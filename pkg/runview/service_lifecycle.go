@@ -571,16 +571,10 @@ func (s *Service) reconcileRun(runID string) (*store.Run, bool, error) {
 		}
 		return r2, false, nil
 	}
-	newStatus := store.RunStatusFailed
-	if r2.Checkpoint != nil {
-		newStatus = store.RunStatusFailedResumable
-	} else {
-		// No checkpoint means the run died before any node finished —
-		// resume from entry is now possible thanks to the engine-side
-		// permissive-restart path. Flag as resumable too so the studio
-		// can offer the resume button.
-		newStatus = store.RunStatusFailedResumable
-	}
+	// Both paths are resumable: with a checkpoint we resume from the failed
+	// node; without one, the engine's permissive-restart path resumes from
+	// entry — either way the studio can offer the resume button.
+	newStatus := store.RunStatusFailedResumable
 	const reason = "orphan reconciled on resume request: server had no live goroutine for run"
 	if err := s.store.UpdateRunStatus(context.Background(), runID, newStatus, reason); err != nil {
 		_ = lock.Unlock()

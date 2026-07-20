@@ -480,7 +480,7 @@ func loadWorkflowForDoctor(path string) (*ir.Workflow, error) {
 	path = ResolveRecipePath(path)
 
 	b, iterPath, kind, cleanup, err := openBundleOrFile(path)
-	defer cleanup()
+	defer func() { _ = cleanup() }()
 	if err != nil {
 		switch kind {
 		case bundle.KindBundle:

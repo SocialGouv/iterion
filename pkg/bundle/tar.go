@@ -86,7 +86,7 @@ func extractTarGz(r io.Reader, dest string) (int, error) {
 			if err := lim.makeDir(hdr.Name); err != nil {
 				return lim.written, err
 			}
-		case tar.TypeReg, tar.TypeRegA:
+		case tar.TypeReg, tar.TypeRegA: //nolint:staticcheck // TypeRegA marks regular files in legacy tar archives we must still read
 			if err := lim.writeFile(hdr.Name, fileMode(hdr.Mode), hdr.Size, tr); err != nil {
 				return lim.written, err
 			}

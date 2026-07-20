@@ -157,10 +157,10 @@ func isLoopbackBindHost(bind string) bool {
 }
 
 func RunStudio(ctx context.Context, opts StudioOptions, p *Printer) error {
-	switch {
-	case opts.Port == 0:
+	switch opts.Port {
+	case 0:
 		opts.Port = 4891
-	case opts.Port == -1:
+	case -1:
 		opts.Port = 0
 	}
 	if opts.Bind == "" {

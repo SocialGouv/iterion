@@ -55,7 +55,7 @@ func NewWatcher(workDir string, hub *Hub, logger *iterlog.Logger) (*Watcher, err
 
 // Start walks the work directory, adds watches, and runs the event loop.
 func (w *Watcher) Start() {
-	filepath.WalkDir(w.workDir, func(path string, d os.DirEntry, err error) error {
+	if err := filepath.WalkDir(w.workDir, func(path string, d os.DirEntry, err error) error {
 		if err != nil {
 			return nil
 		}
@@ -68,7 +68,9 @@ func (w *Watcher) Start() {
 			}
 		}
 		return nil
-	})
+	}); err != nil {
+		w.logger.Warn("watcher: initial walk of %s: %v", w.workDir, err)
+	}
 
 	go w.cleanupIgnoreEntries()
 
@@ -135,7 +137,9 @@ func (w *Watcher) handleEvent(ev fsnotify.Event) {
 	if ev.Has(fsnotify.Create) {
 		if info, err := os.Stat(absPath); err == nil && info.IsDir() {
 			if !isSkippedDir(filepath.Base(absPath)) {
-				w.fsWatcher.Add(absPath)
+				if err := w.fsWatcher.Add(absPath); err != nil {
+					w.logger.Warn("watcher: cannot watch new dir %s: %v", absPath, err)
+				}
 			}
 			return
 		}

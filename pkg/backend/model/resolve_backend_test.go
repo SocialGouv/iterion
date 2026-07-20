@@ -62,7 +62,7 @@ func newExecutorForResolveTest(defaultBackend string) *ClawExecutor {
 
 func nodeWithBackend(backend string) *ir.AgentNode {
 	n := &ir.AgentNode{}
-	n.LLMFields.Backend = backend
+	n.Backend = backend
 	return n
 }
 
@@ -171,8 +171,8 @@ func TestResolveBackend_FallbackToClawWhenNothing(t *testing.T) {
 // tests can exercise their respective env-expansion paths.
 func nodeWithBackendProvider(backend, provider string) *ir.AgentNode {
 	n := &ir.AgentNode{}
-	n.LLMFields.Backend = backend
-	n.LLMFields.Provider = provider
+	n.Backend = backend
+	n.Provider = provider
 	return n
 }
 

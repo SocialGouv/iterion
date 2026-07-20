@@ -428,8 +428,10 @@ tasks:
       - go vet ./...
 
   lint:
-    desc: Run fmt and vet
+    desc: Run fmt, vet, and golangci-lint
     deps: [fmt, vet]
+    cmds:
+      - golangci-lint run
 
   run:
     desc: Build and run iterion (pass args after --)

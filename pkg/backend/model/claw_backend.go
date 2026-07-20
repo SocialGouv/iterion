@@ -444,7 +444,7 @@ func (b *ClawBackend) Execute(ctx context.Context, task delegate.Task) (delegate
 		} else {
 			ref = memory.LegacyBotRef(memBase, m.Scope)
 		}
-		var memStore knowledge.MemoryStore = b.memStore
+		var memStore = b.memStore
 		if memStore == nil {
 			memStore = memory.DefaultFSStore()
 		}
@@ -708,8 +708,8 @@ func (b *ClawBackend) generateTextWithToolsAndSchema(ctx context.Context, client
 			})
 		}
 		reRun, reErr := GenerateTextDirect(ctx, client, nudged)
-		switch {
-		case reErr == nil:
+		switch reErr {
+		case nil:
 			// Carry the wasted first-pass usage into the re-run so cost
 			// accounting reflects both turns.
 			accumulateUsage(&reRun.TotalUsage, result.TotalUsage)

@@ -289,7 +289,7 @@ func (e *ClawExecutor) runToolNodeCore(
 	// `[detached HEAD ...]` line, a `script: js` body's console.error)
 	// without that prose breaking the JSON parse downstream.
 	// CombinedOutput() conflated the two and poisoned the parse.
-	stdoutBytes, runErr, stderrStr := runWithSeparateStreams(cmd)
+	stdoutBytes, stderrStr, runErr := runWithSeparateStreams(cmd)
 	outputStr := string(stdoutBytes)
 	duration := time.Since(start)
 
@@ -416,16 +416,16 @@ func (e *ClawExecutor) checkToolNodePolicy(ctx context.Context, node *ir.ToolNod
 }
 
 // runWithSeparateStreams runs cmd with stdout and stderr captured into
-// distinct buffers. Returns (stdout bytes, run error, stderr string).
+// distinct buffers. Returns (stdout bytes, stderr string, run error).
 // Use this for tool nodes where downstream needs to parse stdout as a
 // structured payload while leaving stderr free for diagnostic chatter.
-func runWithSeparateStreams(cmd *exec.Cmd) ([]byte, error, string) {
+func runWithSeparateStreams(cmd *exec.Cmd) ([]byte, string, error) {
 	var stderrBuf bytes.Buffer
 	cmd.Stderr = &stderrBuf
 	stdoutBytes, runErr := cmd.Output()
 	// exec.ExitError carries stderr it captured before we set ours; the
 	// buffer we provided is still the source of truth in our path.
-	return stdoutBytes, runErr, stderrBuf.String()
+	return stdoutBytes, stderrBuf.String(), runErr
 }
 
 // combineStreamsForLog formats stdout + stderr into a single string for

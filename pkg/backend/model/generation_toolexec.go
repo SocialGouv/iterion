@@ -251,7 +251,7 @@ func runToolExecution(ctx context.Context, gt *GenerationTool, tu toolUseBlock, 
 
 	execInput := json.RawMessage(tu.PartialJSON)
 	if materialize != nil {
-		execInput = json.RawMessage(materialize(string(tu.PartialJSON)))
+		execInput = json.RawMessage(materialize(tu.PartialJSON))
 	}
 	start := time.Now()
 	output, err := gt.Execute(ctx, execInput)

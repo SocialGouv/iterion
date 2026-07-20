@@ -17,7 +17,7 @@ import (
 func evt(seq int64, t store.EventType, branch, node string, data map[string]any) *store.Event {
 	return &store.Event{
 		Seq:       seq,
-		Timestamp: time.Unix(int64(seq), 0).UTC(),
+		Timestamp: time.Unix(seq, 0).UTC(),
 		Type:      t,
 		BranchID:  branch,
 		NodeID:    node,

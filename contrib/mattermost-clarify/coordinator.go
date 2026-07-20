@@ -135,7 +135,7 @@ func (c *Coordinator) HandleCompletion(ctx context.Context, payload notify.Compl
 	if err != nil {
 		return err
 	}
-	thread := ThreadRef{ChannelID: tok.ChannelID, RootID: tok.RootID}
+	thread := ThreadRef(tok)
 	return c.driver.PostReply(ctx, thread, payload.FinalAnswer)
 }
 

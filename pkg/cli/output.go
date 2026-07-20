@@ -89,7 +89,7 @@ func (p *Printer) Table(headers []string, rows [][]string) {
 		if i > 0 {
 			hdr.WriteString("  ")
 		}
-		hdr.WriteString(fmt.Sprintf("%-*s", widths[i], h))
+		fmt.Fprintf(&hdr, "%-*s", widths[i], h)
 	}
 	p.Line("  %s", hdr.String())
 
@@ -114,7 +114,7 @@ func (p *Printer) Table(headers []string, rows [][]string) {
 			if i < len(widths) {
 				w = widths[i]
 			}
-			line.WriteString(fmt.Sprintf("%-*s", w, cell))
+			fmt.Fprintf(&line, "%-*s", w, cell)
 		}
 		p.Line("  %s", line.String())
 	}

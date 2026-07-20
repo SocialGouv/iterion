@@ -123,7 +123,7 @@ func TestWriteManifest_AppendsNewKeysAfterDescription(t *testing.T) {
 	descAt := strings.Index(got, "description:")
 	whenAt := strings.Index(got, "when_to_use:")
 	authorAt := strings.Index(got, "author:")
-	if !(descAt < whenAt && whenAt < authorAt) {
+	if descAt >= whenAt || whenAt >= authorAt {
 		t.Errorf("when_to_use not placed after description / before author (desc=%d when=%d author=%d)\n---\n%s",
 			descAt, whenAt, authorAt, got)
 	}
@@ -158,7 +158,7 @@ func TestWriteManifest_IconRoundTrip(t *testing.T) {
 	displayAt := strings.Index(got, "display_name:")
 	iconAt := strings.Index(got, "icon:")
 	descAt := strings.Index(got, "description:")
-	if !(displayAt < iconAt && iconAt < descAt) {
+	if displayAt >= iconAt || iconAt >= descAt {
 		t.Errorf("icon not placed after display_name / before description (display=%d icon=%d desc=%d)\n---\n%s",
 			displayAt, iconAt, descAt, got)
 	}

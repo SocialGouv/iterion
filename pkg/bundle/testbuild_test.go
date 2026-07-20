@@ -60,7 +60,7 @@ func buildBotz(t *testing.T, dest string, entries []tarEntry) {
 			Typeflag: typ,
 			Linkname: e.Linkname,
 		}
-		if typ != tar.TypeReg && typ != tar.TypeRegA {
+		if typ != tar.TypeReg && typ != tar.TypeRegA { //nolint:staticcheck // legacy tar archives mark regular files with TypeRegA
 			hdr.Size = 0
 		}
 		if err := tw.WriteHeader(hdr); err != nil {

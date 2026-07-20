@@ -1600,9 +1600,8 @@ func TestEventSequenceCoherence(t *testing.T) {
 	lastNodeEvent := make(map[string]store.EventType)
 	for _, evt := range events {
 		if evt.Type == store.EventNodeStarted {
-			if prev, ok := lastNodeEvent[evt.NodeID]; ok && prev == store.EventNodeStarted {
-				// This is OK for looped nodes (node starts again after finishing).
-			}
+			// A repeated start is fine for looped nodes (a node starts again
+			// after finishing); only finish-without-start is a violation.
 			lastNodeEvent[evt.NodeID] = store.EventNodeStarted
 		}
 		if evt.Type == store.EventNodeFinished {

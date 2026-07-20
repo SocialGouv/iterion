@@ -117,7 +117,7 @@ func classifyImageResolve(ref string, out []byte, runErr error) error {
 		return nil
 	}
 	lower := strings.ToLower(string(out))
-	transient := true
+	var transient bool
 	switch {
 	case containsAny(lower,
 		"denied", "unauthorized", "authentication", "forbidden", "login",

@@ -481,11 +481,11 @@ func (m *Manager) smokeTestWorkspace(ctx context.Context, client protocolClient,
 		}
 		result, err := client.CallTool(ctx, "Bash", args)
 		if err != nil {
-			return fmt.Errorf("Bash tool call failed: %w", err)
+			return fmt.Errorf("bash tool call failed: %w", err)
 		}
 		text, _ := formatToolResult(result)
 		if !strings.Contains(text, workDir) {
-			return fmt.Errorf("Bash pwd returned %q, expected workDir %q", strings.TrimSpace(text), workDir)
+			return fmt.Errorf("bash pwd returned %q, expected workDir %q", strings.TrimSpace(text), workDir)
 		}
 	case toolNames["codex"]:
 		// Codex exposes a single "codex" tool — ask it to list files.

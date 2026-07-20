@@ -590,7 +590,7 @@ func validateInvocations(invs []Invocation) error {
 				return fmt.Errorf("invocations[%d].forge: unknown event %q (known: %s, %s)", idx, inv.Forge.Event, ForgeEventPullRequest, ForgeEventPullRequestComment)
 			}
 			if inv.Command != nil || inv.Schedule != nil {
-				return fmt.Errorf("invocations[%d]: kind=forge must not set command:/schedule:", idx)
+				return fmt.Errorf("invocations[%d]: kind=forge must not set a command:/schedule: block", idx)
 			}
 		case InvocationKindCommand:
 			if inv.Command == nil {
@@ -613,7 +613,7 @@ func validateInvocations(invs []Invocation) error {
 				seenCmd[lc] = true
 			}
 			if inv.Forge != nil || inv.Schedule != nil {
-				return fmt.Errorf("invocations[%d]: kind=command must not set forge:/schedule:", idx)
+				return fmt.Errorf("invocations[%d]: kind=command must not set a forge:/schedule: block", idx)
 			}
 		case InvocationKindSchedule:
 			if inv.Schedule == nil {
@@ -625,7 +625,7 @@ func validateInvocations(invs []Invocation) error {
 				}
 			}
 			if inv.Forge != nil || inv.Command != nil {
-				return fmt.Errorf("invocations[%d]: kind=schedule must not set forge:/command:", idx)
+				return fmt.Errorf("invocations[%d]: kind=schedule must not set a forge:/command: block", idx)
 			}
 		case InvocationKindBoard:
 			if inv.Forge != nil || inv.Command != nil || inv.Schedule != nil {

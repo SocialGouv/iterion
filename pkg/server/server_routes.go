@@ -48,8 +48,8 @@ func (s *Server) routes() {
 	// enable/disable rewrite the host-global plugins.yaml — on a shared
 	// cloud server that changes behavior for every tenant, so they take
 	// the same super-admin gate as install (operator-open in local mode).
-	s.mux.Handle("POST /api/v1/plugins/{name}/enable", s.requireSuperAdmin(http.HandlerFunc(s.handlePluginEnable(true))))
-	s.mux.Handle("POST /api/v1/plugins/{name}/disable", s.requireSuperAdmin(http.HandlerFunc(s.handlePluginEnable(false))))
+	s.mux.Handle("POST /api/v1/plugins/{name}/enable", s.requireSuperAdmin(s.handlePluginEnable(true)))
+	s.mux.Handle("POST /api/v1/plugins/{name}/disable", s.requireSuperAdmin(s.handlePluginEnable(false)))
 	// install/uninstall mutate the shared plugin tree (clone an arbitrary
 	// source server-side), so they're gated to platform super-admins —
 	// requireSuperAdmin synthesizes a super-admin in local/dev mode, so the

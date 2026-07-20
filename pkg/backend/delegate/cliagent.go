@@ -389,7 +389,7 @@ func parseStreamJSONText(stdout string) (text, sessionID string, tokens int) {
 			continue
 		}
 		var ev map[string]any
-		if json.Unmarshal([]byte(line), &ev); ev == nil {
+		if err := json.Unmarshal([]byte(line), &ev); err != nil || ev == nil {
 			continue
 		}
 		if sid, ok := ev["session_id"].(string); ok && sid != "" {

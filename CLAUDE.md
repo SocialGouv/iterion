@@ -59,7 +59,7 @@ devbox run -- task test:live:review  # Run session continuity review/fix live te
 devbox run -- task test:live:kanban  # Run kanban board plan/implement/review live test
 devbox run -- task test:live:full    # Run exhaustive DSL coverage live test
 devbox run -- task test:race      # Tests with race detector
-devbox run -- task lint           # go fmt + go vet
+devbox run -- task lint           # go fmt + go vet + golangci-lint
 devbox run -- task check          # lint + test
 devbox run -- task clean          # Remove build artifacts
 ```
@@ -1155,7 +1155,7 @@ push / `--squash` without `--auto`). Required checks: `test`, `race`,
 
 ## Conventions
 
-- No external linter beyond `go fmt` and `go vet`
+- Go linting: `go fmt` + `go vet` + a curated `golangci-lint` (`.golangci.yml`: errcheck/govet/ineffassign/staticcheck/unconvert/unused; misspell off — it flags French comments; tests skip errcheck/SA1012; `cmd/iterion-desktop` excluded as cgo/build-tagged). Run via `task lint`; CI `golangci` job (add to the branch-protection required checks to gate merges)
 - Tests use the standard `testing` package — no test frameworks
 - Binary name is `iterion` (ignored in .gitignore)
 - Store data lives in `.iterion/` (ignored in .gitignore)

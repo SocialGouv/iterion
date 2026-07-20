@@ -14,7 +14,8 @@
     "imagemagick@latest",
     "pkg-config@latest",
     "gtk3@latest",
-    "webkitgtk_4_1@latest"
+    "webkitgtk_4_1@latest",
+    "golangci-lint@latest"
   ],
   "shell": {
     "init_hook": [],

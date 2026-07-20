@@ -337,7 +337,10 @@ func (s *Server) handleListFiles(w http.ResponseWriter, _ *http.Request) {
 		return
 	}
 	var files []fileEntry
-	filepath.WalkDir(workDir, func(path string, d fs.DirEntry, err error) error {
+	// Per-entry errors are handled in the callback; a root-level walk failure
+	// yields the partial (possibly empty) list, which this read-only file
+	// browser degrades to gracefully.
+	_ = filepath.WalkDir(workDir, func(path string, d fs.DirEntry, err error) error {
 		if err != nil {
 			return nil
 		}

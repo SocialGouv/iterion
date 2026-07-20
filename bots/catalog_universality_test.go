@@ -60,7 +60,7 @@ var violationPatterns = []string{
 // it is a regression to justify in the entry's reason — and to shrink
 // away again.
 type allowEntry struct {
-	bot, varName, pattern, reason string
+	bot, varName, pattern, reason string //nolint:unused // reason is the justification slot filled when an exemption is re-added (see doc above)
 }
 
 var allowlist = []allowEntry{}

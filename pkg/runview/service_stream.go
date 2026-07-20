@@ -101,8 +101,7 @@ func (v *svcSource) SubscribeEvents(ctx context.Context, runID string, fromSeq i
 		// nil) close via broker.CloseRun as before.
 		external := release != nil
 		if external {
-			if newMax, done := s.eventTerminalCatchUp(ctx, runID, maxReplayed, sub); done {
-				maxReplayed = newMax
+			if _, done := s.eventTerminalCatchUp(ctx, runID, maxReplayed, sub); done {
 				return
 			}
 		}
@@ -136,8 +135,7 @@ func (v *svcSource) SubscribeEvents(ctx context.Context, runID string, fromSeq i
 					maxReplayed = ev.Seq
 				}
 			case <-termC:
-				if newMax, done := s.eventTerminalCatchUp(ctx, runID, maxReplayed, sub); done {
-					maxReplayed = newMax
+				if _, done := s.eventTerminalCatchUp(ctx, runID, maxReplayed, sub); done {
 					return
 				}
 			}

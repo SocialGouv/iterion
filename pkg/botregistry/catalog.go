@@ -97,7 +97,7 @@ func renderCatalogCard(b *strings.Builder, e EntryWithSchema, workdir string) {
 	if len(e.Capabilities) > 0 {
 		b.WriteString("- **Capabilities**: " + strings.Join(e.Capabilities, ", ") + "\n")
 	}
-	b.WriteString("- **Path**: `" + catalogRelPath(e.Entry.MainFile(), workdir) + "`\n")
+	b.WriteString("- **Path**: `" + catalogRelPath(e.MainFile(), workdir) + "`\n")
 }
 
 // renderCatalogVars formats a bot's declared vars as a one-line summary,

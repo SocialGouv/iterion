@@ -456,6 +456,25 @@ jobs:
       - name: helm lint --strict (values-prod.yaml)
         run: helm lint charts/iterion -f charts/iterion/values-prod.yaml --strict
 
+  golangci:
+    # Curated golangci-lint pass (.golangci.yml): errcheck, govet,
+    # ineffassign, staticcheck, unconvert, unused. misspell is deliberately
+    # OFF — it flags French comments as misspelled English (1097 false
+    # positives). Runs in parallel with `test`; ~1-2 min. Add to the
+    # branch-protection required checks to gate merges on a clean lint.
+    runs-on: ubuntu-latest
+    env:
+      CGO_ENABLED: "0"
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+      - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6.5.0
+        with:
+          go-version-file: go.mod
+      - name: Install golangci-lint
+        run: go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.12.2
+      - name: Run golangci-lint
+        run: golangci-lint run --timeout 5m
+
   govulncheck:
     # govulncheck is call-graph aware (only reports CVEs whose vulnerable
     # functions are actually reachable from this codebase). Trivy's

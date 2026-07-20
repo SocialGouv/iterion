@@ -126,7 +126,7 @@ func TestLoadManifest_RejectsInvocationErrors(t *testing.T) {
 		{
 			name: "wrong payload on kind",
 			body: "name: b\nschema_version: 1\ninvocations:\n  - kind: forge\n    forge:\n      event: pull_request\n    command:\n      name: x\n",
-			want: "kind=forge must not set command:/schedule:",
+			want: "kind=forge must not set a command:/schedule: block",
 		},
 		{
 			name: "schedule bad cron",

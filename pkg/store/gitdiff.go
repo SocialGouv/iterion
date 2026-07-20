@@ -66,10 +66,6 @@ const (
 	totalRunDiffBytes = 48 << 20 // 48 MiB
 )
 
-// gitDiffBlobName is the attachment/subdir bucket name under which offloaded
-// diff blobs are stored, so DeleteRun's attachment sweep reclaims them.
-const gitDiffBlobName = "__gitdiff"
-
 // RunDiffBlobStore is the optional seam a store implements to offload large
 // per-file diff content out of the RunGitMeta document: the filesystem store
 // writes runs/<id>/gitdiffs/<ref>.json, the Mongo store PUTs an attachment
