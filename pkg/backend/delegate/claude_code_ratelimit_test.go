@@ -27,6 +27,16 @@ func TestIsRateLimitMessage(t *testing.T) {
 			want: true,
 		},
 		{
+			name: "anthropic forfait WEEKLY limit (real-world, feed-watch runner 019f7eee)",
+			text: "You've hit your weekly limit · resets 9pm (Europe/Paris)",
+			want: true,
+		},
+		{
+			name: "future noun variant (daily) — tolerant match keeps this from re-masking",
+			text: "You've hit your daily limit · resets midnight (UTC)",
+			want: true,
+		},
+		{
 			name: "bare rate_limit_error substring NOT matched — left to SDK error path",
 			text: "Error: rate_limit_error: too many requests",
 			want: false,

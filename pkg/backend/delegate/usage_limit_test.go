@@ -26,6 +26,12 @@ func TestClassifyRateLimit(t *testing.T) {
 			wantReset: time.Date(2026, 7, 18, 10, 30, 0, 0, time.UTC), // 10:30 already past 14:00 → next day
 		},
 		{
+			name:      "weekly limit with pm clock (feed-watch runner 019f7eee)",
+			text:      "You've hit your weekly limit · resets 9pm (Europe/Paris)",
+			wantKind:  RateLimitKindUsageWindow,
+			wantReset: time.Date(2026, 7, 17, 21, 0, 0, 0, time.UTC),
+		},
+		{
 			name:      "zai 5h facade",
 			text:      "API Error: Request rejected (429) · Usage limit reached for 5 hour. Your limit will reset later.",
 			wantKind:  RateLimitKindUsageWindow,

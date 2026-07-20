@@ -756,19 +756,29 @@ func logAssistantContent(logger *iterlog.Logger, nodeID string, iteration int, b
 	}
 }
 
+// hitYourLimitRe matches the Anthropic forfait window-exhaustion notice
+// while tolerating the noun the CLI inserts between "your" and "limit".
+// The forfait has (at least) three window shapes and the CLI phrases each
+// differently:
+//   - 5h:      "You've hit your limit · resets …"
+//   - session: "You've hit your session limit · resets 10:30am (UTC)"
+//   - weekly:  "You've hit your weekly limit · resets 9pm (Europe/Paris)"
+//
+// A bare "hit your limit" substring misses the inserted-noun variants: the
+// noun ("session" / "weekly", or a future "daily" / "5-hour") sits between
+// "your" and "limit" and defeats it. Each missed shape sails through as a
+// normal result and fails structured-output validation with a misleading
+// "missing required field", crashing the run instead of producing a clean
+// resumable rate-limit (observed for "session" on a claude-sonnet-5 fixer,
+// see docs/bot-runs/whole-improve-loop.md; and for "weekly" on the
+// feed-watch veille runner, 2026-07-20). One tolerant pattern subsumes
+// every noun so a new window shape never re-opens this masking bug.
+var hitYourLimitRe = regexp.MustCompile(`hit your (?:[a-z0-9-]+ )?limit`)
+
 // rateLimitSignals are case-insensitive substrings of assistant text
-// that indicate the upstream provider has cut us off. Two observed
-// shapes so far:
-//   - Anthropic forfait quota: "You've hit your limit · resets …" —
-//     short standalone assistant text, no HTTP 429.
-//   - Anthropic forfait SESSION quota: "You've hit your session limit ·
-//     resets 10:30am (UTC)" — same shape, different noun. The "session"
-//     between "your" and "limit" defeats the "hit your limit" substring,
-//     so it needs its own signal (observed on a claude-sonnet-5 fixer
-//     node mid-run — without it the 53-char notice sailed through as a
-//     normal result and failed structured-output validation with a
-//     misleading "missing required field", crashing the run instead of a
-//     clean resumable rate-limit; see docs/bot-runs/whole-improve-loop.md).
+// that indicate the upstream provider has cut us off. The forfait
+// window-exhaustion shapes ("hit your … limit") are matched by
+// hitYourLimitRe above; these cover the remaining upstream/facade forms:
 //   - ZAI / Anthropic-shaped facade: "API Error: Request rejected (429)
 //     · Usage limit reached for 5 hour. Your limit will reset at …" —
 //     the CLI relays the upstream 429 into assistant text.
@@ -778,8 +788,6 @@ func logAssistantContent(logger *iterlog.Logger, nodeID string, iteration int, b
 // The 200-char length cap is the second guard against agents quoting
 // these phrases mid-paragraph.
 var rateLimitSignals = []string{
-	"hit your limit",
-	"hit your session limit",
 	"rate limit exceeded",
 	"quota exceeded",
 	"usage limit reached",
@@ -796,6 +804,9 @@ func isRateLimitMessage(text string) bool {
 		return false
 	}
 	lower := strings.ToLower(text)
+	if hitYourLimitRe.MatchString(lower) {
+		return true
+	}
 	for _, sig := range rateLimitSignals {
 		if strings.Contains(lower, sig) {
 			return true
@@ -805,13 +816,12 @@ func isRateLimitMessage(text string) bool {
 }
 
 // usageWindowSignals are the subset of rate-limit shapes that mean a
-// subscription/quota WINDOW is exhausted (the Anthropic forfait 5h /
-// session / weekly caps, the ZAI 5h facade) — waiting for the reset is
-// the only cure, so retries inside the window just burn attempts.
-// Plain throttles ("rate limit exceeded") stay transient.
+// subscription/quota WINDOW is exhausted (the ZAI 5h facade) — waiting
+// for the reset is the only cure, so retries inside the window just burn
+// attempts. The Anthropic forfait 5h / session / weekly caps ("hit your
+// … limit") are all windows too and are matched by hitYourLimitRe in
+// classifyRateLimit. Plain throttles ("rate limit exceeded") stay transient.
 var usageWindowSignals = []string{
-	"hit your limit",
-	"hit your session limit",
 	"usage limit reached",
 }
 
@@ -821,6 +831,9 @@ var usageWindowSignals = []string{
 func classifyRateLimit(text string, now time.Time) (kind string, resetAt time.Time) {
 	lower := strings.ToLower(text)
 	kind = RateLimitKindTransient
+	if hitYourLimitRe.MatchString(lower) {
+		kind = RateLimitKindUsageWindow
+	}
 	for _, sig := range usageWindowSignals {
 		if strings.Contains(lower, sig) {
 			kind = RateLimitKindUsageWindow
