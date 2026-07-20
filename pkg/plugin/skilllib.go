@@ -116,3 +116,33 @@ func WriteManifest(dir string, m *Manifest) error {
 	}
 	return os.WriteFile(filepath.Join(dir, ManifestFile), data, 0o644)
 }
+
+// LoadDir reads a plugin from an arbitrary directory — a tree fetched from a
+// git remote rather than installed under the iterion home.
+//
+// It accepts both shapes an operator can host in a repository: a full
+// plugin.yaml, or a bare skills/ library (no manifest), for which it
+// synthesizes a skills-only manifest exactly like `iterion plugin install`
+// does. name seeds the synthesized manifest and is ignored when the directory
+// carries its own manifest.
+//
+// Enabled is left to the caller: a PluginSource carries its own enable state,
+// which is the authority for a git-hosted plugin (default_enabled belongs to
+// the artifact, not to the operator's binding).
+func LoadDir(name, dir string) (*Plugin, error) {
+	var m *Manifest
+	data, err := os.ReadFile(filepath.Join(dir, ManifestFile))
+	switch {
+	case err == nil:
+		if m, err = ParseManifest(data); err != nil {
+			return nil, fmt.Errorf("plugin: parse %s in %s: %w", ManifestFile, dir, err)
+		}
+	case os.IsNotExist(err):
+		if m, err = SynthesizeSkillsManifest(name, dir); err != nil {
+			return nil, err
+		}
+	default:
+		return nil, fmt.Errorf("plugin: read %s in %s: %w", ManifestFile, dir, err)
+	}
+	return &Plugin{Manifest: *m, Dir: dir, fsys: os.DirFS(dir)}, nil
+}
