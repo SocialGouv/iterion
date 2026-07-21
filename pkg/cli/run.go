@@ -697,29 +697,16 @@ func resolveWorkflow(opts RunOptions) (wf *ir.Workflow, hash, filePath, displayN
 	return raw, h, resolved, raw.Name, nil, cleanup, nil
 }
 
-// bundleParentOf returns the absolute path of `path`'s parent
-// directory when the parent looks like a bundle (has skills/ or
-// manifest.yaml) AND `path` is named main.bot (the canonical bundle
-// entrypoint). Returns "" when no promotion is warranted.
+// bundleParentOf returns the absolute path of `path`'s parent directory
+// when that parent is a bundle and `path` is its main.bot. Returns "" when
+// no promotion is warranted.
+//
 // Conservative on purpose — promoting an arbitrary `*.bot` inside a
 // folder with a sibling `skills/` could surprise operators who
-// intentionally split bundle vs. one-off bots.
+// intentionally split bundle vs. one-off bots. What counts as a bundle is
+// pkg/bundle's to define, not this package's.
 func bundleParentOf(path string) string {
-	abs, err := filepath.Abs(path)
-	if err != nil {
-		return ""
-	}
-	base := filepath.Base(abs)
-	if base != "main.bot" {
-		return ""
-	}
-	parent := filepath.Dir(abs)
-	for _, marker := range []string{"skills", "manifest.yaml"} {
-		if _, err := os.Stat(filepath.Join(parent, marker)); err == nil {
-			return parent
-		}
-	}
-	return ""
+	return bundle.DirForMainBot(path)
 }
 
 // enrichPausedResult loads checkpoint and interaction details from the store

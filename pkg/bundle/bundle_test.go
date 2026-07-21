@@ -319,3 +319,65 @@ func TestLoadManifest_LaunchHints_EmptyCollapsesToNil(t *testing.T) {
 		t.Errorf("expected nil Launch when block absent, got %+v", m.Launch)
 	}
 }
+
+// TestDirForMainBot is the shared answer to "is this main.bot inside a
+// bundle?" — pkg/cli and pkg/runview both route through it, so a
+// disagreement between them is no longer possible.
+func TestDirForMainBot(t *testing.T) {
+	tests := []struct {
+		name    string
+		file    string // path (relative to a temp root) to create as main.bot
+		markers []string
+		want    bool
+	}{
+		{"skills marker", "b/main.bot", []string{DirSkills}, true},
+		{"manifest marker", "b/main.bot", []string{ManifestFile}, true},
+		{"both markers", "b/main.bot", []string{DirSkills, ManifestFile}, true},
+		{"no marker", "b/main.bot", nil, false},
+		{"not main.bot", "b/other.bot", []string{DirSkills, ManifestFile}, false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			root := t.TempDir()
+			path := filepath.Join(root, tt.file)
+			if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(path, []byte("workflow x:\n"), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			for _, m := range tt.markers {
+				mp := filepath.Join(filepath.Dir(path), m)
+				if m == DirSkills {
+					if err := os.MkdirAll(mp, 0o755); err != nil {
+						t.Fatal(err)
+					}
+					continue
+				}
+				if err := os.WriteFile(mp, []byte("name: x\n"), 0o644); err != nil {
+					t.Fatal(err)
+				}
+			}
+
+			got := DirForMainBot(path)
+			if tt.want && got != filepath.Dir(path) {
+				t.Errorf("DirForMainBot = %q, want %q", got, filepath.Dir(path))
+			}
+			if !tt.want && got != "" {
+				t.Errorf("DirForMainBot = %q, want \"\"", got)
+			}
+		})
+	}
+}
+
+// TestDirForMainBot_MarkersAreLayoutConstants keeps the marker list tied
+// to the exported layout names: a rename that updated only one of them
+// would otherwise leave bundle detection silently looking for a
+// directory that no longer exists.
+func TestDirForMainBot_MarkersAreLayoutConstants(t *testing.T) {
+	for _, m := range dirMarkers {
+		if m != DirSkills && m != ManifestFile {
+			t.Errorf("marker %q is neither DirSkills nor ManifestFile", m)
+		}
+	}
+}

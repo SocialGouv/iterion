@@ -357,8 +357,8 @@ func discoverBots(roots []string) ([]Entry, error) {
 				return walkErr
 			}
 			if d.IsDir() {
-				manifest := filepath.Join(path, "manifest.yaml")
-				mainBot := filepath.Join(path, "main.bot")
+				manifest := filepath.Join(path, bundle.ManifestFile)
+				mainBot := filepath.Join(path, bundle.MainBotFile)
 				if fileExists(manifest) && fileExists(mainBot) {
 					e, err := parseBundle(path)
 					if err != nil {
@@ -412,7 +412,7 @@ func discoverBots(roots []string) ([]Entry, error) {
 }
 
 func parseBundle(dir string) (*Entry, error) {
-	m, err := bundle.LoadManifest(filepath.Join(dir, "manifest.yaml"))
+	m, err := bundle.LoadManifest(filepath.Join(dir, bundle.ManifestFile))
 	if err != nil {
 		return nil, fmt.Errorf("bots: %w", err)
 	}

@@ -15,6 +15,11 @@
 // hash identically whether packed as ZIP or read from a legacy tar.gz.
 package bundle
 
+import (
+	"os"
+	"path/filepath"
+)
+
 // Layout directory names. A bundle resolves each by convention at its
 // root, so these strings ARE the format — spelling one differently
 // silently disables that resource kind.
@@ -37,6 +42,50 @@ const (
 // and pkg/botscaffold (which creates them). Kept as one list so adding a
 // convention directory is not a three-package hunt.
 var LayoutDirs = []string{DirSkills, DirPrompts, DirAttachments, DirPresets}
+
+// Bundle root file names. Like the layout directories, these strings ARE
+// the format: several packages outside pkg/bundle reach into a bundle by
+// name, and they must all spell it the same way.
+const (
+	// MainBotFile is the workflow source at a bundle's root — the
+	// familiar main.go / main.rs convention, independent of the bundle
+	// directory's own name.
+	MainBotFile = "main.bot"
+	// ManifestFile is the bundle manifest.
+	ManifestFile = "manifest.yaml"
+	// ManifestFileAlt is the accepted `.yml` spelling of ManifestFile.
+	ManifestFileAlt = "manifest.yml"
+)
+
+// dirMarkers are the sibling entries that mark a directory as a bundle
+// rather than somewhere a loose main.bot happens to sit.
+var dirMarkers = []string{DirSkills, ManifestFile}
+
+// DirForMainBot returns the bundle directory holding path, or "" when
+// path is not a bundle's main.bot.
+//
+// Callers outside pkg/bundle need this to decide whether to open a
+// workflow as a bundle (picking up its skills, prompts, presets and
+// attachments) or as a loose file. It lives here because it encodes what
+// a bundle IS — when two packages answered that question with their own
+// copy of the marker list, they could disagree about it after any change
+// to the layout.
+func DirForMainBot(path string) string {
+	abs, err := filepath.Abs(path)
+	if err != nil {
+		return ""
+	}
+	if filepath.Base(abs) != MainBotFile {
+		return ""
+	}
+	parent := filepath.Dir(abs)
+	for _, marker := range dirMarkers {
+		if _, err := os.Stat(filepath.Join(parent, marker)); err == nil {
+			return parent
+		}
+	}
+	return ""
+}
 
 // Kind discriminates how a workflow path was supplied.
 type Kind int

@@ -209,7 +209,7 @@ func mergeFilePresets(e Entry, inSource *PresetsBlock) *PresetsBlock {
 	if !e.IsBundleDir {
 		return inSource
 	}
-	specs, _ := bundle.LoadPresets(filepath.Join(e.Path, "presets"))
+	specs, _ := bundle.LoadPresets(filepath.Join(e.Path, bundle.DirPresets))
 	if len(specs) == 0 {
 		return inSource
 	}

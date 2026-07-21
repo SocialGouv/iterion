@@ -30,7 +30,7 @@ func hasPrefix(b, prefix []byte) bool {
 // botFileNames is the set of accepted workflow source file names at the
 // bundle root. The canonical name is `main.bot` (familiar `main.go` /
 // `main.rs` convention, independent of the bundle directory name).
-var botFileNames = []string{"main.bot"}
+var botFileNames = []string{MainBotFile}
 
 // Detect classifies path as a plain `.bot` file, a `.botz` archive, or a
 // directory bundle.
@@ -307,12 +307,12 @@ func assembleBundle(dir string) (*Bundle, error) {
 			*d.dst = p
 		}
 	}
-	manifest, err := LoadManifest(filepath.Join(dir, "manifest.yaml"))
+	manifest, err := LoadManifest(filepath.Join(dir, ManifestFile))
 	if err != nil {
 		return nil, err
 	}
 	if manifest == nil {
-		manifest, err = LoadManifest(filepath.Join(dir, "manifest.yml"))
+		manifest, err = LoadManifest(filepath.Join(dir, ManifestFileAlt))
 		if err != nil {
 			return nil, err
 		}

@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/SocialGouv/iterion/pkg/bundle"
 	"github.com/SocialGouv/iterion/pkg/store"
 )
 
@@ -202,7 +203,7 @@ func RegenerateWhatsNextCatalog(workdir string) (string, error) {
 		return "", fmt.Errorf("botregistry: %s: %w", staticPath, err)
 	}
 
-	skillsDir := filepath.Join(owner.Path, "skills")
+	skillsDir := filepath.Join(owner.Path, bundle.DirSkills)
 	if err := os.MkdirAll(skillsDir, 0o755); err != nil {
 		return "", fmt.Errorf("botregistry: mkdir %s: %w", skillsDir, err)
 	}

@@ -137,26 +137,11 @@ func ResolveBundleFromFilePath(filePath string) *bundle.Bundle {
 	if filePath == "" {
 		return nil
 	}
-	abs, err := filepath.Abs(filePath)
-	if err != nil {
+	dir := bundle.DirForMainBot(filePath)
+	if dir == "" {
 		return nil
 	}
-	base := filepath.Base(abs)
-	if base != "main.bot" {
-		return nil
-	}
-	parent := filepath.Dir(abs)
-	hasMarker := false
-	for _, marker := range []string{"skills", "manifest.yaml"} {
-		if _, err := os.Stat(filepath.Join(parent, marker)); err == nil {
-			hasMarker = true
-			break
-		}
-	}
-	if !hasMarker {
-		return nil
-	}
-	b, err := bundle.OpenDir(parent)
+	b, err := bundle.OpenDir(dir)
 	if err != nil {
 		return nil
 	}
