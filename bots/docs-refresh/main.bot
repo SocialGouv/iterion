@@ -226,6 +226,16 @@ vars:
   ## OUT of the target worktree is the repo-agnostic rule.
   scratch_dir: string = "${PROJECT_SCRATCH_DIR}/docs-refresh"
 
+  ## DISMISSALS LEDGER. JSON array of candidates the campaign
+  ## adjudicated as false positives ({doc, kind, value, reason});
+  ## build_manifest excludes ledger entries from every later pass so
+  ## the chunk window ADVANCES instead of re-surfacing the same
+  ## candidates — a zero-commit adjudication pass otherwise leaves the
+  ## manifest byte-identical and the run livelocks re-judging the same
+  ## chunk until max_passes (observed live, cloud run 019f86ce).
+  ## Out-of-tree like scratch_dir; empty disables the exclusion.
+  dismissed_path: string = "${PROJECT_SCRATCH_DIR}/docs-refresh/dismissed.json"
+
   ## BASELINE (G5). Known pre-existing build/test failures the campaign
   ## must SKIP rather than burn budget proving they aren't its own —
   ## docs-refresh rarely trips this (docs-only edits), but when
@@ -325,7 +335,10 @@ prompt campaign_system:
      doc with a semantic message (`docs(<area>): <what was aligned>`),
      body ending with the trailer line `Bot: docs-refresh`. Use
      `fix(<area>):` ONLY when you fixed a demonstrably misleading code
-     COMMENT (go_comment_globs opt-in).
+     COMMENT (go_comment_globs opt-in). A candidate you adjudicate as
+     a FALSE POSITIVE (no edit warranted) goes in the DISMISSALS
+     LEDGER (below) — dismissing without recording is what livelocks
+     the run.
 
   3. COMMIT EACH DOC AS YOU ALIGN IT — never batch. Stage everything
      including new files (`git add -A`) and commit before moving on.
@@ -371,8 +384,21 @@ prompt campaign_system:
   "severity:<low|medium|high>"]. Zero findings is a fine outcome. If
   the board tools are unavailable, list the findings in `summary`.
 
+  DISMISSALS LEDGER — the persistence half of adjudication. For EVERY
+  candidate you judge a false positive, append one entry to the JSON
+  array at `{{vars.dismissed_path}}` (create the file — `[]` — and its
+  parent directory on first use; read-modify-write, keep it valid
+  JSON):
+    {"doc": "<candidate doc>", "kind": "<candidate kind>",
+     "value": "<candidate value>", "reason": "<one line>"}
+  build_manifest excludes ledger entries from every later pass, so the
+  chunk window advances to the deferred docs. A dismissal that is not
+  recorded WILL come back to you next pass — recording it is part of
+  adjudicating it, exactly like committing is part of fixing.
+
   KEEP GOING, one doc at a time, until this pass has adjudicated every
-  candidate in its working set. Then STOP and report.
+  candidate in its working set (fixed+committed or dismissed+recorded).
+  Then STOP and report.
 
   TERMINATION CONTRACT (required structured output — this is how the
   engine detects completion; an under-specified end just gets
@@ -873,6 +899,9 @@ schema build_manifest_output:
   ## v2: the mechanically VERIFIED doc::anchor pairs — feeds the
   ## inter-run audit cache (update_audit_cache) so pre-verification no
   ## longer depends on retired reviewer claims.
+  ## Candidates dropped because the campaign's dismissals ledger
+  ## (vars.dismissed_path) already adjudicated them as false positives.
+  dismissed_excluded: int
   verified_pairs: string[]
 
 ## ─── Nodes ──────────────────────────────────────────────────────
@@ -1118,7 +1147,7 @@ print(json.dumps({
 ## All inputs flow via env vars (JSON-encoded for arrays); the
 ## tool's argv is empty.
 tool build_manifest:
-  command: `WS={{input.workspace_dir}} CODE_GLOBS={{input.code_scope_globs}} MAX_CANDIDATES={{input.max_drift_candidates}} MAX_CHUNK_DOCS={{input.max_review_chunk_docs}} python3 -c "
+  command: `WS={{input.workspace_dir}} CODE_GLOBS={{input.code_scope_globs}} MAX_CANDIDATES={{input.max_drift_candidates}} MAX_CHUNK_DOCS={{input.max_review_chunk_docs}} DISMISSED_PATH={{vars.dismissed_path}} python3 -c "
 import os, json, re, glob, subprocess, sys
 ws = os.environ['WS']
 os.chdir(ws)
@@ -1429,6 +1458,27 @@ priority = {
 ## we never scanned that surface, so there is nothing for the campaign to
 ## adjudicate — they would only be noise that tempts a false blocker.
 candidates = drifted + [a for a in unverifiable if a['kind'] == 'symbol_ref']
+
+## DISMISSALS LEDGER exclusion: candidates the campaign already
+## adjudicated as false positives (recorded at DISMISSED_PATH) are
+## dropped BEFORE the sort/chunk, so the chunk window advances to the
+## deferred docs instead of re-surfacing the same candidates forever.
+dismissed_path = os.environ.get('DISMISSED_PATH', '').strip()
+dismissed = set()
+if dismissed_path and os.path.exists(dismissed_path):
+    try:
+        with open(dismissed_path, encoding='utf-8') as df:
+            for e in json.load(df):
+                if isinstance(e, dict):
+                    dismissed.add((e.get('doc', ''), e.get('kind', ''), str(e.get('value', ''))))
+    except (OSError, json.JSONDecodeError, TypeError):
+        pass
+dismissed_excluded = 0
+if dismissed:
+    kept = [a for a in candidates if (a['doc'], a['kind'], str(a['value'])) not in dismissed]
+    dismissed_excluded = len(candidates) - len(kept)
+    candidates = kept
+
 candidates.sort(key=lambda a: (priority.get((a['status'], a['kind']), 9), a['doc'], a['line']))
 
 ## v0.16.0: doc-count chunking. After the severity sort, walk the
@@ -1495,6 +1545,7 @@ print(json.dumps({
     'chunked': chunked,
     'chunk_doc_count': chunk_doc_count,
     'max_review_chunk_docs': max_chunk_docs,
+    'dismissed_excluded': dismissed_excluded,
     'verified_pairs': sorted({a['doc'] + '::' + str(a.get('value','')) for a in verified}),
 }))
 " --docs {{input.doc_files}} --cli {{input.cli_commands}} --flags {{input.cli_flags}} --diag {{input.diagnostic_codes}}`
