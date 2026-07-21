@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"sync"
+	"sync/atomic"
 	"time"
 
 	wp "github.com/SherClockHolmes/webpush-go"
@@ -56,13 +58,19 @@ type payload struct {
 	Body  string `json:"body"`
 	Link  string `json:"link"`
 	Tag   string `json:"tag"`
-	RunID string `json:"run_id"`
 }
 
-// Deliver pushes n to every registered browser of every recipient. A push
-// endpoint the service reports dead (404/410 Gone) is pruned. Deliver only
-// errors when nothing could be delivered despite at least one live
-// subscription — a recipient with no subscriptions is not a failure.
+// pushConcurrency bounds the parallel HTTP calls to push services — enough
+// to make wall time ≈ one RTT for a typical fan-out without stampeding.
+const pushConcurrency = 8
+
+// Deliver pushes n to every registered browser of every recipient — one
+// subscription query, then bounded-parallel HTTP sends (each is a blocking
+// call to an external push service; serialized they can outlast the
+// deliver budget). A push endpoint the service reports dead (404/410 Gone)
+// is pruned. Deliver only errors when nothing could be delivered despite
+// at least one live subscription — a recipient with no subscriptions is
+// not a failure.
 func (s *Sink) Deliver(ctx context.Context, n usernotify.Notification) error {
 	body, err := json.Marshal(payload{
 		Kind:  string(n.Kind),
@@ -70,30 +78,38 @@ func (s *Sink) Deliver(ctx context.Context, n usernotify.Notification) error {
 		Body:  n.Body,
 		Link:  n.Link,
 		Tag:   n.Tag,
-		RunID: n.RunID,
 	})
 	if err != nil {
 		return fmt.Errorf("webpush: marshal payload: %w", err)
 	}
 
-	attempted, delivered := 0, 0
-	for _, userID := range n.UserIDs {
-		subs, err := s.store.ListForUser(ctx, n.TenantID, userID)
-		if err != nil {
-			s.logger.Warn("webpush: list subscriptions for %s/%s: %v", n.TenantID, userID, err)
-			continue
-		}
-		for _, sub := range subs {
-			attempted++
-			if err := s.push(ctx, body, sub); err != nil {
-				s.logger.Warn("webpush: push to %s (user %s): %v", redactEndpoint(sub.Endpoint), userID, err)
-				continue
-			}
-			delivered++
-		}
+	subs, err := s.store.ListForUsers(ctx, n.TenantID, n.UserIDs)
+	if err != nil {
+		return fmt.Errorf("webpush: list subscriptions: %w", err)
 	}
-	if attempted > 0 && delivered == 0 {
-		return fmt.Errorf("webpush: all %d push attempts failed for run %s", attempted, n.RunID)
+	if len(subs) == 0 {
+		return nil
+	}
+
+	sem := make(chan struct{}, pushConcurrency)
+	var wg sync.WaitGroup
+	var delivered atomic.Int32
+	for _, sub := range subs {
+		wg.Add(1)
+		go func(sub *Subscription) {
+			defer wg.Done()
+			sem <- struct{}{}
+			defer func() { <-sem }()
+			if err := s.push(ctx, body, sub); err != nil {
+				s.logger.Warn("webpush: push to %s (user %s): %v", redactEndpoint(sub.Endpoint), sub.UserID, err)
+				return
+			}
+			delivered.Add(1)
+		}(sub)
+	}
+	wg.Wait()
+	if delivered.Load() == 0 {
+		return fmt.Errorf("webpush: all %d push attempts failed for run %s", len(subs), n.RunID)
 	}
 	return nil
 }

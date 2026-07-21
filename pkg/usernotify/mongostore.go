@@ -68,13 +68,11 @@ func (s *MongoPrefsStore) Set(ctx context.Context, p *Prefs) error {
 }
 
 func (s *MongoPrefsStore) ListTeamWide(ctx context.Context, tenantID string) ([]string, error) {
-	cur, err := s.coll.Find(ctx, bson.M{"tenant_id": tenantID, "scope": ScopeTeam})
+	rows, err := mongoutil.FindAllSorted[Prefs](ctx, s.coll,
+		bson.M{"tenant_id": tenantID, "scope": ScopeTeam}, "user_id",
+		"usernotify: list team-wide prefs", "usernotify: decode team-wide prefs")
 	if err != nil {
-		return nil, fmt.Errorf("usernotify: list team-wide prefs: %w", err)
-	}
-	var rows []Prefs
-	if err := cur.All(ctx, &rows); err != nil {
-		return nil, fmt.Errorf("usernotify: decode team-wide prefs: %w", err)
+		return nil, err
 	}
 	users := make([]string, 0, len(rows))
 	for _, p := range rows {
@@ -107,12 +105,20 @@ func (s *MongoSentStore) EnsureSchema(ctx context.Context) error {
 func (s *MongoSentStore) TryMark(ctx context.Context, key string) (bool, error) {
 	_, err := s.coll.InsertOne(ctx, SentRecord{Key: key, SentAt: time.Now().UTC()})
 	if err != nil {
-		if mongo.IsDuplicateKeyError(err) {
+		if mongoutil.IsDuplicateKey(err) {
 			return false, nil
 		}
 		return false, fmt.Errorf("usernotify: claim episode: %w", err)
 	}
 	return true, nil
+}
+
+func (s *MongoSentStore) IsMarked(ctx context.Context, key string) (bool, error) {
+	n, err := s.coll.CountDocuments(ctx, bson.M{"_id": key})
+	if err != nil {
+		return false, fmt.Errorf("usernotify: check episode claim: %w", err)
+	}
+	return n > 0, nil
 }
 
 func (s *MongoSentStore) Unmark(ctx context.Context, key string) error {

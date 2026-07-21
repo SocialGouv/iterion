@@ -12,6 +12,8 @@ import (
 	"github.com/SocialGouv/iterion/pkg/forge"
 	"github.com/SocialGouv/iterion/pkg/secrets"
 	"github.com/SocialGouv/iterion/pkg/trigger"
+	"github.com/SocialGouv/iterion/pkg/usernotify"
+	"github.com/SocialGouv/iterion/pkg/usernotify/webpush"
 )
 
 // Addr returns the actual bound address (host:port) once ListenAndServe has
@@ -75,19 +77,18 @@ func (s *Server) ListenAndServe() error {
 		if s.runs != nil {
 			launcher = newServiceLauncher(s.runs, s.effectivePaths(), s.logger)
 		}
-		s.triggerCoord = StartTriggerCoordinator(s.cfg.NativeTrackerStore, s.cfg.TriggerStore, nudger, launcher, s.scheduleGate(), s.logger)
-		// Wire the run-completion source onto the same bus so a finished /
-		// failed run can fire downstream trigger subscriptions.
-		if s.triggerCoord != nil && s.runs != nil {
+		s.triggerCoord = StartTriggerCoordinator(s.cfg.NativeTrackerStore, s.cfg.TriggerStore, nudger, launcher, s.scheduleGate(), s.cfg.EventsBus, s.logger)
+	}
+	// Wire the run-completion source onto the process's single event spine
+	// (the injected EventsBus, which the trigger coordinator also rides
+	// when active; its own InProcBus otherwise) so every consumer —
+	// trigger evaluator, usernotify — sees the same run-outcome stream.
+	if s.runs != nil {
+		if s.cfg.EventsBus != nil {
+			s.runs.SetEventPublisher(s.cfg.EventsBus)
+		} else if s.triggerCoord != nil {
 			s.runs.SetEventPublisher(s.triggerCoord.Bus())
 		}
-	}
-	// User notifications (web push): dispatcher on the event spine +
-	// reconciliation sweep. In cloud, the runview service also publishes
-	// run outcomes onto the shared bus so an in-process run (if any)
-	// reaches the same consumers as runner-pod runs.
-	if s.cfg.EventsBus != nil && s.runs != nil && s.triggerCoord == nil {
-		s.runs.SetEventPublisher(s.cfg.EventsBus)
 	}
 	s.startUserNotify()
 	// Sweep abandoned OIDC PendingAuth entries — a user who clicks
@@ -282,6 +283,51 @@ func (s *Server) ListenAndServe() error {
 // run to failed_resumable and emits EventRunInterrupted so the next
 // boot can offer one-click resume and clients can distinguish
 // shutdown-induced termination from user-initiated cancel.
+// startUserNotify builds the usernotify dispatcher (web-push sink), attaches
+// it to the event spine, and starts the reconciliation sweep. No-op when the
+// feature is off. The dispatcher subscribes on the shared EventsBus (cloud
+// NATSBus — queue-group delivery dedups across replicas) or, locally, on the
+// trigger coordinator's in-proc bus.
+func (s *Server) startUserNotify() {
+	if !s.webPushEnabled() || s.runs == nil {
+		return
+	}
+	rs := s.runs.RunStore()
+	if rs == nil {
+		return
+	}
+	s.pushSink = webpush.NewSink(s.cfg.PushSubscriptions, webpush.SinkOptions{
+		VAPIDPublicKey:  s.cfg.WebPushVAPIDPublicKey,
+		VAPIDPrivateKey: s.cfg.WebPushVAPIDPrivateKey,
+		Subscriber:      s.cfg.WebPushSubscriber,
+	}, s.logger)
+	s.userNotify = usernotify.NewDispatcher(rs, s.cfg.NotificationPrefs, s.cfg.NotificationSent, s.cfg.PublicURL, s.logger, s.pushSink)
+
+	bus := s.cfg.EventsBus
+	if bus == nil && s.triggerCoord != nil {
+		bus = s.triggerCoord.Bus()
+	}
+	if bus != nil {
+		cancel, err := s.userNotify.Attach(bus)
+		if err != nil {
+			s.logger.Warn("server: usernotify bus subscribe failed (sweep-only delivery): %v", err)
+		} else {
+			s.userNotifyCancel = cancel
+		}
+	}
+
+	if s.cfg.NotifiableRuns != nil {
+		sweeper := usernotify.NewSweeper(s.userNotify, s.cfg.NotifiableRuns, s.logger)
+		sweepCtx, cancelSweep := context.WithCancel(context.Background())
+		go func() {
+			<-s.shutdown
+			cancelSweep()
+		}()
+		go sweeper.Start(sweepCtx)
+	}
+	s.logger.Info("server: user notifications enabled (web push)")
+}
+
 func (s *Server) Shutdown(ctx context.Context) error {
 	if s.runs != nil {
 		s.runs.Drain(ctx)

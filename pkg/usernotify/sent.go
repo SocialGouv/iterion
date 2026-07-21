@@ -21,6 +21,10 @@ type SentStore interface {
 	// Unmark releases a claim after a delivery that failed on every sink,
 	// so the reconciliation sweep retries the episode. Best-effort.
 	Unmark(ctx context.Context, key string) error
+	// IsMarked reports whether key is already claimed WITHOUT claiming it —
+	// the sweep's cheap pre-check that skips the per-run store load for
+	// episodes long since delivered.
+	IsMarked(ctx context.Context, key string) (bool, error)
 }
 
 // SentRecord is the persisted shape (exported for the Mongo store's TTL
@@ -53,4 +57,11 @@ func (m *MemSentStore) Unmark(_ context.Context, key string) error {
 	defer m.mu.Unlock()
 	delete(m.keys, key)
 	return nil
+}
+
+func (m *MemSentStore) IsMarked(_ context.Context, key string) (bool, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	_, ok := m.keys[key]
+	return ok, nil
 }

@@ -54,11 +54,16 @@ type TriggerCoordinator struct {
 // the dispatcher poll remains the backstop. nudger (the dispatcher Manager)
 // and launcher (direct-mode runs) may be nil; a nil nudger just means a
 // promoted card waits for the next poll instead of being dispatched now.
-func StartTriggerCoordinator(ns *native.Store, subs trigger.SubscriptionStore, nudger trigger.Nudger, launcher trigger.Launcher, gate *trigger.ScheduleGate, logger *iterlog.Logger) *TriggerCoordinator {
+// bus, when non-nil, is the process-wide event spine to ride (the cloud
+// NATSBus) so every run-outcome consumer — evaluator, usernotify — sees one
+// stream; nil builds the local InProcBus.
+func StartTriggerCoordinator(ns *native.Store, subs trigger.SubscriptionStore, nudger trigger.Nudger, launcher trigger.Launcher, gate *trigger.ScheduleGate, bus eventbus.Bus, logger *iterlog.Logger) *TriggerCoordinator {
 	if ns == nil || subs == nil {
 		return nil
 	}
-	bus := eventbus.NewInProcBus(logger)
+	if bus == nil {
+		bus = eventbus.NewInProcBus(logger)
+	}
 	effect := trigger.NewNativeBoardEffect(ns, nudger, logger)
 	eval := trigger.NewEvaluator(subs,
 		trigger.WithBoardEffect(effect),

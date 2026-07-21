@@ -381,7 +381,7 @@ func runServer(cmd *cobra.Command, _ []string) error {
 			}
 			out := make([]usernotify.RunRef, 0, len(refs))
 			for _, ref := range refs {
-				out = append(out, usernotify.RunRef{ID: ref.ID, TenantID: ref.TenantID, Status: ref.Status})
+				out = append(out, usernotify.RunRef{ID: ref.ID, Status: ref.Status, InteractionID: ref.Checkpoint.InteractionID})
 			}
 			return out, nil
 		}

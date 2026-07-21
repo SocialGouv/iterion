@@ -24,7 +24,7 @@ self.addEventListener("push", (event) => {
   event.waitUntil(
     self.registration.showNotification(title, {
       body: data.body || "",
-      tag: data.tag || data.run_id || "iterion",
+      tag: data.tag || "iterion",
       renotify: true,
       icon: "/android-icon-192x192.png",
       badge: "/android-icon-96x96.png",

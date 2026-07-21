@@ -35,7 +35,9 @@ type Subscription struct {
 type SubscriptionStore interface {
 	// Upsert registers (or refreshes) a subscription, keyed on its endpoint.
 	Upsert(ctx context.Context, s *Subscription) error
-	ListForUser(ctx context.Context, tenantID, userID string) ([]*Subscription, error)
+	// ListForUsers returns every subscription of the given users in one
+	// query (a notification fans out to all recipients at once).
+	ListForUsers(ctx context.Context, tenantID string, userIDs []string) ([]*Subscription, error)
 	// DeleteByEndpoint removes the caller's own subscription (unsubscribe).
 	DeleteByEndpoint(ctx context.Context, tenantID, userID, endpoint string) error
 	// Prune removes a subscription the push service reported dead (404/410).
@@ -74,12 +76,19 @@ func (m *MemSubscriptionStore) Upsert(_ context.Context, s *Subscription) error 
 	return nil
 }
 
-func (m *MemSubscriptionStore) ListForUser(_ context.Context, tenantID, userID string) ([]*Subscription, error) {
+func (m *MemSubscriptionStore) ListForUsers(_ context.Context, tenantID string, userIDs []string) ([]*Subscription, error) {
+	users := make(map[string]struct{}, len(userIDs))
+	for _, u := range userIDs {
+		users[u] = struct{}{}
+	}
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 	var out []*Subscription
 	for _, s := range m.rows {
-		if s.TenantID == tenantID && s.UserID == userID {
+		if s.TenantID != tenantID {
+			continue
+		}
+		if _, ok := users[s.UserID]; ok {
 			cp := s
 			out = append(out, &cp)
 		}
@@ -158,16 +167,10 @@ func (s *MongoSubscriptionStore) Upsert(ctx context.Context, sub *Subscription) 
 	return nil
 }
 
-func (s *MongoSubscriptionStore) ListForUser(ctx context.Context, tenantID, userID string) ([]*Subscription, error) {
-	cur, err := s.coll.Find(ctx, bson.M{"tenant_id": tenantID, "user_id": userID})
-	if err != nil {
-		return nil, fmt.Errorf("webpush: list subscriptions: %w", err)
-	}
-	var out []*Subscription
-	if err := cur.All(ctx, &out); err != nil {
-		return nil, fmt.Errorf("webpush: decode subscriptions: %w", err)
-	}
-	return out, nil
+func (s *MongoSubscriptionStore) ListForUsers(ctx context.Context, tenantID string, userIDs []string) ([]*Subscription, error) {
+	return mongoutil.FindAllSorted[*Subscription](ctx, s.coll,
+		bson.M{"tenant_id": tenantID, "user_id": bson.M{"$in": userIDs}}, "created_at",
+		"webpush: list subscriptions", "webpush: decode subscriptions")
 }
 
 func (s *MongoSubscriptionStore) DeleteByEndpoint(ctx context.Context, tenantID, userID, endpoint string) error {

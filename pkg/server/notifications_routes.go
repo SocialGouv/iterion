@@ -1,7 +1,6 @@
 package server
 
 import (
-	"context"
 	"encoding/json"
 	"net/http"
 
@@ -16,54 +15,6 @@ func (s *Server) webPushEnabled() bool {
 	return s.cfg.PushSubscriptions != nil &&
 		s.cfg.WebPushVAPIDPublicKey != "" &&
 		s.cfg.WebPushVAPIDPrivateKey != ""
-}
-
-// startUserNotify builds the usernotify dispatcher (web-push sink), attaches
-// it to the event spine, and starts the reconciliation sweep. Called from
-// Serve; no-op when the feature is off. The dispatcher subscribes on the
-// shared EventsBus (cloud NATSBus — queue-group delivery dedups across
-// replicas) or, locally, on the trigger coordinator's in-proc bus.
-func (s *Server) startUserNotify() {
-	if !s.webPushEnabled() || s.runs == nil {
-		return
-	}
-	rs := s.runs.RunStore()
-	if rs == nil {
-		return
-	}
-	s.pushSink = webpush.NewSink(s.cfg.PushSubscriptions, webpush.SinkOptions{
-		VAPIDPublicKey:  s.cfg.WebPushVAPIDPublicKey,
-		VAPIDPrivateKey: s.cfg.WebPushVAPIDPrivateKey,
-		Subscriber:      s.cfg.WebPushSubscriber,
-	}, s.logger)
-	s.userNotify = usernotify.NewDispatcher(rs, s.cfg.NotificationPrefs, s.cfg.NotificationSent, s.cfg.PublicURL, s.logger, s.pushSink)
-
-	bus := s.cfg.EventsBus
-	if bus == nil && s.triggerCoord != nil {
-		bus = s.triggerCoord.Bus()
-	}
-	if bus != nil {
-		cancel, err := s.userNotify.Attach(bus)
-		if err != nil {
-			s.logger.Warn("server: usernotify bus subscribe failed (sweep-only delivery): %v", err)
-		} else {
-			s.userNotifyCancel = cancel
-		}
-	}
-
-	if s.cfg.NotifiableRuns != nil {
-		sweeper := usernotify.NewSweeper(s.userNotify, s.cfg.NotifiableRuns, s.logger)
-		go func() {
-			ctx, cancel := context.WithCancel(context.Background())
-			defer cancel()
-			go func() {
-				<-s.shutdown
-				cancel()
-			}()
-			sweeper.Start(ctx)
-		}()
-	}
-	s.logger.Info("server: user notifications enabled (web push)")
 }
 
 // registerNotificationRoutes wires the browser push-subscription CRUD, the

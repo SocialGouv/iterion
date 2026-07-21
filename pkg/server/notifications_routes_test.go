@@ -58,7 +58,7 @@ func TestPushSubscribeUnsubscribe(t *testing.T) {
 	if w.Code != http.StatusOK {
 		t.Fatalf("subscribe: code=%d body=%s", w.Code, w.Body.String())
 	}
-	subs, _ := s.cfg.PushSubscriptions.ListForUser(ctx, "t1", "u1")
+	subs, _ := s.cfg.PushSubscriptions.ListForUsers(ctx, "t1", []string{"u1"})
 	if len(subs) != 1 || subs[0].Endpoint != "https://push/x" {
 		t.Fatalf("stored subs = %+v", subs)
 	}
@@ -69,7 +69,7 @@ func TestPushSubscribeUnsubscribe(t *testing.T) {
 	if w.Code != http.StatusOK {
 		t.Fatalf("unsubscribe (other user): code=%d", w.Code)
 	}
-	if subs, _ = s.cfg.PushSubscriptions.ListForUser(ctx, "t1", "u1"); len(subs) != 1 {
+	if subs, _ = s.cfg.PushSubscriptions.ListForUsers(ctx, "t1", []string{"u1"}); len(subs) != 1 {
 		t.Fatal("cross-user unsubscribe removed the subscription")
 	}
 
@@ -79,7 +79,7 @@ func TestPushSubscribeUnsubscribe(t *testing.T) {
 	if w.Code != http.StatusOK {
 		t.Fatalf("unsubscribe: code=%d body=%s", w.Code, w.Body.String())
 	}
-	if subs, _ = s.cfg.PushSubscriptions.ListForUser(ctx, "t1", "u1"); len(subs) != 0 {
+	if subs, _ = s.cfg.PushSubscriptions.ListForUsers(ctx, "t1", []string{"u1"}); len(subs) != 0 {
 		t.Fatalf("subscription not removed: %+v", subs)
 	}
 }

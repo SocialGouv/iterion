@@ -24,6 +24,23 @@ import (
 // The event ID is distinct per outcome episode: a run that pauses, resumes
 // and pauses again must not dedup against its earlier pause, so the pending
 // interaction id (or the status) is folded into the key.
+// RunOutcomeEventID derives the per-episode event ID: the pending
+// interaction when the run is paused on one (distinct per pause), else the
+// status, so pause→resume→finish yields distinct IDs. Exported so the
+// usernotify sweep can derive the episode key from a run listing without
+// loading each run.
+func RunOutcomeEventID(runID, status, interactionID string) string {
+	episode := status
+	if interactionID != "" && store.RunStatus(status).IsPaused() {
+		episode = interactionID
+	}
+	id := "run:" + runID
+	if episode != "" {
+		id += ":" + episode
+	}
+	return id
+}
+
 func BuildRunOutcome(ctx context.Context, rs store.RunStore, runID string, bodyErr error) Event {
 	// A pause is NOT a terminal failure. Match it BEFORE the bodyErr!=nil arm
 	// so a run that suspends on a human node (ErrRunPaused) or an operator
@@ -82,19 +99,8 @@ func BuildRunOutcome(ctx context.Context, rs store.RunStore, runID string, bodyE
 		payload["owner_id"] = ownerID
 	}
 
-	// Episode key: prefer the pending interaction (distinct per pause);
-	// fall back to the status so pause→resume→finish yields distinct IDs.
-	episode := status
-	if kind == KindRunPaused && interactionID != "" {
-		episode = interactionID
-	}
-	id := "run:" + runID
-	if episode != "" {
-		id += ":" + episode
-	}
-
 	return Event{
-		ID:         id,
+		ID:         RunOutcomeEventID(runID, status, interactionID),
 		Source:     SourceRun,
 		Kind:       kind,
 		TenantID:   tenantID,

@@ -23,7 +23,7 @@ func TestSweepRecoversMissedPause(t *testing.T) {
 	_ = pausedRun(t, st, "run-missed")
 
 	list := func(ctx context.Context, _ time.Time, _ int) ([]RunRef, error) {
-		return []RunRef{{ID: "run-missed", TenantID: "team-1", Status: string(store.RunStatusPausedWaitingHuman)}}, nil
+		return []RunRef{{ID: "run-missed", Status: string(store.RunStatusPausedWaitingHuman)}}, nil
 	}
 	sw := NewSweeper(d, list, nil)
 
@@ -59,8 +59,10 @@ func TestSweepAfterLiveDelivery(t *testing.T) {
 		t.Fatalf("Handle: %v", err)
 	}
 
+	// The ref carries the pending interaction (as the Mongo listing does),
+	// so the sweep's cheap pre-check skips the episode without a run load.
 	list := func(ctx context.Context, _ time.Time, _ int) ([]RunRef, error) {
-		return []RunRef{{ID: "run-live", TenantID: "team-1", Status: string(store.RunStatusPausedWaitingHuman)}}, nil
+		return []RunRef{{ID: "run-live", Status: string(store.RunStatusPausedWaitingHuman), InteractionID: "run-live_ask"}}, nil
 	}
 	NewSweeper(d, list, nil).SweepOnce(context.Background())
 	if sink.calls != 1 {

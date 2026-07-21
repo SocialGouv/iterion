@@ -17,11 +17,13 @@ import (
 // whose SentStore claim makes the replay idempotent (already-notified
 // episodes are skipped in one indexed read).
 
-// RunRef identifies one run the sweep should re-examine.
+// RunRef identifies one run the sweep should re-examine, carrying just
+// enough (status + pending interaction) to derive the episode key without
+// loading the run.
 type RunRef struct {
-	ID       string
-	TenantID string
-	Status   string
+	ID            string
+	Status        string
+	InteractionID string
 }
 
 // ListNotifiableRuns returns the runs to (re-)examine: every run still
@@ -82,6 +84,20 @@ func (sw *Sweeper) SweepOnce(ctx context.Context) {
 		return
 	}
 	for _, ref := range refs {
+		// Cheap pre-check: derive the episode key from the listing alone
+		// and skip already-claimed episodes WITHOUT loading the run. In
+		// steady state nearly every listed run (notably long-lived pauses,
+		// which are re-listed forever) is already claimed, so this turns
+		// up-to-500 run loads per pass into a handful.
+		if sw.dispatcher.sent != nil {
+			key := trigger.RunOutcomeEventID(ref.ID, ref.Status, ref.InteractionID)
+			claimed, cErr := sw.dispatcher.sent.IsMarked(fctx, key)
+			if cErr != nil {
+				sw.logger.Warn("usernotify: sweep claim pre-check for run %s: %v", ref.ID, cErr)
+			} else if claimed {
+				continue
+			}
+		}
 		// Re-derive the outcome event from the persisted run — the same
 		// authority the live emitters use, so the episode key matches and
 		// the SentStore dedups against the bus path.

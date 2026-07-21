@@ -69,9 +69,6 @@ func (d *Dispatcher) Attach(bus eventbus.Bus) (func(), error) {
 // Handle processes one run-outcome event. It is the eventbus.Handler and
 // the sweep's replay entry point.
 func (d *Dispatcher) Handle(ctx context.Context, ev trigger.Event) error {
-	if ev.Source != trigger.SourceRun {
-		return nil
-	}
 	kind, ok := kindFor(ev)
 	if !ok {
 		return nil
@@ -94,10 +91,7 @@ func (d *Dispatcher) Handle(ctx context.Context, ev trigger.Event) error {
 		}
 	}
 
-	n, err := d.build(ctx, ev, kind, runID)
-	if err != nil {
-		return err
-	}
+	n := d.build(ctx, ev, kind, runID)
 	if len(n.UserIDs) == 0 || len(d.sinks) == 0 {
 		// Nothing addressable (local single-user run with no owner) or no
 		// channel wired — the claim stands so the sweep doesn't spin on it.
@@ -155,7 +149,7 @@ func kindFor(ev trigger.Event) (Kind, bool) {
 	return "", false
 }
 
-func (d *Dispatcher) build(ctx context.Context, ev trigger.Event, kind Kind, runID string) (Notification, error) {
+func (d *Dispatcher) build(ctx context.Context, ev trigger.Event, kind Kind, runID string) Notification {
 	fctx := store.WithoutTenantFilter(ctx)
 
 	tenantID := ev.TenantID
@@ -225,7 +219,7 @@ func (d *Dispatcher) build(ctx context.Context, ev trigger.Event, kind Kind, run
 		RunID:    runID,
 		Tag:      runID,
 		Data:     data,
-	}, nil
+	}
 }
 
 // render produces the display strings. The human-input body includes a
@@ -263,9 +257,6 @@ func (d *Dispatcher) render(ctx context.Context, kind Kind, name, runID, nodeID,
 }
 
 func truncate(s string, max int) string {
-	if len(s) <= max {
-		return s
-	}
 	r := []rune(s)
 	if len(r) <= max {
 		return s
