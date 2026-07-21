@@ -659,6 +659,24 @@ prompt deploy_user:
        exact published reference.
     4. Only then follow the `deploy-target` skill to deploy it.
 
+  ONE blocker is a human's to clear, and you must ASK rather than fail:
+  a freshly published container package is PRIVATE, and no API or token can
+  change that — it is a UI-only action. So if the cluster cannot pull the
+  image with an authorization error (403 / denied / not found on a tag you
+  just saw published), ask the operator, giving:
+    - the exact link: the package's settings page on the forge
+      (GitHub: https://github.com/orgs/<owner>/packages/container/<pkg>/settings
+       → "Change package visibility" → Public → confirm),
+    - the image reference you need pulled,
+    - and that this is once per APPLICATION, not per deploy.
+  When they confirm, do NOT take their word for it: re-attempt the pull and
+  only continue once it actually succeeds. A public package needs no pull
+  secret at all, so drop it from the manifest if you had added one.
+
+  Ask ONLY for this, and only when actually blocked — never to confirm a
+  step you could take yourself. If nobody answers (a headless run), report
+  deployed=false with this exact remedy in notes.
+
   If a step genuinely cannot succeed, report deployed=false with the
   concrete blocking error — never a guessed URL.
 
