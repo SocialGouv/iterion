@@ -2141,6 +2141,45 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/runs/{id}/interactions/pending": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        /** GET /api/runs/{id}/interactions/pending */
+        get: operations["getRunsByIdInteractionsPending"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/runs/{id}/interactions/{iid}/answer": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+                iid: string;
+            };
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** POST /api/runs/{id}/interactions/{iid}/answer */
+        post: operations["postRunsByIdInteractionsByIidAnswer"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/runs/{id}/log": {
         parameters: {
             query?: never;
@@ -7531,6 +7570,47 @@ export interface operations {
             header?: never;
             path: {
                 id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Response */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    getRunsByIdInteractionsPending: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Response */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    postRunsByIdInteractionsByIidAnswer: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+                iid: string;
             };
             cookie?: never;
         };

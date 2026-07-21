@@ -35,6 +35,22 @@ export async function cancelRun(
   return request(`/runs/${encodeURIComponent(runId)}/cancel`, { method: "POST" });
 }
 
+// answerInteraction answers a pending ASYNC question (ADR-081,
+// ask_user_async) — valid while the run is RUNNING or paused. The
+// answer is delivered to the asking node's message queue; when it
+// completes an await-paused run's pending set, the run auto-resumes
+// (resumed: true).
+export async function answerInteraction(
+  runId: string,
+  interactionId: string,
+  answer: string,
+): Promise<{ run_id: string; interaction_id: string; queued: boolean; resumed: boolean }> {
+  return request(
+    `/runs/${encodeURIComponent(runId)}/interactions/${encodeURIComponent(interactionId)}/answer`,
+    { method: "POST", body: JSON.stringify({ answer }) },
+  );
+}
+
 // deleteRun permanently removes a run and ALL of its data (events,
 // artifacts, interactions, attachments). Irreversible. Tenant-scoped
 // server-side: a 404 means the run is gone or outside your team's scope.

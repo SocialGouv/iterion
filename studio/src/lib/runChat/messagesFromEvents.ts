@@ -527,6 +527,32 @@ function processEvent(
       const nodeId = evt.node_id;
       if (!nodeId) break;
       const data = evt.data;
+      // Async question (ADR-081, ask_user_async): the run keeps
+      // executing — push a non-blocking answer card keyed on the
+      // interaction id, and do NOT mark it as the latest pending
+      // (blocking) turn.
+      if (data?.async === true) {
+        const asyncId = data?.interaction_id;
+        if (!asyncId || humanIdx.has(asyncId)) break;
+        const q = data?.questions;
+        const asyncPrompt =
+          q && typeof q.ask_user_response === "string"
+            ? q.ask_user_response
+            : "The agent asked a question (it keeps working meanwhile).";
+        const asyncIdx = out.length;
+        out.push({
+          kind: "human-question",
+          id: asyncId,
+          nodeId,
+          prompt: asyncPrompt,
+          status: "pending",
+          questions: q,
+          async: true,
+          interactionId: asyncId,
+        } satisfies HumanQuestionMessage);
+        humanIdx.set(asyncId, asyncIdx);
+        break;
+      }
       // Pull through the runtime-supplied questions payload (set when
       // the engine resolved field definitions from the workflow's
       // human node or from an LLM-fill step). The form renderer uses
@@ -615,6 +641,24 @@ function processEvent(
       } satisfies HumanQuestionMessage);
       humanIdx.set(key, idx);
       latestPendingHumanKey = key;
+      break;
+    }
+
+    case "interaction_answered": {
+      // Async question answered (ADR-081) — flip the non-blocking card.
+      const asyncKey = evt.data?.interaction_id;
+      if (!asyncKey) break;
+      const asyncIdx = humanIdx.get(asyncKey);
+      if (asyncIdx === undefined) break;
+      const asyncCur = out[asyncIdx];
+      if (!asyncCur || asyncCur.kind !== "human-question") break;
+      const answerText =
+        typeof evt.data?.answer === "string" ? evt.data.answer : "";
+      out[asyncIdx] = {
+        ...asyncCur,
+        status: "answered",
+        userReply: answerText || asyncCur.userReply,
+      };
       break;
     }
 

@@ -162,6 +162,9 @@ export function buildExecutionsAt(
         break;
       }
       case "human_input_requested": {
+        // Async questions (ADR-081, data.async) never pause the node —
+        // the run keeps executing, so the exec status must not flip.
+        if (evt.data?.["async"] === true) break;
         const cur = currentExecFor(branch, evt.node_id ?? "");
         if (!cur) break;
         execs.set(cur.execution_id, {

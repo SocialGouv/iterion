@@ -114,6 +114,13 @@ export interface HumanQuestionMessage {
   // companion dialogue + squash-merge controls — instead of the
   // free-text / schema form.
   review?: ReviewGateMeta;
+  // Async question (ADR-081, ask_user_async): the run KEEPS EXECUTING
+  // while this is pending. The renderer shows a non-blocking answer
+  // card posting to /interactions/{id}/answer instead of the pause
+  // form; interaction_answered flips it.
+  async?: boolean;
+  // The interaction record ID (always set when async).
+  interactionId?: string;
 }
 
 // Generic node-output card pushed after an agent/judge/compute node

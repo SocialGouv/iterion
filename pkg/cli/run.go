@@ -461,6 +461,11 @@ func buildRunExecutor(
 		// Studio/server wire this via service_launch; the CLI did not,
 		// so supervisor steering silently never reached the agent.
 		Inbox: &model.StoreInboxBinder{Store: s},
+		// Async questions (ADR-081) work CLI-side too: answers written to
+		// the same store (studio, `iterion runs answer`, REST) reach the
+		// agent through the store-backed inbox; the await node's poll
+		// ticker covers the cross-process doorbell gap.
+		AsyncAsk: &model.StoreAsyncAskBinder{Store: s},
 	}
 	localStore, localSealer, err := localSecretsForRun(len(wf.Secrets) > 0, storeDir, logger)
 	if err != nil {

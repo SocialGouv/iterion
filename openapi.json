@@ -4739,6 +4739,62 @@
         ]
       }
     },
+    "/api/runs/{id}/interactions/pending": {
+      "get": {
+        "operationId": "getRunsByIdInteractionsPending",
+        "responses": {
+          "default": {
+            "description": "Response"
+          }
+        },
+        "summary": "GET /api/runs/{id}/interactions/pending",
+        "tags": [
+          "runs"
+        ]
+      },
+      "parameters": [
+        {
+          "in": "path",
+          "name": "id",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        }
+      ]
+    },
+    "/api/runs/{id}/interactions/{iid}/answer": {
+      "parameters": [
+        {
+          "in": "path",
+          "name": "id",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        },
+        {
+          "in": "path",
+          "name": "iid",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        }
+      ],
+      "post": {
+        "operationId": "postRunsByIdInteractionsByIidAnswer",
+        "responses": {
+          "default": {
+            "description": "Response"
+          }
+        },
+        "summary": "POST /api/runs/{id}/interactions/{iid}/answer",
+        "tags": [
+          "runs"
+        ]
+      }
+    },
     "/api/runs/{id}/log": {
       "get": {
         "operationId": "getRunsByIdLog",

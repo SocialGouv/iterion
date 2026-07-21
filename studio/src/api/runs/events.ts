@@ -177,6 +177,18 @@ export interface HumanAnswersRecordedEvent extends RunEventBase {
   };
 }
 
+// Async question answered (ADR-081, ask_user_async): fires while the
+// run keeps executing — the non-blocking twin of human_answers_recorded.
+export interface InteractionAnsweredEvent extends RunEventBase {
+  type: "interaction_answered";
+  data?: {
+    interaction_id?: string;
+    async?: boolean;
+    answer?: string;
+    [key: string]: unknown;
+  };
+}
+
 export interface RunPausedEvent extends RunEventBase {
   type: "run_paused";
   data?: {
@@ -409,6 +421,7 @@ export type RunEvent =
   | NodeRecoveryEvent
   | HumanInputRequestedEvent
   | HumanAnswersRecordedEvent
+  | InteractionAnsweredEvent
   | RunPausedEvent
   | RunResumedEvent
   | RunFinishedEvent

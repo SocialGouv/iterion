@@ -89,6 +89,64 @@ func (s *Server) handleRaiseBudget(w http.ResponseWriter, r *http.Request) {
 	s.writeJSONFor(w, r, res)
 }
 
+type answerInteractionHTTPRequest struct {
+	Answer string `json:"answer"`
+}
+
+// handleAnswerInteraction answers a pending ASYNC question (ADR-081) —
+// valid while the run is running OR paused. 404 unknown interaction,
+// 409 non-async or already answered, 200 with {queued, resumed}.
+func (s *Server) handleAnswerInteraction(w http.ResponseWriter, r *http.Request) {
+	id, ok := s.steerGate(w, r)
+	if !ok {
+		return
+	}
+	iid := r.PathValue("iid")
+	if iid == "" {
+		s.httpErrorFor(w, r, http.StatusBadRequest, "missing interaction id")
+		return
+	}
+	var req answerInteractionHTTPRequest
+	if !decodeJSON(w, r, &req) {
+		return
+	}
+	if req.Answer == "" {
+		s.httpErrorFor(w, r, http.StatusBadRequest, "answer is required")
+		return
+	}
+	res, err := s.runs.AnswerInteractionCtx(r.Context(), id, iid, req.Answer)
+	if err != nil {
+		switch {
+		case errors.Is(err, runview.ErrInteractionNotFound):
+			s.httpErrorFor(w, r, http.StatusNotFound, "%s", err.Error())
+		case errors.Is(err, runview.ErrInteractionNotAsync), errors.Is(err, store.ErrInteractionAlreadyAnswered):
+			s.httpErrorFor(w, r, http.StatusConflict, "%s", err.Error())
+		default:
+			s.writeSteerError(w, r, err)
+		}
+		return
+	}
+	s.writeJSONFor(w, r, res)
+}
+
+// handleListPendingInteractions lists the run's pending async questions.
+func (s *Server) handleListPendingInteractions(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	if id == "" {
+		s.httpErrorFor(w, r, http.StatusBadRequest, "missing run id")
+		return
+	}
+	pending, err := s.runs.PendingAsyncInteractions(r.Context(), id)
+	if err != nil {
+		s.writeSteerError(w, r, err)
+		return
+	}
+	if pending == nil {
+		pending = []*store.Interaction{}
+	}
+	s.writeJSONFor(w, r, map[string]any{"interactions": pending})
+}
+
 func (s *Server) handleAnswerHuman(w http.ResponseWriter, r *http.Request) {
 	id, ok := s.steerGate(w, r)
 	if !ok {

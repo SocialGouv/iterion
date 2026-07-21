@@ -81,6 +81,10 @@ type ExecutorSpec struct {
 	// agent-loop iterations. Nil disables the inbox (CLI mode +
 	// runs that opted out).
 	Inbox model.InboxBinder
+	// AsyncAsk, when non-nil, backs the ask_user_async / await_answers
+	// tools of interaction: async nodes (ADR-081). Nil = the tools
+	// error explicitly if a node resolves them.
+	AsyncAsk model.AsyncAskBinder
 	// Backend, when non-empty, takes precedence over the workflow's
 	// `default_backend:` for this run only. Node-level explicit
 	// `backend:` still wins (it's the most specific level in the
@@ -293,6 +297,9 @@ func BuildExecutor(spec ExecutorSpec) (*model.ClawExecutor, error) {
 	}
 	if spec.Inbox != nil {
 		opts = append(opts, model.WithExecutorInbox(spec.Inbox))
+	}
+	if spec.AsyncAsk != nil {
+		opts = append(opts, model.WithExecutorAsyncAsk(spec.AsyncAsk))
 	}
 	if spec.Backend != "" {
 		opts = append(opts, model.WithDefaultBackend(spec.Backend))

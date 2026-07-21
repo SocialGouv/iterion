@@ -15,8 +15,58 @@ var runsCmd = &cobra.Command{
 	Long: `Manage runs persisted under <store-dir>/runs/.
 
 Subcommands:
-  prune   Delete old runs (retention for schedule/dispatcher-driven runs)
+  prune      Delete old runs (retention for schedule/dispatcher-driven runs)
+  questions  List a run's pending async questions (ask_user_async, ADR-081)
+  answer     Answer one pending async question
 `,
+}
+
+var runsQuestionsOpts struct {
+	storeDir string
+}
+
+var runsQuestionsCmd = &cobra.Command{
+	Use:   "questions <run-id>",
+	Short: "List a run's pending async questions",
+	Long: `List the still-unanswered questions an agent posted with the
+ask_user_async tool (interaction: async, ADR-081). The run keeps
+executing while these are pending; answer them with:
+
+  iterion runs answer <run-id> <interaction-id> "<answer>"
+`,
+	Args: cobra.ExactArgs(1),
+	RunE: func(cmd *cobra.Command, args []string) error {
+		return cli.RunQuestions(cli.QuestionsOptions{
+			StoreDir: runsQuestionsOpts.storeDir,
+			RunID:    args[0],
+		}, newPrinter())
+	},
+}
+
+var runsAnswerOpts struct {
+	storeDir string
+}
+
+var runsAnswerCmd = &cobra.Command{
+	Use:   "answer <run-id> <interaction-id> <answer>",
+	Short: "Answer a pending async question",
+	Long: `Record the answer to an async question (posted via ask_user_async)
+and queue it for delivery to the asking node's message inbox. The
+running agent picks it up at its next turn boundary — the run never
+needs to pause. A parked await_answers node re-checks the store within
+its poll interval.
+
+For a run paused on a BLOCKING question, use ` + "`iterion resume --answer`" + ` instead.
+`,
+	Args: cobra.ExactArgs(3),
+	RunE: func(cmd *cobra.Command, args []string) error {
+		return cli.RunAnswer(cli.AnswerOptions{
+			StoreDir:      runsAnswerOpts.storeDir,
+			RunID:         args[0],
+			InteractionID: args[1],
+			Answer:        args[2],
+		}, newPrinter())
+	},
 }
 
 var runsPruneOpts struct {
@@ -78,6 +128,11 @@ func init() {
 	f.StringVar(&runsPruneOpts.statuses, "status", "", "Comma-separated statuses to prune (default: finished,failed,cancelled; allowed additionally: failed_resumable)")
 	f.BoolVar(&runsPruneOpts.dryRun, "dry-run", false, "List runs that would be pruned without deleting them")
 
+	runsQuestionsCmd.Flags().StringVar(&runsQuestionsOpts.storeDir, "store-dir", "", "Store directory (default: .iterion)")
+	runsAnswerCmd.Flags().StringVar(&runsAnswerOpts.storeDir, "store-dir", "", "Store directory (default: .iterion)")
+
 	runsCmd.AddCommand(runsPruneCmd)
+	runsCmd.AddCommand(runsQuestionsCmd)
+	runsCmd.AddCommand(runsAnswerCmd)
 	rootCmd.AddCommand(runsCmd)
 }

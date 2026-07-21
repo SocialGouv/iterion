@@ -173,6 +173,7 @@ func (e *Engine) fanOutAwaitAnswers(ctx context.Context, runID, nodeID string, r
 		_ = e.emit(ctx, runID, store.EventInteractionAnswered, in.NodeID, map[string]any{
 			"interaction_id": in.ID,
 			"async":          true,
+			"answer":         fmt.Sprintf("%v", v),
 		})
 	}
 

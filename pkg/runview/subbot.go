@@ -70,6 +70,7 @@ func (s *Service) subbotRunnerFor(parentPath string, runLogger *iterlog.Logger) 
 			Logger:        runLogger,
 			StoreDir:      s.storeDir,
 			Inbox:         s.inboxBinder(),
+			AsyncAsk:      s.asyncAskBinder(),
 			BoardRegister: s.boardRegister,
 			LocalSecrets:  s.localSecrets,
 			LocalSealer:   s.localSealer,

@@ -915,6 +915,19 @@ func (s *Service) inboxBinder() model.InboxBinder {
 	return binder
 }
 
+// asyncAskBinder returns the async-question plumbing (ADR-081) scoped
+// to this service's store + broker, the sibling of inboxBinder.
+func (s *Service) asyncAskBinder() model.AsyncAskBinder {
+	if s == nil || s.store == nil {
+		return nil
+	}
+	binder := &model.StoreAsyncAskBinder{Store: s.store}
+	if s.broker != nil {
+		binder.Publish = s.broker.Publish
+	}
+	return binder
+}
+
 // StoreDir returns the on-disk store directory. Exposed so HTTP
 // handlers can fall back to persisted run.log when the in-memory
 // buffer is gone.

@@ -55,6 +55,8 @@ func (s *Server) registerRunRoutes() {
 	s.mux.HandleFunc("POST /api/runs/{id}/bump-loop", s.handleBumpLoop)
 	s.mux.HandleFunc("POST /api/runs/{id}/raise-budget", s.handleRaiseBudget)
 	s.mux.HandleFunc("POST /api/runs/{id}/answer-human", s.handleAnswerHuman)
+	s.mux.HandleFunc("GET /api/runs/{id}/interactions/pending", s.handleListPendingInteractions)
+	s.mux.HandleFunc("POST /api/runs/{id}/interactions/{iid}/answer", s.handleAnswerInteraction)
 	s.mux.HandleFunc("POST /api/runs/{id}/fork", s.handleForkRun)
 	s.mux.HandleFunc("GET /api/runs/{id}/skills", s.handleListRunSkills)
 	s.mux.HandleFunc("GET /api/runs/{id}/session-board", s.handleGetSessionBoard)

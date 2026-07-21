@@ -1,6 +1,7 @@
 import { useNodeLabel } from "@/lib/runChat/useNodeLabel";
 import type { HumanQuestionMessage } from "@/lib/runChat/types";
 
+import AsyncQuestionForm from "./AsyncQuestionForm";
 import HumanPromptForm from "./HumanPromptForm";
 import MarkdownText from "./MarkdownText";
 import ReviewMergeCard from "./ReviewMergeCard";
@@ -26,6 +27,34 @@ export default function HumanQuestionCard({ runId, message, isActive }: Props) {
   const nodeLabel = useNodeLabel();
   if (message.status === "answered") {
     return <AnsweredBubble message={message} />;
+  }
+  // Async question (ADR-081): the run keeps executing — always render
+  // the non-blocking answer form while pending, regardless of isActive
+  // (there is no pause to be "active" at).
+  if (message.async && message.interactionId) {
+    return (
+      <div className="mt-1 rounded-md border border-accent-emphasis/50 bg-accent-soft/15 px-3 py-2 space-y-2">
+        <div className="flex items-center gap-2 text-micro">
+          <span className="font-medium text-accent-fg">
+            Question — the agent keeps working meanwhile
+          </span>
+          <span
+            className="px-1.5 py-0.5 rounded bg-accent-soft/40 text-fg-default"
+            title={message.nodeId}
+          >
+            {nodeLabel(message.nodeId)}
+          </span>
+        </div>
+        <div className="text-body text-fg-default">
+          <MarkdownText value={message.prompt} size="sm" />
+        </div>
+        <AsyncQuestionForm
+          runId={runId}
+          interactionId={message.interactionId}
+          questions={message.questions}
+        />
+      </div>
+    );
   }
   if (!isActive) {
     return (
