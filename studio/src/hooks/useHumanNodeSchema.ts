@@ -1,5 +1,5 @@
 import { errorMessage } from "@/lib/errorHints";
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 
 import { getRunWorkflow, type WireSchemaField } from "@/api/runs";
 
@@ -10,18 +10,31 @@ interface State {
   error: string | null;
 }
 
+export interface HumanNodeSchema extends State {
+  // reload re-fetches the run workflow (used by the "Retry" affordance
+  // when the first fetch failed — see HumanPromptForm). Stable identity.
+  reload: () => void;
+}
+
 const initial: State = { fields: null, loading: false, staleHash: false, error: null };
 
 // useHumanNodeSchema returns the output_schema fields for the paused
-// human node. Callers MUST distinguish loading=true (don't render the
-// form yet) from loading=false && fields===null (no schema, fall back
-// to free-text PauseForm). Conflating them ships the fallback during
-// the brief fetch window and turns typed answers into strings.
+// human node. Callers MUST distinguish three outcomes, never conflate
+// them:
+//   - loading=true                      → don't render the form yet
+//   - loading=false && error!=null      → the fetch FAILED; surface it
+//     and offer reload() — do NOT silently fall back (a fallback form
+//     that can't express the gate's verdict strands the operator and
+//     drops their notes; iterion#244)
+//   - loading=false && error==null && fields empty → the node genuinely
+//     has no output schema → free-text PauseForm fallback is correct
 export function useHumanNodeSchema(
   runId: string | null,
   nodeId: string | undefined,
-): State {
+): HumanNodeSchema {
   const [state, setState] = useState<State>(initial);
+  // Bumped by reload() to force the fetch effect to run again.
+  const [nonce, setNonce] = useState(0);
 
   useEffect(() => {
     if (!runId || !nodeId) {
@@ -54,7 +67,9 @@ export function useHumanNodeSchema(
     return () => {
       cancelled = true;
     };
-  }, [runId, nodeId]);
+  }, [runId, nodeId, nonce]);
 
-  return state;
+  const reload = useCallback(() => setNonce((n) => n + 1), []);
+
+  return { ...state, reload };
 }
