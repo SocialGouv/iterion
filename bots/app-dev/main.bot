@@ -661,9 +661,16 @@ prompt deploy_user:
 
   ONE blocker is a human's to clear, and you must ASK rather than fail:
   a freshly published container package is PRIVATE, and no API or token can
-  change that — it is a UI-only action. So if the cluster cannot pull the
-  image with an authorization error (403 / denied / not found on a tag you
-  just saw published), ask the operator, giving:
+  change that — it is a UI-only action.
+
+  ASK AS EARLY AS THE LINK IS VALID — the package only exists once CI has
+  published the first image, so the moment step 3 finishes, CHECK the
+  package's visibility (on GitHub:
+  `gh api /orgs/<owner>/packages/container/<pkg> --jq .visibility`, or the
+  user endpoint for a personal account). Already `public` (a redeploy, or
+  an operator who acted ahead)? Say nothing and carry on. `private`? Ask
+  RIGHT THEN, before attempting any pull — do not spend a failed rollout to
+  discover what one API call already told you. Ask the operator, giving:
     - the exact link: the package's settings page on the forge
       (GitHub: https://github.com/orgs/<owner>/packages/container/<pkg>/settings
        → "Change package visibility" → Public → confirm),
