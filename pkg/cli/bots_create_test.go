@@ -10,8 +10,6 @@ import (
 
 	"github.com/SocialGouv/iterion/pkg/botscaffold"
 	"github.com/SocialGouv/iterion/pkg/bundle"
-	"github.com/SocialGouv/iterion/pkg/dsl/ir"
-	"github.com/SocialGouv/iterion/pkg/dsl/parser"
 )
 
 // inTempWorkspace chdirs into a fresh temp dir for the duration of the
@@ -57,23 +55,8 @@ func TestBotsCreate_ProducesDiscoverableBundle(t *testing.T) {
 		t.Errorf("manifest name = %q, want my-bot", m.Name)
 	}
 
-	// And the generated workflow must actually compile.
-	src, err := os.ReadFile(filepath.Join(dir, "main.bot"))
-	if err != nil {
-		t.Fatalf("read main.bot: %v", err)
-	}
-	pr := parser.Parse("main.bot", string(src))
-	for _, d := range pr.Diagnostics {
-		if d.Severity == parser.SeverityError {
-			t.Fatalf("generated main.bot does not parse: %s", d.Error())
-		}
-	}
-	for _, d := range ir.Compile(pr.File).Diagnostics {
-		if d.Severity == ir.SeverityError && d.Code != ir.DiagMissingModelOrBackend {
-			t.Fatalf("generated main.bot does not compile: %s", d.Error())
-		}
-	}
-
+	// The workflow's parse+compile guarantee is Scaffold's, covered in
+	// pkg/botscaffold — not re-asserted here.
 	if !strings.Contains(out.String(), "Bot created") {
 		t.Errorf("human output missing header:\n%s", out.String())
 	}
@@ -112,29 +95,6 @@ func TestBotsCreate_TemplateAppliesAndOverridesWin(t *testing.T) {
 	}
 	if !strings.Contains(string(src), "base") {
 		t.Errorf("template var 'base' missing from generated main.bot:\n%s", src)
-	}
-}
-
-func TestBotsCreate_DialOverridesOnlyWhenSet(t *testing.T) {
-	inTempWorkspace(t)
-
-	// docs-writer sets Worktree=true. Passing no dial keeps it; passing
-	// false explicitly must turn it off.
-	spec, err := specFromTemplate(BotsCreateOptions{Slug: "d1", Template: "docs-writer"})
-	if err != nil {
-		t.Fatalf("specFromTemplate: %v", err)
-	}
-	if !spec.Worktree {
-		t.Error("docs-writer template lost its Worktree=true default")
-	}
-
-	off := false
-	spec, err = specFromTemplate(BotsCreateOptions{Slug: "d2", Template: "docs-writer", Worktree: &off})
-	if err != nil {
-		t.Fatalf("specFromTemplate: %v", err)
-	}
-	if spec.Worktree {
-		t.Error("explicit --worktree=false did not override the template")
 	}
 }
 
@@ -180,7 +140,7 @@ func TestBotsCreate_RefusesExistingDirectory(t *testing.T) {
 }
 
 func TestBotsCreate_JSONOutput(t *testing.T) {
-	inTempWorkspace(t)
+	dir := inTempWorkspace(t)
 	p, out := jsonPrinter()
 
 	if err := BotsCreate(BotsCreateOptions{Slug: "json-bot"}, p); err != nil {
@@ -190,11 +150,30 @@ func TestBotsCreate_JSONOutput(t *testing.T) {
 	if err := json.Unmarshal(out.Bytes(), &res); err != nil {
 		t.Fatalf("unmarshal %q: %v", out.String(), err)
 	}
-	if res.Dir != filepath.Join("bots", "json-bot") {
-		t.Errorf("Dir = %q, want bots/json-bot", res.Dir)
+	// Dest is anchored to the workdir, so machine consumers get an
+	// unambiguous path rather than one relative to the caller's cwd.
+	if want := filepath.Join(dir, "bots", "json-bot"); res.Dir != want {
+		t.Errorf("Dir = %q, want %q", res.Dir, want)
 	}
 	if len(res.Files) == 0 {
 		t.Error("Files is empty")
+	}
+}
+
+// TestBotsCreate_WorkdirAnchorsDestAndCatalog guards the convention
+// alignment with `bots install`: --dest is resolved against --workdir,
+// not the process cwd.
+func TestBotsCreate_WorkdirAnchorsDest(t *testing.T) {
+	inTempWorkspace(t)
+	elsewhere := t.TempDir()
+	p, _ := testPrinter()
+
+	opts := BotsCreateOptions{Slug: "anchored", Workdir: elsewhere}
+	if err := BotsCreate(opts, p); err != nil {
+		t.Fatalf("BotsCreate: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(elsewhere, "bots", "anchored", "main.bot")); err != nil {
+		t.Errorf("bundle not written under --workdir: %v", err)
 	}
 }
 

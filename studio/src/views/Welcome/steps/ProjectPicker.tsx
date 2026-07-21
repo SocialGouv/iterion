@@ -50,11 +50,14 @@ export default function ProjectPicker({ onNext }: Props) {
         is fine. You&rsquo;ll choose what to do with it next: run a bot from
         the catalog, or create your own from the Bots view.
       </p>
-      <div className="flex gap-3">
-        <Button onClick={run} loading={busy} variant="primary">
-          Choose folder…
-        </Button>
-      </div>
+      <Button
+        onClick={run}
+        loading={busy}
+        variant="primary"
+        className="self-start"
+      >
+        Choose folder…
+      </Button>
       {error && (
         <p className="text-danger text-sm" role="alert">
           {error}

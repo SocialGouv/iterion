@@ -5,6 +5,7 @@ import (
 	"os"
 
 	"github.com/SocialGouv/iterion/pkg/botinstall"
+	"github.com/SocialGouv/iterion/pkg/botregistry"
 	"github.com/SocialGouv/iterion/pkg/cli"
 	"github.com/spf13/cobra"
 )
@@ -83,19 +84,14 @@ render through the same engine, so a bot created either way is identical. The
 generated main.bot follows the house shape: ONE adaptive agent carrying the
 whole mission, with worktree/sandbox as opt-in workflow dials.
 
-Start from a gallery template with --template (see --list-templates); every
-field stays editable afterwards. The rendered workflow is parsed AND compiled
-before anything is written, so a scaffold never lands a broken bundle.`,
-	Args: cobra.MaximumNArgs(1),
+Start from a gallery template with --template (see "iterion bots templates");
+every field stays editable afterwards. The rendered workflow is parsed AND
+compiled before anything is written, so a scaffold never lands a broken
+bundle.`,
+	Args: cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
-		p := newPrinter()
-		if list, _ := cmd.Flags().GetBool("list-templates"); list {
-			return cli.BotsTemplates(p)
-		}
-		if len(args) == 0 {
-			return fmt.Errorf("a bot slug is required (or pass --list-templates)")
-		}
 		opts := cli.BotsCreateOptions{Slug: args[0]}
+		opts.Workdir, _ = cmd.Flags().GetString("workdir")
 		opts.Dest, _ = cmd.Flags().GetString("dest")
 		opts.Template, _ = cmd.Flags().GetString("template")
 		opts.DisplayName, _ = cmd.Flags().GetString("display-name")
@@ -104,15 +100,31 @@ before anything is written, so a scaffold never lands a broken bundle.`,
 		opts.Model, _ = cmd.Flags().GetString("model")
 		opts.Backend, _ = cmd.Flags().GetString("backend")
 		// Only an explicitly-passed dial overrides the template's value.
-		if cmd.Flags().Changed("worktree") {
-			v, _ := cmd.Flags().GetBool("worktree")
-			opts.Worktree = &v
-		}
-		if cmd.Flags().Changed("sandbox") {
-			v, _ := cmd.Flags().GetBool("sandbox")
-			opts.Sandbox = &v
-		}
-		return cli.BotsCreate(opts, p)
+		opts.Worktree = boolFlagIfSet(cmd, "worktree")
+		opts.Sandbox = boolFlagIfSet(cmd, "sandbox")
+		return cli.BotsCreate(opts, newPrinter())
+	},
+}
+
+// boolFlagIfSet returns the flag's value only when the operator passed it
+// explicitly, so an unset flag stays distinguishable from an explicit
+// false and cannot silently override a template's own dial.
+func boolFlagIfSet(cmd *cobra.Command, name string) *bool {
+	if !cmd.Flags().Changed(name) {
+		return nil
+	}
+	v, _ := cmd.Flags().GetBool(name)
+	return &v
+}
+
+var botsTemplatesCmd = &cobra.Command{
+	Use:   "templates",
+	Short: "List the templates `bots create` can start from",
+	Long: `List the bot-creation gallery — the same templates the studio builder
+offers at /bots/new. Use one with "iterion bots create <slug> --template <id>".`,
+	Args: cobra.NoArgs,
+	RunE: func(cmd *cobra.Command, _ []string) error {
+		return cli.BotsTemplates(newPrinter())
 	},
 }
 
@@ -170,9 +182,9 @@ func init() {
 	botsListCmd.Flags().StringSlice("paths", nil, "Directories or .bot files to scan (default: bots, examples)")
 	botsListCmd.Flags().String("format", "json", "Output format: json|markdown|skill")
 	botsRegenCatalogCmd.Flags().String("workdir", "", "Workspace root to scan (default: current directory)")
-	botsCreateCmd.Flags().Bool("list-templates", false, "List the available bot templates and exit")
-	botsCreateCmd.Flags().String("template", "blank", "Template to start from (see --list-templates)")
-	botsCreateCmd.Flags().String("dest", cli.DefaultBotsDir, "Parent directory for the new bundle")
+	botsCreateCmd.Flags().String("template", "blank", "Template to start from (see `iterion bots templates`)")
+	botsCreateCmd.Flags().String("workdir", "", "Workspace root anchoring --dest and the catalog refresh (default: current directory)")
+	botsCreateCmd.Flags().String("dest", botregistry.BotsDirName, "Parent directory for the new bundle, relative to --workdir")
 	botsCreateCmd.Flags().String("display-name", "", "Human-facing bot name")
 	botsCreateCmd.Flags().String("description", "", "One-line description for the catalog")
 	botsCreateCmd.Flags().String("instructions", "", "The agent's mission (its system prompt body)")
@@ -187,6 +199,7 @@ func init() {
 	botsInstallCmd.Flags().Bool("force", false, "Overwrite an existing install of the same name")
 	botsInstallCmd.Flags().String("workdir", "", "Workspace root for catalog refresh (default: current directory)")
 	botsCmd.AddCommand(botsCreateCmd)
+	botsCmd.AddCommand(botsTemplatesCmd)
 	botsCmd.AddCommand(botsListCmd)
 	botsCmd.AddCommand(botsRegenCatalogCmd)
 	botsCmd.AddCommand(botsInstallCmd)

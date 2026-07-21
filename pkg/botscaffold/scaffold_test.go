@@ -42,12 +42,6 @@ func TestScaffold_Minimal(t *testing.T) {
 			t.Errorf("%s missing: %v", name, err)
 		}
 	}
-	for _, sub := range bundleDirs {
-		info, err := os.Stat(filepath.Join(dir, sub))
-		if err != nil || !info.IsDir() {
-			t.Errorf("%s/ dir missing: %v", sub, err)
-		}
-	}
 	m, err := bundle.LoadManifest(filepath.Join(dir, "manifest.yaml"))
 	if err != nil || m == nil {
 		t.Fatalf("LoadManifest: %v (m=%v)", err, m)

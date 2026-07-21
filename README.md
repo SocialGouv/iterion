@@ -217,7 +217,7 @@ iterion run bots/review-pr/main.bot
 #### Or create your own
 
 ```bash
-iterion bots create --list-templates          # blank, code-reviewer, docs-writer, …
+iterion bots templates                        # blank, code-reviewer, docs-writer, …
 iterion bots create my-bot --template code-reviewer
 
 $EDITOR bots/my-bot/main.bot                  # write the mission

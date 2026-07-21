@@ -4,9 +4,9 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
-	"strings"
 
 	"github.com/SocialGouv/iterion/internal/httpx"
+	"github.com/SocialGouv/iterion/pkg/botregistry"
 	"github.com/SocialGouv/iterion/pkg/botscaffold"
 )
 
@@ -38,7 +38,7 @@ func (s *Server) handleBotCreate(w http.ResponseWriter, r *http.Request) {
 		s.httpErrorFor(w, r, http.StatusBadRequest, "invalid request: %v", err)
 		return
 	}
-	spec.Slug = strings.TrimSpace(spec.Slug)
+	// Validate normalizes the spec (slug trimming included) in place.
 	if err := spec.Validate(); err != nil {
 		s.httpErrorFor(w, r, http.StatusBadRequest, "%v", err)
 		return
@@ -53,7 +53,7 @@ func (s *Server) handleBotCreate(w http.ResponseWriter, r *http.Request) {
 		s.httpErrorFor(w, r, http.StatusConflict, "bots: %q already exists", spec.Slug)
 		return
 	}
-	dir := filepath.Join(s.cfg.WorkDir, "bots", spec.Slug)
+	dir := filepath.Join(s.cfg.WorkDir, botregistry.BotsDirName, spec.Slug)
 	if _, err := os.Stat(dir); err == nil {
 		s.httpErrorFor(w, r, http.StatusConflict, "bots: %s already exists on disk", dir)
 		return

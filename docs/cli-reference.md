@@ -193,8 +193,8 @@ Default retention deletes `finished`, `failed`, and `cancelled` runs older than 
 ### `iterion bots`
 
 ```bash
-iterion bots create <slug> [--template <id>] [--dest bots]
-iterion bots create --list-templates
+iterion bots create <slug> [--template <id>] [--workdir <dir>] [--dest bots]
+iterion bots templates
 iterion bots list
 iterion bots list --paths bots --paths examples --format markdown
 iterion bots install <git-url|path> [--path <bundle>] [--dest bots]
@@ -205,9 +205,9 @@ iterion bots regen-catalog
 
 | Flag | Meaning |
 |---|---|
-| `--template <id>` | Start from a gallery template (default `blank`). |
-| `--list-templates` | List available templates and exit. |
-| `--dest <dir>` | Parent directory for the bundle (default `bots`). |
+| `--template <id>` | Start from a gallery template (default `blank`); `iterion bots templates` lists them. |
+| `--workdir <dir>` | Workspace root anchoring `--dest` and the catalogue refresh (default: cwd). |
+| `--dest <dir>` | Parent directory for the bundle, resolved against `--workdir` (default `bots`). |
 | `--display-name`, `--description`, `--instructions` | Pre-fill catalogue metadata and the agent's mission. |
 | `--model`, `--backend` | Pin instead of auto-detection. |
 | `--worktree`, `--sandbox` | Isolation dials; only override the template when passed explicitly. |

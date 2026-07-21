@@ -123,8 +123,13 @@ type Result struct {
 
 var knownPermissions = map[string]bool{"": true, "ask": true, "deny": true}
 
-// Validate rejects a malformed Spec with an explicit, field-naming error.
+// Validate normalizes the Spec in place, then rejects a malformed one
+// with an explicit, field-naming error. Normalizing here (rather than on
+// each surface) is what keeps the CLI and the studio from drifting: a
+// caller that forgets to trim would otherwise get a baffling
+// `invalid slug " foo"`.
 func (s *Spec) Validate() error {
+	s.Slug = strings.TrimSpace(s.Slug)
 	if !SlugRe.MatchString(s.Slug) {
 		return fmt.Errorf("botscaffold: invalid slug %q (want %s)", s.Slug, SlugRe)
 	}
@@ -247,30 +252,24 @@ func Scaffold(dir string, s Spec) (Result, error) {
 		}
 	}
 
-	files := map[string][]byte{
-		"main.bot":      []byte(mainBot),
-		"manifest.yaml": manifest,
-		"README.md":     readme,
-		".gitignore":    []byte(bundleGitignore),
-		// A starter sous-bot so authors see the preset format.
-		filepath.Join("presets", "example.md"): presetExample,
-	}
-	order := []string{"main.bot", "manifest.yaml", "README.md", ".gitignore", filepath.Join("presets", "example.md")}
-	// .gitkeep makes the empty layout dirs survive `git add`; presets/
-	// ships example.md instead, so it needs none.
-	for _, sub := range bundleDirs {
-		if sub == "presets" {
-			continue
-		}
-		name := filepath.Join(sub, ".gitkeep")
-		files[name] = []byte{}
-		order = append(order, name)
-	}
-
+	// .gitkeep makes an otherwise-empty layout dir survive `git add`;
+	// presets/ ships example.md instead, so it needs none.
 	res := Result{Dir: dir}
-	for _, name := range order {
-		path := filepath.Join(dir, name)
-		if err := store.WriteFileAtomic(path, files[name], 0o644); err != nil {
+	for _, f := range []struct {
+		name string
+		data []byte
+	}{
+		{"main.bot", []byte(mainBot)},
+		{"manifest.yaml", manifest},
+		{"README.md", readme},
+		{".gitignore", []byte(bundleGitignore)},
+		{filepath.Join("presets", "example.md"), presetExample},
+		{filepath.Join("skills", ".gitkeep"), nil},
+		{filepath.Join("prompts", ".gitkeep"), nil},
+		{filepath.Join("attachments", ".gitkeep"), nil},
+	} {
+		path := filepath.Join(dir, f.name)
+		if err := store.WriteFileAtomic(path, f.data, 0o644); err != nil {
 			return Result{}, fmt.Errorf("botscaffold: write %s: %w", path, err)
 		}
 		res.Files = append(res.Files, path)

@@ -1,8 +1,6 @@
 package main
 
 import (
-	"fmt"
-
 	"github.com/SocialGouv/iterion/pkg/cli"
 	"github.com/spf13/cobra"
 )
@@ -23,19 +21,11 @@ so ` + "`iterion bots list`" + ` and the studio discover it.
 Subcommands:
   pack   Build a deterministic .botz from a source directory.
 `,
-	// Without this, cobra answers an unknown subcommand (notably the
-	// retired `bundle init`) by printing help and exiting 0 — a silent
+	// NoArgs makes cobra reject an unknown subcommand (notably the retired
+	// `bundle init`) instead of printing help and exiting 0 — a silent
 	// no-op for anyone with the old command in muscle memory.
-	RunE: func(cmd *cobra.Command, args []string) error {
-		if len(args) > 0 {
-			if args[0] == "init" {
-				return fmt.Errorf(
-					"`bundle init` was removed — use `iterion bots create <slug>` to scaffold a bundle")
-			}
-			return fmt.Errorf("unknown command %q for %q", args[0], cmd.CommandPath())
-		}
-		return cmd.Help()
-	},
+	Args: cobra.NoArgs,
+	RunE: func(cmd *cobra.Command, _ []string) error { return cmd.Help() },
 }
 
 var bundlePackOpts struct {

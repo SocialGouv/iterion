@@ -259,6 +259,11 @@ func NormalizeName(s string) string {
 	return s
 }
 
+// BotsDirName is the conventional committable bot directory at a
+// workspace root. It is where `iterion bots create` and the studio
+// builder land a new bundle, and the first root DefaultPaths discovers.
+const BotsDirName = "bots"
+
 // DefaultPaths returns the conventional bot-discovery roots relative to a
 // working directory: <dir>/bots, <dir>/examples, <dir>/.botz. Missing
 // roots are skipped silently by discovery, so returning all three is
@@ -270,7 +275,7 @@ func NormalizeName(s string) string {
 // ticket.)
 func DefaultPaths(workDir string) []string {
 	return []string{
-		filepath.Join(workDir, "bots"),
+		filepath.Join(workDir, BotsDirName),
 		filepath.Join(workDir, "examples"),
 		filepath.Join(workDir, ".botz"),
 	}
