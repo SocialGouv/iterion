@@ -22,6 +22,13 @@ const askUserMCPServerName = "iterion"
 // CLI exposes it to the LLM.
 const askUserMCPToolName = "mcp__iterion__ask_user"
 
+// Fully-qualified names of the async-interaction pair (ADR-081), served
+// by the same iterion MCP server.
+const (
+	askUserAsyncMCPToolName = "mcp__iterion__" + AskUserAsyncToolName
+	awaitAnswersMCPToolName = "mcp__iterion__" + AwaitAnswersToolName
+)
+
 // askUserMCPSubcommand is the hidden iterion subcommand that runs an MCP stdio
 // server exposing only the ask_user tool. See cmd/iterion/mcp_ask_user.go.
 const askUserMCPSubcommand = "__mcp-ask-user"
@@ -97,6 +104,9 @@ type pendingAskUser struct {
 	Question      string
 	Options       []AskUserOption
 	AllowFreeText bool
+	// AwaitPending marks an await_answers escalation (ADR-081): the
+	// still-unanswered async questions the agent chose to block on.
+	AwaitPending []PendingAsync
 }
 
 // wireAskUserHook registers iterion's native ask_user MCP server and a
@@ -112,6 +122,12 @@ type pendingAskUser struct {
 // restriction").
 func (b *ClaudeCodeBackend) wireAskUserHook(task Task, opts []claudesdk.Option, extras *[]string, pendingQuestion *atomic.Value, cancelStream context.CancelFunc) []claudesdk.Option {
 	if !task.InteractionEnabled || task.Sandbox != nil {
+		if task.Sandbox != nil && task.PostAsyncQuestion != nil {
+			// Same pre-existing gap as the blocking ask_user (stdio MCP
+			// server unreachable from inside the container) — loud, not
+			// silent: the node runs but cannot post async questions.
+			b.Logger.Warn("[%s#%d/claude-code] interaction: async is not available under a sandbox (stdio MCP transport) — ask_user_async/await_answers disabled for this node; the [INTERACTION PROTOCOL] JSON fallback still allows a blocking escalation", task.NodeID, task.Iteration)
+		}
 		return opts
 	}
 	selfPath := proc.LocateIterionBinary()
@@ -143,7 +159,97 @@ func (b *ClaudeCodeBackend) wireAskUserHook(task Task, opts []claudesdk.Option, 
 			}, nil
 		},
 	}))
+	return b.wireAsyncAskHooks(task, opts, extras, pendingQuestion, cancelStream)
+}
+
+// wireAsyncAskHooks adds the non-blocking question pair (ADR-081) on top
+// of the ask_user MCP server wireAskUserHook just registered. Only wired
+// when the executor bound the async closures (interaction: async).
+//
+//   - ask_user_async: the PreToolUse hook persists the pending
+//     interaction (Task.PostAsyncQuestion) and ALLOWS the call — the
+//     stdio server's canned success text tells the model to keep
+//     working. On a post error, deny with the error so nothing is
+//     silently lost.
+//   - await_answers: nothing pending → deny with DecisionReason carrying
+//     the formatted answers (the deny channel is the only hook path that
+//     can return content; the reason is phrased as the success payload —
+//     permission-gate precedent). Pending → capture + cancel the stream,
+//     exactly the blocking ask_user shape; the post-session check turns
+//     it into an await-tagged pause.
+func (b *ClaudeCodeBackend) wireAsyncAskHooks(task Task, opts []claudesdk.Option, extras *[]string, pendingQuestion *atomic.Value, cancelStream context.CancelFunc) []claudesdk.Option {
+	if task.PostAsyncQuestion == nil {
+		return opts
+	}
+	if len(task.AllowedTools) > 0 {
+		*extras = append(*extras, askUserAsyncMCPToolName, awaitAnswersMCPToolName)
+	}
+	noContinue := false
+
+	asyncMatcher := "^" + askUserAsyncMCPToolName + "$"
+	opts = append(opts, claudesdk.WithHook(claudesdk.HookPreToolUse, claudesdk.HookMatcher{
+		Matcher: &asyncMatcher,
+		Handler: func(_ context.Context, in claudesdk.HookCallbackInput) (claudesdk.HookOutput, error) {
+			q, _ := in.ToolInput["question"].(string)
+			options, allowFree := ParseAskUserToolInput(in.ToolInput)
+			id, err := task.PostAsyncQuestion(AsyncQuestion{Question: q, Options: options, AllowFreeText: allowFree})
+			if err != nil {
+				return claudesdk.HookOutput{
+					Decision:       "deny",
+					DecisionReason: fmt.Sprintf("ask_user_async failed: %v", err),
+				}, nil
+			}
+			b.Logger.Info("[%s#%d/claude-code] 💬 async question posted (%s)", task.NodeID, task.Iteration, id)
+			return claudesdk.HookOutput{}, nil
+		},
+	}))
+
+	awaitMatcher := "^" + awaitAnswersMCPToolName + "$"
+	opts = append(opts, claudesdk.WithHook(claudesdk.HookPreToolUse, claudesdk.HookMatcher{
+		Matcher: &awaitMatcher,
+		Handler: func(_ context.Context, _ claudesdk.HookCallbackInput) (claudesdk.HookOutput, error) {
+			pending, err := task.PendingAsyncQuestions()
+			if err != nil {
+				return claudesdk.HookOutput{
+					Decision:       "deny",
+					DecisionReason: fmt.Sprintf("await_answers failed: %v", err),
+				}, nil
+			}
+			if len(pending) == 0 {
+				answers, err := task.CollectAsyncAnswers()
+				if err != nil {
+					return claudesdk.HookOutput{
+						Decision:       "deny",
+						DecisionReason: fmt.Sprintf("await_answers failed: %v", err),
+					}, nil
+				}
+				return claudesdk.HookOutput{
+					Decision:       "deny",
+					DecisionReason: answers + "\n(No pause was needed — every posted question is already answered. Use these answers and continue.)",
+				}, nil
+			}
+			b.Logger.Info("[%s#%d/claude-code] ⏸ await_answers with %d pending question(s) — escalating to pause", task.NodeID, task.Iteration, len(pending))
+			pendingQuestion.Store(pendingAskUser{Question: awaitPauseQuestionText(pending), AwaitPending: pending})
+			cancelStream()
+			return claudesdk.HookOutput{
+				Decision:      "deny",
+				Continue:      &noContinue,
+				SystemMessage: "await_answers has been escalated to the iterion runtime; stop generating.",
+			}, nil
+		},
+	}))
 	return opts
+}
+
+// awaitPauseQuestionText renders the operator-facing question of an
+// await_answers pause (same shape as the claw backend's awaitPauseQuestion).
+func awaitPauseQuestionText(pending []PendingAsync) string {
+	var sb strings.Builder
+	sb.WriteString("The agent is waiting for your answer(s) to continue:")
+	for _, p := range pending {
+		sb.WriteString(fmt.Sprintf("\n- [%s] %s", p.InteractionID, p.Question))
+	}
+	return sb.String()
 }
 
 // wirePermissionHook installs the tool-permission gate for claude_code:

@@ -578,6 +578,9 @@ func RegisterClawAll(reg *Registry, defaults ClawDefaults) error {
 	if err := RegisterAskUser(reg, defaults.AskUser); err != nil {
 		return err
 	}
+	if err := RegisterAsyncAsk(reg); err != nil {
+		return err
+	}
 	if err := RegisterClawSubagents(reg, defaults.Subagent); err != nil {
 		return err
 	}

@@ -102,8 +102,19 @@ func GenerateTextDirect(ctx context.Context, client api.APIClient, opts Generati
 		lastToolCalls = stepResult.ToolCalls
 		lastFinish = stepResult.FinishReason
 
-		// If no tool calls or stop reason is not tool_use, we're done.
+		// If no tool calls or stop reason is not tool_use, we're done —
+		// unless the operator inbox holds undelivered messages (e.g. an
+		// async-question answer that landed while the model was
+		// composing its final text). Final-drain parity with
+		// claude_code's Stop/BlockStop hook: inject them and give the
+		// model another turn, bounded by maxSteps.
 		if len(agg.toolUses) == 0 || stepResult.FinishReason != FinishToolCalls {
+			if step < maxSteps {
+				if drained, ok := finalDrainInbox(ctx, messages, agg.text, opts); ok {
+					messages = drained
+					continue
+				}
+			}
 			captureFinalTurn(opts, messages, step, stepResult)
 			break
 		}
@@ -254,6 +265,31 @@ func compactBetweenIterations(messages []api.Message, opts GenerationOptions) []
 		messages = append(messages, todoReseedMessage())
 	}
 	return messages
+}
+
+// finalDrainInbox is the end-of-turn twin of drainOperatorInbox: called
+// when the model produced a final (no-tool) answer, it checks the inbox
+// one last time. When messages are waiting it appends the model's final
+// text as an assistant turn (so the history stays coherent) followed by
+// the operator message, and reports ok=true so the caller loops for one
+// more turn instead of finishing — the claw analog of claude_code's
+// Stop hook with BlockStop.
+func finalDrainInbox(ctx context.Context, messages []api.Message, finalText string, opts GenerationOptions) ([]api.Message, bool) {
+	if opts.Inbox == nil {
+		return messages, false
+	}
+	opts.Inbox.Consume(ctx)
+	drained := opts.Inbox.Drain(ctx)
+	if len(drained) == 0 {
+		return messages, false
+	}
+	if finalText != "" {
+		messages = append(messages, api.Message{
+			Role:    "assistant",
+			Content: []api.ContentBlock{{Type: "text", Text: finalText}},
+		})
+	}
+	return append(messages, buildOperatorMessage(drained)), true
 }
 
 // drainOperatorInbox drains operator-queued chatbox messages AFTER

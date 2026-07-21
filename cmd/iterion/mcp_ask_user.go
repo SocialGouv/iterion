@@ -32,7 +32,11 @@ func init() {
 	rootCmd.AddCommand(mcpAskUserCmd)
 }
 
-const askUserToolName = "ask_user"
+const (
+	askUserToolName      = "ask_user"
+	askUserAsyncToolName = "ask_user_async"
+	awaitAnswersToolName = "await_answers"
+)
 
 // askUserInputSchema is the JSON Schema for the ask_user tool input.
 // Mirrors claw-code-go's native ask_user tool shape (options + free
@@ -66,6 +70,51 @@ var askUserInputSchema = json.RawMessage(`{
   "additionalProperties": false
 }`)
 
+// awaitAnswersInputSchema is the JSON Schema for the await_answers tool
+// input (an optional note; the real state lives in the run's interaction
+// store, consulted by the PreToolUse hook).
+var awaitAnswersInputSchema = json.RawMessage(`{
+  "type": "object",
+  "properties": {
+    "note": {
+      "type": "string",
+      "description": "Optional short note on why you need the answers now (shown to the operator)."
+    }
+  },
+  "additionalProperties": false
+}`)
+
+// mcpAskUserCallResult builds the tools/call result per tool.
+//
+//   - ask_user / await_answers: defensive fallback — these are intercepted
+//     (denied or stream-cancelled) by the SDK PreToolUse hooks, so reaching
+//     the server means the hook was bypassed.
+//   - ask_user_async: the REAL success path. Its hook persists the pending
+//     interaction and then ALLOWS the call, so the CLI forwards it here;
+//     the canned text tells the model to keep working.
+func mcpAskUserCallResult(name string, args map[string]any) map[string]any {
+	if name == askUserAsyncToolName {
+		return map[string]any{
+			"content": []map[string]any{
+				{
+					"type": "text",
+					"text": "Question posted. The operator's answer will arrive in your conversation as an operator message tagged with the question id — keep working on everything that does not depend on it. Call await_answers only when you cannot proceed without the pending answers.",
+				},
+			},
+		}
+	}
+	question, _ := args["question"].(string)
+	return map[string]any{
+		"content": []map[string]any{
+			{
+				"type": "text",
+				"text": fmt.Sprintf("ESCALATION_NOT_INTERCEPTED: %s(%q) was not handled by the iterion runtime. Stop and report this issue.", name, question),
+			},
+		},
+		"isError": true,
+	}
+}
+
 // runMCPAskUserServer runs a line-delimited JSON-RPC loop on the given streams.
 // It returns nil on clean EOF. MCP messages can exceed the 64KB default
 // buffer, so the loop is sized at 1MB.
@@ -87,6 +136,16 @@ func dispatchMCPAskUser(req mcpRequest) mcpResponse {
 					"description": "Pause execution and ask the human running this workflow a clarifying question. Use this when you need information, approval, or guidance you cannot derive yourself. Optional `options` present the user with clickable choices; when `allow_free_text` is true the user may also type a free response.",
 					"inputSchema": askUserInputSchema,
 				},
+				{
+					"name":        askUserAsyncToolName,
+					"description": "Ask the human operator a question WITHOUT pausing your work. The question is posted immediately and you keep working; the operator's answer arrives later in your conversation as an operator message tagged with the question id. Post questions as early as possible. Use ask_user instead when you cannot take another step without the answer.",
+					"inputSchema": askUserInputSchema,
+				},
+				{
+					"name":        awaitAnswersToolName,
+					"description": "Wait for the operator's answers to the questions you posted with ask_user_async. Call this ONLY when you truly cannot proceed without the pending answers. If everything is already answered it returns the answers immediately; otherwise the run pauses until the operator replies.",
+					"inputSchema": awaitAnswersInputSchema,
+				},
 			},
 		}
 	case "tools/call":
@@ -98,20 +157,7 @@ func dispatchMCPAskUser(req mcpRequest) mcpResponse {
 			resp.Error = mcpInvalidParamsError(err)
 			return resp
 		}
-		// Defensive fallback: this handler should not be reached in practice because
-		// iterion intercepts ask_user at the SDK PreToolUse hook level. If we get here,
-		// the hook was bypassed — return a tool_result that tells the LLM to stop and
-		// flag the situation.
-		question, _ := params.Arguments["question"].(string)
-		resp.Result = map[string]any{
-			"content": []map[string]any{
-				{
-					"type": "text",
-					"text": fmt.Sprintf("ESCALATION_NOT_INTERCEPTED: ask_user(%q) was not handled by the iterion runtime. Stop and report this issue.", question),
-				},
-			},
-			"isError": true,
-		}
+		resp.Result = mcpAskUserCallResult(params.Name, params.Arguments)
 	default:
 		resp.Error = mcpMethodNotFoundError(req.Method)
 	}

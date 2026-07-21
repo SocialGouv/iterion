@@ -911,6 +911,51 @@ type ErrAskUser struct {
 	// surfaces as an approval card and the runtime can compute the grant
 	// on resume. See pkg/backend/permission.Marker.
 	PermissionMarker map[string]any
+
+	// AwaitPending is set (non-empty) when this suspension is an
+	// await_answers escalation (ADR-081): the agent asked to sync while
+	// async questions were still unanswered. It carries the pending
+	// question refs so the pause interaction can list them and the
+	// resume path can fan the operator's answers back out.
+	AwaitPending []PendingAsync
+}
+
+// AwaitPendingToQuestions serializes an AwaitPending slice into the
+// JSON-friendly shape stored under AwaitPendingInteractionsKey in
+// Interaction.Questions ([]any of map{"interaction_id","question"}).
+func AwaitPendingToQuestions(pending []PendingAsync) []any {
+	out := make([]any, 0, len(pending))
+	for _, p := range pending {
+		out = append(out, map[string]any{
+			"interaction_id": p.InteractionID,
+			"question":       p.Question,
+		})
+	}
+	return out
+}
+
+// ParseAwaitPending decodes the AwaitPendingInteractionsKey value back
+// into PendingAsync refs. Tolerant of the JSON round-trip shapes
+// (checkpoint persistence turns everything into []any / map[string]any).
+func ParseAwaitPending(v any) []PendingAsync {
+	list, ok := v.([]any)
+	if !ok {
+		return nil
+	}
+	out := make([]PendingAsync, 0, len(list))
+	for _, item := range list {
+		m, ok := item.(map[string]any)
+		if !ok {
+			continue
+		}
+		id, _ := m["interaction_id"].(string)
+		q, _ := m["question"].(string)
+		if id == "" {
+			continue
+		}
+		out = append(out, PendingAsync{InteractionID: id, Question: q})
+	}
+	return out
 }
 
 // AskUserOption is one selectable answer of a structured ask_user call.

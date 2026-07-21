@@ -385,8 +385,11 @@ func (s *charStubInbox) Drain(context.Context) []string {
 // TestGenerateTextDirect_InboxDrainedBetweenIterations pins the operator
 // chatbox plumbing: after a tool round, Consume runs before Drain, and the
 // drained texts land as ONE synthetic user turn (system-reminder framed) at
-// the tail of the next request. The inbox is consulted only between
-// iterations — a 2-step run consults it exactly once.
+// the tail of the next request. A 2-step run consults the inbox twice:
+// once between iterations, once at the final-drain (the end-of-turn check
+// added by ADR-081 so a late answer forces one more turn instead of being
+// lost); the final drain here returns nothing, so the run still ends at
+// step 2.
 func TestGenerateTextDirect_InboxDrainedBetweenIterations(t *testing.T) {
 	client := newMockClient(
 		toolUseEvents("tu_1", "noop", `{}`, 10, 5),
@@ -405,8 +408,8 @@ func TestGenerateTextDirect_InboxDrainedBetweenIterations(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	if got := strings.Join(inbox.order, ","); got != "consume,drain" {
-		t.Errorf("inbox call order = %q, want %q (consulted once, consume first)", got, "consume,drain")
+	if got := strings.Join(inbox.order, ","); got != "consume,drain,consume,drain" {
+		t.Errorf("inbox call order = %q, want %q (between-iterations + final-drain, consume first each time)", got, "consume,drain,consume,drain")
 	}
 
 	calls := client.getCalls()

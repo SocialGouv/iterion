@@ -570,6 +570,9 @@ func (b *ClaudeCodeBackend) buildAskUserPendingResult(task Task, p pendingAskUse
 	if marker != nil {
 		questions[permission.InteractionMarkerKey] = marker
 	}
+	if len(p.AwaitPending) > 0 {
+		questions[AwaitPendingInteractionsKey] = AwaitPendingToQuestions(p.AwaitPending)
+	}
 	askResult := Result{
 		Output: map[string]any{
 			"_needs_interaction":     true,

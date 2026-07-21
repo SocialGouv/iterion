@@ -899,6 +899,12 @@ func (e *ClawExecutor) assembleEffectiveTools(f backendFields, backendName strin
 	if f.interaction != ir.InteractionNone {
 		effectiveTools = ensureToolPresent(effectiveTools, askUserToolName)
 	}
+	// interaction: async (ADR-081) additionally grants the non-blocking
+	// pair; the blocking ask_user above stays available for hard stops.
+	if f.interaction == ir.InteractionAsync {
+		effectiveTools = ensureToolPresent(effectiveTools, delegate.AskUserAsyncToolName)
+		effectiveTools = ensureToolPresent(effectiveTools, delegate.AwaitAnswersToolName)
+	}
 	// When board capabilities are granted and the node already restricts
 	// its tool set (non-empty tools:), append the board MCP tools so
 	// the CLI backend's allowlist exposes them. Empty tools: means "no

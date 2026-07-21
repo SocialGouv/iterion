@@ -371,6 +371,7 @@ func (b *ClawBackend) Execute(ctx context.Context, task delegate.Task) (delegate
 	// Tools.
 	if len(task.ToolDefs) > 0 {
 		opts.Tools = toolDefsToGeneration(task.ToolDefs)
+		applyAsyncAskExecs(task, opts.Tools)
 		maxSteps := task.ToolMaxSteps
 		if maxSteps <= 0 {
 			maxSteps = 5
@@ -529,6 +530,9 @@ func askUserResult(err error) (delegate.Result, bool) {
 	delegate.AddAskUserOptionKeys(questions, ask.Options, ask.AllowFreeText)
 	if ask.PermissionMarker != nil {
 		questions[permission.InteractionMarkerKey] = ask.PermissionMarker
+	}
+	if len(ask.AwaitPending) > 0 {
+		questions[delegate.AwaitPendingInteractionsKey] = delegate.AwaitPendingToQuestions(ask.AwaitPending)
 	}
 	return delegate.Result{
 		Output: map[string]any{
@@ -1109,4 +1113,66 @@ func toolDefsToGeneration(defs []delegate.ToolDef) []GenerationTool {
 		}
 	}
 	return tools
+}
+
+// applyAsyncAskExecs swaps the registry's explicit-error default execs of
+// ask_user_async / await_answers for the task-bound behaviour (ADR-081)
+// when the node is interaction: async. No-op for other nodes — the tools
+// then keep their loud "not bound" default if they somehow resolve.
+func applyAsyncAskExecs(task delegate.Task, tools []GenerationTool) {
+	if task.PostAsyncQuestion == nil {
+		return
+	}
+	for i := range tools {
+		switch tools[i].Name {
+		case delegate.AskUserAsyncToolName:
+			tools[i].Execute = func(_ context.Context, input json.RawMessage) (string, error) {
+				var in map[string]any
+				if err := json.Unmarshal(input, &in); err != nil {
+					return "", fmt.Errorf("ask_user_async: decode input: %w", err)
+				}
+				q, _ := in["question"].(string)
+				options, allowFree := delegate.ParseAskUserToolInput(in)
+				id, err := task.PostAsyncQuestion(delegate.AsyncQuestion{Question: q, Options: options, AllowFreeText: allowFree})
+				if err != nil {
+					return "", err
+				}
+				return fmt.Sprintf("Question posted as %s. The operator's answer will arrive in your conversation as an operator message tagged with this id — keep working on everything that does not depend on it.", id), nil
+			}
+		case delegate.AwaitAnswersToolName:
+			tools[i].Execute = func(_ context.Context, _ json.RawMessage) (string, error) {
+				pending, err := task.PendingAsyncQuestions()
+				if err != nil {
+					return "", fmt.Errorf("await_answers: %w", err)
+				}
+				if len(pending) == 0 {
+					answers, err := task.CollectAsyncAnswers()
+					if err != nil {
+						return "", fmt.Errorf("await_answers: %w", err)
+					}
+					return answers, nil
+				}
+				// Pending questions remain: suspend the node through the
+				// standard ask_user pause machinery. The generation loop
+				// stashes the conversation + pending tool_use so resume
+				// answers THIS call with the collected answers.
+				return "", &delegate.ErrAskUser{
+					Question:     awaitPauseQuestion(pending),
+					AwaitPending: pending,
+				}
+			}
+		}
+	}
+}
+
+// awaitPauseQuestion renders the operator-facing question of an
+// await_answers pause: the agent is blocked on these still-pending
+// async questions.
+func awaitPauseQuestion(pending []delegate.PendingAsync) string {
+	var b strings.Builder
+	b.WriteString("The agent is waiting for your answer(s) to continue:")
+	for _, p := range pending {
+		fmt.Fprintf(&b, "\n- [%s] %s", p.InteractionID, p.Question)
+	}
+	return b.String()
 }
