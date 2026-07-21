@@ -2,6 +2,80 @@
 
 Newest first. Template: see [README.md](README.md).
 
+## 2026-07-21 — the delivery pipeline, proven except the pull (runs 019f8384, 019f8425)
+- Status: **partial** — everything iterion controls worked; the last step is a
+  GitHub platform limit, not a bug.
+- Versions: bot app-dev 0.1.0 · iterion `9a2787636` → `d30f99561`
+- Method: studio Launch → the **iterion-sandbox** App connection, "Create a new
+  repository", `mode=autonomous`, `deploy_enabled=true`, `draft_review=false`.
+
+### 019f8384 — a live URL that was not a delivery
+Blocked from pushing CI and from publishing an image, the agent served the app
+from a **ConfigMap on a stock `node:22-slim`**. The URL genuinely answered 200,
+every liveness field was honest — and the repo still held only its initial
+commit. Nothing versioned, nothing reproducible, gone with the namespace.
+
+The gate passed it, because the gate only asked "is it live". That is the
+lesson: **liveness is necessary, not sufficient**. `deploy_trace` now also
+requires HEAD reachable from a branch on origin, the image published under the
+repo's registry, and the image naming the pushed commit.
+
+### 019f8425 — the pipeline works
+```
+push origin        ✓  branch appy/quote-service
+CI build-and-push  ✓  success
+image              ✓  ghcr.io/…/appy-quotes-ci:5df0fb99…   ← tagged with the SHA
+manifests          ✓  Deployment + Service + Ingress applied
+image pull         ✗  403
+```
+
+### The blocker, root-caused
+- **A GitHub App installation token cannot pull a private GHCR package.** The
+  docs list only classic PATs as registry credentials. Measured on one image,
+  one tag: App token **403**, user PAT **200**.
+- **No API changes package visibility** — four endpoint variants all 404 from CI
+  with `packages: write`. It is UI-only.
+
+So the pull secret the playbook prescribed could never have worked, and the bot
+cannot fix it alone. An org-wide PAT was rejected on the right grounds: it would
+let every deployed app read every other app's images. Harbor (live at
+`harbor.fabrique.social.gouv.fr`) would solve it with per-project robots, at the
+cost of a permanent stack element for a one-time click — declined.
+
+**Resolution: the human gate.** The deploy phase queries the package's
+visibility as soon as CI publishes, asks the operator with the exact settings
+link if it is private, stays silent if it is already public, and **re-attempts
+the pull rather than trusting the confirmation**. Once per application, not per
+delivery. Skill v1.2.0 drops the unusable pull secret.
+
+### Engine bugs these runs surfaced
+- `d7b4db9f8` — **devbox first-class reached no catalog bot**. `bundleHost` was
+  set only for a packed `.botz`, so a plain `.bot` (which is what iterion ships)
+  got no bundle mount and its `devbox.json` was never read. All nine tests
+  passed throughout: each supplied a bundle path and asserted the logic
+  downstream of it; none asserted a real bot ever gets one.
+- `d30f99561` — **the traceability gate read an unsubstituted template**. A tool
+  node's command resolves `vars.*` but not `outputs.*`, so the gate judged the
+  literal `{{outputs.deploy.image_ref}}` and produced false negatives — it
+  failed a delivery that was correct. A gate that rejects good work is as
+  damaging as one that passes a façade; it just fails in the direction that
+  looks responsible.
+- `e3b8f0789` — **a fresh database could not boot**. Dropping a retired index
+  returned `NamespaceNotFound` (26), not `IndexNotFound` (27), so `EnsureSchema`
+  errored on any empty database. Invisible in prod (the collection exists),
+  fatal in CI: it turned `cloud-e2e` red for six runs while prod stayed healthy.
+
+### Lessons for next run
+- **Check the token, not the grant.** The pre-flight reported "nothing missing"
+  while the minted token carried neither `workflows` nor `packages` — the
+  installation had them, the token did not. The health view now reports both,
+  separately.
+- Equip before constraining: the agent probed for docker/podman/buildah/skopeo/
+  nerdctl/kaniko and fetched a binary itself. The prompt now states what the
+  sandbox has (`crane`, `yq`) and what it deliberately lacks.
+- Pin bot tooling: `devbox.json` carries explicit versions and a committed
+  `devbox.lock`, so a run cannot silently acquire a different binary.
+
 ## 2026-07-21 — deploy phase e2e on CLOUD prod, org-private plugin (run 019f8191)
 - Status: **partial** — the app was built and verified; the deploy was blocked
   by a missing GitHub App grant, and the run wrongly reported success.
