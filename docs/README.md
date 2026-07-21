@@ -2,100 +2,159 @@
 
 # Documentation
 
-Welcome to the Iterion docs. Pages are organised by audience and topic.
+This index describes the current repository state. Guides and references below are maintained against `main`; ADRs, dated plans, audits, reviews, and bot-run bilans are point-in-time records and may intentionally describe an older state.
 
-## Background
+## Start here
 
-| Page | Read this if… |
+| Page | Purpose |
 |---|---|
-| [why-iterion.md](why-iterion.md) | …you want the origin story, the patterns we've seen work, the asymptote lens that motivated the engine, and the workflow-lab dimension. Helps you decide whether Iterion fits how you work. |
-| [why-not-prompt-orchestration.md](why-not-prompt-orchestration.md) | …you're wondering whether a single Claude Code (or similar) session calling sub-agents could replace Iterion. Lays out the structural guarantees a compiled IR provides and the three-question heuristic for choosing between the two approaches. |
-| [asymptote-bench.md](asymptote-bench.md) | …you want to measure a workflow's inter-session reliability curve via `iterion bench asymptote`. |
+| [why-iterion.md](why-iterion.md) | Product rationale, workflow patterns, and the asymptote lens. |
+| [install.md](install.md) | Install through the CLI, studio, desktop, Docker, cloud, dispatcher, scheduler, or TypeScript SDK. |
+| [examples.md](examples.md) | Maintained bot catalogue and focused DSL examples. |
+| [cli-reference.md](cli-reference.md) | Complete top-level CLI map plus the commonly used commands and flags. |
+| [visual-editor.md](visual-editor.md) | Browser-based studio, graph editor, launch forms, and live diagnostics. |
+| [skill.md](skill.md) | Install Iterion guidance into AI coding agents. |
 
-## Getting started
+For the architectural trade-off against prompt-only orchestration, read [why-not-prompt-orchestration.md](why-not-prompt-orchestration.md). [asymptote-bench.md](asymptote-bench.md) and [thinking-metrics.md](thinking-metrics.md) cover workflow-quality measurement.
 
-| Page | Read this if… |
-|---|---|
-| [install.md](install.md) | …you want to install Iterion. Covers all eight delivery modes (CLI, studio, desktop, Docker, cloud, dispatcher, scheduler, SDK). |
-| [visual-editor.md](visual-editor.md) | …you want a browser-based drag-and-drop workflow editor. |
-| [desktop.md](desktop.md) | …you want the native window app with multi-project + OS keychain + auto-update. |
-| [examples.md](examples.md) | …you want to learn from working `.bot` files. |
-| [skill.md](skill.md) | …you want your AI coding agent (Claude Code, Cursor, Copilot…) to author workflows for you. |
+## Author `.bot` workflows
 
-## Authoring `.bot` workflows
+### Language and graph construction
 
 | Page | Topic |
 |---|---|
-| [dsl.md](dsl.md) | Full DSL reference — variables, prompts, schemas, node types, edges, templates, MCP, budget, worktree/sandbox. |
-| [routers.md](routers.md) | Deep dive on routing modes (`fan_out_all`, `condition`, `round_robin`, `llm`) and convergence patterns. |
-| [human-in-the-loop.md](human-in-the-loop.md) | Pause for human input — the `human` node, form widgets, and the four interaction modes (`human` / `llm` / `llm_or_human` / `review`). |
-| [recipes.md](recipes.md) | Run the same workflow with different presets (vars, prompts, budget, success criteria). |
-| [delegation.md](delegation.md) | When to use `backend:` (claude_code, codex) vs `model:` (claw). |
-| [attachments.md](attachments.md) | Attaching files / images to prompts. |
-| [bundles.md](bundles.md) | Packaging a workflow + skills + prompts as a deterministic `.botz` archive. |
-| [skills-library.md](skills-library.md) | The standalone skill library (`~/.iterion/skills/`, `iterion skill`) referenced from workflows via the DSL `skills:` field. |
-| [security-bots.md](security-bots.md) | The `sec-audit-source` + `sec-audit-deps` bundles — universal security auditors (source-code SAST and supply-chain malware) with cross-run FP / package memory. |
-| [privacy_filter.md](privacy_filter.md) | Built-in PII redaction tools. |
-| [workflow_authoring_pitfalls.md](workflow_authoring_pitfalls.md) | **Required reading before authoring workflows that commit code.** Goodhart's law, façade patterns, prompt + judge anti-patterns. |
-| [references/dsl-grammar.md](references/dsl-grammar.md) | Readable grammar reference. |
-| [references/patterns.md](references/patterns.md) | 10 reusable workflow patterns with annotated snippets. |
-| [references/diagnostics.md](references/diagnostics.md) | All validation diagnostic codes (C001–C086, sparse). |
-| [grammar/iterion_v1.ebnf](grammar/iterion_v1.ebnf) | Formal EBNF grammar. |
+| [dsl.md](dsl.md) | Language guide and map of every declaration, node family, edge form, and workflow control. |
+| [references/dsl-grammar.md](references/dsl-grammar.md) | Readable grammar derived from the parser surface. |
+| [grammar/iterion_v1.ebnf](grammar/iterion_v1.ebnf) | Formal EBNF counterpart. |
+| [references/diagnostics.md](references/diagnostics.md) | Authoritative sparse catalogue: DSL C001–C199 and bundle checks C200–C230. |
+| [routers.md](routers.md) | Five routing modes, per-item fan-out, and convergence. |
+| [groups-iteration-subbots.md](groups-iteration-subbots.md) | `group`/`use`, edge `foreach`, `fan_out_each`, resources, and nested bots. |
+| [human-in-the-loop.md](human-in-the-loop.md) | Human nodes and `human`, `llm`, `llm_or_human`, and `review` interaction modes. |
+| [cursors.md](cursors.md) | Prompt-calibration cursor declarations and node activation. |
+| [supervisors.md](supervisors.md) | Concurrent run watchers and steering messages. |
+| [dsl-totality-and-tc.md](dsl-totality-and-tc.md) | Language totality, fuel, liveness, and Turing-completeness boundaries. |
 
-## Running and operating
+### Inputs, capabilities, and reuse
 
 | Page | Topic |
 |---|---|
-| [cli-reference.md](cli-reference.md) | Every `iterion` subcommand and its flags. |
-| [resume.md](resume.md) | Resume / failure / cancellation matrix. |
-| [sandbox.md](sandbox.md) | Per-run container isolation (Docker/Podman/Kubernetes + CONNECT proxy). |
-| [observability/README.md](observability/README.md) | Prometheus metrics, OTLP traces, Grafana dashboards. |
-| [persisted-formats.md](persisted-formats.md) | On-disk format spec for `run.json`, `events.jsonl`, artifacts, interactions. |
+| [recipes.md](recipes.md) | In-source presets and external recipe overlays. |
+| [attachments.md](attachments.md) | File and image inputs. |
+| [bundles.md](bundles.md) | Deterministic `.botz` packaging with skills and resources. |
+| [import.md](import.md) | Lossy, non-executing import of Claude Code workflow JavaScript into draft `.bot` files. |
+| [backends.md](backends.md) | Backend/model matrix, harness behavior, and provider support. |
+| [delegation.md](delegation.md) | Choosing in-process `model:` calls or delegated CLI `backend:` execution. |
+| [permissions.md](permissions.md) | Workflow/node permission modes and allow/ask/deny rules. |
+| [skills-library.md](skills-library.md) | Local project/global skill library and DSL `skills:` references. |
+| [plugins.md](plugins.md) | Local and cloud plugins, built-ins, MCP injection, and git-backed org sources. |
+| [memory-and-knowledge.md](memory-and-knowledge.md) | Memory scopes, visibility, lifecycle, CLI, and cloud quotas. |
+| [web-search.md](web-search.md) | Tiered search/fetch/browser capabilities. |
+| [ultracode.md](ultracode.md) | Output-compression modes and backend limits. |
+| [secrets.md](secrets.md) | Local sealed secret store and CLI workflow. |
+| [secrets-reference.md](secrets-reference.md) | Unified map of local/cloud secret kinds and sealing boundaries. |
+| [privacy_filter.md](privacy_filter.md) | Built-in PII redaction and restoration tools. |
 
-## Cloud platform (Bot-as-a-Service)
-
-Iterion ships as a self-hostable multi-tenant platform — orgs + teams,
-BYOK LLM keys, inbound webhooks for 4 forges, NATS-queued runner pool,
-per-org quotas, audit log, PATs, SMTP onboarding. We call it
-**Bot-as-a-Service** (BaaS).
-
-| Page | Topic |
-|---|---|
-| [baas-overview.md](baas-overview.md) | Start here — the event → autonomous agent → result-posted-back loop, a concrete GitLab-MR → Revi walkthrough, the primitives table. |
-| [webhooks.md](webhooks.md) | Inbound webhooks (GitLab + `/revi`, GitHub, Forgejo/Gitea, generic) — auth modes, idempotency, CRUD API. |
-| [forge-integrations.md](forge-integrations.md) | Connect a GitLab/GitHub/Forgejo repo (OAuth/PAT) and auto-provision the webhook + token binding when you enable a bot — the self-serve replacement for the manual webhook chain. |
-| [quotas-and-limits.md](quotas-and-limits.md) | Run/cost/concurrency/rate caps, denial reasons + HTTP semantics, Prometheus metrics. |
-| [baas-admin-guide.md](baas-admin-guide.md) | Platform operator + org admin runbook (UI paths + curl), DLQ triage, audit, PATs. |
-| [secrets-reference.md](secrets-reference.md) | The single map of every secret kind (BYOK, generic, bindings, file, OAuth-forfait, tokens) and the sealing model. |
-| [cloud-rest-api.md](cloud-rest-api.md) | Every REST endpoint grouped by domain, auth class, purpose. |
-| [cloud-cli.md](cloud-cli.md) | `iterion remote` — drive the whole cloud instance from the CLI (login, env-var CI mode, typed subcommands per domain). |
-| [memory-and-knowledge.md](memory-and-knowledge.md) | Memory visibilities, per-org + per-space quotas, REST surface. |
-| [cloud-architecture.md](cloud-architecture.md) | Control plane vs data plane, run lifecycle + sealed bundle, queue internals, multitenancy enforcement layers. |
-| [outbound-callbacks.md](outbound-callbacks.md) | The mirror direction — runs POSTing their result back to the launcher. |
-
-## Cloud mode — operator
+### Authoring practice
 
 | Page | Topic |
 |---|---|
-| [cloud.md](cloud.md) | Architecture overview — server + runner + Mongo + NATS + S3. |
-| [cloud-deployment.md](cloud-deployment.md) | Operator runbook: secrets, NetworkPolicy, observability, resume, migration. |
-| [cloud-admin.md](cloud-admin.md) | Multitenant admin guide: bootstrap super-admin, SSO config, BYOK + OAuth-forfait, secret rotation. |
-| [cloud-user.md](cloud-user.md) | User-facing guide: login, teams, BYOK, OAuth subscriptions, invitations, PATs, password reset. |
-| [cloud-troubleshooting.md](cloud-troubleshooting.md) | Symptoms-first reference: queued runs not starting, hangs, /readyz 503s, WS streaming, budget overruns, Trivy CVE findings. |
-| [cloud-public-exposure-checklist.md](cloud-public-exposure-checklist.md) | 10-section checklist before opening a deployment to public traffic. Hard prerequisites: auth, multitenancy, NetworkPolicy, secrets, image supply chain, observability, probes, budgets, backups, runbooks. |
+| [workflow_authoring_pitfalls.md](workflow_authoring_pitfalls.md) | Required reading for code-mutating workflows: anti-façade and anti-Goodhart rules. |
+| [references/patterns.md](references/patterns.md) | Reusable graph patterns. |
+| [references/productive-session-patterns.md](references/productive-session-patterns.md) | Minimal-framing patterns learned from productive agent sessions. |
+| [references-bootstrap.md](references-bootstrap.md) | Building grounded reference packs for bot skills. |
 
-## Architecture & contributing
+## Run and operate locally
 
 | Page | Topic |
 |---|---|
-| [architecture.md](architecture.md) | Compiler pipeline, runtime engine, persistence layout. |
-| [adr/](adr/) | Architecture Decision Records (router semantics, AssetServer proxy, runview separation, privacy tools). |
-| [development.md](development.md) | Build, test, project structure — for contributors working on the Iterion codebase itself. |
-| [bot-runs/](bot-runs/) | **Bot validation & knowledge base** — one dated bilan per catalog-bot dogfood run (what it caught/missed, lessons, engine bugs surfaced). Read a bot's file before launching it. |
-| [desktop-architecture.md](desktop-architecture.md) | Desktop app's proxy-based AssetServer architecture (Wails v2 + embedded `pkg/server`). |
-| [desktop-build.md](desktop-build.md) | Local build flow + Docker reproducible builder + per-OS deps. |
-| [desktop-distribution.md](desktop-distribution.md) | Release signing + Ed25519 keypair setup. |
-| [desktop-qa.md](desktop-qa.md) | Developer-facing smoke checklist (AssetServer / runtime-injection regressions). |
-| [desktop-qa-checklist.md](desktop-qa-checklist.md) | Per-platform release QA matrix (Boot, Multi-proj, Settings, Onboarding, Run, Browser, Auto-update, Crash, Disconnect) with assignment grid for human testers. |
-| [desktop-release-checklist.md](desktop-release-checklist.md) | Pre-tag sign-off: code freeze, versioning, signing prerequisites, dry run, trigger, post-publish verification, rollback, Ed25519 key rotation. |
-| [e2e_coverage.md](e2e_coverage.md) | End-to-end test coverage map. |
+| [bot-invocations.md](bot-invocations.md) | Manifest-driven command, board, schedule, and forge invocation modes. |
+| [resume.md](resume.md) | Resume/failure/cancellation matrix, checkpoints, and stale-run safeguards. |
+| [merge-policy.md](merge-policy.md) | Worktree finalization, branch ownership, and merge authority. |
+| [review-merge-gate.md](review-merge-gate.md) | Review-environment conversation and final merge gate. |
+| [sandbox.md](sandbox.md) | Docker, Podman, and Kubernetes isolation plus egress proxy policy. |
+| [scheduling.md](scheduling.md) | Cron schedules, sub-minute keepalive, overlap guards, and audit history. |
+| [dispatcher.md](dispatcher.md) | Tracker polling, leases, retries, hooks, and per-issue bot dispatch. |
+| [native-tracker.md](native-tracker.md) | File-backed kanban tracker used by the dispatcher and studio. |
+| [session-board.md](session-board.md) | Session and pipeline board projections. |
+| [repo-scope.md](repo-scope.md) | Project root and repository-scope behavior. |
+| [settings-precedence.md](settings-precedence.md) | CLI, environment, project, user, and workflow precedence. |
+| [config-share.md](config-share.md) | Scoped, role-aware configuration sharing/editor surface. |
+| [browser-pane.md](browser-pane.md) | Studio browser pane and isolation boundaries. |
+| [post-mortem-shell.md](post-mortem-shell.md) | Controlled shell access after a run. |
+| [persisted-formats.md](persisted-formats.md) | On-disk run, event, artifact, and interaction contracts. |
+| [observability/README.md](observability/README.md) | Prometheus, OTLP, Grafana, and operational metrics. |
+
+## Bots and security automation
+
+| Page | Topic |
+|---|---|
+| [examples.md](examples.md) | All maintained repository bots and learning examples. |
+| [security-bots.md](security-bots.md) | Source and dependency audit bots. |
+| [security-bots-distributed.md](security-bots-distributed.md) | Distributed security-bot operation. |
+| [security-patcher.md](security-patcher.md) | Security remediation workflow and boundaries. |
+
+## Cloud / Bot-as-a-Service
+
+Start with [baas-overview.md](baas-overview.md) for the event → queued run → result-posted-back loop, or [cloud.md](cloud.md) for the deployable components.
+
+### Users, teams, and integrations
+
+| Page | Topic |
+|---|---|
+| [cloud-user.md](cloud-user.md) | Login, teams, invitations, credentials, PATs, and password reset. |
+| [forge-integrations.md](forge-integrations.md) | GitHub/GitLab/Forgejo connections, app/token setup, and bot enablement. |
+| [forge-permissions.md](forge-permissions.md) | Least-privilege forge permissions and minted-token scopes. |
+| [forge-conversations.md](forge-conversations.md) | Command/reply routing for PR/MR conversations. |
+| [webhooks.md](webhooks.md) | Inbound provider/generic webhooks, authentication, idempotency, and CRUD. |
+| [outbound-callbacks.md](outbound-callbacks.md) | Signed run-result callbacks to launchers. |
+| [byok.md](byok.md) | Bring-your-own LLM API keys. |
+| [oauth-forfait.md](oauth-forfait.md) | Delegated subscription/OAuth credentials. |
+| [quotas-and-limits.md](quotas-and-limits.md) | Run, cost, concurrency, rate, memory, and storage limits. |
+| [cloud-cli.md](cloud-cli.md) | Full `iterion remote` operator/user CLI. |
+| [cloud-rest-api.md](cloud-rest-api.md) | REST surface by domain and authorization class. |
+
+### Operators and architecture
+
+| Page | Topic |
+|---|---|
+| [cloud-deployment.md](cloud-deployment.md) | Helm deployment, configuration, migration, and runbook. |
+| [cloud-architecture.md](cloud-architecture.md) | Control/data planes, queue contract, isolation, and multitenancy. |
+| [baas-admin-guide.md](baas-admin-guide.md) | Platform and organization administration. |
+| [cloud-admin.md](cloud-admin.md) | Bootstrap admin, SSO, credentials, and rotation. |
+| [cloud-backup.md](cloud-backup.md) | Mongo/S3 backup and restore. |
+| [cloud-troubleshooting.md](cloud-troubleshooting.md) | Symptoms-first cloud troubleshooting. |
+| [cloud-public-exposure-checklist.md](cloud-public-exposure-checklist.md) | Pre-exposure security and reliability checklist. |
+| [ci-performance-buildkit-operator.md](ci-performance-buildkit-operator.md) | BuildKit operator and CI-cache tuning. |
+
+## Desktop
+
+| Page | Topic |
+|---|---|
+| [desktop.md](desktop.md) | End-user desktop application. |
+| [desktop-architecture.md](desktop-architecture.md) | Wails/AssetServer proxy architecture. |
+| [desktop-build.md](desktop-build.md) | Local and reproducible desktop builds. |
+| [desktop-distribution.md](desktop-distribution.md) | Signing and distribution. |
+| [desktop-qa.md](desktop-qa.md) | Developer smoke checks. |
+| [desktop-qa-checklist.md](desktop-qa-checklist.md) | Cross-platform release QA matrix. |
+| [desktop-release-checklist.md](desktop-release-checklist.md) | Tag, sign, publish, verify, and roll back. |
+
+## Architecture and contribution
+
+| Page | Topic |
+|---|---|
+| [architecture.md](architecture.md) | Parser/compiler pipeline, execution engine, persistence, and UI/server boundaries. |
+| [development.md](development.md) | Reproducible toolchain, task graph, tests, and repository structure. |
+| [e2e_coverage.md](e2e_coverage.md) | Stubbed end-to-end coverage map. |
+| [live-e2e-coverage.md](live-e2e-coverage.md) | Credentialed/live E2E coverage and compile guards. |
+
+## Point-in-time records
+
+These collections are valuable evidence, but they do not override current code or the living references above:
+
+- [adr/](adr/) — immutable architecture decision records; later ADRs may supersede earlier ones.
+- [bot-runs/](bot-runs/) — dated dogfood bilans and lessons for each bot.
+- [plans/](plans/) and [c082-board-emit-fix-plan.md](c082-board-emit-fix-plan.md) — implementation plans.
+- [reviews/](reviews/) — dated codebase reviews.
+- [security/](security/) — dated security audits.
+- [studio-ux-audit-2026-07.md](studio-ux-audit-2026-07.md) — UX audit snapshot.
+- [grammar/V1_SCOPE.md](grammar/V1_SCOPE.md) — original V1 scope record; use the current grammar references for accepted syntax.

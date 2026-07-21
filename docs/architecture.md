@@ -16,7 +16,7 @@ flowchart LR
 
 1. **Parse** (`pkg/dsl/parser/`) — Indent-sensitive lexer + recursive-descent parser produces an AST
 2. **Compile** (`pkg/dsl/ir/compile.go`) — Transforms AST to IR, resolves template references, binds schemas and prompts
-3. **Validate** (`pkg/dsl/ir/validate.go`) — Static analysis with diagnostic codes spanning C001–C086 (sparse, ~60 codes today): reachability, routing correctness, cycle detection, schema validation, capability checks, cursor declarations, and more. See [references/diagnostics.md](references/diagnostics.md) for the full table.
+3. **Validate** (`pkg/dsl/ir/`) — Static analysis with sparse DSL diagnostic codes in C001–C199: reachability, routing correctness, cycle detection, schema validation, capability checks, cursor declarations, and more. Bundle consistency checks use C200–C230. See [references/diagnostics.md](references/diagnostics.md) for the authoritative table.
 
 ## Runtime Engine
 

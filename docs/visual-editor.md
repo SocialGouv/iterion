@@ -25,7 +25,7 @@ See [cli-reference.md `#iterion-studio`](cli-reference.md#iterion-studio) for th
 - **Node library** — Drag pre-built node types (agent, judge, router, human, tool, compute) onto the canvas
 - **Property editor** — Edit node properties, schemas, prompts, and edge conditions in a side panel
 - **Source view** — Split-pane view showing the raw workflow source (`.bot` / `.bot`) alongside the visual graph
-- **Live diagnostics** — Real-time validation errors and warnings as you edit (codes C001–C086, sparse)
+- **Live diagnostics** — Real-time validation errors and warnings as you edit (sparse DSL range C001–C199; bundle checks C200–C230)
 - **File watching** — Detects external file changes via WebSocket and syncs automatically
 - **Undo/redo** — Full edit history
 - **Launch modal** — Fills `vars` and attachments at launch time, with bot/argument discovery driven by `--bots-path` (the modal's bot picker and argument form consume the same catalogue `iterion bots list` emits)

@@ -265,8 +265,9 @@ func MintInstallationToken(ctx context.Context, httpClient *http.Client, apiBase
 		return "", time.Time{}, err
 	}
 	var out struct {
-		Token     string `json:"token"`
-		ExpiresAt string `json:"expires_at"`
+		Token     string            `json:"token"`
+		ExpiresAt string            `json:"expires_at"`
+		Perms     map[string]string `json:"permissions"`
 	}
 	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
 		return "", time.Time{}, err
@@ -275,7 +276,30 @@ func MintInstallationToken(ctx context.Context, httpClient *http.Client, apiBase
 	if exp.IsZero() {
 		exp = now.Add(time.Hour)
 	}
+	lastMintedPermissions.Store(installationID, out.Perms)
 	return out.Token, exp, nil
+}
+
+// lastMintedPermissions remembers what the most recent token for an
+// installation actually CARRIED, keyed by installation id.
+//
+// It exists because checking the installation's grant is necessary but NOT
+// sufficient, and mistaking one for the other cost a full run: the
+// installation had `workflows`, the minted token did not (it was pinned to the
+// baseline), and a pre-flight that read the grant reported all-clear while the
+// push was refused an hour later. The token is the thing that acts, so the
+// token is the thing to inspect.
+var lastMintedPermissions sync.Map // installationID(int64) → map[string]string
+
+// LastMintedPermissions returns the permissions carried by the most recent
+// token minted for an installation in this process, and whether one is known.
+func LastMintedPermissions(installationID int64) (map[string]string, bool) {
+	v, ok := lastMintedPermissions.Load(installationID)
+	if !ok {
+		return nil, false
+	}
+	perms, _ := v.(map[string]string)
+	return perms, len(perms) > 0
 }
 
 // mintTokenErr wraps the base status error with GitHub's own explanation from

@@ -68,12 +68,14 @@ Think of it as a DAG runner purpose-built for LLM workflows — with first-class
 ### Authoring & orchestration
 
 - 📝 **Declarative DSL** — Human-readable `.bot` files with indentation-based syntax
-- 🤖 **Multi-agent orchestration** — Chain agents, judges, routers, and await-based convergence into complex graphs
+- 🤖 **Multi-agent orchestration** — Chain agents, judges, routers, humans, deterministic tools/computes, sub-bots, and event nodes into complex graphs
 - 🖥️ **Visual editor** — Browser-based workflow builder with drag-and-drop, live validation, and source view
 - 🙋 **Human-in-the-loop** — Pause for human input, auto-answer via LLM, or let the LLM decide when to ask — see [docs/human-in-the-loop.md](docs/human-in-the-loop.md)
 - 🔀 **Parallel branching** — Fan-out via routers, converge at downstream nodes with `await: wait_all` / `await: best_effort`
-- 🧭 **4 routing modes** — `fan_out_all`, `condition`, `round_robin`, and `llm`-driven routing
-- 🔁 **Bounded loops** — Retry and refinement cycles with configurable iteration limits
+- 🧭 **5 routing modes** — `fan_out_all`, `fan_out_each`, `condition`, `round_robin`, and `llm`-driven routing
+- 🧩 **Reusable composition** — Parameterised `group`/`use` macros, nested `subbot` runs, sequential `foreach`, and resource-aware fan-out
+- 🔁 **Fuelled loops** — Fixed, templated, or convergence-driven loops with iteration and liveness backstops
+- 📡 **In-bot events** — `emit` / `wait` nodes coordinate concurrent branches without polling
 - 🔲 **Structured I/O** — Typed schemas for inputs and outputs with enum constraints
 - 🔗 **MCP support** — Declare MCP servers directly in `.bot` files (`stdio`, `http`)
 - 🧪 **Recipe system** — Bundle workflows with presets for comparison and benchmarking
@@ -152,8 +154,8 @@ Iterion ships a team of named, first-class bots — your legion. Each is a gener
 |---|---|---|
 | 🧭 **Nexie** | Co-CTO orchestrator — surveys the repo, elicits priorities, proposes a roadmap, and emits kanban issues | [`whats-next`](bots/whats-next/) |
 | 🛠️ **Featurly** | Ships a feature end-to-end — plan → implement → simplify → review-fix loop | [`feature_dev`](bots/feature-dev/) |
-| 🌿 **Billy** | Branch reviewer-fixer — alternating Claude/GPT review-fix on the branch diff, auto-commits on convergence | [`branch_improve_loop`](bots/branch-improve-loop/) |
-| 🌍 **Willy** | Whole-repo reviewer-fixer — the same loop across the entire codebase | [`whole_improve_loop`](bots/whole-improve-loop/) |
+| 🌿 **Billy** | Branch reviewer-fixer — one adaptive campaign over the branch diff, with deterministic checks and convergence gates | [`branch_improve_loop`](bots/branch-improve-loop/) |
+| 🌍 **Willy** | Whole-repo reviewer-fixer — the same unit-convergent campaign across the full codebase | [`whole_improve_loop`](bots/whole-improve-loop/) |
 | 📚 **Doki** | Doc aligner — detects & fixes doc/code drift (the docs, never the code) | [`docs-refresh`](bots/docs-refresh/) |
 | 🔎 **Revi** | Code reviewer — read-only cross-family review, publishes findings to the board | [`review_pr`](bots/review-pr/) |
 | 🛡️ **Seki** | Source security auditor — SAST + secret scan + LLM triage | [`sec-audit-source`](bots/sec-audit-source/) |
@@ -271,7 +273,7 @@ workflow minimal:
 
 That's it — 28 lines. The agent gets a code input, produces a structured `{approved, summary}` output, and the workflow routes to `done` or `fail` based on the verdict.
 
-From here you can add judges for multi-pass review, routers for parallel fan-out, human gates for approval, bounded loops for retry, budget caps for cost control, and more — see [docs/dsl.md](docs/dsl.md) for the full reference.
+From here you can add judges for multi-pass review, routers for parallel or per-item fan-out, human gates, reusable groups, nested bots, event coordination, fuelled loops, and budget caps — see [docs/dsl.md](docs/dsl.md) for the language guide and reference map.
 
 ---
 
@@ -314,7 +316,7 @@ The full documentation lives under [`docs/`](docs/) — start with the [document
 
 **References**
 - [docs/references/dsl-grammar.md](docs/references/dsl-grammar.md) — readable grammar
-- [docs/references/diagnostics.md](docs/references/diagnostics.md) — all C001–C086 codes (sparse)
+- [docs/references/diagnostics.md](docs/references/diagnostics.md) — authoritative sparse catalogue: DSL C001–C199 and bundle checks C200–C230
 - [docs/references/patterns.md](docs/references/patterns.md) — 10 reusable workflow patterns
 - [docs/grammar/iterion_v1.ebnf](docs/grammar/iterion_v1.ebnf) — formal EBNF grammar
 

@@ -2,82 +2,99 @@
 
 # The `.bot` DSL
 
-Workflows are written in a declarative, indentation-significant language. The formal grammar is in [`grammar/iterion_v1.ebnf`](grammar/iterion_v1.ebnf).
+Iterion workflows use a declarative, indentation-significant language. Source files end in `.bot`; deterministic bundles end in `.botz`.
 
-> Workflow source files use the `.bot` extension. Packaged workflows use `.botz`.
+This page is the language guide. For exact accepted syntax use the [readable grammar](references/dsl-grammar.md), the [formal EBNF](grammar/iterion_v1.ebnf), and the [diagnostic catalogue](references/diagnostics.md). The parser, IR compiler, and validators under [`pkg/dsl/`](../pkg/dsl/) remain the implementation source of truth.
 
-## Variables
+## File shape
 
-Define typed variables at the top level. These can be set at runtime with `--var key=value`:
+A file may contain these top-level declarations:
+
+```text
+vars, presets, attachments, secrets, mcp_server,
+prompt, schema, cursor, supervisor,
+agent, judge, router, human, tool, compute, emit, wait, subbot,
+group, use, workflow
+```
+
+Declarations may appear in any order subject to validation. `##` starts a comment. Values accept quoted strings, backtick-delimited raw strings, and `|` block scalars where the grammar expects a string.
+
+## Inputs and reusable values
+
+### Variables and presets
 
 ```iter
 vars:
-  pr_title: string
+  project: string
+  mode: string [enum: "autonomous", "interview"] = "autonomous"
   max_retries: int = 3
   verbose: bool = false
-  config: json = { "key": "value" }
-  tags: string[] = ["security", "performance"]
+  threshold: float = 0.8
+  config: json = "{\"key\":\"value\"}"
+  tags: string[] = "[\"security\",\"performance\"]"
+
+presets:
+  quick:
+    max_retries: 1
+    verbose: true
 ```
 
-Supported types: `string`, `bool`, `int`, `float`, `json`, `string[]`.
+Supported types are `string`, `bool`, `int`, `float`, `json`, and `string[]`. Only strings accept `[enum: ...]`; defaults and launch values must belong to the declared set. Runtime precedence is `--var` over `--preset`, recipe values, and declaration defaults. See [recipes](recipes.md).
 
-A `string` var can constrain its value to a fixed set with the same
-`[enum: ...]` syntax as a schema field, placed between the type and the
-optional default:
+A workflow may declare an additional `vars:` block. Top-level and workflow variables are merged during compilation.
+
+### Attachments
 
 ```iter
-vars:
-  mode: string [enum: "autonomous", "interview"] = "autonomous"
+attachments:
+  specification: file
+    description: "Product specification"
+    accept_mime: ["application/pdf", "text/markdown"]
+    required: true
+  mockup: image
 ```
 
-The constraint is string-only (C125), the default must be one of the
-declared values (C126), and duplicates warn and are deduplicated (C127).
-At launch the engine rejects any provided value outside the set —
-`--var`, HTTP launch vars, dispatcher `bot_args`, and preset overrides
-alike — with an error naming the var, the value, and the allowed list.
-The studio's launch form renders enum vars as a select (the `enum` field
-on `/api/v1/bots` var schemas).
+Attachments are uploaded/persisted inputs, not scalar vars. They are available as `{{attachments.specification}}`, `.path`, `.url`, `.mime`, `.size`, and `.sha256`. A workflow may also carry an `attachments:` block. See [attachments](attachments.md).
 
-## Prompts
+### Secrets
 
-Reusable prompt templates with `{{...}}` interpolation:
+```iter
+secrets:
+  forge_token: "${FORGE_TOKEN}"
+  deploy_key:
+    value: "${DEPLOY_KEY}"
+    as: file
+    mount_path: "/run/iterion/secrets/deploy_key"
+    env: "GIT_SSH_KEY_PATH"
+    hosts: ["github.com", "api.github.com"]
+    optional: false
+    description: "SSH key used by the deploy step"
+```
+
+Value secrets render as opaque placeholders and are materialised only at execution sinks. File secrets render as their mounted path. A declaration without `value:` resolves by name from the local/cloud store. Use `{{secrets.forge_token}}` or `{{secrets.deploy_key.path}}`; undeclared references are compile errors. The protection layers, egress scoping, stores, and limitations are documented in [secrets](secrets.md) and the [secrets reference](secrets-reference.md).
+
+## Prompts, schemas, and templates
+
+### Prompts
 
 ```iter
 prompt review_system:
-  You are a code reviewer specializing in {{vars.language}}.
-  Focus on: {{vars.review_rules}}
+  You are a reviewer for {{vars.project}}.
 
 prompt review_user:
-  Review this code:
+  Review:
   {{input.code}}
-  Previous feedback: {{outputs.prior_review.summary}}
+  Previous result: {{outputs.prior.summary}}
 ```
 
-### Including an external file
+`{{include "relative/path.md"}}` inlines a file at compile time. Paths are relative to the `.bot`, may not escape its directory (including through symlinks), and are capped at 256 KiB. Included content may contain normal runtime templates.
 
-Use `{{include "relative/path.md"}}` inside a prompt body to inline the
-contents of an external file (e.g. a shared rules file) at **compile
-time** — the marker is replaced once with the file's text before the
-workflow is validated or run, so the injected content is auditable in
-the compiled workflow and there is no runtime file access:
+### Schemas
 
 ```iter
-prompt review_system:
-  You are a code reviewer.
-  {{include "rules/review-guidelines.md"}}
-```
+schema review_request:
+  code: string
 
-The path is resolved **relative to the directory of the `.bot` file**.
-Absolute paths, paths that escape the `.bot` directory (via `..` or a
-symlink resolving outside it), and files larger than 256 KiB are rejected
-with diagnostic `C055`, as is a missing file. Included text may itself contain `{{...}}` template
-references, which resolve normally after inclusion.
-
-## Schemas
-
-Typed data contracts for structured agent I/O:
-
-```iter
 schema review_result:
   approved: bool
   summary: string
@@ -87,287 +104,397 @@ schema review_result:
   metadata: json
 ```
 
-Supported field types: `string`, `bool`, `int`, `float`, `json`, `string[]`. Strings support `[enum: ...]` constraints.
+Schemas define structured node inputs/outputs. Field types match variable types; string fields may carry enum constraints.
 
-## Node Types
+### Template namespaces
 
-### Agent
+| Reference | Meaning |
+|---|---|
+| `{{vars.name}}` | Resolved workflow variable. |
+| `{{input.field}}` | Current node input. |
+| `{{outputs.node}}` / `.field` | Prior node output or a field within it. |
+| `{{outputs.node.history}}` | Outputs accumulated across loop iterations. |
+| `{{artifacts.name}}` | Published artifact. |
+| `{{attachments.name}}` / `.path` / `.url` / `.mime` / `.size` / `.sha256` | Attachment metadata. |
+| `{{secrets.name}}` / `.path` | Opaque value placeholder or mounted file-secret path. |
+| `{{loop.name.iteration}}` / `.max` / `.previous_output` | Declared-loop state. |
+| `{{each.name.item}}` / `.index` / `.count` / `.first` / `.last` / `.empty` | Sequential edge-`foreach` state. |
+| `{{run.id}}` | Current run id. |
+| `{{params.name}}` | `group` parameter during compile-time expansion. |
 
-The primary execution unit. Calls an LLM with prompts, optionally uses tools, and returns structured output:
+`fan_out_each` also exposes the current item as `{{outputs.<router>.<as-name>}}`. Environment expressions use `${NAME}` (and supported default forms) before execution.
+
+## LLM nodes: `agent` and `judge`
+
+`agent` performs work; `judge` is the semantically evaluative twin. They accept the same properties.
 
 ```iter
 agent reviewer:
-  model: "claude-sonnet-4-20250514"
+  description: "Read-only branch reviewer"
+  backend: "claude_code"
+  model: "anthropic/claude-sonnet-4-6"
+  provider: "anthropic,zai"
   input: review_request
   output: review_result
   system: review_system
   user: review_user
   session: fresh
   tools: [git_diff, read_file, search_codebase]
+  tool_policy: [git.*, read_file]
+  capabilities: [board.read]
+  skills: ["review-playbook"]
   tool_max_steps: 10
-  publish: review_artifact
+  max_tokens: 12000
   reasoning_effort: high
+  timeout: "20m"
   readonly: true
+  publish: review_artifact
+  artifact_labels: [review, branch]
 ```
 
-| Property | Description |
-|----------|-------------|
-| `model` | LLM model identifier (supports `${ENV_VAR}`) |
-| `backend` | Execution backend: `claw` (default, in-process LLM), `claude_code` (recommended for tool use), `codex` (discouraged, see [Delegation](delegation.md)) |
-| `command` | Per-node CLI binary override, honored by the `claude_code` backend: run this node with an alternate **claude-code-compatible** CLI instead of the default `claude` (e.g. a pinned build or a compatible wrapper). The target must speak the claude-code CLI protocol (Session mode: `--print`, `--input-format`/`--output-format stream-json` with the prompt on stdin, `--permission-mode`, `--append-system-prompt`) — a CLI with a different interface is **not** supported. Swaps the **binary only**, not credentials/endpoint. Supports `${ENV_VAR}`. Ignored (with a `C174` warning) on `claw`/`codex`. |
-| `input` / `output` | Schema references for structured I/O |
-| `publish` | Persist output as a named artifact |
-| `system` / `user` | Prompt references |
-| `session` | Context mode: `fresh` (default), `inherit`, `inherit_if_available`, `fork`, or `artifacts_only`. `inherit_if_available` (v0.6.0+) inherits the parent session when `_session_id` resolves on the input and falls back to `fresh` otherwise — useful inside loops where the first iteration has no parent. |
-| `tools` | List of allowed tool names |
-| `tool_max_steps` | Max tool-use iterations (0 = unlimited) |
-| `reasoning_effort` | Extended thinking: `low`, `medium`, `high`, `xhigh`, `max` |
-| `timeout` | Per-node wall-clock bound as a Go duration string, e.g. `"20m"`, `"1200s"` (supports `${ENV_VAR:-default}`). The node fails once this or the workflow budget deadline — whichever is tighter — expires. |
-| `readonly` | If `true`, prevents tool side effects (workspace safety) |
+Important property groups:
 
-### Judge
+| Group | Properties |
+|---|---|
+| Model execution | `model`, `backend`, `provider`, and the `claude_code`-compatible binary override `command`. See [backends](backends.md) and [delegation](delegation.md). |
+| Data/prompt | `input`, `output`, `system`, `user`, `publish`, `artifact_labels`, `description`. |
+| Conversation | `session: fresh\|inherit\|inherit_if_available\|fork\|artifacts_only`, `interaction`, `interaction_prompt`, `interaction_model`. |
+| Tools/access | `tools`, `tool_policy`, `capabilities`, `skills`, `permission`, `mcp`, `sandbox`. |
+| Limits | `tool_max_steps`, `max_tokens`, `reasoning_effort`, `timeout`, `compaction`, `compress`. |
+| Scheduling | `await`, `needs`, and the workspace-safety assertion `readonly`. |
+| Backend-specific | `full_access` and `images` are honored by the Codex backend; other backends ignore them. |
+| Persistent context | `memory` and `cursors`. |
 
-Structurally identical to agents, but semantically intended for evaluation — typically no tools:
+`readonly: true` forces delegated agents into a read-only sandbox and classifies the node as non-mutating for parallel workspace safety. `full_access: true` is a high-authority Codex-only opt-in; `readonly` wins if both are present.
+
+Node-level nested blocks include:
 
 ```iter
-judge compliance_check:
-  model: "claude-sonnet-4-20250514"
-  input: plan_schema
-  output: verdict_schema
-  system: compliance_system
-  user: compliance_user
+agent worker:
+  # ...model/prompts...
+  compaction:
+    threshold: 0.85
+    preserve_recent: 4
+  memory:
+    enabled: true
+    scope: "campaign"
+    autoload: ["CONTEXT_BRIEF.md"]
+    read: true
+    write: true
+    pre_compact_inject: true
+    project_root: true
+    visibility: "bot"
+  cursors:
+    enabled: true
+    rigor: high
+  mcp:
+    inherit: true
+    servers: [repo_tools]
+    disable: [legacy_server]
 ```
 
-### Router
+See [memory and knowledge](memory-and-knowledge.md), [cursors](cursors.md), [permissions](permissions.md), [skills](skills-library.md), and [sandboxing](sandbox.md).
 
-Branches execution into parallel or conditional paths. Four modes are available:
+## Routers and convergence
+
+Iterion has five router modes:
 
 ```iter
-router dispatch:
-  mode: fan_out_all      # Send to ALL outgoing edges in parallel
+router all_reviews:
+  mode: fan_out_all
 
-router branch:
-  mode: condition        # Route based on `when` clauses on edges
+router per_ticket:
+  mode: fan_out_each
+  over: "{{outputs.plan.tickets}}"
+  as: ticket
+  key: id
+  depends_on: deps
+
+router decision:
+  mode: condition
 
 router alternate:
-  mode: round_robin      # Cycle through targets one per iteration
+  mode: round_robin
 
 router smart:
-  mode: llm              # LLM decides which target(s) to route to
-  model: "claude-sonnet-4-20250514"
+  mode: llm
+  model: "anthropic/claude-sonnet-4-6"
   system: routing_prompt
-  multi: true            # Allow selecting multiple targets
+  multi: true
 ```
 
-> For a deep dive on routing modes, edge rules, and convergence patterns, see [`routers.md`](routers.md).
+- `fan_out_all` activates every outgoing edge.
+- `fan_out_each` replays exactly one unconditional template edge per runtime array item; `key`/`depends_on` optionally impose a dependency DAG.
+- `condition` makes edge guards explicit.
+- `round_robin` selects one outgoing edge per traversal in declaration order.
+- `llm` selects one or several candidates and is the only router mode that makes a model call.
 
-### Convergence with `await`
-
-Parallel branches converge at a real downstream node (agent, judge, human, tool, or compute) that declares how it waits for multiple incoming edges:
+Parallel branches converge at an `agent`, `judge`, `human`, `tool`, or `compute` node:
 
 ```iter
-agent merge:
-  model: "claude-sonnet-4-20250514"
-  input: branch_results
-  output: merged_result
-  user: merge_prompt
-  await: wait_all        # or: best_effort
-
-workflow example:
-  fan -> branch_a
-  fan -> branch_b
-  branch_a -> merge
-  branch_b -> merge
+compute collect:
+  output: collection_result
+  await: wait_all       # or best_effort
+  expr:
+    completed: "true"
 ```
 
-- `await: wait_all` — waits for every incoming branch
-- `await: best_effort` — proceeds with successful branches and tolerates failures on others
+Routers are fan-out sources and never declare `await`. See [routers](routers.md) and [composition/iteration/sub-bots](groups-iteration-subbots.md).
 
-Dedicated `join` node declarations are no longer supported; put `await:` on the node that consumes the parallel branch outputs.
-
-### Human
-
-Pauses the workflow for human input, or lets an LLM handle it (full guide,
-form widgets, and the interaction-mode decision tree:
-[human-in-the-loop.md](human-in-the-loop.md)):
+## Human interaction
 
 ```iter
-## Always pause for human answers
 human approval:
+  description: "Release approval"
   input: approval_request
   output: approval_response
   instructions: approval_prompt
   interaction: human
   min_answers: 1
-
-## LLM auto-answers (never pauses)
-human auto_review:
-  interaction: llm
-  model: "claude-sonnet-4-20250514"
-  system: auto_review_prompt
-  output: review_decision
-
-## LLM decides whether to pause or auto-answer
-human conditional:
-  interaction: llm_or_human
-  model: "claude-sonnet-4-20250514"
-  system: decision_guidance
-  instructions: review_questions
-  output: review_decision
 ```
 
-Resume a paused run with `iterion resume --run-id <id> --file <file> --answer key=value`.
+`interaction` is one of `none`, `human`, `llm`, `llm_or_human`, or `review`. A review gate additionally accepts `review_url`, `posture`, `merge_strategy`, `merge_into`, and `max_turns`. Human nodes may also publish labeled artifacts and converge with `await`. See [human-in-the-loop](human-in-the-loop.md) and [review/merge gate](review-merge-gate.md).
 
-### Tool
+Resume a pause with `iterion resume --run-id <id> --file workflow.bot --answer key=value`.
 
-Direct shell command execution — no LLM involved:
+## Deterministic nodes
+
+### `tool`
+
+A tool executes either a shell command or a script; it does not call an LLM.
 
 ```iter
 tool run_tests:
-  command: "make test"
+  description: "Run the repository test suite"
+  command: `make test`
   output: test_result
-  publish: test_result_artifact   # optional — see below
+  publish: test_result_artifact
+  permission: ask
+  needs: [test_slot]
 ```
 
-Supports `${ENV_VAR}` in the command string. Like agent/judge/human nodes,
-a `tool` — or a `compute` — node may add `publish: <name>` to persist its
-output as a versioned artifact (surfaced in the studio Artifact tab and
-`iterion report`, and referenceable downstream as `{{artifacts.<name>}}`).
-This is deterministic and adds **no LLM cost** — `publish:` only redirects
-the node's already-computed output into the store.
+`command` and `script` are mutually exclusive. A script adds `language: js|py|sh|bash` (default `sh`). Tools also accept `input`, `output`, `publish`, `artifact_labels`, `await`, `sandbox`, `compress`, `permission`, and `needs`.
 
-### Terminal Nodes
-
-Every workflow must end at `done` (success) or `fail` (failure). These are built-in — you don't declare them.
-
-## Workflows, Edges & Control Flow
-
-A workflow ties nodes together with an entry point, optional budget, and edges:
+Verified Actions add a deterministic outcome check and bounded recovery:
 
 ```iter
-workflow pr_review:
-  entry: context_builder
-
-  budget:
-    max_duration: "30m"
-    max_cost_usd: 10
-    max_tokens: 400000
-
-  context_builder -> reviewer
-  reviewer -> done when approved
-  reviewer -> context_builder when not approved as retry(3)
+tool deploy:
+  command: `./deploy.sh`
+  goal: "The service is deployed and healthy"
+  postcondition: `./scripts/check-health.sh`
+  policy: recover       # required | recover | best_effort
+  recovery:
+    max_repair_attempts: 2
+    max_agent_attempts: 1
+    model: "anthropic/claude-sonnet-4-6"
+    agent_tools: [read_file, bash]
 ```
 
-**Edge syntax:**
+`parallel_safe: true` is a narrowly scoped assertion for `fan_out_each`: concurrent replays must write only to disjoint item-keyed targets. It does not make a tool generally read-only.
+
+### `compute`
+
+`compute` evaluates bounded expressions without an LLM or shell:
 
 ```iter
-src -> dst                              # Unconditional
-src -> dst when approved                # Conditional (bool field from src output)
-src -> dst when not approved            # Negated condition
-src -> dst as loop_name(5)              # Bounded loop (max 5 iterations)
-src -> dst as loop_name(unbounded 200)  # Opt-in unbounded loop, fuel ceiling 200
-src -> dst with {                       # Data mapping
-  context: "{{outputs.src}}",
-  config: "{{vars.my_var}}"
+schema stats:
+  count: int
+  ready: bool
+
+compute summarize:
+  input: review_result
+  output: stats
+  expr:
+    count: "length(input.issues)"
+    ready: "input.approved && length(input.issues) == 0"
+```
+
+Expressions support field/index access, arithmetic/comparison/boolean operators, conditional/map/filter/reduce forms, and the total built-ins `length`, `concat`, `unique`, `contains`, `join`, `tail`, `if`, `sort`, `keys`, `values`, `slice`, `sum`, `min`, `max`, and `flatten`. They share namespaces with quoted `when` expressions and are bounded by an evaluation-work limit; see [DSL totality](dsl-totality-and-tc.md).
+
+### `emit` and `wait`
+
+These nodes coordinate concurrent branches through immutable run-scoped events:
+
+```iter
+emit publish_ready:
+  event: "ready"
+  with {
+    revision: "{{outputs.build.sha}}"
+  }
+
+wait await_ready:
+  event: "ready"
+  timeout: "30s"
+  output: ready_payload
+```
+
+`wait.timeout` is mandatory: the language does not permit an unbounded silent wait.
+
+## Reuse and nested execution
+
+### `group` / `use`
+
+Groups are compile-time macros containing agents, judges, routers, humans, tools, computes, and internal edges. Each use prefixes cloned node ids and substitutes `{{params.*}}`.
+
+```iter
+group check(rule):
+  agent inspect:
+    model: "anthropic/claude-sonnet-4-6"
+    user: inspect_prompt
+
+use check as security with {
+  rule: "security"
 }
+
+workflow grouped:
+  entry: security.inspect
+  security.inspect -> done
 ```
 
-**Edge rules:**
+External workflow edges address expanded nodes as `<prefix>.<node>`.
 
-- Non-router nodes can have at most one unconditional edge
-- Conditional edges must be exhaustive (`when X` + `when not X`) or have an unconditional fallback
-- All cycles must be declared with `as name(N)` — undeclared cycles are a compile error
-- A cycle may opt into `as name(unbounded [<fuel>])` — no static iteration cap; termination is relocated to a runtime fuel ceiling + a liveness monitor. This is the DSL's opt-in Turing-completeness; see [dsl-totality-and-tc.md](dsl-totality-and-tc.md) and [ADR-050](adr/050-dsl-turing-completeness-fuel-liveness.md). Diagnostics C097 (fuel required) / C098 (no exit edge)
-- Inside loops, you can access iteration history with `{{outputs.node_id.history}}`
+### `subbot`
 
-## Template Expressions
+```iter
+subbot run_ticket:
+  description: "Implement one planned ticket"
+  source: "child.bot"
+  with {
+    issue: "{{outputs.dispatch.ticket.id}}"
+  }
+  output: ticket_result
+  needs: [worktree_slot]
+  isolated: true
+```
 
-Templates use `{{...}}` interpolation:
+A subbot is a real nested run with its own loops, state, and budget. Parent budget totals do not aggregate child budgets. `isolated: true` is a workspace-safety assertion, not automatic isolation: use it only when the child cannot mutate the parent checkout.
 
-| Reference | Description |
-|-----------|-------------|
-| `{{vars.name}}` | Workflow variable |
-| `{{input.field}}` | Current node's input field |
-| `{{outputs.node_id}}` | Full output of a previously executed node |
-| `{{outputs.node_id.field}}` | Specific field from a node's output |
-| `{{outputs.node_id.history}}` | Array of all outputs across loop iterations |
-| `{{artifacts.name}}` | Published artifact by name |
-| `{{attachments.name}}` | Declared attachment by name; resolves to the host path (same as `.path`) |
-| `{{attachments.name.path}}` | Attachment host path |
-| `{{attachments.name.url}}` | Presigned attachment URL |
-| `{{attachments.name.mime}}` | Attachment MIME type |
-| `{{attachments.name.size}}` | Attachment size in bytes |
-| `{{attachments.name.sha256}}` | Attachment SHA-256 digest |
-| `{{loop.name.iteration}}` | Current 0-based iteration count for a declared loop |
-| `{{loop.name.max}}` | Effective loop iteration cap |
-| `{{loop.name.previous_output}}` | Previous iteration output snapshot; append subfields to drill in |
-| `{{run.id}}` | Current run identifier |
+See [groups, iteration, resources, and sub-bots](groups-iteration-subbots.md) for pause/resume, board-write, and concurrency boundaries.
 
-Environment variables are supported with `${ENV_VAR}` syntax (resolved at compile time).
+## Cursors and supervisors
 
-## MCP Servers
+A cursor declares reusable prompt calibration; a supervisor is a concurrent watcher, not a graph node:
 
-You can declare MCP (Model Context Protocol) servers directly in your `.bot` files:
+```iter
+cursor rigor:
+  description: "Review strictness"
+  values:
+    normal: "Focus on material defects."
+    high: "Demand direct evidence and adversarial checks."
+
+supervisor guard:
+  watches: [worker]
+  model: "anthropic/claude-sonnet-4-6"
+  system: supervision_policy
+  cooldown: "30s"
+  max_evals: 20
+```
+
+Cursor declarations use either `values:` or numeric `bands:`, never both. Supervisors enqueue node-scoped steering messages while watched nodes are active. See [cursors](cursors.md) and [supervisors](supervisors.md).
+
+## MCP servers
 
 ```iter
 mcp_server code_tools:
   transport: stdio
   command: "npx"
-  args: ["-y", "@anthropic-ai/claude-code-mcp"]
+  args: ["-y", "@example/code-tools"]
 
-mcp_server api_server:
+mcp_server remote_tools:
   transport: http
-  url: "http://localhost:3000/mcp"
+  url: "https://tools.example.com/mcp"
+  auth:
+    type: "oauth2"
+    auth_url: "https://tools.example.com/oauth/authorize"
+    token_url: "https://tools.example.com/oauth/token"
+    client_id: "iterion"
+    scopes: ["tools.read"]
 ```
 
-Agents can then reference these servers:
+Supported transports are `stdio`, `http`, and `sse`. Workflow `mcp:` blocks may set `autoload_project`, `servers`, and `disable`; node blocks use `inherit`, `servers`, and `disable`.
+
+## Workflows and edges
+
+A workflow selects the entry node, configures run-wide controls, and declares edges:
 
 ```iter
-agent worker:
-  model: "claude-sonnet-4-20250514"
-  mcp:
-    servers: [code_tools, api_server]
+workflow review:
+  entry: prepare
+  default_backend: "claude_code"
+  worktree: auto
+  compress: on
+  permission: ask
+  allow: ["Read(*)", "Grep(*)"]
+  ask: ["Bash(git push:*)"]
+  deny: ["Bash(rm:*)"]
+  capabilities: [board.read]
+  skills: ["review-playbook"]
+
+  budget:
+    max_parallel_branches: 4
+    max_duration: "30m"
+    max_cost_usd: 10
+    max_tokens: 400000
+    max_iterations: 100
+
+  resources:
+    test_slot: 2
+    worktree_slot: ["slot-a", "slot-b"]
+
+  compaction:
+    threshold: 0.85
+    preserve_recent: 4
+
+  sandbox: auto
+
+  prepare -> reviewer
+  reviewer -> done when approved
+  reviewer -> prepare when not approved as retry(3)
 ```
 
-Supported transports: `stdio` (requires `command` and forbids `url`), plus `http` and `sse` (both require `url` and must not set `command` or `args`; they share the streamable transport path at runtime).
+Workflow controls are `vars`, `attachments`, `entry`, `default_backend`, `tool_policy`, `capabilities`, `skills`, `mcp`, `budget`, `resources`, `compaction`, `interaction`, `worktree`, `compress`, `permission`, `allow`, `ask`, `deny`, and `sandbox`.
 
-## Budget
-
-Control costs and prevent runaway execution:
+### Edge forms
 
 ```iter
-budget:
-  max_parallel_branches: 4    # Concurrent branch limit
-  max_duration: "30m"         # Global timeout
-  max_cost_usd: 10.0          # Cost cap in USD
-  max_tokens: 500000          # Total token budget
-  max_iterations: 50          # Loop iteration limit
+src -> dst
+src -> dst when approved
+src -> dst when not approved
+src -> dst when "approved && length(outputs.scan.findings) == 0"
+src -> fallback else
+src -> dst as retry(5)
+src -> dst as retry("{{outputs.plan.max_passes}}")
+src -> dst as retry(unbounded 200)
+src -> dst as foreach scan(item in "{{outputs.plan.items}}")
+src -> dst with {
+  context: "{{outputs.src}}",
+  mode: "{{vars.mode}}"
+}
 ```
 
-The budget is shared across all branches. When a limit is hit, the engine emits a `budget_exceeded` event and stops the run.
+Optional `when`/`else`, `as`, and `with` clauses may appear in any order, once each. `else` is the explicit fallback when no sibling guard matched. A quoted `when` uses the bounded expression language.
 
-## Worktree & Sandbox
+Every cycle must carry an `as <loop>(...)` clause. A cap may be a literal, a runtime template, or `unbounded` with a fuel ceiling. If an unbounded loop omits its local fuel, `budget.max_iterations` must supply it; the runtime also applies a no-progress liveness monitor. `as foreach` is different: it walks a finite array sequentially and binds the `each.<name>` namespace.
 
-Two top-level workflow directives let a run isolate itself from the host:
+Terminal targets `done` and `fail` are reserved and are never declared.
 
-```iter
-workflow safe_pr_fix:
-  worktree: auto       # Run inside a fresh git worktree; persist commits to a branch on success
-  sandbox: auto        # Run all tool/agent calls inside a Docker/Podman container
-  entry: planner
-  ...
-```
+## Worktrees, sandboxing, permissions, and budgets
 
-- **`worktree: auto`** — the engine creates `<store-dir>/worktrees/<run-id>`, executes the workflow there, then on a clean exit creates a persistent branch (default `iterion/run/<friendly-name>`) and fast-forwards the user's currently-checked-out branch to that HEAD. Override with `--merge-into`, `--branch-name`, `--merge-strategy`, or `--auto-merge=false`. See [resume.md](resume.md).
-- **`sandbox: auto`** — reads `.devcontainer/devcontainer.json` (or falls back to the default iterion sandbox image) and runs each agent/tool node inside an isolated container with the worktree bind-mounted at `/workspace`, plus an HTTP CONNECT proxy enforcing a network allowlist. `claw` backend calls run through the hidden `iterion __claw-runner` subprocess inside the container, so custom images must provide `iterion` on PATH or allow the host binary to be bind-mounted. Use `iterion sandbox doctor` to verify host capabilities. See [sandbox.md](sandbox.md).
+- `worktree: auto` executes in a per-run worktree and preserves a run branch. Final merge behavior depends on CLI/studio flags and delegated merge authority; see [merge policy](merge-policy.md) and [resume](resume.md).
+- `sandbox: auto` resolves a devcontainer/default image. Block form supports image/build, user/workspace, host-state, environment, mounts, post-create, and network policy; see [sandbox](sandbox.md).
+- `permission: off|ask|deny` plus allow/ask/deny rules creates an execution-time tool gate. CLI overrides are available; see [permissions](permissions.md).
+- `compress: off|on|ultra` controls output compression where supported; see [ultracode](ultracode.md).
+- Workflow budgets are shared across branches in that run. Hitting cost, token, duration, parallelism, or iteration limits emits budget events and stops/parks according to the failure path. Nested subbot runs retain their own budgets.
+- `resources` are named semaphores. Integer values declare capacities; string arrays declare leaseable named members exposed to nodes that list the resource in `needs:`.
 
----
+## Validation and references
 
-## Related references
+Run `iterion validate workflow.bot` before execution. Diagnostics occupy sparse ranges: DSL/compiler/runtime consistency checks use C001–C199; bundle checks use C200–C230. The authoritative list is [references/diagnostics.md](references/diagnostics.md).
 
-- [`grammar/iterion_v1.ebnf`](grammar/iterion_v1.ebnf) — formal EBNF grammar
-- [`references/dsl-grammar.md`](references/dsl-grammar.md) — readable grammar reference
-- [`references/diagnostics.md`](references/diagnostics.md) — all validation diagnostic codes (C001–C086, sparse)
-- [`references/patterns.md`](references/patterns.md) — 10 reusable workflow patterns
-- [`attachments.md`](attachments.md) — attachment handling
-- [`workflow_authoring_pitfalls.md`](workflow_authoring_pitfalls.md) — required reading before authoring workflows that commit code
+- [Readable grammar](references/dsl-grammar.md)
+- [Formal EBNF](grammar/iterion_v1.ebnf)
+- [Router semantics](routers.md)
+- [Composition, iteration, resources, and sub-bots](groups-iteration-subbots.md)
+- [Human interaction](human-in-the-loop.md)
+- [Reusable workflow patterns](references/patterns.md)
+- [Authoring pitfalls](workflow_authoring_pitfalls.md)

@@ -2,7 +2,7 @@
 
 # Install
 
-Iterion ships in seven delivery flavours. Pick the one that fits your workflow — the DSL, runtime, persistence and observability are identical across all of them.
+Iterion ships in eight delivery flavours. Pick the one that fits your workflow — the DSL, runtime, persistence and observability are identical across all of them.
 
 | Mode | Best for | Install |
 |---|---|---|
@@ -12,9 +12,10 @@ Iterion ships in seven delivery flavours. Pick the one that fits your workflow �
 | 🐳 [**Docker**](#docker) | Zero-install runs, reproducible CI, isolated environments | `docker run --rm ghcr.io/socialgouv/iterion:latest` |
 | ☁️ [**Cloud / server**](cloud.md) | Multi-tenant deployment, shared run store, REST/WS API | `helm install iterion oci://ghcr.io/socialgouv/charts/iterion` |
 | 🎼 [**Dispatcher**](dispatcher.md) | Autonomous loop — poll a tracker, dispatch a workflow per issue | Bundled with the CLI: `iterion dispatch iterion.dispatcher.yaml` |
+| ⏰ [**Scheduler**](scheduling.md) | Cron or sub-minute keepalive runs without a resident Iterion daemon | Bundled with the CLI: `iterion schedule add … && iterion schedule install` |
 | 📦 [**TypeScript SDK**](../sdks/typescript/) | Programmatic invocation from Node/Deno/Bun apps | `npm install @iterion/sdk` |
 
-All seven invoke the same Go core. Pick CLI for automation, the web editor for daily editing, the desktop app if you want a one-click install with managed credentials, Docker when you want to run iterion without installing it on the host, cloud mode when teams need a shared always-on instance, the dispatcher when you want an autonomous issue-dispatch loop, or the SDK to embed iterion inside another Node/Deno/Bun application.
+All eight invoke the same Go core. Pick CLI for automation, the web editor for daily editing, the desktop app for a one-click install with managed credentials, Docker for a self-contained runtime, cloud mode for a shared always-on instance, the dispatcher for an autonomous issue loop, the scheduler for recurring or keepalive runs, or the SDK to embed Iterion in a Node/Deno/Bun application.
 
 ---
 
