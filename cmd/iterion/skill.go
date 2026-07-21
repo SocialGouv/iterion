@@ -95,7 +95,7 @@ var skillExportCmd = &cobra.Command{
 }
 
 func init() {
-	skillCmd.PersistentFlags().StringVar(&skillOpts.StoreDir, "store-dir", "", "Run store directory (default: nearest .iterion of the working dir)")
+	skillCmd.PersistentFlags().StringVar(&skillOpts.StoreDir, "store-dir", "", "Run store directory override (default: managed store for the working directory)")
 	skillCmd.PersistentFlags().BoolVar(&skillOpts.Project, "project", false, "Target the per-project skill store (shadows global by name)")
 	skillAddCmd.Flags().StringVar(&skillOpts.From, "from", "", "Read the skill body from this file (default: stdin)")
 

@@ -1,16 +1,28 @@
+[← Documentation index](README.md) · [← Iterion](../README.md) · [Current state](current-state.md)
+
 # Backends and credential auto-detection
 
-iterion ships three execution backends — `claw` (in-process LLM SDK),
-`claude_code` (Claude Code CLI subprocess), and `codex` (Codex CLI
-subprocess) — and picks one automatically when neither the workflow
-nor the node spell out which one to use. This page documents the
-resolution chain, the credentials each backend understands, and how
-to override the auto-selection.
+Iterion ships five execution backends: `claw` (in-process LLM SDK),
+`claude_code` (Claude Code CLI), `kimi` (Kimi Code CLI), `grok` (Grok Build
+CLI), and the deprecated `codex` compatibility delegate. The default automatic
+preference only considers `claude_code` and `claw`; the other three require an
+explicit opt-in. This page documents the resolution chain, credentials, support
+boundaries, and overrides.
 
 > **Cloud BYOK.** The auto-detection below is the *host/env* path. In
 > cloud mode, provider API keys are owned per-org and sealed in Mongo,
 > resolved per-run with a precedence chain (per-webhook override → user
 > default → org default → env fallback). See [byok.md](byok.md).
+
+## Backend status
+
+| Backend | Status | Selection |
+|---|---|---|
+| `claw` | Recommended in-process backend for direct provider calls and native Iterion tools. | Automatic or explicit. |
+| `claude_code` | Recommended CLI-agent backend for implementation work and Claude subscription/OAuth use. | Automatic when Claude Code OAuth is detected, or explicit. |
+| `kimi` | Supported through the generic CLI-agent protocol; session resume/fork is not wired. | Explicit only. |
+| `grok` | Supported through the generic CLI-agent protocol; session resume/fork is not wired. | Explicit only. |
+| `codex` | **Deprecated and frozen.** Compatibility/live-test path only; the compiler emits C030. | Per-node/workflow opt-in, or explicit addition to `ITERION_BACKEND_PREFERENCE`. |
 
 ## TL;DR
 
@@ -88,8 +100,10 @@ claude_code → claw
 ```
 
 `codex` is intentionally **not** in the default list. The codex SDK
-has known limitations (see [codex C030](../pkg/dsl/ir/compile.go))
-and we'd rather have authors opt in explicitly than auto-select it.
+has known limitations (see [codex C030](../pkg/dsl/ir/compile.go)) and the
+delegate is frozen: new workflows and backend work should use `claude_code`,
+or `claw` with an OpenAI model. It remains available for compatibility and live
+test coverage.
 You can still set `backend: codex` per-node, or include it in
 `ITERION_BACKEND_PREFERENCE` to make it eligible for auto-selection.
 
@@ -283,6 +297,10 @@ no subprocess fork). To use `claude_code` with API-key auth, set
 `backend: claude_code` explicitly on the node.
 
 ### `codex`
+
+> **Legacy compatibility only.** This backend is deprecated and frozen. The
+> details below document existing workflows; they are not a recommendation for
+> new authoring.
 
 | Credential | Source |
 |---|---|
@@ -710,5 +728,5 @@ dev-purpose-only regardless of the UA you configure.
 | Pill is red | No credential detected | Set `ANTHROPIC_API_KEY` or sign in to Claude Code, then click Refresh |
 | Pill is green but Run errors out with "no provider" | Workflow uses `model: openai/...` but only `ANTHROPIC_API_KEY` is set | Switch model to an Anthropic spec, or add `OPENAI_API_KEY` |
 | Pill says "claude_code" but you wanted "claw" | OAuth is found and ranked first | `export ITERION_BACKEND_PREFERENCE='claw,claude_code'` |
-| Pill says "claw" but you wanted Codex | Codex isn't in the default order | `export ITERION_BACKEND_PREFERENCE='codex,claude_code,claw'` and ensure `$CODEX_HOME/auth.json` exists |
+| Pill says "claw" but a legacy workflow needs Codex | Codex is deprecated and absent from the default order | Prefer `claw` + an OpenAI model; for compatibility, select `backend: codex` explicitly and ensure `$CODEX_HOME/auth.json` exists |
 | Editor pill stale after fixing env | Server cache (30s) | Click the pill → **Refresh** |

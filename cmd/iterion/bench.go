@@ -81,7 +81,7 @@ Examples:
 
 func init() {
 	f := benchAsymptoteCmd.Flags()
-	f.StringVar(&benchAsymptoteOpts.storeDir, "store-dir", "", "Store directory (default: .iterion)")
+	f.StringVar(&benchAsymptoteOpts.storeDir, "store-dir", "", "Store directory override (default: managed store for the working directory)")
 	f.StringVar(&benchAsymptoteOpts.runs, "runs", "", "Comma-separated run IDs of the same workflow (the canonical asymptote subjects)")
 	f.StringVar(&benchAsymptoteOpts.variantRuns, "variant-runs", "", "Comma-separated run IDs of an alternative recipe variant (optional)")
 	f.StringVar(&benchAsymptoteOpts.label, "label", "", "Primary group label (default: asymptote)")

@@ -96,7 +96,7 @@ func init() {
 	f.BoolVar(&forkOpts.rewindCode, "rewind-code", false, "Reset the new worktree to the snapshot captured at this node boundary")
 	f.StringVar(&forkOpts.forkName, "name", "", "Friendly name for the forked run (default auto-generated)")
 	f.StringVar(&forkOpts.newInputsFile, "new-inputs", "", "JSON file with input overrides merged onto the parent's inputs")
-	f.StringVar(&forkOpts.storeDir, "store-dir", "", "Store directory (default: .iterion)")
+	f.StringVar(&forkOpts.storeDir, "store-dir", "", "Store directory override (default: managed store for the working directory)")
 	mustMarkRequired(forkCmd, "run-id")
 	mustMarkRequired(forkCmd, "node")
 	rootCmd.AddCommand(forkCmd)

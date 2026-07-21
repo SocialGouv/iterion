@@ -58,7 +58,7 @@ var secretRmCmd = &cobra.Command{
 }
 
 func init() {
-	secretCmd.PersistentFlags().StringVar(&secretOpts.StoreDir, "store-dir", "", "Run store directory (default: nearest .iterion of the working dir)")
+	secretCmd.PersistentFlags().StringVar(&secretOpts.StoreDir, "store-dir", "", "Run store directory override (default: managed store for the working directory)")
 	secretCmd.PersistentFlags().BoolVar(&secretOpts.Project, "project", false, "Target the per-project store (overrides global by name)")
 	secretSetCmd.Flags().StringVar(&secretOpts.FromEnv, "from-env", "", "Read the value from this environment variable instead of prompting")
 	secretSetCmd.Flags().StringSliceVar(&secretOpts.Hosts, "hosts", nil, "Egress host allowlist for the secret (comma-separated); empty = unrestricted")

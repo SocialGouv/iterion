@@ -149,7 +149,7 @@ func init() {
 	scheduleAddCmd.Flags().StringVar(&scheduleAddOpts.Cron, "cron", "", "Cron expression: 5 fields (min hour dom month dow), e.g. \"0 2 * * 1\" (required)")
 	scheduleAddCmd.Flags().StringVar(&scheduleAddOpts.Bot, "bot", "", "Path to the .bot workflow or .botz bundle to run (resolved against --workdir) (required)")
 	scheduleAddCmd.Flags().StringVar(&scheduleAddOpts.Workdir, "workdir", "", "Working directory for the run (default: current directory)")
-	scheduleAddCmd.Flags().StringVar(&scheduleAddOpts.StoreDir, "store-dir", "", "Store directory passed to the run (default: <workdir>/.iterion)")
+	scheduleAddCmd.Flags().StringVar(&scheduleAddOpts.StoreDir, "store-dir", "", "Store directory passed to the run (default: managed store for the bot project)")
 	scheduleAddCmd.Flags().StringVar(&scheduleAddOpts.Sandbox, "sandbox", "", "Sandbox override passed to the run (none|auto)")
 	scheduleAddCmd.Flags().StringVar(&scheduleAddOpts.Timeout, "timeout", "", "Max run duration, e.g. 2h (guards a hung scheduled run)")
 	scheduleAddCmd.Flags().StringArrayVar(&scheduleAddOpts.VarFlags, "var", nil, "Workflow variable key=value, merged at run time (repeatable; commas kept verbatim)")

@@ -35,7 +35,7 @@ schedules:
     cron: "0 2 * * 1"                   # standard 5-field expression, passed opaquely to host cron
     bot: bots/sec-audit-source/main.bot
     workdir: /home/jo/lab/ai/iterion    # cd here before running; bot path resolves against it
-    store_dir: ""                        # optional --store-dir (default <workdir>/.iterion)
+    store_dir: ""                        # optional override; empty uses project-store resolution
     sandbox: ""                          # optional --sandbox override (none|auto)
     timeout: "2h"                        # optional max run duration (guards a hung run)
     vars:                                # optional --var overrides (commas kept verbatim)
@@ -48,6 +48,12 @@ schedules:
     guard_timeout: "30s"                 # optional guard subprocess timeout
     guard_var: guard_output              # optional var name receiving the guard stdout
 ```
+
+With an empty `store_dir`, the run uses the normal resolution anchored at the
+bot path: an existing managed project `.iterion`, otherwise the deterministic
+slot under `$ITERION_HOME/projects/` (normally `~/.iterion/projects/`). Set an
+explicit `<workdir>/.iterion` when scheduled runs must appear in a studio bound
+to that workspace store.
 
 ## Commands
 

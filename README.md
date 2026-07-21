@@ -13,11 +13,14 @@ Kubernetes gave cloud workloads a declarative control plane. Iterion brings that
 
 > 📖 **New here? Read [Why Iterion?](docs/why-iterion.md)** — the origin story, the patterns we've seen work, the asymptote lens that motivated the engine, and the workflow-lab dimension. Helps you decide whether Iterion fits how you work before you install anything.
 
+> 🧭 **Want the as-built picture? Read [Current state of Iterion](docs/current-state.md)** — shipped surfaces, execution architecture, backend status, security defaults, cloud control plane, and deliberate limits, verified against `main`.
+
 ---
 
 ## Table of Contents
 
 - [Why Iterion?](docs/why-iterion.md) — origin + recipe + asymptote + lab
+- [Current state](docs/current-state.md) — as-built capabilities, architecture, defaults, and limits
 - [What is Iterion?](#what-is-iterion)
 - [Features](#features)
 - [Ready-to-run agent workflows](#agent-workflows)
@@ -81,12 +84,14 @@ Think of it as a DAG runner purpose-built for LLM workflows — with first-class
 
 ### Execution & runtime
 
-- 🔌 **Delegation** — Offload execution to external agents (Claude Code, Codex) with full tool access — works with Claude and ChatGPT/Codex subscriptions
-- 🌐 **Provider-agnostic** — In-process `claw` backend supports Anthropic and OpenAI (validated), plus Bedrock, Vertex, Foundry (via the vendored `claw-code-go` SDK)
+- 🔌 **Multiple execution backends** — In-process `claw` and the recommended Claude Code delegate, plus explicit Kimi Code and Grok Build CLI-agent backends; the Codex delegate is deprecated and frozen
+- 🌐 **Provider routing** — `claw` validates Anthropic and OpenAI as first-class lanes and also wires xAI, Bedrock, Vertex, Foundry, and compatible endpoints with varying test coverage; OpenAI can use an API key or a ChatGPT/Codex OAuth forfait
 - 💰 **Budget enforcement** — Shared, mutex-protected caps on tokens, cost (USD), duration, parallel branches, and loop iterations
-- 🛡️ **Tool policies** — Allowlist-based access control with exact, namespace, and wildcard matching
-- 🌳 **Worktree auto-finalization** — `worktree: auto` runs the workflow in a fresh git worktree, persists commits to a named branch, and fast-forwards the current branch on success — see [docs/resume.md](docs/resume.md)
-- 🛡️ **Per-run sandbox** — `sandbox: auto` isolates each run inside a Docker/Podman container with the worktree bind-mounted at `/workspace` and an HTTP CONNECT proxy enforcing a network allowlist — see [docs/sandbox.md](docs/sandbox.md)
+- 🎛️ **Live control and recovery** — Queue operator/supervisor messages, raise budgets, grant loop iterations, retry eligible failures, and resume from persisted checkpoints
+- 🛡️ **Tool-permission gate** — Shared `off` / `ask` / `deny` policy for `claude_code` and `claw`, with allow/ask/deny rule lists; restrictive modes are opt-in
+- 🌳 **Worktree finalization** — `worktree: auto` runs in a fresh Git worktree and protects committed results with a named branch; CLI or studio merge policy decides when and how it lands — see [docs/merge-policy.md](docs/merge-policy.md)
+- 🛡️ **Per-run sandbox** — Opt-in Docker/Podman/Kubernetes isolation. Local containers preserve the host worktree path by default; network mode is open unless the workflow selects an allowlist/denylist proxy — see [docs/sandbox.md](docs/sandbox.md)
+- 🧰 **Reproducible bot tools** — A bot and its target repository can each declare a pinned `devbox.json`; Iterion composes both toolchains and exposes them to non-interactive nodes
 - 🔐 **Privacy filter** — Built-in Go-native `privacy_filter` / `privacy_unfilter` tools redact and restore PII (emails, phones, IBANs, credit cards, URLs, ~25 secret patterns) — see [docs/privacy_filter.md](docs/privacy_filter.md)
 
 ### Persistence & observability
@@ -94,6 +99,7 @@ Think of it as a DAG runner purpose-built for LLM workflows — with first-class
 - 📦 **Artifact versioning** — Per-node, per-iteration versioned outputs persisted to disk
 - 📊 **Event sourcing** — Append-only JSONL event log for full replay and debugging
 - ⏯️ **Resumable runs** — Checkpoint-based resume from `failed_resumable` / `paused_waiting_human` / `cancelled` states — see [docs/resume.md](docs/resume.md)
+- 🧭 **Run operations** — Run trees, files/diffs/commits, live steering, human answers, notes/tags, and a local post-mortem shell for preserved worktrees
 - 📈 **Observability stack** — Prometheus `/metrics`, OTLP traces, and a self-contained docker-compose stack with pre-built Grafana dashboards — see [docs/observability/README.md](docs/observability/README.md)
 
 <p align="center">
@@ -104,7 +110,8 @@ Think of it as a DAG runner purpose-built for LLM workflows — with first-class
 
 ### Distribution & integration
 
-- ☁️ **Multi-tenant agent control plane** — Self-hostable Helm deployment (MongoDB + S3 + NATS JetStream, KEDA-scaled runners, per-run Kubernetes sandboxes) with the full platform layer: orgs + quotas + metering, inbound webhooks for GitLab / GitHub / Forgejo / generic JSON, bound credentials, audit log, PATs, SMTP onboarding, self-serve studio — see the [Iterion Cloud overview](docs/cloud-overview.md)
+- ☁️ **Multi-tenant agent control plane** — Self-hostable Helm deployment (MongoDB + S3 + NATS JetStream, KEDA-scaled runners, per-run Kubernetes sandboxes) with org → team tenancy, repo-first forge integrations, schedules/triggers/webhooks, bound credentials, quotas/metering, audit, SSO, PATs, SMTP onboarding, and a typed remote CLI — see the [Iterion Cloud overview](docs/cloud-overview.md)
+- 🧩 **Skills, plugins, and marketplace** — Package bot resources, install project/global skills, contribute MCP/rewriter/skill/hook/lifecycle plugins, and distribute bots or plugins through one registry model
 - 🧰 **TypeScript SDK** — [`@iterion/sdk`](sdks/typescript/) wraps the CLI with typed `run` / `resume` / `events` streaming for Node, Deno, and Bun apps
 - 🧠 **AI agent skill** — Install as a skill in Claude Code, Codex, Cursor, Windsurf, GitHub Copilot, Cline, Aider, and other AI coding agents
 
@@ -128,13 +135,13 @@ flowchart LR
   WORKFLOW --> POST["review/fix/report<br/>posted back on the MR/PR"]
 ```
 
-Five steps to a working loop:
+Five steps to a working forge loop:
 
 1. `helm install iterion oci://ghcr.io/socialgouv/charts/iterion -f values.yaml` — [chart README](charts/iterion/README.md)
 2. Activate the bootstrap super-admin (temp password in the boot logs), create an org
-3. In the studio: org → Webhooks → create (provider, bot scope) — copy the one-time token + URL
-4. Paste them into your forge's webhook settings; add a `forge_token` secret + bot binding
-5. Open an MR — watch the run in the studio, the review lands on the MR
+3. In the studio, open **Integrations**, connect GitHub/GitLab/Forgejo, and select a repository
+4. Enable a bot for that repository; Iterion provisions the managed hook, webhook secret, credential binding, and optional schedule
+5. Open a PR/MR — watch the run in the studio and the result land back on the forge
 
 Org quotas (runs / cost / concurrency / rate), audit log, personal
 access tokens, DLQ ops and Prometheus metrics make it operable as a
@@ -185,7 +192,9 @@ Same engine, eight delivery modes — pick the one that fits your workflow:
 | ⏰ **Scheduler** | Cron recurring runs (weekly audits, nightly passes) — no resident daemon | Bundled: `iterion schedule add … && iterion schedule install` | [scheduling.md](docs/scheduling.md) |
 | 📦 **TypeScript SDK** | Programmatic invocation from Node/Deno/Bun | `npm install @iterion/sdk` | [sdks/typescript/](sdks/typescript/) |
 
-All eight invoke the same Go core. The DSL, runtime, persistence and observability are identical — they only differ in how you reach them.
+All eight use the same Go compiler and runtime contracts. They differ in launch
+transport, persistence adapter, isolation driver, and whether execution is
+in-process or queued to a runner.
 
 ### Your first bot
 
@@ -209,7 +218,7 @@ cd /path/to/your/repo
 claude login                    # authenticate a backend (or set an API key)
 
 iterion bots list               # what's available
-iterion run bots/review-pr/main.bot
+iterion run bots/review-pr/main.bot --store-dir "$PWD/.iterion"
 ```
 
 #### Or create your own
@@ -240,7 +249,11 @@ iterion inspect --run-id <id> --events   # View a specific run with events
 iterion report --run-id <id>             # Generate a detailed report
 ```
 
-All run data (events, artifacts, interactions) is stored in `.iterion/runs/`.
+Run data lives under the resolved store. The example above opts into
+`$PWD/.iterion` so the CLI and `iterion studio --dir "$PWD"` share it. Without
+`--store-dir`, Iterion reuses an existing managed project `.iterion` or stores
+the run in a deterministic project slot under `~/.iterion/projects/`; reuse the
+same override when inspecting a run. See [the current storage contract](docs/current-state.md#state-and-observability).
 
 ---
 
@@ -304,6 +317,7 @@ From here you can add judges for multi-pass review, routers for parallel or per-
 The full documentation lives under [`docs/`](docs/) — start with the [documentation index](docs/README.md). Highlights:
 
 **Get going**
+- [docs/current-state.md](docs/current-state.md) — as-built product, runtime, control-plane, and maturity snapshot
 - [docs/install.md](docs/install.md) — every install method (CLI, desktop, Docker, Helm, SDK)
 - [docs/visual-editor.md](docs/visual-editor.md) — studio (browser-based workflow editor)
 - [docs/desktop.md](docs/desktop.md) — native desktop app
@@ -313,9 +327,9 @@ The full documentation lives under [`docs/`](docs/) — start with the [document
 **Author workflows**
 - [docs/dsl.md](docs/dsl.md) — full `.bot` DSL reference
 - [docs/routers.md](docs/routers.md) — routing modes deep dive
-- [docs/human-in-the-loop.md](docs/human-in-the-loop.md) — pause for human input; interaction modes (human / llm / llm_or_human / review)
+- [docs/human-in-the-loop.md](docs/human-in-the-loop.md) — pause for human input; all five interaction values and their node-specific behavior
 - [docs/recipes.md](docs/recipes.md) — preset-driven runs (benchmarking, prompt comparison)
-- [docs/delegation.md](docs/delegation.md) — `model:` vs `backend:` (claude_code, codex)
+- [docs/backends.md](docs/backends.md) + [docs/delegation.md](docs/delegation.md) — model/provider routing and the `claw`, Claude Code, Kimi, Grok, and legacy Codex execution paths
 - [docs/cursors.md](docs/cursors.md) — prompt-engineering cursors (ambition / depth / rigor / autonomy dials)
 - [docs/attachments.md](docs/attachments.md) — file/image attachments in prompts
 - [docs/privacy_filter.md](docs/privacy_filter.md) — built-in PII redaction tools

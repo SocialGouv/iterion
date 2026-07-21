@@ -72,7 +72,7 @@ Examples:
 
 func init() {
 	f := runsPruneCmd.Flags()
-	f.StringVar(&runsPruneOpts.storeDir, "store-dir", "", "Store directory (default: .iterion)")
+	f.StringVar(&runsPruneOpts.storeDir, "store-dir", "", "Store directory override (default: managed store for the working directory)")
 	f.StringVar(&runsPruneOpts.olderThan, "older-than", "720h", "Prune runs older than this Go duration (e.g. 168h = 7d, 720h = 30d)")
 	f.IntVar(&runsPruneOpts.keepLast, "keep-last", 0, "Always keep the N most recent matching runs (default 0 = keep none extra)")
 	f.StringVar(&runsPruneOpts.statuses, "status", "", "Comma-separated statuses to prune (default: finished,failed,cancelled; allowed additionally: failed_resumable)")
