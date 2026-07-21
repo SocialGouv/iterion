@@ -1,31 +1,40 @@
 package main
 
 import (
+	"fmt"
+
 	"github.com/SocialGouv/iterion/pkg/cli"
 	"github.com/spf13/cobra"
 )
 
 var bundleCmd = &cobra.Command{
 	Use:   "bundle",
-	Short: "Create and inspect .botz workflow bundles",
-	Long: `Create and inspect .botz workflow bundles.
+	Short: "Package bot bundles into .botz archives",
+	Long: `Package a bundle source directory into a distributable .botz archive.
 
 A .botz is a tar.gz packaging a workflow (main.bot) with adjacent
-resources: skills/, prompts/, attachments/, and an optional
+resources: skills/, prompts/, attachments/, presets/, and an optional
 manifest.yaml. See docs/bundles.md for the format reference.
 
+To CREATE a bundle source directory, use ` + "`iterion bots create <slug>`" + ` —
+it scaffolds the same layout plus catalog metadata, and registers the bot
+so ` + "`iterion bots list`" + ` and the studio discover it.
+
 Subcommands:
-  init   Scaffold a new bundle source directory.
   pack   Build a deterministic .botz from a source directory.
 `,
-}
-
-var bundleInitCmd = &cobra.Command{
-	Use:   "init <dir>",
-	Short: "Scaffold a new .botz bundle source directory",
-	Args:  cobra.ExactArgs(1),
+	// Without this, cobra answers an unknown subcommand (notably the
+	// retired `bundle init`) by printing help and exiting 0 — a silent
+	// no-op for anyone with the old command in muscle memory.
 	RunE: func(cmd *cobra.Command, args []string) error {
-		return cli.RunBundleInit(args[0], newPrinter())
+		if len(args) > 0 {
+			if args[0] == "init" {
+				return fmt.Errorf(
+					"`bundle init` was removed — use `iterion bots create <slug>` to scaffold a bundle")
+			}
+			return fmt.Errorf("unknown command %q for %q", args[0], cmd.CommandPath())
+		}
+		return cmd.Help()
 	},
 }
 
@@ -48,7 +57,6 @@ func init() {
 	f.StringVarP(&bundlePackOpts.output, "output", "o", "", "Output .botz path (default: <dir>.botz next to the source)")
 	f.BoolVar(&bundlePackOpts.force, "force", false, "Overwrite the output file if it already exists")
 
-	bundleCmd.AddCommand(bundleInitCmd)
 	bundleCmd.AddCommand(bundlePackCmd)
 	rootCmd.AddCommand(bundleCmd)
 }

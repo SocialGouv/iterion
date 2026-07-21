@@ -9,9 +9,9 @@ you can email, commit, or drop into S3, and that any `iterion` install
 can run with one command.
 
 ```bash
-iterion bundle init  my-bot         # scaffold
-$EDITOR my-bot/main.bot             # write your workflow
-iterion bundle pack  my-bot         # → my-bot.botz
+iterion bots create  my-bot         # scaffold
+$EDITOR bots/my-bot/main.bot        # write your workflow
+iterion bundle pack  bots/my-bot    # → my-bot.botz
 iterion run          my-bot.botz    # run it
 ```
 
@@ -30,16 +30,16 @@ workflows (templates, examples, organisation-internal recipes).
 ## Quick start
 
 ```bash
-# 1. Scaffold a layout under ./my-bot.
-iterion bundle init my-bot
+# 1. Scaffold a layout under ./bots/my-bot.
+iterion bots create my-bot
 
 # 2. Edit main.bot, drop skills/prompts/attachments as needed.
-$EDITOR my-bot/main.bot
-echo "# my skill" > my-bot/skills/probe.md
-echo "Hello {{vars.topic}}" > my-bot/prompts/helper.md
+$EDITOR bots/my-bot/main.bot
+echo "# my skill" > bots/my-bot/skills/probe.md
+echo "Hello {{vars.topic}}" > bots/my-bot/prompts/helper.md
 
 # 3. Build the deterministic archive.
-iterion bundle pack my-bot
+iterion bundle pack bots/my-bot
 #  → my-bot.botz   (next to the source dir)
 
 # 4. Run it like any workflow file.
@@ -176,7 +176,7 @@ persisted `BundlePath` automatically — the user doesn't re-type
 ## CLI reference
 
 ```
-iterion bundle init <dir>                Scaffold a bundle source layout.
+iterion bots create <slug>               Scaffold a bundle source layout.
 iterion bundle pack <dir> [-o file]      Build a deterministic .botz from a dir.
                        [--force]         Overwrite the output if it exists.
 iterion validate <bundle.botz|dir>       Validate a bundle and its workflow.

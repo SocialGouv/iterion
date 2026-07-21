@@ -1,8 +1,9 @@
-// Package botscaffold renders a new single-agent bot bundle (main.bot +
-// manifest.yaml + README.md + skills/) from a builder Spec. It is the
-// engine behind the studio's "New bot" flow and is deliberately
-// server-importable (pkg/cli wraps it too; the server must not import
-// pkg/cli).
+// Package botscaffold renders a new bot bundle (main.bot +
+// manifest.yaml + README.md + the bundle layout directories) from a
+// builder Spec. It is the single engine behind both bot-creation
+// surfaces — the studio's "New bot" flow and `iterion bots create` — and
+// is deliberately server-importable (pkg/cli wraps it too; the server
+// must not import pkg/cli).
 //
 // The generated workflow follows the house v2 shape: ONE adaptive agent
 // carrying the whole mission (see docs/workflow_authoring_pitfalls.md —
@@ -32,6 +33,20 @@ import (
 
 //go:embed templates/*.tmpl
 var templateFS embed.FS
+
+//go:embed templates/preset_example.md
+var presetExample []byte
+
+// bundleDirs is the .botz layout every scaffolded bot ships. They are
+// created empty (with a .gitkeep so git carries them) because the bundle
+// loader resolves each by convention: skills/ mirrors into the run
+// workspace's .claude/skills/, prompts/<stem>.md becomes a named prompt,
+// attachments/ holds default binary inputs, presets/ holds sous-bots.
+var bundleDirs = []string{"skills", "prompts", "attachments", "presets"}
+
+// bundleGitignore keeps local build output out of the author's repo. It
+// mirrors what the pack walker already filters.
+const bundleGitignore = "*.botz\n.iterion/\n"
 
 // SlugRe is the accepted shape for a new bot's directory/technical name.
 var SlugRe = regexp.MustCompile(`^[a-z][a-z0-9-]{1,63}$`)
@@ -226,17 +241,34 @@ func Scaffold(dir string, s Spec) (Result, error) {
 	if _, err := os.Stat(filepath.Join(dir, "main.bot")); err == nil {
 		return Result{}, fmt.Errorf("botscaffold: %s already contains a main.bot", dir)
 	}
-	if err := os.MkdirAll(filepath.Join(dir, "skills"), 0o755); err != nil {
-		return Result{}, fmt.Errorf("botscaffold: mkdir %s: %w", dir, err)
+	for _, sub := range bundleDirs {
+		if err := os.MkdirAll(filepath.Join(dir, sub), 0o755); err != nil {
+			return Result{}, fmt.Errorf("botscaffold: mkdir %s: %w", sub, err)
+		}
 	}
 
 	files := map[string][]byte{
 		"main.bot":      []byte(mainBot),
 		"manifest.yaml": manifest,
 		"README.md":     readme,
+		".gitignore":    []byte(bundleGitignore),
+		// A starter sous-bot so authors see the preset format.
+		filepath.Join("presets", "example.md"): presetExample,
 	}
+	order := []string{"main.bot", "manifest.yaml", "README.md", ".gitignore", filepath.Join("presets", "example.md")}
+	// .gitkeep makes the empty layout dirs survive `git add`; presets/
+	// ships example.md instead, so it needs none.
+	for _, sub := range bundleDirs {
+		if sub == "presets" {
+			continue
+		}
+		name := filepath.Join(sub, ".gitkeep")
+		files[name] = []byte{}
+		order = append(order, name)
+	}
+
 	res := Result{Dir: dir}
-	for _, name := range []string{"main.bot", "manifest.yaml", "README.md"} {
+	for _, name := range order {
 		path := filepath.Join(dir, name)
 		if err := store.WriteFileAtomic(path, files[name], 0o644); err != nil {
 			return Result{}, fmt.Errorf("botscaffold: write %s: %w", path, err)

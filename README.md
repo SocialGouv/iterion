@@ -25,7 +25,7 @@ Kubernetes gave cloud workloads a declarative control plane. Iterion brings that
 - [Meet the agents](#meet-the-agents)
 - [Getting Started](#getting-started)
   - [Installation](#installation)
-  - [Your first workflow](#your-first-workflow)
+  - [Your first bot](#your-first-bot)
 - [Workflow files](#workflow-files)
 - [A Taste of the DSL](#a-taste-of-the-dsl)
 - [Documentation](#documentation)
@@ -189,30 +189,50 @@ Same engine, eight delivery modes — pick the one that fits your workflow:
 
 All eight invoke the same Go core. The DSL, runtime, persistence and observability are identical — they only differ in how you reach them.
 
-### Your first workflow
+### Your first bot
+
+There is no mandatory setup step — `cd` into the repository you want bots to
+work on and pick the entry point that matches your intent:
+
+| You want to… | Start here |
+|---|---|
+| **Run a bot** on this repo | `iterion bots list` → `iterion run <bot>` |
+| **Build your own bot** | `iterion bots create <slug>`, or the studio builder at `/bots/new` |
+| **Wire bots into CI / a forge** | [`docs/repo-scope.md`](docs/repo-scope.md) — connect a repo, then trigger on PRs and issues |
+| **Use a cloud instance** | `iterion remote login <url>` — see [`docs/cloud-cli.md`](docs/cloud-cli.md) |
+
+#### Run a bot from the catalog
+
+Iterion ships a fleet (see [Meet the legion](#meet-the-legion)) — the fastest
+way to see it work is to point one at your repo:
 
 ```bash
-# Scaffold a new project
-mkdir my-project && cd my-project
-iterion init
+cd /path/to/your/repo
+claude login                    # authenticate a backend (or set an API key)
 
-# Authenticate Claude Code (the scaffolded workflow's backend)
-claude login
-
-# Optional: copy .env.example to .env to override PROJECT_DIR
-cp .env.example .env
-
-# Validate the workflow
-iterion validate pr_refine_single_model_backend.bot
-
-# Run it
-iterion run pr_refine_single_model_backend.bot \
-  --var pr_title="Fix auth middleware" \
-  --var review_rules="No SQL injection, no hardcoded secrets" \
-  --var compliance_rules="Must satisfy the review rules and keep tests passing"
+iterion bots list               # what's available
+iterion run bots/review-pr/main.bot
 ```
 
-`iterion init` creates a complete PR refinement workflow (review → plan → compliance check → act → verify) that you can run immediately.
+#### Or create your own
+
+```bash
+iterion bots create --list-templates          # blank, code-reviewer, docs-writer, …
+iterion bots create my-bot --template code-reviewer
+
+$EDITOR bots/my-bot/main.bot                  # write the mission
+iterion validate bots/my-bot/main.bot
+iterion run bots/my-bot/main.bot
+```
+
+This scaffolds a complete bot bundle (`main.bot` + `manifest.yaml` + `README.md`
++ the resource directories) — so the bot is immediately discoverable by
+`iterion bots list`, editable in the studio, and dispatchable. The generated
+workflow is parsed and compiled before anything is written, so a scaffold never
+lands a broken bot.
+
+`iterion studio` gives you the same thing with a visual builder, a live run
+console, and a kanban board.
 
 ### Inspect results
 
@@ -232,7 +252,7 @@ All run data (events, artifacts, interactions) is stored in `.iterion/runs/`.
 
 Iterion accepts plain workflow sources as **`.bot`** files. Any other extension is rejected at the CLI, server, dispatcher, and studio boundaries.
 
-Bots can also be shipped as **`.botz`** — a tar.gz packaging the workflow with adjacent resources (Claude Code skills, reusable prompts, default attachments, manifest). Scaffold with `iterion bundle init`, build with `iterion bundle pack`, run with `iterion run my.botz`. See [docs/bundles.md](docs/bundles.md).
+Bots can also be shipped as **`.botz`** — a tar.gz packaging the workflow with adjacent resources (Claude Code skills, reusable prompts, default attachments, manifest). Scaffold with `iterion bots create`, build with `iterion bundle pack`, run with `iterion run my.botz`. See [docs/bundles.md](docs/bundles.md).
 
 ---
 

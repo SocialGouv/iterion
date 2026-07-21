@@ -173,10 +173,10 @@ output (documented as the user's choice).
 
 ## Consequences
 
-- **One self-contained binary.** `iterion run` works immediately
-  after `iterion init`; no `task privacy:install`, no environment
-  variables, no model downloads. Operators with offline machines
-  see no behavioural difference.
+- **One self-contained binary.** `iterion run` works straight out of
+  the install; no `task privacy:install`, no environment variables,
+  no model downloads. Operators with offline machines see no
+  behavioural difference.
 
 - **Hard-coded persistence-aware redaction.** Two specific tool
   names (`privacy_filter`, `privacy_unfilter`) are recognized in

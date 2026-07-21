@@ -53,7 +53,7 @@ For every platform row, walk every scenario column. Mark `✓` (pass), `✗` (fa
 
 ### 5. Run (workflow execution)
 
-- [ ] Open the `pr_refine_single_model_backend.bot` file scaffolded by `iterion init` (or any shipped workflow under `examples/`, e.g. `bots/feature-dev/main.bot`).
+- [ ] Open a `main.bot` scaffolded by `iterion bots create` (or any shipped workflow, e.g. `bots/feature-dev/main.bot`).
 - [ ] Click **Run** → live console renders events as they stream.
 - [ ] Scrubber: drag back and forth across iterations; per-iteration node detail loads.
 - [ ] Resume a paused run via the resume button — picks up from the checkpoint without re-running upstream.

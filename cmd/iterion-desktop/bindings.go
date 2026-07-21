@@ -535,13 +535,6 @@ func (a *App) PickProjectDirectory() (string, error) {
 	return dir, nil
 }
 
-// ScaffoldProject runs the same logic as `iterion init` against the given
-// directory. Used by the onboarding "Create new project here" flow.
-func (a *App) ScaffoldProject(dir string) error {
-	printer := cli.NewPrinter(cli.OutputJSON)
-	return cli.RunInit(cli.InitOptions{Dir: dir}, printer)
-}
-
 // ── Keychain bindings ────────────────────────────────────────────────────
 
 // GetKnownSecretKeys returns the canonical list of API key names the UI

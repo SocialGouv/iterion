@@ -74,7 +74,6 @@ describe("desktopBridge — desktop mode (mocked bindings)", () => {
             RemoveProject: vi.fn().mockResolvedValue(undefined),
             SwitchProject: vi.fn().mockResolvedValue(undefined),
             PickProjectDirectory: vi.fn().mockResolvedValue("/tmp/p"),
-            ScaffoldProject: vi.fn().mockResolvedValue(undefined),
             GetKnownSecretKeys: vi.fn().mockResolvedValue(["ANTHROPIC_API_KEY"]),
           },
         },

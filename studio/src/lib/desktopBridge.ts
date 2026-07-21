@@ -116,7 +116,6 @@ interface WailsBindings {
   CloseConnection: (id: string) => Promise<void>;
   GetOpenConnections: () => Promise<string[]>;
   PickProjectDirectory: () => Promise<string>;
-  ScaffoldProject: (dir: string) => Promise<void>;
   // Cloud connections (password + SSO auth).
   ConnectCloud: (cloudURL: string, email: string, password: string) => Promise<Project>;
   ConnectCloudSSO: (cloudURL: string, provider: string) => Promise<Project>;
@@ -236,7 +235,6 @@ export const desktop = {
   closeConnection: (id: string) => call("CloseConnection", id),
   getOpenConnections: () => call("GetOpenConnections"),
   pickProjectDirectory: () => call("PickProjectDirectory"),
-  scaffoldProject: (dir: string) => call("ScaffoldProject", dir),
 
   // Cloud connections
   connectCloud: (cloudURL: string, email: string, password: string) =>

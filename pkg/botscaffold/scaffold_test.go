@@ -24,11 +24,29 @@ func TestScaffold_Minimal(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Scaffold: %v", err)
 	}
-	if len(res.Files) != 3 {
-		t.Fatalf("Files = %v, want main.bot + manifest.yaml + README.md", res.Files)
+	// Every scaffolded bot ships the full .botz layout so `bundle pack`
+	// works on it as-is and authors have an obvious home for each
+	// resource kind.
+	want := []string{
+		"main.bot", "manifest.yaml", "README.md", ".gitignore",
+		filepath.Join("presets", "example.md"),
+		filepath.Join("skills", ".gitkeep"),
+		filepath.Join("prompts", ".gitkeep"),
+		filepath.Join("attachments", ".gitkeep"),
 	}
-	if _, err := os.Stat(filepath.Join(dir, "skills")); err != nil {
-		t.Errorf("skills/ dir missing: %v", err)
+	if len(res.Files) != len(want) {
+		t.Fatalf("Files = %v, want %d entries (%v)", res.Files, len(want), want)
+	}
+	for _, name := range want {
+		if _, err := os.Stat(filepath.Join(dir, name)); err != nil {
+			t.Errorf("%s missing: %v", name, err)
+		}
+	}
+	for _, sub := range bundleDirs {
+		info, err := os.Stat(filepath.Join(dir, sub))
+		if err != nil || !info.IsDir() {
+			t.Errorf("%s/ dir missing: %v", sub, err)
+		}
 	}
 	m, err := bundle.LoadManifest(filepath.Join(dir, "manifest.yaml"))
 	if err != nil || m == nil {

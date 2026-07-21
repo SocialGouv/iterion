@@ -160,8 +160,8 @@ func New(root string, opts ...StoreOption) (*FilesystemRunStore, error) {
 	if err := os.MkdirAll(filepath.Join(root, "runs"), dirPerm); err != nil {
 		return nil, fmt.Errorf("store: create root: %w", err)
 	}
-	// Best-effort: drop a self-ignoring .gitignore so the store dir is never
-	// accidentally committed even if the user skipped `iterion init`.
+	// Best-effort: drop a self-ignoring .gitignore so the store dir is
+	// never accidentally committed.
 	// Failures (read-only FS, permission, etc.) are non-fatal.
 	_ = ensureGitignore(root)
 	s := &FilesystemRunStore{

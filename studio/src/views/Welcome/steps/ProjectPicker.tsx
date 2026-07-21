@@ -11,17 +11,14 @@ interface Props {
 
 interface OnboardingProjectDesktop {
   pickProjectDirectory: () => Promise<string>;
-  scaffoldProject: (dir: string) => Promise<void>;
   addProjectSilently: (dir: string) => Promise<unknown>;
 }
 
 export async function selectOnboardingProject(
   bridge: OnboardingProjectDesktop,
-  scaffold: boolean,
 ): Promise<boolean> {
   const dir = await bridge.pickProjectDirectory();
   if (!dir) return false;
-  if (scaffold) await bridge.scaffoldProject(dir);
   await bridge.addProjectSilently(dir);
   return true;
 }
@@ -30,11 +27,11 @@ export default function ProjectPicker({ onNext }: Props) {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  const run = async (scaffold: boolean) => {
+  const run = async () => {
     setError(null);
     setBusy(true);
     try {
-      const selected = await selectOnboardingProject(desktop, scaffold);
+      const selected = await selectOnboardingProject(desktop);
       if (selected) onNext();
     } catch (err) {
       setError(errorMessage(err));
@@ -45,18 +42,17 @@ export default function ProjectPicker({ onNext }: Props) {
 
   return (
     <div className="max-w-xl flex flex-col gap-4">
-      <h2 className="text-lg font-semibold">Where is your iterion project?</h2>
+      <h2 className="text-lg font-semibold">
+        Which folder should iterion work in?
+      </h2>
       <p className="text-fg-subtle text-sm">
-        Iterion projects are folders containing one or more <code>.bot</code>{" "}
-        workflow files. Pick an existing one or create a new project (this
-        runs <code>iterion init</code> in the chosen folder).
+        Pick the repository or folder you want bots to work on — an empty one
+        is fine. You&rsquo;ll choose what to do with it next: run a bot from
+        the catalog, or create your own from the Bots view.
       </p>
       <div className="flex gap-3">
-        <Button onClick={() => run(false)} loading={busy} variant="primary">
-          Pick existing folder…
-        </Button>
-        <Button onClick={() => run(true)} loading={busy}>
-          Create new project…
+        <Button onClick={run} loading={busy} variant="primary">
+          Choose folder…
         </Button>
       </div>
       {error && (

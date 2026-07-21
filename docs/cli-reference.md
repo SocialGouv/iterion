@@ -9,14 +9,13 @@ This page maps every public top-level command in the current binary and document
 | Command | Purpose |
 |---|---|
 | `bench asymptote` | Build a workflow-quality stabilisation report from persisted runs. |
-| `bots` | Discover, install, and regenerate catalogue metadata for bots. |
-| `bundle` | Scaffold and pack deterministic `.botz` bundles. |
+| `bots` | Create bots, install published ones, and emit the catalogue. |
+| `bundle` | Pack a bundle source directory into a deterministic `.botz`. |
 | `completion` | Generate Bash, Zsh, Fish, or PowerShell completion. |
 | `diagram` | Render a workflow as Mermaid. |
 | `dispatch` | Poll a tracker and launch an eligible bot per issue. |
 | `fork` | Fork a run at a prior LLM turn. |
 | `import` | Convert a Claude Code workflow script into a draft `.bot`. |
-| `init` | Scaffold an Iterion project. |
 | `inspect` | Inspect local runs, executions, events, traces, tools, artifacts, and logs. |
 | `issue` | Manage the native kanban tracker and import forge issues. |
 | `marketplace` | Browse, submit, install, and uninstall local-registry bots/plugins. |
@@ -44,14 +43,9 @@ This page maps every public top-level command in the current binary and document
 
 ## Project and workflow commands
 
-### `iterion init`
-
-```bash
-iterion init
-iterion init my-project
-```
-
-Creates the PR-refinement example, `.env.example`, and `.gitignore` without overwriting existing files.
+There is no project-initialisation step: iterion works against any directory.
+To create a bot, see [`iterion bots create`](#iterion-bots); to attach a repo
+or a cloud instance, see [repo scope](repo-scope.md) and [cloud CLI](cloud-cli.md).
 
 ### `iterion validate`
 
@@ -75,11 +69,11 @@ iterion diagram workflow.bot --view full
 ### `iterion bundle`
 
 ```bash
-iterion bundle init my-bot
 iterion bundle pack my-bot
 iterion bundle pack my-bot --output dist/my-bot.botz --force
 ```
 
+`bundle` only packages. Create the source directory with `iterion bots create`.
 See [bundles](bundles.md) for the archive contract.
 
 ### `iterion import`
@@ -194,16 +188,29 @@ iterion runs prune --older-than 168h --keep-last 100
 
 Default retention deletes `finished`, `failed`, and `cancelled` runs older than 720 hours. `failed_resumable` requires explicit inclusion via `--status`. Only `<store-dir>/runs/` is touched; worktrees are not removed.
 
-## Bot discovery and extension distribution
+## Bot creation, discovery, and extension distribution
 
 ### `iterion bots`
 
 ```bash
+iterion bots create <slug> [--template <id>] [--dest bots]
+iterion bots create --list-templates
 iterion bots list
 iterion bots list --paths bots --paths examples --format markdown
 iterion bots install <git-url|path> [--path <bundle>] [--dest bots]
 iterion bots regen-catalog
 ```
+
+`bots create` scaffolds a bot bundle under `bots/<slug>` — `main.bot`, `manifest.yaml`, `README.md`, `.gitignore`, and the `skills/ prompts/ attachments/ presets/` layout — then refreshes the generated catalogue. It is the CLI half of the studio builder at `/bots/new`: both render through `pkg/botscaffold`, so a bot created either way is identical. The generated workflow is parsed **and** compiled before anything is written.
+
+| Flag | Meaning |
+|---|---|
+| `--template <id>` | Start from a gallery template (default `blank`). |
+| `--list-templates` | List available templates and exit. |
+| `--dest <dir>` | Parent directory for the bundle (default `bots`). |
+| `--display-name`, `--description`, `--instructions` | Pre-fill catalogue metadata and the agent's mission. |
+| `--model`, `--backend` | Pin instead of auto-detection. |
+| `--worktree`, `--sandbox` | Isolation dials; only override the template when passed explicitly. |
 
 `bots list` scans `bots` and `examples` by default and emits `json`, `markdown`, or a generated `skill`. Installs default to workspace `.botz/` and never run the bot. `regen-catalog` rebuilds Nexie's generated bot catalogue from manifests and `.iterion/bot-overrides.yaml`.
 

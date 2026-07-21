@@ -982,7 +982,6 @@ above is the standing baseline, not an open-work list).
 ## CLI Commands
 
 ```
-iterion init [dir]                      # Scaffold new project
 iterion validate <file.bot>            # Parse and validate workflow
 iterion import <workflow.js> [--out] [--name] [--dry-run]  # Lossy Claude-Code workflow-script → draft .bot (goja AST, zero execution; see docs/import.md)
 iterion run <file.bot> [flags]         # Execute workflow (--var, --recipe, --timeout, --store-dir, --merge-into, --branch-name, --compress, --max-cost-usd, --max-tokens, --max-duration, --max-iterations, --max-parallel-branches)
@@ -996,11 +995,12 @@ iterion report --run-id <id> [--store-dir] [--output]  # Generate chronological 
 iterion dispatch <config.yaml> [--port]  # Long-running dispatcher (tracker → workflow per issue)
 iterion schedule add|list|remove|run|install|uninstall|audit  # Cron recurring bots via the host crontab — no daemon; overlap policy + guard + tick audit (see docs/scheduling.md)
 iterion issue create|list|show|move|update|close|board  # Native kanban tracker
+iterion bots create <slug> [--template <id>] [--dest <dir>]  # Scaffold a bot bundle (CLI half of the studio builder /bots/new)
 iterion bots list [--paths <dir>] [--format json|markdown|skill]  # Discover .bot/.botz bundles (used by whats-next + dispatcher zero-config)
 iterion skill list|show|add|rm|import|export  # Local skill library (~/.iterion/skills + per-project); referenced by the DSL `skills:` field (see docs/skills-library.md)
 iterion marketplace list|submit|install|uninstall  # Hosted registry CLI — bot AND plugin entries (kind auto-detected at submit; list --kind filters; same <store-dir>/marketplace the studio reads)
 iterion bench asymptote [flags]         # Asymptote benchmark (see docs/asymptote-bench.md)
-iterion bundle init|pack                # Scaffold or pack a .botz bundle (see docs/bundles.md)
+iterion bundle pack                     # Pack a .botz bundle (create it with `bots create`; see docs/bundles.md)
 iterion sandbox doctor [file] [--strict] [--target auto|cloud|local]  # Diagnose host sandbox prerequisites; --strict validates a run's full config pre-flight (see docs/sandbox.md)
 iterion migrate to-cloud [flags]        # Migrate a local store into a cloud (Mongo + S3) backend
 iterion server [--port] [--store-dir]   # HTTP server (run console + studio), without the studio launcher

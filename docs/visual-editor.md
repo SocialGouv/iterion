@@ -21,6 +21,7 @@ See [cli-reference.md `#iterion-studio`](cli-reference.md#iterion-studio) for th
 
 ## What you get
 
+- **Bot builder (`/bots/new`)** — Guided creation of a new bot, from template gallery to first test run (see below)
 - **Canvas** — Drag-and-drop node graph with auto-layout, zoom, search, and keyboard shortcuts
 - **Node library** — Drag pre-built node types (agent, judge, router, human, tool, compute) onto the canvas
 - **Property editor** — Edit node properties, schemas, prompts, and edge conditions in a side panel
@@ -35,6 +36,37 @@ See [cli-reference.md `#iterion-studio`](cli-reference.md#iterion-studio) for th
 - **Run console** — Launch a workflow from the studio and watch events stream live
 
 This mode is the simplest way to design and iterate locally. If you want a packaged native window instead (no browser, OS-keychain credentials, auto-update), see the [Desktop App](desktop.md).
+
+## Creating a bot (`/bots/new`)
+
+The **New bot** button on the Bots view opens the guided builder — the
+recommended way to start a bot from nothing. It runs in two phases on a
+single page:
+
+1. **Template gallery** — pick a starting point (`blank`, `daily-digest`,
+   `code-reviewer`, `docs-writer`, `issue-triager`). Each pre-fills the
+   form; every field stays editable afterwards.
+2. **Form → create → test** — name the bot, write its mission, set the
+   optional dials (model/backend, worktree, sandbox, permission, budgets,
+   a suggested cron), then create it. An embedded test-run pane lets you
+   iterate without leaving the page. Drafts auto-save to local storage.
+
+Creating writes a real bundle to `<workdir>/bots/<slug>/` — `main.bot`,
+`manifest.yaml`, `README.md`, and the `skills/ prompts/ attachments/
+presets/` layout — and refreshes the generated bot catalogue, so the new
+bot is immediately discoverable, launchable, and dispatchable. The
+generated workflow is parsed **and** compiled and the manifest strictly
+decoded *before* anything lands on disk, so the builder cannot write a
+broken bundle.
+
+The CLI equivalent is `iterion bots create <slug> --template <id>`; both
+surfaces render through the same `pkg/botscaffold` engine, so a bot
+created either way is identical. See the
+[CLI reference](cli-reference.md#iterion-bots).
+
+> Local mode only. In cloud mode the builder is disabled (bots are
+> authored through git) and the view points you at the catalogue and
+> marketplace instead.
 
 ## Screenshots
 
