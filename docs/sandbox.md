@@ -1,9 +1,22 @@
 # iterion sandbox
 
 The iterion sandbox provides per-run isolation for coding agents and
-shell tool nodes via a Docker (or Podman) container. It is **opt-in**:
-workflows that don't declare `sandbox:` and runs that don't pass
-`--sandbox` execute exactly as they did before this feature shipped.
+shell tool nodes via a Docker (or Podman) container. It is
+**on by default**: at product entry points (`iterion run`, `resume`,
+the studio, the dispatcher) a workflow that declares no `sandbox:`
+block runs as `sandbox: auto` (devcontainer-aware, falling back to the
+published default image). Opting out is explicit and discouraged —
+`sandbox: none` in the workflow (flagged by the C128 warning
+diagnostic), `--sandbox none`, or `ITERION_SANDBOX_DEFAULT=none` —
+because an unsandboxed run executes with the host's credentials and
+filesystem. The ambient default degrades gracefully instead of
+failing: outside a git repository it is silently not applicable, and
+on a host with no container runtime the run proceeds unsandboxed with
+a visible `sandbox_skipped` event. An EXPLICIT sandbox request (CLI
+flag or workflow block) never degrades — it errors. (The cloud runner
+currently pins `ITERION_SANDBOX_OVERRIDE=none` — the runner pod is the
+isolation boundary there until the k8s sandbox path carries worktree
+git access and interactive channels end-to-end.)
 
 ## Quick start
 
@@ -306,7 +319,10 @@ iterion sandbox doctor                 # report driver + capabilities
 ### Environment / project config
 
 - `ITERION_SANDBOX_DEFAULT` — global default (`""`, `none`, or `auto`).
-  Lowest precedence. Workflows and CLI override.
+  Lowest precedence. Workflows and CLI override. When UNSET, product
+  entry points resolve it to `auto` (sandbox-by-default,
+  `runtime.ResolveGlobalSandboxDefault`); set `none` to restore the
+  historical opt-in behaviour machine-wide.
 - `ITERION_SANDBOX_DEFAULT_IMAGE` — image ref used by `sandbox: auto`
   when no `.devcontainer/devcontainer.json` is found. Falls back to
   `ghcr.io/socialgouv/iterion-sandbox-slim:<iterion-version>` when
@@ -331,7 +347,10 @@ iterion sandbox doctor                 # report driver + capabilities
 2. CLI `--sandbox` flag
 3. Workflow-level `sandbox:` declaration (DSL)
 4. `ITERION_SANDBOX_DEFAULT` env var
-5. Implicit `none` (no sandbox)
+5. Built-in `auto` at product entry points (sandbox-by-default;
+   degrades gracefully outside a git repo or without a container
+   runtime). Engines embedded without an explicit default (tests,
+   library use) stay neutral: no sandbox.
 
 The same chain applies to `host_state` via `--sandbox-host-state`,
 `sandbox.host_state:` in the workflow block, and

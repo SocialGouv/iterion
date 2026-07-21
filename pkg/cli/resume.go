@@ -203,6 +203,9 @@ func RunResumeWithFile(ctx context.Context, iterFile string, opts ResumeOptions,
 		runtime.WithWorkflowHash(wfHash),
 		runtime.WithFilePath(iterFile),
 		runtime.WithForceResume(opts.Force),
+		// Sandbox-by-default: resumed runs re-resolve their sandbox with
+		// the same global default as `iterion run`.
+		runtime.WithSandboxDefault(runtime.ResolveGlobalSandboxDefault()),
 		runtime.WithBundle(bundleHandle),
 		runtime.WithPreset(r.Preset),
 		// Wire the subbot runner, mirroring the run path (run.go). Without

@@ -52,21 +52,23 @@ export function pickAttachments(doc: IterDocument | null): AttachmentField[] {
   return doc.attachments?.fields ?? [];
 }
 
-/** isSandboxActive mirrors pkg/dsl/ir/sandbox.go SandboxSpec.IsActive:
- *  the workflow declares a sandbox block whose mode is "auto" or
- *  "inline". Absent block or mode: "none" → host runs the tools. */
+/** isSandboxActive mirrors the engine's pickMode default: sandboxing is
+ *  the DEFAULT, so an ABSENT sandbox block resolves to `auto` and counts
+ *  as active. Only an explicit `sandbox: none` (or an unknown mode)
+ *  runs the tools on the host. */
 export function isSandboxActive(doc: IterDocument | null): boolean {
   const sb = doc?.workflows?.[0]?.sandbox;
-  if (!sb) return false;
+  if (!sb) return true;
   const m = (sb.mode ?? "").toLowerCase();
-  return m === "auto" || m === "inline";
+  return m === "auto" || m === "inline" || m === "";
 }
 
-/** sandboxModeLabel returns "auto" / "inline" / "none" / "" — the empty
- *  string when no block is declared. Used by the SandboxBadge so the
+/** sandboxModeLabel returns "auto" / "inline" / "none" /
+ *  "auto (default)" — the latter when no block is declared and the
+ *  engine's sandbox-by-default applies. Used by the SandboxBadge so the
  *  badge label tracks the IR's view of the workflow without re-parsing. */
 export function sandboxModeLabel(doc: IterDocument | null): string {
   const sb = doc?.workflows?.[0]?.sandbox;
-  if (!sb) return "";
+  if (!sb) return "auto (default)";
   return (sb.mode ?? "").toLowerCase();
 }
