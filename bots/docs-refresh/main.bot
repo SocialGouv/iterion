@@ -1118,22 +1118,27 @@ print(json.dumps({
 ## All inputs flow via env vars (JSON-encoded for arrays); the
 ## tool's argv is empty.
 tool build_manifest:
-  command: `WS={{input.workspace_dir}} DOC_FILES={{input.doc_files}} CLI_COMMANDS={{input.cli_commands}} CLI_FLAGS={{input.cli_flags}} DIAG_CODES={{input.diagnostic_codes}} CODE_GLOBS={{input.code_scope_globs}} MAX_CANDIDATES={{input.max_drift_candidates}} MAX_CHUNK_DOCS={{input.max_review_chunk_docs}} python3 -c "
-import os, json, re, glob, subprocess
+  command: `WS={{input.workspace_dir}} CODE_GLOBS={{input.code_scope_globs}} MAX_CANDIDATES={{input.max_drift_candidates}} MAX_CHUNK_DOCS={{input.max_review_chunk_docs}} python3 -c "
+import os, json, re, glob, subprocess, sys
 ws = os.environ['WS']
 os.chdir(ws)
-def jload(name, default):
-    raw = os.environ.get(name, '')
-    if not raw:
-        return default
-    try:
-        return json.loads(raw)
-    except json.JSONDecodeError:
-        return default
-doc_files = jload('DOC_FILES', [])
-cli_commands = set(jload('CLI_COMMANDS', []))
-cli_flags = set(jload('CLI_FLAGS', []))
-diag_codes = set(jload('DIAG_CODES', []))
+## List inputs ride argv after section markers (--docs/--cli/--flags/
+## --diag): the engine substitutes an all-string list as space-joined
+## escaped words — argv semantics. In an env assignment the second
+## element would run as a command (exit 127). Same idiom as
+## update_audit_cache's sys.argv tail.
+buckets = {'--docs': [], '--cli': [], '--flags': [], '--diag': []}
+cur = None
+for a in sys.argv[1:]:
+    if a in buckets:
+        cur = a
+        continue
+    if cur is not None:
+        buckets[cur].append(a)
+doc_files = buckets['--docs']
+cli_commands = set(buckets['--cli'])
+cli_flags = set(buckets['--flags'])
+diag_codes = set(buckets['--diag'])
 code_globs = [g.strip() for g in os.environ.get('CODE_GLOBS', '').split(',') if g.strip()]
 try:
     max_candidates = int(os.environ.get('MAX_CANDIDATES', '150'))
@@ -1492,7 +1497,7 @@ print(json.dumps({
     'max_review_chunk_docs': max_chunk_docs,
     'verified_pairs': sorted({a['doc'] + '::' + str(a.get('value','')) for a in verified}),
 }))
-"`
+" --docs {{input.doc_files}} --cli {{input.cli_commands}} --flags {{input.cli_flags}} --diag {{input.diagnostic_codes}}`
   input: build_manifest_input
   output: build_manifest_output
 

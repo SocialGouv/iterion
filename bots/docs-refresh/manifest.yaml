@@ -1,7 +1,15 @@
 name: docs-refresh
 display_name: Doki
 icon: 📚
-version: 2.2.0
+version: 2.2.1
+## 2.2.1 — fix build_manifest list inputs: pass doc_files/cli_commands/
+## cli_flags/diagnostic_codes as argv section markers instead of env
+## assignments. The engine substitutes an all-string list as
+## space-joined escaped words, so `DOC_FILES={{input.doc_files}}` made
+## the shell execute the second filename (exit 127) — a regression
+## introduced by the 55d7170e6 raw-interpolation removal, observed on
+## the first repo-targeted cloud dogfood (run 019f86ac). Same argv
+## idiom as update_audit_cache.
 ## 2.2.0 — PR finalization tail (opt-in, feature-dev verbatim). When
 ## open_mr=true, after the run finishes (converged or max_passes
 ## exhausted with banked commits) a deterministic forge_auth_probe
