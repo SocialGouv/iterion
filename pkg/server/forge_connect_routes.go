@@ -337,21 +337,42 @@ func (s *Server) handleForgeGitHubAppCallback(w http.ResponseWriter, r *http.Req
 				httpError(w, http.StatusBadGateway, "could not verify installation ownership: %v", verr)
 				return
 			}
-		} else if s.logger != nil {
-			// Opt-in hardening not configured: the shared-App install path
-			// cannot verify ownership. Log loudly so operators enable it
-			// (ITERION_FORGE_GITHUB_APP_CLIENT_ID/_CLIENT_SECRET + "Request
-			// user authorization during installation" on the App).
-			s.logger.Warn("forge: github-app install accepted WITHOUT installation-ownership verification (shared platform app, no user-auth client creds) — set ITERION_FORGE_GITHUB_APP_CLIENT_ID/_CLIENT_SECRET to close the installation_id IDOR")
+		} else {
+			// FAIL CLOSED. A shared App's private key can mint a token for ANY
+			// installation, and installation_id is an enumerable integer taken
+			// verbatim from this callback — so without ownership verification an
+			// attacker substitutes a victim org's id and walks away with a
+			// connection that mints tokens against their repos. Accepting the
+			// install with a warning left that open precisely for the
+			// configuration a PUBLIC branded App would run in.
+			if s.logger != nil {
+				s.logger.Error("forge: refused a github-app install — shared platform app without user-auth client creds cannot verify installation ownership (installation_id IDOR)")
+			}
+			httpError(w, http.StatusPreconditionFailed,
+				"this instance's shared GitHub App cannot verify installation ownership, so the install was refused. Set ITERION_FORGE_GITHUB_APP_CLIENT_ID and ITERION_FORGE_GITHUB_APP_CLIENT_SECRET, and enable \"Request user authorization (OAuth) during installation\" on the App")
+			return
 		}
 	}
 
 	now := time.Now().UTC()
-	// Least-privilege: the initial connect-time token carries only iterion's
-	// minimal permission set (no repositories scope yet — none provisioned;
-	// the refresh worker re-scopes to the provisioned repo set thereafter).
+	// Capture what the owner actually APPROVED, BEFORE minting: the mint must
+	// ask only for permissions that exist (requesting a missing one fails the
+	// whole call), and reading it first means even this FIRST token carries the
+	// delivery grants when they were approved. A short run can finish on this
+	// token alone, so narrowing it here and widening only at the next refresh
+	// would leave exactly the gap this closes.
+	// Best-effort: an unknown grant set falls back to the historical baseline.
+	var granted map[string]string
+	if inst, ierr := forgegithub.InstallationInfo(r.Context(), s.forgeHTTPClient(),
+		forgegithub.APIBaseFor(base), cfg, installationID, now); ierr == nil {
+		granted = inst.Permissions
+	} else if s.logger != nil {
+		s.logger.Warn("forge: read installation %d permissions at connect: %v", installationID, ierr)
+	}
+	// No repositories scope yet — none provisioned; the refresh worker
+	// re-scopes to the provisioned repo set thereafter.
 	tok, exp, err := forgegithub.MintInstallationToken(r.Context(), s.forgeHTTPClient(), forgegithub.APIBaseFor(base), cfg, installationID, now,
-		&forgegithub.InstallationTokenOptions{Permissions: forgegithub.RuntimeInstallationPermissions()})
+		&forgegithub.InstallationTokenOptions{Permissions: forgegithub.RuntimePermissionsFor(granted)})
 	if err != nil {
 		httpError(w, http.StatusBadGateway, "could not mint installation token: %v", err)
 		return
@@ -363,18 +384,6 @@ func (s *Server) handleForgeGitHubAppCallback(w http.ResponseWriter, r *http.Req
 	if err != nil {
 		httpError(w, http.StatusInternalServerError, "seal token: %v", err)
 		return
-	}
-	// Capture what the owner actually APPROVED at install. The mint reads it
-	// to ask only for permissions that exist (asking for a missing one fails
-	// the whole call), so recording it here is what lets an App created with
-	// delivery permissions and one created without share a single code path.
-	// Best-effort: an unknown grant set falls back to the historical baseline.
-	var granted map[string]string
-	if inst, ierr := forgegithub.InstallationInfo(r.Context(), s.forgeHTTPClient(),
-		forgegithub.APIBaseFor(base), cfg, installationID, time.Now().UTC()); ierr == nil {
-		granted = inst.Permissions
-	} else if s.logger != nil {
-		s.logger.Warn("forge: read installation %d permissions at connect: %v", installationID, ierr)
 	}
 	conn := forge.Connection{
 		ID: connID, TenantID: pending.TenantID, Provider: forge.ProviderGitHub, Kind: forge.KindGitHubApp,
