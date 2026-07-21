@@ -58,22 +58,27 @@ export function WizardForm({
     setVisited(new Set([0]));
   }, [initial]);
 
+  // Publish the current answers to the parent AFTER commit — never from
+  // inside a setState updater (that runs during render and triggers
+  // React's "Cannot update a component while rendering a different
+  // component" warning, which can drop the update). Verdict buttons live
+  // outside the wizard in schema-driven human gates and read this via
+  // onAnswerChange; firing on mount also publishes the defaults so
+  // clicking a verdict without first toggling a preselected field still
+  // submits the visible selection.
+  useEffect(() => {
+    onAnswerChange?.(answers);
+  }, [answers, onAnswerChange]);
+
   const total = spec.questions.length;
   const useWizard =
     mode === "wizard" || (mode === "auto" && total >= 2);
   const single = total === 1;
   const submitLabel = spec.submitLabel ?? "Send";
 
-  const setOne = useCallback(
-    (id: string, value: string | string[]) => {
-      setAnswers((prev) => {
-        const next = { ...prev, [id]: value };
-        if (onAnswerChange) onAnswerChange(next);
-        return next;
-      });
-    },
-    [onAnswerChange],
-  );
+  const setOne = useCallback((id: string, value: string | string[]) => {
+    setAnswers((prev) => ({ ...prev, [id]: value }));
+  }, []);
 
   const submit = () => {
     if (busy || !isFormValid(spec, answers)) return;
