@@ -37,6 +37,8 @@ func (s *Store) Create(in Issue) (created *Issue, err error) {
 	if err := s.board.ValidateFieldValues(in.Fields); err != nil {
 		return nil, err
 	}
+	in.Blockers = NormalizeBlockers(in.Blockers)
+	in.ParentID = strings.TrimSpace(in.ParentID)
 
 	if in.ID == "" {
 		in.ID = "native:" + uuid.NewString()
@@ -45,6 +47,13 @@ func (s *Store) Create(in Issue) (created *Issue, err error) {
 	}
 	if _, exists := s.index[in.ID]; exists {
 		return nil, fmt.Errorf("issue: id %q already exists", in.ID)
+	}
+	if in.ParentID == in.ID {
+		return nil, errors.New("issue: parent_id cannot be self")
+	}
+	// Cycle check once the final id is known (catches self-ref + A→B→A).
+	if err := s.validateBlockersLocked(in.ID, in.Blockers); err != nil {
+		return nil, err
 	}
 	now := time.Now().UTC()
 	in.CreatedAt = now
@@ -59,6 +68,15 @@ func (s *Store) Create(in Issue) (created *Issue, err error) {
 		Payload: map[string]any{"state": in.State, "title": in.Title},
 	}); err != nil {
 		return nil, err
+	}
+	if len(in.Blockers) > 0 {
+		if err := s.emitPostCommitEvent(Event{
+			Type:    EvtIssueBlockersUpdated,
+			IssueID: in.ID,
+			Payload: map[string]any{"blockers": append([]string(nil), in.Blockers...)},
+		}); err != nil {
+			return nil, err
+		}
 	}
 	clone := in
 	return &clone, nil
@@ -177,6 +195,9 @@ type Patch struct {
 	Priority *int
 	Assignee *string
 	Blockers *[]string
+	// ParentID, when non-nil, sets the planner provenance pointer (empty
+	// string clears it). Distinct from Blockers.
+	ParentID *string
 	// Fields is merged into the issue's Fields. A nil value deletes the key.
 	Fields map[string]any
 	// Bot, when non-nil, sets the per-ticket bot override (empty string
@@ -226,9 +247,23 @@ func (s *Store) Update(id string, p Patch) (updated *Issue, err error) {
 		iss.Assignee = *p.Assignee
 		changed = append(changed, "assignee")
 	}
+	if p.ParentID != nil && *p.ParentID != iss.ParentID {
+		pid := strings.TrimSpace(*p.ParentID)
+		if pid == id {
+			return nil, errors.New("issue: parent_id cannot be self")
+		}
+		iss.ParentID = pid
+		changed = append(changed, "parent_id")
+	}
+	blockersChanged := false
 	if p.Blockers != nil {
-		iss.Blockers = append([]string(nil), (*p.Blockers)...)
+		next := NormalizeBlockers(*p.Blockers)
+		if err := s.validateBlockersLocked(id, next); err != nil {
+			return nil, err
+		}
+		iss.Blockers = next
 		changed = append(changed, "blockers")
+		blockersChanged = true
 	}
 	if len(p.Fields) > 0 {
 		merged := map[string]any{}
@@ -283,11 +318,23 @@ func (s *Store) Update(id string, p Patch) (updated *Issue, err error) {
 	}); err != nil {
 		return nil, err
 	}
+	if blockersChanged {
+		if err := s.emitPostCommitEvent(Event{
+			Type:    EvtIssueBlockersUpdated,
+			IssueID: iss.ID,
+			Payload: map[string]any{"blockers": append([]string(nil), iss.Blockers...)},
+		}); err != nil {
+			return nil, err
+		}
+	}
 	return iss, nil
 }
 
 // SetState transitions an issue, validating against the board. Returns
-// tracker.ErrTransitionRejected if newState is unknown.
+// tracker.ErrTransitionRejected if newState is unknown. When the new
+// state is StateDone, dependents parked in StateWaitingDeps whose hard
+// blockers are now all satisfied are auto-promoted (default → backlog,
+// or → ready when bot_args.auto_ready is set) and emit issue_unblocked.
 func (s *Store) SetState(id, newState string) (updated *Issue, err error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -316,7 +363,100 @@ func (s *Store) SetState(id, newState string) (updated *Issue, err error) {
 	}); err != nil {
 		return nil, err
 	}
+	if newState == StateDone {
+		// Best-effort: a failed auto-promote must not roll back the
+		// successful transition that just committed.
+		_ = s.promoteUnblockedDependentsLocked(id)
+	}
 	return iss, nil
+}
+
+// validateBlockersLocked rejects cycles against the in-memory index. Caller
+// must hold s.mu. Uses a locked IssueGetter so Get is not re-entered.
+func (s *Store) validateBlockersLocked(id string, blockers []string) error {
+	return ValidateBlockers(lockedIssueGetter{s: s}, id, blockers)
+}
+
+// promoteUnblockedDependentsLocked walks every issue that lists closedID as
+// a blocker. Those currently in StateWaitingDeps with all blockers now
+// satisfied are moved to UnblockTarget and emit EvtIssueUnblocked. Caller
+// holds s.mu.
+func (s *Store) promoteUnblockedDependentsLocked(closedID string) error {
+	if closedID == "" || s.board.StateByName(StateWaitingDeps) == nil {
+		return nil
+	}
+	// Snapshot IDs first — promote mutates the index.
+	var candidates []string
+	for id, iss := range s.index {
+		if iss == nil || iss.State != StateWaitingDeps {
+			continue
+		}
+		for _, b := range iss.Blockers {
+			if b == closedID {
+				candidates = append(candidates, id)
+				break
+			}
+		}
+	}
+	g := lockedIssueGetter{s: s}
+	for _, id := range candidates {
+		iss := s.index[id]
+		if iss == nil || iss.State != StateWaitingDeps {
+			continue
+		}
+		ok, _ := BlockersSatisfiedForIssue(g, iss)
+		if !ok {
+			continue
+		}
+		target := UnblockTarget(s.board, iss)
+		if target == "" || target == iss.State {
+			continue
+		}
+		if s.board.StateByName(target) == nil {
+			continue
+		}
+		from := iss.State
+		// Mutate a clone then write — index holds shared pointers.
+		next := cloneIssue(iss)
+		next.State = target
+		next.UpdatedAt = time.Now().UTC()
+		if err := s.writeIssueLocked(next); err != nil {
+			return err
+		}
+		s.index[id] = cloneIssue(next)
+		if err := s.emitPostCommitEvent(Event{
+			Type:    EvtIssueUnblocked,
+			IssueID: id,
+			Payload: map[string]any{
+				"from":           from,
+				"to":             target,
+				"closed_blocker": closedID,
+			},
+		}); err != nil {
+			return err
+		}
+		// Also emit a state-changed for consumers that only watch that type.
+		if err := s.emitPostCommitEvent(Event{
+			Type:    EvtIssueState,
+			IssueID: id,
+			Payload: map[string]any{"from": from, "to": target, "reason": "unblocked"},
+		}); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// lockedIssueGetter implements IssueGetter using the store's index without
+// taking the mutex — only safe while the caller already holds s.mu.
+type lockedIssueGetter struct{ s *Store }
+
+func (g lockedIssueGetter) Get(id string) (*Issue, error) {
+	iss, ok := g.s.index[id]
+	if !ok || iss == nil {
+		return nil, tracker.ErrNotFound
+	}
+	return cloneIssue(iss), nil
 }
 
 // Delete removes the issue file and emits an issue_deleted event.

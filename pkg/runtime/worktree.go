@@ -191,6 +191,39 @@ func resolveWorktreeGitDir(repoRoot, wtPath string) string {
 	return filepath.Join(repoRoot, ".git", "worktrees", filepath.Base(wtPath))
 }
 
+// checkWorktreeLinkage verifies that a linked-worktree workspace still
+// resolves to a live gitdir: workDir's `.git` pointer file must name an
+// existing directory. When it doesn't, every git command in the workspace
+// fails ("fatal: not a git repository: <gitdir>") and nodes read the
+// broken workspace as "no repo" — a wrong answer, not a visible failure —
+// so callers must refuse to execute there.
+//
+// Only the definitively-severed shape returns an error. A missing
+// workspace, a `.git` directory (main checkout), or an unreadable/
+// non-pointer `.git` all return nil so their existing failure modes stay
+// unchanged.
+func checkWorktreeLinkage(workDir string) error {
+	if workDir == "" {
+		return nil
+	}
+	pointer, err := os.ReadFile(filepath.Join(workDir, ".git"))
+	if err != nil {
+		return nil
+	}
+	rest, ok := strings.CutPrefix(strings.TrimSpace(string(pointer)), "gitdir:")
+	if !ok {
+		return nil
+	}
+	gitDir := strings.TrimSpace(rest)
+	if !filepath.IsAbs(gitDir) {
+		gitDir = filepath.Join(workDir, gitDir)
+	}
+	if _, statErr := os.Stat(gitDir); statErr == nil {
+		return nil
+	}
+	return fmt.Errorf("workspace %s is a git worktree whose gitdir %s no longer exists — the repository that registered it is gone (on a cloud runner the per-run clone is recycled between queue deliveries), so git cannot work there; re-launch the run", workDir, gitDir)
+}
+
 // finalizeOptions controls the post-run worktree promotion. All fields
 // are optional; sensible defaults apply when empty.
 type finalizeOptions struct {

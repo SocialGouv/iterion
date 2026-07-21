@@ -77,13 +77,22 @@ Approximating this from a prompt requires a cron, a state machine, and a place t
 
 ### 9. Per-run sandbox isolation
 
-`sandbox: auto` runs every claude_code and tool node inside a long-lived container that bind-mounts the worktree at `/workspace`, with an HTTP CONNECT proxy enforcing a network allowlist. See [sandbox.md](sandbox.md).
+`sandbox: auto` runs supported LLM/tool execution inside a long-lived container.
+Local Docker/Podman normally bind-mounts the worktree at the same absolute path
+as the host (an explicit `workspace_folder` may choose `/workspace`); Kubernetes
+copies it to `/workspace`. Sandboxing is opt-in, and an active sandbox's network
+mode is `open` by default. Select `network: allowlist` or `denylist` when the
+CONNECT-proxy boundary is required. See [sandbox.md](sandbox.md).
 
 A prompt orchestrator running on your laptop has the full filesystem and the full network. That's fine for personal use, not fine for unattended runs you might come back to having destroyed something.
 
 ### 10. Backend portability
 
-The same `.bot` runs on `claude_code`, `codex`, or the in-process `claw` backend (which itself talks Anthropic, OpenAI, Bedrock, Vertex…). Swapping a model family is a one-line edit. See [backends.md](backends.md) and [delegation.md](delegation.md).
+The same `.bot` can run on the in-process `claw` backend, Claude Code, or the
+explicit Kimi Code and Grok Build CLI-agent backends. `claw` routes among
+provider models; launch-time selectors can retarget node groups without editing
+the source. The Codex delegate remains only as a deprecated compatibility path.
+See [backends.md](backends.md) and [delegation.md](delegation.md).
 
 A prompt-orchestrator is shaped to one host agent's idioms. Porting it to another is a rewrite.
 
@@ -101,9 +110,16 @@ Any **yes** → write a `.bot`. All **no** → a Claude Code session with sub-ag
 
 ## The hybrid path
 
-The choice isn't binary. Iterion *welcomes* dynamic sub-agent orchestration **inside** a node — `backend: claude_code` lets the executing agent decide internally which sub-agents to spawn via its Task tool, which files to read, which commands to run. The structural envelope (the DAG, the budget, the schemas, the checkpoint, the sandbox) wraps a freely-orchestrating interior.
+The choice isn't binary. Iterion *welcomes* dynamic sub-agent orchestration **inside** a node — `backend: claude_code` lets the executing agent decide internally which sub-agents to spawn, which files to read, and which commands to run. The structural envelope (graph, budget, schemas, checkpoint, worktree, permissions, and optional sandbox) wraps a freely-orchestrating interior.
 
-In practice most non-trivial Iterion workflows look exactly like this: a small graph of structurally-pinned nodes (plan, implement, judge, fix) whose implementation work each delegates to a Claude Code session that itself dispatches sub-agents as it sees fit. You get the operational guarantees at the outer layer and the creative flexibility at the inner one. The tradeoff this page describes only bites if you try to run the *whole thing* — including the boundaries between phases — as one undifferentiated prompt loop.
+The maintained improvement fleet now leans especially hard into that hybrid: a
+small graph places deterministic manifest, verification, scope, and termination
+gates around one capable adaptive campaign agent. Other bots still use several
+specialized nodes when their boundaries add value. In both shapes, Iterion owns
+the durable outer contract while the agent keeps creative freedom inside the
+node. The tradeoff on this page only bites when the *whole* operation — including
+budgets, continuation, and phase boundaries — is left to one undifferentiated
+prompt loop.
 
 ## See also
 

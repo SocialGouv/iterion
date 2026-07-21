@@ -34,10 +34,11 @@ interface Props {
   open: boolean;
   onOpenChange: (open: boolean) => void;
   onCreated: () => void;
-  // When set, the dialog edits this existing (Backlog / ready-but-unlaunched)
-  // ticket instead of creating a new one: the form pre-fills from the card
-  // and Save PATCHes it. The ready-state stays under the “→ Todo” / “→ Backlog” buttons,
-  // so the "Ready to run" checkbox is hidden in edit mode.
+  // When set, the dialog edits this existing (not-yet-run Todo, or failed
+  // Closed) ticket instead of creating a new one: the form pre-fills from the
+  // card and Save PATCHes it. The ready-state stays under the card's Mark
+  // ready / Unmark buttons, so the "Ready to run" checkbox is hidden in edit
+  // mode.
   editTask?: PipelineBoardCard;
 }
 
@@ -131,6 +132,10 @@ function AddTaskDialogContent({
   const [priority, setPriority] = useState(editTask?.priority ?? 0);
   const [botArgs, setBotArgs] = useState<Record<string, string>>(() =>
     coerceEntryInput(editTask?.entry_input),
+  );
+  // Hard deps: native issue IDs that must reach done before this ticket launches.
+  const [blockersText, setBlockersText] = useState(() =>
+    (editTask?.blockers ?? []).map((b) => b.id).join("\n"),
   );
   const [start, setStart] = useState(false);
   // Open Advanced by default when editing so the title / description / labels /
@@ -276,6 +281,10 @@ function AddTaskDialogContent({
       return;
     }
     const external = resolveExternalForSubmit();
+    const blockers = blockersText
+      .split(/[\n,]+/)
+      .map((s) => s.trim())
+      .filter(Boolean);
     if (isEdit && editTask?.issue_id) {
       const patch: PipelineTaskPatch = {
         bot: botName.trim(),
@@ -285,6 +294,7 @@ function AddTaskDialogContent({
         priority,
         bot_args: botArgs,
         ...(external ? { external } : {}),
+        blockers,
       };
       const result = await action.run(() =>
         updatePipelineTask(editTask.issue_id as string, patch),
@@ -301,6 +311,7 @@ function AddTaskDialogContent({
       ...(labels.length > 0 ? { labels } : {}),
       ...(priority !== 0 ? { priority } : {}),
       ...(Object.keys(botArgs).length > 0 ? { bot_args: botArgs } : {}),
+      ...(blockers.length > 0 ? { blockers } : {}),
       ...(start && botEnabled ? { start: true } : {}),
       ...(external ? { external } : {}),
     };
@@ -317,7 +328,7 @@ function AddTaskDialogContent({
       title={isEdit ? "Edit ticket" : "Add pipeline task"}
       description={
         isEdit
-          ? "Edit this backlog ticket before it runs. Technical parameters sit under Advanced."
+          ? "Edit this Opened ticket before it runs. Technical parameters sit under Advanced."
           : "Pick the pipeline to run and its input. Technical parameters sit under Advanced."
       }
       widthClass="max-w-2xl"
@@ -351,7 +362,7 @@ function AddTaskDialogContent({
             disabled={!canSubmit}
             onClick={() => void submit()}
           >
-            {isEdit ? "Save" : start && botEnabled ? "Add to Todo" : "Add to Backlog"}
+            {isEdit ? "Save" : start && botEnabled ? "Add ready to Opened" : "Add to Opened"}
           </Button>
         </>
       }
@@ -497,16 +508,52 @@ function AddTaskDialogContent({
                     setPriority(Number(event.target.value) || 0)
                   }
                   min={0}
-                  title="Higher numbers launch first from Todo; equal priorities go oldest-first. 0 = unprioritized."
+                  title="Higher numbers launch first once ready; equal priorities go oldest-first. 0 = unprioritized."
                 />
                 <span className="mt-1 block text-micro text-fg-subtle">
-                  Higher launches first from Todo.
+                  Higher launches first once ready.
+                </span>
+              </label>
+
+              <label className="block">
+                <span className="mb-1 block text-xs text-fg-muted">
+                  Blockers (hard deps)
+                </span>
+                <Textarea
+                  value={blockersText}
+                  onChange={(event) => setBlockersText(event.target.value)}
+                  placeholder={"native:…\nnative:…"}
+                  rows={3}
+                  title="Issue IDs that must reach Done before this ticket can launch. One per line or comma-separated."
+                />
+                <span className="mt-1 block text-micro text-fg-subtle">
+                  Ticket IDs that must finish (state <code>done</code>) before
+                  this one can launch. Cycles are rejected. Open blockers park
+                  the ticket in Waiting on deps instead of Ready.
                 </span>
               </label>
             </div>
           )}
         </div>
 
+
+        {!isEdit && (
+          <div className="border-t border-border-default pt-4">
+            <Checkbox
+              checked={start}
+              onChange={(event) => setStart(event.target.checked)}
+              disabled={!botName || !botEnabled}
+              label="Ready to run"
+              help={
+                !botName
+                  ? "Pick a pipeline first."
+                  : botEnabled
+                    ? "Marks the ticket ready — it starts automatically when a concurrency slot frees. Otherwise it stays in Opened as a draft until you Mark ready."
+                    : "This bot is disabled. The ticket stays in Opened as a draft; enable the bot, then Mark ready to run."
+              }
+            />
+          </div>
+        )}
       </div>
     </Dialog>
   );

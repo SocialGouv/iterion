@@ -129,6 +129,18 @@ effect choice (promote-card vs direct launch)":
   (wired via `SetEventPublisher(coord.Bus())`); a direct-mode subscription
   matching `Source: run` fires the downstream bot. The `Actor` carries the
   upstream bot id so a chain can key on "after feature-dev finishes".
+  *2026-07-21 update (web-notifications work):* the event construction is
+  now the shared `trigger.BuildRunOutcome` (kind derivation, tenant+owner
+  enrichment, per-episode ID), **cloud runner pods publish the same
+  outcome events** onto the NATSBus (`Runner.fireOutcomeEvent` — closing
+  the "runner-pod runs are invisible to the spine" gap), and the NATSBus
+  is wired for real in `iterion server`/`runner` (`cfg.EventsBus`,
+  injected into the trigger coordinator so every consumer rides ONE bus).
+  First cloud consumer: the `usernotify` dispatcher (browser web push on
+  `run.paused` + terminals, queue group `usernotify` —
+  [docs/notifications.md](../notifications.md)). The evaluator itself
+  still subscribes on the coordinator's bus (local); pointing a cloud
+  evaluator at the NATSBus stays a staged follow-on.
 - **Scheduled** — DONE: `trigger.Scheduler` ticks schedule-kind subscriptions
   on their `Cron` and fires them via the launcher, scoped to the local tenant
   "" (no-op in cloud, where cloudsched's CAS ticker stays authoritative for

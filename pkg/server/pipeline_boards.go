@@ -14,11 +14,13 @@ import (
 // second mutable store — cards are positioned by persisted run state, so
 // there is no drag-and-drop. See docs/native-tracker.md + ADR-074.
 const (
-	pipelineColumnBacklog    = "backlog"
-	pipelineColumnTodo       = "todo"
+	// Three fixed lanes. "opened" folds backlog + ready staging (a per-card
+	// `ready` badge distinguishes prepared-but-not-ready from launch-eligible);
+	// "closed" folds done + failed (per-card success/failed). IDs are the wire
+	// contract (filters, tests).
+	pipelineColumnOpened     = "opened"
 	pipelineColumnInProgress = "in_progress"
-	pipelineColumnDone       = "done"
-	pipelineColumnFailed     = "failed"
+	pipelineColumnClosed     = "closed"
 
 	pipelineTreeMaxDepth = 20
 	pipelineTreeMaxCards = 500
@@ -40,6 +42,17 @@ func (s *Server) registerPipelineBoardRoutes() {
 	s.mux.Handle("POST /api/v1/pipeline-board/tasks", s.requireAuth(http.HandlerFunc(s.handlePipelineBoardTaskCreate)))
 	s.mux.Handle("POST /api/v1/pipeline-board/tasks/{id}/ready", s.requireAuth(http.HandlerFunc(s.handlePipelineBoardTaskReady)))
 	s.mux.Handle("PATCH /api/v1/pipeline-board/tasks/{id}", s.requireAuth(http.HandlerFunc(s.handlePipelineBoardTaskUpdate)))
+	// Ticket lifecycle beyond the ready toggle.
+	s.mux.Handle("DELETE /api/v1/pipeline-board/tasks/{id}", s.requireAuth(http.HandlerFunc(s.handlePipelineBoardTaskDelete)))
+	s.mux.Handle("POST /api/v1/pipeline-board/tasks/{id}/reset", s.requireAuth(http.HandlerFunc(s.handlePipelineBoardTaskReset)))
+	s.mux.Handle("POST /api/v1/pipeline-board/tasks/{id}/launch", s.requireAuth(http.HandlerFunc(s.handlePipelineBoardTaskLaunch)))
+	// Bulk + graph (multi-pipeline production ops).
+	s.mux.Handle("POST /api/v1/pipeline-board/bulk/ready", s.requireAuth(http.HandlerFunc(s.handlePipelineBoardBulkReady)))
+	s.mux.Handle("POST /api/v1/pipeline-board/bulk/delete", s.requireAuth(http.HandlerFunc(s.handlePipelineBoardBulkDelete)))
+	s.mux.Handle("POST /api/v1/pipeline-board/bulk/recompute-deps", s.requireAuth(http.HandlerFunc(s.handlePipelineBoardRecomputeDeps)))
+	s.mux.Handle("GET /api/v1/pipeline-board/tasks/{id}/dependency-graph", s.requireAuth(http.HandlerFunc(s.handlePipelineBoardDependencyGraph)))
+	// Also under /api/v1/native for CLI/MCP consumers that already use that prefix.
+	s.mux.Handle("GET /api/v1/native/issues/{id}/dependency-graph", s.requireAuth(http.HandlerFunc(s.handlePipelineBoardDependencyGraph)))
 	// Input thumbnails: a ticket's bot_args may reference images living in the
 	// studio workdir (e.g. a character-reference list) — this endpoint lets the
 	// card sidebar actually SHOW them instead of printing bare paths.

@@ -18,6 +18,7 @@ import (
 	"github.com/SocialGouv/iterion/pkg/backend/delegate"
 	"github.com/SocialGouv/iterion/pkg/backend/permission"
 	"github.com/SocialGouv/iterion/pkg/backend/rewrite"
+	"github.com/SocialGouv/iterion/pkg/backend/tool"
 	"github.com/SocialGouv/iterion/pkg/knowledge"
 	"github.com/SocialGouv/iterion/pkg/memory"
 	"github.com/SocialGouv/iterion/pkg/sandbox"
@@ -194,6 +195,11 @@ func (b *ClawBackend) Execute(ctx context.Context, task delegate.Task) (delegate
 	// IOTask to the in-container runner, whose own Execute re-applies them here.
 	ctx = rewrite.WithMode(ctx, rewrite.ParseMode(task.CompressMode))
 	ctx = rewrite.WithChain(ctx, rewrite.NewChain(task.Rewriters))
+	// Run-level env additions (devbox profile PATH on no-sandbox runs)
+	// reach the in-process bash builtin via ctx — the tool registry is
+	// built before the run's provisioning resolves, so the closure reads
+	// the value per call.
+	ctx = tool.WithBashExtraEnv(ctx, task.ExtraEnv)
 	if task.Sandbox != nil {
 		return b.executeViaSandboxRunner(ctx, task)
 	}

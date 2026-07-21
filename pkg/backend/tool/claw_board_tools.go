@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strings"
 
 	"github.com/SocialGouv/iterion/pkg/dispatcher/native"
 	"github.com/SocialGouv/iterion/pkg/dispatcher/native/boardops"
@@ -16,6 +17,9 @@ import (
 type BoardConfig struct {
 	Store        *native.Store
 	Capabilities []string
+	// SourceIssueID is the ticket that owns the calling run (if any).
+	// Auto-stamped as parent_id on create_issue when the agent omits it.
+	SourceIssueID string
 }
 
 // RegisterClawBoardTools registers the seven board operations as
@@ -37,10 +41,11 @@ func RegisterClawBoardTools(reg *Registry, cfg *BoardConfig) error {
 	for _, c := range cfg.Capabilities {
 		caps[c] = true
 	}
+	env := boardops.CallEnv{SpawnParentID: strings.TrimSpace(cfg.SourceIssueID)}
 	for _, t := range boardops.ToolsFor(caps) {
 		t := t // capture for closure
 		exec := func(ctx context.Context, input json.RawMessage) (string, error) {
-			raw, err := boardops.Call(cfg.Store, caps, t.Name, input)
+			raw, err := boardops.CallWithEnv(cfg.Store, caps, t.Name, input, env)
 			if err != nil {
 				return "", err
 			}

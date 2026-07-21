@@ -606,6 +606,7 @@ func (e *ClawExecutor) buildTask(ctx context.Context, node ir.Node, f backendFie
 
 	task := delegate.Task{
 		NodeID:                f.id,
+		SourceIssueID:         e.sourceIssueID,
 		Iteration:             LoopIterationFromContext(ctx),
 		SystemPrompt:          systemText,
 		SystemPromptMode:      delegate.SystemPromptModeForBackend(backendName),
@@ -623,6 +624,7 @@ func (e *ClawExecutor) buildTask(ctx context.Context, node ir.Node, f backendFie
 		ToolMaxSteps:          f.toolMaxSteps,
 		MaxTokens:             f.maxTokens,
 		WorkDir:               e.workDir,
+		ExtraEnv:              e.runExtraEnv,
 		ReasoningEffort:       wireEffort(effort),
 		Ultracode:             ultracode,
 		InteractionEnabled:    f.interaction != ir.InteractionNone,
@@ -951,7 +953,12 @@ func (e *ClawExecutor) applyBoardEndpoint(task *delegate.Task, effectiveCaps []s
 		return
 	}
 	task.BoardHTTPEndpoint = e.boardEndpoint
-	task.BoardRunToken = e.boardRegister(effectiveCaps)
+	// The source ticket rides the grant so board.create over the HTTP
+	// transport auto-stamps parent_id / spawned_from exactly like the
+	// stdio (__mcp-board) and in-process (claw) paths do — otherwise a
+	// sandboxed planner publishes orphan tickets and the parent card
+	// loses its children counter.
+	task.BoardRunToken = e.boardRegister(effectiveCaps, e.sourceIssueID)
 }
 
 // applySessionContinuity wires the inherit / inherit_if_available /

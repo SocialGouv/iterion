@@ -17,23 +17,41 @@ import (
 // share one type for "where to look for bots".
 type BotsConfig = botregistry.Config
 
+// currentWorkDir snapshots cfg.WorkDir under the state lock — it is
+// hot-swapped on a studio project switch (swapWorkDir).
+func (s *Server) currentWorkDir() string {
+	s.stateMu.RLock()
+	defer s.stateMu.RUnlock()
+	return s.cfg.WorkDir
+}
+
 // effectivePaths returns the configured bot paths, falling back to the
-// project-relative conventions when none are configured.
+// project-relative conventions when none are configured. Only an
+// explicit --bots-path pins the catalog; the default derives from the
+// LIVE WorkDir on every call so bot discovery follows a project switch.
 func (s *Server) effectivePaths() []string {
+	return s.effectivePathsFor(s.currentWorkDir())
+}
+
+func (s *Server) effectivePathsFor(workDir string) []string {
 	if len(s.cfg.Bots.Paths) > 0 {
 		return s.cfg.Bots.Paths
 	}
-	if s.cfg.WorkDir == "" {
+	if workDir == "" {
 		return nil
 	}
-	return botregistry.DefaultPaths(s.cfg.WorkDir)
+	return botregistry.DefaultPaths(workDir)
 }
 
 // botListOptions builds the discovery options for the bot endpoints,
 // passing WorkDir so each Entry.Enabled reflects the workspace overlay
 // (.iterion/bot-overrides.yaml) composed over the manifest default.
+// Paths and Workdir derive from ONE WorkDir snapshot: two reads could
+// straddle a concurrent project switch and compose one project's bots
+// with the other's enabled-overlay.
 func (s *Server) botListOptions() botregistry.ListOptions {
-	return botregistry.ListOptions{Paths: s.effectivePaths(), Workdir: s.cfg.WorkDir}
+	workDir := s.currentWorkDir()
+	return botregistry.ListOptions{Paths: s.effectivePathsFor(workDir), Workdir: workDir}
 }
 
 // handleBotsList returns the discovered bots' metadata + vars schema.

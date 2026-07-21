@@ -69,6 +69,11 @@ data:
   # --- Hosted bot marketplace (public browse/download + submit) ----
   ITERION_CLOUD_MARKETPLACE: "true"
   {{- end }}
+  {{- with .Values.config.webpush.subscriber }}
+  # --- Browser push notifications (VAPID contact; the keypair lives
+  # in the auth secret) --------------------------------------------
+  ITERION_WEBPUSH_SUBSCRIBER: {{ . | quote }}
+  {{- end }}
   {{- with .Values.config.smtp.host }}
   # --- SMTP (transactional email) ---------------------------------
   ITERION_SMTP_HOST: {{ . | quote }}

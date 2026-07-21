@@ -14,7 +14,14 @@ const (
 	EvtIssueReleased EventType = "issue_released"
 	EvtIssueLastRun  EventType = "issue_last_run_updated"
 	EvtIssueComment  EventType = "issue_comment_added"
-	EvtBoardUpdated  EventType = "board_updated"
+	// EvtIssueBlockersUpdated is emitted when an issue's blockers list changes
+	// (create-with-blockers, Update patch). Payload: {blockers: []string}.
+	EvtIssueBlockersUpdated EventType = "issue_blockers_updated"
+	// EvtIssueUnblocked is emitted when a waiting_deps ticket is auto-
+	// promoted because its last hard blocker reached StateDone. Payload:
+	// {from, to, closed_blocker}.
+	EvtIssueUnblocked EventType = "issue_unblocked"
+	EvtBoardUpdated   EventType = "board_updated"
 	// Label-vocabulary management events, emitted once per touched
 	// issue. The payload carries `{from, to}` for rename/merge and
 	// `{label}` for delete.

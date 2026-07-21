@@ -8,6 +8,7 @@ This index describes the current repository state. Guides and references below a
 
 | Page | Purpose |
 |---|---|
+| [current-state.md](current-state.md) | Living as-built overview: shipped surfaces, runtime/backend status, security defaults, cloud control plane, and known limits. |
 | [why-iterion.md](why-iterion.md) | Product rationale, workflow patterns, and the asymptote lens. |
 | [install.md](install.md) | Install through the CLI, studio, desktop, Docker, cloud, dispatcher, scheduler, or TypeScript SDK. |
 | [examples.md](examples.md) | Maintained bot catalogue and focused DSL examples. |
@@ -143,7 +144,7 @@ Start with the [Iterion Cloud overview](cloud-overview.md) for the event → que
 
 | Page | Topic |
 |---|---|
-| [architecture.md](architecture.md) | Parser/compiler pipeline, execution engine, persistence, and UI/server boundaries. |
+| [architecture.md](architecture.md) | End-to-end compiler, runtime, backend, persistence, control-plane, automation, and extension architecture. |
 | [development.md](development.md) | Reproducible toolchain, task graph, tests, and repository structure. |
 | [e2e_coverage.md](e2e_coverage.md) | Stubbed end-to-end coverage map. |
 | [live-e2e-coverage.md](live-e2e-coverage.md) | Credentialed/live E2E coverage and compile guards. |
@@ -154,7 +155,7 @@ These collections are valuable evidence, but they do not override current code o
 
 - [adr/](adr/) — immutable architecture decision records; later ADRs may supersede earlier ones.
 - [bot-runs/](bot-runs/) — dated dogfood bilans and lessons for each bot.
-- [plans/](plans/) and [c082-board-emit-fix-plan.md](c082-board-emit-fix-plan.md) — implementation plans.
+- [c082-board-emit-fix-plan.md](c082-board-emit-fix-plan.md) — retained implementation plan.
 - [reviews/](reviews/) — dated codebase reviews.
 - [security/](security/) — dated security audits.
 - [studio-ux-audit-2026-07.md](studio-ux-audit-2026-07.md) — UX audit snapshot.

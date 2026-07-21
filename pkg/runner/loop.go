@@ -39,6 +39,7 @@ import (
 	"github.com/SocialGouv/iterion/pkg/cloud/metrics"
 	"github.com/SocialGouv/iterion/pkg/dsl/ast"
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
+	"github.com/SocialGouv/iterion/pkg/eventbus"
 	gitlib "github.com/SocialGouv/iterion/pkg/git"
 	"github.com/SocialGouv/iterion/pkg/knowledge"
 	iterlog "github.com/SocialGouv/iterion/pkg/log"
@@ -50,6 +51,7 @@ import (
 	"github.com/SocialGouv/iterion/pkg/runview"
 	"github.com/SocialGouv/iterion/pkg/secrets"
 	"github.com/SocialGouv/iterion/pkg/store"
+	"github.com/SocialGouv/iterion/pkg/trigger"
 )
 
 const tracerName = "github.com/SocialGouv/iterion/pkg/runner"
@@ -417,6 +419,15 @@ type Config struct {
 	// execution attempt (the billing source of truth — Prometheus
 	// counters above stay tenant-unlabelled). nil → no org metering.
 	OrgUsage orgusage.Counter
+
+	// Events, when non-nil, receives a run-outcome trigger.Event
+	// (run.finished/failed/cancelled/paused) after every execution
+	// attempt — the runner-side twin of runview.emitRunOutcome, so
+	// server-side consumers (the usernotify dispatcher, trigger
+	// chaining) see runner-pod runs too, not only in-process ones.
+	// Lossy fan-out by design; the notification sweep is the safety
+	// net. nil → no event publishing.
+	Events eventbus.Bus
 
 	// BotsPaths is where bot bundles are resolved from (the image ships
 	// the catalog at /opt/iterion/bots via ITERION_BOTS_PATH). A run
@@ -800,6 +811,7 @@ func (r *Runner) processOne(parent context.Context, delivery *natsq.Delivery) {
 	<-hbDone
 
 	r.fireCompletionNotifier(msg)
+	r.fireOutcomeEvent(msg, err)
 
 	if handled, dlqStatus := r.parkOnDLQOnFinalDelivery(err, delivery, msg, logger); handled {
 		finalStatus = dlqStatus
@@ -857,6 +869,23 @@ func (r *Runner) fireCompletionNotifier(msg *queue.RunMessage) {
 	}
 	nctx := store.WithIdentity(context.Background(), msg.TenantID, msg.OwnerID)
 	r.completionNotifier.FireForRun(nctx, r.cfg.Store, msg.RunID)
+}
+
+// fireOutcomeEvent publishes the run-outcome trigger.Event onto the events
+// bus — the runner-side twin of runview.emitRunOutcome, sharing the same
+// trigger.BuildRunOutcome authority. Fired after the execution attempt with
+// the checkpoint already persisted, so a human-input pause carries its
+// pending interaction_id. Best-effort: a publish failure is logged, never
+// fails the delivery (the usernotify sweep reconciles missed episodes).
+func (r *Runner) fireOutcomeEvent(msg *queue.RunMessage, execErr error) {
+	if r.cfg.Events == nil {
+		return
+	}
+	ectx := store.WithIdentity(context.Background(), msg.TenantID, msg.OwnerID)
+	ev := trigger.BuildRunOutcome(ectx, r.cfg.Store, msg.RunID, execErr)
+	if err := r.cfg.Events.Publish(ectx, ev); err != nil {
+		r.cfg.Logger.Warn("runner: publish %s trigger event for run %s: %v", ev.Kind, msg.RunID, err)
+	}
 }
 
 // executeRun hydrates the IR from the message, builds the runtime
@@ -1081,20 +1110,22 @@ func (r *Runner) executeRun(ctx context.Context, msg *queue.RunMessage) error {
 			engineOpts = append(engineOpts, runtime.WithSandboxRunObserver(obs))
 		}
 	}
-	// Bundle skills: a bot-qualified run mirrors its bundle's skills/ into
-	// <workspace>/.claude/skills exactly like a local `iterion run
-	// bots/<bot>` does (the engine's mirrorBundleSkills reads the bundle).
-	// Best-effort: an unresolvable bot id or a loose .bot just skips the
-	// mirror with a warning — the run proceeds without skills.
+	// Bundle resources: a bot-qualified run attaches its bundle so the
+	// engine mirrors skills/ into <workspace>/.claude/skills AND
+	// provisions the bot's devbox.json (host devbox provisioning — the
+	// runner pod is the isolation boundary, no sandbox starts here),
+	// exactly like a local `iterion run bots/<bot>` does. Best-effort:
+	// an unresolvable bot id or a loose .bot just skips the bundle with
+	// a warning — the run proceeds without skills or devbox tools.
 	if msg.BotID != "" && len(r.cfg.BotsPaths) > 0 {
 		if mainFile, rerr := botregistry.ResolveBotPath(msg.BotID, r.cfg.BotsPaths); rerr == nil {
 			if b, berr := bundle.OpenDir(filepath.Dir(mainFile)); berr == nil {
 				engineOpts = append(engineOpts, runtime.WithBundle(b))
 			} else {
-				r.cfg.Logger.Warn("runner: bot %q bundle open: %v (skills not mirrored)", msg.BotID, berr)
+				r.cfg.Logger.Warn("runner: bot %q bundle open: %v (skills not mirrored, devbox tools not provisioned)", msg.BotID, berr)
 			}
 		} else {
-			r.cfg.Logger.Warn("runner: bot %q not resolvable in %v (skills not mirrored)", msg.BotID, r.cfg.BotsPaths)
+			r.cfg.Logger.Warn("runner: bot %q not resolvable in %v (skills not mirrored, devbox tools not provisioned)", msg.BotID, r.cfg.BotsPaths)
 		}
 	}
 	// Plugin/library skills the LAUNCHING instance resolved for us. This pod's

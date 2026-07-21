@@ -35,6 +35,17 @@ func (e *Engine) Resume(ctx context.Context, runID string, answers map[string]an
 	if err != nil {
 		return fmt.Errorf("runtime: load run for resume: %w", err)
 	}
+	// A worktree run resumes into its persisted workspace (restoreRunEnv),
+	// which is only usable while the gitdir its `.git` pointer names still
+	// exists. When that linkage is severed, executing nodes there makes
+	// deterministic gates read the workspace as "no repo" and return wrong
+	// verdicts. Refuse loudly before claiming the run — the status stays
+	// resumable and the operator sees the real cause.
+	if r.Worktree {
+		if linkErr := checkWorktreeLinkage(r.WorkDir); linkErr != nil {
+			return fmt.Errorf("runtime: resume run %q: %w", runID, linkErr)
+		}
+	}
 	switch r.Status {
 	case store.RunStatusPausedWaitingHuman:
 		return e.resumeFromPause(ctx, r, answers)

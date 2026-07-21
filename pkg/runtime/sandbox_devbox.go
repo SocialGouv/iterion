@@ -167,6 +167,7 @@ func applyDevboxProvisioning(
 			strings.Join(labels, "+"), strings.Join(configs, ", "), strings.Join(binDirs, ", "))
 	}
 	_ = emitEvent(store.EventSandboxDevboxProvisioned, map[string]any{
+		"target":   "sandbox",
 		"sources":  labels,
 		"configs":  configs,
 		"bin_dirs": binDirs,

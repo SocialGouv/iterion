@@ -102,7 +102,7 @@ Inputs and execution:
 | `--preset <name>` | Apply an in-source preset before `--var`. |
 | `--recipe <file>` | Apply a recipe JSON overlay. |
 | `--run-id <id>` | Supply the run id. |
-| `--store-dir <dir>` | Local store; default `.iterion`. |
+| `--store-dir <dir>` | Local store override. Without it, reuse a managed project `.iterion` or use the deterministic project slot under `$ITERION_HOME/projects/` (normally `~/.iterion/projects/`). |
 | `--timeout <duration>` | Outer run deadline. |
 | `--log-level error\|warn\|info\|debug\|trace` | Logging verbosity. |
 | `--no-interactive` | Return at a human pause instead of prompting on the TTY. |
@@ -114,7 +114,7 @@ Launch-time graph overrides:
 | Flag | Meaning |
 |---|---|
 | `--model selector=model` | Override by node id, id glob, or kind (`agent`/`judge`); repeatable. A bare model targets all LLM nodes. |
-| `--backend selector=backend` | Same selector rules for `claw` or `claude_code`; repeatable. |
+| `--backend selector=backend` | Same selector rules for a supported backend; repeatable. `claw`/`claude_code` are recommended, Kimi/Grok are explicit opt-ins, and Codex is legacy. |
 | `--max-cost-usd`, `--max-duration`, `--max-tokens`, `--max-iterations`, `--max-parallel-branches` | Override non-zero workflow budget fields. |
 | `--review-mode mono\|dual\|auto` | Legacy/third-party topology override for workflows that declare a `review_mode` var; current catalogue campaigns do not. |
 

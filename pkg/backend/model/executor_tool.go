@@ -542,9 +542,14 @@ func (e *ClawExecutor) toolNodeScriptCommand(ctx context.Context, interpreter, s
 	}
 	cmd := exec.CommandContext(ctx, interpreter, scriptBasename)
 	// Host path only: sandboxed commands already see the variable from the
-	// container env (the same dir is bind-mounted there).
-	if e.artifactFilesDir != "" {
-		cmd.Env = append(os.Environ(), "ITERION_ARTIFACT_FILES_DIR="+e.artifactFilesDir)
+	// container env (the same dir is bind-mounted there). runExtraEnv
+	// carries run-level provisioning (devbox profile PATH), appended
+	// after the inherited env so on a duplicate key it wins.
+	if e.artifactFilesDir != "" || len(e.runExtraEnv) > 0 {
+		cmd.Env = append(os.Environ(), e.runExtraEnv...)
+		if e.artifactFilesDir != "" {
+			cmd.Env = append(cmd.Env, "ITERION_ARTIFACT_FILES_DIR="+e.artifactFilesDir)
+		}
 	}
 	if e.workDir != "" {
 		cmd.Dir = e.workDir
@@ -586,8 +591,11 @@ func (e *ClawExecutor) toolNodeCommand(ctx context.Context, resolved string, env
 		return e.sandbox.Command(ctx, []string{"bash", "-c", resolved}, sandbox.ExecOpts{Env: env})
 	}
 	cmd := exec.CommandContext(ctx, "bash", "-c", resolved)
-	if len(env) > 0 || e.artifactFilesDir != "" {
+	if len(env) > 0 || e.artifactFilesDir != "" || len(e.runExtraEnv) > 0 {
 		cmd.Env = os.Environ()
+		// Run-level provisioning (devbox profile PATH) — appended after
+		// the inherited env so on a duplicate key it wins.
+		cmd.Env = append(cmd.Env, e.runExtraEnv...)
 		// Host path only: sandboxed commands already see the variable from
 		// the container env (the same dir is bind-mounted there).
 		if e.artifactFilesDir != "" {

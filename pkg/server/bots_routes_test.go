@@ -1,6 +1,7 @@
 package server
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -352,5 +353,103 @@ func TestBotOverlayRoute_TogglesWithoutTouchingManifest(t *testing.T) {
 	json.Unmarshal(rec.Body.Bytes(), &b)
 	if !b.Enabled {
 		t.Error("clearing the overlay should restore Enabled=true")
+	}
+}
+
+// The studio wires cfg.Bots.Paths ONLY for an explicit --bots-path; the
+// default catalog must re-derive from the LIVE WorkDir so /api/v1/bots
+// (and pipeline-ticket bot resolution via findBot) follows a project
+// switch instead of staying pinned to the boot workspace.
+func TestBotsListFollowsProjectSwitch(t *testing.T) {
+	botregistry.ClearSchemaCache()
+	// Keep swapWorkDir's per-project store out of the real ~/.iterion.
+	t.Setenv("ITERION_HOME", t.TempDir())
+
+	dirA := t.TempDir()
+	writeBotFile(t, filepath.Join(dirA, "bots", "alpha.bot"),
+		strings.ReplaceAll(testBotSrc, "feature_dev", "alpha"))
+	dirB := t.TempDir()
+	writeBotFile(t, filepath.Join(dirB, "bots", "beta.bot"),
+		strings.ReplaceAll(testBotSrc, "feature_dev", "beta"))
+
+	srv := New(Config{
+		DisableAuth: true,
+		WorkDir:     dirA,
+		// No Bots.Paths: the catalog derives from the current WorkDir.
+	}, iterlog.New(iterlog.LevelError, nil))
+	srv.handler = srv.mux
+
+	listNames := func() []string {
+		t.Helper()
+		req := httptest.NewRequest(http.MethodGet, "/api/v1/bots", nil)
+		rec := httptest.NewRecorder()
+		srv.handler.ServeHTTP(rec, req)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("status = %d; body=%s", rec.Code, rec.Body.String())
+		}
+		var resp struct {
+			Bots []botregistry.EntryWithSchema `json:"bots"`
+		}
+		if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+			t.Fatalf("decode: %v; body=%s", err, rec.Body.String())
+		}
+		names := make([]string, 0, len(resp.Bots))
+		for _, b := range resp.Bots {
+			names = append(names, b.Name)
+		}
+		return names
+	}
+
+	if got := listNames(); len(got) != 1 || got[0] != "alpha" {
+		t.Fatalf("boot workspace: bots = %v, want [alpha]", got)
+	}
+
+	if err := srv.swapWorkDir(context.Background(), dirB); err != nil {
+		t.Fatalf("swapWorkDir: %v", err)
+	}
+
+	if got := listNames(); len(got) != 1 || got[0] != "beta" {
+		t.Fatalf("after project switch: bots = %v, want [beta]", got)
+	}
+}
+
+// An explicit --bots-path stays pinned across project switches — it is
+// a deliberate operator override, not a workspace convention.
+func TestBotsListExplicitPathsPinnedAcrossSwitch(t *testing.T) {
+	botregistry.ClearSchemaCache()
+	t.Setenv("ITERION_HOME", t.TempDir())
+
+	pinned := t.TempDir()
+	writeBotFile(t, filepath.Join(pinned, "alpha.bot"),
+		strings.ReplaceAll(testBotSrc, "feature_dev", "alpha"))
+	dirB := t.TempDir()
+	writeBotFile(t, filepath.Join(dirB, "bots", "beta.bot"),
+		strings.ReplaceAll(testBotSrc, "feature_dev", "beta"))
+
+	srv := New(Config{
+		DisableAuth: true,
+		WorkDir:     t.TempDir(),
+		Bots:        BotsConfig{Paths: []string{pinned}},
+	}, iterlog.New(iterlog.LevelError, nil))
+	srv.handler = srv.mux
+
+	if err := srv.swapWorkDir(context.Background(), dirB); err != nil {
+		t.Fatalf("swapWorkDir: %v", err)
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/bots", nil)
+	rec := httptest.NewRecorder()
+	srv.handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d; body=%s", rec.Code, rec.Body.String())
+	}
+	var resp struct {
+		Bots []botregistry.EntryWithSchema `json:"bots"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode: %v; body=%s", err, rec.Body.String())
+	}
+	if len(resp.Bots) != 1 || resp.Bots[0].Name != "alpha" {
+		t.Fatalf("explicit --bots-path must stay pinned: got %+v", resp.Bots)
 	}
 }

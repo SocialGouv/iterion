@@ -270,6 +270,12 @@ config:
     # Envelope + header sender, e.g. "iterion <no-reply@example.org>"
     from: ""
     startTLS: true
+  # --- Browser push notifications (web push) -----------------------
+  # The VAPID contact push services may use to reach the operator
+  # (mailto: or https: URL). The keypair itself is a secret —
+  # secrets.auth.webpush below.
+  webpush:
+    subscriber: ""
   # --- Org launch limit defaults (cloud only) ----------------------
   # Platform-wide caps applied to orgs without a per-org override
   # (PATCH /api/admin/orgs/{id}). 0 = unlimited.
@@ -337,6 +343,13 @@ secrets:
     # (X-Iterion-Signature). Read by both the server and the runner;
     # empty = unsigned callbacks. `openssl rand -base64 32`.
     completionWebhookSecret: ""
+    # VAPID keypair for browser push notifications — generate ONCE with
+    # `iterion server webpush-keys` and never rotate casually (rotation
+    # invalidates every registered browser subscription; users must
+    # re-enable notifications in their settings). Empty = feature off.
+    webpush:
+      vapidPublicKey: ""
+      vapidPrivateKey: ""
     # OIDC client_secrets. Public client_ids and discovery URLs go
     # into the ConfigMap (values.config.auth.oidc) — the secret
     # bundle only carries the secrets that should not be readable

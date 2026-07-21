@@ -378,7 +378,7 @@ type Service struct {
 	// board tokens. Both nil unless the server wires them via
 	// WithBoardMCP — sandboxed board-emit then stays disabled.
 	boardMCPHandler http.Handler
-	boardRegister   func(caps []string) string
+	boardRegister   func(caps []string, sourceIssueID string) string
 	// workDir is the directory the engine should treat as ${PROJECT_DIR}
 	// and as the repo-lookup seed for worktree: auto. Empty means
 	// "default to os.Getwd() at Run() time" — the right thing for the
@@ -633,7 +633,7 @@ func WithStore(s store.RunStore) ServiceOption {
 // server mux. register mints a per-node run token against the server's
 // BoardMCPTokenRegistry. Both are threaded into the engine + executor so
 // sandboxed claude_code can write the operator's board.
-func WithBoardMCP(handler http.Handler, register func(caps []string) string) ServiceOption {
+func WithBoardMCP(handler http.Handler, register func(caps []string, sourceIssueID string) string) ServiceOption {
 	return func(svc *Service) {
 		svc.boardMCPHandler = handler
 		svc.boardRegister = register

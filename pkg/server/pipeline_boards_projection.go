@@ -41,6 +41,8 @@ func (s *Server) handlePipelineBoard(w http.ResponseWriter, r *http.Request) {
 type pipelineProjectionBuilder struct {
 	ctx            context.Context
 	rs             store.RunStore
+	boardStore     native.BoardStore
+	allIssues      []*native.Issue
 	runs           map[string]*store.Run
 	children       map[string][]*store.Run
 	terminalStates map[string]struct{}
@@ -65,6 +67,7 @@ func (s *Server) buildPipelineBoard(ctx context.Context, boardStore native.Board
 	}
 	builder := &pipelineProjectionBuilder{
 		ctx:            ctx,
+		boardStore:     boardStore,
 		runs:           map[string]*store.Run{},
 		children:       map[string][]*store.Run{},
 		terminalStates: map[string]struct{}{},
@@ -88,6 +91,7 @@ func (s *Server) buildPipelineBoard(ctx context.Context, boardStore native.Board
 	if err != nil {
 		return PipelineBoardResponse{}, fmt.Errorf("list native tasks: %w", err)
 	}
+	builder.allIssues = allIssues
 	// Global board: keep every issue that names a bot (any bot). Issues
 	// with no bot belong to the shared backlog (/board), not to pipelines.
 	issues := make([]*native.Issue, 0, len(allIssues))
@@ -120,7 +124,18 @@ func (s *Server) buildPipelineBoard(ctx context.Context, boardStore native.Board
 	for _, issue := range issues {
 		root := builder.currentRunForIssue(issue)
 		if root == nil {
-			builder.addTaskCard(issue)
+			builder.addTaskCard(issue, nil)
+			continue
+		}
+		// Restaged for relaunch: ticket is back in Opened (ready / inbox /
+		// waiting_deps / …) while LastRunID still points at a terminal
+		// failed/cancelled attempt. Project the TICKET card — not the old
+		// Closed run — so Ready stays visible and the admission queue can
+		// be understood. Without this, Retry/reset leaves the card stuck
+		// behind its cancelled run in Closed (episode "invisible but not
+		// lost"). History remains on Attempts.
+		if pipelineIssueRestagedForRelaunch(issue, root) {
+			builder.addTaskCard(issue, root)
 			continue
 		}
 		builder.addRootCard(root, issue)
@@ -150,6 +165,14 @@ func (s *Server) buildPipelineBoard(ctx context.Context, boardStore native.Board
 	for _, run := range standalone {
 		builder.addRootCard(run, nil)
 	}
+
+	// Planner provenance only — a parent is an ordinary card and lands in
+	// Closed as soon as its own run finishes, regardless of its children.
+	// (There used to be a campaign hold pinning executed parents to Opened
+	// until every child closed; it made the parent's own lane lie about its
+	// run. The relation now shows purely as data: the children counter on
+	// the parent, the parent name on each child.)
+	builder.enrichParentChildLinks()
 
 	response.Cards = builder.cards
 	if response.Cards == nil {
@@ -354,11 +377,39 @@ func (b *pipelineProjectionBuilder) attemptsForIssue(issue *native.Issue, curren
 	return attempts
 }
 
+// pipelineIssueRestagedForRelaunch reports that the operator (or reset /
+// Retry) put the ticket back into a pre-launch staging state while the
+// current attempt is a terminal failure/cancel. The board must show an
+// Opened task card, not bury the ticket under the old Closed run card.
+// Finished-success is excluded — admission will not relaunch it.
+func pipelineIssueRestagedForRelaunch(issue *native.Issue, root *store.Run) bool {
+	if issue == nil || root == nil {
+		return false
+	}
+	if !pipelineRunFailed(root.Status) {
+		return false
+	}
+	switch issue.State {
+	case native.StateReady, native.StateInbox, native.StateWaitingDeps,
+		native.StateBacklog:
+		return true
+	default:
+		// in_progress / awaiting_input / done / blocked / review → keep the
+		// run card (live or closed outcome of that attempt).
+		return false
+	}
+}
+
 // addTaskCard emits a card for a native task pinned to a bot that has no
-// current run yet. A ticket in a launch-eligible (ready) state sits in
-// Todo — the launch loop starts it when a slot frees; otherwise it is a
-// Backlog ticket the operator prepares and stages to Todo when ready.
-func (b *pipelineProjectionBuilder) addTaskCard(issue *native.Issue) {
+// *active* run (never launched, or restaged after a failed/cancelled
+// attempt). Every not-yet-running ticket sits in Opened; its `ready` flag
+// (StateReady) drives the studio's Ready badge + filter — the launch loop
+// starts exactly the ready ones when a slot frees, the rest are still being
+// prepared. A terminal-state ticket with no run lands in Closed.
+//
+// prior is the terminal previous attempt when restaged; it enriches title /
+// entry_input / attempts without moving the card to Closed.
+func (b *pipelineProjectionBuilder) addTaskCard(issue *native.Issue, prior *store.Run) {
 	if issue == nil || len(b.cards) >= pipelineTreeMaxCards {
 		b.cardLimitReached = len(b.cards) >= pipelineTreeMaxCards
 		return
@@ -366,20 +417,22 @@ func (b *pipelineProjectionBuilder) addTaskCard(issue *native.Issue) {
 	_, terminal := b.terminalStates[issue.State]
 	// "Ready" is the specific StateReady the operator stages a ticket into;
 	// the launch loop starts exactly those. Other non-terminal states
-	// (inbox/…) are Backlog tickets being prepared.
+	// (inbox/waiting_deps/…) are tickets being prepared — same Opened lane,
+	// no Ready badge (waiting_deps surfaces via open_blocker_count + reason).
 	ready := issue.State == native.StateReady
-	column := pipelineColumnBacklog
-	switch {
-	case terminal:
-		column = pipelineColumnDone
-	case ready:
-		column = pipelineColumnTodo
+	column := pipelineColumnOpened
+	if terminal {
+		column = pipelineColumnClosed
 	}
-	b.cards = append(b.cards, PipelineBoardCard{
+	entry := stringMapToAny(issue.BotArgs)
+	if len(entry) == 0 && prior != nil {
+		entry = cloneAnyMap(prior.Inputs)
+	}
+	card := PipelineBoardCard{
 		ID:         "task:" + issue.ID,
 		Kind:       "task",
 		ColumnID:   column,
-		Title:      issue.Title,
+		Title:      pipelineDisplayTitle(issue, prior),
 		Body:       issue.Body,
 		IssueID:    issue.ID,
 		IssueState: issue.State,
@@ -388,11 +441,14 @@ func (b *pipelineProjectionBuilder) addTaskCard(issue *native.Issue) {
 		Priority:   issue.Priority,
 		External:   issue.External,
 		BotID:      issue.Bot,
-		EntryInput: stringMapToAny(issue.BotArgs),
+		Role:       pipelineIssueRole(issue),
+		EntryInput: entry,
 		CreatedAt:  issue.CreatedAt,
 		UpdatedAt:  issue.UpdatedAt,
-		Attempts:   b.attemptsForIssue(issue, nil),
-	})
+		Attempts:   b.attemptsForIssue(issue, prior),
+	}
+	b.attachDeps(&card, issue)
+	b.cards = append(b.cards, card)
 }
 
 // addRootCard emits ONE card for a root run, folding its whole descendant
@@ -414,19 +470,11 @@ func (b *pipelineProjectionBuilder) addRootCard(root *store.Run, issue *native.I
 	rootExec, rootTotal := b.runProgress(root)
 	treeExec, treeTotal, descCount, reviews, treeRunIDs := b.aggregateTree(root)
 
-	title := strings.TrimSpace(root.Name)
-	if title == "" {
-		title = humanizePipelineName(root.WorkflowName)
-	}
-	if issue != nil {
-		title = issue.Title
-	}
-
 	card := PipelineBoardCard{
 		ID:                "run:" + root.ID,
 		Kind:              "run",
 		ColumnID:          pipelineColumnForRoot(root, reviews),
-		Title:             title,
+		Title:             pipelineDisplayTitle(issue, root),
 		RunID:             root.ID,
 		WorkflowName:      root.WorkflowName,
 		BotID:             pipelineRunBotID(root),

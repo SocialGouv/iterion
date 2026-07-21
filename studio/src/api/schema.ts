@@ -3745,6 +3745,25 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/native/issues/{id}/dependency-graph": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        /** GET /api/v1/native/issues/{id}/dependency-graph */
+        get: operations["getV1NativeIssuesByIdDependencyGraph"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/pipeline-board": {
         parameters: {
             query?: never;
@@ -3756,6 +3775,57 @@ export interface paths {
         get: operations["getV1PipelineBoard"];
         put?: never;
         post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/pipeline-board/bulk/delete": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** POST /api/v1/pipeline-board/bulk/delete */
+        post: operations["postV1PipelineBoardBulkDelete"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/pipeline-board/bulk/ready": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** POST /api/v1/pipeline-board/bulk/ready */
+        post: operations["postV1PipelineBoardBulkReady"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/pipeline-board/bulk/recompute-deps": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** POST /api/v1/pipeline-board/bulk/recompute-deps */
+        post: operations["postV1PipelineBoardBulkRecomputeDeps"];
         delete?: never;
         options?: never;
         head?: never;
@@ -3791,11 +3861,50 @@ export interface paths {
         get?: never;
         put?: never;
         post?: never;
-        delete?: never;
+        /** DELETE /api/v1/pipeline-board/tasks/{id} */
+        delete: operations["deleteV1PipelineBoardTasksById"];
         options?: never;
         head?: never;
         /** PATCH /api/v1/pipeline-board/tasks/{id} */
         patch: operations["patchV1PipelineBoardTasksById"];
+        trace?: never;
+    };
+    "/api/v1/pipeline-board/tasks/{id}/dependency-graph": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        /** GET /api/v1/pipeline-board/tasks/{id}/dependency-graph */
+        get: operations["getV1PipelineBoardTasksByIdDependencyGraph"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/pipeline-board/tasks/{id}/launch": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** POST /api/v1/pipeline-board/tasks/{id}/launch */
+        post: operations["postV1PipelineBoardTasksByIdLaunch"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
         trace?: never;
     };
     "/api/v1/pipeline-board/tasks/{id}/ready": {
@@ -3811,6 +3920,25 @@ export interface paths {
         put?: never;
         /** POST /api/v1/pipeline-board/tasks/{id}/ready */
         post: operations["postV1PipelineBoardTasksByIdReady"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/pipeline-board/tasks/{id}/reset": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** POST /api/v1/pipeline-board/tasks/{id}/reset */
+        post: operations["postV1PipelineBoardTasksByIdReset"];
         delete?: never;
         options?: never;
         head?: never;
@@ -4248,6 +4376,19 @@ export interface components {
             model?: string;
             node_count: number;
         };
+        BlockerInfo: {
+            bot?: string;
+            id: string;
+            labels?: string[];
+            missing_labels?: string[];
+            satisfied: boolean;
+            state?: string;
+            title?: string;
+        };
+        BlockingInfo: {
+            id: string;
+            title?: string;
+        };
         Checkpoint: {
             artifact_versions: {
                 [key: string]: number;
@@ -4333,6 +4474,25 @@ export interface components {
             /** Format: date-time */
             updated_at: string;
         };
+        DependencyGraphEdge: {
+            from: string;
+            to: string;
+        };
+        DependencyGraphNode: {
+            blockers?: components["schemas"]["BlockerInfo"][];
+            blocking?: components["schemas"]["BlockingInfo"][];
+            bot?: string;
+            depth: number;
+            id: string;
+            satisfied?: boolean;
+            state?: string;
+            title?: string;
+        };
+        DependencyGraphResponse: {
+            edges?: components["schemas"]["DependencyGraphEdge"][];
+            nodes: components["schemas"]["DependencyGraphNode"][];
+            root: components["schemas"]["DependencyGraphNode"];
+        };
         ExecutionState: {
             branch_id: string;
             current_event_seq: number;
@@ -4399,6 +4559,7 @@ export interface components {
             labels?: string[];
             last_run_id?: string;
             last_workdir?: string;
+            parent_id?: string;
             priority?: number;
             runs?: components["schemas"]["RunRef"][];
             state: string;
@@ -4414,8 +4575,12 @@ export interface components {
         };
         PipelineBoardCard: {
             attempts?: components["schemas"]["PipelineBoardAttempt"][];
+            blockers?: components["schemas"]["BlockerInfo"][];
+            blocking?: components["schemas"]["BlockingInfo"][];
             body?: string;
             bot_id?: string;
+            children?: components["schemas"]["PipelineBoardChildRef"][];
+            children_summary?: components["schemas"]["PipelineBoardChildrenSummary"];
             column_id: string;
             /** Format: date-time */
             created_at: string;
@@ -4432,11 +4597,16 @@ export interface components {
             issue_state?: string;
             kind: string;
             labels?: string[];
+            launch_blocked_reason?: string;
+            open_blocker_count?: number;
             output?: string;
+            parent_issue_id?: string;
+            parent_title?: string;
             pending_reviews?: components["schemas"]["PipelineBoardPendingReview"][];
             priority?: number;
             queue_position?: number;
             ready?: boolean;
+            role?: string;
             run_id?: string;
             status?: string;
             title: string;
@@ -4447,6 +4617,21 @@ export interface components {
             /** Format: date-time */
             updated_at: string;
             workflow_name?: string;
+        };
+        PipelineBoardChildRef: {
+            bot_id?: string;
+            card_id?: string;
+            issue_id: string;
+            state?: string;
+            title?: string;
+        };
+        PipelineBoardChildrenSummary: {
+            done: number;
+            failed: number;
+            in_progress: number;
+            open: number;
+            ready: number;
+            total: number;
         };
         PipelineBoardColumn: {
             id: string;
@@ -4782,6 +4967,7 @@ export interface components {
             ready: boolean;
         };
         pipelineBoardTaskRequest: {
+            blockers?: string[];
             body?: string;
             bot: string;
             bot_args?: {
@@ -4789,11 +4975,14 @@ export interface components {
             };
             external?: components["schemas"]["ExternalRef"];
             labels?: string[];
+            parent_id?: string;
             priority?: number;
             start?: boolean;
             title: string;
+            upsert?: boolean;
         };
         pipelineBoardUpdateRequest: {
+            blockers?: string[];
             body?: string;
             bot?: string;
             bot_args?: {
@@ -4803,6 +4992,39 @@ export interface components {
             labels?: string[];
             priority?: number;
             title?: string;
+        };
+        pipelineBulkDeleteRequest: {
+            ids: string[];
+        };
+        pipelineBulkDeleteResponse: {
+            deleted: string[];
+            skipped?: string[];
+            skipped_why?: {
+                [key: string]: string;
+            };
+        };
+        pipelineBulkReadyRequest: {
+            family_id?: string;
+            ids?: string[];
+            only_satisfied?: boolean;
+            pipeline_kind?: string;
+        };
+        pipelineBulkReadyResponse: {
+            ready: string[];
+            skipped?: string[];
+            skipped_why?: {
+                [key: string]: string;
+            };
+            waiting_deps?: string[];
+        };
+        pipelineRecomputeDepsRequest: {
+            closed_id?: string;
+        };
+        pipelineRecomputeDepsResponse: {
+            promoted: string[];
+            targets?: {
+                [key: string]: string;
+            };
         };
         setOrgStatusReq: {
             reason?: string;
@@ -9863,6 +10085,28 @@ export interface operations {
             };
         };
     };
+    getV1NativeIssuesByIdDependencyGraph: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["DependencyGraphResponse"];
+                };
+            };
+        };
+    };
     getV1PipelineBoard: {
         parameters: {
             query?: never;
@@ -9879,6 +10123,78 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["PipelineBoardResponse"];
+                };
+            };
+        };
+    };
+    postV1PipelineBoardBulkDelete: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["pipelineBulkDeleteRequest"];
+            };
+        };
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["pipelineBulkDeleteResponse"];
+                };
+            };
+        };
+    };
+    postV1PipelineBoardBulkReady: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["pipelineBulkReadyRequest"];
+            };
+        };
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["pipelineBulkReadyResponse"];
+                };
+            };
+        };
+    };
+    postV1PipelineBoardBulkRecomputeDeps: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["pipelineRecomputeDepsRequest"];
+            };
+        };
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["pipelineRecomputeDepsResponse"];
                 };
             };
         };
@@ -9904,6 +10220,26 @@ export interface operations {
                 content: {
                     "application/json": components["schemas"]["Issue"];
                 };
+            };
+        };
+    };
+    deleteV1PipelineBoardTasksById: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Response */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
             };
         };
     };
@@ -9933,6 +10269,48 @@ export interface operations {
             };
         };
     };
+    getV1PipelineBoardTasksByIdDependencyGraph: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["DependencyGraphResponse"];
+                };
+            };
+        };
+    };
+    postV1PipelineBoardTasksByIdLaunch: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Response */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
     postV1PipelineBoardTasksByIdReady: {
         parameters: {
             query?: never;
@@ -9956,6 +10334,26 @@ export interface operations {
                 content: {
                     "application/json": components["schemas"]["Issue"];
                 };
+            };
+        };
+    };
+    postV1PipelineBoardTasksByIdReset: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Response */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
             };
         };
     };

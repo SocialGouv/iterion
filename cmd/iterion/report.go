@@ -27,7 +27,7 @@ var reportCmd = &cobra.Command{
 func init() {
 	f := reportCmd.Flags()
 	f.StringVar(&reportOpts.runID, "run-id", "", "Run to report on")
-	f.StringVar(&reportOpts.storeDir, "store-dir", "", "Store directory (default: .iterion)")
+	f.StringVar(&reportOpts.storeDir, "store-dir", "", "Store directory override (default: managed store for the working directory)")
 	f.StringVar(&reportOpts.output, "output", "", "Output file (default: store/runs/<id>/report.md)")
 	mustMarkRequired(reportCmd, "run-id")
 	rootCmd.AddCommand(reportCmd)

@@ -217,6 +217,7 @@ func (b *ClaudeCodeBackend) buildTransportOptions(task Task) ([]claudesdk.Option
 		effort = defaultClaudeCodeEffort
 	}
 	opts = append(opts, claudesdk.WithEnv("CLAUDE_CODE_EFFORT_LEVEL", effort))
+	opts = append(opts, taskExtraEnvOpts(task)...)
 	if d := claudeCodeThinkingDisplay(); d != "" {
 		opts = append(opts, claudesdk.WithThinkingDisplay(d))
 	}
@@ -797,6 +798,20 @@ func hostSpawnEnv(extra map[string]string) []string {
 	return base
 }
 
+// taskExtraEnvOpts converts Task.ExtraEnv (KEY=value entries — run-level
+// provisioning such as the devbox profile PATH) into per-spawn env
+// options. Entries without an '=' are dropped: they cannot form a valid
+// environment assignment.
+func taskExtraEnvOpts(task Task) []claudesdk.Option {
+	opts := make([]claudesdk.Option, 0, len(task.ExtraEnv))
+	for _, kv := range task.ExtraEnv {
+		if k, v, ok := strings.Cut(kv, "="); ok && k != "" {
+			opts = append(opts, claudesdk.WithEnv(k, v))
+		}
+	}
+	return opts
+}
+
 // formatOutput performs the second pass of two-pass execution: resumes the
 // Pass 1 session with WithOutputFormat (no tools) to guarantee structured JSON
 // output conforming to the schema. The model already has full context from the
@@ -930,6 +945,7 @@ func (b *ClaudeCodeBackend) formatOutput(ctx context.Context, task Task, session
 		effort = defaultClaudeCodeEffort
 	}
 	opts = append(opts, claudesdk.WithEnv("CLAUDE_CODE_EFFORT_LEVEL", effort))
+	opts = append(opts, taskExtraEnvOpts(task)...)
 	if d := claudeCodeThinkingDisplay(); d != "" {
 		opts = append(opts, claudesdk.WithThinkingDisplay(d))
 	}

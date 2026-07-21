@@ -40,7 +40,12 @@ type BoardMCPTokenRegistry struct {
 
 type boardMCPGrant struct {
 	Capabilities boardops.Capabilities
-	ExpiresAt    time.Time
+	// SourceIssueID is the ticket that owns the granted run, carried so
+	// board.create over this transport auto-stamps parent_id /
+	// spawned_from the same way the stdio and in-process transports do.
+	// Empty for runs with no owning ticket (plain studio/CLI launches).
+	SourceIssueID string
+	ExpiresAt     time.Time
 }
 
 // BoardMCPTokenStore is the per-run board-MCP token registry. The in-memory
@@ -52,7 +57,7 @@ type boardMCPGrant struct {
 // a Register failure means the minted token would never authorize, so the
 // minter must not hand it out; lookup is called by the HTTP handler.
 type BoardMCPTokenStore interface {
-	Register(token string, caps []string) error
+	Register(token string, caps []string, sourceIssueID string) error
 	Revoke(token string)
 	lookup(token string) (boardMCPGrant, bool)
 }
@@ -80,10 +85,11 @@ func newBoardMCPToken() string {
 // Register stores a token with its grant. A subsequent call with the same
 // token replaces the grant. A full registry is an error: the token would
 // never authorize, so the caller must not hand it out.
-func (r *BoardMCPTokenRegistry) Register(token string, caps []string) error {
+func (r *BoardMCPTokenRegistry) Register(token string, caps []string, sourceIssueID string) error {
 	grant := boardMCPGrant{
-		Capabilities: boardops.Capabilities{},
-		ExpiresAt:    r.now().Add(boardMCPDefaultTTL),
+		Capabilities:  boardops.Capabilities{},
+		SourceIssueID: strings.TrimSpace(sourceIssueID),
+		ExpiresAt:     r.now().Add(boardMCPDefaultTTL),
 	}
 	for _, c := range caps {
 		grant.Capabilities[c] = true
@@ -230,11 +236,11 @@ func (h *boardMCPHandler) serve(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusNoContent)
 		return
 	}
-	resp := dispatchHTTP(req, h.store, grant.Capabilities)
+	resp := dispatchHTTP(req, h.store, grant.Capabilities, boardops.CallEnv{SpawnParentID: grant.SourceIssueID})
 	writeJSONStatus(w, http.StatusOK, resp)
 }
 
-func dispatchHTTP(req mcpReq, store *native.Store, caps boardops.Capabilities) mcpResp {
+func dispatchHTTP(req mcpReq, store *native.Store, caps boardops.Capabilities, env boardops.CallEnv) mcpResp {
 	resp := mcpResp{JSONRPC: "2.0", ID: req.ID}
 
 	switch req.Method {
@@ -270,7 +276,7 @@ func dispatchHTTP(req mcpReq, store *native.Store, caps boardops.Capabilities) m
 			resp.Error = &mcpRespError{Code: -32602, Message: "invalid params: " + err.Error()}
 			return resp
 		}
-		raw, err := boardops.Call(store, caps, params.Name, params.Arguments)
+		raw, err := boardops.CallWithEnv(store, caps, params.Name, params.Arguments, env)
 		if err != nil {
 			if errors.Is(err, boardops.ErrCapabilityDenied) {
 				resp.Error = &mcpRespError{Code: -32601, Message: err.Error()}

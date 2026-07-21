@@ -60,6 +60,7 @@ fields the operator can attach to issues. Defaults:
     { "name": "inbox",          "display": "Inbox" },
     { "name": "backlog",        "display": "Backlog" },
     { "name": "ready",          "display": "Ready",       "eligible": true },
+    { "name": "waiting_deps",   "display": "Waiting on deps" },
     { "name": "in_progress",    "display": "In progress", "eligible": true },
     { "name": "awaiting_input", "display": "Awaiting input" },
     { "name": "review",         "display": "Review" },
@@ -77,6 +78,14 @@ post their out-of-scope observations there (labeled `findings`) so
 operators can triage on /board without a separate inbox surface —
 drag inbox → backlog to promote, delete the card to dismiss.
 
+`waiting_deps` holds a ticket whose **hard blockers** are not yet
+`done` (see [ADR-076](adr/076-pipeline-hard-blockers-and-waiting-deps.md)).
+Non-eligible and non-terminal: neither the dispatcher nor the
+`/pipelines` launch loop will start it. Distinct from `blocked`, which
+is terminal “won't do” and must **not** be used as a temporary hold
+for open deps (a ticket in `blocked` does **not** satisfy anyone
+else's blockers).
+
 `awaiting_input` holds a dispatched card whose run paused for input
 (a `human` node, or an operator soft-pause): the dispatcher parks the
 card there — non-eligible, claim retained — and a per-tick sweep moves
@@ -84,14 +93,15 @@ it on once the run reaches a terminal status (see the "Paused runs"
 section in [docs/dispatcher.md](dispatcher.md)). Boards persisted by an
 older iterion are **schema-upgraded automatically** on store open
 (filesystem) or on read (Mongo): missing `inbox` is prepended, missing
-`awaiting_input` is inserted right after `in_progress`. Fully-custom
-boards without an `in_progress` state are left untouched.
+`waiting_deps` is inserted after `ready` (else after `backlog`),
+missing `awaiting_input` is inserted right after `in_progress`.
+Fully-custom boards without those anchors are left untouched for the
+optional inserts.
 
 | Property            | Meaning                                                            |
 |---------------------|--------------------------------------------------------------------|
-| `eligible: true`    | Dispatcher will dispatch issues sitting in this state.              |
-| `terminal: true`    | Dispatcher treats this state as a stop signal; blocker dependencies | 
-|                     | resolve.                                                           |
+| `eligible: true`    | Dispatcher will dispatch issues sitting in this state (subject to hard-blocker gate). |
+| `terminal: true`    | Dispatcher treats this state as a stop signal for *lifecycle*. Hard blocker satisfaction is **only** `done` (not every terminal state). |
 
 A state can be both `eligible` and `terminal` — for example a
 `completed` column that triggers a final wrap-up workflow before
@@ -232,10 +242,10 @@ different product surface — a **control center** for watching and unblocking
 many pipelines at once — not a saved filter and not a replacement for `/board`:
 
 - `/board` remains the editable, shared dispatcher backlog;
-- `/board` remains the editable, shared dispatcher backlog;
 - `/pipelines` is one global projection of every **root** pipeline, across all
   bots;
-- it has five fixed lanes — `Backlog`, `Todo`, `In progress`, `Done`, `Failed`;
+- it has three fixed lanes — `Opened`, `In progress`, `Closed` (IDs `opened`,
+  `in_progress`, `closed`; the IDs are the wire contract);
 - each card is one root pipeline; its descendant runs are **folded into the
   root card** (aggregate node progress + a list of pending human reviews), not
   shown as separate cards;
@@ -246,31 +256,106 @@ many pipelines at once — not a saved filter and not a replacement for `/board`
   time.
 
 Lane semantics — the board is **task-centric**:
-- `Backlog` = tickets being prepared;
-- `Todo` = tickets you staged with the card's **“→ Todo”** button, plus runs
-  waiting for a local slot (queued); “→ Backlog” unstages an unlaunched ticket.
-  The launch loop starts ready tickets **highest priority first** (the same
-  `P{n}` field /board sorts on; ties go oldest-first) — set it from the
-  ticket's Edit dialog, shown as a `P{n}` badge on the card;
-- `In progress` = running or awaiting a human review (progress bar +
-  Blocked tag);
-- `Done` = finished — the pipeline's output shows in the details sidebar;
-- `Failed` = the run failed / was cancelled, with the **error shown as the
-  reason**; ticket-backed cards offer **Retry** (back to Todo) and Edit.
+- `Opened` = every not-yet-running ticket (pairs with `Closed`). A per-card
+  **Ready** badge marks the ones cleared to leave Opened for In progress (a
+  staged task, or a run already queued for a slot); tickets with open hard
+  deps show **Blocked by N** / **Waiting on deps**; the rest show **Not
+  ready**. The card's **Mark ready** / **Unmark ready** buttons flip that
+  state; Mark ready with open blockers parks the ticket in `waiting_deps`
+  (or 409 on boards without that state). A not-ready ticket also offers
+  **Delete** (confirmed, and refused server-side while any run in the tree is
+  active). The launch loop starts ready tickets **highest priority first**
+  **and only when every hard blocker is `done`** — same `native.CanLaunch`
+  rule as the dispatcher. A header control filters the lane by **All /
+  Ready / Not ready**;
+- `In progress` = running or awaiting a human review (progress bar + Blocked
+  tag). A running card offers **Pause** (soft operator pause — the engine
+  checkpoints at the next safe boundary; **Resume** appears while paused); a
+  ticket-backed card offers **Reset** (cancels the run tree, then restages the
+  ticket to Ready for a fresh start); a ticket-less card offers **Stop** (plain
+  cancel → the run lands in Closed as failed);
+- `Closed` = every finished pipeline, success or failure. A per-card
+  **Success** / **Failed** badge distinguishes the outcome; a successful card's
+  output shows in the details sidebar, a failed one shows the **error as the
+  reason** and (ticket-backed) offers **Retry** (restages to Ready) + Edit. A
+  header control filters the lane by **All / Success / Failed**.
+
+**Hard dependencies (blockers).** Ticket-to-ticket DAG (roots only — not
+sub-bot runs). Satisfied only when the blocker issue is in state `done`
+(not merely terminal). Optional extra gate: set
+`bot_args.require_blocker_labels` (e.g. `accepted`) so a done blocker still
+blocks until it carries those labels (artefact acceptance without a second
+state machine). Projection fields on each card: `blockers` (enriched
+`{id,title,state,bot,satisfied,missing_labels?}`), `open_blocker_count`,
+`launch_blocked_reason`, `blocking` (reverse index, computed on read).
+When the last blocker reaches `done` (and labels if required), dependents
+in `waiting_deps` auto-promote to `backlog` (or `ready` if
+`bot_args.auto_ready` is truthy) and emit `issue_unblocked`. Full contract:
+[ADR-076](adr/076-pipeline-hard-blockers-and-waiting-deps.md).
+
+### Ticket contract (`bot_args`)
+
+Iterion stays game-agnostic. Cross-bot multi-pipeline tickets share a small
+**well-known key vocabulary** (constants in
+`pkg/dispatcher/native/ticket_contract.go`). Bots own the immutable request
+JSON on disk; the board only routes execution.
+
+| Key | Role |
+|-----|------|
+| `input_path` | Path to the immutable request file (primary). Upsert key with `bot`. |
+| `revision_id` / `request_hash` | Immutability / cache identity |
+| `asset_id` / `feature_id` / `family_id` | Correlation / bulk filters |
+| `pipeline_kind` | `mesh` \| `humanoid` \| `feature` \| custom — UI filter |
+| `produces` / `consumes` | Serialized artefact / dependency lists (JSON strings) |
+| `doc_refs` | Optional design refs |
+| `auto_ready` | Truthy → auto Ready when unblocked (else backlog) |
+| `require_blocker_labels` | Comma-separated labels required on every hard blocker |
+| `spawned_from` | Planner ticket id that published this card (synced with `Issue.ParentID`) |
+| `role` | Optional `planner` \| `producer` hint for UI grouping |
+
+**Planner provenance.** Distinct from hard `blockers` (scheduling): a planner
+ticket can spawn child tickets via `board.create` / `POST …/tasks`. When the
+creating run is sourced from a ticket, `parent_id` / `spawned_from` is
+auto-stamped. The `/pipelines` projection exposes `parent_issue_id`,
+`children[]`, and `children_summary` so Inventory can group children under a
+collapsible plan card.
+
+The `/pipelines` drawer surfaces these under **Ticket contract** before the
+generic inputs list.
+
+**Upsert.** Planners re-run without flooding the board: `POST …/tasks` with
+`upsert: true` and `bot_args.input_path` updates the existing card matching
+`(bot, input_path)` (title / blockers / bot_args). Does **not** reset state
+when the ticket is already `in_progress` / `done` / `awaiting_input`.
+
+**Multi-engine access.** Board mutations do not require Claude MCP tools.
+Canonical surfaces for every backend (Claude / Codex / Kimi / scripts):
+
+1. **REST** — `/api/v1/pipeline-board/*` and `/api/v1/native/issues/*` (this page);
+2. **CLI** — `iterion issue create|list|show|update|move … --blocker … --bot … --bot-arg key=value`;
+3. **HTTP MCP** — `/api/v1/mcp/board` (ephemeral run token) for sandboxed agents.
 
 Ticket movement is **button-driven** — there is no drag & drop. The studio's
 launch loop starts ready tickets when a concurrency slot frees (no
-`iterion dispatch` needed). Run cards (In progress / Done / Failed without a
-ticket) are positioned by run state and cannot be moved.
+`iterion dispatch` needed). Run cards (In progress / Closed without a
+ticket) are positioned by run state and cannot be moved. Per-lane filters are
+client-side and compose on top of the global search / bot / label /
+`pipeline_kind` / `family_id` / “Waiting on deps” bar.
 
 The aggregate read API is intentionally server-side, so the browser does not
 perform an N+1 traversal over issues, checkpoints and child runs:
 
 | Endpoint | Method | Purpose |
 |----------|--------|---------|
-| `/api/v1/pipeline-board` | GET | Global projection: 5 fixed lanes + one folded card per root pipeline (progress, pending reviews, output, concurrency) |
-| `/api/v1/pipeline-board/tasks` | POST | Create a ticket; `bot` required **in the body**; `{start:true}` creates it ready (Todo), else Backlog |
-| `/api/v1/pipeline-board/tasks/{id}/ready` | POST | `{ready}` flips a ticket ready↔backlog — the backend of the “→ Todo” / “→ Backlog” / Retry buttons |
+| `/api/v1/pipeline-board` | GET | Global projection: 3 fixed lanes + one folded card per root pipeline (progress, pending reviews, deps, contract args, output, concurrency) |
+| `/api/v1/pipeline-board/tasks` | POST | Create a ticket; `bot` required; optional `blockers`, `upsert`; `{start:true}` → ready when deps OK else `waiting_deps` |
+| `/api/v1/pipeline-board/tasks/{id}/ready` | POST | `{ready}` stages Ready when hard deps are done, else parks in `waiting_deps` (or 409); unstage → backlog |
+| `/api/v1/pipeline-board/tasks/{id}` | PATCH | Edit a not-yet-run ticket (title, body, labels, priority, bot, bot_args, blockers) |
+| `/api/v1/pipeline-board/tasks/{id}` | DELETE | Delete a ticket (issue only, never a run); 409 while any run in its tree is active |
+| `/api/v1/pipeline-board/tasks/{id}/reset` | POST | Cancel every active run in the ticket's tree, then restage it to Ready |
+| `/api/v1/pipeline-board/tasks/{id}/dependency-graph` | GET | Limited-depth hard-dep graph (also `GET /api/v1/native/issues/{id}/dependency-graph`) |
+| `/api/v1/pipeline-board/bulk/ready` | POST | `{ids?\|family_id?\|pipeline_kind?}` stage many tickets Ready (skip open blockers by default) |
+| `/api/v1/pipeline-board/bulk/recompute-deps` | POST | Re-promote `waiting_deps` tickets whose blockers are now satisfied |
 
 **Local concurrency cap.** `iterion studio` caps concurrent **root** pipelines
 at `--max-concurrent-pipelines` (default 3; also

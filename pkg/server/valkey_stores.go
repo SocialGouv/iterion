@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/redis/go-redis/v9"
@@ -84,8 +85,17 @@ func newValkeyBoardMCPTokenStore(rdb redis.UniversalClient, logger *iterlog.Logg
 	return &valkeyBoardMCPTokenStore{rdb: rdb, logger: logger}
 }
 
-func (s *valkeyBoardMCPTokenStore) Register(token string, caps []string) error {
-	b, err := json.Marshal(caps)
+// boardTokenPayload is the stored grant. It replaced a bare `[]string` of
+// capabilities when the owning ticket had to ride along (so board.create
+// over the HTTP transport can auto-stamp parent_id); lookup still accepts
+// the legacy array shape written by an older replica mid-rollout.
+type boardTokenPayload struct {
+	Caps          []string `json:"caps"`
+	SourceIssueID string   `json:"src,omitempty"`
+}
+
+func (s *valkeyBoardMCPTokenStore) Register(token string, caps []string, sourceIssueID string) error {
+	b, err := json.Marshal(boardTokenPayload{Caps: caps, SourceIssueID: strings.TrimSpace(sourceIssueID)})
 	if err != nil {
 		return fmt.Errorf("marshal board MCP caps: %w", err)
 	}
@@ -121,12 +131,20 @@ func (s *valkeyBoardMCPTokenStore) lookup(token string) (boardMCPGrant, bool) {
 	if err != nil {
 		return boardMCPGrant{}, false
 	}
-	var caps []string
-	if json.Unmarshal(b, &caps) != nil {
-		return boardMCPGrant{}, false
+	var payload boardTokenPayload
+	if json.Unmarshal(b, &payload) != nil {
+		// Legacy shape: a bare capability array (pre-parent_id rollout).
+		var caps []string
+		if json.Unmarshal(b, &caps) != nil {
+			return boardMCPGrant{}, false
+		}
+		payload.Caps = caps
 	}
-	grant := boardMCPGrant{Capabilities: boardops.Capabilities{}}
-	for _, c := range caps {
+	grant := boardMCPGrant{
+		Capabilities:  boardops.Capabilities{},
+		SourceIssueID: payload.SourceIssueID,
+	}
+	for _, c := range payload.Caps {
 		grant.Capabilities[c] = true
 	}
 	// ExpiresAt left zero: Redis already evicted the key if it lapsed, and the

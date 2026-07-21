@@ -118,6 +118,7 @@ Other top-level directories: `studio/` (React/Vite frontend), `examples/` (.bot 
 - `pkg/orgusage/` — Per-org monthly run/cost counters (Mongo CAS) feeding the launch gate + usage views (see [docs/quotas-and-limits.md](docs/quotas-and-limits.md))
 - `pkg/pat/` — Personal access tokens (`iap_` bearers for programmatic API access)
 - `pkg/mail/` — Stdlib SMTP mailer (invitations + password reset) with a log fallback when unconfigured
+- `pkg/usernotify/` — User-addressed notifications for run lifecycle moments (run paused on a human form, finished/failed/cancelled): `Dispatcher` consumes run-outcome `trigger.Event`s from the eventbus spine (queue group `usernotify` on NATS ⇒ one replica per event), resolves recipients (run owner + per-user team-wide opt-in prefs), dedups per episode via the `sent_notifications` first-writer-wins claim, and fans out to `Sink`s — `webpush/` (VAPID Web Push to per-browser subscriptions, cloud) ships; desktop (Wails OS notification) and email are future sinks on the same interface. A 2-min reconciliation sweep replays episodes the lossy bus dropped. Shared event authority: `trigger.BuildRunOutcome` (used by both `runview.emitRunOutcome` and the runner's `fireOutcomeEvent`). Enabled iff `ITERION_WEBPUSH_VAPID_{PUBLIC,PRIVATE}_KEY` are set (`iterion server webpush-keys` mints a pair). See [docs/notifications.md](docs/notifications.md)
 - `pkg/bundle/` — `.botz` bundle loader (workflow + skills + recipes packaged together)
 - `pkg/skilllib/` — **skill library** (ADR-059): a standalone, operator-curated store of `SKILL.md` skills, global `~/.iterion/skills/` + per-project override, referenced from workflows by the DSL `skills:` field. Distinct from bundle/plugin skills (both artifact-coupled); the three share the run-time `.claude/skills/` mirror (bundle > plugin > library precedence). Ships the shared frontmatter parser reused by `runview`. See [docs/skills-library.md](docs/skills-library.md)
 - `pkg/cloud/` — Cloud-mode runtime wiring (queue dispatch, runner orchestration, multitenancy)
@@ -456,8 +457,14 @@ ship on the spine** (each = a source adapter publishing a
   poll stays the reconciliation net, so fast-path + poll **cannot
   double-launch**.
 - **run-completion** ("runned by iterion") — `runview.Service` emits
-  `run.finished`/`failed`/`cancelled`; a direct-mode subscription chains
-  the next bot (`Actor` = upstream bot id).
+  `run.finished`/`failed`/`cancelled`/`paused` in-process, and cloud
+  **runner pods publish the same events** onto the NATSBus
+  (`Runner.fireOutcomeEvent`, sharing `trigger.BuildRunOutcome` with the
+  runview emitter — the NATSBus is wired in cloud since the
+  web-notifications work); a direct-mode subscription chains the next
+  bot (`Actor` = upstream bot id), and the `usernotify` dispatcher
+  consumes `run.paused`+terminals for browser push notifications
+  ([docs/notifications.md](docs/notifications.md)).
 - **scheduled** — `trigger.Scheduler` ticks schedule-kind subscriptions
   on their `Cron` (local tenant ""; cloud keeps cloudsched's CAS
   ticker).

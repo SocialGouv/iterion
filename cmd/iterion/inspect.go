@@ -58,7 +58,7 @@ Examples:
 func init() {
 	f := inspectCmd.Flags()
 	f.StringVar(&inspectOpts.runID, "run-id", "", "Run to inspect (omit to list all)")
-	f.StringVar(&inspectOpts.storeDir, "store-dir", "", "Store directory (default: .iterion)")
+	f.StringVar(&inspectOpts.storeDir, "store-dir", "", "Store directory override (default: managed store for the working directory)")
 	f.BoolVar(&inspectOpts.events, "events", false, "Show event log (run-level mode)")
 	f.BoolVar(&inspectOpts.full, "full", false, "Show all details (run-level mode)")
 

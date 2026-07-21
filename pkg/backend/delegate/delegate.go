@@ -319,6 +319,11 @@ type Task struct {
 	// NodeID is the IR node identifier, used for observability hooks.
 	NodeID string
 
+	// SourceIssueID is the native ticket that owns this run (dispatcher
+	// or pipeline launch). Board MCP create_issue auto-stamps children
+	// with this parent when set. Empty for ad-hoc runs.
+	SourceIssueID string
+
 	// Iteration is the 0-based loop iteration counter for this
 	// execution. Aligned with the loop_iteration field exposed in
 	// events / ExecutionState. Zero for nodes outside any loop.
@@ -453,6 +458,17 @@ type Task struct {
 
 	// WorkDir is the working directory for the CLI subprocess.
 	WorkDir string
+
+	// ExtraEnv is a list of KEY=value process-environment additions for
+	// every subprocess this task spawns on the HOST — delegate CLI
+	// spawns (claude_code, kimi/grok) and the claw bash builtin. The
+	// executor populates it from run-level provisioning (the devbox
+	// profile bin dirs prepended to PATH on runs without a sandbox).
+	// Entries are appended after the inherited environment, so on a
+	// duplicate key the ExtraEnv value wins (os/exec keeps the last
+	// occurrence). Sandboxed tasks never carry entries here: the
+	// container's env is settled at container creation.
+	ExtraEnv []string
 
 	// BaseDir is the allowed base directory for WorkDir validation.
 	// If set, WorkDir must resolve to a path within BaseDir.

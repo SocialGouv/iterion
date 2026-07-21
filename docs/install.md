@@ -2,7 +2,9 @@
 
 # Install
 
-Iterion ships in eight delivery flavours. Pick the one that fits your workflow — the DSL, runtime, persistence and observability are identical across all of them.
+Iterion ships in eight delivery/operation flavours. They share the same DSL,
+compiler, runtime, and logical run contract; launch transport, persistence,
+isolation, and process topology vary between local, container, and cloud modes.
 
 | Mode | Best for | Install |
 |---|---|---|
@@ -15,7 +17,7 @@ Iterion ships in eight delivery flavours. Pick the one that fits your workflow �
 | ⏰ [**Scheduler**](scheduling.md) | Cron or sub-minute keepalive runs without a resident Iterion daemon | Bundled with the CLI: `iterion schedule add … && iterion schedule install` |
 | 📦 [**TypeScript SDK**](../sdks/typescript/) | Programmatic invocation from Node/Deno/Bun apps | `npm install @iterion/sdk` |
 
-All eight invoke the same Go core. Pick CLI for automation, the web editor for daily editing, the desktop app for a one-click install with managed credentials, Docker for a self-contained runtime, cloud mode for a shared always-on instance, the dispatcher for an autonomous issue loop, the scheduler for recurring or keepalive runs, or the SDK to embed Iterion in a Node/Deno/Bun application.
+All eight use the same Go core. Pick CLI for automation, the web editor for daily editing, the desktop app for a one-click install with managed credentials, Docker for a self-contained runtime, cloud mode for a shared always-on instance, the dispatcher for an autonomous issue loop, the scheduler for recurring or keepalive runs, or the SDK to embed Iterion in a Node/Deno/Bun application.
 
 ---
 

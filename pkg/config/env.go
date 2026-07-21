@@ -153,6 +153,10 @@ func loadEnv(cfg *Config) error {
 	lookupString("ITERION_OAUTH_FORFAIT_ANTHROPIC_CLIENT_ID", &cfg.Auth.OAuthForfait.AnthropicClientID)
 	lookupString("ITERION_OAUTH_FORFAIT_CODEX_CLIENT_ID", &cfg.Auth.OAuthForfait.CodexClientID)
 
+	lookupString("ITERION_WEBPUSH_VAPID_PUBLIC_KEY", &cfg.WebPush.VAPIDPublicKey)
+	lookupString("ITERION_WEBPUSH_VAPID_PRIVATE_KEY", &cfg.WebPush.VAPIDPrivateKey)
+	lookupString("ITERION_WEBPUSH_SUBSCRIBER", &cfg.WebPush.Subscriber)
+
 	lookupString("ITERION_ALERTS_WEBHOOK_URL", &cfg.Alerts.Webhook.URL)
 	if err := lookupBool("ITERION_ALERTS_DESKTOP_ENABLED", &cfg.Alerts.Desktop.Enabled); err != nil {
 		return err

@@ -51,7 +51,7 @@ func init() {
 	// interface IP to expose on the LAN.
 	f.StringVar(&studioOpts.bind, "bind", "127.0.0.1", "Bind address (default: 127.0.0.1; use 0.0.0.0 to expose on LAN)")
 	f.StringVar(&studioOpts.dir, "dir", "", "Working directory")
-	f.StringVar(&studioOpts.storeDir, "store-dir", "", "Run store directory (default: nearest .iterion ancestor of --dir, or <dir>/.iterion)")
+	f.StringVar(&studioOpts.storeDir, "store-dir", "", "Run store directory override (default: managed store for --dir)")
 	f.BoolVar(&studioOpts.noBrowser, "no-browser", false, "Don't open browser automatically")
 	f.BoolVar(&studioOpts.noBrowserPane, "no-browser-pane", false, "Disable the run console's Browser pane (no preview proxy, no CDP WS, no live Chromium)")
 	f.Int64Var(&studioOpts.maxUploadSize, "max-upload-size", 0, "Max bytes per attachment upload (0 = mode default: 50MB web, 1GB desktop)")

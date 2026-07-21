@@ -281,3 +281,42 @@ func TestClose_RejectsNonTerminalTarget(t *testing.T) {
 		t.Fatalf("expected not-terminal rejection, got %v", err)
 	}
 }
+
+func TestCreateIssue_ParentIDAndAutoSpawn(t *testing.T) {
+	dir := t.TempDir()
+	s, err := native.NewStore(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = s.Close() })
+	caps := NewCapabilities("board.create,board.read")
+
+	// Explicit parent_id
+	raw, err := Call(s, caps, "create_issue", json.RawMessage(
+		`{"title":"child","parent_id":"native:planner-1","bot":"producer"}`,
+	))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var child native.Issue
+	if err := json.Unmarshal(raw, &child); err != nil {
+		t.Fatal(err)
+	}
+	if child.ParentID != "native:planner-1" {
+		t.Fatalf("ParentID = %q", child.ParentID)
+	}
+	if child.BotArgs[native.BotArgSpawnedFrom] != "native:planner-1" {
+		t.Fatalf("spawned_from = %v", child.BotArgs)
+	}
+
+	// Auto from CallEnv
+	raw2, err := CallWithEnv(s, caps, "create_issue", json.RawMessage(`{"title":"auto-child"}`), CallEnv{SpawnParentID: "native:auto-parent"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var child2 native.Issue
+	_ = json.Unmarshal(raw2, &child2)
+	if child2.ParentID != "native:auto-parent" {
+		t.Fatalf("auto ParentID = %q", child2.ParentID)
+	}
+}

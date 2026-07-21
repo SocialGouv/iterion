@@ -92,7 +92,13 @@ archive moved, pass its new path explicitly.
 Resume also rebuilds the execution environment: sandbox, run work directory,
 plugin contributions/hooks, library skills, subbot runner, and worktree
 context. A worktree run that eventually finishes goes through the normal
-persistent-branch and merge-finalization path.
+persistent-branch and merge-finalization path. A worktree workspace whose
+`.git` pointer names a gitdir that no longer exists (the repository that
+registered it is gone) refuses to resume with an explicit error — every git
+command there would fail, and nodes would read the workspace as "no repo".
+Cloud runs never create that shape: with a rootless store (cloud Mongo) the
+engine skips worktree isolation and runs in place in the per-run clone, so
+the workspace survives the runner's clone-recycle between queue deliveries.
 
 ## Overrides on resume
 

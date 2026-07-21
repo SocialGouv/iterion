@@ -112,6 +112,15 @@ type ClawExecutor struct {
 	// route their subprocess invocations through it when set.
 	sandbox sandbox.Run
 
+	// runExtraEnv is a list of KEY=value process-environment additions
+	// applied to every HOST-spawned command of the run — tool nodes,
+	// delegate CLI spawns (via Task.ExtraEnv), and the claw bash
+	// builtin. The engine pushes it via SetRunExtraEnv on runs without
+	// a sandbox (host devbox provisioning: the profile bin dirs
+	// prepended to PATH). Nil on sandboxed runs — the container env is
+	// settled at container creation.
+	runExtraEnv []string
+
 	// sessions holds per-(runID, nodeID) accumulated message lists
 	// so the recovery dispatcher's CompactAndRetry path has
 	// something to actually compact. The claw backend reads this
@@ -119,14 +128,19 @@ type ClawExecutor struct {
 	sessions *nodeSessionStore
 
 	// boardRegister mints a per-node board MCP run token for the given
-	// capabilities (returns the token registered with the server's
-	// BoardMCPTokenRegistry). Set via WithBoardRegister on the server
-	// path; nil on CLI runs (sandboxed board-emit then stays disabled).
-	boardRegister func(caps []string) string
+	// capabilities and owning ticket (returns the token registered with
+	// the server's BoardMCPTokenRegistry). Set via WithBoardRegister on
+	// the server path; nil on CLI runs (sandboxed board-emit then stays
+	// disabled).
+	boardRegister func(caps []string, sourceIssueID string) string
 	// boardEndpoint is the per-run gateway-reachable board MCP URL pushed
 	// in by the engine after the sandbox starts (SetBoardEndpoint). Empty
 	// disables sandboxed board-emit wiring (C082).
 	boardEndpoint string
+	// sourceIssueID is the ticket that owns this run (if any). Plumbed
+	// into board MCP / claw board tools so create_issue can auto-stamp
+	// parent_id on spawned children.
+	sourceIssueID string
 
 	// detector lazily probes host credentials (claude_code OAuth,
 	// codex OAuth, ANTHROPIC_API_KEY, …) so resolveBackendName can
@@ -174,6 +188,15 @@ type ClawExecutor struct {
 	hostSecretErr     error
 }
 
+// SetRunExtraEnv installs run-level process-environment additions
+// (KEY=value entries) applied to every host-spawned command of the run.
+// The engine calls this once per run, before the first node executes,
+// from host devbox provisioning (pkg/runtime/devbox_host.go); the same
+// happens-before as SetSandbox makes a mutex unnecessary.
+func (e *ClawExecutor) SetRunExtraEnv(env []string) {
+	e.runExtraEnv = env
+}
+
 // SetSandbox installs the live sandbox handle on the executor. The
 // engine calls this once per run, after [resolveAndStartSandbox]
 // returns. Subsequent tool node and backend invocations consult the
@@ -200,8 +223,16 @@ type ClawExecutorOption func(*ClawExecutor)
 // path). The closure registers a token for the node's board capabilities
 // with the server's BoardMCPTokenRegistry and returns it; the executor
 // pairs it with the board endpoint on each sandboxed board-cap node.
-func WithBoardRegister(fn func(caps []string) string) ClawExecutorOption {
+// sourceIssueID is the ticket owning the run, so the HTTP transport can
+// auto-stamp parent_id on board.create like the other two transports.
+func WithBoardRegister(fn func(caps []string, sourceIssueID string) string) ClawExecutorOption {
 	return func(e *ClawExecutor) { e.boardRegister = fn }
+}
+
+// WithSourceIssueID stamps the ticket that owns this run so board.create
+// can auto-link spawned children (parent_id / spawned_from).
+func WithSourceIssueID(issueID string) ClawExecutorOption {
+	return func(e *ClawExecutor) { e.sourceIssueID = strings.TrimSpace(issueID) }
 }
 
 // WithEventHooks sets observability callbacks on the executor.

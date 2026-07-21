@@ -137,7 +137,7 @@ func RunDispatch(p *Printer, opts DispatchOptions) error {
 	// dispatcher claims them now instead of at the next poll. nil store =
 	// spine off (poll-only). The Manager doubles as the nudger.
 	if ts := buildLocalTriggerStore(cfg.Bots.Paths, logger); ts != nil {
-		if tc := server.StartTriggerCoordinator(nativeStore, ts, mgr, nil, nil, logger); tc != nil {
+		if tc := server.StartTriggerCoordinator(nativeStore, ts, mgr, nil, nil, nil, logger); tc != nil {
 			defer tc.Close()
 		}
 	}

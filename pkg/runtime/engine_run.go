@@ -73,7 +73,22 @@ func (e *Engine) Run(ctx context.Context, runID string, inputs map[string]any) (
 		// isolation, never a precondition. Many e2e/examples and ad-hoc
 		// runs against scratch dirs rely on this. The explicit opt-out
 		// path is `worktree: none`.
-		if !workspaceIsGitRepo(e.workDir) {
+		if e.store.Root() == "" {
+			// A store with no filesystem root (the cloud Mongo store) has
+			// nowhere durable to host a per-run worktree: setupWorktree
+			// derives the worktree home from store.Root(), so "" would
+			// anchor it in the process cwd. Decisive on a cloud runner,
+			// the workspace is a per-run clone recycled between queue
+			// deliveries — a worktree's gitdir lives inside that clone's
+			// .git, so the re-clone on resume severs the linkage and every
+			// git command in the workspace fails with "not a git
+			// repository". The per-run clone on an ephemeral runner is
+			// already isolation; run in place so git keeps working across
+			// deliveries.
+			if e.logger != nil {
+				e.logger.Info("runtime: store has no filesystem root — running in place in %s (worktree isolation skipped: an ephemeral per-run workspace cannot host a durable worktree)", e.workDir)
+			}
+		} else if !workspaceIsGitRepo(e.workDir) {
 			if e.logger != nil {
 				e.logger.Warn("runtime: workspace %s is not a git repository — running in-place (set `worktree: none` to silence this)", e.workDir)
 			}

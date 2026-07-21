@@ -38,7 +38,7 @@ type RunOptions struct {
 	Preset        string               // --preset <name>: applies an in-source named preset before --var
 	RunID         string               // explicit run ID (auto-generated if empty)
 	Source        *store.RunSource     // originating-action provenance stamped on the run (schedule launches)
-	StoreDir      string               // store directory (default: nearest .iterion ancestor of the workflow, or alongside it)
+	StoreDir      string               // explicit store override; empty uses store.ResolveStoreDir anchored at the workflow project
 	Timeout       time.Duration        // maximum run duration (0 = no limit)
 	LogLevel      string               // log level (default: "info", env: ITERION_LOG_LEVEL)
 	NoInteractive bool                 // disable interactive TTY prompting on human pause

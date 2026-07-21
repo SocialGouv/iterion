@@ -379,6 +379,9 @@ func (b *ClaudeCodeBackend) wireBoardMCP(task Task, opts []claudesdk.Option, ext
 		if task.StoreDir != "" {
 			env["ITERION_STORE_DIR"] = task.StoreDir
 		}
+		if task.SourceIssueID != "" {
+			env["ITERION_SOURCE_ISSUE_ID"] = task.SourceIssueID
+		}
 		opts = append(opts, claudesdk.WithMCPServer(boardMCPServerName, &claudesdk.MCPStdioServer{
 			Command: selfPath,
 			Args:    []string{boardMCPSubcommand},
