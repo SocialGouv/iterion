@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"time"
 
 	"github.com/SocialGouv/iterion/pkg/backend/delegate"
 	"github.com/SocialGouv/iterion/pkg/backend/model"
@@ -88,7 +89,12 @@ func RunAnswer(opts AnswerOptions, p *Printer) error {
 		p.Line("warning: answer recorded but event append failed: %v", aerr)
 	}
 	text := model.FormatAsyncAnswerMessage(answered.ID, model.AsyncQuestionText(answered), opts.Answer)
-	msg := store.QueuedUserMessage{RunID: opts.RunID, Text: text, NodeID: answered.NodeID}
+	msg := store.QueuedUserMessage{
+		ID:     fmt.Sprintf("msg_%d_%s", time.Now().UnixNano(), answered.ID),
+		RunID:  opts.RunID,
+		Text:   text,
+		NodeID: answered.NodeID,
+	}
 	if qerr := s.AppendQueuedMessage(ctx, opts.RunID, msg); qerr != nil {
 		return fmt.Errorf("answer recorded but queueing delivery failed: %w", qerr)
 	}

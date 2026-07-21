@@ -41,6 +41,10 @@ prompt draft_sys:
   <NAME> where an unanswered detail belongs. Only call await_answers
   if you have literally nothing left to do without the answers.
 
+prompt draft_user:
+  Start now: post your two ask_user_async questions first, then draft
+  the README skeleton while the operator answers.
+
 prompt finalize_sys:
   You finalize a README draft. You receive the draft (with possible
   placeholders) and the operator's answers to the drafting questions.
@@ -56,6 +60,7 @@ prompt finalize_user:
 agent draft:
   interaction: async
   system: draft_sys
+  user: draft_user
   output: draft_out
 
 ## Deterministic sync point: block HERE (and only here) until every
