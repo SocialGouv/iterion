@@ -20,13 +20,12 @@ function jsonResponse(body: unknown, status = 200): Response {
 }
 
 describe("normalizePipelineBoard", () => {
-  it("keeps the four fixed columns, folded root cards, draft/ready flags and concurrency", () => {
+  it("keeps the three fixed columns, folded root cards, ready flags and concurrency", () => {
     const board = normalizePipelineBoard({
       columns: [
-        { id: "draft", title: "Draft", kind: "draft" },
-        { id: "todo", title: "Todo", kind: "todo" },
+        { id: "opened", title: "Opened", kind: "opened" },
         { id: "in_progress", title: "In progress", kind: "in_progress" },
-        { id: "done", title: "Done", kind: "done" },
+        { id: "closed", title: "Closed", kind: "closed" },
       ],
       cards: [
         {
@@ -56,7 +55,7 @@ describe("normalizePipelineBoard", () => {
         {
           id: "task:iss-1",
           kind: "task",
-          column_id: "todo",
+          column_id: "opened",
           title: "Backlog item",
           issue_id: "iss-1",
           issue_state: "ready",
@@ -73,7 +72,7 @@ describe("normalizePipelineBoard", () => {
         {
           id: "task:iss-2",
           kind: "run",
-          column_id: "draft",
+          column_id: "closed",
           title: "Broke last time",
           issue_id: "iss-2",
           run_id: "run-old",
@@ -92,10 +91,9 @@ describe("normalizePipelineBoard", () => {
     });
 
     expect(board.columns.map((c) => c.id)).toEqual([
-      "draft",
-      "todo",
+      "opened",
       "in_progress",
-      "done",
+      "closed",
     ]);
     expect(board.concurrency).toEqual({
       enabled: true,
@@ -118,13 +116,13 @@ describe("normalizePipelineBoard", () => {
     });
     expect(board.cards[1]).toMatchObject({
       kind: "task",
-      column_id: "todo",
+      column_id: "opened",
       ready: true,
       entry_input: { area: "api", verbose: true },
       queue_position: 2,
     });
     expect(board.cards[2]).toMatchObject({
-      column_id: "draft",
+      column_id: "closed",
       failed: true,
       error: "boom",
     });
@@ -132,7 +130,7 @@ describe("normalizePipelineBoard", () => {
 
   it("defaults progress and concurrency when the server omits them", () => {
     const board = normalizePipelineBoard({
-      cards: [{ id: "task:x", column_id: "todo", title: "Loose" }],
+      cards: [{ id: "task:x", column_id: "opened", title: "Loose" }],
     });
     expect(board.columns).toEqual([]);
     expect(board.concurrency).toEqual({
@@ -150,13 +148,77 @@ describe("normalizePipelineBoard", () => {
     });
     expect(board.cards[0]?.pending_reviews).toBeUndefined();
   });
+
+  // Regression: this normalizer is a whitelist, and planner provenance was
+  // missing from it — so a parent card arrived in the views with no
+  // children_summary and rendered neither the Plan badge nor the
+  // "N / M closed" children counter, even though the server sent both.
+  it("keeps planner provenance (role, parent, children, summary)", () => {
+    const board = normalizePipelineBoard({
+      cards: [
+        {
+          id: "run:parent",
+          column_id: "opened",
+          title: "Boudicca",
+          run_id: "run-1",
+          role: "planner",
+          children: [
+            { issue_id: "kid-1", title: "ÉP 1", state: "done", card_id: "run:kid1" },
+            { issue_id: "", title: "dropped — no issue_id" },
+          ],
+          children_summary: {
+            total: 5,
+            ready: 0,
+            in_progress: 1,
+            done: 2,
+            failed: 2,
+            open: 0,
+          },
+        },
+        {
+          id: "run:child",
+          column_id: "in_progress",
+          title: "ÉP 4/5",
+          parent_issue_id: "native:parent",
+          parent_title: "Boudicca",
+          role: "producer",
+        },
+      ],
+    });
+    const parent = board.cards[0];
+    expect(parent?.role).toBe("planner");
+    expect(parent?.children_summary).toEqual({
+      total: 5,
+      ready: 0,
+      in_progress: 1,
+      done: 2,
+      failed: 2,
+      open: 0,
+    });
+    expect(parent?.children).toEqual([
+      { issue_id: "kid-1", title: "ÉP 1", state: "done", card_id: "run:kid1" },
+    ]);
+    const child = board.cards[1];
+    expect(child?.parent_issue_id).toBe("native:parent");
+    expect(child?.parent_title).toBe("Boudicca");
+    expect(child?.role).toBe("producer");
+  });
+
+  it("omits planner provenance when the server sends none", () => {
+    const board = normalizePipelineBoard({
+      cards: [{ id: "task:x", column_id: "opened", title: "Loose" }],
+    });
+    expect(board.cards[0]?.children_summary).toBeUndefined();
+    expect(board.cards[0]?.children).toBeUndefined();
+    expect(board.cards[0]?.role).toBeUndefined();
+  });
 });
 
 describe("getPipelineBoard", () => {
   it("GETs the single global board endpoint", async () => {
     const fetchMock = vi.fn().mockResolvedValue(
       jsonResponse({
-        columns: [{ id: "todo", title: "Todo", kind: "todo" }],
+        columns: [{ id: "opened", title: "Opened", kind: "opened" }],
         cards: [],
         concurrency: { enabled: false, max: 0, active: 0, waiting: 0 },
         generated_at: "2026-07-14T10:00:00Z",

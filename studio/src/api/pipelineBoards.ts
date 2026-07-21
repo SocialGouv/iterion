@@ -11,7 +11,7 @@ const BASE = "/api/v1/pipeline-board";
 
 // The five fixed lanes, in the order the server emits them.
 export interface PipelineBoardColumn {
-  id: string; // "backlog" | "todo" | "in_progress" | "done" | "failed"
+  id: string; // "opened" | "in_progress" | "closed"
   title: string;
   kind: string;
 }
@@ -36,6 +36,42 @@ export interface PipelineBoardAttempt {
   at?: string;
 }
 
+// Resolved hard dependency on another ticket (server-side enrichment).
+export interface PipelineBoardBlocker {
+  id: string;
+  title?: string;
+  state?: string;
+  bot?: string;
+  labels?: string[];
+  satisfied: boolean;
+  missing_labels?: string[];
+}
+
+// Reverse-index entry: a ticket that lists this card as a blocker.
+export interface PipelineBoardBlocking {
+  id: string;
+  title?: string;
+}
+
+/** Spawned child ticket under a planner parent. */
+export interface PipelineBoardChildRef {
+  issue_id: string;
+  title?: string;
+  state?: string;
+  bot_id?: string;
+  card_id?: string;
+}
+
+/** Aggregated child statuses for a plan group face. */
+export interface PipelineBoardChildrenSummary {
+  total: number;
+  ready: number;
+  in_progress: number;
+  done: number;
+  failed: number;
+  open: number;
+}
+
 // PipelineBoardCard is the read model the studio polls: one per root pipeline
 // (or per not-yet-launched native task). Descendants are folded into their
 // root — there are no per-child cards.
@@ -52,6 +88,21 @@ export interface PipelineBoardCard {
   labels?: string[];
   priority?: number;
 
+  // Hard-dependency graph (ticket roots). open_blocker_count > 0 means the
+  // launch loop will refuse even if ready is true.
+  blockers?: PipelineBoardBlocker[];
+  open_blocker_count?: number;
+  launch_blocked_reason?: string;
+  blocking?: PipelineBoardBlocking[];
+
+  // Planner provenance (distinct from hard blockers).
+  parent_issue_id?: string;
+  parent_title?: string;
+  children?: PipelineBoardChildRef[];
+  children_summary?: PipelineBoardChildrenSummary;
+  /** planner | producer when known. */
+  role?: string;
+
   // Run identity (empty for a not-yet-launched task card).
   run_id?: string;
   workflow_name?: string;
@@ -60,13 +111,13 @@ export interface PipelineBoardCard {
   error?: string;
 
   // Failed lane — the ticket's last run failed/cancelled (Retry stages it
-  // back to Todo), as opposed to a not-yet-ready Backlog ticket.
+  // back to Ready), as opposed to a not-yet-ready Backlog ticket.
   failed?: boolean;
-  // Todo lane — a task-backed ticket in the ready state (waiting for a
+  // Ready lane (wire ID "opened") — a task-backed ticket staged (waiting for a
   // concurrency slot; the studio auto-launches it when one frees).
   ready?: boolean;
 
-  // TODO lane — launch vars / task bot-args, and the concurrency-queue place.
+  // Ready lane — launch vars / task bot-args, and the concurrency-queue place.
   entry_input?: Record<string, unknown>;
   queue_position?: number;
 
@@ -96,7 +147,7 @@ export interface PipelineBoardCard {
 }
 
 // The local pipeline-concurrency gate. When `enabled` is false the other
-// fields are zero and the TODO lane only holds not-yet-launched native tasks.
+// fields are zero and the Ready lane only holds not-yet-launched native tasks.
 export interface PipelineConcurrency {
   enabled: boolean;
   max: number;
@@ -122,10 +173,14 @@ export interface CreatePipelineTaskInput {
   labels?: string[];
   priority?: number;
   bot_args?: Record<string, string>;
+  /** Hard deps: issue IDs that must reach done before this ticket can launch. */
+  blockers?: string[];
   start?: boolean;
   // Optional repo-first scoping: link the new task to a connected forge repo
   // at creation. Mirrors NativeIssueCreate.external.
   external?: ExternalLinkInput;
+  /** Reconcile by (bot, bot_args.input_path) instead of creating a duplicate. */
+  upsert?: boolean;
 }
 
 type UnknownRecord = Record<string, unknown>;
@@ -193,6 +248,80 @@ function normalizeExternal(value: unknown): ExternalLinkInput | undefined {
   return out;
 }
 
+function normalizeBlockers(value: unknown): PipelineBoardBlocker[] | undefined {
+  if (!Array.isArray(value)) return undefined;
+  return value
+    .map((entry) => {
+      const source = record(entry) ?? {};
+      const id = text(source.id);
+      if (!id) return null;
+      return {
+        id,
+        ...(text(source.title) ? { title: text(source.title) } : {}),
+        ...(text(source.state) ? { state: text(source.state) } : {}),
+        ...(text(source.bot) ? { bot: text(source.bot) } : {}),
+        ...(stringArray(source.labels) !== undefined
+          ? { labels: stringArray(source.labels) }
+          : {}),
+        satisfied: booleanValue(source.satisfied),
+        ...(stringArray(source.missing_labels) !== undefined
+          ? { missing_labels: stringArray(source.missing_labels) }
+          : {}),
+      };
+    })
+    .filter((b): b is PipelineBoardBlocker => b !== null);
+}
+
+function normalizeBlocking(value: unknown): PipelineBoardBlocking[] | undefined {
+  if (!Array.isArray(value)) return undefined;
+  return value
+    .map((entry) => {
+      const source = record(entry) ?? {};
+      const id = text(source.id);
+      if (!id) return null;
+      return {
+        id,
+        ...(text(source.title) ? { title: text(source.title) } : {}),
+      };
+    })
+    .filter((b): b is PipelineBoardBlocking => b !== null);
+}
+
+function normalizeChildRefs(
+  value: unknown,
+): PipelineBoardChildRef[] | undefined {
+  if (!Array.isArray(value)) return undefined;
+  return value
+    .map((entry) => {
+      const source = record(entry) ?? {};
+      const issueID = text(source.issue_id);
+      if (!issueID) return null;
+      return {
+        issue_id: issueID,
+        ...(text(source.title) ? { title: text(source.title) } : {}),
+        ...(text(source.state) ? { state: text(source.state) } : {}),
+        ...(text(source.bot_id) ? { bot_id: text(source.bot_id) } : {}),
+        ...(text(source.card_id) ? { card_id: text(source.card_id) } : {}),
+      };
+    })
+    .filter((c): c is PipelineBoardChildRef => c !== null);
+}
+
+function normalizeChildrenSummary(
+  value: unknown,
+): PipelineBoardChildrenSummary | undefined {
+  const source = record(value);
+  if (!source) return undefined;
+  return {
+    total: intValue(source.total, 0),
+    ready: intValue(source.ready, 0),
+    in_progress: intValue(source.in_progress, 0),
+    done: intValue(source.done, 0),
+    failed: intValue(source.failed, 0),
+    open: intValue(source.open, 0),
+  };
+}
+
 function normalizePendingReviews(
   value: unknown,
 ): PipelineBoardPendingReview[] | undefined {
@@ -244,7 +373,7 @@ export function normalizePipelineBoardCard(
   return {
     id,
     kind: text(source.kind) ?? (runID ? "run" : "task"),
-    column_id: text(source.column_id) ?? "todo",
+    column_id: text(source.column_id) ?? "opened",
     title: text(source.title) ?? id,
     ...(text(source.body) ? { body: text(source.body) } : {}),
     ...(issueID ? { issue_id: issueID } : {}),
@@ -255,6 +384,36 @@ export function normalizePipelineBoardCard(
     ...(numberValue(source.priority) !== undefined
       ? { priority: numberValue(source.priority) }
       : {}),
+    ...(normalizeBlockers(source.blockers) !== undefined
+      ? { blockers: normalizeBlockers(source.blockers) }
+      : {}),
+    ...(numberValue(source.open_blocker_count) !== undefined
+      ? { open_blocker_count: intValue(source.open_blocker_count, 0) }
+      : {}),
+    ...(text(source.launch_blocked_reason)
+      ? { launch_blocked_reason: text(source.launch_blocked_reason) }
+      : {}),
+    ...(normalizeBlocking(source.blocking) !== undefined
+      ? { blocking: normalizeBlocking(source.blocking) }
+      : {}),
+    // Planner provenance. This normalizer is a WHITELIST — a field absent
+    // here never reaches the views, however faithfully the server emits it
+    // (that is exactly how the parent card lost its "N / M closed" children
+    // counter and its Plan badge while /api/v1/pipeline-board was serving
+    // both). Keep it in sync with PipelineBoardCard.
+    ...(text(source.parent_issue_id)
+      ? { parent_issue_id: text(source.parent_issue_id) }
+      : {}),
+    ...(text(source.parent_title)
+      ? { parent_title: text(source.parent_title) }
+      : {}),
+    ...(normalizeChildRefs(source.children) !== undefined
+      ? { children: normalizeChildRefs(source.children) }
+      : {}),
+    ...(normalizeChildrenSummary(source.children_summary) !== undefined
+      ? { children_summary: normalizeChildrenSummary(source.children_summary) }
+      : {}),
+    ...(text(source.role) ? { role: text(source.role) } : {}),
     ...(runID ? { run_id: runID } : {}),
     ...(text(source.workflow_name)
       ? { workflow_name: text(source.workflow_name) }
@@ -330,10 +489,54 @@ export async function createPipelineTask(
   });
 }
 
-// markPipelineTaskReady flips a task-backed ticket between the ready (Todo)
-// and backlog states — the write behind the board's "→ Todo" / "→ Backlog"
-// move buttons. The studio auto-launches ready tickets when a concurrency slot
-// frees.
+export interface BulkReadyInput {
+  ids?: string[];
+  family_id?: string;
+  pipeline_kind?: string;
+  only_satisfied?: boolean;
+}
+
+export interface BulkReadyResult {
+  ready: string[];
+  waiting_deps?: string[];
+  skipped?: string[];
+  skipped_why?: Record<string, string>;
+}
+
+/** Stage many tickets Ready (or waiting_deps). Used by multi-select bulk. */
+export async function bulkReadyPipelineTasks(
+  input: BulkReadyInput,
+): Promise<BulkReadyResult> {
+  return apiRequest<BulkReadyResult>(`${BASE}/bulk/ready`, {
+    method: "POST",
+    body: JSON.stringify(input),
+  });
+}
+
+export interface BulkDeleteInput {
+  ids: string[];
+}
+
+export interface BulkDeleteResult {
+  deleted: string[];
+  skipped?: string[];
+  skipped_why?: Record<string, string>;
+}
+
+/** Delete many tickets (issue only). Skips tickets with active runs. */
+export async function bulkDeletePipelineTasks(
+  input: BulkDeleteInput,
+): Promise<BulkDeleteResult> {
+  return apiRequest<BulkDeleteResult>(`${BASE}/bulk/delete`, {
+    method: "POST",
+    body: JSON.stringify(input),
+  });
+}
+
+// markPipelineTaskReady flips a task-backed ticket between the ready and
+// draft states (both stay in the Todo lane) — the write behind the board's
+// Mark ready / Unmark ready / Retry buttons. The studio auto-launches ready
+// tickets when a concurrency slot frees.
 export async function markPipelineTaskReady(
   taskId: string,
   ready: boolean,
@@ -344,6 +547,38 @@ export async function markPipelineTaskReady(
       method: "POST",
       body: JSON.stringify({ ready }),
     },
+  );
+}
+
+// deletePipelineTask removes a ticket — the Backlog card's Delete button.
+// Server-guarded: refused (409) while any run in the ticket's tree is still
+// active, so a live pipeline can never be detached from its ticket. Runs are
+// never deleted, only the native issue.
+export async function deletePipelineTask(taskId: string): Promise<void> {
+  await apiRequest<unknown>(`${BASE}/tasks/${encodeURIComponent(taskId)}`, {
+    method: "DELETE",
+  });
+}
+
+// resetPipelineTask restarts an in-progress ticket from zero: the server
+// cancels every still-active run in the ticket's tree, then restages the
+// ticket to Ready so the admission loop relaunches it fresh. Refused (409)
+// when a run is held by another process.
+export async function resetPipelineTask(taskId: string): Promise<void> {
+  await apiRequest<unknown>(
+    `${BASE}/tasks/${encodeURIComponent(taskId)}/reset`,
+    { method: "POST", body: JSON.stringify({}) },
+  );
+}
+
+// launchPipelineTask starts a ticket immediately, jumping the admission
+// loop's priority order (the Opened → In progress drag). The server still
+// refuses (409) on an active run, an unfinished hard dependency, or a full
+// concurrency cap — those are correctness, not ranking.
+export async function launchPipelineTask(taskId: string): Promise<void> {
+  await apiRequest<unknown>(
+    `${BASE}/tasks/${encodeURIComponent(taskId)}/launch`,
+    { method: "POST", body: JSON.stringify({}) },
   );
 }
 
@@ -359,6 +594,8 @@ export interface PipelineTaskPatch {
   // Re-links the task's forge repo (absent = unchanged). Mirrors
   // NativeIssuePatch.external.
   external?: ExternalLinkInput;
+  /** Replace hard-dep list wholesale; empty array clears. */
+  blockers?: string[];
 }
 
 // updatePipelineTask edits a Backlog (or ready-but-unlaunched) ticket before it

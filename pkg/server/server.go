@@ -69,6 +69,12 @@ type Server struct {
 	// header (see runs_loc.go). Non-nil after New.
 	locCache *runLOCCache
 
+	// admissionSkipWarned dedupes the pipeline-admission "unresolvable
+	// bot" warning per (ticket, bot) so a stranded Ready ticket logs
+	// once instead of every 2s tick. Guarded by admissionSkipMu.
+	admissionSkipMu     sync.Mutex
+	admissionSkipWarned map[string]string
+
 	authSvc        *auth.Service
 	authLimiter    authRateLimiterBackend
 	signer         *auth.JWTSigner
@@ -223,7 +229,7 @@ func (s *Server) boardMCPServiceOption(logger *iterlog.Logger) (runview.ServiceO
 	mux := http.NewServeMux()
 	RegisterBoardMCPRoutes(mux, "/api/v1/mcp/board", s.cfg.NativeTrackerStore, s.boardMCPTokens)
 	reg := s.boardMCPTokens
-	return runview.WithBoardMCP(mux, func(caps []string) string {
+	return runview.WithBoardMCP(mux, func(caps []string, sourceIssueID string) string {
 		token := newBoardMCPToken()
 		if token == "" {
 			if logger != nil {
@@ -231,7 +237,7 @@ func (s *Server) boardMCPServiceOption(logger *iterlog.Logger) (runview.ServiceO
 			}
 			return ""
 		}
-		if err := reg.Register(token, caps); err != nil {
+		if err := reg.Register(token, caps, sourceIssueID); err != nil {
 			if logger != nil {
 				logger.Error("board MCP: %v; sandboxed board-emit disabled for a node", err)
 			}

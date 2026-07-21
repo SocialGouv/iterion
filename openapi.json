@@ -19,6 +19,56 @@
         ],
         "type": "object"
       },
+      "BlockerInfo": {
+        "properties": {
+          "bot": {
+            "type": "string"
+          },
+          "id": {
+            "type": "string"
+          },
+          "labels": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "missing_labels": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "satisfied": {
+            "type": "boolean"
+          },
+          "state": {
+            "type": "string"
+          },
+          "title": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "satisfied"
+        ],
+        "type": "object"
+      },
+      "BlockingInfo": {
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "title": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "id"
+        ],
+        "type": "object"
+      },
       "Checkpoint": {
         "properties": {
           "artifact_versions": {
@@ -230,6 +280,84 @@
           "created_by",
           "created_at",
           "updated_at"
+        ],
+        "type": "object"
+      },
+      "DependencyGraphEdge": {
+        "properties": {
+          "from": {
+            "type": "string"
+          },
+          "to": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "from",
+          "to"
+        ],
+        "type": "object"
+      },
+      "DependencyGraphNode": {
+        "properties": {
+          "blockers": {
+            "items": {
+              "$ref": "#/components/schemas/BlockerInfo"
+            },
+            "type": "array"
+          },
+          "blocking": {
+            "items": {
+              "$ref": "#/components/schemas/BlockingInfo"
+            },
+            "type": "array"
+          },
+          "bot": {
+            "type": "string"
+          },
+          "depth": {
+            "type": "integer"
+          },
+          "id": {
+            "type": "string"
+          },
+          "satisfied": {
+            "type": "boolean"
+          },
+          "state": {
+            "type": "string"
+          },
+          "title": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "depth"
+        ],
+        "type": "object"
+      },
+      "DependencyGraphResponse": {
+        "properties": {
+          "edges": {
+            "items": {
+              "$ref": "#/components/schemas/DependencyGraphEdge"
+            },
+            "type": "array"
+          },
+          "nodes": {
+            "items": {
+              "$ref": "#/components/schemas/DependencyGraphNode"
+            },
+            "type": "array"
+          },
+          "root": {
+            "$ref": "#/components/schemas/DependencyGraphNode"
+          }
+        },
+        "required": [
+          "root",
+          "nodes"
         ],
         "type": "object"
       },
@@ -447,6 +575,9 @@
           "last_workdir": {
             "type": "string"
           },
+          "parent_id": {
+            "type": "string"
+          },
           "priority": {
             "type": "integer"
           },
@@ -502,11 +633,32 @@
             },
             "type": "array"
           },
+          "blockers": {
+            "items": {
+              "$ref": "#/components/schemas/BlockerInfo"
+            },
+            "type": "array"
+          },
+          "blocking": {
+            "items": {
+              "$ref": "#/components/schemas/BlockingInfo"
+            },
+            "type": "array"
+          },
           "body": {
             "type": "string"
           },
           "bot_id": {
             "type": "string"
+          },
+          "children": {
+            "items": {
+              "$ref": "#/components/schemas/PipelineBoardChildRef"
+            },
+            "type": "array"
+          },
+          "children_summary": {
+            "$ref": "#/components/schemas/PipelineBoardChildrenSummary"
           },
           "column_id": {
             "type": "string"
@@ -552,7 +704,19 @@
             },
             "type": "array"
           },
+          "launch_blocked_reason": {
+            "type": "string"
+          },
+          "open_blocker_count": {
+            "type": "integer"
+          },
           "output": {
+            "type": "string"
+          },
+          "parent_issue_id": {
+            "type": "string"
+          },
+          "parent_title": {
             "type": "string"
           },
           "pending_reviews": {
@@ -569,6 +733,9 @@
           },
           "ready": {
             "type": "boolean"
+          },
+          "role": {
+            "type": "string"
           },
           "run_id": {
             "type": "string"
@@ -613,6 +780,60 @@
           "tree_total_nodes",
           "created_at",
           "updated_at"
+        ],
+        "type": "object"
+      },
+      "PipelineBoardChildRef": {
+        "properties": {
+          "bot_id": {
+            "type": "string"
+          },
+          "card_id": {
+            "type": "string"
+          },
+          "issue_id": {
+            "type": "string"
+          },
+          "state": {
+            "type": "string"
+          },
+          "title": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "issue_id"
+        ],
+        "type": "object"
+      },
+      "PipelineBoardChildrenSummary": {
+        "properties": {
+          "done": {
+            "type": "integer"
+          },
+          "failed": {
+            "type": "integer"
+          },
+          "in_progress": {
+            "type": "integer"
+          },
+          "open": {
+            "type": "integer"
+          },
+          "ready": {
+            "type": "integer"
+          },
+          "total": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "total",
+          "ready",
+          "in_progress",
+          "done",
+          "failed",
+          "open"
         ],
         "type": "object"
       },
@@ -1732,6 +1953,12 @@
       },
       "pipelineBoardTaskRequest": {
         "properties": {
+          "blockers": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
           "body": {
             "type": "string"
           },
@@ -1753,6 +1980,9 @@
             },
             "type": "array"
           },
+          "parent_id": {
+            "type": "string"
+          },
           "priority": {
             "type": "integer"
           },
@@ -1761,6 +1991,9 @@
           },
           "title": {
             "type": "string"
+          },
+          "upsert": {
+            "type": "boolean"
           }
         },
         "required": [
@@ -1771,6 +2004,12 @@
       },
       "pipelineBoardUpdateRequest": {
         "properties": {
+          "blockers": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
           "body": {
             "type": "string"
           },
@@ -1799,6 +2038,126 @@
             "type": "string"
           }
         },
+        "type": "object"
+      },
+      "pipelineBulkDeleteRequest": {
+        "properties": {
+          "ids": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "ids"
+        ],
+        "type": "object"
+      },
+      "pipelineBulkDeleteResponse": {
+        "properties": {
+          "deleted": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "skipped": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "skipped_why": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "type": "object"
+          }
+        },
+        "required": [
+          "deleted"
+        ],
+        "type": "object"
+      },
+      "pipelineBulkReadyRequest": {
+        "properties": {
+          "family_id": {
+            "type": "string"
+          },
+          "ids": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "only_satisfied": {
+            "type": "boolean"
+          },
+          "pipeline_kind": {
+            "type": "string"
+          }
+        },
+        "type": "object"
+      },
+      "pipelineBulkReadyResponse": {
+        "properties": {
+          "ready": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "skipped": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "skipped_why": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "type": "object"
+          },
+          "waiting_deps": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "ready"
+        ],
+        "type": "object"
+      },
+      "pipelineRecomputeDepsRequest": {
+        "properties": {
+          "closed_id": {
+            "type": "string"
+          }
+        },
+        "type": "object"
+      },
+      "pipelineRecomputeDepsResponse": {
+        "properties": {
+          "promoted": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "targets": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "type": "object"
+          }
+        },
+        "required": [
+          "promoted"
+        ],
         "type": "object"
       },
       "setOrgStatusReq": {
@@ -7267,6 +7626,37 @@
         ]
       }
     },
+    "/api/v1/native/issues/{id}/dependency-graph": {
+      "get": {
+        "operationId": "getV1NativeIssuesByIdDependencyGraph",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DependencyGraphResponse"
+                }
+              }
+            },
+            "description": "OK"
+          }
+        },
+        "summary": "GET /api/v1/native/issues/{id}/dependency-graph",
+        "tags": [
+          "native"
+        ]
+      },
+      "parameters": [
+        {
+          "in": "path",
+          "name": "id",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        }
+      ]
+    },
     "/api/v1/pipeline-board": {
       "get": {
         "operationId": "getV1PipelineBoard",
@@ -7283,6 +7673,99 @@
           }
         },
         "summary": "GET /api/v1/pipeline-board",
+        "tags": [
+          "pipeline-board"
+        ]
+      }
+    },
+    "/api/v1/pipeline-board/bulk/delete": {
+      "post": {
+        "operationId": "postV1PipelineBoardBulkDelete",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/pipelineBulkDeleteRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/pipelineBulkDeleteResponse"
+                }
+              }
+            },
+            "description": "OK"
+          }
+        },
+        "summary": "POST /api/v1/pipeline-board/bulk/delete",
+        "tags": [
+          "pipeline-board"
+        ]
+      }
+    },
+    "/api/v1/pipeline-board/bulk/ready": {
+      "post": {
+        "operationId": "postV1PipelineBoardBulkReady",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/pipelineBulkReadyRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/pipelineBulkReadyResponse"
+                }
+              }
+            },
+            "description": "OK"
+          }
+        },
+        "summary": "POST /api/v1/pipeline-board/bulk/ready",
+        "tags": [
+          "pipeline-board"
+        ]
+      }
+    },
+    "/api/v1/pipeline-board/bulk/recompute-deps": {
+      "post": {
+        "operationId": "postV1PipelineBoardBulkRecomputeDeps",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/pipelineRecomputeDepsRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/pipelineRecomputeDepsResponse"
+                }
+              }
+            },
+            "description": "OK"
+          }
+        },
+        "summary": "POST /api/v1/pipeline-board/bulk/recompute-deps",
         "tags": [
           "pipeline-board"
         ]
@@ -7320,6 +7803,18 @@
       }
     },
     "/api/v1/pipeline-board/tasks/{id}": {
+      "delete": {
+        "operationId": "deleteV1PipelineBoardTasksById",
+        "responses": {
+          "default": {
+            "description": "Response"
+          }
+        },
+        "summary": "DELETE /api/v1/pipeline-board/tasks/{id}",
+        "tags": [
+          "pipeline-board"
+        ]
+      },
       "parameters": [
         {
           "in": "path",
@@ -7355,6 +7850,61 @@
           }
         },
         "summary": "PATCH /api/v1/pipeline-board/tasks/{id}",
+        "tags": [
+          "pipeline-board"
+        ]
+      }
+    },
+    "/api/v1/pipeline-board/tasks/{id}/dependency-graph": {
+      "get": {
+        "operationId": "getV1PipelineBoardTasksByIdDependencyGraph",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DependencyGraphResponse"
+                }
+              }
+            },
+            "description": "OK"
+          }
+        },
+        "summary": "GET /api/v1/pipeline-board/tasks/{id}/dependency-graph",
+        "tags": [
+          "pipeline-board"
+        ]
+      },
+      "parameters": [
+        {
+          "in": "path",
+          "name": "id",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        }
+      ]
+    },
+    "/api/v1/pipeline-board/tasks/{id}/launch": {
+      "parameters": [
+        {
+          "in": "path",
+          "name": "id",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        }
+      ],
+      "post": {
+        "operationId": "postV1PipelineBoardTasksByIdLaunch",
+        "responses": {
+          "default": {
+            "description": "Response"
+          }
+        },
+        "summary": "POST /api/v1/pipeline-board/tasks/{id}/launch",
         "tags": [
           "pipeline-board"
         ]
@@ -7396,6 +7946,30 @@
           }
         },
         "summary": "POST /api/v1/pipeline-board/tasks/{id}/ready",
+        "tags": [
+          "pipeline-board"
+        ]
+      }
+    },
+    "/api/v1/pipeline-board/tasks/{id}/reset": {
+      "parameters": [
+        {
+          "in": "path",
+          "name": "id",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        }
+      ],
+      "post": {
+        "operationId": "postV1PipelineBoardTasksByIdReset",
+        "responses": {
+          "default": {
+            "description": "Response"
+          }
+        },
+        "summary": "POST /api/v1/pipeline-board/tasks/{id}/reset",
         "tags": [
           "pipeline-board"
         ]

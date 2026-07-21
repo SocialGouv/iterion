@@ -17,7 +17,7 @@ func drive(t *testing.T, store *native.Store, caps boardops.Capabilities, lines 
 	t.Helper()
 	in := strings.NewReader(strings.Join(lines, "\n") + "\n")
 	out := &bytes.Buffer{}
-	if err := runMCPBoardServer(in, out, store, caps); err != nil && err != io.EOF {
+	if err := runMCPBoardServer(in, out, store, caps, boardops.CallEnv{}); err != nil && err != io.EOF {
 		t.Fatalf("runMCPBoardServer: %v", err)
 	}
 	dec := json.NewDecoder(out)

@@ -68,6 +68,36 @@ func TestListCandidatesBlockerGating(t *testing.T) {
 	}
 }
 
+// Terminal non-success (StateBlocked) must NOT satisfy a hard dep — same rule
+// as CanLaunch / the pipeline launch loop.
+func TestListCandidatesBlockedDoesNotSatisfy(t *testing.T) {
+	a, s := newAdapter(t)
+
+	wont, _ := s.Create(native.Issue{Title: "won't do", State: native.StateBlocked})
+	gated, _ := s.Create(native.Issue{
+		Title: "needs real done", State: native.StateReady, Blockers: []string{wont.ID},
+	})
+	candidates, _ := a.ListCandidates(context.Background())
+	for _, c := range candidates {
+		if c.ID == gated.ID {
+			t.Fatal("blocker in terminal blocked must not make dependent eligible")
+		}
+	}
+}
+
+func TestListCandidatesMissingBlockerFailClosed(t *testing.T) {
+	a, s := newAdapter(t)
+	gated, _ := s.Create(native.Issue{
+		Title: "dangling", State: native.StateReady, Blockers: []string{"native:missing"},
+	})
+	candidates, _ := a.ListCandidates(context.Background())
+	for _, c := range candidates {
+		if c.ID == gated.ID {
+			t.Fatal("missing blocker must fail closed")
+		}
+	}
+}
+
 func TestRefreshStates(t *testing.T) {
 	a, s := newAdapter(t)
 	x, _ := s.Create(native.Issue{Title: "x", State: "ready"})

@@ -129,7 +129,7 @@ var allTools = []Tool{
 	{
 		Name:        "create_issue",
 		Capability:  CapBoardCreate,
-		Description: "Create a new issue on the native kanban board. Returns the created issue.",
+		Description: "Create a new issue on the native kanban board. Returns the created issue. When called from a planner run, parent_id/spawned_from is auto-stamped from the source ticket unless overridden.",
 		InputSchema: json.RawMessage(`{
           "type":"object",
           "properties":{
@@ -140,9 +140,10 @@ var allTools = []Tool{
             "priority":{"type":"integer","description":"Higher = more important. Default 0."},
             "assignee":{"type":"string","description":"Bot or user handle this issue is assigned to."},
             "blockers":{"type":"array","items":{"type":"string"},"description":"IDs of issues that must be terminal before this one is eligible."},
+            "parent_id":{"type":"string","description":"Planner ticket that spawned this one (provenance). Auto-filled from the creating run's source issue when omitted."},
             "fields":{"type":"object","description":"Custom board fields (validated against board schema)."},
             "bot":{"type":"string","description":"CANONICAL bot that runs this issue when the dispatcher picks it up (e.g. feature-dev). The dispatcher routes by bot first, else assignee."},
-            "bot_args":{"type":"object","additionalProperties":{"type":"string"},"description":"Per-ticket workflow var overrides (--var key=value) applied at launch."}
+            "bot_args":{"type":"object","additionalProperties":{"type":"string"},"description":"Per-ticket workflow var overrides (--var key=value) applied at launch. Use spawned_from for planner provenance (synced with parent_id)."}
           },
           "required":["title"]
         }`),
@@ -243,8 +244,8 @@ var toolByName = func() map[string]*Tool {
 // dispatchByName maps a tool name to its handler. Populated once at init
 // so Call can dispatch in O(1).
 var dispatchByName = map[string]func(native.BoardStore, json.RawMessage) (json.RawMessage, error){
-	"comment_issue":    doComment,
-	"create_issue":     doCreate,
+	"comment_issue": doComment,
+	// create_issue is dispatched via doCreate in CallWithEnv (needs CallEnv).
 	"transition_issue": doTransition,
 	"assign_issue":     doAssign,
 	"set_bot":          doSetBot,
@@ -267,16 +268,33 @@ func ToolsFor(caps Capabilities) []Tool {
 	return out
 }
 
+// CallEnv carries ambient context for a boardops invocation (e.g. the
+// source issue of the run that is calling create_issue).
+type CallEnv struct {
+	// SpawnParentID is the issue id of the ticket that owns the calling
+	// run. Used to auto-stamp parent_id / bot_args.spawned_from on create
+	// when the agent omits them. Empty = no auto parent.
+	SpawnParentID string
+}
+
 // Call dispatches a tool invocation. The result is a JSON-encoded value
 // suitable for direct embedding in an MCP `content[0].text` field or an
 // HTTP response body.
 func Call(store native.BoardStore, caps Capabilities, name string, rawArgs json.RawMessage) (json.RawMessage, error) {
+	return CallWithEnv(store, caps, name, rawArgs, CallEnv{})
+}
+
+// CallWithEnv is Call with ambient spawn context (planner → child stamp).
+func CallWithEnv(store native.BoardStore, caps Capabilities, name string, rawArgs json.RawMessage, env CallEnv) (json.RawMessage, error) {
 	t, ok := toolByName[name]
 	if !ok {
 		return nil, fmt.Errorf("unknown tool %q", name)
 	}
 	if !caps.Has(t.Capability) {
 		return nil, fmt.Errorf("%w: tool %q needs capability %q", ErrCapabilityDenied, name, t.Capability)
+	}
+	if name == "create_issue" {
+		return doCreate(store, rawArgs, env)
 	}
 	return dispatchByName[name](store, rawArgs)
 }
@@ -285,7 +303,7 @@ func Call(store native.BoardStore, caps Capabilities, name string, rawArgs json.
 // Operation implementations
 // ---------------------------------------------------------------------------
 
-func doCreate(store native.BoardStore, raw json.RawMessage) (json.RawMessage, error) {
+func doCreate(store native.BoardStore, raw json.RawMessage, env CallEnv) (json.RawMessage, error) {
 	var args struct {
 		Title    string            `json:"title"`
 		Body     string            `json:"body"`
@@ -294,6 +312,7 @@ func doCreate(store native.BoardStore, raw json.RawMessage) (json.RawMessage, er
 		Priority int               `json:"priority"`
 		Assignee string            `json:"assignee"`
 		Blockers []string          `json:"blockers"`
+		ParentID string            `json:"parent_id"`
 		Fields   map[string]any    `json:"fields"`
 		Bot      string            `json:"bot"`
 		BotArgs  map[string]string `json:"bot_args"`
@@ -304,6 +323,31 @@ func doCreate(store native.BoardStore, raw json.RawMessage) (json.RawMessage, er
 	if strings.TrimSpace(args.Title) == "" {
 		return nil, errors.New("title is required")
 	}
+	botArgs := args.BotArgs
+	if botArgs == nil {
+		botArgs = map[string]string{}
+	} else {
+		// Defensive copy so we don't mutate the caller's map.
+		cp := make(map[string]string, len(botArgs)+1)
+		for k, v := range botArgs {
+			cp[k] = v
+		}
+		botArgs = cp
+	}
+	parentID := strings.TrimSpace(args.ParentID)
+	if parentID == "" {
+		parentID = strings.TrimSpace(botArgs[native.BotArgSpawnedFrom])
+	}
+	if parentID == "" {
+		parentID = strings.TrimSpace(env.SpawnParentID)
+	}
+	if parentID != "" {
+		botArgs[native.BotArgSpawnedFrom] = parentID
+	}
+	// Empty map → nil for cleaner JSON.
+	if len(botArgs) == 0 {
+		botArgs = nil
+	}
 	iss, err := store.Create(native.Issue{
 		Title:    args.Title,
 		Body:     args.Body,
@@ -312,9 +356,10 @@ func doCreate(store native.BoardStore, raw json.RawMessage) (json.RawMessage, er
 		Priority: args.Priority,
 		Assignee: args.Assignee,
 		Blockers: args.Blockers,
+		ParentID: parentID,
 		Fields:   args.Fields,
 		Bot:      args.Bot,
-		BotArgs:  args.BotArgs,
+		BotArgs:  botArgs,
 	})
 	if err != nil {
 		return nil, err
