@@ -104,6 +104,7 @@ and a fresh review fires under a different idempotency key.
 | **Runner pool** | claims a queued run, unseals the bundle, runs the workflow | [docs/cloud-architecture.md](cloud-architecture.md) · [pkg/runner/](../pkg/runner/) |
 | **Orgs + quotas + audit** | the multitenancy and metering layer | [docs/quotas-and-limits.md](quotas-and-limits.md) · [pkg/orgusage/](../pkg/orgusage/) · [pkg/audit/](../pkg/audit/) |
 | **PATs** (`iap_…`) | long-lived, programmatic API access for CI/SDKs | [Iterion Cloud admin guide](cloud-admin-guide.md) · [pkg/pat/](../pkg/pat/) |
+| **User notifications** (web push) | browser push when a run pauses on a human form or ends — VAPID keypair + per-user subscriptions | [docs/notifications.md](notifications.md) · [pkg/usernotify/](../pkg/usernotify/) |
 
 Everything is **opt-in**. A self-hosted iterion that hasn't enabled
 webhooks is still a perfectly fine multi-tenant studio (`iterion server`

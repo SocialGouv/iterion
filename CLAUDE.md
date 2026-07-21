@@ -456,8 +456,14 @@ ship on the spine** (each = a source adapter publishing a
   poll stays the reconciliation net, so fast-path + poll **cannot
   double-launch**.
 - **run-completion** ("runned by iterion") — `runview.Service` emits
-  `run.finished`/`failed`/`cancelled`; a direct-mode subscription chains
-  the next bot (`Actor` = upstream bot id).
+  `run.finished`/`failed`/`cancelled`/`paused` in-process, and cloud
+  **runner pods publish the same events** onto the NATSBus
+  (`Runner.fireOutcomeEvent`, sharing `trigger.BuildRunOutcome` with the
+  runview emitter — the NATSBus is wired in cloud since the
+  web-notifications work); a direct-mode subscription chains the next
+  bot (`Actor` = upstream bot id), and the `usernotify` dispatcher
+  consumes `run.paused`+terminals for browser push notifications
+  ([docs/notifications.md](docs/notifications.md)).
 - **scheduled** — `trigger.Scheduler` ticks schedule-kind subscriptions
   on their `Cron` (local tenant ""; cloud keeps cloudsched's CAS
   ticker).
