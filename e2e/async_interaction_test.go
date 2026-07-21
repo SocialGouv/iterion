@@ -91,8 +91,12 @@ func TestAwaitAnswersReleasedByAnswer(t *testing.T) {
 		if err != nil {
 			t.Fatalf("run: %v", err)
 		}
-	case <-time.After(4 * time.Second):
-		t.Fatal("run did not converge within 4s after the answer (doorbell not honoured?)")
+	// Ceiling ABOVE the await_answers 5s level-poll: if the doorbell rings
+	// before the gate branch parks (the 300ms sleep lost the race — seen
+	// under -race on CI), the level-triggered poll still releases the
+	// branch; only a miss of BOTH mechanisms is a real failure.
+	case <-time.After(15 * time.Second):
+		t.Fatal("run did not converge after the answer (neither doorbell nor level-poll released the gate)")
 	}
 
 	r, err := s.LoadRun(context.Background(), runID)
