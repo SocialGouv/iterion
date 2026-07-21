@@ -319,9 +319,14 @@ func (m *Manager) budgetAlertLocked(kind Kind, rs *runState, evt store.Event, ax
 		pct = used / limit * 100
 	}
 	var reason string
-	if kind == KindBudgetExceeded {
+	switch {
+	case kind == KindBudgetExceeded:
 		reason = fmt.Sprintf("%s budget exhausted (%.0f/%.0f)", axis, used, limit)
-	} else {
+	case boolData(evt.Data, "advisory"):
+		// warn_tokens-style advisory: consumption is unusual, nothing was
+		// blocked — suggest a look rather than announce a ceiling.
+		reason = fmt.Sprintf("%s crossed the advisory threshold (%.0f/%.0f) — worth auditing what consumed so much", axis, used, limit)
+	default:
 		reason = fmt.Sprintf("%s budget at %.0f%% (%.0f/%.0f)", axis, pct, used, limit)
 	}
 	return m.alertLocked(kind, rs, evt.NodeID, reason, axis, pct, ts)
@@ -406,6 +411,14 @@ func (m *Manager) dispatch(sinks []Sink, alerts []Alert) {
 			}()
 		}
 	}
+}
+
+func boolData(d map[string]any, key string) bool {
+	if d == nil {
+		return false
+	}
+	v, _ := d[key].(bool)
+	return v
 }
 
 func strData(d map[string]any, key string) string {

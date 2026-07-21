@@ -1261,7 +1261,10 @@ type Budget struct {
 	MaxDuration         string // e.g. "60m"
 	MaxCostUSD          float64
 	MaxTokens           int
-	MaxIterations       int
+	// WarnTokens is advisory-only: crossing it emits a budget_warning
+	// (advisory) but never blocks execution. 0 = disabled.
+	WarnTokens    int
+	MaxIterations int
 }
 
 // ClampToCeiling lowers each numeric limit so it never EXCEEDS the

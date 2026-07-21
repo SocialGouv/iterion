@@ -752,6 +752,7 @@ type BudgetBlock struct {
 	MaxDuration         string  // e.g. "60m", empty = not set
 	MaxCostUSD          float64 // 0 = not set
 	MaxTokens           int     // 0 = not set
+	WarnTokens          int     // advisory-only token threshold (0 = not set): warns, never blocks
 	MaxIterations       int     // 0 = not set
 	Span                Span
 }

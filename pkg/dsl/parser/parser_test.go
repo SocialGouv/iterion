@@ -852,6 +852,7 @@ func TestBudgetBlock(t *testing.T) {
     max_duration: "60m"
     max_cost_usd: 30.5
     max_tokens: 400000
+    warn_tokens: 250000
     max_iterations: 10
   a -> done
 `
@@ -866,6 +867,7 @@ func TestBudgetBlock(t *testing.T) {
 	assertEq(t, "MaxDuration", b.MaxDuration, "60m")
 	assertEq(t, "MaxCostUSD", b.MaxCostUSD, 30.5)
 	assertEq(t, "MaxTokens", b.MaxTokens, 400000)
+	assertEq(t, "WarnTokens", b.WarnTokens, 250000)
 	assertEq(t, "MaxIterations", b.MaxIterations, 10)
 }
 

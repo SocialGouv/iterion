@@ -253,7 +253,7 @@ func isKeywordToken(tt TokenType) bool {
 		TokenTypeString, TokenTypeBool, TokenTypeInt, TokenTypeFloat,
 		TokenTypeJSON, TokenTypeStringArray,
 		TokenMaxParallelBranches, TokenMaxDuration, TokenMaxCostUSD,
-		TokenMaxTokens, TokenMaxIterations,
+		TokenMaxTokens, TokenMaxIterations, TokenWarnTokens,
 		TokenCompaction, TokenThreshold, TokenPreserveRecent,
 		TokenMemory, TokenEnabled, TokenScope, TokenAutoload, TokenRead, TokenWrite, TokenPreCompactInject,
 		TokenWorktree,

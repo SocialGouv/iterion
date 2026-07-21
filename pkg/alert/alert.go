@@ -31,7 +31,8 @@ const (
 	// persisted timeline shows both edges.
 	KindStallRecovered Kind = "stall_recovered"
 	// KindBudgetWarning fires the first time a budget axis crosses the
-	// runtime warning threshold (80%).
+	// runtime warning threshold (80%) or an advisory warn threshold
+	// (e.g. warn_tokens), which reports without ever blocking.
 	KindBudgetWarning Kind = "budget_warning"
 	// KindBudgetExceeded fires when a budget axis hits its hard cap.
 	KindBudgetExceeded Kind = "budget_exceeded"

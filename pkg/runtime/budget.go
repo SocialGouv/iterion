@@ -30,6 +30,9 @@ type SharedBudget struct {
 	maxCostUSD    float64
 	maxIterations int
 	maxDuration   time.Duration
+	// warnTokens is advisory-only: crossing it emits a single
+	// budget_warning (advisory=true) but never hard-limits the run.
+	warnTokens int
 
 	// Consumed.
 	tokensUsed     int
@@ -70,14 +73,17 @@ func newSharedBudget(b *ir.Budget, logger *iterlog.Logger) *SharedBudget {
 		}
 	}
 
-	// If no limits are set beyond MaxParallelBranches (handled elsewhere), skip.
-	if b.MaxTokens == 0 && b.MaxCostUSD == 0 && b.MaxIterations == 0 && maxDur == 0 {
+	// If no limits are set beyond MaxParallelBranches (handled elsewhere),
+	// skip. A warn-only threshold still needs the tracker: it never blocks,
+	// but consumption must be counted for the advisory to fire.
+	if b.MaxTokens == 0 && b.MaxCostUSD == 0 && b.MaxIterations == 0 && maxDur == 0 && b.WarnTokens == 0 {
 		return nil
 	}
 
 	return &SharedBudget{
 		logger:          logger,
 		maxTokens:       b.MaxTokens,
+		warnTokens:      b.WarnTokens,
 		maxCostUSD:      b.MaxCostUSD,
 		maxIterations:   b.MaxIterations,
 		maxDuration:     maxDur,
@@ -193,6 +199,7 @@ type budgetCheckResult struct {
 	exceeded    bool
 	hardLimited bool // true when 90% <= ratio < 100%
 	warning     bool
+	advisory    bool   // warning came from a warn-only threshold (warn_tokens)
 	dimension   string // "tokens", "cost_usd", "iterations", "duration"
 	used        float64
 	limit       float64
@@ -304,6 +311,18 @@ func (b *SharedBudget) checkLocked() []budgetCheckResult {
 	check("cost_usd", b.costUsed, b.maxCostUSD)
 	check("duration", float64(time.Since(b.startedAt)), float64(b.maxDuration))
 
+	// The advisory token threshold reports once on the tokens axis and
+	// never blocks: the operator asked to be told (audit hint), not
+	// stopped. It shares the axis dedupe with the ratio warning above so
+	// a run surfaces at most one tokens warning.
+	if b.warnTokens > 0 && b.tokensUsed >= b.warnTokens && !b.warningsEmitted["tokens"] {
+		b.warningsEmitted["tokens"] = true
+		results = append(results, budgetCheckResult{
+			warning: true, advisory: true, dimension: "tokens",
+			used: float64(b.tokensUsed), limit: float64(b.warnTokens),
+		})
+	}
+
 	return results
 }
 
@@ -412,6 +431,7 @@ func (e *Engine) recordAndCheckBudget(rs *runState, nodeID string, output map[st
 	for _, w := range findWarnings(checks) {
 		_ = e.emit(rs.ctx, rs.runID, store.EventBudgetWarning, nodeID, map[string]any{
 			"dimension": w.dimension,
+			"advisory":  w.advisory,
 			"used":      w.used,
 			"limit":     w.limit,
 		})
