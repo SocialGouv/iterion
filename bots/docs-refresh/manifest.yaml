@@ -1,7 +1,18 @@
 name: docs-refresh
 display_name: Doki
 icon: 📚
-version: 2.1.0
+version: 2.2.0
+## 2.2.0 — PR finalization tail (opt-in, feature-dev verbatim). When
+## open_mr=true, after the run finishes (converged or max_passes
+## exhausted with banked commits) a deterministic forge_auth_probe
+## checks for a push credential (forge_token secret / *_TOKEN env /
+## host gh auth) and, only then, the finalize_mr agent pushes the
+## doc-alignment series and opens ONE PR (GitHub gh / GitLab glab /
+## Forgejo REST) via the shared forge-mr-create skill, reporting
+## drift_remaining honestly in the body. Default off: local runs and
+## the noop_skip path are unchanged. This is the mechanism that makes
+## repo-targeted CLOUD runs deliverable — the runner's clone is
+## ephemeral, so without a push the alignment commits die with the pod.
 ## 2.1.0 — NOOP short-circuit (openwiki-inspired). scan_docs now skips
 ## the whole campaign when the docs are already aligned to the exact
 ## current HEAD: update_audit_cache persists git_head, and a matching
@@ -45,9 +56,15 @@ description: |
   mechanical anchor coverage to meet its target — the agent cannot
   rubber-stamp its own alignment.
 
-  The bot ships 5 skills capturing the discipline: docs-refresh
+  Opt-in delivery: open_mr=true pushes the alignment series and opens
+  one PR/MR at the end of the run (gated by a deterministic push-
+  credential probe) — required for repo-targeted cloud runs, whose
+  clone is ephemeral.
+
+  The bot ships 7 skills capturing the discipline: docs-refresh
   (playbook), doc-mismatch-taxonomy, doc-scope-enumeration,
-  anti-facade-fix-rules, doc-verification-checklist.
+  anti-facade-fix-rules, doc-verification-checklist, verify-build,
+  forge-mr-create.
 when_to_use: |
   Use when README / CLAUDE.md / docs/**/*.md / bundled skills are
   stale versus the code, before a release, or whenever a survey flags
@@ -78,5 +95,5 @@ invocations:
 ## the declared order; `hidden` vars are internal plumbing kept out of
 ## the form (still settable via --var / bot_args).
 launch:
-  primary: [scope_notes]
+  primary: [scope_notes, open_mr]
   hidden: [bundle_self_path]

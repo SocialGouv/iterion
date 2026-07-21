@@ -493,9 +493,15 @@ outside the doc writeable-set changed; and convergence requires the
 mechanical anchor coverage to meet its target — the agent cannot
 rubber-stamp its own alignment.
 
-The bot ships 5 skills capturing the discipline: docs-refresh
+Opt-in delivery: open_mr=true pushes the alignment series and opens
+one PR/MR at the end of the run (gated by a deterministic push-
+credential probe) — required for repo-targeted cloud runs, whose
+clone is ephemeral.
+
+The bot ships 7 skills capturing the discipline: docs-refresh
 (playbook), doc-mismatch-taxonomy, doc-scope-enumeration,
-anti-facade-fix-rules, doc-verification-checklist.
+anti-facade-fix-rules, doc-verification-checklist, verify-build,
+forge-mr-create.
 
 - **Use when**:
   Use when README / CLAUDE.md / docs/**/*.md / bundled skills are
@@ -503,7 +509,7 @@ anti-facade-fix-rules, doc-verification-checklist.
   code↔doc drift — or when a repo has NO docs yet and needs an initial
   set authored from the code. Fixes the DOCS only (never code logic)
   and commits.
-- **Vars**: `audit_cache_path` (string), `baseline` (string), `bundle_self_path` (string), `cli_surface_globs` (string), `code_scope_globs` (string), `coverage_target_pct` (int), `diagnostic_surface_globs` (string), `diff_since` (string), `doc_globs` (string), `docs_dir` (string), `excluded_dirs` (string), `go_comment_globs` (string), `issue_id` (string), `max_drift_candidates` (int), `max_passes` (int), `max_review_chunk_docs` (int), `scope_notes` (string), `scratch_dir` (string), `workspace_dir` (string)
+- **Vars**: `audit_cache_path` (string), `baseline` (string), `bundle_self_path` (string), `cli_surface_globs` (string), `code_scope_globs` (string), `coverage_target_pct` (int), `diagnostic_surface_globs` (string), `diff_since` (string), `doc_globs` (string), `docs_dir` (string), `excluded_dirs` (string), `go_comment_globs` (string), `issue_id` (string), `max_drift_candidates` (int), `max_passes` (int), `max_review_chunk_docs` (int), `mr_base` (string), `mr_branch` (string), `open_mr` (bool), `scope_notes` (string), `scratch_dir` (string), `source_issue_ref` (string), `workspace_dir` (string)
 - **Path**: `bots/docs-refresh/main.bot`
 
 ### `evolve` — Evoly
