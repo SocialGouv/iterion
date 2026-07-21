@@ -4276,6 +4276,9 @@ export interface components {
             created_by: string;
             display_name?: string;
             forge_base_url?: string;
+            granted_permissions?: {
+                [key: string]: string;
+            };
             id: string;
             installation_id?: number;
             kind: string;
@@ -4652,12 +4655,16 @@ export interface components {
         forgeConnectionHealth: {
             account_login?: string;
             app_slug?: string;
+            granted_permissions?: {
+                [key: string]: string;
+            };
             installation_account?: string;
             installation_id?: number;
             installation_repos?: string[];
             kind: string;
             live_error?: string;
             manage_install_url?: string;
+            missing_permissions?: string[];
             provider: string;
             provisioned_repo_count: number;
             status: string;
@@ -4674,6 +4681,7 @@ export interface components {
         };
         forgeOAuthAppReq: {
             admin_token?: string;
+            allow_app_delivery?: boolean;
             allow_repo_creation?: boolean;
             client_id?: string;
             client_secret?: string;

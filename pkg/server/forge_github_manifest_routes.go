@@ -67,7 +67,10 @@ func (s *Server) handleStartGitHubManifest(w http.ResponseWriter, r *http.Reques
 	redirectURL := home + "/api/forge/github/app-manifest/callback"
 	name := "iterion-forge-" + uuid.NewString()[:8] // GitHub App names are globally unique
 	manifest := forgegithub.BuildAppManifest(name, home, redirectURL,
-		forgegithub.AppManifestOptions{AllowRepoCreation: req.AllowRepoCreation})
+		forgegithub.AppManifestOptions{
+			AllowRepoCreation: req.AllowRepoCreation,
+			AllowAppDelivery:  req.AllowAppDelivery,
+		})
 	// Create the App UNDER the chosen org so a (private) App is installable
 	// org-wide; empty org = the user's personal account.
 	target := strings.TrimRight(baseURL, "/")

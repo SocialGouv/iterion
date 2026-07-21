@@ -375,7 +375,7 @@ func (s *Server) forgeAppMinter(ctx context.Context, conn forge.Connection) (str
 		forgegithub.APIBaseFor(conn.BaseURL()), cfg, conn.InstallationID, time.Now().UTC(),
 		&forgegithub.InstallationTokenOptions{
 			Repositories: repos,
-			Permissions:  forgegithub.RuntimeInstallationPermissions(),
+			Permissions:  forgegithub.RuntimePermissionsFor(conn.GrantedPermissions),
 		})
 	return tok, err
 }

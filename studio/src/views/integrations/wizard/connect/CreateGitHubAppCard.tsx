@@ -33,6 +33,7 @@ export default function CreateGitHubAppCard({
   const [orgIsCustom, setOrgIsCustom] = useState(false);
   const [githubOrg, setGithubOrg] = useState("");
   const [allowRepoCreation, setAllowRepoCreation] = useState(true);
+  const [allowAppDelivery, setAllowAppDelivery] = useState(true);
 
   // Fetch failures stay silent (no error surfaced) — the "Pick from
   // GitHub" link below covers the empty case.
@@ -58,6 +59,7 @@ export default function CreateGitHubAppCard({
         forge_base_url: baseURL.trim() || undefined,
         github_org: githubOrg.trim() || undefined,
         allow_repo_creation: allowRepoCreation,
+        allow_app_delivery: allowAppDelivery,
         next: RETURN_PATH,
       });
       // Auto-submit the hidden form: GitHub swallows the manifest, creates
@@ -151,6 +153,24 @@ export default function CreateGitHubAppCard({
             <span className="block text-caption text-fg-muted mt-0.5">
               Adds the Administration: write permission so bots can bootstrap new
               repositories (recommended). You can revoke this on GitHub later.
+            </span>
+          </span>
+        }
+      />
+
+      <Checkbox
+        id="wizard-allow-app-delivery"
+        checked={allowAppDelivery}
+        onChange={(e) => setAllowAppDelivery(e.target.checked)}
+        label={
+          <span className="text-fg-default text-xs">
+            <span className="font-medium">
+              Allow iterion to publish CI workflows and container images
+            </span>
+            <span className="block text-caption text-fg-muted mt-0.5">
+              Adds Workflows: write + Packages: write, so a bot can ship an app
+              it built. Without them GitHub refuses any push that touches
+              .github/workflows/, which blocks the build-and-deploy chain.
             </span>
           </span>
         }

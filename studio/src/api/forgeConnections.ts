@@ -376,11 +376,15 @@ export async function startGitHubManifest(
   // the caller's personal account (then only installable there).
   // allow_repo_creation requests administration:write on the App so iterion
   // can CREATE repositories (opt-in, surfaced as a visible checkbox).
+  // allow_app_delivery requests workflows:write + packages:write so a bot can
+  // publish the CI that builds an app and the image it produces — without
+  // them GitHub refuses any push touching .github/workflows/**.
   input: {
     forge_base_url?: string;
     next?: string;
     github_org?: string;
     allow_repo_creation?: boolean;
+    allow_app_delivery?: boolean;
   },
 ): Promise<GitHubManifestStart> {
   // Body type-checked against the spec's forgeOAuthAppReq (provider is

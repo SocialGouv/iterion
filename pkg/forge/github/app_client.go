@@ -55,6 +55,78 @@ func RuntimeInstallationPermissions() map[string]string {
 	}
 }
 
+// DeliveryInstallationPermissions are what a bot needs to SHIP an application
+// rather than only change code: publish the CI definition that builds it, and
+// publish the resulting image.
+//
+// They are separated from the runtime baseline because `workflows: write` is a
+// genuine escalation — an actor who can rewrite CI can run arbitrary code in
+// it — so an App only gets them when the operator opts in at creation.
+//
+// GitHub enforces this hard, not softly: pushing a commit that touches
+// .github/workflows/** with a token lacking `workflows` is REJECTED outright
+// ("refusing to allow a GitHub App to create or update workflow … without
+// `workflows` permission"), which blocks the whole build-and-deploy chain at
+// its first step.
+func DeliveryInstallationPermissions() map[string]string {
+	return map[string]string{
+		"workflows": "write",
+		"packages":  "write",
+	}
+}
+
+// MissingDeliveryPermissions lists the delivery grants an installation does
+// NOT have, so the connection health view can name them BEFORE a run spends
+// hours discovering them at push time. Empty when nothing is missing (or when
+// the grant set is unknown — absence of data is not evidence of a gap).
+func MissingDeliveryPermissions(granted map[string]string) []string {
+	if len(granted) == 0 {
+		return nil
+	}
+	var missing []string
+	for _, name := range []string{"packages", "workflows"} { // sorted: stable output
+		if _, ok := granted[name]; !ok {
+			missing = append(missing, name)
+		}
+	}
+	return missing
+}
+
+// RuntimePermissionsFor narrows the permissions iterion WANTS to those the
+// installation actually granted.
+//
+// Minting is not forgiving: asking for a permission the installation lacks
+// fails the whole call (422), so a token cannot simply request the superset.
+// Intersecting keeps one code path for both an App created before delivery
+// permissions existed and one created with them.
+//
+// granted == nil means "unknown" (a connection stored before grants were
+// recorded); those keep exactly the historical baseline.
+func RuntimePermissionsFor(granted map[string]string) map[string]string {
+	base := RuntimeInstallationPermissions()
+	if len(granted) == 0 {
+		return base
+	}
+	out := map[string]string{}
+	for name, level := range base {
+		if _, ok := granted[name]; ok {
+			out[name] = level
+		}
+	}
+	for name, level := range DeliveryInstallationPermissions() {
+		if _, ok := granted[name]; ok {
+			out[name] = level
+		}
+	}
+	// An installation that granted nothing we recognise would yield an empty
+	// map, which the mint reads as "no constraint" (the installation's FULL
+	// set) — the opposite of least privilege. Keep the baseline instead.
+	if len(out) == 0 {
+		return base
+	}
+	return out
+}
+
 // InstallationTokenOptions narrows a minted installation token below the
 // installation's full grant (least-privilege). Both fields are optional; a nil
 // field means "don't constrain that dimension" (GitHub returns the
@@ -69,47 +141,61 @@ type InstallationTokenOptions struct {
 	Permissions  map[string]string
 }
 
-// InstallationInfo returns the installation's account login and its
-// GitHub settings page URL (html_url — the only place where the
-// installation's repo scope and permission grants can be widened).
+// Installation is what GET /app/installations/{id} tells us about a live
+// installation.
+type Installation struct {
+	Login   string
+	HTMLURL string
+	// Permissions is the grant the ORG actually approved, which can be
+	// narrower than what the App requests (a permission added to an App after
+	// installation stays pending until an owner approves it). Carrying it lets
+	// the mint ask only for what exists, and lets the health probe name a
+	// missing grant BEFORE a run spends hours discovering it at push time.
+	Permissions map[string]string
+}
+
+// InstallationInfo returns the installation's account login, its GitHub
+// settings page URL (html_url — the only place where the installation's repo
+// scope and permission grants can be widened), and its approved permissions.
 // App-JWT-authenticated: GET /app/installations/{id}.
-func InstallationInfo(ctx context.Context, httpClient *http.Client, apiBase string, cfg AppConfig, installationID int64, now time.Time) (login, htmlURL string, err error) {
+func InstallationInfo(ctx context.Context, httpClient *http.Client, apiBase string, cfg AppConfig, installationID int64, now time.Time) (info Installation, err error) {
 	if httpClient == nil {
 		httpClient = http.DefaultClient
 	}
 	jwt, err := signAppJWT(cfg.AppID, cfg.PrivateKeyPEM, now)
 	if err != nil {
-		return "", "", err
+		return Installation{}, err
 	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet,
 		apiBase+"/app/installations/"+strconv.FormatInt(installationID, 10), nil)
 	if err != nil {
-		return "", "", err
+		return Installation{}, err
 	}
 	req.Header.Set("Authorization", "Bearer "+jwt)
 	req.Header.Set("Accept", "application/vnd.github+json")
 	req.Header.Set("X-GitHub-Api-Version", "2022-11-28")
 	resp, err := httpClient.Do(req)
 	if err != nil {
-		return "", "", err
+		return Installation{}, err
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode == http.StatusUnauthorized {
-		return "", "", forge.ErrUnauthorized
+		return Installation{}, forge.ErrUnauthorized
 	}
 	if resp.StatusCode/100 != 2 {
-		return "", "", statusErr("GET /app/installations/{id}", resp.StatusCode)
+		return Installation{}, statusErr("GET /app/installations/{id}", resp.StatusCode)
 	}
 	var out struct {
 		HTMLURL string `json:"html_url"`
 		Account struct {
 			Login string `json:"login"`
 		} `json:"account"`
+		Permissions map[string]string `json:"permissions"`
 	}
 	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
-		return "", "", err
+		return Installation{}, err
 	}
-	return out.Account.Login, out.HTMLURL, nil
+	return Installation{Login: out.Account.Login, HTMLURL: out.HTMLURL, Permissions: out.Permissions}, nil
 }
 
 // MintInstallationToken trades the App JWT for a short-lived (≈1h)
@@ -398,7 +484,7 @@ func (r AppRefresher) Refresh(ctx context.Context, conn forge.Connection, _ stri
 	}
 	// Least-privilege: the runtime forge token carries only iterion's minimal
 	// permission set, scoped to the connection's provisioned repos when known.
-	opts := &InstallationTokenOptions{Permissions: RuntimeInstallationPermissions()}
+	opts := &InstallationTokenOptions{Permissions: RuntimePermissionsFor(conn.GrantedPermissions)}
 	if r.Repos != nil {
 		repos, err := r.Repos(ctx, conn)
 		if err != nil {

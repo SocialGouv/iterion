@@ -173,6 +173,12 @@
           "forge_base_url": {
             "type": "string"
           },
+          "granted_permissions": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "type": "object"
+          },
           "id": {
             "type": "string"
           },
@@ -1415,6 +1421,12 @@
           "app_slug": {
             "type": "string"
           },
+          "granted_permissions": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "type": "object"
+          },
           "installation_account": {
             "type": "string"
           },
@@ -1435,6 +1447,12 @@
           },
           "manage_install_url": {
             "type": "string"
+          },
+          "missing_permissions": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
           },
           "provider": {
             "type": "string"
@@ -1491,6 +1509,9 @@
         "properties": {
           "admin_token": {
             "type": "string"
+          },
+          "allow_app_delivery": {
+            "type": "boolean"
           },
           "allow_repo_creation": {
             "type": "boolean"

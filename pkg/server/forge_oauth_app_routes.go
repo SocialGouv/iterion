@@ -49,6 +49,13 @@ type forgeOAuthAppReq struct {
 	// (opt-in — the connect wizard surfaces it as a visible checkbox;
 	// absent keeps the least-privilege baseline).
 	AllowRepoCreation bool `json:"allow_repo_creation,omitempty"`
+	// AllowAppDelivery (github-manifest): request workflows:write +
+	// packages:write so a bot can publish the CI that builds an app and the
+	// image it produces. Without them GitHub REFUSES a push touching
+	// .github/workflows/**, which blocks the build-and-deploy chain at its
+	// first step. Opt-in: workflows:write means the holder can run arbitrary
+	// code in CI.
+	AllowAppDelivery bool `json:"allow_app_delivery,omitempty"`
 }
 
 func (s *Server) handleListForgeOAuthApps(w http.ResponseWriter, r *http.Request) {

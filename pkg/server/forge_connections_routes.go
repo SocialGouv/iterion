@@ -1,6 +1,7 @@
 package server
 
 import (
+	"context"
 	"errors"
 	"net/http"
 	"sort"
@@ -133,6 +134,39 @@ type forgeConnectionHealth struct {
 	// LiveError reports a failed live probe (token mint / API call)
 	// without failing the endpoint — the stored status is still useful.
 	LiveError string `json:"live_error,omitempty"`
+	// GrantedPermissions is what the installation's owner actually approved.
+	// MissingPermissions names the delivery grants it lacks — publishing a CI
+	// workflow or an image is refused outright without them, and that refusal
+	// otherwise surfaces only at push time, hours into a run.
+	GrantedPermissions map[string]string `json:"granted_permissions,omitempty"`
+	MissingPermissions []string          `json:"missing_permissions,omitempty"`
+}
+
+// syncGrantedPermissions persists the installation's live grant onto the
+// connection when it moved. Best-effort: the health view is already correct
+// from the live probe, and the stored copy only optimises the mint — a failed
+// write must not fail the endpoint.
+func (s *Server) syncGrantedPermissions(ctx context.Context, conn forge.Connection, live map[string]string) {
+	if len(live) == 0 || s.forgeConnections == nil || samePermissions(conn.GrantedPermissions, live) {
+		return
+	}
+	conn.GrantedPermissions = live
+	conn.UpdatedAt = time.Now().UTC()
+	if err := s.forgeConnections.Update(store.WithTenant(ctx, conn.TenantID), conn); err != nil && s.logger != nil {
+		s.logger.Warn("forge: persist granted permissions for connection %s: %v", conn.ID, err)
+	}
+}
+
+func samePermissions(a, b map[string]string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for k, v := range a {
+		if b[k] != v {
+			return false
+		}
+	}
+	return true
 }
 
 func (s *Server) handleForgeConnectionHealth(w http.ResponseWriter, r *http.Request) {
@@ -164,13 +198,19 @@ func (s *Server) handleForgeConnectionHealth(w http.ResponseWriter, r *http.Requ
 	}
 	if conn.Kind == forge.KindGitHubApp && conn.InstallationID != 0 {
 		if cfg, _, ok := s.githubAppConfigForConnection(r.Context(), conn); ok {
-			login, htmlURL, err := forgegithub.InstallationInfo(r.Context(), s.forgeHTTPClient(),
+			inst, err := forgegithub.InstallationInfo(r.Context(), s.forgeHTTPClient(),
 				forgegithub.APIBaseFor(conn.BaseURL()), cfg, conn.InstallationID, time.Now().UTC())
 			if err != nil {
 				h.LiveError = err.Error()
 			} else {
-				h.InstallationAccount = login
-				h.ManageInstallURL = htmlURL
+				h.InstallationAccount = inst.Login
+				h.ManageInstallURL = inst.HTMLURL
+				h.GrantedPermissions = inst.Permissions
+				h.MissingPermissions = forgegithub.MissingDeliveryPermissions(inst.Permissions)
+				// Keep the stored grant in step with the live one: the mint
+				// reads it, and an owner may approve (or revoke) a permission
+				// long after the install.
+				s.syncGrantedPermissions(r.Context(), conn, inst.Permissions)
 			}
 		}
 		if admin, err := s.forgeAdminFor(r.Context(), conn); err == nil {

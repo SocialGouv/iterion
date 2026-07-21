@@ -364,12 +364,25 @@ func (s *Server) handleForgeGitHubAppCallback(w http.ResponseWriter, r *http.Req
 		httpError(w, http.StatusInternalServerError, "seal token: %v", err)
 		return
 	}
+	// Capture what the owner actually APPROVED at install. The mint reads it
+	// to ask only for permissions that exist (asking for a missing one fails
+	// the whole call), so recording it here is what lets an App created with
+	// delivery permissions and one created without share a single code path.
+	// Best-effort: an unknown grant set falls back to the historical baseline.
+	var granted map[string]string
+	if inst, ierr := forgegithub.InstallationInfo(r.Context(), s.forgeHTTPClient(),
+		forgegithub.APIBaseFor(base), cfg, installationID, time.Now().UTC()); ierr == nil {
+		granted = inst.Permissions
+	} else if s.logger != nil {
+		s.logger.Warn("forge: read installation %d permissions at connect: %v", installationID, ierr)
+	}
 	conn := forge.Connection{
 		ID: connID, TenantID: pending.TenantID, Provider: forge.ProviderGitHub, Kind: forge.KindGitHubApp,
 		DisplayName: cfg.AppSlug, ForgeBaseURL: base,
 		AccountLogin: cfg.AppSlug + "[bot]", Namespace: cfg.AppSlug,
 		InstallationID: installationID, AppSlug: cfg.AppSlug, OAuthAppID: appRecordID,
-		Status: forge.StatusActive, SealedPayload: sealed, AccessTokenExpiresAt: &exp,
+		GrantedPermissions: granted,
+		Status:             forge.StatusActive, SealedPayload: sealed, AccessTokenExpiresAt: &exp,
 		CreatedBy: pending.UserID, CreatedAt: now, UpdatedAt: now,
 	}
 	if err := s.forgeConnections.Create(store.WithTenant(r.Context(), pending.TenantID), conn); err != nil {

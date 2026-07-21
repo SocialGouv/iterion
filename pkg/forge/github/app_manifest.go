@@ -47,6 +47,12 @@ type AppManifestOptions struct {
 	// (RepoAdminInstallationPermissions) — the cached runtime token stays
 	// on RuntimeInstallationPermissions.
 	AllowRepoCreation bool
+	// AllowAppDelivery adds workflows:write + packages:write so a bot can
+	// publish the CI that builds an app and the image it produces — the
+	// second half of the "new app → new repo → deployed" journey. Opt-in
+	// because `workflows: write` lets the holder rewrite CI, i.e. run
+	// arbitrary code in it.
+	AllowAppDelivery bool
 }
 
 // BuildAppManifest assembles the manifest for an iterion forge GitHub App. The
@@ -63,6 +69,11 @@ func BuildAppManifest(name, homeURL, redirectURL string, opts ...AppManifestOpti
 	for _, o := range opts {
 		if o.AllowRepoCreation {
 			perms["administration"] = "write"
+		}
+		if o.AllowAppDelivery {
+			for name, level := range DeliveryInstallationPermissions() {
+				perms[name] = level
+			}
 		}
 	}
 	return AppManifest{
