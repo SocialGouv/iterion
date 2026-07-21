@@ -371,12 +371,14 @@ func (s *Server) handleForgeGitHubAppCallback(w http.ResponseWriter, r *http.Req
 	}
 	// No repositories scope yet — none provisioned; the refresh worker
 	// re-scopes to the provisioned repo set thereafter.
+	runtimePerms := forgegithub.RuntimePermissionsFor(granted)
 	tok, exp, err := forgegithub.MintInstallationToken(r.Context(), s.forgeHTTPClient(), forgegithub.APIBaseFor(base), cfg, installationID, now,
-		&forgegithub.InstallationTokenOptions{Permissions: forgegithub.RuntimePermissionsFor(granted)})
+		&forgegithub.InstallationTokenOptions{Permissions: runtimePerms})
 	if err != nil {
 		httpError(w, http.StatusBadGateway, "could not mint installation token: %v", err)
 		return
 	}
+	forgegithub.RecordRuntimePermissions(installationID, runtimePerms)
 	connID := uuid.NewString()
 	// Seal the installation token like an OAuth access token (no refresh
 	// token — the refresh worker re-mints from the App private key).

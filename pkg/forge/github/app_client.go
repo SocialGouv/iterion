@@ -276,11 +276,10 @@ func MintInstallationToken(ctx context.Context, httpClient *http.Client, apiBase
 	if exp.IsZero() {
 		exp = now.Add(time.Hour)
 	}
-	lastMintedPermissions.Store(installationID, out.Perms)
 	return out.Token, exp, nil
 }
 
-// lastMintedPermissions remembers what the most recent token for an
+// lastMintedPermissions remembers what the most recent RUNTIME token for an
 // installation actually CARRIED, keyed by installation id.
 //
 // It exists because checking the installation's grant is necessary but NOT
@@ -289,10 +288,25 @@ func MintInstallationToken(ctx context.Context, httpClient *http.Client, apiBase
 // baseline), and a pre-flight that read the grant reported all-clear while the
 // push was refused an hour later. The token is the thing that acts, so the
 // token is the thing to inspect.
+//
+// Only the RUNTIME token is recorded — the one sealed into a run and used by
+// the bot. AppClient.rest mints a separate MANAGEMENT token, deliberately
+// pinned to the baseline for iterion's own API calls; recording that one would
+// make the pre-flight report a narrow token for a run that will get a wide one,
+// which is the same wrong-layer mistake in the opposite direction.
 var lastMintedPermissions sync.Map // installationID(int64) → map[string]string
 
+// RecordRuntimePermissions notes what a runtime token carried. Called by the
+// mint paths that produce the token a RUN uses.
+func RecordRuntimePermissions(installationID int64, perms map[string]string) {
+	if len(perms) > 0 {
+		lastMintedPermissions.Store(installationID, perms)
+	}
+}
+
 // LastMintedPermissions returns the permissions carried by the most recent
-// token minted for an installation in this process, and whether one is known.
+// runtime token minted for an installation in this process, and whether one is
+// known.
 func LastMintedPermissions(installationID int64) (map[string]string, bool) {
 	v, ok := lastMintedPermissions.Load(installationID)
 	if !ok {
@@ -523,6 +537,7 @@ func (r AppRefresher) Refresh(ctx context.Context, conn forge.Connection, _ stri
 	if err != nil {
 		return forge.RefreshedToken{}, err
 	}
+	RecordRuntimePermissions(conn.InstallationID, opts.Permissions)
 	return forge.RefreshedToken{AccessToken: tok, ExpiresAt: exp}, nil
 }
 

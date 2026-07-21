@@ -15,7 +15,7 @@ import { SignInCard } from "./Login";
 const GITHUB_URL = "https://github.com/SocialGouv/iterion";
 const DOCS_URL = "https://github.com/SocialGouv/iterion/tree/main/docs";
 
-// FALLBACK_BOTS is the curated legion shown when the marketplace is empty
+// FALLBACK_BOTS is the curated agent set shown when the marketplace is empty
 // or unreachable, so the hero never collapses to a blank showcase. Mirrors
 // the named personas shipped in bots/ (kept short — the live marketplace is
 // the real source once seeded).
@@ -77,7 +77,7 @@ function LandingTopBar() {
 }
 
 // PersonaAvatar is the accent-tinted monogram tile fronting each showcase
-// card — gives the legion grid a face without shipping per-bot artwork.
+// card — gives the agent grid a face without shipping per-bot artwork.
 function PersonaAvatar({ name }: { name: string }) {
   return (
     <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-accent-soft text-sm font-semibold text-accent-text">
@@ -180,9 +180,9 @@ export function PublicTopBar() {
 
 // LandingHero is the full-width marketing pitch above the sign-in card.
 // Dark/light theme-aware, electric-indigo, a restrained cyberpunk nod —
-// deliberately NOT a pastel SaaS hero. The roman-imperator brand voice + a
-// live showcase of the bot legion, with links out to the public marketplace,
-// GitHub, and docs.
+// deliberately NOT a pastel SaaS hero. The infrastructure/control-plane brand
+// voice is paired with a live agent showcase and links out to the public
+// marketplace, GitHub, and docs.
 function LandingHero() {
   const [, navigate] = useLocation();
   const marketplaceEnabled = useServerInfoStore((s) => s.info?.marketplace_enabled);
@@ -197,7 +197,7 @@ function LandingHero() {
 
         <span className="inline-flex items-center gap-1.5 rounded-full border border-border-subtle bg-surface-1/60 px-3 py-1 text-xs text-fg-muted backdrop-blur">
           <span className="h-1.5 w-1.5 rounded-full bg-accent" />
-          Open-source workflow engine for AI agents
+          Open-source control plane for AI agents
         </span>
 
         <h1
@@ -207,15 +207,15 @@ function LandingHero() {
               "linear-gradient(92deg, var(--color-fg-default) 30%, var(--color-accent-text))",
           }}
         >
-          From dev to imperator
+          The control plane for AI agents.
         </h1>
         <p className="mt-4 text-lg font-medium text-accent-text sm:text-2xl">
-          Command a legion of bots at the next level.
+          Apps have Linux. The cloud has Kubernetes. AI agents have Iterion.
         </p>
         <p className="mx-auto mt-5 max-w-2xl text-base text-fg-muted">
-          Iterion turns your repository into a battlefield of autonomous agents —
-          they ship features, review PRs, audit security and keep the whole
-          codebase converging, while you stay in command.
+          Define agent workflows as code. Iterion schedules, coordinates, and
+          governs agents across parallel branches, review gates, tools, and
+          budgets — from one auditable control plane.
         </p>
 
         <div className="mt-8 flex flex-wrap items-center justify-center gap-3">
@@ -244,7 +244,7 @@ function LandingHero() {
 
         <div className="mt-16">
           <div className="mb-4 text-xs uppercase tracking-[0.2em] text-fg-subtle">
-            Meet the legion
+            Featured agents
           </div>
           <BotShowcase />
         </div>

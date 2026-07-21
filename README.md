@@ -4,12 +4,12 @@
 
 # Iterion
 
-**From dev to imperator — command a legion of bots at the next level.**
-*Veni, vidi, merged.*
+**The control plane for AI agents.**
+*Apps have Linux. The cloud has Kubernetes. AI agents have Iterion.*
 
 **Bots, as code.** *Declarative workflow orchestration for AI agents.*
 
-Stop coding like a mortal. Define your bots as readable `.bot` files — chain agents, judges, routers, human gates, parallel branches, bounded loops, and budget caps into a single, auditable execution graph, then command from the next level.
+Kubernetes gave cloud workloads a declarative control plane. Iterion brings that model to AI agents. Define your bots as readable `.bot` files — chain agents, judges, routers, human gates, parallel branches, bounded loops, and budget caps — and operate every run from a single, auditable execution graph.
 
 > ⚠️ **This project is highly experimental.** APIs, DSL syntax, and storage formats may change without notice. Use at your own risk in production environments. Feedback and contributions are welcome!
 
@@ -22,7 +22,7 @@ Stop coding like a mortal. Define your bots as readable `.bot` files — chain a
 - [Why Iterion?](docs/why-iterion.md) — origin + recipe + asymptote + lab
 - [What is Iterion?](#what-is-iterion)
 - [Features](#features)
-- [Meet the legion](#meet-the-legion)
+- [Meet the agents](#meet-the-agents)
 - [Getting Started](#getting-started)
   - [Installation](#installation)
   - [Your first workflow](#your-first-workflow)
@@ -119,7 +119,7 @@ runs with your org's **bound** credentials → the result lands back in
 your own system. Open a merge request, get Revi's review as inline
 comments — no human in the loop, no secret ever in a prompt.
 
-From dev to imperator: the legion, as a service.
+The control plane for AI agents, as a service.
 
 ```mermaid
 flowchart LR
@@ -144,11 +144,11 @@ real multi-tenant service. Start at [docs/baas-overview.md](docs/baas-overview.m
 
 ---
 
-<a id="meet-the-legion"></a>
+<a id="meet-the-agents"></a>
 
-## ⚔️ Meet the legion
+## 🤖 Meet the agents
 
-Iterion ships a team of named, first-class bots — your legion. Each is a general-purpose `.bot` you point at *any* repo: run it directly (`iterion run bots/<name>/main.bot`), dispatch it per issue, or schedule it.
+Iterion ships a catalog of named, first-class bots. Each is a general-purpose `.bot` you point at *any* repo: run it directly (`iterion run bots/<name>/main.bot`), dispatch it per issue, or schedule it.
 
 | Bot | Role | Bundle |
 |---|---|---|

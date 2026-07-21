@@ -19,7 +19,8 @@ Iterion is two things in one repository:
    **Bot-as-a-Service** (BaaS) and the category
    **Agent-as-a-Service** (AaaS).
 
-> *From dev to imperator — command a legion of bots at the next level.*
+> **The control plane for AI agents.** Apps have Linux. The cloud has
+> Kubernetes. AI agents have Iterion.
 
 ## The BaaS loop
 
@@ -126,5 +127,5 @@ If you arrived here looking for…
 
 The catalog of bots iterion ships with — Nexie, Featurly, Billy, Revi,
 Seki and friends — lives in [examples.md](examples.md) and
-[bundles.md](bundles.md). They are the legion you command; this page is
-how that legion gets paged.
+[bundles.md](bundles.md). They are the agents Iterion orchestrates; this page
+explains how the platform dispatches them.

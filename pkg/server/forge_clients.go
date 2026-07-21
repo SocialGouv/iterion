@@ -371,12 +371,13 @@ func (s *Server) forgeAppMinter(ctx context.Context, conn forge.Connection) (str
 	if err != nil {
 		return "", fmt.Errorf("forge: cannot determine provisioned repos for least-privilege token: %w", err)
 	}
+	perms := forgegithub.RuntimePermissionsFor(conn.GrantedPermissions)
 	tok, _, err := forgegithub.MintInstallationToken(ctx, s.forgeHTTPClient(),
 		forgegithub.APIBaseFor(conn.BaseURL()), cfg, conn.InstallationID, time.Now().UTC(),
-		&forgegithub.InstallationTokenOptions{
-			Repositories: repos,
-			Permissions:  forgegithub.RuntimePermissionsFor(conn.GrantedPermissions),
-		})
+		&forgegithub.InstallationTokenOptions{Repositories: repos, Permissions: perms})
+	if err == nil {
+		forgegithub.RecordRuntimePermissions(conn.InstallationID, perms)
+	}
 	return tok, err
 }
 
