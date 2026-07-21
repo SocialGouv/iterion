@@ -14,8 +14,10 @@ scan_docs ──(no docs)──▶ author_docs ──▶ scan_docs   (author_res
 scan_docs ──(exact HEAD cache hit, clean tree, no issue)──────────▶ done
 scan_docs ──▶ scan_code_surface ──▶ build_manifest ──▶ campaign
 campaign ──▶ scope_check ──▶ verify_build ──▶ verify_run ──▶ gate
-gate ──▶ mark_issue_for_review ──▶ update_audit_cache ──▶ done   when converged
+gate ──▶ mark_issue_for_review ──▶ update_audit_cache ──▶ mr_gate   when converged
 gate ──▶ build_manifest   as continuation_loop(max_passes)  — re-manifest, next pass
+mr_gate ──(open_mr)──▶ forge_auth_probe ──(credential)──▶ finalize_mr ──▶ done
+mr_gate ──(not open_mr)──────────────────────────────────────────────▶ done
 ```
 
 The deterministic audit machinery is the engine's unique value and is
@@ -71,6 +73,22 @@ convergence-hardening changelog.
 | `docs_dir` | `docs` | DEFAULT-CREATE target |
 | `baseline` | `""` | Known pre-existing failures to SKIP (G5) |
 | `max_passes` | `8` | Continuation-loop cap |
+| `open_mr` | `false` | Push the alignment series + open ONE PR/MR at the end |
+| `mr_branch` / `mr_base` | `""` | PR branch (default `iterion/docs-refresh/<run-id>`) / base (default: repo default branch) |
+| `source_issue_ref` | `""` | Issue to back-link the PR URL onto (forge URL or `native:<id>`) |
+
+## PR finalization (opt-in)
+
+`open_mr=true` appends the feature-dev-verbatim PR tail: a deterministic
+`forge_auth_probe` checks for a push credential (mounted `forge_token`
+secret, `*_TOKEN` env, or host `gh` auth) and only then the
+`finalize_mr` agent pushes the doc-alignment series and opens one PR
+(GitHub `gh` / GitLab `glab` / Forgejo REST, per the shared
+`forge-mr-create` skill), reporting any `drift_remaining` honestly in
+the body. Without a credential the tail skips cleanly and the commits
+stay on the run's storage branch, exactly as before. This is the
+delivery path for repo-targeted **cloud** runs, whose runner clone is
+ephemeral — without a push the alignment commits die with the pod.
 
 ## Run
 
@@ -83,5 +101,6 @@ iterion run bots/docs-refresh/main.bot \
 Campaign skills shipped: `docs-refresh`, `doc-mismatch-taxonomy`,
 `doc-scope-enumeration`, `doc-verification-checklist`, and
 `anti-facade-fix-rules`. The bundle also carries the shared
-`verify-build` skill for its verification agent. See [main.bot](main.bot)
+`verify-build` skill for its verification agent and the shared
+`forge-mr-create` skill for the opt-in PR tail. See [main.bot](main.bot)
 for the full DSL.

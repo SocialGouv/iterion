@@ -244,6 +244,31 @@ vars:
   ## dogfood 019f3d4d-1aed).
   max_passes: int = 8
 
+  ## ─── PR finalization (opt-in) ─────────────────────────────────
+  ## Same contract as feature-dev/app-dev: when open_mr=true, after the
+  ## run finishes (converged OR max_passes exhausted with banked
+  ## commits), finalize_mr pushes the doc-alignment series and opens
+  ## the pull request (PR; merge request on GitLab). Requires a git
+  ## remote + a push credential (forge_token secret, *_TOKEN env, or
+  ## host gh auth) — the deterministic forge_auth_probe skips the tail
+  ## cleanly when none exists, so local runs keep today's behavior
+  ## (commits stay on the run's storage branch). The noop_skip path
+  ## never reaches this tail, and finalize_mr refuses to open an empty
+  ## PR when no commits landed.
+  open_mr: bool = false
+  mr_branch: string = ""
+  mr_base: string = ""
+  source_issue_ref: string = ""
+
+secrets:
+  ## Forge access for push + PR creation + the issue back-link. Mounted
+  ## as a read-only file the gh/glab CLI authenticates from; never read
+  ## into a prompt. optional:true so local runs (no forge token bound)
+  ## and host-authenticated gh/glab setups work unchanged.
+  forge_token:
+    as: file
+    optional: true
+
 ## ─── Prompts ────────────────────────────────────────────────────
 
 prompt campaign_system:
@@ -525,6 +550,59 @@ prompt verify_user:
   anything; the deterministic gate runs your script and the campaign
   fixes any red on the next pass.
 
+## ─── PR finalization prompts (opt-in) ──────────────────────────────
+
+prompt finalize_mr_system:
+  You finalize a finished docs-refresh run by opening ONE pull request
+  (PR; merge request on GitLab) for the SERIES of per-doc alignment
+  commits this run produced, then (optionally) posting the PR link back
+  to the source issue. You make NO further changes to docs or code.
+
+  Read the `forge-mr-create` skill FIRST — it tells you how to detect the
+  forge, authenticate from the mounted forge_token, push the branch, and
+  open the PR (GitHub via gh, GitLab via glab, Forgejo/Gitea via REST).
+
+  Procedure:
+    1. Confirm there are commits to ship: the run's HEAD must be ahead of
+       the base (`git rev-list --count <base>..HEAD` > 0). If not, set
+       opened=false with skipped_reason "no commits ahead of base" — do
+       NOT open an empty PR.
+    2. Determine the branch name (mr_branch if set, else a stable
+       iterion/docs-refresh/<run-id> name) and the base (mr_base if set,
+       else the repo's default branch — see the skill).
+    3. Authenticate the matching forge CLI from the mounted forge_token
+       file when present; otherwise assume host auth. If neither is
+       available, set opened=false with a precise skipped_reason — never
+       pretend.
+    4. Push HEAD to the branch on the origin remote, then open the PR
+       from that branch into the base. Title: a concise
+       "docs: …" conventional summary. Body: the campaign summary, the
+       docs aligned this run, and — when drift_remaining is non-empty —
+       an honest "Remaining drift" section (the run shipped what is
+       banked; never present a partial alignment as complete).
+    5. If source_issue_ref is set, post the opened PR URL back to it: a
+       forge issue URL → comment via the same forge CLI; a "native:<id>"
+       ref → use the board comment tool. Set back_linked accordingly.
+
+  Return opened, url, branch, back_linked, skipped_reason and a short
+  summary. Be honest: report exactly what happened.
+
+prompt finalize_mr_user:
+  Workspace: {{input.workspace_dir}}
+  Desired branch (may be empty → derive): {{input.mr_branch}}
+  Base (may be empty → repo default branch): {{input.mr_base}}
+  Source issue to back-link (may be empty): {{input.source_issue_ref}}
+  Operator scope notes (may be empty): {{input.scope_notes}}
+
+  Campaign summary (for the PR body):
+  {{input.campaign_summary}}
+
+  Remaining drift reported by the campaign (empty = fully aligned):
+  {{input.drift_remaining}}
+
+  Push the branch, open the PR, post the back-link when a source issue
+  is given, and return the structured result.
+
 ## ─── Schemas (v2 campaign / gates) ─────────────────────────────────
 
 ## campaign's input: the bounded manifest working set for this pass +
@@ -595,6 +673,36 @@ schema scope_check_output:
 schema gate_state:
   converged: bool
   fail_log: string
+
+## ─── PR finalization schemas (opt-in) ───────────────────────────────
+
+## mr_gate lifts vars.open_mr into a bool output field so the two
+## outgoing edges use the C012-exhaustive simple form. No LLM, no shell.
+schema mr_gate_output:
+  open_mr: bool
+
+## forge_auth_probe output — deterministic "can we push?" so finalize_mr (an
+## LLM agent) is only ever entered when a push credential actually exists.
+schema forge_auth_state:
+  available: bool
+  reason: string
+
+schema finalize_mr_input:
+  workspace_dir: string
+  mr_branch: string
+  mr_base: string
+  source_issue_ref: string
+  scope_notes: string
+  campaign_summary: string
+  drift_remaining: string
+
+schema finalize_mr_output:
+  opened: bool
+  url: string
+  branch: string
+  back_linked: bool
+  skipped_reason: string
+  summary: string
 
 
 ## ─── Schemas ────────────────────────────────────────────────────
@@ -1683,6 +1791,55 @@ compute gate:
     converged: "outputs.verify_run.passed && outputs.scope_check.scope_ok && outputs.campaign.docs_aligned && outputs.build_manifest.coverage_pct >= vars.coverage_target_pct"
     fail_log: "if(!outputs.scope_check.scope_ok, outputs.scope_check.log, if(outputs.verify_run.passed, '', outputs.verify_run.log_tail))"
 
+## ─── Nodes : PR finalization tail (opt-in, feature-dev verbatim) ────
+
+## mr_gate lifts vars.open_mr into a bool output so the two outgoing
+## edges use the C012-exhaustive simple form. No LLM, no shell.
+compute mr_gate:
+  output: mr_gate_output
+  expr:
+    open_mr: "vars.open_mr"
+
+## forge_auth_probe — DETERMINISTIC pre-flight for the push. finalize_mr is an
+## LLM agent; entering it with NO push credential mounted burns a whole turn
+## just to rediscover, in shell, that it can't push. This tool answers "is
+## there a push credential?" in ~100ms of subprocess so the graph only pays
+## finalize_mr when a push can actually happen. python3 for safe JSON;
+## read-only, idempotent.
+tool forge_auth_probe:
+  command: `python3 -c "
+import os, subprocess, json
+tok = '/run/iterion/secrets/forge_token'
+try:
+    if os.path.isfile(tok) and os.path.getsize(tok) > 0:
+        print(json.dumps({'available': True, 'reason': 'file:' + tok})); raise SystemExit(0)
+except OSError:
+    pass
+for v in ('GH_TOKEN', 'GITHUB_TOKEN', 'GITLAB_TOKEN', 'FORGEJO_TOKEN', 'GITEA_TOKEN'):
+    if os.environ.get(v):
+        print(json.dumps({'available': True, 'reason': 'env:' + v})); raise SystemExit(0)
+try:
+    r = subprocess.run(['gh', 'auth', 'status'], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=10)
+    if r.returncode == 0:
+        print(json.dumps({'available': True, 'reason': 'gh host auth'})); raise SystemExit(0)
+except Exception:
+    pass
+print(json.dumps({'available': False, 'reason': 'no forge_token secret, no *_TOKEN env, no gh host auth'}))
+"`
+  output: forge_auth_state
+
+agent finalize_mr:
+  backend: "claude_code"
+  model: "${ITERION_DOC_ALIGN_MODEL_CLAUDE:-claude-opus-4-8}"
+  reasoning_effort: "${ITERION_DOC_ALIGN_MR_EFFORT:-medium}"
+  input: finalize_mr_input
+  output: finalize_mr_output
+  system: finalize_mr_system
+  user: finalize_mr_user
+  tools: [bash, read_file, glob, grep]
+  capabilities: [board.read, board.comment]
+  tool_max_steps: 20
+
 ## ─── Workflow ───────────────────────────────────────────────────
 
 workflow docs_refresh:
@@ -1796,4 +1953,23 @@ workflow docs_refresh:
     cache_path: "{{vars.audit_cache_path}}",
     audited_pairs: "{{outputs.build_manifest.verified_pairs}}"
   }
-  update_audit_cache -> done
+  ## ── PR tail (opt-in, feature-dev verbatim) ──────────────────────
+  ## Reached on BOTH finishes (converged and max_passes-exhausted): the
+  ## banked alignment commits are real landed work either way, and
+  ## finalize_mr refuses an empty PR + reports drift_remaining honestly
+  ## in the body. The noop_skip path (scan_docs -> done) never gets here.
+  update_audit_cache -> mr_gate
+  mr_gate -> forge_auth_probe when open_mr
+  mr_gate -> done when not open_mr
+
+  forge_auth_probe -> finalize_mr when available with {
+    workspace_dir:    "{{vars.workspace_dir}}",
+    mr_branch:        "{{vars.mr_branch}}",
+    mr_base:          "{{vars.mr_base}}",
+    source_issue_ref: "{{vars.source_issue_ref}}",
+    scope_notes:      "{{vars.scope_notes}}",
+    campaign_summary: "{{outputs.campaign.summary}}",
+    drift_remaining:  "{{outputs.campaign.drift_remaining}}"
+  }
+  forge_auth_probe -> done when not available
+  finalize_mr -> done

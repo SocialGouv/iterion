@@ -1,7 +1,9 @@
-<!-- DUPLICATE — one of three byte-identical copies (iterion has no
+<!-- DUPLICATE — one of five byte-identical copies (iterion has no
      skill-sharing primitive; see CLAUDE.md "If a skill ends up duplicated
-     across multiple bundles"). Edit one, edit all three:
+     across multiple bundles"). Edit one, edit all five:
+       bots/app-dev/skills/forge-mr-create.md
        bots/branch-improve-loop/skills/forge-mr-create.md
+       bots/docs-refresh/skills/forge-mr-create.md
        bots/feature-dev/skills/forge-mr-create.md
        bots/whole-improve-loop/skills/forge-mr-create.md -->
 ---
