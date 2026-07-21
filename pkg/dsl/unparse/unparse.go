@@ -1246,6 +1246,9 @@ func writeBudget(b *strings.Builder, budget *ast.BudgetBlock) {
 	if budget.MaxTokens > 0 {
 		fmt.Fprintf(b, "    max_tokens: %d\n", budget.MaxTokens)
 	}
+	if budget.WarnTokens > 0 {
+		fmt.Fprintf(b, "    warn_tokens: %d\n", budget.WarnTokens)
+	}
 	if budget.MaxIterations > 0 {
 		fmt.Fprintf(b, "    max_iterations: %d\n", budget.MaxIterations)
 	}

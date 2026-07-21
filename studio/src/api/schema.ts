@@ -4695,6 +4695,7 @@ export interface components {
             max_iterations?: number;
             max_parallel_branches?: number;
             max_tokens?: number;
+            warn_tokens?: number;
         };
         RunHeader: {
             active_duration_ms: number;

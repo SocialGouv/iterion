@@ -120,6 +120,7 @@ type RunModelOverride struct {
 type RunBudget struct {
 	MaxCostUSD          float64 `json:"max_cost_usd,omitempty" bson:"max_cost_usd,omitempty"`
 	MaxTokens           int     `json:"max_tokens,omitempty" bson:"max_tokens,omitempty"`
+	WarnTokens          int     `json:"warn_tokens,omitempty" bson:"warn_tokens,omitempty"`
 	MaxIterations       int     `json:"max_iterations,omitempty" bson:"max_iterations,omitempty"`
 	MaxDuration         string  `json:"max_duration,omitempty" bson:"max_duration,omitempty"`
 	MaxParallelBranches int     `json:"max_parallel_branches,omitempty" bson:"max_parallel_branches,omitempty"`

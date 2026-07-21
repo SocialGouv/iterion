@@ -1049,6 +1049,9 @@
           },
           "max_tokens": {
             "type": "integer"
+          },
+          "warn_tokens": {
+            "type": "integer"
           }
         },
         "type": "object"

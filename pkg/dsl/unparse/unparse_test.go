@@ -140,6 +140,7 @@ func TestUnparseBasic(t *testing.T) {
 					MaxDuration:         "30m",
 					MaxCostUSD:          15,
 					MaxTokens:           400000,
+					WarnTokens:          250000,
 					MaxIterations:       10,
 				},
 				Edges: []*ast.Edge{
@@ -201,7 +202,7 @@ func TestUnparseBasic(t *testing.T) {
 		"workflow my_workflow:",
 		"  vars:\n    branch: string\n    ci_command: string = \"make test\"",
 		"  entry: my_agent",
-		"  budget:\n    max_parallel_branches: 1\n    max_duration: \"30m\"\n    max_cost_usd: 15\n    max_tokens: 400000\n    max_iterations: 10",
+		"  budget:\n    max_parallel_branches: 1\n    max_duration: \"30m\"\n    max_cost_usd: 15\n    max_tokens: 400000\n    warn_tokens: 250000\n    max_iterations: 10",
 		"my_agent -> plan_fix with {",
 		"diagnosis: \"{{outputs.diagnose}}\"",
 		"plan_fix -> act_fix",

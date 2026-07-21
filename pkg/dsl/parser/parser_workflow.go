@@ -183,6 +183,9 @@ func (p *parser) parseBudgetProp(bb *ast.BudgetBlock, propTok Token) {
 	case TokenMaxTokens:
 		p.expect(TokenColon)
 		bb.MaxTokens = p.expectInt()
+	case TokenWarnTokens:
+		p.expect(TokenColon)
+		bb.WarnTokens = p.expectInt()
 	case TokenMaxIterations:
 		p.expect(TokenColon)
 		bb.MaxIterations = p.expectInt()

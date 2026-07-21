@@ -642,6 +642,7 @@ type jsonBudgetBlock struct {
 	MaxDuration         string  `json:"max_duration,omitempty"`
 	MaxCostUSD          float64 `json:"max_cost_usd,omitempty"`
 	MaxTokens           int     `json:"max_tokens,omitempty"`
+	WarnTokens          int     `json:"warn_tokens,omitempty"`
 	MaxIterations       int     `json:"max_iterations,omitempty"`
 }
 
@@ -1213,6 +1214,7 @@ func workflowToJSON(w *WorkflowDecl) *jsonWorkflowDecl {
 			MaxDuration:         w.Budget.MaxDuration,
 			MaxCostUSD:          w.Budget.MaxCostUSD,
 			MaxTokens:           w.Budget.MaxTokens,
+			WarnTokens:          w.Budget.WarnTokens,
 			MaxIterations:       w.Budget.MaxIterations,
 		}
 	}
@@ -1799,6 +1801,7 @@ func workflowFromJSON(jw *jsonWorkflowDecl) (*WorkflowDecl, error) {
 			MaxDuration:         jw.Budget.MaxDuration,
 			MaxCostUSD:          jw.Budget.MaxCostUSD,
 			MaxTokens:           jw.Budget.MaxTokens,
+			WarnTokens:          jw.Budget.WarnTokens,
 			MaxIterations:       jw.Budget.MaxIterations,
 		}
 	}

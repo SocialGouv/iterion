@@ -1807,6 +1807,7 @@ func (c *compiler) compileBudget(b *ast.BudgetBlock) *Budget {
 		MaxDuration:         b.MaxDuration,
 		MaxCostUSD:          cost,
 		MaxTokens:           b.MaxTokens,
+		WarnTokens:          b.WarnTokens,
 		MaxIterations:       b.MaxIterations,
 	}
 }
