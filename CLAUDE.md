@@ -885,6 +885,15 @@ This is the supported way, and the alternatives are all worse:
   agent spent turns discovering that, fetched a binary itself, then fell back
   to a workaround that produced a live URL and delivered nothing.
 
+**Pin the versions and commit `devbox.lock`.** `some-tool@latest` re-resolves
+at install time, so what lands in a run's sandbox can change with no commit
+anywhere — a supply-chain surface, and a reproducibility hole for a bot whose
+job is to ship code. The lock pins each package to an exact nixpkgs commit;
+the explicit version in `devbox.json` makes the intent readable in a diff.
+Generate it with `devbox install` in the bot's directory and commit both
+files — the engine copies the lock alongside the config, so a locked project
+installs exactly what it was authored against.
+
 Two things to know when writing one:
 
 - **Non-interactive PATH is the trap.** `tool` nodes run through a
