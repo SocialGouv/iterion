@@ -21,11 +21,8 @@ so ` + "`iterion bots list`" + ` and the studio discover it.
 Subcommands:
   pack   Build a deterministic .botz from a source directory.
 `,
-	// NoArgs makes cobra reject an unknown subcommand (notably the retired
-	// `bundle init`) instead of printing help and exiting 0 — a silent
-	// no-op for anyone with the old command in muscle memory.
-	Args: cobra.NoArgs,
-	RunE: func(cmd *cobra.Command, _ []string) error { return cmd.Help() },
+	// Rejecting `bundle init` (and any other unknown subcommand) is
+	// handled generically by rejectUnknownSubcommands in main.go.
 }
 
 var bundlePackOpts struct {

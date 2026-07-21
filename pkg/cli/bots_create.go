@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -78,6 +79,19 @@ func BotsCreate(opts BotsCreateOptions, p *Printer) error {
 	if !filepath.IsAbs(dest) {
 		dest = filepath.Join(workdir, dest)
 	}
+	// Name collision anywhere discovery looks — not just under Dest —
+	// because a duplicate name makes catalog routing ambiguous. Same
+	// precondition the studio's create endpoint enforces.
+	if err := botregistry.EnsureNameFree(
+		botregistry.ListOptions{Paths: botregistry.DefaultPaths(workdir), Workdir: workdir},
+		spec.Slug,
+	); err != nil {
+		if errors.Is(err, botregistry.ErrNameTaken) {
+			return UserInputError(err)
+		}
+		return err
+	}
+
 	dir := filepath.Join(dest, spec.Slug)
 	if _, err := os.Stat(dir); err == nil {
 		return UserInputError(fmt.Errorf("bots: %s already exists", dir))

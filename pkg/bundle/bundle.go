@@ -15,6 +15,29 @@
 // hash identically whether packed as ZIP or read from a legacy tar.gz.
 package bundle
 
+// Layout directory names. A bundle resolves each by convention at its
+// root, so these strings ARE the format — spelling one differently
+// silently disables that resource kind.
+const (
+	// DirSkills holds `SKILL.md` files mirrored into the run
+	// workspace's `.claude/skills/`.
+	DirSkills = "skills"
+	// DirPrompts holds reusable `.md` prompts; the filename stem
+	// becomes the prompt name.
+	DirPrompts = "prompts"
+	// DirAttachments holds default binary inputs referenced from the
+	// manifest's `attachments:` map.
+	DirAttachments = "attachments"
+	// DirPresets holds file-based presets (named sous-bots).
+	DirPresets = "presets"
+)
+
+// LayoutDirs is the canonical order of the layout directories, shared by
+// the loader (which resolves them), the packer (which archives them),
+// and pkg/botscaffold (which creates them). Kept as one list so adding a
+// convention directory is not a three-package hunt.
+var LayoutDirs = []string{DirSkills, DirPrompts, DirAttachments, DirPresets}
+
 // Kind discriminates how a workflow path was supplied.
 type Kind int
 

@@ -35,6 +35,12 @@ var skipSuffixes = []string{
 	"~",
 }
 
+// IsPackSkipped reports whether a bundle-relative path would be excluded
+// from a .botz by [PackDir]. Exported so a scaffolder can prove the
+// `.gitignore` it writes only lists things the packer already drops,
+// instead of asserting that in a comment.
+func IsPackSkipped(rel string) bool { return shouldSkip(rel) }
+
 // PackResult summarises a successful PackDir invocation.
 type PackResult struct {
 	OutputPath string // absolute path of the .botz file

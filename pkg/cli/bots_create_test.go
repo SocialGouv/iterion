@@ -3,11 +3,13 @@ package cli
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 
+	"github.com/SocialGouv/iterion/pkg/botregistry"
 	"github.com/SocialGouv/iterion/pkg/botscaffold"
 	"github.com/SocialGouv/iterion/pkg/bundle"
 )
@@ -123,7 +125,7 @@ func TestBotsCreate_Rejects(t *testing.T) {
 	}
 }
 
-func TestBotsCreate_RefusesExistingDirectory(t *testing.T) {
+func TestBotsCreate_RefusesExistingName(t *testing.T) {
 	inTempWorkspace(t)
 	p, _ := testPrinter()
 
@@ -134,8 +136,40 @@ func TestBotsCreate_RefusesExistingDirectory(t *testing.T) {
 	if err == nil {
 		t.Fatal("second BotsCreate = nil, want a collision error (must never clobber an authored bot)")
 	}
-	if !strings.Contains(err.Error(), "already exists") {
-		t.Errorf("error = %q, want it to mention the collision", err)
+	if !errors.Is(err, botregistry.ErrNameTaken) {
+		t.Errorf("error = %q, want ErrNameTaken", err)
+	}
+	if !errors.Is(err, ErrUserInput) {
+		t.Errorf("error = %q, want it marked as user input (exit 2)", err)
+	}
+}
+
+// TestBotsCreate_RefusesNameTakenInAnotherRoot is the case the target
+// directory check alone misses: a bot installed under .botz/ occupies
+// the same catalog name, so creating bots/<name> would make routing by
+// name ambiguous. The studio already refused this with a 409; the CLI
+// must agree.
+func TestBotsCreate_RefusesNameTakenInAnotherRoot(t *testing.T) {
+	dir := inTempWorkspace(t)
+	p, _ := testPrinter()
+
+	// Land a bot in .botz/ (a discovery root that is NOT --dest).
+	if err := BotsCreate(BotsCreateOptions{Slug: "taken", Dest: ".botz"}, p); err != nil {
+		t.Fatalf("seed BotsCreate: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(dir, ".botz", "taken", "main.bot")); err != nil {
+		t.Fatalf("seed bot not written: %v", err)
+	}
+
+	err := BotsCreate(BotsCreateOptions{Slug: "taken"}, p)
+	if err == nil {
+		t.Fatal("BotsCreate = nil, want a collision with the bot already in .botz/")
+	}
+	if !errors.Is(err, botregistry.ErrNameTaken) {
+		t.Errorf("error = %q, want ErrNameTaken", err)
+	}
+	if _, statErr := os.Stat(filepath.Join(dir, "bots", "taken")); !os.IsNotExist(statErr) {
+		t.Error("a bundle was written despite the name collision")
 	}
 }
 

@@ -45,6 +45,8 @@ func main() {
 	// vars take precedence; .env only fills in missing keys.
 	loadDotEnvFromCwd()
 
+	rejectUnknownSubcommands(rootCmd)
+
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer cancel()
 
@@ -60,6 +62,36 @@ func main() {
 			os.Exit(2)
 		}
 		os.Exit(1)
+	}
+}
+
+// rejectUnknownSubcommands makes every GROUP command — one that only
+// hosts subcommands and does nothing itself, like `iterion bundle` or
+// `iterion remote runs` — reject an argument it has no subcommand for.
+//
+// Cobra's default (legacyArgs) does that check for the root command
+// only; every other group silently accepts arbitrary args, and since a
+// group is not Runnable, cobra falls through to printing help and
+// exiting 0. A typo or a retired command (`iterion bundle init`) then
+// looks like a success. NoArgs turns it into `unknown command "init"
+// for "iterion bundle"` with a non-zero exit.
+//
+// Applied by walking the tree rather than by annotating each group, so
+// a group added later inherits the behaviour instead of re-introducing
+// the silent no-op. Groups that deliberately take positional args of
+// their own already set Args or a Run and are left untouched.
+//
+// Both fields are required: cobra returns ErrHelp for a non-Runnable
+// command BEFORE it validates args, so Args alone would never be
+// consulted. RunE makes the group Runnable — it only ever prints help,
+// which is what a bare `iterion bundle` did before.
+func rejectUnknownSubcommands(cmd *cobra.Command) {
+	for _, sub := range cmd.Commands() {
+		rejectUnknownSubcommands(sub)
+	}
+	if cmd.HasSubCommands() && !cmd.Runnable() && cmd.Args == nil {
+		cmd.Args = cobra.NoArgs
+		cmd.RunE = func(c *cobra.Command, _ []string) error { return c.Help() }
 	}
 }
 

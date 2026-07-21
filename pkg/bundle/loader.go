@@ -291,17 +291,21 @@ func assembleBundle(dir string) (*Bundle, error) {
 	if b.IterPath == "" {
 		return nil, fmt.Errorf("bundle: %s contains no main.bot at root", dir)
 	}
-	if info, err := os.Stat(filepath.Join(dir, "skills")); err == nil && info.IsDir() {
-		b.SkillsDir = filepath.Join(dir, "skills")
-	}
-	if info, err := os.Stat(filepath.Join(dir, "prompts")); err == nil && info.IsDir() {
-		b.PromptsDir = filepath.Join(dir, "prompts")
-	}
-	if info, err := os.Stat(filepath.Join(dir, "attachments")); err == nil && info.IsDir() {
-		b.AttachmentsDir = filepath.Join(dir, "attachments")
-	}
-	if info, err := os.Stat(filepath.Join(dir, "presets")); err == nil && info.IsDir() {
-		b.PresetsDir = filepath.Join(dir, "presets")
+	// Each layout dir resolves to its absolute path when present, "" when
+	// absent. Driven by a table so the names live only in bundle.go.
+	for _, d := range []struct {
+		name string
+		dst  *string
+	}{
+		{DirSkills, &b.SkillsDir},
+		{DirPrompts, &b.PromptsDir},
+		{DirAttachments, &b.AttachmentsDir},
+		{DirPresets, &b.PresetsDir},
+	} {
+		p := filepath.Join(dir, d.name)
+		if info, err := os.Stat(p); err == nil && info.IsDir() {
+			*d.dst = p
+		}
 	}
 	manifest, err := LoadManifest(filepath.Join(dir, "manifest.yaml"))
 	if err != nil {

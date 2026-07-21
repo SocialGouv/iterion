@@ -1,6 +1,7 @@
 package server
 
 import (
+	"errors"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -46,11 +47,12 @@ func (s *Server) handleBotCreate(w http.ResponseWriter, r *http.Request) {
 
 	// Collision check against BOTH the discovery registry (a bot of that
 	// name may live in any configured path) and the target directory.
-	if _, exists, err := s.findBot(spec.Slug); err != nil {
+	if err := botregistry.EnsureNameFree(s.botListOptions(), spec.Slug); err != nil {
+		if errors.Is(err, botregistry.ErrNameTaken) {
+			s.httpErrorFor(w, r, http.StatusConflict, "%v", err)
+			return
+		}
 		s.httpErrorFor(w, r, http.StatusInternalServerError, "bots: %v", err)
-		return
-	} else if exists {
-		s.httpErrorFor(w, r, http.StatusConflict, "bots: %q already exists", spec.Slug)
 		return
 	}
 	dir := filepath.Join(s.cfg.WorkDir, botregistry.BotsDirName, spec.Slug)

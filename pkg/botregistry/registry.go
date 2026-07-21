@@ -11,6 +11,7 @@
 package botregistry
 
 import (
+	"errors"
 	"fmt"
 	"io/fs"
 	"os"
@@ -173,6 +174,45 @@ type ListOptions struct {
 // without one importing the other.
 type Config struct {
 	Paths []string `yaml:"paths,omitempty" json:"paths,omitempty"`
+}
+
+// ErrNameTaken reports that a bot of the requested name is already
+// discoverable. Callers that need a distinct status for it (the studio's
+// 409, the CLI's exit 2) match with errors.Is.
+var ErrNameTaken = errors.New("bot name already in use")
+
+// FindByName returns the discovered bot named name, if any.
+func FindByName(opts ListOptions, name string) (Entry, bool, error) {
+	entries, err := List(opts)
+	if err != nil {
+		return Entry{}, false, err
+	}
+	for _, e := range entries {
+		if e.Name == name {
+			return e, true, nil
+		}
+	}
+	return Entry{}, false, nil
+}
+
+// EnsureNameFree is the shared precondition for creating a bot: it fails
+// when name is already taken anywhere discovery looks, not merely where
+// the new bundle would be written.
+//
+// Both creation surfaces call it so they agree. Checking only the target
+// directory is not enough — a bot of the same name living in `.botz/` or
+// any other configured root would still collide in the catalog, and a
+// duplicate name there is what makes `iterion run <name>` and dispatcher
+// routing ambiguous.
+func EnsureNameFree(opts ListOptions, name string) error {
+	existing, found, err := FindByName(opts, name)
+	if err != nil {
+		return err
+	}
+	if found {
+		return fmt.Errorf("%w: %q is already defined at %s", ErrNameTaken, name, existing.Path)
+	}
+	return nil
 }
 
 // List walks Opts.Paths and returns the discovered bots sorted by

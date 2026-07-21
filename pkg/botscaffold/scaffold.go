@@ -37,15 +37,10 @@ var templateFS embed.FS
 //go:embed templates/preset_example.md
 var presetExample []byte
 
-// bundleDirs is the .botz layout every scaffolded bot ships. They are
-// created empty (with a .gitkeep so git carries them) because the bundle
-// loader resolves each by convention: skills/ mirrors into the run
-// workspace's .claude/skills/, prompts/<stem>.md becomes a named prompt,
-// attachments/ holds default binary inputs, presets/ holds sous-bots.
-var bundleDirs = []string{"skills", "prompts", "attachments", "presets"}
-
-// bundleGitignore keeps local build output out of the author's repo. It
-// mirrors what the pack walker already filters.
+// bundleGitignore keeps local build output out of the author's repo.
+// Every entry must be something the packer already excludes — asserted
+// by TestBundleGitignore_MatchesPackerSkips rather than by comment, so
+// the two cannot drift silently.
 const bundleGitignore = "*.botz\n.iterion/\n"
 
 // SlugRe is the accepted shape for a new bot's directory/technical name.
@@ -246,7 +241,9 @@ func Scaffold(dir string, s Spec) (Result, error) {
 	if _, err := os.Stat(filepath.Join(dir, "main.bot")); err == nil {
 		return Result{}, fmt.Errorf("botscaffold: %s already contains a main.bot", dir)
 	}
-	for _, sub := range bundleDirs {
+	// The full .botz layout, so `bundle pack` works on the result as-is
+	// and each resource kind has an obvious home.
+	for _, sub := range bundle.LayoutDirs {
 		if err := os.MkdirAll(filepath.Join(dir, sub), 0o755); err != nil {
 			return Result{}, fmt.Errorf("botscaffold: mkdir %s: %w", sub, err)
 		}
@@ -263,10 +260,10 @@ func Scaffold(dir string, s Spec) (Result, error) {
 		{"manifest.yaml", manifest},
 		{"README.md", readme},
 		{".gitignore", []byte(bundleGitignore)},
-		{filepath.Join("presets", "example.md"), presetExample},
-		{filepath.Join("skills", ".gitkeep"), nil},
-		{filepath.Join("prompts", ".gitkeep"), nil},
-		{filepath.Join("attachments", ".gitkeep"), nil},
+		{filepath.Join(bundle.DirPresets, "example.md"), presetExample},
+		{filepath.Join(bundle.DirSkills, ".gitkeep"), nil},
+		{filepath.Join(bundle.DirPrompts, ".gitkeep"), nil},
+		{filepath.Join(bundle.DirAttachments, ".gitkeep"), nil},
 	} {
 		path := filepath.Join(dir, f.name)
 		if err := store.WriteFileAtomic(path, f.data, 0o644); err != nil {

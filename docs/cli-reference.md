@@ -203,6 +203,8 @@ iterion bots regen-catalog
 
 `bots create` scaffolds a bot bundle under `bots/<slug>` — `main.bot`, `manifest.yaml`, `README.md`, `.gitignore`, and the `skills/ prompts/ attachments/ presets/` layout — then refreshes the generated catalogue. It is the CLI half of the studio builder at `/bots/new`: both render through `pkg/botscaffold`, so a bot created either way is identical. The generated workflow is parsed **and** compiled before anything is written.
 
+The name must be free **everywhere discovery looks** (`bots/`, `examples/`, `.botz/`), not merely under `--dest`: a duplicate name makes catalogue routing ambiguous. A collision exits 2 and names the conflicting bot's path.
+
 | Flag | Meaning |
 |---|---|
 | `--template <id>` | Start from a gallery template (default `blank`); `iterion bots templates` lists them. |

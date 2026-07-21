@@ -174,3 +174,24 @@ func TestScaffold_RefusesExistingBundle(t *testing.T) {
 		t.Fatalf("expected already-contains error, got %v", err)
 	}
 }
+
+// TestBundleGitignore_MatchesPackerSkips turns the scaffolded
+// .gitignore's relationship with the packer into a machine-checked
+// invariant: every entry we tell authors to ignore must be something
+// PackDir already excludes. A comment asserting this would drift the
+// first time either list changed.
+func TestBundleGitignore_MatchesPackerSkips(t *testing.T) {
+	for _, line := range strings.Split(strings.TrimSpace(bundleGitignore), "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+		// Turn the gitignore entry into a concrete path the packer
+		// would see: `*.botz` → `x.botz`, `.iterion/` → `.iterion`.
+		sample := strings.TrimSuffix(strings.Replace(line, "*", "x", 1), "/")
+		if !bundle.IsPackSkipped(sample) {
+			t.Errorf("scaffolded .gitignore lists %q but PackDir would still archive %q",
+				line, sample)
+		}
+	}
+}
