@@ -10,17 +10,29 @@ interface State {
   error: string | null;
 }
 
+export interface HumanNodeSchema extends State {
+  // reload re-fetches the run workflow — the "Retry" affordance when the
+  // first fetch failed (see HumanPromptForm). Backed by react-query's
+  // refetch, so it re-runs the query and repopulates the shared cache.
+  reload: () => void;
+}
+
 const initial: State = { fields: null, loading: false, staleHash: false, error: null };
 
 // useHumanNodeSchema returns the output_schema fields for the paused
-// human node. Callers MUST distinguish loading=true (don't render the
-// form yet) from loading=false && fields===null (no schema, fall back
-// to free-text PauseForm). Conflating them ships the fallback during
-// the brief fetch window and turns typed answers into strings.
+// human node. Callers MUST distinguish three outcomes, never conflate
+// them:
+//   - loading=true                      → don't render the form yet
+//   - loading=false && error!=null      → the fetch FAILED; surface it
+//     and offer reload() — do NOT silently fall back (a fallback form
+//     that can't express the gate's verdict strands the operator and
+//     drops their notes; iterion#244)
+//   - loading=false && error==null && fields empty → the node genuinely
+//     has no output schema → free-text PauseForm fallback is correct
 export function useHumanNodeSchema(
   runId: string | null,
   nodeId: string | undefined,
-): State {
+): HumanNodeSchema {
   const enabled = !!runId && !!nodeId;
   const query = useQuery<WireWorkflow>({
     // Shares the run console's workflow cache (useNodeLabel,
@@ -33,14 +45,24 @@ export function useHumanNodeSchema(
     staleTime: Infinity,
   });
 
-  if (!enabled) return initial;
+  const reload = () => {
+    void query.refetch();
+  };
+
+  if (!enabled) return { ...initial, reload };
   // isPending (not isLoading): whenever we have neither data nor a
   // settled error, report loading — never the "no schema" fallback.
   if (query.isPending && !query.error) {
-    return { fields: null, loading: true, staleHash: false, error: null };
+    return { fields: null, loading: true, staleHash: false, error: null, reload };
   }
   if (query.error) {
-    return { fields: null, loading: false, staleHash: false, error: errorMessage(query.error) };
+    return {
+      fields: null,
+      loading: false,
+      staleHash: false,
+      error: errorMessage(query.error),
+      reload,
+    };
   }
   const wf = query.data;
   const node = wf?.nodes.find((n) => n.id === nodeId);
@@ -49,5 +71,6 @@ export function useHumanNodeSchema(
     loading: false,
     staleHash: !!wf?.stale_hash,
     error: null,
+    reload,
   };
 }

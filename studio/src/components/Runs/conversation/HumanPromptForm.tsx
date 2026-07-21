@@ -6,7 +6,7 @@ import { Button } from "@/components/ui/Button";
 import { WizardForm } from "@/components/ui/WizardForm";
 import { useHumanNodeSchema } from "@/hooks/useHumanNodeSchema";
 import { ASK_USER_RESPONSE_KEY } from "@/lib/askUserOptions";
-import type { FormAnswer } from "@/lib/whats-next/questionForm";
+import type { FormAnswer, FormSpec } from "@/lib/whats-next/questionForm";
 import {
   coerceFormAnswerToSchema,
   formSpecFromSchema,
@@ -67,11 +67,25 @@ export default function HumanPromptForm({
   const resolvedSource =
     (sourceOverride !== undefined ? sourceOverride : currentSource) ?? undefined;
 
-  const { fields, loading, staleHash } = useHumanNodeSchema(runId, nodeId);
+  const {
+    fields,
+    loading,
+    staleHash,
+    error: schemaError,
+    reload: reloadSchema,
+  } = useHumanNodeSchema(runId, nodeId);
 
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [submitted, setSubmitted] = useState(false);
+  // Answers of the last rejected attempt when the server refused the
+  // resume because the workflow source changed since the run started.
+  // Non-null renders a one-click "force" retry that replays them with
+  // force: true — without it the operator's answer is silently lost
+  // with no recourse but the CLI.
+  const [forceRetry, setForceRetry] = useState<Record<string, unknown> | null>(
+    null,
+  );
   // The latest form draft is captured here so the quick-action
   // Approve/Reject and skip/idk buttons can submit alongside the
   // current text. WizardForm emits FormAnswer atomically; we also
@@ -84,7 +98,6 @@ export default function HumanPromptForm({
   const snapshotTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   useEffect(() => {
     setSubmitted(false);
-    setLatestAnswer({});
     setError(null);
   }, [nodeId]);
   useEffect(() => {
@@ -131,15 +144,25 @@ export default function HumanPromptForm({
     });
   }, [fields, questions]);
 
+  useEffect(() => {
+    if (!formSpec) {
+      setLatestAnswer({});
+      return;
+    }
+    setLatestAnswer(defaultAnswerForSpec(formSpec));
+  }, [nodeId, formSpec]);
+
   if (submitted) return null;
 
-  const submit = async (answers: Record<string, unknown>) => {
+  const submit = async (answers: Record<string, unknown>, force = false) => {
     setBusy(true);
     setError(null);
+    setForceRetry(null);
     try {
       await resumeRun(runId, {
         answers,
         source: resolvedSource,
+        ...(force ? { force: true } : {}),
       });
       setSubmitted(true);
       // A board caller isn't viewing this run's canvas — skip the
@@ -174,7 +197,9 @@ export default function HumanPromptForm({
           .catch(() => {});
       }, 600);
     } catch (e) {
-      setError(errorMessage(e));
+      const msg = errorMessage(e);
+      setError(msg);
+      if (/source has changed/i.test(msg)) setForceRetry(answers);
     } finally {
       setBusy(false);
     }
@@ -187,8 +212,16 @@ export default function HumanPromptForm({
   // rendering would show the wrong form. Route straight to the
   // questions-driven PauseForm.
   const isAskUserPause = ASK_USER_RESPONSE_KEY in (questions ?? {});
+  // The output-schema fetch FAILED (not merely "no schema"). We must NOT
+  // silently drop into the PauseForm fallback: that form renders the
+  // node's INPUT questions with no verdict/notes controls, so the
+  // operator can neither approve/reject nor record notes — they hit
+  // "Resume" (empty answers), the run re-pauses, and the typed feedback
+  // is gone. Surface the error + a Retry instead (iterion#244).
+  const schemaFailed = !isAskUserPause && !loading && !!schemaError;
   const useFallback =
-    isAskUserPause || (!loading && (fields === null || fields.length === 0));
+    isAskUserPause ||
+    (!loading && !schemaError && (fields === null || fields.length === 0));
   const approveField = fields?.find(
     (f) => f.type === "bool" && f.name === "approved",
   );
@@ -209,9 +242,13 @@ export default function HumanPromptForm({
 
   const submitWithVerdict = (value: boolean | string) => {
     if (!fields || !verdictField) return;
+    const answerWithDefaults = {
+      ...defaultAnswerForSpec(formSpec),
+      ...latestAnswer,
+    };
     const { answers, errors } = coerceFormAnswerToSchema(
       visibleFields,
-      latestAnswer,
+      answerWithDefaults,
     );
     if (Object.keys(errors).length > 0) {
       setError("Fix invalid fields: " + Object.keys(errors).join(", "));
@@ -261,11 +298,29 @@ export default function HumanPromptForm({
       {staleHash && (
         <div className="text-caption text-warning-fg" role="status">
           The workflow source changed since this run started. Submit will still
-          try — pass <code>--force</code> later if it rejects.
+          try — if the server rejects it, a force-retry button will appear.
         </div>
       )}
       {loading && !isAskUserPause ? (
         <p className="text-micro text-fg-subtle">Loading question form…</p>
+      ) : schemaFailed ? (
+        <div className="space-y-2">
+          <p className="text-danger-fg text-micro" role="alert">
+            Couldn't load the answer form for this gate: {schemaError}
+          </p>
+          <p className="text-micro text-fg-subtle">
+            The run is still paused — your answer wasn't lost. Retry, or open
+            the run console to answer it there.
+          </p>
+          <Button
+            variant="secondary"
+            size="sm"
+            disabled={loading}
+            onClick={() => reloadSchema()}
+          >
+            Retry
+          </Button>
+        </div>
       ) : useFallback ? (
         <PauseForm
           runId={runId}
@@ -282,6 +337,7 @@ export default function HumanPromptForm({
           {formSpec && (
             <WizardForm
               spec={formSpec}
+              mode={formSpec.mode}
               busy={busy}
               hideSubmit={!!verdictField}
               onAnswerChange={setLatestAnswer}
@@ -295,6 +351,21 @@ export default function HumanPromptForm({
             <p className="text-danger-fg text-micro" role="alert">
               {error}
             </p>
+          )}
+          {forceRetry && (
+            <div className="flex items-center gap-2">
+              <Button
+                variant="primary"
+                size="sm"
+                disabled={busy}
+                onClick={() => void submit(forceRetry, true)}
+              >
+                Resume with updated workflow (force)
+              </Button>
+              <span className="text-micro text-fg-subtle">
+                Replays your answer against the current workflow source.
+              </span>
+            </div>
           )}
           {approveField && (
             <div className="flex items-center gap-2 pt-2 border-t border-border-subtle">
@@ -351,6 +422,20 @@ export default function HumanPromptForm({
         </>
       )}
     </div>
+  );
+}
+
+function defaultAnswerForSpec(spec: FormSpec | null): FormAnswer {
+  if (!spec) return {};
+  return Object.fromEntries(
+    spec.questions.map((question) => [
+      question.id,
+      question.kind === "checkbox"
+        ? [...(question.defaultValues ?? [])]
+        : "defaultValue" in question
+          ? question.defaultValue ?? ""
+          : "",
+    ]),
   );
 }
 
