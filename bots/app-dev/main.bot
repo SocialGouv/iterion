@@ -830,6 +830,14 @@ schema deploy_result:
   image_ref:    string
   notes:        string
 
+## deploy_trace's input: the image the deploy says it ran, mapped through the
+## edge. A tool node's command resolves `vars.*` but NOT `outputs.*`, so the
+## reference has to arrive as input — reading it from `outputs` silently left
+## the literal `{{outputs.deploy.image_ref}}` in the shell, which then matched
+## nothing and failed a delivery that was in fact correct.
+schema deploy_trace_input:
+  image_ref: string
+
 ## deploy_trace's deterministic verdict — see the tool node.
 schema deploy_trace_result:
   pushed:          bool
@@ -1231,8 +1239,9 @@ agent deploy:
 ## traceable to the repo: the commits reachable from a remote branch, and the
 ## running image published under the repo's own registry path.
 tool deploy_trace:
+  input: deploy_trace_input
   output: deploy_trace_result
-  command: `WS={{vars.workspace_dir}} IMAGE={{outputs.deploy.image_ref}} python3 -c "
+  command: `WS={{vars.workspace_dir}} IMAGE={{input.image_ref}} python3 -c "
 import os, subprocess, json, re
 ws = os.environ.get('WS', '.')
 image = (os.environ.get('IMAGE') or '').strip()
@@ -1259,6 +1268,13 @@ head = head.strip() if rc == 0 else ''
 # tell a CI build (tagged with the commit it built) from a hand-pushed one.
 built_from_head = bool(head) and bool(image) and any(
     head[:n].lower() in image.lower() for n in (40, 12, 8, 7))
+# An unsubstituted template means the gate is reading nothing and would
+# report a FALSE NEGATIVE — failing a delivery that may be correct. Say so
+# loudly rather than silently judging the literal string.
+if ('{' + '{') in image:
+    print(json.dumps({'pushed': False, 'image_from_repo': False, 'built_from_head': False,
+                      'trace_log': 'GATE MISWIRED: image_ref arrived unsubstituted (' + image + '). This verdict is NOT a judgement about the deploy — fix the bot wiring.'}))
+    raise SystemExit(0)
 log = []
 log.append('image=' + (image or '(none reported)'))
 log.append('repo=' + (slug or '(unknown)'))
@@ -1432,7 +1448,7 @@ workflow app_dev:
   deploy_gate -> deploy when enabled
   deploy_gate -> mr_gate when not enabled
 
-  deploy -> deploy_trace
+  deploy -> deploy_trace with { image_ref: "{{outputs.deploy.image_ref}}" }
   deploy_trace -> deploy_verify
 
   ## Healthy → the PR tail (the live URL rides on the deploy node output,
