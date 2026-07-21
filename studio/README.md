@@ -1,8 +1,12 @@
 # Iterion Studio
 
-React + Vite SPA for the iterion engine: workflow editor canvas, run
-console, board, dispatcher dashboard. Built and checked from the repo
-root:
+React + Vite SPA for the Iterion engine. The same application serves local
+workflow authoring/runs and the cloud control plane: visual editor, run console,
+session and pipeline boards, bot catalogue/launch forms, triggers and schedules,
+dispatcher, marketplace/plugins/skills/secrets, forge integrations, team/org
+administration, usage/audit views, and scoped configuration editors.
+
+Build and check it from the repository root:
 
 ```bash
 devbox run -- task studio:check   # lint + typecheck + tests
@@ -13,6 +17,9 @@ devbox run -- task studio:build   # production bundle (embedded by pkg/server)
 Contributor references live in [`docs/`](docs/):
 [design-system.md](docs/design-system.md) (tokens, UI primitives,
 adoption discipline) and [visual-identity.md](docs/visual-identity.md).
+Product/user documentation lives in the repository-level
+[`docs/`](../docs/README.md), especially [visual-editor.md](../docs/visual-editor.md)
+and [cloud.md](../docs/cloud.md).
 
 ## Data fetching
 

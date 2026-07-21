@@ -66,7 +66,7 @@ The document serves two purposes:
 
 It is not a changelog, not a bug list, not a tutorial. It explains the **science behind the workflow** — the principles, trade-offs, and empirical evidence that justify each design choice. Keep it honest: if something doesn't work well, say so. If a number fluctuates, report the range, not the best case.
 
-See [examples/rust_to_go_port.md](examples/rust_to_go_port.md) for a real example produced during a live refinement session.
+See the maintained [bot-run bilans](docs/bot-runs/README.md) for concrete run evidence, lessons, and follow-up work recorded during dogfooding.
 
 ## Launching a run
 
@@ -378,6 +378,6 @@ These patterns were discovered during live runs and are now built into the workf
 ## See Also
 
 - [SKILL.md](SKILL.md) — DSL reference for writing .bot files
-- [examples/rust_to_go_port.md](examples/rust_to_go_port.md) — detailed design notes for a production workflow
+- [docs/bot-runs/README.md](docs/bot-runs/README.md) — dated run bilans and empirical lessons
 - [docs/resume.md](docs/resume.md) — exhaustive failure matrix and resume semantics
 - [examples/](examples/) — workflow examples of increasing complexity

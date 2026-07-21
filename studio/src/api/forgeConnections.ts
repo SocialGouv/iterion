@@ -164,6 +164,11 @@ export interface ConnectForgeInput {
   display_name?: string;
   /** Studio path to return to after an OAuth / App-install round-trip. */
   next?: string;
+  /**
+   * mode=app: which of the team's GitHub Apps to install, when it holds
+   * several (one per owning org). Omitted = the team's single App for the host.
+   */
+  oauth_app_id?: string;
 }
 
 export interface ConnectForgeResult {

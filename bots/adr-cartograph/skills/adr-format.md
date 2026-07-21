@@ -11,10 +11,9 @@ this repo uses a markdown bullet-list head followed by H2 sections. When
 authoring or editing, follow this shape verbatim — the
 `completeness-taxonomy.md` review loop checks the structure.
 
-Two canonical examples to read before authoring:
-
-- [`docs/adr/008-bot-golden-replay-framework.md`](../../docs/adr/008-bot-golden-replay-framework.md)
-- [`docs/adr/004-provider-fallback-chain.md`](../../docs/adr/004-provider-fallback-chain.md)
+Two canonical repository-relative examples to read before authoring are
+`docs/adr/008-bot-golden-replay-framework.md` and
+`docs/adr/004-provider-fallback-chain.md`.
 
 ## Filename
 

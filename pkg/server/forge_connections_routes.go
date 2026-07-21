@@ -140,6 +140,13 @@ type forgeConnectionHealth struct {
 	// otherwise surfaces only at push time, hours into a run.
 	GrantedPermissions map[string]string `json:"granted_permissions,omitempty"`
 	MissingPermissions []string          `json:"missing_permissions,omitempty"`
+	// TokenPermissions is what the most recently minted token actually
+	// CARRIED. It can be NARROWER than GrantedPermissions — a token pinned to
+	// a permission subset is exactly that — and it is the token that acts, so
+	// this is the field a pre-flight should read. Absent until this process
+	// has minted one for the installation.
+	TokenPermissions        map[string]string `json:"token_permissions,omitempty"`
+	TokenMissingPermissions []string          `json:"token_missing_permissions,omitempty"`
 }
 
 // syncGrantedPermissions persists the installation's live grant onto the
@@ -211,6 +218,16 @@ func (s *Server) handleForgeConnectionHealth(w http.ResponseWriter, r *http.Requ
 				// reads it, and an owner may approve (or revoke) a permission
 				// long after the install.
 				s.syncGrantedPermissions(r.Context(), conn, inst.Permissions)
+			}
+			// What the installation GRANTED and what a token CARRIES are two
+			// different things, and reading the first as the second cost a full
+			// run: the installation had `workflows`, the minted token did not
+			// (it was pinned to the baseline), and this view reported all-clear
+			// while the push was refused an hour later. Report the token's own
+			// permissions so the pre-flight looks at the thing that acts.
+			if tokenPerms, ok := forgegithub.LastMintedPermissions(conn.InstallationID); ok {
+				h.TokenPermissions = tokenPerms
+				h.TokenMissingPermissions = forgegithub.MissingDeliveryPermissions(tokenPerms)
 			}
 		}
 		if admin, err := s.forgeAdminFor(r.Context(), conn); err == nil {

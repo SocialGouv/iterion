@@ -377,6 +377,82 @@ your own image (must support `sleep infinity` as PID 1 — i.e. provide
 to the repo to disable the fallback for that workspace; iterion will
 read the devcontainer instead.
 
+## Devbox tools (`devbox.json`)
+
+The sandbox images are based on `jetpackio/devbox`, so devbox and Nix
+are already in the container. A run declares the binaries it needs by
+shipping a `devbox.json` — no DSL field, no flag; the file's presence
+is the whole opt-in.
+
+Two sources, and **both apply together**:
+
+| Source   | Location                              | Installed |
+| -------- | ------------------------------------- | --------- |
+| **bot**  | next to the bot's `main.bot` (bundle root) | staged into `/tmp/iterion-devbox/bot`, then installed there |
+| **repo** | the target repo's workspace root       | in place |
+
+The bot's copy is staged because the bundle is bind-mounted read-only
+and devbox writes its `.devbox/` profile beside the config it installs.
+The repo's installs in place so relative package references
+(`path:./flake`) resolve; devbox drops a self-ignoring
+`.devbox/.gitignore`, so the generated profile never rides a `git add
+-A` onto a branch.
+
+**Both land on `PATH`, repo first.** A repo that pins its own toolchain
+stays authoritative for building itself; the bot's packages fill in what
+the repo does not provide. Neither silently wins.
+
+### Why `PATH` and not `devbox shell`
+
+Tool nodes — and the agents' Bash tool — run a **non-interactive `sh
+-c`**, which sources no shell profile. Installing packages without
+exposing them is therefore an invisible no-op: the binary exists in the
+Nix store and nothing on the box can find it. iterion instead computes
+each project's profile bin dir
+(`<project>/.devbox/nix/profile/default/bin`) and **prepends** it to the
+container `PATH` at container creation, so every exec inherits it with
+nothing to source.
+
+The prepend never clobbers. A `sandbox.env.PATH:` you declare (or a
+devcontainer `containerEnv.PATH`) is kept as the suffix; when you
+declare none, the base is the FHS default
+(`/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin`) that
+the iterion sandbox images ship. An image with a non-standard `PATH`
+should declare `sandbox.env.PATH:` explicitly so its own entries are
+preserved.
+
+### Best-effort, never silent
+
+A failed install does **not** fail the run: it prints what is
+consequently unavailable to the container's stderr, warns host-side, and
+lets the run proceed. The same happens when the image has no `devbox` on
+`PATH`. Nothing is dressed up as success — a missing binary would
+otherwise read as an agent bug.
+
+Provisioning emits `sandbox_devbox_provisioned` (`sources`, `configs`,
+`bin_dirs`, `path`) so you can audit what was picked up.
+
+### Cost
+
+A cold `devbox install` resolves and realises Nix store paths and can
+take **minutes**. That is why the step is added only when a
+`devbox.json` actually exists — a run whose bot and repo declare none
+gets no post-create step and pays nothing. The `/nix` store volume is
+persisted across runs by default (see `ITERION_SANDBOX_PERSIST_NIX`), so
+the cost is paid once per image.
+
+### Example
+
+`bots/app-dev/devbox.json` gives that bot `crane` (via
+`go-containerregistry`) to publish container images without a daemon:
+
+```json
+{
+  "packages": ["go-containerregistry@latest"],
+  "env": { "DEVBOX_NO_PROMPT": "true" }
+}
+```
+
 ### Devbox-ready devcontainer template
 
 If you want a project-pinned toolchain instead of relying on the

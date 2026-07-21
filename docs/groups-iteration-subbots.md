@@ -241,18 +241,13 @@ boundaries are worth knowing before a heavy fan-out:
 The headline pattern — *map a sub-bot over a dependency DAG of work items, each
 in its own worktree slot* — combines all of these:
 
-```
-resources:
-  worktree_slot: 5
-
+```iter
 router dispatch:
   mode: fan_out_each
   over: "{{outputs.plan.tickets}}"
   as: ticket
   key: id
   depends_on: deps
-
-dispatch -> run_ticket with { id: "{{outputs.dispatch.ticket.id}}" }
 
 subbot run_ticket:
   source: "implement_ticket.bot"
@@ -261,7 +256,17 @@ subbot run_ticket:
   needs: worktree_slot
   isolated: true                       # each child mutates only its leased worktree
 
-run_ticket -> collect when validated   # collect: await: best_effort
+workflow tickets:
+  entry: plan
+  resources:
+    worktree_slot: 5
+  budget:
+    max_parallel_branches: 5
+
+  plan -> dispatch
+  dispatch -> run_ticket
+  run_ticket -> collect when validated   # collect declares await: best_effort
+  collect -> done
 ```
 
 `isolated: true` is what makes this parallel — the `worktree_slot` lease gives

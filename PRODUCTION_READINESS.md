@@ -185,8 +185,6 @@ review cadence kicks in.
   Sprint-6 findings.
 - [.plans/bug-review-2026-05-17-sprint7.md](.plans/bug-review-2026-05-17-sprint7.md) —
   Sprint-7 findings (Go + editor TS first audit).
-- [.plans/production-readiness-2026-05-17.md](.plans/production-readiness-2026-05-17.md) —
-  this branch's execution plan.
 - [SECURITY.md](SECURITY.md) — coordinated-disclosure channel.
 - [docs/cloud-backup.md](docs/cloud-backup.md) — Mongo + blob backup
   runbook.

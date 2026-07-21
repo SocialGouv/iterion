@@ -22,7 +22,7 @@ iterion dispatch
 Called without an argument, the dispatcher boots with a built-in
 preset: the [native kanban](native-tracker.md) tracker, the studio HTTP
 surface on `http://localhost:4892`, polling every 30 s, and an
-**embedded bot catalogue** that exposes the workflows from `examples/`
+**embedded bot catalogue** containing the nine default bots from `bots/`
 as assignees. Out of the box you can:
 
 1. Open `http://localhost:4892/board` and create a ticket.
@@ -41,15 +41,15 @@ Open that run and the console records the ticket it came from (the
 
 ![Studio run console — the From-ticket header linking a dispatched run back to its issue](images/studio/run-from-ticket.png)
 
-Built-in assignees ([source bots](../examples/)):
+Built-in assignees ([source bots](../bots/)):
 
 | Persona | Assignee | Backing bot | What it does |
 |---|---|---|---|
-| 🛠️ Featurly | `feature-dev` | `bots/feature-dev/` | Autonomous feature dev: plan → act → simplify → alternating Claude/GPT review loop |
-| 🌍 Willy | `whole-improve-loop` | `bots/whole-improve-loop/` | Whole-codebase improvement loop with alternating cross-family verdicts |
-| 🌿 Billy | `branch-improve-loop` | `bots/branch-improve-loop/` | Branch-scoped improvement + auto-commit on convergence |
-| 🧭 Nexie | `whats-next` | `bots/whats-next/` | Repo survey → roadmap synthesis → kanban materialisation |
-| 📚 Doki | `docs-refresh` | `bots/docs-refresh/` | Detect & fix doc/code mismatches |
+| 🛠️ Featurly | `feature-dev` | `bots/feature-dev/` | One adaptive feature campaign with verified commits and deterministic build/test gates |
+| 🌍 Willy | `whole-improve-loop` | `bots/whole-improve-loop/` | Whole-codebase campaign applying one improvement axis site by site |
+| 🌿 Billy | `branch-improve-loop` | `bots/branch-improve-loop/` | Branch-diff review/improvement campaign with verified in-stride commits |
+| 🧭 Nexie | `whats-next` | `bots/whats-next/` | Conversational co-CTO for recommendation, board curation, roadmap study, and dispatch |
+| 📚 Doki | `docs-refresh` | `bots/docs-refresh/` | One doc-only campaign over a deterministic code/document drift manifest |
 | 🔎 Revi | `review-pr` | `bots/review-pr/` | Read-only cross-family code review; publishes findings to the board |
 | 🛡️ Seki | `sec-audit-source` | `bots/sec-audit-source/` | Source-code security audit (gitleaks/trivy/semgrep/gosec) |
 | 📦 Depsy | `sec-audit-deps` | `bots/sec-audit-deps/` | Supply-chain dep audit + LLM review |

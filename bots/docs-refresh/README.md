@@ -11,6 +11,7 @@ When a repo has no docs in scope, it bootstraps an initial set first
 
 ```
 scan_docs ──(no docs)──▶ author_docs ──▶ scan_docs   (author_rescan, once)
+scan_docs ──(exact HEAD cache hit, clean tree, no issue)──────────▶ done
 scan_docs ──▶ scan_code_surface ──▶ build_manifest ──▶ campaign
 campaign ──▶ scope_check ──▶ verify_build ──▶ verify_run ──▶ gate
 gate ──▶ mark_issue_for_review ──▶ update_audit_cache ──▶ done   when converged
@@ -66,7 +67,7 @@ convergence-hardening changelog.
 | `diff_since` | `""` | Incremental hint (`git diff <ref>...HEAD`) |
 | `cli_surface_globs` / `diagnostic_surface_globs` | `""` | Opt-in surface scan |
 | `max_drift_candidates` / `max_review_chunk_docs` | `40` / `30` | Context-bounding caps |
-| `audit_cache_path` | `.docs-refresh-cache.json` | Inter-run cache (gitignore it) |
+| `audit_cache_path` | `${PROJECT_SCRATCH_DIR}/docs-refresh-cache.json` | Host-persistent, out-of-tree cache; empty disables it |
 | `docs_dir` | `docs` | DEFAULT-CREATE target |
 | `baseline` | `""` | Known pre-existing failures to SKIP (G5) |
 | `max_passes` | `8` | Continuation-loop cap |
@@ -79,7 +80,8 @@ iterion run bots/docs-refresh/main.bot \
   --var diff_since=main
 ```
 
-Skills shipped: `docs-refresh`, `doc-mismatch-taxonomy`,
-`doc-scope-enumeration`, `doc-verification-checklist`,
-`anti-facade-fix-rules`, `verify-build`. See [main.bot](main.bot) for
-the full DSL.
+Campaign skills shipped: `docs-refresh`, `doc-mismatch-taxonomy`,
+`doc-scope-enumeration`, `doc-verification-checklist`, and
+`anti-facade-fix-rules`. The bundle also carries the shared
+`verify-build` skill for its verification agent. See [main.bot](main.bot)
+for the full DSL.

@@ -329,7 +329,7 @@ V2-6 wires `sandbox.build:` via `docker buildx build` on the local docker driver
 
 The checkpoint embedded in `run.json` is the authoritative source for resume — events are observational only. See `docs/persisted-formats.md` for field semantics.
 
-**Run statuses:** `queued` (cloud mode only — submitted to the NATS queue, not yet claimed by a runner pod) → `running` → `paused_waiting_human` → `finished` | `failed` | `failed_resumable` | `cancelled`
+**Run statuses:** `queued` (cloud mode only — submitted to the NATS queue, not yet claimed by a runner pod) → `running` → `paused_waiting_human` or `paused_operator` → `finished` | `failed` | `failed_resumable` | `cancelled`
 
 **Key event types:** `run_started`, `node_started`, `llm_request`, `llm_retry`, `tool_called`, `artifact_written`, `human_input_requested`, `run_paused`, `run_resumed`, `join_ready`, `edge_selected`, `budget_warning`, `budget_exceeded`, `run_finished`, `run_failed`
 
@@ -339,15 +339,17 @@ The engine saves a checkpoint after every successful node execution. When a run 
 
 **Resumable statuses:** `paused_waiting_human` (needs answers), `failed_resumable` (automatic retry), `cancelled` (user-interrupted, checkpoint preserved)
 
-**All failure scenarios are resumable** except:
-- `FailNode` reached (intentional workflow termination → `failed`, no checkpoint)
-- First node fails before any checkpoint exists (→ `failed`, must restart)
+Execution failures routed through the checkpoint-aware path are resumable,
+including a failure on the first node (resume starts from the workflow entry
+when no older checkpoint exists). Reaching `FailNode` is intentional workflow
+termination and produces non-resumable `failed`; bootstrap/persistence failures
+that cannot save resumable state can also end as plain `failed`.
 
 Common resumable failures: transient LLM errors (rate limit, timeout), budget exceeded (increase budget + resume), schema validation errors (fix workflow + `--force`), context timeout/cancellation, fan-out branch failures, router failures.
 
 **`--force` flag**: allows resume even when the `.bot` source has changed (e.g., bug fix). Without `--force`, a hash mismatch produces an error.
 
-See `docs/resume.md` for the exhaustive failure matrix.
+See `docs/resume.md` for the current status, checkpoint, and override semantics.
 
 ### Concurrency
 
@@ -861,6 +863,41 @@ for the stack-specific patterns above. When you touch a catalog bot,
 re-read this section and "Catalog bots are repo-agnostic" — iterion (Go)
 is the easiest stack to overfit to, because it's the one you're staring at.
 
+## A bot that needs tools declares them in `devbox.json`
+
+**If a bot's steps need a binary the sandbox image does not ship, add a
+`devbox.json` next to its `main.bot`.** iterion auto-installs it and puts
+the resulting tools on `PATH` for every node of the run. The same applies
+to a `devbox.json` at the root of the TARGET repo: iterion loads that one
+too, so a bot inherits the toolchain the repo itself declares.
+
+This is the supported way, and the alternatives are all worse:
+
+- **Curling a binary in `post_create`** — unpinned, undeclared, and
+  invisible to anyone reading the bot.
+- **A bespoke sandbox image** (the `-sec` variant) — a CI image chain to
+  maintain for every new tool, and a bot pinned to an image instead of to
+  the tools it actually needs.
+- **Letting the agent improvise** — the failure this rule exists for. In run
+  019f8384 the deploy step needed `crane` to publish an image, the sandbox
+  had no container tooling at all (no docker/podman/buildah/skopeo, `sudo`
+  blocked by `no_new_privs`, no `newuidmap` for rootless BuildKit), and the
+  agent spent turns discovering that, fetched a binary itself, then fell back
+  to a workaround that produced a live URL and delivered nothing.
+
+Two things to know when writing one:
+
+- **Non-interactive PATH is the trap.** `tool` nodes run through a
+  non-interactive `sh -c` that never sources a shell profile, so a tool that
+  is installed but not on `PATH` is a tool that does not exist. The engine
+  prepends the devbox profile's bin dir for this reason — don't hand-roll it
+  per bot.
+- **Nix installs cost time.** Declare what the bot genuinely needs. A bot
+  with no `devbox.json` pays nothing.
+
+The bar for reaching past devbox (a dedicated image) is a tool that Nix does
+not package, or a base layer the run needs *before* any step executes.
+
 ## Security
 
 Iterion self-audits with its own catalog bots, `sec-audit-source`
@@ -1161,7 +1198,6 @@ push / `--squash` without `--auto`). Required checks: `test`, `race`,
 - Store data lives in `.iterion/` (ignored in .gitignore)
 - CLI built with Cobra (`github.com/spf13/cobra`) — one file per command in `cmd/iterion/`
 - `CGO_ENABLED=0`, version/commit injected via ldflags from `package.json` + git
-- External LLM SDK: claw-code-go (vendored), used directly via `pkg/api`
+- External LLM SDK: claw-code-go (vendored), used directly via `claw-code-go/pkg/api`
 - Event-driven observability via `events.jsonl` — no structured logging library
 - Output abstraction: `Printer` (`pkg/cli/output.go`) with human and JSON modes
-

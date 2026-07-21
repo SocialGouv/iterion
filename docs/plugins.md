@@ -292,11 +292,12 @@ legacy entries) so bots and plugins share one hosted registry. `iterion
 marketplace list` can filter by kind; installing a plugin entry resolves its
 repo coordinates and runs the same `plugin install` path.
 
-## Roadmap — full Claude plugin taxonomy & parity
+## Contribution parity status
 
-The `contributes:` design is deliberately open so iterion can grow to configure
-**every Claude Code plugin type** from the UI and the marketplace. Planned kinds
-map onto Claude Code's plugin model:
+The `contributes:` design covers the Claude Code plugin taxonomy from the UI,
+CLI, and marketplace. Backend parity is complete for skills and MCP servers;
+the remaining work is claw-side discovery/execution for commands, named agents,
+and hooks:
 
 | Claude plugin type | iterion kind | parity note |
 |--------------------|--------------|-------------|
@@ -312,8 +313,9 @@ source) so a plugin behaves identically on either backend, rather than papered
 over with a claude_code-only adapter. Adaptation bridges are acceptable as an
 interim only when native parity is impractical.
 
-The `commands`/`agents`/`hooks` kinds are tracked as a follow-on; the manifest
-schema and registry already accommodate new kinds without a breaking change.
+The `commands`, `agents`, and `hooks` manifest kinds are shipped today. Their
+claude_code wiring is live; only the claw parity work called out in the table is
+follow-on.
 
 ## Public skill libraries (shipped)
 

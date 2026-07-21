@@ -67,7 +67,7 @@ The manifests are authoritative for inputs, invocation modes, required capabilit
 | [`keepalive/`](../examples/keepalive/) | Sub-minute always-on schedule shape and overlap policy. |
 | [`nested-subbots-demo/`](../examples/nested-subbots-demo/) | Multi-level child-run nesting. |
 | [`pipeline-board-demo/`](../examples/pipeline-board-demo/) | Pipeline-board episode projection. |
-| [`devcontainer-devbox/`](../examples/devcontainer-devbox/) | Reproducible toolchain/sandbox fixture. |
+| [`devcontainer-devbox/`](../examples/devcontainer-devbox/) | Devcontainer sandbox plus repository `devbox.json`, including non-interactive `PATH` provisioning and composition with bot-local tools. |
 | [`github-actions/`](../examples/github-actions/) | Human-in-the-loop workflow from GitHub Actions. |
 
 Other root-level fixtures exercise explicit `else`, deploy E2E, and the review/merge gate. Validate any example with `iterion validate <path>` before adapting it.

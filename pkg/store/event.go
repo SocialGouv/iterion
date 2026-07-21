@@ -168,6 +168,18 @@ const (
 	//   - spec_user: the value of Spec.User
 	//   - host_uid: host UID (only emitted on Linux hosts)
 	EventSandboxUIDMismatchWarning EventType = "sandbox_uid_mismatch_warning"
+	// EventSandboxDevboxProvisioned fires when the runtime finds a
+	// `devbox.json` for the bot (bundle root) or the target repo
+	// (workspace root) and wires it into the sandbox: `devbox install` in
+	// PostCreate plus the resulting profile bin dir prepended to the
+	// container PATH, so tool nodes — which run a non-interactive
+	// `sh -c` that sources no profile — find the packages. Data:
+	//   - sources: []string of the devbox sources picked up ("repo", "bot"),
+	//     in PATH-precedence order
+	//   - configs: []string of the host devbox.json paths that triggered it
+	//   - bin_dirs: []string of in-container profile bin dirs added to PATH
+	//   - path: the resulting container PATH
+	EventSandboxDevboxProvisioned EventType = "sandbox_devbox_provisioned"
 	// EventNetworkBlocked fires every time the iterion CONNECT proxy
 	// rejects a request. Data:
 	//   - host: blocked hostname

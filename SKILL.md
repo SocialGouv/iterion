@@ -422,7 +422,7 @@ iterion resume --run-id <id> --file f --answers-file a.json  # resume paused run
 
 ## See Also
 
-- [references/dsl-grammar.md](references/dsl-grammar.md) — formal grammar specification
-- [references/patterns.md](references/patterns.md) — common workflow patterns with examples
-- [references/diagnostics.md](references/diagnostics.md) — all validation diagnostic codes
+- [docs/references/dsl-grammar.md](docs/references/dsl-grammar.md) — readable grammar specification
+- [docs/references/patterns.md](docs/references/patterns.md) — common workflow patterns with examples
+- [docs/references/diagnostics.md](docs/references/diagnostics.md) — authoritative diagnostic catalogue
 - [bots/feature-dev/](bots/feature-dev/), [bots/whole-improve-loop/](bots/whole-improve-loop/), [bots/branch-improve-loop/](bots/branch-improve-loop/) — productized `.bot` bots (proven, runnable)

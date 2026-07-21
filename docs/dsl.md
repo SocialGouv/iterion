@@ -122,7 +122,7 @@ Schemas define structured node inputs/outputs. Field types match variable types;
 | `{{run.id}}` | Current run id. |
 | `{{params.name}}` | `group` parameter during compile-time expansion. |
 
-`fan_out_each` also exposes the current item as `{{outputs.<router>.<as-name>}}`. Environment expressions use `${NAME}` (and supported default forms) before execution.
+`fan_out_each` also exposes the current item as `{{outputs.<router>.<as-name>}}`. Environment expressions use `${NAME}` (and supported default forms) before execution. In a tool `command` or `script`, `{{!input.field}}` is the explicit raw-substitution form; ordinary `{{input.field}}` is shell-escaped. Use the raw form only when the value is intentionally executable shell syntax, because it crosses the command-injection boundary.
 
 ## LLM nodes: `agent` and `judge`
 

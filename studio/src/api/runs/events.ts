@@ -382,6 +382,7 @@ export type PassthroughEventType =
   | "sandbox_host_state_mounted"
   | "sandbox_user_remap"
   | "sandbox_uid_mismatch_warning"
+  | "sandbox_devbox_provisioned"
   | "network_blocked"
   | "sandbox_build_started"
   | "sandbox_build_finished"

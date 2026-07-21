@@ -74,8 +74,7 @@ export default function GitHubAuthorize({
         forge_base_url: baseURL.trim() || undefined,
         // Pin WHICH app when the team has several, so the install callback
         // records it on the connection instead of guessing by host.
-        oauth_app_id:
-          selectedAppID || (teamApps.length === 1 ? teamApps[0].id : undefined),
+        oauth_app_id: selectedAppID || teamApps[0]?.id,
         next: RETURN_PATH,
       });
       if (res.install_url) {
@@ -133,7 +132,7 @@ export default function GitHubAuthorize({
                 organisation.
               </span>
               <Select
-                value={selectedAppID || teamApps[0].id}
+                value={selectedAppID || teamApps[0]?.id}
                 onChange={(e) => setSelectedAppID(e.target.value)}
               >
                 {teamApps.map((a) => (

@@ -4669,6 +4669,10 @@ export interface components {
             provisioned_repo_count: number;
             status: string;
             status_reason?: string;
+            token_missing_permissions?: string[];
+            token_permissions?: {
+                [key: string]: string;
+            };
         };
         forgeCreateRepoReq: {
             connection_id: string;

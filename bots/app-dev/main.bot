@@ -826,6 +826,7 @@ schema deploy_result:
 schema deploy_trace_result:
   pushed:          bool
   image_from_repo: bool
+  built_from_head: bool
   trace_log:       string
 
 ## deploy_verify's verdict — pass gates exit from the redeploy loop.
@@ -1195,7 +1196,11 @@ compute deploy_gate:
 agent deploy:
   backend: "claude_code"
   model: "${ITERION_APP_DEV_DEPLOY_MODEL:-claude-opus-4-8}"
-  reasoning_effort: "${ITERION_APP_DEV_DEPLOY_EFFORT:-high}"
+  ## xhigh, not high: deploy is the step that repeatedly failed, and it fails
+  ## on PLANNING rather than on writing — publish the image by which of two
+  ## routes, in what order, and recognising early that a workaround producing
+  ## a live URL is not a delivery. That is reasoning, so buy more of it.
+  reasoning_effort: "${ITERION_APP_DEV_DEPLOY_EFFORT:-xhigh}"
   input: deploy_input
   output: deploy_result
   system: deploy_system
@@ -1239,14 +1244,24 @@ if rc == 0 and url:
     if m:
         slug = m.group(1).lower()
 from_repo = bool(slug) and bool(image) and slug in image.lower()
+rc, head = git('rev-parse', 'HEAD')
+head = head.strip() if rc == 0 else ''
+# The image must name the commit that is on origin. This is what ties the
+# running pod back to reviewable source, and it is the forge-agnostic way to
+# tell a CI build (tagged with the commit it built) from a hand-pushed one.
+built_from_head = bool(head) and bool(image) and any(
+    head[:n].lower() in image.lower() for n in (40, 12, 8, 7))
 log = []
 log.append('image=' + (image or '(none reported)'))
 log.append('repo=' + (slug or '(unknown)'))
+log.append('head=' + (head[:12] or '(unknown)'))
 if not pushed:
     log.append('NOT PUSHED: no remote branch contains HEAD — the work exists only in this workspace and dies with it. Push the commits to origin.')
 if not from_repo:
     log.append('IMAGE NOT FROM THIS REPO: a live URL served by a stock base image (or an unreported image) is not a delivery — publish an image under the repo registry and deploy THAT.')
-print(json.dumps({'pushed': pushed, 'image_from_repo': from_repo, 'trace_log': ' | '.join(log)}))
+if not built_from_head:
+    log.append('IMAGE DOES NOT NAME THE PUSHED COMMIT: tag the image with the commit SHA and deploy that tag, so the running pod is traceable to reviewable source. The FINAL image must come from CI building the pushed commit — a locally pushed image is for iterating, not for delivering.')
+print(json.dumps({'pushed': pushed, 'image_from_repo': from_repo, 'built_from_head': built_from_head, 'trace_log': ' | '.join(log)}))
 "`
 
 ## deploy_verify — DETERMINISTIC verdict on the deploy result. No LLM: the
@@ -1265,8 +1280,8 @@ print(json.dumps({'pushed': pushed, 'image_from_repo': from_repo, 'trace_log': '
 compute deploy_verify:
   output: deploy_verdict
   expr:
-    pass:   "outputs.deploy.deployed && outputs.deploy.healthy && outputs.deploy.deployed_url != '' && outputs.deploy_trace.pushed && outputs.deploy_trace.image_from_repo"
-    reason: "if(outputs.deploy.deployed_url == '', outputs.deploy.notes, if(outputs.deploy_trace.pushed && outputs.deploy_trace.image_from_repo, '', outputs.deploy_trace.trace_log))"
+    pass:   "outputs.deploy.deployed && outputs.deploy.healthy && outputs.deploy.deployed_url != '' && outputs.deploy_trace.pushed && outputs.deploy_trace.image_from_repo && outputs.deploy_trace.built_from_head"
+    reason: "if(outputs.deploy.deployed_url == '', outputs.deploy.notes, if(outputs.deploy_trace.pushed && outputs.deploy_trace.image_from_repo && outputs.deploy_trace.built_from_head, '', outputs.deploy_trace.trace_log))"
 
 ## ─── Workflow ───────────────────────────────────────────────────
 
@@ -1297,6 +1312,13 @@ workflow app_dev:
     mounts: ["type=bind,source=${localEnv:HOME}/.claude,target=/home/devbox/.claude,consistency=cached"]
     env:
       CLAUDE_CONFIG_DIR: "/home/devbox/.claude"
+    ## crane comes from the sibling devbox.json (go-containerregistry): the
+    ## engine installs it at container start and puts its profile bin on
+    ## PATH for every node, tool nodes included. It publishes a container
+    ## image WITHOUT a daemon — the image carries no
+    ## docker/podman/buildah/skopeo, sudo is blocked at run time
+    ## (no_new_privs) and rootless BuildKit is unavailable (no newuidmap),
+    ## so an agent that needs to push an image otherwise has nothing.
     post_create: "set -e; claude --version >/dev/null 2>&1 || sudo npm install -g @anthropic-ai/claude-code@latest; claude --version >/dev/null 2>&1 || { echo 'claude install verification failed' >&2; exit 1; }"
 
   budget:

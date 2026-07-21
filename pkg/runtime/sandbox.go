@@ -306,8 +306,16 @@ func resolveAndStartSandbox(ctx context.Context, p SandboxParams) (*activeSandbo
 		}
 		spec.Env["ITERION_ARTIFACT_FILES_DIR"] = runFilesContainerPath
 	}
-	addOptionalBindMount(spec, p.BundleHostDir, p.BundleContainerPath, "/run/iterion/bundle", "bundle", true, logger)
+	bundleContainerPath := addOptionalBindMount(spec, p.BundleHostDir, p.BundleContainerPath, "/run/iterion/bundle", "bundle", true, logger)
 	applyHostStateMounts(spec, p.Workflow, p, emitEvent, logger)
+	// Devbox provisioning (bot's bundle devbox.json + target repo's) runs
+	// after both: it needs the bundle mount's resolved container path, and
+	// it reads spec.WorkspaceFolder, which applyHostStateMounts may have
+	// just defaulted. Gated on SupportsPostCreate — a driver with no
+	// post-create hook has nothing to install into (noop has no container).
+	if caps.SupportsPostCreate {
+		applyDevboxProvisioning(spec, p, bundleContainerPath, emitEvent, logger)
+	}
 	// Host-convenience bind mounts — the claw/rtk runner binaries and the
 	// worktree .git — require a driver with a shared host filesystem. On
 	// kubernetes (SupportsHostBindMounts=false) type=bind is rejected at

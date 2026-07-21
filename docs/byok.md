@@ -126,7 +126,7 @@ The claude_code / claw delegates read the key from ctx.
 
 Create body ([byok_routes.go:132](../pkg/server/byok_routes.go#L132)): `{ "provider": "anthropic", "name": "...", "secret": "<key>", "is_default": true }`. The server seals `secret` and stores only the ciphertext + `last4`.
 
-Studio UI: Settings → API Keys ([studio/src/views/Settings/ApiKeysTab.tsx](../studio/src/views/Settings/ApiKeysTab.tsx), [studio/src/api/byok.ts](../studio/src/api/byok.ts)).
+Studio UI: Settings → API Keys ([studio/src/views/SettingsDialog/ApiKeysTab.tsx](../studio/src/views/SettingsDialog/ApiKeysTab.tsx), [studio/src/api/byok.ts](../studio/src/api/byok.ts)). Cloud accounts use the sibling [account API-key page](../studio/src/views/account/ApiKeys.tsx).
 
 ## Per-webhook key override
 

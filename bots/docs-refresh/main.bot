@@ -117,7 +117,7 @@ vars:
   ## files.
   go_comment_globs: string = ""
 
-  ## Code scope reviewers may grep / read to verify doc claims.
+  ## Code scope the campaign may grep / read to verify doc claims.
   ## UNIVERSAL DEFAULT: empty = the campaign may grep the whole
   ## workspace (minus `excluded_dirs`).
   code_scope_globs: string = ""
@@ -601,10 +601,9 @@ schema gate_state:
 
 ## code_surface (v0.6.0): the inventory of "publicly-exposed"
 ## identifiers extracted from the workspace by the
-## `scan_code_surface` tool. Reviewers receive these as a
-## counter-omission audit list — for each identifier, verify it
-## appears in at least one doc in scope. Mismatch_kind for missed
-## items: `undocumented_capability`.
+## `scan_code_surface` tool. build_manifest compares these with the
+## documentation as a counter-omission audit; the campaign verifies
+## and documents any real `undocumented_capability` drift.
 schema code_surface:
   cli_commands: string[]
   cli_flags: string[]
@@ -618,18 +617,16 @@ schema code_surface:
 ## transparency.
 ##
 ## v0.5.0 adds `pre_verified_docs`: docs whose content AND all
-## referenced code-file SHAs match what was recorded in
-## `.iterion/docs-refresh/audit-cache.json` after the previous
-## successful run. These docs are seeded into
-## `cumulative_audited_docs` from iter 0, lifting the coverage
-## gate immediately for unchanged regions. Reviewers focus on
-## `doc_files - pre_verified_docs`.
+## referenced code-file SHAs match what was recorded at the configured
+## audit_cache_path after the previous successful run. build_manifest
+## treats their mechanically verified pairs as already checked and
+## focuses the current pass on changed regions.
 schema scan_output:
   doc_files: string[]
   doc_count: int
   ## DEFAULT-CREATE gate (v0.3.0): true when doc_count == 0 (no docs in
   ## scope). Routes scan_docs -> author_docs (bootstrap an initial doc
-  ## set) instead of straight into the review loop. After authoring, the
+  ## set) instead of straight into the campaign. After authoring, the
   ## run re-scans; no_docs is then false and the normal path runs.
   no_docs: bool
   footprint_hash: string
@@ -686,18 +683,18 @@ schema update_audit_cache_output:
   skipped: string
 
 
-## build_manifest I/O (v0.15.0 — manifest-driven reviewers).
+## build_manifest I/O (v0.15.0 manifest, consumed by the v2 campaign).
 ##
-## Replaces the ad-hoc "reviewer greps everything" pattern with a
+## Replaces ad-hoc agent enumeration with a
 ## deterministic anchor extraction + verification pass. For each
 ## doc in the footprint, scans for code references (file paths,
 ## symbols, CLI commands, CLI flags, diagnostic codes, markdown
 ## link targets), then checks each anchor against the live code
-## state (scan_code_surface outputs + filesystem). The reviewer
-## then audits ONLY the drift candidates — a bounded set with
-## pre-fetched evidence — instead of grepping the workspace itself.
+## state (scan_code_surface outputs + filesystem). The campaign
+## adjudicates the bounded drift candidates with pre-fetched evidence,
+## then reads only the live anchors needed for semantic verification.
 ##
-## The before/after on the 2026-05-21 dogfood: reviewer_gpt's iter
+## The before/after on the 2026-05-21 v1 dogfood: reviewer_gpt's iter
 ## 1 burned through 4 LLM steps and ~400K input tokens enumerating
 ## anchors via grep before hitting context_length_exceeded. Under
 ## the manifest pattern, the same iter receives ~150 pre-resolved
@@ -711,9 +708,8 @@ schema build_manifest_input:
   diagnostic_codes: string[]
   code_scope_globs: string
   ## max_drift_candidates caps the drift_candidates[] slice so the
-  ## reviewer's prompt stays bounded regardless of how degraded the
-  ## docs are. The full counts are still reported in the summary
-  ## fields for the streak gate.
+  ## campaign prompt stays bounded regardless of how degraded the
+  ## docs are. Full counts are still reported for the deterministic gate.
   max_drift_candidates: int
   ## v0.16.0: max distinct docs whose candidates may appear in a
   ## single chunk. Applied after the severity sort, before the
@@ -738,32 +734,30 @@ schema build_manifest_output:
   ## skipped/unscoped don't drag the gate below reach.
   checkable_anchors: int
   coverage_pct: int
-  ## drift_candidates is the reviewer's working set. Each entry
+  ## drift_candidates is the campaign's working set. Each entry
   ## carries the doc::anchor pair plus pre-fetched evidence so the
-  ## reviewer can judge "real drift vs false positive" without
-  ## running its own grep loop. Capped at input.max_drift_candidates;
+  ## campaign can judge "real drift vs false positive" without
+  ## re-enumerating the tree. Capped at input.max_drift_candidates;
   ## when more candidates exist, the entries are prioritised by
   ## severity (removed/drifted CLI surface > drifted file_ref >
   ## unverifiable symbol).
   drift_candidates: json
   ## per_doc_anchor_counts is the deterministic coverage signal —
   ## each entry says "doc X had Y anchors total, Z of them verified".
-  ## streak_check picks coverage_pct from the summary; this list
-  ## exists for telemetry / reports.
+  ## The gate uses coverage_pct; this list exists for telemetry/reports.
   per_doc_anchor_counts: json
-  ## all_audited_docs lists every doc the manifest scanned. The
-  ## reviewer no longer claims coverage via its own audited_docs[]
-  ## — the manifest pass IS the audit. streak_check pulls this
-  ## list into its cumulative_audited_docs.
+  ## all_audited_docs lists every doc the manifest scanned. Retained
+  ## as telemetry/backward-compatible output; the manifest pass itself
+  ## is the audit and the v2 gate reads coverage_pct directly.
   all_audited_docs: string[]
   ## v0.16.0 doc-count chunking telemetry. `docs_with_drift_count`
   ## is the universe of docs that still have at least one drift
-  ## candidate this iter (before chunking). `chunk_doc_count` is
+  ## candidate this pass (before chunking). `chunk_doc_count` is
   ## the count of distinct docs whose candidates landed in this
-  ## iter's slice. `chunked=true` when chunk_doc_count <
-  ## docs_with_drift_count (some docs deferred to a later iter).
-  ## `max_review_chunk_docs` echoes the var so the reviewer prompt
-  ## can show the operator the active cap.
+  ## pass's slice. `chunked=true` when chunk_doc_count <
+  ## docs_with_drift_count (some docs deferred to a later pass).
+  ## `max_review_chunk_docs` echoes the compatibility-named var so the
+  ## campaign prompt can show the active cap.
   docs_with_drift_count: int
   chunked: bool
   chunk_doc_count: int
@@ -775,7 +769,8 @@ schema build_manifest_output:
 
 ## ─── Nodes ──────────────────────────────────────────────────────
 
-## scan_docs runs ONCE upstream of the review loop. Emits the
+## scan_docs runs once upstream of the campaign (and once more only on
+## the bounded zero-doc author_rescan path). Emits the
 ## immutable doc footprint + (when vars.diff_since is set) the
 ## list of code files changed since that ref. Auto-excludes the
 ## bot's own bundle via vars.bundle_self_path (fix 4).
@@ -905,8 +900,8 @@ print(json.dumps({'doc_files': files, 'doc_count': len(files), 'no_docs': len(fi
   output: scan_output
 
 ## scan_code_surface (v0.6.0): runs after scan_docs and extracts
-## "publicly-exposed identifiers" from the workspace via grep so
-## reviewers can audit code→doc presence (the inverse direction
+## "publicly-exposed identifiers" from the workspace via grep so the
+## manifest/campaign can audit code→doc presence (the inverse direction
 ## of the existing doc→code audit). Categories:
 ##   - cli_commands: cobra `Use:` literals in cmd/iterion/*.go
 ##   - cli_flags: --flag-name tokens in StringVar/BoolVar/...Var
@@ -982,8 +977,8 @@ print(json.dumps({
   output: code_surface
 
 ## build_manifest (v0.15.0): deterministic anchor extraction +
-## verification + evidence collection. Replaces the
-## reviewer-side "grep everything" pattern.
+## verification + evidence collection. It bounds the campaign's
+## semantic working set.
 ##
 ## For each doc in input.doc_files, scans the markdown and
 ## extracts code anchors via regex:
@@ -1007,10 +1002,10 @@ print(json.dumps({
 ##
 ## Drift candidates = anchors whose verification failed. Each
 ## carries pre-fetched evidence (the doc line excerpt + the
-## verifier's miss reason) so the reviewer can judge semantics
-## without running its own grep loop. Output is bounded:
+## verifier's miss reason) so the campaign can judge semantics
+## without re-enumerating the tree. Output is bounded:
 ## input.max_drift_candidates caps the candidate slice; the full
-## counts ride along in the summary fields for the streak gate.
+## counts ride along in the summary fields for the deterministic gate.
 ##
 ## All inputs flow via env vars (JSON-encoded for arrays); the
 ## tool's argv is empty.
@@ -1079,7 +1074,7 @@ def excerpt(line_text, limit=140):
 ## needing a literal double-quote in this backtick command body) and
 ## verifies BOTH the target file's existence AND, for .md targets, the
 ## heading anchor — slugified GitHub-style. dead_link is already in the
-## reviewer taxonomy; this feeds it deterministic candidates.
+## mismatch taxonomy; this feeds the campaign deterministic candidates.
 MD_LINK_RE = re.compile(r'\[(?:[^\]]*)\]\(([^)\s]+)')
 _heading_cache = {}
 def slugify(text):
@@ -1316,9 +1311,9 @@ priority = {
     ('unverifiable', 'symbol_ref'): 4,
 }
 ## Surface drifted anchors plus unverifiable *symbol_ref*s (genuinely
-## borderline — a reviewer may resolve them by reading code). Do NOT
+## borderline — the campaign may resolve them by reading code). Do NOT
 ## surface scanner-skipped cli/flag/diagnostic unverifiables: we know
-## we never scanned that surface, so there is nothing for a reviewer to
+## we never scanned that surface, so there is nothing for the campaign to
 ## adjudicate — they would only be noise that tempts a false blocker.
 candidates = drifted + [a for a in unverifiable if a['kind'] == 'symbol_ref']
 candidates.sort(key=lambda a: (priority.get((a['status'], a['kind']), 9), a['doc'], a['line']))
@@ -1326,7 +1321,7 @@ candidates.sort(key=lambda a: (priority.get((a['status'], a['kind']), 9), a['doc
 ## v0.16.0: doc-count chunking. After the severity sort, walk the
 ## ordered list and admit candidates from at most max_chunk_docs
 ## distinct docs. Once the doc budget is full, candidates from new
-## docs are deferred (they surface in a later iter once the fixer
+## docs are deferred (they surface in a later pass once the campaign
 ## clears earlier drifts). max_chunk_docs=0 disables chunking
 ## (preserves legacy candidate-cap-only behaviour).
 docs_with_drift = sorted({a['doc'] for a in candidates})
@@ -1363,7 +1358,7 @@ unverifiable_anchors = len(unverifiable)
 ## anchors capped achievable coverage at 79% < the 80% target, a
 ## permanent non-convergence deadlock. When nothing is checkable,
 ## coverage is vacuously complete (100) so the gate can still fire on
-## reviewer approval instead of looping to exhaustion.
+## campaign alignment instead of looping to exhaustion.
 checkable_anchors = verified_anchors + drifted_anchors
 coverage_pct = (verified_anchors * 100 // checkable_anchors) if checkable_anchors > 0 else 100
 
@@ -1450,7 +1445,8 @@ tool mark_issue_for_review:
   command: `if [ -n {{vars.issue_id}} ]; then ID={{vars.issue_id}}; ID_SHORT=${ID#native:}; PORT=${ITERION_DISPATCHER_PORT:-4891}; curl -sS -X POST -H "Content-Type: application/json" -d '{"to":"review"}' "http://localhost:${PORT}/api/v1/native/issues/${ID_SHORT}/transition" 2>&1 | head -c 1000 || true; else echo '{"skipped":"no issue_id"}'; fi`
   output: mark_issue_output
 
-## update_audit_cache: rewrites <workspace_dir>/<audit_cache_path>
+## update_audit_cache: rewrites the resolved audit_cache_path (absolute
+## paths stay out-of-tree; relative paths resolve under workspace_dir)
 ## from the manifest's mechanically VERIFIED doc::anchor pairs (v2 —
 ## the cache no longer records reviewer claims). Each pair
 ## contributes a reference entry; the current sha1 of doc + refs is

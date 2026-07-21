@@ -18,7 +18,7 @@ agent implementer:
 | `claude_code` | recommended | Runs the `claude` CLI as a subprocess with full tool access |
 | `claw` (default) | recommended for read-only / judges | In-process multi-provider LLM client (Anthropic, OpenAI, …) — use with `model: "openai/gpt-5.4-mini"` etc. |
 | `codex` | **discouraged** | Runs the `codex` CLI as a subprocess. Cannot configure its tool set, tends to fill its own context window, and has weaker iterion integration. The compiler emits a `C030` warning per node. Kept for compatibility — prefer `claude_code` or `claw`+OpenAI in new workflows. |
-| `kimi` | opt-in | Runs Moonshot's `kimi-code` CLI, whose argv is disjoint from claude-code's (`kimi -p <prompt> --output-format stream-json [-m <alias>]`). A concrete instance of iterion's generic CLI-agent backend. See [Backends → Third-party agent CLIs](backends.md#third-party-agent-clis-kimi-and-the-cli-agent-seam) and [ADR-065](adr/065-dedicated-cli-agent-backend.md). |
+| `kimi` | opt-in | Runs Moonshot's `kimi-code` CLI, whose argv is disjoint from claude-code's (`kimi -p <prompt> --output-format stream-json [-m <alias>]`). A concrete instance of iterion's generic CLI-agent backend. See [Backends → Third-party agent CLIs](backends.md#third-party-agent-clis-kimi-grok-and-the-cli-agent-seam) and [ADR-065](adr/065-dedicated-cli-agent-backend.md). |
 
 > 💡 `claude_code` works with your Claude subscription (Pro/Max/Team/Enterprise) — no separate API key required. `claw` calls provider APIs directly and needs the corresponding API key (`ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, …).
 

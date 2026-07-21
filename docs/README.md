@@ -26,10 +26,11 @@ For the architectural trade-off against prompt-only orchestration, read [why-not
 | [dsl.md](dsl.md) | Language guide and map of every declaration, node family, edge form, and workflow control. |
 | [references/dsl-grammar.md](references/dsl-grammar.md) | Readable grammar derived from the parser surface. |
 | [grammar/iterion_v1.ebnf](grammar/iterion_v1.ebnf) | Formal EBNF counterpart. |
+| [grammar/V1_SCOPE.md](grammar/V1_SCOPE.md) | Living boundary of the additively evolved V1 grammar and AST. |
 | [references/diagnostics.md](references/diagnostics.md) | Authoritative sparse catalogue: DSL C001–C199 and bundle checks C200–C230. |
 | [routers.md](routers.md) | Five routing modes, per-item fan-out, and convergence. |
 | [groups-iteration-subbots.md](groups-iteration-subbots.md) | `group`/`use`, edge `foreach`, `fan_out_each`, resources, and nested bots. |
-| [human-in-the-loop.md](human-in-the-loop.md) | Human nodes and `human`, `llm`, `llm_or_human`, and `review` interaction modes. |
+| [human-in-the-loop.md](human-in-the-loop.md) | Human nodes and all five interaction values, including the node-specific `none` behavior. |
 | [cursors.md](cursors.md) | Prompt-calibration cursor declarations and node activation. |
 | [supervisors.md](supervisors.md) | Concurrent run watchers and steering messages. |
 | [dsl-totality-and-tc.md](dsl-totality-and-tc.md) | Language totality, fuel, liveness, and Turing-completeness boundaries. |
@@ -68,10 +69,10 @@ For the architectural trade-off against prompt-only orchestration, read [why-not
 | Page | Topic |
 |---|---|
 | [bot-invocations.md](bot-invocations.md) | Manifest-driven command, board, schedule, and forge invocation modes. |
-| [resume.md](resume.md) | Resume/failure/cancellation matrix, checkpoints, and stale-run safeguards. |
+| [resume.md](resume.md) | Current resume states, checkpoint semantics, overrides, and stale-run safeguards. |
 | [merge-policy.md](merge-policy.md) | Worktree finalization, branch ownership, and merge authority. |
 | [review-merge-gate.md](review-merge-gate.md) | Review-environment conversation and final merge gate. |
-| [sandbox.md](sandbox.md) | Docker, Podman, and Kubernetes isolation plus egress proxy policy. |
+| [sandbox.md](sandbox.md) | Docker, Podman, and Kubernetes isolation, bot/repository `devbox.json` tool provisioning, and egress proxy policy. |
 | [scheduling.md](scheduling.md) | Cron schedules, sub-minute keepalive, overlap guards, and audit history. |
 | [dispatcher.md](dispatcher.md) | Tracker polling, leases, retries, hooks, and per-issue bot dispatch. |
 | [native-tracker.md](native-tracker.md) | File-backed kanban tracker used by the dispatcher and studio. |
@@ -81,7 +82,7 @@ For the architectural trade-off against prompt-only orchestration, read [why-not
 | [config-share.md](config-share.md) | Scoped, role-aware configuration sharing/editor surface. |
 | [browser-pane.md](browser-pane.md) | Studio browser pane and isolation boundaries. |
 | [post-mortem-shell.md](post-mortem-shell.md) | Controlled shell access after a run. |
-| [persisted-formats.md](persisted-formats.md) | On-disk run, event, artifact, and interaction contracts. |
+| [persisted-formats.md](persisted-formats.md) | Filesystem run, checkpoint, event, artifact, interaction, attachment, plan, tool-blob, and message contracts. |
 | [observability/README.md](observability/README.md) | Prometheus, OTLP, Grafana, and operational metrics. |
 
 ## Bots and security automation
@@ -157,4 +158,3 @@ These collections are valuable evidence, but they do not override current code o
 - [reviews/](reviews/) — dated codebase reviews.
 - [security/](security/) — dated security audits.
 - [studio-ux-audit-2026-07.md](studio-ux-audit-2026-07.md) — UX audit snapshot.
-- [grammar/V1_SCOPE.md](grammar/V1_SCOPE.md) — original V1 scope record; use the current grammar references for accepted syntax.

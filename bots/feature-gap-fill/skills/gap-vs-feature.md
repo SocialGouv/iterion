@@ -5,9 +5,10 @@ description: When to use Fini (feature-gap-fill) vs Featurly (feature_dev), and 
 
 # Fini vs Featurly — choosing the right completer
 
-Both bots ship a feature behind the same alternating Claude/GPT
-review-fix loop. They differ on the SHAPE of the input and the
-PRESERVATION discipline applied during planning and implementation.
+Both bots use one adaptive implementation campaign with verified
+in-stride commits, a deterministic build/test gate, and a bounded
+continuation loop. They differ on the SHAPE of the input and the
+PRESERVATION discipline applied during implementation.
 
 ## Pick Featurly (`feature_dev`) when
 
@@ -16,8 +17,8 @@ PRESERVATION discipline applied during planning and implementation.
   CLI flag --branch-name" — the feature does not yet exist anywhere
   in the workspace.
 - The ticket describes the desired end-state as a single feature with
-  a clear, externally-visible "done" state. Featurly's plan node will
-  do its own read-only exploration to discover patterns; it doesn't
+  a clear, externally-visible "done" state. Featurly's campaign does
+  its own exploration and maintains a living implementation plan; it doesn't
   need a structured what's-implemented / what's-missing input.
 - The implementer is free to choose abstractions. Featurly explicitly
   authors ADRs for non-trivial decisions because it OWNS those
@@ -35,7 +36,7 @@ PRESERVATION discipline applied during planning and implementation.
   Fini consumes that body verbatim as `gap_spec`.
 - Preservation matters. The half-done work shipped to a branch
   someone else owns, or has consumers that the operator can't break.
-  Fini's plan node is gap-aware: it layers the missing parts on top
+  Fini's campaign is gap-aware: it layers the missing parts on top
   of the existing seams instead of proposing a redesign.
 
 ## What a valid gap spec looks like
@@ -78,10 +79,11 @@ The intended flow:
 2. The dispatcher (or Nexie) routes the issue to Fini. Fini's
    `dispatch_vars.gap_spec` template renders the issue title + body
    into the `gap_spec` var.
-3. Fini surveys, plans, implements, reviews, fixes, and commits with
-   a `Bot: feature-gap-fill` trailer. ADR-worthy decisions surfaced
-   during the run are captured as `kind:improvement` inbox findings
-   (and noted in commit summaries) so the next Adry run picks them up.
+3. Fini runs one adaptive gap-closing campaign, verifying and committing
+   each missing item with a `Bot: feature-gap-fill` trailer. ADR-worthy
+   decisions surfaced during the run are captured as `kind:improvement`
+   inbox findings (and noted in the campaign summary) so the next Adry
+   run picks them up.
 
 This composition keeps each bot focused: Adry owns the survey + ADR
 trail; Fini owns the gap-closing implementation; neither steps on the

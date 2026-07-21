@@ -43,8 +43,8 @@ greppable, and flagged by diagnostics.
 
 `as name(unbounded)` removes the user iteration cap. Termination is **relocated
 from compile-time to runtime** by two mechanisms in
-[pkg/runtime/engine.go](../pkg/runtime/engine.go) /
-[pkg/runtime/helpers.go](../pkg/runtime/helpers.go):
+[pkg/runtime/engine_resolve.go](../pkg/runtime/engine_resolve.go) and
+[pkg/runtime/edges.go](../pkg/runtime/edges.go):
 
 1. **Fuel** (`resolveLoopMax`): effective ceiling = per-loop fuel, else
    `budget.max_iterations`, else `defaultUnboundedFuel = 1000` — **never 0**, so

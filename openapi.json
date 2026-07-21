@@ -1465,6 +1465,18 @@
           },
           "status_reason": {
             "type": "string"
+          },
+          "token_missing_permissions": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "token_permissions": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "type": "object"
           }
         },
         "required": [

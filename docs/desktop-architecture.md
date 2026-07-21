@@ -220,7 +220,8 @@ flips the right CGO/cross flags).
 | `studio/src/lib/desktopBridge.ts` | Typed `window.go.main.App.*` wrappers |
 | `studio/src/hooks/useDesktop.ts` | React hook for desktop state |
 | `studio/src/views/Welcome/` | First-run wizard |
-| `studio/src/views/Settings/` | API keys / projects / updates / about |
+| `studio/src/views/SettingsDialog/` | Local API keys, backends, projects, storage, appearance, updates, and about |
+| `studio/src/views/account/` | Cloud account settings, API keys, OAuth connections, and tokens |
 | `studio/src/views/ProjectSwitcher/` | Cmd+P modal |
 
 ## Backwards compatibility
