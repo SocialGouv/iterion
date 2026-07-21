@@ -1081,20 +1081,22 @@ func (r *Runner) executeRun(ctx context.Context, msg *queue.RunMessage) error {
 			engineOpts = append(engineOpts, runtime.WithSandboxRunObserver(obs))
 		}
 	}
-	// Bundle skills: a bot-qualified run mirrors its bundle's skills/ into
-	// <workspace>/.claude/skills exactly like a local `iterion run
-	// bots/<bot>` does (the engine's mirrorBundleSkills reads the bundle).
-	// Best-effort: an unresolvable bot id or a loose .bot just skips the
-	// mirror with a warning — the run proceeds without skills.
+	// Bundle resources: a bot-qualified run attaches its bundle so the
+	// engine mirrors skills/ into <workspace>/.claude/skills AND
+	// provisions the bot's devbox.json (host devbox provisioning — the
+	// runner pod is the isolation boundary, no sandbox starts here),
+	// exactly like a local `iterion run bots/<bot>` does. Best-effort:
+	// an unresolvable bot id or a loose .bot just skips the bundle with
+	// a warning — the run proceeds without skills or devbox tools.
 	if msg.BotID != "" && len(r.cfg.BotsPaths) > 0 {
 		if mainFile, rerr := botregistry.ResolveBotPath(msg.BotID, r.cfg.BotsPaths); rerr == nil {
 			if b, berr := bundle.OpenDir(filepath.Dir(mainFile)); berr == nil {
 				engineOpts = append(engineOpts, runtime.WithBundle(b))
 			} else {
-				r.cfg.Logger.Warn("runner: bot %q bundle open: %v (skills not mirrored)", msg.BotID, berr)
+				r.cfg.Logger.Warn("runner: bot %q bundle open: %v (skills not mirrored, devbox tools not provisioned)", msg.BotID, berr)
 			}
 		} else {
-			r.cfg.Logger.Warn("runner: bot %q not resolvable in %v (skills not mirrored)", msg.BotID, r.cfg.BotsPaths)
+			r.cfg.Logger.Warn("runner: bot %q not resolvable in %v (skills not mirrored, devbox tools not provisioned)", msg.BotID, r.cfg.BotsPaths)
 		}
 	}
 	// Plugin/library skills the LAUNCHING instance resolved for us. This pod's

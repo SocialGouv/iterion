@@ -112,6 +112,15 @@ type ClawExecutor struct {
 	// route their subprocess invocations through it when set.
 	sandbox sandbox.Run
 
+	// runExtraEnv is a list of KEY=value process-environment additions
+	// applied to every HOST-spawned command of the run — tool nodes,
+	// delegate CLI spawns (via Task.ExtraEnv), and the claw bash
+	// builtin. The engine pushes it via SetRunExtraEnv on runs without
+	// a sandbox (host devbox provisioning: the profile bin dirs
+	// prepended to PATH). Nil on sandboxed runs — the container env is
+	// settled at container creation.
+	runExtraEnv []string
+
 	// sessions holds per-(runID, nodeID) accumulated message lists
 	// so the recovery dispatcher's CompactAndRetry path has
 	// something to actually compact. The claw backend reads this
@@ -172,6 +181,15 @@ type ClawExecutor struct {
 	hostSecretOnce    sync.Once
 	hostSecretCleanup func()
 	hostSecretErr     error
+}
+
+// SetRunExtraEnv installs run-level process-environment additions
+// (KEY=value entries) applied to every host-spawned command of the run.
+// The engine calls this once per run, before the first node executes,
+// from host devbox provisioning (pkg/runtime/devbox_host.go); the same
+// happens-before as SetSandbox makes a mutex unnecessary.
+func (e *ClawExecutor) SetRunExtraEnv(env []string) {
+	e.runExtraEnv = env
 }
 
 // SetSandbox installs the live sandbox handle on the executor. The

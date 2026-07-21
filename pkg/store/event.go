@@ -170,15 +170,24 @@ const (
 	EventSandboxUIDMismatchWarning EventType = "sandbox_uid_mismatch_warning"
 	// EventSandboxDevboxProvisioned fires when the runtime finds a
 	// `devbox.json` for the bot (bundle root) or the target repo
-	// (workspace root) and wires it into the sandbox: `devbox install` in
-	// PostCreate plus the resulting profile bin dir prepended to the
-	// container PATH, so tool nodes — which run a non-interactive
-	// `sh -c` that sources no profile — find the packages. Data:
+	// (workspace root) and provisions it for the run. Two targets:
+	//   - "sandbox": `devbox install` in the container's PostCreate plus
+	//     the resulting profile bin dir prepended to the container PATH;
+	//   - "host": no sandbox is active (every cloud run — the runner pod
+	//     is the isolation boundary — and local no-sandbox runs), so
+	//     `devbox install` runs on the executing host and the profile
+	//     bin dirs are threaded into every host-spawned command's PATH.
+	// Either way, tool nodes — which run a non-interactive `sh -c` that
+	// sources no profile — find the packages. Data:
+	//   - target: "sandbox" | "host"
 	//   - sources: []string of the devbox sources picked up ("repo", "bot"),
 	//     in PATH-precedence order
 	//   - configs: []string of the host devbox.json paths that triggered it
-	//   - bin_dirs: []string of in-container profile bin dirs added to PATH
-	//   - path: the resulting container PATH
+	//   - bin_dirs: []string of profile bin dirs added to PATH
+	//   - path: the resulting PATH
+	//   - errors: []string (host target only) — provisioning problems
+	//     (devbox binary missing, staging or install failures); the run
+	//     proceeds, the named packages are absent
 	EventSandboxDevboxProvisioned EventType = "sandbox_devbox_provisioned"
 	// EventNetworkBlocked fires every time the iterion CONNECT proxy
 	// rejects a request. Data:

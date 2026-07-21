@@ -1227,6 +1227,16 @@ func (e *Engine) startSandbox(ctx context.Context, runID string, repoRoot string
 	if sbErr != nil {
 		return noopCleanup, sbErr
 	}
+	// No sandbox → every command of this run executes directly on this
+	// host (the cloud runner pod under ITERION_SANDBOX_OVERRIDE=none, or
+	// a local run without a sandbox declaration). The sandbox-side devbox
+	// provisioning above never fires on that path, so the bot's/repo's
+	// devbox.json is honoured here instead — installed on the host and
+	// exposed on the run's PATH.
+	hostDevboxCleanup := noopCleanup
+	if active == nil {
+		hostDevboxCleanup = e.provisionHostDevbox(ctx, runID)
+	}
 	if active != nil && active.run != nil {
 		if s, ok := e.executor.(sandboxSetter); ok {
 			s.SetSandbox(active.run)
@@ -1256,6 +1266,7 @@ func (e *Engine) startSandbox(ctx context.Context, runID string, repoRoot string
 		}
 	}
 	cleanup := func() {
+		hostDevboxCleanup()
 		if active == nil {
 			return
 		}

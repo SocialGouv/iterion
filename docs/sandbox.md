@@ -379,10 +379,10 @@ read the devcontainer instead.
 
 ## Devbox tools (`devbox.json`)
 
-The sandbox images are based on `jetpackio/devbox`, so devbox and Nix
-are already in the container. A run declares the binaries it needs by
-shipping a `devbox.json` — no DSL field, no flag; the file's presence
-is the whole opt-in.
+A run declares the binaries it needs by shipping a `devbox.json` — no
+DSL field, no flag; the file's presence is the whole opt-in. The
+sandbox images are based on `jetpackio/devbox`, so devbox and Nix are
+already in the container.
 
 Two sources, and **both apply together**:
 
@@ -397,6 +397,24 @@ The repo's installs in place so relative package references
 (`path:./flake`) resolve; devbox drops a self-ignoring
 `.devbox/.gitignore`, so the generated profile never rides a `git add
 -A` onto a branch.
+
+### Runs without a sandbox (cloud runner pods, plain host runs)
+
+Provisioning is **not** tied to a sandbox container. When no sandbox is
+active — which is **every cloud run** (the chart pins
+`ITERION_SANDBOX_OVERRIDE=none`: the runner pod is the isolation
+boundary, so a bot's inline `sandbox:` block never starts a container)
+and every local `iterion run` without a sandbox declaration — the same
+two sources are provisioned **on the executing host**: `devbox install`
+runs at run start (the bot's config staged into a per-run temp dir,
+since a runner image's `/opt/iterion/bots` is read-only for the pod
+user; the repo's in place), and the profile bin dirs are threaded into
+the `PATH` of every command the run spawns — tool nodes, `claude_code`
+CLI spawns, and the claw bash builtin. The
+[`iterion-runner-devbox`](../Dockerfile.runner-devbox) image ships the
+devbox binary for exactly this; on a host without one the run proceeds
+and the gap is surfaced loudly (warning + `errors` in the event below),
+never silently.
 
 **Both land on `PATH`, repo first.** A repo that pins its own toolchain
 stays authoritative for building itself; the bot's packages fill in what
@@ -429,8 +447,11 @@ lets the run proceed. The same happens when the image has no `devbox` on
 `PATH`. Nothing is dressed up as success — a missing binary would
 otherwise read as an agent bug.
 
-Provisioning emits `sandbox_devbox_provisioned` (`sources`, `configs`,
-`bin_dirs`, `path`) so you can audit what was picked up.
+Provisioning emits `sandbox_devbox_provisioned` (`target`
+`"sandbox"|"host"`, `sources`, `configs`, `bin_dirs`, `path`, plus
+`errors` on the host target when something failed) so you can audit
+what was picked up — and see when a declared toolchain could **not**
+be provisioned.
 
 ### Cost
 

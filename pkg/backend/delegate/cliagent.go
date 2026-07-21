@@ -161,6 +161,9 @@ func (b *CLIAgentBackend) Execute(ctx context.Context, task Task) (Result, error
 			env = append(env, k+"="+v)
 		}
 	}
+	// Run-level provisioning (devbox profile PATH) — appended last so on
+	// a duplicate key the run-level value wins.
+	env = append(env, task.ExtraEnv...)
 
 	timeout := b.Timeout
 	if timeout <= 0 {
