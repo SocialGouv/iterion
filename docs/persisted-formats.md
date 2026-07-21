@@ -183,6 +183,41 @@ Versions are zero-based and increment on publication. `artifact_index` in the
 run record accelerates latest-version lookup; older records fall back to a
 directory scan.
 
+### Deployment-report output contract
+
+Reserved output keys any workflow can emit to declare a **delivery**. The
+run-view reducer ([`pkg/runview/snapshot.go`](../pkg/runview/snapshot.go),
+`recordDeployment`) folds them out of `node_finished` into
+`RunHeader.deployment`, and the studio renders them as the run header's
+deployment row. The seam is the **field names** — no bot name, node name or
+manifest flag is involved, so any bot that reports a deployment lights it up.
+
+Two groups, recognised independently so a bot may emit them from one node or
+split them across a deploying agent and a deterministic traceability gate
+(the [app-dev](../bots/app-dev/main.bot) shape):
+
+| group | recognised by | fields |
+|---|---|---|
+| delivery | `deployed_url` present | `deployed` bool · `healthy` bool · `deployed_url` string · `image_ref` string · `commit` string · `notes` string |
+| traceability | `verifiable` present **and** at least one of `pushed` / `image_from_repo` / `built_from_head` | `verifiable` bool · `pushed` bool · `image_from_repo` bool · `built_from_head` bool · `commit` string · `trace_log` string |
+
+Last-write-wins per group: a redeploy loop re-reports both, and the final
+attempt is the run's outcome. A node output carrying neither key contributes
+nothing, so a run that deploys nothing carries no `deployment` at all.
+
+**`verifiable` is the meta-fact and it is load-bearing.** `false` means the
+gate could not establish the three traceability facts (git unreachable, gate
+miswired) — an environment fault, *not* a verdict against the deploy, and the
+studio renders it as its own state rather than as a failure. The three
+booleans below it carry no information when it is false.
+
+The traceability group exists because liveness is necessary and not
+sufficient: an app served from a ConfigMap on a stock base image answers 200
+and reports every liveness field honestly while nothing was pushed and nothing
+is reproducible. A delivery must *also* be traceable — commits reachable from
+a remote branch, and the running image published under the repo's own registry
+path, naming the deployed commit.
+
 ## Interactions
 
 `interactions/<interaction_id>.json` records the durable question/answer

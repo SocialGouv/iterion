@@ -343,6 +343,59 @@ export interface RunHeader {
   // report their resolved value, never "auto". Absent for tool/compute-
   // only runs (the header then renders no backend chip).
   backends_used?: BackendUsage[];
+  // deployment is the run's delivery outcome — live URL, running image,
+  // source commit, and the traceability verdict — reducer-derived from
+  // the deployment-report output contract (any node emitting the
+  // reserved keys; no bot name involved). Absent for runs that deployed
+  // nothing, which is nearly all of them: the header then renders no
+  // deployment row at all. Mirror of runview.DeploymentReport.
+  deployment?: DeploymentReport;
+}
+
+// DeploymentReport is a run's delivery outcome. deployed/healthy are the
+// deploying node's own claims; trace carries the INDEPENDENT verdict on
+// whether that claim is traceable back to the repository. The UI must
+// never render the first without the second: a URL that answers 200
+// while nothing was pushed and nothing is reproducible is not a
+// delivery. Mirror of runview.DeploymentReport.
+export interface DeploymentReport {
+  // IR node that reported the delivery.
+  node_id?: string;
+  deployed: boolean;
+  healthy: boolean;
+  // Public address a human opens. Absent on a failed or blocked deploy.
+  url?: string;
+  // Exact image reference running, e.g. "ghcr.io/owner/repo:<sha>".
+  image_ref?: string;
+  // Source commit the delivery is anchored to. Absent when the reporter
+  // did not state it — the row then shows no commit rather than
+  // borrowing final_commit, which can be LATER than what was deployed.
+  commit?: string;
+  // The reporter's own prose: what was published, or the blocking error.
+  notes?: string;
+  // Traceability verdict. Absent when no traceability gate ran at all —
+  // a distinct fact from a gate that ran and could not establish the
+  // facts (trace.verifiable === false).
+  trace?: DeploymentTrace;
+}
+
+// DeploymentTrace is the verdict on whether a delivery traces back to
+// reviewable source. verifiable is the meta-fact and gates the other
+// three: false means the gate could not establish them at all (git
+// unreachable, gate miswired). That is NOT a failed delivery and must
+// never be rendered as one. Mirror of runview.DeploymentTrace.
+export interface DeploymentTrace {
+  node_id?: string;
+  verifiable: boolean;
+  // The deployed commits are reachable from a remote branch.
+  pushed: boolean;
+  // The running image is published under this repo's own registry path.
+  image_from_repo: boolean;
+  // The image reference names the pushed commit.
+  built_from_head: boolean;
+  // The gate's own explanation — the remedy on a failure, the
+  // environment fault when unverifiable.
+  log?: string;
 }
 
 // BackendUsage is one distinct (backend, model) pair the run's LLM /

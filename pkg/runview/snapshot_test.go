@@ -1026,3 +1026,237 @@ func TestSnapshotReducer_BackendsUsedEmptyForNonLLMRun(t *testing.T) {
 		t.Errorf("BackendsUsed = %+v, want nil for a tool-only run", used)
 	}
 }
+
+// ---------------------------------------------------------------------------
+// Deployment report (delivery + traceability output contract)
+// ---------------------------------------------------------------------------
+
+// deployFinished builds a node_finished carrying a delivery-group output.
+func deployFinished(seq int64, node, url, image string, deployed, healthy bool, notes string) *store.Event {
+	return evt(seq, store.EventNodeFinished, "", node, map[string]any{"output": map[string]any{
+		"deployed":     deployed,
+		"healthy":      healthy,
+		"deployed_url": url,
+		"image_ref":    image,
+		"notes":        notes,
+	}})
+}
+
+// traceFinished builds a node_finished carrying a traceability-group output.
+func traceFinished(seq int64, node string, verifiable, pushed, fromRepo, fromHead bool, commit, log string) *store.Event {
+	return evt(seq, store.EventNodeFinished, "", node, map[string]any{"output": map[string]any{
+		"verifiable":      verifiable,
+		"pushed":          pushed,
+		"image_from_repo": fromRepo,
+		"built_from_head": fromHead,
+		"commit":          commit,
+		"trace_log":       log,
+	}})
+}
+
+// The two groups are recognized independently, so a bot that splits the
+// delivery (agent) from the traceability gate (deterministic tool) across
+// two nodes still yields ONE report.
+func TestSnapshotReducer_DeploymentTraceable(t *testing.T) {
+	b := NewSnapshotBuilder(&store.Run{ID: "r1", Status: store.RunStatusFinished})
+	events := []*store.Event{
+		evt(0, store.EventRunStarted, "", "", nil),
+		evt(1, store.EventNodeStarted, "", "deploy", map[string]any{"kind": "agent"}),
+		deployFinished(2, "deploy", "https://app.example.test", "ghcr.io/acme/app:abc1234", true, true, "released r1"),
+		evt(3, store.EventNodeStarted, "", "deploy_trace", map[string]any{"kind": "tool"}),
+		traceFinished(4, "deploy_trace", true, true, true, true, "abc1234def567", "image=ghcr.io/acme/app:abc1234"),
+		evt(5, store.EventRunFinished, "", "", nil),
+	}
+	for _, e := range events {
+		b.Apply(e)
+	}
+	d := b.Snapshot().Run.Deployment
+	if d == nil {
+		t.Fatal("Deployment = nil, want a report")
+	}
+	if d.URL != "https://app.example.test" || d.ImageRef != "ghcr.io/acme/app:abc1234" {
+		t.Errorf("URL/ImageRef = %q/%q", d.URL, d.ImageRef)
+	}
+	if !d.Deployed || !d.Healthy {
+		t.Errorf("Deployed/Healthy = %v/%v, want true/true", d.Deployed, d.Healthy)
+	}
+	if d.NodeID != "deploy" {
+		t.Errorf("NodeID = %q, want deploy", d.NodeID)
+	}
+	// The gate resolves the commit git actually reports, so it wins over
+	// the (here absent) agent-reported one.
+	if d.Commit != "abc1234def567" {
+		t.Errorf("Commit = %q, want the gate-resolved SHA", d.Commit)
+	}
+	if d.Trace == nil {
+		t.Fatal("Trace = nil, want the traceability verdict attached")
+	}
+	if !d.Trace.Traceable() {
+		t.Errorf("Traceable() = false, want true: %+v", d.Trace)
+	}
+	if d.Trace.NodeID != "deploy_trace" {
+		t.Errorf("Trace.NodeID = %q, want deploy_trace", d.Trace.NodeID)
+	}
+}
+
+// The ConfigMap-on-a-stock-base-image failure: a live, honest URL with
+// nothing pushed and nothing reproducible. The report must carry the URL
+// AND the verdict that sinks it.
+func TestSnapshotReducer_DeploymentNotTraceable(t *testing.T) {
+	b := NewSnapshotBuilder(&store.Run{ID: "r1"})
+	events := []*store.Event{
+		evt(0, store.EventRunStarted, "", "", nil),
+		deployFinished(1, "deploy", "https://app.example.test", "node:22-slim", true, true, "served from a ConfigMap"),
+		traceFinished(2, "deploy_trace", true, false, false, false, "", "NOT PUSHED | IMAGE NOT FROM THIS REPO"),
+	}
+	for _, e := range events {
+		b.Apply(e)
+	}
+	d := b.Snapshot().Run.Deployment
+	if d == nil || d.Trace == nil {
+		t.Fatalf("Deployment/Trace = %+v, want both", d)
+	}
+	if !d.Trace.Verifiable {
+		t.Error("Verifiable = false, want true — the gate DID establish the facts")
+	}
+	if d.Trace.Traceable() {
+		t.Error("Traceable() = true, want false: nothing pushed, stock base image")
+	}
+	if d.Trace.Log == "" {
+		t.Error("Trace.Log is empty — the operator loses the reason")
+	}
+}
+
+// verifiable:false is an environment fault, not a verdict on the deploy.
+// It must stay distinguishable from a verified failure.
+func TestSnapshotReducer_DeploymentUnverified(t *testing.T) {
+	b := NewSnapshotBuilder(&store.Run{ID: "r1"})
+	events := []*store.Event{
+		evt(0, store.EventRunStarted, "", "", nil),
+		deployFinished(1, "deploy", "https://app.example.test", "ghcr.io/acme/app:abc1234", true, true, ""),
+		traceFinished(2, "deploy_trace", false, false, false, false, "", "CANNOT VERIFY: git is unavailable in this workspace"),
+	}
+	for _, e := range events {
+		b.Apply(e)
+	}
+	d := b.Snapshot().Run.Deployment
+	if d == nil || d.Trace == nil {
+		t.Fatalf("Deployment/Trace = %+v, want both", d)
+	}
+	if d.Trace.Verifiable {
+		t.Error("Verifiable = true, want false")
+	}
+	if d.Trace.Traceable() {
+		t.Error("Traceable() = true, want false — unverifiable is never traceable")
+	}
+}
+
+// A redeploy loop re-reports both groups; the LAST attempt is the run's
+// actual outcome.
+func TestSnapshotReducer_DeploymentLastAttemptWins(t *testing.T) {
+	b := NewSnapshotBuilder(&store.Run{ID: "r1"})
+	events := []*store.Event{
+		evt(0, store.EventRunStarted, "", "", nil),
+		deployFinished(1, "deploy", "", "", false, false, "registry auth failed"),
+		traceFinished(2, "deploy_trace", true, false, false, false, "", "NOT PUSHED"),
+		deployFinished(3, "deploy", "https://app.example.test", "ghcr.io/acme/app:abc1234", true, true, "released r2"),
+		traceFinished(4, "deploy_trace", true, true, true, true, "abc1234def567", "ok"),
+	}
+	for _, e := range events {
+		b.Apply(e)
+	}
+	d := b.Snapshot().Run.Deployment
+	if d == nil || d.URL != "https://app.example.test" {
+		t.Fatalf("Deployment = %+v, want the second attempt's URL", d)
+	}
+	if !d.Trace.Traceable() {
+		t.Errorf("Traceable() = false, want the second attempt's verdict: %+v", d.Trace)
+	}
+}
+
+// A deploy that never came up still reports — "attempted and failed" is
+// not the same as "no deployment", and hiding it hides the blocker.
+func TestSnapshotReducer_DeploymentFailedStillReported(t *testing.T) {
+	b := NewSnapshotBuilder(&store.Run{ID: "r1"})
+	b.Apply(evt(0, store.EventRunStarted, "", "", nil))
+	b.Apply(deployFinished(1, "deploy", "", "", false, false, "no deploy-target skill attached"))
+	d := b.Snapshot().Run.Deployment
+	if d == nil {
+		t.Fatal("Deployment = nil, want the failed attempt reported")
+	}
+	if d.Deployed || d.URL != "" {
+		t.Errorf("Deployed/URL = %v/%q, want false/empty", d.Deployed, d.URL)
+	}
+	if d.Notes == "" {
+		t.Error("Notes is empty — the operator loses the blocker")
+	}
+	if d.Trace != nil {
+		t.Errorf("Trace = %+v, want nil (no gate ran)", d.Trace)
+	}
+}
+
+// The overwhelming majority of runs deploy nothing: no reserved key, no
+// report, and the studio renders exactly what it renders today.
+func TestSnapshotReducer_DeploymentAbsentForOrdinaryRun(t *testing.T) {
+	b := NewSnapshotBuilder(&store.Run{ID: "r1"})
+	events := []*store.Event{
+		evt(0, store.EventRunStarted, "", "", nil),
+		evt(1, store.EventNodeFinished, "", "implement", map[string]any{"output": map[string]any{
+			"summary": "shipped", "commits_this_pass": 3, "pushed": true,
+		}}),
+		evt(2, store.EventNodeFinished, "", "verify", map[string]any{"output": map[string]any{
+			"passed": true, "verifiable": true,
+		}}),
+		evt(3, store.EventRunFinished, "", "", nil),
+	}
+	for _, e := range events {
+		b.Apply(e)
+	}
+	if d := b.Snapshot().Run.Deployment; d != nil {
+		t.Errorf("Deployment = %+v, want nil for a run that deployed nothing", d)
+	}
+}
+
+// SetRun rebuilds the header from run.json (terminal-event refresh); the
+// event-derived deployment must survive it, like Loops and BackendsUsed.
+func TestSnapshotReducer_DeploymentSurvivesSetRun(t *testing.T) {
+	b := NewSnapshotBuilder(&store.Run{ID: "r1", Status: store.RunStatusRunning})
+	b.Apply(evt(0, store.EventRunStarted, "", "", nil))
+	b.Apply(deployFinished(1, "deploy", "https://app.example.test", "ghcr.io/acme/app:abc1234", true, true, ""))
+	b.SetRun(&store.Run{ID: "r1", Status: store.RunStatusFinished})
+	if d := b.Snapshot().Run.Deployment; d == nil || d.URL != "https://app.example.test" {
+		t.Errorf("Deployment = %+v, want it preserved across SetRun", d)
+	}
+}
+
+// The two groups may arrive in either order, and the gate's git-resolved
+// commit outranks the deploying agent's own claim.
+func TestSnapshotReducer_DeploymentTraceBeforeDelivery(t *testing.T) {
+	b := NewSnapshotBuilder(&store.Run{ID: "r1"})
+	b.Apply(evt(0, store.EventRunStarted, "", "", nil))
+	b.Apply(traceFinished(1, "deploy_trace", true, true, true, true, "abc1234def567", "ok"))
+	b.Apply(evt(2, store.EventNodeFinished, "", "deploy", map[string]any{"output": map[string]any{
+		"deployed": true, "healthy": true,
+		"deployed_url": "https://app.example.test",
+		"image_ref":    "ghcr.io/acme/app:abc1234",
+		"commit":       "0000000deadbee",
+	}}))
+	d := b.Snapshot().Run.Deployment
+	if d == nil || d.Trace == nil {
+		t.Fatalf("Deployment/Trace = %+v, want both regardless of arrival order", d)
+	}
+	if d.Commit != "abc1234def567" {
+		t.Errorf("Commit = %q, want the gate-resolved SHA to outrank the agent's claim", d.Commit)
+	}
+}
+
+// A traceability verdict with nothing to qualify is dropped: the row
+// exists to qualify a URL.
+func TestSnapshotReducer_DeploymentTraceAloneIsDropped(t *testing.T) {
+	b := NewSnapshotBuilder(&store.Run{ID: "r1"})
+	b.Apply(evt(0, store.EventRunStarted, "", "", nil))
+	b.Apply(traceFinished(1, "deploy_trace", true, true, true, true, "abc1234def567", "ok"))
+	if d := b.Snapshot().Run.Deployment; d != nil {
+		t.Errorf("Deployment = %+v, want nil when no delivery was reported", d)
+	}
+}

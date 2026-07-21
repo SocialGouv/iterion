@@ -27,6 +27,7 @@ import ResumeDialog from "./ResumeDialog";
 import { RunShellPanel } from "./RunShellPanel";
 import BackendsUsedRow from "./runHeader/BackendsUsedRow";
 import BotChip from "./runHeader/BotChip";
+import DeploymentRow from "./runHeader/DeploymentRow";
 import ErrorHintRow from "./runHeader/ErrorHintRow";
 import FinalizationRow from "./runHeader/FinalizationRow";
 import ForkedFromRow from "./runHeader/ForkedFromRow";
@@ -421,6 +422,9 @@ export default function RunHeader({ run, active, wsState, onResetLayout, bare = 
       {liveStreamExpected && (
         <WSDisconnectBanner state={wsState} onReconnect={requestWsReconnect} />
       )}
+      {/* What the run shipped, above where its commits landed: the live
+          URL is the operator's destination at the end of a deploy run. */}
+      {run.deployment && <DeploymentRow deployment={run.deployment} />}
       {showFinalization && <FinalizationRow run={run} />}
       {shellEligible && (
         <div className="shrink-0 px-4 py-1.5 bg-surface-2/40 border-b border-border-default flex items-center gap-2 text-micro">

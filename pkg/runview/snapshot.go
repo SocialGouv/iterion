@@ -195,6 +195,12 @@ type RunHeader struct {
 	// (iteration_path); Max is the declared bound (0 = unbounded /
 	// expression cap / unknown). Absent for runs with no named loops.
 	Loops map[string]RunLoopProgress `json:"loops,omitempty"`
+	// Deployment is the run's delivery outcome — the live URL, the image
+	// actually running, and the traceability verdict — folded from any
+	// node whose structured output carries the deployment-report keys
+	// (see recordDeployment). Nil for the overwhelming majority of runs,
+	// which deploy nothing; the studio then renders no deployment row.
+	Deployment *DeploymentReport `json:"deployment,omitempty"`
 }
 
 // BackendUsage is one distinct (backend, model) pair a run's LLM /
@@ -213,6 +219,78 @@ type BackendUsage struct {
 type RunLoopProgress struct {
 	Current int `json:"current"`
 	Max     int `json:"max,omitempty"`
+}
+
+// DeploymentReport is a run's delivery outcome, assembled from the
+// deployment-report output contract (see recordDeployment). It is the
+// run-level answer to "what did this ship, and where can I see it".
+//
+// Deployed/Healthy are the deploying node's own claims; Trace carries
+// the INDEPENDENT verdict on whether that claim is traceable back to
+// the repository. The two are kept apart on purpose: a URL that answers
+// 200 while nothing was pushed and nothing is reproducible is not a
+// delivery, and the studio must never render the first without the
+// second.
+type DeploymentReport struct {
+	// NodeID is the IR node that reported the delivery, so the operator
+	// can jump to its output. Empty only for hand-built values.
+	NodeID string `json:"node_id,omitempty"`
+	// Deployed is the reporting node's claim that the deploy applied.
+	Deployed bool `json:"deployed"`
+	// Healthy is its claim that the deployed URL answers healthily.
+	Healthy bool `json:"healthy"`
+	// URL is the public address a human opens. Empty on a failed or
+	// blocked deploy — a truthful blocker, never a guessed URL.
+	URL string `json:"url,omitempty"`
+	// ImageRef is the exact image reference running, e.g.
+	// "ghcr.io/owner/repo:<sha>". Empty when none was reported.
+	ImageRef string `json:"image_ref,omitempty"`
+	// Commit is the source commit the delivery is anchored to (the one
+	// the image is expected to name). Empty when the reporter did not
+	// state it — the studio then shows no commit rather than borrowing
+	// the run's final_commit, which can be a LATER commit than the one
+	// deployed.
+	Commit string `json:"commit,omitempty"`
+	// Notes is the reporter's own prose: what was published, or the
+	// concrete blocking error.
+	Notes string `json:"notes,omitempty"`
+	// Trace is the traceability verdict. Nil when no node ran a
+	// traceability gate at all — a distinct fact from a gate that ran
+	// and could not establish the facts (Trace.Verifiable == false).
+	Trace *DeploymentTrace `json:"trace,omitempty"`
+}
+
+// DeploymentTrace is the traceability verdict on a delivery: whether the
+// running artifact can be traced back to reviewable source.
+//
+// Verifiable is the meta-fact and gates the other three: false means the
+// gate could not establish them at all (git unreachable, gate miswired).
+// That is NOT a failed delivery — reading it as one rejects deliveries
+// that are in fact correct — and the studio renders it as its own
+// "unverified" state, never as a failure.
+type DeploymentTrace struct {
+	NodeID string `json:"node_id,omitempty"`
+	// Verifiable reports whether the gate could establish the facts.
+	// When false, the three booleans below carry no information.
+	Verifiable bool `json:"verifiable"`
+	// Pushed: the deployed commits are reachable from a remote branch.
+	Pushed bool `json:"pushed"`
+	// ImageFromRepo: the running image is published under this repo's
+	// own registry path (not a stock base image).
+	ImageFromRepo bool `json:"image_from_repo"`
+	// BuiltFromHead: the image reference names the pushed commit, which
+	// is what ties the running artifact to reviewable source.
+	BuiltFromHead bool `json:"built_from_head"`
+	// Log is the gate's own explanation — the remedy on a failure, the
+	// environment fault when unverifiable.
+	Log string `json:"log,omitempty"`
+}
+
+// Traceable reports whether the delivery is fully traced back to the
+// repository. It is only meaningful when Verifiable is true; callers
+// must branch on Verifiable first.
+func (t *DeploymentTrace) Traceable() bool {
+	return t != nil && t.Verifiable && t.Pushed && t.ImageFromRepo && t.BuiltFromHead
 }
 
 // RunSnapshot is the structured view returned by GET /api/runs/{id} and
@@ -298,6 +376,18 @@ type SnapshotBuilder struct {
 	// don't inflate NodeCount.
 	backendUsage map[string]*backendAgg
 	backendOrder []string
+	// deployment / deployTrace hold the LAST reported delivery and the
+	// LAST traceability verdict (see recordDeployment). Last-write-wins
+	// because a redeploy loop re-reports both, and the final attempt is
+	// the run's actual outcome. Kept out of b.header: SetRun rebuilds
+	// the header from run.json, so event-derived state is re-attached in
+	// Snapshot() like Loops and BackendsUsed.
+	deployment  *DeploymentReport
+	deployTrace *DeploymentTrace
+	// deployTraceCommit is the commit the traceability gate resolved from
+	// git. Held separately from deployment.Commit so the two groups can
+	// arrive in either order; buildDeployment applies the precedence.
+	deployTraceCommit string
 }
 
 // backendAgg accumulates one (backend, model) pair while folding events.
@@ -386,6 +476,7 @@ func (b *SnapshotBuilder) Apply(evt *store.Event) {
 	case store.EventNodeFinished:
 		b.handleNodeFinished(evt, branch)
 		b.recordBackendUsage(evt)
+		b.recordDeployment(evt)
 	case store.EventArtifactWritten:
 		b.handleArtifactWritten(evt, branch)
 	case store.EventRunFailed:
@@ -433,6 +524,7 @@ func (b *SnapshotBuilder) Snapshot() *RunSnapshot {
 	header := b.header
 	header.Loops = b.buildLoopProgress()
 	header.BackendsUsed = b.buildBackendsUsed()
+	header.Deployment = b.buildDeployment()
 	return &RunSnapshot{
 		Run:        header,
 		Executions: execs,
@@ -508,6 +600,115 @@ func (b *SnapshotBuilder) buildBackendsUsed() []BackendUsage {
 		})
 	}
 	return out
+}
+
+// ---------------------------------------------------------------------------
+// Deployment report (delivery + traceability output contract)
+// ---------------------------------------------------------------------------
+
+// The deployment-report output contract: reserved output keys any bot
+// can emit to declare a delivery, folded here into RunHeader.Deployment.
+// The seam is the FIELD NAMES, never a bot or node name, so the studio
+// stays bot-agnostic. Two groups, recognized independently so a bot may
+// emit them from one node or split them across a deploying agent and a
+// deterministic traceability gate (the app-dev shape):
+//
+//	delivery      keyed on deploymentURLKey — plus deployed / healthy /
+//	              image_ref / commit / notes
+//	traceability  keyed on traceVerifiableKey — plus pushed /
+//	              image_from_repo / built_from_head / trace_log
+//
+// A node output lacking the group's key contributes nothing, so runs
+// that deploy nothing (nearly all of them) carry no Deployment at all.
+const (
+	deploymentURLKey   = "deployed_url"
+	traceVerifiableKey = "verifiable"
+)
+
+// recordDeployment folds a node_finished event into the run's delivery
+// outcome. Last-write-wins per group: a redeploy loop re-reports both,
+// and the final attempt is the run's actual outcome.
+func (b *SnapshotBuilder) recordDeployment(evt *store.Event) {
+	if evt.NodeID == "" || evt.Data == nil {
+		return
+	}
+	output, ok := evt.Data["output"].(map[string]any)
+	if !ok {
+		return
+	}
+	if url, present := output[deploymentURLKey]; present {
+		urlStr, _ := url.(string)
+		b.deployment = &DeploymentReport{
+			NodeID:   evt.NodeID,
+			Deployed: outputBool(output, "deployed"),
+			Healthy:  outputBool(output, "healthy"),
+			URL:      strings.TrimSpace(urlStr),
+			ImageRef: strings.TrimSpace(outputString(output, "image_ref")),
+			Commit:   strings.TrimSpace(outputString(output, "commit")),
+			Notes:    outputString(output, "notes"),
+		}
+	}
+	// The traceability group needs its meta-fact AND at least one of the
+	// facts it qualifies: `verifiable` alone is too common a field name
+	// to treat as a traceability verdict on its own.
+	if _, present := output[traceVerifiableKey]; present && hasAnyKey(output, "pushed", "image_from_repo", "built_from_head") {
+		b.deployTrace = &DeploymentTrace{
+			NodeID:        evt.NodeID,
+			Verifiable:    outputBool(output, traceVerifiableKey),
+			Pushed:        outputBool(output, "pushed"),
+			ImageFromRepo: outputBool(output, "image_from_repo"),
+			BuiltFromHead: outputBool(output, "built_from_head"),
+			Log:           outputString(output, "trace_log"),
+		}
+		b.deployTraceCommit = strings.TrimSpace(outputString(output, "commit"))
+	}
+}
+
+// buildDeployment materialises the run's delivery outcome, attaching the
+// traceability verdict to the delivery. Returns nil when no node
+// reported a delivery, so a run that deploys nothing renders no row.
+//
+// A traceability verdict with no delivery is dropped: the verdict exists
+// to qualify a URL, and on its own it has nothing to qualify.
+func (b *SnapshotBuilder) buildDeployment() *DeploymentReport {
+	if b.deployment == nil {
+		return nil
+	}
+	out := *b.deployment
+	if b.deployTrace != nil {
+		trace := *b.deployTrace
+		out.Trace = &trace
+	}
+	// The gate resolves the commit from git itself, so it outranks the
+	// deploying agent's own claim; the claim stands when no gate ran.
+	if b.deployTraceCommit != "" {
+		out.Commit = b.deployTraceCommit
+	}
+	return &out
+}
+
+// outputBool reads a bool field from a node output map, treating a
+// missing or non-bool value as false.
+func outputBool(output map[string]any, key string) bool {
+	v, _ := output[key].(bool)
+	return v
+}
+
+// outputString reads a string field from a node output map, treating a
+// missing or non-string value as empty.
+func outputString(output map[string]any, key string) string {
+	v, _ := output[key].(string)
+	return v
+}
+
+// hasAnyKey reports whether the map carries at least one of the keys.
+func hasAnyKey(output map[string]any, keys ...string) bool {
+	for _, k := range keys {
+		if _, ok := output[k]; ok {
+			return true
+		}
+	}
+	return false
 }
 
 // ---------------------------------------------------------------------------

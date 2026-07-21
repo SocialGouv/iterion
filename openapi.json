@@ -361,6 +361,68 @@
         ],
         "type": "object"
       },
+      "DeploymentReport": {
+        "properties": {
+          "commit": {
+            "type": "string"
+          },
+          "deployed": {
+            "type": "boolean"
+          },
+          "healthy": {
+            "type": "boolean"
+          },
+          "image_ref": {
+            "type": "string"
+          },
+          "node_id": {
+            "type": "string"
+          },
+          "notes": {
+            "type": "string"
+          },
+          "trace": {
+            "$ref": "#/components/schemas/DeploymentTrace"
+          },
+          "url": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "deployed",
+          "healthy"
+        ],
+        "type": "object"
+      },
+      "DeploymentTrace": {
+        "properties": {
+          "built_from_head": {
+            "type": "boolean"
+          },
+          "image_from_repo": {
+            "type": "boolean"
+          },
+          "log": {
+            "type": "string"
+          },
+          "node_id": {
+            "type": "string"
+          },
+          "pushed": {
+            "type": "boolean"
+          },
+          "verifiable": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "verifiable",
+          "pushed",
+          "image_from_repo",
+          "built_from_head"
+        ],
+        "type": "object"
+      },
       "ExecutionState": {
         "properties": {
           "branch_id": {
@@ -1024,6 +1086,9 @@
           "current_run_start": {
             "format": "date-time",
             "type": "string"
+          },
+          "deployment": {
+            "$ref": "#/components/schemas/DeploymentReport"
           },
           "error": {
             "type": "string"

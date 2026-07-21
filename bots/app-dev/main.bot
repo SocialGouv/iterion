@@ -872,6 +872,13 @@ schema deploy_trace_result:
   ## unreachable, miswired input). Distinct from a verified failure: it must
   ## not sink a delivery the gate simply could not inspect.
   verifiable:      bool
+  ## The workspace HEAD the three facts were established against — the
+  ## commit the running image is expected to name. Empty when the gate
+  ## could not resolve it. Part of the studio's deployment-report
+  ## contract (runview.DeploymentReport): the run header anchors the
+  ## delivery to THIS commit rather than to the run's final_commit,
+  ## which can be a later commit than the one deployed.
+  commit:          string
   trace_log:       string
 
 ## deploy_verify's verdict — pass gates exit from the redeploy loop.
@@ -1288,7 +1295,7 @@ def git(*a):
 probe_rc, _ = git('rev-parse', '--git-dir')
 if probe_rc != 0:
     print(json.dumps({'pushed': False, 'image_from_repo': False, 'built_from_head': False,
-                      'verifiable': False,
+                      'verifiable': False, 'commit': '',
                       'trace_log': 'CANNOT VERIFY: git is unavailable in this workspace (' + ws + '), so traceability could not be checked either way. This is an environment fault, not a verdict on the deploy.'}))
     raise SystemExit(0)
 git('fetch', '--quiet', 'origin')
@@ -1313,7 +1320,7 @@ built_from_head = bool(head) and bool(image) and any(
 # loudly rather than silently judging the literal string.
 if ('{' + '{') in image:
     print(json.dumps({'pushed': False, 'image_from_repo': False, 'built_from_head': False,
-                      'verifiable': False,
+                      'verifiable': False, 'commit': head,
                       'trace_log': 'GATE MISWIRED: image_ref arrived unsubstituted (' + image + '). This verdict is NOT a judgement about the deploy — fix the bot wiring.'}))
     raise SystemExit(0)
 log = []
@@ -1326,7 +1333,7 @@ if not from_repo:
     log.append('IMAGE NOT FROM THIS REPO: a live URL served by a stock base image (or an unreported image) is not a delivery — publish an image under the repo registry and deploy THAT.')
 if not built_from_head:
     log.append('IMAGE DOES NOT NAME THE PUSHED COMMIT: tag the image with the commit SHA and deploy that tag, so the running pod is traceable to reviewable source. The FINAL image must come from CI building the pushed commit — a locally pushed image is for iterating, not for delivering.')
-print(json.dumps({'pushed': pushed, 'image_from_repo': from_repo, 'built_from_head': built_from_head, 'verifiable': True, 'trace_log': ' | '.join(log)}))
+print(json.dumps({'pushed': pushed, 'image_from_repo': from_repo, 'built_from_head': built_from_head, 'verifiable': True, 'commit': head, 'trace_log': ' | '.join(log)}))
 "`
 
 ## deploy_verify — DETERMINISTIC verdict on the deploy result. No LLM: the

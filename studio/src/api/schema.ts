@@ -4493,6 +4493,24 @@ export interface components {
             nodes: components["schemas"]["DependencyGraphNode"][];
             root: components["schemas"]["DependencyGraphNode"];
         };
+        DeploymentReport: {
+            commit?: string;
+            deployed: boolean;
+            healthy: boolean;
+            image_ref?: string;
+            node_id?: string;
+            notes?: string;
+            trace?: components["schemas"]["DeploymentTrace"];
+            url?: string;
+        };
+        DeploymentTrace: {
+            built_from_head: boolean;
+            image_from_repo: boolean;
+            log?: string;
+            node_id?: string;
+            pushed: boolean;
+            verifiable: boolean;
+        };
         ExecutionState: {
             branch_id: string;
             current_event_seq: number;
@@ -4690,6 +4708,7 @@ export interface components {
             created_at: string;
             /** Format: date-time */
             current_run_start?: string;
+            deployment?: components["schemas"]["DeploymentReport"];
             error?: string;
             file_path?: string;
             final_branch?: string;
