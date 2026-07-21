@@ -52,6 +52,29 @@ type Config struct {
 	Sandbox SandboxConfig `yaml:"sandbox"`
 	Auth    AuthConfig    `yaml:"auth"`
 	Alerts  AlertsConfig  `yaml:"alerts"`
+	WebPush WebPushConfig `yaml:"webpush"`
+}
+
+// WebPushConfig holds the VAPID identity for browser push notifications
+// (a run pausing on a human form, run outcomes). The keypair is the sender
+// identity browsers pin at subscribe time, so every server replica must
+// share ONE pair; rotating it invalidates all stored subscriptions.
+// Generate with `iterion server webpush-keys`. The feature is enabled iff
+// both keys are set.
+type WebPushConfig struct {
+	// VAPIDPublicKey is the base64url-encoded P-256 public key, exposed to
+	// browsers via server_info (public by design).
+	VAPIDPublicKey string `yaml:"vapid_public_key"`
+	// VAPIDPrivateKey is the matching private key (a secret).
+	VAPIDPrivateKey string `yaml:"vapid_private_key"`
+	// Subscriber is the VAPID contact (mailto: or https: URL) push
+	// services may use to reach the operator.
+	Subscriber string `yaml:"subscriber"`
+}
+
+// Enabled reports whether web push can be served (both keys present).
+func (w WebPushConfig) Enabled() bool {
+	return w.VAPIDPublicKey != "" && w.VAPIDPrivateKey != ""
 }
 
 // RedisConfig points the server at a Valkey/Redis used to share ephemeral

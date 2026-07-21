@@ -158,6 +158,13 @@ export interface ServerInfo {
   // plugins_enabled is always true: the plugin registry is available in every
   // mode, so the SPA can surface the Plugins management view + nav entry.
   plugins_enabled?: boolean;
+  // web_push_enabled is true when the server can deliver browser push
+  // notifications (VAPID keys + subscription store wired). Gates the
+  // Notifications settings panel.
+  web_push_enabled?: boolean;
+  // web_push_vapid_public_key is the applicationServerKey this browser
+  // subscribes with (public by design).
+  web_push_vapid_public_key?: string;
   // secrets_enabled is true in local (non-cloud) mode when a sealed secret
   // store + sealer are wired. The SPA exposes the local Secrets view + nav
   // entry conditionally. Cloud mode uses the auth-gated team/personal secrets

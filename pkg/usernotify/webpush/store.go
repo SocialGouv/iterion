@@ -1,0 +1,192 @@
+// Package webpush is the Web Push (RFC 8030 + VAPID) usernotify.Sink: it
+// delivers a Notification to every browser PushSubscription registered by
+// each recipient, via the browsers' push services.
+package webpush
+
+import (
+	"context"
+	"fmt"
+	"sync"
+	"time"
+
+	"go.mongodb.org/mongo-driver/v2/bson"
+	"go.mongodb.org/mongo-driver/v2/mongo"
+	"go.mongodb.org/mongo-driver/v2/mongo/options"
+
+	"github.com/SocialGouv/iterion/pkg/internal/mongoutil"
+)
+
+// Subscription is one browser push registration (one user × one browser
+// profile × one device). The endpoint is the push service's capability URL
+// and is globally unique.
+type Subscription struct {
+	ID         string    `json:"id" bson:"_id"`
+	TenantID   string    `json:"tenant_id" bson:"tenant_id"`
+	UserID     string    `json:"user_id" bson:"user_id"`
+	Endpoint   string    `json:"endpoint" bson:"endpoint"`
+	P256dh     string    `json:"p256dh" bson:"p256dh"`
+	Auth       string    `json:"auth" bson:"auth"`
+	UserAgent  string    `json:"user_agent,omitempty" bson:"user_agent,omitempty"`
+	CreatedAt  time.Time `json:"created_at" bson:"created_at"`
+	LastUsedAt time.Time `json:"last_used_at,omitempty" bson:"last_used_at,omitempty"`
+}
+
+// SubscriptionStore persists browser push registrations.
+type SubscriptionStore interface {
+	// Upsert registers (or refreshes) a subscription, keyed on its endpoint.
+	Upsert(ctx context.Context, s *Subscription) error
+	ListForUser(ctx context.Context, tenantID, userID string) ([]*Subscription, error)
+	// DeleteByEndpoint removes the caller's own subscription (unsubscribe).
+	DeleteByEndpoint(ctx context.Context, tenantID, userID, endpoint string) error
+	// Prune removes a subscription the push service reported dead (404/410).
+	Prune(ctx context.Context, endpoint string) error
+	// Touch refreshes last_used_at after a successful delivery. Best-effort.
+	Touch(ctx context.Context, endpoint string, at time.Time) error
+}
+
+// MemSubscriptionStore is the in-memory SubscriptionStore for tests and
+// local mode.
+type MemSubscriptionStore struct {
+	mu   sync.RWMutex
+	rows map[string]Subscription // by endpoint
+}
+
+func NewMemSubscriptionStore() *MemSubscriptionStore {
+	return &MemSubscriptionStore{rows: make(map[string]Subscription)}
+}
+
+func (m *MemSubscriptionStore) Upsert(_ context.Context, s *Subscription) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	cp := *s
+	if prev, ok := m.rows[s.Endpoint]; ok {
+		cp.ID = prev.ID
+		cp.CreatedAt = prev.CreatedAt
+	} else {
+		if cp.ID == "" {
+			cp.ID = s.Endpoint
+		}
+		if cp.CreatedAt.IsZero() {
+			cp.CreatedAt = time.Now().UTC()
+		}
+	}
+	m.rows[s.Endpoint] = cp
+	return nil
+}
+
+func (m *MemSubscriptionStore) ListForUser(_ context.Context, tenantID, userID string) ([]*Subscription, error) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	var out []*Subscription
+	for _, s := range m.rows {
+		if s.TenantID == tenantID && s.UserID == userID {
+			cp := s
+			out = append(out, &cp)
+		}
+	}
+	return out, nil
+}
+
+func (m *MemSubscriptionStore) DeleteByEndpoint(_ context.Context, tenantID, userID, endpoint string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if s, ok := m.rows[endpoint]; ok && s.TenantID == tenantID && s.UserID == userID {
+		delete(m.rows, endpoint)
+	}
+	return nil
+}
+
+func (m *MemSubscriptionStore) Prune(_ context.Context, endpoint string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	delete(m.rows, endpoint)
+	return nil
+}
+
+func (m *MemSubscriptionStore) Touch(_ context.Context, endpoint string, at time.Time) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if s, ok := m.rows[endpoint]; ok {
+		s.LastUsedAt = at
+		m.rows[endpoint] = s
+	}
+	return nil
+}
+
+// SubscriptionsCollectionName backs the cloud-mode SubscriptionStore.
+const SubscriptionsCollectionName = "push_subscriptions"
+
+// MongoSubscriptionStore is the cloud-mode SubscriptionStore.
+type MongoSubscriptionStore struct {
+	coll *mongo.Collection
+}
+
+func NewMongoSubscriptionStore(db *mongo.Database) *MongoSubscriptionStore {
+	return &MongoSubscriptionStore{coll: db.Collection(SubscriptionsCollectionName)}
+}
+
+func (s *MongoSubscriptionStore) EnsureSchema(ctx context.Context) error {
+	_, err := s.coll.Indexes().CreateMany(ctx, []mongo.IndexModel{
+		{Keys: bson.D{{Key: "endpoint", Value: 1}}, Options: options.Index().SetName("endpoint").SetUnique(true)},
+		{Keys: bson.D{{Key: "tenant_id", Value: 1}, {Key: "user_id", Value: 1}}, Options: options.Index().SetName("tenant_user")},
+	})
+	if err != nil && !mongoutil.IsIndexConflict(err) {
+		return fmt.Errorf("webpush: ensure subscription indexes: %w", err)
+	}
+	return nil
+}
+
+func (s *MongoSubscriptionStore) Upsert(ctx context.Context, sub *Subscription) error {
+	now := time.Now().UTC()
+	_, err := s.coll.UpdateOne(ctx,
+		bson.M{"endpoint": sub.Endpoint},
+		bson.M{
+			"$set": bson.M{
+				"tenant_id":  sub.TenantID,
+				"user_id":    sub.UserID,
+				"p256dh":     sub.P256dh,
+				"auth":       sub.Auth,
+				"user_agent": sub.UserAgent,
+			},
+			"$setOnInsert": bson.M{"_id": sub.Endpoint, "created_at": now},
+		},
+		options.UpdateOne().SetUpsert(true),
+	)
+	if err != nil {
+		return fmt.Errorf("webpush: upsert subscription: %w", err)
+	}
+	return nil
+}
+
+func (s *MongoSubscriptionStore) ListForUser(ctx context.Context, tenantID, userID string) ([]*Subscription, error) {
+	cur, err := s.coll.Find(ctx, bson.M{"tenant_id": tenantID, "user_id": userID})
+	if err != nil {
+		return nil, fmt.Errorf("webpush: list subscriptions: %w", err)
+	}
+	var out []*Subscription
+	if err := cur.All(ctx, &out); err != nil {
+		return nil, fmt.Errorf("webpush: decode subscriptions: %w", err)
+	}
+	return out, nil
+}
+
+func (s *MongoSubscriptionStore) DeleteByEndpoint(ctx context.Context, tenantID, userID, endpoint string) error {
+	if _, err := s.coll.DeleteOne(ctx, bson.M{"endpoint": endpoint, "tenant_id": tenantID, "user_id": userID}); err != nil {
+		return fmt.Errorf("webpush: delete subscription: %w", err)
+	}
+	return nil
+}
+
+func (s *MongoSubscriptionStore) Prune(ctx context.Context, endpoint string) error {
+	if _, err := s.coll.DeleteOne(ctx, bson.M{"endpoint": endpoint}); err != nil {
+		return fmt.Errorf("webpush: prune subscription: %w", err)
+	}
+	return nil
+}
+
+func (s *MongoSubscriptionStore) Touch(ctx context.Context, endpoint string, at time.Time) error {
+	if _, err := s.coll.UpdateOne(ctx, bson.M{"endpoint": endpoint}, bson.M{"$set": bson.M{"last_used_at": at}}); err != nil {
+		return fmt.Errorf("webpush: touch subscription: %w", err)
+	}
+	return nil
+}

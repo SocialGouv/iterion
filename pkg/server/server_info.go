@@ -81,6 +81,13 @@ type serverInfoResponse struct {
 	// ~/.iterion/plugins) is available in every mode, so the SPA can surface a
 	// Plugins management view unconditionally.
 	PluginsEnabled bool `json:"plugins_enabled"`
+	// WebPushEnabled is true when the server can deliver browser push
+	// notifications (subscription store + VAPID keypair wired). The SPA
+	// surfaces the Notifications settings panel only when true.
+	WebPushEnabled bool `json:"web_push_enabled"`
+	// WebPushVAPIDPublicKey is the applicationServerKey browsers subscribe
+	// with. Public by design (it is embedded in every push registration).
+	WebPushVAPIDPublicKey string `json:"web_push_vapid_public_key,omitempty"`
 	// SecretsEnabled is true in local (non-cloud) mode when a sealed secret
 	// store + sealer are wired, so the SPA can surface the local Secrets
 	// management view. Cloud mode uses the auth-gated team/personal secrets
@@ -145,6 +152,10 @@ func (s *Server) handleServerInfo(w http.ResponseWriter, r *http.Request) {
 		ForgeGitHubAppConfigured: s.forgeGitHubApp.Configured(),
 		SessionBoardEnabled:      sessionboard.Enabled(),
 		PluginsEnabled:           true,
+		WebPushEnabled:           s.webPushEnabled(),
+	}
+	if resp.WebPushEnabled {
+		resp.WebPushVAPIDPublicKey = s.cfg.WebPushVAPIDPublicKey
 	}
 	// Snapshot the hot-swap fields under a single RLock (both read here are
 	// swapped on a project switch): the run-console service for the daily-cap

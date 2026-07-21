@@ -13,6 +13,7 @@ import (
 	"github.com/SocialGouv/iterion/pkg/cloud/metrics"
 	"github.com/SocialGouv/iterion/pkg/cloud/tracing"
 	iterconfig "github.com/SocialGouv/iterion/pkg/config"
+	"github.com/SocialGouv/iterion/pkg/eventbus"
 	iterlog "github.com/SocialGouv/iterion/pkg/log"
 	"github.com/SocialGouv/iterion/pkg/orgusage"
 	natsq "github.com/SocialGouv/iterion/pkg/queue/nats"
@@ -199,9 +200,19 @@ func runRunner(cmd *cobra.Command, _ []string) error {
 		botsPaths = filepath.SplitList(bp)
 	}
 
+	// Event spine: publish run outcomes (finished/failed/cancelled/paused)
+	// onto the NATS event subjects so server-side consumers (user
+	// notifications, trigger chaining) see runner-pod runs. Rides the
+	// queue's connection — disjoint subject trees on one link.
+	eventsBus, err := eventbus.NewNATSBus(natsConn.NATS(), eventbus.NATSOptions{Logger: logger})
+	if err != nil {
+		return fmt.Errorf("runner: build events bus: %w", err)
+	}
+
 	// 5. Runner loop.
 	r, err := runner.New(rootCtx, runner.Config{
 		NATS:              natsConn,
+		Events:            eventsBus,
 		Store:             st,
 		RunnerID:          runnerID,
 		WorkDir:           cfg.Runner.WorkDir,

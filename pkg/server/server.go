@@ -31,6 +31,8 @@ import (
 	"github.com/SocialGouv/iterion/pkg/runview"
 	"github.com/SocialGouv/iterion/pkg/secrets"
 	"github.com/SocialGouv/iterion/pkg/store"
+	"github.com/SocialGouv/iterion/pkg/usernotify"
+	"github.com/SocialGouv/iterion/pkg/usernotify/webpush"
 	"github.com/SocialGouv/iterion/pkg/valkey"
 	"github.com/SocialGouv/iterion/pkg/webhooks"
 	"github.com/SocialGouv/iterion/pkg/webhooks/gitlab"
@@ -61,6 +63,13 @@ type Server struct {
 	runs             *runview.Service    // run console service; nil disables /api/runs endpoints
 	watchCoord       *watchCoordinator   // MVP3b issue-state fan-out; nil when no native tracker or events tail unavailable
 	triggerCoord     *TriggerCoordinator // event-driven trigger spine; nil when no TriggerStore/native tracker
+	// userNotify + pushSink are the user-notification stack (web push on
+	// human-input pauses and run outcomes); nil when the feature is off
+	// (no subscription store / no VAPID keys). userNotifyCancel detaches
+	// the bus subscription on Close.
+	userNotify       *usernotify.Dispatcher
+	pushSink         *webpush.Sink
+	userNotifyCancel func()
 	// statsCache memoizes the per-run events.jsonl cost scan behind
 	// /api/v1/runs/stats (terminal runs only — see runs_stats_cache.go).
 	// Cleared on project switch. Non-nil after New.

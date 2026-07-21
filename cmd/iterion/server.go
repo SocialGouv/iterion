@@ -31,6 +31,7 @@ import (
 	"github.com/SocialGouv/iterion/pkg/configshare"
 	"github.com/SocialGouv/iterion/pkg/dispatcher/boardmongo"
 	"github.com/SocialGouv/iterion/pkg/dispatcher/native"
+	"github.com/SocialGouv/iterion/pkg/eventbus"
 	"github.com/SocialGouv/iterion/pkg/forge"
 	"github.com/SocialGouv/iterion/pkg/identity"
 	iterlog "github.com/SocialGouv/iterion/pkg/log"
@@ -47,6 +48,8 @@ import (
 	"github.com/SocialGouv/iterion/pkg/server/cloudpublisher"
 	"github.com/SocialGouv/iterion/pkg/store"
 	mongostore "github.com/SocialGouv/iterion/pkg/store/mongo"
+	"github.com/SocialGouv/iterion/pkg/usernotify"
+	usernotifywebpush "github.com/SocialGouv/iterion/pkg/usernotify/webpush"
 	"github.com/SocialGouv/iterion/pkg/valkey"
 	"github.com/SocialGouv/iterion/pkg/webhooks"
 )
@@ -98,7 +101,31 @@ func init() {
 	f.StringVar(&serverOpts.dir, "dir", "", "Working directory")
 	f.StringVar(&serverOpts.storeDir, "store-dir", "", "Run store directory (local mode only)")
 	f.StringVar(&serverOpts.configPath, "config", "", "Path to YAML config (env vars take precedence)")
+	serverCmd.AddCommand(webpushKeysCmd)
 	rootCmd.AddCommand(serverCmd)
+}
+
+// webpushKeysCmd mints the VAPID keypair browser push notifications ride
+// on. Run once per deployment; every server replica must share the SAME
+// pair (rotating it invalidates all stored browser subscriptions).
+var webpushKeysCmd = &cobra.Command{
+	Use:   "webpush-keys",
+	Short: "Generate a VAPID keypair for browser push notifications",
+	Long: `Generate the VAPID keypair web-push notifications are signed with.
+
+Store both values in the server environment (e.g. the deploy secret):
+every replica must share the one pair, and rotating it invalidates every
+registered browser subscription (users just re-enable notifications in
+their settings).`,
+	Args: cobra.NoArgs,
+	RunE: func(cmd *cobra.Command, _ []string) error {
+		priv, pub, err := usernotifywebpush.GenerateVAPIDKeys()
+		if err != nil {
+			return fmt.Errorf("generate VAPID keys: %w", err)
+		}
+		fmt.Fprintf(cmd.OutOrStdout(), "ITERION_WEBPUSH_VAPID_PUBLIC_KEY=%s\nITERION_WEBPUSH_VAPID_PRIVATE_KEY=%s\n", pub, priv)
+		return nil
+	},
 }
 
 // randomBootstrapPassword returns a URL-safe random temporary password for the
@@ -317,6 +344,49 @@ func runServer(cmd *cobra.Command, _ []string) error {
 		BaseURL:      cfg.Auth.PublicURL,
 	}
 
+	// User notifications (web push): the shared event spine (NATSBus over
+	// the queue's connection — disjoint subject trees on one link) carries
+	// the runner pods' run-outcome events to exactly one server replica
+	// (queue-group delivery); the Mongo stores hold browser subscriptions,
+	// per-user prefs and the sent-episode dedup claims; the sweep seam
+	// reconciles episodes the lossy bus dropped. Enabled iff the VAPID
+	// keypair is configured (ITERION_WEBPUSH_*).
+	var eventsBus eventbus.Bus
+	var pushSubs usernotifywebpush.SubscriptionStore
+	var notifPrefs usernotify.PrefsStore
+	var notifSent usernotify.SentStore
+	var notifiableRuns usernotify.ListNotifiableRuns
+	if cfg.WebPush.Enabled() {
+		eventsBus, err = eventbus.NewNATSBus(natsConn.NATS(), eventbus.NATSOptions{Logger: logger})
+		if err != nil {
+			return fmt.Errorf("server: build events bus: %w", err)
+		}
+		subsStore := usernotifywebpush.NewMongoSubscriptionStore(st.DB())
+		prefsStore := usernotify.NewMongoPrefsStore(st.DB())
+		sentStore := usernotify.NewMongoSentStore(st.DB())
+		for name, ensure := range map[string]func(context.Context) error{
+			"push subscriptions": subsStore.EnsureSchema,
+			"notification prefs": prefsStore.EnsureSchema,
+			"sent notifications": sentStore.EnsureSchema,
+		} {
+			if sErr := ensure(rootCtx); sErr != nil {
+				return fmt.Errorf("server: ensure %s schema: %w", name, sErr)
+			}
+		}
+		pushSubs, notifPrefs, notifSent = subsStore, prefsStore, sentStore
+		notifiableRuns = func(ctx context.Context, since time.Time, limit int) ([]usernotify.RunRef, error) {
+			refs, lErr := st.ListNotifiableRuns(ctx, since, limit)
+			if lErr != nil {
+				return nil, lErr
+			}
+			out := make([]usernotify.RunRef, 0, len(refs))
+			for _, ref := range refs {
+				out = append(out, usernotify.RunRef{ID: ref.ID, TenantID: ref.TenantID, Status: ref.Status})
+			}
+			return out, nil
+		}
+	}
+
 	// The studio Home "Bots" panel lists first-class bots via /api/examples
 	// (an on-disk ExamplesDir walk). In cloud mode the bot catalog ships at
 	// the ITERION_BOTS_PATH dir — the same source /api/v1/bots uses — so point
@@ -414,6 +484,14 @@ func runServer(cmd *cobra.Command, _ []string) error {
 		PATs:                   stores.pat,
 		PATMaxTTL:              patMaxTTLFromEnv(logger),
 		Queue:                  natsConn,
+		EventsBus:              eventsBus,
+		PushSubscriptions:      pushSubs,
+		NotificationPrefs:      notifPrefs,
+		NotificationSent:       notifSent,
+		NotifiableRuns:         notifiableRuns,
+		WebPushVAPIDPublicKey:  cfg.WebPush.VAPIDPublicKey,
+		WebPushVAPIDPrivateKey: cfg.WebPush.VAPIDPrivateKey,
+		WebPushSubscriber:      cfg.WebPush.Subscriber,
 		MemoryStore:            stores.memory,
 		RunSecrets:             stores.runSecrets,
 		Sealer:                 sealer,

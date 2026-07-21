@@ -66,6 +66,9 @@ github.com/AzureAD/microsoft-authentication-library-for-go/apps/internal/shared
 github.com/AzureAD/microsoft-authentication-library-for-go/apps/internal/version
 github.com/AzureAD/microsoft-authentication-library-for-go/apps/managedidentity
 github.com/AzureAD/microsoft-authentication-library-for-go/apps/public
+# github.com/SherClockHolmes/webpush-go v1.4.0
+## explicit; go 1.13
+github.com/SherClockHolmes/webpush-go
 # github.com/SocialGouv/claw-code-go v0.1.1-0.20260714085100-c9eed790765b
 ## explicit; go 1.25.0
 github.com/SocialGouv/claw-code-go/hooks
@@ -817,6 +820,7 @@ golang.org/x/crypto/acme/autocert
 golang.org/x/crypto/argon2
 golang.org/x/crypto/blake2b
 golang.org/x/crypto/curve25519
+golang.org/x/crypto/hkdf
 golang.org/x/crypto/internal/alias
 golang.org/x/crypto/internal/poly1305
 golang.org/x/crypto/nacl/box

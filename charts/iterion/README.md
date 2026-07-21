@@ -48,7 +48,7 @@ groups:
 | `server` | Replicas, resources, command/args, metrics port |
 | `runner` | Pool enable/replicas/resources, `keda.*` (JetStream lag scaler), `sandbox.enabled` (+RBAC for per-run pods) |
 | `config` | Non-secret env: `mongo.*`, `nats.*`, `s3.*`, `runner.*`, `auth.*` (public half: publicUrl, cookies, TTLs, signupMode, OIDC client ids), `smtp.*` (host/port/from — enables invitations + password-reset email), `orgDefaults.*` (platform-wide launch limits → `ITERION_ORG_DEFAULT_*`), `log.*` |
-| `secrets` | Four bundles, each `create:` (chart-rendered, dev) or `existingSecret:` (sealed-secrets / external-secrets, prod): `llm` (fallback provider keys), `storage` (S3 creds), `auth` (`ITERION_JWT_SECRET`, `ITERION_SECRETS_KEY`, bootstrap admin, OIDC client secrets, `completionWebhookSecret`), `smtp` (relay credentials, server-only) |
+| `secrets` | Four bundles, each `create:` (chart-rendered, dev) or `existingSecret:` (sealed-secrets / external-secrets, prod): `llm` (fallback provider keys), `storage` (S3 creds), `auth` (`ITERION_JWT_SECRET`, `ITERION_SECRETS_KEY`, bootstrap admin, OIDC client secrets, `completionWebhookSecret`, `webpush` VAPID keypair), `smtp` (relay credentials, server-only) |
 | `service` / `ingress` | Exposure; pair ingress TLS with your issuer |
 | `probes` | `/healthz` liveness, `/readyz` readiness (Mongo/NATS/S3 pings) |
 | `networkPolicy` | Opt-in deny-all egress + allowlist (see `examples/networkpolicy-egress.yaml`) |

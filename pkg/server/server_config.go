@@ -19,6 +19,7 @@ import (
 	"github.com/SocialGouv/iterion/pkg/dispatcher"
 	"github.com/SocialGouv/iterion/pkg/dispatcher/boardmongo"
 	"github.com/SocialGouv/iterion/pkg/dispatcher/native"
+	"github.com/SocialGouv/iterion/pkg/eventbus"
 	"github.com/SocialGouv/iterion/pkg/forge"
 	"github.com/SocialGouv/iterion/pkg/knowledge"
 	"github.com/SocialGouv/iterion/pkg/marketplace"
@@ -31,6 +32,8 @@ import (
 	"github.com/SocialGouv/iterion/pkg/secrets"
 	"github.com/SocialGouv/iterion/pkg/store"
 	"github.com/SocialGouv/iterion/pkg/trigger"
+	"github.com/SocialGouv/iterion/pkg/usernotify"
+	"github.com/SocialGouv/iterion/pkg/usernotify/webpush"
 	"github.com/SocialGouv/iterion/pkg/valkey"
 	"github.com/SocialGouv/iterion/pkg/webhooks"
 )
@@ -312,6 +315,30 @@ type Config struct {
 	// so the dispatcher picks them up immediately instead of at the next poll.
 	// It also backs the /api/v1/triggers subscription CRUD. nil = spine off.
 	TriggerStore trigger.SubscriptionStore
+
+	// PushSubscriptions, NotificationPrefs and NotificationSent wire the
+	// user-notification stack (pkg/usernotify): browser Web Push for a run
+	// pausing on a human form and for run outcomes. All three non-nil +
+	// the VAPID keypair set ⇒ the dispatcher starts, the reconciliation
+	// sweep runs (when NotifiableRuns is wired), and the
+	// /api/v1/notifications/* routes activate. nil ⇒ feature off.
+	PushSubscriptions webpush.SubscriptionStore
+	NotificationPrefs usernotify.PrefsStore
+	NotificationSent  usernotify.SentStore
+	// WebPushVAPIDPublicKey / WebPushVAPIDPrivateKey are the shared VAPID
+	// sender identity (public key is exposed via server_info by design);
+	// WebPushSubscriber is the VAPID contact (mailto:).
+	WebPushVAPIDPublicKey  string
+	WebPushVAPIDPrivateKey string
+	WebPushSubscriber      string
+	// EventsBus, when non-nil, is the shared trigger-event spine the
+	// usernotify dispatcher subscribes on (the cloud NATSBus — queue-group
+	// delivery ⇒ exactly one replica handles each event). nil → the
+	// dispatcher falls back to the local trigger coordinator's in-proc bus.
+	EventsBus eventbus.Bus
+	// NotifiableRuns is the reconciliation sweep's scan seam (the Mongo
+	// store's ListNotifiableRuns). nil → no sweep (bus-only delivery).
+	NotifiableRuns usernotify.ListNotifiableRuns
 
 	// CloudBoardFor returns a tenant-scoped board store for cloud mode (a
 	// boardmongo.Store). When set, a board-mode slash-command materialises a

@@ -82,6 +82,14 @@ func (s *Server) ListenAndServe() error {
 			s.runs.SetEventPublisher(s.triggerCoord.Bus())
 		}
 	}
+	// User notifications (web push): dispatcher on the event spine +
+	// reconciliation sweep. In cloud, the runview service also publishes
+	// run outcomes onto the shared bus so an in-process run (if any)
+	// reaches the same consumers as runner-pod runs.
+	if s.cfg.EventsBus != nil && s.runs != nil && s.triggerCoord == nil {
+		s.runs.SetEventPublisher(s.cfg.EventsBus)
+	}
+	s.startUserNotify()
 	// Sweep abandoned OIDC PendingAuth entries — a user who clicks
 	// "Sign in with Google" then closes the tab never returns to
 	// trigger the lazy eviction inside Take, so without this the
@@ -297,6 +305,9 @@ func (s *Server) Shutdown(ctx context.Context) error {
 	}
 	if s.triggerCoord != nil {
 		s.triggerCoord.Close()
+	}
+	if s.userNotifyCancel != nil {
+		s.userNotifyCancel()
 	}
 	if s.watcher != nil {
 		s.watcher.Stop()

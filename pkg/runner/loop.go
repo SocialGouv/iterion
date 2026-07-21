@@ -39,6 +39,7 @@ import (
 	"github.com/SocialGouv/iterion/pkg/cloud/metrics"
 	"github.com/SocialGouv/iterion/pkg/dsl/ast"
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
+	"github.com/SocialGouv/iterion/pkg/eventbus"
 	gitlib "github.com/SocialGouv/iterion/pkg/git"
 	"github.com/SocialGouv/iterion/pkg/knowledge"
 	iterlog "github.com/SocialGouv/iterion/pkg/log"
@@ -50,6 +51,7 @@ import (
 	"github.com/SocialGouv/iterion/pkg/runview"
 	"github.com/SocialGouv/iterion/pkg/secrets"
 	"github.com/SocialGouv/iterion/pkg/store"
+	"github.com/SocialGouv/iterion/pkg/trigger"
 )
 
 const tracerName = "github.com/SocialGouv/iterion/pkg/runner"
@@ -417,6 +419,15 @@ type Config struct {
 	// execution attempt (the billing source of truth — Prometheus
 	// counters above stay tenant-unlabelled). nil → no org metering.
 	OrgUsage orgusage.Counter
+
+	// Events, when non-nil, receives a run-outcome trigger.Event
+	// (run.finished/failed/cancelled/paused) after every execution
+	// attempt — the runner-side twin of runview.emitRunOutcome, so
+	// server-side consumers (the usernotify dispatcher, trigger
+	// chaining) see runner-pod runs too, not only in-process ones.
+	// Lossy fan-out by design; the notification sweep is the safety
+	// net. nil → no event publishing.
+	Events eventbus.Bus
 
 	// BotsPaths is where bot bundles are resolved from (the image ships
 	// the catalog at /opt/iterion/bots via ITERION_BOTS_PATH). A run
@@ -800,6 +811,7 @@ func (r *Runner) processOne(parent context.Context, delivery *natsq.Delivery) {
 	<-hbDone
 
 	r.fireCompletionNotifier(msg)
+	r.fireOutcomeEvent(msg, err)
 
 	if handled, dlqStatus := r.parkOnDLQOnFinalDelivery(err, delivery, msg, logger); handled {
 		finalStatus = dlqStatus
@@ -857,6 +869,23 @@ func (r *Runner) fireCompletionNotifier(msg *queue.RunMessage) {
 	}
 	nctx := store.WithIdentity(context.Background(), msg.TenantID, msg.OwnerID)
 	r.completionNotifier.FireForRun(nctx, r.cfg.Store, msg.RunID)
+}
+
+// fireOutcomeEvent publishes the run-outcome trigger.Event onto the events
+// bus — the runner-side twin of runview.emitRunOutcome, sharing the same
+// trigger.BuildRunOutcome authority. Fired after the execution attempt with
+// the checkpoint already persisted, so a human-input pause carries its
+// pending interaction_id. Best-effort: a publish failure is logged, never
+// fails the delivery (the usernotify sweep reconciles missed episodes).
+func (r *Runner) fireOutcomeEvent(msg *queue.RunMessage, execErr error) {
+	if r.cfg.Events == nil {
+		return
+	}
+	ectx := store.WithIdentity(context.Background(), msg.TenantID, msg.OwnerID)
+	ev := trigger.BuildRunOutcome(ectx, r.cfg.Store, msg.RunID, execErr)
+	if err := r.cfg.Events.Publish(ectx, ev); err != nil {
+		r.cfg.Logger.Warn("runner: publish %s trigger event for run %s: %v", ev.Kind, msg.RunID, err)
+	}
 }
 
 // executeRun hydrates the IR from the message, builds the runtime

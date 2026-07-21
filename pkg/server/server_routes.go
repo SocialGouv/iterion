@@ -234,6 +234,11 @@ func (s *Server) routes() {
 		s.registerPATRoutes()
 	}
 
+	// Browser push notifications (subscription CRUD + prefs + test push).
+	if s.webPushEnabled() && s.authSvc != nil {
+		s.registerNotificationRoutes()
+	}
+
 	// Super-admin DLQ inspection/replay (cloud only — needs the queue).
 	if s.authSvc != nil {
 		s.registerQueueAdminRoutes()

@@ -405,6 +405,43 @@ func (s *Store) ListStaleActiveRuns(ctx context.Context, statuses []store.RunSta
 	return out, nil
 }
 
+// ListNotifiableRuns returns the runs the usernotify reconciliation sweep
+// should (re-)examine: every run currently paused on a human interaction
+// (no time bound — it is still waiting, however old), plus runs that
+// reached a terminal status since `since`. Platform-level scan: callers
+// pass a WithoutTenantFilter ctx; the per-run tenant comes back on the ref.
+// The sent-notifications claim makes replays idempotent, so over-listing
+// is cheap and under-listing is the only real failure.
+func (s *Store) ListNotifiableRuns(ctx context.Context, since time.Time, limit int) ([]StaleRunRef, error) {
+	if limit <= 0 || limit > 500 {
+		limit = 500
+	}
+	terminal := []string{
+		string(store.RunStatusFinished),
+		string(store.RunStatusFailed),
+		string(store.RunStatusFailedResumable),
+		string(store.RunStatusCancelled),
+	}
+	cur, err := s.runs.Find(ctx,
+		withTenantFilter(ctx, bson.M{"$or": []bson.M{
+			{"status": string(store.RunStatusPausedWaitingHuman)},
+			{"status": bson.M{"$in": terminal}, "updated_at": bson.M{"$gte": since}},
+		}}),
+		options.Find().
+			SetProjection(bson.M{"_id": 1, "tenant_id": 1, "status": 1}).
+			SetSort(bson.M{"updated_at": -1}).
+			SetLimit(int64(limit)))
+	if err != nil {
+		return nil, fmt.Errorf("store/mongo: list notifiable runs: %w", err)
+	}
+	defer cur.Close(ctx)
+	var out []StaleRunRef
+	if err := cur.All(ctx, &out); err != nil {
+		return nil, fmt.Errorf("store/mongo: decode notifiable runs: %w", err)
+	}
+	return out, nil
+}
+
 // CountActiveRunsByTenant counts the org's queued + running runs.
 // Consumed by the server's launch gate (per-org concurrency cap) with
 // an explicit tenant — deliberately NOT the ctx-derived tenant filter,

@@ -9,6 +9,7 @@ import { Spinner } from "@/components/ui/Spinner";
 import { Tabs } from "@/components/ui/Tabs";
 import { useConfirm } from "@/hooks/useConfirm";
 import ApiKeysPanel from "./ApiKeys";
+import NotificationsPanel from "./NotificationsPanel";
 import OAuthConnections from "./OAuthConnections";
 import TokensPanel from "./TokensPanel";
 import {
@@ -27,7 +28,7 @@ import { useAuth } from "@/auth/AuthContext";
 import { useServerInfoStore } from "@/store/serverInfo";
 import { useHeaderSlot } from "@/components/shared/useHeaderSlot";
 
-type Tab = "api-keys" | "oauth" | "tokens" | "profile";
+type Tab = "api-keys" | "oauth" | "tokens" | "notifications" | "profile";
 
 export default function SettingsPage() {
   const { user } = useAuth();
@@ -57,6 +58,7 @@ export default function SettingsPage() {
     { id: "oauth", label: "OAuth subscriptions" },
   ];
   if (showAuthTabs) tabs.push({ id: "tokens", label: "Access tokens" });
+  if (serverInfo?.web_push_enabled) tabs.push({ id: "notifications", label: "Notifications" });
   tabs.push({ id: "profile", label: "Profile" });
 
   return (
@@ -75,6 +77,7 @@ export default function SettingsPage() {
           {tab === "api-keys" && <ApiKeysPanel />}
           {tab === "oauth" && <OAuthConnections />}
           {tab === "tokens" && showAuthTabs && <TokensPanel />}
+          {tab === "notifications" && serverInfo?.web_push_enabled && <NotificationsPanel />}
           {tab === "profile" && (
             <div className="space-y-6">
               <section className="space-y-3 text-sm">
