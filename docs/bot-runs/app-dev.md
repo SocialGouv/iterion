@@ -2,6 +2,81 @@
 
 Newest first. Template: see [README.md](README.md).
 
+## 2026-07-21 — deploy phase e2e on CLOUD prod, org-private plugin (run 019f8191)
+- Status: **partial** — the app was built and verified; the deploy was blocked
+  by a missing GitHub App grant, and the run wrongly reported success.
+- Versions: bot app-dev 0.1.0 · iterion `e30b7daf2` (server + runner)
+- Method: studio Launch → connection `iterion-forge-c6efcfed` (the
+  **iterion-sandbox** App), "Create a new repository" →
+  `iterion-sandbox/appy-live-quotes` (public), `mode=autonomous`,
+  `deploy_enabled=true`, `draft_review=false`, `open_mr=false`.
+  Brief: a tiny quote service — `PORT`/`0.0.0.0`, non-root Dockerfile,
+  `/healthz`, plus a CI workflow pushing the image to the repo's registry.
+- Result: converged in ~15 min. Campaign built the app, `verify_run` green
+  (`✔ GET /healthz returns 200 OK`, `✔ GET /api/quote`), `review.clean`,
+  `gate.converged`. Deploy **blocked**; no live URL. Local commit
+  `c2fefcfc` on `iterion/run/019f8191…` — **never pushed**: `origin/main`
+  still holds only the repo-creation `Initial commit`.
+
+### What the run PROVED (all firsts, all on prod)
+- **The org-private plugin reaches a cloud run through git.** The agent read
+  `.claude/skills/deploy-target` from the `PluginSource`
+  (`SocialGouv/iterion-deploy-msociaux@v1.0.0`, pinned). The pods had just
+  been restarted, which wipes any ephemeral injection — so this can only have
+  come from the durable source. ADR-079 + ADR-080 validated end to end.
+- **A team can hold several GitHub Apps.** The run used the `iterion-sandbox`
+  App while the SocialGouv App stayed on its own connection; git identity
+  resolved to `iterion-forge-c6efcfed[bot]`. See ADR note in the commits
+  below.
+- **A repo iterion creates is immediately in scope.** No owner intervention,
+  because the App is installed on `iterion-sandbox` with *All repositories*.
+
+### Findings
+1. **Missing App grants block the whole publish path.** The manifest requests
+   `contents/pull_requests/issues/metadata/repository_hooks` (+
+   `administration` when opted in). It does **not** request `workflows` or
+   `packages`. GitHub refuses outright: *"refusing to allow a GitHub App to
+   create or update workflow .github/workflows/ci.yml without `workflows`
+   permission"* — so the CI file cannot be pushed, no image is built, and
+   nothing can be deployed. `packages: write` is needed for GHCR on top.
+2. **The deploy gate was an LLM and it waved a failure through.** On the
+   redeploy, with `deployed=false, deployed_url=""`, the judge answered
+   `pass=true, reason="Acknowledged."`. The loop exited to `done` and the run
+   status read `finished`. A run that deployed nothing looked successful —
+   the exact façade [workflow_authoring_pitfalls](../workflow_authoring_pitfalls.md)
+   is about. **Fixed** in `0157000f5`: `deploy_verify` is now a `compute`
+   gate (`deployed && healthy && deployed_url != ''`) carrying the agent's own
+   notes into the retry. The agent's reporting was never the problem — its
+   root-cause note was excellent; the gate was.
+
+### Engine hardening this run produced
+- `ca3d939fc` + `a9f02e425` — GitHub App keyed by **connection**
+  (`Connection.OAuthAppID`) instead of `(tenant, provider, host)`; uniqueness
+  moves to the owning org. Creating the replacement index does not retire the
+  old one, so the legacy unique index must be dropped explicitly — it kept
+  silently enforcing the old rule through a full deploy.
+- `aa5eaacf3` — studio App picker; the create-App card used to be unreachable
+  whenever an App already existed, i.e. exactly when a second org was needed.
+- `e30b7daf2` — the clone's git credential is no longer frozen in
+  `remote.origin.url`; a credential file is refreshed from the store for the
+  whole run (an installation token lives 1h, this run's push comes hours in).
+- `2d1064329` — the plugin-source store was never constructed; the REST
+  surface answered 501 and the whole feature was dead on arrival.
+
+### Lessons for next run
+- **Grant `workflows: write` + `packages: write`** before re-running, and
+  remember the runtime mint must request them too: adding them to the manifest
+  alone changes nothing, because tokens are minted from
+  `RuntimeInstallationPermissions()`. Minting a permission the installation
+  lacks 422s, so legacy installations need an intersection (or a documented
+  fallback) — do not ship the manifest half alone.
+- **A permission gap should be visible in seconds, not after a full run.** The
+  connection health probe (`InstallationInfo`) returns login + html_url but
+  drops the `permissions` map GitHub already sends. Surfacing it would have
+  named this before launch.
+- Keep `draft_review=false` for unattended e2e; the gate otherwise parks the
+  run at a human pause.
+
 ## 2026-07-17 — create-repo launch journey on CLOUD prod (run 019f7013)
 - Status: validated
 - Versions: bot 0.1.0 (+ manifest `repo:` block) · iterion edda80793 (cloud prod, ephemeral runner)
