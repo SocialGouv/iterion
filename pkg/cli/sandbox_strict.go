@@ -104,7 +104,7 @@ func buildStrictReport(ctx context.Context, wf *ir.Workflow, opts SandboxDoctorO
 
 	spec, source, err := runtime.ResolveSandboxSpecForDoctor(
 		wf, doctorRepoRoot(opts.File), opts.Sandbox,
-		strings.ToLower(os.Getenv("ITERION_SANDBOX_DEFAULT")),
+		runtime.ResolveGlobalSandboxDefault(),
 		opts.SandboxDefaultImage, opts.SandboxHostState,
 		strings.ToLower(os.Getenv("ITERION_SANDBOX_HOST_STATE")),
 	)

@@ -67,10 +67,11 @@ type RunOptions struct {
 	// studio sets false by default to defer merge to a UI action.
 	AutoMerge bool
 	// Sandbox is the run-level override for the sandbox activation
-	// mode ("", "none", "auto"). "" inherits the project default
-	// (ITERION_SANDBOX_DEFAULT) which itself defaults to "" (no
-	// sandbox). The workflow's own `sandbox:` block is the next layer
-	// of precedence; per-node overrides win above all. See pkg/sandbox.
+	// mode ("", "none", "auto"). "" inherits the global default
+	// (ITERION_SANDBOX_DEFAULT, else "auto" — sandbox-by-default, see
+	// runtime.ResolveGlobalSandboxDefault). The workflow's own
+	// `sandbox:` block is the next layer of precedence; per-node
+	// overrides win above all. See pkg/sandbox.
 	Sandbox string
 	// SandboxDefaultImage overrides the image ref used by `sandbox: auto`
 	// when no .devcontainer/devcontainer.json is found in the workspace.
@@ -584,7 +585,7 @@ func buildEngine(
 	bundleHandle *bundle.Bundle,
 	base []runtime.EngineOption,
 ) *runtime.Engine {
-	sandboxDefault := strings.ToLower(os.Getenv("ITERION_SANDBOX_DEFAULT"))
+	sandboxDefault := runtime.ResolveGlobalSandboxDefault()
 	sandboxHostStateDefault := strings.ToLower(os.Getenv("ITERION_SANDBOX_HOST_STATE"))
 	return runtime.New(wf, s, executor,
 		append(base,

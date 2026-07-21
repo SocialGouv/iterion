@@ -672,6 +672,13 @@ func (s *Service) engineOptions(runLogger *iterlog.Logger, hash, filePath, runNa
 		runtime.WithEventObserver(s.broker.Publish),
 		runtime.WithOnNodeFinished(s.stampWatchedFromOutput),
 	}
+	// Global sandbox default (sandbox-by-default): injected by the
+	// PRODUCT constructors (studio/server/dispatch daemons) via
+	// WithSandboxDefault. A Service built without it (tests, embedders)
+	// stays neutral, mirroring the engine's own contract.
+	if s.sandboxDefault != "" {
+		opts = append(opts, runtime.WithSandboxDefault(s.sandboxDefault))
+	}
 	// Per-launch WorkDir (ADR-046) overrides the service default; the
 	// dispatcher points it at the per-issue worktree so ${PROJECT_DIR}
 	// resolves there, not the daemon's cwd.

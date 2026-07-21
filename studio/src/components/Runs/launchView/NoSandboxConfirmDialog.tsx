@@ -1,6 +1,8 @@
 // Extracted from LaunchView.tsx to keep that file focused.
-// Confirmation shown when the user clicks Launch on a workflow with no
-// sandbox active — host (or bare runner pod) execution carries real
+// Confirmation shown when the user clicks Launch on a workflow that
+// EXPLICITLY opts out of sandboxing (sandbox: none) — sandboxing is the
+// default, so an absent block never triggers this; only a declared
+// opt-out does, and host (or bare runner pod) execution carries real
 // risk, so the choice must be deliberate.
 
 import ConfirmDialog from "@/components/shared/ConfirmDialog";
@@ -28,30 +30,33 @@ export default function NoSandboxConfirmDialog({
         cloud ? (
           <>
             <p>
-              This workflow doesn't declare a <code>sandbox:</code>{" "}
-              block, so its tools and shell commands run directly in
-              the ephemeral runner pod's filesystem — no container
-              isolation between the bot and the runner's mounted
-              credentials, workspace clone, or outbound network egress.
+              This workflow <strong>explicitly opts out</strong> of
+              sandboxing (<code>sandbox: none</code>), so its tools and
+              shell commands run directly in the runner pod's
+              filesystem — no container isolation between the bot and
+              the runner's mounted credentials, workspace clone, or
+              outbound network egress.
             </p>
             <p>
-              Add <code>sandbox: auto</code> (devcontainer-aware) or
-              an inline block with an image in the workflow file to
-              narrow the write scope and the tools the bot can reach.
+              Sandboxing is the default: remove the{" "}
+              <code>sandbox: none</code> block to run sandboxed. Keep
+              the opt-out only if this flow genuinely needs the
+              runner's own environment.
             </p>
           </>
         ) : (
           <>
             <p>
-              This workflow doesn't declare a <code>sandbox:</code>{" "}
-              block, so its tools and shell commands will run directly
-              on the host. The bot can read, modify, or delete any
-              file the iterion process has access to.
+              This workflow <strong>explicitly opts out</strong> of
+              sandboxing (<code>sandbox: none</code>), so its tools and
+              shell commands will run directly on the host. The bot can
+              read, modify, or delete any file the iterion process has
+              access to.
             </p>
             <p>
-              Add <code>sandbox: auto</code> (devcontainer-aware) or
-              an inline block with an image in the workflow file to
-              opt into container isolation.
+              Sandboxing is the default: remove the{" "}
+              <code>sandbox: none</code> block to run sandboxed. Keep
+              the opt-out only if this flow genuinely needs the host.
             </p>
           </>
         )

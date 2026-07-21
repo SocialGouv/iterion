@@ -389,6 +389,11 @@ type Service struct {
 	broker  *EventBroker
 	manager *Manager
 
+	// sandboxDefault is the global sandbox default injected into every
+	// in-process engine this service launches (see WithSandboxDefault).
+	// Empty = neutral (no default), the contract tests rely on.
+	sandboxDefault string
+
 	// sbStore persists per-run Session-board specs (the LLM curation
 	// layer's output). Nil when no on-disk store dir is available (cloud
 	// mode) — curation then stays disabled. The deterministic task-list
@@ -550,6 +555,18 @@ func WithLogger(l *iterlog.Logger) ServiceOption {
 		if l != nil {
 			s.logger = l
 		}
+	}
+}
+
+// WithSandboxDefault sets the global sandbox default injected into
+// every in-process engine this service launches (the studio/dispatch
+// counterpart of `iterion run`'s ITERION_SANDBOX_DEFAULT resolution —
+// product daemons pass runtime.ResolveGlobalSandboxDefault()). Empty
+// keeps the service neutral: workflows without a sandbox: block run
+// unsandboxed, the pre-sandbox-by-default behaviour.
+func WithSandboxDefault(mode string) ServiceOption {
+	return func(s *Service) {
+		s.sandboxDefault = mode
 	}
 }
 

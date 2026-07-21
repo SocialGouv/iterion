@@ -274,12 +274,25 @@ func resolveAndStartSandbox(ctx context.Context, p SandboxParams) (*activeSandbo
 		}
 		return err
 	}
-	spec, source, err := resolveSandboxSpec(p.Workflow, p.RepoRoot, p.CLIOverride, p.GlobalDefault, resolveDefaultSandboxImage(p.DefaultImage))
+	spec, source, skipReason, err := resolveSandboxSpec(p.Workflow, p.RepoRoot, p.CLIOverride, p.GlobalDefault, resolveDefaultSandboxImage(p.DefaultImage))
 	if err != nil {
 		return nil, err
 	}
 	if spec == nil || !spec.Mode.IsActive() {
-		// User opted out (Mode=none) or never opted in.
+		// Explicit opt-out (Mode=none / override none), or the built-in
+		// default degraded because the host can't sandbox — the latter
+		// must stay visible: emit sandbox_skipped so the run record says
+		// it executed unsandboxed and why.
+		if skipReason != "" {
+			_ = emitEvent(store.EventSandboxSkipped, map[string]any{
+				"mode":   string(sandbox.ModeAuto),
+				"source": source,
+				"reason": "sandbox-by-default degraded to unsandboxed: " + skipReason,
+			})
+			if logger != nil {
+				logger.Warn("runtime: sandbox-by-default degraded to unsandboxed for run %s: %s", p.RunID, skipReason)
+			}
+		}
 		return nil, nil
 	}
 
@@ -290,6 +303,20 @@ func resolveAndStartSandbox(ctx context.Context, p SandboxParams) (*activeSandbo
 	// is what the "configure mounts first" invariant requires.
 	driver, err := selectSandboxDriver(spec, logger)
 	if err != nil {
+		// A sandbox chosen by the built-in default must not brick runs on
+		// hosts with no container runtime — degrade to unsandboxed with a
+		// visible event. An EXPLICIT request keeps the hard error.
+		if source == sandboxDefaultSource {
+			_ = emitEvent(store.EventSandboxSkipped, map[string]any{
+				"mode":   string(spec.Mode),
+				"source": source,
+				"reason": "sandbox-by-default degraded to unsandboxed: " + err.Error(),
+			})
+			if logger != nil {
+				logger.Warn("runtime: sandbox-by-default degraded to unsandboxed for run %s: %v", p.RunID, err)
+			}
+			return nil, nil
+		}
 		return nil, err
 	}
 	caps := driver.Capabilities()
@@ -633,26 +660,39 @@ func ResolveNetworkPolicy(spec *sandbox.Spec) (netproxy.Mode, []string) {
 }
 
 // resolveSandboxSpec applies the precedence chain
-// (CLI > workflow > global default) and produces a [sandbox.Spec] plus
-// a `source` string describing where the spec came from (used in the
-// sandbox_skipped event).
+// (CLI > workflow > global default > built-in auto) and produces a
+// [sandbox.Spec] plus a `source` string describing where the spec came
+// from (used in the sandbox_skipped event).
 //
 // CLI override syntax: "" (no override), "none" (force off), "auto"
 // (force on, read devcontainer.json). Inline mode requires a DSL
 // block and so cannot be expressed via the flag.
+//
+// The third return (skipReason) is non-empty ONLY when the mode was
+// chosen by the built-in default and the host cannot honour it (not a
+// git repo, unreadable devcontainer): the run degrades to unsandboxed
+// and the caller must surface the reason (sandbox_skipped event). An
+// EXPLICIT sandbox request never degrades — it errors.
 func resolveSandboxSpec(
 	wf *ir.Workflow,
 	repoRoot, cliOverride, globalDefault, defaultImage string,
-) (*sandbox.Spec, string, error) {
+) (*sandbox.Spec, string, string, error) {
 	mode, source := pickMode(wf, cliOverride, globalDefault)
 	if mode == "" || mode == string(sandbox.ModeNone) {
-		return nil, source, nil
+		return nil, source, "", nil
 	}
+	byDefault := source == sandboxDefaultSource
 
 	switch mode {
 	case string(sandbox.ModeAuto):
 		if repoRoot == "" {
-			return nil, source, fmt.Errorf("runtime: sandbox: mode=auto requires a git repository (worktree must be active or workdir must be inside a repo)")
+			if byDefault {
+				// auto is repo-bound by design (it mounts the repo tree);
+				// outside a repo the default is simply not applicable —
+				// quiet skip (no event), unlike the degrade cases below.
+				return nil, source + " — not applicable (outside a git repository)", "", nil
+			}
+			return nil, source, "", fmt.Errorf("runtime: sandbox: mode=auto requires a git repository (worktree must be active or workdir must be inside a repo)")
 		}
 		dc, path, err := devcontainer.ReadFromRepo(repoRoot)
 		if err != nil {
@@ -669,14 +709,17 @@ func resolveSandboxSpec(
 					spec.Mode = sandbox.ModeAuto
 					spec.Image = defaultImage
 					expandSandboxSpec(&spec, repoRoot)
-					return &spec, source + " (default image: " + defaultImage + ")", nil
+					return &spec, source + " (default image: " + defaultImage + ")", "", nil
 				}
-				return nil, source, fmt.Errorf("runtime: sandbox: mode=auto but no .devcontainer/devcontainer.json found at %s — add one or switch to inline mode", repoRoot)
+				return nil, source, "", fmt.Errorf("runtime: sandbox: mode=auto but no .devcontainer/devcontainer.json found at %s — add one or switch to inline mode", repoRoot)
 			}
-			return nil, source, fmt.Errorf("runtime: sandbox: read devcontainer.json: %w", err)
+			if byDefault {
+				return nil, source, fmt.Sprintf("devcontainer.json unreadable: %v", err), nil
+			}
+			return nil, source, "", fmt.Errorf("runtime: sandbox: read devcontainer.json: %w", err)
 		}
 		spec := devcontainer.ToSandboxSpec(dc)
-		return &spec, source + " (" + path + ")", nil
+		return &spec, source + " (" + path + ")", "", nil
 
 	case string(sandbox.ModeInline):
 		// Inline mode requires the workflow's DSL to carry the spec
@@ -685,7 +728,7 @@ func resolveSandboxSpec(
 		// parser lands. The IR field still goes through unchanged so
 		// future block-form parsing wires up automatically.
 		if wf == nil || wf.Sandbox == nil {
-			return nil, source, fmt.Errorf("runtime: sandbox: mode=inline but no sandbox: block on the workflow")
+			return nil, source, "", fmt.Errorf("runtime: sandbox: mode=inline but no sandbox: block on the workflow")
 		}
 		spec := fromIRSpec(wf.Sandbox)
 		// Expand devcontainer-style host-side variables in the inline
@@ -695,10 +738,10 @@ func resolveSandboxSpec(
 		// expansion docker run rejects the literal `${localEnv:HOME}`
 		// string with "mount path must be absolute".
 		expandSandboxSpec(&spec, repoRoot)
-		return &spec, source, nil
+		return &spec, source, "", nil
 	}
 
-	return nil, source, fmt.Errorf("runtime: sandbox: unknown mode %q", mode)
+	return nil, source, "", fmt.Errorf("runtime: sandbox: unknown mode %q", mode)
 }
 
 // ResolveSandboxSpecForDoctor produces the effective sandbox spec a run
@@ -726,16 +769,45 @@ func ResolveSandboxSpecForDoctor(
 	wf *ir.Workflow,
 	repoRoot, cliOverride, globalDefault, defaultImageFlag, hostStateOverride, hostStateDefault string,
 ) (*sandbox.Spec, string, error) {
-	spec, source, err := resolveSandboxSpec(wf, repoRoot, cliOverride, globalDefault, resolveDefaultSandboxImage(defaultImageFlag))
+	spec, source, skipReason, err := resolveSandboxSpec(wf, repoRoot, cliOverride, globalDefault, resolveDefaultSandboxImage(defaultImageFlag))
 	if err != nil {
 		return nil, source, err
 	}
 	if spec == nil || !spec.Mode.IsActive() {
+		if skipReason != "" {
+			source += " — would degrade to unsandboxed: " + skipReason
+		}
 		return spec, source, nil
 	}
 	resolvedHostState, _ := pickHostState(workflowHostState(wf), hostStateOverride, hostStateDefault)
 	spec.HostState = sandbox.HostState(resolvedHostState)
 	return spec, source, nil
+}
+
+// sandboxDefaultSource labels a mode chosen at the GLOBAL-DEFAULT tier
+// (ITERION_SANDBOX_DEFAULT, or the sandbox-by-default policy that
+// product entry points install via [ResolveGlobalSandboxDefault]), as
+// opposed to an explicit per-run request from the CLI flag or the
+// workflow's own block. Downstream resolution keys degrade-vs-fail on
+// this: an explicit sandbox request that cannot be honoured must
+// hard-error (never silently soften), but the ambient default must not
+// brick runs on hosts that cannot sandbox (no container runtime) —
+// those degrade to unsandboxed with a visible sandbox_skipped event.
+const sandboxDefaultSource = "global sandbox default"
+
+// ResolveGlobalSandboxDefault returns the effective global sandbox
+// default a PRODUCT ENTRY POINT (iterion run / resume / studio /
+// dispatch) should install via [WithSandboxDefault]: the
+// ITERION_SANDBOX_DEFAULT env value when set, else "auto" —
+// sandbox-by-default. The policy deliberately lives at the entry
+// points, not in the engine: an Engine constructed without
+// [WithSandboxDefault] (tests, embedders) stays neutral and runs
+// unsandboxed workflows unsandboxed.
+func ResolveGlobalSandboxDefault() string {
+	if v := strings.ToLower(strings.TrimSpace(os.Getenv("ITERION_SANDBOX_DEFAULT"))); v != "" {
+		return v
+	}
+	return string(sandbox.ModeAuto)
 }
 
 // pickMode walks the precedence chain and returns the first
@@ -763,7 +835,7 @@ func pickMode(wf *ir.Workflow, cli, global string) (string, string) {
 		return wf.Sandbox.Mode, "workflow sandbox: block"
 	}
 	if global != "" {
-		return global, "ITERION_SANDBOX_DEFAULT"
+		return global, sandboxDefaultSource
 	}
 	return "", "default (no sandbox)"
 }

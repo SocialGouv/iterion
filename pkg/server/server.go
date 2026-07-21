@@ -28,6 +28,7 @@ import (
 	"github.com/SocialGouv/iterion/pkg/pat"
 	"github.com/SocialGouv/iterion/pkg/pluginsource"
 	natsq "github.com/SocialGouv/iterion/pkg/queue/nats"
+	"github.com/SocialGouv/iterion/pkg/runtime"
 	"github.com/SocialGouv/iterion/pkg/runview"
 	"github.com/SocialGouv/iterion/pkg/secrets"
 	"github.com/SocialGouv/iterion/pkg/store"
@@ -442,6 +443,9 @@ func New(cfg Config, logger *iterlog.Logger) *Server {
 		svcOpts := []runview.ServiceOption{
 			runview.WithLogger(logger),
 			runview.WithMaxConcurrentPipelines(cfg.MaxConcurrentPipelines),
+			// Sandbox-by-default for studio/server-launched in-process runs
+			// (same resolution as `iterion run`).
+			runview.WithSandboxDefault(runtime.ResolveGlobalSandboxDefault()),
 		}
 		if cfg.WorkDir != "" {
 			svcOpts = append(svcOpts, runview.WithWorkDir(cfg.WorkDir))
