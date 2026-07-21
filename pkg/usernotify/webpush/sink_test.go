@@ -86,7 +86,7 @@ func TestSinkDeliverAndPrune(t *testing.T) {
 	}
 
 	// The 410 endpoint must be pruned; the live one stays.
-	subs, err := store.ListForUsers(ctx, "team-1", []string{"user-1"})
+	subs, err := store.ListForUsers(ctx, []string{"user-1"})
 	if err != nil {
 		t.Fatalf("ListForUser: %v", err)
 	}
@@ -119,7 +119,7 @@ func TestSinkAllAttemptsFailedErrors(t *testing.T) {
 		t.Fatal("expected error when every push attempt fails")
 	}
 	// A 500 is transient — the subscription must NOT be pruned.
-	subs, _ := store.ListForUsers(ctx, "team-1", []string{"user-1"})
+	subs, _ := store.ListForUsers(ctx, []string{"user-1"})
 	if len(subs) != 1 {
 		t.Fatalf("transient failure pruned the subscription: %+v", subs)
 	}

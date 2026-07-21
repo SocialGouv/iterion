@@ -79,7 +79,7 @@ func (s *Server) handlePushUnsubscribe(w http.ResponseWriter, r *http.Request) {
 		s.httpErrorFor(w, r, http.StatusBadRequest, "endpoint required")
 		return
 	}
-	if err := s.cfg.PushSubscriptions.DeleteByEndpoint(r.Context(), id.TeamID, id.UserID, req.Endpoint); err != nil {
+	if err := s.cfg.PushSubscriptions.DeleteByEndpoint(r.Context(), id.UserID, req.Endpoint); err != nil {
 		s.httpErrorFor(w, r, http.StatusInternalServerError, "delete subscription: %v", err)
 		return
 	}

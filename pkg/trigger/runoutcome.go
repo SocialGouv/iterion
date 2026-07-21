@@ -3,6 +3,7 @@ package trigger
 import (
 	"context"
 	"errors"
+	"strconv"
 	"time"
 
 	"github.com/SocialGouv/iterion/pkg/runtime"
@@ -25,14 +26,22 @@ import (
 // and pauses again must not dedup against its earlier pause, so the pending
 // interaction id (or the status) is folded into the key.
 // RunOutcomeEventID derives the per-episode event ID: the pending
-// interaction when the run is paused on one (distinct per pause), else the
-// status, so pause→resume→finish yields distinct IDs. Exported so the
-// usernotify sweep can derive the episode key from a run listing without
-// loading each run.
-func RunOutcomeEventID(runID, status, interactionID string) string {
+// interaction when the run is paused on one, else the status — plus the
+// run's updated_at second, which moves on every pause/terminal
+// transition. The timestamp is what makes REPEAT episodes distinct: a
+// failed_resumable run resumed and failing again, or a review-gate node
+// re-pausing on the same interaction id, must notify again rather than
+// dedup against the earlier episode. Exported so the usernotify sweep can
+// derive the episode key from a run listing without loading each run;
+// truncation to the second keeps the key stable across the stores'
+// differing timestamp precisions.
+func RunOutcomeEventID(runID, status, interactionID string, updatedAt time.Time) string {
 	episode := status
 	if interactionID != "" && store.RunStatus(status).IsPaused() {
 		episode = interactionID
+	}
+	if episode != "" && !updatedAt.IsZero() {
+		episode += ":" + strconv.FormatInt(updatedAt.Truncate(time.Second).Unix(), 10)
 	}
 	id := "run:" + runID
 	if episode != "" {
@@ -57,7 +66,9 @@ func BuildRunOutcome(ctx context.Context, rs store.RunStore, runID string, bodyE
 
 	fctx := store.WithoutTenantFilter(ctx)
 	var repo, botID, status, name, nodeID, interactionID, tenantID, ownerID string
+	var updatedAt time.Time
 	if r, err := rs.LoadRun(fctx, runID); err == nil && r != nil {
+		updatedAt = r.UpdatedAt
 		repo = r.ProjectPath
 		botID = r.BotID
 		status = string(r.Status)
@@ -100,7 +111,7 @@ func BuildRunOutcome(ctx context.Context, rs store.RunStore, runID string, bodyE
 	}
 
 	return Event{
-		ID:         RunOutcomeEventID(runID, status, interactionID),
+		ID:         RunOutcomeEventID(runID, status, interactionID, updatedAt),
 		Source:     SourceRun,
 		Kind:       kind,
 		TenantID:   tenantID,

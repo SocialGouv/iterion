@@ -103,22 +103,45 @@ func (s *MongoSentStore) EnsureSchema(ctx context.Context) error {
 }
 
 func (s *MongoSentStore) TryMark(ctx context.Context, key string) (bool, error) {
-	_, err := s.coll.InsertOne(ctx, SentRecord{Key: key, SentAt: time.Now().UTC()})
-	if err != nil {
-		if mongoutil.IsDuplicateKey(err) {
-			return false, nil
-		}
+	now := time.Now().UTC()
+	_, err := s.coll.InsertOne(ctx, SentRecord{Key: key, SentAt: now})
+	if err == nil {
+		return true, nil
+	}
+	if !mongoutil.IsDuplicateKey(err) {
 		return false, fmt.Errorf("usernotify: claim episode: %w", err)
 	}
-	return true, nil
+	// Already claimed. A pending claim older than ClaimGrace was abandoned
+	// mid-delivery (its owner died between claim and confirm) — take it
+	// over atomically so exactly one replica retries the episode.
+	res, err := s.coll.UpdateOne(ctx,
+		bson.M{"_id": key, "delivered": false, "sent_at": bson.M{"$lt": now.Add(-ClaimGrace)}},
+		bson.M{"$set": bson.M{"sent_at": now}})
+	if err != nil {
+		return false, fmt.Errorf("usernotify: take over stale episode claim: %w", err)
+	}
+	return res.ModifiedCount == 1, nil
+}
+
+func (s *MongoSentStore) MarkDelivered(ctx context.Context, key string) error {
+	_, err := s.coll.UpdateOne(ctx, bson.M{"_id": key},
+		bson.M{"$set": bson.M{"delivered": true, "sent_at": time.Now().UTC()}})
+	if err != nil {
+		return fmt.Errorf("usernotify: confirm episode delivery: %w", err)
+	}
+	return nil
 }
 
 func (s *MongoSentStore) IsMarked(ctx context.Context, key string) (bool, error) {
-	n, err := s.coll.CountDocuments(ctx, bson.M{"_id": key})
+	var rec SentRecord
+	err := s.coll.FindOne(ctx, bson.M{"_id": key}).Decode(&rec)
 	if err != nil {
+		if err == mongo.ErrNoDocuments {
+			return false, nil
+		}
 		return false, fmt.Errorf("usernotify: check episode claim: %w", err)
 	}
-	return n > 0, nil
+	return rec.Delivered || time.Since(rec.SentAt) < ClaimGrace, nil
 }
 
 func (s *MongoSentStore) Unmark(ctx context.Context, key string) error {

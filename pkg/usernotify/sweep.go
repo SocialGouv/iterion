@@ -18,18 +18,21 @@ import (
 // episodes are skipped in one indexed read).
 
 // RunRef identifies one run the sweep should re-examine, carrying just
-// enough (status + pending interaction) to derive the episode key without
-// loading the run.
+// enough (status + pending interaction + updated_at) to derive the episode
+// key without loading the run, and to keyset-paginate.
 type RunRef struct {
 	ID            string
 	Status        string
 	InteractionID string
+	UpdatedAt     time.Time
 }
 
-// ListNotifiableRuns returns the runs to (re-)examine: every run still
-// paused on a human interaction, plus terminal runs updated since the
-// cutoff. Wired to the Mongo store's ListNotifiableRuns in cloud mode.
-type ListNotifiableRuns func(ctx context.Context, since time.Time, limit int) ([]RunRef, error)
+// ListNotifiableRuns returns one page of runs to (re-)examine: every run
+// still paused on a human interaction, plus terminal runs updated since
+// `since` — restricted to updated_at < `before` when non-zero (the keyset
+// cursor), newest first. Wired to the Mongo store's ListNotifiableRuns in
+// cloud mode.
+type ListNotifiableRuns func(ctx context.Context, since, before time.Time, limit int) ([]RunRef, error)
 
 const (
 	// sweepInterval paces the reconciliation scan. Push loss is the rare
@@ -41,8 +44,12 @@ const (
 	// waiting); a finished/failed run older than this simply misses its
 	// (by then stale) notification.
 	sweepTerminalLookback = 24 * time.Hour
-	// sweepLimit caps one scan page.
-	sweepLimit = 500
+	// sweepLimit caps one scan page; sweepMaxPages bounds a pass. The
+	// keyset cursor (updated_at) guarantees old-but-unclaimed episodes are
+	// reached even when newer rows outnumber a page — without it, a flat
+	// newest-first LIMIT would starve exactly the runs waiting longest.
+	sweepLimit    = 500
+	sweepMaxPages = 20
 )
 
 // Sweeper replays missed notification episodes through the Dispatcher.
@@ -75,14 +82,33 @@ func (sw *Sweeper) Start(ctx context.Context) {
 	}
 }
 
-// SweepOnce performs one reconciliation pass.
+// SweepOnce performs one reconciliation pass, paginating by updated_at so
+// a backlog larger than one page cannot starve the oldest episodes.
 func (sw *Sweeper) SweepOnce(ctx context.Context) {
 	fctx := store.WithoutTenantFilter(ctx)
-	refs, err := sw.list(fctx, time.Now().Add(-sweepTerminalLookback), sweepLimit)
-	if err != nil {
-		sw.logger.Warn("usernotify: sweep list runs: %v", err)
-		return
+	since := time.Now().Add(-sweepTerminalLookback)
+	var before time.Time
+	for page := 0; page < sweepMaxPages; page++ {
+		refs, err := sw.list(fctx, since, before, sweepLimit)
+		if err != nil {
+			sw.logger.Warn("usernotify: sweep list runs: %v", err)
+			return
+		}
+		sw.sweepRefs(fctx, refs)
+		if len(refs) < sweepLimit {
+			return
+		}
+		last := refs[len(refs)-1].UpdatedAt
+		if last.IsZero() || (!before.IsZero() && !last.Before(before)) {
+			// A lister without updated_at cannot cursor — stop rather
+			// than loop on the same page.
+			return
+		}
+		before = last
 	}
+}
+
+func (sw *Sweeper) sweepRefs(fctx context.Context, refs []RunRef) {
 	for _, ref := range refs {
 		// Cheap pre-check: derive the episode key from the listing alone
 		// and skip already-claimed episodes WITHOUT loading the run. In
@@ -90,7 +116,7 @@ func (sw *Sweeper) SweepOnce(ctx context.Context) {
 		// which are re-listed forever) is already claimed, so this turns
 		// up-to-500 run loads per pass into a handful.
 		if sw.dispatcher.sent != nil {
-			key := trigger.RunOutcomeEventID(ref.ID, ref.Status, ref.InteractionID)
+			key := trigger.RunOutcomeEventID(ref.ID, ref.Status, ref.InteractionID, ref.UpdatedAt)
 			claimed, cErr := sw.dispatcher.sent.IsMarked(fctx, key)
 			if cErr != nil {
 				sw.logger.Warn("usernotify: sweep claim pre-check for run %s: %v", ref.ID, cErr)

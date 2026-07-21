@@ -94,7 +94,9 @@ func (d *Dispatcher) Handle(ctx context.Context, ev trigger.Event) error {
 	n := d.build(ctx, ev, kind, runID)
 	if len(n.UserIDs) == 0 || len(d.sinks) == 0 {
 		// Nothing addressable (local single-user run with no owner) or no
-		// channel wired — the claim stands so the sweep doesn't spin on it.
+		// channel wired — confirm the claim so neither the sweep nor the
+		// stale-claim takeover ever retries a deliberate no-op.
+		d.markDelivered(ctx, ev.ID)
 		return nil
 	}
 
@@ -120,13 +122,29 @@ func (d *Dispatcher) Handle(ctx context.Context, ev trigger.Event) error {
 			failed++
 		}
 	}
-	if failed == len(d.sinks) && d.sent != nil {
-		if err := d.sent.Unmark(context.WithoutCancel(ctx), ev.ID); err != nil {
-			d.logger.Warn("usernotify: release episode %s after failed delivery: %v", ev.ID, err)
+	if failed == len(d.sinks) {
+		if d.sent != nil {
+			if err := d.sent.Unmark(context.WithoutCancel(ctx), ev.ID); err != nil {
+				d.logger.Warn("usernotify: release episode %s after failed delivery: %v", ev.ID, err)
+			}
 		}
 		return fmt.Errorf("usernotify: every sink failed for episode %s", ev.ID)
 	}
+	// At least one sink delivered: confirm the pending claim so the episode
+	// is settled (a crash BEFORE this line leaves a pending claim that the
+	// ClaimGrace takeover retries — better a rare duplicate than a lost
+	// "your run is waiting on you").
+	d.markDelivered(ctx, ev.ID)
 	return nil
+}
+
+func (d *Dispatcher) markDelivered(ctx context.Context, key string) {
+	if d.sent == nil {
+		return
+	}
+	if err := d.sent.MarkDelivered(context.WithoutCancel(ctx), key); err != nil {
+		d.logger.Warn("usernotify: confirm episode %s: %v", key, err)
+	}
 }
 
 // kindFor maps the trigger event onto a notification Kind. A run.paused
@@ -161,7 +179,12 @@ func (d *Dispatcher) build(ctx context.Context, ev trigger.Event, kind Kind, run
 	// The event usually carries everything; re-read the run only to fill
 	// gaps (events built before the enrichment existed, sweep replays).
 	if tenantID == "" || ownerID == "" || name == "" {
-		if r, err := d.runs.LoadRun(fctx, runID); err == nil && r != nil {
+		r, err := d.runs.LoadRun(fctx, runID)
+		if err != nil {
+			// Visible, not fatal: with no owner resolvable the episode ends
+			// as an addressed-to-nobody no-op, so surface why.
+			d.logger.Warn("usernotify: load run %s for notification: %v", runID, err)
+		} else if r != nil {
 			if tenantID == "" {
 				tenantID = r.TenantID
 			}

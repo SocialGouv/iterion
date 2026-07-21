@@ -405,25 +405,29 @@ func (s *Store) ListStaleActiveRuns(ctx context.Context, statuses []store.RunSta
 	return out, nil
 }
 
-// NotifiableRunRef is one row of ListNotifiableRuns: run id + the two
-// fields the usernotify sweep needs to derive the notification episode key
-// (status + pending interaction) without loading the run.
+// NotifiableRunRef is one row of ListNotifiableRuns: run id + the fields
+// the usernotify sweep needs to derive the notification episode key
+// (status + pending interaction + updated_at) and to keyset-paginate,
+// without loading the run.
 type NotifiableRunRef struct {
-	ID         string `bson:"_id"`
-	Status     string `bson:"status"`
+	ID         string    `bson:"_id"`
+	Status     string    `bson:"status"`
+	UpdatedAt  time.Time `bson:"updated_at"`
 	Checkpoint struct {
 		InteractionID string `bson:"interaction_id"`
 	} `bson:"checkpoint"`
 }
 
-// ListNotifiableRuns returns the runs the usernotify reconciliation sweep
-// should (re-)examine: every run currently paused on a human interaction
-// (no time bound — it is still waiting, however old), plus runs that
-// reached a terminal status since `since`. Platform-level scan: callers
-// pass a WithoutTenantFilter ctx. The sent-notifications claim makes
-// replays idempotent, so over-listing is cheap and under-listing is the
-// only real failure.
-func (s *Store) ListNotifiableRuns(ctx context.Context, since time.Time, limit int) ([]NotifiableRunRef, error) {
+// ListNotifiableRuns returns one page of the runs the usernotify
+// reconciliation sweep should (re-)examine: every run currently paused on
+// a human interaction (no time bound — it is still waiting, however old),
+// plus runs that reached a terminal status since `since`; restricted to
+// updated_at < `before` when non-zero (the sweep's keyset cursor, so a
+// backlog beyond one page cannot starve the oldest rows). Platform-level
+// scan: callers pass a WithoutTenantFilter ctx. The sent-notifications
+// claim makes replays idempotent, so over-listing is cheap and
+// under-listing is the only real failure.
+func (s *Store) ListNotifiableRuns(ctx context.Context, since, before time.Time, limit int) ([]NotifiableRunRef, error) {
 	if limit <= 0 || limit > 500 {
 		limit = 500
 	}
@@ -433,13 +437,20 @@ func (s *Store) ListNotifiableRuns(ctx context.Context, since time.Time, limit i
 		string(store.RunStatusFailedResumable),
 		string(store.RunStatusCancelled),
 	}
+	filter := bson.M{"$or": []bson.M{
+		{"status": string(store.RunStatusPausedWaitingHuman)},
+		{"status": bson.M{"$in": terminal}, "updated_at": bson.M{"$gte": since}},
+	}}
+	if !before.IsZero() {
+		filter = bson.M{"$and": []bson.M{
+			{"updated_at": bson.M{"$lt": before}},
+			filter,
+		}}
+	}
 	cur, err := s.runs.Find(ctx,
-		withTenantFilter(ctx, bson.M{"$or": []bson.M{
-			{"status": string(store.RunStatusPausedWaitingHuman)},
-			{"status": bson.M{"$in": terminal}, "updated_at": bson.M{"$gte": since}},
-		}}),
+		withTenantFilter(ctx, filter),
 		options.Find().
-			SetProjection(bson.M{"_id": 1, "status": 1, "checkpoint.interaction_id": 1}).
+			SetProjection(bson.M{"_id": 1, "status": 1, "updated_at": 1, "checkpoint.interaction_id": 1}).
 			SetSort(bson.M{"updated_at": -1}).
 			SetLimit(int64(limit)))
 	if err != nil {

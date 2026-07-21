@@ -83,7 +83,7 @@ func (s *Sink) Deliver(ctx context.Context, n usernotify.Notification) error {
 		return fmt.Errorf("webpush: marshal payload: %w", err)
 	}
 
-	subs, err := s.store.ListForUsers(ctx, n.TenantID, n.UserIDs)
+	subs, err := s.store.ListForUsers(ctx, n.UserIDs)
 	if err != nil {
 		return fmt.Errorf("webpush: list subscriptions: %w", err)
 	}

@@ -374,14 +374,14 @@ func runServer(cmd *cobra.Command, _ []string) error {
 			}
 		}
 		pushSubs, notifPrefs, notifSent = subsStore, prefsStore, sentStore
-		notifiableRuns = func(ctx context.Context, since time.Time, limit int) ([]usernotify.RunRef, error) {
-			refs, lErr := st.ListNotifiableRuns(ctx, since, limit)
+		notifiableRuns = func(ctx context.Context, since, before time.Time, limit int) ([]usernotify.RunRef, error) {
+			refs, lErr := st.ListNotifiableRuns(ctx, since, before, limit)
 			if lErr != nil {
 				return nil, lErr
 			}
 			out := make([]usernotify.RunRef, 0, len(refs))
 			for _, ref := range refs {
-				out = append(out, usernotify.RunRef{ID: ref.ID, Status: ref.Status, InteractionID: ref.Checkpoint.InteractionID})
+				out = append(out, usernotify.RunRef{ID: ref.ID, Status: ref.Status, InteractionID: ref.Checkpoint.InteractionID, UpdatedAt: ref.UpdatedAt})
 			}
 			return out, nil
 		}

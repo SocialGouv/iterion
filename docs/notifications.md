@@ -62,11 +62,19 @@ server replica is subscribed at publish time, the event is gone. The
 **reconciliation sweep** (`usernotify.Sweeper`, every 2 min on each
 server replica) closes that gap: it re-derives the outcome event for
 every run still `paused_waiting_human` (no time bound) and every
-terminal run updated in the last 24h, and replays it through the
-dispatcher. The `sent_notifications` collection (unique episode key,
-30-day TTL) makes replays idempotent across the bus path, the sweep,
-and every replica. A delivery that fails on **every** sink releases its
-claim so the next sweep retries.
+terminal run updated in the last 24h — keyset-paginated by `updated_at`
+so a backlog beyond one page cannot starve the oldest episodes — and
+replays it through the dispatcher. The `sent_notifications` collection
+(unique episode key, 30-day TTL) makes replays idempotent across the
+bus path, the sweep, and every replica; the claim is **two-phase**
+(pending at claim, confirmed after ≥1 sink delivered), so a pod killed
+mid-delivery leaves a pending claim that is taken over after a 10-min
+grace instead of silencing the episode forever. A delivery that fails
+on **every** sink releases its claim so the next sweep retries. The
+episode key folds in the run's `updated_at`, so a resumed run failing
+again (same terminal status) or a review gate re-pausing on the same
+interaction notifies again rather than deduping against the earlier
+episode.
 
 **Stores (Mongo, cloud):** `push_subscriptions` (endpoint-unique, per
 user × browser), `notification_prefs` (per tenant × user scope),
@@ -109,8 +117,11 @@ user × browser), `notification_prefs` (per tenant × user scope),
   SW registration → `pushManager.subscribe` with the server's public key
   → `POST /api/v1/notifications/push/subscriptions`.
 - One subscription per browser profile × device; a user can enroll
-  several browsers. Dead subscriptions (browser revoked, 404/410 Gone)
-  are pruned automatically on the next push.
+  several browsers. Subscriptions belong to the **user**, not a team: a
+  multi-team user enrolls once and receives notifications for runs of
+  every team that resolves them as a recipient. Dead subscriptions
+  (browser revoked, 404/410 Gone) are pruned automatically on the next
+  push.
 - "Send a test notification" in the panel exercises the full path for
   the current user only.
 

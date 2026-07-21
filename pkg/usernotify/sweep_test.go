@@ -22,7 +22,7 @@ func TestSweepRecoversMissedPause(t *testing.T) {
 	// Paused run persisted, but its bus event was never handled.
 	_ = pausedRun(t, st, "run-missed")
 
-	list := func(ctx context.Context, _ time.Time, _ int) ([]RunRef, error) {
+	list := func(ctx context.Context, _, _ time.Time, _ int) ([]RunRef, error) {
 		return []RunRef{{ID: "run-missed", Status: string(store.RunStatusPausedWaitingHuman)}}, nil
 	}
 	sw := NewSweeper(d, list, nil)
@@ -59,13 +59,63 @@ func TestSweepAfterLiveDelivery(t *testing.T) {
 		t.Fatalf("Handle: %v", err)
 	}
 
-	// The ref carries the pending interaction (as the Mongo listing does),
-	// so the sweep's cheap pre-check skips the episode without a run load.
-	list := func(ctx context.Context, _ time.Time, _ int) ([]RunRef, error) {
-		return []RunRef{{ID: "run-live", Status: string(store.RunStatusPausedWaitingHuman), InteractionID: "run-live_ask"}}, nil
+	// The ref carries the pending interaction + updated_at (as the Mongo
+	// listing does), so the sweep's cheap pre-check derives the SAME
+	// episode key as the live event and skips without a run load.
+	r, err := st.LoadRun(context.Background(), "run-live")
+	if err != nil {
+		t.Fatalf("LoadRun: %v", err)
+	}
+	list := func(ctx context.Context, _, _ time.Time, _ int) ([]RunRef, error) {
+		return []RunRef{{ID: "run-live", Status: string(store.RunStatusPausedWaitingHuman), InteractionID: "run-live_ask", UpdatedAt: r.UpdatedAt}}, nil
 	}
 	NewSweeper(d, list, nil).SweepOnce(context.Background())
 	if sink.calls != 1 {
 		t.Fatalf("calls = %d, want 1 (sweep must dedup against live path)", sink.calls)
+	}
+}
+
+// TestClaimGraceRecoversAbandonedEpisode pins the two-phase claim: a
+// pending claim whose owner died mid-delivery shields the episode only for
+// ClaimGrace, then is taken over and retried; a DELIVERED episode is
+// settled forever.
+func TestClaimGraceRecoversAbandonedEpisode(t *testing.T) {
+	st, err := store.New(t.TempDir())
+	if err != nil {
+		t.Fatalf("store.New: %v", err)
+	}
+	sink := &captureSink{name: "capture"}
+	sent := NewMemSentStore()
+	d := NewDispatcher(st, nil, sent, "", nil, sink)
+	ctx := context.Background()
+
+	ev := pausedRun(t, st, "run-crash")
+
+	// Another pod claimed the episode, then died before delivering.
+	if won, _ := sent.TryMark(ctx, ev.ID); !won {
+		t.Fatal("initial claim should win")
+	}
+	// Within the grace the claim shields the episode.
+	if err := d.Handle(ctx, ev); err != nil {
+		t.Fatalf("Handle: %v", err)
+	}
+	if sink.calls != 0 {
+		t.Fatalf("calls = %d, want 0 (fresh pending claim must shield)", sink.calls)
+	}
+	// Past the grace the abandoned claim is taken over and delivery runs.
+	sent.now = func() time.Time { return time.Now().Add(ClaimGrace + time.Minute) }
+	if err := d.Handle(ctx, ev); err != nil {
+		t.Fatalf("Handle after grace: %v", err)
+	}
+	if sink.calls != 1 {
+		t.Fatalf("calls = %d, want 1 (stale pending claim must be retried)", sink.calls)
+	}
+	// Delivery confirmed the claim: even past any grace it stays settled.
+	sent.now = func() time.Time { return time.Now().Add(10 * ClaimGrace) }
+	if err := d.Handle(ctx, ev); err != nil {
+		t.Fatalf("Handle after delivery: %v", err)
+	}
+	if sink.calls != 1 {
+		t.Fatalf("calls = %d, want 1 (delivered episode must never re-send)", sink.calls)
 	}
 }
