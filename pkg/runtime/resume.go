@@ -142,13 +142,11 @@ func (e *Engine) resumeFromPause(ctx context.Context, r *store.Run, answers map[
 	// interaction records, then substitutes the canonical collected-answers
 	// text as the ResumeAnswer. Errors (still-unanswered questions) leave
 	// the run paused.
-	if cp.InteractionQuestions != nil {
-		if refs := delegate.ParseAwaitPending(cp.InteractionQuestions[delegate.AwaitPendingInteractionsKey]); len(refs) > 0 {
-			var fanErr error
-			answers, fanErr = e.fanOutAwaitAnswers(ctx, runID, humanNodeID, refs, answers)
-			if fanErr != nil {
-				return fanErr
-			}
+	if refs := delegate.ParseAwaitPending(cp.InteractionQuestions[delegate.AwaitPendingInteractionsKey]); len(refs) > 0 {
+		var fanErr error
+		answers, fanErr = e.fanOutAwaitAnswers(ctx, runID, humanNodeID, refs, answers)
+		if fanErr != nil {
+			return fanErr
 		}
 	}
 
@@ -1076,12 +1074,10 @@ func (e *Engine) handleNeedsInteraction(ctx context.Context, rs *runState, nodeI
 		return e.handleAwaitEscalation(ctx, rs, nodeID, node, ni, depth)
 	}
 	switch nodeInteraction(node) {
-	case ir.InteractionHuman:
-		return e.pauseForBackendInteraction(rs, nodeID, ni)
-
-	case ir.InteractionAsync:
-		// A blocking ask_user from an interaction: async node behaves
-		// like interaction: human — a deliberate hard stop.
+	case ir.InteractionHuman, ir.InteractionAsync:
+		// interaction: async only changes the NON-blocking tools; a
+		// blocking ask_user from such a node is a deliberate hard stop,
+		// identical to interaction: human.
 		return e.pauseForBackendInteraction(rs, nodeID, ni)
 
 	case ir.InteractionLLM:

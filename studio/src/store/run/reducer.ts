@@ -5,6 +5,7 @@ import type {
   RunSnapshot,
   UserMessageEvent,
 } from "@/api/runs";
+import { isAsyncHumanInput } from "@/api/runs";
 import { extractTodosFromInput } from "@/components/Runs/toolFormatters";
 import { isRecord } from "@/lib/isRecord";
 
@@ -511,6 +512,10 @@ export function reduceEvents(
         break;
       }
       case "human_input_requested": {
+        // Async question (ADR-081): the run keeps executing — no exec
+        // pause, no blocking pause form. The conversation renders its
+        // own non-blocking card from the event.
+        if (isAsyncHumanInput(evt)) break;
         const exec = currentExec(executionsById, lastExecIDByNode, branch, evt.node_id);
         if (exec) {
           ensureExecCopy();

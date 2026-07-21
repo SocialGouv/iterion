@@ -189,6 +189,17 @@ export interface InteractionAnsweredEvent extends RunEventBase {
   };
 }
 
+// isAsyncHumanInput reports whether a human_input_requested event marks a
+// NON-BLOCKING async question (ADR-081, ask_user_async): the run keeps
+// executing, so pause-driven consumers (exec-status reducers, pause forms)
+// must skip it. TS twin of Go's store.IsAsyncHumanInput.
+export function isAsyncHumanInput(evt: {
+  type: string;
+  data?: Record<string, unknown> | null;
+}): boolean {
+  return evt.type === "human_input_requested" && evt.data?.["async"] === true;
+}
+
 export interface RunPausedEvent extends RunEventBase {
   type: "run_paused";
   data?: {

@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"net/netip"
 	"path"
+	"slices"
 	"strings"
 
 	"github.com/SocialGouv/iterion/pkg/dsl/expr"
@@ -425,14 +426,13 @@ func (c *compiler) validateOutputsRef(w *Workflow, rc refContext, predecessors m
 		return
 	}
 
-	// await_answers nodes have a FIXED implicit output shape
-	// ({answers: [...]}) rather than a declared schema — `answers` is
-	// always valid, anything else is a hard error (ADR-081).
-	if _, isAwait := targetNode.(*AwaitAnswersNode); isAwait {
-		if fieldName != "answers" {
+	// Nodes with a FIXED implicit output shape (no declared schema):
+	// exactly those fields are valid, anything else is a hard error.
+	if implicit := NodeImplicitOutputFields(targetNode); implicit != nil {
+		if !slices.Contains(implicit, fieldName) {
 			c.errorf(DiagRefFieldNotInSchema,
-				"%s: reference %s accesses field %q on await_answers node %q — its only output field is `answers`",
-				rc.Location, rc.Ref.Raw, fieldName, targetNodeID)
+				"%s: reference %s accesses field %q on %s node %q — its only output field(s): %s",
+				rc.Location, rc.Ref.Raw, fieldName, targetNode.NodeKind(), targetNodeID, strings.Join(implicit, ", "))
 		}
 		return
 	}

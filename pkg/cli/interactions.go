@@ -4,9 +4,7 @@ import (
 	"context"
 	"fmt"
 	"os"
-	"time"
 
-	"github.com/SocialGouv/iterion/pkg/backend/delegate"
 	"github.com/SocialGouv/iterion/pkg/backend/model"
 	"github.com/SocialGouv/iterion/pkg/store"
 )
@@ -76,27 +74,30 @@ func RunAnswer(opts AnswerOptions, p *Printer) error {
 	if in.Kind != store.InteractionKindAsync {
 		return UserInputError(fmt.Errorf("interaction %s is not an async question (kind %q) — a blocking pause is answered with `iterion resume --answer`", opts.InteractionID, in.Kind))
 	}
-	answered, err := store.AnswerInteraction(ctx, s, opts.RunID, opts.InteractionID, map[string]any{delegate.AskUserQuestionKey: opts.Answer})
+	answered, text, err := model.RecordAsyncAnswer(ctx, s, nil, opts.RunID, opts.InteractionID, opts.Answer)
 	if err != nil {
 		return err
 	}
-	if evt, aerr := s.AppendEvent(ctx, opts.RunID, store.Event{
-		Type:   store.EventInteractionAnswered,
-		RunID:  opts.RunID,
-		NodeID: answered.NodeID,
-		Data:   map[string]any{"interaction_id": answered.ID, "async": true, "answer": opts.Answer},
-	}); aerr != nil || evt == nil {
-		p.Line("warning: answer recorded but event append failed: %v", aerr)
+	// Queue the node-scoped delivery with the same shape the runview
+	// service produces (store-owned ID format, TenantID, queued event)
+	// so a CLI-delivered answer renders identically in the studio.
+	r, err := s.LoadRun(ctx, opts.RunID)
+	if err != nil {
+		return fmt.Errorf("answer recorded but run reload failed: %w", err)
 	}
-	text := model.FormatAsyncAnswerMessage(answered.ID, model.AsyncQuestionText(answered), opts.Answer)
 	msg := store.QueuedUserMessage{
-		ID:     fmt.Sprintf("msg_%d_%s", time.Now().UnixNano(), answered.ID),
-		RunID:  opts.RunID,
-		Text:   text,
-		NodeID: answered.NodeID,
+		ID:            store.NewQueuedMessageID(),
+		RunID:         opts.RunID,
+		Text:          text,
+		TenantID:      r.TenantID,
+		NodeID:        answered.NodeID,
+		InteractionID: answered.ID,
 	}
 	if qerr := s.AppendQueuedMessage(ctx, opts.RunID, msg); qerr != nil {
 		return fmt.Errorf("answer recorded but queueing delivery failed: %w", qerr)
+	}
+	if nerr := store.NormalizeQueuedForAppend(&msg, opts.RunID); nerr == nil {
+		store.PublishInboxEvent(ctx, s, nil, store.EventUserMessageQueued, opts.RunID, msg)
 	}
 	if p.Format == OutputJSON {
 		p.JSON(map[string]any{"run_id": opts.RunID, "interaction_id": answered.ID, "queued": true})

@@ -1,4 +1,5 @@
 import type { ExecutionState, RunEvent } from "@/api/runs";
+import { isAsyncHumanInput } from "@/api/runs";
 import { stepIteration } from "./eventIter";
 
 // buildExecutionsAt is a pure port of the store reducer's per-event
@@ -162,9 +163,9 @@ export function buildExecutionsAt(
         break;
       }
       case "human_input_requested": {
-        // Async questions (ADR-081, data.async) never pause the node —
-        // the run keeps executing, so the exec status must not flip.
-        if (evt.data?.["async"] === true) break;
+        // Async questions (ADR-081) never pause the node — the run
+        // keeps executing, so the exec status must not flip.
+        if (isAsyncHumanInput(evt)) break;
         const cur = currentExecFor(branch, evt.node_id ?? "");
         if (!cur) break;
         execs.set(cur.execution_id, {

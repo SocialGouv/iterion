@@ -185,6 +185,12 @@ func (b *ClaudeCodeBackend) wireAsyncAskHooks(task Task, opts []claudesdk.Option
 		*extras = append(*extras, askUserAsyncMCPToolName, awaitAnswersMCPToolName)
 	}
 	noContinue := false
+	deny := func(format string, a ...any) (claudesdk.HookOutput, error) {
+		return claudesdk.HookOutput{
+			Decision:       "deny",
+			DecisionReason: fmt.Sprintf(format, a...),
+		}, nil
+	}
 
 	asyncMatcher := "^" + askUserAsyncMCPToolName + "$"
 	opts = append(opts, claudesdk.WithHook(claudesdk.HookPreToolUse, claudesdk.HookMatcher{
@@ -194,10 +200,7 @@ func (b *ClaudeCodeBackend) wireAsyncAskHooks(task Task, opts []claudesdk.Option
 			options, allowFree := ParseAskUserToolInput(in.ToolInput)
 			id, err := task.PostAsyncQuestion(AsyncQuestion{Question: q, Options: options, AllowFreeText: allowFree})
 			if err != nil {
-				return claudesdk.HookOutput{
-					Decision:       "deny",
-					DecisionReason: fmt.Sprintf("ask_user_async failed: %v", err),
-				}, nil
+				return deny("ask_user_async failed: %v", err)
 			}
 			b.Logger.Info("[%s#%d/claude-code] 💬 async question posted (%s)", task.NodeID, task.Iteration, id)
 			return claudesdk.HookOutput{}, nil
@@ -210,26 +213,17 @@ func (b *ClaudeCodeBackend) wireAsyncAskHooks(task Task, opts []claudesdk.Option
 		Handler: func(_ context.Context, _ claudesdk.HookCallbackInput) (claudesdk.HookOutput, error) {
 			pending, err := task.PendingAsyncQuestions()
 			if err != nil {
-				return claudesdk.HookOutput{
-					Decision:       "deny",
-					DecisionReason: fmt.Sprintf("await_answers failed: %v", err),
-				}, nil
+				return deny("await_answers failed: %v", err)
 			}
 			if len(pending) == 0 {
 				answers, err := task.CollectAsyncAnswers()
 				if err != nil {
-					return claudesdk.HookOutput{
-						Decision:       "deny",
-						DecisionReason: fmt.Sprintf("await_answers failed: %v", err),
-					}, nil
+					return deny("await_answers failed: %v", err)
 				}
-				return claudesdk.HookOutput{
-					Decision:       "deny",
-					DecisionReason: answers + "\n(No pause was needed — every posted question is already answered. Use these answers and continue.)",
-				}, nil
+				return deny("%s\n(No pause was needed — every posted question is already answered. Use these answers and continue.)", answers)
 			}
 			b.Logger.Info("[%s#%d/claude-code] ⏸ await_answers with %d pending question(s) — escalating to pause", task.NodeID, task.Iteration, len(pending))
-			pendingQuestion.Store(pendingAskUser{Question: awaitPauseQuestionText(pending), AwaitPending: pending})
+			pendingQuestion.Store(pendingAskUser{Question: AwaitPauseQuestion(pending), AwaitPending: pending})
 			cancelStream()
 			return claudesdk.HookOutput{
 				Decision:      "deny",
@@ -239,17 +233,6 @@ func (b *ClaudeCodeBackend) wireAsyncAskHooks(task Task, opts []claudesdk.Option
 		},
 	}))
 	return opts
-}
-
-// awaitPauseQuestionText renders the operator-facing question of an
-// await_answers pause (same shape as the claw backend's awaitPauseQuestion).
-func awaitPauseQuestionText(pending []PendingAsync) string {
-	var sb strings.Builder
-	sb.WriteString("The agent is waiting for your answer(s) to continue:")
-	for _, p := range pending {
-		fmt.Fprintf(&sb, "\n- [%s] %s", p.InteractionID, p.Question)
-	}
-	return sb.String()
 }
 
 // wirePermissionHook installs the tool-permission gate for claude_code:

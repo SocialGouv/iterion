@@ -117,10 +117,9 @@ export interface HumanQuestionMessage {
   // Async question (ADR-081, ask_user_async): the run KEEPS EXECUTING
   // while this is pending. The renderer shows a non-blocking answer
   // card posting to /interactions/{id}/answer instead of the pause
-  // form; interaction_answered flips it.
+  // form; interaction_answered flips it. `id` IS the interaction ID
+  // for these messages.
   async?: boolean;
-  // The interaction record ID (always set when async).
-  interactionId?: string;
 }
 
 // Generic node-output card pushed after an agent/judge/compute node

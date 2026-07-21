@@ -170,6 +170,12 @@ func (m *Manager) Observe(evt store.Event) {
 	case store.EventRunPaused, store.EventHumanInputRequested:
 		// Intentional wait (human form / operator pause), not a stall —
 		// suppress stall detection until the run resumes (see checkStalls).
+		// An async question (ADR-081) is NOT a wait: the run keeps
+		// executing, and muting stall detection on it would blind the
+		// alerting for exactly the long runs that need it.
+		if store.IsAsyncHumanInput(evt) {
+			break
+		}
 		rs.paused = true
 	case store.EventRunResumed:
 		rs.paused = false

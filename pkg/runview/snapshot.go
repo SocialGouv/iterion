@@ -738,6 +738,11 @@ func (b *SnapshotBuilder) closeInFlightExecs(status ExecStatus, ts time.Time, se
 }
 
 func (b *SnapshotBuilder) handleHumanInputRequested(evt *store.Event, branch string) {
+	// An async question (ADR-081) never pauses the node — the run keeps
+	// executing, so the exec status must not flip.
+	if store.IsAsyncHumanInput(*evt) {
+		return
+	}
 	exec := b.currentExec(branch, evt.NodeID)
 	if exec == nil {
 		return

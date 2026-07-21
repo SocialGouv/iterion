@@ -7,6 +7,8 @@ import (
 	"os"
 
 	"github.com/spf13/cobra"
+
+	"github.com/SocialGouv/iterion/pkg/backend/delegate"
 )
 
 // mcpAskUserCmd runs a minimal MCP stdio server that exposes a single tool,
@@ -96,10 +98,7 @@ func mcpAskUserCallResult(name string, args map[string]any) map[string]any {
 	if name == askUserAsyncToolName {
 		return map[string]any{
 			"content": []map[string]any{
-				{
-					"type": "text",
-					"text": "Question posted. The operator's answer will arrive in your conversation as an operator message tagged with the question id — keep working on everything that does not depend on it. Call await_answers only when you cannot proceed without the pending answers.",
-				},
+				{"type": "text", "text": delegate.AsyncQuestionPostedText},
 			},
 		}
 	}

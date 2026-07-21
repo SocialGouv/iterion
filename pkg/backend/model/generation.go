@@ -275,12 +275,8 @@ func compactBetweenIterations(messages []api.Message, opts GenerationOptions) []
 // more turn instead of finishing — the claw analog of claude_code's
 // Stop hook with BlockStop.
 func finalDrainInbox(ctx context.Context, messages []api.Message, finalText string, opts GenerationOptions) ([]api.Message, bool) {
-	if opts.Inbox == nil {
-		return messages, false
-	}
-	opts.Inbox.Consume(ctx)
-	drained := opts.Inbox.Drain(ctx)
-	if len(drained) == 0 {
+	operatorMsg, ok := consumeAndDrainInbox(ctx, opts)
+	if !ok {
 		return messages, false
 	}
 	if finalText != "" {
@@ -289,22 +285,32 @@ func finalDrainInbox(ctx context.Context, messages []api.Message, finalText stri
 			Content: []api.ContentBlock{{Type: "text", Text: finalText}},
 		})
 	}
-	return append(messages, buildOperatorMessage(drained)), true
+	return append(messages, operatorMsg), true
 }
 
 // drainOperatorInbox drains operator-queued chatbox messages AFTER
-// compaction so they always land in the preserved-recent window. Consume
-// runs first so the studio inbox transitions delivered → consumed in
-// lockstep with the next request.
+// compaction so they always land in the preserved-recent window.
 func drainOperatorInbox(ctx context.Context, messages []api.Message, opts GenerationOptions) []api.Message {
-	if opts.Inbox == nil {
-		return messages
-	}
-	opts.Inbox.Consume(ctx)
-	if drained := opts.Inbox.Drain(ctx); len(drained) > 0 {
-		messages = append(messages, buildOperatorMessage(drained))
+	if operatorMsg, ok := consumeAndDrainInbox(ctx, opts); ok {
+		messages = append(messages, operatorMsg)
 	}
 	return messages
+}
+
+// consumeAndDrainInbox is the shared drain core: Consume runs FIRST so
+// the studio inbox transitions delivered → consumed in lockstep with the
+// next request, then any newly-queued texts are wrapped into one
+// synthetic operator turn.
+func consumeAndDrainInbox(ctx context.Context, opts GenerationOptions) (api.Message, bool) {
+	if opts.Inbox == nil {
+		return api.Message{}, false
+	}
+	opts.Inbox.Consume(ctx)
+	drained := opts.Inbox.Drain(ctx)
+	if len(drained) == 0 {
+		return api.Message{}, false
+	}
+	return buildOperatorMessage(drained), true
 }
 
 // buildOperatorMessage wraps any operator-queued chat messages into a

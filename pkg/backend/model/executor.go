@@ -441,19 +441,20 @@ func (e *ClawExecutor) bindInboxDrain(ctx context.Context) func() []string {
 }
 
 // bindAsyncAsk threads the per-(run,node) async-question closures onto
-// the Task (ADR-081). No binder / no run ID leaves the closures nil —
-// backends then reject the async tools with an explicit error rather
-// than a silent no-op.
+// the Task (ADR-081). Only called for interaction: async nodes; when
+// binding is impossible (no binder wired, no run ID on ctx) the
+// closures stay nil — backends then reject the async tools with an
+// explicit error — and a warning names the real culprit so the tool
+// error isn't misread as a DSL mistake.
 func (e *ClawExecutor) bindAsyncAsk(ctx context.Context, nodeID string, task *delegate.Task) {
-	if e.asyncAsk == nil {
-		return
+	var hook AsyncAskHook
+	if e.asyncAsk != nil {
+		hook = e.asyncAsk.BindAsyncAsk(ctx, RunIDFromContext(ctx), nodeID)
 	}
-	runID := RunIDFromContext(ctx)
-	if runID == "" {
-		return
-	}
-	hook := e.asyncAsk.BindAsyncAsk(ctx, runID, nodeID)
 	if hook == nil {
+		if e.logger != nil {
+			e.logger.Warn("node %q declares interaction: async but no async-ask binder is available for this run (embedder missing WithExecutorAsyncAsk, or no run ID on context) — ask_user_async/await_answers will error", nodeID)
+		}
 		return
 	}
 	task.PostAsyncQuestion = func(q delegate.AsyncQuestion) (string, error) {

@@ -9,6 +9,7 @@ package delegate
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"strings"
 	"time"
 
@@ -696,6 +697,26 @@ type PendingAsync struct {
 	InteractionID string
 	Question      string
 }
+
+// AwaitPauseQuestion renders the operator-facing question of an
+// await_answers pause: the agent is blocked on these still-pending
+// async questions. One formatter for both backends so the pause card
+// text never drifts.
+func AwaitPauseQuestion(pending []PendingAsync) string {
+	var b strings.Builder
+	b.WriteString("The agent is waiting for your answer(s) to continue:")
+	for _, p := range pending {
+		fmt.Fprintf(&b, "\n- [%s] %s", p.InteractionID, p.Question)
+	}
+	return b.String()
+}
+
+// AsyncQuestionPostedText is the ask_user_async success result on every
+// transport (claw exec, __mcp-ask-user server): identical prompting on
+// both backends is an ADR-081 goal, so the text lives here once.
+const AsyncQuestionPostedText = "Question posted. The operator's answer will arrive in your conversation " +
+	"as an operator message tagged with the question id — keep working on everything that does not " +
+	"depend on it. Call await_answers only when you cannot proceed without the pending answers."
 
 // TaskHooks are optional callbacks a backend can fire during execution
 // to stream observability events back to the engine. Each callback runs

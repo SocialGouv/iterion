@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -95,7 +96,7 @@ func (h *storeAsyncAskHook) Post(ctx context.Context, q delegate.AsyncQuestion) 
 	if err := h.store.WriteInteraction(ctx, in); err != nil {
 		return "", fmt.Errorf("ask_user_async: write interaction %s: %w", id, err)
 	}
-	evt := store.Event{
+	store.AppendAndPublish(ctx, h.store, h.publish, h.runID, store.Event{
 		Type:   store.EventHumanInputRequested,
 		RunID:  h.runID,
 		NodeID: h.nodeID,
@@ -104,11 +105,7 @@ func (h *storeAsyncAskHook) Post(ctx context.Context, q delegate.AsyncQuestion) 
 			"questions":      questions,
 			"async":          true,
 		},
-	}
-	persisted, err := h.store.AppendEvent(ctx, h.runID, evt)
-	if err == nil && persisted != nil && h.publish != nil {
-		h.publish(*persisted)
-	}
+	})
 	if h.onPosted != nil {
 		h.onPosted(h.runID, id)
 	}
@@ -139,7 +136,7 @@ func (h *storeAsyncAskHook) CollectAnswers(ctx context.Context) (string, error) 
 // await_answers tool result (both backends) and the runtime's await-node
 // output / resume re-injection so the agent always sees one shape.
 func CollectAsyncAnswersText(ctx context.Context, rs store.RunStore, runID, nodeID string) (string, error) {
-	answered, err := ListAnsweredAsyncInteractions(ctx, rs, runID, nodeID)
+	answered, err := store.ListAnsweredAsyncInteractions(ctx, rs, runID, nodeID)
 	if err != nil {
 		return "", err
 	}
@@ -154,31 +151,28 @@ func CollectAsyncAnswersText(ctx context.Context, rs store.RunStore, runID, node
 	return b.String(), nil
 }
 
-// ListAnsweredAsyncInteractions returns the answered async interactions of
-// a run (nodeID empty = all nodes), oldest-first.
-func ListAnsweredAsyncInteractions(ctx context.Context, rs store.RunStore, runID, nodeID string) ([]*store.Interaction, error) {
-	ids, err := rs.ListInteractions(ctx, runID)
+// RecordAsyncAnswer is the shared trunk of every "operator answers an
+// async question" surface (runview service, CLI): it records the answer
+// on the pending interaction, appends + publishes interaction_answered,
+// and returns the answered record with the canonical delivery text for
+// the asking node's inbox. Callers own the delivery-specific tail
+// (QueueMessage vs direct AppendQueuedMessage).
+func RecordAsyncAnswer(ctx context.Context, rs store.RunStore, publish func(store.Event), runID, interactionID, answer string) (*store.Interaction, string, error) {
+	answered, err := store.AnswerInteraction(ctx, rs, runID, interactionID, map[string]any{delegate.AskUserQuestionKey: answer})
 	if err != nil {
-		return nil, fmt.Errorf("list interactions for run %s: %w", runID, err)
+		return nil, "", err
 	}
-	var answered []*store.Interaction
-	for _, id := range ids {
-		in, err := rs.LoadInteraction(ctx, runID, id)
-		if err != nil {
-			return nil, fmt.Errorf("load interaction %s/%s: %w", runID, id, err)
-		}
-		if in.Kind != store.InteractionKindAsync || in.AnsweredAt == nil {
-			continue
-		}
-		if nodeID != "" && in.NodeID != nodeID {
-			continue
-		}
-		answered = append(answered, in)
-	}
-	sort.SliceStable(answered, func(i, j int) bool {
-		return answered[i].RequestedAt.Before(answered[j].RequestedAt)
+	store.AppendAndPublish(ctx, rs, publish, runID, store.Event{
+		Type:   store.EventInteractionAnswered,
+		RunID:  runID,
+		NodeID: answered.NodeID,
+		Data: map[string]any{
+			"interaction_id": interactionID,
+			"async":          true,
+			"answer":         answer,
+		},
 	})
-	return answered, nil
+	return answered, FormatAsyncAnswerMessage(interactionID, AsyncQuestionText(answered), answer), nil
 }
 
 // nextInteractionID allocates <runID>_<nodeID>_async_<n> with n one past
@@ -192,8 +186,11 @@ func (h *storeAsyncAskHook) nextInteractionID(ctx context.Context) (string, erro
 	prefix := fmt.Sprintf("%s_%s_async_", h.runID, h.nodeID)
 	max := 0
 	for _, id := range ids {
-		var n int
-		if _, err := fmt.Sscanf(strings.TrimPrefix(id, prefix), "%d", &n); err == nil && strings.HasPrefix(id, prefix) && n > max {
+		rest, ok := strings.CutPrefix(id, prefix)
+		if !ok {
+			continue
+		}
+		if n, err := strconv.Atoi(rest); err == nil && n > max {
 			max = n
 		}
 	}

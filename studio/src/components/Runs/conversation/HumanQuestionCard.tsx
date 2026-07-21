@@ -30,8 +30,9 @@ export default function HumanQuestionCard({ runId, message, isActive }: Props) {
   }
   // Async question (ADR-081): the run keeps executing — always render
   // the non-blocking answer form while pending, regardless of isActive
-  // (there is no pause to be "active" at).
-  if (message.async && message.interactionId) {
+  // (there is no pause to be "active" at). message.id IS the
+  // interaction ID for async cards.
+  if (message.async) {
     return (
       <div className="mt-1 rounded-md border border-accent-emphasis/50 bg-accent-soft/15 px-3 py-2 space-y-2">
         <div className="flex items-center gap-2 text-micro">
@@ -50,7 +51,7 @@ export default function HumanQuestionCard({ runId, message, isActive }: Props) {
         </div>
         <AsyncQuestionForm
           runId={runId}
-          interactionId={message.interactionId}
+          interactionId={message.id}
           questions={message.questions}
         />
       </div>

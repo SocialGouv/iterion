@@ -2,6 +2,7 @@ package runtime
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 	"time"
@@ -71,7 +72,7 @@ func (e *Engine) awaitAsyncAnswers(ctx context.Context, rs *runState, nodeID str
 // awaitAnswersOutput builds the node output once nothing is pending:
 // {answers: [{interaction_id, node, question, answer}, …]}, oldest first.
 func (e *Engine) awaitAnswersOutput(ctx context.Context, runID, nodeID, from string) (map[string]any, error) {
-	answered, err := model.ListAnsweredAsyncInteractions(ctx, e.store, runID, from)
+	answered, err := store.ListAnsweredAsyncInteractions(ctx, e.store, runID, from)
 	if err != nil {
 		return nil, &RuntimeError{
 			Code:    ErrCodeExecutionFailed,
@@ -165,7 +166,7 @@ func (e *Engine) fanOutAwaitAnswers(ctx context.Context, runID, nodeID string, r
 		}
 		in, err := store.AnswerInteraction(ctx, e.store, runID, ref.InteractionID, map[string]any{delegate.AskUserQuestionKey: v})
 		if err != nil {
-			if strings.Contains(err.Error(), store.ErrInteractionAlreadyAnswered.Error()) {
+			if errors.Is(err, store.ErrInteractionAlreadyAnswered) {
 				continue // answered live via the per-interaction endpoint — keep that answer
 			}
 			return nil, fmt.Errorf("runtime: fan out await answer onto %s: %w", ref.InteractionID, err)
@@ -210,7 +211,7 @@ func (e *Engine) cancelSupersededAnswerMessages(ctx context.Context, runID, node
 		return
 	}
 	for _, m := range pendingMsgs {
-		if m.NodeID != nodeID || !strings.HasPrefix(m.Text, "[Answer to question ") {
+		if m.NodeID != nodeID || m.InteractionID == "" {
 			continue
 		}
 		if err := e.store.UpdateQueuedMessageStatus(ctx, runID, m.ID, store.QueuedMessageStatusCancelled, store.QueuedMessageStatusQueued); err != nil {

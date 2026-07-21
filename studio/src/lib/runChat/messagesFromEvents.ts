@@ -25,6 +25,8 @@
 // pending second one.
 
 import type { NodeFinishedEvent, RunEvent, RunSnapshot } from "@/api/runs";
+import { isAsyncHumanInput } from "@/api/runs";
+import { ASK_USER_RESPONSE_KEY } from "@/lib/askUserOptions";
 import { isRecord } from "@/lib/isRecord";
 
 import type { NodeKindResolver } from "./nodeKindResolver";
@@ -531,13 +533,14 @@ function processEvent(
       // executing — push a non-blocking answer card keyed on the
       // interaction id, and do NOT mark it as the latest pending
       // (blocking) turn.
-      if (data?.async === true) {
+      if (isAsyncHumanInput(evt)) {
         const asyncId = data?.interaction_id;
         if (!asyncId || humanIdx.has(asyncId)) break;
         const q = data?.questions;
+        const asyncPromptRaw = q?.[ASK_USER_RESPONSE_KEY];
         const asyncPrompt =
-          q && typeof q.ask_user_response === "string"
-            ? q.ask_user_response
+          typeof asyncPromptRaw === "string"
+            ? asyncPromptRaw
             : "The agent asked a question (it keeps working meanwhile).";
         const asyncIdx = out.length;
         out.push({
@@ -548,7 +551,6 @@ function processEvent(
           status: "pending",
           questions: q,
           async: true,
-          interactionId: asyncId,
         } satisfies HumanQuestionMessage);
         humanIdx.set(asyncId, asyncIdx);
         break;

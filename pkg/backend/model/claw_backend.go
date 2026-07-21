@@ -1133,11 +1133,10 @@ func applyAsyncAskExecs(task delegate.Task, tools []GenerationTool) {
 				}
 				q, _ := in["question"].(string)
 				options, allowFree := delegate.ParseAskUserToolInput(in)
-				id, err := task.PostAsyncQuestion(delegate.AsyncQuestion{Question: q, Options: options, AllowFreeText: allowFree})
-				if err != nil {
+				if _, err := task.PostAsyncQuestion(delegate.AsyncQuestion{Question: q, Options: options, AllowFreeText: allowFree}); err != nil {
 					return "", err
 				}
-				return fmt.Sprintf("Question posted as %s. The operator's answer will arrive in your conversation as an operator message tagged with this id — keep working on everything that does not depend on it.", id), nil
+				return delegate.AsyncQuestionPostedText, nil
 			}
 		case delegate.AwaitAnswersToolName:
 			tools[i].Execute = func(_ context.Context, _ json.RawMessage) (string, error) {
@@ -1157,22 +1156,10 @@ func applyAsyncAskExecs(task delegate.Task, tools []GenerationTool) {
 				// stashes the conversation + pending tool_use so resume
 				// answers THIS call with the collected answers.
 				return "", &delegate.ErrAskUser{
-					Question:     awaitPauseQuestion(pending),
+					Question:     delegate.AwaitPauseQuestion(pending),
 					AwaitPending: pending,
 				}
 			}
 		}
 	}
-}
-
-// awaitPauseQuestion renders the operator-facing question of an
-// await_answers pause: the agent is blocked on these still-pending
-// async questions.
-func awaitPauseQuestion(pending []delegate.PendingAsync) string {
-	var b strings.Builder
-	b.WriteString("The agent is waiting for your answer(s) to continue:")
-	for _, p := range pending {
-		fmt.Fprintf(&b, "\n- [%s] %s", p.InteractionID, p.Question)
-	}
-	return b.String()
 }

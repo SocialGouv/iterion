@@ -61,7 +61,11 @@ const (
 	// marks the answers of a blocking pause at resume time. Data:
 	//   - interaction_id, node_id (the asking node), async: true
 	EventInteractionAnswered EventType = "interaction_answered"
-	EventRunResumed          EventType = "run_resumed"
+
+	// asyncEventDataKey marks a human_input_requested event as a
+	// NON-BLOCKING async question (ADR-081) — see IsAsyncHumanInput.
+	asyncEventDataKey           = "async"
+	EventRunResumed   EventType = "run_resumed"
 	// EventRunSteered marks a live-steering intervention on a RUNNING
 	// run (bump_loop / raise_budget), emitted by the engine goroutine
 	// atomically with the in-memory mutation so the timeline and any
@@ -331,4 +335,17 @@ type Event struct {
 	// runview Service / runner wired a callback; 0 when unknown (no
 	// callback, or the workflow declares no budget).
 	ActiveMs int64 `json:"active_ms,omitempty" bson:"active_ms,omitempty"`
+}
+
+// IsAsyncHumanInput reports whether a human_input_requested event marks
+// a NON-BLOCKING async question (ADR-081, ask_user_async): the run keeps
+// executing, so pause-driven consumers (exec-status reducers, stall
+// alerting, pause forms) must skip it. One grep-able helper instead of a
+// hand-rolled Data read at every consumer.
+func IsAsyncHumanInput(evt Event) bool {
+	if evt.Type != EventHumanInputRequested {
+		return false
+	}
+	async, _ := evt.Data[asyncEventDataKey].(bool)
+	return async
 }

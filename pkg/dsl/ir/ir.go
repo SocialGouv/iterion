@@ -588,6 +588,18 @@ func NodeAwaitMode(n Node) AwaitMode {
 	return AwaitNone
 }
 
+// NodeImplicitOutputFields returns the FIXED output field names of node
+// kinds whose output shape is built in rather than schema-declared
+// (await_answers → {answers}). nil for every other kind. Reference
+// validation accepts exactly these fields and hard-errors on any other,
+// keeping the per-kind knowledge here instead of inside the validators.
+func NodeImplicitOutputFields(n Node) []string {
+	if _, ok := n.(*AwaitAnswersNode); ok {
+		return []string{"answers"}
+	}
+	return nil
+}
+
 // NodeOutputSchema returns the OutputSchema for nodes that support it, or "".
 func NodeOutputSchema(n Node) string {
 	switch n := n.(type) {

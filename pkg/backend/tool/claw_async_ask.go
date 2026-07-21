@@ -86,7 +86,7 @@ func AwaitAnswersTool() api.Tool {
 func RegisterAsyncAsk(reg *Registry) error {
 	notBound := func(name string) func(context.Context, map[string]any) (string, error) {
 		return func(context.Context, map[string]any) (string, error) {
-			return "", fmt.Errorf("%s: async interaction is not bound for this node — declare `interaction: async` on the node (ADR-081)", name)
+			return "", fmt.Errorf("%s: async interaction is not available here — the node must declare `interaction: async` AND the host must wire an async-ask binder (ADR-081); see the run log for the executor-side warning naming the missing piece", name)
 		}
 	}
 	if err := RegisterClawTool(reg, AskUserAsyncTool(), notBound(delegate.AskUserAsyncToolName)); err != nil {

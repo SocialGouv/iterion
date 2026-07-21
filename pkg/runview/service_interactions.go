@@ -53,29 +53,18 @@ func (s *Service) AnswerInteractionCtx(ctx context.Context, runID, interactionID
 		return nil, fmt.Errorf("%w: %s has kind %q", ErrInteractionNotAsync, interactionID, in.Kind)
 	}
 
-	answered, err := store.AnswerInteraction(ctx, s.store, runID, interactionID, map[string]any{delegate.AskUserQuestionKey: answer})
+	answered, text, err := model.RecordAsyncAnswer(ctx, s.store, s.brokerPublish(), runID, interactionID, answer)
 	if err != nil {
 		return nil, err // ErrInteractionAlreadyAnswered maps to 409 at the HTTP layer
 	}
-	s.publishRunEvent(ctx, runID, store.Event{
-		Type:   store.EventInteractionAnswered,
-		RunID:  runID,
-		NodeID: answered.NodeID,
-		Data: map[string]any{
-			"interaction_id": interactionID,
-			"async":          true,
-			"answer":         answer,
-		},
-	})
 
 	result := &AnswerInteractionResult{RunID: runID, InteractionID: interactionID}
 
 	// Deliver to the asking node's inbox (node-scoped: a late answer can
 	// never leak into an unrelated node). Delivered at the node's next
 	// turn boundary by the existing inbox drains; superseded copies are
-	// cancelled by the await-resume path.
-	text := model.FormatAsyncAnswerMessage(interactionID, model.AsyncQuestionText(answered), answer)
-	if _, qerr := s.QueueMessage(ctx, runID, text, WithMessageNode(answered.NodeID)); qerr != nil {
+	// cancelled by the await-resume path via the InteractionID tag.
+	if _, qerr := s.QueueMessage(ctx, runID, text, WithMessageNode(answered.NodeID), WithMessageInteraction(interactionID)); qerr != nil {
 		return nil, fmt.Errorf("runview: answer recorded but queueing delivery failed: %w", qerr)
 	}
 	result.Queued = true
@@ -91,7 +80,7 @@ func (s *Service) AnswerInteractionCtx(ctx context.Context, runID, interactionID
 	// Auto-resume an await-paused run once nothing is pending: the resume
 	// fan-out path re-collects the answers (tolerating already-answered
 	// records) and injects the aggregated text as the ResumeAnswer.
-	if r.Status == store.RunStatusPausedWaitingHuman && r.Checkpoint != nil && r.Checkpoint.InteractionQuestions != nil {
+	if r.Status == store.RunStatusPausedWaitingHuman && r.Checkpoint != nil {
 		refs := delegate.ParseAwaitPending(r.Checkpoint.InteractionQuestions[delegate.AwaitPendingInteractionsKey])
 		if len(refs) > 0 && r.Checkpoint.NodeID == answered.NodeID {
 			pending, perr := store.ListPendingAsyncInteractions(ctx, s.store, runID, answered.NodeID)
@@ -107,18 +96,6 @@ func (s *Service) AnswerInteractionCtx(ctx context.Context, runID, interactionID
 		}
 	}
 	return result, nil
-}
-
-// publishRunEvent appends an event to the run log and fans it out to the
-// live broker (nil-safe on both).
-func (s *Service) publishRunEvent(ctx context.Context, runID string, evt store.Event) {
-	persisted, err := s.store.AppendEvent(ctx, runID, evt)
-	if err != nil || persisted == nil {
-		return
-	}
-	if s.broker != nil {
-		s.broker.Publish(*persisted)
-	}
 }
 
 // PendingAsyncInteractions lists the run's pending async questions
