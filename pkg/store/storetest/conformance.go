@@ -56,6 +56,7 @@ func RunWithOpts(t *testing.T, factory Factory, opts Opts) {
 	t.Run("StatusTransitions", func(t *testing.T) { testStatusTransitions(t, factory(t)) })
 	t.Run("EventSeqMonotone", func(t *testing.T) { testEventSeqMonotone(t, factory(t)) })
 	t.Run("EventSeqUnderConcurrency", func(t *testing.T) { testEventSeqConcurrent(t, factory(t)) })
+	t.Run("EventDataDecodeShape", func(t *testing.T) { testEventDataDecodeShape(t, factory(t)) })
 	t.Run("ArtifactVersionsMonotone", func(t *testing.T) { testArtifactVersions(t, factory(t)) })
 	t.Run("LockExclusivity", func(t *testing.T) { testLockExclusive(t, factory(t)) })
 	t.Run("CapabilitiesReported", func(t *testing.T) { testCapabilitiesReported(t, factory(t)) })
@@ -922,6 +923,81 @@ func testEventSeqConcurrent(t *testing.T, s store.RunStore) {
 			t.Errorf("negative seq at index %d: %d", i, ev.Seq)
 		}
 	}
+}
+
+// testEventDataDecodeShape pins the cross-backend contract for the
+// open-shaped Event.Data payload: whatever a backend puts on the wire,
+// nested documents must load back as plain map[string]any, nested
+// arrays as plain []any, and integers within the int / int64 / float64
+// family. Shared consumers (runview snapshot reducers, subbot
+// terminal-output recovery) type-assert exactly these shapes and
+// silently produce nothing on any other — a backend leaking its
+// codec's defined types (bson.D / bson.A / int32) breaks every one of
+// them while JSON round-trips keep looking correct.
+func testEventDataDecodeShape(t *testing.T, s store.RunStore) {
+	t.Helper()
+	ctx := testCtx()
+	const runID = "run_event_decode_shape"
+	if _, err := s.CreateRun(ctx, runID, "demo", nil); err != nil {
+		t.Fatal(err)
+	}
+	in := store.Event{
+		Type:      store.EventNodeFinished,
+		NodeID:    "deploy",
+		Timestamp: time.Now().UTC(),
+		Data: map[string]any{
+			"output": map[string]any{
+				"_backend":     "claude_code",
+				"deployed_url": "https://app.example.test",
+				"steps":        []any{map[string]any{"name": "build", "ok": true}},
+			},
+			"iteration": 3,
+		},
+	}
+	if _, err := s.AppendEvent(ctx, runID, in); err != nil {
+		t.Fatalf("AppendEvent: %v", err)
+	}
+
+	assertShape := func(source string, e *store.Event) {
+		t.Helper()
+		output, ok := e.Data["output"].(map[string]any)
+		if !ok {
+			t.Fatalf("%s: Data[output] loaded as %T, want map[string]any", source, e.Data["output"])
+		}
+		steps, ok := output["steps"].([]any)
+		if !ok {
+			t.Fatalf("%s: output[steps] loaded as %T, want []any", source, output["steps"])
+		}
+		if _, ok := steps[0].(map[string]any); !ok {
+			t.Fatalf("%s: steps[0] loaded as %T, want map[string]any", source, steps[0])
+		}
+		switch e.Data["iteration"].(type) {
+		case int, int64, float64:
+		default:
+			t.Fatalf("%s: Data[iteration] loaded as %T, want int / int64 / float64", source, e.Data["iteration"])
+		}
+	}
+
+	all, err := s.LoadEvents(ctx, runID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(all) != 1 {
+		t.Fatalf("LoadEvents: got %d events, want 1", len(all))
+	}
+	assertShape("LoadEvents", all[0])
+
+	var scanned *store.Event
+	if err := s.ScanEvents(ctx, runID, func(e *store.Event) bool {
+		scanned = e
+		return true
+	}); err != nil {
+		t.Fatalf("ScanEvents: %v", err)
+	}
+	if scanned == nil {
+		t.Fatal("ScanEvents visited no events")
+	}
+	assertShape("ScanEvents", scanned)
 }
 
 func testArtifactVersions(t *testing.T, s store.RunStore) {
