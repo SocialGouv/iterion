@@ -133,6 +133,18 @@ func (e *Engine) executeSpecialNodeForBranch(ctx context.Context, rs *runState, 
 			return fail(rerr)
 		}
 		return store(out, true)
+	case *ir.AwaitAnswersNode:
+		// Same slot-on-park discipline as WaitNode: release while parked
+		// so sibling branches keep the semaphore, reacquire on wake.
+		slot.release()
+		out, err := e.awaitAsyncAnswers(ctx, rs, nodeID, n)
+		if err != nil {
+			return fail(err)
+		}
+		if rerr := slot.acquire(ctx); rerr != nil {
+			return fail(rerr)
+		}
+		return store(out, true)
 	case *ir.ComputeNode:
 		out, err := e.computeOutput(rs, nodeID, n, sc)
 		if err != nil {

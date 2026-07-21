@@ -124,40 +124,61 @@ func (h *storeAsyncAskHook) Pending(ctx context.Context) ([]delegate.PendingAsyn
 	for _, in := range pending {
 		out = append(out, delegate.PendingAsync{
 			InteractionID: in.ID,
-			Question:      asyncQuestionText(in),
+			Question:      AsyncQuestionText(in),
 		})
 	}
 	return out, nil
 }
 
 func (h *storeAsyncAskHook) CollectAnswers(ctx context.Context) (string, error) {
-	ids, err := h.store.ListInteractions(ctx, h.runID)
+	return CollectAsyncAnswersText(ctx, h.store, h.runID, h.nodeID)
+}
+
+// CollectAsyncAnswersText formats every ANSWERED async question of a node
+// (nodeID empty = whole run) into one human-readable block. Shared by the
+// await_answers tool result (both backends) and the runtime's await-node
+// output / resume re-injection so the agent always sees one shape.
+func CollectAsyncAnswersText(ctx context.Context, rs store.RunStore, runID, nodeID string) (string, error) {
+	answered, err := ListAnsweredAsyncInteractions(ctx, rs, runID, nodeID)
 	if err != nil {
-		return "", fmt.Errorf("await_answers: list interactions: %w", err)
-	}
-	var answered []*store.Interaction
-	for _, id := range ids {
-		in, err := h.store.LoadInteraction(ctx, h.runID, id)
-		if err != nil {
-			return "", fmt.Errorf("await_answers: load interaction %s: %w", id, err)
-		}
-		if in.Kind != store.InteractionKindAsync || in.NodeID != h.nodeID || in.AnsweredAt == nil {
-			continue
-		}
-		answered = append(answered, in)
+		return "", err
 	}
 	if len(answered) == 0 {
 		return "No async questions were posted (nothing to wait for).", nil
 	}
-	sort.SliceStable(answered, func(i, j int) bool {
-		return answered[i].RequestedAt.Before(answered[j].RequestedAt)
-	})
 	var b strings.Builder
 	b.WriteString("All posted questions are answered:\n")
 	for _, in := range answered {
-		fmt.Fprintf(&b, "- [%s] Q: %s — A: %s\n", in.ID, asyncQuestionText(in), asyncAnswerText(in))
+		fmt.Fprintf(&b, "- [%s] Q: %s — A: %s\n", in.ID, AsyncQuestionText(in), AsyncAnswerText(in))
 	}
 	return b.String(), nil
+}
+
+// ListAnsweredAsyncInteractions returns the answered async interactions of
+// a run (nodeID empty = all nodes), oldest-first.
+func ListAnsweredAsyncInteractions(ctx context.Context, rs store.RunStore, runID, nodeID string) ([]*store.Interaction, error) {
+	ids, err := rs.ListInteractions(ctx, runID)
+	if err != nil {
+		return nil, fmt.Errorf("list interactions for run %s: %w", runID, err)
+	}
+	var answered []*store.Interaction
+	for _, id := range ids {
+		in, err := rs.LoadInteraction(ctx, runID, id)
+		if err != nil {
+			return nil, fmt.Errorf("load interaction %s/%s: %w", runID, id, err)
+		}
+		if in.Kind != store.InteractionKindAsync || in.AnsweredAt == nil {
+			continue
+		}
+		if nodeID != "" && in.NodeID != nodeID {
+			continue
+		}
+		answered = append(answered, in)
+	}
+	sort.SliceStable(answered, func(i, j int) bool {
+		return answered[i].RequestedAt.Before(answered[j].RequestedAt)
+	})
+	return answered, nil
 }
 
 // nextInteractionID allocates <runID>_<nodeID>_async_<n> with n one past
@@ -179,18 +200,18 @@ func (h *storeAsyncAskHook) nextInteractionID(ctx context.Context) (string, erro
 	return fmt.Sprintf("%s%d", prefix, max+1), nil
 }
 
-// asyncQuestionText extracts the question text of an async interaction.
-func asyncQuestionText(in *store.Interaction) string {
+// AsyncQuestionText extracts the question text of an async interaction.
+func AsyncQuestionText(in *store.Interaction) string {
 	if q, ok := in.Questions[delegate.AskUserQuestionKey].(string); ok {
 		return q
 	}
 	return "(question unavailable)"
 }
 
-// asyncAnswerText flattens the recorded answers of an answered async
+// AsyncAnswerText flattens the recorded answers of an answered async
 // interaction. The canonical shape is a single AskUserQuestionKey string;
 // other keys are rendered k=v so nothing is silently dropped.
-func asyncAnswerText(in *store.Interaction) string {
+func AsyncAnswerText(in *store.Interaction) string {
 	if a, ok := in.Answers[delegate.AskUserQuestionKey].(string); ok && len(in.Answers) == 1 {
 		return a
 	}

@@ -225,6 +225,13 @@ func (e *Engine) execLoopDispatchSpecial(ctx context.Context, rs *runState, curr
 			return true, true, "", e.failRunErrWithCheckpoint(rs, currentNodeID, wErr)
 		}
 		return true, false, nextNodeID, nil
+
+	case *ir.AwaitAnswersNode:
+		nextNodeID, aErr := e.execAwaitAnswers(ctx, rs, currentNodeID, n)
+		if aErr != nil {
+			return true, true, "", e.failRunErrWithCheckpoint(rs, currentNodeID, aErr)
+		}
+		return true, false, nextNodeID, nil
 	}
 
 	return false, false, "", nil

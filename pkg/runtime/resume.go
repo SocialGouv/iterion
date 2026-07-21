@@ -137,6 +137,21 @@ func (e *Engine) resumeFromPause(ctx context.Context, r *store.Run, answers map[
 	// converted).
 	answers = e.coerceAnswersToSchema(humanNodeID, answers)
 
+	// An await_answers pause (ADR-081) fans the operator's per-question
+	// answers (keyed by interaction ID) out onto the original async
+	// interaction records, then substitutes the canonical collected-answers
+	// text as the ResumeAnswer. Errors (still-unanswered questions) leave
+	// the run paused.
+	if cp.InteractionQuestions != nil {
+		if refs := delegate.ParseAwaitPending(cp.InteractionQuestions[delegate.AwaitPendingInteractionsKey]); len(refs) > 0 {
+			var fanErr error
+			answers, fanErr = e.fanOutAwaitAnswers(ctx, runID, humanNodeID, refs, answers)
+			if fanErr != nil {
+				return fanErr
+			}
+		}
+	}
+
 	// Record answers on the interaction (LoadInteraction + WriteInteraction
 	// + emit human_answers_recorded). Fall back to the checkpoint's embedded
 	// questions if the interaction file has been deleted.
@@ -1054,8 +1069,19 @@ func (e *Engine) handleNeedsInteraction(ctx context.Context, rs *runState, nodeI
 	if _, isPermission := ni.Questions[permission.InteractionMarkerKey]; isPermission {
 		return e.pauseForBackendInteraction(rs, nodeID, ni)
 	}
+	// An await_answers tool escalation (ADR-081) has its own handling:
+	// re-check the store first, and only pause when questions are
+	// genuinely still pending.
+	if _, isAwait := ni.Questions[delegate.AwaitPendingInteractionsKey]; isAwait {
+		return e.handleAwaitEscalation(ctx, rs, nodeID, node, ni, depth)
+	}
 	switch nodeInteraction(node) {
 	case ir.InteractionHuman:
+		return e.pauseForBackendInteraction(rs, nodeID, ni)
+
+	case ir.InteractionAsync:
+		// A blocking ask_user from an interaction: async node behaves
+		// like interaction: human — a deliberate hard stop.
 		return e.pauseForBackendInteraction(rs, nodeID, ni)
 
 	case ir.InteractionLLM:
@@ -1266,6 +1292,10 @@ func (e *Engine) pauseForBackendInteraction(rs *runState, nodeID string, ni *mod
 		BackendConversation:     ni.Conversation,
 		BackendPendingToolUseID: ni.PendingToolUseID,
 	}
+	if _, isAwait := ni.Questions[delegate.AwaitPendingInteractionsKey]; isAwait {
+		pi.Kind = store.InteractionKindAwait
+		eventExtra["await"] = true
+	}
 	if err := e.doPause(rs, nodeID, ni.Questions, eventExtra, pi); err != nil {
 		return err
 	}
@@ -1281,6 +1311,9 @@ type pauseInfo struct {
 	BackendName             string
 	BackendConversation     json.RawMessage
 	BackendPendingToolUseID string
+	// Kind tags the written Interaction (store.InteractionKindAwait for
+	// an await_answers tool escalation, "" for ordinary blocking pauses).
+	Kind string
 	// Turns carries the accumulated companion↔human dialogue for a review
 	// gate (interaction: review). doPause stamps it onto the written
 	// Interaction so the whole thread re-renders on resume. Nil for
@@ -1345,6 +1378,7 @@ func (e *Engine) doPause(rs *runState, nodeID string, questions map[string]any, 
 		ID:          interactionID,
 		RunID:       rs.runID,
 		NodeID:      nodeID,
+		Kind:        info.Kind,
 		RequestedAt: time.Now().UTC(),
 		Questions:   questions,
 		Turns:       info.Turns,
