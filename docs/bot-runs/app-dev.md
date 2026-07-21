@@ -2,6 +2,71 @@
 
 Newest first. Template: see [README.md](README.md).
 
+## 2026-07-21 — end to end, twice (runs 019f847b, 019f84a7)
+- Status: **validated** — both apps live, the second with every traceability
+  gate green and no manual step at all.
+- Versions: bot app-dev 0.1.0 · iterion `c1b0c1c8d` → `4949bf3e8`
+- Method: repo created at launch on the **iterion-sandbox** App connection,
+  `mode=autonomous`, `deploy_enabled=true`, `draft_review=false`.
+
+| run | app | outcome |
+|---|---|---|
+| 019f847b | quote service | live; gates **wrongly** failed (see below) |
+| 019f84a7 | Next.js + DSFR + Postgres | live; **all three gates green**, zero human steps |
+
+### What the second run proves
+```
+https://iterion-app-boite-a-idees.ovh.fabrique.social.gouv.fr
+image   ghcr.io/iterion-sandbox/appy-boite-a-idees:f11a28d6…   ← CI, tagged with the SHA
+db      StatefulSet postgres 1/1 + PVC 1Gi on csi-cinder-high-speed
+ui      real DSFR (dsfr.min.css, fr-btn, fr-card, fr-header)
+gates   pushed=true  image_from_repo=true  built_from_head=true
+```
+A French-language brief became a running, persistent, state-owning
+application on the cluster — repo created, code written and tested, image
+built by CI, deployed — with no operator action.
+
+### The two runs were the same bug, side by side
+019f847b paused for the package-visibility gate; 019f84a7 never paused. That
+is the whole difference, and it is why one failed its gates and the other did
+not: **a cloud run's git workspace dies at the queue-delivery boundary**. The
+Mongo store's `Root()` is `""`, so the worktree path resolved against the
+process cwd, while its `.git` pointer named a gitdir inside the per-run
+clone — and that clone is removed and re-cloned on every delivery. Healthy on
+delivery 1, severed on every one after. Fixed in `4949bf3e8`: `worktree: auto`
+degrades to in-place on a rootless store, and `Resume` refuses an
+already-severed workspace before claiming rather than emitting confident
+nonsense.
+
+Having both results in hand and not connecting them cost several hours. The
+lesson is cheap to state and was expensive to learn: when two runs of the same
+bot disagree, the difference between them IS the bug.
+
+### Engine fixes these runs produced
+- `4949bf3e8` — git severed at the delivery boundary (above).
+- `8ab9c3cea` — **devbox provisioning never ran in cloud**: the chart pins
+  `ITERION_SANDBOX_OVERRIDE=none` (the pod is the isolation boundary), so
+  `resolveAndStartSandbox` returns before driver selection and everything
+  inside that path was unreachable. Now provisioned host-side, with the
+  profile bin dirs threaded onto every command the run spawns — installing
+  without that plumbing would have been the same invisible no-op elsewhere.
+
+### What made the difference this time
+- **The Postgres recipe was tested on the cluster before being written down.**
+  It then worked first try in a real run — the only recipe today that needed
+  no iteration. `fsGroup`, `PGDATA` in a subdirectory of the mount, and a
+  generated Secret are each load-bearing under `runAsNonRoot`.
+- **The visibility gate stayed silent** because the package was already
+  public: it queries visibility before asking, so a redeploy (or an operator
+  who acted ahead) is never interrupted.
+
+### Lessons for next run
+- Watch for a bot that pauses: until `4949bf3e8` is deployed everywhere, any
+  resumed cloud run reads its workspace as "no repo".
+- A gate must distinguish "cannot verify" from "verified bad" (`6bfabe676`).
+  The first version failed a correct delivery, which teaches an agent to
+  distrust a gate that was right to exist.
+
 ## 2026-07-21 — the delivery pipeline, proven except the pull (runs 019f8384, 019f8425)
 - Status: **partial** — everything iterion controls worked; the last step is a
   GitHub platform limit, not a bug.
