@@ -21,11 +21,36 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/SocialGouv/iterion/pkg/bundle"
 	"github.com/SocialGouv/iterion/pkg/internal/shellquote"
 	iterlog "github.com/SocialGouv/iterion/pkg/log"
 	"github.com/SocialGouv/iterion/pkg/sandbox"
 	"github.com/SocialGouv/iterion/pkg/store"
 )
+
+// bundleResourceDir returns the directory holding a bot's own resources —
+// its devbox.json, skills, and anything else shipped beside the workflow.
+//
+// A packed .botz has a real bundle dir. A CATALOG bot does not: it is a plain
+// .bot path, yet its resources sit next to main.bot exactly as a bundle's do.
+// Keying only on the bundle meant every bundle-mounted resource silently never
+// reached the bots that ship with iterion — which is most of them, and the ones
+// the devbox support was written for.
+func bundleResourceDir(b *bundle.Bundle, workflowPath string) string {
+	if b != nil && b.Dir != "" {
+		return b.Dir
+	}
+	if workflowPath == "" {
+		return ""
+	}
+	dir := filepath.Dir(workflowPath)
+	if dir == "." || dir == string(filepath.Separator) {
+		// A bare "main.bot" with no directory would resolve to the process's
+		// working directory, which is not the bot's own resource dir.
+		return ""
+	}
+	return dir
+}
 
 const (
 	// devboxConfigName is the devbox project manifest. Its presence is

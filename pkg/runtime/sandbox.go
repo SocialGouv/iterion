@@ -1195,10 +1195,7 @@ func (e *Engine) startSandbox(ctx context.Context, runID string, repoRoot string
 		}
 	}
 
-	var bundleHost string
-	if e.bundle != nil {
-		bundleHost = e.bundle.Dir
-	}
+	bundleHost := bundleResourceDir(e.bundle, e.filePath)
 	var secretVars map[string]any
 	if workflowHasFileSecrets(e.workflow) {
 		secretVars = e.resolveVars(inputs)

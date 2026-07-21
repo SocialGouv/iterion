@@ -642,6 +642,14 @@ prompt deploy_user:
   this order; do not stop early because "no image reference was
   provided", and never ask the operator for one:
 
+  Tooling already in the sandbox (do NOT go hunting or download binaries):
+  `crane` publishes an image with no daemon, and `yq` reads/validates YAML.
+  There is NO docker/podman/buildah daemon, `sudo` is blocked, and rootless
+  BuildKit is unavailable — that is expected, not a problem to solve. Use
+  `crane` to ITERATE locally; the image you DELIVER must be the one CI built
+  from the pushed commit. Need another tool? It belongs in the bot's
+  devbox.json, not in a curl.
+
     1. Ensure the repo has a CI workflow that builds and pushes the image
        to this forge's registry (add it if missing) plus a Dockerfile.
     2. Commit anything you added, then PUSH the branch — this is what

@@ -4,9 +4,11 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 
+	"github.com/SocialGouv/iterion/pkg/bundle"
 	iterlog "github.com/SocialGouv/iterion/pkg/log"
 	"github.com/SocialGouv/iterion/pkg/sandbox"
 	"github.com/SocialGouv/iterion/pkg/store"
@@ -340,5 +342,45 @@ func TestResolveDevboxProjects_RejectsPathPoisoningDir(t *testing.T) {
 
 	if got := resolveDevboxProjects(spec, p, "", iterlog.Nop()); len(got) != 0 {
 		t.Errorf("a dir containing ':' must be dropped, got %+v", got)
+	}
+}
+
+// The gap the original suite missed: every devbox test supplied a bundle path
+// and asserted the logic downstream of it, so all of them passed while the
+// feature reached NO catalog bot. bundleHost was set only when a packed .botz
+// was loaded; a catalog bot is a plain .bot path, so its devbox.json — and
+// every other bundle-mounted resource — was silently invisible.
+func TestBundleResourceDir(t *testing.T) {
+	t.Run("a packed bundle wins", func(t *testing.T) {
+		got := bundleResourceDir(&bundle.Bundle{Dir: "/packed/bundle"}, "/elsewhere/main.bot")
+		if got != "/packed/bundle" {
+			t.Errorf("got %q, want the bundle dir", got)
+		}
+	})
+
+	// THE REGRESSION: a catalog bot must resolve to the directory holding its
+	// main.bot, because that is where its devbox.json and skills live.
+	t.Run("a catalog bot falls back to its .bot directory", func(t *testing.T) {
+		got := bundleResourceDir(nil, "/opt/iterion/bots/app-dev/main.bot")
+		if got != "/opt/iterion/bots/app-dev" {
+			t.Errorf("got %q, want the bot's own directory", got)
+		}
+	})
+
+	t.Run("an empty bundle dir is not mistaken for a bundle", func(t *testing.T) {
+		got := bundleResourceDir(&bundle.Bundle{}, "/opt/iterion/bots/app-dev/main.bot")
+		if got != "/opt/iterion/bots/app-dev" {
+			t.Errorf("got %q, want the fallback", got)
+		}
+	})
+
+	// A bare filename would otherwise resolve to "." — the process's working
+	// directory, which is not the bot's resource dir and could mount anything.
+	for _, in := range []string{"", "main.bot"} {
+		t.Run("no usable directory in "+strconv.Quote(in), func(t *testing.T) {
+			if got := bundleResourceDir(nil, in); got != "" {
+				t.Errorf("got %q, want empty", got)
+			}
+		})
 	}
 }

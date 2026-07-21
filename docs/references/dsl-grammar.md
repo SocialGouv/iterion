@@ -1,5 +1,6 @@
 [← DSL guide](../dsl.md) · [← Documentation index](../README.md)
 
+{% raw %}
 # Iterion `.bot` grammar reference
 
 This is the readable inventory of the syntax accepted by the current parser. The machine-oriented counterpart is [`grammar/iterion_v1.ebnf`](../grammar/iterion_v1.ebnf). Parsing success is only the first stage: the IR compiler then checks declarations, types, references, graph structure, mode-specific properties, loops, resources, and capabilities.
@@ -394,3 +395,5 @@ Namespace-specific shapes and constraints are detailed in the [DSL guide](../dsl
 Syntax-valid files can still fail compilation for duplicate ids, unknown schemas/prompts/nodes, invalid templates, unreachable nodes, non-exhaustive routing, undeclared cycles, router-mode property misuse, unsafe fan-out, bad resource references, capability mismatches, and invalid sandbox/secret/cursor configuration.
 
 Use `iterion validate file.bot`. The authoritative sparse code ranges are DSL C001–C199 and bundle checks C200–C230; see [diagnostics](diagnostics.md).
+
+{% endraw %}
