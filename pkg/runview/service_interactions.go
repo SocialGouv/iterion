@@ -89,6 +89,17 @@ func (s *Service) AnswerInteractionCtx(ctx context.Context, runID, interactionID
 			}
 			if len(pending) == 0 {
 				if _, rerr := s.Resume(ctx, ResumeSpec{RunID: runID, FilePath: r.FilePath, Answers: map[string]any{}}); rerr != nil {
+					// Two answers landing together both see pending==0
+					// and race to resume; LockRun lets exactly one win.
+					// The loser's answer is already recorded + queued —
+					// verify the run actually left the pause before
+					// treating this as a failure.
+					if reloaded, lerr := s.LoadRunCtx(ctx, runID); lerr == nil && reloaded.Status != store.RunStatusPausedWaitingHuman {
+						if s.logger != nil {
+							s.logger.Info("runview: auto-resume of %s lost the race to a concurrent resume (benign): %v", runID, rerr)
+						}
+						return result, nil
+					}
 					return nil, fmt.Errorf("runview: answer recorded but auto-resume failed: %w", rerr)
 				}
 				result.Resumed = true

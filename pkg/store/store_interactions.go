@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"time"
 )
 
 // ---------------------------------------------------------------------------
@@ -55,6 +56,28 @@ func (s *FilesystemRunStore) LoadInteraction(_ context.Context, runID, interacti
 		return nil, fmt.Errorf("store: decode interaction: %w", err)
 	}
 	return &i, nil
+}
+
+// AnswerInteractionCAS implements InteractionAnswerCAS: the load →
+// check-unanswered → write sequence runs under an exclusive per-run
+// interaction lock (flock on Unix, PID-lock on Windows), so of two
+// concurrent answerers — REST racing CLI, a double-submit — exactly one
+// wins and the other gets ErrInteractionAlreadyAnswered. The critical
+// section is a few ms; contention waits (bounded) instead of erroring.
+func (s *FilesystemRunStore) AnswerInteractionCAS(ctx context.Context, runID, interactionID string, answers map[string]any) (*Interaction, error) {
+	if err := sanitizePathComponent("run ID", runID); err != nil {
+		return nil, err
+	}
+	lock, err := acquireFileLockRetry(
+		filepath.Join(s.root, "runs", runID, "interactions", ".answer.lock"),
+		fmt.Sprintf("interactions of run %s", runID),
+		2*time.Second,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = lock.Unlock() }()
+	return answerInteractionUnlocked(ctx, s, runID, interactionID, answers)
 }
 
 // ListInteractions returns all interaction IDs for a run.

@@ -3,6 +3,8 @@ package store
 import (
 	"context"
 	"errors"
+	"fmt"
+	"sync"
 	"testing"
 	"time"
 )
@@ -67,6 +69,54 @@ func TestListPendingAsyncInteractions(t *testing.T) {
 	}
 	if len(scoped) != 2 {
 		t.Fatalf("asker pending = %d, want 2", len(scoped))
+	}
+}
+
+// TestAnswerInteraction_ConcurrentAnswersOneWinner exercises the CAS
+// path: N goroutines answer the same interaction simultaneously —
+// exactly one must win, every loser must get
+// ErrInteractionAlreadyAnswered, and the stored answer must be the
+// winner's (never a silent overwrite).
+func TestAnswerInteraction_ConcurrentAnswersOneWinner(t *testing.T) {
+	s := asyncStoreFixture(t)
+	ctx := context.Background()
+	writeAsync(t, s, "r1", "asker", "r1_asker_async_1", false, time.Now().UTC())
+
+	const n = 8
+	winners := make(chan string, n)
+	var wg sync.WaitGroup
+	for i := 0; i < n; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			answer := fmt.Sprintf("answer-%d", i)
+			_, err := AnswerInteraction(ctx, s, "r1", "r1_asker_async_1", map[string]any{"ask_user_response": answer})
+			switch {
+			case err == nil:
+				winners <- answer
+			case errors.Is(err, ErrInteractionAlreadyAnswered):
+				// expected for losers
+			default:
+				t.Errorf("unexpected error: %v", err)
+			}
+		}(i)
+	}
+	wg.Wait()
+	close(winners)
+
+	var won []string
+	for w := range winners {
+		won = append(won, w)
+	}
+	if len(won) != 1 {
+		t.Fatalf("winners = %d (%v), want exactly 1", len(won), won)
+	}
+	in, err := s.LoadInteraction(ctx, "r1", "r1_asker_async_1")
+	if err != nil {
+		t.Fatalf("reload: %v", err)
+	}
+	if got := in.Answers["ask_user_response"]; got != won[0] {
+		t.Errorf("stored answer = %v, want the winner's (%s)", got, won[0])
 	}
 }
 

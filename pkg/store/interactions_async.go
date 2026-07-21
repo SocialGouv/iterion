@@ -58,11 +58,33 @@ func listAsyncInteractions(ctx context.Context, rs RunStore, runID, nodeID strin
 	return out, nil
 }
 
+// InteractionAnswerCAS is the store capability making AnswerInteraction's
+// check-and-set atomic against concurrent answerers (REST racing CLI,
+// double-submits). Both production stores implement it — filesystem via
+// a per-run interaction lock, Mongo via a filtered update. Test doubles
+// without it fall back to the unlocked sequence below, which is exact
+// under the single-caller discipline tests use.
+type InteractionAnswerCAS interface {
+	AnswerInteractionCAS(ctx context.Context, runID, interactionID string, answers map[string]any) (*Interaction, error)
+}
+
 // AnswerInteraction records the answers on a pending interaction and stamps
 // AnsweredAt. It refuses to overwrite an already-answered interaction
 // (ErrInteractionAlreadyAnswered) — the caller decides how to surface the
-// conflict. Returns the updated record.
+// conflict. Returns the updated record. Atomic on stores implementing
+// InteractionAnswerCAS (both production stores): the second of two
+// concurrent answers gets the conflict instead of silently winning.
 func AnswerInteraction(ctx context.Context, rs RunStore, runID, interactionID string, answers map[string]any) (*Interaction, error) {
+	if cas, ok := rs.(InteractionAnswerCAS); ok {
+		return cas.AnswerInteractionCAS(ctx, runID, interactionID, answers)
+	}
+	return answerInteractionUnlocked(ctx, rs, runID, interactionID, answers)
+}
+
+// answerInteractionUnlocked is the plain load → check → write sequence.
+// Production stores wrap it in their atomicity primitive; only CAS-less
+// test doubles run it bare.
+func answerInteractionUnlocked(ctx context.Context, rs RunStore, runID, interactionID string, answers map[string]any) (*Interaction, error) {
 	in, err := rs.LoadInteraction(ctx, runID, interactionID)
 	if err != nil {
 		return nil, err
