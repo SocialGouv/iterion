@@ -2,6 +2,8 @@
 
 # Visual Editor (web)
 
+**The same workflows, visually.** Build on the canvas or edit the `.bot` source directly — both stay in sync.
+
 Iterion includes a browser-based visual workflow editor built with React and XYFlow. Served by your local `iterion` binary — no installation beyond the CLI.
 
 ![Iterion studio — visual workflow editor with canvas, node library, and inspector](images/studio/editor-canvas.png)

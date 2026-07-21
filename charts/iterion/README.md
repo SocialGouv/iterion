@@ -1,12 +1,12 @@
 # iterion Helm chart
 
-Deploys iterion's cloud mode — the multi-tenant **Bot-as-a-Service**
-platform: HTTP/WS control plane with the embedded studio, a
-KEDA-scalable runner pool consuming the NATS JetStream queue, and the
-Mongo + S3 run store. One image, two deployments (`server` + `runner`).
+Deploys Iterion Cloud, the multi-tenant **control plane for AI agents**.
+It combines an HTTP/WS API with the embedded studio, a KEDA-scalable runner
+pool consuming the NATS JetStream queue, and the Mongo + S3 run store. One
+image, two deployments (`server` + `runner`).
 
-- Platform overview: [docs/baas-overview.md](../../docs/baas-overview.md)
-- Operator runbook: [docs/cloud-deployment.md](../../docs/cloud-deployment.md) and [docs/baas-admin-guide.md](../../docs/baas-admin-guide.md)
+- Platform overview: [Iterion Cloud overview](../../docs/cloud-overview.md)
+- Operator runbook: [docs/cloud-deployment.md](../../docs/cloud-deployment.md) and [Iterion Cloud admin guide](../../docs/cloud-admin-guide.md)
 
 ## Requirements
 
@@ -78,4 +78,4 @@ kubectl get pods -l app.kubernetes.io/instance=iterion
 ```
 
 Then walk the first-webhook loop in
-[docs/baas-admin-guide.md](../../docs/baas-admin-guide.md).
+[Iterion Cloud admin guide](../../docs/cloud-admin-guide.md).

@@ -7,9 +7,7 @@
 **The control plane for AI agents.**
 *Apps have Linux. The cloud has Kubernetes. AI agents have Iterion.*
 
-**Bots, as code.** *Declarative workflow orchestration for AI agents.*
-
-Kubernetes gave cloud workloads a declarative control plane. Iterion brings that model to AI agents. Define your bots as readable `.bot` files — chain agents, judges, routers, human gates, parallel branches, bounded loops, and budget caps — and operate every run from a single, auditable execution graph.
+Kubernetes gave cloud workloads a declarative control plane. Iterion brings that model to AI agents. Define agent workflows as readable `.bot` files — chain agents, judges, routers, human gates, parallel branches, bounded loops, and budget caps — and operate every run from a single, auditable execution graph.
 
 > ⚠️ **This project is highly experimental.** APIs, DSL syntax, and storage formats may change without notice. Use at your own risk in production environments. Feedback and contributions are welcome!
 
@@ -22,7 +20,7 @@ Kubernetes gave cloud workloads a declarative control plane. Iterion brings that
 - [Why Iterion?](docs/why-iterion.md) — origin + recipe + asymptote + lab
 - [What is Iterion?](#what-is-iterion)
 - [Features](#features)
-- [Meet the agents](#meet-the-agents)
+- [Ready-to-run agent workflows](#agent-workflows)
 - [Getting Started](#getting-started)
   - [Installation](#installation)
   - [Your first bot](#your-first-bot)
@@ -106,28 +104,28 @@ Think of it as a DAG runner purpose-built for LLM workflows — with first-class
 
 ### Distribution & integration
 
-- ☁️ **Bot-as-a-Service platform** — Multi-tenant Helm deployment (MongoDB + S3 + NATS JetStream, KEDA-scaled runners, per-run Kubernetes sandboxes) with the full platform layer: orgs + quotas + metering, inbound webhooks for GitLab / GitHub / Forgejo / generic JSON, bound credentials, audit log, PATs, SMTP onboarding, self-serve studio — see [docs/baas-overview.md](docs/baas-overview.md)
+- ☁️ **Multi-tenant agent control plane** — Self-hostable Helm deployment (MongoDB + S3 + NATS JetStream, KEDA-scaled runners, per-run Kubernetes sandboxes) with the full platform layer: orgs + quotas + metering, inbound webhooks for GitLab / GitHub / Forgejo / generic JSON, bound credentials, audit log, PATs, SMTP onboarding, self-serve studio — see the [Iterion Cloud overview](docs/cloud-overview.md)
 - 🧰 **TypeScript SDK** — [`@iterion/sdk`](sdks/typescript/) wraps the CLI with typed `run` / `resume` / `events` streaming for Node, Deno, and Bun apps
 - 🧠 **AI agent skill** — Install as a skill in Claude Code, Codex, Cursor, Windsurf, GitHub Copilot, Cline, Aider, and other AI coding agents
 
 ---
 
-## ☁️ Iterion Cloud — Bot-as-a-Service
+## ☁️ Iterion Cloud — Agent orchestration at scale
 
-The same engine, hosted: an external event fires → an autonomous bot
-runs with your org's **bound** credentials → the result lands back in
+The same engine, deployed for teams: an external event fires → an agent
+workflow runs with your org's **bound** credentials → the result lands back in
 your own system. Open a merge request, get Revi's review as inline
 comments — no human in the loop, no secret ever in a prompt.
 
-The control plane for AI agents, as a service.
+Run agent workflows as governed services.
 
 ```mermaid
 flowchart LR
   FORGE["forge event"] -- "token/HMAC,<br/>rate, quota" --> HOOK["POST /api/webhooks/{provider}/{id}"]
   HOOK --> NATS[("NATS queue")]
   NATS --> RUNNER["runner pod<br/>(KEDA-scaled)"]
-  RUNNER -- "BYOK key +<br/>file secrets" --> BOT["bot executes with<br/>bound creds"]
-  BOT --> POST["review/fix/report<br/>posted back on the MR/PR"]
+  RUNNER -- "BYOK key +<br/>file secrets" --> WORKFLOW["agent workflow executes<br/>with bound creds"]
+  WORKFLOW --> POST["review/fix/report<br/>posted back on the MR/PR"]
 ```
 
 Five steps to a working loop:
@@ -140,17 +138,17 @@ Five steps to a working loop:
 
 Org quotas (runs / cost / concurrency / rate), audit log, personal
 access tokens, DLQ ops and Prometheus metrics make it operable as a
-real multi-tenant service. Start at [docs/baas-overview.md](docs/baas-overview.md).
+real multi-tenant service. Start with the [Iterion Cloud overview](docs/cloud-overview.md).
 
 ---
 
-<a id="meet-the-agents"></a>
+<a id="agent-workflows"></a>
 
-## 🤖 Meet the agents
+## 🤖 Ready-to-run agent workflows
 
-Iterion ships a catalog of named, first-class bots. Each is a general-purpose `.bot` you point at *any* repo: run it directly (`iterion run bots/<name>/main.bot`), dispatch it per issue, or schedule it.
+Iterion ships a catalog of named, first-class agent workflows. Each is packaged as a general-purpose `.bot` you point at *any* repo: run it directly (`iterion run bots/<name>/main.bot`), dispatch it per issue, or schedule it.
 
-| Bot | Role | Bundle |
+| Workflow | Role | Bundle |
 |---|---|---|
 | 🧭 **Nexie** | Co-CTO orchestrator — surveys the repo, elicits priorities, proposes a roadmap, and emits kanban issues | [`whats-next`](bots/whats-next/) |
 | 🛠️ **Featurly** | Ships a feature end-to-end — plan → implement → simplify → review-fix loop | [`feature_dev`](bots/feature-dev/) |
@@ -250,9 +248,11 @@ All run data (events, artifacts, interactions) is stored in `.iterion/runs/`.
 
 ## 🤖 Workflow files
 
+**Agent workflows, as code.** Define readable, versioned workflows in `.bot` files. The DSL and visual editor are two views of the same source of truth.
+
 Iterion accepts plain workflow sources as **`.bot`** files. Any other extension is rejected at the CLI, server, dispatcher, and studio boundaries.
 
-Bots can also be shipped as **`.botz`** — a tar.gz packaging the workflow with adjacent resources (Claude Code skills, reusable prompts, default attachments, manifest). Scaffold with `iterion bots create`, build with `iterion bundle pack`, run with `iterion run my.botz`. See [docs/bundles.md](docs/bundles.md).
+Agent workflows can also be shipped as **`.botz`** bundles — tar.gz archives packaging the workflow with adjacent resources (Claude Code skills, reusable prompts, default attachments, manifest). Scaffold with `iterion bots create`, build with `iterion bundle pack`, run with `iterion run my.botz`. See [docs/bundles.md](docs/bundles.md).
 
 ---
 

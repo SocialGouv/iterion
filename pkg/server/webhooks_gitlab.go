@@ -652,7 +652,7 @@ func forgeHostAllowed(host string) bool {
 // sent at all. Precedence:
 //   - cfg.ForgeBaseURL set (per-webhook pin): the payload MR-URL host MUST
 //     match the configured host, else refuse — the precise per-tenant control
-//     for multi-instance BaaS.
+//     for multi-instance cloud deployments.
 //   - otherwise: derive the host from the (secret-authenticated) payload,
 //     gated by the optional global ITERION_WEBHOOK_FORGE_HOSTS allowlist.
 func resolveForgeBaseURL(cfg webhooks.Config, mrURL string) (baseURL, refusal string) {

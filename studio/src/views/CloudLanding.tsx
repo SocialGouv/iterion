@@ -244,7 +244,7 @@ function LandingHero() {
 
         <div className="mt-16">
           <div className="mb-4 text-xs uppercase tracking-[0.2em] text-fg-subtle">
-            Featured agents
+            Featured agent workflows
           </div>
           <BotShowcase />
         </div>

@@ -126,7 +126,7 @@ more gaps surfaced, both fixed live:
   the orchestrator now upserts a per-bot `forge_token` binding at provision
   (fix 5), reconciled even on an idempotent re-provision so an
   already-provisioned integration is backfilled (fix 6). This is a general
-  cloud-BaaS fix: EVERY board-launched bot that pushes (Featurly, Billy on the
+  cloud-platform fix: EVERY board-launched bot that pushes (Featurly, Billy on the
   board path) needed it, not just this cycle.
 - Standing gap (deferred): fully zero-touch issue handling still needs the
   cloud dispatcher (the webhook `issues` path is labeled-only by design); and

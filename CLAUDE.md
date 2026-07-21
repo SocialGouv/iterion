@@ -416,7 +416,7 @@ flags are set: `/board` (kanban CRUD with drag-and-drop, gated on
 `server_info.native_tracker_enabled`) and `/dispatcher` (live dashboard
 with running + retry tables, gated on `server_info.dispatcher_enabled`).
 
-### Inbound webhooks (cloud BaaS triggers)
+### Inbound webhooks (cloud agent-workflow triggers)
 
 Distinct from the dispatcher (which polls): cloud mode exposes
 self-authenticating inbound webhook endpoints that launch a bot per
@@ -429,7 +429,7 @@ all sit in front of the launch. Key files:
 [pkg/webhooks/](pkg/webhooks/) (spine + per-provider parsers),
 [pkg/server/webhooks_common.go](pkg/server/webhooks_common.go) (shared
 admission→idempotency→launch tail). Reference: [docs/webhooks.md](docs/webhooks.md);
-platform overview: [docs/baas-overview.md](docs/baas-overview.md).
+platform overview: [Iterion Cloud overview](docs/cloud-overview.md).
 
 ### Event-driven trigger spine (`pkg/trigger` + `pkg/eventbus`)
 

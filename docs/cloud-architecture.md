@@ -1,4 +1,4 @@
-[← Documentation index](README.md) · [← BaaS overview](baas-overview.md)
+[← Documentation index](README.md) · [← Iterion Cloud overview](cloud-overview.md)
 
 # Cloud architecture
 
@@ -53,8 +53,8 @@ A failure in the data plane (a runner OOMs, NATS reboots, S3 is slow)
 must not lose the run; the control plane keeps the canonical state and
 the orphan sweeper closes the gap when the runner dies between claiming
 a run and writing its terminal status (see
-[baas-admin-guide.md → DLQ + orphan
-sweeper](baas-admin-guide.md#17-dlq-triage)).
+[Iterion Cloud admin guide → DLQ + orphan
+sweeper](cloud-admin-guide.md#17-dlq-triage)).
 
 ## The run lifecycle
 
@@ -140,8 +140,8 @@ Pinned semantics:
 - **DLQ retention**: 7 days
   ([pkg/queue/nats/nats.go:DefaultDLQMaxAge](../pkg/queue/nats/nats.go)).
   An operator triages via the admin endpoints
-  ([baas-admin-guide.md
-  §1.7](baas-admin-guide.md#17-dlq-triage)).
+  ([Iterion Cloud admin guide
+  §1.7](cloud-admin-guide.md#17-dlq-triage)).
 
 The **orphan sweeper** runs on the server side
 ([pkg/server/queue_sweeper.go](../pkg/server/queue_sweeper.go)) and

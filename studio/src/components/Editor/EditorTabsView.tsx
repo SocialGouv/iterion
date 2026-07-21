@@ -116,12 +116,12 @@ export default function EditorTabsView() {
           <div className="max-w-md mx-auto py-10 px-4 space-y-4">
             <div>
               <h2 className="text-sm font-semibold text-fg-default">
-                Start editing a workflow
+                The same workflows, visually.
               </h2>
               <p className="text-xs text-fg-muted mt-1">
-                Pick an existing file, fork an example, or open a fresh
-                blank canvas. Each one opens in its own editor tab so
-                you can work on several in parallel.
+                Build on the canvas or edit the <code className="font-mono">.bot</code> source
+                directly — both stay in sync. Pick an existing file, fork an example, or start
+                with a blank canvas; each opens in its own tab.
               </p>
             </div>
             <RecentFilesPanel variant="plain" />

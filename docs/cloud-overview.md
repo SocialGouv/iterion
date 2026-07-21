@@ -1,6 +1,6 @@
 [← Documentation index](README.md) · [← Iterion](../README.md)
 
-# Iterion as Bot-as-a-Service
+# Iterion Cloud — the multi-tenant control plane for AI agents
 
 **Audience.** Anyone evaluating iterion as a multi-tenant platform — a
 platform engineer about to `helm install`, a tech-lead choosing between
@@ -15,17 +15,22 @@ Iterion is two things in one repository:
 2. **A self-hostable multi-tenant platform** built on top of that engine:
    orgs, teams, BYOK LLM keys, generic + bot-secret bindings, inbound
    webhooks for four providers, NATS-queued runner pods, per-org quotas,
-   audit log, PATs, SMTP onboarding. We call the product
-   **Bot-as-a-Service** (BaaS) and the category
-   **Agent-as-a-Service** (AaaS).
+   audit log, PATs, SMTP onboarding. We call this deployment mode
+   **Iterion Cloud**: the control plane and execution platform for running
+   agent workflows across teams.
 
 > **The control plane for AI agents.** Apps have Linux. The cloud has
 > Kubernetes. AI agents have Iterion.
 
-## The BaaS loop
+> **Terminology.** An *agent workflow* is the deployable workload packaged as
+> `.bot` or `.botz` and identified as a `bot` by the existing CLI and API. An
+> *agent* is one LLM-powered node inside that workflow.
 
-A bot in iterion is an autonomous agent compiled from a `.bot` file. In
-platform mode the loop is end-to-end:
+## The governed execution loop
+
+A `.bot` is a deployable agent workflow: a versioned graph that can combine
+agents, judges, tools, routers, human gates, and deterministic compute. In
+cloud mode the loop is end-to-end:
 
 ```mermaid
 sequenceDiagram
@@ -35,12 +40,12 @@ sequenceDiagram
 
   SRC->>RUN: POST /api/webhooks (iwh_ token)
   Note over RUN: admit (auth/rate/quota)<br/>publish to NATS queue<br/>runner claims + executes<br/>binds org credentials<br/>(BYOK key + file secret)
-  RUN->>EXT: bot acts (commit,<br/>review, post note...)
+  RUN->>EXT: agent workflow acts (commit,<br/>review, post note...)
   RUN-->>SRC: 202 launched + run id
 ```
 
-The event is the **trigger**; the bot is the **autonomous worker**; the
-org-bound credentials let it **act in the user's own system** (GitLab MR
+The event is the **trigger**; the agent workflow is the **governed workload**;
+the org-bound credentials let it **act in the user's own system** (GitLab MR
 comment, GitHub PR review, Mattermost note); the result lands back in
 that system without anyone clicking a UI in between.
 
@@ -51,7 +56,7 @@ The operator's seed (a one-off):
 1. Helm-install the chart against Mongo + NATS + S3 (see
    [cloud-deployment.md](cloud-deployment.md)).
 2. Bootstrap the super-admin and create an org for the team
-   (see [baas-admin-guide.md](baas-admin-guide.md)).
+   (see the [Iterion Cloud admin guide](cloud-admin-guide.md)).
 3. The org admin opens `/teams/<id>` in the studio → **Integrations** →
    "Connect a forge" → GitLab → paste a project access token (or use OAuth
    when an OAuth app is configured) → **Enable a repo** → pick the project →
@@ -79,8 +84,8 @@ autonomously:
 | Launch admission (org suspend / concurrency / cost cap / run quota) | [pkg/server/launch_gate.go](../pkg/server/launch_gate.go) | 402/403/429 with a stable reason token |
 | Bundle the org's BYOK keys + bound secrets, seal them | [pkg/secrets/run_secrets.go](../pkg/secrets/run_secrets.go) | Per-run AES-GCM, run-id-bound AAD |
 | Publish on NATS `iterion.queue.runs` | [pkg/queue/nats/nats.go](../pkg/queue/nats/nats.go) | KEDA scales the runner pool on lag |
-| A runner pod claims, unseals, runs the `review-pr` bot | [pkg/runner/loop.go](../pkg/runner/loop.go) | One in-flight run per pod (MaxAckPending=1) |
-| The bot clones, reviews, posts the note via `forge_token` | the bot | The org's identity, not iterion's |
+| A runner pod claims, unseals, runs the `review-pr` workflow | [pkg/runner/loop.go](../pkg/runner/loop.go) | One in-flight run per pod (MaxAckPending=1) |
+| The workflow clones, reviews, posts the note via `forge_token` | the workflow | The org's identity, not iterion's |
 | Audit row + delivery row + Prometheus counters | [pkg/audit/audit.go](../pkg/audit/audit.go) + [pkg/cloud/metrics/metrics.go](../pkg/cloud/metrics/metrics.go) | Both tenant and platform timelines |
 
 The same chain handles an on-demand re-review: a reviewer types `/revi`
@@ -94,11 +99,11 @@ and a fresh review fires under a different idempotency key.
 | Primitive | Owns | Where |
 |---|---|---|
 | **Webhook token** (`iwh_…`) | inbound auth + tenant resolution + per-org rate/quota | [docs/webhooks.md](webhooks.md) · [pkg/webhooks/](../pkg/webhooks/) |
-| **Bot catalog** | what a webhook can launch — bots discovered from `ITERION_BOTS_PATH` | [docs/bundles.md](bundles.md) |
+| **Workflow catalog** (`bot_id`) | what a webhook can launch — agent workflows discovered from `ITERION_BOTS_PATH` | [docs/bundles.md](bundles.md) |
 | **BYOK API keys + bindings** | the org's LLM and forge credentials, sealed at rest | [docs/secrets-reference.md](secrets-reference.md) · [pkg/secrets/](../pkg/secrets/) |
-| **Runner pool** | claims a queued run, unseals the bundle, runs the bot | [docs/cloud-architecture.md](cloud-architecture.md) · [pkg/runner/](../pkg/runner/) |
+| **Runner pool** | claims a queued run, unseals the bundle, runs the workflow | [docs/cloud-architecture.md](cloud-architecture.md) · [pkg/runner/](../pkg/runner/) |
 | **Orgs + quotas + audit** | the multitenancy and metering layer | [docs/quotas-and-limits.md](quotas-and-limits.md) · [pkg/orgusage/](../pkg/orgusage/) · [pkg/audit/](../pkg/audit/) |
-| **PATs** (`iap_…`) | long-lived, programmatic API access for CI/SDKs | [docs/baas-admin-guide.md](baas-admin-guide.md) · [pkg/pat/](../pkg/pat/) |
+| **PATs** (`iap_…`) | long-lived, programmatic API access for CI/SDKs | [Iterion Cloud admin guide](cloud-admin-guide.md) · [pkg/pat/](../pkg/pat/) |
 
 Everything is **opt-in**. A self-hosted iterion that hasn't enabled
 webhooks is still a perfectly fine multi-tenant studio (`iterion server`
@@ -115,7 +120,7 @@ If you arrived here looking for…
 | The conceptual loop (you're here) | this page |
 | The webhook reference (auth modes, providers, idempotency, CRUD API) | [webhooks.md](webhooks.md) |
 | The quota / metering / enforcement contract (denial tokens, HTTP semantics) | [quotas-and-limits.md](quotas-and-limits.md) |
-| The platform-operator + org-admin runbook (UI + curl side by side) | [baas-admin-guide.md](baas-admin-guide.md) |
+| The platform-operator + org-admin runbook (UI + curl side by side) | [Iterion Cloud admin guide](cloud-admin-guide.md) |
 | Every kind of secret and where it lives | [secrets-reference.md](secrets-reference.md) (engine-side layers in [secrets.md](secrets.md)) |
 | The full REST surface (every endpoint, auth class, purpose) | [cloud-rest-api.md](cloud-rest-api.md) |
 | Memory + knowledge spaces (visibilities, quotas, REST) | [memory-and-knowledge.md](memory-and-knowledge.md) |
@@ -125,7 +130,7 @@ If you arrived here looking for…
 | The END-USER-side flows (login, BYOK, OAuth-forfait, PATs, reset) | [cloud-user.md](cloud-user.md) |
 | Outbound run-completion callbacks (the original "webhook" feature) | [outbound-callbacks.md](outbound-callbacks.md) |
 
-The catalog of bots iterion ships with — Nexie, Featurly, Billy, Revi,
-Seki and friends — lives in [examples.md](examples.md) and
-[bundles.md](bundles.md). They are the agents Iterion orchestrates; this page
-explains how the platform dispatches them.
+The ready-to-run agent workflows iterion ships — Nexie, Featurly, Billy,
+Revi, Seki and friends — live in [examples.md](examples.md) and
+[bundles.md](bundles.md). Iterion orchestrates and dispatches them through the
+same governed execution loop.

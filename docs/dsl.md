@@ -2,7 +2,9 @@
 
 # The `.bot` DSL
 
-Iterion workflows use a declarative, indentation-significant language. Source files end in `.bot`; deterministic bundles end in `.botz`.
+**Agent workflows, as code.** Define readable, versioned workflows in a declarative, indentation-significant language.
+
+Source files end in `.bot`; deterministic bundles end in `.botz`.
 
 This page is the language guide. For exact accepted syntax use the [readable grammar](references/dsl-grammar.md), the [formal EBNF](grammar/iterion_v1.ebnf), and the [diagnostic catalogue](references/diagnostics.md). The parser, IR compiler, and validators under [`pkg/dsl/`](../pkg/dsl/) remain the implementation source of truth.
 

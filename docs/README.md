@@ -94,9 +94,9 @@ For the architectural trade-off against prompt-only orchestration, read [why-not
 | [security-bots-distributed.md](security-bots-distributed.md) | Distributed security-bot operation. |
 | [security-patcher.md](security-patcher.md) | Security remediation workflow and boundaries. |
 
-## Cloud / Bot-as-a-Service
+## Cloud / agent control plane
 
-Start with [baas-overview.md](baas-overview.md) for the event → queued run → result-posted-back loop, or [cloud.md](cloud.md) for the deployable components.
+Start with the [Iterion Cloud overview](cloud-overview.md) for the event → queued run → result-posted-back loop, or [cloud.md](cloud.md) for the deployable components.
 
 ### Users, teams, and integrations
 
@@ -120,7 +120,7 @@ Start with [baas-overview.md](baas-overview.md) for the event → queued run →
 |---|---|
 | [cloud-deployment.md](cloud-deployment.md) | Helm deployment, configuration, migration, and runbook. |
 | [cloud-architecture.md](cloud-architecture.md) | Control/data planes, queue contract, isolation, and multitenancy. |
-| [baas-admin-guide.md](baas-admin-guide.md) | Platform and organization administration. |
+| [cloud-admin-guide.md](cloud-admin-guide.md) | Platform and organization administration. |
 | [cloud-admin.md](cloud-admin.md) | Bootstrap admin, SSO, credentials, and rotation. |
 | [cloud-backup.md](cloud-backup.md) | Mongo/S3 backup and restore. |
 | [cloud-troubleshooting.md](cloud-troubleshooting.md) | Symptoms-first cloud troubleshooting. |

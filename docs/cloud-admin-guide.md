@@ -1,6 +1,6 @@
-[← Documentation index](README.md) · [← BaaS overview](baas-overview.md)
+[← Documentation index](README.md) · [← Iterion Cloud overview](cloud-overview.md)
 
-# BaaS admin runbook
+# Iterion Cloud admin runbook
 
 **Audience.** The platform operator who runs `iterion server` for
 multiple teams **and** the org admin who manages their team inside it.
@@ -11,8 +11,8 @@ studio user and the CI script.
 
 For deployment + chart values, start with
 [cloud-deployment.md](cloud-deployment.md). For the bigger conceptual
-picture, [baas-overview.md](baas-overview.md). For the precise REST
-shapes, [cloud-rest-api.md](cloud-rest-api.md).
+picture, see the [Iterion Cloud overview](cloud-overview.md). For the
+precise REST shapes, see [cloud-rest-api.md](cloud-rest-api.md).
 
 ---
 
