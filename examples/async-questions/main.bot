@@ -57,7 +57,13 @@ prompt finalize_user:
   Operator answers:
   {{outputs.gate.answers}}
 
+## ask_user_async / await_answers are claw-native tools, so the async
+## drafting agent runs on claw. Pinning backend+model also keeps the bot
+## in the CI compile floor (TestCatalogBotsParseAndCompileClean), which
+## compiles with no credentials to auto-detect.
 agent draft:
+  backend: "claw"
+  model: "anthropic/claude-sonnet-4-6"
   interaction: async
   system: draft_sys
   user: draft_user
@@ -71,6 +77,8 @@ await_answers gate:
   timeout: "30m"
 
 agent finalize:
+  backend: "claw"
+  model: "anthropic/claude-sonnet-4-6"
   system: finalize_sys
   user: finalize_user
   output: final_out

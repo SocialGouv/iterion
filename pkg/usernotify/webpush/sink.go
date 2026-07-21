@@ -115,7 +115,15 @@ func (s *Sink) Deliver(ctx context.Context, n usernotify.Notification) error {
 }
 
 func (s *Sink) push(ctx context.Context, body []byte, sub *Subscription) error {
-	resp, err := wp.SendNotificationWithContext(ctx, body, &wp.Subscription{
+	// webpush-go wraps the message with bytes.NewBuffer (no copy) and then
+	// appends a padding delimiter into it, mutating the slice's backing
+	// array in place. Deliver fans the SAME body slice out to every
+	// concurrent push goroutine, so without a per-call copy those in-place
+	// writes race on the shared array (caught by -race in
+	// TestSinkDeliverAndPrune). Give each send its own copy.
+	msg := make([]byte, len(body))
+	copy(msg, body)
+	resp, err := wp.SendNotificationWithContext(ctx, msg, &wp.Subscription{
 		Endpoint: sub.Endpoint,
 		Keys:     wp.Keys{P256dh: sub.P256dh, Auth: sub.Auth},
 	}, &wp.Options{
