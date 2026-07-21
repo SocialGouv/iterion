@@ -262,6 +262,11 @@ func (p *parser) parseFile() *ast.File {
 				f.Waits = append(f.Waits, wd)
 			}
 
+		case TokenAwaitAnswers:
+			if ad := p.parseAwaitAnswersDecl(); ad != nil && !p.isReservedName(t, ad.Name, "await_answers") {
+				f.AwaitAnswers = append(f.AwaitAnswers, ad)
+			}
+
 		case TokenSubbot:
 			sd := p.parseSubbotDecl()
 			if sd != nil {

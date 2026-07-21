@@ -35,6 +35,7 @@ func Unparse(f *ast.File) string {
 	w.writeComputes(f.Computes)
 	w.writeEmits(f.Emits)
 	w.writeWaits(f.Waits)
+	w.writeAwaitAnswers(f.AwaitAnswers)
 	w.writeSubbots(f.Subbots)
 	w.writeWorkflows(f.Workflows)
 	return w.b.String()
@@ -537,6 +538,22 @@ func (w *fileWriter) writeWaits(waits []*ast.WaitDecl) {
 		}
 		if wt.Output != "" {
 			writeProp(&w.b, "output", wt.Output)
+		}
+	}
+}
+
+func (w *fileWriter) writeAwaitAnswers(decls []*ast.AwaitAnswersDecl) {
+	for _, aa := range decls {
+		w.blankLine()
+		fmt.Fprintf(&w.b, "await_answers %s:\n", aa.Name)
+		if aa.Description != "" {
+			writeQuotedProp(&w.b, "description", aa.Description)
+		}
+		if aa.From != "" {
+			writeProp(&w.b, "from", aa.From)
+		}
+		if aa.Timeout != "" {
+			writeQuotedProp(&w.b, "timeout", aa.Timeout)
 		}
 	}
 }

@@ -246,6 +246,8 @@ func kindIcon(k NodeKind) string {
 		return "📤"
 	case NodeWait:
 		return "⏳"
+	case NodeAwaitAnswers:
+		return "💬"
 	case NodeDone:
 		return "✅"
 	case NodeFail:

@@ -40,6 +40,31 @@ func (c *compiler) validateEvents(w *Workflow) {
 	}
 }
 
+// validateAwaitAnswers cross-checks await_answers nodes (ADR-081): a `from:`
+// that names a missing node, or a node that is not an interaction: async
+// agent/judge, can never see a pending question — the await can only ever
+// time out. C202 warnings (not errors), mirroring the C198 dangling-event
+// discipline.
+func (c *compiler) validateAwaitAnswers(w *Workflow) {
+	for _, n := range w.Nodes {
+		aa, ok := n.(*AwaitAnswersNode)
+		if !ok || aa.From == "" {
+			continue
+		}
+		src, exists := w.Nodes[aa.From]
+		if !exists {
+			c.warnfAt(DiagAwaitAnswersBadFrom, aa.ID, "",
+				"await_answers %q `from:` references unknown node %q — it can only ever time out", aa.ID, aa.From)
+			continue
+		}
+		llm, isLLM := src.(LLMNode)
+		if !isLLM || llm.GetInteractionFields().Interaction != InteractionAsync {
+			c.warnfAt(DiagAwaitAnswersBadFrom, aa.ID, "",
+				"await_answers %q `from:` references %q which is not an interaction: async agent/judge — no async question can originate there, so it can only ever time out", aa.ID, aa.From)
+		}
+	}
+}
+
 // validateArtifactLabels warns (C049) when a node declares artifact_labels:
 // but no publish: — the labels have no artifact to attach to (only a node's
 // *published* output is labelled). Judge nodes never publish, so their

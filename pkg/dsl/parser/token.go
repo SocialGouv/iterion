@@ -55,6 +55,7 @@ const (
 	TokenCompute
 	TokenEmit
 	TokenWait
+	TokenAwaitAnswers
 	TokenEntry
 	TokenMCP
 	TokenBudget
@@ -231,6 +232,7 @@ var tokenNames = map[TokenType]string{
 	TokenCompute:            "compute",
 	TokenEmit:               "emit",
 	TokenWait:               "wait",
+	TokenAwaitAnswers:       "await_answers",
 	TokenEntry:              "entry",
 	TokenMCP:                "mcp",
 	TokenBudget:             "budget",
@@ -371,6 +373,7 @@ var keywords = map[string]TokenType{
 	"compute":               TokenCompute,
 	"emit":                  TokenEmit,
 	"wait":                  TokenWait,
+	"await_answers":         TokenAwaitAnswers,
 	"entry":                 TokenEntry,
 	"mcp":                   TokenMCP,
 	"budget":                TokenBudget,

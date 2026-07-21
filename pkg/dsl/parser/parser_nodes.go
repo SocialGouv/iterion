@@ -432,8 +432,10 @@ func (p *parser) parseInteractionMode() ast.InteractionMode {
 		return ast.InteractionLLMOrHuman
 	case "review":
 		return ast.InteractionReview
+	case "async":
+		return ast.InteractionAsync
 	default:
-		p.addError(DiagInvalidValue, t, "expected interaction mode (none, human, llm, llm_or_human, review), got '"+t.Value+"'")
+		p.addError(DiagInvalidValue, t, "expected interaction mode (none, human, llm, llm_or_human, review, async), got '"+t.Value+"'")
 		return ast.InteractionNone
 	}
 }
@@ -965,4 +967,47 @@ func (p *parser) parseWaitDecl() *ast.WaitDecl {
 		}
 	}
 	return wd
+}
+
+// parseAwaitAnswersDecl parses an await_answers node — the deterministic sync
+// point for async human questions:
+//
+//	await_answers <name>:
+//	  from: gatherer
+//	  timeout: "30m"
+func (p *parser) parseAwaitAnswersDecl() *ast.AwaitAnswersDecl {
+	start, name, ok := p.parseDeclHeader("await_answers")
+	if !ok {
+		return nil
+	}
+	ad := &ast.AwaitAnswersDecl{Name: name, Span: ast.Span{Start: p.pos(start)}}
+	for {
+		p.skipNewlines()
+		t := p.peek()
+		if t.Type == TokenDedent || t.Type == TokenEOF {
+			if t.Type == TokenDedent {
+				p.next()
+			}
+			break
+		}
+		switch {
+		case t.Type == TokenIdent && t.Value == "from":
+			p.next()
+			p.expect(TokenColon)
+			ad.From = p.expectStringOrIdent()
+		case t.Type == TokenIdent && t.Value == "timeout":
+			p.next()
+			p.expect(TokenColon)
+			ad.Timeout = p.expectString()
+		case t.Type == TokenIdent && t.Value == "description":
+			p.next()
+			p.expect(TokenColon)
+			ad.Description = p.expectString()
+		default:
+			p.addError(DiagUnknownProperty, t, "unknown await_answers property '"+t.Value+"'")
+			p.next()
+			p.skipToNewline()
+		}
+	}
+	return ad
 }

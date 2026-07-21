@@ -72,6 +72,7 @@ var interactionModeToStr = map[InteractionMode]string{
 	InteractionLLM:        "llm",
 	InteractionLLMOrHuman: "llm_or_human",
 	InteractionReview:     "review",
+	InteractionAsync:      "async",
 }
 
 var strToInteractionMode = reverseMap(interactionModeToStr)
@@ -126,6 +127,7 @@ type jsonFile struct {
 	Subbots     []*jsonSubbotDecl     `json:"subbots,omitempty"`
 	Emits       []*jsonEmitDecl       `json:"emits,omitempty"`
 	Waits       []*jsonWaitDecl       `json:"waits,omitempty"`
+	AwaitAnswers []*jsonAwaitAnswersDecl `json:"await_answers,omitempty"`
 	Workflows   []*jsonWorkflowDecl   `json:"workflows,omitempty"`
 	Comments    []*jsonComment        `json:"comments,omitempty"`
 }
@@ -604,6 +606,13 @@ type jsonWaitDecl struct {
 	Output      string `json:"output,omitempty"`
 }
 
+type jsonAwaitAnswersDecl struct {
+	Name        string `json:"name,omitempty"`
+	Description string `json:"description,omitempty"`
+	From        string `json:"from,omitempty"`
+	Timeout     string `json:"timeout,omitempty"`
+}
+
 type jsonWorkflowDecl struct {
 	Name           string                `json:"name,omitempty"`
 	Vars           *jsonVarsBlock        `json:"vars,omitempty"`
@@ -800,6 +809,14 @@ func toJSON(f *File) *jsonFile {
 			Event:       wt.Event,
 			Timeout:     wt.Timeout,
 			Output:      wt.Output,
+		})
+	}
+	for _, aa := range f.AwaitAnswers {
+		jf.AwaitAnswers = append(jf.AwaitAnswers, &jsonAwaitAnswersDecl{
+			Name:        aa.Name,
+			Description: aa.Description,
+			From:        aa.From,
+			Timeout:     aa.Timeout,
 		})
 	}
 	for _, w := range f.Workflows {
@@ -1432,6 +1449,15 @@ func fromJSON(jf *jsonFile) (*File, error) {
 			Event:       jw.Event,
 			Timeout:     jw.Timeout,
 			Output:      jw.Output,
+		})
+	}
+
+	for _, ja := range jf.AwaitAnswers {
+		f.AwaitAnswers = append(f.AwaitAnswers, &AwaitAnswersDecl{
+			Name:        ja.Name,
+			Description: ja.Description,
+			From:        ja.From,
+			Timeout:     ja.Timeout,
 		})
 	}
 

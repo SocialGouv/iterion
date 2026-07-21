@@ -442,6 +442,7 @@ func (c *compiler) compile() *Workflow {
 	c.compileComputes()
 	c.compileEmits()
 	c.compileWaits()
+	c.compileAwaitAnswers()
 	c.compileSubbots()
 
 	// Add terminal nodes. Safe by construction now: validateNodeNames
@@ -991,11 +992,19 @@ func (c *compiler) compileHumans() {
 		// can override when the node doesn't set interaction explicitly.
 		if h.Interaction == 0 {
 			wfDefault := c.workflowInteractionDefault()
-			if wfDefault != InteractionNone {
+			if wfDefault != InteractionNone && wfDefault != InteractionAsync {
 				interaction = wfDefault
 			} else {
 				interaction = InteractionHuman
 			}
+		}
+		// interaction: async is an agent/judge posture (post questions, keep
+		// working) — a human node IS the blocking question, so async on it is
+		// a contradiction, not a mode.
+		if interaction == InteractionAsync {
+			c.errorfAt(DiagAsyncOnHuman, h.Name, "",
+				"human %q cannot use interaction: async — async questions are posted by agent/judge nodes (use interaction: async on the asking node and an await_answers node as the sync point)", h.Name)
+			interaction = InteractionHuman
 		}
 		node := &HumanNode{
 			BaseNode: BaseNode{ID: h.Name, Description: h.Description},
@@ -1334,6 +1343,36 @@ func (c *compiler) compileWaits() {
 			SchemaFields: SchemaFields{OutputSchema: wd.Output},
 			Event:        wd.Event,
 			Timeout:      timeout,
+		}
+	}
+}
+
+// compileAwaitAnswers compiles `await_answers` nodes (ADR-081): the
+// deterministic sync point for async human questions, with a mandatory timeout
+// (the no-silent-infinity invariant) and an optional `from:` scope.
+func (c *compiler) compileAwaitAnswers() {
+	for _, ad := range c.file.AwaitAnswers {
+		if _, exists := c.nodes[ad.Name]; exists {
+			continue
+		}
+		if ast.ReservedTargets[ad.Name] {
+			continue
+		}
+		var timeout time.Duration
+		if ad.Timeout == "" {
+			c.errorfAt(DiagAwaitAnswersNoTimeout, ad.Name, "",
+				"await_answers %q has no `timeout:` — a mandatory bound is required (the no-silent-infinity invariant)", ad.Name)
+		} else if d, err := time.ParseDuration(ad.Timeout); err != nil {
+			c.errorfAt(DiagAwaitAnswersNoTimeout, ad.Name, "", "await_answers %q has an invalid `timeout:` %q: %v", ad.Name, ad.Timeout, err)
+		} else if d <= 0 {
+			c.errorfAt(DiagAwaitAnswersNoTimeout, ad.Name, "", "await_answers %q `timeout:` must be positive, got %q", ad.Name, ad.Timeout)
+		} else {
+			timeout = d
+		}
+		c.nodes[ad.Name] = &AwaitAnswersNode{
+			BaseNode: BaseNode{ID: ad.Name, Description: ad.Description},
+			From:     ad.From,
+			Timeout:  timeout,
 		}
 	}
 }

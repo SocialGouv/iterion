@@ -25,6 +25,7 @@ type File struct {
 	Computes    []*ComputeDecl    // deterministic compute node declarations (no LLM, no shell)
 	Emits       []*EmitDecl       // emit node declarations (publish a run-scoped event)
 	Waits       []*WaitDecl       // wait node declarations (block until a run-scoped event)
+	AwaitAnswers []*AwaitAnswersDecl // await_answers node declarations (block until async questions are answered)
 	Groups      []*GroupDecl      // reusable node-cluster declarations (compile-time macros)
 	Uses        []*UseDecl        // group instantiations (`use <group> as <prefix>`)
 	Subbots     []*SubbotDecl     // sub-bot node declarations (run another .bot as a nested run)
@@ -116,6 +117,24 @@ type WaitDecl struct {
 	Event       string // event name to wait for (required)
 	Timeout     string // Go duration string (required)
 	Output      string // optional schema reference for the received payload
+	Span        Span
+}
+
+// AwaitAnswersDecl is an `await_answers` node: the deterministic sync point for
+// async human questions (`interaction: async` + the ask_user_async tool). It
+// blocks its branch until every pending async interaction — for the `from:`
+// node, or the whole run when `from:` is empty — is answered, then completes
+// with the collected answers as its output. The `timeout:` is mandatory (the
+// "no silent infinity" invariant, same as WaitDecl).
+//
+//	await_answers <name>:
+//	  from: gatherer        ## optional: only questions posted by this node
+//	  timeout: "30m"
+type AwaitAnswersDecl struct {
+	Name        string
+	Description string // optional human-readable node label (surfaced in the run console)
+	From        string // optional node ref: only await questions posted by this node ("" = whole run)
+	Timeout     string // Go duration string (required)
 	Span        Span
 }
 
@@ -572,6 +591,7 @@ const (
 	InteractionLLM        = types.InteractionLLM
 	InteractionLLMOrHuman = types.InteractionLLMOrHuman
 	InteractionReview     = types.InteractionReview
+	InteractionAsync      = types.InteractionAsync
 )
 
 // ---------------------------------------------------------------------------

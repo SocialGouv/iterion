@@ -123,4 +123,10 @@ const (
 	DiagEventNoListener DiagCode = "C198" // wait on an event no emit produces, or emit no wait consumes (warning — dangling event)
 	// Skill library (ADR-059): `skills:` references on nodes / workflow.
 	DiagInvalidSkillRef DiagCode = "C199" // malformed skill-library reference name (warning; existence is resolved at run time)
+	// Async human interaction (ADR-081): interaction: async + await_answers
+	// nodes. C240 band — C200–C230 are claimed by pkg/bundlelint's manifest
+	// lint codes (same Cnnn namespace, guarded by TestDiagCodesAreUnique).
+	DiagAsyncOnHuman          DiagCode = "C240" // interaction: async on a human node — only agent/judge can post async questions (error)
+	DiagAwaitAnswersNoTimeout DiagCode = "C241" // await_answers node with no `timeout:` (error — the no-silent-infinity invariant)
+	DiagAwaitAnswersBadFrom   DiagCode = "C242" // await_answers `from:` names a node that is missing or not interaction: async (warning — it can only ever time out)
 )

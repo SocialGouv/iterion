@@ -80,6 +80,7 @@ const (
 	NodeCompute                 // deterministic expression evaluation (no LLM, no shell)
 	NodeEmit                    // publishes a run-scoped event (no LLM, no shell)
 	NodeWait                    // blocks until a run-scoped event (no LLM, no shell)
+	NodeAwaitAnswers            // blocks until pending async human questions are answered (no LLM, no shell)
 	NodeSubbot                  // runs another .bot as a nested run
 	NodeDone                    // terminal: success
 	NodeFail                    // terminal: failure
@@ -103,6 +104,8 @@ func (k NodeKind) String() string {
 		return "emit"
 	case NodeWait:
 		return "wait"
+	case NodeAwaitAnswers:
+		return "await_answers"
 	case NodeSubbot:
 		return "subbot"
 	case NodeDone:
@@ -445,6 +448,22 @@ type WaitNode struct {
 // NodeKind implements Node.
 func (n *WaitNode) NodeKind() NodeKind { return NodeWait }
 
+// AwaitAnswersNode blocks its branch until every pending async human question
+// (posted via the ask_user_async tool by the From node — or by any node in the
+// run when From is empty) has been answered, then completes with the collected
+// answers as its output: {answers: [{interaction_id, node, question, answer}]}.
+// The Timeout is mandatory (the "no silent infinity" invariant) and bounds the
+// wait. The predicate is level-triggered against the interaction store, so
+// answers that arrived while the process was down are honoured on resume.
+type AwaitAnswersNode struct {
+	BaseNode
+	From    string        // optional node ref: only await questions posted by this node ("" = whole run)
+	Timeout time.Duration // mandatory bound on the wait
+}
+
+// NodeKind implements Node.
+func (n *AwaitAnswersNode) NodeKind() NodeKind { return NodeAwaitAnswers }
+
 // DoneNode is a terminal success node.
 type DoneNode struct {
 	BaseNode
@@ -743,6 +762,7 @@ const (
 	InteractionLLM        = types.InteractionLLM
 	InteractionLLMOrHuman = types.InteractionLLMOrHuman
 	InteractionReview     = types.InteractionReview
+	InteractionAsync      = types.InteractionAsync
 )
 
 // Review-gate posture values (interaction: review).
