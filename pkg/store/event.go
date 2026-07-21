@@ -61,7 +61,7 @@ const (
 	// marks the answers of a blocking pause at resume time. Data:
 	//   - interaction_id, node_id (the asking node), async: true
 	EventInteractionAnswered EventType = "interaction_answered"
-	EventRunResumed           EventType = "run_resumed"
+	EventRunResumed          EventType = "run_resumed"
 	// EventRunSteered marks a live-steering intervention on a RUNNING
 	// run (bump_loop / raise_budget), emitted by the engine goroutine
 	// atomically with the in-memory mutation so the timeline and any

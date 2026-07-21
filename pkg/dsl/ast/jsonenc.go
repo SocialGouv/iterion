@@ -110,26 +110,26 @@ func reverseMap[K comparable, V comparable](m map[K]V) map[V]K {
 // ---------------------------------------------------------------------------
 
 type jsonFile struct {
-	Vars        *jsonVarsBlock        `json:"vars,omitempty"`
-	Presets     *jsonPresetsBlock     `json:"presets,omitempty"`
-	Attachments *jsonAttachmentsBlock `json:"attachments,omitempty"`
-	Secrets     *jsonSecretsBlock     `json:"secrets,omitempty"`
-	MCPServers  []*jsonMCPServerDecl  `json:"mcp_servers,omitempty"`
-	Prompts     []*jsonPromptDecl     `json:"prompts,omitempty"`
-	Schemas     []*jsonSchemaDecl     `json:"schemas,omitempty"`
-	Cursors     []*jsonCursorDecl     `json:"cursors,omitempty"`
-	Agents      []*jsonAgentDecl      `json:"agents,omitempty"`
-	Judges      []*jsonJudgeDecl      `json:"judges,omitempty"`
-	Routers     []*jsonRouterDecl     `json:"routers,omitempty"`
-	Humans      []*jsonHumanDecl      `json:"humans,omitempty"`
-	Tools       []*jsonToolNodeDecl   `json:"tools,omitempty"`
-	Computes    []*jsonComputeDecl    `json:"computes,omitempty"`
-	Subbots     []*jsonSubbotDecl     `json:"subbots,omitempty"`
-	Emits       []*jsonEmitDecl       `json:"emits,omitempty"`
-	Waits       []*jsonWaitDecl       `json:"waits,omitempty"`
+	Vars         *jsonVarsBlock          `json:"vars,omitempty"`
+	Presets      *jsonPresetsBlock       `json:"presets,omitempty"`
+	Attachments  *jsonAttachmentsBlock   `json:"attachments,omitempty"`
+	Secrets      *jsonSecretsBlock       `json:"secrets,omitempty"`
+	MCPServers   []*jsonMCPServerDecl    `json:"mcp_servers,omitempty"`
+	Prompts      []*jsonPromptDecl       `json:"prompts,omitempty"`
+	Schemas      []*jsonSchemaDecl       `json:"schemas,omitempty"`
+	Cursors      []*jsonCursorDecl       `json:"cursors,omitempty"`
+	Agents       []*jsonAgentDecl        `json:"agents,omitempty"`
+	Judges       []*jsonJudgeDecl        `json:"judges,omitempty"`
+	Routers      []*jsonRouterDecl       `json:"routers,omitempty"`
+	Humans       []*jsonHumanDecl        `json:"humans,omitempty"`
+	Tools        []*jsonToolNodeDecl     `json:"tools,omitempty"`
+	Computes     []*jsonComputeDecl      `json:"computes,omitempty"`
+	Subbots      []*jsonSubbotDecl       `json:"subbots,omitempty"`
+	Emits        []*jsonEmitDecl         `json:"emits,omitempty"`
+	Waits        []*jsonWaitDecl         `json:"waits,omitempty"`
 	AwaitAnswers []*jsonAwaitAnswersDecl `json:"await_answers,omitempty"`
-	Workflows   []*jsonWorkflowDecl   `json:"workflows,omitempty"`
-	Comments    []*jsonComment        `json:"comments,omitempty"`
+	Workflows    []*jsonWorkflowDecl     `json:"workflows,omitempty"`
+	Comments     []*jsonComment          `json:"comments,omitempty"`
 }
 
 type jsonComment struct {

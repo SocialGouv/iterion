@@ -8,30 +8,30 @@ import "github.com/SocialGouv/iterion/pkg/dsl/types"
 
 // File is the root AST node representing an entire .bot source file.
 type File struct {
-	Vars        *VarsBlock        // top-level vars (optional, at most one)
-	Presets     *PresetsBlock     // top-level named preset value sets (optional, at most one)
-	Attachments *AttachmentsBlock // top-level attachments (optional, at most one)
-	Secrets     *SecretsBlock     // top-level secrets (optional, at most one)
-	MCPServers  []*MCPServerDecl  // top-level reusable MCP server declarations
-	Prompts     []*PromptDecl     // prompt declarations
-	Schemas     []*SchemaDecl     // schema declarations
-	Cursors     []*CursorDecl     // cursor declarations (prompt-engineering dials)
-	Supervisors []*SupervisorDecl // supervisor declarations (concurrent node-watchers)
-	Agents      []*AgentDecl      // agent node declarations
-	Judges      []*JudgeDecl      // judge node declarations
-	Routers     []*RouterDecl     // router node declarations
-	Humans      []*HumanDecl      // human node declarations
-	Tools       []*ToolNodeDecl   // tool node declarations (direct execution, no LLM)
-	Computes    []*ComputeDecl    // deterministic compute node declarations (no LLM, no shell)
-	Emits       []*EmitDecl       // emit node declarations (publish a run-scoped event)
-	Waits       []*WaitDecl       // wait node declarations (block until a run-scoped event)
+	Vars         *VarsBlock          // top-level vars (optional, at most one)
+	Presets      *PresetsBlock       // top-level named preset value sets (optional, at most one)
+	Attachments  *AttachmentsBlock   // top-level attachments (optional, at most one)
+	Secrets      *SecretsBlock       // top-level secrets (optional, at most one)
+	MCPServers   []*MCPServerDecl    // top-level reusable MCP server declarations
+	Prompts      []*PromptDecl       // prompt declarations
+	Schemas      []*SchemaDecl       // schema declarations
+	Cursors      []*CursorDecl       // cursor declarations (prompt-engineering dials)
+	Supervisors  []*SupervisorDecl   // supervisor declarations (concurrent node-watchers)
+	Agents       []*AgentDecl        // agent node declarations
+	Judges       []*JudgeDecl        // judge node declarations
+	Routers      []*RouterDecl       // router node declarations
+	Humans       []*HumanDecl        // human node declarations
+	Tools        []*ToolNodeDecl     // tool node declarations (direct execution, no LLM)
+	Computes     []*ComputeDecl      // deterministic compute node declarations (no LLM, no shell)
+	Emits        []*EmitDecl         // emit node declarations (publish a run-scoped event)
+	Waits        []*WaitDecl         // wait node declarations (block until a run-scoped event)
 	AwaitAnswers []*AwaitAnswersDecl // await_answers node declarations (block until async questions are answered)
-	Groups      []*GroupDecl      // reusable node-cluster declarations (compile-time macros)
-	Uses        []*UseDecl        // group instantiations (`use <group> as <prefix>`)
-	Subbots     []*SubbotDecl     // sub-bot node declarations (run another .bot as a nested run)
-	Workflows   []*WorkflowDecl   // workflow declarations
-	Comments    []*Comment        // top-level comments (## ...)
-	Span        Span
+	Groups       []*GroupDecl        // reusable node-cluster declarations (compile-time macros)
+	Uses         []*UseDecl          // group instantiations (`use <group> as <prefix>`)
+	Subbots      []*SubbotDecl       // sub-bot node declarations (run another .bot as a nested run)
+	Workflows    []*WorkflowDecl     // workflow declarations
+	Comments     []*Comment          // top-level comments (## ...)
+	Span         Span
 }
 
 // GroupDecl is a reusable cluster of nodes + internal edges, parameterised by

@@ -71,11 +71,12 @@ workflow my_workflow:
 | `agent` | LLM with tools and structured I/O | Most common |
 | `judge` | LLM verdict, no mutation | Tools optional |
 | `router` | Branch selection | Modes: `fan_out_all`, `fan_out_each`, `condition`, `round_robin`, `llm` |
-| `human` | Pause for human input | `interaction: human | llm | llm_or_human | review` |
+| `human` | Pause for human input | `interaction: human | llm | llm_or_human | review` (`async` is agent/judge-only — C240) |
 | `tool` | Deterministic shell | No LLM; uses `{{input.x}}` templates with auto shell-escape |
 | `compute` | Deterministic expression | No LLM, no shell. Use for passthrough, derived booleans, loop guards. |
 | `emit` | Publish a run-scoped event | `event: "<name>"` + optional `with { k: "{{ref}}" }` payload. No LLM, no shell (ADR-051). |
 | `wait` | Block a branch until an event fires | `event: "<name>"` + **mandatory** `timeout: "30s"` (the bornage, C197) + optional `output:` schema for the payload. Pair with `emit` in a parallel `fan_out_all` branch for reactive coordination. |
+| `await_answers` | Sync point for async human questions (ADR-081) | Optional `from: <node>` + **mandatory** `timeout:` (C241). Parks its branch until every pending `ask_user_async` question is answered; output is `{answers: [...]}`. The asking agent declares `interaction: async` (grants `ask_user_async` + `await_answers` tools — the agent keeps working while questions are pending, answers arrive in its message queue). |
 | `subbot` | Run another `.bot` as a nested run | `source:` + `with { ... }` + `output:`; child may contain loops |
 | `done` / `fail` | Built-in terminals | Never declare them |
 

@@ -1,0 +1,45 @@
+## async_await_mini.bot — deterministic fixture for the await_answers
+## node (ADR-081). A fan_out_all router spawns two parallel branches:
+##   - side:  a compute that finishes immediately (proves siblings are
+##            never frozen by pending questions)
+##   - gate:  an await_answers node parked until every pending async
+##            interaction of the run is answered
+## The test seeds/answers async interactions directly in the store —
+## no LLM, no shell.
+
+schema num:
+  n: int
+
+compute prep:
+  output: num
+  expr:
+    n: "21 + 21"
+
+router fork:
+  mode: fan_out_all
+
+compute side:
+  output: num
+  expr:
+    n: "outputs.prep.n"
+
+await_answers gate:
+  timeout: "5s"
+
+compute gather:
+  await: wait_all
+  output: num
+  publish: gathered
+  expr:
+    n: "outputs.side.n"
+
+workflow async_await_mini:
+  budget:
+    max_parallel_branches: 4
+  entry: prep
+  prep -> fork
+  fork -> side
+  fork -> gate
+  side -> gather
+  gate -> gather
+  gather -> done

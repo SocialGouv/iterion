@@ -72,18 +72,18 @@ type Workflow struct {
 type NodeKind int
 
 const (
-	NodeAgent   NodeKind = iota // LLM agent
-	NodeJudge                   // verdict-producing LLM node
-	NodeRouter                  // deterministic routing (no LLM)
-	NodeHuman                   // human pause/resume
-	NodeTool                    // direct command execution (no LLM)
-	NodeCompute                 // deterministic expression evaluation (no LLM, no shell)
-	NodeEmit                    // publishes a run-scoped event (no LLM, no shell)
-	NodeWait                    // blocks until a run-scoped event (no LLM, no shell)
-	NodeAwaitAnswers            // blocks until pending async human questions are answered (no LLM, no shell)
-	NodeSubbot                  // runs another .bot as a nested run
-	NodeDone                    // terminal: success
-	NodeFail                    // terminal: failure
+	NodeAgent        NodeKind = iota // LLM agent
+	NodeJudge                        // verdict-producing LLM node
+	NodeRouter                       // deterministic routing (no LLM)
+	NodeHuman                        // human pause/resume
+	NodeTool                         // direct command execution (no LLM)
+	NodeCompute                      // deterministic expression evaluation (no LLM, no shell)
+	NodeEmit                         // publishes a run-scoped event (no LLM, no shell)
+	NodeWait                         // blocks until a run-scoped event (no LLM, no shell)
+	NodeAwaitAnswers                 // blocks until pending async human questions are answered (no LLM, no shell)
+	NodeSubbot                       // runs another .bot as a nested run
+	NodeDone                         // terminal: success
+	NodeFail                         // terminal: failure
 )
 
 func (k NodeKind) String() string {

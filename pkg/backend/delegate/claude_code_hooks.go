@@ -247,7 +247,7 @@ func awaitPauseQuestionText(pending []PendingAsync) string {
 	var sb strings.Builder
 	sb.WriteString("The agent is waiting for your answer(s) to continue:")
 	for _, p := range pending {
-		sb.WriteString(fmt.Sprintf("\n- [%s] %s", p.InteractionID, p.Question))
+		fmt.Fprintf(&sb, "\n- [%s] %s", p.InteractionID, p.Question)
 	}
 	return sb.String()
 }

@@ -425,6 +425,18 @@ func (c *compiler) validateOutputsRef(w *Workflow, rc refContext, predecessors m
 		return
 	}
 
+	// await_answers nodes have a FIXED implicit output shape
+	// ({answers: [...]}) rather than a declared schema — `answers` is
+	// always valid, anything else is a hard error (ADR-081).
+	if _, isAwait := targetNode.(*AwaitAnswersNode); isAwait {
+		if fieldName != "answers" {
+			c.errorf(DiagRefFieldNotInSchema,
+				"%s: reference %s accesses field %q on await_answers node %q — its only output field is `answers`",
+				rc.Location, rc.Ref.Raw, fieldName, targetNodeID)
+		}
+		return
+	}
+
 	// C032: node has no output schema — warn that field access can't be verified.
 	outSchema := NodeOutputSchema(targetNode)
 	if outSchema == "" {

@@ -1,0 +1,78 @@
+## ─────────────────────────────────────────────────────────────────
+## async-questions/main.bot — async human interaction demo (ADR-081).
+##
+## The drafting agent declares `interaction: async`, which grants it:
+##   - ask_user_async : post a question to the operator and KEEP
+##     WORKING — the answer arrives later in its message queue,
+##   - await_answers  : sync on demand (returns immediately when all
+##     answered, pauses the run otherwise),
+##   - ask_user       : the blocking variant, for hard stops.
+##
+## The `await_answers gate` node is the DETERMINISTIC sync point: the
+## finalizer runs only once every posted question is answered, with
+## {{outputs.gate.answers}} carrying the Q/A list.
+##
+## Run it (visible in the studio):
+##   iterion run examples/async-questions/main.bot --store-dir "$PWD/.iterion"
+## Answer from the studio's question cards while the agent works, or:
+##   iterion runs questions <run-id>
+##   iterion runs answer <run-id> <interaction-id> "my answer"
+## ─────────────────────────────────────────────────────────────────
+
+schema draft_out:
+  draft: string
+
+schema final_out:
+  readme: string
+
+prompt draft_sys:
+  You are drafting a README skeleton for a small open-source project.
+
+  You do NOT yet know two things only the operator can decide:
+    1. the project's name,
+    2. the tone (corporate-neutral vs playful).
+
+  FIRST, before any drafting, post BOTH questions with ask_user_async
+  (one call per question) so the operator can answer while you work.
+  Then draft everything that does not depend on the answers: section
+  structure, installation template, contribution guide, license note.
+  If answers arrive in your conversation while you work, incorporate
+  them. Do not block: return your best draft with placeholders like
+  <NAME> where an unanswered detail belongs. Only call await_answers
+  if you have literally nothing left to do without the answers.
+
+prompt finalize_sys:
+  You finalize a README draft. You receive the draft (with possible
+  placeholders) and the operator's answers to the drafting questions.
+  Produce the final README with every placeholder resolved.
+
+prompt finalize_user:
+  Draft:
+  {{outputs.draft.draft}}
+
+  Operator answers:
+  {{outputs.gate.answers}}
+
+agent draft:
+  interaction: async
+  system: draft_sys
+  output: draft_out
+
+## Deterministic sync point: block HERE (and only here) until every
+## question the draft agent posted is answered. Mandatory timeout —
+## the no-silent-infinity invariant.
+await_answers gate:
+  from: draft
+  timeout: "30m"
+
+agent finalize:
+  system: finalize_sys
+  user: finalize_user
+  output: final_out
+  publish: readme
+
+workflow async_questions:
+  entry: draft
+  draft -> gate
+  gate -> finalize
+  finalize -> done

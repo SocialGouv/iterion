@@ -66,7 +66,7 @@ export default function AsyncQuestionForm({ runId, interactionId, questions }: P
           }}
         >
           <textarea
-            className="min-h-[38px] flex-1 resize-y rounded-md border border-border-default bg-bg-default px-2 py-1.5 text-body text-fg-default placeholder:text-fg-subtle focus:outline-none focus:ring-1 focus:ring-accent-emphasis"
+            className="min-h-[38px] flex-1 resize-y rounded-md border border-border-default bg-surface-default px-2 py-1.5 text-body text-fg-default placeholder:text-fg-subtle focus:outline-none focus:ring-1 focus:ring-accent-emphasis"
             rows={1}
             placeholder="Answer whenever you're ready — the agent keeps working…"
             value={text}
