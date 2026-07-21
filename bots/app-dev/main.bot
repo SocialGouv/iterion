@@ -868,6 +868,10 @@ schema deploy_trace_result:
   pushed:          bool
   image_from_repo: bool
   built_from_head: bool
+  ## False when the gate could not establish the facts at all (git
+  ## unreachable, miswired input). Distinct from a verified failure: it must
+  ## not sink a delivery the gate simply could not inspect.
+  verifiable:      bool
   trace_log:       string
 
 ## deploy_verify's verdict — pass gates exit from the redeploy loop.
@@ -1276,6 +1280,17 @@ def git(*a):
         return p.returncode, p.stdout.strip()
     except Exception as e:
         return 1, str(e)
+# Absence of evidence is not evidence of absence. If git itself is
+# unreachable (the sandbox cannot resolve the worktree's gitdir), the gate
+# knows NOTHING — reporting that as "not pushed" fails deliveries that are
+# in fact correct, which is how run 019f847b was rejected after shipping a
+# working app from a CI-built image.
+probe_rc, _ = git('rev-parse', '--git-dir')
+if probe_rc != 0:
+    print(json.dumps({'pushed': False, 'image_from_repo': False, 'built_from_head': False,
+                      'verifiable': False,
+                      'trace_log': 'CANNOT VERIFY: git is unavailable in this workspace (' + ws + '), so traceability could not be checked either way. This is an environment fault, not a verdict on the deploy.'}))
+    raise SystemExit(0)
 git('fetch', '--quiet', 'origin')
 rc, remote_branches = git('branch', '-r', '--contains', 'HEAD')
 pushed = rc == 0 and bool(remote_branches.strip())
@@ -1298,6 +1313,7 @@ built_from_head = bool(head) and bool(image) and any(
 # loudly rather than silently judging the literal string.
 if ('{' + '{') in image:
     print(json.dumps({'pushed': False, 'image_from_repo': False, 'built_from_head': False,
+                      'verifiable': False,
                       'trace_log': 'GATE MISWIRED: image_ref arrived unsubstituted (' + image + '). This verdict is NOT a judgement about the deploy — fix the bot wiring.'}))
     raise SystemExit(0)
 log = []
@@ -1310,7 +1326,7 @@ if not from_repo:
     log.append('IMAGE NOT FROM THIS REPO: a live URL served by a stock base image (or an unreported image) is not a delivery — publish an image under the repo registry and deploy THAT.')
 if not built_from_head:
     log.append('IMAGE DOES NOT NAME THE PUSHED COMMIT: tag the image with the commit SHA and deploy that tag, so the running pod is traceable to reviewable source. The FINAL image must come from CI building the pushed commit — a locally pushed image is for iterating, not for delivering.')
-print(json.dumps({'pushed': pushed, 'image_from_repo': from_repo, 'built_from_head': built_from_head, 'trace_log': ' | '.join(log)}))
+print(json.dumps({'pushed': pushed, 'image_from_repo': from_repo, 'built_from_head': built_from_head, 'verifiable': True, 'trace_log': ' | '.join(log)}))
 "`
 
 ## deploy_verify — DETERMINISTIC verdict on the deploy result. No LLM: the
@@ -1329,8 +1345,14 @@ print(json.dumps({'pushed': pushed, 'image_from_repo': from_repo, 'built_from_he
 compute deploy_verify:
   output: deploy_verdict
   expr:
-    pass:   "outputs.deploy.deployed && outputs.deploy.healthy && outputs.deploy.deployed_url != '' && outputs.deploy_trace.pushed && outputs.deploy_trace.image_from_repo && outputs.deploy_trace.built_from_head"
-    reason: "if(outputs.deploy.deployed_url == '', outputs.deploy.notes, if(outputs.deploy_trace.pushed && outputs.deploy_trace.image_from_repo && outputs.deploy_trace.built_from_head, '', outputs.deploy_trace.trace_log))"
+    ## Traceability is REQUIRED when it could be established, and cannot be
+    ## demanded when the gate was unable to look. Treating "could not verify"
+    ## as "failed" rejected a correct delivery (run 019f847b); treating it as
+    ## "passed" would re-open the façade hole. So: a live deploy still gates
+    ## on the three facts whenever verifiable, and an unverifiable one passes
+    ## with the fault stated in `reason` for the operator to judge.
+    pass:   "outputs.deploy.deployed && outputs.deploy.healthy && outputs.deploy.deployed_url != '' && (if(outputs.deploy_trace.verifiable, outputs.deploy_trace.pushed && outputs.deploy_trace.image_from_repo && outputs.deploy_trace.built_from_head, true))"
+    reason: "if(outputs.deploy.deployed_url == '', outputs.deploy.notes, outputs.deploy_trace.trace_log)"
 
 ## ─── Workflow ───────────────────────────────────────────────────
 
