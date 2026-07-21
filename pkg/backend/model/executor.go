@@ -140,6 +140,11 @@ type ClawExecutor struct {
 	// backend-level WithInbox option (set in runview/executor.go).
 	inbox InboxBinder
 
+	// asyncAsk backs the ask_user_async / await_answers tools of
+	// interaction: async nodes (ADR-081). nil = async asks unavailable
+	// (the tools then error explicitly). Set via WithExecutorAsyncAsk.
+	asyncAsk AsyncAskBinder
+
 	// secretGuard is the per-run secrets scrubber (Layer 0/1/2). It is
 	// shared with the event hooks (Layer 0 sink redaction); the executor
 	// holds its own reference so it can (a) satisfy runtime.SecretScrubber
@@ -433,6 +438,33 @@ func (e *ClawExecutor) bindInboxDrain(ctx context.Context) func() []string {
 		return nil
 	}
 	return func() []string { return hook.Drain(ctx) }
+}
+
+// bindAsyncAsk threads the per-(run,node) async-question closures onto
+// the Task (ADR-081). No binder / no run ID leaves the closures nil —
+// backends then reject the async tools with an explicit error rather
+// than a silent no-op.
+func (e *ClawExecutor) bindAsyncAsk(ctx context.Context, nodeID string, task *delegate.Task) {
+	if e.asyncAsk == nil {
+		return
+	}
+	runID := RunIDFromContext(ctx)
+	if runID == "" {
+		return
+	}
+	hook := e.asyncAsk.BindAsyncAsk(ctx, runID, nodeID)
+	if hook == nil {
+		return
+	}
+	task.PostAsyncQuestion = func(q delegate.AsyncQuestion) (string, error) {
+		return hook.Post(ctx, q)
+	}
+	task.PendingAsyncQuestions = func() ([]delegate.PendingAsync, error) {
+		return hook.Pending(ctx)
+	}
+	task.CollectAsyncAnswers = func() (string, error) {
+		return hook.CollectAnswers(ctx)
+	}
 }
 
 // EvictRun drops every per-node session belonging to the given run.

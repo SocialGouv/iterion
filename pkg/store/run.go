@@ -720,11 +720,25 @@ type AttachmentRecord struct {
 // Interaction — human input/output exchange
 // ---------------------------------------------------------------------------
 
+// Interaction kinds (ADR-081). The zero value ("") is a legacy/blocking
+// pause interaction — the run is paused_waiting_human on it.
+const (
+	// InteractionKindAsync is a non-blocking question posted by an
+	// interaction: async agent via the ask_user_async tool. The run keeps
+	// executing; pending = AnsweredAt == nil.
+	InteractionKindAsync = "async"
+	// InteractionKindAwait is the synthetic pause interaction created when
+	// an agent calls the await_answers tool while async questions are
+	// still pending. Its Questions carry the pending async interaction IDs.
+	InteractionKindAwait = "await"
+)
+
 // Interaction records a human pause/resume exchange.
 type Interaction struct {
 	ID          string         `json:"id" bson:"interaction_id"`
 	RunID       string         `json:"run_id" bson:"run_id"`
 	NodeID      string         `json:"node_id" bson:"node_id"`
+	Kind        string         `json:"kind,omitempty" bson:"kind,omitempty"` // "" (blocking pause) | InteractionKindAsync | InteractionKindAwait
 	RequestedAt time.Time      `json:"requested_at" bson:"requested_at"`
 	AnsweredAt  *time.Time     `json:"answered_at,omitempty" bson:"answered_at,omitempty"`
 	Questions   map[string]any `json:"questions,omitempty" bson:"questions,omitempty"`

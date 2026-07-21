@@ -637,6 +637,12 @@ func (e *ClawExecutor) buildTask(ctx context.Context, node ir.Node, f backendFie
 		Hooks:      e.delegateHooksFor(f.id, backendName, LoopIterationFromContext(ctx)),
 		InboxDrain: e.bindInboxDrain(ctx),
 	}
+	// interaction: async (ADR-081) — bind the non-blocking question
+	// closures. Both backends key their ask_user_async / await_answers
+	// tool registration on PostAsyncQuestion being non-nil.
+	if f.interaction == ir.InteractionAsync {
+		e.bindAsyncAsk(ctx, f.id, &task)
+	}
 	// Per-node CLI binary override (env-expanded). Only claude_code consumes
 	// it; other backends ignore Task.Command. Empty = backend default.
 	task.Command = ir.ExpandEnvWithDefault(f.command)

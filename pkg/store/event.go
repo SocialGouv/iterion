@@ -55,6 +55,12 @@ const (
 	EventHumanInputRequested  EventType = "human_input_requested"
 	EventRunPaused            EventType = "run_paused"
 	EventHumanAnswersRecorded EventType = "human_answers_recorded"
+	// EventInteractionAnswered fires when a pending ASYNC interaction
+	// (ADR-081, Interaction.Kind == "async") receives its answer — while
+	// the run keeps executing. Distinct from human_answers_recorded, which
+	// marks the answers of a blocking pause at resume time. Data:
+	//   - interaction_id, node_id (the asking node), async: true
+	EventInteractionAnswered EventType = "interaction_answered"
 	EventRunResumed           EventType = "run_resumed"
 	// EventRunSteered marks a live-steering intervention on a RUNNING
 	// run (bump_loop / raise_budget), emitted by the engine goroutine

@@ -35,6 +35,25 @@ const interactionSystemInstruction = "\n\n[INTERACTION PROTOCOL]\n" +
 	"Include as many question keys as needed. If you do NOT need human input, " +
 	"do not include these fields and complete your task normally."
 
+// asyncInteractionSystemInstruction is appended (after the base
+// interaction protocol) for interaction: async nodes (ADR-081): the agent
+// may post non-blocking questions and keep working; answers arrive in its
+// message queue; await_answers is the explicit sync point.
+const asyncInteractionSystemInstruction = "\n\n[ASYNC QUESTIONS]\n" +
+	"You can ask the human operator questions WITHOUT stopping your work:\n" +
+	"- ask_user_async(question, options?, allow_free_text?) posts a question and " +
+	"returns immediately. Keep working on everything that does not depend on the " +
+	"answer. The operator's answer will arrive later in your conversation as an " +
+	"operator message tagged with the question id — incorporate it when it shows up.\n" +
+	"- Post questions as EARLY as possible (front-load them), so the operator has " +
+	"time to answer while you work.\n" +
+	"- await_answers() is the sync point: call it ONLY when you truly cannot " +
+	"proceed without the pending answers. If everything is already answered it " +
+	"returns the answers immediately; otherwise the run pauses until the operator " +
+	"replies.\n" +
+	"- For a question that must block right now (a destructive or irreversible " +
+	"decision), use the blocking ask_user tool instead."
+
 // ultracodeOrchestrationInstruction is the standing-consent prompt appended
 // when Task.Ultracode is set. It mirrors Anthropic's documented
 // orchestration-mode recipe (xhigh effort + standing permission to launch
@@ -643,6 +662,39 @@ type Task struct {
 	// executor populates it from its bound InboxBinder; nil means the
 	// run opted out of the inbox (CLI manual runs, …).
 	InboxDrain func() []string
+
+	// Async-interaction closures (ADR-081), bound by the executor for
+	// nodes with `interaction: async`. All three are nil otherwise —
+	// backends must treat a nil closure as "async ask not available for
+	// this node" and surface an explicit tool error, never a silent no-op.
+
+	// PostAsyncQuestion persists a pending Kind=async Interaction for
+	// this node and emits human_input_requested{async:true}. Returns the
+	// interaction ID the answer will reference.
+	PostAsyncQuestion func(q AsyncQuestion) (interactionID string, err error)
+
+	// PendingAsyncQuestions lists this node's still-unanswered async
+	// questions (oldest first).
+	PendingAsyncQuestions func() ([]PendingAsync, error)
+
+	// CollectAsyncAnswers formats every answered async question of this
+	// node into a single human-readable block (the await_answers tool
+	// result when nothing is pending).
+	CollectAsyncAnswers func() (string, error)
+}
+
+// AsyncQuestion is the input of a non-blocking ask_user_async call
+// (ADR-081). Same wire shape as the blocking ask_user question.
+type AsyncQuestion struct {
+	Question      string
+	Options       []AskUserOption
+	AllowFreeText bool
+}
+
+// PendingAsync identifies one still-unanswered async question.
+type PendingAsync struct {
+	InteractionID string
+	Question      string
 }
 
 // TaskHooks are optional callbacks a backend can fire during execution
@@ -749,6 +801,10 @@ func (t Task) BuildSystemPrompt() string {
 	b.WriteString(base)
 	if t.InteractionEnabled {
 		b.WriteString(interactionSystemInstruction)
+		// PostAsyncQuestion bound ⇒ the node is interaction: async.
+		if t.PostAsyncQuestion != nil {
+			b.WriteString(asyncInteractionSystemInstruction)
+		}
 	}
 	if t.Ultracode {
 		b.WriteString(ultracodeOrchestrationInstruction)
@@ -1022,6 +1078,23 @@ const (
 	// session-continuity wiring and by the engine's fork rehydration path
 	// so a forked claude_code node picks up the parent's CLI session.
 	SessionIDKey = "_session_id"
+)
+
+// AwaitPendingInteractionsKey is the reserved Interaction.Questions key
+// marking an await_answers-tool escalation (ADR-081): the agent called
+// await_answers while async questions were still pending, so the run
+// paused on a synthetic Kind=await interaction. Value shape: []any of
+// map{"interaction_id","question"} — the pending async questions at
+// pause time. The resume path fans the operator's answers out onto the
+// referenced async interaction records before re-invoking the backend.
+const AwaitPendingInteractionsKey = "_await_pending_interactions"
+
+// Canonical tool names of the async-interaction pair (ADR-081). The
+// claude_code side prefixes them with the MCP server namespace
+// (mcp__iterion__…); claw registers them under these bare names.
+const (
+	AskUserAsyncToolName = "ask_user_async"
+	AwaitAnswersToolName = "await_answers"
 )
 
 // QueuedOperatorMessagesKey is the reserved Interaction.Questions key
