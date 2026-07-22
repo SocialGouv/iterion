@@ -101,8 +101,19 @@ non-obvious flags worth calling out:
   body, `--diff` shows its diff, and `--edit @<local-file>` writes the
   local file's bytes back to `<path>` in the run workspace.
 - `runs merge <id> --into <branch>` sets the merge **target** branch
-  (pairs with `--strategy`); `runs list --limit N` (and `audit --limit N`)
-  caps result count.
+  (pairs with `--strategy`); `--message <msg>` overrides the merge commit
+  message. `runs list --limit N` (and `audit --limit N`) caps result count.
+- `runs launch --model-overrides <json>` supplies a model-overrides JSON
+  array (a literal string, or `@file` to read it from a path) applied to the
+  launched run.
+- `runs delete <id> --yes` confirms the deletion non-interactively.
+- `issues comment <id> <text> --transition-to <state>` moves the issue to
+  `<state>` right after posting the comment.
+- `teams invitations create <email> --role <role>` (and the identical
+  `orgs invitations create`) sets the invited member's role (default
+  `member`).
+- `marketplace moderation reject <slug> --reason <text>` records the
+  rejection reason on a marketplace submission.
 - `tokens create --expires-days N` (0 = platform default) and
   `api-keys create --default` (make this the provider's default key)
   tune the credential each command mints.
