@@ -894,17 +894,12 @@ workflow sec_audit_deps:
   ## `open`, so the SCA DBs are reachable. (Until CI publishes the ref
   ## to ghcr, build locally and `docker tag` it to the ref below so the
   ## docker driver's image-inspect fast path resolves it without a pull.)
+  ## Image pin survives ADR-082 Phase 2: the scanner toolchain (semgrep,
+  ## trivy, gitleaks, …) genuinely needs the baked sec image —
+  ## devbox-installing it per run costs minutes of Nix. Everything else
+  ## (isolation, claude CLI, host-state mounts) is the platform default.
   sandbox:
     image: "ghcr.io/socialgouv/iterion-sandbox-sec:edge"
-    user: "1000:1000"
-    mounts: ["type=bind,source=${localEnv:HOME}/.claude,target=/home/devbox/.claude,consistency=cached"]
-    env:
-      CLAUDE_CONFIG_DIR: "/home/devbox/.claude"
-    ## llm_review is a claude_code node, but the sec image ships node+npm
-    ## WITHOUT the claude CLI — install it once per container (same gate as
-    ## feature_dev / sec-audit-source: run the binary, verify, fail
-    ## post_create cleanly so the dispatcher retries with a fresh container).
-    post_create: "set -e; claude --version >/dev/null 2>&1 || sudo npm install -g @anthropic-ai/claude-code@latest; claude --version >/dev/null 2>&1 || { echo 'claude install verification failed' >&2; exit 1; }"
 
   budget:
     max_parallel_branches: 4

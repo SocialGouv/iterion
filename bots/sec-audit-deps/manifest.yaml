@@ -1,7 +1,10 @@
 name: sec-audit-deps
 display_name: Depsy
 icon: 📦
-version: 0.1.0
+version: 0.1.1
+## 0.1.1 — ADR-082 Phase 2 (sandbox-by-default): sandbox block reduced to
+## the sec-image pin (scanner toolchain); claude install gate, ~/.claude
+## mount and CLAUDE_CONFIG_DIR removed — platform defaults cover them.
 description: |
   Universal supply-chain malware auditor. Enumerates installed
   dependencies per ecosystem (npm/yarn/pnpm, pip/poetry/uv,

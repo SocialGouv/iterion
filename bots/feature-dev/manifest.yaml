@@ -1,7 +1,10 @@
 name: feature-dev
 display_name: Featurly
 icon: 🛠️
-version: 2.0.0
+version: 2.0.1
+## 2.0.1 — ADR-082 Phase 2 (sandbox-by-default): removed the `sandbox:`
+## block — isolation is the platform's job; gh/glab move to the bot's
+## pinned devbox.json.
 ## 2.0.0 — RADICAL SIMPLIFICATION (ADR-058 minimal-framing). Replaces the
 ## v1 staged pipeline (plan → act → simplify session chain → alt condition
 ## router → reviewer_claude/reviewer_gpt → streak_check → fix_claude/

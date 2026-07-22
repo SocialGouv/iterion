@@ -1,7 +1,10 @@
 name: devbox-setup
 display_name: Devy
 icon: 🧰
-version: 0.1.0
+version: 0.1.1
+## 0.1.1 — ADR-082 Phase 2 (sandbox-by-default): removed the `sandbox:`
+## block entirely — the default slim image already ships node + devbox/nix
+## + the claude CLI.
 description: |
   Bootstraps a reproducible dev environment for a repository. Detects the
   project's languages, runtimes, build + test tools and e2e stack (e.g.

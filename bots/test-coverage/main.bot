@@ -563,22 +563,10 @@ workflow test_coverage:
   ## checked-out branch.
   worktree: auto
 
-  ## Container isolation on top of the worktree. The campaign runs the
-  ## repo's build+test inferred from the project — the worktree alone
-  ## doesn't sandbox those. Inline mode (not `mode: auto`) so we can pin
-  ## the image AND install claude into it (the sandbox images don't ship
-  ## the CLI; auto fallback drops post_create/mounts/env).
-  sandbox:
-    image: "ghcr.io/socialgouv/iterion-sandbox-full:edge"
-    user: "1000:1000"
-    mounts: ["type=bind,source=${localEnv:HOME}/.claude,target=/home/devbox/.claude,consistency=cached"]
-    env:
-      CLAUDE_CONFIG_DIR: "/home/devbox/.claude"
-    ## Gate on `claude --version` (runs the binary), NOT `command -v`
-    ## (a broken/partial npm -g install exits 0 leaving a non-runnable
-    ## binary). VERIFY after install + exit 1 on failure so a broken
-    ## claude fails post_create cleanly instead of cryptically mid-run.
-    post_create: "set -e; claude --version >/dev/null 2>&1 || sudo npm install -g @anthropic-ai/claude-code@latest; claude --version >/dev/null 2>&1 || { echo 'claude install verification failed' >&2; exit 1; }"
+  ## No `sandbox:` block (ADR-082): the platform sandboxes by default
+  ## (`sandbox: auto` — target repo's devcontainer, else the default
+  ## image); the target repo's toolchain comes from its own
+  ## devcontainer/devbox.json.
 
   budget:
     max_parallel_branches: 1

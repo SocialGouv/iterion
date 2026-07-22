@@ -13,13 +13,13 @@ import (
 // v2 (ADR-058 minimal-framing): ONE campaign agent surveys the seams,
 // closes the missing items committing each in stride, then the
 // deterministic verify gate re-checks the tree inside a worktree
-// (worktree: auto + sandbox-full).
+// (worktree: auto; no sandbox block per ADR-082 — direct engine runs are host-side).
 //
 // Reliability invariants: campaign + verify_build + verify_run + gate
 // fire; commits are logged. The quality panel grades the completion +
 // value.
 //
-// Requires: claude CLI + docker w/ iterion-sandbox-full:edge.
+// Requires: claude CLI.
 // Expected: ~20-50 min.
 func TestLive_Bot_FeatureGapFill(t *testing.T) {
 	if testing.Short() {
@@ -27,7 +27,6 @@ func TestLive_Bot_FeatureGapFill(t *testing.T) {
 	}
 	loadDotEnv(t)
 	requireCLI(t, "claude")
-	requireDockerImage(t, "ghcr.io/socialgouv/iterion-sandbox-full:edge")
 
 	workspaceDir, err := os.MkdirTemp("", "iterion-feature-gap-fill-*")
 	if err != nil {

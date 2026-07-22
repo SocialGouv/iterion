@@ -1292,21 +1292,21 @@ workflow supply_shield_cve:
   ## onto the full image; build it from sandbox/sec/Dockerfile. Network
   ## defaults to open, so the vuln DBs are reachable. (Until CI publishes
   ## the ref, build locally and `docker tag` it to the ref below.)
+  ## Image pin survives ADR-082 Phase 2: the scanner toolchain genuinely
+  ## needs the baked sec image — devbox-installing it per run costs
+  ## minutes of Nix. Everything else (isolation, claude CLI, host-state
+  ## mounts) is the platform default.
   sandbox:
     image: "ghcr.io/socialgouv/iterion-sandbox-sec:edge"
-    user: "1000:1000"
-    mounts: ["type=bind,source=${localEnv:HOME}/.claude,target=/home/devbox/.claude,consistency=cached"]
     env:
-      CLAUDE_CONFIG_DIR: "/home/devbox/.claude"
+      ## Forge-token passthrough for the forge_report tail
+      ## (docker-local parity: the host env is the credential source).
+      ## ADR-082 Phase 3 moves these to file secrets delivered per run.
       GH_TOKEN: "${localEnv:GH_TOKEN}"
       GITHUB_TOKEN: "${localEnv:GITHUB_TOKEN}"
       GITLAB_TOKEN: "${localEnv:GITLAB_TOKEN}"
       FORGEJO_TOKEN: "${localEnv:FORGEJO_TOKEN}"
       GITEA_TOKEN: "${localEnv:GITEA_TOKEN}"
-    ## llm_review + forge_report are claude_code nodes, but the sec image
-    ## ships node+npm WITHOUT the claude CLI — install it once per
-    ## container (same gate as feature_dev / sec-audit-deps).
-    post_create: "set -e; claude --version >/dev/null 2>&1 || sudo npm install -g @anthropic-ai/claude-code@latest; claude --version >/dev/null 2>&1 || { echo 'claude install verification failed' >&2; exit 1; }"
 
   budget:
     max_parallel_branches: 4
