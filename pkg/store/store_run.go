@@ -56,6 +56,8 @@ func (s *FilesystemRunStore) CreateRun(_ context.Context, id, workflowName strin
 	return r, nil
 }
 
+var _ ParentedRunCreator = (*FilesystemRunStore)(nil)
+
 // CreateChildRun persists a new run with status "running", stamping
 // ParentRunID in the same exclusive-create write as the run document.
 // It exists so spawnRun's precreate never leaves a running child doc

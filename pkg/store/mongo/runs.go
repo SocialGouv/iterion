@@ -45,6 +45,8 @@ func (s *Store) CreateRun(ctx context.Context, id, workflowName string, inputs m
 	return r, nil
 }
 
+var _ store.ParentedRunCreator = (*Store)(nil)
+
 // CreateChildRun inserts a new run document (status=queued, like
 // CreateRun) with ParentRunID stamped in the same insert, so the cloud
 // launch path persists the parent link without a follow-up SaveRun.
