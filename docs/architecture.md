@@ -287,6 +287,8 @@ code. See [bundles.md](bundles.md), [skills-library.md](skills-library.md), and
 | `pkg/dispatcher/`, `pkg/trigger/`, `pkg/eventbus/` | Issue and event-driven automation. |
 | `pkg/cloud/`, `pkg/queue/`, `pkg/runner/` | Cloud configuration, NATS queue, and execution workers. |
 | `pkg/identity/`, `pkg/auth/`, `pkg/forge/`, `pkg/secrets/` | Tenancy, access, repository integration, and credentials. |
+| `pkg/secure/httpdial/`, `pkg/valkey/` | SSRF guard (safe host resolution + pinned-IP dial, DNS-rebinding-proof) and the go-redis/Valkey client for ephemeral state shared across cloud replicas. |
+| `pkg/artifactlabels/`, `pkg/runshell/` | Shape-derived artifact labels for studio grouping, and interactive post-mortem shells (the studio "Open shell" on a preserved run worktree). |
 | `bots/`, `examples/` | Maintained product bots and focused language/integration fixtures. |
 
 ## Architecture decisions
