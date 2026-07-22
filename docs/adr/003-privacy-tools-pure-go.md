@@ -180,7 +180,7 @@ output (documented as the user's choice).
 
 - **Hard-coded persistence-aware redaction.** Two specific tool
   names (`privacy_filter`, `privacy_unfilter`) are recognized in
-  `pkg/backend/model/executor.go` and `pkg/runtime/helpers.go`. A
+  `pkg/backend/model/executor.go` and `pkg/runtime/node_output.go`. A
   third privacy-sensitive tool would need a parallel entry here
   and motivate generalisation.
 
