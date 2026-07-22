@@ -55,6 +55,15 @@ authors → `triage:auto`, external authors → `needs:approval` + studio
   branch the operator had checked out mid-session (delivery had to be
   re-based commit-by-commit; #203/Willy deferred for the same reason —
   it edits its workspace in place).
+- Wave 4 (#203, Willy/whole-improve-loop): the reference-quality run.
+  Launched via CLI from a CLONE pinned to main (friction 8 workaround —
+  nested worktrees fork the PRIMARY checkout's HEAD, and the operator's
+  checkout was on a test branch), improvement_prompt = the card body.
+  Converged FIRST pass: ~$3.2 / ~15 min for both axes (M2 atomic
+  ClaimForLaunch CAS + M1 pipeline-board memoization), 254+ added lines
+  incl. tests, drift mirror included up front by the hardened
+  verify_build prompt (no exit-3 wall), auto squash-merged into the
+  clone's main by finalize. Cost/value profile exactly on target.
 - Lessons: dispatcher-claimed treatment is solid once the above are in;
   the campaign/precheck tug-of-war (agent stripping "irrelevant" gates)
   is fully resolved by fixing the probe reuse (bug 4) + prompt (6);
