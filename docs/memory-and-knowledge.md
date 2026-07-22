@@ -105,6 +105,26 @@ client gets `Content-Disposition: attachment; filename="memory-export.tar.gz"`.
 `knowledge.ImportStrategy`. Use the export → import pair to migrate a
 space between orgs (or environments).
 
+### Local CLI
+
+`iterion memory` drives the same archive over a **local** store — no
+running server needed. All three subcommands select the space with the
+shared `--visibility` (`bot|project|cross_project|user|org|global`),
+`--name`, and the scoping flags the visibility requires (`--bot`,
+`--project`, `--user`, `--tenant`):
+
+```sh
+iterion memory export --name notes --bot whats-next --out notes.tar.gz   # default: stdout
+iterion memory import --name notes --bot whats-next --in notes.tar.gz \
+        --strategy skip                                                  # skip|overwrite|rename; default stdin
+iterion memory du     --name notes --bot whats-next                      # disk usage of the space
+```
+
+`--in`/`--out` default to stdin/stdout, so `export … | import …` pipes a
+space across stores directly. `--strategy` mirrors the REST `?strategy=`
+merge policy. The remote equivalents are `iterion remote memory
+export|import` (see [cloud-cli.md](cloud-cli.md)).
+
 ## How bots use memory
 
 The canonical consumer is the **session-continuity** skill shipped in
