@@ -29,12 +29,17 @@ USER root
 #              driver overrides PID 1 anyway.
 #   procps   — `ps`, used by recovery dispatch + diagnostics.
 #   jq, ca-certificates, curl, gnupg — common shell-tool dependencies.
-RUN apt-get update \
+# apt cache mounts keep the downloaded .deb archives + package lists warm on
+# the operator daemon (dropping docker-clean so apt doesn't purge them); the
+# mounts never land in the image layer, so no rm -rf cleanup is needed.
+RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
+    --mount=type=cache,target=/var/lib/apt/lists,sharing=locked \
+    rm -f /etc/apt/apt.conf.d/docker-clean \
+ && apt-get update \
  && apt-get install -y --no-install-recommends \
         ca-certificates curl gnupg jq procps tini \
  && curl -fsSL https://deb.nodesource.com/setup_24.x | bash - \
- && apt-get install -y --no-install-recommends nodejs \
- && rm -rf /var/lib/apt/lists/*
+ && apt-get install -y --no-install-recommends nodejs
 
 # /workspace is the canonical bind-mount target used by iterion's
 # docker driver (see pkg/sandbox/docker/driver.go DefaultWorkspace).

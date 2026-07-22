@@ -33,7 +33,13 @@ USER root
 # fonts-noto-color-emoji + fonts-liberation cover the typical "page
 # looks broken because emoji/sans fallbacks are missing" case
 # without bloating the image with a CJK/Indic spread.
-RUN apt-get update \
+# apt cache mounts keep the ~280 MB chromium download warm on the operator
+# daemon (dropping docker-clean so apt doesn't purge it); the mounts never
+# land in the image layer, so no rm -rf cleanup is needed.
+RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
+    --mount=type=cache,target=/var/lib/apt/lists,sharing=locked \
+    rm -f /etc/apt/apt.conf.d/docker-clean \
+ && apt-get update \
  && apt-get install -y --no-install-recommends \
         chromium \
         fonts-liberation \
@@ -42,14 +48,16 @@ RUN apt-get update \
         libxss1 \
         libxtst6 \
         libgbm1 \
-        libasound2 \
- && rm -rf /var/lib/apt/lists/*
+        libasound2
 
 # Playwright MCP — the npm package the runtime spawns via stdio.
-# Pin the global install for reproducibility; bumps land via PR.
+# Pinned global install for reproducibility; bumps land via PR.
 # We rely on Node 24 inherited from slim. Corepack-managed pnpm is
 # already enabled in the base image.
-RUN npm install -g @playwright/mcp@latest
+# renovate: datasource=npm depName=@playwright/mcp versioning=npm
+ARG PLAYWRIGHT_MCP_VERSION=0.0.78
+RUN --mount=type=cache,target=/root/.npm \
+    npm install -g "@playwright/mcp@${PLAYWRIGHT_MCP_VERSION}"
 
 # Chromium expects a writable XDG_CACHE dir; default to the devbox
 # user's home so each run gets a fresh, isolated cache.
