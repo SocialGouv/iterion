@@ -64,6 +64,7 @@ For the fuller control-plane / data-plane view, see [cloud-architecture.md](clou
 | MongoDB | 6.0+ with **replica set** (change-streams require an oplog) |
 | NATS | 2.10+ with JetStream enabled |
 | S3-compatible | bucket pre-created with `s3:ListBucket`, `s3:GetObject`, `s3:PutObject`, `s3:DeleteObject` for the IAM principal |
+| Valkey / Redis (optional) | required only for **multi-replica** servers — shares per-pod state across replicas (see below); a single server replica runs without it |
 | KEDA (optional) | 2.13+ if `runner.keda.enabled=true` |
 | Prometheus Operator (optional) | for `metrics.podMonitor.enabled=true` |
 
@@ -114,6 +115,27 @@ auth bootstrap routes remain public.
 
 For rotation details, including JWT signing-key rotation and
 `ITERION_SECRETS_KEY` impact, see [cloud-admin.md](cloud-admin.md).
+
+## Shared replica state (Valkey / Redis)
+
+Some server state is per-pod and must be shared when you run **more than
+one server replica**: forge OAuth/CSRF/manifest-install state, board-MCP
+run tokens, and auth rate-limit buckets. Configure a Valkey/Redis backend
+and every replica reads/writes the same store; leave it unset and the
+server falls back to **in-memory** implementations (correct for a single
+replica, but an OAuth callback or rate-limit check can then land on a pod
+that never saw the paired request).
+
+| Env var | Purpose |
+|---|---|
+| `ITERION_REDIS_URL` | Single-node connection string (`redis://[:pass@]host:port[/db]`) — dev/local topology |
+| `ITERION_REDIS_SENTINEL_ADDRS` | Comma-separated Sentinel endpoints for the HA failover topology (wins over `ITERION_REDIS_URL` when set) |
+| `ITERION_REDIS_MASTER_NAME` | Sentinel-monitored master name (required with `ITERION_REDIS_SENTINEL_ADDRS`) |
+| `ITERION_REDIS_PASSWORD` | Password for the data nodes |
+| `ITERION_REDIS_SENTINEL_PASSWORD` | Password for the Sentinels (defaults to `ITERION_REDIS_PASSWORD`) |
+
+A Valkey outage degrades gracefully — each operation is bounded by a
+short round-trip timeout rather than blocking the request path.
 
 ## NetworkPolicy egress
 
