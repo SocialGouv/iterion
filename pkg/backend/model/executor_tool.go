@@ -499,7 +499,8 @@ func (e *ClawExecutor) scriptRecipe(ctx context.Context, node *ir.ToolNode, inpu
 			// Materialise secret placeholders into the executed script body
 			// only. `resolved` (placeholder form) stays the value passed to
 			// hooks/logs, so the real secret never reaches the event stream.
-			if _, werr := tmpFile.WriteString(e.secretGuard.MaterializeShell(resolved)); werr != nil {
+			body := e.secretGuard.MaterializeShell(resolved)
+			if _, werr := tmpFile.WriteString(body); werr != nil {
 				_ = tmpFile.Close()
 				cleanup()
 				return nil, nil, fmt.Errorf("model: tool node %q: write temp script: %w", node.ID, werr)
@@ -508,9 +509,31 @@ func (e *ClawExecutor) scriptRecipe(ctx context.Context, node *ir.ToolNode, inpu
 				cleanup()
 				return nil, nil, fmt.Errorf("model: tool node %q: close temp script: %w", node.ID, cerr)
 			}
+			base := filepath.Base(tmpPath)
+			// Copy-based sandboxes (kubernetes: workspace tar-copied at
+			// Prepare time) never see a host-side file created mid-run, so
+			// the script must ALSO be pushed through the write-through seam.
+			// The in-pod copy is removed on cleanup — a stray workspace
+			// dotfile would otherwise be swept up by a later `git add -A`.
+			if e.sandbox != nil && !e.nodeOptsOutOfSandbox(toolNodeOptOut) {
+				if refresher, ok := e.sandbox.(sandbox.WorkspaceFileRefresher); ok {
+					if rerr := refresher.RefreshWorkspaceFile(ctx, base, []byte(body)); rerr != nil {
+						cleanup()
+						return nil, nil, fmt.Errorf("model: tool node %q: write script into sandbox: %w", node.ID, rerr)
+					}
+					hostCleanup := cleanup
+					sb := e.sandbox
+					cleanup = func() {
+						hostCleanup()
+						rmCtx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+						defer cancel()
+						_, _ = sb.Exec(rmCtx, []string{"rm", "-f", base}, sandbox.ExecOpts{})
+					}
+				}
+			}
 			// Pass just the basename for the in-sandbox view (the bind mount
 			// uses the same path; portable whether we run via sandbox or host).
-			return e.toolNodeScriptCommand(ctx, interp, filepath.Base(tmpPath)), cleanup, nil
+			return e.toolNodeScriptCommand(ctx, interp, base), cleanup, nil
 		}
 }
 
