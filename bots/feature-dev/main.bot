@@ -798,43 +798,12 @@ workflow feature_dev:
   ## skipped with a warning on conflict).
   worktree: auto
 
-  ## Container isolation on top of the worktree. The campaign runs arbitrary
-  ## build/test commands inferred from the project — the worktree alone
-  ## doesn't sandbox those.
-  ##
-  ## Why inline mode (not `mode: auto`)?
-  ## The iterion-sandbox-{slim,full} images don't ship `claude` — every
-  ## claude_code agent here shells out to the CLI, so post_create MUST
-  ## install it. iterion currently drops post_create / mounts / env when
-  ## `mode: auto` falls back to the default image (pkg/runtime/sandbox.go),
-  ## so we can't combine "auto fallback" with "install claude into the
-  ## container". Inline mode lets us pin both the image and the bootstrap
-  ## script. Operators wanting a different image just edit this block —
-  ## the inline `image:` ref is the single override point.
-  ##
-  ## Mounting ~/.claude carries the host's OAuth / ANTHROPIC_API_KEY
-  ## credentials so the in-container CLI doesn't need a fresh login each
-  ## run. Writable because claude_code persists per-session transcripts
-  ## under ~/.claude/projects/<hash>/<session>.jsonl.
-  sandbox:
-    ## `iterion-sandbox-full` = slim + Go + Python 3 + pnpm. Pulled once,
-    ## cached locally. Operators with a different toolchain (Java, Ruby,
-    ## Elixir, …) point this at their own image — or switch to slim and
-    ## add a `devbox install` step in post_create with the workspace's
-    ## devbox.json.
-    image: "ghcr.io/socialgouv/iterion-sandbox-full:edge"
-    user: "1000:1000"
-    mounts: ["type=bind,source=${localEnv:HOME}/.claude,target=/home/devbox/.claude,consistency=cached"]
-    env:
-      CLAUDE_CONFIG_DIR: "/home/devbox/.claude"
-    ## post_create installs claude_code if absent (the sandbox images
-    ## don't ship it). Gate on `claude --version` (runs the binary), NOT
-    ## `command -v claude` (mere existence): `npm install -g`
-    ## occasionally exits 0 leaving a broken/partial binary. VERIFY after
-    ## install and exit 1 on failure so a still-broken claude fails
-    ## post_create (a clean sandbox-setup error the dispatcher retries)
-    ## instead of failing cryptically on the first claude_code node.
-    post_create: "set -e; claude --version >/dev/null 2>&1 || sudo npm install -g @anthropic-ai/claude-code@latest; claude --version >/dev/null 2>&1 || { echo 'claude install verification failed' >&2; exit 1; }"
+  ## No `sandbox:` block (ADR-082): isolation is the platform's job —
+  ## the engine sandboxes by default (`sandbox: auto` reads the target
+  ## repo's devcontainer, else the default image). The bot declares only
+  ## its own toolchain in the sibling devbox.json (gh/glab for the PR
+  ## tail); the target repo's toolchain comes from the target's own
+  ## devcontainer/devbox.json.
 
   budget:
     max_parallel_branches: 1

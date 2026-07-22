@@ -968,17 +968,11 @@ workflow branch_improve_loop:
   ## skipped with a warning on conflict).
   worktree: auto
 
-  ## Container isolation. campaign runs the repo's build, tests, linters and
-  ## git; verify runs the build/test. Inline sandbox config (vs `mode: auto`)
-  ## so the post_create that installs claude inside the container is honoured
-  ## — see feature_dev/main.bot for the full rationale.
-  sandbox:
-    image: "ghcr.io/socialgouv/iterion-sandbox-full:edge"
-    user: "1000:1000"
-    mounts: ["type=bind,source=${localEnv:HOME}/.claude,target=/home/devbox/.claude,consistency=cached"]
-    env:
-      CLAUDE_CONFIG_DIR: "/home/devbox/.claude"
-    post_create: "set -e; claude --version >/dev/null 2>&1 || sudo npm install -g @anthropic-ai/claude-code@latest; claude --version >/dev/null 2>&1 || { echo 'claude install verification failed' >&2; exit 1; }"
+  ## No `sandbox:` block (ADR-082): the platform sandboxes by default
+  ## (`sandbox: auto` — target repo's devcontainer, else the default
+  ## image). The bot's own tools (gh/glab for the PR-comment tail) come
+  ## from the sibling devbox.json; the target repo's toolchain from its
+  ## own devcontainer/devbox.json.
 
   budget:
     max_parallel_branches: 1

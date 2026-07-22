@@ -175,15 +175,9 @@ print(json.dumps({'committed': r.returncode == 0, 'output': (r.stdout + r.stderr
 
 workflow devbox_setup:
   entry: preflight
-  sandbox:
-    image: "ghcr.io/socialgouv/iterion-sandbox-sec:edge"
-    user: "1000:1000"
-    mounts: ["type=bind,source=${localEnv:HOME}/.claude,target=/home/devbox/.claude,consistency=cached"]
-    env:
-      CLAUDE_CONFIG_DIR: "/home/devbox/.claude"
-    ## The image ships node+devbox+nix; ensure the claude CLI is present
-    ## for the claude_code agents (baked locally; install once otherwise).
-    post_create: "set -e; claude --version >/dev/null 2>&1 || sudo npm install -g --ignore-scripts=false --include=optional @anthropic-ai/claude-code@latest; claude --version >/dev/null 2>&1 || { echo 'claude install verification failed' >&2; exit 1; }"
+  ## No `sandbox:` block (ADR-082): the platform sandboxes by default
+  ## and the default slim image already ships everything this bot needs
+  ## (node + devbox/nix + the claude CLI).
   worktree: auto
 
   preflight -> detect_stack

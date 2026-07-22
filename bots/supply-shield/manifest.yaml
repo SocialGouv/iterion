@@ -1,7 +1,10 @@
 name: supply-shield
 display_name: Shieldy
 icon: ⛓️
-version: 0.1.0
+version: 0.1.1
+## 0.1.1 — ADR-082 Phase 2 (sandbox-by-default): sandbox block reduced to
+## the sec-image pin + forge-token env passthrough (Phase 3 moves tokens to
+## file secrets); claude install gate and ~/.claude mount removed.
 description: |
   Global supply-chain MALWARE shield. PR / push-driven, diff-scoped
   sibling of sec-audit-deps (Depsy): it inspects only the dependency

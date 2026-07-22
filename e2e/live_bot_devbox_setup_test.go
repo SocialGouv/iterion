@@ -11,21 +11,19 @@ import (
 // TestLive_Bot_DevboxSetup runs the devbox-setup bot (Devy) against a
 // polyglot repo with no devbox.json. Devy detects the stack, generates a
 // devbox.json (+ devbox.lock via `devbox install`), and commits — inside a
-// worktree (worktree: auto + sandbox-sec, which ships devbox/nix).
+// worktree (worktree: auto; no sandbox block per ADR-082 — direct engine runs are host-side, so devbox/nix come from the host).
 //
 // Reliability invariants: detect_stack/generate_devbox/verify_devbox fire
 // and generate_devbox emits non-empty devbox.json content. The quality
 // panel grades the generated config + value.
 //
-// Requires: claude CLI + docker w/ iterion-sandbox-sec:edge. Expected:
-// ~20-45 min.
+// Requires: claude CLI + devbox on the host. Expected: ~20-45 min.
 func TestLive_Bot_DevboxSetup(t *testing.T) {
 	if testing.Short() {
 		t.Skip("skipping live test in short mode")
 	}
 	loadDotEnv(t)
 	requireCLI(t, "claude")
-	requireDockerImage(t, "ghcr.io/socialgouv/iterion-sandbox-sec:edge")
 
 	workspaceDir, err := os.MkdirTemp("", "iterion-devbox-setup-*")
 	if err != nil {
