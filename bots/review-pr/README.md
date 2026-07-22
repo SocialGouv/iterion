@@ -19,8 +19,9 @@ fan (fan_out_all)
 reviewer_* -> emit     await: wait_all  (merge + dedupe → board + report)
 emit -> pr_gate        deterministic: was a pr_url given?
   ├─ no  -> done
-  └─ yes -> publish_review   skill-guided forge PR review (inline
-            -> publish_health  comments + ```suggestion) -> done
+  └─ yes -> publish_review   deterministic forge publish via the iterion
+            -> publish_health  server endpoint (inline comments +
+                               one-click suggestions) -> done
 ```
 
 ## Scope
@@ -73,21 +74,28 @@ iterion run bots/review-pr/main.bot \
   --var pr_url=https://github.com/owner/repo/pull/42
 ```
 
-- **Forge-agnostic.** The publish step reads the `forge-pr-review.md`
-  skill and dispatches by the URL host — GitHub (`gh`), GitLab (`glab`),
-  or Forgejo/Gitea (REST API). No forge names are baked into the
-  workflow. The matching CLI must be authenticated on the host (e.g.
-  `gh auth login`).
+- **Deterministic + tokenless-in-workspace.** `publish_review` is a tool
+  node (no LLM): it POSTs the findings to the iterion server's
+  `POST /api/v1/forge/publish-review` endpoint, authenticated by an
+  ephemeral per-run token the server injects at launch as the
+  `forge_publish_url` / `forge_publish_token` vars. The SERVER posts the
+  review through the team forge connection's live client (a GitHub App
+  connection mints a fresh installation token per call), so no forge
+  credential ever sits in the run's workspace and a token can't expire
+  mid-run. Forge-agnostic: the endpoint dispatches by the connection's
+  provider (GitHub / GitLab / Forgejo-Gitea); no forge names in the
+  workflow.
 - **Diff model (v1).** Revi reviews the LOCAL checkout (`base_ref..HEAD`)
   and publishes to `pr_url`; check out the PR branch and pass its base
   as `base_ref`. Auto-resolving base/head from the URL is a planned
   enhancement.
-- **Anti-façade.** `publish_review` re-fetches the posted review to count
-  the comments the forge actually stored, and a deterministic
-  `publish_health` gate raises a loud banner if findings existed but zero
-  comments landed (e.g. the CLI was not authenticated) — the board +
-  report still succeed, so fix forge auth and re-run with the same
-  `pr_url`.
+- **Anti-façade.** The endpoint re-fetches the posted review to count the
+  comments the forge actually stored (falling back to a summary-only
+  review when inline anchors are rejected — findings are folded into the
+  body, never dropped), and a deterministic `publish_health` gate raises
+  a loud banner if findings existed but zero inline comments landed — the
+  board + report still succeed, so fix the forge connection and re-run
+  with the same `pr_url`.
 
 ## Read-only by construction
 

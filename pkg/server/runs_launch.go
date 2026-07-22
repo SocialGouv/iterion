@@ -307,6 +307,16 @@ func (s *Server) handleLaunchRun(w http.ResponseWriter, r *http.Request) {
 		repoProjectPath = strings.TrimSuffix(strings.TrimPrefix(req.RepoURL, base+"/"), ".git")
 	}
 
+	// Deterministic forge review publishing: when the launch carries a
+	// pr_url var and a team connection covers that PR, mint a per-run
+	// publish grant and inject forge_publish_url/forge_publish_token
+	// (dropped by the IR unless the bot declares them). The bot's publish
+	// node then posts through the server's live forge client instead of a
+	// workspace-mounted token.
+	if launchID, _ := auth.FromContext(r.Context()); launchID.TeamID != "" {
+		req.Vars = s.injectForgePublishVars(r.Context(), launchID.TeamID, req.ConnectionID, req.Vars, r)
+	}
+
 	// Detach lifecycle from the HTTP request context so a client
 	// disconnect doesn't abort the run, but keep the trace span so
 	// the runner-side span chains under this one. context.WithoutCancel

@@ -285,6 +285,12 @@ func (s *Server) routes() {
 	if s.cfg.Dispatcher != nil {
 		s.cfg.Dispatcher.RegisterRoutesWithMiddleware(s.mux.ServeMux, "/api/v1/dispatcher", s.requireAuth)
 	}
+	// Deterministic forge review publishing. Like the board MCP endpoint it
+	// authenticates via its own per-run X-Iterion-Run token (minted at launch
+	// by injectForgePublishVars), so it intentionally bypasses requireAuth.
+	if s.forgeConnections != nil && s.forgePublishTokens != nil {
+		s.mux.ServeMux.HandleFunc("POST /api/v1/forge/publish-review", s.handleForgePublishReview)
+	}
 	// Event-driven trigger subscription CRUD backing the Triggers /
 	// Automations view. No-op without a TriggerStore.
 	if s.cfg.TriggerStore != nil {
