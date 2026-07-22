@@ -7,6 +7,7 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"path"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -19,10 +20,12 @@ import (
 
 // Compile-time interface checks.
 var (
-	_ sandbox.Driver          = (*Driver)(nil)
-	_ sandbox.Run             = (*Run)(nil)
-	_ sandbox.PreparedSpec    = (*Prepared)(nil)
-	_ sandbox.ProxyConfigurer = (*Driver)(nil)
+	_ sandbox.Driver                 = (*Driver)(nil)
+	_ sandbox.Run                    = (*Run)(nil)
+	_ sandbox.PreparedSpec           = (*Prepared)(nil)
+	_ sandbox.ProxyConfigurer        = (*Driver)(nil)
+	_ sandbox.SecretFileRefresher    = (*Run)(nil)
+	_ sandbox.WorkspaceFileRefresher = (*Run)(nil)
 )
 
 // NOTE: the kubernetes driver intentionally does NOT implement
@@ -384,6 +387,10 @@ func (d *Driver) Start(ctx context.Context, prepared sandbox.PreparedSpec, info 
 			_ = r.Cleanup(ctx)
 			return nil, fmt.Errorf("kubernetes: populate workspace: %w", err)
 		}
+		if err := r.fixupWorkspaceGit(ctx, p.workspace); err != nil {
+			_ = r.Cleanup(ctx)
+			return nil, fmt.Errorf("kubernetes: fixup workspace git: %w", err)
+		}
 	}
 
 	if p.spec.PostCreate != "" {
@@ -681,6 +688,83 @@ func (r *Run) populateWorkspace(ctx context.Context, hostSrc, podDst string) err
 		return fmt.Errorf("in-pod tar extract: %w\n%s", err, strings.TrimSpace(podErr.String()))
 	}
 	return nil
+}
+
+// fixupWorkspaceGitScript re-anchors the copied clone's git plumbing on
+// the IN-POD workspace path. Run via `sh -c` with the workspace as $1.
+//
+// Two host-path leftovers travel in with the tar copy and would break
+// in-pod git otherwise:
+//
+//   - credential.helper: installGitCredentialStore (pkg/runner) wires
+//     `store --file=<HOST clone abs path>/.git/iterion-credentials`.
+//     For a worktree run the pod workspace lives at the WORKTREE path
+//     while the copied content is the clone — so the recorded absolute
+//     path doesn't exist in the pod and every authenticated push would
+//     fail credential-less. Re-point it at the pod-local file.
+//   - .git/worktrees/: the engine's per-run worktree registration.
+//     Inside the pod the workspace is a standalone clone; the stale
+//     registration claims the storage branch is checked out elsewhere
+//     and blocks `git checkout` of that branch name. Remove it.
+//
+// `set -e` propagates a failing `git config` (e.g. no git in the image
+// while the workspace carries a credential the run will need) as a hard
+// error rather than deferring the breakage to push time.
+const fixupWorkspaceGitScript = `set -e
+ws=$1
+if [ -d "$ws/.git" ]; then
+  cred="$ws/.git/iterion-credentials"
+  if [ -f "$cred" ]; then
+    git -C "$ws" config credential.helper "store --file=$cred"
+  fi
+  rm -rf "$ws/.git/worktrees"
+fi`
+
+// fixupWorkspaceGit runs [fixupWorkspaceGitScript] inside the pod right
+// after populateWorkspace. No-op for non-git workspaces.
+func (r *Run) fixupWorkspaceGit(ctx context.Context, podWorkspace string) error {
+	res, err := r.Exec(ctx, []string{"sh", "-c", fixupWorkspaceGitScript, "sh", podWorkspace}, sandbox.ExecOpts{})
+	if err != nil {
+		return err
+	}
+	if res.ExitCode != 0 {
+		return fmt.Errorf("exited %d: %s", res.ExitCode, strings.TrimSpace(string(res.Stderr)))
+	}
+	return nil
+}
+
+// RefreshWorkspaceFile implements [sandbox.WorkspaceFileRefresher]: it
+// atomically rewrites relPath under the pod workspace via the exec seam
+// (value streamed over stdin, never argv). The kubernetes workspace is
+// a tar COPY of the host workspace, so host-side rewrites — the
+// runner's mid-run git-credential rotation — must be written through
+// here to reach the pod; bind-mount drivers (docker) share the host
+// inode and don't need (or implement) this.
+func (r *Run) RefreshWorkspaceFile(ctx context.Context, relPath string, value []byte) error {
+	target, err := workspaceFileTarget(r.prepared.workspace, relPath)
+	if err != nil {
+		return fmt.Errorf("kubernetes: refresh workspace file: %w", err)
+	}
+	if err := sandbox.WriteFileExec(ctx, r, target, value); err != nil {
+		return fmt.Errorf("kubernetes: refresh workspace file %s: %w", relPath, err)
+	}
+	return nil
+}
+
+// workspaceFileTarget joins a workspace-relative path onto the pod
+// workspace root, rejecting anything that could escape it.
+func workspaceFileTarget(workspace, relPath string) (string, error) {
+	if workspace == "" {
+		return "", fmt.Errorf("empty workspace")
+	}
+	if relPath == "" || path.IsAbs(relPath) || path.Clean(relPath) != relPath ||
+		relPath == "." || relPath == ".." || strings.HasPrefix(relPath, "../") {
+		return "", fmt.Errorf("relPath %q must be a clean workspace-relative file path", relPath)
+	}
+	if strings.ContainsAny(relPath, "\n\r\x00") {
+		return "", fmt.Errorf("relPath %q contains a control character", relPath)
+	}
+	return path.Join(workspace, relPath), nil
 }
 
 // resolveCloneRoot returns the standalone clone directory for a host

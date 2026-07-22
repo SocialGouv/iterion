@@ -131,6 +131,29 @@ type SecretFileRefresher interface {
 	RefreshSecretFile(ctx context.Context, name string, value []byte) error
 }
 
+// WorkspaceFileRefresher is an optional interface a [Run] may implement
+// to rewrite a file INSIDE the sandbox workspace mid-run, addressed
+// relative to the workspace root.
+//
+// It exists for drivers whose workspace is a COPY of the host workspace
+// (kubernetes: tar-streamed into the pod's emptyDir): a host-side file
+// update — the runner rewriting the clone's `.git/iterion-credentials`
+// when the forge token rotates — never reaches the pod, so the run's
+// final `git push` would authenticate with the launch-time token
+// (ADR-082 Phase 3 blocker 1). Drivers that bind-mount the workspace
+// (docker) or run on the host (noop) share the inode with the host
+// file and intentionally do NOT implement this — callers gate on the
+// type assertion.
+//
+// Implementations MUST stream the value over stdin (never argv/env —
+// both are visible to `ps` / the kube API) and MUST NOT log it.
+type WorkspaceFileRefresher interface {
+	// RefreshWorkspaceFile atomically writes value to relPath (a clean
+	// relative path, e.g. ".git/iterion-credentials") under the sandbox
+	// workspace root, mode 0600.
+	RefreshWorkspaceFile(ctx context.Context, relPath string, value []byte) error
+}
+
 // Capabilities advertises a driver's supported feature set.
 //
 // The engine compares a [Spec] against capabilities at Prepare time:
