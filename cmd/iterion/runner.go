@@ -244,9 +244,9 @@ func runRunner(cmd *cobra.Command, _ []string) error {
 		// ITERION_SANDBOX_OVERRIDE=none without this left cloud runs
 		// executing unsandboxed in the runner pod, because the runner
 		// wired the raw (empty) config value and the engine is neutral.
-		SandboxDefault:    resolveRunnerSandboxDefault(cfg.Sandbox.Default),
-		SandboxHostState:  cfg.Sandbox.HostState,
-		SandboxOverride:   cfg.Sandbox.Override,
+		SandboxDefault:   resolveRunnerSandboxDefault(cfg.Sandbox.Default),
+		SandboxHostState: cfg.Sandbox.HostState,
+		SandboxOverride:  cfg.Sandbox.Override,
 	})
 	if err != nil {
 		return fmt.Errorf("runner: build: %w", err)
