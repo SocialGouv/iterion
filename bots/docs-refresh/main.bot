@@ -2277,6 +2277,23 @@ except Exception as e:
     out(False, 'git state unreadable: ' + str(e))
 if head and head == state.get('head') and not dirty:
     out(True, 'HEAD ' + head[:12] + ' unchanged since last green verify, tree clean')
+## Docs-only fast-path: commits landed since the green verify, but if
+## EVERY changed path is a markdown doc the build/test verdict cannot
+## have changed — a .md edit is invisible to the repo's build. This is
+## a deterministic file-extension rule, not an LLM judgment; anything
+## else (code-comment fixes via go_comment_globs, cache files, unknown
+## extensions) still triggers the full verify chain. Observed live
+## (run 019f8b50): verify_build+verify_run burned 5-16 min PER PASS
+## re-verifying docs-only commits — ~half the run's wall-clock.
+green = state.get('head', '')
+if head and green and not dirty:
+    try:
+        diff = subprocess.run(['git', '-C', ws, 'diff', '--name-only', green, head], stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True, timeout=60)
+        changed = [p for p in diff.stdout.splitlines() if p.strip()]
+    except Exception:
+        changed = None
+    if changed and diff.returncode == 0 and all(p.lower().endswith('.md') for p in changed):
+        out(True, 'only markdown docs changed since green verify ' + green[:12] + ' (' + str(len(changed)) + ' file(s)), tree clean — build verdict unchanged')
 out(False, 'tree changed since last green verify')
 "`
   output: verify_precheck_output
