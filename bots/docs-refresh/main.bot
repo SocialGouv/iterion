@@ -807,15 +807,19 @@ schema update_audit_cache_output:
 ## ledger entries) retire between passes.
 ##
 ## What it checks (high-precision, universal by construction):
-##   - missing_path  — a path cited in a doc whose FIRST segment
-##                     exists as a repo directory but whose file is
-##                     gone. The first-segment rule is the precision
-##                     boundary: foreign-tool example lines (docker /
-##                     gh flags, other repos' layouts) cite no
-##                     repo-rooted path and are silently skipped —
-##                     the v2.5 foreign-flag noise class (~200 FPs on
-##                     one live run) is structurally absent because
-##                     CLI flags are simply not scanned.
+##   - missing_path  — a path cited in a doc that is gone from disk
+##                     AND that git once tracked (index ∪ deletion
+##                     history). Two precision boundaries: the
+##                     first-segment rule skips foreign-tool example
+##                     lines (docker / gh, other repos' layouts — the
+##                     v2.5 foreign-flag class, ~200 FPs on one live
+##                     run, is structurally absent because CLI flags
+##                     are simply not scanned); the git-tracked rule
+##                     skips example/placeholder paths under real top
+##                     dirs and runtime-only files (bots/my-bot/…,
+##                     .claude/settings.json — 604 "missing" / 43%
+##                     noise on run 019f8ba3 without it). A path git
+##                     never knew is not doc drift.
 ##   - dead_link /   — internal markdown links whose target file or
 ##     dead_anchor     GitHub-slug heading anchor does not resolve.
 ##   - unmentioned_area — top-level dirs (+ children of generic
@@ -942,6 +946,26 @@ def headings_of(path):
         pass
     _heading_cache[path] = slugs
     return slugs
+## A cited path that is missing on disk is a DRIFT signal only if git
+## ever TRACKED it (current index or a path deleted somewhere in
+## history): docs constantly cite example/placeholder paths under real
+## top dirs (bots/my-bot/main.bot) and runtime-only files
+## (.claude/settings.json) — never tracked, never drift. Observed live
+## (run 019f8ba3): the existence-only rule flagged 604 missing paths,
+## ~43% of everything checked. On a shallow clone the history half is
+## partial and the check degrades toward SILENCE (fewer hints), never
+## toward noise; with no git at all the set stays empty and the plain
+## existence rule applies (fixtures/tests).
+ever_tracked = set()
+try:
+    _ls = subprocess.run(['git', 'ls-files'], stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True, timeout=60)
+    if _ls.returncode == 0:
+        ever_tracked.update(p for p in _ls.stdout.splitlines() if p)
+    _dl = subprocess.run(['git', 'log', '--pretty=format:', '--name-only', '--diff-filter=D'], stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True, timeout=120)
+    if _dl.returncode == 0:
+        ever_tracked.update(p for p in _dl.stdout.splitlines() if p)
+except Exception:
+    ever_tracked = set()
 checked_paths = 0
 checked_links = 0
 corpus_parts = []
@@ -977,19 +1001,24 @@ for doc in files:
         for m in PATH_RE.finditer(line):
             value = m.group(1)
             root = value.split('/', 1)[0]
-            ## Precision boundary: only a path whose FIRST segment exists
-            ## as a directory in THIS repo is checkable. Everything else
-            ## (foreign-tool example lines, URLs, other repos' layouts)
-            ## is silently skipped — never surfaced as noise.
-            if not os.path.isdir(root):
+            ## Precision boundary. With git available, ever_tracked IS the
+            ## boundary: a missing path hints iff git once tracked it —
+            ## foreign-tool examples, placeholders and runtime files are
+            ## silently skipped, and a fully-removed directory still
+            ## surfaces its tracked files (the first-segment rule would
+            ## mask that drift). Without git (fixtures), fall back to the
+            ## first-segment-exists-as-repo-directory rule.
+            if not ever_tracked and not os.path.isdir(root):
                 continue
             key = ('path', value)
             if key in seen:
                 continue
             seen.add(key)
+            if ever_tracked and not os.path.exists(value) and value not in ever_tracked:
+                continue
             checked_paths += 1
             if not os.path.exists(value):
-                add_hint(doc, lineno, 'missing_path', value, 'path cited in the doc not found on disk (' + root + '/ exists)')
+                add_hint(doc, lineno, 'missing_path', value, 'path cited in the doc not found on disk (git tracked it before)' if ever_tracked else 'path cited in the doc not found on disk (' + root + '/ exists)')
 corpus = chr(10).join(corpus_parts)
 SRC_ROOTS = {'src', 'lib', 'pkg', 'cmd', 'app', 'apps', 'packages', 'internal', 'modules', 'crates', 'services', 'components'}
 def significant(d):

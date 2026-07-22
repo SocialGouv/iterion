@@ -157,6 +157,54 @@ and the [dead anchor](docs/guide.md#not-there).
 		}
 	})
 
+	t.Run("git_tracked_rule_filters_example_paths", func(t *testing.T) {
+		// In a git workspace a missing path is a drift signal ONLY if git
+		// ever tracked it. Example/placeholder paths under real top dirs
+		// (bots/my-bot/main.bot) and runtime-only files were 604 hints /
+		// 43% noise on live run 019f8ba3 without this rule.
+		ws := t.TempDir()
+		git := func(args ...string) {
+			cmd := exec.Command("git", args...)
+			cmd.Dir = ws
+			cmd.Env = append(os.Environ(),
+				"GIT_AUTHOR_NAME=t", "GIT_AUTHOR_EMAIL=t@t",
+				"GIT_COMMITTER_NAME=t", "GIT_COMMITTER_EMAIL=t@t")
+			if out, err := cmd.CombinedOutput(); err != nil {
+				t.Fatalf("git %v: %v\n%s", args, err, out)
+			}
+		}
+		git("init", "-q")
+		write(t, ws, "bots/real/tracked.go", "package real\n")
+		git("add", "-A")
+		git("commit", "-q", "-m", "init")
+		git("rm", "-q", "bots/real/tracked.go")
+		git("commit", "-q", "-m", "remove tracked file")
+		write(t, ws, "README.md", `# fixture
+
+The old entry point lived in `+"`bots/real/tracked.go`"+`.
+Scaffold your own with `+"`bots/my-bot/main.bot`"+` as a starting name.
+`)
+		git("add", "-A")
+		git("commit", "-q", "-m", "docs")
+
+		res := run(t, ws, "")
+		var gotTracked, gotExample bool
+		for _, h := range res.Hints {
+			if h.Kind == "missing_path" && h.Value == "bots/real/tracked.go" {
+				gotTracked = true
+			}
+			if h.Kind == "missing_path" && h.Value == "bots/my-bot/main.bot" {
+				gotExample = true
+			}
+		}
+		if !gotTracked {
+			t.Errorf("deleted-but-once-tracked path must hint (real drift): %+v", res.Hints)
+		}
+		if gotExample {
+			t.Errorf("never-tracked example path must NOT hint: %+v", res.Hints)
+		}
+	})
+
 	t.Run("silent_degradation_when_nothing_scannable", func(t *testing.T) {
 		ws := t.TempDir()
 		write(t, ws, "README.md", "# quiet\n\nJust prose. No paths, no links.\n")
