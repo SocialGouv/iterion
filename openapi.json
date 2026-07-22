@@ -942,12 +942,17 @@
           "run_id": {
             "type": "string"
           },
+          "updated_at": {
+            "format": "date-time",
+            "type": "string"
+          },
           "workflow_name": {
             "type": "string"
           }
         },
         "required": [
           "run_id",
+          "updated_at",
           "depth"
         ],
         "type": "object"

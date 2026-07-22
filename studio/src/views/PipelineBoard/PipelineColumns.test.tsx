@@ -314,6 +314,7 @@ describe("PipelineColumns", () => {
               run_id: "run-child",
               node_id: "approval",
               depth: 1,
+              updated_at: "2026-07-15T09:30:00Z",
               questions: { approved: "Ship it?" },
             },
           ],
@@ -349,7 +350,14 @@ describe("PipelineColumns", () => {
           failed: true,
           tree_executed_nodes: 3,
           tree_total_nodes: 10,
-          pending_reviews: [{ run_id: "c1", node_id: "review", depth: 1 }],
+          pending_reviews: [
+            {
+              run_id: "c1",
+              node_id: "review",
+              depth: 1,
+              updated_at: "2026-07-15T09:30:00Z",
+            },
+          ],
         }),
       ]),
     );
@@ -369,9 +377,24 @@ describe("PipelineColumns", () => {
           tree_executed_nodes: 2,
           tree_total_nodes: 8,
           pending_reviews: [
-            { run_id: "c1", node_id: "review", depth: 1 },
-            { run_id: "c2", node_id: "review", depth: 1 },
-            { run_id: "c3", node_id: "review", depth: 1 },
+            {
+              run_id: "c1",
+              node_id: "review",
+              depth: 1,
+              updated_at: "2026-07-15T09:30:00Z",
+            },
+            {
+              run_id: "c2",
+              node_id: "review",
+              depth: 1,
+              updated_at: "2026-07-15T09:31:00Z",
+            },
+            {
+              run_id: "c3",
+              node_id: "review",
+              depth: 1,
+              updated_at: "2026-07-15T09:32:00Z",
+            },
           ],
         }),
       ]),

@@ -560,6 +560,7 @@ func (b *pipelineProjectionBuilder) aggregateTree(root *store.Run) (treeExec, tr
 				NodeID:        run.Checkpoint.NodeID,
 				InteractionID: run.Checkpoint.InteractionID,
 				Questions:     cloneAnyMap(run.Checkpoint.InteractionQuestions),
+				UpdatedAt:     b.pendingReviewUpdatedAt(run),
 				Depth:         depth,
 			})
 		}
@@ -568,5 +569,41 @@ func (b *pipelineProjectionBuilder) aggregateTree(root *store.Run) (treeExec, tr
 		}
 	}
 	walk(root, 0)
+	// FIFO by the time each pending turn was requested. In particular, a
+	// review gate that resumes and re-pauses is a new turn and belongs at the
+	// back of the queue, even though its run keeps the same place in the tree.
+	sort.SliceStable(reviews, func(i, j int) bool {
+		a, c := reviews[i], reviews[j]
+		if !a.UpdatedAt.Equal(c.UpdatedAt) {
+			return a.UpdatedAt.Before(c.UpdatedAt)
+		}
+		if a.RunID != c.RunID {
+			return a.RunID < c.RunID
+		}
+		if a.NodeID != c.NodeID {
+			return a.NodeID < c.NodeID
+		}
+		return a.InteractionID < c.InteractionID
+	})
 	return
+}
+
+// pendingReviewUpdatedAt returns the enqueue time of the current pending
+// interaction. Interaction.RequestedAt is precise for guided review gates:
+// every new companion turn rewrites the stable interaction ID with a fresh
+// request timestamp. Legacy/missing interactions fall back to the run stamp.
+func (b *pipelineProjectionBuilder) pendingReviewUpdatedAt(run *store.Run) time.Time {
+	if run == nil {
+		return time.Time{}
+	}
+	if b.rs != nil && run.Checkpoint != nil && run.Checkpoint.InteractionID != "" {
+		interaction, err := b.rs.LoadInteraction(b.ctx, run.ID, run.Checkpoint.InteractionID)
+		if err == nil && interaction != nil && !interaction.RequestedAt.IsZero() {
+			return interaction.RequestedAt
+		}
+	}
+	if !run.UpdatedAt.IsZero() {
+		return run.UpdatedAt
+	}
+	return run.CreatedAt
 }

@@ -26,6 +26,8 @@ export interface PipelineBoardPendingReview {
   node_id?: string;
   interaction_id?: string;
   questions?: Record<string, unknown>;
+  /** When this exact pending turn joined the FIFO review queue. */
+  updated_at: string;
   depth: number;
 }
 
@@ -340,6 +342,7 @@ function normalizePendingReviews(
         ? { interaction_id: text(source.interaction_id) }
         : {}),
       ...(questions ? { questions } : {}),
+      updated_at: text(source.updated_at) ?? "",
       depth: Math.max(0, intValue(source.depth, 0)),
     };
   });

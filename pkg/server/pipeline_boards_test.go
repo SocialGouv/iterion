@@ -253,6 +253,82 @@ func TestPipelineBoardFoldsDescendantsAndCollectsReviews(t *testing.T) {
 	}
 }
 
+func TestPipelineBoardPendingReviewsOldestUpdateFirstAndRepauseMovesToBack(t *testing.T) {
+	env := newPipelineBoardTestEnv(t)
+	base := time.Date(2026, time.July, 22, 10, 0, 0, 0, time.UTC)
+	env.seedRun(t, "review-root", "review", store.RunStatusRunning, func(run *store.Run) {
+		run.CreatedAt = base.Add(-time.Hour)
+		run.UpdatedAt = run.CreatedAt
+	})
+
+	seedReview := func(id string, createdAt, requestedAt time.Time) {
+		t.Helper()
+		interactionID := id + "_gate"
+		env.seedRun(t, id, "review", store.RunStatusPausedWaitingHuman, func(run *store.Run) {
+			run.ParentRunID = "review-root"
+			run.CreatedAt = createdAt
+			run.UpdatedAt = requestedAt
+			run.Checkpoint = &store.Checkpoint{
+				NodeID:               "gate",
+				InteractionID:        interactionID,
+				InteractionQuestions: map[string]any{"reply": id + "?"},
+			}
+		})
+		if err := env.runStore(t).WriteInteraction(context.Background(), &store.Interaction{
+			ID:          interactionID,
+			RunID:       id,
+			NodeID:      "gate",
+			RequestedAt: requestedAt,
+			Questions:   map[string]any{"reply": id + "?"},
+		}); err != nil {
+			t.Fatalf("WriteInteraction(%s): %v", id, err)
+		}
+	}
+
+	// Tree order is A, B, C by creation time. The review queue initially has
+	// the same order for a different reason: the pending-turn update stamps.
+	seedReview("ai-a", base.Add(-3*time.Minute), base)
+	seedReview("ai-b", base.Add(-2*time.Minute), base.Add(time.Minute))
+	seedReview("ai-c", base.Add(-time.Minute), base.Add(2*time.Minute))
+
+	assertQueue := func(wantIDs []string, wantTimes []time.Time) {
+		t.Helper()
+		card := findPipelineCard(t, env.projection(t).Cards, "run:review-root")
+		if len(card.PendingReviews) != len(wantIDs) {
+			t.Fatalf("pending_reviews = %+v, want %v", card.PendingReviews, wantIDs)
+		}
+		for i, wantID := range wantIDs {
+			got := card.PendingReviews[i]
+			if got.RunID != wantID || !got.UpdatedAt.Equal(wantTimes[i]) {
+				t.Errorf("pending_reviews[%d] = (%s, %s), want (%s, %s)",
+					i, got.RunID, got.UpdatedAt, wantID, wantTimes[i])
+			}
+		}
+	}
+
+	assertQueue(
+		[]string{"ai-a", "ai-b", "ai-c"},
+		[]time.Time{base, base.Add(time.Minute), base.Add(2 * time.Minute)},
+	)
+
+	// Guided reviews reuse the same run/node/interaction ID. Rewriting A's
+	// interaction with a fresh request stamp models its next AI turn: it must
+	// join the back instead of reclaiming A's structural position in the tree.
+	if err := env.runStore(t).WriteInteraction(context.Background(), &store.Interaction{
+		ID:          "ai-a_gate",
+		RunID:       "ai-a",
+		NodeID:      "gate",
+		RequestedAt: base.Add(3 * time.Minute),
+		Questions:   map[string]any{"reply": "ai-a next turn?"},
+	}); err != nil {
+		t.Fatalf("rewrite ai-a interaction: %v", err)
+	}
+	assertQueue(
+		[]string{"ai-b", "ai-c", "ai-a"},
+		[]time.Time{base.Add(time.Minute), base.Add(2 * time.Minute), base.Add(3 * time.Minute)},
+	)
+}
+
 // Root status maps to the five lanes; queued is TODO (waiting for a slot).
 func TestPipelineBoardColumnBucketing(t *testing.T) {
 	env := newPipelineBoardTestEnv(t)
