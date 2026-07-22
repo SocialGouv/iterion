@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"path"
 	"sort"
+	"strconv"
 	"strings"
 
 	"github.com/SocialGouv/iterion/pkg/sandbox"
@@ -220,6 +221,22 @@ func BuildPodManifest(in PodManifestInput) ([]byte, error) {
 		// them so the network posture matches the documented
 		// "allowlist via iterion proxy" promise.
 		envSlice = upsertEnv(envSlice, "NO_PROXY", "localhost,127.0.0.1")
+	}
+
+	// Git safe.directory for the workspace. The emptyDir mountpoint is
+	// created root-owned by kubelet (fsGroup only sets the group), while
+	// every `kubectl exec` — the post-populate git fixup, the agent's own
+	// git, tool nodes — runs as the non-root workload user, so git ≥2.35.2
+	// rejects the repo at the workspace root as dubiously owned; `git -C
+	// <ws> config …` then fails discovery with the notoriously opaque
+	// "fatal: not in a git directory" (exit 128 — observed live on run
+	// 019f8a50, breaking sandbox start at fixupWorkspaceGit). safe.directory
+	// is only honoured from protected configuration; the GIT_CONFIG_*
+	// environment ("command" scope, git ≥2.38) is the one protected channel
+	// a pod env can carry, and every exec inherits it.
+	envSlice, gitEnvErr := appendGitSafeDirectoryEnv(envSlice, workspace)
+	if gitEnvErr != nil {
+		return nil, fmt.Errorf("kubernetes: %w", gitEnvErr)
 	}
 
 	// Egress TLS-inspection CA (Layer 2): mount the per-run CA Secret and
@@ -572,6 +589,36 @@ func envMapToSlice(env map[string]string) []any {
 		out = append(out, map[string]any{"name": k, "value": env[k]})
 	}
 	return out
+}
+
+// appendGitSafeDirectoryEnv appends `safe.directory=<workspace>` to the
+// pod's GIT_CONFIG_{COUNT,KEY_n,VALUE_n} environment, preserving any
+// entries the spec already carries (their count is read and our entry
+// appended after them). A malformed pre-existing GIT_CONFIG_COUNT is a
+// hard error — silently renumbering (or skipping) would either clobber
+// the workflow's git config or reintroduce the dubious-ownership 128
+// this exists to fix.
+func appendGitSafeDirectoryEnv(envSlice []any, workspace string) ([]any, error) {
+	next := 0
+	for _, e := range envSlice {
+		m, ok := e.(map[string]any)
+		if !ok {
+			continue
+		}
+		if name, _ := m["name"].(string); name == "GIT_CONFIG_COUNT" {
+			raw, _ := m["value"].(string)
+			n, err := strconv.Atoi(strings.TrimSpace(raw))
+			if err != nil || n < 0 {
+				return nil, fmt.Errorf("spec env GIT_CONFIG_COUNT=%q is not a non-negative integer; fix it so the workspace safe.directory entry can be appended", raw)
+			}
+			next = n
+			break
+		}
+	}
+	envSlice = upsertEnv(envSlice, fmt.Sprintf("GIT_CONFIG_KEY_%d", next), "safe.directory")
+	envSlice = upsertEnv(envSlice, fmt.Sprintf("GIT_CONFIG_VALUE_%d", next), workspace)
+	envSlice = upsertEnv(envSlice, "GIT_CONFIG_COUNT", strconv.Itoa(next+1))
+	return envSlice, nil
 }
 
 // upsertEnv replaces (or appends) an env var on the slice. Used to
