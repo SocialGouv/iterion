@@ -1052,7 +1052,7 @@ iterion server [--port] [--store-dir]   # HTTP server (run console + studio), wi
 iterion version                         # Print version
 
 # Operational runner and hidden subprocess entry points:
-# `iterion runner`, `iterion __claw-runner`, `iterion __mcp-ask-user`, `iterion __mcp-board`, `iterion __mcp-control`, `iterion __scan-shards`
+# `iterion runner`, `iterion __claw-runner`, `iterion __mcp-ask-user`, `iterion __mcp-board`, `iterion __mcp-control`, `iterion __scan-shards`, `iterion __claude-hook-drain`
 # Only the double-underscore commands are hidden internal subprocess entry points.
 ```
 
