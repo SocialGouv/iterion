@@ -279,7 +279,13 @@ func ReattachSubbotChild(ctx context.Context, rs store.RunStore, req runtime.Sub
 			logger.Info("subbot: re-attaching to in-flight child run %s (%s) after restart — no fresh child spawned", childRunID, child.Status)
 		}
 		out, aerr := AwaitSubbotTerminal(ctx, rs, childRunID, logger)
-		ClearSubbotChild(ctx, rs, req)
+		if aerr == nil {
+			// Clear ONLY on successful consumption. On error (parent shutdown
+			// mid-park → ctx cancelled, or the child ended failed/cancelled) LEAVE
+			// the record so the next resume re-attaches / re-decides — mirrors the
+			// first-execution path in subbotRunnerFor and ADR-083's invariant.
+			ClearSubbotChild(ctx, rs, req)
+		}
 		return out, aerr, true
 	}
 }

@@ -114,6 +114,34 @@ func TestReattachSubbotChild(t *testing.T) {
 		}
 	})
 
+	t.Run("in-flight child + shutdown mid-park → error, record PRESERVED", func(t *testing.T) {
+		// A resumed parent re-parks on a still-paused child; the process is then
+		// shut down (ctx cancelled) before the child is answered. AwaitSubbotTerminal
+		// returns ctx.Err(); the record MUST survive so the next resume re-attaches
+		// rather than spawning a fresh child (ADR-083 invariant, regression guard).
+		s := mustStore(t)
+		if _, err := s.CreateRun(ctx, "parent", "p", nil); err != nil {
+			t.Fatal(err)
+		}
+		mkChild(t, s, "parent", "run_child", "child-paused", store.RunStatusPausedWaitingHuman, nil)
+		if err := s.SetSubbotChild(ctx, "parent", "run_child", "child-paused"); err != nil {
+			t.Fatal(err)
+		}
+		cctx, cancel := context.WithCancel(ctx)
+		cancel() // simulate the process shutting down while re-parked
+		_, err, handled := ReattachSubbotChild(cctx, s, newReq("parent", "run_child"), iterlog.Nop())
+		if !handled {
+			t.Fatal("handled=false for an in-flight child; want handled=true (parked)")
+		}
+		if err == nil {
+			t.Fatal("err=nil on a cancelled-ctx park; want ctx error")
+		}
+		p, _ := s.LoadRun(ctx, "parent")
+		if p.SubbotChildren["run_child"] != "child-paused" {
+			t.Errorf("record cleared on shutdown mid-park (lost-work bug): %v", p.SubbotChildren)
+		}
+	})
+
 	t.Run("vanished child → spawn fresh + clear stale record", func(t *testing.T) {
 		s := mustStore(t)
 		if _, err := s.CreateRun(ctx, "parent", "p", nil); err != nil {
