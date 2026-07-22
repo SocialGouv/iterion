@@ -202,6 +202,17 @@ func (d *Driver) Prepare(_ context.Context, spec sandbox.Spec) (sandbox.Prepared
 	// validated lazily — translateMounts at manifest-render time produces
 	// a clear error pointing at the offending entry, so authors see the
 	// offending mount string verbatim rather than a generic rejection here.
+	// Default the numeric user before validation: under sandbox-by-default
+	// most specs are the platform's synthetic default-image spec (published
+	// iterion-sandbox-* images, which all run as devbox uid 1000) and carry
+	// no user: field — hard-requiring one made every ambient cloud sandbox
+	// fail at boot (observed live, run 019f8a37). An explicit user: still
+	// wins; for a foreign image whose filesystem expects another uid, the
+	// kubelet's runAsNonRoot/permission failure stays the visible guard.
+	if spec.User == "" {
+		spec.User = defaultPodUser
+		d.logger.Info("kubernetes: sandbox.user not set — defaulting to %s (published iterion sandbox images run as devbox uid 1000); declare user: to override", defaultPodUser)
+	}
 	if err := ValidateSpec(spec); err != nil {
 		return nil, err
 	}
@@ -211,6 +222,11 @@ func (d *Driver) Prepare(_ context.Context, spec sandbox.Spec) (sandbox.Prepared
 	}
 	return &Prepared{spec: spec, workspace: workspace}, nil
 }
+
+// defaultPodUser is the uid:gid a spec without user: runs as on the
+// kubernetes driver — the devbox user every published iterion-sandbox-*
+// image is built with.
+const defaultPodUser = "1000:1000"
 
 // Start applies the pod manifest, waits for Ready, optionally runs
 // post-create, and returns a live [Run] handle.
