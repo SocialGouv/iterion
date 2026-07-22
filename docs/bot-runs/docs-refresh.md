@@ -11,6 +11,22 @@ reviewers, deterministic `streak_check` (two cross-family approvals), a
 agents can't truncate the audit set. Runs on ANY repo; iterion is the
 reference self-host case.
 
+## 2026-07-22 (soir) — enrichment validation ×2: real work produced, then thrown away, then shipped (runs 019f8af6 → 019f8b50)
+- Status: validated (2nd run) after a failed-honest 1st run — **PR #276 opened by the bot** (5 commits, 4 docs, +61 lines) with the "Unfulfilled documented promises" section live (2 real promises: ADR-044 `iterion __commit` layer, ADR-050 `C099`)
+- Versions: bot 2.5.0 → 2.5.1 · iterion `69c932529` → `15c92caa1` · cloud prod, k8s sandbox pods
+- Method: catalog launch via POST /api/runs (`open_mr=true`, `enrich` default on, `cli_surface_globs=cmd/iterion/*.go[,pkg/cli/*.go run 2]`, `diagnostic_surface_globs=pkg/dsl/ir/*.go`), repo SocialGouv/iterion@main, forfait Claude
+- Result run 1 (019f8af6, 2.5.0): converged in 6 passes / 44 min — but **finalize threw the work away**: the campaign's real commits (`d9ef7685` architecture map of 4 undocumented packages + a cloud-cli flag table) never left the pod because the skill's ahead-check `git rev-list main..HEAD` is vacuously 0 when committing ON the checked-out base (the cloud-clone case). ~40 of the 44 min burned adjudicating ~200 false-positive `cli_flag` candidates (git/docker/gh flags quoted in docs).
+- Result run 2 (019f8b50, 2.5.1): converged in 5 passes / **55 min / ~$10.12** → PR #276 (+61/-0). Pass timing: campaign 3.5-8 min/pass (productive), **verify gate 5-16 min/pass (~half the wall-clock)** re-building the whole repo for docs-only commits.
+- Value: the enrichment mechanism works end-to-end — mechanical `undocumented` candidates → real documentation written (remote flags reference, `issue update --blockers`, `iterion memory` CLI, package map) → pushed PR with promises section. The dismissals ledger advanced every pass (~120 entries).
+- Findings / misses: ratio production/coût still poor (55 min/$10 for +61 lines); root cause = excessive determinism (operator lesson): the anchor scanner is an *obligation generator* (every artifact must be adjudicated to satisfy `undocumented_count == 0` and coverage gates), the priority/chunk pipeline buried the real enrichment work behind scanner noise for 4 passes.
+- Engine/bot hardening (all landed on main same evening):
+  - `ebc7df0` — forge-mr ahead-check compares `origin/<base>..HEAD` (skill ×5 copies + 5 bots' inline prompts); the bug that discarded run 1's commits.
+  - `15c92ca` — foreign-flag heuristic keys on the repo's *binary name* (repo-agnostic derivation) instead of command words (`run`, `merge` matched prose/other tools); 2.5.1.
+  - `14246f4` — verify_precheck docs-only fast-path: green verdict reused when every changed path since the green HEAD is `.md` (deterministic extension rule).
+  - `2dc71f5ed` — engine gap 7: `script:` tool nodes broke in copy-based (k8s) sandboxes (workspace tar-copied, temp file invisible in-pod) → write-through via `WorkspaceFileRefresher` (killed the scheduled Vigie run 019f8ac5).
+  - `ca09a6292` (#275) — umbrella authMiddleware fronted the per-run `X-Iterion-Run` token surfaces: `/api/v1/forge/publish-review` 401'd on its first live exercise (Revi run 019f8ad0) and `/api/v1/mcp/board` shares the root cause (ticket native:1ec7b869).
+- Lessons for next run: **Doki 3.0 realignment decided** (operator): scanner output becomes ADVISORY hints to the campaign, gate reduced to `verify ∧ scope ∧ docs_aligned`, chunk/priority pipeline dropped, ledgers kept as agent memory, universality strict (stack knowledge in skills). Also: run artifacts + cost fields are absent from the cloud API for runner-launched runs (observation to ticket); sum per-node costs from the run log instead.
+
 ## 2026-07-22 — SANDBOXED cloud validation: converged + PR opened in-pod (runs 019f8a05→019f8a8f)
 - Status: validated — the full ADR-082 Phase 3 stack end-to-end
 - Versions: bot 2.4.0 · iterion :edge (#268 head) · prod chart runner.sandbox.enabled=true, default image -full
