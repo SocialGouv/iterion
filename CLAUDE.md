@@ -1013,9 +1013,11 @@ ghcr.io/socialgouv/iterion-sandbox-sec:edge gosec -severity=high
 The 2026-05-31 self-audit surfaced 6 high-severity gosec taint findings
 (SSRF in `pkg/server/runs_preview.go`, path-traversal in
 `pkg/server/runs_files.go` + a few internal paths); **all were resolved in
-`c9e18195`** — `resolvePreviewHost` strict-mode SSRF gate (public-unicast
+`c9e18195`** — the strict-mode SSRF gate (public-unicast
 pinning, metadata/loopback/link-local blocks, DNS-rebinding-proof, no
-redirect-follow) and `safePathWithin` symlink-aware containment for run-file
+redirect-follow), since extracted to [`pkg/secure/httpdial`](pkg/secure/httpdial/httpdial.go)'s
+`ResolvePublicHost` (the single source of truth, now also backing completion
+webhooks and OIDC SSO), and `safePathWithin` symlink-aware containment for run-file
 read/write, with regression tests in `runs_preview_test.go` /
 `runs_files_test.go`. New `source:sec-audit-self` findings land on the board;
 verify against the code before re-surfacing a finding as open (the prose
