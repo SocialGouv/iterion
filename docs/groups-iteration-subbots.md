@@ -133,6 +133,20 @@ just another answerable review on the parent's card. A child that ends
 subbot node (resuming the PARENT re-runs that subbot with a fresh child).
 Runnable demo: [examples/pipeline-board-demo](../examples/pipeline-board-demo/main.bot).
 
+**The park is restart-safe (re-attach).** The parked parent is an in-memory
+goroutine, so a studio/CLI restart drops it: the orphan sweep promotes the
+parent to `failed_resumable` while the child stays answerable. To keep the
+child's work from being lost, the runner records the in-flight child id on the
+parent (`Run.SubbotChildren`, keyed by the subbot node's execution — node id +
+loop iteration + fan-out branch) **before** running it. On a resumed
+re-execution the runner re-attaches to that same child instead of spawning a
+fresh one: a still-paused child simply re-parks, and a child answered while the
+parent was down has its terminal output picked up. A child that ended
+`failed`/`cancelled`, or one that was pruned, falls back to spawning fresh.
+Both the studio in-process runner and `iterion resume` share the one re-attach
+oracle, so a bot behaves identically on either. See
+[ADR-084](adr/084-subbot-reattach-across-restarts.md).
+
 ### Fanning subbots out in parallel
 
 A subbot runs a **whole child `.bot`** that may do anything, so the
