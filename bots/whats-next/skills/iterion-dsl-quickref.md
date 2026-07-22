@@ -179,8 +179,8 @@ src -> dst when approved                          # bool field on src.output
 src -> dst when not approved
 src -> dst when "!approved && length(blockers) > 0"   # expression
 src -> dst else                                   # explicit fallback: fires only when no sibling `when` matched
-src -> dst as loop_name(10)                       # bounded loop (literal cap)
-src -> dst as loop_name("{{outputs.x.cap}}")      # bounded loop (data-driven cap)
+src -> dst as loop_name(10)                       # bounded loop (literal cap — UNQUOTED int)
+src -> dst as loop_name("{{outputs.x.cap}}")      # bounded loop (data-driven cap; quote ONLY a template)
 src -> dst as loop_name(unbounded)                # unbounded: runs until a when-exit; fuel from budget.max_iterations
 src -> dst as loop_name(unbounded 500)            # unbounded with a per-loop fuel ceiling
 src -> dst with { field: "{{outputs.src.x}}" }    # data mapping
@@ -190,6 +190,9 @@ Rules:
 1. Every cycle MUST be bounded — `as name(N)`, a data-driven cap, or `as name(unbounded)`.
    `unbounded` needs a fuel ceiling (per-loop `(unbounded N)` or `budget.max_iterations`) — else C097.
    A runtime liveness monitor also halts an unbounded loop that makes no progress (fixpoint).
+   A literal cap is an UNQUOTED int — `as fix(2)`. Quotes mean a template
+   (`as fix("{{vars.cap}}")`); a quoted plain int `as fix("2")` is read as
+   the int 2, but a quoted non-numeric cap `as fix("two")` is an E002 error.
 2. Conditional edges must be exhaustive (or have an unconditional fallback).
 3. Edge `with {}` values MUST be strings — int/bool literals fail with E002. Use `"true"` / `"0"` if needed, then coerce in compute.
 4. Edge order matters for conditional fallthrough.
