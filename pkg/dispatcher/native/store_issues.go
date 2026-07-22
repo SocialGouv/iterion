@@ -24,7 +24,48 @@ func (s *Store) Create(in Issue) (created *Issue, err error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	defer s.recoverMutator("Create", &err)
+	return s.createLocked(in)
+}
 
+// CreateUniqueTitle creates an issue whose title is made distinct from
+// every existing title WITHIN THE SAME critical section as the write, so
+// two concurrent creates of the same desired title cannot both land it
+// (PR #193 review M4 — the previous list-then-check was racy). When the
+// desired title is free it is used verbatim; otherwise the smallest free
+// "#N - " prefix (N≥2) is prepended, kept as a PREFIX so the counter stays
+// visible under title truncation.
+func (s *Store) CreateUniqueTitle(in Issue) (created *Issue, err error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	defer s.recoverMutator("CreateUniqueTitle", &err)
+	in.Title = s.uniqueTitleLocked(strings.TrimSpace(in.Title))
+	return s.createLocked(in)
+}
+
+// uniqueTitleLocked returns desired if no issue already holds it, else the
+// smallest free "#N - desired" (N≥2). Caller must hold s.mu.
+func (s *Store) uniqueTitleLocked(desired string) string {
+	taken := make(map[string]struct{}, len(s.index))
+	for _, iss := range s.index {
+		if iss != nil {
+			taken[iss.Title] = struct{}{}
+		}
+	}
+	if _, clash := taken[desired]; !clash {
+		return desired
+	}
+	for n := 2; n < 100000; n++ {
+		candidate := fmt.Sprintf("#%d - %s", n, desired)
+		if _, clash := taken[candidate]; !clash {
+			return candidate
+		}
+	}
+	return desired
+}
+
+// createLocked is the body of Create; the caller holds s.mu and installs
+// the recoverMutator guard.
+func (s *Store) createLocked(in Issue) (created *Issue, err error) {
 	if in.Title == "" {
 		return nil, errors.New("issue: title required")
 	}

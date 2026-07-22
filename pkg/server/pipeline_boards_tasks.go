@@ -216,8 +216,8 @@ func (s *Server) handlePipelineBoardTaskCreate(w http.ResponseWriter, r *http.Re
 		}
 		botArgs[native.BotArgSpawnedFrom] = parentID
 	}
-	issue, err := boardStore.Create(native.Issue{
-		Title:    uniquePipelineTitle(boardStore, req.Title),
+	newIssue := native.Issue{
+		Title:    strings.TrimSpace(req.Title),
 		Body:     strings.TrimSpace(req.Body),
 		State:    state,
 		Labels:   append([]string(nil), req.Labels...),
@@ -225,7 +225,16 @@ func (s *Server) handlePipelineBoardTaskCreate(w http.ResponseWriter, r *http.Re
 		Bot:      entry.Name,
 		BotArgs:  cloneStringMap(req.BotArgs),
 		External: req.External,
-	})
+	}
+	// Prefer the store-side atomic unique-title create (no list-then-check
+	// race); degrade to the best-effort helper for backends without it.
+	var issue *native.Issue
+	if utc := native.AsUniqueTitleCreator(boardStore); utc != nil {
+		issue, err = utc.CreateUniqueTitle(newIssue)
+	} else {
+		newIssue.Title = uniquePipelineTitle(boardStore, newIssue.Title)
+		issue, err = boardStore.Create(newIssue)
+	}
 	if err != nil {
 		s.httpErrorFor(w, r, http.StatusInternalServerError, "pipeline board task: create: %v", err)
 		return
@@ -239,6 +248,12 @@ func (s *Server) handlePipelineBoardTaskCreate(w http.ResponseWriter, r *http.Re
 // ("Episode" → "#2 - Episode" → "#3 - Episode"). The counter is a PREFIX so
 // it stays visible even when a long title is truncated. Best-effort — a list
 // error just returns the desired title unchanged.
+//
+// This is the FALLBACK for board backends that don't implement
+// native.UniqueTitleCreator; the list-then-check window is racy under
+// concurrent create (last writer may duplicate a title). Backends that
+// implement CreateUniqueTitle assign the title atomically with the write
+// instead (PR #193 M4).
 func uniquePipelineTitle(boardStore native.BoardStore, desired string) string {
 	existing, err := boardStore.List(native.ListFilter{})
 	if err != nil {

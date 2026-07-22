@@ -41,8 +41,28 @@ type BoardStore interface {
 	AggregateLabels() []LabelUsage
 }
 
+// UniqueTitleCreator is the optional interface for board backends that can
+// assign a distinct card title atomically with the create write (so two
+// concurrent creates of the same title cannot both land it — PR #193 M4).
+// The filesystem store implements it; a backend that does not cleanly
+// degrades to the caller's best-effort list-then-check.
+type UniqueTitleCreator interface {
+	CreateUniqueTitle(in Issue) (*Issue, error)
+}
+
+// AsUniqueTitleCreator returns s as UniqueTitleCreator when the backend
+// supports the atomic-unique-title create, or nil otherwise.
+func AsUniqueTitleCreator(s BoardStore) UniqueTitleCreator {
+	if s == nil {
+		return nil
+	}
+	u, _ := s.(UniqueTitleCreator)
+	return u
+}
+
 // Compile-time assertion that the filesystem store satisfies the contract.
 var _ BoardStore = (*Store)(nil)
+var _ UniqueTitleCreator = (*Store)(nil)
 
 // Compile-time guarantees: the filesystem store is a full board backend.
 var (
