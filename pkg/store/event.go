@@ -146,6 +146,15 @@ const (
 	//   - has_post_create: whether the spec carries a non-empty
 	//     postCreateCommand
 	EventSandboxStarted EventType = "sandbox_started"
+	// EventSandboxWorkspaceExportFailed fires when a copy-based sandbox
+	// driver (kubernetes) fails to export the pod workspace back to the
+	// host at run end — the run's in-pod commits then stay invisible to
+	// the host-side git metadata (Commits/Files panels) and worktree
+	// finalization, even though a bot-side `git push` may have already
+	// delivered them to the remote. Data:
+	//   - driver: the sandbox driver
+	//   - error: the export failure
+	EventSandboxWorkspaceExportFailed EventType = "sandbox_workspace_export_failed"
 	// EventSandboxClawRoutedViaRunner fires when a sandboxed run
 	// contains a node using backend=claw — the engine forwards the
 	// call to iterion __claw-runner inside the container. Data:

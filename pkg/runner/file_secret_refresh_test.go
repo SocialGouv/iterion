@@ -247,21 +247,29 @@ type fakeSandboxRun struct{ sandbox.Run }
 
 func (fakeSandboxRun) Driver() string { return "fake-driver" }
 
-// TestSandboxSecretRefreshObserver pins the observer construction: no
-// refreshable refs → nil (engine hook no-op); a driver without
-// SecretFileRefresher → a visible warning naming the driver.
-func TestSandboxSecretRefreshObserver(t *testing.T) {
+// TestSandboxRunObserver pins the observer construction: the live Run is
+// always registered in the write-through registry (even with no
+// refreshable refs); a driver without SecretFileRefresher plus
+// refreshable refs → a visible warning naming the driver.
+func TestSandboxRunObserver(t *testing.T) {
 	var buf bytes.Buffer
 	r := &Runner{cfg: Config{Logger: iterlog.New(iterlog.LevelWarn, &buf)}}
 
-	if obs := r.sandboxSecretRefreshObserver(context.Background(), "team-1", nil); obs != nil {
-		t.Error("expected nil observer for empty refs")
+	// No refreshable refs: still registers, no warning.
+	obs := r.sandboxRunObserver(context.Background(), "run-1", "team-1", nil)
+	obs(fakeSandboxRun{})
+	if r.sandboxRunFor("run-1") == nil {
+		t.Fatal("observer must register the live sandbox run")
+	}
+	if buf.Len() != 0 {
+		t.Errorf("no warning expected without refreshable refs, got %q", buf.String())
+	}
+	r.unregisterSandboxRun("run-1")
+	if r.sandboxRunFor("run-1") != nil {
+		t.Fatal("unregister must drop the run from the registry")
 	}
 
-	obs := r.sandboxSecretRefreshObserver(context.Background(), "team-1", map[string]string{"forge_token": "id-1"})
-	if obs == nil {
-		t.Fatal("expected an observer for refreshable refs")
-	}
+	obs = r.sandboxRunObserver(context.Background(), "run-2", "team-1", map[string]string{"forge_token": "id-1"})
 	obs(fakeSandboxRun{})
 	out := buf.String()
 	if !strings.Contains(out, "does not support mid-run secret refresh") || !strings.Contains(out, "fake-driver") {

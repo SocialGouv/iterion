@@ -568,6 +568,23 @@ func (g *Guard) MaterializeHostFiles(dir string) (func(), error) {
 		if !ok || val == "" {
 			continue
 		}
+		// A file already present at the DECLARED mount path is the cloud
+		// runner's own materialisation (materializeFileSecretsNoSandbox),
+		// which the runner's mid-run refresh loop keeps LIVE as the store
+		// record rotates. Keep the hint pointing there instead of taking a
+		// per-run tempdir snapshot: the snapshot freezes the launch-time
+		// value, so an agent reading the hinted path after the token's
+		// lifetime (a GitHub App installation token lives ~1h; the forge
+		// review post is the run's LAST action) would 401 — the live prod
+		// failure this closes. Local host runs have nothing at the mount
+		// path (creating /run/iterion/secrets needs root) and keep the
+		// tempdir path below.
+		if h.Path != "" {
+			if _, err := os.Stat(h.Path); err == nil {
+				g.filePathByName[h.Name] = h.Path
+				continue
+			}
+		}
 		hostPath := filepath.Join(dir, secrets.SanitizeFileName(h.Name))
 		if err := os.WriteFile(hostPath, []byte(val), 0o600); err != nil {
 			cleanup()

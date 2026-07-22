@@ -510,9 +510,13 @@ func mountIsHostBind(mount string) bool {
 // time (see pkg/sandbox/kubernetes/mounts.go) — that surfaces as a
 // clear "type=bind not supported in cloud" diagnostic at run start,
 // which is the right behaviour for cloud runners that lack a host
-// filesystem to bind. Cloud workflows that need worktree-aware git
-// access will need a different mechanism (init container + PVC) —
-// out of scope here.
+// filesystem to bind. Cloud runs don't need this mount: the kubernetes
+// driver tar-copies the CLONE ROOT (real `.git`, incl. the credential
+// store) into the pod at the workspace path, re-anchors the copied
+// clone's git plumbing in-pod, and the runner writes rotated git
+// credentials through via [sandbox.WorkspaceFileRefresher] — see
+// pkg/sandbox/kubernetes/driver.go (populateWorkspace /
+// fixupWorkspaceGit) and ADR-082 Phase 3.
 func addWorktreeGitMount(spec *sandbox.Spec, gitDir string, logger *iterlog.Logger) {
 	if gitDir == "" {
 		return

@@ -131,6 +131,51 @@ type SecretFileRefresher interface {
 	RefreshSecretFile(ctx context.Context, name string, value []byte) error
 }
 
+// WorkspaceExporter is an optional interface a [Run] may implement to
+// copy the sandbox workspace BACK to the host at end of run.
+//
+// It exists for drivers whose workspace is a COPY of the host workspace
+// (kubernetes: tar-streamed into the pod's emptyDir): without a reverse
+// copy, every commit the run made inside the pod is destroyed with the
+// pod, and the host-side consumers that read the launch-time clone after
+// the run — worktree finalization, the runner's recordRunGitMeta
+// (Commits/Files panels), diff capture — see an unchanged workspace
+// (ADR-082 Phase 3 blocker 1). Bind-mount drivers (docker) and the noop
+// passthrough share the host filesystem and intentionally do NOT
+// implement this — callers gate on the type assertion.
+//
+// The engine calls it once, at sandbox teardown, BEFORE the sandbox is
+// destroyed. A failure must be surfaced by the caller (log + event) —
+// it means the run's un-pushed work is about to be lost with the pod.
+type WorkspaceExporter interface {
+	// ExportWorkspace copies the sandbox workspace back onto the host
+	// workspace it was populated from. No-op for workspace-less runs.
+	ExportWorkspace(ctx context.Context) error
+}
+
+// WorkspaceFileRefresher is an optional interface a [Run] may implement
+// to rewrite a file INSIDE the sandbox workspace mid-run, addressed
+// relative to the workspace root.
+//
+// It exists for drivers whose workspace is a COPY of the host workspace
+// (kubernetes: tar-streamed into the pod's emptyDir): a host-side file
+// update — the runner rewriting the clone's `.git/iterion-credentials`
+// when the forge token rotates — never reaches the pod, so the run's
+// final `git push` would authenticate with the launch-time token
+// (ADR-082 Phase 3 blocker 1). Drivers that bind-mount the workspace
+// (docker) or run on the host (noop) share the inode with the host
+// file and intentionally do NOT implement this — callers gate on the
+// type assertion.
+//
+// Implementations MUST stream the value over stdin (never argv/env —
+// both are visible to `ps` / the kube API) and MUST NOT log it.
+type WorkspaceFileRefresher interface {
+	// RefreshWorkspaceFile atomically writes value to relPath (a clean
+	// relative path, e.g. ".git/iterion-credentials") under the sandbox
+	// workspace root, mode 0600.
+	RefreshWorkspaceFile(ctx context.Context, relPath string, value []byte) error
+}
+
 // Capabilities advertises a driver's supported feature set.
 //
 // The engine compares a [Spec] against capabilities at Prepare time:

@@ -34,6 +34,7 @@ import (
 	"github.com/SocialGouv/iterion/pkg/sandbox"
 	"github.com/SocialGouv/iterion/pkg/sandbox/devcontainer"
 	"github.com/SocialGouv/iterion/pkg/sandbox/netproxy"
+	"github.com/SocialGouv/iterion/pkg/secrets"
 	"github.com/SocialGouv/iterion/pkg/store"
 )
 
@@ -406,6 +407,18 @@ func resolveAndStartSandbox(ctx context.Context, p SandboxParams) (*activeSandbo
 		return startNoopSandbox(ctx, driver, spec, source, p.RunID, p.FriendlyName, p.WorkspacePath, emitEvent)
 	}
 
+	// Claude forfait delivery (ADR-082 Phase 3 blocker 3): when the run's
+	// credentials carry a materialised Claude Code OAuth file, ship it into
+	// the sandbox on the ADR-070 file-secret channel so in-pod claude auth
+	// has a real credentials file instead of hanging on the per-spawn env
+	// token alone. After the sandbox starts, seedClaudeConfigDir below
+	// copies it into the writable CLAUDE_CONFIG_DIR the delegate points the
+	// CLI at. Added past the noop gate — a real driver is required to mount.
+	claudeOAuthMounted, err := addClaudeOAuthSecretFile(ctx, spec)
+	if err != nil {
+		return nil, fmt.Errorf("runtime: sandbox: claude forfait delivery: %w", err)
+	}
+
 	// Optionally start the network proxy. When the workflow has no
 	// explicit network policy, default to the iterion-default
 	// allowlist preset so users get sensible defaults out of the box —
@@ -461,6 +474,21 @@ func resolveAndStartSandbox(ctx context.Context, p SandboxParams) (*activeSandbo
 	emitSandboxStarted(prepared, spec, driver.Name(), source, emitEvent)
 
 	active := &activeSandbox{run: run, proxy: proxy, workspaceFolder: spec.WorkspaceFolder}
+
+	// Second half of the Claude forfait delivery: copy the read-only mount
+	// into the writable CLAUDE_CONFIG_DIR the claude_code delegate points
+	// sandboxed CLI spawns at. Hard error — the run resolved a forfait, so
+	// a failed seed must stop the boot, not resurface as an auth failure
+	// hours into the workflow.
+	if claudeOAuthMounted {
+		if err := seedClaudeConfigDir(ctx, run); err != nil {
+			active.shutdown(ctx, logger)
+			return nil, err
+		}
+		if logger != nil {
+			logger.Info("runtime: sandbox: claude forfait credentials delivered (CLAUDE_CONFIG_DIR=%s)", secrets.ClaudeCodeSandboxConfigDir)
+		}
+	}
 
 	// C082: when the server supplies a board MCP handler and a board-cap
 	// node exists, start a per-run gateway-reachable board listener so
@@ -1441,9 +1469,57 @@ func (e *Engine) startSandbox(ctx context.Context, runID string, repoRoot string
 		if active == nil {
 			return
 		}
+		if active.run != nil {
+			exportSandboxWorkspaceOnCleanup(active.run, e.logger, emitForSandbox)
+		}
 		cleanupCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 		defer cancel()
 		active.shutdown(cleanupCtx, e.logger)
 	}
 	return cleanup, nil
+}
+
+// sandboxWorkspaceExportTimeout bounds the end-of-run pod→host workspace
+// export (a tar stream of the whole workspace — sized for large repos,
+// distinct from the 30s teardown bound).
+const sandboxWorkspaceExportTimeout = 5 * time.Minute
+
+// exportSandboxWorkspaceOnCleanup performs the pod→host workspace
+// write-back (ADR-082 Phase 3 blocker 1) at sandbox teardown: copy-based
+// drivers (kubernetes) must export the pod workspace back BEFORE the
+// sandbox is destroyed — the in-pod commits only exist there, and the
+// host-side consumers that run after this cleanup (the deferred
+// finalizeOnExit in Engine.Run — LIFO puts this cleanup first — and the
+// cloud runner's recordRunGitMeta / diff capture after Run returns) read
+// the HOST workspace. Drivers that share the host filesystem
+// (docker bind mount, noop) don't implement the interface — no-op.
+//
+// Runs on its own background ctx: the run ctx is typically
+// cancelled/expired by now, and a cancelled export would silently lose
+// the run's work. A failure is loud (warn + event), never silent — it
+// means un-pushed commits are about to be destroyed with the pod.
+func exportSandboxWorkspaceOnCleanup(
+	run sandbox.Run,
+	logger *iterlog.Logger,
+	emitEvent func(store.EventType, map[string]any) error,
+) {
+	exporter, ok := run.(sandbox.WorkspaceExporter)
+	if !ok {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), sandboxWorkspaceExportTimeout)
+	defer cancel()
+	if err := exporter.ExportWorkspace(ctx); err != nil {
+		if logger != nil {
+			logger.Warn("runtime: sandbox workspace export back to host FAILED — in-pod commits not visible host-side (a bot-side push, if any, still delivered them): %v", err)
+		}
+		_ = emitEvent(store.EventSandboxWorkspaceExportFailed, map[string]any{
+			"driver": run.Driver(),
+			"error":  err.Error(),
+		})
+		return
+	}
+	if logger != nil {
+		logger.Info("runtime: sandbox workspace exported back to host")
+	}
 }

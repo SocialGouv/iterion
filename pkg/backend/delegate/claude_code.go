@@ -733,7 +733,7 @@ func (b *ClaudeCodeBackend) runTwoPassFormatting(ctx context.Context, task Task,
 // or drop it on a provider-fingerprint mismatch. Returns the extended opts
 // and the current provider fingerprint.
 func (b *ClaudeCodeBackend) setupCredsAndSession(ctx context.Context, task Task, opts []claudesdk.Option) ([]claudesdk.Option, string) {
-	credEnv := anthropicCredEnvForCLI(ctx, task.ProviderHint)
+	credEnv := anthropicCredEnvForCLI(ctx, task.ProviderHint, taskSandboxed(task))
 	opts = append(opts, credEnvToOpts(credEnv)...)
 	currentFingerprint := providerFingerprint(credEnv)
 
@@ -939,7 +939,7 @@ func (b *ClaudeCodeBackend) formatOutput(ctx context.Context, task Task, session
 
 	// Forward BYOK credentials and effort level into the formatting pass so
 	// the resumed session uses the same auth path as Pass 1.
-	opts = append(opts, anthropicCredOptsForCLI(ctx, task.ProviderHint)...)
+	opts = append(opts, anthropicCredOptsForCLI(ctx, task.ProviderHint, taskSandboxed(task))...)
 	effort := task.ReasoningEffort
 	if effort == "" {
 		effort = defaultClaudeCodeEffort
