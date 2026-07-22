@@ -94,9 +94,17 @@ shape is `[Answer to question <id>] Q: "…" — A: …`.
 
 ## Limits (v1)
 
-- Sandboxed claude_code nodes: the async tools are unavailable (same
-  stdio-MCP transport gap as the blocking `ask_user`); a loud per-node
-  warning is logged.
+- Sandboxed claude_code nodes now get the full ask-user tool set
+  (`ask_user`, `ask_user_async`, `await_answers`) over the per-run
+  HTTP MCP transport (ADR-082 Phase 3): the engine binds a
+  gateway-reachable listener at `/api/v1/mcp/ask-user`
+  (`pkg/askusermcp`, token-authenticated via `X-Iterion-Run`) and the
+  delegate registers it in place of the stdio `__mcp-ask-user`
+  subcommand, whose host binary path is invisible in-container. The
+  PreToolUse hooks run host-side on both transports, so the
+  interaction-store paths and studio pause/answer UX are identical.
+  If the listener fails to bind, the tools are disabled with a loud
+  per-node warning (never silently).
 - An in-flight `await_answers` node keeps the run status `running`
   (in-process park bounded by `timeout:`); the durable
   `paused_waiting_event`-style parking is deferred (see ADR-051/081).

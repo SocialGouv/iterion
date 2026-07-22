@@ -205,6 +205,40 @@ func validateEnvVar(k, v string) error {
 // its lifetime. The caller invokes [Run.Command] / [Run.Exec] for each
 // delegate (claude_code, tool node) — startup cost is amortised across
 // every invocation in the run.
+// hostNetworkArgs returns the `docker run` args wiring the container to
+// the host-side per-run services (egress proxy, board/ask-user MCP
+// listeners).
+//
+// The `host.docker.internal → host-gateway` alias (+ NO_PROXY coverage)
+// is DECOUPLED from the proxy's presence: iterion's per-run MCP
+// listeners (board — C082 — and ask-user — ADR-082 Phase 3) advertise
+// exactly that host, and under the default `network: open` policy no
+// proxy runs — on Linux the alias then simply doesn't resolve and
+// claude-code fails MCP tool registration at session start
+// (AlwaysLoad servers fail loudly). The runtime signals a planned
+// listener via [sandbox.RunInfo.HostGatewayAlias]; either that or a
+// live proxy endpoint injects the alias. On Docker Desktop the alias
+// is built-in; on Linux we have to opt in via --add-host.
+//
+// NO_PROXY rides along whenever the alias does: calls to
+// host.docker.internal MUST go direct, never through an HTTP proxy
+// (iterion's own, or one inherited from spec.Env) — the proxy runs on
+// the host and cannot itself resolve host.docker.internal, so proxying
+// an MCP call would fail the connect. It also lets inner localhost-only
+// services (e.g. an inner devbox cache) bypass the proxy.
+func hostNetworkArgs(info sandbox.RunInfo) []string {
+	var args []string
+	if info.ProxyEndpoint != "" {
+		args = append(args, "--env", "HTTPS_PROXY="+info.ProxyEndpoint)
+		args = append(args, "--env", "HTTP_PROXY="+info.ProxyEndpoint)
+	}
+	if info.ProxyEndpoint != "" || info.HostGatewayAlias {
+		args = append(args, "--env", "NO_PROXY=localhost,127.0.0.1,host.docker.internal")
+		args = append(args, "--add-host", "host.docker.internal:host-gateway")
+	}
+	return args
+}
+
 func (d *Driver) Start(ctx context.Context, prepared sandbox.PreparedSpec, info sandbox.RunInfo) (sandbox.Run, error) {
 	p, ok := prepared.(*Prepared)
 	if !ok {
@@ -313,25 +347,7 @@ func (d *Driver) Start(ctx context.Context, prepared sandbox.PreparedSpec, info 
 		}
 		args = append(args, "--env", k+"="+v)
 	}
-	if info.ProxyEndpoint != "" {
-		// Inject proxy URL via standard env vars + a host-gateway alias
-		// so the container can reach the host's loopback interface
-		// where the iterion proxy is listening. On Docker Desktop the
-		// alias is built-in; on Linux we have to opt in via --add-host.
-		args = append(args, "--env", "HTTPS_PROXY="+info.ProxyEndpoint)
-		args = append(args, "--env", "HTTP_PROXY="+info.ProxyEndpoint)
-		// Allow inner clones / installs that talk to localhost-only
-		// services (rare, but legal — e.g. an inner devbox cache) to
-		// bypass the proxy. The container's own services on its loop-
-		// back interface should not be tunneled through the host.
-		// host.docker.internal is the host gateway where iterion's own
-		// per-run services live (the board MCP listener — C082); calls to
-		// it MUST go direct, not through HTTP_PROXY (the egress proxy runs
-		// on the host and cannot itself resolve host.docker.internal, so
-		// proxying a board call would fail the MCP connect).
-		args = append(args, "--env", "NO_PROXY=localhost,127.0.0.1,host.docker.internal")
-		args = append(args, "--add-host", "host.docker.internal:host-gateway")
-	}
+	args = append(args, hostNetworkArgs(info)...)
 
 	// Egress TLS-inspection CA (Layer 2 secret substitution): when the
 	// proxy runs in inspection mode it mints leaves the in-container

@@ -54,6 +54,8 @@ type IOTask struct {
 	StoreDir               string                `json:"store_dir,omitempty"`
 	BoardHTTPEndpoint      string                `json:"board_http_endpoint,omitempty"`
 	BoardRunToken          string                `json:"board_run_token,omitempty"`
+	AskUserHTTPEndpoint    string                `json:"ask_user_http_endpoint,omitempty"`
+	AskUserRunToken        string                `json:"ask_user_run_token,omitempty"`
 	ToolDefs               []IOToolDef           `json:"tool_defs,omitempty"`
 	OutputSchema           json.RawMessage       `json:"output_schema,omitempty"`
 	Model                  string                `json:"model,omitempty"`
@@ -145,6 +147,8 @@ func ToIOTask(t Task) IOTask {
 		StoreDir:               t.StoreDir,
 		BoardHTTPEndpoint:      t.BoardHTTPEndpoint,
 		BoardRunToken:          t.BoardRunToken,
+		AskUserHTTPEndpoint:    t.AskUserHTTPEndpoint,
+		AskUserRunToken:        t.AskUserRunToken,
 		ToolDefs:               ioToolDefs,
 		OutputSchema:           t.OutputSchema,
 		Model:                  t.Model,
@@ -196,6 +200,8 @@ func FromIOTask(t IOTask) Task {
 		StoreDir:               t.StoreDir,
 		BoardHTTPEndpoint:      t.BoardHTTPEndpoint,
 		BoardRunToken:          t.BoardRunToken,
+		AskUserHTTPEndpoint:    t.AskUserHTTPEndpoint,
+		AskUserRunToken:        t.AskUserRunToken,
 		OutputSchema:           t.OutputSchema,
 		Model:                  t.Model,
 		HasTools:               t.HasTools,

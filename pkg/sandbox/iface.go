@@ -308,6 +308,19 @@ type RunInfo struct {
 	// populates this; Phase 0 leaves it empty.
 	ProxyEndpoint string
 
+	// HostGatewayAlias, when true, tells the driver the runtime will
+	// bind per-run host listeners advertised to the container as
+	// `host.docker.internal` (the board MCP endpoint — C082 — and/or
+	// the ask-user MCP endpoint — ADR-082 Phase 3), so the container
+	// MUST be able to resolve that alias even when no egress proxy is
+	// running (network: open, the default). On Linux docker the alias
+	// only exists via `--add-host host.docker.internal:host-gateway`;
+	// without it every advertised MCP endpoint is unreachable and
+	// claude-code fails tool registration at session start. Drivers
+	// that don't use the alias (kubernetes advertises the runner pod
+	// IP) ignore it.
+	HostGatewayAlias bool
+
 	// MaxDurationSeconds is the run's budgeted wall-clock cap in seconds
 	// (0 = unbounded). Drivers that can bound a sandbox's lifetime use it
 	// to self-terminate a leaked sandbox — the kubernetes driver derives
