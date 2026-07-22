@@ -168,9 +168,9 @@ type Run struct {
 	// losing the answered child's work. Empty for parents with no subbot
 	// nodes and for runs that predate this field. Set only on the parent.
 	SubbotChildren map[string]string `json:"subbot_children,omitempty" bson:"subbot_children,omitempty"`
-	WorkflowName string `json:"workflow_name" bson:"workflow_name"`
-	WorkflowHash string `json:"workflow_hash,omitempty" bson:"workflow_hash,omitempty"` // SHA-256 of the .bot source at run start
-	FilePath     string `json:"file_path,omitempty" bson:"file_path,omitempty"`         // absolute .bot source path captured at launch (resume without re-supplying file)
+	WorkflowName   string            `json:"workflow_name" bson:"workflow_name"`
+	WorkflowHash   string            `json:"workflow_hash,omitempty" bson:"workflow_hash,omitempty"` // SHA-256 of the .bot source at run start
+	FilePath       string            `json:"file_path,omitempty" bson:"file_path,omitempty"`         // absolute .bot source path captured at launch (resume without re-supplying file)
 	// Preset is the in-source preset name selected at launch via
 	// `--preset <name>` (or the studio Launch modal). Persisted so
 	// `iterion resume` re-applies the same parameter set without the
