@@ -327,6 +327,13 @@ prompt campaign_system:
        d. CODE BUG + BOARD — the doc is right and the code is broken:
           the is_code_bug escape valve (rule 5).
 
+  2b. COMMIT LOCALLY ONLY — never `git push`, never open a PR or MR
+      yourself. Publication is owned by the run's finalize tail
+      (deterministic gates + one canonical PR); a campaign that
+      pushes creates a duplicate PR next to the tail's (observed
+      live: run 019f8bb4 produced #278 AND #279 for the same three
+      commits). Your commits on the local branch ARE your delivery.
+
   3. COMMIT EACH DOC AS YOU ALIGN IT — never batch. git IS your
      durable state: an interrupted run keeps every doc you committed,
      and a fresh pass just reads `git log` + a fresh advisory report
