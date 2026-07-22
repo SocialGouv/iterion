@@ -148,6 +148,35 @@ jobs:
           sbom: ${{ inputs.multiarch }}
           sign: false # the published index is signed once in the merge job
 
+      # Single-arch fast path: on non-release builds there is no arm64 leg to
+      # stitch, so the final tags are published right here from the just-pushed
+      # staging manifest — the separate merge job (one more runner spin-up per
+      # image, ~15-25s each and real queueing under slot pressure) only runs
+      # for multiarch releases. imagetools talks straight to the registry: no
+      # builder needed, the GHCR login above suffices.
+      - name: Compute final tags (single-arch fast path)
+        if: ${{ !inputs.multiarch }}
+        id: fasttags
+        uses: docker/metadata-action@80c7e94dd9b9319bd5eb7a0e0fe9291e23a2a2e9 # v6.1.0
+        with:
+          images: ${{ env.IMAGE_REF }}
+          # No semver types: release tags always take the multiarch merge path.
+          tags: |
+            type=ref,event=branch
+            type=raw,value=edge,enable=${{ github.ref == format('refs/heads/{0}', 'main') }}
+
+      - name: Publish final tags (single-arch fast path)
+        if: ${{ !inputs.multiarch }}
+        env:
+          TAGS: ${{ steps.fasttags.outputs.tags }}
+          SHA: ${{ github.sha }}
+        run: |
+          set -eux
+          tflags=""
+          for t in $TAGS; do tflags="$tflags -t $t"; done
+          # shellcheck disable=SC2086
+          docker buildx imagetools create $tflags "${IMAGE_REF}:${SHA}-amd64"
+
   # --------------------------------------------------------------------------
   # arm64 — native build on a GitHub arm runner (no QEMU), pushed to a per-arch
   # staging tag. gha layer cache keyed per image+arch.
@@ -206,12 +235,13 @@ jobs:
   # --------------------------------------------------------------------------
   # merge — stitch the two per-arch staging manifests into the published
   # multi-arch index (final tags), then cosign-sign + SBOM-attest the index.
+  # Release (multiarch) builds only: single-arch builds publish their final
+  # tags inside the amd64 job (fast path above) and skip this runner entirely.
   # --------------------------------------------------------------------------
   merge:
-    # Runs once amd64 succeeded, whether arm64 ran (multiarch) or was skipped
-    # (feature branch). always() prevents auto-skip on the skipped arm64 need; the
-    # explicit guards then require amd64 success and a non-failing arm64.
-    if: ${{ always() && !inputs.is-pr && needs.amd64.result == 'success' && needs.arm64.result != 'failure' }}
+    # always() prevents auto-skip on needs edge cases; the explicit guards then
+    # require the multiarch mode, amd64 success and a successful arm64 leg.
+    if: ${{ always() && !inputs.is-pr && inputs.multiarch && needs.amd64.result == 'success' && needs.arm64.result != 'failure' }}
     needs: [amd64, arm64]
     runs-on: ubuntu-latest
     permissions:
