@@ -797,16 +797,15 @@ schema author_output:
 schema mark_issue_output:
   text: string
 
-## update_audit_cache I/O (v0.5.0). The `audited_pairs: string[]`
-## field is shell-tokenised by iterion's template substitution
-## (`'pair1' 'pair2' 'pair3'`) so each element lands as a separate
-## argv entry to python3 — env var passing breaks on internal
-## whitespace, JSON encoding is unreachable via the {{!...}} raw
-## form because raw values still go through env-var assignment.
+## update_audit_cache I/O (v2.3.1). The verified pairs ride a FILE
+## (written by build_manifest under scratch), not inline argv: a large
+## repo produces thousands of pairs and an inline substitution blows
+## the kernel's per-argument limit — `fork/exec bash: argument list
+## too long`, observed live on cloud run 019f86ce (~4200 pairs).
 schema update_audit_cache_input:
   workspace_dir: string
   cache_path: string
-  audited_pairs: string[]
+  pairs_file: string
 
 schema update_audit_cache_output:
   cache_path: string
@@ -902,7 +901,11 @@ schema build_manifest_output:
   ## Candidates dropped because the campaign's dismissals ledger
   ## (vars.dismissed_path) already adjudicated them as false positives.
   dismissed_excluded: int
-  verified_pairs: string[]
+  ## Path (under scratch) of the JSON array of mechanically verified
+  ## doc::anchor pairs — consumed by update_audit_cache. A file, never
+  ## inline: thousands of pairs inline hit the kernel argv limit.
+  verified_pairs_file: string
+  verified_pairs_count: int
 
 ## ─── Nodes ──────────────────────────────────────────────────────
 
@@ -1147,7 +1150,7 @@ print(json.dumps({
 ## All inputs flow via env vars (JSON-encoded for arrays); the
 ## tool's argv is empty.
 tool build_manifest:
-  command: `WS={{input.workspace_dir}} CODE_GLOBS={{input.code_scope_globs}} MAX_CANDIDATES={{input.max_drift_candidates}} MAX_CHUNK_DOCS={{input.max_review_chunk_docs}} DISMISSED_PATH={{vars.dismissed_path}} python3 -c "
+  command: `WS={{input.workspace_dir}} CODE_GLOBS={{input.code_scope_globs}} MAX_CANDIDATES={{input.max_drift_candidates}} MAX_CHUNK_DOCS={{input.max_review_chunk_docs}} DISMISSED_PATH={{vars.dismissed_path}} PAIRS_OUT={{vars.scratch_dir}}/verified_pairs.json python3 -c "
 import os, json, re, glob, subprocess, sys
 ws = os.environ['WS']
 os.chdir(ws)
@@ -1508,6 +1511,21 @@ if max_candidates > 0:
     candidates = candidates[:max_candidates]
 chunk_doc_count = len({a['doc'] for a in candidates})
 
+## Verified pairs ride a FILE, never inline shell substitution: a large
+## repo yields thousands of pairs and an inline argv handoff blows the
+## kernel per-argument limit (E2BIG — seen live at ~4200 pairs).
+pairs_sorted = sorted({a['doc'] + '::' + str(a.get('value','')) for a in verified})
+pairs_out = os.environ.get('PAIRS_OUT', '').strip()
+pairs_out_written = ''
+if pairs_out:
+    try:
+        os.makedirs(os.path.dirname(pairs_out) or '.', exist_ok=True)
+        with open(pairs_out, 'w', encoding='utf-8') as pf:
+            json.dump(pairs_sorted, pf)
+        pairs_out_written = pairs_out
+    except OSError:
+        pass
+
 total_anchors = len(anchors)
 verified_anchors = len(verified)
 drifted_anchors = len(drifted)
@@ -1546,7 +1564,8 @@ print(json.dumps({
     'chunk_doc_count': chunk_doc_count,
     'max_review_chunk_docs': max_chunk_docs,
     'dismissed_excluded': dismissed_excluded,
-    'verified_pairs': sorted({a['doc'] + '::' + str(a.get('value','')) for a in verified}),
+    'verified_pairs_file': pairs_out_written,
+    'verified_pairs_count': len(pairs_sorted),
 }))
 " --docs {{input.doc_files}} --cli {{input.cli_commands}} --flags {{input.cli_flags}} --diag {{input.diagnostic_codes}}`
   input: build_manifest_input
@@ -1623,10 +1642,19 @@ tool update_audit_cache:
 import os, json, hashlib, re, sys, pathlib, subprocess
 ws = sys.argv[1]
 cache_path = sys.argv[2]
-pairs = sys.argv[3:]
+pairs_file = sys.argv[3] if len(sys.argv) > 3 else ''
 if not cache_path:
     print(json.dumps({'cache_path': '', 'entries_written': 0, 'git_head': '', 'skipped': 'no cache_path'}))
     sys.exit(0)
+pairs = []
+if pairs_file and os.path.exists(pairs_file):
+    try:
+        with open(pairs_file, encoding='utf-8') as pf:
+            loaded = json.load(pf)
+        if isinstance(loaded, list):
+            pairs = [p for p in loaded if isinstance(p, str)]
+    except (OSError, json.JSONDecodeError):
+        pass
 os.chdir(ws)
 def git_head():
     try:
@@ -1666,7 +1694,7 @@ head = git_head()
 with open(out_path, 'w') as out:
     json.dump({'v': 1, 'git_head': head, 'doc': doc_entries}, out, indent=2, sort_keys=True)
 print(json.dumps({'cache_path': str(out_path), 'entries_written': len(doc_entries), 'git_head': head, 'skipped': ''}))
-" {{input.workspace_dir}} {{input.cache_path}} {{input.audited_pairs}}`
+" {{input.workspace_dir}} {{input.cache_path}} {{input.pairs_file}}`
   input: update_audit_cache_input
   output: update_audit_cache_output
 
@@ -2007,7 +2035,7 @@ workflow docs_refresh:
   mark_issue_for_review -> update_audit_cache with {
     workspace_dir: "{{vars.workspace_dir}}",
     cache_path: "{{vars.audit_cache_path}}",
-    audited_pairs: "{{outputs.build_manifest.verified_pairs}}"
+    pairs_file: "{{outputs.build_manifest.verified_pairs_file}}"
   }
   ## ── PR tail (opt-in, feature-dev verbatim) ──────────────────────
   ## Reached on BOTH finishes (converged and max_passes-exhausted): the
