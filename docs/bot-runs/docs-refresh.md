@@ -11,6 +11,21 @@ reviewers, deterministic `streak_check` (two cross-family approvals), a
 agents can't truncate the audit set. Runs on ANY repo; iterion is the
 reference self-host case.
 
+## 2026-07-22 — SANDBOXED cloud validation: converged + PR opened in-pod (runs 019f8a05→019f8a8f)
+- Status: validated — the full ADR-082 Phase 3 stack end-to-end
+- Versions: bot 2.4.0 · iterion :edge (#268 head) · prod chart runner.sandbox.enabled=true, default image -full
+- Method: API launch (bot_id + repo_url SocialGouv/iterion + connection), open_mr=true, iterion surface globs; six iterations, each failure fixed+deployed within ~15-30 min (user-sanctioned CI bypass)
+- Result: run 019f8a8f — sandbox pod boots, workflow runs IN-POD, 6 passes (~35 min), gate CONVERGED (docs_aligned ∧ green ∧ coverage), 3 real doc commits (pass 4), finalize_mr pushed from the pod and opened PR #270. Doki 2.4.0 economy confirmed live: verify_precheck reuse on 0-commit passes (~3.5 min vs ~9), chunks of 22 docs (denoised), dismissals ledger advancing every pass.
+- Cutover gaps found and fixed by these validation iterations (each observed live, fixed, redeployed):
+  1. Runner entry point had no sandbox default (#263 + chart ITERION_SANDBOX_DEFAULT=auto) — cloud runs stayed unsandboxed after the override lift.
+  2. Unusable devcontainer (iterion's own --privileged) degraded to unsandboxed forever → default-image fallback at the ambient tier (#264).
+  3. k8s driver hard-required sandbox.user → defaults to the published images' 1000:1000 (#265).
+  4. git safe.directory: root-owned emptyDir mountpoint vs uid-1000 exec broke repo discovery (exit 128) → GIT_CONFIG_* protected-config env injected pod-wide (#266).
+  5. Prod forfait rides the runner pod's AMBIENT env; kubectl-exec spawns only get the SDK env map → claude "Not logged in" in-pod, masked as structured-output schema errors (the known gotcha) → ambient Anthropic env forwarded verbatim for sandboxed spawns (#268).
+  6. Board MCP HTTP endpoint not wired on runner-launched sandboxed runs (board handoff degraded to summary) — ticket native:1ec7b869, open.
+- Also: cancelled cloud runs resurrected after runner restarts (NATS redelivery ignores terminal status) — ticket native:85cea410, open.
+- Lessons: validation-by-real-run caught six gaps no test suite had; "auth failure masquerading as schema error" struck again (test auth FIRST); the argv idiom has a kernel ceiling (ride files); merge-queue drops are silent — verify the gh-readonly-queue branch, and a red gate ON MAIN (OpenAPI drift from direct pushes) starves the whole queue.
+
 ## 2026-07-22 — first repo-targeted CLOUD dogfood + PR tail (runs 019f86ac, 019f86ce)
 - Status: validated (infrastructure) / low direct value (docs) — the whole cloud PR-tail path + ledger + fixes proven live; zero real doc drift found (all candidates were scanner noise, now denoised in 2.4.0)
 - Versions: bot 2.2.0→2.2.1→2.3.1 (runs) / 2.4.0 (post-run) · iterion 37c36f7→aff5e02 (prod :edge)
