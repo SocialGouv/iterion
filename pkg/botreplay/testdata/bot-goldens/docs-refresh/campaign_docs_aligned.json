@@ -1,24 +1,23 @@
 {
-  "_note": "Hand-authored seed fixture — record mode is impractical for a claude_code campaign node (whole-session agent, real repo side-effects, interaction: human). Shape derived from bots/docs-refresh/main.bot schema campaign_output (ADR-058 v2 termination contract). Regenerate by hand ONLY if the campaign_output schema changes.",
+  "_note": "Hand-authored seed fixture — record mode is impractical for a claude_code campaign node (whole-session agent, real repo side-effects, interaction: human). Shape derived from bots/docs-refresh/main.bot schema campaign_output (ADR-058 v2 termination contract, unchanged by v3). Input mirrors the v3 advisory-hints campaign_input. Regenerate by hand ONLY if the campaign_output schema changes.",
   "bot": "docs-refresh",
   "scenario": "campaign_docs_aligned",
   "node": "campaign",
   "backend": "claude_code",
   "model": "claude-opus-4-8",
-  "recorded_at": "2026-07-07T00:00:00Z",
+  "recorded_at": "2026-07-22T00:00:00Z",
   "input": {
-    "total_docs": 3,
-    "total_anchors": 12,
-    "verified_anchors": 11,
-    "drifted_anchors": 1,
-    "unverifiable_anchors": 0,
-    "manifest_coverage_pct": 91,
-    "coverage_target_pct": 80,
-    "drift_candidates": [],
-    "docs_with_drift_count": 1,
-    "chunked": false,
-    "chunk_doc_count": 1,
-    "max_review_chunk_docs": 30,
+    "hints": [
+      {
+        "doc": "README.md",
+        "line": 3,
+        "kind": "missing_path",
+        "value": "cmd/app/old.go",
+        "note": "path cited in the doc not found on disk (cmd/ exists)"
+      }
+    ],
+    "hint_count": 1,
+    "hints_note": "1 missing path(s), 0 dead link(s)/anchor(s), 0 unmentioned area(s) — from 4 checkable path(s) + 2 internal link(s) across 3 doc(s); 0 ledger-dismissed excluded",
     "recently_changed_code_files": [],
     "fail_log": ""
   },
@@ -29,6 +28,6 @@
     "is_code_bug": false,
     "needs_human": false,
     "human_note": "",
-    "summary": "Aligned README.md's CLI example with the current flag surface (verified via read_file on cmd/app/main.go before the edit; docs(readme): align CLI example, Bot: docs-refresh trailer). The one drifted anchor is fixed; the remaining candidates were verified in place."
+    "summary": "Aligned README.md's CLI example with the current flag surface (verified via read_file on cmd/app/main.go before the edit; docs(readme): align CLI example, Bot: docs-refresh trailer). The one missing-path hint was fixed; a survey of the remaining docs against the code found no further drift."
   }
 }
