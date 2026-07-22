@@ -468,7 +468,14 @@ ship on the spine** (each = a source adapter publishing a
   handler bot + labels via `set_bot`), untrusted ones park with
   `needs:approval` + zero LLM until the operator's studio "Approve &
   triage" swaps the labels. The same author gate protects the webhook
-  `AutoImplementOnOpen` zero-touch lane.
+  `AutoImplementOnOpen` zero-touch lane. **Cloud parity**: the mongo
+  board has its own spine half
+  ([pkg/server/trigger_cloud.go](pkg/server/trigger_cloud.go)) — a
+  `board_events` poll-tail whose per-tenant CAS cursor elects one
+  publishing replica, feeding the same evaluator over the NATS bus with
+  an ATOMIC label consume (`boardmongo.ConsumeLabels`), so
+  consume_labels triggers cannot double-launch across replicas; the
+  `/api/v1/triggers` CRUD is team-scoped in cloud (active-team JWT).
 - **run-completion** ("runned by iterion") — `runview.Service` emits
   `run.finished`/`failed`/`cancelled`/`paused` in-process, and cloud
   **runner pods publish the same events** onto the NATSBus

@@ -62,8 +62,9 @@ type Server struct {
 	hub              *Hub
 	watcher          *Watcher
 	runs             *runview.Service    // run console service; nil disables /api/runs endpoints
-	watchCoord       *watchCoordinator   // MVP3b issue-state fan-out; nil when no native tracker or events tail unavailable
-	triggerCoord     *TriggerCoordinator // event-driven trigger spine; nil when no TriggerStore/native tracker
+	watchCoord       *watchCoordinator        // MVP3b issue-state fan-out; nil when no native tracker or events tail unavailable
+	triggerCoord     *TriggerCoordinator      // event-driven trigger spine; nil when no TriggerStore/native tracker
+	cloudTriggerCoord *CloudTriggerCoordinator // cloud (mongo board) trigger spine; nil outside cloud mode
 	// userNotify + pushSink are the user-notification stack (web push on
 	// human-input pauses and run outcomes); nil when the feature is off
 	// (no subscription store / no VAPID keys). userNotifyCancel detaches

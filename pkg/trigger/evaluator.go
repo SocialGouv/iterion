@@ -84,7 +84,7 @@ func (e *Evaluator) Handle(ctx context.Context, ev Event) error {
 					e.warn("trigger: subscription %s requires consume_labels but the board effect cannot consume; skipping", sub.ID)
 					continue
 				}
-				consumed, err := lc.ConsumeMatchLabels(ctx, ev.Subject.ID, sub.Match.Labels)
+				consumed, err := lc.ConsumeMatchLabels(ctx, ev.TenantID, ev.Subject.ID, sub.Match.Labels)
 				if err != nil {
 					e.warn("trigger: consume labels for subscription %s failed: %v", sub.ID, err)
 					continue

@@ -57,8 +57,10 @@ type BoardEffect interface {
 // a card before a direct launch. consumed=false (no error) means another
 // evaluation already stripped them — the caller must skip the launch, which
 // is what makes the label a one-shot trigger under duplicate card events.
+// tenantID scopes the card on a multi-tenant (cloud) board; the local
+// single-store effect ignores it.
 type LabelConsumer interface {
-	ConsumeMatchLabels(ctx context.Context, issueID string, labels []string) (consumed bool, err error)
+	ConsumeMatchLabels(ctx context.Context, tenantID, issueID string, labels []string) (consumed bool, err error)
 }
 
 // Nudger asks a consumer to act on a just-promoted card immediately instead
