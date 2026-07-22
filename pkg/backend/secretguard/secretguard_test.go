@@ -336,6 +336,58 @@ func TestMaterializeHostFiles_RewritesPathAndWritesValue(t *testing.T) {
 	}
 }
 
+// TestMaterializeHostFiles_PrefersRunnerMaterializedMountPath pins the
+// fix for the live prod 401 (run 019f8861): on an unsandboxed cloud run
+// the runner materialises each file secret at its DECLARED mount path
+// and keeps that file LIVE via its mid-run refresh loop — but this seam
+// used to snapshot the launch value into a per-run tempdir and re-point
+// the agent-facing hint there, so the agent read a frozen token no
+// refresher ever touched. When a file already exists at the declared
+// path, the hint must keep pointing at it, and a subsequent rotation
+// (the runner's atomic rewrite) must be visible through the hinted path.
+func TestMaterializeHostFiles_PrefersRunnerMaterializedMountPath(t *testing.T) {
+	mountDir := t.TempDir()
+	mountPath := filepath.Join(mountDir, "forge_token")
+	// The runner's launch-time materialisation.
+	if err := os.WriteFile(mountPath, []byte("launch-token"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	g := newTestGuard(t, Secret{
+		Name:     "forge_token",
+		Value:    "launch-token-value-long-enough",
+		FilePath: mountPath,
+	})
+	cleanup, err := g.MaterializeHostFiles(t.TempDir())
+	if err != nil {
+		t.Fatalf("MaterializeHostFiles: %v", err)
+	}
+	defer cleanup()
+
+	if got := g.ResolveSecretRef("forge_token"); got != mountPath {
+		t.Errorf("ResolveSecretRef = %q, want the runner-materialised mount path %q", got, mountPath)
+	}
+	hints := g.SecretFileHints()
+	if len(hints) != 1 || hints[0].Path != mountPath {
+		t.Fatalf("hint re-pointed away from the refreshed mount path: %+v", hints)
+	}
+
+	// The runner's mid-run refresh rewrites the mount-path file; the agent
+	// reading the hinted path must see the ROTATED token.
+	if err := os.WriteFile(mountPath+".tmp", []byte("rotated-token"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Rename(mountPath+".tmp", mountPath); err != nil {
+		t.Fatal(err)
+	}
+	b, err := os.ReadFile(hints[0].Path)
+	if err != nil {
+		t.Fatalf("read hinted path: %v", err)
+	}
+	if string(b) != "rotated-token" {
+		t.Errorf("hinted path content = %q, want the rotated token", string(b))
+	}
+}
+
 // TestMaterializeHostFiles_SanitisesFilename verifies the host filename
 // follows the shared SanitizeFileName rule (non-safe chars → `_`), so a
 // secret named e.g. "cluster/kubeconfig" lands under a portable basename
