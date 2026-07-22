@@ -22,6 +22,43 @@ const maxSubbotDepth = 8
 
 type subbotDepthKey struct{}
 
+// manageSubbotChild registers an in-process subbot child run with the run
+// Manager so a studio Cancel/Pause targeting the CHILD's run id acts on it
+// WHILE it executes its first pass — not only once it has paused on a human
+// gate (before this, the child engine ran unregistered, so Cancel(childID) /
+// Pause(childID) returned ErrRunNotActive and silently no-op'd mid-flight;
+// only parent-ctx cancellation propagated). The pipeline board promises "act
+// on any node of the tree", so the child must be individually controllable.
+//
+// Returns the cancellable ctx the child engine must run under, the engine
+// options carrying the operator-pause signal, and a release func that MUST be
+// called once the child engine's ACTIVE pass returns — BEFORE parking on
+// AwaitSubbotTerminal. Releasing hands the run id back so an external
+// `iterion resume` of a paused child can re-register the same id in its own
+// manager (keeping it registered during the park would make that Register
+// fail with "already registered"); the persisted run doc is the handoff.
+//
+// Degrades safely: if the manager is stopped (server shutdown) or the id is
+// somehow already registered, it falls back to the parent ctx unmanaged with
+// a warning — the child still runs and parent-ctx cancellation still
+// propagates, exactly as before this wiring.
+func manageSubbotChild(mgr *Manager, parent context.Context, childRunID string, logger *iterlog.Logger) (context.Context, []runtime.EngineOption, func()) {
+	ctx, err := mgr.Register(parent, childRunID)
+	if err != nil {
+		if logger != nil {
+			logger.Warn("subbot child %s: manager register failed (%v) — running unmanaged; cancel/pause ride the parent ctx", childRunID, err)
+		}
+		return parent, nil, func() {}
+	}
+	var opts []runtime.EngineOption
+	if pauseCh, perr := mgr.PauseSignal(childRunID); perr == nil {
+		opts = append(opts, runtime.WithPauseSignal(pauseCh))
+	}
+	var once sync.Once
+	release := func() { once.Do(func() { mgr.Deregister(childRunID) }) }
+	return ctx, opts, release
+}
+
 // subbotRunnerFor builds the runtime.SubbotRunner wired into every in-process
 // engine the service spawns (Launch AND Resume paths). Before this, a bot
 // declaring `subbot` nodes could only run through the CLI: the studio's
@@ -62,8 +99,14 @@ func (s *Service) subbotRunnerFor(parentPath string, runLogger *iterlog.Logger) 
 			return nil, err
 		}
 
+		// Register the child with the run Manager so studio Cancel/Pause on the
+		// child's run id act on it mid-flight. managedCtx cancels when
+		// Manager.Cancel(childRunID) fires; releaseChild deregisters it once the
+		// active pass returns (before any park below).
+		managedCtx, pauseOpts, releaseChild := manageSubbotChild(s.manager, ctx, childRunID, runLogger)
+
 		childExec, err := BuildExecutor(ExecutorSpec{
-			Ctx:           ctx,
+			Ctx:           managedCtx,
 			Workflow:      childWf,
 			Store:         s.store,
 			RunID:         childRunID,
@@ -76,6 +119,7 @@ func (s *Service) subbotRunnerFor(parentPath string, runLogger *iterlog.Logger) 
 			LocalSealer:   s.localSealer,
 		})
 		if err != nil {
+			releaseChild()
 			return nil, err
 		}
 
@@ -105,9 +149,17 @@ func (s *Service) subbotRunnerFor(parentPath string, runLogger *iterlog.Logger) 
 				s.stampWatchedFromOutput(runID, nodeID, out)
 			}),
 		)
+		// The operator-pause signal (if the manager registered the child) so
+		// Pause(childRunID) checkpoints the child at its next safe boundary.
+		opts = append(opts, pauseOpts...)
 		childEng := runtime.New(childWf, s.store, childExec, opts...)
-		childCtx := context.WithValue(ctx, subbotDepthKey{}, depth+1)
+		childCtx := context.WithValue(managedCtx, subbotDepthKey{}, depth+1)
 		runErr := childEng.Run(childCtx, childRunID, req.Vars)
+		// Release the manager handle now the active pass is done: a paused
+		// child is resumed EXTERNALLY (which re-registers the id in its own
+		// manager), so keeping it here would both block that Register and
+		// wrongly hold the id past the point this engine owns it.
+		releaseChild()
 		// Close promptly — BEFORE a potentially hours-long human wait below —
 		// so per-child MCP servers / board-store watchers don't accumulate
 		// under parallel fan-out (the inotify-instance exhaustion #197 fixed).
