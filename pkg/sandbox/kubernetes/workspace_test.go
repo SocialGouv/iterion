@@ -7,6 +7,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/SocialGouv/iterion/pkg/sandbox"
 )
 
 // TestResolveCloneRoot verifies the worktree→clone-root resolution that
@@ -115,6 +117,33 @@ func TestFixupWorkspaceGitScript(t *testing.T) {
 	cmd = exec.Command("sh", "-c", fixupWorkspaceGitScript, "sh", plain)
 	if out, err := cmd.CombinedOutput(); err != nil {
 		t.Fatalf("fixup on non-git dir: %v\n%s", err, out)
+	}
+}
+
+// TestExportWorkspace_WorkspaceLessRunIsNoop pins the export gate: a run
+// that never populated a workspace (RunInfo.WorkspacePath empty) has
+// nothing to write back and must not shell out at all.
+func TestExportWorkspace_WorkspaceLessRunIsNoop(t *testing.T) {
+	r := &Run{info: sandbox.RunInfo{}, prepared: &Prepared{workspace: "/ws"}}
+	if err := r.ExportWorkspace(context.Background()); err != nil {
+		t.Fatalf("workspace-less export must be a nil no-op, got %v", err)
+	}
+}
+
+// TestExportExcludes pins the two host-authoritative paths the reverse
+// tar must never overwrite: the host clone's .git/config (the pod copy
+// was re-pointed at POD paths by fixupWorkspaceGit) and the host's
+// .git/iterion-credentials (kept LIVE by the runner's rotation
+// refresher — the pod copy may be staler).
+func TestExportExcludes(t *testing.T) {
+	want := map[string]bool{"./.git/config": true, "./.git/iterion-credentials": true}
+	if len(exportExcludes) != len(want) {
+		t.Fatalf("exportExcludes = %v", exportExcludes)
+	}
+	for _, ex := range exportExcludes {
+		if !want[ex] {
+			t.Fatalf("unexpected exclude %q in %v", ex, exportExcludes)
+		}
 	}
 }
 

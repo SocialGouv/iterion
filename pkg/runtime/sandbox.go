@@ -1370,9 +1370,57 @@ func (e *Engine) startSandbox(ctx context.Context, runID string, repoRoot string
 		if active == nil {
 			return
 		}
+		if active.run != nil {
+			exportSandboxWorkspaceOnCleanup(active.run, e.logger, emitForSandbox)
+		}
 		cleanupCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 		defer cancel()
 		active.shutdown(cleanupCtx, e.logger)
 	}
 	return cleanup, nil
+}
+
+// sandboxWorkspaceExportTimeout bounds the end-of-run pod→host workspace
+// export (a tar stream of the whole workspace — sized for large repos,
+// distinct from the 30s teardown bound).
+const sandboxWorkspaceExportTimeout = 5 * time.Minute
+
+// exportSandboxWorkspaceOnCleanup performs the pod→host workspace
+// write-back (ADR-082 Phase 3 blocker 1) at sandbox teardown: copy-based
+// drivers (kubernetes) must export the pod workspace back BEFORE the
+// sandbox is destroyed — the in-pod commits only exist there, and the
+// host-side consumers that run after this cleanup (the deferred
+// finalizeOnExit in Engine.Run — LIFO puts this cleanup first — and the
+// cloud runner's recordRunGitMeta / diff capture after Run returns) read
+// the HOST workspace. Drivers that share the host filesystem
+// (docker bind mount, noop) don't implement the interface — no-op.
+//
+// Runs on its own background ctx: the run ctx is typically
+// cancelled/expired by now, and a cancelled export would silently lose
+// the run's work. A failure is loud (warn + event), never silent — it
+// means un-pushed commits are about to be destroyed with the pod.
+func exportSandboxWorkspaceOnCleanup(
+	run sandbox.Run,
+	logger *iterlog.Logger,
+	emitEvent func(store.EventType, map[string]any) error,
+) {
+	exporter, ok := run.(sandbox.WorkspaceExporter)
+	if !ok {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), sandboxWorkspaceExportTimeout)
+	defer cancel()
+	if err := exporter.ExportWorkspace(ctx); err != nil {
+		if logger != nil {
+			logger.Warn("runtime: sandbox workspace export back to host FAILED — in-pod commits not visible host-side (a bot-side push, if any, still delivered them): %v", err)
+		}
+		_ = emitEvent(store.EventSandboxWorkspaceExportFailed, map[string]any{
+			"driver": run.Driver(),
+			"error":  err.Error(),
+		})
+		return
+	}
+	if logger != nil {
+		logger.Info("runtime: sandbox workspace exported back to host")
+	}
 }

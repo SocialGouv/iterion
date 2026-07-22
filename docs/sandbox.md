@@ -677,6 +677,15 @@ Architecture:
   forge token it rewrites the pod's credential store via the driver's
   `RefreshWorkspaceFile` seam (value streamed over stdin, never argv) —
   so a `git push` hours into the run still authenticates.
+- **Workspace write-back.** Because the workspace is a COPY, the driver
+  exports it back at sandbox teardown (reverse tar stream,
+  `ExportWorkspace`) onto the host clone — before the pod is destroyed
+  and before worktree finalization / the runner's git-metadata capture
+  read the host workspace — so in-pod commits survive the pod and feed
+  the Commits/Files panels. The host's `.git/config` and
+  `.git/iterion-credentials` are excluded (host-authoritative). An
+  export failure is loud: warn log + a
+  `sandbox_workspace_export_failed` run event.
 - **In-pod Claude forfait (blocker 3).** A run whose sealed bundle
   carries a materialised Claude Code OAuth `.credentials.json` ships it
   into the pod on the ADR-070 file-secret channel

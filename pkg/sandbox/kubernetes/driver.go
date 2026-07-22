@@ -26,6 +26,7 @@ var (
 	_ sandbox.ProxyConfigurer        = (*Driver)(nil)
 	_ sandbox.SecretFileRefresher    = (*Run)(nil)
 	_ sandbox.WorkspaceFileRefresher = (*Run)(nil)
+	_ sandbox.WorkspaceExporter      = (*Run)(nil)
 )
 
 // NOTE: the kubernetes driver intentionally does NOT implement
@@ -686,6 +687,67 @@ func (r *Run) populateWorkspace(ctx context.Context, hostSrc, podDst string) err
 	}
 	if err := podTar.Wait(); err != nil {
 		return fmt.Errorf("in-pod tar extract: %w\n%s", err, strings.TrimSpace(podErr.String()))
+	}
+	return nil
+}
+
+// exportExcludes are the tar --exclude patterns for [Run.ExportWorkspace]
+// (member names start with "./" because the in-pod tar archives "."):
+//   - .git/config was re-pointed at POD paths by fixupWorkspaceGit — the
+//     host clone's own config (host credential-store path) must survive;
+//   - .git/iterion-credentials on the host is maintained LIVE by the
+//     runner's rotation refresher — the pod copy may be staler and must
+//     never overwrite it.
+var exportExcludes = []string{"./.git/config", "./.git/iterion-credentials"}
+
+// ExportWorkspace implements [sandbox.WorkspaceExporter]: it streams the
+// pod workspace back onto the host workspace it was populated from — the
+// exact reverse of populateWorkspace (in-pod `tar -cf -` piped into a
+// host-side extract), targeting the same resolved clone root. Without
+// it, commits made inside the pod are destroyed with the pod and the
+// host-side consumers (worktree finalization, recordRunGitMeta,
+// Commits/Files diff capture) see the launch-time state.
+//
+// The overlay adds/overwrites — a file DELETED inside the pod's working
+// tree keeps its host copy (tar has no delete semantics). Git-level
+// truth is exact regardless: `.git` (commits, refs, index) is exported,
+// so committed deletions are fully represented; only an uncommitted
+// working-tree deletion is left behind, as an untracked leftover.
+func (r *Run) ExportWorkspace(ctx context.Context) error {
+	if r.info.WorkspacePath == "" {
+		return nil // workspace-less run — nothing was populated
+	}
+	hostDst := resolveCloneRoot(ctx, r.info.WorkspacePath)
+	r.driver.logger.Info("sandbox: exporting workspace from pod %s:%s back to %s", r.podName, r.prepared.workspace, hostDst)
+
+	kubectlArgs := []string{"--namespace", r.namespace,
+		"exec", r.podName, "--container", "workload", "--",
+		"tar", "-C", r.prepared.workspace}
+	for _, ex := range exportExcludes {
+		kubectlArgs = append(kubectlArgs, "--exclude="+ex)
+	}
+	kubectlArgs = append(kubectlArgs, "-cf", "-", ".")
+	podTar := kubectlCmdContext(ctx, kubectlArgs...)
+	hostTar := exec.CommandContext(ctx, "tar", "-C", hostDst, "-xf", "-")
+
+	pipe, err := podTar.StdoutPipe()
+	if err != nil {
+		return fmt.Errorf("pod tar stdout pipe: %w", err)
+	}
+	hostTar.Stdin = pipe
+	var podErr, hostErr bytes.Buffer
+	podTar.Stderr = &podErr
+	hostTar.Stderr = &hostErr
+
+	if err := hostTar.Start(); err != nil {
+		return fmt.Errorf("start host tar extract: %w", err)
+	}
+	if err := podTar.Run(); err != nil {
+		_ = hostTar.Wait()
+		return fmt.Errorf("in-pod tar %s: %w\n%s", r.prepared.workspace, err, strings.TrimSpace(podErr.String()))
+	}
+	if err := hostTar.Wait(); err != nil {
+		return fmt.Errorf("host tar extract into %s: %w\n%s", hostDst, err, strings.TrimSpace(hostErr.String()))
 	}
 	return nil
 }
