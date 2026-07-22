@@ -23,15 +23,48 @@ func (s *Server) handlePipelineBoard(w http.ResponseWriter, r *http.Request) {
 		s.httpErrorFor(w, r, http.StatusNotFound, "pipeline board: native tracker is not available")
 		return
 	}
+	since, err := parsePipelineSince(r.URL.Query().Get("since"))
+	if err != nil {
+		s.httpErrorFor(w, r, http.StatusBadRequest, "pipeline board: invalid since: %v", err)
+		return
+	}
 	s.stateMu.RLock()
 	runs := s.runs
 	s.stateMu.RUnlock()
-	projection, err := s.buildPipelineBoard(r.Context(), boardStore, runs)
+	projection, err := s.buildPipelineBoard(r.Context(), boardStore, runs, since)
 	if err != nil {
 		s.httpErrorFor(w, r, http.StatusInternalServerError, "pipeline board: %v", err)
 		return
 	}
 	s.writeJSONFor(w, r, projection)
+}
+
+// parsePipelineSince resolves the board's `?since=` query into an absolute
+// cutoff: CLOSED cards (terminal runs / terminal-state tasks) that last
+// changed before it are pruned so a long-lived local store isn't stuck in the
+// truncation banner (PR #193 review L5). Two accepted forms:
+//
+//   - a Go duration ("168h", "720h") → cutoff = now - duration (relative
+//     "hide finished older than X");
+//   - an RFC3339 timestamp → that absolute instant.
+//
+// Empty returns the zero time (no filter). A malformed value is an explicit
+// error (the handler answers 400) rather than a silently-ignored filter.
+func parsePipelineSince(raw string) (time.Time, error) {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return time.Time{}, nil
+	}
+	if d, err := time.ParseDuration(raw); err == nil {
+		if d <= 0 {
+			return time.Time{}, fmt.Errorf("duration must be positive, got %q", raw)
+		}
+		return time.Now().UTC().Add(-d), nil
+	}
+	if ts, err := time.Parse(time.RFC3339, raw); err == nil {
+		return ts.UTC(), nil
+	}
+	return time.Time{}, fmt.Errorf("expected a positive Go duration (e.g. 168h) or an RFC3339 timestamp, got %q", raw)
 }
 
 // ---------------------------------------------------------------------------
@@ -52,12 +85,18 @@ type pipelineProjectionBuilder struct {
 	queuePositions map[string]int
 	cards          []PipelineBoardCard
 
+	// since is the `?since=` cutoff (zero = disabled): a CLOSED card whose
+	// UpdatedAt precedes it is pruned and counted in hiddenBySince instead of
+	// consuming a truncation slot.
+	since         time.Time
+	hiddenBySince int
+
 	cardLimitReached  bool
 	depthLimitReached bool
 	cycleDetected     bool
 }
 
-func (s *Server) buildPipelineBoard(ctx context.Context, boardStore native.BoardStore, runs *runview.Service) (PipelineBoardResponse, error) {
+func (s *Server) buildPipelineBoard(ctx context.Context, boardStore native.BoardStore, runs *runview.Service, since time.Time) (PipelineBoardResponse, error) {
 	response := PipelineBoardResponse{
 		Columns:     pipelineColumns(),
 		GeneratedAt: time.Now().UTC(),
@@ -75,6 +114,7 @@ func (s *Server) buildPipelineBoard(ctx context.Context, boardStore native.Board
 		issueOwnedRuns: map[string]struct{}{},
 		nodeCountCache: map[string]int{},
 		queuePositions: map[string]int{},
+		since:          since,
 	}
 	if runs != nil {
 		builder.rs = runs.RunStore()
@@ -187,7 +227,27 @@ func (s *Server) buildPipelineBoard(ctx context.Context, boardStore native.Board
 	if builder.cycleDetected {
 		appendPipelineTopologyError(&response, "run tree contains a parent/child cycle")
 	}
+	if !since.IsZero() {
+		cutoff := since
+		response.HiddenClosedBefore = &cutoff
+		response.HiddenClosedCount = builder.hiddenBySince
+	}
 	return response, nil
+}
+
+// hiddenByCutoff reports whether the `?since=` filter is active AND the given
+// card last changed strictly before the cutoff — the caller has already
+// established the card is CLOSED. Bumps the hidden counter so the pruning is
+// reported, never silent. A zero updatedAt (unknown) is never hidden.
+func (b *pipelineProjectionBuilder) hiddenByCutoff(updatedAt time.Time) bool {
+	if b.since.IsZero() || updatedAt.IsZero() {
+		return false
+	}
+	if updatedAt.Before(b.since) {
+		b.hiddenBySince++
+		return true
+	}
+	return false
 }
 
 func appendPipelineTopologyError(response *PipelineBoardResponse, message string) {
@@ -410,11 +470,20 @@ func pipelineIssueRestagedForRelaunch(issue *native.Issue, root *store.Run) bool
 // prior is the terminal previous attempt when restaged; it enriches title /
 // entry_input / attempts without moving the card to Closed.
 func (b *pipelineProjectionBuilder) addTaskCard(issue *native.Issue, prior *store.Run) {
-	if issue == nil || len(b.cards) >= pipelineTreeMaxCards {
-		b.cardLimitReached = len(b.cards) >= pipelineTreeMaxCards
+	if issue == nil {
 		return
 	}
 	_, terminal := b.terminalStates[issue.State]
+	// `?since=` prunes a CLOSED (terminal-state) task card that last changed
+	// before the cutoff, BEFORE it consumes a truncation slot — so old, done
+	// tickets never crowd out live pipelines under the card cap.
+	if terminal && b.hiddenByCutoff(issue.UpdatedAt) {
+		return
+	}
+	if len(b.cards) >= pipelineTreeMaxCards {
+		b.cardLimitReached = true
+		return
+	}
 	// "Ready" is the specific StateReady the operator stages a ticket into;
 	// the launch loop starts exactly those. Other non-terminal states
 	// (inbox/waiting_deps/…) are tickets being prepared — same Opened lane,
@@ -461,19 +530,28 @@ func (b *pipelineProjectionBuilder) addRootCard(root *store.Run, issue *native.I
 	if _, already := b.includedRuns[root.ID]; already {
 		return
 	}
-	if len(b.cards) >= pipelineTreeMaxCards {
-		b.cardLimitReached = true
-		return
-	}
 	b.includedRuns[root.ID] = struct{}{}
 
 	rootExec, rootTotal := b.runProgress(root)
 	treeExec, treeTotal, descCount, reviews, treeRunIDs := b.aggregateTree(root)
 
+	column := pipelineColumnForRoot(root, reviews)
+	// `?since=` prunes a CLOSED root (finished/failed/cancelled with no
+	// pending descendant review) that last changed before the cutoff, BEFORE
+	// it consumes a truncation slot — the whole point of the filter is to keep
+	// old completed pipelines from crowding out live ones under the card cap.
+	if column == pipelineColumnClosed && b.hiddenByCutoff(root.UpdatedAt) {
+		return
+	}
+	if len(b.cards) >= pipelineTreeMaxCards {
+		b.cardLimitReached = true
+		return
+	}
+
 	card := PipelineBoardCard{
 		ID:                "run:" + root.ID,
 		Kind:              "run",
-		ColumnID:          pipelineColumnForRoot(root, reviews),
+		ColumnID:          column,
 		Title:             pipelineDisplayTitle(issue, root),
 		RunID:             root.ID,
 		WorkflowName:      root.WorkflowName,

@@ -140,7 +140,18 @@ func (e *pipelineBoardTestEnv) seedNodeStarted(t *testing.T, runID string, nodeI
 
 func (e *pipelineBoardTestEnv) projection(t *testing.T) PipelineBoardResponse {
 	t.Helper()
-	resp, err := http.Get(e.http.URL + "/api/v1/pipeline-board")
+	return e.projectionQuery(t, "")
+}
+
+// projectionQuery fetches the board with an optional raw query string
+// (e.g. "since=1h"). It fails the test unless the response is 200.
+func (e *pipelineBoardTestEnv) projectionQuery(t *testing.T, query string) PipelineBoardResponse {
+	t.Helper()
+	url := e.http.URL + "/api/v1/pipeline-board"
+	if query != "" {
+		url += "?" + query
+	}
+	resp, err := http.Get(url)
 	if err != nil {
 		t.Fatalf("GET projection: %v", err)
 	}
@@ -876,6 +887,76 @@ func TestPipelineBoardCloudStoreIsResolvedFromActiveTeam(t *testing.T) {
 	}
 	if got != nil {
 		t.Fatalf("store without active team = %p, want nil", got)
+	}
+}
+
+// The `?since=` filter (L5) prunes CLOSED cards that last changed before the
+// cutoff so a long-lived local store isn't stuck in the truncation banner —
+// while live pipelines stay visible regardless of age, and the pruning is
+// reported (never silent).
+func TestPipelineBoardSinceFilterHidesOldClosedCards(t *testing.T) {
+	env := newPipelineBoardTestEnv(t)
+	now := time.Now().UTC()
+	old := now.Add(-72 * time.Hour)
+
+	// A finished root that last changed long ago → hidden by `?since=1h`.
+	env.seedRun(t, "r-old-done", "review", store.RunStatusFinished, func(run *store.Run) {
+		run.FilePath = env.botPath
+		run.UpdatedAt = old
+	})
+	// A finished root that changed just now → kept even though it is closed.
+	env.seedRun(t, "r-fresh-done", "review", store.RunStatusFinished, func(run *store.Run) {
+		run.FilePath = env.botPath
+		run.UpdatedAt = now
+	})
+	// A running root that started long ago → kept: live pipelines are never
+	// pruned by age, only closed ones.
+	env.seedRun(t, "r-old-running", "review", store.RunStatusRunning, func(run *store.Run) {
+		run.FilePath = env.botPath
+		run.UpdatedAt = old
+	})
+
+	// No filter: all three render.
+	all := env.projection(t)
+	for _, id := range []string{"run:r-old-done", "run:r-fresh-done", "run:r-old-running"} {
+		if !hasPipelineCard(all.Cards, id) {
+			t.Fatalf("unfiltered projection missing %s", id)
+		}
+	}
+	if all.HiddenClosedCount != 0 || all.HiddenClosedBefore != nil {
+		t.Errorf("unfiltered projection reports hidden=%d before=%v; want 0/nil", all.HiddenClosedCount, all.HiddenClosedBefore)
+	}
+
+	// since=1h: the old finished card drops; the fresh finished and the old
+	// running one stay.
+	filtered := env.projectionQuery(t, "since=1h")
+	if hasPipelineCard(filtered.Cards, "run:r-old-done") {
+		t.Errorf("since=1h should have hidden the stale finished card")
+	}
+	if !hasPipelineCard(filtered.Cards, "run:r-fresh-done") {
+		t.Errorf("since=1h wrongly hid a freshly-finished card")
+	}
+	if !hasPipelineCard(filtered.Cards, "run:r-old-running") {
+		t.Errorf("since=1h wrongly hid a live (running) card")
+	}
+	if filtered.HiddenClosedCount != 1 {
+		t.Errorf("HiddenClosedCount = %d, want 1", filtered.HiddenClosedCount)
+	}
+	if filtered.HiddenClosedBefore == nil {
+		t.Errorf("HiddenClosedBefore should be set when a filter is applied")
+	}
+}
+
+// A malformed `?since=` is an explicit 400, not a silently-ignored filter.
+func TestPipelineBoardSinceFilterRejectsBadValue(t *testing.T) {
+	env := newPipelineBoardTestEnv(t)
+	resp, err := http.Get(env.http.URL + "/api/v1/pipeline-board?since=notaduration")
+	if err != nil {
+		t.Fatalf("GET: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400", resp.StatusCode)
 	}
 }
 

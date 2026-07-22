@@ -172,4 +172,13 @@ type PipelineBoardResponse struct {
 	Concurrency   runview.PipelineConcurrencyStatus `json:"concurrency"`
 	GeneratedAt   time.Time                         `json:"generated_at"`
 	TopologyError string                            `json:"topology_error,omitempty"`
+
+	// HiddenClosedCount / HiddenClosedBefore report the `?since=` filter's
+	// effect: how many CLOSED cards (finished/failed/cancelled runs, or
+	// terminal-state task cards) were pruned because they last changed before
+	// the cutoff, and what the resolved cutoff was. Zero/absent when no filter
+	// was applied. Surfaced so the pruning is never silent (the studio can
+	// offer "show N older pipelines").
+	HiddenClosedCount  int        `json:"hidden_closed_count,omitempty"`
+	HiddenClosedBefore *time.Time `json:"hidden_closed_before,omitempty"`
 }
