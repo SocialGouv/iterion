@@ -4529,6 +4529,7 @@ export interface components {
             status: string;
         };
         ExternalRef: {
+            author?: string;
             connection_id: string;
             number: number;
             provider: string;
