@@ -60,9 +60,31 @@ func AsUniqueTitleCreator(s BoardStore) UniqueTitleCreator {
 	return u
 }
 
+// LaunchClaimer is the optional interface for board backends that can
+// atomically claim a Ready ticket for launch — a CAS StateReady →
+// StateInProgress that reports whether THIS caller won (PR #193 M2). It
+// closes the check-then-act window where a live dispatcher and the studio
+// admission loop both pick the same Ready ticket. The filesystem store
+// implements it; a backend that does not cleanly degrades to the caller's
+// best-effort SetState (the documented V1 window).
+type LaunchClaimer interface {
+	ClaimForLaunch(id string) (*Issue, bool, error)
+}
+
+// AsLaunchClaimer returns s as LaunchClaimer when the backend supports the
+// atomic launch claim, or nil otherwise.
+func AsLaunchClaimer(s BoardStore) LaunchClaimer {
+	if s == nil {
+		return nil
+	}
+	c, _ := s.(LaunchClaimer)
+	return c
+}
+
 // Compile-time assertion that the filesystem store satisfies the contract.
 var _ BoardStore = (*Store)(nil)
 var _ UniqueTitleCreator = (*Store)(nil)
+var _ LaunchClaimer = (*Store)(nil)
 
 // Compile-time guarantees: the filesystem store is a full board backend.
 var (

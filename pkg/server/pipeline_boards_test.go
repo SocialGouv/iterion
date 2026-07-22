@@ -447,6 +447,35 @@ func TestPipelineBoardProgressAndOutput(t *testing.T) {
 	}
 }
 
+// TestPipelineBoardFinishedOutputMemoized proves a finished run's DONE-card
+// output is computed once and served from the memo on later polls, instead of
+// re-probing artifacts every tick (PR #193 M1). We overwrite the artifact
+// between polls: because a finished run is terminal, the board keeps serving
+// the first-computed value.
+func TestPipelineBoardFinishedOutputMemoized(t *testing.T) {
+	env := newPipelineBoardTestEnv(t)
+
+	env.seedRun(t, "run-memo", "review", store.RunStatusFinished, func(run *store.Run) {
+		run.FilePath = env.botPath
+		run.ArtifactIndex = map[string]int{"summary": 1}
+	})
+	env.seedArtifact(t, "run-memo", "summary", map[string]any{"final_answer": "First answer."})
+
+	first := findPipelineCard(t, env.projection(t).Cards, "run:run-memo")
+	if first.Output != "First answer." {
+		t.Fatalf("first output = %q, want %q", first.Output, "First answer.")
+	}
+
+	// Change the underlying artifact. A non-memoized projection would pick this
+	// up on the next poll; a memoized one keeps the first value.
+	env.seedArtifact(t, "run-memo", "summary", map[string]any{"final_answer": "MUTATED answer."})
+
+	second := findPipelineCard(t, env.projection(t).Cards, "run:run-memo")
+	if second.Output != "First answer." {
+		t.Errorf("second output = %q, want memoized %q (re-read the store instead of serving the cache)", second.Output, "First answer.")
+	}
+}
+
 func TestPipelineBoardTaskCreatePinsBotFromBody(t *testing.T) {
 	env := newPipelineBoardTestEnv(t)
 	post := func(body string) *http.Response {

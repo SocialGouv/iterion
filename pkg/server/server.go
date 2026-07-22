@@ -86,6 +86,13 @@ type Server struct {
 	admissionSkipMu     sync.Mutex
 	admissionSkipWarned map[string]string
 
+	// finalOutputMemo caches finished runs' resolved board output. A finished
+	// run is terminal, so its final_answer/latest-artifact output never
+	// changes — computing it once per run (instead of on every 3s poll, each
+	// up to pipelineArtifactProbeCap artifact loads per DONE card) keeps the
+	// pipeline-board poll cheap on a full 500-card board (PR #193 M1).
+	finalOutputMemo finalOutputCache
+
 	authSvc        *auth.Service
 	authLimiter    authRateLimiterBackend
 	signer         *auth.JWTSigner

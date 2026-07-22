@@ -5,12 +5,47 @@ import (
 	"fmt"
 	"path/filepath"
 	"strings"
+	"sync"
 
 	"github.com/SocialGouv/iterion/pkg/dispatcher/native"
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
 	"github.com/SocialGouv/iterion/pkg/runview"
 	"github.com/SocialGouv/iterion/pkg/store"
 )
+
+// finalOutputCacheMax bounds the memo so a long-lived studio can't leak: past
+// this many distinct finished runs the whole map is dropped (a cheap
+// recompute), which is fine — entries are ≤ pipelineOutputMaxLen strings.
+const finalOutputCacheMax = 5000
+
+// finalOutputCache memoizes finished runs' resolved board output, keyed by run
+// id. Finished runs are terminal, so the value is immutable once computed —
+// the pipeline-board poll then serves the DONE card's output from memory
+// instead of re-probing artifacts on every 3s tick (PR #193 M1). Safe for
+// concurrent poll handlers.
+type finalOutputCache struct {
+	mu sync.RWMutex
+	m  map[string]string
+}
+
+func (c *finalOutputCache) get(runID string) (string, bool) {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	v, ok := c.m[runID]
+	return v, ok
+}
+
+func (c *finalOutputCache) put(runID, out string) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.m == nil {
+		c.m = make(map[string]string)
+	}
+	if len(c.m) >= finalOutputCacheMax {
+		c.m = make(map[string]string)
+	}
+	c.m[runID] = out
+}
 
 // runProgress returns (executed, total) node counts for one run. Finished
 // runs clamp to 100% with no event scan; queued runs report 0/total; other
@@ -71,6 +106,23 @@ func (b *pipelineProjectionBuilder) totalNodes(filePath string) int {
 	}
 	b.nodeCountCache[filePath] = n
 	return n
+}
+
+// cachedFinalOutput returns the truncated DONE-card output for a finished run,
+// memoized across polls (PR #193 M1). A finished run is terminal, so the value
+// is stable; the first poll computes it (probing artifacts), every later poll
+// serves it from the cache without touching the store.
+func (b *pipelineProjectionBuilder) cachedFinalOutput(run *store.Run) string {
+	if b.finalOutputMemo != nil {
+		if out, ok := b.finalOutputMemo.get(run.ID); ok {
+			return out
+		}
+	}
+	out := pipelineTruncate(b.finalOutput(run), pipelineOutputMaxLen)
+	if b.finalOutputMemo != nil {
+		b.finalOutputMemo.put(run.ID, out)
+	}
+	return out
 }
 
 // finalOutput resolves a finished run's user-facing output: the

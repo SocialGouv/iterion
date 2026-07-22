@@ -412,6 +412,40 @@ func (s *Store) SetState(id, newState string) (updated *Issue, err error) {
 	return iss, nil
 }
 
+// ClaimForLaunch atomically transitions a ticket from StateReady to
+// StateInProgress and reports whether THIS caller won the transition. It
+// closes the check-then-act window (PR #193 M2) where a live dispatcher and
+// the studio admission loop both pick the same Ready ticket: under the lock,
+// exactly one caller observes state == StateReady, flips it, and returns
+// (issue, true, nil); every other caller returns (nil, false, nil). A ticket
+// that is not in StateReady is not claimable — (nil, false, nil), not an error.
+func (s *Store) ClaimForLaunch(id string) (claimed *Issue, won bool, err error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	defer s.recoverMutator("ClaimForLaunch", &err)
+	iss, err := s.readIssueLocked(id)
+	if err != nil {
+		return nil, false, err
+	}
+	if iss.State != StateReady {
+		return nil, false, nil
+	}
+	iss.State = StateInProgress
+	iss.UpdatedAt = time.Now().UTC()
+	if err := s.writeIssueLocked(iss); err != nil {
+		return nil, false, err
+	}
+	s.index[iss.ID] = cloneIssue(iss)
+	if err := s.emitPostCommitEvent(Event{
+		Type:    EvtIssueState,
+		IssueID: iss.ID,
+		Payload: map[string]any{"from": StateReady, "to": StateInProgress},
+	}); err != nil {
+		return nil, false, err
+	}
+	return iss, true, nil
+}
+
 // validateBlockersLocked rejects cycles against the in-memory index. Caller
 // must hold s.mu. Uses a locked IssueGetter so Get is not re-entered.
 func (s *Store) validateBlockersLocked(id string, blockers []string) error {

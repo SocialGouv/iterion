@@ -85,6 +85,11 @@ type pipelineProjectionBuilder struct {
 	queuePositions map[string]int
 	cards          []PipelineBoardCard
 
+	// finalOutputMemo caches finished runs' resolved output across polls so a
+	// DONE card's output isn't re-probed from artifacts every tick (PR #193
+	// M1). Server-owned so it survives per-poll builder recreation.
+	finalOutputMemo *finalOutputCache
+
 	// since is the `?since=` cutoff (zero = disabled): a CLOSED card whose
 	// UpdatedAt precedes it is pruned and counted in hiddenBySince instead of
 	// consuming a truncation slot.
@@ -105,16 +110,17 @@ func (s *Server) buildPipelineBoard(ctx context.Context, boardStore native.Board
 		response.Concurrency = runs.PipelineConcurrency()
 	}
 	builder := &pipelineProjectionBuilder{
-		ctx:            ctx,
-		boardStore:     boardStore,
-		runs:           map[string]*store.Run{},
-		children:       map[string][]*store.Run{},
-		terminalStates: map[string]struct{}{},
-		includedRuns:   map[string]struct{}{},
-		issueOwnedRuns: map[string]struct{}{},
-		nodeCountCache: map[string]int{},
-		queuePositions: map[string]int{},
-		since:          since,
+		ctx:             ctx,
+		boardStore:      boardStore,
+		runs:            map[string]*store.Run{},
+		children:        map[string][]*store.Run{},
+		terminalStates:  map[string]struct{}{},
+		includedRuns:    map[string]struct{}{},
+		issueOwnedRuns:  map[string]struct{}{},
+		nodeCountCache:  map[string]int{},
+		queuePositions:  map[string]int{},
+		since:           since,
+		finalOutputMemo: &s.finalOutputMemo,
 	}
 	if runs != nil {
 		builder.rs = runs.RunStore()
@@ -576,7 +582,7 @@ func (b *pipelineProjectionBuilder) addRootCard(root *store.Run, issue *native.I
 		card.EntryInput = cloneAnyMap(root.Inputs)
 	}
 	if root.Status == store.RunStatusFinished {
-		card.Output = pipelineTruncate(b.finalOutput(root), pipelineOutputMaxLen)
+		card.Output = b.cachedFinalOutput(root)
 	}
 	if issue != nil {
 		card.IssueID = issue.ID
