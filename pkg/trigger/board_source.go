@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"strconv"
+	"strings"
 
 	"github.com/SocialGouv/iterion/pkg/dispatcher/native"
 	iterlog "github.com/SocialGouv/iterion/pkg/log"
@@ -236,4 +237,42 @@ func (n *NativeBoardEffect) Promote(_ context.Context, plan LaunchPlan) (string,
 	return id, nil
 }
 
+// ConsumeMatchLabels strips the given labels from the card, reporting whether
+// any were actually present. The evaluator runs on a single serial worker
+// (InProcBus), so read-strip-launch is race-free locally; consumed=false means
+// a previous evaluation already stripped them and the caller must skip.
+func (n *NativeBoardEffect) ConsumeMatchLabels(_ context.Context, issueID string, labels []string) (bool, error) {
+	if n.store == nil {
+		return false, fmt.Errorf("trigger: native board effect has no store")
+	}
+	if issueID == "" || len(labels) == 0 {
+		return false, nil
+	}
+	iss, err := n.store.Get(issueID)
+	if err != nil {
+		return false, fmt.Errorf("trigger: get card %s: %w", issueID, err)
+	}
+	strip := make(map[string]bool, len(labels))
+	for _, l := range labels {
+		strip[strings.ToLower(l)] = true
+	}
+	remaining := make([]string, 0, len(iss.Labels))
+	found := false
+	for _, l := range iss.Labels {
+		if strip[strings.ToLower(l)] {
+			found = true
+			continue
+		}
+		remaining = append(remaining, l)
+	}
+	if !found {
+		return false, nil
+	}
+	if _, err := n.store.Update(issueID, native.Patch{Labels: &remaining}); err != nil {
+		return false, fmt.Errorf("trigger: consume labels on card %s: %w", issueID, err)
+	}
+	return true, nil
+}
+
 var _ BoardEffect = (*NativeBoardEffect)(nil)
+var _ LabelConsumer = (*NativeBoardEffect)(nil)

@@ -78,6 +78,21 @@ func (e *Evaluator) Handle(ctx context.Context, ev Event) error {
 				e.warn("trigger: subscription %s is direct-mode but no launcher is wired; skipping", sub.ID)
 				continue
 			}
+			if sub.ConsumeLabels && ev.Source == SourceBoard {
+				lc, ok := e.board.(LabelConsumer)
+				if !ok {
+					e.warn("trigger: subscription %s requires consume_labels but the board effect cannot consume; skipping", sub.ID)
+					continue
+				}
+				consumed, err := lc.ConsumeMatchLabels(ctx, ev.Subject.ID, sub.Match.Labels)
+				if err != nil {
+					e.warn("trigger: consume labels for subscription %s failed: %v", sub.ID, err)
+					continue
+				}
+				if !consumed {
+					continue // already consumed by an earlier event — one-shot spent
+				}
+			}
 			if _, err := e.launcher.Launch(ctx, plan); err != nil {
 				e.warn("trigger: launch for subscription %s failed: %v", sub.ID, err)
 			}
@@ -90,12 +105,19 @@ func (e *Evaluator) Handle(ctx context.Context, ev Event) error {
 // subscription's static Vars, plus the event's free-text payload injected
 // under ArgsVar (matching the dispatch_vars / webhook ArgsVar convention).
 func (e *Evaluator) buildPlan(sub Subscription, ev Event) LaunchPlan {
-	vars := make(map[string]string, len(sub.Vars)+1)
+	vars := make(map[string]string, len(sub.Vars)+2)
 	// Per-event dynamic vars first (a forge/custom source stamps these under
 	// payload["vars"]), then the subscription's static operator-pinned Vars on
 	// top — operator pins win, mirroring the webhook LaunchVars precedence.
 	for k, v := range eventVars(ev) {
 		vars[k] = v
+	}
+	// A direct launch on a board event hands the bot its target card:
+	// vars["issue_id"] is the card the bot operates ON (triage-style). The
+	// promote path must NOT get it — it would pollute every promoted card's
+	// BotArgs with a self-reference.
+	if ev.Source == SourceBoard && sub.EffectiveMode() == bundle.ExecutionDirect && ev.Subject.ID != "" {
+		vars["issue_id"] = ev.Subject.ID
 	}
 	for k, v := range sub.Vars {
 		vars[k] = v
