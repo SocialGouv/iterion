@@ -53,13 +53,18 @@ fi
 BASE="${BASE:-main}"                             # last-resort floor only
 ```
 
-Then confirm HEAD is ahead of that base before doing anything:
+Then confirm HEAD is ahead of that base before doing anything. Compare
+against the REMOTE ref, never the local branch: in a cloud/runner clone
+the campaign commits directly on the checked-out base branch, so the
+local `$BASE` ref IS HEAD and `"$BASE"..HEAD` is vacuously 0 — that
+exact mistake silently discarded a run's real commits.
 
 ```
-git rev-list --count "$BASE"..HEAD               # > 0 means there is work to ship
+git fetch origin "$BASE" --quiet 2>/dev/null || true
+git rev-list --count "origin/$BASE"..HEAD        # > 0 means there is work to ship
 ```
 
-If the count is 0 (or the base ref is missing), STOP: return
+If the count is 0 (or `origin/$BASE` is missing), STOP: return
 `opened=false` with `skipped_reason="no commits ahead of base"`. Never
 open an empty PR.
 

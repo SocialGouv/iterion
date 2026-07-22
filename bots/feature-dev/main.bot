@@ -413,7 +413,7 @@ prompt finalize_mr_system:
 
   Procedure:
     1. Confirm there are commits to ship: the run's HEAD must be ahead of
-       the base (`git rev-list --count <base>..HEAD` > 0). If not, set
+       the base (`git rev-list --count origin/<base>..HEAD` > 0). If not, set
        opened=false with skipped_reason "no commits ahead of base" — do
        NOT open an empty PR.
     2. Determine the branch name (mr_branch if set, else a stable
