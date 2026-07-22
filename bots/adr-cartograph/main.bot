@@ -450,6 +450,12 @@ prompt verify_user:
   (out-of-tree — see the `verify-build` skill). Do NOT change
   anything.
 
+  MANDATORY (skill section 1b): if the repo's own CI enforces a
+  codegen-drift gate (git diff --exit-code after a regen/vendor step,
+  a drift-check task, test -z on git status --porcelain), verify.sh
+  MUST mirror it — run the regen command(s), then fail on drift; the
+  deterministic precheck rejects a gateless verify.sh otherwise.
+
 
 ## carries each ADR's metadata + sha so subsequent passes can
 ## detect changes. next_adr_number is the integer Adry uses for

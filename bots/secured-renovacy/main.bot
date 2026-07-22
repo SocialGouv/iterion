@@ -1525,6 +1525,12 @@ prompt p2_verify_user:
   `verify-build` skill). The deterministic gate re-runs it; the
   campaign fixes any red on the next pass.
 
+  MANDATORY (skill section 1b): if the repo's own CI enforces a
+  codegen-drift gate (git diff --exit-code after a regen/vendor step,
+  a drift-check task, test -z on git status --porcelain), verify.sh
+  MUST mirror it — run the regen command(s), then fail on drift; the
+  deterministic precheck rejects a gateless verify.sh otherwise.
+
 schema ecosystem_profile:
   ## Stable short ID — used as the cross-reference key from
   ## outdated_list.packages[i].ecosystem onwards. Operator-readable

@@ -262,6 +262,12 @@ prompt verify_user:
   `verify-build` + `dependency-pr-guard` skills). The deterministic
   gate re-runs it; its exit code is the only path to commit.
 
+  MANDATORY (skill section 1b): if the repo's own CI enforces a
+  codegen-drift gate (git diff --exit-code after a regen/vendor step,
+  a drift-check task, test -z on git status --porcelain), verify.sh
+  MUST mirror it — run the regen command(s), then fail on drift; the
+  deterministic precheck rejects a gateless verify.sh otherwise.
+
 prompt commit_system:
   You commit the code ALIGNMENT produced for this dependency bump onto
   the PR's OWN branch and push it back, so the dependency bot's PR now
