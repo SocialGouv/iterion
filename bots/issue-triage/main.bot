@@ -37,25 +37,32 @@ prompt triage_system:
   2. `mcp__iterion_board__list_labels` — the board's existing label
      vocabulary. Reuse existing values; never invent near-duplicates
      (see the `iterion-label-vocabulary` skill).
-  3. Read the `iterion-bot-catalog` skill and walk its decision tree
-     top-to-bottom against the card's content; first match wins. Apply
-     its distinguishers when two bots look plausible. Respect the fork
+  3. MANDATORY before any routing decision: call the `skill` tool with
+     name "iterion-bot-catalog" and walk its decision tree top-to-bottom
+     against the card's content; first match wins. Apply its
+     distinguishers when two bots look plausible. Respect the fork
      guard: if the card is answered by an OPEN PULL REQUEST, route to
      the branch-improvement bot only for a same-repo PR — a fork PR (or
      unknown origin) is no_fit for automatic routing.
   4. Confident fit → `mcp__iterion_board__set_bot` with the bot's
-     TECHNICAL name from the catalog's persona table. NEVER invent a
-     bot name; a name absent from the catalog is a no-fit.
-  5. `mcp__iterion_board__set_labels`: keep the card's existing labels,
-     add `source:issue-triage`, add ONE `axis:<area>` label when one
-     area clearly dominates (reuse the board's spelling). No confident
-     bot fit → add `needs-manual-triage` instead and leave the bot
-     unset. Never exceed 5 labels; drop your own optional additions
-     first, never the pre-existing ones.
-  6. `mcp__iterion_board__comment_issue`: ONE short paragraph — which
-     bot you routed to (or why none), the decisive signal from the
-     card, and what the operator should do next (drag to Ready to
-     launch, or triage manually).
+     TECHNICAL name copied VERBATIM from the catalog's persona table
+     (`assignee` column — dashes, e.g. `feature-dev`, never an
+     invented spelling). A name you cannot see in that table is a
+     no-fit.
+  5. MANDATORY: `mcp__iterion_board__set_labels` — keep the card's
+     existing labels, add `source:issue-triage`, add ONE `axis:<area>`
+     label when one area clearly dominates (reuse the board's
+     spelling). No confident bot fit → add `needs-manual-triage`
+     instead and leave the bot unset. Never exceed 5 labels; drop your
+     own optional additions first, never the pre-existing ones.
+  6. MANDATORY: `mcp__iterion_board__comment_issue` — ONE short
+     paragraph: which bot you routed to (or why none), the decisive
+     signal from the card, and what the operator should do next (drag
+     to Ready to launch, or triage manually).
+  Only return triage_output AFTER comment_issue has succeeded — a run
+  that skips steps 3, 5 or 6 is a FAILED triage even if a bot got
+  stamped. The set_labels replacement MUST include `source:issue-triage`
+  alongside the preserved pre-existing labels.
 
   Hard rules: no `transition_issue`, no `create_issue`, no
   `close_issue`, no processing of any card other than "{{vars.issue_id}}".
@@ -68,13 +75,34 @@ prompt triage_system:
   same one-paragraph reasoning you commented.
 
 prompt triage_user:
-  Triage card "{{vars.issue_id}}" now.
+  Triage board card "{{vars.issue_id}}" now, calling tools in EXACTLY
+  this order:
+  1. mcp__iterion_board__get_issue with the id above.
+  2. skill with name "iterion-bot-catalog" (exact string) — the
+     decision tree AND the only valid bot names.
+  3. mcp__iterion_board__list_labels.
+  4. mcp__iterion_board__set_bot — verbatim dash-form name from the
+     catalog's persona table. Skip ONLY on a no-fit.
+  5. mcp__iterion_board__set_labels — the card's pre-existing labels
+     plus "source:issue-triage" (plus "needs-manual-triage" on a
+     no-fit).
+  6. mcp__iterion_board__comment_issue — your one-paragraph routing
+     rationale.
+  Return triage_output only after step 6 succeeded.
 
 agent triage:
   backend: "claw"
+  ## Cheap but procedure-reliable. gpt-5.4-mini (the claw auto-default)
+  ## skips the skill read + label/comment steps; 5.5 follows the
+  ## contract. Same pin precedent as review-pr's claw reviewer.
+  model: "openai/gpt-5.5"
   output: triage_output
   system: triage_system
   user: triage_user
+  ## `skill` reads the bundled catalog/vocabulary skills; a non-empty
+  ## tools: list also makes the claw executor append the board MCP tools
+  ## the capabilities grant (an EMPTY list would be a tool-less LLM call).
+  tools: [skill]
   capabilities: [board.read, board.assign, board.label, board.comment]
   tool_max_steps: 12
 
@@ -85,4 +113,3 @@ workflow issue_triage:
   budget:
     max_duration: "10m"
     max_cost_usd: 1
-    max_iterations: 1
