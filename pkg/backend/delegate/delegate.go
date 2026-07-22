@@ -414,6 +414,22 @@ type Task struct {
 	// generates it, registers grants, and revokes on run completion.
 	BoardRunToken string
 
+	// AskUserHTTPEndpoint is the URL of the per-run ask-user MCP HTTP
+	// endpoint the engine binds next to the sandbox (ADR-082 Phase 3).
+	// Sandboxed claude_code registers an HTTP MCP server pointing here
+	// instead of the stdio `iterion __mcp-ask-user` subcommand (whose
+	// host binary path is invisible in-container); the PreToolUse hooks
+	// — and therefore the interaction-store paths — are identical on
+	// both transports. Empty on a sandboxed task = ask-user MCP
+	// disabled for the node (loud warning; the [INTERACTION PROTOCOL]
+	// JSON fallback still allows a blocking escalation).
+	AskUserHTTPEndpoint string
+
+	// AskUserRunToken is the ephemeral per-run token authorizing calls
+	// to AskUserHTTPEndpoint (sent as the X-Iterion-Run header). Minted
+	// by the engine at sandbox start; dies with the per-run listener.
+	AskUserRunToken string
+
 	// ToolDefs provides full tool definitions for backends that manage tool
 	// loops internally (e.g. claw). CLI-based backends ignore this field.
 	ToolDefs []ToolDef

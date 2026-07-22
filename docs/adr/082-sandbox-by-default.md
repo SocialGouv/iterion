@@ -96,9 +96,15 @@ inspection:
    in-sandbox git (and `finalize_mr`-style `git push`) is not wired —
    needs the init-container/PVC mechanism (or a git-credential/HTTP
    proxy) called out in `sandbox_mounts.go`.
-2. **ask-user transport**: `__mcp-ask-user` is stdio-only and disabled
-   under any sandbox; needs an HTTP fallback mirroring the board MCP
-   transport (`/api/v1/mcp/board` + per-run token).
+2. **ask-user transport** — RESOLVED: the engine now binds a per-run
+   gateway-reachable ask-user MCP listener at `/api/v1/mcp/ask-user`
+   (`pkg/askusermcp`, per-run `X-Iterion-Run` token, mirroring the
+   board transport) and the claude_code delegate registers it as an
+   HTTP MCP server for sandboxed interactive nodes instead of
+   disabling the hook. Both docker and kubernetes drivers are covered
+   (same `ProxyConfigurer` bind as the egress proxy / board listener);
+   the PreToolUse hooks stay host-side so the interaction-store paths
+   are unchanged. A bind failure degrades loudly per node.
 3. **Forfait auth robustness**: in-pod claude auth rides a single
    exec-env `CLAUDE_CODE_OAUTH_TOKEN` (the `CLAUDE_CONFIG_DIR` file
    fallback points at a host path that doesn't exist in the pod);

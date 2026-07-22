@@ -27,6 +27,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/SocialGouv/iterion/pkg/askusermcp"
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
 	gitlib "github.com/SocialGouv/iterion/pkg/git"
 	iterlog "github.com/SocialGouv/iterion/pkg/log"
@@ -45,6 +46,9 @@ type activeSandbox struct {
 	workspaceFolder string       // in-container path the host worktree is bind-mounted to (Spec.WorkspaceFolder, e.g. "/workspace"); used by Engine to remap ${PROJECT_DIR}
 	boardEndpoint   string       // http URL of the per-run gateway-reachable board MCP listener (C082); empty when not started (no handler / not sandboxed)
 	boardListener   *http.Server // the board listener to shut down at teardown; nil when not started
+	askUserEndpoint string       // http URL of the per-run gateway-reachable ask-user MCP listener (ADR-082 Phase 3); empty when not started (no interactive node / bind failure)
+	askUserToken    string       // per-run bearer token authorizing calls to askUserEndpoint (X-Iterion-Run)
+	askUserListener *http.Server // the ask-user listener to shut down at teardown; nil when not started
 }
 
 // shutdown tears down both handles best-effort. Safe to call multiple
@@ -68,19 +72,32 @@ func (a *activeSandbox) shutdown(ctx context.Context, logger *iterlog.Logger) {
 			logger.Warn("runtime: sandbox board listener shutdown: %v", err)
 		}
 	}
+	if a.askUserListener != nil {
+		if err := a.askUserListener.Shutdown(ctx); err != nil && logger != nil {
+			logger.Warn("runtime: sandbox ask-user listener shutdown: %v", err)
+		}
+	}
 }
 
-// startBoardMCPListener binds a per-run, gateway-reachable HTTP listener
-// serving the board MCP routes (handler) so a sandboxed claude_code node
-// can reach the operator's board from inside the container (C082). It
-// reuses the egress proxy's driver-specific bind (docker → 0.0.0.0:0
-// advertised as host.docker.internal) so the container can dial it the
-// same way it dials the proxy. The listener serves the SAME in-process
-// native.Store the studio uses (via the handler), so writes serialize
-// through that Store's mutex — the reason the board transport is HTTP and
-// not a second in-container process. Returns the container-reachable
-// endpoint URL and the *http.Server (shut down at sandbox teardown).
-func startBoardMCPListener(driver sandbox.Driver, handler http.Handler) (endpoint string, srv *http.Server, err error) {
+// startSandboxMCPListener binds a per-run, gateway-reachable HTTP
+// listener serving handler at path, so a sandboxed claude_code node can
+// reach a host-side MCP endpoint from inside the container. It reuses
+// the egress proxy's driver-specific bind (docker → 0.0.0.0:0
+// advertised as host.docker.internal; kubernetes → the runner pod IP)
+// so the container can dial it the same way it dials the proxy.
+// Returns the container-reachable endpoint URL and the *http.Server
+// (shut down at sandbox teardown).
+//
+// Two per-run MCP listeners ride this helper:
+//   - the board transport (C082): serves the SAME in-process
+//     native.Store the studio uses, so writes serialize through that
+//     Store's mutex — the reason the board transport is HTTP and not a
+//     second in-container process;
+//   - the ask-user transport (ADR-082 Phase 3): serves the ask-user
+//     tool surface (pkg/askusermcp) so interactive nodes keep the
+//     native ask_user tools in-container — the stdio __mcp-ask-user
+//     subcommand's host binary path is invisible there.
+func startSandboxMCPListener(driver sandbox.Driver, handler http.Handler, path string) (endpoint string, srv *http.Server, err error) {
 	bind, advertise, err := proxyAddressesForDriver(driver)
 	if err != nil {
 		return "", nil, err
@@ -96,7 +113,7 @@ func startBoardMCPListener(driver sandbox.Driver, handler http.Handler) (endpoin
 	}
 	srv = &http.Server{Handler: handler}
 	go func() { _ = srv.Serve(ln) }()
-	endpoint = "http://" + net.JoinHostPort(advertise, port) + "/api/v1/mcp/board"
+	endpoint = "http://" + net.JoinHostPort(advertise, port) + path
 	return endpoint, srv, nil
 }
 
@@ -398,6 +415,16 @@ func resolveAndStartSandbox(ctx context.Context, p SandboxParams) (*activeSandbo
 		return nil, fmt.Errorf("runtime: sandbox: network proxy: %w", err)
 	}
 
+	// Per-run MCP listener intents, decided BEFORE the container starts:
+	// the listeners themselves bind after Driver.Start (they need the
+	// live driver gateway), but the container's ability to RESOLVE their
+	// advertised host (host.docker.internal on docker/podman) is settled
+	// at `docker run` time — so the driver must know now that an
+	// endpoint will be advertised, proxy or no proxy (the default
+	// network: open starts none).
+	wantsBoardListener := p.BoardMCPHandler != nil && workflowHasBoardCapability(p.Workflow)
+	wantsAskUserListener := workflowHasInteractiveNode(p.Workflow)
+
 	info := sandbox.RunInfo{
 		RunID:              p.RunID,
 		FriendlyName:       p.FriendlyName,
@@ -405,6 +432,7 @@ func resolveAndStartSandbox(ctx context.Context, p SandboxParams) (*activeSandbo
 		ProxyEndpoint:      proxyEndpoint,
 		ProxyCACert:        proxyCACert,
 		MaxDurationSeconds: workflowMaxDurationSeconds(p.Workflow),
+		HostGatewayAlias:   wantsBoardListener || wantsAskUserListener,
 	}
 
 	prepared, err := driver.Prepare(ctx, *spec)
@@ -439,8 +467,8 @@ func resolveAndStartSandbox(ctx context.Context, p SandboxParams) (*activeSandbo
 	// sandboxed claude_code can write the operator's board. Non-fatal: a
 	// failure degrades to the prior (board-disabled) behaviour rather than
 	// breaking the run.
-	if p.BoardMCPHandler != nil && workflowHasBoardCapability(p.Workflow) {
-		endpoint, srv, berr := startBoardMCPListener(driver, p.BoardMCPHandler)
+	if wantsBoardListener {
+		endpoint, srv, berr := startSandboxMCPListener(driver, p.BoardMCPHandler, "/api/v1/mcp/board")
 		if berr != nil {
 			if logger != nil {
 				logger.Warn("runtime: sandbox: board MCP listener failed to start (board-emit disabled for this run): %v", berr)
@@ -453,7 +481,57 @@ func resolveAndStartSandbox(ctx context.Context, p SandboxParams) (*activeSandbo
 			}
 		}
 	}
+
+	// ADR-082 Phase 3: when the workflow has interactive LLM nodes, bind a
+	// per-run ask-user MCP listener so sandboxed claude_code keeps the
+	// native ask_user / ask_user_async / await_answers tools (the stdio
+	// __mcp-ask-user subcommand is unreachable in-container). The
+	// interaction semantics stay host-side (delegate PreToolUse hooks +
+	// the interaction store); the listener only serves the MCP tool
+	// surface, authenticated by a per-run bearer token. Non-fatal on
+	// failure: the delegate then disables the tools per node with a loud
+	// warning (the [INTERACTION PROTOCOL] JSON fallback still applies).
+	if wantsAskUserListener {
+		token, terr := askusermcp.NewRunToken()
+		if terr != nil {
+			if logger != nil {
+				logger.Warn("runtime: sandbox: ask-user MCP token mint failed (native ask_user disabled for this run): %v", terr)
+			}
+		} else {
+			endpoint, srv, aerr := startSandboxMCPListener(driver, askusermcp.Handler(askusermcp.DefaultPath, token), askusermcp.DefaultPath)
+			if aerr != nil {
+				if logger != nil {
+					logger.Warn("runtime: sandbox: ask-user MCP listener failed to start (native ask_user disabled for this run): %v", aerr)
+				}
+			} else {
+				active.askUserEndpoint = endpoint
+				active.askUserToken = token
+				active.askUserListener = srv
+				if logger != nil {
+					logger.Info("sandbox: ask-user MCP listener on %s (sandboxed ask_user enabled)", endpoint)
+				}
+			}
+		}
+	}
 	return active, nil
+}
+
+// workflowHasInteractiveNode reports whether any LLM (agent/judge) node
+// resolves to a non-none interaction mode — the gate for binding the
+// per-run ask-user MCP listener next to a sandbox (ADR-082 Phase 3).
+// Human nodes pause in the runtime (no MCP transport involved), so only
+// LLM nodes count. The workflow-level `interaction:` default is already
+// folded into each node's Interaction field at compile time.
+func workflowHasInteractiveNode(wf *ir.Workflow) bool {
+	if wf == nil {
+		return false
+	}
+	for _, n := range wf.Nodes {
+		if ln, ok := n.(ir.LLMNode); ok && ln.GetInteractionFields().Interaction != ir.InteractionNone {
+			return true
+		}
+	}
+	return false
 }
 
 // secretEgressRewriter is the structural view of the executor's secret
@@ -1210,6 +1288,17 @@ type boardMCPSetter interface {
 	SetBoardEndpoint(endpoint string)
 }
 
+// askUserMCPSetter is the optional interface ClawExecutor implements so
+// the engine can push the per-run ask-user MCP HTTP endpoint + bearer
+// token (started with the sandbox) into the executor after the run
+// starts (ADR-082 Phase 3). The executor sets
+// Task.AskUserHTTPEndpoint/AskUserRunToken from it for sandboxed
+// interactive nodes. Type-asserted at call time so test stubs need not
+// implement it.
+type askUserMCPSetter interface {
+	SetAskUserEndpoint(endpoint, token string)
+}
+
 // startSandbox boots the run's sandbox container (if the workflow opts
 // in), wires it into the executor, stashes the in-container workspace
 // path, and returns a no-arg cleanup the caller must defer.
@@ -1327,6 +1416,16 @@ func (e *Engine) startSandbox(ctx context.Context, runID string, repoRoot string
 		if active.boardEndpoint != "" {
 			if bs, ok := e.executor.(boardMCPSetter); ok {
 				bs.SetBoardEndpoint(active.boardEndpoint)
+			}
+		}
+		// ADR-082 Phase 3: hand the per-run ask-user MCP endpoint + token
+		// to the executor so it can wire Task.AskUserHTTPEndpoint/
+		// AskUserRunToken for sandboxed interactive nodes. Empty when no
+		// listener started (no interactive node / bind failure) — the
+		// delegate then disables the tools loudly.
+		if active.askUserEndpoint != "" {
+			if as, ok := e.executor.(askUserMCPSetter); ok {
+				as.SetAskUserEndpoint(active.askUserEndpoint, active.askUserToken)
 			}
 		}
 		// Stash the in-container bind-mount target so resolveVars can

@@ -700,6 +700,7 @@ func (e *ClawExecutor) buildTask(ctx context.Context, node ir.Node, f backendFie
 		task.HasTools = len(effectiveTools) > 0
 	}
 	e.applyBoardEndpoint(&task, effectiveCaps)
+	e.applyAskUserEndpoint(&task)
 
 	// Mark the tools the runtime opened for its OWN interaction/capability
 	// plumbing as gate-exempt (registration-linked, so a future internal
@@ -959,6 +960,22 @@ func (e *ClawExecutor) applyBoardEndpoint(task *delegate.Task, effectiveCaps []s
 	// sandboxed planner publishes orphan tickets and the parent card
 	// loses its children counter.
 	task.BoardRunToken = e.boardRegister(effectiveCaps, e.sourceIssueID)
+}
+
+// applyAskUserEndpoint wires the per-run ask-user MCP HTTP transport
+// onto sandboxed interactive nodes (ADR-082 Phase 3): the gateway
+// listener the engine bound at sandbox start, plus the per-run bearer
+// token, so claude_code keeps the native ask_user / ask_user_async /
+// await_answers tools from inside the container. Non-sandboxed runs
+// use the stdio __mcp-ask-user server; a sandboxed run whose listener
+// failed to bind leaves the fields empty and the delegate degrades
+// with a loud warning (never silently).
+func (e *ClawExecutor) applyAskUserEndpoint(task *delegate.Task) {
+	if !task.InteractionEnabled || e.sandbox == nil || e.askUserEndpoint == "" || e.askUserToken == "" {
+		return
+	}
+	task.AskUserHTTPEndpoint = e.askUserEndpoint
+	task.AskUserRunToken = e.askUserToken
 }
 
 // applySessionContinuity wires the inherit / inherit_if_available /
