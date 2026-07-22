@@ -10,15 +10,15 @@ import (
 
 // TestLive_Bot_DocsRefresh runs the docs-refresh bot (Doki) against a
 // fixture with a deliberate doc/code drift: the README documents a wrong
-// function signature. v2 (ADR-058 minimal-framing): the deterministic
-// audit machinery (scan → manifest) hands ONE campaign agent the drift
-// set; the campaign fixes the docs (never code logic) committing in
-// stride, then the deterministic gates (scope, build, coverage) re-check.
+// function signature. v3 (adaptive): a deterministic scan_hints node
+// hands ONE campaign agent an ADVISORY report; the campaign explores the
+// repo, fixes the docs (never code logic) committing in stride, then the
+// deterministic TRUTH gates (scope, build) re-check.
 //
-// Reliability invariants: scan + manifest + campaign + gate fire; and
-// the drift gets corrected (a doc commit lands, or the final manifest
-// reports zero remaining drift). The quality panel then grades the doc
-// edits + value.
+// Reliability invariants: scan + campaign + gate fire; and the drift
+// gets corrected (a doc commit lands, or the campaign honestly reports
+// the docs aligned). The quality panel then grades the doc edits +
+// value.
 //
 // Requires: claude CLI. Expected: ~10-30 min.
 func TestLive_Bot_DocsRefresh(t *testing.T) {
@@ -68,20 +68,20 @@ Call it with exactly three integers.
 		timeout:      40 * time.Minute,
 	})
 
-	// Reliability invariants: the deterministic machinery + the campaign
-	// must fire, and the convergence gate must have been evaluated.
-	assertNodesFinished(t, res.events, "scan_docs", "build_manifest", "campaign", "scope_check", "verify_run", "gate")
+	// Reliability invariants: the advisory scan + the campaign must fire,
+	// and the convergence gate must have been evaluated.
+	assertNodesFinished(t, res.events, "scan_hints", "campaign", "scope_check", "verify_run", "gate")
 
 	// The drift should be corrected: either a doc commit landed, or the
-	// final manifest reports zero remaining drift (already-aligned).
+	// campaign honestly reports the docs aligned (already-aligned repo).
 	committed := workspaceCommitCount(t, workspaceDir) > seedCommits
-	manifest, _ := lastNodeOutput(res.events, "build_manifest")
-	zeroDrift := manifest != nil && asFloat(manifest["drifted_anchors"]) == 0
-	if !committed && !zeroDrift {
-		t.Errorf("expected a doc fix commit OR zero residual drift; got neither (commits=%d seed=%d drifted=%v)",
-			workspaceCommitCount(t, workspaceDir), seedCommits, manifest["drifted_anchors"])
+	camp, _ := lastNodeOutput(res.events, "campaign")
+	aligned := camp != nil && camp["docs_aligned"] == true
+	if !committed && !aligned {
+		t.Errorf("expected a doc fix commit OR an honest docs_aligned report; got neither (commits=%d seed=%d docs_aligned=%v)",
+			workspaceCommitCount(t, workspaceDir), seedCommits, camp["docs_aligned"])
 	} else {
-		t.Logf("docs-refresh outcome: committed=%v zeroResidualDrift=%v", committed, zeroDrift)
+		t.Logf("docs-refresh outcome: committed=%v docsAligned=%v", committed, aligned)
 	}
 
 	assessQuality(t, res, qualityInput{
