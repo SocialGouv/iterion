@@ -152,6 +152,7 @@ iterion issue show     <id-or-prefix>
 iterion issue move     <id-or-prefix>  --to <state>
 iterion issue update   <id-or-prefix>  [--title T] [--body B] [--labels L1,L2]
                                        [--priority N] [--assignee A]
+                                       [--blockers ID1,ID2]
                                        [--field k=v]+ [--clear-field K]+
 iterion issue close    <id-or-prefix>          # → first terminal state
 
@@ -162,6 +163,12 @@ iterion issue board init [--from <board.json>]
 `<id-or-prefix>` accepts the full `native:<uuid>` form, the bare
 UUID, or any uniquely-matching prefix (e.g. the first 8 characters
 shown in `list`).
+
+`update --blockers ID1,ID2` **replaces** the whole hard-blocker set
+(comma-separated ids), the same way `--labels` replaces labels —
+distinct from `create`'s repeatable `--blocker ID`, which adds one at
+a time. See [ADR-076](adr/076-pipeline-hard-blockers-and-waiting-deps.md)
+for how blockers gate `waiting_deps`.
 
 `--field key=value` infers the type from the value: `true`/`false` →
 bool, integers / floats → number, everything else → string. Use
