@@ -331,6 +331,10 @@ type IssueImportOptions struct {
 	TokenEnv string // NAME of the env var holding the forge token (never the value)
 	BaseURL  string // forge API base; empty = provider default
 	Since    string // RFC3339; empty = full re-sync
+	// MinAuthorRole is the trust threshold (gitlab vocabulary; "" →
+	// developer) above which an issue author's fresh card is stamped
+	// triage:auto instead of parked needs:approval.
+	MinAuthorRole string
 }
 
 // RunIssueImport imports a forge repo's issues into the native board, reusing
@@ -366,7 +370,8 @@ func RunIssueImport(p *Printer, opts IssueImportOptions) error {
 		return err
 	}
 	created, updated, err := server.ImportForgeIssues(
-		context.Background(), provider, strings.TrimSpace(opts.BaseURL), token, opts.Repo, board, since)
+		context.Background(), provider, strings.TrimSpace(opts.BaseURL), token, opts.Repo, board, since,
+		strings.TrimSpace(opts.MinAuthorRole))
 	if err != nil {
 		return fmt.Errorf("issue import: %w", err)
 	}

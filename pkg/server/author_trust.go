@@ -38,6 +38,13 @@ func newAuthorTrust() *authorTrust {
 	return &authorTrust{ttl: authorTrustDefaultTTL, cache: map[string]authorTrustEntry{}}
 }
 
+// authorTrustGate returns the server's shared author-trust cache, built on
+// first use (Server has several construction paths; lazy init covers all).
+func (s *Server) authorTrustGate() *authorTrust {
+	s.authorTrustOnce.Do(func() { s.authorTrustG = newAuthorTrust() })
+	return s.authorTrustG
+}
+
 // trustedAssociations are the GitHub author_association values that prove
 // write-side rights without an API round trip. CONTRIBUTOR ("has previously
 // committed") and NONE/FIRST_TIME_* are deliberately excluded — a merged

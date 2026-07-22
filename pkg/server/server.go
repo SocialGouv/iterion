@@ -124,6 +124,10 @@ type Server struct {
 	configShareFC     func(context.Context, *configshare.Share) (forge.FileClient, error)
 	forgeConnections  forge.ConnectionStore
 	forgeIntegrations forge.RepoIntegrationStore
+	// authorTrustG is the lazily-built TTL cache behind the issue
+	// author-trust gate (webhooks + forge→board sync); use authorTrustGate().
+	authorTrustG    *authorTrust
+	authorTrustOnce sync.Once
 	forgeOrchestrator *forge.Orchestrator
 	forgeStates       forgeStateBackend
 	forgeOAuthApps    forge.OAuthAppStore
