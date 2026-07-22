@@ -412,6 +412,85 @@ workflow tpl:
 	}
 }
 
+// TestCompileLoopStaticLiteralCap covers the compile backstop for a loop
+// cap expr that carries no template refs — the shape group `${}`
+// substitution or an AST-JSON import can produce, bypassing the parser's
+// `as fix("2")` guard. A plain integer folds into the literal MaxIterations
+// slot; a non-numeric static string is rejected rather than silently
+// resolving to 0 and skipping the loop edge as exhausted.
+func TestCompileLoopStaticLiteralCap(t *testing.T) {
+	base := `
+schema s:
+  ok: bool
+
+prompt sys:
+  hi
+
+prompt usr:
+  go
+
+agent select:
+  model: "m"
+  input: s
+  output: s
+  system: sys
+  user: usr
+
+agent refine:
+  model: "m"
+  input: s
+  output: s
+  system: sys
+  user: usr
+
+workflow tpl:
+  entry: select
+  select -> refine
+  refine -> select as fix_loop("{{outputs.select.cap}}")
+`
+	setLoopExpr := func(t *testing.T, expr string) *ast.File {
+		f := parseFile(t, base)
+		for _, wf := range f.Workflows {
+			for _, e := range wf.Edges {
+				if e.Loop != nil && e.Loop.Name == "fix_loop" {
+					e.Loop.MaxIterationsExpr = expr
+					e.Loop.MaxIterations = 0
+				}
+			}
+		}
+		return f
+	}
+
+	t.Run("plain integer folds into literal cap", func(t *testing.T) {
+		r := Compile(setLoopExpr(t, "2"))
+		if r.HasErrors() {
+			for _, d := range r.Diagnostics {
+				t.Errorf("unexpected diag: %s", d.Error())
+			}
+		}
+		loop, ok := r.Workflow.Loops["fix_loop"]
+		if !ok {
+			t.Fatal("fix_loop not registered")
+		}
+		if loop.MaxIterations != 2 {
+			t.Errorf("MaxIterations: expected 2, got %d", loop.MaxIterations)
+		}
+		if loop.MaxIterationsExpr != "" {
+			t.Errorf("MaxIterationsExpr: expected cleared, got %q", loop.MaxIterationsExpr)
+		}
+	})
+
+	t.Run("non-numeric static string is rejected", func(t *testing.T) {
+		r := Compile(setLoopExpr(t, "two"))
+		if !r.HasErrors() {
+			t.Fatal("expected a compile error for a static non-numeric loop cap")
+		}
+		if !hasDiag(r.Diagnostics, DiagBadTemplateRef) {
+			t.Error("expected DiagBadTemplateRef diagnostic")
+		}
+	})
+}
+
 // TestComputeLoopBodies_NestedLoops covers a fix_loop nested inside a
 // package_loop — the exact shape that motivated the per-entry reset.
 // The package loop's body subsumes the fix loop's body; an edge entering

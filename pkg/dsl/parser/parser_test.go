@@ -448,6 +448,45 @@ func TestEdgeLoopTemplatedCap(t *testing.T) {
 	assertEq(t, "Loop.MaxIterationsExpr", e.Loop.MaxIterationsExpr, "{{outputs.select.cap}}")
 }
 
+func TestEdgeLoopQuotedIntLiteralCap(t *testing.T) {
+	// A quoted plain integer (`as fix("2")`) sits between the unquoted
+	// literal `as fix(2)` and the quoted template `as fix("{{x}}")`. It is
+	// an easy mistake since every template form is quoted. It must be read
+	// as the integer 2 (MaxIterations), NOT stored as a template with no
+	// refs — which would silently resolve to 0 and skip the loop edge as
+	// exhausted on the first traversal.
+	src := `workflow test:
+  entry: a
+
+  a -> b as fix("2")
+`
+	res := parser.Parse("test.bot", src)
+	assertNoDiags(t, res)
+
+	e := res.File.Workflows[0].Edges[0]
+	if e.Loop == nil {
+		t.Fatal("expected loop clause")
+	}
+	assertEq(t, "Loop.Name", e.Loop.Name, "fix")
+	assertEq(t, "Loop.MaxIterations", e.Loop.MaxIterations, 2)
+	assertEq(t, "Loop.MaxIterationsExpr", e.Loop.MaxIterationsExpr, "")
+}
+
+func TestEdgeLoopQuotedNonNumericCapRejected(t *testing.T) {
+	// A quoted non-numeric, non-template cap has no template refs and would
+	// silently cap the loop at 0. Reject it at parse time rather than let it
+	// through as a template that resolves to nothing.
+	src := `workflow test:
+  entry: a
+
+  a -> b as fix("two")
+`
+	res := parser.Parse("test.bot", src)
+	if len(res.Diagnostics) == 0 {
+		t.Fatal("expected a diagnostic for a quoted non-numeric loop cap")
+	}
+}
+
 func TestEdgeWhenNot(t *testing.T) {
 	src := `workflow test:
   entry: a
