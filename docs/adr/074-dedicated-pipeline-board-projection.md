@@ -217,3 +217,29 @@ cap simply wait in Todo until a slot frees.
   durable launch specs and explicit attempt correlation while preserving this
   API's principle: the board is a derived execution projection, never a second
   mutable store.
+
+### V1 hardening follow-ups (2026-07-22)
+
+The PR #193 review accepted three V1 limitations; they are now resolved:
+
+- **M3 — atomic child precreate.** `spawnRun`'s precreate stamped
+  `ParentRunID` with a `SaveRun` after `CreateRun`; a failure of that second
+  write left a `running` child doc with no goroutine until the orphan
+  reconciler swept it. The optional `store.ParentedRunCreator.CreateChildRun`
+  now persists `ParentRunID` in the same exclusive-create write (both
+  filesystem and mongo stores implement it); `spawnRun` degrades to the
+  two-write path only for stores without the seam.
+- **M4 — atomic unique title.** `uniquePipelineTitle` was list-then-check —
+  racy under concurrent create (last writer could duplicate a title, harmless
+  but sloppy). `native.Store.CreateUniqueTitle` (optional
+  `native.UniqueTitleCreator`) computes the `#N -` prefix inside the same
+  store-mutex critical section as the write, closing the race for the
+  filesystem board; the handler keeps the best-effort helper as the fallback.
+- **L5 — `?since=` prune of old closed cards.** `pipelineTreeMaxCards=500` /
+  depth 20 stay hardcoded, but the projection now accepts `?since=<duration|
+  RFC3339>`: CLOSED cards (terminal runs / terminal-state tasks) that last
+  changed before the cutoff are pruned **before** they consume a truncation
+  slot, so a long-lived local store no longer sits permanently in the
+  truncation banner. Live pipelines are never pruned by age; the prune is
+  reported via `hidden_closed_count` / `hidden_closed_before`, never silent.
+  The default (no `since`) is unchanged, so this is a pure opt-in escape hatch.

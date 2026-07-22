@@ -347,7 +347,7 @@ perform an N+1 traversal over issues, checkpoints and child runs:
 
 | Endpoint | Method | Purpose |
 |----------|--------|---------|
-| `/api/v1/pipeline-board` | GET | Global projection: 3 fixed lanes + one folded card per root pipeline (progress, pending reviews, deps, contract args, output, concurrency) |
+| `/api/v1/pipeline-board` | GET | Global projection: 3 fixed lanes + one folded card per root pipeline (progress, pending reviews, deps, contract args, output, concurrency). Optional `?since=<duration\|RFC3339>` prunes CLOSED cards last changed before the cutoff (live pipelines are never pruned) so a long-lived store escapes the ≤500-card truncation banner; the prune is reported via `hidden_closed_count` / `hidden_closed_before` |
 | `/api/v1/pipeline-board/tasks` | POST | Create a ticket; `bot` required; optional `blockers`, `upsert`; `{start:true}` → ready when deps OK else `waiting_deps` |
 | `/api/v1/pipeline-board/tasks/{id}/ready` | POST | `{ready}` stages Ready when hard deps are done, else parks in `waiting_deps` (or 409); unstage → backlog |
 | `/api/v1/pipeline-board/tasks/{id}` | PATCH | Edit a not-yet-run ticket (title, body, labels, priority, bot, bot_args, blockers) |
