@@ -69,6 +69,57 @@ func RunWithOpts(t *testing.T, factory Factory, opts Opts) {
 	t.Run("TurnStore", func(t *testing.T) { testTurnStore(t, factory(t)) })
 	t.Run("ToolBlobStore", func(t *testing.T) { testToolBlobStore(t, factory(t)) })
 	t.Run("RunFilesStore", func(t *testing.T) { testRunFilesStore(t, factory(t)) })
+	t.Run("ParentedRunCreator", func(t *testing.T) { testParentedRunCreator(t, factory(t)) })
+}
+
+// testParentedRunCreator exercises the optional ParentedRunCreator surface
+// (spawnRun's atomic child precreate, PR #193 M3): the ParentRunID must
+// round-trip from the SINGLE create write — no follow-up SaveRun — and the
+// child must be reachable through ListChildRuns. Also asserts the
+// no-clobber contract (a reused id fails). Skipped otherwise.
+func testParentedRunCreator(t *testing.T, s store.RunStore) {
+	t.Helper()
+	pc := store.AsParentedRunCreator(s)
+	if pc == nil {
+		t.Skip("backend does not implement ParentedRunCreator")
+	}
+	ctx := testCtx()
+	const parentID = "run_parent"
+	const childID = "run_child"
+	if _, err := s.CreateRun(ctx, parentID, "demo", nil); err != nil {
+		t.Fatalf("CreateRun(parent): %v", err)
+	}
+	child, err := pc.CreateChildRun(ctx, childID, "demo", parentID, map[string]any{"k": "v"})
+	if err != nil {
+		t.Fatalf("CreateChildRun: %v", err)
+	}
+	// The returned doc carries the parent link with no extra write.
+	if child.ParentRunID != parentID {
+		t.Errorf("CreateChildRun returned ParentRunID = %q; want %q", child.ParentRunID, parentID)
+	}
+	// It is durable: a fresh load sees the link (not just the in-memory copy).
+	loaded, err := s.LoadRun(ctx, childID)
+	if err != nil {
+		t.Fatalf("LoadRun(child): %v", err)
+	}
+	if loaded.ParentRunID != parentID {
+		t.Errorf("persisted ParentRunID = %q; want %q", loaded.ParentRunID, parentID)
+	}
+	if got := loaded.Inputs["k"]; got != "v" {
+		t.Errorf("persisted Inputs[k] = %v; want v", got)
+	}
+	// And it is reachable through the child reverse query.
+	kids, err := s.ListChildRuns(ctx, parentID)
+	if err != nil {
+		t.Fatalf("ListChildRuns: %v", err)
+	}
+	if !sameOrderedSlice(kids, []string{childID}) {
+		t.Errorf("ListChildRuns(%s) = %v; want [%s]", parentID, kids, childID)
+	}
+	// No-clobber: reusing an id must fail, never reset the existing doc.
+	if _, err := pc.CreateChildRun(ctx, childID, "demo", parentID, nil); err == nil {
+		t.Errorf("CreateChildRun(duplicate id): expected error, got nil")
+	}
 }
 
 // testRunFilesStore exercises the optional RunFilesStore surface

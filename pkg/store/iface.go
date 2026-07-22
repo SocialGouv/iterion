@@ -216,6 +216,34 @@ func AsQueuedRunCreator(s RunStore) QueuedRunCreator {
 	return q
 }
 
+// ParentedRunCreator is the optional interface for stores that can persist
+// a child run's ParentRunID in the SAME write as the run document. Without
+// it, spawnRun must CreateRun then SaveRun(ParentRunID) as two writes: if
+// the second fails, the child doc is already `running` with no goroutine
+// attached to it, and only the orphan reconciler eventually cleans it up.
+// CreateChildRun collapses the two writes into one exclusive create, so
+// there is no such window. Both production stores (filesystem, mongo)
+// implement it; a store that does not cleanly degrades to the two-write
+// path.
+type ParentedRunCreator interface {
+	// CreateChildRun persists a new run stamping ParentRunID atomically.
+	// Same no-clobber contract as CreateRun (a reused run ID fails). The
+	// filesystem store creates it `running`, the cloud store `queued`,
+	// exactly like their CreateRun.
+	CreateChildRun(ctx context.Context, id, workflowName, parentRunID string, inputs map[string]any) (*Run, error)
+}
+
+// AsParentedRunCreator returns s as ParentedRunCreator when the backend can
+// persist ParentRunID in the create write, or nil otherwise. Check for nil
+// before use.
+func AsParentedRunCreator(s RunStore) ParentedRunCreator {
+	if s == nil {
+		return nil
+	}
+	p, _ := s.(ParentedRunCreator)
+	return p
+}
+
 // RunFilesStore is an optional interface implemented by stores that
 // can host arbitrary tool-produced files alongside a run. Tools running
 // inside the sandbox write into a per-run scratch directory bind-mounted

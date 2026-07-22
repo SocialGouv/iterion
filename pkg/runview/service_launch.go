@@ -458,24 +458,33 @@ func (s *Service) spawnRun(
 	// being scheduled. The engine's runResolveDoc sees the running doc and
 	// claims it instead of re-creating.
 	if precreateInputs != nil {
-		created, err := s.store.CreateRun(context.Background(), runID, wf.Name, precreateInputs)
-		if err != nil {
+		// ParentRunID is part of the launch identity, so persist it in the
+		// SAME create write when the store supports it (ParentedRunCreator).
+		// Otherwise a running child doc would exist between CreateRun and the
+		// follow-up SaveRun — if that second write failed, the doc stayed
+		// `running` with no goroutine until the orphan reconciler caught it
+		// (PR #193 M3). The engine option below remains the authoritative path
+		// for direct/non-precreated runs.
+		var createErr error
+		if parentRunID != "" {
+			if pc := store.AsParentedRunCreator(s.store); pc != nil {
+				_, createErr = pc.CreateChildRun(context.Background(), runID, wf.Name, parentRunID, precreateInputs)
+			} else {
+				var created *store.Run
+				created, createErr = s.store.CreateRun(context.Background(), runID, wf.Name, precreateInputs)
+				if createErr == nil {
+					created.ParentRunID = parentRunID
+					createErr = s.store.SaveRun(context.Background(), created)
+				}
+			}
+		} else {
+			_, createErr = s.store.CreateRun(context.Background(), runID, wf.Name, precreateInputs)
+		}
+		if createErr != nil {
 			s.manager.Deregister(runID)
 			_ = lock.Unlock()
 			s.dropRunLog(runID)
-			return nil, fmt.Errorf("runview: create run: %w", err)
-		}
-		// ParentRunID is part of the launch identity, so persist it before
-		// returning just like the run document itself. The engine option below
-		// remains the authoritative path for direct/non-precreated runs.
-		if parentRunID != "" {
-			created.ParentRunID = parentRunID
-			if err := s.store.SaveRun(context.Background(), created); err != nil {
-				s.manager.Deregister(runID)
-				_ = lock.Unlock()
-				s.dropRunLog(runID)
-				return nil, fmt.Errorf("runview: save parent run: %w", err)
-			}
+			return nil, fmt.Errorf("runview: create run: %w", createErr)
 		}
 	}
 

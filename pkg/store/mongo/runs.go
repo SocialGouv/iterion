@@ -45,6 +45,37 @@ func (s *Store) CreateRun(ctx context.Context, id, workflowName string, inputs m
 	return r, nil
 }
 
+// CreateChildRun inserts a new run document (status=queued, like
+// CreateRun) with ParentRunID stamped in the same insert, so the cloud
+// launch path persists the parent link without a follow-up SaveRun.
+// Implements store.ParentedRunCreator.
+func (s *Store) CreateChildRun(ctx context.Context, id, workflowName, parentRunID string, inputs map[string]any) (*store.Run, error) {
+	now := time.Now().UTC()
+	r := &store.Run{
+		FormatVersion:  store.RunFormatVersion,
+		ID:             id,
+		WorkflowName:   workflowName,
+		ParentRunID:    parentRunID,
+		Status:         store.RunStatusQueued,
+		Inputs:         inputs,
+		CreatedAt:      now,
+		UpdatedAt:      now,
+		QueuedAt:       &now,
+		SchemaVersion:  SchemaVersion,
+		CASVersion:     1,
+		LaunchEnv:      store.CaptureLaunchEnv(),
+		IterionVersion: appinfo.FullVersion(),
+	}
+	stampTenant(ctx, r)
+	if _, err := s.runs.InsertOne(ctx, r); err != nil {
+		if mongo.IsDuplicateKeyError(err) {
+			return nil, fmt.Errorf("store/mongo: run %s already exists", id)
+		}
+		return nil, fmt.Errorf("store/mongo: insert child run: %w", err)
+	}
+	return r, nil
+}
+
 // LoadRun fetches the run document by _id. The query is implicitly
 // scoped by tenant_id when the ctx carries one — a tenant-scoped
 // caller asking for a run that belongs to another tenant gets a

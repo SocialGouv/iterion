@@ -56,6 +56,36 @@ func (s *FilesystemRunStore) CreateRun(_ context.Context, id, workflowName strin
 	return r, nil
 }
 
+// CreateChildRun persists a new run with status "running", stamping
+// ParentRunID in the same exclusive-create write as the run document.
+// It exists so spawnRun's precreate never leaves a running child doc
+// behind a failed second SaveRun (see store.ParentedRunCreator).
+func (s *FilesystemRunStore) CreateChildRun(_ context.Context, id, workflowName, parentRunID string, inputs map[string]any) (*Run, error) {
+	if err := sanitizePathComponent("run ID", id); err != nil {
+		return nil, err
+	}
+	if err := s.guardNotDeleted(id); err != nil {
+		return nil, err
+	}
+	now := time.Now().UTC()
+	r := &Run{
+		FormatVersion:  RunFormatVersion,
+		ID:             id,
+		WorkflowName:   workflowName,
+		ParentRunID:    parentRunID,
+		Status:         RunStatusRunning,
+		Inputs:         inputs,
+		CreatedAt:      now,
+		UpdatedAt:      now,
+		LaunchEnv:      CaptureLaunchEnv(),
+		IterionVersion: appinfo.FullVersion(),
+	}
+	if err := s.writeRunNew(r); err != nil {
+		return nil, err
+	}
+	return r, nil
+}
+
 // CreateQueuedRun persists a new run with status "queued" — the state
 // the pipeline board renders in its TODO lane while the run waits for a
 // local concurrency slot. It mirrors CreateRun's exclusive-create
