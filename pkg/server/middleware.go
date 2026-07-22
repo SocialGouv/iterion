@@ -210,6 +210,14 @@ func isPublicPath(path string) bool {
 	if strings.HasPrefix(path, "/api/config-share/") {
 		return true
 	}
+	// Per-run X-Iterion-Run token surfaces (board MCP HTTP transport,
+	// deterministic forge review publishing): the handler authenticates
+	// the run token itself and 401s on a missing/unknown one, so the
+	// operator-JWT gate must not front them — a sandboxed or
+	// runner-launched run carries no JWT.
+	if strings.HasPrefix(path, "/api/v1/mcp/") || path == "/api/v1/forge/publish-review" {
+		return true
+	}
 	if strings.HasPrefix(path, "/assets/") || strings.HasPrefix(path, "/static/") {
 		return true
 	}
