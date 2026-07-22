@@ -224,6 +224,12 @@ export interface RunLogState {
   // Set when the backend emits log_terminated — the live stream is
   // over, but the existing text remains for inspection.
   terminated: boolean;
+  // Evicted-head cache for the replay scrubber: the log bytes [0, until)
+  // that rolled out of the in-memory window (start > 0), fetched on
+  // demand from GET /runs/{id}/log?from=0&until=<start>. Only valid
+  // while until === start — a further trim widens the gap and the view
+  // refetches. Null until the scrubber first needs it.
+  prefix: { until: number; text: string } | null;
 }
 
 export interface RunStoreState {
@@ -334,6 +340,9 @@ export interface RunStoreState {
   setLogSubscribed: (subscribed: boolean) => void;
   applyLogChunk: (chunk: { offset: number; text: string; total?: number }) => void;
   markLogTerminated: () => void;
+  // Installs the evicted-head cache fetched by the replay scrubber (see
+  // RunLogState.prefix). Pass null to drop it.
+  setLogPrefix: (prefix: { until: number; text: string } | null) => void;
   clearLog: () => void;
 
   // Manual URL entry from the Browser pane URL bar. Cleared by `null`.
@@ -357,6 +366,7 @@ const initialLogState: RunLogState = {
   text: "",
   subscribed: false,
   terminated: false,
+  prefix: null,
 };
 
 // freshInitial returns a value-only snapshot of the initial reducer
@@ -700,6 +710,8 @@ export function createRunStore() {
 
   markLogTerminated: () =>
     set((s) => ({ log: { ...s.log, terminated: true, subscribed: false } })),
+
+  setLogPrefix: (prefix) => set((s) => ({ log: { ...s.log, prefix } })),
 
   clearLog: () => set({ log: initialLogState }),
 
