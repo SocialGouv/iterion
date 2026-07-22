@@ -14,6 +14,13 @@ name: 🧱 Sandbox Base Images
 # on a v* tag) build their arm64 leg FROM these bases, and there is no
 # tag-time base rebuild — a release's sandbox images carry whatever tool
 # state main's sandbox/ tree had, versioned by content, not by release.
+#
+# All four bases share ONE buildkit-operator routing-name
+# (`iterion-sandbox-base`): the chain is serial, so contention is negligible,
+# and a single warm daemon means one shared content store (full-base FROM
+# slim-base pulls blobs the daemon just built) and shared apt cache mounts
+# across the debian-based variants — instead of four isolated PVCs each
+# re-pulling the chain.
 
 on:
   push:
@@ -58,7 +65,7 @@ jobs:
     secrets: inherit
     with:
       image-name: iterion-sandbox-slim-base
-      routing-name: iterion-sandbox-slim-base
+      routing-name: iterion-sandbox-base
       context: sandbox/slim
       file: sandbox/slim/Dockerfile
       is-pr: ${{ github.event_name == 'pull_request' }}
@@ -72,7 +79,7 @@ jobs:
     secrets: inherit
     with:
       image-name: iterion-sandbox-full-base
-      routing-name: iterion-sandbox-full-base
+      routing-name: iterion-sandbox-base
       context: sandbox/full
       file: sandbox/full/Dockerfile
       build-args: BASE=ghcr.io/${{ needs.prep.outputs.owner_lc }}/iterion-sandbox-slim-base:edge
@@ -88,7 +95,7 @@ jobs:
     secrets: inherit
     with:
       image-name: iterion-sandbox-sec-base
-      routing-name: iterion-sandbox-sec-base
+      routing-name: iterion-sandbox-base
       context: sandbox/sec
       file: sandbox/sec/Dockerfile
       build-args: BASE=ghcr.io/${{ needs.prep.outputs.owner_lc }}/iterion-sandbox-full-base:edge
@@ -103,7 +110,7 @@ jobs:
     secrets: inherit
     with:
       image-name: iterion-sandbox-browser-base
-      routing-name: iterion-sandbox-browser-base
+      routing-name: iterion-sandbox-base
       context: sandbox/browser
       file: sandbox/browser/Dockerfile
       build-args: BASE=ghcr.io/${{ needs.prep.outputs.owner_lc }}/iterion-sandbox-slim-base:edge

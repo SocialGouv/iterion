@@ -53,7 +53,11 @@ jobs:
     secrets: inherit
     with:
       image-name: iterion-sandbox-${{ matrix.variant }}
-      routing-name: iterion-sandbox-${{ matrix.variant }}
+      # One shared routing-name for the four variants: each finalize is a
+      # couple of COPY layers, and a single warm daemon pulls the iterion
+      # app image once (shared content store) instead of four times on four
+      # isolated daemons. BuildKit parallelises the concurrent builds.
+      routing-name: iterion-sandbox-finalize
       context: sandbox/finalize
       file: sandbox/finalize/Dockerfile
       build-args: |
