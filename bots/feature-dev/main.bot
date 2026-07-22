@@ -573,7 +573,7 @@ agent campaign:
 ## a prior run may have left in a persistent (non-sandbox) scratch dir. python3
 ## for safe JSON + no quote clashes (mirrors verify_run); read-only, idempotent.
 tool verify_probe:
-  command: `SCRATCH={{vars.scratch_dir}} ITER="{{input.iteration}}" python3 -c "
+  command: `SCRATCH={{vars.scratch_dir}} ITER={{input.iteration}} python3 -c "
 import os, subprocess, json
 scratch = os.environ.get('SCRATCH', '.')
 script = os.path.join(scratch, 'verify.sh')
