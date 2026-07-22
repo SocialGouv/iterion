@@ -308,40 +308,54 @@ before it lands).
 
 ### `docs-refresh` — Doki
 
-Documentation refresh bot — one capable agent over a deterministic
-drift manifest, minimal framing. Detects mismatches between project
-documentation (README, docs/*.md, CLAUDE.md, bundled skills, Go code
-comments) and the actual current state of the code, then fixes the
-DOCS (never the code), committing each aligned doc in stride. When a
+Documentation alignment bot — one capable agent over a deterministic
+drift manifest, minimal framing. Converges the documentation, as
+exhaustively as possible, to the actual current state of the repo:
+docs follow code, exhaustively — never the reverse. Both halves are
+doc-side: it REPAIRS stale documentation (README, docs/*.md,
+CLAUDE.md, bundled skills, Go code comments — mismatched claims,
+dead links, drifted CLI surface), and it WRITES the missing
+documentation (enrichment: undocumented CLI commands/flags/
+diagnostics and undocumented code areas become candidates the agent
+documents or dismisses with a recorded reason). Every edit lands as
+a `docs(scope):` commit in stride; code is never touched. When a
 repo has NO documentation yet, it bootstraps an initial doc set
 (configurable docs_dir, default "docs") authored from the code, then
-refreshes it through the same campaign.
+refreshes it through the same campaign. Documented claims that read
+as deliberate, unfulfilled AMBITIONS are neither deleted nor
+aligned-down: they are recorded and reported in the PR body under
+"Unfulfilled documented promises".
 
 Anti-Goodhart by construction: a deterministic scanner enumerates the
 immutable doc footprint; build_manifest mechanically verifies every
-code anchor and hands the campaign a bounded, severity-sorted drift
+code anchor, audits the reverse direction (code surface / code areas
+vs the docs), and hands the campaign a bounded, severity-sorted
 working set; a deterministic scope gate fails the run if anything
 outside the doc writeable-set changed; and convergence requires the
-mechanical anchor coverage to meet its target — the agent cannot
-rubber-stamp its own alignment.
+mechanical anchor coverage to meet its target AND every undocumented
+candidate documented-or-dismissed (undocumented_count == 0) — the
+agent cannot rubber-stamp its own alignment.
 
 Opt-in delivery: open_mr=true pushes the alignment series and opens
 one PR/MR at the end of the run (gated by a deterministic push-
 credential probe) — required for repo-targeted cloud runs, whose
 clone is ephemeral.
 
-The bot ships 7 skills capturing the discipline: docs-refresh
-(playbook), doc-mismatch-taxonomy, doc-scope-enumeration,
-anti-facade-fix-rules, doc-verification-checklist, verify-build,
-forge-mr-create.
+The bot ships 8 skills capturing the discipline: docs-refresh
+(playbook), doc-mismatch-taxonomy, doc-enrichment,
+doc-scope-enumeration, anti-facade-fix-rules,
+doc-verification-checklist, verify-build, forge-mr-create.
 
 - **Use when**:
   Use when README / CLAUDE.md / docs/**/*.md / bundled skills are
   stale versus the code, before a release, or whenever a survey flags
-  code↔doc drift — or when a repo has NO docs yet and needs an initial
-  set authored from the code. Fixes the DOCS only (never code logic)
-  and commits.
-- **Vars**: `audit_cache_path` (string), `baseline` (string), `bundle_self_path` (string), `cli_surface_globs` (string), `code_scope_globs` (string), `coverage_target_pct` (int), `diagnostic_surface_globs` (string), `diff_since` (string), `dismissed_path` (string), `doc_globs` (string), `docs_dir` (string), `excluded_dirs` (string), `go_comment_globs` (string), `include_unverifiable_symbols` (bool), `issue_id` (string), `max_drift_candidates` (int), `max_passes` (int), `max_review_chunk_docs` (int), `mr_base` (string), `mr_branch` (string), `open_mr` (bool), `scope_notes` (string), `scratch_dir` (string), `source_issue_ref` (string), `workspace_dir` (string)
+  code↔doc drift — or when parts of the repo (CLI surface, whole
+  subsystems) are simply UNDOCUMENTED and the docs should converge to
+  the actual state of the repo (enrichment, on by default; disable
+  with enrich=false) — or when a repo has NO docs yet and needs an
+  initial set authored from the code. Fixes and writes the DOCS only
+  (never code logic) and commits.
+- **Vars**: `audit_cache_path` (string), `baseline` (string), `bundle_self_path` (string), `cli_surface_globs` (string), `code_scope_globs` (string), `coverage_target_pct` (int), `diagnostic_surface_globs` (string), `diff_since` (string), `dismissed_path` (string), `doc_globs` (string), `docs_dir` (string), `enrich` (bool), `enrich_area_depth` (int), `excluded_dirs` (string), `go_comment_globs` (string), `include_unverifiable_symbols` (bool), `issue_id` (string), `max_drift_candidates` (int), `max_passes` (int), `max_review_chunk_docs` (int), `mr_base` (string), `mr_branch` (string), `open_mr` (bool), `scope_notes` (string), `scratch_dir` (string), `source_issue_ref` (string), `workspace_dir` (string)
 - **Path**: `bots/docs-refresh/main.bot`
 
 ### `evolve` — Evoly

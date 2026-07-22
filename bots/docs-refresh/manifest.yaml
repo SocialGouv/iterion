@@ -1,7 +1,40 @@
 name: docs-refresh
 display_name: Doki
 icon: 📚
-version: 2.4.0
+version: 2.5.0
+## 2.5.0 — EXHAUSTIVE DOC-SIDE ALIGNMENT (docs follow code,
+## exhaustively — never the reverse; both halves are doc-side).
+## (1) build_manifest now RUNS the reverse containment audit its
+## v0.6.0 comments only promised: surface identifiers from
+## scan_code_surface (CLI commands/flags/diagnostics) that appear in
+## NO doc in scope become `undocumented` candidates, and a bounded,
+## repo-agnostic area scan (top-level dirs + one level under generic
+## src-style roots: src/lib/pkg/cmd/app(s)/packages/internal/modules/
+## crates/services/components) emits `undocumented_area` for code
+## areas no doc mentions. Both are ledger-dismissable ("internal, not
+## user-facing" is a legitimate persistent outcome), severity-ranked
+## below real drifted anchors and above unverifiable symbols, and
+## counted mechanically in the new undocumented_count output; the
+## gate now ALSO requires undocumented_count == 0 (every candidate
+## documented-or-dismissed). The containment corpus re-globs the doc
+## footprint fresh each pass so docs the campaign writes — including
+## new .md files — retire their candidates. Controlled by
+## enrich (default true, opt-out) + enrich_area_depth. (2) Campaign
+## mission rewritten to the exhaustive doc-side alignment (repair
+## stale claims AND write missing docs); new doc-enrichment skill
+## (what deserves docs, placement, style, dismissal discipline,
+## obsolete-vs-promise). (3) NEW adjudication outcome — unfulfilled
+## PROMISE: a claim that reads as deliberate ambition (announced
+## feature, accepted-but-unimplemented ADR) is neither deleted nor
+## aligned-down; the campaign records it in <scratch>/promises.json
+## ({doc, claim, code_gap, note}, cross-pass file like the
+## dismissals ledger) + the dismissals ledger (so it stops
+## re-surfacing), may add an honest in-doc status note, and
+## finalize_mr reports the list under an "Unfulfilled documented
+## promises" PR-body section. Promises never block convergence.
+## (4) Ledger-dismissed DRIFTED anchors now leave the coverage
+## denominator (status `dismissed`) — a recorded promise/false
+## positive can no longer deadlock coverage below target.
 ## 2.4.0 — BUDGET/PRODUCTION ratio. Three live-run lessons (019f86ce +
 ## 019f874d: ~31$ / 18 passes / 0 real drift fixed): (1) NEW
 ## verify_precheck tool — when HEAD is unchanged since the last GREEN
@@ -78,38 +111,52 @@ version: 2.4.0
 ## MECHANICALLY verified pairs. 16 nodes → 11; review_mode/mono_family
 ## retired. See docs/references/productive-session-patterns.md.
 description: |
-  Documentation refresh bot — one capable agent over a deterministic
-  drift manifest, minimal framing. Detects mismatches between project
-  documentation (README, docs/*.md, CLAUDE.md, bundled skills, Go code
-  comments) and the actual current state of the code, then fixes the
-  DOCS (never the code), committing each aligned doc in stride. When a
+  Documentation alignment bot — one capable agent over a deterministic
+  drift manifest, minimal framing. Converges the documentation, as
+  exhaustively as possible, to the actual current state of the repo:
+  docs follow code, exhaustively — never the reverse. Both halves are
+  doc-side: it REPAIRS stale documentation (README, docs/*.md,
+  CLAUDE.md, bundled skills, Go code comments — mismatched claims,
+  dead links, drifted CLI surface), and it WRITES the missing
+  documentation (enrichment: undocumented CLI commands/flags/
+  diagnostics and undocumented code areas become candidates the agent
+  documents or dismisses with a recorded reason). Every edit lands as
+  a `docs(scope):` commit in stride; code is never touched. When a
   repo has NO documentation yet, it bootstraps an initial doc set
   (configurable docs_dir, default "docs") authored from the code, then
-  refreshes it through the same campaign.
+  refreshes it through the same campaign. Documented claims that read
+  as deliberate, unfulfilled AMBITIONS are neither deleted nor
+  aligned-down: they are recorded and reported in the PR body under
+  "Unfulfilled documented promises".
 
   Anti-Goodhart by construction: a deterministic scanner enumerates the
   immutable doc footprint; build_manifest mechanically verifies every
-  code anchor and hands the campaign a bounded, severity-sorted drift
+  code anchor, audits the reverse direction (code surface / code areas
+  vs the docs), and hands the campaign a bounded, severity-sorted
   working set; a deterministic scope gate fails the run if anything
   outside the doc writeable-set changed; and convergence requires the
-  mechanical anchor coverage to meet its target — the agent cannot
-  rubber-stamp its own alignment.
+  mechanical anchor coverage to meet its target AND every undocumented
+  candidate documented-or-dismissed (undocumented_count == 0) — the
+  agent cannot rubber-stamp its own alignment.
 
   Opt-in delivery: open_mr=true pushes the alignment series and opens
   one PR/MR at the end of the run (gated by a deterministic push-
   credential probe) — required for repo-targeted cloud runs, whose
   clone is ephemeral.
 
-  The bot ships 7 skills capturing the discipline: docs-refresh
-  (playbook), doc-mismatch-taxonomy, doc-scope-enumeration,
-  anti-facade-fix-rules, doc-verification-checklist, verify-build,
-  forge-mr-create.
+  The bot ships 8 skills capturing the discipline: docs-refresh
+  (playbook), doc-mismatch-taxonomy, doc-enrichment,
+  doc-scope-enumeration, anti-facade-fix-rules,
+  doc-verification-checklist, verify-build, forge-mr-create.
 when_to_use: |
   Use when README / CLAUDE.md / docs/**/*.md / bundled skills are
   stale versus the code, before a release, or whenever a survey flags
-  code↔doc drift — or when a repo has NO docs yet and needs an initial
-  set authored from the code. Fixes the DOCS only (never code logic)
-  and commits.
+  code↔doc drift — or when parts of the repo (CLI surface, whole
+  subsystems) are simply UNDOCUMENTED and the docs should converge to
+  the actual state of the repo (enrichment, on by default; disable
+  with enrich=false) — or when a repo has NO docs yet and needs an
+  initial set authored from the code. Fixes and writes the DOCS only
+  (never code logic) and commits.
 author: SocialGouv (devthejo) — docs-refresh/main.bot
 schema_version: 1
 
@@ -134,5 +181,5 @@ invocations:
 ## the declared order; `hidden` vars are internal plumbing kept out of
 ## the form (still settable via --var / bot_args).
 launch:
-  primary: [scope_notes, open_mr]
+  primary: [scope_notes, enrich, open_mr]
   hidden: [bundle_self_path]

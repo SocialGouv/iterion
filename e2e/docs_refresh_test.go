@@ -20,6 +20,7 @@ import (
 type docsRefreshState struct {
 	alignedBy    int // campaign reports docs_aligned=true on/after this pass
 	coverageBy   []int
+	undocBy      []int // per-pass undocumented_count (v2.5.0 reverse audit); empty = always 0
 	pass         int
 	failLogsSeen []string
 }
@@ -33,6 +34,17 @@ func (st *docsRefreshState) coverage() int {
 		i = len(st.coverageBy) - 1
 	}
 	return st.coverageBy[i]
+}
+
+func (st *docsRefreshState) undocumented() int {
+	if len(st.undocBy) == 0 {
+		return 0
+	}
+	i := st.pass
+	if i >= len(st.undocBy) {
+		i = len(st.undocBy) - 1
+	}
+	return st.undocBy[i]
 }
 
 // stubDocsRefresh registers the baseline green-path stubs. Individual
@@ -65,6 +77,7 @@ func stubDocsRefresh(exec *scenarioExecutor, st *docsRefreshState) {
 			"per_doc_anchor_counts": []any{}, "all_audited_docs": []any{"README.md"},
 			"docs_with_drift_count": 1, "chunked": false, "chunk_doc_count": 1,
 			"max_review_chunk_docs": 30,
+			"undocumented_count":    st.undocumented(),
 			"verified_pairs":        []any{"README.md::cmd/app"},
 			"_tokens":               1,
 		}, nil
@@ -218,6 +231,26 @@ func TestDocsRefresh_CoverageGateBlocksEarlyExit(t *testing.T) {
 	}
 	if got := exec.callCount("campaign"); got != 2 {
 		t.Errorf("campaign called %d times, want 2 (coverage 50%% < 80%% target must block the first-pass exit)", got)
+	}
+}
+
+// TestDocsRefresh_UndocumentedGateBlocksEarlyExit (v2.5.0): the
+// campaign claims aligned, gates green, coverage over target — but the
+// pass-start manifest still counted an undocumented candidate
+// (reverse code→docs audit). The gate must NOT converge until a fresh
+// re-manifest confirms every undocumented candidate was
+// documented-or-dismissed (undocumented_count == 0 on pass 2).
+func TestDocsRefresh_UndocumentedGateBlocksEarlyExit(t *testing.T) {
+	exec := newScenarioExecutor()
+	st := &docsRefreshState{alignedBy: 1, undocBy: []int{3, 0}}
+	stubDocsRefresh(exec, st)
+
+	run := runDocsRefresh(t, exec, "run-dr-undoc")
+	if run.Status != store.RunStatusFinished {
+		t.Fatalf("status = %s, want %s", run.Status, store.RunStatusFinished)
+	}
+	if got := exec.callCount("campaign"); got != 2 {
+		t.Errorf("campaign called %d times, want 2 (undocumented_count 3 must block the first-pass exit)", got)
 	}
 }
 

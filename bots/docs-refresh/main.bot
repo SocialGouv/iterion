@@ -2,12 +2,16 @@
 ## docs-refresh  (v2 — one agent aligns the docs in its natural
 ##                flow, minimal framing)
 ##
-## THE MISSION is a DOC-ALIGNMENT campaign: re-read the repo's
-## documentation against the actual current state of the code, fix the
-## DOCUMENTATION (never the code), and land each aligned doc as a
-## semantic `docs(scope):` commit in stride. When a repo has NO docs in
-## scope yet, an authoring pass bootstraps an initial set first
-## (DEFAULT-CREATE, unchanged from v0.3.0).
+## THE MISSION is an EXHAUSTIVE DOC-ALIGNMENT campaign: converge the
+## documentation to the actual current state of the repo. Docs follow
+## code, exhaustively — never the reverse. Two halves, BOTH doc-side:
+## repair documentation that is stale or obsolete (docs→code audit),
+## and WRITE the documentation that is missing (code→docs enrichment:
+## undocumented CLI surface, undocumented code areas — v2.5.0, opt-out
+## via vars.enrich). All edits land as semantic `docs(scope):` commits
+## in stride. When a repo has NO docs in scope yet, an authoring pass
+## bootstraps an initial set first (DEFAULT-CREATE, unchanged from
+## v0.3.0).
 ##
 ## Sibling of `whole_improve_loop` / `branch_improve_loop` v2: SAME core
 ## (one adaptive `campaign` agent + deterministic gates + a bounded
@@ -24,7 +28,13 @@
 ##                       v0.15/0.16 context-bounding lessons live here),
 ##                       the anchor-level coverage_pct, and (v2) the
 ##                       mechanically VERIFIED `doc::anchor` pairs that
-##                       feed the inter-run cache.
+##                       feed the inter-run cache. v2.5.0 adds the
+##                       REVERSE containment audit: surface identifiers
+##                       (scan_code_surface) and significant code areas
+##                       that appear in NO doc in scope become
+##                       `undocumented` / `undocumented_area` candidates
+##                       (ledger-dismissable), counted mechanically in
+##                       undocumented_count.
 ##   campaign          — ONE adaptive agent (claude_code, full tools).
 ##                       Mission = adjudicate + fix the manifest's drift
 ##                       candidates, one doc at a time, committing each
@@ -49,7 +59,9 @@
 ##                       still compiles. Deterministic exit code.
 ##   gate              — deterministic compute: converged = tree green
 ##                       AND scope clean AND campaign reports docs
-##                       aligned AND manifest coverage ≥ target. The
+##                       aligned AND manifest coverage ≥ target AND no
+##                       undocumented candidate remains (each one
+##                       documented-or-dismissed — v2.5.0). The
 ##                       loop re-runs build_manifest each pass so the
 ##                       drift set always reflects the live tree.
 ##   mark_issue_for_review / update_audit_cache — dispatcher issue
@@ -233,6 +245,29 @@ vars:
   ## deep audit of symbol references.
   include_unverifiable_symbols: bool = false
 
+  ## ENRICHMENT (code→docs — still strictly doc-side: the campaign
+  ## WRITES documentation, never code). When true, build_manifest ALSO
+  ## audits the reverse direction: surface identifiers extracted by
+  ## scan_code_surface (CLI commands / flags / diagnostic codes) that
+  ## appear in NO doc in scope, and significant code areas (top-level
+  ## dirs + one level below generic src-style roots) whose name appears
+  ## in no doc, are emitted as `undocumented` / `undocumented_area`
+  ## candidates. The campaign then writes the missing documentation —or
+  ## dismisses to the ledger with a reason ("internal, not user-facing"
+  ## is a legitimate outcome; the ledger is how that adjudication
+  ## persists). Convergence requires every such candidate
+  ## fixed-or-dismissed (gate: undocumented_count == 0). false restores
+  ## the pure docs→code repair behaviour.
+  enrich: bool = true
+
+  ## Area-scan depth for the enrichment audit: 1 = top-level
+  ## directories only; 2 (default) also enumerates the immediate
+  ## children of generic src-style container roots (src, lib, pkg, cmd,
+  ## app, apps, packages, internal, modules, crates, services,
+  ## components) as areas. Generic across ecosystems — no
+  ## repo-specific paths are ever baked in.
+  enrich_area_depth: int = 2
+
   ## DISMISSALS LEDGER. JSON array of candidates the campaign
   ## adjudicated as false positives ({doc, kind, value, reason});
   ## build_manifest excludes ledger entries from every later pass so
@@ -240,6 +275,9 @@ vars:
   ## candidates — a zero-commit adjudication pass otherwise leaves the
   ## manifest byte-identical and the run livelocks re-judging the same
   ## chunk until max_passes (observed live, cloud run 019f86ce).
+  ## v2.5.0: ledger-matched DRIFTED anchors also leave the coverage
+  ## denominator (status `dismissed`) — a recorded false positive or
+  ## unfulfilled promise can no longer deadlock coverage below target.
   ## Out-of-tree like scratch_dir; empty disables the exclusion.
   dismissed_path: string = "${PROJECT_SCRATCH_DIR}/docs-refresh/dismissed.json"
 
@@ -294,16 +332,27 @@ prompt campaign_system:
   session. You have the repo in front of you and full tools (read, edit,
   shell, git). No one micro-manages you; you own this pass end to end.
 
-  THE MISSION: make the documentation match the actual current state of
-  the code. DOCS FOLLOW CODE; code does NOT follow docs — you correct
-  documentation, never the other way around.
+  THE MISSION: align the documentation, as exhaustively as possible,
+  with the actual current state of the repo. DOCS FOLLOW CODE,
+  exhaustively — never the reverse. Both halves of the work are
+  DOC-SIDE:
+    - REPAIR what is stale or obsolete: update every documented claim
+      the code has moved past (docs→code).
+    - WRITE what is missing: document capabilities, surface, and code
+      areas that exist in the repo but appear in no doc (code→docs
+      enrichment) — so the docs converge to the état de l'art of the
+      repo.
+  You correct and author documentation, never code.
 
-  LOAD YOUR SKILLS FIRST. The bundle ships five skills under
+  LOAD YOUR SKILLS FIRST. The bundle ships six skills under
   `.claude/skills/` describing the discipline you MUST follow:
     - `docs-refresh.md` — operating playbook, the why and the
       inviolable rules
     - `doc-mismatch-taxonomy.md` — the mismatch kinds and anchor kinds
       that tell you what a real drift looks like
+    - `doc-enrichment.md` — what deserves documentation, where to put
+      it, how to write it, when to dismiss instead, and how to tell
+      obsolete prose from a deliberate (unfulfilled) promise
     - `doc-scope-enumeration.md` — the immutable scan_docs footprint
       contract
     - `doc-verification-checklist.md` — the verification preamble to
@@ -312,17 +361,28 @@ prompt campaign_system:
 
   YOUR WORKING SET is deterministic. Upstream, `build_manifest` has
   already enumerated every code anchor in every doc in scope and
-  verified each against the live tree. Your user prompt carries the
-  bounded `drift_candidates` slice (severity-sorted, doc-chunked):
+  verified each against the live tree — and audited the reverse
+  direction (code surface / code areas vs the docs). Your user prompt
+  carries the bounded `drift_candidates` slice (severity-sorted,
+  doc-chunked):
     - status `drifted`      — the anchor is NOT in the live code (file
       missing, flag absent, code renamed). Highest signal: verify, then
       FIX the doc.
+    - status `undocumented` — the thing EXISTS in the code but appears
+      in NO doc in scope. kind `undocumented` = a CLI command / flag /
+      diagnostic from the surface scan; kind `undocumented_area` = a
+      significant code directory no doc mentions. These candidates
+      have no source doc (`doc` is empty) — the target doc is YOUR
+      choice, per the `doc-enrichment` skill: read the code first,
+      then write the missing documentation, or dismiss with a reason.
     - status `unverifiable` — the heuristic couldn't resolve it (prose
       that looks like CamelCase, archived refs, external links). Judge
       from the doc context; most are false positives to LEAVE ALONE.
   The mechanical coverage_pct in your prompt is the gate's coverage
   oracle — it rises as you fix drifted anchors; docs the manifest
-  chunk deferred will surface on a later pass.
+  chunk deferred will surface on a later pass. The gate also requires
+  every `undocumented*` candidate documented-or-dismissed
+  (undocumented_count must reach 0 on a fresh re-scan).
 
   HOW TO WORK — reproduce the shape of a productive session:
 
@@ -335,17 +395,36 @@ prompt campaign_system:
   2. THE REPEATED UNIT, one doc at a time: for each candidate in that
      doc, READ the code at the cited anchor to verify the current
      state (the tool invocation — read_file / grep — is your evidence;
-     a fix whose rationale cannot cite it is a façade) → apply the
-     smallest doc correction that makes the claim true → run the
-     negative-space check (`git grep` for stale cross-references to
-     whatever you renamed/removed, fix those too) → COMMIT the aligned
-     doc with a semantic message (`docs(<area>): <what was aligned>`),
-     body ending with the trailer line `Bot: docs-refresh`. Use
-     `fix(<area>):` ONLY when you fixed a demonstrably misleading code
-     COMMENT (go_comment_globs opt-in). A candidate you adjudicate as
-     a FALSE POSITIVE (no edit warranted) goes in the DISMISSALS
-     LEDGER (below) — dismissing without recording is what livelocks
-     the run.
+     a fix whose rationale cannot cite it is a façade), then
+     adjudicate to exactly ONE of FOUR outcomes:
+       a. FIX + COMMIT — the doc is stale: apply the smallest doc
+          correction that makes the claim true → run the
+          negative-space check (`git grep` for stale cross-references
+          to whatever you renamed/removed, fix those too) → COMMIT
+          the aligned doc with a semantic message
+          (`docs(<area>): <what was aligned>`), body ending with the
+          trailer line `Bot: docs-refresh`. Use `fix(<area>):` ONLY
+          when you fixed a demonstrably misleading code COMMENT
+          (go_comment_globs opt-in).
+       b. DISMISS + LEDGER — a false positive, or genuinely not worth
+          documenting: record it in the DISMISSALS LEDGER (below)
+          with a reason. Dismissing without recording is what
+          livelocks the run.
+       c. PROMISE + PROMISES LEDGER — the claim is a deliberate,
+          still-wanted ambition the code has not caught up with: see
+          UNFULFILLED PROMISES below. Never delete it, never
+          "align" it down to the current code.
+       d. CODE BUG + BOARD — the doc is right and the code is broken:
+          the is_code_bug escape valve (rule 5).
+     For an `undocumented*` candidate the FIX outcome means WRITE the
+     missing documentation: read the code area / surface first (the
+     same evidence rule), then add a concise, code-grounded section
+     to the most appropriate EXISTING doc — or a new `.md` under the
+     repo's doc conventions ({{vars.docs_dir}}) when no existing doc
+     fits (placement + style: the `doc-enrichment` skill) — and
+     commit it (`docs(<area>): document <capability>`). No marketing,
+     no padding: dismissal with a reason ("internal, not
+     user-facing") is a fully legitimate outcome.
 
   3. COMMIT EACH DOC AS YOU ALIGN IT — never batch. Stage everything
      including new files (`git add -A`) and commit before moving on.
@@ -368,7 +447,8 @@ prompt campaign_system:
      human_note, and (for a genuinely blocking ambiguity) pause via
      the ask-user tool. Filing it as a board finding (see below) is
      the default; pausing is for when you cannot proceed without the
-     answer.
+     answer. Distinct from an UNFULFILLED PROMISE (outcome c): there
+     the code is not buggy, it is merely behind a documented ambition.
 
   6. BASELINE — don't chase failures you didn't cause. A build/test
      failure that predates this run (see `baseline`, or establish it
@@ -403,18 +483,46 @@ prompt campaign_system:
   recorded WILL come back to you next pass — recording it is part of
   adjudicating it, exactly like committing is part of fixing.
 
+  UNFULFILLED PROMISES — adjudication outcome (c). Some claims that
+  fail verification are not stale prose: they read as a DELIBERATE
+  ambition (an announced feature, a target contract the code has not
+  caught up with — roadmap phrasing, "will/planned", an accepted ADR
+  not yet implemented). Do NOT delete such a claim and do NOT "align"
+  it down to the current code. Instead:
+    - Append one entry to the JSON array at
+      `{{vars.scratch_dir}}/promises.json` (create the file — `[]` —
+      and its parent directory on first use; read-modify-write, keep
+      it valid JSON; passes are fresh sessions, so the FILE is the
+      only way the list survives to the PR tail):
+        {"doc": "<doc path>", "claim": "<the promised behaviour>",
+         "code_gap": "<big picture: what the code lacks>",
+         "note": "<one line>"}
+    - ALSO record the candidate in the DISMISSALS LEDGER (reason:
+      "promise: <short ref>") so the manifest stops re-surfacing it
+      and coverage cannot deadlock on it.
+    - OPTIONALLY (your judgment, case by case) add a clearly-flagged,
+      honest status note in the doc itself ("Implementation status:
+      …; remaining work: …") and commit it — documenting the gap IS a
+      legitimate doc↔reality alignment.
+  Promises never block convergence — they are reported, not gated:
+  the PR tail lists them under an "Unfulfilled documented promises"
+  section.
+
   KEEP GOING, one doc at a time, until this pass has adjudicated every
-  candidate in its working set (fixed+committed or dismissed+recorded).
-  Then STOP and report.
+  candidate in its working set (fixed+committed, dismissed+recorded,
+  or promised+recorded). Then STOP and report.
 
   TERMINATION CONTRACT (required structured output — this is how the
   engine detects completion; an under-specified end just gets
   re-poked):
     - docs_aligned: true ONLY when every candidate this pass surfaced
-      is either fixed (committed) or adjudicated a false positive —
-      i.e. you expect a fresh manifest re-scan to find no remaining
-      REAL drift. false if real drift remains (a later pass continues
-      from your commits, with a fresh manifest).
+      is either fixed (committed — including missing documentation
+      WRITTEN for undocumented* candidates), dismissed to the ledger,
+      or recorded as an unfulfilled promise — i.e. you expect a fresh
+      manifest re-scan to find no remaining REAL drift and no
+      remaining undocumented candidate. false if real drift remains
+      (a later pass continues from your commits, with a fresh
+      manifest).
     - commits_this_pass: how many commits you landed this pass.
     - drift_remaining: a concise note of what still drifts (empty when
       docs_aligned).
@@ -429,8 +537,9 @@ prompt campaign_system:
   Be honest. A deterministic manifest re-scan, a scope gate and a
   build gate re-check the tree after you, and the run loops you back
   until you report docs_aligned AND the gates are green AND the
-  mechanical coverage meets its target — so under-reporting only costs
-  a pass, and over-reporting lands you right back here.
+  mechanical coverage meets its target AND no undocumented candidate
+  remains — so under-reporting only costs a pass, and over-reporting
+  lands you right back here.
 
 prompt campaign_user:
   Repository: {{vars.workspace_dir}}
@@ -444,6 +553,7 @@ prompt campaign_user:
   Verified:                 {{input.verified_anchors}}
   Drifted:                  {{input.drifted_anchors}}
   Unverifiable:             {{input.unverifiable_anchors}}
+  Undocumented (code→docs): {{input.undocumented_count}} (gate requires 0 — documented or dismissed)
   Mechanical coverage:      {{input.manifest_coverage_pct}}% (gate target: {{input.coverage_target_pct}}%)
 
   ## This pass's chunk
@@ -619,6 +729,14 @@ prompt finalize_mr_system:
        docs aligned this run, and — when drift_remaining is non-empty —
        an honest "Remaining drift" section (the run shipped what is
        banked; never present a partial alignment as complete).
+       PROMISES: read the promises ledger file named in your user
+       prompt (it may be absent or empty — then skip this). When it
+       has entries, append an "Unfulfilled documented promises"
+       section to the PR body: one bullet per entry — the doc, the
+       promised claim, and the big-picture code gap. These are
+       deliberate documented ambitions the code has not caught up
+       with, recorded by the campaign for the maintainers; report
+       them verbatim in substance, never silently drop them.
     5. If source_issue_ref is set, post the opened PR URL back to it: a
        forge issue URL → comment via the same forge CLI; a "native:<id>"
        ref → use the board comment tool. Set back_linked accordingly.
@@ -639,8 +757,12 @@ prompt finalize_mr_user:
   Remaining drift reported by the campaign (empty = fully aligned):
   {{input.drift_remaining}}
 
-  Push the branch, open the PR, post the back-link when a source issue
-  is given, and return the structured result.
+  Promises ledger (JSON array; the file may be absent or empty):
+  {{vars.scratch_dir}}/promises.json
+
+  Push the branch, open the PR (with the "Unfulfilled documented
+  promises" section when the ledger has entries), post the back-link
+  when a source issue is given, and return the structured result.
 
 ## ─── Schemas (v2 campaign / gates) ─────────────────────────────────
 
@@ -653,6 +775,7 @@ schema campaign_input:
   verified_anchors: int
   drifted_anchors: int
   unverifiable_anchors: int
+  undocumented_count: int
   manifest_coverage_pct: int
   coverage_target_pct: int
   drift_candidates: json
@@ -760,9 +883,12 @@ schema finalize_mr_output:
 
 ## code_surface (v0.6.0): the inventory of "publicly-exposed"
 ## identifiers extracted from the workspace by the
-## `scan_code_surface` tool. build_manifest compares these with the
-## documentation as a counter-omission audit; the campaign verifies
-## and documents any real `undocumented_capability` drift.
+## `scan_code_surface` tool. Used twice by build_manifest: forward
+## (verify each doc-cited command/flag/diagnostic against it) and —
+## since v2.5.0 — REVERSE: any surface identifier appearing in NO doc
+## in scope becomes an `undocumented` candidate the campaign
+## documents or dismisses (the counter-omission audit, previously
+## only promised by these comments).
 schema code_surface:
   cli_commands: string[]
   cli_flags: string[]
@@ -883,7 +1009,8 @@ schema build_manifest_output:
   ## verified_anchors counts anchors whose existence/presence the
   ## tool confirmed mechanically (file exists, CLI command in
   ## scan_code_surface output, diagnostic code present, etc.).
-  ## drifted_anchors = total - verified - unverifiable.
+  ## drifted_anchors = total - verified - unverifiable - the
+  ## ledger-dismissed anchors folded into dismissed_excluded (v2.5.0).
   verified_anchors: int
   drifted_anchors: int
   unverifiable_anchors: int
@@ -920,6 +1047,12 @@ schema build_manifest_output:
   chunked: bool
   chunk_doc_count: int
   max_review_chunk_docs: int
+  ## v2.5.0 reverse audit: count of `undocumented`/`undocumented_area`
+  ## candidates remaining after ledger exclusion (pre-chunk, so
+  ## deferred candidates still count). The gate requires 0 to
+  ## converge — every one documented-or-dismissed, mechanically
+  ## re-checked each pass. Always 0 when vars.enrich is false.
+  undocumented_count: int
   ## v2: the mechanically VERIFIED doc::anchor pairs — feeds the
   ## inter-run audit cache (update_audit_cache) so pre-verification no
   ## longer depends on retired reviewer claims.
@@ -1174,8 +1307,24 @@ print(json.dumps({
 ##
 ## All inputs flow via env vars (JSON-encoded for arrays); the
 ## tool's argv is empty.
+##
+## v2.5.0 REVERSE audit (code→docs), gated on vars.enrich: after the
+## forward verification, the surface identifiers (cli_commands /
+## cli_flags / diagnostic_codes) and significant code areas (top-level
+## dirs + one level under generic src-style container roots —
+## repo-agnostic heuristics only, never specific paths) are
+## containment-checked against the doc corpus; misses become
+## `undocumented` / `undocumented_area` candidates (doc='',
+## ledger-dismissable, ranked below drifted anchors and above
+## unverifiable symbols; mechanical undocumented_count feeds the
+## gate). The containment corpus RE-GLOBS the doc footprint fresh
+## each pass, so documentation the campaign wrote on an earlier pass
+## — including brand-new .md files outside scan_docs' immutable
+## footprint — retires its candidate. Ledger-matched DRIFTED anchors
+## are reclassified `dismissed` and leave the coverage denominator
+## (a recorded promise/false positive cannot deadlock coverage).
 tool build_manifest:
-  command: `WS={{input.workspace_dir}} CODE_GLOBS={{input.code_scope_globs}} MAX_CANDIDATES={{input.max_drift_candidates}} MAX_CHUNK_DOCS={{input.max_review_chunk_docs}} DISMISSED_PATH={{vars.dismissed_path}} PAIRS_OUT={{vars.scratch_dir}}/verified_pairs.json INCLUDE_UNVERIFIABLE_SYMBOLS={{vars.include_unverifiable_symbols}} python3 -c "
+  command: `WS={{input.workspace_dir}} CODE_GLOBS={{input.code_scope_globs}} MAX_CANDIDATES={{input.max_drift_candidates}} MAX_CHUNK_DOCS={{input.max_review_chunk_docs}} DISMISSED_PATH={{vars.dismissed_path}} PAIRS_OUT={{vars.scratch_dir}}/verified_pairs.json INCLUDE_UNVERIFIABLE_SYMBOLS={{vars.include_unverifiable_symbols}} ENRICH={{vars.enrich}} ENRICH_DEPTH={{vars.enrich_area_depth}} DOC_GLOBS={{vars.doc_globs}} EXCLUDED_DIRS={{vars.excluded_dirs}} BUNDLE_SELF={{vars.bundle_self_path}} DOCS_DIR={{vars.docs_dir}} python3 -c "
 import os, json, re, glob, subprocess, sys
 ws = os.environ['WS']
 os.chdir(ws)
@@ -1205,6 +1354,11 @@ try:
     max_chunk_docs = int(os.environ.get('MAX_CHUNK_DOCS', '0'))
 except ValueError:
     max_chunk_docs = 0
+enrich = os.environ.get('ENRICH', '').strip().lower() in ('1', 'true', 'yes')
+try:
+    enrich_depth = int(os.environ.get('ENRICH_DEPTH', '2'))
+except ValueError:
+    enrich_depth = 2
 
 ## Regexes targeting markdown-typical patterns.
 ## file_ref: paths like pkg/foo/bar.go, docs/dsl.md, with optional :NN line.
@@ -1368,9 +1522,34 @@ if symbols_to_check and code_globs:
         except Exception:
             pass
 
+## DISMISSALS LEDGER — loaded UP FRONT (v2.5.0). Ledger-matched
+## DRIFTED anchors are reclassified 'dismissed': out of the candidate
+## pool AND out of the coverage denominator, so a recorded false
+## positive or unfulfilled promise cannot deadlock coverage below the
+## gate target. Undocumented candidates are filtered at generation;
+## opted-in unverifiable symbols at assembly (safety net below).
+dismissed_path = os.environ.get('DISMISSED_PATH', '').strip()
+dismissed = set()
+if dismissed_path and os.path.exists(dismissed_path):
+    try:
+        with open(dismissed_path, encoding='utf-8') as df:
+            for e in json.load(df):
+                if isinstance(e, dict):
+                    dismissed.add((e.get('doc', ''), e.get('kind', ''), str(e.get('value', ''))))
+    except (OSError, json.JSONDecodeError, TypeError):
+        pass
+
 verified = []
 drifted = []
 unverifiable = []
+dismissed_anchors = []
+def add_drifted(a):
+    if (a['doc'], a['kind'], str(a['value'])) in dismissed:
+        a['status'] = 'dismissed'
+        a['evidence'] = 'ledger-dismissed: ' + a['evidence']
+        dismissed_anchors.append(a)
+    else:
+        drifted.append(a)
 for a in anchors:
     k = a['kind']
     v = a['value']
@@ -1382,7 +1561,7 @@ for a in anchors:
         else:
             a['status'] = 'drifted'
             a['evidence'] = 'file not found on disk'
-            drifted.append(a)
+            add_drifted(a)
     elif k == 'cli_command':
         ## When scan_code_surface was skipped/unscoped, cli_commands is
         ## empty -- we never scanned the CLI surface, so we cannot call a
@@ -1400,7 +1579,7 @@ for a in anchors:
         else:
             a['status'] = 'drifted'
             a['evidence'] = 'not in scan_code_surface.cli_commands'
-            drifted.append(a)
+            add_drifted(a)
     elif k == 'cli_flag':
         if not cli_flags:
             a['status'] = 'unverifiable'
@@ -1423,7 +1602,7 @@ for a in anchors:
         else:
             a['status'] = 'drifted'
             a['evidence'] = 'not in scan_code_surface.cli_flags'
-            drifted.append(a)
+            add_drifted(a)
     elif k == 'diagnostic':
         if not diag_codes:
             a['status'] = 'unverifiable'
@@ -1436,7 +1615,7 @@ for a in anchors:
         else:
             a['status'] = 'drifted'
             a['evidence'] = 'not in scan_code_surface.diagnostic_codes'
-            drifted.append(a)
+            add_drifted(a)
     elif k == 'symbol_ref':
         if v in present_symbols:
             a['status'] = 'verified'
@@ -1462,7 +1641,7 @@ for a in anchors:
         if path_part and not os.path.exists(tgt):
             a['status'] = 'drifted'
             a['evidence'] = 'link target not found: ' + tgt
-            drifted.append(a)
+            add_drifted(a)
         elif frag and not re.match(r'^[Ll][0-9]', frag) and tgt.endswith('.md'):
             if frag.lower() in headings_of(tgt):
                 a['status'] = 'verified'
@@ -1471,16 +1650,110 @@ for a in anchors:
             else:
                 a['status'] = 'drifted'
                 a['evidence'] = 'dead anchor #' + frag + ' in ' + tgt
-                drifted.append(a)
+                add_drifted(a)
         else:
             a['status'] = 'verified'
             a['evidence'] = 'link target exists'
             verified.append(a)
     per_doc_counts[a['doc']]['verified'] += 1 if a['status'] == 'verified' else 0
 
+## ── REVERSE containment audit (code→docs, v2.5.0) ────────────────
+## Gated on vars.enrich. Surface identifiers (scan_code_surface) and
+## significant code areas that appear in NO doc in scope become
+## 'undocumented' / 'undocumented_area' candidates. The containment
+## corpus re-globs the doc footprint FRESH each pass — documentation
+## the campaign wrote on an earlier pass (including new .md files
+## outside scan_docs' immutable footprint) is seen and the candidate
+## retires. Candidates carry doc='' (no source doc — the target doc
+## is the campaign's choice) and are ledger-dismissable on the
+## ('', kind, value) key. Area heuristics are repo-agnostic: top-level
+## dirs, plus (enrich_depth >= 2) the immediate children of generic
+## src-style container roots. Never a specific repo path.
+undocumented = []
+undoc_dismissed = 0
+if enrich:
+    enr_doc_globs = [g.strip() for g in os.environ.get('DOC_GLOBS', '').split(',') if g.strip()]
+    enr_bundle_self = os.environ.get('BUNDLE_SELF', '').strip().rstrip(os.sep)
+    enr_exclude = {d.strip() for d in os.environ.get('EXCLUDED_DIRS', '').split(',') if d.strip()}
+    enr_docs_dir = os.environ.get('DOCS_DIR', '').strip().rstrip(os.sep)
+    def enr_excluded(p):
+        if any(part in enr_exclude for part in p.split(os.sep)):
+            return True
+        if enr_bundle_self and (p == enr_bundle_self or p.startswith(enr_bundle_self + os.sep)):
+            return True
+        return False
+    corpus_files = set(doc_files)
+    for g in enr_doc_globs:
+        for f in glob.glob(g, recursive=True):
+            if os.path.isfile(f) and not enr_excluded(f):
+                corpus_files.add(f)
+    corpus_parts = []
+    for f in sorted(corpus_files):
+        try:
+            with open(f, encoding='utf-8', errors='replace') as fh:
+                corpus_parts.append(fh.read())
+        except (FileNotFoundError, IsADirectoryError, PermissionError):
+            pass
+    corpus = chr(10).join(corpus_parts)
+    def add_undoc(kind, value, evidence):
+        global undoc_dismissed
+        if ('', kind, str(value)) in dismissed:
+            undoc_dismissed += 1
+            return
+        undocumented.append({'doc': '', 'line': 0, 'kind': kind, 'value': value, 'status': 'undocumented', 'evidence': evidence, 'excerpt': ''})
+    for c in sorted(cli_commands):
+        if not re.search(r'(?<![\w-])' + re.escape(c) + r'(?![\w-])', corpus):
+            add_undoc('undocumented', 'cli_command:' + c, 'CLI command ' + c + ' appears in no doc in scope')
+    for fl in sorted(cli_flags):
+        if ('--' + fl) not in corpus:
+            add_undoc('undocumented', 'cli_flag:--' + fl, 'CLI flag --' + fl + ' appears in no doc in scope')
+    for dc in sorted(diag_codes):
+        if not re.search(r'\b' + re.escape(dc) + r'\b', corpus):
+            add_undoc('undocumented', 'diagnostic:' + dc, 'diagnostic code ' + dc + ' appears in no doc in scope')
+    ## Significant code areas. src-style roots is a GENERIC name set
+    ## (cross-ecosystem container dirs), not a repo layout assumption.
+    SRC_ROOTS = {'src', 'lib', 'pkg', 'cmd', 'app', 'apps', 'packages', 'internal', 'modules', 'crates', 'services', 'components'}
+    def significant(d):
+        for root, dirs, fs in os.walk(d):
+            dirs[:] = [x for x in dirs if not x.startswith('.') and x not in enr_exclude]
+            if any(not x.startswith('.') for x in fs):
+                return True
+        return False
+    areas = []
+    try:
+        top_entries = sorted(os.listdir('.'))
+    except OSError:
+        top_entries = []
+    for name in top_entries:
+        if name.startswith('.') or name in enr_exclude or name == enr_docs_dir:
+            continue
+        if not os.path.isdir(name) or enr_excluded(name):
+            continue
+        if name in SRC_ROOTS and enrich_depth >= 2:
+            try:
+                subs = sorted(os.listdir(name))
+            except OSError:
+                subs = []
+            for sub in subs:
+                p = os.path.join(name, sub)
+                if sub.startswith('.') or sub in enr_exclude or not os.path.isdir(p) or enr_excluded(p):
+                    continue
+                if significant(p):
+                    areas.append(p)
+        elif significant(name):
+            areas.append(name)
+    for area in areas:
+        if os.sep in area:
+            documented = area in corpus
+        else:
+            documented = re.search(r'(?<![\w/])' + re.escape(area) + r'(?![\w-])', corpus, re.IGNORECASE) is not None
+        if not documented:
+            add_undoc('undocumented_area', area, 'code area ' + area + os.sep + ' appears in no doc in scope')
+
 ## Prioritise candidates: drifted CLI surface first (highest signal),
-## then drifted file_ref, then drifted diagnostic, then drifted symbol,
-## then unverifiable symbols at the tail.
+## then drifted file_ref, then drifted diagnostic/links, then
+## undocumented surface, then undocumented areas, then unverifiable
+## symbols at the tail (below every real drift, above nothing).
 priority = {
     ('drifted', 'cli_command'): 0,
     ('drifted', 'cli_flag'): 0,
@@ -1488,7 +1761,9 @@ priority = {
     ('drifted', 'diagnostic'): 1,
     ('drifted', 'file_ref'): 2,
     ('drifted', 'symbol_ref'): 3,
-    ('unverifiable', 'symbol_ref'): 4,
+    ('undocumented', 'undocumented'): 4,
+    ('undocumented', 'undocumented_area'): 5,
+    ('unverifiable', 'symbol_ref'): 6,
 }
 ## Surface drifted anchors, plus — ONLY when the operator opts in via
 ## include_unverifiable_symbols — unverifiable *symbol_ref*s. Two live
@@ -1498,29 +1773,25 @@ priority = {
 ## scanner-skipped cli/flag/diagnostic unverifiables: that surface was
 ## never scanned, there is nothing to adjudicate.
 include_unverifiable = os.environ.get('INCLUDE_UNVERIFIABLE_SYMBOLS', '').strip().lower() in ('1', 'true', 'yes')
-candidates = list(drifted)
+candidates = list(drifted) + undocumented
 if include_unverifiable:
     candidates += [a for a in unverifiable if a['kind'] == 'symbol_ref']
 
-## DISMISSALS LEDGER exclusion: candidates the campaign already
-## adjudicated as false positives (recorded at DISMISSED_PATH) are
-## dropped BEFORE the sort/chunk, so the chunk window advances to the
-## deferred docs instead of re-surfacing the same candidates forever.
-dismissed_path = os.environ.get('DISMISSED_PATH', '').strip()
-dismissed = set()
-if dismissed_path and os.path.exists(dismissed_path):
-    try:
-        with open(dismissed_path, encoding='utf-8') as df:
-            for e in json.load(df):
-                if isinstance(e, dict):
-                    dismissed.add((e.get('doc', ''), e.get('kind', ''), str(e.get('value', ''))))
-    except (OSError, json.JSONDecodeError, TypeError):
-        pass
-dismissed_excluded = 0
+## DISMISSALS LEDGER exclusion (assembly-level safety net — drifted
+## anchors and undocumented candidates were already filtered at
+## classification/generation; this catches the opted-in unverifiable
+## symbols). dismissed_excluded totals EVERY ledger-based exclusion so
+## the telemetry keeps its meaning across the v2.5.0 restructure.
+dismissed_excluded = len(dismissed_anchors) + undoc_dismissed
 if dismissed:
     kept = [a for a in candidates if (a['doc'], a['kind'], str(a['value'])) not in dismissed]
-    dismissed_excluded = len(candidates) - len(kept)
+    dismissed_excluded += len(candidates) - len(kept)
     candidates = kept
+
+## Mechanical gate signal (v2.5.0): undocumented candidates remaining
+## after ledger exclusion, BEFORE chunk/cap — deferred ones still
+## count, so convergence means all of them documented-or-dismissed.
+undocumented_count = sum(1 for a in candidates if a['status'] == 'undocumented')
 
 candidates.sort(key=lambda a: (priority.get((a['status'], a['kind']), 9), a['doc'], a['line']))
 
@@ -1579,7 +1850,10 @@ unverifiable_anchors = len(unverifiable)
 ## anchors capped achievable coverage at 79% < the 80% target, a
 ## permanent non-convergence deadlock. When nothing is checkable,
 ## coverage is vacuously complete (100) so the gate can still fire on
-## campaign alignment instead of looping to exhaustion.
+## campaign alignment instead of looping to exhaustion. v2.5.0:
+## ledger-dismissed drifted anchors (status 'dismissed') are excluded
+## from BOTH sides — a recorded promise/false positive is settled
+## adjudication, not open drift.
 checkable_anchors = verified_anchors + drifted_anchors
 coverage_pct = (verified_anchors * 100 // checkable_anchors) if checkable_anchors > 0 else 100
 
@@ -1604,6 +1878,7 @@ print(json.dumps({
     'chunk_doc_count': chunk_doc_count,
     'max_review_chunk_docs': max_chunk_docs,
     'dismissed_excluded': dismissed_excluded,
+    'undocumented_count': undocumented_count,
     'verified_pairs_file': pairs_out_written,
     'verified_pairs_count': len(pairs_sorted),
 }))
@@ -1965,7 +2240,11 @@ out(False, 'tree changed since last green verify')
 
 ## gate — the deterministic continuation decision. converged = build
 ## green AND scope clean AND campaign reports docs aligned AND the
-## manifest's mechanical anchor coverage meets the target. fail_log
+## manifest's mechanical anchor coverage meets the target AND no
+## undocumented candidate remains (v2.5.0 — undocumented_count is the
+## pass-start manifest's count, so a pass that documents/dismisses the
+## last candidates converges on the NEXT pass's fresh re-scan, exactly
+## like coverage). fail_log
 ## priority: scope violation (the campaign must revert) > build
 ## failure > empty (green-but-more-drift → the fresh manifest is the
 ## guidance). No LLM, no shell. On a verify_precheck reuse pass,
@@ -1974,7 +2253,7 @@ out(False, 'tree changed since last green verify')
 compute gate:
   output: gate_state
   expr:
-    converged: "outputs.verify_run.passed && outputs.scope_check.scope_ok && outputs.campaign.docs_aligned && outputs.build_manifest.coverage_pct >= vars.coverage_target_pct"
+    converged: "outputs.verify_run.passed && outputs.scope_check.scope_ok && outputs.campaign.docs_aligned && outputs.build_manifest.coverage_pct >= vars.coverage_target_pct && outputs.build_manifest.undocumented_count == 0"
     fail_log: "if(!outputs.scope_check.scope_ok, outputs.scope_check.log, if(outputs.verify_run.passed, '', outputs.verify_run.log_tail))"
 
 ## ─── Nodes : PR finalization tail (opt-in, feature-dev verbatim) ────
@@ -2091,6 +2370,7 @@ workflow docs_refresh:
     verified_anchors: "{{outputs.build_manifest.verified_anchors}}",
     drifted_anchors: "{{outputs.build_manifest.drifted_anchors}}",
     unverifiable_anchors: "{{outputs.build_manifest.unverifiable_anchors}}",
+    undocumented_count: "{{outputs.build_manifest.undocumented_count}}",
     manifest_coverage_pct: "{{outputs.build_manifest.coverage_pct}}",
     coverage_target_pct: "{{vars.coverage_target_pct}}",
     drift_candidates: "{{outputs.build_manifest.drift_candidates}}",

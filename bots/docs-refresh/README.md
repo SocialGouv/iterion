@@ -1,11 +1,28 @@
 # docs-refresh (Doki)
 
-Documentation refresh bot — **v2 minimal-framing** (ADR-058). Detects
-mismatches between project documentation and the actual code state,
-then fixes the **documentation** (never the code), committing each
-aligned doc in stride (`docs(scope): …` + `Bot: docs-refresh` trailer).
-When a repo has no docs in scope, it bootstraps an initial set first
-(DEFAULT-CREATE) and then refreshes it through the same campaign.
+Documentation alignment bot — **v2 minimal-framing** (ADR-058).
+Converges the documentation, as exhaustively as possible, to the
+actual current state of the repo: **docs follow code, exhaustively —
+never the reverse**. Both halves are doc-side:
+
+- **Repair** (docs→code audit): detects mismatches between project
+  documentation and the actual code state and fixes the
+  **documentation** (never the code).
+- **Enrichment** (code→docs audit, v2.5.0, on by default): detects
+  code surface (CLI commands/flags/diagnostics) and significant code
+  areas that appear in **no doc in scope** and **writes the missing
+  documentation** — or dismisses with a recorded reason ("internal,
+  not user-facing" is a legitimate, persistent outcome).
+
+Each aligned doc lands in stride (`docs(scope): …` + `Bot:
+docs-refresh` trailer). When a repo has no docs in scope, it
+bootstraps an initial set first (DEFAULT-CREATE) and then refreshes it
+through the same campaign. Documented claims that read as deliberate,
+unfulfilled **promises** (announced features the code hasn't caught up
+with) are neither deleted nor aligned-down: the campaign records them
+in a cross-pass ledger (`<scratch>/promises.json`, optionally adding
+an honest in-doc status note) and the PR tail reports them under an
+"Unfulfilled documented promises" section.
 
 ## Shape (v2 — deterministic manifest + one campaign agent)
 
@@ -32,15 +49,24 @@ kept in full from v1:
   verifies each mechanically against the live tree; emits the bounded,
   severity-sorted, doc-chunked `drift_candidates` working set, the
   anchor-level `coverage_pct`, and the mechanically `verified_pairs`
-  that feed the inter-run cache.
+  that feed the inter-run cache. v2.5.0 adds the **reverse
+  containment audit** (gated on `enrich`): surface identifiers and
+  significant code areas (top-level dirs + one level under generic
+  src-style roots — repo-agnostic heuristics) appearing in no doc
+  become `undocumented` / `undocumented_area` candidates
+  (ledger-dismissable, ranked below real drift, above unverifiable
+  symbols), counted mechanically in `undocumented_count`. The
+  containment corpus re-globs the footprint fresh each pass, so a doc
+  the campaign writes — including a new `.md` — retires its candidate.
 - **`scope_check`** — diffs the run base against the tree: anything
   outside the doc writeable-set (`.md`, the cache file, opted-in Go
   comment globs) fails the gate and bounces back to the campaign.
 - **`verify_build` + `verify_run`** — the shared stack-agnostic build
   gate (matters when `go_comment_globs` opts comment edits in).
 - **`gate`** — `converged = build green ∧ scope_ok ∧ docs_aligned ∧
-  coverage_pct ≥ coverage_target_pct`. The campaign cannot rubber-stamp
-  its own alignment: coverage is mechanical.
+  coverage_pct ≥ coverage_target_pct ∧ undocumented_count == 0`. The
+  campaign cannot rubber-stamp its own alignment: coverage and the
+  undocumented count are mechanical, re-derived each pass.
 
 The **`campaign`** is one adaptive claude_code agent: it adjudicates
 the manifest's candidates one doc at a time (verify at the anchor with
@@ -69,6 +95,8 @@ convergence-hardening changelog.
 | `diff_since` | `""` | Incremental hint (`git diff <ref>...HEAD`) |
 | `cli_surface_globs` / `diagnostic_surface_globs` | `""` | Opt-in surface scan |
 | `max_drift_candidates` / `max_review_chunk_docs` | `40` / `30` | Context-bounding caps |
+| `enrich` | `true` | Code→docs enrichment audit (undocumented surface + areas); `false` = pure repair |
+| `enrich_area_depth` | `2` | `1` = top-level dirs only; `2` = also children of generic src-style roots |
 | `audit_cache_path` | `${PROJECT_SCRATCH_DIR}/docs-refresh-cache.json` | Host-persistent, out-of-tree cache; empty disables it |
 | `docs_dir` | `docs` | DEFAULT-CREATE target |
 | `baseline` | `""` | Known pre-existing failures to SKIP (G5) |
@@ -85,7 +113,9 @@ secret, `*_TOKEN` env, or host `gh` auth) and only then the
 `finalize_mr` agent pushes the doc-alignment series and opens one PR
 (GitHub `gh` / GitLab `glab` / Forgejo REST, per the shared
 `forge-mr-create` skill), reporting any `drift_remaining` honestly in
-the body. Without a credential the tail skips cleanly and the commits
+the body — plus, when the campaign recorded unfulfilled promises
+(`<scratch>/promises.json`), an "Unfulfilled documented promises"
+section listing each doc claim and its big-picture code gap. Without a credential the tail skips cleanly and the commits
 stay on the run's storage branch, exactly as before. This is the
 delivery path for repo-targeted **cloud** runs, whose runner clone is
 ephemeral — without a push the alignment commits die with the pod.
@@ -99,8 +129,9 @@ iterion run bots/docs-refresh/main.bot \
 ```
 
 Campaign skills shipped: `docs-refresh`, `doc-mismatch-taxonomy`,
-`doc-scope-enumeration`, `doc-verification-checklist`, and
-`anti-facade-fix-rules`. The bundle also carries the shared
-`verify-build` skill for its verification agent and the shared
-`forge-mr-create` skill for the opt-in PR tail. See [main.bot](main.bot)
-for the full DSL.
+`doc-enrichment` (what deserves documentation, placement, style,
+dismissal discipline, obsolete-vs-promise), `doc-scope-enumeration`,
+`doc-verification-checklist`, and `anti-facade-fix-rules`. The bundle
+also carries the shared `verify-build` skill for its verification
+agent and the shared `forge-mr-create` skill for the opt-in PR tail —
+8 skills total. See [main.bot](main.bot) for the full DSL.
