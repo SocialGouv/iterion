@@ -80,6 +80,7 @@ For the architectural trade-off against prompt-only orchestration, read [why-not
 | [session-board.md](session-board.md) | Session and pipeline board projections. |
 | [repo-scope.md](repo-scope.md) | Project root and repository-scope behavior. |
 | [settings-precedence.md](settings-precedence.md) | CLI, environment, project, user, and workflow precedence. |
+| [environment-variables.md](environment-variables.md) | Operational `ITERION_*` tuning dials and escape hatches read by the engine and backends. |
 | [config-share.md](config-share.md) | Scoped, role-aware configuration sharing/editor surface. |
 | [browser-pane.md](browser-pane.md) | Studio browser pane and isolation boundaries. |
 | [post-mortem-shell.md](post-mortem-shell.md) | Controlled shell access after a run. |
