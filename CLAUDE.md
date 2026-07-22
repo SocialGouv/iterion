@@ -124,12 +124,31 @@ Other top-level directories: `studio/` (React/Vite frontend), `examples/` (.bot 
 - `pkg/cloud/` — Cloud-mode runtime wiring (queue dispatch, runner orchestration, multitenancy)
 - `pkg/config/` — Config-file loader (`iterion dispatch` YAML + cloud config)
 - `pkg/git/` — Git helpers (worktree create/finalize, branch detection, fast-forward checks)
-- `pkg/identity/` — Operator identity types shared between auth, cloud and dispatcher
 - `pkg/queue/` — NATS-backed work queue used by cloud-mode dispatcher → runner pods
 - `pkg/runner/` — Cloud runner pod logic: claim a queued run, execute, report status back
 - `pkg/runview/` — Read-only run console API (REST + WS) consumed by the studio SPA
 - `pkg/sandbox/` — Sandbox engine: Docker/Kubernetes drivers, devcontainer parsing, CONNECT proxy
 - `pkg/secrets/` — Secret storage + resolution + AES-256-GCM sealing (`Sealer`) shared across backends and sandbox. Domains: BYOK API keys, generic named secrets (`GenericSecretStore` — Mongo in cloud, file-backed `FileGenericSecretStore`/`LayeredGenericSecretStore` for the local **desktop/CLI** store), bot-secret bindings, per-run sealed bundle, OAuth-forfait. The **local** store (`~/.iterion/secrets.json` global + `<store-dir>/.iterion/secrets.json` project override) is sealed with a master key from the OS keychain (go-keyring) or a `secrets.key` keyfile fallback (`LoadOrCreateMasterKey`), resolved into runs by `ResolveLocalCredentials` → `WithCredentials` in `runview.BuildExecutor` (the in-process equivalent of the cloud runner's `injectCredentials`); managed via `iterion secret set|list|rm`, the studio Secrets view (`server_info.secrets_enabled`), and `/api/local/secrets`. There is no KMS backend yet — the `Sealer` interface is the seam for one. See [docs/secrets.md](docs/secrets.md)
+- `pkg/knowledge/` — Backend-agnostic `MemoryStore` contract for iterion's shared memory; adapters implement filesystem (`pkg/memory`) and cloud (Mongo) storage. Memory documents are treated as untrusted data, never instructions (the operating-posture/secret-handling clauses always outrank them). See [docs/memory-and-knowledge.md](docs/memory-and-knowledge.md)
+- `pkg/memory/` — Filesystem `MemoryStore` adapter: the per-workspace tree at `~/.iterion/projects/<encoded-workdir>/memory/<scope>/`, indexed from Markdown frontmatter and space-quota'd
+- `pkg/sessionboard/` — Curation-bot platform rendering declarative semantic widgets (milestone progress, blockers, narrative note, small chart) alongside the run view; the agent emits a Spec against a fixed widget registry, never code
+- `pkg/alert/` — Run-observer detecting stall/budget/failure conditions off runtime events (`budget_warning`/`budget_exceeded`/`run_failed`) + a per-run liveness heartbeat, fanning alerts to webhooks and in-process sinks
+- `pkg/notify/` — Delivers run-completion webhooks to operator-supplied URLs behind an SSRF guard (http/https only; fails closed on loopback/link-local/RFC-1918/metadata hosts unless opted in)
+- `pkg/secure/httpdial/` — Shared SSRF guard resolving operator-supplied hosts to safe public-unicast IPs with pinned DNS; backs webhooks, OIDC issuer fetch, and the preview proxy
+- `pkg/valkey/` — go-redis client construction + health for ephemeral cross-replica server state (forge OAuth/CSRF, board-MCP run tokens, auth rate-limit buckets); single-node URL or Sentinel-HA topology
+- `pkg/configshare/` — Shared-config read/write through `forge.FileClient` under a synthetic `auth.KindShare` grant: reads project down to the grant's visible paths, writes merge onto the server-read file with an if-match SHA. See [docs/config-share.md](docs/config-share.md)
+- `pkg/artifactlabels/` — Derives semantic labels (`plan`, `verdict`) for published artifacts from output shape; kept in sync with the studio's render-time `ArtifactDiff` detection
+- `pkg/cloudsched/` — Cloud-mode recurring-bot scheduler: per-org store of cron-scheduled bots + a multi-replica-safe CAS ticker firing each due schedule exactly once (cloud counterpart of `iterion schedule`)
+- `pkg/schedgate/` — Overlap policy + pre-launch guard evaluation shared by the three scheduled-launch surfaces (host crontab, `pkg/trigger.Scheduler`, `pkg/cloudsched`); no I/O beyond running the guard subprocess
+- `pkg/marketplace/` — Curated hosted registry over `pkg/botinstall` for bot **and** plugin entries (repo URL, moderation status, visibility scope); backs `iterion marketplace`
+- `pkg/botinstall/` — Installs bot bundles from git URLs or local paths into a workspace; shared core for the CLI and studio bundle-install endpoints
+- `pkg/botimport/` — Converts Claude-Code workflow scripts (`.js`) to draft `.bot` DSL via lossy parse-and-lower with a mapped/degraded/dropped import report (backs `iterion import`, see [docs/import.md](docs/import.md))
+- `pkg/botscaffold/` — Generates a new bot bundle (`main.bot` + `manifest.yaml` + layout) from a builder Spec; engine behind `iterion bots create` and the studio guided builder
+- `pkg/bundlelint/` — Cross-checks a bundle's `manifest.yaml` against its compiled `main.bot` (var/secret mismatches the DSL compiler can't see), surfaced at `iterion validate` under a dedicated C2xx diagnostic family
+- `pkg/pluginsource/` — Team-scoped durable binding for private plugins: persists git repo + referenced secret id so cloud pods can fetch and cache skills; the checkout is a re-derivable cache, the credential referenced never inlined
+- `pkg/askusermcp/` — Shared MCP tool surface (`ask_user`, `ask_user_async`, `await_answers`) exposed over both stdio and HTTP transports for interactive workflows
+- `pkg/runshell/` — Spawns an interactive post-mortem PTY shell in a preserved run worktree (studio "Open shell"); Unix-only with a Windows stub
+- `pkg/clock/` — Minimal `Clock` abstraction (real + fake) for deterministic testing of time-dependent logic (e.g. daily spend-cap resets)
 - `pkg/internal/` — Internal utilities (not importable outside `pkg/`)
   - `appinfo/` — Build-time version/commit injection (LDFLAGS targets)
   - `mongoutil/` — MongoDB helpers used by `pkg/cloud/` for the cloud-mode Mongo store
