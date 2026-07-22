@@ -139,6 +139,19 @@ failures; [pkg/server/webhooks_github.go](../pkg/server/webhooks_github.go)):
   implements the issue, opens a PR, and comments the PR URL back onto the
   issue. Scope which label fires with **`label_allowlist`** (below);
   re-applying the same label is an idempotent replay.
+- **`issues`** with action `opened` + **`auto_implement_on_open`** → the
+  zero-touch lane, now **author-gated**: the issue AUTHOR must be
+  trusted — on the static `author_allowlist`, OR
+  `author_association` ∈ OWNER/MEMBER/COLLABORATOR (decoded from the
+  payload, no API call), OR live `CollaboratorPermission` ≥
+  **`min_author_role`** (gitlab vocabulary, `""` → developer ≡ write;
+  needs a `forge_token` binding). Unknown = untrusted (**fail-closed** —
+  this is the budget boundary against drive-by issues, unlike the
+  fail-open org quotas). An untrusted author's delivery filters (200,
+  visible reason) and the issue's board card parks with
+  `needs:approval` for the operator's "Approve & triage". The `labeled`
+  lane is NOT author-gated: applying the trigger label already requires
+  triage+ rights on the forge — labeling IS the approval gesture.
 
 The label path (GitHub `issues` and GitLab `Issue Hook`) routes through
 the same dispatcher sink as the `/command` path, so when a tenant cloud

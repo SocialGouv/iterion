@@ -455,7 +455,20 @@ ship on the spine** (each = a source adapter publishing a
   bot) so the dispatcher's `Claim` — the **sole launch authority** —
   picks it up now (`Manager.Refresh()`) instead of at the 30s poll; the
   poll stays the reconciliation net, so fast-path + poll **cannot
-  double-launch**.
+  double-launch**. A board invocation may instead declare **`mode:
+  direct`** — the evaluator then launches the bot ON the matching card
+  (card id in `vars.issue_id`) instead of routing the card TO it; with
+  **`consume_labels: true`** the matcher's `all_labels` set is stripped
+  atomically pre-launch, making the label a one-shot re-armable trigger.
+  This powers **issue auto-triage** (`bots/issue-triage`, persona
+  Triagy): forge issues synced to the board are author-classified at
+  ingest (fail-closed trust gate — `authorTrust` over
+  `forge.PermissionClient`, threshold `MinAuthorRole`); trusted authors'
+  cards land in inbox with `triage:auto` (fires Triagy, who stamps the
+  handler bot + labels via `set_bot`), untrusted ones park with
+  `needs:approval` + zero LLM until the operator's studio "Approve &
+  triage" swaps the labels. The same author gate protects the webhook
+  `AutoImplementOnOpen` zero-touch lane.
 - **run-completion** ("runned by iterion") — `runview.Service` emits
   `run.finished`/`failed`/`cancelled`/`paused` in-process, and cloud
   **runner pods publish the same events** onto the NATSBus
