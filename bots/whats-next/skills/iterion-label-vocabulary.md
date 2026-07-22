@@ -24,7 +24,8 @@ Use `namespace:value` (colon-prefixed). Single-word tags exist but are rare.
 | `axis:` | area name from the repo | Subject area. Prefer names that match a top-level directory or `pkg/<x>/` package: `axis:runtime`, `axis:studio`, `axis:dispatcher`, `axis:dsl`, `axis:backend`, `axis:cloud`, `axis:sandbox`. For cross-cutting: `axis:testing`, `axis:observability`, `axis:reliability`, `axis:security`, `axis:docs`, `axis:bot`, `axis:performance`. |
 | `priority:` | `low`, `medium`, `high`, `critical` | Visible flag complementing the numeric `priority` field. Use only when one of `medium/high/critical` is meaningful; do not label everything `priority:low`. |
 | `status:` | soft state flag | `status:blocked-by-research`, `status:waiting-on-external`, `status:archived-by-bot`, `status:duplicate-of-<id>`. Operator-facing nuance the formal board state can't capture. |
-| `needs:` | operator action | `needs:manual-triage` (assignee invalid), `needs:bot-assignment`, `needs:retest`. Signals the board state alone can't (issue is in backlog but needs human work before it's dispatchable). |
+| `needs:` | operator action | `needs:manual-triage` (assignee invalid), `needs:bot-assignment`, `needs:retest`, `needs:approval` (external-author card parked by the ingest trust gate — no bot runs until an operator approves). Signals the board state alone can't (issue is in backlog but needs human work before it's dispatchable). |
+| `triage:` | `auto` | One-shot trigger consumed by the spine: a card carrying `triage:auto` fires the issue-triage bot (Triagy), which strips the label, stamps the handler bot + labels, and comments. Stamped automatically on trusted-author forge syncs; add it by hand (or via "Approve & triage") to (re)triage any card. Never re-add it yourself as a bot. |
 
 **Single-word labels** (no namespace) are reserved for unambiguous cross-cutting tags: `breaking-change`, `hotfix`, `experiment`. Use sparingly; namespaced labels scale better.
 

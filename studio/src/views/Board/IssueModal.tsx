@@ -18,6 +18,7 @@ import { useAsyncAction } from "@/hooks/useAsyncAction";
 import { isVarMissing } from "@/lib/varValidation";
 import { useBotsStore } from "@/store/bots";
 
+import { ApproveTriageBanner } from "./ApproveTriage";
 import { BotTab } from "./issueModal/BotTab";
 import { RepositoryField } from "./issueModal/RepositoryField";
 import { TicketTab } from "./issueModal/TicketTab";
@@ -227,6 +228,12 @@ export default function IssueModal({ board, initial, onSubmit, onClose, onDelete
     >
       <form onSubmit={submit} className="max-h-[80vh] overflow-auto">
         <div className="px-4 pt-2">
+          {initial && (
+            <ApproveTriageBanner
+              iss={{ ...initial, labels }}
+              onApproved={setLabels}
+            />
+          )}
           <Tabs
             value={tab}
             onValueChange={(v) => setTab(v as "ticket" | "bot")}
