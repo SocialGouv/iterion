@@ -1771,7 +1771,7 @@ agent verify_build:
 ## safe JSON + subprocess capture; double-quote-free body, no backticks
 ## (E012).
 tool verify_run:
-  command: `WS={{vars.workspace_dir}} SCRATCH={{vars.scratch_dir}} python3 -c "
+  command: `WS={{vars.workspace_dir}} SCRATCH={{vars.scratch_dir}} RUN_ID={{run.id}} python3 -c "
 import os, subprocess, json
 ws = os.environ.get('WS', '.')
 scratch = os.environ.get('SCRATCH', '.')
@@ -1847,12 +1847,17 @@ try:
 except OSError:
     pass
 ## Record the verified HEAD so verify_precheck can reuse a GREEN
-## verdict on a later pass that produced no commits (HEAD unchanged).
+## verdict on a later pass OF THIS RUN that produced no commits (HEAD
+## unchanged). Stamped with the run id: scratch is host-persistent
+## across local runs, and reusing a PREVIOUS run's verdict would let a
+## fresh run reach the gate with outputs.verify_run never resolved —
+## it could then never converge (flagged by the Revi review of this
+## change before it ever shipped).
 if rc == 0:
     try:
         head = subprocess.run(['git', '-C', ws, 'rev-parse', 'HEAD'], stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True, timeout=30).stdout.strip()
         with open(os.path.join(scratch, 'verify.state'), 'w', encoding='utf-8') as sf:
-            json.dump({'head': head, 'rc': rc}, sf)
+            json.dump({'head': head, 'rc': rc, 'run_id': os.environ.get('RUN_ID', '')}, sf)
     except Exception:
         pass
 print(json.dumps({'passed': rc == 0, 'skipped': False, 'exit_code': rc, 'log_tail': out[-4000:]}))
@@ -1911,7 +1916,7 @@ print(json.dumps({'scope_ok': not out_of_scope, 'out_of_scope': out_of_scope[:10
 ## when HEAD is unchanged and the tree is clean; anything else (first
 ## pass, commits landed, dirty tree, red previous verdict) re-verifies.
 tool verify_precheck:
-  command: `WS={{vars.workspace_dir}} SCRATCH={{vars.scratch_dir}} python3 -c "
+  command: `WS={{vars.workspace_dir}} SCRATCH={{vars.scratch_dir}} RUN_ID={{run.id}} python3 -c "
 import os, json, subprocess
 ws = os.environ.get('WS', '.')
 scratch = os.environ.get('SCRATCH', '.')
@@ -1928,6 +1933,12 @@ except (OSError, json.JSONDecodeError):
     out(False, 'verify.state unreadable')
 if state.get('rc') != 0:
     out(False, 'previous verify was not green')
+## Reuse is RUN-SCOPED: scratch persists across local runs, and a
+## previous run's verdict must never satisfy a run in which verify_run
+## has not executed (outputs.verify_run would be unresolved at the
+## gate and the run could never converge).
+if state.get('run_id', '') != os.environ.get('RUN_ID', ''):
+    out(False, 'verify.state belongs to another run')
 try:
     head = subprocess.run(['git', '-C', ws, 'rev-parse', 'HEAD'], stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True, timeout=30).stdout.strip()
     dirty = subprocess.run(['git', '-C', ws, 'status', '--porcelain'], stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True, timeout=60).stdout.strip()
