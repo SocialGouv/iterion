@@ -123,8 +123,11 @@ jobs:
           password: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Build amd64 on buildkit-operator
-        # Pin moved forward on each operator release.
-        uses: socialgouv/buildkit-operator@33b6b49a585b14757fe415d4496bc8ba3ce4471e # v0.12.0
+        # Pin moved forward on each operator release. v0.15.0 brings cache.skipExport:
+        # the client only adds --cache-to when buildd granted the export (s3CachePolicy
+        # cadence/never) — the per-build S3 export cost disappears once the server side
+        # runs >= v0.15 too.
+        uses: socialgouv/buildkit-operator@d6b16a86427cea030553e655c85fd6bb9610ea25 # v0.15.0
         with:
           buildd-url: ${{ vars.BUILDKIT_OPERATOR_BUILDD_URL }}
           gateway-host: ${{ vars.BUILDKIT_OPERATOR_GATEWAY_HOST || 'bkod.fabrique.social.gouv.fr' }}
