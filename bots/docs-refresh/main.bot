@@ -1705,7 +1705,7 @@ if enrich:
         if not re.search(r'(?<![\w-])' + re.escape(c) + r'(?![\w-])', corpus):
             add_undoc('undocumented', 'cli_command:' + c, 'CLI command ' + c + ' appears in no doc in scope')
     for fl in sorted(cli_flags):
-        if ('--' + fl) not in corpus:
+        if not re.search(r'(?<![\w-])--' + re.escape(fl) + r'(?![\w-])', corpus):
             add_undoc('undocumented', 'cli_flag:--' + fl, 'CLI flag --' + fl + ' appears in no doc in scope')
     for dc in sorted(diag_codes):
         if not re.search(r'\b' + re.escape(dc) + r'\b', corpus):
@@ -1746,7 +1746,7 @@ if enrich:
         if os.sep in area:
             documented = area in corpus
         else:
-            documented = re.search(r'(?<![\w/])' + re.escape(area) + r'(?![\w-])', corpus, re.IGNORECASE) is not None
+            documented = re.search(r'(?<![\w-])' + re.escape(area) + r'(?![\w-])', corpus, re.IGNORECASE) is not None
         if not documented:
             add_undoc('undocumented_area', area, 'code area ' + area + os.sep + ' appears in no doc in scope')
 
@@ -1801,13 +1801,19 @@ candidates.sort(key=lambda a: (priority.get((a['status'], a['kind']), 9), a['doc
 ## docs are deferred (they surface in a later pass once the campaign
 ## clears earlier drifts). max_chunk_docs=0 disables chunking
 ## (preserves legacy candidate-cap-only behaviour).
-docs_with_drift = sorted({a['doc'] for a in candidates})
+## Undocumented candidates carry doc='' — not a real doc: keep the
+## pseudo-slot out of the doc-budget walk and the telemetry counts.
+docs_with_drift = sorted({a['doc'] for a in candidates if a['doc']})
 if max_chunk_docs > 0 and len(docs_with_drift) > max_chunk_docs:
     chunk_docs = []
     chunked_candidates = []
     chunk_doc_set = set()
     for a in candidates:
-        if a['doc'] in chunk_doc_set:
+        if not a['doc']:
+            ## No source doc (undocumented*): never consumes a doc-budget
+            ## slot — bounded by max_candidates below instead.
+            chunked_candidates.append(a)
+        elif a['doc'] in chunk_doc_set:
             chunked_candidates.append(a)
         elif len(chunk_doc_set) < max_chunk_docs:
             chunk_doc_set.add(a['doc'])
@@ -1820,7 +1826,7 @@ else:
 
 if max_candidates > 0:
     candidates = candidates[:max_candidates]
-chunk_doc_count = len({a['doc'] for a in candidates})
+chunk_doc_count = len({a['doc'] for a in candidates if a['doc']})
 
 ## Verified pairs ride a FILE, never inline shell substitution: a large
 ## repo yields thousands of pairs and an inline argv handoff blows the
