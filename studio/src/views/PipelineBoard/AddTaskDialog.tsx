@@ -30,6 +30,12 @@ import { useBotsStore } from "@/store/bots";
 import { BotPicker } from "@/views/Board/BotPicker";
 import { RepositoryField } from "@/views/Board/issueModal/RepositoryField";
 
+import {
+  compactPipelineTaskTitle,
+  derivePipelineTaskTitle,
+  PIPELINE_TASK_TITLE_MAX_LENGTH,
+} from "./taskTitle";
+
 interface Props {
   open: boolean;
   onOpenChange: (open: boolean) => void;
@@ -126,7 +132,9 @@ function AddTaskDialogContent({
 }: Props) {
   const isEdit = !!editTask;
   const [botName, setBotName] = useState(editTask?.bot_id ?? "");
-  const [title, setTitle] = useState(editTask?.title ?? "");
+  const [title, setTitle] = useState(() =>
+    compactPipelineTaskTitle(editTask?.title ?? ""),
+  );
   const [body, setBody] = useState(editTask?.body ?? "");
   const [labels, setLabels] = useState<string[]>(editTask?.labels ?? []);
   const [priority, setPriority] = useState(editTask?.priority ?? 0);
@@ -256,14 +264,13 @@ function AddTaskDialogContent({
   // The title auto-derives from the primary inputs so the operator only has
   // to pick the input principal; they can still override it under Advanced.
   const derivedTitle = useMemo(() => {
-    const values = primaryFields
-      .map((f) => (botArgs[f.name] ?? "").trim())
-      .filter(Boolean);
-    if (values.length > 0) return values.join(" · ");
-    return selectedBot?.display_name?.trim() || botName.trim();
+    return derivePipelineTaskTitle(
+      primaryFields.map((f) => botArgs[f.name] ?? ""),
+      selectedBot?.display_name?.trim() || botName.trim(),
+    );
   }, [primaryFields, botArgs, selectedBot, botName]);
 
-  const effectiveTitle = title.trim() || derivedTitle;
+  const effectiveTitle = compactPipelineTaskTitle(title) || derivedTitle;
   const canSubmit =
     botName.trim().length > 0 &&
     effectiveTitle.length > 0 &&
@@ -455,6 +462,7 @@ function AddTaskDialogContent({
                   value={title}
                   onChange={(event) => setTitle(event.target.value)}
                   placeholder={derivedTitle || "What should this pipeline do?"}
+                  maxLength={PIPELINE_TASK_TITLE_MAX_LENGTH}
                   size="md"
                 />
                 <span className="mt-1 block text-micro text-fg-subtle">

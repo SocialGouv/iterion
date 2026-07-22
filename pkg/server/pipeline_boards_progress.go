@@ -222,6 +222,24 @@ func pipelineTruncate(s string, max int) string {
 	return s[:max] + "…"
 }
 
+// compactPipelineTitle turns any selected label into a bounded, single-line
+// card title. Inputs can legitimately contain entire Markdown briefs; those
+// belong in EntryInput, not in the board title or its JSON payload.
+func compactPipelineTitle(s string) string {
+	for _, line := range strings.Split(s, "\n") {
+		if line = strings.TrimSpace(line); line != "" {
+			s = line
+			break
+		}
+	}
+	s = strings.Join(strings.Fields(s), " ")
+	runes := []rune(s)
+	if len(runes) <= pipelineTitleMaxRunes {
+		return s
+	}
+	return strings.TrimSpace(string(runes[:pipelineTitleMaxRunes-1])) + "…"
+}
+
 // pipelineDisplayTitle picks the label shown on a pipeline card.
 //
 // Priority:
@@ -241,22 +259,22 @@ func pipelineDisplayTitle(issue *native.Issue, root *store.Run) string {
 		inputs = stringMapToAny(issue.BotArgs)
 	}
 	if t := titleFromContentInputs(inputs); t != "" {
-		return t
+		return compactPipelineTitle(t)
 	}
 	if issue != nil {
 		if t := strings.TrimSpace(issue.Title); t != "" {
-			return t
+			return compactPipelineTitle(t)
 		}
 	}
 	if root != nil {
 		if t := strings.TrimSpace(root.BundleDisplayName); t != "" {
-			return t
+			return compactPipelineTitle(t)
 		}
 		if t := humanizePipelineName(root.WorkflowName); t != "" && t != "Pipeline" {
-			return t
+			return compactPipelineTitle(t)
 		}
 		if t := strings.TrimSpace(root.Name); t != "" {
-			return t
+			return compactPipelineTitle(t)
 		}
 	}
 	return "Pipeline"
