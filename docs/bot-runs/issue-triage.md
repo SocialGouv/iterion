@@ -42,6 +42,19 @@ authors → `triage:auto`, external authors → `needs:approval` + studio
   6. verify_build generated gateless verify.sh (skill 1b ignored) →
      MANDATORY CI-drift-mirror clause added to the authoring prompts
      fleet-wide.
+- Wave 3 addendum (#204, #205 — same day): both delivered on main
+  (#204: M3 ParentRunID + M4 atomic unique title + L5 ?since= pruning;
+  #205: subbot re-attach across restarts, ADR renumbered 084 at landing —
+  the run had reused 083). #205's in-loop adversarial review caught a REAL
+  blocking lifecycle bug (re-attach record cleared on mid-re-park restart)
+  and pass 2 fixed it — the review gate earning its keep. Two more
+  frictions: (7) the dispatcher auto-RETRIES an operator-cancelled run
+  (resume) — operator cancel should be terminal for the retry policy;
+  (8) a dispatched run's worktree forks the REPO-ROOT checkout, not the
+  studio's --dir — #205's commits landed on top of an unrelated test
+  branch the operator had checked out mid-session (delivery had to be
+  re-based commit-by-commit; #203/Willy deferred for the same reason —
+  it edits its workspace in place).
 - Lessons: dispatcher-claimed treatment is solid once the above are in;
   the campaign/precheck tug-of-war (agent stripping "irrelevant" gates)
   is fully resolved by fixing the probe reuse (bug 4) + prompt (6);
