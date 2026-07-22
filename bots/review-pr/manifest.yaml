@@ -1,7 +1,10 @@
 name: review-pr
 display_name: Revi
 icon: 🔎
-version: 0.3.0
+version: 0.3.1
+## 0.3.1 — reviewer_gpt backend env-overridable (ITERION_VIBE_BACKEND_GPT)
+## so a Claude-forfait-only instance runs the second reviewer on
+## claude_code (cross-model diversity) when OpenAI quota is unavailable.
 description: |
   Read-only cross-family code reviewer. Reviews the working-tree diff
   of the current branch against its base with two independent reviewers
