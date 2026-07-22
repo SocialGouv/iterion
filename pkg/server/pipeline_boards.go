@@ -24,6 +24,9 @@ const (
 
 	pipelineTreeMaxDepth = 20
 	pipelineTreeMaxCards = 500
+	// Keep the card label compact even when a bot input or ticket title is a
+	// full brief. The complete value remains available in EntryInput / Body.
+	pipelineTitleMaxRunes = 80
 
 	// pipelineFinalAnswerField mirrors notify.DefaultAnswerField — the
 	// artifact-data key a finished run's "output" is read from. Duplicated

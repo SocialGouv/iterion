@@ -105,7 +105,7 @@ func (s *Server) handlePipelineBoardTaskCreate(w http.ResponseWriter, r *http.Re
 		s.httpErrorFor(w, r, http.StatusBadRequest, "pipeline board task: invalid request: %v", err)
 		return
 	}
-	req.Title = strings.TrimSpace(req.Title)
+	req.Title = compactPipelineTitle(req.Title)
 	req.Bot = strings.TrimSpace(req.Bot)
 	if req.Title == "" {
 		s.httpErrorFor(w, r, http.StatusBadRequest, "pipeline board task: title is required")
@@ -254,7 +254,7 @@ func uniquePipelineTitle(boardStore native.BoardStore, desired string) string {
 		return desired
 	}
 	for n := 2; n < 100000; n++ {
-		candidate := fmt.Sprintf("#%d - %s", n, desired)
+		candidate := compactPipelineTitle(fmt.Sprintf("#%d - %s", n, desired))
 		if _, clash := taken[candidate]; !clash {
 			return candidate
 		}
@@ -324,7 +324,7 @@ func (s *Server) handlePipelineBoardTaskUpdate(w http.ResponseWriter, r *http.Re
 		External: req.External,
 	}
 	if req.Title != nil {
-		title := strings.TrimSpace(*req.Title)
+		title := compactPipelineTitle(*req.Title)
 		if title == "" {
 			s.httpErrorFor(w, r, http.StatusBadRequest, "pipeline board update: title cannot be empty")
 			return

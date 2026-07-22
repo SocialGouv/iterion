@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -439,6 +440,45 @@ func TestPipelineBoardTaskCreateEnsuresUniqueTitle(t *testing.T) {
 	// A distinct title is untouched.
 	if got := create("Other"); got != "Other" {
 		t.Errorf("distinct = %q, want %q", got, "Other")
+	}
+	longTitle := strings.Repeat("é", pipelineTitleMaxRunes+20)
+	if got := create(longTitle); len([]rune(got)) != pipelineTitleMaxRunes {
+		t.Errorf("long first title has %d runes, want %d", len([]rune(got)), pipelineTitleMaxRunes)
+	}
+	if got := create(longTitle); len([]rune(got)) != pipelineTitleMaxRunes || !strings.HasPrefix(got, "#2 - ") {
+		t.Errorf("long duplicate = %q, want bounded title with #2 prefix", got)
+	}
+}
+
+func TestPipelineBoardTaskCreateCompactsLongTitle(t *testing.T) {
+	env := newPipelineBoardTestEnv(t)
+	rawTitle := "A detailed product idea\n\n" + strings.Repeat("with extensive context ", 20)
+	payload, err := json.Marshal(map[string]string{
+		"bot":   "review",
+		"title": rawTitle,
+	})
+	if err != nil {
+		t.Fatalf("Marshal: %v", err)
+	}
+	resp, err := http.Post(
+		env.http.URL+"/api/v1/pipeline-board/tasks",
+		"application/json",
+		bytes.NewReader(payload),
+	)
+	if err != nil {
+		t.Fatalf("POST: %v", err)
+	}
+	if resp.StatusCode != http.StatusCreated {
+		resp.Body.Close()
+		t.Fatalf("status = %d, want %d", resp.StatusCode, http.StatusCreated)
+	}
+	var out native.Issue
+	decodeJSONResp(t, resp, &out)
+	if want := compactPipelineTitle(rawTitle); out.Title != want {
+		t.Fatalf("stored title = %q, want %q", out.Title, want)
+	}
+	if strings.Contains(out.Title, "\n") {
+		t.Fatalf("stored title still contains a newline: %q", out.Title)
 	}
 }
 
@@ -927,6 +967,36 @@ func TestPipelineDisplayTitle_TaskFromBotArgs(t *testing.T) {
 	want := "Boudicca · ÉP 2/5 — La Ville sans Murailles"
 	if got != want {
 		t.Fatalf("got %q, want %q", got, want)
+	}
+}
+
+func TestPipelineDisplayTitle_IgnoresLongFormInput(t *testing.T) {
+	root := &store.Run{
+		BundleDisplayName: "Ida",
+		Inputs: map[string]any{
+			"idea": strings.Repeat("A full product brief with Markdown. ", 400),
+		},
+	}
+	if got := pipelineDisplayTitle(nil, root); got != "Ida" {
+		t.Fatalf("got %q, want bundle display name", got)
+	}
+}
+
+func TestPipelineDisplayTitle_CompactsAndTruncatesLongCandidate(t *testing.T) {
+	root := &store.Run{
+		Inputs: map[string]any{
+			"topic": "A detailed product idea " + strings.Repeat("with extensive context ", 10) + "\n\nIgnored details",
+		},
+	}
+	got := pipelineDisplayTitle(nil, root)
+	if strings.Contains(got, "\n") {
+		t.Fatalf("title still contains a newline: %q", got)
+	}
+	if len([]rune(got)) > pipelineTitleMaxRunes {
+		t.Fatalf("title has %d runes, want at most %d: %q", len([]rune(got)), pipelineTitleMaxRunes, got)
+	}
+	if !strings.HasSuffix(got, "…") {
+		t.Fatalf("truncated title = %q, want ellipsis", got)
 	}
 }
 
