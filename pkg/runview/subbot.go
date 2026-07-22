@@ -86,6 +86,12 @@ func (s *Service) subbotRunnerFor(parentPath string, runLogger *iterlog.Logger) 
 			return nil, fmt.Errorf("subbot recursion too deep (>%d) at %q — possible cycle", maxSubbotDepth, req.Source)
 		}
 
+		// Re-attach to an in-flight/finished child from a prior (interrupted)
+		// execution of this subbot node before spawning a fresh one.
+		if out, aerr, handled := ReattachSubbotChild(ctx, s.store, req, runLogger); handled {
+			return out, aerr
+		}
+
 		childPath := req.Source
 		if !filepath.IsAbs(childPath) {
 			childPath = filepath.Join(base, childPath)
@@ -98,6 +104,9 @@ func (s *Service) subbotRunnerFor(parentPath string, runLogger *iterlog.Logger) 
 		if err != nil {
 			return nil, err
 		}
+		// Record the child on the parent BEFORE running it, so a restart while
+		// parked below re-attaches instead of spawning fresh.
+		RecordSubbotChild(ctx, s.store, req, childRunID, runLogger)
 
 		// Register the child with the run Manager so studio Cancel/Pause on the
 		// child's run id act on it mid-flight. managedCtx cancels when
@@ -173,11 +182,105 @@ func (s *Service) subbotRunnerFor(parentPath string, runLogger *iterlog.Logger) 
 			// child's review (pipeline-board sidebar / `iterion resume`) and the
 			// child reaches a terminal state, then pick up its output.
 			if errors.Is(runErr, runtime.ErrRunPaused) || errors.Is(runErr, runtime.ErrRunPausedOperator) {
-				return AwaitSubbotTerminal(childCtx, s.store, childRunID, runLogger)
+				out, aerr := AwaitSubbotTerminal(childCtx, s.store, childRunID, runLogger)
+				if aerr == nil {
+					// Output consumed — tidy the re-attach record. On error
+					// (parent shutdown mid-park, or the child ended failed) the
+					// record is LEFT so a resumed parent re-attaches / re-spawns
+					// via ReattachSubbotChild (the single reuse-vs-fresh oracle).
+					ClearSubbotChild(ctx, s.store, req)
+				}
+				return out, aerr
 			}
+			// Non-pause error: leave the re-attach record for the resume path.
 			return nil, runErr
 		}
+		ClearSubbotChild(ctx, s.store, req)
 		return last, nil
+	}
+}
+
+// RecordSubbotChild persists childRunID under req.ReattachKey on the parent
+// run doc so a PARENT resumed after a process restart re-attaches to this
+// child instead of spawning a fresh one. Called at child launch, BEFORE the
+// child engine runs, so an interrupt while parked leaves a durable record.
+// No-op when the key or parent id is empty (re-attach disabled). Failures are
+// logged, not fatal — the worst case degrades to today's spawn-fresh.
+func RecordSubbotChild(ctx context.Context, rs store.RunStore, req runtime.SubbotRequest, childRunID string, logger *iterlog.Logger) {
+	if req.ReattachKey == "" || req.ParentRunID == "" {
+		return
+	}
+	if err := rs.SetSubbotChild(ctx, req.ParentRunID, req.ReattachKey, childRunID); err != nil && logger != nil {
+		logger.Warn("subbot: record child %s for re-attach (parent %s key %s): %v", childRunID, req.ParentRunID, req.ReattachKey, err)
+	}
+}
+
+// ClearSubbotChild drops req.ReattachKey from the parent's re-attach map once
+// the child's terminal output has been consumed (or the child ended badly and
+// a resume should spawn fresh). No-op when the key or parent id is empty.
+func ClearSubbotChild(ctx context.Context, rs store.RunStore, req runtime.SubbotRequest) {
+	if req.ReattachKey == "" || req.ParentRunID == "" {
+		return
+	}
+	_ = rs.ClearSubbotChild(ctx, req.ParentRunID, req.ReattachKey)
+}
+
+// ReattachSubbotChild checks whether THIS subbot-node execution already has an
+// in-flight/finished child recorded on the parent from a prior (interrupted)
+// run, and re-uses it instead of spawning a fresh one — the fix for a parent
+// parked on a child's human gate across a process restart: the orphan sweep
+// promotes the parent to failed_resumable, the child stays answerable, and a
+// resume must pick the SAME child up rather than lose its work.
+//
+// handled=true means the existing child fully satisfied the node (out/err are
+// authoritative — return them). handled=false means "no reusable child — the
+// caller spawns fresh"; the stale record, if any, has been cleared.
+//
+// Terminal semantics mirror AwaitSubbotTerminal: finished → its output;
+// paused/running/queued → park on it (external resume drives it to terminal);
+// failed/cancelled or a vanished child → spawn fresh.
+func ReattachSubbotChild(ctx context.Context, rs store.RunStore, req runtime.SubbotRequest, logger *iterlog.Logger) (out map[string]any, err error, handled bool) {
+	if req.ReattachKey == "" || req.ParentRunID == "" {
+		return nil, nil, false
+	}
+	parent, perr := rs.LoadRun(ctx, req.ParentRunID)
+	if perr != nil || parent == nil {
+		return nil, nil, false
+	}
+	childRunID := parent.SubbotChildren[req.ReattachKey]
+	if childRunID == "" {
+		return nil, nil, false
+	}
+	child, cerr := rs.LoadRun(ctx, childRunID)
+	if cerr != nil || child == nil {
+		// The recorded child vanished (pruned) — drop the stale record and
+		// spawn fresh.
+		ClearSubbotChild(ctx, rs, req)
+		return nil, nil, false
+	}
+	switch child.Status {
+	case store.RunStatusFinished:
+		if logger != nil {
+			logger.Info("subbot: re-attaching to finished child run %s (answered while the parent was down)", childRunID)
+		}
+		out := subbotTerminalOutput(ctx, rs, child)
+		ClearSubbotChild(ctx, rs, req)
+		return out, nil, true
+	case store.RunStatusFailed, store.RunStatusFailedResumable, store.RunStatusCancelled:
+		// The prior child ended badly; the documented behaviour is to re-run
+		// the subbot fresh. Drop the record so the fresh child is re-recorded.
+		ClearSubbotChild(ctx, rs, req)
+		return nil, nil, false
+	default:
+		// queued / running / paused_* → the in-flight child. Park on it exactly
+		// as the first execution did; its external resume (board answer /
+		// `iterion resume --run-id <child>`) drives it to terminal.
+		if logger != nil {
+			logger.Info("subbot: re-attaching to in-flight child run %s (%s) after restart — no fresh child spawned", childRunID, child.Status)
+		}
+		out, aerr := AwaitSubbotTerminal(ctx, rs, childRunID, logger)
+		ClearSubbotChild(ctx, rs, req)
+		return out, aerr, true
 	}
 }
 

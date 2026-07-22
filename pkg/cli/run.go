@@ -500,6 +500,13 @@ func subbotRunnerForCLI(parentPath, storeDir string, s store.RunStore, logger *i
 			return nil, fmt.Errorf("subbot recursion too deep (>%d) at %q — possible cycle", maxSubbotDepth, req.Source)
 		}
 
+		// Re-attach to an in-flight/finished child from a prior (interrupted)
+		// execution of this subbot node before spawning a fresh one (mirrors
+		// the runview runner so a bot behaves identically on either surface).
+		if out, aerr, handled := runview.ReattachSubbotChild(ctx, s, req, logger); handled {
+			return out, aerr
+		}
+
 		childPath := req.Source
 		if !filepath.IsAbs(childPath) {
 			childPath = filepath.Join(parentDir, childPath)
@@ -512,6 +519,9 @@ func subbotRunnerForCLI(parentPath, storeDir string, s store.RunStore, logger *i
 		if err != nil {
 			return nil, err
 		}
+		// Record the child on the parent BEFORE running it, so a restart while
+		// parked below re-attaches instead of spawning fresh.
+		runview.RecordSubbotChild(ctx, s, req, childRunID, logger)
 
 		childExec, err := buildRunExecutor(opts, childWf, s, childRunID, storeDir, logger, nil)
 		if err != nil {
@@ -566,10 +576,18 @@ func subbotRunnerForCLI(parentPath, storeDir string, s store.RunStore, logger *i
 			// resume --run-id <child>`) and the child reaches a terminal
 			// state, then pick up its output from the store.
 			if errors.Is(err, runtime.ErrRunPaused) || errors.Is(err, runtime.ErrRunPausedOperator) {
-				return runview.AwaitSubbotTerminal(childCtx, s, childRunID, logger)
+				out, aerr := runview.AwaitSubbotTerminal(childCtx, s, childRunID, logger)
+				if aerr == nil {
+					// Consumed — tidy the record. On error (shutdown mid-park or
+					// a failed child) LEAVE it for the resume-time re-attach.
+					runview.ClearSubbotChild(ctx, s, req)
+				}
+				return out, aerr
 			}
+			// Non-pause error: leave the re-attach record for the resume path.
 			return nil, err
 		}
+		runview.ClearSubbotChild(ctx, s, req)
 		return last, nil
 	}
 }
