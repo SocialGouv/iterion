@@ -695,7 +695,13 @@ Architecture:
   delegate points sandboxed CLI spawns at it via `CLAUDE_CONFIG_DIR`
   (the per-spawn `CLAUDE_CODE_OAUTH_TOKEN` env stays as the
   first-precedence path). The runner's forfait refresher rewrites both
-  the Secret and the seeded copy mid-run.
+  the Secret and the seeded copy mid-run. When the run carries NO sealed
+  claude credentials, the delegate forwards the runner's ambient
+  Anthropic env (`CLAUDE_CODE_OAUTH_TOKEN` / `ANTHROPIC_API_KEY` /
+  `ANTHROPIC_AUTH_TOKEN`+`BASE_URL`) into sandboxed spawns verbatim —
+  host spawns inherit `os.Environ()`, a `kubectl exec` does not, and the
+  prod runner-pod-level forfait otherwise never reaches the in-pod CLI
+  (`Not logged in` on every exec, observed on run 019f8a6c).
 - Cleanup deletes the pod (and its emptyDir) on run exit.
 
 #### Orphan garbage collection (ADR-070)
