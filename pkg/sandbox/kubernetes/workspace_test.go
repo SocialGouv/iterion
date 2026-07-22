@@ -120,6 +120,78 @@ func TestFixupWorkspaceGitScript(t *testing.T) {
 	}
 }
 
+// TestFixupWorkspaceGitScript_DubiousOwnership replicates the REAL pod
+// condition that killed prod run 019f8a50: the workspace emptyDir
+// mountpoint is root-owned (kubelet creates it; fsGroup only sets the
+// group) while the exec user is the non-root workload uid, so git's
+// safe.directory check rejects the repo and `git -C <ws> config` dies
+// with the opaque "fatal: not in a git directory" (exit 128). Simulated
+// with git's own GIT_TEST_ASSUME_DIFFERENT_OWNER knob (the same one
+// git's test suite uses — no root needed). The pod-env fix
+// (BuildPodManifest's GIT_CONFIG_* safe.directory, inherited by every
+// kubectl exec) must make the exact same script pass.
+func TestFixupWorkspaceGitScript_DubiousOwnership(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not available")
+	}
+	dir := t.TempDir()
+	if out, err := exec.Command("git", "init", "-q", dir).CombinedOutput(); err != nil {
+		t.Fatalf("git init: %v\n%s", err, out)
+	}
+	credPath := filepath.Join(dir, ".git", "iterion-credentials")
+	if err := os.WriteFile(credPath, []byte("https://oauth2:tok@example.com\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	// Sanity: the knob must actually break repository discovery on this
+	// host's git (≥2.35.2). If it doesn't (ancient git), the regression
+	// can't be exercised here.
+	probe := exec.Command("git", "-C", dir, "rev-parse", "--git-dir")
+	probe.Env = append(os.Environ(), "GIT_TEST_ASSUME_DIFFERENT_OWNER=1")
+	if err := probe.Run(); err == nil {
+		t.Skip("this git does not honour GIT_TEST_ASSUME_DIFFERENT_OWNER; cannot simulate the root-owned pod workspace")
+	}
+
+	// WITHOUT the pod env: the exact live failure — exit 128.
+	cmd := exec.Command("sh", "-c", fixupWorkspaceGitScript, "sh", dir)
+	cmd.Env = append(os.Environ(), "GIT_TEST_ASSUME_DIFFERENT_OWNER=1")
+	out, err := cmd.CombinedOutput()
+	if err == nil {
+		t.Fatalf("expected the fixup to fail under dubious ownership (the live 128), got success:\n%s", out)
+	}
+	if ee, ok := err.(*exec.ExitError); !ok || ee.ExitCode() != 128 {
+		t.Fatalf("expected exit 128, got %v\n%s", err, out)
+	}
+
+	// WITH the env BuildPodManifest now injects (safe.directory for the
+	// workspace, protected command scope): the same script succeeds and
+	// re-points the credential helper.
+	cmd = exec.Command("sh", "-c", fixupWorkspaceGitScript, "sh", dir)
+	cmd.Env = append(os.Environ(),
+		"GIT_TEST_ASSUME_DIFFERENT_OWNER=1",
+		"GIT_CONFIG_COUNT=1",
+		"GIT_CONFIG_KEY_0=safe.directory",
+		"GIT_CONFIG_VALUE_0="+dir,
+	)
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("fixup with safe.directory env: %v\n%s", err, out)
+	}
+	read := exec.Command("git", "-C", dir, "config", "credential.helper")
+	read.Env = append(os.Environ(),
+		"GIT_TEST_ASSUME_DIFFERENT_OWNER=1",
+		"GIT_CONFIG_COUNT=1",
+		"GIT_CONFIG_KEY_0=safe.directory",
+		"GIT_CONFIG_VALUE_0="+dir,
+	)
+	got, err := read.Output()
+	if err != nil {
+		t.Fatalf("read credential.helper: %v", err)
+	}
+	if want := "store --file=" + credPath; strings.TrimSpace(string(got)) != want {
+		t.Errorf("credential.helper = %q, want %q", strings.TrimSpace(string(got)), want)
+	}
+}
+
 // TestExportWorkspace_WorkspaceLessRunIsNoop pins the export gate: a run
 // that never populated a workspace (RunInfo.WorkspacePath empty) has
 // nothing to write back and must not shell out at all.
