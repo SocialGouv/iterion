@@ -1,0 +1,63 @@
+# Reusable sandbox finalize — builds the four published iterion-sandbox-*
+# images by stamping the iterion binary onto the matching tool-only *-base
+# image (sandbox/finalize/Dockerfile). Cheap (a few COPY layers), so it runs
+# on every app push, keeping the sandbox `:edge` binaries in lockstep with
+# the `:edge` app image.
+#
+# Called from BOTH image.yml (after every app build — including release tags,
+# which produce the multiarch+signed iterion-sandbox-*:vX.Y.Z) and
+# sandbox-images.yml (after a base rebuild, to fold the new tools into the
+# published images). The *-base images are versioned by content, not by
+# release: they only publish `:edge` (always multiarch), which is why BASE
+# below is pinned to it while the iterion tag varies.
+#
+# On a sandbox/ push both callers finalize the same ref — the shared
+# per-image concurrency group below serialises them so `:edge` tags are
+# never interleaved mid-push; last writer wins with fresh inputs either way.
+name: finalize-sandbox-images (reusable)
+
+on:
+  workflow_call:
+    inputs:
+      owner_lc:
+        description: "Lowercase repository owner (OCI refs must be lowercase)."
+        required: true
+        type: string
+      iterion_tag:
+        description: "Tag of the iterion app image to bake in (vX.Y.Z on releases, else edge). Also drives the produced images' tags via the caller's git ref."
+        required: true
+        type: string
+      is-pr:
+        description: "True on pull_request events (validate-only build, no push)."
+        required: true
+        type: boolean
+      multiarch:
+        description: "Build arm64 + sign + SBOM (release tags)."
+        required: false
+        type: boolean
+        default: false
+
+jobs:
+  finalize:
+    strategy:
+      fail-fast: false
+      matrix:
+        variant: [slim, full, sec, browser]
+    # Shared across the two calling workflows: never interleave two pushes of
+    # the same published tag. PR validations queue per-PR instead (no push, so
+    # they only contend with themselves).
+    concurrency:
+      group: finalize-sandbox-${{ matrix.variant }}-${{ inputs.is-pr && github.ref || inputs.iterion_tag }}
+      cancel-in-progress: ${{ inputs.is-pr }}
+    uses: ./.github/workflows/_build-image.yml
+    secrets: inherit
+    with:
+      image-name: iterion-sandbox-${{ matrix.variant }}
+      routing-name: iterion-sandbox-${{ matrix.variant }}
+      context: sandbox/finalize
+      file: sandbox/finalize/Dockerfile
+      build-args: |
+        BASE=ghcr.io/${{ inputs.owner_lc }}/iterion-sandbox-${{ matrix.variant }}-base:edge
+        ITERION_IMAGE=ghcr.io/${{ inputs.owner_lc }}/iterion:${{ inputs.iterion_tag }}
+      is-pr: ${{ inputs.is-pr }}
+      multiarch: ${{ inputs.multiarch }}

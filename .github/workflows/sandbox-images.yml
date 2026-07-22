@@ -1,0 +1,124 @@
+name: 🧱 Sandbox Base Images
+
+# The heavy, rarely-changing sandbox tool bases (iterion-sandbox-*-base):
+# slim-base → full-base → sec-base (serial: each FROM the previous), plus
+# browser-base off slim-base in parallel. They contain NO iterion binary —
+# sandbox/finalize/Dockerfile stamps it on to produce the published
+# iterion-sandbox-* images (see _finalize.yml).
+#
+# Deliberately a separate workflow from image.yml: its declarative `paths`
+# filter means the ~26-min chain only runs when sandbox/ inputs change, and
+# its own concurrency queue means app pushes never wait behind it.
+#
+# Bases publish `:edge` only, always multiarch: release finalizes (image.yml
+# on a v* tag) build their arm64 leg FROM these bases, and there is no
+# tag-time base rebuild — a release's sandbox images carry whatever tool
+# state main's sandbox/ tree had, versioned by content, not by release.
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - "sandbox/**"
+      - ".github/workflows/sandbox-images.yml"
+      - ".github/workflows/_build-image.yml"
+      - ".github/workflows/_finalize.yml"
+  pull_request:
+    paths:
+      - "sandbox/**"
+      - ".github/workflows/sandbox-images.yml"
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  # Cancel obsolete iterations on PRs; serialise on main so concurrent base
+  # builds never clobber a `:edge` tag mid-push.
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+permissions:
+  contents: read
+  packages: write
+  # cosign keyless OIDC signing + the operator's GitHub OIDC /route auth need an
+  # OIDC token at workflow level; reusable-workflow jobs request it per-job.
+  id-token: write
+
+jobs:
+  prep:
+    runs-on: ubuntu-latest
+    outputs:
+      owner_lc: ${{ steps.vars.outputs.owner_lc }}
+    steps:
+      - id: vars
+        run: echo "owner_lc=$(echo "${GITHUB_REPOSITORY_OWNER}" | tr '[:upper:]' '[:lower:]')" >> "$GITHUB_OUTPUT"
+
+  base-slim:
+    needs: prep
+    uses: ./.github/workflows/_build-image.yml
+    secrets: inherit
+    with:
+      image-name: iterion-sandbox-slim-base
+      routing-name: iterion-sandbox-slim-base
+      context: sandbox/slim
+      file: sandbox/slim/Dockerfile
+      is-pr: ${{ github.event_name == 'pull_request' }}
+      multiarch: true
+
+  # full-base — FROM the freshly-built slim-base. (On PRs the pr-validate leg
+  # builds against the *published* slim-base:edge, since PR builds don't push.)
+  base-full:
+    needs: [prep, base-slim]
+    uses: ./.github/workflows/_build-image.yml
+    secrets: inherit
+    with:
+      image-name: iterion-sandbox-full-base
+      routing-name: iterion-sandbox-full-base
+      context: sandbox/full
+      file: sandbox/full/Dockerfile
+      build-args: BASE=ghcr.io/${{ needs.prep.outputs.owner_lc }}/iterion-sandbox-slim-base:edge
+      is-pr: ${{ github.event_name == 'pull_request' }}
+      multiarch: true
+
+  # sec-base — FROM the freshly-built full-base. Tool floor of the
+  # sec-audit-source / sec-audit-deps bots (they pin the finalized
+  # iterion-sandbox-sec via sandbox.image).
+  base-sec:
+    needs: [prep, base-full]
+    uses: ./.github/workflows/_build-image.yml
+    secrets: inherit
+    with:
+      image-name: iterion-sandbox-sec-base
+      routing-name: iterion-sandbox-sec-base
+      context: sandbox/sec
+      file: sandbox/sec/Dockerfile
+      build-args: BASE=ghcr.io/${{ needs.prep.outputs.owner_lc }}/iterion-sandbox-full-base:edge
+      is-pr: ${{ github.event_name == 'pull_request' }}
+      multiarch: true
+
+  # browser-base — Chromium + Playwright MCP off slim-base, parallel to the
+  # full/sec leg.
+  base-browser:
+    needs: [prep, base-slim]
+    uses: ./.github/workflows/_build-image.yml
+    secrets: inherit
+    with:
+      image-name: iterion-sandbox-browser-base
+      routing-name: iterion-sandbox-browser-base
+      context: sandbox/browser
+      file: sandbox/browser/Dockerfile
+      build-args: BASE=ghcr.io/${{ needs.prep.outputs.owner_lc }}/iterion-sandbox-slim-base:edge
+      is-pr: ${{ github.event_name == 'pull_request' }}
+      multiarch: true
+
+  # Fold the fresh tool bases into the published iterion-sandbox-* images,
+  # baking the current `:edge` iterion binary (already published — image.yml
+  # builds the app on every push, and sandbox/ pushes trigger both workflows).
+  finalize:
+    needs: [prep, base-sec, base-browser]
+    uses: ./.github/workflows/_finalize.yml
+    secrets: inherit
+    with:
+      owner_lc: ${{ needs.prep.outputs.owner_lc }}
+      iterion_tag: edge
+      is-pr: ${{ github.event_name == 'pull_request' }}
+      multiarch: false
