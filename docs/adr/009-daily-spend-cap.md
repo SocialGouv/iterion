@@ -6,8 +6,9 @@
 - **Code context**: [`pkg/clock/`](../../pkg/clock/),
   [`pkg/store/spend.go`](../../pkg/store/spend.go),
   [`pkg/runtime/spendcap.go`](../../pkg/runtime/spendcap.go),
-  [`pkg/runtime/helpers.go`](../../pkg/runtime/helpers.go) (`checkBudgetBeforeExec`,
-  `recordAndCheckBudget`, `handleCostCapPause`),
+  [`pkg/runtime/budget.go`](../../pkg/runtime/budget.go) (`checkBudgetBeforeExec`,
+  `recordAndCheckBudget`),
+  [`pkg/runtime/pause.go`](../../pkg/runtime/pause.go) (`handleCostCapPause`),
   [`pkg/dispatcher/loop.go`](../../pkg/dispatcher/loop.go) (`refreshCostCap`),
   [`pkg/server/limits.go`](../../pkg/server/limits.go)
 
