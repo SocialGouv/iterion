@@ -140,8 +140,12 @@ jobs:
           labels: ${{ steps.meta.outputs.labels }}
           tags: ${{ env.IMAGE_REF }}:${{ github.sha }}-amd64
           push: true
-          provenance: mode=max
-          sbom: true
+          # Provenance + SBOM only on release (multiarch) builds, matching the
+          # sign policy: `:edge` is ephemeral and unsigned, and generating them
+          # anyway cost ~60-90s per image per push (syft scan ~28s + mode=max
+          # attestation export ~35s measured on a 2-COPY finalize build).
+          provenance: ${{ inputs.multiarch && 'mode=max' || '' }}
+          sbom: ${{ inputs.multiarch }}
           sign: false # the published index is signed once in the merge job
 
   # --------------------------------------------------------------------------
