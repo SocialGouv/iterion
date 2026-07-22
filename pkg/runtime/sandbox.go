@@ -415,6 +415,16 @@ func resolveAndStartSandbox(ctx context.Context, p SandboxParams) (*activeSandbo
 		return nil, fmt.Errorf("runtime: sandbox: network proxy: %w", err)
 	}
 
+	// Per-run MCP listener intents, decided BEFORE the container starts:
+	// the listeners themselves bind after Driver.Start (they need the
+	// live driver gateway), but the container's ability to RESOLVE their
+	// advertised host (host.docker.internal on docker/podman) is settled
+	// at `docker run` time — so the driver must know now that an
+	// endpoint will be advertised, proxy or no proxy (the default
+	// network: open starts none).
+	wantsBoardListener := p.BoardMCPHandler != nil && workflowHasBoardCapability(p.Workflow)
+	wantsAskUserListener := workflowHasInteractiveNode(p.Workflow)
+
 	info := sandbox.RunInfo{
 		RunID:              p.RunID,
 		FriendlyName:       p.FriendlyName,
@@ -422,6 +432,7 @@ func resolveAndStartSandbox(ctx context.Context, p SandboxParams) (*activeSandbo
 		ProxyEndpoint:      proxyEndpoint,
 		ProxyCACert:        proxyCACert,
 		MaxDurationSeconds: workflowMaxDurationSeconds(p.Workflow),
+		HostGatewayAlias:   wantsBoardListener || wantsAskUserListener,
 	}
 
 	prepared, err := driver.Prepare(ctx, *spec)
@@ -456,7 +467,7 @@ func resolveAndStartSandbox(ctx context.Context, p SandboxParams) (*activeSandbo
 	// sandboxed claude_code can write the operator's board. Non-fatal: a
 	// failure degrades to the prior (board-disabled) behaviour rather than
 	// breaking the run.
-	if p.BoardMCPHandler != nil && workflowHasBoardCapability(p.Workflow) {
+	if wantsBoardListener {
 		endpoint, srv, berr := startSandboxMCPListener(driver, p.BoardMCPHandler, "/api/v1/mcp/board")
 		if berr != nil {
 			if logger != nil {
@@ -480,7 +491,7 @@ func resolveAndStartSandbox(ctx context.Context, p SandboxParams) (*activeSandbo
 	// surface, authenticated by a per-run bearer token. Non-fatal on
 	// failure: the delegate then disables the tools per node with a loud
 	// warning (the [INTERACTION PROTOCOL] JSON fallback still applies).
-	if workflowHasInteractiveNode(p.Workflow) {
+	if wantsAskUserListener {
 		token, terr := askusermcp.NewRunToken()
 		if terr != nil {
 			if logger != nil {
