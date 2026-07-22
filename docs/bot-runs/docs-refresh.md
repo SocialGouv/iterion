@@ -39,7 +39,7 @@ reference self-host case.
   4. git safe.directory: root-owned emptyDir mountpoint vs uid-1000 exec broke repo discovery (exit 128) → GIT_CONFIG_* protected-config env injected pod-wide (#266).
   5. Prod forfait rides the runner pod's AMBIENT env; kubectl-exec spawns only get the SDK env map → claude "Not logged in" in-pod, masked as structured-output schema errors (the known gotcha) → ambient Anthropic env forwarded verbatim for sandboxed spawns (#268).
   6. Board MCP HTTP endpoint not wired on runner-launched sandboxed runs (board handoff degraded to summary) — ticket native:1ec7b869, open.
-- Also: cancelled cloud runs resurrected after runner restarts (NATS redelivery ignores terminal status) — ticket native:85cea410, open.
+- Also: cancelled cloud runs resurrected after runner restarts (NATS redelivery ignores terminal status) — ticket native:85cea410, fixed in `ffe9ea7d` (cancelled is now terminal for redelivery: the runner acks a redelivered launch against a cancelled-with-checkpoint run unconditionally, so only an explicit resume can continue it — no auto-resume resurrection).
 - Lessons: validation-by-real-run caught six gaps no test suite had; "auth failure masquerading as schema error" struck again (test auth FIRST); the argv idiom has a kernel ceiling (ride files); merge-queue drops are silent — verify the gh-readonly-queue branch, and a red gate ON MAIN (OpenAPI drift from direct pushes) starves the whole queue.
 
 ## 2026-07-22 — first repo-targeted CLOUD dogfood + PR tail (runs 019f86ac, 019f86ce)
