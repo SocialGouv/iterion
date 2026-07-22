@@ -13,13 +13,13 @@ import (
 // minimal-framing): ONE campaign agent writes real tests committing each
 // in stride, then the deterministic gate re-runs the suite and verifies
 // genuinely-new test code landed, inside a worktree (worktree: auto +
-// sandbox-full).
+// no sandbox block per ADR-082 — direct engine runs are host-side).
 //
 // Reliability invariants: campaign/verify_build/verify_run fire and the
 // gate reports a newly-added test (new_test_code). The quality panel then
 // grades the tests (anti-façade: are the assertions real?) + value.
 //
-// Requires: claude CLI + docker w/ iterion-sandbox-full:edge.
+// Requires: claude CLI.
 // Expected: ~20-50 min.
 func TestLive_Bot_TestCoverage(t *testing.T) {
 	if testing.Short() {
@@ -27,7 +27,6 @@ func TestLive_Bot_TestCoverage(t *testing.T) {
 	}
 	loadDotEnv(t)
 	requireCLI(t, "claude")
-	requireDockerImage(t, "ghcr.io/socialgouv/iterion-sandbox-full:edge")
 
 	workspaceDir, err := os.MkdirTemp("", "iterion-test-coverage-*")
 	if err != nil {

@@ -81,6 +81,18 @@ func (s *MongoSubscriptionStore) ListCandidates(ctx context.Context, ev Event) (
 	})
 }
 
+// DistinctBoardTenants returns the tenants holding at least one ENABLED
+// board-kind subscription — the set the cloud board source poll-tails.
+// Tenants without board triggers cost nothing.
+func (s *MongoSubscriptionStore) DistinctBoardTenants(ctx context.Context) ([]string, error) {
+	res := s.coll.Distinct(ctx, "tenant_id", bson.M{"invocation": "board", "enabled": true})
+	var tenants []string
+	if err := res.Decode(&tenants); err != nil {
+		return nil, fmt.Errorf("trigger: distinct board tenants: %w", err)
+	}
+	return tenants, nil
+}
+
 func (s *MongoSubscriptionStore) find(ctx context.Context, filter bson.M) ([]Subscription, error) {
 	return mongoutil.FindAllSorted[Subscription](ctx, s.coll, filter, "created_at",
 		"trigger: list subscriptions", "trigger: decode subscriptions")

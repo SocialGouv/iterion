@@ -12,14 +12,14 @@ import (
 // against a base..branch diff containing a planted logic bug. In v2 (ADR-058)
 // Billy is ONE adaptive `campaign` agent: it reads the branch diff, reviews +
 // improves it, and commits each fix in stride inside a fresh worktree
-// (worktree: auto + sandbox-full); a deterministic build/test gate re-checks
+// (worktree: auto; no sandbox block per ADR-082 — direct engine runs are host-side); a deterministic build/test gate re-checks
 // the tree each pass until the branch is clean and green.
 //
 // Reliability invariants: the campaign fires and the deterministic verify gate
 // (verify_run) is evaluated (the loop ran); commits are logged. The quality
 // panel grades the fixes + value.
 //
-// Requires: claude CLI + OpenAI + docker w/ iterion-sandbox-full:edge.
+// Requires: claude CLI + OpenAI.
 // Expected: ~40-70 min.
 func TestLive_Bot_BranchImproveLoop(t *testing.T) {
 	if testing.Short() {
@@ -28,7 +28,6 @@ func TestLive_Bot_BranchImproveLoop(t *testing.T) {
 	loadDotEnv(t)
 	requireCLI(t, "claude")
 	requireOpenAI(t)
-	requireDockerImage(t, "ghcr.io/socialgouv/iterion-sandbox-full:edge")
 
 	workspaceDir, err := os.MkdirTemp("", "iterion-branch-improve-*")
 	if err != nil {

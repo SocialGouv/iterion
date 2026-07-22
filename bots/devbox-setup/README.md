@@ -36,9 +36,9 @@ verify_devbox  (tool, deterministic)
 done
 ```
 
-- **sandbox**: an image with `nix` + `devbox` (today `ghcr.io/socialgouv/
-  iterion-sandbox-sec:edge` has them; a slim `base+devbox+node` image is the
-  ADR-017 target). Mount `~/.claude` for the claude_code backend.
+- **sandbox**: none declared (ADR-082 — the platform sandboxes by
+  default, and the default slim image ships everything this bot needs:
+  node + devbox/nix + the claude CLI).
 - **worktree: auto** (it writes a file → isolate + gate before it lands).
 - **vars**: `workspace_dir`, `apply_mode` (propose|apply), `devbox_model`.
 - **idempotent**: if `/workspace/devbox.json` exists, propose a diff (add

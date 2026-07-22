@@ -455,7 +455,27 @@ ship on the spine** (each = a source adapter publishing a
   bot) so the dispatcher's `Claim` — the **sole launch authority** —
   picks it up now (`Manager.Refresh()`) instead of at the 30s poll; the
   poll stays the reconciliation net, so fast-path + poll **cannot
-  double-launch**.
+  double-launch**. A board invocation may instead declare **`mode:
+  direct`** — the evaluator then launches the bot ON the matching card
+  (card id in `vars.issue_id`) instead of routing the card TO it; with
+  **`consume_labels: true`** the matcher's `all_labels` set is stripped
+  atomically pre-launch, making the label a one-shot re-armable trigger.
+  This powers **issue auto-triage** (`bots/issue-triage`, persona
+  Triagy): forge issues synced to the board are author-classified at
+  ingest (fail-closed trust gate — `authorTrust` over
+  `forge.PermissionClient`, threshold `MinAuthorRole`); trusted authors'
+  cards land in inbox with `triage:auto` (fires Triagy, who stamps the
+  handler bot + labels via `set_bot`), untrusted ones park with
+  `needs:approval` + zero LLM until the operator's studio "Approve &
+  triage" swaps the labels. The same author gate protects the webhook
+  `AutoImplementOnOpen` zero-touch lane. **Cloud parity**: the mongo
+  board has its own spine half
+  ([pkg/server/trigger_cloud.go](pkg/server/trigger_cloud.go)) — a
+  `board_events` poll-tail whose per-tenant CAS cursor elects one
+  publishing replica, feeding the same evaluator over the NATS bus with
+  an ATOMIC label consume (`boardmongo.ConsumeLabels`), so
+  consume_labels triggers cannot double-launch across replicas; the
+  `/api/v1/triggers` CRUD is team-scoped in cloud (active-team JWT).
 - **run-completion** ("runned by iterion") — `runview.Service` emits
   `run.finished`/`failed`/`cancelled`/`paused` in-process, and cloud
   **runner pods publish the same events** onto the NATSBus
@@ -933,11 +953,15 @@ the sec image produces a zero-finding façade — now caught, not silent:
 when the always-on generic scanners (gitleaks/trivy/semgrep-auto)
 produced no output, and banners partial coverage gaps in the report (see
 [sec_audit_scan_health_test.go](e2e/sec_audit_scan_health_test.go)). CI publishes it
-via [.github/workflows/image.yml](.github/workflows/image.yml) (the
-`build-sandbox-sec` job, chained on `-full`) on every push to `main`
-(tag `:edge`) and on release tags. Until that first CI run lands — or for
-a local-only loop — build it yourself and `docker tag` it to
-`ghcr.io/socialgouv/iterion-sandbox-sec:edge`.
+in two halves: the tool-only `iterion-sandbox-sec-base` builds in
+[.github/workflows/sandbox-images.yml](.github/workflows/sandbox-images.yml)
+(only when `sandbox/**` changes), and the published
+`iterion-sandbox-sec:edge` is finalized — current iterion binary stamped
+onto that base — on every push to `main` by
+[.github/workflows/image.yml](.github/workflows/image.yml) via
+[_finalize.yml](.github/workflows/_finalize.yml) (and at `:vX.Y.Z` on
+release tags). For a local-only loop, build it yourself and `docker tag`
+it to `ghcr.io/socialgouv/iterion-sandbox-sec:edge`.
 
 **Recurring audit.** The weekly schedule (sec-audit-source Mon 02:00
 UTC, sec-audit-deps Mon 03:00 UTC) is wired through
@@ -976,9 +1000,10 @@ blockers, the context-overflow ones are fixed —
 deterministic `cap_findings` node (see
 [sec_audit_cap_findings_test.go](e2e/sec_audit_cap_findings_test.go)).
 The remaining gate before flipping the schedule on for real is **(2) the
-sec image published in CI** (the `build-sandbox-sec` job above); until
-that first push lands, install the schedule but `docker tag` the locally
-built `iterion-sandbox-sec:edge` so the scanned runs find their tools.
+sec image published in CI** (the sandbox-images.yml `base-sec` job + the
+per-push finalize above); until that first push lands, install the
+schedule but `docker tag` the locally built `iterion-sandbox-sec:edge`
+so the scanned runs find their tools.
 For a one-time audit by hand, a direct scanner pass in the sec image is
 reliable —
 `docker run --rm -v "$PWD":/src:ro -w /src

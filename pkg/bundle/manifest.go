@@ -586,6 +586,12 @@ type InvocationBoard struct {
 	// AllLabels requires the card to carry every listed label (AND). Empty =
 	// no label constraint.
 	AllLabels []string `yaml:"all_labels,omitempty" json:"all_labels,omitempty"`
+	// ConsumeLabels strips the AllLabels set from the card atomically before
+	// firing, so the labels act as a one-shot trigger: a card-event storm
+	// (forge re-syncs, edits) cannot re-fire, and re-adding the label re-arms
+	// the trigger. Only meaningful with mode=direct (the promote path is
+	// already idempotent); requires a non-empty AllLabels.
+	ConsumeLabels bool `yaml:"consume_labels,omitempty" json:"consume_labels,omitempty"`
 }
 
 var (
@@ -663,6 +669,9 @@ func validateInvocations(invs []Invocation) error {
 					if !knownBoardKinds[k] {
 						return fmt.Errorf("invocations[%d].board: unknown on %q (known: %s, %s, %s, %s)", idx, k, BoardKindCardCreated, BoardKindCardMoved, BoardKindCardLabeled, BoardKindCardUpdated)
 					}
+				}
+				if inv.Board.ConsumeLabels && len(inv.Board.AllLabels) == 0 {
+					return fmt.Errorf("invocations[%d].board: consume_labels requires a non-empty all_labels", idx)
 				}
 			}
 		case InvocationKindKeepalive:

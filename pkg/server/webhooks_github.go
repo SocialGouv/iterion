@@ -200,6 +200,22 @@ func (s *Server) handleGitHubIssues(w http.ResponseWriter, r *http.Request, cfg 
 		return
 	}
 
+	// Author-trust gate on the zero-touch lane ONLY: an opened issue launches
+	// a bot with no human in the loop, so the author must hold real repo
+	// rights (the budget boundary against drive-by issues). The labeled lane
+	// needs no gate — applying the trigger label already requires triage+
+	// rights on the forge, which IS the approval gesture.
+	if openedZeroTouch && !s.issueAuthorTrusted(ctx, cfg, webhooks.ProviderGitHub, botID, p) {
+		author := p.IssueAuthorLogin
+		if author == "" {
+			author = p.SenderLogin
+		}
+		s.recordTerminalWebhookDelivery(ctx, cfg, meta, webhooks.StatusFiltered, payloadHash, srcIP,
+			"untrusted issue author "+author+" — parked for operator approval")
+		writeJSONStatus(w, http.StatusOK, map[string]string{"status": webhooks.StatusFiltered})
+		return
+	}
+
 	// Idempotency: one launch per (tenant, webhook, repo, issue#, trigger).
 	// The trigger is the label for the labeled path (re-applying a DIFFERENT
 	// label still launches; the SAME label replays no-op) and a stable "opened"

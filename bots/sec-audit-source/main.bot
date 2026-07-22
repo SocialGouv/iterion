@@ -4512,20 +4512,12 @@ workflow sec_audit_source:
   ## rulesets + DBs. (Until CI publishes the ref to ghcr, build locally
   ## and `docker tag` it to the ref below so the docker driver's
   ## image-inspect fast path resolves it without a pull.)
+  ## Image pin survives ADR-082 Phase 2: the scanner toolchain (semgrep,
+  ## gosec, trivy, gitleaks, …) genuinely needs the baked sec image —
+  ## devbox-installing it per run costs minutes of Nix. Everything else
+  ## (isolation, claude CLI, host-state mounts) is the platform default.
   sandbox:
     image: "ghcr.io/socialgouv/iterion-sandbox-sec:edge"
-    user: "1000:1000"
-    mounts: ["type=bind,source=${localEnv:HOME}/.claude,target=/home/devbox/.claude,consistency=cached"]
-    env:
-      CLAUDE_CONFIG_DIR: "/home/devbox/.claude"
-    ## report_card is a claude_code node, but the sec image (layered on
-    ## -full) ships node+npm WITHOUT the claude CLI — install it once per
-    ## container. Same gate as feature_dev: run the binary (not `command -v`,
-    ## which a partial install fools), verify, and fail post_create cleanly
-    ## so the dispatcher retries with a fresh container rather than dying
-    ## cryptically on the first claude_code node. (Discovered via live
-    ## dogfood: report_card failed with cli_exit_code=127 = claude not found.)
-    post_create: "set -e; claude --version >/dev/null 2>&1 || sudo npm install -g --ignore-scripts=false --include=optional @anthropic-ai/claude-code@latest; claude --version >/dev/null 2>&1 || sudo node \"$(npm root -g)/@anthropic-ai/claude-code/install.cjs\" >/dev/null 2>&1 || true; claude --version >/dev/null 2>&1 || { echo 'claude install verification failed' >&2; exit 1; }"
 
   budget:
     max_parallel_branches: 4

@@ -53,17 +53,18 @@ type Server struct {
 	// currentProjectID is the id of the registry entry matching
 	// cfg.WorkDir. Surfaced by /api/server/info (polled by the SPA);
 	// caching it here avoids a disk read on every poll.
-	currentProjectID string
-	cfg              Config
-	logger           *iterlog.Logger
-	mux              *recordingMux // records routes → GET /api/openapi.json
-	handler          http.Handler  // mux wrapped with auth middleware
-	server           *http.Server
-	hub              *Hub
-	watcher          *Watcher
-	runs             *runview.Service    // run console service; nil disables /api/runs endpoints
-	watchCoord       *watchCoordinator   // MVP3b issue-state fan-out; nil when no native tracker or events tail unavailable
-	triggerCoord     *TriggerCoordinator // event-driven trigger spine; nil when no TriggerStore/native tracker
+	currentProjectID  string
+	cfg               Config
+	logger            *iterlog.Logger
+	mux               *recordingMux // records routes → GET /api/openapi.json
+	handler           http.Handler  // mux wrapped with auth middleware
+	server            *http.Server
+	hub               *Hub
+	watcher           *Watcher
+	runs              *runview.Service         // run console service; nil disables /api/runs endpoints
+	watchCoord        *watchCoordinator        // MVP3b issue-state fan-out; nil when no native tracker or events tail unavailable
+	triggerCoord      *TriggerCoordinator      // event-driven trigger spine; nil when no TriggerStore/native tracker
+	cloudTriggerCoord *CloudTriggerCoordinator // cloud (mongo board) trigger spine; nil outside cloud mode
 	// userNotify + pushSink are the user-notification stack (web push on
 	// human-input pauses and run outcomes); nil when the feature is off
 	// (no subscription store / no VAPID keys). userNotifyCancel detaches
@@ -124,6 +125,10 @@ type Server struct {
 	configShareFC     func(context.Context, *configshare.Share) (forge.FileClient, error)
 	forgeConnections  forge.ConnectionStore
 	forgeIntegrations forge.RepoIntegrationStore
+	// authorTrustG is the lazily-built TTL cache behind the issue
+	// author-trust gate (webhooks + forge→board sync); use authorTrustGate().
+	authorTrustG      *authorTrust
+	authorTrustOnce   sync.Once
 	forgeOrchestrator *forge.Orchestrator
 	forgeStates       forgeStateBackend
 	forgeOAuthApps    forge.OAuthAppStore
@@ -206,6 +211,18 @@ type Server struct {
 	// board-disabled (empty token). Non-nil iff cfg.NativeTrackerStore
 	// is non-nil (handler is only mounted when the board exists).
 	boardMCPTokens BoardMCPTokenStore
+
+	// forgePublishTokens authorizes runs that POST their review findings
+	// to /api/v1/forge/publish-review (the deterministic, tokenless-in-
+	// workspace forge publish seam). Tokens are minted per launch by
+	// injectForgePublishVars; grants pin (team, connection, repo). Non-nil
+	// iff forgeConnections is wired.
+	forgePublishTokens ForgePublishTokenStore
+
+	// forgeReviewClientFor is a test seam overriding how the publish-review
+	// handler resolves a connection's forge.ReviewClient. Nil → real admin
+	// client via forgeAdminFor.
+	forgeReviewClientFor func(ctx context.Context, conn forge.Connection) (forge.ReviewClient, error)
 
 	// marketplace is the hosted bot registry store. Mirrors
 	// Config.Marketplace; nil disables every /api/v1/marketplace/*
@@ -355,6 +372,16 @@ func New(cfg Config, logger *iterlog.Logger) *Server {
 			s.boardMCPTokens = newValkeyBoardMCPTokenStore(s.redis.Redis(), s.logger)
 		} else {
 			s.boardMCPTokens = NewBoardMCPTokenRegistry()
+		}
+	}
+	if s.forgeConnections != nil {
+		// Same replica story as the board MCP tokens: a run's publish POST
+		// may land on any server pod, so a distributed backend shares the
+		// grants; single-replica keeps the in-memory registry.
+		if s.redis != nil {
+			s.forgePublishTokens = newValkeyForgePublishTokenStore(s.redis.Redis(), s.logger)
+		} else {
+			s.forgePublishTokens = NewForgePublishTokenRegistry()
 		}
 	}
 	// Auth rate limiter — eagerly built so the lazy `if s.authLimiter == nil`

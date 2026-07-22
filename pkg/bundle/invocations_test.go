@@ -168,6 +168,11 @@ func TestLoadManifest_RejectsInvocationErrors(t *testing.T) {
 			body: "name: b\nschema_version: 1\ninvocations:\n  - kind: board\n    board:\n      on: [card.exploded]\n",
 			want: "unknown on \"card.exploded\"",
 		},
+		{
+			name: "board consume_labels without all_labels",
+			body: "name: b\nschema_version: 1\ninvocations:\n  - kind: board\n    mode: direct\n    board:\n      on: [card.created]\n      consume_labels: true\n",
+			want: "consume_labels requires a non-empty all_labels",
+		},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

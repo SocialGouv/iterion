@@ -123,10 +123,8 @@ jobs:
           password: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Build amd64 on buildkit-operator
-        # Pin moved forward on each operator release. This SHA must be pushed to
-        # github.com/SocialGouv/buildkit-operator (branch feat/build-args-passthrough)
-        # for `uses:` to resolve it — it carries the --build-arg passthrough.
-        uses: socialgouv/buildkit-operator@8707e7f9d2a3baeeb5154bfbd0ae114bccfa4e58
+        # Pin moved forward on each operator release.
+        uses: socialgouv/buildkit-operator@33b6b49a585b14757fe415d4496bc8ba3ce4471e # v0.12.0
         with:
           buildd-url: ${{ vars.BUILDKIT_OPERATOR_BUILDD_URL }}
           gateway-host: ${{ vars.BUILDKIT_OPERATOR_GATEWAY_HOST || 'bkod.fabrique.social.gouv.fr' }}

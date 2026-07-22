@@ -31,12 +31,17 @@ USER root
 
 # Runner toolset — mirrors the root Dockerfile runtime stage: git + certs + tini
 # + procps + curl + passwd + python3 + jq, and node 24 for the LLM CLIs.
-RUN apt-get update \
+# apt cache mounts keep the downloaded .deb archives + package lists warm on
+# the operator daemon (dropping docker-clean so apt doesn't purge them); the
+# mounts never land in the image layer, so no rm -rf cleanup is needed.
+RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
+    --mount=type=cache,target=/var/lib/apt/lists,sharing=locked \
+    rm -f /etc/apt/apt.conf.d/docker-clean \
+ && apt-get update \
  && apt-get install -y --no-install-recommends \
         ca-certificates curl gnupg jq procps tini git python3 passwd \
  && curl -fsSL https://deb.nodesource.com/setup_24.x | bash - \
- && apt-get install -y --no-install-recommends nodejs \
- && rm -rf /var/lib/apt/lists/*
+ && apt-get install -y --no-install-recommends nodejs
 
 # Pre-install the firecrawl MCP server (shipped `firecrawl` builtin plugin) so
 # the runtime `npx -y firecrawl-mcp@<ver>` starts INSTANTLY from the warm global
@@ -46,10 +51,13 @@ RUN apt-get update \
 # Baking it in makes discovery deterministic. The version is PINNED (supply-
 # chain: never resolve a moving `latest` at build OR run time) and MUST match
 # pkg/plugin/builtin/firecrawl/plugin.yaml's `npx` arg so runtime reuses this
-# exact global install instead of fetching another version.
+# exact global install instead of fetching another version. The npm cache is a
+# build mount (not an image layer), so no `npm cache clean` is needed — and
+# keeping it warm is the point.
 # renovate: datasource=npm depName=firecrawl-mcp versioning=npm
 ARG FIRECRAWL_MCP_VERSION=3.22.3
-RUN npm install -g "firecrawl-mcp@${FIRECRAWL_MCP_VERSION}" && npm cache clean --force
+RUN --mount=type=cache,target=/root/.npm \
+    npm install -g "firecrawl-mcp@${FIRECRAWL_MCP_VERSION}"
 
 # gh + glab (Revi posts reviews from the runner pod) + kubectl (parity with the
 # base runner image; also used by the k8s sandbox driver if ever enabled).
@@ -62,6 +70,26 @@ RUN set -eux; ARCH="$(dpkg --print-architecture)"; \
     case "$ARCH" in amd64) KARCH=amd64;; arm64) KARCH=arm64;; *) echo "unsupported arch $ARCH" >&2; exit 1;; esac; \
     curl -fsSL -o /usr/local/bin/kubectl "https://dl.k8s.io/release/${KUBECTL_VERSION}/bin/linux/${KARCH}/kubectl"; \
     chmod +x /usr/local/bin/glab /usr/local/bin/gh /usr/local/bin/kubectl
+
+# Warm the Nix store with the dominant toolchain (Go + go-task) so the FIRST
+# `devbox run` on a Go repo — iterion itself, and most SocialGouv repos — reuses
+# the baked store paths instead of re-downloading ~500MB from cache.nixos.org on
+# every ephemeral pod's cold start (the DEPLOY NOTE's "first run re-downloads").
+# A target repo's devbox.json requesting the SAME go@1.26 (same pinned nixpkgs)
+# hits these store paths directly. Best-effort: `|| true` so a transient
+# resolver/network blip never breaks the image build — an un-warmed store just
+# falls back to today's on-demand download. The scalable, stack-agnostic fix
+# remains a shared binary-cache substituter (S3/attic) or a persistent /nix PVC;
+# this bakes the 80% case without standing up a service.
+#
+# Placed ABOVE the iterion-bin COPYs on purpose: those COPYs change on every
+# push (the iterion:edge digest), while this ~15-min/~500MB layer depends only
+# on the pinned base + toolchain pins — ordered here it stays cache-hit across
+# pushes. Runs as uid 1000 (the Nix store and devbox global profile are owned
+# by the devbox user).
+USER 1000
+RUN timeout 900 sh -c 'devbox global add go@1.26 go-task@latest && devbox global install' >/dev/null 2>&1 || true
+USER root
 
 # Static iterion binary + pinned LLM CLIs (claude + codex) + bot catalog, from
 # the iterion image (all built there; static CGO_ENABLED=0 runs on this base).
@@ -82,18 +110,6 @@ ENV ITERION_BOTS_PATH=/opt/iterion/bots \
 # owned by devbox). Differs from the base runner's uid 10001 — see DEPLOY NOTE.
 USER 1000
 WORKDIR /home/devbox
-
-# Warm the Nix store with the dominant toolchain (Go + go-task) so the FIRST
-# `devbox run` on a Go repo — iterion itself, and most SocialGouv repos — reuses
-# the baked store paths instead of re-downloading ~500MB from cache.nixos.org on
-# every ephemeral pod's cold start (the DEPLOY NOTE's "first run re-downloads").
-# A target repo's devbox.json requesting the SAME go@1.26 (same pinned nixpkgs)
-# hits these store paths directly. Best-effort: `|| true` so a transient
-# resolver/network blip never breaks the image build — an un-warmed store just
-# falls back to today's on-demand download. The scalable, stack-agnostic fix
-# remains a shared binary-cache substituter (S3/attic) or a persistent /nix PVC;
-# this bakes the 80% case without standing up a service.
-RUN timeout 900 sh -c 'devbox global add go@1.26 go-task@latest && devbox global install' >/dev/null 2>&1 || true
 
 ENTRYPOINT ["/usr/bin/tini", "--", "/usr/local/bin/iterion"]
 CMD ["runner"]

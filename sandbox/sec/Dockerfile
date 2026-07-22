@@ -21,7 +21,7 @@
 #   - trivy     — fs vuln/config/secret scanning (SCA + IaC + secrets).
 #   - gitleaks  — secret detection.
 
-ARG BASE=ghcr.io/socialgouv/iterion-sandbox-full:edge
+ARG BASE=ghcr.io/socialgouv/iterion-sandbox-full-base:edge
 FROM ${BASE}
 
 USER root

@@ -52,6 +52,17 @@ type BoardEffect interface {
 	Promote(ctx context.Context, plan LaunchPlan) (issueID string, err error)
 }
 
+// LabelConsumer is the optional capability a BoardEffect exposes for
+// consume_labels subscriptions: atomically strip the matcher's label set from
+// a card before a direct launch. consumed=false (no error) means another
+// evaluation already stripped them — the caller must skip the launch, which
+// is what makes the label a one-shot trigger under duplicate card events.
+// tenantID scopes the card on a multi-tenant (cloud) board; the local
+// single-store effect ignores it.
+type LabelConsumer interface {
+	ConsumeMatchLabels(ctx context.Context, tenantID, issueID string, labels []string) (consumed bool, err error)
+}
+
 // Nudger asks a consumer to act on a just-promoted card immediately instead
 // of waiting for its next poll. *dispatcher.Dispatcher satisfies it via
 // Refresh(). Optional — when absent, the dispatcher's 30s poll still picks

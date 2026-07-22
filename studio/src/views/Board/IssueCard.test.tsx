@@ -36,6 +36,30 @@ function renderCard(iss: NativeIssue) {
 
 afterEach(cleanup);
 
+describe("IssueCard approval banner", () => {
+  it("renders the approval banner + author when the card carries needs:approval", () => {
+    renderCard({
+      ...baseIssue,
+      labels: ["bug", "needs:approval"],
+      external: {
+        provider: "github",
+        connection_id: "c1",
+        repo: "acme/widgets",
+        number: 7,
+        author: "drive-by",
+      },
+    });
+    expect(screen.getByText(/approval required/i)).toBeTruthy();
+    expect(screen.getByText(/@drive-by/)).toBeTruthy();
+    expect(screen.getByRole("button", { name: /Approve & triage/i })).toBeTruthy();
+  });
+
+  it("omits the banner without the needs:approval label", () => {
+    renderCard({ ...baseIssue, labels: ["bug"] });
+    expect(screen.queryByText(/approval required/i)).toBeNull();
+  });
+});
+
 describe("IssueCard awaiting-input badge", () => {
   it("renders the ⏸ Awaiting input badge when awaiting_input is set", () => {
     renderCard({ ...baseIssue, awaiting_input: true });

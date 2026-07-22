@@ -124,5 +124,7 @@ function formatSource(source: NonNullable<RunHeader["source"]>): string {
   const kind = source.kind ?? "manual";
   if (source.issue_identifier) return `${kind} · ${source.issue_identifier}`;
   if (source.issue_title) return `${kind} · ${source.issue_title}`;
+  const schedule = source.schedule_name || source.schedule_id;
+  if (schedule) return `${kind} · ${schedule}`;
   return kind;
 }

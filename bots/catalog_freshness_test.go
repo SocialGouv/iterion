@@ -21,37 +21,47 @@ func TestCommittedCatalogIsFresh(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	committedPath := filepath.Join(repoRoot, "bots", "whats-next", "skills", "iterion-bot-catalog.md")
-	committed, err := os.ReadFile(committedPath)
+	// Every bundle shipping the static template owns a generated catalog
+	// (whats-next, issue-triage, …) — snapshot each committed copy, regen
+	// all of them, and compare in place.
+	templates, err := filepath.Glob(filepath.Join(repoRoot, "bots", "*", "iterion-bot-catalog-static.md"))
 	if err != nil {
-		t.Fatalf("read committed catalog: %v", err)
+		t.Fatal(err)
 	}
-
-	// Regenerate into a scratch copy of the owning bundle's layout is not
-	// needed: RegenerateWhatsNextCatalog writes atomically to the SOURCE
-	// path, so render the expected content by regenerating and comparing —
-	// restoring the committed bytes if they differ, to keep the working
-	// tree untouched by a failing test.
-	dest, err := botregistry.RegenerateWhatsNextCatalog(repoRoot)
-	if err != nil {
-		t.Fatalf("regenerate: %v", err)
-	}
-	if dest == "" {
+	if len(templates) == 0 {
 		t.Skip("no catalog template discovered in this workspace")
 	}
-	regenerated, err := os.ReadFile(dest)
-	if err != nil {
-		t.Fatalf("read regenerated catalog: %v", err)
+	committed := map[string][]byte{}
+	for _, tmpl := range templates {
+		genPath := filepath.Join(filepath.Dir(tmpl), "skills", "iterion-bot-catalog.md")
+		b, err := os.ReadFile(genPath)
+		if err != nil {
+			t.Fatalf("read committed catalog %s: %v", genPath, err)
+		}
+		committed[genPath] = b
 	}
 
-	if string(regenerated) != string(committed) {
-		// Leave the tree as the test found it: a failing guard must not
-		// itself dirty the checkout.
-		if writeErr := os.WriteFile(committedPath, committed, 0o644); writeErr != nil {
-			t.Logf("restore committed catalog: %v", writeErr)
+	// RegenerateWhatsNextCatalog writes atomically to each SOURCE path, so
+	// render the expected content by regenerating and comparing — restoring
+	// the committed bytes if they differ, to keep the working tree untouched
+	// by a failing test.
+	if _, err := botregistry.RegenerateWhatsNextCatalog(repoRoot); err != nil {
+		t.Fatalf("regenerate: %v", err)
+	}
+	for genPath, before := range committed {
+		regenerated, err := os.ReadFile(genPath)
+		if err != nil {
+			t.Fatalf("read regenerated catalog %s: %v", genPath, err)
 		}
-		t.Fatalf("committed catalog is STALE vs the current manifests.\n"+
-			"Every run-start regen will dirty the worktree (and wip-bank clean runs).\n"+
-			"Fix: run `iterion bots regen-catalog` and commit %s with your manifest change.", committedPath)
+		if string(regenerated) != string(before) {
+			// Leave the tree as the test found it: a failing guard must not
+			// itself dirty the checkout.
+			if writeErr := os.WriteFile(genPath, before, 0o644); writeErr != nil {
+				t.Logf("restore committed catalog: %v", writeErr)
+			}
+			t.Fatalf("committed catalog is STALE vs the current manifests.\n"+
+				"Every run-start regen will dirty the worktree (and wip-bank clean runs).\n"+
+				"Fix: run `iterion bots regen-catalog` and commit %s with your manifest change.", genPath)
+		}
 	}
 }

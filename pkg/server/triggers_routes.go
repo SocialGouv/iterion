@@ -9,6 +9,7 @@ import (
 
 	"github.com/google/uuid"
 
+	"github.com/SocialGouv/iterion/pkg/auth"
 	"github.com/SocialGouv/iterion/pkg/bundle"
 	"github.com/SocialGouv/iterion/pkg/dispatcher"
 	"github.com/SocialGouv/iterion/pkg/schedgate"
@@ -16,10 +17,11 @@ import (
 )
 
 // registerTriggerRoutes wires the event-driven trigger subscription CRUD under
-// /api/v1/triggers. Local single-host scope (tenant ""); the cloud
-// multi-tenant variant is a team-scoped follow-on. All routes go through
-// requireAuth so a non-loopback bind can't mutate automation wiring
-// unauthenticated, mirroring the native/dispatcher route gating.
+// /api/v1/triggers. Tenant scope follows the request: the JWT's active team
+// in cloud mode, the local single-host scope ("") otherwise — mirroring
+// cloudBoardResolve. All routes go through requireAuth so a non-loopback
+// bind can't mutate automation wiring unauthenticated, mirroring the
+// native/dispatcher route gating.
 func (s *Server) registerTriggerRoutes() {
 	s.mux.Handle("GET /api/v1/triggers", s.requireAuth(http.HandlerFunc(s.handleListTriggers)))
 	s.mux.Handle("POST /api/v1/triggers", s.requireAuth(http.HandlerFunc(s.handleCreateTrigger)))
@@ -41,6 +43,14 @@ func (s *Server) handleTriggersHealth(w http.ResponseWriter, r *http.Request) {
 		"scheduler_running": s.triggerCoord.SchedulerRunning(),
 		"scheduler":         st,
 	})
+}
+
+// triggerTenant resolves the tenant scope of a trigger-route request: the
+// JWT's active team in cloud mode, "" in the local single-host scope (where
+// the identity carries no team).
+func (s *Server) triggerTenant(r *http.Request) string {
+	id, _ := auth.FromContext(r.Context())
+	return id.TeamID
 }
 
 // triggerFromInvocationReq selects one of the bot's manifest-declared
@@ -94,26 +104,27 @@ func (s *Server) handleTriggerFromInvocation(w http.ResponseWriter, r *http.Requ
 
 	now := time.Now().UTC()
 	id := uuid.NewString()
+	tenant := s.triggerTenant(r)
 	var (
 		sub     trigger.Subscription
 		derived bool
 	)
 	switch inv.Kind {
 	case bundle.InvocationKindSchedule:
-		sub, derived = trigger.FromScheduleInvocation(id, "", "", entry.Name, botHomeTriggerOrigin, inv, now)
+		sub, derived = trigger.FromScheduleInvocation(id, tenant, "", entry.Name, botHomeTriggerOrigin, inv, now)
 		if !derived {
 			dispatcher.WriteErr(w, http.StatusBadRequest, errors.New("schedule invocation has no suggested_cron — pass cron explicitly"))
 			return
 		}
 	case bundle.InvocationKindBoard:
-		sub, derived = trigger.FromBoardInvocation(id, "", "", entry.Name, botHomeTriggerOrigin, inv, now)
+		sub, derived = trigger.FromBoardInvocation(id, tenant, "", entry.Name, botHomeTriggerOrigin, inv, now)
 		if !derived {
 			dispatcher.WriteErr(w, http.StatusBadRequest,
 				errors.New("board invocation has no board: block — it is a plain dispatcher target, nothing to subscribe"))
 			return
 		}
 	case bundle.InvocationKindKeepalive:
-		sub, derived = trigger.FromKeepaliveInvocation(id, "", "", entry.Name, botHomeTriggerOrigin, inv, now)
+		sub, derived = trigger.FromKeepaliveInvocation(id, tenant, "", entry.Name, botHomeTriggerOrigin, inv, now)
 		if !derived {
 			dispatcher.WriteErr(w, http.StatusBadRequest,
 				errors.New("keepalive invocation has no valid interval — check the keepalive: block"))
@@ -125,7 +136,7 @@ func (s *Server) handleTriggerFromInvocation(w http.ResponseWriter, r *http.Requ
 		return
 	}
 
-	existing, err := s.cfg.TriggerStore.ListByBot(r.Context(), "", entry.Name)
+	existing, err := s.cfg.TriggerStore.ListByBot(r.Context(), tenant, entry.Name)
 	if err != nil {
 		dispatcher.WriteErr(w, http.StatusInternalServerError, err)
 		return
@@ -185,7 +196,11 @@ type emitTriggerReq struct {
 // 202 — the launch, if any, happens via the evaluator, so no run_id is
 // returned synchronously (use a direct webhook for a synchronous launch).
 func (s *Server) handleEmitTrigger(w http.ResponseWriter, r *http.Request) {
-	if s.triggerCoord == nil || s.triggerCoord.Bus() == nil {
+	bus := s.cfg.EventsBus
+	if bus == nil && s.triggerCoord != nil {
+		bus = s.triggerCoord.Bus()
+	}
+	if bus == nil {
 		dispatcher.WriteErr(w, http.StatusServiceUnavailable, errors.New("trigger spine not enabled"))
 		return
 	}
@@ -230,13 +245,14 @@ func (s *Server) handleEmitTrigger(w http.ResponseWriter, r *http.Request) {
 		eventID = "custom:" + req.Kind + ":" + uuid.NewString()
 	}
 	ev := trigger.Event{
-		ID:     eventID,
-		Source: trigger.SourceCustom,
-		Kind:   req.Kind,
-		Action: req.Action,
-		Repo:   req.Repo,
-		Actor:  req.Actor,
-		Labels: req.Labels,
+		ID:       eventID,
+		TenantID: s.triggerTenant(r),
+		Source:   trigger.SourceCustom,
+		Kind:     req.Kind,
+		Action:   req.Action,
+		Repo:     req.Repo,
+		Actor:    req.Actor,
+		Labels:   req.Labels,
 		Subject: trigger.Subject{
 			Type: req.Subject.Type, ID: req.Subject.ID, URL: req.Subject.URL,
 			Ref: req.Subject.Ref, Title: req.Subject.Title, Body: req.Subject.Body, State: req.Subject.State,
@@ -244,7 +260,7 @@ func (s *Server) handleEmitTrigger(w http.ResponseWriter, r *http.Request) {
 		Payload:    payload,
 		OccurredAt: time.Now().UTC(),
 	}
-	if err := s.triggerCoord.Bus().Publish(r.Context(), ev); err != nil {
+	if err := bus.Publish(r.Context(), ev); err != nil {
 		dispatcher.WriteErr(w, http.StatusInternalServerError, err)
 		return
 	}
@@ -291,13 +307,14 @@ func (s *Server) handleListTriggers(w http.ResponseWriter, r *http.Request) {
 		subs []trigger.Subscription
 		err  error
 	)
+	tenant := s.triggerTenant(r)
 	switch {
 	case q.Get("repo") != "":
-		subs, err = s.cfg.TriggerStore.ListByRepo(r.Context(), "", q.Get("repo"))
+		subs, err = s.cfg.TriggerStore.ListByRepo(r.Context(), tenant, q.Get("repo"))
 	case q.Get("bot") != "":
-		subs, err = s.cfg.TriggerStore.ListByBot(r.Context(), "", q.Get("bot"))
+		subs, err = s.cfg.TriggerStore.ListByBot(r.Context(), tenant, q.Get("bot"))
 	default:
-		subs, err = s.cfg.TriggerStore.ListByTenant(r.Context(), "")
+		subs, err = s.cfg.TriggerStore.ListByTenant(r.Context(), tenant)
 	}
 	if err != nil {
 		dispatcher.WriteErr(w, http.StatusInternalServerError, err)
@@ -311,6 +328,9 @@ func (s *Server) handleListTriggers(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleGetTrigger(w http.ResponseWriter, r *http.Request) {
 	sub, err := s.cfg.TriggerStore.Get(r.Context(), r.PathValue("id"))
+	if err == nil && sub.TenantID != s.triggerTenant(r) {
+		err = trigger.ErrSubscriptionNotFound
+	}
 	if errors.Is(err, trigger.ErrSubscriptionNotFound) {
 		dispatcher.WriteErr(w, http.StatusNotFound, err)
 		return
@@ -338,6 +358,7 @@ func (s *Server) handleCreateTrigger(w http.ResponseWriter, r *http.Request) {
 	now := time.Now().UTC()
 	sub := applyTriggerReq(trigger.Subscription{
 		ID:        uuid.NewString(),
+		TenantID:  s.triggerTenant(r),
 		Origin:    "operator",
 		Enabled:   true,
 		CreatedAt: now,
@@ -352,6 +373,9 @@ func (s *Server) handleCreateTrigger(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleUpdateTrigger(w http.ResponseWriter, r *http.Request) {
 	cur, err := s.cfg.TriggerStore.Get(r.Context(), r.PathValue("id"))
+	if err == nil && cur.TenantID != s.triggerTenant(r) {
+		err = trigger.ErrSubscriptionNotFound
+	}
 	if errors.Is(err, trigger.ErrSubscriptionNotFound) {
 		dispatcher.WriteErr(w, http.StatusNotFound, err)
 		return
@@ -378,7 +402,13 @@ func (s *Server) handleUpdateTrigger(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleDeleteTrigger(w http.ResponseWriter, r *http.Request) {
-	err := s.cfg.TriggerStore.Delete(r.Context(), r.PathValue("id"))
+	cur, err := s.cfg.TriggerStore.Get(r.Context(), r.PathValue("id"))
+	if err == nil && cur.TenantID != s.triggerTenant(r) {
+		err = trigger.ErrSubscriptionNotFound
+	}
+	if err == nil {
+		err = s.cfg.TriggerStore.Delete(r.Context(), r.PathValue("id"))
+	}
 	if errors.Is(err, trigger.ErrSubscriptionNotFound) {
 		dispatcher.WriteErr(w, http.StatusNotFound, err)
 		return

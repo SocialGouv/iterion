@@ -1,7 +1,10 @@
 name: app-dev
 display_name: Appy
 icon: 🏗️
-version: 0.1.0
+version: 0.1.1
+## 0.1.1 — ADR-082 Phase 2 (sandbox-by-default): removed the `sandbox:`
+## block (image pin, ~/.claude mount, claude post_create gate) — isolation
+## is the platform's job; gh/glab join crane in the pinned devbox.json.
 ## 0.1.0 — initial release. ONE bot, two operator modes on the ADR-058
 ## v2 campaign shape: `interview` (a Nexie-style conversational loop
 ## converges + commits SPEC.md before development) and `autonomous`

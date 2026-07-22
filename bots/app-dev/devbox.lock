@@ -1,9 +1,95 @@
 {
   "lockfile_version": "1",
   "packages": {
+    "gh@2.96.0": {
+      "last_modified": "2026-07-08T21:13:06Z",
+      "resolved": "github:NixOS/nixpkgs/389ed85304b281ca7f306cf8a1eb4378651ca44e#gh",
+      "source": "devbox-search",
+      "version": "2.96.0",
+      "systems": {
+        "aarch64-darwin": {
+          "outputs": [
+            {
+              "name": "out",
+              "path": "/nix/store/5m3slxi84h97r5hzmy4dhfksl9cc166a-gh-2.96.0",
+              "default": true
+            }
+          ],
+          "store_path": "/nix/store/5m3slxi84h97r5hzmy4dhfksl9cc166a-gh-2.96.0"
+        },
+        "aarch64-linux": {
+          "outputs": [
+            {
+              "name": "out",
+              "path": "/nix/store/85s40vacs1ajn0x7b3vszvlqwnflh0dq-gh-2.96.0",
+              "default": true
+            }
+          ],
+          "store_path": "/nix/store/85s40vacs1ajn0x7b3vszvlqwnflh0dq-gh-2.96.0"
+        },
+        "x86_64-darwin": {
+          "outputs": [
+            {
+              "name": "out",
+              "path": "/nix/store/waa7fl1d466lkihg89p60iisjwynyfb7-gh-2.96.0",
+              "default": true
+            }
+          ],
+          "store_path": "/nix/store/waa7fl1d466lkihg89p60iisjwynyfb7-gh-2.96.0"
+        },
+        "x86_64-linux": {
+          "outputs": [
+            {
+              "name": "out",
+              "path": "/nix/store/fz2h6h3cgw645ighi31zdjwbkdzmaav7-gh-2.96.0",
+              "default": true
+            }
+          ],
+          "store_path": "/nix/store/fz2h6h3cgw645ighi31zdjwbkdzmaav7-gh-2.96.0"
+        }
+      }
+    },
     "github:NixOS/nixpkgs/nixpkgs-unstable": {
       "last_modified": "2026-07-20T13:48:30Z",
       "resolved": "github:NixOS/nixpkgs/421eebfd0ec7bccd4abe826ce62d7e6e83129493?lastModified=1784555310&narHash=sha256-%2FFCliTPgiuV1owejZFNx3Ch9irdvkOfOFl%2BHHZ%2BDrtM%3D"
+    },
+    "glab@1.108.0": {
+      "last_modified": "2026-07-16T04:38:10Z",
+      "resolved": "github:NixOS/nixpkgs/6368bc923cec55a5f78960ade0cb4dd99580e087#glab",
+      "source": "devbox-search",
+      "version": "1.108.0",
+      "systems": {
+        "aarch64-darwin": {
+          "outputs": [
+            {
+              "name": "out",
+              "path": "/nix/store/g1pxpc8mc85b5njadwc7c4ji9z17gs6m-glab-1.108.0",
+              "default": true
+            }
+          ],
+          "store_path": "/nix/store/g1pxpc8mc85b5njadwc7c4ji9z17gs6m-glab-1.108.0"
+        },
+        "aarch64-linux": {
+          "outputs": [
+            {
+              "name": "out",
+              "path": "/nix/store/qsh8x8h14cbrkkmgxzgh8kz2qpiqh16f-glab-1.108.0",
+              "default": true
+            }
+          ],
+          "store_path": "/nix/store/qsh8x8h14cbrkkmgxzgh8kz2qpiqh16f-glab-1.108.0"
+        },
+        "x86_64-linux": {
+          "outputs": [
+            {
+              "name": "out",
+              "path": "/nix/store/3czfggb51vdif2fia979hcv3cl9cib4p-glab-1.108.0",
+              "default": true
+            }
+          ],
+          "store_path": "/nix/store/3czfggb51vdif2fia979hcv3cl9cib4p-glab-1.108.0"
+        }
+      }
     },
     "go-containerregistry@0.21.6": {
       "last_modified": "2026-07-12T10:08:30Z",

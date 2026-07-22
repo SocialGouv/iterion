@@ -4292,73 +4292,22 @@ workflow secured_renovacy:
   ## surface it tries to surface via security_audit. Letting agents
   ## execute that chain on the host means a malicious package's
   ## postinstall script runs with the operator's user permissions.
+  ## Isolation itself is the platform default (ADR-082); the block
+  ## below only pins the image and the run env.
   ##
-  ## We pin an explicit `image:` (inline mode) instead of `mode: auto`
-  ## because `auto` reuses the target project's
-  ## .devcontainer/devcontainer.json — and many devcontainers (e.g.
-  ## modjo's) rely on the `features:` block to layer in node/npm,
-  ## which iterion does not honour yet (devcontainer features support
-  ## is V2 work). The result was a container with no npm, postCreate
-  ## that "succeeded" with claude-code never installed, and runs
-  ## ending instantly with "claude session ended without result".
-  ##
-  ## `iterion-sandbox-full` ships node 22 + npm, Go, Python 3, pnpm,
-  ## and the usual devops tooling on top of the slim base (git, jq,
-  ## curl, devbox/Nix). Defaulting to `full` keeps the bot's "any
-  ## ecosystem" promise true out of the box — slim image is JS-only-
-  ## friendly and forces the upgrade agents to bootstrap missing
-  ## toolchains via devbox/Nix at runtime (30-90s per call). When
-  ## an operator KNOWS their target repos are JS-only, they can swap
-  ## back to slim:latest to save image weight; the upgrade nodes
-  ## still work for that subset.
-  ##
-  ## We layer claude-code on top via post_create regardless of image.
-  ##
-  ## Mounting `${localEnv:HOME}/.claude` into the container's
-  ## `/home/devbox/.claude` carries the operator's existing OAuth /
-  ## API-key credentials so the in-sandbox claude CLI can talk to
-  ## Anthropic without a fresh login flow per run.
-  ##
-  ## Network stays default (egress allowed) because the workflow MUST
-  ## reach the npm registry, GitHub release notes, and osv-scanner's
-  ## OSV database. A future tightening would set
-  ## `network.preset: package-managers` once that preset lands.
+  ## Why the `image:` pin survives ADR-082 Phase 2: plain `auto`
+  ## reuses the target project's .devcontainer/devcontainer.json — and
+  ## many devcontainers (e.g. modjo's) rely on the `features:` block
+  ## to layer in node/npm, which iterion does not honour yet
+  ## (devcontainer features support is V2 work). That produced
+  ## containers with no npm and runs ending instantly.
+  ## `iterion-sandbox-full` ships node + npm, Go, Python 3, pnpm and
+  ## the usual devops tooling on top of the slim base, keeping the
+  ## bot's "any ecosystem" promise true out of the box; upgrade agents
+  ## still bootstrap anything missing via devbox/Nix at runtime.
   sandbox:
-    ## Image is `:latest` for convenience; pin to an immutable
-    ## digest (`ghcr.io/socialgouv/iterion-sandbox-full@sha256:...`)
-    ## once the recipe goes to production so identical runs land on
-    ## identical toolchains. `iterion-sandbox-full` layers Go, Python,
-    ## pnpm and the multi-stack devops tools onto the slim base
-    ## (Node 22, npm, git, jq, curl, devbox/Nix). Operators targeting
-    ## JS-only repos can downgrade to `iterion-sandbox-slim:latest`
-    ## to save image weight; agents still bootstrap missing
-    ## toolchains via devbox/Nix at runtime in either case.
-    image: "ghcr.io/socialgouv/iterion-sandbox-full:latest"
-    user: "1000:1000"
-    ## R&D phase: egress is fully open. Every domain the
-    ## downstream agents actually hit (registries, OSV API,
-    ## raw.githubusercontent.com, github.com/releases, deps.dev,
-    ## telemetry from the SDKs, …) is allowed. Once we've collected
-    ## the real domain set from a few production runs, convert
-    ## this to `mode: allowlist` with an explicit, observed-and-
-    ## safe rule list (probably built on top of the
-    ## `iterion-default` preset + project-specific additions).
-    network:
-      mode: open
+    image: "ghcr.io/socialgouv/iterion-sandbox-full:edge"
     env:
-      CLAUDE_CONFIG_DIR: "/home/devbox/.claude"
-      ## Provider routing for in-container `claude` is handled by
-      ## iterion's claude_code backend per-agent: every Claude-side
-      ## agent in this recipe declares `provider: "${RESCUE_PROVIDER:-
-      ## zai}"`, which iterion's anthropicCredEnvForCLI translates
-      ## into `--env ANTHROPIC_BASE_URL=… --env ANTHROPIC_AUTH_TOKEN=…`
-      ## on the docker exec when `ZAI_API_KEY` is set on the daemon
-      ## process. We therefore do NOT propagate ANTHROPIC_* via
-      ## sandbox.env here — an empty `${localEnv:ANTHROPIC_BASE_URL}`
-      ## (the common case when the daemon is on Anthropic OAuth)
-      ## would set ANTHROPIC_BASE_URL="" in the container, which
-      ## the claude CLI treats as a real (broken) URL and short-
-      ## circuits "model not found" before hitting the api.
       ## Git identity for in-sandbox `git commit` calls. Without
       ## these the pipeline's commit step fails with "Author
       ## identity unknown" but the shell tool would still report
@@ -4393,49 +4342,13 @@ workflow secured_renovacy:
       UV_CACHE_DIR: "/tmp/iterion-renovacy/uv-cache"
       CARGO_HOME: "/tmp/iterion-renovacy/cargo"
       TMPDIR: "/tmp/iterion-renovacy/tmp"
-    ## Bind mount of ~/.claude into the sandbox. The mount is
-    ## read-write (intentionally — see below).
-    ##
-    ## The sandbox needs to READ the operator's OAuth / credential
-    ## files for claude_code. Session 19 originally added `,readonly`
-    ## here on the assumption that "claude_code only writes for
-    ## refresh-token rotation — handled by the host CLI between runs".
-    ## That assumption was wrong: claude_code ALSO writes per-session
-    ## conversation transcripts under `~/.claude/projects/<hash>/
-    ## <session_id>.jsonl`, and iterion's formatter pass invokes
-    ## `claude --resume <session_id>` to normalise the agent's free-
-    ## form response into structured JSON. With the mount read-only,
-    ## the agent's session files were never persisted, the formatter
-    ## resume failed with "No conversation found", and the structured
-    ## output came back EMPTY — surfacing one layer up as
-    ## `raw_output_len: 0` plus a "missing required field …"
-    ## validation error on every long-output node (detect_stack,
-    ## discover_outdated, …).
-    ##
-    ## Trade-off accepted (R&D phase): a malicious package's
-    ## postinstall script running in this sandbox CAN now tamper
-    ## with `~/.claude` (rotate tokens, plant fake credentials,
-    ## etc.) since the mount is writable. The exfiltration risk was
-    ## already present (read access alone is enough for that), so the
-    ## marginal security loss from re-enabling write is small.
-    ## Production hardening: TODO mount a writable tmpfs/bind at
-    ## `/home/devbox/.claude/projects` ON TOP of a read-only mount of
-    ## the parent — that lets sessions write to the overlay while
-    ## credentials stay tamper-proof. Iterion's sandbox spec
-    ## currently only supports `type=bind` (no tmpfs); the overlay
-    ## bind would need a per-run scratch dir on the host.
-    mounts: ["type=bind,source=${localEnv:HOME}/.claude,target=/home/devbox/.claude,consistency=cached"]
-    ## post_create:
-    ##   - install claude-code CLI (the agentic backbone). Pin to
-    ##     a known-good version (currently 2.1.138 per `npm view
-    ##     @anthropic-ai/claude-code version` on 2026-05-11) once
-    ##     the recipe goes to production; `latest` here lets the
-    ##     CLI drift between runs.
-    ##   - activate corepack so yarn/pnpm/bun shims resolve from
-    ##     the project's `packageManager` field without each
-    ##     downstream agent re-discovering the right invocation.
-    ##     Corepack ships with Node 22 (no extra install).
-    post_create: "set -e; claude --version >/dev/null 2>&1 || sudo npm install -g @anthropic-ai/claude-code@latest; claude --version >/dev/null 2>&1 || { echo 'claude install verification failed' >&2; exit 1; }; sudo corepack enable 2>/dev/null || true; corepack prepare --activate 2>/dev/null || true; mkdir -p /tmp/iterion-renovacy/go /tmp/iterion-renovacy/go-build /tmp/iterion-renovacy/go-mod /tmp/iterion-renovacy/xdg-cache /tmp/iterion-renovacy/pip-cache /tmp/iterion-renovacy/uv-cache /tmp/iterion-renovacy/cargo /tmp/iterion-renovacy/tmp 2>/dev/null || true"
+    ## post_create: activate corepack so yarn/pnpm/bun shims resolve
+    ## from the project's `packageManager` field without each
+    ## downstream agent re-discovering the right invocation (corepack
+    ## ships with Node — no extra install), and pre-create the cache
+    ## dirs the env block points at. The claude CLI is baked into the
+    ## sandbox images — no install gate needed.
+    post_create: "set -e; sudo corepack enable 2>/dev/null || true; corepack prepare --activate 2>/dev/null || true; mkdir -p /tmp/iterion-renovacy/go /tmp/iterion-renovacy/go-build /tmp/iterion-renovacy/go-mod /tmp/iterion-renovacy/xdg-cache /tmp/iterion-renovacy/pip-cache /tmp/iterion-renovacy/uv-cache /tmp/iterion-renovacy/cargo /tmp/iterion-renovacy/tmp 2>/dev/null || true"
 
   budget:
     max_parallel_branches: 4

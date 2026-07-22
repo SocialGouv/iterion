@@ -48,6 +48,7 @@ import (
 	"github.com/SocialGouv/iterion/pkg/server/cloudpublisher"
 	"github.com/SocialGouv/iterion/pkg/store"
 	mongostore "github.com/SocialGouv/iterion/pkg/store/mongo"
+	"github.com/SocialGouv/iterion/pkg/trigger"
 	"github.com/SocialGouv/iterion/pkg/usernotify"
 	usernotifywebpush "github.com/SocialGouv/iterion/pkg/usernotify/webpush"
 	"github.com/SocialGouv/iterion/pkg/valkey"
@@ -351,16 +352,19 @@ func runServer(cmd *cobra.Command, _ []string) error {
 	// per-user prefs and the sent-episode dedup claims; the sweep seam
 	// reconciles episodes the lossy bus dropped. Enabled iff the VAPID
 	// keypair is configured (ITERION_WEBPUSH_*).
+	// The NATS events bus is the process-wide trigger-event spine: the
+	// board trigger evaluator AND the usernotify dispatcher both ride it,
+	// so it is built unconditionally (not only when web-push is on).
 	var eventsBus eventbus.Bus
+	eventsBus, err = eventbus.NewNATSBus(natsConn.NATS(), eventbus.NATSOptions{Logger: logger})
+	if err != nil {
+		return fmt.Errorf("server: build events bus: %w", err)
+	}
 	var pushSubs usernotifywebpush.SubscriptionStore
 	var notifPrefs usernotify.PrefsStore
 	var notifSent usernotify.SentStore
 	var notifiableRuns usernotify.ListNotifiableRuns
 	if cfg.WebPush.Enabled() {
-		eventsBus, err = eventbus.NewNATSBus(natsConn.NATS(), eventbus.NATSOptions{Logger: logger})
-		if err != nil {
-			return fmt.Errorf("server: build events bus: %w", err)
-		}
 		subsStore := usernotifywebpush.NewMongoSubscriptionStore(st.DB())
 		prefsStore := usernotify.NewMongoPrefsStore(st.DB())
 		sentStore := usernotify.NewMongoSentStore(st.DB())
@@ -450,6 +454,7 @@ func runServer(cmd *cobra.Command, _ []string) error {
 		Store:                  st,
 		CloudBoardFor:          func(tenantID string) native.BoardStore { return boardmongo.New(st.DB(), tenantID) },
 		CloudBoardCoordinator:  boardmongo.NewCoordinator(st.DB()),
+		TriggerStore:           trigger.NewMongoSubscriptionStore(st.DB()),
 		ScheduledBots:          cloudsched.NewMongoStore(st.DB()),
 		OrgPurgeSweeper:        orgPurgeSweeper,
 		Alerts:                 alertSettings,
@@ -619,6 +624,7 @@ func buildCloudStores(ctx context.Context, st *mongostore.Store, logger *iterlog
 		{"org_usage", func(c context.Context) error { return orgusage.EnsureSchema(c, st.DB()) }},
 		{"audit", func(c context.Context) error { return audit.EnsureSchema(c, st.DB()) }},
 		{"board", func(c context.Context) error { return boardmongo.EnsureSchema(c, st.DB()) }},
+		{"trigger_subscriptions", func(c context.Context) error { return trigger.NewMongoSubscriptionStore(st.DB()).EnsureSchema(c) }},
 		{"scheduled_bots", func(c context.Context) error { return cloudsched.EnsureSchema(c, st.DB()) }},
 		{"config_shares", func(c context.Context) error { return configshare.EnsureSchema(c, st.DB()) }},
 	}

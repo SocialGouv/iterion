@@ -152,6 +152,66 @@ func (s *valkeyBoardMCPTokenStore) lookup(token string) (boardMCPGrant, bool) {
 	return grant, true
 }
 
+// --- forge-publish run tokens ------------------------------------------------
+
+const forgePublishTokenKeyPrefix = "iterion:forgepub:tok:"
+
+// valkeyForgePublishTokenStore shares per-run forge-publish grants across
+// server replicas (the run's POST is load-balanced to any pod while the
+// grant was minted at launch time elsewhere).
+type valkeyForgePublishTokenStore struct {
+	rdb    redis.UniversalClient
+	logger *iterlog.Logger
+}
+
+func newValkeyForgePublishTokenStore(rdb redis.UniversalClient, logger *iterlog.Logger) *valkeyForgePublishTokenStore {
+	return &valkeyForgePublishTokenStore{rdb: rdb, logger: logger}
+}
+
+func (s *valkeyForgePublishTokenStore) Register(token string, g ForgePublishGrant) error {
+	b, err := json.Marshal(g)
+	if err != nil {
+		return fmt.Errorf("marshal forge publish grant: %w", err)
+	}
+	ctx, cancel := valkeyCtx()
+	defer cancel()
+	// Redis TTL replaces the in-memory sweep. The grant is safe to name in
+	// the error (team/conn/repo); the token is not.
+	if err := s.rdb.Set(ctx, forgePublishTokenKeyPrefix+token, b, forgePublishDefaultTTL).Err(); err != nil {
+		return fmt.Errorf("store forge publish token (repo=%s): %w", g.Repo, err)
+	}
+	return nil
+}
+
+// Revoke is best-effort: the Redis TTL is the backstop that reaps a missed
+// delete, so a failure is logged (token prefix only) rather than propagated.
+func (s *valkeyForgePublishTokenStore) Revoke(token string) {
+	ctx, cancel := valkeyCtx()
+	defer cancel()
+	if err := s.rdb.Del(ctx, forgePublishTokenKeyPrefix+token).Err(); err != nil && s.logger != nil {
+		prefix := token
+		if len(prefix) > 8 {
+			prefix = prefix[:8]
+		}
+		s.logger.Warn("forge publish: revoke token %s…: %v (best-effort — Redis TTL %s is the backstop)", prefix, err, forgePublishDefaultTTL)
+	}
+}
+
+func (s *valkeyForgePublishTokenStore) lookup(token string) (ForgePublishGrant, bool) {
+	ctx, cancel := valkeyCtx()
+	defer cancel()
+	b, err := s.rdb.Get(ctx, forgePublishTokenKeyPrefix+token).Bytes()
+	if err != nil {
+		return ForgePublishGrant{}, false
+	}
+	var g ForgePublishGrant
+	if json.Unmarshal(b, &g) != nil {
+		return ForgePublishGrant{}, false
+	}
+	// ExpiresAt left zero: Redis already evicted the key if it lapsed.
+	return g, true
+}
+
 // --- auth rate limit (atomic token bucket) ----------------------------------
 
 const rateLimitKeyPrefix = "iterion:rl:"

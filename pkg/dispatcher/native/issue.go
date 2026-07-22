@@ -111,6 +111,10 @@ type ExternalRef struct {
 	Number       int    `json:"number"`
 	URL          string `json:"url,omitempty"`
 	State        string `json:"state,omitempty"`
+	// Author is the forge login that opened the external issue — the identity
+	// the author-trust gate classified at ingest, kept so operators can see
+	// WHO requested a parked card before approving its triage.
+	Author string `json:"author,omitempty"`
 }
 
 // Comment is a single append-only note on a native issue. Author is a

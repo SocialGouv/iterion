@@ -79,6 +79,17 @@ func (s *Server) ListenAndServe() error {
 		}
 		s.triggerCoord = StartTriggerCoordinator(s.cfg.NativeTrackerStore, s.cfg.TriggerStore, nudger, launcher, s.scheduleGate(), s.cfg.EventsBus, s.logger)
 	}
+	// Cloud counterpart: the multi-tenant Mongo board spine (board_events
+	// poll-tail → NATS bus → evaluator with the atomic consume effect).
+	// Distinct from the local branch above — cloud wires no
+	// NativeTrackerStore; the board dispatcher below stays the promote
+	// path's launch authority and 5s safety net.
+	if s.cfg.NativeTrackerStore == nil && s.cfg.CloudBoardCoordinator != nil && s.cfg.TriggerStore != nil && s.runs != nil {
+		s.cloudTriggerCoord = StartCloudTriggerCoordinator(
+			s.cfg.CloudBoardCoordinator, s.cfg.TriggerStore,
+			newServiceLauncher(s.runs, s.effectivePaths(), s.logger),
+			s.cfg.EventsBus, s.logger)
+	}
 	// Wire the run-completion source onto the process's single event spine
 	// (the injected EventsBus, which the trigger coordinator also rides
 	// when active; its own InProcBus otherwise) so every consumer —
@@ -348,6 +359,9 @@ func (s *Server) Shutdown(ctx context.Context) error {
 	}
 	if s.watchCoord != nil {
 		s.watchCoord.Close()
+	}
+	if s.cloudTriggerCoord != nil {
+		s.cloudTriggerCoord.Close()
 	}
 	if s.triggerCoord != nil {
 		s.triggerCoord.Close()

@@ -273,10 +273,18 @@ func (s *Service) launchDetached(parent context.Context, runID string, spec Laun
 	if err != nil {
 		return nil, fmt.Errorf("runview: create run: %w", err)
 	}
-	if spec.ParentRunID != "" {
+	// The runner subprocess (`iterion run`) has no flag to carry either of
+	// these, so they are stamped here or not at all — a dropped SourceRef
+	// leaves a scheduled run reading as "manual" and invisible to the
+	// overlap gate's source.schedule_id query.
+	if spec.ParentRunID != "" || spec.SourceRef != nil {
 		created.ParentRunID = spec.ParentRunID
+		if spec.SourceRef != nil {
+			src := *spec.SourceRef
+			created.Source = &src
+		}
 		if err := s.store.SaveRun(context.Background(), created); err != nil {
-			return nil, fmt.Errorf("runview: save parent run: %w", err)
+			return nil, fmt.Errorf("runview: save run provenance: %w", err)
 		}
 	}
 

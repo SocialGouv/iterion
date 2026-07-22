@@ -46,7 +46,10 @@ scanner toolchain (js-x-ray + osv-scanner + trivy + npm/pip/go SCA). On a
 bare host the scanners are absent → `coverage_gate` fails the run rather
 than reporting a 0-finding façade. Build it from
 [`sandbox/sec/Dockerfile`](../../sandbox/sec/Dockerfile) and
-`docker tag` it to the ref above until CI publishes it.
+`docker tag` it to the ref above until CI publishes it. The image pin is
+the only sandbox setting the bot carries (ADR-082): isolation, the
+claude CLI and host-state mounts are platform defaults; the forge-token
+env passthrough remains until Phase 3 delivers tokens as file secrets.
 
 ## Shared cache
 

@@ -268,6 +268,7 @@ dispatcher routes on it), never the persona.
 | Fini | `feature-gap-fill` |
 | Vigie | `feed-watch` |
 | Heartbeat (always-on demo) | `heartbeat` |
+| Triagy | `issue-triage` |
 | Nested Subbots Demo | `nested-subbots-demo` |
 | Pipeline Board Demo | `pipeline-board-demo` |
 | Revi (converse) | `revi-converse` |
@@ -509,7 +510,7 @@ forge-mr-create.
   code↔doc drift — or when a repo has NO docs yet and needs an initial
   set authored from the code. Fixes the DOCS only (never code logic)
   and commits.
-- **Vars**: `audit_cache_path` (string), `baseline` (string), `bundle_self_path` (string), `cli_surface_globs` (string), `code_scope_globs` (string), `coverage_target_pct` (int), `diagnostic_surface_globs` (string), `diff_since` (string), `dismissed_path` (string), `doc_globs` (string), `docs_dir` (string), `excluded_dirs` (string), `go_comment_globs` (string), `issue_id` (string), `max_drift_candidates` (int), `max_passes` (int), `max_review_chunk_docs` (int), `mr_base` (string), `mr_branch` (string), `open_mr` (bool), `scope_notes` (string), `scratch_dir` (string), `source_issue_ref` (string), `workspace_dir` (string)
+- **Vars**: `audit_cache_path` (string), `baseline` (string), `bundle_self_path` (string), `cli_surface_globs` (string), `code_scope_globs` (string), `coverage_target_pct` (int), `diagnostic_surface_globs` (string), `diff_since` (string), `dismissed_path` (string), `doc_globs` (string), `docs_dir` (string), `excluded_dirs` (string), `go_comment_globs` (string), `include_unverifiable_symbols` (bool), `issue_id` (string), `max_drift_candidates` (int), `max_passes` (int), `max_review_chunk_docs` (int), `mr_base` (string), `mr_branch` (string), `open_mr` (bool), `scope_notes` (string), `scratch_dir` (string), `source_issue_ref` (string), `workspace_dir` (string)
 - **Path**: `bots/docs-refresh/main.bot`
 
 ### `evolve` — Evoly
@@ -654,6 +655,28 @@ rather than one immortal run. No LLM, no API keys.
 
 - **Path**: `examples/keepalive/main.bot`
 
+### `issue-triage` — Triagy
+
+Lightweight single-shot card triage. ONE cheap read-classify-stamp
+agent: reads a fresh board card, classifies it against the generated
+bot catalog's decision tree, stamps the handler bot on the card
+(typed Bot field via set_bot) plus vocabulary-consistent labels, and
+leaves a one-paragraph routing comment. The card STAYS in inbox —
+launching is the operator's drag to Ready (the dispatcher claims the
+stamped bot). No confident fit → needs-manual-triage, Bot unset.
+Auto-fires via the trigger spine on cards carrying triage:auto
+(consumed one-shot); re-add the label to re-triage.
+
+- **Use when**:
+  Never dispatch work TO it — Triagy routes work to OTHER bots. It
+  fires automatically on trusted-author forge issues synced to the
+  board (triage:auto), on an operator's "Approve & triage" of an
+  external issue (needs:approval → triage:auto swap), or on any card
+  you hand-label triage:auto. Use when you want fresh issues to arrive
+  pre-routed so launching is a single drag to Ready.
+- **Vars**: `issue_id` (string, required)
+- **Path**: `bots/issue-triage/main.bot`
+
 ### `nested-subbots-demo` — Nested Subbots Demo
 
 Zero-LLM demo of NESTED subbots (a subbot inside a subbot): main runs
@@ -731,7 +754,7 @@ or commits code — that is the improve-loops' job (Billy / Willy).
   auto-fixed. Read-only: Revi reports; Billy (branch-improve-loop)
   reviews AND fixes AND commits.
 - **Triggers**: review-pr, pr-review, review
-- **Vars**: `base_ref` (string), `max_findings` (int), `post_to_board` (bool), `pr_review_mode` (string), `pr_url` (string), `report_path` (string), `scope_notes` (string), `severity_threshold` (string), `workspace_dir` (string)
+- **Vars**: `base_ref` (string), `forge_publish_token` (string), `forge_publish_url` (string), `max_findings` (int), `post_to_board` (bool), `pr_review_mode` (string), `pr_url` (string), `report_path` (string), `scope_notes` (string), `severity_threshold` (string), `workspace_dir` (string)
 - **Path**: `bots/review-pr/main.bot`
 
 ### `rgaa-audit` — Acci

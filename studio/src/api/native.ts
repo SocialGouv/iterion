@@ -75,6 +75,9 @@ export interface ExternalLink {
   number: number;
   url?: string;
   state?: string;
+  // Forge login that opened the linked issue (identity behind the
+  // author-trust gate; shown on parked needs:approval cards).
+  author?: string;
 }
 
 // ExternalLinkInput is the WRITE shape for repo-first scoping: operator
