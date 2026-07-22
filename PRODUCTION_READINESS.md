@@ -179,12 +179,11 @@ review cadence kicks in.
 
 ## Reference
 
-- [.plans/bug-review-2026-05-16.md](.plans/bug-review-2026-05-16.md) —
-  Sprint-5 findings.
-- [.plans/bug-review-2026-05-17.md](.plans/bug-review-2026-05-17.md) —
-  Sprint-6 findings.
-- [.plans/bug-review-2026-05-17-sprint7.md](.plans/bug-review-2026-05-17-sprint7.md) —
-  Sprint-7 findings (Go + editor TS first audit).
+- `.plans/bug-review-2026-05-16.md` — Sprint-5 findings.
+- `.plans/bug-review-2026-05-17.md` — Sprint-6 findings.
+- `.plans/bug-review-2026-05-17-sprint7.md` — Sprint-7 findings (Go +
+  editor TS first audit). *(The `.plans/` audit notes are local working
+  notes — gitignored, not tracked in the repo.)*
 - [SECURITY.md](SECURITY.md) — coordinated-disclosure channel.
 - [docs/cloud-backup.md](docs/cloud-backup.md) — Mongo + blob backup
   runbook.
