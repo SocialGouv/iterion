@@ -1,7 +1,25 @@
 name: docs-refresh
 display_name: Doki
 icon: 📚
-version: 2.2.1
+version: 2.3.1
+## 2.3.1 — verified pairs ride a FILE. update_audit_cache took the
+## manifest's verified_pairs inline as argv; a large repo yields
+## thousands of pairs and the substituted command blew the kernel
+## per-argument limit — `fork/exec bash: argument list too long`,
+## crash-looping the terminal node (observed live: cloud run 019f86ce,
+## ~4200 pairs). build_manifest now writes them to
+## <scratch>/verified_pairs.json (new verified_pairs_file /
+## verified_pairs_count outputs) and update_audit_cache reads the path.
+## 2.3.0 — DISMISSALS LEDGER (v2 revival of the v1 dismissed-pairs
+## accumulator). A zero-commit adjudication pass left the manifest
+## byte-identical, so the severity-sorted chunker re-surfaced the SAME
+## candidates and the run livelocked re-judging them until max_passes
+## (observed live: cloud run 019f86ce, 4 passes over the same 41
+## cli_flag false positives). The campaign now records every dismissed
+## candidate in vars.dismissed_path ({doc, kind, value, reason});
+## build_manifest excludes ledger entries before sort/chunk (new
+## dismissed_excluded output field), so the chunk window advances and
+## convergence means "all chunks fixed-or-dismissed".
 ## 2.2.1 — fix build_manifest list inputs: pass doc_files/cli_commands/
 ## cli_flags/diagnostic_codes as argv section markers instead of env
 ## assignments. The engine substitutes an all-string list as
