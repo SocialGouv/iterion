@@ -73,19 +73,27 @@ in per-run sandbox pods (kubernetes driver + ADR-070 per-run credential
 Secret). Known blockers to resolve first, all confirmed by code
 inspection:
 
-1. **Worktree git + push**: the k8s driver tar-copies the workspace
-   into the pod's emptyDir; the parent `.git` object store and the
-   clone's `iterion-credentials` store stay on the runner, so
-   in-sandbox git (and `finalize_mr`-style `git push`) is not wired —
-   needs the init-container/PVC mechanism (or a git-credential/HTTP
-   proxy) called out in `sandbox_mounts.go`.
+1. **Worktree git + push** — RESOLVED (feat/sandbox-cloud-git). No
+   init-container/PVC needed: the driver already tar-copies the *clone
+   root* (real `.git` + `origin` + the `iterion-credentials` store)
+   into the pod at the workspace path; the branch adds the missing
+   halves — a post-populate fixup re-points the copied clone's
+   `credential.helper` at the pod-local credential file (the recorded
+   host path doesn't exist in-pod) and drops stale `.git/worktrees/`
+   registrations, and the runner's mid-run git-credential refresher
+   writes rotated forge tokens THROUGH into the pod copy via the new
+   `sandbox.WorkspaceFileRefresher` exec seam (stdin-streamed). Local
+   docker worktree runs keep the bind-mount mechanism untouched.
 2. **ask-user transport**: `__mcp-ask-user` is stdio-only and disabled
    under any sandbox; needs an HTTP fallback mirroring the board MCP
    transport (`/api/v1/mcp/board` + per-run token).
-3. **Forfait auth robustness**: in-pod claude auth rides a single
-   exec-env `CLAUDE_CODE_OAUTH_TOKEN` (the `CLAUDE_CONFIG_DIR` file
-   fallback points at a host path that doesn't exist in the pod);
-   mid-run refresh only re-reads per spawn.
+3. **Forfait auth robustness** — RESOLVED (feat/sandbox-cloud-git).
+   The materialised `.credentials.json` ships into the pod on the
+   ADR-070 file-secret channel and is seeded into a WRITABLE
+   `CLAUDE_CONFIG_DIR` (`/tmp/iterion-claude-config`) the claude_code
+   delegate targets for sandboxed spawns; the per-spawn env token
+   stays first-precedence, and the runner's forfait refresher rewrites
+   both the Secret and the in-pod copy on each rotation.
 4. **Runner-identity bots** (review-pr/Revi, revi-converse): they use
    the pod's glab/gh + env credentials by design; under default-on
    they need the CLI in the image (`-full` has both) and the forge

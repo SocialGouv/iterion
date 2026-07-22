@@ -667,6 +667,26 @@ Architecture:
   has no host filesystem to bind-mount, so it copies. A git worktree's
   `.git` is a pointer file, so the *clone root* is copied (real `.git` +
   `origin`) so the sandboxed bot can commit and push.
+- **In-pod git auth (ADR-082 Phase 3 blocker 1).** After the copy, the
+  driver re-anchors the clone's git plumbing on the pod path: the
+  `credential.helper store --file=…` entry (recorded with the runner's
+  HOST absolute path) is re-pointed at the pod-local
+  `.git/iterion-credentials`, and stale `.git/worktrees/` registrations
+  are removed. Because the workspace is a COPY, the runner's mid-run
+  git-credential refresher also *writes through*: on each rotation of the
+  forge token it rewrites the pod's credential store via the driver's
+  `RefreshWorkspaceFile` seam (value streamed over stdin, never argv) —
+  so a `git push` hours into the run still authenticates.
+- **In-pod Claude forfait (blocker 3).** A run whose sealed bundle
+  carries a materialised Claude Code OAuth `.credentials.json` ships it
+  into the pod on the ADR-070 file-secret channel
+  (`/run/iterion/secrets/claude-code-oauth/.credentials.json`,
+  read-only, auto-updated on Secret refresh), then the runtime seeds a
+  WRITABLE copy at `/tmp/iterion-claude-config` and the claude_code
+  delegate points sandboxed CLI spawns at it via `CLAUDE_CONFIG_DIR`
+  (the per-spawn `CLAUDE_CODE_OAUTH_TOKEN` env stays as the
+  first-precedence path). The runner's forfait refresher rewrites both
+  the Secret and the seeded copy mid-run.
 - Cleanup deletes the pod (and its emptyDir) on run exit.
 
 #### Orphan garbage collection (ADR-070)
