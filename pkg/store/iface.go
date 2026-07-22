@@ -89,6 +89,17 @@ type RunStore interface {
 	AddWatchedIssues(ctx context.Context, runID string, issueIDs []string) ([]string, error)
 	RemoveWatchedIssues(ctx context.Context, runID string, issueIDs []string) ([]string, error)
 
+	// Subbot re-attach map (subbot restart-safety). SetSubbotChild records
+	// childRunID under key in the parent run's SubbotChildren map;
+	// ClearSubbotChild removes it. Both are atomic per-key writes so
+	// concurrent fan-out branches (distinct keys) don't clobber each other.
+	// key is the subbot node's execution key (node id + loop-iteration path
+	// + branch id). A resumed parent looks the key up (via LoadRun) to
+	// re-attach to an in-flight/finished child instead of spawning a fresh
+	// one. Both no-op silently when key is empty.
+	SetSubbotChild(ctx context.Context, parentRunID, key, childRunID string) error
+	ClearSubbotChild(ctx context.Context, parentRunID, key string) error
+
 	// Status & checkpoint
 	UpdateRunStatus(ctx context.Context, id string, status RunStatus, runErr string) error
 	// UpdateRunStatusIf is a compare-and-set on the status field: the

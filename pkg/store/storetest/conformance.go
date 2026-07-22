@@ -62,6 +62,7 @@ func RunWithOpts(t *testing.T, factory Factory, opts Opts) {
 	t.Run("CapabilitiesReported", func(t *testing.T) { testCapabilitiesReported(t, factory(t)) })
 	t.Run("UserMessagesInbox", func(t *testing.T) { testUserMessagesInbox(t, factory(t)) })
 	t.Run("WatchedIssues", func(t *testing.T) { testWatchedIssues(t, factory(t)) })
+	t.Run("SubbotChildren", func(t *testing.T) { testSubbotChildren(t, factory(t)) })
 	t.Run("ReverseTreeQueries", func(t *testing.T) { testReverseTreeQueries(t, factory(t)) })
 	t.Run("ScheduleReverseQuery", func(t *testing.T) { testScheduleReverseQuery(t, factory(t)) })
 	t.Run("DeleteRun", func(t *testing.T) { testDeleteRun(t, factory(t)) })
@@ -655,6 +656,64 @@ func testWatchedIssues(t *testing.T, s store.RunStore) {
 	}
 	if len(got) != 0 {
 		t.Errorf("after remove all: got %v want empty", got)
+	}
+}
+
+// testSubbotChildren exercises the subbot re-attach map: SetSubbotChild
+// records a childRunID under a per-execution key (atomic per-key so distinct
+// keys coexist), LoadRun surfaces it, and ClearSubbotChild removes exactly
+// that key. Empty keys are silent no-ops.
+func testSubbotChildren(t *testing.T, s store.RunStore) {
+	t.Helper()
+	ctx := testCtx()
+	if _, err := s.CreateRun(ctx, "run_subbot_parent", "demo", nil); err != nil {
+		t.Fatal(err)
+	}
+
+	// Two distinct execution keys (e.g. two fan-out branches of the same
+	// subbot node) coexist without clobbering each other.
+	if err := s.SetSubbotChild(ctx, "run_subbot_parent", "node_a#branch_0", "child-A"); err != nil {
+		t.Fatalf("SetSubbotChild A: %v", err)
+	}
+	if err := s.SetSubbotChild(ctx, "run_subbot_parent", "node_a#branch_1", "child-B"); err != nil {
+		t.Fatalf("SetSubbotChild B: %v", err)
+	}
+
+	r, err := s.LoadRun(ctx, "run_subbot_parent")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if r.SubbotChildren["node_a#branch_0"] != "child-A" || r.SubbotChildren["node_a#branch_1"] != "child-B" {
+		t.Errorf("after set: got %v want {node_a#branch_0:child-A, node_a#branch_1:child-B}", r.SubbotChildren)
+	}
+
+	// Re-set overwrites the same key in place (re-attach to a fresh child
+	// after the prior one ended badly).
+	if err := s.SetSubbotChild(ctx, "run_subbot_parent", "node_a#branch_0", "child-A2"); err != nil {
+		t.Fatalf("SetSubbotChild A2: %v", err)
+	}
+
+	// Clear removes exactly the named key, leaving the sibling.
+	if err := s.ClearSubbotChild(ctx, "run_subbot_parent", "node_a#branch_0"); err != nil {
+		t.Fatalf("ClearSubbotChild A: %v", err)
+	}
+	r, err = s.LoadRun(ctx, "run_subbot_parent")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := r.SubbotChildren["node_a#branch_0"]; ok {
+		t.Errorf("after clear: node_a#branch_0 still present in %v", r.SubbotChildren)
+	}
+	if r.SubbotChildren["node_a#branch_1"] != "child-B" {
+		t.Errorf("after clear: sibling lost, got %v", r.SubbotChildren)
+	}
+
+	// Empty key is a no-op on both paths.
+	if err := s.SetSubbotChild(ctx, "run_subbot_parent", "", "ignored"); err != nil {
+		t.Errorf("SetSubbotChild empty key: %v", err)
+	}
+	if err := s.ClearSubbotChild(ctx, "run_subbot_parent", ""); err != nil {
+		t.Errorf("ClearSubbotChild empty key: %v", err)
 	}
 }
 

@@ -159,6 +159,15 @@ type Run struct {
 	ShardIndex   int    `json:"shard_index,omitempty" bson:"shard_index,omitempty"`
 	ShardCount   int    `json:"shard_count,omitempty" bson:"shard_count,omitempty"`
 	ShardLabel   string `json:"shard_label,omitempty" bson:"shard_label,omitempty"`
+	// SubbotChildren maps a subbot-node execution key (node id +
+	// loop-iteration path + fan-out branch id) to the child run id that
+	// execution spawned. Written when the child is launched and cleared
+	// when its terminal output is consumed, so a PARENT resumed after a
+	// process restart RE-ATTACHES to the in-flight child (paused on its
+	// human gate, or since finished) instead of spawning a fresh one and
+	// losing the answered child's work. Empty for parents with no subbot
+	// nodes and for runs that predate this field. Set only on the parent.
+	SubbotChildren map[string]string `json:"subbot_children,omitempty" bson:"subbot_children,omitempty"`
 	WorkflowName string `json:"workflow_name" bson:"workflow_name"`
 	WorkflowHash string `json:"workflow_hash,omitempty" bson:"workflow_hash,omitempty"` // SHA-256 of the .bot source at run start
 	FilePath     string `json:"file_path,omitempty" bson:"file_path,omitempty"`         // absolute .bot source path captured at launch (resume without re-supplying file)

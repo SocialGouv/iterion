@@ -428,6 +428,51 @@ func (s *FilesystemRunStore) mutateWatched(runID string, apply func([]string) []
 	return r.WatchedIssueIDs, nil
 }
 
+// SetSubbotChild records childRunID under key in the parent run's
+// SubbotChildren map (atomic RMW under mu — concurrent fan-out branches
+// write distinct keys). No-op when key is empty.
+func (s *FilesystemRunStore) SetSubbotChild(_ context.Context, parentRunID, key, childRunID string) error {
+	if key == "" {
+		return nil
+	}
+	return s.mutateSubbotChildren(parentRunID, func(m map[string]string) map[string]string {
+		if m == nil {
+			m = make(map[string]string, 1)
+		}
+		m[key] = childRunID
+		return m
+	})
+}
+
+// ClearSubbotChild removes key from the parent run's SubbotChildren map.
+// No-op when key is empty or already absent.
+func (s *FilesystemRunStore) ClearSubbotChild(_ context.Context, parentRunID, key string) error {
+	if key == "" {
+		return nil
+	}
+	return s.mutateSubbotChildren(parentRunID, func(m map[string]string) map[string]string {
+		delete(m, key)
+		if len(m) == 0 {
+			return nil
+		}
+		return m
+	})
+}
+
+// mutateSubbotChildren applies apply to the run's SubbotChildren under mu.
+func (s *FilesystemRunStore) mutateSubbotChildren(runID string, apply func(map[string]string) map[string]string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	r, err := s.loadRunRaw(runID)
+	if err != nil {
+		return err
+	}
+	r.SubbotChildren = apply(r.SubbotChildren)
+	r.UpdatedAt = time.Now().UTC()
+	return s.writeRun(r)
+}
+
 // ListRuns returns the IDs of all persisted runs.
 func (s *FilesystemRunStore) ListRuns(_ context.Context) ([]string, error) {
 	runsDir := filepath.Join(s.root, "runs")

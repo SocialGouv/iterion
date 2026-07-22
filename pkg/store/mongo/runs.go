@@ -267,6 +267,47 @@ func (s *Store) RemoveWatchedIssues(ctx context.Context, runID string, issueIDs 
 	return s.updateWatched(ctx, runID, update)
 }
 
+// SetSubbotChild records childRunID under key in the parent run's
+// subbot_children map. Per-key $set is atomic in Mongo, so concurrent
+// fan-out branches writing distinct keys don't conflict. No-op when key
+// is empty. key must be a Mongo-safe field name (no '.'/'$') — the engine
+// sanitizes it at construction.
+func (s *Store) SetSubbotChild(ctx context.Context, parentRunID, key, childRunID string) error {
+	if key == "" {
+		return nil
+	}
+	update := bson.M{
+		"$set": bson.M{"subbot_children." + key: childRunID, "updated_at": time.Now().UTC()},
+		"$inc": bson.M{"version": 1},
+	}
+	return s.updateSubbotChildren(ctx, parentRunID, update)
+}
+
+// ClearSubbotChild removes key from the parent run's subbot_children map.
+// No-op when key is empty.
+func (s *Store) ClearSubbotChild(ctx context.Context, parentRunID, key string) error {
+	if key == "" {
+		return nil
+	}
+	update := bson.M{
+		"$unset": bson.M{"subbot_children." + key: ""},
+		"$set":   bson.M{"updated_at": time.Now().UTC()},
+		"$inc":   bson.M{"version": 1},
+	}
+	return s.updateSubbotChildren(ctx, parentRunID, update)
+}
+
+func (s *Store) updateSubbotChildren(ctx context.Context, runID string, update bson.M) error {
+	res, err := s.runs.UpdateOne(ctx, withTenantFilter(ctx, bson.M{"_id": runID}), update)
+	if err != nil {
+		return fmt.Errorf("store/mongo: update subbot children %s: %w", runID, err)
+	}
+	if res.MatchedCount == 0 {
+		return fmt.Errorf("store/mongo: run %s not found", runID)
+	}
+	return nil
+}
+
 func (s *Store) updateWatched(ctx context.Context, runID string, update bson.M) ([]string, error) {
 	var doc struct {
 		Watched []string `bson:"watched_issue_ids"`
