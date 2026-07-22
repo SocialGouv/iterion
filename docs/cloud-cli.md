@@ -86,6 +86,27 @@ Attachments: `--attach name=./file` uploads via `POST /api/runs/uploads`
 and wires the returned id into the launch. `runs upload <path>` does
 the staging step alone and prints the upload id.
 
+### Notable flags
+
+The typed tree stays terse; `--help` on any leaf is authoritative. A few
+non-obvious flags worth calling out:
+
+- `runs launch --callback-url <url> [--callback-token <tok>]` — register a
+  **completion webhook**: the instance POSTs the run outcome to `<url>`
+  when it finishes, echoing `--callback-token` back so the receiver can
+  authenticate the delivery. The fire-and-forget alternative to `--follow`.
+- `runs resume <id> --answers @answers.json` — resume a run paused on a
+  human/async question by supplying the answers file inline.
+- `runs files <id> <path>` reads by default; `--content` prints the file
+  body, `--diff` shows its diff, and `--edit @<local-file>` writes the
+  local file's bytes back to `<path>` in the run workspace.
+- `runs merge <id> --into <branch>` sets the merge **target** branch
+  (pairs with `--strategy`); `runs list --limit N` (and `audit --limit N`)
+  caps result count.
+- `tokens create --expires-days N` (0 = platform default) and
+  `api-keys create --default` (make this the provider's default key)
+  tune the credential each command mints.
+
 ## Command tree
 
 | Group | Commands |
