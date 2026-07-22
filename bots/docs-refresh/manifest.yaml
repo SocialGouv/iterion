@@ -1,7 +1,7 @@
 name: docs-refresh
 display_name: Doki
 icon: 📚
-version: 2.5.0
+version: 2.5.1
 ## 2.5.0 — EXHAUSTIVE DOC-SIDE ALIGNMENT (docs follow code,
 ## exhaustively — never the reverse; both halves are doc-side).
 ## (1) build_manifest now RUNS the reverse containment audit its

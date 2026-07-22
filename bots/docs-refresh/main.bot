@@ -1345,6 +1345,39 @@ doc_files = buckets['--docs']
 cli_commands = set(buckets['--cli'])
 cli_flags = set(buckets['--flags'])
 diag_codes = set(buckets['--diag'])
+## Names the repo's own CLI is invoked by, derived repo-agnostically:
+## workspace basename, cmd/* subdirs (Go), package.json bin keys/name.
+## Used by the foreign-flag heuristic below — command WORDS (run, merge,
+## version…) match ordinary prose and other tools' invocations ('docker
+## run --rm', 'gh pr merge --auto'), so a flag line only counts as OUR
+## CLI when it names the binary itself.
+cli_names = set()
+wsbase = os.path.basename(ws.rstrip(os.sep))
+if wsbase and not re.fullmatch(r'[0-9a-f-]{16,}', wsbase):
+    ## Skip opaque run-id dirnames (cloud clones land in <run-uuid>/).
+    cli_names.add(wsbase)
+try:
+    for d in os.listdir('cmd'):
+        if os.path.isdir(os.path.join('cmd', d)):
+            cli_names.add(d)
+except OSError:
+    pass
+try:
+    with open('package.json', encoding='utf-8') as pj:
+        pkg = json.load(pj)
+    b = pkg.get('bin')
+    if isinstance(b, dict):
+        cli_names.update(k for k in b if isinstance(k, str))
+    elif isinstance(b, str) and isinstance(pkg.get('name'), str):
+        cli_names.add(pkg['name'].split('/')[-1])
+except (OSError, ValueError):
+    pass
+cli_names = {n for n in cli_names if n}
+if not cli_names:
+    ## No binary name derivable (bare dir name was an opaque id, no
+    ## cmd/, no package.json): fall back to command-word matching so
+    ## drift detection does not go dark on such repos.
+    cli_names = set(cli_commands)
 code_globs = [g.strip() for g in os.environ.get('CODE_GLOBS', '').split(',') if g.strip()]
 try:
     max_candidates = int(os.environ.get('MAX_CANDIDATES', '150'))
@@ -1589,15 +1622,19 @@ for a in anchors:
             a['status'] = 'verified'
             a['evidence'] = 'present in scan_code_surface.cli_flags'
             verified.append(a)
-        elif not any(re.search(r'\b' + re.escape(c) + r'\b', a.get('excerpt', '')) for c in cli_commands):
+        elif not any(re.search(r'(?<![\w@/-])' + re.escape(n) + r'(?![\w-])', a.get('excerpt', ''), re.IGNORECASE) for n in cli_names):
             ## Foreign-flag heuristic: a doc line showing --flags of some
-            ## OTHER tool (docker/kubectl/gh examples…) never mentions one
-            ## of this repo's own CLI commands. 100% of the drifted
-            ## cli_flag candidates were this class on two live runs — pure
-            ## adjudication burn. Unverifiable, not drifted: it drops out
-            ## of checkable coverage instead of faking alignment.
+            ## OTHER tool (docker/kubectl/gh examples…) never names THIS
+            ## repo's binary. Matching command WORDS was not enough —
+            ## common names (run, merge, version) hit prose and other
+            ## tools' invocations ('docker run --rm' → run), so ~200
+            ## foreign flags still surfaced as drifted on a live run and
+            ## burned ~40 min of adjudication. Only a line that names the
+            ## repo's own CLI binary (cli_names) can drift a flag.
+            ## Unverifiable, not drifted: it drops out of checkable
+            ## coverage instead of faking alignment.
             a['status'] = 'unverifiable'
-            a['evidence'] = 'flag not in cli surface AND line references no known CLI command — foreign-tool example (heuristic)'
+            a['evidence'] = 'flag not in cli surface AND line does not invoke this repo CLI — foreign-tool example (heuristic)'
             unverifiable.append(a)
         else:
             a['status'] = 'drifted'
