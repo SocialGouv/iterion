@@ -112,33 +112,51 @@ type pendingAskUser struct {
 // wireAskUserHook registers iterion's native ask_user MCP server and a
 // PreToolUse hook that captures the question and cancels the stream the
 // moment the LLM calls ask_user (mirrors the claw backend's in-process
-// path). Disabled when sandboxed: the stdio MCP server's host binary path
-// (os.Executable) and the host /tmp --mcp-config are both invisible inside
-// the container, so claude would reject the missing config and exit before
-// producing a result — the [INTERACTION PROTOCOL] JSON fallback covers that
-// case. Stores the captured question (with any structured options) into
+// path). Stores the captured question (with any structured options) into
 // pendingQuestion and extends extras with the ask_user tool name only when
 // the node already restricts its toolset (an empty AllowedTools means "no
 // restriction").
+//
+// Transport is sandbox-dependent (ADR-082 Phase 3, mirroring wireBoardMCP):
+//
+//   - unsandboxed → the stdio `iterion __mcp-ask-user` subcommand
+//     (host binary path via proc.LocateIterionBinary);
+//   - sandboxed → an HTTP MCP server pointing at the per-run
+//     gateway-reachable listener the engine bound at sandbox start
+//     (Task.AskUserHTTPEndpoint + AskUserRunToken), since the stdio
+//     server's host binary path is invisible inside the container.
+//     When the runtime didn't bind the endpoint the tools are disabled
+//     LOUDLY (never silently); the [INTERACTION PROTOCOL] JSON
+//     fallback still allows a blocking escalation.
+//
+// The PreToolUse hooks below run host-side over the SDK control channel
+// on BOTH transports, so the interception semantics — and the
+// interaction-store paths behind Task.PostAsyncQuestion — are identical.
 func (b *ClaudeCodeBackend) wireAskUserHook(task Task, opts []claudesdk.Option, extras *[]string, pendingQuestion *atomic.Value, cancelStream context.CancelFunc) []claudesdk.Option {
-	if !task.InteractionEnabled || task.Sandbox != nil {
-		if task.Sandbox != nil && task.PostAsyncQuestion != nil {
-			// Same pre-existing gap as the blocking ask_user (stdio MCP
-			// server unreachable from inside the container) — loud, not
-			// silent: the node runs but cannot post async questions.
-			b.Logger.Warn("[%s#%d/claude-code] interaction: async is not available under a sandbox (stdio MCP transport) — ask_user_async/await_answers disabled for this node; the [INTERACTION PROTOCOL] JSON fallback still allows a blocking escalation", task.NodeID, task.Iteration)
+	if !task.InteractionEnabled {
+		return opts
+	}
+	if task.Sandbox != nil {
+		srv := askUserSandboxHTTPServer(task)
+		if srv == nil {
+			b.Logger.Warn("[%s#%d/claude-code] sandboxed run has no ask-user MCP HTTP endpoint (listener not bound); native ask_user disabled for this node (falling back to JSON _needs_interaction protocol)", task.NodeID, task.Iteration)
+			if task.PostAsyncQuestion != nil {
+				b.Logger.Warn("[%s#%d/claude-code] interaction: async unavailable without the ask-user HTTP endpoint — ask_user_async/await_answers disabled for this node; the [INTERACTION PROTOCOL] JSON fallback still allows a blocking escalation", task.NodeID, task.Iteration)
+			}
+			return opts
 		}
-		return opts
+		opts = append(opts, claudesdk.WithMCPServer(askUserMCPServerName, srv))
+	} else {
+		selfPath := proc.LocateIterionBinary()
+		if selfPath == "" {
+			b.Logger.Warn("[%s#%d/claude-code] could not resolve iterion CLI binary path; native ask_user MCP server disabled (falling back to JSON _needs_interaction protocol)", task.NodeID, task.Iteration)
+			return opts
+		}
+		opts = append(opts, claudesdk.WithMCPServer(askUserMCPServerName, &claudesdk.MCPStdioServer{
+			Command: selfPath,
+			Args:    []string{askUserMCPSubcommand},
+		}))
 	}
-	selfPath := proc.LocateIterionBinary()
-	if selfPath == "" {
-		b.Logger.Warn("[%s#%d/claude-code] could not resolve iterion CLI binary path; native ask_user MCP server disabled (falling back to JSON _needs_interaction protocol)", task.NodeID, task.Iteration)
-		return opts
-	}
-	opts = append(opts, claudesdk.WithMCPServer(askUserMCPServerName, &claudesdk.MCPStdioServer{
-		Command: selfPath,
-		Args:    []string{askUserMCPSubcommand},
-	}))
 	if len(task.AllowedTools) > 0 {
 		*extras = append(*extras, askUserMCPToolName)
 	}
@@ -160,6 +178,26 @@ func (b *ClaudeCodeBackend) wireAskUserHook(task Task, opts []claudesdk.Option, 
 		},
 	}))
 	return b.wireAsyncAskHooks(task, opts, extras, pendingQuestion, cancelStream)
+}
+
+// askUserSandboxHTTPServer builds the HTTP MCP server config a sandboxed
+// task uses to reach the per-run ask-user listener, or nil when the
+// runtime didn't bind the endpoint (no listener / bind failure — the
+// caller degrades loudly). AlwaysLoad forces the server past
+// claude-code's tool-search deferral so ask_user surfaces without a
+// ToolSearch hit and an unreachable endpoint fails loudly at session
+// start — the same rationale as the board HTTP transport (C082).
+func askUserSandboxHTTPServer(task Task) *claudesdk.MCPHTTPServer {
+	if task.AskUserHTTPEndpoint == "" || task.AskUserRunToken == "" {
+		return nil
+	}
+	return &claudesdk.MCPHTTPServer{
+		URL: task.AskUserHTTPEndpoint,
+		Headers: map[string]string{
+			"X-Iterion-Run": task.AskUserRunToken,
+		},
+		AlwaysLoad: true,
+	}
 }
 
 // wireAsyncAskHooks adds the non-blocking question pair (ADR-081) on top

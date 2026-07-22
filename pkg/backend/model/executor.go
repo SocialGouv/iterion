@@ -137,6 +137,15 @@ type ClawExecutor struct {
 	// in by the engine after the sandbox starts (SetBoardEndpoint). Empty
 	// disables sandboxed board-emit wiring (C082).
 	boardEndpoint string
+	// askUserEndpoint / askUserToken are the per-run gateway-reachable
+	// ask-user MCP HTTP endpoint + bearer token pushed in by the engine
+	// after the sandbox starts (SetAskUserEndpoint) — ADR-082 Phase 3.
+	// Empty leaves the sandboxed ask-user HTTP transport unwired; the
+	// claude_code delegate then disables the native ask_user tools for
+	// sandboxed interactive nodes with a loud warning.
+	askUserEndpoint string
+	askUserToken    string
+
 	// sourceIssueID is the ticket that owns this run (if any). Plumbed
 	// into board MCP / claw board tools so create_issue can auto-stamp
 	// parent_id on spawned children.
@@ -214,6 +223,16 @@ func (e *ClawExecutor) SetSandbox(run sandbox.Run) {
 // "" leaves sandboxed board-emit disabled.
 func (e *ClawExecutor) SetBoardEndpoint(endpoint string) {
 	e.boardEndpoint = endpoint
+}
+
+// SetAskUserEndpoint installs the per-run gateway-reachable ask-user
+// MCP URL + token (started with the sandbox) so the executor can wire
+// Task.AskUserHTTPEndpoint/AskUserRunToken for sandboxed interactive
+// nodes (ADR-082 Phase 3). Called by the engine after the sandbox
+// starts; empty values leave the sandboxed ask-user transport unwired.
+func (e *ClawExecutor) SetAskUserEndpoint(endpoint, token string) {
+	e.askUserEndpoint = endpoint
+	e.askUserToken = token
 }
 
 // ClawExecutorOption configures a ClawExecutor.
