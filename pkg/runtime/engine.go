@@ -158,6 +158,16 @@ type SubbotRequest struct {
 	Vars        map[string]any // resolved `with:` mappings + `_lease_<resource>` instance ids
 	ParentRunID string
 	NodeID      string
+	// ReattachKey uniquely identifies THIS execution of the subbot node
+	// (node id + loop-iteration path + fan-out branch id) so the runner can
+	// persist the child run id under it on the parent and, on a resumed
+	// re-execution, re-attach to that in-flight/finished child instead of
+	// spawning a fresh one. Stable across resume (branch ids are
+	// deterministic), unique per concurrent execution (branch id
+	// disambiguates fan-out) and per loop iteration (iteration path
+	// disambiguates loops). Mongo-field-safe (no '.'/'$'). Empty disables
+	// re-attach (the runner always spawns fresh).
+	ReattachKey string
 }
 
 // SubbotRunner compiles and runs a child .bot as a nested run and returns its

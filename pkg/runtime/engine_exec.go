@@ -574,7 +574,7 @@ func (e *Engine) execCompute(rs *runState, nodeID string, cn *ir.ComputeNode) (s
 func (e *Engine) execSubbot(ctx context.Context, rs *runState, nodeID string, sn *ir.SubbotNode) (string, error) {
 	return e.execSpecialNode(rs, nodeID, "subbot", sn,
 		map[string]any{"source": sn.Source},
-		func() (map[string]any, error) { return e.runSubbotNode(ctx, rs, nodeID, sn, rs.scope()) },
+		func() (map[string]any, error) { return e.runSubbotNode(ctx, rs, nodeID, sn, rs.scope(), "") },
 		nil,
 	)
 }
