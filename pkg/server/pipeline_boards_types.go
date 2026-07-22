@@ -42,6 +42,10 @@ type PipelineBoardPendingReview struct {
 	NodeID        string         `json:"node_id,omitempty"`
 	InteractionID string         `json:"interaction_id,omitempty"`
 	Questions     map[string]any `json:"questions,omitempty"`
+	// UpdatedAt is when this exact pending turn joined the operator queue.
+	// Review gates reuse their interaction ID across dialogue turns, so the
+	// timestamp also versions the form on the Studio side.
+	UpdatedAt time.Time `json:"updated_at"`
 	// Depth is 0 for the root's own pause, >0 for a descendant's.
 	Depth int `json:"depth"`
 }

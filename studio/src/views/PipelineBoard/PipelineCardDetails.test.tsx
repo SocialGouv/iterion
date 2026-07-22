@@ -113,7 +113,13 @@ describe("PipelineCardDetailsBody", () => {
         status: "running",
         entry_input: { topic: "jazz" },
         pending_reviews: [
-          { run_id: "run-child", node_id: "approval", depth: 1, questions: { approved: "Ship it?" } },
+          {
+            run_id: "run-child",
+            node_id: "approval",
+            depth: 1,
+            updated_at: "2026-07-15T09:30:00Z",
+            questions: { approved: "Ship it?" },
+          },
         ],
       }),
     );
@@ -132,7 +138,14 @@ describe("PipelineCardDetailsBody", () => {
         run_id: "run-orphan",
         status: "failed_resumable",
         failed: true,
-        pending_reviews: [{ run_id: "c1", node_id: "review", depth: 1 }],
+        pending_reviews: [
+          {
+            run_id: "c1",
+            node_id: "review",
+            depth: 1,
+            updated_at: "2026-07-15T09:30:00Z",
+          },
+        ],
       }),
     );
     expect(html).toContain("Response required");
@@ -146,7 +159,14 @@ describe("PipelineCardDetailsBody", () => {
         column_id: "in_progress",
         run_id: "run-ok",
         status: "running",
-        pending_reviews: [{ run_id: "c1", node_id: "review", depth: 1 }],
+        pending_reviews: [
+          {
+            run_id: "c1",
+            node_id: "review",
+            depth: 1,
+            updated_at: "2026-07-15T09:30:00Z",
+          },
+        ],
       }),
     );
     expect(html).toContain("Response required");

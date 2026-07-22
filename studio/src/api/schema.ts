@@ -4666,6 +4666,8 @@ export interface components {
                 [key: string]: unknown;
             };
             run_id: string;
+            /** Format: date-time */
+            updated_at: string;
             workflow_name?: string;
         };
         PipelineBoardResponse: {

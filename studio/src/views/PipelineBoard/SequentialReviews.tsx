@@ -1,24 +1,22 @@
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import { Link } from "wouter";
 
 import type { PipelineBoardCard } from "@/api/pipelineBoards";
 import HumanPromptForm from "@/components/Runs/conversation/HumanPromptForm";
 import { Badge, Button, InlineBanner } from "@/components/ui";
 
+import {
+  clampReviewIndex,
+  pendingReviewVersionKey,
+  sortPendingReviewsChronologically,
+} from "./reviewQueue";
+
 interface Props {
   card: PipelineBoardCard;
-  // Refetches the board. Called after every successful answer BEFORE the
-  // operator advances, because resuming a review can retire it or spawn new
-  // child reviews — the fresh projection is authoritative.
+  // Refetches the board after every successful answer. The component pins the
+  // next existing turn first; the fresh projection may then retire the old
+  // review or append a new turn without replacing the active form.
   onResolved: () => void;
-}
-
-// clampReviewIndex keeps the active review index inside [0, total). The board
-// refetch after each answer can shrink the pending set out from under the
-// current index, so every read clamps.
-export function clampReviewIndex(index: number, total: number): number {
-  if (total <= 0) return 0;
-  return Math.min(Math.max(index, 0), total - 1);
 }
 
 // SequentialReviews steps through a card's pending human interactions one at a
@@ -26,15 +24,42 @@ export function clampReviewIndex(index: number, total: number): number {
 // POSTed to the exact run_id/node_id the review names (via HumanPromptForm's
 // existing resume path — not reimplemented here).
 export function SequentialReviews({ card, onResolved }: Props) {
-  const reviews = card.pending_reviews ?? [];
-  const [index, setIndex] = useState(0);
+  const reviews = useMemo(
+    () => sortPendingReviewsChronologically(card.pending_reviews ?? []),
+    [card.pending_reviews],
+  );
+  const reviewKeys = useMemo(
+    () => reviews.map(pendingReviewVersionKey),
+    [reviews],
+  );
+  const [activeReviewKey, setActiveReviewKey] = useState<string | null>(null);
+
+  // Polling may remove an answered turn and append a newer turn from the same
+  // AI. Keep the exact active version mounted while it still exists, so a
+  // draft in another form cannot be replaced underneath the operator. Once
+  // it disappears, continue from the (oldest) head of the refreshed queue.
+  let current = activeReviewKey === null ? -1 : reviewKeys.indexOf(activeReviewKey);
+  if (current < 0) current = 0;
 
   if (reviews.length === 0) return null;
 
   const total = reviews.length;
-  const current = clampReviewIndex(index, total);
   const review = reviews[current];
-  if (!review) return null;
+  const reviewKey = reviewKeys[current];
+  if (!review || !reviewKey) return null;
+
+  const selectReview = (index: number) => {
+    const key = reviewKeys[clampReviewIndex(index, total)];
+    if (key) setActiveReviewKey(key);
+  };
+
+  const handleResolved = () => {
+    // Advance immediately to the oldest other pending turn and pin it before
+    // the refetch returns. A new turn from the just-answered AI can then only
+    // append behind this active form; it cannot steal the screen.
+    setActiveReviewKey(reviewKeys.find((key) => key !== reviewKey) ?? null);
+    onResolved();
+  };
 
   return (
     <div className="space-y-2 rounded-md border border-warning/40 bg-warning-soft p-2">
@@ -54,7 +79,7 @@ export function SequentialReviews({ card, onResolved }: Props) {
               variant="secondary"
               size="sm"
               disabled={current <= 0}
-              onClick={() => setIndex(clampReviewIndex(current - 1, total))}
+              onClick={() => selectReview(current - 1)}
               aria-label="Previous review"
             >
               Prev
@@ -63,7 +88,7 @@ export function SequentialReviews({ card, onResolved }: Props) {
               variant="secondary"
               size="sm"
               disabled={current >= total - 1}
-              onClick={() => setIndex(clampReviewIndex(current + 1, total))}
+              onClick={() => selectReview(current + 1)}
               aria-label="Next review"
             >
               Next
@@ -94,12 +119,12 @@ export function SequentialReviews({ card, onResolved }: Props) {
 
       {review.run_id && review.node_id ? (
         <HumanPromptForm
-          key={`${review.run_id}:${review.node_id}`}
+          key={reviewKey}
           runId={review.run_id}
           nodeId={review.node_id}
           questions={review.questions ?? {}}
           sourceOverride={null}
-          onResumed={onResolved}
+          onResumed={handleResolved}
         />
       ) : (
         <InlineBanner tone="warning" layout="inline">

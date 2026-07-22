@@ -46,6 +46,7 @@ describe("normalizePipelineBoard", () => {
               run_id: "run-child",
               node_id: "approval",
               depth: 1,
+              updated_at: "2026-07-14T09:30:00Z",
               questions: { approved: "Ship it?" },
             },
           ],
@@ -112,6 +113,7 @@ describe("normalizePipelineBoard", () => {
       run_id: "run-child",
       node_id: "approval",
       depth: 1,
+      updated_at: "2026-07-14T09:30:00Z",
       questions: { approved: "Ship it?" },
     });
     expect(board.cards[1]).toMatchObject({
