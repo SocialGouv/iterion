@@ -9,6 +9,46 @@ card in inbox. Companion of the ingest author-trust gate (trusted
 authors → `triage:auto`, external authors → `needs:approval` + studio
 "Approve & triage").
 
+## 2026-07-22 — treatment follow-through: 3 triaged cards driven to delivery (runs 019f8949 / 019f8979 / 019f898e)
+
+- Status: **validated** (triage→ready→dispatch→feature-dev→delivery, end-to-end)
+- Versions: iterion main @0da792861 → @e6f419892 · feature-dev v2
+- Method: cards #250/#246/#202 dragged to ready one wave at a time; native
+  dispatcher (studio-embedded) claimed and ran feature-dev per card; runs
+  observed live; deliveries landed on local main (cherry-pick when finalize
+  couldn't FF). ~$14 total for 3 real engine fixes by Viczei's specs.
+- Result: 3/3 features delivered on main — #250 json-field schema type
+  union (+ADR-083), #246 quoted loop-cap fix, #202 subbot child Manager
+  registration. Cards ended in review with claims released.
+- Engine/bot hardening from observed frictions (all committed same-day):
+  1. orphan reconciler killed a live dispatcher run 16s after dispatch
+     (no flock + slow boot scan) → EngineRunner run-lock + 2-min grace.
+  2. stale committed catalog → every worktree run wip-banked a garbage
+     branch each 15s heartbeat; the freshness guard had passed on a stale
+     go-test CACHE (reads files outside the package) → catalog refreshed;
+     follow-up: move the freshness check to a cache-proof surface.
+  3. drift-gate precheck false positive on brew-update.yml's
+     commit-if-changed `git diff --staged --quiet` → heuristic now demands
+     build-failing semantics; regression subtests run the real command.
+  4. author-quoted ref `ITER="{{input.iteration}}"` → shellEscape's own
+     quotes made python int() fail → probe stuck on "first pass", paying
+     verify_build + rewriting verify.sh EVERY pass → ref unquoted across
+     6 bots; e2e pins the engine mapping (which was correct). Diagnostic
+     candidate: compile warning for quoted refs in tool commands.
+  5. mid-flight "recovered finalize" marked the run finalized → the true
+     completion finalize skipped and stranded delivery on the per-node
+     GC refs → finalize now re-runs when the worktree HEAD moved past the
+     recorded FinalCommit.
+  6. verify_build generated gateless verify.sh (skill 1b ignored) →
+     MANDATORY CI-drift-mirror clause added to the authoring prompts
+     fleet-wide.
+- Lessons: dispatcher-claimed treatment is solid once the above are in;
+  the campaign/precheck tug-of-war (agent stripping "irrelevant" gates)
+  is fully resolved by fixing the probe reuse (bug 4) + prompt (6);
+  remaining cards (#204/#205/#203) intentionally deferred — the operator's
+  checkout moved to a test branch mid-session and fresh worktrees would
+  have forked it.
+
 ## 2026-07-22 — first dogfood: 7 real GitHub-synced cards (runs 019f88e7…019f88f2)
 
 - Status: **validated** (local engine; the cloud spine shipped the same
