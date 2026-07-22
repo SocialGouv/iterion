@@ -1061,6 +1061,9 @@ iterion bots templates                  # List the templates `bots create` can s
 iterion bots list [--paths <dir>] [--format json|markdown|skill]  # Discover .bot/.botz bundles (used by whats-next + dispatcher zero-config)
 iterion skill list|show|add|rm|import|export  # Local skill library (~/.iterion/skills + per-project); referenced by the DSL `skills:` field (see docs/skills-library.md)
 iterion marketplace list|submit|install|uninstall  # Hosted registry CLI — bot AND plugin entries (kind auto-detected at submit; list --kind filters; same <store-dir>/marketplace the studio reads)
+iterion memory export|import|du         # Manage local shared-knowledge memory spaces (.tar.gz export/import, usage vs quota; see docs/memory-and-knowledge.md)
+iterion models [provider/model-id]      # Inspect resolved model capabilities and their source
+iterion openapi                         # Generate this build's OpenAPI 3.1 spec offline (stdout)
 iterion bench asymptote [flags]         # Asymptote benchmark (see docs/asymptote-bench.md)
 iterion bundle pack                     # Pack a .botz bundle (create it with `bots create`; see docs/bundles.md)
 iterion sandbox doctor [file] [--strict] [--target auto|cloud|local]  # Diagnose host sandbox prerequisites; --strict validates a run's full config pre-flight (see docs/sandbox.md)
