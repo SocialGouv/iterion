@@ -27,6 +27,11 @@ type IssuesEvent struct {
 		Body    string `json:"body"`
 		HTMLURL string `json:"html_url"`
 		State   string `json:"state"` // "open" | "closed"
+		User    Sender `json:"user"`
+		// AuthorAssociation is GitHub's relationship of the issue author to
+		// the repo (OWNER|MEMBER|COLLABORATOR|CONTRIBUTOR|NONE|…); Forgejo
+		// omits it (empty).
+		AuthorAssociation string `json:"author_association"`
 	} `json:"issue"`
 	Label  Label  `json:"label"`
 	Sender Sender `json:"sender"`
@@ -52,6 +57,13 @@ type ParsedIssue struct {
 	IssueURL    string // the issue's own web URL (html_url) — the back-link target
 	IssueState  string // "open" | "closed"
 	SenderLogin string
+	// IssueAuthorLogin is the login that OPENED the issue (== SenderLogin on
+	// an "opened" action; distinct on "labeled", where the sender is the
+	// labeler). The author-trust gate classifies this identity.
+	IssueAuthorLogin string
+	// AuthorAssociation is GitHub's author↔repo relationship for the issue
+	// author (empty on Forgejo) — the no-API-call trust fast path.
+	AuthorAssociation string
 }
 
 // ParseIssues decodes an issues webhook body from GitHub or Forgejo/Gitea
@@ -63,17 +75,19 @@ func ParseIssues(body []byte) (ParsedIssue, error) {
 		return ParsedIssue{}, fmt.Errorf("prforge: decode issues event: %w", err)
 	}
 	return ParsedIssue{
-		RepoID:      e.Repository.ID,
-		ProjectPath: e.Repository.FullName,
-		CloneURL:    e.Repository.CloneURL,
-		IssueNumber: e.Issue.Number,
-		Action:      e.Action,
-		LabelName:   e.Label.Name,
-		IssueTitle:  e.Issue.Title,
-		IssueBody:   e.Issue.Body,
-		IssueURL:    e.Issue.HTMLURL,
-		IssueState:  e.Issue.State,
-		SenderLogin: e.Sender.Login,
+		RepoID:            e.Repository.ID,
+		ProjectPath:       e.Repository.FullName,
+		CloneURL:          e.Repository.CloneURL,
+		IssueNumber:       e.Issue.Number,
+		Action:            e.Action,
+		LabelName:         e.Label.Name,
+		IssueTitle:        e.Issue.Title,
+		IssueBody:         e.Issue.Body,
+		IssueURL:          e.Issue.HTMLURL,
+		IssueState:        e.Issue.State,
+		SenderLogin:       e.Sender.Login,
+		IssueAuthorLogin:  e.Issue.User.Login,
+		AuthorAssociation: e.Issue.AuthorAssociation,
 	}, nil
 }
 

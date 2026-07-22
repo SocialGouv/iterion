@@ -2,11 +2,14 @@ package server
 
 import (
 	"context"
+	"net/url"
 	"strings"
 	"sync"
 	"time"
 
 	"github.com/SocialGouv/iterion/pkg/forge"
+	"github.com/SocialGouv/iterion/pkg/webhooks"
+	"github.com/SocialGouv/iterion/pkg/webhooks/prforge"
 )
 
 // authorTrust classifies whether an issue author holds real rights on a repo
@@ -43,6 +46,48 @@ func newAuthorTrust() *authorTrust {
 func (s *Server) authorTrustGate() *authorTrust {
 	s.authorTrustOnce.Do(func() { s.authorTrustG = newAuthorTrust() })
 	return s.authorTrustG
+}
+
+// issueAuthorTrusted classifies the author of an inbound forge issue for the
+// AutoImplementOnOpen zero-touch lane. Allowlist and the GitHub
+// author_association fast path need no credentials; the live
+// CollaboratorPermission fallback rides the bot's forge_token (same
+// resolution as the command gate) — without one it logs a warning once per
+// delivery and the fallback is unavailable, so unknown authors park
+// (fail-closed) instead of silently launching.
+func (s *Server) issueAuthorTrusted(ctx context.Context, cfg webhooks.Config, provider webhooks.Provider, botID string, p prforge.ParsedIssue) bool {
+	login := p.IssueAuthorLogin
+	if login == "" {
+		login = p.SenderLogin // opened: the sender IS the author
+	}
+	var pc forge.PermissionClient
+	if token, terr := s.resolveForgeToken(ctx, cfg, botID); terr == nil && token != "" {
+		if baseURL, refusal := prforgeIssueBaseURL(cfg, p); refusal == "" {
+			if c, ok := prforgeReplierClient(provider, s.forgeHTTPClient(), baseURL, token).(forge.PermissionClient); ok {
+				pc = c
+			}
+		}
+	} else if s.logger != nil {
+		s.logger.Warn("webhook %s: no forge token for the author-trust gate (configure a forge_token binding); only allowlist/author_association can trust", cfg.ID)
+	}
+	return s.authorTrustGate().trusted(ctx, pc, string(provider), p.ProjectPath, login, p.AuthorAssociation, cfg.MinAuthorRole, cfg.AuthorAllowlist)
+}
+
+// prforgeIssueBaseURL mirrors prforgeBaseURL for the issues path: the
+// operator-pinned ForgeBaseURL wins, else the host derives from the issue's
+// own URL gated by the ITERION_WEBHOOK_FORGE_HOSTS allowlist.
+func prforgeIssueBaseURL(cfg webhooks.Config, p prforge.ParsedIssue) (baseURL, refusal string) {
+	if cfg.ForgeBaseURL != "" {
+		return cfg.ForgeBaseURL, ""
+	}
+	u, err := url.Parse(p.IssueURL)
+	if err != nil || u.Host == "" || u.User != nil {
+		return "", "issue URL has no usable forge host"
+	}
+	if !forgeHostAllowed(u.Host) {
+		return "", "forge host not in ITERION_WEBHOOK_FORGE_HOSTS allowlist"
+	}
+	return u.Scheme + "://" + u.Host, ""
 }
 
 // trustedAssociations are the GitHub author_association values that prove
