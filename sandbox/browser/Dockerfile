@@ -21,7 +21,7 @@
 # Image budget target: < 1.2 GB compressed. Chromium + Playwright
 # add ~280 MB on top of slim's ~250 MB.
 
-ARG BASE=ghcr.io/socialgouv/iterion-sandbox-slim:edge
+ARG BASE=ghcr.io/socialgouv/iterion-sandbox-slim-base:edge
 FROM ${BASE}
 
 USER root
