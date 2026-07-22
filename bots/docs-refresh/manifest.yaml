@@ -1,7 +1,20 @@
 name: docs-refresh
 display_name: Doki
 icon: 📚
-version: 2.3.1
+version: 2.4.0
+## 2.4.0 — BUDGET/PRODUCTION ratio. Three live-run lessons (019f86ce +
+## 019f874d: ~31$ / 18 passes / 0 real drift fixed): (1) NEW
+## verify_precheck tool — when HEAD is unchanged since the last GREEN
+## verify and the tree is clean (⇔ the pass produced no commits), the
+## verify_build (LLM) + verify_run (real build+tests) chain is skipped
+## and the gate reuses the recorded verdict (~5-6 min + ~1$ saved per
+## adjudication-only pass; red verdicts are never reused). (2)
+## Foreign-flag heuristic: a drifted cli_flag whose doc line references
+## no known CLI command is reclassified unverifiable (docker/kubectl/gh
+## example lines were 100% of cli_flag candidates on both runs). (3)
+## Unverifiable symbol_refs are no longer surfaced as candidates by
+## default (100% false-positive rate observed) — opt back in with
+## include_unverifiable_symbols=true.
 ## 2.3.1 — verified pairs ride a FILE. update_audit_cache took the
 ## manifest's verified_pairs inline as argv; a large repo yields
 ## thousands of pairs and the substituted command blew the kernel

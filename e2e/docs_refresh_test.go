@@ -90,6 +90,11 @@ func stubDocsRefresh(exec *scenarioExecutor, st *docsRefreshState) {
 	exec.on("scope_check", func(_ map[string]any) (map[string]any, error) {
 		return map[string]any{"scope_ok": true, "out_of_scope": []any{}, "log": "", "_tokens": 1}, nil
 	})
+	// verify_precheck (2.4.0): the stub never reuses, so every pass walks
+	// the full verify chain exactly as the pre-2.4.0 scenarios did.
+	exec.on("verify_precheck", func(_ map[string]any) (map[string]any, error) {
+		return map[string]any{"reuse": false, "reason": "stub: always verify", "_tokens": 1}, nil
+	})
 	exec.on("verify_build", func(_ map[string]any) (map[string]any, error) {
 		return map[string]any{"prepared": true, "summary": "verify.sh written", "_tokens": 1}, nil
 	})
