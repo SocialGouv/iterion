@@ -49,6 +49,7 @@ import (
 	natsq "github.com/SocialGouv/iterion/pkg/queue/nats"
 	"github.com/SocialGouv/iterion/pkg/runtime"
 	"github.com/SocialGouv/iterion/pkg/runview"
+	"github.com/SocialGouv/iterion/pkg/sandbox"
 	"github.com/SocialGouv/iterion/pkg/secrets"
 	"github.com/SocialGouv/iterion/pkg/store"
 	"github.com/SocialGouv/iterion/pkg/trigger"
@@ -501,6 +502,14 @@ type Runner struct {
 	// /etc/hosts) to a single info log for the runner's lifetime, instead of a
 	// per-clone warn that trains operators to ignore warns. See prepareRepoWorkspace.
 	ssrfPinUnavailableOnce sync.Once
+
+	// sandboxRuns maps an in-flight run to its live sandbox Run handle
+	// (registered by the engine's sandbox-run observer) so the mid-run
+	// credential refreshers can write rotated tokens THROUGH into the
+	// sandbox — the k8s workspace is a tar COPY, so a host-side rewrite
+	// alone never reaches it. See sandbox_registry.go.
+	sandboxRunsMu sync.Mutex
+	sandboxRuns   map[string]sandbox.Run
 }
 
 type inFlight struct {
@@ -1010,7 +1019,7 @@ func (r *Runner) executeRun(ctx context.Context, msg *queue.RunMessage) error {
 		if ref := r.gitCredentialSecretRef(ctx); ref != "" {
 			gitCredCtx, stopGitCred := context.WithCancel(ctx)
 			defer stopGitCred()
-			go r.refreshGitCredentialsLoop(gitCredCtx, msg.TenantID, ref, workDir, msg.RepoURL)
+			go r.refreshGitCredentialsLoop(gitCredCtx, msg.TenantID, ref, msg.RunID, workDir, msg.RepoURL)
 		}
 	}
 
@@ -1095,21 +1104,19 @@ func (r *Runner) executeRun(ctx context.Context, msg *queue.RunMessage) error {
 		// sandbox block, so the run executes directly in the runner pod.
 		runtime.WithSandboxOverride(r.cfg.SandboxOverride),
 	}
-	// Sandboxed counterpart of the no-sandbox file-secret refresh above: a
-	// `sandbox: auto` run mounts file secrets as a launch-time snapshot
-	// (docker bind-mount / k8s Secret), so the in-pod loop never starts and
-	// a long run would push/comment with a dead token (#99, still open for
-	// the common cloud path). Register an observer that, once the sandbox
-	// Run is live, drives a refresh loop rewriting the in-container secret
-	// when the store record rotates. No-op when the run has no refreshable
-	// file secrets or the driver can't refresh.
-	if refs := r.sandboxFileSecretRefs(ctx, wf); refs != nil {
-		sbRefreshCtx, stopSbRefresh := context.WithCancel(ctx)
-		defer stopSbRefresh()
-		if obs := r.sandboxSecretRefreshObserver(sbRefreshCtx, msg.TenantID, refs); obs != nil {
-			engineOpts = append(engineOpts, runtime.WithSandboxRunObserver(obs))
-		}
-	}
+	// Sandbox-run observer: registers the live sandbox Run so the mid-run
+	// credential refreshers can write rotated tokens THROUGH into the
+	// container (forfait credentials + the k8s workspace's git credential
+	// copy — see sandbox_registry.go), and starts the sandboxed
+	// file-secret refresh loop when the run carries refreshable file
+	// secrets (a `sandbox: auto` run mounts them as a launch-time
+	// snapshot — docker bind-mount / k8s Secret — so a long run would
+	// otherwise push/comment with a dead token, #99).
+	sbObsCtx, stopSbObs := context.WithCancel(ctx)
+	defer stopSbObs()
+	defer r.unregisterSandboxRun(msg.RunID)
+	engineOpts = append(engineOpts, runtime.WithSandboxRunObserver(
+		r.sandboxRunObserver(sbObsCtx, msg.RunID, msg.TenantID, r.sandboxFileSecretRefs(ctx, wf))))
 	// Bundle resources: a bot-qualified run attaches its bundle so the
 	// engine mirrors skills/ into <workspace>/.claude/skills AND
 	// provisions the bot's devbox.json (host devbox provisioning — the

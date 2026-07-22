@@ -412,15 +412,26 @@ func (r *Runner) installGitCredentialStore(ctx context.Context, dir, repoURL, to
 	return nil
 }
 
+// renderGitCredentialLine renders the single credential-store line
+// (https://oauth2:<token>@host) for a repo's canonical host. Shared by
+// the host file write below and the sandbox workspace write-through
+// (sandbox_registry.go) so both locations always carry the same shape.
+func renderGitCredentialLine(repoURL, token string) (string, error) {
+	u, err := url.Parse(repoURL)
+	if err != nil || u.Scheme == "" || u.Host == "" {
+		return "", fmt.Errorf("credential store: unusable repo URL %q", repoURL)
+	}
+	return (&url.URL{Scheme: u.Scheme, Host: u.Host, User: url.UserPassword("oauth2", token)}).String() + "\n", nil
+}
+
 // writeGitCredentials renders one credential-store line
 // (https://oauth2:<token>@host) and replaces the file atomically, so a
 // concurrent git read never sees a torn line.
 func writeGitCredentials(path, repoURL, token string) error {
-	u, err := url.Parse(repoURL)
-	if err != nil || u.Scheme == "" || u.Host == "" {
-		return fmt.Errorf("credential store: unusable repo URL %q", repoURL)
+	line, err := renderGitCredentialLine(repoURL, token)
+	if err != nil {
+		return err
 	}
-	line := (&url.URL{Scheme: u.Scheme, Host: u.Host, User: url.UserPassword("oauth2", token)}).String() + "\n"
 	tmp := path + ".tmp"
 	if err := os.WriteFile(tmp, []byte(line), 0o600); err != nil {
 		return fmt.Errorf("credential store: write: %w", err)

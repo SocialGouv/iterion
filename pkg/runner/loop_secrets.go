@@ -152,9 +152,14 @@ func (r *Runner) refreshFileSecretsOnce(ctx context.Context, tenantID string, re
 // takes several, and the push happens at the END — so without this the last
 // and most valuable action of the run is the one that fails.
 //
+// When the run executes inside a copy-based sandbox (kubernetes), the
+// rotated token is additionally written THROUGH into the pod workspace's
+// own credential store — the host rewrite below lands in a clone the
+// sandboxed git never reads (ADR-082 Phase 3 blocker 1).
+//
 // Best-effort by design: a transient store error just leaves the previous
 // (still possibly valid) credential in place until the next tick.
-func (r *Runner) refreshGitCredentialsLoop(ctx context.Context, tenantID, secretID, dir, repoURL string) {
+func (r *Runner) refreshGitCredentialsLoop(ctx context.Context, tenantID, secretID, runID, dir, repoURL string) {
 	tick := time.NewTicker(fileSecretRefreshInterval)
 	defer tick.Stop()
 	path := filepath.Join(dir, ".git", gitCredentialFile)
@@ -177,6 +182,7 @@ func (r *Runner) refreshGitCredentialsLoop(ctx context.Context, tenantID, secret
 			r.cfg.Logger.Warn("runner: refresh git credential: %v", err)
 			continue
 		}
+		r.writeThroughSandboxGitCredential(runID, repoURL, string(val))
 		last = string(val)
 		r.cfg.Logger.Info("runner: refreshed the clone's git credential from store (rotation picked up)")
 	}
@@ -227,29 +233,6 @@ func (r *Runner) sandboxFileSecretRefs(ctx context.Context, wf *ir.Workflow) map
 		return nil
 	}
 	return refs
-}
-
-// sandboxSecretRefreshObserver returns a runtime sandbox-run observer
-// that starts the sandboxed mid-run file-secret refresh loop once the
-// container is live — the sandboxed counterpart to refreshFileSecretsLoop
-// (#99 covered only the no-sandbox in-pod path, so a long `sandbox: auto`
-// run that pushes/comments after ~1h used a dead token). Returns nil when
-// the run has no refreshable file secrets, so the engine hook is a no-op.
-//
-// refreshCtx must be a context the caller cancels when the run ends (the
-// loop exits on it); the observer only spawns the goroutine.
-func (r *Runner) sandboxSecretRefreshObserver(refreshCtx context.Context, tenantID string, refs map[string]string) func(sandbox.Run) {
-	if len(refs) == 0 {
-		return nil
-	}
-	return func(run sandbox.Run) {
-		refresher, ok := run.(sandbox.SecretFileRefresher)
-		if !ok {
-			r.cfg.Logger.Warn("runner: sandbox driver %q does not support mid-run secret refresh; a long run may push with a stale token", run.Driver())
-			return
-		}
-		go r.refreshSandboxFileSecretsLoop(refreshCtx, tenantID, refs, refresher)
-	}
 }
 
 // refreshSandboxFileSecretsLoop re-reads each refreshable file secret's
