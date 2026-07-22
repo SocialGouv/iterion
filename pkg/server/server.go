@@ -207,6 +207,18 @@ type Server struct {
 	// is non-nil (handler is only mounted when the board exists).
 	boardMCPTokens BoardMCPTokenStore
 
+	// forgePublishTokens authorizes runs that POST their review findings
+	// to /api/v1/forge/publish-review (the deterministic, tokenless-in-
+	// workspace forge publish seam). Tokens are minted per launch by
+	// injectForgePublishVars; grants pin (team, connection, repo). Non-nil
+	// iff forgeConnections is wired.
+	forgePublishTokens ForgePublishTokenStore
+
+	// forgeReviewClientFor is a test seam overriding how the publish-review
+	// handler resolves a connection's forge.ReviewClient. Nil → real admin
+	// client via forgeAdminFor.
+	forgeReviewClientFor func(ctx context.Context, conn forge.Connection) (forge.ReviewClient, error)
+
 	// marketplace is the hosted bot registry store. Mirrors
 	// Config.Marketplace; nil disables every /api/v1/marketplace/*
 	// endpoint (and the studio's Marketplace view via
@@ -355,6 +367,16 @@ func New(cfg Config, logger *iterlog.Logger) *Server {
 			s.boardMCPTokens = newValkeyBoardMCPTokenStore(s.redis.Redis(), s.logger)
 		} else {
 			s.boardMCPTokens = NewBoardMCPTokenRegistry()
+		}
+	}
+	if s.forgeConnections != nil {
+		// Same replica story as the board MCP tokens: a run's publish POST
+		// may land on any server pod, so a distributed backend shares the
+		// grants; single-replica keeps the in-memory registry.
+		if s.redis != nil {
+			s.forgePublishTokens = newValkeyForgePublishTokenStore(s.redis.Redis(), s.logger)
+		} else {
+			s.forgePublishTokens = NewForgePublishTokenRegistry()
 		}
 	}
 	// Auth rate limiter — eagerly built so the lazy `if s.authLimiter == nil`
