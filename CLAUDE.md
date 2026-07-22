@@ -933,11 +933,15 @@ the sec image produces a zero-finding façade — now caught, not silent:
 when the always-on generic scanners (gitleaks/trivy/semgrep-auto)
 produced no output, and banners partial coverage gaps in the report (see
 [sec_audit_scan_health_test.go](e2e/sec_audit_scan_health_test.go)). CI publishes it
-via [.github/workflows/image.yml](.github/workflows/image.yml) (the
-`build-sandbox-sec` job, chained on `-full`) on every push to `main`
-(tag `:edge`) and on release tags. Until that first CI run lands — or for
-a local-only loop — build it yourself and `docker tag` it to
-`ghcr.io/socialgouv/iterion-sandbox-sec:edge`.
+in two halves: the tool-only `iterion-sandbox-sec-base` builds in
+[.github/workflows/sandbox-images.yml](.github/workflows/sandbox-images.yml)
+(only when `sandbox/**` changes), and the published
+`iterion-sandbox-sec:edge` is finalized — current iterion binary stamped
+onto that base — on every push to `main` by
+[.github/workflows/image.yml](.github/workflows/image.yml) via
+[_finalize.yml](.github/workflows/_finalize.yml) (and at `:vX.Y.Z` on
+release tags). For a local-only loop, build it yourself and `docker tag`
+it to `ghcr.io/socialgouv/iterion-sandbox-sec:edge`.
 
 **Recurring audit.** The weekly schedule (sec-audit-source Mon 02:00
 UTC, sec-audit-deps Mon 03:00 UTC) is wired through
@@ -976,9 +980,10 @@ blockers, the context-overflow ones are fixed —
 deterministic `cap_findings` node (see
 [sec_audit_cap_findings_test.go](e2e/sec_audit_cap_findings_test.go)).
 The remaining gate before flipping the schedule on for real is **(2) the
-sec image published in CI** (the `build-sandbox-sec` job above); until
-that first push lands, install the schedule but `docker tag` the locally
-built `iterion-sandbox-sec:edge` so the scanned runs find their tools.
+sec image published in CI** (the sandbox-images.yml `base-sec` job + the
+per-push finalize above); until that first push lands, install the
+schedule but `docker tag` the locally built `iterion-sandbox-sec:edge`
+so the scanned runs find their tools.
 For a one-time audit by hand, a direct scanner pass in the sec image is
 reliable —
 `docker run --rm -v "$PWD":/src:ro -w /src
