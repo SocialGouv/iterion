@@ -210,7 +210,7 @@ work on and pick the entry point that matches your intent:
 
 #### Run a bot from the catalog
 
-Iterion ships a fleet (see [Meet the legion](#meet-the-legion)) — the fastest
+Iterion ships a fleet (see [Ready-to-run agent workflows](#agent-workflows)) — the fastest
 way to see it work is to point one at your repo:
 
 ```bash
