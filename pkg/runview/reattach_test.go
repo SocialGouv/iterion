@@ -123,6 +123,7 @@ func TestReconcileOrphans_StalePIDFlipsStatus(t *testing.T) {
 	if err := seed.SaveCheckpoint(context.Background(), id, &store.Checkpoint{NodeID: "n1"}); err != nil {
 		t.Fatalf("SaveCheckpoint: %v", err)
 	}
+	backdateRun(t, seed, id)
 
 	// Spawn + immediately kill a child to obtain a PID we know is
 	// dead. PID collisions during the test window are vanishingly

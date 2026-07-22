@@ -222,6 +222,16 @@ func (r *EngineRunner) Dispatch(ctx context.Context, spec DispatchSpec) error {
 	if err != nil {
 		return fmt.Errorf("engine runner: open store: %w", err)
 	}
+	// Hold the run flock for the run's lifetime — the liveness signal the
+	// orphan reconciler probes (runview.reconcileOrphans). A dispatcher-owned
+	// run is neither in runview's manager nor a detached-.pid runner, so
+	// without the lock a server-side reconcile tick flips it failed while
+	// its engine and delegate subprocesses are still working.
+	if lock, lerr := baseStore.LockRun(ctx, spec.RunID); lerr == nil {
+		defer func() { _ = lock.Unlock() }()
+	} else {
+		r.logger.Warn("engine runner: run lock %s unavailable (%v) — the orphan reconciler may misjudge this run as dead", spec.RunID, lerr)
+	}
 	// Wrap so spec.OnEvent fires on EVERY AppendEvent — high-frequency
 	// tool_started/tool_called events emitted by the backend hooks
 	// (pkg/backend/model/hooks.go) write straight to the store and
