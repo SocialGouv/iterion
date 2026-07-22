@@ -101,6 +101,48 @@ func TestVerifyRunDriftTail(t *testing.T) {
 		}
 	})
 
+	t.Run("updater_commit_if_changed_ci_is_not_a_drift_gate", func(t *testing.T) {
+		// A workflow using `git diff --quiet` as commit-if-changed control
+		// flow (a Homebrew tap updater, a changelog bump) is NOT a
+		// build-failing drift gate — a gateless verify.sh must still pass.
+		// Regression: brew-update.yml's `if git diff --staged --quiet; then`
+		// forced every feature-dev pass to exit 3, blocking convergence
+		// (2026-07-22 treatment dogfood).
+		ws, scratch := gitWorkspace(t), t.TempDir()
+		dir := filepath.Join(ws, ".github", "workflows")
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		yml := "jobs:\n  bump:\n    steps:\n      - run: |\n          git add -A\n          if git diff --staged --quiet; then\n            echo 'nothing to commit'\n          else\n            git commit -m bump && git push\n          fi\n"
+		if err := os.WriteFile(filepath.Join(dir, "updater.yml"), []byte(yml), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		writeVerifySh(t, scratch, "#!/bin/sh\nexit 0\n") // gateless — and that's fine
+		res := run(t, ws, scratch)
+		if !res.Passed {
+			t.Fatalf("commit-if-changed updater CI must not demand a drift gate: %+v", res)
+		}
+	})
+
+	t.Run("porcelain_assert_ci_is_a_drift_gate", func(t *testing.T) {
+		// The porcelain form of a REAL gate (`test -z "$(git status
+		// --porcelain)"`) still counts: a gateless verify.sh must fail.
+		ws, scratch := gitWorkspace(t), t.TempDir()
+		dir := filepath.Join(ws, ".github", "workflows")
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		yml := "jobs:\n  test:\n    steps:\n      - run: |\n          task gen\n          test -z \"$(git status --porcelain)\"\n"
+		if err := os.WriteFile(filepath.Join(dir, "ci.yml"), []byte(yml), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		writeVerifySh(t, scratch, "#!/bin/sh\nexit 0\n")
+		res := run(t, ws, scratch)
+		if res.Passed {
+			t.Fatalf("porcelain-assert CI gate must demand a mirror in verify.sh: %+v", res)
+		}
+	})
+
 	t.Run("green_verify_leaving_new_tree_changes_fails", func(t *testing.T) {
 		ws, scratch := gitWorkspace(t), t.TempDir() // no CI config → assertion 1 skipped
 		writeVerifySh(t, scratch, "#!/bin/sh\necho generated > gen-out.txt\nexit 0\n")

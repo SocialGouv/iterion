@@ -548,6 +548,15 @@ func subbotRunnerForCLI(parentPath, storeDir string, s store.RunStore, logger *i
 				}
 			}),
 		)
+		// Unlike the studio's in-process runner (runview.subbotRunnerFor, which
+		// registers the child with the run Manager for per-child studio
+		// Cancel/Pause), the CLI has no per-run control plane — no HTTP API and
+		// no Manager to target a single child. Its only control signal is
+		// SIGINT/SIGTERM on the process (cmd/iterion/main.go's root ctx), which
+		// cancels the whole run: childCtx descends from that ctx, so an
+		// interrupt propagates into a mid-flight child here exactly as it does
+		// to the parent. There is thus nothing to register — a Manager here
+		// would have no caller. Per-child control is a studio-only capability.
 		childCtx := context.WithValue(ctx, subbotDepthKey{}, depth+1)
 		if err := childEng.Run(childCtx, childRunID, req.Vars); err != nil {
 			// A human gate inside the child pauses the CHILD run (its doc is

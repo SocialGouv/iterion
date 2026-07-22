@@ -310,3 +310,50 @@ func TestVibeFeatureDev_Structural(t *testing.T) {
 		}
 	}
 }
+
+// TestVibeFeatureDev_ProbeSeesLoopIteration pins the LOAD-BEARING
+// {{loop.continuation_loop.iteration}} edge mapping into verify_probe: the
+// probe's reuse decision keys on it ("pass 1 always regenerates"), so a
+// mapping that silently resolves to 0 every pass makes verify_build (an LLM
+// agent, ~$0.30-0.70) re-run — and rewrite verify.sh — on EVERY pass
+// (observed live on the 2026-07-22 treatment runs: probe reason stuck on
+// "first pass of this run" across 4 passes).
+func TestVibeFeatureDev_ProbeSeesLoopIteration(t *testing.T) {
+	wf := compileFixtureStubSafe(t, "feature-dev/main.bot")
+	exec := newScenarioExecutor()
+	st := &featureDevState{completeBy: 3}
+	stubFeatureDevCampaign(exec, st)
+
+	var probeIters []int
+	exec.on("verify_probe", func(in map[string]any) (map[string]any, error) {
+		it := -1
+		switch v := in["iteration"].(type) {
+		case int:
+			it = v
+		case int64:
+			it = int(v)
+		case float64:
+			it = int(v)
+		case string:
+			// A ref that failed to resolve arrives as its raw/empty string —
+			// keep -1 so the assertion shows the failure shape.
+		}
+		probeIters = append(probeIters, it)
+		return map[string]any{"fresh": false, "reason": "stub", "_tokens": 1}, nil
+	})
+
+	s := tmpStore(t)
+	eng := runtime.New(wf, s, exec)
+	if err := eng.Run(context.Background(), "run-fd-iter", nil); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	want := []int{0, 1, 2}
+	if len(probeIters) != len(want) {
+		t.Fatalf("verify_probe called %d times (%v), want %d", len(probeIters), probeIters, len(want))
+	}
+	for i, w := range want {
+		if probeIters[i] != w {
+			t.Fatalf("verify_probe pass %d saw iteration=%d, want %d (full: %v)", i+1, probeIters[i], w, probeIters)
+		}
+	}
+}

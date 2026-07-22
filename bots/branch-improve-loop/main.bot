@@ -354,6 +354,13 @@ prompt verify_user:
   skill). Do NOT change code; the deterministic gate runs your script and the
   campaign fixes any red on the next pass.
 
+  MANDATORY (skill section 1b): if the repo's own CI enforces a
+  codegen-drift gate (git diff --exit-code after a regen/vendor step, a
+  drift-check task, test -z on git status --porcelain), verify.sh MUST
+  mirror it — run the repo's regen command(s), then fail on drift. The
+  deterministic precheck rejects a gateless verify.sh in that case
+  (exit 3) and the loop burns a full pass re-learning this.
+
 ## ─── PR finalization prompts (opt-in) ────────────────────────────
 
 prompt review_system:
@@ -620,7 +627,7 @@ agent campaign:
 ## a prior run may have left in a persistent (non-sandbox) scratch dir. python3
 ## for safe JSON + no quote clashes (mirrors verify_run); read-only, idempotent.
 tool verify_probe:
-  command: `SCRATCH={{vars.scratch_dir}} ITER="{{input.iteration}}" python3 -c "
+  command: `SCRATCH={{vars.scratch_dir}} ITER={{input.iteration}} python3 -c "
 import os, subprocess, json
 scratch = os.environ.get('SCRATCH', '.')
 script = os.path.join(scratch, 'verify.sh')
@@ -707,7 +714,14 @@ if rc == 0:
     import glob
     def has_drift_gate(text):
         for l in text.splitlines():
-            if ('diff' in l and ('--exit-code' in l or '--quiet' in l)) or 'status --porcelain' in l:
+            # git diff --exit-code is the canonical build-failing gate.
+            if 'diff' in l and '--exit-code' in l:
+                return True
+            # --quiet / status --porcelain also appear as commit-if-changed
+            # control flow in updater workflows (e.g. a Homebrew tap bump) --
+            # only count them when the same line actually fails the build.
+            gated = ('exit 1' in l) or ('|| exit' in l) or ('test -z' in l) or ('[ -z' in l)
+            if gated and (('diff' in l and '--quiet' in l) or 'status --porcelain' in l):
                 return True
         return False
     ci_hit = ''
