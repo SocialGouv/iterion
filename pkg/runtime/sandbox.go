@@ -820,6 +820,24 @@ func resolveSandboxSpec(
 				return nil, source, "", fmt.Errorf("runtime: sandbox: mode=auto but no .devcontainer/devcontainer.json found at %s — add one or switch to inline mode", repoRoot)
 			}
 			if byDefault {
+				// Ambient default: a devcontainer the sandbox cannot use
+				// (parse error, refused runArgs like --privileged, …) must
+				// not disable sandboxing when a default image exists — the
+				// repo's devcontainer serves human dev environments first,
+				// and rejecting it would leave every run on such a repo
+				// permanently unsandboxed (observed live: iterion's own
+				// devcontainer declares --privileged; run 019f8a0b degraded
+				// to unsandboxed instead of using the default image).
+				if defaultImage != "" {
+					var spec sandbox.Spec
+					if wf != nil && wf.Sandbox != nil {
+						spec = fromIRSpec(wf.Sandbox)
+					}
+					spec.Mode = sandbox.ModeAuto
+					spec.Image = defaultImage
+					expandSandboxSpec(&spec, repoRoot)
+					return &spec, source + fmt.Sprintf(" (devcontainer unusable — %v — default image: %s)", err, defaultImage), "", nil
+				}
 				return nil, source, fmt.Sprintf("devcontainer.json unreadable: %v", err), nil
 			}
 			return nil, source, "", fmt.Errorf("runtime: sandbox: read devcontainer.json: %w", err)
