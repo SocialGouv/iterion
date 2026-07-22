@@ -406,7 +406,11 @@ func TestResolveDeliveryPreconditions(t *testing.T) {
 		{"missing run terms", "run-ghost", nil, false, actionTerm, "store_load_failed", false},
 		{"running proceeds as launch", "run-running", nil, true, 0, "", false},
 		{"pre-pickup cancel acks", "run-cancelled-nocp", nil, false, actionAck, "cancelled", false},
-		{"cancel checkpoint converts to resume", "run-cancelled-cp", nil, true, 0, "", true},
+		// Cancelled is terminal for redelivery even WITH a checkpoint:
+		// auto-resume here resurrected operator-cancelled runs (live:
+		// 019f8ba3, three times). Only an explicit resume proceeds.
+		{"cancel checkpoint stays cancelled", "run-cancelled-cp", nil, false, actionAck, "cancelled", false},
+		{"cancel checkpoint explicit resume proceeds", "run-cancelled-cp", &queue.ResumeSpec{}, true, 0, "", true},
 		{"failed_resumable converts to resume", "run-failres", nil, true, 0, "", true},
 		{"paused_operator converts to resume", "run-pausedop", nil, true, 0, "", true},
 		{"explicit resume passes through", "run-failres", &queue.ResumeSpec{}, true, 0, "", true},

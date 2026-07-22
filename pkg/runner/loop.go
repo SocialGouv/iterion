@@ -213,26 +213,23 @@ func (r *Runner) resolveDeliveryPreconditions(msg *queue.RunMessage) preconditio
 	// has no checkpoint and remains a stale delivery to ack/drop.
 	switch preRun.Status {
 	case store.RunStatusCancelled:
-		if preRun.Checkpoint == nil {
+		// Cancelled is terminal for a REDELIVERED launch message,
+		// checkpoint or not: auto-resuming here turned any lost ack of
+		// an operator cancel into a resurrection loop (run 019f8ba3
+		// came back three times, incl. via plain JetStream redelivery
+		// with the runner up, and after every pod roll). The checkpoint
+		// stays on the run doc — an explicit resume (msg.Resume set, or
+		// the resume API) is the only way to continue. A shutdown-drain
+		// whose nak beat the checkpoint write lands here too and now
+		// waits for that explicit resume instead of self-restarting.
+		if msg.Resume == nil {
 			return preconditionOutcome{
 				finalStatus: "cancelled",
 				op:          "ack-already-cancelled",
 				action:      actionAck,
 				level:       logInfo,
-				logFmt:      "runner: run %s already cancelled — skipping",
+				logFmt:      "runner: run %s is cancelled — dropping redelivery (explicit resume required to continue)",
 				logArgs:     []any{msg.RunID},
-			}
-		}
-		if msg.Resume == nil {
-			// We mutate msg.Resume here so the executor takes the
-			// resume path; caller still uses outcome.preRun unchanged.
-			msg.Resume = &queue.ResumeSpec{}
-			return preconditionOutcome{
-				proceed: true,
-				preRun:  preRun,
-				level:   logInfo,
-				logFmt:  "runner: run %s redelivered after cancellation checkpoint — resuming",
-				logArgs: []any{msg.RunID},
 			}
 		}
 	case store.RunStatusFailedResumable, store.RunStatusPausedOperator:
