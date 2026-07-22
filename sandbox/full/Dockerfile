@@ -22,7 +22,7 @@
 # users who need them should publish their own image, or declare the
 # extras in a workspace-local devbox.json.
 
-ARG BASE=ghcr.io/socialgouv/iterion-sandbox-slim:edge
+ARG BASE=ghcr.io/socialgouv/iterion-sandbox-slim-base:edge
 FROM ${BASE}
 
 USER root

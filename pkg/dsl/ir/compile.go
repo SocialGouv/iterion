@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -1449,6 +1450,23 @@ func (c *compiler) compileEdges(astEdges []*ast.Edge) ([]*Edge, map[string]*Loop
 						c.errorf(DiagBadTemplateRef,
 							"loop %q: template cap %q: %v",
 							ae.Loop.Name, ae.Loop.MaxIterationsExpr, err)
+					}
+					// A cap expr with no template refs is a static string
+					// (the parser catches the `as fix("2")` DSL form, but
+					// group `${}` substitution and AST-JSON import can also
+					// land a bare literal here). It would silently resolve to
+					// MaxIterations=0 and skip the loop edge as exhausted on
+					// the first traversal, so fold a plain integer into the
+					// literal cap and reject anything else outright.
+					if len(refs) == 0 {
+						if n, aerr := strconv.Atoi(strings.TrimSpace(ae.Loop.MaxIterationsExpr)); aerr == nil {
+							loop.MaxIterations = n
+							loop.MaxIterationsExpr = ""
+						} else {
+							c.errorf(DiagBadTemplateRef,
+								"loop %q: cap %q has no template refs and is not an integer — a static non-numeric cap would silently limit the loop to 0 iterations",
+								ae.Loop.Name, ae.Loop.MaxIterationsExpr)
+						}
 					}
 					loop.MaxIterationsExprRefs = refs
 				}

@@ -1,7 +1,7 @@
 name: review-pr
 display_name: Revi
 icon: 🔎
-version: 0.2.0
+version: 0.3.0
 description: |
   Read-only cross-family code reviewer. Reviews the working-tree diff
   of the current branch against its base with two independent reviewers
@@ -39,11 +39,12 @@ forge:
   secret: forge_token        # cross-ref with main.bot `secrets: { forge_token }`
   webhook:
     launch_vars:
-      pr_review_mode: summary
       post_to_board: "false"
   rationale: |
-    Revi reads the PR diff and posts one forge review with inline
-    comments + ```suggestion blocks. /revi in a note triggers a
+    Revi reads the PR diff; the iterion server posts one forge review
+    with inline comments + one-click suggestion blocks through the team
+    connection's live client (deterministic publish endpoint — the run
+    itself holds no posting credential). /revi in a note triggers a
     re-review on the same PR.
 
 # Invocations: how Revi can be triggered (typed routing contract).

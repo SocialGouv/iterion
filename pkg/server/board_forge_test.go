@@ -71,7 +71,7 @@ func TestUpsertForgeCard_CreateUpdateIdempotent(t *testing.T) {
 	}
 
 	is := forge.IssueRef{Number: 7, Title: "fix login", Body: "boom", State: "open", URL: "http://f/7", Labels: []string{"bug"}}
-	c, u, err := upsertForgeCard(board, b, openCol, doneCol, forge.ProviderGitHub, "conn1", "org/api", is)
+	c, u, err := upsertForgeCard(board, b, openCol, doneCol, forge.ProviderGitHub, "conn1", "org/api", is, false)
 	if err != nil || c != 1 || u != 0 {
 		t.Fatalf("create: c=%d u=%d err=%v", c, u, err)
 	}
@@ -95,7 +95,7 @@ func TestUpsertForgeCard_CreateUpdateIdempotent(t *testing.T) {
 		t.Fatalf("setstate: %v", err)
 	}
 	is.Title = "fix login (v2)"
-	c, u, err = upsertForgeCard(board, b, openCol, doneCol, forge.ProviderGitHub, "conn1", "org/api", is)
+	c, u, err = upsertForgeCard(board, b, openCol, doneCol, forge.ProviderGitHub, "conn1", "org/api", is, false)
 	if err != nil || c != 0 || u != 1 {
 		t.Fatalf("update: c=%d u=%d err=%v", c, u, err)
 	}
@@ -109,7 +109,7 @@ func TestUpsertForgeCard_CreateUpdateIdempotent(t *testing.T) {
 
 	// Forge closes the issue → still-open card moves to the terminal column.
 	is.State = "closed"
-	if _, _, err := upsertForgeCard(board, b, openCol, doneCol, forge.ProviderGitHub, "conn1", "org/api", is); err != nil {
+	if _, _, err := upsertForgeCard(board, b, openCol, doneCol, forge.ProviderGitHub, "conn1", "org/api", is, false); err != nil {
 		t.Fatalf("close-sync: %v", err)
 	}
 	card, _ = board.Get(id)
@@ -138,7 +138,7 @@ func TestSyncForgeIssuesToBoard_StoreAgnostic(t *testing.T) {
 	}}
 
 	created, updated, err := syncForgeIssuesToBoard(
-		context.Background(), ic, forge.ProviderGitHub, "conn1", "org/api", board, time.Time{})
+		context.Background(), ic, forge.ProviderGitHub, "conn1", "org/api", board, time.Time{}, nil)
 	if err != nil {
 		t.Fatalf("sync: %v", err)
 	}
@@ -159,7 +159,7 @@ func TestSyncForgeIssuesToBoard_StoreAgnostic(t *testing.T) {
 
 	// Re-sync = idempotent upsert, not duplication.
 	created, updated, err = syncForgeIssuesToBoard(
-		context.Background(), ic, forge.ProviderGitHub, "conn1", "org/api", board, time.Time{})
+		context.Background(), ic, forge.ProviderGitHub, "conn1", "org/api", board, time.Time{}, nil)
 	if err != nil {
 		t.Fatalf("re-sync: %v", err)
 	}
@@ -180,7 +180,7 @@ func TestSyncForgeIssuesToBoard_StoreAgnostic(t *testing.T) {
 // (ImportForgeIssues is a thin construct-then-delegate shim over it).
 func TestImportForgeIssues_UnsupportedProvider(t *testing.T) {
 	board := newTestBoard(t)
-	_, _, err := ImportForgeIssues(context.Background(), forge.Provider("bitbucket"), "", "tok", "org/api", board, time.Time{})
+	_, _, err := ImportForgeIssues(context.Background(), forge.Provider("bitbucket"), "", "tok", "org/api", board, time.Time{}, "")
 	if err == nil {
 		t.Fatal("expected an error for an unsupported provider, got nil")
 	}
@@ -190,7 +190,7 @@ func TestUpsertForgeCard_ClosedCreatesInTerminal(t *testing.T) {
 	board := newTestBoard(t)
 	b := board.Board()
 	is := forge.IssueRef{Number: 9, Title: "old", State: "closed"}
-	if _, _, err := upsertForgeCard(board, b, defaultOpenColumn(b), terminalColumn(b), forge.ProviderForgejo, "c", "o/r", is); err != nil {
+	if _, _, err := upsertForgeCard(board, b, defaultOpenColumn(b), terminalColumn(b), forge.ProviderForgejo, "c", "o/r", is, false); err != nil {
 		t.Fatalf("upsert: %v", err)
 	}
 	card, _ := board.Get(forgeCardID(forge.ProviderForgejo, "o/r", 9))

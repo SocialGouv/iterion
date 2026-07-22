@@ -99,6 +99,11 @@ type Subscription struct {
 	// claims). Empty inherits the invocation's EffectiveMode at evaluation.
 	Mode  bundle.ExecutionMode `json:"mode,omitempty" bson:"mode,omitempty"`
 	Match Matcher              `json:"match" bson:"match"`
+	// ConsumeLabels (board-source, direct-mode only) strips the Match.Labels
+	// set from the card before launching, making the labels a one-shot
+	// trigger: duplicate card events can't double-launch, and re-adding the
+	// label re-arms it. Mirrors bundle.InvocationBoard.ConsumeLabels.
+	ConsumeLabels bool `json:"consume_labels,omitempty" bson:"consume_labels,omitempty"`
 	// Vars are launch-var overrides stamped on the run (ContextVars +
 	// operator LaunchVars merged at provision time; operator wins).
 	Vars map[string]string `json:"vars,omitempty" bson:"vars,omitempty"`
@@ -187,14 +192,21 @@ func (s Subscription) EffectiveMode() bundle.ExecutionMode {
 // activates event-driven promotion. Returns ok=false for any other invocation.
 //
 // The caller supplies id (a uuid), tenant, and repo scope; the board block's
-// On/ToStates/AllLabels become the Matcher. The mode is board (promote the
-// card so the dispatcher claims it).
+// On/ToStates/AllLabels become the Matcher. The default mode is board
+// (promote the card so the dispatcher claims it); an explicit mode: direct
+// launches the bot itself on the matching card event (with the card id in
+// vars["issue_id"]) — the triage-style "run a bot ON the card without
+// routing the card TO it" shape.
 func FromBoardInvocation(id, tenantID, repo, botID, origin string, inv bundle.Invocation, now time.Time) (Subscription, bool) {
 	if inv.Kind != bundle.InvocationKindBoard || inv.Board == nil {
 		return Subscription{}, false
 	}
 	sub := baseSubscription(id, tenantID, repo, botID, origin, inv.Kind, now)
 	sub.Mode = bundle.ExecutionBoard
+	if inv.Mode == bundle.ExecutionDirect {
+		sub.Mode = bundle.ExecutionDirect
+		sub.ConsumeLabels = inv.Board.ConsumeLabels
+	}
 	sub.Match = Matcher{
 		Sources:       []Source{SourceBoard},
 		Kinds:         append([]string(nil), inv.Board.On...),

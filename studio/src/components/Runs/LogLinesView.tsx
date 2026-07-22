@@ -14,6 +14,7 @@ import { formatBytes } from "@/lib/format";
 import { downloadBlob } from "@/lib/download";
 import { readBooleanFlag, writeBooleanFlag } from "@/lib/localStorageFlag";
 import { selectInFlightTools, useRunStore } from "@/store/run";
+import { clampLogBody } from "@/store/run/logBuffer";
 import { useTabsStore } from "@/store/tabs";
 import { useUIStore } from "@/store/ui";
 
@@ -211,23 +212,68 @@ export default function LogLinesView({
     };
   }, [subscribeLogs, unsubscribeLogs]);
 
+  // Evicted-head fallback for the replay scrubber. The in-memory buffer
+  // is a bounded tail (MAX_LOG_BYTES): on a log larger than the cap the
+  // head [0, log.start) is trimmed away, and a scrub position below
+  // log.start used to render as an empty panel mislabelled "No log
+  // captured." Fetch that prefix once from the authoritative persisted
+  // log (run.log on a filesystem store, run_logs chunks on Mongo) and
+  // cache it in the run store; the cache is keyed on log.start so a
+  // further live trim triggers a refetch of the widened gap.
+  const prefix = log.prefix;
+  const setLogPrefix = useRunStore((s) => s.setLogPrefix);
+  const clamping = clampToBytes !== null && clampToBytes !== undefined;
+  const needPrefixFetch =
+    clamping && log.start > 0 && (!prefix || prefix.until !== log.start);
+  // The error is keyed by the `until` it failed for, so a later trim
+  // (a new fetch target) supersedes it without a synchronous state
+  // reset inside the effect.
+  const [prefixError, setPrefixError] = useState<{
+    until: number;
+    message: string;
+  } | null>(null);
+  useEffect(() => {
+    if (!needPrefixFetch) return;
+    const until = log.start;
+    let cancelled = false;
+    void (async () => {
+      try {
+        const res = await fetch(
+          apiURL(`/runs/${encodeURIComponent(runId)}/log?from=0&until=${until}`),
+          { credentials: "include" },
+        );
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        const text = await res.text();
+        if (!cancelled) setLogPrefix({ until, text });
+      } catch (err) {
+        console.error("[LogLinesView] evicted-log prefix fetch failed:", err);
+        if (!cancelled) setPrefixError({ until, message: String(err) });
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [needPrefixFetch, log.start, runId, setLogPrefix]);
+  const prefixState: PrefixState = !clamping || log.start === 0
+    ? "none"
+    : prefix && prefix.until === log.start
+      ? "ready"
+      : prefixError && prefixError.until === log.start
+        ? "error"
+        : "loading";
+
   // Annotate lines with their inferred level. Continuation lines (from
   // LogBlock) inherit the level of the most recent header so a level
   // filter doesn't strand a multi-line block's body.
   //
-  // When clampToBytes is set, slice the buffer to the absolute byte
-  // position the time-travel scrubber asks for (events[scrubSeq].log_
-  // offset on the parent side). Bytes BEFORE the ring's lower bound
-  // (log.start) have been evicted from the 1 MB window — those are
-  // silently absent until we wire a /api/runs/{id}/log fetch fallback.
+  // When clampToBytes is set, clampLogBody slices the buffer to the
+  // absolute byte position the time-travel scrubber asks for
+  // (events[scrubSeq].log_offset on the parent side), byte-accurately,
+  // stitching in the fetched evicted-head prefix when the position
+  // falls below the in-memory window.
   const annotated = useMemo<AnnotatedLine[]>(() => {
-    if (!log.text) return [];
-    let body = log.text;
-    if (clampToBytes !== null && clampToBytes !== undefined) {
-      const rel = clampToBytes - log.start;
-      if (rel <= 0) return [];
-      if (rel < body.length) body = body.slice(0, rel);
-    }
+    const body = clampLogBody(log.text, log.start, prefix, clampToBytes);
+    if (!body) return [];
     const raw = body.endsWith("\n") ? body.slice(0, -1) : body;
     const split = raw.split("\n");
     const out: AnnotatedLine[] = new Array(split.length);
@@ -243,7 +289,7 @@ export default function LogLinesView({
       }
     }
     return out;
-  }, [log.text, log.start, clampToBytes]);
+  }, [log.text, log.start, prefix, clampToBytes]);
 
   // Per-(node, iteration) pre-filter. Backends prefix every node-bound
   // line as [NodeID#iter/component]; we scan past the timestamp+emoji
@@ -385,7 +431,7 @@ export default function LogLinesView({
           {filtered.length} / {lineCount} lines
           {!isFiltered && <> · {formatBytes(totalBytes)}</>}
         </span>
-        {!isFiltered && droppedBytes > 0 && (
+        {!isFiltered && droppedBytes > 0 && prefixState !== "ready" && (
           <span
             className="text-warning-fg text-caption"
             title={`${formatBytes(droppedBytes)} of older output rolled out of the in-memory tail; download the full log to inspect.`}
@@ -568,7 +614,13 @@ export default function LogLinesView({
         <div className="flex-1 min-w-0 min-h-0 px-3 py-1">
           {filtered.length === 0 ? (
             <div className="text-fg-subtle py-2 text-micro">
-              {emptyMessage(lineCount, isFiltered, log.subscribed)}
+              {emptyMessage(
+                lineCount,
+                isFiltered,
+                log.subscribed,
+                log.total,
+                prefixState,
+              )}
             </div>
           ) : (
             <Virtuoso
@@ -763,13 +815,27 @@ function inferLevel(text: string): string | null {
   return null;
 }
 
+// PrefixState tracks the evicted-head fetch the replay scrubber relies
+// on: "none" when no fetch is needed (not clamping, or nothing was
+// evicted), then loading → ready | error.
+type PrefixState = "none" | "loading" | "ready" | "error";
+
 function emptyMessage(
   lineCount: number,
   isFiltered: boolean,
   subscribed: boolean,
+  totalBytes: number,
+  prefixState: PrefixState,
 ): string {
   if (lineCount > 0) return "No log lines match.";
   if (isFiltered) return "No log lines tagged with this node yet.";
+  // Replay-scrub states: the log exists but the scrub position falls in
+  // the evicted head being (re)fetched. Never claim "No log captured."
+  // while totalBytes proves otherwise.
+  if (prefixState === "loading") return "Loading earlier log…";
+  if (prefixState === "error")
+    return "Earlier log unavailable — fetching the evicted portion failed (see console).";
   if (subscribed) return "Waiting for log output…";
+  if (totalBytes > 0) return "No log output at this replay position.";
   return "No log captured.";
 }

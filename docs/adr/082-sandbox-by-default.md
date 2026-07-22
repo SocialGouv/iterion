@@ -1,6 +1,6 @@
 # ADR-082 — Sandbox by default
 
-- Status: accepted (Phase 1 shipped; Phases 2–3 planned)
+- Status: accepted (Phases 1–2 shipped; Phase 3 planned)
 - Date: 2026-07-22
 - Deciders: devthejo
 
@@ -51,7 +51,7 @@ isolation level. Rollout in three phases:
   (workflow and node level), and the studio confirm dialog now fires
   only for it; an absent block shows `Sandbox: auto (default)`.
 
-### Phase 2 — fleet realignment (planned)
+### Phase 2 — fleet realignment (shipped)
 
 Remove `sandbox:` blocks from catalog bots. Tool access moves to the
 declared-toolchain channels, per the repo's existing rule ("a bot that
@@ -65,6 +65,23 @@ needs tools declares them in devbox.json"):
 - An image pin survives only where Nix cannot provide the toolchain
   (to verify per scanner for `-sec`) or a base layer is needed before
   any step runs.
+
+Shipped state: the six `-full`-pinned coding bots (feature-dev,
+feature-gap-fill, test-coverage, branch-improve-loop,
+whole-improve-loop, app-dev) and devbox-setup carry no `sandbox:`
+block at all; the forge-posting bots declare pinned `gh`/`glab` in
+their `devbox.json` (app-dev keeps `crane`/`yq` there too). The five
+scanner bots (sec-audit-source, sec-audit-deps, supply-shield,
+supply-shield-cve, dep-update-guard) keep exactly the `-sec` image
+pin — the scanner toolchain is the "Nix cannot provide it cheaply"
+case — plus, for the supply-shield pair, the forge-token env
+passthrough that Phase 3 replaces with file secrets.
+secured-renovacy keeps a `-full:edge` pin (its targets' devcontainers
+rely on the un-honoured `features:` block — the documented `auto`
+trap) plus its load-bearing env (git identity, out-of-worktree
+toolchain caches); everything else (claude install gates, `~/.claude`
+mounts, `CLAUDE_CONFIG_DIR`, `user:`, `network: open`) is gone —
+platform defaults cover them.
 
 ### Phase 3 — cloud cutover (planned)
 

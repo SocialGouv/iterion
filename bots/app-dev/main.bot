@@ -432,6 +432,13 @@ prompt verify_user:
   skill). Do NOT change code; the deterministic gate runs your script and the
   campaign fixes any red on the next pass.
 
+  MANDATORY (skill section 1b): if the repo's own CI enforces a
+  codegen-drift gate (git diff --exit-code after a regen/vendor step, a
+  drift-check task, test -z on git status --porcelain), verify.sh MUST
+  mirror it — run the repo's regen command(s), then fail on drift. The
+  deterministic precheck rejects a gateless verify.sh in that case
+  (exit 3) and the loop burns a full pass re-learning this.
+
 ## ─── Adversarial in-loop review prompts ─────────────────────────────
 
 prompt review_system:
@@ -1082,7 +1089,14 @@ if rc == 0:
     import glob
     def has_drift_gate(text):
         for l in text.splitlines():
-            if ('diff' in l and ('--exit-code' in l or '--quiet' in l)) or 'status --porcelain' in l:
+            # git diff --exit-code is the canonical build-failing gate.
+            if 'diff' in l and '--exit-code' in l:
+                return True
+            # --quiet / status --porcelain also appear as commit-if-changed
+            # control flow in updater workflows (e.g. a Homebrew tap bump) --
+            # only count them when the same line actually fails the build.
+            gated = ('exit 1' in l) or ('|| exit' in l) or ('test -z' in l) or ('[ -z' in l)
+            if gated and (('diff' in l and '--quiet' in l) or 'status --porcelain' in l):
                 return True
         return False
     ci_hit = ''
@@ -1376,28 +1390,19 @@ workflow app_dev:
   ## branch to protect yet.
   worktree: auto
 
-  ## Container isolation. The campaign runs arbitrary scaffolders and
-  ## build/test commands inferred from the brief — the worktree alone
-  ## doesn't sandbox those. Inline mode (not `mode: auto`) because the
-  ## iterion-sandbox images don't ship `claude` and mode-auto fallback
-  ## drops post_create/mounts/env (see feature-dev's identical block).
-  ## -full ships Node 24 + npm + Go + Python 3 + pnpm; network default
-  ## is `open`, so official scaffolders (npm/PyPI/crates registries)
-  ## work without a proxy.
-  sandbox:
-    image: "ghcr.io/socialgouv/iterion-sandbox-full:edge"
-    user: "1000:1000"
-    mounts: ["type=bind,source=${localEnv:HOME}/.claude,target=/home/devbox/.claude,consistency=cached"]
-    env:
-      CLAUDE_CONFIG_DIR: "/home/devbox/.claude"
-    ## crane comes from the sibling devbox.json (go-containerregistry): the
-    ## engine installs it at container start and puts its profile bin on
-    ## PATH for every node, tool nodes included. It publishes a container
-    ## image WITHOUT a daemon — the image carries no
-    ## docker/podman/buildah/skopeo, sudo is blocked at run time
-    ## (no_new_privs) and rootless BuildKit is unavailable (no newuidmap),
-    ## so an agent that needs to push an image otherwise has nothing.
-    post_create: "set -e; claude --version >/dev/null 2>&1 || sudo npm install -g @anthropic-ai/claude-code@latest; claude --version >/dev/null 2>&1 || { echo 'claude install verification failed' >&2; exit 1; }"
+  ## No `sandbox:` block (ADR-082): the platform sandboxes by default
+  ## (`sandbox: auto` — target repo's devcontainer, else the default
+  ## image; network default is `open`, so official scaffolders
+  ## (npm/PyPI/crates registries) work without a proxy). The bot's own
+  ## tools come from the sibling devbox.json: crane
+  ## (go-containerregistry) publishes a container image WITHOUT a daemon
+  ## — a sandbox carries no docker/podman/buildah/skopeo, sudo is
+  ## blocked at run time (no_new_privs) and rootless BuildKit is
+  ## unavailable (no newuidmap), so an agent that needs to push an image
+  ## otherwise has nothing — plus gh/glab for the forge tail and yq for
+  ## manifest shaping. The engine installs the devbox profile at
+  ## container start and puts its bin on PATH for every node, tool
+  ## nodes included.
 
   budget:
     max_parallel_branches: 1

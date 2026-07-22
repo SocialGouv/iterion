@@ -199,7 +199,7 @@ var allTools = []Tool{
           "type":"object",
           "properties":{
             "id":{"type":"string"},
-            "bot":{"type":"string","description":"Bot name, e.g. feature_dev or whole_improve_loop. Empty string clears it."}
+            "bot":{"type":"string","description":"Bot TECHNICAL name exactly as the catalog lists it (dash form, e.g. feature-dev or whole-improve-loop). Empty string clears it."}
           },
           "required":["id","bot"]
         }`),

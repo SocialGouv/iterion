@@ -1,0 +1,40 @@
+name: issue-triage
+display_name: Triagy
+icon: 🏷️
+version: 0.1.0
+description: |
+  Lightweight single-shot card triage. ONE cheap read-classify-stamp
+  agent: reads a fresh board card, classifies it against the generated
+  bot catalog's decision tree, stamps the handler bot on the card
+  (typed Bot field via set_bot) plus vocabulary-consistent labels, and
+  leaves a one-paragraph routing comment. The card STAYS in inbox —
+  launching is the operator's drag to Ready (the dispatcher claims the
+  stamped bot). No confident fit → needs-manual-triage, Bot unset.
+  Auto-fires via the trigger spine on cards carrying triage:auto
+  (consumed one-shot); re-add the label to re-triage.
+when_to_use: |
+  Never dispatch work TO it — Triagy routes work to OTHER bots. It
+  fires automatically on trusted-author forge issues synced to the
+  board (triage:auto), on an operator's "Approve & triage" of an
+  external issue (needs:approval → triage:auto swap), or on any card
+  you hand-label triage:auto. Use when you want fresh issues to arrive
+  pre-routed so launching is a single drag to Ready.
+author: SocialGouv (devthejo) — issue-triage/main.bot
+schema_version: 1
+
+invocations:
+  - kind: board
+    mode: direct
+    board:
+      on: [card.created, card.updated]
+      to_states: [inbox]
+      all_labels: ["triage:auto"]
+      consume_labels: true
+
+## Fallback lane: an operator can also stamp Triagy as a card's Bot and
+## drag it to Ready — the dispatcher then hands the card to Triagy itself.
+dispatch_vars:
+  issue_id: "{{issue.id}}"
+
+launch:
+  primary: [issue_id]

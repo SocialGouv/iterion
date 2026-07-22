@@ -1,7 +1,10 @@
 name: branch-improve-loop
 display_name: Billy
 icon: 🌿
-version: 1.0.0
+version: 1.0.1
+## 1.0.1 — ADR-082 Phase 2 (sandbox-by-default): removed the `sandbox:`
+## block — isolation is the platform's job; gh/glab move to the bot's
+## pinned devbox.json.
 ## 1.0.0 — RADICAL SIMPLIFICATION (mechanism change, ADR-058). Replaces the v1
 ## chunked cross-family review loop (~11 nodes: plan_chunks → alt →
 ## reviewer_claude/reviewer_gpt → streak_check → fix_claude/fix_gpt →

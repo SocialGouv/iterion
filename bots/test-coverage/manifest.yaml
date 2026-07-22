@@ -1,7 +1,10 @@
 name: test-coverage
 display_name: Testy
 icon: 🧪
-version: 2.0.0
+version: 2.0.1
+## 2.0.1 — ADR-082 Phase 2 (sandbox-by-default): removed the `sandbox:`
+## block — isolation is the platform's job; the target repo's toolchain
+## comes from its own devcontainer/devbox.json.
 ## 2.0.0 — RADICAL SIMPLIFICATION (ADR-058 minimal-framing). Replaces the
 ## v1 staged pipeline (plan → act → simplify → verify_run_tests →
 ## repair_tests → alternating Claude/GPT review-fix loop →

@@ -126,8 +126,20 @@ type Config struct {
 	// iterion turns every new issue into a PR without a manual label. OFF by
 	// default: labeling an issue (LabelAllowlist) stays the deliberate opt-in,
 	// so enabling this is a per-webhook decision to auto-act on ALL new issues.
-	// The labeled path keeps working alongside it.
+	// The labeled path keeps working alongside it. The opened lane is
+	// author-gated (see MinAuthorRole): an untrusted author's issue is
+	// filtered here and parks on the board for approval instead.
 	AutoImplementOnOpen bool `bson:"auto_implement_on_open,omitempty" json:"auto_implement_on_open,omitempty"`
+
+	// MinAuthorRole is the minimum repo role (gitlab vocabulary: guest|
+	// reporter|developer|maintainer|owner; "" → developer ≡ write) the ISSUE
+	// AUTHOR must hold for the AutoImplementOnOpen zero-touch lane to launch
+	// — the budget boundary against drive-by issues. Trust resolves as:
+	// AuthorAllowlist ∪ GitHub author_association fast path ∪ live
+	// CollaboratorPermission (needs a forge_token binding). The labeled lane
+	// is NOT author-gated: applying the trigger label already requires
+	// triage+ rights on the forge, which IS the approval gesture.
+	MinAuthorRole string `bson:"min_author_role,omitempty" json:"min_author_role,omitempty"`
 
 	// BlockForkPRs, when true, filters (never auto-launches ANY bot on) a PR
 	// whose head branch lives in a DIFFERENT repo than its base — a fork PR.

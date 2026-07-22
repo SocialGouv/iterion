@@ -117,11 +117,16 @@ func mergeVarsInto(dst, src map[string]string) map[string]string {
 // pin always wins. `extra` may be nil; `launchVars` may be nil.
 func reviewPRVars(prURL, baseRef, scopeNotes string, launchVars map[string]string, extra map[string]string) map[string]string {
 	vars := map[string]string{
-		"pr_url":         prURL,
-		"base_ref":       baseRef,
-		"scope_notes":    scopeNotes,
-		"post_to_board":  "false",
-		"pr_review_mode": "summary",
+		"pr_url":        prURL,
+		"base_ref":      baseRef,
+		"scope_notes":   scopeNotes,
+		"post_to_board": "false",
+		// Inline: the publish path is deterministic and server-anchored
+		// (the /api/v1/forge/publish-review endpoint falls back to a
+		// summary-only review when a forge rejects the inline anchors),
+		// so the historical "summary for a lower failure surface" default
+		// no longer applies.
+		"pr_review_mode": "inline",
 	}
 	mergeVarsInto(vars, extra)
 	mergeVarsInto(vars, launchVars)
@@ -474,6 +479,11 @@ func (s *Server) insertAndLaunchWebhook(
 	if launch == nil {
 		launch = s.realWebhookLaunchBot
 	}
+	// Deterministic forge review publishing: a review-shaped delivery
+	// carries a pr_url var — mint a per-run publish grant scoped to the
+	// webhook's tenant so the bot's deterministic publish node posts
+	// through the server's live forge client (never a workspace token).
+	vars = s.injectForgePublishVars(ctx, cfg.TenantID, "", vars, r)
 	// meta.ProjectPath is the forge slug already parsed by the provider
 	// handler — thread it onto the launch so the run is filterable by
 	// repository in the studio.

@@ -543,6 +543,16 @@ func (p *Publisher) SubmitLaunch(ctx context.Context, runID string, spec runview
 		CallbackToken:      spec.CallbackToken,
 		CallbackAnswerNode: spec.CallbackAnswerNode,
 	}
+	// Typed provenance (schedule / dispatcher / trigger spine). The queued
+	// doc is the ONLY carrier: the RunMessage has no source field, and the
+	// runner's engine only stamps run.Source when it was given one, so a
+	// value lost here is lost for good — taking the run's source_kind back
+	// to "manual" and blinding the overlap gate, which counts a schedule's
+	// live runs through source.schedule_id.
+	if spec.SourceRef != nil {
+		src := *spec.SourceRef // copy: never share the caller's pointer
+		r.Source = &src
+	}
 	// 1b. Resolve BYOK credentials and seal them under a fresh
 	//     secrets_ref. Empty ref means "no team-scoped credentials
 	//     configured" — the runner falls back to env. This runs BEFORE the

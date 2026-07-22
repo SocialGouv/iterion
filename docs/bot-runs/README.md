@@ -54,6 +54,7 @@ first bilan for a bot lands.
 | Persona | Bot | Kind | Bilan |
 |---|---|---|---|
 | Nexie | `whats-next` | orchestrator / board triage | [whats-next.md](whats-next.md) |
+| Triagy | `issue-triage` | auto-triage of fresh board cards (stamps the handler bot) | [issue-triage.md](issue-triage.md) |
 | Appy | `app-dev` | greenfield app-from-prompt (interview / free first draft) | [app-dev.md](app-dev.md) |
 | Evoly | `evolve` | strategic vision + evolution proposals (per-bot memory) | [evolve.md](evolve.md) |
 | Willy | `whole-improve-loop` | whole-repo review-fix loop | [whole-improve-loop.md](whole-improve-loop.md) |

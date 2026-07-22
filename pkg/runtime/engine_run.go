@@ -495,24 +495,40 @@ func (e *Engine) finalizeOnExit(ctx context.Context, runID string, wtCtx *worktr
 	// owns this run's finalize. Re-running finalizeWorktree would create a
 	// duplicate storage branch and possibly re-merge — skip it, just clean up.
 	if r, err := e.store.LoadRun(ctx, runID); err == nil && r.MergeStatus != "" {
-		if e.logger != nil {
-			e.logger.Info("runtime: finalize: run already finalized at review gate (status=%s, branch=%s); skipping",
-				r.MergeStatus, r.FinalBranch)
-		}
-		// The gate finalized COMMITS, but post-gate work may sit
-		// uncommitted in the worktree — removing it would destroy that
-		// work silently. Preserve instead; the operator recovers via the
-		// studio commit-and-finalize action.
-		if clean, cleanErr := workdirIsClean(wtCtx.wtPath); cleanErr == nil && !clean {
+		// Staleness check: the recorded finalize (review gate, or an
+		// orphan-recovery pass) captured FinalCommit at ITS moment. If the
+		// worktree HEAD has since moved, later committed work exists that the
+		// recorded finalize never promoted — skipping here would delete the
+		// worktree and strand those commits on the per-node GC-guard refs
+		// (observed: a mid-flight recovered finalize marked the run
+		// finalized, the true completion skipped, and the delivery had to be
+		// recovered from refs/iterion/runs/*). Re-finalize at the true tip
+		// instead; the storage branch gets a numeric suffix on collision.
+		if head := readHEAD(wtCtx.wtPath); head != "" && r.FinalCommit != "" && head != r.FinalCommit {
 			if e.logger != nil {
-				e.logger.Warn("runtime: finalize: worktree has uncommitted changes after review-gate finalize — preserving %s for inspection", wtCtx.wtPath)
+				e.logger.Warn("runtime: finalize: recorded finalize (%s @ %.9s) is stale — worktree HEAD moved to %.9s; re-finalizing",
+					r.MergeStatus, r.FinalCommit, head)
+			}
+		} else {
+			if e.logger != nil {
+				e.logger.Info("runtime: finalize: run already finalized at review gate (status=%s, branch=%s); skipping",
+					r.MergeStatus, r.FinalBranch)
+			}
+			// The gate finalized COMMITS, but post-gate work may sit
+			// uncommitted in the worktree — removing it would destroy that
+			// work silently. Preserve instead; the operator recovers via the
+			// studio commit-and-finalize action.
+			if clean, cleanErr := workdirIsClean(wtCtx.wtPath); cleanErr == nil && !clean {
+				if e.logger != nil {
+					e.logger.Warn("runtime: finalize: worktree has uncommitted changes after review-gate finalize — preserving %s for inspection", wtCtx.wtPath)
+				}
+				return
+			}
+			if cleanup != nil {
+				cleanup()
 			}
 			return
 		}
-		if cleanup != nil {
-			cleanup()
-		}
-		return
 	}
 	finRes := finalizeWorktree(*wtCtx, finalizeOptions{
 		runName:       e.runName,

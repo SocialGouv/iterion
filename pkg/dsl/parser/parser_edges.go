@@ -1,8 +1,18 @@
 package parser
 
 import (
+	"fmt"
+	"strconv"
+	"strings"
+
 	"github.com/SocialGouv/iterion/pkg/dsl/ast"
 )
+
+// isTemplate reports whether s carries a `{{ ... }}` substitution marker,
+// i.e. it is a runtime-resolved template rather than a static literal.
+func isTemplate(s string) bool {
+	return strings.Contains(s, "{{")
+}
 
 // ---- edge ----
 
@@ -206,7 +216,20 @@ func (p *parser) parseLoopClause() *ast.LoopClause {
 	case nt.Type == TokenInt:
 		lc.MaxIterations = p.expectInt()
 	case nt.Type == TokenString:
-		lc.MaxIterationsExpr = p.expectString()
+		// A quoted cap is a runtime template (`as fix("{{vars.cap}}")`) —
+		// UNLESS it is a plain integer literal (`as fix("2")`), which is an
+		// easy mistake since every template form is quoted. Treat that as the
+		// integer it obviously is rather than a template with no refs, which
+		// would silently resolve to 0 and skip the loop edge as exhausted.
+		s := p.expectString()
+		if isTemplate(s) {
+			lc.MaxIterationsExpr = s
+		} else if n, err := strconv.Atoi(strings.TrimSpace(s)); err == nil {
+			lc.MaxIterations = n
+		} else {
+			p.addError(DiagExpectedToken, nt,
+				fmt.Sprintf("loop cap %q must be an unquoted integer, a template, or 'unbounded' — a quoted non-numeric string has no template refs and would silently cap the loop at 0", s))
+		}
 	case tokenAsIdent(nt) == "unbounded":
 		// `as <name>(unbounded)` or `as <name>(unbounded <fuel>)`: the loop
 		// is not iteration-capped; an optional integer sets a per-loop fuel

@@ -232,6 +232,17 @@ func (s *Service) reconcileOrphans() {
 		if s.tryReattachByPID(id) {
 			continue
 		}
+		// Grace window: a just-created run may sit between its run-record
+		// write and its owner's lock acquisition, and the boot scan on a
+		// large store can take long enough to REACH a run that was
+		// launched after the scan began (observed: a dispatcher-owned run
+		// flipped failed 16s after dispatch). Never judge a run this
+		// young — the next tick re-probes it with the lock in place.
+		// (Placed after the PID reattach so a live detached runner still
+		// reattaches immediately regardless of age.)
+		if time.Since(r.CreatedAt) < orphanGraceWindow {
+			continue
+		}
 		// Try to grab the lock; non-blocking semantics mean we
 		// either own it instantly (orphan) or fail fast (live).
 		lock, err := s.store.LockRun(ctx, id)
@@ -258,6 +269,10 @@ func (s *Service) reconcileOrphans() {
 		_ = lock.Unlock()
 	}
 }
+
+// orphanGraceWindow shields freshly-created runs from the orphan scan:
+// within it, "no lock held" is not yet proof of a dead owner.
+const orphanGraceWindow = 2 * time.Minute
 
 // defaultOrphanReconcileInterval is how often the periodic reconcile
 // re-runs the orphan scan after boot. Overridable via

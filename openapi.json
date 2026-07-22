@@ -481,6 +481,9 @@
       },
       "ExternalRef": {
         "properties": {
+          "author": {
+            "type": "string"
+          },
           "connection_id": {
             "type": "string"
           },

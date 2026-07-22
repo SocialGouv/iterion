@@ -120,6 +120,9 @@ export type { MeterProps, MeterTone, MeterSize } from "./Meter";
 export { CopyButton } from "./CopyButton";
 export type { CopyButtonProps } from "./CopyButton";
 
+export { LinkifiedText } from "./LinkifiedText";
+export type { LinkifiedTextProps } from "./LinkifiedText";
+
 export { ThinkingIndicator } from "./ThinkingIndicator";
 export type { ThinkingIndicatorProps } from "./ThinkingIndicator";
 

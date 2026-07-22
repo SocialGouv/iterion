@@ -226,6 +226,13 @@ vars:
   ## OUT of the target worktree is the repo-agnostic rule.
   scratch_dir: string = "${PROJECT_SCRATCH_DIR}/docs-refresh"
 
+  ## OPT-IN: surface unverifiable symbol_ref anchors as campaign
+  ## candidates. Off by default — two live runs adjudicated 100% of
+  ## them as false positives (prose that merely looks like an
+  ## identifier), burning whole passes for zero fixes. Turn on for a
+  ## deep audit of symbol references.
+  include_unverifiable_symbols: bool = false
+
   ## DISMISSALS LEDGER. JSON array of candidates the campaign
   ## adjudicated as false positives ({doc, kind, value, reason});
   ## build_manifest excludes ledger entries from every later pass so
@@ -576,6 +583,12 @@ prompt verify_user:
   anything; the deterministic gate runs your script and the campaign
   fixes any red on the next pass.
 
+  MANDATORY (skill section 1b): if the repo's own CI enforces a
+  codegen-drift gate (git diff --exit-code after a regen/vendor step,
+  a drift-check task, test -z on git status --porcelain), verify.sh
+  MUST mirror it — run the regen command(s), then fail on drift; the
+  deterministic precheck rejects a gateless verify.sh otherwise.
+
 ## ─── PR finalization prompts (opt-in) ──────────────────────────────
 
 prompt finalize_mr_system:
@@ -678,6 +691,18 @@ schema verify_result:
   skipped: bool
   exit_code: int
   log_tail: string
+
+## verify_precheck: deterministic "did anything change since the last
+## GREEN verify?" — HEAD equality + clean tree ⇔ this pass produced no
+## commits, so the previous verdict still holds and the whole
+## verify_build (LLM agent) + verify_run (real build+tests) chain is
+## skipped. On adjudication-heavy passes that chain was ~5-6 min and
+## ~1$ per pass for an UNCHANGED tree (observed live: 8 of 9 passes,
+## run 019f874d). Pass 1 always verifies (no state file yet); a RED
+## verdict is never reused (only rc==0 is recorded).
+schema verify_precheck_output:
+  reuse: bool
+  reason: string
 
 ## scope_check is the DETERMINISTIC writeable-set gate (v2 rewrite of
 ## v1's enforce_fix_scope): every path changed since the RUN BASE must
@@ -1150,7 +1175,7 @@ print(json.dumps({
 ## All inputs flow via env vars (JSON-encoded for arrays); the
 ## tool's argv is empty.
 tool build_manifest:
-  command: `WS={{input.workspace_dir}} CODE_GLOBS={{input.code_scope_globs}} MAX_CANDIDATES={{input.max_drift_candidates}} MAX_CHUNK_DOCS={{input.max_review_chunk_docs}} DISMISSED_PATH={{vars.dismissed_path}} PAIRS_OUT={{vars.scratch_dir}}/verified_pairs.json python3 -c "
+  command: `WS={{input.workspace_dir}} CODE_GLOBS={{input.code_scope_globs}} MAX_CANDIDATES={{input.max_drift_candidates}} MAX_CHUNK_DOCS={{input.max_review_chunk_docs}} DISMISSED_PATH={{vars.dismissed_path}} PAIRS_OUT={{vars.scratch_dir}}/verified_pairs.json INCLUDE_UNVERIFIABLE_SYMBOLS={{vars.include_unverifiable_symbols}} python3 -c "
 import os, json, re, glob, subprocess, sys
 ws = os.environ['WS']
 os.chdir(ws)
@@ -1385,6 +1410,16 @@ for a in anchors:
             a['status'] = 'verified'
             a['evidence'] = 'present in scan_code_surface.cli_flags'
             verified.append(a)
+        elif not any(re.search(r'\b' + re.escape(c) + r'\b', a.get('excerpt', '')) for c in cli_commands):
+            ## Foreign-flag heuristic: a doc line showing --flags of some
+            ## OTHER tool (docker/kubectl/gh examples…) never mentions one
+            ## of this repo's own CLI commands. 100% of the drifted
+            ## cli_flag candidates were this class on two live runs — pure
+            ## adjudication burn. Unverifiable, not drifted: it drops out
+            ## of checkable coverage instead of faking alignment.
+            a['status'] = 'unverifiable'
+            a['evidence'] = 'flag not in cli surface AND line references no known CLI command — foreign-tool example (heuristic)'
+            unverifiable.append(a)
         else:
             a['status'] = 'drifted'
             a['evidence'] = 'not in scan_code_surface.cli_flags'
@@ -1455,12 +1490,17 @@ priority = {
     ('drifted', 'symbol_ref'): 3,
     ('unverifiable', 'symbol_ref'): 4,
 }
-## Surface drifted anchors plus unverifiable *symbol_ref*s (genuinely
-## borderline — the campaign may resolve them by reading code). Do NOT
-## surface scanner-skipped cli/flag/diagnostic unverifiables: we know
-## we never scanned that surface, so there is nothing for the campaign to
-## adjudicate — they would only be noise that tempts a false blocker.
-candidates = drifted + [a for a in unverifiable if a['kind'] == 'symbol_ref']
+## Surface drifted anchors, plus — ONLY when the operator opts in via
+## include_unverifiable_symbols — unverifiable *symbol_ref*s. Two live
+## runs adjudicated 100% of surfaced unverifiable symbol_refs as false
+## positives (prose that merely looks like an identifier): defaulting
+## them in burned whole passes for zero fixes. Never surface
+## scanner-skipped cli/flag/diagnostic unverifiables: that surface was
+## never scanned, there is nothing to adjudicate.
+include_unverifiable = os.environ.get('INCLUDE_UNVERIFIABLE_SYMBOLS', '').strip().lower() in ('1', 'true', 'yes')
+candidates = list(drifted)
+if include_unverifiable:
+    candidates += [a for a in unverifiable if a['kind'] == 'symbol_ref']
 
 ## DISMISSALS LEDGER exclusion: candidates the campaign already
 ## adjudicated as false positives (recorded at DISMISSED_PATH) are
@@ -1737,7 +1777,7 @@ agent verify_build:
 ## safe JSON + subprocess capture; double-quote-free body, no backticks
 ## (E012).
 tool verify_run:
-  command: `WS={{vars.workspace_dir}} SCRATCH={{vars.scratch_dir}} python3 -c "
+  command: `WS={{vars.workspace_dir}} SCRATCH={{vars.scratch_dir}} RUN_ID={{run.id}} python3 -c "
 import os, subprocess, json
 ws = os.environ.get('WS', '.')
 scratch = os.environ.get('SCRATCH', '.')
@@ -1778,7 +1818,14 @@ if rc == 0:
     import glob
     def has_drift_gate(text):
         for l in text.splitlines():
-            if ('diff' in l and ('--exit-code' in l or '--quiet' in l)) or 'status --porcelain' in l:
+            # git diff --exit-code is the canonical build-failing gate.
+            if 'diff' in l and '--exit-code' in l:
+                return True
+            # --quiet / status --porcelain also appear as commit-if-changed
+            # control flow in updater workflows (e.g. a Homebrew tap bump) --
+            # only count them when the same line actually fails the build.
+            gated = ('exit 1' in l) or ('|| exit' in l) or ('test -z' in l) or ('[ -z' in l)
+            if gated and (('diff' in l and '--quiet' in l) or 'status --porcelain' in l):
                 return True
         return False
     ci_hit = ''
@@ -1812,6 +1859,20 @@ try:
         lf.write(out)
 except OSError:
     pass
+## Record the verified HEAD so verify_precheck can reuse a GREEN
+## verdict on a later pass OF THIS RUN that produced no commits (HEAD
+## unchanged). Stamped with the run id: scratch is host-persistent
+## across local runs, and reusing a PREVIOUS run's verdict would let a
+## fresh run reach the gate with outputs.verify_run never resolved —
+## it could then never converge (flagged by the Revi review of this
+## change before it ever shipped).
+if rc == 0:
+    try:
+        head = subprocess.run(['git', '-C', ws, 'rev-parse', 'HEAD'], stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True, timeout=30).stdout.strip()
+        with open(os.path.join(scratch, 'verify.state'), 'w', encoding='utf-8') as sf:
+            json.dump({'head': head, 'rc': rc, 'run_id': os.environ.get('RUN_ID', '')}, sf)
+    except Exception:
+        pass
 print(json.dumps({'passed': rc == 0, 'skipped': False, 'exit_code': rc, 'log_tail': out[-4000:]}))
 "`
   output: verify_result
@@ -1863,12 +1924,53 @@ print(json.dumps({'scope_ok': not out_of_scope, 'out_of_scope': out_of_scope[:10
 "`
   output: scope_check_output
 
+## verify_precheck — the deterministic fast path around the verify
+## chain (see verify_precheck_output). Reuses the last GREEN verdict
+## when HEAD is unchanged and the tree is clean; anything else (first
+## pass, commits landed, dirty tree, red previous verdict) re-verifies.
+tool verify_precheck:
+  command: `WS={{vars.workspace_dir}} SCRATCH={{vars.scratch_dir}} RUN_ID={{run.id}} python3 -c "
+import os, json, subprocess
+ws = os.environ.get('WS', '.')
+scratch = os.environ.get('SCRATCH', '.')
+state_path = os.path.join(scratch, 'verify.state')
+def out(reuse, reason):
+    print(json.dumps({'reuse': reuse, 'reason': reason}))
+    raise SystemExit(0)
+if not os.path.exists(state_path):
+    out(False, 'no previous green verify (first pass)')
+try:
+    with open(state_path, encoding='utf-8') as sf:
+        state = json.load(sf)
+except (OSError, json.JSONDecodeError):
+    out(False, 'verify.state unreadable')
+if state.get('rc') != 0:
+    out(False, 'previous verify was not green')
+## Reuse is RUN-SCOPED: scratch persists across local runs, and a
+## previous run's verdict must never satisfy a run in which verify_run
+## has not executed (outputs.verify_run would be unresolved at the
+## gate and the run could never converge).
+if state.get('run_id', '') != os.environ.get('RUN_ID', ''):
+    out(False, 'verify.state belongs to another run')
+try:
+    head = subprocess.run(['git', '-C', ws, 'rev-parse', 'HEAD'], stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True, timeout=30).stdout.strip()
+    dirty = subprocess.run(['git', '-C', ws, 'status', '--porcelain'], stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True, timeout=60).stdout.strip()
+except Exception as e:
+    out(False, 'git state unreadable: ' + str(e))
+if head and head == state.get('head') and not dirty:
+    out(True, 'HEAD ' + head[:12] + ' unchanged since last green verify, tree clean')
+out(False, 'tree changed since last green verify')
+"`
+  output: verify_precheck_output
+
 ## gate — the deterministic continuation decision. converged = build
 ## green AND scope clean AND campaign reports docs aligned AND the
 ## manifest's mechanical anchor coverage meets the target. fail_log
 ## priority: scope violation (the campaign must revert) > build
 ## failure > empty (green-but-more-drift → the fresh manifest is the
-## guidance). No LLM, no shell.
+## guidance). No LLM, no shell. On a verify_precheck reuse pass,
+## outputs.verify_run still resolves to the last REAL execution — the
+## verdict being reused.
 compute gate:
   output: gate_state
   expr:
@@ -2001,9 +2103,14 @@ workflow docs_refresh:
   }
 
   ## Deterministic gates after every campaign pass: writeable-set
-  ## containment, then the build gate, then the continuation decision.
+  ## containment, then the build gate (skipped via verify_precheck when
+  ## nothing changed since the last green verify — outputs.verify_run
+  ## then still carries the verdict being reused), then the
+  ## continuation decision.
   campaign -> scope_check
-  scope_check -> verify_build
+  scope_check -> verify_precheck
+  verify_precheck -> gate when reuse
+  verify_precheck -> verify_build when not reuse
   verify_build -> verify_run
   verify_run -> gate
 

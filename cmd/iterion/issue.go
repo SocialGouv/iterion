@@ -266,6 +266,7 @@ func init() {
 	issueImportCmd.Flags().StringVar(&issueImportOpts.TokenEnv, "token-env", "", "Name of the env var holding the forge token (required; the value is never a flag)")
 	issueImportCmd.Flags().StringVar(&issueImportOpts.BaseURL, "base-url", "", "Forge base URL (default: provider SaaS host; required for self-hosted forgejo/gitlab)")
 	issueImportCmd.Flags().StringVar(&issueImportOpts.Since, "since", "", "Only import issues updated since this RFC3339 timestamp (default: full re-sync)")
+	issueImportCmd.Flags().StringVar(&issueImportOpts.MinAuthorRole, "min-author-role", "", "Minimum repo role (guest|reporter|developer|maintainer|owner) an issue author needs for the card to be stamped triage:auto; below it the card parks as needs:approval (default: developer)")
 
 	issueBoardCmd.AddCommand(issueBoardShowCmd)
 	issueBoardCmd.AddCommand(issueBoardInitCmd)

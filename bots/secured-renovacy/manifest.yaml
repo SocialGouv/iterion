@@ -1,7 +1,12 @@
 name: secured-renovacy
 display_name: Renovacy
 icon: ⬆️
-version: 0.2.0
+version: 0.2.1
+## 0.2.1 — ADR-082 Phase 2 (sandbox-by-default): sandbox block reduced to
+## the image pin (`:latest` → `:edge`) + the load-bearing env (git
+## identity, out-of-worktree toolchain caches) + corepack post_create;
+## claude install gate, ~/.claude mount and `network: open` (now the
+## default) removed.
 ## 0.2.0 — Phase 2 converted to ADR-058 minimal-framing (SCOPED pass:
 ## Phase 1's per-package pipeline is untouched — its security/CVE/
 ## revert/SBOM gates are deliberately reified in the graph, ADR-055

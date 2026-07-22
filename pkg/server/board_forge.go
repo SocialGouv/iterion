@@ -31,7 +31,9 @@ import (
 // canonical SaaS host (required to be set explicitly for self-hosted
 // forgejo/gitlab). since == zero re-syncs everything (idempotent). The
 // high-water mark is the caller's concern and stays out of this function.
-func ImportForgeIssues(ctx context.Context, provider forge.Provider, baseURL, token, repo string, board native.BoardStore, since time.Time) (created, updated int, err error) {
+// minAuthorRole is the trust threshold for the triage:auto stamp ("" →
+// developer ≡ write); authors below it get needs:approval cards.
+func ImportForgeIssues(ctx context.Context, provider forge.Provider, baseURL, token, repo string, board native.BoardStore, since time.Time, minAuthorRole string) (created, updated int, err error) {
 	if baseURL == "" {
 		baseURL = forge.DefaultBaseURL(provider)
 	}
@@ -52,7 +54,20 @@ func ImportForgeIssues(ctx context.Context, provider forge.Provider, baseURL, to
 	}
 	// connID is empty for a self-hosted import: there is no persisted forge
 	// connection, and the deterministic card ID keys on provider+repo+number.
-	return syncForgeIssuesToBoard(ctx, ic, provider, "", repo, board, since)
+	return syncForgeIssuesToBoard(ctx, ic, provider, "", repo, board, since,
+		authorTrustFunc(admin, string(provider), repo, minAuthorRole, newAuthorTrust()))
+}
+
+// authorTrustFunc builds the per-login trust classifier the sync core takes,
+// from a provider admin client's optional PermissionClient capability. A
+// client without the capability yields a fn that only ever trusts nobody via
+// the API path (fail-closed) — the assoc fast path doesn't apply on sync
+// (ListIssues carries no author_association).
+func authorTrustFunc(admin forge.Admin, provider, repo, minRole string, gate *authorTrust) func(context.Context, string) bool {
+	pc, _ := admin.(forge.PermissionClient)
+	return func(ctx context.Context, login string) bool {
+		return gate.trusted(ctx, pc, provider, repo, login, "", minRole, nil)
+	}
 }
 
 // forgeSyncNamespace is the fixed UUIDv5 namespace that turns a forge issue
@@ -166,10 +181,16 @@ func (s *Server) forgeIntegrationForTenant(w http.ResponseWriter, r *http.Reques
 // the first non-terminal column on create and refresh in place on update; see
 // upsertForgeCard for the column policy. Returns per-issue create/update counts.
 //
+// trust classifies an issue author's repo rights: a trusted author's fresh
+// open card is stamped triage:auto (fires the auto-triage), an untrusted one
+// needs:approval (parked until an operator approves). nil trust fails CLOSED —
+// every new card parks — because this is the budget security boundary, not an
+// operator preference. Classification is memoized per sweep.
+//
 // The high-water mark (LastSyncedAt) is the caller's concern — it is the only
 // piece that differs between the cloud integration store and a self-hosted
 // entry point, so it stays out of this pure core.
-func syncForgeIssuesToBoard(ctx context.Context, ic forge.IssueClient, provider forge.Provider, connID, repo string, board native.BoardStore, since time.Time) (created, updated int, err error) {
+func syncForgeIssuesToBoard(ctx context.Context, ic forge.IssueClient, provider forge.Provider, connID, repo string, board native.BoardStore, since time.Time, trust func(ctx context.Context, login string) bool) (created, updated int, err error) {
 	issues, err := ic.ListIssues(ctx, repo, forge.IssueListOptions{
 		State: "all", Since: since, PerPage: 100,
 	})
@@ -179,11 +200,23 @@ func syncForgeIssuesToBoard(ctx context.Context, ic forge.IssueClient, provider 
 	b := board.Board()
 	openCol := defaultOpenColumn(b)
 	doneCol := terminalColumn(b)
+	trustMemo := map[string]bool{}
+	trusted := func(login string) bool {
+		if trust == nil || login == "" {
+			return false
+		}
+		if v, ok := trustMemo[login]; ok {
+			return v
+		}
+		v := trust(ctx, login)
+		trustMemo[login] = v
+		return v
+	}
 	for _, is := range issues {
 		if is.IsPullRequest {
 			continue // the board syncs ISSUES; PRs surface via the card PR panel
 		}
-		c, u, e := upsertForgeCard(board, b, openCol, doneCol, provider, connID, repo, is)
+		c, u, e := upsertForgeCard(board, b, openCol, doneCol, provider, connID, repo, is, trusted(is.Author))
 		if e != nil {
 			if err == nil {
 				err = e
@@ -218,7 +251,8 @@ func (s *Server) syncOneIntegration(ctx context.Context, teamID string, ri forge
 	if board == nil {
 		return 0, 0, errors.New("no board for team")
 	}
-	created, updated, err = syncForgeIssuesToBoard(ctx, ic, conn.Provider, ri.ConnectionID, ri.RepoFullName, board, ri.LastSyncedAt)
+	created, updated, err = syncForgeIssuesToBoard(ctx, ic, conn.Provider, ri.ConnectionID, ri.RepoFullName, board, ri.LastSyncedAt,
+		authorTrustFunc(admin, string(conn.Provider), ri.RepoFullName, ri.MinAuthorRole, s.authorTrustGate()))
 	// Advance the high-water mark unconditionally: a partial-failure sync
 	// still records progress on the issues it did upsert.
 	ri.LastSyncedAt = time.Now().UTC()
@@ -229,11 +263,16 @@ func (s *Server) syncOneIntegration(ctx context.Context, teamID string, ri forge
 }
 
 // upsertForgeCard creates or updates the board card mirroring one forge issue.
-// On create the card lands in openCol (or doneCol when already closed); on
-// update the card's content/labels refresh but its COLUMN is left to the
-// operator — except a forge-close pulls a still-open card to the terminal
-// column. Returns (created, updated) as 0/1 flags.
-func upsertForgeCard(board native.BoardStore, b *native.Board, openCol, doneCol string, provider forge.Provider, connID, repo string, is forge.IssueRef) (int, int, error) {
+// On create the card lands in openCol (or doneCol when already closed); a
+// fresh OPEN card is additionally stamped with the trust label (triage:auto
+// for a trusted author, needs:approval otherwise — never on closed issues,
+// never re-stamped on update). On update the card's content/labels refresh
+// but its COLUMN is left to the operator — except a forge-close pulls a
+// still-open card to the terminal column — and board-local label namespaces
+// are preserved (forge labels are mirrored verbatim; triage:/needs:/cmd:/
+// source: labels belong to the board and must survive the sweep). Returns
+// (created, updated) as 0/1 flags.
+func upsertForgeCard(board native.BoardStore, b *native.Board, openCol, doneCol string, provider forge.Provider, connID, repo string, is forge.IssueRef, trusted bool) (int, int, error) {
 	cardID := forgeCardID(provider, repo, is.Number)
 	ext := &native.ExternalRef{
 		Provider:     string(provider),
@@ -242,19 +281,27 @@ func upsertForgeCard(board native.BoardStore, b *native.Board, openCol, doneCol 
 		Number:       is.Number,
 		URL:          is.URL,
 		State:        is.State,
+		Author:       is.Author,
 	}
 	existing, gerr := board.Get(cardID)
 	if gerr != nil {
 		col := openCol
+		labels := is.Labels
 		if is.State == "closed" && doneCol != "" {
 			col = doneCol
+		} else {
+			trustLabel := native.LabelNeedsApproval
+			if trusted {
+				trustLabel = native.LabelTriageAuto
+			}
+			labels = append(append([]string(nil), is.Labels...), trustLabel)
 		}
 		if _, err := board.Create(native.Issue{
 			ID:       cardID,
 			Title:    is.Title,
 			Body:     is.Body,
 			State:    col,
-			Labels:   is.Labels,
+			Labels:   labels,
 			Assignee: firstString(is.Assignees),
 			External: ext,
 		}); err != nil {
@@ -262,7 +309,7 @@ func upsertForgeCard(board native.BoardStore, b *native.Board, openCol, doneCol 
 		}
 		return 1, 0, nil
 	}
-	labels := is.Labels
+	labels := mergeForgeLabels(is.Labels, existing.Labels)
 	if _, err := board.Update(cardID, native.Patch{
 		Title:    &is.Title,
 		Body:     &is.Body,
@@ -277,6 +324,49 @@ func upsertForgeCard(board native.BoardStore, b *native.Board, openCol, doneCol 
 		}
 	}
 	return 0, 1, nil
+}
+
+// boardLocalLabelPrefixes are the label namespaces owned by the BOARD, not
+// the forge: the ingest trust labels (triage:, needs:), command idempotency
+// markers (cmd:) and provenance (source:). The forge sync's label refresh
+// preserves them; everything else mirrors the forge verbatim.
+var boardLocalLabelPrefixes = []string{"triage:", "needs:", "cmd:", "source:"}
+
+func isBoardLocalLabel(l string) bool {
+	ll := strings.ToLower(l)
+	for _, p := range boardLocalLabelPrefixes {
+		if strings.HasPrefix(ll, p) {
+			return true
+		}
+	}
+	// Legacy dash form stamped by the triage decision tree.
+	return ll == "needs-manual-triage"
+}
+
+// mergeForgeLabels refreshes a synced card's labels from the forge while
+// keeping the card's board-local labels: forge labels verbatim ∪ (existing ∩
+// board-local namespaces), deduplicated case-insensitively, order stable
+// (forge first, then surviving board-local).
+func mergeForgeLabels(forgeLabels, existing []string) []string {
+	out := make([]string, 0, len(forgeLabels)+4)
+	seen := map[string]bool{}
+	add := func(l string) {
+		k := strings.ToLower(l)
+		if l == "" || seen[k] {
+			return
+		}
+		seen[k] = true
+		out = append(out, l)
+	}
+	for _, l := range forgeLabels {
+		add(l)
+	}
+	for _, l := range existing {
+		if isBoardLocalLabel(l) {
+			add(l)
+		}
+	}
+	return out
 }
 
 // defaultOpenColumn is the landing column for a newly-synced open issue: the
