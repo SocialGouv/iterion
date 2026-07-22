@@ -33,6 +33,7 @@ import (
 	"github.com/SocialGouv/iterion/pkg/sandbox"
 	"github.com/SocialGouv/iterion/pkg/sandbox/devcontainer"
 	"github.com/SocialGouv/iterion/pkg/sandbox/netproxy"
+	"github.com/SocialGouv/iterion/pkg/secrets"
 	"github.com/SocialGouv/iterion/pkg/store"
 )
 
@@ -389,6 +390,18 @@ func resolveAndStartSandbox(ctx context.Context, p SandboxParams) (*activeSandbo
 		return startNoopSandbox(ctx, driver, spec, source, p.RunID, p.FriendlyName, p.WorkspacePath, emitEvent)
 	}
 
+	// Claude forfait delivery (ADR-082 Phase 3 blocker 3): when the run's
+	// credentials carry a materialised Claude Code OAuth file, ship it into
+	// the sandbox on the ADR-070 file-secret channel so in-pod claude auth
+	// has a real credentials file instead of hanging on the per-spawn env
+	// token alone. After the sandbox starts, seedClaudeConfigDir below
+	// copies it into the writable CLAUDE_CONFIG_DIR the delegate points the
+	// CLI at. Added past the noop gate — a real driver is required to mount.
+	claudeOAuthMounted, err := addClaudeOAuthSecretFile(ctx, spec)
+	if err != nil {
+		return nil, fmt.Errorf("runtime: sandbox: claude forfait delivery: %w", err)
+	}
+
 	// Optionally start the network proxy. When the workflow has no
 	// explicit network policy, default to the iterion-default
 	// allowlist preset so users get sensible defaults out of the box —
@@ -433,6 +446,21 @@ func resolveAndStartSandbox(ctx context.Context, p SandboxParams) (*activeSandbo
 	emitSandboxStarted(prepared, spec, driver.Name(), source, emitEvent)
 
 	active := &activeSandbox{run: run, proxy: proxy, workspaceFolder: spec.WorkspaceFolder}
+
+	// Second half of the Claude forfait delivery: copy the read-only mount
+	// into the writable CLAUDE_CONFIG_DIR the claude_code delegate points
+	// sandboxed CLI spawns at. Hard error — the run resolved a forfait, so
+	// a failed seed must stop the boot, not resurface as an auth failure
+	// hours into the workflow.
+	if claudeOAuthMounted {
+		if err := seedClaudeConfigDir(ctx, run); err != nil {
+			active.shutdown(ctx, logger)
+			return nil, err
+		}
+		if logger != nil {
+			logger.Info("runtime: sandbox: claude forfait credentials delivered (CLAUDE_CONFIG_DIR=%s)", secrets.ClaudeCodeSandboxConfigDir)
+		}
+	}
 
 	// C082: when the server supplies a board MCP handler and a board-cap
 	// node exists, start a per-run gateway-reachable board listener so

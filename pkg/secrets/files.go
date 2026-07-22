@@ -8,6 +8,39 @@ import (
 
 const SecretFilesMountDir = "/run/iterion/secrets"
 
+// Sandbox delivery of the Claude Code OAuth forfait (ADR-082 Phase 3
+// blocker 3). A run whose credentials carry a materialised Claude Code
+// .credentials.json ships it into the sandbox as a file secret on the
+// ADR-070 channel (per-run k8s Secret / docker temp-dir bind), then the
+// runtime seeds a WRITABLE copy the CLI can use as its config dir —
+// CLAUDE_CONFIG_DIR must be writable because the claude CLI persists
+// session state (and its own token refreshes) under it, while the
+// secret mount is read-only by construction.
+const (
+	// ClaudeCodeOAuthSecretName is the reserved file-secret name for the
+	// forfait payload. addClaudeOAuthSecretFile rejects a workflow secret
+	// colliding with it.
+	ClaudeCodeOAuthSecretName = "claude-code-oauth"
+
+	// ClaudeCodeOAuthSandboxMountPath is where the read-only payload
+	// lands inside the sandbox. Kept under SecretFilesMountDir so the
+	// k8s driver projects it via the auto-updating directory volume
+	// (a custom absolute path would ride subPath, which kubelet never
+	// refreshes) and RefreshSecretFile can rotate it mid-run.
+	ClaudeCodeOAuthSandboxMountPath = SecretFilesMountDir + "/claude-code-oauth/.credentials.json"
+
+	// ClaudeCodeSandboxConfigDir is the writable in-sandbox
+	// CLAUDE_CONFIG_DIR seeded from the mount above. Under /tmp because
+	// the pod's volume-mount parents (/run/iterion/*) are kubelet-created
+	// root-owned dirs a non-root workload cannot mkdir siblings in.
+	ClaudeCodeSandboxConfigDir = "/tmp/iterion-claude-config"
+
+	// ClaudeCodeSandboxCredentialsPath is the seeded credentials file the
+	// in-sandbox claude CLI reads (and the runner's mid-run refresher
+	// rewrites through the sandbox exec seam).
+	ClaudeCodeSandboxCredentialsPath = ClaudeCodeSandboxConfigDir + "/.credentials.json"
+)
+
 var secretFileNameSanitizer = regexp.MustCompile(`[^A-Za-z0-9_.-]+`)
 
 // SanitizeFileName reduces a secret name to a safe basename for a secret

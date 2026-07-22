@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"testing"
 
+	"github.com/SocialGouv/iterion/pkg/sandbox"
 	"github.com/SocialGouv/iterion/pkg/secrets"
 )
 
@@ -43,7 +44,7 @@ func TestAnthropicCredEnv_AutoZAIFromCtxWinsOverAnthropic(t *testing.T) {
 		secrets.ProviderZAI:       "zai-test",
 		secrets.ProviderAnthropic: "sk-anthropic-test",
 	}, nil)
-	got := anthropicCredEnvForCLI(ctx, "")
+	got := anthropicCredEnvForCLI(ctx, "", false)
 	if got["ANTHROPIC_BASE_URL"] != secrets.ZAIDefaultBaseURL {
 		t.Fatalf("ANTHROPIC_BASE_URL: got %q, want %q", got["ANTHROPIC_BASE_URL"], secrets.ZAIDefaultBaseURL)
 	}
@@ -60,7 +61,7 @@ func TestAnthropicCredEnv_AutoAnthropicWhenNoZAI(t *testing.T) {
 	ctx := ctxWithCreds(t, map[secrets.Provider]string{
 		secrets.ProviderAnthropic: "sk-anthropic-test",
 	}, nil)
-	got := anthropicCredEnvForCLI(ctx, "")
+	got := anthropicCredEnvForCLI(ctx, "", false)
 	if got["ANTHROPIC_API_KEY"] != "sk-anthropic-test" {
 		t.Errorf("ANTHROPIC_API_KEY: got %q, want sk-anthropic-test", got["ANTHROPIC_API_KEY"])
 	}
@@ -69,7 +70,7 @@ func TestAnthropicCredEnv_AutoAnthropicWhenNoZAI(t *testing.T) {
 func TestAnthropicCredEnv_AutoEnvFallbackZAI(t *testing.T) {
 	resetClaudeCredEnv(t)
 	t.Setenv("ZAI_API_KEY", "env-zai-test")
-	got := anthropicCredEnvForCLI(context.Background(), "")
+	got := anthropicCredEnvForCLI(context.Background(), "", false)
 	if got["ANTHROPIC_AUTH_TOKEN"] != "env-zai-test" {
 		t.Errorf("ANTHROPIC_AUTH_TOKEN: got %q, want env-zai-test", got["ANTHROPIC_AUTH_TOKEN"])
 	}
@@ -90,7 +91,7 @@ func TestAnthropicCredEnv_HintAnthropicSkipsZAIInCtx(t *testing.T) {
 		secrets.ProviderZAI:       "zai-test",
 		secrets.ProviderAnthropic: "sk-anthropic-test",
 	}, nil)
-	got := anthropicCredEnvForCLI(ctx, "anthropic")
+	got := anthropicCredEnvForCLI(ctx, "anthropic", false)
 	if got["ANTHROPIC_API_KEY"] != "sk-anthropic-test" {
 		t.Fatalf("ANTHROPIC_API_KEY: got %q, want sk-anthropic-test (hint must force this even with z.ai key present)", got["ANTHROPIC_API_KEY"])
 	}
@@ -108,7 +109,7 @@ func TestAnthropicCredEnv_HintAnthropicFallsToOAuthDir(t *testing.T) {
 	ctx := ctxWithCreds(t, nil, map[string]string{
 		string(secrets.OAuthKindClaudeCode): "/tmp/iterion-oauth-claude",
 	})
-	got := anthropicCredEnvForCLI(ctx, "anthropic")
+	got := anthropicCredEnvForCLI(ctx, "anthropic", false)
 	assertForfaitEnv(t, got, "/tmp/iterion-oauth-claude")
 }
 
@@ -122,7 +123,7 @@ func TestAnthropicCredEnv_AutoForfaitSuppressesInheritedKey(t *testing.T) {
 	ctx := ctxWithCreds(t, nil, map[string]string{
 		string(secrets.OAuthKindClaudeCode): "/tmp/iterion-oauth-claude",
 	})
-	got := anthropicCredEnvForCLI(ctx, "")
+	got := anthropicCredEnvForCLI(ctx, "", false)
 	assertForfaitEnv(t, got, "/tmp/iterion-oauth-claude")
 }
 
@@ -152,14 +153,14 @@ func TestClaudeForfaitEnv_ExportsOAuthTokenFromFile(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(dir, ".credentials.json"), []byte(blob), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	got := claudeForfaitEnv(dir)
+	got := claudeForfaitEnv(dir, false)
 	assertForfaitEnv(t, got, dir)
 	if got["CLAUDE_CODE_OAUTH_TOKEN"] != "sk-ant-oat-TESTTOKEN" {
 		t.Errorf("CLAUDE_CODE_OAUTH_TOKEN: got %q, want the file's accessToken", got["CLAUDE_CODE_OAUTH_TOKEN"])
 	}
 
 	// No file → no token key, file path preserved.
-	bare := claudeForfaitEnv(t.TempDir())
+	bare := claudeForfaitEnv(t.TempDir(), false)
 	if _, present := bare["CLAUDE_CODE_OAUTH_TOKEN"]; present {
 		t.Errorf("CLAUDE_CODE_OAUTH_TOKEN must be absent when no credentials file is present: %v", bare)
 	}
@@ -172,7 +173,7 @@ func TestAnthropicCredEnv_HintAnthropicClearsStaleZAIEnv(t *testing.T) {
 	// only what we want.
 	t.Setenv("ANTHROPIC_BASE_URL", "https://api.z.ai/api/anthropic")
 	t.Setenv("ANTHROPIC_AUTH_TOKEN", "leftover-zai")
-	got := anthropicCredEnvForCLI(context.Background(), "anthropic")
+	got := anthropicCredEnvForCLI(context.Background(), "anthropic", false)
 	if got["ANTHROPIC_BASE_URL"] != "" {
 		t.Errorf("ANTHROPIC_BASE_URL: got %q, want '' (must clear stale value)", got["ANTHROPIC_BASE_URL"])
 	}
@@ -189,7 +190,7 @@ func TestAnthropicCredEnv_HintZAIForcesEvenWithAnthropicCtx(t *testing.T) {
 		secrets.ProviderAnthropic: "sk-anthropic-test",
 		secrets.ProviderZAI:       "zai-test",
 	}, nil)
-	got := anthropicCredEnvForCLI(ctx, "zai")
+	got := anthropicCredEnvForCLI(ctx, "zai", false)
 	if got["ANTHROPIC_AUTH_TOKEN"] != "zai-test" {
 		t.Errorf("ANTHROPIC_AUTH_TOKEN: got %q, want zai-test (hint zai pins z.ai routing)", got["ANTHROPIC_AUTH_TOKEN"])
 	}
@@ -204,7 +205,7 @@ func TestAnthropicCredEnv_HintZAIForcesEvenWithAnthropicCtx(t *testing.T) {
 func TestAnthropicCredEnv_HintZAIFallsToEnvKey(t *testing.T) {
 	resetClaudeCredEnv(t)
 	t.Setenv("ZAI_API_KEY", "env-zai-test")
-	got := anthropicCredEnvForCLI(context.Background(), "zai")
+	got := anthropicCredEnvForCLI(context.Background(), "zai", false)
 	if got["ANTHROPIC_AUTH_TOKEN"] != "env-zai-test" {
 		t.Errorf("ANTHROPIC_AUTH_TOKEN: got %q, want env-zai-test", got["ANTHROPIC_AUTH_TOKEN"])
 	}
@@ -327,3 +328,46 @@ func TestShouldDropSessionFork_UnknownCurrentKeepsForkWithParentSet(t *testing.T
 		t.Error("unknown current fingerprint should NOT trigger a drop when parent fingerprint is set")
 	}
 }
+
+// Sandboxed forfait (ADR-082 Phase 3): the CLI runs inside a container
+// where the host temp dir does not exist, so CLAUDE_CONFIG_DIR must be
+// remapped to the in-sandbox seeded config dir — while the per-spawn
+// CLAUDE_CODE_OAUTH_TOKEN is still read from the HOST file the runner's
+// refresher keeps fresh.
+func TestClaudeForfaitEnv_SandboxedRemapsConfigDir(t *testing.T) {
+	dir := t.TempDir()
+	blob := `{"claudeAiOauth":{"accessToken":"sk-ant-oat-TESTTOKEN","refreshToken":"r","expiresAt":1,"scopes":["user:inference"]}}`
+	if err := os.WriteFile(filepath.Join(dir, ".credentials.json"), []byte(blob), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	got := claudeForfaitEnv(dir, true)
+	assertForfaitEnv(t, got, secrets.ClaudeCodeSandboxConfigDir)
+	if got["CLAUDE_CODE_OAUTH_TOKEN"] != "sk-ant-oat-TESTTOKEN" {
+		t.Errorf("CLAUDE_CODE_OAUTH_TOKEN must still come from the HOST file: got %q", got["CLAUDE_CODE_OAUTH_TOKEN"])
+	}
+	// Host path unchanged when not sandboxed.
+	host := claudeForfaitEnv(dir, false)
+	assertForfaitEnv(t, host, dir)
+}
+
+// taskSandboxed must treat the noop passthrough as NOT sandboxed — its
+// commands run on the host, where the host config dir is the right one.
+func TestTaskSandboxed_NoopIsHost(t *testing.T) {
+	if taskSandboxed(Task{}) {
+		t.Error("nil sandbox must not be sandboxed")
+	}
+	if taskSandboxed(Task{Sandbox: noopLikeRun{}}) {
+		t.Error("noop passthrough must not be sandboxed")
+	}
+	if !taskSandboxed(Task{Sandbox: k8sLikeRun{}}) {
+		t.Error("a real driver must be sandboxed")
+	}
+}
+
+type noopLikeRun struct{ sandbox.Run }
+
+func (noopLikeRun) Driver() string { return "noop" }
+
+type k8sLikeRun struct{ sandbox.Run }
+
+func (k8sLikeRun) Driver() string { return "kubernetes" }
