@@ -12,6 +12,7 @@ import (
 	iterlog "github.com/SocialGouv/iterion/pkg/log"
 	"github.com/SocialGouv/iterion/pkg/sandbox"
 	"github.com/SocialGouv/iterion/pkg/secrets"
+	"github.com/SocialGouv/iterion/pkg/store"
 )
 
 // writeThroughRun fakes a copy-based sandbox driver (kubernetes): it
@@ -20,6 +21,7 @@ import (
 type writeThroughRun struct {
 	sandbox.Run
 	workspaceFiles map[string][]byte // relPath → value (RefreshWorkspaceFile)
+	workspaceErr   error             // when set, RefreshWorkspaceFile fails
 	secretFiles    map[string][]byte // name → value (RefreshSecretFile)
 	execStdin      [][]byte          // payloads streamed to Exec (WriteFileExec)
 	execPaths      []string          // $1 of each Exec invocation
@@ -35,6 +37,9 @@ func newWriteThroughRun() *writeThroughRun {
 func (f *writeThroughRun) Driver() string { return "fake-k8s" }
 
 func (f *writeThroughRun) RefreshWorkspaceFile(_ context.Context, relPath string, value []byte) error {
+	if f.workspaceErr != nil {
+		return f.workspaceErr
+	}
 	f.workspaceFiles[relPath] = append([]byte(nil), value...)
 	return nil
 }
@@ -65,7 +70,9 @@ func TestWriteThroughSandboxGitCredential(t *testing.T) {
 	r.registerSandboxRun("run-1", fake)
 	defer r.unregisterSandboxRun("run-1")
 
-	r.writeThroughSandboxGitCredential("run-1", "https://github.com/org/repo.git", "rotated-tok")
+	if err := r.writeThroughSandboxGitCredential("run-1", "https://github.com/org/repo.git", "rotated-tok"); err != nil {
+		t.Fatalf("write-through: %v", err)
+	}
 
 	got, ok := fake.workspaceFiles[".git/"+gitCredentialFile]
 	if !ok {
@@ -75,14 +82,95 @@ func TestWriteThroughSandboxGitCredential(t *testing.T) {
 		t.Errorf("written credential line = %q, want %q", got, want)
 	}
 
-	// Unknown run / no sandbox: silent no-op, never a panic.
-	r.writeThroughSandboxGitCredential("run-absent", "https://github.com/org/repo.git", "t")
+	// A transient pod exec failure must SURFACE — the caller keeps the
+	// rotation pending and retries next tick instead of recording it done.
+	fake.workspaceErr = context.DeadlineExceeded
+	if err := r.writeThroughSandboxGitCredential("run-1", "https://github.com/org/repo.git", "t2"); err == nil {
+		t.Fatal("expected the refresher failure to propagate")
+	}
+
+	// Unknown run / no sandbox: nil no-op, never a panic.
+	if err := r.writeThroughSandboxGitCredential("run-absent", "https://github.com/org/repo.git", "t"); err != nil {
+		t.Fatalf("absent run must be a nil no-op, got %v", err)
+	}
 
 	// A driver without the WorkspaceFileRefresher capability (docker's
-	// bind-mounted workspace shares the host inode) is a clean no-op.
+	// bind-mounted workspace shares the host inode) is a clean nil no-op.
 	r.registerSandboxRun("run-2", fakeSandboxRun{})
 	defer r.unregisterSandboxRun("run-2")
-	r.writeThroughSandboxGitCredential("run-2", "https://github.com/org/repo.git", "t")
+	if err := r.writeThroughSandboxGitCredential("run-2", "https://github.com/org/repo.git", "t"); err != nil {
+		t.Fatalf("non-refresher driver must be a nil no-op, got %v", err)
+	}
+}
+
+// TestRefreshGitCredentialsOnce_PartialDeliveryRetries pins the rotation
+// bookkeeping: when the host rewrite succeeds but the sandbox
+// write-through fails transiently, `last` must NOT advance — otherwise
+// the pod keeps the previous token until the NEXT server-side rotation
+// (~1h away). The unchanged `last` makes the next tick retry the whole
+// rotation; once the write-through succeeds, `last` advances and the
+// rotation stops re-applying.
+func TestRefreshGitCredentialsOnce_PartialDeliveryRetries(t *testing.T) {
+	sealer, err := secrets.NewAESGCMSealerFromBase64("MDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWY=")
+	if err != nil {
+		t.Fatal(err)
+	}
+	mem := secrets.NewMemoryGenericSecretStore()
+	id := secrets.NewGenericSecretID()
+	sealed, err := secrets.SealGenericSecret(sealer, id, []byte("token-v2"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	tctx := store.WithTenant(context.Background(), "team-1")
+	if err := mem.Create(tctx, secrets.GenericSecret{ID: id, TenantID: "team-1", ScopeTeamID: "team-1", Name: "forge_token", SealedSecret: sealed}); err != nil {
+		t.Fatal(err)
+	}
+
+	r := &Runner{cfg: Config{
+		Logger:         iterlog.New(iterlog.LevelError, os.Stderr),
+		Sealer:         sealer,
+		GenericSecrets: mem,
+	}}
+	fake := newWriteThroughRun()
+	fake.workspaceErr = context.DeadlineExceeded // pod exec transiently down
+	r.registerSandboxRun("run-1", fake)
+	defer r.unregisterSandboxRun("run-1")
+
+	dir := t.TempDir()
+	gitDir := filepath.Join(dir, ".git")
+	if err := os.MkdirAll(gitDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(gitDir, gitCredentialFile)
+	const repoURL = "https://github.com/org/repo.git"
+
+	// Tick 1: rotation reaches the host but NOT the pod → last stays "".
+	last := ""
+	r.refreshGitCredentialsOnce(context.Background(), "team-1", id, "run-1", path, repoURL, &last)
+	if last != "" {
+		t.Fatalf("last advanced on a partial delivery: %q", last)
+	}
+	if got, _ := os.ReadFile(path); string(got) != "https://oauth2:token-v2@github.com\n" {
+		t.Fatalf("host credential file = %q, want the rotated line", got)
+	}
+
+	// Tick 2: pod exec recovered → the SAME rotation is retried and lands
+	// everywhere; only now does last advance.
+	fake.workspaceErr = nil
+	r.refreshGitCredentialsOnce(context.Background(), "team-1", id, "run-1", path, repoURL, &last)
+	if last != "token-v2" {
+		t.Fatalf("last = %q after full delivery, want token-v2", last)
+	}
+	if got := string(fake.workspaceFiles[".git/"+gitCredentialFile]); got != "https://oauth2:token-v2@github.com\n" {
+		t.Fatalf("pod credential copy = %q, want the rotated line", got)
+	}
+
+	// Tick 3: nothing new — no re-push to the pod.
+	fake.workspaceFiles = map[string][]byte{}
+	r.refreshGitCredentialsOnce(context.Background(), "team-1", id, "run-1", path, repoURL, &last)
+	if len(fake.workspaceFiles) != 0 {
+		t.Fatalf("unchanged rotation re-pushed to the pod: %+v", fake.workspaceFiles)
+	}
 }
 
 // TestPropagateForfaitToSandbox proves a refreshed forfait credentials

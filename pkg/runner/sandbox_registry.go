@@ -11,6 +11,7 @@ package runner
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"time"
 
@@ -73,28 +74,32 @@ func (r *Runner) sandboxRunObserver(ctx context.Context, runID, tenantID string,
 // implement [sandbox.WorkspaceFileRefresher] (kubernetes); bind-mount
 // drivers (docker) share the host inode with the file
 // refreshGitCredentialsLoop just rewrote, and the noop passthrough IS
-// the host — both are correctly a no-op here.
-func (r *Runner) writeThroughSandboxGitCredential(runID, repoURL, token string) {
+// the host — both are correctly a nil no-op here.
+//
+// A non-nil error means the pod is still holding the PREVIOUS token: the
+// caller must NOT record the rotation as applied (it would otherwise
+// only retry on the next server-side rotation, ~1h away) — retrying the
+// same value next tick is the recovery.
+func (r *Runner) writeThroughSandboxGitCredential(runID, repoURL, token string) error {
 	run := r.sandboxRunFor(runID)
 	if run == nil {
-		return
+		return nil
 	}
 	refresher, ok := run.(sandbox.WorkspaceFileRefresher)
 	if !ok {
-		return
+		return nil
 	}
 	line, err := renderGitCredentialLine(repoURL, token)
 	if err != nil {
-		r.cfg.Logger.Warn("runner: sandbox git-credential write-through: %v", err)
-		return
+		return fmt.Errorf("sandbox git-credential write-through: %w", err)
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), sandboxWriteThroughTimeout)
 	defer cancel()
 	if err := refresher.RefreshWorkspaceFile(ctx, ".git/"+gitCredentialFile, []byte(line)); err != nil {
-		r.cfg.Logger.Warn("runner: sandbox git-credential write-through: %v", err)
-		return
+		return fmt.Errorf("sandbox git-credential write-through: %w", err)
 	}
 	r.cfg.Logger.Info("runner: rotated git credential written through into the sandbox workspace")
+	return nil
 }
 
 // propagateForfaitToSandbox pushes the just-refreshed Claude forfait

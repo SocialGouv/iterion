@@ -170,22 +170,37 @@ func (r *Runner) refreshGitCredentialsLoop(ctx context.Context, tenantID, secret
 			return
 		case <-tick.C:
 		}
-		val, err := r.readFreshSecret(ctx, tenantID, secretID)
-		if err != nil {
-			r.cfg.Logger.Warn("runner: refresh git credential (ref %s): %v", secretID, err)
-			continue
-		}
-		if len(val) == 0 || string(val) == last {
-			continue
-		}
-		if err := writeGitCredentials(path, repoURL, string(val)); err != nil {
-			r.cfg.Logger.Warn("runner: refresh git credential: %v", err)
-			continue
-		}
-		r.writeThroughSandboxGitCredential(runID, repoURL, string(val))
-		last = string(val)
-		r.cfg.Logger.Info("runner: refreshed the clone's git credential from store (rotation picked up)")
+		r.refreshGitCredentialsOnce(ctx, tenantID, secretID, runID, path, repoURL, &last)
 	}
+}
+
+// refreshGitCredentialsOnce is one tick of refreshGitCredentialsLoop.
+// `last` advances ONLY when the rotation reached EVERY consumer — the
+// host clone file AND the sandbox workspace copy. Advancing it on a
+// partial delivery (host ok, pod exec transiently failed) would park the
+// pod on the previous token until the NEXT server-side rotation, ~1h
+// away — exactly the stale-push window this loop exists to close; by
+// keeping `last` unchanged the whole rotation is retried next tick (the
+// host rewrite is idempotent).
+func (r *Runner) refreshGitCredentialsOnce(ctx context.Context, tenantID, secretID, runID, path, repoURL string, last *string) {
+	val, err := r.readFreshSecret(ctx, tenantID, secretID)
+	if err != nil {
+		r.cfg.Logger.Warn("runner: refresh git credential (ref %s): %v", secretID, err)
+		return
+	}
+	if len(val) == 0 || string(val) == *last {
+		return
+	}
+	if err := writeGitCredentials(path, repoURL, string(val)); err != nil {
+		r.cfg.Logger.Warn("runner: refresh git credential: %v", err)
+		return
+	}
+	if err := r.writeThroughSandboxGitCredential(runID, repoURL, string(val)); err != nil {
+		r.cfg.Logger.Warn("runner: refresh git credential: %v — retrying the rotation next tick", err)
+		return
+	}
+	*last = string(val)
+	r.cfg.Logger.Info("runner: refreshed the clone's git credential from store (rotation picked up)")
 }
 
 // gitCredentialSecretRef returns the store id backing the run's forge token,
