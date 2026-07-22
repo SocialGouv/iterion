@@ -2,14 +2,27 @@
 
 # docs-refresh (Doki) — bilans
 
-Documentation refresh bot. Detects mismatches between project docs
-(README, docs/**/*.md, CLAUDE.md, bundled skills, Go comments) and the
-actual code, fixes the DOCS only (never code logic), and auto-commits on
-convergence. Alternating claude_code (opus-4-8) / claw (gpt-5.5)
-reviewers, deterministic `streak_check` (two cross-family approvals), a
-`scan_docs` footprint enumerator + `build_manifest` anchor verifier so
-agents can't truncate the audit set. Runs on ANY repo; iterion is the
+Documentation refresh bot (v3: adaptive paradigm). ONE campaign agent
+aligns the docs with the current code — docs follow code, never the
+reverse: repair stale claims AND write missing documentation. A
+deterministic `scan_hints` producer feeds ADVISORY hints (missing
+tracked paths, dead links/anchors, unmentioned areas — never a gate);
+convergence is `verify ∧ scope_ok ∧ docs_aligned` only. Dismissals +
+promises ledgers persist the agent's adjudications; the opt-in
+`open_mr` tail publishes ONE PR. Runs on ANY repo; iterion is the
 reference self-host case.
+
+## 2026-07-23 — v3 adaptive realignment: 4 runs, 3 stop-fix-relaunch cycles, ratio ×4 (runs 019f8ba3 / 019f8bb4 / 019f8bdd)
+- Status: **validated** — the "excessive determinism is counterproductive" realignment (Billy/Willy paradigm), driven by an interrupt-fix-relaunch dogfood loop on cloud prod
+- Versions: bot 3.0.0 → 3.0.2 · iterion `57b9853ec` → `ffe9ea7d9`
+- Method: catalog launch POST /api/runs, vars reduced to `open_mr` + `scope_notes` (v3 dropped the v2 scanner/chunk vars), forfait Claude, k8s sandbox pods
+- The three cycles:
+  1. Run 019f8ba3 (3.0.0) stopped at the scan checkpoint — 604 `missing_path` hints (43% of checked paths): example paths (`bots/my-bot/…`) and runtime files (`.claude/settings.json`) passed the first-segment rule. Fix `2251b32` (3.0.1): a missing path hints iff **git ever tracked it** (index ∪ deletion history) — 604 → 14 hints (−98%). The stopped run's pod meanwhile ran to completion and delivered **PR #277** (CLAUDE.md module map: 20 missing packages) — the advisory paradigm absorbed even the noisy input without burning on it.
+  2. Run 019f8bb4 (3.0.1): **14 min / ~$3.1 / 3 substantive commits** (SSRF baseline pointer, Valkey deploy dependency, hidden-subcommand list), converged pass 1 → **PR #279**. Friction: the campaign pushed its own PR (#278, duplicate). Fix `fa35e22` (3.0.2): mission contract "commit locally only — the finalize tail is the single publisher".
+  3. Run 019f8bdd (3.0.2, asymptote check after #277/#279 merged): **~29 min / ~$2.6 / 1 commit + 11 dismissals**, converged pass 1, single PR #281, zero manufactured work. 22 of the 29 min = first-pass `verify_build` (agent authors verify.sh + full build/test; the docs-only fast-path only helps pass ≥ 2) — the remaining bottleneck.
+- Ratio v2.5.1 → v3.0.x: 55 min/$10.12/5 commits over 5 passes → 14-29 min/~$3/pass-1 convergence; adjudication burn 120+ candidates → 10-14 plausible hints.
+- Engine hardening: `ffe9ea7` cancelled-run resurrection (ticket native:85cea410) — a redelivered launch against a cancelled-with-checkpoint run was auto-resumed; run 019f8ba3 resurrected 3× (incl. via plain redelivery, runner up). Cancelled now acks; explicit resume only. Validated live: post-roll redelivery did NOT revive it.
+- Lessons: hints precision belongs in the producer (git-tracked rule), publication belongs to the tail (contract line), and the next perf lever is first-pass verify (persist verify.sh across runs needs per-project scratch on cloud runners — existing follow-up). Double quotes inside inline `python3 -c` script comments break the command — caught by the emulation tests.
 
 ## 2026-07-22 (soir) — enrichment validation ×2: real work produced, then thrown away, then shipped (runs 019f8af6 → 019f8b50)
 - Status: validated (2nd run) after a failed-honest 1st run — **PR #276 opened by the bot** (5 commits, 4 docs, +61 lines) with the "Unfulfilled documented promises" section live (2 real promises: ADR-044 `iterion __commit` layer, ADR-050 `C099`)
