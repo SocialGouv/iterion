@@ -39,6 +39,7 @@ export type ExecStatus =
 export type RunSourceKind =
   | "manual"
   | "webhook"
+  | "schedule"
   | "dispatcher"
   | "fork"
   | "shard";
@@ -311,9 +312,10 @@ export interface RunHeader {
   // Different from workflow_hash (the child's own) when the workflow has
   // been edited between parent run and fork.
   source_hash?: string;
-  // source describes the originating action that produced this run.
-  // Today only dispatcher runs populate it, carrying the back-reference
-  // to the kanban issue so the RunHeader can link back to /board.
+  // source describes the originating action that produced this run:
+  // a dispatcher claim (carrying the back-reference to the kanban issue
+  // so the RunHeader can link back to /board) or a schedule tick
+  // (carrying the schedule identity). Absent for operator launches.
   source?: RunSource;
   // Run-tree shard tuple (T4b, refs #125): parent_run_id points UP at the
   // run that spawned this shard/child; shard_index/shard_count/shard_label
@@ -422,6 +424,11 @@ export interface RunSource {
   issue_id?: string;
   issue_identifier?: string;
   issue_title?: string;
+  // Schedule provenance (kind === "schedule"): the stable schedule
+  // identity the overlap gate queries, plus its human label when it
+  // differs. Mirror of store.RunSource.
+  schedule_id?: string;
+  schedule_name?: string;
 }
 
 // Mirror of runview.RunSnapshot.
