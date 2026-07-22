@@ -1,13 +1,13 @@
 ---
 name: doc-mismatch-taxonomy
-description: Working taxonomy and evidence conventions for adjudicating Doki v2 drift-manifest candidates.
+description: Working taxonomy and evidence conventions for adjudicating Doki doc-drift issues (advisory hints and self-found).
 ---
 
 # Documentation mismatch taxonomy
 
-Use these classifications while adjudicating a manifest candidate. They are a
-reasoning vocabulary for the single v2 campaign, not required fields in
-`campaign_output`.
+Use these classifications while adjudicating a documentation issue — whether
+it came from an advisory hint or from your own survey. They are a reasoning
+vocabulary for the single campaign, not required fields in `campaign_output`.
 
 | Kind | Meaning | Typical evidence |
 |---|---|---|
@@ -21,12 +21,13 @@ reasoning vocabulary for the single v2 campaign, not required fields in
 | `obsolete_capability` | Documentation claims a removed or unshipped capability. | Current command/API/feature registration. |
 | `wrong_directory_layout` | A documented repository or package map is stale. | Current tracked tree. |
 | `comment_lies_about_function` | An opted-in Go comment contradicts its implementation. | Adjacent implementation and tests. |
-| `undocumented_capability` | The optional code-surface scan finds a public CLI flag, command, or diagnostic absent from the scoped docs. | `scan_code_surface` result plus documentation search. |
+| `undocumented_capability` | A public capability, command, or code area is absent from the scoped docs. | Repo exploration (help output, entry points, an `unmentioned_area` hint) plus documentation search. |
 
-The manifest itself emits candidate kinds such as `file_ref`, `md_link`,
-`cli_command`, `cli_flag`, `diagnostic`, and `symbol_ref`, with status
-`drifted` or `unverifiable`. A manifest kind describes how the anchor was
-extracted; the taxonomy describes the semantic problem after verification.
+The advisory scan emits hint kinds `missing_path`, `dead_link`,
+`dead_anchor`, and `unmentioned_area`. A hint kind describes how the signal
+was derived mechanically; the taxonomy describes the semantic problem after
+YOUR verification — and most taxonomy rows (wrong defaults, stale behaviour,
+outdated examples) have no hint kind at all: they are yours to find.
 
 ## Evidence anchors
 
@@ -51,9 +52,9 @@ symbol anchor, and a source line is not an external-link anchor.
 - **Low:** a minor count, label, or dated qualifier is stale. Fix it alongside
   substantive work in the same document.
 
-Prioritisation does not replace verification. A mechanically drifted CLI flag
-is usually high signal; an unverifiable `symbol_ref` in prose is usually low
-signal until context proves otherwise.
+Prioritisation does not replace verification. A missing repo-rooted path or
+a dead internal link is usually high signal; prose that merely looks like an
+identifier is usually low signal until context proves otherwise.
 
 ## Not a documentation fix
 

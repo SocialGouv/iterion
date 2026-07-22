@@ -1,22 +1,24 @@
 ---
 name: anti-facade-fix-rules
-description: Evidence and editing discipline for Doki v2's single documentation-alignment campaign.
+description: Evidence and editing discipline for Doki's single documentation-alignment campaign.
 ---
 
 # Anti-façade alignment rules
 
 A façade edit looks plausible but is not grounded in the current repository.
-Doki's manifest narrows the search; it does not replace semantic verification.
+Doki's advisory hints narrow the search; they do not replace semantic
+verification — and most real drift is found by your own exploration, not by
+a hint.
 
 ## 1. Verify before writing
 
-Read or grep the live implementation at the candidate's evidence anchor before
-changing the document. Record enough path, symbol, command output, or test
-evidence in `summary` that another maintainer could repeat the check.
+Read or grep the live implementation behind every claim before changing the
+document. Record enough path, symbol, command output, or test evidence in
+`summary` that another maintainer could repeat the check.
 
-For `status: unverifiable`, first decide whether the value was intended as a
+Before acting on any hint, first decide whether the value was intended as a
 code reference at all. Historical prose, examples, product names, and external
-concepts often look like symbols to a heuristic.
+concepts often look like references to a heuristic.
 
 ## 2. Derive the wording from current behavior
 
@@ -30,7 +32,7 @@ verifiable mismatch.
 
 ## 3. Respect the writable set
 
-Edit only Markdown in the immutable scanned footprint. When
+Edit only Markdown (existing docs, or new `.md` pages you author). When
 `go_comment_globs` is explicitly non-empty, comment-only changes in matching Go
 files are also allowed. Never change executable statements, tests, build files,
 configuration, generated output, or unrelated files.
@@ -88,8 +90,8 @@ explain the exact decision. Do not pause for ordinary editorial judgment.
 
 ## 8. Terminate honestly
 
-Before `docs_aligned=true`, account for every candidate in the pass as fixed or
-false positive, account for deferred documents when `chunked=true`, and ensure
-no known real drift remains. State which anchors you verified and why dismissed
-candidates were not code claims. A fresh manifest, the scope gate, and the
-verification gate will independently check the result.
+Before `docs_aligned=true`, account for every issue you surfaced as fixed,
+dismissed-to-ledger, or recorded-as-promise, and ensure no known real drift
+or significant missing documentation remains. State which claims you
+verified and why dismissed items were not code claims. The scope gate and
+the verification gate will independently check the result.
