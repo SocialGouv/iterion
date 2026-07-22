@@ -53,17 +53,17 @@ type Server struct {
 	// currentProjectID is the id of the registry entry matching
 	// cfg.WorkDir. Surfaced by /api/server/info (polled by the SPA);
 	// caching it here avoids a disk read on every poll.
-	currentProjectID string
-	cfg              Config
-	logger           *iterlog.Logger
-	mux              *recordingMux // records routes → GET /api/openapi.json
-	handler          http.Handler  // mux wrapped with auth middleware
-	server           *http.Server
-	hub              *Hub
-	watcher          *Watcher
-	runs             *runview.Service    // run console service; nil disables /api/runs endpoints
-	watchCoord       *watchCoordinator        // MVP3b issue-state fan-out; nil when no native tracker or events tail unavailable
-	triggerCoord     *TriggerCoordinator      // event-driven trigger spine; nil when no TriggerStore/native tracker
+	currentProjectID  string
+	cfg               Config
+	logger            *iterlog.Logger
+	mux               *recordingMux // records routes → GET /api/openapi.json
+	handler           http.Handler  // mux wrapped with auth middleware
+	server            *http.Server
+	hub               *Hub
+	watcher           *Watcher
+	runs              *runview.Service         // run console service; nil disables /api/runs endpoints
+	watchCoord        *watchCoordinator        // MVP3b issue-state fan-out; nil when no native tracker or events tail unavailable
+	triggerCoord      *TriggerCoordinator      // event-driven trigger spine; nil when no TriggerStore/native tracker
 	cloudTriggerCoord *CloudTriggerCoordinator // cloud (mongo board) trigger spine; nil outside cloud mode
 	// userNotify + pushSink are the user-notification stack (web push on
 	// human-input pauses and run outcomes); nil when the feature is off
