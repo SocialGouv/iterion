@@ -242,6 +242,7 @@ func upsertForgeCard(board native.BoardStore, b *native.Board, openCol, doneCol 
 		Number:       is.Number,
 		URL:          is.URL,
 		State:        is.State,
+		Author:       is.Author,
 	}
 	existing, gerr := board.Get(cardID)
 	if gerr != nil {
