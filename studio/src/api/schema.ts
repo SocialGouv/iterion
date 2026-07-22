@@ -4676,6 +4676,9 @@ export interface components {
             concurrency: components["schemas"]["PipelineConcurrencyStatus"];
             /** Format: date-time */
             generated_at: string;
+            /** Format: date-time */
+            hidden_closed_before?: string;
+            hidden_closed_count?: number;
             topology_error?: string;
         };
         PipelineConcurrencyStatus: {

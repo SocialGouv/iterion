@@ -978,6 +978,13 @@
             "format": "date-time",
             "type": "string"
           },
+          "hidden_closed_before": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "hidden_closed_count": {
+            "type": "integer"
+          },
           "topology_error": {
             "type": "string"
           }
