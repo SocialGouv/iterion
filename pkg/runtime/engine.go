@@ -39,6 +39,17 @@ var ErrRunPaused = errors.New("runtime: run paused waiting for human input")
 // can handle cancellation gracefully.
 var ErrRunCancelled = errors.New("runtime: run cancelled")
 
+// ErrRunInterrupted marks a run cancelled by INFRASTRUCTURE — a cloud
+// runner draining on deploy (lame-duck) or a lost lease heartbeat — rather
+// than by operator intent. A caller requests it by cancelling the run
+// context with this as the cause (context.CancelCause); the engine then
+// writes failed_resumable (not cancelled) and emits a resumable run_failed
+// event (not run_cancelled), so the run auto-resumes on a healthy pod
+// instead of being dropped like a deliberate cancel. This single-sources
+// the resumable-vs-terminal decision in the engine, next to the existing
+// Canceled-vs-DeadlineExceeded split in handleContextDoneWithCheckpoint.
+var ErrRunInterrupted = errors.New("runtime: run interrupted (resumable)")
+
 // ErrRunPausedOperator is returned when execution is suspended in
 // response to a POST /api/runs/{id}/pause request — the operator
 // asked for a soft pause (no cancellation) that resumes via the

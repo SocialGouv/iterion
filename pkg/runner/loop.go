@@ -24,7 +24,6 @@ import (
 	"strconv"
 	"strings"
 	"sync"
-	"sync/atomic"
 	"time"
 
 	"go.opentelemetry.io/otel"
@@ -145,15 +144,6 @@ type execOutcome struct {
 	level       logLevel
 	logFmt      string
 	logArgs     []any
-	// promoteResumable asks processOne to CAS the run's persisted status
-	// from `cancelled` to `failed_resumable` before naking. Set for the
-	// non-operator interruptions (runner shutdown, heartbeat loss): the
-	// engine wrote `cancelled` on ctx cancel, but the redelivery
-	// reconciliation drops a `cancelled` run — flipping it to
-	// `failed_resumable` makes the nak's redelivery auto-resume from the
-	// checkpoint instead of stranding the run for a manual resume. An
-	// operator cancel leaves this false, so it stays terminal `cancelled`.
-	promoteResumable bool
 }
 
 // resolveDeliveryPreconditions runs the pre-lock store gauntlet:
@@ -275,7 +265,7 @@ func (r *Runner) resolveDeliveryPreconditions(msg *queue.RunMessage) preconditio
 // because it has side effects (PublishDLQ + UpdateRunStatusIf). The
 // caller checks that trigger inline BEFORE delegating the remaining
 // generic-error case to this helper.
-func classifyExecResult(execErr error, hbFailed bool, shutdownCancel bool, runID string) execOutcome {
+func classifyExecResult(execErr error, runID string) execOutcome {
 	if execErr == nil {
 		return execOutcome{
 			finalStatus: "finished",
@@ -310,33 +300,22 @@ func classifyExecResult(execErr error, hbFailed bool, shutdownCancel bool, runID
 			logArgs:     []any{runID, execErr},
 		}
 	}
+	// Infrastructure interruption (runner drain / lost heartbeat): the
+	// engine already wrote failed_resumable (via the ErrRunInterrupted
+	// cancel cause). Nak so JetStream redelivers and the reconciliation
+	// auto-resumes from the checkpoint — no manual intervention.
+	if errors.Is(execErr, runtime.ErrRunInterrupted) {
+		return execOutcome{
+			finalStatus: "interrupted",
+			op:          "nak-interrupted",
+			action:      actionNak,
+			level:       logWarn,
+			logFmt:      "runner: run %s interrupted (resumable) — naking for auto-resume (%v)",
+			logArgs:     []any{runID, execErr},
+		}
+	}
+	// Operator cancel: terminal cancelled, acked (redelivery drops it).
 	if errors.Is(execErr, runtime.ErrRunCancelled) {
-		// Heartbeat-induced cancel: the lease is gone, so a sibling
-		// runner is free to pick this up via JetStream redelivery.
-		// Nak (not Ack) so the message stays queued instead of
-		// being marked done and forcing manual user intervention.
-		if hbFailed {
-			return execOutcome{
-				finalStatus:      "lock_held",
-				op:               "nak-heartbeat-lost",
-				action:           actionNak,
-				level:            logWarn,
-				logFmt:           "runner: run %s heartbeat lost — promoting to failed_resumable + naking for sibling redelivery",
-				logArgs:          []any{runID},
-				promoteResumable: true,
-			}
-		}
-		if shutdownCancel {
-			return execOutcome{
-				finalStatus:      "shutdown",
-				op:               "nak-shutdown-cancelled",
-				action:           actionNak,
-				level:            logWarn,
-				logFmt:           "runner: run %s interrupted by runner shutdown — promoting to failed_resumable + naking for auto-resume",
-				logArgs:          []any{runID},
-				promoteResumable: true,
-			}
-		}
 		return execOutcome{
 			finalStatus: "cancelled",
 			op:          "ack-cancelled",
@@ -559,20 +538,19 @@ type Runner struct {
 type inFlight struct {
 	runID    string
 	delivery *natsq.Delivery
-	cancelFn context.CancelFunc
+	// cancelFn cancels the run context WITH A CAUSE (context.CancelCause).
+	// The cause is the single source of the shutdown-vs-operator decision:
+	// runtime.ErrRunInterrupted (runner drain / lost heartbeat) → the engine
+	// writes failed_resumable and the run auto-resumes; runtime.ErrRunCancelled
+	// (operator cancel subject) → terminal cancelled. This replaces inferring
+	// intent from the loop ctx, which would misclassify an operator cancel
+	// arriving during a (up-to-DrainTimeout-long) lame-duck drain and
+	// resurrect a deliberately-cancelled run.
+	cancelFn context.CancelCauseFunc
 	// done is closed once processOne has Ack'd or Nak'd the delivery.
 	// Shutdown selects on it to avoid double-acting on a delivery
 	// processOne already finalised.
 	done chan struct{}
-	// shutdownCancel is set by Shutdown (via cancelAndAwaitCheckpoint)
-	// BEFORE it cancels the run, so classifyExecResult can tell a
-	// shutdown-drain cancel (→ promote to failed_resumable + auto-resume)
-	// from an operator cancel arriving on the cancel subject during the
-	// same drain window (→ stays terminal `cancelled`). Inferring this from
-	// the loop ctx (parent.Err()) would misclassify the operator cancel and
-	// resurrect a deliberately-cancelled run — the lame-duck window makes
-	// that window up to DrainTimeout wide.
-	shutdownCancel atomic.Bool
 }
 
 const (
@@ -796,12 +774,10 @@ func (r *Runner) Shutdown(ctx context.Context) error {
 // JetStream redelivers to a sibling. Shared by the interrupt drain and the
 // lame-duck ceiling cap.
 func (r *Runner) cancelAndAwaitCheckpoint(cur *inFlight, waitCtx context.Context) {
-	// Mark this as a shutdown-driven cancel BEFORE cancelling, so
-	// classifyExecResult promotes it to failed_resumable (auto-resume)
-	// rather than treating it as an operator cancel. Ordered before
-	// cancelFn so the flag is visible by the time executeRun unwinds.
-	cur.shutdownCancel.Store(true)
-	cur.cancelFn()
+	// Cancel WITH the interrupted cause so the engine writes failed_resumable
+	// (auto-resume) rather than terminal cancelled — the shutdown-vs-operator
+	// decision lives entirely in this cause.
+	cur.cancelFn(runtime.ErrRunInterrupted)
 	logDeliveryErr(r.cfg.Logger, "in-progress-shutdown", cur.runID, cur.delivery.InProgress())
 	select {
 	case <-cur.done:
@@ -844,13 +820,13 @@ func (r *Runner) processOne(parent context.Context, delivery *natsq.Delivery) {
 	// Decouple the run's cancellation from the loop context: a SIGTERM
 	// cancels loopCtx to stop fetching, but the in-flight run must NOT die
 	// with it — Shutdown drives run cancellation explicitly per drain mode
-	// (lame-duck lets it finish; interrupt cancels it here via cur.cancelFn).
+	// (lame-duck lets it finish; interrupt cancels it via cur.cancelFn).
 	// WithoutCancel keeps the OTel span/trace values while severing the
-	// parent-chain cancel. `parent.Err()` (the loop ctx) still reports the
-	// shutdown so classifyExecResult can distinguish it from an operator
-	// cancel.
-	runCtx, runCancel := context.WithCancel(context.WithoutCancel(spanCtx))
-	defer runCancel()
+	// parent-chain cancel. WithCancelCause lets each cancel site stamp WHY
+	// (drain/heartbeat → ErrRunInterrupted → resumable; operator subject →
+	// ErrRunCancelled → terminal), which the engine reads via context.Cause.
+	runCtx, runCancel := context.WithCancelCause(context.WithoutCancel(spanCtx))
+	defer runCancel(nil)
 	defer func() {
 		span.SetAttributes(attribute.String("iterion.run.status", finalStatus))
 		if finalStatus == "failed" || finalStatus == "lock_held" {
@@ -874,10 +850,10 @@ func (r *Runner) processOne(parent context.Context, delivery *natsq.Delivery) {
 	}()
 
 	// Subscribe to the cancel subject for this run. A POST cancel on
-	// the API publishes on iterion.cancel.<run_id>; we react by
-	// cancelling runCtx, which unwinds engine.Run via
-	// handleContextDoneWithCheckpoint.
-	if _, err := r.cfg.NATS.SubscribeCancel(runCtx, msg.RunID, runCancel); err != nil {
+	// the API publishes on iterion.cancel.<run_id>; we react by cancelling
+	// runCtx with the OPERATOR cause, so the engine writes terminal
+	// cancelled (never resurrected), distinct from a shutdown-drain cancel.
+	if _, err := r.cfg.NATS.SubscribeCancel(runCtx, msg.RunID, func() { runCancel(runtime.ErrRunCancelled) }); err != nil {
 		logger.Warn("runner: subscribe cancel %s: %v (continuing without)", msg.RunID, err)
 	}
 
@@ -925,27 +901,21 @@ func (r *Runner) processOne(parent context.Context, delivery *natsq.Delivery) {
 		}
 	}()
 
-	// Heartbeat goroutine: refresh the NATS lease while we own it.
-	// On refresh failure the heartbeat cancels runCtx so engine.Run
-	// unwinds via handleContextDoneWithCheckpoint — better to lose
-	// progress than to let the lease expire while the engine is still
-	// writing to Mongo (which would invite split-brain when JetStream
-	// redelivers to a sibling pod). hbFailed flips to true before the
-	// cancel so processOne can distinguish heartbeat-induced cancel
-	// from a legitimate user cancel and Nak instead of Ack — without
-	// that, JetStream considers the run done and no sibling picks it
-	// up automatically.
-	var hbFailed atomic.Bool
+	// Heartbeat goroutine: refresh the NATS lease while we own it. On
+	// refresh failure it cancels runCtx WITH the interrupted cause so the
+	// engine unwinds to failed_resumable — better to lose progress than to
+	// let the lease expire while the engine is still writing to Mongo (which
+	// would invite split-brain when JetStream redelivers to a sibling pod).
+	// The cause makes the redelivery auto-resume without manual intervention.
 	hbDone := make(chan struct{})
-	go r.heartbeat(runCtx, runCancel, lock, delivery, hbDone, &hbFailed)
+	go r.heartbeat(runCtx, runCancel, lock, delivery, hbDone)
 	// Cancel runCtx *before* waiting on hbDone, otherwise we deadlock:
-	// heartbeat only exits on ctx.Done(), and the outer `defer
-	// runCancel()` at function entry is LIFO-last so it would run
-	// after this defer. Calling runCancel() here is idempotent. Kept as
-	// a panic-safety net even though the happy path drains the heartbeat
-	// explicitly below.
+	// heartbeat only exits on ctx.Done(), and the outer `defer runCancel`
+	// at function entry is LIFO-last so it would run after this defer.
+	// nil cause: the run has already returned terminally here, so this is
+	// teardown — the engine never reads the cause. Idempotent panic net.
 	defer func() {
-		runCancel()
+		runCancel(nil)
 		<-hbDone
 	}()
 
@@ -956,18 +926,17 @@ func (r *Runner) processOne(parent context.Context, delivery *natsq.Delivery) {
 	// no InProgress() lands after the terminal Ack/Nak below (which would
 	// otherwise log a spurious already-acked error). A second drain in
 	// the defer above is a no-op on the closed channel.
-	runCancel()
+	runCancel(nil)
 	<-hbDone
 
-	// Classify once (pure, no side effects). promoteResumable doubles as
-	// the "this is a non-operator interruption" signal: a runner-shutdown
-	// drain or lost heartbeat is NOT a terminal outcome — the run is about
-	// to auto-resume on redelivery — so firing a run.cancelled outcome +
-	// completion webhook here would push a spurious "run cancelled"
-	// notification on every deploy. Skip both run-facing fires; the resumed
-	// run emits its own real terminal outcome when it finishes.
-	outcome := classifyExecResult(err, hbFailed.Load(), inflight.shutdownCancel.Load(), msg.RunID)
-	if !outcome.promoteResumable {
+	// A non-operator interruption (runner drain / lost heartbeat) returns
+	// ErrRunInterrupted — the engine already wrote failed_resumable and the
+	// run is about to auto-resume on redelivery, so firing a terminal
+	// outcome + completion webhook here would push a spurious "run
+	// cancelled/failed" notification on every deploy. Skip both run-facing
+	// fires; the resumed run emits its own real terminal outcome later.
+	outcome := classifyExecResult(err, msg.RunID)
+	if !errors.Is(err, runtime.ErrRunInterrupted) {
 		r.fireCompletionNotifier(msg)
 		r.fireOutcomeEvent(msg, err)
 	}
@@ -986,35 +955,9 @@ func (r *Runner) processOne(parent context.Context, delivery *natsq.Delivery) {
 		return
 	}
 
-	// Promote the engine's `cancelled` write to `failed_resumable` so the
-	// nak's redelivery reconciliation auto-resumes from the checkpoint
-	// instead of dropping the run (see execOutcome.promoteResumable).
-	if outcome.promoteResumable {
-		r.promoteCancelledToResumable(msg, outcome.op)
-	}
 	logAt(logger, outcome.level, outcome.logFmt, outcome.logArgs...)
 	finalStatus = outcome.finalStatus
 	dispatchTerminal(logger, delivery, outcome.action, outcome.op, msg.RunID)
-}
-
-// promoteCancelledToResumable CAS-flips a run the engine just checkpointed
-// as `cancelled` (on ctx cancel) to `failed_resumable`, the status the
-// runner's redelivery reconciliation converts back into an auto-resume
-// (resolveDeliveryPreconditions). Used for the non-operator interruptions
-// — runner shutdown drain and heartbeat loss — where the nak is meant to
-// bring the run back, not strand it for a manual resume. Mirrors the
-// DLQ-park status flip in parkOnDLQOnFinalDelivery. Best-effort: a failed
-// flip leaves the run `cancelled` (the pre-existing behaviour), logged at
-// warn. The CAS guard ([cancelled]) makes it a no-op if the engine wrote a
-// different status (e.g. the checkpoint write was itself interrupted and
-// the run stayed `running` — the orphan sweeper covers that case).
-func (r *Runner) promoteCancelledToResumable(msg *queue.RunMessage, op string) {
-	sctx := store.WithIdentity(context.Background(), msg.TenantID, msg.OwnerID)
-	if _, err := r.cfg.Store.UpdateRunStatusIf(sctx, msg.RunID, store.RunStatusFailedResumable,
-		"interrupted before completion ("+op+") — resuming from checkpoint",
-		[]store.RunStatus{store.RunStatusCancelled}); err != nil {
-		r.cfg.Logger.Warn("runner: promote %s to failed_resumable for %s: %v", msg.RunID, op, err)
-	}
 }
 
 // startProcessSpan builds the runner-side OTel root span for this

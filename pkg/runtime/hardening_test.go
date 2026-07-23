@@ -78,6 +78,71 @@ func TestCancelProducesCancelledStatus(t *testing.T) {
 	}
 }
 
+// TestInterruptedCauseProducesResumableStatus pins the cause-threaded
+// engine write: a run whose context is cancelled with ErrRunInterrupted as
+// the cause (an infra interruption — runner drain / lost heartbeat) is
+// written failed_resumable and returns ErrRunInterrupted, NOT cancelled.
+// This is what lets a cloud runner's drained run auto-resume without a
+// runner-side status CAS, and without a misleading run_cancelled event.
+func TestInterruptedCauseProducesResumableStatus(t *testing.T) {
+	wf := &ir.Workflow{
+		Name:  "interrupt_status_test",
+		Entry: "step",
+		Nodes: map[string]ir.Node{
+			"step": &ir.AgentNode{BaseNode: ir.BaseNode{ID: "step"}},
+			"done": &ir.DoneNode{BaseNode: ir.BaseNode{ID: "done"}},
+		},
+		Edges:   []*ir.Edge{{From: "step", To: "done"}},
+		Schemas: map[string]*ir.Schema{},
+		Prompts: map[string]*ir.Prompt{},
+		Vars:    map[string]*ir.Var{},
+		Loops:   map[string]*ir.Loop{},
+	}
+
+	// Cancel with the interrupted cause BEFORE running, mirroring a runner
+	// drain that cancels the run context via context.CancelCause. Wrap it in
+	// a WithTimeout child exactly like the runner's executeRun does (msg
+	// TimeoutSec) — the cause must still propagate to context.Cause(rs.ctx)
+	// through that child, or the engine would fall back to `cancelled`.
+	base, cancel := context.WithCancelCause(context.Background())
+	cancel(ErrRunInterrupted)
+	ctx, timeoutCancel := context.WithTimeout(base, time.Hour)
+	defer timeoutCancel()
+
+	exec := newStubExecutor()
+	s := tmpStore(t)
+	eng := New(wf, s, exec)
+
+	err := eng.Run(ctx, "run-interrupted", nil)
+	if !errors.Is(err, ErrRunInterrupted) {
+		t.Fatalf("expected ErrRunInterrupted, got: %v", err)
+	}
+	if errors.Is(err, ErrRunCancelled) {
+		t.Error("interrupted run must NOT classify as ErrRunCancelled")
+	}
+
+	r, err := s.LoadRun(context.Background(), "run-interrupted")
+	if err != nil {
+		t.Fatalf("load run: %v", err)
+	}
+	if r.Status != store.RunStatusFailedResumable {
+		t.Errorf("expected status failed_resumable, got %s", r.Status)
+	}
+	if r.Checkpoint == nil {
+		t.Error("expected a checkpoint preserved for resume")
+	}
+
+	events, err := s.LoadEvents(context.Background(), "run-interrupted")
+	if err != nil {
+		t.Fatalf("load events: %v", err)
+	}
+	for _, evt := range events {
+		if evt.Type == store.EventRunCancelled {
+			t.Error("interrupted run must NOT emit a run_cancelled event (misleading)")
+		}
+	}
+}
+
 // ---------------------------------------------------------------------------
 // Test: context cancellation mid-execution cancels cleanly
 // ---------------------------------------------------------------------------
