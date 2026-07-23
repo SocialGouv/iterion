@@ -24,7 +24,7 @@ linked references.
 | Orchestration | Agent, judge, router, human, tool, compute, emit, wait, sub-bot, done, and fail behavior; structured I/O; explicit loops; downstream convergence; reusable groups and iteration. |
 | Local operation | CLI, browser studio, Wails desktop app, file-backed run store, native kanban, run console, live operator messages/overrides, and a local post-mortem shell for preserved worktrees. |
 | Execution | In-process multi-provider `claw`, Claude Code, Kimi Code, and Grok Build backends. The Codex delegate remains only as a deprecated compatibility path. |
-| Isolation and policy | Git worktrees, opt-in Docker/Podman/Kubernetes sandboxes, opt-in network policies, tool permissions, sealed secrets, budget enforcement, and resumable checkpoints. |
+| Isolation and policy | Git worktrees, default-on Docker/Podman/Kubernetes sandboxes, opt-in network policies, tool permissions, sealed secrets, budget enforcement, and resumable checkpoints. |
 | Reuse and extension | Bundles, recipes/presets, project/global skills, plugins, MCP servers, marketplace entries, command-output rewriters, and bot/repository `devbox.json` toolchains. |
 | Automation | Host schedules, tracker dispatcher, native-board events, run-completion chains, forge/generic webhooks, and the event-driven trigger spine. |
 | Cloud control plane | Organization → team tenancy, SSO/password auth, PATs, BYOK and bound secrets, audit and quotas, repo-first forge integrations, NATS-queued runners, MongoDB/S3 persistence, and the typed `iterion remote` CLI. |
@@ -123,8 +123,13 @@ matrix.
 
 The security posture is explicit rather than implied:
 
-- A sandbox is **not enabled globally by default**. A workflow, launch flag, or
-  environment setting must select `sandbox: auto` or an inline sandbox spec.
+- A sandbox is **on by default** at the product entry points (`iterion
+  run`/`resume`, studio, dispatcher): a workflow with no `sandbox:` block runs
+  as `sandbox: auto` (reads `.devcontainer/devcontainer.json`, falling back to
+  the published `iterion-sandbox-slim` image), degrading gracefully when the
+  host can't sandbox. Opt out per-workflow with `sandbox: none`, or machine-wide
+  with `ITERION_SANDBOX_DEFAULT=none`. Embedded `Engine` instances stay neutral
+  unless the caller sets a default.
 - When a sandbox is active, its network mode defaults to **`open`**. An
   `allowlist` or `denylist` starts the CONNECT proxy; the `iterion-default`
   preset is a curated starting point, not the default policy.
