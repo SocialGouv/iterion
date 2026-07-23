@@ -18,15 +18,18 @@ neither (Nexie, Evoly) stay out of the picker.
 
 ```yaml
 invocations:
-  - kind: forge | command | schedule | board   # required, closed set
+  - kind: forge | command | schedule | board | keepalive   # required, closed set
     mode: direct | board                        # optional, default direct
     args_var: <workflow var>                    # optional: where the trigger payload lands
     context_vars: { k: v }                       # optional: vars stamped on every run from this path
     # exactly one payload block, selected by kind:
-    forge:    { event: pull_request | pull_request_comment, actions: [opened, reopened] }
+    forge:    { event: pull_request | pull_request_comment | issue_labeled, actions: [opened, reopened] }
     command:  { name: featurly, aliases: [feature-dev], scope: pr|issue|any,
                 min_replier_role: maintainer, disambiguator: when_args_empty|when_args_present }
     schedule: { suggested_cron: "0 2 * * 1", default_vars: { k: v } }
+    board:    { on: [card.moved], to_states: [ready], all_labels: [triage:auto],
+                consume_labels: false }          # optional; empty = plain dispatcher target
+    keepalive:{ interval: 5m, stale_after: 15m, default_vars: { k: v } }
 ```
 
 Validation runs at manifest parse time (`bundle.validateInvocations`): unknown
@@ -41,19 +44,35 @@ a var the bot's workflow does not declare.
 - **`command`** — a `/slash-command` in a PR/MR/issue comment. The universal
   manual trigger, on all three forges (GitLab notes, GitHub/Forgejo
   `issue_comment`). Resolved through the per-webhook command map.
-- **`schedule`** — a suggested cron the Integrations UI proposes. *(Cloud
-  scheduler not yet wired — the suggestion shows but does not fire; see P3.)*
-- **`board`** — a dispatcher target: an issue whose `Bot` is this bot is picked
-  up and run.
+- **`schedule`** — a suggested cron the Integrations UI proposes. In cloud
+  mode the `cloudsched` CAS ticker fires due schedules
+  ([pkg/cloudsched](../pkg/cloudsched/ticker.go), wired in
+  `pkg/server/server_lifecycle.go`); self-hosted uses `iterion schedule` on
+  the host crontab.
+- **`board`** — a native-board trigger. With no `board:` block the bot is a
+  plain dispatcher target (an issue whose `Bot` is this bot is picked up and
+  run). A `board:` block (`on`/`to_states`/`all_labels`) fires the bot the
+  moment a matching card transition lands (via a derived
+  `trigger.Subscription`) instead of waiting for the poll; `consume_labels:
+  true` (with `mode: direct`) strips the matched labels atomically so they act
+  as a one-shot, re-armable trigger.
+- **`keepalive`** — always-on: a fresh, individually-budgeted run relaunches
+  every `interval` with at-most-one-live semantics (a run silent past
+  `stale_after` is reaped, not stacked). Sub-minute cadence needs the resident
+  in-process scheduler (host crontab floors at 1m).
 
 ## Execution mode
 
 - **`direct`** — launch the run immediately (the Revi path: webhook → publisher
   → queue → runner). For fast / read-only / PR-bound work.
-- **`board`** — *intended* to materialise a kanban issue assigned to the bot
-  and let the dispatcher run it (tracked, retryable, supports human gates). In
-  the current build a `board` command still launches **directly** — full
-  board-issue materialisation + the cloud board land in a later phase.
+- **`board`** — materialises a tracking kanban card for the bot and, when a
+  cloud board + dispatcher are present, lets the dispatcher own execution and
+  state transitions (tracked, retryable, human gates) — no direct launch, so
+  the card can't run twice (`ensureBoardCard` in
+  [pkg/server/invocation_dispatch.go](../pkg/server/invocation_dispatch.go)).
+  With a cloud board but no dispatcher it creates a tracking card **and**
+  launches directly; with no cloud board at all it falls back to a plain
+  direct launch.
 
 ## Slash-command routing
 
@@ -119,9 +138,9 @@ connected repo:
    role ≥ the bot's `min_replier_role` (maintainer for mutating bots).
 4. Observe: the delivery is recorded (studio webhook deliveries), the gate
    authorizes the commenter, and a feature-dev run launches with
-   `feature_prompt = "add a healthcheck endpoint"`. In cloud the run launches
-   directly (board-issue tracking lands with the cloud dispatcher); self-hosted
-   with the dispatcher running materialises a board card.
+   `feature_prompt = "add a healthcheck endpoint"`. With a cloud board +
+   dispatcher the command materialises a tracking card the dispatcher runs;
+   without a dispatcher (or a board) it launches directly.
 5. Validate the path with a READ-ONLY command first: `/seki` (sec-audit-source)
    or `/revi` (review) don't mutate code. Contain side-effects by enabling on a
    throwaway repo. The binary is `CGO_ENABLED=0` (static) so it runs inside the
