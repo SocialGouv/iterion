@@ -68,7 +68,8 @@ The runtime resolves each setting like so:
    range is dropped at runtime). Within range, if the cursor has
    `bands:`, return the prompt of the first band whose `[lo, hi]`
    contains the value. If it has `values:` only, snap to the enum
-   position by `floor(v * len)`.
+   position by `min(floor(v * len), len-1)` — the clamp maps the
+   boundary `v == 1.0` to the last entry rather than out of range.
 4. **Enum path**: look up the value by name against the cursor's
    `values:` list. Misses fail at compile time (`C084`).
 
