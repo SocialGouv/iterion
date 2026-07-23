@@ -1059,6 +1059,8 @@ iterion import <workflow.js> [--out] [--name] [--dry-run]  # Lossy Claude-Code w
 iterion run <file.bot> [flags]         # Execute workflow (--var, --recipe, --timeout, --store-dir, --merge-into, --branch-name, --compress, --max-cost-usd, --max-tokens, --max-duration, --max-iterations, --max-parallel-branches)
 iterion inspect [--run-id] [--events]   # View run state and events
 iterion runs prune [--store-dir] [--older-than 720h] [--keep-last N] [--status finished,failed,cancelled] [--dry-run]  # Delete old runs (pair with `iterion schedule` for retention; docs/scheduling.md)
+iterion runs questions <run-id> [--store-dir]   # List a run's pending async (ask_user_async) questions
+iterion runs answer <run-id> <interaction-id> <answer> [--store-dir]  # Answer one pending async question (non-blocking; ADR-081)
 iterion resume --run-id --file [--answers-file] [--force]  # Resume paused/failed/cancelled run
 iterion fork --run-id <parent> --node <id> [--turn N] [--rewind-code]  # Fork a run at a prior LLM turn (resume with `iterion resume`)
 iterion diagram <file.bot> [--view]    # Generate Mermaid diagram (compact|detailed|full)

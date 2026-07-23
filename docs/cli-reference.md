@@ -188,6 +188,22 @@ iterion runs prune --older-than 168h --keep-last 100
 
 Default retention deletes `finished`, `failed`, and `cancelled` runs older than 720 hours. `failed_resumable` requires explicit inclusion via `--status`. Only `<store-dir>/runs/` is touched; worktrees are not removed.
 
+### `iterion runs questions` / `iterion runs answer`
+
+```bash
+iterion runs questions <run-id>
+iterion runs answer <run-id> <interaction-id> "<answer>"
+```
+
+Inspect and answer the **non-blocking** questions an agent posts with the
+`ask_user_async` tool (`interaction: async`, ADR-081 — see
+[async-interaction.md](async-interaction.md)). `runs questions` lists the
+still-unanswered questions of a run; `runs answer` records one answer and
+queues it for delivery to the asking node's inbox — the running agent picks
+it up at its next turn boundary and the run never has to pause. Both take
+`--store-dir` (default `.iterion`). For a run **paused** on a blocking
+question, use `iterion resume --answer` instead.
+
 ## Bot creation, discovery, and extension distribution
 
 ### `iterion bots`
