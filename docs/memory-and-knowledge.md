@@ -53,8 +53,8 @@ Two levels, both enforced at write:
 `DefaultMaxDocumentSize` caps any one markdown document at 2 MiB
 ([pkg/knowledge/quota.go](../pkg/knowledge/quota.go)).
 
-`GET /api/teams/{id}/usage` surfaces the org's `memory_used_bytes`
-against `effective_memory_quota_bytes` for the org admin; the per-space
+`GET /api/orgs/{id}/usage` surfaces the org's `memory_used_bytes`
+against `effective_memory_quota_bytes` for the org member; the per-space
 write CAS is what actually blocks an over-budget write.
 
 ## REST surface
