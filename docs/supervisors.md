@@ -30,7 +30,8 @@ The coordinator (`pkg/supervise`) subscribes to the run's event stream
 supervisor bot on:
 
 - **turn boundaries** (`llm_step_finished` / `node_finished` /
-  `node_started`), debounced and rate-limited by a cooldown, and
+  `node_started` / `run_paused`), debounced and rate-limited by a
+  cooldown, and
 - **monitor matches** — event patterns the bot registers interest in
   (a Bash failure, an edit to a path, a cost threshold), which fire
   immediately, bypassing the cooldown.
@@ -90,13 +91,16 @@ Flags:
 
 | flag | meaning |
 |------|---------|
-| `--run-id` | the run to supervise (required) |
+| `--run-id` | the iterion run to supervise (this OR `--claude-session`) |
+| `--claude-session` | supervise a raw Claude Code session — its cwd (directory) or session id |
 | `--node` | agent node id(s) to watch (repeatable; empty = whole run) |
+| `--name` | supervisor name, shown in injected messages (`[supervisor <name>]`) and logs |
 | `--system` | supervision policy text, or `@path` to read it from a file |
 | `--model` | supervisor model spec; default auto-detect or `ITERION_DEFAULT_SUPERVISOR_MODEL` |
 | `--monitor` | pre-declared monitor `key=val,key=val` (repeatable). Keys: `event_type`, `node_id`, `tool_name`, `text_contains`, `cost_gt` |
 | `--cooldown` | min time between LLM evals on turn boundaries (default 30s) |
 | `--max-evals` | hard cap on LLM evaluations for the run (default 20) |
+| `--store-dir` | override the iterion store directory |
 
 The supervisor blocks until the run terminates or you Ctrl-C to detach.
 Because it observes via the shared store, it works against a run launched
@@ -130,8 +134,10 @@ iterion supervise --claude-session /path/to/repo \
   --monitor event_type=tool_error,tool_name=Bash
 ```
 
-iterion finds the active transcript
-(`~/.claude/projects/<key>/<sessionId>.jsonl`), tails it, and when the
+The argument is either the session's cwd (a repo directory, resolved to
+its active session) or a session id directly. iterion finds the
+transcript (`~/.claude/projects/<key>/<sessionId>.jsonl`), tails it, and
+when the
 supervisor decides to intervene it writes to an iterion-owned inbox
 (`~/.iterion/claude-sessions/<key>/`); the installed hook drains it and
 injects the message at the session's next tool/stop boundary. Raw
