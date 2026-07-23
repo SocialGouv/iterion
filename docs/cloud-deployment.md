@@ -167,34 +167,36 @@ short round-trip timeout rather than blocking the request path.
 ## NetworkPolicy egress
 
 `values-prod.yaml` ships with `networkPolicy.enabled=true` + an empty
-`extraAllow` so the cluster default-denies egress except DNS. Add
-explicit rules for Mongo, NATS, S3, and the LLM provider:
+`networkPolicy.egress.extraAllow` so the cluster default-denies egress
+except DNS. Add explicit rules for Mongo, NATS, S3, and the LLM
+provider (the allowlist is nested under `egress`):
 
 ```yaml
 networkPolicy:
   enabled: true
-  extraAllow:
-    # In-cluster Mongo (same namespace)
-    - to:
-        - podSelector:
-            matchLabels:
-              app.kubernetes.io/name: mongodb
-      ports:
-        - protocol: TCP
-          port: 27017
-    # External LLM provider (Anthropic)
-    - to:
-        - ipBlock:
-            cidr: 0.0.0.0/0
-      ports:
-        - protocol: TCP
-          port: 443
+  egress:
+    extraAllow:
+      # In-cluster Mongo (same namespace)
+      - to:
+          - podSelector:
+              matchLabels:
+                app.kubernetes.io/name: mongodb
+        ports:
+          - protocol: TCP
+            port: 27017
+      # External LLM provider (Anthropic)
+      - to:
+          - ipBlock:
+              cidr: 0.0.0.0/0
+        ports:
+          - protocol: TCP
+            port: 443
 ```
 
 The chart synthesises a single egress block from the union of
-defaults + `extraAllow`. There is no auto-detection of bundled
+defaults + `egress.extraAllow`. There is no auto-detection of bundled
 sub-charts; if you also bundle Mongo via `mongodb.enabled`, add the
-matching `extraAllow` entry.
+matching `egress.extraAllow` entry.
 
 ## NATS monitoring endpoint (KEDA)
 
@@ -217,7 +219,8 @@ config:
 ## Metrics & dashboards
 
 The server + runner expose `/metrics` on `:9090` (configurable via
-`config.metrics.port`). Counters/gauges are documented at
+`server.metricsPort` / `runner.metricsPort`, or the `ITERION_METRICS_PORT`
+env var). Counters/gauges are documented at
 [pkg/cloud/metrics/metrics.go](../pkg/cloud/metrics/metrics.go) and
 populated at runtime:
 
@@ -261,7 +264,7 @@ Configure the OTLP exporter via standard env vars:
 
 ```yaml
 config:
-  env:
+  extraEnv:
     OTEL_EXPORTER_OTLP_ENDPOINT: "http://tempo.observability:4318"
     OTEL_SERVICE_NAMESPACE: "iterion"
     OTEL_RESOURCE_ATTRIBUTES: "deployment.environment=prod"
