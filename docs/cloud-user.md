@@ -165,7 +165,7 @@ you leave the pinned team. The operator may cap token lifetimes
 `/teams/<id>` → Usage shows the month's consumption against your org's
 limits: runs vs quota, metered LLM cost vs cap, live concurrency,
 webhook calls, memory bytes, key/secret/webhook counts. The same data
-is at `GET /api/teams/{id}/usage`. Denial semantics when a cap is hit:
+is at `GET /api/orgs/{id}/usage`. Denial semantics when a cap is hit:
 [quotas-and-limits.md](quotas-and-limits.md).
 
 ## 9. Common errors
