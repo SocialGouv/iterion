@@ -112,7 +112,8 @@ server configuration defaults unless an embedder wires explicit
 
 The default MIME allowlist covers `image/{png,jpeg,gif,webp}`,
 `application/{pdf,json,zip,gzip,x-tar}`, `text/{plain,markdown,csv}`,
-and `application/yaml`. The `GET /api/server/info` endpoint returns
+`application/yaml`, and `application/octet-stream` (the fallback for
+files whose type can't be sniffed). The `GET /api/server/info` endpoint returns
 the resolved limits so the SPA can surface them before any byte
 leaves the browser.
 
