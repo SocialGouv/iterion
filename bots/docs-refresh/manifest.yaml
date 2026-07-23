@@ -1,7 +1,27 @@
 name: docs-refresh
 display_name: Doki
 icon: 📚
-version: 3.1.0
+version: 3.2.0
+## 3.2.0 — SELF-ORCHESTRATED COVERAGE (the campaign fans out its own
+## sub-agents, like a native Claude Code session). A live 3-way
+## benchmark (2026-07-23, this repo) settled why 3.0/3.1 shipped tiny
+## PRs: a SINGLE campaign agent — like a free native agent on the same
+## one-liner — self-scopes to the headline docs and misses the long
+## tail. The three runs, by rising coverage: Doki (~3 commits/pass,
+## docs/ only) < native one-liner (6 fixes, docs/ only, missed cloud +
+## bot READMEs) < native with a demanding prompt (reached the WHOLE
+## corpus — bot READMEs describing pre-migration architectures, cloud
+## docs with wrong NATS values + a subsystem documented as
+## nonexistent, studio). The one run that got there DECOMPOSED into
+## per-cluster sub-auditors ON ITS OWN. So the lever is COVERAGE via
+## the agent's own orchestration — not a mechanical checklist (3.1
+## rejected), not engine-wired fan-out (that's scaffolding). The fix:
+## give the campaign the capability — reasoning_effort ultracode on
+## opus-4-8 hands it the `agent` subagent tool + orchestration
+## prerogative — and one line telling it to cover the whole corpus,
+## fanning out by cluster on a large repo. Verdict on the corpus: docs
+## ~85-90% aligned (well-maintained), real ~30-item long tail, worst
+## in bot READMEs. Lean brief + asymptote loop + truth gates unchanged.
 ## 3.1.0 — LEAN COMPREHENSIVE BRIEF + asymptote on the agent's honest
 ## declaration (no mechanical checklist, no mandated plan phase). The
 ## 3.0 campaign was fast and cheap but UNDER-delivered: it handled the

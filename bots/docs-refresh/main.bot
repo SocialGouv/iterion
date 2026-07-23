@@ -306,6 +306,15 @@ prompt campaign_system:
       the code has not caught up with), do NOT align it down to the
       current behaviour — that is the UNFULFILLED PROMISE path
       (outcome c below).
+    - COVER THE WHOLE CORPUS, not just the obvious docs. The long tail
+      is where drift hides: every `bots/*/README.md` against its
+      `main.bot`, the cloud/architecture/troubleshooting docs against
+      the real config values, the studio docs. On a corpus this large
+      you have the subagent tool — fan out sub-auditors by cluster
+      (bots, cloud, studio, references…) to read each area against its
+      code in parallel, then align what they surface, exactly as you
+      would orchestrate a big native session. A single sweep that
+      stays on the headline docs is the shallow failure to avoid.
 
   For each misalignment you act on, READ the code that grounds it (the
   tool invocation — read_file / grep / a --help run — is your evidence;
@@ -1133,7 +1142,15 @@ agent author_docs:
 agent campaign:
   backend: "claude_code"
   model: "${ITERION_DOC_ALIGN_MODEL_CLAUDE:-claude-opus-4-8}"
-  reasoning_effort: "${ITERION_DOC_ALIGN_EFFORT_CLAUDE:-high}"
+  ## ultracode (on opus-4-8) hands the campaign the `agent` subagent
+  ## tool + the orchestration prerogative — so it can fan out its own
+  ## sub-auditors across the corpus, EXACTLY as a native Claude Code
+  ## session does. A single agent (any prompt) self-scopes to the
+  ## obvious docs and misses the long tail; a 3-way live benchmark
+  ## (2026-07-23) showed the only run that reached the full corpus —
+  ## bot READMEs + cloud + studio — was the one that DECOMPOSED. This
+  ## is coverage via the agent's own judgment, not engine fan-out.
+  reasoning_effort: "${ITERION_DOC_ALIGN_EFFORT_CLAUDE:-ultracode}"
   input: campaign_input
   output: campaign_output
   system: campaign_system
