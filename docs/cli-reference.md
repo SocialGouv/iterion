@@ -354,9 +354,10 @@ Strict mode resolves workflow/CLI sandbox settings and exits non-zero for driver
 ```bash
 iterion server --config cloud.yaml --bind 0.0.0.0 --port 4891
 iterion runner --config cloud.yaml
+iterion server webpush-keys        # mint a VAPID keypair for Web Push
 ```
 
-`server` uses local in-process mode by default and cloud control-plane mode under `ITERION_MODE=cloud`. `runner` consumes NATS run messages and persists through MongoDB/S3. See [cloud deployment](cloud-deployment.md).
+`server` uses local in-process mode by default and cloud control-plane mode under `ITERION_MODE=cloud`. `runner` consumes NATS run messages and persists through MongoDB/S3. The `server webpush-keys` subcommand prints a fresh VAPID public/private pair for the `ITERION_WEBPUSH_VAPID_{PUBLIC,PRIVATE}_KEY` env vars that enable user notifications ([notifications](notifications.md)). See [cloud deployment](cloud-deployment.md).
 
 ## State, knowledge, and supervision
 
