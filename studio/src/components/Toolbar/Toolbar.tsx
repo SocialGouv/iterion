@@ -108,6 +108,7 @@ export default function Toolbar() {
   // and returns stable callbacks; the Toolbar stays a layout shell.
   const ops = useDocumentFileOps({ confirm });
   const {
+    readOnly,
     loading,
     showSaveDialog,
     setShowSaveDialog,
@@ -261,10 +262,16 @@ export default function Toolbar() {
           size="sm"
           leadingIcon={<DownloadIcon />}
           onClick={handleSave}
-          disabled={!document}
-          title={currentFilePath ? `Save to ${currentFilePath} (Ctrl+S)` : "Save as… (Ctrl+S)"}
+          disabled={!document || readOnly}
+          title={
+            readOnly
+              ? "Read-only catalog bot — use “Duplicate & edit” to make an editable copy"
+              : currentFilePath
+                ? `Save to ${currentFilePath} (Ctrl+S)`
+                : "Save as… (Ctrl+S)"
+          }
         >
-          {currentFilePath ? "Save" : "Save As"}
+          {readOnly ? "Read-only" : currentFilePath ? "Save" : "Save As"}
         </Button>
       </ToolbarGroup>
 
