@@ -97,6 +97,7 @@ the staging step alone and prints the upload id.
 | `labels` / `board` | `list · rename · merge · delete` / `get · set` |
 | `dispatcher` | `status · state · start · stop · pause · resume · refresh · reload · config · issue · cancel` |
 | `triggers` | `list · get · create · update · delete · emit` |
+| `schedules` | `list · create · delete` (team-scoped cloud recurring-bot schedules) |
 | `teams` | `list · create · switch · members · invitations` |
 | `orgs` | `list · switch · members · invitations · usage · teams` |
 | `me` | `password · sessions-revoke-all · sso-links` |
