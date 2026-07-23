@@ -134,6 +134,25 @@ const initialBrowserState: BrowserPaneState = {
   liveSession: null,
 };
 
+// ResultLink is a run's headline deliverable — an opened pull request, a
+// live deployment, a published app — surfaced as a prominent clickable
+// link in the run summary (RunHeader's ResultLinksRow), like a CI run's
+// "View deployment" button. Distinct from the embeddable Browser pane: a
+// PR page blocks iframing, so it lives here as a link only. Derived purely
+// from `preview_url_available` events whose `kind` is a result kind
+// (RESULT_LINK_KINDS), so a reloaded terminal run reconstructs the list by
+// replaying its event log — level-triggered, never live-only.
+export interface ResultLink {
+  url: string;
+  // "pr" | "deploy" | "app" today, kept a plain string so a new
+  // deterministic emitter can add a kind with no store change.
+  kind: string;
+  scope: PreviewScope;
+  // Event seq that produced/last-classified this url. Stable identity +
+  // sort key (ascending = discovery order).
+  seq: number;
+}
+
 // InFlightTool tracks a tool call the engine has reported as started but
 // not yet completed. Populated on `tool_started`, cleared on
 // `tool_called` / `tool_error` (matched by toolUseID when present,
@@ -282,6 +301,10 @@ export interface RunStoreState {
   followTail: boolean;
   log: RunLogState;
   browser: BrowserPaneState;
+  // Headline result-links (opened PR, live deploy, …), deduped by url,
+  // in discovery order. Event-derived (see ResultLink); rebuilt on reload
+  // from the replayed event log alongside `browser`.
+  resultLinks: ResultLink[];
   // Increments to request a fresh WS dial. The broker drops a run's
   // subscribers on terminal status (pkg/runview/service.go: CloseRun),
   // so after Resume the still-open WS conn no longer receives events
@@ -397,6 +420,7 @@ function freshInitial() {
     followTail: true,
     log: initialLogState,
     browser: initialBrowserState,
+    resultLinks: [] as ResultLink[],
     wsReconnectToken: 0,
     uiOpenEventLogToken: 0,
   };
@@ -492,6 +516,7 @@ export function createRunStore() {
           snapshot: snap,
           pendingHumanInput: rehydrated,
           browser: state.browser,
+          resultLinks: state.resultLinks,
           queuedMessages: state.queuedMessages,
         },
         newerEvents,

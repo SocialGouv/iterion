@@ -33,6 +33,7 @@ import FinalizationRow from "./runHeader/FinalizationRow";
 import ForkedFromRow from "./runHeader/ForkedFromRow";
 import RunChildrenPanel from "./runHeader/RunChildrenPanel";
 import NotesRow from "./runHeader/NotesRow";
+import ResultLinksRow from "./runHeader/ResultLinksRow";
 import RunNameEditor from "./runHeader/RunNameEditor";
 import RunTagsRow from "./runHeader/RunTagsRow";
 import SourceTicketRow from "./runHeader/SourceTicketRow";
@@ -54,6 +55,9 @@ interface Props {
 export default function RunHeader({ run, active, wsState, onResetLayout, bare = false }: Props) {
   const requestWsReconnect = useRunStore((s) => s.requestWsReconnect);
   const applySnapshot = useRunStore((s) => s.applySnapshot);
+  // Headline result-links (opened PR, live deploy) derived from the run's
+  // preview_url events — rebuilt on reload from the replayed event log.
+  const resultLinks = useRunStore((s) => s.resultLinks);
   const { busy, error, run: runAction, setError } = useAsyncAction();
   const [resumeOpen, setResumeOpen] = useState(false);
   const [forkOpen, setForkOpen] = useState(false);
@@ -422,6 +426,10 @@ export default function RunHeader({ run, active, wsState, onResetLayout, bare = 
       {liveStreamExpected && (
         <WSDisconnectBanner state={wsState} onReconnect={requestWsReconnect} />
       )}
+      {/* Headline result-links (opened PR, live deploy) — the run's
+          "what did it produce" at a glance, the topmost outcome bar above
+          the detailed deployment/finalization rows. */}
+      <ResultLinksRow links={resultLinks} />
       {/* What the run shipped, above where its commits landed: the live
           URL is the operator's destination at the end of a deploy run. */}
       {run.deployment && <DeploymentRow deployment={run.deployment} />}

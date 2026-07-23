@@ -79,6 +79,7 @@ beforeEach(() => {
       screenshots: [],
       liveSession: null,
     },
+    resultLinks: [],
   } as never);
 });
 
@@ -833,5 +834,116 @@ describe("applyLogChunk — byte-keyed overlap/dedup", () => {
     const log = runStore.getState().log;
     expect(log.text).toBe("🔧abcd"); // no dup of "bc", "d" appended
     expect(log.nextByte).toBe(8);
+  });
+});
+
+// previewEvent builds a preview_url_available event as the runtime emits
+// one from a tool node's `[iterion] preview_url=…` stdout directive.
+function previewEvent(
+  seq: number,
+  url: string,
+  kind?: string,
+  scope: "internal" | "external" = "external",
+): RunEvent {
+  return {
+    seq,
+    timestamp: ts(seq),
+    type: "preview_url_available",
+    run_id: "run_test",
+    branch_id: "main",
+    node_id: "surface_pr_link",
+    data: { url, kind, scope, source: "tool-stdout" },
+  };
+}
+
+describe("applyEventsBatch — result-links (headline PR/deploy surfacing)", () => {
+  it("captures a kind=pr preview_url as a visible result-link", () => {
+    runStore.getState().applyEventsBatch([
+      previewEvent(1, "https://github.com/o/r/pull/7", "pr"),
+    ]);
+    const { resultLinks } = runStore.getState();
+    expect(resultLinks).toHaveLength(1);
+    expect(resultLinks[0]).toMatchObject({
+      url: "https://github.com/o/r/pull/7",
+      kind: "pr",
+      scope: "external",
+    });
+  });
+
+  it("does NOT embed a PR link in the Browser pane (GitHub blocks iframing)", () => {
+    runStore.getState().applyEventsBatch([
+      previewEvent(1, "https://github.com/o/r/pull/7", "pr"),
+    ]);
+    const { browser } = runStore.getState();
+    // The PR surfaces as a result-link, never as the pane's currentUrl…
+    expect(browser.currentUrl).toBeNull();
+    // …but the seen-seq still advances so the pane's auto-reveal logic
+    // stays consistent.
+    expect(browser.lastEventSeqSeen).toBe(1);
+  });
+
+  it("keeps an embeddable deploy URL in the Browser pane AND as a result-link", () => {
+    runStore.getState().applyEventsBatch([
+      previewEvent(1, "https://app.example.com", "deploy"),
+    ]);
+    const st = runStore.getState();
+    expect(st.browser.currentUrl).toBe("https://app.example.com");
+    expect(st.browser.kind).toBe("deploy");
+    expect(st.resultLinks).toHaveLength(1);
+    expect(st.resultLinks[0]).toMatchObject({ kind: "deploy" });
+  });
+
+  it("does NOT capture a non-result kind (dev-server) as a result-link", () => {
+    runStore.getState().applyEventsBatch([
+      previewEvent(1, "http://localhost:5173", "dev-server"),
+    ]);
+    const st = runStore.getState();
+    expect(st.resultLinks).toHaveLength(0);
+    // …but it still drives the Browser pane.
+    expect(st.browser.currentUrl).toBe("http://localhost:5173");
+  });
+
+  it("holds both a deploy and a PR link, deduped by url, in discovery order", () => {
+    // app-dev shape: deploy surfaces first, the PR after the MR tail.
+    runStore.getState().applyEventsBatch([
+      previewEvent(1, "https://app.example.com", "deploy"),
+      previewEvent(2, "https://github.com/o/r/pull/7", "pr"),
+      // A duplicate PR directive (idempotent re-run) must not double it.
+      previewEvent(3, "https://github.com/o/r/pull/7", "pr"),
+    ]);
+    const { resultLinks } = runStore.getState();
+    expect(resultLinks.map((l) => l.kind)).toEqual(["deploy", "pr"]);
+    expect(resultLinks.map((l) => l.url)).toEqual([
+      "https://app.example.com",
+      "https://github.com/o/r/pull/7",
+    ]);
+  });
+
+  it("reconstructs result-links on a reloaded terminal run (event-log replay)", () => {
+    // A finished run: cold-loaded snapshot at the final seq, then the full
+    // event log hydrated via loadEventHistoryIfMissing (applyEventsBatch).
+    const finished = {
+      ...baseRun,
+      status: "finished",
+    } as unknown as RunHeader;
+    runStore.getState().applySnapshot({ run: finished, executions: [], last_seq: 3 });
+    // Snapshots carry no result-links; the replayed history rebuilds them.
+    expect(runStore.getState().resultLinks).toHaveLength(0);
+    runStore.getState().applyEventsBatch([
+      nodeStarted("finalize_mr", 1),
+      nodeFinished("finalize_mr", 2),
+      previewEvent(3, "https://github.com/o/r/pull/7", "pr"),
+    ]);
+    const { resultLinks } = runStore.getState();
+    expect(resultLinks).toHaveLength(1);
+    expect(resultLinks[0]).toMatchObject({
+      url: "https://github.com/o/r/pull/7",
+      kind: "pr",
+    });
+  });
+
+  it("ignores an empty-url preview event", () => {
+    runStore.getState().applyEventsBatch([previewEvent(1, "", "pr")]);
+    expect(runStore.getState().resultLinks).toHaveLength(0);
   });
 });

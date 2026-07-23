@@ -15,6 +15,7 @@ import type {
   PreviewScope,
   QueuedMessageStatus,
   QueuedUserMessage,
+  ResultLink,
   RunStoreState,
   TodoListSnapshot,
 } from "../run";
@@ -159,7 +160,32 @@ type ReduceInput = Pick<
   | "pendingHumanInput"
   | "queuedMessages"
   | "browser"
+  | "resultLinks"
 >;
+
+// RESULT_LINK_KINDS are the preview_url `kind` values that a run
+// advertises as a headline deliverable in its summary (RunHeader's
+// ResultLinksRow) rather than (or in addition to) the embeddable Browser
+// pane. A "pr" is a link only — GitHub/GitLab block iframing — while
+// "deploy"/"app" are live sites that keep the Browser pane too.
+const RESULT_LINK_KINDS: ReadonlySet<string> = new Set(["pr", "deploy", "app"]);
+
+// upsertResultLink folds one link into the deduped-by-url list. A new url
+// appends (preserving discovery order); a known url updates its kind/scope
+// only when they actually changed (a later, more specific classification
+// wins). Returns the SAME array reference when nothing changed so the
+// reducer's identity check skips a needless re-render.
+function upsertResultLink(list: ResultLink[], link: ResultLink): ResultLink[] {
+  const idx = list.findIndex((l) => l.url === link.url);
+  if (idx === -1) return list.concat(link);
+  const existing = list[idx];
+  if (existing && existing.kind === link.kind && existing.scope === link.scope) {
+    return list;
+  }
+  const next = list.slice();
+  next[idx] = { ...link };
+  return next;
+}
 
 // execKey composes the (branch, node) lookup key used by
 // lastExecIDByNode. The `\t` separator is forbidden in both branch
@@ -214,6 +240,7 @@ export function reduceEvents(
     }
   };
   let browser = state.browser;
+  let resultLinks = state.resultLinks;
   // Clone the executions map only when the first mutation happens; if
   // the whole batch only contains pass-through event types we keep the
   // identity stable so React skips re-renders downstream.
@@ -695,6 +722,28 @@ export function reduceEvents(
         const rawScope = evt.data?.scope;
         const scope: PreviewScope = rawScope === "internal" ? "internal" : "external";
         const rawSource = evt.data?.source;
+        const kind = evt.data?.kind;
+
+        // Result-link kinds (pr / deploy / app) are the run's headline
+        // deliverables — captured into a deduped list surfaced as
+        // prominent links in the run summary, so one run can advertise
+        // both a PR and a deploy. Level-triggered from the event log, so
+        // a reloaded terminal run rebuilds them.
+        if (kind && RESULT_LINK_KINDS.has(kind)) {
+          resultLinks = upsertResultLink(resultLinks, { url, kind, scope, seq: evt.seq });
+        }
+
+        // A PR link is never embeddable (GitHub/GitLab block iframing),
+        // so it must not hijack the Browser pane — it lives only as a
+        // result link. lastEventSeqSeen still advances so the pane's
+        // auto-reveal logic stays consistent. Embeddable kinds
+        // (dev-server, artifact-html, deploy/app live sites) fall through
+        // and drive the pane as before.
+        if (kind === "pr") {
+          browser = { ...browser, lastEventSeqSeen: evt.seq };
+          break;
+        }
+
         // Manual URLs from setManualPreviewUrl take precedence: don't
         // overwrite an active manual selection with a workflow event.
         if (browser.source === "manual" && browser.currentUrl) {
@@ -706,7 +755,7 @@ export function reduceEvents(
           currentUrl: url,
           scope,
           source: rawSource === "tool-stdout" ? "tool-stdout" : "runtime",
-          kind: evt.data?.kind,
+          kind,
           lastEventSeqSeen: evt.seq,
         };
         break;
@@ -801,6 +850,9 @@ export function reduceEvents(
   }
   if (browser !== state.browser) {
     next.browser = browser;
+  }
+  if (resultLinks !== state.resultLinks) {
+    next.resultLinks = resultLinks;
   }
   if (inFlightMutated) {
     next.inFlightToolsByExec = inFlightToolsByExec;

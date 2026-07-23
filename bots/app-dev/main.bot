@@ -1243,6 +1243,37 @@ agent finalize_mr:
   capabilities: [board.read, board.comment]
   tool_max_steps: 20
 
+## surface_pr_link / surface_deploy_link — DETERMINISTIC result-link emitters
+## for the studio run summary. The studio surfaces a run's headline links (the
+## opened PR, the live deploy) from `[iterion] preview_url=… kind=…` directives
+## a tool node prints on stdout — never from an LLM agent's prose. Each is
+## reached only on the success it names (finalize_mr opened a PR ⇒ url set;
+## deploy_verify passed ⇒ deployed_url set); the python guard drops an empty url
+## so the scanner never sees a malformed directive. read-only, idempotent.
+schema surface_pr_link_input:
+  url: string
+
+schema surface_deploy_link_input:
+  url: string
+
+tool surface_pr_link:
+  input: surface_pr_link_input
+  command: `URL={{input.url}} python3 -c "
+import os
+u = (os.environ.get('URL') or '').strip()
+if u:
+    print('[iterion] preview_url=' + u + ' kind=pr scope=external')
+"`
+
+tool surface_deploy_link:
+  input: surface_deploy_link_input
+  command: `URL={{input.url}} python3 -c "
+import os
+u = (os.environ.get('URL') or '').strip()
+if u:
+    print('[iterion] preview_url=' + u + ' kind=deploy scope=external')
+"`
+
 ## ─── Deploy phase nodes (opt-in, platform-agnostic) ─────────────────
 
 ## deploy_gate — deterministic "should we deploy?" projection of
@@ -1518,7 +1549,13 @@ workflow app_dev:
   deploy_verify -> deploy when not pass as deploy_retry("{{vars.max_deploy_retries}}") with {
     fail_log: "DEPLOY NOT HEALTHY (fix exactly this, then redeploy):\n{{outputs.deploy_verify.reason}}"
   }
+  ## Healthy deploy → surface the live URL as a headline result-link (kind=deploy)
+  ## in the run summary, alongside the detailed deployment report, then the PR
+  ## tail. Retry-exhausted (not pass) → straight to the PR tail; the deploy is
+  ## best-effort and the committed app is real work regardless.
+  deploy_verify -> surface_deploy_link when pass with { url: "{{outputs.deploy.deployed_url}}" }
   deploy_verify -> mr_gate
+  surface_deploy_link -> mr_gate
 
   ## ── PR tail (opt-in, feature-dev verbatim) ──────────────────────
   mr_gate -> forge_auth_probe when open_mr
@@ -1532,4 +1569,9 @@ workflow app_dev:
     scope_notes:      "{{vars.app_prompt}}"
   }
   forge_auth_probe -> done when not available
-  finalize_mr -> done
+  ## PR opened → surface its URL as a headline result-link in the run summary
+  ## (deterministic stdout directive → preview_url_available kind=pr), then
+  ## finish. Nothing opened (empty diff / refused PR) → straight to done.
+  finalize_mr -> surface_pr_link when opened with { url: "{{outputs.finalize_mr.url}}" }
+  finalize_mr -> done when not opened
+  surface_pr_link -> done

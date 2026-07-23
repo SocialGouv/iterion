@@ -795,6 +795,25 @@ agent finalize_mr:
   ## makes impossible (the node is only entered when a push credential exists).
   tool_max_steps: 20
 
+## surface_pr_link — DETERMINISTIC result-link emitter for the studio run
+## summary. finalize_mr is an LLM agent, but the studio surfaces a run's
+## headline PR link from the deterministic `[iterion] preview_url=… kind=pr`
+## directive a tool node prints on stdout — never from agent prose. Reached
+## only when finalize_mr actually opened a PR (opened=true ⇒ url set); the
+## python guard drops an empty url so the scanner never sees a malformed
+## directive. read-only, idempotent.
+schema surface_pr_link_input:
+  url: string
+
+tool surface_pr_link:
+  input: surface_pr_link_input
+  command: `URL={{input.url}} python3 -c "
+import os
+u = (os.environ.get('URL') or '').strip()
+if u:
+    print('[iterion] preview_url=' + u + ' kind=pr scope=external')
+"`
+
 ## ─── Workflow ───────────────────────────────────────────────────
 
 workflow feature_dev:
@@ -883,4 +902,9 @@ workflow feature_dev:
     scope_notes:      "{{vars.feature_prompt}}"
   }
   forge_auth_probe -> done when not available
-  finalize_mr -> done
+  ## PR opened → surface its URL as a headline result-link in the run summary
+  ## (deterministic stdout directive → preview_url_available kind=pr), then
+  ## finish. Nothing opened (empty diff / refused PR) → straight to done.
+  finalize_mr -> surface_pr_link when opened with { url: "{{outputs.finalize_mr.url}}" }
+  finalize_mr -> done when not opened
+  surface_pr_link -> done
