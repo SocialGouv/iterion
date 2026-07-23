@@ -12,6 +12,7 @@ import { forgeTeamRepoKey } from "@/api/forgeConnections";
 import { useAuth } from "@/auth/AuthContext";
 import { Button } from "@/components/ui";
 import { useActiveRepo } from "@/hooks/useActiveRepo";
+import { usePromptText } from "@/hooks/usePromptText";
 import { toastError } from "@/lib/errorHints";
 import { useBotsStore } from "@/store/bots";
 import { useServerInfoStore } from "@/store/serverInfo";
@@ -40,6 +41,7 @@ export default function ActionsRow({
   const { activeTeamID } = useAuth();
   const addToast = useUIStore((s) => s.addToast);
   const fetchBots = useBotsStore((s) => s.fetch);
+  const { prompt: promptText, dialog: promptDialog } = usePromptText();
   const { activeRepo, repos, enabled: repoScopeEnabled } = useActiveRepo();
 
   const noPathTitle =
@@ -77,14 +79,18 @@ export default function ActionsRow({
   };
 
   const onFork = async () => {
-    const suggested = `${entry.name}-copy`;
-    const slug = window.prompt(
-      `Duplicate “${entry.display_name || entry.name}” into an editable team bot.\nNew bot id (lowercase, digits, - or _):`,
-      suggested,
-    );
+    const slug = await promptText({
+      title: `Duplicate ${entry.display_name || entry.name}`,
+      message: "Copies this catalog bot into an editable team bot.",
+      label: "New bot id (lowercase, digits, - or _)",
+      defaultValue: `${entry.name}-copy`,
+      confirmLabel: "Duplicate",
+      validate: (v) =>
+        /^[a-z0-9_-]+$/.test(v) ? null : "Use lowercase letters, digits, '-' or '_'",
+    });
     if (!slug) return;
     try {
-      const forked = await forkBotSource(activeTeamID, slug.trim(), entry.name);
+      const forked = await forkBotSource(activeTeamID, slug, entry.name);
       await fetchBots();
       openEditorAt(botSourceEditorPath(activeTeamID, forked.slug));
     } catch (err) {
@@ -208,6 +214,7 @@ export default function ActionsRow({
           </Link>
         </div>
       )}
+      {promptDialog}
     </div>
   );
 }
