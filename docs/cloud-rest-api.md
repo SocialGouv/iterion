@@ -62,7 +62,7 @@ Source: [pkg/server/auth_routes.go](../pkg/server/auth_routes.go) +
 | `GET` | `/api/teams/{id}/invitations` | team admin | List pending invitations |
 | `POST` | `/api/teams/{id}/invitations` | team admin | Mint a token (shown once) |
 | `DELETE` | `/api/teams/{id}/invitations/{invite_id}` | team admin | Revoke |
-| `GET` | `/api/teams/{id}/usage` | team member | Org-admin mirror of admin usage view (see below) |
+| `GET` | `/api/orgs/{id}/usage` | org member | Org-member mirror of the admin usage view (see below) |
 | `GET` | `/api/teams/{id}/audit` | team admin | Tenant audit log |
 
 ## BYOK LLM keys + generic secrets + bindings
@@ -276,11 +276,11 @@ Plus the header `Retry-After: <seconds>` on `concurrency_cap_exceeded`
 and `launch_rate_limited`. Token list and HTTP semantics in
 [quotas-and-limits.md](quotas-and-limits.md).
 
-### `GET /api/teams/{id}/usage` (also `/api/admin/orgs/{id}/usage`)
+### `GET /api/orgs/{id}/usage` (also `/api/admin/orgs/{id}/usage`)
 
 See [quotas-and-limits.md → Reading usage](quotas-and-limits.md#reading-usage)
 for the full `orgUsageView` schema. Same shape on both routes — the
-admin endpoint is super-admin only, the team endpoint is any member.
+admin endpoint is super-admin only, the member endpoint is any org member.
 
 ### `POST /api/me/tokens` — create PAT
 
