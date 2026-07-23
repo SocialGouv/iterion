@@ -33,6 +33,7 @@ See [cli-reference.md `#iterion-studio`](cli-reference.md#iterion-studio) for th
 - **Undo/redo** — Full edit history
 - **Launch modal** — Fills `vars` and attachments at launch time, with bot/argument discovery driven by `--bots-path` (the modal's bot picker and argument form consume the same catalogue `iterion bots list` emits)
 - **Kanban `/board` view** — Native tracker CRUD with drag-and-drop (gated on `server_info.native_tracker_enabled`; see [native-tracker.md](native-tracker.md))
+- **Pipeline `/pipelines` board** — Global control-center board tracking staged tasks and their in-flight runs, with priority-driven launch (same `server_info.native_tracker_enabled` gate; concurrency capped by `--max-concurrent-pipelines`; see [native-tracker.md](native-tracker.md))
 - **`/dispatcher` dashboard** — Live running + retry tables when `iterion dispatch` is wired (gated on `server_info.dispatcher_enabled`; see [dispatcher.md](dispatcher.md))
 - **Browser pane** — Preview URLs, live CDP screencast, and time-travel screenshots tied to a run (see [browser-pane.md](browser-pane.md)). Disable with `--no-browser-pane`.
 - **Run console** — Launch a workflow from the studio and watch events stream live
