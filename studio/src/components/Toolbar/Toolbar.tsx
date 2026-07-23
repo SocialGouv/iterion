@@ -22,6 +22,7 @@ import {
 } from "@/components/ui";
 import ToolbarGroup from "./ToolbarGroup";
 import { useDocumentFileOps } from "./useDocumentFileOps";
+import BundleFilesDrawer from "@/components/Editor/BundleFilesDrawer";
 import {
   FilePlusIcon,
   DownloadIcon,
@@ -153,6 +154,12 @@ export default function Toolbar() {
 
   const workflows = document?.workflows ?? [];
 
+  // A team-authored cloud bot is a multi-file bundle: expose its files (skills,
+  // manifest, …) via the Bundle-files drawer. Detected from the botsource://
+  // virtual path the editor loads a tenant bot under.
+  const bundleRef = api.parseBotSourceEditorPath(currentFilePath ?? "");
+  const [bundleDrawerOpen, setBundleDrawerOpen] = useState(false);
+
   return (
     <div className="flex items-center gap-1 px-4 h-10 text-sm bg-surface-1 border-b border-border-default">
       {/* File menu (VSCode-style unified dropdown) + inline primary Save */}
@@ -260,6 +267,20 @@ export default function Toolbar() {
           {currentFilePath ? "Save" : "Save As"}
         </Button>
       </ToolbarGroup>
+
+      {/* Bundle files (team-authored cloud bots only) */}
+      {bundleRef && (
+        <ToolbarGroup>
+          <IconButton
+            label="Bundle files"
+            tooltip="Bundle files (skills, manifest…)"
+            size="sm"
+            onClick={() => setBundleDrawerOpen(true)}
+          >
+            <StackIcon />
+          </IconButton>
+        </ToolbarGroup>
+      )}
 
       {/* Edit */}
       <ToolbarGroup>
@@ -511,6 +532,14 @@ export default function Toolbar() {
 
       <ShortcutsHelp open={showShortcuts} onClose={() => setShowShortcuts(false)} />
       {confirmDialog}
+      {bundleRef && (
+        <BundleFilesDrawer
+          teamID={bundleRef.teamID}
+          slug={bundleRef.slug}
+          open={bundleDrawerOpen}
+          onOpenChange={setBundleDrawerOpen}
+        />
+      )}
     </div>
   );
 }

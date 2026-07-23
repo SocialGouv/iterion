@@ -73,3 +73,32 @@ export function deleteBotSource(teamID: string, slug: string): Promise<void> {
     method: "DELETE",
   });
 }
+
+// putBotSourceFile writes one raw file into an existing bundle (skills/*.md,
+// manifest.yaml, …). Distinct from the editor's document save path (which
+// unparses a .bot document first) — this takes verbatim text. The server
+// re-validates the whole bundle and returns 400 if it no longer compiles.
+export function putBotSourceFile(
+  teamID: string,
+  slug: string,
+  rel: string,
+  content: string,
+): Promise<BotSourceFull> {
+  const path = rel.split("/").map(encodeURIComponent).join("/");
+  return apiRequest<BotSourceFull>(
+    `${base(teamID)}/${encodeURIComponent(slug)}/files/${path}`,
+    { method: "PUT", body: JSON.stringify({ content }) },
+  );
+}
+
+export function deleteBotSourceFile(
+  teamID: string,
+  slug: string,
+  rel: string,
+): Promise<BotSourceFull> {
+  const path = rel.split("/").map(encodeURIComponent).join("/");
+  return apiRequest<BotSourceFull>(
+    `${base(teamID)}/${encodeURIComponent(slug)}/files/${path}`,
+    { method: "DELETE" },
+  );
+}
