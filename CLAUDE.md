@@ -844,7 +844,7 @@ the following are violations when they appear as **defaults**:
 **Not violations** (these are the *runtime*, not the target repo):
 references to iterion the engine running the bot — `mcp__iterion_board__*`
 capability tools, "iterion's expr / template substitution", `iterion
-report` for surfacing output, `.bot`/`.bot` DSL syntax. The bot is
+report` for surfacing output, `.bot` DSL syntax. The bot is
 *written for* iterion; it must not be *scoped to* iterion.
 
 **Enforcement:** `bots/catalog_universality_test.go` greps every
