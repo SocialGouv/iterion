@@ -334,10 +334,11 @@ The full binding resolution chain (user > binding > team) and what
 
 ### 2.3 Watch usage
 
-UI path: `/teams/<id>` → Usage.
+UI path: `/teams/<id>` → Usage. The run/cost counters are **org-scoped**
+(they sum every team in the org), so the API is keyed on the org:
 
 ```bash
-curl https://iterion.example.com/api/teams/$TEAM_ID/usage
+curl https://iterion.example.com/api/orgs/$ORG_ID/usage
 ```
 
 The view fields are documented in
