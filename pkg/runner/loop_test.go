@@ -375,37 +375,39 @@ workflow main:
 // sentinels classify identically.
 func TestClassifyExecResult(t *testing.T) {
 	cases := []struct {
-		name        string
-		err         error
-		hbFailed    bool
-		parentErr   error
-		wantStatus  string
-		wantAction  deliveryAction
-		wantPromote bool // promoteResumable: CAS cancelled→failed_resumable for auto-resume
+		name           string
+		err            error
+		hbFailed       bool
+		shutdownCancel bool
+		wantStatus     string
+		wantAction     deliveryAction
+		wantPromote    bool // promoteResumable: CAS cancelled→failed_resumable for auto-resume
 	}{
-		{"success acks finished", nil, false, nil, "finished", actionAck, false},
-		{"paused acks", runtime.ErrRunPaused, false, nil, "paused", actionAck, false},
-		{"wrapped paused acks", fmt.Errorf("engine: %w", runtime.ErrRunPaused), false, nil, "paused", actionAck, false},
-		{"operator pause acks", runtime.ErrRunPausedOperator, false, nil, "paused_operator", actionAck, false},
-		// Operator cancel stays terminal cancelled — never promoted.
-		{"user cancel acks", runtime.ErrRunCancelled, false, nil, "cancelled", actionAck, false},
+		{"success acks finished", nil, false, false, "finished", actionAck, false},
+		{"paused acks", runtime.ErrRunPaused, false, false, "paused", actionAck, false},
+		{"wrapped paused acks", fmt.Errorf("engine: %w", runtime.ErrRunPaused), false, false, "paused", actionAck, false},
+		{"operator pause acks", runtime.ErrRunPausedOperator, false, false, "paused_operator", actionAck, false},
+		// Operator cancel stays terminal cancelled — never promoted, even
+		// when it arrives DURING a drain (shutdownCancel is false because it
+		// came from the cancel subject, not cancelAndAwaitCheckpoint).
+		{"user cancel acks", runtime.ErrRunCancelled, false, false, "cancelled", actionAck, false},
 		// Non-operator interruptions promote to failed_resumable so the
 		// nak's redelivery auto-resumes instead of dropping the run.
-		{"heartbeat-loss cancel naks", runtime.ErrRunCancelled, true, nil, "lock_held", actionNak, true},
-		// hbFailed wins over a concurrently-cancelled parent ctx.
-		{"heartbeat beats shutdown", runtime.ErrRunCancelled, true, context.Canceled, "lock_held", actionNak, true},
-		{"shutdown cancel naks", runtime.ErrRunCancelled, false, context.Canceled, "shutdown", actionNak, true},
-		{"generic failure naks", errors.New("boom"), false, nil, "failed", actionNak, false},
+		{"heartbeat-loss cancel naks", runtime.ErrRunCancelled, true, false, "lock_held", actionNak, true},
+		// hbFailed wins over a concurrent shutdown-cancel flag.
+		{"heartbeat beats shutdown", runtime.ErrRunCancelled, true, true, "lock_held", actionNak, true},
+		{"shutdown cancel naks", runtime.ErrRunCancelled, false, true, "shutdown", actionNak, true},
+		{"generic failure naks", errors.New("boom"), false, false, "failed", actionNak, false},
 		// Budget exceeded is a resumable checkpoint — Ack, never auto-resume
 		// (auto-redelivery re-fails on the same spent budget and its fresh-pod
 		// recordRunGitMeta clobbers the exported commits; run 019f8e08). It is
 		// the one interruption-shaped outcome that must NOT promote.
-		{"budget exceeded acks (no auto-resume)", runtime.ErrBudgetExceeded, false, nil, "budget_exceeded", actionAck, false},
-		{"wrapped budget exceeded acks", fmt.Errorf("%w: duration (7201/7200)", runtime.ErrBudgetExceeded), false, nil, "budget_exceeded", actionAck, false},
+		{"budget exceeded acks (no auto-resume)", runtime.ErrBudgetExceeded, false, false, "budget_exceeded", actionAck, false},
+		{"wrapped budget exceeded acks", fmt.Errorf("%w: duration (7201/7200)", runtime.ErrBudgetExceeded), false, false, "budget_exceeded", actionAck, false},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			out := classifyExecResult(c.err, c.hbFailed, c.parentErr, "run-1")
+			out := classifyExecResult(c.err, c.hbFailed, c.shutdownCancel, "run-1")
 			if out.finalStatus != c.wantStatus {
 				t.Errorf("finalStatus = %q, want %q", out.finalStatus, c.wantStatus)
 			}

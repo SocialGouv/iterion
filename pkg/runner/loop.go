@@ -275,7 +275,7 @@ func (r *Runner) resolveDeliveryPreconditions(msg *queue.RunMessage) preconditio
 // because it has side effects (PublishDLQ + UpdateRunStatusIf). The
 // caller checks that trigger inline BEFORE delegating the remaining
 // generic-error case to this helper.
-func classifyExecResult(execErr error, hbFailed bool, parentErr error, runID string) execOutcome {
+func classifyExecResult(execErr error, hbFailed bool, shutdownCancel bool, runID string) execOutcome {
 	if execErr == nil {
 		return execOutcome{
 			finalStatus: "finished",
@@ -326,7 +326,7 @@ func classifyExecResult(execErr error, hbFailed bool, parentErr error, runID str
 				promoteResumable: true,
 			}
 		}
-		if parentErr != nil {
+		if shutdownCancel {
 			return execOutcome{
 				finalStatus:      "shutdown",
 				op:               "nak-shutdown-cancelled",
@@ -564,6 +564,15 @@ type inFlight struct {
 	// Shutdown selects on it to avoid double-acting on a delivery
 	// processOne already finalised.
 	done chan struct{}
+	// shutdownCancel is set by Shutdown (via cancelAndAwaitCheckpoint)
+	// BEFORE it cancels the run, so classifyExecResult can tell a
+	// shutdown-drain cancel (→ promote to failed_resumable + auto-resume)
+	// from an operator cancel arriving on the cancel subject during the
+	// same drain window (→ stays terminal `cancelled`). Inferring this from
+	// the loop ctx (parent.Err()) would misclassify the operator cancel and
+	// resurrect a deliberately-cancelled run — the lame-duck window makes
+	// that window up to DrainTimeout wide.
+	shutdownCancel atomic.Bool
 }
 
 const (
@@ -728,6 +737,14 @@ func (r *Runner) Run(ctx context.Context) error {
 // deploy never strands a run. `ctx` carries the drain ceiling
 // (DrainTimeout); k8s terminationGracePeriodSeconds is the hard external
 // bound. Plan §F T-28.
+//
+// Narrow benign race: a delivery Fetched in the instant before SIGTERM may
+// not have published r.current yet, so Shutdown sees nil and returns
+// without engaging the drain machinery for it. The run still executes
+// safely on its decoupled runCtx (the process stays alive because Run
+// blocks in processOne) — only the DrainTimeout ceiling is skipped;
+// terminationGracePeriodSeconds remains the hard bound and the orphan
+// sweeper recovers anything the SIGKILL leaves `running`. No state is lost.
 func (r *Runner) Shutdown(ctx context.Context) error {
 	r.mu.Lock()
 	cur := r.current
@@ -779,6 +796,11 @@ func (r *Runner) Shutdown(ctx context.Context) error {
 // JetStream redelivers to a sibling. Shared by the interrupt drain and the
 // lame-duck ceiling cap.
 func (r *Runner) cancelAndAwaitCheckpoint(cur *inFlight, waitCtx context.Context) {
+	// Mark this as a shutdown-driven cancel BEFORE cancelling, so
+	// classifyExecResult promotes it to failed_resumable (auto-resume)
+	// rather than treating it as an operator cancel. Ordered before
+	// cancelFn so the flag is visible by the time executeRun unwinds.
+	cur.shutdownCancel.Store(true)
 	cur.cancelFn()
 	logDeliveryErr(r.cfg.Logger, "in-progress-shutdown", cur.runID, cur.delivery.InProgress())
 	select {
@@ -838,8 +860,9 @@ func (r *Runner) processOne(parent context.Context, delivery *natsq.Delivery) {
 	}()
 
 	done := make(chan struct{})
+	inflight := &inFlight{runID: msg.RunID, delivery: delivery, cancelFn: runCancel, done: done}
 	r.mu.Lock()
-	r.current = &inFlight{runID: msg.RunID, delivery: delivery, cancelFn: runCancel, done: done}
+	r.current = inflight
 	r.mu.Unlock()
 	defer func() {
 		// Close before nilling: a Shutdown that captured the cur
@@ -943,7 +966,7 @@ func (r *Runner) processOne(parent context.Context, delivery *natsq.Delivery) {
 	// completion webhook here would push a spurious "run cancelled"
 	// notification on every deploy. Skip both run-facing fires; the resumed
 	// run emits its own real terminal outcome when it finishes.
-	outcome := classifyExecResult(err, hbFailed.Load(), parent.Err(), msg.RunID)
+	outcome := classifyExecResult(err, hbFailed.Load(), inflight.shutdownCancel.Load(), msg.RunID)
 	if !outcome.promoteResumable {
 		r.fireCompletionNotifier(msg)
 		r.fireOutcomeEvent(msg, err)
