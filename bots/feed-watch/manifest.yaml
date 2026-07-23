@@ -1,7 +1,7 @@
 name: feed-watch
 display_name: Vigie
 icon: 🔭
-version: 1.1.0
+version: 1.1.1
 description: |
   Universal feed-watch + digest bot (Huginn-style veille pipeline as a
   single bot). Two run modes over one file-backed state in the target
