@@ -45,7 +45,7 @@ All diagnostic codes emitted during compilation (`ir.Compile`) and validation (`
 | **C022** | error | LLM router edge has condition | An edge from an `llm` router has a `when` clause | Remove the `when` clause — LLM routers select targets directly |
 | **C023** | error | LLM-only property on non-LLM router | Properties `model`, `backend`, `system`, `user`, `multi`, or `reasoning_effort` are set on a router that isn't `mode: llm` | Remove these properties or change the mode to `llm` |
 | **C026** | error | Invalid loop iterations | A loop's `max_iterations` is less than 1 | Set `max_iterations` to at least 1 |
-| **C027** | error | Invalid reasoning effort | `reasoning_effort` has a value other than `low`, `medium`, `high`, `xhigh`, `max` | Use one of the five valid values |
+| **C027** | error | Invalid reasoning effort | `reasoning_effort` has a value other than `low`, `medium`, `high`, `xhigh`, `max`, `ultracode` | Use one of the six valid values |
 | **C028** | error | Duplicate with-mapping key | The same `with` key appears on multiple non-conditional edges to the same target | Use unique keys, or make edges conditional/convergent |
 | **C029** | error | Unknown outputs node reference | A `{{outputs.<node>...}}` template targets a node not declared anywhere in the file | Declare the node or fix the typo |
 | **C031** | error | outputs ref field not in output schema | `{{outputs.<node>.<field>}}` references a field absent from that node's `output:` schema | Reference an existing field, or add the field to the schema |
