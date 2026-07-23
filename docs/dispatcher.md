@@ -104,7 +104,7 @@ the in-flight runs, and the retry queue, with pause/stop controls:
 
 ```mermaid
 flowchart LR
-  TRK["Tracker<br/>(native / GH /<br/>Forgejo)"]
+  TRK["Tracker<br/>(native / GH /<br/>GitLab / Forgejo)"]
   DSP["Dispatcher<br/>(1 actor goro)"]
   RUN["Runner<br/>(engine = LLM<br/>+ tools)"]
 
@@ -198,7 +198,7 @@ agent:
   running_state: none   # keep claimed issues in their source state
 ```
 
-External trackers (GitHub, Forgejo) map the abstract state to labels;
+External trackers (GitHub, GitLab, Forgejo) map the abstract state to labels;
 if the YAML's `state_mapping` doesn't declare `in_progress`,
 `UpdateState` returns `ErrTransitionRejected` and the dispatcher
 logs + continues without aborting the dispatch.
@@ -422,11 +422,12 @@ for the stock assignee workflow selection.
 **How to set `bot` / `bot_args` today**: REST API only —
 `POST /api/v1/native/issues` or `PATCH /api/v1/native/issues/{id}`
 with `{ "bot": "feature_dev", "bot_args": { "feature_prompt": "…" } }`.
-The `iterion issue create/update` CLI does **not** yet expose
-dedicated bot-selection or bot-argument flags; `--field key=value` lands in
-the freeform `Fields` map, not in `BotArgs`, and is not merged into dispatch
-vars. Operators driving routing purely through the CLI should rely on
-`assignee_workflows:` + `assignee_dispatch:` instead.
+`iterion issue create` exposes `--bot` and `--bot-arg key=value`
+(they land in the typed `Bot` / `BotArgs` fields the dispatcher routes
+on). `iterion issue update` does **not** yet — change routing on an
+existing card via the REST `PATCH` above, the board MCP tools, or the
+studio. Note that `--field key=value` on either command lands in the
+freeform `Fields` map, not in `BotArgs`.
 
 ### Per-assignee dispatch overrides
 
@@ -618,6 +619,30 @@ tracker:
 Same label-driven semantics as GitHub; label updates go through
 `PUT /api/v1/repos/<owner>/<repo>/issues/<n>/labels` so iterion does
 not need to resolve numeric label IDs.
+
+### `tracker.kind: gitlab`
+
+Direct client against the GitLab v4 REST API. Auth is the
+`PRIVATE-TOKEN: $GITLAB_TOKEN` header; the `repo` project path is
+URL-encoded (`owner/repo` → `owner%2Frepo`) internally.
+
+```yaml
+tracker:
+  kind: gitlab
+  gitlab:
+    host: https://gitlab.com
+    repo: owner/repo
+    token: $GITLAB_TOKEN
+    include_labels: [ready]
+    claimed_label: claimed        # optional; defaults to iterion-claimed
+    state_mapping:
+      ready:       { labels_include: [ready] }
+      in_progress: { labels_include: [claimed] }
+```
+
+Same label-driven claim semantics as GitHub/Forgejo — the claim label
+(default `iterion-claimed`) marks an issue as taken so a single
+dispatcher instance never double-claims it.
 
 ## HTTP / WS surface
 

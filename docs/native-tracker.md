@@ -7,8 +7,8 @@ through the `iterion issue` CLI or the studio's Board view.
 
 The native tracker is a deliberate design choice: iterion's autonomous
 loop should not require the operator to lock themselves into a
-proprietary issue tracker. External adapters (`github`, `forgejo`) are
-optional plug-ins, not the source of truth.
+proprietary issue tracker. External adapters (`github`, `gitlab`,
+`forgejo`) are optional plug-ins, not the source of truth.
 
 The studio's Board view (`/board`) is a drag-and-drop front end over
 this store — cards carry labels, priorities, and per-card bot assignees:
@@ -40,7 +40,9 @@ one record to `events.jsonl`. The event types are:
 
 `issue_created`, `issue_updated`, `issue_state_changed`,
 `issue_deleted`, `issue_claimed`, `issue_released`,
-`issue_last_run_updated`, `board_updated`.
+`issue_last_run_updated`, `issue_comment_added`,
+`issue_blockers_updated`, `issue_unblocked`, `label_rename`,
+`label_merge`, `label_delete`, `board_updated`.
 
 The dispatcher stamps every issue it processes with `last_run_id`
 (the run that handled it) + `last_workdir` (the worktree path on
@@ -134,6 +136,15 @@ issue write — unknown fields and bad types are rejected.
 
 Field values are rendered into workflow inputs via
 `{{issue.fields.<name>}}` in the dispatcher's `dispatch.vars` block.
+
+### Comments
+
+Each issue carries an append-only `comments` thread (`Issue.Comments`,
+persisted with the issue). A bot writes to it through the
+`board.comment` capability's `comment_issue` tool; every append emits
+an `issue_comment_added` event. The thread is a lightweight discussion
+record alongside the structured fields — the `events.jsonl` log remains
+the full audit trail.
 
 ## CLI — `iterion issue`
 
@@ -458,8 +469,6 @@ adapter := native.NewAdapter(s) // satisfies tracker.Tracker
 
 ## Limitations (v1)
 
-- **No comments.** Events.jsonl is the audit trail; user-facing
-  comments are a v2 ergonomic.
 - **No bi-directional sync with GitHub / Forgejo.** A single
   dispatcher instance picks one tracker. Mirroring is on the v2
   roadmap.
