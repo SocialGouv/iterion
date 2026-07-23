@@ -14,8 +14,11 @@ The login page surfaces every auth method your operator has
 enabled. The basic two:
 
 - **Email + password.** Use the credentials your team admin sent
-  you. Argon2id at rest, refresh tokens auto-rotate every 15
-  minutes, full session expires after 30 days of inactivity.
+  you. Argon2id at rest; the access token lasts 15 minutes and is
+  silently rotated via the refresh token when it expires. Each
+  rotation mints a fresh 30-day refresh session, so continuous use
+  keeps you signed in while an idle session lapses 30 days after its
+  last rotation.
 - **Single sign-on.** One button per configured provider
   (Google, GitHub, your company's SSO). Clicking it redirects to
   the IdP, then back to iterion with a session cookie set.
@@ -80,7 +83,7 @@ plaintext. The UI only shows `last4` + a fingerprint so you can
 distinguish two keys for the same provider.
 
 Supported providers: Anthropic, OpenAI, AWS Bedrock, GCP Vertex,
-Azure (Foundry), OpenRouter, xAI.
+Azure (Foundry), OpenRouter, xAI, z.ai.
 
 ## 4. OAuth subscriptions (Claude Pro/Max + ChatGPT)
 
