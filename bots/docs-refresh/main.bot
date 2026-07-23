@@ -290,22 +290,32 @@ prompt campaign_system:
     - An empty or degraded report ("nothing scannable") means nothing
       about alignment — it means you explore the repo directly.
 
-  HOW TO WORK — reproduce the shape of a productive session:
+  HOW TO WORK — like a Claude Code "plan, then act" session aimed at
+  the WHOLE corpus, not a punch-list of the scanned hints:
 
-  1. LIVING TODO LIST, not frozen phases. Survey the docs + the code
-     (use the hints and `recently_changed_code_files` to prioritise,
-     `git log` to see what earlier passes banked), and build a todo
-     grouped BY DOC. Keep the list DENSE and MOVING as you learn —
-     you own your plan; no upstream pipeline decides it for you.
+  1. PLAN COMPREHENSIVELY FIRST — survey broadly before editing.
+     Read the docs in scope AND the code they describe; diff the
+     code's recent evolution (`git log`, `recently_changed_code_files`)
+     to see what the docs have NOT caught up with; and build the FULL
+     list of misalignments across the corpus — stale claims to repair
+     AND capabilities/behaviour/examples the docs omit entirely. The
+     advisory hints are a cheap starting point, NEVER the plan's
+     boundary: most real drift is semantic (wrong defaults, outdated
+     behaviour descriptions, undocumented features shipped weeks ago)
+     and invisible to any scan. This is the pass's plan; you own it,
+     no upstream pipeline decides it.
 
-  2. THE REPEATED UNIT, one doc at a time: for each issue you find,
-     READ the code that grounds it (the tool invocation — read_file /
-     grep / a --help run — is your evidence; a fix whose rationale
-     cannot cite it is a façade), then adjudicate to exactly ONE of
-     FOUR outcomes:
+  2. EXECUTE THE WHOLE PLAN THIS PASS, one doc at a time. For each
+     item, READ the code that grounds it (the tool invocation —
+     read_file / grep / a --help run — is your evidence; a fix whose
+     rationale cannot cite it is a façade), then adjudicate to exactly
+     ONE of FOUR outcomes:
        a. FIX + COMMIT — the doc is stale (or the doc is missing):
-          apply the smallest correction that makes the claim true —
-          or write the missing documentation, code-grounded, placed
+          make the claim fully correct and complete — bring the doc up
+          to the état de l'art of the code, not the most minimal token
+          change that mutes the scanner (but no padding, no invented
+          prose) — or write the missing documentation, code-grounded,
+          placed
           per the `doc-enrichment` skill (an existing doc first; a
           new `.md` under {{vars.docs_dir}} only when none fits) →
           run the negative-space check (`git grep` for stale
@@ -414,19 +424,27 @@ prompt campaign_system:
   the PR tail lists them under an "Unfulfilled documented promises"
   section.
 
-  KEEP GOING, one doc at a time, until this pass has resolved every
-  real issue you can find within your budget — fixed+committed,
-  dismissed+recorded, or promised+recorded. Then STOP and report.
+  KEEP GOING until you have worked THROUGH THE WHOLE PLAN this pass —
+  every misalignment you found across the ENTIRE corpus fixed+committed,
+  dismissed+recorded, or promised+recorded, not just the handful of
+  scanned hints. A pass that touches only the hinted docs and declares
+  done is the exact failure this bot exists to prevent. Work to the
+  edge of your budget; there is no prize for a small diff. Then STOP
+  and report.
 
   TERMINATION CONTRACT (required structured output — this is how the
   engine detects completion; an under-specified end just gets
   re-poked):
-    - docs_aligned: true ONLY when a fresh survey of the docs against
-      the code would find no remaining real drift and no significant
-      missing documentation — everything you surfaced is fixed
-      (committed), dismissed to the ledger, or recorded as a promise.
-      false if real work remains (a later pass continues from your
-      commits).
+    - docs_aligned: the ASYMPTOTE signal. true ONLY when THIS pass
+      converged the corpus — a fresh comprehensive survey would find
+      little or nothing left to align (no remaining real drift, no
+      significant missing docs). If this pass produced MANY alignments,
+      assume the next comprehensive sweep will still find real work and
+      report false: the run loops you back on a fresh tree, and it is
+      the DECLINE of alignments-per-pass toward zero that ends the run
+      — exactly like re-running a Claude Code plan until the plan comes
+      back empty. Report true only when you have genuinely reached that
+      floor (everything surfaced is committed, dismissed, or a promise).
     - commits_this_pass: how many commits you landed this pass.
     - drift_remaining: a concise note of what still needs work (empty
       when docs_aligned).
@@ -472,12 +490,14 @@ prompt campaign_user:
   continuing — OR a real build/test failure to fix):
   {{input.fail_log}}
 
-  Align the documentation with the code, one doc at a time — verify
-  in the code → smallest fix (or write the missing doc) →
-  negative-space check → commit (`docs(<area>): …` + `Bot:
-  docs-refresh` trailer) — then report the termination contract
-  (docs_aligned, commits_this_pass, drift_remaining). Read `git log`
-  first to see what earlier passes already aligned.
+  Plan the whole corpus first, then align it — for each item: verify
+  in the code → bring the doc fully up to the code (repair stale, or
+  write the missing doc) → negative-space check → commit (`docs(<area>):
+  …` + `Bot: docs-refresh` trailer). Work through the entire plan this
+  pass, to the edge of your budget, then report the termination
+  contract (docs_aligned as the asymptote signal, commits_this_pass,
+  drift_remaining). Read `git log` first to see what earlier passes
+  already aligned.
 
 ## ─── Prompts : Default-create (author docs from zero) ──────────────
 
