@@ -208,10 +208,13 @@ that has never been restored is unverified.
   re-creates the tracker view; in-flight retries restart from the
   tracker's source of truth (GitHub Issues, Forgejo, native kanban).
 
-For the JetStream gap, run the [chart's `nats-backup` Helm value](https://github.com/SocialGouv/iterion/blob/main/charts/iterion/values-prod.yaml)
-or use NATS' own `nats-server -js -reset` documented procedure if
-your durable subjects exceed the loss tolerance — that's an explicit
-operator choice, not a default.
+For the JetStream gap there is no chart-provided backup value — the
+bundled `nats` sub-chart only exposes `nats.enabled` +
+`nats.config.jetstream.enabled`. Back the durable streams up with NATS'
+own tooling (`nats stream backup <stream>` / `nats account backup`, or a
+volume snapshot of the JetStream file store) if your durable subjects
+exceed the loss tolerance — that's an explicit operator choice, not a
+default.
 
 See also:
 
