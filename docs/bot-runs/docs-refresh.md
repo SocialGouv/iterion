@@ -7,10 +7,24 @@ aligns the docs with the current code — docs follow code, never the
 reverse: repair stale claims AND write missing documentation. A
 deterministic `scan_hints` producer feeds ADVISORY hints (missing
 tracked paths, dead links/anchors, unmentioned areas — never a gate);
-convergence is `verify ∧ scope_ok ∧ docs_aligned` only. Dismissals +
+convergence is `scope_ok ∧ docs_aligned` only (since v3.3 a docs-only
+bot can't break the build, so there is no build/verify gate). Dismissals +
 promises ledgers persist the agent's adjudications; the opt-in
 `open_mr` tail publishes ONE PR. Runs on ANY repo; iterion is the
 reference self-host case.
+
+## 2026-07-23 — v3.3 build-verify apparatus REMOVED, then validated lean (runs 019f9085 → 019f90da)
+
+- Status: **validated**
+- Versions: bot 3.2.1 → **3.3.0** · iterion `8aee22894`
+- Method: cloud PROD (ovh), target SocialGouv/iterion, claude_code opus-4-8 ultracode (self-orchestrated), `open_mr=true` + `merge_into=none`, GitHub App forge conn, budget 6h / $120 / 4 passes.
+- Result — **run 1 exposed the waste, run 2 validated the fix:**
+  - **019f9085 (WITH verify, bot 3.2.1)** — 31 min, converged pass 1, **no PR** (corpus already aligned by #284). Timing: campaign ~8 min · **verify_build (agent composing verify.sh) ~19 min** · verify_run ~2 min · tail ~2 min → the verify chain was **~21/31 min = 68% of the run**, and verify_build alone was more than the actual alignment work — all to verify a docs-only diff that couldn't affect the build.
+  - **019f90da (LEAN, bot 3.3.0)** — **20.5 min**, converged pass 1, **PR #288 (+58/-22)**. Lean path confirmed live: `campaign → scope_check → gate` DIRECT (no verify_precheck/verify_build/verify_run). `surface_pr_link` fired → `preview_url_available kind=pr` — the #286 result-link, validated live.
+- Value: the dogfood closed on itself. PR #288 aligned the docs to THIS session's code: a new "Feed-fetch security (SSRF posture)" section documenting the feed-watch proxy-aware SSRF fix (#287, +35 in feed-config.md), the docs-refresh build-gate removal (CLAUDE.md + README + 2× bot-catalog), and it **caught a stale "8 skills / verify-build skill" line the operator had missed** in the same README. Real, grounded alignment — not façade.
+- The change (v3.3.0): removed 3 nodes (verify_build/verify_run/verify_precheck) + their schemas/prompts, the `baseline` + `go_comment_globs` vars (Doki is now cleanly `.md`-only), the verify-build skill, and the gate's verify verdict → `converged = scope_ok ∧ docs_aligned`. main.bot 1626→1321 lines, 14→11 nodes. Rationale (operator insight): a docs-only bot edits `.md` only, which cannot break `go build`/`go test`, so the ADR-058 build gate verified an invariant the campaign structurally cannot violate — at ~68% of the wall-clock.
+- Misses / lessons for next run: (1) the lean campaign ran LONGER (~20 min vs 8) because it did MORE real work (drift to align + pinned scope_notes) — campaign time isn't apples-to-apples, but the ~21-min verify removal is a gain independent of campaign length. (2) Doki hand-edited the GENERATED bot-catalog files (`iterion-bot-catalog.md`) rather than running `iterion bots regen-catalog` — content is correct (matches the new manifest) but a regen is cleaner; docs-refresh's skills should flag generated-file patterns + the regen command. (3) run cost is not exposed via the remote runs API (`$?`) mid/post-run — duration/seq were the budget proxy.
+- Engine hardening: none needed (lean path worked first try). Session's engine-adjacent win is the feed-watch proxy-aware SSRF fix (#287, tracked separately).
 
 ## 2026-07-23 — v3.2 SELF-ORCHESTRATED coverage: the big comprehensive PR, at last (runs 019f8e08 → 019f8e9c)
 - Status: **validated** — the fix for v3.0/3.1's tiny PRs; delivered **PR #284 (+1020/−429, ~29 self-found fixes across cloud/forge/DSL/webhooks)** in one run
