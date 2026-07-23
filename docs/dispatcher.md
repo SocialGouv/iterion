@@ -422,14 +422,16 @@ See [pkg/dispatcher/loop.go](../pkg/dispatcher/loop.go)
 [pkg/dispatcher/routing_runner.go](../pkg/dispatcher/routing_runner.go)
 for the stock assignee workflow selection.
 
-**How to set `bot` / `bot_args` today**: REST API only —
-`POST /api/v1/native/issues` or `PATCH /api/v1/native/issues/{id}`
-with `{ "bot": "feature_dev", "bot_args": { "feature_prompt": "…" } }`.
-The `iterion issue create/update` CLI does **not** yet expose
-dedicated bot-selection or bot-argument flags; `--field key=value` lands in
-the freeform `Fields` map, not in `BotArgs`, and is not merged into dispatch
-vars. Operators driving routing purely through the CLI should rely on
-`assignee_workflows:` + `assignee_dispatch:` instead.
+**How to set `bot` / `bot_args`**: `iterion issue create` exposes
+`--bot <id>` and repeatable `--bot-arg key=value` (the latter lands in
+`BotArgs`, merged over the rendered dispatch vars) — see
+[native-tracker.md](native-tracker.md). The same fields are settable over
+REST (`POST /api/v1/native/issues` or `PATCH /api/v1/native/issues/{id}`
+with `{ "bot": "feature_dev", "bot_args": { "feature_prompt": "…" } }`), via
+the board MCP `set_bot`, or in the studio Launch modal. Only `iterion issue
+update` still lacks dedicated flags — change routing on an existing card via
+REST `PATCH`, `set_bot`, or the studio. Operators can also route purely
+through `assignee_workflows:` + `assignee_dispatch:`.
 
 ### Per-assignee dispatch overrides
 
