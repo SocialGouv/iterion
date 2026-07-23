@@ -3,9 +3,10 @@
 # Seki — verification-ladder remediation (security-patcher)
 
 Seki's remediation phase turns each confirmed finding into a verified
-diff and (optionally) commits it. It is gated by `--var remediate=true`
-(default) and chooses one of three modes via `--var remediation_mode`
-(default `apply_gated`).
+diff and (optionally) commits it. It is **off by default** (Seki is a
+read-only SAST auditor out of the box); opt in with `--var remediate=true`
+and choose one of three modes via `--var remediation_mode` (default
+`apply_gated`).
 
 The shape was adapted from Anthropic's
 [`defending-code-reference-harness`](https://github.com/anthropics/defending-code-reference-harness)
@@ -301,7 +302,7 @@ before deciding to re-run with `apply_gated`.
 
 | Var | Default | Notes |
 |---|---|---|
-| `remediate` | `true` | `false` → phase fully skipped, identical to pre-remediation behaviour |
+| `remediate` | `false` | Opt-in; `false` → phase fully skipped, identical to pre-remediation behaviour. Set `true` to enable. |
 | `remediation_mode` | `"apply_gated"` | `propose` \| `apply_gated` \| `apply_auto` |
 | `hard_stop_categories` | `"crypto,secrets"` | Comma-separated `finding_type` values that bypass the loop entirely |
 | `max_fix_per_run` | `10` | Loop budget — bounds the per-run patch attempts |
