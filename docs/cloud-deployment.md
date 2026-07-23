@@ -203,7 +203,7 @@ populated at runtime:
 | `iterion_mongo_change_stream_lag_seconds` | server | Set on each delivered event |
 | `iterion_nats_pending_messages` | runner | Polled every 15s from JetStream consumer |
 | `iterion_llm_tokens_total{backend,model,direction}` | runner | input/output/cache_read/cache_write |
-| `iterion_llm_cost_usd_total{backend,model}` | runner | Reserved (not yet emitted by hooks) |
+| `iterion_llm_cost_usd_total{backend,model}` | runner | Added per claw-priced call; unknown models leave the counter untouched |
 | `iterion_runner_heartbeat_errors_total` | runner | Each KV lease refresh failure |
 
 Wire a Prometheus PodMonitor:
