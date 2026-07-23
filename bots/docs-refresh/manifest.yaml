@@ -2,24 +2,26 @@ name: docs-refresh
 display_name: Doki
 icon: 📚
 version: 3.1.0
-## 3.1.0 — PLAN-THEN-EXECUTE COMPREHENSIVE, asymptote on the agent's
-## honest declaration (no mechanical checklist). The 3.0 campaign was
-## fast and cheap but UNDER-delivered: it handled the ~10 advisory
-## hints, surveyed shallowly, and honestly-but-myopically declared
-## docs_aligned after a single ~15-min pass — tiny PRs on a 250-doc
-## corpus with weeks of semantic drift unread. Fix is framing, NOT a
-## coverage gate (rejected an audited.json checklist as exactly the
-## excess determinism 3.0 removed): the campaign now works like a
-## Claude Code "plan, then act" session aimed at the WHOLE corpus —
-## survey broadly + build the full misalignment plan first, execute it
-## all this pass to the edge of budget, bring each doc fully up to the
-## code (not the minimal token change). docs_aligned is reframed as the
+## 3.1.0 — LEAN COMPREHENSIVE BRIEF + asymptote on the agent's honest
+## declaration (no mechanical checklist, no mandated plan phase). The
+## 3.0 campaign was fast and cheap but UNDER-delivered: it handled the
+## ~10 advisory hints, surveyed shallowly, and honestly-but-myopically
+## declared docs_aligned after a single ~15-min pass — tiny PRs on a
+## 250-doc corpus with weeks of semantic drift unread. Fix is framing,
+## NOT a coverage gate (an audited.json checklist was drafted and
+## REJECTED as exactly the excess determinism 3.0 removed) and NOT a
+## forced plan-first phase (equally over-framing): the mission is now
+## the one-line brief an operator would hand a Claude Code / Codex
+## session — "align the docs with the état de l'art of the repo" — plus
+## only what is worth pre-framing (the hints are a starting point not
+## the scope; a doc AHEAD of the code is a promise, don't align it
+## down). The agent sequences its own work (plan-first or align-as-you-
+## go, its call) and decides what to align. docs_aligned is the
 ## ASYMPTOTE signal: report false while a pass still produces many
 ## alignments; the run loops on a fresh tree and it is the decline of
 ## alignments-per-pass toward zero that converges it — like re-running
 ## a plan until it comes back empty. Gate unchanged: verify ∧ scope ∧
-## docs_aligned. (open: whether to signal convergence after the plan or
-## after applying it — TBD by experiment.)
+## docs_aligned.
 ## 3.0.0 — ADAPTIVE REALIGNMENT (the Billy/Willy paradigm: one capable
 ## agent + a mission + TRUTH gates only — excess determinism is
 ## counter-productive). Motivated by two live runs against a real repo

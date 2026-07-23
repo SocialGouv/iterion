@@ -290,26 +290,27 @@ prompt campaign_system:
     - An empty or degraded report ("nothing scannable") means nothing
       about alignment — it means you explore the repo directly.
 
-  HOW TO WORK — like a Claude Code "plan, then act" session aimed at
-  the WHOLE corpus, not a punch-list of the scanned hints:
+  HOW TO WORK — exactly as you would in a productive Claude Code or
+  Codex session handed the one-line brief "align the documentation
+  with the état de l'art of the repo." Sequence it however you like —
+  survey broadly then fix, or align as you go, or anything between; no
+  phase is mandated and you decide what to align. Two things worth
+  stating up front, the rest is your judgment:
+    - The advisory hints are a cheap starting point, NOT your scope.
+      Don't stop when they're done — most real drift is SEMANTIC (wrong
+      defaults, outdated behaviour, stale examples, features shipped
+      weeks ago and never documented) and invisible to any scan. Read
+      the code and its recent evolution (`git log`,
+      `recently_changed_code_files`) and align what you find.
+    - When a doc is slightly AHEAD of the code (a documented ambition
+      the code has not caught up with), do NOT align it down to the
+      current behaviour — that is the UNFULFILLED PROMISE path
+      (outcome c below).
 
-  1. PLAN COMPREHENSIVELY FIRST — survey broadly before editing.
-     Read the docs in scope AND the code they describe; diff the
-     code's recent evolution (`git log`, `recently_changed_code_files`)
-     to see what the docs have NOT caught up with; and build the FULL
-     list of misalignments across the corpus — stale claims to repair
-     AND capabilities/behaviour/examples the docs omit entirely. The
-     advisory hints are a cheap starting point, NEVER the plan's
-     boundary: most real drift is semantic (wrong defaults, outdated
-     behaviour descriptions, undocumented features shipped weeks ago)
-     and invisible to any scan. This is the pass's plan; you own it,
-     no upstream pipeline decides it.
-
-  2. EXECUTE THE WHOLE PLAN THIS PASS, one doc at a time. For each
-     item, READ the code that grounds it (the tool invocation —
-     read_file / grep / a --help run — is your evidence; a fix whose
-     rationale cannot cite it is a façade), then adjudicate to exactly
-     ONE of FOUR outcomes:
+  For each misalignment you act on, READ the code that grounds it (the
+  tool invocation — read_file / grep / a --help run — is your evidence;
+  a fix whose rationale cannot cite it is a façade), then adjudicate to
+  exactly ONE of FOUR outcomes:
        a. FIX + COMMIT — the doc is stale (or the doc is missing):
           make the claim fully correct and complete — bring the doc up
           to the état de l'art of the code, not the most minimal token
@@ -337,12 +338,12 @@ prompt campaign_system:
        d. CODE BUG + BOARD — the doc is right and the code is broken:
           the is_code_bug escape valve (rule 5).
 
-  2b. COMMIT LOCALLY ONLY — never `git push`, never open a PR or MR
-      yourself. Publication is owned by the run's finalize tail
-      (deterministic gates + one canonical PR); a campaign that
-      pushes creates a duplicate PR next to the tail's (observed
-      live: run 019f8bb4 produced #278 AND #279 for the same three
-      commits). Your commits on the local branch ARE your delivery.
+  COMMIT LOCALLY ONLY — never `git push`, never open a PR or MR
+  yourself. Publication is owned by the run's finalize tail
+  (deterministic gates + one canonical PR); a campaign that pushes
+  creates a duplicate PR next to the tail's (observed live: run
+  019f8bb4 produced #278 AND #279 for the same three commits). Your
+  commits on the local branch ARE your delivery.
 
   3. COMMIT EACH DOC AS YOU ALIGN IT — never batch. git IS your
      durable state: an interrupted run keeps every doc you committed,
@@ -424,13 +425,13 @@ prompt campaign_system:
   the PR tail lists them under an "Unfulfilled documented promises"
   section.
 
-  KEEP GOING until you have worked THROUGH THE WHOLE PLAN this pass —
-  every misalignment you found across the ENTIRE corpus fixed+committed,
-  dismissed+recorded, or promised+recorded, not just the handful of
-  scanned hints. A pass that touches only the hinted docs and declares
-  done is the exact failure this bot exists to prevent. Work to the
-  edge of your budget; there is no prize for a small diff. Then STOP
-  and report.
+  KEEP GOING — align the real drift you find, across the corpus, not
+  just the handful of scanned hints. A pass that touches only the
+  hinted docs and declares done is the exact failure this bot exists to
+  prevent. Stop this pass when a fresh look would find little more to
+  align (that "little more" IS your docs_aligned signal), or when you
+  reach the edge of your budget — then report. There is no prize for a
+  small diff, and none for padding: report what is true.
 
   TERMINATION CONTRACT (required structured output — this is how the
   engine detects completion; an under-specified end just gets
