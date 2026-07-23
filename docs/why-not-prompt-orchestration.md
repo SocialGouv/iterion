@@ -80,8 +80,9 @@ Approximating this from a prompt requires a cron, a state machine, and a place t
 `sandbox: auto` runs supported LLM/tool execution inside a long-lived container.
 Local Docker/Podman normally bind-mounts the worktree at the same absolute path
 as the host (an explicit `workspace_folder` may choose `/workspace`); Kubernetes
-copies it to `/workspace`. Sandboxing is opt-in, and an active sandbox's network
-mode is `open` by default. Select `network: allowlist` or `denylist` when the
+copies it to `/workspace`. Sandboxing is on by default at the product entry
+points (opt out with `sandbox: none` or `ITERION_SANDBOX_DEFAULT=none`), and an
+active sandbox's network mode is `open` by default. Select `network: allowlist` or `denylist` when the
 CONNECT-proxy boundary is required. See [sandbox.md](sandbox.md).
 
 A prompt orchestrator running on your laptop has the full filesystem and the full network. That's fine for personal use, not fine for unattended runs you might come back to having destroyed something.

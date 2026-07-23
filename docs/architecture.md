@@ -175,8 +175,10 @@ results are protected with a persistent branch; landing is controlled by the
 CLI or studio merge policy. A failed run keeps its worktree for inspection and
 resume.
 
-Sandboxing is a separate, opt-in execution adapter under
-[`pkg/sandbox`](../pkg/sandbox/):
+Sandboxing is a separate execution adapter under
+[`pkg/sandbox`](../pkg/sandbox/), on by default at the product entry points
+(`iterion run`/`resume`, studio, dispatcher; opt out with `sandbox: none` or
+`ITERION_SANDBOX_DEFAULT=none`):
 
 - Docker and Podman keep one long-lived container per run.
 - The local workspace normally stays mounted at its host absolute path; an
