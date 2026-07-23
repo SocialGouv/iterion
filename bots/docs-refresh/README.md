@@ -98,7 +98,7 @@ mr_gate ──(not open_mr)─────────────────�
 | `dismissed_path` | `${PROJECT_SCRATCH_DIR}/docs-refresh/dismissed.json` | Dismissals ledger (cross-pass memory) |
 | `docs_dir` | `docs` | DEFAULT-CREATE target |
 | `baseline` | `""` | Known pre-existing failures to SKIP (G5) |
-| `max_passes` | `8` | Continuation-loop cap |
+| `max_passes` | `4` | Continuation-loop cap |
 | `open_mr` | `false` | Push the alignment series + open ONE PR/MR at the end |
 | `mr_branch` / `mr_base` | `""` | PR branch (default `iterion/docs-refresh/<run-id>`) / base (default: repo default branch) |
 | `source_issue_ref` | `""` | Issue to back-link the PR URL onto (forge URL or `native:<id>`) |
