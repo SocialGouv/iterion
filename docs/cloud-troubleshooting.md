@@ -14,19 +14,24 @@ curl -fsS http://<server-host>:4891/healthz
 curl -fsS http://<server-host>:4891/readyz
 curl -fsS http://<server-host>:4891/metrics | head -20
 
+# The server Deployment is named after the Helm release (`deploy/iterion`
+# for a release named `iterion`); target it by that name or by the
+# `-l app.kubernetes.io/component=server` label. The runner is
+# `<release>-runner` (`-l app.kubernetes.io/component=runner`).
+
 # Runner pool status (Kubernetes)
 kubectl -n <ns> get pods -l app.kubernetes.io/component=runner
 kubectl -n <ns> logs -l app.kubernetes.io/component=runner --tail=200
 
 # Queue depth (NATS)
-nats stream info iterion-runs
-nats consumer info iterion-runs iterion-runners
+nats stream info ITERION_RUNS
+nats consumer info ITERION_RUNS iterion-runners
 
 # Mongo connectivity from server pod
-kubectl -n <ns> exec deploy/iterion-server -- nc -zv <mongo-host> 27017
+kubectl -n <ns> exec deploy/iterion -- nc -zv <mongo-host> 27017
 
 # Blob bucket connectivity from server pod
-kubectl -n <ns> exec deploy/iterion-server -- aws --endpoint-url $S3_ENDPOINT s3 ls s3://$S3_BUCKET/runs/
+kubectl -n <ns> exec deploy/iterion -- aws --endpoint-url $S3_ENDPOINT s3 ls s3://$S3_BUCKET/runs/
 ```
 
 If `/readyz` returns 503: the server can reach itself but cannot reach Mongo, NATS, or blob storage. The body lists which probe failed.
@@ -39,12 +44,12 @@ If `/readyz` returns 503: the server can reach itself but cannot reach Mongo, NA
 
 Diagnose:
 1. `kubectl get pods -l app.kubernetes.io/component=runner` — replicas > 0?
-2. `nats consumer info iterion-runs iterion-runners` — `Num Pending` decreasing? `Num Outstanding Acks` non-zero?
+2. `nats consumer info ITERION_RUNS iterion-runners` — `Num Pending` decreasing? `Num Outstanding Acks` non-zero?
 3. `kubectl logs -l app.kubernetes.io/component=runner --tail=200 | grep -E 'lock|claim|mongo|blob'`
 
 Fix:
 - KEDA scaled to 0 with no runs queued is normal. Submit a run; KEDA should scale up within ~30s. If it doesn't: check `kubectl describe scaledobject iterion-runner` for KEDA controller errors.
-- Lock contention (multiple runners racing on the same run): the loser will see `ErrLockHeld` in logs and Nak the message. Expected — JetStream redelivers. If *all* runners loop on `ErrLockHeld`, the run was leased and orphaned; wait for the 60s TTL or `nats kv del iterion-locks <run-id>` to force release.
+- Lock contention (multiple runners racing on the same run): the loser will see `ErrLockHeld` in logs and Nak the message. Expected — JetStream redelivers. If *all* runners loop on `ErrLockHeld`, the run was leased and orphaned; wait for the 60s TTL or `nats kv del iterion-run-locks <run-id>` to force release.
 - Mongo / blob unreachable: NetworkPolicy or firewall. See [networkpolicy-egress example](../charts/iterion/examples/networkpolicy-egress.yaml).
 
 ### Runs hang in `running` past their `max_duration`
@@ -53,11 +58,11 @@ Fix:
 
 Diagnose:
 1. `iterion inspect --run-id <id> --events | tail -50` (or `kubectl logs … | grep <id>`) — last event before hang?
-2. `nats kv get iterion-locks <run-id>` — is the lease still claimed?
+2. `nats kv get iterion-run-locks <run-id>` — is the lease still claimed?
 3. `kubectl get events -n <ns> --sort-by='.lastTimestamp' | tail -30` — pod evictions, OOM kills?
 
 Fix:
-- If the lease is stale (`status: running` in lease but no runner pod alive): release with `nats kv del iterion-locks <run-id>` and the next runner will pick the run up via JetStream redelivery. The engine resumes from the last checkpoint.
+- If the lease is stale (`status: running` in lease but no runner pod alive): release with `nats kv del iterion-run-locks <run-id>` and the next runner will pick the run up via JetStream redelivery. The engine resumes from the last checkpoint.
 - If the run was OOM-killed: increase `runner.resources.limits.memory` in your values overlay; some workflows (especially `claude_code` with long context) need ≥ 2 GiB.
 - If the sandbox container is orphaned: `docker ps --filter ancestor=ghcr.io/socialgouv/iterion-sandbox-slim` from the runner host shows lingering containers. Restart the runner pod; the engine drains and recreates sandboxes per run.
 
@@ -66,8 +71,8 @@ Fix:
 **Probable cause**: server cannot reach Mongo at the configured `ITERION_MONGO_URI`.
 
 Diagnose:
-1. `kubectl exec deploy/iterion-server -- env | grep MONGO`
-2. `kubectl exec deploy/iterion-server -- nc -zv <mongo-host> 27017`
+1. `kubectl exec deploy/iterion -- env | grep MONGO`
+2. `kubectl exec deploy/iterion -- nc -zv <mongo-host> 27017`
 3. `kubectl get networkpolicy -n <ns>` — does the egress allow port 27017 to the Mongo namespace?
 
 Fix:
@@ -75,12 +80,12 @@ Fix:
 - NetworkPolicy: see [networkpolicy-egress example](../charts/iterion/examples/networkpolicy-egress.yaml). The chart's default egress allows DNS only; cluster traffic is *not* implicit.
 - TLS mismatch: cloud Mongo (Atlas, etc.) often requires TLS — set `ITERION_MONGO_URI=mongodb+srv://...?tls=true&retryWrites=true`.
 
-### `/readyz` 503 with `blob: AccessDenied`
+### `/readyz` 503 with `s3: AccessDenied`
 
 **Probable cause**: S3 credentials are wrong, the bucket doesn't exist, or the bucket policy denies the iterion server.
 
 Diagnose:
-1. `kubectl exec deploy/iterion-server -- env | grep -E 'S3|AWS'`
+1. `kubectl exec deploy/iterion -- env | grep -E 'S3|AWS'`
 2. From inside the pod: `aws --endpoint-url $S3_ENDPOINT s3 ls s3://$S3_BUCKET/`
 3. Check the bucket policy / IAM role for the access key.
 
@@ -95,13 +100,13 @@ Fix:
 
 Diagnose:
 1. Browser devtools → Network → filter on `Upgrade: websocket`. Does the handshake return 101?
-2. `kubectl logs deploy/iterion-server | grep -E 'eventstream|ws|tenant'`
+2. `kubectl logs deploy/iterion | grep -E 'eventstream|ws|tenant'`
 3. `iterion inspect --run-id <id> --events` from a TTY against the same store: do events exist?
 
 Fix:
 - 101 handshake fails behind a proxy: configure the Ingress to pass WebSocket Upgrade. Example for nginx ingress: `nginx.ingress.kubernetes.io/proxy-set-header: "Upgrade $http_upgrade"`.
 - Events exist but the stream is empty: the studio is filtering by tenant mismatch. Re-login to refresh the JWT.
-- MongoSource unwired: confirm `ITERION_MODE=cloud` is set on the server. Without it, `runview.service` defaults to `FilesystemSource` which won't see Mongo events.
+- MongoSource unwired: confirm `ITERION_MODE=cloud` is set on the server. Without it, `runview.service` defaults to the filesystem event source (`runstream.FileSource`) which won't see Mongo events.
 
 ### Runs fail with `budget_exceeded` immediately
 
@@ -112,7 +117,11 @@ Diagnose:
 2. Inspect the `.bot` source's `budget:` block.
 
 Fix:
-- Raise the workflow source's `budget:` block (`max_cost_usd` / `max_tokens`) and resume the run; iterion has no per-run CLI override for these caps.
+- Raise the cap and resume. Either edit the workflow source's `budget:`
+  block (`max_cost_usd` / `max_tokens`), or — with no source edit — pass a
+  per-run override on resume: `iterion resume --run-id <id> --max-cost-usd <n>`
+  (the same `--max-cost-usd` / `--max-tokens` / `--max-duration` /
+  `--max-iterations` / `--max-parallel-branches` flags accepted by `iterion run`).
 - For long-running review-fix loops, raise `max_iterations` too — a low cap forces premature termination.
 
 ### `iterion bench asymptote` shows all runs at iteration 0

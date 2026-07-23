@@ -34,11 +34,11 @@ remediation** bot. Six new capabilities, all in `bots/sec-audit-source/main.bot`
 | # | Capability | Vars (default) | Skill |
 |---|---|---|---|
 | 1 | **Project security context** — `.sec-audit/context.md` (threat model + auth model + known-FP sources). Loaded or auto-generated on first run; injected into triage + every voter prompt as authoritative scoping (NOT instructions). | `enable_project_context=true`, `context_path=…/.sec-audit/context.md`, `context_ttl_days=90`, `force_context_refresh=false` | [`project-context.md`](../bots/sec-audit-source/skills/project-context.md), [`threat-model.md`](../bots/sec-audit-source/skills/threat-model.md) |
-| 2 | **N-vote adversarial revalidation** — the single judge becomes a **fixed pool of 3 independent cross-family "disprove" voters** (v1/v3 = claw + gpt-5.5, v2 = claude_code + opus-4-8). Majority drives the verdict; `await: best_effort` tolerates one crashed voter. Voters consult `git log`/`git blame` for `fixed_recently` / `introduced_recently` signals. Unanimous dismiss with a cited guard appends to `fp-known.yaml`. | `confirm_threshold=2`, `fp_append_policy="unanimous_dismiss"` | [`disprove-voting.md`](../bots/sec-audit-source/skills/disprove-voting.md) |
+| 2 | **N-vote adversarial revalidation** — the single judge becomes a **fixed pool of 3 independent "disprove" voters** (all three default to `claude_code` + `claude-opus-4-8` — opus-first out of the box; restore cross-family diversity by overriding the per-voter model/backend env vars, or the opt-in `ITERION_SEC_AUDIT_PROVIDER_CHAIN` GLM lane). Majority drives the verdict; `await: best_effort` tolerates one crashed voter. Voters consult `git log`/`git blame` for `fixed_recently` / `introduced_recently` signals. Unanimous dismiss with a cited guard appends to `fp-known.yaml`. | `confirm_threshold=2`, `fp_append_policy="unanimous_dismiss"` | [`disprove-voting.md`](../bots/sec-audit-source/skills/disprove-voting.md) |
 | 3 | **Diff/incremental mode** — when set, scopes triage to files changed between the working tree and `git merge-base <diff_base> HEAD` (mirrors `code-review` `diff_precheck` shape). Scanners still walk the whole tree; the narrowing happens at triage via `file_filter`. Empty = full scan. | `diff_base=""` (try `main`, `origin/main`, or `HEAD` for uncommitted-only) | (handled by `diff_scope` tool node) |
 | 4 | **Optional deepsec scanner backend** — runs `deepsec init/scan/process/export` headlessly from the workspace; the JSON is ingested by triage like any other scanner. Reuses the local `claude` subscription when no AI Gateway key is set. Requires Node 22 + a deepsec clone. ALWAYS exits 0 — a missing binary degrades gracefully. | `enable_deepsec=false`, `deepsec_concurrency=4`, `deepsec_process_limit=50`, `deepsec_root="${HOME}/lab/ai/references/deepsec"` | [`scanner-deepsec.md`](../bots/sec-audit-source/skills/scanner-deepsec.md), see also [references-bootstrap.md](references-bootstrap.md) |
-| 5 | **Integrated remediation phase** — per confirmed finding: `patch_author` → `build_rung` → `reproduce_rung` (original scanner rule no longer fires) → `regress_rung` (tests pass) → `reattack` (fresh judge probes the vuln CLASS across the package) → `reviewer_isolation` (judge sees only `{file, line, category, diff}` — schema-enforced) → `aggregate_verdict`. In apply modes, verified patches commit to a temp branch `iterion/sec-fix/<run-id>`; `apply_gated` PAUSES on a human gate (`iterion resume --run-id <id> --answer approved=true\|false`) before merging `--no-ff` to the user's branch; `apply_auto` skips the gate; `propose` only writes diffs. Crypto + secrets are always hard-stopped. | `remediate=true`, `remediation_mode="apply_gated"`, `hard_stop_categories="crypto,secrets"`, `max_fix_per_run=10`, `patch_attempts=1`, `patch_dir=…/.sec-audit/patches` | [`security-patcher.md`](security-patcher.md), [`patch.md`](../bots/sec-audit-source/skills/patch.md), [`reattack-oracles.md`](../bots/sec-audit-source/skills/reattack-oracles.md), [`reviewer-isolation.md`](../bots/sec-audit-source/skills/reviewer-isolation.md), [`crypto-handling.md`](../bots/sec-audit-source/skills/crypto-handling.md) |
-| 6 | **Env-overridable cost-tier backend** — the whole bot can run on a Claude Code subscription with no API key. Override `ITERION_SEC_AUDIT_BACKEND=claude_code` (default `claw`) and the matching model vars. Voters can mix families (default keeps cross-family signal: v2 on `claude_code` + opus-4-8). | `ITERION_SEC_AUDIT_BACKEND` (`claw`), `ITERION_SEC_AUDIT_MODEL` (`openai/gpt-5.5`), `ITERION_SEC_AUDIT_VOTER_V1_MODEL`, `ITERION_SEC_AUDIT_VOTER_V3_MODEL` (`openai/gpt-5.5`), `ITERION_SEC_AUDIT_VOTER_V2_MODEL` (`claude-opus-4-8`), `ITERION_SEC_PATCH_MODEL` (`claude-opus-4-8`) | (env overrides on `agent`/`judge` declarations in `main.bot`) |
+| 5 | **Integrated remediation phase** — per confirmed finding: `patch_author` → `build_rung` → `reproduce_rung` (original scanner rule no longer fires) → `regress_rung` (tests pass) → `reattack` (fresh judge probes the vuln CLASS across the package) → `reviewer_isolation` (judge sees only `{file, line, category, diff}` — schema-enforced) → `aggregate_verdict`. In apply modes, verified patches commit to a temp branch `iterion/sec-fix/<run-id>`; `apply_gated` PAUSES on a human gate (`iterion resume --run-id <id> --answer approved=true\|false`) before merging `--no-ff` to the user's branch; `apply_auto` skips the gate; `propose` only writes diffs. Crypto + secrets are always hard-stopped. | `remediate=false` (opt-in), `remediation_mode="apply_gated"`, `hard_stop_categories="crypto,secrets"`, `max_fix_per_run=10`, `patch_attempts=1`, `patch_dir=…/.sec-audit/patches` | [`security-patcher.md`](security-patcher.md), [`patch.md`](../bots/sec-audit-source/skills/patch.md), [`reattack-oracles.md`](../bots/sec-audit-source/skills/reattack-oracles.md), [`reviewer-isolation.md`](../bots/sec-audit-source/skills/reviewer-isolation.md), [`crypto-handling.md`](../bots/sec-audit-source/skills/crypto-handling.md) |
+| 6 | **Env-overridable cost-tier backend** — the whole bot runs on a Claude Code subscription with no API key **by default** (`ITERION_SEC_AUDIT_BACKEND` defaults to `claude_code`, models to `claude-opus-4-8` — opus-first out of the box, so triage stops stalling on the heavy input). Flip the spine (triage/voters/report) to the metered `claw` + `openai/gpt-5.5` / GLM lane via the env vars (or the opt-in `ITERION_SEC_AUDIT_PROVIDER_CHAIN`). `detect_tech` keeps its own cheap `claw`/`gpt-5.5` default so flipping the spine can't drag the classifier onto an incompatible model. | `ITERION_SEC_AUDIT_BACKEND` (`claude_code`), `ITERION_SEC_AUDIT_MODEL` (`claude-opus-4-8`), `ITERION_SEC_AUDIT_VOTER_V1_MODEL` / `_V2_MODEL` / `_V3_MODEL` (`claude-opus-4-8`), `ITERION_SEC_AUDIT_DETECT_BACKEND` (`claw`) / `ITERION_SEC_AUDIT_DETECT_MODEL` (`openai/gpt-5.5`), `ITERION_SEC_PATCH_MODEL` (`claude-opus-4-8`) | (env overrides on `agent`/`judge` declarations in `main.bot`) |
 
 End-to-end on the subscription, no API key, with the default gated remediation:
 
@@ -62,9 +62,9 @@ depth (ladder rungs, modes, temp-branch + human-gate flow, crypto/secrets
 hard-stop) and [`references-bootstrap.md`](references-bootstrap.md) for the
 deepsec + harness clone setup and `ITERION_REFERENCES_ROOT`.
 
-The budget headroom was bumped from `$25` to `$70/run` to absorb the 3-voter
-pool + the remediation ladder; lower `ITERION_SEC_AUDIT_EFFORT_VOTER` to claw
-budget back on small repos.
+The budget headroom is `max_cost_usd: 150` per run (bumped 25 → 70 → 150) to
+absorb the 3-voter pool + a full remediation ladder on large repos; lower
+`ITERION_SEC_AUDIT_EFFORT_VOTER` to claw budget back on small repos.
 
 ## Architectural patterns shared by both
 
@@ -145,7 +145,7 @@ one router branch per language**. Adding a language:
 
 V1 ships:
 - `sec-audit-source`: JS/TS, Go, Python + always-on generic (gitleaks
-  + trivy + semgrep auto).
+  + trivy + semgrep `p/default`).
 - `sec-audit-deps`: npm/yarn/pnpm, pip/poetry/uv, go modules +
   always-on generic.
 
@@ -191,7 +191,7 @@ target similar problems with different ergonomics. Trade-offs:
 | Remediation / patch | none (scan only) | Verification-ladder remediation phase (build → reproduce → regress → reattack → reviewer-isolation), three modes (`propose` / `apply_gated` / `apply_auto`), crypto/secrets hard-stop. See [`security-patcher.md`](security-patcher.md) |
 | Operator-visible FP suppression | `revalidate` verdicts in workspace | Committed `.sec-audit/fp-known.yaml` (appended only on unanimous-dismiss + cited guard) |
 | Integration with project boards / dispatcher | None built-in | Native: each finding is a kanban issue, then `remediation_report` labels it with the per-finding ladder outcome |
-| Budget headroom | Tuned for $1000s/scan large monorepos | `max_cost_usd=70` per run (bumped from 25 to absorb voters + ladder); cloud mode scales further |
+| Budget headroom | Tuned for $1000s/scan large monorepos | `max_cost_usd=150` per run (bumped 25 → 70 → 150 to absorb voters + ladder); cloud mode scales further |
 
 ## Comparison with no-package-malware
 

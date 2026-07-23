@@ -82,8 +82,9 @@ iterion import flow.js --dry-run --json                       # machine-readable
 2. Fill every `hole_N` var (or replace the ref with real DSL) and
    resolve every `## IMPORT TODO`.
 3. `iterion validate <draft>.bot`, then a dogfood run.
-4. Promote it to a bundle when it earns a manifest: `iterion bundle
-   init` and move the workflow in.
+4. Promote it to a bundle when it earns a manifest: scaffold one with
+   `iterion bots create <slug>` and move the workflow into it (`iterion
+   bundle` only exposes `pack`; `bundle init` was retired).
 
 ## In the studio
 

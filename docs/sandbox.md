@@ -510,7 +510,7 @@ your repo root and `sandbox: auto` will pick them up.
 | `codex`       | partially sandboxed (host CLI; codex has its own internal sandbox) |
 | `claw`        | **sandboxed via runner sub-process** (Phase 4 V1) — see below |
 | Tool nodes    | **fully sandboxed** (`sh -c` runs inside the container) |
-| MCP servers   | partially sandboxed (host-side stdio; container-side MCP servers in V2) |
+| MCP servers   | iterion's built-in board + ask-user MCP reach a sandboxed `claude_code` over a per-run HTTP transport (see [MCP tools in a sandbox](#mcp-tools-in-a-sandbox)); arbitrary user-declared stdio MCP servers stay host-side |
 
 ### Claw backend in sandbox
 
@@ -572,6 +572,25 @@ across the channel.
   envelope, the runner stashes the snapshot, then loads it into its
   local store once the task arrives so applySessionMessages
   prepends the replayed prior messages to the LLM's first call.
+
+### MCP tools in a sandbox
+
+iterion's built-in MCP tools reach a sandboxed `claude_code` node over a
+**per-run HTTP transport** instead of the host stdio pipe the container
+cannot see:
+
+- **board capabilities** (`board.*`) — served at `/api/v1/mcp/board`
+  ([pkg/server/mcp_board_handler.go](../pkg/server/mcp_board_handler.go));
+- **interactive questions** (`ask_user`, `ask_user_async`,
+  `await_answers`) — served at `/api/v1/mcp/ask-user`
+  ([pkg/askusermcp/http.go](../pkg/askusermcp/http.go)).
+
+Each request is authenticated by an ephemeral `X-Iterion-Run` token the
+runtime mints and registers for the run, so a sandboxed agent can call
+these tools but nothing else can. Outside a sandbox the same capabilities
+are wired as host-side stdio MCP servers (`iterion __mcp-board` /
+`iterion __mcp-ask-user`). Arbitrary user-declared stdio MCP servers still
+run host-side; running them container-side is a future item.
 
 ## Drivers
 

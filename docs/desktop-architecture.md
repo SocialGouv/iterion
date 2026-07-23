@@ -210,6 +210,8 @@ flips the right CGO/cross flags).
 | `cmd/iterion-desktop/window_state.go` | Persisted geometry |
 | `cmd/iterion-desktop/single_instance.go` + `_unix.go` + `_windows.go` | Single-instance + IPC |
 | `cmd/iterion-desktop/server_host.go` | In-process `cli.RunStudio` fallback when daemon attach is disabled or fails |
+| `cmd/iterion-desktop/daemon_spawn.go` + `daemon_discovery.go` | Per-project studio daemon: spawn (logs to `~/.iterion/daemons/<key>.log`) + registry discovery, so a GUI pane attaches to a running `iterion studio` daemon |
+| `cmd/iterion-desktop/cloud.go` + `cloud_client.go` + `connections.go` | Multi-connection workspace: cloud-connection bindings + per-account token jar, and per-connection iframe panes served at `/x/<connID>/` |
 | `cmd/iterion-desktop/config.go` | User config (no build tag — testable) |
 | `cmd/iterion-desktop/keychain.go` | go-keyring wrapper |
 | `cmd/iterion-desktop/external_cli.go` | claude/codex/git detection |

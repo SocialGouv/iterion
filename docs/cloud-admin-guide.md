@@ -138,8 +138,9 @@ Two scopes: tenant rows (visible to the org's admins at
 ### 1.6 User admin — force a password rotation
 
 ```bash
-# Find the user.
-curl "https://iterion.example.com/api/admin/users?email=alice@acme.example"
+# List users (paginated with ?offset=&limit=; there is no ?email= filter —
+# page through and match client-side, or read a known user by id).
+curl "https://iterion.example.com/api/admin/users?limit=200"
 
 # Force a password change on next login.
 curl -X PATCH https://iterion.example.com/api/admin/users/$USER_ID \
@@ -154,7 +155,7 @@ while keeping their data.
 
 ### 1.7 DLQ triage
 
-When a run exhausts its NATS redelivery budget (default 3) the runner
+When a run exhausts its NATS redelivery budget (default 8) the runner
 **parks** a copy on the DLQ stream and flips the run to
 `failed_resumable` ([pkg/runner/loop.go](../pkg/runner/loop.go), look
 for `parking on DLQ`). Triage:
@@ -190,8 +191,9 @@ shows an eternal spinner, `iterion resume` rejects ("not a resumable
 status"). The orphan sweeper closes that gap
 ([pkg/server/queue_sweeper.go](../pkg/server/queue_sweeper.go)):
 
-- Scans every 60s for `queued > 20 min` or `running > 10 min` AND no
-  current NATS-KV lease.
+- Scans every 60s for `queued` past the redelivery window + margin
+  (~90 min with the defaults) or `running > 10 min` AND no current
+  NATS-KV lease.
 - CAS-flips matched rows to `failed_resumable` so `iterion resume` (or
   the studio Retry button) lights up.
 - Bumps `iterion_runs_orphan_recovered_total`. Set the
@@ -333,10 +335,11 @@ The full binding resolution chain (user > binding > team) and what
 
 ### 2.3 Watch usage
 
-UI path: `/teams/<id>` → Usage.
+UI path: `/teams/<id>` → Usage. The run/cost counters are **org-scoped**
+(they sum every team in the org), so the API is keyed on the org:
 
 ```bash
-curl https://iterion.example.com/api/teams/$TEAM_ID/usage
+curl https://iterion.example.com/api/orgs/$ORG_ID/usage
 ```
 
 The view fields are documented in
@@ -371,9 +374,10 @@ curl -X POST https://iterion.example.com/api/teams/$TEAM_ID/invitations \
 UI path: `/teams/<id>` → Members → "Invite".
 
 When SMTP is configured, the new member receives an email with a link
-to `/auth/invitations/lookup?token=…` and creates an account from
-there. Without SMTP, the in-band response token must be sent to them
-out-of-band (email / chat / SMS).
+to `${PUBLIC_URL}/invitations/accept?token=…` (the SPA accept page,
+which resolves the token via `GET /api/auth/invitations/lookup`) and
+creates an account from there. Without SMTP, the in-band response token
+must be sent to them out-of-band (email / chat / SMS).
 
 Invitations expire in 7 days; revoke with
 `DELETE /api/teams/{id}/invitations/{invite_id}`.

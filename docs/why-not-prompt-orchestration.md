@@ -31,7 +31,7 @@ The moment you want any of the properties below, prompt-orchestration starts hit
 
 ### 1. Deterministic DAG
 
-The same `.bot` file produces the same graph of nodes and edges every time. The compiler and validators under [`pkg/dsl/ir/`](../pkg/dsl/ir/) turn the AST into an IR and emit sparse DSL diagnostic codes in C001–C199 for structural problems *before* you spend a token; bundle checks use C200–C230.
+The same `.bot` file produces the same graph of nodes and edges every time. The compiler and validators under [`pkg/dsl/ir/`](../pkg/dsl/ir/) turn the AST into an IR and emit sparse DSL diagnostic codes in C001–C199 (plus the async-interaction band C240–C242) for structural problems *before* you spend a token; bundle checks use C200–C230.
 
 With a prompt orchestrator, the topology is re-decided on every run. That's a feature for exploration and a bug for reproducibility — you can't diff "what changed between run 7 and run 8" if both runs invented their own plan.
 
@@ -80,8 +80,9 @@ Approximating this from a prompt requires a cron, a state machine, and a place t
 `sandbox: auto` runs supported LLM/tool execution inside a long-lived container.
 Local Docker/Podman normally bind-mounts the worktree at the same absolute path
 as the host (an explicit `workspace_folder` may choose `/workspace`); Kubernetes
-copies it to `/workspace`. Sandboxing is opt-in, and an active sandbox's network
-mode is `open` by default. Select `network: allowlist` or `denylist` when the
+copies it to `/workspace`. Sandboxing is on by default at the product entry
+points (opt out with `sandbox: none` or `ITERION_SANDBOX_DEFAULT=none`), and an
+active sandbox's network mode is `open` by default. Select `network: allowlist` or `denylist` when the
 CONNECT-proxy boundary is required. See [sandbox.md](sandbox.md).
 
 A prompt orchestrator running on your laptop has the full filesystem and the full network. That's fine for personal use, not fine for unattended runs you might come back to having destroyed something.

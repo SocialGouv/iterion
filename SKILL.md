@@ -72,14 +72,16 @@ Use one of the five session modes:
 fresh | inherit | inherit_if_available | fork | artifacts_only
 ```
 
-Use one of the five interaction values:
+Use one of the six interaction values:
 
 ```text
-none | human | llm | llm_or_human | review
+none | human | llm | llm_or_human | review | async
 ```
 
 `none` rejects mid-step interaction on agents/judges. An explicit `none` on a
 human node currently follows the normal human-pause path; prefer `human` there.
+`async` lets an agent/judge post non-blocking `ask_user_async` questions and
+sync on demand via `await_answers`.
 
 ## Route and converge
 

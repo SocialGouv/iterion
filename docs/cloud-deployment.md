@@ -116,6 +116,33 @@ auth bootstrap routes remain public.
 For rotation details, including JWT signing-key rotation and
 `ITERION_SECRETS_KEY` impact, see [cloud-admin.md](cloud-admin.md).
 
+## Queue connection (NATS JetStream)
+
+Cloud mode routes runs through a NATS JetStream queue: the server publishes
+RunMessages, the runner pool pulls them. `ITERION_NATS_URL` is **required when
+`ITERION_MODE=cloud`** — the server refuses to start with `ITERION_NATS_URL
+required when mode=cloud` otherwise. The stream / bucket / DLQ names and the
+JetStream tuning knobs have working defaults
+([pkg/queue/nats/nats.go](../pkg/queue/nats/nats.go)); override them only to
+match an existing cluster (a `0` on a numeric/duration knob inherits the
+default).
+
+| Env var | Purpose |
+|---|---|
+| `ITERION_NATS_URL` | JetStream connection string (`nats://[user:pass@]host:4222`) — **required in cloud mode** |
+| `ITERION_NATS_STREAM` | Runs stream name (default `ITERION_RUNS`) |
+| `ITERION_NATS_KV_BUCKET` | Per-run distributed-lease KV bucket (default `iterion-run-locks`) |
+| `ITERION_NATS_DLQ_STREAM` | Dead-letter stream for max-deliver-exhausted messages (default `ITERION_RUNS_DLQ`) |
+| `ITERION_NATS_MAX_ACK_PENDING` | Fleet-wide in-flight (delivered-unacked) ceiling on the durable consumer |
+| `ITERION_NATS_MAX_DELIVER` | Redelivery budget before a message parks on the DLQ (default 8) |
+| `ITERION_NATS_ACK_WAIT` | Per-message ack deadline, refreshed by runner heartbeats |
+| `ITERION_NATS_MAX_AGE` / `ITERION_NATS_DLQ_MAX_AGE` | Runs-stream / DLQ retention |
+| `ITERION_NATS_MAX_PAYLOAD` | Max message size |
+
+The queue's internal semantics (the `MaxAckPending` fleet ceiling, `AckWait`
+heartbeats, DLQ parking, the orphan sweeper) are covered in
+[cloud-architecture.md § Queue internals](cloud-architecture.md#queue-internals).
+
 ## Shared replica state (Valkey / Redis)
 
 Some server state is per-pod and must be shared when you run **more than
@@ -140,34 +167,36 @@ short round-trip timeout rather than blocking the request path.
 ## NetworkPolicy egress
 
 `values-prod.yaml` ships with `networkPolicy.enabled=true` + an empty
-`extraAllow` so the cluster default-denies egress except DNS. Add
-explicit rules for Mongo, NATS, S3, and the LLM provider:
+`networkPolicy.egress.extraAllow` so the cluster default-denies egress
+except DNS. Add explicit rules for Mongo, NATS, S3, and the LLM
+provider (the allowlist is nested under `egress`):
 
 ```yaml
 networkPolicy:
   enabled: true
-  extraAllow:
-    # In-cluster Mongo (same namespace)
-    - to:
-        - podSelector:
-            matchLabels:
-              app.kubernetes.io/name: mongodb
-      ports:
-        - protocol: TCP
-          port: 27017
-    # External LLM provider (Anthropic)
-    - to:
-        - ipBlock:
-            cidr: 0.0.0.0/0
-      ports:
-        - protocol: TCP
-          port: 443
+  egress:
+    extraAllow:
+      # In-cluster Mongo (same namespace)
+      - to:
+          - podSelector:
+              matchLabels:
+                app.kubernetes.io/name: mongodb
+        ports:
+          - protocol: TCP
+            port: 27017
+      # External LLM provider (Anthropic)
+      - to:
+          - ipBlock:
+              cidr: 0.0.0.0/0
+        ports:
+          - protocol: TCP
+            port: 443
 ```
 
 The chart synthesises a single egress block from the union of
-defaults + `extraAllow`. There is no auto-detection of bundled
+defaults + `egress.extraAllow`. There is no auto-detection of bundled
 sub-charts; if you also bundle Mongo via `mongodb.enabled`, add the
-matching `extraAllow` entry.
+matching `egress.extraAllow` entry.
 
 ## NATS monitoring endpoint (KEDA)
 
@@ -190,7 +219,8 @@ config:
 ## Metrics & dashboards
 
 The server + runner expose `/metrics` on `:9090` (configurable via
-`config.metrics.port`). Counters/gauges are documented at
+`server.metricsPort` / `runner.metricsPort`, or the `ITERION_METRICS_PORT`
+env var). Counters/gauges are documented at
 [pkg/cloud/metrics/metrics.go](../pkg/cloud/metrics/metrics.go) and
 populated at runtime:
 
@@ -203,7 +233,7 @@ populated at runtime:
 | `iterion_mongo_change_stream_lag_seconds` | server | Set on each delivered event |
 | `iterion_nats_pending_messages` | runner | Polled every 15s from JetStream consumer |
 | `iterion_llm_tokens_total{backend,model,direction}` | runner | input/output/cache_read/cache_write |
-| `iterion_llm_cost_usd_total{backend,model}` | runner | Reserved (not yet emitted by hooks) |
+| `iterion_llm_cost_usd_total{backend,model}` | runner | Added per claw-priced call; unknown models leave the counter untouched |
 | `iterion_runner_heartbeat_errors_total` | runner | Each KV lease refresh failure |
 
 Wire a Prometheus PodMonitor:
@@ -234,7 +264,7 @@ Configure the OTLP exporter via standard env vars:
 
 ```yaml
 config:
-  env:
+  extraEnv:
     OTEL_EXPORTER_OTLP_ENDPOINT: "http://tempo.observability:4318"
     OTEL_SERVICE_NAMESPACE: "iterion"
     OTEL_RESOURCE_ATTRIBUTES: "deployment.environment=prod"

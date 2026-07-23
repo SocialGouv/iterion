@@ -8,7 +8,7 @@ an approval before a deploy, a missing requirement only a human knows, a
 first-class, **resumable** part of the graph: a run can pause, wait for a
 human (for seconds or for days), and pick up exactly where it left off.
 
-This page covers the `human` node, the five accepted interaction values, the form
+This page covers the `human` node, the six accepted interaction values, the form
 the studio renders, and every way to answer (studio, CLI, HTTP).
 
 ## The `human` node
@@ -94,6 +94,7 @@ flowchart TD
 | `llm_or_human` | The LLM answers when confident, else escalates to a human. | Cut routine pauses while keeping a human backstop. |
 | `review` | A companion LLM walks a reviewer through testing the change, ending in a squash-merge — see [review-merge-gate.md](review-merge-gate.md). | Ship gates. |
 | `none` | On `agent`/`judge`, a mid-step interaction request is rejected instead of pausing. An explicit `none` on a `human` node currently follows the normal human-pause path. | Disable interaction capability on LLM nodes; prefer the default `human` value for human nodes. |
+| `async` | On `agent`/`judge`, the node posts **non-blocking** questions via `ask_user_async` and keeps working; answers arrive in its node-scoped inbox and an `await_answers` node is the discretionary sync point (**ADR-081**). | Long-running agents that need a clarification without stalling — see [async-interaction.md](async-interaction.md). |
 
 Modes are also why the same workflow can run fully autonomously in cloud
 mode (LLM answers) and interactively on a desk (human answers) with no

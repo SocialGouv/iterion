@@ -16,7 +16,8 @@ metadata + events in **MongoDB**, artifact bytes in **S3**, and
 publishes work onto a **NATS JetStream** subject the runner pool
 drains. Auth, multitenancy, BYOK and OAuth-forfait sit entirely on
 the server side: every request is gated by a JWT that carries the
-caller's `tenant_id` (active team), and the server seals tenant-
+caller's active `org_id` + `team_id` (the store layer partitions on
+that team id under a `tenant_id` field), and the server seals tenant-
 scoped credentials per-run before the runner unseals + injects them
 into the engine ctx.
 

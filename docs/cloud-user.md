@@ -14,8 +14,11 @@ The login page surfaces every auth method your operator has
 enabled. The basic two:
 
 - **Email + password.** Use the credentials your team admin sent
-  you. Argon2id at rest, refresh tokens auto-rotate every 15
-  minutes, full session expires after 30 days of inactivity.
+  you. Argon2id at rest; the access token lasts 15 minutes and is
+  silently rotated via the refresh token when it expires. Each
+  rotation mints a fresh 30-day refresh session, so continuous use
+  keeps you signed in while an idle session lapses 30 days after its
+  last rotation.
 - **Single sign-on.** One button per configured provider
   (Google, GitHub, your company's SSO). Clicking it redirects to
   the IdP, then back to iterion with a session cookie set.
@@ -35,8 +38,8 @@ The chip in the top-right of the studio surfaces the active team;
 clicking it lets you:
 
 - Switch teams. The server re-bakes a fresh access JWT bound to the
-  new `tenant_id`. All studio surfaces (run list, files panel,
-  settings) follow.
+  new `team_id` (the resource-tenant claim). All studio surfaces (run
+  list, files panel, settings) follow.
 - Open the team admin page (`/teams/<id>`) where you can:
   - invite teammates with a role (viewer / member / admin / owner)
     and copy the one-time invitation token to send via email or
@@ -80,7 +83,7 @@ plaintext. The UI only shows `last4` + a fingerprint so you can
 distinguish two keys for the same provider.
 
 Supported providers: Anthropic, OpenAI, AWS Bedrock, GCP Vertex,
-Azure (Foundry), OpenRouter, xAI.
+Azure (Foundry), OpenRouter, xAI, z.ai.
 
 ## 4. OAuth subscriptions (Claude Pro/Max + ChatGPT)
 
@@ -165,7 +168,7 @@ you leave the pinned team. The operator may cap token lifetimes
 `/teams/<id>` → Usage shows the month's consumption against your org's
 limits: runs vs quota, metered LLM cost vs cap, live concurrency,
 webhook calls, memory bytes, key/secret/webhook counts. The same data
-is at `GET /api/teams/{id}/usage`. Denial semantics when a cap is hit:
+is at `GET /api/orgs/{id}/usage`. Denial semantics when a cap is hit:
 [quotas-and-limits.md](quotas-and-limits.md).
 
 ## 9. Common errors
@@ -190,3 +193,26 @@ is at `GET /api/teams/{id}/usage`. Denial semantics when a cap is hit:
 - **Audit log**: every OAuth-forfait use is logged with your user
   id, run id and kind. Operators can review it for cost attribution
   and CGU defence-in-depth.
+
+## 11. Editing and creating bots
+
+The bot **catalog** shipped with the instance is read-only (baked into
+the runner image). To customise a bot or write your own, the studio's
+bot editor saves into a **team-authored bot store** — the bundle lives
+with your team, not on a pod's ephemeral filesystem, so it survives
+restarts and every team member can launch it.
+
+- **Fork a catalog bot** to get an editable copy of its whole bundle
+  (`main.bot` + `manifest.yaml` + `skills/`…), then edit it.
+- **Author a new bot** from scratch in the multi-file editor.
+- Every save **compiles the bundle first** — a bot that doesn't compile
+  is rejected with its diagnostics rather than failing later at launch.
+- Concurrent edits are guarded: if a teammate saved between your load
+  and your save, you get a conflict and re-load.
+
+Editing is gated: you need the **bot-editor capability**, or to be a
+team admin or owner — a bot runs in every member's context, so authoring
+one is team automation policy, not a personal setting. (If your operator
+hasn't wired a bot store, the editor reports that bot editing is not
+enabled.) The underlying API is documented in
+[cloud-rest-api.md → Team bot sources](cloud-rest-api.md#team-bot-sources-cloud-bot-editing).

@@ -42,7 +42,7 @@ schedules:
       label_source: sec-audit-self
     description: Weekly SAST self-audit  # optional; emitted as a crontab comment
     disabled: false                      # keep in the manifest, leave out of the crontab
-    overlap: skip                        # optional: skip (default) | allow — see "Overlap policy"
+    overlap: skip                        # optional: skip (default) | allow | keepalive — see "Overlap policy"
     max_concurrent: 0                    # optional, with overlap: allow — cap on live runs (0 = unlimited)
     guard: ""                            # optional pre-launch sh -lc gate — see "Guard command"
     guard_timeout: "30s"                 # optional guard subprocess timeout
@@ -59,7 +59,7 @@ to that workspace store.
 
 | Command | What it does |
 |---|---|
-| `iterion schedule add <name> --cron … --bot … [--workdir …] [--var k=v]… [--store-dir …] [--sandbox …] [--timeout …] [--description …] [--disabled]` | Add or update an entry (upsert by name). |
+| `iterion schedule add <name> --cron … --bot … [--workdir …] [--var k=v]… [--store-dir …] [--sandbox …] [--timeout …] [--description …] [--disabled] [--overlap skip\|allow\|keepalive] [--max-concurrent N] [--stale-after 5m] [--guard …] [--guard-timeout 30s] [--guard-var guard_output]` | Add or update an entry (upsert by name). Overlap, keepalive (`--stale-after`), and guard flags mirror the manifest fields — see "Overlap policy", "Always-on agents", and "Guard command". |
 | `iterion schedule list [--json]` | List manifest entries. |
 | `iterion schedule remove <name>` | Delete an entry from the manifest. |
 | `iterion schedule run <name> [--dry-run]` | Execute one entry now — what cron invokes. Applies the overlap policy and the guard before launching. `--dry-run` prints the resolved `iterion run` command without executing. |
@@ -129,10 +129,12 @@ needs that image present (CI publishes it; for a local loop, `docker
 tag` your build to `ghcr.io/socialgouv/iterion-sandbox-sec:edge`).
 
 > Note: `sec-audit-source` (SAST) is production-ready. `sec-audit-deps`
-> (SCA) is currently an enumerate + LLM-review pass — its heuristic
-> scanner layer is still a scaffold and a run self-labels with a
-> "⚠ Coverage" banner. Schedule it for the LLM-review pass, but treat it
-> as incomplete until the implementation ticket lands.
+> (SCA) now has a real CVE floor — `run_generic_heuristics` runs `trivy
+> fs --scanners vuln` over the workspace from a bare checkout, matching
+> pinned versions against the OSV/GHSA/NVD DB. The per-ecosystem
+> npm/pip-audit and code-pattern/typosquat malware signals remain
+> partial, so a run still self-labels with a "⚠ Coverage" banner — but it
+> is no longer a zero-finding scaffold.
 
 ## Overlap policy — skip is the default (behavior change)
 

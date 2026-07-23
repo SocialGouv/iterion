@@ -95,8 +95,9 @@ and claimed by a runner.
    executable graph.
 4. **Validate** — structural and semantic passes check reachability, cycles and
    loop fuel, routing, convergence, capabilities, templates, sandbox settings,
-   and backend constraints before execution. DSL diagnostics occupy C001–C199;
-   bundle consistency checks occupy C200–C230.
+   and backend constraints before execution. DSL diagnostics occupy C001–C199
+   plus the async-interaction band C240–C242; bundle consistency checks occupy
+   C200–C230.
 
 The compiler returns diagnostics rather than hiding repairs. The authoritative
 catalogue is [references/diagnostics.md](references/diagnostics.md); the language
@@ -120,6 +121,9 @@ specific LLM or CLI agent.
   deterministic postcondition as the truth oracle.
 - `emit` and `wait` coordinate branches through a reliable run-local event
   registry.
+- `await_answers` parks a branch until pending async (`ask_user_async`)
+  questions are answered — the deterministic sync point for `interaction:
+  async` nodes.
 - `subbot` nodes launch child runs through a runtime seam, preserving run-tree
   provenance and optional isolation.
 - `done` and `fail` terminate the graph intentionally.
@@ -175,8 +179,10 @@ results are protected with a persistent branch; landing is controlled by the
 CLI or studio merge policy. A failed run keeps its worktree for inspection and
 resume.
 
-Sandboxing is a separate, opt-in execution adapter under
-[`pkg/sandbox`](../pkg/sandbox/):
+Sandboxing is a separate execution adapter under
+[`pkg/sandbox`](../pkg/sandbox/), on by default at the product entry points
+(`iterion run`/`resume`, studio, dispatcher; opt out with `sandbox: none` or
+`ITERION_SANDBOX_DEFAULT=none`):
 
 - Docker and Podman keep one long-lived container per run.
 - The local workspace normally stays mounted at its host absolute path; an

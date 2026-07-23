@@ -53,8 +53,8 @@ Two levels, both enforced at write:
 `DefaultMaxDocumentSize` caps any one markdown document at 2 MiB
 ([pkg/knowledge/quota.go](../pkg/knowledge/quota.go)).
 
-`GET /api/teams/{id}/usage` surfaces the org's `memory_used_bytes`
-against `effective_memory_quota_bytes` for the org admin; the per-space
+`GET /api/orgs/{id}/usage` surfaces the org's `memory_used_bytes`
+against `effective_memory_quota_bytes` for the org member; the per-space
 write CAS is what actually blocks an over-budget write.
 
 ## REST surface
@@ -104,6 +104,25 @@ client gets `Content-Disposition: attachment; filename="memory-export.tar.gz"`.
 `?strategy=` query param picks a merge strategy from
 `knowledge.ImportStrategy`. Use the export → import pair to migrate a
 space between orgs (or environments).
+
+## CLI (`iterion memory`)
+
+The local (desktop/CLI) filesystem store under `~/.iterion/` is managed
+with `iterion memory export|import|du`. A space is addressed by
+`--visibility` (`bot|project|cross_project|user|org|global`, **default
+`bot`** — note the REST default is `project`) + `--name`, with `--project`
+(defaults to the current directory) for `bot`/`project` spaces and `--bot`
+(required when `--visibility=bot`).
+
+```bash
+iterion memory du --visibility project              # usage vs quota for a space
+iterion memory export --bot whats-next --out mem.tar.gz
+iterion memory import --in mem.tar.gz --strategy skip   # skip|overwrite|rename
+```
+
+`export` writes a `.tar.gz` (stdout when `--out` is omitted); `import`
+reads one (stdin when `--in` is omitted) and merges under `--strategy`
+(default `skip`).
 
 ## How bots use memory
 

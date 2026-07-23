@@ -51,9 +51,9 @@ This boundary is deliberate. Three reasons:
 
 | Layer | Scanner | Default ruleset |
 |---|---|---|
-| Generic | semgrep | `--config=auto` (semgrep registry's auto-detect) |
+| Generic | semgrep | `--config=p/default` (semgrep's curated cross-language pack) |
 | Generic | gitleaks | builtin gitleaks rules |
-| Generic | trivy fs | builtin `--security-checks=vuln,config,secret` |
+| Generic | trivy fs | builtin `--scanners=vuln,misconfig,secret` |
 | JS/TS | semgrep | `--config=p/javascript,p/typescript,p/nodejsscan` |
 | Go | semgrep | `--config=p/golang` |
 | Go | gosec | `-include=G101,G102,...,G505` (all G-rules) |

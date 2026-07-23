@@ -188,6 +188,22 @@ iterion runs prune --older-than 168h --keep-last 100
 
 Default retention deletes `finished`, `failed`, and `cancelled` runs older than 720 hours. `failed_resumable` requires explicit inclusion via `--status`. Only `<store-dir>/runs/` is touched; worktrees are not removed.
 
+### `iterion runs questions` / `iterion runs answer`
+
+```bash
+iterion runs questions <run-id>
+iterion runs answer <run-id> <interaction-id> "<answer>"
+```
+
+Inspect and answer the **non-blocking** questions an agent posts with the
+`ask_user_async` tool (`interaction: async`, ADR-081 — see
+[async-interaction.md](async-interaction.md)). `runs questions` lists the
+still-unanswered questions of a run; `runs answer` records one answer and
+queues it for delivery to the asking node's inbox — the running agent picks
+it up at its next turn boundary and the run never has to pause. Both take
+`--store-dir` (default `.iterion`). For a run **paused** on a blocking
+question, use `iterion resume --answer` instead.
+
 ## Bot creation, discovery, and extension distribution
 
 ### `iterion bots`
@@ -338,9 +354,10 @@ Strict mode resolves workflow/CLI sandbox settings and exits non-zero for driver
 ```bash
 iterion server --config cloud.yaml --bind 0.0.0.0 --port 4891
 iterion runner --config cloud.yaml
+iterion server webpush-keys        # mint a VAPID keypair for Web Push
 ```
 
-`server` uses local in-process mode by default and cloud control-plane mode under `ITERION_MODE=cloud`. `runner` consumes NATS run messages and persists through MongoDB/S3. See [cloud deployment](cloud-deployment.md).
+`server` uses local in-process mode by default and cloud control-plane mode under `ITERION_MODE=cloud`. `runner` consumes NATS run messages and persists through MongoDB/S3. The `server webpush-keys` subcommand prints a fresh VAPID public/private pair for the `ITERION_WEBPUSH_VAPID_{PUBLIC,PRIVATE}_KEY` env vars that enable user notifications ([notifications](notifications.md)). See [cloud deployment](cloud-deployment.md).
 
 ## State, knowledge, and supervision
 

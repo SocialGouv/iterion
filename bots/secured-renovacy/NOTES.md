@@ -4,7 +4,7 @@ A running log of what we learn iterating on this recipe. Append-only when possib
 
 ## Architecture in one paragraph
 
-Phase 0 (`detect_stack` + `capture_start_sha`) identifies the project's package manager and the upgrade base SHA. Phase 1 is a per-package loop driven by an agentic chain: `discover_outdated → select_candidate → security_audit → changelog_review → upgrade → install → align_code → validate_upgrade → (fix_loop)* → prepare_commit → commit_changes → (loop)`. Phase 2 alternates Claude and GPT reviewers over the cumulative diff with auto-fixes between rounds. Every node that touches a package manager is an agent; only `select_candidate`, `join_files`, `mark_failed_and_continue`, `streak_check`, `capture_start_sha`, and the commit tools are deterministic.
+Phase 0 (`detect_stack` + `capture_start_sha`) identifies the project's package ecosystems and the upgrade base SHA. Phase 1 lands upgrades one verified unit at a time: a patch fast-track (`bucket_patches → batch_upgrade_patches → batch_commit`), a same-scope family batch (`bucket_families → select_family → family_upgrade → family_align_code → family_validate → family_commit`/`family_revert`, looping via `mark_family_attempted`), then the per-package solo loop — `select_candidate → resolve_pkg_ecosystem → intel_fanout (security_audit ∥ changelog_review) → intel_join → upgrade → install → align_code → validate_upgrade → (fix_loop)* → prepare_commit → commit_changes → write_audit_md → (package_loop)`, with `revert_changes → mark_failed_and_continue` as the failure lane. Phase 2 is the ADR-058 v2 minimal-framing shape: `phase2_decider` either short-circuits to `emit_sbom → done` (nothing worth reviewing) or runs ONE `p2_campaign` agent over the run's cumulative diff (`git diff` from `capture_start_sha`, fixes committed in stride), gated by the deterministic `p2_verify_build → p2_verify_run` build/test check and closed by `p2_gate` over a bounded `review_pass_loop`. Every node that touches a package manager is an agent; the deterministic (non-LLM) nodes are `capture_start_sha`, `select_candidate`, `bucket_patches`, `bucket_families`, `select_family`, `resolve_pkg_ecosystem`, `intel_join`, `join_files`, `mark_failed_and_continue`, `mark_family_attempted`, `phase2_decider`, `p2_gate`, `emit_sbom`, and the commit/validate/revert tools.
 
 ## Design principles (in priority order)
 
@@ -32,8 +32,10 @@ Phase 0 (`detect_stack` + `capture_start_sha`) identifies the project's package 
 | prepare_commit | agent | Drafts commit messages following the repo's existing convention. |
 | revert_changes | agent | Same toolchain story as install (needs to reinstall after git checkout). |
 | commit_changes | tool | git add / commit / amend pipeline — deterministic; needs `set -euo pipefail` to actually fail on git errors (previous version always reported success). |
-| reviewer_claude / reviewer_gpt / fix_claude / fix_gpt | agent | Phase 2 cross-family review. |
-| review_commit_auto | tool | Same shape as commit_changes. |
+| p2_campaign | agent | Phase 2 (v2, ADR-058): one review campaign over the run's cumulative diff, fixing + committing in stride. Replaces the retired alternating Claude/GPT reviewer relay. |
+| p2_verify_build | agent | Writes the repo's real build+test into `<scratch>/verify.sh` (reads the verify-build skill); does not fix code. |
+| p2_verify_run | tool | The deterministic half — re-runs `verify.sh` on the REAL exit code (no LLM judgment); the truth oracle for `p2_gate.converged`. |
+| p2_gate | compute | `converged = p2_verify_run.passed ∧ p2_campaign.review_clean`; closes the bounded `review_pass_loop`. |
 
 ## Observations from iteration runs
 
