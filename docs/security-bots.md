@@ -62,9 +62,9 @@ depth (ladder rungs, modes, temp-branch + human-gate flow, crypto/secrets
 hard-stop) and [`references-bootstrap.md`](references-bootstrap.md) for the
 deepsec + harness clone setup and `ITERION_REFERENCES_ROOT`.
 
-The budget headroom was bumped from `$25` to `$70/run` to absorb the 3-voter
-pool + the remediation ladder; lower `ITERION_SEC_AUDIT_EFFORT_VOTER` to claw
-budget back on small repos.
+The budget headroom is `max_cost_usd: 150` per run (bumped 25 → 70 → 150) to
+absorb the 3-voter pool + a full remediation ladder on large repos; lower
+`ITERION_SEC_AUDIT_EFFORT_VOTER` to claw budget back on small repos.
 
 ## Architectural patterns shared by both
 
@@ -191,7 +191,7 @@ target similar problems with different ergonomics. Trade-offs:
 | Remediation / patch | none (scan only) | Verification-ladder remediation phase (build → reproduce → regress → reattack → reviewer-isolation), three modes (`propose` / `apply_gated` / `apply_auto`), crypto/secrets hard-stop. See [`security-patcher.md`](security-patcher.md) |
 | Operator-visible FP suppression | `revalidate` verdicts in workspace | Committed `.sec-audit/fp-known.yaml` (appended only on unanimous-dismiss + cited guard) |
 | Integration with project boards / dispatcher | None built-in | Native: each finding is a kanban issue, then `remediation_report` labels it with the per-finding ladder outcome |
-| Budget headroom | Tuned for $1000s/scan large monorepos | `max_cost_usd=70` per run (bumped from 25 to absorb voters + ladder); cloud mode scales further |
+| Budget headroom | Tuned for $1000s/scan large monorepos | `max_cost_usd=150` per run (bumped 25 → 70 → 150 to absorb voters + ladder); cloud mode scales further |
 
 ## Comparison with no-package-malware
 
