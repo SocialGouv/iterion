@@ -37,7 +37,7 @@ JWT layer.
 | `POST` | `/api/auth/password/change` | public (legacy) | First-login password rotation for `pending_password_change` users |
 | `POST` | `/api/auth/password/reset/request` | public | Mint + email a reset token (always 200, no enumeration) |
 | `POST` | `/api/auth/password/reset/confirm` | public | Redeem `iar_…`, set new password, issue fresh session |
-| `GET` | `/api/auth/providers` | public | List configured OIDC connectors |
+| `GET` | `/api/auth/providers` | public | List configured OIDC connectors + `signup_mode` |
 | `GET` | `/api/auth/oidc/{provider}/start` | public | Start OIDC dance |
 | `GET` | `/api/auth/oidc/{provider}/callback` | public | OIDC redirect target |
 | `GET` | `/api/auth/invitations/lookup` | public | Resolve invitation token → email + team |
@@ -246,7 +246,7 @@ Sources: [pkg/server/admin_orgs_routes.go](../pkg/server/admin_orgs_routes.go),
 
 | Method | Path | Auth | Purpose |
 |---|---|---|---|
-| `GET` | `/api/server/info` | public | Build info, signup mode, `email_enabled`, OAuth-forfait config |
+| `GET` | `/api/server/info` | public | Mode, version, `auth_required`, `email_enabled`, per-feature enablement flags, upload limits |
 | `GET` | `/healthz` | public | Liveness — HTTP listener up |
 | `GET` | `/readyz` | public | Readiness — Mongo + NATS + S3 reachable under 1s deadline |
 | `GET` | `/metrics` | public on the metrics port (ClusterIP-only by design) | Prometheus scrape |
