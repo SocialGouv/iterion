@@ -745,19 +745,10 @@ func (r *Runner) Shutdown(ctx context.Context) error {
 	}
 
 	if r.cfg.DrainMode == DrainModeInterrupt {
-		// Cancel the in-flight run now so the engine unwinds via
-		// handleContextDoneWithCheckpoint (preserving the checkpoint), and
-		// extend the ack window while processOne checkpoints + promotes +
-		// naks. On the redelivery the run auto-resumes on a healthy pod.
-		cur.cancelFn()
-		logDeliveryErr(r.cfg.Logger, "in-progress-shutdown", cur.runID, cur.delivery.InProgress())
-		select {
-		case <-cur.done:
-			r.cfg.Logger.Info("runner: in-flight run %s interrupted + checkpointed for resume", cur.runID)
-		case <-ctx.Done():
-			logDeliveryErr(r.cfg.Logger, "nak-shutdown-grace", cur.runID, cur.delivery.Nak())
-			r.cfg.Logger.Warn("runner: drain grace expired for run %s — naking for redelivery", cur.runID)
-		}
+		// Cancel the in-flight run now and wait (up to the drain ceiling)
+		// for processOne to checkpoint + promote + nak. Auto-resumes on a
+		// healthy pod from the redelivery.
+		r.cancelAndAwaitCheckpoint(cur, ctx)
 		return nil
 	}
 
@@ -771,22 +762,32 @@ func (r *Runner) Shutdown(ctx context.Context) error {
 	case <-cur.done:
 		r.cfg.Logger.Info("runner: in-flight run %s finished during drain", cur.runID)
 	case <-ctx.Done():
-		// Ceiling hit (or k8s grace about to SIGKILL): cap the run —
-		// cancel it so the engine checkpoints, then let processOne promote
-		// it to failed_resumable + nak within a bounded window so it
-		// auto-resumes on another pod.
+		// Ceiling hit (or k8s grace about to SIGKILL): cap the run within a
+		// short bounded window so it checkpoints + auto-resumes elsewhere.
 		r.cfg.Logger.Warn("runner: drain ceiling reached for run %s — capping for checkpoint resume", cur.runID)
-		cur.cancelFn()
-		logDeliveryErr(r.cfg.Logger, "in-progress-shutdown", cur.runID, cur.delivery.InProgress())
-		select {
-		case <-cur.done:
-			r.cfg.Logger.Info("runner: capped run %s checkpointed for resume", cur.runID)
-		case <-time.After(interruptCheckpointGrace):
-			logDeliveryErr(r.cfg.Logger, "nak-shutdown-grace", cur.runID, cur.delivery.Nak())
-			r.cfg.Logger.Warn("runner: checkpoint grace expired for run %s — naking for redelivery", cur.runID)
-		}
+		capCtx, cancel := context.WithTimeout(context.Background(), interruptCheckpointGrace)
+		defer cancel()
+		r.cancelAndAwaitCheckpoint(cur, capCtx)
 	}
 	return nil
+}
+
+// cancelAndAwaitCheckpoint cancels the in-flight run so the engine unwinds
+// via handleContextDoneWithCheckpoint (preserving the checkpoint), extends
+// the ack window, and waits for processOne to finalise (promote to
+// failed_resumable + nak). If waitCtx expires first it best-effort naks so
+// JetStream redelivers to a sibling. Shared by the interrupt drain and the
+// lame-duck ceiling cap.
+func (r *Runner) cancelAndAwaitCheckpoint(cur *inFlight, waitCtx context.Context) {
+	cur.cancelFn()
+	logDeliveryErr(r.cfg.Logger, "in-progress-shutdown", cur.runID, cur.delivery.InProgress())
+	select {
+	case <-cur.done:
+		r.cfg.Logger.Info("runner: in-flight run %s interrupted + checkpointed for resume", cur.runID)
+	case <-waitCtx.Done():
+		logDeliveryErr(r.cfg.Logger, "nak-shutdown-grace", cur.runID, cur.delivery.Nak())
+		r.cfg.Logger.Warn("runner: drain grace expired for run %s — naking for redelivery", cur.runID)
+	}
 }
 
 // processOne validates, locks, executes a single delivery. The
@@ -935,14 +936,15 @@ func (r *Runner) processOne(parent context.Context, delivery *natsq.Delivery) {
 	runCancel()
 	<-hbDone
 
-	// A non-operator interruption (runner shutdown draining this pod, or a
-	// lost heartbeat) is NOT a terminal outcome: the run is about to
-	// auto-resume on redelivery, so firing a run.cancelled outcome here
-	// would push a spurious "run cancelled" notification on every deploy.
-	// Skip both run-facing fires — the resumed run emits its own real
-	// terminal outcome when it finishes.
-	interrupted := errors.Is(err, runtime.ErrRunCancelled) && (parent.Err() != nil || hbFailed.Load())
-	if !interrupted {
+	// Classify once (pure, no side effects). promoteResumable doubles as
+	// the "this is a non-operator interruption" signal: a runner-shutdown
+	// drain or lost heartbeat is NOT a terminal outcome — the run is about
+	// to auto-resume on redelivery — so firing a run.cancelled outcome +
+	// completion webhook here would push a spurious "run cancelled"
+	// notification on every deploy. Skip both run-facing fires; the resumed
+	// run emits its own real terminal outcome when it finishes.
+	outcome := classifyExecResult(err, hbFailed.Load(), parent.Err(), msg.RunID)
+	if !outcome.promoteResumable {
 		r.fireCompletionNotifier(msg)
 		r.fireOutcomeEvent(msg, err)
 	}
@@ -961,7 +963,6 @@ func (r *Runner) processOne(parent context.Context, delivery *natsq.Delivery) {
 		return
 	}
 
-	outcome := classifyExecResult(err, hbFailed.Load(), parent.Err(), msg.RunID)
 	// Promote the engine's `cancelled` write to `failed_resumable` so the
 	// nak's redelivery reconciliation auto-resumes from the checkpoint
 	// instead of dropping the run (see execOutcome.promoteResumable).
