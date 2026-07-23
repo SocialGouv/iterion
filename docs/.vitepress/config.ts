@@ -59,6 +59,27 @@ function escapeAngles(md: MarkdownIt) {
   }
 }
 
+// DSL template syntax (`{{input.field}}`, `{{vars.name}}`) fills these docs, in
+// prose and in inline code. VitePress compiles page markdown as a Vue template,
+// so a contiguous `{{ ... }}` is evaluated as an expression (breaking the build,
+// or rendering empty). Neutralize the delimiters to HTML entities in prose text
+// and inline-code tokens — the browser shows literal `{{ }}`. Fenced blocks are
+// left alone: Shiki splits `{{` across separate spans, so Vue never sees a
+// contiguous mustache there. This is scoped to markdown content and never
+// touches the theme (unlike a global `vue.compilerOptions.delimiters`, which
+// breaks VPHero/VPButton/nav).
+function escapeBraces(md: MarkdownIt) {
+  const neutralize = (html: string) =>
+    html.replace(/\{\{/g, '&#123;&#123;').replace(/\}\}/g, '&#125;&#125;')
+  const wrap = (rule: 'text' | 'code_inline', fallback: (t: any, i: number) => string) => {
+    const prev = md.renderer.rules[rule] || fallback
+    md.renderer.rules[rule] = (tokens, idx, options, env, self) =>
+      neutralize(prev(tokens, idx, options, env, self))
+  }
+  wrap('text', (t, i) => md.utils.escapeHtml(t[i].content))
+  wrap('code_inline', (t, i) => `<code>${md.utils.escapeHtml(t[i].content)}</code>`)
+}
+
 const DOCS_ROOT = join(__dirname, '..')
 
 // Does an in-docs directory lack a browsable index (README.md / index.md)?
@@ -279,22 +300,12 @@ export default withMermaid(
     // localhost:* appears as illustrative example URLs in operator docs.
     ignoreDeadLinks: [/^https?:\/\/localhost/],
     head: [['link', { rel: 'icon', href: '/iterion/favicon.ico' }]],
-    // Docs pages are static and full of DSL template syntax (`{{input.field}}`,
-    // `{{vars.name}}`). Disable Vue's `{{ }}` interpolation on page content so
-    // those render literally instead of being parsed as expressions.
-    vue: {
-      template: {
-        compilerOptions: {
-          delimiters: ['__vitepress_noop_open__', '__vitepress_noop_close__'],
-        },
-      },
-    },
     markdown: {
       // The .bot DSL uses ```iter fences (YAML-like, indentation-based) — alias
       // to the bundled yaml grammar. (```ebnf isn't bundled either but has no
       // close bundled match; it falls back to plain text on its own.)
       languageAlias: { iter: 'yaml' },
-      config: (md) => md.use(escapeAngles).use(githubLinks),
+      config: (md) => md.use(escapeBraces).use(escapeAngles).use(githubLinks),
     },
     themeConfig: {
       logo: '/iterion-logo.png',
