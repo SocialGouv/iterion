@@ -1,6 +1,7 @@
 package native
 
 import (
+	"strings"
 	"sync"
 	"testing"
 )
@@ -9,21 +10,21 @@ import (
 // free title verbatim and prefixes "#N - " for each subsequent clash.
 func TestCreateUniqueTitle_SequentialPrefixes(t *testing.T) {
 	s := newTestStore(t)
-	first, err := s.CreateUniqueTitle(Issue{Title: "Episode", Bot: "b"})
+	first, err := s.CreateUniqueTitle(Issue{Title: "Episode", Bot: "b"}, nil)
 	if err != nil {
 		t.Fatalf("CreateUniqueTitle #1: %v", err)
 	}
 	if first.Title != "Episode" {
 		t.Fatalf("first title = %q; want %q", first.Title, "Episode")
 	}
-	second, err := s.CreateUniqueTitle(Issue{Title: "Episode", Bot: "b"})
+	second, err := s.CreateUniqueTitle(Issue{Title: "Episode", Bot: "b"}, nil)
 	if err != nil {
 		t.Fatalf("CreateUniqueTitle #2: %v", err)
 	}
 	if second.Title != "#2 - Episode" {
 		t.Fatalf("second title = %q; want %q", second.Title, "#2 - Episode")
 	}
-	third, err := s.CreateUniqueTitle(Issue{Title: "Episode", Bot: "b"})
+	third, err := s.CreateUniqueTitle(Issue{Title: "Episode", Bot: "b"}, nil)
 	if err != nil {
 		t.Fatalf("CreateUniqueTitle #3: %v", err)
 	}
@@ -46,7 +47,7 @@ func TestCreateUniqueTitle_ConcurrentNoDuplicates(t *testing.T) {
 	for i := 0; i < n; i++ {
 		go func(idx int) {
 			defer wg.Done()
-			iss, err := s.CreateUniqueTitle(Issue{Title: "Race", Bot: "b"})
+			iss, err := s.CreateUniqueTitle(Issue{Title: "Race", Bot: "b"}, nil)
 			if err != nil {
 				errs[idx] = err
 				return
@@ -89,7 +90,42 @@ func keysOf(m map[string]int) []string {
 // the atomic path.
 func TestCreateUniqueTitle_EmptyTitleRejected(t *testing.T) {
 	s := newTestStore(t)
-	if _, err := s.CreateUniqueTitle(Issue{Title: "   ", Bot: "b"}); err == nil {
+	if _, err := s.CreateUniqueTitle(Issue{Title: "   ", Bot: "b"}, nil); err == nil {
 		t.Fatalf("CreateUniqueTitle(blank): expected error, got nil")
+	}
+}
+
+// TestCreateUniqueTitle_NormalizeKeepsBudget proves the normalizer re-truncates
+// each "#N - " candidate so prefixing an already-max-length title never
+// overflows the caller's rune budget — the bug where a compacted 80-rune board
+// title became 85 once the atomic path prepended "#2 - ".
+func TestCreateUniqueTitle_NormalizeKeepsBudget(t *testing.T) {
+	s := newTestStore(t)
+	const max = 20
+	norm := func(x string) string {
+		r := []rune(x)
+		if len(r) <= max {
+			return x
+		}
+		return strings.TrimSpace(string(r[:max-1])) + "…"
+	}
+	long := strings.Repeat("é", max+10) // over the cap
+
+	first, err := s.CreateUniqueTitle(Issue{Title: long, Bot: "b"}, norm)
+	if err != nil {
+		t.Fatalf("first: %v", err)
+	}
+	if n := len([]rune(first.Title)); n != max {
+		t.Fatalf("first title runes=%d, want %d (%q)", n, max, first.Title)
+	}
+	second, err := s.CreateUniqueTitle(Issue{Title: long, Bot: "b"}, norm)
+	if err != nil {
+		t.Fatalf("second: %v", err)
+	}
+	if n := len([]rune(second.Title)); n != max || !strings.HasPrefix(second.Title, "#2 - ") {
+		t.Fatalf("second title = %q (runes=%d), want a #2- prefix within %d runes", second.Title, n, max)
+	}
+	if first.Title == second.Title {
+		t.Fatalf("unique variant collided with the base: %q", first.Title)
 	}
 }

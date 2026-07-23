@@ -34,17 +34,27 @@ func (s *Store) Create(in Issue) (created *Issue, err error) {
 // desired title is free it is used verbatim; otherwise the smallest free
 // "#N - " prefix (N≥2) is prepended, kept as a PREFIX so the counter stays
 // visible under title truncation.
-func (s *Store) CreateUniqueTitle(in Issue) (created *Issue, err error) {
+func (s *Store) CreateUniqueTitle(in Issue, normalize func(string) string) (created *Issue, err error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	defer s.recoverMutator("CreateUniqueTitle", &err)
-	in.Title = s.uniqueTitleLocked(strings.TrimSpace(in.Title))
+	in.Title = s.uniqueTitleLocked(strings.TrimSpace(in.Title), normalize)
 	return s.createLocked(in)
 }
 
 // uniqueTitleLocked returns desired if no issue already holds it, else the
-// smallest free "#N - desired" (N≥2). Caller must hold s.mu.
-func (s *Store) uniqueTitleLocked(desired string) string {
+// smallest free "#N - desired" (N≥2). When normalize is non-nil it is applied to
+// each candidate, so a caller's rune-aware truncator keeps a prefixed title
+// within its display budget (the "#N - " head survives truncation, so distinct N
+// stay distinct). Caller must hold s.mu.
+func (s *Store) uniqueTitleLocked(desired string, normalize func(string) string) string {
+	norm := func(x string) string {
+		if normalize != nil {
+			return normalize(x)
+		}
+		return x
+	}
+	desired = norm(desired)
 	taken := make(map[string]struct{}, len(s.index))
 	for _, iss := range s.index {
 		if iss != nil {
@@ -55,7 +65,7 @@ func (s *Store) uniqueTitleLocked(desired string) string {
 		return desired
 	}
 	for n := 2; n < 100000; n++ {
-		candidate := fmt.Sprintf("#%d - %s", n, desired)
+		candidate := norm(fmt.Sprintf("#%d - %s", n, desired))
 		if _, clash := taken[candidate]; !clash {
 			return candidate
 		}

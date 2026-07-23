@@ -47,7 +47,13 @@ type BoardStore interface {
 // The filesystem store implements it; a backend that does not cleanly
 // degrades to the caller's best-effort list-then-check.
 type UniqueTitleCreator interface {
-	CreateUniqueTitle(in Issue) (*Issue, error)
+	// normalize, when non-nil, is applied to every candidate title inside the
+	// critical section — including the "#N - " prefixed variants. It lets a
+	// caller keep the result within a display budget: prefixing "#N - " onto an
+	// already-max-length title would otherwise overflow it, so the caller passes
+	// its own rune-aware truncator (the prefix survives because truncation keeps
+	// the head). nil = titles are used verbatim.
+	CreateUniqueTitle(in Issue, normalize func(string) string) (*Issue, error)
 }
 
 // AsUniqueTitleCreator returns s as UniqueTitleCreator when the backend

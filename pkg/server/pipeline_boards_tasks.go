@@ -230,7 +230,10 @@ func (s *Server) handlePipelineBoardTaskCreate(w http.ResponseWriter, r *http.Re
 	// race); degrade to the best-effort helper for backends without it.
 	var issue *native.Issue
 	if utc := native.AsUniqueTitleCreator(boardStore); utc != nil {
-		issue, err = utc.CreateUniqueTitle(newIssue)
+		// compactPipelineTitle re-truncates each "#N - " candidate so a
+		// uniqueness prefix on an already-max-length title stays within
+		// pipelineTitleMaxRunes (the fallback helper below already does this).
+		issue, err = utc.CreateUniqueTitle(newIssue, compactPipelineTitle)
 	} else {
 		newIssue.Title = uniquePipelineTitle(boardStore, newIssue.Title)
 		issue, err = boardStore.Create(newIssue)
