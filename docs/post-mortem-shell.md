@@ -31,8 +31,9 @@ never 409s.
 - **One shell per connection.** Closing the panel ends the shell;
   reopening spawns a fresh one. The worktree is the state — the shell
   is a viewer, not a persistent tmux session.
-- `$SHELL -l` (bash fallback), `TERM=xterm-256color`, cwd = the
-  preserved worktree, `ITERION_RUN_ID` exported.
+- `$SHELL -l` (`/bin/bash` fallback), `TERM=xterm-256color`,
+  `COLORTERM=truecolor`, cwd = the preserved worktree, `ITERION_RUN_ID`
+  exported.
 - **Idle timeout 30 min** — counting BOTH directions, so a running
   `htop` or a long build's output keeps the session alive without
   keystrokes. **Absolute cap 2 h.** Overridable via
