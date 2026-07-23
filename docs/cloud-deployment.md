@@ -274,6 +274,47 @@ When `OTEL_EXPORTER_OTLP_ENDPOINT` is unset, spans are dropped and the
 W3C propagator-only path is installed (inbound trace context still
 respected, but no export).
 
+## Rolling deploys & in-flight runs
+
+A new-version deploy rolling-restarts the runner pods. What happens to a
+run a runner is executing is governed by **`config.runner.drainMode`**:
+
+- **`complete`** (default — *lame-duck*): on SIGTERM the runner stops
+  claiming new runs but **lets its in-flight run finish** before exiting.
+  New pods (already up) serve new runs; the draining pod holds its NATS KV
+  lease so nothing double-claims. A deploy interrupts **nothing** — the run
+  runs to completion, even if it takes hours. The bound is
+  `runner.terminationGracePeriodSeconds` (the k8s hard stop before SIGKILL)
+  and `config.runner.drainTimeout` (the internal ceiling, default `8h`): a
+  run exceeding it is capped — checkpointed and auto-resumed on another pod.
+- **`interrupt`**: on SIGTERM the runner cancels its in-flight run
+  immediately, checkpoints it, and it **auto-resumes** on a healthy pod from
+  the last completed node. The fast path for an urgent (e.g. security)
+  deploy that must not wait for long runs.
+
+Either way an interrupted run (lame-duck cap, interrupt mode, lost
+heartbeat, or an involuntary eviction the grace window can't cover) is
+**promoted to `failed_resumable` and redelivered** — it auto-resumes with
+no operator action and fires no spurious "run cancelled" notification. Only
+an **operator** cancel stays terminal `cancelled`.
+
+**Invariants when raising the lame-duck window:**
+
+- `runner.terminationGracePeriodSeconds` ≥ `config.runner.drainTimeout` +
+  a couple of minutes of checkpoint margin (else k8s SIGKILLs a capped run
+  before it checkpoints — it still recovers via the orphan sweeper, just
+  ~10 min slower).
+- `runner.progressDeadlineSeconds` above the grace period: a lame-duck
+  rollout stays `Progressing` until the last old pod drains (possibly
+  hours), and the default 600s deadline would otherwise mark the Deployment
+  degraded while the new pods already serve. ArgoCD users: the sync will
+  likewise show Progressing until the drain completes.
+
+The mechanism lives in the runner's `Shutdown`
+([pkg/runner/loop.go](../pkg/runner/loop.go)); the run's context is
+decoupled from the fetch-loop context so stopping intake never cancels a
+live run.
+
 ## Resume from a paused / failed run
 
 Cloud-mode resume goes through the same NATS path as launch. The

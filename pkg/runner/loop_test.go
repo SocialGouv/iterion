@@ -8,7 +8,9 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/SocialGouv/iterion/pkg/backend/mcp"
 	"github.com/SocialGouv/iterion/pkg/dsl/ast"
@@ -82,6 +84,46 @@ func TestShutdown_NoInFlight_NoOp(t *testing.T) {
 	// current is nil; Shutdown returns nil without panicking.
 	if err := r.Shutdown(context.Background()); err != nil {
 		t.Errorf("expected nil err, got %v", err)
+	}
+}
+
+// TestShutdown_CompleteMode_LetsRunFinish is the lame-duck proof: on
+// SIGTERM the complete-mode runner must NOT cancel its in-flight run — it
+// waits for the run to finish on its own. The run's delivery is never
+// touched on this happy path, so a nil delivery is safe here.
+func TestShutdown_CompleteMode_LetsRunFinish(t *testing.T) {
+	var cancelled atomic.Bool
+	done := make(chan struct{})
+	r := &Runner{cfg: Config{Logger: iterlog.Nop(), DrainMode: DrainModeComplete, DrainTimeout: time.Hour}}
+	r.current = &inFlight{
+		runID:    "run-1",
+		cancelFn: func() { cancelled.Store(true) },
+		done:     done,
+	}
+
+	// Shutdown must block until the run finishes (done closes), NOT return
+	// eagerly and NOT cancel the run.
+	shutReturned := make(chan struct{})
+	go func() { _ = r.Shutdown(context.Background()); close(shutReturned) }()
+
+	select {
+	case <-shutReturned:
+		t.Fatal("Shutdown returned before the in-flight run finished (lame-duck must wait)")
+	case <-time.After(50 * time.Millisecond):
+	}
+	if cancelled.Load() {
+		t.Fatal("lame-duck Shutdown cancelled the in-flight run — it must let it finish")
+	}
+
+	// Run finishes naturally → Shutdown returns, still never cancelling.
+	close(done)
+	select {
+	case <-shutReturned:
+	case <-time.After(2 * time.Second):
+		t.Fatal("Shutdown did not return after the run finished")
+	}
+	if cancelled.Load() {
+		t.Fatal("Shutdown cancelled the run after it had already finished")
 	}
 }
 
@@ -333,28 +375,33 @@ workflow main:
 // sentinels classify identically.
 func TestClassifyExecResult(t *testing.T) {
 	cases := []struct {
-		name       string
-		err        error
-		hbFailed   bool
-		parentErr  error
-		wantStatus string
-		wantAction deliveryAction
+		name        string
+		err         error
+		hbFailed    bool
+		parentErr   error
+		wantStatus  string
+		wantAction  deliveryAction
+		wantPromote bool // promoteResumable: CAS cancelled→failed_resumable for auto-resume
 	}{
-		{"success acks finished", nil, false, nil, "finished", actionAck},
-		{"paused acks", runtime.ErrRunPaused, false, nil, "paused", actionAck},
-		{"wrapped paused acks", fmt.Errorf("engine: %w", runtime.ErrRunPaused), false, nil, "paused", actionAck},
-		{"operator pause acks", runtime.ErrRunPausedOperator, false, nil, "paused_operator", actionAck},
-		{"user cancel acks", runtime.ErrRunCancelled, false, nil, "cancelled", actionAck},
-		{"heartbeat-loss cancel naks", runtime.ErrRunCancelled, true, nil, "lock_held", actionNak},
+		{"success acks finished", nil, false, nil, "finished", actionAck, false},
+		{"paused acks", runtime.ErrRunPaused, false, nil, "paused", actionAck, false},
+		{"wrapped paused acks", fmt.Errorf("engine: %w", runtime.ErrRunPaused), false, nil, "paused", actionAck, false},
+		{"operator pause acks", runtime.ErrRunPausedOperator, false, nil, "paused_operator", actionAck, false},
+		// Operator cancel stays terminal cancelled — never promoted.
+		{"user cancel acks", runtime.ErrRunCancelled, false, nil, "cancelled", actionAck, false},
+		// Non-operator interruptions promote to failed_resumable so the
+		// nak's redelivery auto-resumes instead of dropping the run.
+		{"heartbeat-loss cancel naks", runtime.ErrRunCancelled, true, nil, "lock_held", actionNak, true},
 		// hbFailed wins over a concurrently-cancelled parent ctx.
-		{"heartbeat beats shutdown", runtime.ErrRunCancelled, true, context.Canceled, "lock_held", actionNak},
-		{"shutdown cancel naks", runtime.ErrRunCancelled, false, context.Canceled, "shutdown", actionNak},
-		{"generic failure naks", errors.New("boom"), false, nil, "failed", actionNak},
+		{"heartbeat beats shutdown", runtime.ErrRunCancelled, true, context.Canceled, "lock_held", actionNak, true},
+		{"shutdown cancel naks", runtime.ErrRunCancelled, false, context.Canceled, "shutdown", actionNak, true},
+		{"generic failure naks", errors.New("boom"), false, nil, "failed", actionNak, false},
 		// Budget exceeded is a resumable checkpoint — Ack, never auto-resume
 		// (auto-redelivery re-fails on the same spent budget and its fresh-pod
-		// recordRunGitMeta clobbers the exported commits; run 019f8e08).
-		{"budget exceeded acks (no auto-resume)", runtime.ErrBudgetExceeded, false, nil, "budget_exceeded", actionAck},
-		{"wrapped budget exceeded acks", fmt.Errorf("%w: duration (7201/7200)", runtime.ErrBudgetExceeded), false, nil, "budget_exceeded", actionAck},
+		// recordRunGitMeta clobbers the exported commits; run 019f8e08). It is
+		// the one interruption-shaped outcome that must NOT promote.
+		{"budget exceeded acks (no auto-resume)", runtime.ErrBudgetExceeded, false, nil, "budget_exceeded", actionAck, false},
+		{"wrapped budget exceeded acks", fmt.Errorf("%w: duration (7201/7200)", runtime.ErrBudgetExceeded), false, nil, "budget_exceeded", actionAck, false},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -365,8 +412,53 @@ func TestClassifyExecResult(t *testing.T) {
 			if out.action != c.wantAction {
 				t.Errorf("action = %v, want %v", out.action, c.wantAction)
 			}
+			if out.promoteResumable != c.wantPromote {
+				t.Errorf("promoteResumable = %v, want %v", out.promoteResumable, c.wantPromote)
+			}
 		})
 	}
+}
+
+// TestPromoteCancelledToResumable pins the CAS that turns a shutdown/
+// heartbeat interruption (engine wrote `cancelled`) into `failed_resumable`
+// so the redelivery reconciliation auto-resumes it, and confirms it is a
+// no-op guard on any other status.
+func TestPromoteCancelledToResumable(t *testing.T) {
+	st, err := store.New(t.TempDir())
+	if err != nil {
+		t.Fatalf("store.New: %v", err)
+	}
+	ctx := context.Background()
+	save := func(id string, status store.RunStatus) {
+		t.Helper()
+		if err := st.SaveRun(ctx, &store.Run{ID: id, WorkflowName: "wf", Status: status, Checkpoint: &store.Checkpoint{NodeID: "n1"}}); err != nil {
+			t.Fatalf("SaveRun %s: %v", id, err)
+		}
+	}
+	save("run-cancelled", store.RunStatusCancelled)
+	save("run-running", store.RunStatusRunning)
+
+	r := &Runner{cfg: Config{Store: st, Logger: iterlog.Nop()}}
+
+	r.promoteCancelledToResumable(&queue.RunMessage{RunID: "run-cancelled", TenantID: "team-1"}, "nak-shutdown-cancelled")
+	if got := loadStatus(t, st, "run-cancelled"); got != store.RunStatusFailedResumable {
+		t.Errorf("cancelled run: status = %q, want failed_resumable", got)
+	}
+
+	// The CAS guard ([cancelled]) leaves a non-cancelled run untouched.
+	r.promoteCancelledToResumable(&queue.RunMessage{RunID: "run-running", TenantID: "team-1"}, "nak-shutdown-cancelled")
+	if got := loadStatus(t, st, "run-running"); got != store.RunStatusRunning {
+		t.Errorf("running run: status = %q, want running (no-op)", got)
+	}
+}
+
+func loadStatus(t *testing.T, st store.RunStore, id string) store.RunStatus {
+	t.Helper()
+	run, err := st.LoadRun(context.Background(), id)
+	if err != nil {
+		t.Fatalf("LoadRun %s: %v", id, err)
+	}
+	return run.Status
 }
 
 // ---------------------------------------------------------------------------

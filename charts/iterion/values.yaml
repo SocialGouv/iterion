@@ -87,6 +87,16 @@ runner:
     limits:
       cpu: 2000m
       memory: 4Gi
+  # k8s hard bound before SIGKILL. In lame-duck drain mode
+  # (config.runner.drainMode=complete) the pod finishes its in-flight run
+  # within this window, so it is raised well above the 30s default. Keep it
+  # >= config.runner.drainTimeout + a couple of minutes of checkpoint margin.
+  terminationGracePeriodSeconds: 29100 # 8h5m
+  # A lame-duck rollout stays "Progressing" until the last old pod drains
+  # (possibly hours). Raise the Deployment progress deadline above the grace
+  # period so k8s/ArgoCD don't flag the rollout degraded while the new pods
+  # already serve. 0 disables the deadline entirely.
+  progressDeadlineSeconds: 30000
   keda:
     enabled: false
     minReplicas: 1
@@ -194,6 +204,13 @@ config:
     concurrency: 1
     heartbeat: 20s
     lockTtl: 60s
+    # Graceful drain on deploy/node-drain. "complete" (default, lame-duck):
+    # stop claiming new runs but let the in-flight one FINISH before exiting
+    # — a deploy interrupts nothing. "interrupt": cancel + checkpoint for
+    # auto-resume on a healthy pod. drainTimeout is the lame-duck ceiling;
+    # keep runner.terminationGracePeriodSeconds >= it + checkpoint margin.
+    drainMode: complete
+    drainTimeout: 8h
   # --- Valkey/Redis (distributed ephemeral state) ------------------
   # Required for multi-replica servers: shares forge OAuth/CSRF state,
   # board-MCP run tokens and auth rate-limit across pods. Empty (the

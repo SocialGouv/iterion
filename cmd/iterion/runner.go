@@ -230,6 +230,8 @@ func runRunner(cmd *cobra.Command, _ []string) error {
 		RunnerID:          runnerID,
 		WorkDir:           cfg.Runner.WorkDir,
 		HeartbeatInterval: cfg.Runner.Heartbeat,
+		DrainMode:         cfg.Runner.DrainMode,
+		DrainTimeout:      cfg.Runner.DrainTimeout,
 		Logger:            logger,
 		Metrics:           mreg,
 		RunSecrets:        runSecretsStore,
@@ -252,12 +254,15 @@ func runRunner(cmd *cobra.Command, _ []string) error {
 		return fmt.Errorf("runner: build: %w", err)
 	}
 
-	// SIGTERM handling: cancel the loop ctx, then wait up to grace
-	// for the in-flight run to checkpoint + nak.
+	// SIGTERM handling: stop fetching, then drain per DrainMode — lame-duck
+	// (let the in-flight run finish) or interrupt (cancel + checkpoint for
+	// auto-resume). The drain ceiling is DrainTimeout; k8s
+	// terminationGracePeriodSeconds is the hard external bound (must be >=
+	// DrainTimeout + margin so a capped run checkpoints cleanly).
 	go func() {
 		<-rootCtx.Done()
-		logger.Info("runner: shutdown signal received")
-		drainCtx, drainCancel := context.WithTimeout(context.Background(), 60*time.Second)
+		logger.Info("runner: shutdown signal received (drain mode=%s ceiling=%s)", r.DrainMode(), r.DrainTimeout())
+		drainCtx, drainCancel := context.WithTimeout(context.Background(), r.DrainTimeout())
 		defer drainCancel()
 		_ = r.Shutdown(drainCtx)
 	}()
