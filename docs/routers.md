@@ -235,7 +235,7 @@ Routers are fan-out sources and do not declare `await:` themselves.
 
 The compiler catches common mistakes at compile time:
 
-- **Mode-specific properties** — `model`, `backend`, `provider`, `system`, `user`, `multi`, and `reasoning_effort` belong to `llm`; `over`, `as`, `key`, and `depends_on` belong to `fan_out_each`.
+- **Mode-specific properties** — `model`, `backend`, `system`, `user`, `multi`, and `reasoning_effort` belong to `llm`; `over`, `as`, `key`, and `depends_on` belong to `fan_out_each`.
 - **Missing model and backend on LLM routers** — if neither `model` nor `backend` is set, a warning is emitted (the built-in default model will be used at runtime).
 - **Conditional edges on LLM routers** — LLM routers must use unconditional edges because the LLM decides the route, not edge conditions.
 - **Malformed per-item fan-out** — `fan_out_each` requires `over:`, exactly one unconditional outgoing template edge, and `key:` whenever `depends_on:` is set.
