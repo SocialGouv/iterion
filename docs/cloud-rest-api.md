@@ -157,6 +157,47 @@ left to fail at launch. A non-zero `version` is an optimistic if-match token
 [pkg/server/bot_sources_routes.go](../pkg/server/bot_sources_routes.go),
 store [pkg/botsource/](../pkg/botsource/botsource.go).
 
+## Forge integrations (connections, OAuth apps, repo-bots)
+
+The team-scoped, **outbound** forge layer behind the studio's repo-first shell
+([docs/repo-scope.md](repo-scope.md)): connect a forge, hold an OAuth app /
+GitHub App credential, and provision a set of bots onto a repo (webhook + hook
++ managed secret + bindings). All routes are `requireAuth`; the team role is
+checked in-handler — read routes need team **membership** (`canViewTeam`),
+mutations need team **admin/owner** (`canManageTeam`). Sources:
+[pkg/server/forge_routes.go](../pkg/server/forge_routes.go),
+[forge_connect_routes.go](../pkg/server/forge_connect_routes.go),
+[forge_oauth_app_routes.go](../pkg/server/forge_oauth_app_routes.go),
+[forge_github_manifest_routes.go](../pkg/server/forge_github_manifest_routes.go),
+[forge_provisioning_routes.go](../pkg/server/forge_provisioning_routes.go),
+[board_forge.go](../pkg/server/board_forge.go).
+
+| Method | Path | Auth | Purpose |
+|---|---|---|---|
+| `GET` | `/api/teams/{id}/forge/connections` | team member | List forge connections |
+| `POST` | `/api/teams/{id}/forge/connections` | team admin | Connect a forge (PAT / OAuth / GitHub-App install) |
+| `DELETE` | `/api/teams/{id}/forge/connections/{conn_id}` | team admin | Remove a connection |
+| `GET` | `/api/teams/{id}/forge/connections/{conn_id}/health` | team member | Connection health / token probe |
+| `GET` | `/api/teams/{id}/forge/connections/{conn_id}/repos` | team member | Repos visible to the connection |
+| `GET` | `/api/teams/{id}/forge/repos` | team member | Team's forge-linked repos |
+| `POST` | `/api/teams/{id}/forge/repos` | team admin | Create a repo (opt-in `RepoCreator` capability) |
+| `GET` | `/api/teams/{id}/forge/oauth-apps` | team member | List per-tenant OAuth apps |
+| `POST` | `/api/teams/{id}/forge/oauth-apps` | team admin | Register an OAuth app (`manual` / `auto` / `auto_from_connection`) |
+| `DELETE` | `/api/teams/{id}/forge/oauth-apps/{app_id}` | team admin | Remove an OAuth app |
+| `POST` | `/api/teams/{id}/forge/oauth-apps/github-manifest` | team admin | Start the GitHub App-manifest auto-create flow |
+| `GET` | `/api/teams/{id}/forge/repo-bots` | team member | List repo→bot provisionings (integrations) |
+| `GET` | `/api/teams/{id}/forge/repo-bots/preview` | team member | Preview what enabling a bot set subscribes to (no forge writes) |
+| `POST` | `/api/teams/{id}/forge/repo-bots` | team admin | Enable bots on a repo (provision webhook + hook + secret + bindings) |
+| `PATCH` | `/api/teams/{id}/forge/repo-bots/{integration_id}` | team admin | Set the exact bot set (replace semantics) |
+| `DELETE` | `/api/teams/{id}/forge/repo-bots/{integration_id}` | team admin | Disable / deprovision (tears down webhook + hook) |
+| `PATCH` | `/api/teams/{id}/forge/integrations/{iid}` | team admin | Update an integration (incl. `sync_issues_enabled`) |
+| `POST` | `/api/teams/{id}/forge/integrations/{iid}/sync` | team admin | Run the forge→board issue sync now (one-way, forge is source) |
+| `GET` | `/api/teams/{id}/forge/integrations/{iid}/hooks` | team member | List the webhooks on an integration |
+
+The OAuth handshake completes on public callbacks the SPA is redirected to:
+`GET /api/forge/oauth/callback`, `GET /api/forge/github/app/callback`, and
+`GET /api/forge/github/app-manifest/callback`.
+
 ## Inbound webhooks
 
 CRUD (operator-side) plus per-provider delivery URLs.
