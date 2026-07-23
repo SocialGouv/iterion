@@ -35,7 +35,7 @@ flowchart LR
   SRV -- "persist / read" --> MONGO
   SRV -- "change-stream<br/>(events)" --> MONGO
 
-  NATS -- "pull (durable<br/>iterion-runners,<br/>MaxAckPending=1)" --> RUN
+  NATS -- "pull (durable<br/>iterion-runners,<br/>MaxAckPending=256)" --> RUN
   RUN -- "claim KV lease<br/>+ heartbeat (~20s)" --> NATS
   RUN -- "execute" --> SBX
   RUN -- "write events / status" --> MONGO
@@ -122,16 +122,21 @@ matches plan §C.2:
 
 Pinned semantics:
 
-- **`MaxAckPending = 1`** on the consumer — one in-flight run per
-  runner pod. Horizontal scale is "more pods" via KEDA.
-- **`AckWait = 5min`** with periodic `InProgress()` heartbeats so a
+- **`MaxAckPending = 256`** on the consumer — a fleet-wide ceiling on
+  in-flight (delivered-unacked) runs across the shared durable consumer,
+  not a per-pod cap. It MUST stay ≥ the max runner-pod count KEDA scales
+  to (the historic value of `1` pinned the whole fleet to a single
+  concurrent run). Per-pod serialization comes instead from each runner
+  holding one in-flight run via its serial loop. Horizontal scale is
+  "more pods" via KEDA.
+- **`AckWait = 10min`** with periodic `InProgress()` heartbeats so a
   long LLM step doesn't trigger redelivery while it's still healthy.
 - **KV lease**: TTL 60s, refreshed every 20s by the runner's
   `heartbeat` goroutine
-  ([pkg/runner/loop.go](../pkg/runner/loop.go)). If three refreshes
-  fail, the runner self-cancels its own run to avoid split-brain
+  ([pkg/runner/loop.go](../pkg/runner/loop.go)). If a single lease
+  refresh fails, the runner self-cancels its own run to avoid split-brain
   (`iterion_runner_heartbeat_errors_total` bumps).
-- **`MaxDeliver = 3`** — third NAK parks a copy on the DLQ stream
+- **`MaxDeliver = 8`** — the eighth NAK parks a copy on the DLQ stream
   (header `Iterion-DLQ-Reason: <err>`) and the runner CAS-flips the
   run to `failed_resumable`
   ([pkg/runner/loop.go](../pkg/runner/loop.go), look for "parking on
@@ -147,8 +152,9 @@ The **orphan sweeper** runs on the server side
 ([pkg/server/queue_sweeper.go](../pkg/server/queue_sweeper.go)) and
 catches the failure mode the runner can't — the pod that died before
 even claiming the run, or before its first status write. It scans
-every 60s for `queued > 20min` or `running > 10min` AND no current
-NATS-KV lease, then CAS-flips matched rows to `failed_resumable`.
+every 60s for `queued` past the redelivery window + margin (~90min with
+the defaults: `MaxDeliver × AckWait` + 10min) or `running > 10min` AND no
+current NATS-KV lease, then CAS-flips matched rows to `failed_resumable`.
 Bumps `iterion_runs_orphan_recovered_total`.
 
 The same sweeper also polls `DLQDepth()` so
