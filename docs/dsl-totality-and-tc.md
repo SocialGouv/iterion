@@ -81,7 +81,7 @@ body has no exit edge, so only fuel/liveness can ever stop it).
 ## The static-predictability surface
 
 Compilation is a two-phase pipeline that emits ~110 diagnostics
-(C001–C199 + bundlelint C200–C230, both sparse ranges). The full catalogue, with severity and fix,
+(C001–C199 plus the async band C240–C242 + bundlelint C200–C230, all sparse ranges). The full catalogue, with severity and fix,
 is in [references/diagnostics.md](references/diagnostics.md); a drift guard
 (`TestDiagCodesAreDocumented`) and a uniqueness guard (`TestDiagCodesAreUnique`)
 in [pkg/dsl/ir/diag_codes_test.go](../pkg/dsl/ir/diag_codes_test.go) keep that
