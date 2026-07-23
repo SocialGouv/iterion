@@ -388,6 +388,21 @@ the handler-derived vars, so the operator's keys always win. Useful for:
 e.g. forcing `severity_threshold=high` on a security webhook, or pinning
 `pr_review_mode=detailed` regardless of what the forge said.
 
+### `branch_improve_as_pr` — how the branch-improvement bot lands its work
+
+A boolean toggle ([pkg/webhooks/types.go:Config.BranchImproveAsPR](../pkg/webhooks/types.go),
+patchable via the CRUD API) that changes how the branch-improvement bot
+(Billy) delivers its hardening on a PR it reviews. Default (`false`): Billy
+commits and pushes **directly onto the PR's own source branch** in place, so
+the author merges their PR and gets the improvements with it. `true`: Billy
+instead opens a **separate PR targeting that source branch** (routed through
+`open_mr=true` + `mr_base=<source branch>`), so the author reviews the bot's
+changes as an isolated diff before integrating — the right posture for a
+third-party contributor who should stay in control of their branch. Applied
+on the GitHub / GitLab / Forgejo PR and `/revi` comment paths
+([pkg/server/webhooks_github.go:branchImproveVars](../pkg/server/webhooks_github.go),
+[pkg/server/webhooks_prforge.go:stampBranchImprovePushBack](../pkg/server/webhooks_prforge.go)).
+
 ## Observability
 
 Every delivery bumps a label set on `iterion_webhook_deliveries_total`
