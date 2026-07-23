@@ -3,7 +3,7 @@
 # Current state of Iterion
 
 _Living snapshot last verified on 2026-07-21 against `main` (release metadata:
-`0.51.0`). Code, generated CLI help, and the OpenAPI document remain the exact
+`2.0.1`). Code, generated CLI help, and the OpenAPI document remain the exact
 source of truth for a particular build._
 
 Iterion currently ships as both an open-source workflow engine and a
@@ -21,7 +21,7 @@ linked references.
 | Area | Current implementation |
 |---|---|
 | Workflow language | `.bot` sources and deterministic `.botz` bundles compile through an indentation-sensitive parser, AST, IR compiler, and static validator. |
-| Orchestration | Agent, judge, router, human, tool, compute, emit, wait, sub-bot, done, and fail behavior; structured I/O; explicit loops; downstream convergence; reusable groups and iteration. |
+| Orchestration | Agent, judge, router, human, tool, compute, emit, wait, await_answers, sub-bot, done, and fail behavior; structured I/O; explicit loops; downstream convergence; reusable groups and iteration. |
 | Local operation | CLI, browser studio, Wails desktop app, file-backed run store, native kanban, run console, live operator messages/overrides, and a local post-mortem shell for preserved worktrees. |
 | Execution | In-process multi-provider `claw`, Claude Code, Kimi Code, and Grok Build backends. The Codex delegate remains only as a deprecated compatibility path. |
 | Isolation and policy | Git worktrees, default-on Docker/Podman/Kubernetes sandboxes, opt-in network policies, tool permissions, sealed secrets, budget enforcement, and resumable checkpoints. |
