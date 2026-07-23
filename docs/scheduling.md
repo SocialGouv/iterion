@@ -129,10 +129,12 @@ needs that image present (CI publishes it; for a local loop, `docker
 tag` your build to `ghcr.io/socialgouv/iterion-sandbox-sec:edge`).
 
 > Note: `sec-audit-source` (SAST) is production-ready. `sec-audit-deps`
-> (SCA) is currently an enumerate + LLM-review pass — its heuristic
-> scanner layer is still a scaffold and a run self-labels with a
-> "⚠ Coverage" banner. Schedule it for the LLM-review pass, but treat it
-> as incomplete until the implementation ticket lands.
+> (SCA) now has a real CVE floor — `run_generic_heuristics` runs `trivy
+> fs --scanners vuln` over the workspace from a bare checkout, matching
+> pinned versions against the OSV/GHSA/NVD DB. The per-ecosystem
+> npm/pip-audit and code-pattern/typosquat malware signals remain
+> partial, so a run still self-labels with a "⚠ Coverage" banner — but it
+> is no longer a zero-finding scaffold.
 
 ## Overlap policy — skip is the default (behavior change)
 
