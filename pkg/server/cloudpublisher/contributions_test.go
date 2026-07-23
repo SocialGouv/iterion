@@ -4,7 +4,9 @@ import (
 	"context"
 	"testing"
 
+	"github.com/SocialGouv/iterion/pkg/botsource"
 	"github.com/SocialGouv/iterion/pkg/queue"
+	"github.com/SocialGouv/iterion/pkg/store"
 )
 
 // A locally installed plugin file must deterministically shadow a same-named
@@ -27,6 +29,50 @@ func TestReplaceContribution_ShadowsInPlace(t *testing.T) {
 	// A different kind with the same name is a distinct target.
 	if replaceContribution(files, "commands", "deploy-target.md", []byte("y")) {
 		t.Error("must not match across kinds")
+	}
+}
+
+// A team-authored bot's bundle skills ride the Contributions channel so they
+// reach a runner pod (which can't resolve a tenant bundle off its baked
+// BotsPaths). Flat skills/<name>.md become library skills; main.bot, manifest
+// and nested skill dirs are excluded.
+func TestAppendTenantBotSkills(t *testing.T) {
+	mem := botsource.NewMemoryStore()
+	ctx := store.WithTenant(context.Background(), "team-1")
+	if _, err := mem.Create(ctx, botsource.BotSource{
+		TenantID: "team-1",
+		Slug:     "reviewer",
+		Files: map[string]string{
+			botsource.MainBotFile: "workflow main:\n  a -> done\n",
+			"manifest.yaml":       "name: reviewer\n",
+			"skills/deep.md":      "# deep skill",
+			"skills/wide.md":      "# wide skill",
+			"skills/nested/x.md":  "# nested — excluded",
+		},
+	}); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+	p := &Publisher{botSources: mem}
+
+	got := p.appendTenantBotSkills(context.Background(), nil, "team-1", "reviewer")
+	if got == nil {
+		t.Fatal("expected contributions with library skills")
+	}
+	names := map[string]string{}
+	for _, s := range got.Library {
+		names[s.Name] = string(s.Content)
+	}
+	if len(names) != 2 || names["deep"] != "# deep skill" || names["wide"] != "# wide skill" {
+		t.Fatalf("wrong library skills: %v", names)
+	}
+
+	// A catalog/unknown bot (no store entry) adds nothing.
+	if p.appendTenantBotSkills(context.Background(), nil, "team-1", "not-a-tenant-bot") != nil {
+		t.Error("unknown bot must not synthesize contributions")
+	}
+	// No store → passthrough.
+	if (&Publisher{}).appendTenantBotSkills(context.Background(), nil, "team-1", "reviewer") != nil {
+		t.Error("nil store must be a passthrough")
 	}
 }
 
