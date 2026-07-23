@@ -46,9 +46,7 @@ agent's honest termination contract).
 ```
 scan_hints ──(no docs)──▶ author_docs ──▶ scan_hints   (author_rescan, once)
 scan_hints ──(exact HEAD cache hit, clean tree, no issue)──────────▶ done
-scan_hints ──▶ campaign ──▶ scope_check ──▶ verify_precheck
-verify_precheck ──(reuse)─────────────────────────────▶ gate
-verify_precheck ──▶ verify_build ──▶ verify_run ──────▶ gate
+scan_hints ──▶ campaign ──▶ scope_check ──▶ gate
 gate ──(converged)──▶ mark_issue_for_review ──▶ update_audit_cache ──▶ mr_gate
 gate ──▶ scan_hints   as continuation_loop(max_passes)  — fresh hints, next pass
 mr_gate ──(open_mr)──▶ forge_auth_probe ──(credential)──▶ finalize_mr ──▶ done
@@ -73,15 +71,12 @@ mr_gate ──(not open_mr)─────────────────�
   issue to exactly one of **four outcomes** — fix+commit /
   dismiss+ledger / promise+promises-ledger / code-bug→board — and
   commits each aligned doc in stride. git is the durable state.
-- **`scope_check`** — deterministic writeable-set containment (`.md`,
-  the cache file, opted-in `go_comment_globs`) vs the run base.
-- **`verify_build` + `verify_run`** — the shared stack-agnostic build
-  gate (ADR-044), with `verify_precheck`'s docs-only fast path (a
-  green verdict is reused when every change since the green HEAD is
-  `.md`).
-- **`gate`** — `converged = verify.passed ∧ scope_ok ∧
-  campaign.docs_aligned` — **nothing else**. Hint counts are
-  telemetry, never conditions.
+- **`scope_check`** — deterministic writeable-set containment (`.md`
+  + the cache file) vs the run base. The bot only touches docs.
+- **`gate`** — `converged = scope_ok ∧ campaign.docs_aligned` —
+  **nothing else**. There is no build gate: a docs-only change can't
+  break the build, so running it would verify an invariant the bot
+  can't violate. Hint counts are telemetry, never conditions.
 - **Ledgers** — `dismissed.json` (adjudication memory) and
   `promises.json` (unfulfilled ambitions, reported in the PR body).
 
@@ -90,7 +85,6 @@ mr_gate ──(not open_mr)─────────────────�
 | Var | Default | Description |
 |---|---|---|
 | `doc_globs` | READMEs + docs/ + CLAUDE.md | Doc footprint (universal default) |
-| `go_comment_globs` | `""` | Opt-in Go comment auditing + writeable-set widening |
 | `scope_notes` | `""` | Operator attention pin |
 | `diff_since` | `""` | Incremental hint (`git diff <ref>...HEAD`) |
 | `max_hints` | `120` | Cap on the advisory hints list (context bound) |

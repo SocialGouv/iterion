@@ -43,11 +43,9 @@ scan defines the campaign's footprint.
 
 The campaign may modify:
 
-- Markdown files (`.md`) — existing docs and new ones it authors;
-- Go comments, and only comments, in paths matching `go_comment_globs` when
-  the variable is non-empty.
+- Markdown files (`.md`) — existing docs and new ones it authors.
 
-Do not modify code bodies, configuration, generated files, or build files.
+Do not modify code, configuration, generated files, or build files.
 `scope_check` is the deterministic containment gate: it diffs the whole run
 against its base and fails the pass on any out-of-scope path. Any
 out-of-scope commit must be reverted on the next pass.

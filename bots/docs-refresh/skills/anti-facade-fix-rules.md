@@ -32,10 +32,9 @@ verifiable mismatch.
 
 ## 3. Respect the writable set
 
-Edit only Markdown (existing docs, or new `.md` pages you author). When
-`go_comment_globs` is explicitly non-empty, comment-only changes in matching Go
-files are also allowed. Never change executable statements, tests, build files,
-configuration, generated output, or unrelated files.
+Edit only Markdown (existing docs, or new `.md` pages you author). Never
+change code, tests, build files, configuration, generated output, or
+unrelated files.
 
 If `fail_log` names out-of-scope paths, revert those changes before doing more
 work. `scope_check` evaluates the complete diff from the run base, including
@@ -63,8 +62,9 @@ Use the closest available proof:
 - compile or test API snippets when a focused command exists;
 - re-run the relevant search to prove a stale reference is gone.
 
-The later build gate is a safety net, not a substitute for checking the edited
-claim.
+Nothing downstream re-checks a documentation claim for you — the scope gate
+only proves you stayed in the `.md` writeable set. Verifying the edited claim
+against the live code is yours alone.
 
 ## 6. Commit each aligned document
 

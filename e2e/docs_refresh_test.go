@@ -10,13 +10,14 @@ import (
 	"github.com/SocialGouv/iterion/pkg/store"
 )
 
-// docsRefreshState models docs-refresh's v3 shape (the Billy/Willy
-// paradigm: one capable agent + a mission + TRUTH gates only). A single
-// deterministic scan_hints node hands the campaign an ADVISORY report
-// (hints, telemetry — never obligations); the campaign aligns docs
-// committing in stride; the deterministic TRUTH gates re-check (scope
-// containment, real build) and the continuation loop re-hints until
-// docs_aligned ∧ scope_ok ∧ passed — nothing else.
+// docsRefreshState models docs-refresh's shape: one capable agent + a
+// mission + a TRUTH gate only. A single deterministic scan_hints node
+// hands the campaign an ADVISORY report (hints, telemetry — never
+// obligations); the campaign aligns docs committing in stride; the
+// deterministic scope gate re-checks writeable-set containment and the
+// continuation loop re-hints until docs_aligned ∧ scope_ok — nothing
+// else. A docs-only bot cannot break the build, so there is no build
+// gate.
 type docsRefreshState struct {
 	alignedBy    int // campaign reports docs_aligned=true on/after this pass
 	hintCount    int // hint_count reported by every scan_hints pass (advisory)
@@ -63,17 +64,6 @@ func stubDocsRefresh(exec *scenarioExecutor, st *docsRefreshState) {
 	})
 	exec.on("scope_check", func(_ map[string]any) (map[string]any, error) {
 		return map[string]any{"scope_ok": true, "out_of_scope": []any{}, "log": "", "_tokens": 1}, nil
-	})
-	// verify_precheck: the stub never reuses, so every pass walks the full
-	// verify chain.
-	exec.on("verify_precheck", func(_ map[string]any) (map[string]any, error) {
-		return map[string]any{"reuse": false, "reason": "stub: always verify", "_tokens": 1}, nil
-	})
-	exec.on("verify_build", func(_ map[string]any) (map[string]any, error) {
-		return map[string]any{"prepared": true, "summary": "verify.sh written", "_tokens": 1}, nil
-	})
-	exec.on("verify_run", func(_ map[string]any) (map[string]any, error) {
-		return map[string]any{"passed": true, "skipped": false, "exit_code": 0, "log_tail": "", "_tokens": 1}, nil
 	})
 	exec.on("mark_issue_for_review", func(_ map[string]any) (map[string]any, error) {
 		return map[string]any{"text": "{\"skipped\":\"no issue_id\"}", "_tokens": 1}, nil
@@ -180,8 +170,8 @@ func TestDocsRefresh_ScopeViolationRoutesBack(t *testing.T) {
 // TestDocsRefresh_HintsAreAdvisoryNeverGate (v3, the paradigm pin): a
 // large residual hint count must NOT block convergence. The v2 lineage
 // gated on scanner metrics (coverage_pct, undocumented_count) and the
-// agent ended up serving the scanner; v3's gate is verify ∧ scope ∧
-// docs_aligned — nothing else. If someone re-introduces a scanner count
+// agent ended up serving the scanner; the gate is scope ∧ docs_aligned
+// — nothing else. If someone re-introduces a scanner count
 // into the gate expression, this test fails.
 func TestDocsRefresh_HintsAreAdvisoryNeverGate(t *testing.T) {
 	exec := newScenarioExecutor()
@@ -222,8 +212,8 @@ func TestDocsRefresh_NoopSkipsCampaign(t *testing.T) {
 	if exec.wasCalled("campaign") {
 		t.Errorf("campaign fired on a noop_skip run — the short-circuit must cost zero LLM")
 	}
-	if exec.wasCalled("verify_build") {
-		t.Errorf("verify_build fired on a noop_skip run")
+	if exec.wasCalled("scope_check") {
+		t.Errorf("scope_check fired on a noop_skip run")
 	}
 }
 
@@ -282,7 +272,7 @@ func TestDocsRefresh_Structural(t *testing.T) {
 	if wf.Entry != "scan_hints" {
 		t.Errorf("workflow entry = %q, want %q (the advisory scan leads)", wf.Entry, "scan_hints")
 	}
-	for _, id := range []string{"campaign", "verify_build", "author_docs"} {
+	for _, id := range []string{"campaign", "author_docs"} {
 		node, ok := wf.Nodes[id]
 		if !ok {
 			t.Fatalf("workflow missing expected agent node %q", id)
@@ -291,7 +281,7 @@ func TestDocsRefresh_Structural(t *testing.T) {
 			t.Errorf("node %q is %T, want *ir.AgentNode (adaptive)", id, node)
 		}
 	}
-	for _, id := range []string{"scan_hints", "scope_check", "verify_precheck", "verify_run", "mark_issue_for_review", "update_audit_cache"} {
+	for _, id := range []string{"scan_hints", "scope_check", "mark_issue_for_review", "update_audit_cache"} {
 		node, ok := wf.Nodes[id]
 		if !ok {
 			t.Fatalf("workflow missing expected tool node %q", id)
@@ -312,6 +302,9 @@ func TestDocsRefresh_Structural(t *testing.T) {
 		"enforce_fix_scope", "detect_doc_changes",
 		// v2 obligation machinery (scanner-as-obligation-generator)
 		"scan_docs", "scan_code_surface", "build_manifest",
+		// v3.3 removed the build-verify apparatus (a docs bot cannot
+		// break the build): campaign + scope gate are the whole oracle.
+		"verify_build", "verify_run", "verify_precheck",
 	} {
 		if _, ok := wf.Nodes[id]; ok {
 			t.Errorf("retired node %q is still present — v3 is one campaign guided by an advisory scan + truth gates, not a scanner pipeline", id)

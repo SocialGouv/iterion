@@ -62,21 +62,13 @@
 ##                   campaign continues from the commits earlier
 ##                   passes banked.
 ##   scope_check   — deterministic writeable-set containment (docs +
-##                   cache + opted-in go_comment_globs) vs the run
-##                   base. TRUTH: the bot must not touch code.
-##   verify_build  — the stack-agnostic build/test gate shared with
-##     + verify_run   the other v2 bots (ADR-044): the agent writes
-##                   the repo's REAL build+test into an out-of-tree
-##                   verify.sh; a deterministic tool re-runs it on
-##                   the real exit code. verify_precheck keeps the
-##                   docs-only fast path (green verdict reused when
-##                   every change since the green HEAD is `.md`).
-##                   TRUTH: the tree must still build.
+##                   cache) vs the run base. TRUTH: the bot only
+##                   touches docs, never code — a docs-only change
+##                   cannot break the build, so there is no build gate.
 ##   gate          — deterministic compute:
-##                   converged = verify.passed ∧ scope_ok ∧
-##                   campaign.docs_aligned — NOTHING ELSE. Scanner
-##                   counts are telemetry (report, events), never
-##                   conditions.
+##                   converged = scope_ok ∧ campaign.docs_aligned —
+##                   NOTHING ELSE. Scanner counts are telemetry
+##                   (report, events), never conditions.
 ##   ledgers       — the dismissals ledger (vars.dismissed_path) and
 ##                   the promises ledger (<scratch>/promises.json)
 ##                   are the campaign's cross-pass MEMORY: its own
@@ -96,8 +88,8 @@
 ## 15 nodes → 13; ~1400 lines of embedded python → ~350.
 ##
 ## CONTINUATION IS BOUNDED. The single declared loop
-## (scan_hints→campaign→scope_check→verify_precheck[→verify_build
-## →verify_run]→gate→scan_hints) is capped by `max_passes`; on
+## (scan_hints→campaign→scope_check→gate→scan_hints) is capped by
+## `max_passes`; on
 ## exhaustion it ships what is banked (every committed doc alignment
 ## is real, landed work). `iterion validate` reports NO undeclared
 ## cycle (author_rescan(1) is the one other declared loop).
@@ -123,12 +115,6 @@ vars:
   ## doc locations are added per-run via --var, never baked into the
   ## catalog default.
   doc_globs: string = "README.md,docs/**/*.md,**/README.md,CLAUDE.md,**/CLAUDE.md"
-
-  ## Go code comment scope (comma-separated globs). Empty (default)
-  ## means: do NOT audit Go function/package comments. Non-empty
-  ## widens the campaign's writeable set (and scope_check's
-  ## allow-list) to comment-only edits in those files.
-  go_comment_globs: string = ""
 
   ## Optional free-text notes pinning the campaign's attention.
   scope_notes: string = ""
@@ -184,8 +170,8 @@ vars:
   ## doc_globs, widen doc_globs too.
   docs_dir: string = "docs"
 
-  ## Out-of-tree, sandbox-writable scratch for the deterministic
-  ## gate's verify script/log and the promises ledger. The engine
+  ## Out-of-tree, sandbox-writable scratch for the promises ledger
+  ## (and any cross-pass state). The engine
   ## resolves ${PROJECT_SCRATCH_DIR} to ~/.iterion/projects/<key>/
   ## scratch non-sandboxed and to the container-writable
   ## /tmp/iterion-scratch under a sandbox. Keeping it OUT of the
@@ -201,21 +187,13 @@ vars:
   ## tree like scratch_dir; empty disables the exclusion.
   dismissed_path: string = "${PROJECT_SCRATCH_DIR}/docs-refresh/dismissed.json"
 
-  ## BASELINE (G5). Known pre-existing build/test failures the
-  ## campaign must SKIP rather than burn budget proving they aren't
-  ## its own — docs-refresh rarely trips this (docs-only edits), but
-  ## when go_comment_globs opts comment edits in, the build gate runs
-  ## and a red base tree must not absorb the run. Empty = establish
-  ## once cheaply, then skip what predates the run.
-  baseline: string = ""
-
   ## Hard cap on continuation PASSES — the convergence backstop. Each
-  ## pass is one hints→campaign→verify cycle; the run stops (shipping
-  ## what is banked) when the docs are reported aligned + the gates
-  ## are green, or when this cap is hit.
+  ## pass is one hints→campaign→scope_check cycle; the run stops
+  ## (shipping what is banked) when the docs are reported aligned +
+  ## the scope gate is green, or when this cap is hit.
   ## NOTE loop semantics: the DSL `as continuation_loop(N)` bounds
   ## the loop-BACKS (re-entries), so the TOTAL number of passes is
-  ## N+1 — max_passes: 2 yields up to 3 campaign→verify cycles.
+  ## N+1 — max_passes: 2 yields up to 3 campaign→scope cycles.
   ## Self-orchestrated passes are comprehensive (pass 1 aligns most of
   ## the corpus), so the asymptote converges in a FEW big passes, not
   ## many small ones — and the wall-clock/cost budget must fit them
@@ -337,9 +315,7 @@ prompt campaign_system:
           cross-references to whatever you renamed/removed, fix
           those too) → COMMIT the aligned doc with a semantic
           message (`docs(<area>): <what was aligned>`), body ending
-          with the trailer line `Bot: docs-refresh`. Use
-          `fix(<area>):` ONLY for a demonstrably misleading code
-          COMMENT (go_comment_globs opt-in). Stage everything
+          with the trailer line `Bot: docs-refresh`. Stage everything
           including new files (`git add -A`) before each commit.
        b. DISMISS + LEDGER — a false positive, or genuinely not worth
           documenting: record it in the DISMISSALS LEDGER (below)
@@ -364,13 +340,11 @@ prompt campaign_system:
      and a fresh pass just reads `git log` + a fresh advisory report
      and continues. Do NOT keep a separate worklist file.
 
-  4. WRITEABLE SET — `.md` files, plus (ONLY when `go_comment_globs`
-     is non-empty) comment-only edits in Go files matching those
-     globs. NEVER touch code statements, configs, or build files. A
-     deterministic scope gate diffs the whole run against its base
-     after every pass: any out-of-scope file FAILS the gate and
-     bounces back to you — you would then have to revert those
-     commits before continuing. Don't make it fire.
+  4. WRITEABLE SET — `.md` files only. NEVER touch code, configs, or
+     build files. A deterministic scope gate diffs the whole run
+     against its base after every pass: any out-of-scope file FAILS
+     the gate and bounces back to you — you would then have to revert
+     those commits before continuing. Don't make it fire.
 
   5. ESCAPE VALVE — is_code_bug. When a doc is CORRECT and the CODE
      is wrong, do NOT "align" the doc to broken behaviour. Set
@@ -381,13 +355,7 @@ prompt campaign_system:
      answer. Distinct from an UNFULFILLED PROMISE (outcome c): there
      the code is not buggy, it is merely behind a documented ambition.
 
-  6. BASELINE — don't chase failures you didn't cause. A build/test
-     failure that predates this run (see `baseline`, or establish it
-     once cheaply with a `git stash`-based check) is out of scope:
-     note it and move on. Docs-only passes rarely trip the build
-     gate; comment edits can.
-
-  7. ASK ONLY ON A REAL DECISION. Keep operator pauses RARE — most
+  6. ASK ONLY ON A REAL DECISION. Keep operator pauses RARE — most
      adjudications are yours to make; lower-stakes doubts go in
      `summary`.
 
@@ -471,10 +439,10 @@ prompt campaign_system:
     - summary: which docs you aligned or wrote (with the verification
       evidence pattern you used), what you dismissed and why.
 
-  Be honest. A deterministic scope gate and a build gate re-check the
-  tree after you, and the run loops you back until you report
-  docs_aligned AND the gates are green — so under-reporting only
-  costs a pass, and over-reporting lands you right back here.
+  Be honest. A deterministic scope gate re-checks the tree after you,
+  and the run loops you back until you report docs_aligned AND the
+  scope is clean — so under-reporting only costs a pass, and
+  over-reporting lands you right back here.
 
 prompt campaign_user:
   Repository: {{vars.workspace_dir}}
@@ -495,14 +463,9 @@ prompt campaign_user:
   Recently changed code files (prioritisation hint, may be empty):
   {{input.recently_changed_code_files}}
 
-  BASELINE — pre-existing failures to SKIP (empty = establish once
-  cheaply if the build gate goes red):
-  {{vars.baseline}}
-
   Deterministic gate feedback from the PREVIOUS pass (empty on the
-  first pass; when present it is EITHER a scope violation — files
-  outside the doc writeable-set changed; revert those commits before
-  continuing — OR a real build/test failure to fix):
+  first pass; when present it is a scope violation — files outside the
+  doc writeable-set changed; revert those commits before continuing):
   {{input.fail_log}}
 
   Plan the whole corpus first, then align it — for each item: verify
@@ -570,61 +533,6 @@ prompt author_docs_user:
    - created_doc_files: repo-relative paths you wrote
    - summary: what you authored, and the evidence (files you read)
      behind the key claims
-
-## ─── verify (deterministic build/test gate, stack-agnostic) ─────────
-## An ADAPTIVE agent (verify_build) reads the verify-build skill and writes
-## the repo's real build+test into an OUT-OF-TREE <scratch_dir>/verify.sh; a
-## DETERMINISTIC tool node (verify_run) re-runs it and gates on the REAL exit
-## code. Docs-only passes should always be green here; the gate earns its
-## keep when go_comment_globs opts comment edits in (the tree must still
-## compile) and as the universal engine-side floor shared with the other v2
-## bots. verify_build does NOT fix anything: a RED gate routes back to
-## `campaign`.
-
-prompt verify_system:
-  You are a release engineer. A doc-alignment pass just committed changes
-  to this repository (documentation, possibly code COMMENTS). Your single
-  job: capture how THIS repo builds and tests itself into a re-runnable
-  script the deterministic gate will execute. You do NOT change anything.
-
-  STEPS:
-  1. Detect how THIS repo builds and tests itself — read the `verify-build`
-     skill. Use the repo's OWN toolchain, HONOURING any pinned toolchain
-     (version managers, lockfiles, devbox, GOTOOLCHAIN). Do NOT assume a
-     language.
-  2. Write an executable POSIX-sh script to `{{vars.scratch_dir}}/verify.sh`
-     (an OUT-OF-TREE scratch path — create it first with
-     `mkdir -p {{vars.scratch_dir}}`) that runs the repo's build (and the
-     fast test targets a comment-only change could plausibly affect) and
-     exits non-zero on any failure. For a docs-only repo or a pass that
-     touched only `.md` files, a build-only script (or the closest cheap
-     sanity command) is appropriate — keep it FAST.
-  3. PRE-EXISTING failures: scope `verify.sh` so a red base tree can't
-     absorb the run; list any excluded pre-existing failures in your
-     summary.
-  4. Run it ONCE to confirm the script itself is valid. You do NOT fix
-     anything here.
-  5. If the repo genuinely has no build/test system (pure docs/config),
-     write a script that echoes that and exits 0, and say so.
-
-  A deterministic tool node RE-RUNS your script and gates the run on its
-  real exit code. Output prepared=true once `{{vars.scratch_dir}}/verify.sh`
-  exists; summary = the command you settled on.
-
-prompt verify_user:
-  Repository to verify: {{vars.workspace_dir}}
-
-  Capture the repo's real build (+ fast tests where comment edits could
-  plausibly matter) into `{{vars.scratch_dir}}/verify.sh` (out-of-tree —
-  see the system prompt + the `verify-build` skill). Do NOT change
-  anything; the deterministic gate runs your script and the campaign
-  fixes any red on the next pass.
-
-  MANDATORY (skill section 1b): if the repo's own CI enforces a
-  codegen-drift gate (git diff --exit-code after a regen/vendor step,
-  a drift-check task, test -z on git status --porcelain), verify.sh
-  MUST mirror it — run the regen command(s), then fail on drift; the
-  deterministic precheck rejects a gateless verify.sh otherwise.
 
 ## ─── PR finalization prompts (opt-in) ──────────────────────────────
 
@@ -729,8 +637,7 @@ schema campaign_input:
 
 ## campaign's TERMINATION CONTRACT (G2): a machine-checkable output
 ## the engine keys convergence on. docs_aligned is the done-oracle;
-## the gate ANDs it with the scope check and the build gate — nothing
-## else.
+## the gate ANDs it with the writeable-set scope check — nothing else.
 schema campaign_output:
   docs_aligned: bool
   commits_this_pass: int
@@ -740,34 +647,9 @@ schema campaign_output:
   human_note: string
   summary: string
 
-## verify_plan is verify_build's contract: it has WRITTEN <scratch_dir>/verify.sh.
-schema verify_plan:
-  prepared: bool
-  summary: string
-
-## verify_result is the DETERMINISTIC build gate's contract. `passed` is
-## the real process exit code of re-running <scratch_dir>/verify.sh — NOT
-## an LLM judgment. `skipped` is true only when no verify script was
-## produced (treated as pass but surfaced loudly, never a silent façade).
-schema verify_result:
-  passed: bool
-  skipped: bool
-  exit_code: int
-  log_tail: string
-
-## verify_precheck: deterministic "did anything change since the last
-## GREEN verify?" — HEAD equality + clean tree (or a docs-only diff)
-## ⇔ the previous verdict still holds and the whole verify_build (LLM
-## agent) + verify_run (real build+tests) chain is skipped. Pass 1
-## always verifies (no state file yet); a RED verdict is never reused.
-schema verify_precheck_output:
-  reuse: bool
-  reason: string
-
 ## scope_check is the DETERMINISTIC writeable-set gate: every path
-## changed since the RUN BASE must be a doc (`.md`), the audit cache
-## file, or (when go_comment_globs is non-empty) a file inside those
-## globs. Out-of-scope changes fail the gate and bounce back to the
+## changed since the RUN BASE must be a doc (`.md`) or the audit cache
+## file. Out-of-scope changes fail the gate and bounce back to the
 ## campaign, which must revert them.
 schema scope_check_output:
   scope_ok: bool
@@ -1164,134 +1046,16 @@ agent campaign:
   interaction: human
   capabilities: [board.read, board.create]
 
-## verify_build — adaptive, stack-agnostic gate authoring (writes
-## <scratch_dir>/verify.sh). Kept FAST for docs-only passes.
-agent verify_build:
-  backend: "claude_code"
-  model: "${ITERION_DOC_ALIGN_MODEL_CLAUDE:-claude-opus-4-8}"
-  reasoning_effort: "${ITERION_DOC_ALIGN_EFFORT_CLAUDE:-medium}"
-  output: verify_plan
-  system: verify_system
-  user: verify_user
-  session: fresh
-  interaction: human
-
-## verify_run — the DETERMINISTIC half: re-runs the agent-prepared
-## <scratch_dir>/verify.sh and reports the REAL exit code. python3 for
-## safe JSON + subprocess capture; double-quote-free body, no backticks
-## (E012).
-tool verify_run:
-  command: `WS={{vars.workspace_dir}} SCRATCH={{vars.scratch_dir}} RUN_ID={{run.id}} python3 -c "
-import os, subprocess, json
-ws = os.environ.get('WS', '.')
-scratch = os.environ.get('SCRATCH', '.')
-try:
-    os.makedirs(scratch, exist_ok=True)
-except OSError:
-    pass
-script = os.path.join(scratch, 'verify.sh')
-if not os.path.exists(script):
-    print(json.dumps({'passed': True, 'skipped': True, 'exit_code': 0, 'log_tail': 'verify_build produced no verify.sh in the scratch dir; build gate SKIPPED (counted as pass, but surfaced) -- verify_build should write the script'}))
-    raise SystemExit(0)
-def tree_state():
-    try:
-        p = subprocess.run(['git', '-C', ws, 'status', '--porcelain'], stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True, timeout=60)
-        if p.returncode != 0:
-            return None
-        return set(l for l in p.stdout.splitlines() if l.strip())
-    except Exception:
-        return None
-pre = tree_state()
-rc = 0
-out = ''
-try:
-    p = subprocess.run(['sh', script], cwd=ws, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, timeout=1500)
-    out = p.stdout or ''
-    rc = p.returncode
-except subprocess.TimeoutExpired as e:
-    out = (e.output or '') + chr(10) + '[verify timed out after 1500s]'
-    rc = 124
-except Exception as e:
-    out = 'verify_run could not execute the script: ' + str(e)
-    rc = 1
-# Deterministic codegen-drift tail (stack-agnostic; the gate stays
-# deterministic per ADR-044). Only on a GREEN verify: (1) if the repo's own
-# CI enforces a drift gate, verify.sh must mirror it; (2) a green verify
-# must not leave new changes in the tree (regen output belongs in a commit).
-if rc == 0:
-    import glob
-    def has_drift_gate(text):
-        for l in text.splitlines():
-            # git diff --exit-code is the canonical build-failing gate.
-            if 'diff' in l and '--exit-code' in l:
-                return True
-            # --quiet / status --porcelain also appear as commit-if-changed
-            # control flow in updater workflows (e.g. a Homebrew tap bump) --
-            # only count them when the same line actually fails the build.
-            gated = ('exit 1' in l) or ('|| exit' in l) or ('test -z' in l) or ('[ -z' in l)
-            if gated and (('diff' in l and '--quiet' in l) or 'status --porcelain' in l):
-                return True
-        return False
-    ci_hit = ''
-    for pat in ('.github/workflows/*.yml', '.github/workflows/*.yaml', '.gitlab-ci.yml', '.circleci/config.yml'):
-        for f in sorted(glob.glob(os.path.join(ws, pat))):
-            try:
-                if has_drift_gate(open(f, encoding='utf-8', errors='replace').read()):
-                    ci_hit = os.path.relpath(f, ws)
-                    break
-            except OSError:
-                pass
-        if ci_hit:
-            break
-    if ci_hit:
-        try:
-            vs = open(script, encoding='utf-8', errors='replace').read()
-        except OSError:
-            vs = ''
-        if not has_drift_gate(vs):
-            rc = 3
-            out = out + chr(10) + 'DRIFT GATE MISSING: CI (' + ci_hit + ') enforces a codegen-drift gate but ' + script + ' has none -- edit the script per the verify-build skill section 1b (run the repo regen command, then: git diff --exit-code).'
-    if rc == 0 and pre is not None:
-        post = tree_state()
-        if post is not None:
-            fresh = sorted(post - pre)
-            if fresh:
-                rc = 4
-                out = out + chr(10) + 'UNCOMMITTED REGEN OUTPUT: a green verify left new changes in the tree; commit (or gitignore) them:' + chr(10) + chr(10).join(fresh[:50])
-try:
-    with open(os.path.join(scratch, 'verify.log'), 'w', encoding='utf-8') as lf:
-        lf.write(out)
-except OSError:
-    pass
-## Record the verified HEAD so verify_precheck can reuse a GREEN
-## verdict on a later pass OF THIS RUN. Stamped with the run id:
-## scratch is host-persistent across local runs, and reusing a
-## PREVIOUS run's verdict would let a fresh run reach the gate with
-## outputs.verify_run never resolved — it could then never converge.
-if rc == 0:
-    try:
-        head = subprocess.run(['git', '-C', ws, 'rev-parse', 'HEAD'], stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True, timeout=30).stdout.strip()
-        with open(os.path.join(scratch, 'verify.state'), 'w', encoding='utf-8') as sf:
-            json.dump({'head': head, 'rc': rc, 'run_id': os.environ.get('RUN_ID', '')}, sf)
-    except Exception:
-        pass
-print(json.dumps({'passed': rc == 0, 'skipped': False, 'exit_code': rc, 'log_tail': out[-4000:]}))
-"`
-  output: verify_result
-
 ## scope_check — the DETERMINISTIC writeable-set gate. Diffs the RUN
 ## BASE (oldest reflog entry of the fresh per-run worktree — exact
 ## under worktree: auto) against the working tree and flags any changed
-## path that is not a doc: `.md` anywhere, the audit cache file, or
-## (when GO_GLOBS is non-empty) a file matching those globs (the
-## comment-only discipline stays contract-level — this gate is
-## path-level containment). Untracked files are held to the same rule.
+## path that is not a doc (`.md` anywhere) or the audit cache file —
+## path-level containment. Untracked files are held to the same rule.
 ## No LLM; the campaign must revert whatever this flags.
 tool scope_check:
-  command: `WS={{vars.workspace_dir}} GO_GLOBS={{vars.go_comment_globs}} CACHE={{vars.audit_cache_path}} python3 -c "
-import os, json, subprocess, fnmatch
+  command: `WS={{vars.workspace_dir}} CACHE={{vars.audit_cache_path}} python3 -c "
+import os, json, subprocess
 ws = os.environ.get('WS', '.')
-go_globs = [g.strip() for g in os.environ.get('GO_GLOBS', '').split(',') if g.strip()]
 cache = os.environ.get('CACHE', '').strip()
 
 def git(args):
@@ -1313,92 +1077,28 @@ def allowed(p):
         return True
     if cache and p == cache:
         return True
-    for g in go_globs:
-        if fnmatch.fnmatch(p, g):
-            return True
     return False
 
 out_of_scope = sorted(p for p in changed if not allowed(p))
 log = ''
 if out_of_scope:
-    log = 'SCOPE VIOLATION: this run changed files outside the doc writeable-set (.md' + (' + go_comment_globs' if go_globs else '') + '). Revert these before continuing (git revert the offending commits, or git checkout ' + base[:12] + ' -- <path>): ' + ', '.join(out_of_scope[:40])
+    log = 'SCOPE VIOLATION: this run changed files outside the doc writeable-set (.md only). Revert these before continuing (git revert the offending commits, or git checkout ' + base[:12] + ' -- <path>): ' + ', '.join(out_of_scope[:40])
 print(json.dumps({'scope_ok': not out_of_scope, 'out_of_scope': out_of_scope[:100], 'log': log}))
 "`
   output: scope_check_output
 
-## verify_precheck — the deterministic fast path around the verify
-## chain. Reuses the last GREEN verdict when HEAD is unchanged and the
-## tree is clean, AND (docs-only fast path) when every path changed
-## since the green HEAD is a `.md` file — a doc edit is invisible to
-## the repo's build (observed live: verify_build+verify_run burned
-## 5-16 min PER PASS re-verifying docs-only commits — ~half the run's
-## wall-clock, run 019f8b50). Anything else (first pass, code-comment
-## edits, dirty tree, red previous verdict) re-verifies.
-tool verify_precheck:
-  command: `WS={{vars.workspace_dir}} SCRATCH={{vars.scratch_dir}} RUN_ID={{run.id}} python3 -c "
-import os, json, subprocess
-ws = os.environ.get('WS', '.')
-scratch = os.environ.get('SCRATCH', '.')
-state_path = os.path.join(scratch, 'verify.state')
-def out(reuse, reason):
-    print(json.dumps({'reuse': reuse, 'reason': reason}))
-    raise SystemExit(0)
-if not os.path.exists(state_path):
-    out(False, 'no previous green verify (first pass)')
-try:
-    with open(state_path, encoding='utf-8') as sf:
-        state = json.load(sf)
-except (OSError, json.JSONDecodeError):
-    out(False, 'verify.state unreadable')
-if state.get('rc') != 0:
-    out(False, 'previous verify was not green')
-## Reuse is RUN-SCOPED: scratch persists across local runs, and a
-## previous run's verdict must never satisfy a run in which verify_run
-## has not executed (outputs.verify_run would be unresolved at the
-## gate and the run could never converge).
-if state.get('run_id', '') != os.environ.get('RUN_ID', ''):
-    out(False, 'verify.state belongs to another run')
-try:
-    head = subprocess.run(['git', '-C', ws, 'rev-parse', 'HEAD'], stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True, timeout=30).stdout.strip()
-    dirty = subprocess.run(['git', '-C', ws, 'status', '--porcelain'], stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True, timeout=60).stdout.strip()
-except Exception as e:
-    out(False, 'git state unreadable: ' + str(e))
-if head and head == state.get('head') and not dirty:
-    out(True, 'HEAD ' + head[:12] + ' unchanged since last green verify, tree clean')
-## Docs-only fast-path: commits landed since the green verify, but if
-## EVERY changed path is a markdown doc the build/test verdict cannot
-## have changed — a .md edit is invisible to the repo's build. This is
-## a deterministic file-extension rule, not an LLM judgment; anything
-## else (code-comment fixes via go_comment_globs, cache files, unknown
-## extensions) still triggers the full verify chain.
-green = state.get('head', '')
-if head and green and not dirty:
-    try:
-        diff = subprocess.run(['git', '-C', ws, 'diff', '--name-only', green, head], stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True, timeout=60)
-        changed = [p for p in diff.stdout.splitlines() if p.strip()]
-    except Exception:
-        changed = None
-    if changed and diff.returncode == 0 and all(p.lower().endswith('.md') for p in changed):
-        out(True, 'only markdown docs changed since green verify ' + green[:12] + ' (' + str(len(changed)) + ' file(s)), tree clean — build verdict unchanged')
-out(False, 'tree changed since last green verify')
-"`
-  output: verify_precheck_output
-
-## gate — the deterministic continuation decision. converged = build
-## green AND scope clean AND the campaign reports the docs aligned —
-## NOTHING ELSE (v3). The advisory hint counts are telemetry in the
-## run events/report, never conditions: the campaign's honest
-## termination contract + the two truth gates are the whole oracle.
-## fail_log priority: scope violation (the campaign must revert) >
-## build failure > empty (green-but-more-work → the fresh advisory
-## report is the guidance). No LLM, no shell. On a verify_precheck
-## reuse pass, outputs.verify_run still resolves to the last REAL
-## execution — the verdict being reused.
+## gate — the deterministic continuation decision. converged = scope
+## clean AND the campaign reports the docs aligned — NOTHING ELSE. The
+## advisory hint counts are telemetry in the run events/report, never
+## conditions: the campaign's honest termination contract + the
+## writeable-set truth gate are the whole oracle. fail_log surfaces a
+## scope violation (the campaign must revert) back to the next pass;
+## green-but-more-work rides an empty log. No LLM, no shell.
 compute gate:
   output: gate_state
   expr:
-    converged: "outputs.verify_run.passed && outputs.scope_check.scope_ok && outputs.campaign.docs_aligned"
-    fail_log: "if(!outputs.scope_check.scope_ok, outputs.scope_check.log, if(outputs.verify_run.passed, '', outputs.verify_run.log_tail))"
+    converged: "outputs.scope_check.scope_ok && outputs.campaign.docs_aligned"
+    fail_log: "if(!outputs.scope_check.scope_ok, outputs.scope_check.log, '')"
 
 ## mark_issue_for_review: after the run reaches a clean terminal
 ## state, transition the tracker issue out of `ready` so the
@@ -1568,17 +1268,12 @@ workflow docs_refresh:
   }
   author_docs -> scan_hints as author_rescan(1)
 
-  ## Deterministic TRUTH gates after every campaign pass: writeable-set
-  ## containment, then the build gate (skipped via verify_precheck when
-  ## nothing build-relevant changed since the last green verify —
-  ## outputs.verify_run then still carries the verdict being reused),
-  ## then the continuation decision.
+  ## Deterministic TRUTH gate after every campaign pass: writeable-set
+  ## containment (the bot only touches docs — a docs-only change cannot
+  ## affect the repo's build, so there is no build/test gate), then the
+  ## continuation decision.
   campaign -> scope_check
-  scope_check -> verify_precheck
-  verify_precheck -> gate when reuse
-  verify_precheck -> verify_build when not reuse
-  verify_build -> verify_run
-  verify_run -> gate
+  scope_check -> gate
 
   ## Converged → transition the dispatcher issue (no-op without
   ## issue_id) and refresh the noop cache, then finish.

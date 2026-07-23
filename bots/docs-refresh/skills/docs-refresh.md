@@ -20,21 +20,18 @@ obligation generators:
   zero-doc bootstrap route. Hints are help, never a checklist you owe anyone.
 - `scope_check` rejects changes outside the writeable set (truth: the bot
   must not touch code).
-- `verify_build` plus `verify_run` execute the repository's real
-  build/verification command (truth: the tree must still build), with a
-  docs-only fast path.
-- `gate` converges on `verify.passed ∧ scope_ok ∧ docs_aligned` — nothing
-  else. No coverage percentage, no candidate count: your honest termination
-  contract is the done-oracle.
+- `gate` converges on `scope_ok ∧ docs_aligned` — nothing else. There is no
+  build gate: a docs-only change can't break `go build`/`go test`, so
+  running them would verify an invariant you can't violate. No coverage
+  percentage, no candidate count: your honest termination contract is the
+  done-oracle.
 
 ## Inviolable rules
 
 1. **Documentation follows code.** Verify the current implementation, then
    correct the documentation. Never change code logic to make an old claim true.
-2. **Stay inside the writeable set.** Edit only Markdown files. Go
-   comment-only changes are additionally allowed when `go_comment_globs` is
-   non-empty and the file matches those globs. Do not edit code statements,
-   configuration, generated artifacts, or build files.
+2. **Stay inside the writeable set.** Edit only Markdown files. Do not edit
+   code, configuration, generated artifacts, or build files.
 3. **Verify before editing.** Read or grep the live code that grounds every
    claim you touch. A plausible rewrite without code evidence is a façade.
 4. **The hints are advisory.** Use them as a cheap, high-precision starting

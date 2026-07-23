@@ -69,16 +69,11 @@ For a code bug, do not align the document to broken behavior. Set
 
 Before finishing the pass:
 
-- inspect changed paths: only `.md` files (and opted-in `go_comment_globs`
-  comment edits) may have changed;
-- ensure any opted-in Go edit changes comments only;
-- undo anything named by a prior scope failure;
-- distinguish new verification failures from the declared or cheaply
-  established baseline.
+- inspect changed paths: only `.md` files may have changed;
+- undo anything named by a prior scope failure.
 
-`scope_check` and `verify_run` are deterministic and run after the campaign,
-so do not claim their result in advance. Leave the tree in a state they can
-prove.
+`scope_check` is deterministic and runs after the campaign, so do not claim
+its result in advance. Leave the tree in a state it can prove.
 
 ## 6. Fill the termination contract truthfully
 
@@ -93,7 +88,8 @@ prove.
 - `summary`: documents committed, evidence used, dismissals recorded,
   findings handed off, and relevant pre-existing failures.
 
-The deterministic gate converges only when `docs_aligned` is true,
-`scope_check.scope_ok` is true, and `verify_run.passed` is true — nothing
-else. If any condition fails, the continuation loop sends a fresh advisory
-report or `fail_log` to the next campaign pass.
+The deterministic gate converges only when `docs_aligned` is true and
+`scope_check.scope_ok` is true — nothing else (a docs-only bot can't break
+the build, so there is no build gate). If either condition fails, the
+continuation loop sends a fresh advisory report or `fail_log` to the next
+campaign pass.
