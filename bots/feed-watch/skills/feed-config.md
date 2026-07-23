@@ -119,9 +119,44 @@ retention: `iterion runs prune` (see docs/scheduling.md).
 | `FEED_WATCH_MODEL` (env) | `""` | synthesis model spec (`""` = the resolved backend's default; per-run: `iterion run --model …`) |
 | `max_items_per_feed` | `30` | freshest-N cap per feed at collect |
 | `max_digest_items` | `150` | newest-N cap per digest (overflow is dropped WITH a count in the message) |
+| `fetch_timeout_secs` | `20` | per-feed HTTP timeout at collect |
+| `allow_private_feeds` | `false` | relax the SSRF guard (see below) — trusted single-tenant / on-prem only |
 
 First run checklist: create the config, run
 `iterion run bots/feed-watch/main.bot --var mode=collect` (zero-LLM —
 verify pending.jsonl fills, re-run → 0 new = dedup proven), then
 `--var mode=digest --var category=<key> --var dry_run=true` and read
 the message in the run artifacts before wiring the real webhooks.
+
+## Feed-fetch security (SSRF posture)
+
+Feed URLs are untrusted input (they come from the workspace config, and
+with the config-share editor open, from an operator who is not
+necessarily the deployer). The collect step guards every fetch against
+SSRF/LFI:
+
+- **Default (`allow_private_feeds: false`) — strict.** Only `http` /
+  `https` schemes are fetched, and any host that resolves to a private,
+  loopback, link-local, or cloud-metadata address is refused — up-front
+  and on every redirect hop — so a hostile feed URL can never reach a
+  runner-internal service or read a local file.
+- **`allow_private_feeds: true` — relaxed.** Permits private/loopback
+  addresses **and** `file://` feeds. Enable it ONLY for a trusted
+  single-tenant / on-prem deployment that legitimately polls internal
+  feeds. NEVER enable it on a multi-tenant / cloud runner or with the
+  config-share editor open — it turns the feed list into an SSRF/LFI
+  primitive.
+
+**Sandboxed / cloud runs go through the egress proxy transparently.** A
+sandboxed run reaches the internet through iterion's egress proxy
+(injected as `HTTPS_PROXY`, advertised at the runner's own private pod
+IP — the trusted egress boundary and secret-redaction point, started
+even in `network: open` whenever a secret rewriter is present). The
+guard detects the proxy from the `*_PROXY` env vars: behind a proxy it
+validates each feed URL's host up-front (the real SSRF check on the
+untrusted input) rather than at socket-connect time — the socket only
+ever targets the proxy, so the proxy itself is exempt. With no proxy
+(local / on-prem) the connect-time check stays the guard. Either way an
+attacker feed pointing at an internal address is still rejected. No
+configuration is needed; feed-watch works the same behind the proxy as
+without it.
