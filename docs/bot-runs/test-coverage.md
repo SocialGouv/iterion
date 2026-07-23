@@ -2,13 +2,16 @@
 
 # test-coverage (Testy) — run bilans
 
-Universal test-coverage augmentation bot. Plans missing tests for a target
-area, writes them with the repo's own framework, proves they pass with a
-deterministic gate, then runs the cross-family (Claude + GPT) anti-façade
-review loop to a `test:` commit. Modelled on feature-dev + whole-improve-loop's
-verify gate; stack knowledge lives in `skills/` (test-coverage, verify-tests,
-test-types). Anti-façade is the design center: the metric is meaningful tests
-that catch a real regression, NOT coverage %.
+Universal test-coverage augmentation bot (ADR-058 v2). ONE `campaign` agent plans
+and writes missing tests for a target area with the repo's own framework,
+committing a `test:` commit per gap in stride; a deterministic verify gate
+(`verify_build` writes the repo's real build+test into `verify.sh`, `verify_run`
+re-runs it on the actual exit code) proves the suite passes, and `gate.converged`
+closes a bounded continuation loop. The anti-façade guarantee now lives in the
+campaign's termination contract, not a cross-family reviewer relay. Modelled on
+feature-dev + whole-improve-loop's verify gate; stack knowledge lives in `skills/`
+(test-coverage, verify-tests, test-types). Anti-façade is the design center: the
+metric is meaningful tests that catch a real regression, NOT coverage %.
 
 ---
 
