@@ -138,8 +138,9 @@ Two scopes: tenant rows (visible to the org's admins at
 ### 1.6 User admin — force a password rotation
 
 ```bash
-# Find the user.
-curl "https://iterion.example.com/api/admin/users?email=alice@acme.example"
+# List users (paginated with ?offset=&limit=; there is no ?email= filter —
+# page through and match client-side, or read a known user by id).
+curl "https://iterion.example.com/api/admin/users?limit=200"
 
 # Force a password change on next login.
 curl -X PATCH https://iterion.example.com/api/admin/users/$USER_ID \
@@ -373,9 +374,10 @@ curl -X POST https://iterion.example.com/api/teams/$TEAM_ID/invitations \
 UI path: `/teams/<id>` → Members → "Invite".
 
 When SMTP is configured, the new member receives an email with a link
-to `/auth/invitations/lookup?token=…` and creates an account from
-there. Without SMTP, the in-band response token must be sent to them
-out-of-band (email / chat / SMS).
+to `${PUBLIC_URL}/invitations/accept?token=…` (the SPA accept page,
+which resolves the token via `GET /api/auth/invitations/lookup`) and
+creates an account from there. Without SMTP, the in-band response token
+must be sent to them out-of-band (email / chat / SMS).
 
 Invitations expire in 7 days; revoke with
 `DELETE /api/teams/{id}/invitations/{invite_id}`.
