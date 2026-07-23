@@ -65,6 +65,38 @@ Source: [pkg/server/auth_routes.go](../pkg/server/auth_routes.go) +
 | `GET` | `/api/orgs/{id}/usage` | org member | Org-member mirror of the admin usage view (see below) |
 | `GET` | `/api/teams/{id}/audit` | team admin | Tenant audit log |
 
+## Organisations — self-serve (org members, teams, SSO)
+
+The org-admin self-serve mirror of the super-admin org views (two-level
+tenancy, ADR-048). All routes are `requireAuth`; the org role is checked
+in-handler — read routes need org **membership** (`canViewOrg`), mutations
+need org **admin/owner** (`canManageOrg`). Sources:
+[pkg/server/orgs_routes.go](../pkg/server/orgs_routes.go),
+[pkg/server/org_sso_routes.go](../pkg/server/org_sso_routes.go),
+[pkg/server/org_sso_domain_routes.go](../pkg/server/org_sso_domain_routes.go).
+
+| Method | Path | Auth | Purpose |
+|---|---|---|---|
+| `GET` | `/api/orgs/{id}` | org member | Read the org |
+| `GET` | `/api/orgs/{id}/members` | org member | List org members + roles |
+| `PATCH` | `/api/orgs/{id}/members/{user_id}` | org admin | Change a member's org role (`member\|admin\|owner`) |
+| `DELETE` | `/api/orgs/{id}/members/{user_id}` | org admin | Remove a member |
+| `GET` | `/api/orgs/{id}/invitations` | org admin | List pending org invitations |
+| `POST` | `/api/orgs/{id}/invitations` | org admin | Mint an org invitation token |
+| `DELETE` | `/api/orgs/{id}/invitations/{invite_id}` | org admin | Revoke |
+| `GET` | `/api/orgs/{id}/teams` | org member | List the org's teams |
+| `POST` | `/api/orgs/{id}/teams` | org admin | Create a team in the org |
+| `GET` | `/api/orgs/{id}/audit` | org admin | Org audit log |
+| `GET` | `/api/orgs/{id}/sso/providers` | org member | List SSO providers |
+| `POST` | `/api/orgs/{id}/sso/providers` | org admin | Add an SSO provider (OIDC) |
+| `PATCH` | `/api/orgs/{id}/sso/providers/{provider_id}` | org admin | Update a provider |
+| `DELETE` | `/api/orgs/{id}/sso/providers/{provider_id}` | org admin | Remove a provider |
+| `POST` | `/api/orgs/{id}/sso/providers/{provider_id}/test` | org admin | Test a provider's config |
+| `GET` | `/api/orgs/{id}/sso/domains` | org member | List claimed SSO domains |
+| `POST` | `/api/orgs/{id}/sso/domains` | org admin | Claim a domain |
+| `POST` | `/api/orgs/{id}/sso/domains/{domain_id}/verify` | org admin | Verify a claimed domain |
+| `DELETE` | `/api/orgs/{id}/sso/domains/{domain_id}` | org admin | Release a domain |
+
 ## BYOK LLM keys + generic secrets + bindings
 
 User-scoped + team-scoped flavours share the same payload shape. Both
@@ -229,10 +261,14 @@ Source: [pkg/server/runs.go](../pkg/server/runs.go).
 | `POST` | `/api/admin/orgs` | super-admin | Create org |
 | `GET` | `/api/admin/orgs/{id}` | super-admin | Read |
 | `PATCH` | `/api/admin/orgs/{id}` | super-admin | Update name / slug / quotas |
+| `DELETE` | `/api/admin/orgs/{id}` | super-admin | Schedule org deletion (reversible until it runs) |
+| `POST` | `/api/admin/orgs/{id}/restore` | super-admin | Cancel a scheduled deletion |
 | `POST` | `/api/admin/orgs/{id}/status` | super-admin | Suspend / read-only / activate |
 | `GET` | `/api/admin/orgs/{id}/usage` | super-admin | Usage snapshot |
+| `GET` | `/api/admin/orgs/{id}/teams` | super-admin | List the org's teams |
 | `GET` | `/api/admin/users` | super-admin | List users (filter `?email=`) |
 | `PATCH` | `/api/admin/users/{id}` | super-admin | Status / super-admin flag |
+| `POST` | `/api/admin/users/{id}/reset-password` | super-admin | Force a user's password reset |
 | `GET` | `/api/admin/audit` | super-admin | Platform audit log (filters: `action`, `actor`, `from`, `to`, `offset`, `limit`) |
 | `GET` | `/api/admin/dlq` | super-admin | List parked messages |
 | `GET` | `/api/admin/dlq/{seq}` | super-admin | Peek payload |
