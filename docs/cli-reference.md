@@ -188,6 +188,15 @@ iterion runs prune --older-than 168h --keep-last 100
 
 Default retention deletes `finished`, `failed`, and `cancelled` runs older than 720 hours. `failed_resumable` requires explicit inclusion via `--status`. Only `<store-dir>/runs/` is touched; worktrees are not removed.
 
+### `iterion runs questions` / `iterion runs answer`
+
+```bash
+iterion runs questions <run-id>                   # list a run's pending async questions
+iterion runs answer <run-id> <interaction-id> "<answer>"
+```
+
+The async-question subcommands drive the `ask_user_async` / `await_answers` interaction (ADR-081): `questions` lists the questions an agent has posted and is still awaiting, and `answer` replies to one without pausing the run. See [async-interaction.md](async-interaction.md).
+
 ## Bot creation, discovery, and extension distribution
 
 ### `iterion bots`
@@ -380,7 +389,7 @@ The watcher evaluates on turn boundaries/monitor matches and injects node-scoped
 
 ## Remote, benchmarks, and utility commands
 
-`iterion remote` exposes typed cloud domains for runs, bots, marketplace, issues/boards, dispatcher, triggers, orgs/teams/users, tokens, secrets/keys/bindings, webhooks/forge, audit/usage/limits, memory, plugins, SSO/admin, routes/OpenAPI, and raw API access. CI can use `ITERION_REMOTE_URL`, `ITERION_REMOTE_TOKEN`, and optional team/org selectors without a config file. The complete reference is [cloud CLI](cloud-cli.md).
+`iterion remote` exposes typed cloud domains for runs, bots, marketplace, issues/boards, dispatcher, triggers, schedules, orgs/teams/users, tokens, secrets/keys/bindings, webhooks/forge, audit/usage/limits, memory, plugins, SSO/admin, routes/OpenAPI, and raw API access. CI can use `ITERION_REMOTE_URL`, `ITERION_REMOTE_TOKEN`, and optional team/org selectors without a config file. The complete reference is [cloud CLI](cloud-cli.md).
 
 `iterion bench asymptote` accepts primary `--runs`, optional `--variant-runs`, a required `--judge-node`, judge field/threshold, loop selector, labels, title, per-run detail, and output path. See [asymptote bench](asymptote-bench.md).
 

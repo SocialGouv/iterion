@@ -15,7 +15,7 @@ A file may contain these top-level declarations:
 ```text
 vars, presets, attachments, secrets, mcp_server,
 prompt, schema, cursor, supervisor,
-agent, judge, router, human, tool, compute, emit, wait, subbot,
+agent, judge, router, human, tool, compute, emit, wait, await_answers, subbot,
 group, use, workflow
 ```
 
@@ -255,7 +255,9 @@ human approval:
   min_answers: 1
 ```
 
-`interaction` is one of `none`, `human`, `llm`, `llm_or_human`, or `review`. A review gate additionally accepts `review_url`, `posture`, `merge_strategy`, `merge_into`, and `max_turns`. Human nodes may also publish labeled artifacts and converge with `await`. See [human-in-the-loop](human-in-the-loop.md) and [review/merge gate](review-merge-gate.md).
+`interaction` is one of `none`, `human`, `llm`, `llm_or_human`, `review`, or `async`. A review gate additionally accepts `review_url`, `posture`, `merge_strategy`, `merge_into`, and `max_turns`. Human nodes may also publish labeled artifacts and converge with `await`. See [human-in-the-loop](human-in-the-loop.md) and [review/merge gate](review-merge-gate.md).
+
+`interaction: async` (ADR-081) lets an agent/judge node post **non-blocking** questions via the `ask_user_async` tool and keep working; answers land in a node-scoped inbox. The dedicated `await_answers` node is the deterministic sync point — it parks only its own branch until every pending question of the `from:` node (or the whole run) is answered (mandatory `timeout:`), outputting `{answers: [...]}`. Diagnostics C240–C242. See [async interaction](async-interaction.md).
 
 Resume a pause with `iterion resume --run-id <id> --file workflow.bot --answer key=value`.
 
@@ -275,7 +277,7 @@ tool run_tests:
   needs: [test_slot]
 ```
 
-`command` and `script` are mutually exclusive. A script adds `language: js|py|sh|bash` (default `sh`). Tools also accept `input`, `output`, `publish`, `artifact_labels`, `await`, `sandbox`, `compress`, `permission`, and `needs`.
+`command` and `script` are mutually exclusive. A script adds `language: js|node|py|python|python3|sh|bash` (default `sh`). Tools also accept `input`, `output`, `publish`, `artifact_labels`, `await`, `sandbox`, `compress`, `permission`, and `needs`.
 
 Verified Actions add a deterministic outcome check and bounded recovery:
 
@@ -492,7 +494,7 @@ Terminal targets `done` and `fail` are reserved and are never declared.
 
 ## Validation and references
 
-Run `iterion validate workflow.bot` before execution. Diagnostics occupy sparse ranges: DSL/compiler/runtime consistency checks use C001–C199; bundle checks use C200–C230. The authoritative list is [references/diagnostics.md](references/diagnostics.md).
+Run `iterion validate workflow.bot` before execution. Diagnostics occupy sparse ranges: DSL/compiler/runtime consistency checks use C001–C199 (with a later C240+ band for async-interaction checks, since C200–C230 is claimed by bundle checks); bundle checks use C200–C230. The authoritative list is [references/diagnostics.md](references/diagnostics.md).
 
 - [Readable grammar](references/dsl-grammar.md)
 - [Formal EBNF](grammar/iterion_v1.ebnf)

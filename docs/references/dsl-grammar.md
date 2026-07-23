@@ -15,7 +15,7 @@ file = { top_level_decl } ;
 top_level_decl = vars | presets | attachments | secrets | mcp_server
                | prompt | schema | cursor | supervisor
                | agent | judge | router | human | tool | compute
-               | emit | wait | subbot | group | use | workflow ;
+               | emit | wait | await_answers | subbot | group | use | workflow ;
 ```
 
 At most one top-level `vars`, `presets`, `attachments`, and `secrets` block is retained. Named declarations may repeat only when their names remain unique after compilation.
@@ -157,7 +157,7 @@ They share the exact property surface:
 | `timeout` | duration string |
 | `readonly`, `full_access` | boolean |
 | `images` | string list |
-| `interaction` | `none`, `human`, `llm`, `llm_or_human`, `review` |
+| `interaction` | `none`, `human`, `llm`, `llm_or_human`, `review`, `async` (`async` is agent/judge-only) |
 | `interaction_prompt` | prompt identifier |
 | `interaction_model` | string |
 | `await` | `wait_all`, `best_effort` |

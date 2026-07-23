@@ -8,7 +8,7 @@ an approval before a deploy, a missing requirement only a human knows, a
 first-class, **resumable** part of the graph: a run can pause, wait for a
 human (for seconds or for days), and pick up exactly where it left off.
 
-This page covers the `human` node, the five accepted interaction values, the form
+This page covers the `human` node, the five interaction values a human node accepts, the form
 the studio renders, and every way to answer (studio, CLI, HTTP).
 
 ## The `human` node
