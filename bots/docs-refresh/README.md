@@ -131,6 +131,5 @@ Campaign skills shipped: `docs-refresh`, `doc-mismatch-taxonomy`,
 `doc-enrichment` (what deserves documentation, placement, style,
 dismissal discipline, obsolete-vs-promise), `doc-scope-enumeration`,
 `doc-verification-checklist`, and `anti-facade-fix-rules`. The bundle
-also carries the shared `verify-build` skill for its verification
-agent and the shared `forge-mr-create` skill for the opt-in PR tail —
-8 skills total. See [main.bot](main.bot) for the full DSL.
+also carries the shared `forge-mr-create` skill for the opt-in PR tail —
+7 skills total. See [main.bot](main.bot) for the full DSL.
