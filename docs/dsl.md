@@ -15,7 +15,7 @@ A file may contain these top-level declarations:
 ```text
 vars, presets, attachments, secrets, mcp_server,
 prompt, schema, cursor, supervisor,
-agent, judge, router, human, tool, compute, emit, wait, subbot,
+agent, judge, router, human, tool, compute, emit, wait, await_answers, subbot,
 group, use, workflow
 ```
 
@@ -255,7 +255,7 @@ human approval:
   min_answers: 1
 ```
 
-`interaction` is one of `none`, `human`, `llm`, `llm_or_human`, or `review`. A review gate additionally accepts `review_url`, `posture`, `merge_strategy`, `merge_into`, and `max_turns`. Human nodes may also publish labeled artifacts and converge with `await`. See [human-in-the-loop](human-in-the-loop.md) and [review/merge gate](review-merge-gate.md).
+`interaction` is one of `none`, `human`, `llm`, `llm_or_human`, `review`, or `async`. A review gate additionally accepts `review_url`, `posture`, `merge_strategy`, `merge_into`, and `max_turns`. The `async` mode is an agent/judge mode (not a human-node mode): the node posts non-blocking questions with `ask_user_async` and keeps working, syncing on demand via an `await_answers` node — see [async interaction](async-interaction.md). Human nodes may also publish labeled artifacts and converge with `await`. See [human-in-the-loop](human-in-the-loop.md) and [review/merge gate](review-merge-gate.md).
 
 Resume a pause with `iterion resume --run-id <id> --file workflow.bot --answer key=value`.
 
