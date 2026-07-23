@@ -83,7 +83,8 @@ Prefer narrowing the *connection*, not the user:
 
 - **GitHub App** (`github_app`) — the bot acts as the App with exactly the
   permissions in its manifest (`contents:write`, `pull_requests:write`,
-  `repository_hooks:write` for the per-repo inbound webhook, `metadata:read`),
+  `issues:write` for posting the PR/MR back-link on the source issue,
+  `metadata:read`, `repository_hooks:write` for the per-repo inbound webhook),
   scoped to the repos the App is installed on. It deliberately does **not**
   request `administration` (repo deletion/settings/teams/branch-protection) —
   that is over-privileged, and per GitHub docs webhooks require
