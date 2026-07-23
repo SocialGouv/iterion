@@ -99,6 +99,32 @@ Sources:
 [pkg/server/bot_bindings_routes.go](../pkg/server/bot_bindings_routes.go).
 Full semantics in [secrets-reference.md](secrets-reference.md).
 
+## Team bot sources (cloud bot editing)
+
+Team-authored bot bundles — the writable, tenant-scoped store the studio
+editor saves into (cloud pods bake the catalog read-only). Each source is a
+multi-file bundle (`main.bot` + `manifest.yaml` + `skills/`…). Edit rights =
+the `config_editor` capability, team admin, or owner (`canEditBots`); if the
+server has no bot-source store wired every route returns `501 bot editing is
+not enabled on this server`.
+
+| Method | Path | Access | Purpose |
+|---|---|---|---|
+| `GET` | `/api/teams/{id}/bot-sources` | bot editor | List the team's bots (metadata only — file bodies omitted) |
+| `GET` | `/api/teams/{id}/bot-sources/{slug}` | bot editor | One bot with its full file map |
+| `PUT` | `/api/teams/{id}/bot-sources/{slug}` | bot editor | Create or replace the whole bundle (`{files, version?}`) |
+| `PUT` | `/api/teams/{id}/bot-sources/{slug}/files/{path...}` | bot editor | Per-file save (`{content, version?}`) |
+| `DELETE` | `/api/teams/{id}/bot-sources/{slug}/files/{path...}` | bot editor | Delete one file (never `main.bot`) |
+| `DELETE` | `/api/teams/{id}/bot-sources/{slug}` | bot editor | Delete the bot |
+| `POST` | `/api/teams/{id}/bot-sources/{slug}/fork` | bot editor | Fork a baked catalog bot (`{from}`) into an editable copy |
+
+Every write **compiles the bundle before it persists** — a bot that fails to
+parse/compile is rejected `400 bot does not compile: <diagnostics>`, never
+left to fail at launch. A non-zero `version` is an optimistic if-match token
+(`409` if a concurrent editor advanced it); slug collisions are `409`. Source:
+[pkg/server/bot_sources_routes.go](../pkg/server/bot_sources_routes.go),
+store [pkg/botsource/](../pkg/botsource/botsource.go).
+
 ## Inbound webhooks
 
 CRUD (operator-side) plus per-provider delivery URLs.
