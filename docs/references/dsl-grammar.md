@@ -15,7 +15,7 @@ file = { top_level_decl } ;
 top_level_decl = vars | presets | attachments | secrets | mcp_server
                | prompt | schema | cursor | supervisor
                | agent | judge | router | human | tool | compute
-               | emit | wait | subbot | group | use | workflow ;
+               | emit | wait | await_answers | subbot | group | use | workflow ;
 ```
 
 At most one top-level `vars`, `presets`, `attachments`, and `secrets` block is retained. Named declarations may repeat only when their names remain unique after compilation.
@@ -157,7 +157,7 @@ They share the exact property surface:
 | `timeout` | duration string |
 | `readonly`, `full_access` | boolean |
 | `images` | string list |
-| `interaction` | `none`, `human`, `llm`, `llm_or_human`, `review` |
+| `interaction` | `none`, `human`, `llm`, `llm_or_human`, `review`, `async` |
 | `interaction_prompt` | prompt identifier |
 | `interaction_model` | string |
 | `await` | `wait_all`, `best_effort` |
@@ -295,7 +295,7 @@ Workflow members may appear in any order:
 | `allow`, `ask`, `deny` | string list |
 | edge | graph transition |
 
-Budget fields are `max_parallel_branches: INT`, `max_duration: STRING`, `max_cost_usd: NUMBER`, `max_tokens: INT`, and `max_iterations: INT`.
+Budget fields are `max_parallel_branches: INT`, `max_duration: STRING`, `max_cost_usd: NUMBER`, `max_tokens: INT`, `warn_tokens: INT` (advisory-only — crossing it emits a `budget_warning`), and `max_iterations: INT`.
 
 Resources are either counting semaphores or named-member pools:
 
