@@ -59,8 +59,10 @@ my-bot/
 │   └── probe.md
 ├── prompts/           # optional — reusable .md prompts
 │   └── helper.md
-└── attachments/       # optional — default values for `attachments:` block
-    └── logo.png
+├── attachments/       # optional — default values for `attachments:` block
+│   └── logo.png
+└── presets/           # optional — file-based presets ("sous-bots")
+    └── sre.md
 ```
 
 | Entry             | Purpose |
@@ -70,6 +72,7 @@ my-bot/
 | `skills/`         | Claude Code skills. Mirrored into `<workDir>/.claude/skills/` at run time. Workspace files always win on collision (warn-logged). |
 | `prompts/`        | Reusable `.md` prompts. Each file is auto-registered with name equal to the filename stem — `prompts/helper.md` makes `system: helper` resolvable from `main.bot`. Workflow-declared prompts always win on collision. |
 | `attachments/`    | Default binary inputs the manifest can map to declared `attachments:` entries. Runtime uploads (Launch modal, cloud) override these. |
+| `presets/`        | File-based presets ("sous-bots"): each `presets/<name>.md` (YAML frontmatter + markdown body) is a named launch-time specialization selected with `--preset <name>`, layering variable overrides + a system-prompt bias + skill hints onto the bot. |
 
 ## Manifest schema
 
