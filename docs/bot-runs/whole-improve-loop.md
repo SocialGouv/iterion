@@ -1,12 +1,15 @@
 # Willy — `whole-improve-loop` run bilans
 
-Whole-repository alternating Claude/GPT review-fix loop. Reviews the workspace in
-per-package chunks, fixes blockers in place, converges on two consecutive
-cross-family approvals. See [bots/whole-improve-loop/](../../bots/whole-improve-loop/).
+Whole-repository improvement loop (ADR-058 v2). ONE `campaign` agent surveys the
+workspace, makes fixes in place, and commits each unit in stride; a deterministic
+verify gate (`verify_probe`/`verify_build` write the repo's real build+test into
+`verify.sh`, `verify_run` re-runs it on the actual exit code) is the truth oracle,
+and `gate.converged = <termination flag> ∧ gates green` closes a bounded
+continuation loop. See [bots/whole-improve-loop/](../../bots/whole-improve-loop/).
 
-> Convergence machinery (`alt` round-robin → `reviewer_*` → `streak_check` →
-> `fix_*`) is **shared with Billy** (`branch-improve-loop`), whose full
-> cross-family convergence to an asymptote is validated in
+> Convergence machinery (`campaign` → `verify_probe`/`verify_build` →
+> `verify_run` → `gate`) is **shared with Billy** (`branch-improve-loop`), which
+> migrated to the same v2 shape; its convergence to an asymptote is validated in
 > [branch-improve-loop.md](branch-improve-loop.md). This page covers Willy's
 > whole-repo specifics.
 
