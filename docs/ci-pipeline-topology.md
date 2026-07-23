@@ -16,6 +16,19 @@ image it redeploys.
 Sandbox images (`iterion-sandbox-*`) are pulled at bot-run time, not by any
 deploy — they are off every deploy path.
 
+> ⚠️ **Signal-contract change — a redeploy watcher must be reconfigured.**
+> Before this split, `image.yml` built the server AND the runner, so its
+> completion meant *both* were ready. Now `image.yml` completes when only the
+> **server** is ready; the runner `:edge` is published ~2-3 min later by
+> `runner-image.yml`. **A CD/agent that redeploys the runner must key on
+> `runner-image.yml` completion, not `image.yml`** — otherwise it redeploys a
+> one-cycle-stale runner. Server redeploy keys on `image.yml` as before.
+>
+> Minor knock-on: `trivy.yml` image-scan runs on `image.yml` completion and
+> scans `iterion-sandbox-*:edge`, which the fresh refold republishes just
+> after — so those sandbox scans lag by one cycle (non-blocking; the tool
+> bases change only on `sandbox/**`, so the content is near-always identical).
+
 ## Workflows
 
 ```
