@@ -23,8 +23,8 @@ How to verify: try `curl https://<host>/api/runs` with no token — must return 
 ## 2. Multi-tenant isolation is real
 
 - [ ] **All Mongo queries** include the active tenant filter. Sample by inspecting the access log: every query line should show a `tenantID=<id>` matching the JWT.
-- [ ] **All blob keys** are namespaced under `runs/<run-id>/...` and the run-id is itself a tenant-scoped value. No cross-tenant prefix collision possible.
-- [ ] **Audit trail requirement** is covered for your deployment: collect the server/runner structured logs plus Mongo auth-store records in your log aggregator, retain them for ≥ 90 days, and verify they cover login, run launch, API-key issuance, and team-membership changes. There is no dedicated persistent audit-log package in the current tree, so treat this as an operator control/backlog item rather than an in-repo subsystem.
+- [ ] **All blob keys** embed the run-id as a top path segment (`artifacts/<run-id>/<node>/<v>.json`, `attachments/<run-id>/...`, `tools/<run-id>/...`, `ir/<run-id>.json`, `runfiles/<run-id>/...`) and the run-id is itself a tenant-scoped value. No cross-tenant prefix collision possible.
+- [ ] **Audit trail requirement** is covered for your deployment: the tree ships a dedicated persistent audit-log subsystem ([pkg/audit](../pkg/audit/audit.go) — tenant + platform Mongo TTL store, surfaced at `/api/teams/{id}/audit` and `/api/admin/audit`) recording control-plane mutations. Confirm your retention (Mongo TTL ≥ your compliance window) and that login, run launch, API-key issuance, and team-membership changes are covered; supplement with server/runner structured logs in your aggregator as needed.
 - [ ] **Admin-only endpoints** (`/api/admin/*`) require both `requireAuth` AND a role check (`requireSuperAdmin`).
 
 How to verify: log in as user A on tenant A, take their JWT, try to call `/api/runs/<a-run-id-from-tenant-B>` — must return 404 or 403, never 200.
