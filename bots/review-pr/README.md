@@ -105,7 +105,7 @@ iterion run bots/review-pr/main.bot \
 No node mutates source: `reviewer_claude` is `readonly: true` (Write/Edit
 removed, Read/Grep/Bash kept for `git diff`), and `reviewer_gpt` is given
 only read tools (`bash`, `read_file`, `glob`, `grep` — no
-`write_file`/`file_edit`). The single downstream `emit` step writes only
-the report file and creates board issues over MCP.
+`write_file`/`file_edit`). The single downstream `converge` step writes
+only the report file and creates board issues over MCP.
 
 See [main.bot](main.bot) for the full DSL.
