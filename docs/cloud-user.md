@@ -35,8 +35,8 @@ The chip in the top-right of the studio surfaces the active team;
 clicking it lets you:
 
 - Switch teams. The server re-bakes a fresh access JWT bound to the
-  new `tenant_id`. All studio surfaces (run list, files panel,
-  settings) follow.
+  new `team_id` (the resource-tenant claim). All studio surfaces (run
+  list, files panel, settings) follow.
 - Open the team admin page (`/teams/<id>`) where you can:
   - invite teammates with a role (viewer / member / admin / owner)
     and copy the one-time invitation token to send via email or
