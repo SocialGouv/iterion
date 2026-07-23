@@ -280,9 +280,47 @@ export async function listFiles(): Promise<FileEntry[]> {
   return res.files;
 }
 
+// BOTSOURCE_SCHEME marks a virtual editor path that resolves to a team-authored
+// bot bundle in the cloud store (pkg/botsource) instead of a local file. It lets
+// the whole editor UI stay filesystem-shaped in cloud mode: a tab's file is
+// "botsource://<teamId>/<slug>/<relpath>", and openFile/saveFile below route it
+// to /api/teams/{id}/bot-sources/{slug} transparently.
+export const BOTSOURCE_SCHEME = "botsource://";
+
+export function botSourceEditorPath(teamID: string, slug: string, rel = "main.bot"): string {
+  return `${BOTSOURCE_SCHEME}${teamID}/${slug}/${rel}`;
+}
+
+export function parseBotSourceEditorPath(
+  path: string,
+): { teamID: string; slug: string; rel: string } | null {
+  if (!path.startsWith(BOTSOURCE_SCHEME)) return null;
+  const rest = path.slice(BOTSOURCE_SCHEME.length);
+  const parts = rest.split("/");
+  if (parts.length < 3 || !parts[0] || !parts[1]) return null;
+  return { teamID: parts[0], slug: parts[1], rel: parts.slice(2).join("/") };
+}
+
+interface BotSourceFilesResponse {
+  id: string;
+  slug: string;
+  files: Record<string, string>;
+  origin?: string;
+  version: number;
+}
+
 export async function openFile(
   path: string,
 ): Promise<{ source: string; document: IterDocument; diagnostics: string[]; path: string }> {
+  const bs = parseBotSourceEditorPath(path);
+  if (bs) {
+    const bundle = await apiRequest<BotSourceFilesResponse>(
+      `/api/teams/${encodeURIComponent(bs.teamID)}/bot-sources/${encodeURIComponent(bs.slug)}`,
+    );
+    const source = bundle.files?.[bs.rel] ?? "";
+    const parsed = await parseSource(source);
+    return { source, document: parsed.document, diagnostics: parsed.diagnostics, path };
+  }
   return request("/files/open", {
     method: "POST",
     body: JSON.stringify({ path }),
@@ -293,6 +331,15 @@ export async function saveFile(
   path: string,
   document: IterDocument,
 ): Promise<SaveFileResponse> {
+  const bs = parseBotSourceEditorPath(path);
+  if (bs) {
+    const source = await unparse(document);
+    await apiRequest(
+      `/api/teams/${encodeURIComponent(bs.teamID)}/bot-sources/${encodeURIComponent(bs.slug)}/files/${bs.rel}`,
+      { method: "PUT", body: JSON.stringify({ content: source }) },
+    );
+    return { path, source };
+  }
   return request("/files/save", {
     method: "POST",
     body: JSON.stringify({ path, document }),

@@ -22,6 +22,7 @@ import (
 	"github.com/SocialGouv/iterion/pkg/auth/oidc"
 	"github.com/SocialGouv/iterion/pkg/auth/orgsso"
 	"github.com/SocialGouv/iterion/pkg/auth/wsticket"
+	"github.com/SocialGouv/iterion/pkg/botsource"
 	"github.com/SocialGouv/iterion/pkg/cli"
 	"github.com/SocialGouv/iterion/pkg/cloud/metrics"
 	"github.com/SocialGouv/iterion/pkg/cloud/orgsweep"
@@ -313,6 +314,7 @@ func runServer(cmd *cobra.Command, _ []string) error {
 		ForgeConnections: stores.forgeConn,
 		Identity:         authStack.identityStore,
 		PluginSources:    newPluginSourceResolver(stores, sealer, logger),
+		BotSources:       stores.botSources,
 	})
 	if err != nil {
 		return fmt.Errorf("server: build cloud publisher: %w", err)
@@ -477,6 +479,7 @@ func runServer(cmd *cobra.Command, _ []string) error {
 		ForgeOAuthApps:         stores.forgeOAuthApp,
 		ForgeGitHubApp:         forgeGitHubAppFromEnv(),
 		PluginSources:          stores.pluginSources,
+		BotSources:             stores.botSources,
 		WebhookConfigs:         stores.webhooks.Configs,
 		WebhookDeliveries:      stores.webhooks.Deliveries,
 		WebhookCounter:         stores.webhooks.Counter,
@@ -549,6 +552,7 @@ type cloudStores struct {
 	forgeIntegration *forge.MongoRepoIntegrationStore
 	forgeOAuthApp    *forge.MongoOAuthAppStore
 	pluginSources    *pluginsource.MongoStore
+	botSources       *botsource.MongoStore
 	orgSSO           *orgsso.MongoStore
 	orgDomain        *orgsso.MongoDomainStore
 	oidcState        *oidc.MongoStateStore
@@ -582,6 +586,7 @@ func buildCloudStores(ctx context.Context, st *mongostore.Store, logger *iterlog
 		forgeIntegration: forge.NewMongoRepoIntegrationStore(st.DB()),
 		forgeOAuthApp:    forge.NewMongoOAuthAppStore(st.DB()),
 		pluginSources:    pluginsource.NewMongoStore(st.DB()),
+		botSources:       botsource.NewMongoStore(st.DB()),
 		orgSSO:           orgsso.NewMongoStore(st.DB()),
 		orgDomain:        orgsso.NewMongoDomainStore(st.DB()),
 		// Mongo-backed OIDC state store: PendingAuth must survive across replicas
@@ -616,6 +621,7 @@ func buildCloudStores(ctx context.Context, st *mongostore.Store, logger *iterlog
 		{"repo_integrations", s.forgeIntegration.EnsureSchema},
 		{"forge_oauth_apps", s.forgeOAuthApp.EnsureSchema},
 		{"plugin_sources", s.pluginSources.EnsureSchema},
+		{"bot_sources", s.botSources.EnsureSchema},
 		{"org_sso_providers", s.orgSSO.EnsureSchema},
 		{"org_verified_domains", s.orgDomain.EnsureSchema},
 		{"oidc_states", s.oidcState.EnsureSchema},

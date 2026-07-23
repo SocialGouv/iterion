@@ -158,6 +158,11 @@ export interface ServerInfo {
   // plugins_enabled is always true: the plugin registry is available in every
   // mode, so the SPA can surface the Plugins management view + nav entry.
   plugins_enabled?: boolean;
+  // bot_editing_enabled is true when the .bot editor + /bots/new builder +
+  // "Duplicate & edit" fork are available. Always true in local mode (edits the
+  // real filesystem); in cloud mode true only when the team-authored bot store
+  // is wired. Gates the Editor nav entry and the per-bot edit affordances.
+  bot_editing_enabled?: boolean;
   // web_push_enabled is true when the server can deliver browser push
   // notifications (VAPID keys + subscription store wired). Gates the
   // Notifications settings panel.

@@ -2,6 +2,7 @@ package server
 
 import (
 	"bytes"
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
@@ -10,8 +11,43 @@ import (
 	"strings"
 
 	"github.com/SocialGouv/iterion/bots"
+	"github.com/SocialGouv/iterion/pkg/auth"
+	"github.com/SocialGouv/iterion/pkg/botsource"
 	"github.com/SocialGouv/iterion/pkg/store"
 )
+
+// tenantBotSource resolves an inline source for a TEAM-AUTHORED bot (pkg/botsource)
+// referenced by an explicit bot id or a catalog-shaped file path, scoped to the
+// caller's active team. It returns the bundle's main.bot and the resolved slug;
+// the bundle's skills reach the runner separately via the publisher's
+// Contributions channel. ok=false when no store, no active team, or no matching
+// tenant bot — the caller then falls back to the baked catalog. A tenant bot of
+// the same slug as a catalog bot therefore overrides it.
+func (s *Server) tenantBotSource(ctx context.Context, botID, filePath string) (source, slug string, ok bool) {
+	if s.botSources == nil {
+		return "", "", false
+	}
+	id, _ := auth.FromContext(ctx)
+	if id.TeamID == "" {
+		return "", "", false
+	}
+	slug = strings.TrimSpace(botID)
+	if slug == "" {
+		slug = inferCatalogBotID(filePath)
+	}
+	if slug == "" {
+		return "", "", false
+	}
+	bs, err := s.botSources.GetBySlug(store.WithTenant(ctx, id.TeamID), id.TeamID, slug)
+	if err != nil {
+		return "", "", false
+	}
+	main := bs.Files[botsource.MainBotFile]
+	if strings.TrimSpace(main) == "" {
+		return "", "", false
+	}
+	return main, slug, true
+}
 
 // resolveWorkflowPath returns the absolute path the engine should
 // associate with a launch / resume / answer call.

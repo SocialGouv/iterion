@@ -208,6 +208,11 @@ export interface BotEntryWithSchema extends BotEntry {
   /** Non-empty when the bot's source failed to parse. The picker still
    *  shows the bot but the typed form is hidden / surfaces an error. */
   schema_error?: string;
+  /** True for team-authored bots (editable in the cloud editor); false for the
+   *  read-only baked catalog. Undefined on older servers → treated read-only. */
+  editable?: boolean;
+  /** "tenant" for a team-authored bot, "catalog" for a baked one. */
+  origin?: "tenant" | "catalog";
 }
 
 interface ListResponse {

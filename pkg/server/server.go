@@ -19,6 +19,7 @@ import (
 	"github.com/SocialGouv/iterion/pkg/auth/wsticket"
 	"github.com/SocialGouv/iterion/pkg/backend/detect"
 	"github.com/SocialGouv/iterion/pkg/backend/mcp"
+	"github.com/SocialGouv/iterion/pkg/botsource"
 	"github.com/SocialGouv/iterion/pkg/configshare"
 	"github.com/SocialGouv/iterion/pkg/forge"
 	"github.com/SocialGouv/iterion/pkg/knowledge"
@@ -124,7 +125,11 @@ type Server struct {
 	// pluginSources holds team-scoped, git-hosted org-private plugins. Durable
 	// (unlike a plugin installed into this pod's ephemeral iterion home), so a
 	// restart re-derives instead of silently dropping the plugin from runs.
-	pluginSources  pluginsource.Store
+	pluginSources pluginsource.Store
+	// botSources holds team-authored bot bundles (pkg/botsource) — the writable,
+	// tenant-scoped counterpart to the read-only baked catalog. Non-nil enables
+	// cloud bot editing (/api/teams/:id/bot-sources + bot_editing_enabled).
+	botSources     botsource.Store
 	configShares   configshare.Store
 	configShareSvc *configshare.Service
 	// configShareFC overrides forge-client resolution in tests (nil in prod →
@@ -347,6 +352,7 @@ func New(cfg Config, logger *iterlog.Logger) *Server {
 		botBindings:       cfg.BotBindings,
 		forgeConnections:  cfg.ForgeConnections,
 		pluginSources:     cfg.PluginSources,
+		botSources:        cfg.BotSources,
 		forgeIntegrations: cfg.ForgeIntegrations,
 		forgeOAuthApps:    cfg.ForgeOAuthApps,
 		forgeGitHubApp:    cfg.ForgeGitHubApp,

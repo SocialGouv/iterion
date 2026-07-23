@@ -58,6 +58,16 @@ func (s *Server) canEditConfigShares(ctx context.Context, id auth.Identity, team
 	return s.canManageTeam(ctx, id, teamID)
 }
 
+// canEditBots reports whether the principal may create/edit/delete this team's
+// authored bot bundles. Editing a team bot is authoring team automation that
+// runs in every member's context, so it takes the same orthogonal
+// config_editor capability (ADR-078) as config-share editing, plus anyone who
+// already manages the team (admin/owner, org admin, super-admin). Deliberately
+// NOT canViewTeam — a plain viewer/member was never delegated bot authoring.
+func (s *Server) canEditBots(ctx context.Context, id auth.Identity, teamID string) bool {
+	return s.canEditConfigShares(ctx, id, teamID)
+}
+
 func (s *Server) canManageTeam(ctx context.Context, id auth.Identity, teamID string) bool {
 	if id.IsSynthetic() {
 		return false

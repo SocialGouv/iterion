@@ -12,6 +12,7 @@ import (
 	"github.com/SocialGouv/iterion/pkg/auth/orgsso"
 	"github.com/SocialGouv/iterion/pkg/auth/wsticket"
 	"github.com/SocialGouv/iterion/pkg/backend/mcp"
+	"github.com/SocialGouv/iterion/pkg/botsource"
 	"github.com/SocialGouv/iterion/pkg/cloud/metrics"
 	"github.com/SocialGouv/iterion/pkg/cloud/orgsweep"
 	"github.com/SocialGouv/iterion/pkg/cloudsched"
@@ -199,6 +200,12 @@ type Config struct {
 	// nil answers 501 there. The durable counterpart to a plugin installed
 	// into a pod's iterion home, which a restart silently loses.
 	PluginSources pluginsource.Store
+
+	// BotSources holds team-authored bot bundles (pkg/botsource). Non-nil
+	// registers /api/teams/:id/bot-sources and enables cloud bot editing
+	// (server_info.bot_editing_enabled); nil answers 501 there. The writable,
+	// tenant-scoped counterpart to the read-only catalog baked into the image.
+	BotSources botsource.Store
 
 	// MemoryStore backs the shared-knowledge REST surface
 	// (/api/memory/*). nil → the local filesystem store. Cloud mode

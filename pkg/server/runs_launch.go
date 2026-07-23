@@ -222,6 +222,17 @@ func (s *Server) handleLaunchRun(w http.ResponseWriter, r *http.Request) {
 	// runner mirrors the bundle's skills. This is what lets the studio
 	// launch Nexie/Revi/etc. by id or catalog path without uploading bytes.
 	botID := strings.TrimSpace(req.BotID)
+	// A TEAM-AUTHORED bot (pkg/botsource) resolves FIRST so it overrides a baked
+	// catalog bot of the same slug: its main.bot runs inline, and its skills ride
+	// the publisher's Contributions channel to the runner.
+	if s.cfg.Mode == "cloud" && req.Source == "" {
+		if src, slug, ok := s.tenantBotSource(r.Context(), req.BotID, req.FilePath); ok {
+			req.Source, botID = src, slug
+			if req.FilePath == "" {
+				req.FilePath = "bots/" + slug + "/main.bot"
+			}
+		}
+	}
 	if s.cfg.Mode == "cloud" && req.Source == "" {
 		if src, p, id, ok := s.catalogBotSource(req.BotID, req.FilePath); ok {
 			req.Source, req.FilePath, botID = src, p, id

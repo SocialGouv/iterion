@@ -16,11 +16,14 @@ import { useMemo, useState } from "react";
 import { Link, useLocation } from "wouter";
 
 import { createBot, type BotEntryWithSchema } from "@/api/bots";
+import { botSourceEditorPath } from "@/api/client";
 import TestRunPane from "@/components/Runs/TestRunPane";
 import { useHeaderSlot } from "@/components/shared/useHeaderSlot";
+import { useAuth } from "@/auth/AuthContext";
 import { Button, InlineBanner } from "@/components/ui";
 import { errorMessage } from "@/lib/errorHints";
 import { useServerInfoStore } from "@/store/serverInfo";
+import { useTabsStore } from "@/store/tabs";
 
 import { botLaunchFile } from "../botPaths";
 import AdvancedCard from "./AdvancedCard";
@@ -59,14 +62,17 @@ export default function BotBuilderView() {
     ),
   });
 
-  if (serverInfo?.mode === "cloud") {
+  // Cloud without a bot store wired can't persist a new bot — fall back to the
+  // browse-catalog guidance. With the store wired, the builder works in cloud
+  // (it scaffolds into the team-authored bot store instead of the filesystem).
+  if (serverInfo?.mode === "cloud" && !serverInfo?.bot_editing_enabled) {
     return (
       <div className="mx-auto w-full max-w-2xl p-4">
-        <InlineBanner tone="info" title="Bot creation is a local-studio feature">
-          Creating a bot scaffolds files into the workspace&apos;s <code>bots/</code> directory,
-          which a cloud server has no filesystem for. Run <code>iterion studio</code> against your
-          repo locally to build a bot, then push it. On this server, the way to put bots to work
-          is to browse the catalog and marketplace, and enable them on a connected repository.
+        <InlineBanner tone="info" title="Bot creation is unavailable on this server">
+          This cloud server has no team-authored bot store wired, so a new bot has nowhere to
+          persist. Ask an administrator to enable bot editing, or run <code>iterion studio</code>
+          against your repo locally to build a bot and push it. You can also browse the catalog
+          and marketplace and enable a bot on a connected repository.
         </InlineBanner>
         <div className="mt-3 flex items-center gap-2">
           <Link href="/bots">
@@ -149,8 +155,11 @@ function BuilderForm({
   onBackToTemplates,
   onGoToBotPage,
 }: BuilderFormProps) {
+  const [, setLocation] = useLocation();
   const [creating, setCreating] = useState(false);
   const [createError, setCreateError] = useState<string | null>(null);
+  const isCloud = useServerInfoStore((s) => s.info?.mode === "cloud");
+  const { activeTeamID } = useAuth();
 
   const slug = useMemo(() => deriveSlug(draft.name), [draft.name]);
   const slugValid = isValidSlug(slug);
@@ -215,9 +224,18 @@ function BuilderForm({
 
           {created && (
             <InlineBanner tone="success" title={`${created.display_name?.trim() || created.name} is live`}>
-              Scaffolded into <code className="font-mono">bots/{created.name}/</code> and visible
-              to the orchestrator catalog. Give it a first spin in the test pane, or head to its
-              page to wire triggers.
+              {isCloud ? (
+                <>
+                  Saved to your team&apos;s bot store and visible to the orchestrator catalog. Open
+                  it in the editor to refine it, or head to its page to wire triggers.
+                </>
+              ) : (
+                <>
+                  Scaffolded into <code className="font-mono">bots/{created.name}/</code> and visible
+                  to the orchestrator catalog. Give it a first spin in the test pane, or head to its
+                  page to wire triggers.
+                </>
+              )}
             </InlineBanner>
           )}
 
@@ -262,6 +280,19 @@ function BuilderForm({
               <Button variant="primary" size="md" onClick={() => onGoToBotPage(created.name)}>
                 Go to bot page →
               </Button>
+              {isCloud && (
+                <Button
+                  variant="secondary"
+                  size="md"
+                  onClick={() => {
+                    const file = botSourceEditorPath(activeTeamID, created.name);
+                    useTabsStore.getState().openTab("editor", { file });
+                    setLocation(`/editor?file=${encodeURIComponent(file)}`);
+                  }}
+                >
+                  Open in editor
+                </Button>
+              )}
               {createdFile ? (
                 <TestRunPane file={createdFile} vars={created.vars?.fields ?? []} />
               ) : (

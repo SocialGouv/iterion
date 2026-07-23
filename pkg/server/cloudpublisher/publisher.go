@@ -24,6 +24,7 @@ import (
 
 	"os"
 
+	"github.com/SocialGouv/iterion/pkg/botsource"
 	"github.com/SocialGouv/iterion/pkg/cloud/metrics"
 	"github.com/SocialGouv/iterion/pkg/dsl/ast"
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
@@ -87,6 +88,11 @@ type Config struct {
 	// counterpart to a plugin installed into the pod's iterion home, which a
 	// restart silently loses. Nil keeps local-only resolution.
 	PluginSources *pluginsource.Resolver
+	// BotSources, when non-nil, resolves the launching team's authored bot
+	// bundles (pkg/botsource) so a tenant bot's skills/ reach the runner via the
+	// Contributions channel — the runner's baked BotsPaths cannot resolve a
+	// tenant bundle, so this is the only way its skills mirror into the workspace.
+	BotSources botsource.Store
 	// Identity, when non-nil, lets the publisher resolve a run's team
 	// to its parent org so the RunMessage carries the org id the launch
 	// gate metered the run on. The runner charges LLM spend to that key
@@ -123,6 +129,7 @@ type Publisher struct {
 	oauthForfait   secrets.OAuthStore
 	forgeConns     forge.ConnectionStore
 	pluginSources  *pluginsource.Resolver
+	botSources     botsource.Store
 	identity       TeamResolver
 
 	// orgCache memoizes team → org id so the publish hot path doesn't
@@ -213,6 +220,7 @@ func New(cfg Config) (*Publisher, error) {
 		oauthForfait:   cfg.OAuthForfait,
 		forgeConns:     cfg.ForgeConnections,
 		pluginSources:  cfg.PluginSources,
+		botSources:     cfg.BotSources,
 		identity:       cfg.Identity,
 	}, nil
 }
@@ -583,6 +591,7 @@ func (p *Publisher) SubmitLaunch(ctx context.Context, runID string, spec runview
 	if err != nil {
 		return 0, err
 	}
+	contributions = p.appendTenantBotSkills(ctx, contributions, tenantID, spec.BotID)
 	msg := &queue.RunMessage{
 		V:              queue.SchemaVersion,
 		Contributions:  contributions,
@@ -752,6 +761,7 @@ func (p *Publisher) SubmitResume(ctx context.Context, spec runview.ResumeSpec, w
 	if contribErr != nil {
 		return contribErr
 	}
+	contributions = p.appendTenantBotSkills(ctx, contributions, prior.TenantID, prior.BotID)
 	msg := &queue.RunMessage{
 		V:             queue.SchemaVersion,
 		Contributions: contributions,

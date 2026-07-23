@@ -81,6 +81,12 @@ type serverInfoResponse struct {
 	// ~/.iterion/plugins) is available in every mode, so the SPA can surface a
 	// Plugins management view unconditionally.
 	PluginsEnabled bool `json:"plugins_enabled"`
+	// BotEditingEnabled is true when a team-authored bot store is wired
+	// (pkg/botsource), so the SPA surfaces the .bot editor + /bots/new builder +
+	// "Duplicate & edit" fork in cloud mode. Local mode edits bots on the real
+	// filesystem via /api/files/* and does not need this gate, but the flag is
+	// still true there so the same editing affordances render uniformly.
+	BotEditingEnabled bool `json:"bot_editing_enabled"`
 	// WebPushEnabled is true when the server can deliver browser push
 	// notifications (subscription store + VAPID keypair wired). The SPA
 	// surfaces the Notifications settings panel only when true.
@@ -153,6 +159,9 @@ func (s *Server) handleServerInfo(w http.ResponseWriter, r *http.Request) {
 		SessionBoardEnabled:      sessionboard.Enabled(),
 		PluginsEnabled:           true,
 		WebPushEnabled:           s.webPushEnabled(),
+		// Local mode edits bots on the real filesystem (/api/files/*); cloud mode
+		// needs the team-authored bot store + auth stack wired for the editor.
+		BotEditingEnabled: s.cfg.Mode != "cloud" || (s.botSources != nil && s.authSvc != nil),
 	}
 	if resp.WebPushEnabled {
 		resp.WebPushVAPIDPublicKey = s.cfg.WebPushVAPIDPublicKey

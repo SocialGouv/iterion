@@ -6,11 +6,17 @@ import { useMemo } from "react";
 import { Link, useLocation } from "wouter";
 
 import type { BotEntryWithSchema } from "@/api/bots";
+import { botSourceEditorPath } from "@/api/client";
+import { forkBotSource } from "@/api/botSources";
 import { forgeTeamRepoKey } from "@/api/forgeConnections";
+import { useAuth } from "@/auth/AuthContext";
 import { Button } from "@/components/ui";
 import { useActiveRepo } from "@/hooks/useActiveRepo";
+import { toastError } from "@/lib/errorHints";
+import { useBotsStore } from "@/store/bots";
 import { useServerInfoStore } from "@/store/serverInfo";
 import { useTabsStore } from "@/store/tabs";
+import { useUIStore } from "@/store/ui";
 import { bindBotPath } from "@/views/integrations/wizard/bindModel";
 import { repoDetailPath } from "@/views/RepoDetail/repoKey";
 
@@ -30,10 +36,21 @@ export default function ActionsRow({
     (state) => !!state.info?.native_tracker_enabled,
   );
   const isCloud = useServerInfoStore((s) => s.info?.mode === "cloud");
+  const botEditingEnabled = useServerInfoStore((s) => !!s.info?.bot_editing_enabled);
+  const { activeTeamID } = useAuth();
+  const addToast = useUIStore((s) => s.addToast);
+  const fetchBots = useBotsStore((s) => s.fetch);
   const { activeRepo, repos, enabled: repoScopeEnabled } = useActiveRepo();
 
   const noPathTitle =
     "The server couldn't relativise this bot's path to the workspace — launch it from its own directory instead.";
+
+  // A team-authored bot edits directly; a baked catalog bot is read-only and
+  // must be forked first. Local mode edits the real filesystem path.
+  const isTenantBot = !!entry.editable;
+  // Cloud editing is available when the store is wired; local editing always is.
+  const canEdit = isCloud ? botEditingEnabled : true;
+  const canFork = isCloud && botEditingEnabled && !isTenantBot;
 
   const onLaunch = () => {
     if (!launchFile) return;
@@ -43,10 +60,36 @@ export default function ActionsRow({
     setLocation(`/runs/new?bot=${encodeURIComponent(entry.name)}`);
   };
 
+  // openEditorAt opens the editor tab on a file path (a real workspace path in
+  // local mode, a botsource:// virtual path for a cloud tenant bot).
+  const openEditorAt = (file: string) => {
+    useTabsStore.getState().openTab("editor", { file });
+    setLocation(`/editor?file=${encodeURIComponent(file)}`);
+  };
+
   const onEdit = () => {
+    if (isCloud && isTenantBot) {
+      openEditorAt(botSourceEditorPath(activeTeamID, entry.name));
+      return;
+    }
     if (!launchFile) return;
-    useTabsStore.getState().openTab("editor", { file: launchFile });
-    setLocation(`/editor?file=${encodeURIComponent(launchFile)}`);
+    openEditorAt(launchFile);
+  };
+
+  const onFork = async () => {
+    const suggested = `${entry.name}-copy`;
+    const slug = window.prompt(
+      `Duplicate “${entry.display_name || entry.name}” into an editable team bot.\nNew bot id (lowercase, digits, - or _):`,
+      suggested,
+    );
+    if (!slug) return;
+    try {
+      const forked = await forkBotSource(activeTeamID, slug.trim(), entry.name);
+      await fetchBots();
+      openEditorAt(botSourceEditorPath(activeTeamID, forked.slug));
+    } catch (err) {
+      toastError(addToast, err, "Duplicate bot failed");
+    }
   };
 
   // Cloud repo-context row: the repositories this bot is bound to (webhook
@@ -78,18 +121,30 @@ export default function ActionsRow({
         >
           Launch
         </Button>
-        {/* Cloud has no editor save path (the Editor is out of the cloud
-            nav), so the button is hidden rather than disabled — it has no
-            cloud equivalent. */}
-        {!isCloud && (
+        {/* A team-authored bot (or any bot in local mode) opens directly in the
+            editor. A read-only baked catalog bot in cloud offers "Duplicate &
+            edit" instead — forking it into the team store makes it editable. */}
+        {canEdit && (isTenantBot || !isCloud) && (
           <Button
             variant="secondary"
             size="sm"
             onClick={onEdit}
-            disabled={!launchFile}
-            title={launchFile ? "Open the workflow in the editor" : noPathTitle}
+            disabled={!isCloud && !launchFile}
+            title={
+              isCloud || launchFile ? "Open the workflow in the editor" : noPathTitle
+            }
           >
             Open in editor
+          </Button>
+        )}
+        {canFork && (
+          <Button
+            variant="secondary"
+            size="sm"
+            onClick={onFork}
+            title="Copy this catalog bot into an editable team bot"
+          >
+            Duplicate & edit
           </Button>
         )}
         {pipelineBoardsEnabled && (

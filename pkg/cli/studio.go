@@ -15,6 +15,7 @@ import (
 	"github.com/SocialGouv/iterion/pkg/alert"
 	"github.com/SocialGouv/iterion/pkg/backend/mcp"
 	"github.com/SocialGouv/iterion/pkg/botregistry"
+	"github.com/SocialGouv/iterion/pkg/botsource"
 	"github.com/SocialGouv/iterion/pkg/dispatcher"
 	"github.com/SocialGouv/iterion/pkg/dispatcher/native"
 	iterlog "github.com/SocialGouv/iterion/pkg/log"
@@ -232,6 +233,11 @@ func RunStudio(ctx context.Context, opts StudioOptions, p *Printer) error {
 		DisableAuth: disableAuth,
 		Bots:        server.BotsConfig{Paths: botsPaths},
 		Alerts:      alertSettingsFromEnv(opts.Bind, opts.Port),
+		// Team-authored bot store. Local editing goes through /api/files/*
+		// (real filesystem), so this in-memory store is here for parity and to
+		// keep the /api/teams/:id/bot-sources surface available; the durable
+		// Mongo store is wired on the cloud path (cmd/iterion/server.go).
+		BotSources: botsource.NewMemoryStore(),
 	}
 	// Native desktop notifications: wire the Wails-backed sink the desktop
 	// host supplied, but only when the operator opted in. Browser/headless

@@ -183,6 +183,13 @@ func (s *Server) routes() {
 		s.registerPluginSourceRoutes()
 	}
 
+	// Team-authored bot sources — the writable, tenant-scoped bot store that
+	// makes cloud bot editing possible. Needs the store + the auth stack
+	// (team-scoped CRUD behind canEditBots).
+	if s.botSources != nil && s.authSvc != nil {
+		s.registerBotSourceRoutes()
+	}
+
 	// Recurring cloud schedules — team-scoped CRUD. Cloud-only (the ticker
 	// that fires them lives on the same Server.cfg.ScheduledBots handle).
 	if s.cfg.ScheduledBots != nil && s.authSvc != nil {

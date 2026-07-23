@@ -3,13 +3,16 @@ package cloudpublisher
 import (
 	"context"
 	"fmt"
+	"strings"
 
+	"github.com/SocialGouv/iterion/pkg/bundle"
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
 	iterlog "github.com/SocialGouv/iterion/pkg/log"
 	"github.com/SocialGouv/iterion/pkg/plugin"
 	"github.com/SocialGouv/iterion/pkg/pluginsource"
 	"github.com/SocialGouv/iterion/pkg/queue"
 	"github.com/SocialGouv/iterion/pkg/skilllib"
+	"github.com/SocialGouv/iterion/pkg/store"
 )
 
 // maxContributionsBytes caps the contribution payload carried inline on the
@@ -166,6 +169,41 @@ func collectWorkflowSkillRefs(wf *ir.Workflow) []string {
 		}
 	}
 	return out
+}
+
+// appendTenantBotSkills adds a team-authored bot's bundle skills (skills/*.md)
+// to the run's contributions as library skills, so a tenant bot launched in
+// cloud mirrors its own skills into the runner workspace exactly as a baked
+// catalog bot does. The runner resolves baked bundles off its read-only
+// BotsPaths and cannot see a tenant bundle, so this Contributions channel is the
+// only way a tenant bot's skills reach the pod. A botID that is not a tenant bot
+// (a catalog or loose bot) resolves to nothing and is left untouched.
+func (p *Publisher) appendTenantBotSkills(ctx context.Context, contributions *queue.Contributions, tenantID, botID string) *queue.Contributions {
+	if p.botSources == nil || tenantID == "" || botID == "" {
+		return contributions
+	}
+	bs, err := p.botSources.GetBySlug(store.WithTenant(ctx, tenantID), tenantID, botID)
+	if err != nil {
+		return contributions // not a tenant bot — nothing to mirror
+	}
+	prefix := bundle.DirSkills + "/"
+	for path, content := range bs.Files {
+		if !strings.HasPrefix(path, prefix) || !strings.HasSuffix(path, ".md") {
+			continue
+		}
+		name := strings.TrimSuffix(strings.TrimPrefix(path, prefix), ".md")
+		if name == "" || strings.Contains(name, "/") {
+			continue // flat skills/<name>.md only; nested skill dirs are out of scope
+		}
+		if contributions == nil {
+			contributions = &queue.Contributions{}
+		}
+		contributions.Library = append(contributions.Library, queue.LibrarySkillFile{
+			Name:    name,
+			Content: []byte(content),
+		})
+	}
+	return contributions
 }
 
 // replaceContribution overwrites an existing (kind, name) entry in place and

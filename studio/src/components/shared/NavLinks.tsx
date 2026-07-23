@@ -75,14 +75,17 @@ const BASE_LINKS_LOCAL: LinkDef[] = [
   { section: "bots", href: "/bots", label: "Bots", icon: CubeIcon },
 ];
 
-// Editor authoring depends on a local file system (Save has no cloud path);
-// drop it from the cloud shell so the nav only advertises reachable surfaces.
+// The cloud shell omits the Editor by default; it is spliced back in below when
+// server_info.bot_editing_enabled (the team-authored bot store is wired), so the
+// editor now has a cloud save path (botsource://) and is a reachable surface.
 const BASE_LINKS_CLOUD: LinkDef[] = [
   { section: "home", href: "/", label: "Home", icon: HomeIcon },
   { section: "whatsNext", href: "/whats-next", label: "What's Next", icon: PaperPlaneIcon },
   { section: "runs", href: "/runs", label: "Runs", icon: ListBulletIcon },
   { section: "bots", href: "/bots", label: "Bots", icon: CubeIcon },
 ];
+
+const EDITOR_LINK: LinkDef = { section: "editor", href: "/editor", label: "Editor", icon: Pencil2Icon };
 
 // deriveSection maps the current path to the highlighted nav entry by
 // looking at the first path segment only — so `/runs/:id` highlights
@@ -203,7 +206,17 @@ export default function NavLinks({ collapsed }: Props) {
     manage.push({ section: "admin", href: "/admin/orgs", label: "Admin", icon: GearIcon });
   }
 
-  const baseLinks = info?.mode === "cloud" ? BASE_LINKS_CLOUD : BASE_LINKS_LOCAL;
+  // Cloud shows the Editor once the bot store is wired (bot_editing_enabled) —
+  // spliced after What's Next to match the local order. Local always has it.
+  let baseLinks = info?.mode === "cloud" ? BASE_LINKS_CLOUD : BASE_LINKS_LOCAL;
+  if (info?.mode === "cloud" && info?.bot_editing_enabled) {
+    const at = baseLinks.findIndex((l) => l.section === "runs");
+    baseLinks = [
+      ...baseLinks.slice(0, at < 0 ? baseLinks.length : at),
+      EDITOR_LINK,
+      ...baseLinks.slice(at < 0 ? baseLinks.length : at),
+    ];
+  }
   const groups: { label?: string; links: LinkDef[] }[] = [
     { links: baseLinks },
     { label: "Operate", links: operate },
