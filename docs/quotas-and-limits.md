@@ -142,8 +142,8 @@ Both views share the same JSON shape
 Two routes serve it:
 
 - `GET /api/admin/orgs/{id}/usage` — super-admin only, any org.
-- `GET /api/teams/{id}/usage` — any member of the team (org-admin
-  self-serve mirror).
+- `GET /api/orgs/{id}/usage` — any member of the org (self-serve
+  mirror).
 
 The "effective" values resolve the team override against the platform
 default before returning, so the UI shows the **real** ceiling the gate
