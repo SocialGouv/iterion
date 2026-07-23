@@ -42,8 +42,9 @@ schedules:
       label_source: sec-audit-self
     description: Weekly SAST self-audit  # optional; emitted as a crontab comment
     disabled: false                      # keep in the manifest, leave out of the crontab
-    overlap: skip                        # optional: skip (default) | allow — see "Overlap policy"
+    overlap: skip                        # optional: skip (default) | allow | keepalive — see "Overlap policy"
     max_concurrent: 0                    # optional, with overlap: allow — cap on live runs (0 = unlimited)
+    stale_after: ""                       # optional, with overlap: keepalive — relaunch if the live run is stale — see "Always-on agents"
     guard: ""                            # optional pre-launch sh -lc gate — see "Guard command"
     guard_timeout: "30s"                 # optional guard subprocess timeout
     guard_var: guard_output              # optional var name receiving the guard stdout

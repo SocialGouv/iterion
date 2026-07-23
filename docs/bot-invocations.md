@@ -18,7 +18,7 @@ neither (Nexie, Evoly) stay out of the picker.
 
 ```yaml
 invocations:
-  - kind: forge | command | schedule | board   # required, closed set
+  - kind: forge | command | schedule | board | keepalive   # required, closed set
     mode: direct | board                        # optional, default direct
     args_var: <workflow var>                    # optional: where the trigger payload lands
     context_vars: { k: v }                       # optional: vars stamped on every run from this path
@@ -27,6 +27,7 @@ invocations:
     command:  { name: featurly, aliases: [feature-dev], scope: pr|issue|any,
                 min_replier_role: maintainer, disambiguator: when_args_empty|when_args_present }
     schedule: { suggested_cron: "0 2 * * 1", default_vars: { k: v } }
+    keepalive: { interval: "30s" }               # relaunch cadence (>= 5s; sub-minute needs the resident scheduler)
 ```
 
 Validation runs at manifest parse time (`bundle.validateInvocations`): unknown
@@ -41,10 +42,17 @@ a var the bot's workflow does not declare.
 - **`command`** — a `/slash-command` in a PR/MR/issue comment. The universal
   manual trigger, on all three forges (GitLab notes, GitHub/Forgejo
   `issue_comment`). Resolved through the per-webhook command map.
-- **`schedule`** — a suggested cron the Integrations UI proposes. *(Cloud
-  scheduler not yet wired — the suggestion shows but does not fire; see P3.)*
+- **`schedule`** — a suggested cron. Enabling a bot with a schedule
+  invocation provisions a firing cloud `ScheduledBot` (the orchestrator's
+  `syncSchedules`), with the cadence overridable in the enable dialog; the
+  in-process `trigger.Scheduler` fires schedule-kind subscriptions on their
+  cron. Self-hosted CLI uses `iterion schedule` instead.
 - **`board`** — a dispatcher target: an issue whose `Bot` is this bot is picked
   up and run.
+- **`keepalive`** — always-on: a fresh, individually budgeted run is relaunched
+  every `interval` with at-most-one-live semantics (a stale run is reaped, not
+  stacked). Sub-minute cadence needs the resident in-process scheduler; the host
+  crontab floors at one minute.
 
 ## Execution mode
 
