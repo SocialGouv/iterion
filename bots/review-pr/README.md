@@ -6,18 +6,20 @@ commits code. (Fixing is the improve-loops' job: `branch_improve_loop` =
 Billy, `whole_improve_loop` = Willy.)
 
 Two independent reviewers from different model families (Claude + GPT)
-audit the diff in parallel; a single `emit` step merges and de-duplicates
-their findings, raises the confidence of anything **both** families
+audit the diff in parallel; a single `converge` step merges and
+de-duplicates their findings, raises the confidence of anything **both** families
 flagged ("cross-confirmed"), then writes one issue per finding to the
 iterion native kanban board (labelled `severity:*`, `type:*`,
 `source:revi`) plus a markdown report.
 
 ```
+diff_precheck (tool)   empty diff → done (nothing to review)
+diff_precheck -> fan
 fan (fan_out_all)
   ├─ reviewer_claude   claude_code, read-only
   └─ reviewer_gpt      claw + openai/gpt-5.5, read-only tools
-reviewer_* -> emit     await: wait_all  (merge + dedupe → board + report)
-emit -> pr_gate        deterministic: was a pr_url given?
+reviewer_* -> converge await: wait_all  (merge + dedupe → board + report)
+converge -> pr_gate    deterministic: was a pr_url given?
   ├─ no  -> done
   └─ yes -> publish_review   deterministic forge publish via the iterion
             -> publish_health  server endpoint (inline comments +
@@ -45,6 +47,7 @@ All inputs are workflow `vars` (override with `--var name=value`):
 | `post_to_board` | `true` | File findings on the native board; `false` = report only. |
 | `report_path` | `.review-pr/findings.md` | Markdown report destination (gitignorable; not under `.iterion/`). |
 | `pr_url` | `""` | When set, ALSO publish the review onto this PR (see below). Empty = board + report only. |
+| `pr_review_mode` | `inline` | How the PR review is posted: `inline` (per-line comments) or `summary` (one comment). |
 
 ## Run
 
