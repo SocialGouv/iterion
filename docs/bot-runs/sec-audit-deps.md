@@ -4,10 +4,14 @@ Universal supply-chain / SCA auditor: enumerates installed deps per ecosystem,
 runs heuristics + CVE baseline, LLM-reviews, emits findings to the board.
 Read-only (no code edits). See [bots/sec-audit-deps/](../../bots/sec-audit-deps/).
 
-> **Known status (CLAUDE.md):** the heuristic scanner layer is still a scaffold
-> (runs the real CVE scanners but discards their output, tracked native:3a81df64);
-> a run self-labels with a "⚠ Coverage" banner. It is enumerate + LLM-review only
-> until that lands.
+> **Known status (CLAUDE.md):** the CVE floor is now **real** —
+> `run_generic_heuristics` runs `trivy fs --scanners vuln` over the workspace from
+> a bare checkout, matching every pinned version in go.mod / package-lock.json /
+> requirements.txt / Cargo.lock etc. against the OSV/GHSA/NVD DB, and feeds those
+> findings into `heuristic_join` for the reviewer. Still pending (native:3a81df64):
+> the per-ecosystem install-tree heuristics (npm-audit/pip-audit) and code-pattern
+> /typosquat-corpus malware signals — so a run still self-labels with a
+> "⚠ Coverage" banner for partial coverage, but it is no longer a 0-finding scaffold.
 
 ## 2026-06-13 (retest) — 2 engine bugs root-caused & fixed (runs 019ec1b1→019ec1d3)
 
