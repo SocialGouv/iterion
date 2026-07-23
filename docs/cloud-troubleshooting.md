@@ -14,6 +14,11 @@ curl -fsS http://<server-host>:4891/healthz
 curl -fsS http://<server-host>:4891/readyz
 curl -fsS http://<server-host>:4891/metrics | head -20
 
+# The server Deployment is named after the Helm release (`deploy/iterion`
+# for a release named `iterion`); target it by that name or by the
+# `-l app.kubernetes.io/component=server` label. The runner is
+# `<release>-runner` (`-l app.kubernetes.io/component=runner`).
+
 # Runner pool status (Kubernetes)
 kubectl -n <ns> get pods -l app.kubernetes.io/component=runner
 kubectl -n <ns> logs -l app.kubernetes.io/component=runner --tail=200
@@ -23,10 +28,10 @@ nats stream info ITERION_RUNS
 nats consumer info ITERION_RUNS iterion-runners
 
 # Mongo connectivity from server pod
-kubectl -n <ns> exec deploy/iterion-server -- nc -zv <mongo-host> 27017
+kubectl -n <ns> exec deploy/iterion -- nc -zv <mongo-host> 27017
 
 # Blob bucket connectivity from server pod
-kubectl -n <ns> exec deploy/iterion-server -- aws --endpoint-url $S3_ENDPOINT s3 ls s3://$S3_BUCKET/runs/
+kubectl -n <ns> exec deploy/iterion -- aws --endpoint-url $S3_ENDPOINT s3 ls s3://$S3_BUCKET/runs/
 ```
 
 If `/readyz` returns 503: the server can reach itself but cannot reach Mongo, NATS, or blob storage. The body lists which probe failed.
@@ -66,8 +71,8 @@ Fix:
 **Probable cause**: server cannot reach Mongo at the configured `ITERION_MONGO_URI`.
 
 Diagnose:
-1. `kubectl exec deploy/iterion-server -- env | grep MONGO`
-2. `kubectl exec deploy/iterion-server -- nc -zv <mongo-host> 27017`
+1. `kubectl exec deploy/iterion -- env | grep MONGO`
+2. `kubectl exec deploy/iterion -- nc -zv <mongo-host> 27017`
 3. `kubectl get networkpolicy -n <ns>` — does the egress allow port 27017 to the Mongo namespace?
 
 Fix:
@@ -80,7 +85,7 @@ Fix:
 **Probable cause**: S3 credentials are wrong, the bucket doesn't exist, or the bucket policy denies the iterion server.
 
 Diagnose:
-1. `kubectl exec deploy/iterion-server -- env | grep -E 'S3|AWS'`
+1. `kubectl exec deploy/iterion -- env | grep -E 'S3|AWS'`
 2. From inside the pod: `aws --endpoint-url $S3_ENDPOINT s3 ls s3://$S3_BUCKET/`
 3. Check the bucket policy / IAM role for the access key.
 
@@ -95,13 +100,13 @@ Fix:
 
 Diagnose:
 1. Browser devtools → Network → filter on `Upgrade: websocket`. Does the handshake return 101?
-2. `kubectl logs deploy/iterion-server | grep -E 'eventstream|ws|tenant'`
+2. `kubectl logs deploy/iterion | grep -E 'eventstream|ws|tenant'`
 3. `iterion inspect --run-id <id> --events` from a TTY against the same store: do events exist?
 
 Fix:
 - 101 handshake fails behind a proxy: configure the Ingress to pass WebSocket Upgrade. Example for nginx ingress: `nginx.ingress.kubernetes.io/proxy-set-header: "Upgrade $http_upgrade"`.
 - Events exist but the stream is empty: the studio is filtering by tenant mismatch. Re-login to refresh the JWT.
-- MongoSource unwired: confirm `ITERION_MODE=cloud` is set on the server. Without it, `runview.service` defaults to `FilesystemSource` which won't see Mongo events.
+- MongoSource unwired: confirm `ITERION_MODE=cloud` is set on the server. Without it, `runview.service` defaults to the filesystem event source (`runstream.FileSource`) which won't see Mongo events.
 
 ### Runs fail with `budget_exceeded` immediately
 
