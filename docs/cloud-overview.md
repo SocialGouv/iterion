@@ -84,7 +84,7 @@ autonomously:
 | Launch admission (org suspend / concurrency / cost cap / run quota) | [pkg/server/launch_gate.go](../pkg/server/launch_gate.go) | 402/403/429 with a stable reason token |
 | Bundle the org's BYOK keys + bound secrets, seal them | [pkg/secrets/run_secrets.go](../pkg/secrets/run_secrets.go) | Per-run AES-GCM, run-id-bound AAD |
 | Publish on NATS `iterion.queue.runs` | [pkg/queue/nats/nats.go](../pkg/queue/nats/nats.go) | KEDA scales the runner pool on lag |
-| A runner pod claims, unseals, runs the `review-pr` workflow | [pkg/runner/loop.go](../pkg/runner/loop.go) | One in-flight run per pod (MaxAckPending=1) |
+| A runner pod claims, unseals, runs the `review-pr` workflow | [pkg/runner/loop.go](../pkg/runner/loop.go) | One in-flight run per pod (each pod's serial loop; `MaxAckPending=256` is the fleet ceiling) |
 | The workflow clones, reviews, posts the note via `forge_token` | the workflow | The org's identity, not iterion's |
 | Audit row + delivery row + Prometheus counters | [pkg/audit/audit.go](../pkg/audit/audit.go) + [pkg/cloud/metrics/metrics.go](../pkg/cloud/metrics/metrics.go) | Both tenant and platform timelines |
 
