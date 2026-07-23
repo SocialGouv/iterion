@@ -78,7 +78,7 @@ invocations:
   - kind: command
     mode: board
     args_var: scope_notes
-    command: { name: billy, aliases: [branch-improve-loop, improve], scope: any, min_replier_role: developer }
+    command: { name: billy, aliases: [branch-improve-loop, improve], scope: any, min_replier_role: maintainer }
   - kind: board
 
 ## Studio launch-form hierarchy: `primary` inputs render top-level in
