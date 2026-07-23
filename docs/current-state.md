@@ -28,7 +28,7 @@ linked references.
 | Reuse and extension | Bundles, recipes/presets, project/global skills, plugins, MCP servers, marketplace entries, command-output rewriters, and bot/repository `devbox.json` toolchains. |
 | Automation | Host schedules, tracker dispatcher, native-board events, run-completion chains, forge/generic webhooks, and the event-driven trigger spine. |
 | Cloud control plane | Organization → team tenancy, SSO/password auth, PATs, BYOK and bound secrets, audit and quotas, repo-first forge integrations, NATS-queued runners, MongoDB/S3 persistence, and the typed `iterion remote` CLI. |
-| Maintained bots | 24 bundles live under `bots/`; nine general-purpose bots are embedded for zero-config dispatcher use. See the [catalogue](examples.md). |
+| Maintained bots | 25 bundles live under `bots/`; nine general-purpose bots are embedded for zero-config dispatcher use. See the [catalogue](examples.md). |
 
 ## End-to-end execution
 

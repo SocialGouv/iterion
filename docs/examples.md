@@ -42,6 +42,7 @@ These bots are shipped in the repository and are discoverable by the CLI and stu
 | 🧬 Evoly | [`evolve`](../bots/evolve/) | Long-horizon product and architecture partner backed by persistent per-bot memory. |
 | 🧩 Fini | [`feature-gap-fill`](../bots/feature-gap-fill/) | Finish a structured partial-implementation gap while preserving what already works. |
 | 🔭 Vigie | [`feed-watch`](../bots/feed-watch/) | Collect RSS/Atom feeds at zero LLM cost, then produce and deliver grounded digests. |
+| 🏷️ Triagy | [`issue-triage`](../bots/issue-triage/) | Single-shot card triage: read a fresh board card, classify it, stamp the handler bot + labels, and leave a routing comment. Routes work to other bots; never dispatched to. |
 | 💬 Revi (converse) | [`revi-converse`](../bots/revi-converse/) | Answer a focused `/revi` follow-up in the same forge discussion; never edits code. |
 | ♿ Acci | [`rgaa-audit`](../bots/rgaa-audit/) | Read-only RGAA 4.1.2 source audit with a deterministic coverage gate. |
 | ⛓️ Shieldy | [`supply-shield`](../bots/supply-shield/) | Diff-scoped dependency-malware gate for forge events. |
