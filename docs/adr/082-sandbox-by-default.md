@@ -1,6 +1,6 @@
 # ADR-082 — Sandbox by default
 
-- Status: accepted (Phases 1–2 shipped; Phase 3 planned)
+- Status: accepted (Phases 1–3 shipped; Phase 3 opt-in per-environment via `runner.sandbox.enabled`)
 - Date: 2026-07-22
 - Deciders: devthejo
 
@@ -83,12 +83,20 @@ toolchain caches); everything else (claude install gates, `~/.claude`
 mounts, `CLAUDE_CONFIG_DIR`, `user:`, `network: open`) is gone —
 platform defaults cover them.
 
-### Phase 3 — cloud cutover (planned)
+### Phase 3 — cloud cutover (shipped)
 
-Lift the chart's `ITERION_SANDBOX_OVERRIDE=none` so cloud runs execute
-in per-run sandbox pods (kubernetes driver + ADR-070 per-run credential
-Secret). Known blockers to resolve first, all confirmed by code
-inspection:
+Cloud runs execute in per-run sandbox pods (kubernetes driver + ADR-070
+per-run credential Secret) when a deployment sets
+`runner.sandbox.enabled: true` (base chart default `false` → the chart
+pins `ITERION_SANDBOX_OVERRIDE=none`; prod opts in via
+`values-prod.yaml`). The runner entry point itself resolves the sandbox
+default to `auto` (`resolveRunnerSandboxDefault` in
+[cmd/iterion/runner.go](../../cmd/iterion/runner.go)), so the override is
+the only thing standing between a runner pod and a per-run sandbox. The
+four blockers below were resolved before the cutover, all confirmed by
+code inspection; the prod-validated dogfood is recorded in
+[docs/bot-runs/docs-refresh.md](../bot-runs/docs-refresh.md) (2026-07-22,
+run 019f8a8f — converged sandboxed, PR #270 opened in-pod):
 
 1. **Worktree git + push** — RESOLVED (feat/sandbox-cloud-git). No
    init-container/PVC needed: the driver already tar-copies the *clone
@@ -124,9 +132,10 @@ inspection:
    token delivered as a file secret — or a per-bot policy grant to
    stay unsandboxed.
 
-Validation for the cutover: re-run the Doki repo-targeted cloud dogfood
-sandboxed and compare against the 2026-07-21/22 unsandboxed baseline
-(`docs/bot-runs/docs-refresh.md`).
+Validation for the cutover was performed: the Doki repo-targeted cloud
+dogfood was re-run sandboxed and compared against the 2026-07-21/22
+unsandboxed baseline (`docs/bot-runs/docs-refresh.md`) — the sandboxed
+run converged and opened its PR from inside the pod.
 
 ## Alternatives considered
 
@@ -152,5 +161,7 @@ sandboxed and compare against the 2026-07-21/22 unsandboxed baseline
 - The per-launch sandbox confirmation disappears for the common case;
   security review focuses on explicit `sandbox: none` declarations,
   which C128 makes greppable and reviewable.
-- Until Phase 3 lands, cloud behaviour is unchanged — the dogfood
-  baseline stays comparable.
+- Cloud behaviour is unchanged for deployments that leave
+  `runner.sandbox.enabled: false` (the base-chart default); enabling it
+  puts each cloud run in its own per-run sandbox pod. Prod runs
+  sandboxed.
