@@ -265,7 +265,7 @@ same override when inspecting a run. See [the current storage contract](docs/cur
 
 Iterion accepts plain workflow sources as **`.bot`** files. Any other extension is rejected at the CLI, server, dispatcher, and studio boundaries.
 
-Agent workflows can also be shipped as **`.botz`** bundles — tar.gz archives packaging the workflow with adjacent resources (Claude Code skills, reusable prompts, default attachments, manifest). Scaffold with `iterion bots create`, build with `iterion bundle pack`, run with `iterion run my.botz`. See [docs/bundles.md](docs/bundles.md).
+Agent workflows can also be shipped as **`.botz`** bundles — deterministic ZIP archives (legacy tar.gz still readable) packaging the workflow with adjacent resources (Claude Code skills, reusable prompts, default attachments, manifest). Scaffold with `iterion bots create`, build with `iterion bundle pack`, run with `iterion run my.botz`. See [docs/bundles.md](docs/bundles.md).
 
 ---
 
@@ -327,7 +327,7 @@ The full documentation lives under [`docs/`](docs/) — start with the [document
 **Author workflows**
 - [docs/dsl.md](docs/dsl.md) — full `.bot` DSL reference
 - [docs/routers.md](docs/routers.md) — routing modes deep dive
-- [docs/human-in-the-loop.md](docs/human-in-the-loop.md) — pause for human input; all five interaction values and their node-specific behavior
+- [docs/human-in-the-loop.md](docs/human-in-the-loop.md) — pause for human input; all six interaction values and their node-specific behavior
 - [docs/recipes.md](docs/recipes.md) — preset-driven runs (benchmarking, prompt comparison)
 - [docs/backends.md](docs/backends.md) + [docs/delegation.md](docs/delegation.md) — model/provider routing and the `claw`, Claude Code, Kimi, Grok, and legacy Codex execution paths
 - [docs/cursors.md](docs/cursors.md) — prompt-engineering cursors (ambition / depth / rigor / autonomy dials)
