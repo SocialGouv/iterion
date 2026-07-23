@@ -31,7 +31,7 @@ For the architectural trade-off against prompt-only orchestration, read [why-not
 | [references/diagnostics.md](references/diagnostics.md) | Authoritative sparse catalogue: DSL C001–C199 and bundle checks C200–C230. |
 | [routers.md](routers.md) | Five routing modes, per-item fan-out, and convergence. |
 | [groups-iteration-subbots.md](groups-iteration-subbots.md) | `group`/`use`, edge `foreach`, `fan_out_each`, resources, and nested bots. |
-| [human-in-the-loop.md](human-in-the-loop.md) | Human nodes and all five interaction values, including the node-specific `none` behavior. |
+| [human-in-the-loop.md](human-in-the-loop.md) | Human nodes and all six interaction values, including the node-specific `none` and `async` behavior. |
 | [cursors.md](cursors.md) | Prompt-calibration cursor declarations and node activation. |
 | [supervisors.md](supervisors.md) | Concurrent run watchers and steering messages. |
 | [dsl-totality-and-tc.md](dsl-totality-and-tc.md) | Language totality, fuel, liveness, and Turing-completeness boundaries. |
