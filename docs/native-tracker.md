@@ -145,7 +145,7 @@ The full CLI works against `<store-dir>/dispatcher/` directly; it does
 ```
 iterion issue create   --title T [--body B] [--state S] [--label L]+
                        [--priority N] [--assignee A] [--blocker ID]+
-                       [--field key=value]+
+                       [--field key=value]+ [--bot NAME] [--bot-arg key=value]+
 
 iterion issue list     [--state S]+ [--label L]+ [--assignee A]
                        [--claimed] [--unclaimed]
