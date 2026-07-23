@@ -14,7 +14,8 @@ top_level_decl = vars_decl | presets_decl | attachments_decl | secrets_decl
                | mcp_server_decl | prompt_decl | schema_decl
                | cursor_decl | supervisor_decl
                | agent_decl | judge_decl | router_decl | human_decl
-               | tool_decl | compute_decl | emit_decl | wait_decl | subbot_decl
+               | tool_decl | compute_decl | emit_decl | wait_decl
+               | await_answers_decl | subbot_decl
                | group_decl | use_decl | workflow_decl ;
 
 (* ---------- Values and collections ---------- *)
@@ -148,7 +149,7 @@ session_mode = "fresh" | "inherit" | "inherit_if_available"
 reasoning_effort = "low" | "medium" | "high" | "xhigh" | "max"
                  | "ultracode" | STRING_LIT ;
 await_mode = "wait_all" | "best_effort" ;
-interaction_mode = "none" | "human" | "llm" | "llm_or_human" | "review" ;
+interaction_mode = "none" | "human" | "llm" | "llm_or_human" | "review" | "async" ;
 compress_mode = "off" | "on" | "ultra" ;
 permission_mode = "off" | "ask" | "deny" ;
 
@@ -256,6 +257,12 @@ wait_prop = "description" ":" STRING_LIT NEWLINE
           | "timeout" ":" STRING_LIT NEWLINE
           | "output" ":" IDENT NEWLINE ;
 
+await_answers_decl = "await_answers" IDENT ":" NEWLINE
+                     INDENT { await_answers_prop } DEDENT ;
+await_answers_prop = "from" ":" ( STRING_LIT | IDENT ) NEWLINE
+                   | "timeout" ":" STRING_LIT NEWLINE
+                   | "description" ":" STRING_LIT NEWLINE ;
+
 subbot_decl = "subbot" IDENT ":" NEWLINE INDENT { subbot_prop } DEDENT ;
 subbot_prop = "description" ":" STRING_LIT NEWLINE
             | "source" ":" STRING_LIT NEWLINE
@@ -301,6 +308,7 @@ budget_prop = "max_parallel_branches" ":" INT_LIT NEWLINE
             | "max_duration" ":" STRING_LIT NEWLINE
             | "max_cost_usd" ":" NUMBER_LIT NEWLINE
             | "max_tokens" ":" INT_LIT NEWLINE
+            | "warn_tokens" ":" INT_LIT NEWLINE
             | "max_iterations" ":" INT_LIT NEWLINE ;
 
 resources_block = "resources" ":" NEWLINE INDENT
