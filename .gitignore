@@ -82,6 +82,8 @@ node_modules
 .env.*-bak
 studio/dist/
 studio/node_modules/
+docs/.vitepress/dist/
+docs/.vitepress/cache/
 # This is a pnpm workspace (see pnpm-workspace.yaml). Lockfiles from
 # other package managers bypass pnpm-lock.yaml and produce silently
 # divergent dependency trees — never commit them.
