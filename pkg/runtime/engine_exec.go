@@ -352,6 +352,23 @@ func (e *Engine) execLoopRunNode(ctx context.Context, rs *runState, currentNodeI
 	}
 	span.End()
 	if execErr != nil {
+		// If the RUN's own context is done, the run is being torn down —
+		// cancelled by a drain/operator/heartbeat, or past its wall-clock
+		// deadline — WHILE this node was executing. Route through the
+		// cause-aware handler, not recovery/retry (a cancelled run must not
+		// retry) and not a generic failRunWithCheckpoint (which stringifies
+		// the error, losing the ErrRunInterrupted sentinel — so a drain would
+		// surface as a spurious "run failed" notification instead of a silent
+		// auto-resume, and an operator cancel would wrongly land
+		// failed_resumable and get redelivered-resumed). This mirrors the
+		// top-of-loop select for the far more common MID-node interruption
+		// (a deploy almost always drains a run inside an LLM call, not in the
+		// gap between nodes). Gated on the RUN ctx being done, so a node's
+		// own internal Canceled error with a live run ctx still takes the
+		// normal recovery path below.
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			return nil, false, e.handleContextDoneWithCheckpoint(rs, currentNodeID, ctxErr)
+		}
 		// Check if the delegate needs user interaction.
 		var needsInput *model.ErrNeedsInteraction
 		if errors.As(execErr, &needsInput) {

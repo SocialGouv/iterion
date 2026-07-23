@@ -143,6 +143,57 @@ func TestInterruptedCauseProducesResumableStatus(t *testing.T) {
 	}
 }
 
+// TestInterruptedMidNodeProducesResumableStatus is the common real-world
+// case: a drain cancels the run WHILE a node is executing, so the
+// cancellation surfaces as the node's own execErr (not the between-node
+// select). The engine must still read the cause and write failed_resumable +
+// ErrRunInterrupted — otherwise a deploy would fire a spurious "run failed"
+// notification for a run that silently auto-resumes.
+func TestInterruptedMidNodeProducesResumableStatus(t *testing.T) {
+	wf := &ir.Workflow{
+		Name:  "interrupt_midnode_test",
+		Entry: "step",
+		Nodes: map[string]ir.Node{
+			"step": &ir.AgentNode{BaseNode: ir.BaseNode{ID: "step"}},
+			"done": &ir.DoneNode{BaseNode: ir.BaseNode{ID: "done"}},
+		},
+		Edges:   []*ir.Edge{{From: "step", To: "done"}},
+		Schemas: map[string]*ir.Schema{},
+		Prompts: map[string]*ir.Prompt{},
+		Vars:    map[string]*ir.Var{},
+		Loops:   map[string]*ir.Loop{},
+	}
+
+	ctx, cancel := context.WithCancelCause(context.Background())
+	exec := newStubExecutor()
+	// The node cancels the run mid-flight (drain) and returns a
+	// context.Canceled-wrapping error, exactly as a real delegate does when
+	// its ctx is cancelled during an LLM call.
+	exec.on("step", func(_ map[string]any) (map[string]any, error) {
+		cancel(ErrRunInterrupted)
+		return nil, fmt.Errorf("llm call aborted: %w", context.Canceled)
+	})
+
+	s := tmpStore(t)
+	eng := New(wf, s, exec)
+
+	err := eng.Run(ctx, "run-interrupted-midnode", nil)
+	if !errors.Is(err, ErrRunInterrupted) {
+		t.Fatalf("expected ErrRunInterrupted from a mid-node drain, got: %v", err)
+	}
+
+	r, _ := s.LoadRun(context.Background(), "run-interrupted-midnode")
+	if r.Status != store.RunStatusFailedResumable {
+		t.Errorf("expected status failed_resumable, got %s", r.Status)
+	}
+	events, _ := s.LoadEvents(context.Background(), "run-interrupted-midnode")
+	for _, evt := range events {
+		if evt.Type == store.EventRunCancelled {
+			t.Error("mid-node interrupted run must NOT emit run_cancelled")
+		}
+	}
+}
+
 // ---------------------------------------------------------------------------
 // Test: context cancellation mid-execution cancels cleanly
 // ---------------------------------------------------------------------------
