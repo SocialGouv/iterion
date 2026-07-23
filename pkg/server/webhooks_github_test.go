@@ -181,8 +181,10 @@ func TestGitHubWebhook_DraftPRNotAutoLaunched(t *testing.T) {
 	}
 }
 
-// Marking a draft PR ready-for-review IS the auto-trigger: this ticket PR
-// then routes to the branch-improvement bot exactly like a fresh open.
+// Marking a draft PR ready-for-review IS the auto-trigger — and the auto-lane
+// is REVIEW-ONLY (Revi). Even a ticket PR must NOT auto-launch Billy on open:
+// Billy runs on a PR only on a deliberate `/billy` command (or the auto-heal
+// path). This pins the decoupling (req 1+2).
 func TestGitHubWebhook_ReadyForReviewLaunches(t *testing.T) {
 	s := newWebhookTestServer(t)
 	var gotBot string
@@ -198,8 +200,8 @@ func TestGitHubWebhook_ReadyForReviewLaunches(t *testing.T) {
 	if w.Code != http.StatusAccepted {
 		t.Fatalf("code=%d body=%s", w.Code, w.Body.String())
 	}
-	if gotBot != branchImproveBotID {
-		t.Fatalf("ready_for_review ticket PR should route to %q, got %q", branchImproveBotID, gotBot)
+	if gotBot != "review-pr" {
+		t.Fatalf("ready_for_review PR must auto-REVIEW (Revi), never auto-launch Billy; got %q", gotBot)
 	}
 }
 
@@ -266,40 +268,79 @@ const ghForkTicketPR = `{
   "sender": {"login": "mallory"}
 }`
 
-// TestGitHubWebhook_TicketPRRoutesToBilly: a same-repo PR that closes an issue,
-// on a webhook that enables Billy, launches branch-improve-loop with Billy's
-// vars (open_mr=false — the PR already exists; push_branch set — Billy pushes
-// in-place onto the PR; pr_url carried so Billy can post its review comment).
-func TestGitHubWebhook_TicketPRRoutesToBilly(t *testing.T) {
+// TestGitHubWebhook_TicketPRAutoReviewsNeverBilly: a same-repo PR that closes an
+// issue must NOT auto-launch Billy on open (req 1+2). Even with Billy enabled on
+// the webhook, the PR-open auto-lane is REVIEW-ONLY — it routes to Revi with the
+// review vars, never the mutating branch-improve loop.
+func TestGitHubWebhook_TicketPRAutoReviewsNeverBilly(t *testing.T) {
 	s := newWebhookTestServer(t)
 	var gotBot string
 	var gotVars map[string]string
 	s.webhookLaunchBot = func(_ context.Context, botID string, vars map[string]string, _, _, _ string, _, _ map[string]string) (string, error) {
 		gotBot, gotVars = botID, vars
-		return "run-billy", nil
+		return "run-review", nil
 	}
 	cfg, pt := ghConfig(t, s)
-	cfg.BotIDs = []string{"review-pr", "branch-improve-loop"} // enable Billy on this repo
+	cfg.BotIDs = []string{"review-pr", "branch-improve-loop"} // Billy enabled — still must not auto-launch
 
 	w := httptest.NewRecorder()
 	s.handleGitHubWebhook(w, ghReq(ghCtx(cfg), ghTicketPR, prforge.EventHeaderPullRequest, pt))
 	if w.Code != http.StatusAccepted {
 		t.Fatalf("code=%d body=%s", w.Code, w.Body.String())
 	}
-	if gotBot != "branch-improve-loop" {
-		t.Fatalf("ticket PR must route to Billy, got %q", gotBot)
+	if gotBot != "review-pr" {
+		t.Fatalf("ticket PR must auto-REVIEW (Revi), never auto-launch Billy; got %q", gotBot)
 	}
-	if gotVars["open_mr"] != "false" || gotVars["base_ref"] != "main" {
-		t.Fatalf("billy vars: %v", gotVars)
+	// Review vars, not Billy's push-back vars.
+	if gotVars["post_to_board"] != "false" || gotVars["pr_review_mode"] != "inline" {
+		t.Fatalf("expected Revi review vars, got %v", gotVars)
 	}
-	if !strings.Contains(gotVars["scope_notes"], "Add subtract") {
-		t.Fatalf("scope_notes must carry the PR title/body: %q", gotVars["scope_notes"])
+	if _, ok := gotVars["push_branch"]; ok {
+		t.Fatalf("review lane must NOT carry Billy's push_branch: %v", gotVars)
 	}
-	if gotVars["push_branch"] != "feat/subtract" {
-		t.Fatalf("billy path must set push_branch to the PR source branch (in-place push, not the review path): %v", gotVars)
+	if gotVars["pr_author"] != "alice" {
+		t.Fatalf("review run must stamp pr_author, got %v", gotVars)
 	}
-	if gotVars["pr_url"] == "" {
-		t.Fatalf("billy carries pr_url so it can post its review-comment feedback on the PR: %v", gotVars)
+}
+
+// TestGitHubWebhook_IterionBotPRSkipsReview: a PR opened by iterion's OWN forge
+// bot (login = <app_slug>[bot], resolved from the provisioned connection) is
+// NOT auto-reviewed — it already converged in its own loop (req 5). A generic
+// [bot] (Dependabot) is unaffected (covered by the auto-review happy path).
+func TestGitHubWebhook_IterionBotPRSkipsReview(t *testing.T) {
+	s := newWebhookTestServer(t)
+	launched := 0
+	s.webhookLaunchBot = func(context.Context, string, map[string]string, string, string, string, map[string]string, map[string]string) (string, error) {
+		launched++
+		return "run-x", nil
+	}
+	// Seam: the provisioned connection's bot is "iterion-forge-1234[bot]".
+	s.webhookIterionBotAuthor = func(_ context.Context, _ webhooks.Config, login string) bool {
+		return login == "iterion-forge-1234[bot]"
+	}
+	cfg, pt := ghConfig(t, s)
+
+	body := `{
+	  "action": "opened", "number": 21,
+	  "repository": {"id": 42, "full_name": "acme/widgets", "clone_url": "https://github.com/acme/widgets.git"},
+	  "pull_request": {"number": 21, "title": "Docs: align", "body": "aligned by Doki",
+	    "html_url": "https://github.com/acme/widgets/pull/21", "state": "open",
+	    "head": {"ref": "iterion/run/docs", "sha": "ddd333", "repo": {"full_name": "acme/widgets"}},
+	    "base": {"ref": "main", "repo": {"full_name": "acme/widgets"}}},
+	  "sender": {"login": "iterion-forge-1234[bot]"}
+	}`
+	w := httptest.NewRecorder()
+	s.handleGitHubWebhook(w, ghReq(ghCtx(cfg), body, prforge.EventHeaderPullRequest, pt))
+	if w.Code != http.StatusOK {
+		t.Fatalf("code=%d body=%s", w.Code, w.Body.String())
+	}
+	var resp map[string]string
+	json.Unmarshal(w.Body.Bytes(), &resp)
+	if resp["status"] != webhooks.StatusFiltered {
+		t.Fatalf("iterion-bot PR must be filtered, got %q", resp["status"])
+	}
+	if launched != 0 {
+		t.Fatalf("iterion-bot PR must NOT auto-launch any bot, launched=%d", launched)
 	}
 }
 

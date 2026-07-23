@@ -169,6 +169,16 @@ vars:
   ## only in the iterion run. The PR-webhook trigger sets it. Empty = skip.
   pr_url: string = ""
 
+  ## Prior review to START FROM, not re-derive. When Billy is invoked with
+  ## `/billy` on a PR that Revi (review-pr) already reviewed, the iterion
+  ## webhook handler seeds this with Revi's most recent findings for that PR
+  ## (severity/category/file:line/detail per finding). Treat them as a
+  ## high-signal head start — verify each against the current diff, FIX the
+  ## real ones, and keep reviewing for anything Revi missed (Revi is
+  ## read-only; you fix + commit). Empty (default) = no prior review, review
+  ## the diff from scratch.
+  prior_review: string = ""
+
 secrets:
   ## Forge access for push + PR creation + the issue back-link. Mounted as a
   ## read-only file the gh/glab CLI authenticates from; never read into a
@@ -285,6 +295,12 @@ prompt campaign_user:
 
   Extra context / notes (empty = the diff speaks for itself):
   {{vars.scope_notes}}
+
+  PRIOR REVIEW to start from (empty = none; when present, another reviewer
+  (Revi) already reviewed this PR — treat each finding as a high-signal head
+  start: verify it against the CURRENT diff, FIX the real ones and commit,
+  then keep reviewing for anything it missed — do NOT just trust it):
+  {{vars.prior_review}}
 
   BASELINE — pre-existing failures / known-flaky tests to SKIP (empty =
   establish it once cheaply against {{vars.base_ref}}, then skip what predates

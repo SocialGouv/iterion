@@ -146,8 +146,9 @@ type Config struct {
 	// The anti budget-exhaustion boundary: a fork PR is untrusted (an adversary
 	// can open many to trigger costly bot runs), so an operator must validate it
 	// before a bot runs. Off by default (fork PRs still auto-review via Revi;
-	// the mutating branch-improve bot never runs on a fork regardless — see
-	// selectForgePRBot). Recommended ON for a public repo.
+	// the mutating branch-improve bot never runs on a PR-open regardless — the
+	// PR-open lane is review-only, see handlePRForgeReview). Recommended ON for
+	// a public repo.
 	BlockForkPRs bool `bson:"block_fork_prs,omitempty" json:"block_fork_prs,omitempty"`
 
 	// ForgeBaseURL, when set, pins the forge instance this webhook's bot

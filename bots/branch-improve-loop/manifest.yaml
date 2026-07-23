@@ -70,15 +70,15 @@ forge:
   secret: forge_token
 
 invocations:
+  # Billy runs on a PR ONLY on this deliberate `/billy` (alias `/improve`)
+  # slash-command, gated on the commenter's repo rights (min_replier_role).
+  # There is NO PR-open auto-launch: opening a PR only ever auto-REVIEWS it
+  # (Revi). `/billy` picks up where Revi left off — the handler seeds
+  # `prior_review` from Revi's most recent review of the PR.
   - kind: command
     mode: board
     args_var: scope_notes
-    command: { name: billy, aliases: [branch-improve-loop], scope: any, min_replier_role: maintainer }
-  # A same-repo PR that implements a tracked issue auto-launches Billy to harden
-  # it (fork guard + ticket dedup live in the inbound handler: selectForgePRBot).
-  - kind: forge
-    mode: direct
-    forge: { event: pull_request, actions: [opened, reopened] }
+    command: { name: billy, aliases: [branch-improve-loop, improve], scope: any, min_replier_role: maintainer }
   - kind: board
 
 ## Studio launch-form hierarchy: `primary` inputs render top-level in

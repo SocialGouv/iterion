@@ -180,7 +180,16 @@ type Server struct {
 	// PR-surface command comment (the issue_comment payload carries no head
 	// branch — test seam). nil → realWebhookPRForgePRResolver.
 	webhookPRForgePRResolver func(ctx context.Context, cfg webhooks.Config, provider webhooks.Provider, p prforge.ParsedNote, route webhooks.CommandRoute) (forge.PullRef, error)
-	httpClient               *http.Client
+	// webhookIterionBotAuthor overrides the "is this PR/MR authored by iterion's
+	// own forge bot" check that keeps the PR-open auto-review lane from launching
+	// Revi on another iterion bot's PR (test seam — the real impl resolves the
+	// provisioned forge Connection). nil → realIterionBotAuthor.
+	webhookIterionBotAuthor func(ctx context.Context, cfg webhooks.Config, login string) bool
+	// webhookPriorReview overrides the lookup of the most recent review-pr (Revi)
+	// run for a PR, whose findings seed a `/billy` invocation (test seam). nil →
+	// realWebhookPriorReview. Returns "" when no prior review is found (best-effort).
+	webhookPriorReview func(ctx context.Context, cfg webhooks.Config, prURL, projectPath string, prNumber int) string
+	httpClient         *http.Client
 
 	// forgeHTTP is the SSRF-guarded client for outbound forge calls, built
 	// once (its strict flag is startup-fixed) so connection pooling is

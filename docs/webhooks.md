@@ -123,15 +123,19 @@ event paths trigger; ping / push / everything else is silently filtered
 failures; [pkg/server/webhooks_github.go](../pkg/server/webhooks_github.go)):
 
 - **`pull_request`** with action `opened`, `reopened`, or `ready_for_review`
-  → PR auto-review. A **draft PR never auto-launches** (the `draft` flag is
-  honoured on every action — the trigger is `ready_for_review`, which clears
-  it). A **fork PR** (head branch in a different repo) is likewise never
-  auto-launched: it is untrusted, so a repo collaborator must trigger a bot
-  manually via the `/command` path — the anti budget-exhaustion boundary
+  → PR auto-**review** (Revi / `review-pr`). This lane is **review-only**: a
+  PR-open NEVER auto-launches the mutating branch-improve loop (Billy) — see
+  *PR auto-lane: review, not mutate* below. A **draft PR never auto-launches**
+  (the `draft` flag is honoured on every action — the trigger is
+  `ready_for_review`, which clears it). A **fork PR** (head branch in a
+  different repo) is likewise never auto-launched: it is untrusted, so a repo
+  collaborator must trigger a bot manually via the `/command` path — the anti
+  budget-exhaustion boundary
   ([pkg/webhooks/prforge/parser.go:IsReviewable](../pkg/webhooks/prforge/parser.go) +
-  `IsCrossRepo`).
+  `IsCrossRepo`). A PR opened by iterion's **own forge bot** (another iterion
+  bot's PR — see below) is also skipped.
 - **`issue_comment`** → the universal `/command` slash path (e.g.
-  `/featurly <prompt>`), routed through the command registry.
+  `/featurly <prompt>`, `/billy`), routed through the command registry.
 - **`issues`** with action `labeled` → launches the webhook's bot with
   the labeled issue turned into a feature task. The handler derives
   `feature_prompt` (issue title + body), `open_mr=true`, and
@@ -179,6 +183,45 @@ webhook action (marking a WIP PR ready arrives as `edited`, which does not
 auto-trigger), so on Forgejo the draft→ready re-trigger is on-demand — a
 collaborator reopens the PR or uses the `/command` path. The no-draft and
 no-fork guarantees hold regardless.
+
+### PR auto-lane: review, not mutate (Revi vs Billy)
+
+The PR/MR **open** lane (GitHub `pull_request`, GitLab `merge_request`,
+Forgejo PR) is **review-only**. Opening a PR auto-launches the read-only
+reviewer **Revi** (`review-pr`) and nothing else — it never runs the
+mutating branch-improve loop **Billy** (`branch-improve-loop`). Two
+carve-outs sit around that rule
+([pkg/server/webhooks_github.go:handlePRForgeReview](../pkg/server/webhooks_github.go),
+[pkg/server/webhooks_common.go:isIterionForgeBotAuthor](../pkg/server/webhooks_common.go)):
+
+- **Iterion-bot PRs are skipped.** A PR opened by iterion's OWN forge bot
+  (another iterion bot — Doki, Willy, Featurly… — pushing through the
+  tenant's forge integration) is **not** auto-reviewed: it already
+  converged inside its own loop, so re-reviewing it just wastes budget and
+  adds noise. The author is matched against the tenant's provisioned forge
+  connection — a GitHub/Forgejo App's `<app_slug>[bot]` login, or (GitLab)
+  the connected bot account — **not** a generic `[bot]` suffix, so
+  Dependabot / Renovate PRs stay reviewable. A human can still force a
+  review with a manual `/revi`. Filtered as a clean 200 (visible reason).
+- **Merge-queue auto-heal is preserved.** A PR *ejected from the GitHub
+  merge queue* for a healable reason (`dequeued`, `NeedsAutoHeal`) still
+  dispatches **Billy** to rebase, resolve the conflict / fix the combined
+  break, and re-enter the queue — a narrow, distinct trigger
+  (same-repo + project/author allowlist + bot-permitted, one attempt per
+  head SHA), unrelated to the review lane.
+
+**Billy on demand — `/billy` (alias `/improve`).** To run Billy on a PR,
+a repo collaborator issues a **`/billy`** slash-command in a PR/MR comment.
+The command reuses the SAME authorization gate as every other
+`/command` / `/revi` (loop-guard + `AuthorizedRepliers` allowlist OR a
+repo permission ≥ the route's `min_replier_role`), so a non-collaborator
+cannot invoke it. Billy then commits its hardening onto the PR's own
+branch (or opens a separate PR with `branch_improve_as_pr`). When Revi has
+already reviewed that PR, the handler seeds Billy's run with Revi's most
+recent findings under the **`prior_review`** var — so Billy starts from
+that review instead of re-deriving it (best-effort: with no prior review,
+Billy reviews the diff from scratch;
+[pkg/server/webhooks_prior_review.go](../pkg/server/webhooks_prior_review.go)).
 
 ### Generic (`POST /api/webhooks/generic/{id}`)
 
