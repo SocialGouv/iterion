@@ -12,15 +12,12 @@ import SubNodePalette from "@/components/Canvas/SubNodePalette";
 import SourceView from "@/components/SourceView/SourceView";
 import { DesktopOnlyNotice, IconButton } from "@/components/ui";
 import { useUIStore } from "@/store/ui";
-import { useDocumentStoreInstance } from "@/store/document";
+import { useDocumentStore, useDocumentStoreInstance } from "@/store/document";
 import { useSelectionStore } from "@/store/selection";
 import { useAutoValidation } from "@/hooks/useAutoValidation";
 import { useAutoOpenDiagnosticsOnError } from "@/hooks/useAutoOpenDiagnosticsOnError";
 import { useFileWatcher } from "@/hooks/useFileWatcher";
-import { useConfirm } from "@/hooks/useConfirm";
-import { DISCARD_CHANGES_PROMPT } from "@/lib/copy";
-import { toastError } from "@/lib/errorHints";
-import * as api from "@/api/client";
+import { editorDeepLinkTargetsDocument } from "@/lib/editorDeepLink";
 
 interface EditorViewProps {
   // Whether this editor tab is currently the visible one. EditorTabsView
@@ -47,7 +44,7 @@ export default function EditorView({ active = true }: EditorViewProps) {
   const inspectorCollapsed = useUIStore((s) => s.inspectorCollapsed);
   const toggleInspectorCollapsed = useUIStore((s) => s.toggleInspectorCollapsed);
   const setPendingFitNodeId = useUIStore((s) => s.setPendingFitNodeId);
-  const addToast = useUIStore((s) => s.addToast);
+  const currentFilePath = useDocumentStore((s) => s.currentFilePath);
   const setSelectedNode = useSelectionStore((s) => s.setSelectedNode);
 
   const search = useSearch();
@@ -63,11 +60,11 @@ export default function EditorView({ active = true }: EditorViewProps) {
   useAutoOpenDiagnosticsOnError();
   useFileWatcher();
 
-  const { confirm, dialog: confirmDialog } = useConfirm();
-
-  // Honor deep links from the run console: /?file=<workspace-relative>&node=<ir_node_id>&from=<runId>.
-  // Mounted once, runs whenever the search string changes — the early
-  // return avoids re-loading the same file on unrelated navigation.
+  // Honor node-focus deep links from the run console:
+  // /editor?file=<workspace-relative>&node=<ir_node_id>&from=<runId>.
+  // EditorTabsView + EditorTabHost exclusively own file/tab hydration.
+  // Keeping that responsibility out of every mounted EditorView prevents a
+  // hidden or untitled tab from consuming another tab's global ?file= URL.
   useEffect(() => {
     if (handledSearch.current === search) return;
     const params = new URLSearchParams(search);
@@ -78,46 +75,24 @@ export default function EditorView({ active = true }: EditorViewProps) {
       handledSearch.current = search;
       return;
     }
+
+    // The matching EditorTabHost may still be loading. Do not mark this
+    // search as handled until the active document is the requested file.
+    if (!editorDeepLinkTargetsDocument(active, currentFilePath, file)) return;
     handledSearch.current = search;
 
-    const docStore = docStoreInst.getState();
-    const alreadyOpen = file && docStore.currentFilePath === file;
-
-    const applyNodeFocus = () => {
-      if (!node) return;
+    if (node) {
       setSelectedNode(node);
       setPendingFitNodeId(node);
-    };
-
-    const proceedOpen = async () => {
-      if (docStore.isDirty()) {
-        const ok = await confirm(DISCARD_CHANGES_PROMPT);
-        if (!ok) return;
-      }
-      try {
-        const result = await api.openFile(file!);
-        const ds = docStoreInst.getState();
-        ds.setDocument(result.document);
-        ds.setCurrentFilePath(result.path);
-        ds.setCurrentSource(result.source);
-        ds.markSaved();
-        // Selection waits a tick so the new document's nodes have
-        // been registered with React Flow before we attempt to
-        // center on one of them.
-        setTimeout(applyNodeFocus, 0);
-      } catch (err) {
-        toastError(addToast, err, "Open from run failed");
-      }
-    };
-
-    if (file && !alreadyOpen) {
-      void proceedOpen();
-    } else {
-      applyNodeFocus();
     }
-
     if (from) setBannerRunId(from);
-  }, [search, addToast, setPendingFitNodeId, setSelectedNode, confirm]);
+  }, [
+    active,
+    search,
+    currentFilePath,
+    setPendingFitNodeId,
+    setSelectedNode,
+  ]);
 
   const dismissBanner = () => {
     setBannerRunId(null);
@@ -292,7 +267,6 @@ export default function EditorView({ active = true }: EditorViewProps) {
         )}
       </div>
       </DesktopOnlyNotice>
-      {confirmDialog}
       </div>
     </ReactFlowProvider>
   );

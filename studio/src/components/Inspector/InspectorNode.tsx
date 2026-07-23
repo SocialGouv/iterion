@@ -5,7 +5,10 @@ import { useSelectionStore } from "@/store/selection";
 import { useTabsStore } from "@/store/tabs";
 import { NODE_COLORS, NODE_ICONS, softColor } from "@/lib/constants";
 import { getAllNodeNames } from "@/lib/defaults";
-import { parseSubbotChildId, resolveSubbotSource } from "@/lib/subbotGraph";
+import {
+  parseSubbotChildId,
+  resolveChildBotOpenPath,
+} from "@/lib/subbotGraph";
 import type {
   AgentDecl,
   ComputeDecl,
@@ -251,10 +254,23 @@ function NodeForm({ match }: { match: NodeMatch }) {
  *  RecentFilesPanel: openTab + URL so deep-link state stays in sync). */
 function useOpenChildBot() {
   const currentFilePath = useDocumentStore((s) => s.currentFilePath);
+  const activeEditorFile = useTabsStore((s) => {
+    const active = s.tabs.find((tab) => tab.id === s.activeEditorTabId);
+    return active?.kind === "editor" ? (active.params.file ?? null) : null;
+  });
   const [, setLocation] = useLocation();
   return (source: string | undefined) => {
     if (!source) return;
-    const path = resolveSubbotSource(currentFilePath, source);
+    // currentFilePath is normally authoritative. The tab binding is a safe
+    // fallback during route hydration: Pipelines may activate the editor tab
+    // one render before EditorTabHost has copied its file into the document
+    // store. Never send a parent-relative source to the workspace-root API.
+    const path = resolveChildBotOpenPath(
+      currentFilePath,
+      activeEditorFile,
+      source,
+    );
+    if (!path) return;
     useTabsStore.getState().openTab("editor", { file: path });
     setLocation(`/editor?file=${encodeURIComponent(path)}`);
   };
@@ -360,4 +376,3 @@ function SubbotChildNotice({ subbotId, childId }: { subbotId: string; childId: s
     </div>
   );
 }
-
