@@ -112,7 +112,7 @@ Operators who want only the auto-review path list `["merge_request"]`
 explicitly; that disables `/revi` while keeping open/reopen.
 
 Vars stamped on the run: `pr_url`, `base_ref`, `scope_notes`,
-`post_to_board=false`, `pr_review_mode=summary`, plus `re_review=true`
+`post_to_board=false`, `pr_review_mode=inline`, plus `re_review=true`
 for the note path. The webhook's `LaunchVars` override these.
 
 ### GitHub (`POST /api/webhooks/github/{id}`)
@@ -267,13 +267,15 @@ Iterion durably dedupes deliveries via a unique index on
 `(tenant_id, idempotency_key)` — a duplicate insert returns
 `ErrDuplicate` and the handler replies 200 with `{status:"duplicate",
 run_id, delivery_id}` ([pkg/server/webhooks_common.go:insertAndLaunchWebhook](../pkg/server/webhooks_common.go)).
-The key space is **provider-prefixed** so the same event id can't
-collide across paths:
+The key space is **path-disjoint** so the same event id can't collide
+across paths — most paths carry a literal prefix (`mr|`, `gh|`, `fj|`,
+`generic|`), while the GitLab note path stays disjoint via its
+`note:<note_id>` subject segment rather than a prefix:
 
 | Key prefix | Identifying tuple | Bumps on |
 |---|---|---|
 | `mr\|` | `(tenant, webhook, project_id, mr_iid, head_sha)` | a new push (new head SHA) → fresh launch |
-| `note\|` | `(tenant, webhook, project_id, mr_iid, note_id)` | a new `/revi` comment → fresh launch |
+| _(none)_ | `(tenant, webhook, project_id, note:note_id)` | a new `/revi` comment → fresh launch |
 | `gh\|` | `(tenant, webhook, project_path, pr_number, head_sha)` | a new push → fresh launch |
 | `fj\|` | `(tenant, webhook, project_path, pr_number, head_sha)` | a new push → fresh launch |
 | `generic\|` | `(tenant, webhook, request.idempotency_key OR sha256(body))` | any change in dedup token or body → fresh launch |
@@ -386,7 +388,8 @@ that belongs to another org are 400s
 Anything in `launch_vars` is merged into the run's variable map **after**
 the handler-derived vars, so the operator's keys always win. Useful for:
 e.g. forcing `severity_threshold=high` on a security webhook, or pinning
-`pr_review_mode=detailed` regardless of what the forge said.
+`pr_review_mode=summary` regardless of what the forge said (the review-pr
+enum is `inline|summary`, default `inline`).
 
 ### `branch_improve_as_pr` — how the branch-improvement bot lands its work
 
