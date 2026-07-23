@@ -19,8 +19,8 @@ kubectl -n <ns> get pods -l app.kubernetes.io/component=runner
 kubectl -n <ns> logs -l app.kubernetes.io/component=runner --tail=200
 
 # Queue depth (NATS)
-nats stream info iterion-runs
-nats consumer info iterion-runs iterion-runners
+nats stream info ITERION_RUNS
+nats consumer info ITERION_RUNS iterion-runners
 
 # Mongo connectivity from server pod
 kubectl -n <ns> exec deploy/iterion-server -- nc -zv <mongo-host> 27017
@@ -39,12 +39,12 @@ If `/readyz` returns 503: the server can reach itself but cannot reach Mongo, NA
 
 Diagnose:
 1. `kubectl get pods -l app.kubernetes.io/component=runner` — replicas > 0?
-2. `nats consumer info iterion-runs iterion-runners` — `Num Pending` decreasing? `Num Outstanding Acks` non-zero?
+2. `nats consumer info ITERION_RUNS iterion-runners` — `Num Pending` decreasing? `Num Outstanding Acks` non-zero?
 3. `kubectl logs -l app.kubernetes.io/component=runner --tail=200 | grep -E 'lock|claim|mongo|blob'`
 
 Fix:
 - KEDA scaled to 0 with no runs queued is normal. Submit a run; KEDA should scale up within ~30s. If it doesn't: check `kubectl describe scaledobject iterion-runner` for KEDA controller errors.
-- Lock contention (multiple runners racing on the same run): the loser will see `ErrLockHeld` in logs and Nak the message. Expected — JetStream redelivers. If *all* runners loop on `ErrLockHeld`, the run was leased and orphaned; wait for the 60s TTL or `nats kv del iterion-locks <run-id>` to force release.
+- Lock contention (multiple runners racing on the same run): the loser will see `ErrLockHeld` in logs and Nak the message. Expected — JetStream redelivers. If *all* runners loop on `ErrLockHeld`, the run was leased and orphaned; wait for the 60s TTL or `nats kv del iterion-run-locks <run-id>` to force release.
 - Mongo / blob unreachable: NetworkPolicy or firewall. See [networkpolicy-egress example](../charts/iterion/examples/networkpolicy-egress.yaml).
 
 ### Runs hang in `running` past their `max_duration`
@@ -53,11 +53,11 @@ Fix:
 
 Diagnose:
 1. `iterion inspect --run-id <id> --events | tail -50` (or `kubectl logs … | grep <id>`) — last event before hang?
-2. `nats kv get iterion-locks <run-id>` — is the lease still claimed?
+2. `nats kv get iterion-run-locks <run-id>` — is the lease still claimed?
 3. `kubectl get events -n <ns> --sort-by='.lastTimestamp' | tail -30` — pod evictions, OOM kills?
 
 Fix:
-- If the lease is stale (`status: running` in lease but no runner pod alive): release with `nats kv del iterion-locks <run-id>` and the next runner will pick the run up via JetStream redelivery. The engine resumes from the last checkpoint.
+- If the lease is stale (`status: running` in lease but no runner pod alive): release with `nats kv del iterion-run-locks <run-id>` and the next runner will pick the run up via JetStream redelivery. The engine resumes from the last checkpoint.
 - If the run was OOM-killed: increase `runner.resources.limits.memory` in your values overlay; some workflows (especially `claude_code` with long context) need ≥ 2 GiB.
 - If the sandbox container is orphaned: `docker ps --filter ancestor=ghcr.io/socialgouv/iterion-sandbox-slim` from the runner host shows lingering containers. Restart the runner pod; the engine drains and recreates sandboxes per run.
 
@@ -75,7 +75,7 @@ Fix:
 - NetworkPolicy: see [networkpolicy-egress example](../charts/iterion/examples/networkpolicy-egress.yaml). The chart's default egress allows DNS only; cluster traffic is *not* implicit.
 - TLS mismatch: cloud Mongo (Atlas, etc.) often requires TLS — set `ITERION_MONGO_URI=mongodb+srv://...?tls=true&retryWrites=true`.
 
-### `/readyz` 503 with `blob: AccessDenied`
+### `/readyz` 503 with `s3: AccessDenied`
 
 **Probable cause**: S3 credentials are wrong, the bucket doesn't exist, or the bucket policy denies the iterion server.
 
