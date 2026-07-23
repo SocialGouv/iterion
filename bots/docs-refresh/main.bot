@@ -216,7 +216,12 @@ vars:
   ## NOTE loop semantics: the DSL `as continuation_loop(N)` bounds
   ## the loop-BACKS (re-entries), so the TOTAL number of passes is
   ## N+1 — max_passes: 2 yields up to 3 campaign→verify cycles.
-  max_passes: int = 8
+  ## Self-orchestrated passes are comprehensive (pass 1 aligns most of
+  ## the corpus), so the asymptote converges in a FEW big passes, not
+  ## many small ones — and the wall-clock/cost budget must fit them
+  ## (see the budget block). 4 = one comprehensive sweep + refinement to
+  ## the floor; exhaustion here finalizes+ships gracefully.
+  max_passes: int = 4
 
   ## ─── PR finalization (opt-in) ─────────────────────────────────
   ## Same contract as feature-dev/app-dev: when open_mr=true, after
@@ -1500,8 +1505,18 @@ workflow docs_refresh:
 
   budget:
     max_parallel_branches: 1
-    max_duration: "2h"
-    max_cost_usd: 60
+    ## Self-orchestrated passes (the campaign fans out sub-auditors on
+    ## ultracode) are COMPREHENSIVE and long — ~70 min / ~$16 per pass
+    ## on a large corpus (live: run 019f8e08 aligned 40 docs in pass 1).
+    ## The old 2h/$60 caps guillotined it mid-pass-2 as a hard
+    ## failed_resumable BEFORE finalize — losing all 40 in-pod commits
+    ## (the exporter only runs on a clean finalize; see the export-on-
+    ## failure engine gap). Give the asymptote room to reach GRACEFUL
+    ## exhaustion (which finalizes + exports) within budget: a few big
+    ## passes fit here, and max_passes below is lowered to match so the
+    ## run exhausts and ships rather than getting axed by the cap.
+    max_duration: "6h"
+    max_cost_usd: 120
 
   compaction:
     threshold: 0.9

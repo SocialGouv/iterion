@@ -1,7 +1,16 @@
 name: docs-refresh
 display_name: Doki
 icon: 📚
-version: 3.2.0
+version: 3.2.1
+## 3.2.1 — budgets sized for self-orchestration. First 3.2.0 live run
+## (019f8e08) aligned 40 docs across the whole corpus in pass 1 (~70
+## min / ~$16) — the win — but the old 2h/$60 caps guillotined it
+## mid-pass-2 as a hard failed_resumable BEFORE finalize, and all 40
+## in-pod commits were lost (the exporter only runs on a clean
+## finalize — an engine gap tracked separately). Comprehensive passes
+## are long: max_duration 2h→6h, max_cost_usd 60→120, max_passes 8→4
+## so the asymptote reaches GRACEFUL exhaustion (which finalizes +
+## exports + opens the PR) instead of getting axed by a cap.
 ## 3.2.0 — SELF-ORCHESTRATED COVERAGE (the campaign fans out its own
 ## sub-agents, like a native Claude Code session). A live 3-way
 ## benchmark (2026-07-23, this repo) settled why 3.0/3.1 shipped tiny
