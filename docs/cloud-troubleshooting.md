@@ -112,7 +112,11 @@ Diagnose:
 2. Inspect the `.bot` source's `budget:` block.
 
 Fix:
-- Raise the workflow source's `budget:` block (`max_cost_usd` / `max_tokens`) and resume the run; iterion has no per-run CLI override for these caps.
+- Raise the cap and resume. Either edit the workflow source's `budget:`
+  block (`max_cost_usd` / `max_tokens`), or — with no source edit — pass a
+  per-run override on resume: `iterion resume --run-id <id> --max-cost-usd <n>`
+  (the same `--max-cost-usd` / `--max-tokens` / `--max-duration` /
+  `--max-iterations` / `--max-parallel-branches` flags accepted by `iterion run`).
 - For long-running review-fix loops, raise `max_iterations` too — a low cap forces premature termination.
 
 ### `iterion bench asymptote` shows all runs at iteration 0
