@@ -40,7 +40,9 @@ one record to `events.jsonl`. The event types are:
 
 `issue_created`, `issue_updated`, `issue_state_changed`,
 `issue_deleted`, `issue_claimed`, `issue_released`,
-`issue_last_run_updated`, `board_updated`.
+`issue_last_run_updated`, `issue_comment_added`,
+`issue_blockers_updated`, `issue_unblocked`, `board_updated`,
+`label_rename`, `label_merge`, `label_delete`.
 
 The dispatcher stamps every issue it processes with `last_run_id`
 (the run that handled it) + `last_workdir` (the worktree path on
@@ -151,12 +153,12 @@ iterion issue list     [--state S]+ [--label L]+ [--assignee A]
 iterion issue show     <id-or-prefix>
 iterion issue move     <id-or-prefix>  --to <state>
 iterion issue update   <id-or-prefix>  [--title T] [--body B] [--labels L1,L2]
-                                       [--priority N] [--assignee A]
+                                       [--priority N] [--assignee A] [--blockers B1,B2]
                                        [--field k=v]+ [--clear-field K]+
 iterion issue close    <id-or-prefix>          # → first terminal state
 
 iterion issue board show
-iterion issue board init [--from <board.json>]
+iterion issue board init [--from <board.json>] [--force]
 ```
 
 `<id-or-prefix>` accepts the full `native:<uuid>` form, the bare
@@ -215,6 +217,7 @@ same JWT middleware as `/api/runs/*`.
 | `/api/v1/native/issues/{id}`                 | PATCH  | partial `{title?, body?, labels?, priority?, assignee?, blockers?, fields?, bot?, bot_args?}` |
 | `/api/v1/native/issues/{id}`                 | DELETE | —                                   |
 | `/api/v1/native/issues/{id}/transition`      | POST   | `{to: <state>}`                     |
+| `/api/v1/native/issues/{id}/comments`        | POST   | `{author?, body}` — appends a comment |
 | `/api/v1/native/board`                       | GET    | —                                   |
 | `/api/v1/native/board`                       | PUT    | full `Board`                        |
 
@@ -458,8 +461,6 @@ adapter := native.NewAdapter(s) // satisfies tracker.Tracker
 
 ## Limitations (v1)
 
-- **No comments.** Events.jsonl is the audit trail; user-facing
-  comments are a v2 ergonomic.
 - **No bi-directional sync with GitHub / Forgejo.** A single
   dispatcher instance picks one tracker. Mirroring is on the v2
   roadmap.
