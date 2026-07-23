@@ -64,7 +64,7 @@ sweeper](cloud-admin-guide.md#17-dlq-triage)).
 | `running` | A runner pod has claimed the KV lease, opened the bundle, and is executing nodes. Heartbeats refresh the lease ~every 20s. |
 | `paused_waiting_human` | A human node awaits input (`POST /api/runs/{id}/resume` with answers). Resumable. |
 | `paused_operator` | Operator paused via the studio. Resumable. |
-| `failed_resumable` | Transient failure (LLM rate limit, timeout, budget exceeded, runner crash). Checkpoint preserved; `iterion resume` / studio Retry brings it back. |
+| `failed_resumable` | Transient failure (LLM rate limit, timeout, runner crash) — the runner Naks and JetStream redelivers for an auto-retry — **or** budget exceeded, which the runner Acks (no auto-redelivery: the same message carries the same spent budget, so it would re-fail instantly). Either way the checkpoint is preserved; `iterion resume` / studio Retry brings it back, and for budget exceeded you raise the cap first (`iterion resume --max-cost-usd/--max-duration …`). |
 | `failed` | Definitive — `FailNode` reached, or first node failed before any checkpoint existed. |
 | `cancelled` | Cancelled by the operator. Checkpoint preserved; resumable. |
 | `finished` | Terminal success. |
