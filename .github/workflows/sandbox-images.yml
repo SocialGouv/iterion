@@ -8,12 +8,15 @@ name: 🧱 Sandbox Base Images
 #
 # Deliberately a separate workflow from image.yml: its declarative `paths`
 # filter means the ~26-min chain only runs when sandbox/ inputs change, and
-# its own concurrency queue means app pushes never wait behind it.
+# its own concurrency queue means app pushes never wait behind it. It is OFF
+# the deploy critical path — sandbox images are pulled at bot-run time, not by
+# the server/runner deploy.
 #
-# Bases publish `:edge` only, always multiarch: release finalizes (image.yml
-# on a v* tag) build their arm64 leg FROM these bases, and there is no
-# tag-time base rebuild — a release's sandbox images carry whatever tool
-# state main's sandbox/ tree had, versioned by content, not by release.
+# Two shapes: (1) sandbox/** push → rebuild the bases, then finalize; (2)
+# image.yml completes on main (workflow_run) → skip the bases, refold the
+# finalizes with the fresh binary. Bases publish `:edge` only, always
+# multi-arch. Release (`:vX.Y.Z`, multi-arch, signed) sandbox images are
+# produced by release-images.yml, not here.
 #
 # All four bases share ONE buildkit-operator routing-name
 # (`iterion-sandbox-base`): the chain is serial, so contention is negligible,
@@ -31,6 +34,12 @@ on:
       - ".github/workflows/sandbox-images.yml"
       - ".github/workflows/_build-image.yml"
       - ".github/workflows/_finalize.yml"
+  # Refold the finalizes with the fresh binary when the server image publishes
+  # (image.yml on main). Bases are skipped on this event (tools unchanged) —
+  # only the cheap COPY-layer finalize runs. Off the deploy critical path.
+  workflow_run:
+    workflows: ["🐳 Container Image"]
+    types: [completed]
   pull_request:
     paths:
       - "sandbox/**"
@@ -52,6 +61,14 @@ permissions:
 
 jobs:
   prep:
+    # On a workflow_run trigger, only proceed for a SUCCESSFUL MAIN image.yml
+    # build (tags/PRs of image.yml don't refresh the sandbox :edge). Other
+    # events (sandbox/** push, PR, dispatch) always proceed.
+    if: >-
+      ${{ github.event_name != 'workflow_run' ||
+          (github.event.workflow_run.conclusion == 'success' &&
+           github.event.workflow_run.head_branch == 'main' &&
+           github.event.workflow_run.event == 'push') }}
     runs-on: ubuntu-latest
     outputs:
       owner_lc: ${{ steps.vars.outputs.owner_lc }}
@@ -59,8 +76,12 @@ jobs:
       - id: vars
         run: echo "owner_lc=$(echo "${GITHUB_REPOSITORY_OWNER}" | tr '[:upper:]' '[:lower:]')" >> "$GITHUB_OUTPUT"
 
+  # The heavy tool bases rebuild ONLY when sandbox/ inputs change (push / PR /
+  # dispatch) — never on a workflow_run refold (the tools are unchanged then,
+  # only the binary is fresh).
   base-slim:
     needs: prep
+    if: ${{ github.event_name != 'workflow_run' }}
     uses: ./.github/workflows/_build-image.yml
     secrets: inherit
     with:
@@ -75,6 +96,7 @@ jobs:
   # builds against the *published* slim-base:edge, since PR builds don't push.)
   base-full:
     needs: [prep, base-slim]
+    if: ${{ github.event_name != 'workflow_run' }}
     uses: ./.github/workflows/_build-image.yml
     secrets: inherit
     with:
@@ -91,6 +113,7 @@ jobs:
   # iterion-sandbox-sec via sandbox.image).
   base-sec:
     needs: [prep, base-full]
+    if: ${{ github.event_name != 'workflow_run' }}
     uses: ./.github/workflows/_build-image.yml
     secrets: inherit
     with:
@@ -106,6 +129,7 @@ jobs:
   # full/sec leg.
   base-browser:
     needs: [prep, base-slim]
+    if: ${{ github.event_name != 'workflow_run' }}
     uses: ./.github/workflows/_build-image.yml
     secrets: inherit
     with:
@@ -117,11 +141,16 @@ jobs:
       is-pr: ${{ github.event_name == 'pull_request' }}
       multiarch: true
 
-  # Fold the fresh tool bases into the published iterion-sandbox-* images,
-  # baking the current `:edge` iterion binary (already published — image.yml
-  # builds the app on every push, and sandbox/ pushes trigger both workflows).
+  # Fold the fresh tool bases + the current `:edge` iterion binary into the
+  # published iterion-sandbox-*:edge images. Runs after a base rebuild (push /
+  # PR) AND on a workflow_run refold (bases skipped → this is the only job).
+  # The skipped-base tolerance lets it run in both shapes.
   finalize:
     needs: [prep, base-sec, base-browser]
+    if: >-
+      ${{ !cancelled() && needs.prep.result == 'success' &&
+          contains(fromJSON('["success","skipped"]'), needs.base-sec.result) &&
+          contains(fromJSON('["success","skipped"]'), needs.base-browser.result) }}
     uses: ./.github/workflows/_finalize.yml
     secrets: inherit
     with:
