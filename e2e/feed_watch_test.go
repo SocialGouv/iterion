@@ -546,3 +546,57 @@ func TestFeedWatch_FetchRejectsSSRF(t *testing.T) {
 		}
 	}
 }
+
+// TestFeedWatch_FetchProxyAware pins the sandbox-proxy fix: a cloud run reaches
+// the internet through iterion's egress proxy, injected as HTTPS_PROXY at the
+// runner's own (private) pod IP. urllib then dials the PROXY, not the feed host,
+// so the old socket-level getaddrinfo guard rejected our own proxy as an
+// "SSRF-unsafe address <pod-ip>" and every feed failed. The guard is now
+// proxy-aware: it validates each feed URL's host UP-FRONT (the real SSRF check
+// on the untrusted input) and no longer rejects the proxy hop.
+func TestFeedWatch_FetchProxyAware(t *testing.T) {
+	if _, err := exec.LookPath("python3"); err != nil {
+		t.Skip("python3 not on PATH")
+	}
+	// Simulate the sandbox egress proxy advertised at a private pod IP.
+	t.Setenv("HTTPS_PROXY", "http://10.2.40.10:45049")
+	t.Setenv("HTTP_PROXY", "http://10.2.40.10:45049")
+	wf := compileFixture(t, "feed-watch/main.bot")
+	script := feedWatchTool(t, wf, "fetch_feeds").Script
+
+	// (1) Protection HOLDS behind the proxy: an attacker feed host resolving to
+	// a metadata/link-local address is still rejected up-front — not silently
+	// tunnelled through the proxy.
+	priv := []any{map[string]any{"key": "x", "feeds": []any{
+		"http://169.254.169.254/latest/meta-data/",
+	}}}
+	_, stderr, err := runPy(t, t.TempDir(), subScript(t, script, map[string]any{
+		"targets": priv, "timeout_secs": 5, "max_per_feed": 5,
+		"scratch_dir": t.TempDir(), "allow_private": false,
+	}, ""))
+	if err == nil {
+		t.Fatal("behind a proxy, a metadata-IP feed host must still be rejected")
+	}
+	if !strings.Contains(stderr, "SSRF-unsafe address 169.254.169.254") {
+		t.Fatalf("expected up-front SSRF rejection of metadata host behind proxy, got:\n%s", stderr)
+	}
+
+	// (2) The regression itself: a PUBLIC feed host must NOT be rejected as
+	// SSRF just because urllib dials the private proxy IP. A public literal IP
+	// keeps the check offline-deterministic; urllib dials the (unreachable in
+	// test) proxy, so the fetch fails with a CONNECTION error — never
+	// "SSRF-unsafe".
+	pub := []any{map[string]any{"key": "x", "feeds": []any{
+		"https://8.8.8.8/feed.xml",
+	}}}
+	_, stderr2, err2 := runPy(t, t.TempDir(), subScript(t, script, map[string]any{
+		"targets": pub, "timeout_secs": 5, "max_per_feed": 5,
+		"scratch_dir": t.TempDir(), "allow_private": false,
+	}, ""))
+	if err2 == nil {
+		t.Fatal("the unreachable test proxy should make the fetch fail (0 feeds ok)")
+	}
+	if strings.Contains(stderr2, "SSRF-unsafe") {
+		t.Fatalf("public feed host must not be rejected as SSRF behind a proxy, got:\n%s", stderr2)
+	}
+}
