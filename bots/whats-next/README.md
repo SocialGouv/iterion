@@ -76,5 +76,5 @@ All under [`skills/`](skills/), mirrored to `<workspace>/.claude/skills/`
 at run start: `whats-next` (playbook), `iterion-board`,
 `iterion-bot-catalog` (generated — edit bot manifests, not the file),
 `iterion-label-vocabulary`, `repo-survey`, `roadmap-synthesis`,
-`priority-elicitation`, `session-continuity`, `iterion-dsl-quickref`,
-`dogfood-cycle`.
+`operator-arbitrage`, `factory-ops`, `session-continuity`,
+`iterion-dsl-quickref`, `dogfood-cycle`.

@@ -60,6 +60,13 @@ campaign ──▶ verify_build ──▶ verify_run ──▶ gate
                                               mr_gate ──▶ (finalize_mr) ──▶ done
 ```
 
+Two deterministic probe nodes front the LLM steps (omitted above for
+clarity): `verify_probe` sits between `campaign` and the verify pair —
+when a valid `verify.sh` already exists it routes straight to
+`verify_run`, skipping the `verify_build` LLM step; and `forge_auth_probe`
+sits between `mr_gate` and `finalize_mr`, checking a push credential
+exists before the MR-opening agent runs (no credential → `done`).
+
 - **`campaign`** (adaptive, claude_code, whole-repo, full tools) is the whole
   engine: it reads `git log`, builds a living todo list from a brief
   exploration, and applies the axis one site at a time — locate → smallest
