@@ -73,7 +73,7 @@ Every denial returns the same JSON shape
 ```jsonc
 {
   "error":    "monthly_cost_cap_exceeded",         // stable token
-  "detail":   "monthly LLM cost cap reached ($87.42 of $80.00)",
+  "detail":   "monthly LLM cost cap ($80.00) reached",
   "reset_at": "2026-07-01T00:00:00Z"               // monthly quotas only
 }
 ```
