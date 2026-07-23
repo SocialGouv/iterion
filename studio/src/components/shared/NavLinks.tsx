@@ -269,7 +269,13 @@ export default function NavLinks({ collapsed }: Props) {
                 sublistKind={withSublist ? section : null}
                 showAlertDot={showAlertDot}
                 badgeCount={badgeCount}
-                onNavClick={section === "runs" ? clearAlertUnseen : undefined}
+                onNavClick={
+                section === "runs"
+                  ? clearAlertUnseen
+                  : section === "editor"
+                    ? () => useTabsStore.getState().clearActiveEditor()
+                    : undefined
+              }
               />
             );
           })}

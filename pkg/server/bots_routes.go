@@ -220,8 +220,17 @@ func (s *Server) findBot(name string) (botregistry.EntryWithSchema, bool, error)
 	return botregistry.EntryWithSchema{}, false, nil
 }
 
-// respondBot re-resolves name (post-mutation) and writes it as JSON.
+// respondBot re-resolves name (post-mutation) and writes it as JSON. It carries
+// the editable/origin fields like list/get/create so a PUT/overlay response
+// doesn't drop them from the studio's cached entry (a tenant bot would otherwise
+// lose its editable flag on an icon/visibility change).
 func (s *Server) respondBot(w http.ResponseWriter, r *http.Request, name string) {
+	for _, e := range s.tenantBotEntries(r.Context()) {
+		if e.Name == name {
+			s.writeJSONFor(w, r, botEntryView{EntryWithSchema: e, Editable: true, Origin: "tenant"})
+			return
+		}
+	}
 	entry, ok, err := s.findBot(name)
 	if err != nil {
 		s.httpErrorFor(w, r, http.StatusInternalServerError, "bots: %v", err)
@@ -231,7 +240,7 @@ func (s *Server) respondBot(w http.ResponseWriter, r *http.Request, name string)
 		s.httpErrorFor(w, r, http.StatusNotFound, "bots: %q not found", name)
 		return
 	}
-	s.writeJSONFor(w, r, entry)
+	s.writeJSONFor(w, r, botEntryView{EntryWithSchema: entry, Editable: false, Origin: "catalog"})
 }
 
 // regenCatalog refreshes the orchestrator-facing bot catalog after a

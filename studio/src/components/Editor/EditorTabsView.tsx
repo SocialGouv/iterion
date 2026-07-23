@@ -48,20 +48,16 @@ export default function EditorTabsView() {
     useTabsStore.getState().openTab("editor", { file: fileParam });
   }, [fileParam]);
 
-  // Cold-start restore: persisted tabs rehydrate dormant (hydrated:false)
-  // and only flip on activation. The persisted ACTIVE tab is never
-  // clicked, so without this it shows as selected in the strip while the
-  // pane below stays blank (only hydrated tabs are mounted). Re-activating
-  // it hydrates it and mounts its EditorTabHost, which reloads the
-  // document from the tab's file param. Also repoints a dangling active
-  // id (e.g. active tab filtered out by project scoping) to the first
-  // visible tab.
+  // Cold-start restore: the persisted ACTIVE tab rehydrates dormant
+  // (hydrated:false) and is never clicked, so without this it shows selected in
+  // the strip while the pane below stays blank (only hydrated tabs mount).
+  // Re-activating it hydrates it + mounts its EditorTabHost. A null/dangling
+  // active id is deliberately NOT repointed to tabs[0]: null active = the editor
+  // home (welcome pane), which the "Editor" nav link returns to on demand.
   useEffect(() => {
-    if (tabs.length === 0) return;
+    if (!activeTabId) return;
     const active = tabs.find((t) => t.id === activeTabId);
-    if (!active) {
-      useTabsStore.getState().setActive(tabs[0]!.id);
-    } else if (!active.hydrated) {
+    if (active && !active.hydrated) {
       useTabsStore.getState().setActive(active.id);
     }
   }, [tabs, activeTabId]);
@@ -100,18 +96,25 @@ export default function EditorTabsView() {
     [setLocation],
   );
 
-  if (tabs.length === 0) {
-    return (
-      <div className="h-full flex flex-col">
-        <InnerTabBar
-          tabs={[]}
-          activeTabId={null}
-          onSelect={() => {}}
-          onClose={() => {}}
-          onNewTab={handleNewTab}
-          newTabLabel="New editor tab"
-          icon={() => <Pencil2Icon className="w-3.5 h-3.5 shrink-0" />}
-        />
+  // The editor "home" (welcome + recent files) shows whenever no tab is active
+  // — no tabs open at all, OR the user returned to it via the "Editor" nav link
+  // (which deselects the active tab). The tab strip stays visible so open tabs
+  // remain one click away.
+  const activeTab = tabs.find((t) => t.id === activeTabId);
+  const showHome = !activeTab;
+
+  return (
+    <div className="h-full flex flex-col">
+      <InnerTabBar
+        tabs={tabs}
+        activeTabId={showHome ? null : activeTabId}
+        onSelect={handleSelect}
+        onClose={handleClose}
+        onNewTab={handleNewTab}
+        newTabLabel="New editor tab"
+        icon={() => <Pencil2Icon className="w-3.5 h-3.5 shrink-0" />}
+      />
+      {showHome ? (
         <div className="flex-1 overflow-auto">
           <div className="max-w-md mx-auto py-10 px-4 space-y-4">
             <div>
@@ -127,32 +130,21 @@ export default function EditorTabsView() {
             <RecentFilesPanel variant="plain" />
           </div>
         </div>
-      </div>
-    );
-  }
-
-  return (
-    <div className="h-full flex flex-col">
-      <InnerTabBar
-        tabs={tabs}
-        activeTabId={activeTabId}
-        onSelect={handleSelect}
-        onClose={handleClose}
-        onNewTab={handleNewTab}
-        newTabLabel="New editor tab"
-        icon={() => <Pencil2Icon className="w-3.5 h-3.5 shrink-0" />}
-      />
-      <div className="flex-1 min-h-0 relative">
-        {tabs.filter((t) => t.hydrated).map((tab) => (
-          <div
-            key={tab.id}
-            className={`absolute inset-0 ${tab.id === activeTabId ? "block" : "hidden"}`}
-            aria-hidden={tab.id === activeTabId ? undefined : true}
-          >
-            <EditorTabHost tabId={tab.id} file={tab.params.file} />
-          </div>
-        ))}
-      </div>
+      ) : (
+        <div className="flex-1 min-h-0 relative">
+          {tabs
+            .filter((t) => t.hydrated)
+            .map((tab) => (
+              <div
+                key={tab.id}
+                className={`absolute inset-0 ${tab.id === activeTabId ? "block" : "hidden"}`}
+                aria-hidden={tab.id === activeTabId ? undefined : true}
+              >
+                <EditorTabHost tabId={tab.id} file={tab.params.file} />
+              </div>
+            ))}
+        </div>
+      )}
     </div>
   );
 }

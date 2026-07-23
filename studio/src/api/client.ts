@@ -291,6 +291,21 @@ export function botSourceEditorPath(teamID: string, slug: string, rel = "main.bo
   return `${BOTSOURCE_SCHEME}${teamID}/${slug}/${rel}`;
 }
 
+// inferCatalogBotId derives a catalog bot id from a workflow file path, mirroring
+// the server's inferCatalogBotID: "bots/<id>/main.bot", ".../examples/<id>/main.bot",
+// "<id>/main.bot" and "<id>.bot" all map to <id>. Used to fork the bot the editor
+// currently shows read-only.
+export function inferCatalogBotId(path: string): string {
+  const parts = path.split("/").filter(Boolean);
+  const i = parts.findIndex((p) => p === "bots" || p === "examples");
+  if (i >= 0 && parts[i + 1]) return parts[i + 1]!;
+  const last = parts[parts.length - 1] ?? "";
+  if (parts.length >= 2 && last === "main.bot") {
+    return parts[parts.length - 2] ?? "";
+  }
+  return last.replace(/\.bot$/, "");
+}
+
 export function parseBotSourceEditorPath(
   path: string,
 ): { teamID: string; slug: string; rel: string } | null {

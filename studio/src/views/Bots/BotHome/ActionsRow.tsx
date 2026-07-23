@@ -40,7 +40,7 @@ export default function ActionsRow({
   const botEditingEnabled = useServerInfoStore((s) => !!s.info?.bot_editing_enabled);
   const { activeTeamID } = useAuth();
   const addToast = useUIStore((s) => s.addToast);
-  const fetchBots = useBotsStore((s) => s.fetch);
+  const refetchBots = useBotsStore((s) => s.refetch);
   const { prompt: promptText, dialog: promptDialog } = usePromptText();
   const { activeRepo, repos, enabled: repoScopeEnabled } = useActiveRepo();
 
@@ -91,7 +91,7 @@ export default function ActionsRow({
     if (!slug) return;
     try {
       const forked = await forkBotSource(activeTeamID, slug, entry.name);
-      await fetchBots();
+      await refetchBots();
       openEditorAt(botSourceEditorPath(activeTeamID, forked.slug));
     } catch (err) {
       toastError(addToast, err, "Duplicate bot failed");
