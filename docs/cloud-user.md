@@ -190,3 +190,26 @@ is at `GET /api/orgs/{id}/usage`. Denial semantics when a cap is hit:
 - **Audit log**: every OAuth-forfait use is logged with your user
   id, run id and kind. Operators can review it for cost attribution
   and CGU defence-in-depth.
+
+## 11. Editing and creating bots
+
+The bot **catalog** shipped with the instance is read-only (baked into
+the runner image). To customise a bot or write your own, the studio's
+bot editor saves into a **team-authored bot store** — the bundle lives
+with your team, not on a pod's ephemeral filesystem, so it survives
+restarts and every team member can launch it.
+
+- **Fork a catalog bot** to get an editable copy of its whole bundle
+  (`main.bot` + `manifest.yaml` + `skills/`…), then edit it.
+- **Author a new bot** from scratch in the multi-file editor.
+- Every save **compiles the bundle first** — a bot that doesn't compile
+  is rejected with its diagnostics rather than failing later at launch.
+- Concurrent edits are guarded: if a teammate saved between your load
+  and your save, you get a conflict and re-load.
+
+Editing is gated: you need the **bot-editor capability**, or to be a
+team admin or owner — a bot runs in every member's context, so authoring
+one is team automation policy, not a personal setting. (If your operator
+hasn't wired a bot store, the editor reports that bot editing is not
+enabled.) The underlying API is documented in
+[cloud-rest-api.md → Team bot sources](cloud-rest-api.md#team-bot-sources-cloud-bot-editing).
