@@ -104,7 +104,7 @@ the in-flight runs, and the retry queue, with pause/stop controls:
 
 ```mermaid
 flowchart LR
-  TRK["Tracker<br/>(native / GH /<br/>Forgejo)"]
+  TRK["Tracker<br/>(native / GH /<br/>Forgejo / GitLab)"]
   DSP["Dispatcher<br/>(1 actor goro)"]
   RUN["Runner<br/>(engine = LLM<br/>+ tools)"]
 
@@ -245,15 +245,18 @@ re-dispatching).
 ## Workspace lifecycle
 
 `<workspace.root>/<sanitized-issue-id>/` is created on first dispatch
-for that issue, preserved across retries (so the agent's incremental
-state survives a failure), and removed when the issue reaches a
-terminal state — pending `workspace.persist` policy.
+for that issue and preserved across retries (so the agent's incremental
+state survives a failure). By default it is **never** auto-removed —
+cleanup is opt-in via the `workspace.persist` policy.
 
 | `workspace.persist`     | Behaviour                                                 |
 |--------------------------|----------------------------------------------------------|
-| `keep`                   | Never delete.                                            |
-| `cleanup_on_done`        | Delete when the engine returns success.                  |
-| `cleanup_on_terminal`    | Delete when the tracker state hits a terminal state. _(default)_ |
+| `keep`                   | Never delete. **Default** (the empty value).            |
+| `cleanup_on_done`        | Delete on a clean dispatch return (engine success).      |
+| `cleanup_on_terminal`    | v1: identical to `cleanup_on_done` (terminal-state branching is unimplemented). |
+
+Failed / cancelled dispatches always retain the workspace so a retry can
+resume from it.
 
 The sanitize regex is `[^a-zA-Z0-9._-]` → `_`, with a leading dot
 escaped (so an issue named `.gitignore` doesn't produce a hidden dir).
@@ -615,15 +618,40 @@ tracker:
       in_progress: { labels_include: [claimed] }
 ```
 
-Same label-driven semantics as GitHub; label updates go through
-`PUT /api/v1/repos/<owner>/<repo>/issues/<n>/labels` so iterion does
-not need to resolve numeric label IDs.
+Same label-driven semantics as GitHub. `Claim` adds the claimed label
+via `POST /api/v1/repos/<owner>/<repo>/issues/<n>/labels` (add-only);
+`Release` resolves the label's numeric id and `DELETE`s it by id. The
+bulk `PUT .../labels` replace endpoint is used only when the full label
+set is being rewritten.
+
+### `tracker.kind: gitlab`
+
+Direct GitLab v4 REST client. Auth is a personal/project access token.
+
+```yaml
+tracker:
+  kind: gitlab
+  gitlab:
+    host: https://gitlab.com
+    repo: group/project              # or a numeric project id
+    token: $GITLAB_TOKEN
+    include_labels: [ready]
+    exclude_labels: [blocked]
+    claimed_label: iterion-claimed   # required
+    state_mapping:
+      ready:       { labels_include: [ready] }
+      in_progress: { labels_include: [claimed] }
+```
+
+Same label-driven claim/release semantics as the other forge trackers,
+mapped onto GitLab issues + labels.
 
 ## HTTP / WS surface
 
 The `server.port` setting starts the dispatcher's HTTP server (the
 same SPA the studio serves, so you get the kanban + dashboard at
-`http://localhost:<port>`).
+`http://localhost:<port>`). To run fully headless — no HTTP surface even
+when `server.port` is set — pass `iterion dispatch --no-server`.
 
 | Endpoint                                            | Method | Description                              |
 |-----------------------------------------------------|--------|------------------------------------------|
