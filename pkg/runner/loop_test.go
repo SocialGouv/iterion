@@ -350,6 +350,11 @@ func TestClassifyExecResult(t *testing.T) {
 		{"heartbeat beats shutdown", runtime.ErrRunCancelled, true, context.Canceled, "lock_held", actionNak},
 		{"shutdown cancel naks", runtime.ErrRunCancelled, false, context.Canceled, "shutdown", actionNak},
 		{"generic failure naks", errors.New("boom"), false, nil, "failed", actionNak},
+		// Budget exceeded is a resumable checkpoint — Ack, never auto-resume
+		// (auto-redelivery re-fails on the same spent budget and its fresh-pod
+		// recordRunGitMeta clobbers the exported commits; run 019f8e08).
+		{"budget exceeded acks (no auto-resume)", runtime.ErrBudgetExceeded, false, nil, "budget_exceeded", actionAck},
+		{"wrapped budget exceeded acks", fmt.Errorf("%w: duration (7201/7200)", runtime.ErrBudgetExceeded), false, nil, "budget_exceeded", actionAck},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {

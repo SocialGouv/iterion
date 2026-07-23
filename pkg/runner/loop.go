@@ -334,6 +334,28 @@ func classifyExecResult(execErr error, hbFailed bool, parentErr error, runID str
 			logArgs:     []any{runID, execErr},
 		}
 	}
+	// Budget exceeded is a RESUMABLE checkpoint, not a transient blip:
+	// the engine saved a failed_resumable checkpoint (failBudgetExceeded).
+	// Ack it — do NOT Nak for auto-redelivery. Auto-resuming a
+	// budget-exceeded run is worse than useless: the same message carries
+	// the same (already-spent) budget, so a duration cap re-fails
+	// instantly, and each redelivery re-provisions a FRESH pod whose
+	// recordRunGitMeta overwrites the first attempt's good git metadata
+	// with base==head — silently destroying the run's exported commits
+	// (observed live: run 019f8e08 lost 40 in-pod doc commits this way).
+	// The operator resumes MANUALLY with a raised cap
+	// (`iterion resume --max-duration/--max-cost-usd`), the documented
+	// "budget exceeded → raise the cap + resume" recovery.
+	if errors.Is(execErr, runtime.ErrBudgetExceeded) {
+		return execOutcome{
+			finalStatus: "budget_exceeded",
+			op:          "ack-budget-exceeded",
+			action:      actionAck,
+			level:       logWarn,
+			logFmt:      "runner: run %s hit a budget cap — failed_resumable, NOT auto-resuming (resume manually with a raised cap): %v",
+			logArgs:     []any{runID, execErr},
+		}
+	}
 	// Generic error → caller checks DLQ trigger before falling back to
 	// the plain-nak outcome below.
 	return execOutcome{
