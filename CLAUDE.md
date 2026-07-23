@@ -184,7 +184,7 @@ Other top-level directories: `studio/` (React/Vite frontend), `examples/` (.bot 
 |------|-------------|
 | **Agent** | LLM node with tools, structured I/O, optional delegation (claude_code, codex) |
 | **Judge** | LLM node producing verdicts (typically no tools) |
-| **Router** | Routing node with 4 modes: `fan_out_all`, `condition`, `round_robin`, `llm` (see `docs/routers.md`) |
+| **Router** | Routing node with 5 modes: `fan_out_all`, `fan_out_each`, `condition`, `round_robin`, `llm` (see `docs/routers.md`) |
 | **Human** | Pause/resume via `interaction: human` (default for human nodes); optional `interaction: llm` or `llm_or_human` can auto-answer or escalate. Agent/judge nodes can instead declare **`interaction: async`** (**ADR-081**): the agent posts questions via `ask_user_async` and KEEPS WORKING — answers arrive in its message queue (node-scoped inbox) whenever the operator replies; the `await_answers` tool is the LLM-discretion sync point (pauses only if something is still pending). See [docs/async-interaction.md](docs/async-interaction.md). |
 | **Tool** | Direct shell command execution (no LLM). ACTION tool nodes may opt into the **Verified Action** quad (`goal`+`postcondition`+`policy`+`recovery`) so a brittle recipe self-heals (idempotent-skip → recipe → self-repair → agent → policy) instead of hard-blocking; the postcondition is the deterministic truth oracle at every rung. **Gates stay deterministic** — never attach recovery to a `recipe == postcondition` gate (enforced by C103–C106). See [docs/adr/044-adaptive-recovery-for-deterministic-action-nodes.md](docs/adr/044-adaptive-recovery-for-deterministic-action-nodes.md). |
 | **Compute** | Deterministic expression node for derived structured output (no LLM, no shell) |
@@ -673,11 +673,11 @@ refresh for upgrade cases) is documented in
 
 Current bundles and their skills:
 - [bots/whats-next/skills/](bots/whats-next/skills/) —
-  10 skills: `whats-next` (operating playbook), `iterion-bot-catalog`,
+  11 skills: `whats-next` (operating playbook), `iterion-bot-catalog`,
   `iterion-dsl-quickref`, `iterion-board` (board capabilities
   reference for the claude_code / claw `board.*` tools),
   `iterion-label-vocabulary`, `repo-survey`, `roadmap-synthesis`,
-  `priority-elicitation`, `session-continuity` (iterion workspace
+  `operator-arbitrage`, `factory-ops`, `session-continuity` (iterion workspace
   memory — `memory_read` / `memory_write` / `memory_list` for the
   cross-run knowledge tree under
   `~/.iterion/projects/<key>/memory/<scope>/`), and `dogfood-cycle`
@@ -835,7 +835,7 @@ the following are violations when they appear as **defaults**:
 **Not violations** (these are the *runtime*, not the target repo):
 references to iterion the engine running the bot — `mcp__iterion_board__*`
 capability tools, "iterion's expr / template substitution", `iterion
-report` for surfacing output, `.bot`/`.bot` DSL syntax. The bot is
+report` for surfacing output, `.bot`/`.botz` DSL syntax. The bot is
 *written for* iterion; it must not be *scoped to* iterion.
 
 **Enforcement:** `bots/catalog_universality_test.go` greps every
@@ -1057,7 +1057,7 @@ iterion studio [--port] [--dir] [--bind] [--bots-path] [--no-browser-pane] [--ma
 iterion report --run-id <id> [--store-dir] [--output]  # Generate chronological run report
 iterion dispatch <config.yaml> [--port]  # Long-running dispatcher (tracker → workflow per issue)
 iterion schedule add|list|remove|run|install|uninstall|audit  # Cron recurring bots via the host crontab — no daemon; overlap policy + guard + tick audit (see docs/scheduling.md)
-iterion issue create|list|show|move|update|close|board  # Native kanban tracker
+iterion issue create|list|show|move|update|close|board|import  # Native kanban tracker
 iterion bots create <slug> [--template <id>] [--workdir <dir>] [--dest <dir>]  # Scaffold a bot bundle (CLI half of the studio builder /bots/new)
 iterion bots templates                  # List the templates `bots create` can start from
 iterion bots list [--paths <dir>] [--format json|markdown|skill]  # Discover .bot/.botz bundles (used by whats-next + dispatcher zero-config)
