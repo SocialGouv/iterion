@@ -13,10 +13,13 @@ filesystem. The ambient default degrades gracefully instead of
 failing: outside a git repository it is silently not applicable, and
 on a host with no container runtime the run proceeds unsandboxed with
 a visible `sandbox_skipped` event. An EXPLICIT sandbox request (CLI
-flag or workflow block) never degrades — it errors. (The cloud runner
-currently pins `ITERION_SANDBOX_OVERRIDE=none` — the runner pod is the
-isolation boundary there until the k8s sandbox path carries worktree
-git access and interactive channels end-to-end.)
+flag or workflow block) never degrades — it errors. (In cloud, per-run
+sandbox pods are gated by the chart's `runner.sandbox.enabled` toggle:
+off — the base-chart default — pins `ITERION_SANDBOX_OVERRIDE=none` and
+the runner pod is the isolation boundary; on — as prod runs — puts each
+cloud run in its own kubernetes-driver sandbox pod. The k8s path now
+carries worktree git/push and interactive channels end-to-end, see
+[ADR-082](adr/082-sandbox-by-default.md) Phase 3.)
 
 ## Quick start
 
@@ -420,9 +423,10 @@ The repo's installs in place so relative package references
 ### Runs without a sandbox (cloud runner pods, plain host runs)
 
 Provisioning is **not** tied to a sandbox container. When no sandbox is
-active — which is **every cloud run** (the chart pins
+active — every cloud run on a deployment that leaves
+`runner.sandbox.enabled: false` (the chart then pins
 `ITERION_SANDBOX_OVERRIDE=none`: the runner pod is the isolation
-boundary, so a bot's inline `sandbox:` block never starts a container)
+boundary, so a bot's inline `sandbox:` block never starts a container),
 and every local `iterion run` without a sandbox declaration — the same
 two sources are provisioned **on the executing host**: `devbox install`
 runs at run start (the bot's config staged into a per-run temp dir,
