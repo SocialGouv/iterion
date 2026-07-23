@@ -44,6 +44,7 @@ JWT layer.
 | `POST` | `/api/auth/invitations/accept` | member | Accept an invitation while logged in |
 | `GET` | `/api/auth/me` | member | Current user + active team identity |
 | `POST` | `/api/auth/me/team/{team_id}` | member | Switch active team |
+| `POST` | `/api/auth/me/org/{org_id}` | member | Switch active org (re-issues the JWT; validates org then team) |
 | `POST` | `/api/me/password` | member | Self-service password change |
 | `POST` | `/api/me/sessions/revoke-all` | member | Sign out every device |
 
@@ -77,7 +78,6 @@ need org **admin/owner** (`canManageOrg`). Sources:
 
 | Method | Path | Auth | Purpose |
 |---|---|---|---|
-| `GET` | `/api/orgs/{id}` | org member | Read the org |
 | `GET` | `/api/orgs/{id}/members` | org member | List org members + roles |
 | `PATCH` | `/api/orgs/{id}/members/{user_id}` | org admin | Change a member's org role (`member\|admin\|owner`) |
 | `DELETE` | `/api/orgs/{id}/members/{user_id}` | org admin | Remove a member |
@@ -307,7 +307,7 @@ Source: [pkg/server/runs.go](../pkg/server/runs.go).
 | `POST` | `/api/admin/orgs/{id}/status` | super-admin | Suspend / read-only / activate |
 | `GET` | `/api/admin/orgs/{id}/usage` | super-admin | Usage snapshot |
 | `GET` | `/api/admin/orgs/{id}/teams` | super-admin | List the org's teams |
-| `GET` | `/api/admin/users` | super-admin | List users (filter `?email=`) |
+| `GET` | `/api/admin/users` | super-admin | List users (`?offset=&limit=` pagination; limit default 50, max 200) |
 | `PATCH` | `/api/admin/users/{id}` | super-admin | Status / super-admin flag |
 | `POST` | `/api/admin/users/{id}/reset-password` | super-admin | Force a user's password reset |
 | `GET` | `/api/admin/audit` | super-admin | Platform audit log (filters: `action`, `actor`, `from`, `to`, `offset`, `limit`) |
