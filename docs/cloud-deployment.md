@@ -116,6 +116,33 @@ auth bootstrap routes remain public.
 For rotation details, including JWT signing-key rotation and
 `ITERION_SECRETS_KEY` impact, see [cloud-admin.md](cloud-admin.md).
 
+## Queue connection (NATS JetStream)
+
+Cloud mode routes runs through a NATS JetStream queue: the server publishes
+RunMessages, the runner pool pulls them. `ITERION_NATS_URL` is **required when
+`ITERION_MODE=cloud`** — the server refuses to start with `ITERION_NATS_URL
+required when mode=cloud` otherwise. The stream / bucket / DLQ names and the
+JetStream tuning knobs have working defaults
+([pkg/queue/nats/nats.go](../pkg/queue/nats/nats.go)); override them only to
+match an existing cluster (a `0` on a numeric/duration knob inherits the
+default).
+
+| Env var | Purpose |
+|---|---|
+| `ITERION_NATS_URL` | JetStream connection string (`nats://[user:pass@]host:4222`) — **required in cloud mode** |
+| `ITERION_NATS_STREAM` | Runs stream name (default `ITERION_RUNS`) |
+| `ITERION_NATS_KV_BUCKET` | Per-run distributed-lease KV bucket (default `iterion-run-locks`) |
+| `ITERION_NATS_DLQ_STREAM` | Dead-letter stream for max-deliver-exhausted messages (default `ITERION_RUNS_DLQ`) |
+| `ITERION_NATS_MAX_ACK_PENDING` | Fleet-wide in-flight (delivered-unacked) ceiling on the durable consumer |
+| `ITERION_NATS_MAX_DELIVER` | Redelivery budget before a message parks on the DLQ (default 8) |
+| `ITERION_NATS_ACK_WAIT` | Per-message ack deadline, refreshed by runner heartbeats |
+| `ITERION_NATS_MAX_AGE` / `ITERION_NATS_DLQ_MAX_AGE` | Runs-stream / DLQ retention |
+| `ITERION_NATS_MAX_PAYLOAD` | Max message size |
+
+The queue's internal semantics (the `MaxAckPending` fleet ceiling, `AckWait`
+heartbeats, DLQ parking, the orphan sweeper) are covered in
+[cloud-architecture.md § Queue internals](cloud-architecture.md#queue-internals).
+
 ## Shared replica state (Valkey / Redis)
 
 Some server state is per-pod and must be shared when you run **more than
