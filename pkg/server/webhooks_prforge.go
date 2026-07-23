@@ -113,6 +113,10 @@ func (s *Server) handlePRForgeComment(ctx context.Context, w http.ResponseWriter
 	vars := buildPRForgeCommandVars(p, pr, route, cmdArgs, cfg.LaunchVars)
 	if pr != nil {
 		stampBranchImprovePushBack(vars, route.BotID, pr.SourceBranch, cfg.BranchImproveAsPR)
+		// `/billy` on a PR picks up where Revi left off: seed the run with the
+		// most recent review-pr findings for this PR (best-effort — Billy just
+		// re-reviews from scratch when none exist). Operator LaunchVars win.
+		s.stampPriorReview(ctx, cfg, route.BotID, vars, p.PRURL, p.ProjectPath, int(p.IssueNumber))
 	}
 	idemKey := knowledge.ChecksumHex([]byte(fmt.Sprintf("cmd|%s|%s|%s|%s", cfg.TenantID, cfg.ID, p.ProjectPath, p.SubjectID())))
 	s.dispatchInvocation(ctx, w, r, cfg, meta, idemKey, route, vars, p.CloneURL, repoRef, payloadHash, srcIP)

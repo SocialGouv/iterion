@@ -10,10 +10,9 @@ import (
 
 	"github.com/google/uuid"
 
-	"github.com/SocialGouv/iterion/pkg/forge"
 	"github.com/SocialGouv/iterion/pkg/knowledge"
+	"github.com/SocialGouv/iterion/pkg/store"
 	"github.com/SocialGouv/iterion/pkg/webhooks"
-	"github.com/SocialGouv/iterion/pkg/webhooks/prforge"
 )
 
 // maxWebhookBodyBytes caps the inbound payload every provider handler
@@ -73,9 +72,12 @@ const defaultWebhookBotReviewPR = "review-pr"
 // path with the args ignored — matching today's behaviour.
 const defaultWebhookBotReviConverse = "revi-converse"
 
-// branchImproveBotID is the branch-improvement bot (Billy) the PR-open path
-// routes to — instead of the default reviewer — when a same-repo PR implements
-// a tracked issue. See selectForgePRBot.
+// branchImproveBotID is the branch-improvement bot (Billy). It is NEVER
+// auto-launched on a PR-open (that lane is Revi's — a PR-open only ever
+// auto-reviews); Billy runs on a PR only on the deliberate `/billy` slash-
+// command (handlePRForgeComment / handleGitLabCommandNote, gated on the
+// commenter's repo rights) or on the narrow merge-queue auto-heal path
+// (NeedsAutoHeal in handlePRForgeReview).
 const branchImproveBotID = "branch-improve-loop"
 
 // featureDevBotID is the implementer bot (Featurly) the issue-labeled path
@@ -191,38 +193,65 @@ func stampBranchImprovePushBack(vars map[string]string, botID, sourceBranch stri
 	}
 }
 
-// selectForgePRBot deterministically routes a PR-open delivery to the
-// branch-improvement bot (Billy) instead of the default reviewer (Revi) when
-// ALL of:
-//   - the PR is NOT from a fork (IsCrossRepo) — a fork PR pushing through a
-//     MUTATING bot is the budget-exhaustion vector, so it stays on the
-//     read-only review path pending operator validation (the fork guard);
-//   - the PR links a tracked issue ("Fixes #N" in the title/body) — the PR is
-//     finishing a ticket, so Billy hardens it. This is also the ticket↔PR
-//     dedup: the PR's Billy run IS the work, so the ticket lane should not also
-//     spin up a fresh feature run (Featurly); and
-//   - the webhook actually enables Billy (AllowsBot).
+// isIterionForgeBotAuthor reports whether the PR/MR author `login` is iterion's
+// OWN forge bot — i.e. this PR was opened by another iterion bot (Doki, Willy,
+// Featurly…) through the tenant's forge integration. Such PRs already converge
+// to near-perfection inside their own loop, so the PR-open auto-review lane must
+// NOT launch Revi on them (a manual `/revi` still can). The detection is
+// derived from the tenant's provisioned forge connection, NOT a generic `[bot]`
+// suffix — Dependabot/Renovate/etc. must stay reviewable:
+//   - GitHub / Forgejo App: the App's bot login is exactly `<app_slug>[bot]`
+//     (e.g. "iterion-forge-61934180[bot]"), and app_slug is pinned on the
+//     Connection the orchestrator provisioned this webhook from.
+//   - GitLab / other non-App: iterion authors MRs as the connected bot account,
+//     so a match on that connection's AccountLogin is the equivalent signal
+//     (gated to GitLab so a GitHub OAuth connection to a HUMAN account can't
+//     make that human's own PRs unreviewable).
 //
-// Returns "" to fall through to resolveReviewBot (the existing Revi/default
-// resolution) — the behaviour for standalone PRs and every fork PR.
-func selectForgePRBot(cfg webhooks.Config, p prforge.Parsed) string {
-	if p.IsCrossRepo() {
-		return ""
+// Fail-safe: any resolution miss (no provisioning marker, no connection store,
+// no app slug) returns false — the PR stays on the normal auto-review path.
+// Routed through the webhookIterionBotAuthor seam so handler tests need no live
+// connection store.
+func (s *Server) isIterionForgeBotAuthor(ctx context.Context, cfg webhooks.Config, login string) bool {
+	fn := s.webhookIterionBotAuthor
+	if fn == nil {
+		fn = s.realIterionBotAuthor
 	}
-	// Dependency-update PRs (Dependabot/Renovate) never route to the
-	// branch-improvement loop: an improve loop over a bumped manifest/lockfile
-	// is off-target and churns the bot's own PR. The dependency guard (Vetty)
-	// owns that lane — via its own invocation / a `/command`.
-	if isDependencyBotAuthor(p.SenderLogin) {
-		return ""
+	return fn(ctx, cfg, login)
+}
+
+// realIterionBotAuthor is the production isIterionForgeBotAuthor: it resolves the
+// forge Connection the webhook was provisioned from and compares `login` against
+// that connection's bot identity. See isIterionForgeBotAuthor for the contract.
+func (s *Server) realIterionBotAuthor(ctx context.Context, cfg webhooks.Config, login string) bool {
+	login = strings.TrimSpace(login)
+	if login == "" || s.forgeConnections == nil {
+		return false
 	}
-	if len(forge.ParseIssueRefs(true, p.Title, p.Description)) == 0 {
-		return ""
+	connID := strings.TrimPrefix(cfg.ProvisionedBy, "forge:")
+	if connID == "" || connID == cfg.ProvisionedBy {
+		// Not an orchestrator-provisioned webhook → no known iterion bot identity.
+		return false
 	}
-	if !cfg.AllowsBot(branchImproveBotID) {
-		return ""
+	conn, err := s.forgeConnections.Get(store.WithTenant(ctx, cfg.TenantID), connID)
+	if err != nil {
+		if s.logger != nil {
+			s.logger.Debug("webhooks: iterion-bot-author check: connection %s: %v", connID, err)
+		}
+		return false
 	}
-	return branchImproveBotID
+	// GitHub/Forgejo App: the bot login is the app slug suffixed with [bot].
+	if conn.AppSlug != "" && strings.EqualFold(login, conn.AppSlug+"[bot]") {
+		return true
+	}
+	// GitLab (and other non-App forges): iterion authors MRs as the connection's
+	// own account. Gated to GitLab so a GitHub OAuth link to a human account
+	// can't render that human's PRs unreviewable.
+	if cfg.Provider == webhooks.ProviderGitLab && conn.AccountLogin != "" &&
+		strings.EqualFold(login, conn.AccountLogin) {
+		return true
+	}
+	return false
 }
 
 // isDependencyBotAuthor reports whether login is an automated dependency-update
@@ -265,8 +294,7 @@ func (s *Server) resolveReviewBot(
 // the reviewer default is wrong here. Precedence: an operator-pinned
 // DefaultBotID wins (explicit intent); else the canonical implementer
 // (Featurly) when the webhook permits it; else fall back to SelectBot /
-// review-pr so a reviewer-only webhook keeps its prior behaviour. The
-// deterministic counterpart to selectForgePRBot on the issue path.
+// review-pr so a reviewer-only webhook keeps its prior behaviour.
 func (s *Server) selectIssueLabeledBot(
 	ctx context.Context,
 	w http.ResponseWriter,

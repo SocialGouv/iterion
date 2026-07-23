@@ -139,29 +139,30 @@ func (s *Server) handlePRForgeReview(ctx context.Context, w http.ResponseWriter,
 		return
 	}
 
-	// PR-open bot selection: a same-repo PR that implements a tracked issue
-	// routes to the branch-improvement bot (Billy) to harden it — and dedup the
-	// ticket lane; standalone PRs and every fork PR keep the default reviewer
-	// (Revi). selectForgePRBot has already validated AllowsBot for a non-empty
-	// return, so only the fall-through path needs resolveReviewBot's gate.
-	botID := selectForgePRBot(cfg, p)
-	if botID == "" {
-		var ok bool
-		if botID, ok = s.resolveReviewBot(ctx, w, cfg, meta, payloadHash, srcIP); !ok {
-			return
-		}
+	// Iterion-bot guard: a PR opened by iterion's OWN forge bot (Doki/Willy/
+	// Featurly… through the tenant's forge integration) already converged inside
+	// its own loop — auto-reviewing it wastes budget and adds noise. Filter it
+	// (a human can still run `/revi` on it manually).
+	if s.isIterionForgeBotAuthor(ctx, cfg, p.SenderLogin) {
+		s.recordTerminalWebhookDelivery(ctx, cfg, meta, webhooks.StatusFiltered, payloadHash, srcIP,
+			"PR authored by iterion's forge bot — auto-review skipped (self-produced; run /revi to force a review)")
+		writeJSONStatus(w, http.StatusOK, map[string]string{"status": webhooks.StatusFiltered})
+		return
+	}
+
+	// PR-open auto-lane = REVIEW ONLY (Revi). Billy is NEVER auto-launched on a
+	// PR-open — it runs on a deliberate `/billy` comment (or the narrow
+	// merge-queue auto-heal above). resolveReviewBot gates AllowsBot.
+	botID, ok := s.resolveReviewBot(ctx, w, cfg, meta, payloadHash, srcIP)
+	if !ok {
+		return
 	}
 
 	// Idempotency: one launch per (tenant, webhook, repo, PR#, head sha).
 	idemKey := knowledge.ChecksumHex([]byte(fmt.Sprintf("%s%s|%s|%s|%d|%s", idemPrefix, cfg.TenantID, cfg.ID, p.ProjectPath, p.PRNumber, p.HeadSHA)))
 
 	scopeNotes := strings.TrimSpace(p.Title + "\n\n" + p.Description)
-	var vars map[string]string
-	if botID == branchImproveBotID {
-		vars = branchImproveVars(p.TargetBranch, p.SourceBranch, p.PRURL, scopeNotes, cfg.BranchImproveAsPR, cfg.LaunchVars)
-	} else {
-		vars = reviewPRVars(p.PRURL, p.TargetBranch, scopeNotes, cfg.LaunchVars, map[string]string{"pr_author": p.SenderLogin})
-	}
+	vars := reviewPRVars(p.PRURL, p.TargetBranch, scopeNotes, cfg.LaunchVars, map[string]string{"pr_author": p.SenderLogin})
 
 	s.insertAndLaunchWebhook(ctx, w, r, cfg, meta, idemKey, botID, vars, p.CloneURL, p.SourceBranch, payloadHash, srcIP)
 }

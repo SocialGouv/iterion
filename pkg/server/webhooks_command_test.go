@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/SocialGouv/iterion/pkg/dispatcher/native"
@@ -519,5 +520,78 @@ func TestGitLabIssueNote_NonOpensMRNoStamp(t *testing.T) {
 	}
 	if _, ok := cards[0].BotArgs["open_mr"]; ok {
 		t.Errorf("non-opens_mr command must not stamp open_mr: %+v", cards[0].BotArgs)
+	}
+}
+
+// TestGitHubIssueComment_BillyUnauthorizedRejected: `/billy` from a commenter
+// who fails the authorization gate (no repo write) is filtered (200) and NEVER
+// launches the mutating branch-improve loop (req 3 — the authz gate is
+// mandatory, reused verbatim from the /revi/command path).
+func TestGitHubIssueComment_BillyUnauthorizedRejected(t *testing.T) {
+	s := newWebhookTestServer(t)
+	cfg, pt := ghConfig(t, s)
+	cfg.BotIDs = []string{"branch-improve-loop"}
+	cfg.CommandMap = map[string][]webhooks.CommandRoute{
+		"billy": {{BotID: "branch-improve-loop", ArgsVar: "scope_notes", Scope: "any"}},
+	}
+	s.webhookPRForgeCommandGate = func(context.Context, webhooks.Config, webhooks.Provider, prforge.ParsedNote, webhooks.CommandRoute) (bool, string, error) {
+		return false, "replier not authorized: mallory", nil
+	}
+	launched := 0
+	s.webhookLaunchBot = func(context.Context, string, map[string]string, string, string, string, map[string]string, map[string]string) (string, error) {
+		launched++
+		return "x", nil
+	}
+	body := `{"action":"created","repository":{"full_name":"acme/widgets","clone_url":"https://github.com/acme/widgets.git"},"issue":{"number":7,"title":"t","body":"","state":"open","pull_request":{"html_url":"https://github.com/acme/widgets/pull/7"}},"comment":{"id":561,"body":"/billy fix it"},"sender":{"login":"mallory"}}`
+	w := httptest.NewRecorder()
+	s.handleGitHubWebhook(w, ghReq(ghCtx(cfg), body, prforge.EventHeaderIssueComment, pt))
+	if w.Code != http.StatusOK {
+		t.Fatalf("unauthorized /billy must be filtered 200, got %d", w.Code)
+	}
+	if launched != 0 {
+		t.Fatalf("unauthorized /billy must NOT launch Billy, launched=%d", launched)
+	}
+}
+
+// TestGitHubIssueComment_BillySeedsPriorReview: an authorized `/billy` on a PR
+// Revi already reviewed carries that review into the run as `prior_review`
+// (req 4), so Billy starts from Revi's findings instead of re-deriving them.
+func TestGitHubIssueComment_BillySeedsPriorReview(t *testing.T) {
+	s := newWebhookTestServer(t)
+	cfg, pt := ghConfig(t, s)
+	cfg.BotIDs = []string{"branch-improve-loop"}
+	cfg.CommandMap = map[string][]webhooks.CommandRoute{
+		"billy": {{BotID: "branch-improve-loop", ArgsVar: "scope_notes", Scope: "any"}},
+	}
+	s.webhookPRForgeCommandGate = func(context.Context, webhooks.Config, webhooks.Provider, prforge.ParsedNote, webhooks.CommandRoute) (bool, string, error) {
+		return true, "authorized", nil
+	}
+	s.webhookPRForgePRResolver = func(context.Context, webhooks.Config, webhooks.Provider, prforge.ParsedNote, webhooks.CommandRoute) (forge.PullRef, error) {
+		return forge.PullRef{Number: 7, State: "open", SourceBranch: "feat/x", TargetBranch: "main"}, nil
+	}
+	var gotPRURL string
+	s.webhookPriorReview = func(_ context.Context, _ webhooks.Config, prURL, _ string, prNumber int) string {
+		gotPRURL = prURL
+		if prNumber != 7 {
+			t.Errorf("prior-review lookup pr number = %d, want 7", prNumber)
+		}
+		return "Prior review of this PR by Revi: 1 finding\n- [high/security] SQLi (db.go:42)"
+	}
+	var gotVars map[string]string
+	s.webhookLaunchBot = func(_ context.Context, _ string, vars map[string]string, _, _, _ string, _, _ map[string]string) (string, error) {
+		gotVars = vars
+		return "run-billy-seed", nil
+	}
+	body := `{"action":"created","repository":{"full_name":"acme/widgets","clone_url":"https://github.com/acme/widgets.git"},"issue":{"number":7,"title":"t","body":"","state":"open","pull_request":{"html_url":"https://github.com/acme/widgets/pull/7"}},"comment":{"id":562,"body":"/billy"},"sender":{"login":"alice"}}`
+	w := httptest.NewRecorder()
+	s.handleGitHubWebhook(w, ghReq(ghCtx(cfg), body, prforge.EventHeaderIssueComment, pt))
+	if w.Code != http.StatusAccepted {
+		t.Fatalf("code=%d body=%s", w.Code, w.Body.String())
+	}
+	if gotPRURL != "https://github.com/acme/widgets/pull/7" {
+		t.Fatalf("prior-review lookup used pr_url=%q", gotPRURL)
+	}
+	if !strings.Contains(gotVars["prior_review"], "SQLi") {
+		t.Fatalf("prior_review var must carry Revi's findings, got %q", gotVars["prior_review"])
 	}
 }

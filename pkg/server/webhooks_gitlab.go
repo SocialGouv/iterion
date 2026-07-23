@@ -93,6 +93,16 @@ func (s *Server) handleGitLabMergeRequestEvent(ctx context.Context, w http.Respo
 		return
 	}
 
+	// Iterion-bot guard: an MR opened by iterion's own forge bot already
+	// converged in its own loop — skip the auto-review (a human can still run
+	// `/revi`). Mirror of the GitHub PR-open path.
+	if s.isIterionForgeBotAuthor(ctx, cfg, p.SenderUsername) {
+		s.recordTerminalWebhookDelivery(ctx, cfg, meta, webhooks.StatusFiltered, payloadHash, srcIP,
+			"MR authored by iterion's forge bot — auto-review skipped (self-produced; run /revi to force a review)")
+		writeJSONStatus(w, http.StatusOK, map[string]string{"status": webhooks.StatusFiltered})
+		return
+	}
+
 	botID, ok := s.resolveReviewBot(ctx, w, cfg, meta, payloadHash, srcIP)
 	if !ok {
 		return
@@ -385,6 +395,9 @@ func (s *Server) handleGitLabCommandNote(ctx context.Context, w http.ResponseWri
 		vars = buildGitLabIssueCommandVars(p, route, cmdArgs, cfg.LaunchVars)
 	} else {
 		stampBranchImprovePushBack(vars, route.BotID, p.SourceBranch, cfg.BranchImproveAsPR)
+		// `/billy` on an MR seeds the run with Revi's most recent review of it
+		// (best-effort — see stampPriorReview). Symmetric with the GitHub path.
+		s.stampPriorReview(ctx, cfg, route.BotID, vars, p.MRURL, p.ProjectPath, int(p.MRIID))
 	}
 	// "cmd|" prefix keeps the key space disjoint from the mr|/note| paths.
 	idemKey := knowledge.ChecksumHex([]byte(fmt.Sprintf("cmd|%s|%s|%d|%s", cfg.TenantID, cfg.ID, p.ProjectID, p.SubjectID())))

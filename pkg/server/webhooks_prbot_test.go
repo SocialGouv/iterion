@@ -6,7 +6,6 @@ import (
 	"testing"
 
 	"github.com/SocialGouv/iterion/pkg/webhooks"
-	"github.com/SocialGouv/iterion/pkg/webhooks/prforge"
 )
 
 // TestSelectIssueLabeledBot pins the issue-labeled routing: a freshly-labeled
@@ -39,62 +38,6 @@ func TestSelectIssueLabeledBot(t *testing.T) {
 			}
 			if got != c.want {
 				t.Errorf("selectIssueLabeledBot = %q, want %q", got, c.want)
-			}
-		})
-	}
-}
-
-// TestSelectForgePRBot pins the deterministic PR-open routing: a same-repo PR
-// that implements a tracked issue routes to the branch-improvement bot (Billy);
-// fork PRs, ticket-less PRs, and repos that don't enable Billy all fall through
-// (return "") to the default reviewer resolution. This is the fork guard + the
-// ticket↔PR dedup, both encoded in one pure function.
-func TestSelectForgePRBot(t *testing.T) {
-	billyEnabled := webhooks.Config{BotIDs: []string{"review-pr", branchImproveBotID}}
-	billyDisabled := webhooks.Config{BotIDs: []string{"review-pr"}}
-	wildcard := webhooks.Config{BotIDs: []string{"*"}}
-
-	ticketPR := prforge.Parsed{
-		ProjectPath: "acme/widgets", HeadRepoFullName: "acme/widgets",
-		Title: "Add subtract", Description: "Implements subtraction.\n\nFixes #12",
-	}
-	forkTicketPR := prforge.Parsed{
-		ProjectPath: "acme/widgets", HeadRepoFullName: "mallory/widgets",
-		Title: "Add subtract", Description: "Fixes #12",
-	}
-	standalonePR := prforge.Parsed{
-		ProjectPath: "acme/widgets", HeadRepoFullName: "acme/widgets",
-		Title: "Chore: tidy", Description: "no linked issue here",
-	}
-	// A dependency-bot PR that even references a ticket must still be excluded
-	// from the improve loop — the dependency guard owns that lane.
-	depBotPR := prforge.Parsed{
-		ProjectPath: "acme/widgets", HeadRepoFullName: "acme/widgets",
-		Title: "chore(deps): bump lib", Description: "Fixes #12", SenderLogin: "dependabot[bot]",
-	}
-	renovatePR := prforge.Parsed{
-		ProjectPath: "acme/widgets", HeadRepoFullName: "acme/widgets",
-		Title: "chore(deps): bump lib", Description: "Fixes #12", SenderLogin: "renovate[bot]",
-	}
-
-	cases := []struct {
-		name string
-		cfg  webhooks.Config
-		p    prforge.Parsed
-		want string
-	}{
-		{"same-repo ticket PR + billy enabled → billy", billyEnabled, ticketPR, branchImproveBotID},
-		{"same-repo ticket PR + wildcard webhook → billy", wildcard, ticketPR, branchImproveBotID},
-		{"fork ticket PR → fall through (fork guard)", billyEnabled, forkTicketPR, ""},
-		{"standalone PR (no ticket) → fall through", billyEnabled, standalonePR, ""},
-		{"ticket PR but billy not enabled → fall through", billyDisabled, ticketPR, ""},
-		{"dependabot ticket PR → excluded from improve loop", billyEnabled, depBotPR, ""},
-		{"renovate ticket PR → excluded from improve loop", billyEnabled, renovatePR, ""},
-	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			if got := selectForgePRBot(tc.cfg, tc.p); got != tc.want {
-				t.Errorf("selectForgePRBot = %q, want %q", got, tc.want)
 			}
 		})
 	}
