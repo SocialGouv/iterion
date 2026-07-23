@@ -4,7 +4,8 @@ Devy authors a pinned `devbox.json` for a repo so its build/test/e2e run in a
 reproducible toolchain (ADR-017 Tier-3). This bundle ships the **manifest**,
 the **playbook skill** (`skills/devbox-setup.md` — the substance: detect →
 map to Nix → shape → validate → scope), and the **`main.bot`** (linear
-detect → generate → verify → commit → done; `iterion validate` OK, 6 nodes).
+preflight → detect → generate → verify → commit → done; `iterion validate`
+OK, 5 nodes).
 
 **Dogfood (2026-06-08, minimal Go repo) — green end-to-end.** `detect_stack`
 identified Go 1.22, `generate_devbox` wrote a correct pinned `devbox.json`
@@ -25,6 +26,8 @@ worktree, so a `commit_devbox` node was added. Set
 ## Intended workflow (build spec)
 
 ```
+preflight     (compute, deterministic)
+  → resolves the workspace + run context before any LLM work
 detect_stack  (agent, claude_code, read-only: read_file/glob/grep/bash)
   → reads manifests (go.mod, package.json, pyproject, …) + build/test/e2e
     commands; emits {languages, runtimes, build_cmd, test_cmd, e2e, pins}
@@ -33,6 +36,8 @@ generate_devbox (agent, claude_code, tools incl. write_file)
 verify_devbox  (tool, deterministic)
   → `cd <workspace> && devbox install` (must exit 0 + produce devbox.lock);
     degrade-with-report on fail
+commit_devbox (tool, deterministic)
+  → commits devbox.json + devbox.lock
 done
 ```
 
@@ -40,7 +45,9 @@ done
   default, and the default slim image ships everything this bot needs:
   node + devbox/nix + the claude CLI).
 - **worktree: auto** (it writes a file → isolate + gate before it lands).
-- **vars**: `workspace_dir`, `apply_mode` (propose|apply), `devbox_model`.
+- **vars**: `workspace_dir` (defaults to `${PROJECT_DIR}`). The model is
+  set via the `DEVBOX_SETUP_MODEL` env (default `claude-opus-4-8`), not a
+  var.
 - **idempotent**: if `/workspace/devbox.json` exists, propose a diff (add
   missing tools), never clobber existing pins (see skill §6).
 
