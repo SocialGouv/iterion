@@ -62,8 +62,12 @@ Normalized event vocabulary (mapped to the forge's native names by
 
 | normalized | GitLab | GitHub | Forgejo |
 |---|---|---|---|
-| `pull_request` | `merge_requests_events` | `pull_request` | `pull_request` |
-| `pull_request_comment` | `note_events` | `issue_comment` | `issue_comment` |
+| `pull_request` | `merge_request` | `pull_request` | `pull_request` |
+| `pull_request_comment` | `note` | `issue_comment` | `issue_comment` |
+
+(GitLab's native names `merge_request` / `note` are translated a second
+time — to the boolean request-body fields `merge_requests_events` /
+`note_events` — inside the GitLab admin client when the hook is created.)
 
 Unknown events / scope keys / levels fail manifest parsing
 ([pkg/bundle/manifest.go:validateForgeRequirements](../pkg/bundle/manifest.go)).
