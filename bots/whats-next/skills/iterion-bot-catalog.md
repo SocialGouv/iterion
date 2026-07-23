@@ -492,12 +492,12 @@ read as deliberate, unfulfilled AMBITIONS are neither deleted nor
 aligned-down: they are recorded and reported in the PR body under
 "Unfulfilled documented promises".
 
-The determinism is TRUTH-only (v3): a deterministic scope gate
-fails the run if anything outside the doc writeable-set changed; a
-deterministic build gate (agent-authored verify.sh re-run on the
-real exit code, with a docs-only fast path) proves the tree still
-builds; and convergence is verify ∧ scope ∧ the campaign's honest
-docs_aligned contract — nothing else. A deterministic scan still
+The determinism is TRUTH-only: a deterministic scope gate fails the
+run if anything outside the doc writeable-set (`.md`) changed, and
+convergence is that scope gate ∧ the campaign's honest docs_aligned
+contract — nothing else. (A docs-only change cannot affect the
+repo's build, so there is no build/test gate.) A deterministic scan
+still
 runs each pass, but as an ADVISORY hints producer (missing paths,
 dead links/anchors, unmentioned code areas, telemetry): help the
 agent is free to use, contradict, and explore beyond — never an
@@ -509,10 +509,10 @@ one PR/MR at the end of the run (gated by a deterministic push-
 credential probe) — required for repo-targeted cloud runs, whose
 clone is ephemeral.
 
-The bot ships 8 skills capturing the discipline: docs-refresh
+The bot ships 7 skills capturing the discipline: docs-refresh
 (playbook), doc-mismatch-taxonomy, doc-enrichment,
 doc-scope-enumeration, anti-facade-fix-rules,
-doc-verification-checklist, verify-build, forge-mr-create.
+doc-verification-checklist, forge-mr-create.
 
 - **Use when**:
   Use when README / CLAUDE.md / docs/**/*.md / bundled skills are
@@ -522,7 +522,7 @@ doc-verification-checklist, verify-build, forge-mr-create.
   the actual state of the repo — or when a repo has NO docs yet and
   needs an initial set authored from the code. Fixes and writes the
   DOCS only (never code logic) and commits.
-- **Vars**: `audit_cache_path` (string), `baseline` (string), `bundle_self_path` (string), `diff_since` (string), `dismissed_path` (string), `doc_globs` (string), `docs_dir` (string), `excluded_dirs` (string), `go_comment_globs` (string), `issue_id` (string), `max_hints` (int), `max_passes` (int), `mr_base` (string), `mr_branch` (string), `open_mr` (bool), `scope_notes` (string), `scratch_dir` (string), `source_issue_ref` (string), `workspace_dir` (string)
+- **Vars**: `audit_cache_path` (string), `bundle_self_path` (string), `diff_since` (string), `dismissed_path` (string), `doc_globs` (string), `docs_dir` (string), `excluded_dirs` (string), `issue_id` (string), `max_hints` (int), `max_passes` (int), `mr_base` (string), `mr_branch` (string), `open_mr` (bool), `scope_notes` (string), `scratch_dir` (string), `source_issue_ref` (string), `workspace_dir` (string)
 - **Path**: `bots/docs-refresh/main.bot`
 
 ### `evolve` — Evoly
