@@ -154,7 +154,7 @@ while keeping their data.
 
 ### 1.7 DLQ triage
 
-When a run exhausts its NATS redelivery budget (default 3) the runner
+When a run exhausts its NATS redelivery budget (default 8) the runner
 **parks** a copy on the DLQ stream and flips the run to
 `failed_resumable` ([pkg/runner/loop.go](../pkg/runner/loop.go), look
 for `parking on DLQ`). Triage:
@@ -190,8 +190,9 @@ shows an eternal spinner, `iterion resume` rejects ("not a resumable
 status"). The orphan sweeper closes that gap
 ([pkg/server/queue_sweeper.go](../pkg/server/queue_sweeper.go)):
 
-- Scans every 60s for `queued > 20 min` or `running > 10 min` AND no
-  current NATS-KV lease.
+- Scans every 60s for `queued` past the redelivery window + margin
+  (~90 min with the defaults) or `running > 10 min` AND no current
+  NATS-KV lease.
 - CAS-flips matched rows to `failed_resumable` so `iterion resume` (or
   the studio Retry button) lights up.
 - Bumps `iterion_runs_orphan_recovered_total`. Set the
