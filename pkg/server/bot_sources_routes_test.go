@@ -165,9 +165,17 @@ func TestBotSource_GalleryMergeAndLaunchResolve(t *testing.T) {
 	s.cfg.Mode = "cloud"
 	edCtx := auth.WithIdentity(context.Background(), editor)
 
+	// A manifest whose name differs from the slug is the case that exposed the
+	// slug-derivation bug: botregistry names the bundle "seed-persona" (manifest),
+	// so the gallery entry MUST be re-keyed to the slug "reviewer" or it collides
+	// with a catalog bot and never surfaces under its own id.
 	if _, err := s.botSources.Create(store.WithTenant(edCtx, "t1"), botsource.BotSource{
 		TenantID: "t1", Slug: "reviewer",
-		Files: map[string]string{botsource.MainBotFile: testBotMain, "skills/x.md": "# x\n"},
+		Files: map[string]string{
+			botsource.MainBotFile: testBotMain,
+			"manifest.yaml":       "name: seed-persona\ndisplay_name: Persona\n",
+			"skills/x.md":         "# x\n",
+		},
 	}); err != nil {
 		t.Fatal(err)
 	}

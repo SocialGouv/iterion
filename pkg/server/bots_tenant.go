@@ -122,17 +122,19 @@ func (s *Server) tenantBotEntries(ctx context.Context) []botregistry.EntryWithSc
 }
 
 // slugFromMaterializedPath extracts "<slug>" — the first path segment under
-// root — from a discovered bot path "<root>/<slug>/main.bot".
+// root. botregistry sets an entry's Path to the bundle DIRECTORY ("<root>/<slug>"),
+// so the relative path is a single segment; a loose bot would be "<slug>/main.bot".
+// Either way the slug is the first segment.
 func slugFromMaterializedPath(root, botPath string) string {
 	rel, err := filepath.Rel(root, botPath)
 	if err != nil {
 		return ""
 	}
-	segments := strings.Split(filepath.ToSlash(rel), "/")
-	if len(segments) < 2 || segments[0] == "" || segments[0] == ".." {
+	seg, _, _ := strings.Cut(filepath.ToSlash(rel), "/")
+	if seg == "" || seg == "." || seg == ".." {
 		return ""
 	}
-	return segments[0]
+	return seg
 }
 
 func hasParentTraversal(clean string) bool {
