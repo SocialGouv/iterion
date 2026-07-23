@@ -70,7 +70,7 @@ values are overridable per deployment:
 | Env var | Purpose |
 | --- | --- |
 | `ITERION_OAUTH_FORFAIT_ANTHROPIC_CLIENT_ID` | Claude Code OAuth client id. **Defaults** to the public client; override only if Anthropic rotates it. |
-| `ITERION_OAUTH_FORFAIT_OPENAI_CLIENT_ID` | Codex OAuth client id (refresh). |
+| `ITERION_OAUTH_FORFAIT_CODEX_CLIENT_ID` | Codex OAuth client id (refresh). |
 | `ITERION_OAUTH_FORFAIT_ANTHROPIC_AUTHORIZE_URL` | Override the authorize endpoint (default `https://claude.ai/oauth/authorize`). |
 | `ITERION_OAUTH_FORFAIT_ANTHROPIC_REDIRECT_URI` | Override the headless redirect (default `https://platform.claude.com/oauth/code/callback`). |
 | `ITERION_OAUTH_FORFAIT_ANTHROPIC_SCOPES` | Override the requested scopes. |
