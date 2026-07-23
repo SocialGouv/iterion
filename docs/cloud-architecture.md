@@ -178,9 +178,9 @@ Four boundaries, each fail-closed:
    adapters filter `tenant_id = ...` automatically — handlers can't
    forget it.
 4. **Mongo adapter**: every collection (`runs`, `events`,
-   `api_keys`, `generic_secrets`, `bot_secret_bindings`, `audit_log`,
+   `api_keys`, `generic_secrets`, `bot_secret_bindings`, `audit_events`,
    `webhook_configs`, `webhook_deliveries`, `org_usage`,
-   `password_resets`, `pats`, `memory_*`) carries `tenant_id` on every
+   `password_resets`, `personal_access_tokens`, `memory_*`) carries `tenant_id` on every
    row + a compound index that starts with it. Reads without a tenant
    ctx **fail-close** (`ErrBindingTenantMissing` and friends), not
    "show everything".
