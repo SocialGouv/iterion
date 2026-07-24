@@ -761,7 +761,9 @@ adr-cartograph, secured-renovacy Phase 2) converge through ONE
 - the **deterministic verify gate** (`verify_build` writes the repo's
   real build+test into an out-of-tree `verify.sh`; the `verify_run`
   tool re-runs it on the REAL exit code — never an LLM judgment,
-  ADR-044) is the truth oracle;
+  ADR-044) is the truth oracle (docs-refresh is the exception: a
+  docs-only campaign can't break the build, so it dropped the verify
+  gate and converges on `scope_ok ∧ docs_aligned` alone);
 - the **termination contract** (a machine-checkable flag —
   `axis_complete` / `feature_complete` / `docs_aligned` / … — plus
   `commits_this_pass` and a remaining-work note) is the done-oracle,
