@@ -99,6 +99,18 @@ iterion run bots/review-pr/main.bot \
   a loud banner if findings existed but zero inline comments landed — the
   board + report still succeed, so fix the forge connection and re-run
   with the same `pr_url`.
+- **Stale-review guard.** The inline findings anchor to `file:line`
+  positions computed against the tree the reviewers judged — the worktree
+  HEAD `diff_precheck` captured as `reviewed_sha`. `publish_review`
+  re-reads HEAD before posting and, if it has moved, **refuses to
+  publish** rather than landing comments on lines that have since shifted;
+  it emits a `skipped` reason telling you to re-run with the same `pr_url`
+  for a fresh review. Within a single run Revi is read-only, so HEAD never
+  drifts between the two nodes — the guard bites on a **resume** after the
+  branch advanced (and any future mid-run mutation). Fail-open: it fires
+  only when both SHAs read cleanly and differ, so a normal publish is
+  never blocked, and the board + report already ran, so no findings are
+  lost.
 
 ## Read-only by construction
 
