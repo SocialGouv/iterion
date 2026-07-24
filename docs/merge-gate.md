@@ -71,6 +71,16 @@ Webhook config ([`pkg/webhooks/types.go`](../pkg/webhooks/types.go)):
 | Field | Default | Meaning |
 |-------|---------|---------|
 | `review_on_sync` | `false` | Re-review on each push so the required status re-evaluates on the fixed head. **Required for a blocking gate.** |
+| `block_fork_prs` | `false` | Filter fork PRs from any auto-launch. **Recommended ON whenever `review_on_sync` is enabled on a public repo** (see caution). |
+
+> **Caution — budget with `review_on_sync`.** The sync lane re-runs the two
+> LLM reviewers on **every push** (each new head SHA), gated only by the
+> webhook's `AuthorAllowlist` (empty = any author) and per-head idempotency —
+> there is no author-trust gate on this lane. On a public repo a fork
+> contributor pushing repeatedly can drive repeated full reviews, bounded only
+> by the org launch gate + webhook rate limit. Enable **`block_fork_prs`**
+> (and/or set an `AuthorAllowlist`/`MinAuthorRole`) alongside `review_on_sync`
+> so untrusted fork PRs don't auto-re-review.
 
 ## Activating the blocking gate on a repo
 

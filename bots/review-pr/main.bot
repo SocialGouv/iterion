@@ -667,12 +667,15 @@ url = os.environ.get('PUB_URL', '').strip()
 tok = os.environ.get('PUB_TOKEN', '').strip()
 pr = os.environ.get('PR_URL', '').strip()
 mode = os.environ.get('MODE', '').strip() or 'inline'
+findings_parse_failed = False
 try:
     findings = json.loads(os.environ.get('FINDINGS') or '[]')
 except ValueError:
     findings = []
+    findings_parse_failed = True
 if not isinstance(findings, list):
     findings = []
+    findings_parse_failed = True
 try:
     questions = json.loads(os.environ.get('QUESTIONS') or '[]')
 except ValueError:
@@ -734,12 +737,23 @@ gate_enabled = str(os.environ.get('GATE_ENABLED', '')).strip().lower() in ('1', 
 if gate_enabled:
     gate_sev = str(os.environ.get('GATE_SEVERITY', 'high')).strip().lower() or 'high'
     floor = sev_rank.get(gate_sev, 1)
-    blocking = 0
-    for f in findings:
-        if not isinstance(f, dict):
-            continue
-        if sev_rank.get(str(f.get('severity') or 'low').lower(), 3) <= floor:
-            blocking += 1
+    # A gate fails CLOSED: an unparseable finding set can't be evaluated, so it
+    # blocks rather than reporting a green status by omission.
+    if findings_parse_failed:
+        blocking = 1
+    else:
+        blocking = 0
+        for f in findings:
+            if not isinstance(f, dict):
+                continue
+            # An off-enum severity ("high " with a space, "blocker", "major",
+            # anything the model wrote outside the four values) is UNKNOWN, and
+            # an unknown severity must block, never silently downgrade to low.
+            rank = sev_rank.get(str(f.get('severity') or '').strip().lower())
+            if rank is None:
+                rank = 0
+            if rank <= floor:
+                blocking += 1
     payload['gate'] = {'enabled': True, 'context': 'revi/review',
                        'blocking_count': blocking, 'threshold': gate_sev,
                        'total_findings': len(findings)}

@@ -8,15 +8,22 @@ import (
 	"testing"
 
 	"github.com/SocialGouv/iterion/pkg/forge"
+	forgeforgejo "github.com/SocialGouv/iterion/pkg/forge/forgejo"
 	forgegithub "github.com/SocialGouv/iterion/pkg/forge/github"
+	forgegitlab "github.com/SocialGouv/iterion/pkg/forge/gitlab"
 )
 
-// The real GitHub clients must satisfy the server's merge-gate client — both
-// the raw-token AdminClient and the production GitHub App client — so
-// gateClientFor never silently degrades to "no capability" on the prod path.
+// Every real forge admin client must satisfy the server's merge-gate client
+// (GetPullRequest + SetCommitStatus) — including the production GitHub App
+// client — so gateClientFor never silently degrades to "no capability" and
+// deadlocks a required check. Asserting the two-method forgeGateClient here
+// (not just forge.CommitStatusClient in each provider) guards a GetPullRequest
+// signature drift on any provider.
 var (
 	_ forgeGateClient = (*forgegithub.AdminClient)(nil)
 	_ forgeGateClient = (*forgegithub.AppClient)(nil)
+	_ forgeGateClient = (*forgegitlab.AdminClient)(nil)
+	_ forgeGateClient = (*forgeforgejo.AdminClient)(nil)
 )
 
 // fakeGateClient records the merge-gate calls (head-SHA lookup + commit-status
@@ -44,14 +51,28 @@ func publishBodyWithGate(gate string) string {
 	return `{"pr_url":"https://github.com/o/r/pull/42","summary":"s","comments":[],"gate":` + gate + `}`
 }
 
+func TestForgePublishReview_GateDefaultContextIsNeutral(t *testing.T) {
+	// A gate arriving with an EMPTY context must fall back to the bot-agnostic
+	// default, never a specific bot's persona name.
+	s, _ := newForgePublishTestServer(t)
+	registerPublishToken(t, s, "tok1", ForgePublishGrant{TeamID: "team1", ConnectionID: "conn1", Repo: "o/r"})
+	gc := &fakeGateClient{headSHA: "abc"}
+	s.forgeGateClientFor = func(context.Context, forge.Connection) (forgeGateClient, error) { return gc, nil }
+	w := httptest.NewRecorder()
+	s.handleForgePublishReview(w, publishReq("tok1", publishBodyWithGate(`{"enabled":true,"blocking_count":0}`)))
+	if gc.last.Context != defaultGateContext {
+		t.Fatalf("empty gate context must default to %q, got %q", defaultGateContext, gc.last.Context)
+	}
+}
+
 func TestForgePublishReview_GateSuccessAndFailure(t *testing.T) {
 	cases := []struct {
 		name      string
 		gate      string
 		wantState string
 	}{
-		{"clean passes", `{"enabled":true,"blocking_count":0,"threshold":"high","total_findings":2}`, "success"},
-		{"blocking fails", `{"enabled":true,"blocking_count":2,"threshold":"high","total_findings":5}`, "failure"},
+		{"clean passes", `{"enabled":true,"context":"revi/review","blocking_count":0,"threshold":"high","total_findings":2}`, "success"},
+		{"blocking fails", `{"enabled":true,"context":"revi/review","blocking_count":2,"threshold":"high","total_findings":5}`, "failure"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

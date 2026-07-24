@@ -296,9 +296,11 @@ func (s *Server) handleForgePublishReview(w http.ResponseWriter, r *http.Request
 }
 
 // defaultGateContext is the commit-status check name the merge gate posts
-// under when the bot pins none. Branch protection lists this as a required
-// check to make the merge queue block on it.
-const defaultGateContext = "revi/review"
+// under when the bot pins none. Kept BOT-AGNOSTIC (the engine must not bake a
+// specific bot's persona in — see CLAUDE.md): a reviewer bot names its own
+// check via gate.context (Revi sends "revi/review"); this neutral fallback
+// only applies when a gate arrives with an empty context.
+const defaultGateContext = "merge-gate"
 
 // forgeGateClient is the capability the merge gate needs: resolve the PR head
 // SHA, then post a commit status on it. Satisfied by the github/gitlab/forgejo
