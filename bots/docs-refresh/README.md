@@ -85,13 +85,15 @@ mr_gate ──(not open_mr)─────────────────�
 |---|---|---|
 | `doc_globs` | READMEs + docs/ + CLAUDE.md | Doc footprint (universal default) |
 | `scope_notes` | `""` | Operator attention pin |
-| `diff_since` | `""` | Incremental hint (`git diff <ref>...HEAD`) |
+| `mode` | `full` | `full` = whole-corpus semantic sweep (monthly reconciliation); `incremental` = semantic pass scoped to the code changed since the last alignment (auto-detected), for weekly/per-PR runs |
+| `diff_since` | `""` | Explicit incremental base (`git diff <ref>...HEAD`). Usually empty — `mode: incremental` auto-detects it from the `Bot: docs-refresh` commit trailer; pin it to force a base (e.g. a PR base) |
 | `max_hints` | `120` | Cap on the advisory hints list (context bound) |
 | `dismissed_path` | `${PROJECT_SCRATCH_DIR}/docs-refresh/dismissed.json` | Dismissals ledger (cross-pass memory) |
 | `docs_dir` | `docs` | Docs dir skipped when scanning for unmentioned code areas |
 | `max_passes` | `4` | Continuation-loop cap |
 | `open_mr` | `false` | Push the alignment series + open ONE PR/MR at the end |
-| `mr_branch` / `mr_base` | `""` | PR branch (default `iterion/docs-refresh/<run-id>`) / base (default: repo default branch) |
+| `mr_mode` | `new_pr` | `new_pr` = open a new PR (periodic runs); `amend` = push the alignment commits onto an existing PR's head branch (`mr_branch`) + comment, so docs land IN the contributor's PR (PR-open trigger) |
+| `mr_branch` / `mr_base` | `""` | PR branch (default `iterion/docs-refresh/<run-id>`, or the PR head in amend mode) / base (default: repo default branch) |
 | `source_issue_ref` | `""` | Issue to back-link the PR URL onto (forge URL or `native:<id>`) |
 
 Retired in v3 (the obligation machinery): `coverage_target_pct`,

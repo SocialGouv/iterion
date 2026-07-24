@@ -159,6 +159,35 @@ Set `back_linked=true` only when the comment actually posted. A failed
 back-link is not fatal — keep `opened=true` and note the failure in
 `summary`.
 
+## 6. Amend an existing PR instead of opening a new one (`mr_mode=amend`)
+
+When the user prompt says **Mode: amend**, the run was checked out from an
+existing PR's head branch and the alignment commits are already stacked on
+top of it. Do NOT open a new PR — land the commits IN that PR and comment.
+
+1. `mr_branch` is the PR's head branch and is REQUIRED. If empty, set
+   `opened=false`, `skipped_reason="amend mode needs the PR head branch"`,
+   stop.
+2. Push the stacked commits onto that branch — a fast-forward, **never
+   force-push**: `git push origin HEAD:<mr_branch>`. The alignment commits
+   now appear in the PR.
+3. Find the PR for the branch and comment on it:
+   - GitHub: `gh pr view <mr_branch> --json url,number` → then
+     `gh pr comment <number> --body "<comment>"`.
+   - GitLab: `glab mr list --source-branch <mr_branch>` → the MR iid →
+     `glab mr note <iid> --message "<comment>"`.
+   - Forgejo/Gitea: `GET /repos/<owner>/<repo>/pulls?head=<owner>:<mr_branch>`
+     → comment via `POST /repos/<owner>/<repo>/issues/<index>/comments`.
+
+   Comment body: which docs were aligned to this change (concise), plus a
+   "Remaining drift" line when `drift_remaining` is non-empty.
+4. Set `opened=true` (the alignment is now in the PR), `url=<the PR URL>`,
+   `branch=<mr_branch>`, `back_linked=true`.
+
+If no PR is found for the branch (the trigger raced ahead of PR creation),
+still keep the pushed commits: `opened=true`, `url=""`, note it in
+`summary` — the commits are the real deliverable.
+
 ## Honesty contract
 
 Report exactly what happened: `opened`, `url`, `branch`, `back_linked`,

@@ -125,12 +125,25 @@ vars:
   ## that contains its source; otherwise leave empty.
   bundle_self_path: string = ""
 
-  ## Incremental mode. When non-empty, scan_hints computes
-  ## `git diff <diff_since>...HEAD --name-only` and surfaces the
-  ## result as `recently_changed_code_files` — a prioritisation HINT
-  ## for the campaign, never a scope reduction. Useful for nightly /
-  ## per-PR runs (`--var diff_since=main`).
+  ## Incremental base (explicit pin). When non-empty, scan_hints computes
+  ## `git diff <diff_since>...HEAD --name-only` → `recently_changed_code_files`.
+  ## Usually left EMPTY: in `mode: incremental` scan_hints AUTO-DETECTS the
+  ## base (the last `Bot: docs-refresh` alignment commit) so a periodic run
+  ## only re-aligns what changed since it last ran. Pin it to force a base —
+  ## e.g. the PR base for an amend-PR run (`--var diff_since=main`).
   diff_since: string = ""
+
+  ## Alignment scope. `full` (default): the campaign sweeps the WHOLE
+  ## corpus semantically — the monthly reconciliation that catches
+  ## cross-cutting drift no per-file diff sees. `incremental`: the
+  ## campaign focuses its SEMANTIC alignment on the docs impacted by the
+  ## code changed since the last alignment (auto-detected from the
+  ## `Bot: docs-refresh` commit trailer, or `diff_since` when pinned) —
+  ## cheap, for the frequent/weekly + per-PR runs. The zero-LLM STRUCTURAL
+  ## scan (dead links, missing paths) stays corpus-wide in BOTH modes, so
+  ## a broken link anywhere is still caught. A first run with no prior
+  ## alignment commit degrades cleanly to a full sweep.
+  mode: string = "full"
 
   ## Hard-excluded directories. Comma-separated list of directory
   ## names whose presence anywhere in a path disqualifies it from the
@@ -193,6 +206,16 @@ vars:
   mr_branch: string = ""
   mr_base: string = ""
   source_issue_ref: string = ""
+
+  ## PR finalization mode. `new_pr` (default): open ONE new PR from the
+  ## alignment series (periodic runs). `amend`: the run was checked out
+  ## from an EXISTING PR's head branch (repo_ref set by the PR-open
+  ## trigger) — instead of opening a new PR, push the alignment commits
+  ## onto that same branch (mr_branch) and comment on the PR, so the docs
+  ## land IN the contributor's PR and are reviewed WITH the code. Pair
+  ## with `mode: incremental` + `diff_since: <pr base>` so the campaign
+  ## scopes to the PR's own diff.
+  mr_mode: string = "new_pr"
 
 secrets:
   ## Forge access for push + PR creation + the issue back-link.
@@ -429,6 +452,21 @@ prompt campaign_user:
   Scope notes (operator's attention pin, may be empty):
   {{vars.scope_notes}}
 
+  ## Pass scope — mode: {{input.mode}}
+  FULL: sweep the WHOLE corpus — plan it, then align exhaustively. The
+  periodic reconciliation that catches cross-cutting drift a per-file
+  diff can't see.
+  INCREMENTAL: focus your SEMANTIC alignment on the docs impacted by the
+  code changed since the last alignment (base {{input.incremental_base}} —
+  see "Recently changed code files" below): read that changed code, align
+  the docs that describe it, and follow the thread where a change makes a
+  nearby doc stale. Do NOT re-audit semantically-aligned areas untouched
+  by these changes. In BOTH modes the structural hints below cover the
+  whole corpus — fix any dead link / missing path anywhere. If the delta
+  is empty and no structural hint remains, you are already aligned:
+  report docs_aligned=true and stop (zero commits is the correct, honest
+  outcome — never manufacture edits).
+
   ## Advisory scan report (this pass)
   {{input.hints_note}}
 
@@ -447,68 +485,84 @@ prompt campaign_user:
   doc writeable-set changed; revert those commits before continuing):
   {{input.fail_log}}
 
-  Plan the whole corpus first, then align it — for each item: verify
-  in the code → bring the doc fully up to the code (repair stale, or
-  write the missing doc) → negative-space check → commit (`docs(<area>):
-  …` + `Bot: docs-refresh` trailer). Work through the entire plan this
-  pass, to the edge of your budget, then report the termination
-  contract (docs_aligned as the asymptote signal, commits_this_pass,
+  Plan your pass (whole corpus in full mode; the impacted docs in
+  incremental), then align — for each item: verify in the code → bring
+  the doc fully up to the code (repair stale, or write the missing doc) →
+  negative-space check → commit (`docs(<area>): …` + a `Bot: docs-refresh`
+  trailer line — REQUIRED on every commit: the next incremental run reads
+  it to find where alignment last landed). Work through the plan this
+  pass, to the edge of your budget, then report the termination contract
+  (docs_aligned as the asymptote signal, commits_this_pass,
   drift_remaining). Read `git log` first to see what earlier passes
   already aligned.
 
 ## ─── PR finalization prompts (opt-in) ──────────────────────────────
 
 prompt finalize_mr_system:
-  You finalize a finished docs-refresh run by opening ONE pull request
-  (PR; merge request on GitLab) for the SERIES of per-doc alignment
-  commits this run produced, then (optionally) posting the PR link back
-  to the source issue. You make NO further changes to docs or code.
+  You finalize a finished docs-refresh run by getting its SERIES of
+  per-doc alignment commits into a pull request (PR; merge request on
+  GitLab). Two modes — the user prompt names which. You make NO further
+  changes to docs or code.
 
-  Read the `forge-mr-create` skill FIRST — it tells you how to detect the
-  forge, authenticate from the mounted forge_token, push the branch, and
-  open the PR (GitHub via gh, GitLab via glab, Forgejo/Gitea via REST).
+  - new_pr (default): open ONE new PR for the alignment series, then
+    (optionally) post the PR link back to the source issue.
+  - amend: the run was checked out FROM an existing PR's head branch, so
+    the alignment commits already sit on top of it — do NOT open a new
+    PR. Push those commits onto that same branch (they land IN the
+    contributor's PR) and post ONE short comment on the PR. The docs get
+    reviewed together with the code.
 
-  Procedure:
-    1. Confirm there are commits to ship: the run's HEAD must be ahead of
-       the base (`git rev-list --count origin/<base>..HEAD` > 0). If not, set
-       opened=false with skipped_reason "no commits ahead of base" — do
-       NOT open an empty PR.
-    2. Determine the branch name (mr_branch if set, else a stable
-       iterion/docs-refresh/<run-id> name) and the base (mr_base if set,
-       else the repo's default branch — see the skill).
-    3. Authenticate the matching forge CLI from the mounted forge_token
-       file when present; otherwise assume host auth. If neither is
-       available, set opened=false with a precise skipped_reason — never
-       pretend.
-    4. Push HEAD to the branch on the origin remote, then open the PR
-       from that branch into the base. Title: a concise
-       "docs: …" conventional summary. Body: the campaign summary, the
-       docs aligned this run, and — when drift_remaining is non-empty —
-       an honest "Remaining drift" section (the run shipped what is
-       banked; never present a partial alignment as complete).
-       PROMISES: read the promises ledger file named in your user
-       prompt (it may be absent or empty — then skip this). When it
-       has entries, append an "Unfulfilled documented promises"
-       section to the PR body: one bullet per entry — the doc, the
-       promised claim, and the big-picture code gap. These are
-       deliberate documented ambitions the code has not caught up
-       with, recorded by the campaign for the maintainers; report
-       them verbatim in substance, never silently drop them.
-    5. If source_issue_ref is set, post the opened PR URL back to it: a
-       forge issue URL → comment via the same forge CLI; a "native:<id>"
-       ref → use the board comment tool. Set back_linked accordingly.
+  Read the `forge-mr-create` skill FIRST — forge detection, authenticating
+  from the mounted forge_token, pushing, opening a PR (GitHub gh, GitLab
+  glab, Forgejo/Gitea REST), and the amend path.
+
+  Common precondition (both modes):
+    A. Commits to ship: HEAD must be ahead of the base
+       (`git rev-list --count <base>..HEAD` > 0). If not, set opened=false,
+       skipped_reason "no commits ahead of base" — never push, never open
+       an empty PR or post an empty comment.
+    B. Authenticate the matching forge CLI from the mounted forge_token
+       file when present; otherwise assume host auth. If neither works,
+       set opened=false with a precise skipped_reason — never pretend.
+
+  new_pr mode:
+    1. Branch = mr_branch if set, else a stable iterion/docs-refresh/<run-id>;
+       base = mr_base if set, else the repo default branch (skill).
+    2. Push HEAD to that branch on origin, open the PR into the base.
+       Title: a concise "docs: …" summary. Body: the campaign summary, the
+       docs aligned, and — when drift_remaining is non-empty — an honest
+       "Remaining drift" section. PROMISES: read the promises ledger named
+       in your user prompt; when it has entries, append an "Unfulfilled
+       documented promises" section (one bullet each: doc, promised claim,
+       code gap) — verbatim in substance, never silently dropped.
+    3. If source_issue_ref is set, post the PR URL back (forge issue URL →
+       forge-CLI comment; "native:<id>" → board comment tool); back_linked.
+    4. opened=true, url=<the new PR>, branch=<the branch>.
+
+  amend mode:
+    1. mr_branch is the existing PR's head branch and is REQUIRED — if
+       empty, set opened=false, skipped_reason "amend mode needs the PR
+       head branch". Push HEAD to origin/<mr_branch> (a fast-forward: the
+       alignment commits are stacked on top of the PR). NEVER force-push.
+    2. Find the PR for that branch (`gh pr view --json url,number`, or the
+       skill) and post ONE concise comment: which docs were aligned to
+       this change, plus the remaining drift when non-empty. Do NOT open a
+       new PR.
+    3. opened=true (the alignment is now IN the PR), url=<that PR>,
+       branch=<mr_branch>, back_linked=true.
 
   Return opened, url, branch, back_linked, skipped_reason and a short
   summary. Be honest: report exactly what happened.
 
 prompt finalize_mr_user:
+  Mode: {{input.mr_mode}}
   Workspace: {{input.workspace_dir}}
-  Desired branch (may be empty → derive): {{input.mr_branch}}
+  Branch (new_pr: may be empty → derive · amend: the PR head branch to push onto): {{input.mr_branch}}
   Base (may be empty → repo default branch): {{input.mr_base}}
-  Source issue to back-link (may be empty): {{input.source_issue_ref}}
+  Source issue to back-link (new_pr only, may be empty): {{input.source_issue_ref}}
   Operator scope notes (may be empty): {{input.scope_notes}}
 
-  Campaign summary (for the PR body):
+  Campaign summary (for the PR body / amend comment):
   {{input.campaign_summary}}
 
   Remaining drift reported by the campaign (empty = fully aligned):
@@ -517,9 +571,11 @@ prompt finalize_mr_user:
   Promises ledger (JSON array; the file may be absent or empty):
   {{vars.scratch_dir}}/promises.json
 
-  Push the branch, open the PR (with the "Unfulfilled documented
-  promises" section when the ledger has entries), post the back-link
-  when a source issue is given, and return the structured result.
+  Finalize per the mode: new_pr → push the branch + open the PR (with the
+  "Unfulfilled documented promises" section when the ledger has entries) +
+  post the back-link when a source issue is given. amend → push HEAD onto
+  the PR head branch + post ONE comment on the PR. Return the structured
+  result.
 
 ## ─── Schemas ────────────────────────────────────────────────────
 
@@ -541,15 +597,20 @@ schema hints_output:
   ledger_excluded: int
   truncated: bool
   hints_note: string
+  mode: string
+  incremental_base: string
   recently_changed_code_files: string[]
 
 ## campaign input: the advisory report + the deterministic gate
 ## feedback from the previous pass (empty on the first pass and on a
-## green-but-more-work continuation).
+## green-but-more-work continuation). mode/incremental_base carry the
+## alignment-scope framing (full sweep vs delta-since-last-alignment).
 schema campaign_input:
   hints: json
   hint_count: int
   hints_note: string
+  mode: string
+  incremental_base: string
   recently_changed_code_files: string[]
   fail_log: string
 
@@ -598,6 +659,7 @@ schema forge_auth_state:
 
 schema finalize_mr_input:
   workspace_dir: string
+  mr_mode: string
   mr_branch: string
   mr_base: string
   source_issue_ref: string
@@ -650,7 +712,7 @@ schema finalize_mr_output:
 ## Raw-string command — the python body avoids double quotes and
 ## literal backticks (BT = chr(96)); values flow via shell env vars.
 tool scan_hints:
-  command: `WS={{vars.workspace_dir}} DOC_GLOBS={{vars.doc_globs}} EXCLUDED_DIRS={{vars.excluded_dirs}} BUNDLE_SELF={{vars.bundle_self_path}} DIFF_SINCE={{vars.diff_since}} DISMISSED_PATH={{vars.dismissed_path}} MAX_HINTS={{vars.max_hints}} DOCS_DIR={{vars.docs_dir}} python3 -c "
+  command: `WS={{vars.workspace_dir}} DOC_GLOBS={{vars.doc_globs}} EXCLUDED_DIRS={{vars.excluded_dirs}} BUNDLE_SELF={{vars.bundle_self_path}} DIFF_SINCE={{vars.diff_since}} MODE={{vars.mode}} DISMISSED_PATH={{vars.dismissed_path}} MAX_HINTS={{vars.max_hints}} DOCS_DIR={{vars.docs_dir}} python3 -c "
 import os, json, glob, re, subprocess
 ws = os.environ['WS']
 os.chdir(ws)
@@ -838,13 +900,27 @@ else:
     hints_note = str(missing_path_count) + ' missing path(s), ' + str(dead_link_count) + ' dead link(s)/anchor(s), ' + str(unmentioned_area_count) + ' unmentioned area(s) — from ' + str(checked_paths) + ' checkable path(s) + ' + str(checked_links) + ' internal link(s) across ' + str(len(files)) + ' doc(s); ' + str(ledger_excluded) + ' ledger-dismissed excluded' + (' [list truncated to ' + str(max_hints) + ']' if truncated else '')
 recent = []
 diff_since = os.environ.get('DIFF_SINCE', '').strip()
+mode = os.environ.get('MODE', 'full').strip().lower()
+if mode == 'incremental' and not diff_since:
+    # Auto-detect the last alignment point: the campaign stamps every
+    # commit with a Bot: docs-refresh trailer, so the newest such commit
+    # is where the docs were last aligned. The delta after it is what this
+    # incremental pass focuses its (expensive) semantic alignment on. No
+    # prior alignment commit (first run) leaves diff_since empty → the
+    # campaign sweeps the whole corpus, a clean degrade to full.
+    try:
+        p = subprocess.run(['git', 'log', '--grep', 'Bot: docs-refresh', '-n', '1', '--format=%H'], capture_output=True, text=True, check=True)
+        diff_since = p.stdout.strip()
+    except Exception:
+        diff_since = ''
+incremental_base = diff_since
 if diff_since:
     try:
         proc = subprocess.run(['git', 'diff', '--name-only', diff_since + '...HEAD'], capture_output=True, text=True, check=True)
         recent = sorted([l for l in proc.stdout.splitlines() if l and not excluded(l)])
     except Exception:
         recent = []
-print(json.dumps({'doc_files': files, 'doc_count': len(files), 'hints': hints, 'hint_count': len(hints), 'missing_path_count': missing_path_count, 'dead_link_count': dead_link_count, 'unmentioned_area_count': unmentioned_area_count, 'checked_paths': checked_paths, 'checked_links': checked_links, 'ledger_excluded': ledger_excluded, 'truncated': truncated, 'hints_note': hints_note, 'recently_changed_code_files': recent}))
+print(json.dumps({'doc_files': files, 'doc_count': len(files), 'hints': hints, 'hint_count': len(hints), 'missing_path_count': missing_path_count, 'dead_link_count': dead_link_count, 'unmentioned_area_count': unmentioned_area_count, 'checked_paths': checked_paths, 'checked_links': checked_links, 'ledger_excluded': ledger_excluded, 'truncated': truncated, 'hints_note': hints_note, 'mode': mode, 'incremental_base': incremental_base, 'recently_changed_code_files': recent}))
 "`
   output: hints_output
 
@@ -1033,6 +1109,8 @@ workflow docs_refresh:
     hints: "{{outputs.scan_hints.hints}}",
     hint_count: "{{outputs.scan_hints.hint_count}}",
     hints_note: "{{outputs.scan_hints.hints_note}}",
+    mode: "{{outputs.scan_hints.mode}}",
+    incremental_base: "{{outputs.scan_hints.incremental_base}}",
     recently_changed_code_files: "{{outputs.scan_hints.recently_changed_code_files}}",
     fail_log: "{{outputs.gate.fail_log}}"
   }
@@ -1070,6 +1148,7 @@ workflow docs_refresh:
 
   forge_auth_probe -> finalize_mr when available with {
     workspace_dir:    "{{vars.workspace_dir}}",
+    mr_mode:          "{{vars.mr_mode}}",
     mr_branch:        "{{vars.mr_branch}}",
     mr_base:          "{{vars.mr_base}}",
     source_issue_ref: "{{vars.source_issue_ref}}",

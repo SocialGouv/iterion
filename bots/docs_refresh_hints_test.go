@@ -43,19 +43,19 @@ func TestDocsRefreshHintsProducer(t *testing.T) {
 		Note  string `json:"note"`
 	}
 	type hintsOut struct {
-		DocCount       int         `json:"doc_count"`
-		NoDocs         bool        `json:"no_docs"`
-		NoopSkip       bool        `json:"noop_skip"`
-		NoopReason     string      `json:"noop_reason"`
-		Hints          []hintEntry `json:"hints"`
-		HintCount      int         `json:"hint_count"`
-		CheckedPaths   int         `json:"checked_paths"`
-		CheckedLinks   int         `json:"checked_links"`
-		LedgerExcluded int         `json:"ledger_excluded"`
-		HintsNote      string      `json:"hints_note"`
+		DocCount        int         `json:"doc_count"`
+		Hints           []hintEntry `json:"hints"`
+		HintCount       int         `json:"hint_count"`
+		CheckedPaths    int         `json:"checked_paths"`
+		CheckedLinks    int         `json:"checked_links"`
+		LedgerExcluded  int         `json:"ledger_excluded"`
+		HintsNote       string      `json:"hints_note"`
+		Mode            string      `json:"mode"`
+		IncrementalBase string      `json:"incremental_base"`
+		RecentlyChanged []string    `json:"recently_changed_code_files"`
 	}
 
-	run := func(t *testing.T, ws, dismissedPath string) hintsOut {
+	run := func(t *testing.T, ws, dismissedPath string, overrides map[string]string) hintsOut {
 		t.Helper()
 		vars := map[string]string{
 			"workspace_dir":    ws,
@@ -63,11 +63,13 @@ func TestDocsRefreshHintsProducer(t *testing.T) {
 			"excluded_dirs":    ".iterion,.works,.claude,vendor,node_modules,.git,dist,build,out",
 			"bundle_self_path": "",
 			"diff_since":       "",
-			"audit_cache_path": "",
-			"issue_id":         "",
+			"mode":             "full",
 			"dismissed_path":   dismissedPath,
 			"max_hints":        "120",
 			"docs_dir":         "docs",
+		}
+		for k, v := range overrides {
+			vars[k] = v
 		}
 		cmd := command
 		for k, v := range vars {
@@ -114,7 +116,7 @@ Amend with `+"`git commit --amend --no-edit`"+` and push with
 `)
 		write(t, ws, "src/main.c", "int main(void){return 0;}\n")
 
-		res := run(t, ws, "")
+		res := run(t, ws, "", nil)
 		if res.HintCount != 0 || len(res.Hints) != 0 {
 			t.Fatalf("foreign-tool flag examples must produce ZERO hints, got %d: %+v", res.HintCount, res.Hints)
 		}
@@ -136,7 +138,7 @@ Read the [guide](docs/guide.md), the [missing page](nope.md),
 and the [dead anchor](docs/guide.md#not-there).
 `)
 
-		res := run(t, ws, "")
+		res := run(t, ws, "", nil)
 		kinds := map[string]string{}
 		for _, h := range res.Hints {
 			kinds[h.Kind+"|"+h.Value] = h.Note
@@ -187,7 +189,7 @@ Scaffold your own with `+"`bots/my-bot/main.bot`"+` as a starting name.
 		git("add", "-A")
 		git("commit", "-q", "-m", "docs")
 
-		res := run(t, ws, "")
+		res := run(t, ws, "", nil)
 		var gotTracked, gotExample bool
 		for _, h := range res.Hints {
 			if h.Kind == "missing_path" && h.Value == "bots/real/tracked.go" {
@@ -209,7 +211,7 @@ Scaffold your own with `+"`bots/my-bot/main.bot`"+` as a starting name.
 		ws := t.TempDir()
 		write(t, ws, "README.md", "# quiet\n\nJust prose. No paths, no links.\n")
 
-		res := run(t, ws, "")
+		res := run(t, ws, "", nil)
 		if res.HintCount != 0 {
 			t.Fatalf("nothing scannable must yield zero hints, got %+v", res.Hints)
 		}
@@ -218,14 +220,17 @@ Scaffold your own with `+"`bots/my-bot/main.bot`"+` as a starting name.
 		}
 	})
 
-	t.Run("no_docs_routes_to_bootstrap", func(t *testing.T) {
+	t.Run("no_docs_degrades_silently", func(t *testing.T) {
+		// A repo with zero docs in scope: the producer reports doc_count=0 +
+		// empty hints + a "no docs in scope" note and exits 0. There is no
+		// special routing (the campaign authors the initial set itself).
 		ws := t.TempDir()
-		res := run(t, ws, "")
-		if !res.NoDocs || res.DocCount != 0 {
-			t.Fatalf("empty repo must report no_docs=true, got %+v", res)
+		res := run(t, ws, "", nil)
+		if res.DocCount != 0 || res.HintCount != 0 || len(res.Hints) != 0 {
+			t.Fatalf("empty repo must report doc_count=0 + zero hints, got %+v", res)
 		}
-		if res.NoopSkip {
-			t.Errorf("no_docs and noop_skip are mutually exclusive")
+		if !strings.Contains(res.HintsNote, "no docs in scope") {
+			t.Errorf("hints_note must say 'no docs in scope', got %q", res.HintsNote)
 		}
 	})
 
@@ -234,7 +239,7 @@ Scaffold your own with `+"`bots/my-bot/main.bot`"+` as a starting name.
 		write(t, ws, "README.md", "# fixture\n\nNothing about the backend here.\n")
 		write(t, ws, "server/handler.py", "def h():\n    pass\n")
 
-		res := run(t, ws, "")
+		res := run(t, ws, "", nil)
 		found := false
 		for _, h := range res.Hints {
 			if h.Kind == "unmentioned_area" && h.Value == "server" {
@@ -268,7 +273,7 @@ Scaffold your own with `+"`bots/my-bot/main.bot`"+` as a starting name.
 			t.Fatal(err)
 		}
 
-		res := run(t, ws, ledger)
+		res := run(t, ws, ledger, nil)
 		for _, h := range res.Hints {
 			if h.Kind == "missing_path" && h.Value == "pkg/gone.go" {
 				t.Errorf("ledger-dismissed hint re-surfaced — the agent's adjudication memory is broken: %+v", h)
@@ -276,6 +281,89 @@ Scaffold your own with `+"`bots/my-bot/main.bot`"+` as a starting name.
 		}
 		if res.LedgerExcluded != 1 {
 			t.Errorf("ledger_excluded = %d, want 1", res.LedgerExcluded)
+		}
+	})
+
+	t.Run("incremental_auto_detects_last_alignment_base", func(t *testing.T) {
+		// The core of the weekly incremental schedule: mode=incremental with
+		// no explicit diff_since → scan_hints finds the last
+		// Bot: docs-refresh commit and scopes recently_changed_code_files to
+		// the code changed SINCE it. A periodic run re-aligns only the delta.
+		ws := t.TempDir()
+		git := func(args ...string) string {
+			cmd := exec.Command("git", args...)
+			cmd.Dir = ws
+			cmd.Env = append(os.Environ(),
+				"GIT_AUTHOR_NAME=t", "GIT_AUTHOR_EMAIL=t@t",
+				"GIT_COMMITTER_NAME=t", "GIT_COMMITTER_EMAIL=t@t")
+			out, err := cmd.CombinedOutput()
+			if err != nil {
+				t.Fatalf("git %v: %v\n%s", args, err, out)
+			}
+			return strings.TrimSpace(string(out))
+		}
+		git("init", "-q")
+		write(t, ws, "README.md", "# fixture\n")
+		write(t, ws, "pkg/old.go", "package pkg\n")
+		git("add", "-A")
+		git("commit", "-q", "-m", "init")
+		// A prior docs-refresh alignment commit — carries the trailer.
+		write(t, ws, "README.md", "# fixture\n\naligned.\n")
+		git("add", "-A")
+		git("commit", "-q", "-m", "docs(readme): align\n\nBot: docs-refresh")
+		base := git("rev-parse", "HEAD")
+		// Code changed AFTER the alignment — the incremental delta.
+		write(t, ws, "pkg/new.go", "package pkg\n\nfunc New() {}\n")
+		git("add", "-A")
+		git("commit", "-q", "-m", "feat: add New")
+
+		res := run(t, ws, "", map[string]string{"mode": "incremental"})
+		if res.IncrementalBase != base {
+			t.Errorf("incremental_base = %q, want the last Bot: docs-refresh commit %q", res.IncrementalBase, base)
+		}
+		var gotNew, gotOld bool
+		for _, f := range res.RecentlyChanged {
+			if f == "pkg/new.go" {
+				gotNew = true
+			}
+			if f == "pkg/old.go" {
+				gotOld = true
+			}
+		}
+		if !gotNew {
+			t.Errorf("recently_changed_code_files must include pkg/new.go (changed since base): %+v", res.RecentlyChanged)
+		}
+		if gotOld {
+			t.Errorf("recently_changed_code_files must NOT include pkg/old.go (predates base): %+v", res.RecentlyChanged)
+		}
+	})
+
+	t.Run("incremental_first_run_degrades_to_full", func(t *testing.T) {
+		// No prior alignment commit → incremental_base empty and
+		// recently_changed_code_files empty → the campaign sweeps the whole
+		// corpus. A clean degrade to full, never an error.
+		ws := t.TempDir()
+		git := func(args ...string) {
+			cmd := exec.Command("git", args...)
+			cmd.Dir = ws
+			cmd.Env = append(os.Environ(),
+				"GIT_AUTHOR_NAME=t", "GIT_AUTHOR_EMAIL=t@t",
+				"GIT_COMMITTER_NAME=t", "GIT_COMMITTER_EMAIL=t@t")
+			if out, err := cmd.CombinedOutput(); err != nil {
+				t.Fatalf("git %v: %v\n%s", args, err, out)
+			}
+		}
+		git("init", "-q")
+		write(t, ws, "README.md", "# fixture\n")
+		git("add", "-A")
+		git("commit", "-q", "-m", "init")
+
+		res := run(t, ws, "", map[string]string{"mode": "incremental"})
+		if res.IncrementalBase != "" {
+			t.Errorf("incremental_base = %q, want empty (no prior Bot: docs-refresh commit)", res.IncrementalBase)
+		}
+		if len(res.RecentlyChanged) != 0 {
+			t.Errorf("recently_changed_code_files must be empty with no base, got %+v", res.RecentlyChanged)
 		}
 	})
 }

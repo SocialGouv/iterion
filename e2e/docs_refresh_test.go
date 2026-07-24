@@ -40,6 +40,8 @@ func stubDocsRefresh(exec *scenarioExecutor, st *docsRefreshState) {
 			"unmentioned_area_count": 0, "checked_paths": 1, "checked_links": 0,
 			"ledger_excluded": 0, "truncated": false,
 			"hints_note":                  "1 missing path(s)",
+			"mode":                        "full",
+			"incremental_base":            "",
 			"recently_changed_code_files": []any{},
 			"_tokens":                     1,
 		}, nil
@@ -185,6 +187,7 @@ func TestDocsRefresh_ZeroDocsRoutesToCampaign(t *testing.T) {
 			"missing_path_count": 0, "dead_link_count": 0, "unmentioned_area_count": 0,
 			"checked_paths": 0, "checked_links": 0, "ledger_excluded": 0,
 			"truncated": false, "hints_note": "no docs in scope",
+			"mode": "full", "incremental_base": "",
 			"recently_changed_code_files": []any{}, "_tokens": 1,
 		}, nil
 	})
@@ -195,6 +198,38 @@ func TestDocsRefresh_ZeroDocsRoutesToCampaign(t *testing.T) {
 	}
 	if !exec.wasCalled("campaign") {
 		t.Errorf("campaign never ran on a zero-doc repo — the campaign must author the initial set itself")
+	}
+}
+
+// TestDocsRefresh_ModeWiredToCampaign: scan_hints' mode + incremental_base
+// reach the campaign input via the edge mapping, so the campaign can scope
+// its pass (full sweep vs delta-since-last-alignment). Guards the
+// incremental-mode wiring.
+func TestDocsRefresh_ModeWiredToCampaign(t *testing.T) {
+	exec := newScenarioExecutor()
+	st := &docsRefreshState{alignedBy: 1, hintCount: 1}
+	stubDocsRefresh(exec, st)
+	var gotMode any
+	var haveMode, haveBase bool
+	exec.on("campaign", func(in map[string]any) (map[string]any, error) {
+		gotMode, haveMode = in["mode"]
+		_, haveBase = in["incremental_base"]
+		return map[string]any{
+			"docs_aligned": true, "commits_this_pass": 0, "drift_remaining": "",
+			"is_code_bug": false, "needs_human": false, "human_note": "",
+			"summary": "already aligned", "_tokens": 1,
+		}, nil
+	})
+
+	run := runDocsRefresh(t, exec, "run-dr-mode-wired")
+	if run.Status != store.RunStatusFinished {
+		t.Fatalf("status = %s, want %s", run.Status, store.RunStatusFinished)
+	}
+	if !haveMode || toStr(gotMode) != "full" {
+		t.Errorf("campaign input mode = %v (present=%v), want \"full\" — the scan_hints→campaign edge must carry mode", gotMode, haveMode)
+	}
+	if !haveBase {
+		t.Errorf("campaign input missing incremental_base — the edge must carry it (empty in full mode is fine)")
 	}
 }
 

@@ -1,7 +1,22 @@
 name: docs-refresh
 display_name: Doki
 icon: 📚
-version: 3.4.0
+version: 3.5.0
+## 3.5.0 — TWO alignment strategies, so Doki can keep docs fresh cheaply.
+## (1) `mode: incremental` (+ default `full`): scan_hints AUTO-DETECTS the
+## last alignment point from git (the newest `Bot: docs-refresh` commit
+## trailer) and scopes the campaign's SEMANTIC pass to the code changed
+## since — cheap, for a weekly schedule; the zero-LLM STRUCTURAL scan
+## (dead links, missing paths) stays corpus-wide in both modes; first run
+## with no prior alignment degrades to a full sweep. A `full` sweep stays
+## the monthly reconciliation for cross-cutting drift. (2) `mr_mode: amend`
+## (+ default `new_pr`): when the run is checked out from an existing PR's
+## head branch, finalize_mr pushes the alignment commits ONTO that branch
+## and comments, instead of opening a new PR — docs land IN the
+## contributor's PR, reviewed with the code (for the PR-open trigger).
+## The git-native base detection is the durable, cloud-safe successor to
+## the noop cache removed in 3.4 (git IS the state). Real fixture tests
+## pin the base-detection + delta-scoping (bots/docs_refresh_hints_test.go).
 ## 3.4.0 — REMOVED three more non-essential nodes, converging on the
 ## native paradigm (one agent + truth gate + PR). (1) update_audit_cache
 ## + the inter-run noop cache: INERT on cloud (per-run scratch never
