@@ -20,6 +20,13 @@ export function installMermaidZoom() {
 }
 
 function openZoomModal(source: SVGSVGElement) {
+  // Directly hide the clicked diagram's container (inline style wins over
+  // everything and is immune to compositing quirks) so its inline copy can't
+  // show under the overlay. Restored on close.
+  const sourceContainer = source.closest('.mermaid') as HTMLElement | null
+  const prevDisplay = sourceContainer ? sourceContainer.style.display : ''
+  if (sourceContainer) sourceContainer.style.display = 'none'
+
   const overlay = document.createElement('div')
   overlay.className = 'mermaid-zoom-overlay'
 
@@ -134,6 +141,7 @@ function openZoomModal(source: SVGSVGElement) {
     overlay.remove()
     document.documentElement.style.overflow = ''
     document.documentElement.classList.remove('mermaid-zoom-active')
+    if (sourceContainer) sourceContainer.style.display = prevDisplay
   }
 
   document.documentElement.style.overflow = 'hidden'

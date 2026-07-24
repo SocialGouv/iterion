@@ -45,11 +45,13 @@
   border-color: var(--vp-c-brand-1);
 }
 
-/* While zoomed, remove the inline diagrams from the render tree entirely, so
-   none can show through the overlay. display:none (not visibility:hidden) is
-   immune to GPU-compositing quirks where a transformed SVG keeps painting
-   despite a hidden parent — the cause of the apparent "doubling". */
-.mermaid-zoom-active .vp-doc .mermaid {
+/* While zoomed, remove every inline diagram from the render tree so none can
+   show through the overlay. display:none (not visibility:hidden) is immune to
+   GPU-compositing quirks where a transformed SVG keeps painting despite a
+   hidden parent. The overlay's own SVG carries .mermaid-zoom-svg (not .mermaid),
+   so it is never matched here. */
+.mermaid-zoom-active .mermaid,
+.mermaid-zoom-active .mermaid > svg {
   display: none !important;
 }
 
