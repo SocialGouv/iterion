@@ -264,7 +264,7 @@ a key the org-admin has pinned (`handleGenericWebhook` in
 
 ## Matching: project + event + author allowlists, bot scope
 
-Every webhook carries four filters
+Every webhook carries four selection filters plus a bot-agnostic hold gate
 ([pkg/webhooks/types.go:Config](../pkg/webhooks/types.go)):
 
 - **`event_allowlist`** — provider-event names allowed; empty defaults
