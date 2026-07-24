@@ -108,6 +108,38 @@ func TestScanFrontmatter(t *testing.T) {
 			wantName: "kept",
 			wantDesc: "",
 		},
+		{
+			// Folded block scalar (`>`): continuation lines join into one
+			// whitespace-normalized string. Without block-scalar support the
+			// router would see just ">" as the whole description.
+			name:     "folded block-scalar description",
+			in:       "---\nname: n\ndescription: >\n  first line\n  second line\n---\n# body\n",
+			wantName: "n",
+			wantDesc: "first line second line",
+		},
+		{
+			// Literal block scalar (`|`): newlines preserved.
+			name:     "literal block-scalar description",
+			in:       "---\nname: n\ndescription: |\n  line one\n  line two\n---\n",
+			wantName: "n",
+			wantDesc: "line one\nline two",
+		},
+		{
+			// A block scalar is terminated by a dedent to another key, which
+			// is then parsed normally.
+			name:     "block scalar ends at next key",
+			in:       "---\ndescription: >\n  folded text\nname: after\n---\n",
+			wantName: "after",
+			wantDesc: "folded text",
+		},
+		{
+			// Chomping/indent indicators after |/> are ignored (we only need
+			// the text), and the block may end at EOF/`---` mid-collection.
+			name:     "block scalar with chomping indicator",
+			in:       "---\nname: n\ndescription: |-\n  kept text\n---\n",
+			wantName: "n",
+			wantDesc: "kept text",
+		},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
