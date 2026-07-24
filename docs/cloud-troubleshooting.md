@@ -1,5 +1,3 @@
-[← docs index](README.md) · [← cloud-deployment.md](cloud-deployment.md)
-
 # Cloud troubleshooting
 
 Symptoms-first reference for operators running iterion in cloud mode (Helm chart, docker-compose, or any setup using Mongo + NATS + S3-compatible blob storage). For each symptom: how to diagnose, what to check, what fixes it.

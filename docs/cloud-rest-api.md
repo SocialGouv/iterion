@@ -1,5 +1,3 @@
-[← Documentation index](README.md) · [← Iterion Cloud overview](cloud-overview.md)
-
 # Cloud REST API reference
 
 **Audience.** Anyone calling iterion programmatically — a CI job, an

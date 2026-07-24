@@ -1,5 +1,3 @@
-[← Documentation index](README.md)
-
 # Bundles — `.botz` packaged workflows
 
 A **bundle** is a deterministic ZIP archive that ships a workflow

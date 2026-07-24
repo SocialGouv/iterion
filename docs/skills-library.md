@@ -1,5 +1,3 @@
-[← Documentation index](README.md)
-
 # Skill library
 
 The **skill library** is a curated, standalone collection of Claude-Code-style

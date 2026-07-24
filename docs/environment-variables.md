@@ -1,5 +1,3 @@
-[← Documentation](README.md)
-
 # Environment variables
 
 Operational `ITERION_*` environment variables read directly by the engine

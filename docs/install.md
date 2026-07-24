@@ -1,10 +1,11 @@
-[← Documentation index](README.md) · [← Iterion](../README.md)
-
 # Install
 
-Iterion ships in eight delivery/operation flavours. They share the same DSL,
-compiler, runtime, and logical run contract; launch transport, persistence,
-isolation, and process topology vary between local, container, and cloud modes.
+One Go core, delivered wherever you work — a scriptable CLI, a visual studio, a
+native desktop app, a Docker image, a multi-tenant cloud, an autonomous
+dispatcher, a cron scheduler, and a TypeScript SDK. All eight share the same
+DSL, compiler, runtime, and logical run contract; only launch transport,
+persistence, isolation, and process topology vary between local, container, and
+cloud modes.
 
 | Mode | Best for | Install |
 |---|---|---|

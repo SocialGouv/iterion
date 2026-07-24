@@ -1,5 +1,3 @@
-[← Documentation index](README.md) · [← Iterion](../README.md)
-
 # Visual Editor (web)
 
 **The same workflows, visually.** Build on the canvas or edit the `.bot` source directly — both stay in sync.

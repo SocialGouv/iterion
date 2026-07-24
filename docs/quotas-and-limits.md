@@ -1,5 +1,3 @@
-[← Documentation index](README.md) · [← Iterion Cloud overview](cloud-overview.md)
-
 # Quotas and limits
 
 **Audience.** Anyone choosing platform-default values, deciding what to

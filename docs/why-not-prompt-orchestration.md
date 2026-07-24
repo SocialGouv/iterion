@@ -1,5 +1,3 @@
-[← Documentation index](README.md) · [← Iterion](../README.md)
-
 # Why not just prompt-orchestration?
 
 A recurring question when someone first sees Iterion is: *"why a DSL? Can't I get the same thing with a single Claude Code session that calls sub-agents in a loop?"*

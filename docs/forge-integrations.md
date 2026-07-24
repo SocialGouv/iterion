@@ -1,5 +1,3 @@
-[← Documentation index](README.md) · [← Iterion Cloud overview](cloud-overview.md) · [← Inbound webhooks](webhooks.md)
-
 # Forge integrations (connect a repo, auto-provision)
 
 **Audience.** Org admins who want to wire a GitLab/GitHub/Forgejo repo to a

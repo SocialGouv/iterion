@@ -1,5 +1,3 @@
-[← Documentation index](README.md) · [← Iterion Cloud overview](cloud-overview.md)
-
 # Cloud architecture
 
 **Audience.** Anyone who needs the mental model behind the

@@ -1,6 +1,6 @@
 # Routers
 
-Routers control how execution flows through the workflow graph. When a router is reached, it decides which downstream node(s) to activate next. There are five routing modes, each suited to a different orchestration pattern.
+Routers are the branch points of the graph — the difference between a linear script and a real workflow. A router decides which downstream node(s) fire next: fan out in parallel, replay a branch per array element, pick one path on a condition, rotate through options, or let an LLM choose. Five modes, each suited to a different orchestration pattern.
 
 ## Overview
 

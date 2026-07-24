@@ -1,5 +1,3 @@
-[← Documentation index](README.md) · [← Iterion](../README.md)
-
 # Development
 
 This page is for contributors to Iterion itself. The repository's reproducible toolchain is the supported path; CI and bot verification use the same task entry points.

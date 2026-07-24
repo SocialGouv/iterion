@@ -1,5 +1,3 @@
-[← Security bots](security-bots.md)
-
 # Distributed security scans — design (Cap. 3)
 
 > **Status: deepsec parity SHIPPED.** Local-mode primitive +

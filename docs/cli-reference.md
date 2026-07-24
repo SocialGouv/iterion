@@ -1,5 +1,3 @@
-[← Documentation index](README.md) · [← Iterion](../README.md)
-
 # CLI reference
 
 This page maps every public top-level command in the current binary and documents the common operational flags. `iterion <command> --help` is the canonical, build-specific leaf reference. The global `--json` flag is inherited by commands; commands that produce structured records use it for machine-readable output.

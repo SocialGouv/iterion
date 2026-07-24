@@ -38,9 +38,11 @@ Kubernetes gave cloud workloads a declarative control plane. Iterion brings that
 
 ## 🧩 What is Iterion?
 
-*If you've ever noticed yourself repeating the same prompt-and-review patterns while vibe-coding with an LLM — "ask the model, eyeball the diff, ask it to fix what it missed, run the tests, ask again" — and wondered how to **automate and optimize** that loop, Iterion is built for you.* Capture the pattern once as a `.bot` workflow, give it budget caps, parallel reviewers, judges and human gates, and let the engine run it deterministically every time.
+AI agents can now hold a real task for an hour — plan a feature, implement it, review it, fix what the review found. Iterion is the **control plane** that makes that work *operable*: define it once as a readable `.bot` file, and every run becomes a single execution graph you can budget, isolate, audit, resume, and prove converges — on your laptop, in CI, or across a multi-tenant cloud.
 
-Iterion is a workflow engine that turns `.bot` files into executable AI pipelines. You describe *what* your agents should do — review code, plan fixes, check compliance, ask a human — and Iterion handles *how*: scheduling branches in parallel, enforcing budgets, persisting state, and routing between nodes.
+*Concretely: if you've caught yourself repeating the same loop with an LLM — "ask the model, eyeball the diff, ask it to fix what it missed, run the tests, ask again" — Iterion is where that loop stops being manual.* Capture the pattern once, give it budget caps, parallel reviewers, judges, and human gates, and let the engine run it deterministically every time.
+
+You describe *what* the agents should do — review code, plan fixes, check compliance, ask a human. Iterion handles *how*: scheduling branches in parallel, enforcing budgets, isolating writes in a sandbox, persisting every step, and routing between nodes.
 
 ```mermaid
 flowchart LR
@@ -52,7 +54,7 @@ flowchart LR
   NODES --> OUT["results, artifacts, event log"]
 ```
 
-Think of it as a DAG runner purpose-built for LLM workflows — with first-class support for things like structured I/O, conversation sessions, human-in-the-loop pauses, and cost control.
+More than a DAG runner: Iterion is built for long, autonomous, multi-agent work — first-class structured I/O, conversation sessions, human-in-the-loop pauses, per-run sandboxes, resumable checkpoints, and cost control, with a control plane to operate every run from launch to landed result.
 
 <p align="center">
   <img src="docs/images/studio/editor-canvas.png" alt="Iterion studio — visual workflow editor" width="900" />

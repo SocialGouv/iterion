@@ -10,14 +10,14 @@ hero:
     alt: Iterion logo
   actions:
     - theme: brand
-      text: Current state
-      link: /current-state
-    - theme: alt
       text: Why Iterion?
       link: /why-iterion
     - theme: alt
-      text: View on GitHub
-      link: https://github.com/SocialGouv/iterion
+      text: Install
+      link: /install
+    - theme: alt
+      text: Current state
+      link: /current-state
 
 features:
   - title: Start here
@@ -43,7 +43,7 @@ features:
     link: /architecture
   - title: Point-in-time records
     details: ADRs, dated dogfood bilans, plans, reviews, and security audits — evidence, not living references. Browse them from the sidebar.
-    link: /bot-runs/
+    link: /bot-runs/README
 ---
 
 Guides and references above are maintained against `main`. ADRs, dated plans,

@@ -1,8 +1,9 @@
-[← Documentation index](README.md) · [← Iterion](../README.md)
-
 # Delegation
 
-For tasks that need full tool access (file editing, shell commands, git operations), you can delegate agent execution to an external CLI agent instead of making direct LLM API calls:
+Iterion splits agents into thinkers and doers. A `model:` node makes a direct
+LLM call for reasoning; delegating a node to a `backend:` CLI agent gives it
+full tool access — editing files, running shell, driving git — and you wire
+both into the same graph:
 
 ```iter
 agent implementer:

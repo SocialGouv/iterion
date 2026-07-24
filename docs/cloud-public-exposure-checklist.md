@@ -1,5 +1,3 @@
-[← docs index](README.md) · [← cloud-deployment.md](cloud-deployment.md) · [← cloud-troubleshooting.md](cloud-troubleshooting.md)
-
 # Cloud — public exposure checklist
 
 This page is a pre-flight checklist for **opening an iterion deployment to traffic outside your private network** (i.e., putting it behind a public Ingress, on the internet, or accessible to users you don't fully trust). Every item below is a hard prerequisite — skipping any of them is how incidents happen.

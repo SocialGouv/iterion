@@ -1,5 +1,3 @@
-[← Documentation index](README.md) · [← Iterion](../README.md) · [Current state](current-state.md)
-
 # Architecture
 
 Iterion is organized around one compiled workflow and runtime model with

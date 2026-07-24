@@ -1,14 +1,12 @@
-[← Documentation index](README.md) · [← Iterion Cloud overview](cloud-overview.md)
-
 # Memory and knowledge spaces
 
 **Audience.** Bot authors who write to memory (`memory_read` /
 `memory_write` / `memory_list`), org admins enforcing a quota on
 shared knowledge, and operators wiring multi-tenant isolation.
 
-Memory in iterion is a per-org tree of markdown documents — the
-substrate the cross-run "what did we learn" / "where did we leave off"
-loop runs on. The session-continuity skill
+Memory is how iterion agents carry knowledge across runs — what they
+learned, where they left off — persisted as a per-org, quota-governed
+tree of markdown documents with tenant-isolated visibility scopes. The session-continuity skill
 ([bots/whats-next/skills/session-continuity.md](../bots/whats-next/skills/session-continuity.md))
 is the canonical consumer.
 

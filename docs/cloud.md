@@ -1,11 +1,10 @@
-[← Documentation index](README.md) · [← Iterion](../README.md)
-
 # Cloud Mode
 
-A long-running server deployment that targets multi-tenant teams. Same Go core as the CLI, but exposes the studio + run engine through HTTP/WS to a shared instance, persists runs to a Mongo + S3-compatible blob store, and dispatches jobs to a runner pool via NATS JetStream.
-
-Cloud mode deploys iterion as a multi-tenant **control plane for AI agents** —
-orgs, quotas, inbound webhooks, bound credentials, audit. Reading map:
+Cloud mode runs iterion as a multi-tenant **control plane for AI agents** — the
+same Go core as the CLI, but with orgs, quotas, bound credentials, inbound
+webhooks, and an audit trail, serving a shared always-on run engine over
+HTTP/WS. Runs persist to a Mongo + S3-compatible blob store, and jobs dispatch
+to a runner pool via NATS JetStream. Reading map:
 
 | You want | Read |
 |---|---|

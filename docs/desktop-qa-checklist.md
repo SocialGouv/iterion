@@ -1,5 +1,3 @@
-[← docs index](README.md) · [← desktop-qa.md](desktop-qa.md)
-
 # Desktop — release QA matrix
 
 This is the **per-platform sign-off sheet** the team walks before tagging a desktop release. It complements [desktop-qa.md](desktop-qa.md) (the developer-facing smoke checklist focused on AssetServer / runtime-injection regressions) by adding the user-facing scenarios and the assignment grid that says *who* tested *what* on *which platform*.

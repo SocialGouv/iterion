@@ -1,5 +1,3 @@
-[← Documentation index](README.md) · [← Security bots](security-bots.md)
-
 # References bootstrap — deepsec + harness clones
 
 Seki's `--var enable_deepsec=true` and its `external-security-tools`

@@ -1,7 +1,8 @@
 # iterion sandbox
 
-The iterion sandbox provides per-run isolation for coding agents and
-shell tool nodes via a Docker (or Podman) container. It is
+The sandbox is the boundary that makes autonomous agents safe to run: every
+coding agent and shell tool node executes inside a throwaway per-run Docker (or
+Podman) container instead of against your host credentials and filesystem. It is
 **on by default**: at product entry points (`iterion run`, `resume`,
 the studio, the dispatcher) a workflow that declares no `sandbox:`
 block runs as `sandbox: auto` (devcontainer-aware, falling back to the

@@ -1,10 +1,9 @@
-[← Documentation index](README.md) · [← Iterion](../README.md)
-
 # Resume paused, failed, and cancelled runs
 
-Iterion persists a checkpoint in the run record and can continue the same run
-ID without replaying the whole workflow. The checkpoint, not `events.jsonl`, is
-the authoritative execution state.
+A run in iterion is durable: it can pause for a human, fail, or be cancelled,
+and later continue under the same run ID from an authoritative checkpoint — no
+replay, no lost work — whether that pause lasted seconds or days. The
+checkpoint, not `events.jsonl`, is the authoritative execution state.
 
 ## Resumable states
 

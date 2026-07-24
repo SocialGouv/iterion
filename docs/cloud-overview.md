@@ -1,5 +1,3 @@
-[← Documentation index](README.md) · [← Iterion](../README.md)
-
 # Iterion Cloud — the multi-tenant control plane for AI agents
 
 **Audience.** Anyone evaluating iterion as a multi-tenant platform — a

@@ -1,13 +1,14 @@
-[← Documentation index](README.md) · [← Iterion](../README.md) · [Current state](current-state.md)
-
 # Backends and credential auto-detection
 
-Iterion ships five execution backends: `claw` (in-process LLM SDK),
+A backend is the engine iterion routes a node to — a direct in-process LLM
+call for *thinking*, or a full agent CLI for *acting* — and one workflow can
+mix them per node. Iterion ships five: `claw` (in-process LLM SDK),
 `claude_code` (Claude Code CLI), `kimi` (Kimi Code CLI), `grok` (Grok Build
-CLI), and the deprecated `codex` compatibility delegate. The default automatic
-preference only considers `claude_code` and `claw`; the other three require an
-explicit opt-in. This page documents the resolution chain, credentials, support
-boundaries, and overrides.
+CLI), and the deprecated `codex` compatibility delegate. It auto-detects
+whatever credentials you already have signed in: the default preference
+considers `claude_code` and `claw`; the other three require an explicit opt-in.
+This page documents the resolution chain, credentials, support boundaries, and
+overrides.
 
 > **Cloud BYOK.** The auto-detection below is the *host/env* path. In
 > cloud mode, provider API keys are owned per-org and sealed in Mongo,

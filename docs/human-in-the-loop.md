@@ -1,5 +1,3 @@
-[← Documentation index](README.md) · [← Iterion](../README.md)
-
 # Human in the loop
 
 Most iterion nodes run unattended. But some decisions want a person —

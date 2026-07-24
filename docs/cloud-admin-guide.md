@@ -1,5 +1,3 @@
-[← Documentation index](README.md) · [← Iterion Cloud overview](cloud-overview.md)
-
 # Iterion Cloud admin runbook
 
 **Audience.** The platform operator who runs `iterion server` for

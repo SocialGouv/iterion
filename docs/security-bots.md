@@ -1,5 +1,3 @@
-[← Documentation index](README.md)
-
 # Security bots — `sec-audit-source` (Seki) + `sec-audit-deps` (Depsy)
 
 Iterion ships two complementary security audit bundles. They share a

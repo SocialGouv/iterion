@@ -213,7 +213,7 @@ const sidebar = [
       { text: 'Browser pane', link: '/browser-pane' },
       { text: 'Post-mortem shell', link: '/post-mortem-shell' },
       { text: 'Persisted formats', link: '/persisted-formats' },
-      { text: 'Observability', link: '/observability/' },
+      { text: 'Observability', link: '/observability/README' },
     ],
   },
   {
@@ -294,8 +294,9 @@ export default withMermaid(
     cleanUrls: true,
     lastUpdated: true,
     // The top-level README.md stays the github.com index; the site home is
-    // index.md. Nested READMEs (observability/, adr/, ...) are real section
-    // indexes and keep building.
+    // index.md. Nested READMEs build to `<dir>/README.html` (VitePress does not
+    // treat README as a directory index), so link them as `/<dir>/README`, never
+    // the bare `/<dir>/` directory (which would 404).
     srcExclude: ['README.md'],
     // localhost:* appears as illustrative example URLs in operator docs.
     ignoreDeadLinks: [/^https?:\/\/localhost/],

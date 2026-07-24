@@ -1,5 +1,3 @@
-[← Documentation index](README.md) · [← Iterion](../README.md)
-
 # Persisted formats — V1 reference
 
 This page describes the filesystem run store. Mongo/cloud uses equivalent

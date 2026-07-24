@@ -1,5 +1,3 @@
-[← Documentation index](README.md) · [← Iterion](../README.md)
-
 # The `.bot` DSL
 
 **Agent workflows, as code.** Define readable, versioned workflows in a declarative, indentation-significant language.

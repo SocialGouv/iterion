@@ -1,5 +1,3 @@
-[← Documentation index](README.md) · [← Iterion](../README.md)
-
 # Desktop App
 
 A native desktop build (Wails v2) wraps the visual editor in its own window with multi-project switching, OS-keychain credential storage, first-run onboarding, and Ed25519-signed auto-update. Two binaries ship side-by-side: `iterion` (CLI) and `iterion-desktop` (this app).

@@ -1,5 +1,3 @@
-[← Documentation index](README.md) · [← Security bots](security-bots.md)
-
 # Seki — verification-ladder remediation (security-patcher)
 
 Seki's remediation phase turns each confirmed finding into a verified

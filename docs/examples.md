@@ -1,8 +1,9 @@
-[← Documentation index](README.md) · [← Iterion](../README.md)
-
 # Bots and examples
 
-The repository deliberately separates two things:
+Iterion ships a maintained fleet of production bots — a co-CTO, a feature
+builder, security auditors, a dependency upgrader, and more — each a
+declarative `.bot` you can run, inspect, or fork. The repository keeps two
+things deliberately separate:
 
 - [`bots/`](../bots/) contains the maintained bot catalogue. Each bot is a folder with a `main.bot`, a `manifest.yaml`, and any skills or resources it needs.
 - [`examples/`](../examples/) contains focused DSL and integration demos. They are teaching fixtures, not the product bot catalogue.

@@ -1,5 +1,3 @@
-[← Documentation index](README.md) · [← Iterion Cloud overview](cloud-overview.md)
-
 # Secrets reference
 
 **Audience.** Org admins choosing where to store a credential (their

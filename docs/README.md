@@ -1,5 +1,3 @@
-[← Iterion](../README.md)
-
 # Documentation
 
 This index describes the current repository state. Guides and references below are maintained against `main`; ADRs, dated plans, audits, reviews, and bot-run bilans are point-in-time records and may intentionally describe an older state.

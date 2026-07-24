@@ -1,5 +1,3 @@
-[← Documentation index](README.md) · [← Iterion Cloud overview](cloud-overview.md)
-
 # Inbound webhooks
 
 **Audience.** Org admins wiring a forge or a custom caller to iterion,
