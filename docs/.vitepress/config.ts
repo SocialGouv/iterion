@@ -312,10 +312,11 @@ export default withMermaid(
       logo: '/iterion-logo.png',
       search: { provider: 'local' },
       nav: [
-        { text: 'Start', link: '/current-state' },
+        { text: 'Why Iterion?', link: '/why-iterion' },
+        { text: 'Get started', link: '/install' },
         { text: 'DSL', link: '/dsl' },
+        { text: 'Bots', link: '/examples' },
         { text: 'Cloud', link: '/cloud-overview' },
-        { text: 'Architecture', link: '/architecture' },
       ],
       sidebar,
       editLink: {
