@@ -157,6 +157,24 @@ vars:
   ## the inline anchors, so "inline" is safe unattended.
   pr_review_mode: string [enum: "inline", "summary"] = "inline"
 
+  ## MERGE GATE (v0.5.0). When pr_url is set, the deterministic publish
+  ## step ALSO posts a commit status named "revi/review" on the PR head
+  ## SHA: `success` when 0 findings meet `gate_severity`, else `failure`.
+  ## Add that context to the repo's required checks (branch protection /
+  ## merge queue) to make Revi's verdict BLOCK the merge; leave it out and
+  ## the status is a harmless advisory check. The verdict is DETERMINISTIC
+  ## — a count of findings at/above the threshold, computed here, never an
+  ## LLM judgment. Non-blocking `questions` never count. A push re-reviews
+  ## (opt-in ReviewOnSync webhook) so the status tracks the fixed head.
+  ## Set false to skip the status entirely (advisory-only reviews).
+  gate_enabled: bool = true
+
+  ## Severity floor that BLOCKS the merge (order: low < medium < high <
+  ## critical). Default "high": high + critical findings block; low +
+  ## medium advise only. A finding you "would block a PR on" is exactly
+  ## the reviewer's own bar (see review_system), so high is the sane floor.
+  gate_severity: string [enum: "low", "medium", "high", "critical"] = "high"
+
   ## Deterministic forge publish grant — INJECTED BY THE ITERION SERVER
   ## at launch when the run's team has a forge connection covering
   ## pr_url's repo (studio/API launches and inbound webhooks both
@@ -222,7 +240,26 @@ prompt review_system:
     - Rate each finding's `confidence` honestly. A guess is `low`.
     - Finding nothing is a valid, common outcome — return an empty
       `findings` array and say so in `summary`. Do NOT invent issues
-      to look thorough.
+      to look thorough. A clean review is NOT "trust me, nothing":
+      make it auditable through `questions` (next section).
+
+  OPEN QUESTIONS (falsifiability — kept STRICTLY SEPARATE from findings):
+    `findings` are issues you would BLOCK a merge on. The most valuable
+    thing a sharp human reviewer does on a clean diff is ASK — surface
+    the load-bearing assumptions the change now RELIES ON but that you
+    could not fully verify yourself:
+      - a contract MOVED to another component ("EditorView no longer
+        opens the file — does EditorTabHost guarantee it still does?"),
+      - an invariant the diff now depends on but does not itself prove,
+      - a cross-file / cross-service assumption you read AROUND but could
+        not confirm end-to-end.
+    Record each in `questions`, phrased as a concrete question a
+    maintainer can answer. They are NON-BLOCKING: never inflate one into
+    a finding, never file it to the board, never let it gate a merge —
+    their only job is to make a 0-finding review falsifiable, showing
+    WHAT you checked and WHERE the residual risk hides. Empty is correct
+    when the change is genuinely self-contained and you verified it
+    end-to-end — but reach for it before concluding a silent "nothing".
 
   OUTPUT — emit `review_output`:
     - `family`: YOUR model family — "claude" or "gpt" (the user
@@ -264,6 +301,9 @@ prompt review_system:
       complete replacement text; when empty, your one-line `suggestion`
       sketch is posted as a plain comment instead.
     - `scanned_areas`: the (axis, file) surfaces you actually audited.
+    - `questions`: non-blocking open questions / load-bearing assumptions
+      per OPEN QUESTIONS above — a string array (empty when none). These
+      are NOT findings and never reach the board or a merge gate.
     - `summary`: one paragraph — overall risk read + anything notable
       that did not rise to a finding.
 
@@ -309,6 +349,10 @@ prompt emit_system:
       operator's highest-trust signal.
     - Keep family-unique findings too (one reviewer often sees what the
       other misses), at their own confidence.
+    - Union the two `questions` arrays the same way: dedupe near-identical
+      questions, keep each family's distinct ones. Questions are NEVER
+      promoted to findings and NEVER filed to the board — they are the
+      falsifiability channel that makes a 0-finding review auditable.
 
   STEP 2 — THRESHOLD & CAP:
     - Drop findings whose severity is below `{{vars.severity_threshold}}`
@@ -364,6 +408,10 @@ prompt emit_system:
       ## Findings      (table: severity, category, file:line, title,
                         reviewers, board issue id)
       ## Agreement     (one line: N of M findings cross-confirmed)
+      ## Open questions (the merged non-blocking questions as a bulleted
+                        list — what the reviewers verified/assumed and the
+                        contracts a maintainer should confirm; "none" when
+                        empty. NEVER a findings table — these do not block.)
 
   RETURN `emit_output`:
     - `report_path`: absolute path of the markdown file you wrote.
@@ -379,6 +427,10 @@ prompt emit_system:
       publish these onto a forge PR, so keep `line`/`line_end` and any
       `replacement` exactly as given. This is the same set you reported —
       do not re-summarise or drop fields.
+    - `questions`: the merged, de-duplicated non-blocking questions as a
+      JSON array of strings (empty `[]` when none). Carried forward so
+      the PR summary can show what the reviewers verified/assumed even on
+      a 0-finding review. NOT findings — they never gate or reach the board.
 
 prompt emit_user:
   Workspace:          {{vars.workspace_dir}}
@@ -392,12 +444,14 @@ prompt emit_user:
   Findings (JSON):
   {{outputs.reviewer_claude.findings}}
   Areas audited: {{outputs.reviewer_claude.scanned_areas}}
+  Open questions: {{outputs.reviewer_claude.questions}}
 
   ── GPT-family review ──
   Summary: {{outputs.reviewer_gpt.summary}}
   Findings (JSON):
   {{outputs.reviewer_gpt.findings}}
   Areas audited: {{outputs.reviewer_gpt.scanned_areas}}
+  Open questions: {{outputs.reviewer_gpt.questions}}
 
   Merge, dedupe, threshold, cap, publish, and report per your
   instructions.
@@ -414,6 +468,10 @@ schema review_output:
   ## in review_system. emit reads it as JSON.
   findings: json
   scanned_areas: string[]
+  ## Non-blocking reviewer questions / load-bearing assumptions to
+  ## confirm — the falsifiability channel, kept strictly out of findings
+  ## (never filed to the board, never gates a merge).
+  questions: string[]
   summary: string
 
 schema emit_output:
@@ -426,6 +484,10 @@ schema emit_output:
   ## per-object shape the reviewers emit (file/line/line_end/severity/
   ## category/title/detail/suggestion/replacement/confidence/reviewers).
   findings: json
+  ## Merged non-blocking questions (JSON array of strings) — the
+  ## falsifiability channel surfaced in the report + PR summary body,
+  ## never on the board and never gating.
+  questions: json
 
 schema diff_precheck_output:
   is_empty: bool
@@ -439,17 +501,20 @@ schema diff_precheck_output:
 schema pr_gate_input:
   pr_url: string
   findings: json
+  questions: json
   total_findings: int
 
 schema pr_gate_output:
   has_pr: bool
   pr_url: string
   findings: json
+  questions: json
   total_findings: int
 
 schema publish_input:
   pr_url: string
   findings: json
+  questions: json
   total_findings: int
 
 schema publish_output:
@@ -576,6 +641,7 @@ compute pr_gate:
     has_pr: "input.pr_url != ''"
     pr_url: "input.pr_url"
     findings: "input.findings"
+    questions: "input.questions"
     total_findings: "input.total_findings"
 
 ## DETERMINISTIC forge publish (no LLM, no workspace credential): map the
@@ -588,7 +654,7 @@ compute pr_gate:
 ## published is true ONLY on a 2xx from the endpoint, whose counts are
 ## forge-re-fetched (anti-façade), never self-estimated.
 tool publish_review:
-  command: `PUB_URL={{vars.forge_publish_url}} PUB_TOKEN={{vars.forge_publish_token}} MODE={{vars.pr_review_mode}} PR_URL={{input.pr_url}} FINDINGS={{input.findings}} python3 -c "
+  command: `PUB_URL={{vars.forge_publish_url}} PUB_TOKEN={{vars.forge_publish_token}} MODE={{vars.pr_review_mode}} PR_URL={{input.pr_url}} FINDINGS={{input.findings}} QUESTIONS={{input.questions}} GATE_ENABLED={{vars.gate_enabled}} GATE_SEVERITY={{vars.gate_severity}} python3 -c "
 import os, json, urllib.request, urllib.error
 
 def emit(published, forge='unknown', review_url='', posted=0, sugg=0, skipped='', summary=''):
@@ -607,6 +673,13 @@ except ValueError:
     findings = []
 if not isinstance(findings, list):
     findings = []
+try:
+    questions = json.loads(os.environ.get('QUESTIONS') or '[]')
+except ValueError:
+    questions = []
+if not isinstance(questions, list):
+    questions = []
+questions = [str(q).strip() for q in questions if str(q).strip()]
 if not url or not tok:
     emit(False, skipped='no forge publish endpoint bound to this run: launch through an iterion server with a team forge connection covering the PR repo, so it injects forge_publish_url/forge_publish_token', summary='publish skipped: run holds no server-side forge publish grant (and never uses workspace tokens to post).')
 
@@ -642,9 +715,34 @@ for sev in sorted(counts, key=lambda s: sev_rank.get(s, 9)):
     summary.append('- ' + sev + ': ' + str(counts[sev]))
 cross_n = len([f for f in findings if isinstance(f, dict) and str(f.get('reviewers') or '') == 'both'])
 summary.append('')
-summary.append(str(cross_n) + ' finding(s) cross-confirmed by both model families.' if findings else 'No findings rose to a reportable issue.')
+summary.append(str(cross_n) + ' finding(s) cross-confirmed by both model families.' if findings else 'No blocking findings.')
+if questions:
+    summary.append('')
+    summary.append('### Open questions (non-blocking — reviewer assumptions to confirm)')
+    for q in questions:
+        summary.append('- ' + q)
+elif not findings:
+    summary.append('')
+    summary.append('Reviewers verified the change end-to-end and raised no open questions.')
 
 payload = {'pr_url': pr, 'summary': nl.join(summary), 'mode': mode, 'comments': comments}
+
+# Deterministic merge-gate verdict: count findings at/above the blocking
+# severity floor. The server maps 0 blocking -> success, >0 -> failure on the
+# revi/review commit status. Questions never count.
+gate_enabled = str(os.environ.get('GATE_ENABLED', '')).strip().lower() in ('1', 'true', 'yes', 'on')
+if gate_enabled:
+    gate_sev = str(os.environ.get('GATE_SEVERITY', 'high')).strip().lower() or 'high'
+    floor = sev_rank.get(gate_sev, 1)
+    blocking = 0
+    for f in findings:
+        if not isinstance(f, dict):
+            continue
+        if sev_rank.get(str(f.get('severity') or 'low').lower(), 3) <= floor:
+            blocking += 1
+    payload['gate'] = {'enabled': True, 'context': 'revi/review',
+                       'blocking_count': blocking, 'threshold': gate_sev,
+                       'total_findings': len(findings)}
 req = urllib.request.Request(url, data=json.dumps(payload).encode(),
                              headers={'Content-Type': 'application/json', 'X-Iterion-Run': tok},
                              method='POST')
@@ -667,6 +765,10 @@ verified = bool(res.get('verified'))
 s = 'posted ' + str(posted) + ' inline comment(s), ' + str(sugg) + ' with one-click suggestions, via the iterion forge-publish endpoint (server-side live-token client); counts ' + ('re-fetched from the forge.' if verified else 'as submitted (forge re-fetch unavailable).')
 if fallback:
     s = s + ' fallback=' + fallback + ': rejected inline anchors were folded into the review summary body, not dropped.'
+if bool(res.get('gate_posted')):
+    s = s + ' merge gate: revi/review=' + str(res.get('gate_state') or '') + ' on ' + str(res.get('gate_sha') or '')[:12] + '.'
+elif str(res.get('gate_error') or ''):
+    s = s + ' merge gate NOT posted: ' + str(res.get('gate_error')) + '.'
 emit(bool(res.get('published')), forge=str(res.get('provider') or 'unknown'),
      review_url=str(res.get('review_url') or ''), posted=posted, sugg=sugg, skipped='', summary=s)
 "`
@@ -727,6 +829,7 @@ workflow review_pr:
   converge -> pr_gate with {
     pr_url: "{{vars.pr_url}}",
     findings: "{{outputs.converge.findings}}",
+    questions: "{{outputs.converge.questions}}",
     total_findings: "{{outputs.converge.total_findings}}"
   }
   ## No PR target → finish after the board + report (the default,
@@ -736,6 +839,7 @@ workflow review_pr:
   pr_gate -> publish_review when has_pr with {
     pr_url: "{{outputs.pr_gate.pr_url}}",
     findings: "{{outputs.pr_gate.findings}}",
+    questions: "{{outputs.pr_gate.questions}}",
     total_findings: "{{outputs.pr_gate.total_findings}}"
   }
   ## Deterministic anti-façade gate on the publish result, then done.
