@@ -16,8 +16,11 @@ obligation generators:
 
 - `scan_hints` produces an ADVISORY report each pass: missing repo-rooted
   paths cited in docs, dead internal links/anchors, code areas no doc
-  mentions, coverage telemetry — plus the exact-HEAD no-op path and the
-  zero-doc bootstrap route. Hints are help, never a checklist you owe anyone.
+  mentions, coverage telemetry. In `incremental` mode it also resolves the
+  base to diff against — auto-detected from the newest `Bot: docs-refresh`
+  commit trailer, unless `diff_since` pins one — and reports the code files
+  changed since it (`recently_changed_code_files`) as a prioritisation hint.
+  Hints are help, never a checklist you owe anyone.
 - `scope_check` rejects changes outside the writeable set (truth: the bot
   must not touch code).
 - `gate` converges on `scope_ok ∧ docs_aligned` — nothing else. There is no
@@ -72,14 +75,12 @@ one of:
    `is_code_bug=true`, file a board finding; never rewrite a correct doc
    around a bug.
 
-## Bootstrap and no-op paths
+## Bootstrap (empty-doc repos)
 
-- If no documentation matches `doc_globs`, `author_docs` creates a grounded
-  initial set under `docs_dir`; `author_rescan` then starts the normal
-  campaign.
-- If the noop cache matches the exact current Git HEAD, the tree is clean,
-  and no issue explicitly requested work, `scan_hints` routes directly to
-  `done` without invoking the campaign.
+When no documentation matches `doc_globs`, there is no separate bootstrap
+node: the `campaign` agent authors a grounded initial set under `docs_dir`
+itself (guided by `doc-enrichment.md`) and aligns it in the same pass. The
+authored files join the footprint on the next scan.
 
 ## Human decisions
 
