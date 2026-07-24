@@ -1,4 +1,4 @@
-# Install
+# 🖥️ Install
 
 One Go core, delivered wherever you work — a scriptable CLI, a visual studio, a
 native desktop app, a Docker image, a multi-tenant cloud, an autonomous

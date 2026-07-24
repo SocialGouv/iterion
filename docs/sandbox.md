@@ -1,4 +1,4 @@
-# iterion sandbox
+# 🛡️ iterion sandbox
 
 The sandbox is the boundary that makes autonomous agents safe to run: every
 coding agent and shell tool node executes inside a throwaway per-run Docker (or

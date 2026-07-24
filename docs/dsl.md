@@ -1,10 +1,22 @@
-# The `.bot` DSL
+# 🧩 The `.bot` DSL
 
 **Agent workflows, as code.** Define readable, versioned workflows in a declarative, indentation-significant language.
 
 Source files end in `.bot`; deterministic bundles end in `.botz`.
 
 This page is the language guide. For exact accepted syntax use the [readable grammar](references/dsl-grammar.md), the [formal EBNF](grammar/iterion_v1.ebnf), and the [diagnostic catalogue](references/diagnostics.md). The parser, IR compiler, and validators under [`pkg/dsl/`](../pkg/dsl/) remain the implementation source of truth.
+
+A `.bot` file travels through a fixed pipeline before it runs:
+
+```mermaid
+flowchart LR
+  SRC[".bot source"] --> LEX["Lexer<br/>indent-aware tokens"]
+  LEX --> PAR["Parser<br/>recursive descent"]
+  PAR --> AST["AST"]
+  AST --> IR["IR compile<br/>nodes · edges · schemas"]
+  IR --> VAL["Validate<br/>C001–C199 diagnostics"]
+  VAL --> RUN["Runtime<br/>execute · budget · persist"]
+```
 
 ## File shape
 

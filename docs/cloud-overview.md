@@ -1,4 +1,4 @@
-# Iterion Cloud — the multi-tenant control plane for AI agents
+# ☁️ Iterion Cloud — the multi-tenant control plane for AI agents
 
 **Audience.** Anyone evaluating iterion as a multi-tenant platform — a
 platform engineer about to `helm install`, a tech-lead choosing between

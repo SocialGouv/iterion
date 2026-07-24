@@ -1,4 +1,4 @@
-# Resume paused, failed, and cancelled runs
+# ⏯️ Resume paused, failed, and cancelled runs
 
 A run in iterion is durable: it can pause for a human, fail, or be cancelled,
 and later continue under the same run ID from an authoritative checkpoint — no

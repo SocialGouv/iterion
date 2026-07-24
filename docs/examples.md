@@ -1,4 +1,4 @@
-# Bots and examples
+# 🤖 Bots and examples
 
 Iterion ships a maintained fleet of production bots — a co-CTO, a feature
 builder, security auditors, a dependency upgrader, and more — each a

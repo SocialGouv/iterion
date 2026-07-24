@@ -1,4 +1,4 @@
-# Backends and credential auto-detection
+# 🤝 Backends and credential auto-detection
 
 A backend is the engine iterion routes a node to — a direct in-process LLM
 call for *thinking*, or a full agent CLI for *acting* — and one workflow can
@@ -9,6 +9,14 @@ whatever credentials you already have signed in: the default preference
 considers `claude_code` and `claw`; the other three require an explicit opt-in.
 This page documents the resolution chain, credentials, support boundaries, and
 overrides.
+
+```mermaid
+flowchart LR
+  NODE["Workflow node"] -->|"model:"| DIRECT["Direct in-process<br/>LLM call · claw"]
+  NODE -->|"backend:"| CLI["Delegated CLI agent<br/>claude_code · kimi · grok"]
+  DIRECT --> THINK["Think<br/>plan · judge · route"]
+  CLI --> ACT["Act<br/>edit files · run shell · drive git"]
+```
 
 > **Cloud BYOK.** The auto-detection below is the *host/env* path. In
 > cloud mode, provider API keys are owned per-org and sealed in Mongo,

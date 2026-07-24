@@ -2,6 +2,16 @@
 
 Routers are the branch points of the graph — the difference between a linear script and a real workflow. A router decides which downstream node(s) fire next: fan out in parallel, replay a branch per array element, pick one path on a condition, rotate through options, or let an LLM choose. Five modes, each suited to a different orchestration pattern.
 
+```mermaid
+flowchart LR
+  R{"Router"} --> A["Branch A"]
+  R --> B["Branch B"]
+  R --> C["Branch C"]
+  A --> J["Downstream node<br/>await: wait_all"]
+  B --> J
+  C --> J
+```
+
 ## Overview
 
 - **`fan_out_all`** — run all downstream branches in parallel
