@@ -45,10 +45,12 @@
   border-color: var(--vp-c-brand-1);
 }
 
-/* While zoomed, hide the inline diagrams so none can show through the overlay
-   (bulletproofs against any stacking-context bleed-through / apparent doubling). */
+/* While zoomed, remove the inline diagrams from the render tree entirely, so
+   none can show through the overlay. display:none (not visibility:hidden) is
+   immune to GPU-compositing quirks where a transformed SVG keeps painting
+   despite a hidden parent — the cause of the apparent "doubling". */
 .mermaid-zoom-active .vp-doc .mermaid {
-  visibility: hidden;
+  display: none !important;
 }
 
 /* Full-screen pan/zoom overlay. */
