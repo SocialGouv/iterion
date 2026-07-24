@@ -45,43 +45,35 @@
   border-color: var(--vp-c-brand-1);
 }
 
-/* While zoomed, remove every inline diagram from the render tree so none can
-   show through the overlay. display:none (not visibility:hidden) is immune to
-   GPU-compositing quirks where a transformed SVG keeps painting despite a
-   hidden parent. The overlay's own SVG carries .mermaid-zoom-svg (not .mermaid),
-   so it is never matched here. */
-.mermaid-zoom-active .mermaid,
-.mermaid-zoom-active .mermaid > svg {
-  display: none !important;
-}
-
-/* Full-screen pan/zoom overlay. */
-.mermaid-zoom-overlay {
+/* Click-to-zoom: the ORIGINAL .mermaid element is promoted to a full-screen
+   box (no clone). The opaque backdrop sits just under it. */
+.mermaid-zoom-backdrop {
   position: fixed;
   inset: 0;
   z-index: 2147483000;
   background: var(--vp-c-bg);
+}
+.mermaid.mermaid-zoomed {
+  position: fixed;
+  inset: 0;
+  z-index: 2147483001;
+  margin: 0;
   display: flex;
   align-items: center;
   justify-content: center;
-  overflow: hidden;
-  touch-action: none;
-}
-.mermaid-zoom-inner {
-  transform-origin: center center;
-  will-change: transform;
+  overflow: auto;
   cursor: grab;
-  display: flex;
 }
-.mermaid-zoom-inner:active {
-  cursor: grabbing;
-}
-.mermaid-zoom-svg {
-  max-width: 92vw;
-  max-height: 84vh;
-  width: auto;
-  height: auto;
-  display: block;
+/* Fill the width and let the CSS variable drive zoom; height follows aspect,
+   and anything taller than the viewport scrolls. !important overrides mermaid's
+   own inline max-width on the svg. */
+.mermaid.mermaid-zoomed > svg {
+  max-width: none !important;
+  max-height: none !important;
+  width: 92vw !important;
+  height: auto !important;
+  transform: scale(var(--mermaid-zoom, 1));
+  transform-origin: center center;
 }
 .mermaid-zoom-bar {
   position: fixed;
@@ -89,7 +81,7 @@
   right: 16px;
   display: flex;
   gap: 8px;
-  z-index: 201;
+  z-index: 2147483002;
 }
 .mermaid-zoom-bar button {
   width: 38px;
