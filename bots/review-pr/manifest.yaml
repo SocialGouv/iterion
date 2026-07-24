@@ -1,7 +1,20 @@
 name: review-pr
 display_name: Revi
 icon: 🔎
-version: 0.3.1
+version: 0.5.0
+## 0.5.0 — merge gate: the deterministic publish step posts a "revi/review"
+## commit status on the PR head SHA (success when 0 findings meet
+## `gate_severity`, else failure). List that context in branch protection to
+## make Revi's verdict BLOCK the merge; leave it out and it is advisory. The
+## verdict is a COUNT computed in the bot, never an LLM judgment; `questions`
+## never count. Pairs with the webhook ReviewOnSync opt-in (re-review each
+## push) so the status tracks the fixed head.
+## 0.4.0 — falsifiability channel: reviewers emit non-blocking `questions`
+## (load-bearing assumptions a clean diff now relies on but they could not
+## verify end-to-end), merged by converge and surfaced in the report + the
+## PR review summary body — so a 0-finding review shows WHAT was checked
+## and WHERE residual risk hides, never a bare "trust me, nothing".
+## Questions never become findings, never reach the board, never gate.
 ## 0.3.1 — reviewer_gpt backend env-overridable (ITERION_VIBE_BACKEND_GPT)
 ## so a Claude-forfait-only instance runs the second reviewer on
 ## claude_code (cross-model diversity) when OpenAI quota is unavailable.

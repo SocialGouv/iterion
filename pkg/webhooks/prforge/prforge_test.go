@@ -187,6 +187,27 @@ func TestIsReviewable(t *testing.T) {
 	}
 }
 
+func TestIsSynchronize(t *testing.T) {
+	cases := []struct {
+		action string
+		draft  bool
+		want   bool
+	}{
+		{"synchronize", false, true},  // GitHub push-to-PR
+		{"synchronized", false, true}, // Gitea/Forgejo push-to-PR
+		{"synchronize", true, false},  // a DRAFT push never re-reviews
+		{"synchronized", true, false}, // idem Gitea/Forgejo
+		{"opened", false, false},
+		{"reopened", false, false},
+		{"edited", false, false},
+	}
+	for _, c := range cases {
+		if got := (Parsed{Action: c.action, Draft: c.draft}).IsSynchronize(); got != c.want {
+			t.Errorf("action=%q draft=%v => %v want %v", c.action, c.draft, got, c.want)
+		}
+	}
+}
+
 // Allowlist matching tests live in pkg/webhooks/match_test.go (the
 // canonical webhooks.MatchEvent + MatchProject are exercised there with
 // every provider's default kinds).

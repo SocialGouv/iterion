@@ -130,7 +130,11 @@ func (s *Server) handlePRForgeReview(ctx context.Context, w http.ResponseWriter,
 		return
 	}
 
-	if !p.IsReviewable() ||
+	// The merge gate opts synchronize (a push to the head) back into review so
+	// the revi/review status re-evaluates on the new head SHA; otherwise only
+	// opened/reopened/ready_for_review review (on-demand re-review on push).
+	reviewable := p.IsReviewable() || (cfg.ReviewOnSync && p.IsSynchronize())
+	if !reviewable ||
 		!webhooks.MatchEvent(cfg.EventAllowlist, "pull_request", "pull_request") ||
 		!webhooks.MatchProject(cfg.ProjectAllowlist, p.ProjectPath) ||
 		!webhooks.MatchAuthor(cfg.AuthorAllowlist, p.SenderLogin) {
