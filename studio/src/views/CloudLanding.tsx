@@ -13,7 +13,7 @@ import { listMarketplace, type MarketplaceEntry } from "@/api/marketplace";
 import { SignInCard } from "./Login";
 
 const GITHUB_URL = "https://github.com/SocialGouv/iterion";
-const DOCS_URL = "https://github.com/SocialGouv/iterion/tree/main/docs";
+const DOCS_URL = "https://socialgouv.github.io/iterion/";
 
 // FALLBACK_BOTS is the curated agent set shown when the marketplace is empty
 // or unreachable, so the hero never collapses to a blank showcase. Mirrors

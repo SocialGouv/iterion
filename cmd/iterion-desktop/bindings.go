@@ -173,7 +173,7 @@ func (a *App) GetAppInfo() AppInfo {
 		License:       "MIT",
 		Homepage:      "https://github.com/SocialGouv/iterion",
 		IssueTracker:  "https://github.com/SocialGouv/iterion/issues",
-		Documentation: "https://github.com/SocialGouv/iterion/tree/main/docs",
+		Documentation: "https://socialgouv.github.io/iterion/",
 	}
 }
 

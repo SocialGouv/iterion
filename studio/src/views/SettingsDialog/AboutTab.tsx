@@ -77,8 +77,7 @@ export default function AboutTab({ desktopFeatures }: Props) {
             ["GitHub", info?.homepage ?? "https://github.com/SocialGouv/iterion"],
             [
               "Documentation",
-              info?.documentation ??
-                "https://github.com/SocialGouv/iterion/tree/main/docs",
+              info?.documentation ?? "https://socialgouv.github.io/iterion/",
             ],
             [
               "Report an issue",

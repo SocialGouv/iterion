@@ -91,7 +91,7 @@ func buildMenu(a *App) *menu.Menu {
 	// Help ────────────────────────────────────────────────────────────────
 	helpMenu := m.AddSubmenu("Help")
 	helpMenu.AddText("Documentation", nil, func(_ *menu.CallbackData) {
-		_ = a.OpenExternal("https://github.com/SocialGouv/iterion/tree/main/docs")
+		_ = a.OpenExternal("https://socialgouv.github.io/iterion/")
 	})
 	helpMenu.AddText("GitHub", nil, func(_ *menu.CallbackData) {
 		_ = a.OpenExternal("https://github.com/SocialGouv/iterion")
