@@ -1,10 +1,8 @@
-[← Documentation index](README.md) · [← Iterion](../README.md)
-
 # Current state of Iterion
 
-_Living snapshot last verified on 2026-07-21 against `main` (release metadata:
-`2.0.1`). Code, generated CLI help, and the OpenAPI document remain the exact
-source of truth for a particular build._
+_A living, as-built snapshot maintained against `main` — the page footer shows
+when it was last updated. Code, generated CLI help, and the OpenAPI document
+remain the exact source of truth for any particular build._
 
 Iterion currently ships as both an open-source workflow engine and a
 self-hostable control plane for AI agents. The same compiled workflow and
