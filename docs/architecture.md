@@ -95,7 +95,7 @@ and claimed by a runner.
    loop fuel, routing, convergence, capabilities, templates, sandbox settings,
    and backend constraints before execution. DSL diagnostics occupy C001–C199
    plus the async-interaction band C240–C242; bundle consistency checks occupy
-   C200–C230.
+   C200–C234.
 
 The compiler returns diagnostics rather than hiding repairs. The authoritative
 catalogue is [references/diagnostics.md](references/diagnostics.md); the language
