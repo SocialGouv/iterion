@@ -1,7 +1,12 @@
 name: docs-refresh
 display_name: Doki
 icon: 📚
-version: 3.5.0
+version: 3.5.1
+## 3.5.1 — incremental base detection anchors to the trailer LINE
+## (`git log -E --grep '^Bot: docs-refresh'`), so a commit that merely
+## MENTIONS the trailer in prose (this bot's own feature commits) is not
+## mistaken for an alignment point. Caught on the first live check: the
+## loose grep matched the v3.5 code commit itself.
 ## 3.5.0 — TWO alignment strategies, so Doki can keep docs fresh cheaply.
 ## (1) `mode: incremental` (+ default `full`): scan_hints AUTO-DETECTS the
 ## last alignment point from git (the newest `Bot: docs-refresh` commit

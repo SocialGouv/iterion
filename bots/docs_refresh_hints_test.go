@@ -312,14 +312,17 @@ Scaffold your own with `+"`bots/my-bot/main.bot`"+` as a starting name.
 		git("add", "-A")
 		git("commit", "-q", "-m", "docs(readme): align\n\nBot: docs-refresh")
 		base := git("rev-parse", "HEAD")
-		// Code changed AFTER the alignment — the incremental delta.
+		// Code changed AFTER the alignment — the incremental delta. Its
+		// message MENTIONS the trailer in prose (as this bot's own feature
+		// commits do) but is NOT an alignment commit: the anchored ^ match
+		// must ignore it, so the base stays the real alignment commit above.
 		write(t, ws, "pkg/new.go", "package pkg\n\nfunc New() {}\n")
 		git("add", "-A")
-		git("commit", "-q", "-m", "feat: add New")
+		git("commit", "-q", "-m", "feat(docs-refresh): wire the Bot: docs-refresh trailer detection")
 
 		res := run(t, ws, "", map[string]string{"mode": "incremental"})
 		if res.IncrementalBase != base {
-			t.Errorf("incremental_base = %q, want the last Bot: docs-refresh commit %q", res.IncrementalBase, base)
+			t.Errorf("incremental_base = %q, want the real alignment commit %q — a prose mention of the trailer must NOT be picked as the base", res.IncrementalBase, base)
 		}
 		var gotNew, gotOld bool
 		for _, f := range res.RecentlyChanged {

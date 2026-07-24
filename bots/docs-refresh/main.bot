@@ -903,13 +903,16 @@ diff_since = os.environ.get('DIFF_SINCE', '').strip()
 mode = os.environ.get('MODE', 'full').strip().lower()
 if mode == 'incremental' and not diff_since:
     # Auto-detect the last alignment point: the campaign stamps every
-    # commit with a Bot: docs-refresh trailer, so the newest such commit
-    # is where the docs were last aligned. The delta after it is what this
-    # incremental pass focuses its (expensive) semantic alignment on. No
-    # prior alignment commit (first run) leaves diff_since empty → the
-    # campaign sweeps the whole corpus, a clean degrade to full.
+    # commit with a Bot: docs-refresh TRAILER LINE, so the newest commit
+    # whose message has that line is where the docs were last aligned. The
+    # delta after it is what this incremental pass focuses its (expensive)
+    # semantic alignment on. Anchor the match to a line start (-E ^) so a
+    # commit that merely MENTIONS the trailer in prose (e.g. this bot's own
+    # feature commits) is not mistaken for an alignment point. No prior
+    # alignment commit (first run) leaves diff_since empty → the campaign
+    # sweeps the whole corpus, a clean degrade to full.
     try:
-        p = subprocess.run(['git', 'log', '--grep', 'Bot: docs-refresh', '-n', '1', '--format=%H'], capture_output=True, text=True, check=True)
+        p = subprocess.run(['git', 'log', '-E', '--grep', '^Bot: docs-refresh', '-n', '1', '--format=%H'], capture_output=True, text=True, check=True)
         diff_since = p.stdout.strip()
     except Exception:
         diff_since = ''
