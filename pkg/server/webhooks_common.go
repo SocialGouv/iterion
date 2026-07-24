@@ -117,6 +117,11 @@ func mergeVarsInto(dst, src map[string]string) map[string]string {
 // per-handler `extra` overlay (the Note handler injects "re_review":
 // "true"), then the operator's `launchVars` LAST so the per-webhook
 // pin always wins. `extra` may be nil; `launchVars` may be nil.
+//
+// GENERIC PR-context vars (bot-agnostic): the MR/PR-open lanes pass
+// "source_branch" (the PR head) via `extra` alongside "base_ref" (the PR
+// base). Any bot may read them — a review bot to scope its diff, a doc bot
+// to amend the PR head. They name PR facts, never a specific bot.
 func reviewPRVars(prURL, baseRef, scopeNotes string, launchVars map[string]string, extra map[string]string) map[string]string {
 	vars := map[string]string{
 		"pr_url":        prURL,

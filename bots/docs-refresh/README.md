@@ -92,8 +92,8 @@ mr_gate ──(not open_mr)─────────────────�
 | `docs_dir` | `docs` | Docs dir skipped when scanning for unmentioned code areas |
 | `max_passes` | `4` | Continuation-loop cap |
 | `open_mr` | `false` | Push the alignment series + open ONE PR/MR at the end |
-| `mr_mode` | `new_pr` | `new_pr` = open a new PR (periodic runs); `amend` = push the alignment commits onto an existing PR's head branch (`mr_branch`) + comment, so docs land IN the contributor's PR (PR-open trigger) |
-| `mr_branch` / `mr_base` | `""` | PR branch (default `iterion/docs-refresh/<run-id>`, or the PR head in amend mode) / base (default: repo default branch) |
+| `pr_url` / `base_ref` | `""` | GENERIC PR-context vars iterion sets for ANY bot launched on a PR (webhook / `/doki`). Non-empty `pr_url` ⇒ Doki self-switches to AMEND: aligns the PR's own diff (incremental, base = `base_ref`) and pushes onto the PR head + comments, instead of opening a new PR. No docs-refresh-specific engine code |
+| `mr_branch` / `mr_base` | `""` | New-PR branch (default `iterion/docs-refresh/<run-id>`) / base; in amend mode `mr_branch` overrides the push target (default: the checked-out PR head) |
 | `source_issue_ref` | `""` | Issue to back-link the PR URL onto (forge URL or `native:<id>`) |
 
 Retired in v3 (the obligation machinery): `coverage_target_pct`,
@@ -117,6 +117,24 @@ credential the tail skips cleanly and the commits stay on the run's
 storage branch. This is the delivery path for repo-targeted **cloud**
 runs, whose runner clone is ephemeral — without a push the alignment
 commits die with the pod.
+
+### Amend an existing PR (`pr_url` set)
+
+Launched ON a pull request — via the generic `pr_url` + `base_ref` vars
+iterion sets for ANY bot on a PR (a forge PR webhook pointed at
+`docs-refresh`, or a `/doki` comment) — Doki self-switches to AMEND: the
+campaign scopes to the PR's own diff (incremental) and `finalize_mr` pushes
+the alignment commits onto the PR's head branch (`source_branch` — pushed by
+NAME, robust to `worktree: auto`'s detached HEAD) and comments, instead of
+opening a separate PR. `mr_gate` opens the tail on any PR launch (amending
+the contributor's PR IS the delivery), so `open_mr` need not be set.
+**Activate** by pointing a forge PR-open webhook at `docs-refresh` (or
+enabling `/doki` on PR comments); until then the feature is dormant.
+
+Limitation: the engine's fork-PR guard blocks auto-launch on PRs from a
+FORK (untrusted code + token), so amend-on-PR-open covers same-repo
+(internal) branches; an external fork PR is aligned only via a repo
+collaborator's deliberate `/doki` comment.
 
 ## Run
 

@@ -64,6 +64,8 @@ func TestDocsRefreshHintsProducer(t *testing.T) {
 			"bundle_self_path": "",
 			"diff_since":       "",
 			"mode":             "full",
+			"pr_url":           "",
+			"base_ref":         "",
 			"dismissed_path":   dismissedPath,
 			"max_hints":        "120",
 			"docs_dir":         "docs",
@@ -367,6 +369,101 @@ Scaffold your own with `+"`bots/my-bot/main.bot`"+` as a starting name.
 		}
 		if len(res.RecentlyChanged) != 0 {
 			t.Errorf("recently_changed_code_files must be empty with no base, got %+v", res.RecentlyChanged)
+		}
+	})
+
+	t.Run("pr_context_switches_to_incremental_scoped_to_base", func(t *testing.T) {
+		// Agnostic amend path: iterion sets the GENERIC pr_url + base_ref for
+		// ANY bot launched on a PR (no docs-refresh-specific engine code). Doki
+		// self-switches to incremental scoped to the PR's own diff (base =
+		// base_ref) even though the mode var is the "full" default.
+		ws := t.TempDir()
+		git := func(args ...string) string {
+			cmd := exec.Command("git", args...)
+			cmd.Dir = ws
+			cmd.Env = append(os.Environ(),
+				"GIT_AUTHOR_NAME=t", "GIT_AUTHOR_EMAIL=t@t",
+				"GIT_COMMITTER_NAME=t", "GIT_COMMITTER_EMAIL=t@t")
+			out, err := cmd.CombinedOutput()
+			if err != nil {
+				t.Fatalf("git %v: %v\n%s", args, err, out)
+			}
+			return strings.TrimSpace(string(out))
+		}
+		git("init", "-q")
+		write(t, ws, "README.md", "# fixture\n")
+		write(t, ws, "pkg/base.go", "package pkg\n")
+		git("add", "-A")
+		git("commit", "-q", "-m", "base")
+		base := git("rev-parse", "--abbrev-ref", "HEAD") // the PR base branch
+		git("checkout", "-q", "-b", "feature/pr")
+		write(t, ws, "pkg/pr_change.go", "package pkg\n\nfunc PR() {}\n")
+		git("add", "-A")
+		git("commit", "-q", "-m", "feat: PR change")
+
+		// mode stays the "full" default — pr_url must override it to incremental.
+		res := run(t, ws, "", map[string]string{"pr_url": "https://forge/pr/1", "base_ref": base})
+		if res.Mode != "incremental" {
+			t.Errorf("mode = %q, want incremental (pr_url set ⇒ PR launch)", res.Mode)
+		}
+		var gotChange, gotBase bool
+		for _, f := range res.RecentlyChanged {
+			if f == "pkg/pr_change.go" {
+				gotChange = true
+			}
+			if f == "pkg/base.go" {
+				gotBase = true
+			}
+		}
+		if !gotChange {
+			t.Errorf("recently_changed_code_files must include the PR's change pkg/pr_change.go: %+v", res.RecentlyChanged)
+		}
+		if gotBase {
+			t.Errorf("recently_changed_code_files must NOT include pre-PR pkg/base.go: %+v", res.RecentlyChanged)
+		}
+	})
+
+	t.Run("incremental_base_resolves_via_origin_when_not_local", func(t *testing.T) {
+		// The origin/<ref> fallback: a PR base like "main" may exist only as a
+		// remote-tracking ref in the run's clone. scan_hints must still resolve
+		// the delta against origin/main.
+		gitIn := func(dir string, args ...string) {
+			cmd := exec.Command("git", args...)
+			cmd.Dir = dir
+			cmd.Env = append(os.Environ(),
+				"GIT_AUTHOR_NAME=t", "GIT_AUTHOR_EMAIL=t@t",
+				"GIT_COMMITTER_NAME=t", "GIT_COMMITTER_EMAIL=t@t")
+			if out, err := cmd.CombinedOutput(); err != nil {
+				t.Fatalf("git -C %s %v: %v\n%s", dir, args, err, out)
+			}
+		}
+		origin := t.TempDir()
+		gitIn(origin, "init", "-q", "-b", "main")
+		write(t, origin, "README.md", "# fixture\n")
+		write(t, origin, "pkg/base.go", "package pkg\n")
+		gitIn(origin, "add", "-A")
+		gitIn(origin, "commit", "-q", "-m", "base")
+
+		ws := filepath.Join(t.TempDir(), "clone")
+		gitIn(t.TempDir(), "clone", "-q", origin, ws)
+		gitIn(ws, "checkout", "-q", "-b", "feature/pr")
+		write(t, ws, "pkg/pr_change.go", "package pkg\n\nfunc PR() {}\n")
+		gitIn(ws, "add", "-A")
+		gitIn(ws, "commit", "-q", "-m", "feat: PR change")
+		gitIn(ws, "branch", "-D", "main") // base "main" now resolves ONLY via origin/main
+
+		res := run(t, ws, "", map[string]string{"pr_url": "https://forge/pr/1", "base_ref": "main"})
+		if res.IncrementalBase != "origin/main" {
+			t.Errorf("incremental_base = %q, want origin/main (local main deleted → fallback must resolve remotely)", res.IncrementalBase)
+		}
+		var gotChange bool
+		for _, f := range res.RecentlyChanged {
+			if f == "pkg/pr_change.go" {
+				gotChange = true
+			}
+		}
+		if !gotChange {
+			t.Errorf("recently_changed must include pkg/pr_change.go via the origin/main fallback: %+v", res.RecentlyChanged)
 		}
 	})
 }

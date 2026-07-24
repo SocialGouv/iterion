@@ -207,15 +207,26 @@ vars:
   mr_base: string = ""
   source_issue_ref: string = ""
 
-  ## PR finalization mode. `new_pr` (default): open ONE new PR from the
-  ## alignment series (periodic runs). `amend`: the run was checked out
-  ## from an EXISTING PR's head branch (repo_ref set by the PR-open
-  ## trigger) — instead of opening a new PR, push the alignment commits
-  ## onto that same branch (mr_branch) and comment on the PR, so the docs
-  ## land IN the contributor's PR and are reviewed WITH the code. Pair
-  ## with `mode: incremental` + `diff_since: <pr base>` so the campaign
-  ## scopes to the PR's own diff.
-  mr_mode: string = "new_pr"
+  ## PR-CONTEXT inputs — the GENERIC vars iterion's forge webhook and the
+  ## `/doki` command already set for ANY bot launched ON a pull request
+  ## (no docs-refresh-specific engine code; iterion stays bot-agnostic).
+  ## When `pr_url` is non-empty the run was launched on a PR (and the
+  ## engine checked out its head branch), so Doki switches ITSELF into
+  ## AMEND mode: align the docs impacted by the PR's own diff (incremental,
+  ## base = `base_ref`) and push the alignment commits ONTO the PR's head
+  ## branch + comment, instead of opening a separate PR — the docs land IN
+  ## the contributor's PR, reviewed with the code. Empty (schedule / manual
+  ## path) → the normal `mode` / `open_mr` behaviour. `mr_branch` overrides
+  ## the push target (default: the checked-out branch = the PR head).
+  pr_url: string = ""
+  base_ref: string = ""
+  ## The PR head branch (generic, engine-provided on a PR launch). In amend
+  ## mode this is the push target — pushing HEAD onto it fast-forwards the
+  ## contributor's PR. Robust to `worktree: auto` (which checks out a
+  ## DETACHED head): we push by branch NAME, not by being on the branch.
+  ## `mr_branch` overrides it; empty on both → finalize_mr falls back to the
+  ## current branch, else reports it could not determine the head.
+  source_branch: string = ""
 
 secrets:
   ## Forge access for push + PR creation + the issue back-link.
@@ -462,10 +473,17 @@ prompt campaign_user:
   the docs that describe it, and follow the thread where a change makes a
   nearby doc stale. Do NOT re-audit semantically-aligned areas untouched
   by these changes. In BOTH modes the structural hints below cover the
-  whole corpus — fix any dead link / missing path anywhere. If the delta
-  is empty and no structural hint remains, you are already aligned:
-  report docs_aligned=true and stop (zero commits is the correct, honest
-  outcome — never manufacture edits).
+  whole corpus — fix any dead link / missing path anywhere.
+  PR ALIGNMENT (pr_url = {{input.pr_url}} — empty on a non-PR run): when set,
+  you are aligning THAT pull request. If "Recently changed code files" is
+  empty here AND the base ({{input.incremental_base}}) is empty, the diff
+  could NOT be computed — do NOT read that as "nothing changed": inspect the
+  PR's own diff yourself (`git log`, `git diff` against the PR's base branch)
+  and align the docs its changes touch. NEVER report docs_aligned=true on a
+  PR without having read its actual changes.
+  Otherwise, if the delta is empty and no structural hint remains, you are
+  already aligned: report docs_aligned=true and stop (zero commits is the
+  correct, honest outcome — never manufacture edits).
 
   ## Advisory scan report (this pass)
   {{input.hints_note}}
@@ -501,16 +519,16 @@ prompt campaign_user:
 prompt finalize_mr_system:
   You finalize a finished docs-refresh run by getting its SERIES of
   per-doc alignment commits into a pull request (PR; merge request on
-  GitLab). Two modes — the user prompt names which. You make NO further
-  changes to docs or code.
+  GitLab). The `pr_url` input selects the mode. You make NO further changes
+  to docs or code.
 
-  - new_pr (default): open ONE new PR for the alignment series, then
-    (optionally) post the PR link back to the source issue.
-  - amend: the run was checked out FROM an existing PR's head branch, so
-    the alignment commits already sit on top of it — do NOT open a new
-    PR. Push those commits onto that same branch (they land IN the
-    contributor's PR) and post ONE short comment on the PR. The docs get
-    reviewed together with the code.
+  - pr_url EMPTY → NEW-PR mode: open ONE new PR for the alignment series,
+    then (optionally) post the PR link back to the source issue.
+  - pr_url SET → AMEND mode: the run was launched ON that PR and checked out
+    from its head branch, so the alignment commits already sit on top of it.
+    Do NOT open a new PR — push those commits onto the SAME (checked-out)
+    branch (they land IN the contributor's PR) and post ONE short comment on
+    the PR. The docs get reviewed together with the code.
 
   Read the `forge-mr-create` skill FIRST — forge detection, authenticating
   from the mounted forge_token, pushing, opening a PR (GitHub gh, GitLab
@@ -525,7 +543,7 @@ prompt finalize_mr_system:
        file when present; otherwise assume host auth. If neither works,
        set opened=false with a precise skipped_reason — never pretend.
 
-  new_pr mode:
+  NEW-PR mode (pr_url empty):
     1. Branch = mr_branch if set, else a stable iterion/docs-refresh/<run-id>;
        base = mr_base if set, else the repo default branch (skill).
     2. Push HEAD to that branch on origin, open the PR into the base.
@@ -539,27 +557,31 @@ prompt finalize_mr_system:
        forge-CLI comment; "native:<id>" → board comment tool); back_linked.
     4. opened=true, url=<the new PR>, branch=<the branch>.
 
-  amend mode:
-    1. mr_branch is the existing PR's head branch and is REQUIRED — if
-       empty, set opened=false, skipped_reason "amend mode needs the PR
-       head branch". Push HEAD to origin/<mr_branch> (a fast-forward: the
-       alignment commits are stacked on top of the PR). NEVER force-push.
-    2. Find the PR for that branch (`gh pr view --json url,number`, or the
-       skill) and post ONE concise comment: which docs were aligned to
-       this change, plus the remaining drift when non-empty. Do NOT open a
-       new PR.
-    3. opened=true (the alignment is now IN the PR), url=<that PR>,
-       branch=<mr_branch>, back_linked=true.
+  AMEND mode (pr_url set):
+    1. The push target is the PR head branch, by NAME (do NOT rely on being
+       ON it — `worktree: auto` checks out a DETACHED head): use
+       `source_branch` if set, else `mr_branch`, else the current branch
+       (`git rev-parse --abbrev-ref HEAD` only when it is not literally
+       "HEAD"). If none resolves, set opened=false, skipped_reason
+       "amend: could not determine the PR head branch". Push the run's HEAD
+       onto it: `git push origin HEAD:<branch>` — a fast-forward, the
+       alignment commits stacked on top. NEVER force-push.
+    2. Post ONE concise comment on the PR (resolve it from pr_url or the
+       branch — see the skill's amend path): which docs were aligned to this
+       change, plus the remaining drift when non-empty. Do NOT open a new PR.
+    3. opened=true (the alignment is now IN the PR), url=<pr_url>,
+       branch=<that branch>, back_linked=true.
 
   Return opened, url, branch, back_linked, skipped_reason and a short
   summary. Be honest: report exactly what happened.
 
 prompt finalize_mr_user:
-  Mode: {{input.mr_mode}}
+  PR to amend (pr_url — EMPTY = open a new PR · SET = amend THIS PR): {{input.pr_url}}
   Workspace: {{input.workspace_dir}}
-  Branch (new_pr: may be empty → derive · amend: the PR head branch to push onto): {{input.mr_branch}}
+  PR head branch (amend push target, engine-provided; may be empty): {{input.source_branch}}
+  Branch override (new-PR: empty → derive · amend: overrides the PR head above): {{input.mr_branch}}
   Base (may be empty → repo default branch): {{input.mr_base}}
-  Source issue to back-link (new_pr only, may be empty): {{input.source_issue_ref}}
+  Source issue to back-link (new-PR only, may be empty): {{input.source_issue_ref}}
   Operator scope notes (may be empty): {{input.scope_notes}}
 
   Campaign summary (for the PR body / amend comment):
@@ -571,10 +593,10 @@ prompt finalize_mr_user:
   Promises ledger (JSON array; the file may be absent or empty):
   {{vars.scratch_dir}}/promises.json
 
-  Finalize per the mode: new_pr → push the branch + open the PR (with the
+  Finalize per pr_url: EMPTY → push the branch + open a new PR (with the
   "Unfulfilled documented promises" section when the ledger has entries) +
-  post the back-link when a source issue is given. amend → push HEAD onto
-  the PR head branch + post ONE comment on the PR. Return the structured
+  post the back-link when a source issue is given. SET → push HEAD onto the
+  PR's own head branch + post ONE comment on the PR. Return the structured
   result.
 
 ## ─── Schemas ────────────────────────────────────────────────────
@@ -611,6 +633,7 @@ schema campaign_input:
   hints_note: string
   mode: string
   incremental_base: string
+  pr_url: string
   recently_changed_code_files: string[]
   fail_log: string
 
@@ -659,7 +682,8 @@ schema forge_auth_state:
 
 schema finalize_mr_input:
   workspace_dir: string
-  mr_mode: string
+  pr_url: string
+  source_branch: string
   mr_branch: string
   mr_base: string
   source_issue_ref: string
@@ -712,7 +736,7 @@ schema finalize_mr_output:
 ## Raw-string command — the python body avoids double quotes and
 ## literal backticks (BT = chr(96)); values flow via shell env vars.
 tool scan_hints:
-  command: `WS={{vars.workspace_dir}} DOC_GLOBS={{vars.doc_globs}} EXCLUDED_DIRS={{vars.excluded_dirs}} BUNDLE_SELF={{vars.bundle_self_path}} DIFF_SINCE={{vars.diff_since}} MODE={{vars.mode}} DISMISSED_PATH={{vars.dismissed_path}} MAX_HINTS={{vars.max_hints}} DOCS_DIR={{vars.docs_dir}} python3 -c "
+  command: `WS={{vars.workspace_dir}} DOC_GLOBS={{vars.doc_globs}} EXCLUDED_DIRS={{vars.excluded_dirs}} BUNDLE_SELF={{vars.bundle_self_path}} DIFF_SINCE={{vars.diff_since}} MODE={{vars.mode}} PR_URL={{vars.pr_url}} BASE_REF={{vars.base_ref}} DISMISSED_PATH={{vars.dismissed_path}} MAX_HINTS={{vars.max_hints}} DOCS_DIR={{vars.docs_dir}} python3 -c "
 import os, json, glob, re, subprocess
 ws = os.environ['WS']
 os.chdir(ws)
@@ -901,6 +925,16 @@ else:
 recent = []
 diff_since = os.environ.get('DIFF_SINCE', '').strip()
 mode = os.environ.get('MODE', 'full').strip().lower()
+pr_url = os.environ.get('PR_URL', '').strip()
+base_ref = os.environ.get('BASE_REF', '').strip()
+if pr_url:
+    # PR launch: iterion's forge webhook / the /doki command set pr_url +
+    # base_ref for ANY bot launched on a PR (generic, not docs-refresh-
+    # specific) and checked out the PR head. Doki aligns the docs impacted by
+    # the PR's OWN diff — incremental, base = the PR base.
+    mode = 'incremental'
+    if base_ref and not diff_since:
+        diff_since = base_ref
 if mode == 'incremental' and not diff_since:
     # Auto-detect the last alignment point: the campaign stamps every
     # commit with a Bot: docs-refresh TRAILER LINE, so the newest commit
@@ -916,13 +950,22 @@ if mode == 'incremental' and not diff_since:
         diff_since = p.stdout.strip()
     except Exception:
         diff_since = ''
-incremental_base = diff_since
+incremental_base = ''
 if diff_since:
-    try:
-        proc = subprocess.run(['git', 'diff', '--name-only', diff_since + '...HEAD'], capture_output=True, text=True, check=True)
-        recent = sorted([l for l in proc.stdout.splitlines() if l and not excluded(l)])
-    except Exception:
-        recent = []
+    # Resolve the base against a local ref first, then origin/<ref>: a PR base
+    # like main may exist only as a remote-tracking ref in the run's clone,
+    # while an auto-detected SHA resolves on the first try. incremental_base
+    # stays EMPTY if neither resolves (a shallow clone with no in-clone
+    # merge-base) — honest telemetry: the delta could not be computed, so the
+    # campaign must not read a 0-length change list as nothing-to-align.
+    for ref in (diff_since, 'origin/' + diff_since):
+        try:
+            proc = subprocess.run(['git', 'diff', '--name-only', ref + '...HEAD'], capture_output=True, text=True, check=True)
+            recent = sorted([l for l in proc.stdout.splitlines() if l and not excluded(l)])
+            incremental_base = ref
+            break
+        except Exception:
+            recent = []
 print(json.dumps({'doc_files': files, 'doc_count': len(files), 'hints': hints, 'hint_count': len(hints), 'missing_path_count': missing_path_count, 'dead_link_count': dead_link_count, 'unmentioned_area_count': unmentioned_area_count, 'checked_paths': checked_paths, 'checked_links': checked_links, 'ledger_excluded': ledger_excluded, 'truncated': truncated, 'hints_note': hints_note, 'mode': mode, 'incremental_base': incremental_base, 'recently_changed_code_files': recent}))
 "`
   output: hints_output
@@ -1006,12 +1049,15 @@ compute gate:
 
 ## ─── Nodes : PR finalization tail (opt-in, feature-dev verbatim) ────
 
-## mr_gate lifts vars.open_mr into a bool output so the two outgoing
-## edges use the C012-exhaustive simple form. No LLM, no shell.
+## mr_gate decides whether the PR tail runs. `open_mr` OR a PR launch
+## (`pr_url` non-empty) — a PR launch ALWAYS finalizes, because amending the
+## contributor's PR IS the delivery: without this, the alignment commits
+## would strand on the run's storage branch and never reach the PR. No LLM,
+## no shell. (String `pr_url` is truthy when non-empty.)
 compute mr_gate:
   output: mr_gate_output
   expr:
-    open_mr: "vars.open_mr"
+    open_mr: "vars.open_mr || vars.pr_url"
 
 ## forge_auth_probe — DETERMINISTIC pre-flight for the push. finalize_mr is an
 ## LLM agent; entering it with NO push credential mounted burns a whole turn
@@ -1114,6 +1160,7 @@ workflow docs_refresh:
     hints_note: "{{outputs.scan_hints.hints_note}}",
     mode: "{{outputs.scan_hints.mode}}",
     incremental_base: "{{outputs.scan_hints.incremental_base}}",
+    pr_url: "{{vars.pr_url}}",
     recently_changed_code_files: "{{outputs.scan_hints.recently_changed_code_files}}",
     fail_log: "{{outputs.gate.fail_log}}"
   }
@@ -1151,7 +1198,8 @@ workflow docs_refresh:
 
   forge_auth_probe -> finalize_mr when available with {
     workspace_dir:    "{{vars.workspace_dir}}",
-    mr_mode:          "{{vars.mr_mode}}",
+    pr_url:           "{{vars.pr_url}}",
+    source_branch:    "{{vars.source_branch}}",
     mr_branch:        "{{vars.mr_branch}}",
     mr_base:          "{{vars.mr_base}}",
     source_issue_ref: "{{vars.source_issue_ref}}",

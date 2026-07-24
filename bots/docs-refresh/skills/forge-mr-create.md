@@ -159,34 +159,40 @@ Set `back_linked=true` only when the comment actually posted. A failed
 back-link is not fatal — keep `opened=true` and note the failure in
 `summary`.
 
-## 6. Amend an existing PR instead of opening a new one (`mr_mode=amend`)
+## 6. Amend an existing PR instead of opening a new one (`pr_url` is set)
 
-When the user prompt says **Mode: amend**, the run was checked out from an
-existing PR's head branch and the alignment commits are already stacked on
-top of it. Do NOT open a new PR — land the commits IN that PR and comment.
+When `pr_url` is non-empty, the run was launched ON that pull request and
+checked out from its head branch — the alignment commits are already stacked
+on top of it. Do NOT open a new PR — land the commits IN that PR and comment.
 
-1. `mr_branch` is the PR's head branch and is REQUIRED. If empty, set
-   `opened=false`, `skipped_reason="amend mode needs the PR head branch"`,
-   stop.
-2. Push the stacked commits onto that branch — a fast-forward, **never
-   force-push**: `git push origin HEAD:<mr_branch>`. The alignment commits
-   now appear in the PR.
-3. Find the PR for the branch and comment on it:
-   - GitHub: `gh pr view <mr_branch> --json url,number` → then
+1. Determine the PR head branch by NAME — do NOT rely on being ON it, since
+   `worktree: auto` checks out a DETACHED head. Priority: `source_branch`
+   (engine-provided PR head) → `mr_branch` (override) → the current branch
+   `br=$(git rev-parse --abbrev-ref HEAD)` **only when** `br` != `HEAD`. If
+   none resolves, set `opened=false`,
+   `skipped_reason="amend: could not determine the PR head branch"`, stop.
+2. Push the run's HEAD onto that branch — a fast-forward, **never
+   force-push**: `git push origin HEAD:<branch>`. Pushing by branch name
+   works whether or not HEAD is on the branch. The alignment commits now
+   appear in the PR.
+3. Comment on the PR (resolve it from `pr_url`, or from the branch):
+   - GitHub: `gh pr comment <pr_url> --body "<comment>"` (gh accepts the PR
+     URL directly), or `gh pr view <branch> --json url,number` then
      `gh pr comment <number> --body "<comment>"`.
-   - GitLab: `glab mr list --source-branch <mr_branch>` → the MR iid →
+   - GitLab: `glab mr list --source-branch <branch>` → the MR iid →
      `glab mr note <iid> --message "<comment>"`.
-   - Forgejo/Gitea: `GET /repos/<owner>/<repo>/pulls?head=<owner>:<mr_branch>`
+   - Forgejo/Gitea: `GET /repos/<owner>/<repo>/pulls?head=<owner>:<branch>`
      → comment via `POST /repos/<owner>/<repo>/issues/<index>/comments`.
 
    Comment body: which docs were aligned to this change (concise), plus a
    "Remaining drift" line when `drift_remaining` is non-empty.
-4. Set `opened=true` (the alignment is now in the PR), `url=<the PR URL>`,
-   `branch=<mr_branch>`, `back_linked=true`.
+4. Set `opened=true` (the alignment is now in the PR), `url=<pr_url>`,
+   `branch=<branch>`, `back_linked=true`.
 
-If no PR is found for the branch (the trigger raced ahead of PR creation),
-still keep the pushed commits: `opened=true`, `url=""`, note it in
-`summary` — the commits are the real deliverable.
+If the push is rejected (someone pushed to the PR branch meanwhile), do NOT
+force — set `opened=false`, `skipped_reason="amend: push rejected (branch
+advanced); re-run"`, and stop. The `pr_url` and the un-pushed local commits
+are preserved for the retry.
 
 ## Honesty contract
 

@@ -1,7 +1,23 @@
 name: docs-refresh
 display_name: Doki
 icon: 📚
-version: 3.5.1
+version: 3.5.2
+## 3.5.2 — amend-PR mode is now AGNOSTIC (no docs-refresh-specific engine
+## code). The webhook / `/doki` command already set the GENERIC `pr_url` +
+## `base_ref` vars and check out the PR head for ANY bot launched on a PR;
+## Doki self-detects a non-empty `pr_url` and switches into incremental
+## amend (scope = the PR's own diff via base_ref; push onto the PR head +
+## comment) — the logic lives in the BOT, not in iterion. Replaced the
+## explicit `mr_mode` var with `pr_url`. Delivery (hardened after an
+## adversarial review found the first cut was dead-on-arrival): `mr_gate`
+## opens the PR tail on ANY PR launch (amending the PR IS the delivery, so
+## `open_mr` need not be set); the amend pushes onto the PR head by NAME via
+## the generic `source_branch` (iterion now sets it on the PR-open lanes too
+## — bot-agnostic), robust to `worktree: auto`'s DETACHED head; scan_hints
+## resolves the base against `origin/<ref>` when a bare branch name isn't a
+## local ref, and reports an EMPTY base when the diff can't be computed so
+## the campaign re-reads the PR diff instead of falsely converging. Activate
+## by pointing a forge PR webhook at docs-refresh.
 ## 3.5.1 — incremental base detection anchors to the trailer LINE
 ## (`git log -E --grep '^Bot: docs-refresh'`), so a commit that merely
 ## MENTIONS the trailer in prose (this bot's own feature commits) is not
