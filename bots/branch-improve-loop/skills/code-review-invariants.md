@@ -118,7 +118,9 @@ cross-cutting concerns by §1; here, just confirm the change reads like the
 code around it. This section is judgment, not a checklist — apply it once,
 honestly, and fix what you find in the same pass. It is **advisory**: the
 deterministic build+test gate stays the only thing that blocks shipping — this
-lens sharpens the diff, it never gates it.## How to use this in a self-review pass
+lens sharpens the diff, it never gates it.
+
+## How to use this in a self-review pass
 
 1. `git diff <base>` and `git diff --stat` — see the *whole* change.
 2. For each new/changed unit, walk sections 1–7. Most changes only touch a

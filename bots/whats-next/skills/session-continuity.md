@@ -126,7 +126,9 @@ aged out. A superseded fact carries history; a wrong fact is noise. When in
 doubt, supersede (reversible) rather than delete (destructive).
 
 This keeps the tree from accreting silent contradictions — the failure mode
-that makes a long-lived memory untrustworthy.## The findings/ scope (cross-bot inbox)
+that makes a long-lived memory untrustworthy.
+
+## The findings/ scope (cross-bot inbox)
 
 `findings/` is a **distinct memory scope** — a sibling of this
 bot's own scope under `…/memory/`, not a subfolder of it. It is a

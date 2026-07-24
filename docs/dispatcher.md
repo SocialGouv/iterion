@@ -223,10 +223,14 @@ Each tick (`polling.interval_ms`, default 30s):
    dependencies**: an issue whose body opens a line with
    `Depends on #N` / `Blocked by #N` is held out of the candidate set
    while `#N` is still open (the native tracker has its own richer
-   blocker model). Resolution is **fail-open** — a reference that
-   cannot be confirmed open (a typo, a closed issue, a cross-repo ref)
-   never holds the issue, so a mis-parse can only under-block, never
-   silently wedge a ticket. Each hold is logged at info level.
+   blocker model). Resolution is **best-effort and fail-open** — a
+   blocker holds the issue only when `#N` is positively seen open among
+   the issues this poll fetched. Because that fetch is scoped by the
+   configured `include_labels`, a blocker sitting in a *different* label
+   or state is not seen and fails open (the issue dispatches); likewise a
+   typo, a closed issue, or a cross-repo ref never holds. So a mis-parse
+   can only under-block, never silently wedge a ticket. Each hold is
+   logged at info level.
 4. **Sort.** `priority desc, created_at asc, identifier asc`.
 5. **Dispatch.** Walk candidates, skip those already claimed locally
    or queued for retry, and dispatch as long as both global and

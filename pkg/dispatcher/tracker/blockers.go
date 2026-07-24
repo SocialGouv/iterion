@@ -22,18 +22,24 @@ import (
 //
 //   - FAIL-OPEN. A blocker is "unsatisfied" only when we can positively see it
 //     is still open (its number is in the open-issue set the adapter just
-//     fetched). A reference we cannot resolve — a typo'd number, a cross-repo
-//     ref, an issue outside the fetched set — is treated as satisfied and does
-//     NOT hold the issue. A regex mis-parse can therefore never cause an
-//     invisible stall; the worst case is under-blocking, which the operator
-//     prefers over a ticket wedged for a reason no one can see.
+//     fetched — which, when the tracker filters candidates by label, is the
+//     label-matched set: a blocker in another state/label is not seen and
+//     fails open). A reference we cannot resolve — a typo'd number, a
+//     cross-repo ref, an issue outside the fetched set — is treated as
+//     satisfied and does NOT hold the issue. The worst case is under-blocking,
+//     which the operator prefers over a ticket wedged for a reason no one can
+//     see. This is best-effort honoring of a declared dependency, not a
+//     guarantee.
 //   - SAME-REPO `#N` ONLY. Every forge writes an in-repo dependency as `#N`;
 //     cross-repo / URL forms vary and are intentionally ignored (fail-open).
 
-// blockerLineRe matches a line that opens with a dependency keyword, tolerating
-// leading markdown quote/list markers ("> Blocked by …", "- Depends on …").
-// The captured tail is then scanned for `#N` references.
-var blockerLineRe = regexp.MustCompile(`(?im)^[\s>*+-]*(?:depends on|blocked by)\b(.*)$`)
+// blockerLineRe matches a line that OPENS with a dependency keyword and is
+// IMMEDIATELY followed by a run of `#N` refs (tolerating leading markdown
+// quote/list markers and an optional ":"). Group 1 is that refs run. Requiring
+// the refs to lead keeps the "under-block only" property: a line like
+// "Blocked by a design call, see #42" does NOT match (prose, not a ref, follows
+// the keyword), so a stray `#N` elsewhere never over-blocks.
+var blockerLineRe = regexp.MustCompile(`(?im)^[\s>*+-]*(?:depends on|blocked by)[:\s]+(#\d+(?:[\s,]+(?:and[\s,]+)?#\d+)*)`)
 
 // issueRefRe matches a same-repo issue reference `#N`.
 var issueRefRe = regexp.MustCompile(`#(\d+)`)

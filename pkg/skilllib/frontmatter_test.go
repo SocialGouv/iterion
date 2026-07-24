@@ -140,6 +140,22 @@ func TestScanFrontmatter(t *testing.T) {
 			wantName: "n",
 			wantDesc: "kept text",
 		},
+		{
+			// Regression: an indented "---" INSIDE a folded block is content,
+			// not a frontmatter terminator — later keys must survive.
+			name:     "indented --- inside block is content",
+			in:       "---\ndescription: >\n  before\n  ---\n  after\nname: kept\n---\n",
+			wantName: "kept",
+			wantDesc: "before --- after",
+		},
+		{
+			// Regression: a value with text after >/| on the same line is an
+			// inline scalar, NOT a block header — assign it verbatim.
+			name:     "inline > value is not a block scalar",
+			in:       "---\nname: n\ndescription: > inline text\n---\n",
+			wantName: "n",
+			wantDesc: "> inline text",
+		},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

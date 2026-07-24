@@ -20,7 +20,10 @@ func TestParseBlockerRefs(t *testing.T) {
 		{"markdown markers", "> Blocked by #12\n- Depends on #13", []int{12, 13}},
 		{"mid-sentence is ignored", "This is not blocked by anything really", nil},
 		{"keyword without ref", "Blocked by a design decision", nil},
+		{"keyword then prose then ref does not over-block", "Blocked by a design call, see #42", nil},
+		{"ref must lead — trailing prose ref ignored", "Blocked by #7 because of the schema #999", []int{7}},
 		{"ref elsewhere ignored", "See #99 for context.\nCloses #100", nil},
+		{"colon separator", "Blocked by: #8", []int{8}},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

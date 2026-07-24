@@ -85,11 +85,14 @@ func ScanFrontmatter(r io.Reader) (name, description string) {
 				block = append(block, "")
 				continue
 			}
-			if indent > baseIndent && trimmed != "---" {
+			// A more-indented line is block content — including one that reads
+			// "---" or "key:", which are literal text inside the scalar, not
+			// structure. Only a dedent to the key's indent (or less) ends it.
+			if indent > baseIndent {
 				block = append(block, trimmed)
 				continue
 			}
-			flushBlock() // dedent (or ---) ends the block; reprocess this line
+			flushBlock() // dedent ends the block; reprocess this line below
 		}
 		if trimmed == "---" {
 			break
@@ -103,10 +106,11 @@ func ScanFrontmatter(r io.Reader) (name, description string) {
 			continue
 		}
 		val := strings.TrimSpace(v)
-		if strings.HasPrefix(val, "|") || strings.HasPrefix(val, ">") {
-			// A block-scalar indicator opens a multi-line value (chomping/indent
-			// indicators after |/> are ignored — we only need the text). A bare
-			// empty value falls through and assigns "" like any scalar.
+		if isBlockScalarHeader(val) {
+			// A pure block-scalar header (`>`/`|` + optional chomping/indent
+			// indicator, nothing else) opens a multi-line value. `key: > text`
+			// with content on the same line is NOT a block — it falls through
+			// and is assigned as an inline scalar.
 			blockKey = key
 			fold = val[0] == '>'
 			baseIndent = len(k) - len(strings.TrimLeft(k, " \t"))
@@ -119,4 +123,20 @@ func ScanFrontmatter(r io.Reader) (name, description string) {
 	}
 	flushBlock() // frontmatter that ends at EOF mid-block
 	return name, description
+}
+
+// isBlockScalarHeader reports whether a value is a YAML block-scalar header:
+// `>` or `|`, optionally followed by a chomping indicator (`+`/`-`) and/or a
+// numeric indentation indicator, and nothing else. `> some text` (content on
+// the same line) is not a header — it is an inline value.
+func isBlockScalarHeader(val string) bool {
+	if val == "" || (val[0] != '>' && val[0] != '|') {
+		return false
+	}
+	for _, r := range val[1:] {
+		if r != '+' && r != '-' && (r < '0' || r > '9') {
+			return false
+		}
+	}
+	return true
 }
