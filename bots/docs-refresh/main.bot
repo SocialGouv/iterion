@@ -1016,8 +1016,22 @@ def git(args):
     except Exception:
         return ''
 
+# base = run-start HEAD: the newest reflog entry that is NOT one of this
+# run own docs-refresh commits. On a PR amend the runner clones at the base
+# branch then checks out the PR head, so the OLDEST reflog entry is that
+# base branch, not where alignment began -- diffing against it would flag
+# the PR own code as a scope violation. Walking newest-first to the first
+# foreign HEAD lands on the PR head (amend) or the worktree base
+# (worktree:auto): the true run-start in both.
 reflog = [l for l in git(['reflog', '--format=%H']).splitlines() if l.strip()]
-base = reflog[-1] if reflog else 'HEAD'
+def is_own_commit(h):
+    body = git(['log', '-1', '--format=%B', h])
+    return any(l.strip() == 'Bot: docs-refresh' for l in body.splitlines())
+base = 'HEAD'
+for h in reflog:
+    if not is_own_commit(h):
+        base = h
+        break
 changed = set(l for l in git(['diff', base, '--name-only']).splitlines() if l.strip())
 for line in git(['status', '--porcelain']).splitlines():
     if line[:2].strip() == '??':

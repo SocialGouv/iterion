@@ -1,7 +1,17 @@
 name: docs-refresh
 display_name: Doki
 icon: 📚
-version: 3.5.2
+version: 3.5.3
+## 3.5.3 — scope_check now bases its writeable-set diff on the RUN-START
+## HEAD (the newest reflog entry that is not one of this run's own
+## `Bot: docs-refresh` commits), not the oldest reflog entry. In amend mode
+## the cloud runner clones the base branch (HEAD=main) then checks out the
+## PR head, so the oldest reflog entry is main — and diffing against it
+## folded the PR author's OWN code into the diff, tripping a phantom scope
+## violation that kept `scope_ok` false forever, so `converged` never fired
+## and the amend run burned every pass (found live on run 019f9429). Real
+## fixture tests reproduce the clone+checkout reflog shape
+## (bots/docs_refresh_scope_test.go). No behaviour change for worktree:auto.
 ## 3.5.2 — amend-PR mode is now AGNOSTIC (no docs-refresh-specific engine
 ## code). The webhook / `/doki` command already set the GENERIC `pr_url` +
 ## `base_ref` vars and check out the PR head for ANY bot launched on a PR;
