@@ -106,8 +106,8 @@ somehow skipped resolution) behaves as DUAL — a pure non-regression.
   `ForceInitialToolUse` fix).
 - **Convergence risk** of round_robin→condition is guarded by
   `iterion bench asymptote` on both modes (the pilot gate) and by a
-  deterministic stub e2e (`e2e/review_topology_mini.bot` +
-  `review_topology_test.go`) proving dual alternates, auto→dual, and mono
+  deterministic stub e2e (`e2e/testdata/review_topology_mini.bot` +
+  `e2e/review_topology_test.go`) proving dual alternates, auto→dual, and mono
   fires exactly one family — all converge.
 - **Regression guard:** `bots/review_topology_test.go` fails if any
   review-loop bot reverts to `mode: round_robin` or drops the topology
