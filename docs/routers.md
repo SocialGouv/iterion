@@ -4,10 +4,10 @@ Routers are the branch points of the graph — the difference between a linear s
 
 ```mermaid
 flowchart LR
-  R{"Router"} --> A["Branch A"]
-  R --> B["Branch B"]
-  R --> C["Branch C"]
-  A --> J["Downstream node<br/>await: wait_all"]
+  R{"🔀 Router"} --> A["🅰️ Branch A"]
+  R --> B["🅱️ Branch B"]
+  R --> C["🌿 Branch C"]
+  A --> J(["🔗 Downstream node<br/>await: wait_all"])
   B --> J
   C --> J
 ```

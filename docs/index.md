@@ -10,7 +10,10 @@ hero:
     alt: Iterion logo
   actions:
     - theme: brand
-      text: Get started →
+      text: Quickstart →
+      link: /quickstart
+    - theme: alt
+      text: Install & all modes
       link: /install
     - theme: alt
       text: Explore the bot fleet
@@ -61,6 +64,64 @@ features:
     link: /cloud-overview
     linkText: Iterion Cloud
 ---
+
+## ✨ See it
+
+A `.bot` is a readable graph. Here's a plan → implement → review loop that keeps
+fixing until a judge approves — declarative, versioned, re-runnable:
+
+```iter
+schema verdict:
+  approved: bool
+  notes: string
+
+agent plan:
+  system: "Turn the request into a concrete plan: files, steps, constraints."
+
+agent implement:
+  backend: "claude_code"
+  system: "Implement the plan, then run the tests."
+
+judge review:
+  output: verdict
+  system: "Approve only if the change is complete and the tests pass."
+
+workflow ship_it:
+  entry: plan
+  plan -> implement -> review
+  review -> implement as fix(3) when not approved
+  review -> done when approved
+```
+
+… which compiles to this graph and runs it — in parallel where it can, with
+budgets, sandboxing, and checkpoints:
+
+```mermaid
+flowchart LR
+  P(["📝 plan"]) --> I["🤖 implement"] --> R{"⚖️ review"}
+  R -->|"✅ approved"| D(["🏁 done"])
+  R -->|"🔁 fix · max 3"| I
+```
+
+Design it on the canvas or edit the source — both stay in sync in the
+[visual studio](/visual-editor):
+
+![The Iterion studio — visual workflow editor with live diagnostics and a per-node inspector](images/studio/editor-canvas.png)
+
+## ⚙️ How a run works
+
+Launch from anywhere; the same compiled graph runs the same way — scheduled in
+parallel, bounded by budgets, isolated in a sandbox, and checkpointed so it can
+resume:
+
+```mermaid
+flowchart LR
+  L(["🚀 CLI · studio · CI · cloud"]) --> C["🧩 Compile + validate<br/>.bot → graph"]
+  C --> E{{"⚙️ Runtime engine<br/>schedule · budget · checkpoint"}}
+  E --> N["🤖 agents · judges · routers<br/>humans · tools · sub-bots"]
+  N --> S[["🛡️ Per-run sandbox<br/>worktree · secrets · policy"]]
+  S --> R(["📦 PRs · artifacts · event log"])
+```
 
 ## 💡 What teams build with it
 

@@ -148,6 +148,7 @@ const sidebar = [
   {
     text: 'Start here',
     items: [
+      { text: 'Quickstart', link: '/quickstart' },
       { text: 'Current state', link: '/current-state' },
       { text: 'Why Iterion', link: '/why-iterion' },
       { text: 'Install', link: '/install' },
@@ -300,7 +301,33 @@ export default withMermaid(
     srcExclude: ['README.md'],
     // localhost:* appears as illustrative example URLs in operator docs.
     ignoreDeadLinks: [/^https?:\/\/localhost/],
-    head: [['link', { rel: 'icon', href: '/iterion/favicon.ico' }]],
+    head: [
+      ['link', { rel: 'icon', href: '/iterion/favicon.ico' }],
+      ['meta', { property: 'og:type', content: 'website' }],
+      ['meta', { property: 'og:site_name', content: 'Iterion' }],
+      ['meta', { property: 'og:title', content: 'Iterion — the control plane for AI agents' }],
+      [
+        'meta',
+        {
+          property: 'og:description',
+          content:
+            'Define agent workflows as readable .bot files and operate every run — locally, in CI, or across a multi-tenant cloud.',
+        },
+      ],
+      ['meta', { property: 'og:image', content: 'https://socialgouv.github.io/iterion/og.png' }],
+      ['meta', { property: 'og:url', content: 'https://socialgouv.github.io/iterion/' }],
+      ['meta', { name: 'twitter:card', content: 'summary_large_image' }],
+      ['meta', { name: 'twitter:title', content: 'Iterion — the control plane for AI agents' }],
+      [
+        'meta',
+        {
+          name: 'twitter:description',
+          content:
+            'Define agent workflows as readable .bot files and operate every run — locally, in CI, or across a multi-tenant cloud.',
+        },
+      ],
+      ['meta', { name: 'twitter:image', content: 'https://socialgouv.github.io/iterion/og.png' }],
+    ],
     markdown: {
       // The .bot DSL uses ```iter fences (YAML-like, indentation-based) — alias
       // to the bundled yaml grammar. (```ebnf isn't bundled either but has no
@@ -313,7 +340,13 @@ export default withMermaid(
       search: { provider: 'local' },
       nav: [
         { text: 'Why Iterion?', link: '/why-iterion' },
-        { text: 'Get started', link: '/install' },
+        {
+          text: 'Get started',
+          items: [
+            { text: 'Quickstart (AI devs)', link: '/quickstart' },
+            { text: 'Install & all modes', link: '/install' },
+          ],
+        },
         { text: 'DSL', link: '/dsl' },
         { text: 'Bots', link: '/examples' },
         { text: 'Cloud', link: '/cloud-overview' },

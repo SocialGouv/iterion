@@ -10,12 +10,12 @@ A `.bot` file travels through a fixed pipeline before it runs:
 
 ```mermaid
 flowchart LR
-  SRC[".bot source"] --> LEX["Lexer<br/>indent-aware tokens"]
-  LEX --> PAR["Parser<br/>recursive descent"]
+  SRC(["📄 .bot source"]) --> LEX["🔤 Lexer<br/>indent-aware tokens"]
+  LEX --> PAR["🌳 Parser<br/>recursive descent"]
   PAR --> AST["AST"]
-  AST --> IR["IR compile<br/>nodes · edges · schemas"]
-  IR --> VAL["Validate<br/>C001–C199 diagnostics"]
-  VAL --> RUN["Runtime<br/>execute · budget · persist"]
+  AST --> IR["🧩 IR compile<br/>nodes · edges · schemas"]
+  IR --> VAL{{"✅ Validate<br/>C001–C199 diagnostics"}}
+  VAL --> RUN(["⚙️ Runtime<br/>execute · budget · persist"])
 ```
 
 ## File shape

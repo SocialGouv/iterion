@@ -12,10 +12,10 @@ overrides.
 
 ```mermaid
 flowchart LR
-  NODE["Workflow node"] -->|"model:"| DIRECT["Direct in-process<br/>LLM call · claw"]
-  NODE -->|"backend:"| CLI["Delegated CLI agent<br/>claude_code · kimi · grok"]
-  DIRECT --> THINK["Think<br/>plan · judge · route"]
-  CLI --> ACT["Act<br/>edit files · run shell · drive git"]
+  NODE{"🧠 Workflow node"} -->|"model:"| DIRECT(["⚡ Direct in-process<br/>LLM call · claw"])
+  NODE -->|"backend:"| CLI[["🛠️ Delegated CLI agent<br/>claude_code · kimi · grok"]]
+  DIRECT --> THINK["💭 Think<br/>plan · judge · route"]
+  CLI --> ACT["✋ Act<br/>edit files · run shell · drive git"]
 ```
 
 > **Cloud BYOK.** The auto-detection below is the *host/env* path. In

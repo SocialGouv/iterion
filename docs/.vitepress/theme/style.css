@@ -50,25 +50,27 @@
   position: fixed;
   inset: 0;
   z-index: 200;
-  background: rgba(0, 0, 0, 0.66);
+  background: var(--vp-c-bg);
+  display: flex;
+  align-items: center;
+  justify-content: center;
   overflow: hidden;
   touch-action: none;
 }
-:root.dark .mermaid-zoom-overlay {
-  background: rgba(0, 0, 0, 0.8);
-}
-.mermaid-zoom-stage {
-  position: absolute;
-  top: 0;
-  left: 0;
-  transform-origin: 0 0;
+.mermaid-zoom-inner {
+  transform-origin: center center;
   will-change: transform;
   cursor: grab;
+  display: flex;
 }
-.mermaid-zoom-stage:active {
+.mermaid-zoom-inner:active {
   cursor: grabbing;
 }
-.mermaid-zoom-stage svg {
+.mermaid-zoom-svg {
+  max-width: 92vw;
+  max-height: 84vh;
+  width: auto;
+  height: auto;
   display: block;
 }
 .mermaid-zoom-bar {
