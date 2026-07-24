@@ -122,6 +122,12 @@ func (a *GitHubAdapter) ListCandidates(ctx context.Context) ([]Issue, error) {
 		a.opts.Logger.Warn("github tracker: ListCandidates hit the %d-issue cap on repo %s — beyond this point issues are silently dropped from dispatch; consider tightening label filters",
 			ghCandidateListLimit, a.opts.Repo)
 	}
+	// Open-issue set for fail-open blocker resolution (all open issues this
+	// list returned, before eligibility filtering).
+	openNums := make(map[int]bool, len(raw))
+	for _, r := range raw {
+		openNums[r.Number] = true
+	}
 	out2 := make([]Issue, 0, len(raw))
 	for _, r := range raw {
 		if !a.authorAllowed(r.Author.Login) {
@@ -130,6 +136,13 @@ func (a *GitHubAdapter) ListCandidates(ctx context.Context) ([]Issue, error) {
 		iss := a.toIssue(r)
 		if iss.WorkflowState == "" {
 			continue // doesn't match any configured state
+		}
+		if held := HeldByOpenBlockers(r.Body, openNums); len(held) > 0 {
+			if a.opts.Logger != nil {
+				a.opts.Logger.Info("github tracker: holding %s — declared open blocker(s) %s not yet closed",
+					iss.Identifier, formatIssueRefs(held))
+			}
+			continue // honor the issue's own "Blocked by/Depends on #N"
 		}
 		out2 = append(out2, iss)
 	}

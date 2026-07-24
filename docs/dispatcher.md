@@ -218,7 +218,15 @@ Each tick (`polling.interval_ms`, default 30s):
    tracker as the source of truth.
 3. **Fetch candidates.** `tracker.ListCandidates(ctx)`. The native
    adapter filters by `Eligible` board states; the GitHub adapter
-   passes labels through `gh issue list --search`.
+   passes labels through `gh issue list --search`. Every external
+   adapter (github/forgejo/gitlab) also **honors body-declared
+   dependencies**: an issue whose body opens a line with
+   `Depends on #N` / `Blocked by #N` is held out of the candidate set
+   while `#N` is still open (the native tracker has its own richer
+   blocker model). Resolution is **fail-open** — a reference that
+   cannot be confirmed open (a typo, a closed issue, a cross-repo ref)
+   never holds the issue, so a mis-parse can only under-block, never
+   silently wedge a ticket. Each hold is logged at info level.
 4. **Sort.** `priority desc, created_at asc, identifier asc`.
 5. **Dispatch.** Walk candidates, skip those already claimed locally
    or queued for retry, and dispatch as long as both global and

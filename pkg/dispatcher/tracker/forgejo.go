@@ -79,7 +79,8 @@ func (a *ForgejoAdapter) Name() string { return "forgejo" }
 // negative-label search in the same syntax as GitHub).
 func (a *ForgejoAdapter) ListCandidates(ctx context.Context) ([]Issue, error) {
 	const pageSize = 50
-	out := make([]Issue, 0)
+	var pending []Issue
+	openNums := map[int]bool{} // all open issues seen — fail-open blocker set
 	err := paginateUntilShort(pageSize, 100, a.opts.Logger,
 		fmt.Sprintf("forgejo tracker: ListCandidates hit the 100-page cap on repo %s — beyond this point issues are silently dropped from dispatch; consider tightening label filters", a.opts.Repo),
 		func(page int) (int, error) {
@@ -98,6 +99,7 @@ func (a *ForgejoAdapter) ListCandidates(ctx context.Context) ([]Issue, error) {
 				return 0, err
 			}
 			for _, r := range raw {
+				openNums[r.Number] = true
 				labels := labelNames(r.Labels)
 				if anyOfString(labels, a.opts.ExcludeLabels) {
 					continue
@@ -109,12 +111,25 @@ func (a *ForgejoAdapter) ListCandidates(ctx context.Context) ([]Issue, error) {
 				if iss.WorkflowState == "" {
 					continue
 				}
-				out = append(out, iss)
+				pending = append(pending, iss)
 			}
 			return len(raw), nil
 		})
 	if err != nil {
 		return nil, err
+	}
+	// Second pass (after every page is in openNums): hold any issue whose
+	// body declares a still-open blocker. Fail-open — see blockers.go.
+	out := make([]Issue, 0, len(pending))
+	for _, iss := range pending {
+		if held := HeldByOpenBlockers(iss.Body, openNums); len(held) > 0 {
+			if a.opts.Logger != nil {
+				a.opts.Logger.Info("forgejo tracker: holding %s — declared open blocker(s) %s not yet closed",
+					iss.Identifier, formatIssueRefs(held))
+			}
+			continue
+		}
+		out = append(out, iss)
 	}
 	return out, nil
 }

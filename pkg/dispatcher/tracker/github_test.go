@@ -238,3 +238,45 @@ func contains(args []string, want string) bool {
 	}
 	return false
 }
+
+// TestGitHubListCandidatesBlockers proves the body-declared dependency gate:
+// a "Blocked by #N" issue is held while #N is open, and dispatched once #N is
+// gone (fail-open — an unresolvable ref never stalls the issue).
+func TestGitHubListCandidatesBlockers(t *testing.T) {
+	mapping := map[string]tracker.LabelSelector{"ready": {LabelsInclude: []string{"ready"}}}
+	dependent := map[string]any{
+		"number": 42, "title": "needs the schema", "body": "Blocked by #7",
+		"state": "open", "labels": []map[string]string{{"name": "ready"}},
+		"createdAt": "2026-05-01T00:00:00Z", "updatedAt": "2026-05-01T00:00:00Z",
+		"url": "https://github.com/owner/repo/issues/42",
+	}
+
+	t.Run("held while blocker open", func(t *testing.T) {
+		blocker := map[string]any{
+			"number": 7, "title": "create schema", "state": "open",
+			"labels": []map[string]string{{"name": "wip"}},
+			"createdAt": "2026-05-01T00:00:00Z", "updatedAt": "2026-05-01T00:00:00Z",
+			"url": "https://github.com/owner/repo/issues/7",
+		}
+		fake := &fakeGH{listOut: mustJSON([]map[string]any{dependent, blocker})}
+		got, err := newGHAdapter(t, fake, mapping).ListCandidates(context.Background())
+		if err != nil {
+			t.Fatalf("ListCandidates: %v", err)
+		}
+		if len(got) != 0 {
+			t.Fatalf("want 0 (issue #42 held by open #7), got %d: %+v", len(got), got)
+		}
+	})
+
+	t.Run("dispatched when blocker gone (fail-open)", func(t *testing.T) {
+		// #7 is not in the open set → treated as closed/satisfied.
+		fake := &fakeGH{listOut: mustJSON([]map[string]any{dependent})}
+		got, err := newGHAdapter(t, fake, mapping).ListCandidates(context.Background())
+		if err != nil {
+			t.Fatalf("ListCandidates: %v", err)
+		}
+		if len(got) != 1 || got[0].ID != "github:owner/repo#42" {
+			t.Fatalf("want #42 dispatched, got %+v", got)
+		}
+	})
+}
