@@ -47,10 +47,7 @@
 ##                   silently skipped, not surfaced as noise. On a
 ##                   repo with nothing scannable the producer
 ##                   degrades silently to an empty report + an
-##                   explicit "explore directly" note. Also carries
-##                   the noop short-circuit (cache git_head == HEAD,
-##                   clean tree, no explicit request → done with zero
-##                   LLM cost) and the DEFAULT-CREATE routing.
+##                   explicit "explore directly" note.
 ##   campaign      — ONE adaptive agent (claude_code, full tools).
 ##                   Mission = align the docs exhaustively on the
 ##                   état de l'art of the code; adjudicate every
@@ -61,8 +58,8 @@
 ##                   durable state — a re-dispatch re-hints and the
 ##                   campaign continues from the commits earlier
 ##                   passes banked.
-##   scope_check   — deterministic writeable-set containment (docs +
-##                   cache) vs the run base. TRUTH: the bot only
+##   scope_check   — deterministic writeable-set containment (`.md`
+##                   only) vs the run base. TRUTH: the bot only
 ##                   touches docs, never code — a docs-only change
 ##                   cannot break the build, so there is no build gate.
 ##   gate          — deterministic compute:
@@ -83,16 +80,19 @@
 ## the severity/chunking pipeline (max_drift_candidates /
 ## max_review_chunk_docs / cli_surface_globs / diagnostic_surface_globs
 ## / include_unverifiable_symbols / coverage_target_pct / enrich /
-## enrich_area_depth vars), and the per-doc SHA pre-verification cache
-## (the inter-run cache keeps only git_head for the noop gate).
-## 15 nodes → 13; ~1400 lines of embedded python → ~350.
+## enrich_area_depth vars), and the per-doc SHA pre-verification cache.
+## v3.3 dropped the build-verify apparatus (a docs-only bot cannot break
+## the build); v3.4 dropped the noop cache (update_audit_cache), the
+## author_docs bootstrap branch (the campaign authors from zero itself),
+## and the mark_issue node (the dispatcher owns the tracker-issue
+## lifecycle natively — completed_state). 15 nodes → 8; ~1400 lines of
+## embedded python → ~250.
 ##
 ## CONTINUATION IS BOUNDED. The single declared loop
 ## (scan_hints→campaign→scope_check→gate→scan_hints) is capped by
-## `max_passes`; on
-## exhaustion it ships what is banked (every committed doc alignment
-## is real, landed work). `iterion validate` reports NO undeclared
-## cycle (author_rescan(1) is the one other declared loop).
+## `max_passes`; on exhaustion it ships what is banked (every committed
+## doc alignment is real, landed work). `iterion validate` reports NO
+## undeclared cycle — this is the only declared loop.
 ##
 ## STACK/REPO-AGNOSTIC (CLAUDE.md "Catalog bots are repo-agnostic" +
 ## "Universal code bots"): universal doc_globs defaults, no language /
@@ -144,30 +144,9 @@ vars:
   ## report stays honest about what was cut).
   max_hints: int = 120
 
-  ## Identifier of the tracker issue this run was dispatched from.
-  ## Used by mark_issue_for_review at the end of the workflow to
-  ## transition the issue out of `ready`. Filled by the dispatcher
-  ## via `vars.issue_id: "{{issue.identifier}}"`. Empty when run
-  ## outside the dispatcher — mark_issue_for_review is then a no-op.
-  issue_id: string = ""
-
-  ## Inter-run noop cache. JSON file storing the git HEAD the docs
-  ## were last aligned to; a matching HEAD on a clean tree with no
-  ## explicit request (issue_id) short-circuits the whole run
-  ## (noop_skip) with zero LLM cost — killing wasteful scheduled runs
-  ## on an unchanged repo. Out-of-tree under the project scratch dir
-  ## (a repo-root dotfile would not survive `worktree: auto`); under
-  ## a sandbox scratch is per-run, so the cache simply no-ops (safe
-  ## degradation — noop never wrongly skips). Empty disables it.
-  audit_cache_path: string = "${PROJECT_SCRATCH_DIR}/docs-refresh-cache.json"
-
-  ## DEFAULT-CREATE: when scan_hints finds ZERO documentation files
-  ## in scope, the `author_docs` node creates this directory and
-  ## authors an initial documentation set there from the code; the
-  ## run then re-scans (author_rescan) and the normal campaign
-  ## polishes + commits it. Repo-relative; DEFAULT "docs" (covered by
-  ## the default doc_globs). If you point it OUTSIDE the default
-  ## doc_globs, widen doc_globs too.
+  ## The docs directory scan_hints skips when scanning code areas for
+  ## `unmentioned_area` hints, so `docs/` is not itself flagged as an
+  ## undocumented code area. Repo-relative; DEFAULT "docs".
   docs_dir: string = "docs"
 
   ## Out-of-tree, sandbox-writable scratch for the promises ledger
@@ -208,8 +187,8 @@ vars:
   ## the pull request (PR; merge request on GitLab). Requires a git
   ## remote + a push credential (forge_token secret, *_TOKEN env, or
   ## host gh auth) — the deterministic forge_auth_probe skips the
-  ## tail cleanly when none exists. The noop_skip path never reaches
-  ## this tail, and finalize_mr refuses to open an empty PR.
+  ## tail cleanly when none exists, and finalize_mr refuses to open an
+  ## empty PR.
   open_mr: bool = false
   mr_branch: string = ""
   mr_base: string = ""
@@ -477,63 +456,6 @@ prompt campaign_user:
   drift_remaining). Read `git log` first to see what earlier passes
   already aligned.
 
-## ─── Prompts : Default-create (author docs from zero) ──────────────
-
-prompt author_docs_system:
-  You are the doc author for the `docs-refresh` workflow, invoked on a
-  repository that currently has NO documentation in scope. Your job is
-  to BOOTSTRAP an initial documentation set by reading the code and
-  writing accurate Markdown, so the run's normal alignment campaign has
-  something real to polish.
-
-  Load the `docs-refresh.md` skill for the operating context.
-
-  WHAT TO CREATE:
-   - Create the docs directory (`{{input.docs_dir}}`) if it does not
-     exist, and author your documentation there as `.md` files.
-   - Author or refresh a top-level `README.md` if the repo has none — a
-     short overview that links into `{{input.docs_dir}}/`.
-   - Cover, at minimum: a project overview (what it is / what it does),
-     how to build & run it, the high-level architecture or module map,
-     and how to use the main entry points. Add further pages only where
-     the code clearly warrants them — do not pad.
-
-  HARD CONSTRAINTS:
-   1. Documentation only — write `.md` files. NEVER modify source code,
-      build files, or configuration.
-   2. EVIDENCE OVER INVENTION. Every statement must reflect what the
-      code actually does. Read the relevant files before describing
-      them; never document aspirational or assumed behaviour. If you
-      cannot verify a claim, omit it rather than guess.
-   3. STACK-AGNOSTIC. This repo may be in ANY language. Detect the
-      language / build system from the repo itself (manifest files,
-      entry points, lockfiles) — never assume a particular ecosystem.
-   4. Do NOT commit. A later step commits on convergence.
-
-prompt author_docs_user:
-  Author initial documentation for the repository at
-  {{input.workspace_dir}}.
-
-  Target docs directory (create if absent): {{input.docs_dir}}
-
-  Recently changed code files (a hint, may be empty — non-authoritative):
-  {{input.recently_changed_code_files}}
-
-  Steps:
-   1. Survey the repository to understand its purpose, language/stack,
-      structure, and entry points (read manifest files, top-level
-      directories, and the main entry file(s)).
-   2. Create `{{input.docs_dir}}/` if needed and author the initial
-      `.md` pages described in your system prompt, each grounded in what
-      you read. Author/refresh a root `README.md` overview if missing.
-   3. Keep each page focused and accurate; cross-link the pages.
-
-  Output fields:
-   - docs_created: true if you created at least one doc file
-   - created_doc_files: repo-relative paths you wrote
-   - summary: what you authored, and the evidence (files you read)
-     behind the key claims
-
 ## ─── PR finalization prompts (opt-in) ──────────────────────────────
 
 prompt finalize_mr_system:
@@ -605,14 +527,10 @@ prompt finalize_mr_user:
 ## is a bounded JSON array of {doc, line, kind, value, note} entries
 ## (kinds: missing_path, dead_link, dead_anchor, unmentioned_area);
 ## every *_count field is TELEMETRY (report/events), never a gate
-## condition. noop_skip / no_docs drive the two special routes.
+## condition.
 schema hints_output:
   doc_files: string[]
   doc_count: int
-  no_docs: bool
-  noop_skip: bool
-  noop_reason: string
-  git_head: string
   hints: json
   hint_count: int
   missing_path_count: int
@@ -648,19 +566,19 @@ schema campaign_output:
   summary: string
 
 ## scope_check is the DETERMINISTIC writeable-set gate: every path
-## changed since the RUN BASE must be a doc (`.md`) or the audit cache
-## file. Out-of-scope changes fail the gate and bounce back to the
-## campaign, which must revert them.
+## changed since the RUN BASE must be a doc (`.md`). Out-of-scope
+## changes fail the gate and bounce back to the campaign, which must
+## revert them.
 schema scope_check_output:
   scope_ok: bool
   out_of_scope: string[]
   log: string
 
-## gate is the deterministic continuation decision. converged = build
-## green AND scope clean AND the campaign reports the docs aligned —
-## NOTHING ELSE (v3: scanner counts are telemetry, not conditions).
-## fail_log relays the scope violation (priority) or the real build
-## failure to the campaign on a red pass; empty when green.
+## gate is the deterministic continuation decision. converged = scope
+## clean AND the campaign reports the docs aligned — NOTHING ELSE
+## (a docs-only bot can't break the build, so there is no build gate;
+## scanner counts are telemetry, not conditions). fail_log relays the
+## scope violation to the campaign on a red pass; empty when green.
 schema gate_state:
   converged: bool
   fail_log: string
@@ -695,32 +613,6 @@ schema finalize_mr_output:
   skipped_reason: string
   summary: string
 
-schema author_input:
-  workspace_dir: string
-  docs_dir: string
-  recently_changed_code_files: string[]
-
-schema author_output:
-  docs_created: bool
-  created_doc_files: string[]
-  summary: string
-
-## mark_issue_for_review's free-form output: JSON-as-string on success
-## or {"skipped":"no issue_id"} on the manual-CLI no-op path.
-schema mark_issue_output:
-  text: string
-
-## update_audit_cache (v3 — noop cache only): records the git HEAD the
-## docs were aligned to; the NEXT run's scan_hints compares it against
-## the live HEAD for the noop short-circuit.
-schema update_audit_cache_input:
-  workspace_dir: string
-  cache_path: string
-
-schema update_audit_cache_output:
-  cache_path: string
-  git_head: string
-  skipped: string
 
 ## ─── Nodes ──────────────────────────────────────────────────────
 
@@ -755,14 +647,10 @@ schema update_audit_cache_output:
 ## (no docs, or docs citing nothing checkable) the producer degrades
 ## SILENTLY: empty hints + an explicit "explore directly" note, exit 0.
 ##
-## Also owns the two special routes: noop_skip (cache git_head ==
-## HEAD, clean tree, no explicit request → done, zero LLM cost) and
-## no_docs (→ author_docs DEFAULT-CREATE).
-##
 ## Raw-string command — the python body avoids double quotes and
 ## literal backticks (BT = chr(96)); values flow via shell env vars.
 tool scan_hints:
-  command: `WS={{vars.workspace_dir}} DOC_GLOBS={{vars.doc_globs}} EXCLUDED_DIRS={{vars.excluded_dirs}} BUNDLE_SELF={{vars.bundle_self_path}} DIFF_SINCE={{vars.diff_since}} CACHE_PATH={{vars.audit_cache_path}} ISSUE_ID={{vars.issue_id}} DISMISSED_PATH={{vars.dismissed_path}} MAX_HINTS={{vars.max_hints}} DOCS_DIR={{vars.docs_dir}} python3 -c "
+  command: `WS={{vars.workspace_dir}} DOC_GLOBS={{vars.doc_globs}} EXCLUDED_DIRS={{vars.excluded_dirs}} BUNDLE_SELF={{vars.bundle_self_path}} DIFF_SINCE={{vars.diff_since}} DISMISSED_PATH={{vars.dismissed_path}} MAX_HINTS={{vars.max_hints}} DOCS_DIR={{vars.docs_dir}} python3 -c "
 import os, json, glob, re, subprocess
 ws = os.environ['WS']
 os.chdir(ws)
@@ -782,53 +670,6 @@ def excluded(p):
     return False
 files = sorted({f for g in globs for f in glob.glob(g, recursive=True) if os.path.isfile(f) and not excluded(f)})
 no_docs = len(files) == 0
-def git_head():
-    try:
-        return subprocess.run(['git', 'rev-parse', 'HEAD'], capture_output=True, text=True, check=True).stdout.strip()
-    except Exception:
-        return ''
-cache_path = os.environ.get('CACHE_PATH', '').strip()
-cache_abs = os.path.abspath(cache_path) if cache_path else ''
-def worktree_dirty():
-    try:
-        proc = subprocess.run(['git', 'status', '--porcelain', '--untracked-files=all'], capture_output=True, text=True, check=True)
-    except Exception:
-        return True
-    for line in proc.stdout.splitlines():
-        path = line[3:].strip() if len(line) > 3 else ''
-        if not path:
-            continue
-        if cache_abs and os.path.abspath(path) == cache_abs:
-            continue
-        if excluded(path):
-            continue
-        return True
-    return False
-cache_head = ''
-if cache_path:
-    try:
-        with open(cache_path, encoding='utf-8') as cf:
-            cache_head = (json.load(cf).get('git_head', '') or '')
-    except (OSError, json.JSONDecodeError, AttributeError):
-        pass
-issue_id = os.environ.get('ISSUE_ID', '').strip()
-head = git_head()
-noop_skip = False
-if no_docs:
-    noop_reason = 'no docs in scope'
-elif issue_id:
-    noop_reason = 'explicit request (issue_id set)'
-elif not head:
-    noop_reason = 'HEAD unavailable (not a git repo?)'
-elif not cache_head:
-    noop_reason = 'no cached git_head (first aligned run)'
-elif head != cache_head:
-    noop_reason = 'HEAD advanced since last alignment'
-elif worktree_dirty():
-    noop_reason = 'worktree has uncommitted changes'
-else:
-    noop_skip = True
-    noop_reason = 'docs already aligned to HEAD ' + head[:12]
 dismissed = set()
 dismissed_path = os.environ.get('DISMISSED_PATH', '').strip()
 if dismissed_path and os.path.exists(dismissed_path):
@@ -1003,20 +844,9 @@ if diff_since:
         recent = sorted([l for l in proc.stdout.splitlines() if l and not excluded(l)])
     except Exception:
         recent = []
-print(json.dumps({'doc_files': files, 'doc_count': len(files), 'no_docs': no_docs, 'noop_skip': noop_skip, 'noop_reason': noop_reason, 'git_head': head, 'hints': hints, 'hint_count': len(hints), 'missing_path_count': missing_path_count, 'dead_link_count': dead_link_count, 'unmentioned_area_count': unmentioned_area_count, 'checked_paths': checked_paths, 'checked_links': checked_links, 'ledger_excluded': ledger_excluded, 'truncated': truncated, 'hints_note': hints_note, 'recently_changed_code_files': recent}))
+print(json.dumps({'doc_files': files, 'doc_count': len(files), 'hints': hints, 'hint_count': len(hints), 'missing_path_count': missing_path_count, 'dead_link_count': dead_link_count, 'unmentioned_area_count': unmentioned_area_count, 'checked_paths': checked_paths, 'checked_links': checked_links, 'ledger_excluded': ledger_excluded, 'truncated': truncated, 'hints_note': hints_note, 'recently_changed_code_files': recent}))
 "`
   output: hints_output
-
-agent author_docs:
-  backend: "claude_code"
-  model: "${ITERION_DOC_ALIGN_MODEL_CLAUDE:-claude-opus-4-8}"
-  reasoning_effort: "${ITERION_DOC_ALIGN_EFFORT_CLAUDE:-max}"
-  input: author_input
-  output: author_output
-  system: author_docs_system
-  user: author_docs_user
-  session: fresh
-  interaction: human
 
 ## campaign — the one adaptive agent. claude_code with the full native
 ## toolset so it works exactly like a native session: survey docs +
@@ -1049,14 +879,13 @@ agent campaign:
 ## scope_check — the DETERMINISTIC writeable-set gate. Diffs the RUN
 ## BASE (oldest reflog entry of the fresh per-run worktree — exact
 ## under worktree: auto) against the working tree and flags any changed
-## path that is not a doc (`.md` anywhere) or the audit cache file —
-## path-level containment. Untracked files are held to the same rule.
-## No LLM; the campaign must revert whatever this flags.
+## path that is not a doc (`.md` anywhere) — path-level containment.
+## Untracked files are held to the same rule. No LLM; the campaign
+## must revert whatever this flags.
 tool scope_check:
-  command: `WS={{vars.workspace_dir}} CACHE={{vars.audit_cache_path}} python3 -c "
+  command: `WS={{vars.workspace_dir}} python3 -c "
 import os, json, subprocess
 ws = os.environ.get('WS', '.')
-cache = os.environ.get('CACHE', '').strip()
 
 def git(args):
     try:
@@ -1073,11 +902,7 @@ for line in git(['status', '--porcelain']).splitlines():
         changed.add(line[3:].strip())
 
 def allowed(p):
-    if p.endswith('.md'):
-        return True
-    if cache and p == cache:
-        return True
-    return False
+    return p.endswith('.md')
 
 out_of_scope = sorted(p for p in changed if not allowed(p))
 log = ''
@@ -1099,49 +924,6 @@ compute gate:
   expr:
     converged: "outputs.scope_check.scope_ok && outputs.campaign.docs_aligned"
     fail_log: "if(!outputs.scope_check.scope_ok, outputs.scope_check.log, '')"
-
-## mark_issue_for_review: after the run reaches a clean terminal
-## state, transition the tracker issue out of `ready` so the
-## dispatcher's polling loop doesn't re-dispatch it on the next tick.
-## Skipped (no-op exit 0) when vars.issue_id is empty — manual CLI
-## runs don't have a dispatcher-attached issue to transition.
-## Routes through the dispatcher's HTTP API (the daemon's own Store
-## instance) so its in-memory index stays coherent — an external CLI
-## write would be clobbered by the daemon's next Claim/Release.
-## ITERION_ISSUE_IDENTIFIER carries the short id; the port defaults
-## to the studio's 4891 (override via ITERION_DISPATCHER_PORT).
-## `|| true` keeps the workflow on the happy path if curl fails — the
-## commits have already landed.
-tool mark_issue_for_review:
-  command: `if [ -n {{vars.issue_id}} ]; then ID={{vars.issue_id}}; ID_SHORT=${ID#native:}; PORT=${ITERION_DISPATCHER_PORT:-4891}; curl -sS -X POST -H "Content-Type: application/json" -d '{"to":"review"}' "http://localhost:${PORT}/api/v1/native/issues/${ID_SHORT}/transition" 2>&1 | head -c 1000 || true; else echo '{"skipped":"no issue_id"}'; fi`
-  output: mark_issue_output
-
-## update_audit_cache (v3 — noop cache only): records the git HEAD the
-## docs were aligned to at the configured cache path. The NEXT run's
-## scan_hints compares it against the live HEAD and short-circuits the
-## whole campaign (noop_skip) when nothing changed. The v2 per-doc SHA
-## pre-verification cache is retired with the manifest machinery.
-tool update_audit_cache:
-  command: `python3 -c "
-import os, json, sys, pathlib, subprocess
-ws = sys.argv[1] if len(sys.argv) > 1 else '.'
-cache_path = sys.argv[2] if len(sys.argv) > 2 else ''
-if not cache_path:
-    print(json.dumps({'cache_path': '', 'git_head': '', 'skipped': 'no cache_path'}))
-    sys.exit(0)
-os.chdir(ws)
-try:
-    head = subprocess.run(['git', 'rev-parse', 'HEAD'], capture_output=True, text=True, check=True).stdout.strip()
-except Exception:
-    head = ''
-out_path = pathlib.Path(cache_path)
-out_path.parent.mkdir(parents=True, exist_ok=True)
-with open(out_path, 'w', encoding='utf-8') as out:
-    json.dump({'v': 2, 'git_head': head}, out)
-print(json.dumps({'cache_path': str(out_path), 'git_head': head, 'skipped': ''}))
-" {{input.workspace_dir}} {{input.cache_path}}`
-  input: update_audit_cache_input
-  output: update_audit_cache_output
 
 ## ─── Nodes : PR finalization tail (opt-in, feature-dev verbatim) ────
 
@@ -1241,32 +1023,19 @@ workflow docs_refresh:
     threshold: 0.9
     preserve_recent: 8
 
-  ## NOOP short-circuit: docs already aligned to the exact current
-  ## HEAD, clean tree, no explicit request → skip the whole campaign
-  ## with zero LLM cost. Highest-priority guard; mutually exclusive
-  ## with no_docs (noop requires doc_count > 0) and the else fallback.
-  ## DEFAULT-CREATE: if the repo has ZERO docs in scope, bootstrap an
-  ## initial set first (author_docs), then loop back to scan_hints
-  ## (author_rescan) so the re-scan picks the new docs up and the
-  ## normal campaign polishes + commits them. author_rescan(1) =
-  ## exactly one authoring pass.
-  scan_hints -> done when noop_skip
-  scan_hints -> author_docs when no_docs with {
-    workspace_dir: "{{vars.workspace_dir}}",
-    docs_dir: "{{vars.docs_dir}}",
-    recently_changed_code_files: "{{outputs.scan_hints.recently_changed_code_files}}"
-  }
   ## Each pass: the fresh advisory report is handed to the campaign as
   ## HELP (+ the previous gate's feedback — empty on pass 1,
-  ## outputs.gate resolves nil-safe before the gate has run).
-  scan_hints -> campaign else with {
+  ## outputs.gate resolves nil-safe before the gate has run). A repo
+  ## with no docs in scope is not special-cased — the campaign authors
+  ## the initial set itself (the doc-enrichment skill), exactly as a
+  ## native session handed "align the docs" would.
+  scan_hints -> campaign with {
     hints: "{{outputs.scan_hints.hints}}",
     hint_count: "{{outputs.scan_hints.hint_count}}",
     hints_note: "{{outputs.scan_hints.hints_note}}",
     recently_changed_code_files: "{{outputs.scan_hints.recently_changed_code_files}}",
     fail_log: "{{outputs.gate.fail_log}}"
   }
-  author_docs -> scan_hints as author_rescan(1)
 
   ## Deterministic TRUTH gate after every campaign pass: writeable-set
   ## containment (the bot only touches docs — a docs-only change cannot
@@ -1275,31 +1044,27 @@ workflow docs_refresh:
   campaign -> scope_check
   scope_check -> gate
 
-  ## Converged → transition the dispatcher issue (no-op without
-  ## issue_id) and refresh the noop cache, then finish.
-  gate -> mark_issue_for_review when converged
+  ## Converged → straight to the PR tail. The dispatcher owns the
+  ## tracker-issue lifecycle NATIVELY (claim→running_state,
+  ## finish→completed_state "review", studio-merge→done) — the bot does
+  ## not transition the issue itself, so there is no mark-issue node.
+  gate -> mr_gate when converged
   ## Not converged → another pass through the loop head: a fresh
   ## advisory report (resolved hints + ledger entries retire) →
-  ## campaign. A scope violation or build failure rides
-  ## outputs.gate.fail_log on the scan_hints→campaign edge;
-  ## green-but-more-work rides an empty log.
+  ## campaign. A scope violation rides outputs.gate.fail_log on the
+  ## scan_hints→campaign edge; green-but-more-work rides an empty log.
   gate -> scan_hints as continuation_loop("{{vars.max_passes}}")
   ## continuation_loop exhausted (max_passes hit while work remains) →
   ## finish anyway, shipping what is banked (every committed alignment
   ## is real, landed work; the last campaign_output's drift_remaining
   ## tells the operator what is left).
-  gate -> mark_issue_for_review
+  gate -> mr_gate
 
-  mark_issue_for_review -> update_audit_cache with {
-    workspace_dir: "{{vars.workspace_dir}}",
-    cache_path: "{{vars.audit_cache_path}}"
-  }
   ## ── PR tail (opt-in, feature-dev verbatim) ──────────────────────
   ## Reached on BOTH finishes (converged and max_passes-exhausted): the
   ## banked alignment commits are real landed work either way, and
   ## finalize_mr refuses an empty PR + reports drift_remaining honestly
-  ## in the body. The noop_skip path (scan_hints -> done) never gets here.
-  update_audit_cache -> mr_gate
+  ## in the body.
   mr_gate -> forge_auth_probe when open_mr
   mr_gate -> done when not open_mr
 

@@ -1,7 +1,22 @@
 name: docs-refresh
 display_name: Doki
 icon: 📚
-version: 3.3.0
+version: 3.4.0
+## 3.4.0 — REMOVED three more non-essential nodes, converging on the
+## native paradigm (one agent + truth gate + PR). (1) update_audit_cache
+## + the inter-run noop cache: INERT on cloud (per-run scratch never
+## persists), and a run that finds nothing already converges fast — the
+## complexity bought nothing on the primary target. (2) author_docs (the
+## zero-docs bootstrap branch + author_rescan loop): the campaign is an
+## adaptive agent that authors an initial set itself via the
+## doc-enrichment skill, exactly as a native session would — no separate
+## node. (3) mark_issue_for_review: the DISPATCHER owns the tracker-issue
+## lifecycle natively (claim→running_state, finish→completed_state
+## "review", studio-merge→done; pkg/dispatcher/config.go) — the bot
+## transitioning the issue itself was pure redundancy. Also dropped the
+## `issue_id` + `audit_cache_path` vars, their schemas, and the
+## scan_hints noop machinery. Node count 11→8. The scope gate + honest
+## termination contract remain the whole truth oracle.
 ## 3.3.0 — REMOVED the build-verify apparatus. A docs bot edits `.md`
 ## only; a docs-only change cannot break `go build`/`go test`, so the
 ## adaptive verify_build agent + deterministic verify_run gate +
@@ -169,7 +184,6 @@ dispatch_vars:
     {{issue.title}}
 
     {{issue.body}}
-  issue_id: "{{issue.identifier}}"
 
 invocations:
   - kind: command

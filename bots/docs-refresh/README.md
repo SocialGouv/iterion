@@ -14,9 +14,10 @@ code, exhaustively — never the reverse**. Both halves are doc-side:
   persistent outcome).
 
 Each aligned doc lands in stride (`docs(scope): …` + `Bot:
-docs-refresh` trailer). When a repo has no docs in scope, it
-bootstraps an initial set first (DEFAULT-CREATE) and then refreshes it
-through the same campaign. Documented claims that read as deliberate,
+docs-refresh` trailer). When a repo has no docs in scope, the campaign
+authors an initial set itself (the same adaptive agent, guided by the
+doc-enrichment skill) and refreshes it in the same pass. Documented
+claims that read as deliberate,
 unfulfilled **promises** (announced features the code hasn't caught up
 with) are neither deleted nor aligned-down: the campaign records them
 in a cross-pass ledger (`<scratch>/promises.json`, optionally adding
@@ -44,12 +45,10 @@ agent's honest termination contract).
 ## Shape (v3)
 
 ```
-scan_hints ──(no docs)──▶ author_docs ──▶ scan_hints   (author_rescan, once)
-scan_hints ──(exact HEAD cache hit, clean tree, no issue)──────────▶ done
 scan_hints ──▶ campaign ──▶ scope_check ──▶ gate
-gate ──(converged)──▶ mark_issue_for_review ──▶ update_audit_cache ──▶ mr_gate
+gate ──(converged)────────────────▶ mr_gate
 gate ──▶ scan_hints   as continuation_loop(max_passes)  — fresh hints, next pass
-mr_gate ──(open_mr)──▶ forge_auth_probe ──(credential)──▶ finalize_mr ──▶ done
+mr_gate ──(open_mr)──▶ forge_auth_probe ──(credential)──▶ finalize_mr ──▶ surface_pr_link ──▶ done
 mr_gate ──(not open_mr)──────────────────────────────────────────────▶ done
 ```
 
@@ -63,8 +62,8 @@ mr_gate ──(not open_mr)─────────────────�
   When nothing is derivable the report degrades **silently** to empty
   hints + an explicit "explore the repo directly" note. Ledger
   entries are excluded, so the campaign's settled adjudications never
-  re-surface. Also owns the noop short-circuit and the DEFAULT-CREATE
-  route.
+  re-surface. A repo with no docs in scope is not special-cased — the
+  campaign authors the initial set itself.
 - **`campaign`** — one adaptive claude_code agent. The hints are a
   starting point, never its scope: it explores beyond them (reads the
   code, hunts the semantic drift no regex sees), adjudicates every
@@ -72,7 +71,7 @@ mr_gate ──(not open_mr)─────────────────�
   dismiss+ledger / promise+promises-ledger / code-bug→board — and
   commits each aligned doc in stride. git is the durable state.
 - **`scope_check`** — deterministic writeable-set containment (`.md`
-  + the cache file) vs the run base. The bot only touches docs.
+  only) vs the run base. The bot only touches docs.
 - **`gate`** — `converged = scope_ok ∧ campaign.docs_aligned` —
   **nothing else**. There is no build gate: a docs-only change can't
   break the build, so running it would verify an invariant the bot
@@ -88,10 +87,8 @@ mr_gate ──(not open_mr)─────────────────�
 | `scope_notes` | `""` | Operator attention pin |
 | `diff_since` | `""` | Incremental hint (`git diff <ref>...HEAD`) |
 | `max_hints` | `120` | Cap on the advisory hints list (context bound) |
-| `audit_cache_path` | `${PROJECT_SCRATCH_DIR}/docs-refresh-cache.json` | Noop cache (aligned git HEAD); empty disables it |
 | `dismissed_path` | `${PROJECT_SCRATCH_DIR}/docs-refresh/dismissed.json` | Dismissals ledger (cross-pass memory) |
-| `docs_dir` | `docs` | DEFAULT-CREATE target |
-| `baseline` | `""` | Known pre-existing failures to SKIP (G5) |
+| `docs_dir` | `docs` | Docs dir skipped when scanning for unmentioned code areas |
 | `max_passes` | `4` | Continuation-loop cap |
 | `open_mr` | `false` | Push the alignment series + open ONE PR/MR at the end |
 | `mr_branch` / `mr_base` | `""` | PR branch (default `iterion/docs-refresh/<run-id>`) / base (default: repo default branch) |
