@@ -309,3 +309,59 @@ func TestDeterministicOrder(t *testing.T) {
 		}
 	}
 }
+
+// TestCheckSkills covers the routability lint (C231–C234): missing name,
+// missing/terse description, and duplicate names — all warnings, no prose-style
+// rules. A well-formed skill set produces nothing.
+func TestCheckSkills(t *testing.T) {
+	cases := []struct {
+		name   string
+		skills []bundlelint.SkillDoc
+		want   []string
+	}{
+		{
+			name: "clean set — no diagnostics",
+			skills: []bundlelint.SkillDoc{
+				{Path: "skills/repo-survey.md", Name: "repo-survey", Description: "Survey a repository to map its layout, stack, and conventions."},
+				{Path: "skills/roadmap.md", Name: "roadmap", Description: "Synthesize a prioritized roadmap from the collected findings."},
+			},
+			want: nil,
+		},
+		{
+			name:   "missing name",
+			skills: []bundlelint.SkillDoc{{Path: "skills/x.md", Description: "A description long enough to route on cleanly."}},
+			want:   []string{"C231"},
+		},
+		{
+			name:   "missing description",
+			skills: []bundlelint.SkillDoc{{Path: "skills/x.md", Name: "x"}},
+			want:   []string{"C232"},
+		},
+		{
+			name:   "terse description",
+			skills: []bundlelint.SkillDoc{{Path: "skills/x.md", Name: "x", Description: "Security stuff"}},
+			want:   []string{"C233"},
+		},
+		{
+			name: "duplicate name",
+			skills: []bundlelint.SkillDoc{
+				{Path: "skills/a.md", Name: "dup", Description: "First skill with a routable description."},
+				{Path: "skills/b.md", Name: "dup", Description: "Second skill with a routable description."},
+			},
+			want: []string{"C234"},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			// Manifest is required (CheckConsistency returns nil without it);
+			// the skill checks are independent of the workflow.
+			got := codesOf(bundlelint.CheckConsistency(bundlelint.Input{
+				Manifest: &bundle.Manifest{Name: "b"},
+				Skills:   tc.skills,
+			}))
+			if !eqCodes(got, tc.want) {
+				t.Errorf("codes = %v, want %v", got, tc.want)
+			}
+		})
+	}
+}

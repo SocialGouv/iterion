@@ -170,6 +170,14 @@ except **C230**; warnings are surfaced but do not fail validation.
 | **C220** | warning | manifest capability granted by no node | A `manifest.capabilities` entry is granted by no workflow-level or node-level `capabilities:` list | Add it to a node's `capabilities:`, or drop it from the manifest (it is documentation-only otherwise) |
 | **C221** | warning | frontmatter capabilities override manifest | The `main.bot` `## ---` frontmatter declares `capabilities:` that differ from and silently override the manifest's | Keep one source of truth — drop the frontmatter list or align the two |
 | **C230** | error | per-bot memory name mismatch | A node uses `memory: visibility: bot`, but the manifest name, workflow name, and bundle dir name are not all identical — so the bot's memory tree splits across CLI (workflow name) and dispatcher (bundle name) launches | Make all three identical |
+| **C231** | warning | skill has no `name:` | A `skills/*.md` file has no `name:` frontmatter, so it is undiscoverable by name once mirrored into `.claude/skills/` | Add `name: <kebab-case-id>` to the skill frontmatter |
+| **C232** | warning | skill has no `description:` | A `skills/*.md` file has no `description:` frontmatter, so the router (Nexie) has no signal for when to select it | Add a `description:` saying what the skill is for and when it applies |
+| **C233** | warning | skill `description:` too terse | A skill `description:` is present but too short to route on (e.g. "Security stuff") | Describe what the skill does and the situation it applies to. Routability only — no phrasing template is imposed |
+| **C234** | warning | duplicate skill name | Two `skills/*.md` files declare the same `name:`, so one silently clobbers the other when mirrored | Give each skill a unique `name:` |
+
+The skill-authoring checks (**C231–C234**) guard *routability* — that a skill
+can be discovered and chosen by the router — not prose style. They impose no
+phrasing template and are all warnings, so a skill gap never fails validation.
 
 ## Quick Troubleshooting
 

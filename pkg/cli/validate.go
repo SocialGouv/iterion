@@ -12,6 +12,7 @@ import (
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
 	"github.com/SocialGouv/iterion/pkg/dsl/parser"
 	"github.com/SocialGouv/iterion/pkg/runview"
+	"github.com/SocialGouv/iterion/pkg/skilllib"
 )
 
 // ValidateResult holds the outcome of a validate command.
@@ -136,6 +137,7 @@ func RunValidate(path string, p *Printer) error {
 			Workflow:    cr.Workflow,
 			Frontmatter: bundle.ParseFrontmatter(src), // reuse the bytes already read
 			DirName:     bundleDir,
+			Skills:      scanBundleSkills(bundleHandle.SkillsDir),
 		})
 		for _, d := range diags {
 			result.BundleDiagnostics = append(result.BundleDiagnostics, d.Error())
@@ -178,4 +180,38 @@ func RunValidate(path string, p *Printer) error {
 		return fmt.Errorf("validation failed")
 	}
 	return nil
+}
+
+// scanBundleSkills reads a bundle's skills/*.md frontmatter (name +
+// description) for the routability lint (C231–C234), using the shared
+// skilllib parser so it never drifts from run-time discovery. An empty or
+// missing dir yields no docs (the checks then no-op). Non-.md entries and
+// unreadable files are skipped silently — the lint judges routability of the
+// skills that exist, not filesystem health.
+func scanBundleSkills(skillsDir string) []bundlelint.SkillDoc {
+	if skillsDir == "" {
+		return nil
+	}
+	entries, err := os.ReadDir(skillsDir)
+	if err != nil {
+		return nil
+	}
+	var docs []bundlelint.SkillDoc
+	for _, e := range entries {
+		if e.IsDir() || !strings.EqualFold(filepath.Ext(e.Name()), ".md") {
+			continue
+		}
+		f, err := os.Open(filepath.Join(skillsDir, e.Name()))
+		if err != nil {
+			continue
+		}
+		name, desc := skilllib.ScanFrontmatter(f)
+		_ = f.Close()
+		docs = append(docs, bundlelint.SkillDoc{
+			Path:        filepath.Join(bundle.DirSkills, e.Name()),
+			Name:        name,
+			Description: desc,
+		})
+	}
+	return docs
 }

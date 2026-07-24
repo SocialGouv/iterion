@@ -18,6 +18,7 @@ package bundlelint
 import (
 	"fmt"
 	"sort"
+	"strings"
 
 	"github.com/SocialGouv/iterion/pkg/bundle"
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
@@ -61,7 +62,33 @@ const (
 	// (visibility: bot) but the manifest name, workflow name, and bundle dir
 	// name disagree, so the bot's memory tree splits across launch paths.
 	DiagBundleNameTripleMismatch Code = "C230"
+
+	// Skill-authoring routability (C231–C234). A bundle's skills/*.md are
+	// mirrored into .claude/skills/ and selected by the router bot (Nexie)
+	// purely from their frontmatter. These checks guard *routability* — that
+	// a skill can be discovered and chosen — NOT prose style; they are all
+	// warnings (never block authoring) and deliberately impose no phrasing
+	// template (no mandated "Use when…/Not for…"), only presence + substance.
+
+	// DiagSkillNameMissing: a skill file has no `name:` frontmatter, so it is
+	// undiscoverable by name in the mirrored .claude/skills/ tree.
+	DiagSkillNameMissing Code = "C231"
+	// DiagSkillDescriptionMissing: a skill file has no `description:`, so the
+	// router has no signal for when to select it.
+	DiagSkillDescriptionMissing Code = "C232"
+	// DiagSkillDescriptionTerse: a skill `description:` is present but too
+	// short to route on (e.g. "Security stuff").
+	DiagSkillDescriptionTerse Code = "C233"
+	// DiagSkillNameDuplicate: two skill files in the bundle declare the same
+	// `name:`, so one silently clobbers the other when mirrored.
+	DiagSkillNameDuplicate Code = "C234"
 )
+
+// minRoutableDescription is the shortest `description:` the skill lint treats
+// as carrying enough signal for a router to select on. Deliberately low — the
+// check flags only the trivially-empty ("Security stuff"), not terse-but-real
+// descriptions; routability, not verbosity, is the bar.
+const minRoutableDescription = 24
 
 // Severity mirrors ir.Severity semantics: an error makes `iterion validate`
 // exit non-zero; a warning is surfaced but non-fatal.
@@ -110,6 +137,20 @@ type Input struct {
 	Workflow    *ir.Workflow
 	Frontmatter *bundle.Frontmatter
 	DirName     string
+	// Skills carries the bundle's parsed skills/*.md frontmatter for the
+	// routability checks (C231–C234). Empty skips them. bundlelint stays
+	// I/O-free: the caller scans the files (via skilllib.ScanFrontmatter) and
+	// passes the results in, mirroring how Frontmatter is supplied.
+	Skills []SkillDoc
+}
+
+// SkillDoc is one bundle skill file's routability-relevant frontmatter. Path
+// is the bundle-relative path used for diagnostic attribution (e.g.
+// "skills/repo-survey.md").
+type SkillDoc struct {
+	Path        string
+	Name        string
+	Description string
 }
 
 // CheckConsistency cross-checks a bot's manifest against its compiled
@@ -127,6 +168,7 @@ func CheckConsistency(in Input) []Diag {
 	checkForgeSecret(&diags, m, in.Workflow)
 	checkCapabilities(&diags, m, in.Workflow, in.Frontmatter)
 	checkBundleNameStability(&diags, m, in.Workflow, in.DirName)
+	checkSkills(&diags, in.Skills)
 
 	sort.SliceStable(diags, func(i, j int) bool {
 		if diags[i].Code != diags[j].Code {
@@ -303,6 +345,65 @@ func checkBundleNameStability(diags *[]Diag, m *bundle.Manifest, w *ir.Workflow,
 		),
 		Hint: "make all three identical (rename the bundle dir, the `workflow NAME:`, or the manifest name:)",
 	})
+}
+
+// checkSkills flags routability problems in a bundle's skills/*.md: a skill
+// the router can't discover (no name) or can't decide to select (no/terse
+// description), and a name collision that clobbers on mirror. All warnings —
+// a skill authoring gap should never fail `iterion validate`. Deliberately no
+// prose-style rules: presence + minimal substance + uniqueness only.
+func checkSkills(diags *[]Diag, skills []SkillDoc) {
+	if len(skills) == 0 {
+		return
+	}
+	// Iterate in Path order for deterministic output ahead of the final sort.
+	ordered := append([]SkillDoc(nil), skills...)
+	sort.SliceStable(ordered, func(i, j int) bool { return ordered[i].Path < ordered[j].Path })
+
+	firstByName := map[string]string{} // name → first Path that declared it
+	for _, s := range ordered {
+		name := strings.TrimSpace(s.Name)
+		desc := strings.TrimSpace(s.Description)
+
+		if name == "" {
+			*diags = append(*diags, Diag{
+				Code:     DiagSkillNameMissing,
+				Severity: SeverityWarning,
+				Field:    s.Path,
+				Message:  "skill has no `name:` frontmatter; it is undiscoverable by name once mirrored into .claude/skills/",
+				Hint:     "add `name: <kebab-case-id>` to the skill's frontmatter",
+			})
+		} else if prev, dup := firstByName[name]; dup {
+			*diags = append(*diags, Diag{
+				Code:     DiagSkillNameDuplicate,
+				Severity: SeverityWarning,
+				Field:    s.Path,
+				Message:  fmt.Sprintf("skill name %q is already declared by %s; one silently clobbers the other when mirrored into .claude/skills/", name, prev),
+				Hint:     "give each skill a unique name:",
+			})
+		} else {
+			firstByName[name] = s.Path
+		}
+
+		switch {
+		case desc == "":
+			*diags = append(*diags, Diag{
+				Code:     DiagSkillDescriptionMissing,
+				Severity: SeverityWarning,
+				Field:    s.Path,
+				Message:  "skill has no `description:` frontmatter; the router has no signal for when to select it",
+				Hint:     "add a `description:` saying what the skill is for and when it applies",
+			})
+		case len(desc) < minRoutableDescription:
+			*diags = append(*diags, Diag{
+				Code:     DiagSkillDescriptionTerse,
+				Severity: SeverityWarning,
+				Field:    s.Path,
+				Message:  fmt.Sprintf("skill `description:` (%q) is too short to route on", desc),
+				Hint:     "describe what the skill does and the situation it applies to, so the router can choose it",
+			})
+		}
+	}
 }
 
 // usesPerBotMemory reports whether any node opts into per-bot memory.
