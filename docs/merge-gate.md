@@ -102,11 +102,20 @@ block for an admin.
 
 ## Overriding a finding
 
-Today: push a fix (re-reviews → status flips green) or, for a disputed
-finding, an **admin** bypasses the merge queue. A trust-gated
-`/revi approve <reason>` PR command that force-greens the status with an
-audit trail is the planned fast-follow (a maintainer, not only an admin,
-resolving a false positive from the PR itself).
+Three ways, in order of preference:
+
+1. **Push a fix** — the status re-reviews on the new head (needs
+   `review_on_sync`) and flips green when the finding is gone.
+2. **`/revi approve [reason]`** — a **maintainer** comments this on the PR to
+   force-green the `revi/review` status on the current head, for a finding
+   they dispute. Trust-gated: the commenter must hold real repo rights
+   (`MinAuthorRole` / `AuthorAllowlist`, verified live via the forge
+   permission API) — an arbitrary contributor cannot wave a finding through.
+   The status carries "approved by @user: reason" and links to the comment as
+   the audit trail. It does **not** launch a re-review. *(GitHub + Forgejo
+   today; GitLab `/revi approve` on a note is a follow-on.)*
+3. **Admin merge-queue bypass** — the last resort, always available to repo
+   admins.
 
 ## <a name="questions"></a>Questions vs findings
 

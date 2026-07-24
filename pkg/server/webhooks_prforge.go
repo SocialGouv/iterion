@@ -54,6 +54,13 @@ func (s *Server) handlePRForgeComment(ctx context.Context, w http.ResponseWriter
 		filtered("no slash-command")
 		return
 	}
+	// `/revi approve [reason]` is an OVERRIDE, not a re-review: a trusted
+	// maintainer force-greens the merge gate. Intercept before the
+	// command→bot routing so it never launches a run.
+	if reason, isApprove := reviewApproveReason(cmd, cmdArgs); isApprove {
+		s.handlePRForgeReviewApprove(ctx, w, cfg, provider, p, reason, payloadHash, srcIP)
+		return
+	}
 	route, ok := webhooks.ResolveCommandRoute(cfg, cmd, cmdArgs, s.cmdDiscovery())
 	if !ok {
 		filtered("no command route for /" + cmd)
