@@ -46,7 +46,9 @@ func gitlabCommitState(s forge.CommitState) string {
 		return "success"
 	case forge.CommitStatePending:
 		return "pending"
-	default:
+	case forge.CommitStateFailure, forge.CommitStateError:
 		return "failed"
+	default:
+		return "failed" // unknown fails closed
 	}
 }

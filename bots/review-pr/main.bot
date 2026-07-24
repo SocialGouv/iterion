@@ -736,6 +736,11 @@ payload = {'pr_url': pr, 'summary': nl.join(summary), 'mode': mode, 'comments': 
 gate_enabled = str(os.environ.get('GATE_ENABLED', '')).strip().lower() in ('1', 'true', 'yes', 'on')
 if gate_enabled:
     gate_sev = str(os.environ.get('GATE_SEVERITY', 'high')).strip().lower() or 'high'
+    # sev_rank is INVERTED (critical=0 .. low=3), so a SMALLER rank is MORE
+    # severe. floor is the rank of the blocking threshold; rank <= floor
+    # therefore means at least as severe as the threshold (e.g. floor=high=1
+    # blocks critical=0 and high=1, not medium=2/low=3). Unknown rank=0
+    # (most severe) always blocks -- fail closed.
     floor = sev_rank.get(gate_sev, 1)
     # A gate fails CLOSED: an unparseable finding set can't be evaluated, so it
     # blocks rather than reporting a green status by omission.

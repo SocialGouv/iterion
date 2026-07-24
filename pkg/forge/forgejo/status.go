@@ -46,7 +46,9 @@ func forgejoCommitState(s forge.CommitState) string {
 		return "failure"
 	case forge.CommitStatePending:
 		return "pending"
-	default:
+	case forge.CommitStateError:
 		return "error"
+	default:
+		return "error" // unknown fails closed
 	}
 }
