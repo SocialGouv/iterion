@@ -123,6 +123,13 @@ type Config struct {
 	// label triggers. Case-insensitive; see MatchLabel. Has no effect on the
 	// pull_request / issue_comment paths.
 	LabelAllowlist []string `bson:"label_allowlist,omitempty" json:"label_allowlist,omitempty"`
+	// HoldLabels is a bot-agnostic suppression set: when the triggering PR or
+	// issue carries any of these labels, the auto-launch lanes (PR-open review,
+	// auto-implement-on-open) suppress the launch — whatever bot would have
+	// run. It is the operator's escape hatch to pause automation on one
+	// PR/issue without disabling the webhook. Case-insensitive; empty = off.
+	// Distinct from LabelAllowlist (which selects a bot); this vetoes ALL bots.
+	HoldLabels []string `bson:"hold_labels,omitempty" json:"hold_labels,omitempty"`
 
 	// BranchImproveAsPR changes how the branch-improvement bot (Billy) lands
 	// its hardening on a PR it reviews. Default (false): it commits + pushes

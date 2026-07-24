@@ -119,6 +119,28 @@ func matchCaseInsensitiveAllowlist(allowlist []string, value string) bool {
 	return false
 }
 
+// HeldByLabel returns the first label in `present` that appears in the
+// bot-agnostic `holdLabels` suppression set (case-insensitive), or "" when
+// none does. An empty holdLabels set (the default) always returns "" — the
+// hold gate is opt-in and fail-open (no labels present → nothing held).
+func HeldByLabel(holdLabels, present []string) string {
+	if len(holdLabels) == 0 {
+		return ""
+	}
+	for _, p := range present {
+		p = strings.TrimSpace(p)
+		if p == "" {
+			continue
+		}
+		for _, h := range holdLabels {
+			if strings.EqualFold(strings.TrimSpace(h), p) {
+				return p
+			}
+		}
+	}
+	return ""
+}
+
 // FirstMatchingLabel returns the first freshly-applied label that passes the
 // allowlist — the trigger — or "" when none qualifies. With an empty allowlist
 // any added label qualifies (the first is returned). Used by the GitLab issues

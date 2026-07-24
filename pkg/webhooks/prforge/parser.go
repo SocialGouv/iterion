@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"strconv"
+	"strings"
 )
 
 // Parsed is the normalized PR view the inbound handler consumes. It
@@ -43,6 +44,9 @@ type Parsed struct {
 	// never auto-triggers a bot (IsReviewable is false); the trigger is the
 	// `ready_for_review` action that clears it.
 	Draft bool
+	// Labels is the PR's current label set (names). Empty when the payload
+	// omits it (GitLab, minimal payloads) — the hold-label gate fail-opens.
+	Labels []string
 }
 
 // healableDequeueReasons are the merge-queue eject reasons that a
@@ -97,6 +101,7 @@ func ParsePullRequest(body []byte) (Parsed, error) {
 		HeadRepoFullName: pr.Head.Repo.FullName,
 		DequeueReason:    e.Reason,
 		Draft:            pr.Draft,
+		Labels:           labelNames(pr.Labels),
 	}, nil
 }
 
@@ -108,6 +113,20 @@ func (p Parsed) Author() string {
 		return p.AuthorLogin
 	}
 	return p.SenderLogin
+}
+
+// labelNames extracts the trimmed, non-empty label names from a raw label list.
+func labelNames(labels []Label) []string {
+	if len(labels) == 0 {
+		return nil
+	}
+	out := make([]string, 0, len(labels))
+	for _, l := range labels {
+		if n := strings.TrimSpace(l.Name); n != "" {
+			out = append(out, n)
+		}
+	}
+	return out
 }
 
 // IsCrossRepo reports whether the PR's head branch lives in a DIFFERENT repo

@@ -101,6 +101,19 @@ func (s *Server) handlePRForgeReview(ctx context.Context, w http.ResponseWriter,
 		return
 	}
 
+	// Hold-label gate (bot-agnostic, opt-in): if the PR carries a configured
+	// hold label, suppress EVERY auto-launch this handler can do (auto-heal and
+	// review alike) — the operator's escape hatch to pause automation on one PR
+	// without disabling the webhook. Placed before any launch decision so it
+	// vetoes all of them; fail-open (no HoldLabels / no labels in payload = no
+	// effect). A human can still trigger a bot manually via a `/command`.
+	if held := webhooks.HeldByLabel(cfg.HoldLabels, p.Labels); held != "" {
+		s.recordTerminalWebhookDelivery(ctx, cfg, meta, webhooks.StatusFiltered, payloadHash, srcIP,
+			`held: PR carries hold label "`+held+`" — automation suppressed (remove the label, or trigger a bot manually via a command)`)
+		writeJSONStatus(w, http.StatusOK, map[string]string{"status": webhooks.StatusFiltered})
+		return
+	}
+
 	// Merge-queue auto-heal: a PR ejected from the queue for a conflict or a
 	// combined-build failure (`dequeued` with a healable reason) is
 	// dispatched to the branch-improvement bot (Billy) to rebase on the base,
@@ -210,6 +223,17 @@ func (s *Server) handleGitHubIssues(w http.ResponseWriter, r *http.Request, cfg 
 		!webhooks.MatchEvent(cfg.EventAllowlist, "issues", "issues") ||
 		!webhooks.MatchProject(cfg.ProjectAllowlist, p.ProjectPath) {
 		s.recordTerminalWebhookDelivery(ctx, cfg, meta, webhooks.StatusFiltered, payloadHash, srcIP, "")
+		writeJSONStatus(w, http.StatusOK, map[string]string{"status": webhooks.StatusFiltered})
+		return
+	}
+
+	// Hold-label gate (bot-agnostic, opt-in): a configured hold label on the
+	// issue suppresses the auto-launch (labeled + zero-touch alike), whatever
+	// bot would run. Fail-open; a human can still apply the trigger label after
+	// removing the hold. See the PR handler for the rationale.
+	if held := webhooks.HeldByLabel(cfg.HoldLabels, p.IssueLabels); held != "" {
+		s.recordTerminalWebhookDelivery(ctx, cfg, meta, webhooks.StatusFiltered, payloadHash, srcIP,
+			`held: issue carries hold label "`+held+`" — automation suppressed (remove the label to re-enable)`)
 		writeJSONStatus(w, http.StatusOK, map[string]string{"status": webhooks.StatusFiltered})
 		return
 	}

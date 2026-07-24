@@ -211,3 +211,14 @@ func TestIsSynchronize(t *testing.T) {
 // Allowlist matching tests live in pkg/webhooks/match_test.go (the
 // canonical webhooks.MatchEvent + MatchProject are exercised there with
 // every provider's default kinds).
+
+func TestParsePullRequest_Labels(t *testing.T) {
+	body := `{"action":"opened","number":5,"repository":{"full_name":"o/r"},"pull_request":{"number":5,"labels":[{"name":"ready"},{"name":"iterion:hold"},{"name":""}],"head":{"ref":"f","sha":"s"},"base":{"ref":"main"}}}`
+	p, err := ParsePullRequest([]byte(body))
+	if err != nil {
+		t.Fatalf("ParsePullRequest: %v", err)
+	}
+	if len(p.Labels) != 2 || p.Labels[0] != "ready" || p.Labels[1] != "iterion:hold" {
+		t.Fatalf("labels = %v, want [ready iterion:hold] (empty dropped)", p.Labels)
+	}
+}

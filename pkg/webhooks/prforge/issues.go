@@ -32,6 +32,9 @@ type IssuesEvent struct {
 		// the repo (OWNER|MEMBER|COLLABORATOR|CONTRIBUTOR|NONE|…); Forgejo
 		// omits it (empty).
 		AuthorAssociation string `json:"author_association"`
+		// Labels is the issue's current label set. GitHub/Gitea include it;
+		// empty when omitted (the hold-label gate fail-opens).
+		Labels []Label `json:"labels"`
 	} `json:"issue"`
 	Label  Label  `json:"label"`
 	Sender Sender `json:"sender"`
@@ -64,6 +67,9 @@ type ParsedIssue struct {
 	// AuthorAssociation is GitHub's author↔repo relationship for the issue
 	// author (empty on Forgejo) — the no-API-call trust fast path.
 	AuthorAssociation string
+	// IssueLabels is the issue's current label set (names). Empty when the
+	// payload omits it — the hold-label gate fail-opens.
+	IssueLabels []string
 }
 
 // ParseIssues decodes an issues webhook body from GitHub or Forgejo/Gitea
@@ -88,6 +94,7 @@ func ParseIssues(body []byte) (ParsedIssue, error) {
 		SenderLogin:       e.Sender.Login,
 		IssueAuthorLogin:  e.Issue.User.Login,
 		AuthorAssociation: e.Issue.AuthorAssociation,
+		IssueLabels:       labelNames(e.Issue.Labels),
 	}, nil
 }
 

@@ -71,3 +71,14 @@ func TestIssuesIsLabeled(t *testing.T) {
 		}
 	}
 }
+
+func TestParseIssues_Labels(t *testing.T) {
+	body := `{"action":"opened","repository":{"full_name":"o/r"},"issue":{"number":9,"labels":[{"name":"bug"},{"name":"blocked"}]}}`
+	p, err := ParseIssues([]byte(body))
+	if err != nil {
+		t.Fatalf("ParseIssues: %v", err)
+	}
+	if len(p.IssueLabels) != 2 || p.IssueLabels[0] != "bug" || p.IssueLabels[1] != "blocked" {
+		t.Fatalf("issue labels = %v, want [bug blocked]", p.IssueLabels)
+	}
+}

@@ -275,6 +275,16 @@ Every webhook carries four filters
   freshly-applied label fires (e.g. `["implement"]`). Empty = any label;
   case-insensitive; a bare `*` matches everything. No effect on the
   `pull_request` / `issue_comment` paths.
+- **`hold_labels`** — a **bot-agnostic suppression** set. When the
+  triggering PR or issue carries any of these labels, the auto-launch
+  lanes (PR-open review, merge-queue auto-heal, auto-implement-on-open)
+  suppress the launch — *whatever* bot would have run — and record a
+  filtered delivery. It is the operator's escape hatch to pause
+  automation on one PR/issue without disabling the webhook; a human can
+  still trigger a bot manually via a `/command`. Case-insensitive; empty
+  = off. Fail-open: providers/payloads that don't carry the full label
+  set (GitLab, minimal payloads) simply aren't suppressed. Unlike
+  `label_allowlist` (which *selects* a bot), `hold_labels` *vetoes* them.
 - **`project_allowlist`** — `owner/repo` patterns. Empty = every project
   the forge fires for. Supports `*` (any), `owner/*`, or exact paths.
 - **`author_allowlist`** — PR/MR author logins allowed to trigger a
