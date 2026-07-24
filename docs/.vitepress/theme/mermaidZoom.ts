@@ -133,9 +133,11 @@ function openZoomModal(source: SVGSVGElement) {
     window.removeEventListener('resize', fitSize)
     overlay.remove()
     document.documentElement.style.overflow = ''
+    document.documentElement.classList.remove('mermaid-zoom-active')
   }
 
   document.documentElement.style.overflow = 'hidden'
+  document.documentElement.classList.add('mermaid-zoom-active')
   document.body.appendChild(overlay)
   apply()
 }

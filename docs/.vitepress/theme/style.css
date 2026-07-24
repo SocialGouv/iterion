@@ -45,11 +45,17 @@
   border-color: var(--vp-c-brand-1);
 }
 
+/* While zoomed, hide the inline diagrams so none can show through the overlay
+   (bulletproofs against any stacking-context bleed-through / apparent doubling). */
+.mermaid-zoom-active .vp-doc .mermaid {
+  visibility: hidden;
+}
+
 /* Full-screen pan/zoom overlay. */
 .mermaid-zoom-overlay {
   position: fixed;
   inset: 0;
-  z-index: 200;
+  z-index: 2147483000;
   background: var(--vp-c-bg);
   display: flex;
   align-items: center;
