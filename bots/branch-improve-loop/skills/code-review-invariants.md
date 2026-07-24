@@ -91,10 +91,37 @@ error) indistinguishable from "no data" — the panel renders empty, the
 outage is invisible. Log (or propagate) the error before returning the
 empty/degraded state. No silent recovery that hides a root cause.
 
-## How to use this in a self-review pass
+## 7. Fit and rot — did we build the RIGHT thing, and only that
+
+Sections 1–6 catch code that is *wrong*. This one catches code that is
+*correct but hollow* — it compiles, passes, reviews clean, and still isn't
+what the task needed. Two failure modes, opposite directions:
+
+- **Fit (under-serving):** does the change serve the actual *need*,
+  end-to-end, not just the literal acceptance criteria? A change can satisfy
+  every stated check and still miss the point — it addresses a symptom, sits
+  at the wrong layer, or handles the happy path the ticket named while the
+  real workflow the user described stays broken. Re-read the original intent,
+  then trace the delivered path against it. Name any gap between what was
+  asked for and what the code actually does — a passing test over the wrong
+  behavior is a façade, not a fix.
+- **Rot (over-serving):** did the change make the codebase *worse to work
+  in*? Three tells: **duplication** (a third helper doing what two existing
+  ones already do — reuse the sibling instead), **over-engineering** (an
+  abstraction, config knob, or generality with exactly one caller and no
+  second on the horizon — inline it), and **incoherence** (now there are two
+  ways to do the same thing, and the next author won't know which). Leave the
+  tree more coherent than you found it, not more tangled.
+
+Conformance to the repo's declared conventions is already covered for
+cross-cutting concerns by §1; here, just confirm the change reads like the
+code around it. This section is judgment, not a checklist — apply it once,
+honestly, and fix what you find in the same pass. It is **advisory**: the
+deterministic build+test gate stays the only thing that blocks shipping — this
+lens sharpens the diff, it never gates it.## How to use this in a self-review pass
 
 1. `git diff <base>` and `git diff --stat` — see the *whole* change.
-2. For each new/changed unit, walk sections 1–6. Most changes only touch a
+2. For each new/changed unit, walk sections 1–7. Most changes only touch a
    few; be honest about which apply.
 3. For anything you find, **fix it now** and note it. Do not defer.
 4. Only when a section genuinely doesn't apply (no new state, no new

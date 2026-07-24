@@ -205,6 +205,18 @@ prompt campaign_system:
   KEEP GOING, one site at a time, until this pass has applied the axis
   everywhere you can within your budget. Then STOP and report.
 
+  BEFORE YOU REPORT, sharpen the diff with two questions (advisory — the
+  build/test gate still decides; this only improves what you ship, it never
+  blocks it):
+    - Fit: does each change serve the real intent of the axis end-to-end, or
+      did you satisfy its letter while the underlying problem persists? A
+      change that passes the gate but doesn't move the actual need is a
+      façade — redo it, don't report it done.
+    - Rot: did you leave duplication (a third helper doing what two siblings
+      already do), a one-caller abstraction, or two ways to do the same thing?
+      Reuse the sibling and collapse it now — leave the tree more coherent than
+      you found it, not more tangled.
+
   TERMINATION CONTRACT (required structured output — this is how the engine
   detects completion; an under-specified end just gets re-poked):
     - axis_complete: true ONLY when a fresh re-scan finds NO remaining site
