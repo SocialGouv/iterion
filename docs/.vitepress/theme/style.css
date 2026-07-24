@@ -23,6 +23,28 @@
   opacity: 0.9;
 }
 
+/* Home "Built for real engineering" — turn the bullet list into a card grid. */
+.vp-features-lite ul {
+  list-style: none;
+  padding: 0;
+  margin: 16px 0 0;
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+  gap: 14px;
+}
+.vp-features-lite li {
+  margin: 0;
+  padding: 16px 18px;
+  border: 1px solid var(--vp-c-divider);
+  border-radius: 12px;
+  background: var(--vp-c-bg-soft);
+  line-height: 1.55;
+  transition: border-color 0.2s ease;
+}
+.vp-features-lite li:hover {
+  border-color: var(--vp-c-brand-1);
+}
+
 /* Full-screen pan/zoom overlay. */
 .mermaid-zoom-overlay {
   position: fixed;

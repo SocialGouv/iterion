@@ -62,7 +62,47 @@ features:
     linkText: Iterion Cloud
 ---
 
-New here? Start with [Why Iterion?](/why-iterion) for the vision, or jump
-straight to [Install](/install) and [the bot fleet](/examples). The
-[current as-built state](/current-state) is the honest, verified-against-`main`
-picture of what ships today.
+## 💡 What teams build with it
+
+Iterion ships a maintained fleet of **25+ production bots** — real, grounded
+examples of what an operated agent workflow looks like. A few of the jobs they do:
+
+| | Use case | Bots that run it |
+|---|---|---|
+| 🚀 | **Ship software from a prompt** — greenfield apps and end-to-end features | Appy · Featurly · Fini · Bmady |
+| 🔁 | **Continuously review & improve a codebase** — whole-repo and per-branch campaigns, cross-family PR review, test coverage | Willy · Billy · Revi · Testy |
+| 🛡️ | **Automated security & supply chain** — SAST, dependency/SCA, diff-scoped CVE & malware shields on every PR | Seki · Depsy · Vulny · Shieldy |
+| ⬆️ | **Upgrade dependencies safely** — multi-stack agentic upgrades with a review gate | Renovacy · Vetty |
+| 📚 | **Keep docs & knowledge aligned** — docs alignment, wiki generation, ADR cartography | Doki · Wikky · Adry |
+| ♿ | **Accessibility audits** — RGAA 4.1.2 over deterministic gates | Acci |
+| 🗂️ | **Triage & route work** — classify board cards, auto-open PRs, answer PR questions | Triagy · Revi |
+| 📡 | **Watch & react** — feed/veille monitoring and digests | Vigie |
+| 🧭 | **A strategic partner** — a conversational co-CTO and roadmap, an architectural visionary | Nexie · Evoly |
+
+[Browse the full catalogue →](/examples)
+
+## 🧰 A catalogue you run — or make your own
+
+Run any bot as-is, **fork and adapt** one to your repo, or **author your own**
+from scratch — in the [visual studio builder](/visual-editor), with `iterion
+bots create`, or by hand in the readable [`.bot` DSL](/dsl). Package it as a
+`.botz` bundle and share it through the [marketplace](/plugins). The same
+workflow runs unchanged from your laptop to CI to the cloud.
+
+## 🏗️ Built for real engineering
+
+<div class="vp-features-lite">
+
+- 🔗 **Forge-native** — GitHub, GitLab & Forgejo: open and review PRs, answer PR/MR comments, trigger on webhooks, triage issues, and post results back. → [Forge integrations](/forge-integrations)
+- 🔐 **Secrets, done right** — a sealed local & cloud secret store, bring-your-own provider keys, per-run sealed bundles, egress-scoped file secrets — never printed, materialised only at execution sinks. → [Secrets](/secrets)
+- 🧱 **Safe by default** — per-run Docker/K8s sandboxes, a tool-permission gate against prompt injection, shared budget caps, and worktree isolation with an explicit merge policy. → [Sandbox](/sandbox)
+- ⚡ **Event-driven** — an issue-tracker [dispatcher](/dispatcher), cron [schedules](/scheduling), and a trigger spine over webhooks, board events, and run-completion chains.
+- 👁️ **Operable** — steer live runs, attach [supervisors](/supervisors) that watch and correct an agent, async human gates, checkpoint/[resume](/resume), and Prometheus/OTLP/Grafana observability.
+- ☁️ **Team scale** — orgs & teams, quotas, audit, SSO, PATs, and a remote CLI — the same engine from laptop to [multi-tenant cloud](/cloud-overview).
+
+</div>
+
+---
+
+New here? Start with [Why Iterion?](/why-iterion) for the vision, jump straight
+to [Install](/install), or [explore the bot fleet](/examples).
