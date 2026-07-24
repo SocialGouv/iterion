@@ -245,6 +245,11 @@ type Server struct {
 	// client via forgeAdminFor.
 	forgeReviewClientFor func(ctx context.Context, conn forge.Connection) (forge.ReviewClient, error)
 
+	// forgeGateClientFor is a test seam overriding how the publish-review
+	// handler resolves a connection's merge-gate client (head-SHA lookup +
+	// commit-status write). Nil → real admin client via forgeAdminFor.
+	forgeGateClientFor func(ctx context.Context, conn forge.Connection) (forgeGateClient, error)
+
 	// marketplace is the hosted bot registry store. Mirrors
 	// Config.Marketplace; nil disables every /api/v1/marketplace/*
 	// endpoint (and the studio's Marketplace view via

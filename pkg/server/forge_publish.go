@@ -123,6 +123,30 @@ type publishReviewRequest struct {
 	// everything into a single review body.
 	Mode     string                 `json:"mode,omitempty"`
 	Comments []publishReviewComment `json:"comments,omitempty"`
+	// Gate, when present and enabled, drives the deterministic merge-gate
+	// commit status posted onto the PR head SHA (see publishReviewGate).
+	Gate *publishReviewGate `json:"gate,omitempty"`
+}
+
+// publishReviewGate carries the reviewer bot's DETERMINISTIC gate verdict:
+// how many findings meet the blocking threshold. The server maps it onto a
+// commit status (success when BlockingCount == 0, else failure) named Context
+// on the PR head SHA. The count is computed by the bot from the finding
+// severities — the server never re-judges, it only posts the status. This
+// keeps the gate deterministic (a count) while the LLM only produces content.
+type publishReviewGate struct {
+	// Enabled gates the whole feature; a false/absent gate posts no status
+	// (today's advisory-only behaviour).
+	Enabled bool `json:"enabled"`
+	// Context is the status check name branch protection matches on
+	// (default "revi/review").
+	Context string `json:"context,omitempty"`
+	// BlockingCount is the number of findings at or above Threshold.
+	BlockingCount int `json:"blocking_count"`
+	// Threshold is the severity floor that blocks (for the description only).
+	Threshold string `json:"threshold,omitempty"`
+	// TotalFindings is the full kept-finding count (for the description).
+	TotalFindings int `json:"total_findings"`
 }
 
 type publishReviewResponse struct {
@@ -136,6 +160,14 @@ type publishReviewResponse struct {
 	Verified bool `json:"verified"`
 	// Fallback is "" | "summary" | "partial" (see forge.ReviewResult).
 	Fallback string `json:"fallback,omitempty"`
+	// Gate* report the merge-gate commit-status outcome. GatePosted is false
+	// when no gate was requested OR posting failed (GateError then explains).
+	// A gate failure never fails the publish — the review already landed.
+	GatePosted  bool   `json:"gate_posted"`
+	GateState   string `json:"gate_state,omitempty"`
+	GateContext string `json:"gate_context,omitempty"`
+	GateSHA     string `json:"gate_sha,omitempty"`
+	GateError   string `json:"gate_error,omitempty"`
 }
 
 // handleForgePublishReview authenticates the per-run token, validates the
@@ -234,6 +266,19 @@ func (s *Server) handleForgePublishReview(w http.ResponseWriter, r *http.Request
 		s.logger.Info("forge publish: %s %s#%d → %d inline comment(s) (verified=%v fallback=%q)",
 			conn.Provider, grant.Repo, number, res.CommentsPosted, res.Verified, res.Fallback)
 	}
+
+	// Merge gate: post the deterministic revi/review commit status on the PR
+	// head SHA. Additive — a failure here never fails the publish (the review
+	// already landed), it is reported in the response + logged.
+	gate := s.postGateStatus(r.Context(), conn, grant.Repo, number, req.Gate, res.URL)
+	if s.logger != nil && gate.requested {
+		if gate.posted {
+			s.logger.Info("forge gate: %s %s#%d @%s → %s (%q)", conn.Provider, grant.Repo, number, gate.sha, gate.state, gate.context)
+		} else {
+			s.logger.Warn("forge gate: %s %s#%d → not posted: %s", conn.Provider, grant.Repo, number, gate.errText)
+		}
+	}
+
 	writeJSON(w, publishReviewResponse{
 		Published:         true,
 		Provider:          string(conn.Provider),
@@ -242,7 +287,111 @@ func (s *Server) handleForgePublishReview(w http.ResponseWriter, r *http.Request
 		SuggestionsPosted: res.SuggestionsPosted,
 		Verified:          res.Verified,
 		Fallback:          res.Fallback,
+		GatePosted:        gate.posted,
+		GateState:         gate.state,
+		GateContext:       gate.context,
+		GateSHA:           gate.sha,
+		GateError:         gate.errText,
 	})
+}
+
+// defaultGateContext is the commit-status check name the merge gate posts
+// under when the bot pins none. Branch protection lists this as a required
+// check to make the merge queue block on it.
+const defaultGateContext = "revi/review"
+
+// forgeGateClient is the capability the merge gate needs: resolve the PR head
+// SHA, then post a commit status on it. Satisfied by the github/gitlab/forgejo
+// admin clients (both methods live on the same *AdminClient).
+type forgeGateClient interface {
+	GetPullRequest(ctx context.Context, repo string, number int) (forge.PullRef, error)
+	SetCommitStatus(ctx context.Context, repo, sha string, st forge.CommitStatus) error
+}
+
+// gateClientFor resolves a connection's forgeGateClient. The forgeGateClientFor
+// field is a test seam; nil uses the real admin client. Returns (nil, nil) when
+// the provider has no commit-status capability.
+func (s *Server) gateClientFor(ctx context.Context, conn forge.Connection) (forgeGateClient, error) {
+	if s.forgeGateClientFor != nil {
+		return s.forgeGateClientFor(ctx, conn)
+	}
+	admin, err := s.forgeAdminFor(ctx, conn)
+	if err != nil {
+		return nil, err
+	}
+	gc, ok := admin.(forgeGateClient)
+	if !ok {
+		return nil, nil
+	}
+	return gc, nil
+}
+
+// gateOutcome is the internal result of posting the gate status.
+type gateOutcome struct {
+	requested bool   // a gate was requested (enabled)
+	posted    bool   // the status landed on the forge
+	state     string // "success" | "failure" (when posted)
+	context   string // the status check name used
+	sha       string // the head SHA the status was posted on
+	errText   string // why not posted (when !posted)
+}
+
+// postGateStatus posts the deterministic merge-gate commit status. It resolves
+// the PR head SHA (so the status lands on the exact revision under review),
+// maps the bot's blocking-count verdict to success/failure, and writes the
+// commit status through the connection's live admin client. Every failure is
+// reported (never silently swallowed) but non-fatal to the publish.
+func (s *Server) postGateStatus(ctx context.Context, conn forge.Connection, repo string, number int, gate *publishReviewGate, reviewURL string) gateOutcome {
+	if gate == nil || !gate.Enabled {
+		return gateOutcome{}
+	}
+	out := gateOutcome{requested: true, context: strings.TrimSpace(gate.Context)}
+	if out.context == "" {
+		out.context = defaultGateContext
+	}
+	gc, err := s.gateClientFor(ctx, conn)
+	if err != nil {
+		out.errText = "gate client: " + err.Error()
+		return out
+	}
+	if gc == nil {
+		out.errText = "provider " + string(conn.Provider) + " has no commit-status capability"
+		return out
+	}
+	pr, err := gc.GetPullRequest(ctx, repo, number)
+	if err != nil {
+		out.errText = "resolve head sha: " + err.Error()
+		return out
+	}
+	if strings.TrimSpace(pr.HeadSHA) == "" {
+		out.errText = "forge returned no head sha for the PR"
+		return out
+	}
+	out.sha = pr.HeadSHA
+
+	threshold := strings.TrimSpace(gate.Threshold)
+	if threshold == "" {
+		threshold = "high"
+	}
+	state := forge.CommitStateSuccess
+	desc := fmt.Sprintf("no blocking findings (≥%s); %d total", threshold, gate.TotalFindings)
+	if gate.BlockingCount > 0 {
+		state = forge.CommitStateFailure
+		desc = fmt.Sprintf("%d blocking finding(s) ≥%s — address them (a push re-reviews) or a maintainer overrides", gate.BlockingCount, threshold)
+	}
+	out.state = string(state)
+
+	if err := gc.SetCommitStatus(ctx, repo, out.sha, forge.CommitStatus{
+		State:       state,
+		Context:     out.context,
+		Description: desc,
+		TargetURL:   reviewURL,
+	}); err != nil {
+		out.errText = "set commit status: " + err.Error()
+		return out
+	}
+	out.posted = true
+	return out
 }
 
 // reviewClientFor resolves a connection's forge.ReviewClient. The

@@ -83,6 +83,26 @@ func TestIsReviewable(t *testing.T) {
 	}
 }
 
+func TestIsSynchronize(t *testing.T) {
+	cases := []struct {
+		action string
+		oldRev string
+		draft  bool
+		want   bool
+	}{
+		{"update", "abc123", false, true}, // a push to the source branch
+		{"update", "", false, false},      // metadata-only update, no code change
+		{"open", "abc123", false, false},  // open is not a sync
+		{"update", "abc123", true, false}, // a draft push never re-reviews
+	}
+	for _, c := range cases {
+		p := Parsed{Action: c.action, OldRev: c.oldRev, Draft: c.draft}
+		if got := p.IsSynchronize(); got != c.want {
+			t.Errorf("action=%q oldrev=%q draft=%v => %v want %v", c.action, c.oldRev, c.draft, got, c.want)
+		}
+	}
+}
+
 // mrDraftOpenPayload is a draft MR opened — must be filtered (never
 // auto-launched) even though the action is "open".
 const mrDraftOpenPayload = `{

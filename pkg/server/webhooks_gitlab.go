@@ -84,7 +84,10 @@ func (s *Server) handleGitLabMergeRequestEvent(ctx context.Context, w http.Respo
 	// Filter: only review on open/reopen, allowed event + project.
 	// A filtered delivery returns 200 (a 4xx would make GitLab disable
 	// the webhook after repeated metadata-only edits).
-	if !p.IsReviewable() ||
+	// ReviewOnSync opts a push-to-MR ("update" with a new head) back into
+	// review so the merge-gate status re-evaluates on the new head SHA.
+	reviewable := p.IsReviewable() || (cfg.ReviewOnSync && p.IsSynchronize())
+	if !reviewable ||
 		!webhooks.MatchEvent(cfg.EventAllowlist, "merge_request", "merge_request", "note") ||
 		!webhooks.MatchProject(cfg.ProjectAllowlist, p.ProjectPath) ||
 		!webhooks.MatchAuthor(cfg.AuthorAllowlist, p.SenderUsername) {

@@ -141,6 +141,16 @@ type Config struct {
 	// triage+ rights on the forge, which IS the approval gesture.
 	MinAuthorRole string `bson:"min_author_role,omitempty" json:"min_author_role,omitempty"`
 
+	// ReviewOnSync, when true, re-runs the review bot on a PR "synchronize"
+	// (a push to the PR head), not only on opened/reopened. OFF by default
+	// (a push is normally on-demand re-review — see prforge.IsReviewable, kept
+	// budget-frugal). Turn it ON to power the MERGE GATE: the reviewer posts
+	// its revi/review commit status per head SHA, so as the author pushes
+	// fixes the required check re-evaluates on the new revision instead of
+	// deadlocking on a status the old SHA carried. Pairs with the bot's
+	// gate_enabled var + a required-check ruleset listing revi/review.
+	ReviewOnSync bool `bson:"review_on_sync,omitempty" json:"review_on_sync,omitempty"`
+
 	// BlockForkPRs, when true, filters (never auto-launches ANY bot on) a PR
 	// whose head branch lives in a DIFFERENT repo than its base — a fork PR.
 	// The anti budget-exhaustion boundary: a fork PR is untrusted (an adversary
