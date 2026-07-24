@@ -124,18 +124,7 @@ func (a *GitLabAdapter) ListCandidates(ctx context.Context) ([]Issue, error) {
 	}
 	// Second pass (after every page is in openNums): hold any issue whose
 	// body declares a still-open blocker (`#IID`). Fail-open — see blockers.go.
-	out := make([]Issue, 0, len(pending))
-	for _, iss := range pending {
-		if held := HeldByOpenBlockers(iss.Body, openNums); len(held) > 0 {
-			if a.opts.Logger != nil {
-				a.opts.Logger.Info("gitlab tracker: holding %s — declared open blocker(s) %s not yet closed",
-					iss.Identifier, formatIssueRefs(held))
-			}
-			continue
-		}
-		out = append(out, iss)
-	}
-	return out, nil
+	return filterHeldByBlockers(pending, openNums, a.opts.Logger, "gitlab"), nil
 }
 
 // RefreshStates fetches each issue and re-derives its state from current

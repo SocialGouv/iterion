@@ -101,16 +101,12 @@ func (s *Server) handlePRForgeReview(ctx context.Context, w http.ResponseWriter,
 		return
 	}
 
-	// Hold-label gate (bot-agnostic, opt-in): if the PR carries a configured
-	// hold label, suppress EVERY auto-launch this handler can do (auto-heal and
-	// review alike) — the operator's escape hatch to pause automation on one PR
-	// without disabling the webhook. Placed before any launch decision so it
-	// vetoes all of them; fail-open (no HoldLabels / no labels in payload = no
-	// effect). A human can still trigger a bot manually via a `/command`.
-	if held := webhooks.HeldByLabel(cfg.HoldLabels, p.Labels); held != "" {
-		s.recordTerminalWebhookDelivery(ctx, cfg, meta, webhooks.StatusFiltered, payloadHash, srcIP,
-			`held: PR carries hold label "`+held+`" — automation suppressed (remove the label, or trigger a bot manually via a command)`)
-		writeJSONStatus(w, http.StatusOK, map[string]string{"status": webhooks.StatusFiltered})
+	// Hold-label gate (bot-agnostic, opt-in): a configured hold label on the PR
+	// vetoes EVERY auto-launch this handler can do (auto-heal and review alike)
+	// — the operator's escape hatch to pause automation on one PR. Placed before
+	// any launch decision so it covers all of them. A human can still trigger a
+	// bot manually via a `/command`.
+	if s.suppressedByHoldLabel(ctx, w, cfg, meta, p.Labels, payloadHash, srcIP) {
 		return
 	}
 
@@ -228,13 +224,9 @@ func (s *Server) handleGitHubIssues(w http.ResponseWriter, r *http.Request, cfg 
 	}
 
 	// Hold-label gate (bot-agnostic, opt-in): a configured hold label on the
-	// issue suppresses the auto-launch (labeled + zero-touch alike), whatever
-	// bot would run. Fail-open; a human can still apply the trigger label after
-	// removing the hold. See the PR handler for the rationale.
-	if held := webhooks.HeldByLabel(cfg.HoldLabels, p.IssueLabels); held != "" {
-		s.recordTerminalWebhookDelivery(ctx, cfg, meta, webhooks.StatusFiltered, payloadHash, srcIP,
-			`held: issue carries hold label "`+held+`" — automation suppressed (remove the label to re-enable)`)
-		writeJSONStatus(w, http.StatusOK, map[string]string{"status": webhooks.StatusFiltered})
+	// issue vetoes the auto-launch (labeled + zero-touch alike). See the PR
+	// handler for the rationale.
+	if s.suppressedByHoldLabel(ctx, w, cfg, meta, p.IssueLabels, payloadHash, srcIP) {
 		return
 	}
 

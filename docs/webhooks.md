@@ -281,10 +281,12 @@ Every webhook carries four filters
   suppress the launch — *whatever* bot would have run — and record a
   filtered delivery. It is the operator's escape hatch to pause
   automation on one PR/issue without disabling the webhook; a human can
-  still trigger a bot manually via a `/command`. Case-insensitive; empty
-  = off. Fail-open: providers/payloads that don't carry the full label
-  set (GitLab, minimal payloads) simply aren't suppressed. Unlike
-  `label_allowlist` (which *selects* a bot), `hold_labels` *vetoes* them.
+  still trigger a bot manually via a `/command`. Applies to all four
+  auto-launch lanes (GitHub/Forgejo PR review + auto-heal, GitHub issue,
+  GitLab MR review, GitLab issue). Case-insensitive; empty = off; a `*`
+  entry holds everything. Fail-open: a minimal payload that doesn't carry
+  the label set simply isn't suppressed. Unlike `label_allowlist` (which
+  *selects* a bot), `hold_labels` *vetoes* them.
 - **`project_allowlist`** — `owner/repo` patterns. Empty = every project
   the forge fires for. Supports `*` (any), `owner/*`, or exact paths.
 - **`author_allowlist`** — PR/MR author logins allowed to trigger a

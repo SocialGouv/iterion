@@ -5,6 +5,8 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+
+	iterlog "github.com/SocialGouv/iterion/pkg/log"
 )
 
 // Issue-dependency gating for the external forge adapters (github / forgejo /
@@ -44,9 +46,13 @@ func ParseBlockerRefs(body string) []int {
 	if body == "" {
 		return nil
 	}
+	lines := blockerLineRe.FindAllStringSubmatch(body, -1)
+	if len(lines) == 0 {
+		return nil // common case: no dependency line — allocate nothing
+	}
 	seen := map[int]bool{}
 	var out []int
-	for _, line := range blockerLineRe.FindAllStringSubmatch(body, -1) {
+	for _, line := range lines {
 		for _, ref := range issueRefRe.FindAllStringSubmatch(line[1], -1) {
 			n, err := strconv.Atoi(ref[1])
 			if err != nil || n <= 0 || seen[n] {
@@ -78,6 +84,26 @@ func HeldByOpenBlockers(body string, openNums map[int]bool) []int {
 	}
 	sort.Ints(held)
 	return held
+}
+
+// filterHeldByBlockers returns the subset of issues free to dispatch, dropping
+// (and logging, fail-open) any whose body declares a still-open blocker in
+// openNums. Shared by all three external adapters so the hold semantics + log
+// wording live in one place; adapter names the source ("github"/"forgejo"/
+// "gitlab") for the log line. A nil logger is tolerated.
+func filterHeldByBlockers(issues []Issue, openNums map[int]bool, logger *iterlog.Logger, adapter string) []Issue {
+	out := make([]Issue, 0, len(issues))
+	for _, iss := range issues {
+		if held := HeldByOpenBlockers(iss.Body, openNums); len(held) > 0 {
+			if logger != nil {
+				logger.Info("%s tracker: holding %s — declared open blocker(s) %s not yet closed",
+					adapter, iss.Identifier, formatIssueRefs(held))
+			}
+			continue
+		}
+		out = append(out, iss)
+	}
+	return out
 }
 
 // formatIssueRefs renders issue numbers as "#a, #b" for a log line.

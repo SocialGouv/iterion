@@ -103,17 +103,15 @@ func ScanFrontmatter(r io.Reader) (name, description string) {
 			continue
 		}
 		val := strings.TrimSpace(v)
-		if val == "" || strings.HasPrefix(val, "|") || strings.HasPrefix(val, ">") {
-			// A bare/indicator value opens a block scalar (chomping/indent
-			// indicators after |/> are ignored — we only need the text).
-			if strings.HasPrefix(val, "|") || strings.HasPrefix(val, ">") {
-				blockKey = key
-				fold = val[0] == '>'
-				baseIndent = len(k) - len(strings.TrimLeft(k, " \t"))
-				block = nil
-				continue
-			}
-			// Empty value: leave the field empty (nothing to assign).
+		if strings.HasPrefix(val, "|") || strings.HasPrefix(val, ">") {
+			// A block-scalar indicator opens a multi-line value (chomping/indent
+			// indicators after |/> are ignored — we only need the text). A bare
+			// empty value falls through and assigns "" like any scalar.
+			blockKey = key
+			fold = val[0] == '>'
+			baseIndent = len(k) - len(strings.TrimLeft(k, " \t"))
+			block = nil
+			continue
 		}
 		val = strings.TrimPrefix(val, "\"")
 		val = strings.TrimSuffix(val, "\"")

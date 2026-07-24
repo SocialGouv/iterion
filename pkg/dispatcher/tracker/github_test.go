@@ -254,7 +254,7 @@ func TestGitHubListCandidatesBlockers(t *testing.T) {
 	t.Run("held while blocker open", func(t *testing.T) {
 		blocker := map[string]any{
 			"number": 7, "title": "create schema", "state": "open",
-			"labels": []map[string]string{{"name": "wip"}},
+			"labels":    []map[string]string{{"name": "wip"}},
 			"createdAt": "2026-05-01T00:00:00Z", "updatedAt": "2026-05-01T00:00:00Z",
 			"url": "https://github.com/owner/repo/issues/7",
 		}

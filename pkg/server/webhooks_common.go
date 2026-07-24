@@ -118,6 +118,25 @@ func applyWebhookVarLayers(vars map[string]string, cfg webhooks.Config) map[stri
 	return vars
 }
 
+// suppressedByHoldLabel applies the bot-agnostic hold-label veto shared by
+// every AUTO-launch lane (GitHub/Forgejo/GitLab, PR/MR + issue): if the
+// triggering entity carries a configured hold label, it records a filtered
+// delivery, writes a 200, and returns true so the caller returns without
+// launching — whatever bot would have run. Opt-in (empty HoldLabels = off) and
+// fail-open (a payload without the label set is never suppressed). The human
+// `/command` lanes deliberately do NOT call this — the label pauses automation,
+// not a deliberate manual trigger.
+func (s *Server) suppressedByHoldLabel(ctx context.Context, w http.ResponseWriter, cfg webhooks.Config, meta webhookEventMeta, labels []string, payloadHash, srcIP string) bool {
+	held := webhooks.HeldByLabel(cfg.HoldLabels, labels)
+	if held == "" {
+		return false
+	}
+	s.recordTerminalWebhookDelivery(ctx, cfg, meta, webhooks.StatusFiltered, payloadHash, srcIP,
+		`held: carries hold label "`+held+`" — automation suppressed (remove the label, or trigger a bot manually via a command)`)
+	writeJSONStatus(w, http.StatusOK, map[string]string{"status": webhooks.StatusFiltered})
+	return true
+}
+
 // mergeVarsInto copies every key from src into dst (overwriting on
 // collision) and returns dst. A nil src is a no-op. Used by the
 // webhook launch-vars builders to layer overlays (context vars,

@@ -128,7 +128,7 @@ func (a *GitHubAdapter) ListCandidates(ctx context.Context) ([]Issue, error) {
 	for _, r := range raw {
 		openNums[r.Number] = true
 	}
-	out2 := make([]Issue, 0, len(raw))
+	pending := make([]Issue, 0, len(raw))
 	for _, r := range raw {
 		if !a.authorAllowed(r.Author.Login) {
 			continue // author not in the trusted-author allowlist
@@ -137,16 +137,10 @@ func (a *GitHubAdapter) ListCandidates(ctx context.Context) ([]Issue, error) {
 		if iss.WorkflowState == "" {
 			continue // doesn't match any configured state
 		}
-		if held := HeldByOpenBlockers(r.Body, openNums); len(held) > 0 {
-			if a.opts.Logger != nil {
-				a.opts.Logger.Info("github tracker: holding %s — declared open blocker(s) %s not yet closed",
-					iss.Identifier, formatIssueRefs(held))
-			}
-			continue // honor the issue's own "Blocked by/Depends on #N"
-		}
-		out2 = append(out2, iss)
+		pending = append(pending, iss)
 	}
-	return out2, nil
+	// Hold any issue whose body declares a still-open blocker (fail-open).
+	return filterHeldByBlockers(pending, openNums, a.opts.Logger, "github"), nil
 }
 
 // authorAllowed reports whether an issue author passes AuthorAllowlist
