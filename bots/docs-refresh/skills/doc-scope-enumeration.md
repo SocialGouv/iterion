@@ -1,6 +1,6 @@
 ---
 name: doc-scope-enumeration
-description: Contract for Doki's deterministic documentation footprint, bootstrap rescan, incremental hint, noop cache, and writeable set.
+description: Contract for Doki's deterministic documentation footprint, incremental base detection, advisory hints, and writeable set.
 ---
 
 # Documentation scope enumeration
@@ -15,9 +15,9 @@ Conceptually, its routing/telemetry output contains:
 
 ```text
 doc_files                    sorted repository-relative Markdown paths
-doc_count / no_docs          footprint size; zero routes to the bootstrap
-recently_changed_code_files  prioritisation hint from diff_since
-noop_skip / noop_reason      exact-HEAD clean-tree cache short-circuit
+doc_count / no_docs          footprint size (zero → the campaign authors an initial set itself)
+mode / incremental_base      run mode; the resolved incremental diff base
+recently_changed_code_files  prioritisation hint (code changed since incremental_base)
 hints / hints_note           the advisory report (see the playbook)
 ```
 
@@ -30,14 +30,14 @@ The exact schema in `main.bot` is authoritative.
   are inside the writeable set and join the footprint on the next pass).
 - `recently_changed_code_files` only helps prioritise. It never narrows the
   documentation or code-verification scope.
-- A matching cached Git HEAD may produce `noop_skip=true` only for a clean
-  tree with no explicit `issue_id`. Any requested or changed run proceeds
-  normally.
+- In `incremental` mode the diff base is auto-detected from the newest
+  `Bot: docs-refresh` commit trailer (or pinned via `diff_since`); on the
+  first run, with no such trailer, the base stays empty and the pass behaves
+  like a full sweep.
 
-There is one controlled exception to enumeration-then-campaign: when the
-initial footprint is empty, `author_docs` creates Markdown under `docs_dir`
-and the bounded `author_rescan` loop runs `scan_hints` again. That second
-scan defines the campaign's footprint.
+When the initial footprint is empty there is no separate bootstrap node: the
+`campaign` agent authors a grounded initial set under `docs_dir` itself, and
+those files join the footprint on the next scan.
 
 ## Campaign writeable set
 
@@ -49,9 +49,6 @@ Do not modify code, configuration, generated files, or build files.
 `scope_check` is the deterministic containment gate: it diffs the whole run
 against its base and fails the pass on any out-of-scope path. Any
 out-of-scope commit must be reverted on the next pass.
-
-The noop cache is maintained by `update_audit_cache`, not by the campaign.
-It records only the git HEAD the docs were aligned to.
 
 ## Why enumeration is deterministic
 
