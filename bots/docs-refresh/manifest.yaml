@@ -1,7 +1,14 @@
 name: docs-refresh
 display_name: Doki
 icon: 📚
-version: 3.5.3
+version: 3.5.4
+## 3.5.4 — the `/doki` comment command is now a DIRECT, PR-scoped action
+## (was board/any), mirroring `/revi`: a developer comments `/doki` on a PR
+## and docs-refresh launches immediately on the PR head (no tracking card),
+## self-switching to incremental amend via the generic pr_url/base_ref/
+## source_branch the webhook stamps. Activates the amend-on-PR trigger by
+## re-provisioning a forge webhook to permit docs-refresh (no engine code —
+## the `/command`→bot route derives from this manifest invocation).
 ## 3.5.3 — scope_check now bases its writeable-set diff on the RUN-START
 ## HEAD (the newest reflog entry that is not one of this run's own
 ## `Bot: docs-refresh` commits), not the oldest reflog entry. In amend mode
@@ -233,9 +240,9 @@ dispatch_vars:
 
 invocations:
   - kind: command
-    mode: board
+    mode: direct
     args_var: scope_notes
-    command: { name: doki, aliases: [docs-refresh], scope: any, min_replier_role: developer }
+    command: { name: doki, aliases: [docs-refresh], scope: pr, min_replier_role: developer }
   - kind: schedule
     mode: board
     schedule: { suggested_cron: "0 3 * * *" }
