@@ -214,8 +214,10 @@ func TestVerifyRunDriftTailPresentInAllBots(t *testing.T) {
 		"test-coverage/main.bot":       "verify_run",
 		"dep-update-guard/main.bot":    "verify_run",
 		"adr-cartograph/main.bot":      "verify_run",
-		"docs-refresh/main.bot":        "verify_run",
-		"secured-renovacy/main.bot":    "p2_verify_run",
+		// docs-refresh dropped the build-verify apparatus (a docs-only
+		// campaign can't break the build) — commit 8aee22894, converges on
+		// scope_ok ∧ docs_aligned alone. No verify_run node to guard.
+		"secured-renovacy/main.bot": "p2_verify_run",
 	}
 	for rel, node := range bots {
 		t.Run(rel, func(t *testing.T) {
