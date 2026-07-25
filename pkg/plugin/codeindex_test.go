@@ -59,8 +59,13 @@ func TestCodeindexBuiltinContributions(t *testing.T) {
 	if rw[0].Locate.Bin != "codeindex" || rw[0].Locate.Env == "" || len(rw[0].Locate.Paths) == 0 {
 		t.Errorf("rewriter locate = %+v, want env + bin + paths", rw[0].Locate)
 	}
-	if rw[0].SandboxMount == "" {
-		t.Error("rewriter needs a sandbox_mount or it cannot run in a sandboxed run")
+	// Deliberately NO sandbox_mount: codeindex's bin entry imports ./engine.mjs
+	// as a sibling, so bind-mounting the bin path alone yields a module that
+	// cannot resolve its own import — and it would shadow the working global the
+	// runner image installs at that very path. Asserted so a future "every
+	// rewriter should mount its binary" cleanup cannot silently reintroduce it.
+	if rw[0].SandboxMount != "" {
+		t.Errorf("sandbox_mount = %q, want empty: a Node bundle is not a self-contained binary", rw[0].SandboxMount)
 	}
 
 	if lc := p.Manifest.Contributes.Lifecycle; lc == nil || lc.Index == "" || lc.Refresh == "" {
