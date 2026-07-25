@@ -232,13 +232,7 @@ export default function NodeDetailPanel({
         listClassName="px-3"
         className="flex-1 min-h-0"
         panels={{
-          pause: (
-            <PauseTab
-              runId={runId}
-              nodeId={exec.ir_node_id}
-              matching={matching}
-            />
-          ),
+          pause: <PauseTab runId={runId} matching={matching} />,
           trace: (
             <div className="overflow-auto px-4 py-3 h-full">
               {llmSteps.length === 0 ? (

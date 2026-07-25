@@ -105,27 +105,12 @@
           "cost_usd_total": {
             "type": "number"
           },
-          "incoming_edge_index": {
-            "type": "integer"
-          },
           "interaction_id": {
             "type": "string"
-          },
-          "interaction_instructions": {
-            "type": "string"
-          },
-          "interaction_media": {
-            "items": {
-              "$ref": "#/components/schemas/ReviewMediaRef"
-            },
-            "type": "array"
           },
           "interaction_questions": {
             "additionalProperties": {},
             "type": "object"
-          },
-          "interaction_review": {
-            "$ref": "#/components/schemas/ReviewGateState"
           },
           "loop_counters": {
             "additionalProperties": {
@@ -594,35 +579,6 @@
         ],
         "type": "object"
       },
-      "InteractionTurn": {
-        "properties": {
-          "at": {
-            "format": "date-time",
-            "type": "string"
-          },
-          "content": {
-            "type": "string"
-          },
-          "media": {
-            "items": {
-              "$ref": "#/components/schemas/ReviewMediaRef"
-            },
-            "type": "array"
-          },
-          "role": {
-            "type": "string"
-          },
-          "verdict": {
-            "additionalProperties": {},
-            "type": "object"
-          }
-        },
-        "required": [
-          "role",
-          "at"
-        ],
-        "type": "object"
-      },
       "Issue": {
         "properties": {
           "assignee": {
@@ -973,17 +929,8 @@
           "depth": {
             "type": "integer"
           },
-          "instructions": {
-            "type": "string"
-          },
           "interaction_id": {
             "type": "string"
-          },
-          "media": {
-            "items": {
-              "$ref": "#/components/schemas/ReviewMediaRef"
-            },
-            "type": "array"
           },
           "node_id": {
             "type": "string"
@@ -991,9 +938,6 @@
           "questions": {
             "additionalProperties": {},
             "type": "object"
-          },
-          "review": {
-            "$ref": "#/components/schemas/ReviewGateState"
           },
           "run_id": {
             "type": "string"
@@ -1101,64 +1045,6 @@
           "full_name",
           "private",
           "can_admin"
-        ],
-        "type": "object"
-      },
-      "ReviewGateState": {
-        "properties": {
-          "max_turns": {
-            "type": "integer"
-          },
-          "merge_into": {
-            "type": "string"
-          },
-          "merge_strategy": {
-            "type": "string"
-          },
-          "posture": {
-            "type": "string"
-          },
-          "review_url": {
-            "type": "string"
-          },
-          "turns": {
-            "items": {
-              "$ref": "#/components/schemas/InteractionTurn"
-            },
-            "type": "array"
-          },
-          "verdict": {
-            "additionalProperties": {},
-            "type": "object"
-          }
-        },
-        "type": "object"
-      },
-      "ReviewMediaRef": {
-        "properties": {
-          "caption": {
-            "type": "string"
-          },
-          "kind": {
-            "type": "string"
-          },
-          "mime": {
-            "type": "string"
-          },
-          "path": {
-            "type": "string"
-          },
-          "run_id": {
-            "type": "string"
-          },
-          "size": {
-            "type": "integer"
-          }
-        },
-        "required": [
-          "run_id",
-          "path",
-          "kind"
         ],
         "type": "object"
       },

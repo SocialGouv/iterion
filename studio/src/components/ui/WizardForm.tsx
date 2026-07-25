@@ -73,10 +73,7 @@ export function WizardForm({
   const total = spec.questions.length;
   const useWizard =
     mode === "wizard" || (mode === "auto" && total >= 2);
-  // A compact one-field row only works when its own submit button provides
-  // the surrounding context. Verdict forms hide that button and submit via
-  // external Approve/Reject actions, so keep their field label visible.
-  const single = total === 1 && !hideSubmit;
+  const single = total === 1;
   const submitLabel = spec.submitLabel ?? "Send";
 
   const setOne = useCallback((id: string, value: string | string[]) => {

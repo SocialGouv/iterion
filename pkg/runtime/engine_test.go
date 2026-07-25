@@ -63,57 +63,6 @@ func tmpStore(t *testing.T) store.RunStore {
 	return s
 }
 
-type finishStatusFailRunStore struct {
-	store.RunStore
-}
-
-func (s finishStatusFailRunStore) UpdateRunStatus(ctx context.Context, runID string, status store.RunStatus, reason string) error {
-	if status == store.RunStatusFinished {
-		return errors.New("injected finished-status persistence failure")
-	}
-	return s.RunStore.UpdateRunStatus(ctx, runID, status, reason)
-}
-
-// TestDoneNode_StatusPersistenceFailureIsFatal pins the durable terminal-state
-// contract: reaching DoneNode must not return success or emit run_finished when
-// the authoritative status remains "running".
-func TestDoneNode_StatusPersistenceFailureIsFatal(t *testing.T) {
-	ctx := context.Background()
-	baseStore := tmpStore(t)
-	const runID = "run_done_status_failure"
-	if _, err := baseStore.CreateRun(ctx, runID, "status-failure", nil); err != nil {
-		t.Fatalf("CreateRun: %v", err)
-	}
-	eng := &Engine{
-		store:    finishStatusFailRunStore{RunStore: baseStore},
-		workflow: &ir.Workflow{},
-	}
-	rs := &runState{ctx: ctx, runID: runID, loopCounters: map[string]int{}}
-	done := &ir.DoneNode{BaseNode: ir.BaseNode{ID: "done"}}
-
-	handled, terminate, next, err := eng.execLoopDispatchSpecial(ctx, rs, "done", done)
-	if !handled || !terminate || next != "" {
-		t.Fatalf("dispatch result handled=%v terminate=%v next=%q", handled, terminate, next)
-	}
-	if err == nil || !strings.Contains(err.Error(), "persist run "+runID+" as finished") {
-		t.Fatalf("dispatch error=%v, want durable-status failure", err)
-	}
-	r, loadErr := baseStore.LoadRun(ctx, runID)
-	if loadErr != nil {
-		t.Fatalf("LoadRun: %v", loadErr)
-	}
-	if r.Status != store.RunStatusRunning {
-		t.Fatalf("status=%q, want running after rejected persistence", r.Status)
-	}
-	events, loadErr := baseStore.LoadEvents(ctx, runID)
-	if loadErr != nil {
-		t.Fatalf("LoadEvents: %v", loadErr)
-	}
-	if hasEventType(events, store.EventRunFinished) {
-		t.Fatal("run_finished emitted despite failed terminal-status persistence")
-	}
-}
-
 // waitBranchFinished blocks until the given branch's branch_finished event is
 // durably recorded in the store, or a short deadline elapses. A branch the
 // engine ABANDONS (a wedged goroutine that ignores cancellation) keeps running

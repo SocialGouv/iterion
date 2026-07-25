@@ -31,52 +31,6 @@ export interface PipelineBoardPendingReview {
   depth: number;
 }
 
-export type PipelineBoardReviewBriefPoints =
-  | [string]
-  | [string, string]
-  | [string, string, string];
-
-export interface PipelineBoardReviewBrief {
-  version: 1;
-  source: "ai";
-  points: PipelineBoardReviewBriefPoints;
-}
-
-export type PipelineBoardReviewMediaKind =
-  | "image"
-  | "audio"
-  | "video"
-  | "doc"
-  | "data";
-
-export interface PipelineBoardReviewMedia {
-  run_id?: string;
-  path: string;
-  kind: PipelineBoardReviewMediaKind;
-  mime?: string;
-  size?: number;
-  caption?: string;
-}
-
-export interface PipelineBoardReviewTurn {
-  role: "companion" | "human";
-  content?: string;
-  verdict?: Record<string, unknown>;
-  at?: string;
-}
-
-// Camel-cased client model matching the existing run-console ReviewGateMeta.
-// The API normalizer translates the checkpoint's snake_case wire fields.
-export interface PipelineBoardReviewGate {
-  turns: PipelineBoardReviewTurn[];
-  posture: string;
-  mergeStrategy: string;
-  mergeInto: string;
-  maxTurns: number;
-  reviewUrl?: string;
-  verdict?: Record<string, unknown>;
-}
-
 // One dispatcher attempt associated with a native task-backed root.
 export interface PipelineBoardAttempt {
   run_id?: string;
@@ -377,9 +331,6 @@ function normalizePendingReviews(
   return value.map((entry) => {
     const source = record(entry) ?? {};
     const questions = record(source.questions) ?? undefined;
-    const reviewBrief = normalizeReviewBrief(source.review_brief);
-    const media = normalizeReviewMedia(source.media);
-    const review = normalizeReviewGate(source.review);
     return {
       run_id: text(source.run_id) ?? "",
       ...(text(source.workflow_name)
@@ -395,96 +346,6 @@ function normalizePendingReviews(
       depth: Math.max(0, intValue(source.depth, 0)),
     };
   });
-}
-
-function normalizeReviewBrief(
-  value: unknown,
-): PipelineBoardReviewBrief | undefined {
-  const source = record(value);
-  if (
-    !source ||
-    source.version !== 1 ||
-    source.source !== "ai" ||
-    !Array.isArray(source.points) ||
-    source.points.length < 1 ||
-    source.points.length > 3
-  ) {
-    return undefined;
-  }
-
-  const points: string[] = [];
-  for (const point of source.points) {
-    if (typeof point !== "string" || !point.trim()) return undefined;
-    points.push(point.trim());
-  }
-
-  return {
-    version: 1,
-    source: "ai",
-    points: points as PipelineBoardReviewBriefPoints,
-  };
-}
-
-function normalizeReviewGate(value: unknown): PipelineBoardReviewGate | undefined {
-  const source = record(value);
-  if (!source) return undefined;
-  const turns: PipelineBoardReviewTurn[] = [];
-  if (Array.isArray(source.turns)) {
-    for (const entry of source.turns) {
-      const turn = record(entry);
-      const role = turn ? text(turn.role) : undefined;
-      if (!turn || (role !== "companion" && role !== "human")) continue;
-      const verdict = record(turn.verdict) ?? undefined;
-      turns.push({
-        role,
-        ...(text(turn.content) ? { content: text(turn.content) } : {}),
-        ...(verdict ? { verdict } : {}),
-        ...(text(turn.at) ? { at: text(turn.at) } : {}),
-      });
-    }
-  }
-  const verdict = record(source.verdict) ?? undefined;
-  return {
-    turns,
-    posture: text(source.posture) ?? "human_required",
-    mergeStrategy: text(source.merge_strategy) ?? "squash",
-    mergeInto: text(source.merge_into) ?? "current",
-    maxTurns: Math.max(0, intValue(source.max_turns, 0)),
-    ...(text(source.review_url) ? { reviewUrl: text(source.review_url) } : {}),
-    ...(verdict ? { verdict } : {}),
-  };
-}
-
-function normalizeReviewMedia(
-  value: unknown,
-): PipelineBoardReviewMedia[] | undefined {
-  if (!Array.isArray(value)) return undefined;
-  const out: PipelineBoardReviewMedia[] = [];
-  for (const entry of value) {
-    const source = record(entry);
-    const path = source ? text(source.path) : undefined;
-    const kind = source ? text(source.kind) : undefined;
-    if (
-      !path ||
-      (kind !== "image" &&
-        kind !== "audio" &&
-        kind !== "video" &&
-        kind !== "doc" &&
-        kind !== "data")
-    ) {
-      continue;
-    }
-    const size = numberValue(source?.size);
-    out.push({
-      path,
-      kind,
-      ...(text(source?.run_id) ? { run_id: text(source?.run_id) } : {}),
-      ...(text(source?.mime) ? { mime: text(source?.mime) } : {}),
-      ...(size !== undefined && size >= 0 ? { size } : {}),
-      ...(text(source?.caption) ? { caption: text(source?.caption) } : {}),
-    });
-  }
-  return out;
 }
 
 export function normalizePipelineBoardColumn(

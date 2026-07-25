@@ -154,11 +154,9 @@ func (s *Service) sandboxContainerReapable(ctx context.Context, runID string) bo
 // status — flock(2) is auto-released on crash, but the engine's
 // status writer is not.
 //
-// Every orphan becomes failed_resumable. Runs with a checkpoint continue from
-// it; runs interrupted before their first checkpoint restart from the workflow
-// entry (supported by runtime.resumeFromFailure). Treating that second case as
-// plain failed would make the boot/tick path disagree with reconcileRun and
-// strand a run the engine can safely recover.
+// Logic per orphan:
+//   - has Checkpoint  → failed_resumable (user can iterion resume)
+//   - no Checkpoint   → failed           (no recovery point; restart)
 //
 // We use the lock as the liveness probe: a non-blocking flock that
 // succeeds proves no other process holds the run. Held runs are left
@@ -193,56 +191,38 @@ func (s *Service) reconcileOrphans() {
 		}
 		// Recover missed finalization for worktree runs whose daemon
 		// died between "Run finished" and finalizeWorktree completing.
-		// Without this, a SIGTERM landing between status=finished and
-		// SaveRun(final_*) leaves the run with no merge UI affordance.
+		// The recovery is idempotent (bails when FinalBranch is set or
+		// the run isn't a finished-worktree case), so it's safe to call
+		// for every run scanned. Without this, a SIGTERM landing during
+		// the ~50ms window between status=finished and SaveRun(final_*)
+		// leaves the run forever stuck with no merge UI affordance.
 		//
-		// Recovery mutates Git and may remove a worktree, so it runs only for
-		// terminal rows and while holding the same per-run lock as the live
-		// engine. Status can become finished before the engine's deferred
-		// finalizer runs; locking + reloading closes that race. The manager /
-		// ancestor check handles an in-process owner before the cross-process
-		// probe. A lock-less cloud server has no authority to recover runner
-		// worktrees and skips this path entirely.
-		recoverableTerminal := r.Status == store.RunStatusFinished ||
-			r.Status == store.RunStatusCancelled ||
-			r.Status == store.RunStatusFailed
-		if canReap && recoverableTerminal {
-			if s.runOrAncestorActive(ctx, r) {
-				continue
+		// Only when this service has liveness authority: the cloud server
+		// (noop lock) owns no worktree — the finalize runs on the runner
+		// pod. Calling it here reads a WorkDir/RepoRoot absent on the
+		// server pod, doing pointless git work + logging a spurious
+		// "cannot read worktree HEAD" every tick per finished run.
+		if canReap {
+			if recErr := runtime.RecoverFinalize(ctx, s.store, r, s.logger); recErr != nil {
+				s.logger.Warn("runview: recover finalize %s: %v", id, recErr)
 			}
-			lock, lockErr := s.store.LockRun(ctx, id)
-			if lockErr != nil {
-				continue
-			}
-			r2, loadErr := s.store.LoadRun(ctx, id)
-			if loadErr == nil && r2 != nil {
-				stillRecoverable := r2.Status == store.RunStatusFinished ||
-					r2.Status == store.RunStatusCancelled ||
-					r2.Status == store.RunStatusFailed
-				if stillRecoverable && !s.runOrAncestorActive(ctx, r2) {
-					if recErr := runtime.RecoverFinalize(ctx, s.store, r2, s.logger); recErr != nil {
-						s.logger.Warn("runview: recover finalize %s: %v", id, recErr)
-					}
-				}
-			}
-			_ = lock.Unlock()
-			continue
 		}
 		if r.Status != store.RunStatusRunning {
 			continue
 		}
 		// No liveness authority (cloud server, noop lock): never reap a
-		// runner-owned run.
+		// runner-owned run — RecoverFinalize above still ran for any
+		// finished worktree run, which is all the server legitimately
+		// needs to do here.
 		if !canReap {
 			continue
 		}
-		// In-process active run (or synchronous subbot whose ancestor is
-		// active): this service owns the execution — skip before PID probing.
-		// Current subbot runners also hold the child's own flock; walking the
-		// typed subbot ancestry remains a compatibility/backstop for persisted
-		// children created by an older runner and for synthetic recovery rows.
-		// Async shards/forks are excluded because they have no ParentNodeID.
-		if s.runOrAncestorActive(ctx, r) {
+		// In-process active run: this service owns it — skip before any
+		// lock/PID probing. Matters for the periodic re-scan (the boot
+		// scan predates any active run): without this guard every tick
+		// would re-probe each managed run's flock and re-attempt
+		// RegisterDetached on already-reattached detached runners.
+		if s.manager.Active(id) {
 			continue
 		}
 		// .pid present + PID alive → runner outlived the previous
@@ -277,18 +257,14 @@ func (s *Service) reconcileOrphans() {
 			_ = lock.Unlock()
 			continue
 		}
-		// Re-check under the child's lock. The ancestry is persisted before a
-		// child starts, but a root may have been registered after the outer
-		// scan loaded its snapshot.
-		if s.runOrAncestorActive(ctx, r2) {
-			_ = lock.Unlock()
-			continue
+		newStatus := store.RunStatusFailed
+		if r2.Checkpoint != nil {
+			newStatus = store.RunStatusFailedResumable
 		}
-		const reason = "process orphaned: server restart found run in 'running' state"
-		if err := s.markOrphanInterrupted(ctx, id, reason); err != nil {
+		if err := s.store.UpdateRunStatus(ctx, id, newStatus, "process orphaned: server restart found run in 'running' state"); err != nil {
 			s.logger.Warn("runview: reconcile %s: %v", id, err)
 		} else {
-			s.logger.Info("runview: reconciled orphan run %s → %s", id, store.RunStatusFailedResumable)
+			s.logger.Info("runview: reconciled orphan run %s → %s", id, newStatus)
 		}
 		_ = lock.Unlock()
 	}
@@ -590,10 +566,10 @@ func (s *Service) reconcileRun(runID string) (*store.Run, bool, error) {
 	if r.Status != store.RunStatusRunning {
 		return r, false, nil
 	}
-	// A direct run has its own manager handle; a synchronous subbot is
-	// covered by its active ancestor's handle. In both cases leave the live
-	// execution alone and let resume reject the still-running status.
-	if s.runOrAncestorActive(context.Background(), r) {
+	// If the manager already tracks this run, it's live in this
+	// process — leave it alone, resume will reject with the active
+	// status error.
+	if s.manager.Active(runID) {
 		return r, false, nil
 	}
 	lock, err := s.store.LockRun(context.Background(), runID)
@@ -615,13 +591,13 @@ func (s *Service) reconcileRun(runID string) (*store.Run, bool, error) {
 	// entry — either way the studio can offer the resume button.
 	newStatus := store.RunStatusFailedResumable
 	const reason = "orphan reconciled on resume request: server had no live goroutine for run"
-	if err := s.markOrphanInterrupted(context.Background(), runID, reason); err != nil {
+	if err := s.store.UpdateRunStatus(context.Background(), runID, newStatus, reason); err != nil {
 		_ = lock.Unlock()
 		return r2, false, fmt.Errorf("reconcile %s: %w", runID, err)
 	}
 	_ = lock.Unlock()
 	if s.logger != nil {
-		s.logger.Info("runview: reconciled orphan run %s on demand → %s", runID, store.RunStatusFailedResumable)
+		s.logger.Info("runview: reconciled orphan run %s on demand → %s", runID, newStatus)
 	}
 	r3, _ := s.store.LoadRun(context.Background(), runID)
 	if r3 == nil {

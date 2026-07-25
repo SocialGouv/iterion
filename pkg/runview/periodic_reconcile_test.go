@@ -12,7 +12,7 @@ import (
 // TestPeriodicReconcileFlipsLateOrphan proves the TICK (not the boot
 // scan) reconciles: a run that goes orphan AFTER the service is
 // constructed — a CLI run sharing the store whose process crashed —
-// flips to failed_resumable within the tick budget instead of staying `running`
+// flips to failed within the tick budget instead of staying `running`
 // until the next server restart.
 func TestPeriodicReconcileFlipsLateOrphan(t *testing.T) {
 	t.Setenv("ITERION_ORPHAN_RECONCILE_INTERVAL", "20ms")
@@ -41,94 +41,14 @@ func TestPeriodicReconcileFlipsLateOrphan(t *testing.T) {
 	for time.Now().Before(deadline) {
 		r, err := svc.store.LoadRun(context.Background(), id)
 		if err == nil && r.Status != store.RunStatusRunning {
-			if r.Status != store.RunStatusFailedResumable {
-				t.Fatalf("status = %q, want failed_resumable (restart from entry)", r.Status)
+			if r.Status != store.RunStatusFailed {
+				t.Fatalf("status = %q, want failed (no checkpoint)", r.Status)
 			}
 			return
 		}
 		time.Sleep(20 * time.Millisecond)
 	}
 	t.Fatal("periodic reconcile never flipped the late orphan (still `running` after 5s)")
-}
-
-// TestPeriodicReconcilePreservesNestedRunsUnderActiveAncestor reproduces the
-// native studio subbot failure. These synthetic legacy rows deliberately have
-// no individual Manager handles or held child flocks, so the periodic sweep
-// must use typed subbot ancestry and treat the active root as liveness for the
-// complete nested subtree, including grandchildren.
-func TestPeriodicReconcilePreservesNestedRunsUnderActiveAncestor(t *testing.T) {
-	t.Setenv("ITERION_ORPHAN_RECONCILE_INTERVAL", "10ms")
-	dir := t.TempDir()
-	logger := iterlog.Nop()
-
-	svc, err := NewService(dir, WithLogger(logger))
-	if err != nil {
-		t.Fatalf("NewService: %v", err)
-	}
-	defer svc.Stop(context.Background())
-
-	const (
-		rootID       = "run-active-root"
-		childID      = "run-live-child"
-		grandchildID = "run-live-grandchild"
-	)
-	for _, fixture := range []struct {
-		id       string
-		parentID string
-	}{
-		{id: rootID},
-		{id: childID, parentID: rootID},
-		{id: grandchildID, parentID: childID},
-	} {
-		r, createErr := svc.store.CreateRun(context.Background(), fixture.id, "wf", nil)
-		if createErr != nil {
-			t.Fatalf("CreateRun(%s): %v", fixture.id, createErr)
-		}
-		r.ParentRunID = fixture.parentID
-		if fixture.parentID != "" {
-			r.ParentNodeID = "child_subbot"
-		}
-		if saveErr := svc.store.SaveRun(context.Background(), r); saveErr != nil {
-			t.Fatalf("SaveRun(%s): %v", fixture.id, saveErr)
-		}
-	}
-
-	if _, err := svc.manager.Register(context.Background(), rootID); err != nil {
-		t.Fatalf("register active root: %v", err)
-	}
-
-	// Allow many reconcile ticks. Before the fix the first one acquired the
-	// child/grandchild locks and flipped both to failed_resumable.
-	time.Sleep(150 * time.Millisecond)
-	for _, id := range []string{rootID, childID, grandchildID} {
-		r, loadErr := svc.store.LoadRun(context.Background(), id)
-		if loadErr != nil {
-			t.Fatalf("LoadRun(%s): %v", id, loadErr)
-		}
-		if r.Status != store.RunStatusRunning {
-			t.Fatalf("%s status under active root = %q, want running", id, r.Status)
-		}
-	}
-
-	// Once the process no longer owns the root, the exact same rows are true
-	// orphans and the periodic sweep must recover them normally.
-	svc.manager.Deregister(rootID)
-	deadline := time.Now().Add(5 * time.Second)
-	for time.Now().Before(deadline) {
-		allReconciled := true
-		for _, id := range []string{rootID, childID, grandchildID} {
-			r, loadErr := svc.store.LoadRun(context.Background(), id)
-			if loadErr != nil || r.Status != store.RunStatusFailedResumable {
-				allReconciled = false
-				break
-			}
-		}
-		if allReconciled {
-			return
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
-	t.Fatal("nested runs were not reconciled after their active root deregistered")
 }
 
 // TestPeriodicReconcileStopsOnTeardown pins the goroutine lifecycle:

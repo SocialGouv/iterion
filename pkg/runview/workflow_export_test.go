@@ -87,23 +87,3 @@ func TestBuildWireWorkflow_SubbotNodeProjection(t *testing.T) {
 		}
 	}
 }
-
-func TestBuildWireWorkflow_ResolvesRelativeFilePathFromRunWorkDir(t *testing.T) {
-	dir := t.TempDir()
-	path := filepath.Join(dir, "parent.bot")
-	if err := os.WriteFile(path, []byte(subbotExportSrc), 0o644); err != nil {
-		t.Fatalf("write parent bot: %v", err)
-	}
-
-	wire, err := buildWireWorkflowFromRun(&store.Run{
-		ID:       "relative-source",
-		FilePath: "parent.bot",
-		WorkDir:  dir,
-	}, nil)
-	if err != nil {
-		t.Fatalf("buildWireWorkflowFromRun: %v", err)
-	}
-	if wire.Name != "parent" {
-		t.Fatalf("workflow name = %q, want parent", wire.Name)
-	}
-}

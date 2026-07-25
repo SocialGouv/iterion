@@ -36,12 +36,6 @@ import {
   PIPELINE_TASK_TITLE_MAX_LENGTH,
 } from "./taskTitle";
 
-import {
-  compactPipelineTaskTitle,
-  derivePipelineTaskTitle,
-  PIPELINE_TASK_TITLE_MAX_LENGTH,
-} from "./taskTitle";
-
 interface Props {
   open: boolean;
   onOpenChange: (open: boolean) => void;

@@ -149,7 +149,6 @@ export default function PipelineBoardView() {
   const detailCard = liveSelected ?? selected;
   const detailStale = selected !== null && liveSelected === null;
 
-  const textFiltered = filterPipelineCards(board.cards, filters);
   const filterOptions = collectFilterOptions(board.cards);
   // ONE filtered set: the text/label/kind chips AND the repo scope. The
   // lifecycle chips (Opened/Closed tabs) are applied further down, inside

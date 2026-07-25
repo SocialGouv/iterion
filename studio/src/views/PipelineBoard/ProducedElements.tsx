@@ -25,8 +25,8 @@ import {
   type RunFile,
   type RunFilesMode,
 } from "@/api/runs";
-import { Badge, Button, EmptyState, IconButton, Spinner } from "@/components/ui";
-import { usePreview } from "@/components/Runs/usePreview";
+import { Badge, Button, Dialog, EmptyState, IconButton, Spinner } from "@/components/ui";
+import { usePreview, type PreviewState } from "@/components/Runs/usePreview";
 import { formatBytes, formatRelative } from "@/lib/format";
 
 import { producedKindLabel, type ProducedFileKind } from "./fileKind";
@@ -460,5 +460,62 @@ function ProducedRow({
   );
 }
 
+// PreviewBody renders an inline preview for the fetched artifact: images,
+// audio, and video play in-place; text shows in a <pre>; anything else falls
+// back to the Download action in the dialog footer. The media branch keys on
+// the response Content-Type first, falling back to the extension-derived
+// `kind` — so a store serving application/octet-stream for a .wav/.mp4 still
+// gets a player (the browser sniffs the payload).
+function PreviewBody({ preview, kind }: { preview: PreviewState; kind: ProducedFileKind }) {
+  if (preview.loading) {
+    return (
+      <div className="flex h-48 items-center justify-center gap-2 text-xs text-fg-subtle">
+        <Spinner /> Loading preview…
+      </div>
+    );
+  }
+  if (preview.error) {
+    return <div className="text-xs text-danger-fg">Failed to load: {preview.error}</div>;
+  }
+  if (preview.textBody !== null) {
+    return (
+      <pre className="max-h-[70vh] overflow-auto whitespace-pre-wrap break-words rounded bg-surface-0 p-3 font-mono text-xs">
+        {preview.textBody}
+      </pre>
+    );
+  }
+  if (preview.blobURL) {
+    if (preview.contentType.startsWith("image/") || kind === "image") {
+      return (
+        <div className="flex max-h-[70vh] items-center justify-center overflow-auto rounded bg-surface-0 p-3">
+          <img src={preview.blobURL} alt={preview.path} className="max-w-full" />
+        </div>
+      );
+    }
+    if (preview.contentType.startsWith("audio/") || kind === "audio") {
+      return (
+        <div className="flex items-center justify-center rounded bg-surface-0 p-6">
+          <audio controls autoPlay src={preview.blobURL} className="w-full">
+            Your browser cannot play this audio file.
+          </audio>
+        </div>
+      );
+    }
+    if (preview.contentType.startsWith("video/") || kind === "video") {
+      return (
+        <div className="flex items-center justify-center rounded bg-surface-0 p-3">
+          <video controls src={preview.blobURL} className="max-h-[70vh] max-w-full">
+            Your browser cannot play this video file.
+          </video>
+        </div>
+      );
+    }
+  }
+  return (
+    <div className="py-6 text-center text-xs text-fg-subtle">
+      Preview not available for this file type. Use Download to save it.
+    </div>
+  );
+}
 
 export default ProducedElements;

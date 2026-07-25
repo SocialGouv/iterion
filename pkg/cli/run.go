@@ -167,6 +167,7 @@ func RunRun(ctx context.Context, opts RunOptions, p *Printer) error {
 			return fmt.Errorf("mint run id: %w", idErr)
 		}
 	}
+
 	telemetry, err := startRunTelemetry(runID, logger)
 	if err != nil {
 		return err
@@ -250,12 +251,6 @@ func RunRun(ctx context.Context, opts RunOptions, p *Printer) error {
 	if telemetry.prometheus != nil {
 		exporterHooks = telemetry.prometheus
 	}
-	// This boundary must precede executor construction and MCP health checks:
-	// a stdio MCP Ping starts the long-lived server before Engine.Run creates
-	// its worktree. Persisting this earlier timestamp keeps that child inside
-	// the cleanup process census even when procfs denies link inspection.
-	worktreeAuthoritySince := time.Now().UTC()
-	engineOpts = append(engineOpts, runtime.WithWorktreeAuthoritySince(worktreeAuthoritySince))
 	executor, err := buildRunExecutor(opts, wf, s, runID, storeDir, logger, exporterHooks)
 	if err != nil {
 		return err
@@ -528,7 +523,6 @@ func subbotRunnerForCLI(parentPath, storeDir string, s store.RunStore, logger *i
 		// parked below re-attaches instead of spawning fresh.
 		runview.RecordSubbotChild(ctx, s, req, childRunID, logger)
 
-		childAuthoritySince := time.Now().UTC()
 		childExec, err := buildRunExecutor(opts, childWf, s, childRunID, storeDir, logger, nil)
 		if err != nil {
 			return nil, err
@@ -550,7 +544,6 @@ func subbotRunnerForCLI(parentPath, storeDir string, s store.RunStore, logger *i
 			runtime.WithFilePath(childPath),
 			runtime.WithParentRunID(req.ParentRunID),
 			runtime.WithParentNodeID(req.NodeID),
-			runtime.WithWorktreeAuthoritySince(childAuthoritySince),
 			// Wire the child engine with its own recursive runner so a child
 			// .bot that itself declares subbot nodes can run them (sources
 			// resolve relative to the CHILD's dir). Without this, nested
@@ -575,27 +568,7 @@ func subbotRunnerForCLI(parentPath, storeDir string, s store.RunStore, logger *i
 		// to the parent. There is thus nothing to register — a Manager here
 		// would have no caller. Per-child control is a studio-only capability.
 		childCtx := context.WithValue(ctx, subbotDepthKey{}, depth+1)
-		// Hold the child's own lock for the complete in-process execution.
-		// This closes the CreateRun -> parent-link persistence window against
-		// a Studio/CLI orphan reconciler sharing the same store. Unlock before
-		// AwaitSubbotTerminal so a paused child can be resumed externally.
-		childLock, err := s.LockRun(childCtx, childRunID)
-		if err != nil {
-			return nil, fmt.Errorf("lock subbot child run %s: %w", childRunID, err)
-		}
-		lockHeld := true
-		defer func() {
-			if lockHeld {
-				_ = childLock.Unlock()
-			}
-		}()
-		runErr := childEng.Run(childCtx, childRunID, req.Vars)
-		unlockErr := childLock.Unlock()
-		lockHeld = false
-		if unlockErr != nil {
-			return nil, fmt.Errorf("unlock subbot child run %s: %w", childRunID, unlockErr)
-		}
-		if runErr != nil {
+		if err := childEng.Run(childCtx, childRunID, req.Vars); err != nil {
 			// A human gate inside the child pauses the CHILD run (its doc is
 			// paused_waiting_human with a checkpoint + interaction); that is
 			// not a parent failure. Park this subbot node until the operator

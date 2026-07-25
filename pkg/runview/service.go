@@ -165,12 +165,6 @@ type LaunchSpec struct {
 	// worktree so `${PROJECT_DIR}` in bot var defaults expands to that
 	// worktree, not the daemon's cwd. Empty inherits WithWorkDir.
 	WorkDir string
-	// WorktreeAuthoritySince is an optional trusted process-census boundary
-	// captured by an upstream launcher before any run-scoped hooks or
-	// subprocesses. The dispatcher supplies its external workspace-owner
-	// timestamp; ordinary callers leave it empty and the service captures one
-	// immediately before executor construction.
-	WorktreeAuthoritySince time.Time
 	// ExtraObservers are per-launch event observers fired on EVERY run
 	// event — both the engine-level events runtime.WithEventObserver sees
 	// AND the high-frequency tool_started/tool_called events the backend

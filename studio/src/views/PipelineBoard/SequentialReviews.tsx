@@ -3,18 +3,7 @@ import { Link } from "wouter";
 
 import type { PipelineBoardCard } from "@/api/pipelineBoards";
 import HumanPromptForm from "@/components/Runs/conversation/HumanPromptForm";
-import ReviewMergeCard from "@/components/Runs/conversation/ReviewMergeCard";
-import { Button, InlineBanner } from "@/components/ui";
-import type { HumanQuestionMessage } from "@/lib/runChat/types";
-
-import {
-  clampReviewIndex,
-  pendingReviewVersionKey,
-  sortPendingReviewsChronologically,
-} from "./reviewQueue";
-import { ReviewInstructions } from "./ReviewInstructions";
-import { ReviewMediaRefs } from "./ReviewMediaRefs";
-import { ReviewWorkspaceFiles } from "./ReviewWorkspaceFiles";
+import { Badge, Button, InlineBanner } from "@/components/ui";
 
 import {
   clampReviewIndex,
@@ -32,9 +21,8 @@ interface Props {
 
 // SequentialReviews steps through a card's pending human interactions one at a
 // time. Each pause can live in the root run or any descendant; the answer is
-// POSTed to the exact run_id/node_id the review names. Ordinary pauses reuse
-// HumanPromptForm; guided `interaction: review` pauses reuse ReviewMergeCard
-// so their reserved dialogue/merge actions stay identical to the run console.
+// POSTed to the exact run_id/node_id the review names (via HumanPromptForm's
+// existing resume path — not reimplemented here).
 export function SequentialReviews({ card, onResolved }: Props) {
   const reviews = useMemo(
     () => sortPendingReviewsChronologically(card.pending_reviews ?? []),
@@ -74,16 +62,17 @@ export function SequentialReviews({ card, onResolved }: Props) {
   };
 
   return (
-    <div className="max-w-5xl space-y-4 rounded-lg border border-warning/50 bg-warning-soft/40 p-4">
+    <div className="space-y-2 rounded-md border border-warning/40 bg-warning-soft p-2">
       <div className="flex items-center gap-2">
-        <span className="text-body font-medium uppercase tracking-wide text-warning-fg">
+        <span className="text-micro font-medium uppercase tracking-wide text-warning-fg">
           Awaiting input
         </span>
         {total > 1 && (
-          <span className="text-body text-fg-subtle">
+          <span className="text-micro text-fg-subtle">
             Review {current + 1} of {total}
           </span>
         )}
+        {review.depth > 0 && <Badge variant="neutral">child · depth {review.depth}</Badge>}
         {total > 1 && (
           <div className="ml-auto flex items-center gap-1">
             <Button
@@ -108,38 +97,27 @@ export function SequentialReviews({ card, onResolved }: Props) {
         )}
       </div>
 
-      <ReviewWorkspaceFiles
-        key={`workspace-files:${reviewKey}`}
-        questions={review.questions}
-        runId={review.run_id}
-        instructions={review.instructions}
-      />
-
-      {(review.media?.length ?? 0) > 0 && (
-        <ReviewMediaRefs
-          key={`media:${reviewKey}`}
-          media={review.media ?? []}
-          fallbackRunId={review.run_id}
-        />
+      {(review.workflow_name || review.node_id) && (
+        <div className="flex min-w-0 flex-wrap items-center gap-1 text-caption text-fg-subtle">
+          {review.run_id && (
+            <Link
+              href={`/runs/${encodeURIComponent(review.run_id)}`}
+              className="font-mono text-accent-text hover:underline"
+              title={`Open run ${review.run_id}`}
+            >
+              {review.run_id.slice(0, 12)}
+            </Link>
+          )}
+          {review.workflow_name && <span className="truncate">{review.workflow_name}</span>}
+          {review.node_id && (
+            <code className="truncate" title={review.node_id}>
+              {review.node_id}
+            </code>
+          )}
+        </div>
       )}
 
-      {!guidedMessage && (review.instructions || hasAIReviewContent) && (
-        <ReviewInstructions
-          instructions={review.instructions ?? ""}
-          reviewBrief={review.review_brief}
-          questions={review.questions}
-        />
-      )}
-
-      {review.run_id && review.node_id && guidedMessage ? (
-        <ReviewMergeCard
-          key={reviewKey}
-          runId={review.run_id}
-          message={guidedMessage}
-          sourceOverride={null}
-          onResumed={handleResolved}
-        />
-      ) : review.run_id && review.node_id ? (
+      {review.run_id && review.node_id ? (
         <HumanPromptForm
           key={reviewKey}
           runId={review.run_id}
@@ -153,32 +131,6 @@ export function SequentialReviews({ card, onResolved }: Props) {
           This pause has no node identifier, so it cannot be answered inline. Open the run
           console to inspect it.
         </InlineBanner>
-      )}
-
-      {(review.workflow_name || review.node_id || review.run_id) && (
-        <details className="border-t border-border-subtle pt-3 text-body text-fg-subtle">
-          <summary className="cursor-pointer font-medium hover:text-fg-default">
-            Technical details
-          </summary>
-          <div className="mt-2 flex min-w-0 flex-wrap items-center gap-2">
-            {review.run_id && (
-              <Link
-                href={`/runs/${encodeURIComponent(review.run_id)}`}
-                className="font-mono text-accent-text hover:underline"
-                title={`Open run ${review.run_id}`}
-              >
-                Run {review.run_id.slice(0, 12)}
-              </Link>
-            )}
-            {review.workflow_name && <span className="truncate">{review.workflow_name}</span>}
-            {review.node_id && (
-              <code className="truncate" title={review.node_id}>
-                {review.node_id}
-              </code>
-            )}
-            {review.depth > 0 && <span>child · depth {review.depth}</span>}
-          </div>
-        </details>
       )}
     </div>
   );

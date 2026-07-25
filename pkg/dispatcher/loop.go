@@ -382,13 +382,13 @@ func (c *Dispatcher) dispatch(ctx context.Context, iss tracker.Issue) {
 		return
 	}
 
-	runID, resumeFromRunID, workspaceGeneration, attempt, ok := c.resolveRunID(ctx, iss)
+	runID, resumeFromRunID, attempt, ok := c.resolveRunID(ctx, iss)
 	if !ok {
 		return
 	}
 
 	runCtx, cancel := context.WithCancel(ctx)
-	entry := c.buildRunningEntry(iss, runID, workspaceGeneration, attempt, cancel)
+	entry := c.buildRunningEntry(iss, runID, attempt, cancel)
 
 	spec := c.buildSpec(cfg, iss, runID, entry.WorkspacePath, attempt, entry)
 	spec.ResumeFromRunID = resumeFromRunID
@@ -404,14 +404,13 @@ func (c *Dispatcher) dispatch(ctx context.Context, iss tracker.Issue) {
 	// the same goroutine. The actor returns here immediately, staying
 	// responsive while the (potentially slow) tracker transition runs.
 	c.launchDispatchSetup(dispatchSetupPlan{
-		issueID:             iss.ID,
-		workspaceGeneration: workspaceGeneration,
-		identifier:          iss.Identifier,
-		sourceState:         iss.WorkflowState,
-		runningTarget:       cfg.Agent.RunningState,
-		runCtx:              runCtx,
-		entry:               entry,
-		spec:                spec,
+		issueID:       iss.ID,
+		identifier:    iss.Identifier,
+		sourceState:   iss.WorkflowState,
+		runningTarget: cfg.Agent.RunningState,
+		runCtx:        runCtx,
+		entry:         entry,
+		spec:          spec,
 	})
 }
 
@@ -529,11 +528,7 @@ func (c *Dispatcher) applyBotLabelBestEffort(ctx context.Context, id, label stri
 //     checkpoint instead of starting fresh (passed through as
 //     DispatchSpec.ResumeFromRunID)
 //   - attempt:         the retry attempt number (0 for the first try)
-func (c *Dispatcher) resolveRunID(ctx context.Context, iss tracker.Issue) (
-	runID, resumeFromRunID, workspaceGeneration string,
-	attempt int,
-	ok bool,
-) {
+func (c *Dispatcher) resolveRunID(ctx context.Context, iss tracker.Issue) (runID, resumeFromRunID string, attempt int, ok bool) {
 	// hadRetryEntry records whether this dispatch is servicing a
 	// scheduled retry (an in-memory retryEntry existed). It gates the
 	// cross-restart fallback below: a retry entry carries a DELIBERATE
@@ -552,7 +547,6 @@ func (c *Dispatcher) resolveRunID(ctx context.Context, iss tracker.Issue) (
 		// every upstream node. A clean retry (PrevRunID empty) falls
 		// through to GenerateRunID below.
 		resumeFromRunID = cur.PrevRunID
-		workspaceGeneration = cur.WorkspaceGeneration
 		// The retry entry has done its job — surrender it now so the
 		// new runningEntry is the sole bookkeeping. (cmdRetryDue
 		// already stopped the timer when it fired.)
@@ -587,10 +581,7 @@ func (c *Dispatcher) resolveRunID(ctx context.Context, iss tracker.Issue) (
 		}
 	}
 	if resumeFromRunID != "" {
-		if workspaceGeneration == "" {
-			workspaceGeneration = resumeFromRunID
-		}
-		return resumeFromRunID, resumeFromRunID, workspaceGeneration, attempt, true
+		return resumeFromRunID, resumeFromRunID, attempt, true
 	}
 	freshID, err := store.GenerateRunID()
 	if err != nil {
@@ -599,12 +590,9 @@ func (c *Dispatcher) resolveRunID(ctx context.Context, iss tracker.Issue) (
 		// post-claim setup I/O runs off the actor below, only after the
 		// entry is in place) — just release the claim. See ADR-028 Step 4.
 		_ = c.tracker.Release(ctx, iss.ID, c.hostMarker)
-		return "", "", "", attempt, false
+		return "", "", attempt, false
 	}
-	if workspaceGeneration == "" {
-		workspaceGeneration = freshID
-	}
-	return freshID, "", workspaceGeneration, attempt, true
+	return freshID, "", attempt, true
 }
 
 // buildRunningEntry constructs and registers the runningEntry that
@@ -619,32 +607,25 @@ func (c *Dispatcher) resolveRunID(ctx context.Context, iss tracker.Issue) (
 // isClaimed/the dispatch loop skip the issue. The off-actor setup
 // worker fills TransitionedFromState via cmdDispatchSetupDone once the
 // in-progress transition has run.
-func (c *Dispatcher) buildRunningEntry(
-	iss tracker.Issue,
-	runID, workspaceGeneration string,
-	attempt int,
-	cancel context.CancelFunc,
-) *runningEntry {
-	// The workspace path is deterministic from the issue + run generation
-	// (Workspaces.PathForRun == the directory CreateForRun materialises), so it
-	// is known here on the actor even though mkdir runs off-actor. Never reusing
-	// a completed run's absolute path prevents a stale background writer from
-	// contaminating a later dispatch of the same issue.
-	wsPath := c.workspaces.PathForRun(iss.ID, workspaceGeneration)
+func (c *Dispatcher) buildRunningEntry(iss tracker.Issue, runID string, attempt int, cancel context.CancelFunc) *runningEntry {
+	// The per-issue workspace path is deterministic from the issue ID
+	// (Workspaces.Path == the directory Create materialises), so it is known
+	// here on the actor for the spec/env even though the actual mkdir +
+	// in-progress transition run off-actor below. See ADR-028 Step 4.
+	wsPath := c.workspaces.Path(iss.ID)
 	now := time.Now().UTC()
 	entry := &runningEntry{
-		IssueID:             iss.ID,
-		Identifier:          iss.Identifier,
-		RunID:               runID,
-		WorkspaceGeneration: workspaceGeneration,
-		WorkflowState:       iss.WorkflowState,
-		WorkspacePath:       wsPath,
-		StartedAt:           now,
-		LastEventAt:         now,
-		Attempt:             attempt,
-		Cancel:              cancel,
-		issueSnapshot:       iss,
-		setupPending:        true,
+		IssueID:       iss.ID,
+		Identifier:    iss.Identifier,
+		RunID:         runID,
+		WorkflowState: iss.WorkflowState,
+		WorkspacePath: wsPath,
+		StartedAt:     now,
+		LastEventAt:   now,
+		Attempt:       attempt,
+		Cancel:        cancel,
+		issueSnapshot: iss,
+		setupPending:  true,
 	}
 	entry.touchEvent(time.Now())
 	c.state.running[iss.ID] = entry
@@ -673,14 +654,13 @@ func (c *Dispatcher) buildRunningEntry(
 // split the decision. entry/spec are carried through solely to hand to
 // runWorker AFTER setup; the setup portion never touches them.
 type dispatchSetupPlan struct {
-	issueID             string
-	workspaceGeneration string
-	identifier          string
-	sourceState         string // iss.WorkflowState at claim time (the transition source)
-	runningTarget       string // cfg.Agent.RunningState snapshot at claim time
-	runCtx              context.Context
-	entry               *runningEntry
-	spec                DispatchSpec
+	issueID       string
+	identifier    string
+	sourceState   string // iss.WorkflowState at claim time (the transition source)
+	runningTarget string // cfg.Agent.RunningState snapshot at claim time
+	runCtx        context.Context
+	entry         *runningEntry
+	spec          DispatchSpec
 }
 
 // launchDispatchSetup runs the post-claim dispatch setup OFF the actor and,
@@ -739,7 +719,7 @@ func (c *Dispatcher) runDispatchSetup(plan dispatchSetupPlan) (created bool, ok 
 		}
 	}
 
-	_, created, err := c.workspaces.CreateForRun(plan.issueID, plan.workspaceGeneration)
+	_, created, err := c.workspaces.Create(plan.issueID)
 	if err != nil {
 		c.logger.Warn("dispatcher: workspace create %s: %v", plan.identifier, err)
 		// Carry transitionedFrom so the actor records it on the entry BEFORE
@@ -916,17 +896,6 @@ func (c *Dispatcher) recordDispatchSkip(iss tracker.Issue, reason string) {
 // a late-finishing worker doesn't leak a goroutine blocked forever on
 // a full channel.
 func (c *Dispatcher) runWorker(ctx context.Context, entry *runningEntry, created bool, spec DispatchSpec) {
-	// The ownership marker is created before after_create/before_run. Reuse its
-	// external timestamp for the engine's nested worktree so a background
-	// process spawned by either hook cannot predate and evade the runtime
-	// process census. Missing/corrupt authority fails before any hook starts.
-	workspaceGeneration := entryWorkspaceGeneration(entry)
-	authoritySince, err := c.workspaces.AuthoritySinceForRun(entry.IssueID, workspaceGeneration)
-	if err != nil {
-		c.postFinished(entry.IssueID, fmt.Errorf("workspace process authority: %w", err))
-		return
-	}
-	spec.WorktreeAuthoritySince = authoritySince
 	env := c.dispatchEnv(entry, spec)
 
 	// Snapshot the hooks struct from the atomic config pointer once,
@@ -956,17 +925,16 @@ func (c *Dispatcher) runWorker(ctx context.Context, entry *runningEntry, created
 	}
 
 	// On a clean finish, tear down the workspace per the persist policy —
-	// first proving the persisted run safely accounts for its exact HEAD,
-	// then running before_remove, re-proving the state, and deregistering
-	// the linked worktree through runtime's lock-protected cleanup. Done
-	// here on the worker goroutine (never the actor, where a shell hook
-	// would freeze polling/dispatch/snapshots) and BEFORE
+	// running before_remove first so an operator-configured hook (the
+	// default `git worktree remove`, see BuildDefaultConfig) can
+	// deregister the workspace from the host repo BEFORE the directory is
+	// deleted. Done here on the worker goroutine (never the actor, where a
+	// shell hook would freeze polling/dispatch/snapshots) and BEFORE
 	// postFinished, so teardown completes before the actor releases the
-	// claim and the issue becomes re-dispatchable. Failed/cancelled attempts
-	// keep their logical workspace generation for resume/fresh retry; a
-	// completed logical dispatch retires that path permanently. The operator
-	// can still inspect failed output, matching finishRun's cancel/default
-	// branches.
+	// claim and the issue becomes re-dispatchable — no Create/Remove race
+	// on the shared per-issue workspace path. Failed/cancelled dispatches
+	// keep the workspace (retry resumes from it / the operator inspects
+	// it), matching finishRun's cancel + default branches.
 	if dispatchErr == nil {
 		c.cleanupWorkspace(entry, hooks.BeforeRemove, env)
 	}

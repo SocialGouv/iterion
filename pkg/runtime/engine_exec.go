@@ -109,12 +109,15 @@ func (e *Engine) execLoopDispatchSpecial(ctx context.Context, rs *runState, curr
 		if emErr := e.emitTerminalNodeEvents(rs, currentNodeID); emErr != nil {
 			return true, true, "", emErr
 		}
-		// Reaching DoneNode is not durably successful until the terminal status
-		// is persisted. Returning success here after a failed status write lets
-		// callers report completion while the run remains "running"; on a
-		// worktree run it also creates an unsafe disagreement with finalization.
-		if usErr := e.store.UpdateRunStatus(rs.ctx, rs.runID, store.RunStatusFinished, ""); usErr != nil {
-			return true, true, "", fmt.Errorf("runtime: persist run %s as finished: %w", rs.runID, usErr)
+		// Best-effort status flip — the run logically succeeded the
+		// moment we reached DoneNode, so a transient store-side
+		// failure on the final status write must not flip a
+		// successful run to "failed" (which would also skip
+		// worktree finalize and orphan any commits the run
+		// produced). Log and continue; run_finished still fires
+		// below so observers see the terminal event.
+		if usErr := e.store.UpdateRunStatus(rs.ctx, rs.runID, store.RunStatusFinished, ""); usErr != nil && e.logger != nil {
+			e.logger.Warn("runtime: failed to persist run %s as finished: %v (run reached DoneNode — treating as success)", rs.runID, usErr)
 		}
 		return true, true, "", e.emit(rs.ctx, rs.runID, store.EventRunFinished, "", nil)
 
@@ -665,8 +668,6 @@ func (e *Engine) selectEdgeRS(rs *runState, fromNodeID string, output map[string
 		}
 	}
 
-	e.setIncomingEdge(rs, selected)
-
 	data := map[string]any{
 		"from": selected.From,
 		"to":   selected.To,
@@ -687,22 +688,4 @@ func (e *Engine) selectEdgeRS(rs *runState, fromNodeID string, output map[string
 	}
 
 	return selected.To, nil
-}
-
-// setIncomingEdge records the exact edge that will feed the next main-path
-// node. The pointer is used during this process; the stable 1-based workflow
-// index is checkpointed so a failed node can rebuild the same input on resume.
-// A nil edge denotes a multi-edge convergence (or an unknown legacy path).
-func (e *Engine) setIncomingEdge(rs *runState, selected *ir.Edge) {
-	rs.incomingEdge = selected
-	rs.incomingEdgeIndex = 0
-	if selected == nil {
-		return
-	}
-	for i, edge := range e.workflow.Edges {
-		if edge == selected {
-			rs.incomingEdgeIndex = i + 1
-			return
-		}
-	}
 }

@@ -85,10 +85,6 @@ func (c *Dispatcher) scheduleRetry(issueID string, prev *runningEntry, runErr er
 		errStr = runErr.Error()
 	}
 	prevRunID := c.resumableRunID(prev.RunID)
-	workspaceGeneration := prev.WorkspaceGeneration
-	if workspaceGeneration == "" {
-		workspaceGeneration = prev.RunID
-	}
 	// The prior run may be resumable by status (failed_resumable /
 	// cancelled / paused_operator), but if resume already FAILED because
 	// the bot's workflow source changed since that run started, resuming
@@ -103,19 +99,15 @@ func (c *Dispatcher) scheduleRetry(issueID string, prev *runningEntry, runErr er
 			c.logger.Info("dispatcher: %s prior run %s not resumable (bot source changed) — retrying from scratch", prev.Identifier, prevRunID)
 		}
 		prevRunID = ""
-		// The workflow source changed, so old incremental files are not a
-		// trustworthy basis for the clean restart either.
-		workspaceGeneration = ""
 	}
 	c.state.retries[issueID] = &retryEntry{
-		IssueID:             issueID,
-		Identifier:          prev.Identifier,
-		Attempt:             attempt,
-		DueAt:               due,
-		LastError:           errStr,
-		Timer:               timer,
-		PrevRunID:           prevRunID,
-		WorkspaceGeneration: workspaceGeneration,
+		IssueID:    issueID,
+		Identifier: prev.Identifier,
+		Attempt:    attempt,
+		DueAt:      due,
+		LastError:  errStr,
+		Timer:      timer,
+		PrevRunID:  prevRunID,
 	}
 	switch {
 	case parked:

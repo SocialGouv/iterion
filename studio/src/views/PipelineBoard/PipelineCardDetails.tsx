@@ -18,20 +18,6 @@ import { ImagePreviewDialog } from "./ImagePreview";
 import { ProducedElements } from "./ProducedElements";
 import { SequentialReviews } from "./SequentialReviews";
 
-// Overlay drawer width is an explicit persisted pixel width with a drag
-// handle on its left edge (same pattern as the run console's LeftPanel).
-const DRAWER_WIDTH_KEY = "pipeline-card-details.width";
-const DRAWER_WIDTH_DEFAULT = 448; // 28rem, the historical fixed width
-const DRAWER_WIDTH_MIN = 320;
-const DRAWER_WIDTH_MAX = 960;
-
-// clampDrawerWidth keeps a persisted/dragged width inside sane bounds so a
-// corrupted value can't strand the drawer off-screen or hair-thin.
-function clampDrawerWidth(w: number): number {
-  if (!Number.isFinite(w)) return DRAWER_WIDTH_DEFAULT;
-  return Math.min(DRAWER_WIDTH_MAX, Math.max(DRAWER_WIDTH_MIN, w));
-}
-
 const KNOWN_STATUSES = new Set<UnifiedStatus>([
   "running",
   "paused_waiting_human",

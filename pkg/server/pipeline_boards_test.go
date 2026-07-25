@@ -216,31 +216,6 @@ func TestPipelineBoardFoldsDescendantsAndCollectsReviews(t *testing.T) {
 			NodeID:               "child_approval",
 			InteractionID:        "int-child",
 			InteractionQuestions: map[string]any{"approved": "Ship it?"},
-			InteractionReviewBrief: &store.HumanReviewBrief{
-				Version: store.HumanReviewBriefVersion,
-				Source:  store.HumanReviewBriefSourceAI,
-				Points: []string{
-					"Check that the final cut tells the intended story.",
-					"Confirm that the pacing remains clear throughout.",
-				},
-			},
-			InteractionMedia: []store.ReviewMediaRef{
-				{
-					RunID: "run-child", Path: "renders/candidate.mp4", Kind: "video",
-					MIME: "video/mp4", Size: 1234, Caption: "Validate the final cut",
-				},
-			},
-			InteractionReview: &store.ReviewGateState{
-				Turns: []store.InteractionTurn{
-					{Role: "companion", Content: "Play the final cut end to end."},
-				},
-				Posture:       "human_required",
-				MergeStrategy: "squash",
-				MergeInto:     "main",
-				MaxTurns:      4,
-				ReviewURL:     "https://review.example.test/candidate",
-				Verdict:       map[string]any{"decision": "approved", "confidence": "high"},
-			},
 		}
 	})
 	if err := env.board.SetLastRun(issue.ID, "run-root", ""); err != nil {
@@ -279,26 +254,6 @@ func TestPipelineBoardFoldsDescendantsAndCollectsReviews(t *testing.T) {
 	}
 	if pr.InteractionID != "int-child" || pr.Questions["approved"] != "Ship it?" {
 		t.Errorf("pending review interaction = %+v", pr)
-	}
-	if pr.ReviewBrief == nil ||
-		pr.ReviewBrief.Version != store.HumanReviewBriefVersion ||
-		pr.ReviewBrief.Source != store.HumanReviewBriefSourceAI ||
-		len(pr.ReviewBrief.Points) != 2 ||
-		pr.ReviewBrief.Points[0] != "Check that the final cut tells the intended story." {
-		t.Errorf("pending review brief = %+v", pr.ReviewBrief)
-	}
-	if len(pr.Media) != 1 || pr.Media[0].Path != "renders/candidate.mp4" ||
-		pr.Media[0].RunID != "run-child" || pr.Media[0].Kind != "video" ||
-		pr.Media[0].Caption != "Validate the final cut" {
-		t.Errorf("pending review media = %+v", pr.Media)
-	}
-	if pr.Review == nil || len(pr.Review.Turns) != 1 ||
-		pr.Review.Turns[0].Content != "Play the final cut end to end." ||
-		pr.Review.Posture != "human_required" || pr.Review.MergeStrategy != "squash" ||
-		pr.Review.MergeInto != "main" || pr.Review.MaxTurns != 4 ||
-		pr.Review.ReviewURL != "https://review.example.test/candidate" ||
-		pr.Review.Verdict["decision"] != "approved" {
-		t.Errorf("pending guided review = %+v", pr.Review)
 	}
 	// The whole tree's run ids surface so the studio can aggregate a sub-bot's
 	// produced elements onto the root card (root first, then descendants).

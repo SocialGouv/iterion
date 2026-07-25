@@ -3,7 +3,6 @@ import { Checkbox } from "@/components/ui/Checkbox";
 import { Input } from "@/components/ui/Input";
 import { Select } from "@/components/ui/Select";
 
-import { BotFilterSelect } from "@/components/shared/BotFilterSelect";
 import { LabelFilter } from "@/components/shared/LabelFilterPopover";
 
 import {
@@ -104,12 +103,20 @@ export function BoardFilters({
         </div>
       )}
       {allBots.length > 0 && (
-        <BotFilterSelect
-          value={botFilter}
-          allBots={allBots}
-          onChange={onBotChange}
-          ariaLabel="Filter by bot"
-        />
+        <div className="w-auto">
+          <Select
+            value={botFilter}
+            onChange={(e) => onBotChange(e.target.value)}
+            aria-label="Filter by bot"
+          >
+            <option value="">All bots</option>
+            {allBots.map((b) => (
+              <option key={b} value={b}>
+                {b}
+              </option>
+            ))}
+          </Select>
+        </div>
       )}
       {allLabels.length > 0 && (
         <LabelFilter

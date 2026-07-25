@@ -929,11 +929,6 @@ func TestCheckpointInteractionQuestionsRoundTrip(t *testing.T) {
 		ArtifactVersions:     map[string]int{},
 		Vars:                 map[string]any{"repo": "iterion"},
 		InteractionQuestions: questions,
-		InteractionReviewBrief: &HumanReviewBrief{
-			Version: HumanReviewBriefVersion,
-			Source:  HumanReviewBriefSourceAI,
-			Points:  []string{"Check the release title.", "Confirm the approval choice."},
-		},
 	}
 
 	if err := s.PauseRun(context.Background(), "run-cp", cp); err != nil {
@@ -952,12 +947,6 @@ func TestCheckpointInteractionQuestionsRoundTrip(t *testing.T) {
 	}
 	if r.Checkpoint.InteractionQuestions["approve"] != "Do you approve?" {
 		t.Errorf("InteractionQuestions[approve] = %v", r.Checkpoint.InteractionQuestions["approve"])
-	}
-	brief := r.Checkpoint.InteractionReviewBrief
-	if brief == nil || brief.Version != HumanReviewBriefVersion ||
-		brief.Source != HumanReviewBriefSourceAI ||
-		len(brief.Points) != 2 || brief.Points[1] != "Confirm the approval choice." {
-		t.Errorf("InteractionReviewBrief = %+v", brief)
 	}
 }
 

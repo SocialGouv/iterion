@@ -99,7 +99,6 @@ type Engine struct {
 	forceResume              bool                     // when true, skip workflow hash check on resume
 	workDir                  string                   // working directory for subprocesses + PROJECT_DIR expansion; defaults to os.Getwd() at Run() time
 	workDirDelegated         bool                     // true when workDir was handed to the engine explicitly (WithWorkDir) — the gate for adopting a linked-worktree workspace as a managed baseline; a defaulted CWD never grants finalization authority
-	worktreeAuthoritySince   time.Time                // trusted lower bound captured by the launcher before any run-scoped subprocess can start; setupWorktree falls back to its own pre-create timestamp
 	repoRoot                 string                   // source-of-truth repo root (project_root memory + ${PROJECT_MEMORY_DIR} expansion); empty until runRun resolves it
 	containerWorkspace       string                   // when sandbox is active, the in-container path the host workDir is bind-mounted to (e.g. "/workspace"); used to remap ${PROJECT_DIR} so prompts and tool nodes see paths the in-container processes can actually open
 	sandboxOverride          string                   // CLI/Launch-level sandbox mode override; "" means "no override" (workflow + global default win); set via WithSandboxOverride

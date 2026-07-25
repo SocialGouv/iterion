@@ -269,12 +269,11 @@ func AsParentedRunCreator(s RunStore) ParentedRunCreator {
 // READ source differ: EnsureRunFilesDir returns a runner-local scratch
 // dir (bind-mounted into the sandbox on the runner pod), while
 // ListRunFiles/OpenRunFile read from the S3 blob backend the server pod
-// serves. The runner bridges the two when the engine returns via the optional
-// RunFilesUploader seam (UploadRunFiles walks the scratch dir → S3). Review
-// media is additionally flushed immediately before its human pause becomes
-// visible, so an attached file is readable from the board even though general
-// run files are not streamed live. AsRunFilesStore returns nil for stores that
-// don't implement this interface — callers MUST nil-check.
+// serves. The runner bridges the two after the run via the optional
+// RunFilesUploader seam (UploadRunFiles walks the scratch dir → S3). So
+// cloud artifact files become visible at run completion, not streamed
+// live. AsRunFilesStore returns nil for stores that don't implement this
+// interface — callers MUST nil-check.
 type RunFilesStore interface {
 	// EnsureRunFilesDir creates the per-run files area if missing
 	// and returns its absolute path on the local filesystem. Called

@@ -4423,14 +4423,10 @@ export interface components {
             budget_iterations_used?: number;
             budget_tokens_used?: number;
             cost_usd_total?: number;
-            incoming_edge_index?: number;
             interaction_id: string;
-            interaction_instructions?: string;
-            interaction_media?: components["schemas"]["ReviewMediaRef"][];
             interaction_questions?: {
                 [key: string]: unknown;
             };
-            interaction_review?: components["schemas"]["ReviewGateState"];
             loop_counters: {
                 [key: string]: number;
             };
@@ -4581,16 +4577,6 @@ export interface components {
             /** Format: date-time */
             updated_at: string;
         };
-        InteractionTurn: {
-            /** Format: date-time */
-            at: string;
-            content?: string;
-            media?: components["schemas"]["ReviewMediaRef"][];
-            role: string;
-            verdict?: {
-                [key: string]: unknown;
-            };
-        };
         Issue: {
             assignee?: string;
             awaiting_input?: boolean;
@@ -4694,14 +4680,11 @@ export interface components {
         PipelineBoardPendingReview: {
             bot_id?: string;
             depth: number;
-            instructions?: string;
             interaction_id?: string;
-            media?: components["schemas"]["ReviewMediaRef"][];
             node_id?: string;
             questions?: {
                 [key: string]: unknown;
             };
-            review?: components["schemas"]["ReviewGateState"];
             run_id: string;
             /** Format: date-time */
             updated_at: string;
@@ -4731,25 +4714,6 @@ export interface components {
             full_name: string;
             private: boolean;
             web_url?: string;
-        };
-        ReviewGateState: {
-            max_turns?: number;
-            merge_into?: string;
-            merge_strategy?: string;
-            posture?: string;
-            review_url?: string;
-            turns?: components["schemas"]["InteractionTurn"][];
-            verdict?: {
-                [key: string]: unknown;
-            };
-        };
-        ReviewMediaRef: {
-            caption?: string;
-            kind: string;
-            mime?: string;
-            path: string;
-            run_id: string;
-            size?: number;
         };
         RunBudget: {
             max_cost_usd?: number;

@@ -115,8 +115,7 @@ const (
 	// loop — so it carries no seq and is observational only.
 	EventAlert EventType = "alert"
 	// EventRunInterrupted is emitted when the studio server drains in-flight
-	// runs during shutdown (SIGTERM, watchexec rebuild, etc), or when orphan
-	// reconciliation proves their owning process has vanished. The companion
+	// runs during shutdown (SIGTERM, watchexec rebuild, etc). The companion
 	// run.json status flips to failed_resumable so the next boot can offer
 	// one-click resume — distinct from EventRunCancelled (user-initiated).
 	EventRunInterrupted   EventType = "run_interrupted"

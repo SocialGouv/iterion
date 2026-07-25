@@ -53,9 +53,6 @@ func CommitUncommittedAndFinalize(
 	if strings.TrimSpace(message) == "" {
 		return fmt.Errorf("runtime: commit-uncommitted: commit message is required")
 	}
-	if ownershipErr := verifyFinalizationWorktreeOwnership(st, r); ownershipErr != nil {
-		return fmt.Errorf("runtime: commit-uncommitted: refusing worktree mutation: %w", ownershipErr)
-	}
 
 	clean, err := workdirIsClean(r.WorkDir)
 	if err != nil {

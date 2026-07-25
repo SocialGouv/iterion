@@ -96,21 +96,16 @@ func (s *state) isClaimed(issueID string) bool {
 // off-actor liveness signal is the separate atomic heartbeat pointer
 // below, which is intentionally shared with DispatchSpec.OnEvent.
 type runningEntry struct {
-	IssueID    string
-	Identifier string
-	RunID      string
-	// WorkspaceGeneration is stable across retries of one logical dispatch,
-	// even when a non-resumable engine failure requires a fresh RunID. A
-	// reopened/completed ticket gets a new generation and therefore a new
-	// absolute path.
-	WorkspaceGeneration string
-	WorkflowState       string
-	WorkspacePath       string
-	StartedAt           time.Time
-	LastEventAt         time.Time
-	LastEventName       string
-	Attempt             int
-	Cancel              context.CancelFunc
+	IssueID       string
+	Identifier    string
+	RunID         string
+	WorkflowState string
+	WorkspacePath string
+	StartedAt     time.Time
+	LastEventAt   time.Time
+	LastEventName string
+	Attempt       int
+	Cancel        context.CancelFunc
 
 	// CancelIssuedAt is non-zero once reconcileStalled has called
 	// Cancel(); subsequent ticks suppress the cancel + warn re-spam
@@ -205,10 +200,6 @@ type retryEntry struct {
 	// (e.g. the prior run was `failed` without a checkpoint, or the
 	// retry policy explicitly disabled resume).
 	PrevRunID string
-	// WorkspaceGeneration carries the logical workspace lease across a fresh
-	// (non-resume) retry so incremental files survive without ever reusing the
-	// path after a completed logical dispatch.
-	WorkspaceGeneration string
 }
 
 // Snapshot is the read-only view the dashboard consumes. Built on

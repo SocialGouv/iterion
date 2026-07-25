@@ -48,18 +48,6 @@ describe("normalizePipelineBoard", () => {
               depth: 1,
               updated_at: "2026-07-14T09:30:00Z",
               questions: { approved: "Ship it?" },
-              media: [
-                {
-                  run_id: "run-child",
-                  path: "renders/final cut.mp4",
-                  kind: "video",
-                  mime: "video/mp4",
-                  size: 4096,
-                  caption: "Validate motion and timing",
-                },
-                { path: "missing-kind.png" },
-                { path: "active.svg", kind: "document" },
-              ],
             },
           ],
           created_at: "2026-07-14T09:00:00Z",
@@ -127,16 +115,6 @@ describe("normalizePipelineBoard", () => {
       depth: 1,
       updated_at: "2026-07-14T09:30:00Z",
       questions: { approved: "Ship it?" },
-      media: [
-        {
-          run_id: "run-child",
-          path: "renders/final cut.mp4",
-          kind: "video",
-          mime: "video/mp4",
-          size: 4096,
-          caption: "Validate motion and timing",
-        },
-      ],
     });
     expect(board.cards[1]).toMatchObject({
       kind: "task",

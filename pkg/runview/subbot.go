@@ -114,7 +114,6 @@ func (s *Service) subbotRunnerFor(parentPath string, runLogger *iterlog.Logger) 
 		// active pass returns (before any park below).
 		managedCtx, pauseOpts, releaseChild := manageSubbotChild(s.manager, ctx, childRunID, runLogger)
 
-		childAuthoritySince := time.Now().UTC()
 		childExec, err := BuildExecutor(ExecutorSpec{
 			Ctx:           managedCtx,
 			Workflow:      childWf,
@@ -146,7 +145,6 @@ func (s *Service) subbotRunnerFor(parentPath string, runLogger *iterlog.Logger) 
 		opts = append(opts,
 			runtime.WithParentRunID(req.ParentRunID),
 			runtime.WithParentNodeID(req.NodeID),
-			runtime.WithWorktreeAuthoritySince(childAuthoritySince),
 			// Recursive wiring so a child that itself declares subbot nodes can
 			// run them (grandchild sources resolve relative to the CHILD's dir);
 			// the ctx-carried depth keeps the recursion bounded.
@@ -176,9 +174,6 @@ func (s *Service) subbotRunnerFor(parentPath string, runLogger *iterlog.Logger) 
 		// under parallel fan-out (the inotify-instance exhaustion #197 fixed).
 		if c, ok := any(childExec).(io.Closer); ok {
 			_ = c.Close()
-		}
-		if unlockErr != nil {
-			return nil, fmt.Errorf("unlock subbot child run %s: %w", childRunID, unlockErr)
 		}
 		if runErr != nil {
 			// A human gate inside the child pauses the CHILD run (its doc is

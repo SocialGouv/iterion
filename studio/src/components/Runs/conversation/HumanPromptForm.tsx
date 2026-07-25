@@ -138,23 +138,10 @@ export default function HumanPromptForm({
     // keeps every input (feedback + any per-item selector like
     // whats-next's `selected_titles`) visible alongside the buttons.
     const mode = verdict ? "flat" : undefined;
-    const spec = formSpecFromSchema(visible, questions, {
+    return formSpecFromSchema(visible, questions, {
       submitLabel: "Submit & Resume",
       mode,
     });
-    const rework = approve
-      ? visible.find(
-          (field) =>
-            field.name === "rework_target" &&
-            (field.enum_values?.length ?? 0) > 0,
-        )
-      : undefined;
-    return approve
-      ? makeApprovalFormFriendly(
-          spec,
-          requiresConcreteRevisionTarget(rework?.enum_values),
-        )
-      : spec;
   }, [fields, questions]);
 
   useEffect(() => {
@@ -252,16 +239,6 @@ export default function HumanPromptForm({
   const visibleFields = verdictField
     ? (fields ?? []).filter((f) => f.name !== verdictField.name)
     : fields ?? [];
-  const reworkField = approveField
-    ? visibleFields.find(
-        (field) =>
-          field.name === "rework_target" &&
-          (field.enum_values?.length ?? 0) > 0,
-      )
-    : undefined;
-  const concreteRevisionRequired = requiresConcreteRevisionTarget(
-    reworkField?.enum_values,
-  );
 
   const submitWithVerdict = (value: boolean | string) => {
     if (!fields || !verdictField) return;
@@ -317,7 +294,7 @@ export default function HumanPromptForm({
   const showQuickActions = !verdictField && quickActions.length > 0;
 
   return (
-    <div className="space-y-3">
+    <div className="space-y-2">
       {staleHash && (
         <div className="text-caption text-warning-fg" role="status">
           The workflow source changed since this run started. Submit will still
@@ -406,11 +383,7 @@ export default function HumanPromptForm({
                 disabled={busy}
                 onClick={() => submitWithVerdict(false)}
               >
-                {busy
-                  ? "…"
-                  : reworkField && !concreteRevisionRequired
-                    ? "Reject"
-                    : "Request changes"}
+                {busy ? "…" : "Reject"}
               </Button>
             </div>
           )}

@@ -19,7 +19,6 @@ const BotHomeView = lazy(() => import("@/views/Bots/BotHome"));
 const BotBuilderView = lazy(() => import("@/views/Bots/BotBuilder"));
 const BoardView = lazy(() => import("@/views/Board"));
 const PipelineBoardView = lazy(() => import("@/views/PipelineBoard"));
-const PipelineCardPage = lazy(() => import("@/views/PipelineBoard/PipelineCardPage"));
 const LabelsView = lazy(() => import("@/views/Board/Labels"));
 const FieldsView = lazy(() => import("@/views/Board/Fields"));
 const RunsAnalyticsView = lazy(() => import("@/views/RunsAnalytics"));

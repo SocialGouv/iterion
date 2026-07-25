@@ -118,8 +118,8 @@ func TestReconcileOrphans_StalePIDFlipsStatus(t *testing.T) {
 	if _, err := seed.CreateRun(context.Background(), id, "wf", nil); err != nil {
 		t.Fatalf("CreateRun: %v", err)
 	}
-	// Save a checkpoint so this case also pins checkpoint preservation; orphan
-	// runs without one are now resumable from the workflow entry.
+	// Save a checkpoint so the resulting status is failed_resumable
+	// (otherwise the orphan path lands on plain failed).
 	if err := seed.SaveCheckpoint(context.Background(), id, &store.Checkpoint{NodeID: "n1"}); err != nil {
 		t.Fatalf("SaveCheckpoint: %v", err)
 	}

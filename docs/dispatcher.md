@@ -258,41 +258,15 @@ cleanup is opt-in via the `workspace.persist` policy.
 Failed / cancelled dispatches always retain the workspace so a retry can
 resume from it.
 
-“Verified cleanup” is intentionally conservative. Before hooks or Git
-mutation, the dispatcher retires an external ownership marker for the exact
-issue/run generation. If finalization metadata, Git ownership, exact HEAD,
-durable reachability, cleanliness, ignored-output disposability, or process
-quiescence cannot be proved, the workspace is kept for inspection and that
-generation remains non-reusable.
-
-The same external marker records its creation time before `after_create` and
-`before_run`. That trusted boundary is propagated unchanged through both the
-direct engine runner and shared launch service to any nested
-`worktree: auto`; a background process started by either hook therefore cannot
-look “older than the run” and escape the final process census.
-
-For an eligible linked worktree, cleanup first performs an atomic same-parent
-rename to a random `.iterion-recovery-*` path and repairs its Git registration.
-This closes the gap in which a non-Git background writer could create output
-after the final status check. If the recovery copy stays clean and no
-same-user process holds a cwd, descriptor, or writable memory mapping inside it
-across the quiescence window, Git removes it without `--force` and the sidecar
-manifest is deleted. Linux uses `/proc` (and fails closed for in-scope
-non-dumpable processes), macOS uses `lsof`. Windows currently retains the
-recovery copy because `FILE_SHARE_DELETE` makes handle-based quiescence
-inconclusive; safety wins until a Job Object/handle census is implemented.
-Late activity or an inconclusive proof leaves the registered recovery worktree
-and JSON manifest intact; the log reports both paths for explicit recovery.
-
-The readable slug still uses `[^a-zA-Z0-9._-]` → `_`, with a leading dot
-escaped, but it is not an identity boundary. The full SHA-256 digest and an
-ownership record under `.owners/` are authoritative. Legacy collision-prone
-paths and existing unowned targets are never adopted. The resolver also
-refuses workspaces whose symlink resolution lands outside the configured root.
+The sanitize regex is `[^a-zA-Z0-9._-]` → `_`, with a leading dot
+escaped (so an issue named `.gitignore` doesn't produce a hidden dir).
+The resolver refuses workspaces whose symlink resolution lands outside
+the configured root.
 
 These dispatcher workspaces are **distinct** from the engine's per-run
-`worktree: auto` — the latter is the runtime's Git-isolation mechanism under
-the run store. Both layers keep their independent lifetimes.
+`worktree: auto` — the latter is the runtime's git-isolation
+mechanism and lives **inside** the dispatcher workspace. Both layers
+keep their independent lifetimes.
 
 ## Hooks
 
@@ -310,8 +284,8 @@ hooks:
                                       # or failure). Best-effort: failures
                                       # are logged, not surfaced.
   before_remove: null                 # runs just before the workspace dir
-                                      # is retired. Any state change is
-                                      # revalidated before teardown.
+                                      # is removed (commit + push your work
+                                      # here if you want to keep it).
 ```
 
 Hooks execute via `sh -lc` with `cwd=<workspace path>`. The dispatcher
@@ -325,12 +299,9 @@ exports five environment variables before invoking the hook:
 | `ITERION_RUN_ID`             | the engine run ID for this dispatch    |
 | `ITERION_WORKSPACE`          | absolute workspace path                |
 
-A failed `after_create` or `before_run` aborts the dispatch and feeds the retry
-queue. A failed `after_run` is logged at WARN. A failed `before_remove`, a
-changed HEAD, an unprotected commit, a dirty tree, protected ignored output,
-live writer, or inconclusive Git/run-metadata probe preserves a recovery
-worktree. The dispatcher retires linked worktrees itself without `--force`,
-after rechecking their exact HEAD and durable branch while holding Git locks.
+A failed `after_create` or `before_run` aborts the dispatch and feeds
+the retry queue; failed `after_run` / `before_remove` are logged at
+WARN.
 
 ## Dispatch templates
 

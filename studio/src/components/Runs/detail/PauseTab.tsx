@@ -3,12 +3,10 @@ import { useMemo } from "react";
 import type { RunEvent } from "@/api/runs";
 import { isAsyncHumanInput } from "@/api/runs";
 
-import HumanPromptForm from "../conversation/HumanPromptForm";
-import MarkdownText from "../conversation/MarkdownText";
+import PauseForm from "../PauseForm";
 
 interface PauseInfo {
   questions: Record<string, unknown>;
-  instructions?: string;
   message?: string;
 }
 
@@ -27,7 +25,6 @@ function usePauseInfo(matching: RunEvent[]): PauseInfo | null {
         return {
           questions:
             (e.data["questions"] as Record<string, unknown> | undefined) ?? {},
-          instructions: e.data["instructions"] as string | undefined,
           message:
             (e.data["message"] as string | undefined) ??
             (e.data["reason"] as string | undefined),
@@ -40,26 +37,18 @@ function usePauseInfo(matching: RunEvent[]): PauseInfo | null {
 
 export function PauseTab({
   runId,
-  nodeId,
   matching,
 }: {
   runId: string;
-  nodeId: string;
   matching: RunEvent[];
 }) {
   const pause = usePauseInfo(matching);
-  const context = pause?.instructions ?? pause?.message;
   return (
-    <div className="overflow-auto px-4 py-3 h-full space-y-3">
-      {context && (
-        <div className="rounded-md border border-border-subtle bg-surface-1 px-3 py-2 text-fg-default">
-          <MarkdownText value={context} size="sm" />
-        </div>
-      )}
-      <HumanPromptForm
+    <div className="overflow-auto px-4 py-3 h-full">
+      <PauseForm
         runId={runId}
-        nodeId={nodeId}
         questions={pause?.questions ?? {}}
+        message={pause?.message}
       />
     </div>
   );

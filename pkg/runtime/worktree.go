@@ -9,23 +9,18 @@
 //
 // On a successful run, finalizeWorktree promotes any commits the run
 // produced onto a persistent branch (default `iterion/run/<friendly>`)
-// and best-effort fast-forwards the user's checked-out branch, then atomically
-// retires the worktree. A clean, process-quiescent recovery copy is removed
-// through non-forced Git cleanup; late activity remains quarantined with a
-// manifest. Without promotion, commits are reachable only via reflog and are
-// eligible for GC.
+// and best-effort fast-forwards the user's checked-out branch, then
+// removes the worktree directory. Without that promotion the commits
+// are reachable only via reflog and are eligible for GC.
 package runtime
 
 import (
 	"context"
-	"encoding/json"
-	"errors"
 	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
-	"sync/atomic"
 	"time"
 
 	gitlib "github.com/SocialGouv/iterion/pkg/git"
@@ -37,19 +32,7 @@ import (
 // it, a wedged git process (stale index.lock, a hung smudge/clean filter)
 // blocks the engine goroutine running worktree setup/finalize forever —
 // the run would never surface a timeout error, just hang.
-const (
-	gitCmdTimeout            = 60 * time.Second
-	worktreeQuiescenceWindow = 25 * time.Millisecond
-)
-
-var (
-	cleanupGuardNonce    atomic.Uint64
-	cleanupRecoveryNonce atomic.Uint64
-	// cleanupProcessReferences is a package seam so deterministic cleanup
-	// tests can isolate Git/permission behaviour from unrelated host
-	// processes. Production never reassigns it.
-	cleanupProcessReferences = worktreeProcessReferences
-)
+const gitCmdTimeout = 60 * time.Second
 
 // gitCmd wraps exec.Command("git", args...) with LC_ALL=C / LANG=C so
 // callers can branch on stderr substrings ("already exists",
@@ -79,41 +62,19 @@ func gitCmd(args ...string) (*exec.Cmd, context.CancelFunc) {
 // produced new commits and whether a fast-forward of the user's branch
 // is safe.
 type worktreeContext struct {
-	repoRoot       string    // absolute path to the main repo (where .git lives)
-	wtPath         string    // absolute path to the per-run worktree
-	gitDir         string    // absolute host path of the worktree's git-private dir (<repoRoot>/.git/worktrees/<basename(wtPath)>); the worktree's `.git` pointer file points here
-	originalBranch string    // current branch on the main worktree at run start ("" if detached)
-	originalTip    string    // SHA of HEAD at run start (worktree initial state)
-	authoritySince time.Time // trusted lower bound captured before worktree creation
+	repoRoot       string // absolute path to the main repo (where .git lives)
+	wtPath         string // absolute path to the per-run worktree
+	gitDir         string // absolute host path of the worktree's git-private dir (<repoRoot>/.git/worktrees/<basename(wtPath)>); the worktree's `.git` pointer file points here
+	originalBranch string // current branch on the main worktree at run start ("" if detached)
+	originalTip    string // SHA of HEAD at run start (worktree initial state)
 }
-
-// WorktreeCleanupResult identifies a recovery copy retained while a finalized
-// worktree is retired. The zero value means the atomic quarantine was clean,
-// process-quiescent, and removed through non-forced Git cleanup. A non-empty
-// result is always recoverable: late activity or inconclusive quiescence is
-// never fed to a recursive delete.
-type WorktreeCleanupResult struct {
-	RecoveryPath    string
-	RecoveryMarker  string
-	LateWrite       string
-	RetentionReason string
-	authoritySince  time.Time
-}
-
-// worktreeCleanup retires a finalized worktree after re-validating the exact
-// HEAD, storage ref, tracked/untracked state, and ignored-path disposal policy.
-type worktreeCleanup func(expectedHEAD, finalBranch string) (WorktreeCleanupResult, error)
 
 // setupWorktree creates a fresh git worktree at
 // <storeRoot>/worktrees/<runID>, checked out at HEAD of the repository
 // containing repoHint (typically the engine's workDir before override).
-// On success returns the worktreeContext, a race-safe retirement closure, and
-// nil error.
-func setupWorktree(
-	storeRoot, runID, repoHint string,
-	authoritySince time.Time,
-	logger *iterlog.Logger,
-) (worktreeContext, worktreeCleanup, error) {
+// On success returns the worktreeContext, a cleanup closure
+// (`git worktree remove --force <path>`), and nil error.
+func setupWorktree(storeRoot, runID, repoHint string, logger *iterlog.Logger) (worktreeContext, func(), error) {
 	repoRoot, err := findGitRoot(repoHint)
 	if err != nil {
 		return worktreeContext{}, nil, fmt.Errorf("locate git repo: %w", err)
@@ -154,15 +115,6 @@ func setupWorktree(
 	// HEAD commit. Any working-tree state (staged, unstaged, untracked)
 	// in the main checkout is intentionally NOT copied — that is the whole
 	// point of isolation.
-	now := time.Now().UTC()
-	if authoritySince.IsZero() {
-		authoritySince = now
-	} else if authoritySince.After(now) {
-		return worktreeContext{}, nil, fmt.Errorf(
-			"worktree process authority time %s is in the future",
-			authoritySince.Format(time.RFC3339Nano),
-		)
-	}
 	cmd, cancel := gitCmd("-C", repoRoot, "worktree", "add", wtPath, "HEAD")
 	out, addErr := cmd.CombinedOutput()
 	cancel()
@@ -175,29 +127,30 @@ func setupWorktree(
 			wtPath, repoRoot, shortSHA(originalTip), branchOrDetached(originalBranch))
 	}
 
-	cleanup := newWorktreeCleanup(runID, repoRoot, wtPath, authoritySince)
+	cleanup := func() {
+		// `--force` overrides protections; we accept the risk because the
+		// engine owns the worktree's lifecycle. Best-effort: errors are
+		// logged but do not fail the run. When no logger is configured
+		// the failure goes to stderr so it isn't completely silent —
+		// otherwise the worktree directory leaks on disk with no trace.
+		rmCmd, rmCancel := gitCmd("-C", repoRoot, "worktree", "remove", "--force", wtPath)
+		out, rmErr := rmCmd.CombinedOutput()
+		rmCancel()
+		if rmErr != nil {
+			if logger != nil {
+				logger.Warn("runtime: git worktree remove %s failed: %v\noutput: %s", wtPath, rmErr, string(out))
+			} else {
+				fmt.Fprintf(os.Stderr, "runtime: git worktree remove %s failed: %v\noutput: %s\n", wtPath, rmErr, string(out))
+			}
+		}
+	}
 	return worktreeContext{
 		repoRoot:       repoRoot,
 		wtPath:         wtPath,
 		gitDir:         resolveWorktreeGitDir(repoRoot, wtPath),
 		originalBranch: originalBranch,
 		originalTip:    originalTip,
-		authoritySince: authoritySince,
 	}, cleanup, nil
-}
-
-func newWorktreeCleanup(runID, repoRoot, wtPath string, authoritySince time.Time) worktreeCleanup {
-	return func(expectedHEAD, finalBranch string) (WorktreeCleanupResult, error) {
-		return cleanupRecoveredWorktreeForRun(
-			runID,
-			repoRoot,
-			wtPath,
-			finalBranch,
-			expectedHEAD,
-			authoritySince,
-			nil,
-		)
-	}
 }
 
 // resolveWorktreeGitDir returns the absolute host path of the worktree's
@@ -331,19 +284,17 @@ type finalizeResult struct {
 	// storage branch preserves them. A wip-banked HEAD is never merged
 	// into the operator's branch — MergeStatus is forced to "skipped".
 	WipBanked bool
-	// PreserveWorktree is true when finalize could NOT prove that every
-	// non-disposable worktree change is durably reachable (the cleanliness
-	// probe / wip bank / storage-branch creation failed). The caller must skip
-	// cleanup so the operator can recover files or commits by hand. Ignored
-	// dependency/cache paths are governed separately by
-	// isDisposableIgnoredPath.
+	// PreserveWorktree is true when finalize could NOT secure the
+	// worktree's uncommitted changes (the wip bank commit failed).
+	// The caller must skip the worktree cleanup so the operator can
+	// recover the files by hand — removing it would silently destroy
+	// finished work.
 	PreserveWorktree bool
 }
 
 // finalizeWorktree promotes the worktree's HEAD onto a persistent
 // branch and best-effort fast-forwards the requested merge target.
-// Promotion failures do not fail the run, but cleanup is fail-closed:
-// PreserveWorktree prevents deletion until output is durably reachable.
+// Always best-effort: any failure is logged but does not fail the run.
 func finalizeWorktree(wc worktreeContext, opts finalizeOptions, logger *iterlog.Logger) finalizeResult {
 	res := finalizeResult{}
 
@@ -367,13 +318,10 @@ func finalizeWorktree(wc worktreeContext, opts finalizeOptions, logger *iterlog.
 	// 1. Read the worktree's current HEAD.
 	finalSHA := readHEAD(wc.wtPath)
 	if finalSHA == "" {
-		// Without a readable HEAD we cannot prove that cleanup is safe: the
-		// worktree may contain commits or uncommitted output that no durable
-		// ref protects. Fail closed and leave it in place.
+		// Couldn't read HEAD — log and bail. The cleanup runs anyway.
 		if logger != nil {
-			logger.Warn("runtime: finalize: cannot read worktree HEAD at %s — preserving worktree", wc.wtPath)
+			logger.Warn("runtime: finalize: cannot read worktree HEAD at %s — skipping promotion", wc.wtPath)
 		}
-		res.PreserveWorktree = true
 		return res
 	}
 
@@ -381,7 +329,7 @@ func finalizeWorktree(wc worktreeContext, opts finalizeOptions, logger *iterlog.
 	// exits through a non-commit edge (a gated commit node not reached,
 	// a "hold for later" outcome, an agent that edited but never
 	// committed) leaves finished work as a dirty working tree; the
-	// cleanup that follows finalize removes the worktree,
+	// cleanup that follows finalize is `git worktree remove --force`,
 	// which would silently destroy it — the exact stranded-work failure
 	// mode observed across the pre-ADR-055 bot-session corpus. Commit it
 	// as an explicit wip bank so the storage branch preserves it; the
@@ -389,12 +337,8 @@ func finalizeWorktree(wc worktreeContext, opts finalizeOptions, logger *iterlog.
 	// see step 5).
 	if clean, cleanErr := workdirIsClean(wc.wtPath); cleanErr != nil {
 		if logger != nil {
-			logger.Warn("runtime: finalize: cannot probe worktree cleanliness: %v — preserving worktree", cleanErr)
+			logger.Warn("runtime: finalize: cannot probe worktree cleanliness: %v — proceeding without wip bank", cleanErr)
 		}
-		// "Unknown" must not be treated as "clean": a failed status probe
-		// followed by removal can destroy output we never banked.
-		res.PreserveWorktree = true
-		return res
 	} else if !clean {
 		msg := "wip(iterion): auto-banked uncommitted run output"
 		if opts.runName != "" {
@@ -405,24 +349,16 @@ func finalizeWorktree(wc worktreeContext, opts finalizeOptions, logger *iterlog.
 				logger.Warn("runtime: finalize: wip bank `git add -A` failed: %v — preserving worktree at %s", err, wc.wtPath)
 			}
 			res.PreserveWorktree = true
-			return res
 		} else if err := runGitInDir(wc.wtPath, "commit", "-m", msg); err != nil {
 			if logger != nil {
 				logger.Warn("runtime: finalize: wip bank commit failed: %v — preserving worktree at %s", err, wc.wtPath)
 			}
 			res.PreserveWorktree = true
-			return res
 		} else {
 			res.WipBanked = true
-			banked := readHEAD(wc.wtPath)
-			if banked == "" {
-				if logger != nil {
-					logger.Warn("runtime: finalize: wip bank commit succeeded but its HEAD cannot be read — preserving worktree at %s", wc.wtPath)
-				}
-				res.PreserveWorktree = true
-				return res
+			if banked := readHEAD(wc.wtPath); banked != "" {
+				finalSHA = banked
 			}
-			finalSHA = banked
 			if logger != nil {
 				logger.Warn("runtime: finalize: worktree had UNCOMMITTED changes — banked as wip commit %s (review it on the storage branch; it will not be merged)", shortSHA(finalSHA))
 			}
@@ -457,7 +393,6 @@ func finalizeWorktree(wc worktreeContext, opts finalizeOptions, logger *iterlog.
 			logger.Warn("runtime: finalize: refusing to create branch %q: %v — recover with: git branch <name> %s", branchName, err, finalSHA)
 		}
 		res.FinalBranchError = fmt.Sprintf("invalid branch name %q: %v (recover with: git branch <name> %s)", branchName, err, finalSHA)
-		res.PreserveWorktree = true
 		return res
 	}
 
@@ -474,10 +409,6 @@ func finalizeWorktree(wc worktreeContext, opts finalizeOptions, logger *iterlog.
 				shortSHA(finalSHA), finalSHA)
 		}
 		res.FinalBranchError = fmt.Sprintf("git branch failed for %q (and suffixed variants) — recover with: git branch <name> %s", branchName, finalSHA)
-		// FinalCommit without a durable ref is only reflog-reachable once the
-		// worktree is removed. Keep the worktree as the GC guard until an
-		// operator can create the branch manually or recovery succeeds later.
-		res.PreserveWorktree = true
 		return res
 	}
 	res.FinalBranch = finalName
@@ -586,303 +517,9 @@ func resolveMergeTarget(mergeInto, originalBranch string) string {
 	}
 }
 
-// readBranchCommit resolves one validated local branch to its commit.
-func readBranchCommit(repoRoot, branch string) (string, error) {
-	if err := gitlib.ValidateBranchName(branch); err != nil {
-		return "", fmt.Errorf("invalid branch name %q: %w", branch, err)
-	}
-	refCmd, refCancel := gitCmd("-C", repoRoot, "rev-parse", "--verify", "refs/heads/"+branch+"^{commit}")
-	refOut, refErr := refCmd.Output()
-	refCancel()
-	if refErr != nil {
-		return "", fmt.Errorf("resolve branch %q: %w", branch, refErr)
-	}
-	head := strings.TrimSpace(string(refOut))
-	if head == "" {
-		return "", fmt.Errorf("branch %q resolved to an empty commit", branch)
-	}
-	return head, nil
-}
-
-// verifyCleanWorktreeHEAD proves that wtPath is clean, contains no ignored
-// output outside the explicit disposable-cache policy, and still points at the
-// exact commit protected by finalization metadata.
-func verifyCleanWorktreeHEAD(wtPath, expectedHEAD string) error {
-	if strings.TrimSpace(expectedHEAD) == "" {
-		return fmt.Errorf("expected worktree HEAD is empty")
-	}
-	head := readHEAD(wtPath)
-	if head == "" {
-		return fmt.Errorf("cannot read worktree HEAD")
-	}
-	if head != expectedHEAD {
-		return fmt.Errorf("worktree HEAD changed: got %s, expected %s", shortSHA(head), shortSHA(expectedHEAD))
-	}
-	clean, cleanErr := workdirIsClean(wtPath)
-	if cleanErr != nil {
-		return fmt.Errorf("verify worktree cleanliness: %w", cleanErr)
-	}
-	if !clean {
-		return fmt.Errorf("worktree is dirty")
-	}
-	protectedIgnored, ignoredErr := protectedIgnoredWorktreeEntries(wtPath)
-	if ignoredErr != nil {
-		return fmt.Errorf("verify ignored worktree entries: %w", ignoredErr)
-	}
-	if len(protectedIgnored) > 0 {
-		const maxReported = 5
-		reported := protectedIgnored
-		if len(reported) > maxReported {
-			reported = reported[:maxReported]
-		}
-		suffix := ""
-		if remaining := len(protectedIgnored) - len(reported); remaining > 0 {
-			suffix = fmt.Sprintf(" (and %d more)", remaining)
-		}
-		return fmt.Errorf("worktree has ignored non-disposable output: %s%s",
-			strings.Join(reported, ", "), suffix)
-	}
-	return nil
-}
-
-// VerifyLauncherWorktreeCleanup proves that a dispatcher/launcher-owned
-// worktree can be removed without losing run output. It deliberately accepts
-// only current, explicitly-owned run records:
-//
-//   - a delegated worktree is the run's own WorkDir and its finalized HEAD is
-//     protected by FinalBranch (or still equals BaseCommit when no commit was
-//     produced);
-//   - a managed run executes in a separate runtime worktree, so the launcher's
-//     outer worktree must still equal BaseCommit.
-//
-// In both cases the target must remain a registered, clean linked worktree and
-// contain no ignored output outside the disposable-cache policy. Any missing
-// or legacy metadata fails closed.
-func VerifyLauncherWorktreeCleanup(r *store.Run, launcherPath string) error {
-	proof, err := launcherWorktreeCleanupProofForRun(r, launcherPath)
-	if err != nil {
-		return err
-	}
-	registered, err := registeredWorktree(proof.repoRoot, proof.worktreePath)
-	if err != nil {
-		return err
-	}
-	if !registered {
-		return fmt.Errorf("launcher worktree is not registered in repository: %s", proof.worktreePath)
-	}
-	if err := verifyCleanWorktreeHEAD(proof.worktreePath, proof.expectedHEAD); err != nil {
-		return err
-	}
-	if proof.finalBranch != "" {
-		branchHEAD, err := readBranchCommit(proof.repoRoot, proof.finalBranch)
-		if err != nil {
-			return fmt.Errorf("storage branch %q is not readable: %w", proof.finalBranch, err)
-		}
-		if branchHEAD != proof.expectedHEAD {
-			return fmt.Errorf("storage branch %q moved: got %s, expected %s",
-				proof.finalBranch, shortSHA(branchHEAD), shortSHA(proof.expectedHEAD))
-		}
-	}
-	return nil
-}
-
-// CleanupLauncherWorktree retires a dispatcher/launcher-owned linked worktree
-// using the runtime's race-safe cleanup path. The ownership and durability
-// proof is recomputed here; cleanup then rechecks HEAD, storage branch, tracked
-// state, ignored output, and live process references. It never uses --force.
-func CleanupLauncherWorktree(r *store.Run, launcherPath string) (WorktreeCleanupResult, error) {
-	if r == nil || r.WorktreeCreatedAt.IsZero() {
-		return WorktreeCleanupResult{}, fmt.Errorf(
-			"launcher cleanup requires a trusted worktree creation time",
-		)
-	}
-	return CleanupLauncherWorktreeSince(r, launcherPath, r.WorktreeCreatedAt)
-}
-
-// CleanupLauncherWorktreeSince is CleanupLauncherWorktree with a trusted
-// launcher-owned creation boundary. Dispatcher ownership markers live outside
-// the checkout, so a descendant cannot advance this timestamp to evade the
-// live-process census.
-func CleanupLauncherWorktreeSince(
-	r *store.Run,
-	launcherPath string,
-	authoritySince time.Time,
-) (WorktreeCleanupResult, error) {
-	if authoritySince.IsZero() {
-		return WorktreeCleanupResult{}, fmt.Errorf("launcher cleanup authority time is empty")
-	}
-	proof, err := launcherWorktreeCleanupProofForRun(r, launcherPath)
-	if err != nil {
-		return WorktreeCleanupResult{}, err
-	}
-	return cleanupRecoveredWorktreeForRun(
-		r.ID,
-		proof.repoRoot,
-		proof.worktreePath,
-		proof.finalBranch,
-		proof.expectedHEAD,
-		authoritySince,
-		nil,
-	)
-}
-
-type launcherWorktreeCleanupProof struct {
-	repoRoot     string
-	worktreePath string
-	expectedHEAD string
-	finalBranch  string
-}
-
-func launcherWorktreeCleanupProofForRun(r *store.Run, launcherPath string) (launcherWorktreeCleanupProof, error) {
-	if r == nil {
-		return launcherWorktreeCleanupProof{}, fmt.Errorf("cannot verify launcher cleanup without run metadata")
-	}
-	if r.Status != store.RunStatusFinished {
-		return launcherWorktreeCleanupProof{}, fmt.Errorf("run %q is %q, not finished", r.ID, r.Status)
-	}
-	if !r.Worktree {
-		return launcherWorktreeCleanupProof{}, fmt.Errorf("run %q has no verified worktree authority", r.ID)
-	}
-	if strings.TrimSpace(launcherPath) == "" {
-		return launcherWorktreeCleanupProof{}, fmt.Errorf("launcher worktree path is empty")
-	}
-	if info, err := os.Lstat(launcherPath); err != nil {
-		return launcherWorktreeCleanupProof{}, fmt.Errorf("inspect launcher worktree %s: %w", launcherPath, err)
-	} else if info.Mode()&os.ModeSymlink != 0 {
-		return launcherWorktreeCleanupProof{}, fmt.Errorf("launcher worktree path is a symlink: %s", launcherPath)
-	}
-	worktreePath, err := canonicalExistingPath(launcherPath)
-	if err != nil {
-		return launcherWorktreeCleanupProof{}, fmt.Errorf("canonicalize launcher worktree path: %w", err)
-	}
-	repoRoot, err := canonicalExistingPath(r.RepoRoot)
-	if err != nil {
-		return launcherWorktreeCleanupProof{}, fmt.Errorf("canonicalize launcher repository root: %w", err)
-	}
-	if samePath(repoRoot, worktreePath) {
-		return launcherWorktreeCleanupProof{}, fmt.Errorf("refusing to remove repository root as launcher worktree: %s", worktreePath)
-	}
-
-	proof := launcherWorktreeCleanupProof{
-		repoRoot:     repoRoot,
-		worktreePath: worktreePath,
-	}
-	switch r.WorktreeOwnership {
-	case store.WorktreeOwnershipDelegated:
-		if err := verifyFinalizationWorktreeOwnership(nil, r); err != nil {
-			return launcherWorktreeCleanupProof{}, fmt.Errorf("verify delegated worktree ownership: %w", err)
-		}
-		persistedPath, err := canonicalExistingPath(r.WorkDir)
-		if err != nil {
-			return launcherWorktreeCleanupProof{}, fmt.Errorf("canonicalize delegated worktree path: %w", err)
-		}
-		if !samePath(persistedPath, worktreePath) {
-			return launcherWorktreeCleanupProof{}, fmt.Errorf(
-				"launcher path %s does not match delegated run worktree %s",
-				worktreePath, persistedPath,
-			)
-		}
-		if r.FinalCommit != "" {
-			if r.FinalBranch == "" {
-				return launcherWorktreeCleanupProof{}, fmt.Errorf(
-					"run %q finalized commit %s without a durable storage branch",
-					r.ID, shortSHA(r.FinalCommit),
-				)
-			}
-			proof.expectedHEAD = r.FinalCommit
-			proof.finalBranch = r.FinalBranch
-		} else {
-			if r.FinalBranch != "" {
-				return launcherWorktreeCleanupProof{}, fmt.Errorf(
-					"run %q has storage branch %q without a finalized commit",
-					r.ID, r.FinalBranch,
-				)
-			}
-			proof.expectedHEAD = r.BaseCommit
-		}
-
-	case store.WorktreeOwnershipManaged:
-		// The runtime-owned inner worktree may already have been removed, so
-		// its path cannot be canonicalized here. A lexical equality check is
-		// still sufficient to refuse treating that inner path as the
-		// launcher's independently-owned outer workspace.
-		if samePath(r.WorkDir, launcherPath) {
-			return launcherWorktreeCleanupProof{}, fmt.Errorf(
-				"managed run worktree %s is not launcher-owned",
-				launcherPath,
-			)
-		}
-		proof.expectedHEAD = r.BaseCommit
-
-	default:
-		return launcherWorktreeCleanupProof{}, fmt.Errorf(
-			"run %q has unsupported worktree ownership %q",
-			r.ID, r.WorktreeOwnership,
-		)
-	}
-	if strings.TrimSpace(proof.expectedHEAD) == "" {
-		return launcherWorktreeCleanupProof{}, fmt.Errorf("run %q has no expected launcher HEAD", r.ID)
-	}
-	return proof, nil
-}
-
-// protectedIgnoredWorktreeEntries returns ignored paths that cleanup must not
-// silently delete. Git's ordinary porcelain status intentionally hides ignored
-// paths, but a generated .env, export, or ignored build artefact may be the only
-// copy. Fail closed for every ignored path except a deliberately small set of
-// conventional dependency and cache locations.
-func protectedIgnoredWorktreeEntries(wtPath string) ([]string, error) {
-	out, err := runGit(wtPath, "status", "--porcelain=v1", "-z", "--ignored=matching", "--untracked-files=all")
-	if err != nil {
-		return nil, fmt.Errorf("git status --ignored: %w (output: %s)", err, strings.TrimSpace(out))
-	}
-	var protected []string
-	for _, record := range strings.Split(out, "\x00") {
-		if !strings.HasPrefix(record, "!! ") {
-			continue
-		}
-		path := strings.TrimPrefix(record, "!! ")
-		if path == "" || isDisposableIgnoredPath(path) {
-			continue
-		}
-		protected = append(protected, path)
-	}
-	return protected, nil
-}
-
-// isDisposableIgnoredPath is the explicit cleanup contract for ignored paths.
-// It intentionally covers only reproducible dependency/cache material. Unknown
-// ignored output is preserved with the worktree, even at the cost of a leak,
-// because deletion would be irreversible.
-func isDisposableIgnoredPath(path string) bool {
-	clean := strings.Trim(filepath.ToSlash(path), "/")
-	if clean == "" {
-		return false
-	}
-	parts := strings.Split(clean, "/")
-	for _, part := range parts {
-		switch part {
-		case "node_modules", "__pycache__":
-			return true
-		}
-	}
-	switch parts[0] {
-	case ".cache", ".npm", ".pnpm-store", ".pytest_cache", ".mypy_cache",
-		".ruff_cache", ".tox", ".nox", ".gradle", ".parcel-cache", ".turbo",
-		".vite":
-		return true
-	}
-	if len(parts) >= 2 && parts[0] == ".yarn" && parts[1] == "cache" {
-		return true
-	}
-	base := parts[len(parts)-1]
-	return base == ".DS_Store" || base == ".eslintcache" || strings.HasSuffix(base, ".pyc")
-}
-
-// createBranchSafely creates a branch at sha; on collision, it reuses an
-// existing candidate only when that branch already protects the exact same
-// commit (the crash-retry case), otherwise it retries with a suffix (-1, -2,
-// …) up to 16 times. Returns the final branch name, or "" on total failure.
+// createBranchSafely creates a branch at sha; on collision, retries with
+// a suffix (-1, -2, …) up to 16 times before giving up. Returns the
+// final branch name actually created, or "" on total failure.
 func createBranchSafely(repoRoot, name, sha string, logger *iterlog.Logger) (bool, string) {
 	candidates := []string{name}
 	for i := 1; i <= 16; i++ {
@@ -899,18 +536,12 @@ func createBranchSafely(repoRoot, name, sha string, logger *iterlog.Logger) (boo
 			return true, candidate
 		}
 		// Branch-already-exists is the only error we silently retry on;
-		// an exact same-SHA branch is an idempotent recovery success.
+		// other errors (bad SHA, permissions) are terminal.
 		if !strings.Contains(string(out), "already exists") {
 			if logger != nil {
 				logger.Warn("runtime: finalize: git branch %s failed: %v\noutput: %s", candidate, err, string(out))
 			}
 			return false, ""
-		}
-		if existing, resolveErr := readBranchCommit(repoRoot, candidate); resolveErr == nil && existing == sha {
-			if logger != nil {
-				logger.Info("runtime: finalize: reusing existing branch %s already at %s", candidate, shortSHA(sha))
-			}
-			return true, candidate
 		}
 	}
 	return false, ""
@@ -1287,732 +918,6 @@ func branchOrDetached(branch string) string {
 	return branch
 }
 
-func registeredWorktree(repoRoot, wtPath string) (bool, error) {
-	listCmd, listCancel := gitCmd("-C", repoRoot, "worktree", "list", "--porcelain", "-z")
-	listOut, listErr := listCmd.CombinedOutput()
-	listCancel()
-	if listErr != nil {
-		return false, fmt.Errorf("list registered worktrees: %w (output: %s)", listErr, strings.TrimSpace(string(listOut)))
-	}
-	for _, field := range strings.Split(string(listOut), "\x00") {
-		const prefix = "worktree "
-		if strings.HasPrefix(field, prefix) && samePath(strings.TrimPrefix(field, prefix), wtPath) {
-			return true, nil
-		}
-	}
-	return false, nil
-}
-
-// verifyRecoveredWorktreeOwnership binds persisted run metadata back to the
-// only path Iterion creates for that run. Merely appearing in `git worktree
-// list` is not enough: stale/corrupt metadata could otherwise point at a
-// different, user-owned registered worktree and recovery would mutate it.
-func verifyRecoveredWorktreeOwnership(st store.RunStore, r *store.Run) error {
-	if st == nil || r == nil {
-		return fmt.Errorf("cannot verify recovered worktree ownership without store and run")
-	}
-	runID := strings.TrimSpace(r.ID)
-	if runID == "" || runID != r.ID || runID == "." || runID == ".." ||
-		strings.Contains(runID, "/") || strings.Contains(runID, `\`) {
-		return fmt.Errorf("invalid run ID for recovered worktree ownership: %q", r.ID)
-	}
-	storeRoot := strings.TrimSpace(st.Root())
-	if storeRoot == "" {
-		return fmt.Errorf("run store has no filesystem root for worktree ownership verification")
-	}
-	expected, err := filepath.Abs(filepath.Join(storeRoot, "worktrees", runID))
-	if err != nil {
-		return fmt.Errorf("resolve expected worktree path: %w", err)
-	}
-	actual, err := filepath.Abs(r.WorkDir)
-	if err != nil {
-		return fmt.Errorf("resolve persisted worktree path: %w", err)
-	}
-	if info, lstatErr := os.Lstat(expected); lstatErr != nil {
-		return fmt.Errorf("inspect expected worktree path %s: %w", expected, lstatErr)
-	} else if info.Mode()&os.ModeSymlink != 0 {
-		return fmt.Errorf("expected worktree path is a symlink: %s", expected)
-	}
-	expectedReal, err := filepath.EvalSymlinks(expected)
-	if err != nil {
-		return fmt.Errorf("canonicalize expected worktree path %s: %w", expected, err)
-	}
-	actualReal, err := filepath.EvalSymlinks(actual)
-	if err != nil {
-		return fmt.Errorf("canonicalize persisted worktree path %s: %w", actual, err)
-	}
-	if !samePath(expectedReal, actualReal) {
-		return fmt.Errorf("run %s does not own recovered worktree %s (expected %s)", runID, actualReal, expectedReal)
-	}
-	return nil
-}
-
-// verifyFinalizationWorktreeOwnership selects the proof appropriate to the
-// persisted authority source. Legacy records are accepted only through the
-// stronger managed-path convention; an untyped arbitrary linked worktree never
-// gains resume/recovery authority.
-func verifyFinalizationWorktreeOwnership(st store.RunStore, r *store.Run) error {
-	if r == nil {
-		return fmt.Errorf("cannot verify nil worktree run")
-	}
-	switch r.WorktreeOwnership {
-	case "", store.WorktreeOwnershipManaged:
-		if err := verifyRecoveredWorktreeOwnership(st, r); err != nil {
-			return err
-		}
-		if r.WorktreeGitDir != "" {
-			if err := verifyPersistedWorktreeGitDir(r); err != nil {
-				return err
-			}
-		}
-		return nil
-	case store.WorktreeOwnershipDelegated:
-		if samePath(r.WorkDir, r.RepoRoot) {
-			return fmt.Errorf("delegated worktree path is the repository root: %s", r.WorkDir)
-		}
-		if r.WorktreeGitDir == "" {
-			return fmt.Errorf("delegated worktree has no persisted private Git directory")
-		}
-		if info, err := os.Lstat(r.WorkDir); err != nil {
-			return fmt.Errorf("inspect delegated worktree %s: %w", r.WorkDir, err)
-		} else if info.Mode()&os.ModeSymlink != 0 {
-			return fmt.Errorf("delegated worktree path is a symlink: %s", r.WorkDir)
-		}
-		registered, err := registeredWorktree(r.RepoRoot, r.WorkDir)
-		if err != nil {
-			return err
-		}
-		if !registered {
-			return fmt.Errorf("delegated worktree is not registered in repository: %s", r.WorkDir)
-		}
-		return verifyPersistedWorktreeGitDir(r)
-	default:
-		return fmt.Errorf("unknown worktree ownership %q", r.WorktreeOwnership)
-	}
-}
-
-func verifyPersistedWorktreeGitDir(r *store.Run) error {
-	actual := resolveWorktreeGitDir(r.RepoRoot, r.WorkDir)
-	actualCanonical, err := canonicalExistingPath(actual)
-	if err != nil {
-		return fmt.Errorf("canonicalize actual worktree Git directory: %w", err)
-	}
-	persistedCanonical, err := canonicalExistingPath(r.WorktreeGitDir)
-	if err != nil {
-		return fmt.Errorf("canonicalize persisted worktree Git directory: %w", err)
-	}
-	if !samePath(actualCanonical, persistedCanonical) {
-		return fmt.Errorf("worktree private Git directory changed: got %s, expected %s", actualCanonical, persistedCanonical)
-	}
-	return nil
-}
-
-func canonicalExistingPath(path string) (string, error) {
-	if strings.TrimSpace(path) == "" {
-		return "", fmt.Errorf("path is empty")
-	}
-	absolute, err := filepath.Abs(path)
-	if err != nil {
-		return "", err
-	}
-	return filepath.EvalSymlinks(absolute)
-}
-
-// cleanupRecoveredWorktree retires a terminal run's dedicated worktree only
-// after re-proving every condition required by the durability policy. The
-// compatibility wrapper intentionally discards the recovery-copy location;
-// launcher cleanup and live engine cleanup use cleanupRecoveredWorktreeForRun
-// so they can surface it to operators.
-func cleanupRecoveredWorktree(
-	repoRoot, wtPath, finalBranch, expectedHEAD string,
-	authoritySince time.Time,
-) error {
-	_, err := cleanupRecoveredWorktreeForRun(
-		"",
-		repoRoot,
-		wtPath,
-		finalBranch,
-		expectedHEAD,
-		authoritySince,
-		nil,
-	)
-	return err
-}
-
-// cleanupRecoveredWorktreeForRun retires a terminal run's dedicated worktree
-// after re-proving every condition required by the durability policy:
-//
-//   - the path is still a registered worktree of repoRoot (never an arbitrary
-//     directory from stale/corrupt run metadata);
-//   - its HEAD is the expected commit;
-//   - when a storage branch is expected, that branch still protects the same
-//     commit;
-//   - the worktree is clean and has no non-disposable ignored output
-//     immediately before retirement.
-//
-// Cleanup deliberately does not use --force or recursively delete anything.
-// Git lockfiles and a guard ref close commit/ref races; an atomic same-parent
-// rename closes ordinary writer races by moving their cwd inode into a
-// registered recovery worktree. Only a process-quiescent, still-clean recovery
-// is removed; otherwise reconciliation preserves it (and any guard ref) for
-// inspection.
-func cleanupRecoveredWorktreeForRun(
-	runID, repoRoot, wtPath, finalBranch, expectedHEAD string,
-	authoritySince time.Time,
-	hooks *worktreeCleanupTestHooks,
-) (WorktreeCleanupResult, error) {
-	if authoritySince.IsZero() {
-		return WorktreeCleanupResult{}, fmt.Errorf(
-			"refusing worktree cleanup without a trusted process authority time",
-		)
-	}
-	if now := time.Now().UTC(); authoritySince.After(now) {
-		return WorktreeCleanupResult{}, fmt.Errorf(
-			"refusing worktree cleanup with future process authority time %s",
-			authoritySince.Format(time.RFC3339Nano),
-		)
-	}
-	if samePath(repoRoot, wtPath) {
-		return WorktreeCleanupResult{}, fmt.Errorf("refusing to retire repository root as recovered worktree: %s", wtPath)
-	}
-	if _, err := os.Stat(wtPath); err != nil {
-		if os.IsNotExist(err) {
-			return WorktreeCleanupResult{}, nil // already retired; idempotent recovery
-		}
-		return WorktreeCleanupResult{}, fmt.Errorf("stat recovered worktree %s: %w", wtPath, err)
-	}
-
-	registered, registerErr := registeredWorktree(repoRoot, wtPath)
-	if registerErr != nil {
-		return WorktreeCleanupResult{}, registerErr
-	}
-	if !registered {
-		return WorktreeCleanupResult{}, fmt.Errorf("refusing to retire unregistered recovered worktree path %s", wtPath)
-	}
-	return quarantineFinalizedWorktree(
-		runID,
-		repoRoot,
-		wtPath,
-		finalBranch,
-		expectedHEAD,
-		authoritySince,
-		hooks,
-	)
-}
-
-// worktreeCleanupTestHooks is an internal deterministic seam for adversarial
-// race tests. Production always passes nil.
-type worktreeCleanupTestHooks struct {
-	afterFinalVerification func()
-	afterRename            func(WorktreeCleanupResult)
-	processReferences      func(root string, authoritySince time.Time) ([]int, error)
-}
-
-// quarantineFinalizedWorktree closes the check→remove races that even a plain
-// non-forced `git worktree remove` still permits:
-//
-//   - Git happily removes a clean worktree after a concurrent empty commit,
-//     even when that new HEAD has no durable ref.
-//   - a storage branch can move after validation and before removal.
-//   - Git ignores ignored paths during removal, so an ordinary writer can
-//     create the only copy of an artefact after the last status check and have
-//     it recursively deleted.
-//
-// A hidden guard ref protects expectedHEAD while Git lockfiles block commits in
-// this worktree. We then re-check HEAD/cleanliness/ref under those locks and
-// atomically rename the checkout to a unique same-parent recovery path. Open
-// cwd/file descriptors keep referring to that renamed tree, so relative writes
-// arriving after the check are preserved. `git worktree repair` makes the
-// recovery path the registered location; nothing is recursively deleted.
-//
-// A writer using the old absolute path may recreate it after the rename. That
-// path is also left untouched and reported as an error. Any uncertainty leaks a
-// recovery worktree/ref instead of losing output.
-func quarantineFinalizedWorktree(
-	runID, repoRoot, wtPath, finalBranch, expectedHEAD string,
-	authoritySince time.Time,
-	hooks *worktreeCleanupTestHooks,
-) (result WorktreeCleanupResult, retErr error) {
-	if err := verifyCleanWorktreeHEAD(wtPath, expectedHEAD); err != nil {
-		return result, err
-	}
-
-	guardRef := ""
-	if finalBranch != "" {
-		branchHead, branchErr := readBranchCommit(repoRoot, finalBranch)
-		if branchErr != nil {
-			return result, fmt.Errorf("storage branch %q is not readable: %w", finalBranch, branchErr)
-		}
-		if branchHead != expectedHEAD {
-			return result, fmt.Errorf("storage branch %q moved: got %s, expected %s", finalBranch, shortSHA(branchHead), shortSHA(expectedHEAD))
-		}
-		var guardErr error
-		guardRef, guardErr = createCleanupGuard(repoRoot, expectedHEAD)
-		if guardErr != nil {
-			return result, guardErr
-		}
-		// On a pre-removal failure, discard the guard only through a ref
-		// transaction that simultaneously proves the storage branch still
-		// protects expectedHEAD. If that proof fails, deliberately retain it.
-		defer func() {
-			if guardRef == "" {
-				return
-			}
-			if releaseErr := releaseCleanupGuard(repoRoot, guardRef, finalBranch, expectedHEAD); releaseErr != nil {
-				if retErr == nil {
-					retErr = fmt.Errorf("cleanup guard retained at %s: %w", guardRef, releaseErr)
-				} else {
-					retErr = fmt.Errorf("%w (cleanup guard retained at %s: %v)", retErr, guardRef, releaseErr)
-				}
-				return
-			}
-			guardRef = ""
-		}()
-	}
-
-	unlockGit, lockErr := acquireWorktreeCleanupLocks(repoRoot, wtPath)
-	if lockErr != nil {
-		return result, lockErr
-	}
-	locksHeld := true
-	releaseGitLocks := func() {
-		if locksHeld {
-			unlockGit()
-			locksHeld = false
-		}
-	}
-	defer releaseGitLocks()
-
-	// Re-check after acquiring the Git lockfiles: a commit/write that won the
-	// race before us is now visible and makes cleanup fail closed.
-	if err := verifyCleanWorktreeHEAD(wtPath, expectedHEAD); err != nil {
-		return result, err
-	}
-	if finalBranch != "" {
-		branchHead, branchErr := readBranchCommit(repoRoot, finalBranch)
-		if branchErr != nil {
-			return result, fmt.Errorf("storage branch %q is not readable: %w", finalBranch, branchErr)
-		}
-		if branchHead != expectedHEAD {
-			return result, fmt.Errorf("storage branch %q moved: got %s, expected %s", finalBranch, shortSHA(branchHead), shortSHA(expectedHEAD))
-		}
-	}
-	if hooks != nil && hooks.afterFinalVerification != nil {
-		hooks.afterFinalVerification()
-	}
-
-	var reserveErr error
-	result, reserveErr = reserveWorktreeRecovery(
-		runID,
-		repoRoot,
-		wtPath,
-		finalBranch,
-		expectedHEAD,
-		authoritySince,
-	)
-	if reserveErr != nil {
-		return result, reserveErr
-	}
-	if renameErr := os.Rename(wtPath, result.RecoveryPath); renameErr != nil {
-		_ = os.Remove(result.RecoveryMarker)
-		return WorktreeCleanupResult{}, fmt.Errorf(
-			"atomically quarantine finalized worktree %s at %s: %w",
-			wtPath, result.RecoveryPath, renameErr,
-		)
-	}
-	if hooks != nil && hooks.afterRename != nil {
-		hooks.afterRename(result)
-	}
-
-	// os.Rename deliberately leaves the worktree's private `gitdir` backlink
-	// pointing at the old path. Repair that single administrative pointer so
-	// the recovery copy remains a first-class linked worktree. Unlike
-	// `git worktree remove <old>`, repair cannot recursively delete a directory
-	// that a late absolute-path writer recreated.
-	repairCmd, repairCancel := gitCmd("-C", repoRoot, "worktree", "repair", result.RecoveryPath)
-	repairOut, repairErr := repairCmd.CombinedOutput()
-	repairCancel()
-	if repairErr != nil {
-		return result, fmt.Errorf(
-			"worktree quarantined at %s but Git registration repair failed: %w (output: %s)",
-			result.RecoveryPath, repairErr, strings.TrimSpace(string(repairOut)),
-		)
-	}
-	registered, registerErr := registeredWorktree(repoRoot, result.RecoveryPath)
-	if registerErr != nil {
-		return result, fmt.Errorf("worktree quarantined at %s but registration cannot be verified: %w", result.RecoveryPath, registerErr)
-	}
-	if !registered {
-		return result, fmt.Errorf("worktree quarantined at %s but is not registered there", result.RecoveryPath)
-	}
-
-	if guardRef != "" {
-		// releaseCleanupGuard verifies the storage ref and deletes the guard in
-		// one ref transaction. Clear guardRef only on success so the deferred
-		// fallback retains/reports it on a moved branch.
-		releaseGitLocks()
-		if releaseErr := releaseCleanupGuard(repoRoot, guardRef, finalBranch, expectedHEAD); releaseErr != nil {
-			return result, fmt.Errorf("worktree quarantined but cleanup guard retained at %s: %w", guardRef, releaseErr)
-		}
-		guardRef = ""
-	}
-
-	// Re-check the recovery copy after the rename. Any new output makes the
-	// quarantine permanent; it is never fed to a recursive delete.
-	if verifyErr := verifyCleanWorktreeHEAD(result.RecoveryPath, expectedHEAD); verifyErr != nil {
-		result.LateWrite = verifyErr.Error()
-	}
-	if _, statErr := os.Lstat(wtPath); statErr == nil {
-		return result, fmt.Errorf(
-			"original worktree path %s was recreated during quarantine; both it and recovery copy %s were preserved",
-			wtPath, result.RecoveryPath,
-		)
-	} else if !errors.Is(statErr, os.ErrNotExist) {
-		return result, fmt.Errorf(
-			"cannot prove original worktree path %s stayed absent after quarantine at %s: %w",
-			wtPath, result.RecoveryPath, statErr,
-		)
-	}
-
-	// A dirty recovery copy is the evidence: keep it registered and return the
-	// manifest to the operator. Otherwise prove that no same-user process has
-	// a cwd or open descriptor inside it across a quiet window. Only then is
-	// the quarantine eligible for an ordinary, non-forced Git removal.
-	if result.LateWrite != "" {
-		return result, nil
-	}
-	removed, retireErr := retireQuiescentRecovery(
-		repoRoot,
-		wtPath,
-		expectedHEAD,
-		&result,
-		releaseGitLocks,
-		hooks,
-	)
-	if retireErr != nil {
-		return result, retireErr
-	}
-	if !removed {
-		return result, nil
-	}
-	return WorktreeCleanupResult{}, nil
-}
-
-// retireQuiescentRecovery bounds normal cleanup without reopening the
-// check→delete writer race. Once the original path has been renamed, a stale
-// relative writer can reach the checkout only through a cwd/open descriptor;
-// worktreeProcessReferences proves that no same-user process holds either
-// across a short quiet window. A stale absolute-path writer can only recreate
-// originalPath, which is independently checked and (for dispatcher workspaces)
-// cannot collide with a later run because paths are generation-specific.
-//
-// Unsupported or inconclusive process inspection fails closed and retains the
-// recovery worktree. The removal itself is Git's non-forced worktree removal,
-// never os.RemoveAll.
-func retireQuiescentRecovery(
-	repoRoot, originalPath, expectedHEAD string,
-	result *WorktreeCleanupResult,
-	releaseGitLocks func(),
-	hooks *worktreeCleanupTestHooks,
-) (bool, error) {
-	if result == nil || result.RecoveryPath == "" || result.RecoveryMarker == "" {
-		return false, fmt.Errorf("cannot retire recovery worktree without its path and manifest")
-	}
-	recoveryInfo, err := os.Stat(result.RecoveryPath)
-	if err != nil {
-		return false, fmt.Errorf("stat recovery worktree before quiescence proof: %w", err)
-	}
-	originalMode := recoveryInfo.Mode().Perm()
-	hardenedMode := originalMode &^ 0o022
-	if hardenedMode != originalMode {
-		if err := os.Chmod(result.RecoveryPath, hardenedMode); err != nil {
-			result.RetentionReason = "recovery permissions could not be hardened"
-			return false, fmt.Errorf(
-				"worktree retained at %s because group/other write access could not be revoked: %w",
-				result.RecoveryPath,
-				err,
-			)
-		}
-		defer func() {
-			// Restore operator-visible permissions when the recovery is
-			// retained. ENOENT is expected after successful Git removal.
-			_ = os.Chmod(result.RecoveryPath, originalMode)
-		}()
-	}
-	processReferences := cleanupProcessReferences
-	if hooks != nil && hooks.processReferences != nil {
-		processReferences = hooks.processReferences
-	}
-	checkReferences := func() (bool, error) {
-		pids, err := processReferences(result.RecoveryPath, result.authoritySince)
-		if err != nil {
-			result.RetentionReason = "process quiescence could not be proved"
-			return false, err
-		}
-		if len(pids) > 0 {
-			result.RetentionReason = fmt.Sprintf(
-				"live process references recovery worktree (pids: %s)",
-				formatProcessIDs(pids),
-			)
-			return false, nil
-		}
-		return true, nil
-	}
-
-	quiet, err := checkReferences()
-	if err != nil {
-		return false, fmt.Errorf(
-			"worktree retained at %s because process quiescence cannot be proved: %w",
-			result.RecoveryPath,
-			err,
-		)
-	}
-	if !quiet {
-		return false, nil
-	}
-
-	timer := time.NewTimer(worktreeQuiescenceWindow)
-	<-timer.C
-
-	if err := verifyCleanWorktreeHEAD(result.RecoveryPath, expectedHEAD); err != nil {
-		result.LateWrite = err.Error()
-		return false, nil
-	}
-	if _, err := os.Lstat(originalPath); err == nil {
-		result.RetentionReason = "original path was recreated during quiescence check"
-		return false, fmt.Errorf(
-			"original worktree path %s was recreated while recovery copy %s was retained",
-			originalPath,
-			result.RecoveryPath,
-		)
-	} else if !errors.Is(err, os.ErrNotExist) {
-		result.RetentionReason = "original path absence could not be proved"
-		return false, fmt.Errorf(
-			"cannot prove original worktree path %s stayed absent while recovery copy %s was retained: %w",
-			originalPath,
-			result.RecoveryPath,
-			err,
-		)
-	}
-	quiet, err = checkReferences()
-	if err != nil {
-		return false, fmt.Errorf(
-			"worktree retained at %s because process quiescence cannot be re-proved: %w",
-			result.RecoveryPath,
-			err,
-		)
-	}
-	if !quiet {
-		return false, nil
-	}
-
-	// Git must acquire its own administrative locks for worktree removal.
-	// Release our verification locks only after both quiescence snapshots and
-	// the final cleanliness proof.
-	releaseGitLocks()
-	removeCmd, removeCancel := gitCmd("-C", repoRoot, "worktree", "remove", result.RecoveryPath)
-	removeOut, removeErr := removeCmd.CombinedOutput()
-	removeCancel()
-	if removeErr != nil {
-		result.RetentionReason = "non-forced Git removal failed"
-		return false, fmt.Errorf(
-			"remove quiescent recovery worktree %s: %w (output: %s)",
-			result.RecoveryPath,
-			removeErr,
-			strings.TrimSpace(string(removeOut)),
-		)
-	}
-
-	// Preserve the manifest if an absolute-path writer recreated the old
-	// generation during Git removal. The recreated path is never deleted.
-	if _, err := os.Lstat(originalPath); err == nil {
-		result.RetentionReason = "original path was recreated during recovery removal"
-		return false, fmt.Errorf(
-			"original worktree path %s was recreated while quiescent recovery %s was removed; recreated output was preserved",
-			originalPath,
-			result.RecoveryPath,
-		)
-	} else if !errors.Is(err, os.ErrNotExist) {
-		result.RetentionReason = "original path absence could not be proved after recovery removal"
-		return false, fmt.Errorf(
-			"cannot prove original worktree path %s stayed absent after removing recovery %s: %w",
-			originalPath,
-			result.RecoveryPath,
-			err,
-		)
-	}
-	if err := os.Remove(result.RecoveryMarker); err != nil && !errors.Is(err, os.ErrNotExist) {
-		return false, fmt.Errorf(
-			"recovery worktree was removed but manifest %s could not be removed: %w",
-			result.RecoveryMarker,
-			err,
-		)
-	}
-	return true, nil
-}
-
-func formatProcessIDs(pids []int) string {
-	parts := make([]string, 0, len(pids))
-	for _, pid := range pids {
-		parts = append(parts, fmt.Sprintf("%d", pid))
-	}
-	return strings.Join(parts, ",")
-}
-
-type worktreeRecoveryManifest struct {
-	FormatVersion  int       `json:"format_version"`
-	RunID          string    `json:"run_id,omitempty"`
-	RepositoryRoot string    `json:"repository_root"`
-	OriginalPath   string    `json:"original_path"`
-	RecoveryPath   string    `json:"recovery_path"`
-	ExpectedHEAD   string    `json:"expected_head"`
-	FinalBranch    string    `json:"final_branch,omitempty"`
-	AuthoritySince time.Time `json:"authority_since"`
-	QuarantinedAt  time.Time `json:"quarantined_at"`
-}
-
-// reserveWorktreeRecovery chooses a same-parent destination (required for an
-// atomic directory rename) and durably writes a sidecar manifest before the
-// move. A crash on either side of the rename therefore leaves a human-readable
-// breadcrumb containing both possible locations.
-func reserveWorktreeRecovery(
-	runID, repoRoot, wtPath, finalBranch, expectedHEAD string,
-	authoritySince time.Time,
-) (WorktreeCleanupResult, error) {
-	if authoritySince.IsZero() {
-		return WorktreeCleanupResult{}, fmt.Errorf(
-			"cannot reserve worktree recovery without trusted creation time",
-		)
-	}
-	parent := filepath.Dir(wtPath)
-	for attempts := 0; attempts < 16; attempts++ {
-		now := time.Now().UTC()
-		recoveryPath := filepath.Join(parent, fmt.Sprintf(
-			".iterion-recovery-%d-%d-%d",
-			os.Getpid(), now.UnixNano(), cleanupRecoveryNonce.Add(1),
-		))
-		if _, err := os.Lstat(recoveryPath); err == nil {
-			continue
-		} else if !errors.Is(err, os.ErrNotExist) {
-			return WorktreeCleanupResult{}, fmt.Errorf("inspect worktree recovery path %s: %w", recoveryPath, err)
-		}
-
-		markerPath := recoveryPath + ".json"
-		marker, err := os.OpenFile(markerPath, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
-		if errors.Is(err, os.ErrExist) {
-			continue
-		}
-		if err != nil {
-			return WorktreeCleanupResult{}, fmt.Errorf("reserve worktree recovery marker %s: %w", markerPath, err)
-		}
-		manifest := worktreeRecoveryManifest{
-			FormatVersion:  1,
-			RunID:          runID,
-			RepositoryRoot: repoRoot,
-			OriginalPath:   wtPath,
-			RecoveryPath:   recoveryPath,
-			ExpectedHEAD:   expectedHEAD,
-			FinalBranch:    finalBranch,
-			AuthoritySince: authoritySince,
-			QuarantinedAt:  now,
-		}
-		writeErr := json.NewEncoder(marker).Encode(manifest)
-		if writeErr == nil {
-			writeErr = marker.Sync()
-		}
-		if closeErr := marker.Close(); writeErr == nil {
-			writeErr = closeErr
-		}
-		if writeErr != nil {
-			_ = os.Remove(markerPath)
-			return WorktreeCleanupResult{}, fmt.Errorf("write worktree recovery marker %s: %w", markerPath, writeErr)
-		}
-		return WorktreeCleanupResult{
-			RecoveryPath:   recoveryPath,
-			RecoveryMarker: markerPath,
-			authoritySince: authoritySince,
-		}, nil
-	}
-	return WorktreeCleanupResult{}, fmt.Errorf("could not reserve a unique recovery path beside %s", wtPath)
-}
-
-func createCleanupGuard(repoRoot, expectedHEAD string) (string, error) {
-	// The explicit all-zero old OID makes creation compare-and-set: even an
-	// extremely unlikely name collision can never move another cleanup's
-	// guard. The process-local nonce avoids relying solely on UnixNano, whose
-	// resolution is coarse on some platforms.
-	zeroOID := strings.Repeat("0", len(expectedHEAD))
-	guardRef := fmt.Sprintf("refs/iterion/cleanup-guards/%d-%d-%d",
-		os.Getpid(), time.Now().UnixNano(), cleanupGuardNonce.Add(1))
-	cmd, cancel := gitCmd("-C", repoRoot, "update-ref", guardRef, expectedHEAD, zeroOID)
-	out, err := cmd.CombinedOutput()
-	cancel()
-	if err != nil {
-		return "", fmt.Errorf("create cleanup guard %s: %w (output: %s)",
-			guardRef, err, strings.TrimSpace(string(out)))
-	}
-	return guardRef, nil
-}
-
-// releaseCleanupGuard atomically proves that finalBranch still protects
-// expectedHEAD and deletes guardRef. If the branch moved, the transaction fails
-// and the hidden guard remains as the durable recovery ref.
-func releaseCleanupGuard(repoRoot, guardRef, finalBranch, expectedHEAD string) error {
-	if err := gitlib.ValidateBranchName(finalBranch); err != nil {
-		return fmt.Errorf("invalid storage branch %q: %w", finalBranch, err)
-	}
-	transaction := "verify refs/heads/" + finalBranch + " " + expectedHEAD + "\n" +
-		"delete " + guardRef + " " + expectedHEAD + "\n"
-	cmd, cancel := gitCmd("-C", repoRoot, "update-ref", "--stdin")
-	cmd.Stdin = strings.NewReader(transaction)
-	out, err := cmd.CombinedOutput()
-	cancel()
-	if err != nil {
-		return fmt.Errorf("release cleanup guard: %w (output: %s)", err, strings.TrimSpace(string(out)))
-	}
-	return nil
-}
-
-// acquireWorktreeCleanupLocks participates in Git's own lockfile protocol.
-// index.lock blocks new staging/commit operations and HEAD.lock covers detached
-// HEAD updates and symbolic-ref changes. We deliberately do not leave a lock in
-// the common branch-ref namespace: an attached HEAD update remains durable via
-// that branch, while a crash-created stale branch lock could disable the
-// operator's branch indefinitely. Existing worktree-local locks make
-// acquisition fail immediately, so another Git operation wins and cleanup
-// preserves the worktree.
-func acquireWorktreeCleanupLocks(repoRoot, wtPath string) (func(), error) {
-	gitDir := resolveWorktreeGitDir(repoRoot, wtPath)
-	if gitDir == "" {
-		return nil, fmt.Errorf("cannot resolve worktree git directory for cleanup")
-	}
-	lockPaths := []string{
-		filepath.Join(gitDir, "index.lock"),
-		filepath.Join(gitDir, "HEAD.lock"),
-	}
-
-	created := make([]string, 0, len(lockPaths))
-	unlock := func() {
-		for i := len(created) - 1; i >= 0; i-- {
-			_ = os.Remove(created[i])
-		}
-	}
-	for _, lockPath := range lockPaths {
-		f, err := os.OpenFile(lockPath, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
-		if err != nil {
-			unlock()
-			return nil, fmt.Errorf("acquire Git cleanup lock %s: %w", lockPath, err)
-		}
-		if closeErr := f.Close(); closeErr != nil {
-			unlock()
-			_ = os.Remove(lockPath)
-			return nil, fmt.Errorf("close Git cleanup lock %s: %w", lockPath, closeErr)
-		}
-		created = append(created, lockPath)
-	}
-	return unlock, nil
-}
-
 // RecoverFinalize re-runs the worktree promotion step for a run that
 // reached a terminal status but never persisted its finalization metadata
 // (FinalCommit / FinalBranch / MergeStatus). This happens when the daemon
@@ -2022,10 +927,12 @@ func acquireWorktreeCleanupLocks(repoRoot, wtPath string) (func(), error) {
 // the worktree with 11 commits but the studio showing "no commits to
 // merge" because run.json had no final_branch.
 //
-// The recovery is idempotent. A run whose storage branch was already persisted
-// only retries the safe cleanup step; an unfinalized run rebuilds a minimal
-// worktreeContext and calls finalizeWorktree with autoMerge=false so the user
-// retains UI control over the deferred merge.
+// The recovery is idempotent: it bails immediately if the run already
+// has FinalBranch set or if it's not a worktree run. Reads the worktree
+// HEAD via git rev-parse, rebuilds a minimal worktreeContext from the
+// run's persisted RepoRoot/BaseCommit/WorkDir, and calls finalizeWorktree
+// with autoMerge=false so the user retains UI control over the deferred
+// merge (the same default as a non-recovery finalize).
 //
 // Designed to be invoked from the daemon's reconcileOrphans pass at
 // startup so the gap between "daemon up" and "metadata recovered"
@@ -2049,6 +956,9 @@ func RecoverFinalize(ctx context.Context, st store.RunStore, r *store.Run, logge
 		}
 		return nil
 	}
+	if r.FinalBranch != "" || r.FinalCommit != "" {
+		return nil // already finalized
+	}
 	// Finalize any terminally-stopped run that left work in the
 	// worktree. The happy path is `finished` (the original case that
 	// motivated RecoverFinalize). `cancelled` also benefits: when the
@@ -2068,7 +978,7 @@ func RecoverFinalize(ctx context.Context, st store.RunStore, r *store.Run, logge
 	// fires) OR cancel-then-merge (this RecoverFinalize fires on the
 	// `cancelled` status).
 	//
-	// `failed` is also recovered (F-RT-5): a hard failure may
+	// `failed` is now also recovered (F-RT-5): a hard failure may
 	// still leave partial commits the operator wants to inspect, and
 	// without a persistent branch they only survive in reflog. The
 	// `finalSHA == originalTip` guard in finalizeWorktree means a
@@ -2081,69 +991,6 @@ func RecoverFinalize(ctx context.Context, st store.RunStore, r *store.Run, logge
 		// recover
 	default:
 		return nil
-	}
-	if _, err := os.Stat(r.WorkDir); err != nil {
-		if os.IsNotExist(err) {
-			return nil
-		}
-		return fmt.Errorf("stat recovered worktree %s: %w", r.WorkDir, err)
-	}
-	if ownershipErr := verifyFinalizationWorktreeOwnership(st, r); ownershipErr != nil {
-		return fmt.Errorf("refusing recovered worktree mutation: %w", ownershipErr)
-	}
-	registered, registerErr := registeredWorktree(r.RepoRoot, r.WorkDir)
-	if registerErr != nil {
-		return registerErr
-	}
-	if !registered {
-		return fmt.Errorf("refusing to finalize unregistered recovered worktree path %s", r.WorkDir)
-	}
-	// Only a successfully finished run is eligible for automatic cleanup.
-	// Cancelled/failed runs retain their worktree for inspection even after a
-	// storage branch has made committed output durable; ignored or otherwise
-	// non-censused files may still be diagnostically important.
-	cleanupEligible := r.Status == store.RunStatusFinished &&
-		r.WorktreeOwnership != store.WorktreeOwnershipDelegated &&
-		!r.WorktreeCreatedAt.IsZero()
-	if r.Status == store.RunStatusFinished &&
-		r.WorktreeOwnership != store.WorktreeOwnershipDelegated &&
-		r.WorktreeCreatedAt.IsZero() &&
-		logger != nil {
-		logger.Warn(
-			"runtime: RecoverFinalize: run %s predates trusted worktree creation metadata — finalizing but preserving %s",
-			r.ID,
-			r.WorkDir,
-		)
-	}
-	cleanupRecovered := func(finalBranch, expectedHEAD string) error {
-		result, err := cleanupRecoveredWorktreeForRun(
-			r.ID,
-			r.RepoRoot,
-			r.WorkDir,
-			finalBranch,
-			expectedHEAD,
-			r.WorktreeCreatedAt,
-			nil,
-		)
-		if logger != nil && result.RecoveryPath != "" {
-			logger.Warn(
-				"runtime: recovered worktree retained at %s (manifest: %s, late_write=%q, reason=%q)",
-				result.RecoveryPath,
-				result.RecoveryMarker,
-				result.LateWrite,
-				result.RetentionReason,
-			)
-		}
-		return err
-	}
-	// The metadata may have been saved just before a crash that prevented the
-	// normal cleanup. Re-verify the durable ref + clean worktree and finish that
-	// last step for successful runs only.
-	if r.FinalBranch != "" {
-		if !cleanupEligible {
-			return nil
-		}
-		return cleanupRecovered(r.FinalBranch, r.FinalCommit)
 	}
 	wc := worktreeContext{
 		repoRoot:    r.RepoRoot,
@@ -2163,113 +1010,22 @@ func RecoverFinalize(ctx context.Context, st store.RunStore, r *store.Run, logge
 		mergeInto: "none", // skip auto-merge on recovery path; user drives via UI
 	}, logger)
 	if res.FinalCommit == "" && res.FinalBranch == "" {
-		if res.PreserveWorktree {
-			return nil
-		}
-		if !cleanupEligible {
-			return nil
-		}
-		// A clean worktree whose HEAD still equals BaseCommit produced no work.
-		// Remove it with the same conservative checks; future reconciliation is
-		// then a silent no-op because the path no longer exists.
-		return cleanupRecovered("", r.BaseCommit)
+		return nil // worktree gone, HEAD == base, or branch creation failed
 	}
-	// An in-process auto-merge can succeed in Git and then lose only its
-	// metadata SaveRun. Recovery intentionally never performs a NEW merge, but
-	// it must reconcile a merge that is already visible on the currently
-	// checked-out target instead of persisting the misleading "skipped" result
-	// produced by mergeInto:"none" above.
-	if target, mergedCommit, ok := detectRecoveredAutoMerge(r, res.FinalCommit); ok {
-		res.MergedInto = target
-		res.MergedCommit = mergedCommit
-		res.MergeStatus = string(store.MergeStatusMerged)
-		if logger != nil {
-			logger.Info("runtime: recovered already-applied auto-merge for run %s into %s at %s",
-				r.ID, target, shortSHA(mergedCommit))
-		}
-	}
-	updated := *r
-	updated.FinalCommit = res.FinalCommit
-	updated.FinalBranch = res.FinalBranch
-	updated.FinalBranchError = res.FinalBranchError
-	updated.MergeStatus = store.MergeStatus(res.MergeStatus)
+	r.FinalCommit = res.FinalCommit
+	r.FinalBranch = res.FinalBranch
+	r.MergeStatus = store.MergeStatus(res.MergeStatus)
 	if res.MergedInto != "" {
-		updated.MergedInto = res.MergedInto
+		r.MergedInto = res.MergedInto
 	}
 	if res.MergedCommit != "" {
-		updated.MergedCommit = res.MergedCommit
+		r.MergedCommit = res.MergedCommit
 	}
-	// Persist the durable recovery metadata before removing its worktree. If the
-	// save fails, keep both the caller-visible run and the registered worktree
-	// unchanged so retrying with the same pointer cannot bypass persistence.
-	if err := st.SaveRun(ctx, &updated); err != nil {
-		return err
-	}
-	*r = updated
-	if logger != nil && res.FinalBranch != "" {
+	if logger != nil {
 		logger.Info("runtime: recovered finalize for run %s → branch %s (commit %s, status %s)",
 			r.ID, res.FinalBranch, shortSHA(res.FinalCommit), res.MergeStatus)
 	}
-	if res.PreserveWorktree || res.FinalBranch == "" || !cleanupEligible {
-		return nil
-	}
-	return cleanupRecovered(res.FinalBranch, res.FinalCommit)
-}
-
-// detectRecoveredAutoMerge recognizes the narrow crash window where Git merge
-// succeeded but the run metadata save did not. It never mutates Git.
-//
-// The original merge target is necessarily the currently checked-out branch:
-// guardMergeTarget rejects any other target. For a history-preserving merge,
-// FinalCommit being an ancestor is conclusive. For squash, the target's current
-// tree must exactly equal the finalized tree and must have advanced from the
-// recorded base. The latter avoids calling an opted-out empty-tree result
-// "merged".
-func detectRecoveredAutoMerge(r *store.Run, finalCommit string) (target, mergedCommit string, ok bool) {
-	if r == nil || !r.AutoMerge || r.RepoRoot == "" || finalCommit == "" {
-		return "", "", false
-	}
-	targetOut, targetCancel := gitCmd("-C", r.RepoRoot, "symbolic-ref", "--quiet", "--short", "HEAD")
-	targetBytes, targetErr := targetOut.Output()
-	targetCancel()
-	target = strings.TrimSpace(string(targetBytes))
-	if targetErr != nil || target == "" {
-		return "", "", false
-	}
-	mergedCommit = readHEAD(r.RepoRoot)
-	if mergedCommit == "" {
-		return "", "", false
-	}
-	strategy := strings.ToLower(strings.TrimSpace(string(r.MergeStrategy)))
-	if strategy == "" {
-		strategy = "squash"
-	}
-	switch strategy {
-	case "merge":
-		ancestorCmd, ancestorCancel := gitCmd("-C", r.RepoRoot, "merge-base", "--is-ancestor", finalCommit, mergedCommit)
-		ancestorErr := ancestorCmd.Run()
-		ancestorCancel()
-		return target, mergedCommit, ancestorErr == nil
-	case "squash":
-		if mergedCommit == r.BaseCommit {
-			return "", "", false
-		}
-		finalTree := readGitObject(r.RepoRoot, finalCommit+"^{tree}")
-		targetTree := readGitObject(r.RepoRoot, mergedCommit+"^{tree}")
-		return target, mergedCommit, finalTree != "" && finalTree == targetTree
-	default:
-		return "", "", false
-	}
-}
-
-func readGitObject(repoRoot, revision string) string {
-	cmd, cancel := gitCmd("-C", repoRoot, "rev-parse", "--verify", revision)
-	out, err := cmd.Output()
-	cancel()
-	if err != nil {
-		return ""
-	}
-	return strings.TrimSpace(string(out))
+	return st.SaveRun(ctx, r)
 }
 
 // workspaceIsGitRepo reports whether `dir` (or any parent up to /) is

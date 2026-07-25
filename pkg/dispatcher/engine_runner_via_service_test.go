@@ -8,7 +8,6 @@ import (
 	"sort"
 	"sync"
 	"testing"
-	"time"
 
 	iterlog "github.com/SocialGouv/iterion/pkg/log"
 	"github.com/SocialGouv/iterion/pkg/runtime"
@@ -51,15 +50,6 @@ type dispatchOutcome struct {
 	source    *store.RunSource
 	status    store.RunStatus
 	eventKind []string
-}
-
-type recordingRunLauncher struct {
-	spec runview.LaunchSpec
-}
-
-func (l *recordingRunLauncher) LaunchAndWait(_ context.Context, spec runview.LaunchSpec) error {
-	l.spec = spec
-	return nil
 }
 
 // runOneDispatch drives a single EngineRunner.Dispatch of the pause bot and
@@ -184,29 +174,4 @@ func equalStringSets(a, b []string) bool {
 		}
 	}
 	return true
-}
-
-func TestDispatchViaServicePropagatesPreHookWorktreeAuthority(t *testing.T) {
-	launcher := &recordingRunLauncher{}
-	runner := &EngineRunner{
-		workflowPath: "/tmp/authority.bot",
-		launcher:     launcher,
-		logger:       iterlog.Nop(),
-	}
-	authoritySince := time.Now().Add(-time.Second).UTC()
-	err := runner.dispatchViaService(context.Background(), DispatchSpec{
-		RunID:                  "run-authority",
-		WorkspacePath:          "/tmp/workspace",
-		WorktreeAuthoritySince: authoritySince,
-	})
-	if err != nil {
-		t.Fatalf("dispatchViaService: %v", err)
-	}
-	if !launcher.spec.WorktreeAuthoritySince.Equal(authoritySince) {
-		t.Fatalf(
-			"LaunchSpec authority=%s, want dispatcher boundary %s",
-			launcher.spec.WorktreeAuthoritySince.Format(time.RFC3339Nano),
-			authoritySince.Format(time.RFC3339Nano),
-		)
-	}
 }

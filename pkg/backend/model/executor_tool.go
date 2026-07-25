@@ -564,7 +564,6 @@ func (e *ClawExecutor) toolNodeScriptCommand(ctx context.Context, interpreter, s
 		return e.sandbox.Command(ctx, []string{interpreter, scriptBasename}, sandbox.ExecOpts{})
 	}
 	cmd := exec.CommandContext(ctx, interpreter, scriptBasename)
-	configureToolNodeProcessGroup(cmd)
 	// Host path only: sandboxed commands already see the variable from the
 	// container env (the same dir is bind-mounted there). runExtraEnv
 	// carries run-level provisioning (devbox profile PATH), appended

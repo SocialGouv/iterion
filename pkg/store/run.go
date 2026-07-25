@@ -254,27 +254,9 @@ type Run struct {
 	// (e.g. modified-files panel) can locate the run's working tree
 	// without re-deriving it from the runtime.
 	WorkDir string `json:"work_dir,omitempty" bson:"work_dir,omitempty"`
-	// Worktree is true when WorkDir is an isolated linked worktree over which
-	// Iterion has Git finalization authority. WorktreeOwnership distinguishes a
-	// runtime-created/owned worktree from one explicitly delegated by a launcher.
+	// Worktree is true when WorkDir was created by `worktree: auto`,
+	// false when WorkDir is the inherited cwd.
 	Worktree bool `json:"worktree,omitempty" bson:"worktree,omitempty"`
-	// WorktreeOwnership is "managed" for `worktree: auto` paths below the run
-	// store and "delegated" for a pre-existing isolated worktree explicitly
-	// passed through WithWorkDir. Empty is accepted only for legacy managed
-	// records whose WorkDir still matches <store>/worktrees/<run-id>.
-	WorktreeOwnership WorktreeOwnership `json:"worktree_ownership,omitempty" bson:"worktree_ownership,omitempty"`
-	// WorktreeGitDir binds a delegated WorkDir to the linked worktree's private
-	// Git metadata directory. Resume/recovery recomputes and compares it before
-	// committing, promoting, merging, or deleting anything.
-	WorktreeGitDir string `json:"worktree_git_dir,omitempty" bson:"worktree_git_dir,omitempty"`
-	// WorktreeCreatedAt is the trusted lower bound captured before a launcher
-	// starts any run-scoped subprocess and no later than creation of a managed
-	// linked worktree. It is persisted outside that checkout and cannot be
-	// advanced by a process running inside it. Cleanup uses it to distinguish an
-	// unrelated old non-dumpable desktop process from a child that may still
-	// hold the worktree. Delegated launcher worktrees use the launcher's external
-	// ownership marker instead.
-	WorktreeCreatedAt time.Time `json:"worktree_created_at,omitempty" bson:"worktree_created_at,omitempty"`
 	// RepoRoot is the absolute path of the main git repository the
 	// worktree was forked from. Used by the studio's modified-files
 	// panel after the worktree directory is gc'd to compute the diff
@@ -627,12 +609,7 @@ const (
 // event replay. The separate interaction file (interactions/<id>.json) is a
 // convenience for tooling; InteractionQuestions is embedded here for resilience.
 type Checkpoint struct {
-	NodeID string `json:"node_id" bson:"node_id"` // the node where we paused
-	// IncomingEdgeIndex is the 1-based position of the workflow edge selected
-	// to enter NodeID. It disambiguates a resumed node whose multiple incoming
-	// correction loops still have outputs in the checkpoint. Zero means unknown
-	// (legacy checkpoint, workflow entry, or multi-edge convergence).
-	IncomingEdgeIndex  int                       `json:"incoming_edge_index,omitempty" bson:"incoming_edge_index,omitempty"`
+	NodeID             string                    `json:"node_id" bson:"node_id"`                                               // the node where we paused
 	InteractionID      string                    `json:"interaction_id" bson:"interaction_id,omitempty"`                       // pending interaction ID
 	Outputs            map[string]map[string]any `json:"outputs" bson:"outputs"`                                               // per-node outputs accumulated so far
 	LoopCounters       map[string]int            `json:"loop_counters" bson:"loop_counters"`                                   // current loop iteration counts
@@ -649,29 +626,6 @@ type Checkpoint struct {
 	// InteractionQuestions embeds the questions from the interaction record
 	// so that resume is self-sufficient even if the interaction file is deleted.
 	InteractionQuestions map[string]any `json:"interaction_questions,omitempty" bson:"interaction_questions,omitempty"`
-	// InteractionInstructions is the human node's rendered `instructions:`
-	// markdown at the moment of the pause. It otherwise only rides the
-	// human_input_requested event; embedding it here lets projections that
-	// never replay events (e.g. the pipeline board) show the operator the
-	// author's context next to the answer form.
-	InteractionInstructions string `json:"interaction_instructions,omitempty" bson:"interaction_instructions,omitempty"`
-	// InteractionReviewBrief is a short, AI-authored set of review points
-	// validated and stamped by the runtime. It is separate from the authored
-	// instructions so clients can lead with concise decision criteria while
-	// retaining the full source prompt for detail and auditability.
-	InteractionReviewBrief *HumanReviewBrief `json:"interaction_review_brief,omitempty" bson:"interaction_review_brief,omitempty"`
-	// InteractionMedia is the validated set of passive run-file references
-	// attached to the current human turn. It may include browser media,
-	// documents, or structured text. Only metadata is checkpointed; the binary
-	// payload stays in the run's artifact_files store and is fetched through
-	// the tenant-gated artifact-file endpoint.
-	InteractionMedia []ReviewMediaRef `json:"interaction_media,omitempty" bson:"interaction_media,omitempty"`
-	// InteractionReview carries the guided review-gate presentation and action
-	// contract for the current pause. Unlike events, the checkpoint is the
-	// authoritative read side used by projections such as the pipeline board;
-	// persisting this state lets those surfaces submit the reserved review
-	// actions instead of treating the gate as an ordinary human form.
-	InteractionReview *ReviewGateState `json:"interaction_review,omitempty" bson:"interaction_review,omitempty"`
 	// BackendSessionID is the session ID of a blocked backend, enabling
 	// re-invocation with session: inherit on resume.
 	BackendSessionID string `json:"backend_session_id,omitempty" bson:"backend_session_id,omitempty"`
@@ -799,10 +753,6 @@ type Interaction struct {
 	AnsweredAt  *time.Time     `json:"answered_at,omitempty" bson:"answered_at,omitempty"`
 	Questions   map[string]any `json:"questions,omitempty" bson:"questions,omitempty"`
 	Answers     map[string]any `json:"answers,omitempty" bson:"answers,omitempty"`
-	// ReviewBrief mirrors the validated AI-authored brief kept on the pause
-	// checkpoint. Persisting it here keeps the interaction record self-contained
-	// for consumers that load interactions directly instead of replaying events.
-	ReviewBrief *HumanReviewBrief `json:"review_brief,omitempty" bson:"review_brief,omitempty"`
 	// Turns is the ordered companion↔human dialogue for a review gate
 	// (interaction: review). The gate re-pauses on the same interaction ID
 	// each round and appends a turn, so the whole conversation lives here
@@ -819,55 +769,8 @@ type Interaction struct {
 // The companion (an LLM that walks the human through testing the change)
 // and the human alternate turns until the gate squash-merges.
 type InteractionTurn struct {
-	Role    string           `json:"role" bson:"role"`                           // "companion" | "human"
-	Content string           `json:"content,omitempty" bson:"content,omitempty"` // rendered companion message, or the human's reply text
-	Verdict map[string]any   `json:"verdict,omitempty" bson:"verdict,omitempty"` // companion's structured verdict (decision/confidence/blockers)
-	Media   []ReviewMediaRef `json:"media,omitempty" bson:"media,omitempty"`     // validated passive artifact_files refs attached by the companion
-	At      time.Time        `json:"at" bson:"at"`
-}
-
-const (
-	// HumanReviewBriefVersion is the current persisted/wire contract version.
-	HumanReviewBriefVersion = 1
-	// HumanReviewBriefSourceAI is stamped by the runtime after validating
-	// ai_review_points. Model-controlled provenance is never trusted.
-	HumanReviewBriefSourceAI = "ai"
-)
-
-// HumanReviewBrief is a concise AI-authored checklist for one human pause.
-// The runtime is responsible for validating and normalizing Points before this
-// type reaches durable storage; Version and Source are runtime-owned metadata.
-type HumanReviewBrief struct {
-	Version int      `json:"version" bson:"version"`
-	Source  string   `json:"source" bson:"source"`
-	Points  []string `json:"points" bson:"points"`
-}
-
-// ReviewMediaRef points at one passive preview attachment in a run's
-// artifact_files area: image, audio, video, document, or structured data. The
-// historical name is retained for wire compatibility. It deliberately contains
-// no arbitrary URL or inline data: consumers construct the authenticated
-// artifact-file URL from RunID + Path. Kind/MIME/Size are server-derived
-// metadata, never trusted model input.
-type ReviewMediaRef struct {
-	RunID   string `json:"run_id" bson:"run_id"`
-	Path    string `json:"path" bson:"path"`
-	Kind    string `json:"kind" bson:"kind"` // image | audio | video | doc | data
-	MIME    string `json:"mime,omitempty" bson:"mime,omitempty"`
-	Size    int64  `json:"size,omitempty" bson:"size,omitempty"`
-	Caption string `json:"caption,omitempty" bson:"caption,omitempty"`
-}
-
-// ReviewGateState is the self-contained presentation state for a pending
-// `interaction: review` turn. The runtime stores it on the pause checkpoint so
-// clients that do not replay events can render the same guided dialogue and
-// approve/merge/request-changes controls as the run console.
-type ReviewGateState struct {
-	Turns         []InteractionTurn `json:"turns,omitempty" bson:"turns,omitempty"`
-	Posture       string            `json:"posture,omitempty" bson:"posture,omitempty"`
-	MergeStrategy string            `json:"merge_strategy,omitempty" bson:"merge_strategy,omitempty"`
-	MergeInto     string            `json:"merge_into,omitempty" bson:"merge_into,omitempty"`
-	MaxTurns      int               `json:"max_turns,omitempty" bson:"max_turns,omitempty"`
-	ReviewURL     string            `json:"review_url,omitempty" bson:"review_url,omitempty"`
-	Verdict       map[string]any    `json:"verdict,omitempty" bson:"verdict,omitempty"`
+	Role    string         `json:"role" bson:"role"`                           // "companion" | "human"
+	Content string         `json:"content,omitempty" bson:"content,omitempty"` // rendered companion message, or the human's reply text
+	Verdict map[string]any `json:"verdict,omitempty" bson:"verdict,omitempty"` // companion's structured verdict (decision/confidence/blockers)
+	At      time.Time      `json:"at" bson:"at"`
 }

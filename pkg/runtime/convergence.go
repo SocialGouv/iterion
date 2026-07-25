@@ -97,11 +97,6 @@ func (e *Engine) processConvergence(rs *runState, convergenceNodeID string, resu
 		e.logger.Warn("failed to emit convergence_ready: %v", err)
 	}
 
-	// A convergence visit is fed by every successful branch, not by one
-	// sequentially selected edge. Clear the single-edge discriminator so
-	// buildNodeInputRS deliberately merges all resolved incoming mappings.
-	e.setIncomingEdge(rs, nil)
-
 	// Return the convergence node ID — the main loop will execute it normally.
 	return convergenceNodeID, nil
 }
@@ -111,7 +106,6 @@ func (e *Engine) processConvergence(rs *runState, convergenceNodeID string, resu
 // Merges branch outputs/artifacts into the run state and hands back one
 // of the terminal node IDs so the engine's main loop emits run_finished.
 func (e *Engine) processConvergenceTerminal(rs *runState, results []*branchResult) (string, error) {
-	e.setIncomingEdge(rs, nil)
 	for _, r := range results {
 		for nodeID, output := range r.outputs {
 			rs.outputs[nodeID] = output

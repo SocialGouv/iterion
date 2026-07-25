@@ -201,19 +201,13 @@ func RunStudio(ctx context.Context, opts StudioOptions, p *Printer) error {
 		}
 	}
 
-	// Resolve the bot-discovery roots for the boot-scoped consumers (the
-	// embedded dispatcher Manager and the trigger-spine scan below). When
-	// the operator didn't pass --bots-path, fall back to the conventional
+	// Resolve the bot-discovery roots ONCE so the HTTP /api/v1/bots
+	// endpoint and the embedded dispatcher agree on the catalog. When the
+	// operator didn't pass --bots-path, fall back to the conventional
 	// <dir>/{bots,examples,.botz} default — the same set the server's
 	// effectivePaths() uses. Without this, DefaultBotsPaths received raw
 	// nil and the dispatcher could resolve no catalog bot, silently
 	// running the default workflow for every explicit-bot ticket.
-	//
-	// The HTTP server's cfg.Bots.Paths deliberately receives only the
-	// EXPLICIT --bots-path values (below): when unset, effectivePaths()
-	// re-derives the defaults from the live WorkDir on every request, so
-	// /api/v1/bots (and pipeline-ticket bot resolution) follows a studio
-	// project switch instead of staying pinned to the boot workspace.
 	botsPaths := opts.BotsPaths
 	if len(botsPaths) == 0 {
 		botsPaths = botregistry.DefaultPaths(dir)
@@ -237,7 +231,7 @@ func RunStudio(ctx context.Context, opts StudioOptions, p *Printer) error {
 		// via Origin allowlisting; cross-tenant isolation does not
 		// apply because there is exactly one local user.
 		DisableAuth: disableAuth,
-		Bots:        server.BotsConfig{Paths: opts.BotsPaths},
+		Bots:        server.BotsConfig{Paths: botsPaths},
 		Alerts:      alertSettingsFromEnv(opts.Bind, opts.Port),
 		// Team-authored bot store. Local editing goes through /api/files/*
 		// (real filesystem), so this in-memory store is here for parity and to

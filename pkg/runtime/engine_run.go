@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"os"
 	"strings"
-	"time"
 
 	"github.com/SocialGouv/iterion/pkg/botregistry"
 	gitlib "github.com/SocialGouv/iterion/pkg/git"
@@ -63,7 +62,7 @@ func (e *Engine) Run(ctx context.Context, runID string, inputs map[string]any) (
 	// is the meaningful side effect — extracting it would require
 	// returning a deferred-callable that the caller invokes, which
 	// is less clear than keeping the block here.
-	var worktreeCleanup worktreeCleanup
+	var worktreeCleanup func()
 	var wtCtx worktreeContext
 	worktreeActive := false
 	if e.workflow.Worktree == "auto" {
@@ -102,13 +101,7 @@ func (e *Engine) Run(ctx context.Context, runID string, inputs map[string]any) (
 				e.logger.Warn("runtime: workspace %s has no commits yet — running in-place (worktree needs a HEAD to anchor on)", e.workDir)
 			}
 		} else {
-			wtc, cleanup, wtErr := setupWorktree(
-				e.store.Root(),
-				runID,
-				e.workDir,
-				e.worktreeAuthoritySince,
-				e.logger,
-			)
+			wtc, cleanup, wtErr := setupWorktree(e.store.Root(), runID, e.workDir, e.logger)
 			if wtErr != nil {
 				e.markFailedBestEffort(ctx, runID, "worktree setup", wtErr)
 				return fmt.Errorf("runtime: worktree setup: %w", wtErr)
@@ -131,28 +124,6 @@ func (e *Engine) Run(ctx context.Context, runID string, inputs map[string]any) (
 
 	if err := e.runPersistWorkspace(ctx, runID, run, worktreeActive, wtCtx); err != nil {
 		return err
-	}
-	// A launcher may explicitly delegate an already-isolated linked worktree
-	// (dispatcher per-issue workspace, studio-bound directory) even when the
-	// workflow declares worktree:none. Adopt the same Git finalization lifecycle
-	// as a runtime-created worktree, but only after the persisted delegated
-	// identity is independently re-verified. Cleanup remains the launcher's
-	// responsibility (dispatcher after_run + workspace persist policy).
-	if run.Worktree && !worktreeActive && run.WorktreeOwnership == store.WorktreeOwnershipDelegated {
-		if authorityErr := verifyFinalizationWorktreeOwnership(e.store, run); authorityErr != nil {
-			e.markFailedBestEffort(ctx, runID, "delegated worktree authority", authorityErr)
-			return fmt.Errorf("runtime: delegated worktree authority: %w", authorityErr)
-		}
-		delegatedCtx := e.reconstructWorktreeContext(run)
-		if delegatedCtx == nil {
-			delegatedErr := fmt.Errorf("cannot reconstruct delegated worktree %s", run.WorkDir)
-			e.markFailedBestEffort(ctx, runID, "delegated worktree authority", delegatedErr)
-			return fmt.Errorf("runtime: delegated worktree authority: %w", delegatedErr)
-		}
-		wtCtx = *delegatedCtx
-		defer func() {
-			e.finalizeOnExit(ctx, runID, &wtCtx, nil, err)
-		}()
 	}
 
 	// Sandbox lifecycle: when the workflow opts in, start a long-lived
@@ -339,20 +310,8 @@ func (e *Engine) runPersistWorkspace(ctx context.Context, runID string, run *sto
 		// default, a non-git workspace degrades to in-place and must
 		// honestly report Worktree=false so downstream consumers
 		// (resume, finalize, FilesPanel) don't chase a phantom path.
-		run.Worktree = false
-		run.WorktreeOwnership = ""
-		run.WorktreeGitDir = ""
-		run.WorktreeCreatedAt = time.Time{}
+		run.Worktree = worktreeActive
 		if worktreeActive {
-			gitDir, gitDirErr := canonicalExistingPath(wtCtx.gitDir)
-			if gitDirErr != nil {
-				e.markFailedBestEffort(ctx, runID, "resolve managed worktree identity", gitDirErr)
-				return fmt.Errorf("runtime: resolve managed worktree identity: %w", gitDirErr)
-			}
-			run.Worktree = true
-			run.WorktreeOwnership = store.WorktreeOwnershipManaged
-			run.WorktreeGitDir = gitDir
-			run.WorktreeCreatedAt = wtCtx.authoritySince
 			run.RepoRoot = wtCtx.repoRoot
 			run.BaseCommit = wtCtx.originalTip
 		} else if worktreeRoot := gitlib.FindRepoRoot(e.workDir); worktreeRoot != "" && e.workDirDelegated {
@@ -376,16 +335,9 @@ func (e *Engine) runPersistWorkspace(ctx context.Context, runID string, run *sto
 			mainRepoRoot := gitlib.FindMainRepoRoot(e.workDir)
 			if mainRepoRoot != "" && mainRepoRoot != worktreeRoot {
 				if head, herr := gitlib.RevParseHead(e.workDir); herr == nil && head != "" {
-					gitDir := resolveWorktreeGitDir(mainRepoRoot, e.workDir)
-					if canonicalGitDir, gitDirErr := canonicalExistingPath(gitDir); gitDirErr == nil {
-						run.RepoRoot = mainRepoRoot
-						run.BaseCommit = head
-						run.Worktree = true
-						run.WorktreeOwnership = store.WorktreeOwnershipDelegated
-						run.WorktreeGitDir = canonicalGitDir
-					} else if e.logger != nil {
-						e.logger.Warn("runtime: delegated linked worktree %s has no verifiable private Git directory: %v — keeping in-place semantics", e.workDir, gitDirErr)
-					}
+					run.RepoRoot = mainRepoRoot
+					run.BaseCommit = head
+					run.Worktree = true
 				}
 			}
 		}
@@ -516,53 +468,21 @@ func (e *Engine) runInitState(ctx context.Context, runID string, inputs map[stri
 // finalizeOnExit applies the worktree-finalization step at the end of a
 // run. Called from Run() (which captures wtCtx during setupWorktree)
 // and from both resume paths (which reconstruct wtCtx from the
-// persisted run record). Promotion is best-effort, but cleanup is
-// deliberately fail-closed: the worktree is removed only after both the
-// terminal run status and finalization metadata are durably readable.
+// persisted run record). Persistence + cleanup are best-effort: a save
+// failure logs but never fails the run, since the work has completed.
 //
 // Without this on the resume paths, a `worktree: auto` run that paused
 // and resumed via CLI ended with no final_branch / final_commit
 // persisted, the worktree dir leaked, and the run's commits were
 // reachable only via reflog (eligible for `git gc` after ~30 days) —
 // see F-RT-1 in docs/reviews/codebase-2026-05-17.md.
-func (e *Engine) finalizeOnExit(ctx context.Context, runID string, wtCtx *worktreeContext, cleanup worktreeCleanup, loopErr error) {
+func (e *Engine) finalizeOnExit(ctx context.Context, runID string, wtCtx *worktreeContext, cleanup func(), loopErr error) {
 	if wtCtx == nil {
 		return
 	}
 	if loopErr != nil {
 		if e.logger != nil {
 			e.logger.Info("runtime: worktree preserved for inspection: %s", e.workDir)
-		}
-		return
-	}
-	persistedRun, loadErr := e.store.LoadRun(ctx, runID)
-	if loadErr != nil || persistedRun == nil {
-		if e.logger != nil {
-			e.logger.Warn("runtime: finalize: cannot load terminal run metadata: %v — preserving %s", loadErr, wtCtx.wtPath)
-		}
-		return
-	}
-	if persistedRun.Status != store.RunStatusFinished {
-		if e.logger != nil {
-			e.logger.Warn("runtime: finalize: run status is %s, not durably finished — preserving %s", persistedRun.Status, wtCtx.wtPath)
-		}
-		return
-	}
-	// Bind the reloaded metadata back to the exact run-owned worktree before
-	// any WIP banking, branch promotion, merge, or removal. This is required on
-	// resume/review paths in particular: stale or corrupt run.json metadata
-	// must not grant finalization authority over another registered worktree.
-	if persistedRun.ID != runID || !persistedRun.Worktree ||
-		!samePath(persistedRun.WorkDir, wtCtx.wtPath) ||
-		!samePath(persistedRun.RepoRoot, wtCtx.repoRoot) {
-		if e.logger != nil {
-			e.logger.Warn("runtime: finalize: persisted worktree identity changed for run %s — preserving %s", runID, wtCtx.wtPath)
-		}
-		return
-	}
-	if ownershipErr := verifyFinalizationWorktreeOwnership(e.store, persistedRun); ownershipErr != nil {
-		if e.logger != nil {
-			e.logger.Warn("runtime: finalize: worktree ownership cannot be proved for run %s: %v — preserving %s", runID, ownershipErr, wtCtx.wtPath)
 		}
 		return
 	}
@@ -618,20 +538,8 @@ func (e *Engine) finalizeOnExit(ctx context.Context, runID string, wtCtx *worktr
 		mergeStrategy: e.mergeStrategy,
 		autoMerge:     e.autoMerge,
 	}, e.logger)
-	metadataRequired := finRes.FinalCommit != "" || finRes.FinalBranch != "" || finRes.MergedInto != "" || finRes.MergeStatus != "" || finRes.FinalBranchError != ""
-	if metadataRequired {
-		r2, err := e.store.LoadRun(ctx, runID)
-		if err != nil || r2 == nil {
-			finRes.PreserveWorktree = true
-			if e.logger != nil {
-				e.logger.Warn("runtime: reload run before finalization metadata save: %v — preserving %s", err, wtCtx.wtPath)
-			}
-		} else if r2.Status != store.RunStatusFinished {
-			finRes.PreserveWorktree = true
-			if e.logger != nil {
-				e.logger.Warn("runtime: run status changed to %s before finalization metadata save — preserving %s", r2.Status, wtCtx.wtPath)
-			}
-		} else {
+	if finRes.FinalCommit != "" || finRes.FinalBranch != "" || finRes.MergedInto != "" || finRes.MergeStatus != "" || finRes.FinalBranchError != "" {
+		if r2, err := e.store.LoadRun(ctx, runID); err == nil {
 			r2.FinalCommit = finRes.FinalCommit
 			r2.FinalBranch = finRes.FinalBranch
 			r2.FinalBranchError = finRes.FinalBranchError
@@ -642,11 +550,8 @@ func (e *Engine) finalizeOnExit(ctx context.Context, runID string, wtCtx *worktr
 				r2.MergeStrategy = store.MergeStrategy(e.mergeStrategy)
 			}
 			r2.AutoMerge = e.autoMerge
-			if saveErr := e.store.SaveRun(ctx, r2); saveErr != nil {
-				finRes.PreserveWorktree = true
-				if e.logger != nil {
-					e.logger.Warn("runtime: persist finalization metadata: %v — preserving %s", saveErr, wtCtx.wtPath)
-				}
+			if saveErr := e.store.SaveRun(ctx, r2); saveErr != nil && e.logger != nil {
+				e.logger.Warn("runtime: persist finalization metadata: %v", saveErr)
 			}
 		}
 	}
@@ -659,103 +564,16 @@ func (e *Engine) finalizeOnExit(ctx context.Context, runID string, wtCtx *worktr
 		}
 	}
 	if finRes.PreserveWorktree {
-		// Finalization could not prove that both the git result and its run
-		// metadata are durable. Removing the worktree would make recovery
-		// unreliable even when a storage branch happens to exist.
+		// finalize could not bank the worktree's uncommitted changes —
+		// removing it now would silently destroy finished work.
 		if e.logger != nil {
-			e.logger.Warn("runtime: worktree preserved (finalization not durably secured): %s", wtCtx.wtPath)
+			e.logger.Warn("runtime: worktree preserved (unbanked uncommitted changes): %s", e.workDir)
 		}
 		return
-	}
-	expectedHEAD := finRes.FinalCommit
-	if expectedHEAD == "" {
-		expectedHEAD = wtCtx.originalTip
-	}
-	if verifyErr := verifyCleanWorktreeHEAD(wtCtx.wtPath, expectedHEAD); verifyErr != nil {
-		if e.logger != nil {
-			e.logger.Warn("runtime: worktree changed after finalization: %v — preserving %s", verifyErr, wtCtx.wtPath)
-		}
-		return
-	}
-	if finRes.FinalBranch != "" {
-		branchHEAD, branchErr := readBranchCommit(wtCtx.repoRoot, finRes.FinalBranch)
-		if branchErr != nil || branchHEAD != expectedHEAD {
-			if e.logger != nil {
-				e.logger.Warn("runtime: storage branch no longer protects finalized HEAD (branch=%s, err=%v) — preserving %s", finRes.FinalBranch, branchErr, wtCtx.wtPath)
-			}
-			return
-		}
 	}
 	if cleanup != nil {
-		cleanupResult, cleanupErr := cleanup(expectedHEAD, finRes.FinalBranch)
-		e.logWorktreeCleanupResult(cleanupResult, cleanupErr)
+		cleanup()
 	}
-}
-
-func (e *Engine) logWorktreeCleanupResult(result WorktreeCleanupResult, cleanupErr error) {
-	if e.logger == nil {
-		return
-	}
-	if result.RecoveryPath != "" {
-		e.logger.Info(
-			"runtime: finalized worktree retired; recovery copy preserved at %s (manifest: %s)",
-			result.RecoveryPath,
-			result.RecoveryMarker,
-		)
-	}
-	if result.LateWrite != "" {
-		e.logger.Warn(
-			"runtime: late worktree activity detected after final cleanup proof; output remains recoverable at %s: %s",
-			result.RecoveryPath,
-			result.LateWrite,
-		)
-	}
-	if result.RetentionReason != "" {
-		e.logger.Warn(
-			"runtime: recovery worktree retained at %s: %s",
-			result.RecoveryPath,
-			result.RetentionReason,
-		)
-	}
-	if cleanupErr != nil {
-		e.logger.Warn("runtime: finalized worktree cleanup failed: %v", cleanupErr)
-	}
-}
-
-// finalizeReconstructedWorktree gives resume/review paths the same conservative
-// cleanup callback installed by a fresh managed Run. Delegated worktrees are
-// finalized but never removed here because their launcher owns after-run hooks
-// and teardown policy. Historically even managed paths passed nil: refs and
-// metadata were durable, but the linked worktree leaked until daemon
-// reconciliation (and indefinitely for CLI-only users).
-func (e *Engine) finalizeReconstructedWorktree(ctx context.Context, runID string, r *store.Run, loopErr error) {
-	if r == nil || r.ID != runID {
-		if e.logger != nil {
-			e.logger.Warn("runtime: reconstructed finalize: run identity mismatch for %s — preserving worktree", runID)
-		}
-		return
-	}
-	if ownershipErr := verifyFinalizationWorktreeOwnership(e.store, r); ownershipErr != nil {
-		if e.logger != nil {
-			e.logger.Warn("runtime: reconstructed finalize: worktree ownership cannot be proved for run %s: %v — preserving %s", runID, ownershipErr, r.WorkDir)
-		}
-		return
-	}
-	wtCtx := e.reconstructWorktreeContext(r)
-	if wtCtx == nil {
-		return
-	}
-	var cleanup worktreeCleanup
-	if r.WorktreeOwnership != store.WorktreeOwnershipDelegated && !r.WorktreeCreatedAt.IsZero() {
-		cleanup = newWorktreeCleanup(runID, wtCtx.repoRoot, wtCtx.wtPath, r.WorktreeCreatedAt)
-	} else if r.WorktreeOwnership != store.WorktreeOwnershipDelegated && e.logger != nil {
-		e.logger.Warn(
-			"runtime: reconstructed finalize: run %s predates trusted worktree creation metadata — preserving %s",
-			runID,
-			r.WorkDir,
-		)
-	}
-	e.finalizeOnExit(ctx, runID, wtCtx, cleanup, loopErr)
 }
 
 // reconstructWorktreeContext rebuilds a worktreeContext from a persisted
@@ -786,7 +604,6 @@ func (e *Engine) reconstructWorktreeContext(r *store.Run) *worktreeContext {
 		gitDir:         resolveWorktreeGitDir(r.RepoRoot, r.WorkDir),
 		originalBranch: originalBranch,
 		originalTip:    r.BaseCommit,
-		authoritySince: r.WorktreeCreatedAt,
 	}
 }
 

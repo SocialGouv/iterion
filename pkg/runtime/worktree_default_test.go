@@ -3,27 +3,13 @@ package runtime
 import (
 	"context"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"testing"
-	"time"
 
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
 	"github.com/SocialGouv/iterion/pkg/log"
 	"github.com/SocialGouv/iterion/pkg/store"
 )
-
-type noGitWorktreeStore struct {
-	store.RunStore
-}
-
-func (s noGitWorktreeStore) Root() string { return "" }
-
-func (s noGitWorktreeStore) Capabilities() store.Capabilities {
-	caps := s.RunStore.Capabilities()
-	caps.GitWorktree = false
-	return caps
-}
 
 // TestWorkspaceIsGitRepo_TempDirIsNotARepo locks the predicate the engine
 // uses to gate worktree setup: a freshly-created temp directory must NOT
@@ -53,47 +39,6 @@ func TestWorkspaceIsGitRepo_InitializedRepoIsARepo(t *testing.T) {
 	if !workspaceIsGitRepo(sub) {
 		t.Fatalf("workspaceIsGitRepo(%q) = false, want true (parent has .git)", sub)
 	}
-}
-
-func TestEngineRun_PersistsLauncherWorktreeAuthorityBoundary(t *testing.T) {
-	wf := &ir.Workflow{
-		Name:     "wt-launch-authority",
-		Entry:    "fail",
-		Nodes:    map[string]ir.Node{"fail": &ir.FailNode{BaseNode: ir.BaseNode{ID: "fail"}}},
-		Worktree: "auto",
-	}
-	s := tmpStore(t)
-	repo, _ := initBareishRepo(t)
-	authoritySince := time.Now().Add(-time.Second).UTC()
-
-	const runID = "run-launch-authority"
-	eng := New(
-		wf,
-		s,
-		newStubExecutor(),
-		WithWorkDir(repo),
-		WithWorktreeAuthoritySince(authoritySince),
-	)
-	if err := eng.Run(context.Background(), runID, nil); err == nil {
-		t.Fatal("Engine.Run reached fail node without an error")
-	}
-	r, err := s.LoadRun(context.Background(), runID)
-	if err != nil {
-		t.Fatalf("LoadRun: %v", err)
-	}
-	if !r.WorktreeCreatedAt.Equal(authoritySince) {
-		t.Fatalf(
-			"WorktreeCreatedAt=%s, want launcher boundary %s",
-			r.WorktreeCreatedAt.Format(time.RFC3339Nano),
-			authoritySince.Format(time.RFC3339Nano),
-		)
-	}
-	if _, err := os.Stat(r.WorkDir); err != nil {
-		t.Fatalf("failed run's worktree was not preserved: %v", err)
-	}
-	t.Cleanup(func() {
-		_ = exec.Command("git", "-C", repo, "worktree", "remove", "--force", r.WorkDir).Run()
-	})
 }
 
 // TestEngineRun_AutoWorktreeDegradesOnNonGit drives the full engine path
@@ -167,44 +112,6 @@ func TestEngineRun_AutoWorktreeDegradesOnNonGit(t *testing.T) {
 	}
 }
 
-func TestEngineRun_AutoWorktreeRespectsStoreCapability(t *testing.T) {
-	wf := &ir.Workflow{
-		Name:  "wt-cloud-capability",
-		Entry: "start",
-		Nodes: map[string]ir.Node{
-			"start": &ir.ToolNode{
-				BaseNode: ir.BaseNode{ID: "start"},
-				Command:  "true",
-			},
-			"done": &ir.DoneNode{BaseNode: ir.BaseNode{ID: "done"}},
-		},
-		Edges:    []*ir.Edge{{From: "start", To: "done"}},
-		Worktree: "auto",
-	}
-	base := tmpStore(t)
-	cloudLike := noGitWorktreeStore{RunStore: base}
-	repo, _ := initBareishRepo(t)
-	eng := New(wf, cloudLike, newStubExecutor(), WithWorkDir(repo))
-
-	const runID = "run-no-git-worktree-capability"
-	if err := eng.Run(context.Background(), runID, nil); err != nil {
-		t.Fatalf("Engine.Run: %v", err)
-	}
-	r, err := base.LoadRun(context.Background(), runID)
-	if err != nil {
-		t.Fatalf("LoadRun: %v", err)
-	}
-	if r.Worktree {
-		t.Fatalf("run.Worktree=true for a store with GitWorktree=false")
-	}
-	if r.WorkDir != repo {
-		t.Fatalf("run.WorkDir=%q, want launcher clone %q", r.WorkDir, repo)
-	}
-	if _, err := os.Stat(filepath.Join("worktrees", runID)); !os.IsNotExist(err) {
-		t.Fatalf("relative nested worktree was created despite store capability: %v", err)
-	}
-}
-
 // TestEngineRun_ExplicitNoneSkipsWorktreeOnGitRepo confirms `worktree: none`
 // is honored even inside a real git repository: an operator who explicitly
 // opts out gets in-place execution, no worktree, no finalize-merge guard
@@ -267,7 +174,7 @@ func TestEngineRun_ExplicitNoneSkipsWorktreeOnGitRepo(t *testing.T) {
 	}
 }
 
-func TestEngineRun_DelegatedLinkedWorktreeFinalizesAndPreservesForLauncher(t *testing.T) {
+func TestEngineRun_UnmanagedLinkedWorktreeRecordsBaseline(t *testing.T) {
 	wf := &ir.Workflow{
 		Name:  "wt-linked-dispatcher",
 		Entry: "start",
@@ -287,15 +194,9 @@ func TestEngineRun_DelegatedLinkedWorktreeFinalizesAndPreservesForLauncher(t *te
 	repo, originalTip := initBareishRepo(t)
 	linked := filepath.Join(t.TempDir(), "linked-wt")
 	mustRun(t, repo, "git", "worktree", "add", "--detach", linked, "HEAD")
-	t.Cleanup(func() { _ = exec.Command("git", "-C", repo, "worktree", "remove", "--force", linked).Run() })
+	t.Cleanup(func() { mustRun(t, repo, "git", "worktree", "remove", "--force", linked) })
 
-	executor := newStubExecutor()
-	var producedSHA string
-	executor.handlers["start"] = func(map[string]any) (map[string]any, error) {
-		producedSHA = addCommit(t, linked, "delegated.go", "package delegated\n", "feat: delegated output")
-		return map[string]any{}, nil
-	}
-	eng := New(wf, s, executor,
+	eng := New(wf, s, newStubExecutor(),
 		WithWorkDir(linked),
 		WithLogger(log.New(log.LevelWarn, os.Stderr)),
 	)
@@ -312,12 +213,6 @@ func TestEngineRun_DelegatedLinkedWorktreeFinalizesAndPreservesForLauncher(t *te
 	if !r.Worktree {
 		t.Fatalf("run.Worktree = false, want true for an already-isolated linked worktree")
 	}
-	if r.WorktreeOwnership != store.WorktreeOwnershipDelegated {
-		t.Errorf("run.WorktreeOwnership = %q, want delegated", r.WorktreeOwnership)
-	}
-	if r.WorktreeGitDir == "" {
-		t.Error("run.WorktreeGitDir is empty for delegated worktree")
-	}
 	if r.WorkDir != linked {
 		t.Errorf("run.WorkDir = %q, want linked worktree %q", r.WorkDir, linked)
 	}
@@ -326,22 +221,5 @@ func TestEngineRun_DelegatedLinkedWorktreeFinalizesAndPreservesForLauncher(t *te
 	}
 	if r.BaseCommit != originalTip {
 		t.Errorf("run.BaseCommit = %q, want linked worktree HEAD %q", r.BaseCommit, originalTip)
-	}
-	if producedSHA == "" || r.FinalCommit != producedSHA {
-		t.Errorf("run.FinalCommit = %q, want produced SHA %q", r.FinalCommit, producedSHA)
-	}
-	if r.FinalBranch == "" {
-		t.Error("run.FinalBranch is empty after delegated finalization")
-	} else if got, err := readBranchCommit(repo, r.FinalBranch); err != nil || got != producedSHA {
-		t.Errorf("delegated storage branch = %q err=%v, want %q", got, err, producedSHA)
-	}
-	if _, err := os.Stat(linked); err != nil {
-		t.Errorf("delegated linked worktree was removed before launcher hooks/policy: %v", err)
-	}
-	if err := RecoverFinalize(context.Background(), s, r, nil); err != nil {
-		t.Fatalf("RecoverFinalize delegated finalized run: %v", err)
-	}
-	if _, err := os.Stat(linked); err != nil {
-		t.Errorf("reconciliation removed launcher-owned delegated worktree: %v", err)
 	}
 }

@@ -131,17 +131,6 @@ across parallel `isolated:` children, all work the same way — each pause is
 just another answerable review on the parent's card. A child that ends
 `failed`/`failed_resumable`/`cancelled` after its pause fails the parent's
 subbot node (resuming the PARENT re-runs that subbot with a fresh child).
-
-A human node may receive a `media_refs: json` input containing
-`[{"path":"render.png","caption":"What to validate"}]`. Each path must name an
-image, audio, or video file previously written by that run under
-`$ITERION_ARTIFACT_FILES_DIR`. The runtime resolves the paths against the real
-artifact manifest, discards invented/unsafe references, and the pipeline board
-renders the validated media beside the active review form. Guided
-`interaction: review` companions receive the same bounded media manifest and
-can attach relevant files to each turn automatically. Binary bytes never ride
-in the checkpoint or board JSON; only authenticated run-file references do.
-
 Runnable demo: [examples/pipeline-board-demo](../examples/pipeline-board-demo/main.bot).
 
 **The park is restart-safe (re-attach).** The parked parent is an in-memory

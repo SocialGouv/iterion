@@ -190,17 +190,12 @@ func TestDispatcherDispatchAndFinish(t *testing.T) {
 	})
 
 	type capture struct {
-		runID                  string
-		assignee               string
-		worktreeAuthoritySince time.Time
+		runID    string
+		assignee string
 	}
 	dispatched := make(chan capture, 1)
 	runner := &StubRunner{Handler: func(_ context.Context, spec DispatchSpec) error {
-		dispatched <- capture{
-			runID:                  spec.RunID,
-			assignee:               spec.Assignee,
-			worktreeAuthoritySince: spec.WorktreeAuthoritySince,
-		}
+		dispatched <- capture{runID: spec.RunID, assignee: spec.Assignee}
 		return nil
 	}}
 
@@ -217,17 +212,6 @@ func TestDispatcherDispatchAndFinish(t *testing.T) {
 		}
 		if got.assignee != "feature_dev" {
 			t.Fatalf("dispatch spec dropped issue.Assignee: got %q want %q", got.assignee, "feature_dev")
-		}
-		ownerAuthority, err := c.workspaces.AuthoritySinceForRun("fake:1", got.runID)
-		if err != nil {
-			t.Fatalf("read workspace owner authority: %v", err)
-		}
-		if !got.worktreeAuthoritySince.Equal(ownerAuthority) {
-			t.Fatalf(
-				"dispatch worktree authority=%s, want pre-hook owner boundary %s",
-				got.worktreeAuthoritySince.Format(time.RFC3339Nano),
-				ownerAuthority.Format(time.RFC3339Nano),
-			)
 		}
 	case <-time.After(10 * time.Second):
 		t.Fatal("timed out waiting for dispatch")
