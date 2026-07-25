@@ -1,7 +1,18 @@
 name: review-pr
 display_name: Revi
 icon: 🔎
-version: 0.5.3
+version: 0.5.4
+## 0.5.4 — emit reliability: harden the `findings` output contract. The
+## converge/emit LLM sometimes returned `findings` as a PROSE STRING ("4
+## findings kept (1 high…)") instead of the JSON array the schema intends —
+## `findings: json` accepts a string, so nothing rejected it. Downstream that
+## fails JSON.parse → the gate FAIL-CLOSES (blocking=1) and every finding is
+## dropped from the review (0 inline comments), even though total_findings was
+## right. Found live on PR #292 (run 019f98ed): status failure/1-blocking with
+## a "0 findings kept" body. The prompt now emphatically demands a JSON ARRAY
+## OF OBJECTS with a verbatim example and contrasts it with the newline-string
+## `questions` (the likely source of the shape swap). Fail-closed already made
+## this SAFE (never a false green); this makes it not lose findings.
 ## 0.5.3 — declare the `statuses: write` forge scope the merge gate needs
 ## (advisory/provisioning hint; the runtime does not read it). Live e2e on
 ## prod proved the full chain — Revi reviews, the bot sends the gate verdict,
