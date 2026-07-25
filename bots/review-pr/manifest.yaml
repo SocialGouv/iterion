@@ -1,7 +1,14 @@
 name: review-pr
 display_name: Revi
 icon: 🔎
-version: 0.5.0
+version: 0.5.1
+## 0.5.1 — fix: publish_review shell exit-127 crash. The v0.5.0 `questions`
+## channel passed a json array of strings via QUESTIONS={{input.questions}};
+## a tool-node substitution space-joins an all-string array (known engine bug,
+## executor_tool.go:1047) so the 2nd+ question landed in shell command position
+## → the whole review crashed. Questions now flow as a scalar newline-joined
+## string (shell-safe as one escaped token). Found by dogfooding the gate's own
+## PR #292, whose review literally raised a "/revi approve …" question.
 ## 0.5.0 — merge gate: the deterministic publish step posts a "revi/review"
 ## commit status on the PR head SHA (success when 0 findings meet
 ## `gate_severity`, else failure). List that context in branch protection to

@@ -428,9 +428,12 @@ prompt emit_system:
       `replacement` exactly as given. This is the same set you reported —
       do not re-summarise or drop fields.
     - `questions`: the merged, de-duplicated non-blocking questions as a
-      JSON array of strings (empty `[]` when none). Carried forward so
-      the PR summary can show what the reviewers verified/assumed even on
-      a 0-finding review. NOT findings — they never gate or reach the board.
+      SINGLE STRING with ONE QUESTION PER LINE (newline-separated), NOT a
+      JSON array — empty string "" when none. (A downstream shell step
+      interpolates this value; a scalar string is shell-safe, an array is
+      not.) Carried forward so the PR summary can show what the reviewers
+      verified/assumed even on a 0-finding review. NOT findings — they never
+      gate or reach the board.
 
 prompt emit_user:
   Workspace:          {{vars.workspace_dir}}
@@ -484,10 +487,14 @@ schema emit_output:
   ## per-object shape the reviewers emit (file/line/line_end/severity/
   ## category/title/detail/suggestion/replacement/confidence/reviewers).
   findings: json
-  ## Merged non-blocking questions (JSON array of strings) — the
-  ## falsifiability channel surfaced in the report + PR summary body,
-  ## never on the board and never gating.
-  questions: json
+  ## Merged non-blocking questions, ONE PER LINE in a single string (NOT a
+  ## JSON array): an all-string array decodes to []string, which the tool-node
+  ## command substitution space-joins instead of JSON-encoding, breaking the
+  ## downstream publish shell (a question landing in command position → exit
+  ## 127). A scalar string is shell-escaped as one safe token. The
+  ## falsifiability channel surfaced in the report + PR summary body, never on
+  ## the board and never gating.
+  questions: string
 
 schema diff_precheck_output:
   is_empty: bool
@@ -501,20 +508,22 @@ schema diff_precheck_output:
 schema pr_gate_input:
   pr_url: string
   findings: json
-  questions: json
+  ## questions is a scalar string (one question per line), NOT a json array —
+  ## see emit_output.questions for why (shell-safety of the publish command).
+  questions: string
   total_findings: int
 
 schema pr_gate_output:
   has_pr: bool
   pr_url: string
   findings: json
-  questions: json
+  questions: string
   total_findings: int
 
 schema publish_input:
   pr_url: string
   findings: json
-  questions: json
+  questions: string
   total_findings: int
 
 schema publish_output:
@@ -676,13 +685,10 @@ except ValueError:
 if not isinstance(findings, list):
     findings = []
     findings_parse_failed = True
-try:
-    questions = json.loads(os.environ.get('QUESTIONS') or '[]')
-except ValueError:
-    questions = []
-if not isinstance(questions, list):
-    questions = []
-questions = [str(q).strip() for q in questions if str(q).strip()]
+# QUESTIONS arrives as a newline-separated string (NOT JSON): a json array of
+# strings would be space-joined by the tool-command substitution and break this
+# shell (a question in command position -> exit 127). One question per line.
+questions = [q.strip() for q in (os.environ.get('QUESTIONS') or '').split(chr(10)) if q.strip()]
 if not url or not tok:
     emit(False, skipped='no forge publish endpoint bound to this run: launch through an iterion server with a team forge connection covering the PR repo, so it injects forge_publish_url/forge_publish_token', summary='publish skipped: run holds no server-side forge publish grant (and never uses workspace tokens to post).')
 
