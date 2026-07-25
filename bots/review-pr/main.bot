@@ -757,9 +757,14 @@ if gate_enabled:
         for f in findings:
             if not isinstance(f, dict):
                 continue
-            # An off-enum severity ("high " with a space, "blocker", "major",
-            # anything the model wrote outside the four values) is UNKNOWN, and
-            # an unknown severity must block, never silently downgrade to low.
+            # An off-enum severity (a trailing-space high, a synonym like
+            # blocker or major, anything the model wrote outside the four
+            # values) is UNKNOWN, and an unknown severity must block, never
+            # silently downgrade to low. NOTE: keep this python -c body free of
+            # the double-quote character -- the whole body is wrapped by the
+            # shell in a double-quoted argument, so a stray one ends the string
+            # and truncates the script (a silent empty output, no publish).
+            # Same trap as backticks: use plain words in comments here.
             rank = sev_rank.get(str(f.get('severity') or '').strip().lower())
             if rank is None:
                 rank = 0
