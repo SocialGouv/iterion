@@ -108,12 +108,14 @@ Three ways, in order of preference:
    `review_on_sync`) and flips green when the finding is gone.
 2. **`/revi approve [reason]`** — a **maintainer** comments this on the PR to
    force-green the `revi/review` status on the current head, for a finding
-   they dispute. Trust-gated: the commenter must hold real repo rights
-   (`MinAuthorRole` / `AuthorAllowlist`, verified live via the forge
-   permission API) — an arbitrary contributor cannot wave a finding through.
-   The status carries "approved by @user: reason" and links to the comment as
-   the audit trail. It does **not** launch a re-review. *(GitHub + Forgejo
-   today; GitLab `/revi approve` on a note is a follow-on.)*
+   they dispute. Authorized through the **same PR-comment command gate as
+   every other `/command`**: the commenter must hold a live repo role at or
+   above `MinReplierRole` (or be in `AuthorizedRepliers`), verified via the
+   forge permission API, and the review bot's own comment can't self-approve
+   (WhoAmI loop-guard) — an arbitrary contributor cannot wave a finding
+   through. The status carries "approved by @user: reason" and links to the
+   comment as the audit trail. It does **not** launch a re-review. *(GitHub +
+   Forgejo today; GitLab `/revi approve` on a note is a follow-on.)*
 3. **Admin merge-queue bypass** — the last resort, always available to repo
    admins.
 

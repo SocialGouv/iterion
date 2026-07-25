@@ -6,6 +6,7 @@ import (
 	"net/http/httptest"
 	"testing"
 
+	"github.com/SocialGouv/iterion/pkg/webhooks"
 	"github.com/SocialGouv/iterion/pkg/webhooks/prforge"
 )
 
@@ -54,5 +55,42 @@ func TestGitHubComment_ReviewApproveDoesNotLaunch(t *testing.T) {
 	}
 	if launched != 0 {
 		t.Fatalf("/revi approve must NOT launch a bot (launched=%d)", launched)
+	}
+}
+
+// /revi approve authorizes through the SAME PR-comment command gate as every
+// other /command (MinReplierRole / AuthorizedRepliers + WhoAmI loop-guard),
+// keyed on the review-pr route — NOT the issue-author-trust gate. An
+// unauthorized commenter is filtered and no status is posted.
+func TestGitHubComment_ReviewApprove_UsesCommandGate(t *testing.T) {
+	s := newWebhookTestServer(t)
+	var gateCalls int
+	var gotBot string
+	s.webhookPRForgeCommandGate = func(_ context.Context, _ webhooks.Config, _ webhooks.Provider, _ prforge.ParsedNote, route webhooks.CommandRoute) (bool, string, error) {
+		gateCalls++
+		gotBot = route.BotID
+		return false, "replier not authorized", nil // deny
+	}
+	launched := 0
+	s.webhookLaunchBot = func(context.Context, string, map[string]string, string, string, string, map[string]string, map[string]string) (string, error) {
+		launched++
+		return "run-x", nil
+	}
+	cfg, pt := ghConfig(t, s)
+	body := `{"action":"created","repository":{"full_name":"acme/widgets","clone_url":"https://github.com/acme/widgets.git"},"issue":{"number":7,"title":"t","body":"","state":"open","pull_request":{"html_url":"https://github.com/acme/widgets/pull/7"}},"comment":{"id":556,"body":"/revi approve dispute"},"sender":{"login":"mallory"}}`
+	w := httptest.NewRecorder()
+	s.handleGitHubWebhook(w, ghReq(ghCtx(cfg), body, prforge.EventHeaderIssueComment, pt))
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", w.Code, w.Body.String())
+	}
+	if gateCalls != 1 {
+		t.Fatalf("approve must consult the PR-comment command gate exactly once (calls=%d)", gateCalls)
+	}
+	if gotBot != "review-pr" {
+		t.Fatalf("gate must be keyed on the review-pr route, got %q", gotBot)
+	}
+	if launched != 0 {
+		t.Fatalf("denied approve must not launch anything (launched=%d)", launched)
 	}
 }

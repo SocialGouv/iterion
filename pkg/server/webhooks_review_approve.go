@@ -51,6 +51,35 @@ func (s *Server) handlePRForgeReviewApprove(ctx context.Context, w http.Response
 		filtered("/revi approve only applies on a pull request")
 		return
 	}
+	// The review bot must be permitted on this webhook — same admission the
+	// normal command path applies before authorizing a /command.
+	if !cfg.AllowsBot(defaultWebhookBotReviewPR) {
+		filtered("bot " + defaultWebhookBotReviewPR + " not permitted by this webhook")
+		return
+	}
+	// Authorize EXACTLY like every other PR-comment command (not the
+	// issue-author-trust gate): realWebhookPRForgeCommandGate checks the
+	// commenter's live repo role against MinReplierRole (or AuthorizedRepliers),
+	// AND rejects the review bot's own comment via a WhoAmI loop-guard so a
+	// status can't self-approve. A synthetic review-pr route carries the token
+	// binding + role threshold.
+	route := webhooks.CommandRoute{BotID: defaultWebhookBotReviewPR}
+	gate := s.webhookPRForgeCommandGate
+	if gate == nil {
+		gate = s.realWebhookPRForgeCommandGate
+	}
+	authorized, reason2, aerr := gate(ctx, cfg, provider, p, route)
+	if aerr != nil {
+		s.recordTerminalWebhookDelivery(ctx, cfg, meta, webhooks.StatusLaunchError, payloadHash, srcIP, "authz check: "+aerr.Error())
+		httpError(w, http.StatusBadGateway, "authorization check failed")
+		return
+	}
+	if !authorized {
+		filtered("@" + p.AuthorLogin + " not authorized to /revi approve (" + reason2 + ")")
+		return
+	}
+
+	// Authorized: resolve the client to post the approval status.
 	token, terr := s.resolveForgeToken(ctx, cfg, defaultWebhookBotReviewPR)
 	if terr != nil || token == "" {
 		filtered("no forge token to post the approval status (configure a forge_token binding)")
@@ -62,16 +91,6 @@ func (s *Server) handlePRForgeReviewApprove(ctx context.Context, w http.Response
 		return
 	}
 	client := prforgeReplierClient(provider, s.forgeHTTPClient(), baseURL, token)
-
-	// Trust gate: the commenter must hold real repo rights (>= MinAuthorRole),
-	// verified live via CollaboratorPermission (fail-closed without a token).
-	// An arbitrary contributor must NOT be able to wave a finding through.
-	pc, _ := client.(forge.PermissionClient)
-	if !s.authorTrustGate().trusted(ctx, pc, string(provider), p.ProjectPath, p.AuthorLogin, "", cfg.MinAuthorRole, cfg.AuthorAllowlist) {
-		filtered("@" + p.AuthorLogin + " lacks maintainer rights to /revi approve")
-		return
-	}
-
 	gc, ok := client.(forgeGateClient)
 	if !ok {
 		filtered("provider " + string(provider) + " has no commit-status capability")
