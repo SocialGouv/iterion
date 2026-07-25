@@ -43,8 +43,8 @@ greppable, and flagged by diagnostics.
 
 `as name(unbounded)` removes the user iteration cap. Termination is **relocated
 from compile-time to runtime** by two mechanisms in
-[pkg/runtime/engine.go](../pkg/runtime/engine.go) /
-[pkg/runtime/helpers.go](../pkg/runtime/helpers.go):
+[pkg/runtime/engine_resolve.go](../pkg/runtime/engine_resolve.go) and
+[pkg/runtime/edges.go](../pkg/runtime/edges.go):
 
 1. **Fuel** (`resolveLoopMax`): effective ceiling = per-loop fuel, else
    `budget.max_iterations`, else `defaultUnboundedFuel = 1000` — **never 0**, so
@@ -81,7 +81,7 @@ body has no exit edge, so only fuel/liveness can ever stop it).
 ## The static-predictability surface
 
 Compilation is a two-phase pipeline that emits ~110 diagnostics
-(C001–C195 + bundlelint C200–C230). The full catalogue, with severity and fix,
+(C001–C199 plus the async band C240–C242 + bundlelint C200–C230, all sparse ranges). The full catalogue, with severity and fix,
 is in [references/diagnostics.md](references/diagnostics.md); a drift guard
 (`TestDiagCodesAreDocumented`) and a uniqueness guard (`TestDiagCodesAreUnique`)
 in [pkg/dsl/ir/diag_codes_test.go](../pkg/dsl/ir/diag_codes_test.go) keep that

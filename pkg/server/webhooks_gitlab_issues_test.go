@@ -72,7 +72,7 @@ func TestGitLabWebhook_IssueWrongLabelFiltered(t *testing.T) {
 		t.Fatal("a label outside the allowlist must not launch")
 		return "", nil
 	}
-	body := strings.Replace(glLabeledIssue, `"title": "implement"`, `"title": "question"`, -1)
+	body := strings.ReplaceAll(glLabeledIssue, `"title": "implement"`, `"title": "question"`)
 	w := httptest.NewRecorder()
 	s.handleGitLabWebhook(w, glReq(gitlabCtx(glIssueConfig()), body, gitlab.EventHeaderIssue))
 	assertFiltered(t, w)

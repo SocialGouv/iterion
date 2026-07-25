@@ -205,7 +205,7 @@ func (s *Server) ensureBoardCard(ctx context.Context, cfg webhooks.Config, route
 	// webhook launch vars never reaches a board-mode run — the bot then works
 	// off its DSL defaults (e.g. mr_gate.push_back=false strands the campaign
 	// commits on the runner's storage branch instead of the PR).
-	for _, k := range []string{"pr_url", "base_ref", "target_branch", "source_branch", "pr_author", "push_branch", "open_mr", "mr_base"} {
+	for _, k := range []string{"pr_url", "base_ref", "target_branch", "source_branch", "pr_author", "push_branch", "open_mr", "mr_base", "prior_review"} {
 		if v, ok := vars[k]; ok && v != "" {
 			botArgs[k] = v
 		}

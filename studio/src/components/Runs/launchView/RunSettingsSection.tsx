@@ -4,6 +4,10 @@
 // LaunchView owns the override state and feeds it to createRun().
 
 import type { BackendDetectReport } from "@/api/backends";
+import type {
+  PreviewEffectiveKnob,
+  PreviewEffectiveSettings,
+} from "@/api/runs";
 
 import { Select } from "@/components/ui/Select";
 
@@ -13,10 +17,39 @@ export interface RunSettingsSectionProps {
   permissionOverride: string;
   reviewModeOverride: string;
   backendReport: BackendDetectReport | null;
+  // effective is the server-resolved provenance BELOW run-override
+  // (workflow/env/default, from POST /api/runs/preview-cost). The
+  // caption layers the local override on top.
+  effective?: PreviewEffectiveSettings | null;
   onBackendChange: (value: string) => void;
   onCompressChange: (value: string) => void;
   onPermissionChange: (value: string) => void;
   onReviewModeChange: (value: string) => void;
+  /** True when the bot's parsed doc declares a `review_mode` var — the
+   *  hook the resolver's InjectIfDeclared inspects server-side. Bots
+   *  that don't declare one silently ignore an override, so we hide
+   *  the picker instead of offering a no-op. Permission stays visible
+   *  regardless: CLI `--permission` overrides apply to any workflow. */
+  showReviewMode: boolean;
+}
+
+// knobCaption renders "effective: X · from Y" — the override wins when
+// the operator set the select; else the server's workflow/env/default
+// resolution, plus a node-pinned warning when a run override wouldn't
+// reach every node.
+function knobCaption(override: string, knob: PreviewEffectiveKnob | undefined) {
+  if (!override && !knob) return null;
+  const effective = override || knob?.effective || "";
+  const source = override ? "run override" : (knob?.source ?? "");
+  return (
+    <div className="mt-1 text-caption text-fg-subtle">
+      effective: <code>{effective}</code>
+      {source ? <> · from {source}</> : null}
+      {knob?.node_pinned ? (
+        <> · some nodes pin their own (override won’t affect them)</>
+      ) : null}
+    </div>
+  );
 }
 
 export default function RunSettingsSection({
@@ -25,10 +58,12 @@ export default function RunSettingsSection({
   permissionOverride,
   reviewModeOverride,
   backendReport,
+  effective,
   onBackendChange,
   onCompressChange,
   onPermissionChange,
   onReviewModeChange,
+  showReviewMode,
 }: RunSettingsSectionProps) {
   return (
     <section className="mt-6 border-t border-border-default pt-4 mb-6">
@@ -64,6 +99,7 @@ export default function RunSettingsSection({
                 </option>
               ))}
             </Select>
+            {knobCaption(backendOverride, effective?.backend)}
             <div className="mt-1 text-caption text-fg-subtle">
               Overrides the workflow&apos;s default. Nodes that pin a specific{" "}
               <code>backend:</code> keep their pin.
@@ -85,6 +121,7 @@ export default function RunSettingsSection({
               <option value="ultra">ultra — densest output</option>
               <option value="off">off — disable for this run</option>
             </Select>
+            {knobCaption(compressOverride, effective?.compress)}
             <div className="mt-1 text-caption text-fg-subtle">
               Rewrites agent shell commands via the active rewriter plugin (
               <a
@@ -118,6 +155,7 @@ export default function RunSettingsSection({
               <option value="deny">deny — hard-block off-policy tool use (headless)</option>
               <option value="off">off — no gate (default)</option>
             </Select>
+            {knobCaption(permissionOverride, effective?.permission)}
             <div className="mt-1 text-caption text-fg-subtle">
               Anti-prompt-injection gate: tool calls outside the workflow&apos;s{" "}
               <code>allow:</code> list are paused for your approval (
@@ -126,26 +164,28 @@ export default function RunSettingsSection({
             </div>
           </div>
         </div>
-        <div className="grid grid-cols-[160px_1fr] gap-3 items-start">
-          <div>
-            <div className="text-xs font-medium font-mono">review_mode</div>
-            <div className="text-caption text-fg-subtle">review topology</div>
-          </div>
-          <div>
-            <Select
-              value={reviewModeOverride}
-              onChange={(e) => onReviewModeChange(e.currentTarget.value)}
-            >
-              <option value="">auto — resolve from detected providers</option>
-              <option value="mono">mono — single-family review</option>
-              <option value="dual">dual — cross-family review</option>
-            </Select>
-            <div className="mt-1 text-caption text-fg-subtle">
-              Review topology for bots that declare <code>review_mode</code>.
-              Ignored by bots that don&apos;t.
+        {showReviewMode && (
+          <div className="grid grid-cols-[160px_1fr] gap-3 items-start">
+            <div>
+              <div className="text-xs font-medium font-mono">review_mode</div>
+              <div className="text-caption text-fg-subtle">review topology</div>
+            </div>
+            <div>
+              <Select
+                value={reviewModeOverride}
+                onChange={(e) => onReviewModeChange(e.currentTarget.value)}
+              >
+                <option value="">auto — resolve from detected providers</option>
+                <option value="mono">mono — single-family review</option>
+                <option value="dual">dual — cross-family review</option>
+              </Select>
+              <div className="mt-1 text-caption text-fg-subtle">
+                Mono runs the review side against a single provider family;
+                dual splits reviewers across two families for cross-check.
+              </div>
             </div>
           </div>
-        </div>
+        )}
       </div>
     </section>
   );

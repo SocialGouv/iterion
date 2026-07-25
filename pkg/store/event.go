@@ -55,7 +55,35 @@ const (
 	EventHumanInputRequested  EventType = "human_input_requested"
 	EventRunPaused            EventType = "run_paused"
 	EventHumanAnswersRecorded EventType = "human_answers_recorded"
-	EventRunResumed           EventType = "run_resumed"
+	// EventInteractionAnswered fires when a pending ASYNC interaction
+	// (ADR-081, Interaction.Kind == "async") receives its answer — while
+	// the run keeps executing. Distinct from human_answers_recorded, which
+	// marks the answers of a blocking pause at resume time. Data:
+	//   - interaction_id, node_id (the asking node), async: true
+	EventInteractionAnswered EventType = "interaction_answered"
+
+	// asyncEventDataKey marks a human_input_requested event as a
+	// NON-BLOCKING async question (ADR-081) — see IsAsyncHumanInput.
+	asyncEventDataKey           = "async"
+	EventRunResumed   EventType = "run_resumed"
+	// EventRunSteered marks a live-steering intervention on a RUNNING
+	// run (bump_loop / raise_budget), emitted by the engine goroutine
+	// atomically with the in-memory mutation so the timeline and any
+	// reconnecting WS subscriber see exactly what was applied. Data:
+	//   - command: "bump_loop" | "raise_budget"
+	//   - target: loop name (bump_loop) or "" (raise_budget)
+	//   - delta: extra iterations granted (bump_loop)
+	//   - applied / effective: post-apply values (per-command shape)
+	//   - operator: issuing principal when known ("" for local CLI)
+	EventRunSteered EventType = "run_steered"
+	// EventRunHealth is the PERSISTED twin of the ephemeral alert-broker
+	// event: stall / stall_recovered / budget / failure alerts appended
+	// to events.jsonl so the timeline and a reconnecting WS subscriber
+	// keep the episode. The alert Manager ignores this type on Observe
+	// by construction (no detection feedback loop). Data:
+	//   - kind: alert kind ("stall" | "stall_recovered" | …)
+	//   - reason / axis / budget_pct: mirror the alert fields
+	EventRunHealth EventType = "run_health"
 	// EventRunAutoResumed marks a bounded run-level auto-resume (the
 	// `--auto-resume N` / ITERION_AUTO_RESUME loop). Distinct from
 	// EventRunResumed (operator-initiated) so the timeline shows the
@@ -119,6 +147,15 @@ const (
 	//   - has_post_create: whether the spec carries a non-empty
 	//     postCreateCommand
 	EventSandboxStarted EventType = "sandbox_started"
+	// EventSandboxWorkspaceExportFailed fires when a copy-based sandbox
+	// driver (kubernetes) fails to export the pod workspace back to the
+	// host at run end — the run's in-pod commits then stay invisible to
+	// the host-side git metadata (Commits/Files panels) and worktree
+	// finalization, even though a bot-side `git push` may have already
+	// delivered them to the remote. Data:
+	//   - driver: the sandbox driver
+	//   - error: the export failure
+	EventSandboxWorkspaceExportFailed EventType = "sandbox_workspace_export_failed"
 	// EventSandboxClawRoutedViaRunner fires when a sandboxed run
 	// contains a node using backend=claw — the engine forwards the
 	// call to iterion __claw-runner inside the container. Data:
@@ -151,6 +188,27 @@ const (
 	//   - spec_user: the value of Spec.User
 	//   - host_uid: host UID (only emitted on Linux hosts)
 	EventSandboxUIDMismatchWarning EventType = "sandbox_uid_mismatch_warning"
+	// EventSandboxDevboxProvisioned fires when the runtime finds a
+	// `devbox.json` for the bot (bundle root) or the target repo
+	// (workspace root) and provisions it for the run. Two targets:
+	//   - "sandbox": `devbox install` in the container's PostCreate plus
+	//     the resulting profile bin dir prepended to the container PATH;
+	//   - "host": no sandbox is active (every cloud run — the runner pod
+	//     is the isolation boundary — and local no-sandbox runs), so
+	//     `devbox install` runs on the executing host and the profile
+	//     bin dirs are threaded into every host-spawned command's PATH.
+	// Either way, tool nodes — which run a non-interactive `sh -c` that
+	// sources no profile — find the packages. Data:
+	//   - target: "sandbox" | "host"
+	//   - sources: []string of the devbox sources picked up ("repo", "bot"),
+	//     in PATH-precedence order
+	//   - configs: []string of the host devbox.json paths that triggered it
+	//   - bin_dirs: []string of profile bin dirs added to PATH
+	//   - path: the resulting PATH
+	//   - errors: []string (host target only) — provisioning problems
+	//     (devbox binary missing, staging or install failures); the run
+	//     proceeds, the named packages are absent
+	EventSandboxDevboxProvisioned EventType = "sandbox_devbox_provisioned"
 	// EventNetworkBlocked fires every time the iterion CONNECT proxy
 	// rejects a request. Data:
 	//   - host: blocked hostname
@@ -296,4 +354,17 @@ type Event struct {
 	// runview Service / runner wired a callback; 0 when unknown (no
 	// callback, or the workflow declares no budget).
 	ActiveMs int64 `json:"active_ms,omitempty" bson:"active_ms,omitempty"`
+}
+
+// IsAsyncHumanInput reports whether a human_input_requested event marks
+// a NON-BLOCKING async question (ADR-081, ask_user_async): the run keeps
+// executing, so pause-driven consumers (exec-status reducers, stall
+// alerting, pause forms) must skip it. One grep-able helper instead of a
+// hand-rolled Data read at every consumer.
+func IsAsyncHumanInput(evt Event) bool {
+	if evt.Type != EventHumanInputRequested {
+		return false
+	}
+	async, _ := evt.Data[asyncEventDataKey].(bool)
+	return async
 }

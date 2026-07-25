@@ -75,6 +75,10 @@ interface TabsState {
   newEditorTab: (label?: string) => string;
   closeTab: (id: string) => void;
   setActive: (id: string) => void;
+  // clearActiveEditor deselects the active editor tab (→ null) without closing
+  // anything, so the /editor route can show its home/welcome pane again even
+  // while tabs stay open. Used by the "Editor" nav link.
+  clearActiveEditor: () => void;
   // Bump runOpenNonce[runId] — called by navigation-driven opens to
   // signal the log view to re-enforce follow-tail.
   bumpRunOpen: (runId: string) => void;
@@ -245,6 +249,9 @@ export const useTabsStore = create<TabsState>()(
             : s.tabs.map((t) => (t.id === id ? { ...t, hydrated: true } : t));
           return { tabs, [field]: id } as Partial<TabsState>;
         });
+      },
+      clearActiveEditor: () => {
+        set((s) => (s.activeEditorTabId === null ? s : { activeEditorTabId: null }));
       },
       bumpRunOpen: (runId) => {
         if (!runId) return;

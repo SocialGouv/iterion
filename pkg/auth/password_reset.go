@@ -137,18 +137,28 @@ func (s *MemoryPasswordResetStore) Consume(_ context.Context, id string, at time
 
 // RequestPasswordReset mints a one-shot reset token and emails the
 // link. ALWAYS returns nil — account enumeration via this endpoint
-// must be impossible; misses and disabled accounts are logged only.
-// No-op (logged) when the reset store or mailer isn't wired.
+// must be impossible. Unknown emails are silent even server-side
+// (logging them would let an attacker flood the logs with arbitrary
+// PII); disabled accounts and store failures are logged server-side
+// only. No-op (logged) when the reset store or mailer isn't wired.
 func (s *Service) RequestPasswordReset(ctx context.Context, email string) error {
 	if s.resets == nil || s.mailer == nil {
 		s.logf("auth: password reset requested but store/mailer not wired")
 		return nil
 	}
-	u, err := s.store.GetUserByEmail(ctx, identity.NormalizeEmail(email))
+	norm := identity.NormalizeEmail(email)
+	u, err := s.store.GetUserByEmail(ctx, norm)
 	if err != nil {
-		return nil // unknown account — same response as success
+		// Anti-enumeration: an unknown email must be indistinguishable from
+		// success at the API — always nil. Server-side logs stay honest:
+		// a store outage is an error, only a genuine miss is silent.
+		if !errors.Is(err, identity.ErrNotFound) && !errors.Is(err, context.Canceled) {
+			s.logf("auth: reset lookup for %s failed: %v", norm, err)
+		}
+		return nil
 	}
 	if u.Status == identity.UserStatusDisabled {
+		s.logf("auth: reset requested for disabled account %s", u.ID)
 		return nil
 	}
 	tok, _, err := GenerateRandomToken(32)

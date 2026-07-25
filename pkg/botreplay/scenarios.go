@@ -89,24 +89,46 @@ func Scenarios() []Scenario {
 			},
 		},
 		Scenario{
+			// whats-next v3: a roadmap-study synthesis turn — the reply
+			// carries the chantiers/quick-wins/top-3/blind-spots markdown
+			// and dispatch has NOT happened yet (dispatched_ids stays
+			// empty until the operator arbitrates). Hand-authored seed:
+			// a live study spawns 3 Task sub-agents over a real repo
+			// (cost + side-effects), so the fixture freezes the envelope,
+			// not the prose. The assignee scan stays on so any
+			// assignee/bot key that ever enters the turn envelope is
+			// checked against the real catalog.
+			Bot:              "whats-next",
+			Name:             "nexie_study_synthesis",
+			Node:             "nexie",
+			RequiredNonEmpty: []string{"reply"},
+			CheckAssignees:   true,
+			Vars: map[string]string{
+				"scope_notes":     "",
+				"initial_message": "Quels sont les prochains chantiers pour ce trimestre ?",
+			},
+			Input: map[string]any{
+				"operator_message": "Quels sont les prochains chantiers pour ce trimestre ?",
+			},
+		},
+		Scenario{
+			// docs-refresh v3: the campaign's input is the ADVISORY hints
+			// report (help, never obligations) — the termination-contract
+			// OUTPUT schema is unchanged from v2.
 			Bot:              "docs-refresh",
 			Name:             "campaign_docs_aligned",
 			Node:             "campaign",
 			RequiredNonEmpty: []string{"summary"},
 			CheckAssignees:   true, // docs-refresh routes no work to bots; scan must stay clean
 			Input: map[string]any{
-				"total_docs":                  float64(3),
-				"total_anchors":               float64(12),
-				"verified_anchors":            float64(11),
-				"drifted_anchors":             float64(1),
-				"unverifiable_anchors":        float64(0),
-				"manifest_coverage_pct":       float64(91),
-				"coverage_target_pct":         float64(80),
-				"drift_candidates":            []any{},
-				"docs_with_drift_count":       float64(1),
-				"chunked":                     false,
-				"chunk_doc_count":             float64(1),
-				"max_review_chunk_docs":       float64(30),
+				"hints": []any{
+					map[string]any{
+						"doc": "README.md", "line": float64(3), "kind": "missing_path",
+						"value": "cmd/app/old.go", "note": "path cited in the doc not found on disk (cmd/ exists)",
+					},
+				},
+				"hint_count":                  float64(1),
+				"hints_note":                  "1 missing path(s), 0 dead link(s)/anchor(s), 0 unmentioned area(s) — from 4 checkable path(s) + 2 internal link(s) across 3 doc(s); 0 ledger-dismissed excluded",
 				"recently_changed_code_files": []any{},
 				"fail_log":                    "",
 			},

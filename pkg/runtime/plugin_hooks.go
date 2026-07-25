@@ -22,8 +22,10 @@ const pluginHooksSidecar = "plugin-hooks.json"
 // contributed by every enabled plugin into <workDir>/.claude/settings.json,
 // where claude_code discovers them via --setting-sources project. User hooks
 // already in settings.json are preserved (only iterion's own prior injection,
-// tracked in a sidecar, is removed before re-injecting). Best-effort: a broken
-// plugin or unreadable settings file is logged and skipped — never fails a run.
+// tracked in a sidecar, is removed before re-injecting). A broken plugin is
+// logged and skipped; an existing settings.json that cannot be parsed returns
+// an error WITHOUT rewriting the file (callers downgrade to warn + skip, so a
+// run never fails — but the user's file is never destroyed either).
 // No-op when workDir is empty or nothing is (or was) injected.
 func mergePluginHooks(workDir string, logger *iterlog.Logger) error {
 	if workDir == "" {
@@ -59,13 +61,19 @@ func mergePluginHooks(workDir string, logger *iterlog.Logger) error {
 	claudeDir := filepath.Join(workDir, ".claude")
 	settingsPath := filepath.Join(claudeDir, "settings.json")
 	sidecarPath := filepath.Join(claudeDir, bundleMirrorMarkerDir, pluginHooksSidecar)
-	prevBlob := readHooksSidecar(sidecarPath)
+	prevBlob, prevErr := readHooksSidecar(sidecarPath)
+	if prevErr != nil && logger != nil {
+		logger.Warn("runtime/plugin: hooks sidecar: %v — prior injected hooks may be left stale", prevErr)
+	}
 
 	if len(newBlob) == 0 && len(prevBlob) == 0 {
 		return nil // nothing to do, and nothing was ever injected
 	}
 
-	settings := readJSONObject(settingsPath)
+	settings, err := readJSONObject(settingsPath)
+	if err != nil {
+		return fmt.Errorf("runtime/plugin: %w — refusing to rewrite %s", err, settingsPath)
+	}
 	hooks, _ := settings["hooks"].(map[string]any)
 	if hooks == nil {
 		hooks = map[string]any{}
@@ -109,10 +117,10 @@ func mergePluginHooks(workDir string, logger *iterlog.Logger) error {
 	if err := os.MkdirAll(filepath.Dir(sidecarPath), 0o755); err != nil {
 		return fmt.Errorf("runtime/plugin: mkdir managed dir: %w", err)
 	}
-	if err := writeJSON(settingsPath, settings); err != nil {
+	if err := writeJSONFile(settingsPath, settings); err != nil {
 		return fmt.Errorf("runtime/plugin: write settings.json: %w", err)
 	}
-	if err := writeJSON(sidecarPath, newBlob); err != nil {
+	if err := writeJSONFile(sidecarPath, newBlob); err != nil {
 		return fmt.Errorf("runtime/plugin: write hooks sidecar: %w", err)
 	}
 	return nil
@@ -127,32 +135,52 @@ func containsGroup(groups []any, g any) bool {
 	return false
 }
 
-func readHooksSidecar(path string) map[string][]any {
+// readHooksSidecar reads iterion's own bookkeeping of the previously injected
+// hooks blob. A missing sidecar means nothing was ever injected (empty map, no
+// error). A read or parse failure is reported alongside an empty map so the
+// caller can warn and continue: the merge stays additive-correct (user hooks
+// are never removed), but prior injected hook groups may be left stale.
+func readHooksSidecar(path string) (map[string][]any, error) {
 	out := map[string][]any{}
 	data, err := os.ReadFile(path)
 	if err != nil {
-		return out
+		if os.IsNotExist(err) {
+			return out, nil
+		}
+		return out, fmt.Errorf("read %s: %w", path, err)
 	}
-	_ = json.Unmarshal(data, &out)
-	return out
+	if err := json.Unmarshal(data, &out); err != nil {
+		return map[string][]any{}, fmt.Errorf("parse %s: %w", path, err)
+	}
+	if out == nil { // a literal `null` unmarshals into a nil map without error
+		out = map[string][]any{}
+	}
+	return out, nil
 }
 
-// readJSONObject reads path as a JSON object, returning {} on any error
-// (missing/invalid file) so the merge starts from a clean base.
-func readJSONObject(path string) map[string]any {
-	out := map[string]any{}
+// readJSONObject reads path as a JSON object. Only a MISSING file yields an
+// empty map: a file that exists but cannot be read or parsed returns an error,
+// so a caller about to rewrite the file never mistakes a corrupt existing
+// settings file for an empty one (and destroys it on write-back).
+func readJSONObject(path string) (map[string]any, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
-		return out
+		if os.IsNotExist(err) {
+			return map[string]any{}, nil
+		}
+		return nil, fmt.Errorf("read %s: %w", path, err)
 	}
-	_ = json.Unmarshal(data, &out)
-	if out == nil {
+	out := map[string]any{}
+	if err := json.Unmarshal(data, &out); err != nil {
+		return nil, fmt.Errorf("parse %s: %w", path, err)
+	}
+	if out == nil { // a literal `null` unmarshals into a nil map without error
 		out = map[string]any{}
 	}
-	return out
+	return out, nil
 }
 
-func writeJSON(path string, v any) error {
+func writeJSONFile(path string, v any) error {
 	data, err := json.MarshalIndent(v, "", "  ")
 	if err != nil {
 		return err

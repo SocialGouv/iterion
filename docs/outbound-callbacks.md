@@ -124,8 +124,9 @@ attacker-influenced. Before delivering, iterion vets it
   `metadata.google.internal`) are refused;
 - resolution **fails closed**.
 
-This mirrors the SSRF blocklist used by the preview proxy
-(`pkg/server.isPublicUnicast`).
+This mirrors the SSRF guard used by the preview proxy — both call the
+shared [`pkg/secure/httpdial`](../pkg/secure/httpdial/httpdial.go)
+(`ResolvePublicHost` / `IsPublicUnicast`).
 
 ### Allowing private targets (self-host)
 
@@ -150,6 +151,6 @@ network.
 | Run fields | `store.Run.{CallbackURL,CallbackToken,CallbackAnswerNode}` |
 | Queue propagation | `queue.RunMessage.{CallbackURL,…}` |
 | Launch option | `runtime.WithCallback` |
-| Launch API | `launchRunRequest` in `pkg/server/runs.go`; `runview.LaunchSpec` |
+| Launch API | `launchRunRequest` in `pkg/server/runs_launch.go`; `runview.LaunchSpec` |
 | Fired (local) | `runview` `spawnRun`, after the run body |
 | Fired (cloud) | `runner` `processOne`, after `executeRun` |

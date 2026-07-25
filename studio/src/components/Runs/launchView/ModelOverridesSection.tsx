@@ -13,6 +13,7 @@ import { useState } from "react";
 
 import type { BackendDetectReport } from "@/api/backends";
 
+import { Input } from "@/components/ui/Input";
 import { Select } from "@/components/ui/Select";
 
 // One LLM node the operator can retarget.
@@ -78,10 +79,11 @@ function NodeRow({
         <div className="text-caption text-fg-subtle">{node.kind}</div>
       </div>
       <div>
-        <input
+        <Input
+          size="sm"
           type="text"
           list={suggestionsId}
-          className="w-full rounded-md border border-border-default bg-surface-1 px-2 py-1 text-xs font-mono focus:outline-none focus:ring-1 focus:ring-accent"
+          className="font-mono"
           placeholder={inheritModel ? `inherit — ${inheritModel}` : "inherit (bot default)"}
           value={override.model ?? ""}
           onChange={(e) => onChange({ model: e.currentTarget.value })}

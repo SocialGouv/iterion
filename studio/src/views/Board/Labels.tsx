@@ -14,8 +14,11 @@
 // `iterion-label-vocabulary` skill; this view is the human-facing
 // counterpart that bots read via `mcp__iterion_board__list_labels`.
 
-import { useCallback, useEffect, useMemo, useState } from "react";
-import { useLocation } from "wouter";
+import { useCallback, useMemo, useState } from "react";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { Link, useLocation } from "wouter";
+
+import { useHeaderSlot } from "@/components/shared/useHeaderSlot";
 
 import {
   deleteLabel,
@@ -50,26 +53,24 @@ export default function LabelsView() {
 
 function LabelsViewInner() {
   const [, setLocation] = useLocation();
-  const [labels, setLabels] = useState<LabelUsage[] | null>(null);
-  const [loadError, setLoadError] = useState<string | null>(null);
   const [searchQuery, setSearchQuery] = useState("");
   const [dialog, setDialog] = useState<DialogState>({ kind: "none" });
   const action = useAsyncAction();
   const { confirm, dialog: confirmDialog } = useConfirm();
 
-  const refresh = useCallback(async () => {
-    try {
-      const next = await listLabels();
-      setLabels(next);
-      setLoadError(null);
-    } catch (e) {
-      setLoadError(errorMessage(e));
-    }
-  }, []);
+  const queryClient = useQueryClient();
+  const labelsQuery = useQuery<LabelUsage[]>({
+    queryKey: ["board-labels"],
+    queryFn: () => listLabels(),
+  });
+  const labels = labelsQuery.data ?? null;
+  const loadError = labelsQuery.error ? errorMessage(labelsQuery.error) : null;
 
-  useEffect(() => {
-    void refresh();
-  }, [refresh]);
+  // Label ops rewrite the catalogue — re-pull it after each write.
+  const refresh = useCallback(
+    () => queryClient.invalidateQueries({ queryKey: ["board-labels"] }),
+    [queryClient],
+  );
 
   const filtered = useMemo(() => {
     if (!labels) return null;
@@ -127,6 +128,18 @@ function LabelsViewInner() {
     },
     [action, confirm, refresh],
   );
+
+  useHeaderSlot({
+    left: (
+      <span className="flex items-center gap-1.5 text-xs font-medium text-fg-default">
+        <Link href="/board" className="text-fg-muted hover:text-fg-default hover:underline">
+          Board
+        </Link>
+        <span className="text-fg-subtle">/</span>
+        <span>Labels</span>
+      </span>
+    ),
+  });
 
   return (
     <div className="h-full overflow-auto p-4 space-y-3 text-label">

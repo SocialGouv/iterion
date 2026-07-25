@@ -1,4 +1,5 @@
-import { useEffect, useState } from "react";
+import { useState } from "react";
+import { useQuery } from "@tanstack/react-query";
 
 import {
   type ForgeConnection,
@@ -39,22 +40,18 @@ export function RegisterOAuthAppForm({
   const [clientID, setClientID] = useState("");
   const [clientSecret, setClientSecret] = useState("");
   const [githubOrg, setGithubOrg] = useState("");
-  const [myOrgs, setMyOrgs] = useState<string[]>([]);
   const [orgIsCustom, setOrgIsCustom] = useState(false);
   const [busy, setBusy] = useState(false);
 
   // Load the user's GitHub orgs once the github provider is selected, to offer a
-  // dropdown instead of free-text. Empty until they grant read:org via the picker.
-  useEffect(() => {
-    if (!show || provider !== "github") return;
-    let alive = true;
-    getMyGitHubOrgs()
-      .then((o) => alive && setMyOrgs(o))
-      .catch(() => {});
-    return () => {
-      alive = false;
-    };
-  }, [show, provider]);
+  // dropdown instead of free-text. Empty until they grant read:org via the picker
+  // (failures deliberately leave the list empty).
+  const orgsQuery = useQuery({
+    queryKey: ["my-github-orgs"],
+    queryFn: () => getMyGitHubOrgs(),
+    enabled: show && provider === "github",
+  });
+  const myOrgs = orgsQuery.data ?? [];
 
   const pickOrgs = async () => {
     try {

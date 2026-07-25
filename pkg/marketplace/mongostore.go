@@ -80,9 +80,10 @@ func (s *MongoStore) List(ctx context.Context, q Query) ([]Entry, error) {
 	if t := q.Tag; t != "" {
 		and = append(and, bson.M{"tags": t})
 	}
-	if q.Kind == KindPlugin {
+	switch q.Kind {
+	case KindPlugin:
 		and = append(and, bson.M{"kind": string(KindPlugin)})
-	} else if q.Kind == KindBot {
+	case KindBot:
 		// Legacy entries have no kind field; treat missing/empty as bot.
 		and = append(and, bson.M{"$or": bson.A{
 			bson.M{"kind": string(KindBot)},

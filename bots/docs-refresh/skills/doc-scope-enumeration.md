@@ -1,65 +1,59 @@
 ---
 name: doc-scope-enumeration
-description: Contract for the scan_docs tool output — agents must treat doc_files[] as the immutable, complete audit footprint.
+description: Contract for Doki's deterministic documentation footprint, incremental base detection, advisory hints, and writeable set.
 ---
 
-# Doc scope enumeration — the immutable footprint
+# Documentation scope enumeration
 
-The `scan_docs` tool node runs ONCE at the very start of a
-`docs-refresh` run, before any reviewer or fixer. It executes a
-deterministic shell pipeline (`find` over the configured globs +
-`sha1sum` for a footprint hash) and emits:
+`scan_hints` establishes the documentation footprint before each campaign
+pass. Enumeration is deterministic: configured `doc_globs` are resolved,
+hard-excluded directories and `bundle_self_path` are removed, and paths are
+sorted. The same node then derives the ADVISORY hints report from that
+footprint (see the playbook — hints are help, never scope).
 
+Conceptually, its routing/telemetry output contains:
+
+```text
+doc_files                    sorted repository-relative Markdown paths
+doc_count / no_docs          footprint size (zero → the campaign authors an initial set itself)
+mode / incremental_base      run mode; the resolved incremental diff base
+recently_changed_code_files  prioritisation hint (code changed since incremental_base)
+hints / hints_note           the advisory report (see the playbook)
 ```
-scan_output:
-  doc_files:       string[]   # workspace-relative paths, sorted
-  doc_count:       int        # len(doc_files)
-  footprint_hash:  string     # sha1 of newline-joined sorted paths
-  scope_globs:     string[]   # echo of the resolved scope (for transparency)
-```
 
-This output is passed to every reviewer as `input.doc_files[]` and
-echoed onward through `cumulative_audited_pairs`. It is the
-**immutable audit footprint** for the entire run.
+The exact schema in `main.bot` is authoritative.
 
-## What you must do with it
+## Footprint contract
 
-### As a reviewer
+- The doc footprint is what the deterministic enumeration produced — do not
+  silently omit inconvenient files. You MAY create new `.md` files (they
+  are inside the writeable set and join the footprint on the next pass).
+- `recently_changed_code_files` only helps prioritise. It never narrows the
+  documentation or code-verification scope.
+- In `incremental` mode the diff base is auto-detected from the newest
+  `Bot: docs-refresh` commit trailer (or pinned via `diff_since`); on the
+  first run, with no such trailer, the base stays empty and the pass behaves
+  like a full sweep.
 
-1. Read `input.doc_files[]` literally. Do NOT add files (you would
-   exceed your authorisation) and do NOT silently drop files (you
-   would defeat the negative-space check).
-2. Across iterations, the union of `cumulative_audited_pairs ∪
-   audited_pairs` must cover **every** path in `doc_files`. If
-   coverage is incomplete, you must NOT vote `approved=true` —
-   you must list the uncovered file paths as a blocker with
-   `mismatch_kind: ...` only if you actually inspected it and
-   found a problem; or you must spend this iteration auditing
-   them before voting.
-3. If a file in `doc_files[]` was added to the list erroneously by
-   the scanner (e.g. a vendored markdown that should not be in
-   scope), the correct response is to call `ask_user` to flag the
-   scope misconfiguration — not to silently skip the file.
+When the initial footprint is empty there is no separate bootstrap node: the
+`campaign` agent authors a grounded initial set under `docs_dir` itself, and
+those files join the footprint on the next scan.
 
-### As a fixer
+## Campaign writeable set
 
-1. You may only write to paths inside `doc_files[]` and (if
-   `go_comment_globs` is non-empty) Go files inside that scope,
-   restricted to comment edits.
-2. After your fixes, the `fix_output.modified_doc_files[]` you
-   report MUST be a subset of `doc_files[]`. Any path outside
-   that set triggers a blocker on the next iteration.
-3. `fix_output.code_files_touched[]` MUST be empty. The next
-   reviewer will check this mechanically.
+The campaign may modify:
 
-## Why the scanner is a tool, not an agent
+- Markdown files (`.md`) — existing docs and new ones it authors.
 
-`docs/workflow_authoring_pitfalls.md` documents the failure mode
-that led to this design: when the audit set is chosen by an agent,
-the agent can rationalise away files it does not want to audit. By
-moving file enumeration to a deterministic `find` invocation outside
-agent reach, we close the "silent skip" attack vector entirely.
+Do not modify code, configuration, generated files, or build files.
+`scope_check` is the deterministic containment gate: it diffs the whole run
+against its base and fails the pass on any out-of-scope path. Any
+out-of-scope commit must be reverted on the next pass.
 
-The `footprint_hash` is your evidence that this guarantee was
-honoured: if you log it in your verdict reasoning, you've proven
-you read the actual scanner output rather than a paraphrase of it.
+## Why enumeration is deterministic
+
+An agent-selected audit set permits silent omissions. A tool-generated
+footprint makes the doc universe reproducible and leaves scope selection
+outside the agent's discretion — while everything downstream of it (what to
+fix, what to write, what to dismiss) is the agent's judgment, checked by the
+truth gates.

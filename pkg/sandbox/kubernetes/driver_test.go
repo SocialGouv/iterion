@@ -79,19 +79,12 @@ func TestPrepareRejectsMissingImage(t *testing.T) {
 	}
 }
 
-func TestPrepareRequiresUser(t *testing.T) {
-	d := &Driver{namespace: "test"}
-	_, err := d.Prepare(context.Background(), sandbox.Spec{
-		Mode:  sandbox.ModeInline,
-		Image: "alpine:3.20",
-	})
-	if err == nil {
-		t.Fatal("expected rejection of spec with empty User (runAsNonRoot would fail at kubelet)")
-	}
-	if !strings.Contains(err.Error(), "sandbox.user") {
-		t.Errorf("error should mention sandbox.user, got: %v", err)
-	}
-}
+// NOTE: Prepare no longer rejects an empty user — sandbox-by-default
+// (#265) defaults it to the published images' devbox uid; that contract
+// (defaulting + explicit-user precedence) is pinned in
+// driver_defaultuser_test.go. ValidateSpec (the doctor-facing battery,
+// which sees the spec BEFORE Prepare's defaulting) still requires one —
+// see validate_test.go.
 
 func TestPrepareRejectsNonNumericUser(t *testing.T) {
 	d := &Driver{namespace: "test"}

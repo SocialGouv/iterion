@@ -48,6 +48,12 @@ func buildLocalTriggerStore(botsPaths []string, logger *iterlog.Logger) trigger.
 				if err := st.Create(context.Background(), sub); err == nil {
 					n++
 				}
+				continue
+			}
+			if sub, ok := trigger.FromKeepaliveInvocation(uuid.NewString(), "", "", e.Name, origin, inv, now); ok {
+				if err := st.Create(context.Background(), sub); err == nil {
+					n++
+				}
 			}
 		}
 	}
@@ -55,7 +61,7 @@ func buildLocalTriggerStore(botsPaths []string, logger *iterlog.Logger) trigger.
 		return nil
 	}
 	if logger != nil {
-		logger.Info("trigger: %d board subscription(s) loaded from bot manifests", n)
+		logger.Info("trigger: %d subscription(s) loaded from bot manifests", n)
 	}
 	return st
 }

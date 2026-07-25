@@ -35,6 +35,7 @@ func TestPeriodicReconcileFlipsLateOrphan(t *testing.T) {
 	if _, err := seed.CreateRun(context.Background(), id, "wf", nil); err != nil {
 		t.Fatalf("CreateRun: %v", err)
 	}
+	backdateRun(t, seed, id)
 
 	deadline := time.Now().Add(5 * time.Second)
 	for time.Now().Before(deadline) {

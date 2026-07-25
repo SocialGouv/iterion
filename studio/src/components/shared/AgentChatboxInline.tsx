@@ -2,7 +2,7 @@ import { errorMessage } from "@/lib/errorHints";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { Cross1Icon, PlusIcon, TrashIcon } from "@radix-ui/react-icons";
 
-import { Badge, Button, IconButton, Input, Textarea } from "@/components/ui";
+import { Button, IconButton, Input, StatusBadge, Textarea } from "@/components/ui";
 import type { BadgeVariant } from "@/components/ui";
 import MarkdownText from "@/components/Runs/conversation/MarkdownText";
 import { useAsyncAction } from "@/hooks/useAsyncAction";
@@ -322,7 +322,7 @@ export default function AgentChatboxInline({
               key={m.id}
               className="flex items-start gap-2 rounded border border-border-subtle bg-surface-0 px-2 py-1.5"
             >
-              <StatusBadge status={m.status} />
+              <StatusBadge variant={statusVariant[m.status]} label={m.status} />
               <div className="flex-1 text-body text-fg-default">
                 <MarkdownText value={m.text} size="sm" />
                 {m.skill_refs && m.skill_refs.length > 0 && (
@@ -368,10 +368,6 @@ const statusVariant: Record<QueuedUserMessage["status"], BadgeVariant> = {
   consumed: "success",
   cancelled: "neutral",
 };
-
-function StatusBadge({ status }: { status: QueuedUserMessage["status"] }) {
-  return <Badge variant={statusVariant[status]}>{status}</Badge>;
-}
 
 function filterVisible(
   all: QueuedUserMessage[],

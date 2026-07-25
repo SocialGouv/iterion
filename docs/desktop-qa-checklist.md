@@ -1,5 +1,3 @@
-[← docs index](README.md) · [← desktop-qa.md](desktop-qa.md)
-
 # Desktop — release QA matrix
 
 This is the **per-platform sign-off sheet** the team walks before tagging a desktop release. It complements [desktop-qa.md](desktop-qa.md) (the developer-facing smoke checklist focused on AssetServer / runtime-injection regressions) by adding the user-facing scenarios and the assignment grid that says *who* tested *what* on *which platform*.
@@ -53,7 +51,7 @@ For every platform row, walk every scenario column. Mark `✓` (pass), `✗` (fa
 
 ### 5. Run (workflow execution)
 
-- [ ] Open the `pr_refine_single_model_backend.bot` file scaffolded by `iterion init` (or any shipped workflow under `examples/`, e.g. `bots/feature-dev/main.bot`).
+- [ ] Open a `main.bot` scaffolded by `iterion bots create` (or any shipped workflow, e.g. `bots/feature-dev/main.bot`).
 - [ ] Click **Run** → live console renders events as they stream.
 - [ ] Scrubber: drag back and forth across iterations; per-iteration node detail loads.
 - [ ] Resume a paused run via the resume button — picks up from the checkpoint without re-running upstream.

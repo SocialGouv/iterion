@@ -1,0 +1,81 @@
+name: feed-watch
+display_name: Vigie
+icon: 🔭
+version: 1.1.1
+description: |
+  Universal feed-watch + digest bot (Huginn-style veille pipeline as a
+  single bot). Two run modes over one file-backed state in the target
+  workspace, selected with --var mode=:
+
+  collect (zero-LLM — runs with no LLM credential): polls every
+  configured RSS/Atom/RDF feed with a stdlib parser, dedups against a
+  per-category seen-items FIFO (ids + urls, cross-source), and queues
+  the fresh items in pending.jsonl.
+
+  digest (one LLM step): snapshots a category's queue (empty queue →
+  done at zero cost), then an editorial agent groups same-story items,
+  web_fetches the top articles to ground the takeaways, semantically
+  dedups against the previously sent digests, ranks by importance and
+  writes ONE chat-ready markdown message; a deterministic tool POSTs it
+  to the configured Mattermost/Slack incoming webhooks and clears
+  exactly the digested items from the queue.
+
+  Everything workspace-specific (categories, feeds, editorial guidance
+  and language, webhook sinks, cadences) lives in the target repo's
+  config file (default feed-watch.json) + the `webhooks` secret — no
+  feed, prompt language or channel is baked into the bot. Requires
+  python3 (stdlib only) on the execution host.
+
+  Hardened against untrusted config: the editorial guidance feeds the LLM
+  behind a permission gate (WebFetch-only, so an injected prompt can't
+  reach a shell or the mounted secrets), a deterministic link firewall
+  rejects any digest URL not drawn from the collected items, and feed
+  fetching refuses private/loopback/metadata addresses and non-http(s)
+  schemes by default (opt into internal feeds with
+  --var allow_private_feeds=true on a trusted deployment).
+when_to_use: |
+  Use to run a recurring technology/news watch over RSS/Atom feeds with
+  LLM-synthesized digests delivered to chat (Mattermost/Slack incoming
+  webhooks): schedule `mode=collect` runs to poll feeds cheaply
+  (zero-LLM), and per-category `mode=digest` runs (daily/weekly) to
+  synthesize and deliver. Replaces a Huginn RSS → dedup → digest → LLM
+  → webhook scenario one-for-one. Not for one-shot research questions
+  (use a plain research bot) and it never edits code.
+author: SocialGouv (devthejo) — bots/feed-watch/main.bot
+schema_version: 1
+
+invocations:
+  ## Poll all categories' feeds into the pending queues (zero-LLM).
+  - kind: schedule
+    mode: direct
+    context_vars: { mode: collect }
+    schedule: { suggested_cron: "0 5 * * *" }
+  ## Per-category digest — add one schedule per category with
+  ## `--var mode=digest --var category=<key>` (see skills/feed-config.md
+  ## for the full iterion-schedule recipe).
+  - kind: schedule
+    mode: direct
+    context_vars: { mode: digest }
+    schedule: { suggested_cron: "0 8 * * 1" }
+
+## Scoped config-share surface: what a non-operator may edit from a share URL
+## (pkg/configshare). The operator mints a share for one category; the mint
+## expands {category} and pins these exact paths — feeds + editorial are
+## editable, digest_title is read-only context, and everything else (other
+## categories, the `sinks` routing) stays off-limits. A share can never exceed
+## this. Adding this block is all a bot needs to gain the config-share editor.
+config_share:
+  config_path: feed-watch.json
+  editor_title: "Éditeur de veilles"
+  editor_description: "Gérez les sources et l'éditorial de vos veilles, ainsi que leur fréquence de publication."
+  editable_paths:
+    - "categories.{category}.feeds"
+    - "categories.{category}.editorial"
+  visible_paths:
+    - "categories.{category}.digest_title"
+
+## Studio launch-form hierarchy: `primary` inputs render top-level in
+## the declared order; `hidden` vars are internal plumbing kept out of
+## the form (still settable via --var / bot_args).
+launch:
+  primary: [mode, category]

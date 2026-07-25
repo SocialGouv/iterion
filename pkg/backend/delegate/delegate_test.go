@@ -451,8 +451,10 @@ func (m *mockBackend) Execute(_ context.Context, _ Task) (Result, error) {
 func TestSystemPromptModeForBackend(t *testing.T) {
 	cases := map[string]SystemPromptMode{
 		BackendClaudeCode: SystemPromptAppendToNative,
+		BackendGrok:       SystemPromptAppendToNative,
 		BackendClaw:       SystemPromptAuthoredBase,
 		BackendCodex:      SystemPromptStandalone,
+		BackendKimi:       SystemPromptStandalone,
 		"unknown":         SystemPromptStandalone,
 	}
 	for backend, want := range cases {

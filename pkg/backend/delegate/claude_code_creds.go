@@ -85,8 +85,52 @@ func settingSourcesFromEnv() []claudesdk.SettingSource {
 //     hand. ANTHROPIC_API_KEY in env (if present) takes precedence
 //     via the CLI's own resolution; we don't set anything in that
 //     case so the inherited env wins.
-func anthropicCredOptsForCLI(ctx context.Context, providerHint string) []claudesdk.Option {
-	return credEnvToOpts(anthropicCredEnvForCLI(ctx, providerHint))
+func anthropicCredOptsForCLI(ctx context.Context, providerHint string, sandboxed bool) []claudesdk.Option {
+	return credEnvToOpts(anthropicCredEnvForCLI(ctx, providerHint, sandboxed))
+}
+
+// taskSandboxed reports whether the task's CLI subprocess executes inside
+// a REAL sandbox container. The noop driver is a host passthrough — its
+// Run handle is non-nil but every command still runs on the host with
+// host paths, so it must NOT trigger in-container credential remapping.
+func taskSandboxed(task Task) bool {
+	return task.Sandbox != nil && task.Sandbox.Driver() != "noop"
+}
+
+// ambientAnthropicEnvForSandbox returns the Anthropic-flavoured
+// credential vars present in THIS process' environment, for explicit
+// forwarding into a sandboxed CLI spawn.
+//
+// On the host path the claude subprocess inherits os.Environ()
+// (hostSpawnEnv / the SDK's default spawn), so an ambient
+// CLAUDE_CODE_OAUTH_TOKEN or ANTHROPIC_API_KEY — the prod runner's
+// forfait delivery channel (the `iterion-forfait` secret sets
+// CLAUDE_CODE_OAUTH_TOKEN on the runner pod) — authenticates every run
+// with NO ctx credentials. A sandboxed spawn inherits the CONTAINER env
+// instead (kubectl/docker exec + the SDK env map only), so that ambient
+// credential silently vanished: observed live on the first sandboxed
+// cloud run (019f8a6c) — every claude exec, main pass and formatting
+// pass alike, ran with env_keys=1 and died `Not logged in · Please run
+// /login` (4s, 0 tokens), surfacing as the opaque "structured output
+// invalid: missing required field …". Values are forwarded VERBATIM —
+// the CLI applies its own precedence among them, exactly as it does for
+// inherited host env.
+func ambientAnthropicEnvForSandbox() map[string]string {
+	env := map[string]string{}
+	for _, k := range []string{
+		"ANTHROPIC_API_KEY",
+		"ANTHROPIC_AUTH_TOKEN",
+		"ANTHROPIC_BASE_URL",
+		"CLAUDE_CODE_OAUTH_TOKEN",
+	} {
+		if v := os.Getenv(k); v != "" {
+			env[k] = v
+		}
+	}
+	if len(env) == 0 {
+		return nil
+	}
+	return env
 }
 
 // credEnvToOpts converts a credential env map into claudesdk.Option
@@ -198,9 +242,19 @@ func providerFingerprint(env map[string]string) string {
 // forfait was resolved. Setting the vars to "" overrides the inheritance so the
 // CLI falls through to the OAuth token. Mirrors how the z.ai/anthropic hints
 // clear the base-URL/token to stop a stale value leaking in.
-func claudeForfaitEnv(dir string) map[string]string {
+// When sandboxed is true the CLI runs INSIDE a sandbox container where the
+// host temp dir does not exist, so CLAUDE_CONFIG_DIR is pointed at the
+// in-sandbox writable config dir the runtime seeded from the ADR-070
+// forfait file secret (secrets.ClaudeCodeSandboxConfigDir) — while the
+// CLAUDE_CODE_OAUTH_TOKEN below is still read from the HOST file, which the
+// runner's refresher keeps fresh per spawn (ADR-082 Phase 3 blocker 3).
+func claudeForfaitEnv(dir string, sandboxed bool) map[string]string {
+	configDir := dir
+	if sandboxed {
+		configDir = secrets.ClaudeCodeSandboxConfigDir
+	}
 	env := map[string]string{
-		"CLAUDE_CONFIG_DIR":    dir,
+		"CLAUDE_CONFIG_DIR":    configDir,
 		"ANTHROPIC_API_KEY":    "",
 		"ANTHROPIC_AUTH_TOKEN": "",
 		"ANTHROPIC_BASE_URL":   "",
@@ -241,7 +295,10 @@ func readForfaitAccessToken(dir string) string {
 	return v.ClaudeAIOauth.AccessToken
 }
 
-func anthropicCredEnvForCLI(ctx context.Context, providerHint string) map[string]string {
+// sandboxed reports that the CLI subprocess will execute inside a REAL
+// sandbox container (docker/kubernetes — not the host-passthrough noop), so
+// forfait credential paths must resolve to in-container locations.
+func anthropicCredEnvForCLI(ctx context.Context, providerHint string, sandboxed bool) map[string]string {
 	creds, hasCreds := secrets.CredentialsFromContext(ctx)
 
 	// providerHint=="anthropic": force Anthropic-direct. Skip the z.ai
@@ -252,16 +309,27 @@ func anthropicCredEnvForCLI(ctx context.Context, providerHint string) map[string
 				return map[string]string{"ANTHROPIC_API_KEY": k}
 			}
 			if d := creds.OAuthDir(string(secrets.OAuthKindClaudeCode)); d != "" {
-				return claudeForfaitEnv(d)
+				return claudeForfaitEnv(d, sandboxed)
 			}
 		}
 		// Process-env path: rely on ANTHROPIC_API_KEY inherited by the
 		// CLI. Actively clear ANTHROPIC_BASE_URL / ANTHROPIC_AUTH_TOKEN
-		// so a stale z.ai value from the parent env doesn't leak in.
-		return map[string]string{
+		// so a stale z.ai value from the parent env doesn't leak in. A
+		// sandboxed spawn inherits the CONTAINER env, not this process'
+		// — forward the ambient Anthropic-direct credentials explicitly
+		// (keeping the z.ai suppression: the hint forces direct).
+		env := map[string]string{
 			"ANTHROPIC_BASE_URL":   "",
 			"ANTHROPIC_AUTH_TOKEN": "",
 		}
+		if sandboxed {
+			for _, k := range []string{"ANTHROPIC_API_KEY", "CLAUDE_CODE_OAUTH_TOKEN"} {
+				if v := os.Getenv(k); v != "" {
+					env[k] = v
+				}
+			}
+		}
+		return env
 	}
 
 	// providerHint=="zai": force the z.ai facade. Prefer in-context
@@ -305,7 +373,7 @@ func anthropicCredEnvForCLI(ctx context.Context, providerHint string) map[string
 		case creds.APIKey(secrets.ProviderAnthropic) != "":
 			return map[string]string{"ANTHROPIC_API_KEY": creds.APIKey(secrets.ProviderAnthropic)}
 		case creds.OAuthDir(string(secrets.OAuthKindClaudeCode)) != "":
-			return claudeForfaitEnv(creds.OAuthDir(string(secrets.OAuthKindClaudeCode)))
+			return claudeForfaitEnv(creds.OAuthDir(string(secrets.OAuthKindClaudeCode)), sandboxed)
 		}
 	}
 	// Env-fallback: ZAI_API_KEY is the convenience knob for desktop
@@ -323,6 +391,15 @@ func anthropicCredEnvForCLI(ctx context.Context, providerHint string) map[string
 				"ANTHROPIC_AUTH_TOKEN": zai,
 			}
 		}
+	}
+	// Host path: nil = let the spawned CLI inherit whatever ambient
+	// Anthropic env this process carries (os.Environ passthrough). A
+	// sandboxed spawn has no such inheritance — forward the ambient
+	// credentials explicitly so a runner-pod-level forfait
+	// (CLAUDE_CODE_OAUTH_TOKEN) or API key reaches the in-container CLI
+	// exactly as it would a host spawn.
+	if sandboxed {
+		return ambientAnthropicEnvForSandbox()
 	}
 	return nil
 }

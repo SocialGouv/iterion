@@ -161,6 +161,9 @@ func (b *CLIAgentBackend) Execute(ctx context.Context, task Task) (Result, error
 			env = append(env, k+"="+v)
 		}
 	}
+	// Run-level provisioning (devbox profile PATH) — appended last so on
+	// a duplicate key the run-level value wins.
+	env = append(env, task.ExtraEnv...)
 
 	timeout := b.Timeout
 	if timeout <= 0 {
@@ -389,7 +392,7 @@ func parseStreamJSONText(stdout string) (text, sessionID string, tokens int) {
 			continue
 		}
 		var ev map[string]any
-		if json.Unmarshal([]byte(line), &ev); ev == nil {
+		if err := json.Unmarshal([]byte(line), &ev); err != nil || ev == nil {
 			continue
 		}
 		if sid, ok := ev["session_id"].(string); ok && sid != "" {

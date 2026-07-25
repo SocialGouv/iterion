@@ -15,6 +15,8 @@ function card(partial: Partial<PipelineBoardCard>): PipelineBoardCard {
     kind: "run",
     column_id: "opened",
     title: "t",
+    executed_nodes: 0,
+    total_nodes: 0,
     tree_executed_nodes: 0,
     tree_total_nodes: 0,
     created_at: "2026-01-01T00:00:00Z",

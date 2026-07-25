@@ -2,16 +2,14 @@ import { describe, expect, it } from "vitest";
 
 import type { RunStatus, RunSummary, WireWorkflow } from "@/api/runs";
 import {
-  UNATTRIBUTED_NODE,
-  childStatusTone,
   childTabLabel,
-  firstOpenChild,
   groupChildrenByNode,
   isSettledRunStatus,
   statusDotClass,
-  subbotContinuation,
-  subbotNodeIds,
 } from "./subRuns";
+
+// The unattributed bucket key groupChildrenByNode uses internally.
+const UNATTRIBUTED_NODE = "";
 
 function child(partial: Partial<RunSummary>): RunSummary {
   return {
@@ -52,13 +50,6 @@ function demoWf(overrides?: Partial<WireWorkflow>): WireWorkflow {
     ...overrides,
   };
 }
-
-describe("subbotNodeIds", () => {
-  it("lists subbot-kind nodes and returns empty for a null wf", () => {
-    expect(subbotNodeIds(demoWf())).toEqual(["produce_episode"]);
-    expect(subbotNodeIds(null)).toEqual([]);
-  });
-});
 
 describe("groupChildrenByNode", () => {
   it("groups children by parent_node_id", () => {
@@ -144,43 +135,6 @@ describe("groupChildrenByNode", () => {
   });
 });
 
-describe("subbotContinuation", () => {
-  it("returns edges into and out of the subbot node", () => {
-    const { entryFeeders, successors } = subbotContinuation(
-      demoWf(),
-      "produce_episode",
-    );
-    expect(entryFeeders).toEqual(["dispatch"]);
-    expect(successors).toEqual(["collect"]);
-  });
-
-  it("includes conditional edges and dedupes", () => {
-    const wf = demoWf({
-      edges: [
-        { from: "dispatch", to: "produce_episode" },
-        { from: "produce_episode", to: "collect" },
-        { from: "produce_episode", to: "retry", condition: "failed" },
-        { from: "produce_episode", to: "retry", condition: "flaky", negated: true },
-      ],
-    });
-    expect(subbotContinuation(wf, "produce_episode").successors).toEqual([
-      "collect",
-      "retry",
-    ]);
-  });
-
-  it("is empty for a null wf or an empty node id", () => {
-    expect(subbotContinuation(null, "produce_episode")).toEqual({
-      entryFeeders: [],
-      successors: [],
-    });
-    expect(subbotContinuation(demoWf(), "")).toEqual({
-      entryFeeders: [],
-      successors: [],
-    });
-  });
-});
-
 describe("childTabLabel", () => {
   it("prefers shard_label, then name, then workflow_name #n", () => {
     expect(
@@ -190,40 +144,6 @@ describe("childTabLabel", () => {
       "brave-otter",
     );
     expect(childTabLabel(child({}), 2)).toBe("episode #3");
-  });
-});
-
-describe("childStatusTone", () => {
-  it("maps run statuses to dot tones consistent with STATUS_VARIANT", () => {
-    expect(childStatusTone("running")).toEqual({ variant: "info", pulse: true });
-    expect(childStatusTone("paused_waiting_human")).toEqual({
-      variant: "warning",
-      pulse: false,
-    });
-    expect(childStatusTone("paused_operator")).toEqual({
-      variant: "info",
-      pulse: false,
-    });
-    expect(childStatusTone("finished")).toEqual({
-      variant: "success",
-      pulse: false,
-    });
-    expect(childStatusTone("failed")).toEqual({
-      variant: "danger",
-      pulse: false,
-    });
-    expect(childStatusTone("failed_resumable")).toEqual({
-      variant: "danger",
-      pulse: false,
-    });
-    expect(childStatusTone("cancelled")).toEqual({
-      variant: "neutral",
-      pulse: false,
-    });
-    expect(childStatusTone("queued")).toEqual({
-      variant: "neutral",
-      pulse: false,
-    });
   });
 });
 
@@ -253,18 +173,5 @@ describe("isSettledRunStatus", () => {
     ];
     for (const s of settled) expect(isSettledRunStatus(s)).toBe(true);
     for (const s of open) expect(isSettledRunStatus(s)).toBe(false);
-  });
-});
-
-describe("firstOpenChild", () => {
-  it("picks the first unsettled child, else the first child, else null", () => {
-    const finished = child({ id: "c1", status: "finished" });
-    const running = child({ id: "c2", status: "running" });
-    const paused = child({ id: "c3", status: "paused_waiting_human" });
-    expect(firstOpenChild([finished, running, paused])?.id).toBe("c2");
-    expect(firstOpenChild([finished, child({ id: "c4", status: "failed" })])?.id).toBe(
-      "c1",
-    );
-    expect(firstOpenChild([])).toBeNull();
   });
 });

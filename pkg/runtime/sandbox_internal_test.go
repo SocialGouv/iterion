@@ -37,7 +37,7 @@ func TestPickMode(t *testing.T) {
 		{"cli auto wins over auto workflow (no contradiction)", autoWf, "auto", "", "auto", "cli flag --sandbox"},
 		{"cli auto on empty workflow", emptyWf, "auto", "", "auto", "cli flag --sandbox"},
 		{"workflow inline wins when no cli", inlineWf, "", "auto", "inline", "workflow sandbox: block"},
-		{"global default fallback", emptyWf, "", "auto", "auto", "ITERION_SANDBOX_DEFAULT"},
+		{"global default fallback", emptyWf, "", "auto", "auto", "global sandbox default"},
 		{"nil workflow + cli", nil, "auto", "", "auto", "cli flag --sandbox"},
 		{"nothing set", emptyWf, "", "", "", "default (no sandbox)"},
 	}
@@ -72,7 +72,7 @@ func TestResolveSandboxSpecAutoFallbackToDefaultImage(t *testing.T) {
 	autoWf := &ir.Workflow{Sandbox: &ir.SandboxSpec{Mode: string(sandbox.ModeAuto)}}
 
 	t.Run("auto + no devcontainer + default image -> synthetic spec", func(t *testing.T) {
-		spec, source, err := resolveSandboxSpec(autoWf, repoNoDC, "", "", "ghcr.io/test/sandbox:v1")
+		spec, source, _, err := resolveSandboxSpec(autoWf, repoNoDC, "", "", "ghcr.io/test/sandbox:v1")
 		if err != nil {
 			t.Fatalf("unexpected err: %v", err)
 		}
@@ -91,7 +91,7 @@ func TestResolveSandboxSpecAutoFallbackToDefaultImage(t *testing.T) {
 	})
 
 	t.Run("auto + no devcontainer + empty default -> historical error", func(t *testing.T) {
-		_, _, err := resolveSandboxSpec(autoWf, repoNoDC, "", "", "")
+		_, _, _, err := resolveSandboxSpec(autoWf, repoNoDC, "", "", "")
 		if err == nil {
 			t.Fatal("expected error when no devcontainer and no default image, got nil")
 		}
@@ -101,7 +101,7 @@ func TestResolveSandboxSpecAutoFallbackToDefaultImage(t *testing.T) {
 	})
 
 	t.Run("auto + devcontainer present -> default image is ignored", func(t *testing.T) {
-		spec, _, err := resolveSandboxSpec(autoWf, repoWithDC, "", "", "ghcr.io/test/sandbox:v1")
+		spec, _, _, err := resolveSandboxSpec(autoWf, repoWithDC, "", "", "ghcr.io/test/sandbox:v1")
 		if err != nil {
 			t.Fatalf("unexpected err: %v", err)
 		}
@@ -124,7 +124,7 @@ func TestResolveSandboxSpecAutoFallbackToDefaultImage(t *testing.T) {
 			User:            "node",
 			WorkspaceFolder: "/workspace",
 		}}
-		spec, source, err := resolveSandboxSpec(richWf, repoNoDC, "", "", "ghcr.io/test/sandbox:v1")
+		spec, source, _, err := resolveSandboxSpec(richWf, repoNoDC, "", "", "ghcr.io/test/sandbox:v1")
 		if err != nil {
 			t.Fatalf("unexpected err: %v", err)
 		}
@@ -475,4 +475,109 @@ func TestCollectHostStateMounts(t *testing.T) {
 			t.Errorf("got %d mounts, want 0", len(mounts))
 		}
 	})
+}
+
+func TestResolveSandboxSpecDefaultTierDegrades(t *testing.T) {
+	// Global-default tier (sandbox-by-default): outside a git repo the
+	// default is not applicable — quiet skip, no error, no skipReason.
+	spec, source, skipReason, err := resolveSandboxSpec(&ir.Workflow{}, "", "", "auto", "ghcr.io/test/sandbox:v1")
+	if err != nil {
+		t.Fatalf("default-tier auto outside a repo must not error, got: %v", err)
+	}
+	if spec != nil {
+		t.Fatalf("expected nil spec, got %+v", spec)
+	}
+	if skipReason != "" {
+		t.Errorf("outside-a-repo skip must be quiet (no event), got skipReason %q", skipReason)
+	}
+	if !strings.Contains(source, "not applicable") {
+		t.Errorf("source = %q, want it to note the default was not applicable", source)
+	}
+
+	// An EXPLICIT workflow request keeps the hard error.
+	autoWf := &ir.Workflow{Sandbox: &ir.SandboxSpec{Mode: string(sandbox.ModeAuto)}}
+	_, _, _, err = resolveSandboxSpec(autoWf, "", "", "", "ghcr.io/test/sandbox:v1")
+	if err == nil {
+		t.Fatal("explicit auto outside a repo must error")
+	}
+
+	// Unreadable devcontainer: default tier degrades WITH a visible
+	// skipReason; explicit request errors.
+	repo := t.TempDir()
+	if mkErr := os.MkdirAll(filepath.Join(repo, ".devcontainer"), 0o755); mkErr != nil {
+		t.Fatalf("mkdir: %v", mkErr)
+	}
+	if wErr := os.WriteFile(filepath.Join(repo, ".devcontainer", "devcontainer.json"), []byte("{not json"), 0o644); wErr != nil {
+		t.Fatalf("write: %v", wErr)
+	}
+	// With a default image available, a broken devcontainer falls back to
+	// it (still sandboxed); only WITHOUT a default image does the run
+	// degrade to unsandboxed with a visible skipReason.
+	spec, _, skipReason, err = resolveSandboxSpec(&ir.Workflow{}, repo, "", "auto", "ghcr.io/test/sandbox:v1")
+	if err != nil {
+		t.Fatalf("default-tier auto with a broken devcontainer must not error, got: %v", err)
+	}
+	if spec == nil || spec.Image != "ghcr.io/test/sandbox:v1" {
+		t.Fatalf("expected default-image fallback spec, got %+v", spec)
+	}
+	if skipReason != "" {
+		t.Errorf("default-image fallback must not carry a skipReason, got %q", skipReason)
+	}
+	spec, _, skipReason, err = resolveSandboxSpec(&ir.Workflow{}, repo, "", "auto", "")
+	if err != nil {
+		t.Fatalf("default-tier auto, broken devcontainer, no default image: must degrade, got err: %v", err)
+	}
+	if spec != nil {
+		t.Fatalf("expected nil spec, got %+v", spec)
+	}
+	if skipReason == "" {
+		t.Error("no-default-image degrade must carry a skipReason (sandbox_skipped event)")
+	}
+	if _, _, _, err = resolveSandboxSpec(autoWf, repo, "", "", "ghcr.io/test/sandbox:v1"); err == nil {
+		t.Fatal("explicit auto with a broken devcontainer must error")
+	}
+}
+
+func TestResolveGlobalSandboxDefault(t *testing.T) {
+	t.Setenv("ITERION_SANDBOX_DEFAULT", "")
+	if got := ResolveGlobalSandboxDefault(); got != "auto" {
+		t.Errorf("unset env: got %q, want auto (sandbox-by-default)", got)
+	}
+	t.Setenv("ITERION_SANDBOX_DEFAULT", "NONE")
+	if got := ResolveGlobalSandboxDefault(); got != "none" {
+		t.Errorf("env none: got %q, want none", got)
+	}
+}
+
+func TestResolveSandboxSpecDefaultTierUnusableDevcontainerFallsBack(t *testing.T) {
+	repo := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(repo, ".devcontainer"), 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	// A devcontainer the sandbox refuses (privileged runArgs) — the
+	// ambient default must fall back to the default image, not to
+	// unsandboxed execution.
+	if err := os.WriteFile(filepath.Join(repo, ".devcontainer", "devcontainer.json"),
+		[]byte(`{"image":"x","runArgs":["--privileged"]}`), 0o644); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	spec, source, skipReason, err := resolveSandboxSpec(&ir.Workflow{}, repo, "", "auto", "ghcr.io/test/sandbox:v1")
+	if err != nil {
+		t.Fatalf("default-tier auto with unusable devcontainer must not error, got: %v", err)
+	}
+	if skipReason != "" {
+		t.Fatalf("must not degrade to unsandboxed (skipReason %q)", skipReason)
+	}
+	if spec == nil || spec.Image != "ghcr.io/test/sandbox:v1" {
+		t.Fatalf("expected default-image spec, got %+v", spec)
+	}
+	if !strings.Contains(source, "devcontainer unusable") {
+		t.Errorf("source = %q, want it to note the unusable devcontainer", source)
+	}
+
+	// Explicit workflow auto keeps the hard error.
+	autoWf := &ir.Workflow{Sandbox: &ir.SandboxSpec{Mode: string(sandbox.ModeAuto)}}
+	if _, _, _, err := resolveSandboxSpec(autoWf, repo, "", "", "ghcr.io/test/sandbox:v1"); err == nil {
+		t.Fatal("explicit auto with unusable devcontainer must error")
+	}
 }

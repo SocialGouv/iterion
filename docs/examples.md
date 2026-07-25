@@ -1,46 +1,76 @@
-[← Documentation index](README.md) · [← Iterion](../README.md)
+# 🤖 Bots and examples
 
-# Examples
+Iterion ships a maintained fleet of production bots — a co-CTO, a feature
+builder, security auditors, a dependency upgrader, and more — each a
+declarative `.bot` you can run, inspect, or fork. The repository keeps two
+things deliberately separate:
 
-The [`examples/`](../examples/) directory ships a curated set of
-proven, productized bots and one actively-developed workflow.
+- [`bots/`](../bots/) contains the maintained bot catalogue. Each bot is a folder with a `main.bot`, a `manifest.yaml`, and any skills or resources it needs.
+- [`examples/`](../examples/) contains focused DSL and integration demos. They are teaching fixtures, not the product bot catalogue.
 
-> **Extensions.** Iterion runs workflows from `.bot` files; packaged
-> bundles use `.botz`. Any other extension is rejected at the CLI,
-> server, dispatcher, and studio boundaries
-> ([`pkg/dsl/workflowfile`](../pkg/dsl/workflowfile/workflowfile.go) is
-> the single source of truth).
+Iterion runs `.bot` sources and packaged `.botz` bundles. Other workflow extensions are rejected consistently at the CLI, server, dispatcher, and studio boundaries; [`pkg/dsl/workflowfile`](../pkg/dsl/workflowfile/workflowfile.go) is the source of truth.
 
-## 🤖 Productized bots (folder-per-bot under [`examples/`](../examples/))
+## Embedded dispatcher catalogue
 
-All bots below are also wired as embedded dispatcher assignees by
-[`pkg/cli/dispatch_defaults.go`](../pkg/cli/dispatch_defaults.go), so
-`iterion dispatch` (with no config) recognises their names out of the box.
-See the catalogue and decision tree in
-[`bots/whats-next/skills/iterion-bot-catalog.md`](../bots/whats-next/skills/iterion-bot-catalog.md).
+The release binary embeds these nine general-purpose bots for zero-config dispatcher use. The checked-in folders remain the editable sources; `task templates:dispatch-bots` refreshes the embedded copies.
 
-| Persona | Bot | Description |
+| Persona | Bot | Purpose |
 |---|---|---|
-| 🧭 Nexie | [`whats-next/`](../bots/whats-next/) | Operator-loop bot: explore → elicit → roadmap → materialise the chosen `next_action` as kanban issues; pairs with `iterion dispatch` |
-| 🛠️ Featurly | [`feature_dev/`](../bots/feature-dev/) | Self-driven feature development bot: plan → implement → review → refine loop with judge gates |
-| 🌿 Billy | [`branch_improve_loop/`](../bots/branch-improve-loop/) | Branch-scope variant of the alternating improve loop with auto-commit between iterations |
-| 🌍 Willy | [`whole_improve_loop/`](../bots/whole-improve-loop/) | Alternating Claude/GPT review-and-fix pattern with cross-family streak detection (whole-repo scope) |
-| 📚 Doki | [`docs-refresh/`](../bots/docs-refresh/) | Detect & fix doc/code drift across README, `CLAUDE.md`, and `docs/**/*.md` (alternating Claude/GPT review with a mechanical coverage gate) |
-| 🔎 Revi | [`review_pr/`](../bots/review-pr/) | Read-only cross-family code review; publishes findings to the native board (no fix, no commit) |
-| 🛡️ Seki | [`sec-audit-source/`](../bots/sec-audit-source/) | Source-code SAST audit (gitleaks/trivy/semgrep/gosec/bandit) with per-repo cross-run FP memory — see [docs/security-bots.md](security-bots.md) |
-| 📦 Depsy | [`sec-audit-deps/`](../bots/sec-audit-deps/) | Supply-chain malware/CVE audit on installed deps (npm/pip/go/…) + host-wide package cache — see [docs/security-bots.md](security-bots.md) |
+| 🧭 Nexie | [`whats-next`](../bots/whats-next/) | Conversational co-CTO: inspect the repo and board, recommend work, curate tickets, and dispatch the right bot. |
+| 🛠️ Featurly | [`feature-dev`](../bots/feature-dev/) | Deliver one feature through an adaptive implementation campaign and deterministic verification gates. |
+| 🌿 Billy | [`branch-improve-loop`](../bots/branch-improve-loop/) | Review and improve the branch diff, committing verified fixes in stride until convergence. |
+| 🌍 Willy | [`whole-improve-loop`](../bots/whole-improve-loop/) | Apply one cross-cutting improvement axis across an existing codebase, site by site. |
+| 📚 Doki | [`docs-refresh`](../bots/docs-refresh/) | Align existing documentation with code using one adaptive campaign over a deterministic drift manifest; never edits code. |
+| 🔎 Revi | [`review-pr`](../bots/review-pr/) | Read-only pull/merge-request review with grounded findings and forge/board publication. |
+| 🛡️ Seki | [`sec-audit-source`](../bots/sec-audit-source/) | Read-only source security audit using SAST, secret scanning, triage, and false-positive memory. |
+| 📦 Depsy | [`sec-audit-deps`](../bots/sec-audit-deps/) | Read-only dependency malware/CVE audit with a cross-run package cache. |
+| ⬆️ Renovacy | [`secured-renovacy`](../bots/secured-renovacy/) | Multi-stack dependency upgrades with security, compatibility, build, and review gates. |
 
-## 🧪 Minimal DSL demos
+`iterion dispatch` also exposes a `default` alias. Run `iterion bots list` to inspect the catalogue visible from the current workspace.
 
-Small, self-contained `.bot` files that each isolate one feature:
+## Additional maintained bots
+
+These bots are shipped in the repository and are discoverable by the CLI and studio when `bots/` is in the search path, but they are not copied into the zero-config dispatcher template:
+
+| Persona | Bot | Purpose |
+|---|---|---|
+| 🗺️ Adry | [`adr-cartograph`](../bots/adr-cartograph/) | Reconcile implemented architectural decisions with `docs/adr/` and surface decision gaps. |
+| ⚖️ ReArchi | [`adr-rechallenge`](../bots/adr-rechallenge/) | Human-guided re-evaluation of an existing ADR: keep, change, or append an addendum. |
+| 🏗️ Appy | [`app-dev`](../bots/app-dev/) | Build a new application end to end, optionally beginning with a conversational specification. |
+| 🎭 Bmady | [`bmady`](../bots/bmady/) | Human-steered analyst → PM → architect → developer → QA delivery pipeline. |
+| 💂 Vetty | [`dep-update-guard`](../bots/dep-update-guard/) | Audit and align automated dependency-update PRs without merging them. |
+| 🧰 Devy | [`devbox-setup`](../bots/devbox-setup/) | Create and validate a pinned `devbox.json`/lock for a reproducible project toolchain. |
+| 🧬 Evoly | [`evolve`](../bots/evolve/) | Long-horizon product and architecture partner backed by persistent per-bot memory. |
+| 🧩 Fini | [`feature-gap-fill`](../bots/feature-gap-fill/) | Finish a structured partial-implementation gap while preserving what already works. |
+| 🔭 Vigie | [`feed-watch`](../bots/feed-watch/) | Collect RSS/Atom feeds at zero LLM cost, then produce and deliver grounded digests. |
+| 🏷️ Triagy | [`issue-triage`](../bots/issue-triage/) | Single-shot card triage: read a fresh board card, classify it, stamp the handler bot + labels, and leave a routing comment. Routes work to other bots; never dispatched to. |
+| 💬 Revi (converse) | [`revi-converse`](../bots/revi-converse/) | Answer a focused `/revi` follow-up in the same forge discussion; never edits code. |
+| ♿ Acci | [`rgaa-audit`](../bots/rgaa-audit/) | Read-only RGAA 4.1.2 source audit with a deterministic coverage gate. |
+| ⛓️ Shieldy | [`supply-shield`](../bots/supply-shield/) | Diff-scoped dependency-malware gate for forge events. |
+| 🚨 Vulny | [`supply-shield-cve`](../bots/supply-shield-cve/) | Diff-scoped known-CVE gate for changed dependency versions. |
+| 🧪 Testy | [`test-coverage`](../bots/test-coverage/) | Add meaningful regression-catching tests and verify both the suite and the new test diff. |
+| 📖 Wikky | [`wiki-gen`](../bots/wiki-gen/) | Generate and incrementally maintain a validated Open Knowledge Format wiki. |
+
+The manifests are authoritative for inputs, invocation modes, required capabilities, forge events, and suggested schedules. Nexie’s generated [bot decision catalogue](../bots/whats-next/skills/iterion-bot-catalog.md) is the routing-oriented view.
+
+## Focused DSL demos
 
 | Example | Shows |
 |---|---|
-| [`human-in-the-loop.bot`](../examples/human-in-the-loop.bot) | A `human` node as the entry — pauses instantly and renders an interaction form (no LLM). Companion to [human-in-the-loop.md](human-in-the-loop.md). |
-| [`clarify/main.bot`](../examples/clarify/main.bot) | A read-only facilitator agent using `interaction: llm` (auto-answers, never blocks). |
+| [`human-in-the-loop.bot`](../examples/human-in-the-loop.bot) | A `human` entry node and interaction form. |
+| [`async-questions/`](../examples/async-questions/) | `interaction: async` — non-blocking `ask_user_async` questions with an `await_answers` sync point (ADR-081). |
+| [`clarify/`](../examples/clarify/) | Conversational read-only facilitation with LLM interaction. |
+| [`composition/`](../examples/composition/) | `group`/`use`, nested bots, and parallel sub-bot execution. |
+| [`cursors/`](../examples/cursors/) | Cursor declarations and per-node calibration. |
+| [`events/`](../examples/events/) | In-run `emit`/`wait` coordination. |
+| [`turing/`](../examples/turing/) | Fuelled expression/loop semantics. |
+| [`supervisor/`](../examples/supervisor/) | Concurrent supervisor declarations and steering. |
+| [`ultracode/`](../examples/ultracode/) | Ultracode compression mode. |
+| [`web-search/`](../examples/web-search/) | Tiered web-search capability use. |
+| [`keepalive/`](../examples/keepalive/) | Sub-minute always-on schedule shape and overlap policy. |
+| [`nested-subbots-demo/`](../examples/nested-subbots-demo/) | Multi-level child-run nesting. |
+| [`pipeline-board-demo/`](../examples/pipeline-board-demo/) | Pipeline-board episode projection. |
+| [`devcontainer-devbox/`](../examples/devcontainer-devbox/) | Devcontainer sandbox plus repository `devbox.json`, including non-interactive `PATH` provisioning and composition with bot-local tools. |
+| [`github-actions/`](../examples/github-actions/) | Human-in-the-loop workflow from GitHub Actions. |
 
-## 🚧 In active development
-
-| Persona | Bot | Description |
-|---|---|---|
-| ⬆️ Renovacy | [`secured-renovacy/`](../bots/secured-renovacy/) (`.botz` bundle) | Autonomous, security-aware dependency upgrades for any stack (yarn/npm/pnpm/pip/poetry/uv/cargo/go/bundler/composer/maven). Run via `iterion run bots/secured-renovacy/` or against the packed archive `iterion bundle pack bots/secured-renovacy && iterion run bots/secured-renovacy.botz`. |
+Other root-level fixtures exercise explicit `else`, deploy E2E, and the review/merge gate. Validate any example with `iterion validate <path>` before adapting it.

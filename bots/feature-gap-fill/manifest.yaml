@@ -1,7 +1,10 @@
 name: feature-gap-fill
 display_name: Fini
 icon: 🧩
-version: 2.0.0
+version: 2.0.1
+## 2.0.1 — ADR-082 Phase 2 (sandbox-by-default): removed the `sandbox:`
+## block — isolation is the platform's job; the target repo's toolchain
+## comes from its own devcontainer/devbox.json.
 ## 2.0.0 — RADICAL SIMPLIFICATION (ADR-058 minimal-framing). Replaces the
 ## v1 staged pipeline (survey_existing → plan → act → simplify → alternating
 ## Claude/GPT review-fix loop → prepare_commit → commit_changes, 12 nodes)
@@ -41,3 +44,9 @@ invocations:
     args_var: gap_spec
     command: { name: fini, aliases: [feature-gap-fill], scope: any, min_replier_role: maintainer }
   - kind: board
+
+## Studio launch-form hierarchy: `primary` inputs render top-level in
+## the declared order; `hidden` vars are internal plumbing kept out of
+## the form (still settable via --var / bot_args).
+launch:
+  primary: [gap_spec]

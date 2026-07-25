@@ -56,3 +56,10 @@ invocations:
     mode: board
     schedule: { suggested_cron: "0 5 * * 1" }
   - kind: board
+
+## Studio launch-form hierarchy: `primary` inputs render top-level in
+## the declared order; `hidden` vars are internal plumbing kept out of
+## the form (still settable via --var / bot_args).
+launch:
+  primary: [scope_notes]
+  hidden: [bundle_self_path]

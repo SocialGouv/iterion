@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 
+	"github.com/SocialGouv/iterion/pkg/runtime"
 	"github.com/SocialGouv/iterion/pkg/runview"
 	"github.com/SocialGouv/iterion/pkg/secrets"
 	"github.com/SocialGouv/iterion/pkg/server/projects"
@@ -320,6 +321,8 @@ func (s *Server) swapWorkDir(_ context.Context, newDir string) error {
 			runview.WithLogger(s.logger),
 			runview.WithWorkDir(abs),
 			runview.WithMaxConcurrentPipelines(s.cfg.MaxConcurrentPipelines),
+			// Sandbox-by-default (same resolution as `iterion run`).
+			runview.WithSandboxDefault(runtime.ResolveGlobalSandboxDefault()),
 		}
 		if opt, ok := s.boardMCPServiceOption(s.logger); ok {
 			svcOpts = append(svcOpts, opt)

@@ -8,6 +8,7 @@ import (
 	"io"
 	"os"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/SocialGouv/claw-code-go/pkg/api/hooks"
@@ -111,6 +112,15 @@ type ClawExecutor struct {
 	// route their subprocess invocations through it when set.
 	sandbox sandbox.Run
 
+	// runExtraEnv is a list of KEY=value process-environment additions
+	// applied to every HOST-spawned command of the run — tool nodes,
+	// delegate CLI spawns (via Task.ExtraEnv), and the claw bash
+	// builtin. The engine pushes it via SetRunExtraEnv on runs without
+	// a sandbox (host devbox provisioning: the profile bin dirs
+	// prepended to PATH). Nil on sandboxed runs — the container env is
+	// settled at container creation.
+	runExtraEnv []string
+
 	// sessions holds per-(runID, nodeID) accumulated message lists
 	// so the recovery dispatcher's CompactAndRetry path has
 	// something to actually compact. The claw backend reads this
@@ -127,6 +137,15 @@ type ClawExecutor struct {
 	// in by the engine after the sandbox starts (SetBoardEndpoint). Empty
 	// disables sandboxed board-emit wiring (C082).
 	boardEndpoint string
+	// askUserEndpoint / askUserToken are the per-run gateway-reachable
+	// ask-user MCP HTTP endpoint + bearer token pushed in by the engine
+	// after the sandbox starts (SetAskUserEndpoint) — ADR-082 Phase 3.
+	// Empty leaves the sandboxed ask-user HTTP transport unwired; the
+	// claude_code delegate then disables the native ask_user tools for
+	// sandboxed interactive nodes with a loud warning.
+	askUserEndpoint string
+	askUserToken    string
+
 	// sourceIssueID is the ticket that owns this run (if any). Plumbed
 	// into board MCP / claw board tools so create_issue can auto-stamp
 	// parent_id on spawned children.
@@ -144,6 +163,11 @@ type ClawExecutor struct {
 	// backend-level WithInbox option (set in runview/executor.go).
 	inbox InboxBinder
 
+	// asyncAsk backs the ask_user_async / await_answers tools of
+	// interaction: async nodes (ADR-081). nil = async asks unavailable
+	// (the tools then error explicitly). Set via WithExecutorAsyncAsk.
+	asyncAsk AsyncAskBinder
+
 	// secretGuard is the per-run secrets scrubber (Layer 0/1/2). It is
 	// shared with the event hooks (Layer 0 sink redaction); the executor
 	// holds its own reference so it can (a) satisfy runtime.SecretScrubber
@@ -158,6 +182,28 @@ type ClawExecutor struct {
 	// under parallel subbot fan-out, which builds one executor per child and
 	// can march toward fs.inotify.max_user_instances.
 	extraClosers []io.Closer
+
+	// hostSecretOnce fires ensureHostSecretFiles exactly once per executor:
+	// on the first Execute call of a HOST (non-sandbox) run it materialises
+	// every `as: file` workflow secret to a per-run tempdir so
+	// {{secrets.X.path}} resolves to a real host file. Sandbox runs are a
+	// no-op (the sandbox driver bind-mounts the same files via
+	// [sandbox.Spec.SecretFiles]). hostSecretCleanup deletes the dir on
+	// Close(); hostSecretErr sticks after a first-call failure so every
+	// subsequent Execute surfaces the same error rather than silently
+	// proceeding with unresolved secret paths.
+	hostSecretOnce    sync.Once
+	hostSecretCleanup func()
+	hostSecretErr     error
+}
+
+// SetRunExtraEnv installs run-level process-environment additions
+// (KEY=value entries) applied to every host-spawned command of the run.
+// The engine calls this once per run, before the first node executes,
+// from host devbox provisioning (pkg/runtime/devbox_host.go); the same
+// happens-before as SetSandbox makes a mutex unnecessary.
+func (e *ClawExecutor) SetRunExtraEnv(env []string) {
+	e.runExtraEnv = env
 }
 
 // SetSandbox installs the live sandbox handle on the executor. The
@@ -177,6 +223,16 @@ func (e *ClawExecutor) SetSandbox(run sandbox.Run) {
 // "" leaves sandboxed board-emit disabled.
 func (e *ClawExecutor) SetBoardEndpoint(endpoint string) {
 	e.boardEndpoint = endpoint
+}
+
+// SetAskUserEndpoint installs the per-run gateway-reachable ask-user
+// MCP URL + token (started with the sandbox) so the executor can wire
+// Task.AskUserHTTPEndpoint/AskUserRunToken for sandboxed interactive
+// nodes (ADR-082 Phase 3). Called by the engine after the sandbox
+// starts; empty values leave the sandboxed ask-user transport unwired.
+func (e *ClawExecutor) SetAskUserEndpoint(endpoint, token string) {
+	e.askUserEndpoint = endpoint
+	e.askUserToken = token
 }
 
 // ClawExecutorOption configures a ClawExecutor.
@@ -434,6 +490,34 @@ func (e *ClawExecutor) bindInboxDrain(ctx context.Context) func() []string {
 	return func() []string { return hook.Drain(ctx) }
 }
 
+// bindAsyncAsk threads the per-(run,node) async-question closures onto
+// the Task (ADR-081). Only called for interaction: async nodes; when
+// binding is impossible (no binder wired, no run ID on ctx) the
+// closures stay nil — backends then reject the async tools with an
+// explicit error — and a warning names the real culprit so the tool
+// error isn't misread as a DSL mistake.
+func (e *ClawExecutor) bindAsyncAsk(ctx context.Context, nodeID string, task *delegate.Task) {
+	var hook AsyncAskHook
+	if e.asyncAsk != nil {
+		hook = e.asyncAsk.BindAsyncAsk(ctx, RunIDFromContext(ctx), nodeID)
+	}
+	if hook == nil {
+		if e.logger != nil {
+			e.logger.Warn("node %q declares interaction: async but no async-ask binder is available for this run (embedder missing WithExecutorAsyncAsk, or no run ID on context) — ask_user_async/await_answers will error", nodeID)
+		}
+		return
+	}
+	task.PostAsyncQuestion = func(q delegate.AsyncQuestion) (string, error) {
+		return hook.Post(ctx, q)
+	}
+	task.PendingAsyncQuestions = func() ([]delegate.PendingAsync, error) {
+		return hook.Pending(ctx)
+	}
+	task.CollectAsyncAnswers = func() (string, error) {
+		return hook.CollectAnswers(ctx)
+	}
+}
+
 // EvictRun drops every per-node session belonging to the given run.
 // The runtime engine calls this when a run terminates (success,
 // terminal failure, or cancellation) so a long-lived executor
@@ -547,7 +631,8 @@ func (e *ClawExecutor) MCPHealthCheck(ctx context.Context, servers []string) err
 }
 
 // Close releases resources held by the executor, including MCP server
-// connections. It should be called when the executor is no longer needed.
+// connections and the per-run host secret-file tempdir (host runs only —
+// sandbox runs never populate it).
 func (e *ClawExecutor) Close() error {
 	var errs []error
 	if e.mcpManager != nil {
@@ -556,7 +641,54 @@ func (e *ClawExecutor) Close() error {
 	for _, c := range e.extraClosers {
 		errs = append(errs, c.Close())
 	}
+	if e.hostSecretCleanup != nil {
+		e.hostSecretCleanup()
+	}
 	return errors.Join(errs...)
+}
+
+// ensureHostSecretFiles materialises `as: file` workflow secrets to a
+// per-run host tempdir on the first Execute call of a HOST (non-sandbox)
+// run. Sandbox runs are a no-op — the sandbox driver already bind-mounts
+// each file at its declared mount_path via [sandbox.Spec.SecretFiles], so
+// this path stays strictly gated on `e.sandbox == nil` to keep sandbox
+// behaviour byte-for-byte unchanged.
+//
+// Idempotent via sync.Once; the resulting rewrite of the guard's
+// filePathByName / fileHints happens strictly before any concurrent
+// Execute reads them, so ResolveSecretRef sees the host path.
+func (e *ClawExecutor) ensureHostSecretFiles() error {
+	if e.sandbox != nil {
+		return nil
+	}
+	if e.secretGuard == nil || len(e.secretGuard.SecretFileHints()) == 0 {
+		return nil
+	}
+	e.hostSecretOnce.Do(func() {
+		dir, err := os.MkdirTemp("", "iterion-secrets-*")
+		if err != nil {
+			e.hostSecretErr = fmt.Errorf("model: create host secrets dir: %w", err)
+			return
+		}
+		if err := os.Chmod(dir, 0o700); err != nil {
+			_ = os.RemoveAll(dir)
+			e.hostSecretErr = fmt.Errorf("model: chmod host secrets dir: %w", err)
+			return
+		}
+		fileCleanup, err := e.secretGuard.MaterializeHostFiles(dir)
+		if err != nil {
+			_ = os.RemoveAll(dir)
+			e.hostSecretErr = err
+			return
+		}
+		e.hostSecretCleanup = func() {
+			if fileCleanup != nil {
+				fileCleanup()
+			}
+			_ = os.RemoveAll(dir)
+		}
+	})
+	return e.hostSecretErr
 }
 
 // SetVars merges run-level workflow variables into the executor's
@@ -752,6 +884,15 @@ func (e *ClawExecutor) delegateHooksFor(nodeID string, backendName string, itera
 
 // Execute implements runtime.NodeExecutor.
 func (e *ClawExecutor) Execute(ctx context.Context, node ir.Node, input map[string]any) (map[string]any, error) {
+	// Host runs (no sandbox) materialise `as: file` workflow secrets to a
+	// tempdir on the first call so {{secrets.X.path}} resolves to a real
+	// host file for tool nodes AND for agent/judge prompts. Cheap
+	// sync.Once check after the first hit; a no-op when no file secrets
+	// are declared or when a sandbox owns the mounts.
+	if err := e.ensureHostSecretFiles(); err != nil {
+		return nil, err
+	}
+
 	// Promote the engine-supplied run ID into the richer
 	// runtimeContext that backends read for session-aware retries.
 	runID := RunIDFromContext(ctx)

@@ -25,6 +25,7 @@ const (
 
 	// Edge clause errors
 	DiagDuplicateEdgeClause DiagCode = "E030" // duplicate when/as/with clause on an edge
+	DiagElseWithWhen        DiagCode = "E031" // an edge cannot carry both when and else
 )
 
 // Severity indicates the severity of a diagnostic.

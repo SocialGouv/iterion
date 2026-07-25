@@ -3,7 +3,7 @@ name: lang-generic
 description: |
   Language-agnostic scanner reference for sec-audit-source. Covers
   gitleaks (secrets), trivy fs (filesystem misconfig + vuln DB),
-  and semgrep `--config=auto` (multi-language SAST). Always-on:
+  and semgrep `--config=p/default` (multi-language SAST). Always-on:
   every run executes these scanners regardless of detected stack.
 ---
 
@@ -43,7 +43,7 @@ What it catches:
 trivy fs \
   --format=json \
   --output={{vars.scan_dir}}/trivy.json \
-  --security-checks=vuln,config,secret \
+  --scanners=vuln,misconfig,secret \
   --severity=LOW,MEDIUM,HIGH,CRITICAL \
   --quiet \
   {{vars.workspace_dir}}
@@ -56,26 +56,29 @@ Categories trivy emits:
 | `vuln-os` / `vuln-lib` | `other` (these belong to sec-audit-deps logically; trivy fs may surface lockfile vulns — keep but tag with `redundant-with-deps-audit` label) |
 | `secret` | `secrets` (trivy has weaker rules than gitleaks; deduplicate by file+line — if gitleaks already flagged it, drop) |
 
-## semgrep auto — broad SAST
+## semgrep — broad SAST (`p/default`)
 
 ```bash
 semgrep \
-  --config=auto \
+  --config=p/default \
   --json \
   --output={{vars.scan_dir}}/semgrep-auto.json \
-  --error \
   --metrics=off \
   --quiet \
   {{vars.workspace_dir}}
 ```
 
-`--config=auto` selects rule packs based on languages semgrep
-detects in the tree. Overlaps with the per-language `run_*_scanners`
-nodes — triage MUST deduplicate by `(file, rule_id, line_range)`.
+`p/default` is Semgrep's curated cross-language pack — the
+metrics-off-compatible floor. (`--config=auto` is rejected when
+combined with `--metrics=off`, which is why the earlier auto+off
+combo silently errored.) Overlaps with the per-language
+`run_*_scanners` nodes — triage MUST deduplicate by
+`(file, rule_id, line_range)`. The output file and subscanner id stay
+`semgrep-auto` for backward compatibility.
 
-When semgrep is invoked in `--config=auto` mode with no network, it
-falls back to the built-in registry; in offline sandbox runs, the
-bot logs a warning but continues with whatever rules are bundled.
+If semgrep cannot fetch its rules in an offline sandbox run, the tool
+node captures the error under `errors[]` and continues — a scanner
+failure never fails the workflow (see Output format below).
 
 ## Output normalisation
 

@@ -5,138 +5,81 @@ import (
 	"sort"
 	"sync"
 	"time"
+
+	"github.com/SocialGouv/iterion/pkg/internal/storekit"
 )
 
 // MemoryConfigStore is an in-process ConfigStore for tests and local
 // mode. Keep its semantics in lock-step with MongoConfigStore.
 type MemoryConfigStore struct {
-	mu      sync.RWMutex
-	configs map[string]Config
+	kit *storekit.Memory[Config]
 }
 
 func NewMemoryConfigStore() *MemoryConfigStore {
-	return &MemoryConfigStore{configs: make(map[string]Config)}
+	return &MemoryConfigStore{kit: storekit.NewMemory[Config](ErrNotFound)}
 }
 
 func (s *MemoryConfigStore) Create(_ context.Context, c Config) error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if _, ok := s.configs[c.ID]; ok {
-		return ErrDuplicate
-	}
-	s.configs[c.ID] = c
-	return nil
+	return s.kit.Insert(c.ID, c, ErrDuplicate)
 }
 
 func (s *MemoryConfigStore) Get(_ context.Context, id string) (Config, error) {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-	c, ok := s.configs[id]
-	if !ok {
-		return Config{}, ErrNotFound
-	}
-	return c, nil
+	return s.kit.Get(id)
 }
 
 func (s *MemoryConfigStore) Update(_ context.Context, c Config) error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if _, ok := s.configs[c.ID]; !ok {
-		return ErrNotFound
-	}
-	s.configs[c.ID] = c
-	return nil
+	return s.kit.Replace(c.ID, c)
 }
 
 func (s *MemoryConfigStore) Delete(_ context.Context, id string) error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if _, ok := s.configs[id]; !ok {
-		return ErrNotFound
-	}
-	delete(s.configs, id)
-	return nil
+	return s.kit.Delete(id)
 }
 
 func (s *MemoryConfigStore) ListByTenant(_ context.Context, tenantID string) ([]Config, error) {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-	var out []Config
-	for _, c := range s.configs {
-		if c.TenantID == tenantID {
-			out = append(out, c)
-		}
-	}
+	out := s.kit.List(func(c Config) bool { return c.TenantID == tenantID })
 	sort.Slice(out, func(i, j int) bool { return out[i].CreatedAt.Before(out[j].CreatedAt) })
 	return out, nil
 }
 
 func (s *MemoryConfigStore) MarkUsed(_ context.Context, id string, t time.Time) error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	c, ok := s.configs[id]
-	if !ok {
-		return ErrNotFound
-	}
-	tt := t
-	c.LastUsedAt = &tt
-	s.configs[id] = c
-	return nil
+	_, err := s.kit.Mutate(id, func(c *Config) bool {
+		c.LastUsedAt = &t
+		return true
+	})
+	return err
 }
 
 // MemoryDeliveryStore is an in-process DeliveryStore.
 type MemoryDeliveryStore struct {
-	mu     sync.RWMutex
-	byID   map[string]Delivery
-	byIdem map[string]string // idempotency key -> delivery id
+	kit *storekit.Memory[Delivery]
 }
 
 func NewMemoryDeliveryStore() *MemoryDeliveryStore {
-	return &MemoryDeliveryStore{byID: make(map[string]Delivery), byIdem: make(map[string]string)}
+	return &MemoryDeliveryStore{kit: storekit.NewMemory[Delivery](ErrNotFound)}
 }
 
 func (s *MemoryDeliveryStore) Insert(_ context.Context, d Delivery) error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if d.IdempotencyKey != "" {
-		if _, ok := s.byIdem[d.IdempotencyKey]; ok {
-			return ErrDuplicate
-		}
-		s.byIdem[d.IdempotencyKey] = d.ID
-	}
-	s.byID[d.ID] = d
-	return nil
+	// The idempotency key is the unique constraint (when present) — the
+	// durable dedupe MongoDeliveryStore enforces with a unique index.
+	return s.kit.InsertUnless(d.ID, d, func(e Delivery) bool {
+		return d.IdempotencyKey != "" && e.IdempotencyKey == d.IdempotencyKey
+	}, ErrDuplicate)
 }
 
 func (s *MemoryDeliveryStore) GetByIdempotencyKey(_ context.Context, key string) (Delivery, error) {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-	id, ok := s.byIdem[key]
-	if !ok {
-		return Delivery{}, ErrNotFound
-	}
-	return s.byID[id], nil
+	return s.kit.Find(func(e Delivery) bool {
+		return key != "" && e.IdempotencyKey == key
+	})
 }
 
 func (s *MemoryDeliveryStore) Update(_ context.Context, d Delivery) error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if _, ok := s.byID[d.ID]; !ok {
-		return ErrNotFound
-	}
-	s.byID[d.ID] = d
-	return nil
+	return s.kit.Replace(d.ID, d)
 }
 
 func (s *MemoryDeliveryStore) ListByWebhook(_ context.Context, tenantID, webhookID string, limit int) ([]Delivery, error) {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-	var out []Delivery
-	for _, d := range s.byID {
-		if d.TenantID == tenantID && d.WebhookID == webhookID {
-			out = append(out, d)
-		}
-	}
+	out := s.kit.List(func(d Delivery) bool {
+		return d.TenantID == tenantID && d.WebhookID == webhookID
+	})
 	sort.Slice(out, func(i, j int) bool { return out[i].ReceivedAt.After(out[j].ReceivedAt) })
 	if limit > 0 && len(out) > limit {
 		out = out[:limit]

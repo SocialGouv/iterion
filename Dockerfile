@@ -56,6 +56,7 @@ COPY vendor ./vendor
 # the go build layer stays CACHED (the binary never compiles test files anyway).
 COPY --exclude=**/*_test.go cmd ./cmd
 COPY --exclude=**/*_test.go pkg ./pkg
+COPY --exclude=**/*_test.go internal ./internal
 # bots/ holds the productised bot bundles. pkg/cli embeds them via the
 # github.com/SocialGouv/iterion/bots package, so the source tree must be present
 # for `go build` under -mod=vendor. (e2e/ and examples/ are NOT imported or
@@ -95,11 +96,11 @@ RUN --mount=type=cache,target=/root/.npm \
 # ---------------------------------------------------------------------
 FROM debian:12-slim@sha256:60eac759739651111db372c07be67863818726f754804b8707c90979bda511df AS runtime
 
-ARG VERSION=0.0.0
-ARG COMMIT=unknown
-ENV ITERION_VERSION=${VERSION} \
-    ITERION_COMMIT=${COMMIT} \
-    PATH="/opt/iterion/llm-clis/node_modules/.bin:/usr/local/bin:/usr/bin:/bin"
+# NOTE: the VERSION/COMMIT ARGs are consumed at the BOTTOM of this stage (just
+# above the iterion binary COPY). COMMIT changes on every push; declaring it
+# here would bust the cache of every layer below — including the pinned
+# glab/gh/kubectl downloads, which must stay cache-stable across pushes.
+ENV PATH="/opt/iterion/llm-clis/node_modules/.bin:/usr/local/bin:/usr/bin:/bin"
 
 # Runtime deps:
 #   git       — required for `worktree: auto` workflows.
@@ -200,7 +201,12 @@ COPY --from=llm-clis /llm/node_modules /opt/iterion/llm-clis/node_modules
 RUN ln -s /opt/iterion/llm-clis/node_modules/.bin/claude /usr/local/bin/claude && \
     ln -s /opt/iterion/llm-clis/node_modules/.bin/codex  /usr/local/bin/codex
 
-# Iterion binary.
+# Version metadata + iterion binary — the only per-push layers of this stage
+# (COMMIT is the pushed sha; the binary embeds it via ldflags).
+ARG VERSION=0.0.0
+ARG COMMIT=unknown
+ENV ITERION_VERSION=${VERSION} \
+    ITERION_COMMIT=${COMMIT}
 COPY --from=go-builder /out/iterion /usr/local/bin/iterion
 
 # Productised bot catalog on disk. Cloud bot resolution

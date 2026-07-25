@@ -1,19 +1,18 @@
-[← Documentation index](README.md) · [← Iterion](../README.md)
-
 # Cloud Mode
 
-A long-running server deployment that targets multi-tenant teams. Same Go core as the CLI, but exposes the studio + run engine through HTTP/WS to a shared instance, persists runs to a Mongo + S3-compatible blob store, and dispatches jobs to a runner pool via NATS JetStream.
-
-Cloud mode is the substrate of iterion's **Bot-as-a-Service** platform —
-orgs, quotas, inbound webhooks, bound credentials, audit. Reading map:
+Cloud mode runs iterion as a multi-tenant **control plane for AI agents** — the
+same Go core as the CLI, but with orgs, quotas, bound credentials, inbound
+webhooks, and an audit trail, serving a shared always-on run engine over
+HTTP/WS. Runs persist to a Mongo + S3-compatible blob store, and jobs dispatch
+to a runner pool via NATS JetStream. Reading map:
 
 | You want | Read |
 |---|---|
-| The platform pitch + the BaaS loop | [baas-overview.md](baas-overview.md) |
+| The platform overview + governed execution loop | [cloud-overview.md](cloud-overview.md) |
 | Control plane / data plane internals | [cloud-architecture.md](cloud-architecture.md) |
 | Deploy it (Helm, secrets, probes) | [cloud-deployment.md](cloud-deployment.md) + [chart README](../charts/iterion/README.md) |
-| Operate it (orgs, quotas, DLQ, SMTP) | [baas-admin-guide.md](baas-admin-guide.md) |
-| Trigger bots from a forge / any system | [webhooks.md](webhooks.md) |
+| Operate it (orgs, quotas, DLQ, SMTP) | [cloud-admin-guide.md](cloud-admin-guide.md) |
+| Trigger agent workflows from a forge / any system | [webhooks.md](webhooks.md) |
 | Limits, metering, denial semantics | [quotas-and-limits.md](quotas-and-limits.md) |
 | Every secret kind in one map | [secrets-reference.md](secrets-reference.md) |
 | The REST surface | [cloud-rest-api.md](cloud-rest-api.md) |

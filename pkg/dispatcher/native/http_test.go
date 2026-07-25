@@ -290,3 +290,60 @@ func TestHTTPIDPrefix(t *testing.T) {
 	}
 	r.Body.Close()
 }
+
+// TestHTTPExternalRepoLink covers the repo-first board scoping write
+// path: external {provider, connection_id, repo} on create and patch.
+func TestHTTPExternalRepoLink(t *testing.T) {
+	srv, _ := newServerWithStore(t)
+	defer srv.Close()
+
+	body := bytes.NewBufferString(`{"title":"card","state":"inbox","external":{"provider":"github","connection_id":"c1","repo":"org/app"}}`)
+	r, err := http.Post(srv.URL+"/issues", "application/json", body)
+	if err != nil {
+		t.Fatalf("POST: %v", err)
+	}
+	if r.StatusCode != http.StatusCreated {
+		t.Fatalf("status %d", r.StatusCode)
+	}
+	var created native.Issue
+	if err := json.NewDecoder(r.Body).Decode(&created); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	r.Body.Close()
+	if created.External == nil || created.External.Repo != "org/app" || created.External.Provider != "github" {
+		t.Fatalf("external not persisted on create: %+v", created.External)
+	}
+
+	// Patch re-links to another repo; absent external leaves it untouched.
+	patch := bytes.NewBufferString(`{"external":{"provider":"github","connection_id":"c1","repo":"org/other"}}`)
+	req, _ := http.NewRequest(http.MethodPatch, srv.URL+"/issues/"+created.ID, patch)
+	req.Header.Set("Content-Type", "application/json")
+	r2, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("PATCH: %v", err)
+	}
+	var patched native.Issue
+	if err := json.NewDecoder(r2.Body).Decode(&patched); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	r2.Body.Close()
+	if patched.External == nil || patched.External.Repo != "org/other" {
+		t.Fatalf("external not updated on patch: %+v", patched.External)
+	}
+
+	title := bytes.NewBufferString(`{"title":"renamed"}`)
+	req3, _ := http.NewRequest(http.MethodPatch, srv.URL+"/issues/"+created.ID, title)
+	req3.Header.Set("Content-Type", "application/json")
+	r3, err := http.DefaultClient.Do(req3)
+	if err != nil {
+		t.Fatalf("PATCH 2: %v", err)
+	}
+	var untouched native.Issue
+	if err := json.NewDecoder(r3.Body).Decode(&untouched); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	r3.Body.Close()
+	if untouched.External == nil || untouched.External.Repo != "org/other" {
+		t.Fatalf("absent external must leave link untouched: %+v", untouched.External)
+	}
+}

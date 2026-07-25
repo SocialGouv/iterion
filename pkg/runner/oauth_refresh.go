@@ -78,6 +78,12 @@ func (r *Runner) refreshAnthropicLoop(stop <-chan struct{}, hc *http.Client, run
 		if r.cfg.Logger != nil {
 			r.cfg.Logger.Info("runner: oauth-forfait token refreshed run=%s", runID)
 		}
+		// Sandboxed runs read a seeded in-container COPY of this file
+		// (CLAUDE_CONFIG_DIR) — push the refreshed credentials through the
+		// sandbox exec seam so a long-lived in-pod CLI session outliving
+		// the access token can still self-refresh (ADR-082 Phase 3
+		// blocker 3). No-op without an active real sandbox.
+		r.propagateForfaitToSandbox(runID, path)
 	}
 }
 

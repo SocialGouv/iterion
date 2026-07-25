@@ -20,10 +20,11 @@ import {
   LockClosedIcon,
   MixIcon,
   CardStackIcon,
+  ReaderIcon,
 } from "@radix-ui/react-icons";
 import { useShallow } from "zustand/react/shallow";
 
-import { useAuth } from "@/auth/AuthContext";
+import { useAuth, canEditConfigShares } from "@/auth/AuthContext";
 import { useRuns } from "@/hooks/useRuns";
 import { useServerInfoStore } from "@/store/serverInfo";
 import {
@@ -49,6 +50,7 @@ export type Section =
   | "plugins"
   | "secrets"
   | "skills"
+  | "configEditor"
   | "org"
   | "team"
   | "integrations"
@@ -65,13 +67,25 @@ interface LinkDef {
   icon: typeof HomeIcon;
 }
 
-const BASE_LINKS: LinkDef[] = [
+const BASE_LINKS_LOCAL: LinkDef[] = [
   { section: "home", href: "/", label: "Home", icon: HomeIcon },
   { section: "whatsNext", href: "/whats-next", label: "What's Next", icon: PaperPlaneIcon },
   { section: "editor", href: "/editor", label: "Editor", icon: Pencil2Icon },
   { section: "runs", href: "/runs", label: "Runs", icon: ListBulletIcon },
   { section: "bots", href: "/bots", label: "Bots", icon: CubeIcon },
 ];
+
+// The cloud shell omits the Editor by default; it is spliced back in below when
+// server_info.bot_editing_enabled (the team-authored bot store is wired), so the
+// editor now has a cloud save path (botsource://) and is a reachable surface.
+const BASE_LINKS_CLOUD: LinkDef[] = [
+  { section: "home", href: "/", label: "Home", icon: HomeIcon },
+  { section: "whatsNext", href: "/whats-next", label: "What's Next", icon: PaperPlaneIcon },
+  { section: "runs", href: "/runs", label: "Runs", icon: ListBulletIcon },
+  { section: "bots", href: "/bots", label: "Bots", icon: CubeIcon },
+];
+
+const EDITOR_LINK: LinkDef = { section: "editor", href: "/editor", label: "Editor", icon: Pencil2Icon };
 
 // deriveSection maps the current path to the highlighted nav entry by
 // looking at the first path segment only — so `/runs/:id` highlights
@@ -91,6 +105,7 @@ const SEGMENT_TO_SECTION: Record<string, Section> = {
   triggers: "triggers",
   marketplace: "marketplace",
   plugins: "plugins",
+  "config-editor": "configEditor",
   orgs: "org",
   teams: "team",
   integrations: "integrations",
@@ -111,7 +126,7 @@ function deriveSection(pathname: string): Section | undefined {
 // specific file/run without going through the section's inner strip.
 export default function NavLinks({ collapsed }: Props) {
   const info = useServerInfoStore((s) => s.info);
-  const { activeTeam, user } = useAuth();
+  const { activeTeam, activeRole, user } = useAuth();
   const [location] = useLocation();
   // Integrations is its own top-level route (/integrations, team-scoped via
   // the active team in context — like /board, /plugins), so deriveSection's
@@ -147,7 +162,10 @@ export default function NavLinks({ collapsed }: Props) {
   if (info?.dispatcher_enabled) {
     operate.push({ section: "dispatcher", href: "/dispatcher", label: "Dispatcher", icon: RocketIcon });
   }
-  if (info?.triggers_enabled) {
+  // Shown when EITHER the trigger spine or cloud schedules exist — the
+  // Automations view carries the Schedules tab, which cloud servers have
+  // even with the event-trigger store off.
+  if (info?.triggers_enabled || info?.mode === "cloud") {
     operate.push({ section: "triggers", href: "/triggers", label: "Automations", icon: LightningBoltIcon });
   }
 
@@ -167,6 +185,15 @@ export default function NavLinks({ collapsed }: Props) {
   // Integrations stays — the valued "connect a repo / enable a bot" shortcut.
   // Both are cloud-only (the forge stores are wired only in cloud mode).
   const manage: LinkDef[] = [];
+  // Config editor: the config-share editor as a full-app route, for accounts
+  // that can edit shares but aren't boxed into the minimal ConfigEditorShell
+  // (admins / owners / super-admins). Mirrors the server canEditConfigShares
+  // gate so the editor scales with access instead of vanishing when a
+  // config_editor is broadened. Generic engine surface — a bot's own branding
+  // (e.g. feed-watch's "Éditeur de veilles") shows inside via editor_title.
+  if (info?.config_shares_enabled && canEditConfigShares(activeRole, !!user?.is_super_admin)) {
+    manage.push({ section: "configEditor", href: "/config-editor", label: "Config editor", icon: ReaderIcon });
+  }
   if (info?.secrets_enabled) {
     manage.push({ section: "secrets", href: "/secrets", label: "Secrets", icon: LockClosedIcon });
   }
@@ -179,8 +206,19 @@ export default function NavLinks({ collapsed }: Props) {
     manage.push({ section: "admin", href: "/admin/orgs", label: "Admin", icon: GearIcon });
   }
 
+  // Cloud shows the Editor once the bot store is wired (bot_editing_enabled) —
+  // spliced after What's Next to match the local order. Local always has it.
+  let baseLinks = info?.mode === "cloud" ? BASE_LINKS_CLOUD : BASE_LINKS_LOCAL;
+  if (info?.mode === "cloud" && info?.bot_editing_enabled) {
+    const at = baseLinks.findIndex((l) => l.section === "runs");
+    baseLinks = [
+      ...baseLinks.slice(0, at < 0 ? baseLinks.length : at),
+      EDITOR_LINK,
+      ...baseLinks.slice(at < 0 ? baseLinks.length : at),
+    ];
+  }
   const groups: { label?: string; links: LinkDef[] }[] = [
-    { links: BASE_LINKS },
+    { links: baseLinks },
     { label: "Operate", links: operate },
     { label: "Extend", links: extend },
     { label: "Manage", links: manage },
@@ -231,7 +269,13 @@ export default function NavLinks({ collapsed }: Props) {
                 sublistKind={withSublist ? section : null}
                 showAlertDot={showAlertDot}
                 badgeCount={badgeCount}
-                onNavClick={section === "runs" ? clearAlertUnseen : undefined}
+                onNavClick={
+                section === "runs"
+                  ? clearAlertUnseen
+                  : section === "editor"
+                    ? () => useTabsStore.getState().clearActiveEditor()
+                    : undefined
+              }
               />
             );
           })}

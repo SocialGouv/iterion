@@ -1,0 +1,12 @@
+{
+  "$schema": "https://raw.githubusercontent.com/jetify-com/devbox/0.17.2/.schema/devbox.schema.json",
+  "packages": [
+    "gh@2.96.0",
+    "glab@1.108.0",
+    "go-containerregistry@0.21.6",
+    "yq-go@4.53.3"
+  ],
+  "env": {
+    "DEVBOX_NO_PROMPT": "true"
+  }
+}

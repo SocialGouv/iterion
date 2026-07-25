@@ -1,5 +1,3 @@
-[← Documentation index](README.md) · [← BaaS overview](baas-overview.md)
-
 # Quotas and limits
 
 **Audience.** Anyone choosing platform-default values, deciding what to
@@ -41,12 +39,13 @@ denial path is only the deliberate "this would exceed the cap" case.
 
 ## Limits, fields and platform defaults
 
-Every limit has three knobs: a **team field** (the per-org override),
-a **platform env var** (the default applied when the team field is
-zero), and a public **denial reason token**. Zero means "no limit"
-everywhere — the safe default for existing deployments.
+Every limit has three knobs: an **override field** (on the Org or the
+Team document — see the table), a **platform env var** (the default
+applied when the override field is zero), and a public **denial reason
+token**. Zero means "no limit" everywhere — the safe default for
+existing deployments.
 
-| Limit | Team field | Platform env var | Denial reason | HTTP |
+| Limit | Override field | Platform env var | Denial reason | HTTP |
 |---|---|---|---|---|
 | Org suspended / read-only | `Status` | n/a — admin action | `org_suspended` | 403 |
 | Concurrent active runs | `MaxConcurrentRuns` | `ITERION_ORG_DEFAULT_MAX_CONCURRENT_RUNS` | `concurrency_cap_exceeded` | 429 (`Retry-After: 30`) |
@@ -54,10 +53,16 @@ everywhere — the safe default for existing deployments.
 | Monthly LLM cost cap (USD) | `MonthlyCostCapUSD` | `ITERION_ORG_DEFAULT_MONTHLY_COST_CAP_USD` | `monthly_cost_cap_exceeded` | 402 |
 | Monthly run quota | `MonthlyRunQuota` | `ITERION_ORG_DEFAULT_MONTHLY_RUN_QUOTA` | `monthly_run_quota_exceeded` | 402 |
 
-The team-field semantics are pinned in
-[pkg/server/launch_gate.go:orValue](../pkg/server/launch_gate.go) (team
-override wins when > 0; else platform default; zero = unlimited). The
-denial reason tokens are stable strings — clients (the studio, SDKs,
+`Status`, `MonthlyCostCapUSD`, and `MonthlyRunQuota` are **Org**-document
+fields (org-wide, super-admin managed — `pkg/identity.Org`); the org
+run/cost counters sum every team in the org. `MaxConcurrentRuns` and
+`LaunchRatePerMin` are **Team**-document fields (per-workspace executor
+caps — `pkg/identity.Team`).
+
+The override-field semantics are pinned in
+[pkg/server/launch_gate.go:orValue](../pkg/server/launch_gate.go) (the
+tenant override wins when > 0; else platform default; zero = unlimited).
+The denial reason tokens are stable strings — clients (the studio, SDKs,
 CI scripts) switch on them. The HTTP status codes follow the standard
 "402 = paying issue (resets next month), 429 = retry later" convention.
 
@@ -73,7 +78,7 @@ Every denial returns the same JSON shape
 ```jsonc
 {
   "error":    "monthly_cost_cap_exceeded",         // stable token
-  "detail":   "monthly LLM cost cap reached ($87.42 of $80.00)",
+  "detail":   "monthly LLM cost cap ($80.00) reached",
   "reset_at": "2026-07-01T00:00:00Z"               // monthly quotas only
 }
 ```
@@ -142,8 +147,8 @@ Both views share the same JSON shape
 Two routes serve it:
 
 - `GET /api/admin/orgs/{id}/usage` — super-admin only, any org.
-- `GET /api/teams/{id}/usage` — any member of the team (org-admin
-  self-serve mirror).
+- `GET /api/orgs/{id}/usage` — any member of the org (self-serve
+  mirror).
 
 The "effective" values resolve the team override against the platform
 default before returning, so the UI shows the **real** ceiling the gate
@@ -170,7 +175,7 @@ quota dimension differs.
 ## Memory quota — pointer
 
 Memory + knowledge spaces have their own per-org aggregate quota
-(`MemoryQuotaBytes` on the Team document) plus per-visibility sub-caps.
+(`MemoryQuotaBytes` on the Org document) plus per-visibility sub-caps.
 The launch gate does **not** evaluate it — memory writes go through a
 separate CAS check inside the memory store. See
 [memory-and-knowledge.md](memory-and-knowledge.md) for the full

@@ -56,11 +56,41 @@ export interface BotEntry {
    *  renders it read-only so an operator sees what enabling the bot on a
    *  repo will set up. */
   forge?: ForgeRequirements;
+  /** Runtime repository need (manifest `repo:` block). Present when a bot
+   *  declares it wants a repo target for the run; the Launch surfaces
+   *  render a "Target repository" section (attach / create-new /
+   *  optional-skip) driven off this. `mode: "none"` behaves like an
+   *  absent block (kept so a bot can document the choice). */
+  repo?: RepoRequirement;
+  /** Scoped config-share surface (manifest `config_share:` block) — which
+   *  fields of the bot's config file a non-operator may edit through a share
+   *  URL. Present only when the bot declares one; the "Share config" card
+   *  reads it to drive a data-driven mint form and is hidden otherwise. */
+  config_share?: ConfigShareSpec;
   /** Typed routing contract (manifest `invocations:`) — how this bot can be
    *  triggered (forge event, /slash-command, schedule, board) and the
    *  execution mode each path uses. Drives the Integrations picker grouping.
    *  Empty for orchestrators (Nexie/Evoly) and loose .bot files. */
   invocations?: Invocation[];
+  /** Launch-form hints (manifest `launch:` block) — which vars the bot
+   *  considers its main inputs vs noise. Purely presentational: the launch
+   *  form regroups its buckets from this; requiredness/validation and the
+   *  engine's var resolution are untouched. */
+  launch?: BotLaunchHints;
+}
+
+/** BotLaunchHints mirrors the manifest `launch:` block. Unknown var names
+ *  are ignored silently on both lists. */
+export interface BotLaunchHints {
+  /** Var names forced into the launch form's always-visible primary
+   *  bucket, in the order listed — ahead of the heuristic primaries
+   *  (required vars without a default). A var hinted here keeps its
+   *  declared default and stays optional. */
+  primary?: string[];
+  /** Var names removed from the launch form entirely (never rendered in
+   *  any bucket). The engine still applies their declared defaults; a
+   *  name also listed in `primary` stays hidden. */
+  hidden?: string[];
 }
 
 /** Invocation mirrors the manifest `invocations:` entry. The payload field
@@ -118,6 +148,44 @@ export interface ForgeWebhookHints {
   min_replier_role?: string;
 }
 
+/** RepoRequirement mirrors the manifest `repo:` block — the bot's runtime
+ *  repository need. The Launch surfaces render it as the "Target
+ *  repository" section (attach an active/other connected repo, create a
+ *  new one on a connected forge, or opt out when the mode is optional).
+ *  `mode: "none"` is equivalent to omitting the block; the launch surfaces
+ *  treat it as "no section". Cloud-only launch path — the server 400s a
+ *  repo-targeted launch in local mode. */
+export interface RepoRequirement {
+  /** "required" (launch soft-blocks without a target), "optional" (section
+   *  offered, skippable), or "none" (explicit repo-independence). */
+  mode: "required" | "optional" | "none";
+  /** When true, the section offers a "create a new repository" path
+   *  alongside "attach an existing one". */
+  allow_create?: boolean;
+  /** One-line operator-facing explanation shown under the section title. */
+  purpose?: string;
+  /** Seeds a created repo's default branch name (empty = forge default). */
+  default_branch?: string;
+  /** Seeds a created repo's visibility (default "private"). */
+  visibility?: "private" | "public";
+}
+
+/** ConfigShareSpec mirrors the manifest `config_share:` block — the bot's
+ *  scoped config-share surface. The mint DERIVES a share's editable/visible
+ *  paths + config file from this (expanding a `{category}` placeholder), so a
+ *  share can never exceed what the bot committed to git and a second bot
+ *  adopts the editor by adding this block alone. */
+export interface ConfigShareSpec {
+  /** Config file inside the target repo a share edits (e.g. "feed-watch.json"). */
+  config_path: string;
+  /** Dotted leaf paths a share may WRITE. A `{category}` placeholder is
+   *  expanded per share (e.g. "categories.{category}.feeds"). No globs. */
+  editable_paths: string[];
+  /** Extra read-only dotted paths a share may READ back as context (same
+   *  `{category}` expansion). The projection returns editable ∪ visible. */
+  visible_paths?: string[];
+}
+
 /** BotPatch is the editable subset of a bot's manifest. Omitted fields
  *  are left untouched server-side; an empty string clears a field. */
 export type BotPatch = Partial<{
@@ -140,6 +208,11 @@ export interface BotEntryWithSchema extends BotEntry {
   /** Non-empty when the bot's source failed to parse. The picker still
    *  shows the bot but the typed form is hidden / surfaces an error. */
   schema_error?: string;
+  /** True for team-authored bots (editable in the cloud editor); false for the
+   *  read-only baked catalog. Undefined on older servers → treated read-only. */
+  editable?: boolean;
+  /** "tenant" for a team-authored bot, "catalog" for a baked one. */
+  origin?: "tenant" | "catalog";
 }
 
 interface ListResponse {
@@ -297,4 +370,41 @@ export async function uploadBotBundle(
     throw new Error(`upload failed (${res.status}): ${await res.text()}`);
   }
   return (await res.json()) as InstallBotResult;
+}
+
+// ---- workflow-script import (POST /api/v1/bots/import) ----
+
+/** ImportScriptRequest converts a Claude-Code workflow script (.js —
+ *  the `export const meta` + agent()/phase()/log() shape) into a draft
+ *  .bot. Lossy by contract: the server never executes the JS (goja AST
+ *  walk) and everything unmappable degrades into `## IMPORT` markers +
+ *  report entries. */
+export interface ImportScriptRequest {
+  source: string;
+  filename?: string;
+  name?: string;
+  dry_run?: boolean;
+}
+
+export interface ImportScriptReport {
+  mapped?: string[];
+  holes?: string[];
+  placeholders?: string[];
+  dropped?: string[];
+}
+
+export interface ImportScriptResult {
+  workflow_name: string;
+  path?: string;
+  dry_run?: boolean;
+  needs_attention: boolean;
+  report: ImportScriptReport;
+  bot_source: string;
+}
+
+export function importBotScript(req: ImportScriptRequest): Promise<ImportScriptResult> {
+  return apiRequest<ImportScriptResult>(`${BASE}/import`, {
+    method: "POST",
+    body: JSON.stringify(req),
+  });
 }

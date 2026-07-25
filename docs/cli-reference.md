@@ -1,378 +1,402 @@
-[← Documentation index](README.md) · [← Iterion](../README.md)
+# CLI reference
 
-# CLI Reference
+This page maps every public top-level command in the current binary and documents the common operational flags. `iterion <command> --help` is the canonical, build-specific leaf reference. The global `--json` flag is inherited by commands; commands that produce structured records use it for machine-readable output.
 
-All commands support `--json` for machine-readable output and `--help` for usage details.
+## Command map
 
-## `iterion init`
+| Command | Purpose |
+|---|---|
+| `bench asymptote` | Build a workflow-quality stabilisation report from persisted runs. |
+| `bots` | Create bots, install published ones, and emit the catalogue. |
+| `bundle` | Pack a bundle source directory into a deterministic `.botz`. |
+| `completion` | Generate Bash, Zsh, Fish, or PowerShell completion. |
+| `diagram` | Render a workflow as Mermaid. |
+| `dispatch` | Poll a tracker and launch an eligible bot per issue. |
+| `fork` | Fork a run at a prior LLM turn. |
+| `import` | Convert a Claude Code workflow script into a draft `.bot`. |
+| `inspect` | Inspect local runs, executions, events, traces, tools, artifacts, and logs. |
+| `issue` | Manage the native kanban tracker and import forge issues. |
+| `marketplace` | Browse, submit, install, and uninstall local-registry bots/plugins. |
+| `memory` | Export, import, and size local shared-knowledge spaces. |
+| `models` | Inspect resolved model capabilities and their source. |
+| `openapi` | Generate this build's OpenAPI 3.1 document offline. |
+| `plugin` | Install/configure/enable/run runtime plugins. |
+| `remote` | Authenticate to and drive a remote/cloud Iterion server. |
+| `report` | Generate a chronological run report. |
+| `resume` | Resume a paused, cancelled, or resumable failed run. |
+| `run` | Execute a `.bot`, `.botz`, or bundle directory. |
+| `runner` | Run the cloud NATS worker process. |
+| `runs` | Apply local run-store lifecycle operations. |
+| `sandbox` | Diagnose and strictly validate sandbox configuration. |
+| `schedule` | Manage host-cron and keepalive schedules. |
+| `secret` | Manage the local sealed secret store. |
+| `server` | Serve studio/run APIs locally or the cloud control plane. |
+| `skill` | Manage the project/global skill library. |
+| `studio` | Launch the local visual editor and run console. |
+| `supervise` | Attach a watcher/steering agent or install its Claude hook. |
+| `validate` | Parse, compile, and validate without executing. |
+| `version` | Print version and commit information. |
 
-Scaffold a new project with an example workflow:
+`help` is Cobra's generated help command.
 
-```bash
-iterion init              # Current directory
-iterion init my-project   # New directory
-```
+## Project and workflow commands
 
-Creates `pr_refine_single_model_backend.bot`, `.env.example`, and `.gitignore`. Idempotent — won't overwrite existing files.
+There is no project-initialisation step: iterion works against any directory.
+To create a bot, see [`iterion bots create`](#iterion-bots); to attach a repo
+or a cloud instance, see [repo scope](repo-scope.md) and [cloud CLI](cloud-cli.md).
 
-## `iterion validate`
-
-Parse, compile, and validate a workflow without running it:
+### `iterion validate`
 
 ```bash
 iterion validate workflow.bot
+iterion validate bundle.botz --json
 ```
 
-Reports errors and warnings with diagnostic codes (C001–C086, sparse — see [references/diagnostics.md](references/diagnostics.md) for the authoritative list), file positions, and descriptions.
+Accepted inputs are `.bot`, `.botz`, and bundle directories. Validation reports sparse DSL diagnostics in C001–C199 and bundle checks in C200–C230; the [diagnostic catalogue](references/diagnostics.md) is authoritative.
 
-## `iterion run`
-
-Execute a workflow:
+### `iterion diagram`
 
 ```bash
-iterion run workflow.bot [flags]
+iterion diagram workflow.bot
+iterion diagram workflow.bot --view detailed
+iterion diagram workflow.bot --view full
 ```
 
-| Flag | Description |
-|------|-------------|
-| `--var key=value` | Set workflow variable (repeatable) |
-| `--recipe <file>` | Apply a recipe preset (JSON) |
-| `--preset <name>` | Apply a named in-source preset from the workflow's `presets:` block before `--var` overrides |
-| `--run-id <id>` | Use a specific run ID (default: auto-generated) |
-| `--store-dir <dir>` | Run store directory (default: `.iterion`) |
-| `--timeout <duration>` | Global timeout (e.g. `30m`, `1h`) |
-| `--log-level <level>` | Log verbosity: `error`, `warn`, `info`, `debug`, `trace` |
-| `--no-interactive` | Don't prompt on TTY; exit on human pause |
-| `--sandbox <mode>` | Sandbox override: `auto` (read `.devcontainer/devcontainer.json`) or `none` (force off). Empty inherits `ITERION_SANDBOX_DEFAULT` then the workflow's `sandbox:` block |
-| `--sandbox-default-image <image>` | Image ref used by `sandbox: auto` when no `.devcontainer/devcontainer.json` is found (overrides `ITERION_SANDBOX_DEFAULT_IMAGE`) |
-| `--merge-into <target>` | For `worktree: auto` runs — `current` (default), `none` (skip merge, branch only), or a branch name |
-| `--branch-name <name>` | For `worktree: auto` runs — override the storage branch name (default `iterion/run/<friendly-name>`) |
-| `--merge-strategy <mode>` | For `worktree: auto` runs — `squash` (default, collapses run commits into one) or `merge` (fast-forward, preserves history) |
-| `--auto-merge` | For `worktree: auto` runs — apply `--merge-strategy` at run end (default `true` on the CLI; the studio sets `false` and defers the merge to a UI action) |
+`--detailed` and `--full` are aliases for the corresponding `--view` values.
 
-## `iterion inspect`
-
-View run state and history:
+### `iterion bundle`
 
 ```bash
-iterion inspect                                      # List all runs
-iterion inspect --run-id <id>                        # View a specific run
-iterion inspect --run-id <id> --events               # Include event log
-iterion inspect --run-id <id> --full                 # Show full artifact contents
-iterion inspect --run-id <id> --list-nodes           # List node executions
-iterion inspect --run-id <id> --node review          # View a node-scoped report
-iterion inspect --run-id <id> --node review --section trace
-iterion inspect --run-id <id> --node review --branch main --iteration -1
-iterion inspect --run-id <id> --exec exec:main:review:0 --log-tail 8192
+iterion bundle pack my-bot
+iterion bundle pack my-bot --output dist/my-bot.botz --force
 ```
 
-Node-scoped inspection flags:
+`bundle` only packages. Create the source directory with `iterion bots create`.
+See [bundles](bundles.md) for the archive contract.
 
-| Flag | Description |
+### `iterion import`
+
+```bash
+iterion import .claude/workflows/review.js
+iterion import review.js --name review --out review.bot
+iterion import review.js --dry-run
+```
+
+Import never executes JavaScript. Recognised `agent`/`phase`/loop/routing shapes become DSL; unknown constructs become `## IMPORT` markers. The result is a compile-checked draft and the conversion is intentionally lossy. See [import](import.md).
+
+## Run lifecycle
+
+### `iterion run`
+
+```bash
+iterion run <file.bot|file.botz|bundle-dir> [flags]
+```
+
+Inputs and execution:
+
+| Flag | Meaning |
 |---|---|
-| `--list-nodes` | List node executions for the run, one row per branch × iteration. |
-| `--node <id>` | Focus on a specific IR node and return a node-scoped report. |
-| `--branch <id>` | Optional branch ID when `--node` is ambiguous (defaults to `main`). |
-| `--iteration <n>` | 0-based loop iteration for `--node`; use `-1` for the latest started iteration. |
-| `--exec <execution-id>` | Select an exact execution such as `exec:<branch>:<node>:<iter>` instead of using `--node`. |
-| `--section <name>` | Restrict a node report to `summary`, `events`, `trace`, `tools`, `artifacts`, `interactions`, `log`, or `all`. |
-| `--log-tail <bytes>` | Cap the log slice in bytes (`0` = uncapped). |
+| `--var key=value` | Set a variable; repeatable. |
+| `--preset <name>` | Apply an in-source preset before `--var`. |
+| `--recipe <file>` | Apply a recipe JSON overlay. |
+| `--run-id <id>` | Supply the run id. |
+| `--store-dir <dir>` | Local store override. Without it, reuse a managed project `.iterion` or use the deterministic project slot under `$ITERION_HOME/projects/` (normally `~/.iterion/projects/`). |
+| `--timeout <duration>` | Outer run deadline. |
+| `--log-level error\|warn\|info\|debug\|trace` | Logging verbosity. |
+| `--no-interactive` | Return at a human pause instead of prompting on the TTY. |
+| `--skip-mcp-health` | Warn instead of aborting when a declared MCP server fails startup health. |
+| `--auto-resume <n>` | Retry eligible `failed_resumable` causes with capped backoff. |
 
-## `iterion resume`
+Launch-time graph overrides:
 
-Resume a paused workflow run with human answers:
-
-```bash
-iterion resume --run-id <id> --file workflow.bot --answer key=value
-iterion resume --run-id <id> --file workflow.bot --answers-file answers.json
-```
-
-See [resume.md](resume.md) for the full failure / resume matrix.
-
-## `iterion fork`
-
-Create a new run that resumes from a prior LLM turn of an existing run:
-
-```bash
-iterion fork --run-id <parent-id> --node <node-id>                 # latest turn at that node
-iterion fork --run-id <parent-id> --node <node-id> --turn 0        # explicit turn
-iterion fork --run-id <parent-id> --node <node-id> --rewind-code   # also reset the worktree
-```
-
-The forked run is created in `cancelled` status with a synthetic checkpoint anchored at the chosen `(node, turn)`. Use `iterion resume --run-id <new-id>` (or the studio Resume button) to actually execute it.
-
-| Flag | Description |
+| Flag | Meaning |
 |---|---|
-| `--run-id <id>` | Parent run to fork from (required) |
-| `--node <id>` | Anchor node ID the fork re-executes from (required) |
-| `--turn <n>` | Turn index within the node; `-1` = latest (default) |
-| `--rewind-code` | Reset the new worktree to the snapshot captured at this node boundary (requires per-node snapshots; Phase 2+) |
-| `--name <text>` | Friendly name for the forked run (default: auto-generated) |
-| `--new-inputs <file.json>` | JSON file with input overrides merged onto the parent's inputs |
-| `--store-dir <dir>` | Store directory (default: `.iterion`) |
+| `--model selector=model` | Override by node id, id glob, or kind (`agent`/`judge`); repeatable. A bare model targets all LLM nodes. |
+| `--backend selector=backend` | Same selector rules for a supported backend; repeatable. `claw`/`claude_code` are recommended, Kimi/Grok are explicit opt-ins, and Codex is legacy. |
+| `--max-cost-usd`, `--max-duration`, `--max-tokens`, `--max-iterations`, `--max-parallel-branches` | Override non-zero workflow budget fields. |
+| `--review-mode mono\|dual\|auto` | Legacy/third-party topology override for workflows that declare a `review_mode` var; current catalogue campaigns do not. |
 
-## `iterion diagram`
+Access/isolation:
 
-Generate a Mermaid diagram from a workflow:
-
-```bash
-iterion diagram workflow.bot              # Compact view (default)
-iterion diagram workflow.bot --detailed   # Include node properties
-iterion diagram workflow.bot --full       # Include templates and loop details
-```
-
-Paste the output into any Mermaid-compatible renderer (GitHub Markdown, [Mermaid Live Editor](https://mermaid.live), etc.). For example, `iterion diagram bots/review-pr/main.bot` renders the Revi reviewer bot — a tool pre-check fanning out to two cross-family judges, converging on an emit agent, then a compute gate before publishing:
-
-```mermaid
-flowchart TD
-    diff_precheck["🔧 diff_precheck"]
-    done(["✅ done"])
-    emit[["🤖 emit"]]
-    fail(["❌ fail"])
-    fan{"🔀 fan"}
-    pr_gate["🧮 pr_gate"]
-    publish_health["🔧 publish_health"]
-    publish_review["🤖 publish_review"]
-    reviewer_claude["⚖️ reviewer_claude"]
-    reviewer_gpt["⚖️ reviewer_gpt"]
-
-    diff_precheck -->|"NOT is_empty"| fan
-    diff_precheck -->|"is_empty"| done
-    fan --> reviewer_claude
-    fan --> reviewer_gpt
-    reviewer_claude --> emit
-    reviewer_gpt --> emit
-    emit --> pr_gate
-    pr_gate -->|"NOT has_pr"| done
-    pr_gate -->|"has_pr"| publish_review
-    publish_review --> publish_health
-    publish_health --> done
-
-    classDef agent fill:#4A90D9,stroke:#2C5F8A,color:#fff
-    classDef judge fill:#7B68EE,stroke:#5A4CB5,color:#fff
-    classDef router fill:#F5A623,stroke:#C47D0E,color:#fff
-    classDef human fill:#FF6B6B,stroke:#CC4444,color:#fff
-    classDef tool fill:#A0522D,stroke:#6E3720,color:#fff
-    classDef compute fill:#6BB7B7,stroke:#3D7A7A,color:#fff
-    classDef done fill:#2ECC71,stroke:#1A8B4C,color:#fff
-    classDef fail fill:#E74C3C,stroke:#A93226,color:#fff
-    class reviewer_claude,reviewer_gpt judge
-    class fan router
-    class diff_precheck,publish_health tool
-    class pr_gate compute
-    class fail fail
-    class done done
-    class emit,publish_review agent
-```
-
-## `iterion bundle`
-
-Create and inspect `.botz` workflow bundles (see [bundles.md](bundles.md)):
-
-```bash
-iterion bundle init my-bot              # Scaffold a bundle source directory
-iterion bundle pack my-bot              # Build my-bot.botz next to the source
-iterion bundle pack my-bot -o out.botz  # Choose the output archive
-```
-
-`iterion bundle pack` flags:
-
-| Flag | Description |
-|------|-------------|
-| `-o, --output <file>` | Output `.botz` path (default: `<dir>.botz` next to the source) |
-| `--force` | Overwrite the output file if it already exists |
-
-## `iterion bots`
-
-Discover `.bot` files and `.botz` bundles on disk and emit a structured catalogue. Used by orchestrator bots (e.g. `whats-next`) to pick the right bot for an issue, and by custom/future dispatcher runners to resolve a per-ticket `Bot` value to a workflow path (see [dispatcher.md](dispatcher.md)).
-
-```bash
-iterion bots list                                # defaults: scan ./examples, emit JSON
-iterion bots list --paths ./examples --paths ./bots
-iterion bots list --format markdown
-iterion bots list --format skill > skills/iterion-bot-catalog.md
-```
-
-| Flag | Description |
+| Flag | Meaning |
 |---|---|
-| `--paths <dir-or-file>` | Directories or `.bot` files to scan; repeatable (default: `examples`) |
-| `--format <json\|markdown\|skill>` | Output format. `skill` emits a SKILL.md ready to drop into a bundle's `skills/` directory — the canonical way to refresh `bots/whats-next/skills/iterion-bot-catalog.md` after adding or renaming a bot. |
+| `--permission off\|ask\|deny` | Override the tool-permission gate. |
+| `--permission-allow`, `--permission-ask`, `--permission-deny` | Add repeatable Claude-Code-style rules. |
+| `--sandbox none\|auto` | Force sandbox mode or inherit when omitted. |
+| `--sandbox-default-image <ref>` | Fallback image for `auto`. |
+| `--sandbox-host-state auto\|none` | Bind or exclude host `~/.iterion`/`~/.claude`; use `none` on multitenant runners. |
+| `--compress off\|on\|ultra` | Override command-output rewriting/compression. |
 
-## `iterion report`
+Worktree finalization:
 
-Generate a chronological report for a completed run:
+| Flag | Meaning |
+|---|---|
+| `--branch-name <name>` | Override the run branch name. |
+| `--merge-into current\|none\|<branch>` | Select final target or keep only the run branch. |
+| `--merge-strategy squash\|merge` | Collapse run commits or preserve fast-forward history. |
+| `--auto-merge=<bool>` | Apply the finalization automatically; CLI default is true, studio launches defer it. |
+
+See [permissions](permissions.md), [sandbox](sandbox.md), [merge policy](merge-policy.md), and [settings precedence](settings-precedence.md).
+
+### `iterion inspect`
 
 ```bash
-iterion report --run-id <id>
-iterion report --run-id <id> --output report.md
+iterion inspect
+iterion inspect --run-id RUN --events
+iterion inspect --run-id RUN --list-nodes
+iterion inspect --run-id RUN --node analyze --section trace
+iterion inspect --run-id RUN --exec exec:main:analyze:0
 ```
 
-The report includes:
-- **Summary table** — workflow name, status, duration, tokens, cost, model calls
-- **Artifacts table** — all published artifacts with versions
-- **Timeline** — chronological reconstruction of every node execution, edge selection, verdict, branch lifecycle, and budget warning
+Node selection supports `--branch`, `--iteration` (`-1` latest), `--section summary|events|trace|tools|artifacts|interactions|log|all`, and `--log-tail`.
 
-## `iterion studio`
-
-Launch the visual workflow editor:
+### `iterion report`
 
 ```bash
-iterion studio                     # Default port 4891
-iterion studio --port 8080         # Custom port
-iterion studio --dir ./workflows   # Custom directory
-iterion studio --bind 0.0.0.0      # Expose on the LAN
-iterion studio --bots-path ./bots  # Add a bot discovery path
-iterion studio --no-browser        # Don't auto-open browser
+iterion report --run-id RUN
+iterion report --run-id RUN --output report.md
 ```
 
-Networking flags:
+The report reconstructs summary, artifacts, timeline, routing, branch lifecycle, interactions, and budget events.
 
-| Flag | Description |
-|---|---|
-| `--bind <addr>` | Bind address for the studio HTTP listener. Defaults to `127.0.0.1` (loopback only). Use `0.0.0.0` or an interface IP only when you intentionally want LAN exposure; the studio exposes unauthenticated file read/write endpoints, so do not bind it to untrusted networks. |
-
-Bot discovery flags:
-
-| Flag | Description |
-|---|---|
-| `--bots-path <dir-or-file>` | Add a directory or file for Studio to scan for bots. Repeat the flag (or pass a comma-separated StringSlice value) to provide multiple paths. These paths feed the Studio bot picker and dispatcher defaults. When omitted, Studio scans `<dir>/bots`, `<dir>/examples`, and `<dir>/.botz`. |
-
-See [visual-editor.md](visual-editor.md) for features.
-
-## `iterion dispatch`
-
-Run the dispatcher daemon: poll a tracker, dispatch eligible issues to a workflow, and expose the optional REST/WebSocket surface (see [dispatcher.md](dispatcher.md)):
+### `iterion resume`
 
 ```bash
-iterion dispatch iterion.dispatcher.yaml
+iterion resume --run-id RUN --answer approved=true
+iterion resume --run-id RUN --answers-file answers.json
+```
+
+`--file` defaults to the persisted source path. `--force` ignores source drift; `--force-stale` takes over a `running` run whose event stream has been silent for at least 60 seconds. Resume also accepts `--auto-resume`, model/backend overrides, all `--max-*` budget overrides, and permission mode/rules. Model/backend launch overrides are not persisted, so repeat them when continuity matters. See [resume](resume.md).
+
+### `iterion fork`
+
+```bash
+iterion fork --run-id PARENT --node implement
+iterion fork --run-id PARENT --node implement --turn 0 --new-inputs inputs.json
+```
+
+The new run is created in `cancelled` state at the selected conversation turn; resume it to execute. `--rewind-code` additionally requests the captured code snapshot where available. `--name` controls the friendly name.
+
+### `iterion runs prune`
+
+```bash
+iterion runs prune --dry-run
+iterion runs prune --older-than 168h --keep-last 100
+```
+
+Default retention deletes `finished`, `failed`, and `cancelled` runs older than 720 hours. `failed_resumable` requires explicit inclusion via `--status`. Only `<store-dir>/runs/` is touched; worktrees are not removed.
+
+### `iterion runs questions` / `iterion runs answer`
+
+```bash
+iterion runs questions <run-id>
+iterion runs answer <run-id> <interaction-id> "<answer>"
+```
+
+Inspect and answer the **non-blocking** questions an agent posts with the
+`ask_user_async` tool (`interaction: async`, ADR-081 — see
+[async-interaction.md](async-interaction.md)). `runs questions` lists the
+still-unanswered questions of a run; `runs answer` records one answer and
+queues it for delivery to the asking node's inbox — the running agent picks
+it up at its next turn boundary and the run never has to pause. Both take
+`--store-dir` (default `.iterion`). For a run **paused** on a blocking
+question, use `iterion resume --answer` instead.
+
+## Bot creation, discovery, and extension distribution
+
+### `iterion bots`
+
+```bash
+iterion bots create <slug> [--template <id>] [--workdir <dir>] [--dest bots]
+iterion bots templates
+iterion bots list
+iterion bots list --paths bots --paths examples --format markdown
+iterion bots install <git-url|path> [--path <bundle>] [--dest bots]
+iterion bots regen-catalog
+```
+
+`bots create` scaffolds a bot bundle under `bots/<slug>` — `main.bot`, `manifest.yaml`, `README.md`, `.gitignore`, and the `skills/ prompts/ attachments/ presets/` layout — then refreshes the generated catalogue. It is the CLI half of the studio builder at `/bots/new`: both render through `pkg/botscaffold`, so a bot created either way is identical. The generated workflow is parsed **and** compiled before anything is written.
+
+The name must be free **everywhere discovery looks** (`bots/`, `examples/`, `.botz/`), not merely under `--dest`: a duplicate name makes catalogue routing ambiguous. A collision exits 2 and names the conflicting bot's path.
+
+| Flag | Meaning |
+|---|---|
+| `--template <id>` | Start from a gallery template (default `blank`); `iterion bots templates` lists them. |
+| `--workdir <dir>` | Workspace root anchoring `--dest` and the catalogue refresh (default: cwd). |
+| `--dest <dir>` | Parent directory for the bundle, resolved against `--workdir` (default `bots`). |
+| `--display-name`, `--description`, `--instructions` | Pre-fill catalogue metadata and the agent's mission. |
+| `--model`, `--backend` | Pin instead of auto-detection. |
+| `--worktree`, `--sandbox` | Isolation dials; only override the template when passed explicitly. |
+
+`bots list` scans `bots` and `examples` by default and emits `json`, `markdown`, or a generated `skill`. Installs default to workspace `.botz/` and never run the bot. `regen-catalog` rebuilds Nexie's generated bot catalogue from manifests and `.iterion/bot-overrides.yaml`.
+
+### `iterion marketplace`
+
+```bash
+iterion marketplace list [--kind bot|plugin] [--query text] [--tag tag]
+iterion marketplace submit <git-url|path> [--path subdir] [--ref ref]
+iterion marketplace install <slug> [--force]
+iterion marketplace uninstall <slug>
+```
+
+The registry lives under `<store-dir>/marketplace/`. Submission validates/indexes metadata but does not install. Bot installs land in workspace `.botz/`; plugin installs land under `~/.iterion/plugins/`; neither auto-runs.
+
+### `iterion plugin`
+
+Subcommands are `list`, `info`, `install`, `uninstall`, `enable`, `disable`, `config`, and `run`.
+
+```bash
+iterion plugin list
+iterion plugin enable repo-falcon
+iterion plugin config firecrawl --set api_url=http://localhost:3002
+iterion plugin run repo-falcon index
+iterion plugin install <directory|git-url>
+```
+
+Built-ins are `rtk` (enabled by default), `graphify`, `repo-falcon`, and `firecrawl` (disabled by default). Third-party installs are disabled until enabled. A bare public skill library can be installed through the same path. See [plugins](plugins.md).
+
+### `iterion skill`
+
+Subcommands are `add`, `export`, `import`, `list`, `rm`, and `show`. `--project` targets the project store; otherwise the global store is used.
+
+```bash
+iterion skill add changelog-writer --from skill.md
+iterion skill import https://github.com/acme/skills
+iterion skill list
+```
+
+See [skills library](skills-library.md).
+
+### `iterion models` and `iterion openapi`
+
+```bash
+iterion models
+iterion models openai/gpt-5.5 --json
+iterion models --refresh
+iterion openapi --output openapi.json
+```
+
+Model data reports the online-cache or curated-fallback source. `openapi` is offline and code-generated; use `iterion remote openapi` for a server's live spec.
+
+## Local services and automation
+
+### `iterion studio`
+
+```bash
+iterion studio --dir . --port 4891
+iterion studio --bots-path ./bots --no-browser
+```
+
+The listener defaults to loopback. `--bind 0.0.0.0` exposes unauthenticated local file/run APIs, so use it only on trusted networks. Upload limits are controlled by `--max-upload-size`, `--max-total-upload-size`, `--max-uploads-per-run`, and `--allow-upload-mime`; `--max-concurrent-pipelines` defaults to 3. `--no-browser-pane` disables preview/CDP support. See [visual editor](visual-editor.md).
+
+### `iterion dispatch`
+
+```bash
+iterion dispatch
 iterion dispatch iterion.dispatcher.yaml --port 4892
 iterion dispatch iterion.dispatcher.yaml --no-server
 ```
 
-| Flag | Description |
-|------|-------------|
-| `--store-dir <dir>` | Override the iterion store directory |
-| `--port <port>` | HTTP port for the dispatcher REST/WS surface (overrides `server.port` in config) |
-| `--no-server` | Run headless — disable the HTTP surface even if `server.port` is set |
+No argument selects the native tracker, embedded bot catalogue, and HTTP `:4892` defaults. See [dispatcher](dispatcher.md).
 
-## `iterion schedule`
+### `iterion schedule`
 
-Schedule recurring bot runs via the host crontab — no resident daemon (see [scheduling.md](scheduling.md)). A declarative manifest (`~/.iterion/schedules.yaml`) is the source of truth; `install` splices a managed block into the crontab and each cron line calls `schedule run <name>`:
+The manifest defaults to `$ITERION_SCHEDULES_FILE` or `~/.iterion/schedules.yaml`; every subcommand accepts `--manifest`.
 
 ```bash
-iterion schedule add sec-audit-source-weekly --cron "0 2 * * 1" \
+iterion schedule add weekly --cron "0 2 * * 1" \
   --bot bots/sec-audit-source/main.bot --workdir "$PWD"
-iterion schedule list
-iterion schedule run sec-audit-source-weekly --dry-run   # preview the resolved `iterion run`
-iterion schedule install                                  # write the crontab block (CRON_TZ=UTC)
-iterion schedule uninstall                                # remove the managed block
+iterion schedule install
+iterion schedule audit --name weekly --since 24h
 ```
 
-All subcommands accept `--manifest <path>` (default `$ITERION_SCHEDULES_FILE` or `~/.iterion/schedules.yaml`).
+| Subcommand | Notable flags |
+|---|---|
+| `add <name>` | Required `--cron` and `--bot`; plus `--workdir`, `--store-dir`, `--sandbox`, `--timeout`, repeatable `--var`, `--description`, `--disabled`. |
+| `add <name>` guards | `--guard`, `--guard-timeout`, `--guard-var`. Exit 0 fires; stdout becomes a workflow var. |
+| `add <name>` overlap | `--overlap skip\|allow\|keepalive`, `--max-concurrent`, `--stale-after`. |
+| `list`, `remove` | Inspect or delete manifest entries. |
+| `run <name>` | Execute now; `--dry-run` prints the resolved command. |
+| `audit` | Filter tick decisions with `--name`, `--since`, `--surface`, `--tail`. |
+| `install`, `uninstall` | Synchronize/remove the managed crontab block; install also accepts `--print` and `--tz`. |
 
-| Command | Flags |
-|---------|-------|
-| `schedule add <name>` | `--cron <expr>` (required, 5-field), `--bot <path>` (required), `--workdir <dir>`, `--store-dir <dir>`, `--sandbox <none\|auto>`, `--timeout <dur>`, `--var key=value` (repeatable), `--description <text>`, `--disabled` |
-| `schedule list` | `--json` |
-| `schedule remove <name>` | — |
-| `schedule run <name>` | `--dry-run` |
-| `schedule install` | `--print` (render block to stdout, don't touch crontab), `--tz <zone>` (default `UTC`) |
-| `schedule uninstall` | — |
+See [scheduling](scheduling.md), including sub-minute keepalive behavior.
 
-## `iterion issue`
+### `iterion issue`
 
-Manage the native kanban tracker used by the dispatcher (see [native-tracker.md](native-tracker.md)):
+Subcommands are `create`, `list`, `show`, `move`, `update`, `close`, `board`, and `import`.
 
 ```bash
 iterion issue create --title "Fix auth" --label backend --priority 10
 iterion issue list --state todo --unclaimed
-iterion issue show <id-or-prefix>
-iterion issue move <id-or-prefix> --to doing
-iterion issue update <id-or-prefix> --title "New title" --field bot=review
-iterion issue close <id-or-prefix>
+iterion issue move ISSUE --to doing
 iterion issue board show
-iterion issue board init --force
+FORGE_TOKEN=... iterion issue import --forge forgejo \
+  --repo owner/name --base-url https://forge.example --token-env FORGE_TOKEN
 ```
 
-All `iterion issue` subcommands accept the persistent `--store-dir <dir>` flag.
+Forge import is one-way/idempotent, skips pull requests, and reads the token only from the named environment variable. See [native tracker](native-tracker.md).
 
-Common subcommands and flags:
-
-| Command | Flags |
-|---------|-------|
-| `issue create` | `--title <text>` (required), `--body <text>`, `--state <state>`, `--label <label>` (repeatable), `--priority <n>`, `--assignee <name>`, `--blocker <id>` (repeatable), `--field key=value` (repeatable) |
-| `issue list` | `--state <state>` (repeatable), `--label <label>` (repeatable), `--assignee <name>`, `--claimed`, `--unclaimed` |
-| `issue move <id-or-prefix>` | `--to <state>` (required) |
-| `issue update <id-or-prefix>` | `--title <text>`, `--body <text>`, `--labels <csv>`, `--priority <n>`, `--assignee <name>`, `--blockers <csv>`, `--field key=value` (repeatable), `--clear-field <key>` (repeatable) |
-| `issue board init` | `--from <board.json>`, `--force` |
-
-## `iterion bench asymptote`
-
-Measure inter-session quality stabilisation curves from persisted runs (see [asymptote-bench.md](asymptote-bench.md)):
+### `iterion sandbox doctor`
 
 ```bash
-iterion bench asymptote --runs r1,r2,r3 --judge-node final_judge --output report.md
-iterion bench asymptote --runs r1,r2 --variant-runs r3,r4 --judge-node final_judge
+iterion sandbox doctor
+iterion sandbox doctor --strict workflow.bot --target local
+iterion sandbox doctor --strict workflow.bot --target cloud
 ```
 
-| Flag | Description |
-|------|-------------|
-| `--store-dir <dir>` | Store directory (default: `.iterion`) |
-| `--runs <ids>` | Comma-separated run IDs of the same workflow |
-| `--variant-runs <ids>` | Comma-separated run IDs of an alternative recipe variant |
-| `--label <name>` | Primary group label (default: `asymptote`) |
-| `--variant-label <name>` | Variant group label (default: `variant`) |
-| `--judge-node <id>` | IR node ID of the judge whose verdicts will be scored (required) |
-| `--judge-field <field>` | Output field on the judge node carrying the verdict (default: `approved`) |
-| `--loop <name>` | Restrict scoring to one bounded loop name (default: first observed) |
-| `--approval-threshold <n>` | Score threshold for the approved flag (default: `0.5`) |
-| `--output <file>` | Markdown output file (`-` or empty for stdout) |
-| `--title <text>` | Report title (default: `Asymptote Benchmark`) |
-| `--include-per-run` | Append a per-run iteration list at the end |
+Strict mode resolves workflow/CLI sandbox settings and exits non-zero for driver, image, Kubernetes compatibility, host-state, or network-policy failures. It accepts the run-equivalent `--sandbox`, `--sandbox-default-image`, and `--sandbox-host-state` overrides. See [sandbox](sandbox.md).
 
-## `iterion sandbox`
-
-Inspect and configure the iterion sandbox subsystem (see [sandbox.md](sandbox.md)):
+### `iterion server` and `iterion runner`
 
 ```bash
-iterion sandbox doctor   # Report the active driver (Docker/Podman), image cache, and capabilities
+iterion server --config cloud.yaml --bind 0.0.0.0 --port 4891
+iterion runner --config cloud.yaml
+iterion server webpush-keys        # mint a VAPID keypair for Web Push
 ```
 
-## `iterion server`
+`server` uses local in-process mode by default and cloud control-plane mode under `ITERION_MODE=cloud`. `runner` consumes NATS run messages and persists through MongoDB/S3. The `server webpush-keys` subcommand prints a fresh VAPID public/private pair for the `ITERION_WEBPUSH_VAPID_{PUBLIC,PRIVATE}_KEY` env vars that enable user notifications ([notifications](notifications.md)). See [cloud deployment](cloud-deployment.md).
 
-Start the long-running HTTP server (studio + run console + cloud API). Used both for the local web editor and for cloud mode deployments — install via [`oci://ghcr.io/socialgouv/charts/iterion`](https://github.com/SocialGouv/iterion/pkgs/container/charts%2Fiterion) (chart sources in [`charts/iterion/`](../charts/iterion/)).
+## State, knowledge, and supervision
+
+### `iterion secret`
+
+Subcommands are `set`, `list`, and `rm`; `--project` selects the per-project store. Values are never printed.
 
 ```bash
-iterion server --port 4891 --bind 0.0.0.0
-iterion server --config ./cloud.yaml
+iterion secret set GITHUB_TOKEN
+iterion secret set DB_URL --project --hosts db.internal
+iterion secret list
 ```
 
-Flags:
+See [secrets](secrets.md).
 
-| Flag | Description |
-|---|---|
-| `--port <n>` | HTTP port (default `4891`). |
-| `--bind <addr>` | Bind address (default `0.0.0.0` for cloud pods, so the service listens on all interfaces unless overridden). |
-| `--dir <path>` | Working directory. |
-| `--store-dir <path>` | Run store directory in local mode only. |
-| `--config <path>` | YAML config file; environment variables take precedence. |
+### `iterion memory`
 
-## `iterion remote`
-
-Drive a **remote** iterion instance (cloud or self-hosted server) over its HTTP API — the full operator/admin surface as typed subcommands: `runs` (launch/follow/inspect/merge), `bots`, `marketplace`, `issues`/`labels`/`board`, `dispatcher`, `triggers`, `teams`/`orgs`/`me`, `tokens`, `secrets`/`api-keys`/`bindings`, `webhooks`, `forge`, `audit`/`usage`/`limits`, `memory`, `admin`, `sso`, `plugins`, `server`, plus the raw `api`/`routes`/`openapi` escape hatches.
+Subcommands are `du`, `export`, and `import`. A space is selected by visibility (`bot`, `project`, `cross_project`, `user`, `org`, `global`), name, and the applicable project/user/tenant selector.
 
 ```bash
-iterion remote login https://iterion.example.com   # browser flow; --token/--email for headless
-iterion remote runs launch ./wf.bot --follow
-iterion remote runs list --json | jq '.runs[].id'
+iterion memory du --visibility bot --name campaign
+iterion memory export --visibility project --name shared --out shared.tar.gz
 ```
 
-CI mode needs no config file: set `ITERION_REMOTE_URL` + `ITERION_REMOTE_TOKEN` (and optionally `ITERION_REMOTE_TEAM`/`_ORG`). Full reference: [cloud-cli.md](cloud-cli.md).
+See [memory and knowledge](memory-and-knowledge.md).
 
-## `iterion runner`
+### `iterion supervise`
 
-Run a cloud-mode runner pod that consumes workflows from the NATS queue. Configured via `pkg/config/` env vars; deployed by the Helm chart with KEDA-based autoscaling.
+```bash
+iterion supervise --run-id RUN --node implement \
+  --system @policies/watchdog.md --monitor event_type=tool_error,tool_name=Bash
+iterion supervise install-hook
+iterion supervise uninstall-hook
+```
 
-## `iterion version`
+The watcher evaluates on turn boundaries/monitor matches and injects node-scoped steering for the next turn. Main flags are `--model`, `--system`, repeatable `--node`/`--monitor`, `--cooldown`, `--max-evals`, and `--claude-session` for a raw Claude Code session. A DSL `supervisor` declaration starts the same coordinator automatically. See [supervisors](supervisors.md).
 
-Print version and commit hash.
+## Remote, benchmarks, and utility commands
+
+`iterion remote` exposes typed cloud domains for runs, bots, marketplace, issues/boards, dispatcher, triggers, orgs/teams/users, tokens, secrets/keys/bindings, webhooks/forge, audit/usage/limits, memory, plugins, SSO/admin, routes/OpenAPI, and raw API access. CI can use `ITERION_REMOTE_URL`, `ITERION_REMOTE_TOKEN`, and optional team/org selectors without a config file. The complete reference is [cloud CLI](cloud-cli.md).
+
+`iterion bench asymptote` accepts primary `--runs`, optional `--variant-runs`, a required `--judge-node`, judge field/threshold, loop selector, labels, title, per-run detail, and output path. See [asymptote bench](asymptote-bench.md).
+
+`iterion completion <bash|zsh|fish|powershell>` emits shell completion. `iterion version` prints build version and commit.

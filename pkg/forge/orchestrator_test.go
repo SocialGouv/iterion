@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/SocialGouv/iterion/pkg/bundle"
+	"github.com/SocialGouv/iterion/pkg/cloudsched"
 	"github.com/SocialGouv/iterion/pkg/secrets"
 	"github.com/SocialGouv/iterion/pkg/webhooks"
 )
@@ -529,5 +530,113 @@ func TestProvision_BotWithoutForgeBlock(t *testing.T) {
 	})
 	if err == nil {
 		t.Fatal("expected error for a bot with no forge: block")
+	}
+}
+
+func TestProvision_ReplaceRemovesBot(t *testing.T) {
+	o, fa, sealer := newTestOrch(t)
+	seedConn(t, o, sealer)
+	ctx := context.Background()
+
+	if _, err := o.Provision(ctx, ProvisionRequest{TenantID: "t1", ConnectionID: "conn-1", RepoFullName: "group/api", BotIDs: []string{"review-pr", "revi-converse"}, ActorID: "u1"}); err != nil {
+		t.Fatal(err)
+	}
+	res, err := o.Provision(ctx, ProvisionRequest{TenantID: "t1", ConnectionID: "conn-1", RepoFullName: "group/api", BotIDs: []string{"revi-converse"}, ActorID: "u1", Replace: true})
+	if err != nil {
+		t.Fatalf("replace provision: %v", err)
+	}
+	if res.Created {
+		t.Error("replace on an existing integration is not a fresh create")
+	}
+	if !sameSet(res.BotIDs, []string{"revi-converse"}) {
+		t.Errorf("result bots = %v, want just revi-converse", res.BotIDs)
+	}
+	ri, _ := o.Integrations.Get(ctx, res.IntegrationID)
+	if !sameSet(ri.BotIDs, []string{"revi-converse"}) {
+		t.Errorf("integration bots = %v, want just revi-converse", ri.BotIDs)
+	}
+	cfg, _ := o.Webhooks.Get(ctx, res.WebhookID)
+	if !sameSet(cfg.BotIDs, []string{"revi-converse"}) {
+		t.Errorf("webhook bots = %v", cfg.BotIDs)
+	}
+	// revi-converse subscribes to comments only → events must narrow.
+	if !sameSet(cfg.EventAllowlist, []string{"note"}) {
+		t.Errorf("event allowlist = %v, want [note]", cfg.EventAllowlist)
+	}
+	if fa.deletes != 0 {
+		t.Errorf("replace must not delete the forge hook (deletes=%d)", fa.deletes)
+	}
+	// Without Replace the same request would have been a union no-op.
+	res2, err := o.Provision(ctx, ProvisionRequest{TenantID: "t1", ConnectionID: "conn-1", RepoFullName: "group/api", BotIDs: []string{"review-pr"}, ActorID: "u1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !sameSet(res2.BotIDs, []string{"review-pr", "revi-converse"}) {
+		t.Errorf("union add-back = %v", res2.BotIDs)
+	}
+}
+
+func TestSyncSchedules_PreservesOperatorTuning(t *testing.T) {
+	o, _, sealer := newTestOrch(t)
+	seedConn(t, o, sealer)
+	ctx := context.Background()
+	sched := cloudsched.NewMemoryStore()
+	o.Schedules = sched
+	o.Invocations = func(botID string) ([]bundle.Invocation, error) {
+		if botID == "review-pr" {
+			return []bundle.Invocation{{
+				Kind:     bundle.InvocationKindSchedule,
+				Schedule: &bundle.InvocationSchedule{SuggestedCron: "0 3 * * *"},
+			}}, nil
+		}
+		return nil, nil
+	}
+
+	res, err := o.Provision(ctx, ProvisionRequest{TenantID: "t1", ConnectionID: "conn-1", RepoFullName: "group/api", BotIDs: []string{"review-pr"}, ActorID: "u1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	rows, err := sched.ListByIntegration(ctx, "t1", res.IntegrationID)
+	if err != nil || len(rows) != 1 {
+		t.Fatalf("schedules after provision = %v (err %v), want 1", rows, err)
+	}
+	if rows[0].Cron != "0 3 * * *" {
+		t.Fatalf("cron = %q", rows[0].Cron)
+	}
+
+	// Operator tunes the row: pause + custom cron + guard.
+	cron := "30 6 * * 1"
+	paused := true
+	guard := "test -f ready"
+	if _, err := sched.Update(ctx, rows[0].ID, cloudsched.SchedulePatch{
+		Cron: &cron, Disabled: &paused, Guard: &guard, UpdatedAt: time.Unix(1700000100, 0).UTC(),
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	// Re-provision with an added bot — syncSchedules replaces rows but must
+	// carry the tuning over.
+	if _, err := o.Provision(ctx, ProvisionRequest{TenantID: "t1", ConnectionID: "conn-1", RepoFullName: "group/api", BotIDs: []string{"revi-converse"}, ActorID: "u1"}); err != nil {
+		t.Fatal(err)
+	}
+	rows2, err := sched.ListByIntegration(ctx, "t1", res.IntegrationID)
+	if err != nil || len(rows2) != 1 {
+		t.Fatalf("schedules after re-provision = %v (err %v), want 1", rows2, err)
+	}
+	got := rows2[0]
+	if got.Cron != cron || !got.Disabled || got.Guard != guard {
+		t.Errorf("operator tuning lost: cron=%q disabled=%v guard=%q", got.Cron, got.Disabled, got.Guard)
+	}
+
+	// An explicit enable-dialog cron override still wins over the tuned cron.
+	if _, err := o.Provision(ctx, ProvisionRequest{TenantID: "t1", ConnectionID: "conn-1", RepoFullName: "group/api", BotIDs: []string{"review-pr"}, ActorID: "u1", ScheduleCrons: map[string]string{"review-pr": "15 9 * * *"}}); err != nil {
+		t.Fatal(err)
+	}
+	rows3, _ := sched.ListByIntegration(ctx, "t1", res.IntegrationID)
+	if len(rows3) != 1 || rows3[0].Cron != "15 9 * * *" {
+		t.Errorf("explicit cron override not applied: %+v", rows3)
+	}
+	if len(rows3) == 1 && !rows3[0].Disabled {
+		t.Error("pause state should survive an explicit cron override")
 	}
 }

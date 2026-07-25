@@ -89,7 +89,7 @@ DEEPSEC_PROVIDER=claude-code \
   scan \
   --target {{vars.workspace_dir}} \
   --output {{vars.scan_dir}}/deepsec.json \
-  --record-dir {{vars.workspace_dir}}/.iterion/security/deepsec-records
+  --record-dir {{vars.workspace_dir}}/.sec-audit/deepsec-records
 ```
 
 Requirements:
@@ -134,7 +134,7 @@ contract says:
 - `<cwd>/PATCHES/bug_NN/{patch.diff, patch_result.json}`
 
 When using the harness as a cross-check, Seki copies the
-`TRIAGE.json` into `.iterion/security/cross-check/<ts>/` rather
+`TRIAGE.json` into `.sec-audit/cross-check/<ts>/` rather
 than letting it litter the workspace root.
 
 ## Graceful degrade
@@ -163,9 +163,9 @@ The degrade rules:
 ## Determinism considerations
 
 - deepsec's `--record-dir` adds a non-deterministic warm/cold
-  cache layer. Put it under `.iterion/security/deepsec-records/`
-  (gitignore-able) to keep it out of the source tree and shared
-  with the file-record store.
+  cache layer. Put it under `.sec-audit/deepsec-records/`
+  (gitignore-able) so it sits beside the file-record store in the
+  repo's `.sec-audit/` dotdir instead of littering the source tree.
 - The harness's `/triage` interview is interactive by default —
   always pass `--auto` from a headless Seki invocation.
 - `claude --print` flushes once; capture stdout and stderr

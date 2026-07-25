@@ -152,6 +152,7 @@ func (s *Server) webhookAuth(provider webhooks.Provider, next http.Handler) http
 			UserID: actor,
 			TeamID: cfg.TenantID,
 			Role:   identity.RoleMember,
+			Kind:   auth.KindWebhook,
 		})
 		ctx = store.WithIdentity(ctx, cfg.TenantID, actor)
 		ctx = context.WithValue(ctx, webhookCtxKey{}, cfg)

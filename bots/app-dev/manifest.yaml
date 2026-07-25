@@ -1,7 +1,10 @@
 name: app-dev
 display_name: Appy
 icon: 🏗️
-version: 0.1.0
+version: 0.1.1
+## 0.1.1 — ADR-082 Phase 2 (sandbox-by-default): removed the `sandbox:`
+## block (image pin, ~/.claude mount, claude post_create gate) — isolation
+## is the platform's job; gh/glab join crane in the pinned devbox.json.
 ## 0.1.0 — initial release. ONE bot, two operator modes on the ADR-058
 ## v2 campaign shape: `interview` (a Nexie-style conversational loop
 ## converges + commits SPEC.md before development) and `autonomous`
@@ -26,8 +29,8 @@ description: |
   an opt-in draft-review gate lets the operator ship, request changes
   (feedback loops back into the campaign), or hold. Re-running against
   the generated app EVOLVES it (brownfield detection) instead of
-  re-scaffolding. Opt-in MR tail pushes the series and opens the
-  merge/pull request.
+  re-scaffolding. An opt-in tail pushes the series and opens the
+  pull request (PR; merge request on GitLab).
 when_to_use: |
   Use to create a NEW application from a natural-language brief —
   point it at an EMPTY directory (the bot `git init`s and commits its
@@ -58,13 +61,13 @@ dispatch_vars:
   ## the DSL defaults (autonomous + draft_review on).
   mode: "autonomous"
   draft_review: "false"
-  ## Board-dispatched runs open a merge/pull request at the end and post
+  ## Board-dispatched runs open a pull request at the end and post
   ## the URL back onto the source issue (requires the workspace to have
   ## a forge remote — a bare local greenfield fixture won't).
   open_mr: "true"
   source_issue_ref: "{{issue.id}}"
 
-## Forge access for the MR/PR push + creation + the issue back-link.
+## Forge access for the PR push + creation + the issue back-link.
 ## The auto-provisioner requests these scopes and binds the connection
 ## token under `forge_token` (cross-ref main.bot `secrets: { forge_token }`).
 forge:
@@ -73,10 +76,21 @@ forge:
   ## pull_request_comment: the on-demand `/appy <brief>` slash command.
   events: [issue_labeled, pull_request_comment]
   token_scopes:
-    pull_requests: write     # open the MR/PR
+    pull_requests: write     # open the PR
     repository: write        # push the branch
-    issues: write            # post the MR URL back onto the source issue
+    issues: write            # post the PR URL back onto the source issue
   secret: forge_token
+
+## Appy builds a NEW application, so the launch surface offers a target
+## repository up front: attach a connected repo, or CREATE a fresh one on
+## the forge (the run clones it empty, Appy scaffolds, commits and pushes;
+## finalize_mr opens the PR against it). Optional — a bare local directory
+## (greenfield, `git init` by the bot) stays fully supported.
+repo:
+  mode: optional
+  allow_create: true
+  purpose: "Where the new application will live — pick an existing repo to evolve, or create a fresh one for it."
+  visibility: private
 
 invocations:
   - kind: command
@@ -84,3 +98,10 @@ invocations:
     args_var: app_prompt
     command: { name: appy, aliases: [app-dev], scope: any, min_replier_role: maintainer, opens_mr: true }
   - kind: board
+
+## Studio launch-form hierarchy: `primary` inputs render top-level in
+## the declared order; `hidden` vars are dispatch/webhook plumbing kept
+## out of the form (still settable via --var / bot_args).
+launch:
+  primary: [app_prompt, mode, deploy_enabled]
+  hidden: [source_issue_ref]

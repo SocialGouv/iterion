@@ -66,20 +66,83 @@ export function formatContextUsage(
 }
 
 // formatRelative renders an ISO timestamp as "5m ago" / "2h ago" /
-// "3d ago". Used by the run list and the commits panel; both want the
-// same rounding behaviour so they stay in lockstep on screen.
+// "3d ago" — or "in 5m" / "in 3d" for future instants (expiry dates,
+// scheduled fires). Used by the run list and the commits panel; both
+// want the same rounding behaviour so they stay in lockstep on screen.
 export function formatRelative(iso: string): string {
   const t = Date.parse(iso);
   if (Number.isNaN(t)) return iso;
   const delta = Date.now() - t;
-  const seconds = Math.round(delta / 1000);
-  if (seconds < 60) return `${seconds}s ago`;
+  const future = delta < 0;
+  const phrase = (n: number, unit: string) =>
+    future ? `in ${n}${unit}` : `${n}${unit} ago`;
+  const seconds = Math.round(Math.abs(delta) / 1000);
+  if (seconds < 60) return phrase(seconds, "s");
   const minutes = Math.round(seconds / 60);
-  if (minutes < 60) return `${minutes}m ago`;
+  if (minutes < 60) return phrase(minutes, "m");
   const hours = Math.round(minutes / 60);
-  if (hours < 24) return `${hours}h ago`;
+  if (hours < 24) return phrase(hours, "h");
   const days = Math.round(hours / 24);
-  return `${days}d ago`;
+  return phrase(days, "d");
+}
+
+// Absolute timestamp formatters shared by every table/tooltip that shows
+// a wall-clock instant. Locale is pinned to en-US so output is
+// deterministic across dev hosts and CI ("Jul 18, 2026, 2:32 PM").
+const dateTimeFormatter = new Intl.DateTimeFormat("en-US", {
+  dateStyle: "medium",
+  timeStyle: "short",
+});
+const dateFormatter = new Intl.DateTimeFormat("en-US", {
+  dateStyle: "medium",
+});
+const timeFormatter = new Intl.DateTimeFormat("en-US", {
+  timeStyle: "medium",
+});
+
+// formatDateTime renders an ISO timestamp as an absolute date + time,
+// e.g. "Jul 18, 2026, 2:32 PM". Returns "—" for missing or unparsable
+// input so callers can drop their own fallback branches.
+export function formatDateTime(iso?: string | null): string {
+  if (!iso) return "—";
+  const t = Date.parse(iso);
+  if (Number.isNaN(t)) return "—";
+  return dateTimeFormatter.format(t);
+}
+
+// formatDate renders an ISO timestamp as an absolute date only,
+// e.g. "Jul 18, 2026". Same fallbacks as formatDateTime.
+export function formatDate(iso?: string | null): string {
+  if (!iso) return "—";
+  const t = Date.parse(iso);
+  if (Number.isNaN(t)) return "—";
+  return dateFormatter.format(t);
+}
+
+// formatTime renders an ISO timestamp as wall-clock time only,
+// e.g. "2:32:05 PM". Same fallbacks as formatDateTime.
+export function formatTime(iso?: string | null): string {
+  if (!iso) return "—";
+  const t = Date.parse(iso);
+  if (Number.isNaN(t)) return "—";
+  return timeFormatter.format(t);
+}
+
+// formatDayHeader renders an ISO timestamp as a short weekday + date for
+// day-group headers, e.g. "Sat, Jul 18" — appending the year only when
+// it differs from the current one. Same fallbacks as formatDateTime.
+export function formatDayHeader(iso?: string | null): string {
+  if (!iso) return "—";
+  const t = Date.parse(iso);
+  if (Number.isNaN(t)) return "—";
+  const d = new Date(t);
+  const opts: Intl.DateTimeFormatOptions = {
+    weekday: "short",
+    month: "short",
+    day: "numeric",
+  };
+  if (d.getFullYear() !== new Date().getFullYear()) opts.year = "numeric";
+  return new Intl.DateTimeFormat("en-US", opts).format(d);
 }
 
 // basename returns the trailing path segment after the last "/" or "\",

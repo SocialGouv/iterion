@@ -123,3 +123,25 @@ scripts/bench/ci-build-bench.sh build --image sec  --runs 3   # the worst QEMU o
   before pointing buildx at it (a cold-start daemon otherwise refuses the gRPC connection).
 - Org vars/secrets (visibility ALL): `BUILDKIT_OPERATOR_BUILDD_URL`,
   `BUILDKIT_OPERATOR_GATEWAY_HOST`, `BUILDKIT_OPERATOR_{CA,CERT,KEY}`.
+
+## Addendum 2026-07-22 — decoupled image pipeline + operator-side tuning
+
+The serial slim→full→sec sandbox chain (the ~26 min above) no longer runs on
+app pushes. The pipeline was restructured (see `.github/workflows/`):
+
+- **Layer inversion**: the sandbox images became tool-only `*-base` images
+  (rebuilt only when `sandbox/**` changes, own workflow `sandbox-images.yml`,
+  own concurrency queue) + a cheap per-push finalize (`_finalize.yml`) that
+  stamps the freshly-built iterion binary onto the published bases — all four
+  variants in parallel, so `iterion-sandbox-*:edge` never lags the app image.
+- **Shared operator daemons per family**: the four bases route to ONE
+  buildkit-operator name (`iterion-sandbox-base`, shared content store + apt
+  cache mounts), the four finalizes to another (`iterion-sandbox-finalize`,
+  the app image is pulled once, not four times).
+- **Operator-side** (buildkit-operator ≥ v0.13): adaptive keep-warm (idle
+  window scales with observed build cadence) and bounded cache-volume
+  auto-grow replace hand-tuned per-project CRs; the remaining declared tuning
+  lives in the chart's `projectDefaults` (infra-apps).
+
+Net effect on the day-to-day loop: a Go-only (or go.mod) push pays the app
+build + parallel finalizes — no sandbox chain, no queueing behind it.

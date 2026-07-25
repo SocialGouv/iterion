@@ -5,6 +5,9 @@ import type { RunEvent } from "@/api/runs";
 import { toastForEvent } from "./useRunToasts";
 
 function mkEvent(partial: Partial<RunEvent>): RunEvent {
+  // The cast re-associates the decomposed type/data pair with the
+  // discriminated union — call sites pass a literal type plus the
+  // matching payload shape.
   return {
     seq: partial.seq ?? 1,
     timestamp: partial.timestamp ?? "2026-05-22T12:00:00Z",
@@ -13,7 +16,7 @@ function mkEvent(partial: Partial<RunEvent>): RunEvent {
     data: partial.data ?? {},
     ...(partial.node_id !== undefined ? { node_id: partial.node_id } : {}),
     ...(partial.log_offset !== undefined ? { log_offset: partial.log_offset } : {}),
-  };
+  } as RunEvent;
 }
 
 describe("toastForEvent", () => {

@@ -5,19 +5,13 @@ import {
   Cross2Icon,
   ExternalLinkIcon,
 } from "@radix-ui/react-icons";
-import {
-  useCallback,
-  useEffect,
-  useState,
-  type PointerEvent as ReactPointerEvent,
-} from "react";
+import { useEffect, useState } from "react";
 import { createPortal } from "react-dom";
 import { Link } from "wouter";
 
 import { pipelineBoardImageURL, type PipelineBoardCard } from "@/api/pipelineBoards";
 import type { UnifiedStatus } from "@/components/Runs/runStatusClasses";
 import { Badge, Button, IconButton, InlineBanner, StatusBadge } from "@/components/ui";
-import { readNumberFlag, writeNumberFlag } from "@/lib/localStorageFlag";
 
 import { cardRoutePath } from "./cardRoute";
 import { ImagePreviewDialog } from "./ImagePreview";
@@ -214,7 +208,6 @@ const CONTRACT_KEYS = [
 ] as const;
 
 const CONTRACT_KEY_SET = new Set<string>(CONTRACT_KEYS);
-
 // InputsList renders the pipeline's full entry input (launch vars / task
 // bot-args) as an untruncated key → value list. The sidebar has the room the
 // compact card body does not, so values wrap instead of clipping. Values that
@@ -238,6 +231,14 @@ function InputsList({ input }: { input?: Record<string, unknown> }) {
             </dt>
             {imagePaths.length > 0 ? (
               <InputImageCarousel paths={imagePaths} rawText={stringifyValue(value)} />
+            ) : typeof value === "object" && value !== null ? (
+              // Structured values get a scrollable pretty-printed JSON block;
+              // scalars keep the plain wrapped rendering below.
+              <dd className="m-0">
+                <pre className="m-0 max-h-48 overflow-auto whitespace-pre-wrap break-words rounded-md border border-border-subtle bg-surface-2/40 px-2 py-1 font-mono text-micro text-fg-default">
+                  {stringifyValue(value)}
+                </pre>
+              </dd>
             ) : (
               <dd className="whitespace-pre-wrap break-words rounded-md border border-border-subtle bg-surface-2/40 px-2 py-1 font-mono text-xs text-fg-default">
                 {stringifyValue(value)}
@@ -519,6 +520,14 @@ export function PipelineCardDetailsBody({
 
       <MetaRow card={card} />
 
+      <ContractSection card={card} />
+
+      <div id="pipeline-card-deps">
+        <DependenciesSection card={card} />
+      </div>
+
+      <SpawnTreeSection card={card} />
+
       {reviews.length > 0 && (
         <section
           id="pipeline-card-review"
@@ -537,14 +546,6 @@ export function PipelineCardDetailsBody({
           <SequentialReviews card={card} onResolved={onRefetch} />
         </section>
       )}
-
-      <ContractSection card={card} />
-
-      <div id="pipeline-card-deps">
-        <DependenciesSection card={card} />
-      </div>
-
-      <SpawnTreeSection card={card} />
 
       {closedFailed && card.error && (
         <section aria-label="Failure" className="space-y-2">
@@ -602,44 +603,6 @@ export default function PipelineCardDetails({
   // Scrim ignores the first tick so the same click that opened the drawer
   // cannot immediately close it (portal mounts under the cursor).
   const [scrimArmed, setScrimArmed] = useState(false);
-
-  // Resizable overlay width (px), persisted. Only used in overlay mode.
-  const [drawerWidth, setDrawerWidth] = useState<number>(() =>
-    readNumberFlag(DRAWER_WIDTH_KEY, DRAWER_WIDTH_DEFAULT, {
-      min: DRAWER_WIDTH_MIN,
-      max: DRAWER_WIDTH_MAX,
-    }),
-  );
-  const resizeDrawer = useCallback((w: number) => {
-    const clamped = clampDrawerWidth(w);
-    setDrawerWidth(clamped);
-    writeNumberFlag(DRAWER_WIDTH_KEY, clamped);
-  }, []);
-
-  // Drag-to-resize via the left edge. Tracks the pointer on window so the
-  // drag keeps working when the cursor leaves the thin handle.
-  const startDrawerResize = useCallback(
-    (e: ReactPointerEvent) => {
-      e.preventDefault();
-      const startX = e.clientX;
-      const startW = drawerWidth;
-      const onMove = (ev: PointerEvent) => {
-        // Left edge moves with the cursor: dragging left widens the drawer.
-        resizeDrawer(startW - (ev.clientX - startX));
-      };
-      const onUp = () => {
-        window.removeEventListener("pointermove", onMove);
-        window.removeEventListener("pointerup", onUp);
-        document.body.style.cursor = "";
-        document.body.style.userSelect = "";
-      };
-      document.body.style.cursor = "col-resize";
-      document.body.style.userSelect = "none";
-      window.addEventListener("pointermove", onMove);
-      window.addEventListener("pointerup", onUp);
-    },
-    [drawerWidth, resizeDrawer],
-  );
 
   useEffect(() => {
     if (presentation !== "overlay") return;
@@ -770,21 +733,12 @@ export default function PipelineCardDetails({
         onClick={scrimArmed ? onClose : undefined}
       />
       <aside
-        className="fixed inset-y-0 right-0 flex flex-col border-l border-border-default bg-surface-1 shadow-[var(--shadow-lg)] animate-slide-in-right"
-        style={{ zIndex: "var(--z-modal)", width: `min(${drawerWidth}px, 100vw)` }}
+        className="fixed inset-y-0 right-0 flex w-[min(28rem,100vw)] flex-col border-l border-border-default bg-surface-1 shadow-[var(--shadow-lg)] animate-slide-in-right"
+        style={{ zIndex: "var(--z-modal)" }}
         aria-label={`Details for ${card.title}`}
         role="dialog"
         aria-modal="true"
       >
-        {/* Drag handle on the left edge to resize the drawer. */}
-        <div
-          role="separator"
-          aria-orientation="vertical"
-          aria-label="Resize panel"
-          onPointerDown={startDrawerResize}
-          title="Drag to resize"
-          className="absolute inset-y-0 left-0 w-1 cursor-col-resize hover:bg-accent/60 active:bg-accent transition-colors"
-        />
         {header}
         {body}
       </aside>

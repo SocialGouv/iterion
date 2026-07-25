@@ -39,7 +39,14 @@ vars:
   workspace_dir:       string = "${PROJECT_DIR}"
   scope_notes:         string = ""
   severity_threshold:  string = "low"
-  scan_dir:            string = "${PROJECT_DIR}/.iterion/security/scan"
+  ## Per-run scanner output (JSON envelopes + shard plumbing). Pure
+  ## scratch — regenerated on every run, never operator-consumed — so it
+  ## lives in the engine's out-of-tree scratch dir (${PROJECT_SCRATCH_DIR}
+  ## resolves to a container-writable path when sandboxed) and never
+  ## scatters state into the target repo. Durable operator-facing state
+  ## (FP memory, file records, context, patches) lives under the repo's
+  ## .sec-audit/ dotdir instead — see the vars below.
+  scan_dir:            string = "${PROJECT_SCRATCH_DIR}/sec-audit-source/scan"
   ## Overflow guard. gosec/semgrep can emit thousands of findings on a
   ## large repo; triage reads the scanner JSON and overflows the model
   ## context. cap_findings keeps at most this many findings per scanner
@@ -56,11 +63,11 @@ vars:
   ## longer masquerade as a zero-finding clean bill of health. Set to 0 to
   ## disable the gate (not recommended).
   min_generic_scanners: int    = 2
-  fp_path:             string = "${PROJECT_DIR}/.iterion/security/fp-known.yaml"
+  fp_path:             string = "${PROJECT_DIR}/.sec-audit/fp-known.yaml"
   ## Per-file append-only analysis cache; see skills/file-records.md.
   ## The bot writes one JSON per scanned file to skip the (expensive)
   ## revalidate phase on unchanged files in subsequent runs.
-  records_dir:         string = "${PROJECT_DIR}/.iterion/security/files"
+  records_dir:         string = "${PROJECT_DIR}/.sec-audit/files"
   scanner_version:     string = "sec-audit-source@0.1.0"
   records_ttl_days:    int    = 30
   ## Programmatic matchers directory (Cap. 2); see
@@ -69,7 +76,7 @@ vars:
   ## attachments/matchers/example-secrets.py as a copy-paste
   ## template. Override via --var matchers_dir=... to point at a
   ## different location.
-  matchers_dir:        string = "${PROJECT_DIR}/.iterion/security/matchers"
+  matchers_dir:        string = "${PROJECT_DIR}/.sec-audit/matchers"
   ## Cap. 3 — distributed scans. When shard_size > 0, the parent
   ## run does detect_tech + plans + dispatches; N child runs each
   ## handle a slice of the file list via `iterion __scan-shards`.
@@ -93,7 +100,7 @@ vars:
   ## first run if absent (project_context_load → project_context_generate);
   ## refresh with --var force_context_refresh=true. See
   ## skills/project-context.md for the file shape and contract.
-  context_path:           string = "${PROJECT_DIR}/.iterion/security/context.md"
+  context_path:           string = "${PROJECT_DIR}/.sec-audit/context.md"
   ## How many days an auto-generated context.md remains fresh. Past this
   ## age, project_context_load reports `stale: true` and the workflow
   ## regenerates via project_context_generate. Set to 0 to disable auto-
@@ -155,12 +162,12 @@ vars:
   ## globally-installed CLI). Override via env ITERION_REFERENCES_ROOT
   ## (the tool reads ${ITERION_REFERENCES_ROOT:-$HOME/lab/ai/references}).
   ## The actual runtime workspace lives under deepsec_out's parent
-  ## (.iterion/security/scan/deepsec) — created by `deepsec init`.
+  ## (<scratch>/sec-audit-source/scan/deepsec) — created by `deepsec init`.
   deepsec_root:        string = "${HOME}/lab/ai/references/deepsec"
   ## Where the deepsec JSON export lands. Triage reads it via
   ## json_paths.deepsec when enable_deepsec=true. The directory part
   ## doubles as the `.deepsec/` workspace target for init.
-  deepsec_out:         string = "${PROJECT_DIR}/.iterion/security/scan/deepsec.json"
+  deepsec_out:         string = "${PROJECT_SCRATCH_DIR}/sec-audit-source/scan/deepsec.json"
   ## ─── Enhancement 2 — N-vote adversarial revalidation ──────────────
   ## The revalidate phase is a FIXED POOL OF 3 always-on adversarial
   ## "disprove" voters; majority vote drives the final verdict
@@ -219,9 +226,11 @@ vars:
 
   ## Where the propose-mode patch artifacts land. The diff for each
   ## attempted finding is written under <finding_id>-<status>.diff
-  ## (e.g. F-001-verified.diff). Defaults to the same .iterion/security
-  ## tree the rest of the bot uses.
-  patch_dir:           string = "${PROJECT_DIR}/.iterion/security/patches"
+  ## (e.g. F-001-verified.diff). Defaults to the same durable
+  ## .sec-audit/ tree as the bot's other operator-facing state — the
+  ## diffs are the audit trail the operator inspects at the
+  ## approve_fixes pause, not per-run scratch.
+  patch_dir:           string = "${PROJECT_DIR}/.sec-audit/patches"
 
   ## ─── D5b — Apply machinery on top of D5a's propose ladder ────────
   ## How the workflow disposes of VERIFIED fixes at the end of the
@@ -331,7 +340,7 @@ schema triage_input:
   ## diff/incremental mode (vars.diff_base).
   file_filter:    string
   ## Project security context (Enhancement 1). Markdown body from
-  ## .iterion/security/context.md (committed or auto-generated).
+  ## .sec-audit/context.md (committed or auto-generated).
   ## Empty when vars.enable_project_context is false.
   project_context: string
   ## Enhancement 4 — deepsec scanner envelope. Carries json_paths.deepsec
@@ -852,7 +861,7 @@ schema record_finding_input:
   author:           json
 
 ## record_finding output. ALWAYS writes the diff to
-## ${PROJECT_DIR}/.iterion/security/patches/<finding_id>-<status>.diff
+## ${PROJECT_DIR}/.sec-audit/patches/<finding_id>-<status>.diff
 ## (publishing the artifact for the audit trail). In propose mode,
 ## reverts the working tree afterwards. In apply modes (gated/auto),
 ## when status == "verified" commits the change on the temp branch
@@ -998,7 +1007,7 @@ prompt triage_system:
     a lang_scan slot is empty when no language scanners ran) — handle gracefully.
     custom_scan is always present but may have `subscanners: []`
     when no programmatic matchers are dropped at
-    `.iterion/security/matchers/`.
+    `.sec-audit/matchers/`.
   - deepsec_scan: present when vars.enable_deepsec=true. When non-empty,
     read deepsec_scan.json_paths.deepsec via read_file and map each
     finding to a candidate per the table in skills/scanner-deepsec.md.
@@ -1007,7 +1016,7 @@ prompt triage_system:
     relative file paths. Skip every candidate whose `file` is NOT
     in the list. This is how shard child runs scope themselves to
     their assigned slice. When empty (the default), no filtering.
-  - fp_path: path to .iterion/security/fp-known.yaml. Read it
+  - fp_path: path to .sec-audit/fp-known.yaml. Read it
     via read_file. If the file does not exist, treat the FP set
     as empty.
 
@@ -1313,7 +1322,7 @@ prompt report_card_system:
   ```
 
   5. Write a markdown summary to:
-       {{input.workspace_dir}}/.iterion/security/findings.md
+       {{input.workspace_dir}}/.sec-audit/findings.md
      Sections:
        # Security findings — sec-audit-source
        ## Summary  (counts by status + severity)
@@ -1534,9 +1543,10 @@ prompt patch_author_system:
      quote-escape error burns a fix_loop iteration in the renovacy
      align_code lesson).
   5. Stay strictly inside the workspace dir at
-     {{vars.workspace_dir}}. Touch NO scanner output (.iterion/
-     security/scan/), no FP memory (.iterion/security/fp-known.yaml),
-     no FileRecord cache (.iterion/security/files/). The reviewer-
+     {{vars.workspace_dir}}. Touch NO scanner output (the out-of-tree
+     scan dir at {{vars.scan_dir}}), no FP memory
+     (.sec-audit/fp-known.yaml), no FileRecord cache
+     (.sec-audit/files/). The reviewer-
      isolation judge will reject diffs that touch those paths.
   6. Capture the unified diff with `git diff` (workspace-rooted) and
      the list of files you actually changed. Do NOT commit — the
@@ -1703,8 +1713,7 @@ prompt reviewer_isolation_system:
        an equivalent or stronger one,
      - widens an attack surface,
      - touches a file outside the workspace or under
-       .iterion/security/ (scanner output, FP memory, FileRecord
-       cache),
+       .sec-audit/ (FP memory, FileRecord cache, patch artifacts),
      - leaves the cited line trivially unchanged
        ("// security-fix" comment-only),
      - imports a deprecated / known-bad crypto primitive (MD5,
@@ -1796,7 +1805,7 @@ prompt remediation_report_system:
        - input.merged=true  (apply_auto, or apply_gated approved+merged):
            - patched:seki
            - seki-verdict:verified
-           - patch-artifact:<rel path under .iterion/security/patches/>
+           - patch-artifact:<rel path under .sec-audit/patches/>
            - seki-merge-sha:<short merge_sha>          (when set)
        - input.abandoned=true (apply_gated, operator rejected):
            - seki-fix-pending
@@ -1823,7 +1832,7 @@ prompt remediation_report_system:
        - seki-hard-stop:<finding_type>
        - human-review
   6. Write a markdown summary to:
-       {{input.workspace_dir}}/.iterion/security/patches/REMEDIATION.md
+       {{input.workspace_dir}}/.sec-audit/patches/REMEDIATION.md
      Sections:
        # Seki remediation report — D5{a|b} ({{input.mode}})
        ## Summary  (counts per status + the apply-outcome banner:
@@ -1953,7 +1962,7 @@ tool inventory:
   command: `WS={{vars.workspace_dir}} python3 -c "
 import os, json
 ws = os.environ['WS']
-EXCLUDED = {'.git','node_modules','vendor','.iterion','.works','.claude','.venv','venv','env','dist','build','.next','out','target','__pycache__','.cache','.terraform'}
+EXCLUDED = {'.git','node_modules','vendor','.iterion','.sec-audit','.works','.claude','.venv','venv','env','dist','build','.next','out','target','__pycache__','.cache','.terraform'}
 MANIFESTS = {'go.mod','go.sum','package.json','package-lock.json','pnpm-lock.yaml','yarn.lock','pyproject.toml','requirements.txt','setup.py','setup.cfg','Pipfile','poetry.lock','Gemfile','Gemfile.lock','pom.xml','build.gradle','build.gradle.kts','settings.gradle','Cargo.toml','Cargo.lock','composer.json','composer.lock','Taskfile.yml','Taskfile.yaml','Makefile','Dockerfile','docker-compose.yml','docker-compose.yaml','devbox.json','flake.nix','shell.nix','.tool-versions'}
 try:
     top = sorted(p + ('/' if os.path.isdir(os.path.join(ws, p)) else '') for p in os.listdir(ws))
@@ -2014,7 +2023,7 @@ compute context_gate:
     enabled: "vars.enable_project_context"
 
 ## project_context_load (deterministic, no LLM). Reads vars.context_path
-## (.iterion/security/context.md by default) when present, parses the
+## (.sec-audit/context.md by default) when present, parses the
 ## `iterion_context_generated_at` frontmatter field to compute staleness
 ## against vars.context_ttl_days (0 = never auto-stale), and decides
 ## whether project_context_generate must run. A file without the
@@ -2142,7 +2151,7 @@ if not mb:
     raise SystemExit(0)
 out = subprocess.run(['git', 'diff', '--name-only', mb], capture_output=True, text=True).stdout.strip()
 files = [f for f in out.splitlines() if f.strip()]
-EXCLUDED = {'.git', 'node_modules', '.iterion', 'vendor', '.venv', 'venv', 'dist', 'build', '.next', 'out', '__pycache__', '.cache'}
+EXCLUDED = {'.git', 'node_modules', '.iterion', '.sec-audit', 'vendor', '.venv', 'venv', 'dist', 'build', '.next', 'out', '__pycache__', '.cache'}
 files = [f for f in files if not any(p in EXCLUDED for p in f.split('/'))]
 print(json.dumps({
     'enabled':       True,
@@ -2189,7 +2198,7 @@ import os, sys, json
 ws = os.environ['WS']
 shard_size = int(os.environ.get('SHARD_SIZE','0'))
 out_path = os.environ['OUT']
-EXCLUDED = {'.git','node_modules','.iterion','vendor','.venv','venv','env','dist','build','.next','out','__pycache__','.cache'}
+EXCLUDED = {'.git','node_modules','.iterion','.sec-audit','vendor','.venv','venv','env','dist','build','.next','out','__pycache__','.cache'}
 files = []
 if shard_size > 0:
     for root, dirs, names in os.walk(ws):
@@ -2300,11 +2309,13 @@ tool run_generic_scanners:
   ## secret, modern --scanners flag) + semgrep --config=p/default
   ## (broad-spectrum SAST — `--config=auto` is incompatible with
   ## --metrics=off, which is why the prior auto+off combo silently
-  ## errored). All skip .iterion (iterion's own run store, like .git)
+  ## errored). All skip .iterion (iterion's own run store, like .git),
+  ## .sec-audit (this bot's own durable state — FP snippets and patch
+  ## diffs would re-surface as self-findings)
   ## and .works (sibling worktrees on the self-host) so the scanners
   ## don't traverse accumulated repo copies. sh -c is dash on some
   ## hosts, bash inside devbox — keep POSIX-compatible.
-  command: `mkdir -p {{vars.scan_dir}} && cd {{vars.workspace_dir}} && ERRS="" && gitleaks detect --source={{vars.workspace_dir}} --report-format=json --report-path={{vars.scan_dir}}/gitleaks.json --redact --exit-code=0 || ERRS="$ERRS gitleaks"; trivy fs --format=json --output={{vars.scan_dir}}/trivy.json --scanners=vuln,misconfig,secret --severity=LOW,MEDIUM,HIGH,CRITICAL --skip-dirs=.iterion --skip-dirs=.works --skip-dirs=vendor --skip-dirs='**/node_modules' --timeout 15m --quiet {{vars.workspace_dir}} || ERRS="$ERRS trivy"; semgrep --config=p/default --json --output={{vars.scan_dir}}/semgrep-auto.json --metrics=off --quiet --exclude='.iterion' --exclude='.works' {{vars.workspace_dir}} || ERRS="$ERRS semgrep-auto"; printf '{"scanner":"generic","subscanners":["gitleaks","trivy","semgrep-auto"],"json_paths":{"gitleaks":"%s/gitleaks.json","trivy":"%s/trivy.json","semgrep":"%s/semgrep-auto.json"},"finding_count":0,"errors":["%s"]}\n' {{vars.scan_dir}} {{vars.scan_dir}} {{vars.scan_dir}} "$ERRS"`
+  command: `mkdir -p {{vars.scan_dir}} && cd {{vars.workspace_dir}} && ERRS="" && gitleaks detect --source={{vars.workspace_dir}} --report-format=json --report-path={{vars.scan_dir}}/gitleaks.json --redact --exit-code=0 || ERRS="$ERRS gitleaks"; trivy fs --format=json --output={{vars.scan_dir}}/trivy.json --scanners=vuln,misconfig,secret --severity=LOW,MEDIUM,HIGH,CRITICAL --skip-dirs=.iterion --skip-dirs=.sec-audit --skip-dirs=.works --skip-dirs=vendor --skip-dirs='**/node_modules' --timeout 15m --quiet {{vars.workspace_dir}} || ERRS="$ERRS trivy"; semgrep --config=p/default --json --output={{vars.scan_dir}}/semgrep-auto.json --metrics=off --quiet --exclude='.iterion' --exclude='.sec-audit' --exclude='.works' {{vars.workspace_dir}} || ERRS="$ERRS semgrep-auto"; printf '{"scanner":"generic","subscanners":["gitleaks","trivy","semgrep-auto"],"json_paths":{"gitleaks":"%s/gitleaks.json","trivy":"%s/trivy.json","semgrep":"%s/semgrep-auto.json"},"finding_count":0,"errors":["%s"]}\n' {{vars.scan_dir}} {{vars.scan_dir}} {{vars.scan_dir}} "$ERRS"`
   output: scanner_output
 
 ## run_lang_scanners — skill-driven, DETERMINISTIC (no LLM in the path).
@@ -2424,11 +2435,11 @@ def list_files(root):
     for r, _, files in os.walk(root):
         rel_r = os.path.relpath(r, root)
         parts = rel_r.split(os.sep)
-        if any(p in {'.git','node_modules','.iterion','vendor','.venv','venv','dist','build','.next','__pycache__'} for p in parts if p != '.'):
+        if any(p in {'.git','node_modules','.iterion','.sec-audit','vendor','.venv','venv','dist','build','.next','__pycache__'} for p in parts if p != '.'):
             continue
         for f in files:
             rel = os.path.relpath(os.path.join(r, f), root)
-            if rel.startswith('.iterion/'): continue
+            if rel.startswith('.iterion/') or rel.startswith('.sec-audit/'): continue
             found.append(rel)
     return found
 
@@ -2994,7 +3005,7 @@ agent triage:
   tool_max_steps: 40
   readonly: true
 
-## filter_cached_files reads `.iterion/security/files/*.json` records,
+## filter_cached_files reads `.sec-audit/files/*.json` records,
 ## computes the current sha256 of each file referenced by triage's
 ## candidates, and splits them into:
 ##   - fresh_candidates:  the file's content_hash changed OR no record
@@ -4143,7 +4154,7 @@ compute fix_ledger:
 ## record_finding — mode-aware finalize.
 ##
 ## ALL modes: writes the diff artifact to
-##   ${PROJECT_DIR}/.iterion/security/patches/<finding_id>-<status>.diff
+##   ${PROJECT_DIR}/.sec-audit/patches/<finding_id>-<status>.diff
 ## (publish: patch_artifact for the audit trail).
 ##
 ## PROPOSE mode (input.is_apply=false): reverts the working tree for
@@ -4501,20 +4512,12 @@ workflow sec_audit_source:
   ## rulesets + DBs. (Until CI publishes the ref to ghcr, build locally
   ## and `docker tag` it to the ref below so the docker driver's
   ## image-inspect fast path resolves it without a pull.)
+  ## Image pin survives ADR-082 Phase 2: the scanner toolchain (semgrep,
+  ## gosec, trivy, gitleaks, …) genuinely needs the baked sec image —
+  ## devbox-installing it per run costs minutes of Nix. Everything else
+  ## (isolation, claude CLI, host-state mounts) is the platform default.
   sandbox:
     image: "ghcr.io/socialgouv/iterion-sandbox-sec:edge"
-    user: "1000:1000"
-    mounts: ["type=bind,source=${localEnv:HOME}/.claude,target=/home/devbox/.claude,consistency=cached"]
-    env:
-      CLAUDE_CONFIG_DIR: "/home/devbox/.claude"
-    ## report_card is a claude_code node, but the sec image (layered on
-    ## -full) ships node+npm WITHOUT the claude CLI — install it once per
-    ## container. Same gate as feature_dev: run the binary (not `command -v`,
-    ## which a partial install fools), verify, and fail post_create cleanly
-    ## so the dispatcher retries with a fresh container rather than dying
-    ## cryptically on the first claude_code node. (Discovered via live
-    ## dogfood: report_card failed with cli_exit_code=127 = claude not found.)
-    post_create: "set -e; claude --version >/dev/null 2>&1 || sudo npm install -g --ignore-scripts=false --include=optional @anthropic-ai/claude-code@latest; claude --version >/dev/null 2>&1 || sudo node \"$(npm root -g)/@anthropic-ai/claude-code/install.cjs\" >/dev/null 2>&1 || true; claude --version >/dev/null 2>&1 || { echo 'claude install verification failed' >&2; exit 1; }"
 
   budget:
     max_parallel_branches: 4
@@ -4550,7 +4553,7 @@ workflow sec_audit_source:
 
   ## project_context_load decides freshness deterministically:
   ## - needs_generate=true → run the generator agent, which writes
-  ##   .iterion/security/context.md (the only write_file in this workflow).
+  ##   .sec-audit/context.md (the only write_file in this workflow).
   ## - needs_generate=false → skip straight to resolve; the committed
   ##   or cached contents are authoritative.
   project_context_load -> project_context_generate when needs_generate with {

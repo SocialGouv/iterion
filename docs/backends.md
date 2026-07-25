@@ -1,16 +1,37 @@
-# Backends and credential auto-detection
+# 🤝 Backends and credential auto-detection
 
-iterion ships three execution backends — `claw` (in-process LLM SDK),
-`claude_code` (Claude Code CLI subprocess), and `codex` (Codex CLI
-subprocess) — and picks one automatically when neither the workflow
-nor the node spell out which one to use. This page documents the
-resolution chain, the credentials each backend understands, and how
-to override the auto-selection.
+A backend is the engine iterion routes a node to — a direct in-process LLM
+call for *thinking*, or a full agent CLI for *acting* — and one workflow can
+mix them per node. Iterion ships five: `claw` (in-process LLM SDK),
+`claude_code` (Claude Code CLI), `kimi` (Kimi Code CLI), `grok` (Grok Build
+CLI), and the deprecated `codex` compatibility delegate. It auto-detects
+whatever credentials you already have signed in: the default preference
+considers `claude_code` and `claw`; the other three require an explicit opt-in.
+This page documents the resolution chain, credentials, support boundaries, and
+overrides.
+
+```mermaid
+flowchart LR
+  NODE{"🧠 Workflow node"} -->|"model:"| DIRECT(["⚡ Direct in-process<br/>LLM call · claw"])
+  NODE -->|"backend:"| CLI[["🛠️ Delegated CLI agent<br/>claude_code · kimi · grok"]]
+  DIRECT --> THINK["💭 Think<br/>plan · judge · route"]
+  CLI --> ACT["✋ Act<br/>edit files · run shell · drive git"]
+```
 
 > **Cloud BYOK.** The auto-detection below is the *host/env* path. In
 > cloud mode, provider API keys are owned per-org and sealed in Mongo,
 > resolved per-run with a precedence chain (per-webhook override → user
 > default → org default → env fallback). See [byok.md](byok.md).
+
+## Backend status
+
+| Backend | Status | Selection |
+|---|---|---|
+| `claw` | Recommended in-process backend for direct provider calls and native Iterion tools. | Automatic or explicit. |
+| `claude_code` | Recommended CLI-agent backend for implementation work and Claude subscription/OAuth use. | Automatic when Claude Code OAuth is detected, or explicit. |
+| `kimi` | Supported through the generic CLI-agent protocol; session resume/fork is not wired. | Explicit only. |
+| `grok` | Supported through the generic CLI-agent protocol; session resume/fork is not wired. | Explicit only. |
+| `codex` | **Deprecated and frozen.** Compatibility/live-test path only; the compiler emits C030. | Per-node/workflow opt-in, or explicit addition to `ITERION_BACKEND_PREFERENCE`. |
 
 ## TL;DR
 
@@ -20,6 +41,7 @@ If you have **at least one** of:
   `~/.claude/.credentials.json` on Linux/WSL — "forfait")
 - `ANTHROPIC_API_KEY` set in your environment
 - `OPENAI_API_KEY` set in your environment
+- `XAI_API_KEY` set in your environment (xAI Grok)
 - `AZURE_OPENAI_API_KEY` + `AZURE_OPENAI_ENDPOINT`
 - AWS credentials (Bedrock) or `GOOGLE_CLOUD_PROJECT` (Vertex)
 
@@ -87,8 +109,10 @@ claude_code → claw
 ```
 
 `codex` is intentionally **not** in the default list. The codex SDK
-has known limitations (see [codex C030](../pkg/dsl/ir/compile.go))
-and we'd rather have authors opt in explicitly than auto-select it.
+has known limitations (see [codex C030](../pkg/dsl/ir/compile.go)) and the
+delegate is frozen: new workflows and backend work should use `claude_code`,
+or `claw` with an OpenAI model. It remains available for compatibility and live
+test coverage.
 You can still set `backend: codex` per-node, or include it in
 `ITERION_BACKEND_PREFERENCE` to make it eligible for auto-selection.
 
@@ -283,6 +307,10 @@ no subprocess fork). To use `claude_code` with API-key auth, set
 
 ### `codex`
 
+> **Legacy compatibility only.** This backend is deprecated and frozen. The
+> details below document existing workflows; they are not a recommendation for
+> new authoring.
+
 | Credential | Source |
 |---|---|
 | OAuth | `$CODEX_HOME/auth.json` (default `~/.codex/auth.json`) |
@@ -359,14 +387,39 @@ claw-only).
 |---|---|
 | `anthropic` | `ANTHROPIC_API_KEY` or `ANTHROPIC_AUTH_TOKEN` |
 | `openai` | `OPENAI_API_KEY`, **or** Codex CLI signed in via "Sign in with ChatGPT" (see `OpenAI via ChatGPT forfait` below) |
+| `xai` | `XAI_API_KEY` (xAI Grok — OpenAI-compatible chat completions at `api.x.ai`) |
 | `foundry` (Azure) | `AZURE_OPENAI_API_KEY` + `AZURE_OPENAI_ENDPOINT` |
 | `bedrock` | `AWS_REGION` or `AWS_DEFAULT_REGION` (full chain handled by AWS SDK) |
 | `vertex` | `GOOGLE_CLOUD_PROJECT` |
 
 When `model:` on the agent is also empty, the runtime substitutes a
 sensible default for the first available provider — currently
-`anthropic/claude-opus-4-8` for Anthropic and
-`openai/gpt-5.4-mini` for OpenAI.
+`anthropic/claude-opus-4-8` for Anthropic,
+`openai/gpt-5.4-mini` for OpenAI, and
+`xai/grok-3` for xAI.
+
+### xAI Grok (`model: "xai/…"`)
+
+xAI is a first-class claw provider. Set `XAI_API_KEY` (or store a BYOK
+key under provider `xai` in cloud mode) and point a node at a Grok
+model:
+
+```yaml
+agent planner:
+  backend: "claw"
+  model: "xai/grok-3"
+  # optional: model: "xai/grok-3-mini"  # reasoning variant
+```
+
+Optional `XAI_BASE_URL` overrides the host (default `https://api.x.ai`).
+A trailing `/v1` is stripped automatically so pasting the public
+OpenAI-SDK base URL (`https://api.x.ai/v1`) still works — claw's
+OpenAI-compatible client always appends `/v1/chat/completions`.
+
+In cloud mode the same key can be stored as a per-org BYOK record with
+`provider: xai` (see [byok.md](byok.md)). Sandboxed runs with
+`network: allowlist` already include `api.x.ai` in the `iterion-default`
+preset.
 
 For web search & fetch on claw (the `web_search`/`web_fetch` tools, the
 SearXNG → Brave → DuckDuckGo backend ladder, `ITERION_WEB_SEARCH`, and the
@@ -441,20 +494,28 @@ gray-area but has no explicit prohibition today. We treat this as
 pragmatic — if OpenAI changes the terms or tightens enforcement, set
 `ITERION_OPENAI_USE_OAUTH=0` and fall back to `OPENAI_API_KEY`.
 
-## Third-party agent CLIs (`kimi`, and the CLI-agent seam)
+## Third-party agent CLIs (`kimi`, `grok`, and the CLI-agent seam)
 
 Some agent CLIs have an argument protocol **disjoint from claude-code's**
 Session mode (`--print`, prompt on stdin, `--append-system-prompt`, …), so
 neither `backend: claude_code` nor the per-node `command:` override (which
 only swaps the *binary* while keeping claude-code's argv) can drive them.
-Moonshot's **`kimi-code`** is the motivating case — it takes the prompt as
-`-p <prompt>` (`kimi --print …` errors with `unknown option '--print'`):
+iterion ships dedicated backends for these as instances of a generic
+**CLI-agent** seam (`delegate.CLIAgentBackend` + `CLIAgentProtocol`, see
+[ADR-065](adr/065-dedicated-cli-agent-backend.md)): build the target CLI's
+*own* argv, run with a wall-clock timeout (inside the run's sandbox when
+active), parse stdout into a structured result, retry on no-output /
+network transient. Adding another such CLI is a new protocol *value*, not
+new plumbing.
+
+### `kimi` (Moonshot kimi-code)
+
+Moonshot's **`kimi-code`** takes the prompt as `-p <prompt>`
+(`kimi --print …` errors with `unknown option '--print'`):
 
 ```
 kimi -p <prompt> --output-format {text,stream-json} [-m <alias>]
 ```
-
-iterion ships a dedicated **`kimi`** backend for it:
 
 ```yaml
 agent implement:
@@ -463,28 +524,51 @@ agent implement:
   system: "…the task…"
 ```
 
-Under the hood, `kimi` is a concrete instance of a generic **CLI-agent
-backend** (`delegate.CLIAgentBackend` + `CLIAgentProtocol`, see
-[ADR-065](adr/065-dedicated-cli-agent-backend.md)) that builds the target
-CLI's *own* command line, runs it with a wall-clock timeout (inside the run's
-sandbox container when one is active), parses its role-based `stream-json`
-stdout (with backward compatibility for the former claude-code-style events)
-into the structured result, and retries
-on a no-output / network transient. Adding another such CLI is a new protocol
-*value*, not new plumbing.
+### `grok` (xAI Grok Build CLI)
 
-Behavioural notes specific to CLI-agent backends:
+xAI's **Grok Build** coding agent (`grok` on `PATH`, typically installed
+under `~/.grok/bin/grok`) is headless via `-p` / `--single`, not
+claude-code Session mode:
 
-- **Explicit opt-in.** `kimi` is never auto-detected; you select it with
-  `backend: "kimi"`. No Moonshot credential silently re-targets a run.
-- **Credentials** are resolved by the CLI itself from its own env/config (e.g.
-  `$MOONSHOT_API_KEY`) — iterion inherits the host environment and does not
-  fight the CLI's native resolution.
-- **Tools are not host-gated.** Like `codex`, kimi runs with its *own* built-in
-  toolset; a node's `tools:` list is advisory. For a hard tool-permission
-  boundary use `claude_code` (permission gate) or `claw` (native restriction).
-- **Effort** has no effect (kimi has no reasoning-effort dial); **sessions**
-  are captured for observability but resume/fork is not yet wired.
+```
+grok -p <prompt> --output-format json \
+     --permission-mode bypassPermissions --always-approve \
+     [-m <model>] [--rules <system>] [--reasoning-effort <level>]
+```
+
+```yaml
+agent implement:
+  backend: "grok"
+  model: "grok-4.5"          # or grok-4.5-build, grok-3, …
+  # model: "xai/grok-4.5"    # also fine — the xai/ prefix is stripped
+  system: "…the task…"       # delivered as --rules (appended to Grok's native prompt)
+  reasoning_effort: high     # optional; mapped to --reasoning-effort
+```
+
+The node's `system:` is passed as **`--rules`** (append), never as
+`--system-prompt-override`, so Grok keeps its native agentic baseline
+(tools, plan, posture). Credentials come from the CLI itself (Grok Build
+login / `~/.grok` config) — iterion does not inject `XAI_API_KEY` for this
+backend. That is **distinct** from calling the xAI HTTP API via
+`backend: claw` + `model: "xai/…"`.
+
+### Behavioural notes (all CLI-agent backends)
+
+- **Explicit opt-in.** `kimi` / `grok` are never auto-detected; set
+  `backend: "kimi"` or `backend: "grok"`. No host credential silently
+  re-targets a run away from `claude_code` / `claw`.
+- **Credentials** are resolved by the CLI itself from its own env/config
+  (e.g. `$MOONSHOT_API_KEY` for kimi, Grok Build OAuth for grok) — iterion
+  inherits the host environment and does not fight the CLI's native
+  resolution.
+- **Tools are not host-gated.** Like `codex`, these CLIs run with their
+  *own* built-in toolset; a node's `tools:` list is advisory. For a hard
+  tool-permission boundary use `claude_code` (permission gate) or `claw`
+  (native restriction).
+- **Effort:** kimi has no dial (ignored); grok maps `reasoning_effort` to
+  `--reasoning-effort` (`ultracode` degrades to `high`).
+- **Sessions** are captured for observability (`sessionId`) but resume/fork
+  is not yet wired for CLI-agent backends.
 
 ## Editor UX
 
@@ -653,5 +737,5 @@ dev-purpose-only regardless of the UA you configure.
 | Pill is red | No credential detected | Set `ANTHROPIC_API_KEY` or sign in to Claude Code, then click Refresh |
 | Pill is green but Run errors out with "no provider" | Workflow uses `model: openai/...` but only `ANTHROPIC_API_KEY` is set | Switch model to an Anthropic spec, or add `OPENAI_API_KEY` |
 | Pill says "claude_code" but you wanted "claw" | OAuth is found and ranked first | `export ITERION_BACKEND_PREFERENCE='claw,claude_code'` |
-| Pill says "claw" but you wanted Codex | Codex isn't in the default order | `export ITERION_BACKEND_PREFERENCE='codex,claude_code,claw'` and ensure `$CODEX_HOME/auth.json` exists |
+| Pill says "claw" but a legacy workflow needs Codex | Codex is deprecated and absent from the default order | Prefer `claw` + an OpenAI model; for compatibility, select `backend: codex` explicitly and ensure `$CODEX_HOME/auth.json` exists |
 | Editor pill stale after fixing env | Server cache (30s) | Click the pill → **Refresh** |

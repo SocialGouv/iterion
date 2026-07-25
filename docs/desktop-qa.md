@@ -61,7 +61,7 @@ Walk this list before tagging a release.
 
 ## Workflows
 
-- [ ] The `pr_refine_single_model_backend.bot` scaffolded by `iterion init` (or any shipped workflow under `examples/`) runs end-to-end with real-time event stream.
+- [ ] A bot scaffolded by `iterion bots create` (or any shipped workflow under `bots/` / `examples/`) runs end-to-end with real-time event stream.
 - [ ] A workflow that uses `claude_code` either succeeds (CLI installed)
       or fails with a clear error message (CLI missing).
 - [ ] Worktree finalisation: a workflow with `worktree: auto` ends with a

@@ -249,11 +249,14 @@ func (c *Coordinator) evaluate(reason string, bypassCooldown bool) {
 		return
 	}
 	next.UpdatedSeq = c.lastSeq
-	c.spec = next
-	if err := c.emit.Publish(c.ctx, c.runID, c.spec); err != nil {
+	if err := c.emit.Publish(c.ctx, c.runID, next); err != nil {
+		// Not committed: c.spec keeps mirroring the last persisted spec, so
+		// the next evaluation re-derives the diff against the true board and
+		// retries the publish instead of believing the lost update landed.
 		c.warn("sessionboard: publish spec for run %s failed: %v", c.runID, err)
 		return
 	}
+	c.spec = next
 	c.info("sessionboard: updated board for run %s (v%d, %d widgets)", c.runID, c.spec.Version, len(c.spec.Widgets))
 }
 

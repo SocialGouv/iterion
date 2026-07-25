@@ -4,10 +4,12 @@
 
 Gap-driven feature completer. A specialisation of feature_dev: the input is a
 structured `gap_spec` ("here is what's implemented, here is what's missing"),
-not a greenfield prompt. Fini reads the partial implementation, completes the
-missing parts, runs the alternating Claude/GPT review-fix loop to convergence,
-then commits. Inputs are typically the `type:feature-gap` issues filed by the
-adr-cartograph (Adry) bot.
+not a greenfield prompt. Fini reads the partial implementation and, in ONE
+`campaign` agent, completes the missing parts committing each unit in stride,
+gated by the deterministic verify gate (`verify_build` writes the repo's real
+build+test into `verify.sh`, `verify_run` re-runs it on the actual exit code) with
+`gate.converged` closing a bounded continuation loop. Inputs are typically the
+`type:feature-gap` issues filed by the adr-cartograph (Adry) bot.
 
 ## 2026-07-07 — SANDBOXED path validated end-to-end after root-causing native:221edac8 (run 019f3e27)
 - Status: **VALIDATED (sandboxed)** — closes the sandbox blocker from the morning's dogfood party. Same gap_spec as the party runs, full sandbox (`iterion-sandbox-full:edge`), zero delegate retries.

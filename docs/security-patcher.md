@@ -1,11 +1,10 @@
-[← Documentation index](README.md) · [← Security bots](security-bots.md)
-
 # Seki — verification-ladder remediation (security-patcher)
 
 Seki's remediation phase turns each confirmed finding into a verified
-diff and (optionally) commits it. It is gated by `--var remediate=true`
-(default) and chooses one of three modes via `--var remediation_mode`
-(default `apply_gated`).
+diff and (optionally) commits it. It is **off by default** (Seki is a
+read-only SAST auditor out of the box); opt in with `--var remediate=true`
+and choose one of three modes via `--var remediation_mode` (default
+`apply_gated`).
 
 The shape was adapted from Anthropic's
 [`defending-code-reference-harness`](https://github.com/anthropics/defending-code-reference-harness)
@@ -102,7 +101,8 @@ The reviewer also runs:
 - `session: fresh` — zero context bleed from `patch_author`.
 
 It MAY open the cited source file + its immediate neighbours. It MUST
-NOT read anything under `.iterion/security/`. Full policy + the
+NOT read anything under `.sec-audit/` (nor the out-of-tree scanner
+output under `scan_dir`). Full policy + the
 canonical `risk_flags[]` vocabulary (`touches_crypto_primitive`,
 `removes_existing_guard`, `widens_attack_surface`,
 `touches_iterion_state`, `comment_only`, `regression_test_only`,
@@ -149,7 +149,7 @@ fixes once the ladder has cleared them.
 
 In **all three modes** the diff artifact is written to
 `<patch_dir>/<finding_id>-<status>.diff` for the audit trail
-(`vars.patch_dir = .iterion/security/patches` by default), the kanban
+(`vars.patch_dir = .sec-audit/patches` by default), the kanban
 board is labelled per the mode-specific table in
 `remediation_report`'s system prompt, and the working tree is restored
 to a clean state before the next finding starts.
@@ -227,8 +227,8 @@ When the workflow pauses on `approve_fixes`, inspect the temp branch:
 ```bash
 git -C <workspace> diff <original_branch>..iterion/sec-fix/<run-id-suffix>
 git -C <workspace> log  <original_branch>..iterion/sec-fix/<run-id-suffix> --oneline
-ls .iterion/security/patches/
-cat .iterion/security/patches/REMEDIATION.md
+ls .sec-audit/patches/
+cat .sec-audit/patches/REMEDIATION.md
 ```
 
 `REMEDIATION.md` is written by `fix_summary` BEFORE the pause and
@@ -292,7 +292,7 @@ iterion resume --run-id <id> --answer approved=false
 
 A propose-only dry run uses `--var remediation_mode=propose` — every
 verified diff lands as a `*-verified.diff` artifact under
-`.iterion/security/patches/` and the working tree returns to where it
+`.sec-audit/patches/` and the working tree returns to where it
 started after every finding. Useful when you want to read the diffs
 before deciding to re-run with `apply_gated`.
 
@@ -300,12 +300,12 @@ before deciding to re-run with `apply_gated`.
 
 | Var | Default | Notes |
 |---|---|---|
-| `remediate` | `true` | `false` → phase fully skipped, identical to pre-remediation behaviour |
+| `remediate` | `false` | Opt-in; `false` → phase fully skipped, identical to pre-remediation behaviour. Set `true` to enable. |
 | `remediation_mode` | `"apply_gated"` | `propose` \| `apply_gated` \| `apply_auto` |
 | `hard_stop_categories` | `"crypto,secrets"` | Comma-separated `finding_type` values that bypass the loop entirely |
 | `max_fix_per_run` | `10` | Loop budget — bounds the per-run patch attempts |
 | `patch_attempts` | `1` | Inner per-finding retry budget; future nested-retry hook |
-| `patch_dir` | `"${PROJECT_DIR}/.iterion/security/patches"` | Diff artifacts + `REMEDIATION.md` land here |
+| `patch_dir` | `"${PROJECT_DIR}/.sec-audit/patches"` | Diff artifacts + `REMEDIATION.md` land here |
 | `ITERION_SEC_PATCH_MODEL` | `claude-opus-4-8` | `patch_author`, `reattack`, `reviewer_isolation`, `remediation_report` model |
 | `ITERION_SEC_PATCH_EFFORT_*` | (per node) | `_AUTHOR=high` / `_REATTACK=high` / `_REVIEW=high` / `_REPORT=medium` — lower to claw cost |
 

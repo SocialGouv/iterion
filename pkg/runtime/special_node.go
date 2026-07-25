@@ -3,6 +3,7 @@ package runtime
 import (
 	"context"
 	"fmt"
+	"strings"
 
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
 	"github.com/SocialGouv/iterion/pkg/store"
@@ -133,6 +134,18 @@ func (e *Engine) executeSpecialNodeForBranch(ctx context.Context, rs *runState, 
 			return fail(rerr)
 		}
 		return store(out, true)
+	case *ir.AwaitAnswersNode:
+		// Same slot-on-park discipline as WaitNode: release while parked
+		// so sibling branches keep the semaphore, reacquire on wake.
+		slot.release()
+		out, err := e.awaitAsyncAnswers(ctx, rs, nodeID, n)
+		if err != nil {
+			return fail(err)
+		}
+		if rerr := slot.acquire(ctx); rerr != nil {
+			return fail(rerr)
+		}
+		return store(out, true)
 	case *ir.ComputeNode:
 		out, err := e.computeOutput(rs, nodeID, n, sc)
 		if err != nil {
@@ -140,7 +153,7 @@ func (e *Engine) executeSpecialNodeForBranch(ctx context.Context, rs *runState, 
 		}
 		return store(out, true)
 	case *ir.SubbotNode:
-		out, err := e.runSubbotNode(ctx, rs, nodeID, n, sc)
+		out, err := e.runSubbotNode(ctx, rs, nodeID, n, sc, branchID)
 		if err != nil {
 			return fail(err)
 		}
@@ -179,8 +192,10 @@ func (e *Engine) computeOutput(rs *runState, nodeID string, cn *ir.ComputeNode, 
 // and returns the child's terminal output. Leases are released when this returns
 // (the resource isn't used by the downstream validate/checkpoint steps). Scope
 // is explicit so a subbot resolves its inputs correctly on the main loop and
-// inside a fan-out branch alike.
-func (e *Engine) runSubbotNode(ctx context.Context, rs *runState, nodeID string, sn *ir.SubbotNode, sc resolveScope) (map[string]any, error) {
+// inside a fan-out branch alike. branchID is "" on the main loop and the
+// fan-out branch id inside a branch — it feeds the ReattachKey so concurrent
+// branches of the same subbot node don't collide on the parent's re-attach map.
+func (e *Engine) runSubbotNode(ctx context.Context, rs *runState, nodeID string, sn *ir.SubbotNode, sc resolveScope, branchID string) (map[string]any, error) {
 	if e.subbotRunner == nil {
 		return nil, &RuntimeError{
 			Code:    ErrCodeExecutionFailed,
@@ -212,6 +227,7 @@ func (e *Engine) runSubbotNode(ctx context.Context, rs *runState, nodeID string,
 		Vars:        vars,
 		ParentRunID: rs.runID,
 		NodeID:      nodeID,
+		ReattachKey: e.subbotReattachKey(nodeID, rs.loopCounters, branchID),
 	})
 	if err != nil {
 		return nil, &RuntimeError{
@@ -226,3 +242,28 @@ func (e *Engine) runSubbotNode(ctx context.Context, rs *runState, nodeID string,
 	}
 	return output, nil
 }
+
+// subbotReattachKey builds the stable, unique key identifying one execution of
+// a subbot node: node id, plus the loop-iteration path (disambiguates loop
+// iterations across resume) and the fan-out branch id (disambiguates
+// concurrent branches of the same node). The result is sanitized to a
+// Mongo-safe field name ('.' and '$' → '_') because it becomes a map key on
+// the parent run doc. Empty node id (never expected) yields "" → re-attach
+// disabled for that call.
+func (e *Engine) subbotReattachKey(nodeID string, loopCounters map[string]int, branchID string) string {
+	if nodeID == "" {
+		return ""
+	}
+	key := nodeID
+	if p := e.currentLoopIterationPath(nodeID, loopCounters); p != "" {
+		key += "@" + p
+	}
+	if branchID != "" {
+		key += "#" + branchID
+	}
+	return subbotKeySanitizer.Replace(key)
+}
+
+// subbotKeySanitizer strips the two characters Mongo forbids in a field name
+// so the re-attach key is a valid map key on both store backends.
+var subbotKeySanitizer = strings.NewReplacer(".", "_", "$", "_")

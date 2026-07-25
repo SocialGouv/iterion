@@ -1,8 +1,10 @@
 import { useEffect, useState } from "react";
 import { useLocation } from "wouter";
+import { useQuery } from "@tanstack/react-query";
 
 import type { RunSummary } from "@/api/runs";
 import { listRuns } from "@/api/runs";
+import { formatDate } from "@/lib/format";
 
 interface Props {
   nodeId: string;
@@ -23,36 +25,31 @@ const STATUS_GLYPH: Record<string, string> = {
  *  canvas stays uncluttered — the chip only appears when the user
  *  has actually engaged with the node. */
 export default function NodeRunsChip({ nodeId }: Props) {
-  const [runs, setRuns] = useState<RunSummary[] | null>(null);
   const [, setLocation] = useLocation();
-
+  // Light debounce so rapid node-clicking doesn't hammer the API: the
+  // query only enables once the selected node has been stable for
+  // 200ms; the chip stays hidden for the newly-selected node meanwhile.
+  const [debouncedNodeId, setDebouncedNodeId] = useState<string | null>(null);
   useEffect(() => {
-    setRuns(null);
-    let cancelled = false;
-    // Light debounce so rapid node-clicking doesn't hammer the API.
-    const t = setTimeout(() => {
-      listRuns({ node: nodeId, limit: 8 })
-        .then((rs) => {
-          if (cancelled) return;
-          setRuns(rs);
-        })
-        .catch(() => {
-          // Intentionally silent: this chip is a best-effort
-          // reverse-navigation decoration, not load-bearing. A runs-API
-          // outage surfaces loudly in the Runs view (its own error state) —
-          // double-announcing it here on every node click would be noise.
-          // See docs/design-system.md § Feedback surfaces (silent-error
-          // exceptions). If this ever becomes load-bearing, lift the error.
-          if (!cancelled) setRuns([]);
-        });
-    }, 200);
-    return () => {
-      cancelled = true;
-      clearTimeout(t);
-    };
+    setDebouncedNodeId(null);
+    const t = setTimeout(() => setDebouncedNodeId(nodeId), 200);
+    return () => clearTimeout(t);
   }, [nodeId]);
 
-  if (runs === null || runs.length === 0) return null;
+  const query = useQuery<RunSummary[]>({
+    queryKey: ["node-runs", debouncedNodeId],
+    queryFn: () => listRuns({ node: debouncedNodeId!, limit: 8 }),
+    enabled: debouncedNodeId !== null,
+  });
+  // Errors are intentionally silent (chip hidden): this is a best-effort
+  // reverse-navigation decoration, not load-bearing. A runs-API outage
+  // surfaces loudly in the Runs view (its own error state) —
+  // double-announcing it here on every node click would be noise.
+  // See docs/design-system.md § Feedback surfaces (silent-error
+  // exceptions). If this ever becomes load-bearing, lift the error.
+  const runs = query.error ? [] : (query.data ?? null);
+
+  if (debouncedNodeId !== nodeId || runs === null || runs.length === 0) return null;
 
   return (
     <details
@@ -81,7 +78,7 @@ export default function NodeRunsChip({ nodeId }: Props) {
                 {r.id.length > 20 ? `${r.id.slice(0, 16)}…` : r.id}
               </span>
               <span className="text-caption text-fg-subtle shrink-0">
-                {new Date(r.created_at).toLocaleDateString()}
+                {formatDate(r.created_at)}
               </span>
             </button>
           </li>

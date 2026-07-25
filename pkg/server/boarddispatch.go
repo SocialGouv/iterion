@@ -241,18 +241,23 @@ type boardLaunchContext struct {
 
 // liftBoardLaunchContext splits a card's BotArgs into the bot's vars and the
 // reserved launch context (repo + overrides), removing the reserved keys from
-// the vars so they never leak to the bot. A malformed override blob is dropped
-// (best-effort — never fail a launch on it).
-func liftBoardLaunchContext(botArgs map[string]string) boardLaunchContext {
+// the vars so they never leak to the bot. A malformed override blob is an
+// error: silently dropping it would launch the run WITHOUT the webhook's
+// BYOK key / secret overrides, so the failure must surface instead.
+func liftBoardLaunchContext(botArgs map[string]string) (boardLaunchContext, error) {
 	lc := boardLaunchContext{
 		RepoURL: botArgs[boardRepoURLKey],
 		RepoRef: botArgs[boardRepoRefKey],
 	}
 	if blob := botArgs[boardKeyOverridesKey]; blob != "" {
-		_ = json.Unmarshal([]byte(blob), &lc.KeyOverrides)
+		if err := json.Unmarshal([]byte(blob), &lc.KeyOverrides); err != nil {
+			return boardLaunchContext{}, fmt.Errorf("malformed %s bot-arg (edit the card's bot args to fix): %w", boardKeyOverridesKey, err)
+		}
 	}
 	if blob := botArgs[boardSecretOverridesKey]; blob != "" {
-		_ = json.Unmarshal([]byte(blob), &lc.SecretOverrides)
+		if err := json.Unmarshal([]byte(blob), &lc.SecretOverrides); err != nil {
+			return boardLaunchContext{}, fmt.Errorf("malformed %s bot-arg (edit the card's bot args to fix): %w", boardSecretOverridesKey, err)
+		}
 	}
 	lc.Vars = make(map[string]string, len(botArgs))
 	for k, v := range botArgs {
@@ -262,7 +267,7 @@ func liftBoardLaunchContext(botArgs map[string]string) boardLaunchContext {
 		}
 		lc.Vars[k] = v
 	}
-	return lc
+	return lc, nil
 }
 
 // stampCardLastRun records the launched run on the tenant's board card via the
@@ -331,7 +336,10 @@ func (s *Server) processBoardCard(ctx context.Context, tenant string, iss native
 	// the coordinator otherwise has none of it. Lift it into the LaunchSpec so
 	// the runner clones + the publisher applies the overrides, and strip the
 	// reserved keys from the bot's vars.
-	lc := liftBoardLaunchContext(iss.BotArgs)
+	lc, err := liftBoardLaunchContext(iss.BotArgs)
+	if err != nil {
+		return fmt.Errorf("card %s: %w", iss.ID, err)
+	}
 	res, err := s.runs.Launch(ctx, runview.LaunchSpec{
 		FilePath:        path,
 		Source:          source,

@@ -49,6 +49,10 @@ func (e *Engine) execLoop(ctx context.Context, rs *runState, startNodeID string)
 			default:
 			}
 		}
+		// Live-steering overrides (bump_loop / raise_budget) land at the
+		// same safe boundary: this goroutine is the single writer of
+		// loopCounters/loopOverrides, so applying here needs no locks.
+		e.drainOverrides(rs)
 
 		node, ok := e.workflow.Nodes[currentNodeID]
 		if !ok {
@@ -216,6 +220,13 @@ func (e *Engine) execLoopDispatchSpecial(ctx context.Context, rs *runState, curr
 		nextNodeID, wErr := e.execWait(ctx, rs, currentNodeID, n)
 		if wErr != nil {
 			return true, true, "", e.failRunErrWithCheckpoint(rs, currentNodeID, wErr)
+		}
+		return true, false, nextNodeID, nil
+
+	case *ir.AwaitAnswersNode:
+		nextNodeID, aErr := e.execAwaitAnswers(ctx, rs, currentNodeID, n)
+		if aErr != nil {
+			return true, true, "", e.failRunErrWithCheckpoint(rs, currentNodeID, aErr)
 		}
 		return true, false, nextNodeID, nil
 	}
@@ -560,7 +571,7 @@ func (e *Engine) execCompute(rs *runState, nodeID string, cn *ir.ComputeNode) (s
 func (e *Engine) execSubbot(ctx context.Context, rs *runState, nodeID string, sn *ir.SubbotNode) (string, error) {
 	return e.execSpecialNode(rs, nodeID, "subbot", sn,
 		map[string]any{"source": sn.Source},
-		func() (map[string]any, error) { return e.runSubbotNode(ctx, rs, nodeID, sn, rs.scope()) },
+		func() (map[string]any, error) { return e.runSubbotNode(ctx, rs, nodeID, sn, rs.scope(), "") },
 		nil,
 	)
 }

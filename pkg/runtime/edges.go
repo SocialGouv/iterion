@@ -1,0 +1,201 @@
+package runtime
+
+import (
+	"github.com/SocialGouv/iterion/pkg/dsl/expr"
+	"github.com/SocialGouv/iterion/pkg/dsl/ir"
+	"github.com/SocialGouv/iterion/pkg/store"
+)
+
+// ---------------------------------------------------------------------------
+// Edge evaluation
+// ---------------------------------------------------------------------------
+
+// evaluateEdges walks the workflow edges originating from fromNodeID and returns
+// the first conditional match (or the first unconditional fallback). It returns
+// nil when no edge matches. The logPrefix is included in warning messages.
+// This variant does NOT check loop counters — use evaluateEdgesWithLoops for
+// loop-aware selection.
+//
+// Branches inside fan-out call this variant. The runState's loop counters are
+// owned by the main execution loop and not propagated to branches (branches
+// run concurrently with arbitrary topology; sharing the loop counter would
+// be racy and the semantics — global vs per-branch — are not defined). To
+// prevent runaway iteration when a workflow accidentally places a `loop`
+// edge inside a fan-out branch (which would otherwise be selected without
+// the MaxIterations guard), we explicitly skip edges with a LoopName here.
+// The intent matches the existing comment block on the Expression case:
+// "branches don't iterate, so loop/run namespaces have no meaning."
+func (e *Engine) evaluateEdges(fromNodeID, logPrefix string, output map[string]any) *ir.Edge {
+	var unconditional, elseEdge *ir.Edge
+
+	for _, edge := range e.workflow.Edges {
+		if edge.From != fromNodeID {
+			continue
+		}
+		if edge.LoopName != "" {
+			// Defensive: a loop edge inside a branch would otherwise iterate
+			// without the MaxIterations cap (which is enforced only by the
+			// main loop's evaluateEdgesWithLoopsRS). Skip with a warning so
+			// the operator notices and restructures the workflow.
+			e.logger.Warn("%s: node %q: edge to %q is a loop edge (%q) inside a fan-out branch — skipped (loop semantics are undefined inside branches)",
+				logPrefix, fromNodeID, edge.To, edge.LoopName)
+			continue
+		}
+		if edge.Expression != nil {
+			// Expression-form `when` is unsupported in branch-local edge
+			// selection — branches don't iterate, so loop/run namespaces
+			// have no meaning. Use a simple boolean field condition or
+			// compute the predicate in a `compute` node upstream.
+			e.logger.Debug("%s: node %q: edge to %q has an expression `when` but branch evaluator has no runState — edge skipped",
+				logPrefix, fromNodeID, edge.To)
+			continue
+		}
+		if edge.Condition == "" {
+			// `else` edges and bare unconditional edges share the
+			// fallback role; the validator forbids coexistence, and the
+			// explicit form wins the tie-break defensively.
+			if edge.IsElse {
+				if elseEdge == nil {
+					elseEdge = edge
+				}
+			} else if unconditional == nil {
+				unconditional = edge
+			}
+			continue
+		}
+		val, ok := output[edge.Condition]
+		if !ok {
+			continue
+		}
+		boolVal, isBool := val.(bool)
+		if !isBool {
+			e.logger.Warn("%s: node %q: condition field %q is %T, expected bool — edge to %q skipped",
+				logPrefix, fromNodeID, edge.Condition, val, edge.To)
+			continue
+		}
+		if edge.Negated {
+			boolVal = !boolVal
+		}
+		if boolVal {
+			return edge
+		}
+	}
+
+	if elseEdge != nil {
+		return elseEdge
+	}
+	return unconditional
+}
+
+// evaluateEdgesWithLoopsRS is the rs-aware variant: it evaluates edge `when`
+// expressions against the full runState (vars, outputs, artifacts, loop, run)
+// while still falling back to the simple boolean-field check when the edge
+// has no parsed Expression. The expression evaluation context is built lazily
+// at most once per call (only if at least one outgoing edge uses an
+// expression).
+func (e *Engine) evaluateEdgesWithLoopsRS(fromNodeID, logPrefix string, output map[string]any, rs *runState) *ir.Edge {
+	var unconditional, elseEdge *ir.Edge
+	var exprCtx *expr.Context
+
+	for _, edge := range e.workflow.Edges {
+		if edge.From != fromNodeID {
+			continue
+		}
+
+		if edge.LoopName != "" {
+			loop, ok := e.workflow.Loops[edge.LoopName]
+			if ok {
+				maxIter := e.resolveLoopMax(loop, rs)
+				if rs.loopCounters[edge.LoopName] >= maxIter {
+					kind := "exhausted"
+					if loop.Unbounded {
+						kind = "out of fuel"
+					}
+					e.logger.Warn("%s: node %q: edge to %q skipped — loop %q %s (%d/%d)",
+						logPrefix, fromNodeID, edge.To, edge.LoopName, kind, rs.loopCounters[edge.LoopName], maxIter)
+					continue
+				}
+				// Liveness monitor: an unbounded loop making no progress (its
+				// source output unchanged across maxLoopStall crossings) is at a
+				// fixpoint — skip the back-edge so the run falls through to the
+				// exit path instead of burning the rest of its fuel.
+				if loop.Unbounded && e.loopStalled(edge.LoopName, output, rs) {
+					e.logger.Warn("%s: node %q: edge to %q skipped — loop %q made no progress for %d crossings (liveness stall), falling through",
+						logPrefix, fromNodeID, edge.To, edge.LoopName, maxLoopStall)
+					if err := e.emit(rs.ctx, rs.runID, store.EventBudgetWarning, fromNodeID, map[string]any{
+						"loop": edge.LoopName, "reason": "liveness_stall", "crossings": maxLoopStall,
+					}); err != nil {
+						e.logger.Warn("failed to emit liveness_stall warning: %v", err)
+					}
+					continue
+				}
+			}
+		}
+
+		// Foreach back-edge: take it only while another element remains. The
+		// body already ran for the current index; skip (fall through) when
+		// index+1 has reached the collection length.
+		if edge.ForeachName != "" {
+			if fe, ok := e.workflow.Foreaches[edge.ForeachName]; ok {
+				count := len(e.resolveForeachCollection(fe, rs.scope()))
+				if idx := rs.loopCounters[foreachCounterKey(edge.ForeachName)]; idx+1 >= count {
+					e.logger.Warn("%s: node %q: edge to %q skipped — foreach %q exhausted (%d/%d)",
+						logPrefix, fromNodeID, edge.To, edge.ForeachName, idx+1, count)
+					continue
+				}
+			}
+		}
+
+		// Expression form: parsed AST evaluated against the full context.
+		if edge.Expression != nil {
+			if exprCtx == nil {
+				exprCtx = e.exprContext(rs, output)
+			}
+			ok, err := edge.Expression.EvalBool(exprCtx)
+			if err != nil {
+				e.logger.Warn("%s: node %q: edge `when` expression %q failed: %v — edge to %q skipped",
+					logPrefix, fromNodeID, edge.ExpressionSrc, err, edge.To)
+				continue
+			}
+			if ok {
+				return edge
+			}
+			continue
+		}
+
+		if edge.Condition == "" {
+			// Same fallback tie-break as evaluateEdges: the explicit
+			// `else` form wins over a bare unconditional (validator
+			// forbids coexistence; this is defence in depth).
+			if edge.IsElse {
+				if elseEdge == nil {
+					elseEdge = edge
+				}
+			} else if unconditional == nil {
+				unconditional = edge
+			}
+			continue
+		}
+		val, ok := output[edge.Condition]
+		if !ok {
+			continue
+		}
+		boolVal, isBool := val.(bool)
+		if !isBool {
+			e.logger.Warn("%s: node %q: condition field %q is %T, expected bool — edge to %q skipped",
+				logPrefix, fromNodeID, edge.Condition, val, edge.To)
+			continue
+		}
+		if edge.Negated {
+			boolVal = !boolVal
+		}
+		if boolVal {
+			return edge
+		}
+	}
+
+	if elseEdge != nil {
+		return elseEdge
+	}
+	return unconditional
+}

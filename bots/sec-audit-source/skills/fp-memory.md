@@ -1,13 +1,13 @@
 ---
 name: fp-memory
 description: |
-  How to read and write `.iterion/security/fp-known.yaml` — the
+  How to read and write `.sec-audit/fp-known.yaml` — the
   cross-run false-positive memory for sec-audit-source. Load this in
   the `triage` node (read-only) and the `revalidate` node (which may
   append or invalidate entries).
 ---
 
-# FP memory — `.iterion/security/fp-known.yaml`
+# FP memory — `.sec-audit/fp-known.yaml`
 
 A committed, human-reviewable YAML file in the scanned repo that
 records curated false positives. The bot reads it before LLM triage
@@ -17,10 +17,10 @@ by hand at any time.
 ## Location
 
 ```
-<workspace_dir>/.iterion/security/fp-known.yaml
+<workspace_dir>/.sec-audit/fp-known.yaml
 ```
 
-If `.iterion/` doesn't exist yet, the bot creates it. The file
+If `.sec-audit/` doesn't exist yet, the bot creates it. The file
 itself is intentionally in the repo (NOT in `~/.iterion/`) because:
 
 - FPs are repo-specific (a pattern that's an FP here may be a real

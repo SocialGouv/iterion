@@ -43,6 +43,7 @@ export function useBoardBulkActions({
   board,
   selectedIssues,
   dispatchState,
+  dispatcherEnabled,
   onDrop,
   refresh,
   setError,
@@ -54,6 +55,10 @@ export function useBoardBulkActions({
   board: NativeBoard | null;
   selectedIssues: NativeIssue[];
   dispatchState: string;
+  // Selects the verb in confirm/toast copy: "Dispatch" when a dispatcher
+  // claims from the eligible lane, "Stage" when cards launch their
+  // assigned bot on arrival instead.
+  dispatcherEnabled: boolean;
   onDrop: (
     issueID: string,
     toState: string,
@@ -72,12 +77,14 @@ export function useBoardBulkActions({
     // Each dispatch starts a run (cost). Confirm above a small threshold
     // so a fat-fingered select-all + dispatch doesn't fan out a dozen
     // paid runs — pairs with the per-day spend cap.
+    const verb = dispatcherEnabled ? "Dispatch" : "Stage";
+    const verbed = dispatcherEnabled ? "Dispatched" : "Staged";
     if (ids.length > BULK_DISPATCH_CONFIRM_THRESHOLD) {
       if (
         !(await confirm({
-          title: `Dispatch ${ids.length} issues?`,
+          title: `${verb} ${ids.length} issues?`,
           message: `This starts ${ids.length} runs at once, each consuming budget against the daily spend cap.`,
-          confirmLabel: `Dispatch ${ids.length}`,
+          confirmLabel: `${verb} ${ids.length}`,
         }))
       )
         return;
@@ -89,25 +96,29 @@ export function useBoardBulkActions({
     setSingleSelection(null);
     const plural = (n: number) => (n > 1 ? "s" : "");
     if (queued === ids.length) {
-      addToast(`Dispatched ${queued} issue${plural(queued)}`, "success", {
+      addToast(`${verbed} ${queued} issue${plural(queued)}`, "success", {
         action: { label: "View runs", onClick: () => setLocation("/runs") },
       });
     } else if (queued > 0) {
       // Partial: some transitions failed (claim conflict, rejected move,
       // tracker error). Surface the gap instead of a misleading all-success
-      // toast — the unqueued issues never reached the dispatch lane and the
-      // dispatcher will not pick them up.
+      // toast — the unqueued issues never reached the eligible lane, so
+      // nothing will run for them.
       addToast(
-        `Dispatched ${queued}/${ids.length} issues — ${ids.length - queued} could not be queued`,
+        `${verbed} ${queued}/${ids.length} issues — ${ids.length - queued} could not be queued`,
         "warning",
         { action: { label: "View runs", onClick: () => setLocation("/runs") } },
       );
     } else {
-      addToast(`Could not dispatch ${ids.length} issue${plural(ids.length)}`, "error");
+      addToast(
+        `Could not ${verb.toLowerCase()} ${ids.length} issue${plural(ids.length)}`,
+        "error",
+      );
     }
   }, [
     selectedIssues,
     dispatchState,
+    dispatcherEnabled,
     onDrop,
     setSingleSelection,
     addToast,

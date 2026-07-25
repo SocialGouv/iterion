@@ -17,6 +17,10 @@ import { Button } from "@/components/ui/Button";
 interface Props {
   plugin: PluginView;
   busy: boolean;
+  // Enable/disable rewrites the host-global plugins.yaml — on a shared
+  // cloud server only super-admins may flip it; others see a read-only
+  // state chip.
+  canManage: boolean;
   onEnable: () => void;
   onOpen: () => void;
 }
@@ -50,7 +54,7 @@ function kindIcon(kinds: string[]) {
  *  (mirrors MarketplaceCard's card tokens). The whole card opens the
  *  detail drawer; the footer's single action — Enable, or the green
  *  "Enabled" chip — stops propagation so it doesn't double-trigger. */
-export default function PluginCard({ plugin: p, busy, onEnable, onOpen }: Props) {
+export default function PluginCard({ plugin: p, busy, canManage, onEnable, onOpen }: Props) {
   return (
     <li
       onClick={onOpen}
@@ -101,7 +105,7 @@ export default function PluginCard({ plugin: p, busy, onEnable, onOpen }: Props)
           <span className="inline-flex items-center gap-1 rounded bg-surface-1 px-1.5 py-0.5 text-caption text-success-fg">
             <CheckIcon className="h-3 w-3" /> Enabled
           </span>
-        ) : (
+        ) : canManage ? (
           <Button
             variant="primary"
             size="sm"
@@ -115,6 +119,8 @@ export default function PluginCard({ plugin: p, busy, onEnable, onOpen }: Props)
           >
             Enable
           </Button>
+        ) : (
+          <span className="text-caption text-fg-subtle">Disabled by admin</span>
         )}
       </div>
     </li>

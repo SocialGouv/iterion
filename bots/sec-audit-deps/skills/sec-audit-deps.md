@@ -35,8 +35,10 @@ the installed artifact.
 
 ## Phase 2 — `load_package_cache` (compute)
 
-Reads `~/.iterion/security-cache/packages.jsonl` line by line and
-builds an in-memory index keyed by `ecosystem:name:version:checksum`.
+Reads the package cache at `{{vars.cache_path}}` (see
+`[[package-cache]]` for the default + the host-wide override) line by
+line and builds an in-memory index keyed by
+`ecosystem:name:version:checksum`.
 
 Outputs: `{ cache: {<key>: <cached_entry>, ...}, cache_path: "..." }`.
 
@@ -127,14 +129,14 @@ Title: `<ecosystem> · <name>@<version> — <one-line risk summary>`.
 - Bucket: `<= 20 → LOW`, `<= 50 → MEDIUM`, `> 50 → HIGH`.
 
 `update_package_cache`:
-- Appends one JSONL line per analysed package to
-  `~/.iterion/security-cache/packages.jsonl`. Atomic via temp file
+- Appends one JSONL line per analysed package to the package cache
+  at `{{vars.cache_path}}`. Atomic via temp file
   + rename (POSIX guarantees).
 - Format: see `[[package-cache]]` for the exact schema.
 
 `export_report`:
 - Markdown summary at
-  `{{workspace_dir}}/.iterion/security/deps-findings.md`.
+  `{{workspace_dir}}/.sec-audit/deps-findings.md`.
 
 ## Discipline that keeps the FP rate low
 

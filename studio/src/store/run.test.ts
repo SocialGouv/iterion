@@ -68,6 +68,18 @@ beforeEach(() => {
     pendingHumanInput: null,
     latestTodosByExec: new Map(),
     todoHistoryByExec: new Map(),
+    inFlightToolsByExec: new Map(),
+    queuedMessages: [],
+    browser: {
+      currentUrl: null,
+      scope: "external",
+      source: null,
+      kind: undefined,
+      lastEventSeqSeen: null,
+      screenshots: [],
+      liveSession: null,
+    },
+    resultLinks: [],
   } as never);
 });
 
@@ -343,6 +355,455 @@ describe("session board todo history", () => {
   });
 });
 
+// ---------------------------------------------------------------------------
+// Per-event-kind coverage — one representative fixture per event type the
+// reducer handles. These pin the payload contract consumed from the Go
+// emitters (pkg/store/event.go + pkg/runtime, pkg/backend/model/hooks.go)
+// ahead of the discriminated-union typing of RunEvent.
+// ---------------------------------------------------------------------------
+
+function ts(seq: number): string {
+  return `2026-01-01T00:00:${String(seq).padStart(2, "0")}Z`;
+}
+
+describe("applyEventsBatch — tool lifecycle (in-flight tools)", () => {
+  const execId = "exec:main:implement:0";
+
+  it("registers in-flight tools on tool_started and clears the matching one on tool_called (by tool_use_id)", () => {
+    runStore.getState().applyEventsBatch([
+      nodeStarted("implement", 1),
+      {
+        seq: 2,
+        timestamp: ts(2),
+        type: "tool_started",
+        run_id: "run_test",
+        branch_id: "main",
+        node_id: "implement",
+        data: { tool: "Bash", tool_use_id: "t1", input: { command: "ls" } },
+      },
+      {
+        seq: 3,
+        timestamp: ts(3),
+        type: "tool_started",
+        run_id: "run_test",
+        branch_id: "main",
+        node_id: "implement",
+        data: { tool: "Read", tool_use_id: "t2", input: { file_path: "go.mod" } },
+      },
+    ]);
+    let inFlight = runStore.getState().inFlightToolsByExec.get(execId);
+    expect(inFlight).toHaveLength(2);
+    expect(inFlight![0]!.toolName).toBe("Bash");
+    expect(inFlight![1]!.toolUseID).toBe("t2");
+
+    runStore.getState().applyEventsBatch([
+      {
+        seq: 4,
+        timestamp: ts(4),
+        type: "tool_called",
+        run_id: "run_test",
+        branch_id: "main",
+        node_id: "implement",
+        data: { tool: "Bash", tool_use_id: "t1" },
+      },
+    ]);
+    inFlight = runStore.getState().inFlightToolsByExec.get(execId);
+    expect(inFlight).toHaveLength(1);
+    expect(inFlight![0]!.toolUseID).toBe("t2");
+  });
+
+  it("clears the oldest same-name entry on tool_error when no tool_use_id is carried", () => {
+    runStore.getState().applyEventsBatch([
+      nodeStarted("implement", 1),
+      {
+        seq: 2,
+        timestamp: ts(2),
+        type: "tool_started",
+        run_id: "run_test",
+        branch_id: "main",
+        node_id: "implement",
+        data: { tool: "bash", input: { command: "false" } },
+      },
+      {
+        seq: 3,
+        timestamp: ts(3),
+        type: "tool_error",
+        run_id: "run_test",
+        branch_id: "main",
+        node_id: "implement",
+        data: { tool: "bash", error: "exit 1" },
+      },
+    ]);
+    expect(runStore.getState().inFlightToolsByExec.get(execId)).toBeUndefined();
+  });
+
+  it("clears in-flight entries for the exec on node_finished", () => {
+    runStore.getState().applyEventsBatch([
+      nodeStarted("implement", 1),
+      {
+        seq: 2,
+        timestamp: ts(2),
+        type: "tool_started",
+        run_id: "run_test",
+        branch_id: "main",
+        node_id: "implement",
+        data: { tool: "Bash", tool_use_id: "t1", input: {} },
+      },
+      nodeFinished("implement", 3),
+    ]);
+    expect(runStore.getState().inFlightToolsByExec.size).toBe(0);
+  });
+});
+
+describe("applyEventsBatch — artifact_written", () => {
+  it("stamps last_artifact_version from data.version", () => {
+    runStore.getState().applyEventsBatch([
+      nodeStarted("build", 1),
+      {
+        seq: 2,
+        timestamp: ts(2),
+        type: "artifact_written",
+        run_id: "run_test",
+        branch_id: "main",
+        node_id: "build",
+        data: { publish: true, version: 3 },
+      },
+    ]);
+    const e = Array.from(runStore.getState().executionsById.values())[0]!;
+    expect(e.last_artifact_version).toBe(3);
+    expect(e.last_seq).toBe(2);
+  });
+});
+
+describe("applyEventsBatch — human input lifecycle", () => {
+  it("pauses the exec and captures pendingHumanInput on human_input_requested", () => {
+    runStore.getState().applyEventsBatch([
+      nodeStarted("ask", 1),
+      {
+        seq: 2,
+        timestamp: ts(2),
+        type: "human_input_requested",
+        run_id: "run_test",
+        branch_id: "main",
+        node_id: "ask",
+        data: {
+          interaction_id: "run_test_ask",
+          questions: { approve: "Ship it?" },
+        },
+      },
+    ]);
+    const st = runStore.getState();
+    const e = Array.from(st.executionsById.values())[0]!;
+    expect(e.status).toBe("paused_waiting_human");
+    expect(st.pendingHumanInput).toMatchObject({
+      interaction_id: "run_test_ask",
+      node_id: "ask",
+      questions: { approve: "Ship it?" },
+    });
+  });
+
+  it("clears pendingHumanInput and resumes the paused exec on run_resumed", () => {
+    runStore.getState().applyEventsBatch([
+      nodeStarted("ask", 1),
+      {
+        seq: 2,
+        timestamp: ts(2),
+        type: "human_input_requested",
+        run_id: "run_test",
+        branch_id: "main",
+        node_id: "ask",
+        data: { interaction_id: "run_test_ask", questions: {} },
+      },
+      {
+        seq: 3,
+        timestamp: ts(3),
+        type: "run_resumed",
+        run_id: "run_test",
+      },
+    ]);
+    const st = runStore.getState();
+    expect(st.pendingHumanInput).toBeNull();
+    const e = Array.from(st.executionsById.values())[0]!;
+    expect(e.status).toBe("running");
+  });
+});
+
+describe("applyEventsBatch — run termination & pause status overrides", () => {
+  // Seed a snapshot so runStatusOverride has a base to apply onto.
+  function seed() {
+    runStore.getState().applySnapshot(snap([], 0));
+  }
+
+  it("run_finished closes still-running execs and flips run status to finished", () => {
+    seed();
+    runStore.getState().applyEventsBatch([
+      nodeStarted("work", 1),
+      { seq: 2, timestamp: ts(2), type: "run_finished", run_id: "run_test" },
+    ]);
+    const st = runStore.getState();
+    expect(st.snapshot?.run.status).toBe("finished");
+    const e = Array.from(st.executionsById.values())[0]!;
+    expect(e.status).toBe("finished");
+    expect(e.finished_at).toBeDefined();
+  });
+
+  it("run_failed marks the current exec failed and overrides status to failed_resumable with the error", () => {
+    seed();
+    runStore.getState().applyEventsBatch([
+      nodeStarted("work", 1),
+      {
+        seq: 2,
+        timestamp: ts(2),
+        type: "run_failed",
+        run_id: "run_test",
+        branch_id: "main",
+        node_id: "work",
+        data: { error: "budget exhausted", code: "BUDGET_EXCEEDED" },
+      },
+    ]);
+    const st = runStore.getState();
+    expect(st.snapshot?.run.status).toBe("failed_resumable");
+    expect(st.snapshot?.run.error).toBe("budget exhausted");
+    const e = Array.from(st.executionsById.values())[0]!;
+    expect(e.status).toBe("failed");
+    expect(e.error).toBe("budget exhausted");
+  });
+
+  it("run_cancelled closes running execs with the reason and sets status cancelled", () => {
+    seed();
+    runStore.getState().applyEventsBatch([
+      nodeStarted("work", 1),
+      {
+        seq: 2,
+        timestamp: ts(2),
+        type: "run_cancelled",
+        run_id: "run_test",
+        data: { reason: "user cancelled" },
+      },
+    ]);
+    const st = runStore.getState();
+    expect(st.snapshot?.run.status).toBe("cancelled");
+    const e = Array.from(st.executionsById.values())[0]!;
+    expect(e.status).toBe("failed");
+    expect(e.error).toBe("user cancelled");
+  });
+
+  it("run_paused maps operator/cost_cap_daily reasons to paused_operator, default to paused_waiting_human", () => {
+    seed();
+    runStore.getState().applyEventsBatch([
+      {
+        seq: 1,
+        timestamp: ts(1),
+        type: "run_paused",
+        run_id: "run_test",
+        data: { reason: "operator" },
+      },
+    ]);
+    expect(runStore.getState().snapshot?.run.status).toBe("paused_operator");
+
+    runStore.getState().applyEventsBatch([
+      { seq: 2, timestamp: ts(2), type: "run_paused", run_id: "run_test" },
+    ]);
+    expect(runStore.getState().snapshot?.run.status).toBe(
+      "paused_waiting_human",
+    );
+  });
+});
+
+describe("applyEventsBatch — browser events", () => {
+  it("tracks the live session across browser_session_started/_ended and ignores a stale end", () => {
+    runStore.getState().applyEventsBatch([
+      {
+        seq: 1,
+        timestamp: ts(1),
+        type: "browser_session_started",
+        run_id: "run_test",
+        node_id: "e2e",
+        data: { session_id: "s1", node_id: "e2e" },
+      },
+    ]);
+    expect(runStore.getState().browser.liveSession).toMatchObject({
+      sessionId: "s1",
+      nodeId: "e2e",
+    });
+
+    // A stale end for a DIFFERENT session must not clobber the live one.
+    runStore.getState().applyEventsBatch([
+      {
+        seq: 2,
+        timestamp: ts(2),
+        type: "browser_session_ended",
+        run_id: "run_test",
+        data: { session_id: "s0" },
+      },
+    ]);
+    expect(runStore.getState().browser.liveSession?.sessionId).toBe("s1");
+
+    runStore.getState().applyEventsBatch([
+      {
+        seq: 3,
+        timestamp: ts(3),
+        type: "browser_session_ended",
+        run_id: "run_test",
+        data: { session_id: "s1" },
+      },
+    ]);
+    expect(runStore.getState().browser.liveSession).toBeNull();
+  });
+
+  it("appends browser_screenshot frames with their attachment pointer", () => {
+    runStore.getState().applyEventsBatch([
+      {
+        seq: 1,
+        timestamp: ts(1),
+        type: "browser_screenshot",
+        run_id: "run_test",
+        node_id: "e2e",
+        data: {
+          attachment_name: "shot-1.png",
+          url: "http://localhost:5173/",
+          source: "playwright",
+          tool_call_id: "tc1",
+        },
+      },
+    ]);
+    const shots = runStore.getState().browser.screenshots;
+    expect(shots).toHaveLength(1);
+    expect(shots[0]).toMatchObject({
+      seq: 1,
+      attachmentName: "shot-1.png",
+      url: "http://localhost:5173/",
+      toolCallId: "tc1",
+      nodeId: "e2e",
+    });
+  });
+
+  it("adopts preview_url_available with scope/source/kind and records the seq", () => {
+    runStore.getState().applyEventsBatch([
+      {
+        seq: 1,
+        timestamp: ts(1),
+        type: "preview_url_available",
+        run_id: "run_test",
+        node_id: "serve",
+        data: {
+          url: "http://localhost:3000",
+          kind: "dev-server",
+          scope: "internal",
+          source: "tool-stdout",
+        },
+      },
+    ]);
+    const b = runStore.getState().browser;
+    expect(b.currentUrl).toBe("http://localhost:3000");
+    expect(b.scope).toBe("internal");
+    expect(b.source).toBe("tool-stdout");
+    expect(b.kind).toBe("dev-server");
+    expect(b.lastEventSeqSeen).toBe(1);
+  });
+});
+
+describe("applyEventsBatch — user message inbox", () => {
+  it("folds the queued → delivered → consumed lifecycle, merging transition timestamps", () => {
+    runStore.getState().applyEventsBatch([
+      {
+        seq: 1,
+        timestamp: ts(1),
+        type: "user_message_queued",
+        run_id: "run_test",
+        data: {
+          id: "m1",
+          text: "focus on the parser",
+          status: "queued",
+          queued_at: ts(1),
+        },
+      },
+    ]);
+    expect(runStore.getState().queuedMessages).toMatchObject([
+      { id: "m1", status: "queued", text: "focus on the parser" },
+    ]);
+
+    runStore.getState().applyEventsBatch([
+      {
+        seq: 2,
+        timestamp: ts(2),
+        type: "user_message_delivered",
+        run_id: "run_test",
+        data: {
+          id: "m1",
+          text: "focus on the parser",
+          status: "delivered",
+          queued_at: ts(1),
+          delivered_at: ts(2),
+        },
+      },
+      {
+        seq: 3,
+        timestamp: ts(3),
+        type: "user_message_consumed",
+        run_id: "run_test",
+        data: {
+          id: "m1",
+          text: "focus on the parser",
+          status: "consumed",
+          queued_at: ts(1),
+          delivered_at: ts(2),
+          consumed_at: ts(3),
+        },
+      },
+    ]);
+    const msgs = runStore.getState().queuedMessages;
+    expect(msgs).toHaveLength(1);
+    expect(msgs[0]).toMatchObject({
+      id: "m1",
+      status: "consumed",
+      queued_at: ts(1),
+      delivered_at: ts(2),
+      consumed_at: ts(3),
+    });
+  });
+
+  it("records a cancellation and drops payloads without an id", () => {
+    runStore.getState().applyEventsBatch([
+      {
+        seq: 1,
+        timestamp: ts(1),
+        type: "user_message_queued",
+        run_id: "run_test",
+        data: { id: "m1", text: "wait", status: "queued", queued_at: ts(1) },
+      },
+      {
+        seq: 2,
+        timestamp: ts(2),
+        type: "user_message_cancelled",
+        run_id: "run_test",
+        data: {
+          id: "m1",
+          text: "wait",
+          status: "cancelled",
+          queued_at: ts(1),
+          cancelled_at: ts(2),
+        },
+      },
+      // Malformed payload (no id) — must be ignored, not crash.
+      {
+        seq: 3,
+        timestamp: ts(3),
+        type: "user_message_queued",
+        run_id: "run_test",
+        data: { text: "ghost" },
+      },
+    ]);
+    const msgs = runStore.getState().queuedMessages;
+    expect(msgs).toHaveLength(1);
+    expect(msgs[0]).toMatchObject({
+      id: "m1",
+      status: "cancelled",
+      cancelled_at: ts(2),
+    });
+  });
+});
+
 describe("applyLogChunk — byte-keyed overlap/dedup", () => {
   beforeEach(() => runStore.getState().clearLog());
 
@@ -373,5 +834,116 @@ describe("applyLogChunk — byte-keyed overlap/dedup", () => {
     const log = runStore.getState().log;
     expect(log.text).toBe("🔧abcd"); // no dup of "bc", "d" appended
     expect(log.nextByte).toBe(8);
+  });
+});
+
+// previewEvent builds a preview_url_available event as the runtime emits
+// one from a tool node's `[iterion] preview_url=…` stdout directive.
+function previewEvent(
+  seq: number,
+  url: string,
+  kind?: string,
+  scope: "internal" | "external" = "external",
+): RunEvent {
+  return {
+    seq,
+    timestamp: ts(seq),
+    type: "preview_url_available",
+    run_id: "run_test",
+    branch_id: "main",
+    node_id: "surface_pr_link",
+    data: { url, kind, scope, source: "tool-stdout" },
+  };
+}
+
+describe("applyEventsBatch — result-links (headline PR/deploy surfacing)", () => {
+  it("captures a kind=pr preview_url as a visible result-link", () => {
+    runStore.getState().applyEventsBatch([
+      previewEvent(1, "https://github.com/o/r/pull/7", "pr"),
+    ]);
+    const { resultLinks } = runStore.getState();
+    expect(resultLinks).toHaveLength(1);
+    expect(resultLinks[0]).toMatchObject({
+      url: "https://github.com/o/r/pull/7",
+      kind: "pr",
+      scope: "external",
+    });
+  });
+
+  it("does NOT embed a PR link in the Browser pane (GitHub blocks iframing)", () => {
+    runStore.getState().applyEventsBatch([
+      previewEvent(1, "https://github.com/o/r/pull/7", "pr"),
+    ]);
+    const { browser } = runStore.getState();
+    // The PR surfaces as a result-link, never as the pane's currentUrl…
+    expect(browser.currentUrl).toBeNull();
+    // …but the seen-seq still advances so the pane's auto-reveal logic
+    // stays consistent.
+    expect(browser.lastEventSeqSeen).toBe(1);
+  });
+
+  it("keeps an embeddable deploy URL in the Browser pane AND as a result-link", () => {
+    runStore.getState().applyEventsBatch([
+      previewEvent(1, "https://app.example.com", "deploy"),
+    ]);
+    const st = runStore.getState();
+    expect(st.browser.currentUrl).toBe("https://app.example.com");
+    expect(st.browser.kind).toBe("deploy");
+    expect(st.resultLinks).toHaveLength(1);
+    expect(st.resultLinks[0]).toMatchObject({ kind: "deploy" });
+  });
+
+  it("does NOT capture a non-result kind (dev-server) as a result-link", () => {
+    runStore.getState().applyEventsBatch([
+      previewEvent(1, "http://localhost:5173", "dev-server"),
+    ]);
+    const st = runStore.getState();
+    expect(st.resultLinks).toHaveLength(0);
+    // …but it still drives the Browser pane.
+    expect(st.browser.currentUrl).toBe("http://localhost:5173");
+  });
+
+  it("holds both a deploy and a PR link, deduped by url, in discovery order", () => {
+    // app-dev shape: deploy surfaces first, the PR after the MR tail.
+    runStore.getState().applyEventsBatch([
+      previewEvent(1, "https://app.example.com", "deploy"),
+      previewEvent(2, "https://github.com/o/r/pull/7", "pr"),
+      // A duplicate PR directive (idempotent re-run) must not double it.
+      previewEvent(3, "https://github.com/o/r/pull/7", "pr"),
+    ]);
+    const { resultLinks } = runStore.getState();
+    expect(resultLinks.map((l) => l.kind)).toEqual(["deploy", "pr"]);
+    expect(resultLinks.map((l) => l.url)).toEqual([
+      "https://app.example.com",
+      "https://github.com/o/r/pull/7",
+    ]);
+  });
+
+  it("reconstructs result-links on a reloaded terminal run (event-log replay)", () => {
+    // A finished run: cold-loaded snapshot at the final seq, then the full
+    // event log hydrated via loadEventHistoryIfMissing (applyEventsBatch).
+    const finished = {
+      ...baseRun,
+      status: "finished",
+    } as unknown as RunHeader;
+    runStore.getState().applySnapshot({ run: finished, executions: [], last_seq: 3 });
+    // Snapshots carry no result-links; the replayed history rebuilds them.
+    expect(runStore.getState().resultLinks).toHaveLength(0);
+    runStore.getState().applyEventsBatch([
+      nodeStarted("finalize_mr", 1),
+      nodeFinished("finalize_mr", 2),
+      previewEvent(3, "https://github.com/o/r/pull/7", "pr"),
+    ]);
+    const { resultLinks } = runStore.getState();
+    expect(resultLinks).toHaveLength(1);
+    expect(resultLinks[0]).toMatchObject({
+      url: "https://github.com/o/r/pull/7",
+      kind: "pr",
+    });
+  });
+
+  it("ignores an empty-url preview event", () => {
+    runStore.getState().applyEventsBatch([previewEvent(1, "", "pr")]);
+    expect(runStore.getState().resultLinks).toHaveLength(0);
   });
 });

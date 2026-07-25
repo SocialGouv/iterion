@@ -43,10 +43,16 @@ const TERMINAL_LABELS: Record<string, string> = {
   fail: "Fail",
 };
 
-interface NodeMatch {
-  kind: NodeKind;
-  decl: AgentDecl | JudgeDecl | RouterDecl | HumanDecl | ToolNodeDecl | ComputeDecl | SubbotDecl;
-}
+// Discriminated on `kind` so NodeForm's switch narrows `decl` to the
+// matching declaration type without casts.
+type NodeMatch =
+  | { kind: "agent"; decl: AgentDecl }
+  | { kind: "judge"; decl: JudgeDecl }
+  | { kind: "router"; decl: RouterDecl }
+  | { kind: "human"; decl: HumanDecl }
+  | { kind: "tool"; decl: ToolNodeDecl }
+  | { kind: "compute"; decl: ComputeDecl }
+  | { kind: "subbot"; decl: SubbotDecl };
 
 export default function InspectorNode({ nodeId }: { nodeId: string }) {
   const document = useDocumentStore((s) => s.document);
@@ -77,7 +83,10 @@ export default function InspectorNode({ nodeId }: { nodeId: string }) {
 
   // Terminal nodes
   if (TERMINAL_DESCRIPTIONS[nodeId]) {
-    const icon = NODE_ICONS[nodeId === "__start__" ? "start" : (nodeId as NodeKind)] ?? "";
+    // The guard above restricts nodeId to __start__/done/fail.
+    const iconKind: NodeKind =
+      nodeId === "__start__" ? "start" : nodeId === "fail" ? "fail" : "done";
+    const icon = NODE_ICONS[iconKind] ?? "";
     return (
       <div className="p-3">
         <div className="flex items-center gap-3 rounded-md border border-border-default bg-surface-1 px-3 py-3">
@@ -225,21 +234,19 @@ function NodeHeader({
 function NodeForm({ match }: { match: NodeMatch }) {
   switch (match.kind) {
     case "agent":
-      return <AgentForm decl={match.decl as AgentDecl} kind="agent" />;
+      return <AgentForm decl={match.decl} kind="agent" />;
     case "judge":
-      return <AgentForm decl={match.decl as JudgeDecl} kind="judge" />;
+      return <AgentForm decl={match.decl} kind="judge" />;
     case "router":
-      return <RouterForm decl={match.decl as RouterDecl} />;
+      return <RouterForm decl={match.decl} />;
     case "human":
-      return <HumanForm decl={match.decl as HumanDecl} />;
+      return <HumanForm decl={match.decl} />;
     case "tool":
-      return <ToolForm decl={match.decl as ToolNodeDecl} />;
+      return <ToolForm decl={match.decl} />;
     case "compute":
-      return <ComputeForm decl={match.decl as ComputeDecl} />;
+      return <ComputeForm decl={match.decl} />;
     case "subbot":
-      return <SubbotForm decl={match.decl as SubbotDecl} />;
-    default:
-      return <p className="text-fg-subtle text-xs">Terminal node (no editable properties)</p>;
+      return <SubbotForm decl={match.decl} />;
   }
 }
 

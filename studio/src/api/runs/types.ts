@@ -39,6 +39,7 @@ export type ExecStatus =
 export type RunSourceKind =
   | "manual"
   | "webhook"
+  | "schedule"
   | "dispatcher"
   | "fork"
   | "shard";
@@ -256,6 +257,10 @@ export interface RunHeader {
   // pre-feature runs; the modified-files panel keys off this to decide
   // whether to render at all.
   work_dir?: string;
+  // Stable forge slug ("group/project") the run targets — the cloud
+  // run's repo identity (work_dir is a runner-pod path there). Empty
+  // for local and repo-less runs.
+  project_path?: string;
   worktree?: boolean;
   // True when work_dir still exists on the server's filesystem — i.e. the
   // inline file editor + live diff surfaces can be served without a 409.
@@ -278,6 +283,11 @@ export interface RunHeader {
   merge_strategy?: MergeStrategy;
   merge_status?: MergeStatus;
   auto_merge?: boolean;
+  // Lines changed by the run's commits: three-dot numstat against the
+  // fork point, computed+cached server-side. Absent (not zero) when the
+  // refs are unresolvable — render "—", never a guessed 0.
+  loc_added?: number;
+  loc_deleted?: number;
   // Wall-clock the run actually consumed: sum of run_started/resumed
   // → paused/failed/cancelled/interrupted/finished windows. Excludes
   // pause and failed_resumable gaps. Reducer-derived from events.
@@ -302,9 +312,10 @@ export interface RunHeader {
   // Different from workflow_hash (the child's own) when the workflow has
   // been edited between parent run and fork.
   source_hash?: string;
-  // source describes the originating action that produced this run.
-  // Today only dispatcher runs populate it, carrying the back-reference
-  // to the kanban issue so the RunHeader can link back to /board.
+  // source describes the originating action that produced this run:
+  // a dispatcher claim (carrying the back-reference to the kanban issue
+  // so the RunHeader can link back to /board) or a schedule tick
+  // (carrying the schedule identity). Absent for operator launches.
   source?: RunSource;
   // Run-tree shard tuple (T4b, refs #125): parent_run_id points UP at the
   // run that spawned this shard/child; shard_index/shard_count/shard_label
@@ -334,6 +345,59 @@ export interface RunHeader {
   // report their resolved value, never "auto". Absent for tool/compute-
   // only runs (the header then renders no backend chip).
   backends_used?: BackendUsage[];
+  // deployment is the run's delivery outcome — live URL, running image,
+  // source commit, and the traceability verdict — reducer-derived from
+  // the deployment-report output contract (any node emitting the
+  // reserved keys; no bot name involved). Absent for runs that deployed
+  // nothing, which is nearly all of them: the header then renders no
+  // deployment row at all. Mirror of runview.DeploymentReport.
+  deployment?: DeploymentReport;
+}
+
+// DeploymentReport is a run's delivery outcome. deployed/healthy are the
+// deploying node's own claims; trace carries the INDEPENDENT verdict on
+// whether that claim is traceable back to the repository. The UI must
+// never render the first without the second: a URL that answers 200
+// while nothing was pushed and nothing is reproducible is not a
+// delivery. Mirror of runview.DeploymentReport.
+export interface DeploymentReport {
+  // IR node that reported the delivery.
+  node_id?: string;
+  deployed: boolean;
+  healthy: boolean;
+  // Public address a human opens. Absent on a failed or blocked deploy.
+  url?: string;
+  // Exact image reference running, e.g. "ghcr.io/owner/repo:<sha>".
+  image_ref?: string;
+  // Source commit the delivery is anchored to. Absent when the reporter
+  // did not state it — the row then shows no commit rather than
+  // borrowing final_commit, which can be LATER than what was deployed.
+  commit?: string;
+  // The reporter's own prose: what was published, or the blocking error.
+  notes?: string;
+  // Traceability verdict. Absent when no traceability gate ran at all —
+  // a distinct fact from a gate that ran and could not establish the
+  // facts (trace.verifiable === false).
+  trace?: DeploymentTrace;
+}
+
+// DeploymentTrace is the verdict on whether a delivery traces back to
+// reviewable source. verifiable is the meta-fact and gates the other
+// three: false means the gate could not establish them at all (git
+// unreachable, gate miswired). That is NOT a failed delivery and must
+// never be rendered as one. Mirror of runview.DeploymentTrace.
+export interface DeploymentTrace {
+  node_id?: string;
+  verifiable: boolean;
+  // The deployed commits are reachable from a remote branch.
+  pushed: boolean;
+  // The running image is published under this repo's own registry path.
+  image_from_repo: boolean;
+  // The image reference names the pushed commit.
+  built_from_head: boolean;
+  // The gate's own explanation — the remedy on a failure, the
+  // environment fault when unverifiable.
+  log?: string;
 }
 
 // BackendUsage is one distinct (backend, model) pair the run's LLM /
@@ -360,6 +424,11 @@ export interface RunSource {
   issue_id?: string;
   issue_identifier?: string;
   issue_title?: string;
+  // Schedule provenance (kind === "schedule"): the stable schedule
+  // identity the overlap gate queries, plus its human label when it
+  // differs. Mirror of store.RunSource.
+  schedule_id?: string;
+  schedule_name?: string;
 }
 
 // Mirror of runview.RunSnapshot.
@@ -369,24 +438,10 @@ export interface RunSnapshot {
   last_seq: number; // -1 sentinel when no events have been applied
 }
 
-// Mirror of store.Event (subset — the runtime emits more types than the
-// reducer cares about; the rest pass through opaque).
-export interface RunEvent {
-  seq: number;
-  timestamp: string;
-  type: string;
-  run_id: string;
-  branch_id?: string;
-  node_id?: string;
-  data?: Record<string, unknown>;
-  // Byte position in the run's log buffer at the moment this event
-  // was persisted. Stamped by the backend store from the per-run log
-  // buffer total. Used by the time-travel scrubber / replay to slice
-  // the live log "up to where the log was when this event fired".
-  // Absent on legacy events (pre-feature) and on cloud-mode events
-  // where there is no on-host log buffer to attach.
-  log_offset?: number;
-}
+// RunEvent (mirror of store.Event) lives in ./events.ts as a
+// discriminated union over the event `type`; re-exported here so both
+// the barrel and direct "@/api/runs/types" importers keep resolving it.
+export * from "./events";
 
 export interface ArtifactSummary {
   version: number;
@@ -484,6 +539,9 @@ export interface WireWorkflow {
 export interface WireNode {
   id: string;
   kind: string;
+  // Optional authored `description:` from the .bot node — the
+  // human-readable label. Falls back to humanizeNodeId(id) when absent.
+  description?: string;
   model?: string;
   backend?: string;
   reasoning_effort?: string;
@@ -667,6 +725,23 @@ export interface PreviewCostResponse {
   cost_max_usd: number;
   nodes: PreviewCostNode[];
   notes?: string[];
+  effective?: PreviewEffectiveSettings;
+}
+
+// PreviewEffectiveSettings reports each launch knob's resolution BELOW
+// the run-override level (workflow/env/default + node-pinned flag) so
+// the Launch dialog can caption its selects with why a knob is what it
+// is. The client layers its own override on top.
+export interface PreviewEffectiveKnob {
+  effective: string;
+  source: "workflow" | "env" | "default";
+  node_pinned?: boolean;
+}
+
+export interface PreviewEffectiveSettings {
+  compress: PreviewEffectiveKnob;
+  permission: PreviewEffectiveKnob;
+  backend: PreviewEffectiveKnob;
 }
 
 // ForkAnchor identifies where a forked run resumes inside the parent's

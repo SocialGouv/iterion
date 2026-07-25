@@ -31,6 +31,27 @@ func IsIndexConflict(err error) bool {
 	return false
 }
 
+// IsIndexNotFound reports whether err means "there was no such index to drop",
+// so a schema migration can drop a retired index unconditionally: absent is the
+// expected steady state (fresh install, or already migrated), not a failure.
+//
+// It must accept NamespaceNotFound as well as IndexNotFound. On a FRESH
+// database the collection itself does not exist yet, and dropping an index from
+// a missing collection reports the missing collection (26), never the missing
+// index (27). Tolerating only 27 made EnsureSchema fail on every empty
+// database, which fails the whole server boot — invisible to an existing
+// deployment, fatal to a new one.
+func IsIndexNotFound(err error) bool {
+	if err == nil {
+		return false
+	}
+	var cmd mongo.CommandError
+	if errors.As(err, &cmd) {
+		return cmd.Code == 27 || cmd.Code == 26 // IndexNotFound / NamespaceNotFound
+	}
+	return false
+}
+
 // IsDuplicateKey reports whether err is a Mongo E11000 duplicate-key
 // error, so InsertOne/ReplaceOne callers across storage packages can
 // translate it to a domain sentinel without each re-deriving the check.

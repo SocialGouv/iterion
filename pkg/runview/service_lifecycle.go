@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"runtime/debug"
 	"sync"
 	"time"
 
@@ -251,6 +252,17 @@ func (s *Service) reconcileOrphans() {
 		if s.tryReattachByPID(id) {
 			continue
 		}
+		// Grace window: a just-created run may sit between its run-record
+		// write and its owner's lock acquisition, and the boot scan on a
+		// large store can take long enough to REACH a run that was
+		// launched after the scan began (observed: a dispatcher-owned run
+		// flipped failed 16s after dispatch). Never judge a run this
+		// young — the next tick re-probes it with the lock in place.
+		// (Placed after the PID reattach so a live detached runner still
+		// reattaches immediately regardless of age.)
+		if time.Since(r.CreatedAt) < orphanGraceWindow {
+			continue
+		}
 		// Try to grab the lock; non-blocking semantics mean we
 		// either own it instantly (orphan) or fail fast (live).
 		lock, err := s.store.LockRun(ctx, id)
@@ -282,87 +294,9 @@ func (s *Service) reconcileOrphans() {
 	}
 }
 
-// runOrAncestorActive reports whether r belongs to an execution subtree that
-// this Service currently owns. Direct studio runs are registered themselves;
-// synchronous subbot children are not, so their subbot-only ancestry must be
-// followed until an active registered ancestor is found. ParentRunID alone is
-// insufficient because asynchronous shards/forks also persist that field;
-// ParentNodeID identifies an edge created by a synchronous subbot node.
-//
-// The persisted lineage is deliberately only supporting evidence: a parent
-// row that merely says "running" is not live after a restart. A Manager handle
-// in this Service OR a held ancestor run lock suppresses orphan reconciliation.
-// The lock check matters when project hot-swaps temporarily leave two Service
-// instances watching the same store: only the owner has the Manager handle,
-// while both can observe the root's cross-service flock. Corrupt cyclic
-// lineage and missing ancestors fail open to the normal child lock probe.
-func (s *Service) runOrAncestorActive(ctx context.Context, r *store.Run) bool {
-	if r == nil {
-		return false
-	}
-	if s.manager.Active(r.ID) {
-		return true
-	}
-
-	seen := map[string]struct{}{r.ID: {}}
-	current := r
-	for current.ParentRunID != "" {
-		// Only synchronous subbots inherit their parent's execution liveness.
-		// An independently executing shard/fork must keep its own Manager/lock
-		// and must still be reconciled if that execution disappears.
-		if current.ParentNodeID == "" {
-			return false
-		}
-		parentID := current.ParentRunID
-		if s.manager.Active(parentID) {
-			return true
-		}
-		if _, duplicate := seen[parentID]; duplicate {
-			return false
-		}
-		seen[parentID] = struct{}{}
-
-		parent, err := s.store.LoadRun(ctx, parentID)
-		if err != nil {
-			return false
-		}
-
-		// A second Service instance cannot see the owner's Manager registry,
-		// but the live root keeps its run lock for the whole engine goroutine.
-		// Failure to acquire that lock is therefore cross-service liveness
-		// evidence. If the lock is free, release it immediately and keep
-		// walking: a stale persisted "running" parent alone proves nothing.
-		ancestorLock, lockErr := s.store.LockRun(ctx, parentID)
-		if lockErr != nil {
-			return true
-		}
-		_ = ancestorLock.Unlock()
-		current = parent
-	}
-	return false
-}
-
-// markOrphanInterrupted records the lifecycle boundary left behind when a run
-// owner disappears, then exposes the run as resumable. The event keeps the
-// native timeline/duration projection consistent with Drain; the status lets a
-// run with no checkpoint restart from entry instead of becoming permanently
-// failed. Event persistence is best-effort, matching markInterrupted: a logging
-// failure must not leave the authoritative run status stuck at running.
-func (s *Service) markOrphanInterrupted(ctx context.Context, runID, reason string) error {
-	if _, err := s.store.AppendEvent(ctx, runID, store.Event{
-		Type:  store.EventRunInterrupted,
-		RunID: runID,
-		Data: map[string]any{
-			"reason": reason,
-			"source": "orphan_reconcile",
-		},
-	}); err != nil {
-		if s.logger != nil {
-			s.logger.Warn("runview: reconcile: append run_interrupted for %s: %v", runID, err)
-		}
-	}
-	return s.store.UpdateRunStatus(ctx, runID, store.RunStatusFailedResumable, reason)
-}
+// orphanGraceWindow shields freshly-created runs from the orphan scan:
+// within it, "no lock held" is not yet proof of a dead owner.
+const orphanGraceWindow = 2 * time.Minute
 
 // defaultOrphanReconcileInterval is how often the periodic reconcile
 // re-runs the orphan scan after boot. Overridable via
@@ -415,8 +349,19 @@ func (s *Service) startPeriodicReconcile() {
 				if s.draining.Load() {
 					return
 				}
-				s.reconcileOrphans()
-				s.reconcileSandboxK8sResources()
+				// Contain a reconcile panic: one bad run.json / driver
+				// edge case must not silently kill orphan detection for
+				// the rest of the process lifetime (the sweep IS the
+				// safety net — a dead net is worse than a noisy one).
+				func() {
+					defer func() {
+						if r := recover(); r != nil && s.logger != nil {
+							s.logger.Error("runview: PANIC in periodic reconcile: %v\n%s", r, debug.Stack())
+						}
+					}()
+					s.reconcileOrphans()
+					s.reconcileSandboxK8sResources()
+				}()
 			}
 		}
 	}()
@@ -665,10 +610,10 @@ func (s *Service) reconcileRun(runID string) (*store.Run, bool, error) {
 		}
 		return r2, false, nil
 	}
-	if s.runOrAncestorActive(context.Background(), r2) {
-		_ = lock.Unlock()
-		return r2, false, nil
-	}
+	// Both paths are resumable: with a checkpoint we resume from the failed
+	// node; without one, the engine's permissive-restart path resumes from
+	// entry — either way the studio can offer the resume button.
+	newStatus := store.RunStatusFailedResumable
 	const reason = "orphan reconciled on resume request: server had no live goroutine for run"
 	if err := s.markOrphanInterrupted(context.Background(), runID, reason); err != nil {
 		_ = lock.Unlock()

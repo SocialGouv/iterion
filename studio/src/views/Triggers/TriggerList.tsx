@@ -1,4 +1,4 @@
-import { useCallback } from "react";
+import { useCallback, useState } from "react";
 
 import { Button } from "@/components/ui/Button";
 import { Badge } from "@/components/ui/Badge";
@@ -13,6 +13,7 @@ import {
   setTriggerEnabled,
   type TriggerSubscription,
 } from "@/api/triggers";
+import NewTriggerDialog from "./NewTriggerDialog";
 
 // sourceLabel maps a subscription to its at-a-glance source badge (board
 // promotes, run chains, schedule/cron, forge observational, custom ingress).
@@ -51,13 +52,14 @@ interface Props {
 /**
  * TriggerList renders trigger subscriptions as the shared table used by
  * BOTH the /triggers Automations page and the bot home's Automations
- * card: enabled checkbox, source badge, match summary, and delete —
+ * card: enabled checkbox, source badge, match summary, edit, and delete —
  * extracted verbatim from the /triggers view so behaviour stays
  * identical on both surfaces.
  */
 export default function TriggerList({ subs, onChanged, hideBotColumn = false }: Props) {
   const { confirm, dialog } = useConfirm();
   const action = useAsyncAction();
+  const [editing, setEditing] = useState<TriggerSubscription | null>(null);
 
   const onToggle = useCallback(
     async (sub: TriggerSubscription, enabled: boolean) => {
@@ -123,6 +125,9 @@ export default function TriggerList({ subs, onChanged, hideBotColumn = false }: 
                 <Td className="text-fg-muted">{sub.mode || "direct"}</Td>
                 <Td className="text-fg-muted">{sub.origin || "operator"}</Td>
                 <Td align="right">
+                  <Button variant="ghost" size="sm" onClick={() => setEditing(sub)}>
+                    Edit
+                  </Button>
                   <Button variant="ghost" size="sm" onClick={() => void onDelete(sub)}>
                     Delete
                   </Button>
@@ -132,6 +137,17 @@ export default function TriggerList({ subs, onChanged, hideBotColumn = false }: 
           </TBody>
         </Table>
       </div>
+      <NewTriggerDialog
+        open={editing !== null}
+        onOpenChange={(o) => {
+          if (!o) setEditing(null);
+        }}
+        editing={editing}
+        onCreated={() => {
+          setEditing(null);
+          onChanged();
+        }}
+      />
       {dialog}
     </>
   );

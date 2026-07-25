@@ -54,6 +54,7 @@ first bilan for a bot lands.
 | Persona | Bot | Kind | Bilan |
 |---|---|---|---|
 | Nexie | `whats-next` | orchestrator / board triage | [whats-next.md](whats-next.md) |
+| Triagy | `issue-triage` | auto-triage of fresh board cards (stamps the handler bot) | [issue-triage.md](issue-triage.md) |
 | Appy | `app-dev` | greenfield app-from-prompt (interview / free first draft) | [app-dev.md](app-dev.md) |
 | Evoly | `evolve` | strategic vision + evolution proposals (per-bot memory) | [evolve.md](evolve.md) |
 | Willy | `whole-improve-loop` | whole-repo review-fix loop | [whole-improve-loop.md](whole-improve-loop.md) |
@@ -61,6 +62,7 @@ first bilan for a bot lands.
 | Featurly | `feature-dev` | one-shot feature dev + review loop | [feature-dev.md](feature-dev.md) |
 | Testy | `test-coverage` | test-coverage augmentation + anti-façade review loop | [test-coverage.md](test-coverage.md) |
 | Doki | `docs-refresh` | docs↔code convergence loop | [docs-refresh.md](docs-refresh.md) |
+| Wikky | `wiki-gen` | navigable OKF wiki generator/maintainer | [wiki-gen.md](wiki-gen.md) |
 | Revi | `review-pr` | read-only cross-family reviewer | [review-pr.md](review-pr.md) |
 | Revi (converse) | `revi-converse` | conversational PR follow-up | _not yet_ |
 | Seki | `sec-audit-source` | source SAST audit | [sec-audit-source.md](sec-audit-source.md) |
@@ -71,5 +73,7 @@ first bilan for a bot lands.
 | Adry | `adr-cartograph` | ADR cartographer + completeness audit (idempotent) | [adr-cartograph.md](adr-cartograph.md) |
 | Vetty | `dep-update-guard` | Dependabot/Renovate PR guard (audit + align + deterministic verify) | [dep-update-guard.md](dep-update-guard.md) |
 | Acci | `rgaa-audit` | RGAA 4.1.2 accessibility audit (read-only) | [rgaa-audit.md](rgaa-audit.md) |
+| Vigie | `feed-watch` | feed watch + LLM digest to chat (Huginn-style veille) | [feed-watch.md](feed-watch.md) |
 | ReArchi | `adr-rechallenge` | human-gated ADR re-challenge | [adr-rechallenge.md](adr-rechallenge.md) |
 | Fini | `feature-gap-fill` | gap-driven feature completion loop | [feature-gap-fill.md](feature-gap-fill.md) |
+| — | `examples/keepalive` | always-on (`overlap: keepalive`) demo + feature dogfood | [keepalive.md](keepalive.md) |

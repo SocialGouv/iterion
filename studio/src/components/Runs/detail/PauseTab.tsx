@@ -1,6 +1,7 @@
 import { useMemo } from "react";
 
 import type { RunEvent } from "@/api/runs";
+import { isAsyncHumanInput } from "@/api/runs";
 
 import HumanPromptForm from "../conversation/HumanPromptForm";
 import MarkdownText from "../conversation/MarkdownText";
@@ -19,6 +20,9 @@ function usePauseInfo(matching: RunEvent[]): PauseInfo | null {
     // assume the latest pause request is the active one.
     for (let i = matching.length - 1; i >= 0; i--) {
       const e = matching[i]!;
+      // Async questions (ADR-081) never pause the run — they must not
+      // masquerade as the active pause form.
+      if (isAsyncHumanInput(e)) continue;
       if (e.type === "human_input_requested" && e.data) {
         return {
           questions:

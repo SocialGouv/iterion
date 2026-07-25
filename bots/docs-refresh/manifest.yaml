@@ -1,49 +1,234 @@
 name: docs-refresh
 display_name: Doki
 icon: 📚
-version: 2.0.0
-## 2.0.0 — RADICAL SIMPLIFICATION (ADR-058 minimal-framing). The
-## deterministic audit machinery is KEPT in full (scan_docs footprint,
-## scan_code_surface, build_manifest anchor verification with the
-## severity-sorted / doc-chunked bounded working set); the alternating
-## cross-family review/fix assembly line (alt → reviewer_claude/gpt →
-## streak_check + its dismissed-pairs/pushback/chronic accumulators →
-## fix_claude/gpt → prepare_commit → commit_changes → detect_doc_changes)
-## is replaced by ONE adaptive `campaign` agent that adjudicates the
-## manifest's drift set and commits each aligned doc in stride. New
-## deterministic gates: scope_check (writeable-set containment vs the
-## run base) + the shared verify_build/verify_run build gate; the gate
-## converges on docs_aligned ∧ scope_ok ∧ build green ∧ mechanical
-## coverage ≥ target. The inter-run cache now records the manifest's
-## MECHANICALLY verified pairs. 16 nodes → 11; review_mode/mono_family
-## retired. See docs/references/productive-session-patterns.md.
+version: 3.5.4
+## 3.5.4 — the `/doki` comment command is now a DIRECT, PR-scoped action
+## (was board/any), mirroring `/revi`: a developer comments `/doki` on a PR
+## and docs-refresh launches immediately on the PR head (no tracking card),
+## self-switching to incremental amend via the generic pr_url/base_ref/
+## source_branch the webhook stamps. Activates the amend-on-PR trigger by
+## re-provisioning a forge webhook to permit docs-refresh (no engine code —
+## the `/command`→bot route derives from this manifest invocation).
+## 3.5.3 — scope_check now bases its writeable-set diff on the RUN-START
+## HEAD (the newest reflog entry that is not one of this run's own
+## `Bot: docs-refresh` commits), not the oldest reflog entry. In amend mode
+## the cloud runner clones the base branch (HEAD=main) then checks out the
+## PR head, so the oldest reflog entry is main — and diffing against it
+## folded the PR author's OWN code into the diff, tripping a phantom scope
+## violation that kept `scope_ok` false forever, so `converged` never fired
+## and the amend run burned every pass (found live on run 019f9429). Real
+## fixture tests reproduce the clone+checkout reflog shape
+## (bots/docs_refresh_scope_test.go). No behaviour change for worktree:auto.
+## 3.5.2 — amend-PR mode is now AGNOSTIC (no docs-refresh-specific engine
+## code). The webhook / `/doki` command already set the GENERIC `pr_url` +
+## `base_ref` vars and check out the PR head for ANY bot launched on a PR;
+## Doki self-detects a non-empty `pr_url` and switches into incremental
+## amend (scope = the PR's own diff via base_ref; push onto the PR head +
+## comment) — the logic lives in the BOT, not in iterion. Replaced the
+## explicit `mr_mode` var with `pr_url`. Delivery (hardened after an
+## adversarial review found the first cut was dead-on-arrival): `mr_gate`
+## opens the PR tail on ANY PR launch (amending the PR IS the delivery, so
+## `open_mr` need not be set); the amend pushes onto the PR head by NAME via
+## the generic `source_branch` (iterion now sets it on the PR-open lanes too
+## — bot-agnostic), robust to `worktree: auto`'s DETACHED head; scan_hints
+## resolves the base against `origin/<ref>` when a bare branch name isn't a
+## local ref, and reports an EMPTY base when the diff can't be computed so
+## the campaign re-reads the PR diff instead of falsely converging. Activate
+## by pointing a forge PR webhook at docs-refresh.
+## 3.5.1 — incremental base detection anchors to the trailer LINE
+## (`git log -E --grep '^Bot: docs-refresh'`), so a commit that merely
+## MENTIONS the trailer in prose (this bot's own feature commits) is not
+## mistaken for an alignment point. Caught on the first live check: the
+## loose grep matched the v3.5 code commit itself.
+## 3.5.0 — TWO alignment strategies, so Doki can keep docs fresh cheaply.
+## (1) `mode: incremental` (+ default `full`): scan_hints AUTO-DETECTS the
+## last alignment point from git (the newest `Bot: docs-refresh` commit
+## trailer) and scopes the campaign's SEMANTIC pass to the code changed
+## since — cheap, for a weekly schedule; the zero-LLM STRUCTURAL scan
+## (dead links, missing paths) stays corpus-wide in both modes; first run
+## with no prior alignment degrades to a full sweep. A `full` sweep stays
+## the monthly reconciliation for cross-cutting drift. (2) `mr_mode: amend`
+## (+ default `new_pr`): when the run is checked out from an existing PR's
+## head branch, finalize_mr pushes the alignment commits ONTO that branch
+## and comments, instead of opening a new PR — docs land IN the
+## contributor's PR, reviewed with the code (for the PR-open trigger).
+## The git-native base detection is the durable, cloud-safe successor to
+## the noop cache removed in 3.4 (git IS the state). Real fixture tests
+## pin the base-detection + delta-scoping (bots/docs_refresh_hints_test.go).
+## 3.4.0 — REMOVED three more non-essential nodes, converging on the
+## native paradigm (one agent + truth gate + PR). (1) update_audit_cache
+## + the inter-run noop cache: INERT on cloud (per-run scratch never
+## persists), and a run that finds nothing already converges fast — the
+## complexity bought nothing on the primary target. (2) author_docs (the
+## zero-docs bootstrap branch + author_rescan loop): the campaign is an
+## adaptive agent that authors an initial set itself via the
+## doc-enrichment skill, exactly as a native session would — no separate
+## node. (3) mark_issue_for_review: the DISPATCHER owns the tracker-issue
+## lifecycle natively (claim→running_state, finish→completed_state
+## "review", studio-merge→done; pkg/dispatcher/config.go) — the bot
+## transitioning the issue itself was pure redundancy. Also dropped the
+## `issue_id` + `audit_cache_path` vars, their schemas, and the
+## scan_hints noop machinery. Node count 11→8. The scope gate + honest
+## termination contract remain the whole truth oracle.
+## 3.3.0 — REMOVED the build-verify apparatus. A docs bot edits `.md`
+## only; a docs-only change cannot break `go build`/`go test`, so the
+## adaptive verify_build agent + deterministic verify_run gate +
+## verify_precheck fast-path verified an invariant the campaign cannot
+## violate. Live proof (run 019f9085, 2026-07-23): verify was ~21 of 31
+## min (68% of the run) — verify_build alone ~19 min, MORE than the
+## actual doc alignment — on a docs-only diff that opened no PR. Cut all
+## three verify nodes + their schemas/prompts, the `baseline` and
+## `go_comment_globs` vars (the build-gate opt-in for code-comment
+## edits; Doki is now cleanly `.md`-only), the verify-build skill, and
+## the gate's verify verdict. converged = scope_ok ∧ docs_aligned.
+## Node count 14→11. Scope gate + honest termination contract remain
+## the whole truth oracle.
+## 3.2.1 — budgets sized for self-orchestration. First 3.2.0 live run
+## (019f8e08) aligned 40 docs across the whole corpus in pass 1 (~70
+## min / ~$16) — the win — but the old 2h/$60 caps guillotined it
+## mid-pass-2 as a hard failed_resumable BEFORE finalize, and all 40
+## in-pod commits were lost (the exporter only runs on a clean
+## finalize — an engine gap tracked separately). Comprehensive passes
+## are long: max_duration 2h→6h, max_cost_usd 60→120, max_passes 8→4
+## so the asymptote reaches GRACEFUL exhaustion (which finalizes +
+## exports + opens the PR) instead of getting axed by a cap.
+## 3.2.0 — SELF-ORCHESTRATED COVERAGE (the campaign fans out its own
+## sub-agents, like a native Claude Code session). A live 3-way
+## benchmark (2026-07-23, this repo) settled why 3.0/3.1 shipped tiny
+## PRs: a SINGLE campaign agent — like a free native agent on the same
+## one-liner — self-scopes to the headline docs and misses the long
+## tail. The three runs, by rising coverage: Doki (~3 commits/pass,
+## docs/ only) < native one-liner (6 fixes, docs/ only, missed cloud +
+## bot READMEs) < native with a demanding prompt (reached the WHOLE
+## corpus — bot READMEs describing pre-migration architectures, cloud
+## docs with wrong NATS values + a subsystem documented as
+## nonexistent, studio). The one run that got there DECOMPOSED into
+## per-cluster sub-auditors ON ITS OWN. So the lever is COVERAGE via
+## the agent's own orchestration — not a mechanical checklist (3.1
+## rejected), not engine-wired fan-out (that's scaffolding). The fix:
+## give the campaign the capability — reasoning_effort ultracode on
+## opus-4-8 hands it the `agent` subagent tool + orchestration
+## prerogative — and one line telling it to cover the whole corpus,
+## fanning out by cluster on a large repo. Verdict on the corpus: docs
+## ~85-90% aligned (well-maintained), real ~30-item long tail, worst
+## in bot READMEs. Lean brief + asymptote loop + truth gates unchanged.
+## 3.1.0 — LEAN COMPREHENSIVE BRIEF + asymptote on the agent's honest
+## declaration (no mechanical checklist, no mandated plan phase). The
+## 3.0 campaign was fast and cheap but UNDER-delivered: it handled the
+## ~10 advisory hints, surveyed shallowly, and honestly-but-myopically
+## declared docs_aligned after a single ~15-min pass — tiny PRs on a
+## 250-doc corpus with weeks of semantic drift unread. Fix is framing,
+## NOT a coverage gate (an audited.json checklist was drafted and
+## REJECTED as exactly the excess determinism 3.0 removed) and NOT a
+## forced plan-first phase (equally over-framing): the mission is now
+## the one-line brief an operator would hand a Claude Code / Codex
+## session — "align the docs with the état de l'art of the repo" — plus
+## only what is worth pre-framing (the hints are a starting point not
+## the scope; a doc AHEAD of the code is a promise, don't align it
+## down). The agent sequences its own work (plan-first or align-as-you-
+## go, its call) and decides what to align. docs_aligned is the
+## ASYMPTOTE signal: report false while a pass still produces many
+## alignments; the run loops on a fresh tree and it is the decline of
+## alignments-per-pass toward zero that converges it — like re-running
+## a plan until it comes back empty. Gate unchanged: verify ∧ scope ∧
+## docs_aligned.
+## 3.0.0 — ADAPTIVE REALIGNMENT (the Billy/Willy paradigm: one capable
+## agent + a mission + TRUTH gates only — excess determinism is
+## counter-productive). Motivated by two live runs against a real repo
+## (019f8af6 / 019f8b50, 2026-07-22): the anchor scanner promoted to
+## an OBLIGATION GENERATOR produced ~200 false-positive cli_flag
+## candidates (git/docker/gh flags quoted in doc examples) the agent
+## had to adjudicate one by one (~40 of 44 min burned); the
+## coverage_pct / undocumented_count gate conditions made the agent
+## serve the scanner instead of exploring the repo; the
+## priority/chunking pipeline buried the real work (enrichment)
+## behind scanner noise for 4 passes; final ratio 55 min / ~$10 for
+## +61 lines. v3:
+## (1) scan_docs + scan_code_surface + build_manifest are REPLACED by
+## ONE deterministic `scan_hints` producer of ADVISORY hints: a
+## compact report (missing repo-rooted paths, dead internal links/
+## anchors, potentially undocumented code areas, coverage telemetry)
+## handed to the campaign as HELP — never an obligation, never a
+## gate. The campaign is free to use it, contradict it, and above all
+## to explore BEYOND it. High precision by construction: a cited path
+## is only checkable when its first segment exists as a repo
+## directory (foreign-tool example lines are silently skipped — CLI
+## flags are simply not scanned any more), and the producer degrades
+## SILENTLY to an empty report + an explicit "explore directly" note
+## when nothing is derivable.
+## (2) gate.converged = verify.passed ∧ scope_ok ∧ docs_aligned —
+## NOTHING ELSE. coverage/undocumented counts are telemetry
+## (report/events), no longer conditions.
+## (3) The severity/chunking pipeline is retired (max_drift_candidates
+## / max_review_chunk_docs / cli_surface_globs /
+## diagnostic_surface_globs / include_unverifiable_symbols /
+## coverage_target_pct / enrich / enrich_area_depth vars removed) —
+## the agent owns its plan (living todo + commits in stride, the
+## cadence in the CONTRACT).
+## (4) KEPT: the ADR-044 verify gate (verify_build/verify_run + the
+## verify_precheck docs-only fast path), the deterministic scope_check
+## writeable-set gate, the honest termination contract + bounded
+## continuation_loop, the dismissals ledger + promises ledger as the
+## campaign's cross-pass MEMORY (scan_hints excludes ledger entries;
+## the PR tail reports promises), the DEFAULT-CREATE bootstrap, the
+## board findings handoff, the opt-in PR tail, and the noop
+## short-circuit (the inter-run cache keeps only git_head).
+## 2.5.1 — foreign-flag heuristic keys on the repo's CLI binary name.
+## 2.5.0 — exhaustive doc-side alignment: reverse containment audit
+## (undocumented surface/areas), promises ledger, doc-enrichment
+## skill. (Superseded by v3: the reverse audit's obligation half is
+## retired; the enrichment MISSION and the ledgers remain.)
+## 2.4.0 — verify_precheck + unverifiable-symbol opt-in (budget).
+## 2.3.x — dismissals ledger + verified-pairs-ride-a-file (E2BIG).
+## 2.2.x — PR finalization tail; argv section markers.
+## 2.1.0 — noop short-circuit (openwiki-inspired).
+## 2.0.0 — radical simplification (ADR-058 minimal-framing): one
+## campaign agent replaces the v1 review/fix assembly line.
 description: |
-  Documentation refresh bot — one capable agent over a deterministic
-  drift manifest, minimal framing. Detects mismatches between project
-  documentation (README, docs/*.md, CLAUDE.md, bundled skills, Go code
-  comments) and the actual current state of the code, then fixes the
-  DOCS (never the code), committing each aligned doc in stride. When a
-  repo has NO documentation yet, it bootstraps an initial doc set
-  (configurable docs_dir, default "docs") authored from the code, then
-  refreshes it through the same campaign.
+  Documentation alignment bot — one capable agent + a mission + truth
+  gates only. Converges the documentation, exhaustively, to the
+  actual current state of the repo: docs follow code, exhaustively —
+  never the reverse. Both halves are doc-side: it REPAIRS stale
+  documentation (mismatched claims, dead links, drifted invocations,
+  outdated examples), and it WRITES the missing documentation
+  (undocumented capabilities, surface, and code areas). Every edit
+  lands as a `docs(scope):` commit in stride; code is never touched.
+  When a repo has NO documentation yet, it bootstraps an initial doc
+  set (configurable docs_dir, default "docs") authored from the code,
+  then refreshes it through the same campaign. Documented claims that
+  read as deliberate, unfulfilled AMBITIONS are neither deleted nor
+  aligned-down: they are recorded and reported in the PR body under
+  "Unfulfilled documented promises".
 
-  Anti-Goodhart by construction: a deterministic scanner enumerates the
-  immutable doc footprint; build_manifest mechanically verifies every
-  code anchor and hands the campaign a bounded, severity-sorted drift
-  working set; a deterministic scope gate fails the run if anything
-  outside the doc writeable-set changed; and convergence requires the
-  mechanical anchor coverage to meet its target — the agent cannot
-  rubber-stamp its own alignment.
+  The determinism is TRUTH-only: a deterministic scope gate fails the
+  run if anything outside the doc writeable-set (`.md`) changed, and
+  convergence is that scope gate ∧ the campaign's honest docs_aligned
+  contract — nothing else. (A docs-only change cannot affect the
+  repo's build, so there is no build/test gate.) A deterministic scan
+  still
+  runs each pass, but as an ADVISORY hints producer (missing paths,
+  dead links/anchors, unmentioned code areas, telemetry): help the
+  agent is free to use, contradict, and explore beyond — never an
+  obligation. The dismissals ledger and promises ledger persist the
+  agent's own adjudications across passes (memory, never a cage).
 
-  The bot ships 5 skills capturing the discipline: docs-refresh
-  (playbook), doc-mismatch-taxonomy, doc-scope-enumeration,
-  anti-facade-fix-rules, doc-verification-checklist.
+  Opt-in delivery: open_mr=true pushes the alignment series and opens
+  one PR/MR at the end of the run (gated by a deterministic push-
+  credential probe) — required for repo-targeted cloud runs, whose
+  clone is ephemeral.
+
+  The bot ships 7 skills capturing the discipline: docs-refresh
+  (playbook), doc-mismatch-taxonomy, doc-enrichment,
+  doc-scope-enumeration, anti-facade-fix-rules,
+  doc-verification-checklist, forge-mr-create.
 when_to_use: |
   Use when README / CLAUDE.md / docs/**/*.md / bundled skills are
   stale versus the code, before a release, or whenever a survey flags
-  code↔doc drift — or when a repo has NO docs yet and needs an initial
-  set authored from the code. Fixes the DOCS only (never code logic)
-  and commits.
+  code↔doc drift — or when parts of the repo (capabilities, whole
+  subsystems) are simply UNDOCUMENTED and the docs should converge to
+  the actual state of the repo — or when a repo has NO docs yet and
+  needs an initial set authored from the code. Fixes and writes the
+  DOCS only (never code logic) and commits.
 author: SocialGouv (devthejo) — docs-refresh/main.bot
 schema_version: 1
 
@@ -52,14 +237,20 @@ dispatch_vars:
     {{issue.title}}
 
     {{issue.body}}
-  issue_id: "{{issue.identifier}}"
 
 invocations:
   - kind: command
-    mode: board
+    mode: direct
     args_var: scope_notes
-    command: { name: doki, aliases: [docs-refresh], scope: any, min_replier_role: developer }
+    command: { name: doki, aliases: [docs-refresh], scope: pr, min_replier_role: developer }
   - kind: schedule
     mode: board
     schedule: { suggested_cron: "0 3 * * *" }
   - kind: board
+
+## Studio launch-form hierarchy: `primary` inputs render top-level in
+## the declared order; `hidden` vars are internal plumbing kept out of
+## the form (still settable via --var / bot_args).
+launch:
+  primary: [scope_notes, open_mr]
+  hidden: [bundle_self_path]

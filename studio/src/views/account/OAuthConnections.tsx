@@ -1,5 +1,7 @@
 import { errorMessage } from "@/lib/errorHints";
-import { useEffect, useState } from "react";
+import { formatDateTime } from "@/lib/format";
+import { useState } from "react";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { Badge } from "@/components/ui/Badge";
 import { InlineBanner } from "@/components/ui/InlineBanner";
 import { Button } from "@/components/ui/Button";
@@ -44,8 +46,8 @@ const KINDS: Array<{
 ];
 
 // The ToS caveat shown for the ORG scope only: a Claude subscription is an
-// individual licence — an org-shared forfait is a dev/test convenience, not
-// a production-automation credential.
+// individual licence — an org-shared subscription (forfait) is a dev/test
+// convenience, not a production-automation credential.
 const ORG_TOS_WARNING =
   "For developing and testing bots only — not intended for fully automated production. A Claude subscription is an individual licence (Anthropic Consumer Terms); use API keys for production automation.";
 
@@ -56,9 +58,27 @@ export default function OAuthConnections({
   scope?: OAuthScope;
   org?: boolean;
 }) {
-  const [conns, setConns] = useState<OAuthConnection[]>([]);
-  const [loading, setLoading] = useState(true);
-  const [err, setErr] = useState<string | null>(null);
+  const scopeKey = "teamId" in scope ? scope.teamId : "mine";
+  const queryClient = useQueryClient();
+  const query = useQuery<OAuthConnection[]>({
+    queryKey: ["oauth-connections", scopeKey],
+    queryFn: () => listOAuthConnections(scope),
+  });
+  const conns = query.data ?? [];
+  // Every reload (scope switch, post-connect refresh) replaced the panel
+  // with the loading state — isFetching keeps that visible.
+  const loading = query.isFetching;
+  // Mutation failures share the banner with the fetch error (mutation wins,
+  // like the old single slot). They're tagged with their scope so a stale
+  // one never outlives a scope switch — the manual reload cleared it there.
+  // The fetch error hides while a reload is in flight, which the manual
+  // reload achieved by clearing it up front.
+  const [mutErrTag, setMutErrTag] = useState<{ scope: string; msg: string } | null>(null);
+  const setMutErr = (msg: string | null) =>
+    setMutErrTag(msg === null ? null : { scope: scopeKey, msg });
+  const mutErr = mutErrTag && mutErrTag.scope === scopeKey ? mutErrTag.msg : null;
+  const err =
+    mutErr ?? (query.error && !loading ? errorMessage(query.error) : null);
   const [busy, setBusy] = useState(false);
   // Browser flow: which kind is mid-connect + the pasted code.
   const [connecting, setConnecting] = useState<OAuthKind | null>(null);
@@ -69,39 +89,28 @@ export default function OAuthConnections({
   const { confirm, dialog } = useConfirm();
   const addToast = useUIStore((s) => s.addToast);
 
-  const reload = async () => {
-    setLoading(true);
-    setErr(null);
-    try {
-      setConns(await listOAuthConnections(scope));
-    } catch (e) {
-      setErr(errorMessage(e));
-    } finally {
-      setLoading(false);
-    }
+  // Post-mutation refresh: clear the shared error slot and refetch the list.
+  const reload = () => {
+    setMutErr(null);
+    void queryClient.invalidateQueries({ queryKey: ["oauth-connections", scopeKey] });
   };
-
-  useEffect(() => {
-    void reload();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [org, "teamId" in scope ? scope.teamId : "mine"]);
 
   const onConnected = () => {
     if (org) addToast(ORG_TOS_WARNING, "warning", { persistent: true });
-    void reload();
+    reload();
   };
 
   // --- browser OAuth (claude_code) ---
   const startConnect = async (kind: OAuthKind) => {
     setBusy(true);
-    setErr(null);
+    setMutErr(null);
     try {
       const { authorize_url } = await startOAuthAuthorize(kind, scope);
       window.open(authorize_url, "_blank", "noopener,noreferrer");
       setConnecting(kind);
       setCode("");
     } catch (e) {
-      setErr(errorMessage(e));
+      setMutErr(errorMessage(e));
     } finally {
       setBusy(false);
     }
@@ -111,14 +120,14 @@ export default function OAuthConnections({
     ev.preventDefault();
     if (!connecting) return;
     setBusy(true);
-    setErr(null);
+    setMutErr(null);
     try {
       await completeOAuthAuthorize(connecting, { code: code.trim() }, scope);
       setConnecting(null);
       setCode("");
       onConnected();
     } catch (e) {
-      setErr(errorMessage(e));
+      setMutErr(errorMessage(e));
     } finally {
       setBusy(false);
     }
@@ -129,14 +138,14 @@ export default function OAuthConnections({
     ev.preventDefault();
     if (!pasteKind) return;
     setBusy(true);
-    setErr(null);
+    setMutErr(null);
     try {
       await uploadOAuthCredentials(pasteKind, draft, scope);
       setPasteKind(null);
       setDraft("");
       onConnected();
     } catch (e) {
-      setErr(errorMessage(e));
+      setMutErr(errorMessage(e));
     } finally {
       setBusy(false);
     }
@@ -144,12 +153,12 @@ export default function OAuthConnections({
 
   const refresh = async (kind: OAuthKind) => {
     setBusy(true);
-    setErr(null);
+    setMutErr(null);
     try {
       await refreshOAuth(kind, scope);
-      void reload();
+      reload();
     } catch (e) {
-      setErr(errorMessage(e));
+      setMutErr(errorMessage(e));
     } finally {
       setBusy(false);
     }
@@ -165,9 +174,9 @@ export default function OAuthConnections({
     if (!ok) return;
     try {
       await deleteOAuth(kind, scope);
-      void reload();
+      reload();
     } catch (e) {
-      setErr(errorMessage(e));
+      setMutErr(errorMessage(e));
     }
   };
 
@@ -178,11 +187,11 @@ export default function OAuthConnections({
       {dialog}
       <div>
         <h2 className="text-lg font-semibold">
-          {org ? "Org Claude subscription (forfait)" : "OAuth subscriptions (forfait)"}
+          {org ? "Org Claude subscription" : "Model subscriptions"}
         </h2>
         <p className="text-sm text-fg-muted mt-1">
           {org
-            ? "Connect a Claude subscription at the org level. It is used as a fallback for automated runs (webhooks, dispatcher, scheduler) whose trigger has no personal forfait — runs launched by a member with their own connection use that instead."
+            ? "Connect a Claude subscription (forfait) at the org level. It is used as a fallback for automated runs (webhooks, dispatcher, scheduler) whose trigger has no personal subscription — runs launched by a member with their own connection use that instead."
             : "Connect your personal Claude Pro/Max or ChatGPT subscription so iterion can run agents on your behalf via the official Claude Code / Codex CLIs. The blob is sealed at rest."}
         </p>
       </div>
@@ -208,6 +217,7 @@ export default function OAuthConnections({
             const expiring = conn?.access_token_expires_at
               ? new Date(conn.access_token_expires_at).getTime() - Date.now() < 24 * 3600_000
               : false;
+            const notRefreshable = conn ? conn.refreshable === false : false;
             return (
               <div
                 key={kind}
@@ -218,13 +228,18 @@ export default function OAuthConnections({
                     <h3 className="font-medium">{display}</h3>
                     <div className="text-xs text-fg-muted">{filename}</div>
                   </div>
-                  <div className="text-sm">
+                  <div className="text-sm flex items-center gap-2">
                     {conn ? (
-                      <Badge variant={expiring ? "warning" : "success"}>
-                        Connected
-                        {conn.access_token_expires_at &&
-                          ` · expires ${new Date(conn.access_token_expires_at).toLocaleString()}`}
-                      </Badge>
+                      <>
+                        <Badge variant={expiring || notRefreshable ? "warning" : "success"}>
+                          Connected
+                          {conn.access_token_expires_at &&
+                            ` · expires ${formatDateTime(conn.access_token_expires_at)}`}
+                        </Badge>
+                        {notRefreshable && (
+                          <Badge variant="warning">Manual reconnect required before expiry</Badge>
+                        )}
+                      </>
                     ) : (
                       <Badge variant="neutral">Not connected</Badge>
                     )}
@@ -322,9 +337,11 @@ export default function OAuthConnections({
                     )}
                     {conn && (
                       <>
-                        <Button variant="secondary" onClick={() => refresh(kind)} disabled={busy}>
-                          Refresh tokens
-                        </Button>
+                        {!notRefreshable && (
+                          <Button variant="secondary" onClick={() => refresh(kind)} disabled={busy}>
+                            Refresh tokens
+                          </Button>
+                        )}
                         <Button variant="danger" onClick={() => remove(kind)}>
                           Disconnect
                         </Button>

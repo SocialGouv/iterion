@@ -2,7 +2,7 @@
 // Mirrors pkg/server/admin_orgs_routes.go. "org" is the public alias
 // for the internal Team/tenant.
 
-import { guard404 } from "./client";
+import { guard404, request } from "./client";
 import type { components } from "./schema";
 import { apiDelete, apiGet, apiPatch, apiPost } from "./typed";
 
@@ -54,6 +54,20 @@ export async function createOrg(input: {
 }): Promise<OrgView> {
   // Body is type-checked against the spec's createOrgReq.
   return apiPost("/api/admin/orgs", { body: input });
+}
+
+// createOrgTeam creates a team inside an org (org admin/owner or
+// super-admin). Server: POST /api/teams with an explicit org_id override.
+export async function createOrgTeam(input: {
+  name: string;
+  slug?: string;
+  org_id: string;
+}): Promise<{ id: string; name: string; slug: string; personal?: boolean }> {
+  return await request(`/teams`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(input),
+  });
 }
 
 export async function getOrgUsage(id: string): Promise<OrgUsage> {

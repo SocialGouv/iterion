@@ -1,4 +1,4 @@
-import { useCallback, useMemo, type ReactNode } from "react";
+import { useCallback, useEffect, useMemo, useRef, type ReactNode } from "react";
 import { useLocation } from "wouter";
 
 import {
@@ -8,11 +8,15 @@ import {
 } from "@radix-ui/react-icons";
 
 import { Button } from "@/components/ui/Button";
+import { Checkbox } from "@/components/ui/Checkbox";
 import { EmptyState } from "@/components/ui/EmptyState";
 import type { RunRepo, RunSourceKind, RunStatus } from "@/api/runs";
+import { useActiveRepo } from "@/hooks/useActiveRepo";
+import { useConfirm } from "@/hooks/useConfirm";
 import { useRuns } from "@/hooks/useRuns";
 import { useRunRepos } from "@/hooks/useRunRepos";
 import { useServerInfoStore } from "@/store/serverInfo";
+import { useUIStore } from "@/store/ui";
 import QueueDepthBar from "./QueueDepthBar";
 import {
   availableSourceKinds,
@@ -41,9 +45,12 @@ import { RunListFilters } from "./runList/RunListFilters";
 import { RunListRow } from "./runList/RunListRow";
 import { RunRowGroup } from "./runList/RunRowGroup";
 import { RunCardGroupHeader } from "./runList/RunCardGroupHeader";
+import { RunSelectionToolbar } from "./runList/RunSelectionToolbar";
 import { SortGroupControls } from "./runList/SortGroupControls";
+import { useRunListActions } from "./runList/useRunListActions";
 import { useRunListFilters } from "./runList/useRunListFilters";
 import { useRunListLiveTick } from "./runList/useRunListLiveTick";
+import { useRunListSelection } from "./runList/useRunListSelection";
 
 export default function RunListView() {
   const [, setLocation] = useLocation();
@@ -80,6 +87,25 @@ export default function RunListView() {
   // split once so neither the fetch nor filterRuns has to know about mode.
   const serverRepo = mode === "cloud" ? repo : "";
   const clientRepo = mode === "cloud" ? "" : repo;
+
+  // Repo-first scope: the sidebar's active repo re-anchors this list
+  // whenever it CHANGES; the chips stay usable as a local override until
+  // the next scope change. A ?repo= deep-link wins over the initial
+  // scope adoption so shared URLs keep their filter.
+  const { activeRepo, overview, enabled: repoScope, loading: repoScopeLoading } = useActiveRepo();
+  const scopeRepoName = repoScope && !overview ? (activeRepo?.repo_full_name ?? "") : "";
+  const seenScopeRef = useRef<string | null>(null);
+  useEffect(() => {
+    if (mode !== "cloud" || !repoScope || repoScopeLoading) return;
+    const prev = seenScopeRef.current;
+    seenScopeRef.current = scopeRepoName;
+    if (prev === null) {
+      if (repo === "" && scopeRepoName !== "") setRepo(scopeRepoName);
+      return;
+    }
+    if (prev !== scopeRepoName) setRepo(scopeRepoName);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [mode, repoScope, repoScopeLoading, scopeRepoName]);
 
   const { runs, counts, loading, error } = useRuns({ status, repo: serverRepo });
 
@@ -159,6 +185,23 @@ export default function RunListView() {
   );
   const groups = useMemo(() => groupRuns(sortedRuns, group), [sortedRuns, group]);
   const isGrouped = group !== "none";
+
+  // Multi-selection over the visible (filtered + sorted) list, plus the
+  // mutations it drives (inline Resume, bulk cancel/delete). Selection
+  // checkboxes exist on the desktop table only.
+  const { selectedIds, selectedRuns, allSelected, toggle, toggleAll, clear } =
+    useRunListSelection(sortedRuns);
+  const addToast = useUIStore((s) => s.addToast);
+  const { confirm, dialog } = useConfirm();
+  const { onResume, resumingIds, onBulkCancel, onBulkDelete } =
+    useRunListActions({
+      selectedRuns,
+      clearSelection: clear,
+      addToast,
+      confirm,
+      onOpenRun: openRun,
+    });
+  const someSelected = selectedIds.size > 0;
 
   // Shared "All" option count for the source + bot menus (the full
   // status-filtered fetch size). Omitted when zero.
@@ -252,32 +295,61 @@ export default function RunListView() {
   } else if (error) {
     body = <EmptyState message={<span className="text-danger">{error}</span>} />;
   } else if (runs.length === 0) {
-    body = (
-      <EmptyState
-        title="No runs yet"
-        message="Launch a workflow from the editor to populate this list."
-        caret
-        action={
-          <Button
-            variant="primary"
-            size="sm"
-            leadingIcon={<RocketIcon />}
-            onClick={() => setLocation("/editor")}
-          >
-            Open editor
-          </Button>
-        }
-        secondaryAction={
-          <Button
-            variant="secondary"
-            size="sm"
-            onClick={() => setLocation("/")}
-          >
-            Home
-          </Button>
-        }
-      />
-    );
+    // Cloud operators launch from /bots or the pipeline board, not the
+    // editor. Desktop/local operators do open the editor as the primary
+    // launch surface, so keep those CTAs there.
+    body =
+      mode === "cloud" ? (
+        <EmptyState
+          title="No runs yet"
+          message="Pick a bot from the gallery to launch your first run."
+          caret
+          action={
+            <Button
+              variant="primary"
+              size="sm"
+              leadingIcon={<RocketIcon />}
+              onClick={() => setLocation("/bots")}
+            >
+              Browse bots
+            </Button>
+          }
+          secondaryAction={
+            <Button
+              variant="secondary"
+              size="sm"
+              onClick={() => setLocation("/")}
+            >
+              Home
+            </Button>
+          }
+        />
+      ) : (
+        <EmptyState
+          title="No runs yet"
+          message="Launch a workflow from the editor to populate this list."
+          caret
+          action={
+            <Button
+              variant="primary"
+              size="sm"
+              leadingIcon={<RocketIcon />}
+              onClick={() => setLocation("/editor")}
+            >
+              Open editor
+            </Button>
+          }
+          secondaryAction={
+            <Button
+              variant="secondary"
+              size="sm"
+              onClick={() => setLocation("/")}
+            >
+              Home
+            </Button>
+          }
+        />
+      );
   } else if (filteredRuns.length === 0) {
     body =
       status !== "" ? (
@@ -318,6 +390,16 @@ export default function RunListView() {
           <caption className="sr-only">Runs</caption>
           <thead className="text-fg-subtle">
             <tr className="border-b border-border-default">
+              <th scope="col" className="pl-4 pr-1 py-2 w-8">
+                <Checkbox
+                  aria-label="Select all runs"
+                  checked={allSelected}
+                  ref={(el) => {
+                    if (el) el.indeterminate = someSelected && !allSelected;
+                  }}
+                  onChange={toggleAll}
+                />
+              </th>
               <th scope="col" className="text-left px-4 py-2 font-medium">Run</th>
               <th scope="col" className="text-left px-4 py-2 font-medium">Workflow</th>
               <th scope="col" className="text-left px-4 py-2 font-medium">Source</th>
@@ -334,14 +416,18 @@ export default function RunListView() {
                 label={g.label}
                 count={g.runs.length}
                 showHeader={isGrouped}
-                columnSpan={7}
+                columnSpan={8}
               >
                 {g.runs.map((r) => (
                   <RunListRow
                     key={r.id}
                     run={r}
+                    selected={selectedIds.has(r.id)}
+                    resuming={resumingIds.has(r.id)}
                     onOpen={openRun}
                     onFilterBot={filterByBot}
+                    onToggleSelect={toggle}
+                    onResume={onResume}
                   />
                 ))}
               </RunRowGroup>
@@ -357,7 +443,13 @@ export default function RunListView() {
               <ul className="divide-y divide-border-default">
                 {g.runs.map((r) => (
                   <li key={r.id}>
-                    <RunListCard run={r} onOpen={openRun} onFilterBot={filterByBot} />
+                    <RunListCard
+                      run={r}
+                      resuming={resumingIds.has(r.id)}
+                      onOpen={openRun}
+                      onFilterBot={filterByBot}
+                      onResume={onResume}
+                    />
                   </li>
                 ))}
               </ul>
@@ -418,7 +510,17 @@ export default function RunListView() {
         </div>
       </div>
 
+      {someSelected && (
+        <RunSelectionToolbar
+          selectedRuns={selectedRuns}
+          onCancel={() => void onBulkCancel()}
+          onDelete={() => void onBulkDelete()}
+          onClear={clear}
+        />
+      )}
+
       <div className="flex-1 overflow-auto">{body}</div>
+      {dialog}
     </div>
   );
 }

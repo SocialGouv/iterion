@@ -3,8 +3,11 @@
 Universal source-code security auditor — a bundled iterion workflow
 that runs SAST + secret scanners + filesystem scanners on the current
 repo, triages the noise with an LLM, suppresses curated false
-positives, revalidates with a two-phase judge, and emits one kanban
-issue per real finding.
+positives, revalidates with a three-voter adversarial majority, and
+emits one kanban issue per real finding. An opt-in remediation phase
+(`--var remediate=true`) can then verify and land fixes on a temporary
+branch; it is off by default, so the bot is a read-only auditor out of
+the box.
 
 Inspired by:
 - [vercel-labs/deepsec](https://github.com/vercel-labs/deepsec) — the
@@ -18,14 +21,16 @@ Inspired by:
 
 | Layer | Scanners | Coverage |
 |---|---|---|
-| Generic | gitleaks, trivy fs, semgrep `--config=auto` | Secrets, misconfigs, language-agnostic SAST |
-| JS/TS | semgrep `--config=p/javascript`, semgrep `--config=p/typescript` | Express/Fastify/Next.js/NestJS handler hygiene |
-| Go | semgrep `--config=p/golang`, gosec | gosec G-rules, Gin/Echo/Fiber handler hygiene |
-| Python | semgrep `--config=p/python`, bandit | Django/FastAPI/Flask handler hygiene |
+| Generic (always-on) | gitleaks, trivy fs (`--scanners=vuln,misconfig,secret`), semgrep `--config=p/default` | Secrets, vulns, misconfigs, language-agnostic SAST |
+| JS/TS | semgrep js/ts profile | Express/Fastify/Next.js/NestJS handler hygiene |
+| Go | semgrep golang, gosec | gosec G-rules, Gin/Echo/Fiber handler hygiene |
+| Python | semgrep python, bandit | Django/FastAPI/Flask handler hygiene |
 
-Per-language coverage is documented in `skills/lang-*.md`. Add a
-language by adding one skill + one router branch — see the *Adding a
-language* section at the bottom of this README.
+The generic layer always runs; the per-language rows are dispatched by
+the single `run_lang_scanners` tool, which reads the `iterion:scanners`
+block from `skills/lang-<id>.md` for each language `detect_tech`
+reported. Add a language by dropping one `skills/lang-<id>.md` — no DSL
+edit — see the *Adding a language* section at the bottom of this README.
 
 ## Quick start
 
@@ -35,7 +40,10 @@ language* section at the bottom of this README.
 #    bandit for the dev shell; if you run this bot outside devbox,
 #    `iterion sandbox doctor` flags missing tools.)
 
-# 1. Run on the current repo (claw + openai/gpt-5.5 by default).
+# 1. Run on the current repo. Only detect_tech defaults to
+#    claw + openai/gpt-5.5 (cheap tech survey); triage, the three
+#    revalidation voters, and report_card default to
+#    claude_code + claude-opus-4-8.
 devbox run -- iterion run bots/sec-audit-source/main.bot \
   --var workspace_dir=$(pwd) \
   --var severity_threshold=medium
@@ -46,7 +54,7 @@ devbox run -- iterion run bots/sec-audit-source/main.bot \
 # 3. Findings land on the iterion kanban as issues:
 #    - state:        ready
 #    - labels:       severity:{low|medium|high|critical}, type:<finding-type>, source:sec-audit-source
-#    - assignee:     unset (a follow-up remediation bot can pick them up)
+#    - assignee:     unset (the opt-in remediation phase, or a follow-up bot, can pick them up)
 #    - body:         file:line anchor, exploit hypothesis, reproduction recipe, fix sketch
 ```
 
@@ -56,8 +64,8 @@ The bot keeps two kinds of memory between runs:
 
 | Memory | Location | Purpose |
 |---|---|---|
-| **Curated FP list** | `.iterion/security/fp-known.yaml` in the scanned repo (committable) | Suppress findings the operator has reviewed and judged false positives. Human-editable. |
-| **Per-file analysis records** | `.iterion/security/files/<sha1(path)>.json` in the scanned repo (typically committable) | Append-only history of every file analysis. Lets re-runs skip the expensive `revalidate` phase on files that haven't changed since the previous run at the same scanner version + within TTL. |
+| **Curated FP list** | `.sec-audit/fp-known.yaml` in the scanned repo (committable) | Suppress findings the operator has reviewed and judged false positives. Human-editable. |
+| **Per-file analysis records** | `.sec-audit/files/<sha1(path)>.json` in the scanned repo (typically committable) | Append-only history of every file analysis. Lets re-runs skip the expensive three-voter revalidation on files that haven't changed since the previous run at the same scanner version + within TTL (`filter_cached_files`). |
 
 The records mechanism mirrors deepsec's append-only `FileRecord`
 pattern, scoped to single-process iterion-bundle execution. See
@@ -69,7 +77,7 @@ invalidates the cache (`--var scanner_version=…`).
 ## False-positive memory
 
 Confirmed false positives are written to
-`.iterion/security/fp-known.yaml` in the **scanned repo** (NOT in the
+`.sec-audit/fp-known.yaml` in the **scanned repo** (NOT in the
 host store). The file is committable + human-reviewable, and is the
 authoritative source of suppression rules.
 
@@ -91,52 +99,85 @@ known_false_positives:
 ```
 
 The `triage` agent reads this file and tags matching candidates as
-`status: known_fp` (not surfaced). The `revalidate` judge can ALSO
-invalidate stale entries: when an FP-marked line range no longer
-contains the validating allowlist call (e.g. someone removed it), the
-judge flips the entry to `status: stale` and re-promotes the finding.
+`status: known_fp` (not surfaced). New FP entries are only appended by
+`fp_append` when `majority_verdict` emits them — under the default
+`fp_append_policy: unanimous_dismiss`, that requires all three voters
+to dismiss a candidate with at least one citing a `dismissed_by_guard`
+file:line, the strictest safeguard against the bot suppressing real
+signal on a single voter's error.
 
 If you want to silence a finding the bot keeps surfacing, edit this
-file by hand. If you want the bot to learn from a manual triage,
-mention the suppression rationale in the run console's free-text
-human turn (`fp_curation` node, optional) — the bot will append the
-entry for you.
+file by hand. The bot itself only appends entries automatically, via
+`fp_append`, when the three voters unanimously dismiss a candidate
+under the `unanimous_dismiss` policy above; set
+`--var fp_append_policy=never` to disable those appends entirely.
 
 ## Pipeline
 
 ```
-detect_tech (claw, readonly)
-  └─→ run_scanners (router fan_out_all)
-        ├─→ run_generic_scanners   (tool: gitleaks + trivy + semgrep auto)
-        ├─→ run_js_scanners        (tool: semgrep js/ts profile)        — if tech.langs ∋ js
-        ├─→ run_go_scanners        (tool: semgrep golang + gosec)       — if tech.langs ∋ go
-        └─→ run_python_scanners    (tool: semgrep python + bandit)      — if tech.langs ∋ python
+inventory (tool)                    ← deterministic bounded file/manifest list
+  └─→ detect_tech (agent: claw + openai/gpt-5.5, readonly)
+        emits an OPEN `langs: []` list (no per-language booleans)
+  └─→ … project-context + diff-scope + shard-planning gates …
+  └─→ run_generic_scanners (tool: gitleaks + trivy fs + semgrep --config=p/default) — ALWAYS on
+  └─→ run_lang_scanners (tool: ONE skill-driven node; reads skills/lang-<id>.md
+        `iterion:scanners` block per detected language)
+  └─→ … optional deepsec gate …
   └─→ scan_join (compute, await: best_effort) ← converges scanner outputs
-  └─→ triage (claw, readonly) ← reads scanner JSONs + fp-known.yaml
-  └─→ filter_cached_files (tool) ← Cap1: skip revalidate on unchanged files
-  └─→ revalidate (claw judge, two-phase) ← on fresh candidates only
-  └─→ merge_verdicts (compute) ← fresh + cached verdicts unified
-  └─→ report_card (claude_code, board.create + board.label) → kanban + findings.md
+  └─→ scan_health (tool) ← anti-façade gate: hard-fail if the generic floor is missing
+  └─→ cap_findings (tool) ← overflow guard (top N findings/file)
+  └─→ triage (agent: claude_code + opus-4-8) ← reads scanner JSONs + fp-known.yaml
+  └─→ filter_cached_files (tool) ← skip revalidation on unchanged files
+  └─→ voter_v1 → voter_v2 → voter_v3 (3 judges: claude_code + opus-4-8, adversarial "disprove")
+  └─→ majority_verdict (tool) ← tally confirm/dismiss/uncertain; ≥confirm_threshold (default 2/3) confirms
+  └─→ fp_append (tool, only when majority emits fp_appends[]) → merge_with_cache
+  └─→ merge_with_cache (compute) ← fresh + cached verdicts unified
+  └─→ report_card (agent: claude_code + opus-4-8, board.read/create/label) → kanban + findings.md
   └─→ update_file_records (tool) ← append one history entry per analysed file
+  └─→ remediate_gate (compute) ← when remediate=false (DEFAULT): done
+                                  when remediate=true: opt-in remediation phase (below)
   └─→ done
 ```
 
+Revalidation is a **three-voter adversarial majority**, not a single
+two-phase judge: `voter_v1 → voter_v2 → voter_v3` each run the same
+"the scanner is wrong — disprove it" protocol independently, and
+`majority_verdict` confirms a finding when at least `confirm_threshold`
+(default 2 of 3) vote to confirm.
+
+The scanners run as **one sequential branch** (`run_generic_scanners ->
+run_lang_scanners`), not a parallel router fan-out — this stays inside
+the runtime's one-mutating-branch rule; the lang scanner no-ops on
+absent languages.
+
+### Opt-in remediation phase (`--var remediate=true`)
+
+Off by default. When enabled, after `report_card` the workflow runs a
+verification-ladder remediation phase: `remediation_plan` (split
+confirmed findings into fixable vs hard-stopped) →
+`prepare_branch` (temp git branch) → per-finding loop
+(`select_finding → patch_author → build_rung → reproduce_rung →
+regress_rung → reattack → reviewer_isolation → aggregate_verdict →
+record_finding`) → `merge_fixes` / `abandon_fixes` (gated on the
+`approve_fixes` human node under the default `apply_gated` mode) →
+`remediation_report`. See the `remediate` / `remediation_mode` vars in
+`main.bot` for the mode contract.
+
 ## Adding a language
 
-1. **Drop a skill**: `skills/lang-<langid>.md` describing scanners
-   to invoke, manifest files to parse, framework-specific threat
-   hints (mirror the existing `lang-go.md` shape).
+Drop a single skill — **no DSL edit, no tool node, no router branch**:
 
-2. **Add a tool node**: a `tool run_<langid>_scanners:` node that
-   emits a JSON file under `{{vars.scan_dir}}/<langid>.json`.
+1. **Drop a skill**: `skills/lang-<langid>.md` with an
+   `<!-- iterion:scanners ... -->` data block listing the scanner
+   commands to run, plus the manifest files to parse and
+   framework-specific threat hints under `## Framework-specific
+   signals` (mirror the existing `lang-go.md` shape).
 
-3. **Wire the router**: add a `with { ... } when tech.has_<langid>`
-   branch under the `run_scanners` router.
-
-4. **Add the framework taxonomy** to `skills/lang-<langid>.md`
-   under `## Framework-specific signals`.
-
-No DSL primitive changes, no new capability. Pure composition.
+That is the whole change. `detect_tech` reports the language in its
+open `langs` list; the single `run_lang_scanners` tool reads that
+skill's `iterion:scanners` block and runs the commands, and
+`scan_health` reads the same block to verify per-language coverage.
+No per-language boolean, no new node. Pure composition.
 
 ## See also
 

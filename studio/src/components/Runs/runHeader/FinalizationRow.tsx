@@ -73,6 +73,15 @@ export default function FinalizationRow({ run }: { run: RunHeaderType }) {
         mergedShort={mergedShort}
         branch={branch}
       />
+      {run.loc_added != null && run.loc_deleted != null && (
+        <span
+          className="font-mono"
+          title="Lines changed by the run's commits (three-dot diff against the fork point)"
+        >
+          <span className="text-success">+{run.loc_added}</span>{" "}
+          <span className="text-danger">−{run.loc_deleted}</span>
+        </span>
+      )}
     </div>
   );
 }

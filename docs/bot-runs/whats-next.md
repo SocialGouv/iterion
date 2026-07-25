@@ -1,10 +1,176 @@
 # Nexie — `whats-next` run bilans
 
-Conversational co-CTO (v2: ONE agent in a chat loop — board intelligence,
-ticket curation against code reality, dispatch). See
-[bots/whats-next/](../../bots/whats-next/). Bilans before 2026-07-07 cover
-the v1 form state machine (survey → priorities form → roadmap → review form
-→ emit → dispatch pickers).
+Conversational co-CTO (v3: ONE agent in a chat loop — board intelligence,
+ticket curation against code reality, dispatch, and the roadmap-study
+cycle per ADR-075). See [bots/whats-next/](../../bots/whats-next/).
+Bilans before 2026-07-07 cover the v1 form state machine (survey →
+priorities form → roadmap → review form → emit → dispatch pickers).
+
+## 2026-07-16 — v3 first study turn: adaptive pivot instead of re-study (run 019f69c8)
+
+- Status: **validated (turn 1, high value)** — the fan-out path stayed
+  unexercised by the bot's own (correct) judgment; session handed to the
+  operator at the arbitrage pause.
+- Versions: bot whats-next 0.3.0 · iterion worktree `a75e4fa5e` (v3 branch).
+- Method: CLI `iterion run` from the v3 worktree, `--store-dir` the main
+  workspace store (operator-studio visible), `--var workspace_dir=<main
+  repo>`, seed « Quels sont les prochains chantiers ? ». claude_code +
+  opus-4-8, effort ultracode, budget 45m/$15/80 steps.
+- Result: turn 1 in 4m20 / $1.43 / 11 tool calls, then
+  `paused_waiting_human` (standby). `dispatched_ids: []` — nothing
+  promoted before arbitrage, as contracted.
+- Value: instead of mechanically re-running the 3-audit fan-out, Nexie
+  **found yesterday's epic** (`epic:chantiers-2026h2`, 8 chantiers, ~67
+  tickets), mapped C1–C8 with per-chantier counts, and answered with the
+  STATE, not a list: review wave 1 parked (~7 done-but-unmerged tickets),
+  factory OFF (0 ready, no dispatcher process — she checked), wave 2
+  (10 `feature-dev` tickets, now×5/next×5) undispatched. Recommendation
+  ordered (drain review first, then top-3 tier-now), plus real
+  **pushback**: the tier-now tickets are chantier-sized, not
+  feature-sized, and lack the `## Context/## Done criteria/## Verify`
+  frame — dispatching them as-is to one feature-dev run is a façade
+  risk; she proposes decomposition. Ends on two sharp decision blocks
+  (A: verify+close the review wave with `comment_issue` traces — asks
+  before the bulk, guardrail respected; B: decompose C1 vs dispatch
+  whole) + 4 aligned quick_replies.
+- Turn 2 (operator picked decision A — verify the review lot): $1.28,
+  9 `get_issue` + 2 git checks, ZERO mutations. Per-ticket verdict
+  table with line-level evidence; caught 2 tickets parked in `review`
+  without the work done, and re-asked before the batch because the
+  action set had changed (re-bucketing was not in decision A) — the
+  bulk ritual held. **But 3 of 9 verdicts were right for the wrong
+  tree**: her shell ran cwd-relative in the run's working directory (a
+  worktree cut from the morning's origin/main) while the audited
+  workspace was live main — NATSBus (`d346b6ec7`), T-42 IRRef
+  (`cd333b3b3`) and LaunchSpec (`38799ea38`) had merged mid-session,
+  so her "not delivered / façade" calls on those three were stale.
+  The operator's own base-drift phenomenon, biting the AUDIT phase.
+- Turn 3 (operator-delegate correction: "your base was stale — re-verify
+  anchored, cite the HEAD"): $1.04, the correction loop closed clean.
+  Re-verified on `main @ 9d74c1e7d` with the HEAD cited, self-diagnosed
+  the wrong-tree first pass, found all 3 flips on her own — and
+  out-verified the reviewer on NATSBus (impl merged `d346b6ec7` but
+  `NewNATSBus(` wired nowhere → residual C2 wiring, matching the
+  15/07 session note). Re-proposed the corrected batch (4 proven
+  closes + 2 rebuckets + 3 operator calls), still zero mutations.
+  **Both skill fixes hot-loaded mid-session via the resume re-mirror**:
+  the anchor discipline (this turn's method) and the
+  quick_replies-as-buttons rule (chips now carry complete decision
+  answers — "Applique le lot complet (4 close + 3 close+followup +
+  2 backlog)" etc.).
+- Turn 4 (operator named the batch): $0.93, 21 board mutations —
+  **all ground-truth verified on the store**: 7 tickets → `done`, each
+  with one `comment_issue` trace citing commit + `main @ 9d74c1e7d`;
+  2 mis-parked tickets → `backlog` with a why-comment; 2 follow-ups
+  created (SSRF cloud-e2e C4, NewNATSBus wiring C2) with the full
+  `## Context/## Done criteria/## Verify` frame and vocabulary labels,
+  bot left unassigned as instructed. The review lane is drained. She
+  also wrote the wrong-tree lesson into her CONTEXT_BRIEF unprompted.
+  Board-execution stage: VALIDATED. Session total: 4 turns, ~$4.67.
+- One more cwd slip, mechanical this time: the CONTEXT_BRIEF was
+  written under the memory key derived from her turn-1 `ws=$(cwd)`
+  choice (the worktree — a temporary tree) instead of the prompt's
+  resolved `workspace_dir`; the turn-4 write reused the turn-1
+  derivation from conversational memory. Relocated by hand to the
+  workspace key; the anchor discipline (already shipped) covers the
+  class going forward.
+- Operator UX feedback (jo): a two-choice arbitrage turn read as
+  "answer in free text" — expected radio + submit. Bot-side mitigation
+  = the chips fix (`eb07d1f22`); structural fix filed as framed board
+  ticket `native:7849f5f9` (studio renders grouped decision blocks as
+  a form). ask_user stays single-question by contract.
+- Consent boundary (harness): the operator-delegate session could
+  steer verification but NOT confirm the bulk close/rebucket — the
+  auto-mode classifier requires the operator to NAME the batch for
+  mass-modifying pre-existing tracker items (same lesson as the
+  2026-07-15 GitHub closes). Even a standing "do whatever you deem
+  relevant on the board" delegation did not clear that bar (single
+  ticket creation did). Board execution therefore awaits the
+  operator's own click/message — plan bulk closes into the initial
+  ask, or hand the operator the exact batch to send.
+- Fixture run (019f6b42, /tmp/iterion-probe-nexie, $0.79): a 6-file
+  virgin repo + 3-ticket board, launched cwd≠workspace ON PURPOSE.
+  She correctly did NOT fan out ("repo volontairement fin — je
+  calibre, pas de faux chantiers de prestige"), read the tree
+  directly, caught the planted obsolete ticket with anchored evidence
+  (`95896e1` @67b7c35), classified the ADR-blocked cleanup as
+  non-dispatchable, named the real blind spot (zero tests), and wrote
+  her memory brief under the CORRECT fixture key — the anchor fixes
+  hold. Scale-trigger validated in both directions.
+- Scale run (019f6b46, workspace=.works/claw-code-go, 2 turns ~$2.09):
+  **the mechanical fan-out validated** — 3 parallel read-only
+  sub-agents with fully conformant briefs (Area per canonical axis,
+  absolute Workspace, evidence-cited envelope) into which she
+  propagated the anchor rule herself ("never trust cwd"). Edge found:
+  she ended turn 1 with audits in flight and the sub-agents did not
+  survive the chat pause — turn 2 detected the loss, said so, and
+  relaunched the missing two while delivering the synthesis on the
+  solid base (full v3 shape: tension line, 8 chantiers now/next/later,
+  quick-wins routed per catalog — Doki/Testy/Adry/Fini —, argued
+  top-3, honest blind spots, 3 decision blocks, zero board writes
+  before arbitrage). Skill patched: await audits within the turn;
+  relaunch, never invent, on an inherited loss.
+- Findings / misses:
+  - **Anchor bug (fixed)**: verification commands must anchor at
+    `workspace_dir` (`git -C`, absolute paths), never the shell cwd —
+    the run can execute from a different tree. Skill fix `1b4c30fae`
+    (playbook + repo-survey; skills sit outside the resume hash and
+    re-mirror on resume, so the live session gets it next turn). The
+    matching one-line prompt hardening in main.bot is deferred until
+    the session closes — editing the source would invalidate the
+    run's resume hash and break the operator's next chat answer.
+  - 3-audit Task fan-out not exercised live (adaptive skip — a fresh
+    study would have duplicated the 2026-07-15 one; the doctrine's
+    "skipping a stage is judgment" clause worked as intended). Still to
+    be exercised on a repo/board without a prior study.
+  - Workspace memory: only the legacy root-level
+    `memory/CONTEXT_BRIEF.md` exists; the v3 recipe targets
+    `memory/whats-next/` (absent) so Nexie correctly skipped — but the
+    legacy brief is invisible to v3. Follow-up: migrate the brief or
+    teach the recipe the legacy fallback.
+  - Only the playbook skill was Skill-loaded; behavior still matched
+    roadmap-synthesis/operator-arbitrage/factory-ops (the prompt +
+    playbook summaries carried enough). Watch whether deeper turns load
+    the domain skills when they act (board execution, bilan).
+- Engine hardening surfaced by this run:
+  - **Bundle skills mirror died on `.gitkeep`** (`fix(runtime)`
+    `a75e4fa5e`): a non-`.md` placeholder in `bots/*/skills/` made the
+    directory form and the flat alias collide on the same path — every
+    fresh-workspace run of whats-next AND secured-renovacy crashed at
+    startup since the flat-alias mirroring landed. Mirror now skips
+    non-markdown entries (regression test added).
+  - Zombie `iterion server` found listening on :7799 against a deleted
+    worktree store (leftover from a 2026-07-11 session) — flagged, not
+    killed; Nexie herself spotted it during her operational-state check
+    and reasoned about the store mismatch.
+- Lessons for next run: exercise the full fan-out on a study-less
+  fixture (the ticket's e2e criterion); answer decisions A/B in the
+  studio chat to validate board execution + bilan stages on the real
+  lot; consider the legacy-brief fallback before the next session.
+- Post-merge threads (same day, after #214 landed @9cc03584b):
+  - **Claw roadmap exploited** (study run 019f6b46, +1 arbitrage turn
+    $1.25): answered with her own recos (reliability axis, C1-only
+    ready lot), the 2 relaunched audits' delta integrated (binary
+    quick-win self-invalidated — already gitignored; C3 re-scoped on
+    `internal/auth` 5 src/0 test; NEW C9 release/distribution — single
+    tag ~110 commits behind). Durable output committed in the claw
+    repo: `docs/ROADMAP-2026H2.md` (9 tiered chantiers + 4 framed
+    ticket bodies). Note: the full deliverable (7241 chars) rode the
+    MID-TURN narration (chat bubble) while the turn's `reply` was a
+    recap claiming "livré dans le fil" — accurate but envelope-fragile;
+    watch whether operators miss narration-borne content.
+  - **Wave-2 decomposition** (fresh session 019f6b71, 2 turns ~$5.96 —
+    CONTEXT_BRIEF continuity picked decision B up without re-brief):
+    re-audited terminal-state semantics on fresh main via a 3-agent
+    fan-out (4 contradicting terminal predicates, `runtime.ErrorCode`
+    never persisted), sliced C1 into 3 framed feature-dev tickets with
+    CASCADING BLOCKERS (f26342ab now/8 → d9ac6af9 next/7 → 9f550afa
+    later/6), recreated the regen-catalog quick-win as e2950020
+    (closed 8ca25d98 superseded, traced — no body-edit tool exists),
+    converted both chantier-sized parents to `horizon:theme` tracking
+    cards (bot cleared). Zero promotions — the factory stays
+    operator-owned. Total v3 dogfood: 4 runs, 11 turns, ~$17.5; zero
+    anchoring drift across three distinct workspaces after the fixes.
 
 ## 2026-07-08 — first cloud-prod session + skills-format engine fix (run 019f412x)
 

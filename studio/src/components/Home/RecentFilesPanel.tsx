@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useState } from "react";
 import { useLocation } from "wouter";
+import { useQuery } from "@tanstack/react-query";
 import {
   FilePlusIcon,
   FileIcon,
@@ -15,31 +16,16 @@ import { useRecentsStore } from "@/store/recents";
 import { useTabsStore } from "@/store/tabs";
 import { useUIStore } from "@/store/ui";
 import { useConfirm } from "@/hooks/useConfirm";
+import { errorMessage } from "@/lib/errorHints";
 import { basename } from "@/lib/format";
 import { botIdentity } from "@/lib/personas";
 import { Button, IconButton, InlineBanner } from "@/components/ui";
 import { EmptyState } from "@/components/ui/EmptyState";
 import { BotCatalogDialog } from "@/components/Catalog/BotCatalogDialog";
 
-// First-class bots are static for the lifetime of the server process, so
-// cache the first successful response and reuse it on every subsequent
-// mount. Avoids a network round-trip every time the user lands on /.
-let examplesCache: api.ExampleEntry[] | null = null;
-let examplesPromise: Promise<api.ExampleEntry[]> | null = null;
-
-function loadExamples(): Promise<api.ExampleEntry[]> {
-  if (examplesCache) return Promise.resolve(examplesCache);
-  if (!examplesPromise) {
-    examplesPromise = api.listExampleEntries().then((list) => {
-      examplesCache = list;
-      return list;
-    }).catch((err) => {
-      examplesPromise = null;
-      throw err;
-    });
-  }
-  return examplesPromise;
-}
+// Stable empty fallback so the undefined→loaded transition doesn't
+// hand the render a fresh [] reference each pass.
+const EMPTY_EXAMPLES: api.ExampleEntry[] = [];
 
 type Variant = "card" | "plain";
 
@@ -63,31 +49,27 @@ export default function RecentFilesPanel({ variant = "card" }: Props) {
   const clearRecents = useRecentsStore((s) => s.clearRecents);
   const addToast = useUIStore((s) => s.addToast);
 
-  const [examples, setExamples] = useState<api.ExampleEntry[]>([]);
   const [examplesOpen, setExamplesOpen] = useState(false);
-  const [examplesError, setExamplesError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [catalogOpen, setCatalogOpen] = useState(false);
   const { confirm, dialog: confirmDialog } = useConfirm();
 
-  useEffect(() => {
-    let cancelled = false;
-    setExamplesError(null);
-    loadExamples()
-      .then((list) => {
-        if (!cancelled) setExamples(list);
-      })
-      .catch((e: unknown) => {
-        if (cancelled) return;
-        // Quietly degrade — the examples list is only one of three entry
-        // points (recents + new blank stay reachable). Show an inline
-        // banner so the operator knows the bot catalog couldn't load.
-        setExamplesError(e instanceof Error ? e.message : String(e));
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, []);
+  // First-class bots are static for the lifetime of the server process →
+  // staleTime: Infinity, so landing on / never refetches once the shared
+  // ["example-entries"] cache is warm (FilePicker and the canvas
+  // ExamplesPicker refresh the same cache when opened).
+  const examplesQuery = useQuery({
+    queryKey: ["example-entries"],
+    queryFn: () => api.listExampleEntries(),
+    staleTime: Infinity,
+  });
+  const examples = examplesQuery.data ?? EMPTY_EXAMPLES;
+  // Quietly degrade on error — the examples list is only one of three
+  // entry points (recents + new blank stay reachable). The inline banner
+  // below tells the operator the bot catalog couldn't load.
+  const examplesError = examplesQuery.error
+    ? errorMessage(examplesQuery.error)
+    : null;
 
   useEffect(() => {
     if (recents.length === 0 && examples.length > 0) setExamplesOpen(true);

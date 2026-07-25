@@ -27,7 +27,7 @@ export function isRepoCapable(b: BotEntry): boolean {
 }
 
 /** triggerGroupsFor returns every interaction-mode group a bot belongs to. */
-export function triggerGroupsFor(b: BotEntry): Set<TriggerGroup> {
+function triggerGroupsFor(b: BotEntry): Set<TriggerGroup> {
   const g = new Set<TriggerGroup>();
   for (const inv of b.invocations ?? []) {
     if (inv.kind === "forge") g.add("events");

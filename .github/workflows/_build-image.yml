@@ -123,10 +123,11 @@ jobs:
           password: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Build amd64 on buildkit-operator
-        # Pin moved forward on each operator release. This SHA must be pushed to
-        # github.com/SocialGouv/buildkit-operator (branch feat/build-args-passthrough)
-        # for `uses:` to resolve it — it carries the --build-arg passthrough.
-        uses: socialgouv/buildkit-operator@8707e7f9d2a3baeeb5154bfbd0ae114bccfa4e58
+        # Pin moved forward on each operator release. v0.15.0 brings cache.skipExport:
+        # the client only adds --cache-to when buildd granted the export (s3CachePolicy
+        # cadence/never) — the per-build S3 export cost disappears once the server side
+        # runs >= v0.15 too.
+        uses: socialgouv/buildkit-operator@d6b16a86427cea030553e655c85fd6bb9610ea25 # v0.15.0
         with:
           buildd-url: ${{ vars.BUILDKIT_OPERATOR_BUILDD_URL }}
           gateway-host: ${{ vars.BUILDKIT_OPERATOR_GATEWAY_HOST || 'bkod.fabrique.social.gouv.fr' }}
@@ -142,9 +143,42 @@ jobs:
           labels: ${{ steps.meta.outputs.labels }}
           tags: ${{ env.IMAGE_REF }}:${{ github.sha }}-amd64
           push: true
-          provenance: mode=max
-          sbom: true
+          # Provenance + SBOM only on release (multiarch) builds, matching the
+          # sign policy: `:edge` is ephemeral and unsigned, and generating them
+          # anyway cost ~60-90s per image per push (syft scan ~28s + mode=max
+          # attestation export ~35s measured on a 2-COPY finalize build).
+          provenance: ${{ inputs.multiarch && 'mode=max' || '' }}
+          sbom: ${{ inputs.multiarch }}
           sign: false # the published index is signed once in the merge job
+
+      # Single-arch fast path: on non-release builds there is no arm64 leg to
+      # stitch, so the final tags are published right here from the just-pushed
+      # staging manifest — the separate merge job (one more runner spin-up per
+      # image, ~15-25s each and real queueing under slot pressure) only runs
+      # for multiarch releases. imagetools talks straight to the registry: no
+      # builder needed, the GHCR login above suffices.
+      - name: Compute final tags (single-arch fast path)
+        if: ${{ !inputs.multiarch }}
+        id: fasttags
+        uses: docker/metadata-action@80c7e94dd9b9319bd5eb7a0e0fe9291e23a2a2e9 # v6.1.0
+        with:
+          images: ${{ env.IMAGE_REF }}
+          # No semver types: release tags always take the multiarch merge path.
+          tags: |
+            type=ref,event=branch
+            type=raw,value=edge,enable=${{ github.ref == format('refs/heads/{0}', 'main') }}
+
+      - name: Publish final tags (single-arch fast path)
+        if: ${{ !inputs.multiarch }}
+        env:
+          TAGS: ${{ steps.fasttags.outputs.tags }}
+          SHA: ${{ github.sha }}
+        run: |
+          set -eux
+          tflags=""
+          for t in $TAGS; do tflags="$tflags -t $t"; done
+          # shellcheck disable=SC2086
+          docker buildx imagetools create $tflags "${IMAGE_REF}:${SHA}-amd64"
 
   # --------------------------------------------------------------------------
   # arm64 — native build on a GitHub arm runner (no QEMU), pushed to a per-arch
@@ -204,12 +238,13 @@ jobs:
   # --------------------------------------------------------------------------
   # merge — stitch the two per-arch staging manifests into the published
   # multi-arch index (final tags), then cosign-sign + SBOM-attest the index.
+  # Release (multiarch) builds only: single-arch builds publish their final
+  # tags inside the amd64 job (fast path above) and skip this runner entirely.
   # --------------------------------------------------------------------------
   merge:
-    # Runs once amd64 succeeded, whether arm64 ran (multiarch) or was skipped
-    # (feature branch). always() prevents auto-skip on the skipped arm64 need; the
-    # explicit guards then require amd64 success and a non-failing arm64.
-    if: ${{ always() && !inputs.is-pr && needs.amd64.result == 'success' && needs.arm64.result != 'failure' }}
+    # always() prevents auto-skip on needs edge cases; the explicit guards then
+    # require the multiarch mode, amd64 success and a successful arm64 leg.
+    if: ${{ always() && !inputs.is-pr && inputs.multiarch && needs.amd64.result == 'success' && needs.arm64.result != 'failure' }}
     needs: [amd64, arm64]
     runs-on: ubuntu-latest
     permissions:

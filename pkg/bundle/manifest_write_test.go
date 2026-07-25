@@ -58,6 +58,45 @@ func TestWriteManifest_PreservesCommentsAndBlockScalar(t *testing.T) {
 	}
 }
 
+func TestWriteManifest_PreservesLaunchHints(t *testing.T) {
+	// The studio metadata PUT never patches launch:, so an operator saving
+	// display_name must not strip the block — the node-level rewrite keeps
+	// untouched keys, and the strict pre-write validation must accept the
+	// field (it would reject an unknown key).
+	dir := t.TempDir()
+	path := filepath.Join(dir, "manifest.yaml")
+	src := `name: appy
+schema_version: 1
+description: Builds an app.
+launch:
+  primary: [app_prompt, mode]
+  hidden: [internal_var]
+`
+	if err := os.WriteFile(path, []byte(src), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	m, err := WriteManifest(path, ManifestPatch{DisplayName: ptr("Appy")})
+	if err != nil {
+		t.Fatalf("WriteManifest: %v", err)
+	}
+	if m.DisplayName != "Appy" {
+		t.Errorf("DisplayName = %q, want Appy", m.DisplayName)
+	}
+	if m.Launch == nil || len(m.Launch.Primary) != 2 || m.Launch.Primary[0] != "app_prompt" ||
+		m.Launch.Primary[1] != "mode" || len(m.Launch.Hidden) != 1 || m.Launch.Hidden[0] != "internal_var" {
+		t.Errorf("launch hints not preserved by re-parse: %+v", m.Launch)
+	}
+
+	raw, _ := os.ReadFile(path)
+	got := string(raw)
+	for _, want := range []string{"launch:", "primary:", "hidden:", "app_prompt", "internal_var"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("rewritten manifest lost %q\n---\n%s", want, got)
+		}
+	}
+}
+
 func TestWriteManifest_AppendsNewKeysAfterDescription(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "manifest.yaml")
@@ -84,7 +123,7 @@ func TestWriteManifest_AppendsNewKeysAfterDescription(t *testing.T) {
 	descAt := strings.Index(got, "description:")
 	whenAt := strings.Index(got, "when_to_use:")
 	authorAt := strings.Index(got, "author:")
-	if !(descAt < whenAt && whenAt < authorAt) {
+	if descAt >= whenAt || whenAt >= authorAt {
 		t.Errorf("when_to_use not placed after description / before author (desc=%d when=%d author=%d)\n---\n%s",
 			descAt, whenAt, authorAt, got)
 	}
@@ -119,7 +158,7 @@ func TestWriteManifest_IconRoundTrip(t *testing.T) {
 	displayAt := strings.Index(got, "display_name:")
 	iconAt := strings.Index(got, "icon:")
 	descAt := strings.Index(got, "description:")
-	if !(displayAt < iconAt && iconAt < descAt) {
+	if displayAt >= iconAt || iconAt >= descAt {
 		t.Errorf("icon not placed after display_name / before description (display=%d icon=%d desc=%d)\n---\n%s",
 			displayAt, iconAt, descAt, got)
 	}

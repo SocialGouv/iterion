@@ -1,7 +1,6 @@
 import { beforeEach, describe, expect, it } from "vitest";
 import { makeEdgeId } from "./documentToGraph";
 import {
-  DETAIL_PREFIX_CENTRAL,
   DETAIL_PREFIX_EDGE,
   DETAIL_PREFIX_PROMPT,
   DETAIL_PREFIX_SCHEMA,
@@ -9,6 +8,9 @@ import {
   generateNodeDetailGraph,
   parseDetailId,
 } from "./nodeDetailGraph";
+
+// The central-node id nodeDetailGraph uses internally.
+const DETAIL_PREFIX_CENTRAL = "__detail_central__";
 import type { IterDocument } from "@/api/types";
 import { selectionStore } from "@/store/selection";
 import { useUIStore } from "@/store/ui";

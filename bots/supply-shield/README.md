@@ -4,8 +4,8 @@ A PR / push-driven, **diff-scoped** malware gate for dependency changes.
 Where `sec-audit-deps` (Depsy) runs a full-tree weekly audit emitting
 only to the board, Shieldy inspects **only the dependency versions a
 change adds or upgrades**, reuses a **shared cache** so a version is
-analysed once, and **reports back onto the PR/MR** via the native forge
-API. The CVE-focused sibling is `supply-shield-cve` (Vulny).
+analysed once, and **reports back onto the PR** (merge request on
+GitLab) via the native forge API. The CVE-focused sibling is `supply-shield-cve` (Vulny).
 
 ## What it does
 
@@ -21,7 +21,7 @@ API. The CVE-focused sibling is `supply-shield-cve` (Vulny).
    floor did not run, so a missing analyzer never reads as "0 malware".
 4. **Shared store** — every `(ecosystem, name, version, checksum)` verdict
    (`kind: malware`) is cached and reused across runs / PRs / repos.
-5. **Reports back** — sticky PR/MR summary comment + inline review +
+5. **Reports back** — sticky PR summary comment + inline review +
    SARIF / code-scanning upload (GitHub / GitLab / Forgejo), plus board
    cards labelled `source:supply-shield`.
 
@@ -46,7 +46,10 @@ scanner toolchain (js-x-ray + osv-scanner + trivy + npm/pip/go SCA). On a
 bare host the scanners are absent → `coverage_gate` fails the run rather
 than reporting a 0-finding façade. Build it from
 [`sandbox/sec/Dockerfile`](../../sandbox/sec/Dockerfile) and
-`docker tag` it to the ref above until CI publishes it.
+`docker tag` it to the ref above until CI publishes it. The image pin is
+the only sandbox setting the bot carries (ADR-082): isolation, the
+claude CLI and host-state mounts are platform defaults; the forge-token
+env passthrough remains until Phase 3 delivers tokens as file secrets.
 
 ## Shared cache
 

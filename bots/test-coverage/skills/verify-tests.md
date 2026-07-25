@@ -33,9 +33,9 @@ toolchain:
   dir may be unwritable — e.g. `devbox` fails with
   `mkdir: cannot create directory '~/.cache/devbox': Permission denied`. If
   a wrapper errors on its cache, retry once with `XDG_CACHE_HOME=/tmp/cache`
-  (or `HOME=/tmp`), and if it still fails, fall back to the toolchain the
-  image already provides directly (e.g. plain `go test ./pkg/...` —
-  iterion-sandbox-full ships Go/Node/Python). A direct-toolchain verify
+  (or `HOME=/tmp`), and if it still fails, fall back to a toolchain the
+  environment already provides directly (e.g. plain `go test ./pkg/...`
+  when Go is on PATH). A direct-toolchain verify
   script that genuinely runs the tests is better than a wrapper that can't
   start. Put whatever finally worked into `.test_coverage.verify.sh`.
 - **Language defaults (only when there is no wrapper)** — pick the runner

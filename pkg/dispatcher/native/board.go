@@ -33,6 +33,20 @@ const (
 	StateBlocked = "blocked"
 )
 
+// Board-local trust labels stamped by the forge→board ingest gate. They are
+// namespaced so the forge sync's label refresh preserves them (board-local
+// namespaces survive a sweep; plain forge labels are mirrored verbatim).
+const (
+	// LabelTriageAuto is the one-shot trigger label: a trusted author's fresh
+	// card carries it, and the triage bot's consume_labels subscription
+	// strips it as it fires. Re-adding it re-arms the triage.
+	LabelTriageAuto = "triage:auto"
+	// LabelNeedsApproval parks an untrusted-author card: no bot run of any
+	// kind until an operator swaps it for LabelTriageAuto (approve gesture)
+	// or routes the card manually.
+	LabelNeedsApproval = "needs:approval"
+)
+
 // FieldType enumerates the supported custom-field value kinds.
 type FieldType string
 

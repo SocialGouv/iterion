@@ -1,5 +1,8 @@
 import { errorMessage } from "@/lib/errorHints";
-import { useEffect, useState } from "react";
+import { formatDateTime } from "@/lib/format";
+import { useState } from "react";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { useLocation } from "wouter";
 import { InlineBanner } from "@/components/ui/InlineBanner";
 
 import {
@@ -21,8 +24,8 @@ import { Dialog } from "@/components/ui/Dialog";
 import { EmptyState } from "@/components/ui/EmptyState";
 import { Input } from "@/components/ui/Input";
 import { Table, THead, Th, TBody, Tr, Td, TableSkeleton } from "@/components/ui/Table";
-import ConfirmDialog from "@/components/shared/ConfirmDialog";
 import { useAsyncAction } from "@/hooks/useAsyncAction";
+import { useConfirm } from "@/hooks/useConfirm";
 
 interface Props {
   teamID: string;
@@ -30,58 +33,60 @@ interface Props {
 }
 
 export default function SecretsTab({ teamID, canManage }: Props) {
-  const [teamSecrets, setTeamSecrets] = useState<GenericSecretView[]>([]);
-  const [mySecrets, setMySecrets] = useState<GenericSecretView[]>([]);
-  const [loading, setLoading] = useState(true);
-  const [err, setErr] = useState<string | null>(null);
-  const [unavailable, setUnavailable] = useState(false);
+  const [, navigate] = useLocation();
+  const queryClient = useQueryClient();
+  // Mutation failures report through setActionErr; load failures surface
+  // from the team-secrets query. One banner shows whichever is current.
+  const [actionErr, setActionErr] = useState<string | null>(null);
   const [creating, setCreating] = useState<null | "team" | "me">(null);
   const [rotating, setRotating] = useState<{ scope: "team" | "me"; rec: GenericSecretView } | null>(
     null,
   );
-  const [deleting, setDeleting] = useState<{ scope: "team" | "me"; rec: GenericSecretView } | null>(
-    null,
-  );
+  const { confirm, dialog } = useConfirm();
 
-  const reload = async () => {
-    setLoading(true);
-    setErr(null);
-    try {
-      const [t, m] = await Promise.all([
-        listTeamSecrets(teamID).catch((e) => {
-          if (e instanceof FeatureUnavailableError) throw e;
-          throw e;
-        }),
-        listMySecrets().catch(() => [] as GenericSecretView[]),
-      ]);
-      setTeamSecrets(t);
-      setMySecrets(m);
-      setUnavailable(false);
-    } catch (e) {
-      if (e instanceof FeatureUnavailableError) {
-        setUnavailable(true);
-      } else {
-        setErr(errorMessage(e));
-      }
-    } finally {
-      setLoading(false);
-    }
+  const teamSecretsQuery = useQuery({
+    queryKey: ["team-secrets", teamID],
+    queryFn: () => listTeamSecrets(teamID),
+  });
+  // Personal secrets are best-effort: a failure just renders an empty
+  // list (the team list is the tab's primary content).
+  const mySecretsQuery = useQuery({
+    queryKey: ["my-secrets"],
+    queryFn: () => listMySecrets().catch(() => [] as GenericSecretView[]),
+  });
+  const teamSecrets = teamSecretsQuery.data ?? [];
+  const mySecrets = mySecretsQuery.data ?? [];
+  // isFetching (not isLoading): the pre-query code skeletoned both tables
+  // on every reload, including post-mutation refreshes.
+  const loading = teamSecretsQuery.isFetching || mySecretsQuery.isFetching;
+  const unavailable = teamSecretsQuery.error instanceof FeatureUnavailableError;
+  const err =
+    actionErr ??
+    (teamSecretsQuery.error && !unavailable && !loading
+      ? errorMessage(teamSecretsQuery.error)
+      : null);
+
+  const reload = () => {
+    setActionErr(null);
+    void queryClient.invalidateQueries({ queryKey: ["team-secrets", teamID] });
+    void queryClient.invalidateQueries({ queryKey: ["my-secrets"] });
   };
 
-  useEffect(() => {
-    void reload();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [teamID]);
-
-  const doDelete = async () => {
-    if (!deleting) return;
+  const doDelete = async (scope: "team" | "me", rec: GenericSecretView) => {
+    const ok = await confirm({
+      title: `Delete ${rec.name}?`,
+      message:
+        "Bot bindings that reference this secret will stop resolving immediately. Workflows that need it will fail until you add a new secret with the same workflow name.",
+      confirmLabel: "Delete",
+      confirmVariant: "danger",
+    });
+    if (!ok) return;
     try {
-      if (deleting.scope === "team") await deleteTeamSecret(teamID, deleting.rec.id);
-      else await deleteMySecret(deleting.rec.id);
-      setDeleting(null);
-      void reload();
+      if (scope === "team") await deleteTeamSecret(teamID, rec.id);
+      else await deleteMySecret(rec.id);
+      reload();
     } catch (e) {
-      setErr(errorMessage(e));
+      setActionErr(errorMessage(e));
     }
   };
 
@@ -102,6 +107,18 @@ export default function SecretsTab({ teamID, canManage }: Props) {
         </InlineBanner>
       )}
 
+      <p className="text-caption text-fg-subtle -mb-2">
+        Values injected into bots via{" "}
+        <button
+          type="button"
+          className="text-accent-text hover:underline"
+          onClick={() => navigate("/integrations?tab=bindings")}
+        >
+          Bot bindings
+        </button>
+        .
+      </p>
+
       <section>
         <SecretsSectionHeader
           title="Team secrets"
@@ -119,7 +136,7 @@ export default function SecretsTab({ teamID, canManage }: Props) {
           }
           canManage={canManage}
           onRotate={(rec) => setRotating({ scope: "team", rec })}
-          onDelete={(rec) => setDeleting({ scope: "team", rec })}
+          onDelete={(rec) => void doDelete("team", rec)}
         />
       </section>
 
@@ -136,7 +153,7 @@ export default function SecretsTab({ teamID, canManage }: Props) {
           emptyText="No personal secrets yet."
           canManage
           onRotate={(rec) => setRotating({ scope: "me", rec })}
-          onDelete={(rec) => setDeleting({ scope: "me", rec })}
+          onDelete={(rec) => void doDelete("me", rec)}
         />
       </section>
 
@@ -147,7 +164,7 @@ export default function SecretsTab({ teamID, canManage }: Props) {
           onClose={() => setCreating(null)}
           onCreated={() => {
             setCreating(null);
-            void reload();
+            reload();
           }}
         />
       )}
@@ -160,20 +177,12 @@ export default function SecretsTab({ teamID, canManage }: Props) {
           onClose={() => setRotating(null)}
           onRotated={() => {
             setRotating(null);
-            void reload();
+            reload();
           }}
         />
       )}
 
-      <ConfirmDialog
-        open={deleting !== null}
-        title={`Delete ${deleting?.rec.name ?? ""}?`}
-        message="Bot bindings that reference this secret will stop resolving immediately. Workflows that need it will fail until you add a new secret with the same workflow name."
-        confirmLabel="Delete"
-        confirmVariant="danger"
-        onConfirm={() => void doDelete()}
-        onCancel={() => setDeleting(null)}
-      />
+      {dialog}
     </div>
   );
 }
@@ -240,10 +249,10 @@ function SecretsTable({
               {s.fingerprint ? s.fingerprint.slice(0, 12) : "—"}
             </Td>
             <Td className="text-fg-muted text-xs">
-              {new Date(s.created_at).toLocaleString()}
+              {formatDateTime(s.created_at)}
             </Td>
             <Td className="text-fg-muted text-xs">
-              {s.last_used_at ? new Date(s.last_used_at).toLocaleString() : "—"}
+              {formatDateTime(s.last_used_at)}
             </Td>
             <Td align="right" className="space-x-1 whitespace-nowrap">
               {canManage && (

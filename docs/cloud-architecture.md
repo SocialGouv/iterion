@@ -1,5 +1,3 @@
-[← Documentation index](README.md) · [← BaaS overview](baas-overview.md)
-
 # Cloud architecture
 
 **Audience.** Anyone who needs the mental model behind the
@@ -35,7 +33,7 @@ flowchart LR
   SRV -- "persist / read" --> MONGO
   SRV -- "change-stream<br/>(events)" --> MONGO
 
-  NATS -- "pull (durable<br/>iterion-runners,<br/>MaxAckPending=1)" --> RUN
+  NATS -- "pull (durable<br/>iterion-runners,<br/>MaxAckPending=256)" --> RUN
   RUN -- "claim KV lease<br/>+ heartbeat (~20s)" --> NATS
   RUN -- "execute" --> SBX
   RUN -- "write events / status" --> MONGO
@@ -53,8 +51,8 @@ A failure in the data plane (a runner OOMs, NATS reboots, S3 is slow)
 must not lose the run; the control plane keeps the canonical state and
 the orphan sweeper closes the gap when the runner dies between claiming
 a run and writing its terminal status (see
-[baas-admin-guide.md → DLQ + orphan
-sweeper](baas-admin-guide.md#17-dlq-triage)).
+[Iterion Cloud admin guide → DLQ + orphan
+sweeper](cloud-admin-guide.md#17-dlq-triage)).
 
 ## The run lifecycle
 
@@ -64,7 +62,7 @@ sweeper](baas-admin-guide.md#17-dlq-triage)).
 | `running` | A runner pod has claimed the KV lease, opened the bundle, and is executing nodes. Heartbeats refresh the lease ~every 20s. |
 | `paused_waiting_human` | A human node awaits input (`POST /api/runs/{id}/resume` with answers). Resumable. |
 | `paused_operator` | Operator paused via the studio. Resumable. |
-| `failed_resumable` | Transient failure (LLM rate limit, timeout, budget exceeded, runner crash). Checkpoint preserved; `iterion resume` / studio Retry brings it back. |
+| `failed_resumable` | Transient failure (LLM rate limit, timeout, runner crash) — the runner Naks and JetStream redelivers for an auto-retry — **or** budget exceeded, which the runner Acks (no auto-redelivery: the same message carries the same spent budget, so it would re-fail instantly). Either way the checkpoint is preserved; `iterion resume` / studio Retry brings it back, and for budget exceeded you raise the cap first (`iterion resume --max-cost-usd/--max-duration …`). |
 | `failed` | Definitive — `FailNode` reached, or first node failed before any checkpoint existed. |
 | `cancelled` | Cancelled by the operator. Checkpoint preserved; resumable. |
 | `finished` | Terminal success. |
@@ -122,16 +120,21 @@ matches plan §C.2:
 
 Pinned semantics:
 
-- **`MaxAckPending = 1`** on the consumer — one in-flight run per
-  runner pod. Horizontal scale is "more pods" via KEDA.
-- **`AckWait = 5min`** with periodic `InProgress()` heartbeats so a
+- **`MaxAckPending = 256`** on the consumer — a fleet-wide ceiling on
+  in-flight (delivered-unacked) runs across the shared durable consumer,
+  not a per-pod cap. It MUST stay ≥ the max runner-pod count KEDA scales
+  to (the historic value of `1` pinned the whole fleet to a single
+  concurrent run). Per-pod serialization comes instead from each runner
+  holding one in-flight run via its serial loop. Horizontal scale is
+  "more pods" via KEDA.
+- **`AckWait = 10min`** with periodic `InProgress()` heartbeats so a
   long LLM step doesn't trigger redelivery while it's still healthy.
 - **KV lease**: TTL 60s, refreshed every 20s by the runner's
   `heartbeat` goroutine
-  ([pkg/runner/loop.go](../pkg/runner/loop.go)). If three refreshes
-  fail, the runner self-cancels its own run to avoid split-brain
+  ([pkg/runner/loop.go](../pkg/runner/loop.go)). If a single lease
+  refresh fails, the runner self-cancels its own run to avoid split-brain
   (`iterion_runner_heartbeat_errors_total` bumps).
-- **`MaxDeliver = 3`** — third NAK parks a copy on the DLQ stream
+- **`MaxDeliver = 8`** — the eighth NAK parks a copy on the DLQ stream
   (header `Iterion-DLQ-Reason: <err>`) and the runner CAS-flips the
   run to `failed_resumable`
   ([pkg/runner/loop.go](../pkg/runner/loop.go), look for "parking on
@@ -140,15 +143,16 @@ Pinned semantics:
 - **DLQ retention**: 7 days
   ([pkg/queue/nats/nats.go:DefaultDLQMaxAge](../pkg/queue/nats/nats.go)).
   An operator triages via the admin endpoints
-  ([baas-admin-guide.md
-  §1.7](baas-admin-guide.md#17-dlq-triage)).
+  ([Iterion Cloud admin guide
+  §1.7](cloud-admin-guide.md#17-dlq-triage)).
 
 The **orphan sweeper** runs on the server side
 ([pkg/server/queue_sweeper.go](../pkg/server/queue_sweeper.go)) and
 catches the failure mode the runner can't — the pod that died before
 even claiming the run, or before its first status write. It scans
-every 60s for `queued > 20min` or `running > 10min` AND no current
-NATS-KV lease, then CAS-flips matched rows to `failed_resumable`.
+every 60s for `queued` past the redelivery window + margin (~90min with
+the defaults: `MaxDeliver × AckWait` + 10min) or `running > 10min` AND no
+current NATS-KV lease, then CAS-flips matched rows to `failed_resumable`.
 Bumps `iterion_runs_orphan_recovered_total`.
 
 The same sweeper also polls `DLQDepth()` so
@@ -172,9 +176,9 @@ Four boundaries, each fail-closed:
    adapters filter `tenant_id = ...` automatically — handlers can't
    forget it.
 4. **Mongo adapter**: every collection (`runs`, `events`,
-   `api_keys`, `generic_secrets`, `bot_secret_bindings`, `audit_log`,
+   `api_keys`, `generic_secrets`, `bot_secret_bindings`, `audit_events`,
    `webhook_configs`, `webhook_deliveries`, `org_usage`,
-   `password_resets`, `pats`, `memory_*`) carries `tenant_id` on every
+   `password_resets`, `personal_access_tokens`, `memory_*`) carries `tenant_id` on every
    row + a compound index that starts with it. Reads without a tenant
    ctx **fail-close** (`ErrBindingTenantMissing` and friends), not
    "show everything".
@@ -193,7 +197,7 @@ the FS adapter / Mongo adapter both treat it as untenanted.
 | `iterion_ws_connections` | server | WS open / close |
 | `iterion_mongo_change_stream_lag_seconds` | server | Per event delivered |
 | `iterion_nats_pending_messages` | runner | Polled every 15s |
-| `iterion_workspace_clone_duration_seconds` | runner | Per workspace clone |
+| `iterion_workspace_clone_duration_seconds` | runner | Per workspace clone — **registered but not yet observed** (no runtime `.Observe()` call), so it currently emits no samples |
 | `iterion_llm_tokens_total{backend,model,direction}` | runner | Per LLM call |
 | `iterion_llm_cost_usd_total{backend,model}` | runner | Per claw-priced call (delegate calls don't carry a price table) |
 | `iterion_runner_heartbeat_errors_total` | runner | Per KV refresh failure |

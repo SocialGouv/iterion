@@ -1,10 +1,11 @@
 import { errorMessage } from "@/lib/errorHints";
+import { formatDateTime } from "@/lib/format";
 import { useEffect, useMemo, useState } from "react";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useLocation, useParams, useSearch } from "wouter";
 
 import { hasOrgRole, useAuth } from "@/auth/AuthContext";
 import { Button } from "@/components/ui/Button";
-import { CopyButton } from "@/components/ui/CopyButton";
 import { InlineBanner } from "@/components/ui/InlineBanner";
 import { Input } from "@/components/ui/Input";
 import { Select } from "@/components/ui/Select";
@@ -13,6 +14,8 @@ import { Table, THead, Th, TBody, Tr, Td } from "@/components/ui/Table";
 import { Tabs } from "@/components/ui/Tabs";
 import { useConfirm } from "@/hooks/useConfirm";
 import { useHeaderSlot } from "@/components/shared/useHeaderSlot";
+import InviteLinkPanel from "@/components/shared/InviteLinkPanel";
+
 
 import {
   type OrgInvitationView,
@@ -25,22 +28,19 @@ import {
   updateOrgMemberRole,
 } from "@/api/orgMembers";
 import { type OrgRole } from "@/api/auth";
-import {
-  type OrgUsage,
-  fmtBytes,
-  fmtUSD,
-  getOrgUsage,
-} from "@/api/usage";
+import { createOrgTeam } from "@/api/orgs";
+import { fmtBytes, fmtUSD, getOrgUsage } from "@/api/usage";
 import SSOTab from "@/views/teams/tabs/SSOTab";
 import UsageTab from "@/views/teams/tabs/UsageTab";
 import AuditTab from "@/views/teams/tabs/AuditTab";
 
 const ORG_ROLES: OrgRole[] = ["member", "admin", "owner"];
 
-type Tab = "members" | "sso" | "usage" | "audit" | "billing";
+type Tab = "members" | "teams" | "sso" | "usage" | "audit" | "billing";
 
 const TABS: Array<{ id: Tab; label: string }> = [
   { id: "members", label: "Members + invitations" },
+  { id: "teams", label: "Teams" },
   { id: "sso", label: "SSO" },
   { id: "usage", label: "Usage" },
   { id: "audit", label: "Audit log" },
@@ -111,6 +111,7 @@ export default function OrgPage() {
 
         <main>
           {tab === "members" && <OrgMembers orgID={org.org_id} canManage={canManage} />}
+          {tab === "teams" && <OrgTeams orgID={org.org_id} canManage={canManage} />}
           {tab === "sso" && <SSOTab teamID={org.org_id} canManage={canManage} />}
           {tab === "usage" && <UsageTab orgID={org.org_id} />}
           {tab === "audit" && <AuditTab orgID={org.org_id} canManage={canManage} />}
@@ -122,44 +123,71 @@ export default function OrgPage() {
 }
 
 function OrgMembers({ orgID, canManage }: { orgID: string; canManage: boolean }) {
-  const [members, setMembers] = useState<OrgMemberView[]>([]);
-  const [invs, setInvs] = useState<OrgInvitationView[]>([]);
-  const [err, setErr] = useState<string | null>(null);
+  const { orgs } = useAuth();
+  const orgTeams = useMemo(
+    () => orgs.find((o) => o.org_id === orgID)?.teams ?? [],
+    [orgs, orgID],
+  );
+  const queryClient = useQueryClient();
+  const membersQuery = useQuery<OrgMemberView[]>({
+    queryKey: ["org-members", orgID],
+    queryFn: () => listOrgMembers(orgID),
+  });
+  // Invitations are admin-only server-side — don't fire the doomed request
+  // for a plain member (the manual fetch resolved [] in that case).
+  const invitationsQuery = useQuery<OrgInvitationView[]>({
+    queryKey: ["org-invitations", orgID],
+    queryFn: () => listOrgInvitations(orgID),
+    enabled: canManage,
+  });
+  const members = membersQuery.data ?? [];
+  const invs = invitationsQuery.data ?? [];
+  // Mutation failures share the banner with either fetch error (mutation
+  // wins, like the old single slot). They're tagged with their scope so a
+  // stale one never outlives an org switch — the manual reload cleared it
+  // there.
+  const errScope = `${orgID}:${canManage}`;
+  const [mutErrTag, setMutErrTag] = useState<{ scope: string; msg: string } | null>(null);
+  const setMutErr = (msg: string | null) =>
+    setMutErrTag(msg === null ? null : { scope: errScope, msg });
+  const mutErr = mutErrTag && mutErrTag.scope === errScope ? mutErrTag.msg : null;
+  const err =
+    mutErr ??
+    (membersQuery.error
+      ? errorMessage(membersQuery.error)
+      : invitationsQuery.error
+        ? errorMessage(invitationsQuery.error)
+        : null);
   const [busy, setBusy] = useState(false);
-  const [draft, setDraft] = useState({ email: "", role: "member" });
-  const [issuedToken, setIssuedToken] = useState<string | null>(null);
+  const [draft, setDraft] = useState({ email: "", role: "member", team_id: "" });
+  // Every invite issued in this session, newest first — tokens appear
+  // once server-side, so a second invite must not clobber the first's
+  // still-uncopied link.
+  const [issued, setIssued] = useState<Array<{ email: string; token: string }>>([]);
   const { confirm, dialog } = useConfirm();
 
-  const reload = async () => {
-    setErr(null);
-    try {
-      const [m, i] = await Promise.all([
-        listOrgMembers(orgID),
-        canManage ? listOrgInvitations(orgID) : Promise.resolve<OrgInvitationView[]>([]),
-      ]);
-      setMembers(m);
-      setInvs(i);
-    } catch (e) {
-      setErr(errorMessage(e));
-    }
+  // Post-mutation refresh: clear the shared error slot and refetch both lists.
+  const reload = () => {
+    setMutErr(null);
+    void queryClient.invalidateQueries({ queryKey: ["org-members", orgID] });
+    void queryClient.invalidateQueries({ queryKey: ["org-invitations", orgID] });
   };
-
-  useEffect(() => {
-    void reload();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [orgID, canManage]);
 
   const invite = async (ev: React.FormEvent) => {
     ev.preventDefault();
     setBusy(true);
-    setErr(null);
+    setMutErr(null);
     try {
-      const r = await createOrgInvitation(orgID, draft);
-      setIssuedToken(r.token);
-      setDraft({ email: "", role: "member" });
-      void reload();
+      const r = await createOrgInvitation(orgID, {
+        email: draft.email,
+        role: draft.role,
+        team_id: draft.team_id || undefined,
+      });
+      setIssued((list) => [{ email: draft.email, token: r.token }, ...list]);
+      setDraft({ email: "", role: "member", team_id: draft.team_id });
+      reload();
     } catch (e) {
-      setErr(errorMessage(e));
+      setMutErr(errorMessage(e));
     } finally {
       setBusy(false);
     }
@@ -175,9 +203,9 @@ function OrgMembers({ orgID, canManage }: { orgID: string; canManage: boolean })
     if (!ok) return;
     try {
       await deleteOrgInvitation(orgID, id);
-      void reload();
+      reload();
     } catch (e) {
-      setErr(errorMessage(e));
+      setMutErr(errorMessage(e));
     }
   };
 
@@ -195,9 +223,9 @@ function OrgMembers({ orgID, canManage }: { orgID: string; canManage: boolean })
     }
     try {
       await updateOrgMemberRole(orgID, userID, role);
-      void reload();
+      reload();
     } catch (e) {
-      setErr(errorMessage(e));
+      setMutErr(errorMessage(e));
     }
   };
 
@@ -211,9 +239,9 @@ function OrgMembers({ orgID, canManage }: { orgID: string; canManage: boolean })
     if (!ok) return;
     try {
       await removeOrgMember(orgID, userID);
-      void reload();
+      reload();
     } catch (e) {
-      setErr(errorMessage(e));
+      setMutErr(errorMessage(e));
     }
   };
 
@@ -261,23 +289,41 @@ function OrgMembers({ orgID, canManage }: { orgID: string; canManage: boolean })
                 ))}
               </Select>
             </div>
+            {orgTeams.length > 0 && (
+              <div>
+                <label htmlFor="org-invite-team" className="sr-only">
+                  Also add to team
+                </label>
+                <Select
+                  size="md"
+                  id="org-invite-team"
+                  value={draft.team_id}
+                  onChange={(e) => setDraft({ ...draft, team_id: e.target.value })}
+                  title="Also grant access to a team — otherwise the invitee joins the org with no team and needs a second invite"
+                >
+                  <option value="">No team (org only)</option>
+                  {orgTeams.map((t) => (
+                    <option key={t.team_id} value={t.team_id}>
+                      + team: {t.team_name}
+                    </option>
+                  ))}
+                </Select>
+              </div>
+            )}
             <Button variant="primary" type="submit" loading={busy}>
               Send invite
             </Button>
           </form>
-          {issuedToken && (
-            <div className="text-xs bg-surface-0 border border-border-subtle rounded p-3 font-mono break-all">
-              Invitation token (copy + email this — it appears once):
-              <br />
-              {issuedToken}
-              <div className="mt-2 flex gap-2 items-center font-sans">
-                <CopyButton value={issuedToken} label="Copy" copiedLabel="Copied" />
-                <Button variant="ghost" size="sm" onClick={() => setIssuedToken(null)}>
-                  Done — hide
-                </Button>
-              </div>
-            </div>
-          )}
+          {issued.map((inv) => (
+            <InviteLinkPanel
+              key={inv.token}
+              email={inv.email}
+              token={inv.token}
+              onDismiss={() =>
+                setIssued((list) => list.filter((x) => x.token !== inv.token))
+              }
+            />
+          ))}
         </section>
       )}
 
@@ -344,7 +390,7 @@ function OrgMembers({ orgID, canManage }: { orgID: string; canManage: boolean })
                     <Td>{i.email}</Td>
                     <Td>{i.role}</Td>
                     <Td className="text-fg-muted">
-                      {new Date(i.expires_at).toLocaleString()}
+                      {formatDateTime(i.expires_at)}
                     </Td>
                     <Td align="right">
                       <Button variant="danger" size="sm" onClick={() => cancel(i.id)}>
@@ -366,18 +412,12 @@ function OrgMembers({ orgID, canManage }: { orgID: string; canManage: boolean })
 // the caps is super-admin only (the platform admin console at
 // /admin/orgs). The data comes from the org usage view.
 function OrgBilling({ orgID }: { orgID: string }) {
-  const [usage, setUsage] = useState<OrgUsage | null>(null);
-  const [err, setErr] = useState<string | null>(null);
-
-  useEffect(() => {
-    let alive = true;
-    getOrgUsage(orgID)
-      .then((u) => alive && setUsage(u))
-      .catch((e) => alive && setErr(errorMessage(e)));
-    return () => {
-      alive = false;
-    };
-  }, [orgID]);
+  const usageQuery = useQuery({
+    queryKey: ["org-usage", orgID],
+    queryFn: () => getOrgUsage(orgID),
+  });
+  const usage = usageQuery.data ?? null;
+  const err = usageQuery.error ? errorMessage(usageQuery.error) : null;
 
   if (err) {
     return (
@@ -419,6 +459,107 @@ function OrgBilling({ orgID }: { orgID: string }) {
           </div>
         ))}
       </div>
+    </div>
+  );
+}
+
+// OrgTeams lists the org's teams (from the identity tree — no extra
+// fetch for the member's own orgs) and lets an org admin create one.
+// This is the real target of the OrgSwitcher's "create one" deep-link
+// (/orgs/:id?tab=teams).
+function OrgTeams({ orgID, canManage }: { orgID: string; canManage: boolean }) {
+  const { orgs, reloadIdentity, selectTeam } = useAuth();
+  const org = useMemo(() => orgs.find((o) => o.org_id === orgID), [orgs, orgID]);
+  const teams = org?.teams ?? [];
+  const [draft, setDraft] = useState({ name: "", slug: "" });
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+
+  const create = async () => {
+    if (!draft.name.trim()) return;
+    setBusy(true);
+    setErr(null);
+    try {
+      const t = await createOrgTeam({
+        name: draft.name.trim(),
+        slug: draft.slug.trim() || undefined,
+        org_id: orgID,
+      });
+      setDraft({ name: "", slug: "" });
+      // The new team lands in the identity tree; switch to it so the
+      // operator continues in the context they just created.
+      await reloadIdentity();
+      if (t?.id) await selectTeam(t.id);
+    } catch (e) {
+      setErr(errorMessage(e));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <div className="space-y-4">
+      <p className="text-sm text-fg-muted">
+        Teams partition the organization's resources (repos, runs, boards,
+        secrets). Most orgs need just one — the studio only surfaces team
+        switching when there are several.
+      </p>
+      {err && <InlineBanner tone="danger">{err}</InlineBanner>}
+      <Table caption="Teams of this organization">
+        <THead>
+          <Tr>
+            <Th>Name</Th>
+            <Th>Slug</Th>
+            <Th>Your role</Th>
+          </Tr>
+        </THead>
+        <TBody>
+          {teams.length === 0 && (
+            <Tr>
+              <Td colSpan={3} className="text-fg-muted">
+                No teams yet.
+              </Td>
+            </Tr>
+          )}
+          {teams.map((t) => (
+            <Tr key={t.team_id}>
+              <Td>
+                {t.team_name}
+                {t.personal && (
+                  <span className="ml-2 text-xs text-fg-muted">personal</span>
+                )}
+              </Td>
+              <Td className="font-mono text-xs">{t.team_slug}</Td>
+              <Td>{t.role}</Td>
+            </Tr>
+          ))}
+        </TBody>
+      </Table>
+      {canManage && (
+        <div className="flex flex-wrap items-end gap-2">
+          <label className="flex flex-col gap-1 text-xs text-fg-muted">
+            Team name
+            <Input
+              size="sm"
+              value={draft.name}
+              onChange={(e) => setDraft((d) => ({ ...d, name: e.target.value }))}
+              placeholder="e.g. Platform"
+            />
+          </label>
+          <label className="flex flex-col gap-1 text-xs text-fg-muted">
+            Slug (optional)
+            <Input
+              size="sm"
+              value={draft.slug}
+              onChange={(e) => setDraft((d) => ({ ...d, slug: e.target.value }))}
+              placeholder="platform"
+            />
+          </label>
+          <Button size="sm" onClick={() => void create()} disabled={busy || !draft.name.trim()}>
+            {busy ? <Spinner size="sm" /> : "Create team"}
+          </Button>
+        </div>
+      )}
     </div>
   );
 }

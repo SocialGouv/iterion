@@ -52,7 +52,7 @@
 ##  10. sarif_gen           — DETERMINISTIC tool. Emits SARIF 2.1.0 from
 ##                            confirmed advisories for code-scanning upload.
 ##  11. forge_report        — claude_code. Posts a STICKY summary comment +
-##                            inline review on the PR/MR and uploads SARIF
+##                            inline review on the PR and uploads SARIF
 ##                            to code-scanning, on GitHub / GitLab / Forgejo
 ##                            (native REST — see [[forge-report]]). Degrades
 ##                            gracefully (report stays local) with no PR /
@@ -78,7 +78,7 @@ vars:
   ## else origin/main|master, else HEAD~1. Override per run for a PR.
   base_ref:            string = ""
   head_ref:            string = "HEAD"
-  ## Optional PR/MR identifier for forge_report. When empty, the agent
+  ## Optional PR identifier for forge_report. When empty, the agent
   ## tries to derive it from the branch / git remote; if it still can't,
   ## it writes the report locally and skips the forge post (no failure).
   pr_ref:              string = ""
@@ -407,7 +407,8 @@ prompt review_user:
   Return review_output.
 
 prompt forge_report_system:
-  You post the supply-shield-cve report back onto the PR / MR
+  You post the supply-shield-cve report back onto the pull request
+  (PR; merge request on GitLab)
   using the forge's NATIVE REST API (GitHub, GitLab, or Forgejo/Gitea).
   You are read-only on the workspace except that you may run curl.
 
@@ -424,9 +425,9 @@ prompt forge_report_system:
      - GitHub  → host github.com / GHE; token $GH_TOKEN or $GITHUB_TOKEN.
      - GitLab  → token $GITLAB_TOKEN (header PRIVATE-TOKEN).
      - Forgejo/Gitea → token $FORGEJO_TOKEN or $GITEA_TOKEN (Authorization: token …).
-  2. Resolve the PR/MR number: prefer input.pr_ref; else derive from the
+  2. Resolve the PR number: prefer input.pr_ref; else derive from the
      current branch via the forge API (list open PRs/MRs for head branch).
-     If you cannot resolve a PR/MR or no token is present, DO NOT fail —
+     If you cannot resolve a PR or no token is present, DO NOT fail —
      set posted=false, mode="local-only", and stop after explaining in
      `summary` that the report stayed local at the report_path.
   3. STICKY summary comment: build a markdown body that begins with the
@@ -451,7 +452,7 @@ prompt forge_report_system:
 
 prompt forge_report_user:
   Workspace: {{input.workspace_dir}}
-  PR/MR ref hint: {{input.pr_ref}}
+  PR ref hint: {{input.pr_ref}}
   Marker: {{input.forge_marker}}
   Severity threshold: {{input.severity_threshold}}
   SARIF: {{input.sarif_path}}
@@ -464,7 +465,7 @@ prompt forge_report_user:
   {{input.summary}}
 
   Post the sticky comment + inline review + code-scanning upload on the
-  PR/MR via the native forge API. Degrade to local-only if there is no
+  PR via the native forge API. Degrade to local-only if there is no
   PR context or token. Return forge_report_output.
 
 ## ─── Nodes ────────────────────────────────────────────────────────
@@ -1223,7 +1224,7 @@ print(json.dumps({'sarif_path': out_path, 'result_count': len(results)}))
 agent forge_report:
   ## claude_code: needs curl + the bundled forge-report.md skill. Posts
   ## the sticky comment + inline review + code-scanning SARIF on the
-  ## PR/MR via the native forge REST API. Degrades to local-only when
+  ## PR via the native forge REST API. Degrades to local-only when
   ## there is no PR context / token — never fails the run.
   backend: "claude_code"
   model: "${ITERION_SEC_AUDIT_MODEL_CLAUDE:-claude-opus-4-8}"
@@ -1291,21 +1292,21 @@ workflow supply_shield_cve:
   ## onto the full image; build it from sandbox/sec/Dockerfile. Network
   ## defaults to open, so the vuln DBs are reachable. (Until CI publishes
   ## the ref, build locally and `docker tag` it to the ref below.)
+  ## Image pin survives ADR-082 Phase 2: the scanner toolchain genuinely
+  ## needs the baked sec image — devbox-installing it per run costs
+  ## minutes of Nix. Everything else (isolation, claude CLI, host-state
+  ## mounts) is the platform default.
   sandbox:
     image: "ghcr.io/socialgouv/iterion-sandbox-sec:edge"
-    user: "1000:1000"
-    mounts: ["type=bind,source=${localEnv:HOME}/.claude,target=/home/devbox/.claude,consistency=cached"]
     env:
-      CLAUDE_CONFIG_DIR: "/home/devbox/.claude"
+      ## Forge-token passthrough for the forge_report tail
+      ## (docker-local parity: the host env is the credential source).
+      ## ADR-082 Phase 3 moves these to file secrets delivered per run.
       GH_TOKEN: "${localEnv:GH_TOKEN}"
       GITHUB_TOKEN: "${localEnv:GITHUB_TOKEN}"
       GITLAB_TOKEN: "${localEnv:GITLAB_TOKEN}"
       FORGEJO_TOKEN: "${localEnv:FORGEJO_TOKEN}"
       GITEA_TOKEN: "${localEnv:GITEA_TOKEN}"
-    ## llm_review + forge_report are claude_code nodes, but the sec image
-    ## ships node+npm WITHOUT the claude CLI — install it once per
-    ## container (same gate as feature_dev / sec-audit-deps).
-    post_create: "set -e; claude --version >/dev/null 2>&1 || sudo npm install -g @anthropic-ai/claude-code@latest; claude --version >/dev/null 2>&1 || { echo 'claude install verification failed' >&2; exit 1; }"
 
   budget:
     max_parallel_branches: 4

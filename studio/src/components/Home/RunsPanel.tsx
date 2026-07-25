@@ -19,6 +19,9 @@ interface Props {
   runs: RunSummary[];
   loading: boolean;
   error: string | null;
+  // Active-repo scope (cloud): full name shown in the header so the
+  // operator knows the list is filtered. Null = unscoped.
+  scope?: string | null;
 }
 
 const MAX_RECENT_RUNS = 10;
@@ -34,7 +37,7 @@ const MAX_RECENT_RUNS = 10;
 // /runs page: we surface ONLY status === "running" from other
 // locations (not queued, not failed, not paused). The "View all →"
 // link is the place where the full cross-project history shows up.
-export default function RunsPanel({ runs, loading, error }: Props) {
+export default function RunsPanel({ runs, loading, error, scope }: Props) {
   const [, setLocation] = useLocation();
   const active = runs.filter((r) => isActiveStatus(r.status));
   const recent = runs
@@ -64,6 +67,11 @@ export default function RunsPanel({ runs, loading, error }: Props) {
       <header className="px-4 py-2.5 border-b border-border-default flex items-center justify-between">
         <h2 className="text-xs font-semibold uppercase tracking-wider text-fg-muted">
           Runs
+          {scope && (
+            <span className="ml-2 normal-case tracking-normal font-normal font-mono text-fg-subtle">
+              {scope}
+            </span>
+          )}
           {totalActive > 0 && (
             <span className="ml-2 inline-flex items-center gap-1 normal-case tracking-normal text-info-fg">
               <LiveDot tone="info" size="sm" />

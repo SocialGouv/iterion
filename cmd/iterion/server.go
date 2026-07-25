@@ -22,14 +22,17 @@ import (
 	"github.com/SocialGouv/iterion/pkg/auth/oidc"
 	"github.com/SocialGouv/iterion/pkg/auth/orgsso"
 	"github.com/SocialGouv/iterion/pkg/auth/wsticket"
+	"github.com/SocialGouv/iterion/pkg/botsource"
 	"github.com/SocialGouv/iterion/pkg/cli"
 	"github.com/SocialGouv/iterion/pkg/cloud/metrics"
 	"github.com/SocialGouv/iterion/pkg/cloud/orgsweep"
 	"github.com/SocialGouv/iterion/pkg/cloud/tracing"
 	"github.com/SocialGouv/iterion/pkg/cloudsched"
 	iterconfig "github.com/SocialGouv/iterion/pkg/config"
+	"github.com/SocialGouv/iterion/pkg/configshare"
 	"github.com/SocialGouv/iterion/pkg/dispatcher/boardmongo"
 	"github.com/SocialGouv/iterion/pkg/dispatcher/native"
+	"github.com/SocialGouv/iterion/pkg/eventbus"
 	"github.com/SocialGouv/iterion/pkg/forge"
 	"github.com/SocialGouv/iterion/pkg/identity"
 	iterlog "github.com/SocialGouv/iterion/pkg/log"
@@ -37,13 +40,18 @@ import (
 	"github.com/SocialGouv/iterion/pkg/marketplace"
 	"github.com/SocialGouv/iterion/pkg/orgusage"
 	"github.com/SocialGouv/iterion/pkg/pat"
+	"github.com/SocialGouv/iterion/pkg/pluginsource"
 	natsq "github.com/SocialGouv/iterion/pkg/queue/nats"
 	"github.com/SocialGouv/iterion/pkg/runview"
 	"github.com/SocialGouv/iterion/pkg/runview/runstream"
 	"github.com/SocialGouv/iterion/pkg/secrets"
 	"github.com/SocialGouv/iterion/pkg/server"
 	"github.com/SocialGouv/iterion/pkg/server/cloudpublisher"
+	"github.com/SocialGouv/iterion/pkg/store"
 	mongostore "github.com/SocialGouv/iterion/pkg/store/mongo"
+	"github.com/SocialGouv/iterion/pkg/trigger"
+	"github.com/SocialGouv/iterion/pkg/usernotify"
+	usernotifywebpush "github.com/SocialGouv/iterion/pkg/usernotify/webpush"
 	"github.com/SocialGouv/iterion/pkg/valkey"
 	"github.com/SocialGouv/iterion/pkg/webhooks"
 )
@@ -95,7 +103,31 @@ func init() {
 	f.StringVar(&serverOpts.dir, "dir", "", "Working directory")
 	f.StringVar(&serverOpts.storeDir, "store-dir", "", "Run store directory (local mode only)")
 	f.StringVar(&serverOpts.configPath, "config", "", "Path to YAML config (env vars take precedence)")
+	serverCmd.AddCommand(webpushKeysCmd)
 	rootCmd.AddCommand(serverCmd)
+}
+
+// webpushKeysCmd mints the VAPID keypair browser push notifications ride
+// on. Run once per deployment; every server replica must share the SAME
+// pair (rotating it invalidates all stored browser subscriptions).
+var webpushKeysCmd = &cobra.Command{
+	Use:   "webpush-keys",
+	Short: "Generate a VAPID keypair for browser push notifications",
+	Long: `Generate the VAPID keypair web-push notifications are signed with.
+
+Store both values in the server environment (e.g. the deploy secret):
+every replica must share the one pair, and rotating it invalidates every
+registered browser subscription (users just re-enable notifications in
+their settings).`,
+	Args: cobra.NoArgs,
+	RunE: func(cmd *cobra.Command, _ []string) error {
+		priv, pub, err := usernotifywebpush.GenerateVAPIDKeys()
+		if err != nil {
+			return fmt.Errorf("generate VAPID keys: %w", err)
+		}
+		fmt.Fprintf(cmd.OutOrStdout(), "ITERION_WEBPUSH_VAPID_PUBLIC_KEY=%s\nITERION_WEBPUSH_VAPID_PRIVATE_KEY=%s\n", pub, priv)
+		return nil
+	},
 }
 
 // randomBootstrapPassword returns a URL-safe random temporary password for the
@@ -281,6 +313,8 @@ func runServer(cmd *cobra.Command, _ []string) error {
 		OAuthForfait:     stores.oauth,
 		ForgeConnections: stores.forgeConn,
 		Identity:         authStack.identityStore,
+		PluginSources:    newPluginSourceResolver(stores, sealer, logger),
+		BotSources:       stores.botSources,
 	})
 	if err != nil {
 		return fmt.Errorf("server: build cloud publisher: %w", err)
@@ -311,6 +345,52 @@ func runServer(cmd *cobra.Command, _ []string) error {
 		WebhookURL:   cfg.Alerts.Webhook.URL,
 		StallTimeout: cfg.Alerts.StallTimeout,
 		BaseURL:      cfg.Auth.PublicURL,
+	}
+
+	// User notifications (web push): the shared event spine (NATSBus over
+	// the queue's connection — disjoint subject trees on one link) carries
+	// the runner pods' run-outcome events to exactly one server replica
+	// (queue-group delivery); the Mongo stores hold browser subscriptions,
+	// per-user prefs and the sent-episode dedup claims; the sweep seam
+	// reconciles episodes the lossy bus dropped. Enabled iff the VAPID
+	// keypair is configured (ITERION_WEBPUSH_*).
+	// The NATS events bus is the process-wide trigger-event spine: the
+	// board trigger evaluator AND the usernotify dispatcher both ride it,
+	// so it is built unconditionally (not only when web-push is on).
+	var eventsBus eventbus.Bus
+	eventsBus, err = eventbus.NewNATSBus(natsConn.NATS(), eventbus.NATSOptions{Logger: logger})
+	if err != nil {
+		return fmt.Errorf("server: build events bus: %w", err)
+	}
+	var pushSubs usernotifywebpush.SubscriptionStore
+	var notifPrefs usernotify.PrefsStore
+	var notifSent usernotify.SentStore
+	var notifiableRuns usernotify.ListNotifiableRuns
+	if cfg.WebPush.Enabled() {
+		subsStore := usernotifywebpush.NewMongoSubscriptionStore(st.DB())
+		prefsStore := usernotify.NewMongoPrefsStore(st.DB())
+		sentStore := usernotify.NewMongoSentStore(st.DB())
+		for name, ensure := range map[string]func(context.Context) error{
+			"push subscriptions": subsStore.EnsureSchema,
+			"notification prefs": prefsStore.EnsureSchema,
+			"sent notifications": sentStore.EnsureSchema,
+		} {
+			if sErr := ensure(rootCtx); sErr != nil {
+				return fmt.Errorf("server: ensure %s schema: %w", name, sErr)
+			}
+		}
+		pushSubs, notifPrefs, notifSent = subsStore, prefsStore, sentStore
+		notifiableRuns = func(ctx context.Context, since, before time.Time, limit int) ([]usernotify.RunRef, error) {
+			refs, lErr := st.ListNotifiableRuns(ctx, since, before, limit)
+			if lErr != nil {
+				return nil, lErr
+			}
+			out := make([]usernotify.RunRef, 0, len(refs))
+			for _, ref := range refs {
+				out = append(out, usernotify.RunRef{ID: ref.ID, Status: ref.Status, InteractionID: ref.Checkpoint.InteractionID, UpdatedAt: ref.UpdatedAt})
+			}
+			return out, nil
+		}
 	}
 
 	// The studio Home "Bots" panel lists first-class bots via /api/examples
@@ -376,6 +456,7 @@ func runServer(cmd *cobra.Command, _ []string) error {
 		Store:                  st,
 		CloudBoardFor:          func(tenantID string) native.BoardStore { return boardmongo.New(st.DB(), tenantID) },
 		CloudBoardCoordinator:  boardmongo.NewCoordinator(st.DB()),
+		TriggerStore:           trigger.NewMongoSubscriptionStore(st.DB()),
 		ScheduledBots:          cloudsched.NewMongoStore(st.DB()),
 		OrgPurgeSweeper:        orgPurgeSweeper,
 		Alerts:                 alertSettings,
@@ -397,9 +478,12 @@ func runServer(cmd *cobra.Command, _ []string) error {
 		ForgeIntegrations:      stores.forgeIntegration,
 		ForgeOAuthApps:         stores.forgeOAuthApp,
 		ForgeGitHubApp:         forgeGitHubAppFromEnv(),
+		PluginSources:          stores.pluginSources,
+		BotSources:             stores.botSources,
 		WebhookConfigs:         stores.webhooks.Configs,
 		WebhookDeliveries:      stores.webhooks.Deliveries,
 		WebhookCounter:         stores.webhooks.Counter,
+		ConfigShares:           stores.configShares,
 		OrgUsage:               stores.orgUsage,
 		OrgDefaults:            orgLimitDefaultsFromEnv(),
 		Audit:                  stores.audit,
@@ -408,6 +492,14 @@ func runServer(cmd *cobra.Command, _ []string) error {
 		PATs:                   stores.pat,
 		PATMaxTTL:              patMaxTTLFromEnv(logger),
 		Queue:                  natsConn,
+		EventsBus:              eventsBus,
+		PushSubscriptions:      pushSubs,
+		NotificationPrefs:      notifPrefs,
+		NotificationSent:       notifSent,
+		NotifiableRuns:         notifiableRuns,
+		WebPushVAPIDPublicKey:  cfg.WebPush.VAPIDPublicKey,
+		WebPushVAPIDPrivateKey: cfg.WebPush.VAPIDPrivateKey,
+		WebPushSubscriber:      cfg.WebPush.Subscriber,
 		MemoryStore:            stores.memory,
 		RunSecrets:             stores.runSecrets,
 		Sealer:                 sealer,
@@ -455,9 +547,12 @@ type cloudStores struct {
 	oauthPending     *secrets.MongoOAuthPendingStore
 	botBindings      *secrets.MongoBotSecretBindingStore
 	webhooks         *webhooks.MongoStores
+	configShares     *configshare.MongoStore
 	forgeConn        *forge.MongoConnectionStore
 	forgeIntegration *forge.MongoRepoIntegrationStore
 	forgeOAuthApp    *forge.MongoOAuthAppStore
+	pluginSources    *pluginsource.MongoStore
+	botSources       *botsource.MongoStore
 	orgSSO           *orgsso.MongoStore
 	orgDomain        *orgsso.MongoDomainStore
 	oidcState        *oidc.MongoStateStore
@@ -486,9 +581,12 @@ func buildCloudStores(ctx context.Context, st *mongostore.Store, logger *iterlog
 		oauthPending:     secrets.NewMongoOAuthPendingStore(st.DB()),
 		botBindings:      secrets.NewMongoBotSecretBindingStore(st.DB()),
 		webhooks:         webhooks.NewMongoStores(st.DB()),
+		configShares:     configshare.NewMongoStore(st.DB()),
 		forgeConn:        forge.NewMongoConnectionStore(st.DB()),
 		forgeIntegration: forge.NewMongoRepoIntegrationStore(st.DB()),
 		forgeOAuthApp:    forge.NewMongoOAuthAppStore(st.DB()),
+		pluginSources:    pluginsource.NewMongoStore(st.DB()),
+		botSources:       botsource.NewMongoStore(st.DB()),
 		orgSSO:           orgsso.NewMongoStore(st.DB()),
 		orgDomain:        orgsso.NewMongoDomainStore(st.DB()),
 		// Mongo-backed OIDC state store: PendingAuth must survive across replicas
@@ -522,6 +620,8 @@ func buildCloudStores(ctx context.Context, st *mongostore.Store, logger *iterlog
 		{"forge_connections", s.forgeConn.EnsureSchema},
 		{"repo_integrations", s.forgeIntegration.EnsureSchema},
 		{"forge_oauth_apps", s.forgeOAuthApp.EnsureSchema},
+		{"plugin_sources", s.pluginSources.EnsureSchema},
+		{"bot_sources", s.botSources.EnsureSchema},
 		{"org_sso_providers", s.orgSSO.EnsureSchema},
 		{"org_verified_domains", s.orgDomain.EnsureSchema},
 		{"oidc_states", s.oidcState.EnsureSchema},
@@ -530,7 +630,9 @@ func buildCloudStores(ctx context.Context, st *mongostore.Store, logger *iterlog
 		{"org_usage", func(c context.Context) error { return orgusage.EnsureSchema(c, st.DB()) }},
 		{"audit", func(c context.Context) error { return audit.EnsureSchema(c, st.DB()) }},
 		{"board", func(c context.Context) error { return boardmongo.EnsureSchema(c, st.DB()) }},
+		{"trigger_subscriptions", func(c context.Context) error { return trigger.NewMongoSubscriptionStore(st.DB()).EnsureSchema(c) }},
 		{"scheduled_bots", func(c context.Context) error { return cloudsched.EnsureSchema(c, st.DB()) }},
+		{"config_shares", func(c context.Context) error { return configshare.EnsureSchema(c, st.DB()) }},
 	}
 	if marketplaceEnabled {
 		schemas = append(schemas, schemaEnsurer{"marketplace", func(c context.Context) error { return marketplace.EnsureSchema(c, st.DB()) }})
@@ -547,6 +649,41 @@ func buildCloudStores(ctx context.Context, st *mongostore.Store, logger *iterlog
 		s.marketplace = marketplace.NewMongoStore(st.DB())
 	}
 	return s, nil
+}
+
+// newPluginSourceResolver builds the launch-time resolver for team-scoped,
+// git-hosted plugins (ADR-080). The cache dir is deliberately ephemeral: the
+// durable authority is the Mongo record, so a cold pod re-derives its checkouts
+// instead of depending on pod-local state that a restart would silently lose.
+//
+// The read credential is used strictly BY REFERENCE — the secret id travels on
+// the source record, the value is unsealed here and handed to the fetcher,
+// which passes it to git via an askpass helper (never argv, never a log line).
+func newPluginSourceResolver(stores *cloudStores, sealer secrets.Sealer, logger *iterlog.Logger) *pluginsource.Resolver {
+	if stores == nil || stores.pluginSources == nil || sealer == nil {
+		return nil
+	}
+	return &pluginsource.Resolver{
+		Store: stores.pluginSources,
+		Fetcher: &pluginsource.Fetcher{
+			CacheDir: filepath.Join(os.TempDir(), "iterion-plugin-sources"),
+			CredentialFor: func(ctx context.Context, s pluginsource.PluginSource) (string, error) {
+				if s.SecretID == "" {
+					return "", nil // public repository
+				}
+				gs, err := stores.genericSecrets.Get(store.WithTenant(ctx, s.TenantID), s.SecretID)
+				if err != nil {
+					return "", err
+				}
+				plain, err := secrets.OpenGenericSecret(sealer, gs.ID, gs.SealedSecret)
+				if err != nil {
+					return "", err
+				}
+				return string(plain), nil
+			},
+		},
+		Warnf: logger.Warn,
+	}
 }
 
 // schemaEnsurer pairs a Mongo collection label (used in the

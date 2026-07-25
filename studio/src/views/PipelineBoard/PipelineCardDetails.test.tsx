@@ -63,7 +63,7 @@ describe("PipelineCardDetailsBody", () => {
   it("Todo card shows inputs only — no produced elements, no response form", () => {
     const html = render(
       makeCard({
-        column_id: "todo",
+        column_id: "opened",
         kind: "task",
         issue_id: "iss-1",
         entry_input: { topic: "jazz", length: "3m" },
@@ -207,8 +207,24 @@ describe("PipelineCardDetailsBody", () => {
     expect(html).toContain('data-testid="produced"');
   });
 
+  it("renders object input values as pretty-printed JSON blocks, scalars inline", () => {
+    const html = render(
+      makeCard({
+        column_id: "opened",
+        kind: "task",
+        entry_input: { topic: "jazz", options: { tempo: 120, mood: "calm" } },
+      }),
+    );
+    // Structured value → <pre> with indented JSON (not a single-line blob).
+    expect(html).toContain("<pre");
+    expect(html).toContain("&quot;tempo&quot;: 120");
+    expect(html).not.toContain("{&quot;tempo&quot;:120");
+    // Scalar sibling keeps the plain rendering.
+    expect(html).toContain("jazz");
+  });
+
   it("renders a 'No inputs recorded' fallback and a stale banner", () => {
-    const html = render(makeCard({ column_id: "todo", kind: "task" }), true);
+    const html = render(makeCard({ column_id: "opened", kind: "task" }), true);
     expect(html).toContain("No additional inputs");
     expect(html).toContain("no longer on the board");
   });
@@ -218,7 +234,7 @@ describe("InputsList image carousel", () => {
   it("renders a JSON list of image paths as a carousel of workspace-image URLs", () => {
     const html = render(
       makeCard({
-        column_id: "todo",
+        column_id: "opened",
         entry_input: {
           character: "Boudicca",
           character_refs:
@@ -240,7 +256,7 @@ describe("InputsList image carousel", () => {
   it("renders a single bare image path as an image without cycling controls", () => {
     const html = render(
       makeCard({
-        column_id: "todo",
+        column_id: "opened",
         entry_input: { cover: "assets/cover art/../covers/final.png" },
       }),
     );
@@ -248,7 +264,7 @@ describe("InputsList image carousel", () => {
     // Path with whitespace stays plain text; a clean single path renders.
     const clean = render(
       makeCard({
-        column_id: "todo",
+        column_id: "opened",
         entry_input: { cover: "assets/covers/final.png" },
       }),
     );
@@ -259,7 +275,7 @@ describe("InputsList image carousel", () => {
   it("keeps sentences and mixed arrays as plain text", () => {
     const html = render(
       makeCard({
-        column_id: "todo",
+        column_id: "opened",
         entry_input: {
           notes: "voir le rendu final dans exports/preview.png",
           mixed: '["assets/refs/master.png", "pas une image"]',

@@ -4,6 +4,8 @@
 // twin of the CLI --max-* flags. Presentational: LaunchView owns the
 // field state and folds it into createRun() via buildBudgetPayload.
 
+import { Input } from "@/components/ui/Input";
+
 import type { BudgetFieldValues } from "./budgetPayload";
 
 export interface BudgetSectionProps {
@@ -12,9 +14,6 @@ export interface BudgetSectionProps {
   onToggle: () => void;
   onChange: (patch: Partial<BudgetFieldValues>) => void;
 }
-
-const inputClass =
-  "w-full px-2 py-1 text-xs font-mono rounded bg-surface-2 border border-border-default focus:outline-none focus:ring-1 focus:ring-accent";
 
 interface RowSpec {
   key: keyof BudgetFieldValues;
@@ -89,7 +88,7 @@ export default function BudgetSection({
         onClick={onToggle}
         title="Cap this run's cost / tokens / duration without editing the bot."
       >
-        <span>{show ? "▼" : "▶"}</span>
+        <span>{show ? "▾" : "▸"}</span>
         <span>Budget overrides (cost / tokens / duration)</span>
       </button>
       {show && (
@@ -109,12 +108,13 @@ export default function BudgetSection({
                 <div className="text-caption text-fg-subtle">{row.sub}</div>
               </label>
               <div>
-                <input
+                <Input
                   id={row.id}
+                  size="sm"
                   type={row.type}
                   min={row.type === "number" ? 0 : undefined}
                   step={row.step}
-                  className={inputClass}
+                  className="font-mono"
                   placeholder={row.placeholder}
                   value={values[row.key]}
                   onChange={(e) => onChange({ [row.key]: e.target.value })}

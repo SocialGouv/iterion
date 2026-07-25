@@ -2,8 +2,9 @@ import type { VarField } from "@/api/types";
 
 import { Checkbox } from "@/components/ui/Checkbox";
 import { Input } from "@/components/ui/Input";
+import { Select } from "@/components/ui/Select";
 import { Textarea } from "@/components/ui/Textarea";
-import { isPromptLikeVar, suggestRows } from "@/lib/promptVarHeuristics";
+import { isEnumVar, isPromptLikeVar, suggestRows } from "@/lib/promptVarHeuristics";
 
 interface Props {
   field: VarField;
@@ -15,12 +16,25 @@ interface Props {
    *  resolves to it (label-click focus) and the launch form can
    *  scroll/focus the first missing required field. */
   id?: string;
+  /** Force the prompt-style textarea for a string var regardless of the
+   *  name heuristics — e.g. a var the bot's launch hints promote to a
+   *  primary input. Non-string types ignore it. Undefined falls back to
+   *  isPromptLikeVar. */
+  promptLike?: boolean;
 }
 
 /** Per-type renderer for a single workflow var input. The form layer
  *  collects everything as strings — `POST /api/runs` accepts vars as a
  *  string→string map and the engine resolves them to the declared type. */
-export default function VarFieldInput({ field, value, onChange, required, invalid, id }: Props) {
+export default function VarFieldInput({
+  field,
+  value,
+  onChange,
+  required,
+  invalid,
+  id,
+  promptLike,
+}: Props) {
   const common = {
     id,
     "aria-required": required || undefined,
@@ -75,11 +89,46 @@ export default function VarFieldInput({ field, value, onChange, required, invali
       );
     case "string":
     default:
+      // Enum-constrained string vars render a fixed-choice select (the
+      // same ui/Select the launch Engine-options pickers use). The enum
+      // wins over the prompt-like heuristics AND a forced `promptLike`
+      // (launch-hint prominence) — a closed value list is never a prompt
+      // body. A current value outside the list (stale preset / query
+      // param) stays visible as a disabled-but-selected "(invalid: x)"
+      // option instead of silently snapping to another value.
+      if (isEnumVar(field)) {
+        const options = field.enum ?? [];
+        const stale = !options.includes(value);
+        return (
+          <Select
+            value={value}
+            onChange={(e) => onChange(e.currentTarget.value)}
+            error={invalid}
+            {...common}
+          >
+            {stale &&
+              (value === "" ? (
+                <option value="" disabled>
+                  Select a value…
+                </option>
+              ) : (
+                <option value={value} disabled>
+                  (invalid: {value})
+                </option>
+              ))}
+            {options.map((opt) => (
+              <option key={opt} value={opt}>
+                {opt}
+              </option>
+            ))}
+          </Select>
+        );
+      }
       // Long-form prompt-like fields (suffix _prompt/_description, exact
       // match on prompt/description/instructions, or any string var
       // declared without a default) get a multi-row monospace textarea
       // so authors can paste full prompt bodies comfortably.
-      if (isPromptLikeVar(field)) {
+      if (promptLike ?? isPromptLikeVar(field)) {
         return (
           <Textarea
             value={value}

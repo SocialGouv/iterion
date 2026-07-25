@@ -110,7 +110,7 @@ body: |
 
   ## Candidate diff (DRAFT)
 
-  Path: `.iterion/security/patches/<id>/patch.diff`
+  Path: `.sec-audit/patches/<id>/patch.diff`
 
   ## Reviewer checklist
 
@@ -124,7 +124,7 @@ body: |
         updated consistently.
   - [ ] Forward-secrecy / key-rotation behavior unchanged or
         documented.
-  - [ ] Reviewed against `.iterion/security/context.md` threat
+  - [ ] Reviewed against `.sec-audit/context.md` threat
         model section 4.
 
   ## Original finding
@@ -146,7 +146,7 @@ not crypto (a file named `crypto_test.go` testing an unrelated
 struct, a `tls` package that only formats logs). In that case the
 human reviewer:
 
-1. Adds an entry to `.iterion/security/fp-known.yaml` (see
+1. Adds an entry to `.sec-audit/fp-known.yaml` (see
    `[[fp-memory]]`) so future runs don't re-surface it.
 2. Closes the kanban issue with `won't-fix`.
 

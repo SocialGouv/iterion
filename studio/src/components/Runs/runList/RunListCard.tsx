@@ -2,11 +2,13 @@ import { memo } from "react";
 
 import type { RunSummary } from "@/api/runs";
 import { Badge } from "@/components/ui/Badge";
+import { Button } from "@/components/ui/Button";
 import { LiveDot } from "@/components/ui/LiveDot";
 import { clickableRowProps } from "@/lib/a11y";
 import { formatRelative } from "@/lib/format";
 
 import { STATUS_VARIANT, labelForStatus } from "../runStatusMeta";
+import { isResumable } from "../runStatusActions";
 
 import { BotAvatar } from "./BotAvatar";
 import {
@@ -19,12 +21,16 @@ import { SourceBadge } from "./SourceBadge";
 
 export const RunListCard = memo(function RunListCard({
   run,
+  resuming,
   onOpen,
   onFilterBot,
+  onResume,
 }: {
   run: RunSummary;
+  resuming: boolean;
   onOpen: (id: string) => void;
   onFilterBot: (botKey: string) => void;
+  onResume: (id: string) => void;
 }) {
   // A div (not a <button>) so the bot-avatar button can nest validly;
   // keyboard semantics are restored via clickableRowProps (role + Enter/Space).
@@ -45,6 +51,25 @@ export const RunListCard = memo(function RunListCard({
         <span className="font-medium truncate">
           {friendlyLabel(run)}
         </span>
+        {/* Permanent (not hover-revealed) on cards — touch has no hover. */}
+        {isResumable(run.status) && (
+          <Button
+            variant="secondary"
+            size="sm"
+            className="ml-auto h-6 px-2 text-caption"
+            loading={resuming}
+            onClick={(e) => {
+              e.stopPropagation();
+              onResume(run.id);
+            }}
+            // Keep Enter/Space on the button from bubbling to the card's
+            // clickableRowProps handler (which would navigate instead).
+            onKeyDown={(e) => e.stopPropagation()}
+            title="Resume from the last checkpoint"
+          >
+            Resume
+          </Button>
+        )}
       </div>
       {workflowDisplay(run) && (
         <div className="text-micro text-fg-default truncate">

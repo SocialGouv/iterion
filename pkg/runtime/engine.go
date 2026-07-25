@@ -7,6 +7,7 @@ package runtime
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
@@ -108,7 +109,9 @@ type Engine struct {
 	sandboxHostStateDefault  string                   // global ITERION_SANDBOX_HOST_STATE snapshot; set via WithSandboxHostStateDefault
 	attachmentPromote        AttachmentPromoteFunc    // optional: invoked after CreateRun to materialise attachments
 	bundle                   *bundle.Bundle           // optional: bundle backing this run; nil for plain .bot runs
+	contributions            *Contributions           // optional: pre-resolved plugin/library skills (cloud runner pods have no iterion home); nil = resolve locally. Set via WithContributions
 	pauseSignal              <-chan struct{}          // optional: closed by Service.Pause to request a soft pause at the next safe boundary; nil disables operator pause
+	overrideCh               <-chan *OverrideMsg      // optional: live-steering commands drained at the same safe boundary (see override.go); nil disables steering
 	dailyCap                 *DailyCapGuard           // optional: per-(store, UTC-day) spend cap; nil disables it. Set via WithDailyCap
 	callbackURL              string                   // optional: run-completion webhook target persisted on the run; set via WithCallback
 	callbackToken            string                   // optional: opaque correlation token echoed in the completion payload; set via WithCallback
@@ -116,6 +119,7 @@ type Engine struct {
 	boardMCPHandler          http.Handler             // optional: serves the board MCP routes; when set + a sandbox is active, a per-run gateway-reachable listener is started so sandboxed board-cap nodes can write the operator's board (C082). Set via WithBoardMCP; nil disables sandboxed board-emit (CLI runs with no server).
 	subbotRunner             SubbotRunner             // optional: host-supplied closure that compiles + runs a child .bot for a `subbot` node. nil → subbot nodes hard-error (the runtime can't compile a child itself — import cycle with runview). Set via WithSubbotRunner.
 	sandboxRunObserver       func(sandbox.Run)        // optional: invoked with the live sandbox Run right after it starts, so the host (cloud runner) can drive mid-run file-secret refresh against the driver's SecretFileRefresher. nil disables it. Set via WithSandboxRunObserver.
+	answersBell              answersDoorbell          // in-process fast-path waking await_answers nodes when an async interaction is answered (ADR-081); rung via NotifyInteractionAnswered
 
 	// activeBudget points at the SharedBudget of the run currently
 	// executing in this engine, published atomically by newRunState so an
@@ -155,6 +159,16 @@ type SubbotRequest struct {
 	Vars        map[string]any // resolved `with:` mappings + `_lease_<resource>` instance ids
 	ParentRunID string
 	NodeID      string
+	// ReattachKey uniquely identifies THIS execution of the subbot node
+	// (node id + loop-iteration path + fan-out branch id) so the runner can
+	// persist the child run id under it on the parent and, on a resumed
+	// re-execution, re-attach to that in-flight/finished child instead of
+	// spawning a fresh one. Stable across resume (branch ids are
+	// deterministic), unique per concurrent execution (branch id
+	// disambiguates fan-out) and per loop iteration (iteration path
+	// disambiguates loops). Mongo-field-safe (no '.'/'$'). Empty disables
+	// re-attach (the runner always spawns fresh).
+	ReattachKey string
 }
 
 // SubbotRunner compiles and runs a child .bot as a nested run and returns its
@@ -224,13 +238,11 @@ type runState struct {
 	outputs      map[string]map[string]any
 	artifacts    map[string]map[string]any // publish name → output
 	loopCounters map[string]int
-	// incomingEdge is the concrete workflow edge selected to enter the node
-	// currently executing on the main path. It disambiguates inputs when
-	// several correction loops target the same node and their source outputs
-	// all remain present. incomingEdgeIndex is its 1-based position in
-	// workflow.Edges, persisted in checkpoints for exact failed-node resume.
-	incomingEdge      *ir.Edge
-	incomingEdgeIndex int
+	// loopOverrides holds the live-steering iteration grants (bump_loop):
+	// loop name → extra iterations added to the loop's resolved max.
+	// Written only by the execution-loop goroutine (applyOverride) and
+	// re-seeded at resume from Run.LoopOverrides. nil until first bump.
+	loopOverrides map[string]int
 	// loopPreviousOutput holds the snapshot of the source node output from
 	// the PREVIOUS traversal of a given loop's edge — i.e., one iteration
 	// behind the current one. Workflows reference it as
@@ -310,8 +322,12 @@ type runState struct {
 // payloads target. Bundling them keeps callers from partially
 // updating the group.
 type resumeBackendState struct {
-	nodeID       string
-	conversation []byte
+	nodeID string
+	// conversation is raw JSON; typed json.RawMessage so the value
+	// injected under delegate.ResumeConversationKey satisfies the
+	// consumer's json.RawMessage assertion in applyResumeContinuity
+	// (a plain []byte silently failed it and dropped the rehydration).
+	conversation json.RawMessage
 	sessionID    string
 }
 

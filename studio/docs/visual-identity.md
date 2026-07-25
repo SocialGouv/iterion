@@ -151,8 +151,8 @@ shows the compact "I" monogram + caret. No icon, no logotype.
 
 The studio stays **neutral, modern, tech-oriented** (it's tooling). The
 one identity flavour layered on top is a *subtle, gentle* nod to
-hacker/terminal culture — never the Roman-imperator marketing voice (that
-stays in the README, never in-app). "Tone only":
+hacker/terminal culture. Product messaging uses the infrastructure/control-plane
+analogy consistently across the README and the public landing. "Tone only":
 
 - **Monospace for technical identifiers** — run-ids, commit SHAs,
   node-ids, branch names render in `font-mono`. Reads as a terminal and

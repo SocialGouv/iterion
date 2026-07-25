@@ -18,6 +18,31 @@ import (
 	"github.com/SocialGouv/iterion/pkg/backend/tool/privacy"
 )
 
+// ctxKeyBashExtraEnv carries per-task env additions (KEY=value entries)
+// for the bash builtin through the tool-execution context.
+type ctxKeyBashExtraEnv struct{}
+
+// WithBashExtraEnv returns a context carrying env additions the bash
+// builtin appends to every command's inherited environment. The claw
+// backend installs Task.ExtraEnv here (run-level provisioning such as
+// the devbox profile PATH) so an in-process bash call sees the same
+// environment a delegate CLI spawn would. Empty env returns ctx as-is.
+func WithBashExtraEnv(ctx context.Context, env []string) context.Context {
+	if len(env) == 0 {
+		return ctx
+	}
+	return context.WithValue(ctx, ctxKeyBashExtraEnv{}, env)
+}
+
+// BashExtraEnvFromContext returns the env additions installed by
+// WithBashExtraEnv, or nil.
+func BashExtraEnvFromContext(ctx context.Context) []string {
+	if env, ok := ctx.Value(ctxKeyBashExtraEnv{}).([]string); ok {
+		return env
+	}
+	return nil
+}
+
 // RegisterClawBuiltins registers the standard claw-code-go built-in tools
 // against the given Registry, making them callable by claw-backend agents
 // that declare e.g. `tools: [read_file, write_file, bash]` in their .bot
@@ -49,8 +74,16 @@ func RegisterClawBuiltinsWithEnv(reg *Registry, workspace string, bashExtraEnv [
 		if rewritten, changed := rewrite.RewriteCommandFieldCtx(ctx, input); changed {
 			input = rewritten
 		}
-		if len(bashExtraEnv) > 0 {
-			return clawtools.ExecuteBashWithEnv(ctx, input, workspace, bashExtraEnv)
+		// Per-task env (Task.ExtraEnv, installed into ctx by the claw
+		// backend — run-level provisioning such as the devbox profile
+		// PATH) composes after the registration-time env so on a
+		// duplicate key the per-task value wins.
+		extraEnv := bashExtraEnv
+		if ctxEnv := BashExtraEnvFromContext(ctx); len(ctxEnv) > 0 {
+			extraEnv = append(append([]string{}, bashExtraEnv...), ctxEnv...)
+		}
+		if len(extraEnv) > 0 {
+			return clawtools.ExecuteBashWithEnv(ctx, input, workspace, extraEnv)
 		}
 		return clawtools.ExecuteBash(ctx, input, workspace)
 	}
@@ -576,6 +609,9 @@ func RegisterClawAll(reg *Registry, defaults ClawDefaults) error {
 		return err
 	}
 	if err := RegisterAskUser(reg, defaults.AskUser); err != nil {
+		return err
+	}
+	if err := RegisterAsyncAsk(reg); err != nil {
 		return err
 	}
 	if err := RegisterClawSubagents(reg, defaults.Subagent); err != nil {

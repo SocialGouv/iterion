@@ -101,7 +101,7 @@ Five concrete defects in the `.bot`:
 
 2. **The target API was not specified concretely.** The plan said
    "bridge to claw-code-go" without naming the entry point
-   (`pkg/api.Client.StreamResponse`). The agent invented a different
+   (`claw-code-go/pkg/api.Client.StreamResponse`). The agent invented a different
    bridge point (`pkg/sdk/`) that looked simpler.
 
 3. **The migration scanner was textually scoped, not architecturally
@@ -166,7 +166,7 @@ A workflow that would have caught this:
   edit-list. "After this work, package X cannot be reached from package
   Y" is testable. "Replace X with Y" is gameable.
 - [ ] Identify the **target API entry point** by exact symbol name
-  (e.g. `pkg/api.Client.StreamResponse`). Forbid alternatives explicitly.
+  (e.g. `claw-code-go/pkg/api.Client.StreamResponse`). Forbid alternatives explicitly.
 - [ ] Define a **test that observes the dependency graph**, not just the
   source files. `go list -deps` or `go mod why` or a recursive grep into
   vendored sub-modules. If your scanner can be satisfied by moving
@@ -382,7 +382,8 @@ Run-005's batches were:
   (api_errors, streaming_types, generation_types) so the rest of the
   rewrite has stable type names.
 - **Batch 2 — engine:** build the new generation primitives
-  (generation.go, generation_tool.go) calling pkg/api.Client.StreamResponse
+  (generation.go, generation_tool.go) calling
+  `claw-code-go/pkg/api.Client.StreamResponse`
   *without* swapping any call site yet.
 - **Batch 3 — swap:** replace every iterion call site to use the new
   engine instead of the old wrapper. Goai imports drop out of iterion

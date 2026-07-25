@@ -245,6 +245,71 @@ func TestBudgetTokensExceeded(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
+// Test: warn_tokens advisory — warns once, never blocks
+// ---------------------------------------------------------------------------
+
+func TestWarnTokensAdvisoryNeverBlocks(t *testing.T) {
+	wf := &ir.Workflow{
+		Name:  "warn_tokens_test",
+		Entry: "a",
+		Nodes: map[string]ir.Node{
+			"a":    &ir.AgentNode{BaseNode: ir.BaseNode{ID: "a"}},
+			"b":    &ir.AgentNode{BaseNode: ir.BaseNode{ID: "b"}},
+			"c":    &ir.AgentNode{BaseNode: ir.BaseNode{ID: "c"}},
+			"done": &ir.DoneNode{BaseNode: ir.BaseNode{ID: "done"}},
+			"fail": &ir.FailNode{BaseNode: ir.BaseNode{ID: "fail"}},
+		},
+		Edges: []*ir.Edge{
+			{From: "a", To: "b"},
+			{From: "b", To: "c"},
+			{From: "c", To: "done"},
+		},
+		Schemas: map[string]*ir.Schema{},
+		Prompts: map[string]*ir.Prompt{},
+		Vars:    map[string]*ir.Var{},
+		Loops:   map[string]*ir.Loop{},
+		// Advisory-only budget: no hard cap. 3 nodes × 60 tokens cross the
+		// 100-token warn threshold on the second node.
+		Budget: &ir.Budget{WarnTokens: 100},
+	}
+
+	exec := newStubExecutor()
+	for _, id := range []string{"a", "b", "c"} {
+		exec.on(id, func(_ map[string]any) (map[string]any, error) {
+			return map[string]any{"ok": true, "_tokens": 60}, nil
+		})
+	}
+
+	s := tmpStore(t)
+	eng := New(wf, s, exec)
+
+	// The whole point: crossing the advisory threshold must not fail the run.
+	if err := eng.Run(context.Background(), "run-warn-tokens", nil); err != nil {
+		t.Fatalf("advisory threshold must never block, got: %v", err)
+	}
+
+	events, err := s.LoadEvents(context.Background(), "run-warn-tokens")
+	if err != nil {
+		t.Fatalf("load events: %v", err)
+	}
+	warnings := 0
+	for _, evt := range events {
+		if evt.Type == store.EventBudgetExceeded {
+			t.Errorf("unexpected budget_exceeded event: %v", evt.Data)
+		}
+		if evt.Type == store.EventBudgetWarning && evt.Data["dimension"] == "tokens" {
+			warnings++
+			if adv, _ := evt.Data["advisory"].(bool); !adv {
+				t.Errorf("expected advisory=true on warn_tokens warning, got %v", evt.Data)
+			}
+		}
+	}
+	if warnings != 1 {
+		t.Errorf("expected exactly 1 advisory warning (deduped), got %d", warnings)
+	}
+}
+
+// ---------------------------------------------------------------------------
 // Test: cost-based budget exceeded
 // ---------------------------------------------------------------------------
 

@@ -2,13 +2,14 @@ package trigger
 
 import (
 	"context"
+	"runtime/debug"
 	"sync"
 	"time"
 
-	"github.com/robfig/cron/v3"
-
 	"github.com/SocialGouv/iterion/pkg/bundle"
 	iterlog "github.com/SocialGouv/iterion/pkg/log"
+	"github.com/SocialGouv/iterion/pkg/schedgate"
+	"github.com/SocialGouv/iterion/pkg/store"
 )
 
 // Scheduler is the in-process timer source for schedule-kind subscriptions:
@@ -29,12 +30,65 @@ type Scheduler struct {
 	logger   *iterlog.Logger
 	interval time.Duration
 	now      func() time.Time
+	gate     *ScheduleGate
 
 	mu       sync.Mutex
 	nextFire map[string]time.Time // sub.ID -> next due instant (in-memory)
+	// lastTickAt / lastSubsSeen back Status(): the observable proof the
+	// scheduler loop is alive (a dead loop shows a frozen tick instant
+	// instead of going silent).
+	lastTickAt   time.Time
+	lastSubsSeen int
 
 	stop chan struct{}
 	done chan struct{}
+}
+
+// SchedulerStatus is the read-only health snapshot behind
+// /api/v1/triggers/health.
+type SchedulerStatus struct {
+	// LastTickAt is when tick() last ran (zero before the first tick).
+	LastTickAt time.Time `json:"last_tick_at"`
+	// Subscriptions is the schedule-kind subscription count seen on the
+	// last tick.
+	Subscriptions int `json:"subscriptions"`
+	// Armed is how many subscriptions currently hold a next-fire slot.
+	Armed int `json:"armed"`
+	// IntervalSeconds is the tick cadence, so a reader can judge
+	// staleness ("last tick 3 intervals ago = dead").
+	IntervalSeconds float64 `json:"interval_seconds"`
+}
+
+// Status reports the scheduler's liveness snapshot. Safe on nil (zero
+// value) so callers don't have to gate on wiring.
+func (s *Scheduler) Status() SchedulerStatus {
+	if s == nil {
+		return SchedulerStatus{}
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return SchedulerStatus{
+		LastTickAt:      s.lastTickAt,
+		Subscriptions:   s.lastSubsSeen,
+		Armed:           len(s.nextFire),
+		IntervalSeconds: s.interval.Seconds(),
+	}
+}
+
+// ScheduleGate bundles the overlap/guard dependencies (pkg/schedgate)
+// the scheduler consults before firing a due subscription. Lister
+// counts the schedule's live runs (nil disables the overlap check);
+// Audit receives one TickRecord per decision (nil disables auditing).
+// GuardDir is the working directory guards run in (the workspace the
+// server was started from when empty).
+type ScheduleGate struct {
+	Lister   schedgate.ScheduleRunLister
+	Audit    func(schedgate.TickRecord)
+	GuardDir string
+	// Reap cancels keepalive runs found stale at a tick (so the zombie
+	// frees resources once a fresh run has relaunched). Nil is safe — the
+	// stale run simply lingers but no longer blocks relaunch.
+	Reap func(ctx context.Context, runIDs []string)
 }
 
 // SchedulerOption configures a Scheduler.
@@ -48,6 +102,24 @@ func WithSchedulerLogger(l *iterlog.Logger) SchedulerOption {
 // WithSchedulerClock injects a clock for tests.
 func WithSchedulerClock(fn func() time.Time) SchedulerOption {
 	return func(s *Scheduler) { s.now = fn }
+}
+
+// WithSchedulerGate wires the overlap/guard gate (nil-safe: a nil gate
+// keeps the pre-gate fire-always behavior).
+func WithSchedulerGate(g *ScheduleGate) SchedulerOption {
+	return func(s *Scheduler) { s.gate = g }
+}
+
+// WithSchedulerInterval overrides the loop tick resolution (default 1
+// minute). Set it below a minute (e.g. 5s) so sub-minute keepalive
+// subscriptions can actually fire at their cadence — the loop can only
+// fire a subscription as often as it ticks. Values <= 0 are ignored.
+func WithSchedulerInterval(d time.Duration) SchedulerOption {
+	return func(s *Scheduler) {
+		if d > 0 {
+			s.interval = d
+		}
+	}
 }
 
 // NewScheduler builds a scheduler over a subscription store + launcher.
@@ -114,22 +186,29 @@ func (s *Scheduler) tick(ctx context.Context, now time.Time) {
 		s.warn("scheduler: list subscriptions: %v", err)
 		return
 	}
+	scheduleSubs := 0
 	seen := map[string]bool{}
 	for _, sub := range subs {
-		if sub.Invocation != bundle.InvocationKindSchedule || !sub.Enabled || sub.Cron == "" {
+		if !sub.Enabled {
 			continue
 		}
-		sched, perr := cron.ParseStandard(sub.Cron)
-		if perr != nil {
-			s.warn("scheduler: bad cron %q on %s: %v", sub.Cron, sub.ID, perr)
+		// The subscription owns its cadence (cron or keepalive interval) —
+		// see Subscription.NextFire. ok=false = not a timer sub; err = bad cron.
+		next, ok, err := sub.NextFire(now)
+		if !ok {
 			continue
 		}
+		if err != nil {
+			s.warn("scheduler: bad cron %q on %s: %v", sub.Cron, sub.ID, err)
+			continue
+		}
+		scheduleSubs++
 		seen[sub.ID] = true
 
 		s.mu.Lock()
 		nf, armed := s.nextFire[sub.ID]
 		if !armed {
-			s.nextFire[sub.ID] = sched.Next(now)
+			s.nextFire[sub.ID] = next
 			s.mu.Unlock()
 			continue
 		}
@@ -137,11 +216,15 @@ func (s *Scheduler) tick(ctx context.Context, now time.Time) {
 			s.mu.Unlock()
 			continue
 		}
-		s.nextFire[sub.ID] = sched.Next(now)
+		s.nextFire[sub.ID] = next
 		s.mu.Unlock()
 
-		s.fire(ctx, sub)
+		s.fireIsolated(ctx, sub)
 	}
+	s.mu.Lock()
+	s.lastTickAt = now
+	s.lastSubsSeen = scheduleSubs
+	s.mu.Unlock()
 	// GC next-fire entries for removed/disabled subscriptions.
 	s.mu.Lock()
 	for id := range s.nextFire {
@@ -152,11 +235,68 @@ func (s *Scheduler) tick(ctx context.Context, now time.Time) {
 	s.mu.Unlock()
 }
 
+// fireIsolated contains a panic from one subscription's fire (a bad
+// guard closure, a launcher bug) so one poisoned entry cannot kill the
+// whole scheduler loop — the next tick still serves every other
+// subscription. The panic is logged with its stack, never swallowed
+// silently.
+func (s *Scheduler) fireIsolated(ctx context.Context, sub Subscription) {
+	defer func() {
+		if r := recover(); r != nil {
+			s.warn("scheduler: PANIC firing %s (%s): %v\n%s", sub.ID, sub.BotID, r, debug.Stack())
+		}
+	}()
+	s.fire(ctx, sub)
+}
+
 func (s *Scheduler) fire(ctx context.Context, sub Subscription) {
 	vars := make(map[string]string, len(sub.Vars))
 	for k, v := range sub.Vars {
 		vars[k] = v
 	}
+
+	// Overlap + guard gate (pkg/schedgate). A skipped tick is a normal,
+	// audited outcome — the cron slot simply passes.
+	policy := sub.Policy()
+	var lister schedgate.ScheduleRunLister
+	if s.gate != nil {
+		lister = s.gate.Lister
+	}
+	out := schedgate.Apply(ctx, schedgate.GateInput{
+		Policy:     policy,
+		Lister:     lister,
+		ScheduleID: sub.ID,
+		Record:     s.tickRecord(sub, ""),
+		GuardDir:   s.guardDir(),
+		GuardEnv: []string{
+			"ITERION_SCHEDULE=" + sub.ID,
+			"ITERION_SCHEDULE_BOT=" + sub.BotID,
+		},
+		Logger: s.logger,
+		Now:    s.now(),
+	})
+	if !out.Proceed {
+		s.audit(out.Record)
+		switch out.Record.Decision {
+		case schedgate.TickSkippedOverlap:
+			s.warn("scheduler: %s (%s) skipped — %s", sub.ID, sub.BotID, out.Record.Reason)
+		case schedgate.TickGuardError:
+			s.warn("scheduler: %s (%s) guard error: %s", sub.ID, sub.BotID, out.Record.Error)
+		}
+		return
+	}
+	if out.GuardRan {
+		vars[policy.GuardVar] = out.GuardStdout
+	}
+	// Reap keepalive zombies (stale runs the gate dropped so this fresh
+	// launch could proceed) so they free resources.
+	if len(out.ReapRunIDs) > 0 {
+		s.warn("scheduler: %s (%s) reaping %d stale keepalive run(s): %v", sub.ID, sub.BotID, len(out.ReapRunIDs), out.ReapRunIDs)
+		if s.gate != nil && s.gate.Reap != nil {
+			s.gate.Reap(ctx, out.ReapRunIDs)
+		}
+	}
+
 	plan := LaunchPlan{
 		BotID:           sub.BotID,
 		TenantID:        sub.TenantID,
@@ -174,10 +314,45 @@ func (s *Scheduler) fire(ctx context.Context, sub Subscription) {
 			Subject:    Subject{Type: "schedule", ID: sub.ID},
 			OccurredAt: s.now(),
 		},
+		// Typed provenance: the overlap gate counts this schedule's live
+		// runs through source.schedule_id on the launched run.
+		SourceRef: &store.RunSource{
+			Kind:         store.RunSourceKindSchedule,
+			ScheduleID:   sub.ID,
+			ScheduleName: sub.BotID,
+		},
 	}
-	if _, err := s.launcher.Launch(ctx, plan); err != nil {
+	runID, err := s.launcher.Launch(ctx, plan)
+	rec := s.tickRecord(sub, schedgate.TickFired)
+	rec.RunID = runID
+	if err != nil {
+		rec.Error = err.Error()
 		s.warn("scheduler: launch %s (%s): %v", sub.ID, sub.BotID, err)
 	}
+	s.audit(rec)
+}
+
+// tickRecord stamps the invariant trigger-surface audit fields.
+func (s *Scheduler) tickRecord(sub Subscription, decision schedgate.TickDecision) schedgate.TickRecord {
+	rec := schedgate.NewTickRecord(schedgate.SurfaceTrigger, sub.ID, s.now(), decision)
+	rec.ScheduleName = sub.BotID
+	rec.BotID = sub.BotID
+	rec.TenantID = sub.TenantID
+	rec.Cron = sub.Cron
+	return rec
+}
+
+func (s *Scheduler) audit(rec schedgate.TickRecord) {
+	if s.gate != nil && s.gate.Audit != nil {
+		s.gate.Audit(rec)
+	}
+}
+
+func (s *Scheduler) guardDir() string {
+	if s.gate != nil {
+		return s.gate.GuardDir
+	}
+	return ""
 }
 
 func (s *Scheduler) warn(format string, args ...any) {

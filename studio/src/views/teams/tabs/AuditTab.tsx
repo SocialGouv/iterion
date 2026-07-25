@@ -1,34 +1,61 @@
 import { errorMessage } from "@/lib/errorHints";
-import { useEffect, useState } from "react";
+import { formatDateTime } from "@/lib/format";
+import { useEffect, useMemo, useState } from "react";
+import { useLocation } from "wouter";
 import { InlineBanner } from "@/components/ui/InlineBanner";
 
 import {
   type AuditEvent,
   type AuditQuery,
   FeatureUnavailableError,
+  listAdminAudit,
   listOrgAudit,
   listTeamAudit,
 } from "@/api/audit";
 
+import { useMaybeAuth } from "@/auth/AuthContext";
 import { Button } from "@/components/ui/Button";
 import { EmptyState } from "@/components/ui/EmptyState";
 import { Input } from "@/components/ui/Input";
 import { Table, THead, Th, TBody, Tr, Td, TableSkeleton } from "@/components/ui/Table";
 
-// Either teamID (team audit) or orgID (org control-plane audit) — the
-// component picks the matching loader. Exactly one should be set.
+// Three scopes, one table: teamID (team audit), orgID (org control-plane
+// audit), or platform (the super-admin /api/admin/audit feed spanning
+// every org). Exactly one should be set.
 interface Props {
   teamID?: string;
   orgID?: string;
+  platform?: boolean;
   canManage: boolean;
 }
 
 const PAGE = 50;
 
-export default function AuditTab({ teamID, orgID, canManage }: Props) {
-  const id = orgID ?? teamID ?? "";
+export default function AuditTab({ teamID, orgID, platform, canManage }: Props) {
+  const id = platform ? "platform" : (orgID ?? teamID ?? "");
   const load = (q: AuditQuery) =>
-    orgID ? listOrgAudit(orgID, q) : listTeamAudit(teamID ?? "", q);
+    platform
+      ? listAdminAudit(q)
+      : orgID
+        ? listOrgAudit(orgID, q)
+        : listTeamAudit(teamID ?? "", q);
+  const [, navigate] = useLocation();
+  // Cross-link the two audit surfaces. When rendering the team audit we
+  // resolve the containing org (the team is expected to live under the
+  // active org's tree — the studio only routes to /teams/:id while
+  // switched into its org); when rendering the org audit we point at the
+  // Teams tab as the entry to each team's own audit page.
+  // Provider-optional: the cross-link is decoration — the tab must
+  // still mount without an AuthProvider (jsdom a11y harness).
+  const auth = useMaybeAuth();
+  const orgs = auth?.orgs ?? [];
+  const activeOrg = auth?.activeOrg ?? null;
+  const containingOrgID = useMemo(() => {
+    if (!teamID) return "";
+    if (activeOrg?.teams.some((t) => t.team_id === teamID)) return activeOrg.org_id;
+    const owner = orgs.find((o) => o.teams.some((t) => t.team_id === teamID));
+    return owner?.org_id ?? "";
+  }, [orgs, activeOrg, teamID]);
   const [events, setEvents] = useState<AuditEvent[]>([]);
   const [filter, setFilter] = useState<AuditQuery>({});
   const [nextOffset, setNextOffset] = useState<number | null>(null);
@@ -94,6 +121,34 @@ export default function AuditTab({ teamID, orgID, canManage }: Props) {
         </InlineBanner>
       )}
 
+      {platform ? (
+        <p className="text-caption text-fg-subtle">
+          Platform scope: every control-plane action across all orgs and teams,
+          including super-admin operations. Tenant-scoped views live on each
+          org and team page.
+        </p>
+      ) : orgID ? (
+        <p className="text-caption text-fg-subtle">
+          Team-scope changes (webhooks, secrets, bindings) are audited on each team's page.
+        </p>
+      ) : containingOrgID ? (
+        <p className="text-caption text-fg-subtle">
+          Org-wide actions (SSO, teams, domains) appear in the{" "}
+          <button
+            type="button"
+            className="text-accent-text hover:underline"
+            onClick={() => navigate(`/orgs/${containingOrgID}?tab=audit`)}
+          >
+            organization audit log
+          </button>
+          .
+        </p>
+      ) : (
+        <p className="text-caption text-fg-subtle">
+          Org-wide actions (SSO, teams, domains) appear in the organization audit log.
+        </p>
+      )}
+
       <form
         onSubmit={(e) => {
           e.preventDefault();
@@ -155,13 +210,14 @@ export default function AuditTab({ teamID, orgID, canManage }: Props) {
             <Th>Actor</Th>
             <Th>Action</Th>
             <Th>Target</Th>
+            {platform && <Th>Tenant</Th>}
             <Th>IP</Th>
           </THead>
           <TBody>
             {events.map((e) => (
               <Tr key={e.id} className="align-top">
                 <Td className="text-fg-muted whitespace-nowrap">
-                  {new Date(e.created_at).toLocaleString()}
+                  {formatDateTime(e.created_at)}
                 </Td>
                 <Td className="text-xs">
                   <div>{e.actor_id ?? "—"}</div>
@@ -180,6 +236,11 @@ export default function AuditTab({ teamID, orgID, canManage }: Props) {
                     </details>
                   )}
                 </Td>
+                {platform && (
+                  <Td className="text-xs font-mono text-fg-muted break-all">
+                    {e.tenant_id ?? "—"}
+                  </Td>
+                )}
                 <Td className="text-xs font-mono text-fg-muted">{e.ip ?? "—"}</Td>
               </Tr>
             ))}

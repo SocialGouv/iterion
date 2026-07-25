@@ -3,10 +3,26 @@ package runview
 import (
 	"context"
 	"testing"
+	"time"
 
 	iterlog "github.com/SocialGouv/iterion/pkg/log"
 	"github.com/SocialGouv/iterion/pkg/store"
 )
+
+// backdateRun ages a seeded run past the orphan grace window so the
+// reconcile scan will judge it — the "leftover of a previous process"
+// shape the scan exists for.
+func backdateRun(t *testing.T, s store.RunStore, id string) {
+	t.Helper()
+	r, err := s.LoadRun(context.Background(), id)
+	if err != nil {
+		t.Fatalf("backdate load %s: %v", id, err)
+	}
+	r.CreatedAt = time.Now().Add(-orphanGraceWindow - time.Minute)
+	if err := s.SaveRun(context.Background(), r); err != nil {
+		t.Fatalf("backdate save %s: %v", id, err)
+	}
+}
 
 // TestReconcileOrphans seeds a store with a mix of run statuses,
 // constructs a Service, and verifies that only "running" rows whose
@@ -52,6 +68,21 @@ func TestReconcileOrphans(t *testing.T) {
 		t.Fatalf("pause: %v", err)
 	}
 
+	// The scan only judges runs older than the grace window — backdate the
+	// seeds so they look like leftovers of a previous process, which is the
+	// scenario this scan exists for.
+	for _, id := range []string{"run-orphan-no-cp", "run-orphan-cp", "run-finished", "run-paused"} {
+		backdateRun(t, seed, id)
+	}
+
+	// run-fresh: status=running but created JUST NOW — the grace window
+	// must keep the scan from judging it (regression: a dispatcher-owned
+	// run was flipped failed 16s after dispatch by the boot scan while its
+	// engine was mid-flight, 2026-07-22 dogfood).
+	if _, err := seed.CreateRun(context.Background(), "run-fresh", "wf", nil); err != nil {
+		t.Fatalf("create fresh: %v", err)
+	}
+
 	// Now construct the service — reconcileOrphans runs in NewService.
 	if _, err := NewService(dir, WithLogger(logger)); err != nil {
 		t.Fatalf("NewService: %v", err)
@@ -71,6 +102,7 @@ func TestReconcileOrphans(t *testing.T) {
 		{"run-orphan-cp", store.RunStatusFailedResumable},
 		{"run-finished", store.RunStatusFinished},
 		{"run-paused", store.RunStatusPausedWaitingHuman},
+		{"run-fresh", store.RunStatusRunning},
 	}
 	for _, c := range cases {
 		r, err := verify.LoadRun(context.Background(), c.id)

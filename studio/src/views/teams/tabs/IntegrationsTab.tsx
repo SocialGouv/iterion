@@ -1,13 +1,12 @@
 import { errorMessage } from "@/lib/errorHints";
 import { type ReactNode, useEffect, useMemo, useState } from "react";
-import { useSearch } from "wouter";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { useLocation, useSearch } from "wouter";
 import { CheckIcon } from "@radix-ui/react-icons";
+import { ChevronRight } from "lucide-react";
 
 import { FeatureUnavailableError } from "@/api/client";
 import {
-  type ForgeConnection,
-  type ForgeIntegration,
-  type ForgeOAuthApp,
   listForgeConnections,
   listForgeIntegrations,
   listForgeOAuthApps,
@@ -21,16 +20,10 @@ import { isRepoCapable } from "@/lib/triggers";
 import { useBotsStore } from "@/store/bots";
 
 import { ConnectForm } from "./integrations/ConnectForm";
+import { connectionStatusLabel } from "./integrations/connectionLabels";
 import { ConnectionCard } from "./integrations/ConnectionCard";
 import { OAuthAppsSection } from "./integrations/OAuthAppsSection";
-
-// scrollToConnectForm jumps the operator to the "Connect a forge" form — the
-// CTA the empty / partly-wired states point them at.
-function scrollToConnectForm() {
-  document
-    .getElementById("connect-forge-form")
-    ?.scrollIntoView({ behavior: "smooth", block: "center" });
-}
+import SchedulesSection from "./integrations/SchedulesSection";
 
 export default function IntegrationsTab({
   teamID,
@@ -39,12 +32,42 @@ export default function IntegrationsTab({
   teamID: string;
   canManage: boolean;
 }) {
-  const [connections, setConnections] = useState<ForgeConnection[]>([]);
-  const [integrations, setIntegrations] = useState<ForgeIntegration[]>([]);
-  const [oauthApps, setOAuthApps] = useState<ForgeOAuthApp[]>([]);
-  const [unavailable, setUnavailable] = useState(false);
-  const [err, setErr] = useState<string | null>(null);
+  const queryClient = useQueryClient();
+  // Mutations in the child sections report through setActionErr; load
+  // failures surface from the queries. One banner shows whichever is
+  // current.
+  const [actionErr, setActionErr] = useState<string | null>(null);
   const { confirm, dialog } = useConfirm();
+
+  // The connections + OAuth-apps keys are shared with the connect wizard
+  // and RepoTargetSection, so a connection added there is fresh here
+  // without a manual bridge.
+  const connectionsQuery = useQuery({
+    queryKey: ["forge-connections", teamID],
+    queryFn: () => listForgeConnections(teamID),
+  });
+  const integrationsQuery = useQuery({
+    queryKey: ["forge-integrations", teamID],
+    queryFn: () => listForgeIntegrations(teamID),
+  });
+  const oauthAppsQuery = useQuery({
+    queryKey: ["forge-oauth-apps", teamID],
+    queryFn: () => listForgeOAuthApps(teamID),
+  });
+  const connections = connectionsQuery.data ?? [];
+  const integrations = integrationsQuery.data ?? [];
+  const oauthApps = oauthAppsQuery.data ?? [];
+  const fetching =
+    connectionsQuery.isFetching || integrationsQuery.isFetching || oauthAppsQuery.isFetching;
+  const fetchError =
+    connectionsQuery.error ?? integrationsQuery.error ?? oauthAppsQuery.error;
+  const unavailable =
+    connectionsQuery.error instanceof FeatureUnavailableError ||
+    integrationsQuery.error instanceof FeatureUnavailableError ||
+    oauthAppsQuery.error instanceof FeatureUnavailableError;
+  const err =
+    actionErr ??
+    (fetchError && !unavailable && !fetching ? errorMessage(fetchError) : null);
   // Bots come from the shared catalog cache so a metadata edit (e.g. in
   // the Bot panel) re-renders the connection cards immediately. We surface
   // every repo-capable bot — one that declares an invocations: block (forge
@@ -59,42 +82,55 @@ export default function IntegrationsTab({
   );
   // ?bot=<name> (set by the catalog's "Connect to a repo" affordance) pre-checks
   // that bot in the enable dialog and auto-opens it when there's one connection.
-  const preselectBot = new URLSearchParams(useSearch()).get("bot") ?? undefined;
+  const search = useSearch();
+  const preselectBot = new URLSearchParams(search).get("bot") ?? undefined;
+  const [, navigate] = useLocation();
 
-  const reload = async () => {
-    setErr(null);
-    try {
-      const [conns, ints, apps] = await Promise.all([
-        listForgeConnections(teamID),
-        listForgeIntegrations(teamID),
-        listForgeOAuthApps(teamID),
-      ]);
-      setConnections(conns);
-      setIntegrations(ints);
-      setOAuthApps(apps);
-    } catch (e) {
-      if (e instanceof FeatureUnavailableError) {
-        setUnavailable(true);
-        return;
-      }
-      setErr(errorMessage(e));
+  // "Manual setup (advanced)" folds the legacy Connect-a-forge form + the
+  // OAuth-apps registry away — the /integrations/connect wizard is the
+  // recommended path. Closed by default, but auto-opened when the URL says
+  // the operator is mid-manual-flow: an OAuth / GitHub-App return lands here
+  // with ?connected= / ?installed= (the manual forms are where the result
+  // shows), and a #connect-forge-form anchor deep-links straight to it.
+  const oauthReturn = useMemo(() => {
+    const q = new URLSearchParams(search);
+    return q.has("connected") || q.has("installed");
+  }, [search]);
+  const [manualOpen, setManualOpen] = useState(
+    () => oauthReturn || window.location.hash === "#connect-forge-form",
+  );
+  useEffect(() => {
+    if (oauthReturn) setManualOpen(true);
+  }, [oauthReturn]);
+  useEffect(() => {
+    if (window.location.hash === "#connect-forge-form") {
+      setManualOpen(true);
+      document
+        .getElementById("connect-forge-form")
+        ?.scrollIntoView({ behavior: "smooth", block: "center" });
     }
+  }, []);
+
+  const reload = () => {
+    setActionErr(null);
+    void queryClient.invalidateQueries({ queryKey: ["forge-connections", teamID] });
+    void queryClient.invalidateQueries({ queryKey: ["forge-integrations", teamID] });
+    void queryClient.invalidateQueries({ queryKey: ["forge-oauth-apps", teamID] });
   };
 
   useEffect(() => {
-    void reload();
     void fetchBots();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [teamID]);
+  }, [fetchBots]);
 
   // Re-fetch when the tab/window regains focus. The GitHub App-Manifest flow
   // (and any OAuth-app registration done in another tab) navigates away and
-  // returns here WITHOUT a teamID change, so the [teamID] effect above never
-  // re-runs — without this the Connect form keeps showing a stale
-  // "OAuth (no app)" for an app that was just registered, until a hard reload.
+  // returns here WITHOUT a teamID change, and the app-wide query client has
+  // refetchOnWindowFocus off — without this the Connect form keeps showing a
+  // stale "OAuth (no app)" for an app that was just registered, until a hard
+  // reload.
   useEffect(() => {
     const refetch = () => {
-      if (document.visibilityState === "visible") void reload();
+      if (document.visibilityState === "visible") reload();
     };
     window.addEventListener("focus", refetch);
     document.addEventListener("visibilitychange", refetch);
@@ -134,11 +170,68 @@ export default function IntegrationsTab({
         canManage={canManage}
       />
 
+      {/* Repo-centric summary first: repositories are the operator's
+          mental model; connections are plumbing one section below. */}
       <div>
-        <h3 className="font-medium mb-1">Connected forges</h3>
+        <div className="mb-1 flex items-center justify-between gap-2">
+          <h3 className="font-medium">Repositories</h3>
+          {canManage && (
+            <Button variant="primary" size="sm" onClick={() => navigate("/integrations/connect")}>
+              + Connect a repository
+            </Button>
+          )}
+        </div>
         <p className="text-xs text-fg-muted mb-3">
-          Connect a GitLab/GitHub/Forgejo account once, then enable a bot on a repo — iterion
-          creates the webhook on the forge and wires the bot's token for you.
+          Each connected repo carries its enabled bots — webhook, token and schedules are
+          provisioned automatically.
+        </p>
+        {integrations.length === 0 ? (
+          <EmptyState
+            title="No repository connected yet"
+            message="The guided flow connects your forge account and enables bots on a repo in one pass."
+            action={
+              canManage ? (
+                <Button variant="primary" size="sm" onClick={() => navigate("/integrations/connect")}>
+                  Connect a repository
+                </Button>
+              ) : undefined
+            }
+          />
+        ) : (
+          <ul className="divide-y divide-border-subtle rounded border border-border-subtle bg-surface-0">
+            {integrations.map((i) => {
+              const conn = connections.find((c) => c.id === i.connection_id);
+              return (
+                <li key={i.id} className="flex flex-wrap items-center gap-2 px-3 py-2">
+                  <span className="min-w-0 flex-1 truncate text-sm font-medium">
+                    {i.repo_full_name}
+                  </span>
+                  <span className="text-caption text-fg-muted">
+                    {i.bot_ids.length > 0
+                      ? `${i.bot_ids.length} bot${i.bot_ids.length > 1 ? "s" : ""}`
+                      : "no bots"}
+                  </span>
+                  <span className="rounded bg-surface-2 px-1.5 py-0.5 text-caption text-fg-muted">
+                    {i.provider}
+                    {conn?.status && conn.status !== "active"
+                      ? ` · ${connectionStatusLabel(conn.status)}`
+                      : ""}
+                  </span>
+                </li>
+              );
+            })}
+          </ul>
+        )}
+      </div>
+
+      <SchedulesSection teamID={teamID} canManage={canManage} />
+
+      <div>
+        <h3 className="font-medium mb-1">Connected accounts</h3>
+        <p className="text-xs text-fg-muted mb-3">
+          The forge accounts behind those repositories. Connect once, then enable bots per
+          repository — iterion creates the webhook on the forge and wires the bot's token
+          for you.
         </p>
         {connections.length === 0 ? (
           <EmptyState
@@ -146,7 +239,7 @@ export default function IntegrationsTab({
             message="Connect a GitLab, GitHub or Forgejo account to let bots act on your repositories."
             action={
               canManage ? (
-                <Button variant="primary" size="sm" onClick={scrollToConnectForm}>
+                <Button variant="primary" size="sm" onClick={() => navigate("/integrations/connect")}>
                   Connect a forge
                 </Button>
               ) : undefined
@@ -163,7 +256,7 @@ export default function IntegrationsTab({
                 repoBots={repoCapableBots}
                 canManage={canManage}
                 onChanged={reload}
-                onError={setErr}
+                onError={setActionErr}
                 confirm={confirm}
                 preselectBot={preselectBot}
                 autoOpenEnable={!!preselectBot && connections.length === 1}
@@ -173,26 +266,48 @@ export default function IntegrationsTab({
         )}
       </div>
 
-      <OAuthAppsSection
-        teamID={teamID}
-        apps={oauthApps}
-        connections={connections}
-        canManage={canManage}
-        onChanged={reload}
-        onError={setErr}
-        confirm={confirm}
-      />
-
-      {canManage && (
-        <div id="connect-forge-form">
-          <ConnectForm
-            teamID={teamID}
-            oauthApps={oauthApps}
-            onConnected={reload}
-            onError={setErr}
+      <div id="connect-forge-form">
+        <button
+          type="button"
+          onClick={() => setManualOpen((o) => !o)}
+          aria-expanded={manualOpen}
+          className="inline-flex items-center gap-1.5 text-sm font-medium text-fg-default hover:text-accent-text"
+        >
+          <ChevronRight
+            size={14}
+            className={`shrink-0 text-fg-subtle transition-transform duration-[var(--motion-fast)] ${
+              manualOpen ? "rotate-90" : ""
+            }`}
+            aria-hidden
           />
-        </div>
-      )}
+          Manual setup (advanced)
+        </button>
+        <p className="mt-0.5 text-xs text-fg-muted">
+          The guided “Connect a repository” flow above is the recommended path. Use these
+          forms to register a forge OAuth app or connect an account by hand.
+        </p>
+        {manualOpen && (
+          <div className="mt-3 space-y-6">
+            <OAuthAppsSection
+              teamID={teamID}
+              apps={oauthApps}
+              connections={connections}
+              canManage={canManage}
+              onChanged={reload}
+              onError={setActionErr}
+              confirm={confirm}
+            />
+            {canManage && (
+              <ConnectForm
+                teamID={teamID}
+                oauthApps={oauthApps}
+                onConnected={reload}
+                onError={setActionErr}
+              />
+            )}
+          </div>
+        )}
+      </div>
     </div>
   );
 }
@@ -211,6 +326,7 @@ function WiringGuide({
   repoEnabled: boolean;
   canManage: boolean;
 }) {
+  const [, navigate] = useLocation();
   const wired = forgeConnected && repoEnabled;
   // Default state follows `wired` (collapsed once a forge + repo are wired),
   // but a manual expand/collapse wins. Tracking an override rather than seeding
@@ -264,12 +380,12 @@ function WiringGuide({
           n={1}
           done={forgeConnected}
           label="Connect a forge"
-          hint="GitLab, GitHub or Forgejo — once per account."
+          hint="GitLab, GitHub or Forgejo — once per account. The guided flow connects it and enables a repo in one pass."
           action={
             !forgeConnected && canManage ? (
               <button
                 type="button"
-                onClick={scrollToConnectForm}
+                onClick={() => navigate("/integrations/connect")}
                 className="text-accent-text hover:underline"
               >
                 Connect →

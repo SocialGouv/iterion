@@ -7,6 +7,7 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"path"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -19,10 +20,13 @@ import (
 
 // Compile-time interface checks.
 var (
-	_ sandbox.Driver          = (*Driver)(nil)
-	_ sandbox.Run             = (*Run)(nil)
-	_ sandbox.PreparedSpec    = (*Prepared)(nil)
-	_ sandbox.ProxyConfigurer = (*Driver)(nil)
+	_ sandbox.Driver                 = (*Driver)(nil)
+	_ sandbox.Run                    = (*Run)(nil)
+	_ sandbox.PreparedSpec           = (*Prepared)(nil)
+	_ sandbox.ProxyConfigurer        = (*Driver)(nil)
+	_ sandbox.SecretFileRefresher    = (*Run)(nil)
+	_ sandbox.WorkspaceFileRefresher = (*Run)(nil)
+	_ sandbox.WorkspaceExporter      = (*Run)(nil)
 )
 
 // NOTE: the kubernetes driver intentionally does NOT implement
@@ -198,6 +202,17 @@ func (d *Driver) Prepare(_ context.Context, spec sandbox.Spec) (sandbox.Prepared
 	// validated lazily — translateMounts at manifest-render time produces
 	// a clear error pointing at the offending entry, so authors see the
 	// offending mount string verbatim rather than a generic rejection here.
+	// Default the numeric user before validation: under sandbox-by-default
+	// most specs are the platform's synthetic default-image spec (published
+	// iterion-sandbox-* images, which all run as devbox uid 1000) and carry
+	// no user: field — hard-requiring one made every ambient cloud sandbox
+	// fail at boot (observed live, run 019f8a37). An explicit user: still
+	// wins; for a foreign image whose filesystem expects another uid, the
+	// kubelet's runAsNonRoot/permission failure stays the visible guard.
+	if spec.User == "" {
+		spec.User = defaultPodUser
+		d.logger.Info("kubernetes: sandbox.user not set — defaulting to %s (published iterion sandbox images run as devbox uid 1000); declare user: to override", defaultPodUser)
+	}
 	if err := ValidateSpec(spec); err != nil {
 		return nil, err
 	}
@@ -207,6 +222,11 @@ func (d *Driver) Prepare(_ context.Context, spec sandbox.Spec) (sandbox.Prepared
 	}
 	return &Prepared{spec: spec, workspace: workspace}, nil
 }
+
+// defaultPodUser is the uid:gid a spec without user: runs as on the
+// kubernetes driver — the devbox user every published iterion-sandbox-*
+// image is built with.
+const defaultPodUser = "1000:1000"
 
 // Start applies the pod manifest, waits for Ready, optionally runs
 // post-create, and returns a live [Run] handle.
@@ -383,6 +403,10 @@ func (d *Driver) Start(ctx context.Context, prepared sandbox.PreparedSpec, info 
 		if err := r.populateWorkspace(ctx, info.WorkspacePath, p.workspace); err != nil {
 			_ = r.Cleanup(ctx)
 			return nil, fmt.Errorf("kubernetes: populate workspace: %w", err)
+		}
+		if err := r.fixupWorkspaceGit(ctx, p.workspace); err != nil {
+			_ = r.Cleanup(ctx)
+			return nil, fmt.Errorf("kubernetes: fixup workspace git: %w", err)
 		}
 	}
 
@@ -681,6 +705,144 @@ func (r *Run) populateWorkspace(ctx context.Context, hostSrc, podDst string) err
 		return fmt.Errorf("in-pod tar extract: %w\n%s", err, strings.TrimSpace(podErr.String()))
 	}
 	return nil
+}
+
+// exportExcludes are the tar --exclude patterns for [Run.ExportWorkspace]
+// (member names start with "./" because the in-pod tar archives "."):
+//   - .git/config was re-pointed at POD paths by fixupWorkspaceGit — the
+//     host clone's own config (host credential-store path) must survive;
+//   - .git/iterion-credentials on the host is maintained LIVE by the
+//     runner's rotation refresher — the pod copy may be staler and must
+//     never overwrite it.
+var exportExcludes = []string{"./.git/config", "./.git/iterion-credentials"}
+
+// ExportWorkspace implements [sandbox.WorkspaceExporter]: it streams the
+// pod workspace back onto the host workspace it was populated from — the
+// exact reverse of populateWorkspace (in-pod `tar -cf -` piped into a
+// host-side extract), targeting the same resolved clone root. Without
+// it, commits made inside the pod are destroyed with the pod and the
+// host-side consumers (worktree finalization, recordRunGitMeta,
+// Commits/Files diff capture) see the launch-time state.
+//
+// The overlay adds/overwrites — a file DELETED inside the pod's working
+// tree keeps its host copy (tar has no delete semantics). Git-level
+// truth is exact regardless: `.git` (commits, refs, index) is exported,
+// so committed deletions are fully represented; only an uncommitted
+// working-tree deletion is left behind, as an untracked leftover.
+func (r *Run) ExportWorkspace(ctx context.Context) error {
+	if r.info.WorkspacePath == "" {
+		return nil // workspace-less run — nothing was populated
+	}
+	hostDst := resolveCloneRoot(ctx, r.info.WorkspacePath)
+	r.driver.logger.Info("sandbox: exporting workspace from pod %s:%s back to %s", r.podName, r.prepared.workspace, hostDst)
+
+	kubectlArgs := []string{"--namespace", r.namespace,
+		"exec", r.podName, "--container", "workload", "--",
+		"tar", "-C", r.prepared.workspace}
+	for _, ex := range exportExcludes {
+		kubectlArgs = append(kubectlArgs, "--exclude="+ex)
+	}
+	kubectlArgs = append(kubectlArgs, "-cf", "-", ".")
+	podTar := kubectlCmdContext(ctx, kubectlArgs...)
+	hostTar := exec.CommandContext(ctx, "tar", "-C", hostDst, "-xf", "-")
+
+	pipe, err := podTar.StdoutPipe()
+	if err != nil {
+		return fmt.Errorf("pod tar stdout pipe: %w", err)
+	}
+	hostTar.Stdin = pipe
+	var podErr, hostErr bytes.Buffer
+	podTar.Stderr = &podErr
+	hostTar.Stderr = &hostErr
+
+	if err := hostTar.Start(); err != nil {
+		return fmt.Errorf("start host tar extract: %w", err)
+	}
+	if err := podTar.Run(); err != nil {
+		_ = hostTar.Wait()
+		return fmt.Errorf("in-pod tar %s: %w\n%s", r.prepared.workspace, err, strings.TrimSpace(podErr.String()))
+	}
+	if err := hostTar.Wait(); err != nil {
+		return fmt.Errorf("host tar extract into %s: %w\n%s", hostDst, err, strings.TrimSpace(hostErr.String()))
+	}
+	return nil
+}
+
+// fixupWorkspaceGitScript re-anchors the copied clone's git plumbing on
+// the IN-POD workspace path. Run via `sh -c` with the workspace as $1.
+//
+// Two host-path leftovers travel in with the tar copy and would break
+// in-pod git otherwise:
+//
+//   - credential.helper: installGitCredentialStore (pkg/runner) wires
+//     `store --file=<HOST clone abs path>/.git/iterion-credentials`.
+//     For a worktree run the pod workspace lives at the WORKTREE path
+//     while the copied content is the clone — so the recorded absolute
+//     path doesn't exist in the pod and every authenticated push would
+//     fail credential-less. Re-point it at the pod-local file.
+//   - .git/worktrees/: the engine's per-run worktree registration.
+//     Inside the pod the workspace is a standalone clone; the stale
+//     registration claims the storage branch is checked out elsewhere
+//     and blocks `git checkout` of that branch name. Remove it.
+//
+// `set -e` propagates a failing `git config` (e.g. no git in the image
+// while the workspace carries a credential the run will need) as a hard
+// error rather than deferring the breakage to push time.
+const fixupWorkspaceGitScript = `set -e
+ws=$1
+if [ -d "$ws/.git" ]; then
+  cred="$ws/.git/iterion-credentials"
+  if [ -f "$cred" ]; then
+    git -C "$ws" config credential.helper "store --file=$cred"
+  fi
+  rm -rf "$ws/.git/worktrees"
+fi`
+
+// fixupWorkspaceGit runs [fixupWorkspaceGitScript] inside the pod right
+// after populateWorkspace. No-op for non-git workspaces.
+func (r *Run) fixupWorkspaceGit(ctx context.Context, podWorkspace string) error {
+	res, err := r.Exec(ctx, []string{"sh", "-c", fixupWorkspaceGitScript, "sh", podWorkspace}, sandbox.ExecOpts{})
+	if err != nil {
+		return err
+	}
+	if res.ExitCode != 0 {
+		return fmt.Errorf("exited %d: %s", res.ExitCode, strings.TrimSpace(string(res.Stderr)))
+	}
+	return nil
+}
+
+// RefreshWorkspaceFile implements [sandbox.WorkspaceFileRefresher]: it
+// atomically rewrites relPath under the pod workspace via the exec seam
+// (value streamed over stdin, never argv). The kubernetes workspace is
+// a tar COPY of the host workspace, so host-side rewrites — the
+// runner's mid-run git-credential rotation — must be written through
+// here to reach the pod; bind-mount drivers (docker) share the host
+// inode and don't need (or implement) this.
+func (r *Run) RefreshWorkspaceFile(ctx context.Context, relPath string, value []byte) error {
+	target, err := workspaceFileTarget(r.prepared.workspace, relPath)
+	if err != nil {
+		return fmt.Errorf("kubernetes: refresh workspace file: %w", err)
+	}
+	if err := sandbox.WriteFileExec(ctx, r, target, value); err != nil {
+		return fmt.Errorf("kubernetes: refresh workspace file %s: %w", relPath, err)
+	}
+	return nil
+}
+
+// workspaceFileTarget joins a workspace-relative path onto the pod
+// workspace root, rejecting anything that could escape it.
+func workspaceFileTarget(workspace, relPath string) (string, error) {
+	if workspace == "" {
+		return "", fmt.Errorf("empty workspace")
+	}
+	if relPath == "" || path.IsAbs(relPath) || path.Clean(relPath) != relPath ||
+		relPath == "." || relPath == ".." || strings.HasPrefix(relPath, "../") {
+		return "", fmt.Errorf("relPath %q must be a clean workspace-relative file path", relPath)
+	}
+	if strings.ContainsAny(relPath, "\n\r\x00") {
+		return "", fmt.Errorf("relPath %q contains a control character", relPath)
+	}
+	return path.Join(workspace, relPath), nil
 }
 
 // resolveCloneRoot returns the standalone clone directory for a host

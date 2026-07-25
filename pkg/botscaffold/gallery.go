@@ -1,5 +1,84 @@
 package botscaffold
 
+import (
+	"fmt"
+	"strings"
+)
+
+// DefaultTemplateID is the gallery entry used when a caller names none.
+const DefaultTemplateID = "blank"
+
+// Overrides are the fields a caller may set on top of a template's Spec.
+// An empty string or a nil pointer keeps the template's own value, so a
+// caller only states what the operator actually asked for.
+type Overrides struct {
+	Slug         string
+	DisplayName  string
+	Description  string
+	Instructions string
+	Model        string
+	Backend      string
+	Worktree     *bool
+	Sandbox      *bool
+}
+
+// TemplateByID looks up one gallery entry.
+func TemplateByID(id string) (Template, bool) {
+	for _, t := range Templates() {
+		if t.ID == id {
+			return t, true
+		}
+	}
+	return Template{}, false
+}
+
+// TemplateIDs lists the gallery's entry IDs, in display order.
+func TemplateIDs() []string {
+	tpls := Templates()
+	ids := make([]string, 0, len(tpls))
+	for _, t := range tpls {
+		ids = append(ids, t.ID)
+	}
+	return ids
+}
+
+// SpecFromTemplate resolves a gallery template and applies overrides on
+// top. It lives here rather than in a single caller so every creation
+// surface (the CLI, and any future server-side template endpoint) shares
+// one definition of "start from a template" — the studio currently does
+// this merge in TypeScript, which is exactly the drift this prevents.
+func SpecFromTemplate(id string, ov Overrides) (Spec, error) {
+	if strings.TrimSpace(id) == "" {
+		id = DefaultTemplateID
+	}
+	tpl, ok := TemplateByID(strings.TrimSpace(id))
+	if !ok {
+		return Spec{}, fmt.Errorf("botscaffold: unknown template %q (available: %s)",
+			id, strings.Join(TemplateIDs(), ", "))
+	}
+
+	spec := tpl.Spec
+	overrideString(&spec.Slug, ov.Slug)
+	overrideString(&spec.DisplayName, ov.DisplayName)
+	overrideString(&spec.Description, ov.Description)
+	overrideString(&spec.Instructions, ov.Instructions)
+	overrideString(&spec.Model, ov.Model)
+	overrideString(&spec.Backend, ov.Backend)
+	if ov.Worktree != nil {
+		spec.Worktree = *ov.Worktree
+	}
+	if ov.Sandbox != nil {
+		spec.Sandbox = *ov.Sandbox
+	}
+	return spec, nil
+}
+
+func overrideString(dst *string, v string) {
+	if v != "" {
+		*dst = v
+	}
+}
+
 // Template is one entry of the builder's "start from a template"
 // gallery. Everything is a pre-filled Spec fragment — the form stays
 // fully editable after picking one.

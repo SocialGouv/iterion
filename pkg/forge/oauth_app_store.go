@@ -62,6 +62,13 @@ type ForgeOAuthApp struct {
 	// OAuth-authorized (oauth_app). ProviderAppID doubles as the GitHub App id.
 	AppSlug          string `bson:"app_slug,omitempty" json:"app_slug,omitempty"`
 	SealedPrivateKey []byte `bson:"sealed_private_key,omitempty" json:"-"`
+	// OwnerLogin is the forge account that OWNS the app (a GitHub org login, or
+	// a user login for a personal app). It is the natural discriminator once a
+	// tenant may hold several apps on the same host: a private GitHub App can
+	// only ever be installed on its owning account, so "which app" is really
+	// "which org". Surfaced so the UI can label the picker by org rather than by
+	// opaque slug.
+	OwnerLogin string `bson:"owner_login,omitempty" json:"owner_login,omitempty"`
 	// Installable is a computed view flag (never persisted): true when the App
 	// holds a private key, so the UI can offer the "Install" (github_app) action.
 	Installable bool `bson:"-" json:"installable,omitempty"`
@@ -81,7 +88,40 @@ type OAuthAppStore interface {
 	Update(ctx context.Context, a ForgeOAuthApp) error
 	Delete(ctx context.Context, id string) error
 	ListByTenant(ctx context.Context, tenantID string) ([]ForgeOAuthApp, error)
+	// ListByInstance returns every app a tenant holds on one instance, oldest
+	// first — a tenant may register one per owning org. GetByInstance keeps the
+	// legacy single-app answer (the oldest) for callers that predate the
+	// Connection→app link and for providers where one app per instance is still
+	// the right model.
+	ListByInstance(ctx context.Context, tenantID string, provider Provider, baseURL string) ([]ForgeOAuthApp, error)
 	GetByInstance(ctx context.Context, tenantID string, provider Provider, baseURL string) (ForgeOAuthApp, error)
+}
+
+// firstAppOnInstance collapses a per-instance listing to the legacy
+// single-app answer: the OLDEST app on that instance. Determinism is the point
+// — once several apps may share a host, an unordered "any match" would hand
+// callers a different private key run to run. The oldest is the app that
+// existed while the one-per-host constraint held, so pre-FK connections keep
+// resolving exactly as they did.
+func firstAppOnInstance(apps []ForgeOAuthApp, err error) (ForgeOAuthApp, error) {
+	if err != nil {
+		return ForgeOAuthApp{}, err
+	}
+	if len(apps) == 0 {
+		return ForgeOAuthApp{}, ErrOAuthAppNotFound
+	}
+	return apps[0], nil
+}
+
+// ownerOrInstance labels an app in operator-facing errors by the account that
+// owns it, falling back to the instance when unknown. With several apps per
+// host, "already exists for github on https://github.com" no longer identifies
+// which one — the owning org is what the operator actually recognises.
+func ownerOrInstance(a ForgeOAuthApp) string {
+	if a.OwnerLogin != "" {
+		return a.OwnerLogin + " (" + a.ForgeBaseURL + ")"
+	}
+	return a.ForgeBaseURL
 }
 
 // ---- in-memory store (tests / local) ----
@@ -100,8 +140,9 @@ func (m *MemoryOAuthAppStore) Create(_ context.Context, a ForgeOAuthApp) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	for _, ex := range m.apps {
-		if ex.TenantID == a.TenantID && ex.Provider == a.Provider && ex.ForgeBaseURL == a.ForgeBaseURL {
-			return fmt.Errorf("%w for %s on %s", ErrOAuthAppExists, a.Provider, a.ForgeBaseURL)
+		if ex.TenantID == a.TenantID && ex.Provider == a.Provider &&
+			ex.ForgeBaseURL == a.ForgeBaseURL && ex.OwnerLogin == a.OwnerLogin {
+			return fmt.Errorf("%w for %s on %s", ErrOAuthAppExists, a.Provider, ownerOrInstance(a))
 		}
 	}
 	m.apps[a.ID] = a
@@ -152,16 +193,22 @@ func (m *MemoryOAuthAppStore) ListByTenant(_ context.Context, tenantID string) (
 	return out, nil
 }
 
-func (m *MemoryOAuthAppStore) GetByInstance(_ context.Context, tenantID string, provider Provider, baseURL string) (ForgeOAuthApp, error) {
+func (m *MemoryOAuthAppStore) ListByInstance(_ context.Context, tenantID string, provider Provider, baseURL string) ([]ForgeOAuthApp, error) {
 	base := CanonicalBaseURL(provider, baseURL)
 	m.mu.RLock()
 	defer m.mu.RUnlock()
+	var out []ForgeOAuthApp
 	for _, a := range m.apps {
 		if a.TenantID == tenantID && a.Provider == provider && a.ForgeBaseURL == base {
-			return a, nil
+			out = append(out, a)
 		}
 	}
-	return ForgeOAuthApp{}, ErrOAuthAppNotFound
+	sort.Slice(out, func(i, j int) bool { return out[i].CreatedAt.Before(out[j].CreatedAt) })
+	return out, nil
+}
+
+func (m *MemoryOAuthAppStore) GetByInstance(ctx context.Context, tenantID string, provider Provider, baseURL string) (ForgeOAuthApp, error) {
+	return firstAppOnInstance(m.ListByInstance(ctx, tenantID, provider, baseURL))
 }
 
 // ---- Mongo store ----
@@ -176,9 +223,29 @@ func NewMongoOAuthAppStore(db *mongo.Database) *MongoOAuthAppStore {
 	return &MongoOAuthAppStore{coll: db.Collection(OAuthAppsCollectionName)}
 }
 
+// legacyOAuthAppInstanceIndex is the pre-owner uniqueness key. Creating the
+// replacement does NOT retire it, and while it survives it keeps enforcing
+// one app per host — which is exactly the constraint being lifted. Dropped
+// explicitly, before the new index is created, so a deployment actually
+// changes behaviour instead of silently keeping the old rule.
+const legacyOAuthAppInstanceIndex = "tenant_provider_baseurl_unique"
+
 func (s *MongoOAuthAppStore) EnsureSchema(ctx context.Context) error {
+	if err := s.coll.Indexes().DropOne(ctx, legacyOAuthAppInstanceIndex); err != nil {
+		// IndexNotFound (fresh install, or already migrated) is the expected
+		// steady state — anything else is a real failure worth surfacing.
+		if !mongoutil.IsIndexNotFound(err) {
+			return fmt.Errorf("forge: drop legacy oauth app index: %w", err)
+		}
+	}
 	_, err := s.coll.Indexes().CreateMany(ctx, []mongo.IndexModel{
-		{Keys: bson.D{{Key: "tenant_id", Value: 1}, {Key: "provider", Value: 1}, {Key: "forge_base_url", Value: 1}}, Options: options.Index().SetUnique(true).SetName("tenant_provider_baseurl_unique")},
+		// Uniqueness is per OWNING ACCOUNT, not per host: a tenant legitimately
+		// holds one app per GitHub org (a private App is only installable on its
+		// owner), so keying on the host alone made the second org impossible.
+		// Legacy rows carry no owner_login; they all collapse to owner_login:""
+		// and therefore remain bound by exactly the old one-per-host rule, which
+		// is what keeps this index creatable over existing data.
+		{Keys: bson.D{{Key: "tenant_id", Value: 1}, {Key: "provider", Value: 1}, {Key: "forge_base_url", Value: 1}, {Key: "owner_login", Value: 1}}, Options: options.Index().SetUnique(true).SetName("tenant_provider_baseurl_owner_unique")},
 	})
 	if err != nil && !mongoutil.IsIndexConflict(err) {
 		return fmt.Errorf("forge: ensure forge_oauth_apps indexes: %w", err)
@@ -190,7 +257,7 @@ func (s *MongoOAuthAppStore) Create(ctx context.Context, a ForgeOAuthApp) error 
 	a.ForgeBaseURL = CanonicalBaseURL(a.Provider, a.ForgeBaseURL)
 	if _, err := s.coll.InsertOne(ctx, a); err != nil {
 		if mongo.IsDuplicateKeyError(err) {
-			return fmt.Errorf("%w for %s on %s", ErrOAuthAppExists, a.Provider, a.ForgeBaseURL)
+			return fmt.Errorf("%w for %s on %s", ErrOAuthAppExists, a.Provider, ownerOrInstance(a))
 		}
 		return fmt.Errorf("forge: insert oauth app: %w", err)
 	}
@@ -215,7 +282,13 @@ func (s *MongoOAuthAppStore) ListByTenant(ctx context.Context, tenantID string) 
 		"forge: list oauth apps", "forge: decode oauth apps")
 }
 
-func (s *MongoOAuthAppStore) GetByInstance(ctx context.Context, tenantID string, provider Provider, baseURL string) (ForgeOAuthApp, error) {
+func (s *MongoOAuthAppStore) ListByInstance(ctx context.Context, tenantID string, provider Provider, baseURL string) ([]ForgeOAuthApp, error) {
 	base := CanonicalBaseURL(provider, baseURL)
-	return mongoutil.FindOne[ForgeOAuthApp](ctx, s.coll, bson.M{"tenant_id": tenantID, "provider": provider, "forge_base_url": base}, ErrOAuthAppNotFound, "forge: get oauth app by instance")
+	return mongoutil.FindAllSorted[ForgeOAuthApp](ctx, s.coll,
+		bson.M{"tenant_id": tenantID, "provider": provider, "forge_base_url": base}, "created_at",
+		"forge: list oauth apps by instance", "forge: decode oauth apps by instance")
+}
+
+func (s *MongoOAuthAppStore) GetByInstance(ctx context.Context, tenantID string, provider Provider, baseURL string) (ForgeOAuthApp, error) {
+	return firstAppOnInstance(s.ListByInstance(ctx, tenantID, provider, baseURL))
 }

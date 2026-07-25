@@ -8,11 +8,13 @@ import {
   type ReactNode,
 } from "react";
 import { apiBase } from "@/lib/scope";
+import { useActiveRepoStore } from "@/store/activeRepo";
 import {
   ApiError,
   getMe,
   login as apiLogin,
   logout as apiLogout,
+  register as apiRegister,
   refresh as apiRefresh,
   switchOrg as apiSwitchOrg,
   switchTeam as apiSwitchTeam,
@@ -56,6 +58,12 @@ interface AuthCtx extends AuthState {
   // this is always false there.
   isRestricted: boolean;
   signIn: (email: string, password: string) => Promise<void>;
+  signUp: (input: {
+    email: string;
+    password: string;
+    name?: string;
+    invitation?: string;
+  }) => Promise<void>;
   signOut: () => Promise<void>;
   selectOrg: (orgID: string) => Promise<void>;
   selectTeam: (teamID: string) => Promise<void>;
@@ -201,12 +209,25 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     setState((prev) => applyResponse(prev, res));
   }, []);
 
+  // Registration sets the session cookies server-side just like login; the
+  // response must flow into the auth state or the shell stays anonymous.
+  const signUp = useCallback(
+    async (input: { email: string; password: string; name?: string; invitation?: string }) => {
+      const res = await apiRegister(input);
+      setState((prev) => applyResponse(prev, res));
+    },
+    [],
+  );
+
   const signOut = useCallback(async () => {
     try {
       await apiLogout();
     } catch {
       // Cookies already cleared even if the server rejected — proceed.
     }
+    // Drop the repo-first context so a different account on this browser
+    // never inherits the previous user's active repo.
+    useActiveRepoStore.getState().reset();
     setState({ ...initial, status: "anonymous" });
   }, []);
 
@@ -238,13 +259,14 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         !state.user?.is_super_admin &&
         state.orgs.every((o) => o.teams.length === 0),
       signIn,
+      signUp,
       signOut,
       selectOrg,
       selectTeam,
       reloadIdentity,
       retryConnection: bootstrap,
     };
-  }, [state, signIn, signOut, selectOrg, selectTeam, reloadIdentity, bootstrap]);
+  }, [state, signIn, signUp, signOut, selectOrg, selectTeam, reloadIdentity, bootstrap]);
 
   return <Ctx.Provider value={value}>{children}</Ctx.Provider>;
 }
@@ -253,6 +275,14 @@ export function useAuth(): AuthCtx {
   const v = useContext(Ctx);
   if (!v) throw new Error("useAuth used outside AuthProvider");
   return v;
+}
+
+// useMaybeAuth is the provider-optional variant for components whose
+// auth-derived content is decoration (cross-links, context captions)
+// rather than load-bearing — they can mount without an AuthProvider
+// (jsdom a11y harness, storybook-style isolation) and degrade to null.
+export function useMaybeAuth(): AuthCtx | null {
+  return useContext(Ctx);
 }
 
 // isLocalIdentity reports whether user is the synthetic local-mode
@@ -268,9 +298,29 @@ export function isLocalIdentity(user: UserView | null | undefined): boolean {
 // 403 message).
 export function hasRole(role: Role | null, want: Role | "super-admin"): boolean {
   if (!role) return false;
-  const order: Record<Role, number> = { viewer: 1, member: 2, admin: 3, owner: 4 };
+  // config_editor is least-privilege (0): it satisfies no viewer/member/admin/
+  // owner requirement — it can only reach the config editor, never the studio.
+  const order: Record<Role, number> = {
+    config_editor: 0,
+    viewer: 1,
+    member: 2,
+    admin: 3,
+    owner: 4,
+  };
   if (want === "super-admin") return false; // checked separately via user.is_super_admin
   return order[role] >= order[want];
+}
+
+// canEditConfigShares mirrors the server gate (auth_authz.go
+// canEditConfigShares): a super-admin, the least-privilege config_editor
+// capability, or a team manager (admin/owner) may edit the team's
+// config-shares. Used to gate the Config-editor nav entry / hub card / route so
+// the editor scales with access — a config_editor lands on its minimal shell,
+// an admin reaches the same editor as a route in the full studio.
+export function canEditConfigShares(role: Role | null, isSuperAdmin: boolean): boolean {
+  if (isSuperAdmin) return true;
+  if (role === "config_editor") return true;
+  return hasRole(role, "admin");
 }
 
 // hasOrgRole checks an active-org role against a requirement. Org roles

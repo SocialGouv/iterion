@@ -173,21 +173,21 @@ var marketplaceUninstallCmd = &cobra.Command{
 }
 
 func init() {
-	marketplaceListCmd.Flags().String("store-dir", "", "Store directory (default: .iterion)")
+	marketplaceListCmd.Flags().String("store-dir", "", "Store directory override (default: managed store for the working directory)")
 	marketplaceListCmd.Flags().StringP("query", "q", "", "Free-text filter (name/description/tag)")
 	marketplaceListCmd.Flags().String("tag", "", "Exact tag filter")
 	marketplaceListCmd.Flags().String("kind", "", "Filter by artifact kind (bot|plugin)")
 
-	marketplaceSubmitCmd.Flags().String("store-dir", "", "Store directory (default: .iterion)")
+	marketplaceSubmitCmd.Flags().String("store-dir", "", "Store directory override (default: managed store for the working directory)")
 	marketplaceSubmitCmd.Flags().String("ref", "", "Git ref (branch or tag) to clone")
 	marketplaceSubmitCmd.Flags().String("path", "", "Subdirectory or iterion-bots.yaml bot name when the repo holds several")
 	marketplaceSubmitCmd.Flags().StringSlice("tag", nil, "Marketplace tags (repeatable)")
 
-	marketplaceInstallCmd.Flags().String("store-dir", "", "Store directory (default: .iterion)")
+	marketplaceInstallCmd.Flags().String("store-dir", "", "Store directory override (default: managed store for the working directory)")
 	marketplaceInstallCmd.Flags().String("workdir", "", "Workspace root to install into (default: current directory; bots only)")
 	marketplaceInstallCmd.Flags().Bool("force", false, "Overwrite an existing install (update)")
 
-	marketplaceUninstallCmd.Flags().String("store-dir", "", "Store directory (default: .iterion)")
+	marketplaceUninstallCmd.Flags().String("store-dir", "", "Store directory override (default: managed store for the working directory)")
 	marketplaceUninstallCmd.Flags().String("workdir", "", "Workspace root to uninstall from (default: current directory; bots only)")
 
 	marketplaceCmd.AddCommand(marketplaceListCmd)

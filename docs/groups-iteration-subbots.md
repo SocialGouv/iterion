@@ -144,6 +144,20 @@ in the checkpoint or board JSON; only authenticated run-file references do.
 
 Runnable demo: [examples/pipeline-board-demo](../examples/pipeline-board-demo/main.bot).
 
+**The park is restart-safe (re-attach).** The parked parent is an in-memory
+goroutine, so a studio/CLI restart drops it: the orphan sweep promotes the
+parent to `failed_resumable` while the child stays answerable. To keep the
+child's work from being lost, the runner records the in-flight child id on the
+parent (`Run.SubbotChildren`, keyed by the subbot node's execution — node id +
+loop iteration + fan-out branch) **before** running it. On a resumed
+re-execution the runner re-attaches to that same child instead of spawning a
+fresh one: a still-paused child simply re-parks, and a child answered while the
+parent was down has its terminal output picked up. A child that ended
+`failed`/`cancelled`, or one that was pruned, falls back to spawning fresh.
+Both the studio in-process runner and `iterion resume` share the one re-attach
+oracle, so a bot behaves identically on either. See
+[ADR-084](adr/084-subbot-reattach-across-restarts.md).
+
 ### Fanning subbots out in parallel
 
 A subbot runs a **whole child `.bot`** that may do anything, so the
@@ -183,6 +197,49 @@ run_ticket -> collect
 > the safe path. A false `isolated:` assertion re-opens exactly the parallel
 > shared-workspace race the guard exists to prevent.
 
+### `parallel_safe:` — the same opt-out for a `tool` node
+
+A `tool` node is conservatively **mutating** too (it runs a command that may
+write anything), so the *same* guard refuses to fan a tool template out
+concurrently. When each replay writes only to a **disjoint, item-keyed target**
+— e.g. one keyframe per `scene_id` under `runs/<run>/keyframes/candidates/<scene_id>/`
+— the replays never race, and `parallel_safe: true` opts the tool out of the
+guard on a `fan_out_each`:
+
+```
+router keyframes_dispatch:
+  mode: fan_out_each
+  over: "{{outputs.prepare.keyframes}}"
+  as: keyframe
+  key: scene_id
+
+tool generate_keyframe_scene:
+  command: "render --scene {{outputs.keyframes_dispatch.keyframe.scene_id}}"
+  parallel_safe: true   # each replay writes only to its own scene-keyed path
+
+keyframes_dispatch -> generate_keyframe_scene
+generate_keyframe_scene -> verify   # wait_all
+```
+
+Unlike `isolated:` (own run store/worktree) the tool still writes to the shared
+workspace — it just **partitions** those writes by the fan-out item. Unlike
+`readonly:` it is not read-only.
+
+`parallel_safe:` is **scoped to `fan_out_each`** — the one place a single
+template node is replayed over distinct items, so the item-keyed disjointness
+holds by construction. It has no effect on a static `fan_out_all` or an
+`llm-router` multi-select, where the parallel branches are *different* nodes with
+no shared item key: there a tool stays conservatively mutating (use
+`max_parallel_branches: 1`, or give each branch its own output path and keep them
+under the one-mutating-branch limit). A `parallel_safe` tool followed by any
+*other* mutating node in the same template branch is still guarded.
+
+> **Contract — use `parallel_safe:` ONLY when replays write disjointly.** If two
+> replays can touch the same path (a shared aggregate file, a fixed output name),
+> leave it serialized (`max_parallel_branches: 1`). A false `parallel_safe:`
+> assertion re-opens a last-writer-wins race — the same failure mode the guard
+> exists to prevent.
+
 Parallel child runs are **data-race safe**: they share the parent's `RunStore`,
 whose per-run artifacts/events/checkpoints are isolated by `run_id` and guarded
 by a store-wide lock, and each child gets its own engine + (if `worktree: auto`)
@@ -209,18 +266,13 @@ boundaries are worth knowing before a heavy fan-out:
 The headline pattern — *map a sub-bot over a dependency DAG of work items, each
 in its own worktree slot* — combines all of these:
 
-```
-resources:
-  worktree_slot: 5
-
+```iter
 router dispatch:
   mode: fan_out_each
   over: "{{outputs.plan.tickets}}"
   as: ticket
   key: id
   depends_on: deps
-
-dispatch -> run_ticket with { id: "{{outputs.dispatch.ticket.id}}" }
 
 subbot run_ticket:
   source: "implement_ticket.bot"
@@ -229,7 +281,17 @@ subbot run_ticket:
   needs: worktree_slot
   isolated: true                       # each child mutates only its leased worktree
 
-run_ticket -> collect when validated   # collect: await: best_effort
+workflow tickets:
+  entry: plan
+  resources:
+    worktree_slot: 5
+  budget:
+    max_parallel_branches: 5
+
+  plan -> dispatch
+  dispatch -> run_ticket
+  run_ticket -> collect when validated   # collect declares await: best_effort
+  collect -> done
 ```
 
 `isolated: true` is what makes this parallel — the `worktree_slot` lease gives

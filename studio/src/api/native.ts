@@ -75,7 +75,19 @@ export interface ExternalLink {
   number: number;
   url?: string;
   state?: string;
+  // Forge login that opened the linked issue (identity behind the
+  // author-trust gate; shown on parked needs:approval cards).
+  author?: string;
 }
+
+// ExternalLinkInput is the WRITE shape for repo-first scoping: operator
+// picks a connected repo (provider + connection_id + repo_full_name) and
+// the server fills number/url/state via push-to-forge or the sync worker.
+export type ExternalLinkInput = Pick<
+  ExternalLink,
+  "provider" | "connection_id" | "repo"
+> &
+  Partial<Pick<ExternalLink, "number" | "url" | "state">>;
 
 export interface NativeBoard {
   states: NativeState[];
@@ -128,6 +140,10 @@ export interface NativeIssueCreate {
   fields?: Record<string, unknown>;
   bot?: string;
   bot_args?: Record<string, string>;
+  // Optional repo-first scoping: link the new card to a connected forge
+  // repo at creation. number/url/state stay empty until push-to-forge or
+  // the sync worker populate them.
+  external?: ExternalLinkInput;
 }
 
 export interface NativeIssuePatch {
@@ -140,6 +156,9 @@ export interface NativeIssuePatch {
   fields?: Record<string, unknown>;
   bot?: string;
   bot_args?: Record<string, string>;
+  // When present, re-links the card's forge repo (absent = unchanged; the
+  // server keeps sync-owned number/url/state semantics).
+  external?: ExternalLinkInput;
 }
 
 // ---------------------------------------------------------------------------
@@ -161,7 +180,8 @@ export interface PushIssueResult {
   provider: string;
 }
 
-// PullRef mirrors a forge pull/merge request linked to the issue.
+// PullRef mirrors a forge pull request (merge request on GitLab) linked to
+// the issue.
 export interface PullRef {
   number: number;
   title: string;
@@ -249,14 +269,15 @@ export function pushIssueToForge(id: string, body?: PushIssueBody): Promise<Push
   });
 }
 
-// listIssuePulls returns the forge pull/merge requests linked to a card.
+// listIssuePulls returns the forge pull requests (merge requests on GitLab)
+// linked to a card.
 export function listIssuePulls(id: string): Promise<PullRef[]> {
   return request<{ pulls: PullRef[] }>(`/issues/${encodeURIComponent(id)}/pulls`).then(
     (r) => r.pulls ?? [],
   );
 }
 
-// CreateIssuePullBody opens a PR/MR linking the card to a forge. A forge-linked
+// CreateIssuePullBody opens a PR linking the card to a forge. A forge-linked
 // card reuses its connection + repo (omit connection_id/repo); an unlinked card
 // must supply both connection_id and repo ("owner/repo"). title/body default
 // server-side from the card when omitted.
@@ -270,8 +291,8 @@ export interface CreateIssuePullBody {
   draft?: boolean;
 }
 
-// createIssuePull opens a forge pull/merge request for the card and returns the
-// new PR ref.
+// createIssuePull opens a forge pull request (merge request on GitLab) for the
+// card and returns the new PR ref.
 export function createIssuePull(id: string, body: CreateIssuePullBody): Promise<PullRef> {
   return request(`/issues/${encodeURIComponent(id)}/pulls`, {
     method: "POST",
@@ -313,10 +334,6 @@ export function getIssuePullCI(
 
 export function getBoard(): Promise<NativeBoard> {
   return request("/board");
-}
-
-export function putBoard(board: Partial<NativeBoard>): Promise<NativeBoard> {
-  return request("/board", { method: "PUT", body: JSON.stringify(board) });
 }
 
 // ---------------------------------------------------------------------------

@@ -189,6 +189,25 @@ export interface paths {
         patch: operations["patchAdminUsersById"];
         trace?: never;
     };
+    "/api/admin/users/{id}/reset-password": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** POST /api/admin/users/{id}/reset-password */
+        post: operations["postAdminUsersByIdResetPassword"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/auth/desktop/exchange": {
         parameters: {
             query?: never;
@@ -495,6 +514,45 @@ export interface paths {
         };
         /** GET /api/backends/detect */
         get: operations["getBackendsDetect"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/config-share/{id}/config": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        /** GET /api/config-share/{id}/config */
+        get: operations["getConfigShareByIdConfig"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        /** PATCH /api/config-share/{id}/config */
+        patch: operations["patchConfigShareByIdConfig"];
+        trace?: never;
+    };
+    "/api/config-share/{id}/meta": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        /** GET /api/config-share/{id}/meta */
+        get: operations["getConfigShareByIdMeta"];
         put?: never;
         post?: never;
         delete?: never;
@@ -1637,6 +1695,25 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/runs/{id}/answer-human": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** POST /api/runs/{id}/answer-human */
+        post: operations["postRunsByIdAnswerHuman"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/runs/{id}/artifact-files": {
         parameters: {
             query?: never;
@@ -1808,6 +1885,25 @@ export interface paths {
         get: operations["getRunsByIdBrowserCdp"];
         put?: never;
         post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/runs/{id}/bump-loop": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** POST /api/runs/{id}/bump-loop */
+        post: operations["postRunsByIdBumpLoop"];
         delete?: never;
         options?: never;
         head?: never;
@@ -2039,6 +2135,45 @@ export interface paths {
         put?: never;
         /** POST /api/runs/{id}/fork */
         post: operations["postRunsByIdFork"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/runs/{id}/interactions/pending": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        /** GET /api/runs/{id}/interactions/pending */
+        get: operations["getRunsByIdInteractionsPending"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/runs/{id}/interactions/{iid}/answer": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+                iid: string;
+            };
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** POST /api/runs/{id}/interactions/{iid}/answer */
+        post: operations["postRunsByIdInteractionsByIidAnswer"];
         delete?: never;
         options?: never;
         head?: never;
@@ -2307,6 +2442,25 @@ export interface paths {
         get: operations["getRunsByIdQueueMessages"];
         put?: never;
         post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/runs/{id}/raise-budget": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** POST /api/runs/{id}/raise-budget */
+        post: operations["postRunsByIdRaiseBudget"];
         delete?: never;
         options?: never;
         head?: never;
@@ -2608,6 +2762,167 @@ export interface paths {
         patch: operations["patchTeamsByIdBotsByBotIdBindingsByBindingId"];
         trace?: never;
     };
+    "/api/teams/{id}/config-editor/shares": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        /** GET /api/teams/{id}/config-editor/shares */
+        get: operations["getTeamsByIdConfigEditorShares"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/teams/{id}/config-editor/shares/{sid}/config": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+                sid: string;
+            };
+            cookie?: never;
+        };
+        /** GET /api/teams/{id}/config-editor/shares/{sid}/config */
+        get: operations["getTeamsByIdConfigEditorSharesBySidConfig"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        /** PATCH /api/teams/{id}/config-editor/shares/{sid}/config */
+        patch: operations["patchTeamsByIdConfigEditorSharesBySidConfig"];
+        trace?: never;
+    };
+    "/api/teams/{id}/config-editor/shares/{sid}/runs": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+                sid: string;
+            };
+            cookie?: never;
+        };
+        /** GET /api/teams/{id}/config-editor/shares/{sid}/runs */
+        get: operations["getTeamsByIdConfigEditorSharesBySidRuns"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/teams/{id}/config-editor/shares/{sid}/schedule": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+                sid: string;
+            };
+            cookie?: never;
+        };
+        /** GET /api/teams/{id}/config-editor/shares/{sid}/schedule */
+        get: operations["getTeamsByIdConfigEditorSharesBySidSchedule"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        /** PATCH /api/teams/{id}/config-editor/shares/{sid}/schedule */
+        patch: operations["patchTeamsByIdConfigEditorSharesBySidSchedule"];
+        trace?: never;
+    };
+    "/api/teams/{id}/config-shares": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        /** GET /api/teams/{id}/config-shares */
+        get: operations["getTeamsByIdConfigShares"];
+        put?: never;
+        /** POST /api/teams/{id}/config-shares */
+        post: operations["postTeamsByIdConfigShares"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/teams/{id}/config-shares/{sid}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+                sid: string;
+            };
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        /** DELETE /api/teams/{id}/config-shares/{sid} */
+        delete: operations["deleteTeamsByIdConfigSharesBySid"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/teams/{id}/config-shares/{sid}/deliveries": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+                sid: string;
+            };
+            cookie?: never;
+        };
+        /** GET /api/teams/{id}/config-shares/{sid}/deliveries */
+        get: operations["getTeamsByIdConfigSharesBySidDeliveries"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/teams/{id}/config-shares/{sid}/rotate": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+                sid: string;
+            };
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** POST /api/teams/{id}/config-shares/{sid}/rotate */
+        post: operations["postTeamsByIdConfigSharesBySidRotate"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/teams/{id}/forge/connections": {
         parameters: {
             query?: never;
@@ -2643,6 +2958,46 @@ export interface paths {
         post?: never;
         /** DELETE /api/teams/{id}/forge/connections/{conn_id} */
         delete: operations["deleteTeamsByIdForgeConnectionsByConnId"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/teams/{id}/forge/connections/{conn_id}/health": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+                conn_id: string;
+            };
+            cookie?: never;
+        };
+        /** GET /api/teams/{id}/forge/connections/{conn_id}/health */
+        get: operations["getTeamsByIdForgeConnectionsByConnIdHealth"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/teams/{id}/forge/connections/{conn_id}/refresh": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+                conn_id: string;
+            };
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** POST /api/teams/{id}/forge/connections/{conn_id}/refresh */
+        post: operations["postTeamsByIdForgeConnectionsByConnIdRefresh"];
+        delete?: never;
         options?: never;
         head?: never;
         patch?: never;
@@ -2783,6 +3138,27 @@ export interface paths {
         delete: operations["deleteTeamsByIdForgeRepoBotsByIntegrationId"];
         options?: never;
         head?: never;
+        /** PATCH /api/teams/{id}/forge/repo-bots/{integration_id} */
+        patch: operations["patchTeamsByIdForgeRepoBotsByIntegrationId"];
+        trace?: never;
+    };
+    "/api/teams/{id}/forge/repos": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        /** GET /api/teams/{id}/forge/repos */
+        get: operations["getTeamsByIdForgeRepos"];
+        put?: never;
+        /** POST /api/teams/{id}/forge/repos */
+        post: operations["postTeamsByIdForgeRepos"];
+        delete?: never;
+        options?: never;
+        head?: never;
         patch?: never;
         trace?: never;
     };
@@ -2864,6 +3240,47 @@ export interface paths {
         head?: never;
         /** PATCH /api/teams/{id}/members/{user_id} */
         patch: operations["patchTeamsByIdMembersByUserId"];
+        trace?: never;
+    };
+    "/api/teams/{id}/plugin-sources": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        /** GET /api/teams/{id}/plugin-sources */
+        get: operations["getTeamsByIdPluginSources"];
+        put?: never;
+        /** POST /api/teams/{id}/plugin-sources */
+        post: operations["postTeamsByIdPluginSources"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/teams/{id}/plugin-sources/{source_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+                source_id: string;
+            };
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        /** DELETE /api/teams/{id}/plugin-sources/{source_id} */
+        delete: operations["deleteTeamsByIdPluginSourcesBySourceId"];
+        options?: never;
+        head?: never;
+        /** PATCH /api/teams/{id}/plugin-sources/{source_id} */
+        patch: operations["patchTeamsByIdPluginSourcesBySourceId"];
         trace?: never;
     };
     "/api/teams/{id}/secrets": {
@@ -3018,6 +3435,23 @@ export interface paths {
         put?: never;
         /** POST /api/v1/bots */
         post: operations["postV1Bots"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/bots/import": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** POST /api/v1/bots/import */
+        post: operations["postV1BotsImport"];
         delete?: never;
         options?: never;
         head?: never;
@@ -3750,6 +4184,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/triggers/health": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** GET /api/v1/triggers/health */
+        get: operations["getV1TriggersHealth"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/triggers/{id}": {
         parameters: {
             query?: never;
@@ -3900,6 +4351,25 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/ws/runs/{id}/shell": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        /** GET /api/ws/runs/{id}/shell */
+        get: operations["getWsRunsByIdShell"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/ws/ticket": {
         parameters: {
             query?: never;
@@ -4010,12 +4480,16 @@ export interface components {
             created_by: string;
             display_name?: string;
             forge_base_url?: string;
+            granted_permissions?: {
+                [key: string]: string;
+            };
             id: string;
             installation_id?: number;
             kind: string;
             /** Format: date-time */
             last_refreshed_at?: string;
             namespace?: string;
+            oauth_app_id?: string;
             provider: string;
             scopes?: string[];
             status: string;
@@ -4043,6 +4517,24 @@ export interface components {
             nodes: components["schemas"]["DependencyGraphNode"][];
             root: components["schemas"]["DependencyGraphNode"];
         };
+        DeploymentReport: {
+            commit?: string;
+            deployed: boolean;
+            healthy: boolean;
+            image_ref?: string;
+            node_id?: string;
+            notes?: string;
+            trace?: components["schemas"]["DeploymentTrace"];
+            url?: string;
+        };
+        DeploymentTrace: {
+            built_from_head: boolean;
+            image_from_repo: boolean;
+            log?: string;
+            node_id?: string;
+            pushed: boolean;
+            verifiable: boolean;
+        };
         ExecutionState: {
             branch_id: string;
             current_event_seq: number;
@@ -4061,6 +4553,7 @@ export interface components {
             status: string;
         };
         ExternalRef: {
+            author?: string;
             connection_id: string;
             number: number;
             provider: string;
@@ -4079,6 +4572,7 @@ export interface components {
             forge_base_url?: string;
             id: string;
             installable?: boolean;
+            owner_login?: string;
             provider: string;
             provider_app_id?: string;
             redirect_uri?: string;
@@ -4149,6 +4643,7 @@ export interface components {
             };
             error?: string;
             executed_nodes: number;
+            external?: components["schemas"]["ExternalRef"];
             failed?: boolean;
             id: string;
             issue_id?: string;
@@ -4218,6 +4713,9 @@ export interface components {
             concurrency: components["schemas"]["PipelineConcurrencyStatus"];
             /** Format: date-time */
             generated_at: string;
+            /** Format: date-time */
+            hidden_closed_before?: string;
+            hidden_closed_count?: number;
             topology_error?: string;
         };
         PipelineConcurrencyStatus: {
@@ -4259,6 +4757,7 @@ export interface components {
             max_iterations?: number;
             max_parallel_branches?: number;
             max_tokens?: number;
+            warn_tokens?: number;
         };
         RunHeader: {
             active_duration_ms: number;
@@ -4272,6 +4771,7 @@ export interface components {
             created_at: string;
             /** Format: date-time */
             current_run_start?: string;
+            deployment?: components["schemas"]["DeploymentReport"];
             error?: string;
             file_path?: string;
             final_branch?: string;
@@ -4283,6 +4783,8 @@ export interface components {
             inputs?: {
                 [key: string]: unknown;
             };
+            loc_added?: number;
+            loc_deleted?: number;
             loops?: {
                 [key: string]: components["schemas"]["RunLoopProgress"];
             };
@@ -4295,6 +4797,7 @@ export interface components {
             parent_node_id?: string;
             parent_run_id?: string;
             permission_mode?: string;
+            project_path?: string;
             queue_position?: number;
             shard_count?: number;
             shard_index?: number;
@@ -4336,6 +4839,8 @@ export interface components {
             issue_identifier?: string;
             issue_title?: string;
             kind?: string;
+            schedule_id?: string;
+            schedule_name?: string;
         };
         RunSummary: {
             active: boolean;
@@ -4398,6 +4903,7 @@ export interface components {
         };
         WireNode: {
             backend?: string;
+            description?: string;
             id: string;
             isolated?: boolean;
             kind: string;
@@ -4443,6 +4949,7 @@ export interface components {
             forge_base_url?: string;
             mode: string;
             next?: string;
+            oauth_app_id?: string;
             pat?: string;
             provider: string;
         };
@@ -4451,8 +4958,41 @@ export interface components {
             connection?: components["schemas"]["Connection"];
             install_url?: string;
         };
+        forgeConnectionHealth: {
+            account_login?: string;
+            app_slug?: string;
+            granted_permissions?: {
+                [key: string]: string;
+            };
+            installation_account?: string;
+            installation_id?: number;
+            installation_repos?: string[];
+            kind: string;
+            live_error?: string;
+            manage_install_url?: string;
+            missing_permissions?: string[];
+            provider: string;
+            provisioned_repo_count: number;
+            status: string;
+            status_reason?: string;
+            token_missing_permissions?: string[];
+            token_permissions?: {
+                [key: string]: string;
+            };
+        };
+        forgeCreateRepoReq: {
+            connection_id: string;
+            default_branch?: string;
+            description?: string;
+            init_readme?: boolean;
+            name: string;
+            owner?: string;
+            private?: boolean;
+        };
         forgeOAuthAppReq: {
             admin_token?: string;
+            allow_app_delivery?: boolean;
+            allow_repo_creation?: boolean;
             client_id?: string;
             client_secret?: string;
             connection_id?: string;
@@ -4461,6 +5001,17 @@ export interface components {
             mode?: string;
             next?: string;
             provider: string;
+        };
+        forgeTeamRepo: {
+            bot_ids: string[];
+            clone_url?: string;
+            connection_id: string;
+            connection_status?: string;
+            integration_id: string;
+            provider: string;
+            repo_full_name: string;
+            sync_issues_enabled: boolean;
+            web_url?: string;
         };
         loginReq: {
             email: string;
@@ -4504,6 +5055,7 @@ export interface components {
             bot_args?: {
                 [key: string]: string;
             };
+            external?: components["schemas"]["ExternalRef"];
             labels?: string[];
             parent_id?: string;
             priority?: number;
@@ -4518,6 +5070,7 @@ export interface components {
             bot_args?: {
                 [key: string]: string;
             };
+            external?: components["schemas"]["ExternalRef"];
             labels?: string[];
             priority?: number;
             title?: string;
@@ -4842,6 +5395,26 @@ export interface operations {
         };
     };
     patchAdminUsersById: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Response */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    postAdminUsersByIdResetPassword: {
         parameters: {
             query?: never;
             header?: never;
@@ -5188,6 +5761,66 @@ export interface operations {
             query?: never;
             header?: never;
             path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Response */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    getConfigShareByIdConfig: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Response */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    patchConfigShareByIdConfig: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Response */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    getConfigShareByIdMeta: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
             cookie?: never;
         };
         requestBody?: never;
@@ -6763,6 +7396,26 @@ export interface operations {
             };
         };
     };
+    postRunsByIdAnswerHuman: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Response */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
     getRunsByIdArtifactFiles: {
         parameters: {
             query?: never;
@@ -6930,6 +7583,26 @@ export interface operations {
         };
     };
     getRunsByIdBrowserCdp: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Response */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    postRunsByIdBumpLoop: {
         parameters: {
             query?: never;
             header?: never;
@@ -7201,6 +7874,47 @@ export interface operations {
             header?: never;
             path: {
                 id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Response */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    getRunsByIdInteractionsPending: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Response */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    postRunsByIdInteractionsByIidAnswer: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+                iid: string;
             };
             cookie?: never;
         };
@@ -7497,6 +8211,26 @@ export interface operations {
         };
     };
     getRunsByIdQueueMessages: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Response */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    postRunsByIdRaiseBudget: {
         parameters: {
             query?: never;
             header?: never;
@@ -7964,6 +8698,234 @@ export interface operations {
             };
         };
     };
+    getTeamsByIdConfigEditorShares: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Response */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    getTeamsByIdConfigEditorSharesBySidConfig: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+                sid: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Response */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    patchTeamsByIdConfigEditorSharesBySidConfig: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+                sid: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Response */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    getTeamsByIdConfigEditorSharesBySidRuns: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+                sid: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Response */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    getTeamsByIdConfigEditorSharesBySidSchedule: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+                sid: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Response */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    patchTeamsByIdConfigEditorSharesBySidSchedule: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+                sid: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Response */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    getTeamsByIdConfigShares: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Response */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    postTeamsByIdConfigShares: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Response */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    deleteTeamsByIdConfigSharesBySid: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+                sid: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Response */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    getTeamsByIdConfigSharesBySidDeliveries: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+                sid: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Response */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    postTeamsByIdConfigSharesBySidRotate: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+                sid: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Response */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
     getTeamsByIdForgeConnections: {
         parameters: {
             query?: never;
@@ -8015,6 +8977,50 @@ export interface operations {
         };
     };
     deleteTeamsByIdForgeConnectionsByConnId: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+                conn_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Response */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    getTeamsByIdForgeConnectionsByConnIdHealth: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+                conn_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["forgeConnectionHealth"];
+                };
+            };
+        };
+    };
+    postTeamsByIdForgeConnectionsByConnIdRefresh: {
         parameters: {
             query?: never;
             header?: never;
@@ -8242,6 +9248,80 @@ export interface operations {
             };
         };
     };
+    patchTeamsByIdForgeRepoBotsByIntegrationId: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+                integration_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Response */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    getTeamsByIdForgeRepos: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        repos: components["schemas"]["forgeTeamRepo"][];
+                    };
+                };
+            };
+        };
+    };
+    postTeamsByIdForgeRepos: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["forgeCreateRepoReq"];
+            };
+        };
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        clone_url: string;
+                        repo: components["schemas"]["RepoSummary"];
+                    };
+                };
+            };
+        };
+    };
     getTeamsByIdInvitations: {
         parameters: {
             query?: never;
@@ -8351,6 +9431,88 @@ export interface operations {
             path: {
                 id: string;
                 user_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Response */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    getTeamsByIdPluginSources: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Response */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    postTeamsByIdPluginSources: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Response */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    deleteTeamsByIdPluginSourcesBySourceId: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+                source_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Response */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    patchTeamsByIdPluginSourcesBySourceId: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+                source_id: string;
             };
             cookie?: never;
         };
@@ -8629,6 +9791,24 @@ export interface operations {
         };
     };
     postV1Bots: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Response */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    postV1BotsImport: {
         parameters: {
             query?: never;
             header?: never;
@@ -9547,6 +10727,24 @@ export interface operations {
             };
         };
     };
+    getV1TriggersHealth: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Response */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
     getV1TriggersById: {
         parameters: {
             query?: never;
@@ -9724,6 +10922,26 @@ export interface operations {
         };
     };
     getWsRunsById: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Response */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    getWsRunsByIdShell: {
         parameters: {
             query?: never;
             header?: never;

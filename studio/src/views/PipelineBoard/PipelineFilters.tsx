@@ -1,6 +1,7 @@
 import { BotFilterSelect } from "@/components/shared/BotFilterSelect";
 import { LabelFilter } from "@/components/shared/LabelFilterPopover";
 import { Button } from "@/components/ui/Button";
+import { Checkbox } from "@/components/ui/Checkbox";
 import { Input } from "@/components/ui/Input";
 
 import {
@@ -11,7 +12,12 @@ import {
   type PipelineFilterState,
 } from "./filters";
 
-// PipelineFilters sits above the inventory card grid (tabbed Opened | Closed).
+// PipelineFilters sits above the inventory card grid (tabbed Opened | Closed):
+// text search, bot select, label multi-select, a filtered/total counter and a
+// reset (labels AND, exact bot). When `repoScope` is set (cloud + a chosen
+// active repo) a companion "Include unscoped" checkbox mirrors /board's
+// BoardFilters affordance, letting the operator surface cards that carry no
+// repo identity alongside the scoped set.
 export function PipelineFilters({
   filters,
   allBots,
@@ -22,6 +28,9 @@ export function PipelineFilters({
   filtered,
   onChange,
   onReset,
+  repoScope,
+  includeUnscoped,
+  onIncludeUnscopedChange,
   showInventoryChrome = false,
   tabCounts,
 }: {
@@ -34,6 +43,9 @@ export function PipelineFilters({
   filtered: number;
   onChange: (next: PipelineFilterState) => void;
   onReset: () => void;
+  repoScope?: string | null;
+  includeUnscoped?: boolean;
+  onIncludeUnscopedChange?: (v: boolean) => void;
   /** Tabs Opened/Closed + subfilter chips. */
   showInventoryChrome?: boolean;
   tabCounts?: { opened: number; closed: number };
@@ -184,9 +196,21 @@ export function PipelineFilters({
             searchPlaceholder="Search tags…"
           />
         )}
+        {repoScope && onIncludeUnscopedChange && (
+          <Checkbox
+            checked={!!includeUnscoped}
+            onChange={(e) => onIncludeUnscopedChange(e.target.checked)}
+            label={
+              !includeUnscoped && total > filtered
+                ? `Include unscoped (${total - filtered} hidden)`
+                : "Include unscoped"
+            }
+            help={`When on, cards with no repository also show alongside cards linked to ${repoScope}.`}
+          />
+        )}
         {allKinds.length > 0 && (
-          <select
-            className="rounded-md border border-border-default bg-surface-0 px-2 py-1 text-xs text-fg-default"
+          <Select
+            fit
             value={filters.pipelineKind}
             onChange={(e) => onChange({ ...filters, pipelineKind: e.target.value })}
             aria-label="Filter by pipeline kind"
@@ -198,11 +222,12 @@ export function PipelineFilters({
                 {k}
               </option>
             ))}
-          </select>
+          </Select>
         )}
         {allFamilies.length > 0 && (
-          <select
-            className="max-w-[10rem] rounded-md border border-border-default bg-surface-0 px-2 py-1 text-xs text-fg-default"
+          <Select
+            fit
+            className="max-w-[10rem]"
             value={filters.familyId}
             onChange={(e) => onChange({ ...filters, familyId: e.target.value })}
             aria-label="Filter by family id"
@@ -214,21 +239,16 @@ export function PipelineFilters({
                 {k}
               </option>
             ))}
-          </select>
+          </Select>
         )}
-        <label
-          className="flex cursor-pointer items-center gap-1.5 text-fg-muted"
+        <Checkbox
+          checked={filters.waitingDepsOnly}
+          onChange={(e) =>
+            onChange({ ...filters, waitingDepsOnly: e.target.checked })
+          }
+          label="Waiting on deps"
           title="Show only tickets with open hard blockers or waiting_deps"
-        >
-          <input
-            type="checkbox"
-            checked={filters.waitingDepsOnly}
-            onChange={(e) =>
-              onChange({ ...filters, waitingDepsOnly: e.target.checked })
-            }
-          />
-          Waiting on deps
-        </label>
+        />
         <span className="ml-auto text-fg-muted">
           {active || filtered !== total
             ? `${filtered} / ${total}`

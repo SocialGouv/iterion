@@ -1,11 +1,12 @@
 import { errorMessage } from "@/lib/errorHints";
-import { useEffect, useState } from "react";
+import { useState } from "react";
+import { useQuery } from "@tanstack/react-query";
 
 import { useDocumentStore } from "@/store/document";
 import { useUIStore } from "@/store/ui";
 import { createEmptyDocument } from "@/lib/defaults";
 import { Button, Dialog } from "@/components/ui";
-import { listExamples } from "@/api/client";
+import { listExampleEntries } from "@/api/client";
 import { openExampleIntoStore } from "@/lib/openExample";
 import {
   FileIcon,
@@ -102,11 +103,11 @@ export default function CanvasEmpty() {
   );
 }
 
-// ExamplesPicker fetches the list once on open and renders it as a
-// scrollable card grid. The names returned by the backend are repo-
-// relative paths (e.g. "feature_dev/main.bot") — we split on the
-// last slash so the card header carries the bundle name and the
-// sub-line carries the directory.
+// ExamplesPicker fetches the list on open (it is only mounted while
+// open) and renders it as a scrollable card grid. The names returned
+// by the backend are repo-relative paths (e.g. "feature_dev/main.bot")
+// — we split on the last slash so the card header carries the bundle
+// name and the sub-line carries the directory.
 function ExamplesPicker({
   onClose,
   onPick,
@@ -114,21 +115,17 @@ function ExamplesPicker({
   onClose: () => void;
   onPick: (name: string) => void;
 }) {
-  const [examples, setExamples] = useState<string[] | null>(null);
-  const [err, setErr] = useState<string | null>(null);
-  useEffect(() => {
-    let cancelled = false;
-    listExamples()
-      .then((list) => {
-        if (!cancelled) setExamples(list);
-      })
-      .catch((e) => {
-        if (!cancelled) setErr(errorMessage(e));
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, []);
+  // Shares the ["example-entries"] cache with RecentFilesPanel and
+  // FilePicker. isFetching (not isLoading) so every open shows the
+  // loading line rather than a possibly-stale cached list.
+  const query = useQuery({
+    queryKey: ["example-entries"],
+    queryFn: listExampleEntries,
+  });
+  const loading = query.isFetching;
+  const err = !loading && query.error ? errorMessage(query.error) : null;
+  const examples =
+    loading || query.error ? null : (query.data?.map((e) => e.name) ?? null);
   return (
     <Dialog open={true} onOpenChange={onClose} title="Choose a starter example">
       <div className="space-y-2 max-h-[60vh] overflow-auto pointer-events-auto">

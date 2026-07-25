@@ -86,9 +86,10 @@ func Path() (string, error) {
 	return cachedPath, nil
 }
 
-// Load reads the registry. Missing file → fresh Config; corrupt JSON →
-// returns the error so the caller can decide whether to overwrite
-// (callers typically log + start fresh to avoid wedging the studio).
+// Load reads the registry. Missing file → fresh Config; corrupt JSON
+// (whole document or a wrong-typed owned field) → returns the error so
+// the caller can decide whether to overwrite (callers typically log +
+// start fresh to avoid wedging the studio).
 func Load() (*Config, error) {
 	path, err := Path()
 	if err != nil {
@@ -111,15 +112,22 @@ func loadFrom(path string) (*Config, error) {
 	}
 	cfg := &Config{path: path, Extras: map[string]json.RawMessage{}}
 	for k, v := range raw {
+		// A wrong-typed owned field is corruption: error out instead of
+		// zeroing it (a silent zero would also destroy the on-disk value
+		// on the next Save).
+		var err error
 		switch k {
 		case "version":
-			_ = json.Unmarshal(v, &cfg.Version)
+			err = json.Unmarshal(v, &cfg.Version)
 		case "recent_projects":
-			_ = json.Unmarshal(v, &cfg.RecentProjects)
+			err = json.Unmarshal(v, &cfg.RecentProjects)
 		case "current_project_id":
-			_ = json.Unmarshal(v, &cfg.CurrentProjectID)
+			err = json.Unmarshal(v, &cfg.CurrentProjectID)
 		default:
 			cfg.Extras[k] = v
+		}
+		if err != nil {
+			return nil, fmt.Errorf("parse config field %q: %w", k, err)
 		}
 	}
 	if cfg.Version == 0 {

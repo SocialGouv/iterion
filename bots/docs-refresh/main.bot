@@ -1,237 +1,242 @@
 ## ─────────────────────────────────────────────────────────────────
-## docs-refresh  (v2 — one agent aligns the docs in its natural
-##                flow, minimal framing)
+## docs-refresh  (v3 — one capable agent + a mission + TRUTH gates
+##                only; the scan is advisory, never an obligation)
 ##
-## THE MISSION is a DOC-ALIGNMENT campaign: re-read the repo's
-## documentation against the actual current state of the code, fix the
-## DOCUMENTATION (never the code), and land each aligned doc as a
-## semantic `docs(scope):` commit in stride. When a repo has NO docs in
-## scope yet, an authoring pass bootstraps an initial set first
-## (DEFAULT-CREATE, unchanged from v0.3.0).
+## THE MISSION is an EXHAUSTIVE DOC-ALIGNMENT campaign: converge the
+## documentation to the actual current state of the repo. Docs follow
+## code, exhaustively — never the reverse. Two halves, BOTH doc-side:
+## repair documentation that is stale or obsolete, and WRITE the
+## documentation that is missing. All edits land as semantic
+## `docs(scope):` commits in stride. When a repo has NO docs in scope
+## yet, an authoring pass bootstraps an initial set first
+## (DEFAULT-CREATE, unchanged since v0.3.0).
 ##
-## Sibling of `whole_improve_loop` / `branch_improve_loop` v2: SAME core
-## (one adaptive `campaign` agent + deterministic gates + a bounded
-## continuation loop + git-as-state), with Doki's DETERMINISTIC AUDIT
-## MACHINERY kept fully in front of it — the machinery IS the value the
-## engine uniquely adds here:
-##   scan_docs         — immutable doc-footprint enumeration + inter-run
-##                       cache pre-verification (unchanged).
-##   scan_code_surface — opt-in CLI/diagnostic surface inventory
-##                       (unchanged; empty globs = disabled).
-##   build_manifest    — deterministic anchor extraction + mechanical
-##                       verification; emits the bounded drift_candidates
-##                       working set (severity-sorted, doc-chunked — the
-##                       v0.15/0.16 context-bounding lessons live here),
-##                       the anchor-level coverage_pct, and (v2) the
-##                       mechanically VERIFIED `doc::anchor` pairs that
-##                       feed the inter-run cache.
-##   campaign          — ONE adaptive agent (claude_code, full tools).
-##                       Mission = adjudicate + fix the manifest's drift
-##                       candidates, one doc at a time, committing each
-##                       aligned doc in stride. Docs follow code; the
-##                       writeable set is `.md` (+ Go comments when
-##                       opted in); is_code_bug is the escape valve.
-##                       git IS the durable state — a re-dispatch re-runs
-##                       the manifest and the campaign continues from the
-##                       commits earlier passes banked.
-##   scope_check       — deterministic detector (v2 rewrite of v1's
-##                       enforce_fix_scope): diffs the RUN BASE against
-##                       the tree and fails the gate when anything
-##                       outside the doc writeable-set changed. With
-##                       git-as-state the campaign commits in stride, so
-##                       out-of-scope edits are DETECTED and bounced back
-##                       (the campaign must revert them) instead of
-##                       silently checkout-reverted from a dirty tree.
-##   verify_build      — the stack-agnostic build/test gate shared with
-##     + verify_run      the other v2 bots: docs-only changes should
-##                       never break a build, and when go_comment_globs
-##                       opts Go comments in, the gate proves the tree
-##                       still compiles. Deterministic exit code.
-##   gate              — deterministic compute: converged = tree green
-##                       AND scope clean AND campaign reports docs
-##                       aligned AND manifest coverage ≥ target. The
-##                       loop re-runs build_manifest each pass so the
-##                       drift set always reflects the live tree.
-##   mark_issue_for_review / update_audit_cache — dispatcher issue
-##                       transition + inter-run cache write (unchanged;
-##                       the cache now records the manifest's mechanical
-##                       verified_pairs instead of reviewer claims).
+## WHY v3 (the Billy/Willy paradigm — "a capable agent + a mission +
+## truth gates only; excess determinism is counter-productive"). The
+## v2.x lineage kept growing deterministic machinery in FRONT of the
+## agent: an anchor scanner (file_ref / cli_flag / diagnostic /
+## symbol regexes) promoted to an OBLIGATION GENERATOR, mechanical
+## convergence conditions (`coverage_pct >= target`,
+## `undocumented_count == 0`), and a severity/chunking pipeline that
+## decided the agent's plan for it. Two live runs against a real repo
+## (019f8af6 / 019f8b50, 2026-07-22) measured the cost: ~200
+## false-positive cli_flag candidates (git/docker/gh flags quoted in
+## doc examples) adjudicated one by one — ~40 of 44 minutes burned;
+## successive patches (foreign-flag heuristic, cli_names derivation,
+## pseudo-doc chunk slots) were symptom treatment; the priority/chunk
+## pipeline buried the real work (enrichment) behind scanner noise
+## for 4 passes; final ratio 55 min / ~$10 for +61 lines, half the
+## wall-clock re-building the repo for docs-only commits. The scanner
+## metrics had become the goal: the agent served the scanner instead
+## of exploring the repo.
 ##
-## WHY THIS SHAPE. The v1 loop was ~16 nodes: the audit machinery above
-## PLUS an alternating cross-family review/fix assembly line
-## (alt condition router → reviewer_claude / reviewer_gpt → streak_check
-## → fix_claude / fix_gpt → prepare_commit → commit_changes →
-## detect_doc_changes) with streak/coverage/chronic-path/dismissed-pairs
-## accumulators to keep it from oscillating. ADR-058
-## (docs/references/productive-session-patterns.md): "the deficit is
-## framing, not capability" — a capable agent adjudicates a bounded,
-## pre-verified drift manifest and fixes the real drifts better as ONE
-## flow than as a reviewer/fixer relay, and the accumulator machinery
-## existed only to police the relay's oscillation. The deterministic
-## manifest + scope + build gates keep every anti-Goodhart guarantee.
+## THE v3 SHAPE keeps ONLY truth-oracle determinism:
+##   scan_hints    — ONE deterministic producer of ADVISORY hints: a
+##                   compact report (probable drift sorted by signal:
+##                   missing repo-rooted paths, dead internal links /
+##                   anchors; potentially undocumented code areas;
+##                   coverage telemetry) handed to the campaign as
+##                   HELP. The campaign is free to use it, contradict
+##                   it, and above all to explore BEYOND it (read the
+##                   code, find the drift no scan can see). Hints are
+##                   never a gate and never an obligation. High
+##                   precision by construction: a cited path is only
+##                   checkable when its first segment exists as a
+##                   repo directory — foreign-tool examples (docker /
+##                   gh flag lines, other repos' layouts) are
+##                   silently skipped, not surfaced as noise. On a
+##                   repo with nothing scannable the producer
+##                   degrades silently to an empty report + an
+##                   explicit "explore directly" note.
+##   campaign      — ONE adaptive agent (claude_code, full tools).
+##                   Mission = align the docs exhaustively on the
+##                   état de l'art of the code; adjudicate every
+##                   issue to exactly one of FOUR outcomes
+##                   (fix+commit / dismiss+ledger / promise+ledger /
+##                   code-bug→board); a living todo list + one
+##                   semantic commit per doc, in stride. git IS the
+##                   durable state — a re-dispatch re-hints and the
+##                   campaign continues from the commits earlier
+##                   passes banked.
+##   scope_check   — deterministic writeable-set containment (`.md`
+##                   only) vs the run base. TRUTH: the bot only
+##                   touches docs, never code — a docs-only change
+##                   cannot break the build, so there is no build gate.
+##   gate          — deterministic compute:
+##                   converged = scope_ok ∧ campaign.docs_aligned —
+##                   NOTHING ELSE. Scanner counts are telemetry
+##                   (report, events), never conditions.
+##   ledgers       — the dismissals ledger (vars.dismissed_path) and
+##                   the promises ledger (<scratch>/promises.json)
+##                   are the campaign's cross-pass MEMORY: its own
+##                   adjudications persist (scan_hints excludes
+##                   ledger entries; the PR tail reports promises).
+##                   Memory, never a cage.
+##
+## RETIRED FROM v2.5 (git history has the design): scan_docs +
+## scan_code_surface + build_manifest (the anchor scanner / manifest /
+## reverse-containment machinery — replaced by the single advisory
+## scan_hints), the coverage_pct / undocumented_count gate conditions,
+## the severity/chunking pipeline (max_drift_candidates /
+## max_review_chunk_docs / cli_surface_globs / diagnostic_surface_globs
+## / include_unverifiable_symbols / coverage_target_pct / enrich /
+## enrich_area_depth vars), and the per-doc SHA pre-verification cache.
+## v3.3 dropped the build-verify apparatus (a docs-only bot cannot break
+## the build); v3.4 dropped the noop cache (update_audit_cache), the
+## author_docs bootstrap branch (the campaign authors from zero itself),
+## and the mark_issue node (the dispatcher owns the tracker-issue
+## lifecycle natively — completed_state). 15 nodes → 8; ~1400 lines of
+## embedded python → ~250.
 ##
 ## CONTINUATION IS BOUNDED. The single declared loop
-## (build_manifest→campaign→scope_check→verify_build→verify_run→gate→
-## build_manifest) is capped by `max_passes`; on exhaustion it ships
-## what is banked (every committed doc alignment is real, landed work).
-## `iterion validate` reports NO undeclared cycle (author_rescan(1) is
-## the one other declared loop, unchanged from v1).
+## (scan_hints→campaign→scope_check→gate→scan_hints) is capped by
+## `max_passes`; on exhaustion it ships what is banked (every committed
+## doc alignment is real, landed work). `iterion validate` reports NO
+## undeclared cycle — this is the only declared loop.
 ##
-## STACK/REPO-AGNOSTIC (CLAUDE.md "Catalog bots are repo-agnostic"):
-## universal doc_globs defaults, empty code scope = whole workspace,
-## the CLI/diagnostic surface scan stays opt-in (Cobra-shaped repos),
-## and the cache is a repo-root dotfile. Unchanged from v1.
-##
-## RETIRED FROM v1 (git history has the design): the `alt` condition
-## router, reviewer_claude / reviewer_gpt, streak_check (+ its
-## cumulative_dismissed_pairs / cumulative_pushback / chronic-path
-## accumulators — nothing left to oscillate), fix_claude / fix_gpt,
-## prepare_commit / commit_changes (the campaign commits in stride),
-## detect_doc_changes (both remaining terminal tools are ~ms and
-## unconditional), enforce_fix_scope (reborn as the detect-only
-## scope_check), and the review_mode / mono_family topology vars —
-## the ADR-052 mono/dual review topology no longer applies to this bot
-## (no reviewer nodes). 16 nodes → 11.
+## STACK/REPO-AGNOSTIC (CLAUDE.md "Catalog bots are repo-agnostic" +
+## "Universal code bots"): universal doc_globs defaults, no language /
+## ecosystem / layout literal anywhere in vars, commands or schemas;
+## the stack knowledge lives in the bundled skills; the hint
+## heuristics degrade silently when nothing is derivable.
 ## ─────────────────────────────────────────────────────────────────
 
 vars:
   workspace_dir: string = "${PROJECT_DIR}"
 
-  ## Doc footprint scope (comma-separated globs). The scan_docs
-  ## tool node enumerates files matching these globs once, at run
-  ## start. Hidden / vendored / runtime dirs (.iterion, .works,
-  ## .claude, vendor, node_modules, .git, dist, build, out) are
-  ## excluded unconditionally inside the scanner; the bot's own
-  ## bundle is excluded when `bundle_self_path` is set.
-  ## UNIVERSAL DEFAULT: docs-refresh documents ANY repo, so the default
-  ## footprint is the conventions common to most projects (root +
-  ## nested READMEs, a docs/ tree, CLAUDE.md). Repo-specific doc
-  ## locations are added per-repo via --var, never baked into the
-  ## catalog default. See "Catalog bots are repo-agnostic" in CLAUDE.md.
+  ## Doc footprint scope (comma-separated globs). scan_hints
+  ## enumerates files matching these globs each pass. Hidden /
+  ## vendored / runtime dirs are excluded unconditionally via
+  ## `excluded_dirs`; the bot's own bundle is excluded when
+  ## `bundle_self_path` is set.
+  ## UNIVERSAL DEFAULT: docs-refresh documents ANY repo, so the
+  ## default footprint is the conventions common to most projects
+  ## (root + nested READMEs, a docs/ tree, CLAUDE.md). Repo-specific
+  ## doc locations are added per-run via --var, never baked into the
+  ## catalog default.
   doc_globs: string = "README.md,docs/**/*.md,**/README.md,CLAUDE.md,**/CLAUDE.md"
-
-  ## Go code comment scope (comma-separated globs). Empty (default)
-  ## means: do NOT audit Go function/package comments — speeds up
-  ## first runs. Non-empty also widens the campaign's writeable set
-  ## (and scope_check's allow-list) to comment-only edits in those
-  ## files.
-  go_comment_globs: string = ""
-
-  ## Code scope reviewers may grep / read to verify doc claims.
-  ## UNIVERSAL DEFAULT: empty = the campaign may grep the whole
-  ## workspace (minus `excluded_dirs`).
-  code_scope_globs: string = ""
 
   ## Optional free-text notes pinning the campaign's attention.
   scope_notes: string = ""
 
-  ## Coverage threshold (percentage of mechanically-checkable anchors
-  ## the manifest must have VERIFIED before the gate can converge).
-  ## Default 80 — high enough to defeat "declare aligned after a
-  ## partial pass", low enough to tolerate a genuinely-unverifiable
-  ## tail. The gate compares build_manifest.coverage_pct against it
-  ## every pass; the campaign raises it by fixing drifted anchors.
-  coverage_target_pct: int = 80
-
-  ## Auto-exclusion. When non-empty, scan_docs excludes any file whose
-  ## path starts with this prefix from the doc footprint. Set to the
-  ## bot's own bundle dir when running docs-refresh on a repo that
-  ## contains its source; otherwise leave empty.
+  ## Auto-exclusion. When non-empty, scan_hints excludes any file
+  ## whose path starts with this prefix from the doc footprint. Set
+  ## to the bot's own bundle dir when running docs-refresh on a repo
+  ## that contains its source; otherwise leave empty.
   bundle_self_path: string = ""
 
-  ## Incremental mode. When non-empty, scan_docs computes
-  ## `git diff <diff_since>...HEAD --name-only` and surfaces the result
-  ## as `recently_changed_code_files` — a prioritisation HINT for the
-  ## campaign, never a scope reduction. Useful for nightly / per-PR
-  ## runs (`--var diff_since=main`).
+  ## Incremental base (explicit pin). When non-empty, scan_hints computes
+  ## `git diff <diff_since>...HEAD --name-only` → `recently_changed_code_files`.
+  ## Usually left EMPTY: in `mode: incremental` scan_hints AUTO-DETECTS the
+  ## base (the last `Bot: docs-refresh` alignment commit) so a periodic run
+  ## only re-aligns what changed since it last ran. Pin it to force a base —
+  ## e.g. the PR base for an amend-PR run (`--var diff_since=main`).
   diff_since: string = ""
 
-  ## Hard-excluded directories. Comma-separated list of directory names
-  ## whose presence anywhere in a path disqualifies it from `doc_files`
-  ## (regardless of `doc_globs`). Defaults exclude runtime / scratch /
-  ## vendor / artifact dirs that should never be audited. Setting to
-  ## empty disables all exclusion (NOT recommended — picks up `.git/`).
+  ## Alignment scope. `full` (default): the campaign sweeps the WHOLE
+  ## corpus semantically — the monthly reconciliation that catches
+  ## cross-cutting drift no per-file diff sees. `incremental`: the
+  ## campaign focuses its SEMANTIC alignment on the docs impacted by the
+  ## code changed since the last alignment (auto-detected from the
+  ## `Bot: docs-refresh` commit trailer, or `diff_since` when pinned) —
+  ## cheap, for the frequent/weekly + per-PR runs. The zero-LLM STRUCTURAL
+  ## scan (dead links, missing paths) stays corpus-wide in BOTH modes, so
+  ## a broken link anywhere is still caught. A first run with no prior
+  ## alignment commit degrades cleanly to a full sweep.
+  mode: string = "full"
+
+  ## Hard-excluded directories. Comma-separated list of directory
+  ## names whose presence anywhere in a path disqualifies it from the
+  ## doc footprint (regardless of `doc_globs`). Defaults exclude
+  ## runtime / scratch / vendor / artifact dirs that should never be
+  ## audited.
   excluded_dirs: string = ".iterion,.works,.claude,vendor,node_modules,.git,dist,build,out"
 
-  ## Code-surface scan scope. Globs for the `scan_code_surface` tool —
-  ## a counter-omission audit that greps the code for publicly-exposed
-  ## identifiers docs ought to mention (CLI commands, flags, diagnostic
-  ## codes) and checks each appears in at least one doc.
-  ## OPT-IN / NON-UNIVERSAL: the extraction patterns are specialised
-  ## for a Cobra-CLI + diagnostic-code repo shape; the catalog DEFAULT
-  ## is empty = surface scan DISABLED. A CLI/DSL repo opts in per-run,
-  ## e.g. --var cli_surface_globs="cmd/myapp/*.go".
-  cli_surface_globs: string = ""
-  diagnostic_surface_globs: string = ""
+  ## Cap on the advisory hints list handed to the campaign (context
+  ## bound — telemetry counts are computed BEFORE truncation, so the
+  ## report stays honest about what was cut).
+  max_hints: int = 120
 
-  ## Cap on the campaign's per-pass working set — build_manifest sorts
-  ## candidates by severity (drifted CLI surface > diagnostic >
-  ## file_ref > symbol_ref > unverifiable) then takes the top N. The
-  ## v0.15 lesson: an unbounded candidate list blows the context
-  ## window; the campaign ITERATES — pass 1 fixes ~a chunk, pass 2
-  ## sees the next tier (or coverage rises).
-  max_drift_candidates: int = 40
-
-  ## Cap on the number of DISTINCT docs whose candidates may land in a
-  ## single pass (applied after the severity sort, before the
-  ## candidate cap). Bounds the file surface the campaign is tempted
-  ## to spot-check per pass (the v0.16 context lesson). Convergence is
-  ## unchanged: the gate uses the anchor-level coverage_pct across ALL
-  ## docs. 0 disables doc-chunking.
-  max_review_chunk_docs: int = 30
-
-  ## Identifier of the tracker issue this run was dispatched from.
-  ## Used by mark_issue_for_review at the end of the workflow to
-  ## transition the issue out of `ready` so the dispatcher doesn't
-  ## re-pick it on the next poll. Filled by the dispatcher via
-  ## `vars.issue_id: "{{issue.identifier}}"`. Empty when run outside
-  ## the dispatcher — mark_issue_for_review is then a no-op.
-  issue_id: string = ""
-
-  ## Inter-run audit cache. Path to the JSON cache file that stores
-  ## `{doc_path: {sha, refs: [{path, sha}]}}` from the previous
-  ## successful run. scan_docs reads this and emits `pre_verified_docs`
-  ## for entries whose doc content AND all cited code-file SHAs are
-  ## unchanged; update_audit_cache (the terminal tool) writes the
-  ## merged state from the manifest's mechanically VERIFIED pairs.
-  ## Empty string disables both reads and writes.
-  ## UNIVERSAL DEFAULT: a repo-root dotfile — add it to the target
-  ## repo's .gitignore (or leave empty to disable).
-  audit_cache_path: string = ".docs-refresh-cache.json"
-
-  ## DEFAULT-CREATE: when scan_docs finds ZERO documentation files in
-  ## scope, the `author_docs` node creates this directory and authors
-  ## an initial documentation set there from the code; the run then
-  ## re-scans (author_rescan) and the normal campaign polishes +
-  ## commits it. Repo-relative; DEFAULT "docs" (covered by the default
-  ## doc_globs). If you point it OUTSIDE the default doc_globs, widen
-  ## doc_globs too so the post-authoring re-scan picks the new docs up.
+  ## The docs directory scan_hints skips when scanning code areas for
+  ## `unmentioned_area` hints, so `docs/` is not itself flagged as an
+  ## undocumented code area. Repo-relative; DEFAULT "docs".
   docs_dir: string = "docs"
 
-  ## Out-of-tree, sandbox-writable scratch for the deterministic gate's
-  ## verify script/log ONLY. The engine resolves ${PROJECT_SCRATCH_DIR}
-  ## to ~/.iterion/projects/<key>/scratch non-sandboxed and to the
-  ## container-writable /tmp/iterion-scratch under a sandbox. Keeping it
-  ## OUT of the target worktree is the repo-agnostic rule.
+  ## Out-of-tree, sandbox-writable scratch for the promises ledger
+  ## (and any cross-pass state). The engine
+  ## resolves ${PROJECT_SCRATCH_DIR} to ~/.iterion/projects/<key>/
+  ## scratch non-sandboxed and to the container-writable
+  ## /tmp/iterion-scratch under a sandbox. Keeping it OUT of the
+  ## target worktree is the repo-agnostic rule.
   scratch_dir: string = "${PROJECT_SCRATCH_DIR}/docs-refresh"
 
-  ## BASELINE (G5). Known pre-existing build/test failures the campaign
-  ## must SKIP rather than burn budget proving they aren't its own —
-  ## docs-refresh rarely trips this (docs-only edits), but when
-  ## go_comment_globs opts comment edits in, the build gate runs and a
-  ## red base tree must not absorb the run. Empty = establish once
-  ## cheaply, then skip what predates the run.
-  baseline: string = ""
+  ## DISMISSALS LEDGER — the campaign's cross-pass MEMORY. JSON array
+  ## of {doc, kind, value, reason} entries the campaign adjudicated
+  ## as not-worth-acting-on (false positives, internal-only areas,
+  ## recorded promises). scan_hints excludes ledger entries from
+  ## every later pass so a settled adjudication never re-surfaces —
+  ## persistence of the agent's own judgment, never a cage. Out of
+  ## tree like scratch_dir; empty disables the exclusion.
+  dismissed_path: string = "${PROJECT_SCRATCH_DIR}/docs-refresh/dismissed.json"
 
   ## Hard cap on continuation PASSES — the convergence backstop. Each
-  ## pass is one manifest→campaign→verify cycle; the run stops
+  ## pass is one hints→campaign→scope_check cycle; the run stops
   ## (shipping what is banked) when the docs are reported aligned +
-  ## the gates are green, or when this cap is hit.
-  ## NOTE loop semantics: the DSL `as continuation_loop(N)` bounds the
-  ## loop-BACKS (re-entries), so the TOTAL number of passes is N+1 —
-  ## max_passes: 2 yields up to 3 campaign→verify cycles (observed live,
-  ## dogfood 019f3d4d-1aed).
-  max_passes: int = 8
+  ## the scope gate is green, or when this cap is hit.
+  ## NOTE loop semantics: the DSL `as continuation_loop(N)` bounds
+  ## the loop-BACKS (re-entries), so the TOTAL number of passes is
+  ## N+1 — max_passes: 2 yields up to 3 campaign→scope cycles.
+  ## Self-orchestrated passes are comprehensive (pass 1 aligns most of
+  ## the corpus), so the asymptote converges in a FEW big passes, not
+  ## many small ones — and the wall-clock/cost budget must fit them
+  ## (see the budget block). 4 = one comprehensive sweep + refinement to
+  ## the floor; exhaustion here finalizes+ships gracefully.
+  max_passes: int = 4
+
+  ## ─── PR finalization (opt-in) ─────────────────────────────────
+  ## Same contract as feature-dev/app-dev: when open_mr=true, after
+  ## the run finishes (converged OR max_passes exhausted with banked
+  ## commits), finalize_mr pushes the doc-alignment series and opens
+  ## the pull request (PR; merge request on GitLab). Requires a git
+  ## remote + a push credential (forge_token secret, *_TOKEN env, or
+  ## host gh auth) — the deterministic forge_auth_probe skips the
+  ## tail cleanly when none exists, and finalize_mr refuses to open an
+  ## empty PR.
+  open_mr: bool = false
+  mr_branch: string = ""
+  mr_base: string = ""
+  source_issue_ref: string = ""
+
+  ## PR-CONTEXT inputs — the GENERIC vars iterion's forge webhook and the
+  ## `/doki` command already set for ANY bot launched ON a pull request
+  ## (no docs-refresh-specific engine code; iterion stays bot-agnostic).
+  ## When `pr_url` is non-empty the run was launched on a PR (and the
+  ## engine checked out its head branch), so Doki switches ITSELF into
+  ## AMEND mode: align the docs impacted by the PR's own diff (incremental,
+  ## base = `base_ref`) and push the alignment commits ONTO the PR's head
+  ## branch + comment, instead of opening a separate PR — the docs land IN
+  ## the contributor's PR, reviewed with the code. Empty (schedule / manual
+  ## path) → the normal `mode` / `open_mr` behaviour. `mr_branch` overrides
+  ## the push target (default: the checked-out branch = the PR head).
+  pr_url: string = ""
+  base_ref: string = ""
+  ## The PR head branch (generic, engine-provided on a PR launch). In amend
+  ## mode this is the push target — pushing HEAD onto it fast-forwards the
+  ## contributor's PR. Robust to `worktree: auto` (which checks out a
+  ## DETACHED head): we push by branch NAME, not by being on the branch.
+  ## `mr_branch` overrides it; empty on both → finalize_mr falls back to the
+  ## current branch, else reports it could not determine the head.
+  source_branch: string = ""
+
+secrets:
+  ## Forge access for push + PR creation + the issue back-link.
+  ## Mounted as a read-only file the gh/glab CLI authenticates from;
+  ## never read into a prompt. optional:true so local runs (no forge
+  ## token bound) and host-authenticated gh/glab setups work
+  ## unchanged.
+  forge_token:
+    as: file
+    optional: true
 
 ## ─── Prompts ────────────────────────────────────────────────────
 
@@ -241,93 +246,136 @@ prompt campaign_system:
   session. You have the repo in front of you and full tools (read, edit,
   shell, git). No one micro-manages you; you own this pass end to end.
 
-  THE MISSION: make the documentation match the actual current state of
-  the code. DOCS FOLLOW CODE; code does NOT follow docs — you correct
-  documentation, never the other way around.
+  THE MISSION: align the documentation, exhaustively, with the actual
+  current state of the code — the état de l'art of the repo. DOCS
+  FOLLOW CODE, never the reverse. Both halves of the work are
+  DOC-SIDE:
+    - REPAIR what is stale or obsolete: update every documented claim
+      the code has moved past.
+    - WRITE what is missing: document capabilities, surface, and code
+      areas that exist in the repo but appear in no doc.
+  You correct and author documentation, never code.
 
-  LOAD YOUR SKILLS FIRST. The bundle ships five skills under
+  LOAD YOUR SKILLS FIRST. The bundle ships six skills under
   `.claude/skills/` describing the discipline you MUST follow:
     - `docs-refresh.md` — operating playbook, the why and the
       inviolable rules
-    - `doc-mismatch-taxonomy.md` — the mismatch kinds and anchor kinds
-      that tell you what a real drift looks like
-    - `doc-scope-enumeration.md` — the immutable scan_docs footprint
-      contract
+    - `doc-mismatch-taxonomy.md` — the mismatch kinds that tell you
+      what a real drift looks like
+    - `doc-enrichment.md` — what deserves documentation, where to put
+      it, how to write it, when to dismiss instead, and how to tell
+      obsolete prose from a deliberate (unfulfilled) promise
+    - `doc-scope-enumeration.md` — footprint + writeable-set contract
     - `doc-verification-checklist.md` — the verification preamble to
       run before declaring anything aligned
     - `anti-facade-fix-rules.md` — what a façade fix looks like
 
-  YOUR WORKING SET is deterministic. Upstream, `build_manifest` has
-  already enumerated every code anchor in every doc in scope and
-  verified each against the live tree. Your user prompt carries the
-  bounded `drift_candidates` slice (severity-sorted, doc-chunked):
-    - status `drifted`      — the anchor is NOT in the live code (file
-      missing, flag absent, code renamed). Highest signal: verify, then
-      FIX the doc.
-    - status `unverifiable` — the heuristic couldn't resolve it (prose
-      that looks like CamelCase, archived refs, external links). Judge
-      from the doc context; most are false positives to LEAVE ALONE.
-  The mechanical coverage_pct in your prompt is the gate's coverage
-  oracle — it rises as you fix drifted anchors; docs the manifest
-  chunk deferred will surface on a later pass.
+  THE SCAN IS AN AID, NOT YOUR SCOPE. Your user prompt carries an
+  ADVISORY report from a deterministic scan: probable drift sorted by
+  signal (paths cited in docs that no longer exist, dead internal
+  links/anchors), code areas no doc mentions, and coverage telemetry.
+  Use it as a starting point — it is cheap, high-precision help. But
+  it is NOT your working set and NOT a checklist you owe anyone:
+    - You are FREE to contradict a hint (verify first, then dismiss
+      it to the ledger with a reason).
+    - You MUST explore BEYOND it: read the code, run the entry
+      points' --help, diff recent changes, hunt the semantic drift no
+      regex can see (wrong defaults, stale behaviour descriptions,
+      outdated examples, missing capability docs). The scan sees
+      paths and links; YOU see meaning. Most real drift is semantic.
+    - An empty or degraded report ("nothing scannable") means nothing
+      about alignment — it means you explore the repo directly.
 
-  HOW TO WORK — reproduce the shape of a productive session:
+  HOW TO WORK — exactly as you would in a productive Claude Code or
+  Codex session handed the one-line brief "align the documentation
+  with the état de l'art of the repo." Sequence it however you like —
+  survey broadly then fix, or align as you go, or anything between; no
+  phase is mandated and you decide what to align. Two things worth
+  stating up front, the rest is your judgment:
+    - The advisory hints are a cheap starting point, NOT your scope.
+      Don't stop when they're done — most real drift is SEMANTIC (wrong
+      defaults, outdated behaviour, stale examples, features shipped
+      weeks ago and never documented) and invisible to any scan. Read
+      the code and its recent evolution (`git log`,
+      `recently_changed_code_files`) and align what you find.
+    - When a doc is slightly AHEAD of the code (a documented ambition
+      the code has not caught up with), do NOT align it down to the
+      current behaviour — that is the UNFULFILLED PROMISE path
+      (outcome c below).
+    - COVER THE WHOLE CORPUS, not just the obvious docs. The long tail
+      is where drift hides: every `bots/*/README.md` against its
+      `main.bot`, the cloud/architecture/troubleshooting docs against
+      the real config values, the studio docs. On a corpus this large
+      you have the subagent tool — fan out sub-auditors by cluster
+      (bots, cloud, studio, references…) to read each area against its
+      code in parallel, then align what they surface, exactly as you
+      would orchestrate a big native session. A single sweep that
+      stays on the headline docs is the shallow failure to avoid.
 
-  1. LIVING TODO LIST, not frozen phases. Read the manifest summary +
-     candidates and build a todo grouped BY DOC (all of one doc's
-     drifts together beat scattered single-anchor edits). Use
-     `recently_changed_code_files` (when present) to prioritise; keep
-     the list DENSE and MOVING as you learn.
+  For each misalignment you act on, READ the code that grounds it (the
+  tool invocation — read_file / grep / a --help run — is your evidence;
+  a fix whose rationale cannot cite it is a façade), then adjudicate to
+  exactly ONE of FOUR outcomes:
+       a. FIX + COMMIT — the doc is stale (or the doc is missing):
+          make the claim fully correct and complete — bring the doc up
+          to the état de l'art of the code, not the most minimal token
+          change that mutes the scanner (but no padding, no invented
+          prose) — or write the missing documentation, code-grounded,
+          placed
+          per the `doc-enrichment` skill (an existing doc first; a
+          new `.md` under {{vars.docs_dir}} only when none fits) →
+          run the negative-space check (`git grep` for stale
+          cross-references to whatever you renamed/removed, fix
+          those too) → COMMIT the aligned doc with a semantic
+          message (`docs(<area>): <what was aligned>`), body ending
+          with the trailer line `Bot: docs-refresh`. Stage everything
+          including new files (`git add -A`) before each commit.
+       b. DISMISS + LEDGER — a false positive, or genuinely not worth
+          documenting: record it in the DISMISSALS LEDGER (below)
+          with a reason. Dismissing without recording is what makes
+          the same non-issue come back to you next pass.
+       c. PROMISE + PROMISES LEDGER — the claim is a deliberate,
+          still-wanted ambition the code has not caught up with: see
+          UNFULFILLED PROMISES below. Never delete it, never "align"
+          it down to the current code.
+       d. CODE BUG + BOARD — the doc is right and the code is broken:
+          the is_code_bug escape valve (rule 5).
 
-  2. THE REPEATED UNIT, one doc at a time: for each candidate in that
-     doc, READ the code at the cited anchor to verify the current
-     state (the tool invocation — read_file / grep — is your evidence;
-     a fix whose rationale cannot cite it is a façade) → apply the
-     smallest doc correction that makes the claim true → run the
-     negative-space check (`git grep` for stale cross-references to
-     whatever you renamed/removed, fix those too) → COMMIT the aligned
-     doc with a semantic message (`docs(<area>): <what was aligned>`),
-     body ending with the trailer line `Bot: docs-refresh`. Use
-     `fix(<area>):` ONLY when you fixed a demonstrably misleading code
-     COMMENT (go_comment_globs opt-in).
+  COMMIT LOCALLY ONLY — never `git push`, never open a PR or MR
+  yourself. Publication is owned by the run's finalize tail
+  (deterministic gates + one canonical PR); a campaign that pushes
+  creates a duplicate PR next to the tail's (observed live: run
+  019f8bb4 produced #278 AND #279 for the same three commits). Your
+  commits on the local branch ARE your delivery.
 
-  3. COMMIT EACH DOC AS YOU ALIGN IT — never batch. Stage everything
-     including new files (`git add -A`) and commit before moving on.
-     git IS your durable state: an interrupted run keeps every doc you
-     committed, and a fresh pass just reads `git log` + the fresh
-     manifest and continues. Do NOT keep a separate worklist file.
+  3. COMMIT EACH DOC AS YOU ALIGN IT — never batch. git IS your
+     durable state: an interrupted run keeps every doc you committed,
+     and a fresh pass just reads `git log` + a fresh advisory report
+     and continues. Do NOT keep a separate worklist file.
 
-  4. WRITEABLE SET — `.md` files in the doc footprint, plus (ONLY when
-     `go_comment_globs` is non-empty) comment-only edits in Go files
-     matching those globs. NEVER touch code statements, configs, or
+  4. WRITEABLE SET — `.md` files only. NEVER touch code, configs, or
      build files. A deterministic scope gate diffs the whole run
      against its base after every pass: any out-of-scope file FAILS
      the gate and bounces back to you — you would then have to revert
-     those commits (`git revert` or checkout from the run base) before
-     continuing. Don't make it fire.
+     those commits before continuing. Don't make it fire.
 
-  5. ESCAPE VALVE — is_code_bug. When a doc is CORRECT and the CODE is
-     wrong, do NOT "align" the doc to broken behaviour. Set
+  5. ESCAPE VALVE — is_code_bug. When a doc is CORRECT and the CODE
+     is wrong, do NOT "align" the doc to broken behaviour. Set
      is_code_bug=true in your termination output, name the case in
      human_note, and (for a genuinely blocking ambiguity) pause via
      the ask-user tool. Filing it as a board finding (see below) is
      the default; pausing is for when you cannot proceed without the
-     answer.
+     answer. Distinct from an UNFULFILLED PROMISE (outcome c): there
+     the code is not buggy, it is merely behind a documented ambition.
 
-  6. BASELINE — don't chase failures you didn't cause. A build/test
-     failure that predates this run (see `baseline`, or establish it
-     once cheaply with a `git stash`-based check) is out of scope:
-     note it and move on. Docs-only passes rarely trip the build gate;
-     comment edits can.
-
-  7. ASK ONLY ON A REAL DECISION. Keep operator pauses RARE — most
-     drift adjudications are yours to make; lower-stakes doubts go in
+  6. ASK ONLY ON A REAL DECISION. Keep operator pauses RARE — most
+     adjudications are yours to make; lower-stakes doubts go in
      `summary`.
 
   FINDINGS HANDOFF — after your last commit, capture anything OUT OF
-  SCOPE but worth tracking (a code bug found while verifying an
-  anchor, an undocumented capability worth its own ticket, an
-  infrastructure issue): call `mcp__iterion_board__list_issues` with
+  SCOPE but worth tracking (a code bug found while verifying a claim,
+  an undocumented capability worth its own ticket, an infrastructure
+  issue): call `mcp__iterion_board__list_issues` with
   `{ "state": "inbox" }` first to avoid duplicates, then
   `mcp__iterion_board__create_issue` per NEW finding with state
   "inbox" and labels ["findings", "kind:<bug|drift|improvement|
@@ -335,33 +383,79 @@ prompt campaign_system:
   "severity:<low|medium|high>"]. Zero findings is a fine outcome. If
   the board tools are unavailable, list the findings in `summary`.
 
-  KEEP GOING, one doc at a time, until this pass has adjudicated every
-  candidate in its working set. Then STOP and report.
+  DISMISSALS LEDGER — the persistence half of adjudication. For EVERY
+  hint or self-found candidate you judge not-worth-acting-on, append
+  one entry to the JSON array at `{{vars.dismissed_path}}` (create the
+  file — `[]` — and its parent directory on first use;
+  read-modify-write, keep it valid JSON):
+    {"doc": "<doc, or empty for a repo-wide item>",
+     "kind": "<hint kind, or your own>", "value": "<the value>",
+     "reason": "<one line>"}
+  The scan excludes ledger entries from every later pass, so a
+  settled adjudication never re-surfaces. A dismissal that is not
+  recorded WILL come back to you next pass — recording it is part of
+  adjudicating it, exactly like committing is part of fixing.
+
+  UNFULFILLED PROMISES — adjudication outcome (c). Some claims that
+  fail verification are not stale prose: they read as a DELIBERATE
+  ambition (an announced feature, a target contract the code has not
+  caught up with — roadmap phrasing, "will/planned", an accepted ADR
+  not yet implemented). Do NOT delete such a claim and do NOT "align"
+  it down to the current code. Instead:
+    - Append one entry to the JSON array at
+      `{{vars.scratch_dir}}/promises.json` (create the file — `[]` —
+      and its parent directory on first use; read-modify-write, keep
+      it valid JSON; passes are fresh sessions, so the FILE is the
+      only way the list survives to the PR tail):
+        {"doc": "<doc path>", "claim": "<the promised behaviour>",
+         "code_gap": "<big picture: what the code lacks>",
+         "note": "<one line>"}
+    - ALSO record the item in the DISMISSALS LEDGER (reason:
+      "promise: <short ref>") so it stops re-surfacing.
+    - OPTIONALLY (your judgment, case by case) add a clearly-flagged,
+      honest status note in the doc itself ("Implementation status:
+      …; remaining work: …") and commit it — documenting the gap IS a
+      legitimate doc↔reality alignment.
+  Promises never block convergence — they are reported, not gated:
+  the PR tail lists them under an "Unfulfilled documented promises"
+  section.
+
+  KEEP GOING — align the real drift you find, across the corpus, not
+  just the handful of scanned hints. A pass that touches only the
+  hinted docs and declares done is the exact failure this bot exists to
+  prevent. Stop this pass when a fresh look would find little more to
+  align (that "little more" IS your docs_aligned signal), or when you
+  reach the edge of your budget — then report. There is no prize for a
+  small diff, and none for padding: report what is true.
 
   TERMINATION CONTRACT (required structured output — this is how the
   engine detects completion; an under-specified end just gets
   re-poked):
-    - docs_aligned: true ONLY when every candidate this pass surfaced
-      is either fixed (committed) or adjudicated a false positive —
-      i.e. you expect a fresh manifest re-scan to find no remaining
-      REAL drift. false if real drift remains (a later pass continues
-      from your commits, with a fresh manifest).
+    - docs_aligned: the ASYMPTOTE signal. true ONLY when THIS pass
+      converged the corpus — a fresh comprehensive survey would find
+      little or nothing left to align (no remaining real drift, no
+      significant missing docs). If this pass produced MANY alignments,
+      assume the next comprehensive sweep will still find real work and
+      report false: the run loops you back on a fresh tree, and it is
+      the DECLINE of alignments-per-pass toward zero that ends the run
+      — exactly like re-running a Claude Code plan until the plan comes
+      back empty. Report true only when you have genuinely reached that
+      floor (everything surfaced is committed, dismissed, or a promise).
     - commits_this_pass: how many commits you landed this pass.
-    - drift_remaining: a concise note of what still drifts (empty when
-      docs_aligned).
-    - is_code_bug: true when you found ≥1 place where the doc is right
-      and the code is wrong (detail in human_note / the board finding).
+    - drift_remaining: a concise note of what still needs work (empty
+      when docs_aligned).
+    - is_code_bug: true when you found ≥1 place where the doc is
+      right and the code is wrong (detail in human_note / the board
+      finding).
     - needs_human / human_note: set if you paused or need an operator
       decision.
-    - summary: which docs you aligned (with the verification evidence
-      pattern you used), which candidates you dismissed as false
-      positives and why.
+    - summary: which docs you aligned or wrote (with the verification
+      evidence pattern you used), what you dismissed and why.
 
-  Be honest. A deterministic manifest re-scan, a scope gate and a
-  build gate re-check the tree after you, and the run loops you back
-  until you report docs_aligned AND the gates are green AND the
-  mechanical coverage meets its target — so under-reporting only costs
-  a pass, and over-reporting lands you right back here.
+  Be honest. A deterministic scope gate re-checks the tree after you,
+  and the run loops you back until you report docs_aligned AND the
+  scope is clean — so under-reporting only costs a pass, and
+  over-reporting lands you right back here.
 
 prompt campaign_user:
   Repository: {{vars.workspace_dir}}
@@ -369,177 +463,183 @@ prompt campaign_user:
   Scope notes (operator's attention pin, may be empty):
   {{vars.scope_notes}}
 
-  ## Deterministic manifest summary (this pass)
-  Total docs scanned:       {{input.total_docs}}
-  Total anchors enumerated: {{input.total_anchors}}
-  Verified:                 {{input.verified_anchors}}
-  Drifted:                  {{input.drifted_anchors}}
-  Unverifiable:             {{input.unverifiable_anchors}}
-  Mechanical coverage:      {{input.manifest_coverage_pct}}% (gate target: {{input.coverage_target_pct}}%)
+  ## Pass scope — mode: {{input.mode}}
+  FULL: sweep the WHOLE corpus — plan it, then align exhaustively. The
+  periodic reconciliation that catches cross-cutting drift a per-file
+  diff can't see.
+  INCREMENTAL: focus your SEMANTIC alignment on the docs impacted by the
+  code changed since the last alignment (base {{input.incremental_base}} —
+  see "Recently changed code files" below): read that changed code, align
+  the docs that describe it, and follow the thread where a change makes a
+  nearby doc stale. Do NOT re-audit semantically-aligned areas untouched
+  by these changes. In BOTH modes the structural hints below cover the
+  whole corpus — fix any dead link / missing path anywhere.
+  PR ALIGNMENT (pr_url = {{input.pr_url}} — empty on a non-PR run): when set,
+  you are aligning THAT pull request. If "Recently changed code files" is
+  empty here AND the base ({{input.incremental_base}}) is empty, the diff
+  could NOT be computed — do NOT read that as "nothing changed": inspect the
+  PR's own diff yourself (`git log`, `git diff` against the PR's base branch)
+  and align the docs its changes touch. NEVER report docs_aligned=true on a
+  PR without having read its actual changes.
+  Otherwise, if the delta is empty and no structural hint remains, you are
+  already aligned: report docs_aligned=true and stop (zero commits is the
+  correct, honest outcome — never manufacture edits).
 
-  ## This pass's chunk
-  Docs with remaining drift: {{input.docs_with_drift_count}}
-  Docs in this chunk:        {{input.chunk_doc_count}} (cap: {{input.max_review_chunk_docs}})
-  Chunked this pass:         {{input.chunked}}
-  When chunked=true, drifts in the deferred docs surface on a later
-  pass as you clear this chunk — do NOT report docs_aligned=true
-  while docs_with_drift_count exceeds what this chunk shows fixed.
+  ## Advisory scan report (this pass)
+  {{input.hints_note}}
 
-  ## Drift candidates (the working set — severity-sorted, bounded)
-  Each entry: {doc, line, kind, value, status, evidence, excerpt}.
-  {{input.drift_candidates}}
+  Hints — ADVISORY, sorted by signal; each entry:
+  {doc, line, kind, value, note}. Use them as a starting point,
+  contradict them freely (dismiss to the ledger with a reason), and
+  explore BEYOND them — the scan sees paths and links, you see
+  meaning:
+  {{input.hints}}
 
   Recently changed code files (prioritisation hint, may be empty):
   {{input.recently_changed_code_files}}
 
-  BASELINE — pre-existing failures to SKIP (empty = establish once
-  cheaply if the build gate goes red):
-  {{vars.baseline}}
-
   Deterministic gate feedback from the PREVIOUS pass (empty on the
-  first pass; when present it is EITHER a scope violation — files
-  outside the doc writeable-set changed; revert those commits before
-  continuing — OR a real build/test failure to fix):
+  first pass; when present it is a scope violation — files outside the
+  doc writeable-set changed; revert those commits before continuing):
   {{input.fail_log}}
 
-  Work the candidates one doc at a time — verify at the anchor →
-  smallest doc fix → negative-space check → commit (`docs(<area>): …`
-  + `Bot: docs-refresh` trailer) — then report the termination
-  contract (docs_aligned, commits_this_pass, drift_remaining).
-  Read `git log` first to see what earlier passes already aligned.
+  Plan your pass (whole corpus in full mode; the impacted docs in
+  incremental), then align — for each item: verify in the code → bring
+  the doc fully up to the code (repair stale, or write the missing doc) →
+  negative-space check → commit (`docs(<area>): …` + a `Bot: docs-refresh`
+  trailer line — REQUIRED on every commit: the next incremental run reads
+  it to find where alignment last landed). Work through the plan this
+  pass, to the edge of your budget, then report the termination contract
+  (docs_aligned as the asymptote signal, commits_this_pass,
+  drift_remaining). Read `git log` first to see what earlier passes
+  already aligned.
 
-## ─── Prompts : Default-create (author docs from zero) ──────────────
+## ─── PR finalization prompts (opt-in) ──────────────────────────────
 
-prompt author_docs_system:
-  You are the doc author for the `docs-refresh` workflow, invoked on a
-  repository that currently has NO documentation in scope. Your job is
-  to BOOTSTRAP an initial documentation set by reading the code and
-  writing accurate Markdown, so the run's normal review/refresh loop has
-  something real to polish.
+prompt finalize_mr_system:
+  You finalize a finished docs-refresh run by getting its SERIES of
+  per-doc alignment commits into a pull request (PR; merge request on
+  GitLab). The `pr_url` input selects the mode. You make NO further changes
+  to docs or code.
 
-  Load the `docs-refresh.md` skill for the operating context.
+  - pr_url EMPTY → NEW-PR mode: open ONE new PR for the alignment series,
+    then (optionally) post the PR link back to the source issue.
+  - pr_url SET → AMEND mode: the run was launched ON that PR and checked out
+    from its head branch, so the alignment commits already sit on top of it.
+    Do NOT open a new PR — push those commits onto the SAME (checked-out)
+    branch (they land IN the contributor's PR) and post ONE short comment on
+    the PR. The docs get reviewed together with the code.
 
-  WHAT TO CREATE:
-   - Create the docs directory (`{{input.docs_dir}}`) if it does not
-     exist, and author your documentation there as `.md` files.
-   - Author or refresh a top-level `README.md` if the repo has none — a
-     short overview that links into `{{input.docs_dir}}/`.
-   - Cover, at minimum: a project overview (what it is / what it does),
-     how to build & run it, the high-level architecture or module map,
-     and how to use the main entry points. Add further pages only where
-     the code clearly warrants them — do not pad.
+  Read the `forge-mr-create` skill FIRST — forge detection, authenticating
+  from the mounted forge_token, pushing, opening a PR (GitHub gh, GitLab
+  glab, Forgejo/Gitea REST), and the amend path.
 
-  HARD CONSTRAINTS:
-   1. Documentation only — write `.md` files. NEVER modify source code,
-      build files, or configuration.
-   2. EVIDENCE OVER INVENTION. Every statement must reflect what the
-      code actually does. Read the relevant files before describing
-      them; never document aspirational or assumed behaviour. If you
-      cannot verify a claim, omit it rather than guess.
-   3. STACK-AGNOSTIC. This repo may be in ANY language. Detect the
-      language / build system from the repo itself (manifest files,
-      entry points, lockfiles) — never assume a particular ecosystem.
-   4. Do NOT commit. A later step commits on convergence.
+  Common precondition (both modes):
+    A. Commits to ship: HEAD must be ahead of the base
+       (`git rev-list --count <base>..HEAD` > 0). If not, set opened=false,
+       skipped_reason "no commits ahead of base" — never push, never open
+       an empty PR or post an empty comment.
+    B. Authenticate the matching forge CLI from the mounted forge_token
+       file when present; otherwise assume host auth. If neither works,
+       set opened=false with a precise skipped_reason — never pretend.
 
-prompt author_docs_user:
-  Author initial documentation for the repository at
-  {{input.workspace_dir}}.
+  NEW-PR mode (pr_url empty):
+    1. Branch = mr_branch if set, else a stable iterion/docs-refresh/<run-id>;
+       base = mr_base if set, else the repo default branch (skill).
+    2. Push HEAD to that branch on origin, open the PR into the base.
+       Title: a concise "docs: …" summary. Body: the campaign summary, the
+       docs aligned, and — when drift_remaining is non-empty — an honest
+       "Remaining drift" section. PROMISES: read the promises ledger named
+       in your user prompt; when it has entries, append an "Unfulfilled
+       documented promises" section (one bullet each: doc, promised claim,
+       code gap) — verbatim in substance, never silently dropped.
+    3. If source_issue_ref is set, post the PR URL back (forge issue URL →
+       forge-CLI comment; "native:<id>" → board comment tool); back_linked.
+    4. opened=true, url=<the new PR>, branch=<the branch>.
 
-  Target docs directory (create if absent): {{input.docs_dir}}
+  AMEND mode (pr_url set):
+    1. The push target is the PR head branch, by NAME (do NOT rely on being
+       ON it — `worktree: auto` checks out a DETACHED head): use
+       `source_branch` if set, else `mr_branch`, else the current branch
+       (`git rev-parse --abbrev-ref HEAD` only when it is not literally
+       "HEAD"). If none resolves, set opened=false, skipped_reason
+       "amend: could not determine the PR head branch". Push the run's HEAD
+       onto it: `git push origin HEAD:<branch>` — a fast-forward, the
+       alignment commits stacked on top. NEVER force-push.
+    2. Post ONE concise comment on the PR (resolve it from pr_url or the
+       branch — see the skill's amend path): which docs were aligned to this
+       change, plus the remaining drift when non-empty. Do NOT open a new PR.
+    3. opened=true (the alignment is now IN the PR), url=<pr_url>,
+       branch=<that branch>, back_linked=true.
 
-  Recently changed code files (a hint, may be empty — non-authoritative):
-  {{input.recently_changed_code_files}}
+  Return opened, url, branch, back_linked, skipped_reason and a short
+  summary. Be honest: report exactly what happened.
 
-  Steps:
-   1. Survey the repository to understand its purpose, language/stack,
-      structure, and entry points (read manifest files, top-level
-      directories, and the main entry file(s)).
-   2. Create `{{input.docs_dir}}/` if needed and author the initial
-      `.md` pages described in your system prompt, each grounded in what
-      you read. Author/refresh a root `README.md` overview if missing.
-   3. Keep each page focused and accurate; cross-link the pages.
+prompt finalize_mr_user:
+  PR to amend (pr_url — EMPTY = open a new PR · SET = amend THIS PR): {{input.pr_url}}
+  Workspace: {{input.workspace_dir}}
+  PR head branch (amend push target, engine-provided; may be empty): {{input.source_branch}}
+  Branch override (new-PR: empty → derive · amend: overrides the PR head above): {{input.mr_branch}}
+  Base (may be empty → repo default branch): {{input.mr_base}}
+  Source issue to back-link (new-PR only, may be empty): {{input.source_issue_ref}}
+  Operator scope notes (may be empty): {{input.scope_notes}}
 
-  Output fields:
-   - docs_created: true if you created at least one doc file
-   - created_doc_files: repo-relative paths you wrote
-   - summary: what you authored, and the evidence (files you read)
-     behind the key claims
+  Campaign summary (for the PR body / amend comment):
+  {{input.campaign_summary}}
 
-## ─── verify (deterministic build/test gate, stack-agnostic) ─────────
-## An ADAPTIVE agent (verify_build) reads the verify-build skill and writes
-## the repo's real build+test into an OUT-OF-TREE <scratch_dir>/verify.sh; a
-## DETERMINISTIC tool node (verify_run) re-runs it and gates on the REAL exit
-## code. Docs-only passes should always be green here; the gate earns its
-## keep when go_comment_globs opts comment edits in (the tree must still
-## compile) and as the universal engine-side floor shared with the other v2
-## bots. verify_build does NOT fix anything: a RED gate routes back to
-## `campaign`.
+  Remaining drift reported by the campaign (empty = fully aligned):
+  {{input.drift_remaining}}
 
-prompt verify_system:
-  You are a release engineer. A doc-alignment pass just committed changes
-  to this repository (documentation, possibly code COMMENTS). Your single
-  job: capture how THIS repo builds and tests itself into a re-runnable
-  script the deterministic gate will execute. You do NOT change anything.
+  Promises ledger (JSON array; the file may be absent or empty):
+  {{vars.scratch_dir}}/promises.json
 
-  STEPS:
-  1. Detect how THIS repo builds and tests itself — read the `verify-build`
-     skill. Use the repo's OWN toolchain, HONOURING any pinned toolchain
-     (version managers, lockfiles, devbox, GOTOOLCHAIN). Do NOT assume a
-     language.
-  2. Write an executable POSIX-sh script to `{{vars.scratch_dir}}/verify.sh`
-     (an OUT-OF-TREE scratch path — create it first with
-     `mkdir -p {{vars.scratch_dir}}`) that runs the repo's build (and the
-     fast test targets a comment-only change could plausibly affect) and
-     exits non-zero on any failure. For a docs-only repo or a pass that
-     touched only `.md` files, a build-only script (or the closest cheap
-     sanity command) is appropriate — keep it FAST.
-  3. PRE-EXISTING failures: scope `verify.sh` so a red base tree can't
-     absorb the run; list any excluded pre-existing failures in your
-     summary.
-  4. Run it ONCE to confirm the script itself is valid. You do NOT fix
-     anything here.
-  5. If the repo genuinely has no build/test system (pure docs/config),
-     write a script that echoes that and exits 0, and say so.
+  Finalize per pr_url: EMPTY → push the branch + open a new PR (with the
+  "Unfulfilled documented promises" section when the ledger has entries) +
+  post the back-link when a source issue is given. SET → push HEAD onto the
+  PR's own head branch + post ONE comment on the PR. Return the structured
+  result.
 
-  A deterministic tool node RE-RUNS your script and gates the run on its
-  real exit code. Output prepared=true once `{{vars.scratch_dir}}/verify.sh`
-  exists; summary = the command you settled on.
+## ─── Schemas ────────────────────────────────────────────────────
 
-prompt verify_user:
-  Repository to verify: {{vars.workspace_dir}}
+## scan_hints output — the ADVISORY report + routing booleans. hints
+## is a bounded JSON array of {doc, line, kind, value, note} entries
+## (kinds: missing_path, dead_link, dead_anchor, unmentioned_area);
+## every *_count field is TELEMETRY (report/events), never a gate
+## condition.
+schema hints_output:
+  doc_files: string[]
+  doc_count: int
+  hints: json
+  hint_count: int
+  missing_path_count: int
+  dead_link_count: int
+  unmentioned_area_count: int
+  checked_paths: int
+  checked_links: int
+  ledger_excluded: int
+  truncated: bool
+  hints_note: string
+  mode: string
+  incremental_base: string
+  recently_changed_code_files: string[]
 
-  Capture the repo's real build (+ fast tests where comment edits could
-  plausibly matter) into `{{vars.scratch_dir}}/verify.sh` (out-of-tree —
-  see the system prompt + the `verify-build` skill). Do NOT change
-  anything; the deterministic gate runs your script and the campaign
-  fixes any red on the next pass.
-
-## ─── Schemas (v2 campaign / gates) ─────────────────────────────────
-
-## campaign's input: the bounded manifest working set for this pass +
-## the deterministic gate feedback from the previous pass (empty on the
-## first pass and on a green-but-more-drift continuation).
+## campaign input: the advisory report + the deterministic gate
+## feedback from the previous pass (empty on the first pass and on a
+## green-but-more-work continuation). mode/incremental_base carry the
+## alignment-scope framing (full sweep vs delta-since-last-alignment).
 schema campaign_input:
-  total_docs: int
-  total_anchors: int
-  verified_anchors: int
-  drifted_anchors: int
-  unverifiable_anchors: int
-  manifest_coverage_pct: int
-  coverage_target_pct: int
-  drift_candidates: json
-  docs_with_drift_count: int
-  chunked: bool
-  chunk_doc_count: int
-  max_review_chunk_docs: int
+  hints: json
+  hint_count: int
+  hints_note: string
+  mode: string
+  incremental_base: string
+  pr_url: string
   recently_changed_code_files: string[]
   fail_log: string
 
-## campaign's TERMINATION CONTRACT (G2): a machine-checkable output the
-## engine keys convergence on. docs_aligned is the done-oracle (this
-## pass's candidates are all fixed-or-dismissed and no real drift is
-## expected on a fresh re-scan); the gate ANDs it with the mechanical
-## coverage, the scope check and the build gate.
+## campaign's TERMINATION CONTRACT (G2): a machine-checkable output
+## the engine keys convergence on. docs_aligned is the done-oracle;
+## the gate ANDs it with the writeable-set scope check — nothing else.
 schema campaign_output:
   docs_aligned: bool
   commits_this_pass: int
@@ -549,466 +649,134 @@ schema campaign_output:
   human_note: string
   summary: string
 
-## verify_plan is verify_build's contract: it has WRITTEN <scratch_dir>/verify.sh.
-schema verify_plan:
-  prepared: bool
-  summary: string
-
-## verify_result is the DETERMINISTIC build gate's contract. `passed` is
-## the real process exit code of re-running <scratch_dir>/verify.sh — NOT
-## an LLM judgment. `skipped` is true only when no verify script was
-## produced (treated as pass but surfaced loudly, never a silent façade).
-schema verify_result:
-  passed: bool
-  skipped: bool
-  exit_code: int
-  log_tail: string
-
-## scope_check is the DETERMINISTIC writeable-set gate (v2 rewrite of
-## v1's enforce_fix_scope): every path changed since the RUN BASE must
-## be a doc (`.md`), the audit cache file, or (when go_comment_globs is
-## non-empty) a file inside those globs. Out-of-scope changes fail the
-## gate and bounce back to the campaign, which must revert them — with
-## git-as-state the tree is committed, so detection+bounce replaces
-## v1's silent working-tree checkout-revert.
+## scope_check is the DETERMINISTIC writeable-set gate: every path
+## changed since the RUN BASE must be a doc (`.md`). Out-of-scope
+## changes fail the gate and bounce back to the campaign, which must
+## revert them.
 schema scope_check_output:
   scope_ok: bool
   out_of_scope: string[]
   log: string
 
-## gate is the deterministic continuation decision. converged = build
-## green AND scope clean AND the campaign reports the docs aligned AND
-## the manifest's mechanical coverage meets the target. fail_log relays
-## the scope violation (priority) or the real build failure to the
-## campaign on a red pass; empty when green.
+## gate is the deterministic continuation decision. converged = scope
+## clean AND the campaign reports the docs aligned — NOTHING ELSE
+## (a docs-only bot can't break the build, so there is no build gate;
+## scanner counts are telemetry, not conditions). fail_log relays the
+## scope violation to the campaign on a red pass; empty when green.
 schema gate_state:
   converged: bool
   fail_log: string
 
+## ─── PR finalization schemas (opt-in) ───────────────────────────────
 
-## ─── Schemas ────────────────────────────────────────────────────
+## mr_gate lifts vars.open_mr into a bool output field so the two
+## outgoing edges use the C012-exhaustive simple form. No LLM, no shell.
+schema mr_gate_output:
+  open_mr: bool
 
-## code_surface (v0.6.0): the inventory of "publicly-exposed"
-## identifiers extracted from the workspace by the
-## `scan_code_surface` tool. Reviewers receive these as a
-## counter-omission audit list — for each identifier, verify it
-## appears in at least one doc in scope. Mismatch_kind for missed
-## items: `undocumented_capability`.
-schema code_surface:
-  cli_commands: string[]
-  cli_flags: string[]
-  diagnostic_codes: string[]
-  scan_skipped: string
+## forge_auth_probe output — deterministic "can we push?" so finalize_mr (an
+## LLM agent) is only ever entered when a push credential actually exists.
+schema forge_auth_state:
+  available: bool
+  reason: string
 
-## scan_output is the immutable doc footprint emitted by the
-## upstream scan_docs tool node. recently_changed_code_files is
-## populated from `git diff` when vars.diff_since is set
-## (otherwise empty array). bundle_self_path is echoed for
-## transparency.
-##
-## v0.5.0 adds `pre_verified_docs`: docs whose content AND all
-## referenced code-file SHAs match what was recorded in
-## `.iterion/docs-refresh/audit-cache.json` after the previous
-## successful run. These docs are seeded into
-## `cumulative_audited_docs` from iter 0, lifting the coverage
-## gate immediately for unchanged regions. Reviewers focus on
-## `doc_files - pre_verified_docs`.
-schema scan_output:
-  doc_files: string[]
-  doc_count: int
-  ## DEFAULT-CREATE gate (v0.3.0): true when doc_count == 0 (no docs in
-  ## scope). Routes scan_docs -> author_docs (bootstrap an initial doc
-  ## set) instead of straight into the review loop. After authoring, the
-  ## run re-scans; no_docs is then false and the normal path runs.
-  no_docs: bool
-  footprint_hash: string
-  scope_globs: string[]
-  recently_changed_code_files: string[]
-  bundle_self_path: string
-  pre_verified_docs: string[]
-  cache_hits: int
-  cache_misses: int
-
-schema author_input:
+schema finalize_mr_input:
   workspace_dir: string
-  docs_dir: string
-  recently_changed_code_files: string[]
+  pr_url: string
+  source_branch: string
+  mr_branch: string
+  mr_base: string
+  source_issue_ref: string
+  scope_notes: string
+  campaign_summary: string
+  drift_remaining: string
 
-schema author_output:
-  docs_created: bool
-  created_doc_files: string[]
+schema finalize_mr_output:
+  opened: bool
+  url: string
+  branch: string
+  back_linked: bool
+  skipped_reason: string
   summary: string
 
-## v0.15.4: schema for mark_issue_for_review's free-form output.
-## The tool returns JSON-as-string on success ({"id":...,"state":...})
-## or {"skipped":"no issue_id"} on the manual-CLI no-op path. We
-## don't consume the value downstream — the schema exists to make
-## the tool node DSL-valid.
-schema mark_issue_output:
-  text: string
-
-## update_audit_cache I/O (v0.5.0). The `audited_pairs: string[]`
-## field is shell-tokenised by iterion's template substitution
-## (`'pair1' 'pair2' 'pair3'`) so each element lands as a separate
-## argv entry to python3 — env var passing breaks on internal
-## whitespace, JSON encoding is unreachable via the {{!...}} raw
-## form because raw values still go through env-var assignment.
-schema update_audit_cache_input:
-  workspace_dir: string
-  cache_path: string
-  audited_pairs: string[]
-
-schema update_audit_cache_output:
-  cache_path: string
-  entries_written: int
-  skipped: string
-
-
-## build_manifest I/O (v0.15.0 — manifest-driven reviewers).
-##
-## Replaces the ad-hoc "reviewer greps everything" pattern with a
-## deterministic anchor extraction + verification pass. For each
-## doc in the footprint, scans for code references (file paths,
-## symbols, CLI commands, CLI flags, diagnostic codes, markdown
-## link targets), then checks each anchor against the live code
-## state (scan_code_surface outputs + filesystem). The reviewer
-## then audits ONLY the drift candidates — a bounded set with
-## pre-fetched evidence — instead of grepping the workspace itself.
-##
-## The before/after on the 2026-05-21 dogfood: reviewer_gpt's iter
-## 1 burned through 4 LLM steps and ~400K input tokens enumerating
-## anchors via grep before hitting context_length_exceeded. Under
-## the manifest pattern, the same iter receives ~150 pre-resolved
-## candidates with file:line evidence — bounded context, ~5 tool
-## steps to spot-check the high-severity ones, structured verdict.
-schema build_manifest_input:
-  workspace_dir: string
-  doc_files: string[]
-  cli_commands: string[]
-  cli_flags: string[]
-  diagnostic_codes: string[]
-  code_scope_globs: string
-  ## max_drift_candidates caps the drift_candidates[] slice so the
-  ## reviewer's prompt stays bounded regardless of how degraded the
-  ## docs are. The full counts are still reported in the summary
-  ## fields for the streak gate.
-  max_drift_candidates: int
-  ## v0.16.0: max distinct docs whose candidates may appear in a
-  ## single chunk. Applied after the severity sort, before the
-  ## max_drift_candidates cap. 0 disables doc-chunking.
-  max_review_chunk_docs: int
-
-schema build_manifest_output:
-  ## total_docs / total_anchors are the cardinality of the
-  ## deterministic enumeration. Per-doc breakdown lives in
-  ## per_doc_anchor_counts (bounded by doc count, not anchor count).
-  total_docs: int
-  total_anchors: int
-  ## verified_anchors counts anchors whose existence/presence the
-  ## tool confirmed mechanically (file exists, CLI command in
-  ## scan_code_surface output, diagnostic code present, etc.).
-  ## drifted_anchors = total - verified - unverifiable.
-  verified_anchors: int
-  drifted_anchors: int
-  unverifiable_anchors: int
-  ## checkable_anchors = verified + drifted (excludes unverifiable).
-  ## coverage_pct = verified / checkable, so anchors whose scanner was
-  ## skipped/unscoped don't drag the gate below reach.
-  checkable_anchors: int
-  coverage_pct: int
-  ## drift_candidates is the reviewer's working set. Each entry
-  ## carries the doc::anchor pair plus pre-fetched evidence so the
-  ## reviewer can judge "real drift vs false positive" without
-  ## running its own grep loop. Capped at input.max_drift_candidates;
-  ## when more candidates exist, the entries are prioritised by
-  ## severity (removed/drifted CLI surface > drifted file_ref >
-  ## unverifiable symbol).
-  drift_candidates: json
-  ## per_doc_anchor_counts is the deterministic coverage signal —
-  ## each entry says "doc X had Y anchors total, Z of them verified".
-  ## streak_check picks coverage_pct from the summary; this list
-  ## exists for telemetry / reports.
-  per_doc_anchor_counts: json
-  ## all_audited_docs lists every doc the manifest scanned. The
-  ## reviewer no longer claims coverage via its own audited_docs[]
-  ## — the manifest pass IS the audit. streak_check pulls this
-  ## list into its cumulative_audited_docs.
-  all_audited_docs: string[]
-  ## v0.16.0 doc-count chunking telemetry. `docs_with_drift_count`
-  ## is the universe of docs that still have at least one drift
-  ## candidate this iter (before chunking). `chunk_doc_count` is
-  ## the count of distinct docs whose candidates landed in this
-  ## iter's slice. `chunked=true` when chunk_doc_count <
-  ## docs_with_drift_count (some docs deferred to a later iter).
-  ## `max_review_chunk_docs` echoes the var so the reviewer prompt
-  ## can show the operator the active cap.
-  docs_with_drift_count: int
-  chunked: bool
-  chunk_doc_count: int
-  max_review_chunk_docs: int
-  ## v2: the mechanically VERIFIED doc::anchor pairs — feeds the
-  ## inter-run audit cache (update_audit_cache) so pre-verification no
-  ## longer depends on retired reviewer claims.
-  verified_pairs: string[]
 
 ## ─── Nodes ──────────────────────────────────────────────────────
 
-## scan_docs runs ONCE upstream of the review loop. Emits the
-## immutable doc footprint + (when vars.diff_since is set) the
-## list of code files changed since that ref. Auto-excludes the
-## bot's own bundle via vars.bundle_self_path (fix 4).
+## scan_hints — the ONE deterministic producer of ADVISORY hints (v3:
+## replaces scan_docs + scan_code_surface + build_manifest). Runs at
+## entry and as the continuation-loop head, so the report always
+## reflects the live tree and hints the campaign resolved (fixed docs,
+## ledger entries) retire between passes.
 ##
-## Raw-string command — the python snippet embeds quotes and the
-## raw-string form avoids escape hell. Templates {{vars.X}}
-## resolve at iterion's command-substitution layer; the values
-## are then exposed to python via shell env vars (WS, GLOBS,
-## BUNDLE_SELF, DIFF_SINCE).
-tool scan_docs:
-  command: `WS={{vars.workspace_dir}} GLOBS={{vars.doc_globs}} BUNDLE_SELF={{vars.bundle_self_path}} DIFF_SINCE={{vars.diff_since}} CACHE_PATH={{vars.audit_cache_path}} EXCLUDED_DIRS={{vars.excluded_dirs}} python3 -c "
-import os, json, glob, hashlib, subprocess
+## What it checks (high-precision, universal by construction):
+##   - missing_path  — a path cited in a doc that is gone from disk
+##                     AND that git once tracked (index ∪ deletion
+##                     history). Two precision boundaries: the
+##                     first-segment rule skips foreign-tool example
+##                     lines (docker / gh, other repos' layouts — the
+##                     v2.5 foreign-flag class, ~200 FPs on one live
+##                     run, is structurally absent because CLI flags
+##                     are simply not scanned); the git-tracked rule
+##                     skips example/placeholder paths under real top
+##                     dirs and runtime-only files (bots/my-bot/…,
+##                     .claude/settings.json — 604 "missing" / 43%
+##                     noise on run 019f8ba3 without it). A path git
+##                     never knew is not doc drift.
+##   - dead_link /   — internal markdown links whose target file or
+##     dead_anchor     GitHub-slug heading anchor does not resolve.
+##   - unmentioned_area — top-level dirs (+ children of generic
+##                     src-style container roots) no doc mentions.
+##                     Advisory ZONES, not obligations — "internal,
+##                     not user-facing" is a legitimate dismissal.
+## Ledger entries (vars.dismissed_path) are excluded — the campaign's
+## settled adjudications never re-surface. When nothing is derivable
+## (no docs, or docs citing nothing checkable) the producer degrades
+## SILENTLY: empty hints + an explicit "explore directly" note, exit 0.
+##
+## Raw-string command — the python body avoids double quotes and
+## literal backticks (BT = chr(96)); values flow via shell env vars.
+tool scan_hints:
+  command: `WS={{vars.workspace_dir}} DOC_GLOBS={{vars.doc_globs}} EXCLUDED_DIRS={{vars.excluded_dirs}} BUNDLE_SELF={{vars.bundle_self_path}} DIFF_SINCE={{vars.diff_since}} MODE={{vars.mode}} PR_URL={{vars.pr_url}} BASE_REF={{vars.base_ref}} DISMISSED_PATH={{vars.dismissed_path}} MAX_HINTS={{vars.max_hints}} DOCS_DIR={{vars.docs_dir}} python3 -c "
+import os, json, glob, re, subprocess
 ws = os.environ['WS']
-globs = [g.strip() for g in os.environ['GLOBS'].split(',') if g.strip()]
-bundle_self = os.environ.get('BUNDLE_SELF', '').strip().rstrip(os.sep)
-diff_since = os.environ.get('DIFF_SINCE', '').strip()
-cache_path = os.environ.get('CACHE_PATH', '').strip()
 os.chdir(ws)
+globs = [g.strip() for g in os.environ.get('DOC_GLOBS', '').split(',') if g.strip()]
 EXCLUDE_DIRS = {d.strip() for d in os.environ.get('EXCLUDED_DIRS', '').split(',') if d.strip()}
+bundle_self = os.environ.get('BUNDLE_SELF', '').strip().rstrip(os.sep)
+docs_dir = os.environ.get('DOCS_DIR', '').strip().rstrip(os.sep)
+try:
+    max_hints = int(os.environ.get('MAX_HINTS', '120') or '120')
+except ValueError:
+    max_hints = 120
 def excluded(p):
     if any(part in EXCLUDE_DIRS for part in p.split(os.sep)):
         return True
     if bundle_self and (p == bundle_self or p.startswith(bundle_self + os.sep)):
         return True
     return False
-def sha_of_file(p):
-    try:
-        with open(p, 'rb') as fh:
-            return hashlib.sha1(fh.read()).hexdigest()
-    except (FileNotFoundError, IsADirectoryError, PermissionError):
-        return 'missing'
 files = sorted({f for g in globs for f in glob.glob(g, recursive=True) if os.path.isfile(f) and not excluded(f)})
-h = hashlib.sha1(chr(10).join(files).encode()).hexdigest()
-recent = []
-if diff_since:
+no_docs = len(files) == 0
+dismissed = set()
+dismissed_path = os.environ.get('DISMISSED_PATH', '').strip()
+if dismissed_path and os.path.exists(dismissed_path):
     try:
-        proc = subprocess.run(['git', 'diff', '--name-only', diff_since + '...HEAD'], capture_output=True, text=True, check=True)
-        recent = sorted([l for l in proc.stdout.splitlines() if l and not excluded(l)])
-    except Exception:
-        recent = []
-pre_verified = []
-hits = 0
-misses = 0
-if cache_path:
-    try:
-        with open(cache_path) as cf:
-            cache = json.load(cf)
-        doc_entries = cache.get('doc', {})
-        for doc_path in files:
-            entry = doc_entries.get(doc_path)
-            if not entry:
-                misses += 1
-                continue
-            current_sha = sha_of_file(doc_path)
-            if entry.get('sha') != current_sha:
-                misses += 1
-                continue
-            refs_ok = True
-            for ref in entry.get('refs', []):
-                p = ref.get('p', '')
-                s = ref.get('s', '')
-                if not p:
-                    continue
-                current = sha_of_file(p) if os.path.exists(p) else 'missing'
-                if current != s:
-                    refs_ok = False
-                    break
-            if refs_ok:
-                pre_verified.append(doc_path)
-                hits += 1
-            else:
-                misses += 1
-    except (FileNotFoundError, json.JSONDecodeError):
+        with open(dismissed_path, encoding='utf-8') as df:
+            for e in json.load(df):
+                if isinstance(e, dict):
+                    dismissed.add((e.get('doc', ''), e.get('kind', ''), str(e.get('value', ''))))
+    except (OSError, json.JSONDecodeError, TypeError):
         pass
-print(json.dumps({'doc_files': files, 'doc_count': len(files), 'no_docs': len(files) == 0, 'footprint_hash': h, 'scope_globs': globs, 'recently_changed_code_files': recent, 'bundle_self_path': bundle_self, 'pre_verified_docs': pre_verified, 'cache_hits': hits, 'cache_misses': misses}))
-"`
-  output: scan_output
-
-## scan_code_surface (v0.6.0): runs after scan_docs and extracts
-## "publicly-exposed identifiers" from the workspace via grep so
-## reviewers can audit code→doc presence (the inverse direction
-## of the existing doc→code audit). Categories:
-##   - cli_commands: cobra `Use:` literals in cmd/iterion/*.go
-##   - cli_flags: --flag-name tokens in StringVar/BoolVar/...Var
-##     calls inside the same files
-##   - diagnostic_codes: "Cxxx" constants in pkg/dsl/ir/*.go and
-##     pkg/dsl/parser/*.go
-##
-## When `cli_surface_globs` AND `diagnostic_surface_globs` are
-## both empty, the scan is skipped and the output is empty lists
-## with scan_skipped set to a reason string. Useful for runs
-## targeting docs that have no CLI / diagnostic surface (e.g.
-## a library-only repo).
-##
-## OPT-IN, iterion-shaped SPECIALIZATION — not a universal default.
-## The `cobra Use:` / `--flag` / `Cxxx` patterns below only yield
-## meaningful output on a repo with iterion's own code shape, so this
-## scanner ships OFF (both surface globs empty by default). A run
-## against any other repo either leaves it skipped or points the globs
-## at that repo's own surface patterns via --var. Generalising these
-## regexes to another stack is the bar for making it a default. See
-## CLAUDE.md "Catalog bots are repo-agnostic".
-tool scan_code_surface:
-  command: `WS={{vars.workspace_dir}} CLI_GLOBS={{vars.cli_surface_globs}} DIAG_GLOBS={{vars.diagnostic_surface_globs}} python3 -c "
-import os, json, glob, re
-ws = os.environ['WS']
-cli_globs = [g.strip() for g in os.environ.get('CLI_GLOBS','').split(',') if g.strip()]
-diag_globs = [g.strip() for g in os.environ.get('DIAG_GLOBS','').split(',') if g.strip()]
-os.chdir(ws)
-if not cli_globs and not diag_globs:
-    print(json.dumps({'cli_commands': [], 'cli_flags': [], 'diagnostic_codes': [], 'scan_skipped': 'both globs empty'}))
-    raise SystemExit(0)
-cli_files = sorted({f for g in cli_globs for f in glob.glob(g, recursive=True) if os.path.isfile(f)})
-diag_files = sorted({f for g in diag_globs for f in glob.glob(g, recursive=True) if os.path.isfile(f)})
-## v0.15.3: Use: pattern allows optional [args] / <args> suffixes inside
-## the quoted string (cobra convention for declaring positional args).
-## Previously the regex required \" immediately after the captured name,
-## so 'Use: \"dispatch [config.yaml]\"' didn't match and 'dispatch' was
-## reported as a drifted CLI command on every iter.
-cmd_re = re.compile(r'Use:\s*\"([a-zA-Z0-9_\-]+)(?:[\s<\[\{].*?)?\"')
-## v0.15.3: two flag patterns:
-##   - Var family: BoolVar(&ptr, \"name\", ...) — takes a pointer first
-##   - Non-Var: cobra's Flags().String(\"name\", ...) without backing var
-## Both with optional P suffix (StringP, BoolP) for shorthand variants.
-## Previously the Non-Var family was unscanned, so 'paths' and 'format'
-## (declared via Flags().StringSlice / Flags().String in cmd/iterion/
-## bots.go) were reported as drifted on every iter. The negative
-## lookahead (?!Get) excludes the read variants Flags().GetString etc.
-flag_var_re = re.compile(r'(?:String|Bool|Int|Duration|Float64|Int64|StringSlice|StringArray)Var\(\s*&[a-zA-Z0-9_.]+\s*,\s*\"([a-zA-Z][a-zA-Z0-9-]*)\"')
-flag_nonvar_re = re.compile(r'Flags\(\)\.(?!Get)(?:String|Bool|Int|Duration|Float64|Int64)(?:Slice|Array)?P?\(\s*\"([a-zA-Z][a-zA-Z0-9-]*)\"')
-diag_const_re = re.compile(r'\"(C[0-9]{3})\"')
-cli_commands = set()
-cli_flags = set()
-for path in cli_files:
-    try:
-        with open(path) as fh: src = fh.read()
-    except: continue
-    for m in cmd_re.finditer(src): cli_commands.add(m.group(1))
-    for m in flag_var_re.finditer(src): cli_flags.add(m.group(1))
-    for m in flag_nonvar_re.finditer(src): cli_flags.add(m.group(1))
-diagnostic_codes = set()
-for path in diag_files:
-    try:
-        with open(path) as fh: src = fh.read()
-    except: continue
-    for m in diag_const_re.finditer(src): diagnostic_codes.add(m.group(1))
-print(json.dumps({
-    'cli_commands': sorted(cli_commands),
-    'cli_flags': sorted(cli_flags),
-    'diagnostic_codes': sorted(diagnostic_codes),
-    'scan_skipped': ''
-}))
-"`
-  output: code_surface
-
-## build_manifest (v0.15.0): deterministic anchor extraction +
-## verification + evidence collection. Replaces the
-## reviewer-side "grep everything" pattern.
-##
-## For each doc in input.doc_files, scans the markdown and
-## extracts code anchors via regex:
-##   - file_ref      — paths like `pkg/foo/bar.go`, `docs/dsl.md`,
-##                     `cmd/iterion/run.go:42` (with optional line
-##                     suffix)
-##   - cli_command   — backtick-quoted `iterion <subcmd>` invocations
-##                     matching scan_code_surface.cli_commands
-##   - cli_flag      — `--flag-name` mentions in inline code spans
-##   - diagnostic    — `CNNN` codes referenced in prose
-##   - symbol_ref    — backtick-quoted Go-style identifiers
-##                     (`PackageName.TypeName` or `FunctionName`)
-##                     that look like exported symbols
-##
-## Each anchor is then verified:
-##   - file_ref     → does the file exist on disk?
-##   - cli_command  → is it in input.cli_commands?
-##   - cli_flag     → is it in input.cli_flags?
-##   - diagnostic   → is it in input.diagnostic_codes?
-##   - symbol_ref   → does `git grep -l` find it in code_scope_globs?
-##
-## Drift candidates = anchors whose verification failed. Each
-## carries pre-fetched evidence (the doc line excerpt + the
-## verifier's miss reason) so the reviewer can judge semantics
-## without running its own grep loop. Output is bounded:
-## input.max_drift_candidates caps the candidate slice; the full
-## counts ride along in the summary fields for the streak gate.
-##
-## All inputs flow via env vars (JSON-encoded for arrays); the
-## tool's argv is empty.
-tool build_manifest:
-  command: `WS={{input.workspace_dir}} DOC_FILES={{input.doc_files}} CLI_COMMANDS={{input.cli_commands}} CLI_FLAGS={{input.cli_flags}} DIAG_CODES={{input.diagnostic_codes}} CODE_GLOBS={{input.code_scope_globs}} MAX_CANDIDATES={{input.max_drift_candidates}} MAX_CHUNK_DOCS={{input.max_review_chunk_docs}} python3 -c "
-import os, json, re, glob, subprocess
-ws = os.environ['WS']
-os.chdir(ws)
-def jload(name, default):
-    raw = os.environ.get(name, '')
-    if not raw:
-        return default
-    try:
-        return json.loads(raw)
-    except json.JSONDecodeError:
-        return default
-doc_files = jload('DOC_FILES', [])
-cli_commands = set(jload('CLI_COMMANDS', []))
-cli_flags = set(jload('CLI_FLAGS', []))
-diag_codes = set(jload('DIAG_CODES', []))
-code_globs = [g.strip() for g in os.environ.get('CODE_GLOBS', '').split(',') if g.strip()]
-try:
-    max_candidates = int(os.environ.get('MAX_CANDIDATES', '150'))
-except ValueError:
-    max_candidates = 150
-try:
-    max_chunk_docs = int(os.environ.get('MAX_CHUNK_DOCS', '0'))
-except ValueError:
-    max_chunk_docs = 0
-
-## Regexes targeting markdown-typical patterns.
-## file_ref: paths like pkg/foo/bar.go, docs/dsl.md, with optional :NN line.
-## We restrict to known code/doc roots to avoid false hits on prose.
-## (?<![./\w-]) instead of \b: \b matched the /→letter boundary INSIDE a
-## longer path (e.g. '.archive/examples/foo.bot' captured 'examples/foo.bot',
-## silently dropping the '.archive/' prefix → phantom file-not-found drift).
-## The lookbehind refuses to start a match mid-path, so a known-root token is
-## only captured when it's the true start of the reference.
-FILE_RE = re.compile(r'(?<![./\w-])((?:pkg|cmd|internal|examples|docs|scripts|studio|.github|sdks)/[A-Za-z0-9_./-]+\.(?:go|md|ts|tsx|py|sh|yaml|yml|json|bot|iter))(?::([0-9]+(?:-[0-9]+)?))?')
-## chr(96) = backtick. The iterion DSL uses backticks as the raw-string
-## delimiter for tool commands, so any literal backtick inside the
-## command body (e.g. an inline-code regex) terminates the string and
-## breaks the parser. Building the pattern at runtime via chr() dodges
-## the conflict without forcing a different command-string syntax.
+hints = []
+ledger_excluded = 0
+def add_hint(doc, line, kind, value, note):
+    global ledger_excluded
+    if (doc, kind, str(value)) in dismissed:
+        ledger_excluded += 1
+        return
+    hints.append({'doc': doc, 'line': line, 'kind': kind, 'value': value, 'note': note})
 BT = chr(96)
-## cli_command: backtick-quoted 'iterion <subcmd>' (subcmd is 1st word after iterion)
-CLI_CMD_RE = re.compile(BT + r'iterion\s+([a-zA-Z0-9_-]+)')
-## cli_flag: --kebab-flag tokens (allow leading backtick, allow trailing =)
-CLI_FLAG_RE = re.compile(r'(?:\\s|^|' + BT + r'|\\()--([a-zA-Z][a-zA-Z0-9-]*[a-zA-Z0-9])\b')
-## diag_code: literal CNNN with a 3-digit suffix.
-DIAG_RE = re.compile(r'\b(C[0-9]{3})\b')
-## symbol_ref: backtick-quoted CamelCase or pkg.Symbol identifiers.
-## Strict pattern to avoid catching random capitalized words in prose.
-SYM_RE = re.compile(BT + r'((?:[a-z][a-zA-Z0-9_]*\.)?[A-Z][A-Za-z0-9_]+(?:\.[A-Z][A-Za-z0-9_]+)?)' + BT)
-
-def excerpt(line_text, limit=140):
-    s = line_text.strip()
-    return s if len(s) <= limit else s[:limit] + '…'
-
-## md_link (v0.16.x): internal markdown links [text](path#anchor).
-## FILE_RE only matches prose paths under known roots and never the
-## #anchor fragment, so a dead doc-to-doc link or a broken heading
-## anchor (e.g. CLAUDE.md -> README.md#iter-vs-bot) slipped through the
-## whole audit. This captures the link URL (first token after '(',
-## stopping at whitespace so an optional "title" is ignored without
-## needing a literal double-quote in this backtick command body) and
-## verifies BOTH the target file's existence AND, for .md targets, the
-## heading anchor — slugified GitHub-style. dead_link is already in the
-## reviewer taxonomy; this feeds it deterministic candidates.
 MD_LINK_RE = re.compile(r'\[(?:[^\]]*)\]\(([^)\s]+)')
+PATH_RE = re.compile(r'(?<![\w./-])((?:[A-Za-z0-9_.-]+/)+[A-Za-z0-9_.-]+\.[A-Za-z0-9]{1,8})(?![\w/-])')
 _heading_cache = {}
 def slugify(text):
     s = text.strip().lower().replace(BT, '')
@@ -1029,421 +797,199 @@ def headings_of(path):
         pass
     _heading_cache[path] = slugs
     return slugs
-
-anchors = []
-per_doc_counts = {}
-for doc in doc_files:
+## A cited path that is missing on disk is a DRIFT signal only if git
+## ever TRACKED it (current index or a path deleted somewhere in
+## history): docs constantly cite example/placeholder paths under real
+## top dirs (bots/my-bot/main.bot) and runtime-only files
+## (.claude/settings.json) — never tracked, never drift. Observed live
+## (run 019f8ba3): the existence-only rule flagged 604 missing paths,
+## ~43% of everything checked. On a shallow clone the history half is
+## partial and the check degrades toward SILENCE (fewer hints), never
+## toward noise; with no git at all the set stays empty and the plain
+## existence rule applies (fixtures/tests).
+ever_tracked = set()
+try:
+    _ls = subprocess.run(['git', 'ls-files'], stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True, timeout=60)
+    if _ls.returncode == 0:
+        ever_tracked.update(p for p in _ls.stdout.splitlines() if p)
+    _dl = subprocess.run(['git', 'log', '--pretty=format:', '--name-only', '--diff-filter=D'], stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True, timeout=120)
+    if _dl.returncode == 0:
+        ever_tracked.update(p for p in _dl.stdout.splitlines() if p)
+except Exception:
+    ever_tracked = set()
+checked_paths = 0
+checked_links = 0
+corpus_parts = []
+for doc in files:
     try:
         with open(doc, encoding='utf-8', errors='replace') as fh:
             lines = fh.readlines()
     except (FileNotFoundError, IsADirectoryError, PermissionError):
-        per_doc_counts[doc] = {'total': 0, 'verified': 0}
         continue
-    seen_in_doc = set()
-    doc_anchors = []
+    corpus_parts.append(''.join(lines))
+    seen = set()
     for lineno, line in enumerate(lines, start=1):
-        for m in FILE_RE.finditer(line):
-            value = m.group(1)
-            key = ('file_ref', value)
-            if key in seen_in_doc:
-                continue
-            seen_in_doc.add(key)
-            doc_anchors.append({'doc': doc, 'line': lineno, 'kind': 'file_ref', 'value': value, 'excerpt': excerpt(line)})
-        for m in CLI_CMD_RE.finditer(line):
-            value = m.group(1)
-            key = ('cli_command', value)
-            if key in seen_in_doc:
-                continue
-            seen_in_doc.add(key)
-            doc_anchors.append({'doc': doc, 'line': lineno, 'kind': 'cli_command', 'value': value, 'excerpt': excerpt(line)})
-        for m in CLI_FLAG_RE.finditer(line):
-            value = m.group(1)
-            key = ('cli_flag', value)
-            if key in seen_in_doc:
-                continue
-            seen_in_doc.add(key)
-            doc_anchors.append({'doc': doc, 'line': lineno, 'kind': 'cli_flag', 'value': value, 'excerpt': excerpt(line)})
-        for m in DIAG_RE.finditer(line):
-            value = m.group(1)
-            key = ('diagnostic', value)
-            if key in seen_in_doc:
-                continue
-            seen_in_doc.add(key)
-            doc_anchors.append({'doc': doc, 'line': lineno, 'kind': 'diagnostic', 'value': value, 'excerpt': excerpt(line)})
-        for m in SYM_RE.finditer(line):
-            value = m.group(1)
-            ## Skip obvious markdown headings / English words. A heuristic:
-            ## must contain at least one of [A-Z][a-z]+[A-Z] (CamelCase),
-            ## OR a dot (pkg.Symbol).
-            if not (re.search(r'[A-Z][a-z]+[A-Z]', value) or '.' in value):
-                continue
-            key = ('symbol_ref', value)
-            if key in seen_in_doc:
-                continue
-            seen_in_doc.add(key)
-            doc_anchors.append({'doc': doc, 'line': lineno, 'kind': 'symbol_ref', 'value': value, 'excerpt': excerpt(line)})
         for m in MD_LINK_RE.finditer(line):
             target = m.group(1)
-            same_doc = target.startswith('#')
-            if not same_doc and (re.match(r'^[a-z][a-z0-9+.-]*://', target) or target.startswith(('mailto:', 'tel:', '//', 'www.'))):
+            if target.startswith('#'):
+                continue
+            if re.match(r'^[a-z][a-z0-9+.-]*://', target) or target.startswith(('mailto:', 'tel:', '//', 'www.')):
                 continue
             if '#' in target:
                 path_part, frag = target.split('#', 1)
             else:
                 path_part, frag = target, ''
-            key = ('md_link', target)
-            if key in seen_in_doc:
+            key = ('link', target)
+            if key in seen:
                 continue
-            seen_in_doc.add(key)
-            doc_anchors.append({'doc': doc, 'line': lineno, 'kind': 'md_link', 'value': target, 'path_part': path_part, 'frag': frag, 'excerpt': excerpt(line)})
-    anchors.extend(doc_anchors)
-    per_doc_counts[doc] = {'total': len(doc_anchors), 'verified': 0}
-
-## Verification pass.
-## Symbol lookups are deferred to a single git grep batch — cheaper
-## than O(N) shell calls. Build the union of distinct symbols first.
-symbols_to_check = sorted({a['value'] for a in anchors if a['kind'] == 'symbol_ref'})
-present_symbols = set()
-if symbols_to_check and code_globs:
-    ## git grep -l with alternation; chunk to avoid argv overflow.
-    chunk_size = 100
-    for i in range(0, len(symbols_to_check), chunk_size):
-        chunk = symbols_to_check[i:i+chunk_size]
-        pat = r'\b(' + '|'.join(re.escape(s.split('.')[-1]) for s in chunk) + r')\b'
+            seen.add(key)
+            checked_links += 1
+            tgt = doc if not path_part else os.path.normpath(os.path.join(os.path.dirname(doc), path_part))
+            if path_part and not os.path.exists(tgt):
+                add_hint(doc, lineno, 'dead_link', target, 'link target not found: ' + tgt)
+            elif frag and not re.match(r'^[Ll][0-9]', frag) and tgt.endswith('.md') and frag.lower() not in headings_of(tgt):
+                add_hint(doc, lineno, 'dead_anchor', target, 'no heading matching #' + frag + ' in ' + tgt)
+        for m in PATH_RE.finditer(line):
+            value = m.group(1)
+            root = value.split('/', 1)[0]
+            ## Precision boundary. With git available, ever_tracked IS the
+            ## boundary: a missing path hints iff git once tracked it —
+            ## foreign-tool examples, placeholders and runtime files are
+            ## silently skipped, and a fully-removed directory still
+            ## surfaces its tracked files (the first-segment rule would
+            ## mask that drift). Without git (fixtures), fall back to the
+            ## first-segment-exists-as-repo-directory rule.
+            if not ever_tracked and not os.path.isdir(root):
+                continue
+            key = ('path', value)
+            if key in seen:
+                continue
+            seen.add(key)
+            if ever_tracked and not os.path.exists(value) and value not in ever_tracked:
+                continue
+            checked_paths += 1
+            if not os.path.exists(value):
+                add_hint(doc, lineno, 'missing_path', value, 'path cited in the doc not found on disk (git tracked it before)' if ever_tracked else 'path cited in the doc not found on disk (' + root + '/ exists)')
+corpus = chr(10).join(corpus_parts)
+SRC_ROOTS = {'src', 'lib', 'pkg', 'cmd', 'app', 'apps', 'packages', 'internal', 'modules', 'crates', 'services', 'components'}
+def significant(d):
+    for root, dirs, fs in os.walk(d):
+        dirs[:] = [x for x in dirs if not x.startswith('.') and x not in EXCLUDE_DIRS]
+        if any(not x.startswith('.') for x in fs):
+            return True
+    return False
+areas = []
+try:
+    top_entries = sorted(os.listdir('.'))
+except OSError:
+    top_entries = []
+for name in top_entries:
+    if name.startswith('.') or name in EXCLUDE_DIRS or name == docs_dir:
+        continue
+    if not os.path.isdir(name) or excluded(name):
+        continue
+    if name in SRC_ROOTS:
         try:
-            r = subprocess.run(['git', 'grep', '-lE', pat, '--'] + code_globs, capture_output=True, text=True, check=False)
-            if r.returncode in (0, 1):
-                ## We can only confirm at-least-one-match for the chunk
-                ## as a whole; for per-symbol granularity we'd need
-                ## N grep calls. Instead, do a content check: for each
-                ## symbol in the chunk, regrep its leaf identifier in
-                ## the union of matched files.
-                matched_files = [l for l in r.stdout.splitlines() if l]
-                if matched_files:
-                    for sym in chunk:
-                        leaf = sym.split('.')[-1]
-                        try:
-                            rr = subprocess.run(['git', 'grep', '-lE', r'\b' + re.escape(leaf) + r'\b', '--'] + matched_files, capture_output=True, text=True, check=False)
-                            if rr.returncode == 0 and rr.stdout.strip():
-                                present_symbols.add(sym)
-                        except Exception:
-                            pass
-        except Exception:
-            pass
-
-verified = []
-drifted = []
-unverifiable = []
-for a in anchors:
-    k = a['kind']
-    v = a['value']
-    if k == 'file_ref':
-        if os.path.exists(v):
-            a['status'] = 'verified'
-            a['evidence'] = 'file exists'
-            verified.append(a)
-        else:
-            a['status'] = 'drifted'
-            a['evidence'] = 'file not found on disk'
-            drifted.append(a)
-    elif k == 'cli_command':
-        ## When scan_code_surface was skipped/unscoped, cli_commands is
-        ## empty -- we never scanned the CLI surface, so we cannot call a
-        ## doc's iterion-subcommand reference drifted-from-code. Treat as
-        ## unverifiable (excluded from the coverage denominator) rather
-        ## than emitting a false drift for every existing command.
-        if not cli_commands:
-            a['status'] = 'unverifiable'
-            a['evidence'] = 'cli surface not scanned (scan skipped / code_scope_globs unscoped) — cannot adjudicate'
-            unverifiable.append(a)
-        elif v in cli_commands:
-            a['status'] = 'verified'
-            a['evidence'] = 'present in scan_code_surface.cli_commands'
-            verified.append(a)
-        else:
-            a['status'] = 'drifted'
-            a['evidence'] = 'not in scan_code_surface.cli_commands'
-            drifted.append(a)
-    elif k == 'cli_flag':
-        if not cli_flags:
-            a['status'] = 'unverifiable'
-            a['evidence'] = 'cli surface not scanned (scan skipped / code_scope_globs unscoped) — cannot adjudicate'
-            unverifiable.append(a)
-        elif v in cli_flags:
-            a['status'] = 'verified'
-            a['evidence'] = 'present in scan_code_surface.cli_flags'
-            verified.append(a)
-        else:
-            a['status'] = 'drifted'
-            a['evidence'] = 'not in scan_code_surface.cli_flags'
-            drifted.append(a)
-    elif k == 'diagnostic':
-        if not diag_codes:
-            a['status'] = 'unverifiable'
-            a['evidence'] = 'diagnostic surface not scanned (diagnostic_surface_globs unset) — cannot adjudicate'
-            unverifiable.append(a)
-        elif v in diag_codes:
-            a['status'] = 'verified'
-            a['evidence'] = 'present in scan_code_surface.diagnostic_codes'
-            verified.append(a)
-        else:
-            a['status'] = 'drifted'
-            a['evidence'] = 'not in scan_code_surface.diagnostic_codes'
-            drifted.append(a)
-    elif k == 'symbol_ref':
-        if v in present_symbols:
-            a['status'] = 'verified'
-            a['evidence'] = 'matched in code_scope_globs'
-            verified.append(a)
-        else:
-            ## Symbol heuristic is brittle (CamelCase prose, archived
-            ## examples, …); treat misses as unverifiable rather than
-            ## drifted to avoid Goodhart-trap blockers.
-            a['status'] = 'unverifiable'
-            a['evidence'] = 'no match in code_scope_globs (may be prose or external ref)'
-            unverifiable.append(a)
-    elif k == 'md_link':
-        ## Internal markdown link: verify the target file exists, and for
-        ## a .md target verify the #heading-anchor too (line anchors #Lnn
-        ## are code-line refs, not headings — skip those). High precision:
-        ## os.path.exists + GitHub-slug heading match. Misses are real dead
-        ## links (objective, verifiable), so they are 'drifted', not the
-        ## softer 'unverifiable' used for the brittle symbol heuristic.
-        path_part = a.get('path_part', '')
-        frag = a.get('frag', '')
-        tgt = a['doc'] if not path_part else os.path.normpath(os.path.join(os.path.dirname(a['doc']), path_part))
-        if path_part and not os.path.exists(tgt):
-            a['status'] = 'drifted'
-            a['evidence'] = 'link target not found: ' + tgt
-            drifted.append(a)
-        elif frag and not re.match(r'^[Ll][0-9]', frag) and tgt.endswith('.md'):
-            if frag.lower() in headings_of(tgt):
-                a['status'] = 'verified'
-                a['evidence'] = 'anchor present in target'
-                verified.append(a)
-            else:
-                a['status'] = 'drifted'
-                a['evidence'] = 'dead anchor #' + frag + ' in ' + tgt
-                drifted.append(a)
-        else:
-            a['status'] = 'verified'
-            a['evidence'] = 'link target exists'
-            verified.append(a)
-    per_doc_counts[a['doc']]['verified'] += 1 if a['status'] == 'verified' else 0
-
-## Prioritise candidates: drifted CLI surface first (highest signal),
-## then drifted file_ref, then drifted diagnostic, then drifted symbol,
-## then unverifiable symbols at the tail.
-priority = {
-    ('drifted', 'cli_command'): 0,
-    ('drifted', 'cli_flag'): 0,
-    ('drifted', 'md_link'): 1,
-    ('drifted', 'diagnostic'): 1,
-    ('drifted', 'file_ref'): 2,
-    ('drifted', 'symbol_ref'): 3,
-    ('unverifiable', 'symbol_ref'): 4,
-}
-## Surface drifted anchors plus unverifiable *symbol_ref*s (genuinely
-## borderline — a reviewer may resolve them by reading code). Do NOT
-## surface scanner-skipped cli/flag/diagnostic unverifiables: we know
-## we never scanned that surface, so there is nothing for a reviewer to
-## adjudicate — they would only be noise that tempts a false blocker.
-candidates = drifted + [a for a in unverifiable if a['kind'] == 'symbol_ref']
-candidates.sort(key=lambda a: (priority.get((a['status'], a['kind']), 9), a['doc'], a['line']))
-
-## v0.16.0: doc-count chunking. After the severity sort, walk the
-## ordered list and admit candidates from at most max_chunk_docs
-## distinct docs. Once the doc budget is full, candidates from new
-## docs are deferred (they surface in a later iter once the fixer
-## clears earlier drifts). max_chunk_docs=0 disables chunking
-## (preserves legacy candidate-cap-only behaviour).
-docs_with_drift = sorted({a['doc'] for a in candidates})
-if max_chunk_docs > 0 and len(docs_with_drift) > max_chunk_docs:
-    chunk_docs = []
-    chunked_candidates = []
-    chunk_doc_set = set()
-    for a in candidates:
-        if a['doc'] in chunk_doc_set:
-            chunked_candidates.append(a)
-        elif len(chunk_doc_set) < max_chunk_docs:
-            chunk_doc_set.add(a['doc'])
-            chunk_docs.append(a['doc'])
-            chunked_candidates.append(a)
-    candidates = chunked_candidates
-    chunked = True
+            subs = sorted(os.listdir(name))
+        except OSError:
+            subs = []
+        for sub in subs:
+            p = os.path.join(name, sub)
+            if sub.startswith('.') or sub in EXCLUDE_DIRS or not os.path.isdir(p) or excluded(p):
+                continue
+            if significant(p):
+                areas.append(p)
+    elif significant(name):
+        areas.append(name)
+for area in areas:
+    if os.sep in area:
+        mentioned = area in corpus
+    else:
+        mentioned = re.search(r'(?<![\w-])' + re.escape(area) + r'(?![\w-])', corpus, re.IGNORECASE) is not None
+    if not mentioned:
+        add_hint('', 0, 'unmentioned_area', area, 'code area ' + area + os.sep + ' appears in no doc in scope (advisory zone — may be internal)')
+prio = {'missing_path': 0, 'dead_link': 0, 'dead_anchor': 0, 'unmentioned_area': 1}
+hints.sort(key=lambda h: (prio.get(h['kind'], 2), h['doc'], h['line']))
+missing_path_count = sum(1 for h in hints if h['kind'] == 'missing_path')
+dead_link_count = sum(1 for h in hints if h['kind'] in ('dead_link', 'dead_anchor'))
+unmentioned_area_count = sum(1 for h in hints if h['kind'] == 'unmentioned_area')
+truncated = max_hints > 0 and len(hints) > max_hints
+if max_hints > 0:
+    hints = hints[:max_hints]
+if no_docs:
+    hints_note = 'no docs in scope'
+elif checked_paths + checked_links == 0 and not areas:
+    hints_note = 'no mechanical signal derivable from these docs (no repo-rooted paths or internal links cited) — the scan degrades silently; explore the repo directly'
 else:
-    chunked = False
-
-if max_candidates > 0:
-    candidates = candidates[:max_candidates]
-chunk_doc_count = len({a['doc'] for a in candidates})
-
-total_anchors = len(anchors)
-verified_anchors = len(verified)
-drifted_anchors = len(drifted)
-unverifiable_anchors = len(unverifiable)
-## Coverage is verified / (verified + drifted) — the fraction of
-## MECHANICALLY-CHECKABLE anchors that verify. Unverifiable anchors
-## (symbol-heuristic misses, and cli/flag/diagnostic anchors whose
-## scanner was skipped/unscoped) are EXCLUDED from the denominator:
-## counting them in the denominator dragged coverage below the gate
-## every checkable claim was correct — e.g. 190 unverifiable / 907
-## anchors capped achievable coverage at 79% < the 80% target, a
-## permanent non-convergence deadlock. When nothing is checkable,
-## coverage is vacuously complete (100) so the gate can still fire on
-## reviewer approval instead of looping to exhaustion.
-checkable_anchors = verified_anchors + drifted_anchors
-coverage_pct = (verified_anchors * 100 // checkable_anchors) if checkable_anchors > 0 else 100
-
-per_doc_list = sorted(
-    [{'doc': d, 'total': c['total'], 'verified': c['verified']} for d, c in per_doc_counts.items()],
-    key=lambda r: r['doc'],
-)
-
-print(json.dumps({
-    'total_docs': len(doc_files),
-    'total_anchors': total_anchors,
-    'verified_anchors': verified_anchors,
-    'drifted_anchors': drifted_anchors,
-    'unverifiable_anchors': unverifiable_anchors,
-    'checkable_anchors': checkable_anchors,
-    'coverage_pct': coverage_pct,
-    'drift_candidates': candidates,
-    'per_doc_anchor_counts': per_doc_list,
-    'all_audited_docs': sorted(doc_files),
-    'docs_with_drift_count': len(docs_with_drift),
-    'chunked': chunked,
-    'chunk_doc_count': chunk_doc_count,
-    'max_review_chunk_docs': max_chunk_docs,
-    'verified_pairs': sorted({a['doc'] + '::' + str(a.get('value','')) for a in verified}),
-}))
-"`
-  input: build_manifest_input
-  output: build_manifest_output
-
-agent author_docs:
-  backend: "claude_code"
-  model: "${ITERION_DOC_ALIGN_MODEL_CLAUDE:-claude-opus-4-8}"
-  reasoning_effort: "${ITERION_DOC_ALIGN_EFFORT_CLAUDE:-max}"
-  input: author_input
-  output: author_output
-  system: author_docs_system
-  user: author_docs_user
-  session: fresh
-  interaction: human
-
-## mark_issue_for_review (v0.15.4): after the run reaches a clean
-## terminal state, transition the tracker issue out of `ready` so
-## the dispatcher's polling loop doesn't re-dispatch it on the next
-## tick (observed during run 019e4c2e: a no-op convergence walked
-## the full workflow again on top of the previous commit, costing
-## ~$1.50 per re-run for zero added signal).
-##
-## Skipped (no-op exit 0) when vars.issue_id is empty — manual CLI
-## runs don't have a dispatcher-attached issue to transition.
-##
-## The store-dir is resolved relative to the worktree: the dispatcher
-## puts the worktree at <host>/.iterion/dispatcher/workspaces/native_<id>/
-## so three levels up lands on <host>/.iterion/ which is what
-## `iterion issue move --store-dir` expects (the root that contains
-## the `dispatcher/` subtree).
-##
-## v0.15.7: route through the dispatcher's HTTP API instead of
-## the iterion CLI subprocess. The native store's in-memory index
-## (pkg/dispatcher/native/store.go:s.index) is NOT invalidated
-## when an external process writes the issue file — the dispatcher
-## daemon's cached state survives the CLI's disk update and gets
-## flushed back on the next Claim/Release, clobbering the move.
-## Observed on the 2026-05-22 v0.15.6 dogfood (run 019e4e55):
-## bot moved issue ready→review at 06:23:15, dispatcher's next
-## Claim at 06:23:27 overwrote it back to ready without emitting
-## an issue_state_changed event. The HTTP API path goes through
-## the daemon's own Store instance, so the cache stays coherent.
-##
-## Port hardcoded to 4891 (the iterion studio default). If the
-## studio is bound to a different port, override
-## ITERION_DISPATCHER_PORT in the dispatcher's environment and
-## tweak this command. Future iterion fix: expose dispatcher.port
-## or dispatcher.url as a template var so this isn't hardcoded.
-##
-## ITERION_ISSUE_IDENTIFIER env var (set by the dispatcher per
-## pkg/dispatcher/loop.go:450) carries the short issue id without
-## the "native:" scheme prefix, which is exactly what the HTTP
-## path needs: /api/v1/native/issues/{short-id}/transition.
-##
-## `|| true` keeps the workflow on the happy path if curl fails
-## (network blip, daemon restart, etc.) — the commit has already
-## landed.
-tool mark_issue_for_review:
-  command: `if [ -n {{vars.issue_id}} ]; then ID={{vars.issue_id}}; ID_SHORT=${ID#native:}; PORT=${ITERION_DISPATCHER_PORT:-4891}; curl -sS -X POST -H "Content-Type: application/json" -d '{"to":"review"}' "http://localhost:${PORT}/api/v1/native/issues/${ID_SHORT}/transition" 2>&1 | head -c 1000 || true; else echo '{"skipped":"no issue_id"}'; fi`
-  output: mark_issue_output
-
-## update_audit_cache: rewrites <workspace_dir>/<audit_cache_path>
-## from the manifest's mechanically VERIFIED doc::anchor pairs (v2 —
-## the cache no longer records reviewer claims). Each pair
-## contributes a reference entry; the current sha1 of doc + refs is
-## captured so the NEXT run's scan_docs can pre-verify untouched
-## tuples. Empty cache_path disables the write.
-tool update_audit_cache:
-  command: `python3 -c "
-import os, json, hashlib, re, sys, pathlib
-ws = sys.argv[1]
-cache_path = sys.argv[2]
-pairs = sys.argv[3:]
-if not cache_path:
-    print(json.dumps({'cache_path': '', 'entries_written': 0, 'skipped': 'no cache_path'}))
-    sys.exit(0)
-os.chdir(ws)
-def sha_of_file(p):
+    hints_note = str(missing_path_count) + ' missing path(s), ' + str(dead_link_count) + ' dead link(s)/anchor(s), ' + str(unmentioned_area_count) + ' unmentioned area(s) — from ' + str(checked_paths) + ' checkable path(s) + ' + str(checked_links) + ' internal link(s) across ' + str(len(files)) + ' doc(s); ' + str(ledger_excluded) + ' ledger-dismissed excluded' + (' [list truncated to ' + str(max_hints) + ']' if truncated else '')
+recent = []
+diff_since = os.environ.get('DIFF_SINCE', '').strip()
+mode = os.environ.get('MODE', 'full').strip().lower()
+pr_url = os.environ.get('PR_URL', '').strip()
+base_ref = os.environ.get('BASE_REF', '').strip()
+if pr_url:
+    # PR launch: iterion's forge webhook / the /doki command set pr_url +
+    # base_ref for ANY bot launched on a PR (generic, not docs-refresh-
+    # specific) and checked out the PR head. Doki aligns the docs impacted by
+    # the PR's OWN diff — incremental, base = the PR base.
+    mode = 'incremental'
+    if base_ref and not diff_since:
+        diff_since = base_ref
+if mode == 'incremental' and not diff_since:
+    # Auto-detect the last alignment point: the campaign stamps every
+    # commit with a Bot: docs-refresh TRAILER LINE, so the newest commit
+    # whose message has that line is where the docs were last aligned. The
+    # delta after it is what this incremental pass focuses its (expensive)
+    # semantic alignment on. Anchor the match to a line start (-E ^) so a
+    # commit that merely MENTIONS the trailer in prose (e.g. this bot's own
+    # feature commits) is not mistaken for an alignment point. No prior
+    # alignment commit (first run) leaves diff_since empty → the campaign
+    # sweeps the whole corpus, a clean degrade to full.
     try:
-        with open(p, 'rb') as fh:
-            return hashlib.sha1(fh.read()).hexdigest()
-    except (FileNotFoundError, IsADirectoryError, PermissionError):
-        return 'missing'
-def extract_path(anchor):
-    a = (anchor or '').strip()
-    if not a or a.startswith('<'):
-        return None
-    m = re.match(r'([^\s:()]+)', a)
-    return m.group(1) if m else None
-by_doc = {}
-for pair in pairs:
-    if not isinstance(pair, str) or '::' not in pair:
-        continue
-    doc, anchor = pair.split('::', 1)
-    p = extract_path(anchor)
-    if not p:
-        continue
-    by_doc.setdefault(doc, set()).add(p)
-doc_entries = {}
-for doc, refs in by_doc.items():
-    doc_entries[doc] = {
-        'sha': sha_of_file(doc),
-        'refs': sorted(({'p': p, 's': sha_of_file(p) if os.path.exists(p) else 'missing'} for p in refs), key=lambda r: r['p']),
-    }
-out_path = pathlib.Path(cache_path)
-out_path.parent.mkdir(parents=True, exist_ok=True)
-with open(out_path, 'w') as out:
-    json.dump({'v': 1, 'doc': doc_entries}, out, indent=2, sort_keys=True)
-print(json.dumps({'cache_path': str(out_path), 'entries_written': len(doc_entries), 'skipped': ''}))
-" {{input.workspace_dir}} {{input.cache_path}} {{input.audited_pairs}}`
-  input: update_audit_cache_input
-  output: update_audit_cache_output
-
-## ─── Nodes : v2 campaign + gates ────────────────────────────────
+        p = subprocess.run(['git', 'log', '-E', '--grep', '^Bot: docs-refresh', '-n', '1', '--format=%H'], capture_output=True, text=True, check=True)
+        diff_since = p.stdout.strip()
+    except Exception:
+        diff_since = ''
+incremental_base = ''
+if diff_since:
+    # Resolve the base against a local ref first, then origin/<ref>: a PR base
+    # like main may exist only as a remote-tracking ref in the run's clone,
+    # while an auto-detected SHA resolves on the first try. incremental_base
+    # stays EMPTY if neither resolves (a shallow clone with no in-clone
+    # merge-base) — honest telemetry: the delta could not be computed, so the
+    # campaign must not read a 0-length change list as nothing-to-align.
+    for ref in (diff_since, 'origin/' + diff_since):
+        try:
+            proc = subprocess.run(['git', 'diff', '--name-only', ref + '...HEAD'], capture_output=True, text=True, check=True)
+            recent = sorted([l for l in proc.stdout.splitlines() if l and not excluded(l)])
+            incremental_base = ref
+            break
+        except Exception:
+            recent = []
+print(json.dumps({'doc_files': files, 'doc_count': len(files), 'hints': hints, 'hint_count': len(hints), 'missing_path_count': missing_path_count, 'dead_link_count': dead_link_count, 'unmentioned_area_count': unmentioned_area_count, 'checked_paths': checked_paths, 'checked_links': checked_links, 'ledger_excluded': ledger_excluded, 'truncated': truncated, 'hints_note': hints_note, 'mode': mode, 'incremental_base': incremental_base, 'recently_changed_code_files': recent}))
+"`
+  output: hints_output
 
 ## campaign — the one adaptive agent. claude_code with the full native
-## toolset so it works exactly like a native session: adjudicate the
-## manifest's bounded drift set, verify at the anchor, fix the doc,
-## commit each aligned doc in stride. session: fresh — a fresh pass
-## re-derives its todo from the fresh manifest + `git log` (git is the
-## durable state). Board capabilities power the findings handoff (code
-## bugs found while verifying anchors → inbox), replacing v1's
-## prepare_commit handoff.
+## toolset so it works exactly like a native session: survey docs +
+## code (the advisory report is a starting point, never the scope),
+## verify in the code, fix or write the doc, commit each aligned doc
+## in stride. session: fresh — a fresh pass re-derives its todo from a
+## fresh advisory report + `git log` (git is the durable state). Board
+## capabilities power the findings handoff (code bugs found while
+## verifying claims → inbox).
 agent campaign:
   backend: "claude_code"
   model: "${ITERION_DOC_ALIGN_MODEL_CLAUDE:-claude-opus-4-8}"
-  reasoning_effort: "${ITERION_DOC_ALIGN_EFFORT_CLAUDE:-high}"
+  ## ultracode (on opus-4-8) hands the campaign the `agent` subagent
+  ## tool + the orchestration prerogative — so it can fan out its own
+  ## sub-auditors across the corpus, EXACTLY as a native Claude Code
+  ## session does. A single agent (any prompt) self-scopes to the
+  ## obvious docs and misses the long tail; a 3-way live benchmark
+  ## (2026-07-23) showed the only run that reached the full corpus —
+  ## bot READMEs + cloud + studio — was the one that DECOMPOSED. This
+  ## is coverage via the agent's own judgment, not engine fan-out.
+  reasoning_effort: "${ITERION_DOC_ALIGN_EFFORT_CLAUDE:-ultracode}"
   input: campaign_input
   output: campaign_output
   system: campaign_system
@@ -1452,116 +998,16 @@ agent campaign:
   interaction: human
   capabilities: [board.read, board.create]
 
-## verify_build — adaptive, stack-agnostic gate authoring (writes
-## <scratch_dir>/verify.sh). Kept FAST for docs-only passes.
-agent verify_build:
-  backend: "claude_code"
-  model: "${ITERION_DOC_ALIGN_MODEL_CLAUDE:-claude-opus-4-8}"
-  reasoning_effort: "${ITERION_DOC_ALIGN_EFFORT_CLAUDE:-medium}"
-  output: verify_plan
-  system: verify_system
-  user: verify_user
-  session: fresh
-  interaction: human
-
-## verify_run — the DETERMINISTIC half: re-runs the agent-prepared
-## <scratch_dir>/verify.sh and reports the REAL exit code. python3 for
-## safe JSON + subprocess capture; double-quote-free body, no backticks
-## (E012).
-tool verify_run:
-  command: `WS={{vars.workspace_dir}} SCRATCH={{vars.scratch_dir}} python3 -c "
-import os, subprocess, json
-ws = os.environ.get('WS', '.')
-scratch = os.environ.get('SCRATCH', '.')
-try:
-    os.makedirs(scratch, exist_ok=True)
-except OSError:
-    pass
-script = os.path.join(scratch, 'verify.sh')
-if not os.path.exists(script):
-    print(json.dumps({'passed': True, 'skipped': True, 'exit_code': 0, 'log_tail': 'verify_build produced no verify.sh in the scratch dir; build gate SKIPPED (counted as pass, but surfaced) -- verify_build should write the script'}))
-    raise SystemExit(0)
-def tree_state():
-    try:
-        p = subprocess.run(['git', '-C', ws, 'status', '--porcelain'], stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True, timeout=60)
-        if p.returncode != 0:
-            return None
-        return set(l for l in p.stdout.splitlines() if l.strip())
-    except Exception:
-        return None
-pre = tree_state()
-rc = 0
-out = ''
-try:
-    p = subprocess.run(['sh', script], cwd=ws, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, timeout=1500)
-    out = p.stdout or ''
-    rc = p.returncode
-except subprocess.TimeoutExpired as e:
-    out = (e.output or '') + chr(10) + '[verify timed out after 1500s]'
-    rc = 124
-except Exception as e:
-    out = 'verify_run could not execute the script: ' + str(e)
-    rc = 1
-# Deterministic codegen-drift tail (stack-agnostic; the gate stays
-# deterministic per ADR-044). Only on a GREEN verify: (1) if the repo's own
-# CI enforces a drift gate, verify.sh must mirror it; (2) a green verify
-# must not leave new changes in the tree (regen output belongs in a commit).
-if rc == 0:
-    import glob
-    def has_drift_gate(text):
-        for l in text.splitlines():
-            if ('diff' in l and ('--exit-code' in l or '--quiet' in l)) or 'status --porcelain' in l:
-                return True
-        return False
-    ci_hit = ''
-    for pat in ('.github/workflows/*.yml', '.github/workflows/*.yaml', '.gitlab-ci.yml', '.circleci/config.yml'):
-        for f in sorted(glob.glob(os.path.join(ws, pat))):
-            try:
-                if has_drift_gate(open(f, encoding='utf-8', errors='replace').read()):
-                    ci_hit = os.path.relpath(f, ws)
-                    break
-            except OSError:
-                pass
-        if ci_hit:
-            break
-    if ci_hit:
-        try:
-            vs = open(script, encoding='utf-8', errors='replace').read()
-        except OSError:
-            vs = ''
-        if not has_drift_gate(vs):
-            rc = 3
-            out = out + chr(10) + 'DRIFT GATE MISSING: CI (' + ci_hit + ') enforces a codegen-drift gate but ' + script + ' has none -- edit the script per the verify-build skill section 1b (run the repo regen command, then: git diff --exit-code).'
-    if rc == 0 and pre is not None:
-        post = tree_state()
-        if post is not None:
-            fresh = sorted(post - pre)
-            if fresh:
-                rc = 4
-                out = out + chr(10) + 'UNCOMMITTED REGEN OUTPUT: a green verify left new changes in the tree; commit (or gitignore) them:' + chr(10) + chr(10).join(fresh[:50])
-try:
-    with open(os.path.join(scratch, 'verify.log'), 'w', encoding='utf-8') as lf:
-        lf.write(out)
-except OSError:
-    pass
-print(json.dumps({'passed': rc == 0, 'skipped': False, 'exit_code': rc, 'log_tail': out[-4000:]}))
-"`
-  output: verify_result
-
 ## scope_check — the DETERMINISTIC writeable-set gate. Diffs the RUN
 ## BASE (oldest reflog entry of the fresh per-run worktree — exact
 ## under worktree: auto) against the working tree and flags any changed
-## path that is not a doc: `.md` anywhere, the audit cache file, or
-## (when GO_GLOBS is non-empty) a file matching those globs (the
-## comment-only discipline stays contract-level, as in v1 — this gate
-## is path-level containment). Untracked files are held to the same
-## rule. No LLM; the campaign must revert whatever this flags.
+## path that is not a doc (`.md` anywhere) — path-level containment.
+## Untracked files are held to the same rule. No LLM; the campaign
+## must revert whatever this flags.
 tool scope_check:
-  command: `WS={{vars.workspace_dir}} GO_GLOBS={{vars.go_comment_globs}} CACHE={{vars.audit_cache_path}} python3 -c "
-import os, json, subprocess, fnmatch
+  command: `WS={{vars.workspace_dir}} python3 -c "
+import os, json, subprocess
 ws = os.environ.get('WS', '.')
-go_globs = [g.strip() for g in os.environ.get('GO_GLOBS', '').split(',') if g.strip()]
-cache = os.environ.get('CACHE', '').strip()
 
 def git(args):
     try:
@@ -1570,149 +1016,215 @@ def git(args):
     except Exception:
         return ''
 
+# base = run-start HEAD: the newest reflog entry that is NOT one of this
+# run own docs-refresh commits. On a PR amend the runner clones at the base
+# branch then checks out the PR head, so the OLDEST reflog entry is that
+# base branch, not where alignment began -- diffing against it would flag
+# the PR own code as a scope violation. Walking newest-first to the first
+# foreign HEAD lands on the PR head (amend) or the worktree base
+# (worktree:auto): the true run-start in both.
 reflog = [l for l in git(['reflog', '--format=%H']).splitlines() if l.strip()]
-base = reflog[-1] if reflog else 'HEAD'
+def is_own_commit(h):
+    body = git(['log', '-1', '--format=%B', h])
+    return any(l.strip() == 'Bot: docs-refresh' for l in body.splitlines())
+base = 'HEAD'
+for h in reflog:
+    if not is_own_commit(h):
+        base = h
+        break
 changed = set(l for l in git(['diff', base, '--name-only']).splitlines() if l.strip())
 for line in git(['status', '--porcelain']).splitlines():
     if line[:2].strip() == '??':
         changed.add(line[3:].strip())
 
 def allowed(p):
-    if p.endswith('.md'):
-        return True
-    if cache and p == cache:
-        return True
-    for g in go_globs:
-        if fnmatch.fnmatch(p, g):
-            return True
-    return False
+    return p.endswith('.md')
 
 out_of_scope = sorted(p for p in changed if not allowed(p))
 log = ''
 if out_of_scope:
-    log = 'SCOPE VIOLATION: this run changed files outside the doc writeable-set (.md' + (' + go_comment_globs' if go_globs else '') + '). Revert these before continuing (git revert the offending commits, or git checkout ' + base[:12] + ' -- <path>): ' + ', '.join(out_of_scope[:40])
+    log = 'SCOPE VIOLATION: this run changed files outside the doc writeable-set (.md only). Revert these before continuing (git revert the offending commits, or git checkout ' + base[:12] + ' -- <path>): ' + ', '.join(out_of_scope[:40])
 print(json.dumps({'scope_ok': not out_of_scope, 'out_of_scope': out_of_scope[:100], 'log': log}))
 "`
   output: scope_check_output
 
-## gate — the deterministic continuation decision. converged = build
-## green AND scope clean AND campaign reports docs aligned AND the
-## manifest's mechanical anchor coverage meets the target. fail_log
-## priority: scope violation (the campaign must revert) > build
-## failure > empty (green-but-more-drift → the fresh manifest is the
-## guidance). No LLM, no shell.
+## gate — the deterministic continuation decision. converged = scope
+## clean AND the campaign reports the docs aligned — NOTHING ELSE. The
+## advisory hint counts are telemetry in the run events/report, never
+## conditions: the campaign's honest termination contract + the
+## writeable-set truth gate are the whole oracle. fail_log surfaces a
+## scope violation (the campaign must revert) back to the next pass;
+## green-but-more-work rides an empty log. No LLM, no shell.
 compute gate:
   output: gate_state
   expr:
-    converged: "outputs.verify_run.passed && outputs.scope_check.scope_ok && outputs.campaign.docs_aligned && outputs.build_manifest.coverage_pct >= vars.coverage_target_pct"
-    fail_log: "if(!outputs.scope_check.scope_ok, outputs.scope_check.log, if(outputs.verify_run.passed, '', outputs.verify_run.log_tail))"
+    converged: "outputs.scope_check.scope_ok && outputs.campaign.docs_aligned"
+    fail_log: "if(!outputs.scope_check.scope_ok, outputs.scope_check.log, '')"
+
+## ─── Nodes : PR finalization tail (opt-in, feature-dev verbatim) ────
+
+## mr_gate decides whether the PR tail runs. `open_mr` OR a PR launch
+## (`pr_url` non-empty) — a PR launch ALWAYS finalizes, because amending the
+## contributor's PR IS the delivery: without this, the alignment commits
+## would strand on the run's storage branch and never reach the PR. No LLM,
+## no shell. (String `pr_url` is truthy when non-empty.)
+compute mr_gate:
+  output: mr_gate_output
+  expr:
+    open_mr: "vars.open_mr || vars.pr_url"
+
+## forge_auth_probe — DETERMINISTIC pre-flight for the push. finalize_mr is an
+## LLM agent; entering it with NO push credential mounted burns a whole turn
+## just to rediscover, in shell, that it can't push. This tool answers "is
+## there a push credential?" in ~100ms of subprocess so the graph only pays
+## finalize_mr when a push can actually happen. python3 for safe JSON;
+## read-only, idempotent.
+tool forge_auth_probe:
+  command: `python3 -c "
+import os, subprocess, json
+tok = '/run/iterion/secrets/forge_token'
+try:
+    if os.path.isfile(tok) and os.path.getsize(tok) > 0:
+        print(json.dumps({'available': True, 'reason': 'file:' + tok})); raise SystemExit(0)
+except OSError:
+    pass
+for v in ('GH_TOKEN', 'GITHUB_TOKEN', 'GITLAB_TOKEN', 'FORGEJO_TOKEN', 'GITEA_TOKEN'):
+    if os.environ.get(v):
+        print(json.dumps({'available': True, 'reason': 'env:' + v})); raise SystemExit(0)
+try:
+    r = subprocess.run(['gh', 'auth', 'status'], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=10)
+    if r.returncode == 0:
+        print(json.dumps({'available': True, 'reason': 'gh host auth'})); raise SystemExit(0)
+except Exception:
+    pass
+print(json.dumps({'available': False, 'reason': 'no forge_token secret, no *_TOKEN env, no gh host auth'}))
+"`
+  output: forge_auth_state
+
+agent finalize_mr:
+  backend: "claude_code"
+  model: "${ITERION_DOC_ALIGN_MODEL_CLAUDE:-claude-opus-4-8}"
+  reasoning_effort: "${ITERION_DOC_ALIGN_MR_EFFORT:-medium}"
+  input: finalize_mr_input
+  output: finalize_mr_output
+  system: finalize_mr_system
+  user: finalize_mr_user
+  tools: [bash, read_file, glob, grep]
+  capabilities: [board.read, board.comment]
+  tool_max_steps: 20
+
+## surface_pr_link — DETERMINISTIC result-link emitter for the studio run
+## summary. finalize_mr is an LLM agent, but the studio surfaces a run's
+## headline PR link from the deterministic `[iterion] preview_url=… kind=pr`
+## directive a tool node prints on stdout — never from agent prose. Reached
+## only when finalize_mr actually opened a PR (opened=true ⇒ url set); the
+## python guard drops an empty url so the scanner never sees a malformed
+## directive. read-only, idempotent.
+schema surface_pr_link_input:
+  url: string
+
+tool surface_pr_link:
+  input: surface_pr_link_input
+  command: `URL={{input.url}} python3 -c "
+import os
+u = (os.environ.get('URL') or '').strip()
+if u:
+    print('[iterion] preview_url=' + u + ' kind=pr scope=external')
+"`
 
 ## ─── Workflow ───────────────────────────────────────────────────
 
 workflow docs_refresh:
-  entry: scan_docs
+  entry: scan_hints
 
   ## Run in an isolated git worktree at .iterion/worktrees/<run-id>/ —
   ## the campaign commits doc alignments in stride; the worktree +
   ## finalize FF keeps the operator's checkout untouched during the run
-  ## and lands the series on a persistent branch on convergence. (v1 ran
-  ## on the live tree with a terminal commit; in-stride commits make the
-  ## worktree the safe default, aligned with the other v2 bots.)
+  ## and lands the series on a persistent branch on convergence.
   worktree: auto
 
   budget:
     max_parallel_branches: 1
-    max_duration: "2h"
-    max_cost_usd: 60
+    ## Self-orchestrated passes (the campaign fans out sub-auditors on
+    ## ultracode) are COMPREHENSIVE and long — ~70 min / ~$16 per pass
+    ## on a large corpus (live: run 019f8e08 aligned 40 docs in pass 1).
+    ## The old 2h/$60 caps guillotined it mid-pass-2 as a hard
+    ## failed_resumable BEFORE finalize — losing all 40 in-pod commits
+    ## (the exporter only runs on a clean finalize; see the export-on-
+    ## failure engine gap). Give the asymptote room to reach GRACEFUL
+    ## exhaustion (which finalizes + exports) within budget: a few big
+    ## passes fit here, and max_passes below is lowered to match so the
+    ## run exhausts and ships rather than getting axed by the cap.
+    max_duration: "6h"
+    max_cost_usd: 120
 
   compaction:
     threshold: 0.9
     preserve_recent: 8
 
-  ## DEFAULT-CREATE: if the repo has ZERO docs in scope, bootstrap an
-  ## initial set first (author_docs), then loop back to scan_docs
-  ## (author_rescan) so the re-scan picks the new docs up and the normal
-  ## campaign polishes + commits them. author_rescan(1) = exactly one
-  ## authoring pass; if it still produces nothing in scope the bounded
-  ## loop fails loudly rather than spinning.
-  scan_docs -> author_docs when no_docs with {
-    workspace_dir: "{{vars.workspace_dir}}",
-    docs_dir: "{{vars.docs_dir}}",
-    recently_changed_code_files: "{{outputs.scan_docs.recently_changed_code_files}}"
-  }
-  scan_docs -> scan_code_surface when not no_docs
-  author_docs -> scan_docs as author_rescan(1)
-
-  ## build_manifest runs after scan_code_surface (initial) AND as the
-  ## continuation-loop head (gate re-entry), so the drift_candidates set
-  ## the campaign sees always reflects the live worktree state. Both
-  ## inbound edges supply identical with{} fields.
-  scan_code_surface -> build_manifest with {
-    workspace_dir: "{{vars.workspace_dir}}",
-    doc_files: "{{outputs.scan_docs.doc_files}}",
-    cli_commands: "{{outputs.scan_code_surface.cli_commands}}",
-    cli_flags: "{{outputs.scan_code_surface.cli_flags}}",
-    diagnostic_codes: "{{outputs.scan_code_surface.diagnostic_codes}}",
-    code_scope_globs: "{{vars.code_scope_globs}}",
-    max_drift_candidates: "{{vars.max_drift_candidates}}",
-    max_review_chunk_docs: "{{vars.max_review_chunk_docs}}"
-  }
-
-  ## Each pass: the fresh manifest hands the campaign its bounded
-  ## working set (+ the previous gate's feedback — empty on pass 1,
-  ## outputs.gate resolves nil-safe before the gate has run).
-  build_manifest -> campaign with {
-    total_docs: "{{outputs.build_manifest.total_docs}}",
-    total_anchors: "{{outputs.build_manifest.total_anchors}}",
-    verified_anchors: "{{outputs.build_manifest.verified_anchors}}",
-    drifted_anchors: "{{outputs.build_manifest.drifted_anchors}}",
-    unverifiable_anchors: "{{outputs.build_manifest.unverifiable_anchors}}",
-    manifest_coverage_pct: "{{outputs.build_manifest.coverage_pct}}",
-    coverage_target_pct: "{{vars.coverage_target_pct}}",
-    drift_candidates: "{{outputs.build_manifest.drift_candidates}}",
-    docs_with_drift_count: "{{outputs.build_manifest.docs_with_drift_count}}",
-    chunked: "{{outputs.build_manifest.chunked}}",
-    chunk_doc_count: "{{outputs.build_manifest.chunk_doc_count}}",
-    max_review_chunk_docs: "{{outputs.build_manifest.max_review_chunk_docs}}",
-    recently_changed_code_files: "{{outputs.scan_docs.recently_changed_code_files}}",
+  ## Each pass: the fresh advisory report is handed to the campaign as
+  ## HELP (+ the previous gate's feedback — empty on pass 1,
+  ## outputs.gate resolves nil-safe before the gate has run). A repo
+  ## with no docs in scope is not special-cased — the campaign authors
+  ## the initial set itself (the doc-enrichment skill), exactly as a
+  ## native session handed "align the docs" would.
+  scan_hints -> campaign with {
+    hints: "{{outputs.scan_hints.hints}}",
+    hint_count: "{{outputs.scan_hints.hint_count}}",
+    hints_note: "{{outputs.scan_hints.hints_note}}",
+    mode: "{{outputs.scan_hints.mode}}",
+    incremental_base: "{{outputs.scan_hints.incremental_base}}",
+    pr_url: "{{vars.pr_url}}",
+    recently_changed_code_files: "{{outputs.scan_hints.recently_changed_code_files}}",
     fail_log: "{{outputs.gate.fail_log}}"
   }
 
-  ## Deterministic gates after every campaign pass: writeable-set
-  ## containment, then the build gate, then the continuation decision.
+  ## Deterministic TRUTH gate after every campaign pass: writeable-set
+  ## containment (the bot only touches docs — a docs-only change cannot
+  ## affect the repo's build, so there is no build/test gate), then the
+  ## continuation decision.
   campaign -> scope_check
-  scope_check -> verify_build
-  verify_build -> verify_run
-  verify_run -> gate
+  scope_check -> gate
 
-  ## Converged → transition the dispatcher issue (no-op without
-  ## issue_id) and refresh the inter-run cache from the manifest's
-  ## MECHANICALLY verified pairs, then finish.
-  gate -> mark_issue_for_review when converged
-  ## Not converged → another pass through the loop head: re-manifest
-  ## (fresh drift set from the live tree) → campaign. A scope violation
-  ## or build failure rides outputs.gate.fail_log on the
-  ## build_manifest→campaign edge; green-but-more-drift rides an empty
-  ## log — the fresh manifest is the guidance.
-  gate -> build_manifest as continuation_loop("{{vars.max_passes}}") with {
-    workspace_dir: "{{vars.workspace_dir}}",
-    doc_files: "{{outputs.scan_docs.doc_files}}",
-    cli_commands: "{{outputs.scan_code_surface.cli_commands}}",
-    cli_flags: "{{outputs.scan_code_surface.cli_flags}}",
-    diagnostic_codes: "{{outputs.scan_code_surface.diagnostic_codes}}",
-    code_scope_globs: "{{vars.code_scope_globs}}",
-    max_drift_candidates: "{{vars.max_drift_candidates}}",
-    max_review_chunk_docs: "{{vars.max_review_chunk_docs}}"
-  }
-  ## continuation_loop exhausted (max_passes hit while drift remains) →
+  ## Converged → straight to the PR tail. The dispatcher owns the
+  ## tracker-issue lifecycle NATIVELY (claim→running_state,
+  ## finish→completed_state "review", studio-merge→done) — the bot does
+  ## not transition the issue itself, so there is no mark-issue node.
+  gate -> mr_gate when converged
+  ## Not converged → another pass through the loop head: a fresh
+  ## advisory report (resolved hints + ledger entries retire) →
+  ## campaign. A scope violation rides outputs.gate.fail_log on the
+  ## scan_hints→campaign edge; green-but-more-work rides an empty log.
+  gate -> scan_hints as continuation_loop("{{vars.max_passes}}")
+  ## continuation_loop exhausted (max_passes hit while work remains) →
   ## finish anyway, shipping what is banked (every committed alignment
   ## is real, landed work; the last campaign_output's drift_remaining
   ## tells the operator what is left).
-  gate -> mark_issue_for_review
+  gate -> mr_gate
 
-  mark_issue_for_review -> update_audit_cache with {
-    workspace_dir: "{{vars.workspace_dir}}",
-    cache_path: "{{vars.audit_cache_path}}",
-    audited_pairs: "{{outputs.build_manifest.verified_pairs}}"
+  ## ── PR tail (opt-in, feature-dev verbatim) ──────────────────────
+  ## Reached on BOTH finishes (converged and max_passes-exhausted): the
+  ## banked alignment commits are real landed work either way, and
+  ## finalize_mr refuses an empty PR + reports drift_remaining honestly
+  ## in the body.
+  mr_gate -> forge_auth_probe when open_mr
+  mr_gate -> done when not open_mr
+
+  forge_auth_probe -> finalize_mr when available with {
+    workspace_dir:    "{{vars.workspace_dir}}",
+    pr_url:           "{{vars.pr_url}}",
+    source_branch:    "{{vars.source_branch}}",
+    mr_branch:        "{{vars.mr_branch}}",
+    mr_base:          "{{vars.mr_base}}",
+    source_issue_ref: "{{vars.source_issue_ref}}",
+    scope_notes:      "{{vars.scope_notes}}",
+    campaign_summary: "{{outputs.campaign.summary}}",
+    drift_remaining:  "{{outputs.campaign.drift_remaining}}"
   }
-  update_audit_cache -> done
+  forge_auth_probe -> done when not available
+  ## PR opened → surface its URL as a headline result-link in the run summary
+  ## (deterministic stdout directive → preview_url_available kind=pr), then
+  ## finish. Nothing opened (empty diff / refused PR) → straight to done.
+  finalize_mr -> surface_pr_link when opened with { url: "{{outputs.finalize_mr.url}}" }
+  finalize_mr -> done when not opened
+  surface_pr_link -> done

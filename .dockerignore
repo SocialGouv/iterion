@@ -41,7 +41,11 @@ coverage/
 
 # --- Local dev state — never bake into the image ---
 .iterion/
-.devbox/
+# .devbox/ profile farms anywhere in the tree (repo root AND bots/<bot>/
+# after a local host-devbox run): dangling Nix symlinks in the image.
+# The bot's devbox.json + devbox.lock DO ship (COPY bots) — the runner's
+# host devbox provisioning stages + installs from them at run start.
+**/.devbox/
 .direnv/
 .envrc
 .works/

@@ -17,9 +17,8 @@ const StoreDirName = ".iterion"
 // Resolution order:
 //  1. Explicit override (--store-dir, cfg.StoreDir) wins.
 //  2. Project-local opt-in: if <start>/.iterion exists as a directory,
-//     use it. Created either by an explicit `iterion init` or by hand
-//     when the operator wants the run state versioned with (or merely
-//     adjacent to) the repo.
+//     use it. Created by hand when the operator wants the run state
+//     versioned with (or merely adjacent to) the repo.
 //  3. Default: a per-project subdir of the user's global iterion data
 //     dir — ~/.iterion/projects/<workdir-key>/, where <workdir-key>
 //     is a deterministic encoding of the absolute workdir path. This

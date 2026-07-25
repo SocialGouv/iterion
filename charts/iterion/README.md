@@ -1,12 +1,12 @@
 # iterion Helm chart
 
-Deploys iterion's cloud mode — the multi-tenant **Bot-as-a-Service**
-platform: HTTP/WS control plane with the embedded studio, a
-KEDA-scalable runner pool consuming the NATS JetStream queue, and the
-Mongo + S3 run store. One image, two deployments (`server` + `runner`).
+Deploys Iterion Cloud, the multi-tenant **control plane for AI agents**.
+It combines an HTTP/WS API with the embedded studio, a KEDA-scalable runner
+pool consuming the NATS JetStream queue, and the Mongo + S3 run store. One
+image, two deployments (`server` + `runner`).
 
-- Platform overview: [docs/baas-overview.md](../../docs/baas-overview.md)
-- Operator runbook: [docs/cloud-deployment.md](../../docs/cloud-deployment.md) and [docs/baas-admin-guide.md](../../docs/baas-admin-guide.md)
+- Platform overview: [Iterion Cloud overview](../../docs/cloud-overview.md)
+- Operator runbook: [docs/cloud-deployment.md](../../docs/cloud-deployment.md) and [Iterion Cloud admin guide](../../docs/cloud-admin-guide.md)
 
 ## Requirements
 
@@ -48,7 +48,7 @@ groups:
 | `server` | Replicas, resources, command/args, metrics port |
 | `runner` | Pool enable/replicas/resources, `keda.*` (JetStream lag scaler), `sandbox.enabled` (+RBAC for per-run pods) |
 | `config` | Non-secret env: `mongo.*`, `nats.*`, `s3.*`, `runner.*`, `auth.*` (public half: publicUrl, cookies, TTLs, signupMode, OIDC client ids), `smtp.*` (host/port/from — enables invitations + password-reset email), `orgDefaults.*` (platform-wide launch limits → `ITERION_ORG_DEFAULT_*`), `log.*` |
-| `secrets` | Four bundles, each `create:` (chart-rendered, dev) or `existingSecret:` (sealed-secrets / external-secrets, prod): `llm` (fallback provider keys), `storage` (S3 creds), `auth` (`ITERION_JWT_SECRET`, `ITERION_SECRETS_KEY`, bootstrap admin, OIDC client secrets, `completionWebhookSecret`), `smtp` (relay credentials, server-only) |
+| `secrets` | Four bundles, each `create:` (chart-rendered, dev) or `existingSecret:` (sealed-secrets / external-secrets, prod): `llm` (fallback provider keys), `storage` (S3 creds), `auth` (`ITERION_JWT_SECRET`, `ITERION_SECRETS_KEY`, bootstrap admin, OIDC client secrets, `completionWebhookSecret`, `webpush` VAPID keypair), `smtp` (relay credentials, server-only) |
 | `service` / `ingress` | Exposure; pair ingress TLS with your issuer |
 | `probes` | `/healthz` liveness, `/readyz` readiness (Mongo/NATS/S3 pings) |
 | `networkPolicy` | Opt-in deny-all egress + allowlist (see `examples/networkpolicy-egress.yaml`) |
@@ -78,4 +78,4 @@ kubectl get pods -l app.kubernetes.io/instance=iterion
 ```
 
 Then walk the first-webhook loop in
-[docs/baas-admin-guide.md](../../docs/baas-admin-guide.md).
+[Iterion Cloud admin guide](../../docs/cloud-admin-guide.md).

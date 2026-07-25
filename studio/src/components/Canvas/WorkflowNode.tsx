@@ -1,6 +1,7 @@
 import { Handle } from "@xyflow/react";
 import type { Node, NodeProps } from "@xyflow/react";
-import type { NodeKind, AgentDecl, ToolNodeDecl, HumanDecl, RouterDecl, ComputeDecl, SubbotDecl } from "@/api/types";
+import type { NodeKind } from "@/api/types";
+import { declOf } from "@/lib/documentToGraph";
 import { useActiveWorkflow } from "@/hooks/useActiveWorkflow";
 import { useGroupedDiagnostics } from "@/hooks/useGroupedDiagnostics";
 import { useSelectionStore } from "@/store/selection";
@@ -57,7 +58,7 @@ export default function WorkflowNode({ data, selected }: NodeProps<WorkflowNodeT
   let isLLMNode = false;
 
   if (kind === "agent" || kind === "judge") {
-    const d = decl as AgentDecl | undefined;
+    const d = declOf(kind, decl);
     isLLMNode = !!(d?.model || d?.backend);
     providerModel = d?.model;
     providerDelegate = d?.backend;
@@ -68,7 +69,7 @@ export default function WorkflowNode({ data, selected }: NodeProps<WorkflowNodeT
     else if (d?.session === "artifacts_only") sessionGlyph = "\u{1F4E6}";
     if (d?.await && d.await !== "none") awaitGlyph = "\u{23F3}";
   } else if (kind === "router") {
-    const d = decl as RouterDecl | undefined;
+    const d = declOf(kind, decl);
     if (d?.mode === "llm") {
       isLLMNode = true;
       providerModel = d?.model;
@@ -80,21 +81,21 @@ export default function WorkflowNode({ data, selected }: NodeProps<WorkflowNodeT
       subtitle = d.mode;
     }
   } else if (kind === "tool") {
-    const d = decl as ToolNodeDecl | undefined;
+    const d = declOf(kind, decl);
     if (d?.command) subtitle = d.command.length > 20 ? d.command.slice(0, 20) + "..." : d.command;
     if (d?.await && d.await !== "none") awaitGlyph = "\u{23F3}";
   } else if (kind === "human") {
-    const d = decl as HumanDecl | undefined;
+    const d = declOf(kind, decl);
     if (d?.interaction) subtitle = d.interaction;
     if (d?.await && d.await !== "none") awaitGlyph = "\u{23F3}";
   } else if (kind === "compute") {
-    const d = decl as ComputeDecl | undefined;
+    const d = declOf(kind, decl);
     if (d?.expr?.length) subtitle = `${d.expr.length} expr`;
   } else if (kind === "subbot") {
     // Compact form only: shown while the child document is loading, failed
     // to load, or the subbot sits in a collapsed group. Expanded subbots
     // render as a subbotFrame container instead of this node.
-    const d = decl as SubbotDecl | undefined;
+    const d = declOf(kind, decl);
     if (d?.source) subtitle = d.source;
   }
 
@@ -116,15 +117,15 @@ export default function WorkflowNode({ data, selected }: NodeProps<WorkflowNodeT
   let inputSchema = "";
   let outputSchema = "";
   if (kind === "agent" || kind === "judge") {
-    const d = decl as AgentDecl | undefined;
+    const d = declOf(kind, decl);
     inputSchema = d?.input ?? "";
     outputSchema = d?.output ?? "";
   } else if (kind === "human") {
-    const d = decl as HumanDecl | undefined;
+    const d = declOf(kind, decl);
     inputSchema = d?.input ?? "";
     outputSchema = d?.output ?? "";
   } else if (kind === "tool") {
-    const d = decl as ToolNodeDecl | undefined;
+    const d = declOf(kind, decl);
     outputSchema = d?.output ?? "";
   }
 

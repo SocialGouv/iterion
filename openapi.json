@@ -238,6 +238,12 @@
           "forge_base_url": {
             "type": "string"
           },
+          "granted_permissions": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "type": "object"
+          },
           "id": {
             "type": "string"
           },
@@ -252,6 +258,9 @@
             "type": "string"
           },
           "namespace": {
+            "type": "string"
+          },
+          "oauth_app_id": {
             "type": "string"
           },
           "provider": {
@@ -367,6 +376,68 @@
         ],
         "type": "object"
       },
+      "DeploymentReport": {
+        "properties": {
+          "commit": {
+            "type": "string"
+          },
+          "deployed": {
+            "type": "boolean"
+          },
+          "healthy": {
+            "type": "boolean"
+          },
+          "image_ref": {
+            "type": "string"
+          },
+          "node_id": {
+            "type": "string"
+          },
+          "notes": {
+            "type": "string"
+          },
+          "trace": {
+            "$ref": "#/components/schemas/DeploymentTrace"
+          },
+          "url": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "deployed",
+          "healthy"
+        ],
+        "type": "object"
+      },
+      "DeploymentTrace": {
+        "properties": {
+          "built_from_head": {
+            "type": "boolean"
+          },
+          "image_from_repo": {
+            "type": "boolean"
+          },
+          "log": {
+            "type": "string"
+          },
+          "node_id": {
+            "type": "string"
+          },
+          "pushed": {
+            "type": "boolean"
+          },
+          "verifiable": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "verifiable",
+          "pushed",
+          "image_from_repo",
+          "built_from_head"
+        ],
+        "type": "object"
+      },
       "ExecutionState": {
         "properties": {
           "branch_id": {
@@ -425,6 +496,9 @@
       },
       "ExternalRef": {
         "properties": {
+          "author": {
+            "type": "string"
+          },
           "connection_id": {
             "type": "string"
           },
@@ -481,6 +555,9 @@
           },
           "installable": {
             "type": "boolean"
+          },
+          "owner_login": {
+            "type": "string"
           },
           "provider": {
             "type": "string"
@@ -711,6 +788,9 @@
           },
           "executed_nodes": {
             "type": "integer"
+          },
+          "external": {
+            "$ref": "#/components/schemas/ExternalRef"
           },
           "failed": {
             "type": "boolean"
@@ -954,6 +1034,13 @@
             "format": "date-time",
             "type": "string"
           },
+          "hidden_closed_before": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "hidden_closed_count": {
+            "type": "integer"
+          },
           "topology_error": {
             "type": "string"
           }
@@ -1091,6 +1178,9 @@
           },
           "max_tokens": {
             "type": "integer"
+          },
+          "warn_tokens": {
+            "type": "integer"
           }
         },
         "type": "object"
@@ -1129,6 +1219,9 @@
             "format": "date-time",
             "type": "string"
           },
+          "deployment": {
+            "$ref": "#/components/schemas/DeploymentReport"
+          },
           "error": {
             "type": "string"
           },
@@ -1154,6 +1247,12 @@
           "inputs": {
             "additionalProperties": {},
             "type": "object"
+          },
+          "loc_added": {
+            "type": "integer"
+          },
+          "loc_deleted": {
+            "type": "integer"
           },
           "loops": {
             "additionalProperties": {
@@ -1189,6 +1288,9 @@
             "type": "string"
           },
           "permission_mode": {
+            "type": "string"
+          },
+          "project_path": {
             "type": "string"
           },
           "queue_position": {
@@ -1333,6 +1435,12 @@
             "type": "string"
           },
           "kind": {
+            "type": "string"
+          },
+          "schedule_id": {
+            "type": "string"
+          },
+          "schedule_name": {
             "type": "string"
           }
         },
@@ -1522,6 +1630,9 @@
           "backend": {
             "type": "string"
           },
+          "description": {
+            "type": "string"
+          },
           "id": {
             "type": "string"
           },
@@ -1690,6 +1801,9 @@
           "next": {
             "type": "string"
           },
+          "oauth_app_id": {
+            "type": "string"
+          },
           "pat": {
             "type": "string"
           },
@@ -1717,10 +1831,120 @@
         },
         "type": "object"
       },
+      "forgeConnectionHealth": {
+        "properties": {
+          "account_login": {
+            "type": "string"
+          },
+          "app_slug": {
+            "type": "string"
+          },
+          "granted_permissions": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "type": "object"
+          },
+          "installation_account": {
+            "type": "string"
+          },
+          "installation_id": {
+            "type": "integer"
+          },
+          "installation_repos": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "kind": {
+            "type": "string"
+          },
+          "live_error": {
+            "type": "string"
+          },
+          "manage_install_url": {
+            "type": "string"
+          },
+          "missing_permissions": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "provider": {
+            "type": "string"
+          },
+          "provisioned_repo_count": {
+            "type": "integer"
+          },
+          "status": {
+            "type": "string"
+          },
+          "status_reason": {
+            "type": "string"
+          },
+          "token_missing_permissions": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "token_permissions": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "type": "object"
+          }
+        },
+        "required": [
+          "status",
+          "provider",
+          "kind",
+          "provisioned_repo_count"
+        ],
+        "type": "object"
+      },
+      "forgeCreateRepoReq": {
+        "properties": {
+          "connection_id": {
+            "type": "string"
+          },
+          "default_branch": {
+            "type": "string"
+          },
+          "description": {
+            "type": "string"
+          },
+          "init_readme": {
+            "type": "boolean"
+          },
+          "name": {
+            "type": "string"
+          },
+          "owner": {
+            "type": "string"
+          },
+          "private": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "connection_id",
+          "name"
+        ],
+        "type": "object"
+      },
       "forgeOAuthAppReq": {
         "properties": {
           "admin_token": {
             "type": "string"
+          },
+          "allow_app_delivery": {
+            "type": "boolean"
+          },
+          "allow_repo_creation": {
+            "type": "boolean"
           },
           "client_id": {
             "type": "string"
@@ -1749,6 +1973,49 @@
         },
         "required": [
           "provider"
+        ],
+        "type": "object"
+      },
+      "forgeTeamRepo": {
+        "properties": {
+          "bot_ids": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "clone_url": {
+            "type": "string"
+          },
+          "connection_id": {
+            "type": "string"
+          },
+          "connection_status": {
+            "type": "string"
+          },
+          "integration_id": {
+            "type": "string"
+          },
+          "provider": {
+            "type": "string"
+          },
+          "repo_full_name": {
+            "type": "string"
+          },
+          "sync_issues_enabled": {
+            "type": "boolean"
+          },
+          "web_url": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "connection_id",
+          "provider",
+          "repo_full_name",
+          "integration_id",
+          "bot_ids",
+          "sync_issues_enabled"
         ],
         "type": "object"
       },
@@ -1901,6 +2168,9 @@
             },
             "type": "object"
           },
+          "external": {
+            "$ref": "#/components/schemas/ExternalRef"
+          },
           "labels": {
             "items": {
               "type": "string"
@@ -1948,6 +2218,9 @@
               "type": "string"
             },
             "type": "object"
+          },
+          "external": {
+            "$ref": "#/components/schemas/ExternalRef"
           },
           "labels": {
             "items": {
@@ -2482,6 +2755,30 @@
         ]
       }
     },
+    "/api/admin/users/{id}/reset-password": {
+      "parameters": [
+        {
+          "in": "path",
+          "name": "id",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        }
+      ],
+      "post": {
+        "operationId": "postAdminUsersByIdResetPassword",
+        "responses": {
+          "default": {
+            "description": "Response"
+          }
+        },
+        "summary": "POST /api/admin/users/{id}/reset-password",
+        "tags": [
+          "admin"
+        ]
+      }
+    },
     "/api/auth/desktop/exchange": {
       "post": {
         "operationId": "postAuthDesktopExchange",
@@ -2797,6 +3094,66 @@
           "backends"
         ]
       }
+    },
+    "/api/config-share/{id}/config": {
+      "get": {
+        "operationId": "getConfigShareByIdConfig",
+        "responses": {
+          "default": {
+            "description": "Response"
+          }
+        },
+        "summary": "GET /api/config-share/{id}/config",
+        "tags": [
+          "config-share"
+        ]
+      },
+      "parameters": [
+        {
+          "in": "path",
+          "name": "id",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        }
+      ],
+      "patch": {
+        "operationId": "patchConfigShareByIdConfig",
+        "responses": {
+          "default": {
+            "description": "Response"
+          }
+        },
+        "summary": "PATCH /api/config-share/{id}/config",
+        "tags": [
+          "config-share"
+        ]
+      }
+    },
+    "/api/config-share/{id}/meta": {
+      "get": {
+        "operationId": "getConfigShareByIdMeta",
+        "responses": {
+          "default": {
+            "description": "Response"
+          }
+        },
+        "summary": "GET /api/config-share/{id}/meta",
+        "tags": [
+          "config-share"
+        ]
+      },
+      "parameters": [
+        {
+          "in": "path",
+          "name": "id",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        }
+      ]
     },
     "/api/effort-capabilities": {
       "get": {
@@ -4292,6 +4649,30 @@
         }
       ]
     },
+    "/api/runs/{id}/answer-human": {
+      "parameters": [
+        {
+          "in": "path",
+          "name": "id",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        }
+      ],
+      "post": {
+        "operationId": "postRunsByIdAnswerHuman",
+        "responses": {
+          "default": {
+            "description": "Response"
+          }
+        },
+        "summary": "POST /api/runs/{id}/answer-human",
+        "tags": [
+          "runs"
+        ]
+      }
+    },
     "/api/runs/{id}/artifact-files": {
       "get": {
         "operationId": "getRunsByIdArtifactFiles",
@@ -4555,6 +4936,30 @@
           }
         }
       ]
+    },
+    "/api/runs/{id}/bump-loop": {
+      "parameters": [
+        {
+          "in": "path",
+          "name": "id",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        }
+      ],
+      "post": {
+        "operationId": "postRunsByIdBumpLoop",
+        "responses": {
+          "default": {
+            "description": "Response"
+          }
+        },
+        "summary": "POST /api/runs/{id}/bump-loop",
+        "tags": [
+          "runs"
+        ]
+      }
     },
     "/api/runs/{id}/cancel": {
       "parameters": [
@@ -4885,6 +5290,62 @@
           }
         },
         "summary": "POST /api/runs/{id}/fork",
+        "tags": [
+          "runs"
+        ]
+      }
+    },
+    "/api/runs/{id}/interactions/pending": {
+      "get": {
+        "operationId": "getRunsByIdInteractionsPending",
+        "responses": {
+          "default": {
+            "description": "Response"
+          }
+        },
+        "summary": "GET /api/runs/{id}/interactions/pending",
+        "tags": [
+          "runs"
+        ]
+      },
+      "parameters": [
+        {
+          "in": "path",
+          "name": "id",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        }
+      ]
+    },
+    "/api/runs/{id}/interactions/{iid}/answer": {
+      "parameters": [
+        {
+          "in": "path",
+          "name": "id",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        },
+        {
+          "in": "path",
+          "name": "iid",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        }
+      ],
+      "post": {
+        "operationId": "postRunsByIdInteractionsByIidAnswer",
+        "responses": {
+          "default": {
+            "description": "Response"
+          }
+        },
+        "summary": "POST /api/runs/{id}/interactions/{iid}/answer",
         "tags": [
           "runs"
         ]
@@ -5245,6 +5706,30 @@
           }
         }
       ]
+    },
+    "/api/runs/{id}/raise-budget": {
+      "parameters": [
+        {
+          "in": "path",
+          "name": "id",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        }
+      ],
+      "post": {
+        "operationId": "postRunsByIdRaiseBudget",
+        "responses": {
+          "default": {
+            "description": "Response"
+          }
+        },
+        "summary": "POST /api/runs/{id}/raise-budget",
+        "tags": [
+          "runs"
+        ]
+      }
     },
     "/api/runs/{id}/rename": {
       "parameters": [
@@ -5733,6 +6218,282 @@
         ]
       }
     },
+    "/api/teams/{id}/config-editor/shares": {
+      "get": {
+        "operationId": "getTeamsByIdConfigEditorShares",
+        "responses": {
+          "default": {
+            "description": "Response"
+          }
+        },
+        "summary": "GET /api/teams/{id}/config-editor/shares",
+        "tags": [
+          "teams"
+        ]
+      },
+      "parameters": [
+        {
+          "in": "path",
+          "name": "id",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        }
+      ]
+    },
+    "/api/teams/{id}/config-editor/shares/{sid}/config": {
+      "get": {
+        "operationId": "getTeamsByIdConfigEditorSharesBySidConfig",
+        "responses": {
+          "default": {
+            "description": "Response"
+          }
+        },
+        "summary": "GET /api/teams/{id}/config-editor/shares/{sid}/config",
+        "tags": [
+          "teams"
+        ]
+      },
+      "parameters": [
+        {
+          "in": "path",
+          "name": "id",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        },
+        {
+          "in": "path",
+          "name": "sid",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        }
+      ],
+      "patch": {
+        "operationId": "patchTeamsByIdConfigEditorSharesBySidConfig",
+        "responses": {
+          "default": {
+            "description": "Response"
+          }
+        },
+        "summary": "PATCH /api/teams/{id}/config-editor/shares/{sid}/config",
+        "tags": [
+          "teams"
+        ]
+      }
+    },
+    "/api/teams/{id}/config-editor/shares/{sid}/runs": {
+      "get": {
+        "operationId": "getTeamsByIdConfigEditorSharesBySidRuns",
+        "responses": {
+          "default": {
+            "description": "Response"
+          }
+        },
+        "summary": "GET /api/teams/{id}/config-editor/shares/{sid}/runs",
+        "tags": [
+          "teams"
+        ]
+      },
+      "parameters": [
+        {
+          "in": "path",
+          "name": "id",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        },
+        {
+          "in": "path",
+          "name": "sid",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        }
+      ]
+    },
+    "/api/teams/{id}/config-editor/shares/{sid}/schedule": {
+      "get": {
+        "operationId": "getTeamsByIdConfigEditorSharesBySidSchedule",
+        "responses": {
+          "default": {
+            "description": "Response"
+          }
+        },
+        "summary": "GET /api/teams/{id}/config-editor/shares/{sid}/schedule",
+        "tags": [
+          "teams"
+        ]
+      },
+      "parameters": [
+        {
+          "in": "path",
+          "name": "id",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        },
+        {
+          "in": "path",
+          "name": "sid",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        }
+      ],
+      "patch": {
+        "operationId": "patchTeamsByIdConfigEditorSharesBySidSchedule",
+        "responses": {
+          "default": {
+            "description": "Response"
+          }
+        },
+        "summary": "PATCH /api/teams/{id}/config-editor/shares/{sid}/schedule",
+        "tags": [
+          "teams"
+        ]
+      }
+    },
+    "/api/teams/{id}/config-shares": {
+      "get": {
+        "operationId": "getTeamsByIdConfigShares",
+        "responses": {
+          "default": {
+            "description": "Response"
+          }
+        },
+        "summary": "GET /api/teams/{id}/config-shares",
+        "tags": [
+          "teams"
+        ]
+      },
+      "parameters": [
+        {
+          "in": "path",
+          "name": "id",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        }
+      ],
+      "post": {
+        "operationId": "postTeamsByIdConfigShares",
+        "responses": {
+          "default": {
+            "description": "Response"
+          }
+        },
+        "summary": "POST /api/teams/{id}/config-shares",
+        "tags": [
+          "teams"
+        ]
+      }
+    },
+    "/api/teams/{id}/config-shares/{sid}": {
+      "delete": {
+        "operationId": "deleteTeamsByIdConfigSharesBySid",
+        "responses": {
+          "default": {
+            "description": "Response"
+          }
+        },
+        "summary": "DELETE /api/teams/{id}/config-shares/{sid}",
+        "tags": [
+          "teams"
+        ]
+      },
+      "parameters": [
+        {
+          "in": "path",
+          "name": "id",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        },
+        {
+          "in": "path",
+          "name": "sid",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        }
+      ]
+    },
+    "/api/teams/{id}/config-shares/{sid}/deliveries": {
+      "get": {
+        "operationId": "getTeamsByIdConfigSharesBySidDeliveries",
+        "responses": {
+          "default": {
+            "description": "Response"
+          }
+        },
+        "summary": "GET /api/teams/{id}/config-shares/{sid}/deliveries",
+        "tags": [
+          "teams"
+        ]
+      },
+      "parameters": [
+        {
+          "in": "path",
+          "name": "id",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        },
+        {
+          "in": "path",
+          "name": "sid",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        }
+      ]
+    },
+    "/api/teams/{id}/config-shares/{sid}/rotate": {
+      "parameters": [
+        {
+          "in": "path",
+          "name": "id",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        },
+        {
+          "in": "path",
+          "name": "sid",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        }
+      ],
+      "post": {
+        "operationId": "postTeamsByIdConfigSharesBySidRotate",
+        "responses": {
+          "default": {
+            "description": "Response"
+          }
+        },
+        "summary": "POST /api/teams/{id}/config-shares/{sid}/rotate",
+        "tags": [
+          "teams"
+        ]
+      }
+    },
     "/api/teams/{id}/forge/connections": {
       "get": {
         "operationId": "getTeamsByIdForgeConnections",
@@ -5835,6 +6596,77 @@
           }
         }
       ]
+    },
+    "/api/teams/{id}/forge/connections/{conn_id}/health": {
+      "get": {
+        "operationId": "getTeamsByIdForgeConnectionsByConnIdHealth",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/forgeConnectionHealth"
+                }
+              }
+            },
+            "description": "OK"
+          }
+        },
+        "summary": "GET /api/teams/{id}/forge/connections/{conn_id}/health",
+        "tags": [
+          "teams"
+        ]
+      },
+      "parameters": [
+        {
+          "in": "path",
+          "name": "id",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        },
+        {
+          "in": "path",
+          "name": "conn_id",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        }
+      ]
+    },
+    "/api/teams/{id}/forge/connections/{conn_id}/refresh": {
+      "parameters": [
+        {
+          "in": "path",
+          "name": "id",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        },
+        {
+          "in": "path",
+          "name": "conn_id",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        }
+      ],
+      "post": {
+        "operationId": "postTeamsByIdForgeConnectionsByConnIdRefresh",
+        "responses": {
+          "default": {
+            "description": "Response"
+          }
+        },
+        "summary": "POST /api/teams/{id}/forge/connections/{conn_id}/refresh",
+        "tags": [
+          "teams"
+        ]
+      }
     },
     "/api/teams/{id}/forge/connections/{conn_id}/repos": {
       "get": {
@@ -6134,7 +6966,102 @@
             "type": "string"
           }
         }
-      ]
+      ],
+      "patch": {
+        "operationId": "patchTeamsByIdForgeRepoBotsByIntegrationId",
+        "responses": {
+          "default": {
+            "description": "Response"
+          }
+        },
+        "summary": "PATCH /api/teams/{id}/forge/repo-bots/{integration_id}",
+        "tags": [
+          "teams"
+        ]
+      }
+    },
+    "/api/teams/{id}/forge/repos": {
+      "get": {
+        "operationId": "getTeamsByIdForgeRepos",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "repos": {
+                      "items": {
+                        "$ref": "#/components/schemas/forgeTeamRepo"
+                      },
+                      "type": "array"
+                    }
+                  },
+                  "required": [
+                    "repos"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "OK"
+          }
+        },
+        "summary": "GET /api/teams/{id}/forge/repos",
+        "tags": [
+          "teams"
+        ]
+      },
+      "parameters": [
+        {
+          "in": "path",
+          "name": "id",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        }
+      ],
+      "post": {
+        "operationId": "postTeamsByIdForgeRepos",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/forgeCreateRepoReq"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "clone_url": {
+                      "type": "string"
+                    },
+                    "repo": {
+                      "$ref": "#/components/schemas/RepoSummary"
+                    }
+                  },
+                  "required": [
+                    "repo",
+                    "clone_url"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "OK"
+          }
+        },
+        "summary": "POST /api/teams/{id}/forge/repos",
+        "tags": [
+          "teams"
+        ]
+      }
     },
     "/api/teams/{id}/invitations": {
       "get": {
@@ -6267,6 +7194,86 @@
           }
         },
         "summary": "PATCH /api/teams/{id}/members/{user_id}",
+        "tags": [
+          "teams"
+        ]
+      }
+    },
+    "/api/teams/{id}/plugin-sources": {
+      "get": {
+        "operationId": "getTeamsByIdPluginSources",
+        "responses": {
+          "default": {
+            "description": "Response"
+          }
+        },
+        "summary": "GET /api/teams/{id}/plugin-sources",
+        "tags": [
+          "teams"
+        ]
+      },
+      "parameters": [
+        {
+          "in": "path",
+          "name": "id",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        }
+      ],
+      "post": {
+        "operationId": "postTeamsByIdPluginSources",
+        "responses": {
+          "default": {
+            "description": "Response"
+          }
+        },
+        "summary": "POST /api/teams/{id}/plugin-sources",
+        "tags": [
+          "teams"
+        ]
+      }
+    },
+    "/api/teams/{id}/plugin-sources/{source_id}": {
+      "delete": {
+        "operationId": "deleteTeamsByIdPluginSourcesBySourceId",
+        "responses": {
+          "default": {
+            "description": "Response"
+          }
+        },
+        "summary": "DELETE /api/teams/{id}/plugin-sources/{source_id}",
+        "tags": [
+          "teams"
+        ]
+      },
+      "parameters": [
+        {
+          "in": "path",
+          "name": "id",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        },
+        {
+          "in": "path",
+          "name": "source_id",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        }
+      ],
+      "patch": {
+        "operationId": "patchTeamsByIdPluginSourcesBySourceId",
+        "responses": {
+          "default": {
+            "description": "Response"
+          }
+        },
+        "summary": "PATCH /api/teams/{id}/plugin-sources/{source_id}",
         "tags": [
           "teams"
         ]
@@ -6543,6 +7550,20 @@
           }
         },
         "summary": "POST /api/v1/bots",
+        "tags": [
+          "bots"
+        ]
+      }
+    },
+    "/api/v1/bots/import": {
+      "post": {
+        "operationId": "postV1BotsImport",
+        "responses": {
+          "default": {
+            "description": "Response"
+          }
+        },
+        "summary": "POST /api/v1/bots/import",
         "tags": [
           "bots"
         ]
@@ -7499,6 +8520,20 @@
         ]
       }
     },
+    "/api/v1/triggers/health": {
+      "get": {
+        "operationId": "getV1TriggersHealth",
+        "responses": {
+          "default": {
+            "description": "Response"
+          }
+        },
+        "summary": "GET /api/v1/triggers/health",
+        "tags": [
+          "triggers"
+        ]
+      }
+    },
     "/api/v1/triggers/{id}": {
       "delete": {
         "operationId": "deleteV1TriggersById",
@@ -7680,6 +8715,30 @@
           }
         },
         "summary": "GET /api/ws/runs/{id}",
+        "tags": [
+          "ws"
+        ]
+      },
+      "parameters": [
+        {
+          "in": "path",
+          "name": "id",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        }
+      ]
+    },
+    "/api/ws/runs/{id}/shell": {
+      "get": {
+        "operationId": "getWsRunsByIdShell",
+        "responses": {
+          "default": {
+            "description": "Response"
+          }
+        },
+        "summary": "GET /api/ws/runs/{id}/shell",
         "tags": [
           "ws"
         ]

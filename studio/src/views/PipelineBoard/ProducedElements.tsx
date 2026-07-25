@@ -30,7 +30,7 @@ import { usePreview } from "@/components/Runs/usePreview";
 import { formatBytes, formatRelative } from "@/lib/format";
 
 import { producedKindLabel, type ProducedFileKind } from "./fileKind";
-import { ArtifactFilePreviewDialog } from "./ArtifactFilePreviewDialog";
+import { ImagePreviewDialog } from "./ImagePreview";
 import {
   aggregateProducedItems,
   type ProducedItem,
@@ -241,16 +241,56 @@ export function ProducedElements({ runIds, status }: Props) {
         </Suspense>
       )}
 
-      {preview && (
-        <ArtifactFilePreviewDialog
-          preview={preview}
-          runId={previewRunId}
-          kind={previewKind}
-          onClose={closePreview}
+      {preview && isImagePreview(preview, previewKind) && preview.blobURL ? (
+        <ImagePreviewDialog
+          open
+          onOpenChange={(open) => {
+            if (!open) closePreview();
+          }}
+          src={preview.blobURL}
+          alt={preview.path}
+          title={<span className="font-mono text-xs">{preview.path}</span>}
+          description={
+            <span>
+              {formatBytes(preview.size)} · {preview.contentType || "loading…"}
+            </span>
+          }
+          downloadHref={`${artifactFileURL(previewRunId, preview.path)}?download=1`}
         />
-      )}
+      ) : preview ? (
+        <Dialog
+          open
+          onOpenChange={(open) => {
+            if (!open) closePreview();
+          }}
+          widthClass="max-w-3xl"
+          title={<span className="font-mono text-xs">{preview.path}</span>}
+          description={
+            <span>
+              {formatBytes(preview.size)} · {preview.contentType || "loading…"}
+            </span>
+          }
+          footer={
+            <a
+              href={`${artifactFileURL(previewRunId, preview.path)}?download=1`}
+              download
+              className="inline-flex items-center gap-1 rounded-md border border-border-default px-2.5 py-1 text-xs font-medium text-fg-default hover:bg-surface-2"
+            >
+              <DownloadIcon /> Download
+            </a>
+          }
+        >
+          <PreviewBody preview={preview} kind={previewKind} />
+        </Dialog>
+      ) : null}
     </section>
   );
+}
+
+function isImagePreview(preview: PreviewState, kind: ProducedFileKind): boolean {
+  if (preview.loading || preview.error || !preview.blobURL) return false;
+  if (preview.textBody !== null) return false;
+  return preview.contentType.startsWith("image/") || kind === "image";
 }
 
 // KIND_ICON maps a produced kind to its row glyph. Media kinds (image/audio/

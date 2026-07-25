@@ -1,6 +1,7 @@
-import { type ReactNode, useCallback, useEffect, useMemo, useState } from "react";
+import { type ReactNode, useCallback, useMemo, useState } from "react";
 import { Component1Icon } from "@radix-ui/react-icons";
 import { useLocation } from "wouter";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 
 import {
   installPlugin,
@@ -10,6 +11,7 @@ import {
   type PluginView,
 } from "@/api/plugins";
 import { useAuth } from "@/auth/AuthContext";
+import { errorMessage } from "@/lib/errorHints";
 import { useServerInfoStore } from "@/store/serverInfo";
 import { useUIStore } from "@/store/ui";
 import { useConfirm } from "@/hooks/useConfirm";
@@ -30,8 +32,20 @@ import PluginDetail from "./plugins/PluginDetail";
 // ones. Clicking a card opens a detail drawer (contributes/config/lifecycle/
 // README) backed by GET /api/v1/plugins/{name}.
 export default function Plugins() {
-  const [plugins, setPlugins] = useState<PluginView[] | null>(null);
-  const [error, setError] = useState<string | null>(null);
+  const queryClient = useQueryClient();
+  const pluginsQuery = useQuery<PluginView[]>({
+    queryKey: ["plugins"],
+    queryFn: listPlugins,
+  });
+  const plugins = pluginsQuery.data ?? null;
+  // Enable/disable/remove failures share the fetch error's banner; any
+  // reload clears them (the fetch side clears itself on refetch).
+  const [actionError, setActionError] = useState<string | null>(null);
+  const error =
+    actionError ??
+    (pluginsQuery.error && !pluginsQuery.isFetching
+      ? errorMessage(pluginsQuery.error)
+      : null);
   const [busy, setBusy] = useState<string | null>(null);
   const [kindFilter, setKindFilter] = useState<string | null>(null);
   const [search, setSearch] = useState("");
@@ -41,6 +55,7 @@ export default function Plugins() {
   const { user } = useAuth();
   const authRequired = useServerInfoStore((s) => s.info?.auth_required);
   const marketplaceEnabled = useServerInfoStore((s) => s.info?.marketplace_enabled);
+  const cloud = useServerInfoStore((s) => s.info?.mode === "cloud");
   const addToast = useUIStore((s) => s.addToast);
   const { confirm, dialog } = useConfirm();
   const [, navigate] = useLocation();
@@ -49,18 +64,12 @@ export default function Plugins() {
   // single-user local/desktop operator (auth disabled → no login).
   const canManage = (user?.is_super_admin ?? false) || authRequired === false;
 
+  // Post-mutation reload: invalidate so the registry list refetches
+  // (awaitable — resolves once the active query has refetched).
   const refresh = useCallback(async () => {
-    try {
-      setError(null);
-      setPlugins(await listPlugins());
-    } catch (e) {
-      setError(e instanceof Error ? e.message : String(e));
-    }
-  }, []);
-
-  useEffect(() => {
-    void refresh();
-  }, [refresh]);
+    setActionError(null);
+    await queryClient.invalidateQueries({ queryKey: ["plugins"] });
+  }, [queryClient]);
 
   // The set of contribution kinds present across the registry, for the filter.
   const allKinds = useMemo(
@@ -91,7 +100,7 @@ export default function Plugins() {
         await setPluginEnabled(p.name, !p.enabled);
         await refresh();
       } catch (e) {
-        setError(e instanceof Error ? e.message : String(e));
+        setActionError(errorMessage(e));
       } finally {
         setBusy(null);
       }
@@ -115,7 +124,7 @@ export default function Plugins() {
         setSelected((s) => (s === p.name ? null : s));
         await refresh();
       } catch (e) {
-        setError(e instanceof Error ? e.message : String(e));
+        setActionError(errorMessage(e));
       } finally {
         setBusy(null);
       }
@@ -144,15 +153,23 @@ export default function Plugins() {
         title="Plugins"
         description={
           <>
-            Extend iterion with rewriters, MCP servers, skills, commands, agents
-            and hooks. Builtins ship with the binary; install more from a git URL
-            or local path.
+            Plugins extend what every bot run can do — compress command output
+            (rewriters), reach external tools (MCP servers), or ship extra
+            skills, commands, agents and hooks. Builtins ship with the binary;
+            install more from a git URL or local path.
           </>
         }
         actions={
           <div className="flex items-center gap-2">
             {browseMarketplace}
-            <Button variant="secondary" size="sm" onClick={() => void refresh()}>
+            <Button
+              variant="secondary"
+              size="sm"
+              onClick={() => {
+                setActionError(null);
+                void pluginsQuery.refetch();
+              }}
+            >
               Refresh
             </Button>
             {canManage && (
@@ -165,6 +182,13 @@ export default function Plugins() {
       />
 
       <div className="mx-auto flex w-full max-w-5xl flex-1 flex-col gap-3 overflow-y-auto p-6">
+        {cloud && (
+          <InlineBanner tone="info" layout="inline">
+            Plugins are shared across this server — enabling or disabling one
+            affects every workspace on the instance
+            {canManage ? "." : ", so only administrators can change them."}
+          </InlineBanner>
+        )}
         {error && (
           <InlineBanner tone="danger" title="Plugin error" layout="inline">
             {error}
@@ -228,6 +252,7 @@ export default function Plugins() {
                 key={p.name}
                 plugin={p}
                 busy={busy === p.name}
+                canManage={canManage}
                 onEnable={() => void toggle(p)}
                 onOpen={() => setSelected(p.name)}
               />

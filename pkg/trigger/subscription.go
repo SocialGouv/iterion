@@ -6,7 +6,10 @@ import (
 	"strings"
 	"time"
 
+	"github.com/robfig/cron/v3"
+
 	"github.com/SocialGouv/iterion/pkg/bundle"
+	"github.com/SocialGouv/iterion/pkg/schedgate"
 )
 
 // Matcher is the declarative filter on an Event. It is the union of the four
@@ -96,6 +99,11 @@ type Subscription struct {
 	// claims). Empty inherits the invocation's EffectiveMode at evaluation.
 	Mode  bundle.ExecutionMode `json:"mode,omitempty" bson:"mode,omitempty"`
 	Match Matcher              `json:"match" bson:"match"`
+	// ConsumeLabels (board-source, direct-mode only) strips the Match.Labels
+	// set from the card before launching, making the labels a one-shot
+	// trigger: duplicate card events can't double-launch, and re-adding the
+	// label re-arms it. Mirrors bundle.InvocationBoard.ConsumeLabels.
+	ConsumeLabels bool `json:"consume_labels,omitempty" bson:"consume_labels,omitempty"`
 	// Vars are launch-var overrides stamped on the run (ContextVars +
 	// operator LaunchVars merged at provision time; operator wins).
 	Vars map[string]string `json:"vars,omitempty" bson:"vars,omitempty"`
@@ -103,9 +111,26 @@ type Subscription struct {
 	// payload (issue title+body, comment args). Empty injects no payload.
 	ArgsVar string `json:"args_var,omitempty" bson:"args_var,omitempty"`
 	// Cron is set only for Invocation == schedule (the timer source matches it).
-	Cron            string            `json:"cron,omitempty" bson:"cron,omitempty"`
+	Cron string `json:"cron,omitempty" bson:"cron,omitempty"`
+	// IntervalSeconds is set only for Invocation == keepalive (the sub-minute
+	// counterpart of Cron): the always-on relaunch cadence in seconds.
+	IntervalSeconds int               `json:"interval_seconds,omitempty" bson:"interval_seconds,omitempty"`
 	KeyOverrides    map[string]string `json:"key_overrides,omitempty" bson:"key_overrides,omitempty"`
 	SecretOverrides map[string]string `json:"secret_overrides,omitempty" bson:"secret_overrides,omitempty"`
+	// Overlap policy + pre-launch guard for schedule-kind subscriptions
+	// (pkg/schedgate). Overlap "" normalizes to "skip": a cron tick
+	// whose previous run is still live is skipped and audited instead
+	// of piling up. Guard is an optional `sh -lc` gate: exit 0 fires
+	// (stdout → vars[GuardVar]), non-zero skips the tick.
+	Overlap       string `json:"overlap,omitempty" bson:"overlap,omitempty"`
+	MaxConcurrent int    `json:"max_concurrent,omitempty" bson:"max_concurrent,omitempty"`
+	Guard         string `json:"guard,omitempty" bson:"guard,omitempty"`
+	GuardTimeout  string `json:"guard_timeout,omitempty" bson:"guard_timeout,omitempty"`
+	GuardVar      string `json:"guard_var,omitempty" bson:"guard_var,omitempty"`
+	// StaleAfter is the keepalive silence cutoff (Go duration); empty
+	// normalizes to schedgate.DefaultStaleAfter. Only meaningful with
+	// Overlap == keepalive.
+	StaleAfter string `json:"stale_after,omitempty" bson:"stale_after,omitempty"`
 	// Origin records where this subscription came from so dedup and cleanup
 	// are possible: "forge:<repo_integration_id>" (orchestrator-generated,
 	// deleted by Origin on deprovision), "operator" (studio), "schedule.yaml"
@@ -115,6 +140,40 @@ type Subscription struct {
 	CreatedBy string    `json:"created_by,omitempty" bson:"created_by,omitempty"`
 	CreatedAt time.Time `json:"created_at" bson:"created_at"`
 	UpdatedAt time.Time `json:"updated_at" bson:"updated_at"`
+}
+
+// NextFire computes the subscription's next-fire instant after `after`,
+// the single seam that resolves the cron-vs-interval cadence (mirrors
+// cloudsched.NextFireForBot for the resident scheduler). ok=false means
+// this subscription has no timer cadence (not a schedule/keepalive kind,
+// or missing cron/interval) and the scheduler skips it; a non-nil err is a
+// malformed cron on an otherwise-eligible schedule subscription.
+func (s Subscription) NextFire(after time.Time) (next time.Time, ok bool, err error) {
+	switch {
+	case s.Invocation == bundle.InvocationKindSchedule && s.Cron != "":
+		sched, perr := cron.ParseStandard(s.Cron)
+		if perr != nil {
+			return time.Time{}, true, perr
+		}
+		return sched.Next(after), true, nil
+	case s.Invocation == bundle.InvocationKindKeepalive && s.IntervalSeconds > 0:
+		return after.Add(time.Duration(s.IntervalSeconds) * time.Second), true, nil
+	default:
+		return time.Time{}, false, nil
+	}
+}
+
+// Policy projects the subscription's schedgate fields into a
+// normalized overlap/guard policy.
+func (s Subscription) Policy() schedgate.Policy {
+	return schedgate.Normalize(schedgate.Policy{
+		Overlap:       s.Overlap,
+		MaxConcurrent: s.MaxConcurrent,
+		Guard:         s.Guard,
+		GuardTimeout:  s.GuardTimeout,
+		GuardVar:      s.GuardVar,
+		StaleAfter:    s.StaleAfter,
+	})
 }
 
 // EffectiveMode returns the subscription's execution mode, defaulting an empty
@@ -133,14 +192,21 @@ func (s Subscription) EffectiveMode() bundle.ExecutionMode {
 // activates event-driven promotion. Returns ok=false for any other invocation.
 //
 // The caller supplies id (a uuid), tenant, and repo scope; the board block's
-// On/ToStates/AllLabels become the Matcher. The mode is board (promote the
-// card so the dispatcher claims it).
+// On/ToStates/AllLabels become the Matcher. The default mode is board
+// (promote the card so the dispatcher claims it); an explicit mode: direct
+// launches the bot itself on the matching card event (with the card id in
+// vars["issue_id"]) — the triage-style "run a bot ON the card without
+// routing the card TO it" shape.
 func FromBoardInvocation(id, tenantID, repo, botID, origin string, inv bundle.Invocation, now time.Time) (Subscription, bool) {
 	if inv.Kind != bundle.InvocationKindBoard || inv.Board == nil {
 		return Subscription{}, false
 	}
 	sub := baseSubscription(id, tenantID, repo, botID, origin, inv.Kind, now)
 	sub.Mode = bundle.ExecutionBoard
+	if inv.Mode == bundle.ExecutionDirect {
+		sub.Mode = bundle.ExecutionDirect
+		sub.ConsumeLabels = inv.Board.ConsumeLabels
+	}
 	sub.Match = Matcher{
 		Sources:       []Source{SourceBoard},
 		Kinds:         append([]string(nil), inv.Board.On...),
@@ -173,6 +239,35 @@ func FromScheduleInvocation(id, tenantID, repo, botID, origin string, inv bundle
 	sub.Mode = bundle.ExecutionDirect
 	sub.Match = Matcher{Sources: []Source{SourceSchedule}}
 	sub.Cron = cronExpr
+	sub.Vars = vars
+	sub.ArgsVar = inv.ArgsVar
+	return sub, true
+}
+
+// FromKeepaliveInvocation derives an always-on Subscription from a bot's
+// kind=keepalive invocation. The interval (validated >= KeepaliveMinInterval at
+// manifest parse) becomes IntervalSeconds; the overlap policy is keepalive so
+// the scheduler relaunches a fresh run each tick with at-most-one-live +
+// staleness reaping. Returns ok=false for any other invocation or a
+// missing/unparseable interval.
+func FromKeepaliveInvocation(id, tenantID, repo, botID, origin string, inv bundle.Invocation, now time.Time) (Subscription, bool) {
+	if inv.Kind != bundle.InvocationKindKeepalive || inv.Keepalive == nil {
+		return Subscription{}, false
+	}
+	d, err := time.ParseDuration(strings.TrimSpace(inv.Keepalive.Interval))
+	if err != nil || d < bundle.KeepaliveMinInterval {
+		return Subscription{}, false
+	}
+	vars := copyStrMap(inv.Keepalive.DefaultVars)
+	if vars == nil {
+		vars = copyStrMap(inv.ContextVars)
+	}
+	sub := baseSubscription(id, tenantID, repo, botID, origin, inv.Kind, now)
+	sub.Mode = bundle.ExecutionDirect
+	sub.Match = Matcher{Sources: []Source{SourceSchedule}}
+	sub.IntervalSeconds = int(d.Round(time.Second) / time.Second)
+	sub.Overlap = schedgate.OverlapKeepalive
+	sub.StaleAfter = strings.TrimSpace(inv.Keepalive.StaleAfter)
 	sub.Vars = vars
 	sub.ArgsVar = inv.ArgsVar
 	return sub, true

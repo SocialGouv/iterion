@@ -19,11 +19,11 @@ originally shipped with.
 | npm / yarn / pnpm | `package.json`, `node_modules/**/package.json` | `preinstall`, `install`, `postinstall`, `prepare` | `npm audit --json` |
 | pip / poetry / uv | `setup.py`, `pyproject.toml`, installed dist-info | `setup()` calls, custom commands | `pip-audit --format=json` |
 | Go modules | `go.mod`, `go.sum`, `vendor/` | suspicious `replace` directives, `init()` side-effects | `govulncheck -json ./...` |
-| Generic | extracted tarballs / wheels | embedded binaries, base64 blobs, locale anomalies, fetch+exec patterns | — |
+| Generic | lockfiles (all ecosystems) + `node_modules/**/package.json` | `trivy fs --scanners vuln` CVE floor, npm install-hooks, locale/homoglyph anomalies | `trivy fs --scanners vuln` |
 
 Per-ecosystem coverage is documented in `skills/lang-*.md`. Add an
-ecosystem by adding one skill + one router branch — see *Adding an
-ecosystem* at the bottom.
+ecosystem by dropping one `skills/lang-<id>.md` (with an
+`iterion:heuristics` block) — see *Adding an ecosystem* at the bottom.
 
 ## Quick start
 
@@ -34,16 +34,20 @@ devbox run -- iterion run bots/sec-audit-deps/main.bot \
 
 # Outputs:
 #  - kanban issues: ready / labels = severity:* + type:supply-chain-* + ecosystem:* + source:sec-audit-deps
-#  - host cache appended at ~/.iterion/security-cache/packages.jsonl
-#  - markdown export at <store-dir>/runs/<run_id>/artifacts/export_report/findings.md
+#  - package cache appended at cache_path (default: run scratch; see below)
+#  - markdown export written by llm_review at <workspace_dir>/.sec-audit/deps-findings.md
 ```
 
-## Cross-run memory — host-wide package cache
+## Cross-run memory — package cache
 
 A package version is a universal artifact: `left-pad@1.3.0` is the
 same tarball whether you `npm install` it in repo A or repo B. The
-cache lives at `~/.iterion/security-cache/packages.jsonl` so every
-repo on the host benefits from past analysis.
+cache defaults to the engine's out-of-tree run scratch dir
+(`${PROJECT_SCRATCH_DIR}/sec-audit-deps/cache/packages.jsonl` —
+always writable, even in sandbox images pinning a non-host user, but
+per-run under a sandbox). For true host-wide reuse across repos, opt
+in with
+`--var cache_path=$HOME/.iterion/security-cache/packages.jsonl`.
 
 Schema (one JSON object per line, append-only):
 
@@ -51,11 +55,11 @@ Schema (one JSON object per line, append-only):
 {"ecosystem":"npm","name":"left-pad","version":"1.3.0","checksum":"sha256:...","scanned_at":"2026-05-19T10:00:00Z","risk_score":3,"risk_level":"LOW","flags":[],"scanner_version":"sec-audit-deps@0.1.0"}
 ```
 
-The cache key is `ecosystem:name:version:checksum`. The
-`load_package_cache` compute node loads the file in O(n), builds an
-index, and the `filter_cached` compute node splits pending deps into
-*already analysed at acceptable scanner_version* (skip) and *new or
-stale* (scan).
+The cache key is `ecosystem:name:version`. The `load_cache` tool node
+reads the file and passes the raw JSONL to the `filter_cached` tool
+node, which builds an index and splits pending deps into *already
+analysed at acceptable scanner_version* (skip) and *new or stale*
+(scan).
 
 The cache is **auto-mounted into the sandbox** when
 `host_state: auto` is in effect (the default), so sandboxed runs
@@ -66,33 +70,47 @@ operator state.
 ## Pipeline
 
 ```
-enumerate_deps (claw, readonly)
-  └─→ load_package_cache (compute: read ~/.iterion/security-cache/packages.jsonl)
-  └─→ filter_cached (compute: split into already_scanned[] vs pending[])
-  └─→ heuristic_scan (router fan_out_all on ecosystems present)
-        ├─→ run_js_heuristics      (tool: parse package.json scripts, decode `*-install.js` payloads)
-        ├─→ run_py_heuristics      (tool: parse setup.py / pyproject.toml)
-        ├─→ run_go_heuristics      (tool: scan go.mod / go.sum / vendor/)
-        └─→ run_generic_heuristics (tool: binary entropy, base64 blobs, locale anomalies)
-  └─→ llm_review (claude_code, readonly, capabilities: board.create + board.label)
-  └─→ score_merge (compute: max(heuristic, llm) → bucket LOW/MEDIUM/HIGH)
-  └─→ update_package_cache (tool: append fresh lines to packages.jsonl)
-  └─→ export_report (compute → markdown)
+enumerate_deps (agent: claw + openai/gpt-5.5, readonly)
+     — walk lockfiles / node_modules / .venv / vendor → flat dep list + open `ecosystems` list
+  └─→ normalize_deps (tool: coerce the LLM dep list into canonical [{ecosystem,name,version,checksum}])
+  └─→ run_eco_heuristics (tool: ONE skill-driven node — for each detected ecosystem, read the
+        `iterion:heuristics` block from skills/lang-<id>.md, run its SCA scanner, parse the output)
+  └─→ run_generic_heuristics (tool: `trivy fs --scanners vuln` lockfile CVE floor + npm install-hooks + locale anomalies)
+  └─→ heuristic_join (compute, await: best_effort — merge {eco, generic} signals)
+  └─→ load_cache (tool: read the package cache at cache_path → raw JSONL)
+  └─→ filter_cached (tool: split enumerated deps into already_scanned[] vs pending[])
+  └─→ llm_review (agent: claude_code + opus-4-8, readonly, capabilities board.read/create/label —
+        validates signals, scores + buckets LOW/MEDIUM/HIGH, creates kanban issues for MEDIUM+,
+        writes deps-findings.md)
+  └─→ update_cache (tool: append one JSONL line per analysed package to packages.jsonl)
   └─→ done
 ```
 
+There is no router fan-out: `run_eco_heuristics` is a single
+deterministic tool that dispatches on the open `ecosystems` list. There
+is no separate `score_merge` or `export_report` node either — risk
+scoring, bucketing, and the markdown report are all produced inside
+`llm_review`.
+
 ## Adding an ecosystem
 
-1. **Skill**: `skills/lang-<ecoid>.md` — manifest path, lockfile
-   path, lifecycle-hook patterns, vuln DB command. Mirror `lang-js.md`.
+Drop a single skill — **no DSL edit, no router branch, no new tool
+node**:
 
-2. **Heuristic tool node**: `tool run_<ecoid>_heuristics:` —
-   emits JSON `{packages: [{name, version, checksum, signals: [...]}]}`.
+1. **Skill**: `skills/lang-<ecoid>.md` — manifest path, lockfile path,
+   lifecycle-hook patterns, and an `<!-- iterion:heuristics ... -->`
+   data block listing the SCA scanner command(s) to run. Mirror
+   `lang-js.md`.
 
-3. **Router branch**: add a `... when tech.has_<ecoid>` branch
-   under `heuristic_scan`.
+2. **Parser (only if the scanner's output format is new)**: extend the
+   output-parsing tail of the `run_eco_heuristics` tool. Existing
+   formats (npm-audit / pip-audit / govulncheck JSON) are already
+   handled, so a new ecosystem reusing one of them needs no code.
 
-No DSL primitive changes, no Go runtime changes. Pure composition.
+`enumerate_deps` populates the open `ecosystems` list;
+`run_eco_heuristics` reads each detected ecosystem's skill and runs its
+heuristics block automatically. No per-ecosystem boolean, no router
+branch. Pure composition.
 
 ## See also
 

@@ -10,6 +10,7 @@ import (
 	"go.mongodb.org/mongo-driver/v2/mongo/options"
 
 	"github.com/SocialGouv/iterion/pkg/internal/mongoutil"
+	"github.com/SocialGouv/iterion/pkg/internal/storekit"
 )
 
 // Collection is the Mongo collection name for scheduled bots.
@@ -17,12 +18,12 @@ const Collection = "scheduled_bots"
 
 // MongoStore is the Mongo-backed Store.
 type MongoStore struct {
-	coll *mongo.Collection
+	kit *storekit.Mongo[ScheduledBot]
 }
 
 // NewMongoStore builds a Mongo-backed scheduled-bot store.
 func NewMongoStore(db *mongo.Database) *MongoStore {
-	return &MongoStore{coll: db.Collection(Collection)}
+	return &MongoStore{kit: storekit.NewMongo[ScheduledBot](db.Collection(Collection), ErrNotFound, "cloudsched")}
 }
 
 var _ Store = (*MongoStore)(nil)
@@ -41,29 +42,21 @@ func EnsureSchema(ctx context.Context, db *mongo.Database) error {
 }
 
 func (s *MongoStore) Create(ctx context.Context, sb ScheduledBot) error {
-	if _, err := s.coll.InsertOne(ctx, sb); err != nil {
-		if mongoutil.IsDuplicateKey(err) {
-			return fmt.Errorf("cloudsched: schedule %q already exists", sb.ID)
-		}
-		return fmt.Errorf("cloudsched: create: %w", err)
-	}
-	return nil
+	return s.kit.Insert(ctx, sb, fmt.Errorf("cloudsched: schedule %q already exists", sb.ID), "create")
 }
 
 func (s *MongoStore) Get(ctx context.Context, id string) (ScheduledBot, error) {
-	return mongoutil.FindOne[ScheduledBot](ctx, s.coll, bson.M{"_id": id}, ErrNotFound, "cloudsched: get")
+	return s.kit.GetByID(ctx, id, "get")
 }
 
 func (s *MongoStore) ListByIntegration(ctx context.Context, tenantID, integrationID string) ([]ScheduledBot, error) {
-	cur, err := s.coll.Find(ctx, bson.M{"tenant_id": tenantID, "repo_integration_id": integrationID})
-	if err != nil {
-		return nil, fmt.Errorf("cloudsched: list by integration: %w", err)
-	}
-	var out []ScheduledBot
-	if err := cur.All(ctx, &out); err != nil {
-		return nil, fmt.Errorf("cloudsched: decode: %w", err)
-	}
-	return out, nil
+	return s.kit.List(ctx, bson.M{"tenant_id": tenantID, "repo_integration_id": integrationID},
+		"list by integration", "decode")
+}
+
+func (s *MongoStore) ListByTenant(ctx context.Context, tenantID string) ([]ScheduledBot, error) {
+	return s.kit.List(ctx, bson.M{"tenant_id": tenantID}, "list by tenant", "decode",
+		options.Find().SetSort(bson.D{{Key: "created_at", Value: 1}}))
 }
 
 func (s *MongoStore) ListDue(ctx context.Context, now time.Time, limit int) ([]ScheduledBot, error) {
@@ -71,25 +64,17 @@ func (s *MongoStore) ListDue(ctx context.Context, now time.Time, limit int) ([]S
 	if limit > 0 {
 		opt.SetLimit(int64(limit))
 	}
-	cur, err := s.coll.Find(ctx, bson.M{
+	return s.kit.List(ctx, bson.M{
 		"disabled":     bson.M{"$ne": true},
 		"next_fire_at": bson.M{"$lte": now},
-	}, opt)
-	if err != nil {
-		return nil, fmt.Errorf("cloudsched: list due: %w", err)
-	}
-	var out []ScheduledBot
-	if err := cur.All(ctx, &out); err != nil {
-		return nil, fmt.Errorf("cloudsched: decode: %w", err)
-	}
-	return out, nil
+	}, "list due", "decode", opt)
 }
 
 // ClaimTick is the CAS: the update matches only while next_fire_at still equals
 // expectedNext, so the first replica to advance it wins and the rest get
 // (false, nil). exactly-once per slot, no leader.
 func (s *MongoStore) ClaimTick(ctx context.Context, id string, expectedNext, newNext, firedAt time.Time) (bool, error) {
-	res, err := s.coll.UpdateOne(ctx,
+	res, err := s.kit.Coll().UpdateOne(ctx,
 		bson.M{"_id": id, "next_fire_at": expectedNext},
 		bson.M{"$set": bson.M{"next_fire_at": newNext, "last_fire_at": firedAt, "updated_at": firedAt}},
 	)
@@ -99,14 +84,27 @@ func (s *MongoStore) ClaimTick(ctx context.Context, id string, expectedNext, new
 	return res.MatchedCount > 0, nil
 }
 
+// Update applies a partial mutation. Reads the current row, mutates it via
+// applySchedulePatch, and writes back via ReplaceOne — the atomicity that
+// matters here is exactly-once fire (ClaimTick's CAS), not multi-writer
+// serialisation on the mutable payload (Cron/Vars/…), so a full replace is
+// safe and matches the semantics operators expect from a REST PATCH.
+func (s *MongoStore) Update(ctx context.Context, id string, patch SchedulePatch) (ScheduledBot, error) {
+	sb, err := s.Get(ctx, id)
+	if err != nil {
+		return ScheduledBot{}, err
+	}
+	applySchedulePatch(&sb, patch)
+	if _, err := s.kit.Coll().ReplaceOne(ctx, bson.M{"_id": id}, sb); err != nil {
+		return ScheduledBot{}, fmt.Errorf("cloudsched: update: %w", err)
+	}
+	return sb, nil
+}
+
 func (s *MongoStore) Delete(ctx context.Context, id string) error {
-	return mongoutil.DeleteOneChecked(ctx, s.coll, bson.M{"_id": id}, ErrNotFound, "cloudsched: delete")
+	return s.kit.Delete(ctx, id, "delete")
 }
 
 func (s *MongoStore) DeleteByIntegration(ctx context.Context, tenantID, integrationID string) error {
-	_, err := s.coll.DeleteMany(ctx, bson.M{"tenant_id": tenantID, "repo_integration_id": integrationID})
-	if err != nil {
-		return fmt.Errorf("cloudsched: delete by integration: %w", err)
-	}
-	return nil
+	return s.kit.DeleteWhere(ctx, bson.M{"tenant_id": tenantID, "repo_integration_id": integrationID}, "delete by integration")
 }

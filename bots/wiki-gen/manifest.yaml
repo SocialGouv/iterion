@@ -1,0 +1,72 @@
+name: wiki-gen
+display_name: Wikky
+icon: 📖
+version: 1.0.0
+## 1.0.0 — Generate + maintain a navigable OKF wiki for ANY repository
+## (openwiki-inspired). One adaptive claude_code agent surveys the repo,
+## plans, and writes a structured wiki tree under wiki/ grounded in the
+## source; deterministic tools then regenerate the directory indexes,
+## validate OKF frontmatter + intra-wiki links, and enforce a docs-only
+## scope (the agent cannot ship a hallucinated or structurally-broken
+## wiki). Output conforms to Google's Open Knowledge Format v0.1
+## (type-only-required frontmatter + Markdown-links-as-concept-edges),
+## so it is directly ingestible by a knowledge-graph explorer (graphify).
+## Incremental: an out-of-tree git_head cache short-circuits the run at
+## zero LLM cost when the wiki is already current for HEAD. Distinct from
+## Doki (docs-refresh), which aligns EXISTING docs to code in place;
+## Wikky generates + maintains a parallel navigable artifact it owns.
+description: |
+  Wiki generator — one capable agent builds and incrementally maintains
+  a navigable, Open-Knowledge-Format wiki for whatever repository it is
+  pointed at, in any language. It surveys the code, plans the concept
+  pages and their relationships, and writes a structured wiki tree
+  (architecture/, workflows/, domain/, …) under wiki/ with a quickstart
+  entrypoint — every claim grounded in the source, never invented.
+
+  Deterministic by construction: after each authoring pass a tool
+  regenerates every directory index from the pages' frontmatter, and a
+  validator gate fails the run on invalid OKF frontmatter, a dead
+  intra-wiki link, or any write outside the wiki tree — so the agent
+  cannot rubber-stamp a broken or hallucinated wiki. A persistent,
+  out-of-tree git_head cache lets a scheduled run skip entirely when the
+  wiki is already current for the exact commit.
+
+  The OKF output (type-only-required YAML frontmatter + Markdown links as
+  concept-relationship edges) is a standard, tool-agnostic interchange
+  format, directly ingestible by a knowledge-graph explorer.
+
+  Ships 2 skills: wiki-authoring (the operating playbook) and okf-format
+  (the frontmatter + link-graph contract the validator enforces).
+when_to_use: |
+  Use to bootstrap a navigable wiki for a repository that has none, or to
+  keep an existing wiki/ tree current as the code evolves (nightly, or on
+  demand). Wikky OWNS the wiki/ tree and writes only there — it never
+  edits source. Reach for Doki (docs-refresh) instead when the goal is to
+  fix a repo's EXISTING hand-authored docs (README/docs/**) against the
+  code, editing them in place.
+author: SocialGouv (devthejo) — wiki-gen/main.bot
+schema_version: 1
+
+dispatch_vars:
+  scope_notes: |-
+    {{issue.title}}
+
+    {{issue.body}}
+  issue_id: "{{issue.identifier}}"
+
+invocations:
+  - kind: command
+    mode: board
+    args_var: scope_notes
+    command: { name: wikky, aliases: [wiki-gen, wiki], scope: any, min_replier_role: developer }
+  - kind: schedule
+    mode: board
+    schedule: { suggested_cron: "0 4 * * 1" }
+  - kind: board
+
+## Studio launch-form hierarchy: `primary` inputs render top-level;
+## `hidden` vars are internal plumbing kept out of the form (still
+## settable via --var / bot_args).
+launch:
+  primary: [scope_notes, wiki_dir]
+  hidden: [bundle_self_path]

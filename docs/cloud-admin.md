@@ -16,7 +16,8 @@ metadata + events in **MongoDB**, artifact bytes in **S3**, and
 publishes work onto a **NATS JetStream** subject the runner pool
 drains. Auth, multitenancy, BYOK and OAuth-forfait sit entirely on
 the server side: every request is gated by a JWT that carries the
-caller's `tenant_id` (active team), and the server seals tenant-
+caller's active `org_id` + `team_id` (the store layer partitions on
+that team id under a `tenant_id` field), and the server seals tenant-
 scoped credentials per-run before the runner unseals + injects them
 into the engine ctx.
 
@@ -121,7 +122,7 @@ unless the ctx is privileged (super-admin, runner bootstrap, the
 
 The full org admin runbook (create org, set quotas, suspend/read-only,
 invite members, watch usage, mint PATs, triage the DLQ) lives in
-[baas-admin-guide.md](baas-admin-guide.md). The exact denial reasons +
+[Iterion Cloud admin guide](cloud-admin-guide.md). The exact denial reasons +
 HTTP semantics + Prometheus metrics every quota emits are in
 [quotas-and-limits.md](quotas-and-limits.md).
 
@@ -130,14 +131,14 @@ Also wired and admin-readable:
 - **Audit log** — `/api/admin/audit` (platform) +
   `/api/teams/{id}/audit` (tenant), 400-day retention. Action token
   list and filter params in
-  [baas-admin-guide.md §1.5](baas-admin-guide.md#15-audit-log).
+  [Iterion Cloud admin guide §1.5](cloud-admin-guide.md#15-audit-log).
 - **Personal access tokens** — `/api/me/tokens` (mint / revoke);
   platform ceiling via `ITERION_PAT_MAX_TTL`. See
-  [baas-admin-guide.md §2.6](baas-admin-guide.md#26-personal-access-tokens-for-ci).
+  [Iterion Cloud admin guide §2.6](cloud-admin-guide.md#26-personal-access-tokens-for-ci).
 - **SMTP** — `ITERION_SMTP_*` env (or the chart's `config.smtp` +
   `secrets.smtp`); without it the `LogMailer` falls back to the log
   fallback and `/api/server/info` advertises `email_enabled=false`.
-  See [baas-admin-guide.md §1.9](baas-admin-guide.md#19-smtp-configuration).
+  See [Iterion Cloud admin guide §1.9](cloud-admin-guide.md#19-smtp-configuration).
 
 Roles inside a team:
 

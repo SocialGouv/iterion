@@ -25,6 +25,12 @@ type state struct {
 	// sibling dispatch on the same workspace; cmdRunFinished removes
 	// the entry once the worker has actually exited.
 	tombstones map[string]struct{}
+	// lastTickAt is when the actor's tick loop last ran — the liveness
+	// signal for "is the polling loop alive at all" (a dead loop shows
+	// a frozen value instead of going silent). Actor-owned: written at
+	// the top of every tick, read by buildSnapshot on the same
+	// goroutine.
+	lastTickAt time.Time
 	// lastTrackerErr is the most recent failure from tracker.ListCandidates,
 	// surfaced in the Snapshot so the dashboard can show "GitHub token
 	// expired" / "Forgejo unreachable" rather than going silent. Cleared
@@ -209,9 +215,14 @@ type retryEntry struct {
 // demand from inside the actor so callers always see a consistent
 // snapshot of running/retries/slots.
 type Snapshot struct {
-	Name             string    `json:"name"`
-	Tracker          string    `json:"tracker"`
+	Name    string `json:"name"`
+	Tracker string `json:"tracker"`
+	// GeneratedAt stamps snapshot construction; LastTickAt stamps the
+	// last poll-loop pass — the pair distinguishes "snapshot is fresh"
+	// from "the loop itself is alive" (a wedged loop keeps serving
+	// fresh snapshots with a frozen LastTickAt).
 	GeneratedAt      time.Time `json:"generated_at"`
+	LastTickAt       time.Time `json:"last_tick_at,omitempty"`
 	PollingIntervalS float64   `json:"polling_interval_seconds"`
 	StallTimeoutS    float64   `json:"stall_timeout_seconds"`
 	// Paused is true when new dispatches are currently suspended via

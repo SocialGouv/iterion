@@ -1,0 +1,59 @@
+# golangci-lint v2 config — curated for signal, not noise.
+# misspell is deliberately NOT enabled: it flags French comments as
+# misspelled English (1097 false positives), which is noise, not debt.
+version: "2"
+
+run:
+  timeout: 5m
+  tests: true
+
+issues:
+  # Report every finding — the default caps hide repeats and mask the true gate.
+  max-issues-per-linter: 0
+  max-same-issues: 0
+
+linters:
+  default: none
+  enable:
+    - errcheck      # house rule: errors must surface, never be swallowed
+    - govet         # correctness analyzers
+    - ineffassign   # ineffective assignments (real dead writes)
+    - staticcheck   # SA bug checks + simplifications
+    - unconvert     # unnecessary type conversions
+    - unused        # dead code
+  settings:
+    errcheck:
+      # Conventionally-ignored returns (best-effort close/flush, stdout writes).
+      exclude-functions:
+        - (io.Closer).Close
+        - (*os.File).Close
+        - (net/http.ResponseWriter).Write
+        - fmt.Fprint
+        - fmt.Fprintf
+        - fmt.Fprintln
+  exclusions:
+    generated: lax
+    presets:
+      - common-false-positives
+      - std-error-handling
+    rules:
+      # A failed setup call in a test surfaces at the next assertion; the
+      # house rule against swallowed errors targets production paths.
+      - path: _test\.go
+        linters:
+          - errcheck
+      # Tests legitimately pass a nil context to exercise nil-handling
+      # (e.g. TenantFromContext(nil)) and pure arg-validation paths.
+      - path: _test\.go
+        text: 'SA1012'
+        linters:
+          - staticcheck
+    paths:
+      - vendor
+      - '\.works'
+      - '\.repos'
+      # The Wails/cgo desktop app is gated behind //go:build desktop and needs
+      # the gtk/webkit toolchain to compile; the core lint sees only its
+      # untagged files in isolation and reports false "unused" on symbols the
+      # tagged files consume. It is linted by the desktop pipeline, not here.
+      - 'cmd/iterion-desktop'

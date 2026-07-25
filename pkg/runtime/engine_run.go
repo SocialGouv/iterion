@@ -48,6 +48,16 @@ func (e *Engine) Run(ctx context.Context, runID string, inputs map[string]any) (
 		}
 	}
 
+	// Enum gate: every launch surface (CLI --var, HTTP launch, dispatcher
+	// bot_args, preset overlay, cloud pickup) funnels its var values into
+	// run.Inputs, so this single check rejects any enum-constrained var
+	// value outside its declared set — before a worktree or sandbox is
+	// spun up for a doomed run.
+	if err := e.validateVarEnums(run.Inputs); err != nil {
+		e.markFailedBestEffort(ctx, runID, "var validation", err)
+		return fmt.Errorf("runtime: var validation: %w", err)
+	}
+
 	// Worktree setup stays inline: the finalizeOnExit defer must
 	// capture the named return `err`, and the defer installation
 	// is the meaningful side effect — extracting it would require
@@ -57,25 +67,39 @@ func (e *Engine) Run(ctx context.Context, runID string, inputs map[string]any) (
 	var wtCtx worktreeContext
 	worktreeActive := false
 	if e.workflow.Worktree == "auto" {
-		// Cloud/document stores have no stable filesystem root and explicitly
-		// advertise GitWorktree=false. The runner's clone/pod is already the
-		// isolation boundary; creating a nested relative worktree would hide
-		// changes from the runner's post-run Git collector and then lose them
-		// with the pod.
-		if !e.store.Capabilities().GitWorktree {
+		// Workspace isolation is the IR default (ir.defaultWorktreeMode),
+		// so any `iterion run` against a non-git workspace would otherwise
+		// hard-fail with "not a git repository". Degrade gracefully to
+		// in-place: this is the documented contract — auto is best-effort
+		// isolation, never a precondition. Many e2e/examples and ad-hoc
+		// runs against scratch dirs rely on this. The explicit opt-out
+		// path is `worktree: none`.
+		if e.store.Root() == "" {
+			// A store with no filesystem root (the cloud Mongo store) has
+			// nowhere durable to host a per-run worktree: setupWorktree
+			// derives the worktree home from store.Root(), so "" would
+			// anchor it in the process cwd. Decisive on a cloud runner,
+			// the workspace is a per-run clone recycled between queue
+			// deliveries — a worktree's gitdir lives inside that clone's
+			// .git, so the re-clone on resume severs the linkage and every
+			// git command in the workspace fails with "not a git
+			// repository". The per-run clone on an ephemeral runner is
+			// already isolation; run in place so git keeps working across
+			// deliveries.
 			if e.logger != nil {
-				e.logger.Info("runtime: run store has no Git-worktree capability — using the launcher-provided isolated workspace")
+				e.logger.Info("runtime: store has no filesystem root — running in place in %s (worktree isolation skipped: an ephemeral per-run workspace cannot host a durable worktree)", e.workDir)
 			}
-			// Workspace isolation is the IR default (ir.defaultWorktreeMode),
-			// so any `iterion run` against a non-git workspace would otherwise
-			// hard-fail with "not a git repository". Degrade gracefully to
-			// in-place: this is the documented contract — auto is best-effort
-			// isolation, never a precondition. Many e2e/examples and ad-hoc
-			// runs against scratch dirs rely on this. The explicit opt-out
-			// path is `worktree: none`.
 		} else if !workspaceIsGitRepo(e.workDir) {
 			if e.logger != nil {
 				e.logger.Warn("runtime: workspace %s is not a git repository — running in-place (set `worktree: none` to silence this)", e.workDir)
+			}
+		} else if !workspaceHasCommits(e.workDir) {
+			// An empty repository (unborn HEAD — a freshly created forge
+			// repo right after clone) can't anchor a worktree. Degrade
+			// in-place: the bot's first commit lands on the unborn default
+			// branch directly, and its own push publishes it.
+			if e.logger != nil {
+				e.logger.Warn("runtime: workspace %s has no commits yet — running in-place (worktree needs a HEAD to anchor on)", e.workDir)
 			}
 		} else {
 			wtc, cleanup, wtErr := setupWorktree(
@@ -407,7 +431,7 @@ func (e *Engine) runPersistWorkspace(ctx context.Context, runID string, run *sto
 	// Mirror markdown contributions (skills / commands / agents) from enabled plugins
 	// after the bundle skills so a same-named bundle/workspace file
 	// wins on collision. Best-effort: a plugin must not fail the run.
-	if err := mirrorPluginContributions(e.workDir, e.logger); err != nil && e.logger != nil {
+	if err := mirrorPluginContributions(e.workDir, e.contributions, e.logger); err != nil && e.logger != nil {
 		e.logger.Warn("runtime: plugin contributions: %v", err)
 	}
 	if err := mergePluginHooks(e.workDir, e.logger); err != nil && e.logger != nil {
@@ -428,7 +452,7 @@ func (e *Engine) runPersistWorkspace(ctx context.Context, runID string, run *sto
 // failure is logged but never fails the run (the DSL reference is soft). Only
 // ClawExecutor implements SetSkillHints.
 func (e *Engine) applyLibrarySkills() {
-	hints, err := mirrorLibrarySkills(e.workDir, e.store.Root(), e.workflow, e.logger)
+	hints, err := mirrorLibrarySkills(e.workDir, e.store.Root(), e.workflow, e.contributions, e.logger)
 	if err != nil {
 		if e.logger != nil {
 			e.logger.Warn("runtime: library skills: %v", err)
@@ -550,39 +574,41 @@ func (e *Engine) finalizeOnExit(ctx context.Context, runID string, wtCtx *worktr
 	// ever sets it from empty), so its presence here means the gate already
 	// owns this run's finalize. Re-running finalizeWorktree would create a
 	// duplicate storage branch and possibly re-merge — skip it, just clean up.
-	if persistedRun.MergeStatus != "" {
-		if e.logger != nil {
-			e.logger.Info("runtime: finalize: run already finalized at review gate (status=%s, branch=%s); skipping",
-				persistedRun.MergeStatus, persistedRun.FinalBranch)
-		}
-		// The gate finalized one exact HEAD. Post-gate work may be either
-		// dirty OR committed, so cleanliness alone is insufficient: require
-		// the current HEAD to remain the persisted commit (or the original
-		// base for the no-commit review outcome).
-		expectedHEAD := persistedRun.FinalCommit
-		if expectedHEAD == "" {
-			expectedHEAD = wtCtx.originalTip
-		}
-		if verifyErr := verifyCleanWorktreeHEAD(wtCtx.wtPath, expectedHEAD); verifyErr != nil {
+	if r, err := e.store.LoadRun(ctx, runID); err == nil && r.MergeStatus != "" {
+		// Staleness check: the recorded finalize (review gate, or an
+		// orphan-recovery pass) captured FinalCommit at ITS moment. If the
+		// worktree HEAD has since moved, later committed work exists that the
+		// recorded finalize never promoted — skipping here would delete the
+		// worktree and strand those commits on the per-node GC-guard refs
+		// (observed: a mid-flight recovered finalize marked the run
+		// finalized, the true completion skipped, and the delivery had to be
+		// recovered from refs/iterion/runs/*). Re-finalize at the true tip
+		// instead; the storage branch gets a numeric suffix on collision.
+		if head := readHEAD(wtCtx.wtPath); head != "" && r.FinalCommit != "" && head != r.FinalCommit {
 			if e.logger != nil {
-				e.logger.Warn("runtime: finalize: review-gate worktree changed or cannot be verified: %v — preserving %s", verifyErr, wtCtx.wtPath)
+				e.logger.Warn("runtime: finalize: recorded finalize (%s @ %.9s) is stale — worktree HEAD moved to %.9s; re-finalizing",
+					r.MergeStatus, r.FinalCommit, head)
 			}
-			return
-		}
-		if persistedRun.FinalBranch != "" {
-			branchHEAD, branchErr := readBranchCommit(wtCtx.repoRoot, persistedRun.FinalBranch)
-			if branchErr != nil || branchHEAD != expectedHEAD {
+		} else {
+			if e.logger != nil {
+				e.logger.Info("runtime: finalize: run already finalized at review gate (status=%s, branch=%s); skipping",
+					r.MergeStatus, r.FinalBranch)
+			}
+			// The gate finalized COMMITS, but post-gate work may sit
+			// uncommitted in the worktree — removing it would destroy that
+			// work silently. Preserve instead; the operator recovers via the
+			// studio commit-and-finalize action.
+			if clean, cleanErr := workdirIsClean(wtCtx.wtPath); cleanErr == nil && !clean {
 				if e.logger != nil {
-					e.logger.Warn("runtime: finalize: review-gate storage branch no longer protects worktree HEAD (branch=%s, err=%v) — preserving %s", persistedRun.FinalBranch, branchErr, wtCtx.wtPath)
+					e.logger.Warn("runtime: finalize: worktree has uncommitted changes after review-gate finalize — preserving %s for inspection", wtCtx.wtPath)
 				}
 				return
 			}
+			if cleanup != nil {
+				cleanup()
+			}
+			return
 		}
-		if cleanup != nil {
-			cleanupResult, cleanupErr := cleanup(expectedHEAD, persistedRun.FinalBranch)
-			e.logWorktreeCleanupResult(cleanupResult, cleanupErr)
-		}
-		return
 	}
 	finRes := finalizeWorktree(*wtCtx, finalizeOptions{
 		runName:       e.runName,

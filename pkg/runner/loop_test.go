@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -11,10 +12,14 @@ import (
 
 	"github.com/SocialGouv/iterion/pkg/backend/mcp"
 	"github.com/SocialGouv/iterion/pkg/dsl/ast"
+	"github.com/SocialGouv/iterion/pkg/dsl/ir"
 	"github.com/SocialGouv/iterion/pkg/dsl/parser"
+	gitlib "github.com/SocialGouv/iterion/pkg/git"
 	iterlog "github.com/SocialGouv/iterion/pkg/log"
 	"github.com/SocialGouv/iterion/pkg/queue"
+	"github.com/SocialGouv/iterion/pkg/runtime"
 	"github.com/SocialGouv/iterion/pkg/secrets"
+	"github.com/SocialGouv/iterion/pkg/store"
 )
 
 // NOTE: The runner's main loop wraps NATS deliveries + a Mongo store +
@@ -315,4 +320,607 @@ workflow main:
 	if got := fc.Env["FIRECRAWL_API_URL"]; got != "http://iterion-firecrawl:3002" {
 		t.Errorf("FIRECRAWL_API_URL lost in ir.MCPServer round-trip: got %q, want the self-host URL", got)
 	}
+}
+
+// ---------------------------------------------------------------------------
+// classifyExecResult
+// ---------------------------------------------------------------------------
+
+// TestClassifyExecResult pins the Ack/Nak matrix for engine outcomes:
+// checkpoint writes (paused / operator-paused / user-cancelled) Ack;
+// heartbeat-loss and shutdown cancellations Nak so JetStream redelivers
+// to a sibling; a generic failure Naks. errors.Is semantics mean wrapped
+// sentinels classify identically.
+func TestClassifyExecResult(t *testing.T) {
+	cases := []struct {
+		name       string
+		err        error
+		hbFailed   bool
+		parentErr  error
+		wantStatus string
+		wantAction deliveryAction
+	}{
+		{"success acks finished", nil, false, nil, "finished", actionAck},
+		{"paused acks", runtime.ErrRunPaused, false, nil, "paused", actionAck},
+		{"wrapped paused acks", fmt.Errorf("engine: %w", runtime.ErrRunPaused), false, nil, "paused", actionAck},
+		{"operator pause acks", runtime.ErrRunPausedOperator, false, nil, "paused_operator", actionAck},
+		{"user cancel acks", runtime.ErrRunCancelled, false, nil, "cancelled", actionAck},
+		{"heartbeat-loss cancel naks", runtime.ErrRunCancelled, true, nil, "lock_held", actionNak},
+		// hbFailed wins over a concurrently-cancelled parent ctx.
+		{"heartbeat beats shutdown", runtime.ErrRunCancelled, true, context.Canceled, "lock_held", actionNak},
+		{"shutdown cancel naks", runtime.ErrRunCancelled, false, context.Canceled, "shutdown", actionNak},
+		{"generic failure naks", errors.New("boom"), false, nil, "failed", actionNak},
+		// Budget exceeded is a resumable checkpoint — Ack, never auto-resume
+		// (auto-redelivery re-fails on the same spent budget and its fresh-pod
+		// recordRunGitMeta clobbers the exported commits; run 019f8e08).
+		{"budget exceeded acks (no auto-resume)", runtime.ErrBudgetExceeded, false, nil, "budget_exceeded", actionAck},
+		{"wrapped budget exceeded acks", fmt.Errorf("%w: duration (7201/7200)", runtime.ErrBudgetExceeded), false, nil, "budget_exceeded", actionAck},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			out := classifyExecResult(c.err, c.hbFailed, c.parentErr, "run-1")
+			if out.finalStatus != c.wantStatus {
+				t.Errorf("finalStatus = %q, want %q", out.finalStatus, c.wantStatus)
+			}
+			if out.action != c.wantAction {
+				t.Errorf("action = %v, want %v", out.action, c.wantAction)
+			}
+		})
+	}
+}
+
+// ---------------------------------------------------------------------------
+// resolveDeliveryPreconditions
+// ---------------------------------------------------------------------------
+
+// TestResolveDeliveryPreconditions pins the pre-lock status gauntlet on a
+// real (filesystem) store: unknown runs Term; stale terminal deliveries
+// Ack; redelivered launches against a resumable status are converted to
+// resumes IN PLACE (msg.Resume mutated) so JetStream redelivery uses the
+// checkpoint it exists to protect.
+func TestResolveDeliveryPreconditions(t *testing.T) {
+	st, err := store.New(t.TempDir())
+	if err != nil {
+		t.Fatalf("store.New: %v", err)
+	}
+	ctx := context.Background()
+	save := func(id string, status store.RunStatus, cp *store.Checkpoint) {
+		t.Helper()
+		if err := st.SaveRun(ctx, &store.Run{ID: id, WorkflowName: "wf", Status: status, Checkpoint: cp}); err != nil {
+			t.Fatalf("SaveRun %s: %v", id, err)
+		}
+	}
+	save("run-running", store.RunStatusRunning, nil)
+	save("run-cancelled-nocp", store.RunStatusCancelled, nil)
+	save("run-cancelled-cp", store.RunStatusCancelled, &store.Checkpoint{NodeID: "n1"})
+	save("run-failres", store.RunStatusFailedResumable, &store.Checkpoint{NodeID: "n1"})
+	save("run-pausedop", store.RunStatusPausedOperator, &store.Checkpoint{NodeID: "n1"})
+	save("run-finished", store.RunStatusFinished, nil)
+
+	r := &Runner{cfg: Config{Store: st, Logger: iterlog.Nop()}}
+
+	cases := []struct {
+		name        string
+		runID       string
+		resume      *queue.ResumeSpec
+		wantProceed bool
+		wantAction  deliveryAction
+		wantStatus  string
+		wantResume  bool // msg.Resume non-nil after the call
+	}{
+		{"missing run terms", "run-ghost", nil, false, actionTerm, "store_load_failed", false},
+		{"running proceeds as launch", "run-running", nil, true, 0, "", false},
+		{"pre-pickup cancel acks", "run-cancelled-nocp", nil, false, actionAck, "cancelled", false},
+		// Cancelled is terminal for redelivery even WITH a checkpoint:
+		// auto-resume here resurrected operator-cancelled runs (live:
+		// 019f8ba3, three times). Only an explicit resume proceeds.
+		{"cancel checkpoint stays cancelled", "run-cancelled-cp", nil, false, actionAck, "cancelled", false},
+		{"cancel checkpoint explicit resume proceeds", "run-cancelled-cp", &queue.ResumeSpec{}, true, 0, "", true},
+		{"failed_resumable converts to resume", "run-failres", nil, true, 0, "", true},
+		{"paused_operator converts to resume", "run-pausedop", nil, true, 0, "", true},
+		{"explicit resume passes through", "run-failres", &queue.ResumeSpec{}, true, 0, "", true},
+		{"finished acks stale delivery", "run-finished", nil, false, actionAck, "finished", false},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			msg := &queue.RunMessage{RunID: c.runID, TenantID: "team-1", Resume: c.resume}
+			out := r.resolveDeliveryPreconditions(msg)
+			if out.proceed != c.wantProceed {
+				t.Fatalf("proceed = %v, want %v (outcome %+v)", out.proceed, c.wantProceed, out)
+			}
+			if out.proceed && out.preRun == nil {
+				t.Fatal("proceed=true with nil preRun")
+			}
+			if !out.proceed {
+				if out.action != c.wantAction {
+					t.Errorf("action = %v, want %v", out.action, c.wantAction)
+				}
+				if out.finalStatus != c.wantStatus {
+					t.Errorf("finalStatus = %q, want %q", out.finalStatus, c.wantStatus)
+				}
+			}
+			if (msg.Resume != nil) != c.wantResume {
+				t.Errorf("msg.Resume non-nil = %v, want %v", msg.Resume != nil, c.wantResume)
+			}
+		})
+	}
+}
+
+// ---------------------------------------------------------------------------
+// injectCredentials / deleteRunSecrets
+// ---------------------------------------------------------------------------
+
+const testSealerKeyB64 = "MDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWY="
+
+func testSealer(t *testing.T) secrets.Sealer {
+	t.Helper()
+	sealer, err := secrets.NewAESGCMSealerFromBase64(testSealerKeyB64)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return sealer
+}
+
+func TestInjectCredentials_NoRefIsPassthrough(t *testing.T) {
+	r := &Runner{cfg: Config{Logger: iterlog.Nop()}}
+	ctx := context.Background()
+	got, cleanup, err := r.injectCredentials(ctx, &queue.RunMessage{RunID: "run-1"})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if cleanup != nil {
+		t.Error("expected nil cleanup when no SecretsRef")
+	}
+	if got != ctx {
+		t.Error("expected the original ctx back unchanged")
+	}
+	if _, ok := secrets.CredentialsFromContext(got); ok {
+		t.Error("no credentials should be stamped without a SecretsRef")
+	}
+}
+
+func TestInjectCredentials_RefWithoutStoresFails(t *testing.T) {
+	r := &Runner{cfg: Config{Logger: iterlog.Nop()}}
+	_, cleanup, err := r.injectCredentials(context.Background(), &queue.RunMessage{RunID: "run-1", SecretsRef: "ref-1"})
+	if err == nil || !strings.Contains(err.Error(), "not wired") {
+		t.Fatalf("expected not-wired error, got %v", err)
+	}
+	if cleanup != nil {
+		t.Error("expected nil cleanup on wiring error")
+	}
+}
+
+func TestInjectCredentials_UnknownRefFails(t *testing.T) {
+	r := &Runner{cfg: Config{
+		Logger:     iterlog.Nop(),
+		RunSecrets: secrets.NewMemoryRunSecretsStore(),
+		Sealer:     testSealer(t),
+	}}
+	_, _, err := r.injectCredentials(context.Background(), &queue.RunMessage{RunID: "run-1", SecretsRef: "ref-missing"})
+	if err == nil || !strings.Contains(err.Error(), "fetch run_secrets") {
+		t.Fatalf("expected fetch error, got %v", err)
+	}
+}
+
+// TestInjectCredentials_TenantMismatchFails pins the exact-match tenant
+// binding: a sealed bundle stamped for another tenant (or a legacy
+// tenant-less record) must never be served to this run.
+func TestInjectCredentials_TenantMismatchFails(t *testing.T) {
+	sealer := testSealer(t)
+	rs := secrets.NewMemoryRunSecretsStore()
+	sealed, err := secrets.SealRunBundle(sealer, "run-1", secrets.RunBundle{GenericSecrets: map[string]string{"x": "v"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, recTenant := range []string{"team-other", ""} {
+		if err := rs.Put(context.Background(), secrets.RunSecretsRecord{ID: "ref-1", TenantID: recTenant, RunID: "run-1", SealedBundle: sealed}); err != nil {
+			t.Fatal(err)
+		}
+		r := &Runner{cfg: Config{Logger: iterlog.Nop(), RunSecrets: rs, Sealer: sealer}}
+		_, _, err := r.injectCredentials(context.Background(), &queue.RunMessage{RunID: "run-1", TenantID: "team-a", SecretsRef: "ref-1"})
+		if err == nil || !strings.Contains(err.Error(), "tenant mismatch") {
+			t.Fatalf("rec tenant %q: expected tenant-mismatch error, got %v", recTenant, err)
+		}
+	}
+}
+
+// TestInjectCredentials_HappyPathAndCleanup covers the full unseal →
+// ctx-stamp → OAuth-materialise cycle and the local-hygiene cleanup:
+// plaintext keys are wiped in memory and the materialised OAuth dirs
+// removed, while the PERSISTENT sealed bundle stays in the store (the
+// redelivery contract — deletion is deleteRunSecrets' job, on
+// terminal-clean outcomes only).
+func TestInjectCredentials_HappyPathAndCleanup(t *testing.T) {
+	sealer := testSealer(t)
+	rs := secrets.NewMemoryRunSecretsStore()
+	bundle := secrets.RunBundle{
+		APIKeys:           map[secrets.Provider]string{"anthropic": "sk-live-1"},
+		GenericSecrets:    map[string]string{"forge_token": "tok-1"},
+		GenericSecretRefs: map[string]string{"forge_token": "gsid-1"},
+		// codex kind: materialised as auth.json, and skipped by the
+		// anthropic-only refresher so the test spawns no goroutine.
+		OAuthCredentials: map[string][]byte{string(secrets.OAuthKindCodex): []byte(`{"tokens":{}}`)},
+		ForgeAppBotLogin: "app[bot]",
+	}
+	sealed, err := secrets.SealRunBundle(sealer, "run-1", bundle)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := rs.Put(context.Background(), secrets.RunSecretsRecord{ID: "ref-1", TenantID: "team-a", RunID: "run-1", SealedBundle: sealed}); err != nil {
+		t.Fatal(err)
+	}
+
+	r := &Runner{cfg: Config{Logger: iterlog.Nop(), RunSecrets: rs, Sealer: sealer}}
+	ctx, cleanup, err := r.injectCredentials(context.Background(), &queue.RunMessage{RunID: "run-1", TenantID: "team-a", SecretsRef: "ref-1"})
+	if err != nil {
+		t.Fatalf("injectCredentials: %v", err)
+	}
+	if cleanup == nil {
+		t.Fatal("expected a cleanup func")
+	}
+
+	creds, ok := secrets.CredentialsFromContext(ctx)
+	if !ok {
+		t.Fatal("credentials not stamped into ctx")
+	}
+	if got := creds.APIKey("anthropic"); got != "sk-live-1" {
+		t.Errorf("APIKey = %q, want sk-live-1", got)
+	}
+	if got := creds.GenericSecret("forge_token"); got != "tok-1" {
+		t.Errorf("GenericSecret = %q, want tok-1", got)
+	}
+	if got := creds.GenericRefs["forge_token"]; got != "gsid-1" {
+		t.Errorf("GenericRefs = %q, want gsid-1", got)
+	}
+	if creds.ForgeAppBotLogin != "app[bot]" {
+		t.Errorf("ForgeAppBotLogin = %q, want app[bot]", creds.ForgeAppBotLogin)
+	}
+	dir := creds.OAuthCredentialFiles["codex"]
+	if dir == "" {
+		t.Fatal("codex OAuth dir not materialised")
+	}
+	fi, err := os.Stat(filepath.Join(dir, "auth.json"))
+	if err != nil {
+		t.Fatalf("stat auth.json: %v", err)
+	}
+	if fi.Mode().Perm() != 0o600 {
+		t.Errorf("auth.json mode = %v, want 0600", fi.Mode().Perm())
+	}
+
+	cleanup()
+	if got := creds.APIKey("anthropic"); got != "" {
+		t.Errorf("API key survived cleanup: %q", got)
+	}
+	if got := creds.GenericSecret("forge_token"); got != "" {
+		t.Errorf("generic secret survived cleanup: %q", got)
+	}
+	if _, err := os.Stat(dir); !os.IsNotExist(err) {
+		t.Errorf("OAuth temp dir survived cleanup: %s", dir)
+	}
+	// The persistent sealed bundle must survive cleanup (redelivery contract).
+	if _, err := rs.Get(context.Background(), "ref-1"); err != nil {
+		t.Errorf("sealed bundle deleted by cleanup: %v", err)
+	}
+}
+
+func TestDeleteRunSecrets(t *testing.T) {
+	rs := secrets.NewMemoryRunSecretsStore()
+	if err := rs.Put(context.Background(), secrets.RunSecretsRecord{ID: "ref-1", RunID: "run-1"}); err != nil {
+		t.Fatal(err)
+	}
+	r := &Runner{cfg: Config{Logger: iterlog.Nop(), RunSecrets: rs}}
+
+	// Empty ref: no-op, record untouched.
+	r.deleteRunSecrets(&queue.RunMessage{RunID: "run-1"})
+	if _, err := rs.Get(context.Background(), "ref-1"); err != nil {
+		t.Fatalf("record deleted on empty ref: %v", err)
+	}
+	// Real ref: removed.
+	r.deleteRunSecrets(&queue.RunMessage{RunID: "run-1", SecretsRef: "ref-1"})
+	if _, err := rs.Get(context.Background(), "ref-1"); !errors.Is(err, secrets.ErrRunSecretsNotFound) {
+		t.Fatalf("expected ErrRunSecretsNotFound after delete, got %v", err)
+	}
+	// Nil store: no panic.
+	(&Runner{cfg: Config{Logger: iterlog.Nop()}}).deleteRunSecrets(&queue.RunMessage{RunID: "run-1", SecretsRef: "ref-1"})
+}
+
+// ---------------------------------------------------------------------------
+// stringifyVars / env parsing / cloud budget ceiling
+// ---------------------------------------------------------------------------
+
+// TestStringifyVars pins the wire-vars → executor-vars contract: strings
+// pass through, non-string scalars render with %v, and nested structures
+// are JSON-encoded so the downstream template engine sees parseable JSON
+// (`{"a":1}`), never Go %v syntax (`map[a:1]`). A value JSON cannot
+// encode is an error, not a silently mangled string.
+func TestStringifyVars(t *testing.T) {
+	if got, err := stringifyVars(nil); err != nil || got != nil {
+		t.Errorf("stringifyVars(nil) = %v, %v, want nil, nil", got, err)
+	}
+	if got, err := stringifyVars(map[string]any{}); err != nil || got != nil {
+		t.Errorf("stringifyVars(empty) = %v, %v, want nil, nil", got, err)
+	}
+	got, err := stringifyVars(map[string]any{
+		"s": "x",
+		"f": float64(2),
+		"i": 7,
+		"b": true,
+		"z": nil,
+		"m": map[string]any{"b": float64(2), "a": "one"},
+		"l": []any{"x", float64(1), true},
+	})
+	if err != nil {
+		t.Fatalf("stringifyVars: %v", err)
+	}
+	want := map[string]string{
+		"s": "x",
+		"f": "2",
+		"i": "7",
+		"b": "true",
+		"z": "",
+		"m": `{"a":"one","b":2}`, // JSON (sorted keys), not Go map syntax
+		"l": `["x",1,true]`,
+	}
+	for k, w := range want {
+		if got[k] != w {
+			t.Errorf("stringifyVars[%q] = %q, want %q", k, got[k], w)
+		}
+	}
+	if len(got) != len(want) {
+		t.Errorf("len = %d, want %d", len(got), len(want))
+	}
+
+	// An unencodable nested value surfaces as an error naming the var —
+	// never a silent %v fallback.
+	if _, err := stringifyVars(map[string]any{"bad": make(chan int)}); err == nil {
+		t.Fatal("stringifyVars(chan var) = nil error, want JSON-encode error")
+	} else if !strings.Contains(err.Error(), `"bad"`) {
+		t.Errorf("stringifyVars(chan var) error = %q, want it to name var \"bad\"", err)
+	}
+}
+
+func TestEnvPositiveIntAndFloat(t *testing.T) {
+	const key = "ITERION_TEST_ENV_POSITIVE"
+	intCases := []struct {
+		in   string
+		want int
+		ok   bool
+	}{
+		{"", 0, false}, {"5", 5, true}, {"0", 0, false}, {"-3", 0, false}, {"abc", 0, false},
+	}
+	for _, c := range intCases {
+		t.Setenv(key, c.in)
+		got, ok := envPositiveInt(key)
+		if got != c.want || ok != c.ok {
+			t.Errorf("envPositiveInt(%q) = (%d, %v), want (%d, %v)", c.in, got, ok, c.want, c.ok)
+		}
+	}
+	floatCases := []struct {
+		in   string
+		want float64
+		ok   bool
+	}{
+		{"", 0, false}, {"2.5", 2.5, true}, {"0", 0, false}, {"-1.5", 0, false}, {"NaN%", 0, false},
+	}
+	for _, c := range floatCases {
+		t.Setenv(key, c.in)
+		got, ok := envPositiveFloat(key)
+		if got != c.want || ok != c.ok {
+			t.Errorf("envPositiveFloat(%q) = (%v, %v), want (%v, %v)", c.in, got, ok, c.want, c.ok)
+		}
+	}
+}
+
+func clearCloudCeilingEnv(t *testing.T) {
+	t.Helper()
+	for _, k := range []string{
+		"ITERION_CLOUD_MAX_ITERATIONS", "ITERION_CLOUD_MAX_TOKENS",
+		"ITERION_CLOUD_MAX_PARALLEL_BRANCHES", "ITERION_CLOUD_MAX_COST_USD",
+		"ITERION_CLOUD_MAX_DURATION",
+	} {
+		t.Setenv(k, "")
+	}
+}
+
+func TestApplyCloudBudgetCeiling(t *testing.T) {
+	t.Run("no env is a no-op (nil budget stays nil)", func(t *testing.T) {
+		clearCloudCeilingEnv(t)
+		wf := &ir.Workflow{}
+		applyCloudBudgetCeiling(wf, iterlog.Nop())
+		if wf.Budget != nil {
+			t.Errorf("Budget = %+v, want nil (no platform ceiling configured)", wf.Budget)
+		}
+	})
+	t.Run("ceiling imposes limits on an unbudgeted workflow", func(t *testing.T) {
+		clearCloudCeilingEnv(t)
+		t.Setenv("ITERION_CLOUD_MAX_ITERATIONS", "10")
+		t.Setenv("ITERION_CLOUD_MAX_DURATION", "2h")
+		wf := &ir.Workflow{}
+		applyCloudBudgetCeiling(wf, iterlog.Nop())
+		if wf.Budget == nil || wf.Budget.MaxIterations != 10 || wf.Budget.MaxDuration != "2h" {
+			t.Errorf("Budget = %+v, want iterations 10 + duration 2h imposed", wf.Budget)
+		}
+	})
+	t.Run("lower declared budget is kept", func(t *testing.T) {
+		clearCloudCeilingEnv(t)
+		t.Setenv("ITERION_CLOUD_MAX_TOKENS", "100000")
+		wf := &ir.Workflow{Budget: &ir.Budget{MaxTokens: 500}}
+		applyCloudBudgetCeiling(wf, iterlog.Nop())
+		if wf.Budget.MaxTokens != 500 {
+			t.Errorf("MaxTokens = %d, want the tenant's lower 500 kept", wf.Budget.MaxTokens)
+		}
+	})
+}
+
+// ---------------------------------------------------------------------------
+// uploadRunFiles / recordRunGitMeta
+// ---------------------------------------------------------------------------
+
+// fakeUploaderStore is a RunStore that additionally exposes the
+// RunFilesUploader bridge, recording the call for assertions. The embedded
+// interface is nil — only UploadRunFiles may be invoked.
+type fakeUploaderStore struct {
+	store.RunStore
+	n         int
+	err       error
+	gotRun    string
+	gotTenant string
+}
+
+func (f *fakeUploaderStore) UploadRunFiles(ctx context.Context, runID string) (int, error) {
+	f.gotRun = runID
+	f.gotTenant, _ = store.TenantFromContext(ctx)
+	return f.n, f.err
+}
+
+func TestUploadRunFiles(t *testing.T) {
+	msg := &queue.RunMessage{RunID: "run-1", TenantID: "team-a", OwnerID: "owner-1"}
+
+	t.Run("store without the seam no-ops", func(t *testing.T) {
+		st, err := store.New(t.TempDir())
+		if err != nil {
+			t.Fatal(err)
+		}
+		r := &Runner{cfg: Config{Store: st, Logger: iterlog.Nop()}}
+		r.uploadRunFiles(context.Background(), msg) // must not panic
+	})
+	t.Run("uploader seam receives runID under the tenant identity", func(t *testing.T) {
+		fake := &fakeUploaderStore{n: 2}
+		r := &Runner{cfg: Config{Store: fake, Logger: iterlog.Nop()}}
+		r.uploadRunFiles(context.Background(), msg)
+		if fake.gotRun != "run-1" {
+			t.Errorf("uploaded run = %q, want run-1", fake.gotRun)
+		}
+		if fake.gotTenant != "team-a" {
+			t.Errorf("upload ctx tenant = %q, want team-a", fake.gotTenant)
+		}
+	})
+	t.Run("upload failure is non-fatal", func(t *testing.T) {
+		fake := &fakeUploaderStore{err: errors.New("s3 down")}
+		r := &Runner{cfg: Config{Store: fake, Logger: iterlog.Nop()}}
+		r.uploadRunFiles(context.Background(), msg) // logged, never panics
+	})
+}
+
+// fakeGitMetaStore is a RunStore that additionally persists git metadata,
+// capturing the snapshot recordRunGitMeta saves.
+type fakeGitMetaStore struct {
+	store.RunStore
+	saved    *store.RunGitMeta
+	savedRun string
+}
+
+func (f *fakeGitMetaStore) SaveRunGitMeta(_ context.Context, runID string, meta *store.RunGitMeta) error {
+	f.savedRun = runID
+	f.saved = meta
+	return nil
+}
+
+func (f *fakeGitMetaStore) LoadRunGitMeta(context.Context, string) (*store.RunGitMeta, error) {
+	return nil, nil
+}
+
+// gitCommitAll stages everything and commits with a fixed identity.
+func gitCommitAll(t *testing.T, r *Runner, dir, msg string) {
+	t.Helper()
+	ctx := context.Background()
+	if err := r.runGit(ctx, dir, "", "add", "-A"); err != nil {
+		t.Fatalf("git add: %v", err)
+	}
+	if err := r.runGit(ctx, dir, "", "-c", "user.name=t", "-c", "user.email=t@example.invalid", "commit", "-q", "-m", msg); err != nil {
+		t.Fatalf("git commit: %v", err)
+	}
+}
+
+// TestRecordRunGitMeta pins the best-effort git snapshot: no baseline or a
+// non-git workdir skip persistence entirely; a real clone with commits past
+// the baseline persists the commit + file lists the server pod serves after
+// the runner's workspace is wiped.
+func TestRecordRunGitMeta(t *testing.T) {
+	msg := &queue.RunMessage{RunID: "run-1", TenantID: "team-a"}
+
+	t.Run("empty baseline skips persistence", func(t *testing.T) {
+		fake := &fakeGitMetaStore{}
+		r := &Runner{cfg: Config{Store: fake, Logger: iterlog.Nop()}}
+		r.recordRunGitMeta(context.Background(), msg, t.TempDir(), "")
+		if fake.saved != nil {
+			t.Errorf("snapshot persisted despite empty baseline: %+v", fake.saved)
+		}
+	})
+	t.Run("non-git workdir skips persistence", func(t *testing.T) {
+		fake := &fakeGitMetaStore{}
+		r := &Runner{cfg: Config{Store: fake, Logger: iterlog.Nop()}}
+		r.recordRunGitMeta(context.Background(), msg, t.TempDir(), "deadbeef")
+		if fake.saved != nil {
+			t.Errorf("snapshot persisted for a non-git dir: %+v", fake.saved)
+		}
+	})
+	t.Run("commits past the baseline are persisted", func(t *testing.T) {
+		fake := &fakeGitMetaStore{}
+		r := &Runner{cfg: Config{Store: fake, Logger: iterlog.Nop()}}
+		dir := t.TempDir()
+		ctx := context.Background()
+		if err := r.runGit(ctx, dir, "", "init", "-q"); err != nil {
+			t.Fatalf("git init: %v", err)
+		}
+		if err := os.WriteFile(filepath.Join(dir, "a.txt"), []byte("one\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		gitCommitAll(t, r, dir, "c1")
+		base, err := gitlib.RevParseHead(dir)
+		if err != nil {
+			t.Fatalf("rev-parse base: %v", err)
+		}
+		if err := os.WriteFile(filepath.Join(dir, "b.txt"), []byte("two\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		gitCommitAll(t, r, dir, "c2")
+
+		r.recordRunGitMeta(ctx, msg, dir, base)
+		if fake.saved == nil {
+			t.Fatal("no snapshot persisted")
+		}
+		if fake.savedRun != "run-1" {
+			t.Errorf("saved run = %q, want run-1", fake.savedRun)
+		}
+		if fake.saved.BaseCommit != base {
+			t.Errorf("BaseCommit = %q, want %q", fake.saved.BaseCommit, base)
+		}
+		if len(fake.saved.Commits) != 1 {
+			t.Fatalf("Commits = %+v, want exactly the one post-baseline commit", fake.saved.Commits)
+		}
+		foundB := false
+		for _, f := range fake.saved.Files {
+			if f.Path == "b.txt" {
+				foundB = true
+			}
+		}
+		if !foundB {
+			t.Errorf("Files = %+v, want b.txt listed", fake.saved.Files)
+		}
+	})
+	t.Run("baseline equal to HEAD persists the empty snapshot", func(t *testing.T) {
+		fake := &fakeGitMetaStore{}
+		r := &Runner{cfg: Config{Store: fake, Logger: iterlog.Nop()}}
+		dir := t.TempDir()
+		ctx := context.Background()
+		if err := r.runGit(ctx, dir, "", "init", "-q"); err != nil {
+			t.Fatalf("git init: %v", err)
+		}
+		if err := os.WriteFile(filepath.Join(dir, "a.txt"), []byte("one\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		gitCommitAll(t, r, dir, "c1")
+		head, err := gitlib.RevParseHead(dir)
+		if err != nil {
+			t.Fatal(err)
+		}
+		r.recordRunGitMeta(ctx, msg, dir, head)
+		if fake.saved == nil {
+			t.Fatal("no snapshot persisted for a no-commit run")
+		}
+		if len(fake.saved.Commits) != 0 || len(fake.saved.Files) != 0 {
+			t.Errorf("expected empty commit/file lists, got %+v / %+v", fake.saved.Commits, fake.saved.Files)
+		}
+	})
 }

@@ -41,8 +41,56 @@ type BoardStore interface {
 	AggregateLabels() []LabelUsage
 }
 
+// UniqueTitleCreator is the optional interface for board backends that can
+// assign a distinct card title atomically with the create write (so two
+// concurrent creates of the same title cannot both land it — PR #193 M4).
+// The filesystem store implements it; a backend that does not cleanly
+// degrades to the caller's best-effort list-then-check.
+type UniqueTitleCreator interface {
+	// normalize, when non-nil, is applied to every candidate title inside the
+	// critical section — including the "#N - " prefixed variants. It lets a
+	// caller keep the result within a display budget: prefixing "#N - " onto an
+	// already-max-length title would otherwise overflow it, so the caller passes
+	// its own rune-aware truncator (the prefix survives because truncation keeps
+	// the head). nil = titles are used verbatim.
+	CreateUniqueTitle(in Issue, normalize func(string) string) (*Issue, error)
+}
+
+// AsUniqueTitleCreator returns s as UniqueTitleCreator when the backend
+// supports the atomic-unique-title create, or nil otherwise.
+func AsUniqueTitleCreator(s BoardStore) UniqueTitleCreator {
+	if s == nil {
+		return nil
+	}
+	u, _ := s.(UniqueTitleCreator)
+	return u
+}
+
+// LaunchClaimer is the optional interface for board backends that can
+// atomically claim a Ready ticket for launch — a CAS StateReady →
+// StateInProgress that reports whether THIS caller won (PR #193 M2). It
+// closes the check-then-act window where a live dispatcher and the studio
+// admission loop both pick the same Ready ticket. The filesystem store
+// implements it; a backend that does not cleanly degrades to the caller's
+// best-effort SetState (the documented V1 window).
+type LaunchClaimer interface {
+	ClaimForLaunch(id string) (*Issue, bool, error)
+}
+
+// AsLaunchClaimer returns s as LaunchClaimer when the backend supports the
+// atomic launch claim, or nil otherwise.
+func AsLaunchClaimer(s BoardStore) LaunchClaimer {
+	if s == nil {
+		return nil
+	}
+	c, _ := s.(LaunchClaimer)
+	return c
+}
+
 // Compile-time assertion that the filesystem store satisfies the contract.
 var _ BoardStore = (*Store)(nil)
+var _ UniqueTitleCreator = (*Store)(nil)
+var _ LaunchClaimer = (*Store)(nil)
 
 // Compile-time guarantees: the filesystem store is a full board backend.
 var (

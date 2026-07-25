@@ -18,23 +18,28 @@ import {
 import WSStatusDot from "@/components/shared/WSStatusDot";
 import { useAsyncAction } from "@/hooks/useAsyncAction";
 import { useConfirm } from "@/hooks/useConfirm";
-import { formatRelative } from "@/lib/format";
+import { formatDateTime, formatRelative } from "@/lib/format";
 import { useRunStore, type WsState } from "@/store/run";
+import { useServerInfoStore } from "@/store/serverInfo";
 
 import ForkDialog from "./ForkDialog";
 import ResumeDialog from "./ResumeDialog";
+import { RunShellPanel } from "./RunShellPanel";
 import BackendsUsedRow from "./runHeader/BackendsUsedRow";
 import BotChip from "./runHeader/BotChip";
+import DeploymentRow from "./runHeader/DeploymentRow";
 import ErrorHintRow from "./runHeader/ErrorHintRow";
 import FinalizationRow from "./runHeader/FinalizationRow";
 import ForkedFromRow from "./runHeader/ForkedFromRow";
 import RunChildrenPanel from "./runHeader/RunChildrenPanel";
 import NotesRow from "./runHeader/NotesRow";
+import ResultLinksRow from "./runHeader/ResultLinksRow";
 import RunNameEditor from "./runHeader/RunNameEditor";
 import RunTagsRow from "./runHeader/RunTagsRow";
 import SourceTicketRow from "./runHeader/SourceTicketRow";
 import WSDisconnectBanner from "./runHeader/WSDisconnectBanner";
 import { cancelTooltip } from "./runHeader/cancelTooltip";
+import { isDeletable, isResumable } from "./runStatusActions";
 
 interface Props {
   run: RunHeaderType;
@@ -50,11 +55,16 @@ interface Props {
 export default function RunHeader({ run, active, wsState, onResetLayout, bare = false }: Props) {
   const requestWsReconnect = useRunStore((s) => s.requestWsReconnect);
   const applySnapshot = useRunStore((s) => s.applySnapshot);
+  // Headline result-links (opened PR, live deploy) derived from the run's
+  // preview_url events — rebuilt on reload from the replayed event log.
+  const resultLinks = useRunStore((s) => s.resultLinks);
   const { busy, error, run: runAction, setError } = useAsyncAction();
   const [resumeOpen, setResumeOpen] = useState(false);
   const [forkOpen, setForkOpen] = useState(false);
+  const [shellOpen, setShellOpen] = useState(false);
   const [editingName, setEditingName] = useState(false);
   const [, setLocation] = useLocation();
+  const cloud = useServerInfoStore((s) => s.info?.mode === "cloud");
 
   // canCancel covers every state where a cancel actually does something
   // distinct from Resume:
@@ -105,11 +115,9 @@ export default function RunHeader({ run, active, wsState, onResetLayout, bare = 
   // Resume from header is a "best-effort" trigger — for paused_waiting_human
   // runs the user normally fills the Pause form in the detail panel
   // (Phase 5). The header button stays for failed_resumable / cancelled
-  // / paused_operator runs.
-  const canResume =
-    run.status === "failed_resumable" ||
-    run.status === "cancelled" ||
-    run.status === "paused_operator";
+  // / paused_operator runs (isResumable — shared with the run list's
+  // inline Resume quick action).
+  const canResume = isResumable(run.status);
 
   const onCancel = () => runAction(() => cancelRun(run.id));
 
@@ -141,6 +149,19 @@ export default function RunHeader({ run, active, wsState, onResetLayout, bare = 
   };
 
   const showFinalization = Boolean(run.final_commit);
+
+  // Post-mortem shell: local mode, run at rest, preserved worktree on
+  // disk (worktree_available mirrors the server-side gate, so the
+  // button and the endpoint's 409/410 stay in lockstep).
+  const runShellEnabled = useServerInfoStore(
+    (s) => Boolean(s.info?.run_shell_enabled),
+  );
+  const shellEligible =
+    runShellEnabled &&
+    run.status !== "running" &&
+    run.status !== "queued" &&
+    Boolean(run.work_dir) &&
+    run.worktree_available;
 
   const friendlyName = run.name || run.workflow_name;
   const startedRel = formatRelative(run.created_at);
@@ -182,7 +203,8 @@ export default function RunHeader({ run, active, wsState, onResetLayout, bare = 
 
   // Delete is offered only for terminal runs — an active run must be
   // cancelled first. Irreversible: removes the run + all its data.
-  const canDelete = ["finished", "failed", "failed_resumable", "cancelled"].includes(run.status);
+  // isDeletable is shared with the run list's bulk Delete.
+  const canDelete = isDeletable(run.status);
   const deleteWithConfirm = async () => {
     const ok = await confirm({
       title: "Delete this run?",
@@ -355,7 +377,7 @@ export default function RunHeader({ run, active, wsState, onResetLayout, bare = 
               `/editor?file=${encodeURIComponent(p)}&from=${encodeURIComponent(run.id)}`,
             )
           } />
-          {run.work_dir && (
+          {run.work_dir && !cloud && (
             <Tooltip content={run.work_dir}>
               <span className="inline-flex items-center gap-1 font-mono truncate max-w-[20rem]">
                 <FolderGlyph />
@@ -363,7 +385,16 @@ export default function RunHeader({ run, active, wsState, onResetLayout, bare = 
               </span>
             </Tooltip>
           )}
-          <Tooltip content={new Date(run.created_at).toLocaleString()}>
+          {/* Cloud identity: the target repo slug, not the runner-pod
+              path (which is neither actionable nor informative here). */}
+          {cloud && run.project_path && (
+            <Tooltip content={`Target repository: ${run.project_path}`}>
+              <span className="inline-flex items-center gap-1 font-mono truncate max-w-[20rem]">
+                <span className="truncate">{run.project_path}</span>
+              </span>
+            </Tooltip>
+          )}
+          <Tooltip content={formatDateTime(run.created_at)}>
             <span className="inline-flex items-center gap-1">
               <ClockIcon className="w-3 h-3" />
               <span>started {startedRel}</span>
@@ -395,7 +426,27 @@ export default function RunHeader({ run, active, wsState, onResetLayout, bare = 
       {liveStreamExpected && (
         <WSDisconnectBanner state={wsState} onReconnect={requestWsReconnect} />
       )}
+      {/* Headline result-links (opened PR, live deploy) — the run's
+          "what did it produce" at a glance, the topmost outcome bar above
+          the detailed deployment/finalization rows. */}
+      <ResultLinksRow links={resultLinks} />
+      {/* What the run shipped, above where its commits landed: the live
+          URL is the operator's destination at the end of a deploy run. */}
+      {run.deployment && <DeploymentRow deployment={run.deployment} />}
       {showFinalization && <FinalizationRow run={run} />}
+      {shellEligible && (
+        <div className="shrink-0 px-4 py-1.5 bg-surface-2/40 border-b border-border-default flex items-center gap-2 text-micro">
+          <span className="text-fg-muted">worktree preserved</span>
+          <button
+            type="button"
+            className="text-accent hover:underline"
+            onClick={() => setShellOpen(true)}
+            title="Open an interactive shell in the run's preserved worktree (local mode)"
+          >
+            Open post-mortem shell
+          </button>
+        </div>
+      )}
       {run.forked_from && <ForkedFromRow run={run} />}
       <RunChildrenPanel run={run} />
       {run.source?.issue_id && <SourceTicketRow source={run.source} />}
@@ -416,6 +467,9 @@ export default function RunHeader({ run, active, wsState, onResetLayout, bare = 
           open={forkOpen}
           onOpenChange={setForkOpen}
         />
+      )}
+      {shellEligible && (
+        <RunShellPanel open={shellOpen} onOpenChange={setShellOpen} runId={run.id} />
       )}
       {dialog}
     </>

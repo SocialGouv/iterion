@@ -59,7 +59,7 @@ devbox run -- task test:live:review  # Run session continuity review/fix live te
 devbox run -- task test:live:kanban  # Run kanban board plan/implement/review live test
 devbox run -- task test:live:full    # Run exhaustive DSL coverage live test
 devbox run -- task test:race      # Tests with race detector
-devbox run -- task lint           # go fmt + go vet
+devbox run -- task lint           # go fmt + go vet + golangci-lint
 devbox run -- task check          # lint + test
 devbox run -- task clean          # Remove build artifacts
 ```
@@ -102,14 +102,17 @@ Other top-level directories: `studio/` (React/Vite frontend), `examples/` (.bot 
   - `detect/` — Backend credential auto-detection (OAuth, API keys, AWS/GCP) consumed by `model/executor.go`'s resolver and the studio toolbar BackendStatusPill
   - `tooldisplay/` — Human-readable rendering of tool calls for the run console / report
 - `pkg/runtime/` — Workflow execution engine (branch scheduling, events, budget, recovery dispatch)
+- `pkg/reviewtopology/` — Resolves the mono/dual review topology (`review_mode` / `mono_family`, **ADR-052**) from detected credentials and injects it into a run's inputs, but only for bots that opt in by declaring a `review_mode` var (`InjectIfDeclared`) — no-ops on the shipped catalog, kept for future/third-party reviewer loops. See [docs/adr/052-review-topology-mono-dual.md](docs/adr/052-review-topology-mono-dual.md)
 - `pkg/store/` — Run persistence (JSON-based, versioned artifacts, events.jsonl)
 - `pkg/server/` — HTTP server for studio backend (embedded static UI)
 - `pkg/dispatcher/` — Long-running dispatcher: native kanban store, polling actor, tracker adapters (native, github, forgejo)
   - `tracker/` — `Tracker` interface + normalized `Issue` type + GitHub/Forgejo adapters
   - `native/` — Filesystem-backed kanban (board.json, issues/, events.jsonl) + REST + adapter
   - `native/boardops/` — capability-gated board operations shared by the `__mcp-board` stdio server, the `/api/v1/mcp/board` HTTP handler, and the claw in-process tools (`mcp.iterion_board.*`)
-- `pkg/cli/` — CLI command implementations (init, validate, run, inspect, resume, diagram, studio, report, dispatch, issue, bench, bots, bundle, sandbox, version)
+- `pkg/forge/` — Outbound forge-integration layer (github/gitlab/forgejo): `Connection`/`RepoIntegration`/`OAuthApp` stores (team-scoped), per-provider `Admin` clients (repos/hooks), GitHub App manifest flow + installation-token minting (least-priv, `InstallationInfo` health probe), the optional `RepoCreator` capability (create-only; GitHub Apps mint a per-call `administration:write` token, an opt-in grant at App creation), `Orchestrator` (Provision/Deprovision: webhook + hook + managed secret + bot bindings + repo-bound schedules), and the token refresh worker. The studio's **repo-first** shell (RepoSwitcher, connect wizard `/integrations/connect`, launch "Target repository" attach-or-create from a bot's manifest `repo:` block) sits on it — see [docs/repo-scope.md](docs/repo-scope.md)
+- `pkg/cli/` — CLI command implementations (validate, import, run, inspect, runs, resume, fork, diagram, report, studio, server, dispatch, schedule, issue, bots, skill, marketplace, memory, models, openapi, bench, bundle, sandbox, migrate, secret, plugin, remote, supervise, version)
 - `pkg/benchmark/` — Metrics collection and reporting
+- `pkg/botreplay/` — Record/replay golden-test framework for bots: freezes one representative LLM node interaction (the input + output maps) as a committed fixture and re-validates it against the current schema + invariants with no API calls (`task test:goldens`). See [docs/adr/008-bot-golden-replay-framework.md](docs/adr/008-bot-golden-replay-framework.md)
 - `pkg/log/` — Leveled logger (error, warn, info, debug, trace) — public so e2e tests can construct it
 - `pkg/identity/` — Two-level tenancy domain (**ADR-048**): `Org` (top level — members via `OrgMembership`, SSO, monthly run/cost/memory budget, billing) → `Team` (the **resource tenant**: every store keys on `Team.ID`; carries `OrgID` + team-level concurrency/launch-rate caps). A user is an org member granted 0..N teams. Active context = `(org_id, team_id)`, both on the JWT. Personal org+team auto-created on signup; `iterion migrate orgs` backfills legacy teams. Store (mongo + memory) is the source of truth for both.
 - `pkg/auth/` — Operator authentication primitives (SSO, session cookies, password reset) for cloud-mode endpoints. Mints the JWT carrying `(OrgID, OrgRole, TeamID, Role)`; `SwitchOrg`/`SwitchTeam` re-issue it (org-then-team validation).
@@ -117,17 +120,44 @@ Other top-level directories: `studio/` (React/Vite frontend), `examples/` (.bot 
 - `pkg/orgusage/` — Per-org monthly run/cost counters (Mongo CAS) feeding the launch gate + usage views (see [docs/quotas-and-limits.md](docs/quotas-and-limits.md))
 - `pkg/pat/` — Personal access tokens (`iap_` bearers for programmatic API access)
 - `pkg/mail/` — Stdlib SMTP mailer (invitations + password reset) with a log fallback when unconfigured
+- `pkg/usernotify/` — User-addressed notifications for run lifecycle moments (run paused on a human form, finished/failed/cancelled): `Dispatcher` consumes run-outcome `trigger.Event`s from the eventbus spine (queue group `usernotify` on NATS ⇒ one replica per event), resolves recipients (run owner + per-user team-wide opt-in prefs), dedups per episode via the `sent_notifications` first-writer-wins claim, and fans out to `Sink`s — `webpush/` (VAPID Web Push to per-browser subscriptions, cloud) ships; desktop (Wails OS notification) and email are future sinks on the same interface. A 2-min reconciliation sweep replays episodes the lossy bus dropped. Shared event authority: `trigger.BuildRunOutcome` (used by both `runview.emitRunOutcome` and the runner's `fireOutcomeEvent`). Enabled iff `ITERION_WEBPUSH_VAPID_{PUBLIC,PRIVATE}_KEY` are set (`iterion server webpush-keys` mints a pair). See [docs/notifications.md](docs/notifications.md)
 - `pkg/bundle/` — `.botz` bundle loader (workflow + skills + recipes packaged together)
+- `pkg/plugin/` — The **plugin ecosystem**: declarative out-of-process extensions described by a `plugin.yaml` manifest with typed `contributes:` kinds (rewriters, mcp_servers, skills/commands/agents, hooks, lifecycle). Builtins embedded under `pkg/plugin/builtin/`; never injects Go code (static `CGO_ENABLED=0`), only wires manifests into existing seams. See [docs/plugins.md](docs/plugins.md)
 - `pkg/skilllib/` — **skill library** (ADR-059): a standalone, operator-curated store of `SKILL.md` skills, global `~/.iterion/skills/` + per-project override, referenced from workflows by the DSL `skills:` field. Distinct from bundle/plugin skills (both artifact-coupled); the three share the run-time `.claude/skills/` mirror (bundle > plugin > library precedence). Ships the shared frontmatter parser reused by `runview`. See [docs/skills-library.md](docs/skills-library.md)
 - `pkg/cloud/` — Cloud-mode runtime wiring (queue dispatch, runner orchestration, multitenancy)
 - `pkg/config/` — Config-file loader (`iterion dispatch` YAML + cloud config)
 - `pkg/git/` — Git helpers (worktree create/finalize, branch detection, fast-forward checks)
-- `pkg/identity/` — Operator identity types shared between auth, cloud and dispatcher
 - `pkg/queue/` — NATS-backed work queue used by cloud-mode dispatcher → runner pods
 - `pkg/runner/` — Cloud runner pod logic: claim a queued run, execute, report status back
 - `pkg/runview/` — Read-only run console API (REST + WS) consumed by the studio SPA
+- `pkg/supervise/` — LLM-driven **supervisor** agents (the `Coordinator`) that watch a running agent node from a separate goroutine/process and enqueue steering messages the run picks up at its next turn. Backs the in-`.bot` `supervisor` block and `iterion supervise` (managed runs + raw `claude` sessions). See [docs/supervisors.md](docs/supervisors.md)
 - `pkg/sandbox/` — Sandbox engine: Docker/Kubernetes drivers, devcontainer parsing, CONNECT proxy
 - `pkg/secrets/` — Secret storage + resolution + AES-256-GCM sealing (`Sealer`) shared across backends and sandbox. Domains: BYOK API keys, generic named secrets (`GenericSecretStore` — Mongo in cloud, file-backed `FileGenericSecretStore`/`LayeredGenericSecretStore` for the local **desktop/CLI** store), bot-secret bindings, per-run sealed bundle, OAuth-forfait. The **local** store (`~/.iterion/secrets.json` global + `<store-dir>/.iterion/secrets.json` project override) is sealed with a master key from the OS keychain (go-keyring) or a `secrets.key` keyfile fallback (`LoadOrCreateMasterKey`), resolved into runs by `ResolveLocalCredentials` → `WithCredentials` in `runview.BuildExecutor` (the in-process equivalent of the cloud runner's `injectCredentials`); managed via `iterion secret set|list|rm`, the studio Secrets view (`server_info.secrets_enabled`), and `/api/local/secrets`. There is no KMS backend yet — the `Sealer` interface is the seam for one. See [docs/secrets.md](docs/secrets.md)
+- `pkg/knowledge/` — Backend-agnostic `MemoryStore` contract for iterion's shared memory; adapters implement filesystem (`pkg/memory`) and cloud (Mongo) storage. Memory documents are treated as untrusted data, never instructions (the operating-posture/secret-handling clauses always outrank them). See [docs/memory-and-knowledge.md](docs/memory-and-knowledge.md)
+- `pkg/memory/` — Filesystem `MemoryStore` adapter: the per-workspace tree at `~/.iterion/projects/<encoded-workdir>/memory/<scope>/`, indexed from Markdown frontmatter and space-quota'd
+- `pkg/sessionboard/` — Curation-bot platform rendering declarative semantic widgets (milestone progress, blockers, narrative note, small chart) alongside the run view; the agent emits a Spec against a fixed widget registry, never code
+- `pkg/alert/` — Run-observer detecting stall/budget/failure conditions off runtime events (`budget_warning`/`budget_exceeded`/`run_failed`) + a per-run liveness heartbeat, fanning alerts to webhooks and in-process sinks
+- `pkg/notify/` — Delivers run-completion webhooks to operator-supplied URLs behind an SSRF guard (http/https only; fails closed on loopback/link-local/RFC-1918/metadata hosts unless opted in)
+- `pkg/secure/httpdial/` — Shared SSRF guard resolving operator-supplied hosts to safe public-unicast IPs with pinned DNS; backs webhooks, OIDC issuer fetch, and the preview proxy
+- `pkg/webhooks/` — Inbound-webhook spine: long-lived per-org `iwh_` tokens (token or HMAC mode) authenticating an external caller (forge/CI/script) to launch a configured set of bots, with per-provider parsers (GitLab/GitHub/Forgejo/generic). See [docs/webhooks.md](docs/webhooks.md)
+- `pkg/valkey/` — go-redis client construction + health for ephemeral cross-replica server state (forge OAuth/CSRF, board-MCP run tokens, auth rate-limit buckets); single-node URL or Sentinel-HA topology
+- `pkg/configshare/` — Shared-config read/write through `forge.FileClient` under a synthetic `auth.KindShare` grant: reads project down to the grant's visible paths, writes merge onto the server-read file with an if-match SHA. See [docs/config-share.md](docs/config-share.md)
+- `pkg/artifactlabels/` — Derives semantic labels (`plan`, `verdict`) for published artifacts from output shape; kept in sync with the studio's render-time `ArtifactDiff` detection
+- `pkg/cloudsched/` — Cloud-mode recurring-bot scheduler: per-org store of cron-scheduled bots + a multi-replica-safe CAS ticker firing each due schedule exactly once (cloud counterpart of `iterion schedule`)
+- `pkg/schedgate/` — Overlap policy + pre-launch guard evaluation shared by the three scheduled-launch surfaces (host crontab, `pkg/trigger.Scheduler`, `pkg/cloudsched`); no I/O beyond running the guard subprocess
+- `pkg/trigger/` — The unifying spine for **event-driven runs**: one canonical `Event` envelope every source (forge webhook, schedule tick, native-board transition, run completion, custom ingest) maps onto, a `Subscription` registry binding (event filter) → (bot launch into a repo/workspace), and the `Evaluator` that consumes events from `pkg/eventbus`, matches subscriptions, and launches/promotes. See [docs/adr/046-event-driven-runs-trigger-spine.md](docs/adr/046-event-driven-runs-trigger-spine.md)
+- `pkg/eventbus/` — Internal publish/subscribe spine carrying `trigger.Event` values from producers to the trigger `Evaluator`; two interchangeable implementations selected at wiring time — `InProcBus` (local CLI/studio) and `NATSBus` (cloud, the separate `ITERION_EVENTS` stream)
+- `pkg/marketplace/` — Curated hosted registry over `pkg/botinstall` for bot **and** plugin entries (repo URL, moderation status, visibility scope); backs `iterion marketplace`
+- `pkg/botinstall/` — Installs bot bundles from git URLs or local paths into a workspace; shared core for the CLI and studio bundle-install endpoints
+- `pkg/botimport/` — Converts Claude-Code workflow scripts (`.js`) to draft `.bot` DSL via lossy parse-and-lower with a mapped/degraded/dropped import report (backs `iterion import`, see [docs/import.md](docs/import.md))
+- `pkg/botscaffold/` — Generates a new bot bundle (`main.bot` + `manifest.yaml` + layout) from a builder Spec; engine behind `iterion bots create` and the studio guided builder
+- `pkg/botregistry/` — Discovers bots on disk (single `.bot` files + `.botz` bundle dirs); the shared layer behind `iterion bots list`, the studio `GET /api/v1/bots`, and the dispatcher's per-ticket bot-override resolution. Also generates Nexie's bot-catalog skill from manifests (`iterion bots regen-catalog`, [pkg/botregistry/catalog.go](pkg/botregistry/catalog.go))
+- `pkg/bundlelint/` — Cross-checks a bundle's `manifest.yaml` against its compiled `main.bot` (var/secret mismatches the DSL compiler can't see), surfaced at `iterion validate` under a dedicated C2xx diagnostic family
+- `pkg/pluginsource/` — Team-scoped durable binding for private plugins: persists git repo + referenced secret id so cloud pods can fetch and cache skills; the checkout is a re-derivable cache, the credential referenced never inlined
+- `pkg/botsource/` — Team-authored bot bundles: the writable, tenant-scoped counterpart to the read-only catalog baked into a runner image (the plugin-side `pkg/pluginsource` analogue for bots). Stores the bundle CONTENT as a multi-file map (`main.bot` + `manifest.yaml` + `skills/`…) since it's authored in the studio editor, not fetched from git; Mongo in cloud, memory-backed for tests/local. Two-tier editability: baked catalog bots stay read-only; a team forks one (`Origin = "forked:<catalog-id>"`) or authors a new one. Backs the studio cloud bot editor + `/api/teams/{id}/bot-sources` (see [docs/cloud-rest-api.md](docs/cloud-rest-api.md))
+- `pkg/askusermcp/` — Shared MCP tool surface (`ask_user`, `ask_user_async`, `await_answers`) exposed over both stdio and HTTP transports for interactive workflows
+- `pkg/runshell/` — Spawns an interactive post-mortem PTY shell in a preserved run worktree (studio "Open shell"); Unix-only with a Windows stub
+- `pkg/clock/` — Minimal `Clock` abstraction (real + fake) for deterministic testing of time-dependent logic (e.g. daily spend-cap resets)
 - `pkg/internal/` — Internal utilities (not importable outside `pkg/`)
   - `appinfo/` — Build-time version/commit injection (LDFLAGS targets)
   - `mongoutil/` — MongoDB helpers used by `pkg/cloud/` for the cloud-mode Mongo store
@@ -146,7 +176,7 @@ Other top-level directories: `studio/` (React/Vite frontend), `examples/` (.bot 
 
 ## Architecture
 
-`.bot` files are parsed into an **AST**, compiled into an **IR** (directed graph of nodes and edges), validated, then executed by the **runtime** engine. Nodes include Agent (LLM), Judge, Router, Human (pause/resume), Tool, Compute, and terminal nodes (Done/Fail). Parallel branches converge on downstream nodes via `await: wait_all` or `await: best_effort`; there is no top-level Join node. The runtime supports parallel branch scheduling, loop detection, budget enforcement, and resumable execution.
+`.bot` files are parsed into an **AST**, compiled into an **IR** (directed graph of nodes and edges), validated, then executed by the **runtime** engine. Nodes include Agent (LLM), Judge, Router, Human (pause/resume), Tool, Compute, Subbot (nested child `.bot` run), and terminal nodes (Done/Fail). Parallel branches converge on downstream nodes via `await: wait_all` or `await: best_effort`; there is no top-level Join node. The runtime supports parallel branch scheduling, loop detection, budget enforcement, and resumable execution.
 
 ### Compilation Pipeline
 
@@ -163,17 +193,19 @@ Other top-level directories: `studio/` (React/Vite frontend), `examples/` (.bot 
 |------|-------------|
 | **Agent** | LLM node with tools, structured I/O, optional delegation (claude_code, codex) |
 | **Judge** | LLM node producing verdicts (typically no tools) |
-| **Router** | Routing node with 4 modes: `fan_out_all`, `condition`, `round_robin`, `llm` (see `docs/routers.md`) |
-| **Human** | Pause/resume via `interaction: human` (default for human nodes); optional `interaction: llm` or `llm_or_human` can auto-answer or escalate |
+| **Router** | Routing node with 5 modes: `fan_out_all`, `fan_out_each`, `condition`, `round_robin`, `llm` (see `docs/routers.md`) |
+| **Human** | Pause/resume via `interaction: human` (default for human nodes); optional `interaction: llm` or `llm_or_human` can auto-answer or escalate. Agent/judge nodes can instead declare **`interaction: async`** (**ADR-081**): the agent posts questions via `ask_user_async` and KEEPS WORKING — answers arrive in its message queue (node-scoped inbox) whenever the operator replies; the `await_answers` tool is the LLM-discretion sync point (pauses only if something is still pending). See [docs/async-interaction.md](docs/async-interaction.md). |
 | **Tool** | Direct shell command execution (no LLM). ACTION tool nodes may opt into the **Verified Action** quad (`goal`+`postcondition`+`policy`+`recovery`) so a brittle recipe self-heals (idempotent-skip → recipe → self-repair → agent → policy) instead of hard-blocking; the postcondition is the deterministic truth oracle at every rung. **Gates stay deterministic** — never attach recovery to a `recipe == postcondition` gate (enforced by C103–C106). See [docs/adr/044-adaptive-recovery-for-deterministic-action-nodes.md](docs/adr/044-adaptive-recovery-for-deterministic-action-nodes.md). |
 | **Compute** | Deterministic expression node for derived structured output (no LLM, no shell) |
+| **Subbot** | Runs another `.bot` as a nested child run (`subbot <name>:` with `source:`, var mapping, resource leases, and an `isolated:` workspace-safety assertion); child outputs read back as `outputs.<subbot>.<field>`. Diagnostic C119. |
 | **Emit** / **Wait** | In-bot event-driven primitives (**ADR-051**): `emit` publishes a named run-scoped event with an immutable payload; `wait` blocks a branch until that event fires (mandatory `timeout:` — the bornage). A reactive coordination pair between parallel branches (actor/CSP model, **not** the JS event loop — payloads are immutable, no shared mutable heap), backed by a run-local *reliable* registry, distinct from the lossy cross-run `pkg/eventbus`. Diagnostics C196–C198. See [docs/adr/051-in-bot-event-driven-primitives.md](docs/adr/051-in-bot-event-driven-primitives.md) + [examples/events/pingpong.bot](examples/events/pingpong.bot). |
+| **Await answers** | `await_answers` (**ADR-081**): the deterministic sync point for async human questions — parks its branch (only its branch) until every pending `ask_user_async` question of the `from:` node (or the whole run) is answered; mandatory `timeout:`; output `{answers: [...]}`. Level-triggered against the interaction store (doorbell + 5s poll), so cross-process answers and resume both work. Diagnostics C240–C242. See [docs/async-interaction.md](docs/async-interaction.md) + [examples/async-questions/main.bot](examples/async-questions/main.bot). |
 | **Done** | Terminal: workflow success |
 | **Fail** | Terminal: workflow failure |
 
 ### DSL Quick Reference
 
-**Top-level blocks:** `vars:`, `attachments:`, `prompt <name>:`, `schema <name>:`, `cursor <name>:`, node declarations (`agent`, `judge`, `router`, `human`, `tool`, `compute`, `emit`, `wait`), `workflow <name>:`
+**Top-level blocks:** `vars:`, `attachments:`, `prompt <name>:`, `schema <name>:`, `cursor <name>:`, node declarations (`agent`, `judge`, `router`, `human`, `tool`, `compute`, `emit`, `wait`, `await_answers`), `workflow <name>:`
 
 **`compress:` field** (`on|ultra|off`) — command-output compression (the `rewriter` plugin kind, rtk by default) on the `workflow` block and on `agent`/`judge`/`tool` nodes. **Opt-OUT on agent/judge nodes**: when a rewriter plugin is enabled and its binary is present, compression defaults **on** (so rtk is used out of the box); disable per-run with `--compress off` (or the studio toggle) or globally with `iterion plugin disable rtk` / `ITERION_COMPRESS=off`. **Tool nodes stay opt-IN** (a review loop's `git diff` is never silently compressed). See the plugins section above + [docs/plugins.md](docs/plugins.md).
 
@@ -184,6 +216,7 @@ Other top-level directories: `studio/` (React/Vite frontend), `examples/` (.bot 
 src -> dst                              # default edge
 src -> dst when <field>                 # conditional (boolean field from src output)
 src -> dst when not <field>             # negated condition
+src -> dst else                         # explicit fallback (fires only when no sibling `when` matched)
 src -> dst as loop_name(5)              # bounded loop (max 5 iterations)
 src -> dst with {field: "{{ref}}"}      # data mapping
 ```
@@ -196,11 +229,12 @@ src -> dst with {field: "{{ref}}"}      # data mapping
 
 ### Backend selection
 
-Four backends are wired:
+Five backends are wired:
 - `claw` (default, in-process) — recommended for read-only LLM nodes (judges, reviewers, planners). Use any provider model claw supports, e.g. `model: "openai/gpt-5.4-mini"` or `model: "anthropic/claude-sonnet-4-6"`.
 - `claude_code` — recommended for nodes that need real tool/shell access (implementers, fixers).
 - `codex` — **deprecated / frozen — do NOT do new implementation work on the codex delegate** (`pkg/backend/delegate/codex.go`). Kept only for backward compatibility and live-test coverage (`task test:live`); do not extend it (e.g. new error handling, network-resilience retyping, tool wiring) — apply such work to `claude_code`/`claw` only. The IR compiler emits `C030` for any node using it. Background: codex SDK cannot configure its tool set (`AllowedTools`/`CanUseTool` don't gate the built-in shell), it tends to fill its own context window, and its iterion integration is less ergonomic. New workflows must not adopt it.
 - `kimi` — Moonshot's kimi-code CLI driven through the generic CLI-agent seam (ADR-065, [pkg/backend/delegate/kimi.go](pkg/backend/delegate/kimi.go)): `backend: "kimi"`, prompt via `-p`, stream-json output, model alias passed through verbatim (e.g. `model: "kimi-code/kimi-for-coding"`); credentials are resolved by the CLI itself from its own env/config. Sessions are best-effort — resume/fork are not wired for CLI-agent backends, so each node runs fresh.
+- `grok` — xAI Grok Build CLI driven through the same CLI-agent seam (ADR-065, [pkg/backend/delegate/grok.go](pkg/backend/delegate/grok.go)): `backend: "grok"`, prompt via `-p`, `--output-format json`, `system:` via `--rules` (append — never override the native agentic baseline), model via `-m` (optional `xai/` prefix stripped), `reasoning_effort` via `--reasoning-effort`; headless tool approval forced with `--permission-mode bypassPermissions --always-approve`. Credentials come from the CLI itself (Grok Build login / `~/.grok`). Distinct from the metered xAI HTTP API path (`backend: claw` + `model: "xai/…"`).
 
 **Auto-detection.** When neither the node (`backend:`) nor the workflow (`default_backend:`) names a backend, and `ITERION_DEFAULT_BACKEND` is unset, the resolver in [pkg/backend/model/executor.go:resolveBackendName](pkg/backend/model/executor.go) probes the host for credentials (Claude Code OAuth, ANTHROPIC_API_KEY, OPENAI_API_KEY, AWS, GCP) and picks the first match in `ITERION_BACKEND_PREFERENCE` (default `claude_code,claw` — codex is intentionally excluded). When `model:` is also empty and the resolved backend is `claw`, the runtime substitutes a sensible model spec for the first available provider. The studio surfaces the live detection via the toolbar BackendStatusPill and disables Run when no credential is found. See [docs/backends.md](docs/backends.md).
 
@@ -291,7 +325,7 @@ command). Sandboxed runs bind-mount each rewriter's host binary at its declared
 
 ### Sandbox
 
-Workflows can opt into per-run container isolation via `sandbox: auto` (reads `.devcontainer/devcontainer.json`, falling back to a published `iterion-sandbox-slim:<version>` image when no devcontainer is present), block-form inline configuration (`sandbox:` with `image:` or `build:`), or `sandbox: none` (explicit opt-out). When active, claude_code, claw, and tool nodes execute against a long-lived container that bind-mounts the worktree (by default at the host workspace's absolute path so Claude Code project keys match in/out container); network egress is **unrestricted by default** (`network: open`, since 2026-05-22 — no proxy is started). Opting into `network: allowlist` (or `denylist`) starts an HTTP CONNECT proxy on the host that enforces the policy; the built-in `iterion-default` preset covers LLM endpoints + npm/pypi/golang + github/gitlab/bitbucket + Nix cache. Sandboxed `claw` calls are routed through the hidden `iterion __claw-runner` subprocess inside the container, so the `iterion` binary must be present on the container PATH (or bind-mounted by the host when available).
+Per-run container isolation is **on by default**: at product entry points (`iterion run`/`resume`, studio, dispatcher) a workflow with no `sandbox:` block runs as `sandbox: auto` (reads `.devcontainer/devcontainer.json`, falling back to a published `iterion-sandbox-slim:<version>` image), with graceful degradation when the host can't sandbox (outside a git repo, or no container runtime → visible `sandbox_skipped` event). Workflows can still pin block-form inline configuration (`sandbox:` with `image:` or `build:`) or explicitly opt out via `sandbox: none` — discouraged and flagged by the C128 warning. `ITERION_SANDBOX_DEFAULT=none` restores the historical opt-in behaviour machine-wide; the cloud runner still pins `ITERION_SANDBOX_OVERRIDE=none` (the runner pod is the isolation boundary there, pending the k8s sandbox cutover). When active, claude_code, claw, and tool nodes execute against a long-lived container that bind-mounts the worktree (by default at the host workspace's absolute path so Claude Code project keys match in/out container); network egress is **unrestricted by default** (`network: open`, since 2026-05-22 — no proxy is started). Opting into `network: allowlist` (or `denylist`) starts an HTTP CONNECT proxy on the host that enforces the policy; the built-in `iterion-default` preset covers LLM endpoints + npm/pypi/golang + github/gitlab/bitbucket + Nix cache. Sandboxed `claw` calls are routed through the hidden `iterion __claw-runner` subprocess inside the container, so the `iterion` binary must be present on the container PATH (or bind-mounted by the host when available).
 
 By default the sandbox also auto-mounts `~/.iterion/` (run store) and `~/.claude/` (Claude Code OAuth + per-project sessions) at the same absolute path inside the container so persistent memory survives across runs. On Linux, when the spec doesn't pin a `User`, the docker driver runs the container as the host UID:GID so writes back to those mounted trees stay host-owned. Disable via `sandbox.host_state: none` in the DSL, `--sandbox-host-state=none`, or `ITERION_SANDBOX_HOST_STATE=none` — recommended for multi-tenant cloud runners that must not leak host OAuth credentials. The kubernetes driver hard-errors on `host_state: auto` (cloud pods have no host filesystem to bind). See [docs/sandbox.md](docs/sandbox.md) for the full reference (incl. the published `iterion-sandbox-slim`/`iterion-sandbox-full` variants, the `--sandbox-default-image` override, and the host-state mount details) and `iterion sandbox doctor` for host diagnostics.
 
@@ -326,7 +360,7 @@ V2-6 wires `sandbox.build:` via `docker buildx build` on the local docker driver
 
 The checkpoint embedded in `run.json` is the authoritative source for resume — events are observational only. See `docs/persisted-formats.md` for field semantics.
 
-**Run statuses:** `queued` (cloud mode only — submitted to the NATS queue, not yet claimed by a runner pod) → `running` → `paused_waiting_human` → `finished` | `failed` | `failed_resumable` | `cancelled`
+**Run statuses:** `queued` (cloud mode only — submitted to the NATS queue, not yet claimed by a runner pod) → `running` → `paused_waiting_human` or `paused_operator` → `finished` | `failed` | `failed_resumable` | `cancelled`
 
 **Key event types:** `run_started`, `node_started`, `llm_request`, `llm_retry`, `tool_called`, `artifact_written`, `human_input_requested`, `run_paused`, `run_resumed`, `join_ready`, `edge_selected`, `budget_warning`, `budget_exceeded`, `run_finished`, `run_failed`
 
@@ -336,15 +370,17 @@ The engine saves a checkpoint after every successful node execution. When a run 
 
 **Resumable statuses:** `paused_waiting_human` (needs answers), `failed_resumable` (automatic retry), `cancelled` (user-interrupted, checkpoint preserved)
 
-**All failure scenarios are resumable** except:
-- `FailNode` reached (intentional workflow termination → `failed`, no checkpoint)
-- First node fails before any checkpoint exists (→ `failed`, must restart)
+Execution failures routed through the checkpoint-aware path are resumable,
+including a failure on the first node (resume starts from the workflow entry
+when no older checkpoint exists). Reaching `FailNode` is intentional workflow
+termination and produces non-resumable `failed`; bootstrap/persistence failures
+that cannot save resumable state can also end as plain `failed`.
 
 Common resumable failures: transient LLM errors (rate limit, timeout), budget exceeded (increase budget + resume), schema validation errors (fix workflow + `--force`), context timeout/cancellation, fan-out branch failures, router failures.
 
 **`--force` flag**: allows resume even when the `.bot` source has changed (e.g., bug fix). Without `--force`, a hash mismatch produces an error.
 
-See `docs/resume.md` for the exhaustive failure matrix.
+See `docs/resume.md` for the current status, checkpoint, and override semantics.
 
 ### Concurrency
 
@@ -411,7 +447,7 @@ flags are set: `/board` (kanban CRUD with drag-and-drop, gated on
 `server_info.native_tracker_enabled`) and `/dispatcher` (live dashboard
 with running + retry tables, gated on `server_info.dispatcher_enabled`).
 
-### Inbound webhooks (cloud BaaS triggers)
+### Inbound webhooks (cloud agent-workflow triggers)
 
 Distinct from the dispatcher (which polls): cloud mode exposes
 self-authenticating inbound webhook endpoints that launch a bot per
@@ -424,7 +460,7 @@ all sit in front of the launch. Key files:
 [pkg/webhooks/](pkg/webhooks/) (spine + per-provider parsers),
 [pkg/server/webhooks_common.go](pkg/server/webhooks_common.go) (shared
 admission→idempotency→launch tail). Reference: [docs/webhooks.md](docs/webhooks.md);
-platform overview: [docs/baas-overview.md](docs/baas-overview.md).
+platform overview: [Iterion Cloud overview](docs/cloud-overview.md).
 
 ### Event-driven trigger spine (`pkg/trigger` + `pkg/eventbus`)
 
@@ -448,10 +484,36 @@ ship on the spine** (each = a source adapter publishing a
   bot) so the dispatcher's `Claim` — the **sole launch authority** —
   picks it up now (`Manager.Refresh()`) instead of at the 30s poll; the
   poll stays the reconciliation net, so fast-path + poll **cannot
-  double-launch**.
+  double-launch**. A board invocation may instead declare **`mode:
+  direct`** — the evaluator then launches the bot ON the matching card
+  (card id in `vars.issue_id`) instead of routing the card TO it; with
+  **`consume_labels: true`** the matcher's `all_labels` set is stripped
+  atomically pre-launch, making the label a one-shot re-armable trigger.
+  This powers **issue auto-triage** (`bots/issue-triage`, persona
+  Triagy): forge issues synced to the board are author-classified at
+  ingest (fail-closed trust gate — `authorTrust` over
+  `forge.PermissionClient`, threshold `MinAuthorRole`); trusted authors'
+  cards land in inbox with `triage:auto` (fires Triagy, who stamps the
+  handler bot + labels via `set_bot`), untrusted ones park with
+  `needs:approval` + zero LLM until the operator's studio "Approve &
+  triage" swaps the labels. The same author gate protects the webhook
+  `AutoImplementOnOpen` zero-touch lane. **Cloud parity**: the mongo
+  board has its own spine half
+  ([pkg/server/trigger_cloud.go](pkg/server/trigger_cloud.go)) — a
+  `board_events` poll-tail whose per-tenant CAS cursor elects one
+  publishing replica, feeding the same evaluator over the NATS bus with
+  an ATOMIC label consume (`boardmongo.ConsumeLabels`), so
+  consume_labels triggers cannot double-launch across replicas; the
+  `/api/v1/triggers` CRUD is team-scoped in cloud (active-team JWT).
 - **run-completion** ("runned by iterion") — `runview.Service` emits
-  `run.finished`/`failed`/`cancelled`; a direct-mode subscription chains
-  the next bot (`Actor` = upstream bot id).
+  `run.finished`/`failed`/`cancelled`/`paused` in-process, and cloud
+  **runner pods publish the same events** onto the NATSBus
+  (`Runner.fireOutcomeEvent`, sharing `trigger.BuildRunOutcome` with the
+  runview emitter — the NATSBus is wired in cloud since the
+  web-notifications work); a direct-mode subscription chains the next
+  bot (`Actor` = upstream bot id), and the `usernotify` dispatcher
+  consumes `run.paused`+terminals for browser push notifications
+  ([docs/notifications.md](docs/notifications.md)).
 - **scheduled** — `trigger.Scheduler` ticks schedule-kind subscriptions
   on their `Cron` (local tenant ""; cloud keeps cloudsched's CAS
   ticker).
@@ -699,7 +761,9 @@ adr-cartograph, secured-renovacy Phase 2) converge through ONE
 - the **deterministic verify gate** (`verify_build` writes the repo's
   real build+test into an out-of-tree `verify.sh`; the `verify_run`
   tool re-runs it on the REAL exit code — never an LLM judgment,
-  ADR-044) is the truth oracle;
+  ADR-044) is the truth oracle (docs-refresh is the exception: a
+  docs-only campaign can't break the build, so it dropped the verify
+  gate and converges on `scope_ok ∧ docs_aligned` alone);
 - the **termination contract** (a machine-checkable flag —
   `axis_complete` / `feature_complete` / `docs_aligned` / … — plus
   `commits_this_pass` and a remaining-work note) is the done-oracle,
@@ -783,7 +847,7 @@ the following are violations when they appear as **defaults**:
 **Not violations** (these are the *runtime*, not the target repo):
 references to iterion the engine running the bot — `mcp__iterion_board__*`
 capability tools, "iterion's expr / template substitution", `iterion
-report` for surfacing output, `.bot`/`.bot` DSL syntax. The bot is
+report` for surfacing output, `.bot` DSL syntax. The bot is
 *written for* iterion; it must not be *scoped to* iterion.
 
 **Enforcement:** `bots/catalog_universality_test.go` greps every
@@ -858,6 +922,88 @@ for the stack-specific patterns above. When you touch a catalog bot,
 re-read this section and "Catalog bots are repo-agnostic" — iterion (Go)
 is the easiest stack to overfit to, because it's the one you're staring at.
 
+## The ENGINE stays bot-agnostic — no bot knowledge in `pkg/`/`cmd/`
+
+The mirror of "catalog bots are repo/stack-agnostic": **iterion the engine
+must never know about a SPECIFIC catalog bot.** A bot is a catalog artifact
+(`bots/<name>/`); the engine wires *any* bot through GENERIC seams and must
+carry no `"docs-refresh"` / `"branch-improve-loop"` / `"review-pr"` string,
+no `stampDocsRefreshAmendVars`-style helper, no bot-specific prompt, no
+`if botID == "<x>"` branch. That coupling is exactly backwards — it makes
+the engine un-shippable to anyone whose bots differ, and it means a new bot
+needs an engine PR instead of just a bundle.
+
+**When a bot needs special launch/runtime behaviour, the behaviour lives in
+the BOT, keyed on generic context the engine already provides:**
+- Generic launch vars every bot can read — `pr_url`, `base_ref`,
+  `source_branch`, `pr_author`, `scope_notes`, … — set uniformly for ANY bot
+  launched on a PR/issue (`reviewPRVars` / `buildPRForgeCommandVars`). Doki's
+  amend-on-PR (v3.5.2) is the reference: iterion checks out the PR head +
+  sets `pr_url`/`base_ref` for whatever bot the webhook launches; Doki *itself*
+  reads a non-empty `pr_url` and switches into amend — zero engine code knows
+  it's Doki.
+- Manifest `invocations:` (the capability "what can fire me"), `capabilities:`
+  (board tools), `contributes:` (plugins), skills. The `Subscription` binds
+  (event) → (a bot) generically.
+
+**Known debt (extract when touched, don't extend):** the webhook layer still
+hardcodes distinguished-role bot ids — `defaultWebhookBotReviewPR`
+("review-pr"), `branchImproveBotID`, `featureDevBotID`
+([pkg/server/webhooks_common.go](pkg/server/webhooks_common.go)), the
+`cmd == "revi"` special-casing ([pkg/server/webhooks_gitlab.go](pkg/server/webhooks_gitlab.go)),
+the Billy merge-queue auto-heal + its mission prompt
+([pkg/server/webhooks_github.go](pkg/server/webhooks_github.go)), the
+`botRosterOrder` list ([pkg/server/server_dsl.go](pkg/server/server_dsl.go)),
+and the dispatcher's `ImplementBotOrDefault → "feature-dev"`
+([pkg/dispatcher/config.go](pkg/dispatcher/config.go)). These are ROLES
+(reviewer / implementer / brancher) that should resolve from config/manifest,
+not baked ids. **Do not add to this list** — thread new behaviour through the
+generic seams above. If you find a fresh instance, flag it.
+
+## A bot that needs tools declares them in `devbox.json`
+
+**If a bot's steps need a binary the sandbox image does not ship, add a
+`devbox.json` next to its `main.bot`.** iterion auto-installs it and puts
+the resulting tools on `PATH` for every node of the run. The same applies
+to a `devbox.json` at the root of the TARGET repo: iterion loads that one
+too, so a bot inherits the toolchain the repo itself declares.
+
+This is the supported way, and the alternatives are all worse:
+
+- **Curling a binary in `post_create`** — unpinned, undeclared, and
+  invisible to anyone reading the bot.
+- **A bespoke sandbox image** (the `-sec` variant) — a CI image chain to
+  maintain for every new tool, and a bot pinned to an image instead of to
+  the tools it actually needs.
+- **Letting the agent improvise** — the failure this rule exists for. In run
+  019f8384 the deploy step needed `crane` to publish an image, the sandbox
+  had no container tooling at all (no docker/podman/buildah/skopeo, `sudo`
+  blocked by `no_new_privs`, no `newuidmap` for rootless BuildKit), and the
+  agent spent turns discovering that, fetched a binary itself, then fell back
+  to a workaround that produced a live URL and delivered nothing.
+
+**Pin the versions and commit `devbox.lock`.** `some-tool@latest` re-resolves
+at install time, so what lands in a run's sandbox can change with no commit
+anywhere — a supply-chain surface, and a reproducibility hole for a bot whose
+job is to ship code. The lock pins each package to an exact nixpkgs commit;
+the explicit version in `devbox.json` makes the intent readable in a diff.
+Generate it with `devbox install` in the bot's directory and commit both
+files — the engine copies the lock alongside the config, so a locked project
+installs exactly what it was authored against.
+
+Two things to know when writing one:
+
+- **Non-interactive PATH is the trap.** `tool` nodes run through a
+  non-interactive `sh -c` that never sources a shell profile, so a tool that
+  is installed but not on `PATH` is a tool that does not exist. The engine
+  prepends the devbox profile's bin dir for this reason — don't hand-roll it
+  per bot.
+- **Nix installs cost time.** Declare what the bot genuinely needs. A bot
+  with no `devbox.json` pays nothing.
+
+The bar for reaching past devbox (a dedicated image) is a tool that Nix does
+not package, or a base layer the run needs *before* any step executes.
+
 ## Security
 
 Iterion self-audits with its own catalog bots, `sec-audit-source`
@@ -876,11 +1022,15 @@ the sec image produces a zero-finding façade — now caught, not silent:
 when the always-on generic scanners (gitleaks/trivy/semgrep-auto)
 produced no output, and banners partial coverage gaps in the report (see
 [sec_audit_scan_health_test.go](e2e/sec_audit_scan_health_test.go)). CI publishes it
-via [.github/workflows/image.yml](.github/workflows/image.yml) (the
-`build-sandbox-sec` job, chained on `-full`) on every push to `main`
-(tag `:edge`) and on release tags. Until that first CI run lands — or for
-a local-only loop — build it yourself and `docker tag` it to
-`ghcr.io/socialgouv/iterion-sandbox-sec:edge`.
+in two halves: the tool-only `iterion-sandbox-sec-base` builds in
+[.github/workflows/sandbox-images.yml](.github/workflows/sandbox-images.yml)
+(only when `sandbox/**` changes), and the published
+`iterion-sandbox-sec:edge` is finalized — current iterion binary stamped
+onto that base — on every push to `main` by
+[.github/workflows/image.yml](.github/workflows/image.yml) via
+[_finalize.yml](.github/workflows/_finalize.yml) (and at `:vX.Y.Z` on
+release tags). For a local-only loop, build it yourself and `docker tag`
+it to `ghcr.io/socialgouv/iterion-sandbox-sec:edge`.
 
 **Recurring audit.** The weekly schedule (sec-audit-source Mon 02:00
 UTC, sec-audit-deps Mon 03:00 UTC) is wired through
@@ -919,9 +1069,10 @@ blockers, the context-overflow ones are fixed —
 deterministic `cap_findings` node (see
 [sec_audit_cap_findings_test.go](e2e/sec_audit_cap_findings_test.go)).
 The remaining gate before flipping the schedule on for real is **(2) the
-sec image published in CI** (the `build-sandbox-sec` job above); until
-that first push lands, install the schedule but `docker tag` the locally
-built `iterion-sandbox-sec:edge` so the scanned runs find their tools.
+sec image published in CI** (the sandbox-images.yml `base-sec` job + the
+per-push finalize above); until that first push lands, install the
+schedule but `docker tag` the locally built `iterion-sandbox-sec:edge`
+so the scanned runs find their tools.
 For a one-time audit by hand, a direct scanner pass in the sec image is
 reliable —
 `docker run --rm -v "$PWD":/src:ro -w /src
@@ -931,9 +1082,11 @@ ghcr.io/socialgouv/iterion-sandbox-sec:edge gosec -severity=high
 The 2026-05-31 self-audit surfaced 6 high-severity gosec taint findings
 (SSRF in `pkg/server/runs_preview.go`, path-traversal in
 `pkg/server/runs_files.go` + a few internal paths); **all were resolved in
-`c9e18195`** — `resolvePreviewHost` strict-mode SSRF gate (public-unicast
+`c9e18195`** — the strict-mode SSRF gate (public-unicast
 pinning, metadata/loopback/link-local blocks, DNS-rebinding-proof, no
-redirect-follow) and `safePathWithin` symlink-aware containment for run-file
+redirect-follow), since extracted to [`pkg/secure/httpdial`](pkg/secure/httpdial/httpdial.go)'s
+`ResolvePublicHost` (the single source of truth, now also backing completion
+webhooks and OIDC SSO), and `safePathWithin` symlink-aware containment for run-file
 read/write, with regression tests in `runs_preview_test.go` /
 `runs_files_test.go`. New `source:sec-audit-self` findings land on the board;
 verify against the code before re-surfacing a finding as open (the prose
@@ -942,34 +1095,73 @@ above is the standing baseline, not an open-work list).
 ## CLI Commands
 
 ```
-iterion init [dir]                      # Scaffold new project
 iterion validate <file.bot>            # Parse and validate workflow
+iterion import <workflow.js> [--out] [--name] [--dry-run]  # Lossy Claude-Code workflow-script → draft .bot (goja AST, zero execution; see docs/import.md)
 iterion run <file.bot> [flags]         # Execute workflow (--var, --recipe, --timeout, --store-dir, --merge-into, --branch-name, --compress, --max-cost-usd, --max-tokens, --max-duration, --max-iterations, --max-parallel-branches)
 iterion inspect [--run-id] [--events]   # View run state and events
+iterion runs prune [--store-dir] [--older-than 720h] [--keep-last N] [--status finished,failed,cancelled] [--dry-run]  # Delete old runs (pair with `iterion schedule` for retention; docs/scheduling.md)
+iterion runs questions <run-id> [--store-dir]   # List a run's pending async (ask_user_async) questions
+iterion runs answer <run-id> <interaction-id> <answer> [--store-dir]  # Answer one pending async question (non-blocking; ADR-081)
 iterion resume --run-id --file [--answers-file] [--force]  # Resume paused/failed/cancelled run
 iterion fork --run-id <parent> --node <id> [--turn N] [--rewind-code]  # Fork a run at a prior LLM turn (resume with `iterion resume`)
 iterion diagram <file.bot> [--view]    # Generate Mermaid diagram (compact|detailed|full)
 iterion studio [--port] [--dir] [--bind] [--bots-path] [--no-browser-pane] [--max-concurrent-pipelines]  # Launch visual workflow editor (+ kanban /board, global /pipelines control-center board, /dispatcher dashboard, Browser pane, Launch modal, /bots gallery + per-bot home + guided builder at /bots/new). --max-concurrent-pipelines (default 3) caps concurrent root pipelines; excess wait in the /pipelines Ready lane.
 iterion report --run-id <id> [--store-dir] [--output]  # Generate chronological run report
 iterion dispatch <config.yaml> [--port]  # Long-running dispatcher (tracker → workflow per issue)
-iterion schedule add|list|remove|run|install|uninstall  # Cron recurring bots via the host crontab — no daemon (see docs/scheduling.md)
+iterion schedule add|list|remove|run|install|uninstall|audit  # Cron recurring bots via the host crontab — no daemon; overlap policy + guard + tick audit (see docs/scheduling.md)
 iterion issue create|list|show|move|update|close|board  # Native kanban tracker
+iterion bots create <slug> [--template <id>] [--workdir <dir>] [--dest <dir>]  # Scaffold a bot bundle (CLI half of the studio builder /bots/new)
+iterion bots templates                  # List the templates `bots create` can start from
 iterion bots list [--paths <dir>] [--format json|markdown|skill]  # Discover .bot/.botz bundles (used by whats-next + dispatcher zero-config)
 iterion skill list|show|add|rm|import|export  # Local skill library (~/.iterion/skills + per-project); referenced by the DSL `skills:` field (see docs/skills-library.md)
 iterion marketplace list|submit|install|uninstall  # Hosted registry CLI — bot AND plugin entries (kind auto-detected at submit; list --kind filters; same <store-dir>/marketplace the studio reads)
+iterion memory export|import|du         # Manage local shared-knowledge memory spaces (.tar.gz export/import, usage vs quota; see docs/memory-and-knowledge.md)
+iterion models [provider/model-id]      # Inspect resolved model capabilities and their source
+iterion openapi                         # Generate this build's OpenAPI 3.1 spec offline (stdout)
 iterion bench asymptote [flags]         # Asymptote benchmark (see docs/asymptote-bench.md)
-iterion bundle init|pack                # Scaffold or pack a .botz bundle (see docs/bundles.md)
+iterion bundle pack                     # Pack a .botz bundle (create it with `bots create`; see docs/bundles.md)
 iterion sandbox doctor [file] [--strict] [--target auto|cloud|local]  # Diagnose host sandbox prerequisites; --strict validates a run's full config pre-flight (see docs/sandbox.md)
 iterion migrate to-cloud [flags]        # Migrate a local store into a cloud (Mongo + S3) backend
 iterion server [--port] [--store-dir]   # HTTP server (run console + studio), without the studio launcher
 iterion version                         # Print version
 
 # Operational runner and hidden subprocess entry points:
-# `iterion runner`, `iterion __claw-runner`, `iterion __mcp-ask-user`, `iterion __mcp-board`, `iterion __mcp-control`, `iterion __scan-shards`
+# `iterion runner`, `iterion __claw-runner`, `iterion __mcp-ask-user`, `iterion __mcp-board`, `iterion __mcp-control`, `iterion __scan-shards`, `iterion __claude-hook-drain`
 # Only the double-underscore commands are hidden internal subprocess entry points.
 ```
 
 Global flags: `--json` (machine output), `--help`
+
+### Remote CLI — pilot a cloud instance from your terminal
+
+`iterion remote` drives a running cloud instance (studio/server) over its
+HTTP API. Authenticate once via the **browser loopback flow**, then pilot it
+with typed subcommands. Full reference: [docs/cloud-cli.md](docs/cloud-cli.md).
+
+```bash
+# Browser login: opens <url>/cli-auth, you approve in the studio (already
+# signed in), a token is minted + saved to ~/.iterion/cli-auth.json. The
+# token pins to the team active in the studio at approval time.
+iterion remote login https://iterion.fabrique.social.gouv.fr
+iterion remote status                 # confirm instance + account + team
+```
+
+Then pilot: `iterion remote runs launch <file.bot> --follow` (uploads inline,
+or `--bot <catalog id>`), plus `runs`, `bots`, `board`, `issues`, `labels`,
+`dispatcher`, `schedules`, `triggers`, `secrets`, `api-keys`, `bindings`,
+`teams`, `orgs`, `webhooks`, `forge`, `audit`, `usage`, `memory`, `admin`,
+`sso`, `plugins`. `iterion remote api <METHOD> <path>` is the raw escape hatch
+for any endpoint. Headless auth (CI): `--token <iap_…>` (a PAT) or
+`--email/--password` (mints a CLI token).
+
+**Binary-freshness gotcha:** the full typed `remote` surface is recent — an
+older installed binary may expose only `api/login/logout/status/openapi/routes`
+(the `remote api` escape hatch still reaches everything). If subcommands are
+missing, refresh the install from a static build (see the binary-freshness note
+under Testing Patterns). Smoke-test claude_code auth on a cloud runner (e.g. a
+Claude-subscription **forfait** via `CLAUDE_CODE_OAUTH_TOKEN`) with a one-node
+`backend: "claude_code"` bot: `system/init … model=claude-opus-4-8` in the run
+log + `0 tokens` billed confirms the OAuth-forfait path (not a metered API key).
 
 ## Testing Patterns
 
@@ -1117,15 +1309,27 @@ push / `--squash` without `--auto`). Required checks: `test`, `race`,
 `vendor-check`, `mongo-conformance`. Full details + revert command:
 [docs/merge-policy.md](docs/merge-policy.md).
 
+**Optional Revi merge gate.** Revi (`bots/review-pr`) can post a
+deterministic `revi/review` commit status on a PR head — `success` when 0
+findings meet `gate_severity` (default `high`), else `failure`. Add that
+context to the required checks to make Revi's verdict block the merge (it is
+advisory until then). The verdict is a COUNT computed in the bot, never an LLM
+judgment; the review comments stay non-blocking advice. Pairs with the webhook
+`review_on_sync` opt-in (re-review each push so the status tracks the fixed
+head) and Revi's falsifiability `questions` channel (non-blocking assumptions,
+never gate). The forge-agnostic write path is `forge.CommitStatusClient`
+([pkg/forge/status.go](pkg/forge/status.go)); the endpoint posts it after the
+review ([pkg/server/forge_publish.go](pkg/server/forge_publish.go)). See
+[docs/merge-gate.md](docs/merge-gate.md).
+
 ## Conventions
 
-- No external linter beyond `go fmt` and `go vet`
+- Go linting: `go fmt` + `go vet` + a curated `golangci-lint` (`.golangci.yml`: errcheck/govet/ineffassign/staticcheck/unconvert/unused; misspell off — it flags French comments; tests skip errcheck/SA1012; `cmd/iterion-desktop` excluded as cgo/build-tagged). Run via `task lint`; CI `golangci` job (add to the branch-protection required checks to gate merges)
 - Tests use the standard `testing` package — no test frameworks
 - Binary name is `iterion` (ignored in .gitignore)
 - Store data lives in `.iterion/` (ignored in .gitignore)
 - CLI built with Cobra (`github.com/spf13/cobra`) — one file per command in `cmd/iterion/`
 - `CGO_ENABLED=0`, version/commit injected via ldflags from `package.json` + git
-- External LLM SDK: claw-code-go (vendored), used directly via `pkg/api`
+- External LLM SDK: claw-code-go (vendored), used directly via `claw-code-go/pkg/api`
 - Event-driven observability via `events.jsonl` — no structured logging library
 - Output abstraction: `Printer` (`pkg/cli/output.go`) with human and JSON modes
-

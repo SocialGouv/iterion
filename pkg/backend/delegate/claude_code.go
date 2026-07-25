@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"sort"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -63,6 +64,12 @@ type ClaudeCodeBackend struct {
 func (b *ClaudeCodeBackend) buildTransportOptions(task Task) ([]claudesdk.Option, func()) {
 	var opts []claudesdk.Option
 	var sandboxCleanup func()
+
+	// Route the SDK's internal error diagnostics (control-protocol
+	// delivery failures and the like) to the backend logger.
+	opts = append(opts, claudesdk.WithLogf(func(format string, args ...any) {
+		b.Logger.Error(format, args...)
+	}))
 
 	// APPEND, do not REPLACE. --system-prompt would discard Claude Code's
 	// native agentic system prompt (tool-use discipline, plan-before-act,
@@ -181,6 +188,28 @@ func (b *ClaudeCodeBackend) buildTransportOptions(task Task) ([]claudesdk.Option
 				KeepStdinOpen: openStdin,
 			})
 		}))
+	} else {
+		// Host path: install a builder solely to (a) surface the resolved
+		// claude invocation — the default spawn is opaque, so a silent
+		// "0 tokens / formatting-pass-fallback" structured-output failure can't
+		// be traced to the concrete command + per-task env overrides — and
+		// (b) keep the env identical to the SDK default (os.Environ() + the
+		// per-task entries via hostSpawnEnv), so this is behaviour-neutral.
+		opts = append(opts, claudesdk.WithCommandBuilder(func(ctx context.Context, path string, args []string, cwd string, env map[string]string, openStdin bool) *exec.Cmd {
+			keys := make([]string, 0, len(env))
+			for k := range env {
+				keys = append(keys, k)
+			}
+			sort.Strings(keys)
+			b.Logger.Info("claude-code: host exec %v (cwd=%s, stdin=%v, task_env_keys=%v)",
+				append([]string{path}, args...), cwd, openStdin, keys)
+			cmd := exec.CommandContext(ctx, path, args...)
+			if cwd != "" {
+				cmd.Dir = cwd
+			}
+			cmd.Env = hostSpawnEnv(env)
+			return cmd
+		}))
 	}
 
 	effort := task.ReasoningEffort
@@ -188,6 +217,7 @@ func (b *ClaudeCodeBackend) buildTransportOptions(task Task) ([]claudesdk.Option
 		effort = defaultClaudeCodeEffort
 	}
 	opts = append(opts, claudesdk.WithEnv("CLAUDE_CODE_EFFORT_LEVEL", effort))
+	opts = append(opts, taskExtraEnvOpts(task)...)
 	if d := claudeCodeThinkingDisplay(); d != "" {
 		opts = append(opts, claudesdk.WithThinkingDisplay(d))
 	}
@@ -466,6 +496,36 @@ func (b *ClaudeCodeBackend) Execute(ctx context.Context, task Task) (result Resu
 		return result, fmt.Errorf("claude-code: model %q is unavailable or unauthorized (check the node's backend/model — a claude_code node cannot run a non-Anthropic model): %s", task.Model, detail)
 	}
 
+	// Auth-failure guard. A dead/expired forfait token (or a rejected API key)
+	// does NOT fail the stream (subtype=success, IsError=true): the claude CLI
+	// renders the auth error AS the result text (e.g. "Failed to authenticate.
+	// API Error: 401 Invalid bearer token"). Left untouched it flows into the
+	// formatting passes and finally surfaces as an opaque "missing required
+	// field" schema error — the exact masking that turns a dead credential into
+	// a wild goose chase through the structured-output machinery. Fail fast with
+	// a legible auth error. Non-transient (a retry can't revive a dead token).
+	if rm.Result != nil && isAuthErrorResult(*rm.Result) {
+		detail := strings.TrimSpace(*rm.Result)
+		b.Logger.Error("[%s#%d/claude-code] authentication failed — failing fast: %.160s",
+			task.NodeID, task.Iteration, detail)
+		return result, fmt.Errorf("claude-code: authentication failed (check the forfait CLAUDE_CODE_OAUTH_TOKEN or the Anthropic API key): %s", detail)
+	}
+
+	// Quota / usage-window guard on the RESULT. The forfait's weekly / session /
+	// 5h caps can come back as the result text (subtype=success, IsError=true)
+	// with no assistant text block for the stream classifier to catch — re-check
+	// here so the notice becomes a typed, resumable rate-limit error instead of
+	// flowing into structured-output validation as a misleading "missing
+	// required field". Usage-window → resumable after reset; a plain throttle →
+	// the executor's transient retry.
+	if rm.Result != nil && isRateLimitMessage(*rm.Result) {
+		detail := strings.TrimSpace(*rm.Result)
+		kind, resetAt := classifyRateLimit(detail, time.Now())
+		b.Logger.Warn("[%s#%d/claude-code] provider quota/rate-limit result (%s) — failing: %.120s",
+			task.NodeID, task.Iteration, kind, detail)
+		return result, &ErrRateLimited{Provider: BackendClaudeCode, Detail: detail, Kind: kind, ResetAt: resetAt}
+	}
+
 	if needsTwoPass && rm.SessionID != "" {
 		if handled, twoPassResult, twoPassErr := b.runTwoPassFormatting(ctx, task, rm, result, &totalIn, &totalOut); handled {
 			return twoPassResult, twoPassErr
@@ -510,6 +570,9 @@ func (b *ClaudeCodeBackend) buildAskUserPendingResult(task Task, p pendingAskUse
 	AddAskUserOptionKeys(questions, p.Options, p.AllowFreeText)
 	if marker != nil {
 		questions[permission.InteractionMarkerKey] = marker
+	}
+	if len(p.AwaitPending) > 0 {
+		questions[AwaitPendingInteractionsKey] = AwaitPendingToQuestions(p.AwaitPending)
 	}
 	askResult := Result{
 		Output: map[string]any{
@@ -670,7 +733,7 @@ func (b *ClaudeCodeBackend) runTwoPassFormatting(ctx context.Context, task Task,
 // or drop it on a provider-fingerprint mismatch. Returns the extended opts
 // and the current provider fingerprint.
 func (b *ClaudeCodeBackend) setupCredsAndSession(ctx context.Context, task Task, opts []claudesdk.Option) ([]claudesdk.Option, string) {
-	credEnv := anthropicCredEnvForCLI(ctx, task.ProviderHint)
+	credEnv := anthropicCredEnvForCLI(ctx, task.ProviderHint, taskSandboxed(task))
 	opts = append(opts, credEnvToOpts(credEnv)...)
 	currentFingerprint := providerFingerprint(credEnv)
 
@@ -733,6 +796,20 @@ func hostSpawnEnv(extra map[string]string) []string {
 		base = append(base, k+"="+v)
 	}
 	return base
+}
+
+// taskExtraEnvOpts converts Task.ExtraEnv (KEY=value entries — run-level
+// provisioning such as the devbox profile PATH) into per-spawn env
+// options. Entries without an '=' are dropped: they cannot form a valid
+// environment assignment.
+func taskExtraEnvOpts(task Task) []claudesdk.Option {
+	opts := make([]claudesdk.Option, 0, len(task.ExtraEnv))
+	for _, kv := range task.ExtraEnv {
+		if k, v, ok := strings.Cut(kv, "="); ok && k != "" {
+			opts = append(opts, claudesdk.WithEnv(k, v))
+		}
+	}
+	return opts
 }
 
 // formatOutput performs the second pass of two-pass execution: resumes the
@@ -862,12 +939,13 @@ func (b *ClaudeCodeBackend) formatOutput(ctx context.Context, task Task, session
 
 	// Forward BYOK credentials and effort level into the formatting pass so
 	// the resumed session uses the same auth path as Pass 1.
-	opts = append(opts, anthropicCredOptsForCLI(ctx, task.ProviderHint)...)
+	opts = append(opts, anthropicCredOptsForCLI(ctx, task.ProviderHint, taskSandboxed(task))...)
 	effort := task.ReasoningEffort
 	if effort == "" {
 		effort = defaultClaudeCodeEffort
 	}
 	opts = append(opts, claudesdk.WithEnv("CLAUDE_CODE_EFFORT_LEVEL", effort))
+	opts = append(opts, taskExtraEnvOpts(task)...)
 	if d := claudeCodeThinkingDisplay(); d != "" {
 		opts = append(opts, claudesdk.WithThinkingDisplay(d))
 	}

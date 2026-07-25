@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+
+	"github.com/SocialGouv/iterion/pkg/bundle"
 	"sort"
 	"strings"
 
@@ -52,7 +54,7 @@ func (s *Service) ListRunBundleSkills(ctx context.Context, runID string) ([]Bund
 	// which is heavier than the catalog endpoint should be. Cap the
 	// archive case to "skills unsupported" for now — operators using
 	// .botz can still pack a directory-form copy alongside.
-	skillsDir := filepath.Join(run.BundlePath, "skills")
+	skillsDir := filepath.Join(run.BundlePath, bundle.DirSkills)
 	info, err := os.Stat(skillsDir)
 	if err != nil {
 		if os.IsNotExist(err) {

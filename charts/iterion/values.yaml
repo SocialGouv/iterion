@@ -270,6 +270,12 @@ config:
     # Envelope + header sender, e.g. "iterion <no-reply@example.org>"
     from: ""
     startTLS: true
+  # --- Browser push notifications (web push) -----------------------
+  # The VAPID contact push services may use to reach the operator
+  # (mailto: or https: URL). The keypair itself is a secret —
+  # secrets.auth.webpush below.
+  webpush:
+    subscriber: ""
   # --- Org launch limit defaults (cloud only) ----------------------
   # Platform-wide caps applied to orgs without a per-org override
   # (PATCH /api/admin/orgs/{id}). 0 = unlimited.
@@ -294,6 +300,15 @@ secrets:
     existingSecret: ""
     anthropicApiKey: ""
     openaiApiKey: ""
+  # Optional forfait credentials, managed MANUALLY in k8s (never created or
+  # sealed by the chart): e.g. CLAUDE_CODE_OAUTH_TOKEN so claude_code runs
+  # execute on the subscription instead of a metered API key. When enabled it
+  # is mounted as an OPTIONAL envFrom on the runner (optional: true — a missing
+  # secret never blocks startup). Enable per-environment; the secret's contents
+  # are set by hand (kubectl), not by values.
+  forfait:
+    enabled: false
+    existingSecret: ""
   # SMTP relay credentials (host/port/from live in config.smtp).
   smtp:
     create: false
@@ -328,6 +343,13 @@ secrets:
     # (X-Iterion-Signature). Read by both the server and the runner;
     # empty = unsigned callbacks. `openssl rand -base64 32`.
     completionWebhookSecret: ""
+    # VAPID keypair for browser push notifications — generate ONCE with
+    # `iterion server webpush-keys` and never rotate casually (rotation
+    # invalidates every registered browser subscription; users must
+    # re-enable notifications in their settings). Empty = feature off.
+    webpush:
+      vapidPublicKey: ""
+      vapidPrivateKey: ""
     # OIDC client_secrets. Public client_ids and discovery URLs go
     # into the ConfigMap (values.config.auth.oidc) — the secret
     # bundle only carries the secrets that should not be readable

@@ -1,16 +1,16 @@
 ---
 name: forge-report
 description: |
-  How supply-shield reports findings back onto a PR/MR via the native
-  forge API — GitHub, GitLab, Forgejo/Gitea. Sticky summary comment,
+  How supply-shield reports findings back onto a PR (merge request on
+  GitLab) via the native forge API — GitHub, GitLab, Forgejo/Gitea. Sticky summary comment,
   inline review comments, and SARIF / code-scanning upload, with the
   token env vars and exact REST endpoints. Read by the forge_report node.
 ---
 
-# forge-report — post results back on the PR/MR (native forge API)
+# forge-report — post results back on the PR (native forge API)
 
-The `forge_report` node posts the malware report onto the pull/merge
-request using the forge's own REST API (`curl`). It is best-effort and
+The `forge_report` node posts the malware report onto the pull request
+using the forge's own REST API (`curl`). It is best-effort and
 fail-open: with no PR context or no token it sets `mode=local-only` and
 the report stays at `report_path` — it NEVER fails the run.
 
@@ -28,9 +28,9 @@ host and the token present in the environment:
 API base: GitHub `https://api.github.com` (GHE: `https://<host>/api/v3`);
 GitLab `https://<host>/api/v4`; Forgejo/Gitea `https://<host>/api/v1`.
 
-## 2. Resolve the PR/MR number
+## 2. Resolve the PR number
 
-Prefer `input.pr_ref`. Otherwise find the open PR/MR for the current
+Prefer `input.pr_ref`. Otherwise find the open PR for the current
 branch (`git rev-parse --abbrev-ref HEAD`):
 
 - GitHub: `GET /repos/{owner}/{repo}/pulls?head={owner}:{branch}&state=open`

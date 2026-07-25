@@ -2,7 +2,7 @@
 name: vuln-scan
 description: |
   Static parallel review of a source tree by focus area. Reads
-  `.iterion/security/context.md` (threat model) when present and
+  `.sec-audit/context.md` (threat model) when present and
   delegates the scanner set to the per-language `lang-*` skills.
   Runs deterministic scanners + a per-focus-area review pass, then
   hands candidates to triage. Also usable as a single-file
@@ -67,7 +67,7 @@ deterministic scans land, fan out **one focus-area subagent per
 area** identified by:
 
 1. The threat model's section 3 (entry points & trust boundaries)
-   from `.iterion/security/context.md` if present, OR
+   from `.sec-audit/context.md` if present, OR
 2. A quick recon over the source tree if `context.md` is absent or
    stale (read `README`, route registrations, package manifests;
    propose 3–10 focus areas).
@@ -85,7 +85,7 @@ You are conducting authorized static security review. Focus area:
 wasted effort.
 
 TARGET: {workspace_dir}
-TRUST BOUNDARY: {from .iterion/security/context.md section 3, or
+TRUST BOUNDARY: {from .sec-audit/context.md section 3, or
 "untrusted input -> server process memory"}
 THREATS IN SCOPE: {T-ids from section 4 mapped onto this focus area}
 

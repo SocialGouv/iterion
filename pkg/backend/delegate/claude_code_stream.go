@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"regexp"
+	"strconv"
 	"strings"
 	"time"
 
@@ -577,7 +579,9 @@ func (b *ClaudeCodeBackend) handleAssistantMessage(m *claudesdk.AssistantMessage
 			if isRateLimitMessage(tb.Text) {
 				b.Logger.Warn("[%s#%d/claude-code] 🚦 rate-limit signal in assistant text — aborting: %s", task.NodeID, task.Iteration, truncate(tb.Text, 200))
 				cancelStream()
-				return &ErrRateLimited{Provider: BackendClaudeCode, Detail: strings.TrimSpace(tb.Text)}
+				detail := strings.TrimSpace(tb.Text)
+				kind, resetAt := classifyRateLimit(detail, time.Now())
+				return &ErrRateLimited{Provider: BackendClaudeCode, Detail: detail, Kind: kind, ResetAt: resetAt}
 			}
 			// Narration hook: surface the agent's mid-turn prose to the
 			// conversation views. The bridge filters structured-JSON
@@ -752,19 +756,29 @@ func logAssistantContent(logger *iterlog.Logger, nodeID string, iteration int, b
 	}
 }
 
+// hitYourLimitRe matches the Anthropic forfait window-exhaustion notice
+// while tolerating the noun the CLI inserts between "your" and "limit".
+// The forfait has (at least) three window shapes and the CLI phrases each
+// differently:
+//   - 5h:      "You've hit your limit · resets …"
+//   - session: "You've hit your session limit · resets 10:30am (UTC)"
+//   - weekly:  "You've hit your weekly limit · resets 9pm (Europe/Paris)"
+//
+// A bare "hit your limit" substring misses the inserted-noun variants: the
+// noun ("session" / "weekly", or a future "daily" / "5-hour") sits between
+// "your" and "limit" and defeats it. Each missed shape sails through as a
+// normal result and fails structured-output validation with a misleading
+// "missing required field", crashing the run instead of producing a clean
+// resumable rate-limit (observed for "session" on a claude-sonnet-5 fixer,
+// see docs/bot-runs/whole-improve-loop.md; and for "weekly" on the
+// feed-watch veille runner, 2026-07-20). One tolerant pattern subsumes
+// every noun so a new window shape never re-opens this masking bug.
+var hitYourLimitRe = regexp.MustCompile(`hit your (?:[a-z0-9-]+ )?limit`)
+
 // rateLimitSignals are case-insensitive substrings of assistant text
-// that indicate the upstream provider has cut us off. Two observed
-// shapes so far:
-//   - Anthropic forfait quota: "You've hit your limit · resets …" —
-//     short standalone assistant text, no HTTP 429.
-//   - Anthropic forfait SESSION quota: "You've hit your session limit ·
-//     resets 10:30am (UTC)" — same shape, different noun. The "session"
-//     between "your" and "limit" defeats the "hit your limit" substring,
-//     so it needs its own signal (observed on a claude-sonnet-5 fixer
-//     node mid-run — without it the 53-char notice sailed through as a
-//     normal result and failed structured-output validation with a
-//     misleading "missing required field", crashing the run instead of a
-//     clean resumable rate-limit; see docs/bot-runs/whole-improve-loop.md).
+// that indicate the upstream provider has cut us off. The forfait
+// window-exhaustion shapes ("hit your … limit") are matched by
+// hitYourLimitRe above; these cover the remaining upstream/facade forms:
 //   - ZAI / Anthropic-shaped facade: "API Error: Request rejected (429)
 //     · Usage limit reached for 5 hour. Your limit will reset at …" —
 //     the CLI relays the upstream 429 into assistant text.
@@ -774,8 +788,6 @@ func logAssistantContent(logger *iterlog.Logger, nodeID string, iteration int, b
 // The 200-char length cap is the second guard against agents quoting
 // these phrases mid-paragraph.
 var rateLimitSignals = []string{
-	"hit your limit",
-	"hit your session limit",
 	"rate limit exceeded",
 	"quota exceeded",
 	"usage limit reached",
@@ -792,12 +804,92 @@ func isRateLimitMessage(text string) bool {
 		return false
 	}
 	lower := strings.ToLower(text)
+	if hitYourLimitRe.MatchString(lower) {
+		return true
+	}
 	for _, sig := range rateLimitSignals {
 		if strings.Contains(lower, sig) {
 			return true
 		}
 	}
 	return false
+}
+
+// usageWindowSignals are the subset of rate-limit shapes that mean a
+// subscription/quota WINDOW is exhausted (the ZAI 5h facade) — waiting
+// for the reset is the only cure, so retries inside the window just burn
+// attempts. The Anthropic forfait 5h / session / weekly caps ("hit your
+// … limit") are all windows too and are matched by hitYourLimitRe in
+// classifyRateLimit. Plain throttles ("rate limit exceeded") stay transient.
+var usageWindowSignals = []string{
+	"usage limit reached",
+}
+
+// classifyRateLimit refines a matched rate-limit message into
+// (Kind, ResetAt). All parsing is best-effort: an unrecognized shape
+// keeps Kind = transient and a zero ResetAt — never a hard failure.
+func classifyRateLimit(text string, now time.Time) (kind string, resetAt time.Time) {
+	lower := strings.ToLower(text)
+	kind = RateLimitKindTransient
+	if hitYourLimitRe.MatchString(lower) {
+		kind = RateLimitKindUsageWindow
+	}
+	for _, sig := range usageWindowSignals {
+		if strings.Contains(lower, sig) {
+			kind = RateLimitKindUsageWindow
+			break
+		}
+	}
+	if kind != RateLimitKindUsageWindow {
+		return kind, time.Time{}
+	}
+	return kind, parseResetHint(lower, now)
+}
+
+// resetClockRe matches the clock-time reset hints observed in forfait
+// notices: "resets 3pm", "resets 10:30am (UTC)", "reset at 7pm".
+var resetClockRe = regexp.MustCompile(`reset[s]?(?: at)?\s+(\d{1,2})(?::(\d{2}))?\s*(am|pm)?`)
+
+// resetWindowRe matches the window-duration shape: "reached for 5 hour".
+var resetWindowRe = regexp.MustCompile(`for\s+(\d{1,2})\s*hour`)
+
+// parseResetHint extracts the next reset instant from a usage-window
+// notice, interpreting bare clock times as the NEXT occurrence (UTC —
+// the forfait notices print UTC). Zero when nothing parses.
+func parseResetHint(lower string, now time.Time) time.Time {
+	if m := resetClockRe.FindStringSubmatch(lower); m != nil {
+		hour, _ := strconv.Atoi(m[1])
+		minute := 0
+		if m[2] != "" {
+			minute, _ = strconv.Atoi(m[2])
+		}
+		switch m[3] {
+		case "pm":
+			if hour < 12 {
+				hour += 12
+			}
+		case "am":
+			if hour == 12 {
+				hour = 0
+			}
+		}
+		if hour > 23 || minute > 59 {
+			return time.Time{}
+		}
+		nowUTC := now.UTC()
+		at := time.Date(nowUTC.Year(), nowUTC.Month(), nowUTC.Day(), hour, minute, 0, 0, time.UTC)
+		if !at.After(nowUTC) {
+			at = at.Add(24 * time.Hour)
+		}
+		return at
+	}
+	if m := resetWindowRe.FindStringSubmatch(lower); m != nil {
+		hours, _ := strconv.Atoi(m[1])
+		if hours > 0 {
+			return now.UTC().Add(time.Duration(hours) * time.Hour)
+		}
+	}
+	return time.Time{}
 }
 
 // toolUseDetail extracts a short single-line summary from tool input for

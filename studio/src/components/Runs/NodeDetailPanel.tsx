@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
+import { useQuery } from "@tanstack/react-query";
 
 import type { ArtifactSummary, ExecutionState, RunEvent } from "@/api/runs";
 import { listArtifacts } from "@/api/runs";
@@ -51,6 +52,10 @@ interface Props {
   logClampBytes?: number | null;
 }
 
+// Stable empty fallback so the undefined→loaded transition doesn't hand
+// downstream props a fresh [] reference each render.
+const EMPTY_VERSIONS: ArtifactSummary[] = [];
+
 export default function NodeDetailPanel({
   runId,
   runStatus,
@@ -66,7 +71,6 @@ export default function NodeDetailPanel({
   onCollapse,
   logClampBytes = null,
 }: Props) {
-  const [artifactVersions, setArtifactVersions] = useState<ArtifactSummary[]>([]);
   const [activeTab, setActiveTab] = useState<TabValue | null>(null);
 
   // The active execution drives every tab. selectedIteration is the
@@ -83,31 +87,22 @@ export default function NodeDetailPanel({
   // Load only the version index here; ArtifactDiff handles fetching the
   // body for each selected version on demand.
   //
-  // Depending on `exec` as a whole would refire on every WS event
+  // Keying on `exec` as a whole would refire on every WS event
   // (the parent rebuilds the executions array on each event, which
   // re-derives `exec` to a fresh object identity even for the same
-  // logical iteration). Pin the effect to the stable scalars only —
-  // a node change OR an iteration switch — and abort the in-flight
-  // request when those keys change so we never thrash the network
-  // pool with redundant /artifacts fetches.
+  // logical iteration). Pin the query key to the stable scalars only —
+  // a node change OR an iteration switch — so we never thrash the
+  // network pool with redundant /artifacts fetches. Artifacts are
+  // best-effort, so the query error is deliberately unread (silent
+  // fall-through, same as before).
   const execNodeId = exec?.ir_node_id ?? null;
   const executionId = exec?.execution_id ?? null;
-  useEffect(() => {
-    setArtifactVersions([]);
-    if (!execNodeId) return;
-    const ctrl = new AbortController();
-    listArtifacts(runId, execNodeId, { signal: ctrl.signal })
-      .then((summaries) => {
-        if (ctrl.signal.aborted) return;
-        setArtifactVersions(summaries);
-      })
-      .catch(() => {
-        // Artifacts are best-effort — silent fall-through.
-      });
-    return () => {
-      ctrl.abort();
-    };
-  }, [runId, execNodeId, executionId]);
+  const artifactVersionsQuery = useQuery({
+    queryKey: ["run-artifact-versions", runId, execNodeId, executionId],
+    queryFn: ({ signal }) => listArtifacts(runId, execNodeId!, { signal }),
+    enabled: !!execNodeId,
+  });
+  const artifactVersions = artifactVersionsQuery.data ?? EMPTY_VERSIONS;
 
   const matching = useExecutionEvents(events, exec);
   const llmSteps = useLLMSteps(matching);
@@ -191,29 +186,27 @@ export default function NodeDetailPanel({
   // Tab order: Pause first when paused (drives action), then Trace,
   // Tools, Artifact, Events. Pause hidden when not paused.
   const tabItems: Array<{ value: TabValue; label: string; disabled?: boolean }> = [
-    ...(isPaused
-      ? [{ value: "pause" as TabValue, label: "Pause" }]
-      : []),
+    ...(isPaused ? [{ value: "pause", label: "Pause" } as const] : []),
     {
-      value: "trace" as TabValue,
+      value: "trace",
       label: llmSteps.length > 1 ? `Trace (${llmSteps.length})` : "Trace",
       disabled: llmSteps.length === 0,
     },
     {
-      value: "tools" as TabValue,
+      value: "tools",
       label: `Tools (${toolCalls.length})`,
       disabled: toolCalls.length === 0,
     },
     {
-      value: "artifact" as TabValue,
+      value: "artifact",
       label:
         artifactVersions.length > 1
           ? `Artifact (${artifactVersions.length})`
           : "Artifact",
       disabled: !hasArtifact,
     },
-    { value: "events" as TabValue, label: `Events (${matching.length})` },
-    { value: "logs" as TabValue, label: "Logs" },
+    { value: "events", label: `Events (${matching.length})` },
+    { value: "logs", label: "Logs" },
   ];
 
   return (
@@ -233,7 +226,7 @@ export default function NodeDetailPanel({
 
       <Tabs
         value={activeTab ?? "events"}
-        onValueChange={(v) => setActiveTab(v as TabValue)}
+        onValueChange={setActiveTab}
         items={tabItems}
         variant="underline"
         listClassName="px-3"

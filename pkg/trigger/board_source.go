@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"strconv"
+	"strings"
 
 	"github.com/SocialGouv/iterion/pkg/dispatcher/native"
 	iterlog "github.com/SocialGouv/iterion/pkg/log"
@@ -146,7 +147,29 @@ func (b *BoardSource) worker() {
 // the issue). Returns false when the issue can't be read (deleted between the
 // transition and the read).
 func (b *BoardSource) normalize(evt native.Event) (Event, bool) {
-	iss, err := b.store.Get(evt.IssueID)
+	return NormalizeBoardEvent(b.store.Get, evt, b.tenantID, b.repo, b.boardName)
+}
+
+// IsCardEvent reports whether a native board event is one of the card
+// transitions the trigger spine reacts to — the shared filter between the
+// local tail (enqueue) and the cloud poll-tail.
+func IsCardEvent(t native.EventType) bool {
+	switch t {
+	case native.EvtIssueCreated, native.EvtIssueState, native.EvtIssueUpdated:
+		return true
+	}
+	return false
+}
+
+// NormalizeBoardEvent converts a native board event into a trigger.Event by
+// reading the CURRENT issue through get (the audit event payload is sparse —
+// labels/title/body live on the issue). Shared by the local BoardSource and
+// the cloud board source; returns false when the issue can't be read
+// (deleted between the transition and the read). When the card links an
+// external forge issue, its repo slug is stamped on the event (falling back
+// to the source-wide repo) so repo-scoped subscriptions match.
+func NormalizeBoardEvent(get func(id string) (*native.Issue, error), evt native.Event, tenantID, repo, boardName string) (Event, bool) {
+	iss, err := get(evt.IssueID)
 	if err != nil || iss == nil {
 		return Event{}, false
 	}
@@ -160,18 +183,21 @@ func (b *BoardSource) normalize(evt native.Event) (Event, bool) {
 		kind = KindCardUpdated
 	}
 	payload := map[string]any{}
-	if b.boardName != "" {
-		payload["board"] = b.boardName
+	if boardName != "" {
+		payload["board"] = boardName
 	}
 	if from, ok := evt.Payload["from"].(string); ok {
 		payload["from_state"] = from
 	}
+	if iss.External != nil && iss.External.Repo != "" {
+		repo = iss.External.Repo
+	}
 	return Event{
-		ID:       fmt.Sprintf("board:%s:%s:%s", b.boardName, evt.IssueID, strconv.FormatInt(evt.Seq, 10)),
+		ID:       fmt.Sprintf("board:%s:%s:%s", boardName, evt.IssueID, strconv.FormatInt(evt.Seq, 10)),
 		Source:   SourceBoard,
 		Kind:     kind,
-		TenantID: b.tenantID,
-		Repo:     b.repo,
+		TenantID: tenantID,
+		Repo:     repo,
 		Subject: Subject{
 			Type:  "card",
 			ID:    iss.ID,
@@ -236,4 +262,43 @@ func (n *NativeBoardEffect) Promote(_ context.Context, plan LaunchPlan) (string,
 	return id, nil
 }
 
+// ConsumeMatchLabels strips the given labels from the card, reporting whether
+// any were actually present. The evaluator runs on a single serial worker
+// (InProcBus), so read-strip-launch is race-free locally; consumed=false means
+// a previous evaluation already stripped them and the caller must skip. The
+// tenant is ignored — the local store IS one tenant.
+func (n *NativeBoardEffect) ConsumeMatchLabels(_ context.Context, _ string, issueID string, labels []string) (bool, error) {
+	if n.store == nil {
+		return false, fmt.Errorf("trigger: native board effect has no store")
+	}
+	if issueID == "" || len(labels) == 0 {
+		return false, nil
+	}
+	iss, err := n.store.Get(issueID)
+	if err != nil {
+		return false, fmt.Errorf("trigger: get card %s: %w", issueID, err)
+	}
+	strip := make(map[string]bool, len(labels))
+	for _, l := range labels {
+		strip[strings.ToLower(l)] = true
+	}
+	remaining := make([]string, 0, len(iss.Labels))
+	found := false
+	for _, l := range iss.Labels {
+		if strip[strings.ToLower(l)] {
+			found = true
+			continue
+		}
+		remaining = append(remaining, l)
+	}
+	if !found {
+		return false, nil
+	}
+	if _, err := n.store.Update(issueID, native.Patch{Labels: &remaining}); err != nil {
+		return false, fmt.Errorf("trigger: consume labels on card %s: %w", issueID, err)
+	}
+	return true, nil
+}
+
 var _ BoardEffect = (*NativeBoardEffect)(nil)
+var _ LabelConsumer = (*NativeBoardEffect)(nil)

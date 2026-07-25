@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/SocialGouv/iterion/pkg/bundle"
 	"github.com/SocialGouv/iterion/pkg/store"
 )
 
@@ -97,7 +98,7 @@ func renderCatalogCard(b *strings.Builder, e EntryWithSchema, workdir string) {
 	if len(e.Capabilities) > 0 {
 		b.WriteString("- **Capabilities**: " + strings.Join(e.Capabilities, ", ") + "\n")
 	}
-	b.WriteString("- **Path**: `" + catalogRelPath(e.Entry.MainFile(), workdir) + "`\n")
+	b.WriteString("- **Path**: `" + catalogRelPath(e.MainFile(), workdir) + "`\n")
 }
 
 // renderCatalogVars formats a bot's declared vars as a one-line summary,
@@ -138,17 +139,18 @@ func catalogRelPath(abs, workdir string) string {
 }
 
 // RegenerateWhatsNextCatalog refreshes the orchestrator-facing bot
-// catalog. It discovers the bundle that ships
-// iterion-bot-catalog-static.md, splices a freshly-rendered persona table
+// catalog. It discovers EVERY bundle that ships
+// iterion-bot-catalog-static.md (whats-next, issue-triage, any future
+// router bot), and for each splices a freshly-rendered persona table
 // + per-bot cards (enabled bots only, overlay applied) between that
-// file's generated markers, and atomically writes the result to the
-// sibling iterion-bot-catalog.md — the file Nexie reads (and the runtime
-// mirrors into the workspace skills dir at run start).
+// file's generated markers, atomically writing the result to the
+// sibling skills/iterion-bot-catalog.md — the file the owning bot reads
+// (and the runtime mirrors into the workspace skills dir at run start).
 //
-// Returns the written path on success, or "" (with nil error) when no
-// bundle under workdir ships the static template — e.g. running against a
-// packed .botz cache or a workspace that doesn't vendor whats-next.
-// Writing into the bundle SOURCE (never directly into
+// Returns the first written path on success, or "" (with nil error) when
+// no bundle under workdir ships the static template — e.g. running
+// against a packed .botz cache or a workspace that doesn't vendor any
+// catalog owner. Writing into the bundle SOURCE (never directly into
 // <workspace>/.claude/skills/) lets the runtime's "workspace wins" mirror
 // markers refresh the workspace copy cleanly.
 func RegenerateWhatsNextCatalog(workdir string) (string, error) {
@@ -161,33 +163,7 @@ func RegenerateWhatsNextCatalog(workdir string) (string, error) {
 		return "", err
 	}
 
-	// Find the catalog-owning bundle: the one shipping the static
-	// template. There is at most one (whats-next).
-	var owner *EntryWithSchema
-	var staticPath string
-	for i := range entries {
-		if !entries[i].IsBundleDir {
-			continue
-		}
-		// The template lives at the BUNDLE ROOT, not skills/, so it is
-		// never mirrored into <workspace>/.claude/skills/ as a (duplicate
-		// `name: iterion-bot-catalog`) skill — only the generated file is.
-		candidate := filepath.Join(entries[i].Path, catalogStaticName)
-		if _, statErr := os.Stat(candidate); statErr == nil {
-			owner = &entries[i]
-			staticPath = candidate
-			break
-		}
-	}
-	if owner == nil {
-		return "", nil // no catalog template in this workspace → nothing to do
-	}
-
-	static, err := os.ReadFile(staticPath)
-	if err != nil {
-		return "", fmt.Errorf("botregistry: read catalog template %s: %w", staticPath, err)
-	}
-	// Nexie routes to dispatchable bundles only. Loose .bot demo
+	// The catalog routes to dispatchable bundles only. Loose .bot demo
 	// files (examples/, smoke/) are not catalog bots — exclude them so
 	// the generated catalog matches the set the dispatcher can resolve.
 	bundles := make([]EntryWithSchema, 0, len(entries))
@@ -196,21 +172,39 @@ func RegenerateWhatsNextCatalog(workdir string) (string, error) {
 			bundles = append(bundles, e)
 		}
 	}
-	block := RenderCatalogBlock(bundles, owner.Name, abs)
-	out, err := spliceGeneratedBlock(string(static), block)
-	if err != nil {
-		return "", fmt.Errorf("botregistry: %s: %w", staticPath, err)
-	}
 
-	skillsDir := filepath.Join(owner.Path, "skills")
-	if err := os.MkdirAll(skillsDir, 0o755); err != nil {
-		return "", fmt.Errorf("botregistry: mkdir %s: %w", skillsDir, err)
+	first := ""
+	for i := range bundles {
+		owner := bundles[i]
+		// The template lives at the BUNDLE ROOT, not skills/, so it is
+		// never mirrored into <workspace>/.claude/skills/ as a (duplicate
+		// `name: iterion-bot-catalog`) skill — only the generated file is.
+		staticPath := filepath.Join(owner.Path, catalogStaticName)
+		if _, statErr := os.Stat(staticPath); statErr != nil {
+			continue
+		}
+		static, err := os.ReadFile(staticPath)
+		if err != nil {
+			return first, fmt.Errorf("botregistry: read catalog template %s: %w", staticPath, err)
+		}
+		block := RenderCatalogBlock(bundles, owner.Name, abs)
+		out, err := spliceGeneratedBlock(string(static), block)
+		if err != nil {
+			return first, fmt.Errorf("botregistry: %s: %w", staticPath, err)
+		}
+		skillsDir := filepath.Join(owner.Path, bundle.DirSkills)
+		if err := os.MkdirAll(skillsDir, 0o755); err != nil {
+			return first, fmt.Errorf("botregistry: mkdir %s: %w", skillsDir, err)
+		}
+		dest := filepath.Join(skillsDir, catalogGeneratedName)
+		if err := store.WriteFileAtomic(dest, []byte(out), 0o644); err != nil {
+			return first, fmt.Errorf("botregistry: write catalog %s: %w", dest, err)
+		}
+		if first == "" {
+			first = dest
+		}
 	}
-	dest := filepath.Join(skillsDir, catalogGeneratedName)
-	if err := store.WriteFileAtomic(dest, []byte(out), 0o644); err != nil {
-		return "", fmt.Errorf("botregistry: write catalog %s: %w", dest, err)
-	}
-	return dest, nil
+	return first, nil
 }
 
 // spliceGeneratedBlock replaces the content between the generated markers

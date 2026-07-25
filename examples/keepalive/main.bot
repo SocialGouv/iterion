@@ -1,0 +1,17 @@
+## Always-on demo — a tool-only "heartbeat" bot relaunched continuously by
+## an `overlap: keepalive` schedule (host crontab, >=1m) or a `kind: keepalive`
+## invocation (resident scheduler, sub-minute). No LLM, no API keys: each run
+## is a fresh, individually-budgeted process, and the keepalive policy keeps
+## exactly one alive at a time, relaunching a stale one. See
+## docs/scheduling.md#always-on-agents--overlap-keepalive.
+
+schema out:
+  beat: string
+
+tool beat:
+  command: `printf '{"beat":"%s"}' "$(date -u +%H:%M:%SZ)"`
+  output: out
+
+workflow heartbeat:
+  entry: beat
+  beat -> done

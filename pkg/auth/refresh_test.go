@@ -80,7 +80,7 @@ func TestServiceRefresh_RevokeFailureLogged(t *testing.T) {
 	}
 	// Pre-revoke the session so Refresh hits the "RevokedAt != nil"
 	// reuse branch.
-	if err := store.MemorySessionStore.RevokeSession(ctx, sess.ID, time.Now().UTC()); err != nil {
+	if err := store.RevokeSession(ctx, sess.ID, time.Now().UTC()); err != nil {
 		t.Fatalf("pre-revoke: %v", err)
 	}
 

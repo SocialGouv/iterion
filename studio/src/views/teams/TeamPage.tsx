@@ -1,8 +1,9 @@
 import { errorMessage } from "@/lib/errorHints";
+import { formatDateTime } from "@/lib/format";
 import { useEffect, useMemo, useState } from "react";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { InlineBanner } from "@/components/ui/InlineBanner";
 import { Button } from "@/components/ui/Button";
-import { CopyButton } from "@/components/ui/CopyButton";
 import { Input } from "@/components/ui/Input";
 import { Select } from "@/components/ui/Select";
 import { Table, THead, Th, TBody, Tr, Td } from "@/components/ui/Table";
@@ -12,8 +13,6 @@ import { useConfirm } from "@/hooks/useConfirm";
 import { useCanManageTeam } from "@/hooks/useCanManageTeam";
 import { useAuth } from "@/auth/AuthContext";
 import {
-  type InvitationView,
-  type TeamMemberView,
   createInvitation,
   deleteInvitation,
   listInvitations,
@@ -23,11 +22,23 @@ import {
 } from "@/api/byok";
 import ApiKeysPanel from "@/views/account/ApiKeys";
 import { useHeaderSlot } from "@/components/shared/useHeaderSlot";
+import InviteLinkPanel from "@/components/shared/InviteLinkPanel";
+
 
 import AuditTab from "./tabs/AuditTab";
 import MemoryTab from "./tabs/MemoryTab";
 
-const ROLES = ["viewer", "member", "admin", "owner"] as const;
+// config_editor is prepended (index 0) so it reads as the least-privileged
+// role: the demotion-confirm heuristic below (ROLES.indexOf comparison)
+// correctly flags any downgrade *to* config_editor as a demotion, and it
+// mirrors the access ladder in @/api/auth.
+const ROLES = ["config_editor", "viewer", "member", "admin", "owner"] as const;
+
+// roleLabel gives the technical `config_editor` string a friendly display
+// name; every other role renders as-is (matching the existing lowercase UI).
+function roleLabel(role: string): string {
+  return role === "config_editor" ? "Config editor" : role;
+}
 
 // SSO, Usage, members-roster and billing are ORG-level — they live on the Org
 // settings page (/orgs/:id). The team page keeps the team's own administrative
@@ -87,7 +98,9 @@ export default function TeamPage() {
       <span className="text-sm font-semibold">Team not found</span>
     ),
     right: team ? (
-      <span className="text-xs text-fg-muted">Your role: {activeRole ?? "—"}</span>
+      <span className="text-xs text-fg-muted">
+        Your role: {activeRole ? roleLabel(activeRole) : "—"}
+      </span>
     ) : null,
   });
 
@@ -125,41 +138,51 @@ export default function TeamPage() {
 }
 
 function Members({ teamID, canManage }: { teamID: string; canManage: boolean }) {
-  const [members, setMembers] = useState<TeamMemberView[]>([]);
-  const [invs, setInvs] = useState<InvitationView[]>([]);
-  const [err, setErr] = useState<string | null>(null);
+  const queryClient = useQueryClient();
+  // Mutation failures report through setActionErr; load failures surface
+  // from the queries. One banner shows whichever is current.
+  const [actionErr, setActionErr] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [draft, setDraft] = useState({ email: "", role: "member" });
-  const [issuedToken, setIssuedToken] = useState<string | null>(null);
+  // Session-issued invites, newest first — tokens appear once, so a new
+  // invite must not clobber a still-uncopied link.
+  const [issued, setIssued] = useState<Array<{ email: string; token: string }>>([]);
   const { confirm, dialog } = useConfirm();
 
-  const reload = async () => {
-    setErr(null);
-    try {
-      const [m, i] = await Promise.all([listTeamMembers(teamID), listInvitations(teamID)]);
-      setMembers(m);
-      setInvs(i);
-    } catch (e) {
-      setErr(errorMessage(e));
-    }
-  };
+  const membersQuery = useQuery({
+    queryKey: ["team-members", teamID],
+    queryFn: () => listTeamMembers(teamID),
+  });
+  const invitationsQuery = useQuery({
+    queryKey: ["team-invitations", teamID],
+    queryFn: () => listInvitations(teamID),
+  });
+  const members = membersQuery.data ?? [];
+  const invs = invitationsQuery.data ?? [];
+  const fetching = membersQuery.isFetching || invitationsQuery.isFetching;
+  const loadError = membersQuery.error ?? invitationsQuery.error;
+  const err =
+    actionErr ?? (loadError && !fetching ? errorMessage(loadError) : null);
 
-  useEffect(() => {
-    void reload();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [teamID]);
+  // Post-mutation refresh: invalidate both lists (and clear any stale
+  // mutation error, as the old reload() did).
+  const reload = () => {
+    setActionErr(null);
+    void queryClient.invalidateQueries({ queryKey: ["team-members", teamID] });
+    void queryClient.invalidateQueries({ queryKey: ["team-invitations", teamID] });
+  };
 
   const invite = async (ev: React.FormEvent) => {
     ev.preventDefault();
     setBusy(true);
-    setErr(null);
+    setActionErr(null);
     try {
       const r = await createInvitation(teamID, draft);
-      setIssuedToken(r.token);
+      setIssued((list) => [{ email: draft.email, token: r.token }, ...list]);
       setDraft({ email: "", role: "member" });
-      void reload();
+      reload();
     } catch (e) {
-      setErr(errorMessage(e));
+      setActionErr(errorMessage(e));
     } finally {
       setBusy(false);
     }
@@ -175,9 +198,9 @@ function Members({ teamID, canManage }: { teamID: string; canManage: boolean }) 
     if (!ok) return;
     try {
       await deleteInvitation(teamID, id);
-      void reload();
+      reload();
     } catch (e) {
-      setErr(errorMessage(e));
+      setActionErr(errorMessage(e));
     }
   };
 
@@ -202,9 +225,9 @@ function Members({ teamID, canManage }: { teamID: string; canManage: boolean }) 
     }
     try {
       await updateMemberRole(teamID, userID, role);
-      void reload();
+      reload();
     } catch (e) {
-      setErr(errorMessage(e));
+      setActionErr(errorMessage(e));
     }
   };
 
@@ -218,9 +241,9 @@ function Members({ teamID, canManage }: { teamID: string; canManage: boolean }) 
     if (!ok) return;
     try {
       await removeMember(teamID, userID);
-      void reload();
+      reload();
     } catch (e) {
-      setErr(errorMessage(e));
+      setActionErr(errorMessage(e));
     }
   };
 
@@ -263,7 +286,7 @@ function Members({ teamID, canManage }: { teamID: string; canManage: boolean }) 
               >
                 {ROLES.map((r) => (
                   <option key={r} value={r}>
-                    {r}
+                    {roleLabel(r)}
                   </option>
                 ))}
               </Select>
@@ -272,27 +295,20 @@ function Members({ teamID, canManage }: { teamID: string; canManage: boolean }) 
               Send invite
             </Button>
           </form>
-          {issuedToken && (
-            <div className="text-xs bg-surface-0 border border-border-subtle rounded p-3 font-mono break-all">
-              Invitation token (copy + email this — it appears once):
-              <br />
-              {issuedToken}
-              <div className="mt-2 flex gap-2 items-center font-sans">
-                <CopyButton
-                  value={issuedToken}
-                  label="Copy"
-                  copiedLabel="Copied"
-                />
-                <Button
-                  variant="ghost"
-                  size="sm"
-                  onClick={() => setIssuedToken(null)}
-                >
-                  Done — hide
-                </Button>
-              </div>
-            </div>
-          )}
+          <p className="text-caption text-fg-subtle">
+            Invitees new to the organization get org membership automatically
+            when they accept.
+          </p>
+          {issued.map((inv) => (
+            <InviteLinkPanel
+              key={inv.token}
+              email={inv.email}
+              token={inv.token}
+              onDismiss={() =>
+                setIssued((list) => list.filter((x) => x.token !== inv.token))
+              }
+            />
+          ))}
         </section>
       )}
 
@@ -319,12 +335,12 @@ function Members({ teamID, canManage }: { teamID: string; canManage: boolean }) 
                     >
                       {ROLES.map((r) => (
                         <option key={r} value={r}>
-                          {r}
+                          {roleLabel(r)}
                         </option>
                       ))}
                     </Select>
                   ) : (
-                    m.role
+                    roleLabel(m.role)
                   )}
                 </Td>
                 <Td align="right">
@@ -360,9 +376,9 @@ function Members({ teamID, canManage }: { teamID: string; canManage: boolean }) 
               {invs.map((i) => (
                 <Tr key={i.id}>
                   <Td>{i.email}</Td>
-                  <Td>{i.role}</Td>
+                  <Td>{roleLabel(i.role)}</Td>
                   <Td className="text-fg-muted">
-                    {new Date(i.expires_at).toLocaleString()}
+                    {formatDateTime(i.expires_at)}
                   </Td>
                   <Td align="right">
                     {canManage && (

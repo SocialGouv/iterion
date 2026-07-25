@@ -1,0 +1,42 @@
+## else_edge.bot — the explicit fallback edge (`src -> dst else`).
+##
+## `else` fires only when no sibling `when` edge from the same source
+## matched — the same runtime role a bare unconditional edge plays next
+## to conditional siblings, stated as intent and validated: exactly one
+## `else` per source (C039), at least one conditional sibling required
+## (C015), and no bare unconditional sibling alongside it (C040).
+##
+## Deterministic (compute-only). Run it:
+##   iterion run examples/else_edge.bot --var n=7    → routes to small
+##   iterion run examples/else_edge.bot --var n=100  → routes to big
+
+vars:
+  n: int = 7
+
+schema verdict:
+  big: bool
+
+schema label:
+  kind: string
+
+compute classify:
+  output: verdict
+  expr:
+    big: "vars.n > 42"
+
+compute big:
+  output: label
+  expr:
+    kind: "'big'"
+
+compute small:
+  output: label
+  expr:
+    kind: "'small'"
+
+workflow else_demo:
+  entry: classify
+  classify -> big when big
+  classify -> small else
+  big -> done
+  small -> done

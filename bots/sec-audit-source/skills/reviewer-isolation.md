@@ -79,9 +79,9 @@ its immediate neighbours via `read_file`) for context — reading
 the source itself is fine because the source was already a trust
 input to the workflow. It MUST NOT read:
 
-- Any path under `.iterion/security/` (scanner output, FP memory,
-  patches dir, FileRecords).
-- Any file matching `scan_dir/*`.
+- Any path under `.sec-audit/` (FP memory, patches dir,
+  FileRecords).
+- Any file matching `scan_dir/*` (the out-of-tree scanner output).
 - Any file outside the workspace.
 
 The reviewer SHOULD read:
@@ -101,8 +101,10 @@ The reviewer SHOULD read:
 - Widens an attack surface (new parsing, new trust assertion, new
   untrusted input field consumed without validation).
 - Touches a file outside the workspace dir or under
-  `.iterion/security/` (scanner output, FP memory, scan dir,
-  FileRecord cache).
+  `.sec-audit/` (FP memory, FileRecord cache, patch
+  artifacts). Scanner output lives out-of-tree in the run
+  scratch dir, so any diff touching it is already outside the
+  workspace.
 - Touches `fp-known.yaml` — the FP memory has its own deterministic
   append path (`fp_append`); no LLM-authored mutation.
 - Leaves the cited line trivially unchanged (a
@@ -142,8 +144,9 @@ the flag — write any narrative in `rationale`):
   was removed without an equivalent replacement.
 - `widens_attack_surface` — new input parsing / trust on
   attacker-controlled data.
-- `touches_iterion_state` — the diff edits anything under
-  `.iterion/`, the scanner output, or `fp-known.yaml`.
+- `touches_bot_state` — the diff edits anything under
+  `.sec-audit/` or `.iterion/`, the scanner output, or
+  `fp-known.yaml`.
 - `comment_only` — the diff changes only comments / whitespace
   in a way that does not fix the cited category.
 - `regression_test_only` — the diff only adds a test, no

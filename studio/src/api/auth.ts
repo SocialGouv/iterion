@@ -9,7 +9,11 @@ import { apiBase } from "@/lib/scope";
 
 const BASE = apiBase().replace(/\/$/, "");
 
-export type Role = "owner" | "admin" | "member" | "viewer";
+// `config_editor` is a least-privilege team role: it can ONLY edit the team's
+// config-shares (via the ConfigEditorShell), nothing else in the studio. It
+// sits below `viewer` in the access ladder (a viewer reads the whole studio;
+// a config_editor reaches only the config editor).
+export type Role = "owner" | "admin" | "member" | "viewer" | "config_editor";
 export type UserStatus = "active" | "disabled" | "pending_password_change";
 
 export interface UserView {

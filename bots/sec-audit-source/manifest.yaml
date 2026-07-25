@@ -1,14 +1,17 @@
 name: sec-audit-source
 display_name: Seki
 icon: 🛡️
-version: 0.1.0
+version: 0.1.1
+## 0.1.1 — ADR-082 Phase 2 (sandbox-by-default): sandbox block reduced to
+## the sec-image pin (scanner toolchain); claude install gate, ~/.claude
+## mount and CLAUDE_CONFIG_DIR removed — platform defaults cover them.
 description: |
   Universal source-code security auditor. Detects languages and
   frameworks, runs language-specific SAST (semgrep + gosec / bandit /
   npm audit) plus language-agnostic scanners (gitleaks for secrets,
   trivy fs for filesystem misconfig, semgrep --config=auto), triages
   the raw output with an LLM against a finding taxonomy, confronts
-  candidates against `.iterion/security/fp-known.yaml` to suppress
+  candidates against `.sec-audit/fp-known.yaml` to suppress
   curated false positives, revalidates surviving candidates with a
   two-phase judge (anti-façade), then writes findings to the iterion
   native kanban board (one issue per finding, labelled by severity +
@@ -16,7 +19,7 @@ description: |
 
   Cross-run memory: false positives confirmed by the operator (or by
   the revalidate judge after explicit human reasoning) are written
-  back to `.iterion/security/fp-known.yaml` in the repo so the next
+  back to `.sec-audit/fp-known.yaml` in the repo so the next
   run does not re-surface them. Entries are reviewable + editable by
   humans.
 
@@ -46,3 +49,10 @@ invocations:
     mode: board
     schedule: { suggested_cron: "0 2 * * 1" }
   - kind: board
+
+## Studio launch-form hierarchy: `primary` inputs render top-level in
+## the declared order; `hidden` vars are internal plumbing kept out of
+## the form (still settable via --var / bot_args).
+launch:
+  primary: [scope_notes, severity_threshold]
+  hidden: [scanner_version]

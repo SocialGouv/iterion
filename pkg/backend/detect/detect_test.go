@@ -25,6 +25,9 @@ func isolateEnv(t *testing.T) {
 		// dev machine (a first-class supported provider) flips the anthropic
 		// provider off and turns detection tests red.
 		"ZAI_API_KEY",
+		// xAI Grok is a first-class claw provider (XAI_API_KEY); scrub so a
+		// host with a real key does not flip claw Available unexpectedly.
+		"XAI_API_KEY", "XAI_BASE_URL",
 		// OpenAI ChatGPT-forfait preference overrides are detection inputs.
 		"ITERION_OPENAI_USE_OAUTH",
 		"AWS_REGION", "AWS_DEFAULT_REGION",
@@ -342,6 +345,48 @@ func TestZAISuggestedModel(t *testing.T) {
 	}
 }
 
+func TestDetect_XAIProvider(t *testing.T) {
+	isolateEnv(t)
+
+	// Absent key → xai listed but unavailable.
+	r := Detect(context.Background())
+	xai := findProvider(t, r, "xai")
+	if xai.Available {
+		t.Fatalf("xai Available=true with no XAI_API_KEY")
+	}
+	if xai.SuggestedModel != "xai/grok-3" {
+		t.Fatalf("xai suggested = %q, want xai/grok-3", xai.SuggestedModel)
+	}
+
+	// Present key → available, source name only (no secret leak), and
+	// claw flips to available so auto-resolve can land on it.
+	t.Setenv("XAI_API_KEY", "xai-test-secret")
+	r = Detect(context.Background())
+	xai = findProvider(t, r, "xai")
+	if !xai.Available {
+		t.Fatal("xai Available=false with XAI_API_KEY set")
+	}
+	if xai.Source != "XAI_API_KEY" {
+		t.Fatalf("xai Source = %q, want XAI_API_KEY", xai.Source)
+	}
+	claw := findBackend(t, r, BackendClaw)
+	if !claw.Available {
+		t.Fatal("claw should be available when XAI_API_KEY is set")
+	}
+	if r.ResolvedDefault != BackendClaw {
+		t.Fatalf("ResolvedDefault = %q, want claw", r.ResolvedDefault)
+	}
+	// Never leak the key value into the report fields.
+	if strings.Contains(xai.Source, "xai-test-secret") {
+		t.Fatal("detect report leaks XAI_API_KEY value")
+	}
+	for _, src := range claw.Sources {
+		if strings.Contains(src, "xai-test-secret") {
+			t.Fatal("claw sources leak XAI_API_KEY value")
+		}
+	}
+}
+
 func TestCachedDetector_HonorsTTL(t *testing.T) {
 	isolateEnv(t)
 	cache := NewCachedDetector(0) // never expires
@@ -432,4 +477,15 @@ func findBackend(t *testing.T, r Report, name string) BackendStatus {
 	}
 	t.Fatalf("backend %q missing from report", name)
 	return BackendStatus{}
+}
+
+func findProvider(t *testing.T, r Report, name string) ProviderStatus {
+	t.Helper()
+	for _, p := range r.Providers {
+		if p.Name == name {
+			return p
+		}
+	}
+	t.Fatalf("provider %q missing from report", name)
+	return ProviderStatus{}
 }

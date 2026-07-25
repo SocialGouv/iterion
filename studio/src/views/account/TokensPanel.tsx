@@ -1,5 +1,7 @@
 import { errorMessage } from "@/lib/errorHints";
-import { useEffect, useState } from "react";
+import { formatDateTime } from "@/lib/format";
+import { useState } from "react";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { InlineBanner } from "@/components/ui/InlineBanner";
 
 import {
@@ -23,40 +25,46 @@ import { useAsyncAction } from "@/hooks/useAsyncAction";
 
 export default function TokensPanel() {
   const { teams } = useAuth();
-  const [tokens, setTokens] = useState<PersonalAccessToken[]>([]);
-  const [loading, setLoading] = useState(true);
-  const [err, setErr] = useState<string | null>(null);
-  const [unavailable, setUnavailable] = useState(false);
+  const queryClient = useQueryClient();
+  const query = useQuery<PersonalAccessToken[]>({
+    queryKey: ["my-pats"],
+    queryFn: () => listMyTokens(),
+  });
+  const tokens = query.data ?? [];
+  // The manual reload skeletoned on every pass (create/revoke included) —
+  // isFetching keeps that visible.
+  const loading = query.isFetching;
+  const unavailable = query.error instanceof FeatureUnavailableError;
+  // Mutation failures share the banner with the fetch error (mutation wins,
+  // like the old single slot); the fetch error hides while a reload is in
+  // flight, which the manual reload achieved by clearing it up front.
+  const [mutErr, setMutErr] = useState<string | null>(null);
+  const err =
+    mutErr ??
+    (query.error && !unavailable && !loading ? errorMessage(query.error) : null);
   const [creating, setCreating] = useState(false);
   const [issued, setIssued] = useState<{ pat: PersonalAccessToken; token: string } | null>(null);
   const [deleting, setDeleting] = useState<PersonalAccessToken | null>(null);
 
-  const reload = async () => {
-    setLoading(true);
-    setErr(null);
-    try {
-      setTokens(await listMyTokens());
-      setUnavailable(false);
-    } catch (e) {
-      if (e instanceof FeatureUnavailableError) setUnavailable(true);
-      else setErr(errorMessage(e));
-    } finally {
-      setLoading(false);
-    }
+  // Post-mutation refresh: clear the shared error slot and refetch the list.
+  const reload = () => {
+    setMutErr(null);
+    void queryClient.invalidateQueries({ queryKey: ["my-pats"] });
   };
 
-  useEffect(() => {
-    void reload();
-  }, []);
+  // Tokens store only the team_id — resolve it to the friendly team name the
+  // create dialog shows, falling back to the raw id for a team this account
+  // no longer sees.
+  const teamNameByID = new Map(teams.map((t) => [t.team_id, t.team_name]));
 
   const doDelete = async () => {
     if (!deleting) return;
     try {
       await revokeMyToken(deleting.id);
       setDeleting(null);
-      void reload();
+      reload();
     } catch (e) {
-      setErr(errorMessage(e));
+      setMutErr(errorMessage(e));
     }
   };
 
@@ -109,17 +117,17 @@ export default function TokensPanel() {
               <Tr key={t.id}>
                 <Td>{t.name}</Td>
                 <Td className="text-xs text-fg-muted">
-                  {t.team_id ?? "(default)"}
+                  {t.team_id ? (teamNameByID.get(t.team_id) ?? t.team_id) : "(default)"}
                 </Td>
                 <Td className="font-mono text-xs text-fg-muted">…{t.token_last4}</Td>
                 <Td className="text-xs text-fg-muted">
-                  {new Date(t.created_at).toLocaleString()}
+                  {formatDateTime(t.created_at)}
                 </Td>
                 <Td className="text-xs text-fg-muted">
-                  {t.expires_at ? new Date(t.expires_at).toLocaleString() : "never"}
+                  {t.expires_at ? formatDateTime(t.expires_at) : "never"}
                 </Td>
                 <Td className="text-xs text-fg-muted">
-                  {t.last_used_at ? new Date(t.last_used_at).toLocaleString() : "—"}
+                  {formatDateTime(t.last_used_at)}
                 </Td>
                 <Td align="right">
                   {t.revoked_at ? (
@@ -148,7 +156,7 @@ export default function TokensPanel() {
           onCreated={(r) => {
             setCreating(false);
             setIssued(r);
-            void reload();
+            reload();
           }}
         />
       )}

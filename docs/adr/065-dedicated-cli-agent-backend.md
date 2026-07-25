@@ -2,7 +2,7 @@
 
 - **Status**: Accepted
 - **Date**: 2026-07-09
-- **Code**: [pkg/backend/delegate/cliagent.go](../../pkg/backend/delegate/cliagent.go) (`CLIAgentBackend`, `CLIAgentProtocol`), [pkg/backend/delegate/kimi.go](../../pkg/backend/delegate/kimi.go) (`BackendKimi`, `kimiProtocol`)
+- **Code**: [pkg/backend/delegate/cliagent.go](../../pkg/backend/delegate/cliagent.go) (`CLIAgentBackend`, `CLIAgentProtocol`), [pkg/backend/delegate/kimi.go](../../pkg/backend/delegate/kimi.go) (`BackendKimi`, `kimiProtocol`), [pkg/backend/delegate/grok.go](../../pkg/backend/delegate/grok.go) (`BackendGrok`, `grokProtocol`)
 
 ## Context
 
@@ -49,11 +49,21 @@ between agent CLIs:
 `CLIAgentBackend` wraps a protocol and mirrors the **codex backend's shape**:
 build native argv → run with a wall-clock timeout (host or, when sandboxed,
 inside the run's container via `sandbox.Run.Command`) → parse stdout → retry on
-a no-output/network transient. **kimi** (`backend: "kimi"`) ships as the first
-concrete instance (`kimiProtocol`), registered in `DefaultRegistry`. When the
-CLI emits no system-prompt flag (kimi), the node's composed `system:` task is
-folded in as a preamble to the `-p` prompt so the task still reaches the agent;
-the CLI keeps its own native agentic posture (`SystemPromptStandalone`).
+a no-output/network transient. Two concrete instances ship today, both
+registered in `DefaultRegistry`:
+
+- **kimi** (`backend: "kimi"`, `kimiProtocol`) — Moonshot kimi-code. No
+  system-prompt flag: the node's composed `system:` is folded in as a preamble
+  to the `-p` prompt (`SystemPromptStandalone`).
+- **grok** (`backend: "grok"`, `grokProtocol`) — xAI Grok Build CLI. System
+  prompt is delivered via `--rules` (append to the CLI's native agentic
+  baseline — `SystemPromptAppendToNative`); non-interactive tool approval is
+  forced with `--permission-mode bypassPermissions --always-approve`; model
+  and effort map to `-m` / `--reasoning-effort`.
+
+When a protocol's `SystemPromptFlag` is empty (kimi), the node's task still
+reaches the agent via the preamble fold; when it is set (grok `--rules`), the
+flag carries the author text and the CLI keeps its native posture.
 
 ## Trade-offs / Consequences
 
@@ -65,8 +75,9 @@ the CLI keeps its own native agentic posture (`SystemPromptStandalone`).
 - **Sessions/continuity are best-effort.** We capture a `session_id` from the
   stream when present, but resume/fork is not wired for CLI-agent backends yet
   (the CLI's resume protocol is per-vendor). Kimi runs fresh each node.
-- **Auto-detection excludes it.** kimi is explicit opt-in (`backend: "kimi"`);
-  the credential detector never auto-selects it, so no host with a Moonshot key
+- **Auto-detection excludes them.** kimi and grok are explicit opt-in
+  (`backend: "kimi"` / `backend: "grok"`); the credential detector never
+  auto-selects them, so no host with a Moonshot key or a Grok Build install
   silently re-targets away from claude_code.
 
 ## Alternatives considered

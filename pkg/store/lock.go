@@ -3,6 +3,7 @@ package store
 import (
 	"context"
 	"fmt"
+	"time"
 )
 
 // RunLock represents an exclusive advisory lock on a run directory.
@@ -41,4 +42,23 @@ func (s *FilesystemRunStore) LockRun(_ context.Context, runID string) (RunLock, 
 // releases the lock automatically when the holding process exits.
 func AcquireFileLock(path, label string) (RunLock, error) {
 	return lockFile(path, label)
+}
+
+// acquireFileLockRetry is the short-critical-section variant of
+// AcquireFileLock: instead of failing on contention it retries until
+// timeout. Used where the protected section is a few milliseconds
+// (an interaction check-and-set) and the correct behaviour under
+// contention is to wait for the other writer, not to error.
+func acquireFileLockRetry(path, label string, timeout time.Duration) (RunLock, error) {
+	deadline := time.Now().Add(timeout)
+	for {
+		l, err := lockFile(path, label)
+		if err == nil {
+			return l, nil
+		}
+		if time.Now().After(deadline) {
+			return nil, fmt.Errorf("store: %s: lock contention persisted for %s: %w", label, timeout, err)
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
 }

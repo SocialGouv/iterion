@@ -1,9 +1,23 @@
-# iterion sandbox
+# 🛡️ iterion sandbox
 
-The iterion sandbox provides per-run isolation for coding agents and
-shell tool nodes via a Docker (or Podman) container. It is **opt-in**:
-workflows that don't declare `sandbox:` and runs that don't pass
-`--sandbox` execute exactly as they did before this feature shipped.
+The sandbox is the boundary that makes autonomous agents safe to run: every
+coding agent and shell tool node executes inside a throwaway per-run Docker (or
+Podman) container instead of against your host credentials and filesystem. It is
+**on by default**: at product entry points (`iterion run`, `resume`,
+the studio, the dispatcher) a workflow that declares no `sandbox:`
+block runs as `sandbox: auto` (devcontainer-aware, falling back to the
+published default image). Opting out is explicit and discouraged —
+`sandbox: none` in the workflow (flagged by the C128 warning
+diagnostic), `--sandbox none`, or `ITERION_SANDBOX_DEFAULT=none` —
+because an unsandboxed run executes with the host's credentials and
+filesystem. The ambient default degrades gracefully instead of
+failing: outside a git repository it is silently not applicable, and
+on a host with no container runtime the run proceeds unsandboxed with
+a visible `sandbox_skipped` event. An EXPLICIT sandbox request (CLI
+flag or workflow block) never degrades — it errors. (The cloud runner
+currently pins `ITERION_SANDBOX_OVERRIDE=none` — the runner pod is the
+isolation boundary there until the k8s sandbox path carries worktree
+git access and interactive channels end-to-end.)
 
 ## Quick start
 
@@ -171,12 +185,12 @@ sandbox:
 
 The shipped **`iterion-default`** preset is the recommended
 starting point for allowlist mode: it covers the LLM endpoints
-(anthropic, openai, openrouter, bedrock, googleapis, azure,
-mistral) plus package registries (npm, PyPI, golang proxy) plus
-code hosts (github, gitlab, bitbucket) plus apt mirrors. It is
-**not** applied implicitly — operators name it explicitly so the
-default-open posture and the curated-allowlist posture are
-unambiguous from the YAML.
+(anthropic, openai, xAI/Grok, openrouter, bedrock, googleapis,
+azure, mistral, z.ai) plus package registries (npm, PyPI, golang
+proxy) plus code hosts (github, gitlab, bitbucket) plus apt
+mirrors. It is **not** applied implicitly — operators name it
+explicitly so the default-open posture and the curated-allowlist
+posture are unambiguous from the YAML.
 
 By default the proxy does NOT terminate TLS — only the CONNECT
 host:port is inspected, and the encrypted bytes pass through
@@ -306,7 +320,10 @@ iterion sandbox doctor                 # report driver + capabilities
 ### Environment / project config
 
 - `ITERION_SANDBOX_DEFAULT` — global default (`""`, `none`, or `auto`).
-  Lowest precedence. Workflows and CLI override.
+  Lowest precedence. Workflows and CLI override. When UNSET, product
+  entry points resolve it to `auto` (sandbox-by-default,
+  `runtime.ResolveGlobalSandboxDefault`); set `none` to restore the
+  historical opt-in behaviour machine-wide.
 - `ITERION_SANDBOX_DEFAULT_IMAGE` — image ref used by `sandbox: auto`
   when no `.devcontainer/devcontainer.json` is found. Falls back to
   `ghcr.io/socialgouv/iterion-sandbox-slim:<iterion-version>` when
@@ -331,7 +348,10 @@ iterion sandbox doctor                 # report driver + capabilities
 2. CLI `--sandbox` flag
 3. Workflow-level `sandbox:` declaration (DSL)
 4. `ITERION_SANDBOX_DEFAULT` env var
-5. Implicit `none` (no sandbox)
+5. Built-in `auto` at product entry points (sandbox-by-default;
+   degrades gracefully outside a git repo or without a container
+   runtime). Engines embedded without an explicit default (tests,
+   library use) stay neutral: no sandbox.
 
 The same chain applies to `host_state` via `--sandbox-host-state`,
 `sandbox.host_state:` in the workflow block, and
@@ -377,6 +397,103 @@ your own image (must support `sleep infinity` as PID 1 — i.e. provide
 to the repo to disable the fallback for that workspace; iterion will
 read the devcontainer instead.
 
+## Devbox tools (`devbox.json`)
+
+A run declares the binaries it needs by shipping a `devbox.json` — no
+DSL field, no flag; the file's presence is the whole opt-in. The
+sandbox images are based on `jetpackio/devbox`, so devbox and Nix are
+already in the container.
+
+Two sources, and **both apply together**:
+
+| Source   | Location                              | Installed |
+| -------- | ------------------------------------- | --------- |
+| **bot**  | next to the bot's `main.bot` (bundle root) | staged into `/tmp/iterion-devbox/bot`, then installed there |
+| **repo** | the target repo's workspace root       | in place |
+
+The bot's copy is staged because the bundle is bind-mounted read-only
+and devbox writes its `.devbox/` profile beside the config it installs.
+The repo's installs in place so relative package references
+(`path:./flake`) resolve; devbox drops a self-ignoring
+`.devbox/.gitignore`, so the generated profile never rides a `git add
+-A` onto a branch.
+
+### Runs without a sandbox (cloud runner pods, plain host runs)
+
+Provisioning is **not** tied to a sandbox container. When no sandbox is
+active — which is **every cloud run** (the chart pins
+`ITERION_SANDBOX_OVERRIDE=none`: the runner pod is the isolation
+boundary, so a bot's inline `sandbox:` block never starts a container)
+and every local `iterion run` without a sandbox declaration — the same
+two sources are provisioned **on the executing host**: `devbox install`
+runs at run start (the bot's config staged into a per-run temp dir,
+since a runner image's `/opt/iterion/bots` is read-only for the pod
+user; the repo's in place), and the profile bin dirs are threaded into
+the `PATH` of every command the run spawns — tool nodes, `claude_code`
+CLI spawns, and the claw bash builtin. The
+[`iterion-runner-devbox`](../Dockerfile.runner-devbox) image ships the
+devbox binary for exactly this; on a host without one the run proceeds
+and the gap is surfaced loudly (warning + `errors` in the event below),
+never silently.
+
+**Both land on `PATH`, repo first.** A repo that pins its own toolchain
+stays authoritative for building itself; the bot's packages fill in what
+the repo does not provide. Neither silently wins.
+
+### Why `PATH` and not `devbox shell`
+
+Tool nodes — and the agents' Bash tool — run a **non-interactive `sh
+-c`**, which sources no shell profile. Installing packages without
+exposing them is therefore an invisible no-op: the binary exists in the
+Nix store and nothing on the box can find it. iterion instead computes
+each project's profile bin dir
+(`<project>/.devbox/nix/profile/default/bin`) and **prepends** it to the
+container `PATH` at container creation, so every exec inherits it with
+nothing to source.
+
+The prepend never clobbers. A `sandbox.env.PATH:` you declare (or a
+devcontainer `containerEnv.PATH`) is kept as the suffix; when you
+declare none, the base is the FHS default
+(`/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin`) that
+the iterion sandbox images ship. An image with a non-standard `PATH`
+should declare `sandbox.env.PATH:` explicitly so its own entries are
+preserved.
+
+### Best-effort, never silent
+
+A failed install does **not** fail the run: it prints what is
+consequently unavailable to the container's stderr, warns host-side, and
+lets the run proceed. The same happens when the image has no `devbox` on
+`PATH`. Nothing is dressed up as success — a missing binary would
+otherwise read as an agent bug.
+
+Provisioning emits `sandbox_devbox_provisioned` (`target`
+`"sandbox"|"host"`, `sources`, `configs`, `bin_dirs`, `path`, plus
+`errors` on the host target when something failed) so you can audit
+what was picked up — and see when a declared toolchain could **not**
+be provisioned.
+
+### Cost
+
+A cold `devbox install` resolves and realises Nix store paths and can
+take **minutes**. That is why the step is added only when a
+`devbox.json` actually exists — a run whose bot and repo declare none
+gets no post-create step and pays nothing. The `/nix` store volume is
+persisted across runs by default (see `ITERION_SANDBOX_PERSIST_NIX`), so
+the cost is paid once per image.
+
+### Example
+
+`bots/app-dev/devbox.json` gives that bot `crane` (via
+`go-containerregistry`) to publish container images without a daemon:
+
+```json
+{
+  "packages": ["go-containerregistry@latest"],
+  "env": { "DEVBOX_NO_PROMPT": "true" }
+}
+```
+
 ### Devbox-ready devcontainer template
 
 If you want a project-pinned toolchain instead of relying on the
@@ -394,7 +511,7 @@ your repo root and `sandbox: auto` will pick them up.
 | `codex`       | partially sandboxed (host CLI; codex has its own internal sandbox) |
 | `claw`        | **sandboxed via runner sub-process** (Phase 4 V1) — see below |
 | Tool nodes    | **fully sandboxed** (`sh -c` runs inside the container) |
-| MCP servers   | partially sandboxed (host-side stdio; container-side MCP servers in V2) |
+| MCP servers   | iterion's built-in board + ask-user MCP reach a sandboxed `claude_code` over a per-run HTTP transport (see [MCP tools in a sandbox](#mcp-tools-in-a-sandbox)); arbitrary user-declared stdio MCP servers stay host-side |
 
 ### Claw backend in sandbox
 
@@ -456,6 +573,25 @@ across the channel.
   envelope, the runner stashes the snapshot, then loads it into its
   local store once the task arrives so applySessionMessages
   prepends the replayed prior messages to the LLM's first call.
+
+### MCP tools in a sandbox
+
+iterion's built-in MCP tools reach a sandboxed `claude_code` node over a
+**per-run HTTP transport** instead of the host stdio pipe the container
+cannot see:
+
+- **board capabilities** (`board.*`) — served at `/api/v1/mcp/board`
+  ([pkg/server/mcp_board_handler.go](../pkg/server/mcp_board_handler.go));
+- **interactive questions** (`ask_user`, `ask_user_async`,
+  `await_answers`) — served at `/api/v1/mcp/ask-user`
+  ([pkg/askusermcp/http.go](../pkg/askusermcp/http.go)).
+
+Each request is authenticated by an ephemeral `X-Iterion-Run` token the
+runtime mints and registers for the run, so a sandboxed agent can call
+these tools but nothing else can. Outside a sandbox the same capabilities
+are wired as host-side stdio MCP servers (`iterion __mcp-board` /
+`iterion __mcp-ask-user`). Arbitrary user-declared stdio MCP servers still
+run host-side; running them container-side is a future item.
 
 ## Drivers
 
@@ -551,6 +687,41 @@ Architecture:
   has no host filesystem to bind-mount, so it copies. A git worktree's
   `.git` is a pointer file, so the *clone root* is copied (real `.git` +
   `origin`) so the sandboxed bot can commit and push.
+- **In-pod git auth (ADR-082 Phase 3 blocker 1).** After the copy, the
+  driver re-anchors the clone's git plumbing on the pod path: the
+  `credential.helper store --file=…` entry (recorded with the runner's
+  HOST absolute path) is re-pointed at the pod-local
+  `.git/iterion-credentials`, and stale `.git/worktrees/` registrations
+  are removed. Because the workspace is a COPY, the runner's mid-run
+  git-credential refresher also *writes through*: on each rotation of the
+  forge token it rewrites the pod's credential store via the driver's
+  `RefreshWorkspaceFile` seam (value streamed over stdin, never argv) —
+  so a `git push` hours into the run still authenticates.
+- **Workspace write-back.** Because the workspace is a COPY, the driver
+  exports it back at sandbox teardown (reverse tar stream,
+  `ExportWorkspace`) onto the host clone — before the pod is destroyed
+  and before worktree finalization / the runner's git-metadata capture
+  read the host workspace — so in-pod commits survive the pod and feed
+  the Commits/Files panels. The host's `.git/config` and
+  `.git/iterion-credentials` are excluded (host-authoritative). An
+  export failure is loud: warn log + a
+  `sandbox_workspace_export_failed` run event.
+- **In-pod Claude forfait (blocker 3).** A run whose sealed bundle
+  carries a materialised Claude Code OAuth `.credentials.json` ships it
+  into the pod on the ADR-070 file-secret channel
+  (`/run/iterion/secrets/claude-code-oauth/.credentials.json`,
+  read-only, auto-updated on Secret refresh), then the runtime seeds a
+  WRITABLE copy at `/tmp/iterion-claude-config` and the claude_code
+  delegate points sandboxed CLI spawns at it via `CLAUDE_CONFIG_DIR`
+  (the per-spawn `CLAUDE_CODE_OAUTH_TOKEN` env stays as the
+  first-precedence path). The runner's forfait refresher rewrites both
+  the Secret and the seeded copy mid-run. When the run carries NO sealed
+  claude credentials, the delegate forwards the runner's ambient
+  Anthropic env (`CLAUDE_CODE_OAUTH_TOKEN` / `ANTHROPIC_API_KEY` /
+  `ANTHROPIC_AUTH_TOKEN`+`BASE_URL`) into sandboxed spawns verbatim —
+  host spawns inherit `os.Environ()`, a `kubectl exec` does not, and the
+  prod runner-pod-level forfait otherwise never reaches the in-pod CLI
+  (`Not logged in` on every exec, observed on run 019f8a6c).
 - Cleanup deletes the pod (and its emptyDir) on run exit.
 
 #### Orphan garbage collection (ADR-070)

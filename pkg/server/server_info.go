@@ -62,6 +62,10 @@ type serverInfoResponse struct {
 	// (Config.TriggerStore). The SPA conditionally exposes the Triggers /
 	// Automations view that manages board (and future) subscriptions.
 	TriggersEnabled bool `json:"triggers_enabled"`
+	// ConfigSharesEnabled is true when the scoped config-share editor is wired
+	// (store + generic-secret stack + auth). The SPA exposes the operator
+	// "Share config" surface when set.
+	ConfigSharesEnabled bool `json:"config_shares_enabled"`
 	// ForgeGitHubAppConfigured is true when this server has a GitHub App
 	// configured (ITERION_FORGE_GITHUB_APP_*). The forge connect form only
 	// offers the "Install GitHub App" mode when true — otherwise selecting it
@@ -77,6 +81,19 @@ type serverInfoResponse struct {
 	// ~/.iterion/plugins) is available in every mode, so the SPA can surface a
 	// Plugins management view unconditionally.
 	PluginsEnabled bool `json:"plugins_enabled"`
+	// BotEditingEnabled is true when a team-authored bot store is wired
+	// (pkg/botsource), so the SPA surfaces the .bot editor + /bots/new builder +
+	// "Duplicate & edit" fork in cloud mode. Local mode edits bots on the real
+	// filesystem via /api/files/* and does not need this gate, but the flag is
+	// still true there so the same editing affordances render uniformly.
+	BotEditingEnabled bool `json:"bot_editing_enabled"`
+	// WebPushEnabled is true when the server can deliver browser push
+	// notifications (subscription store + VAPID keypair wired). The SPA
+	// surfaces the Notifications settings panel only when true.
+	WebPushEnabled bool `json:"web_push_enabled"`
+	// WebPushVAPIDPublicKey is the applicationServerKey browsers subscribe
+	// with. Public by design (it is embedded in every push registration).
+	WebPushVAPIDPublicKey string `json:"web_push_vapid_public_key,omitempty"`
 	// SecretsEnabled is true in local (non-cloud) mode when a sealed secret
 	// store + sealer are wired, so the SPA can surface the local Secrets
 	// management view. Cloud mode uses the auth-gated team/personal secrets
@@ -86,6 +103,12 @@ type serverInfoResponse struct {
 	// Skills library management view (/api/local/skills). No sealing is
 	// involved, so unlike SecretsEnabled it gates on mode alone.
 	SkillsEnabled bool `json:"skills_enabled"`
+	// RunShellEnabled is true in local (non-cloud) mode: the SPA offers
+	// the post-mortem shell (GET /api/ws/runs/{id}/shell) on terminal
+	// runs whose preserved worktree still exists. Never in cloud —
+	// spawning an interactive host shell from a multi-tenant API is not
+	// a thing.
+	RunShellEnabled bool `json:"run_shell_enabled"`
 	// PipelineConcurrency reports the local pipeline-concurrency gate
 	// (max/active/waiting) so the pipeline board can render the cap + how
 	// many pipelines wait for a slot. Enabled=false when no cap is set.
@@ -131,9 +154,17 @@ func (s *Server) handleServerInfo(w http.ResponseWriter, r *http.Request) {
 		EmailEnabled:             s.authSvc != nil && s.authSvc.EmailEnabled(),
 		MarketplaceEnabled:       s.marketplace != nil,
 		TriggersEnabled:          s.cfg.TriggerStore != nil,
+		ConfigSharesEnabled:      s.configShares != nil && s.genericSecrets != nil && s.sealer != nil && s.authSvc != nil,
 		ForgeGitHubAppConfigured: s.forgeGitHubApp.Configured(),
 		SessionBoardEnabled:      sessionboard.Enabled(),
 		PluginsEnabled:           true,
+		WebPushEnabled:           s.webPushEnabled(),
+		// Local mode edits bots on the real filesystem (/api/files/*); cloud mode
+		// needs the team-authored bot store + auth stack wired for the editor.
+		BotEditingEnabled: s.cfg.Mode != "cloud" || (s.botSources != nil && s.authSvc != nil),
+	}
+	if resp.WebPushEnabled {
+		resp.WebPushVAPIDPublicKey = s.cfg.WebPushVAPIDPublicKey
 	}
 	// Snapshot the hot-swap fields under a single RLock (both read here are
 	// swapped on a project switch): the run-console service for the daily-cap
@@ -144,6 +175,7 @@ func (s *Server) handleServerInfo(w http.ResponseWriter, r *http.Request) {
 	s.stateMu.RUnlock()
 	resp.SecretsEnabled = s.cfg.Mode != "cloud" && localSecrets != nil && s.sealer != nil
 	resp.SkillsEnabled = s.cfg.Mode != "cloud"
+	resp.RunShellEnabled = s.cfg.Mode != "cloud"
 	// Surface whether the daily spend cap is active so the SPA knows to
 	// poll for live status. DailyCap() is nil when disabled.
 	if runsSvc != nil && runsSvc.DailyCap() != nil {

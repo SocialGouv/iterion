@@ -14,14 +14,13 @@ package runner
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
-	"net"
-	"net/url"
 	"os"
-	"os/exec"
 	"path/filepath"
+	"reflect"
 	"strconv"
 	"strings"
 	"sync"
@@ -33,7 +32,6 @@ import (
 	"go.opentelemetry.io/otel/codes"
 	"go.opentelemetry.io/otel/trace"
 
-	"github.com/SocialGouv/iterion/pkg/backend/cost"
 	"github.com/SocialGouv/iterion/pkg/backend/mcp"
 	"github.com/SocialGouv/iterion/pkg/backend/model"
 	"github.com/SocialGouv/iterion/pkg/botregistry"
@@ -41,8 +39,8 @@ import (
 	"github.com/SocialGouv/iterion/pkg/cloud/metrics"
 	"github.com/SocialGouv/iterion/pkg/dsl/ast"
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
+	"github.com/SocialGouv/iterion/pkg/eventbus"
 	gitlib "github.com/SocialGouv/iterion/pkg/git"
-	"github.com/SocialGouv/iterion/pkg/internal/strutil"
 	"github.com/SocialGouv/iterion/pkg/knowledge"
 	iterlog "github.com/SocialGouv/iterion/pkg/log"
 	"github.com/SocialGouv/iterion/pkg/notify"
@@ -53,8 +51,8 @@ import (
 	"github.com/SocialGouv/iterion/pkg/runview"
 	"github.com/SocialGouv/iterion/pkg/sandbox"
 	"github.com/SocialGouv/iterion/pkg/secrets"
-	"github.com/SocialGouv/iterion/pkg/secure/httpdial"
 	"github.com/SocialGouv/iterion/pkg/store"
+	"github.com/SocialGouv/iterion/pkg/trigger"
 )
 
 const tracerName = "github.com/SocialGouv/iterion/pkg/runner"
@@ -215,26 +213,23 @@ func (r *Runner) resolveDeliveryPreconditions(msg *queue.RunMessage) preconditio
 	// has no checkpoint and remains a stale delivery to ack/drop.
 	switch preRun.Status {
 	case store.RunStatusCancelled:
-		if preRun.Checkpoint == nil {
+		// Cancelled is terminal for a REDELIVERED launch message,
+		// checkpoint or not: auto-resuming here turned any lost ack of
+		// an operator cancel into a resurrection loop (run 019f8ba3
+		// came back three times, incl. via plain JetStream redelivery
+		// with the runner up, and after every pod roll). The checkpoint
+		// stays on the run doc — an explicit resume (msg.Resume set, or
+		// the resume API) is the only way to continue. A shutdown-drain
+		// whose nak beat the checkpoint write lands here too and now
+		// waits for that explicit resume instead of self-restarting.
+		if msg.Resume == nil {
 			return preconditionOutcome{
 				finalStatus: "cancelled",
 				op:          "ack-already-cancelled",
 				action:      actionAck,
 				level:       logInfo,
-				logFmt:      "runner: run %s already cancelled — skipping",
+				logFmt:      "runner: run %s is cancelled — dropping redelivery (explicit resume required to continue)",
 				logArgs:     []any{msg.RunID},
-			}
-		}
-		if msg.Resume == nil {
-			// We mutate msg.Resume here so the executor takes the
-			// resume path; caller still uses outcome.preRun unchanged.
-			msg.Resume = &queue.ResumeSpec{}
-			return preconditionOutcome{
-				proceed: true,
-				preRun:  preRun,
-				level:   logInfo,
-				logFmt:  "runner: run %s redelivered after cancellation checkpoint — resuming",
-				logArgs: []any{msg.RunID},
 			}
 		}
 	case store.RunStatusFailedResumable, store.RunStatusPausedOperator:
@@ -339,6 +334,28 @@ func classifyExecResult(execErr error, hbFailed bool, parentErr error, runID str
 			logArgs:     []any{runID, execErr},
 		}
 	}
+	// Budget exceeded is a RESUMABLE checkpoint, not a transient blip:
+	// the engine saved a failed_resumable checkpoint (failBudgetExceeded).
+	// Ack it — do NOT Nak for auto-redelivery. Auto-resuming a
+	// budget-exceeded run is worse than useless: the same message carries
+	// the same (already-spent) budget, so a duration cap re-fails
+	// instantly, and each redelivery re-provisions a FRESH pod whose
+	// recordRunGitMeta overwrites the first attempt's good git metadata
+	// with base==head — silently destroying the run's exported commits
+	// (observed live: run 019f8e08 lost 40 in-pod doc commits this way).
+	// The operator resumes MANUALLY with a raised cap
+	// (`iterion resume --max-duration/--max-cost-usd`), the documented
+	// "budget exceeded → raise the cap + resume" recovery.
+	if errors.Is(execErr, runtime.ErrBudgetExceeded) {
+		return execOutcome{
+			finalStatus: "budget_exceeded",
+			op:          "ack-budget-exceeded",
+			action:      actionAck,
+			level:       logWarn,
+			logFmt:      "runner: run %s hit a budget cap — failed_resumable, NOT auto-resuming (resume manually with a raised cap): %v",
+			logArgs:     []any{runID, execErr},
+		}
+	}
 	// Generic error → caller checks DLQ trigger before falling back to
 	// the plain-nak outcome below.
 	return execOutcome{
@@ -423,6 +440,15 @@ type Config struct {
 	// counters above stay tenant-unlabelled). nil → no org metering.
 	OrgUsage orgusage.Counter
 
+	// Events, when non-nil, receives a run-outcome trigger.Event
+	// (run.finished/failed/cancelled/paused) after every execution
+	// attempt — the runner-side twin of runview.emitRunOutcome, so
+	// server-side consumers (the usernotify dispatcher, trigger
+	// chaining) see runner-pod runs too, not only in-process ones.
+	// Lossy fan-out by design; the notification sweep is the safety
+	// net. nil → no event publishing.
+	Events eventbus.Bus
+
 	// BotsPaths is where bot bundles are resolved from (the image ships
 	// the catalog at /opt/iterion/bots via ITERION_BOTS_PATH). A run
 	// carrying a BotID gets its bundle wired into the engine so the
@@ -480,11 +506,29 @@ type Runner struct {
 	runEnginesMu sync.Mutex
 	runEngines   map[string]*runtime.Engine
 
+	// steer maps an in-flight run to its live-steering state (override
+	// channel + command-id dedup cache) so the per-run NATS subscriber
+	// can push bump_loop / raise_budget into the engine. See steer.go.
+	steerMu sync.Mutex
+	steer   map[string]*runSteerState
+	// steerAckFn / steerAckTimeout are test seams for the steering
+	// transport (default: NATS PublishSteerAck / 4s engine wait).
+	steerAckFn      func(runID, commandID string, body []byte) error
+	steerAckTimeout time.Duration
+
 	// ssrfPinUnavailableOnce demotes the expected, permanent "hosts file not
 	// writable" SSRF IP-pin condition (non-root runner + kubelet-managed
 	// /etc/hosts) to a single info log for the runner's lifetime, instead of a
 	// per-clone warn that trains operators to ignore warns. See prepareRepoWorkspace.
 	ssrfPinUnavailableOnce sync.Once
+
+	// sandboxRuns maps an in-flight run to its live sandbox Run handle
+	// (registered by the engine's sandbox-run observer) so the mid-run
+	// credential refreshers can write rotated tokens THROUGH into the
+	// sandbox — the k8s workspace is a tar COPY, so a host-side rewrite
+	// alone never reaches it. See sandbox_registry.go.
+	sandboxRunsMu sync.Mutex
+	sandboxRuns   map[string]sandbox.Run
 }
 
 type inFlight struct {
@@ -716,6 +760,18 @@ func (r *Runner) processOne(parent context.Context, delivery *natsq.Delivery) {
 		logger.Warn("runner: subscribe cancel %s: %v (continuing without)", msg.RunID, err)
 	}
 
+	// Live steering: register the override channel BEFORE the engine is
+	// built (the engine picks it up at construction via
+	// steerChannelFor), then subscribe the per-run steer subject. Same
+	// lifecycle as the cancel subscription — torn down with runCtx.
+	r.registerSteerChannel(runCtx, msg.RunID)
+	defer r.unregisterSteerChannel(msg.RunID)
+	if _, err := r.cfg.NATS.SubscribeSteer(runCtx, msg.RunID, func(body []byte, cmdID string) {
+		r.handleSteerDelivery(msg.RunID, body, cmdID)
+	}); err != nil {
+		logger.Warn("runner: subscribe steer %s: %v (steering disabled for this run)", msg.RunID, err)
+	}
+
 	// Cooperative cancel check: if the server flipped the run to
 	// cancelled before we picked it up (T-32 cancel-queued path),
 	// ack the JetStream delivery without doing any work.
@@ -783,6 +839,7 @@ func (r *Runner) processOne(parent context.Context, delivery *natsq.Delivery) {
 	<-hbDone
 
 	r.fireCompletionNotifier(msg)
+	r.fireOutcomeEvent(msg, err)
 
 	if handled, dlqStatus := r.parkOnDLQOnFinalDelivery(err, delivery, msg, logger); handled {
 		finalStatus = dlqStatus
@@ -793,27 +850,6 @@ func (r *Runner) processOne(parent context.Context, delivery *natsq.Delivery) {
 	logAt(logger, outcome.level, outcome.logFmt, outcome.logArgs...)
 	finalStatus = outcome.finalStatus
 	dispatchTerminal(logger, delivery, outcome.action, outcome.op, msg.RunID)
-}
-
-// decodeOrTerm decodes the delivery payload into a queue.RunMessage. On
-// decode failure it Terms the delivery so the malformed message doesn't
-// loop in JetStream, surfacing a failed-Term at WARN so the operator
-// can purge rather than chase a silent loop. Returns (msg, true) on
-// success; (nil, false) when the caller must abandon the delivery.
-func (r *Runner) decodeOrTerm(delivery *natsq.Delivery) (*queue.RunMessage, bool) {
-	msg, err := delivery.Decode()
-	if err != nil {
-		r.cfg.Logger.Error("runner: decode delivery: %v", err)
-		if termErr := delivery.Term(); termErr != nil {
-			// A failed Term leaves the malformed message in the queue
-			// where it will be redelivered and fail decode again on
-			// every runner — surface it so the operator can purge
-			// rather than chase a silent loop.
-			r.cfg.Logger.Warn("runner: term after decode failure: %v", termErr)
-		}
-		return nil, false
-	}
-	return msg, true
 }
 
 // startProcessSpan builds the runner-side OTel root span for this
@@ -848,54 +884,6 @@ func (r *Runner) startProcessSpan(parent context.Context, delivery *natsq.Delive
 	)
 }
 
-// verifyTenantOrTerm refuses a delivery whose message tenant doesn't
-// match the persisted run document. A mismatch implies either a
-// corrupted publish (publisher stamped the wrong tenant) or a malicious
-// / replayed message; either way the run is unsafe to execute under
-// either tenant's scope, so we Term the delivery to keep it from
-// redelivering. Kept separate from resolveDeliveryPreconditions so the
-// failed-Term log can carry a security-shaped ERROR-level alarm asking
-// the operator to purge the JetStream subject manually — the generic
-// logDeliveryErr breadcrumb wouldn't surface it. Returns true to proceed,
-// false when the caller must abandon the delivery.
-func (r *Runner) verifyTenantOrTerm(pre preconditionOutcome, msg *queue.RunMessage, delivery *natsq.Delivery, logger *iterlog.Logger) bool {
-	if pre.preRun.TenantID == msg.TenantID {
-		return true
-	}
-	logger.Error("runner: tenant mismatch for run %s (msg=%q stored=%q) — terming", msg.RunID, msg.TenantID, pre.preRun.TenantID)
-	if termErr := delivery.Term(); termErr != nil {
-		// HIGH-impact: a failed Term on a tenant-mismatched
-		// message means a forged / replayed delivery stays in the
-		// queue and JetStream will redeliver it, looping forever.
-		// Surface loudly so the operator can purge the stream.
-		logger.Error("runner: term for %s after tenant mismatch FAILED (%v) — message will redeliver; purge the JetStream subject manually", msg.RunID, termErr)
-	}
-	return false
-}
-
-// acquireRunLock claims the distributed run lock guarding against two
-// runners executing the same run. ErrLockHeld means a sibling already
-// has it — Nak so the sibling retains exclusive ownership; any other
-// lock error is a transient-store shape and also Nak'd. Returns
-// (lock, true, "") on success; (nil, false, finalStatus) when the caller
-// must abandon the delivery (finalStatus is the metric label).
-func (r *Runner) acquireRunLock(runCtx context.Context, msg *queue.RunMessage, delivery *natsq.Delivery, logger *iterlog.Logger) (store.RunLock, bool, string) {
-	// Acquire the distributed lock. Two competing runners on the
-	// same run is the contention this guards against.
-	lock, err := r.cfg.Store.LockRun(runCtx, msg.RunID)
-	if err != nil {
-		if errors.Is(err, natsq.ErrLockHeld) {
-			logger.Warn("runner: lock held for %s — naking for sibling", msg.RunID)
-			nakTerminal(logger, delivery, "nak-lock-held", msg.RunID)
-			return nil, false, "lock_held"
-		}
-		logger.Error("runner: lock %s: %v", msg.RunID, err)
-		nakTerminal(logger, delivery, "nak-lock-error", msg.RunID)
-		return nil, false, "failed"
-	}
-	return lock, true, ""
-}
-
 // fireCompletionNotifier fires the run-completion webhook (no-op unless
 // the run carries a callback URL). FireForRun re-reads the persisted run
 // and gates on the terminal status via shouldNotify — paused runs (the
@@ -911,90 +899,20 @@ func (r *Runner) fireCompletionNotifier(msg *queue.RunMessage) {
 	r.completionNotifier.FireForRun(nctx, r.cfg.Store, msg.RunID)
 }
 
-// parkOnDLQOnFinalDelivery handles the DLQ branch: a generic engine
-// error on the LAST permitted JetStream attempt must park a copy on the
-// DLQ and Term instead of Nak — without the bridge, JetStream silently
-// drops the message after MaxDeliver and the run is unrecoverable except
-// by hand. Handled here (not via classifyExecResult) because it has side
-// effects (PublishDLQ + UpdateRunStatusIf) and uses its own context with
-// `defer cancel()`. Returns (true, finalStatus) when the caller must
-// stop processing the delivery (DLQ dispatch already issued);
-// (false, "") otherwise to fall through to classifyExecResult.
-func (r *Runner) parkOnDLQOnFinalDelivery(err error, delivery *natsq.Delivery, msg *queue.RunMessage, logger *iterlog.Logger) (bool, string) {
-	if err == nil ||
-		errors.Is(err, runtime.ErrRunPaused) ||
-		errors.Is(err, runtime.ErrRunPausedOperator) ||
-		errors.Is(err, runtime.ErrRunCancelled) ||
-		r.cfg.NATS == nil || delivery.NumDelivered() < r.cfg.NATS.MaxDeliver() {
-		return false, ""
+// fireOutcomeEvent publishes the run-outcome trigger.Event onto the events
+// bus — the runner-side twin of runview.emitRunOutcome, sharing the same
+// trigger.BuildRunOutcome authority. Fired after the execution attempt with
+// the checkpoint already persisted, so a human-input pause carries its
+// pending interaction_id. Best-effort: a publish failure is logged, never
+// fails the delivery (the usernotify sweep reconciles missed episodes).
+func (r *Runner) fireOutcomeEvent(msg *queue.RunMessage, execErr error) {
+	if r.cfg.Events == nil {
+		return
 	}
-	logger.Error("runner: run %s failed on final delivery %d/%d — parking on DLQ: %v",
-		msg.RunID, delivery.NumDelivered(), r.cfg.NATS.MaxDeliver(), err)
-	bg, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-	if perr := r.cfg.NATS.PublishDLQ(bg, delivery, err.Error()); perr != nil {
-		// DLQ unavailable: keep the JetStream redelivery as
-		// the only remaining safety net.
-		logger.Error("runner: DLQ park for %s failed: %v — naking instead", msg.RunID, perr)
-		nakTerminal(logger, delivery, "nak-dlq-failed", msg.RunID)
-		return true, "dlq"
-	}
-	sctx := store.WithIdentity(bg, msg.TenantID, msg.OwnerID)
-	if _, serr := r.cfg.Store.UpdateRunStatusIf(sctx, msg.RunID, store.RunStatusFailedResumable,
-		fmt.Sprintf("max deliveries exhausted: %v (parked on DLQ — replay via /api/admin/dlq)", err),
-		[]store.RunStatus{store.RunStatusRunning, store.RunStatusQueued}); serr != nil {
-		logger.Warn("runner: DLQ status flip for %s: %v", msg.RunID, serr)
-	}
-	termTerminal(logger, delivery, "term-dlq-parked", msg.RunID)
-	return true, "dlq"
-}
-
-// heartbeat refreshes the NATS KV lease so a long-running run keeps
-// holding the lock past the 60s default TTL. Returns when ctx is
-// cancelled (run finished). On refresh failure the heartbeat sets
-// hbFailed and triggers runCancel so the engine unwinds proactively
-// before the lease expires — without that signal, the lease would
-// silently lapse and JetStream would redeliver to a sibling pod, two
-// writers ending up on the same run state. processOne reads hbFailed
-// to Nak (not Ack) the delivery so the message stays queued for sibling
-// redelivery instead of requiring manual user resume.
-func (r *Runner) heartbeat(ctx context.Context, runCancel context.CancelFunc, lock store.RunLock, delivery *natsq.Delivery, done chan<- struct{}, hbFailed *atomic.Bool) {
-	defer close(done)
-	natsLock, ok := lock.(*natsq.Lock)
-	if !ok {
-		return // no-op lock or non-NATS provider — nothing to refresh
-	}
-	t := time.NewTicker(r.cfg.HeartbeatInterval)
-	defer t.Stop()
-	for {
-		select {
-		case <-ctx.Done():
-			return
-		case <-t.C:
-			// Hold the JetStream ack deadline open. AckWait (5m default)
-			// is far shorter than many real runs; without a periodic
-			// InProgress() the broker redelivers the message to a sibling
-			// and, after MaxDeliver attempts, drops it from the queue —
-			// destroying the crash-recovery safety net while the run is
-			// still healthy and head-of-line-blocking one of the consumer's
-			// MaxAckPending slots. Best-effort: a transient miss is retried
-			// on the next tick, well inside AckWait.
-			if err := delivery.InProgress(); err != nil {
-				r.cfg.Logger.Warn("runner: heartbeat InProgress failed: %v", err)
-			}
-			if err := natsLock.Refresh(ctx); err != nil {
-				if errors.Is(err, context.Canceled) {
-					return // run already exiting
-				}
-				if r.cfg.Metrics != nil {
-					r.cfg.Metrics.RunnerHeartbeatErrors.Inc()
-				}
-				r.cfg.Logger.Error("runner: heartbeat refresh failed: %v — cancelling run to avoid split-brain", err)
-				hbFailed.Store(true)
-				runCancel()
-				return
-			}
-		}
+	ectx := store.WithIdentity(context.Background(), msg.TenantID, msg.OwnerID)
+	ev := trigger.BuildRunOutcome(ectx, r.cfg.Store, msg.RunID, execErr)
+	if err := r.cfg.Events.Publish(ectx, ev); err != nil {
+		r.cfg.Logger.Warn("runner: publish %s trigger event for run %s: %v", ev.Kind, msg.RunID, err)
 	}
 }
 
@@ -1112,6 +1030,17 @@ func (r *Runner) executeRun(ctx context.Context, msg *queue.RunMessage) error {
 			go r.refreshFileSecretsLoop(refreshCtx, msg.TenantID, creds.GenericRefs, fileSecrets)
 		}
 	}
+	// Same rotation problem for the token GIT uses. Independent of the file
+	// secrets above: a repo-targeted run has a forge token even when the
+	// workflow declares no `as: file` secret at all, and its push is the last
+	// thing the run does — hours after the credential was minted.
+	if msg.RepoURL != "" && workDir != "" {
+		if ref := r.gitCredentialSecretRef(ctx); ref != "" {
+			gitCredCtx, stopGitCred := context.WithCancel(ctx)
+			defer stopGitCred()
+			go r.refreshGitCredentialsLoop(gitCredCtx, msg.TenantID, ref, msg.RunID, workDir, msg.RepoURL)
+		}
+	}
 
 	// Isolate the forge CLI (glab/gh) auth config to a PER-RUN directory so a
 	// bot's `glab auth login` / `gh auth login` can never leak its forge
@@ -1196,42 +1125,55 @@ func (r *Runner) executeRun(ctx context.Context, msg *queue.RunMessage) error {
 		// sandbox block, so the run executes directly in the runner pod.
 		runtime.WithSandboxOverride(r.cfg.SandboxOverride),
 	}
-	// Sandboxed counterpart of the no-sandbox file-secret refresh above: a
-	// `sandbox: auto` run mounts file secrets as a launch-time snapshot
-	// (docker bind-mount / k8s Secret), so the in-pod loop never starts and
-	// a long run would push/comment with a dead token (#99, still open for
-	// the common cloud path). Register an observer that, once the sandbox
-	// Run is live, drives a refresh loop rewriting the in-container secret
-	// when the store record rotates. No-op when the run has no refreshable
-	// file secrets or the driver can't refresh.
-	if refs := r.sandboxFileSecretRefs(ctx, wf); refs != nil {
-		sbRefreshCtx, stopSbRefresh := context.WithCancel(ctx)
-		defer stopSbRefresh()
-		if obs := r.sandboxSecretRefreshObserver(sbRefreshCtx, msg.TenantID, refs); obs != nil {
-			engineOpts = append(engineOpts, runtime.WithSandboxRunObserver(obs))
-		}
-	}
-	// Bundle skills: a bot-qualified run mirrors its bundle's skills/ into
-	// <workspace>/.claude/skills exactly like a local `iterion run
-	// bots/<bot>` does (the engine's mirrorBundleSkills reads the bundle).
-	// Best-effort: an unresolvable bot id or a loose .bot just skips the
-	// mirror with a warning — the run proceeds without skills.
+	// Sandbox-run observer: registers the live sandbox Run so the mid-run
+	// credential refreshers can write rotated tokens THROUGH into the
+	// container (forfait credentials + the k8s workspace's git credential
+	// copy — see sandbox_registry.go), and starts the sandboxed
+	// file-secret refresh loop when the run carries refreshable file
+	// secrets (a `sandbox: auto` run mounts them as a launch-time
+	// snapshot — docker bind-mount / k8s Secret — so a long run would
+	// otherwise push/comment with a dead token, #99).
+	sbObsCtx, stopSbObs := context.WithCancel(ctx)
+	defer stopSbObs()
+	defer r.unregisterSandboxRun(msg.RunID)
+	engineOpts = append(engineOpts, runtime.WithSandboxRunObserver(
+		r.sandboxRunObserver(sbObsCtx, msg.RunID, msg.TenantID, r.sandboxFileSecretRefs(ctx, wf))))
+	// Bundle resources: a bot-qualified run attaches its bundle so the
+	// engine mirrors skills/ into <workspace>/.claude/skills AND
+	// provisions the bot's devbox.json (host devbox provisioning — the
+	// runner pod is the isolation boundary, no sandbox starts here),
+	// exactly like a local `iterion run bots/<bot>` does. Best-effort:
+	// an unresolvable bot id or a loose .bot just skips the bundle with
+	// a warning — the run proceeds without skills or devbox tools.
 	if msg.BotID != "" && len(r.cfg.BotsPaths) > 0 {
 		if mainFile, rerr := botregistry.ResolveBotPath(msg.BotID, r.cfg.BotsPaths); rerr == nil {
 			if b, berr := bundle.OpenDir(filepath.Dir(mainFile)); berr == nil {
 				engineOpts = append(engineOpts, runtime.WithBundle(b))
 			} else {
-				r.cfg.Logger.Warn("runner: bot %q bundle open: %v (skills not mirrored)", msg.BotID, berr)
+				r.cfg.Logger.Warn("runner: bot %q bundle open: %v (skills not mirrored, devbox tools not provisioned)", msg.BotID, berr)
 			}
 		} else {
-			r.cfg.Logger.Warn("runner: bot %q not resolvable in %v (skills not mirrored)", msg.BotID, r.cfg.BotsPaths)
+			r.cfg.Logger.Warn("runner: bot %q not resolvable in %v (skills not mirrored, devbox tools not provisioned)", msg.BotID, r.cfg.BotsPaths)
 		}
+	}
+	// Plugin/library skills the LAUNCHING instance resolved for us. This pod's
+	// iterion home is ephemeral and empty, so local resolution would silently
+	// find nothing but the compiled-in builtins; passing the payload (even
+	// empty) makes it authoritative and suppresses that dead local lookup.
+	if msg.Contributions != nil {
+		engineOpts = append(engineOpts, runtime.WithContributions(contributionsFromWire(msg.Contributions)))
 	}
 	if msg.Resume != nil && msg.Resume.Force {
 		// Force-resume must be applied at engine construction so the
 		// hash-mismatch guard in pkg/runtime/resume.go reads the flag.
 		// This was previously dropped on the floor.
 		engineOpts = append(engineOpts, runtime.WithForceResume(true))
+	}
+	// Live steering: hand the engine the override channel processOne
+	// registered for this run, so bump_loop / raise_budget commands
+	// arriving on iterion.steer.<run_id> reach the execution loop.
+	if steerCh := r.steerChannelFor(msg.RunID); steerCh != nil {
+		engineOpts = append(engineOpts, runtime.WithOverrideChannel(steerCh))
 	}
 	engine := runtime.New(wf, r.cfg.Store, executor, engineOpts...)
 	// Publish the engine so the store's Event.ActiveMs stamping reads
@@ -1280,780 +1222,6 @@ func (r *Runner) executeRun(ctx context.Context, msg *queue.RunMessage) error {
 		r.deleteRunSecrets(msg)
 	}
 	return runErr
-}
-
-// recordRunGitMeta computes the run's commit/file metadata from the clone
-// at workDir and persists it into the store, so the server pod can render
-// the Commits/Files panels after this runner pod's workspace is gone (the
-// cloud path where the live git inspection has no worktree to read). base
-// is the clone HEAD captured before the run; workDir is the on-disk clone.
-//
-// Best-effort throughout: a non-git workDir, an empty range (no commits),
-// or a store without the RunGitMetaStore seam all no-op cleanly. Never
-// returns an error — the caller has already decided the run's outcome.
-func (r *Runner) recordRunGitMeta(ctx context.Context, msg *queue.RunMessage, workDir, base string) {
-	gs := store.AsRunGitMetaStore(r.cfg.Store)
-	if gs == nil {
-		return
-	}
-	if base == "" {
-		// Baseline capture failed earlier (already warned). Persisting a
-		// snapshot with no range would serve a CONFIDENT "no commits" for a
-		// run that may well have committed — worse than the panel reporting
-		// the metadata unavailable. Skip.
-		return
-	}
-	meta, err := store.BuildRunGitMeta(workDir, base)
-	if err != nil {
-		if !errors.Is(err, gitlib.ErrNotGitRepo) {
-			r.cfg.Logger.Warn("runner: run %s: build git meta: %v", msg.RunID, err)
-		}
-		return
-	}
-	// Flush on a background ctx carrying the run's tenant identity — NOT the
-	// run ctx — so a cancelled/timed-out run still persists its final view
-	// (mirrors the run-log writer's flush-ctx rationale).
-	idCtx := store.WithIdentity(context.Background(), msg.TenantID, msg.OwnerID)
-	// Capture per-file diff content (before/after) into the snapshot while the
-	// clone still exists, so the server pod can serve /files/diff and
-	// /commits/{sha}/diff for this run once the worktree is gone. Bounded:
-	// small diffs inline, large ones offloaded to the blob backend, anything
-	// past the budget dropped (Truncated). Best-effort — the metadata is the
-	// contract; diff content is an enrichment.
-	store.PopulateRunDiffs(idCtx, msg.RunID, workDir, meta, store.AsRunDiffBlobStore(r.cfg.Store))
-	if err := gs.SaveRunGitMeta(idCtx, msg.RunID, meta); err != nil {
-		r.cfg.Logger.Warn("runner: run %s: persist git meta: %v", msg.RunID, err)
-	}
-}
-
-// uploadRunFiles copies the run's tool-produced artifact files from the
-// runner-local scratch dir to the durable read backend (the Mongo store's
-// S3 bridge). The server pod, which never saw this runner's disk, then
-// serves them from the artifact-files panel. Best-effort: a store without
-// the RunFilesUploader seam (filesystem dev store) no-ops cleanly, and an
-// upload failure is logged, never fatal — the run's outcome is already
-// decided. Runs on a background ctx carrying the run's tenant identity so
-// a cancelled/timed-out run still flushes what it produced (mirrors
-// recordRunGitMeta).
-func (r *Runner) uploadRunFiles(_ context.Context, msg *queue.RunMessage) {
-	up := store.AsRunFilesUploader(r.cfg.Store)
-	if up == nil {
-		return
-	}
-	idCtx := store.WithIdentity(context.Background(), msg.TenantID, msg.OwnerID)
-	n, err := up.UploadRunFiles(idCtx, msg.RunID)
-	if err != nil {
-		r.cfg.Logger.Warn("runner: run %s: upload artifact files: %v", msg.RunID, err)
-		return
-	}
-	if n > 0 {
-		r.cfg.Logger.Info("runner: run %s: uploaded %d artifact file(s)", msg.RunID, n)
-	}
-}
-
-// injectCredentials resolves the run's sealed bundle, decrypts it,
-// stamps the plaintext into ctx via secrets.WithCredentials, and
-// returns a cleanup func that performs LOCAL hygiene (wipes the
-// in-memory plaintext keys + removes the OAuth temp dirs) at the call
-// site. When no bundle is attached or the runner has no Sealer wired,
-// returns the original ctx unchanged.
-//
-// The cleanup func runs on every executeRun return. Removal of the
-// *persistent* sealed bundle from the store is intentionally NOT part
-// of cleanup — see deleteRunSecrets, which executeRun invokes only on a
-// terminal-clean outcome so a redelivered run can re-fetch its secrets.
-//
-// OAuth-forfait blobs are materialised in fresh temp directories
-// (CLAUDE_CONFIG_DIR / CODEX_HOME-shaped) and wired through
-// Credentials.OAuthCredentialFiles so the delegate backends point
-// the spawned CLI at them. The cleanup func tears the dirs down on
-// every exit path.
-// prepareRepoWorkspace clones the run's RepoURL@RepoSHA into a fresh per-run
-// directory and returns its path. For a private repo it authenticates the
-// HTTPS clone with the bound forge token (forge_token / gitlab_token /
-// github_token from the sealed bundle). The default branch is cloned first so
-// the review base (typically `main`) is present, then the run's ref is fetched
-// and checked out so merge-base diffs resolve.
-func (r *Runner) prepareRepoWorkspace(ctx context.Context, msg *queue.RunMessage) (string, error) {
-	// RepoURL/RepoSHA arrive from a webhook payload (the generic webhook
-	// body is fully attacker-controlled) and flow into git below
-	// unmodified. Validate the transport + ref shape BEFORE touching the
-	// filesystem or spawning git so a remote-helper URL (`ext::sh -c …`)
-	// or a flag-shaped ref (`--upload-pack=…`) can never reach the
-	// subprocess. This is the runner's flag/transport-injection boundary,
-	// mirroring the bot-install path.
-	pinnedIP, err := validateRepoTarget(ctx, msg.RepoURL, msg.RepoSHA)
-	if err != nil {
-		return "", err
-	}
-	// SSRF connect-time hardening for the two TOCTOU vectors validateRepoTarget
-	// alone can't close (it resolves but git re-resolves at connect time):
-	//   (a) DNS rebinding — the clone-guard CONNECT proxy below is the
-	//       enforcing layer: git dials through a loopback proxy that
-	//       re-resolves the CONNECT host through the same SSRF guard and dials
-	//       ONLY the validated IP, so it holds on non-root pods too. The
-	//       /etc/hosts pin stays as belt-and-braces (it also covers ssh
-	//       remotes) but is best-effort: on a non-root runner the file is
-	//       kubelet-owned and unwritable — expected, logged once at info.
-	//   (b) HTTP 302 → internal — disabled per git invocation below
-	//       (http.followRedirects=false), and the proxy's single-host
-	//       allowlist refuses any off-host CONNECT regardless.
-	// The pod-level egress NetworkPolicy (block RFC1918/metadata) stays as
-	// infra defence-in-depth on top.
-	host, hostErr := extractRepoHost(msg.RepoURL)
-	if hostErr == nil && pinnedIP != nil {
-		if restore, perr := pinHostInHostsFile(runnerHostsFile, host, pinnedIP); perr == nil {
-			defer restore()
-		} else if pinUnavailable(perr) {
-			// Expected & permanent on a non-root runner: /etc/hosts is a
-			// kubelet-managed bind-mount owned by root, so the pin can never
-			// land here. Log ONCE at info — the clone-guard proxy is the
-			// connect-time control.
-			r.ssrfPinUnavailableOnce.Do(func() {
-				r.cfg.Logger.Info("runner: SSRF IP-pin unavailable on this runner: %s not writable (non-root); the clone-guard proxy is the connect-time control (%v)", runnerHostsFile, perr)
-			})
-		} else {
-			// Unexpected: writable file but the write still failed. Keep warning per-clone.
-			r.cfg.Logger.Warn("runner: SSRF IP-pin skipped for %s→%s (%v); the clone-guard proxy is the connect-time control", host, pinnedIP, perr)
-		}
-	}
-	// git honours HTTPS_PROXY for http(s) transports only; ssh remotes keep
-	// the pre-check + hosts pin + pod egress policy as their guard.
-	var gitEnv []string
-	if hostErr == nil && strings.HasPrefix(strings.ToLower(strings.TrimSpace(msg.RepoURL)), "https://") {
-		endpoint, stopProxy, perr := startCloneGuardProxy(host, !cloneAllowPrivate())
-		if perr != nil {
-			return "", fmt.Errorf("runner: %w", perr)
-		}
-		defer stopProxy()
-		gitEnv = cloneGuardEnv(endpoint)
-	}
-	dir := filepath.Join(r.cfg.WorkDir, "repos", msg.RunID)
-	if err := os.RemoveAll(dir); err != nil {
-		return "", fmt.Errorf("clean repo dir: %w", err)
-	}
-	if err := os.MkdirAll(filepath.Dir(dir), 0o755); err != nil {
-		return "", fmt.Errorf("mkdir repo parent: %w", err)
-	}
-
-	cloneURL, tok, appBotLogin := msg.RepoURL, "", ""
-	if creds, ok := secrets.CredentialsFromContext(ctx); ok {
-		tok = strutil.FirstNonBlank(creds.GenericSecret("forge_token"), creds.GenericSecret("gitlab_token"), creds.GenericSecret("github_token"))
-		appBotLogin = creds.ForgeAppBotLogin
-		if tok != "" {
-			cloneURL = injectGitToken(msg.RepoURL, tok)
-		}
-	}
-
-	// -c http.followRedirects=false closes SSRF vector (b): a 302 from the
-	// validated canonical https host to an internal address must not be
-	// auto-followed by git.
-	if err := r.runGitEnv(ctx, "", tok, gitEnv, "-c", "http.followRedirects=false", "clone", "--no-tags", "--quiet", cloneURL, dir); err != nil {
-		return "", err
-	}
-	if ref := strings.TrimSpace(msg.RepoSHA); ref != "" {
-		if err := r.runGitEnv(ctx, dir, tok, gitEnv, "-c", "http.followRedirects=false", "fetch", "--no-tags", "--quiet", "origin", ref); err != nil {
-			return "", err
-		}
-		if err := r.runGit(ctx, dir, tok, "checkout", "--quiet", "-B", ref, "FETCH_HEAD"); err != nil {
-			return "", err
-		}
-	}
-	// Cloud sandboxes have no ~/.gitconfig (the host bind-mount is dropped on
-	// kubernetes and the runner pod has none of its own), so seed an
-	// author/committer in the clone's LOCAL config. It travels into the sandbox
-	// with .git, so commit-producing bots (feature-dev's commit_changes, willy,
-	// billy, docs-refresh, …) don't fail "Author identity unknown".
-	//
-	// Prefer the identity that OWNS the push token (resolved from the forge) so
-	// a pushed commit is attributed to the real pusher, not a stray account
-	// sharing the fallback email. Falls back to a neutral bot identity (never a
-	// real person's) when there's no token or resolution fails. Overridable via
-	// ITERION_GIT_AUTHOR_NAME / ITERION_GIT_AUTHOR_EMAIL.
-	authorName, authorEmail := gitAuthorName(), gitAuthorEmail()
-	if tok != "" {
-		// A github_app connection's forge_token is an installation token that
-		// can't `GET /user`; the publisher threads the App bot login so we
-		// resolve its canonical committer via `GET /users/<login>` instead.
-		if appBotLogin != "" {
-			if n, e, ok := resolveAppBotCommitterIdentity(ctx, msg.RepoURL, appBotLogin, tok); ok {
-				authorName, authorEmail = n, e
-			}
-		} else if n, e, ok := resolveForgeCommitterIdentity(ctx, msg.RepoURL, tok); ok {
-			authorName, authorEmail = n, e
-		}
-	}
-	_ = r.runGit(ctx, dir, "", "config", "user.name", authorName)
-	_ = r.runGit(ctx, dir, "", "config", "user.email", authorEmail)
-	seedRunScratchIgnore(dir)
-	r.cfg.Logger.Info("runner: cloned %s@%s for run %s", msg.RepoURL, msg.RepoSHA, msg.RunID)
-	return dir, nil
-}
-
-// gitAuthorName / gitAuthorEmail are the identity seeded into a cloud clone's
-// local git config so an in-sandbox `git commit` has an author even though no
-// ~/.gitconfig is mounted. Overridable per-deployment.
-func gitAuthorName() string {
-	if v := strings.TrimSpace(os.Getenv("ITERION_GIT_AUTHOR_NAME")); v != "" {
-		return v
-	}
-	return "iterion-runner[bot]"
-}
-
-func gitAuthorEmail() string {
-	if v := strings.TrimSpace(os.Getenv("ITERION_GIT_AUTHOR_EMAIL")); v != "" {
-		return v
-	}
-	// A `.invalid` domain (RFC 2606, reserved, never resolvable) guarantees this
-	// fallback maps to NO GitHub account — the commit shows the bot name as
-	// plain text, never a stray individual. The default was
-	// `iterion@users.noreply.github.com`, which GitHub silently attributed to an
-	// unrelated real user "iterion". The push-token identity above is the
-	// preferred, attributed path; this only fires token-less.
-	return "iterion-runner@bot.iterion.invalid"
-}
-
-// seedRunScratchIgnore locally excludes iterion's per-run scratch — the
-// .claude/ dir (mirrored skills + claude_code's plan.md) — from the cloned
-// repo, so a bot's `git add -A` (which stages new files so the reviewers'
-// `git diff HEAD` can see them) doesn't drag that scratch into the review
-// diff. Writes .git/info/exclude (local, never committed or pushed);
-// best-effort, so a read-only or unusual .git layout simply no-ops.
-func seedRunScratchIgnore(dir string) {
-	p := filepath.Join(dir, ".git", "info", "exclude")
-	f, err := os.OpenFile(p, os.O_APPEND|os.O_WRONLY, 0o644)
-	if err != nil {
-		return
-	}
-	defer f.Close()
-	_, _ = f.WriteString("\n# iterion per-run scratch (mirrored skills + plan) — not part of the change\n.claude/\n")
-}
-
-// validateRepoTarget gates the webhook-sourced clone URL and ref before
-// they reach git. It rejects remote-helper transports (`ext::`, `file://`)
-// via ValidateCloneSource and flag-shaped refs (leading `-`) via
-// ValidateBranchName — the two ways an attacker-controlled RepoURL/RepoSHA
-// could turn `git clone`/`git fetch` into arbitrary command execution.
-// An empty ref is allowed (the caller only fetches when RepoSHA is non-blank).
-//
-// After the transport/ref shape passes, the URL's host is run through the
-// shared SSRF guard (httpdial.ResolvePublicHost) so a holder of a per-org
-// `iwh_` webhook token cannot point the runner at an internal address
-// (loopback, RFC1918/ULA, link-local, cloud metadata, cluster aliases) to
-// probe the cloud network. Mirrors the completion-webhook guard in pkg/notify.
-// On-prem deployments with internal forges set
-// ITERION_RUNNER_CLONE_ALLOW_PRIVATE=1 to relax the strict mode.
-func validateRepoTarget(ctx context.Context, repoURL, repoSHA string) (net.IP, error) {
-	if err := gitlib.ValidateCloneSource(repoURL); err != nil {
-		return nil, fmt.Errorf("runner: reject repo url: %w", err)
-	}
-	if ref := strings.TrimSpace(repoSHA); ref != "" {
-		if err := gitlib.ValidateBranchName(ref); err != nil {
-			return nil, fmt.Errorf("runner: reject repo ref: %w", err)
-		}
-	}
-	host, err := extractRepoHost(repoURL)
-	if err != nil {
-		return nil, fmt.Errorf("runner: reject repo url: %w", err)
-	}
-	allowPrivate := cloneAllowPrivate()
-	// First line of defence: refuse non-public hosts before any subprocess
-	// spawns, and feed the resolved IP to the /etc/hosts pin. On its own this
-	// would be TOCTOU-incomplete (git re-resolves the hostname at connect
-	// time); the enforcing layer is the clone-guard CONNECT proxy
-	// (startCloneGuardProxy) prepareRepoWorkspace routes https git through,
-	// which re-validates and pins the resolved IP at the moment of the dial.
-	// ssh remotes are not proxied — for them this pre-check, the hosts pin and
-	// the pod egress policy remain the guard.
-	ip, err := httpdial.ResolvePublicHost(ctx, host, !allowPrivate)
-	if err != nil {
-		return nil, fmt.Errorf("runner: repo host %q is not a public address (set ITERION_RUNNER_CLONE_ALLOW_PRIVATE=1 to allow internal forges): %w", host, err)
-	}
-	return ip, nil
-}
-
-// extractRepoHost pulls the host out of a clone URL in the shapes
-// ValidateCloneSource permits: `https://host[:port]/...`, `ssh://[user@]host[:port]/...`,
-// and scp-like `[user@]host:path`. Returns an error when the host can't be
-// determined (defence in depth — ValidateCloneSource has already rejected
-// hostless and unsupported-transport forms above).
-func extractRepoHost(repoURL string) (string, error) {
-	s := strings.TrimSpace(repoURL)
-	if i := strings.Index(s, "://"); i >= 0 {
-		u, err := url.Parse(s)
-		if err != nil {
-			return "", fmt.Errorf("parse: %w", err)
-		}
-		host := u.Hostname()
-		if host == "" {
-			return "", fmt.Errorf("missing host in %q", repoURL)
-		}
-		return host, nil
-	}
-	// scp-like: `[user@]host:path`. ValidateCloneSource already requires
-	// the colon to come before any slash and the host to be non-empty.
-	colon := strings.Index(s, ":")
-	if colon <= 0 {
-		return "", fmt.Errorf("missing host in %q", repoURL)
-	}
-	host := s[:colon]
-	if at := strings.LastIndex(host, "@"); at >= 0 {
-		host = host[at+1:]
-	}
-	if host == "" {
-		return "", fmt.Errorf("missing host in %q", repoURL)
-	}
-	return host, nil
-}
-
-// gitOpTimeout bounds a single runner-side git subprocess. Without it a
-// clone/fetch against a wedged remote hangs on the run ctx alone — and a
-// run launched without --timeout has NO deadline, so the git subprocess
-// pins the runner pod (one in-flight run each) indefinitely while the heartbeat
-// keeps the lease alive (the heartbeat proves the pod lives, not that
-// the clone progresses). GIT_TERMINAL_PROMPT=0 covers the credential
-// prompt, not a stalled TCP transfer. Override with
-// ITERION_RUNNER_GIT_TIMEOUT (a Go duration; <= 0 disables).
-var gitOpTimeout = defaultGitOpTimeout()
-
-func defaultGitOpTimeout() time.Duration {
-	if v := os.Getenv("ITERION_RUNNER_GIT_TIMEOUT"); v != "" {
-		if d, err := time.ParseDuration(v); err == nil {
-			return d // <= 0 disables the bound
-		}
-	}
-	return 15 * time.Minute
-}
-
-// runGit runs a git subprocess, redacting tok from any error output so an
-// authed clone URL never leaks into logs. Each invocation is bounded by
-// gitOpTimeout on top of the caller's ctx.
-func (r *Runner) runGit(ctx context.Context, dir, tok string, args ...string) error {
-	return r.runGitEnv(ctx, dir, tok, nil, args...)
-}
-
-// runGitEnv is runGit with extra environment entries appended after the
-// baseline (later entries win) — network git ops use it to route through the
-// clone-guard proxy via HTTPS_PROXY.
-func (r *Runner) runGitEnv(ctx context.Context, dir, tok string, extraEnv []string, args ...string) error {
-	if gitOpTimeout > 0 {
-		var cancel context.CancelFunc
-		ctx, cancel = context.WithTimeout(ctx, gitOpTimeout)
-		defer cancel()
-	}
-	cmd := exec.CommandContext(ctx, "git", args...)
-	if dir != "" {
-		cmd.Dir = dir
-	}
-	// Cancellation must reach git's helper processes (git-remote-https
-	// inherits our output pipes — killing only the parent leaves
-	// CombinedOutput blocked on the helper's copy), and WaitDelay is the
-	// final unblock if a helper still holds them after the group kill.
-	hardenGitCancel(cmd)
-	cmd.WaitDelay = 10 * time.Second
-	// Never prompt for credentials (fail fast instead of hanging), and ignore
-	// any host-level git config in the runner image.
-	cmd.Env = append(os.Environ(), "GIT_TERMINAL_PROMPT=0", "GIT_CONFIG_NOSYSTEM=1")
-	cmd.Env = append(cmd.Env, extraEnv...)
-	out, err := cmd.CombinedOutput()
-	if err != nil {
-		detail, shown := strings.TrimSpace(string(out)), strings.Join(args, " ")
-		if tok != "" {
-			detail = strings.ReplaceAll(detail, tok, "***")
-			shown = strings.ReplaceAll(shown, tok, "***")
-		}
-		if errors.Is(ctx.Err(), context.DeadlineExceeded) && gitOpTimeout > 0 {
-			return fmt.Errorf("git %s: timed out after %s (ITERION_RUNNER_GIT_TIMEOUT bounds each git op): %w: %s", shown, gitOpTimeout, err, detail)
-		}
-		return fmt.Errorf("git %s: %w: %s", shown, err, detail)
-	}
-	return nil
-}
-
-// injectGitToken rewrites an https clone URL to carry an oauth2 token in its
-// userinfo (works for GitLab project/personal access tokens and GitHub PATs).
-func injectGitToken(rawURL, token string) string {
-	if token == "" {
-		return rawURL
-	}
-	u, err := url.Parse(rawURL)
-	if err != nil || u.Scheme != "https" {
-		return rawURL
-	}
-	u.User = url.UserPassword("oauth2", token)
-	return u.String()
-}
-
-// materializeFileSecretsNoSandbox writes the workflow's `as: file` secrets to
-// 0600 files at their mount paths in the runner pod when the run has no
-// sandbox (a sandboxed run mounts them into the container instead). Returns
-// the written files keyed by secret name (for the mid-run refresher) and a
-// cleanup that removes them; both nil when nothing was written.
-func (r *Runner) materializeFileSecretsNoSandbox(ctx context.Context, wf *ir.Workflow) (map[string]string, func(), error) {
-	if wf == nil || len(wf.Secrets) == 0 ||
-		runtime.WorkflowSandboxActive(wf, r.cfg.SandboxOverride, r.cfg.SandboxDefault) {
-		// No secrets, or the run RESOLVES to an active sandbox (which mounts
-		// file secrets into the container). The resolved decision — not
-		// wf.Sandbox — is what matters: under ITERION_SANDBOX_OVERRIDE=none a
-		// bot's sandbox block is neutralized and the run executes in this pod,
-		// so its file secrets must be materialized here (run 019f4551's
-		// push_auth_probe found no forge_token exactly because this gate used
-		// to test the static declaration).
-		return nil, nil, nil
-	}
-	creds, _ := secrets.CredentialsFromContext(ctx)
-	written := map[string]string{}
-	paths := func() []string {
-		out := make([]string, 0, len(written))
-		for _, p := range written {
-			out = append(out, p)
-		}
-		return out
-	}
-	for name, s := range wf.Secrets {
-		if !s.IsFile() {
-			continue
-		}
-		val := creds.GenericSecret(name)
-		if val == "" {
-			continue // optional / unresolved → skip; the agent just won't find it
-		}
-		mp := secrets.ResolveFileMountPath(name, s.MountPath)
-		// Confine writes to the secrets mount dir. The default mount path is
-		// always under it; a DSL-supplied mount_path is tenant-controlled and
-		// this runner pod is NOT sandboxed, so without this guard a crafted
-		// mount_path (e.g. /root/.ssh/authorized_keys, /etc/cron.d/x) would
-		// write the secret value to an arbitrary host path. The helper also
-		// rejects path traversal and non-clean paths.
-		if _, ok := secrets.RelativeToSecretFilesMountDir(mp); !ok {
-			if r.cfg.Logger != nil {
-				r.cfg.Logger.Warn("runner: refusing out-of-tree mount_path %q for file secret %q (must be under %s)", mp, name, secrets.SecretFilesMountDir)
-			}
-			continue
-		}
-		if err := os.MkdirAll(filepath.Dir(mp), 0o700); err != nil {
-			return written, removeFilesFunc(paths()), err
-		}
-		if err := os.WriteFile(mp, []byte(val), 0o600); err != nil {
-			return written, removeFilesFunc(paths()), err
-		}
-		written[name] = mp
-	}
-	if len(written) == 0 {
-		return nil, nil, nil
-	}
-	return written, removeFilesFunc(paths()), nil
-}
-
-// fileSecretRefreshInterval paces the mid-run re-read of materialised file
-// secrets from the generic-secret store. Well under the 10-minute cadence of
-// the server-side refresh worker, so a rotated credential reaches the file
-// within minutes of the store update.
-const fileSecretRefreshInterval = 5 * time.Minute
-
-// refreshFileSecretsLoop re-reads each materialised file secret's store
-// record on a fixed cadence and rewrites the file when the value changed.
-// Tools re-read the file per invocation (`cat /run/iterion/secrets/<name>`),
-// so a rotation propagates to every subsequent forge push/comment without
-// touching the process environment. Failures are logged and retried next
-// tick — the file keeps its last good value; nothing is ever truncated.
-func (r *Runner) refreshFileSecretsLoop(ctx context.Context, tenantID string, refs, files map[string]string) {
-	tick := time.NewTicker(fileSecretRefreshInterval)
-	defer tick.Stop()
-	last := map[string]string{}
-	for {
-		select {
-		case <-ctx.Done():
-			return
-		case <-tick.C:
-		}
-		r.refreshFileSecretsOnce(ctx, tenantID, refs, files, last)
-	}
-}
-
-// refreshFileSecretsOnce is one tick of refreshFileSecretsLoop: re-read every
-// ref'd file secret and atomically rewrite the ones whose store value moved.
-// readFreshSecret re-reads and unseals a generic-secret record by id
-// under the tenant scope. Bounded, tenant-scoped; never logs the value.
-// Shared by the no-sandbox (refreshFileSecretsOnce) and sandboxed
-// (refreshSandboxFileSecretsOnce) mid-run refresh paths.
-func (r *Runner) readFreshSecret(ctx context.Context, tenantID, id string) ([]byte, error) {
-	rctx, cancel := context.WithTimeout(store.WithTenant(ctx, tenantID), 15*time.Second)
-	defer cancel()
-	rec, err := r.cfg.GenericSecrets.Get(rctx, id)
-	if err != nil {
-		return nil, err
-	}
-	return secrets.OpenGenericSecret(r.cfg.Sealer, rec.ID, rec.SealedSecret)
-}
-
-func (r *Runner) refreshFileSecretsOnce(ctx context.Context, tenantID string, refs, files, last map[string]string) {
-	for name, path := range files {
-		id := refs[name]
-		if id == "" {
-			continue // snapshot-only secret (no store ref) — nothing to refresh
-		}
-		val, err := r.readFreshSecret(ctx, tenantID, id)
-		if err != nil {
-			r.cfg.Logger.Warn("runner: refresh file secret %q (ref %s): %v", name, id, err)
-			continue
-		}
-		if len(val) == 0 || string(val) == last[name] {
-			continue
-		}
-		// Atomic replace so a concurrent `cat` never sees a torn write.
-		tmp := path + ".tmp"
-		if err := os.WriteFile(tmp, val, 0o600); err != nil {
-			r.cfg.Logger.Warn("runner: refresh file secret %q: write: %v", name, err)
-			continue
-		}
-		if err := os.Rename(tmp, path); err != nil {
-			_ = os.Remove(tmp)
-			r.cfg.Logger.Warn("runner: refresh file secret %q: rename: %v", name, err)
-			continue
-		}
-		last[name] = string(val)
-		r.cfg.Logger.Info("runner: refreshed file secret %q from store (rotation picked up)", name)
-	}
-}
-
-// sandboxFileSecretRefs returns the file secrets of wf that carry a store
-// ref in the run's credentials — the ones a mid-run refresh can rewrite.
-// Nil when the store/creds/refs are absent or no file secret is
-// refreshable. Shared shape with the no-sandbox refresher's refs map
-// (name → generic-secret id).
-func (r *Runner) sandboxFileSecretRefs(ctx context.Context, wf *ir.Workflow) map[string]string {
-	if wf == nil || len(wf.Secrets) == 0 || r.cfg.GenericSecrets == nil {
-		return nil
-	}
-	creds, ok := secrets.CredentialsFromContext(ctx)
-	if !ok || len(creds.GenericRefs) == 0 {
-		return nil
-	}
-	refs := map[string]string{}
-	for name, s := range wf.Secrets {
-		if !s.IsFile() {
-			continue
-		}
-		if id := creds.GenericRefs[name]; id != "" {
-			refs[name] = id
-		}
-	}
-	if len(refs) == 0 {
-		return nil
-	}
-	return refs
-}
-
-// sandboxSecretRefreshObserver returns a runtime sandbox-run observer
-// that starts the sandboxed mid-run file-secret refresh loop once the
-// container is live — the sandboxed counterpart to refreshFileSecretsLoop
-// (#99 covered only the no-sandbox in-pod path, so a long `sandbox: auto`
-// run that pushes/comments after ~1h used a dead token). Returns nil when
-// the run has no refreshable file secrets, so the engine hook is a no-op.
-//
-// refreshCtx must be a context the caller cancels when the run ends (the
-// loop exits on it); the observer only spawns the goroutine.
-func (r *Runner) sandboxSecretRefreshObserver(refreshCtx context.Context, tenantID string, refs map[string]string) func(sandbox.Run) {
-	if len(refs) == 0 {
-		return nil
-	}
-	return func(run sandbox.Run) {
-		refresher, ok := run.(sandbox.SecretFileRefresher)
-		if !ok {
-			r.cfg.Logger.Warn("runner: sandbox driver %q does not support mid-run secret refresh; a long run may push with a stale token", run.Driver())
-			return
-		}
-		go r.refreshSandboxFileSecretsLoop(refreshCtx, tenantID, refs, refresher)
-	}
-}
-
-// refreshSandboxFileSecretsLoop re-reads each refreshable file secret's
-// store record on a fixed cadence and, when the value rotated, hands it
-// to the sandbox driver's SecretFileRefresher to propagate into the
-// running container. Mirrors refreshFileSecretsLoop; failures are logged
-// (never the value) and retried next tick.
-func (r *Runner) refreshSandboxFileSecretsLoop(ctx context.Context, tenantID string, refs map[string]string, refresher sandbox.SecretFileRefresher) {
-	tick := time.NewTicker(fileSecretRefreshInterval)
-	defer tick.Stop()
-	last := map[string]string{}
-	for {
-		select {
-		case <-ctx.Done():
-			return
-		case <-tick.C:
-		}
-		r.refreshSandboxFileSecretsOnce(ctx, tenantID, refs, refresher, last)
-	}
-}
-
-// refreshSandboxFileSecretsOnce is one tick of
-// refreshSandboxFileSecretsLoop: re-read every ref'd file secret and push
-// the ones whose store value moved into the sandbox.
-func (r *Runner) refreshSandboxFileSecretsOnce(ctx context.Context, tenantID string, refs map[string]string, refresher sandbox.SecretFileRefresher, last map[string]string) {
-	for name, id := range refs {
-		val, err := r.readFreshSecret(ctx, tenantID, id)
-		if err != nil {
-			r.cfg.Logger.Warn("runner: refresh sandboxed file secret %q (ref %s): %v", name, id, err)
-			continue
-		}
-		if len(val) == 0 || string(val) == last[name] {
-			continue
-		}
-		if err := refresher.RefreshSecretFile(ctx, name, val); err != nil {
-			r.cfg.Logger.Warn("runner: refresh sandboxed file secret %q: %v", name, err)
-			continue
-		}
-		last[name] = string(val)
-		r.cfg.Logger.Info("runner: refreshed sandboxed file secret %q into the container (rotation picked up)", name)
-	}
-}
-
-func removeFilesFunc(paths []string) func() {
-	return func() {
-		for _, p := range paths {
-			_ = os.Remove(p)
-		}
-	}
-}
-
-func (r *Runner) injectCredentials(ctx context.Context, msg *queue.RunMessage) (context.Context, func(), error) {
-	if msg.SecretsRef == "" {
-		return ctx, nil, nil
-	}
-	if r.cfg.RunSecrets == nil || r.cfg.Sealer == nil {
-		return ctx, nil, fmt.Errorf("runner: SecretsRef set but RunSecrets/Sealer not wired")
-	}
-	rec, err := r.cfg.RunSecrets.Get(ctx, msg.SecretsRef)
-	if err != nil {
-		return ctx, nil, fmt.Errorf("fetch run_secrets %s: %w", msg.SecretsRef, err)
-	}
-	// Tenant binding: rec.TenantID and msg.TenantID must match exactly.
-	// The old code allowed empty rec.TenantID to bypass the check, on
-	// the assumption that legacy records predated multitenancy — but
-	// once a tenant_id is on the wire (msg.TenantID), a SecretsRef
-	// stamped without a tenant could be served to a different tenant
-	// that happened to request the same ref. New writes always stamp
-	// tenant_id; if you see this error for a legacy ref, backfill its
-	// tenant via the migration script before resuming the run.
-	if rec.TenantID != msg.TenantID {
-		return ctx, nil, fmt.Errorf("run_secrets tenant mismatch (msg=%q sealed=%q)", msg.TenantID, rec.TenantID)
-	}
-	bundle, err := secrets.OpenRunBundle(r.cfg.Sealer, msg.RunID, rec.SealedBundle)
-	if err != nil {
-		return ctx, nil, fmt.Errorf("unseal run_secrets %s: %w", msg.SecretsRef, err)
-	}
-
-	creds := secrets.Credentials{
-		APIKeys: bundle.APIKeys,
-		Generic: bundle.GenericSecrets,
-		// Per-secret egress narrowing from bot-secret bindings; the guard
-		// intersects these with the workflow's declared hosts. Hostnames
-		// are not secret, so cleanup below leaves them untouched.
-		GenericHosts:         bundle.GenericSecretHosts,
-		GenericRefs:          bundle.GenericSecretRefs,
-		OAuthCredentialFiles: map[string]string{},
-		ForgeAppBotLogin:     bundle.ForgeAppBotLogin,
-	}
-	tmpDirs := make([]string, 0, len(bundle.OAuthCredentials))
-	// cancelRefresh stops the per-run OAuth-forfait token refreshers (set
-	// below once the files are materialised). cleanup calls it so the
-	// goroutines exit before their temp dirs are removed.
-	cancelRefresh := func() {}
-	// cleanup performs LOCAL process hygiene only — wiping the decrypted
-	// API keys from memory and removing the materialised OAuth temp dirs.
-	// It runs on EVERY executeRun return (including Nak-for-redelivery
-	// paths) so plaintext never outlives the attempt. Deleting the
-	// *persistent* sealed bundle is deliberately NOT done here: it must
-	// happen only on a terminal-clean outcome (executeRun calls
-	// deleteRunSecrets) so a redelivered run can re-fetch the same
-	// SecretsRef instead of silently running credential-less.
-	cleanup := func() {
-		cancelRefresh()
-		for k := range bundle.APIKeys {
-			bundle.APIKeys[k] = ""
-		}
-		for k := range bundle.GenericSecrets {
-			bundle.GenericSecrets[k] = ""
-		}
-		for _, dir := range tmpDirs {
-			_ = os.RemoveAll(dir)
-		}
-	}
-	// refreshFiles maps oauth kind → the materialised credential file path,
-	// fed to the per-run forfait token refresher so a long run never hits an
-	// expired token mid-workflow (see oauth_refresh.go).
-	refreshFiles := make(map[string]string, len(bundle.OAuthCredentials))
-	for kind, payload := range bundle.OAuthCredentials {
-		dir, fname, err := materializeOAuthCredentials(kind, payload)
-		if err != nil {
-			r.cfg.Logger.Warn("runner: oauth materialise %s for run %s: %v", kind, msg.RunID, err)
-			continue
-		}
-		tmpDirs = append(tmpDirs, dir)
-		creds.OAuthCredentialFiles[kind] = dir
-		refreshFiles[kind] = filepath.Join(dir, fname)
-		r.cfg.Logger.Info("runner: oauth-forfait active run=%s tenant=%s kind=%s file=%s/%s", msg.RunID, msg.TenantID, kind, dir, fname)
-	}
-	if len(refreshFiles) > 0 {
-		stopRefresh := make(chan struct{})
-		var once sync.Once
-		cancelRefresh = func() { once.Do(func() { close(stopRefresh) }) }
-		r.startOAuthRefreshers(stopRefresh, msg.RunID, refreshFiles)
-	}
-	return secrets.WithCredentials(ctx, creds), cleanup, nil
-}
-
-// deleteRunSecrets best-effort removes the persistent sealed bundle for
-// this run from the RunSecrets store. executeRun calls it ONLY on a
-// terminal-clean outcome (success or paused-for-resume) — never on a
-// Nak-for-redelivery path, where the SAME SecretsRef must survive so the
-// redelivered attempt can re-fetch its credentials. Detached from the
-// (possibly already-cancelled) run context with its own short timeout. A
-// failed delete is logged but non-fatal: the store's 24h TTL reaps the
-// bundle regardless.
-func (r *Runner) deleteRunSecrets(msg *queue.RunMessage) {
-	if msg.SecretsRef == "" || r.cfg.RunSecrets == nil {
-		return
-	}
-	ctxDel, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-	if delErr := r.cfg.RunSecrets.Delete(ctxDel, msg.SecretsRef); delErr != nil {
-		r.cfg.Logger.Warn("runner: run_secrets delete for %s (ref=%s): %v", msg.RunID, msg.SecretsRef, delErr)
-	}
-}
-
-// materializeOAuthCredentials writes the sealed payload to a fresh
-// temp dir under the file name the corresponding CLI expects.
-//
-//   - claude_code → <dir>/.credentials.json (CLAUDE_CONFIG_DIR=<dir>)
-//   - codex       → <dir>/auth.json         (CODEX_HOME=<dir>)
-//
-// The directory is mode 0o700, the file 0o600 so other local users
-// (including a sandbox host's UID-shifted writer) cannot read.
-func materializeOAuthCredentials(kind string, payload []byte) (dir string, fname string, err error) {
-	switch secrets.OAuthKind(kind) {
-	case secrets.OAuthKindClaudeCode:
-		fname = ".credentials.json"
-	case secrets.OAuthKindCodex:
-		fname = "auth.json"
-	default:
-		return "", "", fmt.Errorf("unknown oauth kind %q", kind)
-	}
-	dir, err = os.MkdirTemp("", "iter-oauth-")
-	if err != nil {
-		return "", "", err
-	}
-	if err := os.Chmod(dir, 0o700); err != nil {
-		_ = os.RemoveAll(dir)
-		return "", "", err
-	}
-	full := filepath.Join(dir, fname)
-	if err := os.WriteFile(full, payload, 0o600); err != nil {
-		_ = os.RemoveAll(dir)
-		return "", "", err
-	}
-	return dir, fname, nil
 }
 
 // loadWorkflow decodes the AST for a run and compiles it to IR. The IR
@@ -2205,7 +1373,10 @@ func (r *Runner) buildExecutor(ctx context.Context, msg *queue.RunMessage, wf *i
 	// at the runner boundary keeps pkg/backend/model free of any
 	// metrics dependency.
 	usage := newMetricsEmitter(emitter, r.cfg.Metrics)
-	vars := stringifyVars(msg.Vars)
+	vars, err := stringifyVars(msg.Vars)
+	if err != nil {
+		return nil, nil, err
+	}
 	exec, err := runview.BuildExecutor(runview.ExecutorSpec{
 		Ctx:      ctx,
 		Workflow: wf,
@@ -2227,347 +1398,15 @@ func (r *Runner) buildExecutor(ctx context.Context, msg *queue.RunMessage, wf *i
 	return exec, usage, nil
 }
 
-// recordOrgSpend charges the run's accumulated LLM consumption to the
-// org's monthly usage bucket. Called at the end of every execution
-// attempt — paused/cancelled/failed attempts incurred real spend too,
-// and a redelivered attempt re-charges only what it re-executed.
-// Detached ctx: a Mongo blip must not fail the run path; the miss is
-// logged and the Prometheus counters still carry the global totals.
-func (r *Runner) recordOrgSpend(msg *queue.RunMessage, usage *metricsEmitter) {
-	if r.cfg.OrgUsage == nil || usage == nil || msg.TenantID == "" {
-		return
-	}
-	costUSD, in, out := usage.RunTotals()
-	if costUSD <= 0 && in <= 0 && out <= 0 {
-		return
-	}
-	// Charge the same usage key the launch gate metered the run on:
-	// the parent org (caps sum across the org's teams — charging the
-	// team key instead leaves the org's cost-cap document at zero, so
-	// the cap never trips in a multi-team org). OrgID is empty on
-	// pre-orgid messages and org-less pre-backfill teams — both were
-	// metered on the team key, so fall back to it.
-	key := msg.OrgID
-	if key == "" {
-		key = msg.TenantID
-	}
-	bg, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-	if err := r.cfg.OrgUsage.AddSpend(bg, key, time.Now().UTC(), costUSD, in, out); err != nil {
-		r.cfg.Logger.Warn("runner: org spend record for %s (run %s): %v", key, msg.RunID, err)
-	}
-}
-
-// pollPending samples the JetStream consumer info on a fixed cadence
-// and republishes the Pending count to nats_pending_messages. Exits
-// when ctx is cancelled. Errors are logged at debug level — the
-// scaler is the source of truth for autoscaling, so a transient miss
-// here is observability noise, not a correctness issue.
-func (r *Runner) pollPending(ctx context.Context) {
-	t := time.NewTicker(r.cfg.PendingPoll)
-	defer t.Stop()
-	for {
-		select {
-		case <-ctx.Done():
-			return
-		case <-t.C:
-			pending, err := r.consumer.Pending(ctx)
-			if err != nil {
-				r.cfg.Logger.Debug("runner: pending poll: %v", err)
-				continue
-			}
-			r.cfg.Metrics.NATSPendingMessages.Set(float64(pending))
-		}
-	}
-}
-
-// metricsEmitter wraps a model.EventEmitter and taps llm_step_finished
-// / delegate_finished events to keep the LLM token + cost counters
-// up-to-date. The forward call to the underlying emitter happens
-// regardless of metric outcome so write durability is unaffected.
-//
-// It also accumulates the run's own totals (cost + tokens) so the
-// runner can charge the org's monthly usage bucket once at the end of
-// the attempt — reg may be nil (no Prometheus) while the run totals
-// still accumulate.
-type metricsEmitter struct {
-	inner model.EventEmitter
-	reg   *metrics.Registry
-
-	// modelByNode caches the last model name reported by an
-	// llm_request event for a given node, so the subsequent
-	// llm_step_finished events can be labelled even though the step
-	// payload itself doesn't repeat the model field.
-	//
-	// priceByModel caches the resolved per-token rates so the
-	// cost.EstimateUSD path (which hits claw's live registry — a disk
-	// read + JSON parse each call) doesn't fire on every step event.
-	// A workflow with 50 steps × 10 parallel branches would otherwise
-	// serialise 500 disk hits through the metrics emitter mutex.
-	mu           sync.Mutex
-	modelByNode  map[string]string
-	priceByModel map[string]modelRate
-
-	// Per-run accumulation for org metering. Cost covers claw steps
-	// only (delegate backends report tokens without a price table) —
-	// a floor, not an exact invoice; documented on orgusage.
-	runCostUSD      float64
-	runInputTokens  int64
-	runOutputTokens int64
-}
-
-// modelRate is the per-token cost (USD) for a given model, derived
-// once via cost.EstimateUSD and cached. `known` distinguishes
-// "table doesn't know this model" (skip the counter) from
-// "rates are genuinely zero".
-type modelRate struct {
-	inputUSDPerToken  float64
-	outputUSDPerToken float64
-	known             bool
-}
-
-func newMetricsEmitter(inner model.EventEmitter, reg *metrics.Registry) *metricsEmitter {
-	return &metricsEmitter{
-		inner:        inner,
-		reg:          reg,
-		modelByNode:  make(map[string]string),
-		priceByModel: make(map[string]modelRate),
-	}
-}
-
-// rateFor returns the cached per-token rates for the given model,
-// resolving once via cost.EstimateUSD. Called under m.mu.
-func (m *metricsEmitter) rateForLocked(modelName string) modelRate {
-	if r, ok := m.priceByModel[modelName]; ok {
-		return r
-	}
-	const probe = 1_000_000
-	inUSD := cost.EstimateUSD(modelName, probe, 0)
-	outUSD := cost.EstimateUSD(modelName, 0, probe)
-	r := modelRate{
-		inputUSDPerToken:  inUSD / float64(probe),
-		outputUSDPerToken: outUSD / float64(probe),
-		known:             inUSD > 0 || outUSD > 0,
-	}
-	m.priceByModel[modelName] = r
-	return r
-}
-
-func (m *metricsEmitter) AppendEvent(ctx context.Context, runID string, evt store.Event) (*store.Event, error) {
-	m.observe(evt)
-	return m.inner.AppendEvent(ctx, runID, evt)
-}
-
-// AppendPlanSnapshot forwards plan-snapshot persistence to the wrapped
-// emitter when it implements model.PlanWriter (the Mongo cloud store now
-// does). Without this explicit forward the capture hook's plain
-// `emitter.(PlanWriter)` assertion runs against THIS wrapper — which,
-// lacking the method, would yield nil and silently disable plan capture
-// for every cloud run even once the store supports it. When the inner
-// store is not a PlanWriter (a store without the seam) this is a benign
-// no-op (wrote=false, no error) — identical to today's nil-planSink
-// behaviour, and NOT the loud store-write failure path.
-func (m *metricsEmitter) AppendPlanSnapshot(ctx context.Context, runID string, snap store.PlanSnapshot) (store.PlanSnapshot, bool, error) {
-	pw, ok := m.inner.(model.PlanWriter)
-	if !ok {
-		return snap, false, nil
-	}
-	return pw.AppendPlanSnapshot(ctx, runID, snap)
-}
-
-// WriteTurn forwards per-LLM-turn checkpoint persistence to the wrapped
-// emitter when it implements model.TurnWriter (the Mongo cloud store now
-// does). Same rationale as AppendPlanSnapshot: without this explicit
-// forward the capture hook's `emitter.(TurnWriter)` assertion runs against
-// THIS wrapper — which, lacking the method, would yield nil and silently
-// disable per-turn capture for every cloud run (breaking the studio
-// timeline + fork-from-turn) even once the store supports it. When the
-// inner store is not a TurnWriter this is a benign no-op (nil error),
-// matching today's nil-turnSink skip behaviour.
-func (m *metricsEmitter) WriteTurn(ctx context.Context, t *store.TurnCheckpoint) error {
-	tw, ok := m.inner.(model.TurnWriter)
-	if !ok {
-		return nil
-	}
-	return tw.WriteTurn(ctx, t)
-}
-
-// WriteToolBlob forwards per-tool-call I/O sidecar persistence to the
-// wrapped emitter when it implements model.ToolBlobWriter (the Mongo
-// cloud store now does). Same rationale as WriteTurn: the capture hook's
-// `emitter.(ToolBlobWriter)` assertion runs against THIS wrapper, so
-// without the forward large tool outputs would silently fall back to the
-// capped inline preview for every cloud run. When the inner store is not
-// a ToolBlobWriter this signals "no sidecar" the same way a nil
-// blobSink does — persistToolPayload then keeps the capped inline body.
-func (m *metricsEmitter) WriteToolBlob(ctx context.Context, runID, toolUseID, kind string, body []byte) (int64, error) {
-	bw, ok := m.inner.(model.ToolBlobWriter)
-	if !ok {
-		return 0, fmt.Errorf("runner: inner store does not persist tool blobs")
-	}
-	return bw.WriteToolBlob(ctx, runID, toolUseID, kind, body)
-}
-
-func (m *metricsEmitter) observe(evt store.Event) {
-	switch evt.Type {
-	case store.EventLLMRequest:
-		if model, _ := evt.Data["model"].(string); model != "" && evt.NodeID != "" {
-			m.mu.Lock()
-			m.modelByNode[evt.NodeID] = model
-			m.mu.Unlock()
-		}
-	case store.EventLLMStepFinished:
-		const backend = "claw"
-		inputT := toFloat(evt.Data["input_tokens"])
-		outputT := toFloat(evt.Data["output_tokens"])
-
-		// Single critical section: resolve the per-node model name,
-		// accumulate run-level token + cost totals, and compute the
-		// per-model cost delta against the cached rate (rateForLocked
-		// requires the lock held by its caller). Prometheus writes and
-		// the addTokens helper run AFTER the unlock — counter Add is
-		// atomic on the vec, addTokens reads only its locals.
-		m.mu.Lock()
-		modelName := m.modelByNode[evt.NodeID]
-		if modelName == "" {
-			modelName = "unknown"
-		}
-		m.runInputTokens += int64(inputT)
-		m.runOutputTokens += int64(outputT)
-		var costDelta float64
-		if modelName != "unknown" {
-			rate := m.rateForLocked(modelName)
-			if rate.known {
-				if c := inputT*rate.inputUSDPerToken + outputT*rate.outputUSDPerToken; c > 0 {
-					m.runCostUSD += c
-					costDelta = c
-				}
-			}
-		}
-		m.mu.Unlock()
-
-		m.addTokens(backend, modelName, "input", evt.Data["input_tokens"])
-		m.addTokens(backend, modelName, "output", evt.Data["output_tokens"])
-		m.addTokens(backend, modelName, "cache_read", evt.Data["cache_read_tokens"])
-		m.addTokens(backend, modelName, "cache_write", evt.Data["cache_write_tokens"])
-		// LLMCostUSDTotal: unknown models leave the counter untouched so
-		// observers can tell "no data" from "$0" via the absence of
-		// samples.
-		if costDelta > 0 && m.reg != nil {
-			m.reg.LLMCostUSDTotal.WithLabelValues(backend, normalizeModelLabel(modelName)).Add(costDelta)
-		}
-	case store.EventDelegateFinished:
-		backend, _ := evt.Data["backend"].(string)
-		if backend == "" {
-			backend = "delegate"
-		}
-		tokensF := toFloat(evt.Data["tokens"])
-
-		// Single critical section: resolve the per-node model name and
-		// accumulate the aggregated token count. Prometheus write
-		// happens after the unlock via addTokens (counter Add is atomic).
-		m.mu.Lock()
-		modelName := m.modelByNode[evt.NodeID]
-		m.runInputTokens += int64(tokensF)
-		m.mu.Unlock()
-
-		// Delegate events report a single aggregated token count;
-		// label as input so a sum across directions stays meaningful.
-		m.addTokens(backend, modelName, "input", evt.Data["tokens"])
-	}
-}
-
-// RunTotals snapshots the run's accumulated LLM consumption — what
-// the runner charges to the org's monthly usage bucket.
-func (m *metricsEmitter) RunTotals() (costUSD float64, inputTokens, outputTokens int64) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	return m.runCostUSD, m.runInputTokens, m.runOutputTokens
-}
-
-func (m *metricsEmitter) lookupModel(nodeID string) string {
-	if nodeID == "" {
-		return ""
-	}
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	return m.modelByNode[nodeID]
-}
-
-func (m *metricsEmitter) addTokens(backend, modelName, direction string, raw any) {
-	n := toFloat(raw)
-	if n <= 0 || backend == "" || m.reg == nil {
-		return
-	}
-	m.reg.LLMTokensTotal.WithLabelValues(backend, normalizeModelLabel(modelName), direction).Add(n)
-}
-
-// normalizeModelLabel bounds the prometheus `model` label cardinality
-// by stripping trailing date-style version suffixes (e.g. "-20260427",
-// "-2026-04-27") and truncating overlong identifiers. Without this,
-// label values churn every time a provider ships a new dated snapshot,
-// growing the time-series set without bound.
-func normalizeModelLabel(s string) string {
-	if s == "" {
-		return "unknown"
-	}
-	// Strip trailing -<digits[-digits...]> patterns.
-	for {
-		i := strings.LastIndexByte(s, '-')
-		if i < 0 || i == len(s)-1 {
-			break
-		}
-		tail := s[i+1:]
-		alldigit := true
-		for _, r := range tail {
-			if r < '0' || r > '9' {
-				alldigit = false
-				break
-			}
-		}
-		if !alldigit {
-			break
-		}
-		s = s[:i]
-	}
-	const maxLen = 64
-	if len(s) > maxLen {
-		s = s[:maxLen]
-	}
-	return s
-}
-
-// toFloat coerces the JSON-decoded scalar (always float64 in Go's
-// encoding/json) to a non-negative float64, returning 0 when the
-// value is missing, nil, or not a number.
-func toFloat(raw any) float64 {
-	switch v := raw.(type) {
-	case float64:
-		if v < 0 {
-			return 0
-		}
-		return v
-	case int:
-		if v < 0 {
-			return 0
-		}
-		return float64(v)
-	case int64:
-		if v < 0 {
-			return 0
-		}
-		return float64(v)
-	}
-	return 0
-}
-
 // stringifyVars converts the wire payload's free-form vars into the
 // string-typed map the executor expects. Non-string scalars are
-// formatted with %v; nested structures are JSON-encoded so the
-// downstream template engine can still see them.
-func stringifyVars(in map[string]any) map[string]string {
+// formatted with %v; nested structures (maps, slices, structs, …) are
+// JSON-encoded so the downstream template engine can still see them.
+// A nested value JSON cannot encode surfaces as an error — never
+// silently degraded to Go %v syntax.
+func stringifyVars(in map[string]any) (map[string]string, error) {
 	if len(in) == 0 {
-		return nil
+		return nil, nil
 	}
 	out := make(map[string]string, len(in))
 	for k, v := range in {
@@ -2577,8 +1416,22 @@ func stringifyVars(in map[string]any) map[string]string {
 		case nil:
 			out[k] = ""
 		default:
-			out[k] = fmt.Sprintf("%v", t)
+			switch reflect.ValueOf(v).Kind() {
+			case reflect.Bool,
+				reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64,
+				reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64, reflect.Uintptr,
+				reflect.Float32, reflect.Float64,
+				reflect.Complex64, reflect.Complex128,
+				reflect.String:
+				out[k] = fmt.Sprintf("%v", t)
+			default:
+				b, err := json.Marshal(v)
+				if err != nil {
+					return nil, fmt.Errorf("runner: JSON-encode var %q (%T): %w", k, v, err)
+				}
+				out[k] = string(b)
+			}
 		}
 	}
-	return out
+	return out, nil
 }

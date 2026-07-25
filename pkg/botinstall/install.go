@@ -377,10 +377,10 @@ func isBundleDir(dir string) bool {
 	if st, err := os.Stat(filepath.Join(dir, "main.bot")); err != nil || st.IsDir() {
 		return false
 	}
-	if st, err := os.Stat(filepath.Join(dir, "manifest.yaml")); err == nil && !st.IsDir() {
+	if st, err := os.Stat(filepath.Join(dir, bundle.ManifestFile)); err == nil && !st.IsDir() {
 		return true
 	}
-	st, err := os.Stat(filepath.Join(dir, "manifest.yml"))
+	st, err := os.Stat(filepath.Join(dir, bundle.ManifestFileAlt))
 	return err == nil && !st.IsDir()
 }
 

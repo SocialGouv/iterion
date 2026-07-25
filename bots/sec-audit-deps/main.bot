@@ -17,8 +17,8 @@
 ##                            (node_modules install-hooks / locale anomaly).
 ##   4. heuristic_join      — compute. Merges {eco, generic} into one
 ##                            signals object for the reviewer.
-##   5. load_cache          — tool, reads
-##                            ~/.iterion/security-cache/packages.jsonl
+##   5. load_cache          — tool, reads the package cache at
+##                            vars.cache_path (default: run scratch)
 ##                            and emits the in-memory index.
 ##   6. filter_cached       — compute: splits enumerated deps into
 ##                            already_scanned[] vs pending[].
@@ -293,7 +293,7 @@ prompt review_system:
 
   Markdown report:
   - After all board calls, write
-    {{input.workspace_dir}}/.iterion/security/deps-findings.md
+    {{input.workspace_dir}}/.sec-audit/deps-findings.md
     via write_file. Sections:
       # Supply-chain findings — sec-audit-deps
       ## Summary  (counts by ecosystem + risk_level)
@@ -840,8 +840,8 @@ agent llm_review:
   readonly: true
 
 tool update_cache:
-  ## Appends one JSONL line per analysed package to
-  ## ~/.iterion/security-cache/packages.jsonl. Atomic via
+  ## Appends one JSONL line per analysed package to the package
+  ## cache at vars.cache_path. Atomic via
   ## printf >> (POSIX guarantees atomicity up to PIPE_BUF).
   command: `VERDICTS={{input.verdicts}} CACHE_PATH={{input.cache_path}} SVER={{input.scanner_version}} python3 -c "
 import os, sys, json, datetime
@@ -894,17 +894,12 @@ workflow sec_audit_deps:
   ## `open`, so the SCA DBs are reachable. (Until CI publishes the ref
   ## to ghcr, build locally and `docker tag` it to the ref below so the
   ## docker driver's image-inspect fast path resolves it without a pull.)
+  ## Image pin survives ADR-082 Phase 2: the scanner toolchain (semgrep,
+  ## trivy, gitleaks, …) genuinely needs the baked sec image —
+  ## devbox-installing it per run costs minutes of Nix. Everything else
+  ## (isolation, claude CLI, host-state mounts) is the platform default.
   sandbox:
     image: "ghcr.io/socialgouv/iterion-sandbox-sec:edge"
-    user: "1000:1000"
-    mounts: ["type=bind,source=${localEnv:HOME}/.claude,target=/home/devbox/.claude,consistency=cached"]
-    env:
-      CLAUDE_CONFIG_DIR: "/home/devbox/.claude"
-    ## llm_review is a claude_code node, but the sec image ships node+npm
-    ## WITHOUT the claude CLI — install it once per container (same gate as
-    ## feature_dev / sec-audit-source: run the binary, verify, fail
-    ## post_create cleanly so the dispatcher retries with a fresh container).
-    post_create: "set -e; claude --version >/dev/null 2>&1 || sudo npm install -g @anthropic-ai/claude-code@latest; claude --version >/dev/null 2>&1 || { echo 'claude install verification failed' >&2; exit 1; }"
 
   budget:
     max_parallel_branches: 4

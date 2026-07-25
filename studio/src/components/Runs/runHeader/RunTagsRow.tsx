@@ -3,7 +3,8 @@
 // "customer-x") as editable chips. Persisted per-run via
 // GET/PUT /api/runs/:id/tags — a whole-list overwrite on every edit.
 
-import { useEffect, useState } from "react";
+import { useState } from "react";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 
 import { getRunTags, setRunTags } from "@/api/runs";
 import { TagInput } from "@/components/ui";
@@ -15,27 +16,21 @@ const MAX_TAG_LENGTH = 32;
 const MAX_TAGS = 20;
 
 // RunTagsRow loads the run's tags on mount and persists the full set on
-// each add/remove. Edits are optimistic: the chips update immediately and
-// revert with an error line if the PUT fails. A run with no tags still
-// renders the (empty) input so the operator can add the first tag.
+// each add/remove. Edits are optimistic: the chips update immediately
+// (written straight into the query cache) and revert with an error line
+// if the PUT fails. A run with no tags still renders the (empty) input so
+// the operator can add the first tag.
 export default function RunTagsRow({ runId }: { runId: string }) {
-  const [tags, setTags] = useState<string[]>([]);
+  const queryClient = useQueryClient();
+  // A load failure leaves the row empty — the operator can still add
+  // tags (the PUT surfaces its own error), so the query error is
+  // deliberately unread. Don't spam the header.
+  const tagsQuery = useQuery({
+    queryKey: ["run-tags", runId],
+    queryFn: () => getRunTags(runId),
+  });
+  const tags = tagsQuery.data ?? [];
   const [error, setError] = useState<string | null>(null);
-
-  useEffect(() => {
-    let cancelled = false;
-    getRunTags(runId)
-      .then((t) => {
-        if (!cancelled) setTags(t);
-      })
-      .catch(() => {
-        // A load failure leaves the row empty; the operator can still add
-        // tags (the PUT surfaces its own error). Don't spam the header.
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [runId]);
 
   const onChange = (next: string[]) => {
     if (next.length > MAX_TAGS) {
@@ -43,12 +38,14 @@ export default function RunTagsRow({ runId }: { runId: string }) {
       return;
     }
     const prev = tags;
-    setTags(next); // optimistic
+    queryClient.setQueryData(["run-tags", runId], next); // optimistic
     setError(null);
     setRunTags(runId, next)
-      .then((persisted) => setTags(persisted))
+      .then((persisted) =>
+        queryClient.setQueryData(["run-tags", runId], persisted),
+      )
       .catch((e) => {
-        setTags(prev); // revert
+        queryClient.setQueryData(["run-tags", runId], prev); // revert
         setError(errorMessage(e));
       });
   };

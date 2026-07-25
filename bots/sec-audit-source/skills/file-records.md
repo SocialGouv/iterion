@@ -1,7 +1,7 @@
 ---
 name: file-records
 description: |
-  Per-file append-only analysis records — `.iterion/security/files/`.
+  Per-file append-only analysis records — `.sec-audit/files/`.
   Read by `filter_cached_files` (skip work) and written by
   `update_file_records` (capture). Load this skill when the run is
   scoped large enough that the LLM revalidate cost dominates, and
@@ -9,7 +9,7 @@ description: |
   resume after an interrupted scan.
 ---
 
-# File records — `.iterion/security/files/<sha1>.json`
+# File records — `.sec-audit/files/<sha1>.json`
 
 Append-only JSON files, one per source file the bot has ever
 analysed. Each file accumulates a history of analyses. Re-runs skip
@@ -27,7 +27,7 @@ re-runs where most files are unchanged.
 ## Location
 
 ```
-<workspace_dir>/.iterion/security/files/<sha1(rel_path)[0:16]>.json
+<workspace_dir>/.sec-audit/files/<sha1(rel_path)[0:16]>.json
 ```
 
 The filename is the first 16 hex chars of the SHA-1 of the file's
@@ -37,7 +37,7 @@ relative path. This:
 - keeps filenames fixed-length and sortable,
 - makes lookups deterministic.
 
-The directory `.iterion/security/files/` is auto-created on first
+The directory `.sec-audit/files/` is auto-created on first
 write. It is committed (recommended) so the cache survives a fresh
 clone — though developers may add it to `.gitignore` if they
 prefer per-environment caching.
@@ -93,7 +93,7 @@ board sees them.
 After every successful `report_card`, for each file mentioned in
 the run's candidates (whether cache-hit or fresh):
 
-1. Open `.iterion/security/files/<sha1>.json` (create if absent).
+1. Open `.sec-audit/files/<sha1>.json` (create if absent).
 2. Compute the file's current content_hash.
 3. Append one entry to `history[]` with:
     - `content_hash`: current sha256
@@ -114,27 +114,27 @@ regression.
 ### Force a rescan of a file
 ```bash
 # Delete the file's record:
-rm .iterion/security/files/<sha1>.json
+rm .sec-audit/files/<sha1>.json
 # Or truncate history to one entry to keep the path tracked:
 jq '.history = [.history[0]]' file.json > tmp && mv tmp file.json
 ```
 
 ### Force a rescan of everything
 ```bash
-rm -rf .iterion/security/files/
+rm -rf .sec-audit/files/
 ```
 
 ### Audit cache size
 ```bash
-ls .iterion/security/files/ | wc -l
-du -sh .iterion/security/files/
+ls .sec-audit/files/ | wc -l
+du -sh .sec-audit/files/
 ```
 
 ### Inspect a file's history
 ```bash
 PATH_HASH=$(printf '%s' 'pkg/server/proxy.go' | sha1sum | head -c 16)
-jq '.history | length' .iterion/security/files/$PATH_HASH.json
-jq '.history[-1].verdicts' .iterion/security/files/$PATH_HASH.json
+jq '.history | length' .sec-audit/files/$PATH_HASH.json
+jq '.history[-1].verdicts' .sec-audit/files/$PATH_HASH.json
 ```
 
 ## Relation to `fp-known.yaml`

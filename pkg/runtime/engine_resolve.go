@@ -3,9 +3,12 @@ package runtime
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"maps"
 	"os"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -451,7 +454,19 @@ func outputSignature(output map[string]any) string {
 	return fmt.Sprintf("%v", output)
 }
 
+// resolveLoopMax returns the loop's effective iteration ceiling: the
+// declared/expr/fuel base plus any live-steering grant (bump_loop). The
+// grant applies for the remainder of the run; a loop re-entry still
+// resets its COUNTER, so the raised ceiling governs each entry.
 func (e *Engine) resolveLoopMax(loop *ir.Loop, rs *runState) int {
+	base := e.resolveLoopMaxBase(loop, rs)
+	if extra := rs.loopOverrides[loop.Name]; extra > 0 {
+		return base + extra
+	}
+	return base
+}
+
+func (e *Engine) resolveLoopMaxBase(loop *ir.Loop, rs *runState) int {
 	// Unbounded loops have no user iteration cap; the effective ceiling is the
 	// fuel: the clause's per-loop fuel, else the workflow's max_iterations, else
 	// a hard default (so there is never a silent infinity even if validation was
@@ -630,16 +645,76 @@ func matchOutputNode(outputs map[string]map[string]any, path []string) (map[stri
 // only on overrides.
 func (e *Engine) resolveVars(inputs map[string]any) map[string]any {
 	vars := make(map[string]any)
-	// expandFn lets var values reference ${PROJECT_DIR} (resolved to the
-	// engine's workDir, possibly a worktree path) and any other env var.
-	// Applied to both string defaults AND string user-provided overrides:
-	// the studio's LaunchView pre-fills its form with the literal default
-	// (e.g. "${PROJECT_DIR}") so an unmodified submit re-sends it as an
-	// override, which would otherwise reach tool nodes verbatim and break
-	// `git -C '${PROJECT_DIR}'`. Expanding overrides in the same pass
-	// keeps `vars.workspace_dir` resolved to a real path regardless of
-	// whether it came from the workflow default or the form input.
-	expandFn := func(key string) string {
+	expandFn := e.varExpandFn()
+	for name, v := range e.workflow.Vars {
+		if v.HasDefault {
+			if s, ok := v.Default.(string); ok {
+				vars[name] = os.Expand(s, expandFn)
+			} else {
+				vars[name] = v.Default
+			}
+		}
+	}
+	for k, v := range inputs {
+		decl, isVar := e.workflow.Vars[k]
+		if !isVar {
+			continue
+		}
+		coerced, err := coerceVarValue(v, decl.Type)
+		if err != nil {
+			// Fall back to whatever the caller passed; the engine's
+			// downstream type checks will surface a clear error if
+			// the value really is incompatible. The alternative —
+			// failing the run here — would be more aggressive than
+			// the previous behaviour.
+			e.logger.Warn("runtime: var %q: coerce to %s failed: %v (using raw value)", k, decl.Type, err)
+			vars[k] = v
+			continue
+		}
+		if s, ok := coerced.(string); ok {
+			coerced = os.Expand(s, expandFn)
+		}
+		vars[k] = coerced
+	}
+
+	// Foot-gun guard: a var explicitly set to the repo root — e.g.
+	// `--var workspace_dir=$(pwd)` — points agents at the MAIN checkout
+	// rather than the active worktree. Under worktree:auto the repo root
+	// IS the worktree, and under sandbox the main-checkout path has `.git`
+	// mounted but NO working-tree files, so git there reports a phantom
+	// "all files deleted". Remap any repo-root-valued var to the same
+	// target `${PROJECT_DIR}` resolves to (the worktree / in-container
+	// workspace). No-op when that target already equals the repo root
+	// (no worktree and no sandbox path remap), so a plain run is untouched.
+	if e.repoRoot != "" {
+		if projectDir := expandFn("PROJECT_DIR"); projectDir != "" && !samePath(projectDir, e.repoRoot) {
+			for k, val := range vars {
+				if s, ok := val.(string); ok && samePath(s, e.repoRoot) {
+					vars[k] = projectDir
+					if e.logger != nil {
+						e.logger.Warn("runtime: var %q was set to the repo root %q; remapped to the worktree/sandbox workspace %q to avoid a phantom working-tree view. Prefer omitting it so it defaults to ${PROJECT_DIR}.", k, e.repoRoot, projectDir)
+					}
+				}
+			}
+		}
+	}
+	return vars
+}
+
+// varExpandFn returns the os.Expand callback var values are resolved
+// with. It lets var values reference ${PROJECT_DIR} (resolved to the
+// engine's workDir, possibly a worktree path) and any other env var.
+// Applied to both string defaults AND string user-provided overrides:
+// the studio's LaunchView pre-fills its form with the literal default
+// (e.g. "${PROJECT_DIR}") so an unmodified submit re-sends it as an
+// override, which would otherwise reach tool nodes verbatim and break
+// `git -C '${PROJECT_DIR}'`. Expanding overrides in the same pass
+// keeps `vars.workspace_dir` resolved to a real path regardless of
+// whether it came from the workflow default or the form input.
+// Shared by resolveVars and validateVarEnums so the launch gate checks
+// exactly the value that flows into the run.
+func (e *Engine) varExpandFn() func(string) string {
+	return func(key string) string {
 		if key == "PROJECT_DIR" {
 			// In sandbox mode, ${PROJECT_DIR} must resolve to the
 			// in-container bind-mount target (e.g. /workspace), not
@@ -695,59 +770,55 @@ func (e *Engine) resolveVars(inputs map[string]any) map[string]any {
 		}
 		return os.Getenv(key)
 	}
-	for name, v := range e.workflow.Vars {
-		if v.HasDefault {
-			if s, ok := v.Default.(string); ok {
-				vars[name] = os.Expand(s, expandFn)
-			} else {
-				vars[name] = v.Default
-			}
-		}
-	}
-	for k, v := range inputs {
-		decl, isVar := e.workflow.Vars[k]
-		if !isVar {
-			continue
-		}
-		coerced, err := coerceVarValue(v, decl.Type)
-		if err != nil {
-			// Fall back to whatever the caller passed; the engine's
-			// downstream type checks will surface a clear error if
-			// the value really is incompatible. The alternative —
-			// failing the run here — would be more aggressive than
-			// the previous behaviour.
-			e.logger.Warn("runtime: var %q: coerce to %s failed: %v (using raw value)", k, decl.Type, err)
-			vars[k] = v
-			continue
-		}
-		if s, ok := coerced.(string); ok {
-			coerced = os.Expand(s, expandFn)
-		}
-		vars[k] = coerced
-	}
+}
 
-	// Foot-gun guard: a var explicitly set to the repo root — e.g.
-	// `--var workspace_dir=$(pwd)` — points agents at the MAIN checkout
-	// rather than the active worktree. Under worktree:auto the repo root
-	// IS the worktree, and under sandbox the main-checkout path has `.git`
-	// mounted but NO working-tree files, so git there reports a phantom
-	// "all files deleted". Remap any repo-root-valued var to the same
-	// target `${PROJECT_DIR}` resolves to (the worktree / in-container
-	// workspace). No-op when that target already equals the repo root
-	// (no worktree and no sandbox path remap), so a plain run is untouched.
-	if e.repoRoot != "" {
-		if projectDir := expandFn("PROJECT_DIR"); projectDir != "" && !samePath(projectDir, e.repoRoot) {
-			for k, val := range vars {
-				if s, ok := val.(string); ok && samePath(s, e.repoRoot) {
-					vars[k] = projectDir
-					if e.logger != nil {
-						e.logger.Warn("runtime: var %q was set to the repo root %q; remapped to the worktree/sandbox workspace %q to avoid a phantom working-tree view. Prefer omitting it so it defaults to ${PROJECT_DIR}.", k, e.repoRoot, projectDir)
-					}
-				}
-			}
+// validateVarEnums enforces declared `[enum: ...]` constraints on
+// launch-provided var values — the runtime counterpart of the C126
+// compile check on defaults (defaults are compile-validated, so only
+// provided values are checked here). Values are checked after the same
+// ${VAR} expansion resolveVars applies, i.e. against the exact value
+// that flows into the run; upstream template rendering (dispatcher
+// bot_args, preset overlay) has already happened by the time inputs
+// reach the engine. Returns an error naming every violating var, its
+// value, and the allowed list.
+func (e *Engine) validateVarEnums(inputs map[string]any) error {
+	if len(inputs) == 0 {
+		return nil
+	}
+	expandFn := e.varExpandFn()
+	var violations []string
+	for _, k := range slices.Sorted(maps.Keys(inputs)) {
+		decl, isVar := e.workflow.Vars[k]
+		if !isVar || len(decl.EnumValues) == 0 || decl.Type != ir.VarString {
+			continue
+		}
+		v := inputs[k]
+		s, isStr := v.(string)
+		if !isStr {
+			violations = append(violations, fmt.Sprintf(
+				"var %q: value %v (%T) is not one of the allowed values (%s)",
+				k, v, v, quoteList(decl.EnumValues)))
+			continue
+		}
+		if expanded := os.Expand(s, expandFn); !slices.Contains(decl.EnumValues, expanded) {
+			violations = append(violations, fmt.Sprintf(
+				"var %q: value %q is not one of the allowed values (%s)",
+				k, expanded, quoteList(decl.EnumValues)))
 		}
 	}
-	return vars
+	if len(violations) > 0 {
+		return errors.New(strings.Join(violations, "; "))
+	}
+	return nil
+}
+
+// quoteList renders enum values as `"a", "b"` for error messages.
+func quoteList(vals []string) string {
+	quoted := make([]string, len(vals))
+	for i, v := range vals {
+		quoted[i] = fmt.Sprintf("%q", v)
+	}
+	return strings.Join(quoted, ", ")
 }
 
 // samePath reports whether two paths are the same after lexical cleaning.

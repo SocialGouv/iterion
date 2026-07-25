@@ -1,5 +1,6 @@
 import { errorMessage } from "@/lib/errorHints";
 import { useEffect, useMemo, useState } from "react";
+import { keepPreviousData, useQuery } from "@tanstack/react-query";
 import { ChevronLeftIcon, OpenInNewWindowIcon } from "@radix-ui/react-icons";
 
 import { Button, Dialog, Input, Spinner } from "@/components/ui";
@@ -121,36 +122,31 @@ interface BrowsePanelProps {
 
 function BrowsePanel({ initialPath, onPick, onBack }: BrowsePanelProps) {
   const [cwd, setCwd] = useState(initialPath);
-  // absHere is the resolved, server-side absolute path that
-  // corresponds to `cwd`. We track it separately so the picker hands
-  // back exactly what the server resolved (no client-side path
-  // joining that could double-slash or diverge from symlink
-  // resolution).
-  const [absHere, setAbsHere] = useState<string | null>(null);
-  const [listing, setListing] = useState<FilesystemListing | null>(null);
-  const [loading, setLoading] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+  // keepPreviousData: while a new directory loads, the prior listing
+  // stays current (hidden behind the loading row), so "Use this folder"
+  // keeps pointing at the last resolved directory — the pre-migration
+  // behavior. The panel is mounted only while the Browse sub-panel is
+  // open, so the query only fetches on screen.
+  const query = useQuery<FilesystemListing>({
+    queryKey: ["filesystem-listing", cwd],
+    queryFn: ({ signal }) => listFilesystem(cwd, signal),
+    placeholderData: keepPreviousData,
+  });
+  const listing = query.data ?? null;
+  // isFetching (not isLoading): navigating into a cached directory still
+  // shows the loading row until the fresh listing lands.
+  const loading = query.isFetching;
+  const error = query.error && !loading ? errorMessage(query.error) : null;
 
-  useEffect(() => {
-    const ctrl = new AbortController();
-    setLoading(true);
-    setError(null);
-    listFilesystem(cwd, ctrl.signal)
-      .then((data) => {
-        setListing(data);
-        const root = data.root.replace(/\/$/, "");
-        setAbsHere(data.cwd === "/" ? root : root + data.cwd);
-        setLoading(false);
-      })
-      .catch((err) => {
-        if (ctrl.signal.aborted) return;
-        setError(errorMessage(err));
-        setLoading(false);
-      });
-    return () => {
-      ctrl.abort();
-    };
-  }, [cwd]);
+  // absHere is the resolved, server-side absolute path corresponding to
+  // the loaded listing. Derived from the server's own resolution — no
+  // client-side path joining that could double-slash or diverge from
+  // symlink resolution.
+  const absHere = useMemo(() => {
+    if (!listing) return null;
+    const root = listing.root.replace(/\/$/, "");
+    return listing.cwd === "/" ? root : root + listing.cwd;
+  }, [listing]);
 
   // Build a clickable breadcrumb from `cwd`. "/" → just the root chip.
   const crumbs = useMemo(() => {

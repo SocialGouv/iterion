@@ -1,8 +1,9 @@
-// Package botscaffold renders a new single-agent bot bundle (main.bot +
-// manifest.yaml + README.md + skills/) from a builder Spec. It is the
-// engine behind the studio's "New bot" flow and is deliberately
-// server-importable (pkg/cli wraps it too; the server must not import
-// pkg/cli).
+// Package botscaffold renders a new bot bundle (main.bot +
+// manifest.yaml + README.md + the bundle layout directories) from a
+// builder Spec. It is the single engine behind both bot-creation
+// surfaces — the studio's "New bot" flow and `iterion bots create` — and
+// is deliberately server-importable (pkg/cli wraps it too; the server
+// must not import pkg/cli).
 //
 // The generated workflow follows the house v2 shape: ONE adaptive agent
 // carrying the whole mission (see docs/workflow_authoring_pitfalls.md —
@@ -32,6 +33,15 @@ import (
 
 //go:embed templates/*.tmpl
 var templateFS embed.FS
+
+//go:embed templates/preset_example.md
+var presetExample []byte
+
+// bundleGitignore keeps local build output out of the author's repo.
+// Every entry must be something the packer already excludes — asserted
+// by TestBundleGitignore_MatchesPackerSkips rather than by comment, so
+// the two cannot drift silently.
+const bundleGitignore = "*.botz\n.iterion/\n"
 
 // SlugRe is the accepted shape for a new bot's directory/technical name.
 var SlugRe = regexp.MustCompile(`^[a-z][a-z0-9-]{1,63}$`)
@@ -108,8 +118,13 @@ type Result struct {
 
 var knownPermissions = map[string]bool{"": true, "ask": true, "deny": true}
 
-// Validate rejects a malformed Spec with an explicit, field-naming error.
+// Validate normalizes the Spec in place, then rejects a malformed one
+// with an explicit, field-naming error. Normalizing here (rather than on
+// each surface) is what keeps the CLI and the studio from drifting: a
+// caller that forgets to trim would otherwise get a baffling
+// `invalid slug " foo"`.
 func (s *Spec) Validate() error {
+	s.Slug = strings.TrimSpace(s.Slug)
 	if !SlugRe.MatchString(s.Slug) {
 		return fmt.Errorf("botscaffold: invalid slug %q (want %s)", s.Slug, SlugRe)
 	}
@@ -226,19 +241,32 @@ func Scaffold(dir string, s Spec) (Result, error) {
 	if _, err := os.Stat(filepath.Join(dir, "main.bot")); err == nil {
 		return Result{}, fmt.Errorf("botscaffold: %s already contains a main.bot", dir)
 	}
-	if err := os.MkdirAll(filepath.Join(dir, "skills"), 0o755); err != nil {
-		return Result{}, fmt.Errorf("botscaffold: mkdir %s: %w", dir, err)
+	// The full .botz layout, so `bundle pack` works on the result as-is
+	// and each resource kind has an obvious home.
+	for _, sub := range bundle.LayoutDirs {
+		if err := os.MkdirAll(filepath.Join(dir, sub), 0o755); err != nil {
+			return Result{}, fmt.Errorf("botscaffold: mkdir %s: %w", sub, err)
+		}
 	}
 
-	files := map[string][]byte{
-		"main.bot":      []byte(mainBot),
-		"manifest.yaml": manifest,
-		"README.md":     readme,
-	}
+	// .gitkeep makes an otherwise-empty layout dir survive `git add`;
+	// presets/ ships example.md instead, so it needs none.
 	res := Result{Dir: dir}
-	for _, name := range []string{"main.bot", "manifest.yaml", "README.md"} {
-		path := filepath.Join(dir, name)
-		if err := store.WriteFileAtomic(path, files[name], 0o644); err != nil {
+	for _, f := range []struct {
+		name string
+		data []byte
+	}{
+		{"main.bot", []byte(mainBot)},
+		{"manifest.yaml", manifest},
+		{"README.md", readme},
+		{".gitignore", []byte(bundleGitignore)},
+		{filepath.Join(bundle.DirPresets, "example.md"), presetExample},
+		{filepath.Join(bundle.DirSkills, ".gitkeep"), nil},
+		{filepath.Join(bundle.DirPrompts, ".gitkeep"), nil},
+		{filepath.Join(bundle.DirAttachments, ".gitkeep"), nil},
+	} {
+		path := filepath.Join(dir, f.name)
+		if err := store.WriteFileAtomic(path, f.data, 0o644); err != nil {
 			return Result{}, fmt.Errorf("botscaffold: write %s: %w", path, err)
 		}
 		res.Files = append(res.Files, path)

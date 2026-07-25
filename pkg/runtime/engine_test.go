@@ -1433,6 +1433,107 @@ func TestResumeFromFailed(t *testing.T) {
 	}
 }
 
+// Cloud-shaped resume: the cloud publisher flips the run to `queued`
+// BEFORE the runner claims the resume message (queue-depth visibility),
+// so by the time Engine.Resume loads the run its resumable status is
+// gone. The engine must route on the checkpoint evidence instead of
+// rejecting the status — this was live-broken (every cloud resume
+// parked on the DLQ with `cannot resume run ... with status "queued"`).
+func TestResumeFromFailed_QueuedByCloudPublisher(t *testing.T) {
+	wf := &ir.Workflow{
+		Name:  "resume_queued_test",
+		Entry: "step_a",
+		Nodes: map[string]ir.Node{
+			"step_a": &ir.AgentNode{BaseNode: ir.BaseNode{ID: "step_a"}},
+			"done":   &ir.DoneNode{BaseNode: ir.BaseNode{ID: "done"}},
+		},
+		Edges: []*ir.Edge{
+			{From: "step_a", To: "done"},
+		},
+		Schemas: map[string]*ir.Schema{},
+		Prompts: map[string]*ir.Prompt{},
+		Vars:    map[string]*ir.Var{},
+		Loops:   map[string]*ir.Loop{},
+	}
+
+	callCount := 0
+	exec := newStubExecutor()
+	exec.on("step_a", func(_ map[string]any) (map[string]any, error) {
+		callCount++
+		if callCount == 1 {
+			return nil, fmt.Errorf("transient failure")
+		}
+		return map[string]any{"result": "success"}, nil
+	})
+
+	s := tmpStore(t)
+	eng := New(wf, s, exec)
+
+	if err := eng.Run(context.Background(), "run-resume-queued", nil); err == nil {
+		t.Fatal("expected error from failed node")
+	}
+	// Simulate cloudpublisher.SubmitResume's pre-claim flip.
+	if err := s.UpdateRunStatus(context.Background(), "run-resume-queued", store.RunStatusQueued, ""); err != nil {
+		t.Fatalf("flip to queued: %v", err)
+	}
+
+	if err := eng.Resume(context.Background(), "run-resume-queued", nil); err != nil {
+		t.Fatalf("resume of publisher-queued run failed: %v", err)
+	}
+	r, _ := s.LoadRun(context.Background(), "run-resume-queued")
+	if r.Status != store.RunStatusFinished {
+		t.Fatalf("expected finished after queued resume, got %s", r.Status)
+	}
+}
+
+// A queued run with NO checkpoint models a runner-side pre-first-node
+// failure (e.g. clone-prep) that the cloud publisher flipped to queued on
+// resume: there is nothing to resume FROM, so it must restart from entry
+// and run — not error. (A fresh unclaimed launch never reaches Engine.Resume
+// — the runner routes it through Run, and validateResumable rejects resuming
+// a plain queued run at the server.)
+func TestResume_QueuedWithoutCheckpointRestartsFromEntry(t *testing.T) {
+	wf := &ir.Workflow{
+		Name:  "queued_no_cp",
+		Entry: "only",
+		Nodes: map[string]ir.Node{
+			"only": &ir.AgentNode{BaseNode: ir.BaseNode{ID: "only"}},
+			"done": &ir.DoneNode{BaseNode: ir.BaseNode{ID: "done"}},
+		},
+		Edges:   []*ir.Edge{{From: "only", To: "done"}},
+		Schemas: map[string]*ir.Schema{},
+		Prompts: map[string]*ir.Prompt{},
+		Vars:    map[string]*ir.Var{},
+		Loops:   map[string]*ir.Loop{},
+	}
+	ran := 0
+	exec := newStubExecutor()
+	exec.on("only", func(_ map[string]any) (map[string]any, error) {
+		ran++
+		return map[string]any{"ok": true}, nil
+	})
+	s := tmpStore(t)
+	ctx := context.Background()
+	if _, err := s.CreateRun(ctx, "run-queued-nocp", "wf", nil); err != nil {
+		t.Fatalf("CreateRun: %v", err)
+	}
+	// A pre-engine failure never wrote a checkpoint; the publisher flips
+	// the run to queued on resume.
+	if err := s.UpdateRunStatus(ctx, "run-queued-nocp", store.RunStatusQueued, ""); err != nil {
+		t.Fatalf("flip to queued: %v", err)
+	}
+	if err := New(wf, s, exec).Resume(ctx, "run-queued-nocp", nil); err != nil {
+		t.Fatalf("resume of queued no-checkpoint run failed: %v", err)
+	}
+	if ran != 1 {
+		t.Fatalf("entry node ran %d times, want 1 (restart from entry)", ran)
+	}
+	r, _ := s.LoadRun(ctx, "run-queued-nocp")
+	if r.Status != store.RunStatusFinished {
+		t.Fatalf("expected finished, got %s", r.Status)
+	}
+}
+
 // ---------------------------------------------------------------------------
 // Test: force resume bypasses workflow hash check
 // ---------------------------------------------------------------------------

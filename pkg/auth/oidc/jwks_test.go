@@ -76,7 +76,7 @@ func TestParseJWK_RSARoundTrip(t *testing.T) {
 		t.Fatalf("parseJWK: %v", err)
 	}
 	got, ok := pub.(*rsa.PublicKey)
-	if !ok || got.N.Cmp(key.PublicKey.N) != 0 || got.E != key.PublicKey.E {
+	if !ok || got.N.Cmp(key.N) != 0 || got.E != key.E {
 		t.Fatalf("round-trip mismatch: %+v", got)
 	}
 }
@@ -138,7 +138,7 @@ func TestVerifyIDToken_Rejections(t *testing.T) {
 		// HMAC secret. The method allowlist must reject HS256 outright.
 		tok := jwt.NewWithClaims(jwt.SigningMethodHS256, good)
 		tok.Header["kid"] = "k1"
-		s, _ := tok.SignedString(key.PublicKey.N.Bytes())
+		s, _ := tok.SignedString(key.N.Bytes())
 		if _, err := verifyIDToken(ctx, cache, s, "https://iss.example", "client-1"); err == nil {
 			t.Fatal("expected HS256 rejection (alg confusion)")
 		}

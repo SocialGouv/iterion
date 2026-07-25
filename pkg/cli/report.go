@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	gitlib "github.com/SocialGouv/iterion/pkg/git"
 	"github.com/SocialGouv/iterion/pkg/store"
 )
 
@@ -93,6 +94,11 @@ type report struct {
 	Metrics       reportMetrics    `json:"metrics"`
 	Steps         []reportStep     `json:"steps"`
 	Artifacts     []reportArtifact `json:"artifacts"`
+	// LocAdded / LocDeleted: three-dot numstat of the run's commits
+	// against the fork point. Nil when the refs are unresolvable —
+	// rendered as absent, never a guessed zero.
+	LocAdded   *int `json:"loc_added,omitempty"`
+	LocDeleted *int `json:"loc_deleted,omitempty"`
 }
 
 type reportMetrics struct {
@@ -142,6 +148,18 @@ func buildReport(r *store.Run, events []*store.Event, s store.RunStore) *report 
 	if r.FinishedAt != nil {
 		rpt.FinishedAt = r.FinishedAt
 		rpt.Duration = FormatDuration(r.FinishedAt.Sub(r.CreatedAt))
+	}
+
+	// LOC changed by the run's commits (worktree runs with a recorded
+	// FinalCommit only). Same three-dot semantics as the studio header.
+	if r.FinalCommit != "" && r.RepoRoot != "" {
+		target := r.MergedInto
+		if target == "" || target == "none" {
+			target = r.BaseCommit
+		}
+		if added, deleted, ok := gitlib.DiffLOC(r.RepoRoot, target, r.FinalCommit); ok {
+			rpt.LocAdded, rpt.LocDeleted = &added, &deleted
+		}
 	}
 
 	rb := &reportBuilder{rpt: rpt, nodeSet: make(map[string]bool)}
@@ -451,45 +469,48 @@ func collectArtifacts(rpt *report, r *store.Run, s store.RunStore) {
 func renderMarkdown(rpt *report) string {
 	var sb strings.Builder
 
-	sb.WriteString(fmt.Sprintf("# Run Report: %s\n\n", rpt.RunID))
+	fmt.Fprintf(&sb, "# Run Report: %s\n\n", rpt.RunID)
 
 	// Resolved verify command, hoisted to the header so it is greppable at a
 	// glance instead of buried in the verify node's output.
 	if rpt.VerifyCommand != "" {
-		sb.WriteString(fmt.Sprintf("verify: %s\n\n", rpt.VerifyCommand))
+		fmt.Fprintf(&sb, "verify: %s\n\n", rpt.VerifyCommand)
 	}
 
 	// Summary table.
 	sb.WriteString("## Summary\n\n")
 	sb.WriteString("| Field | Value |\n")
 	sb.WriteString("|-------|-------|\n")
-	sb.WriteString(fmt.Sprintf("| Workflow | %s |\n", rpt.Workflow))
-	sb.WriteString(fmt.Sprintf("| Status | %s |\n", rpt.Status))
-	sb.WriteString(fmt.Sprintf("| Duration | %s |\n", rpt.Duration))
-	sb.WriteString(fmt.Sprintf("| Total Tokens | %d |\n", rpt.Metrics.TotalTokens))
+	fmt.Fprintf(&sb, "| Workflow | %s |\n", rpt.Workflow)
+	fmt.Fprintf(&sb, "| Status | %s |\n", rpt.Status)
+	fmt.Fprintf(&sb, "| Duration | %s |\n", rpt.Duration)
+	fmt.Fprintf(&sb, "| Total Tokens | %d |\n", rpt.Metrics.TotalTokens)
 	if rpt.Metrics.TotalCostUSD > 0 {
-		sb.WriteString(fmt.Sprintf("| Total Cost | $%.4f |\n", rpt.Metrics.TotalCostUSD))
+		fmt.Fprintf(&sb, "| Total Cost | $%.4f |\n", rpt.Metrics.TotalCostUSD)
 	}
-	sb.WriteString(fmt.Sprintf("| Model Calls | %d |\n", rpt.Metrics.ModelCalls))
-	sb.WriteString(fmt.Sprintf("| Node Executions | %d |\n", rpt.Metrics.NodeCount))
-	sb.WriteString(fmt.Sprintf("| Loop Edges | %d |\n", rpt.Metrics.LoopEdges))
+	if rpt.LocAdded != nil && rpt.LocDeleted != nil {
+		fmt.Fprintf(&sb, "| Lines Changed | +%d / −%d |\n", *rpt.LocAdded, *rpt.LocDeleted)
+	}
+	fmt.Fprintf(&sb, "| Model Calls | %d |\n", rpt.Metrics.ModelCalls)
+	fmt.Fprintf(&sb, "| Node Executions | %d |\n", rpt.Metrics.NodeCount)
+	fmt.Fprintf(&sb, "| Loop Edges | %d |\n", rpt.Metrics.LoopEdges)
 	if rpt.Metrics.ThinkingTokens > 0 || rpt.Metrics.ThinkingMs > 0 {
 		// Thinking tokens are an approximation (the provider bills thinking
 		// inside output tokens with no breakdown — re-encoded here).
-		sb.WriteString(fmt.Sprintf("| Thinking Tokens | ~%d |\n", rpt.Metrics.ThinkingTokens))
-		sb.WriteString(fmt.Sprintf("| Thinking Time | %s |\n", FormatDuration(time.Duration(rpt.Metrics.ThinkingMs)*time.Millisecond)))
+		fmt.Fprintf(&sb, "| Thinking Tokens | ~%d |\n", rpt.Metrics.ThinkingTokens)
+		fmt.Fprintf(&sb, "| Thinking Time | %s |\n", FormatDuration(time.Duration(rpt.Metrics.ThinkingMs)*time.Millisecond))
 	}
 	if rpt.Metrics.CacheReadTokens > 0 || rpt.Metrics.CacheWriteTokens > 0 {
-		sb.WriteString(fmt.Sprintf("| Cache Read Tokens | %d |\n", rpt.Metrics.CacheReadTokens))
-		sb.WriteString(fmt.Sprintf("| Cache Write Tokens | %d |\n", rpt.Metrics.CacheWriteTokens))
+		fmt.Fprintf(&sb, "| Cache Read Tokens | %d |\n", rpt.Metrics.CacheReadTokens)
+		fmt.Fprintf(&sb, "| Cache Write Tokens | %d |\n", rpt.Metrics.CacheWriteTokens)
 		denom := rpt.Metrics.TotalInputTokens + rpt.Metrics.CacheReadTokens
 		if denom > 0 {
 			ratio := float64(rpt.Metrics.CacheReadTokens) * 100 / float64(denom)
-			sb.WriteString(fmt.Sprintf("| Cache Hit Ratio | %.1f%% |\n", ratio))
+			fmt.Fprintf(&sb, "| Cache Hit Ratio | %.1f%% |\n", ratio)
 		}
 	}
 	if rpt.Error != "" {
-		sb.WriteString(fmt.Sprintf("| Error | %s |\n", rpt.Error))
+		fmt.Fprintf(&sb, "| Error | %s |\n", rpt.Error)
 	}
 	sb.WriteString("\n")
 
@@ -503,7 +524,7 @@ func renderMarkdown(rpt *report) string {
 			if summary == "" {
 				summary = "—"
 			}
-			sb.WriteString(fmt.Sprintf("| %s | v%d | %s |\n", art.NodeID, art.Version, summary))
+			fmt.Fprintf(&sb, "| %s | v%d | %s |\n", art.NodeID, art.Version, summary)
 		}
 		sb.WriteString("\n")
 	}
@@ -516,16 +537,16 @@ func renderMarkdown(rpt *report) string {
 
 		switch {
 		case step.Type == string(store.EventRunStarted):
-			sb.WriteString(fmt.Sprintf("### %s — Run Started\n\n", ts))
+			fmt.Fprintf(&sb, "### %s — Run Started\n\n", ts)
 
 		case step.Type == string(store.EventNodeStarted):
 			branch := ""
 			if step.BranchID != "" {
 				branch = fmt.Sprintf(" `[%s]`", step.BranchID)
 			}
-			sb.WriteString(fmt.Sprintf("### %s — %s%s\n\n", ts, step.Summary, branch))
+			fmt.Fprintf(&sb, "### %s — %s%s\n\n", ts, step.Summary, branch)
 			if step.Detail != "" {
-				sb.WriteString(fmt.Sprintf("> %s\n\n", step.Detail))
+				fmt.Fprintf(&sb, "> %s\n\n", step.Detail)
 			}
 
 		case step.Type == string(store.EventNodeFinished):
@@ -533,32 +554,32 @@ func renderMarkdown(rpt *report) string {
 			if step.Tokens > 0 {
 				tokens = fmt.Sprintf(" (%d tokens)", step.Tokens)
 			}
-			sb.WriteString(fmt.Sprintf("- **%s** %s%s\n", ts, step.Summary, tokens))
+			fmt.Fprintf(&sb, "- **%s** %s%s\n", ts, step.Summary, tokens)
 			if step.Detail != "" {
-				sb.WriteString(fmt.Sprintf("  > %s\n", step.Detail))
+				fmt.Fprintf(&sb, "  > %s\n", step.Detail)
 			}
 			sb.WriteString("\n")
 
 		case step.Type == string(store.EventEdgeSelected):
-			sb.WriteString(fmt.Sprintf("- %s → %s\n", ts, step.Summary))
+			fmt.Fprintf(&sb, "- %s → %s\n", ts, step.Summary)
 
 		case step.Type == string(store.EventBranchStarted):
-			sb.WriteString(fmt.Sprintf("- %s 🔀 %s\n", ts, step.Summary))
+			fmt.Fprintf(&sb, "- %s 🔀 %s\n", ts, step.Summary)
 
 		case step.Type == string(store.EventJoinReady):
-			sb.WriteString(fmt.Sprintf("- %s 🔗 %s\n", ts, step.Summary))
+			fmt.Fprintf(&sb, "- %s 🔗 %s\n", ts, step.Summary)
 
 		case step.Type == string(store.EventArtifactWritten):
-			sb.WriteString(fmt.Sprintf("- %s 📦 %s\n", ts, step.Summary))
+			fmt.Fprintf(&sb, "- %s 📦 %s\n", ts, step.Summary)
 
 		case step.Type == string(store.EventRunFinished):
-			sb.WriteString(fmt.Sprintf("\n### %s — Run Finished\n", ts))
+			fmt.Fprintf(&sb, "\n### %s — Run Finished\n", ts)
 
 		case step.Type == string(store.EventRunFailed):
-			sb.WriteString(fmt.Sprintf("\n### %s — Run Failed\n\n> %s\n", ts, step.Summary))
+			fmt.Fprintf(&sb, "\n### %s — Run Failed\n\n> %s\n", ts, step.Summary)
 
 		case step.Type == string(store.EventBudgetWarning):
-			sb.WriteString(fmt.Sprintf("- %s ⚠️ %s\n", ts, step.Summary))
+			fmt.Fprintf(&sb, "- %s ⚠️ %s\n", ts, step.Summary)
 
 		// Skip LLM prompt/response details in timeline (too verbose).
 		case step.Type == string(store.EventLLMPrompt),
@@ -566,7 +587,7 @@ func renderMarkdown(rpt *report) string {
 			// omit from markdown — the node_finished captures the essence
 
 		default:
-			sb.WriteString(fmt.Sprintf("- %s %s\n", ts, step.Summary))
+			fmt.Fprintf(&sb, "- %s %s\n", ts, step.Summary)
 		}
 	}
 

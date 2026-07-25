@@ -138,6 +138,12 @@ type ProvisionRequest struct {
 	// ScheduleCrons overrides a bot's schedule cron (botID → 5-field cron) for
 	// the operator's chosen cadence; falls back to the manifest suggested_cron.
 	ScheduleCrons map[string]string
+	// Replace makes BotIDs the EXACT desired set instead of a union with the
+	// existing integration's bots — the per-bot unbind path. The webhook
+	// events, command map and schedules reconcile down accordingly. Removing
+	// the last bot is not expressible here (BotIDs must stay non-empty);
+	// full teardown is Deprovision.
+	Replace bool
 }
 
 // ProvisionResult reports what the orchestrator created or reused.
@@ -179,7 +185,7 @@ func (o *Orchestrator) Provision(ctx context.Context, req ProvisionRequest) (Pro
 	}
 
 	desiredBots := dedupSorted(req.BotIDs)
-	if hasExisting {
+	if hasExisting && !req.Replace {
 		desiredBots = dedupSorted(append(append([]string{}, existing.BotIDs...), req.BotIDs...))
 	}
 
@@ -223,6 +229,14 @@ func (o *Orchestrator) Provision(ctx context.Context, req ProvisionRequest) (Pro
 		for _, b := range desiredBots {
 			if err := o.ensureBotBinding(ctx, req.TenantID, b, frByBot[b].SecretName(), existing.ManagedSecretID); err != nil {
 				return ProvisionResult{}, fmt.Errorf("forge: bind %s for bot %s: %w", frByBot[b].SecretName(), b, err)
+			}
+		}
+		// An explicit cron override is a schedule mutation even when the
+		// bot/event set is unchanged — without this, re-enabling with a new
+		// cadence would be silently ignored by the idempotent short-circuit.
+		if len(req.ScheduleCrons) > 0 {
+			if err := o.syncSchedules(ctx, req.TenantID, existing.ID, CloneURLFor(conn.BaseURL(), req.RepoFullName), invByBot, req.ScheduleCrons, req.ActorID); err != nil {
+				return ProvisionResult{}, err
 			}
 		}
 		return ProvisionResult{
@@ -429,7 +443,9 @@ func (o *Orchestrator) Provision(ctx context.Context, req ProvisionRequest) (Pro
 	o.narrowGitHubAppSecret(ctx, &conn)
 
 	// Materialise cloud schedules for the enabled bots' schedule invocations.
-	if err := o.syncSchedules(ctx, req.TenantID, ri.ID, invByBot, req.ScheduleCrons, req.ActorID); err != nil {
+	// The repo clone URL rides along so a stateful scheduled bot gets a git
+	// workspace (#219) — without it the run lands in the pod's bare WorkDir.
+	if err := o.syncSchedules(ctx, req.TenantID, ri.ID, CloneURLFor(conn.BaseURL(), req.RepoFullName), invByBot, req.ScheduleCrons, req.ActorID); err != nil {
 		return ProvisionResult{}, err
 	}
 
@@ -525,6 +541,13 @@ func (o *Orchestrator) narrowGitHubAppSecret(ctx context.Context, conn *Connecti
 	_ = o.Secrets.Update(ctx, gs)
 }
 
+// EnsureManagedSecret exposes ensureManagedSecret to launch-time callers
+// (the repo-targeted launch pins the connection's managed token as the
+// run's forge secret — same Tier-0 pinning the webhook path uses).
+func (o *Orchestrator) EnsureManagedSecret(ctx context.Context, conn *Connection, actor string) (string, error) {
+	return o.ensureManagedSecret(ctx, conn, actor)
+}
+
 // ensureManagedSecret creates (once per connection) the team-scoped generic
 // secret holding the connection's admin token as the bot-runtime forge
 // token, stamping its id onto the connection. Reused across every repo/bot
@@ -607,10 +630,22 @@ func (o *Orchestrator) Deprovision(ctx context.Context, tenantID, integrationID 
 // syncSchedules replaces the integration's ScheduledBot rows with one per
 // schedule invocation (with a suggested cron) of the enabled bots, so the
 // cloud scheduler fires them. Clean-slate (delete-then-create) keeps it
-// idempotent across re-provisions. No-op when no schedule store is wired.
-func (o *Orchestrator) syncSchedules(ctx context.Context, tenantID, integrationID string, invByBot map[string][]bundle.Invocation, crons map[string]string, actor string) error {
+// idempotent across re-provisions; operator tuning on surviving bots'
+// rows (pause state, overlap/guard policy, a customised cron) is carried
+// over by bot id so re-provisioning one bot doesn't reset the others.
+// No-op when no schedule store is wired.
+func (o *Orchestrator) syncSchedules(ctx context.Context, tenantID, integrationID, repoURL string, invByBot map[string][]bundle.Invocation, crons map[string]string, actor string) error {
 	if o.Schedules == nil {
 		return nil
+	}
+	// Snapshot the rows we're about to replace, queued per bot in creation
+	// order so a bot with several schedule invocations keeps each row's
+	// tuning positionally.
+	priorByBot := map[string][]cloudsched.ScheduledBot{}
+	if prior, err := o.Schedules.ListByIntegration(ctx, tenantID, integrationID); err == nil {
+		for _, row := range prior {
+			priorByBot[row.BotID] = append(priorByBot[row.BotID], row)
+		}
 	}
 	if err := o.Schedules.DeleteByIntegration(ctx, tenantID, integrationID); err != nil {
 		return fmt.Errorf("forge: clear schedules: %w", err)
@@ -626,25 +661,44 @@ func (o *Orchestrator) syncSchedules(ctx context.Context, tenantID, integrationI
 			if ov := strings.TrimSpace(crons[bot]); ov != "" {
 				cron = ov
 			}
-			if cron == "" {
-				continue // no cron (no suggestion, no override) → can't fire
-			}
-			next, err := cloudsched.NextFire(cron, now)
-			if err != nil {
-				return fmt.Errorf("forge: schedule for %q: %w", bot, err)
-			}
-			if err := o.Schedules.Create(ctx, cloudsched.ScheduledBot{
+			sb := cloudsched.ScheduledBot{
 				ID:                o.id(),
 				TenantID:          tenantID,
 				RepoIntegrationID: integrationID,
 				BotID:             bot,
 				Cron:              cron,
 				Vars:              inv.Schedule.DefaultVars,
-				NextFireAt:        next,
+				RepoURL:           repoURL,
 				CreatedBy:         actor,
 				CreatedAt:         now,
 				UpdatedAt:         now,
-			}); err != nil {
+			}
+			if q := priorByBot[bot]; len(q) > 0 {
+				prev := q[0]
+				priorByBot[bot] = q[1:]
+				// Explicit enable-dialog cron wins; otherwise the row the
+				// operator may have edited does.
+				if strings.TrimSpace(crons[bot]) == "" && strings.TrimSpace(prev.Cron) != "" {
+					sb.Cron = prev.Cron
+				}
+				sb.Disabled = prev.Disabled
+				sb.Overlap = prev.Overlap
+				sb.MaxConcurrent = prev.MaxConcurrent
+				sb.Guard = prev.Guard
+				sb.GuardTimeout = prev.GuardTimeout
+				sb.GuardVar = prev.GuardVar
+				sb.CreatedBy = prev.CreatedBy
+				sb.CreatedAt = prev.CreatedAt
+			}
+			if sb.Cron == "" {
+				continue // no cron (no suggestion, no override) → can't fire
+			}
+			next, err := cloudsched.NextFire(sb.Cron, now)
+			if err != nil {
+				return fmt.Errorf("forge: schedule for %q: %w", bot, err)
+			}
+			sb.NextFireAt = next
+			if err := o.Schedules.Create(ctx, sb); err != nil {
 				return fmt.Errorf("forge: create schedule for %q: %w", bot, err)
 			}
 		}
@@ -820,7 +874,10 @@ func addCommandRoute(m map[string][]webhooks.CommandRoute, key string, route web
 	}
 	for _, e := range m[key] {
 		if e.BotID == route.BotID {
-			return nil // same bot, alias overlap — keep the first
+			// Same bot re-listed in the provision set: manifest validation
+			// already rejects intra-bot duplicate command names, so the
+			// incumbent route is identical — keep-first is lossless dedup.
+			return nil
 		}
 		if !complementaryArgs(e.Disambiguator, route.Disambiguator) {
 			return fmt.Errorf("forge: bots %q and %q both claim command /%s without args disambiguation", e.BotID, route.BotID, key)

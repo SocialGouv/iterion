@@ -13,7 +13,7 @@ export interface BackendStatus {
 }
 
 export interface ProviderStatus {
-  name: "anthropic" | "openai" | "foundry" | "bedrock" | "vertex" | "zai";
+  name: "anthropic" | "openai" | "xai" | "foundry" | "bedrock" | "vertex" | "zai";
   available: boolean;
   source: string;
   suggested_model?: string;

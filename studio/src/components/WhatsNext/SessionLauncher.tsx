@@ -1,9 +1,11 @@
 import { useEffect, useState } from "react";
+import { Link } from "wouter";
 
 import type { FirstClassBot } from "@/lib/whats-next/firstClassBots";
 import type { FormAnswer } from "@/lib/whats-next/questionForm";
-import { Button, Input } from "@/components/ui";
+import { Button, InlineBanner, Input } from "@/components/ui";
 import { WizardForm } from "@/components/ui/WizardForm";
+import { useActiveRepo } from "@/hooks/useActiveRepo";
 import { useServerInfoStore } from "@/store/serverInfo";
 
 interface Props {
@@ -15,6 +17,13 @@ interface Props {
   onLaunch?: (params: { vars: Record<string, string> }) => void;
   busy?: boolean;
   errorMessage?: string | null;
+  // Startup discovery failed — a live session may exist that we can't
+  // see, so launching may double the spend. Rendered with a Retry.
+  discoveryError?: string | null;
+  onRetryDiscovery?: () => void;
+  // The repo the launch will operate on (cloud active repo), or null
+  // for a board-only launch.
+  launchRepo?: string | null;
 }
 
 export default function SessionLauncher({
@@ -22,8 +31,13 @@ export default function SessionLauncher({
   onLaunch,
   busy = false,
   errorMessage = null,
+  discoveryError = null,
+  onRetryDiscovery,
+  launchRepo = null,
 }: Props) {
   const workDir = useServerInfoStore((s) => s.info?.work_dir ?? "");
+  const cloud = useServerInfoStore((s) => s.info?.mode === "cloud");
+  const { repos, enabled: repoScopeEnabled } = useActiveRepo();
 
   // Initialise each launcherVar from its defaultFrom rule (today only
   // `work_dir`). User can override before submitting.
@@ -75,6 +89,65 @@ export default function SessionLauncher({
           <p className="mt-1 text-label text-fg-muted">{bot.description}</p>
         </div>
 
+        {discoveryError && (
+          <InlineBanner
+            tone="warning"
+            layout="inline"
+            title="Couldn't check for a running session"
+            action={
+              onRetryDiscovery && (
+                <Button variant="secondary" size="sm" onClick={onRetryDiscovery}>
+                  Retry
+                </Button>
+              )
+            }
+          >
+            {discoveryError} — launching now may run two sessions in parallel.
+          </InlineBanner>
+        )}
+
+        {/* What a session actually does — reads, writes, spend — so the
+            first launch isn't a leap of faith. */}
+        <ul className="space-y-1 text-caption text-fg-muted border-t border-border-subtle pt-3">
+          <li>
+            <span className="text-fg-default font-medium">Reads</span> — the
+            team board{launchRepo ? " and the repository" : cloud ? " (no repository attached)" : " and the workspace"}.
+          </li>
+          <li>
+            <span className="text-fg-default font-medium">Writes</span> — board
+            cards (create, move, close); never your code.
+          </li>
+          <li>
+            <span className="text-fg-default font-medium">Spend</span> — each
+            autonomous burst is capped by the bot&apos;s budget; the session
+            pauses for you between turns and only spends again on your reply.
+          </li>
+        </ul>
+
+        {cloud && repoScopeEnabled && (
+          launchRepo ? (
+            <p className="text-caption text-fg-subtle">
+              Operates on{" "}
+              <code className="font-mono text-fg-default">{launchRepo}</code> —
+              switch repos from the sidebar before launching to change scope.
+            </p>
+          ) : repos.length === 0 ? (
+            <InlineBanner tone="warning" layout="inline">
+              No repository connected — the session will only see the board,
+              not code.{" "}
+              <Link href="/integrations/connect" className="underline">
+                Connect a repository
+              </Link>{" "}
+              first for grounded recommendations.
+            </InlineBanner>
+          ) : (
+            <InlineBanner tone="info" layout="inline">
+              &quot;All repos&quot; scope — the session gets the board only.
+              Pick a repo in the sidebar to give it code access.
+            </InlineBanner>
+          )
+        )}
+
         {bot.launcherVars.length > 0 && (
           <div className="space-y-3">
             {bot.launcherVars.map((v) => (
@@ -92,7 +165,7 @@ export default function SessionLauncher({
                   }
                   disabled={busy}
                 />
-                {v.defaultFrom === "work_dir" && (
+                {v.defaultFrom === "work_dir" && !cloud && (
                   <p className="text-caption text-fg-subtle">
                     Absolute path. Defaults to the studio&apos;s working directory.
                   </p>

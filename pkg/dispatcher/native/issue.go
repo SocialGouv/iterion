@@ -6,14 +6,14 @@ import "time"
 // dispatcher consumes a normalized view via tracker.Issue (see
 // pkg/dispatcher/tracker/native.go for the conversion).
 type Issue struct {
-	ID       string         `json:"id"`
-	Title    string         `json:"title"`
-	Body     string         `json:"body,omitempty"`
-	State    string         `json:"state"`
-	Labels   []string       `json:"labels,omitempty"`
-	Priority int            `json:"priority,omitempty"`
-	Assignee string         `json:"assignee,omitempty"`
-	Blockers []string       `json:"blockers,omitempty"`
+	ID       string   `json:"id"`
+	Title    string   `json:"title"`
+	Body     string   `json:"body,omitempty"`
+	State    string   `json:"state"`
+	Labels   []string `json:"labels,omitempty"`
+	Priority int      `json:"priority,omitempty"`
+	Assignee string   `json:"assignee,omitempty"`
+	Blockers []string `json:"blockers,omitempty"`
 	// ParentID is the planner (or prior planner) ticket that spawned this
 	// one. Distinct from Blockers (scheduling deps): ParentID is provenance
 	// / campaign ownership so the /pipelines UI can nest children under a
@@ -111,6 +111,10 @@ type ExternalRef struct {
 	Number       int    `json:"number"`
 	URL          string `json:"url,omitempty"`
 	State        string `json:"state,omitempty"`
+	// Author is the forge login that opened the external issue — the identity
+	// the author-trust gate classified at ingest, kept so operators can see
+	// WHO requested a parked card before approving its triage.
+	Author string `json:"author,omitempty"`
 }
 
 // Comment is a single append-only note on a native issue. Author is a

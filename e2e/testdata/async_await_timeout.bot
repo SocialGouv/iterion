@@ -1,0 +1,19 @@
+## async_await_timeout.bot — the await_answers timeout path (ADR-081):
+## a pending async question that is never answered must bound the wait
+## at `timeout:` (the no-silent-infinity invariant) and fail the run.
+
+schema num:
+  n: int
+
+await_answers gate:
+  timeout: "300ms"
+
+compute gather:
+  output: num
+  expr:
+    n: "1 + 1"
+
+workflow async_await_timeout:
+  entry: gate
+  gate -> gather
+  gather -> done

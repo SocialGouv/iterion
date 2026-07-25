@@ -16,6 +16,12 @@ import { ReviewInstructions } from "./ReviewInstructions";
 import { ReviewMediaRefs } from "./ReviewMediaRefs";
 import { ReviewWorkspaceFiles } from "./ReviewWorkspaceFiles";
 
+import {
+  clampReviewIndex,
+  pendingReviewVersionKey,
+  sortPendingReviewsChronologically,
+} from "./reviewQueue";
+
 interface Props {
   card: PipelineBoardCard;
   // Refetches the board after every successful answer. The component pins the
@@ -53,22 +59,7 @@ export function SequentialReviews({ card, onResolved }: Props) {
   const review = reviews[current];
   const reviewKey = reviewKeys[current];
   if (!review || !reviewKey) return null;
-  const guidedMessage: HumanQuestionMessage | null = review.review
-    ? {
-        kind: "human-question",
-        id: reviewKey,
-        nodeId: review.node_id ?? "",
-        prompt: review.instructions ?? "",
-        status: "pending",
-        questions: review.questions,
-        review: review.review,
-      }
-    : null;
-  const legacyAIReviewDetail = review.questions?.ai_review_detail;
-  const hasAIReviewContent =
-    review.review_brief !== undefined ||
-    (typeof legacyAIReviewDetail === "string" &&
-      legacyAIReviewDetail.trim().length > 0);
+
   const selectReview = (index: number) => {
     const key = reviewKeys[clampReviewIndex(index, total)];
     if (key) setActiveReviewKey(key);

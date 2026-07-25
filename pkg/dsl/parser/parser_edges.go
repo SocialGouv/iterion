@@ -1,8 +1,18 @@
 package parser
 
 import (
+	"fmt"
+	"strconv"
+	"strings"
+
 	"github.com/SocialGouv/iterion/pkg/dsl/ast"
 )
+
+// isTemplate reports whether s carries a `{{ ... }}` substitution marker,
+// i.e. it is a runtime-resolved template rather than a static literal.
+func isTemplate(s string) bool {
+	return strings.Contains(s, "{{")
+}
 
 // ---- edge ----
 
@@ -54,12 +64,14 @@ func (p *parser) parseEdge() *ast.Edge {
 		Span: ast.Span{Start: p.pos(fromT)},
 	}
 
-	// Optional clauses: when, as, with (in any order before newline).
-	// Reject duplicates — `... when foo when not bar` used to accept
-	// the line with the second clause silently overwriting the first.
-	// Track each by token kind so the error message points the operator
-	// at the right culprit.
-	var sawWhen, sawAs, sawWith bool
+	// Optional clauses: when|else, as, with (in any order before
+	// newline). Reject duplicates — `... when foo when not bar` used to
+	// accept the line with the second clause silently overwriting the
+	// first. Track each by token kind so the error message points the
+	// operator at the right culprit. `else` and `when` are mutually
+	// exclusive: else IS the "no sibling when matched" clause, so a
+	// guard on top of it is a contradiction.
+	var sawWhen, sawElse, sawAs, sawWith bool
 	for {
 		t := p.peek()
 		switch t.Type {
@@ -67,11 +79,24 @@ func (p *parser) parseEdge() *ast.Edge {
 			if sawWhen {
 				p.addError(DiagDuplicateEdgeClause, t, "duplicate 'when' clause on edge")
 			}
+			if sawElse {
+				p.addError(DiagElseWithWhen, t, "edge cannot carry both 'else' and 'when'")
+			}
 			parsed := p.parseWhenClause()
 			if !sawWhen {
 				edge.When = parsed
 			}
 			sawWhen = true
+		case TokenElse:
+			if sawElse {
+				p.addError(DiagDuplicateEdgeClause, t, "duplicate 'else' clause on edge")
+			}
+			if sawWhen {
+				p.addError(DiagElseWithWhen, t, "edge cannot carry both 'when' and 'else'")
+			}
+			p.next() // consume "else"
+			edge.IsElse = true
+			sawElse = true
 		case TokenAs:
 			if sawAs {
 				p.addError(DiagDuplicateEdgeClause, t, "duplicate 'as' clause on edge")
@@ -191,7 +216,20 @@ func (p *parser) parseLoopClause() *ast.LoopClause {
 	case nt.Type == TokenInt:
 		lc.MaxIterations = p.expectInt()
 	case nt.Type == TokenString:
-		lc.MaxIterationsExpr = p.expectString()
+		// A quoted cap is a runtime template (`as fix("{{vars.cap}}")`) —
+		// UNLESS it is a plain integer literal (`as fix("2")`), which is an
+		// easy mistake since every template form is quoted. Treat that as the
+		// integer it obviously is rather than a template with no refs, which
+		// would silently resolve to 0 and skip the loop edge as exhausted.
+		s := p.expectString()
+		if isTemplate(s) {
+			lc.MaxIterationsExpr = s
+		} else if n, err := strconv.Atoi(strings.TrimSpace(s)); err == nil {
+			lc.MaxIterations = n
+		} else {
+			p.addError(DiagExpectedToken, nt,
+				fmt.Sprintf("loop cap %q must be an unquoted integer, a template, or 'unbounded' — a quoted non-numeric string has no template refs and would silently cap the loop at 0", s))
+		}
 	case tokenAsIdent(nt) == "unbounded":
 		// `as <name>(unbounded)` or `as <name>(unbounded <fuel>)`: the loop
 		// is not iteration-capped; an optional integer sets a per-loop fuel

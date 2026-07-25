@@ -26,9 +26,12 @@ const fixtureWorkflow: WireWorkflow = {
 
 let nextSeq = 1;
 function evt(
-  type: string,
+  type: RunEvent["type"],
   fields: Partial<Omit<RunEvent, "type">> = {},
 ): RunEvent {
+  // The cast re-associates the decomposed type/data pair with the
+  // discriminated union — call sites pass a literal type plus the
+  // matching payload shape.
   return {
     seq: fields.seq ?? nextSeq++,
     timestamp: fields.timestamp ?? new Date().toISOString(),
@@ -37,7 +40,7 @@ function evt(
     branch_id: fields.branch_id,
     node_id: fields.node_id,
     data: fields.data,
-  };
+  } as RunEvent;
 }
 
 describe("runChat messagesFromEvents", () => {
@@ -63,7 +66,9 @@ describe("runChat messagesFromEvents", () => {
       kind: "banner",
       nodeId: "explorer",
       status: "running",
-      label: "explorer",
+      // The IR resolver humanizes node ids for display (capitalized,
+      // separators spaced); the raw id stays on nodeId.
+      label: "Explorer",
     });
   });
 
@@ -423,5 +428,205 @@ describe("runChat messagesFromEvents", () => {
       snapshot: null,
     });
     expect(out.filter((m) => m.kind === "user-message")).toHaveLength(1);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Per-event-kind coverage for the remaining handled types — pins the payload
+// contract consumed from the Go emitters ahead of the discriminated-union
+// typing of RunEvent.
+// ---------------------------------------------------------------------------
+
+describe("runChat messagesFromEvents — assistant narration & recovery", () => {
+  it("pushes an assistant-text bubble and merges consecutive chunks of the same turn", () => {
+    nextSeq = 1;
+    const out = messagesFromEvents({
+      resolver: irKindResolver(fixtureWorkflow),
+      events: [
+        evt("node_started", { node_id: "explorer", data: { iteration: 0 } }),
+        evt("assistant_text", {
+          node_id: "explorer",
+          data: { text: "Reading the parser first.", iteration: 0 },
+        }),
+        evt("assistant_text", {
+          node_id: "explorer",
+          data: { text: "Now checking the lexer.", iteration: 0 },
+        }),
+      ],
+      snapshot: null,
+    });
+    const bubbles = out.filter((m) => m.kind === "assistant-text");
+    expect(bubbles).toHaveLength(1);
+    expect(bubbles[0]).toMatchObject({
+      kind: "assistant-text",
+      nodeId: "explorer",
+      iteration: 0,
+      text: "Reading the parser first.\n\nNow checking the lexer.",
+    });
+  });
+
+  it("drops blank assistant_text and narration from silent nodes", () => {
+    nextSeq = 1;
+    const out = messagesFromEvents({
+      resolver: irKindResolver(fixtureWorkflow),
+      events: [
+        evt("node_started", { node_id: "explorer" }),
+        evt("assistant_text", { node_id: "explorer", data: { text: "   " } }),
+        evt("assistant_text", {
+          node_id: "router_step",
+          data: { text: "routing…" },
+        }),
+      ],
+      snapshot: null,
+    });
+    expect(out.filter((m) => m.kind === "assistant-text")).toHaveLength(0);
+  });
+
+  it("accumulates node_recovery retries on the active banner", () => {
+    nextSeq = 1;
+    const out = messagesFromEvents({
+      resolver: irKindResolver(fixtureWorkflow),
+      events: [
+        evt("node_started", { node_id: "explorer" }),
+        evt("node_recovery", {
+          node_id: "explorer",
+          data: { error: "anthropic: 529 overloaded", attempt: 1 },
+        }),
+        evt("node_recovery", {
+          node_id: "explorer",
+          data: { error: "http2: stream reset", attempt: 2 },
+        }),
+      ],
+      snapshot: null,
+    });
+    const banner = out[0];
+    if (banner?.kind !== "banner") throw new Error("expected banner");
+    expect(banner.progress?.retryCount).toBe(2);
+    expect(banner.progress?.latestRetryError).toBe("http2: stream reset");
+  });
+});
+
+describe("runChat messagesFromEvents — resume & review gate", () => {
+  it("pops the trailing session-closed marker on run_resumed", () => {
+    nextSeq = 1;
+    const out = messagesFromEvents({
+      resolver: irKindResolver(fixtureWorkflow),
+      events: [
+        evt("node_started", { node_id: "explorer" }),
+        evt("run_failed", { data: { error: "rate limited" } }),
+        evt("run_resumed"),
+      ],
+      snapshot: null,
+    });
+    expect(out.filter((m) => m.kind === "session-closed")).toHaveLength(0);
+    // The failed banner itself stays — only the terminal marker is popped.
+    expect(out.filter((m) => m.kind === "banner")).toHaveLength(1);
+  });
+
+  it("carries the review-gate meta on a review pause", () => {
+    nextSeq = 1;
+    const out = messagesFromEvents({
+      resolver: irKindResolver(fixtureWorkflow),
+      events: [
+        evt("node_started", { node_id: "ask_user", data: { iteration: 0 } }),
+        evt("human_input_requested", {
+          node_id: "ask_user",
+          data: {
+            interaction_id: "run_test_review",
+            questions: { verdict: "Approve the merge?" },
+            review: true,
+            turns: [{ role: "companion", content: "Diff looks clean." }],
+            posture: "human_required",
+            merge_strategy: "squash",
+            merge_into: "current",
+            max_turns: 4,
+            review_url: "http://localhost:8787/review",
+            verdict: { decision: "approve", confidence: 0.9 },
+          },
+        }),
+      ],
+      snapshot: null,
+    });
+    const q = out.find((m) => m.kind === "human-question");
+    if (q?.kind !== "human-question") throw new Error("expected human-question");
+    expect(q.review).toEqual({
+      turns: [{ role: "companion", content: "Diff looks clean." }],
+      posture: "human_required",
+      mergeStrategy: "squash",
+      mergeInto: "current",
+      maxTurns: 4,
+      reviewUrl: "http://localhost:8787/review",
+      verdict: { decision: "approve", confidence: 0.9 },
+    });
+  });
+
+  it("keys agent-node ask_user pauses on interaction_id and uses the question text as the prompt", () => {
+    nextSeq = 1;
+    // One agent turn can pause several times (…_1, …_2 engine-side);
+    // each interaction id gets its own answerable card and
+    // human_answers_recorded flips the matching one.
+    const out = messagesFromEvents({
+      resolver: irKindResolver(fixtureWorkflow),
+      events: [
+        evt("node_started", { node_id: "explorer", data: { iteration: 0 } }),
+        evt("human_input_requested", {
+          node_id: "explorer",
+          data: {
+            interaction_id: "run_test_explorer_1",
+            questions: { ask_user_response: "Which DB should I target?" },
+          },
+        }),
+        evt("human_answers_recorded", {
+          node_id: "explorer",
+          data: {
+            interaction_id: "run_test_explorer_1",
+            answers: { ask_user_response: "postgres" },
+          },
+        }),
+        evt("human_input_requested", {
+          node_id: "explorer",
+          data: {
+            interaction_id: "run_test_explorer_2",
+            questions: { ask_user_response: "Enable RLS too?" },
+          },
+        }),
+      ],
+      snapshot: null,
+    });
+    const questions = out.filter((m) => m.kind === "human-question");
+    expect(questions).toHaveLength(2);
+    expect(questions[0]).toMatchObject({
+      id: "run_test_explorer_1",
+      prompt: "Which DB should I target?",
+      status: "answered",
+      userReply: "postgres",
+    });
+    expect(questions[1]).toMatchObject({
+      id: "run_test_explorer_2",
+      prompt: "Enable RLS too?",
+      status: "pending",
+    });
+  });
+
+  it("prefers the runtime-resolved instructions as the human prompt", () => {
+    nextSeq = 1;
+    const out = messagesFromEvents({
+      resolver: irKindResolver(fixtureWorkflow),
+      events: [
+        evt("node_started", { node_id: "ask_user", data: { iteration: 0 } }),
+        evt("human_input_requested", {
+          node_id: "ask_user",
+          data: {
+            interaction_id: "run_test_ask",
+            instructions: "Pick the deploy window for this rollout.",
+            questions: { window: "…" },
+          },
+        }),
+      ],
+      snapshot: null,
+    });
+    expect(out.find((m) => m.kind === "human-question")).toMatchObject({
+      prompt: "Pick the deploy window for this rollout.",
+    });
   });
 });

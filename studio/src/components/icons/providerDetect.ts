@@ -23,6 +23,9 @@ const DELEGATE_MAP: Record<string, ProviderInfo> = {
   claude: { iconId: "Claude", label: "Claude", hasColor: true },
   codex: { iconId: "Codex", label: "Codex", hasColor: true },
   openai: { iconId: "OpenAI", label: "OpenAI", hasColor: false },
+  // xAI Grok Build CLI (`backend: "grok"`) — coding agent, not the metered API.
+  grok: { iconId: "XAI", label: "Grok", hasColor: false },
+  kimi: { iconId: "OpenAI", label: "Kimi", hasColor: false },
 };
 
 // Model prefix (before "/") -> provider mapping

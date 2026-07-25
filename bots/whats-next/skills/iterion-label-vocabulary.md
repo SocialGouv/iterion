@@ -18,13 +18,14 @@ Use `namespace:value` (colon-prefixed). Single-word tags exist but are rare.
 | Namespace | Allowed values | Meaning |
 |---|---|---|
 | `source:` | bot name, import path, or `manual` | Where the issue came from. Prefer the bot identity (`source:whats-next`, `source:sec-audit-source`, `source:sec-audit-deps`, `source:docs-refresh`). For one-off operator imports, `source:manual` plus a date suffix only when chronology genuinely matters. |
-| `horizon:` | `next-action`, `short-term`, `long-term`, `theme` | Time horizon. `theme` for strategic items the operator never expects to dispatch directly. |
+| `horizon:` | `now`, `next`, `later`, `theme` | Tier from the roadmap-study tiering (see `roadmap-synthesis`): `now` = start this week, `next` = this month, `later` = this quarter. `theme` for strategic items never dispatched directly. Legacy spellings still live on old cards — `next-action`/`short-term`/`long-term` and bare `now`/`next`/`later` — treat them as equivalent when filtering, and do NOT mass-relabel without an explicit operator ask. |
 | `epic:` | short kebab-case name | Long-running effort grouping multiple issues. Example: `epic:battle-tested`, `epic:cloud-readiness`. ONE epic label per issue is enough — multi-epic items dilute the signal. |
 | `sprint:` | integer | Sprint window the issue is committed to. Example: `sprint:1`. Combine with `epic:` to scope. |
 | `axis:` | area name from the repo | Subject area. Prefer names that match a top-level directory or `pkg/<x>/` package: `axis:runtime`, `axis:studio`, `axis:dispatcher`, `axis:dsl`, `axis:backend`, `axis:cloud`, `axis:sandbox`. For cross-cutting: `axis:testing`, `axis:observability`, `axis:reliability`, `axis:security`, `axis:docs`, `axis:bot`, `axis:performance`. |
 | `priority:` | `low`, `medium`, `high`, `critical` | Visible flag complementing the numeric `priority` field. Use only when one of `medium/high/critical` is meaningful; do not label everything `priority:low`. |
 | `status:` | soft state flag | `status:blocked-by-research`, `status:waiting-on-external`, `status:archived-by-bot`, `status:duplicate-of-<id>`. Operator-facing nuance the formal board state can't capture. |
-| `needs:` | operator action | `needs:manual-triage` (assignee invalid), `needs:bot-assignment`, `needs:retest`. Signals the board state alone can't (issue is in backlog but needs human work before it's dispatchable). |
+| `needs:` | operator action | `needs:manual-triage` (assignee invalid), `needs:bot-assignment`, `needs:retest`, `needs:approval` (external-author card parked by the ingest trust gate — no bot runs until an operator approves). Signals the board state alone can't (issue is in backlog but needs human work before it's dispatchable). |
+| `triage:` | `auto` | One-shot trigger consumed by the spine: a card carrying `triage:auto` fires the issue-triage bot (Triagy), which strips the label, stamps the handler bot + labels, and comments. Stamped automatically on trusted-author forge syncs; add it by hand (or via "Approve & triage") to (re)triage any card. Never re-add it yourself as a bot. |
 
 **Single-word labels** (no namespace) are reserved for unambiguous cross-cutting tags: `breaking-change`, `hotfix`, `experiment`. Use sparingly; namespaced labels scale better.
 
@@ -48,7 +49,7 @@ Use it to:
 
 3. **Detect drift early**. If you see two near-identical labels (`epic:cloud` and `epic:cloud-readiness`), surface the question in `rationale` rather than picking one silently.
 
-## The minimum label set per emit_action issue
+## The minimum label set per created issue
 
 Three is the comfortable baseline; four is reasonable when an epic + sprint is in play. More than five labels per issue dilutes filtering.
 

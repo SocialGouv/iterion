@@ -8,29 +8,30 @@ import "github.com/SocialGouv/iterion/pkg/dsl/types"
 
 // File is the root AST node representing an entire .bot source file.
 type File struct {
-	Vars        *VarsBlock        // top-level vars (optional, at most one)
-	Presets     *PresetsBlock     // top-level named preset value sets (optional, at most one)
-	Attachments *AttachmentsBlock // top-level attachments (optional, at most one)
-	Secrets     *SecretsBlock     // top-level secrets (optional, at most one)
-	MCPServers  []*MCPServerDecl  // top-level reusable MCP server declarations
-	Prompts     []*PromptDecl     // prompt declarations
-	Schemas     []*SchemaDecl     // schema declarations
-	Cursors     []*CursorDecl     // cursor declarations (prompt-engineering dials)
-	Supervisors []*SupervisorDecl // supervisor declarations (concurrent node-watchers)
-	Agents      []*AgentDecl      // agent node declarations
-	Judges      []*JudgeDecl      // judge node declarations
-	Routers     []*RouterDecl     // router node declarations
-	Humans      []*HumanDecl      // human node declarations
-	Tools       []*ToolNodeDecl   // tool node declarations (direct execution, no LLM)
-	Computes    []*ComputeDecl    // deterministic compute node declarations (no LLM, no shell)
-	Emits       []*EmitDecl       // emit node declarations (publish a run-scoped event)
-	Waits       []*WaitDecl       // wait node declarations (block until a run-scoped event)
-	Groups      []*GroupDecl      // reusable node-cluster declarations (compile-time macros)
-	Uses        []*UseDecl        // group instantiations (`use <group> as <prefix>`)
-	Subbots     []*SubbotDecl     // sub-bot node declarations (run another .bot as a nested run)
-	Workflows   []*WorkflowDecl   // workflow declarations
-	Comments    []*Comment        // top-level comments (## ...)
-	Span        Span
+	Vars         *VarsBlock          // top-level vars (optional, at most one)
+	Presets      *PresetsBlock       // top-level named preset value sets (optional, at most one)
+	Attachments  *AttachmentsBlock   // top-level attachments (optional, at most one)
+	Secrets      *SecretsBlock       // top-level secrets (optional, at most one)
+	MCPServers   []*MCPServerDecl    // top-level reusable MCP server declarations
+	Prompts      []*PromptDecl       // prompt declarations
+	Schemas      []*SchemaDecl       // schema declarations
+	Cursors      []*CursorDecl       // cursor declarations (prompt-engineering dials)
+	Supervisors  []*SupervisorDecl   // supervisor declarations (concurrent node-watchers)
+	Agents       []*AgentDecl        // agent node declarations
+	Judges       []*JudgeDecl        // judge node declarations
+	Routers      []*RouterDecl       // router node declarations
+	Humans       []*HumanDecl        // human node declarations
+	Tools        []*ToolNodeDecl     // tool node declarations (direct execution, no LLM)
+	Computes     []*ComputeDecl      // deterministic compute node declarations (no LLM, no shell)
+	Emits        []*EmitDecl         // emit node declarations (publish a run-scoped event)
+	Waits        []*WaitDecl         // wait node declarations (block until a run-scoped event)
+	AwaitAnswers []*AwaitAnswersDecl // await_answers node declarations (block until async questions are answered)
+	Groups       []*GroupDecl        // reusable node-cluster declarations (compile-time macros)
+	Uses         []*UseDecl          // group instantiations (`use <group> as <prefix>`)
+	Subbots      []*SubbotDecl       // sub-bot node declarations (run another .bot as a nested run)
+	Workflows    []*WorkflowDecl     // workflow declarations
+	Comments     []*Comment          // top-level comments (## ...)
+	Span         Span
 }
 
 // GroupDecl is a reusable cluster of nodes + internal edges, parameterised by
@@ -73,11 +74,12 @@ type UseDecl struct {
 // The child executes as a real run (it may contain loops); its terminal
 // output is mapped back to `outputs.<subbot>.<field>`.
 type SubbotDecl struct {
-	Name   string
-	Source string       // path/ref to the child .bot (relative to the parent's workdir)
-	With   []*WithEntry // vars passed to the child run (key = var name)
-	Output string       // schema reference describing the child's terminal output
-	Needs  []string     // named resource leases held while the child runs
+	Name        string
+	Description string       // optional human-readable node label (surfaced in the run console)
+	Source      string       // path/ref to the child .bot (relative to the parent's workdir)
+	With        []*WithEntry // vars passed to the child run (key = var name)
+	Output      string       // schema reference describing the child's terminal output
+	Needs       []string     // named resource leases held while the child runs
 	// Isolated asserts the child run does NOT mutate the parent's shared
 	// workspace (it confines writes to its own run store / worktree), so the
 	// workspace-safety guard may fan it out in parallel. Mirror of an
@@ -94,10 +96,11 @@ type SubbotDecl struct {
 //	  event: "ready"
 //	  with: { value: "{{outputs.producer.n}}" }
 type EmitDecl struct {
-	Name  string
-	Event string       // event name to publish (required)
-	With  []*WithEntry // immutable payload (key = payload field)
-	Span  Span
+	Name        string
+	Description string       // optional human-readable node label (surfaced in the run console)
+	Event       string       // event name to publish (required)
+	With        []*WithEntry // immutable payload (key = payload field)
+	Span        Span
 }
 
 // WaitDecl is a `wait` node: it blocks its branch until the named event is
@@ -109,11 +112,30 @@ type EmitDecl struct {
 //	  timeout: "30s"
 //	  output: <schema>   ## optional: types the received payload
 type WaitDecl struct {
-	Name    string
-	Event   string // event name to wait for (required)
-	Timeout string // Go duration string (required)
-	Output  string // optional schema reference for the received payload
-	Span    Span
+	Name        string
+	Description string // optional human-readable node label (surfaced in the run console)
+	Event       string // event name to wait for (required)
+	Timeout     string // Go duration string (required)
+	Output      string // optional schema reference for the received payload
+	Span        Span
+}
+
+// AwaitAnswersDecl is an `await_answers` node: the deterministic sync point for
+// async human questions (`interaction: async` + the ask_user_async tool). It
+// blocks its branch until every pending async interaction — for the `from:`
+// node, or the whole run when `from:` is empty — is answered, then completes
+// with the collected answers as its output. The `timeout:` is mandatory (the
+// "no silent infinity" invariant, same as WaitDecl).
+//
+//	await_answers <name>:
+//	  from: gatherer        ## optional: only questions posted by this node
+//	  timeout: "30m"
+type AwaitAnswersDecl struct {
+	Name        string
+	Description string // optional human-readable node label (surfaced in the run console)
+	From        string // optional node ref: only await questions posted by this node ("" = whole run)
+	Timeout     string // Go duration string (required)
+	Span        Span
 }
 
 // ---------------------------------------------------------------------------
@@ -183,12 +205,14 @@ type VarsBlock struct {
 	Span   Span
 }
 
-// VarField is a single variable declaration: `name: type [= default]`.
+// VarField is a single variable declaration:
+// `name: type [enum: ...] [= default]`.
 type VarField struct {
-	Name    string
-	Type    TypeExpr
-	Default *Literal // nil if no default
-	Span    Span
+	Name       string
+	Type       TypeExpr
+	EnumValues []string // non-nil only if enum constraint present
+	Default    *Literal // nil if no default
+	Span       Span
 }
 
 // ---------------------------------------------------------------------------
@@ -445,6 +469,7 @@ const (
 // field access keeps working via promotion, and parsed by the single
 // parseLLMProp helper.
 type LLMDecl struct {
+	Description       string // optional human-readable node label (surfaced in the run console)
 	Model             string // string literal, may contain ${...} env refs
 	Backend           string // execution backend name (e.g. "claude_code"); when set, bypasses direct LLM API
 	Provider          string // credential routing hint(s): single ("anthropic"/"zai"/"openai"/""=auto) or an ordered fallback chain ("anthropic,zai,openai"); may contain ${...} env refs
@@ -521,6 +546,7 @@ const (
 // (convergence is only meaningful on target nodes: agent, judge, human, tool).
 type RouterDecl struct {
 	Name            string
+	Description     string // optional human-readable node label (surfaced in the run console)
 	Mode            RouterMode
 	Model           string   // only for mode: llm
 	Backend         string   // execution backend name, only for mode: llm
@@ -565,6 +591,7 @@ const (
 	InteractionLLM        = types.InteractionLLM
 	InteractionLLMOrHuman = types.InteractionLLMOrHuman
 	InteractionReview     = types.InteractionReview
+	InteractionAsync      = types.InteractionAsync
 )
 
 // ---------------------------------------------------------------------------
@@ -574,6 +601,7 @@ const (
 // HumanDecl represents a `human <name>:` node declaration.
 type HumanDecl struct {
 	Name              string
+	Description       string          // optional human-readable node label (surfaced in the run console)
 	Input             string          // schema reference name
 	Output            string          // schema reference name
 	Publish           string          // persistent artifact name
@@ -611,6 +639,7 @@ type HumanDecl struct {
 // Setting both is a validation error; setting neither is also an error.
 type ToolNodeDecl struct {
 	Name           string
+	Description    string        // optional human-readable node label (surfaced in the run console)
 	Command        string        // command to execute, may contain ${...} env refs and {{...}} template refs
 	Script         string        // script body for higher-level interpreters (mutually exclusive with Command)
 	Language       string        // interpreter selector for Script: js | py | sh | bash. Defaults to sh when empty.
@@ -661,6 +690,7 @@ type RecoveryBlock struct {
 // counters, etc., without invoking an LLM or shelling out.
 type ComputeDecl struct {
 	Name           string
+	Description    string         // optional human-readable node label (surfaced in the run console)
 	Input          string         // optional input schema reference name
 	Output         string         // schema reference name (defines the output fields)
 	Publish        string         // persistent artifact name (empty if not set)
@@ -722,6 +752,7 @@ type BudgetBlock struct {
 	MaxDuration         string  // e.g. "60m", empty = not set
 	MaxCostUSD          float64 // 0 = not set
 	MaxTokens           int     // 0 = not set
+	WarnTokens          int     // advisory-only token threshold (0 = not set): warns, never blocks
 	MaxIterations       int     // 0 = not set
 	Span                Span
 }
@@ -831,11 +862,18 @@ type SandboxNetworkBlock struct {
 // Edges
 // ---------------------------------------------------------------------------
 
-// Edge represents a directed transition: `src -> dst [when ...] [as ...] [with {...}]`.
+// Edge represents a directed transition: `src -> dst [when ...|else] [as ...] [with {...}]`.
 type Edge struct {
-	From    string         // source node name
-	To      string         // target node name (can be "done" or "fail")
-	When    *WhenClause    // optional condition
+	From string      // source node name
+	To   string      // target node name (can be "done" or "fail")
+	When *WhenClause // optional condition
+	// IsElse marks the explicit fallback edge: it fires only when no
+	// sibling `when` edge from the same source matched. Semantically the
+	// role a bare unconditional edge already plays next to conditional
+	// siblings — `else` states the intent and is validated (exactly one
+	// per source, requires conditional siblings, mutually exclusive with
+	// both `when` on the same edge and a bare unconditional sibling).
+	IsElse  bool
 	Loop    *LoopClause    // optional loop tracking
 	Foreach *ForeachClause // optional sequential foreach iteration (mutually exclusive with Loop)
 	With    []*WithEntry   // optional data mappings

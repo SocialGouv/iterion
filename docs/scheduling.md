@@ -35,23 +35,35 @@ schedules:
     cron: "0 2 * * 1"                   # standard 5-field expression, passed opaquely to host cron
     bot: bots/sec-audit-source/main.bot
     workdir: /home/jo/lab/ai/iterion    # cd here before running; bot path resolves against it
-    store_dir: ""                        # optional --store-dir (default <workdir>/.iterion)
+    store_dir: ""                        # optional override; empty uses project-store resolution
     sandbox: ""                          # optional --sandbox override (none|auto)
     timeout: "2h"                        # optional max run duration (guards a hung run)
     vars:                                # optional --var overrides (commas kept verbatim)
       label_source: sec-audit-self
     description: Weekly SAST self-audit  # optional; emitted as a crontab comment
     disabled: false                      # keep in the manifest, leave out of the crontab
+    overlap: skip                        # optional: skip (default) | allow | keepalive — see "Overlap policy"
+    max_concurrent: 0                    # optional, with overlap: allow — cap on live runs (0 = unlimited)
+    guard: ""                            # optional pre-launch sh -lc gate — see "Guard command"
+    guard_timeout: "30s"                 # optional guard subprocess timeout
+    guard_var: guard_output              # optional var name receiving the guard stdout
 ```
+
+With an empty `store_dir`, the run uses the normal resolution anchored at the
+bot path: an existing managed project `.iterion`, otherwise the deterministic
+slot under `$ITERION_HOME/projects/` (normally `~/.iterion/projects/`). Set an
+explicit `<workdir>/.iterion` when scheduled runs must appear in a studio bound
+to that workspace store.
 
 ## Commands
 
 | Command | What it does |
 |---|---|
-| `iterion schedule add <name> --cron … --bot … [--workdir …] [--var k=v]… [--store-dir …] [--sandbox …] [--timeout …] [--description …] [--disabled]` | Add or update an entry (upsert by name). |
+| `iterion schedule add <name> --cron … --bot … [--workdir …] [--var k=v]… [--store-dir …] [--sandbox …] [--timeout …] [--description …] [--disabled] [--overlap skip\|allow\|keepalive] [--max-concurrent N] [--stale-after 5m] [--guard …] [--guard-timeout 30s] [--guard-var guard_output]` | Add or update an entry (upsert by name). Overlap, keepalive (`--stale-after`), and guard flags mirror the manifest fields — see "Overlap policy", "Always-on agents", and "Guard command". |
 | `iterion schedule list [--json]` | List manifest entries. |
 | `iterion schedule remove <name>` | Delete an entry from the manifest. |
-| `iterion schedule run <name> [--dry-run]` | Execute one entry now — what cron invokes. `--dry-run` prints the resolved `iterion run` command without executing. |
+| `iterion schedule run <name> [--dry-run]` | Execute one entry now — what cron invokes. Applies the overlap policy and the guard before launching. `--dry-run` prints the resolved `iterion run` command without executing. |
+| `iterion schedule audit [--name X] [--surface host-cron\|trigger\|cloud] [--since 24h] [--tail 50] [--json]` | Show the tick-decision history: every fired / skipped / guard outcome with its reason — the deterministic answer to "why didn't my scheduled bot fire last night?". |
 | `iterion schedule install [--print] [--tz UTC]` | Sync the manifest into the host crontab. `--print` renders the block to stdout without touching the crontab (works even where `crontab` is absent). |
 | `iterion schedule uninstall` | Remove the iterion-managed block from the host crontab (manifest left intact). |
 
@@ -117,10 +129,159 @@ needs that image present (CI publishes it; for a local loop, `docker
 tag` your build to `ghcr.io/socialgouv/iterion-sandbox-sec:edge`).
 
 > Note: `sec-audit-source` (SAST) is production-ready. `sec-audit-deps`
-> (SCA) is currently an enumerate + LLM-review pass — its heuristic
-> scanner layer is still a scaffold and a run self-labels with a
-> "⚠ Coverage" banner. Schedule it for the LLM-review pass, but treat it
-> as incomplete until the implementation ticket lands.
+> (SCA) now has a real CVE floor — `run_generic_heuristics` runs `trivy
+> fs --scanners vuln` over the workspace from a bare checkout, matching
+> pinned versions against the OSV/GHSA/NVD DB. The per-ecosystem
+> npm/pip-audit and code-pattern/typosquat malware signals remain
+> partial, so a run still self-labels with a "⚠ Coverage" banner — but it
+> is no longer a zero-finding scaffold.
+
+## Overlap policy — skip is the default (behavior change)
+
+Since the schedgate integration, `iterion schedule run` **does not fire
+while a previous run of the same schedule is still live** (any
+non-terminal status: `running`, `queued`, `paused_*`). Before, every
+tick launched unconditionally — a nightly bot that overran its window
+silently piled up concurrent runs on the same repo. Skip-by-default
+fixes that latent bug; the trade-off is deliberate and loud:
+
+- Every decision is recorded in the **tick audit**
+  (`<manifest-dir>/logs/tick-audit.jsonl`, read with
+  `iterion schedule audit`). A skipped tick writes `skipped_overlap`
+  with the `blocking_run_id`, so you find out *which* run held the slot
+  instead of wondering why nothing ran.
+- A **stale run stuck in `running`** (crashed host) blocks its schedule
+  until it is reconciled or cancelled. iterion does not guess a
+  staleness cutoff: the audit names the run — inspect it, then
+  `iterion resume` or cancel it. The studio/server's orphan
+  reconciliation flips flock-releasable orphans automatically.
+- Opt out per entry with `overlap: allow` (unbounded) or
+  `overlap: allow` + `max_concurrent: N` (fire while fewer than N runs
+  of this schedule are live, counting the one about to start).
+- **After upgrading**, watch `iterion schedule audit --since 48h` once:
+  a schedule that used to rely on implicit overlap shows up as
+  `skipped_overlap` there.
+
+Overlap counting keys on run provenance: schedule-launched runs are
+stamped `source.kind: schedule` + `source.schedule_id` in `run.json`,
+which also makes them attributable in the studio and queryable via the
+store.
+
+## Always-on agents — `overlap: keepalive`
+
+`overlap: keepalive` runs a bot **continuously**: every tick relaunches
+it, but with **at-most-one-live** semantics *and* a **staleness cutoff**.
+It is how you keep an agent (a watcher, a poller, your own long-lived
+bot) alive as a stream of fresh, individually-budgeted runs rather than
+one immortal run that fights `max_duration`, per-node deadlines, and the
+cloud budget ceiling.
+
+The only difference from `skip`: a run that is **silent past
+`stale_after`** (default 5m; a `running` run whose last progress is older
+than the cutoff) stops counting as live, so the next tick **relaunches**
+a fresh run and the zombie is reaped (`running` → `failed_resumable`, so
+it is still inspectable/resumable). This closes the "crashed run stuck in
+`running` blocks the schedule forever" gap above — a dead always-on
+agent recovers on its own within one tick.
+
+```yaml
+# schedules.yaml — an always-on watcher, relaunched every minute,
+# recovered if it goes silent for 2 minutes.
+- name: watcher
+  cron: "* * * * *"           # host crontab floors at 1 minute
+  bot: bots/my-watcher/main.bot
+  overlap: keepalive
+  stale_after: 2m
+```
+
+- **Sub-minute cadence** is *not* expressible on the host crontab (its
+  floor is 1 minute). For a faster pulse, run the resident scheduler
+  (`iterion studio` / `iterion server`) and author the bot with a
+  `kind: keepalive` invocation carrying an `interval:` (see below) — the
+  in-process scheduler ticks every 15s by default (`ITERION_SCHEDULER_INTERVAL`).
+- `max_concurrent` is invalid with keepalive (at-most-one-live is the point).
+- `stale_after` should be **≥ the bot's `max_duration`** so a long-but-alive
+  run is never falsely reaped. Staleness only ever applies to `running`
+  runs — a `paused_waiting_human` run is legitimately idle and never reaped.
+
+### Authoring an always-on bot (`kind: keepalive`)
+
+A bot declares its always-on capability in its `manifest.yaml`; the
+cadence lives on the invocation (not baked into the bot's logic):
+
+```yaml
+invocations:
+  - kind: keepalive
+    keepalive:
+      interval: 30s            # >= 5s; sub-minute needs the resident scheduler
+      stale_after: 5m          # optional (default 5m)
+```
+
+Enable it one-click from the bot's studio home (the
+`/bots/{name}/triggers/from-invocation` route), or toggle **Always-on**
+on a schedule in the studio **Schedules** tab. To also *steer* each
+launched run mid-flight (correct it, nudge it), give the bot a
+`supervisor:` block — the engine auto-attaches a supervisor coordinator
+to every keepalive run, no extra wiring.
+
+## Guard command — fire only when there is work
+
+`guard:` is an optional `sh -lc` snippet executed **before** any
+launch, in the entry's `workdir`, with `ITERION_SCHEDULE` /
+`ITERION_SCHEDULE_BOT` in the environment and a hard `guard_timeout`
+(default 30s) on its own context:
+
+- **exit 0** → the run fires, and the guard's **stdout becomes the
+  run's `vars[guard_var]`** (default `guard_output`) — a cheap way to
+  hand the run "the work found" (an issue list, a diff summary).
+- **exit non-zero** → the tick is skipped (`guard_blocked` in the
+  audit, exit code + stderr tail captured).
+- **guard breaks** (spawn failure, timeout) → `guard_error` in the
+  audit — deliberately distinct from `guard_blocked`, so "the guard
+  said no" never masks "the guard is broken".
+
+Example — only run the fixer when ready-labeled issues exist, and pass
+them in:
+
+```yaml
+- name: fix-ready-issues
+  cron: "*/30 * * * *"
+  bot: bots/feature-dev/main.bot
+  workdir: /home/jo/proj
+  guard: 'out=$(gh issue list --label ready-for-agent --json number,title); [ "$out" != "[]" ] && printf %s "$out"'
+  guard_var: issues_json
+```
+
+Idempotence stays with the workflow (mutate the state you poll — e.g.
+the bot relabels the issue), exactly like the dispatcher's tracker
+loop: the guard is a gate + input source, not a dedup engine.
+
+## Retention — pair recurring schedules with `iterion runs prune`
+
+Every scheduled run persists forever under `<store-dir>/runs/<run_id>/`;
+the store has no built-in retention. A weekly bot alone adds ~50 run
+directories a year, and a fleet of hourly/daily bots pushes that into
+the low thousands per month. Cap disk usage by running `iterion runs
+prune` on its own crontab line — the schedule manifest only runs bots,
+not arbitrary commands, so this one belongs **outside** the managed
+block:
+
+```
+# Weekly retention sweep — keep the last 100 runs and prune anything
+# finished/failed/cancelled that is older than 30 days.
+30 3 * * 1 /usr/local/bin/iterion runs prune --store-dir /path/to/workspace/.iterion --older-than 720h --keep-last 100 >> "$HOME"/.iterion/logs/runs-prune.log 2>&1
+```
+
+Flags mirror the semantics of the shipped statuses — see
+`iterion runs prune --help` for the full list. `--dry-run` is the safe
+way to preview what a candidate retention policy would delete before
+committing to it in the crontab. The command only removes
+`<store-dir>/runs/<id>/` directories; it never touches
+`<store-dir>/worktrees/` or anything else.
+
+`failed_resumable` runs are excluded by default (they are recoverable);
+opt in with `--status finished,failed,cancelled,failed_resumable` when
+you have accepted their loss.
 
 ## Notes & limits
 

@@ -18,6 +18,7 @@ import (
 	"github.com/SocialGouv/iterion/pkg/backend/delegate"
 	"github.com/SocialGouv/iterion/pkg/backend/permission"
 	"github.com/SocialGouv/iterion/pkg/backend/rewrite"
+	"github.com/SocialGouv/iterion/pkg/backend/tool"
 	"github.com/SocialGouv/iterion/pkg/knowledge"
 	"github.com/SocialGouv/iterion/pkg/memory"
 	"github.com/SocialGouv/iterion/pkg/sandbox"
@@ -194,6 +195,11 @@ func (b *ClawBackend) Execute(ctx context.Context, task delegate.Task) (delegate
 	// IOTask to the in-container runner, whose own Execute re-applies them here.
 	ctx = rewrite.WithMode(ctx, rewrite.ParseMode(task.CompressMode))
 	ctx = rewrite.WithChain(ctx, rewrite.NewChain(task.Rewriters))
+	// Run-level env additions (devbox profile PATH on no-sandbox runs)
+	// reach the in-process bash builtin via ctx — the tool registry is
+	// built before the run's provisioning resolves, so the closure reads
+	// the value per call.
+	ctx = tool.WithBashExtraEnv(ctx, task.ExtraEnv)
 	if task.Sandbox != nil {
 		return b.executeViaSandboxRunner(ctx, task)
 	}
@@ -371,6 +377,7 @@ func (b *ClawBackend) Execute(ctx context.Context, task delegate.Task) (delegate
 	// Tools.
 	if len(task.ToolDefs) > 0 {
 		opts.Tools = toolDefsToGeneration(task.ToolDefs)
+		applyAsyncAskExecs(task, opts.Tools)
 		maxSteps := task.ToolMaxSteps
 		if maxSteps <= 0 {
 			maxSteps = 5
@@ -444,7 +451,7 @@ func (b *ClawBackend) Execute(ctx context.Context, task delegate.Task) (delegate
 		} else {
 			ref = memory.LegacyBotRef(memBase, m.Scope)
 		}
-		var memStore knowledge.MemoryStore = b.memStore
+		var memStore = b.memStore
 		if memStore == nil {
 			memStore = memory.DefaultFSStore()
 		}
@@ -529,6 +536,9 @@ func askUserResult(err error) (delegate.Result, bool) {
 	delegate.AddAskUserOptionKeys(questions, ask.Options, ask.AllowFreeText)
 	if ask.PermissionMarker != nil {
 		questions[permission.InteractionMarkerKey] = ask.PermissionMarker
+	}
+	if len(ask.AwaitPending) > 0 {
+		questions[delegate.AwaitPendingInteractionsKey] = delegate.AwaitPendingToQuestions(ask.AwaitPending)
 	}
 	return delegate.Result{
 		Output: map[string]any{
@@ -708,8 +718,8 @@ func (b *ClawBackend) generateTextWithToolsAndSchema(ctx context.Context, client
 			})
 		}
 		reRun, reErr := GenerateTextDirect(ctx, client, nudged)
-		switch {
-		case reErr == nil:
+		switch reErr {
+		case nil:
 			// Carry the wasted first-pass usage into the re-run so cost
 			// accounting reflects both turns.
 			accumulateUsage(&reRun.TotalUsage, result.TotalUsage)
@@ -1109,4 +1119,53 @@ func toolDefsToGeneration(defs []delegate.ToolDef) []GenerationTool {
 		}
 	}
 	return tools
+}
+
+// applyAsyncAskExecs swaps the registry's explicit-error default execs of
+// ask_user_async / await_answers for the task-bound behaviour (ADR-081)
+// when the node is interaction: async. No-op for other nodes — the tools
+// then keep their loud "not bound" default if they somehow resolve.
+func applyAsyncAskExecs(task delegate.Task, tools []GenerationTool) {
+	if task.PostAsyncQuestion == nil {
+		return
+	}
+	for i := range tools {
+		switch tools[i].Name {
+		case delegate.AskUserAsyncToolName:
+			tools[i].Execute = func(_ context.Context, input json.RawMessage) (string, error) {
+				var in map[string]any
+				if err := json.Unmarshal(input, &in); err != nil {
+					return "", fmt.Errorf("ask_user_async: decode input: %w", err)
+				}
+				q, _ := in["question"].(string)
+				options, allowFree := delegate.ParseAskUserToolInput(in)
+				if _, err := task.PostAsyncQuestion(delegate.AsyncQuestion{Question: q, Options: options, AllowFreeText: allowFree}); err != nil {
+					return "", err
+				}
+				return delegate.AsyncQuestionPostedText, nil
+			}
+		case delegate.AwaitAnswersToolName:
+			tools[i].Execute = func(_ context.Context, _ json.RawMessage) (string, error) {
+				pending, err := task.PendingAsyncQuestions()
+				if err != nil {
+					return "", fmt.Errorf("await_answers: %w", err)
+				}
+				if len(pending) == 0 {
+					answers, err := task.CollectAsyncAnswers()
+					if err != nil {
+						return "", fmt.Errorf("await_answers: %w", err)
+					}
+					return answers, nil
+				}
+				// Pending questions remain: suspend the node through the
+				// standard ask_user pause machinery. The generation loop
+				// stashes the conversation + pending tool_use so resume
+				// answers THIS call with the collected answers.
+				return "", &delegate.ErrAskUser{
+					Question:     delegate.AwaitPauseQuestion(pending),
+					AwaitPending: pending,
+				}
+			}
+		}
+	}
 }

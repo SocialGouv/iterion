@@ -28,10 +28,11 @@
     },
     {
       "customType": "regex",
-      "description": "Inline `# renovate: datasource=… depName=… versioning=…` pins. Captures the version on the line right after the comment, in ANY file (e.g. the pinned firecrawl-mcp in Dockerfile.runner-devbox's ARG and pkg/plugin/builtin/firecrawl/plugin.yaml's npx arg — both MUST stay in lockstep, so a bump PR touches both). To pin another tool anywhere, drop the same comment above its version line.",
+      "description": "Inline `# renovate: datasource=… depName=… versioning=…` pins. Captures the version on the line right after the comment, in ANY file (e.g. the pinned firecrawl-mcp in Dockerfile.runner-devbox's ARG and pkg/plugin/builtin/firecrawl/plugin.yaml's npx arg — both MUST stay in lockstep, so a bump PR touches both; same for @maxgfr/codeindex in the codeindex plugin). To pin another tool anywhere, drop the same comment above its version line AND add the file here — a path missing from this list is a pin that silently goes stale.",
       "managerFilePatterns": [
         "/(^|/)Dockerfile\\.runner-devbox$/",
-        "/(^|/)pkg/plugin/builtin/firecrawl/plugin\\.yaml$/"
+        "/(^|/)pkg/plugin/builtin/firecrawl/plugin\\.yaml$/",
+        "/(^|/)pkg/plugin/builtin/codeindex/plugin\\.yaml$/"
       ],
       "matchStrings": [
         "# renovate: datasource=(?<datasource>\\S+) depName=(?<depName>\\S+)(?: versioning=(?<versioning>\\S+))?\\s+[^\\n]*?(?<currentValue>\\d+\\.\\d+\\.\\d+)"

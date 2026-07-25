@@ -78,6 +78,13 @@ const (
 	// answers with wsTypePong (see wsTypePong for why the WS control-frame
 	// ping/pong is insufficient for client-side liveness detection).
 	wsTypePing = "ping"
+	// wsTypeBumpLoop / wsTypeRaiseBudget are the live-steering commands
+	// (grant loop iterations / raise budget caps on a RUNNING run).
+	// Payloads are wsBumpLoopRequest / wsRaiseBudgetRequest; the reply
+	// is an ack envelope carrying the runview response struct. Human
+	// answers already ride wsTypeAnswer.
+	wsTypeBumpLoop    = "bump_loop"
+	wsTypeRaiseBudget = "raise_budget"
 )
 
 type wsSubscribeRequest struct {
@@ -366,6 +373,10 @@ func (c *runConn) dispatch(env runWSEnvelope) {
 		c.handleQueueMessage(env)
 	case wsTypeCancelQueuedMessage:
 		c.handleCancelQueuedMessage(env)
+	case wsTypeBumpLoop:
+		c.handleBumpLoop(env)
+	case wsTypeRaiseBudget:
+		c.handleRaiseBudget(env)
 	case wsTypePing:
 		// Application-level heartbeat: reply immediately so the client's
 		// watchdog sees JS-observable inbound traffic and knows the

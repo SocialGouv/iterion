@@ -11,12 +11,14 @@
 package botregistry
 
 import (
+	"errors"
 	"fmt"
 	"io/fs"
 	"os"
 	"path/filepath"
 	"sort"
 	"strings"
+	"unicode"
 
 	"github.com/SocialGouv/iterion/pkg/bundle"
 	"github.com/SocialGouv/iterion/pkg/dsl/workflowfile"
@@ -59,6 +61,25 @@ type Entry struct {
 	// as …") for the rest. Carried by discovery so the studio knows what
 	// a bot will provision before any run exists.
 	Forge *bundle.ForgeRequirements `json:"forge,omitempty" yaml:"forge,omitempty"`
+
+	// Repo mirrors the manifest repo: block (the bot's runtime
+	// repository need). The Launch surfaces render it as the "Target
+	// repository" section — required soft-blocks, optional offers,
+	// allow_create adds "create a new repository" on a connected forge.
+	Repo *bundle.RepoRequirement `json:"repo,omitempty" yaml:"repo,omitempty"`
+
+	// ConfigShare mirrors the manifest config_share: block (the bot's
+	// scoped config-share surface). The studio's "Share config" card reads
+	// it to drive a data-driven mint form (the editable fields + config
+	// file come from the bot, not hardcoded per bot); nil = the bot exposes
+	// no config-share surface and the card is not offered.
+	ConfigShare *bundle.ConfigShareSpec `json:"config_share,omitempty" yaml:"config_share,omitempty"`
+
+	// Launch mirrors the manifest launch: block (launch-form hints): which
+	// vars the studio launch form surfaces as primary (in order) and which
+	// it hides (still settable via --var). Nil when the bot declares no
+	// opinion — the form renders every var as before.
+	Launch *bundle.LaunchHints `json:"launch,omitempty" yaml:"launch,omitempty"`
 
 	// Invocations is the typed routing contract from the manifest
 	// (manifest.yaml invocations:) — how this bot can be triggered (forge
@@ -155,6 +176,45 @@ type Config struct {
 	Paths []string `yaml:"paths,omitempty" json:"paths,omitempty"`
 }
 
+// ErrNameTaken reports that a bot of the requested name is already
+// discoverable. Callers that need a distinct status for it (the studio's
+// 409, the CLI's exit 2) match with errors.Is.
+var ErrNameTaken = errors.New("bot name already in use")
+
+// FindByName returns the discovered bot named name, if any.
+func FindByName(opts ListOptions, name string) (Entry, bool, error) {
+	entries, err := List(opts)
+	if err != nil {
+		return Entry{}, false, err
+	}
+	for _, e := range entries {
+		if e.Name == name {
+			return e, true, nil
+		}
+	}
+	return Entry{}, false, nil
+}
+
+// EnsureNameFree is the shared precondition for creating a bot: it fails
+// when name is already taken anywhere discovery looks, not merely where
+// the new bundle would be written.
+//
+// Both creation surfaces call it so they agree. Checking only the target
+// directory is not enough — a bot of the same name living in `.botz/` or
+// any other configured root would still collide in the catalog, and a
+// duplicate name there is what makes `iterion run <name>` and dispatcher
+// routing ambiguous.
+func EnsureNameFree(opts ListOptions, name string) error {
+	existing, found, err := FindByName(opts, name)
+	if err != nil {
+		return err
+	}
+	if found {
+		return fmt.Errorf("%w: %q is already defined at %s", ErrNameTaken, name, existing.Path)
+	}
+	return nil
+}
+
 // List walks Opts.Paths and returns the discovered bots sorted by
 // name. A missing path is treated as empty (not an error) so callers
 // can pass optimistic defaults.
@@ -239,6 +299,11 @@ func NormalizeName(s string) string {
 	return s
 }
 
+// BotsDirName is the conventional committable bot directory at a
+// workspace root. It is where `iterion bots create` and the studio
+// builder land a new bundle, and the first root DefaultPaths discovers.
+const BotsDirName = "bots"
+
 // DefaultPaths returns the conventional bot-discovery roots relative to a
 // working directory: <dir>/bots, <dir>/examples, <dir>/.botz. Missing
 // roots are skipped silently by discovery, so returning all three is
@@ -250,7 +315,7 @@ func NormalizeName(s string) string {
 // ticket.)
 func DefaultPaths(workDir string) []string {
 	return []string{
-		filepath.Join(workDir, "bots"),
+		filepath.Join(workDir, BotsDirName),
 		filepath.Join(workDir, "examples"),
 		filepath.Join(workDir, ".botz"),
 	}
@@ -292,8 +357,8 @@ func discoverBots(roots []string) ([]Entry, error) {
 				return walkErr
 			}
 			if d.IsDir() {
-				manifest := filepath.Join(path, "manifest.yaml")
-				mainBot := filepath.Join(path, "main.bot")
+				manifest := filepath.Join(path, bundle.ManifestFile)
+				mainBot := filepath.Join(path, bundle.MainBotFile)
 				if fileExists(manifest) && fileExists(mainBot) {
 					e, err := parseBundle(path)
 					if err != nil {
@@ -347,7 +412,7 @@ func discoverBots(roots []string) ([]Entry, error) {
 }
 
 func parseBundle(dir string) (*Entry, error) {
-	m, err := bundle.LoadManifest(filepath.Join(dir, "manifest.yaml"))
+	m, err := bundle.LoadManifest(filepath.Join(dir, bundle.ManifestFile))
 	if err != nil {
 		return nil, fmt.Errorf("bots: %w", err)
 	}
@@ -375,6 +440,9 @@ func parseBundle(dir string) (*Entry, error) {
 		Capabilities:    m.Capabilities,
 		DispatchVars:    m.DispatchVars,
 		Forge:           m.Forge,
+		Repo:            m.Repo,
+		ConfigShare:     m.ConfigShare,
+		Launch:          m.Launch,
 		Invocations:     bundle.EffectiveInvocations(m),
 		WhenToUse:       strings.TrimSpace(m.WhenToUse),
 		Author:          m.Author,
@@ -410,15 +478,17 @@ func parseBotFile(path string) (*Entry, error) {
 		}
 	}
 	if e.Description == "" {
-		e.Description = leadingCommentDescription(raw)
+		e.Description = leadingCommentDescription(raw, filepath.Base(path))
 	}
 	return e, nil
 }
 
 // leadingCommentDescription returns the first paragraph of `## ` lines
 // at the top of the file (excluding any `## ---` framing). Stops at the
-// first blank line or non-comment line.
-func leadingCommentDescription(raw []byte) string {
+// first blank line or non-comment line. Decoration-only lines (banner
+// rules like `## ────`) and a header line repeating the file's own name
+// are skipped — they are framing, not description.
+func leadingCommentDescription(raw []byte, filename string) string {
 	lines := strings.Split(string(raw), "\n")
 	var out []string
 	skippingFM := false
@@ -438,7 +508,7 @@ func leadingCommentDescription(raw []byte) string {
 			continue
 		}
 		body := strings.TrimSpace(strings.TrimPrefix(strings.TrimPrefix(trim, "##"), " "))
-		if body == "" {
+		if body == "" || isDecorationLine(body) || body == filename {
 			if len(out) > 0 {
 				break
 			}
@@ -447,6 +517,17 @@ func leadingCommentDescription(raw []byte) string {
 		out = append(out, body)
 	}
 	return strings.Join(out, " ")
+}
+
+// isDecorationLine reports whether a comment body is pure framing — no
+// letter or digit in it (e.g. `────…`, `=====`, `***`).
+func isDecorationLine(body string) bool {
+	for _, r := range body {
+		if unicode.IsLetter(r) || unicode.IsDigit(r) {
+			return false
+		}
+	}
+	return true
 }
 
 func fileExists(path string) bool {

@@ -145,6 +145,30 @@ export function BotCatalogDialog({
       description="Toggle which bots are exposed to Nexie and the board picker. Toggles are workspace-local (they don't edit the bot's manifest)."
       widthClass="max-w-2xl"
     >
+      {/* Import/create is a local-studio affordance — the cloud server
+          403s upload/install/create, and the marketplace is the real
+          entry point there (mirrors the /bots gallery header). */}
+      {info?.mode === "cloud" ? (
+        <div className="mb-3 flex items-center justify-between gap-3 border-b border-border-default pb-3">
+          <p className="text-caption text-fg-subtle">
+            This server&apos;s catalog is git-managed — find more bots on the
+            marketplace.
+          </p>
+          {info?.marketplace_enabled && (
+            <Button
+              variant="secondary"
+              size="sm"
+              className="shrink-0"
+              onClick={() => {
+                onOpenChange(false);
+                setLocation("/marketplace");
+              }}
+            >
+              Browse marketplace
+            </Button>
+          )}
+        </div>
+      ) : (
       <div className="mb-3 border-b border-border-default pb-3">
         <div className="flex items-center justify-between">
           <h3 className="text-xs font-medium text-fg-muted">
@@ -236,6 +260,7 @@ export function BotCatalogDialog({
           </div>
         )}
       </div>
+      )}
       <div className="max-h-[60vh] overflow-y-auto">
         {loading && rows.length === 0 && (
           <p className="px-1 py-4 text-sm text-fg-subtle">Loading bots…</p>

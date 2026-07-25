@@ -1,6 +1,4 @@
-[← docs index](README.md)
-
-# Asymptote benchmark
+# 📈 Asymptote benchmark
 
 `iterion bench asymptote` measures the **inter-session quality stabilisation curve** of a workflow: rerun the same task in N independent sessions and watch the per-iteration judge verdict converge. The shape of that convergence is the asymptote — the empirical reliability ceiling of the (model + recipe) on the task.
 

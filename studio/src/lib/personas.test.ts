@@ -1,9 +1,9 @@
 import { describe, expect, it } from "vitest";
 
-import { BOT_IDENTITY, botIdentity, botVisual } from "./personas";
+import { botIdentity, botVisual } from "./personas";
 
-// Known-good persona entry (asserted present so index access is typed).
-const whatsNext = BOT_IDENTITY["whats-next"]!;
+// Known-good built-in persona entry (whats-next ships in the persona map).
+const whatsNext = botIdentity("whats-next");
 
 describe("botVisual", () => {
   it("prefers the manifest icon over the built-in persona map", () => {
@@ -19,7 +19,7 @@ describe("botVisual", () => {
     expect(v.color).toBe(botIdentity("totally-unknown-bot").color);
   });
 
-  it("falls back to the BOT_IDENTITY map when no icon is set", () => {
+  it("falls back to the built-in persona map when no icon is set", () => {
     expect(botVisual({ name: "whats-next" })).toEqual(whatsNext);
     // Blank icons don't count as set.
     expect(botVisual({ name: "whats-next", icon: "  " })).toEqual(whatsNext);

@@ -1,7 +1,10 @@
 name: supply-shield
 display_name: Shieldy
 icon: ⛓️
-version: 0.1.0
+version: 0.1.1
+## 0.1.1 — ADR-082 Phase 2 (sandbox-by-default): sandbox block reduced to
+## the sec-image pin + forge-token env passthrough (Phase 3 moves tokens to
+## file secrets); claude install gate and ~/.claude mount removed.
 description: |
   Global supply-chain MALWARE shield. PR / push-driven, diff-scoped
   sibling of sec-audit-deps (Depsy): it inspects only the dependency
@@ -16,8 +19,8 @@ description: |
   entry points when heuristics are inconclusive. A deterministic
   coverage gate hard-fails when the scanner floor did not run so a
   missing analyzer never reads as "0 malware found". Confirmed findings
-  are reported back onto the PR/MR via the native forge API (GitHub /
-  GitLab / Forgejo) — a sticky summary comment, inline review comments,
+  are reported back onto the PR (merge request on GitLab) via the
+  native forge API (GitHub / GitLab / Forgejo) — a sticky summary comment, inline review comments,
   and a SARIF / code-scanning upload — and emitted to the kanban board.
 
   Cross-run memory: the package cache is shared (a published package
@@ -45,3 +48,10 @@ invocations:
     args_var: scope_notes
     command: { name: shield, aliases: [supply-shield], scope: any, min_replier_role: developer }
   - kind: board
+
+## Studio launch-form hierarchy: `primary` inputs render top-level in
+## the declared order; `hidden` vars are internal plumbing kept out of
+## the form (still settable via --var / bot_args).
+launch:
+  primary: [base_ref, pr_ref]
+  hidden: [forge_marker]

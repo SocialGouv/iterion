@@ -1,12 +1,16 @@
 package runner
 
 import (
+	"bytes"
 	"context"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
+	"github.com/SocialGouv/iterion/pkg/dsl/ir"
 	iterlog "github.com/SocialGouv/iterion/pkg/log"
+	"github.com/SocialGouv/iterion/pkg/sandbox"
 	"github.com/SocialGouv/iterion/pkg/secrets"
 	"github.com/SocialGouv/iterion/pkg/store"
 )
@@ -164,5 +168,111 @@ func TestRefreshSandboxFileSecretsOnce_PushesRotationToDriver(t *testing.T) {
 	r.refreshSandboxFileSecretsOnce(context.Background(), "team-1", refs, fake, last)
 	if got := fake.got["forge_token"]; len(got) != 2 || got[1] != "token-v2" {
 		t.Fatalf("after rotation, pushes = %v, want [...token-v2]", got)
+	}
+}
+
+// TestRefreshFileSecretsOnce_StoreErrorKeepsFile pins the failure contract:
+// a store read failure is logged and retried next tick — the file keeps its
+// last good value, nothing is truncated or removed.
+func TestRefreshFileSecretsOnce_StoreErrorKeepsFile(t *testing.T) {
+	sealer, err := secrets.NewAESGCMSealerFromBase64("MDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWY=")
+	if err != nil {
+		t.Fatal(err)
+	}
+	r := &Runner{cfg: Config{
+		Logger:         iterlog.New(iterlog.LevelError, os.Stderr),
+		Sealer:         sealer,
+		GenericSecrets: secrets.NewMemoryGenericSecretStore(), // empty: every Get fails
+	}}
+	path := filepath.Join(t.TempDir(), "forge_token")
+	if err := os.WriteFile(path, []byte("last-good"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	r.refreshFileSecretsOnce(context.Background(), "team-1",
+		map[string]string{"forge_token": "unknown-id"},
+		map[string]string{"forge_token": path},
+		map[string]string{})
+	if got, _ := os.ReadFile(path); string(got) != "last-good" {
+		t.Fatalf("file mutated on store error: %q", got)
+	}
+}
+
+// TestSandboxFileSecretRefs pins which secrets qualify for the sandboxed
+// mid-run refresh: file secrets carrying a store ref in the run's
+// credentials — env secrets and snapshot-only (ref-less) file secrets are
+// excluded, and every absent prerequisite yields nil (observer no-op).
+func TestSandboxFileSecretRefs(t *testing.T) {
+	wf := &ir.Workflow{Secrets: map[string]*ir.Secret{
+		"forge_token":   {Name: "forge_token", As: "file"},
+		"api_env":       {Name: "api_env", As: "env"},
+		"snapshot_only": {Name: "snapshot_only", As: "file"},
+	}}
+	creds := secrets.Credentials{GenericRefs: map[string]string{
+		"forge_token": "id-1",
+		"api_env":     "id-2", // ref'd but env-mounted → excluded
+	}}
+	r := &Runner{cfg: Config{
+		Logger:         iterlog.New(iterlog.LevelError, os.Stderr),
+		GenericSecrets: secrets.NewMemoryGenericSecretStore(),
+	}}
+	ctx := secrets.WithCredentials(context.Background(), creds)
+
+	refs := r.sandboxFileSecretRefs(ctx, wf)
+	if len(refs) != 1 || refs["forge_token"] != "id-1" {
+		t.Fatalf("refs = %v, want exactly {forge_token: id-1}", refs)
+	}
+
+	if got := r.sandboxFileSecretRefs(ctx, nil); got != nil {
+		t.Errorf("nil workflow: refs = %v, want nil", got)
+	}
+	if got := r.sandboxFileSecretRefs(context.Background(), wf); got != nil {
+		t.Errorf("no credentials in ctx: refs = %v, want nil", got)
+	}
+	noStore := &Runner{cfg: Config{Logger: iterlog.New(iterlog.LevelError, os.Stderr)}}
+	if got := noStore.sandboxFileSecretRefs(ctx, wf); got != nil {
+		t.Errorf("no GenericSecrets store: refs = %v, want nil", got)
+	}
+	refless := &ir.Workflow{Secrets: map[string]*ir.Secret{
+		"snapshot_only": {Name: "snapshot_only", As: "file"},
+	}}
+	if got := r.sandboxFileSecretRefs(ctx, refless); got != nil {
+		t.Errorf("ref-less file secret: refs = %v, want nil", got)
+	}
+}
+
+// fakeSandboxRun is a sandbox.Run WITHOUT the SecretFileRefresher
+// capability — the driver shape the observer must warn about instead of
+// crashing or silently skipping.
+type fakeSandboxRun struct{ sandbox.Run }
+
+func (fakeSandboxRun) Driver() string { return "fake-driver" }
+
+// TestSandboxRunObserver pins the observer construction: the live Run is
+// always registered in the write-through registry (even with no
+// refreshable refs); a driver without SecretFileRefresher plus
+// refreshable refs → a visible warning naming the driver.
+func TestSandboxRunObserver(t *testing.T) {
+	var buf bytes.Buffer
+	r := &Runner{cfg: Config{Logger: iterlog.New(iterlog.LevelWarn, &buf)}}
+
+	// No refreshable refs: still registers, no warning.
+	obs := r.sandboxRunObserver(context.Background(), "run-1", "team-1", nil)
+	obs(fakeSandboxRun{})
+	if r.sandboxRunFor("run-1") == nil {
+		t.Fatal("observer must register the live sandbox run")
+	}
+	if buf.Len() != 0 {
+		t.Errorf("no warning expected without refreshable refs, got %q", buf.String())
+	}
+	r.unregisterSandboxRun("run-1")
+	if r.sandboxRunFor("run-1") != nil {
+		t.Fatal("unregister must drop the run from the registry")
+	}
+
+	obs = r.sandboxRunObserver(context.Background(), "run-2", "team-1", map[string]string{"forge_token": "id-1"})
+	obs(fakeSandboxRun{})
+	out := buf.String()
+	if !strings.Contains(out, "does not support mid-run secret refresh") || !strings.Contains(out, "fake-driver") {
+		t.Errorf("expected a driver-naming warning, got %q", out)
 	}
 }

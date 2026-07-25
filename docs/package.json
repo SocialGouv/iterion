@@ -1,0 +1,20 @@
+{
+  "name": "@iterion/docs",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vitepress dev",
+    "check:mermaid": "node scripts/check-mermaid.mjs",
+    "check:links": "node scripts/check-links.mjs",
+    "build": "node scripts/check-mermaid.mjs && vitepress build && node scripts/check-links.mjs",
+    "preview": "vitepress preview"
+  },
+  "devDependencies": {
+    "jsdom": "^29.1.1",
+    "mermaid": "^11.16.0",
+    "vitepress": "^1.6.4",
+    "vitepress-plugin-mermaid": "^2.0.17",
+    "vue": "^3.5.40"
+  }
+}

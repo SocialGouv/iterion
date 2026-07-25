@@ -1,5 +1,6 @@
 import { errorMessage } from "@/lib/errorHints";
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useState } from "react";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 
 import * as dispatcher from "@/api/dispatcher";
 import {
@@ -21,40 +22,39 @@ interface Props {
 // the Board + Dispatcher views so the operator can pilot the daemon
 // from either one.
 export default function DispatcherControlBar({ onOpenSettings, pollIntervalMs = 2000 }: Props) {
-  const [status, setStatus] = useState<dispatcher.ManagerStatus | null>(null);
   const [busy, setBusy] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+  const [actionError, setActionError] = useState<string | null>(null);
 
-  const refresh = useCallback(async () => {
-    try {
-      const s = await dispatcher.getStatus();
-      setStatus(s);
-      setError(null);
-    } catch (e) {
-      setError(errorMessage(e));
-    }
-  }, []);
-
-  useEffect(() => {
-    void refresh();
-    const t = setInterval(() => void refresh(), pollIntervalMs);
-    return () => clearInterval(t);
-  }, [refresh, pollIntervalMs]);
+  const queryClient = useQueryClient();
+  const statusQuery = useQuery<dispatcher.ManagerStatus>({
+    queryKey: ["dispatcher-status"],
+    queryFn: () => dispatcher.getStatus(),
+    refetchInterval: pollIntervalMs,
+    // The pill is the operator's dispatcher heartbeat: keep polling
+    // while the tab is hidden so it is current the moment they return.
+    refetchIntervalInBackground: true,
+  });
+  const status = statusQuery.data ?? null;
+  // The poll error drives the "unreachable" pill; a lifecycle-action
+  // failure fills in only when the poll has nothing to report.
+  const error = statusQuery.error ? errorMessage(statusQuery.error) : actionError;
 
   const guard = useCallback(
     async (op: () => Promise<dispatcher.ManagerStatus>) => {
       setBusy(true);
       try {
+        // Seed the cache with the returned status so the pill flips
+        // immediately; the poll keeps it fresh from there.
         const s = await op();
-        setStatus(s);
-        setError(null);
+        queryClient.setQueryData<dispatcher.ManagerStatus>(["dispatcher-status"], s);
+        setActionError(null);
       } catch (e) {
-        setError(errorMessage(e));
+        setActionError(errorMessage(e));
       } finally {
         setBusy(false);
       }
     },
-    [],
+    [queryClient],
   );
 
   const { confirm, dialog } = useConfirm();

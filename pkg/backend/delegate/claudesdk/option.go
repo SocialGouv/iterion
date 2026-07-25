@@ -3,6 +3,7 @@ package claudesdk
 import (
 	"context"
 	"encoding/json"
+	"log"
 	"os/exec"
 )
 
@@ -118,6 +119,21 @@ type config struct {
 	// Used by iterion's sandbox driver to route the claude CLI
 	// through `docker exec`. See [CommandBuilder] for the contract.
 	commandBuilder CommandBuilder
+
+	// logf, when non-nil, receives the SDK's internal error diagnostics
+	// (control-protocol delivery failures and the like). See [WithLogf].
+	logf func(format string, args ...any)
+}
+
+// errorf reports an internal SDK error through the configured log hook,
+// falling back to the standard library logger when none is set — never a
+// silent no-op.
+func (c *config) errorf(format string, args ...any) {
+	if c.logf != nil {
+		c.logf(format, args...)
+		return
+	}
+	log.Printf(format, args...)
 }
 
 // WithModel sets the Claude model (e.g. "claude-sonnet-4-6", "claude-opus-4-6").
@@ -299,6 +315,13 @@ func WithStderrCallback(fn func(string)) Option {
 // callers to observe raw protocol messages for logging or diagnostics.
 func WithMessageCallback(fn MessageCallbackFunc) Option {
 	return func(c *config) { c.messageCallback = fn }
+}
+
+// WithLogf routes the SDK's internal error diagnostics (e.g. failures to
+// deliver control-protocol responses back to the CLI) to a caller-supplied
+// logger. When unset, diagnostics fall back to the standard library logger.
+func WithLogf(fn func(format string, args ...any)) Option {
+	return func(c *config) { c.logf = fn }
 }
 
 // WithAddDirs adds additional working directories.

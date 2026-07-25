@@ -27,6 +27,7 @@ aid, not the spec.
 vars:
   feature_prompt: string
   workspace_dir:  string = "${PROJECT_DIR}"
+  mode: string [enum: "autonomous", "interview"] = "autonomous"  # string-only closed value set; default + launch values validated (C125-C127)
 
 secrets:                            # optional; agent sees only an opaque placeholder
   github_token: "${GITHUB_TOKEN}"   #   __ITERION_SECRET_github_token__, materialised at exec
@@ -70,13 +71,18 @@ workflow my_workflow:
 | `agent` | LLM with tools and structured I/O | Most common |
 | `judge` | LLM verdict, no mutation | Tools optional |
 | `router` | Branch selection | Modes: `fan_out_all`, `fan_out_each`, `condition`, `round_robin`, `llm` |
-| `human` | Pause for human input | `interaction: human | llm | llm_or_human | review` |
+| `human` | Pause for human input | `interaction: human | llm | llm_or_human | review` (`async` is agent/judge-only — C240) |
 | `tool` | Deterministic shell | No LLM; uses `{{input.x}}` templates with auto shell-escape |
 | `compute` | Deterministic expression | No LLM, no shell. Use for passthrough, derived booleans, loop guards. |
 | `emit` | Publish a run-scoped event | `event: "<name>"` + optional `with { k: "{{ref}}" }` payload. No LLM, no shell (ADR-051). |
 | `wait` | Block a branch until an event fires | `event: "<name>"` + **mandatory** `timeout: "30s"` (the bornage, C197) + optional `output:` schema for the payload. Pair with `emit` in a parallel `fan_out_all` branch for reactive coordination. |
+| `await_answers` | Sync point for async human questions (ADR-081) | Optional `from: <node>` + **mandatory** `timeout:` (C241). Parks its branch until every pending `ask_user_async` question is answered; output is `{answers: [...]}`. The asking agent declares `interaction: async` (grants `ask_user_async` + `await_answers` tools — the agent keeps working while questions are pending, answers arrive in its message queue). |
 | `subbot` | Run another `.bot` as a nested run | `source:` + `with { ... }` + `output:`; child may contain loops |
 | `done` / `fail` | Built-in terminals | Never declare them |
+
+Every declarable node kind accepts an optional `description: "…"` — a human-readable
+label the run console shows instead of the humanized node id (the raw id stays
+available as tooltip/suffix).
 
 ## Reuse & iteration (see docs/groups-iteration-subbots.md)
 
@@ -172,8 +178,9 @@ src -> dst                                        # unconditional
 src -> dst when approved                          # bool field on src.output
 src -> dst when not approved
 src -> dst when "!approved && length(blockers) > 0"   # expression
-src -> dst as loop_name(10)                       # bounded loop (literal cap)
-src -> dst as loop_name("{{outputs.x.cap}}")      # bounded loop (data-driven cap)
+src -> dst else                                   # explicit fallback: fires only when no sibling `when` matched
+src -> dst as loop_name(10)                       # bounded loop (literal cap — UNQUOTED int)
+src -> dst as loop_name("{{outputs.x.cap}}")      # bounded loop (data-driven cap; quote ONLY a template)
 src -> dst as loop_name(unbounded)                # unbounded: runs until a when-exit; fuel from budget.max_iterations
 src -> dst as loop_name(unbounded 500)            # unbounded with a per-loop fuel ceiling
 src -> dst with { field: "{{outputs.src.x}}" }    # data mapping
@@ -183,6 +190,9 @@ Rules:
 1. Every cycle MUST be bounded — `as name(N)`, a data-driven cap, or `as name(unbounded)`.
    `unbounded` needs a fuel ceiling (per-loop `(unbounded N)` or `budget.max_iterations`) — else C097.
    A runtime liveness monitor also halts an unbounded loop that makes no progress (fixpoint).
+   A literal cap is an UNQUOTED int — `as fix(2)`. Quotes mean a template
+   (`as fix("{{vars.cap}}")`); a quoted plain int `as fix("2")` is read as
+   the int 2, but a quoted non-numeric cap `as fix("two")` is an E002 error.
 2. Conditional edges must be exhaustive (or have an unconditional fallback).
 3. Edge `with {}` values MUST be strings — int/bool literals fail with E002. Use `"true"` / `"0"` if needed, then coerce in compute.
 4. Edge order matters for conditional fallthrough.

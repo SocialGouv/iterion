@@ -1,481 +1,394 @@
-# Iterion DSL V1 — Formal Grammar
+# Iterion `.bot` grammar reference
 
-This is the complete grammar specification for `.bot` files, updated to reflect all features supported by the parser.
+This is the readable inventory of the syntax accepted by the current parser. The machine-oriented counterpart is [`grammar/iterion_v1.ebnf`](../grammar/iterion_v1.ebnf). Parsing success is only the first stage: the IR compiler then checks declarations, types, references, graph structure, mode-specific properties, loops, resources, and capabilities.
 
-Notation: `UPPER_CASE` = terminals/tokens, `lower_case` = non-terminals, `{ x }` = 0..N, `[ x ]` = optional, `( x | y )` = alternative, `"..."` = literal.
+Notation: `{x}` means zero or more, `[x]` is optional, and `a | b` is an alternative. Indentation is significant; examples use two spaces. `##` comments and blank lines are ignored between constructs.
 
-The DSL uses **significant indentation** (2 spaces per level). `INDENT` and `DEDENT` are virtual tokens emitted by the lexer.
-
----
-
-## File Structure
+## File declarations
 
 ```ebnf
 file = { top_level_decl } ;
 
-top_level_decl = vars_decl
-               | presets_decl
-               | attachments_decl
-               | mcp_server_decl
-               | prompt_decl
-               | schema_decl
-               | agent_decl
-               | judge_decl
-               | router_decl
-               | human_decl
-               | tool_node_decl
-               | compute_decl
-               | workflow_decl
-               | comment ;
+top_level_decl = vars | presets | attachments | secrets | mcp_server
+               | prompt | schema | cursor | supervisor
+               | agent | judge | router | human | tool | compute
+               | emit | wait | await_answers | subbot | group | use | workflow ;
 ```
 
-## Comments
+At most one top-level `vars`, `presets`, `attachments`, and `secrets` block is retained. Named declarations may repeat only when their names remain unique after compilation.
 
-```ebnf
-comment = "##" REST_OF_LINE ;
-```
+## Lexical values
 
-Comments start with `##` and extend to end of line. Allowed anywhere a top-level declaration or edge is expected.
-
-## Variables
-
-```ebnf
-vars_decl = "vars" ":" NEWLINE INDENT { var_field } DEDENT ;
-var_field = IDENT ":" type_expr [ "=" literal ] NEWLINE ;
-type_expr = "string" | "bool" | "int" | "float" | "json" | "string[]" ;
-literal   = STRING_LIT | INT_LIT | FLOAT_LIT | BOOL_LIT ;
-```
-
-## Presets
-
-```ebnf
-presets_decl = "presets" ":" NEWLINE INDENT { preset_entry } DEDENT ;
-preset_entry = IDENT ":" NEWLINE INDENT { preset_value } DEDENT ;
-preset_value = IDENT ":" literal NEWLINE ;
-```
-
-A `presets:` block is top-level only. Each entry is a named bundle of
-`vars:` values selected at run time (for example via `--preset <name>`).
-Preset keys must name declared variables and values must match the variable
-type; mismatches raise C070/C071, and duplicate preset names raise C072.
-
-## Attachments
-
-```ebnf
-attachments_decl = "attachments" ":" NEWLINE INDENT { attachment_field } DEDENT ;
-
-attachment_field = IDENT ":" attachment_type NEWLINE
-                   [ INDENT { attachment_prop } DEDENT ] ;
-attachment_type  = "file" | "image" ;
-
-attachment_prop = "description" ":" STRING_LIT NEWLINE
-                | "accept_mime"  ":" "[" STRING_LIT { "," STRING_LIT } "]" NEWLINE
-                | "required"     ":" BOOL_LIT NEWLINE ;
-```
-
-`attachments:` may appear at top level and inside a workflow body. It
-declares binary inputs uploaded for a run. Names are referenced with
-`{{attachments.<name>}}` (the host path) or the subfields documented in
-[attachments.md](../attachments.md): `path`, `url`, `mime`, `size`, and
-`sha256`. Attachment names must not collide with `vars:` names.
-
-## MCP Server Declarations
-
-```ebnf
-mcp_server_decl = "mcp_server" IDENT ":" NEWLINE INDENT { mcp_server_prop } DEDENT ;
-
-mcp_server_prop = "transport" ":" mcp_transport     NEWLINE
-                | "command"   ":" STRING_LIT         NEWLINE
-                | "args"      ":" "[" STRING_LIT { "," STRING_LIT } "]" NEWLINE
-                | "url"       ":" STRING_LIT         NEWLINE
-                | "auth"      ":" NEWLINE INDENT { mcp_auth_prop } DEDENT ;
-
-mcp_auth_prop = "type"       ":" STRING_LIT NEWLINE
-              | "auth_url"   ":" STRING_LIT NEWLINE
-              | "token_url"  ":" STRING_LIT NEWLINE
-              | "revoke_url" ":" STRING_LIT NEWLINE
-              | "client_id"  ":" STRING_LIT NEWLINE
-              | "scopes"     ":" "[" STRING_LIT { "," STRING_LIT } "]" NEWLINE ;
-
-mcp_transport = "stdio" | "http" | "sse" ;
-```
-
-Only `auth.type: "oauth2"` is wired today; other types raise C038.
-
-- `stdio` requires `command`, forbids `url`
-- `http` requires `url`, forbids `command` and `args`
-- `sse` is supported with the same URL/command/args rules as `http` and uses the streamable HTTP transport path
-
-## Prompts
-
-```ebnf
-prompt_decl = "prompt" IDENT ":" NEWLINE INDENT prompt_body DEDENT ;
-prompt_body = { PROMPT_TEXT_LINE } ;
-```
-
-Prompt text may contain template interpolations: `{{vars.X}}`, `{{input.X}}`, `{{outputs.node.field}}`, `{{artifacts.X}}`, `{{attachments.X}}` (and supported subfields), `{{loop.name.iteration}}`, and `{{run.id}}`. Environment variables use `${VAR_NAME}` syntax.
-
-## Schemas
-
-```ebnf
-schema_decl  = "schema" IDENT ":" NEWLINE INDENT { schema_field } DEDENT ;
-schema_field = IDENT ":" field_type [ enum_constraint ] NEWLINE ;
-field_type   = "string" | "bool" | "int" | "float" | "json" | "string[]" ;
-enum_constraint = "[" "enum" ":" STRING_LIT { "," STRING_LIT } "]" ;
-```
-
-## Agent
-
-```ebnf
-agent_decl = "agent" IDENT ":" NEWLINE INDENT { agent_prop } DEDENT ;
-
-agent_prop = "model"              ":" STRING_LIT              NEWLINE
-           | "backend"            ":" STRING_LIT              NEWLINE
-           | "input"              ":" IDENT                   NEWLINE
-           | "output"             ":" IDENT                   NEWLINE
-           | "publish"            ":" IDENT                   NEWLINE
-           | "system"             ":" IDENT                   NEWLINE
-           | "user"               ":" IDENT                   NEWLINE
-           | "session"            ":" session_mode             NEWLINE
-           | "tools"              ":" tool_list                NEWLINE
-           | "tool_policy"        ":" tool_policy_list         NEWLINE
-           | "capabilities"       ":" capability_list          NEWLINE
-           | "tool_max_steps"     ":" INT_LIT                 NEWLINE
-           | "max_tokens"         ":" INT_LIT                 NEWLINE
-           | "reasoning_effort"   ":" reasoning_effort_value   NEWLINE
-           | "readonly"           ":" BOOL_LIT                NEWLINE
-           | "full_access"        ":" BOOL_LIT                NEWLINE
-           | "images"             ":" string_list             NEWLINE
-           | "interaction"        ":" interaction_mode          NEWLINE
-           | "interaction_prompt" ":" IDENT                    NEWLINE
-           | "interaction_model"  ":" STRING_LIT               NEWLINE
-           | "await"              ":" await_mode                NEWLINE
-           | "mcp"                ":" NEWLINE INDENT { mcp_config_prop } DEDENT
-           | "compaction"         ":" NEWLINE INDENT { compaction_prop } DEDENT
-           | sandbox_decl ;
-
-tool_policy_list = "[" tool_ref { "," tool_ref } "]" ;
-tool_list        = "[" tool_ref { "," tool_ref } "]" ;
-tool_ref         = IDENT { "." IDENT } [ "." "*" ] ;
-capability_list  = "[" capability_ref { "," capability_ref } "]" ;
-capability_ref   = IDENT [ "." IDENT ] ; (* lowercase domain or domain.action *)
-```
-
-`backend` accepts the names of built-in delegation backends —
-`claw` (default, in-process), `claude_code`, `codex`. `model` and
-`backend` are independent: a node can set both (provider/model spec
-forwarded to the backend) or only one (a `model` alone uses the
-default `claw` path; a `backend` alone uses that backend's own model
-configuration).
-
-## Judge
-
-```ebnf
-judge_decl = "judge" IDENT ":" NEWLINE INDENT { judge_prop } DEDENT ;
-```
-
-Judge properties are identical to agent properties. Semantically, judges produce verdicts and typically don't use tools.
-
-## Router
-
-```ebnf
-router_decl = "router" IDENT ":" NEWLINE INDENT { router_prop } DEDENT ;
-
-router_prop = "mode"             ":" router_mode             NEWLINE
-            | "model"            ":" STRING_LIT              NEWLINE  (* llm mode only *)
-            | "backend"          ":" STRING_LIT              NEWLINE  (* llm mode only *)
-            | "system"           ":" IDENT                   NEWLINE  (* llm mode only *)
-            | "user"             ":" IDENT                   NEWLINE  (* llm mode only *)
-            | "multi"            ":" BOOL_LIT                NEWLINE  (* llm mode only *)
-            | "reasoning_effort" ":" reasoning_effort_value  NEWLINE ;
-
-router_mode = "fan_out_all" | "condition" | "round_robin" | "llm" ;
-```
-
-Routers do NOT support `await`. Properties `model`, `backend`, `system`, `user`, `multi`, `reasoning_effort` are only valid with `mode: llm` (diagnostic C023 otherwise). `llm` and `round_robin` routers also need at least 2 outgoing edges (C020/C021), and `llm` router edges must not carry `when` clauses (C022).
-
-## Human
-
-```ebnf
-human_decl = "human" IDENT ":" NEWLINE INDENT { human_prop } DEDENT ;
-
-human_prop = "input"              ":" IDENT           NEWLINE
-           | "output"             ":" IDENT           NEWLINE
-           | "publish"            ":" IDENT           NEWLINE
-           | "instructions"       ":" IDENT           NEWLINE
-           | "interaction"        ":" interaction_mode  NEWLINE
-           | "interaction_prompt" ":" IDENT            NEWLINE
-           | "interaction_model"  ":" STRING_LIT       NEWLINE
-           | "min_answers"        ":" INT_LIT          NEWLINE
-           | "model"              ":" STRING_LIT       NEWLINE
-           | "system"             ":" IDENT            NEWLINE
-           | "await"              ":" await_mode        NEWLINE ;
-```
-
-## Tool
-
-```ebnf
-tool_node_decl = "tool" IDENT ":" NEWLINE INDENT { tool_node_prop } DEDENT ;
-
-tool_node_prop = "command"  ":" STRING_LIT  NEWLINE
-               | "script"   ":" STRING_LIT  NEWLINE
-               | "language" ":" IDENT       NEWLINE
-               | "input"    ":" IDENT       NEWLINE
-               | "output"   ":" IDENT       NEWLINE
-               | "publish"  ":" IDENT       NEWLINE
-               | "await"    ":" await_mode  NEWLINE
-               | sandbox_decl ;
-```
-
-A tool must declare exactly one of `command:` or `script:`. `command:` is a
-raw shell snippet; `script:` is written to a temporary file and executed by
-`language:` (empty defaults to `sh`). Supported `language:` values are `js`,
-`node`, `py`, `python`, `python3`, `sh`, and `bash`; `language:` is only valid
-with `script:`. `sandbox:` is a node-level override with the same syntax as
-workflow sandbox configuration.
-
-`input:` is optional but useful when the command or script renders structured
-data via `{{input.field}}` template substitution. String-array fields
-(`string[]`) expand into the command line as space-joined items.
-
-`publish:` (optional) persists the node's output as a named, versioned
-artifact — surfaced in the studio Artifact tab and `iterion report`, and
-referenceable downstream as `{{artifacts.<name>}}`. It works identically on
-`tool` and `compute` nodes as it does on agent/judge/human, and is
-deterministic with **no LLM cost** (it only redirects the already-computed
-output into the store).
-
-## Compute
-
-Deterministic node — evaluates a list of expressions over the
-`vars / input / outputs / artifacts / loop / run` namespaces and
-emits a structured output. No LLM, no shell. Useful for streak
-detection, boolean combinations, counters, simple aggregations.
-
-```ebnf
-compute_decl = "compute" IDENT ":" NEWLINE INDENT { compute_prop } DEDENT ;
-
-compute_prop = "input"   ":" IDENT       NEWLINE
-             | "output"  ":" IDENT       NEWLINE
-             | "publish" ":" IDENT       NEWLINE
-             | "await"   ":" await_mode   NEWLINE
-             | compute_expr_block ;
-
-compute_expr_block  = "expr" ":" NEWLINE INDENT { compute_expr_entry } DEDENT ;
-compute_expr_entry  = IDENT ":" STRING_LIT NEWLINE ;
-```
-
-The `expr` block maps every output schema field that should be
-populated by the compute node to a quoted expression. Built-ins
-available inside expressions: `length(x)`, `concat(a, b, …)`,
-`unique(list)`, `contains(list, item)`, `join(list, sep)`, and
-`if(cond, then, else)`. A `compute` node with no
-`expr` entries raises C039.
-
-Example:
+Identifiers match `[A-Za-z_][A-Za-z0-9_]*`; quote kebab-case skill names and other values containing punctuation. A DSL string can use:
 
 ```iter
-schema streak_state:
-  consecutive_passes: int
-  ready: bool
-
-compute streak:
-  output: streak_state
-  expr:
-    consecutive_passes: "loop.refine.iteration"
-    ready: "outputs.review.passed && loop.refine.iteration >= 2"
+key: "escaped string"
+key: `raw string: $SHELL and "quotes" stay literal`
+key: |
+  block scalar
+  with preserved newlines
 ```
 
-## Workflow
+Raw strings have no backtick escape. `## strict-escape: on` in the leading file comments opts quoted strings into standard escape interpretation. Lists are bracketed and comma-separated. Depending on the property, elements are identifiers, strings, tool refs (`mcp.server.*`), or either.
+
+Scalar declaration literals are strings, integers, floats, or booleans. JSON and `string[]` defaults/preset values therefore use a quoted JSON representation.
+
+## Variables, presets, attachments, and secrets
+
+### Variables and presets
 
 ```ebnf
-workflow_decl = "workflow" IDENT ":" NEWLINE INDENT
-                  { workflow_prop | edge | comment }
-                DEDENT ;
+vars = "vars:" INDENT { IDENT ":" type [ enum ] [ "=" literal ] } DEDENT ;
+type = "string" | "bool" | "int" | "float" | "json" | "string[]" ;
+enum = "[enum:" STRING { "," STRING } "]" ;
 
-workflow_prop = workflow_vars
-              | workflow_attachments
-              | workflow_entry
-              | workflow_default_backend
-              | workflow_tool_policy
-              | workflow_worktree
-              | workflow_mcp
-              | workflow_budget
-              | workflow_compaction
-              | workflow_interaction
-              | sandbox_decl ;
-
-workflow_vars            = "vars"            ":" NEWLINE INDENT { var_field } DEDENT ;
-workflow_attachments     = attachments_decl ;
-workflow_entry           = "entry"           ":" IDENT NEWLINE ;
-workflow_default_backend = "default_backend" ":" STRING_LIT NEWLINE ;
-workflow_tool_policy     = "tool_policy"     ":" tool_policy_list NEWLINE ;
-workflow_worktree        = "worktree"        ":" worktree_mode NEWLINE ;
-
-worktree_mode = "auto" | "none" ;
+presets = "presets:" INDENT
+            { IDENT ":" INDENT { IDENT ":" literal } DEDENT }
+          DEDENT ;
 ```
 
-Workflow body entries are accepted in any order by the parser. Exactly
-one usable `entry:` is required semantically; a missing entry or an
-entry that does not name a declared node is reported by C008 during IR
-compilation.
+`vars:` is valid at top level and inside a workflow; `presets:` is top-level only. Enum constraints apply only to strings.
 
-`worktree: auto` runs the workflow inside a per-run git worktree at
-`<store-dir>/worktrees/<run-id>/` so the user's main working tree
-stays untouched. On a clean exit, Iterion first creates a durable result
-branch, atomically quarantines the checkout, and removes it without force only
-when cleanliness and process quiescence are conclusive. Failure, late activity,
-unsupported process inspection, or legacy metadata without a trusted
-pre-executor creation boundary preserves the worktree for inspection. Omit the
-field (or set `none`) to run in place. See
-[bots/feature-dev/main.bot](../../bots/feature-dev/main.bot)
-for a workflow that opts in.
+### Attachments
 
 ```ebnf
-workflow_mcp = "mcp" ":" NEWLINE INDENT { mcp_config_prop } DEDENT ;
-
-mcp_config_prop = "autoload_project" ":" BOOL_LIT              NEWLINE
-                | "inherit"          ":" BOOL_LIT              NEWLINE
-                | "servers"          ":" "[" IDENT { "," IDENT } "]" NEWLINE
-                | "disable"          ":" "[" IDENT { "," IDENT } "]" NEWLINE ;
-
-workflow_budget = "budget" ":" NEWLINE INDENT { budget_prop } DEDENT ;
-
-budget_prop = "max_parallel_branches" ":" INT_LIT     NEWLINE
-            | "max_duration"          ":" STRING_LIT  NEWLINE
-            | "max_cost_usd"          ":" NUMBER_LIT  NEWLINE
-            | "max_tokens"            ":" INT_LIT     NEWLINE
-            | "max_iterations"        ":" INT_LIT     NEWLINE ;
-
-workflow_compaction = "compaction" ":" NEWLINE INDENT { compaction_prop } DEDENT ;
-
-compaction_prop = "threshold"       ":" NUMBER_LIT NEWLINE
-                | "preserve_recent" ":" INT_LIT    NEWLINE ;
-
-workflow_interaction = "interaction" ":" interaction_mode NEWLINE ;
+attachments = "attachments:" INDENT { attachment } DEDENT ;
+attachment = IDENT ":" ( "file" | "image" )
+             [ INDENT { attachment_property } DEDENT ] ;
+attachment_property = "description:" STRING
+                    | "accept_mime:" string_list
+                    | "required:" BOOL ;
 ```
 
-Workflow-level `attachments:` entries are accepted in the same form as
-top-level `attachments:` and are merged into the workflow's declared binary
-inputs.
+Attachments are valid at top level and inside a workflow.
+
+### Secrets
 
 ```ebnf
-sandbox_decl = "sandbox" ":" sandbox_mode NEWLINE
-             | "sandbox" ":" NEWLINE INDENT { sandbox_prop } DEDENT ;
-
-sandbox_mode = "auto" | "none" | "inline" ;
-
-sandbox_prop = "mode"             ":" sandbox_mode NEWLINE
-             | "image"            ":" STRING_LIT  NEWLINE
-             | "user"             ":" STRING_LIT  NEWLINE
-             | "workspace_folder" ":" STRING_LIT  NEWLINE
-             | "post_create"      ":" STRING_LIT  NEWLINE
-             | "env"              ":" string_map
-             | "mounts"           ":" string_or_ident_list NEWLINE
-             | "network"          ":" NEWLINE INDENT { sandbox_network_prop } DEDENT
-             | "build"            ":" NEWLINE INDENT { sandbox_build_prop } DEDENT ;
-
-sandbox_network_prop = "mode"    ":" IDENT NEWLINE
-                     | "preset"  ":" ( STRING_LIT | IDENT ) NEWLINE
-                     | "inherit" ":" IDENT NEWLINE
-                     | "rules"   ":" string_or_ident_list NEWLINE ;
-
-sandbox_build_prop = "dockerfile" ":" STRING_LIT NEWLINE
-                   | "context"    ":" STRING_LIT NEWLINE
-                   | "args"       ":" string_map ;
-
-string_map           = "{" IDENT ":" ( STRING_LIT | IDENT ) { "," IDENT ":" ( STRING_LIT | IDENT ) } "}" NEWLINE
-                     | NEWLINE INDENT { IDENT ":" ( STRING_LIT | IDENT ) NEWLINE } DEDENT ;
-string_or_ident_list = "[" ( STRING_LIT | IDENT ) { "," ( STRING_LIT | IDENT ) } "]" ;
+secrets = "secrets:" INDENT { secret } DEDENT ;
+secret = IDENT ":" [ STRING ] [ INDENT { secret_property } DEDENT ] ;
+secret_property = "value:" STRING
+                | "as:" ( "value" | "file" )
+                | "mount_path:" STRING
+                | "env:" string_or_ident
+                | "optional:" BOOL
+                | "hosts:" string_list
+                | "description:" STRING ;
 ```
 
-`sandbox:` is accepted on workflows, agents, judges, and tools. Short-form
-`auto` reads `.devcontainer/devcontainer.json` or the configured default
-image; `none` opts out. Block form without explicit `mode:` compiles as
-`inline` and must declare exactly one of `image:` or `build:`.
+`secrets:` is top-level only. The short form supplies `value`; the block form may omit it so the runtime resolves a stored secret by declaration name.
 
-`compaction.threshold` is a fraction of the model's context window in
-`(0, 1]` (default `0.85`), and `compaction.preserve_recent` is the
-minimum number of recent turns kept verbatim (default `4`). The block
-is also valid on agent and judge nodes; either property may be
-omitted to inherit the workflow / engine default. Out-of-range values
-raise C043.
+## Prompts and schemas
+
+```ebnf
+prompt = "prompt" IDENT ":" INDENT { free_text_line } DEDENT ;
+
+schema = "schema" IDENT ":" INDENT { schema_field } DEDENT ;
+schema_field = IDENT ":" type [ enum ] ;
+```
+
+Prompt text may contain runtime `{{...}}` references and compile-time `{{include "relative/file"}}` directives. Schema types are the same six variable types.
+
+## MCP declarations and activation
+
+```ebnf
+mcp_server = "mcp_server" IDENT ":" INDENT { mcp_server_property } DEDENT ;
+mcp_server_property = "transport:" ( "stdio" | "http" | "sse" )
+                    | "command:" STRING
+                    | "args:" string_list
+                    | "url:" STRING
+                    | "auth:" INDENT { auth_property } DEDENT ;
+auth_property = "type:" STRING | "auth_url:" STRING | "token_url:" STRING
+              | "revoke_url:" STRING | "client_id:" STRING
+              | "scopes:" string_list ;
+
+mcp_config = "mcp:" INDENT { mcp_property } DEDENT ;
+mcp_property = "autoload_project:" BOOL | "inherit:" BOOL
+             | "servers:" ident_list | "disable:" ident_list ;
+```
+
+`stdio` uses `command`/`args`; `http` and `sse` use `url`. Only OAuth2 authorization-code/PKCE auth is wired. `mcp:` is accepted on workflows, agents, and judges; workflow scope uses `autoload_project`, while node scope uses `inherit`.
+
+## Cursor and supervisor declarations
+
+```ebnf
+cursor = "cursor" IDENT ":" INDENT
+           [ "description:" STRING ]
+           ( "values:" INDENT { IDENT ":" STRING } DEDENT
+           | "bands:" INDENT { STRING ":" STRING } DEDENT )
+         DEDENT ;
+
+cursors = "cursors:" INDENT
+            { IDENT ":" ( IDENT | STRING | NUMBER | BOOL ) }
+          DEDENT ;
+
+supervisor = "supervisor" IDENT ":" INDENT
+               { "watches:" ident_list | "model:" STRING
+               | "system:" IDENT | "cooldown:" STRING
+               | "max_evals:" INT }
+             DEDENT ;
+```
+
+`cursors:` activates declared cursors on an agent/judge; the reserved `enabled:` key gates the block. A supervisor is concurrent run metadata, not a graph node.
+
+## Agents and judges
+
+```ebnf
+agent = "agent" IDENT ":" INDENT { llm_property } DEDENT ;
+judge = "judge" IDENT ":" INDENT { llm_property } DEDENT ;
+```
+
+They share the exact property surface:
+
+| Property | Value |
+|---|---|
+| `description` | string |
+| `model`, `backend`, `provider`, `command` | string |
+| `input`, `output`, `publish`, `system`, `user` | identifier reference |
+| `artifact_labels` | tool-ref-style identifier list |
+| `session` | `fresh`, `inherit`, `inherit_if_available`, `fork`, `artifacts_only` |
+| `tools`, `tool_policy`, `capabilities` | tool-ref list; dotted refs and trailing `.*` are accepted |
+| `skills` | quoted string or dotted-identifier list |
+| `tool_max_steps`, `max_tokens` | integer |
+| `reasoning_effort` | `low`, `medium`, `high`, `xhigh`, `max`, `ultracode`, or quoted runtime value |
+| `timeout` | duration string |
+| `readonly`, `full_access` | boolean |
+| `images` | string list |
+| `interaction` | `none`, `human`, `llm`, `llm_or_human`, `review`, `async` |
+| `interaction_prompt` | prompt identifier |
+| `interaction_model` | string |
+| `await` | `wait_all`, `best_effort` |
+| `compress` | `off`, `on`, `ultra` |
+| `permission` | `off`, `ask`, `deny` |
+| `needs` | one resource identifier or an identifier list |
+| `mcp`, `compaction`, `memory`, `sandbox`, `cursors` | nested blocks described here |
+
+Nested blocks:
+
+```ebnf
+compaction = "compaction:" INDENT
+               { "threshold:" NUMBER | "preserve_recent:" INT }
+             DEDENT ;
+
+memory = "memory:" INDENT
+           { "enabled:" BOOL | "scope:" STRING | "autoload:" string_list
+           | "read:" BOOL | "write:" BOOL | "pre_compact_inject:" BOOL
+           | "project_root:" BOOL | "visibility:" STRING }
+         DEDENT ;
+```
+
+## Routers
+
+```ebnf
+router = "router" IDENT ":" INDENT { router_property } DEDENT ;
+router_mode = "fan_out_all" | "fan_out_each" | "condition"
+            | "round_robin" | "llm" ;
+```
+
+| Property | Applies to |
+|---|---|
+| `description: STRING`, `mode: router_mode`, `needs: needs_value` | all routers |
+| `model: STRING`, `backend: STRING`, `provider: STRING`, `system: IDENT`, `user: IDENT`, `multi: BOOL`, `reasoning_effort: effort` | `llm` |
+| `over: STRING`, `as: IDENT`, `key: IDENT`, `depends_on: IDENT` | `fan_out_each` |
+
+`fan_out_each` requires `over` and exactly one unconditional outgoing template edge. `depends_on` requires `key`. Routers never accept `await`.
+
+## Human nodes
+
+```ebnf
+human = "human" IDENT ":" INDENT { human_property } DEDENT ;
+```
+
+Accepted properties are `description: STRING`, `input/output/publish: IDENT`, `artifact_labels: tool_ref_list`, `instructions/system/interaction_prompt: IDENT`, `interaction: interaction_mode`, `interaction_model/model/review_url: STRING`, `min_answers/max_turns: INT`, `await: await_mode`, and the string-or-identifier review fields `posture`, `merge_strategy`, and `merge_into`.
+
+## Tool and compute nodes
+
+### Tool
+
+```ebnf
+tool = "tool" IDENT ":" INDENT { tool_property } DEDENT ;
+```
+
+| Property | Value |
+|---|---|
+| `description`, `command`, `script`, `goal`, `postcondition` | string |
+| `language` | `js`, `py`, `sh`, `bash` |
+| `input`, `output`, `publish` | identifier |
+| `artifact_labels` | tool-ref list |
+| `await` | `wait_all`, `best_effort` |
+| `sandbox` | sandbox block |
+| `compress` | `off`, `on`, `ultra` |
+| `permission` | `off`, `ask`, `deny` |
+| `needs` | one identifier or identifier list |
+| `parallel_safe` | boolean |
+| `policy` | `required`, `recover`, `best_effort` |
+| `recovery` | nested block |
+
+`command` and `script` are mutually exclusive. Recovery accepts `max_repair_attempts: INT`, `max_agent_attempts: INT`, `model: STRING`, and `agent_tools: tool_ref_list`.
+
+### Compute
+
+```ebnf
+compute = "compute" IDENT ":" INDENT { compute_property } DEDENT ;
+compute_property = "description:" STRING | "input:" IDENT | "output:" IDENT
+                 | "publish:" IDENT | "artifact_labels:" tool_ref_list
+                 | "await:" await_mode
+                 | "expr:" INDENT { IDENT ":" STRING } DEDENT ;
+```
+
+Each `expr` string is parsed by the bounded expression language described below.
+
+## Event and nested-run nodes
+
+```ebnf
+emit = "emit" IDENT ":" INDENT
+         { "description:" STRING | "event:" STRING | with_block }
+       DEDENT ;
+
+wait = "wait" IDENT ":" INDENT
+         { "description:" STRING | "event:" STRING
+         | "timeout:" STRING | "output:" IDENT }
+       DEDENT ;
+
+subbot = "subbot" IDENT ":" INDENT
+           { "description:" STRING | "source:" STRING | with_block
+           | "output:" IDENT | "needs:" needs_value | "isolated:" BOOL }
+         DEDENT ;
+```
+
+`wait` requires a timeout. A subbot launches the child source as a real nested run.
+
+## Groups and uses
+
+```ebnf
+group = "group" IDENT [ "(" [ IDENT { "," IDENT } ] ")" ] ":"
+        INDENT { agent | judge | router | human | tool | compute | edge } DEDENT ;
+
+use = "use" IDENT "as" IDENT [ with_block ] ;
+```
+
+Groups are compile-time macros. `use` bindings substitute `{{params.name}}`; expanded nodes are addressed as `<prefix>.<node>`.
+
+## Workflows
+
+```ebnf
+workflow = "workflow" IDENT ":" INDENT { workflow_member } DEDENT ;
+```
+
+Workflow members may appear in any order:
+
+| Member | Value |
+|---|---|
+| `vars`, `attachments` | blocks described above |
+| `entry` | plain or dotted node reference |
+| `default_backend` | string |
+| `tool_policy`, `capabilities` | tool-ref list |
+| `skills` | skill-ref list |
+| `mcp`, `budget`, `resources`, `compaction`, `sandbox` | nested blocks |
+| `interaction` | interaction mode |
+| `worktree` | `auto`, `none` |
+| `compress` | `off`, `on`, `ultra` |
+| `permission` | `off`, `ask`, `deny` |
+| `allow`, `ask`, `deny` | string list |
+| edge | graph transition |
+
+Budget fields are `max_parallel_branches: INT`, `max_duration: STRING`, `max_cost_usd: NUMBER`, `max_tokens: INT`, `warn_tokens: INT` (advisory-only — crossing it emits a `budget_warning`), and `max_iterations: INT`.
+
+Resources are either counting semaphores or named-member pools:
+
+```iter
+resources:
+  browser: 2
+  worktree: ["slot-a", "slot-b"]
+```
+
+Nodes acquire them with `needs: browser` or `needs: [browser, worktree]`.
+
+## Sandbox block
+
+Short form:
+
+```iter
+sandbox: auto   # or none / inline
+```
+
+Block form accepts:
+
+```ebnf
+sandbox = "sandbox:" INDENT
+            { "mode:" ( "auto" | "none" | "inline" )
+            | "image:" STRING | build | "user:" STRING
+            | "workspace_folder:" STRING | "host_state:" IDENT
+            | "post_create:" STRING | "env:" string_map
+            | "mounts:" string_or_ident_list | network }
+          DEDENT ;
+
+build = "build:" INDENT
+          { "dockerfile:" STRING | "context:" STRING | "args:" string_map }
+        DEDENT ;
+
+network = "network:" INDENT
+            { "mode:" IDENT | "preset:" string_or_ident
+            | "inherit:" IDENT | "rules:" string_or_ident_list }
+          DEDENT ;
+```
+
+Block form without `mode` implies `inline`. `image` and `build` are mutually exclusive. Sandbox blocks are accepted on workflows, agents, judges, and tools.
 
 ## Edges
 
 ```ebnf
-edge = IDENT "->" IDENT [ when_clause ] [ loop_clause ] [ with_block ] NEWLINE ;
+edge = node_ref "->" node_ref { when_or_else | iteration | with_block } ;
+node_ref = IDENT { "." IDENT } | "done" | "fail" ;
 
-when_clause = "when" ( [ "not" ] IDENT | STRING_LIT ) ;
-loop_clause = "as" IDENT "(" INT_LIT ")" ;
-with_block  = "with" "{" NEWLINE { with_mapping } "}" ;
-with_mapping = IDENT ":" STRING_LIT NEWLINE ;
+when_or_else = "when" ( [ "not" ] IDENT | STRING ) | "else" ;
+iteration = "as" IDENT "(" ( INT | STRING | "unbounded" [ INT ] ) ")"
+          | "as foreach" IDENT "(" IDENT "in" STRING ")" ;
+with_block = "with" "{" { IDENT ":" STRING [ "," ] } "}" ;
 ```
 
-Two `when` forms:
+Clauses may occur in any order, but each kind may occur at most once. `when` and `else` are mutually exclusive. A quoted `when` is parsed as an expression. Every graph cycle must be declared by a named loop or finite `foreach`; `unbounded` loops require a fuel source and an exit edge.
 
-- **Simple boolean field:** `when approved` / `when not approved`. The
-  identifier must reference a `bool` field in the source node's output
-  schema (validated by C013/C014).
-- **Quoted expression:** `when "approved && batch_complete"` or
-  `when "loop.refine.iteration < 3"`. The body is parsed at compile time and
-  may use the same namespaces as a compute expression
-  (`vars / input / outputs / artifacts / loop / run`), comparison and
-  boolean operators, and the built-ins `length`, `concat`, `unique`,
-  `contains`, `join`, and `if`. Useful for compound predicates that don't fit a single
-  schema field.
+## Expression language
 
-## Shared Enumerations
+`compute.expr` values and quoted `when` clauses use this precedence grammar:
 
 ```ebnf
-session_mode           = "fresh" | "inherit" | "inherit_if_available" | "fork" | "artifacts_only" ;
-await_mode             = "wait_all" | "best_effort" ;
-interaction_mode       = "none" | "human" | "llm" | "llm_or_human" ;
-reasoning_effort_value = "low" | "medium" | "high" | "xhigh" | "max" ;
-worktree_mode          = "auto" | "none" ;
+expr = or ;
+or = and { ( "||" | "or" ) and } ;
+and = not { ( "&&" | "and" ) not } ;
+not = ( "!" | "not" ) not | comparison ;
+comparison = add [ ( "==" | "!=" | "<" | "<=" | ">" | ">=" ) add ] ;
+add = multiply { ( "+" | "-" ) multiply } ;
+multiply = unary { ( "*" | "/" | "%" ) unary } ;
+unary = "-" unary | postfix ;
+postfix = primary { "[" expr "]" } ;
+primary = number | string | bool | path | call | lambda_call | "(" expr ")" ;
+path = IDENT { "." IDENT } ;
+call = IDENT "(" [ expr { "," expr } ] ")" ;
+lambda_call = ( "map" | "filter" ) "(" expr "," lambda ")"
+            | "reduce" "(" expr "," expr "," lambda ")" ;
+lambda = ( IDENT | "(" IDENT { "," IDENT } ")" ) "=>" expr ;
 ```
 
-The previous five-level reasoning effort scale (`low | medium | high`) was extended to add `xhigh` and `max` for the highest-effort tiers exposed by recent reasoning models; the runtime model registry decides which levels each model actually supports.
+Standard namespaces are `vars`, `input`, `outputs`, `artifacts`, `loop`, and `run`. Built-ins are `length`, `concat`, `unique`, `contains`, `join`, `tail`, `if`, `sort`, `keys`, `values`, `slice`, `sum`, `min`, `max`, `flatten`, `map`, `filter`, and `reduce`. Lambdas are confined to finite combinators, expression depth is capped, and one evaluation may visit at most 100,000 elements.
 
-## Template Expressions
+## Template references
 
-Inside `STRING_LIT` in with-blocks and prompt bodies:
+Normal runtime references have at least `namespace.path` and may continue through dotted fields:
 
 ```ebnf
-template_expr = "{{" template_ref "}}" ;
-
-template_ref = "vars"      "." IDENT
-             | "input"     "." IDENT
-             | "outputs"   "." IDENT [ "." IDENT ]
-             | "artifacts" "." IDENT
-             | "attachments" "." IDENT [ "." IDENT ]
-             | "loop"      "." IDENT [ "." IDENT { "." IDENT } ]
-             | "run"       "." IDENT ;
+template = "{{" [ "!" ] namespace "." IDENT { "." IDENT } "}}" ;
+namespace = "vars" | "input" | "outputs" | "artifacts" | "attachments"
+          | "secrets" | "loop" | "each" | "run" ;
 ```
 
-`{{attachments.<name>}}` is equivalent to `{{attachments.<name>.path}}`; the
-other valid attachment subfields are `url`, `mime`, `size`, and `sha256`.
+`{{!input.command}}` requests raw substitution only while rendering a tool shell command; it disables shell escaping and must be restricted to trusted input. Group expansion separately consumes `{{params.name}}` before normal reference parsing.
 
-Special: `{{outputs.node_id.history}}` returns the array of all outputs from a node across loop iterations. Only valid if the node is in a declared loop.
+Namespace-specific shapes and constraints are detailed in the [DSL guide](../dsl.md). Unknown or malformed references are diagnostics, not silently empty templates.
 
-The `loop.<name>.iteration` reference exposes the current 0-based iteration counter of a declared loop, `loop.<name>.max` exposes the loop's effective cap, and `loop.<name>.previous_output` exposes the previous iteration's output snapshot for the loop's controlling node. Add field segments such as `loop.<name>.previous_output.score` to drill into that snapshot. The `run` namespace exposes the current run identifier (`run.id`). Both namespaces are also usable inside compute expressions and the quoted `when` form.
+## Semantic validation
 
-## Terminal Tokens
+Syntax-valid files can still fail compilation for duplicate ids, unknown schemas/prompts/nodes, invalid templates, unreachable nodes, non-exhaustive routing, undeclared cycles, router-mode property misuse, unsafe fan-out, bad resource references, capability mismatches, and invalid sandbox/secret/cursor configuration.
 
-```ebnf
-IDENT        = LETTER { LETTER | DIGIT | "_" } ;
-STRING_LIT   = '"' { CHAR } '"' ;
-INT_LIT      = DIGIT { DIGIT } ;
-FLOAT_LIT    = DIGIT { DIGIT } "." DIGIT { DIGIT } ;
-NUMBER_LIT   = INT_LIT | FLOAT_LIT ;
-BOOL_LIT     = "true" | "false" ;
-NEWLINE      = "\n" ;
-INDENT       = (* increase in indentation level *) ;
-DEDENT       = (* decrease in indentation level *) ;
-```
-
-## Reserved Keywords
-
-`vars`, `presets`, `attachments`, `prompt`, `schema`, `agent`, `judge`, `router`, `human`, `tool`, `compute`, `workflow`, `entry`, `mcp`, `mcp_server`, `budget`, `compaction`, `worktree`, `model`, `backend`, `default_backend`, `input`, `output`, `publish`, `system`, `user`, `session`, `tools`, `tool_policy`, `capabilities`, `tool_max_steps`, `reasoning_effort`, `readonly`, `full_access`, `images`, `interaction`, `interaction_prompt`, `interaction_model`, `await`, `mode`, `instructions`, `min_answers`, `command`, `script`, `language`, `expr`, `multi`, `transport`, `args`, `url`, `auth`, `type`, `auth_url`, `token_url`, `revoke_url`, `client_id`, `scopes`, `autoload_project`, `inherit`, `inherit_if_available`, `servers`, `disable`, `threshold`, `preserve_recent`, `sandbox`, `when`, `not`, `as`, `with`, `enum`, `fresh`, `fork`, `artifacts_only`, `fan_out_all`, `condition`, `round_robin`, `llm`, `wait_all`, `best_effort`, `none`, `human`, `llm_or_human`, `auto`, `done`, `fail`, `true`, `false`, `string`, `bool`, `int`, `float`, `json`, `string[]`, `file`, `image`, `max_parallel_branches`, `max_duration`, `max_cost_usd`, `max_tokens`, `max_iterations`, `low`, `medium`, `high`, `xhigh`, `max`, `stdio`, `http`, `sse`, `oauth2`.
-
-The `delegate` keyword from earlier drafts has been removed — use `backend:` everywhere it was used (delegation backends are selected by name: `claw`, `claude_code`, `codex`).
+Use `iterion validate file.bot`. The authoritative sparse code ranges are DSL C001–C199 (plus the async-interaction band C240–C242) and bundle checks C200–C230; see [diagnostics](diagnostics.md).

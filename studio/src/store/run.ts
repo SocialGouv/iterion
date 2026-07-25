@@ -134,6 +134,25 @@ const initialBrowserState: BrowserPaneState = {
   liveSession: null,
 };
 
+// ResultLink is a run's headline deliverable — an opened pull request, a
+// live deployment, a published app — surfaced as a prominent clickable
+// link in the run summary (RunHeader's ResultLinksRow), like a CI run's
+// "View deployment" button. Distinct from the embeddable Browser pane: a
+// PR page blocks iframing, so it lives here as a link only. Derived purely
+// from `preview_url_available` events whose `kind` is a result kind
+// (RESULT_LINK_KINDS), so a reloaded terminal run reconstructs the list by
+// replaying its event log — level-triggered, never live-only.
+export interface ResultLink {
+  url: string;
+  // "pr" | "deploy" | "app" today, kept a plain string so a new
+  // deterministic emitter can add a kind with no store change.
+  kind: string;
+  scope: PreviewScope;
+  // Event seq that produced/last-classified this url. Stable identity +
+  // sort key (ascending = discovery order).
+  seq: number;
+}
+
 // InFlightTool tracks a tool call the engine has reported as started but
 // not yet completed. Populated on `tool_started`, cleared on
 // `tool_called` / `tool_error` (matched by toolUseID when present,
@@ -224,6 +243,12 @@ export interface RunLogState {
   // Set when the backend emits log_terminated — the live stream is
   // over, but the existing text remains for inspection.
   terminated: boolean;
+  // Evicted-head cache for the replay scrubber: the log bytes [0, until)
+  // that rolled out of the in-memory window (start > 0), fetched on
+  // demand from GET /runs/{id}/log?from=0&until=<start>. Only valid
+  // while until === start — a further trim widens the gap and the view
+  // refetches. Null until the scrubber first needs it.
+  prefix: { until: number; text: string } | null;
 }
 
 export interface RunStoreState {
@@ -276,6 +301,10 @@ export interface RunStoreState {
   followTail: boolean;
   log: RunLogState;
   browser: BrowserPaneState;
+  // Headline result-links (opened PR, live deploy, …), deduped by url,
+  // in discovery order. Event-derived (see ResultLink); rebuilt on reload
+  // from the replayed event log alongside `browser`.
+  resultLinks: ResultLink[];
   // Increments to request a fresh WS dial. The broker drops a run's
   // subscribers on terminal status (pkg/runview/service.go: CloseRun),
   // so after Resume the still-open WS conn no longer receives events
@@ -334,6 +363,9 @@ export interface RunStoreState {
   setLogSubscribed: (subscribed: boolean) => void;
   applyLogChunk: (chunk: { offset: number; text: string; total?: number }) => void;
   markLogTerminated: () => void;
+  // Installs the evicted-head cache fetched by the replay scrubber (see
+  // RunLogState.prefix). Pass null to drop it.
+  setLogPrefix: (prefix: { until: number; text: string } | null) => void;
   clearLog: () => void;
 
   // Manual URL entry from the Browser pane URL bar. Cleared by `null`.
@@ -357,6 +389,7 @@ const initialLogState: RunLogState = {
   text: "",
   subscribed: false,
   terminated: false,
+  prefix: null,
 };
 
 // freshInitial returns a value-only snapshot of the initial reducer
@@ -387,6 +420,7 @@ function freshInitial() {
     followTail: true,
     log: initialLogState,
     browser: initialBrowserState,
+    resultLinks: [] as ResultLink[],
     wsReconnectToken: 0,
     uiOpenEventLogToken: 0,
   };
@@ -482,6 +516,7 @@ export function createRunStore() {
           snapshot: snap,
           pendingHumanInput: rehydrated,
           browser: state.browser,
+          resultLinks: state.resultLinks,
           queuedMessages: state.queuedMessages,
         },
         newerEvents,
@@ -700,6 +735,8 @@ export function createRunStore() {
 
   markLogTerminated: () =>
     set((s) => ({ log: { ...s.log, terminated: true, subscribed: false } })),
+
+  setLogPrefix: (prefix) => set((s) => ({ log: { ...s.log, prefix } })),
 
   clearLog: () => set({ log: initialLogState }),
 

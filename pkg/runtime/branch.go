@@ -315,6 +315,7 @@ func (e *Engine) recordBranchUsage(ctx context.Context, rs *runState, runID, bra
 	for _, w := range findWarnings(checks) {
 		if err := e.emitBranch(ctx, runID, branchID, store.EventBudgetWarning, currentNodeID, map[string]any{
 			"dimension": w.dimension,
+			"advisory":  w.advisory,
 			"used":      w.used,
 			"limit":     w.limit,
 		}); err != nil {

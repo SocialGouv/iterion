@@ -72,6 +72,7 @@ var interactionModeToStr = map[InteractionMode]string{
 	InteractionLLM:        "llm",
 	InteractionLLMOrHuman: "llm_or_human",
 	InteractionReview:     "review",
+	InteractionAsync:      "async",
 }
 
 var strToInteractionMode = reverseMap(interactionModeToStr)
@@ -109,25 +110,26 @@ func reverseMap[K comparable, V comparable](m map[K]V) map[V]K {
 // ---------------------------------------------------------------------------
 
 type jsonFile struct {
-	Vars        *jsonVarsBlock        `json:"vars,omitempty"`
-	Presets     *jsonPresetsBlock     `json:"presets,omitempty"`
-	Attachments *jsonAttachmentsBlock `json:"attachments,omitempty"`
-	Secrets     *jsonSecretsBlock     `json:"secrets,omitempty"`
-	MCPServers  []*jsonMCPServerDecl  `json:"mcp_servers,omitempty"`
-	Prompts     []*jsonPromptDecl     `json:"prompts,omitempty"`
-	Schemas     []*jsonSchemaDecl     `json:"schemas,omitempty"`
-	Cursors     []*jsonCursorDecl     `json:"cursors,omitempty"`
-	Agents      []*jsonAgentDecl      `json:"agents,omitempty"`
-	Judges      []*jsonJudgeDecl      `json:"judges,omitempty"`
-	Routers     []*jsonRouterDecl     `json:"routers,omitempty"`
-	Humans      []*jsonHumanDecl      `json:"humans,omitempty"`
-	Tools       []*jsonToolNodeDecl   `json:"tools,omitempty"`
-	Computes    []*jsonComputeDecl    `json:"computes,omitempty"`
-	Subbots     []*jsonSubbotDecl     `json:"subbots,omitempty"`
-	Emits       []*jsonEmitDecl       `json:"emits,omitempty"`
-	Waits       []*jsonWaitDecl       `json:"waits,omitempty"`
-	Workflows   []*jsonWorkflowDecl   `json:"workflows,omitempty"`
-	Comments    []*jsonComment        `json:"comments,omitempty"`
+	Vars         *jsonVarsBlock          `json:"vars,omitempty"`
+	Presets      *jsonPresetsBlock       `json:"presets,omitempty"`
+	Attachments  *jsonAttachmentsBlock   `json:"attachments,omitempty"`
+	Secrets      *jsonSecretsBlock       `json:"secrets,omitempty"`
+	MCPServers   []*jsonMCPServerDecl    `json:"mcp_servers,omitempty"`
+	Prompts      []*jsonPromptDecl       `json:"prompts,omitempty"`
+	Schemas      []*jsonSchemaDecl       `json:"schemas,omitempty"`
+	Cursors      []*jsonCursorDecl       `json:"cursors,omitempty"`
+	Agents       []*jsonAgentDecl        `json:"agents,omitempty"`
+	Judges       []*jsonJudgeDecl        `json:"judges,omitempty"`
+	Routers      []*jsonRouterDecl       `json:"routers,omitempty"`
+	Humans       []*jsonHumanDecl        `json:"humans,omitempty"`
+	Tools        []*jsonToolNodeDecl     `json:"tools,omitempty"`
+	Computes     []*jsonComputeDecl      `json:"computes,omitempty"`
+	Subbots      []*jsonSubbotDecl       `json:"subbots,omitempty"`
+	Emits        []*jsonEmitDecl         `json:"emits,omitempty"`
+	Waits        []*jsonWaitDecl         `json:"waits,omitempty"`
+	AwaitAnswers []*jsonAwaitAnswersDecl `json:"await_answers,omitempty"`
+	Workflows    []*jsonWorkflowDecl     `json:"workflows,omitempty"`
+	Comments     []*jsonComment          `json:"comments,omitempty"`
 }
 
 type jsonComment struct {
@@ -141,6 +143,7 @@ type jsonVarsBlock struct {
 type jsonVarField struct {
 	Name    string       `json:"name,omitempty"`
 	Type    string       `json:"type,omitempty"`
+	Enum    []string     `json:"enum,omitempty"`
 	Default *jsonLiteral `json:"default,omitempty"`
 }
 
@@ -280,6 +283,7 @@ type jsonSchemaField struct {
 
 type jsonAgentDecl struct {
 	Name              string               `json:"name,omitempty"`
+	Description       string               `json:"description,omitempty"`
 	Model             string               `json:"model,omitempty"`
 	Backend           string               `json:"backend,omitempty"`
 	Provider          string               `json:"provider,omitempty"`
@@ -318,6 +322,7 @@ type jsonAgentDecl struct {
 
 type jsonJudgeDecl struct {
 	Name              string               `json:"name,omitempty"`
+	Description       string               `json:"description,omitempty"`
 	Model             string               `json:"model,omitempty"`
 	Backend           string               `json:"backend,omitempty"`
 	Provider          string               `json:"provider,omitempty"`
@@ -356,6 +361,7 @@ type jsonJudgeDecl struct {
 
 type jsonRouterDecl struct {
 	Name            string   `json:"name,omitempty"`
+	Description     string   `json:"description,omitempty"`
 	Mode            string   `json:"mode,omitempty"`
 	Model           string   `json:"model,omitempty"`
 	Backend         string   `json:"backend,omitempty"`
@@ -373,6 +379,7 @@ type jsonRouterDecl struct {
 
 type jsonHumanDecl struct {
 	Name              string   `json:"name,omitempty"`
+	Description       string   `json:"description,omitempty"`
 	Input             string   `json:"input,omitempty"`
 	Output            string   `json:"output,omitempty"`
 	Publish           string   `json:"publish,omitempty"`
@@ -394,6 +401,7 @@ type jsonHumanDecl struct {
 
 type jsonToolNodeDecl struct {
 	Name           string             `json:"name,omitempty"`
+	Description    string             `json:"description,omitempty"`
 	Command        string             `json:"command,omitempty"`
 	Script         string             `json:"script,omitempty"`
 	Language       string             `json:"language,omitempty"`
@@ -559,6 +567,7 @@ func sandboxNetworkBlockFromJSON(j *jsonSandboxNetworkBlock) *SandboxNetworkBloc
 
 type jsonComputeDecl struct {
 	Name           string             `json:"name,omitempty"`
+	Description    string             `json:"description,omitempty"`
 	Input          string             `json:"input,omitempty"`
 	Output         string             `json:"output,omitempty"`
 	Publish        string             `json:"publish,omitempty"`
@@ -573,25 +582,35 @@ type jsonComputeExpr struct {
 }
 
 type jsonSubbotDecl struct {
-	Name     string           `json:"name"`
-	Source   string           `json:"source,omitempty"`
-	With     []*jsonWithEntry `json:"with,omitempty"`
-	Output   string           `json:"output,omitempty"`
-	Needs    []string         `json:"needs,omitempty"`
-	Isolated bool             `json:"isolated,omitempty"`
+	Name        string           `json:"name"`
+	Description string           `json:"description,omitempty"`
+	Source      string           `json:"source,omitempty"`
+	With        []*jsonWithEntry `json:"with,omitempty"`
+	Output      string           `json:"output,omitempty"`
+	Needs       []string         `json:"needs,omitempty"`
+	Isolated    bool             `json:"isolated,omitempty"`
 }
 
 type jsonEmitDecl struct {
-	Name  string           `json:"name,omitempty"`
-	Event string           `json:"event,omitempty"`
-	With  []*jsonWithEntry `json:"with,omitempty"`
+	Name        string           `json:"name,omitempty"`
+	Description string           `json:"description,omitempty"`
+	Event       string           `json:"event,omitempty"`
+	With        []*jsonWithEntry `json:"with,omitempty"`
 }
 
 type jsonWaitDecl struct {
-	Name    string `json:"name,omitempty"`
-	Event   string `json:"event,omitempty"`
-	Timeout string `json:"timeout,omitempty"`
-	Output  string `json:"output,omitempty"`
+	Name        string `json:"name,omitempty"`
+	Description string `json:"description,omitempty"`
+	Event       string `json:"event,omitempty"`
+	Timeout     string `json:"timeout,omitempty"`
+	Output      string `json:"output,omitempty"`
+}
+
+type jsonAwaitAnswersDecl struct {
+	Name        string `json:"name,omitempty"`
+	Description string `json:"description,omitempty"`
+	From        string `json:"from,omitempty"`
+	Timeout     string `json:"timeout,omitempty"`
 }
 
 type jsonWorkflowDecl struct {
@@ -623,15 +642,17 @@ type jsonBudgetBlock struct {
 	MaxDuration         string  `json:"max_duration,omitempty"`
 	MaxCostUSD          float64 `json:"max_cost_usd,omitempty"`
 	MaxTokens           int     `json:"max_tokens,omitempty"`
+	WarnTokens          int     `json:"warn_tokens,omitempty"`
 	MaxIterations       int     `json:"max_iterations,omitempty"`
 }
 
 type jsonEdge struct {
-	From string           `json:"from,omitempty"`
-	To   string           `json:"to,omitempty"`
-	When *jsonWhenClause  `json:"when,omitempty"`
-	Loop *jsonLoopClause  `json:"loop,omitempty"`
-	With []*jsonWithEntry `json:"with,omitempty"`
+	From   string           `json:"from,omitempty"`
+	To     string           `json:"to,omitempty"`
+	When   *jsonWhenClause  `json:"when,omitempty"`
+	IsElse bool             `json:"is_else,omitempty"`
+	Loop   *jsonLoopClause  `json:"loop,omitempty"`
+	With   []*jsonWithEntry `json:"with,omitempty"`
 }
 
 type jsonWhenClause struct {
@@ -704,6 +725,7 @@ func toJSON(f *File) *jsonFile {
 	for _, r := range f.Routers {
 		jf.Routers = append(jf.Routers, &jsonRouterDecl{
 			Name:            r.Name,
+			Description:     r.Description,
 			Mode:            routerModeToStr[r.Mode],
 			Model:           r.Model,
 			Backend:         r.Backend,
@@ -725,6 +747,7 @@ func toJSON(f *File) *jsonFile {
 	for _, t := range f.Tools {
 		jf.Tools = append(jf.Tools, &jsonToolNodeDecl{
 			Name:           t.Name,
+			Description:    t.Description,
 			Command:        t.Command,
 			Script:         t.Script,
 			Language:       t.Language,
@@ -747,6 +770,7 @@ func toJSON(f *File) *jsonFile {
 	for _, c := range f.Computes {
 		jc := &jsonComputeDecl{
 			Name:           c.Name,
+			Description:    c.Description,
 			Input:          c.Input,
 			Output:         c.Output,
 			Publish:        c.Publish,
@@ -760,11 +784,12 @@ func toJSON(f *File) *jsonFile {
 	}
 	for _, s := range f.Subbots {
 		js := &jsonSubbotDecl{
-			Name:     s.Name,
-			Source:   s.Source,
-			Output:   s.Output,
-			Needs:    s.Needs,
-			Isolated: s.Isolated,
+			Name:        s.Name,
+			Description: s.Description,
+			Source:      s.Source,
+			Output:      s.Output,
+			Needs:       s.Needs,
+			Isolated:    s.Isolated,
 		}
 		for _, w := range s.With {
 			js.With = append(js.With, &jsonWithEntry{Key: w.Key, Value: w.Value})
@@ -772,7 +797,7 @@ func toJSON(f *File) *jsonFile {
 		jf.Subbots = append(jf.Subbots, js)
 	}
 	for _, em := range f.Emits {
-		je := &jsonEmitDecl{Name: em.Name, Event: em.Event}
+		je := &jsonEmitDecl{Name: em.Name, Description: em.Description, Event: em.Event}
 		for _, w := range em.With {
 			je.With = append(je.With, &jsonWithEntry{Key: w.Key, Value: w.Value})
 		}
@@ -780,10 +805,19 @@ func toJSON(f *File) *jsonFile {
 	}
 	for _, wt := range f.Waits {
 		jf.Waits = append(jf.Waits, &jsonWaitDecl{
-			Name:    wt.Name,
-			Event:   wt.Event,
-			Timeout: wt.Timeout,
-			Output:  wt.Output,
+			Name:        wt.Name,
+			Description: wt.Description,
+			Event:       wt.Event,
+			Timeout:     wt.Timeout,
+			Output:      wt.Output,
+		})
+	}
+	for _, aa := range f.AwaitAnswers {
+		jf.AwaitAnswers = append(jf.AwaitAnswers, &jsonAwaitAnswersDecl{
+			Name:        aa.Name,
+			Description: aa.Description,
+			From:        aa.From,
+			Timeout:     aa.Timeout,
 		})
 	}
 	for _, w := range f.Workflows {
@@ -991,6 +1025,7 @@ func varsBlockToJSON(v *VarsBlock) *jsonVarsBlock {
 		jf := &jsonVarField{
 			Name: f.Name,
 			Type: typeExprToStr[f.Type],
+			Enum: f.EnumValues,
 		}
 		if f.Default != nil {
 			jf.Default = literalToJSON(f.Default)
@@ -1043,6 +1078,7 @@ func schemaToJSON(s *SchemaDecl) *jsonSchemaDecl {
 func agentToJSON(a *AgentDecl) *jsonAgentDecl {
 	return &jsonAgentDecl{
 		Name:              a.Name,
+		Description:       a.Description,
 		Model:             a.Model,
 		Backend:           a.Backend,
 		Provider:          a.Provider,
@@ -1083,6 +1119,7 @@ func agentToJSON(a *AgentDecl) *jsonAgentDecl {
 func judgeToJSON(j *JudgeDecl) *jsonJudgeDecl {
 	return &jsonJudgeDecl{
 		Name:              j.Name,
+		Description:       j.Description,
 		Model:             j.Model,
 		Backend:           j.Backend,
 		Provider:          j.Provider,
@@ -1123,6 +1160,7 @@ func judgeToJSON(j *JudgeDecl) *jsonJudgeDecl {
 func humanToJSON(h *HumanDecl) *jsonHumanDecl {
 	return &jsonHumanDecl{
 		Name:              h.Name,
+		Description:       h.Description,
 		Input:             h.Input,
 		Output:            h.Output,
 		Publish:           h.Publish,
@@ -1176,6 +1214,7 @@ func workflowToJSON(w *WorkflowDecl) *jsonWorkflowDecl {
 			MaxDuration:         w.Budget.MaxDuration,
 			MaxCostUSD:          w.Budget.MaxCostUSD,
 			MaxTokens:           w.Budget.MaxTokens,
+			WarnTokens:          w.Budget.WarnTokens,
 			MaxIterations:       w.Budget.MaxIterations,
 		}
 	}
@@ -1190,8 +1229,9 @@ func workflowToJSON(w *WorkflowDecl) *jsonWorkflowDecl {
 
 func edgeToJSON(e *Edge) *jsonEdge {
 	je := &jsonEdge{
-		From: e.From,
-		To:   e.To,
+		From:   e.From,
+		To:     e.To,
+		IsElse: e.IsElse,
 	}
 	if e.When != nil {
 		je.When = &jsonWhenClause{
@@ -1308,6 +1348,7 @@ func fromJSON(jf *jsonFile) (*File, error) {
 		}
 		f.Routers = append(f.Routers, &RouterDecl{
 			Name:            jr.Name,
+			Description:     jr.Description,
 			Mode:            mode,
 			Model:           jr.Model,
 			Backend:         jr.Backend,
@@ -1339,6 +1380,7 @@ func fromJSON(jf *jsonFile) (*File, error) {
 		}
 		f.Tools = append(f.Tools, &ToolNodeDecl{
 			Name:           jt.Name,
+			Description:    jt.Description,
 			Command:        jt.Command,
 			Script:         jt.Script,
 			Language:       jt.Language,
@@ -1366,6 +1408,7 @@ func fromJSON(jf *jsonFile) (*File, error) {
 		}
 		cd := &ComputeDecl{
 			Name:           jc.Name,
+			Description:    jc.Description,
 			Input:          jc.Input,
 			Output:         jc.Output,
 			Publish:        jc.Publish,
@@ -1380,11 +1423,12 @@ func fromJSON(jf *jsonFile) (*File, error) {
 
 	for _, js := range jf.Subbots {
 		sd := &SubbotDecl{
-			Name:     js.Name,
-			Source:   js.Source,
-			Output:   js.Output,
-			Needs:    js.Needs,
-			Isolated: js.Isolated,
+			Name:        js.Name,
+			Description: js.Description,
+			Source:      js.Source,
+			Output:      js.Output,
+			Needs:       js.Needs,
+			Isolated:    js.Isolated,
 		}
 		for _, w := range js.With {
 			sd.With = append(sd.With, &WithEntry{Key: w.Key, Value: w.Value})
@@ -1393,7 +1437,7 @@ func fromJSON(jf *jsonFile) (*File, error) {
 	}
 
 	for _, je := range jf.Emits {
-		ed := &EmitDecl{Name: je.Name, Event: je.Event}
+		ed := &EmitDecl{Name: je.Name, Description: je.Description, Event: je.Event}
 		for _, w := range je.With {
 			ed.With = append(ed.With, &WithEntry{Key: w.Key, Value: w.Value})
 		}
@@ -1402,10 +1446,20 @@ func fromJSON(jf *jsonFile) (*File, error) {
 
 	for _, jw := range jf.Waits {
 		f.Waits = append(f.Waits, &WaitDecl{
-			Name:    jw.Name,
-			Event:   jw.Event,
-			Timeout: jw.Timeout,
-			Output:  jw.Output,
+			Name:        jw.Name,
+			Description: jw.Description,
+			Event:       jw.Event,
+			Timeout:     jw.Timeout,
+			Output:      jw.Output,
+		})
+	}
+
+	for _, ja := range jf.AwaitAnswers {
+		f.AwaitAnswers = append(f.AwaitAnswers, &AwaitAnswersDecl{
+			Name:        ja.Name,
+			Description: ja.Description,
+			From:        ja.From,
+			Timeout:     ja.Timeout,
 		})
 	}
 
@@ -1508,7 +1562,7 @@ func varsBlockFromJSON(jv *jsonVarsBlock) (*VarsBlock, error) {
 		if !ok {
 			return nil, fmt.Errorf("astjson: unknown type %q", jf.Type)
 		}
-		vf := &VarField{Name: jf.Name, Type: te}
+		vf := &VarField{Name: jf.Name, Type: te, EnumValues: jf.Enum}
 		if jf.Default != nil {
 			l, err := literalFromJSON(jf.Default)
 			if err != nil {
@@ -1568,6 +1622,7 @@ func agentFromJSON(ja *jsonAgentDecl) (*AgentDecl, error) {
 	return &AgentDecl{
 		Name: ja.Name,
 		LLMDecl: LLMDecl{
+			Description:       ja.Description,
 			Model:             ja.Model,
 			Backend:           ja.Backend,
 			Provider:          ja.Provider,
@@ -1622,6 +1677,7 @@ func judgeFromJSON(jj *jsonJudgeDecl) (*JudgeDecl, error) {
 	return &JudgeDecl{
 		Name: jj.Name,
 		LLMDecl: LLMDecl{
+			Description:       jj.Description,
 			Model:             jj.Model,
 			Backend:           jj.Backend,
 			Provider:          jj.Provider,
@@ -1679,6 +1735,7 @@ func humanFromJSONWithInteraction(jh *jsonHumanDecl, interaction InteractionMode
 	}
 	return &HumanDecl{
 		Name:              jh.Name,
+		Description:       jh.Description,
 		Input:             jh.Input,
 		Output:            jh.Output,
 		Publish:           jh.Publish,
@@ -1744,6 +1801,7 @@ func workflowFromJSON(jw *jsonWorkflowDecl) (*WorkflowDecl, error) {
 			MaxDuration:         jw.Budget.MaxDuration,
 			MaxCostUSD:          jw.Budget.MaxCostUSD,
 			MaxTokens:           jw.Budget.MaxTokens,
+			WarnTokens:          jw.Budget.WarnTokens,
 			MaxIterations:       jw.Budget.MaxIterations,
 		}
 	}
@@ -1762,8 +1820,9 @@ func workflowFromJSON(jw *jsonWorkflowDecl) (*WorkflowDecl, error) {
 
 func edgeFromJSON(je *jsonEdge) (*Edge, error) {
 	e := &Edge{
-		From: je.From,
-		To:   je.To,
+		From:   je.From,
+		To:     je.To,
+		IsElse: je.IsElse,
 	}
 	if je.When != nil {
 		// Reject ambiguous shapes where both Condition and Expr are

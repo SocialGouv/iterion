@@ -1,8 +1,6 @@
-[← Documentation index](README.md) · [← Iterion](../README.md)
-
 # Recipes
 
-Recipes let you run the same workflow with different configurations without editing the `.bot` file. They're useful for benchmarking models, comparing prompts, or creating reusable presets:
+A recipe pins one `.bot` to a named configuration — preset vars, prompt overrides, a budget, and a success metric — so you can benchmark models, A/B prompts, or ship a reusable preset without ever touching the workflow source:
 
 ```json
 {

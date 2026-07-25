@@ -14,6 +14,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"reflect"
 	"sync"
 	"time"
 
@@ -133,6 +134,43 @@ type Store struct {
 	activeDurationFn store.ActiveDurationFn
 }
 
+// Registry returns the BSON codec registry the store's Mongo client is
+// constructed with. It overrides the driver's default type map for
+// values decoded into `any` — the open-shaped payloads every collection
+// carries (Event.Data, Run.Inputs, Checkpoint.Outputs, interaction
+// questions/answers, board event payloads, …):
+//
+//   - embedded documents → map[string]any (driver default: bson.D)
+//   - arrays             → []any          (driver default: bson.A)
+//   - int32              → int64          (the driver encodes any Go
+//     int fitting 32 bits as wire int32, so engine-written counters
+//     would otherwise come back as int32)
+//
+// bson.D / bson.A / int32 are defined types distinct from the
+// map[string]any / []any / int-int64-float64 shapes those payloads
+// carry on every other path (in-memory engine values, filesystem-store
+// JSON, queue/webhook JSON) — and bson.D even marshals to JSON as an
+// object, so API responses look right while every Go-side type
+// assertion on nested values fails. Consumers shared across stores
+// (runview snapshot reducers, subbot output recovery, checkpoint
+// reference resolution, expr evaluation, fan-out iteration) assert
+// exactly the JSON-ish shapes, so the foreign codec types must never
+// cross the store boundary. Normalizing here — on the single client
+// all Mongo access (cursors, change streams, DB() consumers) rides —
+// gives every collection and every future consumer the same contract.
+// Exported so tests decode raw documents exactly the way the store's
+// cursors do; guarded by decode_shape_test.go and the storetest
+// EventDataDecodeShape conformance case.
+func Registry() *bson.Registry {
+	reg := bson.NewRegistry()
+	doc := reflect.TypeOf(map[string]any{})
+	reg.RegisterTypeMapEntry(bson.TypeEmbeddedDocument, doc)
+	reg.RegisterTypeMapEntry(bson.Type(0), doc)
+	reg.RegisterTypeMapEntry(bson.TypeArray, reflect.TypeOf([]any{}))
+	reg.RegisterTypeMapEntry(bson.TypeInt32, reflect.TypeOf(int64(0)))
+	return reg
+}
+
 // New connects to Mongo, pings to validate credentials, then ensures
 // indexes + TTL exist. Returns the live store on success.
 func New(ctx context.Context, cfg Config) (*Store, error) {
@@ -149,7 +187,7 @@ func New(ctx context.Context, cfg Config) (*Store, error) {
 		cfg.Logger = iterlog.New(iterlog.LevelInfo, nil)
 	}
 
-	cli, err := mongo.Connect(options.Client().ApplyURI(cfg.URI))
+	cli, err := mongo.Connect(options.Client().ApplyURI(cfg.URI).SetRegistry(Registry()))
 	if err != nil {
 		return nil, fmt.Errorf("store/mongo: connect: %w", err)
 	}
@@ -281,6 +319,9 @@ func (s *Store) EnsureSchema(ctx context.Context, eventsTTLDays int) error {
 		// run sets source.issue_id, a shard/child sets parent_run_id;
 		// plain manual runs leave both empty.
 		{Keys: bson.D{{Key: "tenant_id", Value: 1}, {Key: "source.issue_id", Value: 1}, {Key: "created_at", Value: 1}}, Options: options.Index().SetName("tenant_source_issue_created").SetPartialFilterExpression(bson.M{"source.issue_id": bson.M{"$exists": true}})},
+		// Schedule←run reverse edge (pkg/schedgate overlap gate). Partial
+		// on source.schedule_id so only schedule-launched runs index.
+		{Keys: bson.D{{Key: "tenant_id", Value: 1}, {Key: "source.schedule_id", Value: 1}, {Key: "created_at", Value: 1}}, Options: options.Index().SetName("tenant_source_schedule_created").SetPartialFilterExpression(bson.M{"source.schedule_id": bson.M{"$exists": true}})},
 		{Keys: bson.D{{Key: "tenant_id", Value: 1}, {Key: "parent_run_id", Value: 1}, {Key: "created_at", Value: 1}}, Options: options.Index().SetName("tenant_parent_run_created").SetPartialFilterExpression(bson.M{"parent_run_id": bson.M{"$exists": true}})},
 	})
 	if err != nil && !mongoutil.IsIndexConflict(err) {

@@ -126,7 +126,32 @@ func TestLoadManifest_RejectsInvocationErrors(t *testing.T) {
 		{
 			name: "wrong payload on kind",
 			body: "name: b\nschema_version: 1\ninvocations:\n  - kind: forge\n    forge:\n      event: pull_request\n    command:\n      name: x\n",
-			want: "kind=forge must not set command:/schedule:",
+			want: "kind=forge must not set a command:/schedule:/keepalive: block",
+		},
+		{
+			name: "keepalive missing block",
+			body: "name: b\nschema_version: 1\ninvocations:\n  - kind: keepalive\n",
+			want: "kind=keepalive requires a keepalive: block",
+		},
+		{
+			name: "keepalive missing interval",
+			body: "name: b\nschema_version: 1\ninvocations:\n  - kind: keepalive\n    keepalive:\n      stale_after: 10m\n",
+			want: "interval is required",
+		},
+		{
+			name: "keepalive interval below floor",
+			body: "name: b\nschema_version: 1\ninvocations:\n  - kind: keepalive\n    keepalive:\n      interval: 1s\n",
+			want: "below the 5s floor",
+		},
+		{
+			name: "keepalive bad interval",
+			body: "name: b\nschema_version: 1\ninvocations:\n  - kind: keepalive\n    keepalive:\n      interval: nope\n",
+			want: "invalid interval",
+		},
+		{
+			name: "keepalive with disallowed payload",
+			body: "name: b\nschema_version: 1\ninvocations:\n  - kind: keepalive\n    keepalive:\n      interval: 30s\n    board: {}\n",
+			want: "kind=keepalive must not set a forge:/command:/schedule:/board: block",
 		},
 		{
 			name: "schedule bad cron",
@@ -142,6 +167,11 @@ func TestLoadManifest_RejectsInvocationErrors(t *testing.T) {
 			name: "board unknown on kind",
 			body: "name: b\nschema_version: 1\ninvocations:\n  - kind: board\n    board:\n      on: [card.exploded]\n",
 			want: "unknown on \"card.exploded\"",
+		},
+		{
+			name: "board consume_labels without all_labels",
+			body: "name: b\nschema_version: 1\ninvocations:\n  - kind: board\n    mode: direct\n    board:\n      on: [card.created]\n      consume_labels: true\n",
+			want: "consume_labels requires a non-empty all_labels",
 		},
 	}
 	for _, tc := range cases {

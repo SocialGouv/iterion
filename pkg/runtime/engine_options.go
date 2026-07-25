@@ -318,6 +318,17 @@ func WithBundle(b *bundle.Bundle) EngineOption {
 	return func(e *Engine) { e.bundle = b }
 }
 
+// WithContributions hands the engine PRE-RESOLVED plugin contributions and
+// skill-library skills instead of letting it resolve them from the local
+// iterion home. Set by the cloud runner from the queue message: a runner pod's
+// iterion home is ephemeral and empty, so without this an operator-installed
+// plugin's skill (or a DSL `skills:` reference) silently never reaches the
+// workspace there. Passing a non-nil value — including an empty one — makes the
+// payload authoritative and suppresses local resolution. See Contributions.
+func WithContributions(c *Contributions) EngineOption {
+	return func(e *Engine) { e.contributions = c }
+}
+
 // WithOutputValidation enables post-execution validation of node outputs
 // against their declared output schemas. When enabled, a node whose output
 // does not conform to its schema will cause the run to fail immediately.
@@ -341,6 +352,17 @@ func WithOutputValidation(enabled bool) EngineOption {
 // Cancel).
 func WithPauseSignal(ch <-chan struct{}) EngineOption {
 	return func(e *Engine) { e.pauseSignal = ch }
+}
+
+// WithOverrideChannel wires the live-steering command channel
+// (bump_loop / raise_budget — see override.go). The engine drains it at
+// the top of every execution-loop iteration, on the loop goroutine
+// itself, so overrides never race the single-writer run state. Senders
+// use OverrideMsg.Await to bound their wait: a run busy inside a long
+// node acks at the next boundary, exactly like operator pause. nil
+// disables steering (the default).
+func WithOverrideChannel(ch <-chan *OverrideMsg) EngineOption {
+	return func(e *Engine) { e.overrideCh = ch }
 }
 
 // WithDailyCap wires a per-(store, UTC-day) LLM spend cap into the

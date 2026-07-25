@@ -187,6 +187,7 @@ func (s *Service) startInProcess(parent context.Context, runID string, spec Laun
 		StoreDir:       s.storeDir,
 		SourceIssueID:  sourceIssueID,
 		Inbox:          s.inboxBinder(),
+		AsyncAsk:       s.asyncAskBinder(),
 		Backend:        spec.Backend,
 		ModelOverrides: toModelOverrides(spec.ModelOverrides),
 		BotID:          spec.BotID,
@@ -360,6 +361,7 @@ func (s *Service) Resume(parent context.Context, spec ResumeSpec) (*LaunchResult
 		Logger:        runLogger,
 		StoreDir:      s.storeDir,
 		Inbox:         s.inboxBinder(),
+		AsyncAsk:      s.asyncAskBinder(),
 		BoardRegister: s.boardRegister,
 		LocalSecrets:  s.localSecrets,
 		LocalSealer:   s.localSealer,
@@ -472,24 +474,33 @@ func (s *Service) spawnRun(
 	// being scheduled. The engine's runResolveDoc sees the running doc and
 	// claims it instead of re-creating.
 	if precreateInputs != nil {
-		created, err := s.store.CreateRun(context.Background(), runID, wf.Name, precreateInputs)
-		if err != nil {
+		// ParentRunID is part of the launch identity, so persist it in the
+		// SAME create write when the store supports it (ParentedRunCreator).
+		// Otherwise a running child doc would exist between CreateRun and the
+		// follow-up SaveRun — if that second write failed, the doc stayed
+		// `running` with no goroutine until the orphan reconciler caught it
+		// (PR #193 M3). The engine option below remains the authoritative path
+		// for direct/non-precreated runs.
+		var createErr error
+		if parentRunID != "" {
+			if pc := store.AsParentedRunCreator(s.store); pc != nil {
+				_, createErr = pc.CreateChildRun(context.Background(), runID, wf.Name, parentRunID, precreateInputs)
+			} else {
+				var created *store.Run
+				created, createErr = s.store.CreateRun(context.Background(), runID, wf.Name, precreateInputs)
+				if createErr == nil {
+					created.ParentRunID = parentRunID
+					createErr = s.store.SaveRun(context.Background(), created)
+				}
+			}
+		} else {
+			_, createErr = s.store.CreateRun(context.Background(), runID, wf.Name, precreateInputs)
+		}
+		if createErr != nil {
 			s.manager.Deregister(runID)
 			_ = lock.Unlock()
 			s.dropRunLog(runID)
-			return nil, fmt.Errorf("runview: create run: %w", err)
-		}
-		// ParentRunID is part of the launch identity, so persist it before
-		// returning just like the run document itself. The engine option below
-		// remains the authoritative path for direct/non-precreated runs.
-		if parentRunID != "" {
-			created.ParentRunID = parentRunID
-			if err := s.store.SaveRun(context.Background(), created); err != nil {
-				s.manager.Deregister(runID)
-				_ = lock.Unlock()
-				s.dropRunLog(runID)
-				return nil, fmt.Errorf("runview: save parent run: %w", err)
-			}
+			return nil, fmt.Errorf("runview: create run: %w", createErr)
 		}
 	}
 
@@ -532,10 +543,15 @@ func (s *Service) spawnRun(
 	if pauseCh, perr := s.manager.PauseSignal(runID); perr == nil {
 		opts = append(opts, runtime.WithPauseSignal(pauseCh))
 	}
+	// Live-steering channel (bump_loop / raise_budget): buffered so a
+	// burst of commands never blocks the HTTP handler; the engine
+	// drains it at the same safe boundary as the pause signal.
+	steerCh := make(chan *runtime.OverrideMsg, 8)
+	opts = append(opts, runtime.WithOverrideChannel(steerCh))
 	eng := runtime.New(wf, emitStore, executor, opts...)
 	// Publish the engine so the store's Event.ActiveMs stamping can read
 	// this run's monotonic active elapsed. Removed when the goroutine exits.
-	s.registerRunEngine(runID, eng)
+	s.registerRunEngine(runID, eng, steerCh)
 
 	done := make(chan struct{})
 	go func() {
@@ -682,8 +698,12 @@ func (s *Service) engineOptions(runLogger *iterlog.Logger, hash, filePath, runNa
 		runtime.WithEventObserver(s.broker.Publish),
 		runtime.WithOnNodeFinished(s.stampWatchedFromOutput),
 	}
-	if !ex.worktreeAuthoritySince.IsZero() {
-		opts = append(opts, runtime.WithWorktreeAuthoritySince(ex.worktreeAuthoritySince))
+	// Global sandbox default (sandbox-by-default): injected by the
+	// PRODUCT constructors (studio/server/dispatch daemons) via
+	// WithSandboxDefault. A Service built without it (tests, embedders)
+	// stays neutral, mirroring the engine's own contract.
+	if s.sandboxDefault != "" {
+		opts = append(opts, runtime.WithSandboxDefault(s.sandboxDefault))
 	}
 	// Per-launch WorkDir (ADR-046) overrides the service default; the
 	// dispatcher points it at the per-issue worktree so ${PROJECT_DIR}

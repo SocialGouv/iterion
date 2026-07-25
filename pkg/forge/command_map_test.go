@@ -143,19 +143,22 @@ func TestSyncSchedules_CreatesAndIsIdempotent(t *testing.T) {
 		},
 	}
 	ctx := context.Background()
-	if err := o.syncSchedules(ctx, "t1", "ri-1", invByBot, nil, "u1"); err != nil {
+	if err := o.syncSchedules(ctx, "t1", "ri-1", "https://github.com/org/app.git", invByBot, nil, "u1"); err != nil {
 		t.Fatalf("syncSchedules: %v", err)
 	}
 	rows, _ := mem.ListByIntegration(ctx, "t1", "ri-1")
 	if len(rows) != 1 {
 		t.Fatalf("want exactly 1 schedule row (only the cron'd one), got %d: %+v", len(rows), rows)
 	}
+	if rows[0].RepoURL != "https://github.com/org/app.git" {
+		t.Fatalf("schedule must carry the repo clone URL (stateful repo-bound bots), got %q", rows[0].RepoURL)
+	}
 	if rows[0].BotID != "sec-audit-source" || rows[0].Cron != "0 2 * * 1" || rows[0].NextFireAt.IsZero() {
 		t.Errorf("schedule row: %+v", rows[0])
 	}
 
 	// Re-sync replaces, doesn't duplicate.
-	if err := o.syncSchedules(ctx, "t1", "ri-1", invByBot, nil, "u1"); err != nil {
+	if err := o.syncSchedules(ctx, "t1", "ri-1", "https://github.com/org/app.git", invByBot, nil, "u1"); err != nil {
 		t.Fatal(err)
 	}
 	rows2, _ := mem.ListByIntegration(ctx, "t1", "ri-1")
@@ -177,7 +180,7 @@ func TestSyncSchedules_CronOverride(t *testing.T) {
 		"sec-audit-source": {{Kind: bundle.InvocationKindSchedule, Schedule: &bundle.InvocationSchedule{SuggestedCron: "0 2 * * 1"}}},
 	}
 	ctx := context.Background()
-	if err := o.syncSchedules(ctx, "t1", "ri-1", invByBot, map[string]string{"sec-audit-source": "30 9 * * *"}, "u1"); err != nil {
+	if err := o.syncSchedules(ctx, "t1", "ri-1", "https://github.com/org/app.git", invByBot, map[string]string{"sec-audit-source": "30 9 * * *"}, "u1"); err != nil {
 		t.Fatal(err)
 	}
 	rows, _ := mem.ListByIntegration(ctx, "t1", "ri-1")

@@ -1,7 +1,7 @@
 import { useCallback } from "react";
 import { useDocumentStore } from "@/store/document";
 import { useActiveWorkflow } from "@/hooks/useActiveWorkflow";
-import type { VarField, TypeExpr, VarsBlock, Literal, LiteralKind } from "@/api/types";
+import type { VarField, TypeExpr, VarsBlock, Literal } from "@/api/types";
 import { TextField, SelectField, NumberField } from "./forms/FormField";
 import { Select } from "@/components/ui/Select";
 
@@ -14,22 +14,28 @@ const TYPE_OPTIONS: { value: TypeExpr; label: string }[] = [
   { value: "string[]", label: "string[]" },
 ];
 
+// The type <select> can only report one of TYPE_OPTIONS' values; this
+// guard narrows the DOM's string back to TypeExpr without a cast.
+function isTypeExpr(v: string): v is TypeExpr {
+  return TYPE_OPTIONS.some((o) => o.value === v);
+}
+
 function rawToLiteral(type: TypeExpr, raw: string): Literal | undefined {
   if (raw === "") return undefined;
   switch (type) {
     case "string":
-      return { kind: "string" as LiteralKind, raw: `"${raw}"`, str_val: raw };
+      return { kind: "string", raw: `"${raw}"`, str_val: raw };
     case "json":
     case "string[]":
-      return { kind: "string" as LiteralKind, raw, str_val: raw };
+      return { kind: "string", raw, str_val: raw };
     case "int":
-      return { kind: "int" as LiteralKind, raw, int_val: parseInt(raw, 10) || 0 };
+      return { kind: "int", raw, int_val: parseInt(raw, 10) || 0 };
     case "float":
-      return { kind: "float" as LiteralKind, raw, float_val: parseFloat(raw) || 0 };
+      return { kind: "float", raw, float_val: parseFloat(raw) || 0 };
     case "bool":
-      return { kind: "bool" as LiteralKind, raw, bool_val: raw === "true" };
+      return { kind: "bool", raw, bool_val: raw === "true" };
     default:
-      return { kind: "string" as LiteralKind, raw: `"${raw}"`, str_val: raw };
+      return { kind: "string", raw: `"${raw}"`, str_val: raw };
   }
 }
 
@@ -111,7 +117,7 @@ function VarsSection({
   );
 
   const addField = useCallback(() => {
-    onChange({ fields: [...fields, { name: "", type: "string" as TypeExpr }] });
+    onChange({ fields: [...fields, { name: "", type: "string" }] });
   }, [fields, onChange]);
 
   const removeField = useCallback(
@@ -157,7 +163,9 @@ function VarsSection({
               <SelectField
                 label="Type"
                 value={field.type}
-                onChange={(v) => updateField(i, { type: v as TypeExpr, default: undefined })}
+                onChange={(v) => {
+                  if (isTypeExpr(v)) updateField(i, { type: v, default: undefined });
+                }}
                 options={TYPE_OPTIONS}
               />
             </div>

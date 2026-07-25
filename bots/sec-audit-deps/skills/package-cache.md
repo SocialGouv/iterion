@@ -1,29 +1,41 @@
 ---
 name: package-cache
 description: |
-  Cross-run host-wide package analysis cache, located at
-  ~/.iterion/security-cache/packages.jsonl. Read by load_package_cache
-  + filter_cached, appended by update_package_cache.
+  Package analysis cache at {{vars.cache_path}} (default: the engine's
+  out-of-tree run scratch dir). Read by load_package_cache
+  + filter_cached, appended by update_package_cache. Point cache_path
+  at ~/.iterion/security-cache/packages.jsonl for host-wide reuse.
 ---
 
-# Package cache — `~/.iterion/security-cache/packages.jsonl`
+# Package cache — `{{vars.cache_path}}`
 
 Append-only JSONL. One line per `(ecosystem, name, version, checksum)`
-tuple analysed by sec-audit-deps. Universal across repos on the host
-(a published package version is the same artifact everywhere).
+tuple analysed by sec-audit-deps. A published package version is the
+same artifact everywhere, so cached verdicts are portable across repos.
 
 ## Location
 
 ```
-~/.iterion/security-cache/packages.jsonl
+{{vars.cache_path}}
+# default: ${PROJECT_SCRATCH_DIR}/sec-audit-deps/cache/packages.jsonl
 ```
 
-The parent directory is created on first write. The file is
-auto-mounted into sandboxes when `host_state: auto` is in effect
-(the default), so sandboxed runs share the cache transparently.
+The parent directory is created on first write. The default lives in
+the engine's out-of-tree scratch dir — always writable, including in
+sandboxes whose image pins a non-host user — at the cost of being
+per-run (ephemeral) under a sandbox.
 
-Pass `--sandbox-host-state=none` to opt out, e.g. on multi-tenant
-cloud runners where operator state must not leak between users.
+For true cross-run, cross-repo reuse, opt into the host-wide store:
+
+```
+--var cache_path=$HOME/.iterion/security-cache/packages.jsonl
+```
+
+That file is auto-mounted into sandboxes when `host_state: auto` is in
+effect (the default). Pass `--sandbox-host-state=none` to opt out,
+e.g. on multi-tenant cloud runners where operator state must not leak
+between users (and expect EACCES on images pinning a non-host user —
+the reason the scratch default exists).
 
 ## Line schema
 
@@ -89,33 +101,37 @@ line per key.
 
 ## Operator workflows
 
+All examples below use `CACHE=<your cache_path>` (the host-wide
+`~/.iterion/security-cache/packages.jsonl` when opted in).
+
 ### Force a rescan of a package
 ```bash
 # Remove all lines for a specific package@version
-grep -v '"name":"<name>","version":"<ver>"' ~/.iterion/security-cache/packages.jsonl > /tmp/p.jsonl
-mv /tmp/p.jsonl ~/.iterion/security-cache/packages.jsonl
+grep -v '"name":"<name>","version":"<ver>"' "$CACHE" > /tmp/p.jsonl
+mv /tmp/p.jsonl "$CACHE"
 ```
 
 ### Clear the cache entirely
 ```bash
-rm ~/.iterion/security-cache/packages.jsonl
+rm "$CACHE"
 ```
 
 ### Audit cache size
 ```bash
-wc -l ~/.iterion/security-cache/packages.jsonl
+wc -l "$CACHE"
 # 100k lines ≈ 50 MB. Compaction (keep latest line per key) is a
 # manual step for now:
-sort -u ~/.iterion/security-cache/packages.jsonl > ...
+sort -u "$CACHE" > ...
 # (but the dedup needs to be per-key, not global; a future compact
 # tool node will handle this; for V1 the file grows append-only)
 ```
 
-## Why host-wide and not per-repo
+## Why the host-wide override exists
 
 A published package version is identical across repos. Caching
-per-repo would multiply tokens by the number of repos on the host.
-Host-wide gives the most value with the least state.
+per-repo (or per-run, the scratch default) multiplies tokens by the
+number of repos on the host; the host-wide override gives the most
+value with the least state, when the sandbox setup can write it.
 
 ## Why JSONL and not SQLite
 

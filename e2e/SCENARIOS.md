@@ -65,6 +65,7 @@ injects a `scenarioExecutor` (stub configurable per node) and executes via
 | router fan_out_all | DualParallel, Compliance |
 | join wait_all | DualParallel, Compliance |
 | human pause/resume | Compliance_HumanGate |
+| async questions / await_answers (ADR-081) | AwaitAnswersAlreadyAnswered, AwaitAnswersReleasedByAnswer, AwaitAnswersTimeout, AwaitAnswersNoQuestions |
 | tool node | CIFix |
 | done | All (happy paths) |
 | fail | CIFix_LoopExhaustion |

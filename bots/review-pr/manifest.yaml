@@ -1,15 +1,63 @@
 name: review-pr
 display_name: Revi
 icon: 🔎
-version: 0.2.0
+version: 0.5.4
+## 0.5.4 — emit reliability: harden the `findings` output contract. The
+## converge/emit LLM sometimes returned `findings` as a PROSE STRING ("4
+## findings kept (1 high…)") instead of the JSON array the schema intends —
+## `findings: json` accepts a string, so nothing rejected it. Downstream that
+## fails JSON.parse → the gate FAIL-CLOSES (blocking=1) and every finding is
+## dropped from the review (0 inline comments), even though total_findings was
+## right. Found live on PR #292 (run 019f98ed): status failure/1-blocking with
+## a "0 findings kept" body. The prompt now emphatically demands a JSON ARRAY
+## OF OBJECTS with a verbatim example and contrasts it with the newline-string
+## `questions` (the likely source of the shape swap). Fail-closed already made
+## this SAFE (never a false green); this makes it not lose findings.
+## 0.5.3 — declare the `statuses: write` forge scope the merge gate needs
+## (advisory/provisioning hint; the runtime does not read it). Live e2e on
+## prod proved the full chain — Revi reviews, the bot sends the gate verdict,
+## the server resolves the head SHA and calls SetCommitStatus — but the
+## GitHub App lacked "Commit statuses: write", so the status 403'd
+## "insufficient scope" (non-fatal: the review still posts, the gate advises
+## instead of blocking). Grant the App perm + re-accept the install to enforce.
+## 0.5.2 — fix: SECOND publish_review shell bug (silent empty output → no
+## publish, no gate status, publish_health then crashes). A python COMMENT in
+## the publish_review body contained double-quote characters ("high"/"blocker"
+## …); the body is wrapped by the shell in python3 -c "…", so a stray double
+## quote ends the string and truncates the script. Same trap as backticks.
+## Comment rewritten quote-free; a catalog test now greps every python -c body
+## for stray double-quotes/backticks so this class can't regress.
+## 0.5.1 — fix: publish_review shell exit-127 crash. The v0.5.0 `questions`
+## channel passed a json array of strings via QUESTIONS={{input.questions}};
+## a tool-node substitution space-joins an all-string array (known engine bug,
+## executor_tool.go:1047) so the 2nd+ question landed in shell command position
+## → the whole review crashed. Questions now flow as a scalar newline-joined
+## string (shell-safe as one escaped token). Found by dogfooding the gate's own
+## PR #292, whose review literally raised a "/revi approve …" question.
+## 0.5.0 — merge gate: the deterministic publish step posts a "revi/review"
+## commit status on the PR head SHA (success when 0 findings meet
+## `gate_severity`, else failure). List that context in branch protection to
+## make Revi's verdict BLOCK the merge; leave it out and it is advisory. The
+## verdict is a COUNT computed in the bot, never an LLM judgment; `questions`
+## never count. Pairs with the webhook ReviewOnSync opt-in (re-review each
+## push) so the status tracks the fixed head.
+## 0.4.0 — falsifiability channel: reviewers emit non-blocking `questions`
+## (load-bearing assumptions a clean diff now relies on but they could not
+## verify end-to-end), merged by converge and surfaced in the report + the
+## PR review summary body — so a 0-finding review shows WHAT was checked
+## and WHERE residual risk hides, never a bare "trust me, nothing".
+## Questions never become findings, never reach the board, never gate.
+## 0.3.1 — reviewer_gpt backend env-overridable (ITERION_VIBE_BACKEND_GPT)
+## so a Claude-forfait-only instance runs the second reviewer on
+## claude_code (cross-model diversity) when OpenAI quota is unavailable.
 description: |
   Read-only cross-family code reviewer. Reviews the working-tree diff
   of the current branch against its base with two independent reviewers
   (Claude + GPT), merges and de-duplicates their findings (cross-family
   agreement raises confidence), then publishes one issue per finding to
   the iterion native kanban board (labelled severity + type +
-  source:revi) and writes a markdown report. Given a pull/merge-request
-  URL (--var pr_url), it ALSO posts the findings onto that PR as a real
+  source:revi) and writes a markdown report. Given a pull-request URL
+  (PR; merge request on GitLab; --var pr_url), it ALSO posts the findings onto that PR as a real
   forge review — inline comments anchored to file:line with one-click
   ```suggestion blocks (GitHub / GitLab / Forgejo). Never edits, fixes,
   or commits code — that is the improve-loops' job (Billy / Willy).
@@ -32,18 +80,24 @@ dispatch_vars:
 # Forge-access requirements for the studio Integrations auto-provisioner
 # (advisory + discovery-time — the runtime does not read this).
 forge:
-  events: [pull_request, pull_request_comment]  # MR/PR open → review ; /revi note → re-review
+  events: [pull_request, pull_request_comment]  # PR open → review ; /revi note → re-review
   token_scopes:
     pull_requests: write     # post the review + inline ```suggestion blocks
     repository: read         # clone + read the diff
+    statuses: write          # post the revi/review merge-gate commit status
+                             # (GitHub App perm "Commit statuses: Read and
+                             # write"; without it SetCommitStatus 403s
+                             # "insufficient scope" and the gate silently
+                             # advises instead of blocking)
   secret: forge_token        # cross-ref with main.bot `secrets: { forge_token }`
   webhook:
     launch_vars:
-      pr_review_mode: summary
       post_to_board: "false"
   rationale: |
-    Revi reads the MR/PR diff and posts one forge review with inline
-    comments + ```suggestion blocks. /revi in a note triggers a
+    Revi reads the PR diff; the iterion server posts one forge review
+    with inline comments + one-click suggestion blocks through the team
+    connection's live client (deterministic publish endpoint — the run
+    itself holds no posting credential). /revi in a note triggers a
     re-review on the same PR.
 
 # Invocations: how Revi can be triggered (typed routing contract).
@@ -54,3 +108,9 @@ invocations:
   - kind: command
     mode: direct
     command: { name: revi, scope: pr, disambiguator: when_args_empty }
+
+## Studio launch-form hierarchy: `primary` inputs render top-level in
+## the declared order; `hidden` vars are dispatch/webhook plumbing kept
+## out of the form (still settable via --var / bot_args).
+launch:
+  primary: [pr_url, base_ref]

@@ -1,7 +1,10 @@
 name: supply-shield-cve
 display_name: Vulny
 icon: 🚨
-version: 0.1.0
+version: 0.1.1
+## 0.1.1 — ADR-082 Phase 2 (sandbox-by-default): sandbox block reduced to
+## the sec-image pin + forge-token env passthrough (Phase 3 moves tokens to
+## file secrets); claude install gate and ~/.claude mount removed.
 description: |
   Global supply-chain CVE shield. PR / push-driven, diff-scoped CVE
   sibling of supply-shield (Shieldy): same pipeline, but the analysis
@@ -13,7 +16,8 @@ description: |
   (npm audit / pip-audit / govulncheck), validates each advisory
   against the resolved version (affected range / fixed version / Go
   reachability) with an LLM reviewer, and reports confirmed CVEs back
-  onto the PR/MR via the native forge API (sticky comment, inline
+  onto the PR (merge request on GitLab) via the native forge API
+  (sticky comment, inline
   review, SARIF / code-scanning) and the kanban board. A deterministic
   coverage gate hard-fails when the CVE floor did not run so a missing
   scanner never reads as "0 CVEs found".
@@ -42,3 +46,10 @@ invocations:
     args_var: scope_notes
     command: { name: cve, aliases: [supply-shield-cve, shield-cve], scope: any, min_replier_role: developer }
   - kind: board
+
+## Studio launch-form hierarchy: `primary` inputs render top-level in
+## the declared order; `hidden` vars are internal plumbing kept out of
+## the form (still settable via --var / bot_args).
+launch:
+  primary: [base_ref, pr_ref]
+  hidden: [forge_marker]

@@ -22,8 +22,11 @@ func TestWorkflowSandboxActive(t *testing.T) {
 		{"inline block, no override", inline, "", "", true},
 		{"inline block neutralized by override none", inline, "none", "", false},
 		{"inline block wins over override auto", inline, "auto", "", true},
-		{"no block, no override", &ir.Workflow{}, "", "", false},
+		// The engine itself is neutral: policy (sandbox-by-default) lives
+		// at product entry points via ResolveGlobalSandboxDefault.
+		{"no block, no override, no default", &ir.Workflow{}, "", "", false},
 		{"no block, global default auto", &ir.Workflow{}, "", "auto", true},
+		{"no block, global default none", &ir.Workflow{}, "", "none", false},
 		{"nil workflow, override none", nil, "none", "", false},
 	}
 	for _, c := range cases {

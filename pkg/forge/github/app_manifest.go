@@ -36,16 +36,50 @@ type AppManifest struct {
 	HookAttributes     map[string]any    `json:"hook_attributes"`
 }
 
+// AppManifestOptions tunes the App's requested grant set beyond the
+// least-privilege runtime baseline.
+type AppManifestOptions struct {
+	// AllowRepoCreation adds administration:write to the App's requested
+	// permissions so iterion can CREATE repositories in the installed
+	// org (the "new app → new repo" launch journey). Broad grant, hence
+	// opt-in at App-creation time and surfaced in the connect UI; at run
+	// time it is minted per CreateRepo call only
+	// (RepoAdminInstallationPermissions) — the cached runtime token stays
+	// on RuntimeInstallationPermissions.
+	AllowRepoCreation bool
+	// AllowAppDelivery adds workflows:write + packages:write so a bot can
+	// publish the CI that builds an app and the image it produces — the
+	// second half of the "new app → new repo → deployed" journey. Opt-in
+	// because `workflows: write` lets the holder rewrite CI, i.e. run
+	// arbitrary code in it.
+	AllowAppDelivery bool
+}
+
 // BuildAppManifest assembles the manifest for an iterion forge GitHub App. The
-// permissions are the LEAST-PRIVILEGE set iterion's forge layer actually needs:
-// push/read code (contents), open + comment on PRs (pull_requests), the
-// mandatory metadata baseline, and manage the per-repo inbound webhook
-// (repository_hooks — the App-level webhook is disabled, iterion creates per-repo
-// hooks itself). It deliberately does NOT request `administration` (repo
-// deletion / settings / teams / branch-protection): that grant is dangerous AND
-// wrong for a GitHub App installation token — per GitHub docs repo webhooks
-// require `repository_hooks:write`, not `administration`.
-func BuildAppManifest(name, homeURL, redirectURL string) AppManifest {
+// baseline permissions are the LEAST-PRIVILEGE set iterion's forge layer
+// actually needs: push/read code (contents), open + comment on PRs
+// (pull_requests), the mandatory metadata baseline, and manage the per-repo
+// inbound webhook (repository_hooks — the App-level webhook is disabled,
+// iterion creates per-repo hooks itself). `administration` (repo settings /
+// deletion / branch-protection) is never part of the baseline — webhooks
+// require `repository_hooks:write`, not `administration` — and only joins the
+// grant when opts.AllowRepoCreation asks for the create-repo capability.
+func BuildAppManifest(name, homeURL, redirectURL string, opts ...AppManifestOptions) AppManifest {
+	perms := RuntimeInstallationPermissions()
+	// statuses:write lets Revi post its revi/review merge-gate commit status.
+	// Optional at runtime (the mint falls back without it — see AppClient.rest),
+	// but requested at App creation so new installations grant it up front.
+	perms["statuses"] = "write"
+	for _, o := range opts {
+		if o.AllowRepoCreation {
+			perms["administration"] = "write"
+		}
+		if o.AllowAppDelivery {
+			for name, level := range DeliveryInstallationPermissions() {
+				perms[name] = level
+			}
+		}
+	}
 	return AppManifest{
 		Name:        name,
 		URL:         homeURL,
@@ -59,13 +93,13 @@ func BuildAppManifest(name, homeURL, redirectURL string) AppManifest {
 		SetupOnUpdate: true,
 		Public:        false,
 		DefaultEvents: []string{},
-		// The App's granted permissions ARE iterion's least-privilege runtime
-		// set — single source of truth, so the manifest and every minted
-		// installation token can never drift apart. (contents: clone + diff +
-		// push; pull_requests: open + comment; metadata: baseline;
-		// repository_hooks: per-repo inbound webhook. Deliberately no
-		// `administration`.)
-		DefaultPermissions: RuntimeInstallationPermissions(),
+		// The App's granted permissions are iterion's least-privilege
+		// runtime set (contents: clone + diff + push; pull_requests:
+		// open + comment; metadata: baseline; repository_hooks: per-repo
+		// inbound webhook), plus administration:write ONLY when the
+		// create-repo capability was opted in — minted tokens always
+		// narrow to the subset a call needs.
+		DefaultPermissions: perms,
 		HookAttributes:     map[string]any{"url": homeURL, "active": false},
 	}
 }

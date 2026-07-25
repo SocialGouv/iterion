@@ -68,7 +68,7 @@ func isMutatingNodeWithBackend(node ir.Node, defaultBackend string, resolver eff
 func isMutatingNodeCtx(node ir.Node, defaultBackend string, resolver effectiveBackendResolver, fanOutEachTemplate bool) bool {
 	switch n := node.(type) {
 	case *ir.ToolNode:
-		return !(fanOutEachTemplate && n.ParallelSafe)
+		return !fanOutEachTemplate || !n.ParallelSafe
 	case *ir.SubbotNode:
 		// A subbot marked `isolated:` asserts the child confines its writes to
 		// its own run store / worktree and never touches the parent's shared

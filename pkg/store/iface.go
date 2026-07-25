@@ -59,6 +59,28 @@ type RunStore interface {
 	ListRunsBySourceIssue(ctx context.Context, issueID string) ([]string, error)
 	ListChildRuns(ctx context.Context, parentRunID string) ([]string, error)
 
+	// ListRunsBySchedule returns every run whose Source.ScheduleID
+	// equals scheduleID — the schedule←run reverse edge the overlap
+	// gate (pkg/schedgate) counts live runs through. Same projection
+	// contract as the other reverse queries: ids only, created_at
+	// ascending, empty slice (no error) when nothing matches or
+	// scheduleID is empty.
+	ListRunsBySchedule(ctx context.Context, scheduleID string) ([]string, error)
+
+	// PatchRunSteering persists the live-steering state (accumulated
+	// loop grants + absolute budget raises) on the run record so a
+	// resume re-applies them. nil map / nil raises leave the stored
+	// field untouched (partial patch). Written by the engine goroutine
+	// right after applying an override in memory.
+	PatchRunSteering(ctx context.Context, runID string, loopOverrides map[string]int, budgetRaises *RunBudgetRaises) error
+
+	// PruneDeletionMarkers reaps the durable tombstones DeleteRun
+	// leaves behind (the resurrection guard) once they are older than
+	// cutoff — the marker must outlive any plausible late writer, not
+	// live forever. Returns how many were reaped. `iterion runs prune`
+	// is the designated caller.
+	PruneDeletionMarkers(ctx context.Context, cutoff time.Time) (int, error)
+
 	// Watch subscriptions (MVP3b) — the set of native-kanban issue IDs
 	// this run is subscribed to. Concurrency-safe read-modify-write of
 	// Run.WatchedIssueIDs (parallel branches' onNodeFinished hooks and
@@ -66,6 +88,17 @@ type RunStore interface {
 	// resulting deduped set.
 	AddWatchedIssues(ctx context.Context, runID string, issueIDs []string) ([]string, error)
 	RemoveWatchedIssues(ctx context.Context, runID string, issueIDs []string) ([]string, error)
+
+	// Subbot re-attach map (subbot restart-safety). SetSubbotChild records
+	// childRunID under key in the parent run's SubbotChildren map;
+	// ClearSubbotChild removes it. Both are atomic per-key writes so
+	// concurrent fan-out branches (distinct keys) don't clobber each other.
+	// key is the subbot node's execution key (node id + loop-iteration path
+	// + branch id). A resumed parent looks the key up (via LoadRun) to
+	// re-attach to an in-flight/finished child instead of spawning a fresh
+	// one. Both no-op silently when key is empty.
+	SetSubbotChild(ctx context.Context, parentRunID, key, childRunID string) error
+	ClearSubbotChild(ctx context.Context, parentRunID, key string) error
 
 	// Status & checkpoint
 	UpdateRunStatus(ctx context.Context, id string, status RunStatus, runErr string) error
@@ -192,6 +225,34 @@ func AsQueuedRunCreator(s RunStore) QueuedRunCreator {
 	}
 	q, _ := s.(QueuedRunCreator)
 	return q
+}
+
+// ParentedRunCreator is the optional interface for stores that can persist
+// a child run's ParentRunID in the SAME write as the run document. Without
+// it, spawnRun must CreateRun then SaveRun(ParentRunID) as two writes: if
+// the second fails, the child doc is already `running` with no goroutine
+// attached to it, and only the orphan reconciler eventually cleans it up.
+// CreateChildRun collapses the two writes into one exclusive create, so
+// there is no such window. Both production stores (filesystem, mongo)
+// implement it; a store that does not cleanly degrades to the two-write
+// path.
+type ParentedRunCreator interface {
+	// CreateChildRun persists a new run stamping ParentRunID atomically.
+	// Same no-clobber contract as CreateRun (a reused run ID fails). The
+	// filesystem store creates it `running`, the cloud store `queued`,
+	// exactly like their CreateRun.
+	CreateChildRun(ctx context.Context, id, workflowName, parentRunID string, inputs map[string]any) (*Run, error)
+}
+
+// AsParentedRunCreator returns s as ParentedRunCreator when the backend can
+// persist ParentRunID in the create write, or nil otherwise. Check for nil
+// before use.
+func AsParentedRunCreator(s RunStore) ParentedRunCreator {
+	if s == nil {
+		return nil
+	}
+	p, _ := s.(ParentedRunCreator)
+	return p
 }
 
 // RunFilesStore is an optional interface implemented by stores that

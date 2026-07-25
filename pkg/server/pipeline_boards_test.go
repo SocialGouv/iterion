@@ -140,7 +140,18 @@ func (e *pipelineBoardTestEnv) seedNodeStarted(t *testing.T, runID string, nodeI
 
 func (e *pipelineBoardTestEnv) projection(t *testing.T) PipelineBoardResponse {
 	t.Helper()
-	resp, err := http.Get(e.http.URL + "/api/v1/pipeline-board")
+	return e.projectionQuery(t, "")
+}
+
+// projectionQuery fetches the board with an optional raw query string
+// (e.g. "since=1h"). It fails the test unless the response is 200.
+func (e *pipelineBoardTestEnv) projectionQuery(t *testing.T, query string) PipelineBoardResponse {
+	t.Helper()
+	url := e.http.URL + "/api/v1/pipeline-board"
+	if query != "" {
+		url += "?" + query
+	}
+	resp, err := http.Get(url)
 	if err != nil {
 		t.Fatalf("GET projection: %v", err)
 	}
@@ -427,7 +438,7 @@ func TestPipelineBoardColumnBucketing(t *testing.T) {
 		}
 	}
 	queued := findPipelineCard(t, projection.Cards, "run:r-queued")
-	if queued.ColumnID != pipelineColumnTodo {
+	if queued.ColumnID != pipelineColumnOpened {
 		t.Errorf("queued column = %q, want todo", queued.ColumnID)
 	}
 	if queued.QueuePosition != 1 {
@@ -478,6 +489,35 @@ func TestPipelineBoardProgressAndOutput(t *testing.T) {
 	}
 	if out.Output != "Shipped v2 cleanly." {
 		t.Errorf("output = %q, want the final_answer", out.Output)
+	}
+}
+
+// TestPipelineBoardFinishedOutputMemoized proves a finished run's DONE-card
+// output is computed once and served from the memo on later polls, instead of
+// re-probing artifacts every tick (PR #193 M1). We overwrite the artifact
+// between polls: because a finished run is terminal, the board keeps serving
+// the first-computed value.
+func TestPipelineBoardFinishedOutputMemoized(t *testing.T) {
+	env := newPipelineBoardTestEnv(t)
+
+	env.seedRun(t, "run-memo", "review", store.RunStatusFinished, func(run *store.Run) {
+		run.FilePath = env.botPath
+		run.ArtifactIndex = map[string]int{"summary": 1}
+	})
+	env.seedArtifact(t, "run-memo", "summary", map[string]any{"final_answer": "First answer."})
+
+	first := findPipelineCard(t, env.projection(t).Cards, "run:run-memo")
+	if first.Output != "First answer." {
+		t.Fatalf("first output = %q, want %q", first.Output, "First answer.")
+	}
+
+	// Change the underlying artifact. A non-memoized projection would pick this
+	// up on the next poll; a memoized one keeps the first value.
+	env.seedArtifact(t, "run-memo", "summary", map[string]any{"final_answer": "MUTATED answer."})
+
+	second := findPipelineCard(t, env.projection(t).Cards, "run:run-memo")
+	if second.Output != "First answer." {
+		t.Errorf("second output = %q, want memoized %q (re-read the store instead of serving the cache)", second.Output, "First answer.")
 	}
 }
 
@@ -750,14 +790,14 @@ func TestPipelineBoardProjectsTaskDraftVsTodo(t *testing.T) {
 
 	projection := env.projection(t)
 	d := findPipelineCard(t, projection.Cards, "task:"+draft.ID)
-	if d.Kind != "task" || d.ColumnID != pipelineColumnTodo || d.Ready {
+	if d.Kind != "task" || d.ColumnID != pipelineColumnOpened || d.Ready {
 		t.Errorf("draft card = %+v, want kind=task column=todo ready=false", d)
 	}
 	if d.EntryInput["scope"] != "api" {
 		t.Errorf("draft entry_input = %+v, want bot_args", d.EntryInput)
 	}
 	r := findPipelineCard(t, projection.Cards, "task:"+ready.ID)
-	if r.ColumnID != pipelineColumnTodo || !r.Ready {
+	if r.ColumnID != pipelineColumnOpened || !r.Ready {
 		t.Errorf("ready card = %+v, want column=todo ready=true", r)
 	}
 }
@@ -790,14 +830,14 @@ func TestPipelineBoardTaskReadyTogglesState(t *testing.T) {
 		t.Errorf("ready=true state = %q, want %q", got.State, native.StateReady)
 	}
 	// On the board the readied ticket is now in Todo.
-	if card := findPipelineCard(t, env.projection(t).Cards, "task:"+issue.ID); card.ColumnID != pipelineColumnTodo || !card.Ready {
+	if card := findPipelineCard(t, env.projection(t).Cards, "task:"+issue.ID); card.ColumnID != pipelineColumnOpened || !card.Ready {
 		t.Errorf("after ready: card = %+v, want column=todo ready=true", card)
 	}
 	if got := post(false); got.State != native.StateBacklog {
 		t.Errorf("ready=false state = %q, want %q", got.State, native.StateBacklog)
 	}
 	// Unstaged, the ticket stays in Todo but loses its Ready flag (Draft badge).
-	if card := findPipelineCard(t, env.projection(t).Cards, "task:"+issue.ID); card.ColumnID != pipelineColumnTodo || card.Ready {
+	if card := findPipelineCard(t, env.projection(t).Cards, "task:"+issue.ID); card.ColumnID != pipelineColumnOpened || card.Ready {
 		t.Errorf("after unready: card = %+v, want column=todo ready=false", card)
 	}
 }
@@ -831,7 +871,7 @@ func TestPipelineBoardTaskUpdateEditsDraft(t *testing.T) {
 	}
 	// The edit shows on the board's Todo (draft) card.
 	card := findPipelineCard(t, env.projection(t).Cards, "task:"+issue.ID)
-	if card.Title != "Polished" || card.ColumnID != pipelineColumnTodo || card.EntryInput["scope"] != "new" {
+	if card.Title != "Polished" || card.ColumnID != pipelineColumnOpened || card.EntryInput["scope"] != "new" {
 		t.Errorf("edited draft card = %+v", card)
 	}
 
@@ -921,6 +961,76 @@ func TestPipelineBoardCloudStoreIsResolvedFromActiveTeam(t *testing.T) {
 	}
 	if got != nil {
 		t.Fatalf("store without active team = %p, want nil", got)
+	}
+}
+
+// The `?since=` filter (L5) prunes CLOSED cards that last changed before the
+// cutoff so a long-lived local store isn't stuck in the truncation banner —
+// while live pipelines stay visible regardless of age, and the pruning is
+// reported (never silent).
+func TestPipelineBoardSinceFilterHidesOldClosedCards(t *testing.T) {
+	env := newPipelineBoardTestEnv(t)
+	now := time.Now().UTC()
+	old := now.Add(-72 * time.Hour)
+
+	// A finished root that last changed long ago → hidden by `?since=1h`.
+	env.seedRun(t, "r-old-done", "review", store.RunStatusFinished, func(run *store.Run) {
+		run.FilePath = env.botPath
+		run.UpdatedAt = old
+	})
+	// A finished root that changed just now → kept even though it is closed.
+	env.seedRun(t, "r-fresh-done", "review", store.RunStatusFinished, func(run *store.Run) {
+		run.FilePath = env.botPath
+		run.UpdatedAt = now
+	})
+	// A running root that started long ago → kept: live pipelines are never
+	// pruned by age, only closed ones.
+	env.seedRun(t, "r-old-running", "review", store.RunStatusRunning, func(run *store.Run) {
+		run.FilePath = env.botPath
+		run.UpdatedAt = old
+	})
+
+	// No filter: all three render.
+	all := env.projection(t)
+	for _, id := range []string{"run:r-old-done", "run:r-fresh-done", "run:r-old-running"} {
+		if !hasPipelineCard(all.Cards, id) {
+			t.Fatalf("unfiltered projection missing %s", id)
+		}
+	}
+	if all.HiddenClosedCount != 0 || all.HiddenClosedBefore != nil {
+		t.Errorf("unfiltered projection reports hidden=%d before=%v; want 0/nil", all.HiddenClosedCount, all.HiddenClosedBefore)
+	}
+
+	// since=1h: the old finished card drops; the fresh finished and the old
+	// running one stay.
+	filtered := env.projectionQuery(t, "since=1h")
+	if hasPipelineCard(filtered.Cards, "run:r-old-done") {
+		t.Errorf("since=1h should have hidden the stale finished card")
+	}
+	if !hasPipelineCard(filtered.Cards, "run:r-fresh-done") {
+		t.Errorf("since=1h wrongly hid a freshly-finished card")
+	}
+	if !hasPipelineCard(filtered.Cards, "run:r-old-running") {
+		t.Errorf("since=1h wrongly hid a live (running) card")
+	}
+	if filtered.HiddenClosedCount != 1 {
+		t.Errorf("HiddenClosedCount = %d, want 1", filtered.HiddenClosedCount)
+	}
+	if filtered.HiddenClosedBefore == nil {
+		t.Errorf("HiddenClosedBefore should be set when a filter is applied")
+	}
+}
+
+// A malformed `?since=` is an explicit 400, not a silently-ignored filter.
+func TestPipelineBoardSinceFilterRejectsBadValue(t *testing.T) {
+	env := newPipelineBoardTestEnv(t)
+	resp, err := http.Get(env.http.URL + "/api/v1/pipeline-board?since=notaduration")
+	if err != nil {
+		t.Fatalf("GET: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400", resp.StatusCode)
 	}
 }
 
@@ -1183,7 +1293,7 @@ func TestPipelineBoardRestagedReadyAfterCancelShowsOpenedTask(t *testing.T) {
 		t.Fatalf("cancelled prior run must not be the board card when ticket is restaged ready: %+v", projection.Cards)
 	}
 	card := findPipelineCard(t, projection.Cards, "task:"+issue.ID)
-	if card.ColumnID != pipelineColumnOpened && card.ColumnID != pipelineColumnTodo {
+	if card.ColumnID != pipelineColumnOpened {
 		t.Errorf("column = %q, want opened", card.ColumnID)
 	}
 	if !card.Ready {

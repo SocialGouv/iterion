@@ -1,5 +1,7 @@
 import { errorMessage } from "@/lib/errorHints";
-import { useEffect, useState } from "react";
+import { formatDateTime } from "@/lib/format";
+import { useState } from "react";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { Button } from "@/components/ui/Button";
 import { Checkbox } from "@/components/ui/Checkbox";
 import { InlineBanner } from "@/components/ui/InlineBanner";
@@ -45,9 +47,30 @@ export default function ApiKeysPanel({ team }: Props) {
   // mode never fires a doomed 404 request.
   const serverInfo = useServerInfoStore((s) => s.info);
   const isCloud = serverInfo?.mode === "cloud";
-  const [keys, setKeys] = useState<ApiKeyView[]>([]);
-  const [loading, setLoading] = useState(true);
-  const [err, setErr] = useState<string | null>(null);
+  const queryClient = useQueryClient();
+  const teamKey = team?.id ?? "mine";
+  const queryKey = ["api-keys", teamKey];
+  const query = useQuery<ApiKeyView[]>({
+    queryKey,
+    queryFn: () => (team ? listTeamApiKeys(team.id) : listMyApiKeys()),
+    enabled: isCloud,
+  });
+  const keys = query.data ?? [];
+  // isPending covers the pre-server_info gate (query disabled); isFetching
+  // keeps the skeleton on every visible reload (team switch, post-mutation
+  // refetch) — matching the manual reload, which always skeletoned.
+  const loading = query.isPending || query.isFetching;
+  // Mutation failures share the banner with the fetch error (mutation wins,
+  // like the old single slot). They're tagged with their scope so a stale
+  // one never outlives a team switch — the manual reload cleared it there.
+  // The fetch error hides while a reload is in flight, which the manual
+  // reload achieved by clearing it up front.
+  const [mutErrTag, setMutErrTag] = useState<{ scope: string; msg: string } | null>(null);
+  const setMutErr = (msg: string | null) =>
+    setMutErrTag(msg === null ? null : { scope: teamKey, msg });
+  const mutErr = mutErrTag && mutErrTag.scope === teamKey ? mutErrTag.msg : null;
+  const err =
+    mutErr ?? (query.error && !loading ? errorMessage(query.error) : null);
   const [showAdd, setShowAdd] = useState(false);
   const [adding, setAdding] = useState(false);
   const { confirm, dialog } = useConfirm();
@@ -62,29 +85,16 @@ export default function ApiKeysPanel({ team }: Props) {
     ? activeRole === "admin" || activeRole === "owner" || (user?.is_super_admin ?? false)
     : true; // Personal keys are always editable by their owner.
 
-  const reload = async () => {
-    setLoading(true);
-    setErr(null);
-    try {
-      const k = team ? await listTeamApiKeys(team.id) : await listMyApiKeys();
-      setKeys(k);
-    } catch (e) {
-      setErr(errorMessage(e));
-    } finally {
-      setLoading(false);
-    }
+  // Post-mutation refresh: clear the shared error slot and refetch the list.
+  const reload = () => {
+    setMutErr(null);
+    void queryClient.invalidateQueries({ queryKey });
   };
-
-  useEffect(() => {
-    if (!isCloud) return;
-    void reload();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [team?.id, isCloud]);
 
   const submitAdd = async (ev: React.FormEvent) => {
     ev.preventDefault();
     setAdding(true);
-    setErr(null);
+    setMutErr(null);
     try {
       if (team) {
         await createTeamApiKey(team.id, draft);
@@ -93,9 +103,9 @@ export default function ApiKeysPanel({ team }: Props) {
       }
       setShowAdd(false);
       setDraft({ provider: "anthropic", name: "", secret: "", is_default: false });
-      void reload();
+      reload();
     } catch (e) {
-      setErr(errorMessage(e));
+      setMutErr(errorMessage(e));
     } finally {
       setAdding(false);
     }
@@ -106,9 +116,9 @@ export default function ApiKeysPanel({ team }: Props) {
       await updateApiKey(team ? { team_id: team.id } : { mine: true }, k.id, {
         is_default: !k.is_default,
       });
-      void reload();
+      reload();
     } catch (e) {
-      setErr(errorMessage(e));
+      setMutErr(errorMessage(e));
     }
   };
 
@@ -122,9 +132,9 @@ export default function ApiKeysPanel({ team }: Props) {
     if (!ok) return;
     try {
       await deleteApiKey(team ? { team_id: team.id } : { mine: true }, k.id);
-      void reload();
+      reload();
     } catch (e) {
-      setErr(errorMessage(e));
+      setMutErr(errorMessage(e));
     }
   };
 
@@ -256,9 +266,9 @@ export default function ApiKeysPanel({ team }: Props) {
                     />
                   ) : k.is_default ? "✓" : ""}
                 </Td>
-                <Td className="text-fg-muted">{new Date(k.created_at).toLocaleDateString()}</Td>
+                <Td className="text-fg-muted">{formatDateTime(k.created_at)}</Td>
                 <Td className="text-fg-muted">
-                  {k.last_used_at ? new Date(k.last_used_at).toLocaleString() : "—"}
+                  {formatDateTime(k.last_used_at)}
                 </Td>
                 <Td align="right">
                   {canManage && (

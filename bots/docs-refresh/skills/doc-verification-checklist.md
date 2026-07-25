@@ -1,224 +1,95 @@
 ---
 name: doc-verification-checklist
-description: STEP-0 preamble for docs-refresh reviewers — how to triage the deterministic drift manifest before voting approved=true.
+description: Per-pass verification checklist for Doki v3's adaptive campaign and deterministic truth gates.
 ---
 
-# Doc verification checklist — reviewers' STEP-0 preamble
+# Documentation verification checklist
 
-Before you emit any verdict (especially `approved=true`), walk this
-checklist in order. Under v0.15.0 the workflow's enumeration phase
-is deterministic (the `build_manifest` tool); your job is the
-semantic pass over the candidates it could not auto-resolve. Skip
-steps at your peril — the cross-family alternation and the
-coverage gate both rely on this discipline.
+Run this checklist during each campaign pass and once more before reporting
+the termination contract.
 
-## STEP 0 — Read the manifest summary
+## 1. Read the pass state
 
-`input.total_anchors`, `input.verified_anchors`,
-`input.drifted_anchors`, `input.unverifiable_anchors`, and
-`input.manifest_coverage_pct` describe the deterministic state of
-the doc/code alignment. Note them in your reasoning; they ground
-every subsequent judgment.
+Read `hints_note` and the advisory hints (each `{doc, line, kind, value,
+note}`; kinds: `missing_path`, `dead_link`, `dead_anchor`,
+`unmentioned_area`). They are telemetry-grade help, not your working set:
+counts never gate the run, and an empty or degraded report ("nothing
+scannable") says nothing about alignment.
 
-The mechanical coverage is `verified_anchors * 100 / total_anchors`
-— if it's below `input.coverage_target_pct`, the convergence gate
-won't fire even if you vote `approved=true`. Push the fixer toward
-resolving drifts.
+Read `fail_log` before new work. It contains either a scope violation or the
+previous deterministic verification failure. Also inspect `git log` so you do
+not repeat documents committed by an earlier pass, and check the dismissals
+ledger to see what earlier passes already settled.
 
-### Chunk awareness (v0.16.0)
+## 2. Build a document-grouped todo
 
-Three further fields tell you whether this iter is seeing the
-entire drift set or a chunk of it:
+Group your findings by document — the hints you accept, plus everything your
+own survey of the docs and code surfaces. Prioritise high-signal drift and
+paths near `recently_changed_code_files`, then work the list. Re-prioritise
+as you learn; the list is yours, no pipeline decides it for you.
 
-- `input.docs_with_drift_count` — how many distinct docs still
-  carry at least one drift candidate (before chunking).
-- `input.chunk_doc_count` — how many distinct docs landed in
-  this iter's slice.
-- `input.chunked` — `true` when the chunk excluded some docs
-  (i.e. `chunk_doc_count < docs_with_drift_count`).
-- `input.max_review_chunk_docs` — the active cap (default 30).
+Then explore beyond the hints: skim each doc against the code it describes,
+run the entry points' help output, diff recent changes. The scan only sees
+paths and links; wrong defaults, stale behaviour descriptions, outdated
+examples, and missing capability docs are yours to find.
 
-When `chunked=true`, the candidates you see are the highest-
-severity slice; the deferred docs roll into the next iter as the
-fixer clears this chunk. This is not a coverage gap to flag —
-the workflow expects multi-iter convergence on large doc
-footprints. Your job is unchanged: adjudicate the chunk you have.
-The STEP 6 coverage gate uses `manifest_coverage_pct` which spans
-ALL docs, so chunking cannot terminate the workflow early.
+## 3. Adjudicate every issue
 
-## STEP 1 — Walk `input.drift_candidates`
+For each issue:
 
-Each entry is `{doc, line, kind, value, status, evidence, excerpt}`.
-You must decide one of three actions per candidate:
+1. read the cited document line in context;
+2. resolve the current implementation, declaration, command, target, or test;
+3. decide `fix`, `dismiss`, `promise`, or `code bug` (the four outcomes —
+   see the playbook);
+4. retain reproducible evidence for the final summary.
 
-- **confirm** — real drift. Raise a blocker pointed at
-  `doc::value` with a `suggested_fix` that edits the DOC (never the
-  code). Severity = high for drifted CLI surface / diagnostic codes
-  (deterministic miss, high signal); medium for drifted file_ref;
-  low for unverifiable symbol_ref unless the doc context makes the
-  drift obvious.
-- **dismiss** — false positive. Skip the blocker; do NOT add to
-  `audited_pairs`. The manifest will keep listing it but the bot
-  won't act on it. Add the candidate to `audited_pairs` if you
-  actively investigated it (i.e. spent a tool call confirming the
-  dismiss), so the cross-family reviewer can spot-check.
-- **code_bug** — the doc is correct, the code is wrong (e.g. a
-  capability the doc describes was removed in error). Raise a
-  blocker with `is_code_bug: true` and `escalate_to_human: true`
-  in your output; the fixer will refuse and call `ask_user`.
+Never infer removal solely from an empty grep if a rename or generated
+surface could explain it. Search likely registrations, callers,
+history-facing migration notes, and runtime help as appropriate.
 
-Always add the candidate to `audited_pairs` as `doc::value` when
-you take action B or C, and (encouraged) when you actively
-investigated A. The cross-family reviewer's STEP-3 spot-check
-randomises 3 entries from your `audited_pairs` and re-greps them.
+## 4. Make and prove the smallest correction
 
-### STEP 1.5 — Do NOT re-litigate (v0.17.0 convergence gate)
+For a real documentation mismatch:
 
-BEFORE you raise any blocker, check the candidate against:
+- change the claim to the exact verified behavior;
+- search all scoped Markdown for old names and cross-references;
+- validate links, heading anchors, commands, defaults, and snippets affected
+  by the edit;
+- review the diff for accidental scope or style churn;
+- commit the aligned document with the required semantic message and
+  `Bot: docs-refresh` trailer.
 
-- `input.cumulative_dismissed_pairs` — `doc::value` strings prior
-  reviewers (any family) adjudicated as not-drift across the run.
-- `input.cumulative_pushback` — fixer pushback descriptions across
-  both families.
+For a false positive, do not edit merely to silence a hint — record the
+dismissal in the ledger with the reason.
 
-If the candidate appears in either, the DEFAULT action is
-**dismiss without spending a tool call**. Re-judging settled
-items is the canonical oscillation pattern — it resets the
-streak gate and burns the iteration budget without changing
-anything material. Only re-raise a settled item when:
+For a code bug, do not align the document to broken behavior. Set
+`is_code_bug=true`, describe it in `human_note`, and use the findings handoff.
 
-1. You ran a tool call (read_file / grep) on the LIVE worktree,
-2. The result contradicts the prior adjudication, AND
-3. You can cite the new evidence in the blocker's `code_state` /
-   `suggested_fix` (so the cross-family reviewer can re-verify).
+## 5. Check scope and verification risk
 
-Without new evidence, dismissing is mandatory — not a courtesy.
-The 2026-06-23 dogfood ran 16 iterations to its review_loop(15)
-ceiling exactly because the manifest re-emits the same
-unverifiable `symbol_ref` candidates every iter and the reviewer
-re-judged them every iter. Don't be that reviewer.
+Before finishing the pass:
 
-## STEP 2 — Spot-check the top drifts
+- inspect changed paths: only `.md` files may have changed;
+- undo anything named by a prior scope failure.
 
-Your `tool_max_steps` budget is 25 (v0.15.0). Spend it on the
-candidates with the highest stakes:
+`scope_check` is deterministic and runs after the campaign, so do not claim
+its result in advance. Leave the tree in a state it can prove.
 
-1. **Drifted `cli_command` / `cli_flag` / `diagnostic`** — the
-   manifest verified these against `scan_code_surface`'s output,
-   which is itself a deterministic scan. A miss here almost always
-   means the doc names something that doesn't exist (rename,
-   removal, typo). Read the cited doc line to confirm the context;
-   then grep the live code to confirm the absence.
-2. **Drifted `file_ref` for paths in active code roots** — a
-   missing `pkg/foo/bar.go` mentioned in `docs/architecture.md` is
-   nearly always real drift (rename, refactor). For `examples/`
-   refs, check whether the workflow moved (e.g. into a bot bundle or
-   `e2e/testdata/`) before raising.
-3. **Unverifiable symbol_ref in prose-heavy docs** — usually a
-   false positive. Spot-check 1-2 to confirm before bulk
-   dismissing the category.
+## 6. Fill the termination contract truthfully
 
-Do NOT enumerate — that's the manifest's job. Do NOT read entire
-docs to verify a single anchor — read the cited line ±5.
+- `docs_aligned`: true only when a fresh survey of the docs against the code
+  would find no remaining real drift and no significant missing
+  documentation — everything surfaced is fixed (committed), dismissed to the
+  ledger, or recorded as a promise; false when real work remains.
+- `commits_this_pass`: exact number of commits created in this pass.
+- `drift_remaining`: concise remaining work, empty only when aligned.
+- `is_code_bug`: true if at least one doc-right/code-wrong case was found.
+- `needs_human` and `human_note`: only for an actual operator decision.
+- `summary`: documents committed, evidence used, dismissals recorded,
+  findings handed off, and relevant pre-existing failures.
 
-## STEP 3 — Adversarial spot-check of prior audits
-
-Before voting `approved=true`, pick 3 random entries from
-`loop.review_loop.previous_output.audited_pairs` (the previous
-reviewer's claims, possibly from a different family) and re-grep
-the cited `value` yourself. Confirm the previous reviewer's
-verdict held.
-
-If your spot-check finds drift the previous reviewer missed:
-
-- The previous reviewer's verification was a façade or sloppy.
-- Raise a blocker with `severity: high` and `suggested_fix`
-  describing the gap: e.g. "FAÇADE-SPOT-CHECK: the previous
-  review claimed `docs/foo.md::Handler` was verified, but
-  `Handler` no longer matches in `pkg/bar.go`."
-
-The cost is 3 grep calls; the alternation honesty mechanism
-becomes mechanical instead of statistical.
-
-## STEP 4 — Mechanical code-touch check (G4 gate)
-
-Examine `input.prior_code_files_touched_claude` and
-`input.prior_code_files_touched_gpt`. Both fields MUST be `[]`.
-
-If either is non-empty, raise an automatic blocker with:
-
-- `mismatch_kind`: any value (use `stale_behavior_description`
-  by default)
-- `severity: high`
-- `confidence: high`
-- `suggested_fix`: "Workflow contract violation: fixer touched
-  <files>. Revert those files; docs-refresh must never modify code."
-
-## STEP 5 — Scope-honesty check (v0.13.0)
-
-`input.cumulative_chronic_paths` lists doc paths the fixer has
-tried to silently edit ≥3 times despite the scope-enforcer
-reverting them. If non-empty:
-
-- Raise ONE blocker per element with `mismatch_kind:
-  stale_behavior_description`, severity:high, suggested_fix
-  pointing at the path and noting "chronic out-of-scope edit;
-  fixer must drop this file from its working set."
-- If empty: stay silent on the topic. Do NOT pre-emptively warn
-  the fixer about scope — the gate by construction defers to the
-  ≥3-revert threshold.
-
-## STEP 6 — Coverage gate on approval
-
-You may vote `approved=true` ONLY if:
-
-- `len(blockers) == 0` after STEP 1's candidate pass.
-- `input.prior_code_files_touched_*` are both `[]` (G4 gate from
-  STEP 4).
-- `input.manifest_coverage_pct >= input.coverage_target_pct`
-  (mechanical, computed from the manifest's
-  verified_anchors / total_anchors ratio — you cannot game it).
-
-If coverage is below threshold but blockers is empty, you've hit
-the "deterministic miss" case: the manifest still finds drifts but
-none rose to a blocker in your judgment. Vote `approved=false` with
-`confidence: low` so the streak gate treats this as a soft-approval
-and alternates without invoking the fixer — the cross-family
-reviewer gets a fresh look.
-
-## STEP 7 — Anchor consistency self-check
-
-For each blocker you're about to emit, confirm the
-`(anchor_kind, code_anchor)` pair is self-consistent per the
-table in `doc-mismatch-taxonomy.md`:
-
-- `symbol`     → anchor MUST contain `<path>:<identifier>`
-- `line_range` → anchor MUST end with `:N` or `:N-M`
-- `removed`    → anchor MUST mention removal (e.g.
-                `<no longer exists>`)
-- `external`   → anchor MUST be a path/URL without `:N` line
-                markers
-
-Drop blockers you can't classify cleanly — a malformed blocker
-routes a fix-iteration session for nothing.
-
-## STEP 8 — Self-critique + confidence
-
-For each blocker:
-
-- Could a maintainer find the cited `code_anchor` and verify the
-  mismatch in under 60 seconds? If not, sharpen the fields.
-- Is this a real misalignment, or a style preference? Style
-  preferences are not blockers.
-
-Rate your confidence:
-
-- `high` — every blocker has exact line evidence, every
-  spot-checked anchor resolved.
-- `medium` — strong evidence for blockers but you didn't audit
-  every candidate (so you can't vote approved=true).
-- `low` — intuition-level. Low-confidence rejections are
-  treated as soft-approvals by `streak_check`; alternation
-  continues without invoking the fixer.
-
-Now and only now, emit the verdict.
+The deterministic gate converges only when `docs_aligned` is true and
+`scope_check.scope_ok` is true — nothing else (a docs-only bot can't break
+the build, so there is no build gate). If either condition fails, the
+continuation loop sends a fresh advisory report or `fail_log` to the next
+campaign pass.

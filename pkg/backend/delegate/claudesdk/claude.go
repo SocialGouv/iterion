@@ -114,7 +114,9 @@ func handleControlRequestOneShot(cfg *config, proc *cliProcess, data json.RawMes
 	case "can_use_tool":
 		handleCanUseTool(cfg, ctrl, req)
 	default:
-		_ = ctrl.sendErrorResponse(req.RequestID, "unsupported request: "+subtype)
+		if err := ctrl.sendErrorResponse(req.RequestID, "unsupported request: "+subtype); err != nil {
+			cfg.errorf("claudesdk: failed to deliver error response (request_id=%s, subtype=%s): %v", req.RequestID, subtype, err)
+		}
 	}
 }
 
@@ -122,9 +124,11 @@ func handleControlRequestOneShot(cfg *config, proc *cliProcess, data json.RawMes
 func handleCanUseTool(cfg *config, ctrl *controller, req controlRequest) {
 	if cfg.canUseTool == nil {
 		// Default: allow all
-		_ = ctrl.sendResponse(req.RequestID, "success", map[string]any{
+		if sendErr := ctrl.sendResponse(req.RequestID, "success", map[string]any{
 			"behavior": "allow",
-		})
+		}); sendErr != nil {
+			cfg.errorf("claudesdk: failed to deliver can_use_tool decision (request_id=%s): %v", req.RequestID, sendErr)
+		}
 		return
 	}
 
@@ -133,19 +137,25 @@ func handleCanUseTool(cfg *config, ctrl *controller, req controlRequest) {
 		Input    map[string]any `json:"input"`
 	}
 	if err := json.Unmarshal(req.Request, &body); err != nil {
-		_ = ctrl.sendErrorResponse(req.RequestID, "parse error: "+err.Error())
+		if sendErr := ctrl.sendErrorResponse(req.RequestID, "parse error: "+err.Error()); sendErr != nil {
+			cfg.errorf("claudesdk: failed to deliver can_use_tool parse-error response (request_id=%s): %v", req.RequestID, sendErr)
+		}
 		return
 	}
 
 	decision, err := cfg.canUseTool(body.ToolName, body.Input)
 	if err != nil {
-		_ = ctrl.sendErrorResponse(req.RequestID, err.Error())
+		if sendErr := ctrl.sendErrorResponse(req.RequestID, err.Error()); sendErr != nil {
+			cfg.errorf("claudesdk: failed to deliver can_use_tool error response (request_id=%s, tool=%s, cause=%v): %v", req.RequestID, body.ToolName, err, sendErr)
+		}
 		return
 	}
 
-	_ = ctrl.sendResponse(req.RequestID, "success", map[string]any{
+	if sendErr := ctrl.sendResponse(req.RequestID, "success", map[string]any{
 		"behavior": decision,
-	})
+	}); sendErr != nil {
+		cfg.errorf("claudesdk: failed to deliver can_use_tool decision (request_id=%s): %v", req.RequestID, sendErr)
+	}
 }
 
 // configToProcess converts internal config to processConfig.

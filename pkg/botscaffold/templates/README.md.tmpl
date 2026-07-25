@@ -2,19 +2,38 @@
 
 {{if .Description}}{{.Description}}{{else}}An iterion bot.{{end}}
 
-Created with the studio bot builder. Layout:
+## Layout
 
 - `main.bot` — the workflow: one adaptive `campaign` agent carrying the
   mission (its system prompt is the `mission` prompt block).
 - `manifest.yaml` — catalog metadata (name, icon, when_to_use, triggers).
 - `skills/` — drop `SKILL.md` files here to ship knowledge with the bot;
   they are mirrored into the run workspace's `.claude/skills/`.
+- `prompts/` — reusable `.md` prompts. The filename stem becomes the
+  prompt name (`prompts/helper.md` → `system: helper`).
+- `attachments/` — default binary inputs, referenced from
+  `manifest.yaml`'s `attachments:` map.
+- `presets/` — named launch-time biases (sous-bots). See
+  `presets/example.md`.
 
-Run it:
+## Run
 
 ```sh
 iterion run {{.Slug}}/main.bot
+iterion run {{.Slug}}/main.bot --preset example
 ```
 
 Or from the studio: open the bot's page and hit Launch (or Test for a
 throwaway run).
+
+## Package
+
+```sh
+iterion bundle pack {{.Slug}}
+```
+
+Produces a deterministic `{{.Slug}}.botz` (same content → same bytes),
+runnable with `iterion run {{.Slug}}.botz` and installable elsewhere.
+
+See [docs/bundles.md](https://github.com/SocialGouv/iterion/blob/main/docs/bundles.md)
+for the full format reference.

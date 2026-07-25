@@ -37,6 +37,36 @@ func (s *Server) auditPlatform(r *http.Request, tenantID, action, target, target
 	s.auditWrite(r, audit.ScopePlatform, tenantID, action, target, targetID, meta)
 }
 
+// auditSystem records a tenant-scoped event originated by a background
+// goroutine (no *http.Request — e.g. the cloudsched ticker's per-tick
+// decisions). ActorKind is "system"; actorID names the subsystem
+// ("scheduler:<bot>"). Same best-effort/detached discipline as
+// auditWrite.
+func (s *Server) auditSystem(tenantID, actorID, action, target, targetID string, meta map[string]any) {
+	if s.auditStore == nil {
+		return
+	}
+	e := audit.Event{
+		ID:        uuid.NewString(),
+		Scope:     audit.ScopeTenant,
+		TenantID:  tenantID,
+		ActorID:   actorID,
+		ActorKind: "system",
+		Action:    action,
+		Target:    target,
+		TargetID:  targetID,
+		Meta:      meta,
+		CreatedAt: time.Now().UTC(),
+	}
+	s.goSafe("audit-insert", func() {
+		bg, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		if err := s.auditStore.Insert(bg, e); err != nil && s.logger != nil {
+			s.logger.Warn("audit: insert %s: %v", action, err)
+		}
+	})
+}
+
 func (s *Server) auditWrite(r *http.Request, scope audit.Scope, tenantID, action, target, targetID string, meta map[string]any) {
 	if s.auditStore == nil {
 		return

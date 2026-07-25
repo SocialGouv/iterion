@@ -3,12 +3,14 @@ package server
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"strings"
 	"time"
 
 	"github.com/redis/go-redis/v9"
 
 	"github.com/SocialGouv/iterion/pkg/dispatcher/native/boardops"
+	iterlog "github.com/SocialGouv/iterion/pkg/log"
 )
 
 // Valkey-backed implementations of the per-pod state stores (forge CSRF state,
@@ -40,14 +42,18 @@ func newValkeyForgeStateStore(rdb redis.UniversalClient, ttl time.Duration) *val
 	return &valkeyForgeStateStore{rdb: rdb, ttl: ttl}
 }
 
-func (s *valkeyForgeStateStore) put(p forgePending) {
+func (s *valkeyForgeStateStore) put(p forgePending) error {
 	b, err := json.Marshal(p)
 	if err != nil {
-		return
+		return fmt.Errorf("marshal forge oauth state: %w", err)
 	}
 	ctx, cancel := valkeyCtx()
 	defer cancel()
-	_ = s.rdb.Set(ctx, forgeStateKeyPrefix+p.State, b, s.ttl).Err()
+	// Never log or wrap the state token itself — it authenticates the callback.
+	if err := s.rdb.Set(ctx, forgeStateKeyPrefix+p.State, b, s.ttl).Err(); err != nil {
+		return fmt.Errorf("persist forge oauth state (provider=%s, team=%s): %w", p.Provider, p.TenantID, err)
+	}
+	return nil
 }
 
 func (s *valkeyForgeStateStore) take(state string) (forgePending, bool) {
@@ -71,11 +77,12 @@ func (s *valkeyForgeStateStore) take(state string) (forgePending, bool) {
 const boardTokenKeyPrefix = "iterion:board:tok:"
 
 type valkeyBoardMCPTokenStore struct {
-	rdb redis.UniversalClient
+	rdb    redis.UniversalClient
+	logger *iterlog.Logger
 }
 
-func newValkeyBoardMCPTokenStore(rdb redis.UniversalClient) *valkeyBoardMCPTokenStore {
-	return &valkeyBoardMCPTokenStore{rdb: rdb}
+func newValkeyBoardMCPTokenStore(rdb redis.UniversalClient, logger *iterlog.Logger) *valkeyBoardMCPTokenStore {
+	return &valkeyBoardMCPTokenStore{rdb: rdb, logger: logger}
 }
 
 // boardTokenPayload is the stored grant. It replaced a bare `[]string` of
@@ -87,21 +94,34 @@ type boardTokenPayload struct {
 	SourceIssueID string   `json:"src,omitempty"`
 }
 
-func (s *valkeyBoardMCPTokenStore) Register(token string, caps []string, sourceIssueID string) {
+func (s *valkeyBoardMCPTokenStore) Register(token string, caps []string, sourceIssueID string) error {
 	b, err := json.Marshal(boardTokenPayload{Caps: caps, SourceIssueID: strings.TrimSpace(sourceIssueID)})
 	if err != nil {
-		return
+		return fmt.Errorf("marshal board MCP caps: %w", err)
 	}
 	ctx, cancel := valkeyCtx()
 	defer cancel()
 	// Redis TTL replaces the in-memory sweep; the run's lifetime cap.
-	_ = s.rdb.Set(ctx, boardTokenKeyPrefix+token, b, boardMCPDefaultTTL).Err()
+	// Caps are safe to include in the error; the token is not.
+	if err := s.rdb.Set(ctx, boardTokenKeyPrefix+token, b, boardMCPDefaultTTL).Err(); err != nil {
+		return fmt.Errorf("store board MCP token (caps=%v): %w", caps, err)
+	}
+	return nil
 }
 
+// Revoke is best-effort: it has no production caller today and the Redis
+// key's boardMCPDefaultTTL is the backstop that reaps a missed delete, so a
+// failure is logged (token prefix only) rather than propagated.
 func (s *valkeyBoardMCPTokenStore) Revoke(token string) {
 	ctx, cancel := valkeyCtx()
 	defer cancel()
-	_ = s.rdb.Del(ctx, boardTokenKeyPrefix+token).Err()
+	if err := s.rdb.Del(ctx, boardTokenKeyPrefix+token).Err(); err != nil && s.logger != nil {
+		prefix := token
+		if len(prefix) > 8 {
+			prefix = prefix[:8]
+		}
+		s.logger.Warn("board MCP: revoke token %s…: %v (best-effort — Redis TTL %s is the backstop)", prefix, err, boardMCPDefaultTTL)
+	}
 }
 
 func (s *valkeyBoardMCPTokenStore) lookup(token string) (boardMCPGrant, bool) {
@@ -130,6 +150,66 @@ func (s *valkeyBoardMCPTokenStore) lookup(token string) (boardMCPGrant, bool) {
 	// ExpiresAt left zero: Redis already evicted the key if it lapsed, and the
 	// handler's IsZero() check then skips the (redundant) local TTL recheck.
 	return grant, true
+}
+
+// --- forge-publish run tokens ------------------------------------------------
+
+const forgePublishTokenKeyPrefix = "iterion:forgepub:tok:"
+
+// valkeyForgePublishTokenStore shares per-run forge-publish grants across
+// server replicas (the run's POST is load-balanced to any pod while the
+// grant was minted at launch time elsewhere).
+type valkeyForgePublishTokenStore struct {
+	rdb    redis.UniversalClient
+	logger *iterlog.Logger
+}
+
+func newValkeyForgePublishTokenStore(rdb redis.UniversalClient, logger *iterlog.Logger) *valkeyForgePublishTokenStore {
+	return &valkeyForgePublishTokenStore{rdb: rdb, logger: logger}
+}
+
+func (s *valkeyForgePublishTokenStore) Register(token string, g ForgePublishGrant) error {
+	b, err := json.Marshal(g)
+	if err != nil {
+		return fmt.Errorf("marshal forge publish grant: %w", err)
+	}
+	ctx, cancel := valkeyCtx()
+	defer cancel()
+	// Redis TTL replaces the in-memory sweep. The grant is safe to name in
+	// the error (team/conn/repo); the token is not.
+	if err := s.rdb.Set(ctx, forgePublishTokenKeyPrefix+token, b, forgePublishDefaultTTL).Err(); err != nil {
+		return fmt.Errorf("store forge publish token (repo=%s): %w", g.Repo, err)
+	}
+	return nil
+}
+
+// Revoke is best-effort: the Redis TTL is the backstop that reaps a missed
+// delete, so a failure is logged (token prefix only) rather than propagated.
+func (s *valkeyForgePublishTokenStore) Revoke(token string) {
+	ctx, cancel := valkeyCtx()
+	defer cancel()
+	if err := s.rdb.Del(ctx, forgePublishTokenKeyPrefix+token).Err(); err != nil && s.logger != nil {
+		prefix := token
+		if len(prefix) > 8 {
+			prefix = prefix[:8]
+		}
+		s.logger.Warn("forge publish: revoke token %s…: %v (best-effort — Redis TTL %s is the backstop)", prefix, err, forgePublishDefaultTTL)
+	}
+}
+
+func (s *valkeyForgePublishTokenStore) lookup(token string) (ForgePublishGrant, bool) {
+	ctx, cancel := valkeyCtx()
+	defer cancel()
+	b, err := s.rdb.Get(ctx, forgePublishTokenKeyPrefix+token).Bytes()
+	if err != nil {
+		return ForgePublishGrant{}, false
+	}
+	var g ForgePublishGrant
+	if json.Unmarshal(b, &g) != nil {
+		return ForgePublishGrant{}, false
+	}
+	// ExpiresAt left zero: Redis already evicted the key if it lapsed.
+	return g, true
 }
 
 // --- auth rate limit (atomic token bucket) ----------------------------------

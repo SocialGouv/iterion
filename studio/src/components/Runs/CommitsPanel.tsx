@@ -23,6 +23,7 @@ import {
 import { formatRelative } from "@/lib/format";
 
 import { ErrorNotice } from "@/components/shared/ErrorNotice";
+import { useServerInfoStore } from "@/store/serverInfo";
 
 import CommitDetailDialog from "./CommitDetailDialog";
 import MergeConflictView from "./MergeConflictView";
@@ -36,7 +37,7 @@ interface CommitsPanelProps {
   onMergeComplete?: () => void;
 }
 
-// CommitsPanel is the GitHub-PR-style listing for the run: every
+// CommitsPanel is the PR-style listing for the run: every
 // workflow `git commit` shows up as a row, and once the run has
 // finished a merge form lets the user pick squash vs merge and
 // confirm. Mounted inside LeftPanel; visible when the Commits tab
@@ -199,6 +200,7 @@ function MergeFooter({
   defaultSquashMessage,
   onMergeComplete,
 }: MergeFooterProps) {
+  const cloud = useServerInfoStore((s) => s.info?.mode === "cloud");
   // Terminal-with-commits states the deferred merge action applies to.
   // Cancelled runs are included alongside finished because RecoverFinalize
   // populates FinalCommit / FinalBranch for them too (pkg/runtime/worktree.go),
@@ -426,8 +428,12 @@ function MergeFooter({
         {submitting ? "Merging…" : buttonLabel}
       </Button>
       <div className="text-caption text-fg-subtle">
-        Target: currently-checked-out branch. The merge fails fast if the
-        working tree is dirty or the storage branch is not fast-forwardable.
+        Target:{" "}
+        {cloud
+          ? "the target repository's default branch checked out in the runner."
+          : "currently-checked-out branch."}{" "}
+        The merge fails fast if the working tree is dirty or the storage
+        branch is not fast-forwardable.
       </div>
     </div>
   );
@@ -436,7 +442,7 @@ function MergeFooter({
 // SquashMessageEditor renders the proposed squash commit message in two
 // modes: a readonly `<pre>` preview with a small Edit button (default),
 // or an editable Textarea with a Reset button (after first edit).
-// Behaves like GitHub's PR-merge dialog so the user sees what will
+// Behaves like a forge's PR-merge dialog so the user sees what will
 // land on `main` before clicking and only types when they need to
 // override the workflow's auto-generated message.
 function SquashMessageEditor({

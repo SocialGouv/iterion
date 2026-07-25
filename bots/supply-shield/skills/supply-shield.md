@@ -44,7 +44,7 @@ shared cache. The CVE-focused sibling is `supply-shield-cve` (Vulny).
    llm)`; a `checksum-mismatch` forces HIGH.
 10. **sarif_gen** (tool) — SARIF 2.1.0 from the verdicts.
 11. **forge_report** (claude_code) — post sticky comment + inline review +
-    code-scanning SARIF on the PR/MR (native API — `[[forge-report]]`).
+    code-scanning SARIF on the PR (native API — `[[forge-report]]`).
     Degrades to local-only with no PR/token.
 12. **update_cache** (tool) — append one kind=malware line per analysed
     package.

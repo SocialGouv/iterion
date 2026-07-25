@@ -72,17 +72,18 @@ type Workflow struct {
 type NodeKind int
 
 const (
-	NodeAgent   NodeKind = iota // LLM agent
-	NodeJudge                   // verdict-producing LLM node
-	NodeRouter                  // deterministic routing (no LLM)
-	NodeHuman                   // human pause/resume
-	NodeTool                    // direct command execution (no LLM)
-	NodeCompute                 // deterministic expression evaluation (no LLM, no shell)
-	NodeEmit                    // publishes a run-scoped event (no LLM, no shell)
-	NodeWait                    // blocks until a run-scoped event (no LLM, no shell)
-	NodeSubbot                  // runs another .bot as a nested run
-	NodeDone                    // terminal: success
-	NodeFail                    // terminal: failure
+	NodeAgent        NodeKind = iota // LLM agent
+	NodeJudge                        // verdict-producing LLM node
+	NodeRouter                       // deterministic routing (no LLM)
+	NodeHuman                        // human pause/resume
+	NodeTool                         // direct command execution (no LLM)
+	NodeCompute                      // deterministic expression evaluation (no LLM, no shell)
+	NodeEmit                         // publishes a run-scoped event (no LLM, no shell)
+	NodeWait                         // blocks until a run-scoped event (no LLM, no shell)
+	NodeAwaitAnswers                 // blocks until pending async human questions are answered (no LLM, no shell)
+	NodeSubbot                       // runs another .bot as a nested run
+	NodeDone                         // terminal: success
+	NodeFail                         // terminal: failure
 )
 
 func (k NodeKind) String() string {
@@ -103,6 +104,8 @@ func (k NodeKind) String() string {
 		return "emit"
 	case NodeWait:
 		return "wait"
+	case NodeAwaitAnswers:
+		return "await_answers"
 	case NodeSubbot:
 		return "subbot"
 	case NodeDone:
@@ -141,13 +144,18 @@ func NodeNeeds(n Node) []string {
 	}
 }
 
-// BaseNode provides the common ID field embedded in every concrete node.
+// BaseNode provides the common fields embedded in every concrete node.
 type BaseNode struct {
-	ID string // unique identifier (= DSL name)
+	ID          string // unique identifier (= DSL name)
+	Description string // optional human-readable label (surfaced in the run console)
 }
 
 // NodeID implements Node.
 func (b BaseNode) NodeID() string { return b.ID }
+
+// NodeDescription returns the node's optional human-readable label.
+// Promoted onto every concrete node type via embedding.
+func (b BaseNode) NodeDescription() string { return b.Description }
 
 // ---------------------------------------------------------------------------
 // Shared field groups (embedded in concrete node types)
@@ -440,6 +448,22 @@ type WaitNode struct {
 // NodeKind implements Node.
 func (n *WaitNode) NodeKind() NodeKind { return NodeWait }
 
+// AwaitAnswersNode blocks its branch until every pending async human question
+// (posted via the ask_user_async tool by the From node — or by any node in the
+// run when From is empty) has been answered, then completes with the collected
+// answers as its output: {answers: [{interaction_id, node, question, answer}]}.
+// The Timeout is mandatory (the "no silent infinity" invariant) and bounds the
+// wait. The predicate is level-triggered against the interaction store, so
+// answers that arrived while the process was down are honoured on resume.
+type AwaitAnswersNode struct {
+	BaseNode
+	From    string        // optional node ref: only await questions posted by this node ("" = whole run)
+	Timeout time.Duration // mandatory bound on the wait
+}
+
+// NodeKind implements Node.
+func (n *AwaitAnswersNode) NodeKind() NodeKind { return NodeAwaitAnswers }
+
 // DoneNode is a terminal success node.
 type DoneNode struct {
 	BaseNode
@@ -562,6 +586,18 @@ func NodeAwaitMode(n Node) AwaitMode {
 		return n.AwaitMode
 	}
 	return AwaitNone
+}
+
+// NodeImplicitOutputFields returns the FIXED output field names of node
+// kinds whose output shape is built in rather than schema-declared
+// (await_answers → {answers}). nil for every other kind. Reference
+// validation accepts exactly these fields and hard-errors on any other,
+// keeping the per-kind knowledge here instead of inside the validators.
+func NodeImplicitOutputFields(n Node) []string {
+	if _, ok := n.(*AwaitAnswersNode); ok {
+		return []string{"answers"}
+	}
+	return nil
 }
 
 // NodeOutputSchema returns the OutputSchema for nodes that support it, or "".
@@ -738,6 +774,7 @@ const (
 	InteractionLLM        = types.InteractionLLM
 	InteractionLLMOrHuman = types.InteractionLLMOrHuman
 	InteractionReview     = types.InteractionReview
+	InteractionAsync      = types.InteractionAsync
 )
 
 // Review-gate posture values (interaction: review).
@@ -839,6 +876,13 @@ type Edge struct {
 	// loop/run namespaces.
 	Expression    *expr.AST
 	ExpressionSrc string // original source string preserved for unparse/debug
+
+	// IsElse marks the explicit fallback edge (`src -> dst else`): taken
+	// only when no conditional sibling matched. Runtime-wise it plays
+	// the same role as a bare unconditional edge among conditional
+	// siblings — the compiler validates the stricter contract (C015/
+	// C039/C040) and IsConditional stays false (else is guardless).
+	IsElse bool
 
 	// Loop reference (optional). LoopName references a Loop in Workflow.Loops.
 	LoopName string
@@ -992,6 +1036,7 @@ type Prompt struct {
 type Var struct {
 	Name       string
 	Type       VarType
+	EnumValues []string // non-nil only if enum constraint present (string vars)
 	HasDefault bool
 	Default    any // string, int64, float64, or bool
 }
@@ -1216,7 +1261,10 @@ type Budget struct {
 	MaxDuration         string // e.g. "60m"
 	MaxCostUSD          float64
 	MaxTokens           int
-	MaxIterations       int
+	// WarnTokens is advisory-only: crossing it emits a budget_warning
+	// (advisory) but never blocks execution. 0 = disabled.
+	WarnTokens    int
+	MaxIterations int
 }
 
 // ClampToCeiling lowers each numeric limit so it never EXCEEDS the

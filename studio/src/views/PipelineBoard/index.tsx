@@ -1,9 +1,11 @@
 import { useEffect, useRef, useState } from "react";
+import { Link } from "wouter";
 import { useQuery } from "@tanstack/react-query";
 
 import { getPipelineBoard, type PipelineBoardCard } from "@/api/pipelineBoards";
 import { useHeaderSlot } from "@/components/shared/useHeaderSlot";
 import { Button, EmptyState, InlineBanner, Spinner } from "@/components/ui";
+import { useActiveRepo } from "@/hooks/useActiveRepo";
 import { errorMessage } from "@/lib/errorHints";
 import { formatRelative } from "@/lib/format";
 import { useUIStore } from "@/store/ui";
@@ -29,6 +31,20 @@ export default function PipelineBoardView() {
   const [selected, setSelected] = useState<PipelineBoardCard | null>(null);
   const [drawerFocus, setDrawerFocus] = useState<OpenCardFocus>("default");
   const [filters, setFilters] = useState(emptyPipelineFilters);
+  // Repo-first scoping: default the visible cards to the sidebar's active
+  // repo (cloud only, non-overview); the "Include unscoped" toggle lets
+  // repo-less cards through alongside. In overview / local mode the filter
+  // is inactive — every card renders as before.
+  const {
+    activeRepo,
+    overview,
+    enabled: repoScopeEnabled,
+  } = useActiveRepo();
+  const repoScope =
+    repoScopeEnabled && !overview && activeRepo
+      ? activeRepo.repo_full_name
+      : null;
+  const [includeUnscoped, setIncludeUnscoped] = useState(false);
   const addToast = useUIStore((s) => s.addToast);
   // issue_id → run_id snapshot for launch-toast detection.
   const prevIssueRuns = useRef<Map<string, string>>(new Map());
@@ -135,6 +151,15 @@ export default function PipelineBoardView() {
 
   const textFiltered = filterPipelineCards(board.cards, filters);
   const filterOptions = collectFilterOptions(board.cards);
+  // ONE filtered set: the text/label/kind chips AND the repo scope. The
+  // lifecycle chips (Opened/Closed tabs) are applied further down, inside
+  // PipelineColumns, so In progress is never hidden by an inventory tab.
+  const filteredCards = filterPipelineCards(
+    board.cards,
+    filters,
+    repoScope,
+    includeUnscoped,
+  );
 
   const openCard = (card: PipelineBoardCard, focus: OpenCardFocus = "default") => {
     setDrawerFocus(focus);
@@ -146,14 +171,21 @@ export default function PipelineBoardView() {
       <div className="shrink-0 space-y-2 px-4 py-3">
         <div className="flex flex-wrap items-start gap-3">
           <div className="min-w-0 flex-1">
-            <h1 className="text-display font-semibold text-fg-default">Pipelines</h1>
-            <p className="mt-0.5 max-w-3xl text-xs text-fg-muted">
+            {/* The view's title lives in the header slot ("Pipelines");
+                the body opens with the explanatory intro line only. */}
+            <p className="max-w-3xl text-xs text-fg-muted">
               Live runs up top. Inventory tabs{" "}
               <strong className="font-medium text-fg-default">Opened</strong>{" "}
               (default) and{" "}
               <strong className="font-medium text-fg-default">Closed</strong>.
               Queue banner shows ready / waiting / next up. One primary action
-              per card; more in ⋯.
+              per card; more in ⋯. Cards advance automatically as their runs
+              progress — the only drag here is Opened → In progress, which
+              launches a ticket immediately, unlike the{" "}
+              <Link href="/board" className="text-accent-text hover:underline">
+                Board
+              </Link>
+              .
             </p>
           </div>
           <div className="flex items-center gap-2 text-caption text-fg-subtle">
@@ -201,7 +233,7 @@ export default function PipelineBoardView() {
             />
           ) : (
             <PipelineColumns
-              board={{ ...board, cards: textFiltered }}
+              board={{ ...board, cards: filteredCards }}
               allCardsForQueue={board.cards}
               onRefetch={() => void query.refetch()}
               onEditTask={setEditTask}
@@ -210,6 +242,9 @@ export default function PipelineBoardView() {
               onFiltersChange={setFilters}
               onFiltersReset={() => setFilters(emptyPipelineFilters())}
               filterOptions={filterOptions}
+              repoScope={repoScope}
+              includeUnscoped={includeUnscoped}
+              onIncludeUnscopedChange={setIncludeUnscoped}
             />
           )}
         </div>

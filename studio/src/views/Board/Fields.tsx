@@ -12,8 +12,11 @@
 //
 // Mirrors Labels.tsx's structure (busy/error footer, confirm-on-delete).
 
-import { useCallback, useEffect, useMemo, useState } from "react";
-import { useLocation } from "wouter";
+import { useCallback, useMemo, useState } from "react";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { Link, useLocation } from "wouter";
+
+import { useHeaderSlot } from "@/components/shared/useHeaderSlot";
 
 import {
   addField,
@@ -58,24 +61,23 @@ export default function FieldsView() {
 
 function FieldsViewInner() {
   const [, setLocation] = useLocation();
-  const [board, setBoard] = useState<NativeBoard | null>(null);
-  const [loadError, setLoadError] = useState<string | null>(null);
   const [dialog, setDialog] = useState<DialogState>({ kind: "none" });
   const action = useAsyncAction();
   const { confirm, dialog: confirmDialog } = useConfirm();
 
-  const refresh = useCallback(async () => {
-    try {
-      setBoard(await getBoard());
-      setLoadError(null);
-    } catch (e) {
-      setLoadError(errorMessage(e));
-    }
-  }, []);
+  const queryClient = useQueryClient();
+  const boardQuery = useQuery<NativeBoard>({
+    queryKey: ["board"],
+    queryFn: () => getBoard(),
+  });
+  const board = boardQuery.data ?? null;
+  const loadError = boardQuery.error ? errorMessage(boardQuery.error) : null;
 
-  useEffect(() => {
-    void refresh();
-  }, [refresh]);
+  // Field ops mutate the board schema — re-pull it after each write.
+  const refresh = useCallback(
+    () => queryClient.invalidateQueries({ queryKey: ["board"] }),
+    [queryClient],
+  );
 
   const fields = useMemo(() => board?.fields ?? [], [board]);
 
@@ -124,6 +126,18 @@ function FieldsViewInner() {
     },
     [fields, action, refresh],
   );
+
+  useHeaderSlot({
+    left: (
+      <span className="flex items-center gap-1.5 text-xs font-medium text-fg-default">
+        <Link href="/board" className="text-fg-muted hover:text-fg-default hover:underline">
+          Board
+        </Link>
+        <span className="text-fg-subtle">/</span>
+        <span>Fields</span>
+      </span>
+    ),
+  });
 
   return (
     <div className="h-full overflow-auto p-4 space-y-3 text-label">

@@ -2,9 +2,12 @@ package mongo
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"time"
 
 	"go.mongodb.org/mongo-driver/v2/bson"
+	"go.mongodb.org/mongo-driver/v2/mongo"
 	"go.mongodb.org/mongo-driver/v2/mongo/options"
 
 	"github.com/SocialGouv/iterion/pkg/internal/mongoutil"
@@ -26,6 +29,9 @@ type interactionDoc struct {
 // the initial pause writes the questions, and the resume path writes
 // the answers; both go through this single method.
 func (s *Store) WriteInteraction(ctx context.Context, i *store.Interaction) error {
+	if err := s.guardNotDeleted(ctx, i.RunID); err != nil {
+		return err
+	}
 	stampTenantOnInteraction(ctx, i)
 	doc := interactionDoc{
 		ID: interactionID{
@@ -59,6 +65,46 @@ func (s *Store) LoadInteraction(ctx context.Context, runID, interactionID2 strin
 	out.RunID = runID
 	out.ID = interactionID2
 	return &out, nil
+}
+
+// AnswerInteractionCAS implements store.InteractionAnswerCAS with a
+// single filtered update: the answered_at-is-unset condition rides the
+// filter, so of two concurrent answerers exactly one document update
+// applies and the loser maps to ErrInteractionAlreadyAnswered — no
+// load-then-write window. ({"answered_at": nil} matches both a missing
+// field — the omitempty write shape — and an explicit null.)
+func (s *Store) AnswerInteractionCAS(ctx context.Context, runID, interactionID string, answers map[string]any) (*store.Interaction, error) {
+	now := time.Now().UTC()
+	res := s.interactions.FindOneAndUpdate(
+		ctx,
+		withTenantFilter(ctx, bson.M{
+			"_id":         interactionID2Key(runID, interactionID),
+			"answered_at": nil,
+		}),
+		bson.M{"$set": bson.M{"answers": answers, "answered_at": now}},
+		options.FindOneAndUpdate().SetReturnDocument(options.After),
+	)
+	var doc interactionDoc
+	err := res.Decode(&doc)
+	if err == nil {
+		out := doc.Interaction
+		out.RunID = runID
+		out.ID = interactionID
+		return &out, nil
+	}
+	if !errors.Is(err, mongo.ErrNoDocuments) {
+		return nil, fmt.Errorf("store/mongo: answer interaction %s/%s: %w", runID, interactionID, err)
+	}
+	// No unanswered document matched: distinguish already-answered from
+	// genuinely missing.
+	if _, lerr := s.LoadInteraction(ctx, runID, interactionID); lerr != nil {
+		return nil, lerr
+	}
+	return nil, fmt.Errorf("interaction %s/%s: %w", runID, interactionID, store.ErrInteractionAlreadyAnswered)
+}
+
+func interactionID2Key(runID, iid string) interactionID {
+	return interactionID{RunID: runID, InteractionID: iid}
 }
 
 // ListInteractions returns the interaction ids for a run, in

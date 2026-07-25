@@ -84,11 +84,24 @@ func (s *Server) handleGitLabMergeRequestEvent(ctx context.Context, w http.Respo
 	// Filter: only review on open/reopen, allowed event + project.
 	// A filtered delivery returns 200 (a 4xx would make GitLab disable
 	// the webhook after repeated metadata-only edits).
-	if !p.IsReviewable() ||
+	// ReviewOnSync opts a push-to-MR ("update" with a new head) back into
+	// review so the merge-gate status re-evaluates on the new head SHA.
+	reviewable := p.IsReviewable() || (cfg.ReviewOnSync && p.IsSynchronize())
+	if !reviewable ||
 		!webhooks.MatchEvent(cfg.EventAllowlist, "merge_request", "merge_request", "note") ||
 		!webhooks.MatchProject(cfg.ProjectAllowlist, p.ProjectPath) ||
 		!webhooks.MatchAuthor(cfg.AuthorAllowlist, p.SenderUsername) {
 		s.recordTerminalWebhookDelivery(ctx, cfg, meta, webhooks.StatusFiltered, payloadHash, srcIP, "")
+		writeJSONStatus(w, http.StatusOK, map[string]string{"status": webhooks.StatusFiltered})
+		return
+	}
+
+	// Iterion-bot guard: an MR opened by iterion's own forge bot already
+	// converged in its own loop — skip the auto-review (a human can still run
+	// `/revi`). Mirror of the GitHub PR-open path.
+	if s.isIterionForgeBotAuthor(ctx, cfg, p.SenderUsername) {
+		s.recordTerminalWebhookDelivery(ctx, cfg, meta, webhooks.StatusFiltered, payloadHash, srcIP,
+			"MR authored by iterion's forge bot — auto-review skipped (self-produced; run /revi to force a review)")
 		writeJSONStatus(w, http.StatusOK, map[string]string{"status": webhooks.StatusFiltered})
 		return
 	}
@@ -103,7 +116,7 @@ func (s *Server) handleGitLabMergeRequestEvent(ctx context.Context, w http.Respo
 	// ("note|") so a /revi on the same MR can't collide with the open.
 	idemKey := knowledge.ChecksumHex([]byte(fmt.Sprintf("mr|%s|%s|%d|%d|%s", cfg.TenantID, cfg.ID, p.ProjectID, p.MRIID, p.HeadSHA)))
 
-	vars := reviewPRVars(p.MRURL, p.TargetBranch, strings.TrimSpace(p.Title+"\n\n"+p.Description), cfg.LaunchVars, map[string]string{"pr_author": p.SenderUsername})
+	vars := reviewPRVars(p.MRURL, p.TargetBranch, strings.TrimSpace(p.Title+"\n\n"+p.Description), cfg.LaunchVars, map[string]string{"pr_author": p.SenderUsername, "source_branch": p.SourceBranch})
 
 	s.insertAndLaunchWebhook(ctx, w, r, cfg, meta, idemKey, botID, vars, p.CloneURL, p.SourceBranch, payloadHash, srcIP)
 }
@@ -385,6 +398,9 @@ func (s *Server) handleGitLabCommandNote(ctx context.Context, w http.ResponseWri
 		vars = buildGitLabIssueCommandVars(p, route, cmdArgs, cfg.LaunchVars)
 	} else {
 		stampBranchImprovePushBack(vars, route.BotID, p.SourceBranch, cfg.BranchImproveAsPR)
+		// `/billy` on an MR seeds the run with Revi's most recent review of it
+		// (best-effort — see stampPriorReview). Symmetric with the GitHub path.
+		s.stampPriorReview(ctx, cfg, route.BotID, vars, p.MRURL, p.ProjectPath, int(p.MRIID))
 	}
 	// "cmd|" prefix keeps the key space disjoint from the mr|/note| paths.
 	idemKey := knowledge.ChecksumHex([]byte(fmt.Sprintf("cmd|%s|%s|%d|%s", cfg.TenantID, cfg.ID, p.ProjectID, p.SubjectID())))
@@ -652,7 +668,7 @@ func forgeHostAllowed(host string) bool {
 // sent at all. Precedence:
 //   - cfg.ForgeBaseURL set (per-webhook pin): the payload MR-URL host MUST
 //     match the configured host, else refuse — the precise per-tenant control
-//     for multi-instance BaaS.
+//     for multi-instance cloud deployments.
 //   - otherwise: derive the host from the (secret-authenticated) payload,
 //     gated by the optional global ITERION_WEBHOOK_FORGE_HOSTS allowlist.
 func resolveForgeBaseURL(cfg webhooks.Config, mrURL string) (baseURL, refusal string) {
@@ -742,7 +758,13 @@ func (s *Server) resolveBotSource(botID string) (path, source string, err error)
 // launchScheduledBot is the cloudsched.LaunchFunc: it launches a recurring bot
 // run for its tenant through the run service (cloud → publisher). The tenant
 // identity is stamped on the ctx so the publisher seals credentials + scopes
-// the run to the org.
+// the run to the org. When the schedule pins a RepoURL, it is threaded onto
+// the LaunchSpec so the runner clones the repo before the bot starts —
+// mandatory for stateful bots that persist state to git (feed-watch
+// state_commit=true), which need a workspace with push credentials wired.
+// Generic secrets declared by the bot (e.g. `webhooks`) resolve via the
+// publisher's bot-secret bindings, so SecretOverrides plumbing is not needed
+// here.
 func (s *Server) launchScheduledBot(ctx context.Context, sb cloudsched.ScheduledBot) error {
 	if s.runs == nil {
 		return errors.New("run service unavailable")
@@ -752,13 +774,31 @@ func (s *Server) launchScheduledBot(ctx context.Context, sb cloudsched.Scheduled
 	if err != nil {
 		return err
 	}
-	_, err = s.runs.Launch(ctx, runview.LaunchSpec{
+	_, err = s.runs.Launch(ctx, buildScheduledLaunchSpec(sb, path, source))
+	return err
+}
+
+// buildScheduledLaunchSpec is the pure-data half of launchScheduledBot,
+// exposed for unit testing without wiring a full runview.Service. It carries
+// the schedule's Vars + repo binding onto the LaunchSpec so the runner clones
+// the pinned repo (mandatory for stateful bots persisting state to git) and
+// stamps the BotID for the publisher's credential-resolution path.
+func buildScheduledLaunchSpec(sb cloudsched.ScheduledBot, path, source string) runview.LaunchSpec {
+	return runview.LaunchSpec{
 		FilePath: path,
 		Source:   source,
 		BotID:    sb.BotID,
 		Vars:     sb.Vars,
-	})
-	return err
+		RepoURL:  sb.RepoURL,
+		RepoRef:  sb.RepoRef,
+		// Typed provenance: the schedgate overlap gate counts this
+		// schedule's live runs through source.schedule_id.
+		SourceRef: &store.RunSource{
+			Kind:         store.RunSourceKindSchedule,
+			ScheduleID:   sb.ID,
+			ScheduleName: sb.BotID,
+		},
+	}
 }
 
 // realWebhookLaunchBot is the production launch path for an inbound

@@ -126,16 +126,39 @@ type Config struct {
 	// iterion turns every new issue into a PR without a manual label. OFF by
 	// default: labeling an issue (LabelAllowlist) stays the deliberate opt-in,
 	// so enabling this is a per-webhook decision to auto-act on ALL new issues.
-	// The labeled path keeps working alongside it.
+	// The labeled path keeps working alongside it. The opened lane is
+	// author-gated (see MinAuthorRole): an untrusted author's issue is
+	// filtered here and parks on the board for approval instead.
 	AutoImplementOnOpen bool `bson:"auto_implement_on_open,omitempty" json:"auto_implement_on_open,omitempty"`
+
+	// MinAuthorRole is the minimum repo role (gitlab vocabulary: guest|
+	// reporter|developer|maintainer|owner; "" → developer ≡ write) the ISSUE
+	// AUTHOR must hold for the AutoImplementOnOpen zero-touch lane to launch
+	// — the budget boundary against drive-by issues. Trust resolves as:
+	// AuthorAllowlist ∪ GitHub author_association fast path ∪ live
+	// CollaboratorPermission (needs a forge_token binding). The labeled lane
+	// is NOT author-gated: applying the trigger label already requires
+	// triage+ rights on the forge, which IS the approval gesture.
+	MinAuthorRole string `bson:"min_author_role,omitempty" json:"min_author_role,omitempty"`
+
+	// ReviewOnSync, when true, re-runs the review bot on a PR "synchronize"
+	// (a push to the PR head), not only on opened/reopened. OFF by default
+	// (a push is normally on-demand re-review — see prforge.IsReviewable, kept
+	// budget-frugal). Turn it ON to power the MERGE GATE: the reviewer posts
+	// its revi/review commit status per head SHA, so as the author pushes
+	// fixes the required check re-evaluates on the new revision instead of
+	// deadlocking on a status the old SHA carried. Pairs with the bot's
+	// gate_enabled var + a required-check ruleset listing revi/review.
+	ReviewOnSync bool `bson:"review_on_sync,omitempty" json:"review_on_sync,omitempty"`
 
 	// BlockForkPRs, when true, filters (never auto-launches ANY bot on) a PR
 	// whose head branch lives in a DIFFERENT repo than its base — a fork PR.
 	// The anti budget-exhaustion boundary: a fork PR is untrusted (an adversary
 	// can open many to trigger costly bot runs), so an operator must validate it
 	// before a bot runs. Off by default (fork PRs still auto-review via Revi;
-	// the mutating branch-improve bot never runs on a fork regardless — see
-	// selectForgePRBot). Recommended ON for a public repo.
+	// the mutating branch-improve bot never runs on a PR-open regardless — the
+	// PR-open lane is review-only, see handlePRForgeReview). Recommended ON for
+	// a public repo.
 	BlockForkPRs bool `bson:"block_fork_prs,omitempty" json:"block_fork_prs,omitempty"`
 
 	// ForgeBaseURL, when set, pins the forge instance this webhook's bot

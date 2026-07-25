@@ -1,0 +1,29 @@
+{
+  "bot": "whats-next",
+  "scenario": "nexie_study_synthesis",
+  "node": "nexie",
+  "backend": "claude_code",
+  "model": "${ITERION_WHATS_NEXT_MODEL_CLAUDE:-claude-opus-4-8}",
+  "recorded_at": "2026-07-16T00:00:00Z",
+  "_note": "Hand-authored seed (v3): a live study turn spawns 3 read-only Task sub-agents over a real repo — recording it costs $10+ and mutates a real board. The fixture freezes the study-turn ENVELOPE against the nexie_turn schema (reply present and non-empty, close/quick_replies/dispatched_ids typed); the reply prose is illustrative and MAY drift from the roadmap-synthesis skill wording without invalidating the golden. dispatched_ids is empty by contract: a synthesis turn never dispatches — board execution happens after the operator's arbitrage.",
+  "vars": {
+    "initial_message": "Quels sont les prochains chantiers pour ce trimestre ?",
+    "scope_notes": ""
+  },
+  "input": {
+    "operator_message": "Quels sont les prochains chantiers pour ce trimestre ?"
+  },
+  "output": {
+    "_backend": "claude_code",
+    "_context_used": 121400,
+    "_cost_usd": 6.84,
+    "_model": "claude-opus-4-8",
+    "_session_fingerprint": "anthropic-env",
+    "_session_id": "7f3a2c1e-5b88-4d02-9c41-0aa1e2d43f77",
+    "_tokens": 24310,
+    "close": false,
+    "dispatched_ids": [],
+    "quick_replies": ["1a 2a 3a — go", "Tes recos partout", "Détaille C2 d'abord"],
+    "reply": "Étude complète — 3 audits parallèles (docs/ADR, code gaps, état opérationnel), croisés avec le CONTEXT_BRIEF. La tension principale : la fiabilité du runtime avance plus vite que sa couverture de tests.\n\n## Chantiers\n**now**\n- C1: Durcir la reprise des runs orphelins — l'audit code-gaps remonte 3 TODO dans `pkg/runtime/resume.go` et un test skippé (`resume_orphan_test.go:41`).\n- C2: Clore le follow-up ADR-046 (cutover forge) — l'ADR le marque « staged », aucun commit depuis 3 semaines (`git log --since` vide sur `pkg/trigger/`).\n\n**next**\n- C3: Couverture e2e du dispatcher (retry/stall) — zéro test sur `loop.go` d'après l'audit.\n- C4: Dette config — 2 knobs lus nulle part (`ITERION_X_TIMEOUT`, audit code-gaps).\n- C5: Docs d'onboarding alignées sur le CLI actuel (3 commandes renommées non répercutées).\n\n**later**\n- C6: Observabilité coûts par run (demande récurrente du brief).\n- C7: Migration du store legacy (bloquée par C1).\n\n## Quick-wins\n- Supprimer le flag mort `--legacy-poll` (grep → 2 occurrences, zéro lecteur).\n- Corriger le lien cassé du README vers docs/dispatcher.md.\n\n## Top 3 à lancer\nC1 (réduction de risque : les orphelins mangent des runs réels), puis C2 (priorité opérateur du brief), puis C3 (blast radius contenu, réversible). C1 → whole-improve-loop, C2 → feature-dev, C3 → test-coverage — noms validés au catalogue.\n\n## Angles morts\nAdoption/usage réel, RGPD, backups/DR — aucun audit ne les couvre.\n\n**Décision 1 — top-3** (reco: a) a) lance C1+C2+C3 b) C1 seul c) autre\n**Décision 2 — quick-wins** (reco: a) a) je les dispatche b) liste-les, tu les fais\n**Décision 3 — angles morts** (reco: b) a) audit ciblé b) ticket later c) hors scope\n\nRéponds en une ligne — ex. « 1a, 2a, 3b »."
+  }
+}

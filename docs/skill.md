@@ -1,5 +1,3 @@
-[← Documentation index](README.md) · [← Iterion](../README.md)
-
 # AI Agent Skill
 
 Iterion ships as an **Agent Skill** compatible with Claude Code, Codex, Cursor, Windsurf, GitHub Copilot, Cline, Aider, and other AI coding agents. Once installed, your agent knows the full `.bot` DSL and can write correct workflows for you.
@@ -18,7 +16,7 @@ npx skills add https://github.com/SocialGouv/iterion --skill iterion-dsl
 | [`SKILL-run-and-refine.md`](../SKILL-run-and-refine.md) | Practice guide for running, debugging and iteratively refining `.bot` workflows against real data |
 | [`references/dsl-grammar.md`](references/dsl-grammar.md) | Formal grammar specification (EBNF) |
 | [`references/patterns.md`](references/patterns.md) | 10 reusable workflow patterns with annotated snippets |
-| [`references/diagnostics.md`](references/diagnostics.md) | All validation diagnostic codes (C001–C086, sparse) with causes and fixes |
+| [`references/diagnostics.md`](references/diagnostics.md) | Authoritative sparse catalogue of DSL diagnostics (C001–C199) and bundle checks (C200–C230), with causes and fixes |
 
 ## Usage
 

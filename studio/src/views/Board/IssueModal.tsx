@@ -1,7 +1,9 @@
 import { useEffect, useMemo, useState } from "react";
 
 import { type BotEntryWithSchema } from "@/api/bots";
+import { forgeTeamRepoKey } from "@/api/forgeConnections";
 import {
+  type ExternalLinkInput,
   type NativeBoard,
   type NativeIssue,
 } from "@/api/native";
@@ -11,17 +13,27 @@ import { Dialog } from "@/components/ui/Dialog";
 import { InlineBanner } from "@/components/ui/InlineBanner";
 import { Tabs } from "@/components/ui/Tabs";
 import { defaultStringFor } from "@/components/shared/VarFieldInput";
+import { useActiveRepo } from "@/hooks/useActiveRepo";
 import { useAsyncAction } from "@/hooks/useAsyncAction";
 import { isVarMissing } from "@/lib/varValidation";
 import { useBotsStore } from "@/store/bots";
 
+import { ApproveTriageBanner } from "./ApproveTriage";
 import { BotTab } from "./issueModal/BotTab";
+import { RepositoryField } from "./issueModal/RepositoryField";
 import { TicketTab } from "./issueModal/TicketTab";
+
+// IssueDraft widens Partial<NativeIssue> for the modal's onSubmit callback:
+// `external` carries the operator's picker input (no server-populated
+// number/url yet), which is not assignable to NativeIssue.external.
+export type IssueDraft = Partial<Omit<NativeIssue, "external">> & {
+  external?: ExternalLinkInput;
+};
 
 interface Props {
   board: NativeBoard;
   initial: NativeIssue | null;
-  onSubmit: (input: Partial<NativeIssue>) => Promise<void> | void;
+  onSubmit: (input: IssueDraft) => Promise<void> | void;
   onClose: () => void;
   onDelete?: () => void;
   // When set, the issue is in a pre-dispatch lane (inbox/backlog) and a
@@ -54,6 +66,34 @@ export default function IssueModal({ board, initial, onSubmit, onClose, onDelete
     return out;
   });
 
+  // Repo-first scoping: the picker is fed by the same connected-repos list
+  // the sidebar switcher uses (cloud-only, gated on `enabled`). A card
+  // already synced from its forge (external.number/url present) locks the
+  // picker into a read-only "synced from forge" note.
+  const {
+    activeRepo,
+    overview,
+    repos: connectedRepos,
+    enabled: repoScopeEnabled,
+  } = useActiveRepo();
+  const initialRepoKey = useMemo(() => {
+    // Existing external → match by (connection_id, repo). Falls through to
+    // the forgeTeamRepoKey format even when the repo has been disconnected
+    // — RepositoryField surfaces it as a legacy option so save doesn't
+    // silently drop the link.
+    const ex = initial?.external;
+    if (ex?.connection_id && ex.repo) {
+      return `${ex.connection_id}::${ex.repo}`;
+    }
+    // New card in cloud mode: pre-fill from the sidebar's active repo
+    // (skip in overview mode — operator explicitly wants no default).
+    if (!initial && repoScopeEnabled && !overview && activeRepo) {
+      return forgeTeamRepoKey(activeRepo);
+    }
+    return "";
+  }, [initial, repoScopeEnabled, overview, activeRepo]);
+  const [repoKey, setRepoKey] = useState(initialRepoKey);
+
   // Bots catalog. Shared zustand store — fetched once across all consumers
   // (Home, BotPicker, Inspector, Catalog manager). Loading + error
   // surface separately so the Bot tab degrades gracefully.
@@ -75,18 +115,48 @@ export default function IssueModal({ board, initial, onSubmit, onClose, onDelete
     setAssignee(initial?.assignee ?? "");
     setBot(initial?.bot ?? "");
     setBotArgs(initial?.bot_args ?? {});
+    setRepoKey(initialRepoKey);
     const out: Record<string, string> = {};
     for (const f of board.fields ?? []) {
       const v = initial?.fields?.[f.name];
       out[f.name] = v == null ? "" : String(v);
     }
     setFields(out);
-  }, [initial, board]);
+  }, [initial, board, initialRepoKey]);
 
   const selectedBot: BotEntryWithSchema | null = useMemo(() => {
     if (!bot || !bots) return null;
     return bots.find((b) => b.name === bot) ?? null;
   }, [bot, bots]);
+
+  // A card is "synced from forge" once the server has stamped a number or a
+  // URL onto its external link — from that point re-linking would break the
+  // upstream sync, so the picker locks read-only.
+  const syncedExternal = useMemo(() => {
+    const ex = initial?.external;
+    if (!ex) return null;
+    return ex.number > 0 || ex.url ? ex : null;
+  }, [initial]);
+
+  // Repository picker: only offered in cloud mode with at least one
+  // connected repo (or an existing external link, so we don't hide the
+  // linkage). Outside cloud mode: no repo affordance.
+  const repositoryField = useMemo(() => {
+    if (!repoScopeEnabled) return undefined;
+    const hasAffordance =
+      connectedRepos.length > 0 || syncedExternal !== null || !!initial?.external;
+    if (!hasAffordance) return undefined;
+    const legacyLabel = initial?.external?.repo ?? null;
+    return (
+      <RepositoryField
+        repos={connectedRepos}
+        value={repoKey}
+        onChange={setRepoKey}
+        synced={syncedExternal}
+        legacyLinkedLabel={legacyLabel}
+      />
+    );
+  }, [repoScopeEnabled, connectedRepos, syncedExternal, initial, repoKey]);
 
   const botRequiredMissing = useMemo(() => {
     if (!selectedBot?.vars?.fields) return false;
@@ -103,7 +173,7 @@ export default function IssueModal({ board, initial, onSubmit, onClose, onDelete
       submitAction.setError("Required bot arguments are missing.");
       return;
     }
-    const out: Partial<NativeIssue> = {
+    const out: IssueDraft = {
       title: title.trim(),
       body: body.trim(),
       state,
@@ -116,6 +186,33 @@ export default function IssueModal({ board, initial, onSubmit, onClose, onDelete
     const typedFields = coerceFields(board, fields);
     if (Object.keys(typedFields).length > 0) {
       out.fields = typedFields;
+    }
+    // Repo-first scoping. Only surface `external` when the picker was
+    // available AND the operator picked a repo — "No repository" (empty
+    // key) omits the field so the server leaves any prior link unchanged
+    // (there is no clear-link semantic today). A synced card ships its
+    // untouched external so the store's pointer-nil "unchanged" rule
+    // preserves the sync-owned number/url/state.
+    if (repositoryField) {
+      if (syncedExternal) {
+        // Locked picker — never re-link.
+      } else if (repoKey) {
+        const picked = connectedRepos.find((r) => forgeTeamRepoKey(r) === repoKey);
+        if (picked) {
+          out.external = {
+            provider: picked.provider,
+            connection_id: picked.connection_id,
+            repo: picked.repo_full_name,
+          };
+        } else if (initial?.external && repoKey === `${initial.external.connection_id}::${initial.external.repo}`) {
+          // Legacy option: keep the disconnected repo linkage intact.
+          out.external = {
+            provider: initial.external.provider,
+            connection_id: initial.external.connection_id,
+            repo: initial.external.repo,
+          };
+        }
+      }
     }
     await submitAction.run(() => Promise.resolve(onSubmit(out)));
   };
@@ -131,6 +228,12 @@ export default function IssueModal({ board, initial, onSubmit, onClose, onDelete
     >
       <form onSubmit={submit} className="max-h-[80vh] overflow-auto">
         <div className="px-4 pt-2">
+          {initial && (
+            <ApproveTriageBanner
+              iss={{ ...initial, labels }}
+              onApproved={setLabels}
+            />
+          )}
           <Tabs
             value={tab}
             onValueChange={(v) => setTab(v as "ticket" | "bot")}
@@ -181,6 +284,7 @@ export default function IssueModal({ board, initial, onSubmit, onClose, onDelete
                   allAssignees={allAssignees}
                   fields={fields}
                   setFields={setFields}
+                  repositoryField={repositoryField}
                 />
               ),
               bot: (

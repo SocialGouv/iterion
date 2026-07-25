@@ -10,17 +10,23 @@ const EMPTY_RUNS: RunSummary[] = [];
 
 const POLL_INTERVAL_FAST_MS = 3000;
 const POLL_INTERVAL_SLOW_MS = 8000;
+// Nothing queued / running / awaiting the operator: the list can only
+// change through an external launch, so poll lazily (focus refetch
+// still snaps the list fresh when the operator returns to the tab).
+const POLL_INTERVAL_IDLE_MS = 15000;
 // Above this many queued runs we slow polling to relieve the cloud
 // server. Mirrors RunListView's contract — see cloud-ready plan §F.
 const QUEUED_BACKOFF_THRESHOLD = 10;
+
+const ACTIVE_STATUSES: RunStatus[] = ["queued", "running", "paused_waiting_human"];
 
 export function computePollingInterval(
   counts: Partial<Record<RunStatus, number>>,
 ): number {
   const queued = counts.queued ?? 0;
-  return queued >= QUEUED_BACKOFF_THRESHOLD
-    ? POLL_INTERVAL_SLOW_MS
-    : POLL_INTERVAL_FAST_MS;
+  if (queued >= QUEUED_BACKOFF_THRESHOLD) return POLL_INTERVAL_SLOW_MS;
+  const active = ACTIVE_STATUSES.reduce((n, s) => n + (counts[s] ?? 0), 0);
+  return active > 0 ? POLL_INTERVAL_FAST_MS : POLL_INTERVAL_IDLE_MS;
 }
 
 export interface UseRunsOptions {
@@ -43,8 +49,9 @@ export interface UseRunsResult {
   error: string | null;
 }
 
-// Polls the runs list at an adaptive interval (3s normally, 8s when the
-// queue is deep). TanStack Query handles tab visibility natively
+// Polls the runs list at an adaptive interval (3s while runs are active,
+// 8s when the queue is deep, 15s when everything is terminal or the list
+// is empty). TanStack Query handles tab visibility natively
 // (`refetchIntervalInBackground: false` pauses polling while the tab
 // is hidden) and de-dupes consumers that mount the same key, so the
 // previous fingerprint + visibilitychange machinery falls away.
@@ -58,11 +65,9 @@ export function useRuns(opts: UseRunsOptions = {}): UseRunsResult {
     refetchInterval: (q) => {
       const data = q.state.data;
       if (!data) return POLL_INTERVAL_FAST_MS;
-      let queued = 0;
-      for (const r of data) if (r.status === "queued") queued++;
-      return queued >= QUEUED_BACKOFF_THRESHOLD
-        ? POLL_INTERVAL_SLOW_MS
-        : POLL_INTERVAL_FAST_MS;
+      const counts: Partial<Record<RunStatus, number>> = {};
+      for (const r of data) counts[r.status] = (counts[r.status] ?? 0) + 1;
+      return computePollingInterval(counts);
     },
     refetchIntervalInBackground: false,
   });

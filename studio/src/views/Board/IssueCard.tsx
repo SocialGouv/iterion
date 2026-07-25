@@ -7,6 +7,7 @@ import { clickableRowProps } from "@/lib/a11y";
 import type { DispatchSkipView, RetryView, RunningView } from "@/api/dispatcher";
 import type { NativeIssue } from "@/api/native";
 
+import { ApproveTriageBanner } from "./ApproveTriage";
 import { labelPalette, pickPinnedFields, shortID } from "./labelPalette";
 import { PushToForgeButton } from "./PushToForge";
 
@@ -248,7 +249,7 @@ export function IssueCard({
             }
             title={`${iss.external.provider} · ${iss.external.repo}${
               iss.external.number ? ` #${iss.external.number}` : ""
-            }`}
+            }${iss.external.author ? ` · opened by @${iss.external.author}` : ""}`}
           >
             <span className="truncate">{iss.external.repo}</span>
           </Badge>
@@ -260,6 +261,7 @@ export function IssueCard({
         )}
         <PushToForgeButton iss={iss} />
       </div>
+      <ApproveTriageBanner iss={iss} compact />
       {running && (
         <div className="mt-1 flex items-center justify-between gap-2 rounded bg-success-soft px-1.5 py-1 text-caption text-success-fg">
           <button

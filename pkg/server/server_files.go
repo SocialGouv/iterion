@@ -3,7 +3,6 @@ package server
 import (
 	"encoding/json"
 	"fmt"
-	"io"
 	"io/fs"
 	"net/http"
 	"net/url"
@@ -12,6 +11,7 @@ import (
 	"strings"
 
 	"github.com/SocialGouv/iterion/bots"
+	"github.com/SocialGouv/iterion/internal/httpx"
 	"github.com/SocialGouv/iterion/pkg/dsl/ast"
 	"github.com/SocialGouv/iterion/pkg/dsl/parser"
 	"github.com/SocialGouv/iterion/pkg/dsl/unparse"
@@ -46,11 +46,7 @@ type saveFileResponse struct {
 // --- Helpers ---
 
 func readJSON(r *http.Request, v any) error {
-	body, err := io.ReadAll(io.LimitReader(r.Body, 10<<20)) // 10 MB max
-	if err != nil {
-		return err
-	}
-	return json.Unmarshal(body, v)
+	return httpx.DecodeJSON(r, v)
 }
 
 // decodeJSON reads+unmarshals the request body into *dst, writing a 400
@@ -168,34 +164,29 @@ func (s *Server) reflectAllowedOrigin(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+// writeJSON encodes v as JSON without touching the status code: callers rely
+// on the implicit 200 from the first body write, or have already called
+// WriteHeader themselves.
 func writeJSON(w http.ResponseWriter, v any) {
-	w.Header().Set("Content-Type", "application/json")
-	_ = json.NewEncoder(w).Encode(v)
+	httpx.EncodeJSON(w, v)
 }
 
 // writeJSONFor is the request-aware variant of writeJSON: it also reflects an
 // allowlisted Origin header so legitimate browser callers receive ACAO.
 func (s *Server) writeJSONFor(w http.ResponseWriter, r *http.Request, v any) {
-	w.Header().Set("Content-Type", "application/json")
 	s.reflectAllowedOrigin(w, r)
-	_ = json.NewEncoder(w).Encode(v)
+	httpx.EncodeJSON(w, v)
 }
 
 func httpError(w http.ResponseWriter, code int, format string, args ...any) {
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(code)
-	msg := fmt.Sprintf(format, args...)
-	json.NewEncoder(w).Encode(map[string]string{"error": msg})
+	httpx.WriteJSON(w, code, map[string]string{"error": fmt.Sprintf(format, args...)})
 }
 
 // httpErrorFor is the request-aware variant: reflects allowlisted Origin so
 // browser code can read the error body when same-origin or loopback.
 func (s *Server) httpErrorFor(w http.ResponseWriter, r *http.Request, code int, format string, args ...any) {
-	w.Header().Set("Content-Type", "application/json")
 	s.reflectAllowedOrigin(w, r)
-	w.WriteHeader(code)
-	msg := fmt.Sprintf(format, args...)
-	json.NewEncoder(w).Encode(map[string]string{"error": msg})
+	httpx.WriteJSON(w, code, map[string]string{"error": fmt.Sprintf(format, args...)})
 }
 
 // requireSafeOrigin gates state-changing endpoints. Any request whose Origin
@@ -207,9 +198,7 @@ func (s *Server) requireSafeOrigin(w http.ResponseWriter, r *http.Request) bool 
 	if s.isAllowedOriginReq(r) {
 		return true
 	}
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(http.StatusForbidden)
-	_ = json.NewEncoder(w).Encode(map[string]string{
+	httpx.WriteJSON(w, http.StatusForbidden, map[string]string{
 		"error": "cross-origin request rejected: origin not allowed (must be same-origin, loopback, or the configured public URL)",
 	})
 	return false
@@ -348,7 +337,10 @@ func (s *Server) handleListFiles(w http.ResponseWriter, _ *http.Request) {
 		return
 	}
 	var files []fileEntry
-	filepath.WalkDir(workDir, func(path string, d fs.DirEntry, err error) error {
+	// Per-entry errors are handled in the callback; a root-level walk failure
+	// yields the partial (possibly empty) list, which this read-only file
+	// browser degrades to gracefully.
+	_ = filepath.WalkDir(workDir, func(path string, d fs.DirEntry, err error) error {
 		if err != nil {
 			return nil
 		}

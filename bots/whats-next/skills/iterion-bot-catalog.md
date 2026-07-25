@@ -266,6 +266,9 @@ dispatcher routes on it), never the persona.
 | Evoly | `evolve` |
 | Featurly | `feature-dev` |
 | Fini | `feature-gap-fill` |
+| Vigie | `feed-watch` |
+| Heartbeat (always-on demo) | `heartbeat` |
+| Triagy | `issue-triage` |
 | Nested Subbots Demo | `nested-subbots-demo` |
 | Pipeline Board Demo | `pipeline-board-demo` |
 | Revi (converse) | `revi-converse` |
@@ -279,6 +282,7 @@ dispatcher routes on it), never the persona.
 | Testy | `test-coverage` |
 | Nexie | `whats-next` (this bot) |
 | Willy | `whole-improve-loop` |
+| Wikky | `wiki-gen` |
 
 ## Bot reference
 
@@ -343,8 +347,8 @@ build/test gate + adversarial self-review re-check every pass, and
 an opt-in draft-review gate lets the operator ship, request changes
 (feedback loops back into the campaign), or hold. Re-running against
 the generated app EVOLVES it (brownfield detection) instead of
-re-scaffolding. Opt-in MR tail pushes the series and opens the
-merge/pull request.
+re-scaffolding. An opt-in tail pushes the series and opens the
+pull request (PR; merge request on GitLab).
 
 - **Use when**:
   Use to create a NEW application from a natural-language brief —
@@ -356,7 +360,7 @@ merge/pull request.
   for a fast free first draft the operator reframes at the draft-review
   gate. A re-run against the generated app evolves it.
 - **Triggers**: new-app, greenfield, scaffold, bootstrap, app-from-prompt
-- **Vars**: `app_prompt` (string), `baseline` (string), `draft_review` (bool), `max_draft_loops` (int), `max_interview_turns` (int), `max_passes` (int), `mode` (string), `mr_base` (string), `mr_branch` (string), `open_mr` (bool), `scratch_dir` (string), `source_issue_ref` (string), `stack` (string), `workspace_dir` (string)
+- **Vars**: `app_prompt` (string), `baseline` (string), `deploy_enabled` (bool), `draft_review` (bool), `max_deploy_retries` (int), `max_draft_loops` (int), `max_interview_turns` (int), `max_passes` (int), `mode` (string), `mr_base` (string), `mr_branch` (string), `open_mr` (bool), `scratch_dir` (string), `source_issue_ref` (string), `stack` (string), `workspace_dir` (string)
 - **Path**: `bots/app-dev/main.bot`
 
 ### `bmady` — Bmady
@@ -399,7 +403,8 @@ re-checks the tree after each pass (the anti-Goodhart truth oracle: the agent
 can't self-certify); RED routes back with the failure log, green + branch
 clean converges. git IS the durable state — an interrupted / budget-capped
 run keeps every committed fix, and a re-dispatch re-runs the campaign. Bounded
-by a max_passes cap. Optional MR/PR path ships the series of per-pass commits.
+by a max_passes cap. An optional PR path (merge request on GitLab) ships the
+series of per-pass commits.
 Sibling of whole-improve-loop v2 (ADR-058). See
 docs/references/productive-session-patterns.md.
 
@@ -411,7 +416,7 @@ docs/references/productive-session-patterns.md.
   improves what it finds, converging when a fresh re-review is clean and a
   deterministic build/test gate is green. For a whole-codebase (not
   branch-scoped) cross-cutting improvement, use whole-improve-loop instead.
-- **Vars**: `base_ref` (string), `baseline` (string), `max_passes` (int), `mr_base` (string), `mr_branch` (string), `open_mr` (bool), `pr_url` (string), `push_branch` (string), `scope_notes` (string), `scratch_dir` (string), `source_issue_ref` (string), `workspace_dir` (string)
+- **Vars**: `base_ref` (string), `baseline` (string), `max_passes` (int), `mr_base` (string), `mr_branch` (string), `open_mr` (bool), `pr_url` (string), `prior_review` (string), `push_branch` (string), `scope_notes` (string), `scratch_dir` (string), `source_issue_ref` (string), `workspace_dir` (string)
 - **Path**: `bots/branch-improve-loop/main.bot`
 
 ### `dep-update-guard` — Vetty
@@ -472,34 +477,52 @@ before it lands).
 
 ### `docs-refresh` — Doki
 
-Documentation refresh bot — one capable agent over a deterministic
-drift manifest, minimal framing. Detects mismatches between project
-documentation (README, docs/*.md, CLAUDE.md, bundled skills, Go code
-comments) and the actual current state of the code, then fixes the
-DOCS (never the code), committing each aligned doc in stride. When a
-repo has NO documentation yet, it bootstraps an initial doc set
-(configurable docs_dir, default "docs") authored from the code, then
-refreshes it through the same campaign.
+Documentation alignment bot — one capable agent + a mission + truth
+gates only. Converges the documentation, exhaustively, to the
+actual current state of the repo: docs follow code, exhaustively —
+never the reverse. Both halves are doc-side: it REPAIRS stale
+documentation (mismatched claims, dead links, drifted invocations,
+outdated examples), and it WRITES the missing documentation
+(undocumented capabilities, surface, and code areas). Every edit
+lands as a `docs(scope):` commit in stride; code is never touched.
+When a repo has NO documentation yet, it bootstraps an initial doc
+set (configurable docs_dir, default "docs") authored from the code,
+then refreshes it through the same campaign. Documented claims that
+read as deliberate, unfulfilled AMBITIONS are neither deleted nor
+aligned-down: they are recorded and reported in the PR body under
+"Unfulfilled documented promises".
 
-Anti-Goodhart by construction: a deterministic scanner enumerates the
-immutable doc footprint; build_manifest mechanically verifies every
-code anchor and hands the campaign a bounded, severity-sorted drift
-working set; a deterministic scope gate fails the run if anything
-outside the doc writeable-set changed; and convergence requires the
-mechanical anchor coverage to meet its target — the agent cannot
-rubber-stamp its own alignment.
+The determinism is TRUTH-only: a deterministic scope gate fails the
+run if anything outside the doc writeable-set (`.md`) changed, and
+convergence is that scope gate ∧ the campaign's honest docs_aligned
+contract — nothing else. (A docs-only change cannot affect the
+repo's build, so there is no build/test gate.) A deterministic scan
+still
+runs each pass, but as an ADVISORY hints producer (missing paths,
+dead links/anchors, unmentioned code areas, telemetry): help the
+agent is free to use, contradict, and explore beyond — never an
+obligation. The dismissals ledger and promises ledger persist the
+agent's own adjudications across passes (memory, never a cage).
 
-The bot ships 5 skills capturing the discipline: docs-refresh
-(playbook), doc-mismatch-taxonomy, doc-scope-enumeration,
-anti-facade-fix-rules, doc-verification-checklist.
+Opt-in delivery: open_mr=true pushes the alignment series and opens
+one PR/MR at the end of the run (gated by a deterministic push-
+credential probe) — required for repo-targeted cloud runs, whose
+clone is ephemeral.
+
+The bot ships 7 skills capturing the discipline: docs-refresh
+(playbook), doc-mismatch-taxonomy, doc-enrichment,
+doc-scope-enumeration, anti-facade-fix-rules,
+doc-verification-checklist, forge-mr-create.
 
 - **Use when**:
   Use when README / CLAUDE.md / docs/**/*.md / bundled skills are
   stale versus the code, before a release, or whenever a survey flags
-  code↔doc drift — or when a repo has NO docs yet and needs an initial
-  set authored from the code. Fixes the DOCS only (never code logic)
-  and commits.
-- **Vars**: `audit_cache_path` (string), `baseline` (string), `bundle_self_path` (string), `cli_surface_globs` (string), `code_scope_globs` (string), `coverage_target_pct` (int), `diagnostic_surface_globs` (string), `diff_since` (string), `doc_globs` (string), `docs_dir` (string), `excluded_dirs` (string), `go_comment_globs` (string), `issue_id` (string), `max_drift_candidates` (int), `max_passes` (int), `max_review_chunk_docs` (int), `scope_notes` (string), `scratch_dir` (string), `workspace_dir` (string)
+  code↔doc drift — or when parts of the repo (capabilities, whole
+  subsystems) are simply UNDOCUMENTED and the docs should converge to
+  the actual state of the repo — or when a repo has NO docs yet and
+  needs an initial set authored from the code. Fixes and writes the
+  DOCS only (never code logic) and commits.
+- **Vars**: `base_ref` (string), `bundle_self_path` (string), `diff_since` (string), `dismissed_path` (string), `doc_globs` (string), `docs_dir` (string), `excluded_dirs` (string), `max_hints` (int), `max_passes` (int), `mode` (string), `mr_base` (string), `mr_branch` (string), `open_mr` (bool), `pr_url` (string), `scope_notes` (string), `scratch_dir` (string), `source_branch` (string), `source_issue_ref` (string), `workspace_dir` (string)
 - **Path**: `bots/docs-refresh/main.bot`
 
 ### `evolve` — Evoly
@@ -559,8 +582,8 @@ campaign explores, builds a living todo of slices, and ships the
 feature one verified semantic commit at a time (tests included, ADRs
 authored for non-trivial decisions). A deterministic build/test gate +
 bounded continuation loop re-poke it until the feature is complete and
-the tree is green; an opt-in MR tail pushes the series and opens the
-merge/pull request.
+the tree is green; an opt-in tail pushes the series and opens the
+pull request (PR; merge request on GitLab).
 
 - **Use when**:
   Use when an item can be phrased as one feature with a clear,
@@ -589,6 +612,82 @@ without re-architecting what already works.
   greenfield (no existing partial implementation to preserve).
 - **Vars**: `baseline` (string), `gap_spec` (string, required), `max_passes` (int), `scope_notes` (string), `scratch_dir` (string), `workspace_dir` (string)
 - **Path**: `bots/feature-gap-fill/main.bot`
+
+### `feed-watch` — Vigie
+
+Universal feed-watch + digest bot (Huginn-style veille pipeline as a
+single bot). Two run modes over one file-backed state in the target
+workspace, selected with --var mode=:
+
+collect (zero-LLM — runs with no LLM credential): polls every
+configured RSS/Atom/RDF feed with a stdlib parser, dedups against a
+per-category seen-items FIFO (ids + urls, cross-source), and queues
+the fresh items in pending.jsonl.
+
+digest (one LLM step): snapshots a category's queue (empty queue →
+done at zero cost), then an editorial agent groups same-story items,
+web_fetches the top articles to ground the takeaways, semantically
+dedups against the previously sent digests, ranks by importance and
+writes ONE chat-ready markdown message; a deterministic tool POSTs it
+to the configured Mattermost/Slack incoming webhooks and clears
+exactly the digested items from the queue.
+
+Everything workspace-specific (categories, feeds, editorial guidance
+and language, webhook sinks, cadences) lives in the target repo's
+config file (default feed-watch.json) + the `webhooks` secret — no
+feed, prompt language or channel is baked into the bot. Requires
+python3 (stdlib only) on the execution host.
+
+Hardened against untrusted config: the editorial guidance feeds the LLM
+behind a permission gate (WebFetch-only, so an injected prompt can't
+reach a shell or the mounted secrets), a deterministic link firewall
+rejects any digest URL not drawn from the collected items, and feed
+fetching refuses private/loopback/metadata addresses and non-http(s)
+schemes by default (opt into internal feeds with
+--var allow_private_feeds=true on a trusted deployment).
+
+- **Use when**:
+  Use to run a recurring technology/news watch over RSS/Atom feeds with
+  LLM-synthesized digests delivered to chat (Mattermost/Slack incoming
+  webhooks): schedule `mode=collect` runs to poll feeds cheaply
+  (zero-LLM), and per-category `mode=digest` runs (daily/weekly) to
+  synthesize and deliver. Replaces a Huginn RSS → dedup → digest → LLM
+  → webhook scenario one-for-one. Not for one-shot research questions
+  (use a plain research bot) and it never edits code.
+- **Vars**: `allow_private_feeds` (bool), `category` (string), `config_path` (string), `dry_run` (bool), `fetch_timeout_secs` (int), `max_digest_items` (int), `max_items_per_feed` (int), `mode` (string), `scratch_dir` (string), `state_commit` (bool), `state_dir` (string), `workspace_dir` (string)
+- **Path**: `bots/feed-watch/main.bot`
+
+### `heartbeat` — Heartbeat (always-on demo)
+
+Tool-only demo of an always-on agent. Relaunched continuously by an
+`overlap: keepalive` schedule with at-most-one-live semantics and
+staleness reaping — the pattern for keeping a watcher/poller/your own
+long-lived bot running as a stream of fresh, individually-budgeted runs
+rather than one immortal run. No LLM, no API keys.
+
+- **Path**: `examples/keepalive/main.bot`
+
+### `issue-triage` — Triagy
+
+Lightweight single-shot card triage. ONE cheap read-classify-stamp
+agent: reads a fresh board card, classifies it against the generated
+bot catalog's decision tree, stamps the handler bot on the card
+(typed Bot field via set_bot) plus vocabulary-consistent labels, and
+leaves a one-paragraph routing comment. The card STAYS in inbox —
+launching is the operator's drag to Ready (the dispatcher claims the
+stamped bot). No confident fit → needs-manual-triage, Bot unset.
+Auto-fires via the trigger spine on cards carrying triage:auto
+(consumed one-shot); re-add the label to re-triage.
+
+- **Use when**:
+  Never dispatch work TO it — Triagy routes work to OTHER bots. It
+  fires automatically on trusted-author forge issues synced to the
+  board (triage:auto), on an operator's "Approve & triage" of an
+  external issue (needs:approval → triage:auto swap), or on any card
+  you hand-label triage:auto. Use when you want fresh issues to arrive
+  pre-routed so launching is a single drag to Ready.
+- **Vars**: `issue_id` (string, required)
+- **Path**: `bots/issue-triage/main.bot`
 
 ### `nested-subbots-demo` — Nested Subbots Demo
 
@@ -625,9 +724,9 @@ human / subbot only — no API keys, runs in seconds.
 ### `revi-converse` — Revi (converse)
 
 Conversational sibling of Revi (review-pr). Triggered when an
-authorized forge user asks a focused QUESTION on an open merge /
-pull request — `/revi <question>` (e.g.
-`/revi why is the SSRF critical?`). Reads the question + the MR
+authorized forge user asks a focused QUESTION on an open pull
+request (PR; merge request on GitLab) — `/revi <question>` (e.g.
+`/revi why is the SSRF critical?`). Reads the question + the PR
 diff against the branch's merge-base, formulates a CONCISE,
 GROUNDED answer (a senior code reviewer's follow-up — not a
 fresh full review), and posts the answer as a REPLY in the same
@@ -637,10 +736,10 @@ webhook handler routes to review-pr for a fresh re-review
 instead.
 
 - **Use when**:
-  Use when an operator asks a follow-up question on an open MR
+  Use when an operator asks a follow-up question on an open PR
   about Revi's earlier findings or the diff itself — clarification,
   rationale, severity justification, alternative fixes. NOT for
-  re-reviewing the MR (that is review-pr / Revi), NOT for editing
+  re-reviewing the PR (that is review-pr / Revi), NOT for editing
   code (that is Billy or Featurly), NOT for triaging issues on the
   board.
 - **Triggers**: revi-converse, ask, converse
@@ -654,8 +753,8 @@ of the current branch against its base with two independent reviewers
 (Claude + GPT), merges and de-duplicates their findings (cross-family
 agreement raises confidence), then publishes one issue per finding to
 the iterion native kanban board (labelled severity + type +
-source:revi) and writes a markdown report. Given a pull/merge-request
-URL (--var pr_url), it ALSO posts the findings onto that PR as a real
+source:revi) and writes a markdown report. Given a pull-request URL
+(PR; merge request on GitLab; --var pr_url), it ALSO posts the findings onto that PR as a real
 forge review — inline comments anchored to file:line with one-click
 ```suggestion blocks (GitHub / GitLab / Forgejo). Never edits, fixes,
 or commits code — that is the improve-loops' job (Billy / Willy).
@@ -667,7 +766,7 @@ or commits code — that is the improve-loops' job (Billy / Willy).
   auto-fixed. Read-only: Revi reports; Billy (branch-improve-loop)
   reviews AND fixes AND commits.
 - **Triggers**: review-pr, pr-review, review
-- **Vars**: `base_ref` (string), `max_findings` (int), `post_to_board` (bool), `pr_review_mode` (string), `pr_url` (string), `report_path` (string), `scope_notes` (string), `severity_threshold` (string), `workspace_dir` (string)
+- **Vars**: `base_ref` (string), `forge_publish_token` (string), `forge_publish_url` (string), `gate_enabled` (bool), `gate_severity` (string), `max_findings` (int), `post_to_board` (bool), `pr_review_mode` (string), `pr_url` (string), `report_path` (string), `scope_notes` (string), `severity_threshold` (string), `workspace_dir` (string)
 - **Path**: `bots/review-pr/main.bot`
 
 ### `rgaa-audit` — Acci
@@ -706,8 +805,10 @@ cannot masquerade as a clean bill of health.
 Universal supply-chain malware auditor. Enumerates installed
 dependencies per ecosystem (npm/yarn/pnpm, pip/poetry/uv,
 go.mod/vendor, …), looks each `(ecosystem, name, version,
-checksum)` triple up against a host-wide cache at
-`~/.iterion/security-cache/packages.jsonl` to skip packages that
+checksum)` triple up against a package cache (per-run scratch by
+default; point `cache_path` at
+`~/.iterion/security-cache/packages.jsonl` for host-wide reuse)
+to skip packages that
 were already analysed at an acceptable scanner version, runs
 language-specific static heuristics on the rest (install-time
 hooks, eval, obfuscation, fetch+exec, base64 blobs, init()
@@ -742,7 +843,7 @@ frameworks, runs language-specific SAST (semgrep + gosec / bandit /
 npm audit) plus language-agnostic scanners (gitleaks for secrets,
 trivy fs for filesystem misconfig, semgrep --config=auto), triages
 the raw output with an LLM against a finding taxonomy, confronts
-candidates against `.iterion/security/fp-known.yaml` to suppress
+candidates against `.sec-audit/fp-known.yaml` to suppress
 curated false positives, revalidates surviving candidates with a
 two-phase judge (anti-façade), then writes findings to the iterion
 native kanban board (one issue per finding, labelled by severity +
@@ -750,7 +851,7 @@ type) and exports a markdown summary.
 
 Cross-run memory: false positives confirmed by the operator (or by
 the revalidate judge after explicit human reasoning) are written
-back to `.iterion/security/fp-known.yaml` in the repo so the next
+back to `.sec-audit/fp-known.yaml` in the repo so the next
 run does not re-surface them. Entries are reviewable + editable by
 humans.
 
@@ -800,8 +901,8 @@ trivy CVE baseline, and an LLM deep-read of install scripts /
 entry points when heuristics are inconclusive. A deterministic
 coverage gate hard-fails when the scanner floor did not run so a
 missing analyzer never reads as "0 malware found". Confirmed findings
-are reported back onto the PR/MR via the native forge API (GitHub /
-GitLab / Forgejo) — a sticky summary comment, inline review comments,
+are reported back onto the PR (merge request on GitLab) via the
+native forge API (GitHub / GitLab / Forgejo) — a sticky summary comment, inline review comments,
 and a SARIF / code-scanning upload — and emitted to the kanban board.
 
 Cross-run memory: the package cache is shared (a published package
@@ -831,7 +932,8 @@ osv-scanner, no install needed) plus the per-ecosystem SCA scanners
 (npm audit / pip-audit / govulncheck), validates each advisory
 against the resolved version (affected range / fixed version / Go
 reachability) with an LLM reviewer, and reports confirmed CVEs back
-onto the PR/MR via the native forge API (sticky comment, inline
+onto the PR (merge request on GitLab) via the native forge API
+(sticky comment, inline
 review, SARIF / code-scanning) and the kanban board. A deterministic
 coverage gate hard-fails when the CVE floor did not run so a missing
 scanner never reads as "0 CVEs found".
@@ -900,6 +1002,11 @@ operator talks, Nexie analyses the board and the repo, recommends
 (recommendation-first, never raw dumps), creates/curates/dispatches
 tickets, verifies whether issues are still relevant against the
 code and git history, and keeps a cross-session CONTEXT_BRIEF.
+On roadmap-scale asks she leads the full study cycle end-to-end:
+parallel audit fan-out → chantiers with now/next/later tiering +
+quick-wins + blind spots → grouped operator arbitrage → framed
+tickets (context / done-criteria / verify) with a limited ready
+lot → factory observation + evidence-based bilan.
 Every turn ends at a budget-free chat pause — the session stays
 reachable for days; only an explicit "close" ends it. Direct action
 on targeted instructions; dry-run + confirmation before bulk or
@@ -909,7 +1016,10 @@ destructive board changes.
   Use to decide and drive what happens next on a repo: discuss the
   board, get a recommendation (quick wins, priorities), create or
   clean up tickets, and dispatch work to the right bot — all in one
-  ongoing conversation. The orchestrator / entry point, not a worker
+  ongoing conversation. Also the entry point for a full roadmap
+  study: ask "quels sont les prochains chantiers ?" (or dispatch a
+  study-titled card) and Nexie runs the audit→synthesis→arbitrage→
+  board→bilan cycle. The orchestrator / entry point, not a worker
   bot.
 - **Vars**: `initial_message` (string), `scope_notes` (string), `workspace_dir` (string)
 - **Path**: `bots/whats-next/main.bot`
@@ -933,8 +1043,8 @@ failure log to fix what it broke, green + axis-complete converges. git IS the
 durable state — an interrupted / budget-capped run keeps every committed
 site, and a re-dispatch re-runs the campaign, which reads `git log` and
 continues (no worklist/cursor scratch). Bounded by a max_passes cap so a
-pathological axis terminates. Optional MR/PR path ships the series of
-per-pass commits. Supersedes the v1 axis-sweep (ADR-057). See
+pathological axis terminates. An optional PR path (merge request on
+GitLab) ships the series of per-pass commits. Supersedes the v1 axis-sweep (ADR-057). See
 docs/references/productive-session-patterns.md.
 
 - **Use when**:
@@ -951,6 +1061,40 @@ docs/references/productive-session-patterns.md.
   at the tree instead — this bot needs an axis to sweep.
 - **Vars**: `baseline` (string), `improvement_prompt` (string), `max_passes` (int), `mr_base` (string), `mr_branch` (string), `open_mr` (bool), `scope_globs` (string), `scope_notes` (string), `scratch_dir` (string), `source_issue_ref` (string), `workspace_dir` (string)
 - **Path**: `bots/whole-improve-loop/main.bot`
+
+### `wiki-gen` — Wikky
+
+Wiki generator — one capable agent builds and incrementally maintains
+a navigable, Open-Knowledge-Format wiki for whatever repository it is
+pointed at, in any language. It surveys the code, plans the concept
+pages and their relationships, and writes a structured wiki tree
+(architecture/, workflows/, domain/, …) under wiki/ with a quickstart
+entrypoint — every claim grounded in the source, never invented.
+
+Deterministic by construction: after each authoring pass a tool
+regenerates every directory index from the pages' frontmatter, and a
+validator gate fails the run on invalid OKF frontmatter, a dead
+intra-wiki link, or any write outside the wiki tree — so the agent
+cannot rubber-stamp a broken or hallucinated wiki. A persistent,
+out-of-tree git_head cache lets a scheduled run skip entirely when the
+wiki is already current for the exact commit.
+
+The OKF output (type-only-required YAML frontmatter + Markdown links as
+concept-relationship edges) is a standard, tool-agnostic interchange
+format, directly ingestible by a knowledge-graph explorer.
+
+Ships 2 skills: wiki-authoring (the operating playbook) and okf-format
+(the frontmatter + link-graph contract the validator enforces).
+
+- **Use when**:
+  Use to bootstrap a navigable wiki for a repository that has none, or to
+  keep an existing wiki/ tree current as the code evolves (nightly, or on
+  demand). Wikky OWNS the wiki/ tree and writes only there — it never
+  edits source. Reach for Doki (docs-refresh) instead when the goal is to
+  fix a repo's EXISTING hand-authored docs (README/docs/**) against the
+  code, editing them in place.
+- **Vars**: `bundle_self_path` (string), `code_scope_globs` (string), `excluded_dirs` (string), `issue_id` (string), `max_passes` (string), `okf_version` (string), `scope_notes` (string), `wiki_cache_path` (string), `wiki_dir` (string), `workspace_dir` (string)
+- **Path**: `bots/wiki-gen/main.bot`
 
 <!-- ITERION:CATALOG:GENERATED:END -->
 

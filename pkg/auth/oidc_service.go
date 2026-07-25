@@ -62,6 +62,8 @@ func (s *Service) LoginWithExternal(ctx context.Context, ext oidc.ExternalUser, 
 			}
 		}
 		u.LastLoginAt = &now
+		// Best-effort: LastLoginAt is cosmetic; a store outage surfaces at
+		// the session write on the next line.
 		_ = s.store.UpdateUser(ctx, u)
 		return s.issueLogin(ctx, u, userAgent, ip)
 	}
@@ -101,6 +103,8 @@ func (s *Service) LoginWithExternal(ctx context.Context, ext oidc.ExternalUser, 
 			return LoginResult{}, err
 		}
 		u.LastLoginAt = &now
+		// Best-effort: LastLoginAt is cosmetic; a store outage surfaces at
+		// the session write on the next line.
 		_ = s.store.UpdateUser(ctx, u)
 		return s.issueLogin(ctx, u, userAgent, ip)
 	}
@@ -257,6 +261,8 @@ func (s *Service) LoginWithExternalForOrg(ctx context.Context, ext oidc.External
 			return LoginResult{}, err
 		}
 		u.LastLoginAt = &now
+		// Best-effort: LastLoginAt is cosmetic; a store outage surfaces at
+		// the session write on the next line.
 		_ = s.store.UpdateUser(ctx, u)
 		return s.issueLoginInTeam(ctx, u, tenantID, userAgent, ip)
 	}
@@ -290,6 +296,8 @@ func (s *Service) LoginWithExternalForOrg(ctx context.Context, ext oidc.External
 			return LoginResult{}, err
 		}
 		existing.LastLoginAt = &now
+		// Best-effort: LastLoginAt is cosmetic; a store outage surfaces at
+		// the session write on the next line.
 		_ = s.store.UpdateUser(ctx, existing)
 		return s.issueLoginInTeam(ctx, existing, tenantID, userAgent, ip)
 	} else if !errors.Is(err, identity.ErrNotFound) {
@@ -324,6 +332,8 @@ func (s *Service) LoginWithExternalForOrg(ctx context.Context, ext oidc.External
 		return LoginResult{}, err
 	}
 	u.LastLoginAt = &now
+	// Best-effort: LastLoginAt is cosmetic; a store outage surfaces at
+	// the session write on the next line.
 	_ = s.store.UpdateUser(ctx, u)
 	return s.issueLoginInTeam(ctx, u, tenantID, userAgent, ip)
 }

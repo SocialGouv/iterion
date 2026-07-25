@@ -55,6 +55,7 @@ const (
 	TokenCompute
 	TokenEmit
 	TokenWait
+	TokenAwaitAnswers
 	TokenEntry
 	TokenMCP
 	TokenBudget
@@ -99,6 +100,7 @@ const (
 	TokenInteractionModel
 	TokenAwait
 	TokenWhen
+	TokenElse
 	TokenNot
 	TokenAs
 	TokenWith
@@ -142,6 +144,7 @@ const (
 	TokenMaxCostUSD
 	TokenMaxTokens
 	TokenMaxIterations
+	TokenWarnTokens
 	// Compaction block + properties
 	TokenCompaction
 	TokenThreshold
@@ -230,6 +233,7 @@ var tokenNames = map[TokenType]string{
 	TokenCompute:            "compute",
 	TokenEmit:               "emit",
 	TokenWait:               "wait",
+	TokenAwaitAnswers:       "await_answers",
 	TokenEntry:              "entry",
 	TokenMCP:                "mcp",
 	TokenBudget:             "budget",
@@ -273,6 +277,7 @@ var tokenNames = map[TokenType]string{
 	TokenInteractionModel:   "interaction_model",
 	TokenAwait:              "await",
 	TokenWhen:               "when",
+	TokenElse:               "else",
 	TokenNot:                "not",
 	TokenAs:                 "as",
 	TokenWith:               "with",
@@ -307,6 +312,7 @@ var tokenNames = map[TokenType]string{
 	TokenMaxCostUSD:          "max_cost_usd",
 	TokenMaxTokens:           "max_tokens",
 	TokenMaxIterations:       "max_iterations",
+	TokenWarnTokens:          "warn_tokens",
 
 	TokenCompaction:       "compaction",
 	TokenThreshold:        "threshold",
@@ -369,6 +375,7 @@ var keywords = map[string]TokenType{
 	"compute":               TokenCompute,
 	"emit":                  TokenEmit,
 	"wait":                  TokenWait,
+	"await_answers":         TokenAwaitAnswers,
 	"entry":                 TokenEntry,
 	"mcp":                   TokenMCP,
 	"budget":                TokenBudget,
@@ -413,6 +420,7 @@ var keywords = map[string]TokenType{
 	"interaction_model":     TokenInteractionModel,
 	"await":                 TokenAwait,
 	"when":                  TokenWhen,
+	"else":                  TokenElse,
 	"not":                   TokenNot,
 	"as":                    TokenAs,
 	"with":                  TokenWith,
@@ -445,6 +453,7 @@ var keywords = map[string]TokenType{
 	"max_cost_usd":          TokenMaxCostUSD,
 	"max_tokens":            TokenMaxTokens,
 	"max_iterations":        TokenMaxIterations,
+	"warn_tokens":           TokenWarnTokens,
 	"compaction":            TokenCompaction,
 	"threshold":             TokenThreshold,
 	"preserve_recent":       TokenPreserveRecent,

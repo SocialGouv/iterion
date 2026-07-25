@@ -138,7 +138,7 @@ coverage. To add/adjust Go scanning, edit this block — no DSL change.
 
 <!-- iterion:scanners
 [
-  {"id":"semgrep-go","output":"go-semgrep.json","cmd":"semgrep --config=p/golang --config=p/owasp-top-ten --json --output=$SCAN_DIR/go-semgrep.json --metrics=off --quiet --exclude=vendor --exclude='.iterion' --exclude='.works' --exclude='**/*_test.go' --exclude='**/testdata' $WORKSPACE_DIR || true"},
-  {"id":"gosec","output":"gosec.json","cmd":"gosec -fmt=json -out=$SCAN_DIR/gosec.json -exclude-dir=vendor -exclude-dir=testdata -exclude-dir=.iterion -exclude-dir=.works -exclude-generated -severity=low -confidence=low -quiet ./... || true"}
+  {"id":"semgrep-go","output":"go-semgrep.json","cmd":"semgrep --config=p/golang --config=p/owasp-top-ten --json --output=$SCAN_DIR/go-semgrep.json --metrics=off --quiet --exclude=vendor --exclude='.iterion' --exclude='.sec-audit' --exclude='.works' --exclude='**/*_test.go' --exclude='**/testdata' $WORKSPACE_DIR || true"},
+  {"id":"gosec","output":"gosec.json","cmd":"gosec -fmt=json -out=$SCAN_DIR/gosec.json -exclude-dir=vendor -exclude-dir=testdata -exclude-dir=.iterion -exclude-dir=.sec-audit -exclude-dir=.works -exclude-generated -severity=low -confidence=low -quiet ./... || true"}
 ]
 -->

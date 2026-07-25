@@ -40,3 +40,10 @@ invocations:
     args_var: scope_notes
     command: { name: rearchi, aliases: [adr-rechallenge], scope: any, min_replier_role: maintainer }
   - kind: board
+
+## Studio launch-form hierarchy: `primary` inputs render top-level in
+## the declared order; `hidden` vars are dispatch/webhook plumbing kept
+## out of the form (still settable via --var / bot_args).
+launch:
+  primary: [adr_path]
+  hidden: [issue_id]

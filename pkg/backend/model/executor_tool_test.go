@@ -3,12 +3,16 @@ package model
 import (
 	"context"
 	"errors"
+	"os"
+	osexec "os/exec"
+	"path/filepath"
 	"strings"
 	"testing"
 
 	"github.com/SocialGouv/iterion/pkg/backend/secretguard"
 	"github.com/SocialGouv/iterion/pkg/backend/tool"
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
+	"github.com/SocialGouv/iterion/pkg/sandbox"
 )
 
 func TestExecutorToolNodeShellDenyAllPolicyRejects(t *testing.T) {
@@ -572,5 +576,90 @@ func TestCombineStreamsForLog(t *testing.T) {
 				t.Errorf("got %q, want %q", got, c.want)
 			}
 		})
+	}
+}
+
+// ----- scriptRecipe: copy-based sandbox write-through -----
+
+// fakeCopySandboxRun is a sandbox.Run whose workspace is a COPY of the
+// host workspace (it implements WorkspaceFileRefresher, like the
+// kubernetes driver). It records refreshed files and Exec calls.
+type fakeCopySandboxRun struct {
+	refreshed map[string][]byte
+	execCalls [][]string
+}
+
+func (f *fakeCopySandboxRun) Driver() string { return "fake-copy" }
+func (f *fakeCopySandboxRun) Command(ctx context.Context, cmd []string, _ sandbox.ExecOpts) *osexec.Cmd {
+	return osexec.CommandContext(ctx, cmd[0], cmd[1:]...)
+}
+func (f *fakeCopySandboxRun) Exec(_ context.Context, cmd []string, _ sandbox.ExecOpts) (sandbox.ExecResult, error) {
+	f.execCalls = append(f.execCalls, cmd)
+	return sandbox.ExecResult{}, nil
+}
+func (f *fakeCopySandboxRun) Cleanup(context.Context) error { return nil }
+func (f *fakeCopySandboxRun) RefreshWorkspaceFile(_ context.Context, relPath string, value []byte) error {
+	if f.refreshed == nil {
+		f.refreshed = map[string][]byte{}
+	}
+	f.refreshed[relPath] = value
+	return nil
+}
+
+var _ sandbox.WorkspaceFileRefresher = (*fakeCopySandboxRun)(nil)
+
+// A script tool node running against a copy-based sandbox must push the
+// materialised script into the sandbox workspace (the host-side temp
+// file is invisible there — the workspace was copied at Prepare time)
+// and remove the in-sandbox copy on cleanup so a later `git add -A`
+// cannot sweep it up.
+func TestScriptRecipe_CopySandboxWriteThrough(t *testing.T) {
+	wd := t.TempDir()
+	e := newTestClawExecutor(NewRegistry(), &ir.Workflow{}, WithWorkDir(wd))
+	fake := &fakeCopySandboxRun{}
+	e.SetSandbox(fake)
+
+	node := &ir.ToolNode{
+		BaseNode: ir.BaseNode{ID: "script_node"},
+		Language: "python3",
+		Script:   "print('hi')",
+	}
+	resolve, buildCmd := e.scriptRecipe(context.Background(), node, map[string]any{})
+	cmd, cleanup, err := buildCmd(resolve())
+	if err != nil {
+		t.Fatalf("buildCmd: %v", err)
+	}
+	if cmd == nil {
+		t.Fatal("buildCmd returned nil cmd")
+	}
+	if len(fake.refreshed) != 1 {
+		t.Fatalf("refreshed files = %d, want 1 (%v)", len(fake.refreshed), fake.refreshed)
+	}
+	var base string
+	for p, body := range fake.refreshed {
+		base = p
+		if filepath.Dir(p) != "." {
+			t.Errorf("refresh path %q is not a basename", p)
+		}
+		if string(body) != "print('hi')" {
+			t.Errorf("refreshed body = %q, want script body", body)
+		}
+	}
+	// Host temp file exists until cleanup.
+	if _, serr := os.Stat(filepath.Join(wd, base)); serr != nil {
+		t.Fatalf("host temp script missing before cleanup: %v", serr)
+	}
+	cleanup()
+	if _, serr := os.Stat(filepath.Join(wd, base)); !os.IsNotExist(serr) {
+		t.Errorf("host temp script still present after cleanup")
+	}
+	found := false
+	for _, call := range fake.execCalls {
+		if len(call) == 3 && call[0] == "rm" && call[1] == "-f" && call[2] == base {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("cleanup did not rm the in-sandbox script (exec calls: %v)", fake.execCalls)
 	}
 }

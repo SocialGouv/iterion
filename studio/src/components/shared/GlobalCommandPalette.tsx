@@ -4,6 +4,8 @@ import { useLocation } from "wouter";
 import CommandPalette, {
   type CommandAction,
 } from "@/components/shared/CommandPalette";
+import { forgeTeamRepoKey } from "@/api/forgeConnections";
+import { useActiveRepo } from "@/hooks/useActiveRepo";
 import { useRuns } from "@/hooks/useRuns";
 import { useRecentsStore } from "@/store/recents";
 import { useServerInfoStore } from "@/store/serverInfo";
@@ -24,7 +26,11 @@ export default function GlobalCommandPalette() {
   const recents = useRecentsStore((s) => s.recents);
   const { runs } = useRuns({ limit: 5, enabled: open });
   const serverInfo = useServerInfoStore((s) => s.info);
+  const cloud = serverInfo?.mode === "cloud";
   const cycleTheme = useThemeStore((s) => s.cycleMode);
+  // useActiveRepo already backs the sidebar RepoSwitcher (cached by TanStack),
+  // so reading it here piggybacks on that query — no extra fetch on Cmd+K.
+  const { repos, choose, enabled: cloudRepos } = useActiveRepo();
 
   // The Canvas Cmd+K listener handles the editor route. Everywhere
   // else, App intercepts Cmd+K and opens this palette.
@@ -58,6 +64,8 @@ export default function GlobalCommandPalette() {
         group: "Navigate",
         title: "Editor",
         keywords: ["canvas", "design", "edit"],
+        // Cloud has no editor save path (the Editor is out of the cloud nav).
+        disabled: cloud,
         run: () => setLocation("/editor"),
       },
       {
@@ -159,14 +167,48 @@ export default function GlobalCommandPalette() {
         keywords: [r.id, r.workflow_name, r.file_path ?? ""],
         run: () => setLocation(`/runs/${encodeURIComponent(r.id)}`),
       })),
-      ...recents.slice(0, 5).map<CommandAction>((path) => ({
-        id: `files.recent.${path}`,
-        group: "Recent files",
-        title: path,
-        run: () => setLocation(`/runs/new?file=${encodeURIComponent(path)}`),
-      })),
+      // Cloud-only repo actions — mirror the sidebar RepoSwitcher so the
+      // palette becomes a keyboard-first shortcut to the same context switch.
+      ...(cloudRepos
+        ? [
+            {
+              id: "repo.connect",
+              group: "Repositories",
+              title: "Connect a repository…",
+              keywords: ["forge", "github", "gitlab", "integration", "add"],
+              run: () => setLocation("/integrations/connect"),
+            } as CommandAction,
+            {
+              id: "repo.all",
+              group: "Repositories",
+              title: "Switch to all repos",
+              keywords: ["overview", "aggregate"],
+              run: () => choose(null),
+            } as CommandAction,
+            ...repos.map<CommandAction>((r) => {
+              const key = forgeTeamRepoKey(r);
+              return {
+                id: `repo.switch.${key}`,
+                group: "Repositories",
+                title: `Switch to ${r.repo_full_name}`,
+                keywords: [r.provider, r.repo_full_name],
+                run: () => choose(key),
+              };
+            }),
+          ]
+        : []),
+      // Local/desktop-only: recent .bot file paths land in LaunchView. Cloud
+      // has no host filesystem, so /runs/new?file=<abs path> would 404.
+      ...(cloud
+        ? []
+        : recents.slice(0, 5).map<CommandAction>((path) => ({
+            id: `files.recent.${path}`,
+            group: "Recent files",
+            title: path,
+            run: () => setLocation(`/runs/new?file=${encodeURIComponent(path)}`),
+          }))),
     ],
-    [runs, recents, serverInfo, setLocation, cycleTheme],
+    [runs, recents, serverInfo, setLocation, cycleTheme, cloud, cloudRepos, repos, choose],
   );
 
   return (

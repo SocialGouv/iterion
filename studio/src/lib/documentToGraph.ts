@@ -1,6 +1,16 @@
 import { MarkerType } from "@xyflow/react";
 import type { Node, Edge as FlowEdge } from "@xyflow/react";
-import type { IterDocument, NodeKind, AgentDecl, JudgeDecl, HumanDecl, ToolNodeDecl, ComputeDecl } from "@/api/types";
+import type {
+  IterDocument,
+  NodeKind,
+  AgentDecl,
+  JudgeDecl,
+  RouterDecl,
+  HumanDecl,
+  ToolNodeDecl,
+  ComputeDecl,
+  SubbotDecl,
+} from "@/api/types";
 import type { LayerKind } from "@/store/ui";
 import type { AuxiliaryNodeData } from "@/components/Canvas/AuxiliaryNode";
 import type { GroupNodeData } from "@/components/Canvas/GroupNode";
@@ -14,6 +24,33 @@ export interface NodeData extends Record<string, unknown> {
   kind: NodeKind;
   color: string;
   decl: unknown;
+}
+
+// DeclByKind maps each graph node kind to the declaration type stored in
+// NodeData.decl. The pairing is established by documentToGraph's nodeMap
+// inserts below (and preserved by subbotGraph's child expansion, which
+// spreads NodeData through); NodeData erases it to `unknown` because
+// @xyflow node data must satisfy Record<string, unknown>, which a
+// discriminated union does not. Terminal kinds (start/done/fail) carry
+// decl: null and have no entry here.
+export interface DeclByKind {
+  agent: AgentDecl;
+  judge: JudgeDecl;
+  router: RouterDecl;
+  human: HumanDecl;
+  tool: ToolNodeDecl;
+  compute: ComputeDecl;
+  subbot: SubbotDecl;
+}
+
+// declOf re-asserts the kind↔decl pairing — the single boundary cast for
+// NodeData.decl. Callers narrow `kind` first (typically via an if/switch
+// on data.kind), so the returned decl type follows the runtime check.
+export function declOf<K extends keyof DeclByKind>(
+  _kind: K,
+  decl: unknown,
+): DeclByKind[K] | undefined {
+  return (decl ?? undefined) as DeclByKind[K] | undefined;
 }
 
 export function makeEdgeId(workflowName: string, index: number): string {
@@ -211,23 +248,24 @@ export function applyGroups(
     for (const nid of g.nodeIds) {
       const found = nodeById.get(nid);
       if (found) {
-        const kind = (found.data as Record<string, unknown>)?.kind as string | undefined;
-        if (kind) childKindSet.add(kind);
+        const kind = found.data.kind;
+        if (typeof kind === "string" && kind) childKindSet.add(kind);
       }
     }
 
+    const data: GroupNodeData = {
+      groupName: g.name,
+      nodeCount: g.nodeIds.length,
+      childKinds: Array.from(childKindSet),
+      color: GROUP_COLOR,
+    };
     if (isCollapsed) {
       // Collapsed: add a compact group node (regular size, handles for edges)
       resultNodes.push({
         id: groupNodeId,
         type: "groupNode",
         position: { x: 0, y: 0 },
-        data: {
-          groupName: g.name,
-          nodeCount: g.nodeIds.length,
-          childKinds: Array.from(childKindSet),
-          color: GROUP_COLOR,
-        } as GroupNodeData,
+        data,
       });
     } else {
       // Expanded: add a container group node — children will be placed inside by ELK
@@ -236,12 +274,7 @@ export function applyGroups(
         type: "groupNode",
         position: { x: 0, y: 0 },
         style: { width: 400, height: 300 },
-        data: {
-          groupName: g.name,
-          nodeCount: g.nodeIds.length,
-          childKinds: Array.from(childKindSet),
-          color: GROUP_COLOR,
-        } as GroupNodeData,
+        data,
       });
     }
   }
@@ -301,9 +334,9 @@ export function applyGroups(
 }
 
 // Prefixes for auxiliary node IDs
-export const AUX_PREFIX_SCHEMA = "__schema__:";
-export const AUX_PREFIX_PROMPT = "__prompt__:";
-export const AUX_PREFIX_VAR = "__var__:";
+const AUX_PREFIX_SCHEMA = "__schema__:";
+const AUX_PREFIX_PROMPT = "__prompt__:";
+const AUX_PREFIX_VAR = "__var__:";
 
 export function isAuxiliaryNodeId(id: string): boolean {
   return id.startsWith(AUX_PREFIX_SCHEMA) || id.startsWith(AUX_PREFIX_PROMPT) || id.startsWith(AUX_PREFIX_VAR);
@@ -325,11 +358,11 @@ export function generateLayerNodes(
 
   // Collect all workflow node declarations with their schema/prompt references
   const allDecls: { name: string; input?: string; output?: string; system?: string; user?: string; instructions?: string }[] = [];
-  for (const a of doc.agents ?? []) allDecls.push({ name: a.name, input: (a as AgentDecl).input, output: (a as AgentDecl).output, system: (a as AgentDecl).system, user: (a as AgentDecl).user });
-  for (const j of doc.judges ?? []) allDecls.push({ name: j.name, input: (j as JudgeDecl).input, output: (j as JudgeDecl).output, system: (j as JudgeDecl).system, user: (j as JudgeDecl).user });
-  for (const h of doc.humans ?? []) allDecls.push({ name: h.name, input: (h as HumanDecl).input, output: (h as HumanDecl).output, instructions: (h as HumanDecl).instructions });
-  for (const t of doc.tools ?? []) allDecls.push({ name: t.name, input: (t as ToolNodeDecl).input, output: (t as ToolNodeDecl).output });
-  for (const c of doc.computes ?? []) allDecls.push({ name: c.name, input: (c as ComputeDecl).input, output: (c as ComputeDecl).output });
+  for (const a of doc.agents ?? []) allDecls.push({ name: a.name, input: a.input, output: a.output, system: a.system, user: a.user });
+  for (const j of doc.judges ?? []) allDecls.push({ name: j.name, input: j.input, output: j.output, system: j.system, user: j.user });
+  for (const h of doc.humans ?? []) allDecls.push({ name: h.name, input: h.input, output: h.output, instructions: h.instructions });
+  for (const t of doc.tools ?? []) allDecls.push({ name: t.name, input: t.input, output: t.output });
+  for (const c of doc.computes ?? []) allDecls.push({ name: c.name, input: c.input, output: c.output });
   // Subbots only declare an output schema (the child run's validated result).
   for (const sb of doc.subbots ?? []) allDecls.push({ name: sb.name, output: sb.output });
 

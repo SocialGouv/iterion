@@ -48,7 +48,7 @@ func RunValidate(path string, p *Printer) error {
 	if err != nil {
 		return fmt.Errorf("cannot open %s: %w", path, err)
 	}
-	defer cleanup()
+	defer func() { _ = cleanup() }()
 
 	var bundleName, bundleVersion, bundleDir string
 	if bundleHandle != nil && bundleHandle.Manifest != nil {

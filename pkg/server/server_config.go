@@ -12,23 +12,29 @@ import (
 	"github.com/SocialGouv/iterion/pkg/auth/orgsso"
 	"github.com/SocialGouv/iterion/pkg/auth/wsticket"
 	"github.com/SocialGouv/iterion/pkg/backend/mcp"
+	"github.com/SocialGouv/iterion/pkg/botsource"
 	"github.com/SocialGouv/iterion/pkg/cloud/metrics"
 	"github.com/SocialGouv/iterion/pkg/cloud/orgsweep"
 	"github.com/SocialGouv/iterion/pkg/cloudsched"
+	"github.com/SocialGouv/iterion/pkg/configshare"
 	"github.com/SocialGouv/iterion/pkg/dispatcher"
 	"github.com/SocialGouv/iterion/pkg/dispatcher/boardmongo"
 	"github.com/SocialGouv/iterion/pkg/dispatcher/native"
+	"github.com/SocialGouv/iterion/pkg/eventbus"
 	"github.com/SocialGouv/iterion/pkg/forge"
 	"github.com/SocialGouv/iterion/pkg/knowledge"
 	"github.com/SocialGouv/iterion/pkg/marketplace"
 	"github.com/SocialGouv/iterion/pkg/orgusage"
 	"github.com/SocialGouv/iterion/pkg/pat"
+	"github.com/SocialGouv/iterion/pkg/pluginsource"
 	natsq "github.com/SocialGouv/iterion/pkg/queue/nats"
 	"github.com/SocialGouv/iterion/pkg/runview"
 	"github.com/SocialGouv/iterion/pkg/runview/runstream"
 	"github.com/SocialGouv/iterion/pkg/secrets"
 	"github.com/SocialGouv/iterion/pkg/store"
 	"github.com/SocialGouv/iterion/pkg/trigger"
+	"github.com/SocialGouv/iterion/pkg/usernotify"
+	"github.com/SocialGouv/iterion/pkg/usernotify/webpush"
 	"github.com/SocialGouv/iterion/pkg/valkey"
 	"github.com/SocialGouv/iterion/pkg/webhooks"
 )
@@ -120,6 +126,12 @@ type Config struct {
 	// publisher resolves keys at launch time.
 	ApiKeys secrets.ApiKeyStore
 
+	// ConfigShares backs the scoped self-service config-share editor. When
+	// nil, the server defaults to an in-memory store (local/desktop); cloud
+	// wires a persistent (Mongo) store. The routes additionally require
+	// GenericSecrets + Sealer (to resolve the repo's forge_token).
+	ConfigShares configshare.Store
+
 	// GenericSecrets stores workflow/user secrets addressable by name
 	// from the DSL `secrets:` block. Plaintexts are sealed at rest and
 	// are only resolved into per-run sealed bundles by the cloud publisher.
@@ -182,6 +194,18 @@ type Config struct {
 	// ForgeGitHubApp is the global GitHub-App identity for the
 	// installation-token connect mode. Empty → that mode is unavailable.
 	ForgeGitHubApp ForgeGitHubAppConfig
+
+	// PluginSources holds team-scoped, git-hosted org-private plugins
+	// (pkg/pluginsource). Non-nil registers /api/teams/:id/plugin-sources;
+	// nil answers 501 there. The durable counterpart to a plugin installed
+	// into a pod's iterion home, which a restart silently loses.
+	PluginSources pluginsource.Store
+
+	// BotSources holds team-authored bot bundles (pkg/botsource). Non-nil
+	// registers /api/teams/:id/bot-sources and enables cloud bot editing
+	// (server_info.bot_editing_enabled); nil answers 501 there. The writable,
+	// tenant-scoped counterpart to the read-only catalog baked into the image.
+	BotSources botsource.Store
 
 	// MemoryStore backs the shared-knowledge REST surface
 	// (/api/memory/*). nil → the local filesystem store. Cloud mode
@@ -298,6 +322,30 @@ type Config struct {
 	// so the dispatcher picks them up immediately instead of at the next poll.
 	// It also backs the /api/v1/triggers subscription CRUD. nil = spine off.
 	TriggerStore trigger.SubscriptionStore
+
+	// PushSubscriptions, NotificationPrefs and NotificationSent wire the
+	// user-notification stack (pkg/usernotify): browser Web Push for a run
+	// pausing on a human form and for run outcomes. All three non-nil +
+	// the VAPID keypair set ⇒ the dispatcher starts, the reconciliation
+	// sweep runs (when NotifiableRuns is wired), and the
+	// /api/v1/notifications/* routes activate. nil ⇒ feature off.
+	PushSubscriptions webpush.SubscriptionStore
+	NotificationPrefs usernotify.PrefsStore
+	NotificationSent  usernotify.SentStore
+	// WebPushVAPIDPublicKey / WebPushVAPIDPrivateKey are the shared VAPID
+	// sender identity (public key is exposed via server_info by design);
+	// WebPushSubscriber is the VAPID contact (mailto:).
+	WebPushVAPIDPublicKey  string
+	WebPushVAPIDPrivateKey string
+	WebPushSubscriber      string
+	// EventsBus, when non-nil, is the shared trigger-event spine the
+	// usernotify dispatcher subscribes on (the cloud NATSBus — queue-group
+	// delivery ⇒ exactly one replica handles each event). nil → the
+	// dispatcher falls back to the local trigger coordinator's in-proc bus.
+	EventsBus eventbus.Bus
+	// NotifiableRuns is the reconciliation sweep's scan seam (the Mongo
+	// store's ListNotifiableRuns). nil → no sweep (bus-only delivery).
+	NotifiableRuns usernotify.ListNotifiableRuns
 
 	// CloudBoardFor returns a tenant-scoped board store for cloud mode (a
 	// boardmongo.Store). When set, a board-mode slash-command materialises a

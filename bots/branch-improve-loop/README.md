@@ -30,7 +30,7 @@ committing each fix **as it finishes** (never batch).
 
 Same v2 shape as [`whole_improve_loop`](../whole-improve-loop/main.bot)
 (ADR-058): one adaptive `campaign` agent + a deterministic build/test gate + a
-bounded continuation loop + git-as-state + an opt-in MR path. The **only**
+bounded continuation loop + git-as-state + an opt-in PR path. The **only**
 difference is scope — `whole_improve_loop` applies ONE determined **axis**
 across the whole codebase; `branch_improve_loop` reviews+improves the **diff of
 one branch**. `whole_improve_loop`'s AXIS is replaced here by the branch diff
@@ -53,19 +53,23 @@ baseline, the termination contract — and drops the graph machinery around it.
 ## The graph
 
 ```
-campaign ──▶ verify_build ──▶ verify_run ──▶ gate
-   ▲   (one adaptive agent:   (writes         (deterministic
-   │    reviews+improves       <scratch>/      build/test gate)
-   │    the branch diff,        verify.sh)          │
-   │    commits each fix                            │
-   │    in stride)                                  │
-   │                                                │
-   │  (not converged: RED → fix / green but more    │
-   └────────────── issues → next pass) ◀────────────┤
-                                                     │  (converged:
-                                                     ▼   green ∧ branch_clean)
-                                              mr_gate ──▶ (finalize_mr) ──▶ done
+campaign ──▶ verify_build ──▶ verify_run ──▶ review ──▶ gate
+   ▲   (one adaptive agent:   (writes        (in-loop  (deterministic
+   │    reviews+improves       <scratch>/     adversarial build/test gate
+   │    the branch diff,        verify.sh)     re-review)  + review verdict)
+   │    commits each fix                                      │
+   │    in stride)                                            │
+   │                                                          │
+   │  (not converged: RED → fix / green but more              │
+   └────────────── issues → next pass) ◀──────────────────────┤
+                                                               │  (converged:
+                                                               ▼   green ∧ branch_clean
+                                              mr_gate ──▶ (…) ──▶ done   ∧ review.clean)
 ```
+
+(`verify_probe` reuses a valid `verify.sh` on passes 2+, skipping the LLM
+`verify_build`; the mr tail forks to `finalize_mr` (open PR) or the PR
+push-back lane — see below.)
 
 - **`campaign`** (adaptive, claude_code, full tools) is the whole engine: it
   runs `git add -N .` then reads the branch diff, builds a living todo list of
@@ -81,22 +85,39 @@ campaign ──▶ verify_build ──▶ verify_run ──▶ gate
   re-runs it and gates on the **real exit code** (no LLM judgment). This is
   both the tight real-feedback loop AND the anti-Goodhart truth oracle — the
   agent can't self-certify. `verify_build` does **not** fix code.
-- **`gate`** (deterministic compute) decides continuation: `converged =` the
-  gate is **green** AND the campaign reported **`branch_clean`**. Not converged
-  → back to `campaign`; a RED gate carries the failure log so the agent fixes
-  what it broke, a green-but-more-work pass carries an empty log so the agent
-  simply keeps reviewing.
-- **`mr_gate` → `finalize_mr`** is the opt-in MR/PR path shipping the series of
-  per-pass commits (`open_mr`).
+- **`review`** (adaptive, claude_code, readonly) is an **in-loop adversarial
+  self-review** of the branch diff, run after the deterministic build gate. It
+  reads the code-review-invariants skill and blocks convergence ONLY on a
+  high-confidence defect in the six invariant classes (emitting `clean` +
+  `findings`) — the downstream reviewer's job, moved into the loop so the
+  pushed-back branch ships clean.
+- **`gate`** (deterministic compute) decides continuation: `converged =
+  verify_run.passed && campaign.branch_clean && review.clean` — the gate is
+  **green** AND the campaign reported **`branch_clean`** AND the in-loop
+  `review` came back **clean**. Not converged → back to `campaign`; a RED gate
+  carries the failure log, a green-but-review-dirty pass carries the review
+  findings so the agent fixes what `review` flagged, and a green-but-more-work
+  pass carries an empty log so the agent simply keeps reviewing.
+- **`mr_gate`** routes the post-convergence tail into exactly one of three
+  mutually-exclusive lanes:
+  - **`forge_auth_probe` → `finalize_mr`** — the opt-in PR path (`open_mr`)
+    shipping the series of per-pass commits.
+  - **`push_auth_probe` → `push_back_tool` → `post_pr_feedback`** — the
+    **PR push-back** path (`push_branch` set, `open_mr=false`): a ~100ms
+    credential probe, then `push_back_tool` pushes the run's HEAD onto the
+    PR's source branch (no-op via rev-list when nothing is new), then Billy
+    posts his review verdict as a comment on the PR (`pr_url`).
+  - **`done`** — finish (commits stay on the storage branch).
 
 ## Convergence & bounding
 
 - **Done-oracle:** the run converges when the campaign reports `branch_clean`
-  (a fresh re-review of the branch diff finds no remaining real issue) **and**
-  the deterministic gate is green.
+  (a fresh re-review of the branch diff finds no remaining real issue), the
+  deterministic gate is green, **and** the in-loop `review` came back
+  `clean`.
 - **`max_passes` cap:** the single declared continuation loop
-  (`campaign → verify_build → verify_run → gate → campaign`) is capped by
-  `max_passes` (default 8); on exhaustion it ships what is banked.
+  (`campaign → verify_build → verify_run → review → gate → campaign`) is capped
+  by `max_passes` (default 8); on exhaustion it ships what is banked.
 - `iterion validate` reports **no undeclared cycle** (one declared loop).
 
 ## git is the state (crash-safe / resumable)
@@ -150,7 +171,9 @@ while remaining universal: the agent writes the repo's own build/test into
 | `scope_notes` | `""` | Free-form extra context for the campaign agent. |
 | `baseline` | `""` | **G5** — known pre-existing failures / flaky tests the campaign must SKIP (empty = it establishes the baseline once cheaply against `base_ref`). |
 | `max_passes` | `8` | Hard cap on continuation passes — the convergence backstop; sizes the declared loop. |
-| `open_mr` / `mr_branch` / `mr_base` / `source_issue_ref` | off | Opt-in MR/PR path shipping the series of per-pass commits (`mr_base` empty = `base_ref`). |
+| `open_mr` / `mr_branch` / `mr_base` / `source_issue_ref` | off | Opt-in PR path shipping the series of per-pass commits (`mr_base` empty = `base_ref`). |
+| `push_branch` | `""` | PR-context push-back: the existing forge branch (the PR's source branch) the run's commits belong to. Set with `open_mr=false` → `push_back_tool` pushes HEAD onto it so fixes land ON the PR. Empty = commits stay on the local storage branch. |
+| `pr_url` | `""` | The PR Billy is hardening, as a forge URL. When set, `post_pr_feedback` posts Billy's review verdict as a comment ON that PR. Empty = skip. |
 | `scratch_dir` | `${PROJECT_SCRATCH_DIR}/branch-improve-loop` | Out-of-tree working files (the gate's `verify.sh` / `verify.log` only — git is the state). |
 
 ## Run

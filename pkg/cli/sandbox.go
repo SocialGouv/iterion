@@ -9,6 +9,7 @@ import (
 	"strings"
 
 	"github.com/SocialGouv/iterion/pkg/internal/proc"
+	iterruntime "github.com/SocialGouv/iterion/pkg/runtime"
 	"github.com/SocialGouv/iterion/pkg/sandbox"
 	"github.com/SocialGouv/iterion/pkg/sandbox/registry"
 )
@@ -82,9 +83,9 @@ func runSandboxDoctorBasic(p *Printer) error {
 		containerRuntime = "<none>"
 	}
 
-	defaultMode := strings.ToLower(os.Getenv("ITERION_SANDBOX_DEFAULT"))
-	if defaultMode == "" {
-		defaultMode = "<unset>"
+	defaultMode := iterruntime.ResolveGlobalSandboxDefault()
+	if strings.TrimSpace(os.Getenv("ITERION_SANDBOX_DEFAULT")) == "" {
+		defaultMode += " (built-in sandbox-by-default)"
 	}
 
 	hostBin := proc.LocateIterionBinary()

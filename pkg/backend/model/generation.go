@@ -6,838 +6,12 @@ import (
 	"errors"
 	"fmt"
 	"strings"
-	"time"
 
 	"github.com/SocialGouv/claw-code-go/pkg/api"
 	"github.com/SocialGouv/claw-code-go/pkg/api/hooks"
-	clawrt "github.com/SocialGouv/claw-code-go/pkg/runtime"
 
 	"github.com/SocialGouv/iterion/pkg/backend/delegate"
-	"github.com/SocialGouv/iterion/pkg/backend/permission"
-	"github.com/SocialGouv/iterion/pkg/backend/thinktokens"
-	"github.com/SocialGouv/iterion/pkg/internal/strutil"
 )
-
-const (
-	// defaultMaxSteps is the default tool-loop iteration limit.
-	defaultMaxSteps = 10
-
-	// defaultMaxTokens is the default max tokens per response.
-	defaultMaxTokens = 8192
-
-	// maxToolInputJSONSize caps the accumulated input_json_delta
-	// fragments for a single tool_use block. A misbehaving provider
-	// (or a malformed stream that never sends content_block_stop)
-	// would otherwise grow the PartialJSON buffer without bound and
-	// OOM the runner. 10 MB is well above any realistic tool input
-	// while still cheap to fail loud on.
-	maxToolInputJSONSize = 10 * 1024 * 1024
-
-	// maxTextBlockSize caps the accumulated text_delta/thinking_delta
-	// content for a single content block. Same rationale as
-	// maxToolInputJSONSize: a misbehaving provider (or a malformed
-	// stream that never sends content_block_stop) would otherwise grow
-	// bs.text without bound and OOM the runner. 50 MB comfortably
-	// covers even a very large extended-thinking transcript while
-	// still cheap to fail loud on.
-	maxTextBlockSize = 50 * 1024 * 1024
-)
-
-// ErrToolInputTooLarge signals that a streamed tool_use block's
-// accumulated input JSON exceeded maxToolInputJSONSize.
-var ErrToolInputTooLarge = errors.New("aggregateStream: tool_use input exceeded max size")
-
-// ErrTextBlockTooLarge signals that a streamed text/thinking block's
-// accumulated content exceeded maxTextBlockSize.
-var ErrTextBlockTooLarge = errors.New("aggregateStream: text/thinking block exceeded max size")
-
-// ---------------------------------------------------------------------------
-// Stream aggregation
-// ---------------------------------------------------------------------------
-
-// toolUseBlock is a collected tool_use block from a streamed response.
-type toolUseBlock struct {
-	ID          string
-	Name        string
-	PartialJSON string // concatenated input_json_delta fragments
-}
-
-// aggregatedResponse is the result of consuming a StreamEvent channel.
-type aggregatedResponse struct {
-	text         string
-	toolUses     []toolUseBlock
-	usage        Usage
-	stopReason   string
-	thinkingText string // concatenated extended-thinking content (all thinking blocks)
-	thinkingMs   int    // wall-clock spent inside thinking blocks (start→stop)
-	err          error
-}
-
-// blockState tracks a single content block during stream aggregation.
-type blockState struct {
-	blockType     string // "text", "tool_use", or "thinking"
-	text          string // text content, or thinking content for thinking blocks
-	toolUse       toolUseBlock
-	stopped       bool
-	thinkingStart time.Time // when a thinking block opened (zero for non-thinking)
-	thinkingMs    int       // finalized thinking duration (set on content_block_stop)
-}
-
-// growText appends delta to bs.text, enforcing maxTextBlockSize. Shared by
-// the text_delta and thinking_delta cases so a misbehaving provider (or a
-// malformed stream that never sends content_block_stop) can't grow either
-// buffer without bound — the same protection input_json_delta already has.
-func (bs *blockState) growText(delta string) error {
-	if len(bs.text)+len(delta) > maxTextBlockSize {
-		return fmt.Errorf("%w: %d bytes", ErrTextBlockTooLarge, maxTextBlockSize)
-	}
-	bs.text += delta
-	return nil
-}
-
-// aggregateStream reads all events from ch and builds an aggregatedResponse.
-// It tracks content blocks by index and concatenates deltas.
-//
-// On any early return, the upstream goroutine inside claw-code-go's
-// StreamResponse is still trying to push the rest of the response into
-// ch. If we return immediately, that goroutine blocks at the next send
-// (ch is buffered ~64) and never releases the underlying TCP connection.
-// A deferred drainer wraps every exit path so the upstream goroutine
-// completes — the old code spawned a drainer only on the ctx-cancel
-// branch and silently leaked the connection on tool-input-too-large or
-// EventError early returns.
-func aggregateStream(ctx context.Context, ch <-chan api.StreamEvent) aggregatedResponse {
-	var res aggregatedResponse
-	blocks := make(map[int]*blockState)
-	drained := false
-	sawStop := false
-	defer func() {
-		if drained {
-			return
-		}
-		go func() {
-			for range ch {
-			}
-		}()
-	}()
-
-	for {
-		select {
-		case <-ctx.Done():
-			res.err = ctx.Err()
-			return res
-		case event, ok := <-ch:
-			if !ok {
-				drained = true
-				res.text, res.toolUses, res.thinkingText, res.thinkingMs = collectBlocks(blocks)
-				for _, bs := range blocks {
-					if bs.blockType == "tool_use" && !bs.stopped {
-						// Retryable: a truncated tool_use is a dropped
-						// stream, not a permanent failure.
-						res.err = &APIError{
-							Message:     fmt.Sprintf("incomplete tool_use block: %s (content_block_stop not received)", bs.toolUse.Name),
-							IsRetryable: true,
-						}
-						return res
-					}
-				}
-				// Truncation backstop: a complete response always ends with a
-				// message_delta carrying a stop_reason AND a message_stop. If
-				// the channel closed with NEITHER terminal signal (and no
-				// explicit stream error fired), the connection dropped
-				// mid-stream. Surface a retryable error so the retry loop
-				// re-issues the request instead of silently accepting a
-				// truncated partial turn — which otherwise reads as a clean
-				// but degenerate response (e.g. a reviewer's narration cut off
-				// before it ever calls a tool).
-				if res.err == nil && res.stopReason == "" && !sawStop {
-					res.err = &APIError{
-						Message:     "incomplete stream: connection closed before completion (no stop_reason or message_stop received)",
-						IsRetryable: true,
-					}
-				}
-				return res
-			}
-
-			switch event.Type {
-			case api.EventMessageStart:
-				res.usage.InputTokens = event.InputTokens
-				res.usage.CacheReadTokens = event.CacheReadInputTokens
-				res.usage.CacheWriteTokens = event.CacheCreationInputTokens
-
-			case api.EventContentBlockStart:
-				bs := &blockState{blockType: event.ContentBlock.Type}
-				if event.ContentBlock.Type == "tool_use" {
-					bs.toolUse = toolUseBlock{
-						ID:   event.ContentBlock.ID,
-						Name: event.ContentBlock.Name,
-					}
-				}
-				if event.ContentBlock.Type == "thinking" {
-					bs.thinkingStart = time.Now()
-				}
-				blocks[event.ContentBlock.Index] = bs
-
-			case api.EventContentBlockDelta:
-				bs, ok := blocks[event.Index]
-				if !ok {
-					bs = &blockState{blockType: "text"}
-					blocks[event.Index] = bs
-				}
-				switch event.Delta.Type {
-				case "text_delta":
-					if growErr := bs.growText(event.Delta.Text); growErr != nil {
-						res.err = growErr
-						res.text, res.toolUses, res.thinkingText, res.thinkingMs = collectBlocks(blocks)
-						return res
-					}
-				case "thinking_delta":
-					if growErr := bs.growText(event.Delta.Thinking); growErr != nil {
-						res.err = growErr
-						res.text, res.toolUses, res.thinkingText, res.thinkingMs = collectBlocks(blocks)
-						return res
-					}
-				case "signature_delta":
-					// Signature signs the thinking block for cross-turn replay;
-					// it carries no token/timing signal, so we ignore it here.
-				case "input_json_delta":
-					if len(bs.toolUse.PartialJSON)+len(event.Delta.PartialJSON) > maxToolInputJSONSize {
-						res.err = fmt.Errorf("%w: tool %q exceeded %d bytes", ErrToolInputTooLarge, bs.toolUse.Name, maxToolInputJSONSize)
-						res.text, res.toolUses, res.thinkingText, res.thinkingMs = collectBlocks(blocks)
-						return res
-					}
-					bs.toolUse.PartialJSON += event.Delta.PartialJSON
-				}
-
-			case api.EventContentBlockStop:
-				if bs, ok := blocks[event.Index]; ok {
-					bs.stopped = true
-					if bs.blockType == "thinking" && !bs.thinkingStart.IsZero() {
-						bs.thinkingMs = int(time.Since(bs.thinkingStart) / time.Millisecond)
-					}
-				}
-
-			case api.EventMessageDelta:
-				res.usage.OutputTokens = event.Usage.OutputTokens
-				// Exact billed thinking tokens (raw internal reasoning,
-				// independent of thinking.display); 0 when the provider
-				// omits the breakdown.
-				res.usage.ReasoningTokens = event.Usage.OutputTokensDetails.ThinkingTokens
-				res.stopReason = event.StopReason
-
-			case api.EventError:
-				// Transport / truncation stream errors are classified
-				// retryable so the retry loop re-issues the request; a
-				// permanent provider error (quota, overflow) stays terminal.
-				res.err = classifyStreamEventError(event.ErrorMessage)
-				res.text, res.toolUses, res.thinkingText, res.thinkingMs = collectBlocks(blocks)
-				return res
-
-			case api.EventMessageStop:
-				sawStop = true
-			case api.EventPing:
-				// No action needed.
-			}
-		}
-	}
-}
-
-// collectBlocks extracts text, tool_use, and thinking blocks from the block
-// state map, ordered by block index. It returns the concatenated visible text,
-// the tool_use blocks, the concatenated thinking content, and the total
-// wall-clock spent inside thinking blocks (milliseconds).
-func collectBlocks(blocks map[int]*blockState) (string, []toolUseBlock, string, int) {
-	if len(blocks) == 0 {
-		return "", nil, "", 0
-	}
-
-	maxIdx := 0
-	for idx := range blocks {
-		if idx > maxIdx {
-			maxIdx = idx
-		}
-	}
-
-	var text string
-	var toolUses []toolUseBlock
-	var thinkingText string
-	var thinkingMs int
-	for i := 0; i <= maxIdx; i++ {
-		bs, ok := blocks[i]
-		if !ok {
-			continue
-		}
-		switch bs.blockType {
-		case "text":
-			text += bs.text
-		case "tool_use":
-			toolUses = append(toolUses, bs.toolUse)
-		case "thinking":
-			thinkingText += bs.text
-			// Duration is finalized on content_block_stop (persisted via the
-			// *blockState pointer). A block that never stopped reports 0 — we
-			// don't attribute stream-close latency to thinking.
-			thinkingMs += bs.thinkingMs
-		}
-	}
-	return text, toolUses, thinkingText, thinkingMs
-}
-
-// ---------------------------------------------------------------------------
-// Request building
-// ---------------------------------------------------------------------------
-
-// buildRequest constructs a CreateMessageRequest from GenerationOptions and messages.
-// extraTools and toolChoice are appended/set on top of opts.Tools.
-// wireModelID strips an optional "provider/" routing prefix from a model
-// spec, returning the bare model ID the wire API expects. iterion selects
-// the provider via Registry.Resolve(spec); the resolved client then needs
-// only the bare model on the request — claw_backend and subagent already
-// pass bare, but the direct-generation callers (executeHumanLLM,
-// ExecuteReviewCompanion) pass the full spec. Without this, "anthropic/
-// claude-sonnet-4-6" reaches the Anthropic API verbatim and 404s (the
-// openai/bedrock claw providers strip it incidentally; anthropic does not).
-// A bare "claude-opus-4-8" (no slash) is returned unchanged.
-func wireModelID(spec string) string {
-	if i := strings.Index(spec, "/"); i >= 0 {
-		return spec[i+1:]
-	}
-	return spec
-}
-
-func buildRequest(opts GenerationOptions, messages []api.Message, extraTools []api.Tool, toolChoice *api.ToolChoice) (api.CreateMessageRequest, error) {
-	maxTokens := opts.MaxTokens
-	if maxTokens <= 0 {
-		maxTokens = defaultMaxTokens
-	}
-
-	req := api.CreateMessageRequest{
-		Model:       wireModelID(opts.Model),
-		MaxTokens:   maxTokens,
-		Messages:    messages,
-		Temperature: opts.Temperature,
-		ToolChoice:  toolChoice,
-	}
-
-	// SystemBlocks takes precedence over System string for cache_control support.
-	if len(opts.SystemBlocks) > 0 {
-		req.SystemBlocks = opts.SystemBlocks
-	} else {
-		req.System = opts.System
-	}
-
-	// Map provider-specific options.
-	if opts.ProviderOptions != nil {
-		if re, ok := opts.ProviderOptions["reasoning_effort"].(string); ok && re != "" {
-			req.ReasoningEffort = re
-		}
-	}
-
-	// Anthropic rejects extended thinking when tool_choice forces a specific
-	// tool ("Thinking may not be enabled when tool_choice forces tool use").
-	// Structured output (GenerateObjectDirect) always forces the synthetic
-	// tool, so on a model with adaptive thinking on by default (e.g.
-	// claude-sonnet-4-6) the call 400s. Force thinking off for forced-tool
-	// requests. Harmless for OpenAI (the field is ignored by the openai
-	// provider's request conversion).
-	if toolChoice != nil && (toolChoice.Type == "tool" || toolChoice.Type == "any") {
-		req.Thinking = &api.ThinkingConfig{Type: "off"}
-	}
-
-	for _, gt := range opts.Tools {
-		var schema api.InputSchema
-		if len(gt.InputSchema) > 0 {
-			if err := json.Unmarshal(gt.InputSchema, &schema); err != nil {
-				return api.CreateMessageRequest{}, fmt.Errorf("invalid InputSchema for tool %q: %w", gt.Name, err)
-			}
-		}
-		req.Tools = append(req.Tools, api.Tool{
-			Name:        gt.Name,
-			Description: gt.Description,
-			InputSchema: schema,
-		})
-	}
-	req.Tools = append(req.Tools, extraTools...)
-
-	// Mark the last tool as the cache breakpoint for the tools array prefix.
-	if n := len(req.Tools); n > 0 {
-		req.Tools[n-1].CacheControl = api.EphemeralCacheControl()
-	}
-
-	return req, nil
-}
-
-// buildToolMap creates a name→GenerationTool lookup.
-func buildToolMap(tools []GenerationTool) map[string]*GenerationTool {
-	m := make(map[string]*GenerationTool, len(tools))
-	for i := range tools {
-		m[tools[i].Name] = &tools[i]
-	}
-	return m
-}
-
-// ---------------------------------------------------------------------------
-// Shared helpers
-// ---------------------------------------------------------------------------
-
-// accumulateUsage adds step usage into the running total.
-func accumulateUsage(total *Usage, step Usage) {
-	total.InputTokens += step.InputTokens
-	total.OutputTokens += step.OutputTokens
-	total.TotalTokens = total.InputTokens + total.OutputTokens
-	total.CacheReadTokens += step.CacheReadTokens
-	total.CacheWriteTokens += step.CacheWriteTokens
-	total.ReasoningTokens += step.ReasoningTokens
-	total.ThinkingMs += step.ThinkingMs
-}
-
-// toolCallsFromBlocks converts aggregated tool_use blocks to ToolCall values.
-func toolCallsFromBlocks(toolUses []toolUseBlock) []ToolCall {
-	if len(toolUses) == 0 {
-		return nil
-	}
-	calls := make([]ToolCall, len(toolUses))
-	for i, tu := range toolUses {
-		calls[i] = ToolCall{
-			ID:    tu.ID,
-			Name:  tu.Name,
-			Input: json.RawMessage(tu.PartialJSON),
-		}
-	}
-	return calls
-}
-
-// fireOnRequest calls the OnRequest hook if set.
-func fireOnRequest(opts GenerationOptions, messageCount int) {
-	if opts.OnRequest != nil {
-		var reasoning string
-		if opts.ProviderOptions != nil {
-			if re, ok := opts.ProviderOptions["reasoning_effort"].(string); ok {
-				reasoning = re
-			}
-		}
-		opts.OnRequest(RequestInfo{
-			Model:           opts.Model,
-			MessageCount:    messageCount,
-			ToolCount:       len(opts.Tools),
-			ReasoningEffort: reasoning,
-			Timestamp:       time.Now(),
-		})
-	}
-}
-
-// callAndAggregate calls StreamResponse, aggregates the stream, fires the
-// OnResponse hook, and returns the aggregated result. On StreamResponse
-// failure it fires OnResponse with the error and returns nil, err.
-func callAndAggregate(
-	ctx context.Context,
-	client api.APIClient,
-	req api.CreateMessageRequest,
-	opts GenerationOptions,
-) (*aggregatedResponse, error) {
-	start := time.Now()
-	ch, err := client.StreamResponse(ctx, req)
-	if err != nil {
-		if opts.OnResponse != nil {
-			opts.OnResponse(ResponseInfo{
-				Latency: time.Since(start),
-				Error:   err,
-			})
-		}
-		return nil, err
-	}
-
-	agg := aggregateStream(ctx, ch)
-	latency := time.Since(start)
-
-	// Thinking metrics. Preferred source is the provider's exact billed
-	// count (usage.output_tokens_details, captured from message_delta);
-	// when absent, approximate by re-encoding the accumulated thinking
-	// text. Timing is measured from the stream (start→stop of each
-	// thinking block).
-	if agg.usage.ReasoningTokens == 0 {
-		agg.usage.ReasoningTokens = thinktokens.Count(agg.thinkingText)
-	}
-	agg.usage.ThinkingMs = agg.thinkingMs
-
-	finishReason := mapStopReason(agg.stopReason)
-	if opts.OnResponse != nil {
-		opts.OnResponse(ResponseInfo{
-			Latency:      latency,
-			Usage:        agg.usage,
-			FinishReason: finishReason,
-			Error:        agg.err,
-		})
-	}
-
-	return &agg, nil
-}
-
-// ---------------------------------------------------------------------------
-// Tool execution
-// ---------------------------------------------------------------------------
-
-// executeToolsDirect runs each tool_use block and builds tool_result content blocks.
-//
-// When runner is non-nil, the function fires PreToolUse before each
-// Execute (a Block decision short-circuits to a synthetic refusal
-// tool_result carrying the decision Reason), then either PostToolUse
-// (success) or PostToolUseFailure (error) afterwards.
-//
-// A non-nil error return signals that the tool loop must abort and the
-// caller should propagate the error up. The only case currently using
-// this is *delegate.ErrAskUser (claw-code-go's native ask_user tool
-// asking iterion to pause the run and surface the question to the dev).
-// In every other failure mode the error is rendered into an isError=true
-// tool_result and execution continues, so the LLM can recover.
-func executeToolsDirect(
-	ctx context.Context,
-	toolUses []toolUseBlock,
-	toolMap map[string]*GenerationTool,
-	onToolStarted func(ToolCallInfo),
-	onToolCall func(ToolCallInfo),
-	runner *hooks.Runner,
-	materialize func(string) string,
-	policy *permission.Policy,
-) ([]api.ContentBlock, error) {
-	results := make([]api.ContentBlock, 0, len(toolUses))
-
-	for _, tu := range toolUses {
-		gt, ok := toolMap[tu.Name]
-		if !ok {
-			// A bot prompt may name an MCP/board tool in the claude_code
-			// double-underscore FQN convention ("mcp__server__tool") while
-			// the claw in-process loop advertises it sanitized
-			// ("mcp_server_tool"); bridge the two so the call dispatches.
-			gt, ok = toolMap[canonicalMCPToolName(tu.Name)]
-		}
-		if !ok {
-			results = append(results, api.ToolResult{
-				ToolUseID: tu.ID,
-				Content:   fmt.Sprintf("unknown tool: %s", tu.Name),
-				IsError:   true,
-			}.ToContentBlock())
-			if onToolCall != nil {
-				onToolCall(ToolCallInfo{
-					ToolName:  tu.Name,
-					InputSize: len(tu.PartialJSON),
-					Error:     fmt.Errorf("unknown tool: %s", tu.Name),
-				})
-			}
-			continue
-		}
-
-		// Validate that PartialJSON is well-formed JSON before either
-		// firing hooks with stale/empty input or invoking Execute with
-		// a payload its decoder can't parse. A malformed PartialJSON
-		// at this point indicates either a truncated stream the
-		// upstream aggregateStream missed, or a provider that emits
-		// invalid JSON; both warrant a tool_result-isError, not a
-		// silent empty-args call that the LLM would never recover
-		// from cleanly.
-		var hookInput map[string]any
-		if jsonErr := json.Unmarshal([]byte(tu.PartialJSON), &hookInput); jsonErr != nil {
-			results = append(results, api.ToolResult{
-				ToolUseID: tu.ID,
-				Content:   fmt.Sprintf("malformed tool input: %v", jsonErr),
-				IsError:   true,
-			}.ToContentBlock())
-			if onToolCall != nil {
-				onToolCall(ToolCallInfo{
-					ToolName:  tu.Name,
-					InputSize: len(tu.PartialJSON),
-					ToolUseID: tu.ID,
-					Error:     fmt.Errorf("malformed tool input: %w", jsonErr),
-				})
-			}
-			continue
-		}
-
-		if dec, _ := runner.Fire(ctx, hooks.Context{
-			Event:     hooks.PreToolUse,
-			ToolName:  tu.Name,
-			ToolInput: hookInput,
-		}); dec.Action == hooks.ActionBlock {
-			reason := dec.Reason
-			if reason == "" {
-				reason = "blocked by lifecycle hook"
-			}
-			results = append(results, api.ToolResult{
-				ToolUseID: tu.ID,
-				Content:   fmt.Sprintf("tool refused: %s", reason),
-				IsError:   true,
-			}.ToContentBlock())
-			if onToolCall != nil {
-				onToolCall(ToolCallInfo{
-					ToolName:  tu.Name,
-					InputSize: len(tu.PartialJSON),
-					Error:     fmt.Errorf("blocked by hook: %s", reason),
-				})
-			}
-			continue
-		}
-
-		// Permission gate (the anti-prompt-injection boundary). Evaluated
-		// AFTER the lifecycle hook (so hooks still observe every call) and
-		// BEFORE execution. Deny → a synthetic refusal tool_result the
-		// model can adapt to. Ask → abort the loop with an ErrAskUser so
-		// the run pauses for human approval (mirrors claude_code's
-		// PreToolUse permission hook for cross-backend parity). Allow falls
-		// through to execution. nil/disabled policy is a no-op.
-		if policy.Enabled() {
-			switch dec, rule := policy.Evaluate(tu.Name, hookInput); dec {
-			case permission.Deny:
-				reason := permission.DenyMessage(tu.Name, hookInput, rule)
-				results = append(results, api.ToolResult{
-					ToolUseID: tu.ID,
-					Content:   reason,
-					IsError:   true,
-				}.ToContentBlock())
-				if onToolCall != nil {
-					onToolCall(ToolCallInfo{
-						ToolName:  tu.Name,
-						InputSize: len(tu.PartialJSON),
-						ToolUseID: tu.ID,
-						Error:     errors.New(reason),
-					})
-				}
-				continue
-			case permission.Ask:
-				// Suspend the run for operator approval. The captured
-				// question guides the model after the operator answers
-				// (and grants), so on resume the re-issued call passes the
-				// now-updated gate. Stamp the pending tool_use ID exactly
-				// like the ask_user path below.
-				return results, &delegate.ErrAskUser{
-					Question:         permission.AskPrompt(tu.Name, hookInput, rule),
-					PendingToolUseID: tu.ID,
-					PermissionMarker: permission.Marker(tu.Name, hookInput, rule),
-				}
-			}
-			// permission.Allow falls through to execution.
-		}
-
-		if onToolStarted != nil {
-			onToolStarted(ToolCallInfo{
-				ToolName:  tu.Name,
-				InputSize: len(tu.PartialJSON),
-				ToolUseID: tu.ID,
-				Input:     json.RawMessage(tu.PartialJSON),
-			})
-		}
-
-		// Materialise secret placeholders into the input the tool actually
-		// executes with. The placeholder form (tu.PartialJSON) is what the
-		// hooks and event log above/below persist, so the real secret
-		// never reaches the store — only the live tool call (Layer 1).
-		execInput := json.RawMessage(tu.PartialJSON)
-		if materialize != nil {
-			execInput = json.RawMessage(materialize(string(tu.PartialJSON)))
-		}
-		start := time.Now()
-		output, err := gt.Execute(ctx, execInput)
-		dur := time.Since(start)
-
-		if onToolCall != nil {
-			onToolCall(ToolCallInfo{
-				ToolName:  tu.Name,
-				InputSize: len(tu.PartialJSON),
-				ToolUseID: tu.ID,
-				Output:    output,
-				Duration:  dur,
-				Error:     err,
-			})
-		}
-
-		if err != nil {
-			// Special case: ask_user requested by the LLM. Abort the loop
-			// and propagate up so the backend can surface the question to
-			// iterion's pause/resume flow. The PostToolUseFailure hook is
-			// intentionally NOT fired — this isn't a tool failure, it's a
-			// suspension request. Stamp the pending tool_use ID so the
-			// backend can craft a tool_result block on resume.
-			var askErr *delegate.ErrAskUser
-			if errors.As(err, &askErr) {
-				askErr.PendingToolUseID = tu.ID
-				return results, askErr
-			}
-			// Post-tool fires are observational; the runner logs any
-			// handler error itself, so we discard the (Decision, error)
-			// return on purpose.
-			_, _ = runner.Fire(ctx, hooks.Context{
-				Event:     hooks.PostToolUseFailure,
-				ToolName:  tu.Name,
-				ToolInput: hookInput,
-				ToolError: err,
-			})
-			results = append(results, api.ToolResult{
-				ToolUseID: tu.ID,
-				Content:   fmt.Sprintf("tool error: %v", err),
-				IsError:   true,
-			}.ToContentBlock())
-		} else {
-			_, _ = runner.Fire(ctx, hooks.Context{
-				Event:      hooks.PostToolUse,
-				ToolName:   tu.Name,
-				ToolInput:  hookInput,
-				ToolResult: output,
-			})
-			results = append(results, api.ToolResult{
-				ToolUseID: tu.ID,
-				Content:   output,
-			}.ToContentBlock())
-		}
-	}
-
-	return results, nil
-}
-
-// maybeCompact runs claw's pure-function compactor with a config sized
-// to the given model's context window (default trigger at 85% of the
-// window, last 4 messages kept verbatim). The ratio and preserveRecent
-// arguments override those defaults; pass 0 to keep them.
-//
-// It is a no-op for short transcripts (returns the input unchanged with
-// `compacted=false`) and a bounded summarisation for long ones — the
-// last preserveRecent turns are kept verbatim, so any assistant message
-// holding a pending tool_use stays addressable for the next tool round
-// or for resume after a pause.
-func maybeCompact(messages []api.Message, model string, ratio float64, preserveRecent int) (out []api.Message, info CompactInfo, compacted bool) {
-	cfg := clawrt.DefaultCompactionConfigForModel(model, ratio, preserveRecent)
-	res := clawrt.CompactMessages(messages, cfg)
-	if res == nil {
-		return messages, CompactInfo{}, false
-	}
-	return res.CompactedMessages, CompactInfo{
-		BeforeMessages:      len(messages),
-		AfterMessages:       len(res.CompactedMessages),
-		RemovedMessageCount: res.RemovedMessageCount,
-	}, true
-}
-
-// maybeCompactPause is a thin wrapper over maybeCompact for the pause
-// path that already discards the info struct (the pause checkpoint
-// records the conversation, not the compaction event).
-func maybeCompactPause(messages []api.Message, model string, ratio float64, preserveRecent int) []api.Message {
-	out, _, _ := maybeCompact(messages, model, ratio, preserveRecent)
-	return out
-}
-
-// maxContextCompactRetries bounds the reactive force-compaction that
-// runs when the backend REJECTS a request for exceeding its real context
-// window. Threshold compaction (maybeCompact) sizes itself to the model's
-// ADVERTISED window (e.g. gpt-5's 1.05M), but the active backend may
-// enforce a smaller one — most notably an OpenAI model driven through the
-// ChatGPT-forfait endpoint, whose effective context is far below the
-// API's. In that case the estimate stays under the advertised window so
-// threshold compaction never fires, and without this reactive pass the
-// tool loop dies mid-run with context_length_exceeded.
-const maxContextCompactRetries = 4
-
-// contextRetryTargets are the shrinking force-compaction token budgets
-// tried, in order, on a context-window rejection — stepped well below
-// common forfait caps so a compacted retry fits even when the backend's
-// real window is unknown.
-var contextRetryTargets = []int{256_000, 128_000, 64_000, 32_000}
-
-// contextWindowMarkers identifies a backend's rejection of a request
-// for exceeding the model's context window. claw's markers live in an
-// internal package, so we mirror them here (provider-agnostic).
-var contextWindowMarkers = []string{
-	"context_length_exceeded", "maximum context length", "context window",
-	"context length", "too many tokens", "prompt is too long",
-	"input is too long", "request is too large",
-}
-
-// isContextWindowError reports whether err is the backend rejecting a
-// request for exceeding the model's context window.
-func isContextWindowError(err error) bool {
-	if err == nil {
-		return false
-	}
-	return strutil.ContainsAnyFold(err.Error(), contextWindowMarkers)
-}
-
-// forceCompactToTokens force-compacts messages to a target token budget,
-// independent of the model's advertised window. Returns the compacted
-// slice and true only when it actually shrank the history (so the caller
-// stops retrying once the transcript can't get any smaller).
-func forceCompactToTokens(messages []api.Message, targetTokens, preserveRecent int) ([]api.Message, bool) {
-	if preserveRecent <= 0 {
-		preserveRecent = clawrt.DefaultCompactionPreserveRecent
-	}
-	res := clawrt.CompactMessages(messages, clawrt.CompactionConfig{
-		PreserveRecentMessages: preserveRecent,
-		MaxEstimatedTokens:     targetTokens,
-	})
-	if res == nil || len(res.CompactedMessages) == 0 || len(res.CompactedMessages) >= len(messages) {
-		return messages, false
-	}
-	return res.CompactedMessages, true
-}
-
-// callWithContextRetry runs one model call and, on a context-window
-// rejection, force-compacts the (pointer-shared) history to a shrinking
-// target and retries, up to maxContextCompactRetries. It mutates
-// *messages in place so the compaction persists into the rest of the
-// tool loop. Non-context errors and exhausted retries surface unchanged.
-func callWithContextRetry(ctx context.Context, client api.APIClient, opts GenerationOptions, messages *[]api.Message, toolChoice *api.ToolChoice) (*aggregatedResponse, error) {
-	for attempt := 0; ; attempt++ {
-		req, err := buildRequest(opts, *messages, nil, toolChoice)
-		if err != nil {
-			return nil, err
-		}
-		fireOnRequest(opts, len(*messages))
-		agg, callErr := callAndAggregate(ctx, client, req, opts)
-		e := callErr
-		if e == nil && agg != nil {
-			e = agg.err
-		}
-		if e == nil {
-			return agg, nil
-		}
-		if !isContextWindowError(e) || attempt >= maxContextCompactRetries {
-			return agg, e
-		}
-		target := contextRetryTargets[len(contextRetryTargets)-1]
-		if attempt < len(contextRetryTargets) {
-			target = contextRetryTargets[attempt]
-		}
-		compacted, ok := forceCompactToTokens(*messages, target, opts.CompactPreserveRecent)
-		if !ok {
-			return agg, e // can't shrink further → surface the original error
-		}
-		*messages = compacted
-		// Same reseed as the threshold path: after a forced squeeze the
-		// model must re-read its todo list before continuing.
-		if hasTodoTool(opts.Tools) {
-			*messages = append(*messages, todoReseedMessage())
-		}
-		if opts.OnContextCompactRetry != nil {
-			opts.OnContextCompactRetry(attempt+1, e, len(compacted), target)
-		}
-	}
-}
-
-// ---------------------------------------------------------------------------
-// Finish reason mapping
-// ---------------------------------------------------------------------------
-
-// mapStopReason converts an Anthropic stop_reason string to a FinishReason.
-func mapStopReason(reason string) FinishReason {
-	switch reason {
-	case "end_turn", "stop":
-		return FinishStop
-	case "tool_use":
-		return FinishToolCalls
-	case "max_tokens":
-		return FinishLength
-	case "content_filter":
-		return FinishContentFilter
-	default:
-		return FinishOther
-	}
-}
 
 // ---------------------------------------------------------------------------
 // Core generation: text
@@ -887,11 +61,12 @@ func GenerateTextDirect(ctx context.Context, client api.APIClient, opts Generati
 	var lastToolCalls []ToolCall
 	var lastFinish FinishReason
 
-	// partialResult captures whatever has been accumulated so the
-	// caller can stash the conversation history for compaction-aware
-	// retries even when this attempt fails. Caller should consult
-	// `err` first; the partial result is best-effort.
-	partial := func() *TextResult {
+	// result assembles whatever has been accumulated so far. Error paths
+	// return it as a best-effort partial result — the caller can stash the
+	// conversation history for compaction-aware retries even when this
+	// attempt fails (consult `err` first); the clean exit returns it as
+	// the final result.
+	result := func() *TextResult {
 		return &TextResult{
 			Text:         lastText,
 			ToolCalls:    lastToolCalls,
@@ -904,75 +79,43 @@ func GenerateTextDirect(ctx context.Context, client api.APIClient, opts Generati
 
 	toolCallsSoFar := 0
 	for step := 1; step <= maxSteps; step++ {
-		// Agentic-parity lever: while ForceInitialToolUse is set and the
-		// model has not yet called a single tool, pin tool_choice to "any"
-		// so it MUST use a tool before it can answer — then revert to auto
-		// (nil) so it can finish. Without this, gpt-5.5 (and other models)
-		// under the default "auto" choice skip the tools and answer from
-		// priors, producing ungrounded verdicts. No-op without tools.
-		var stepToolChoice *api.ToolChoice
-		if opts.ForceInitialToolUse && len(opts.Tools) > 0 && toolCallsSoFar == 0 {
-			stepToolChoice = &api.ToolChoice{Type: "any"}
-		}
 		// callWithContextRetry builds the request, calls the model, and on
 		// a context-window rejection force-compacts `messages` (in place)
 		// and retries — so a backend whose real window is smaller than the
 		// model's advertised one (ChatGPT-forfait) recovers instead of
 		// killing the run.
-		agg, err := callWithContextRetry(ctx, client, opts, &messages, stepToolChoice)
+		agg, err := callWithContextRetry(ctx, client, opts, &messages, forcedInitialToolChoice(opts, toolCallsSoFar))
 		if err != nil {
-			return partial(), err
+			return result(), err
 		}
 
 		accumulateUsage(&totalUsage, agg.usage)
-		finishReason := mapStopReason(agg.stopReason)
-		stepToolCalls := toolCallsFromBlocks(agg.toolUses)
-		toolCallsSoFar += len(stepToolCalls)
-
-		stepResult := StepResult{
-			Number:       step,
-			Text:         agg.text,
-			ToolCalls:    stepToolCalls,
-			FinishReason: finishReason,
-			Usage:        agg.usage,
-			Thinking:     agg.thinkingText,
-		}
+		stepResult := buildStepResult(step, agg)
 		steps = append(steps, stepResult)
+		toolCallsSoFar += len(stepResult.ToolCalls)
 
 		if opts.OnStepFinish != nil {
 			opts.OnStepFinish(stepResult)
 		}
 
 		lastText = agg.text
-		lastToolCalls = stepToolCalls
-		lastFinish = finishReason
+		lastToolCalls = stepResult.ToolCalls
+		lastFinish = stepResult.FinishReason
 
-		// If no tool calls or stop reason is not tool_use, we're done.
-		if len(agg.toolUses) == 0 || finishReason != FinishToolCalls {
-			// Fire OnTurnCapture for the final step too. The live
-			// `messages` slice doesn't get this step's assistant
-			// response (the loop exits), so synthesize the final
-			// snapshot by appending an assistant text block. The fork
-			// UX would never anchor here (final = no follow-up to
-			// resume), but the timeline still wants to display the
-			// turn.
-			if opts.OnTurnCapture != nil {
-				snap := append([]api.Message(nil), messages...)
-				if agg.text != "" {
-					snap = append(snap, api.Message{
-						Role: "assistant",
-						Content: []api.ContentBlock{{
-							Type: "text",
-							Text: agg.text,
-						}},
-					})
+		// If no tool calls or stop reason is not tool_use, we're done —
+		// unless the operator inbox holds undelivered messages (e.g. an
+		// async-question answer that landed while the model was
+		// composing its final text). Final-drain parity with
+		// claude_code's Stop/BlockStop hook: inject them and give the
+		// model another turn, bounded by maxSteps.
+		if len(agg.toolUses) == 0 || stepResult.FinishReason != FinishToolCalls {
+			if step < maxSteps {
+				if drained, ok := finalDrainInbox(ctx, messages, agg.text, opts); ok {
+					messages = drained
+					continue
 				}
-				opts.OnTurnCapture(TurnCaptureInfo{
-					Step:         step,
-					Result:       stepResult,
-					Conversation: snap,
-				})
 			}
+			captureFinalTurn(opts, messages, step, stepResult)
 			break
 		}
 
@@ -984,91 +127,190 @@ func GenerateTextDirect(ctx context.Context, client api.APIClient, opts Generati
 		if toolErr != nil {
 			// ErrAskUser (and any future suspension signal) bubbles up to
 			// the backend, which converts it into iterion's pause flow.
-			// At this point `messages` already contains the assistant
-			// message with the pending tool_use block — capture it so the
-			// backend can persist the conversation and resume mid-loop.
-			// Apply pure-function compaction before marshalling so a long
-			// transcript is bounded on disk; the pending tool_use stays
-			// in the preserved-recent window (default 4) so its ID
-			// remains addressable at resume time.
-			var askErr *delegate.ErrAskUser
-			if errors.As(toolErr, &askErr) {
-				if convBytes, mErr := json.Marshal(maybeCompactPause(messages, opts.Model, opts.CompactThresholdRatio, opts.CompactPreserveRecent)); mErr == nil {
-					askErr.Conversation = convBytes
-				}
-			}
-			return partial(), toolErr
+			stashPauseConversation(toolErr, messages, opts)
+			return result(), toolErr
 		}
 		messages = append(messages, api.Message{
 			Role:    "user",
 			Content: toolResults,
 		})
 
-		// Fire OnTurnCapture at the natural end-of-iteration boundary:
-		// the live `messages` slice now contains everything the NEXT
-		// LLM call would see — exactly the snapshot the Fork API needs
-		// to rehydrate a child claw conversation. Take a defensive
-		// copy because the loop reuses the slice after this point.
-		if opts.OnTurnCapture != nil {
-			snap := append([]api.Message(nil), messages...)
-			opts.OnTurnCapture(TurnCaptureInfo{
-				Step:         step,
-				Result:       stepResult,
-				Conversation: snap,
-			})
-		}
+		captureToolRoundTurn(opts, messages, step, stepResult)
+		messages = compactBetweenIterations(messages, opts)
+		messages = drainOperatorInbox(ctx, messages, opts)
+	}
 
-		// Compact the running history before the next round if it's
-		// grown large. No-op for short transcripts; for long ones,
-		// older tool turns are summarised while the last 4 messages
-		// stay verbatim, so the assistant message that just dispatched
-		// tool_use blocks paired with our tool_results stays in the
-		// preserved-recent window. Without this the tool loop on a
-		// small-context model crashes with context_length_exceeded
-		// once history exceeds the budget.
-		if compacted, info, ok := maybeCompact(messages, opts.Model, opts.CompactThresholdRatio, opts.CompactPreserveRecent); ok {
-			// Compaction is about to fire: give OnBeforeCompact a chance
-			// to inject content (e.g. a session-memory user turn) so the
-			// summary preserves it. The injected slice feeds the
-			// summariser only; the live history keeps the originals.
-			if opts.OnBeforeCompact != nil {
-				if modified := opts.OnBeforeCompact(messages); modified != nil {
-					if reCompacted, reInfo, reOk := maybeCompact(modified, opts.Model, opts.CompactThresholdRatio, opts.CompactPreserveRecent); reOk {
-						compacted, info = reCompacted, reInfo
-					}
-				}
-			}
-			messages = compacted
-			if opts.OnCompact != nil {
-				opts.OnCompact(info)
-			}
-			// Re-anchor the task list after the squeeze (Grok-style reseed):
-			// the todo file survived on disk, the model's view of it did not.
-			if hasTodoTool(opts.Tools) {
-				messages = append(messages, todoReseedMessage())
-			}
-		}
+	return result(), nil
+}
 
-		// Drain operator-queued chatbox messages AFTER compaction so
-		// they always land in the preserved-recent window. Consume
-		// runs first so the studio inbox transitions delivered →
-		// consumed in lockstep with the next request.
-		if opts.Inbox != nil {
-			opts.Inbox.Consume(ctx)
-			if drained := opts.Inbox.Drain(ctx); len(drained) > 0 {
-				messages = append(messages, buildOperatorMessage(drained))
+// forcedInitialToolChoice is the agentic-parity lever: while
+// ForceInitialToolUse is set and the model has not yet called a single
+// tool, it pins tool_choice to "any" so the model MUST use a tool before
+// it can answer — then reverts to auto (nil) so it can finish. Without
+// this, gpt-5.5 (and other models) under the default "auto" choice skip
+// the tools and answer from priors, producing ungrounded verdicts. No-op
+// without tools.
+func forcedInitialToolChoice(opts GenerationOptions, toolCallsSoFar int) *api.ToolChoice {
+	if opts.ForceInitialToolUse && len(opts.Tools) > 0 && toolCallsSoFar == 0 {
+		return &api.ToolChoice{Type: "any"}
+	}
+	return nil
+}
+
+// buildStepResult shapes one aggregated model response into the StepResult
+// recorded on the step list and delivered to OnStepFinish.
+func buildStepResult(step int, agg *aggregatedResponse) StepResult {
+	return StepResult{
+		Number:       step,
+		Text:         agg.text,
+		ToolCalls:    toolCallsFromBlocks(agg.toolUses),
+		FinishReason: mapStopReason(agg.stopReason),
+		Usage:        agg.usage,
+		Thinking:     agg.thinkingText,
+	}
+}
+
+// captureFinalTurn fires OnTurnCapture for the terminal step. The live
+// `messages` slice doesn't get this step's assistant response (the loop
+// exits), so the snapshot synthesizes it by appending an assistant text
+// block when the step produced text. The fork UX would never anchor here
+// (final = no follow-up to resume), but the timeline still wants to
+// display the turn.
+func captureFinalTurn(opts GenerationOptions, messages []api.Message, step int, stepResult StepResult) {
+	if opts.OnTurnCapture == nil {
+		return
+	}
+	snap := append([]api.Message(nil), messages...)
+	if stepResult.Text != "" {
+		snap = append(snap, api.Message{
+			Role: "assistant",
+			Content: []api.ContentBlock{{
+				Type: "text",
+				Text: stepResult.Text,
+			}},
+		})
+	}
+	opts.OnTurnCapture(TurnCaptureInfo{
+		Step:         step,
+		Result:       stepResult,
+		Conversation: snap,
+	})
+}
+
+// captureToolRoundTurn fires OnTurnCapture at the natural end-of-iteration
+// boundary: the live `messages` slice now contains everything the NEXT
+// LLM call would see — exactly the snapshot the Fork API needs to
+// rehydrate a child claw conversation. Takes a defensive copy because the
+// loop reuses the slice after this point.
+func captureToolRoundTurn(opts GenerationOptions, messages []api.Message, step int, stepResult StepResult) {
+	if opts.OnTurnCapture == nil {
+		return
+	}
+	snap := append([]api.Message(nil), messages...)
+	opts.OnTurnCapture(TurnCaptureInfo{
+		Step:         step,
+		Result:       stepResult,
+		Conversation: snap,
+	})
+}
+
+// stashPauseConversation captures the conversation onto a
+// *delegate.ErrAskUser suspension so the backend can persist it and resume
+// mid-loop. At this point `messages` already contains the assistant
+// message with the pending tool_use block. Pure-function compaction is
+// applied before marshalling so a long transcript is bounded on disk; the
+// pending tool_use stays in the preserved-recent window (default 4) so its
+// ID remains addressable at resume time. Non-ask errors (and marshal
+// failures) leave the error untouched.
+func stashPauseConversation(toolErr error, messages []api.Message, opts GenerationOptions) {
+	var askErr *delegate.ErrAskUser
+	if !errors.As(toolErr, &askErr) {
+		return
+	}
+	if convBytes, mErr := json.Marshal(maybeCompactPause(messages, opts.Model, opts.CompactThresholdRatio, opts.CompactPreserveRecent)); mErr == nil {
+		askErr.Conversation = convBytes
+	}
+}
+
+// compactBetweenIterations compacts the running history before the next
+// round if it's grown large. No-op for short transcripts; for long ones,
+// older tool turns are summarised while the last 4 messages stay verbatim,
+// so the assistant message that just dispatched tool_use blocks paired
+// with our tool_results stays in the preserved-recent window. Without this
+// the tool loop on a small-context model crashes with
+// context_length_exceeded once history exceeds the budget.
+func compactBetweenIterations(messages []api.Message, opts GenerationOptions) []api.Message {
+	compacted, info, ok := maybeCompact(messages, opts.Model, opts.CompactThresholdRatio, opts.CompactPreserveRecent)
+	if !ok {
+		return messages
+	}
+	// Compaction is about to fire: give OnBeforeCompact a chance to
+	// inject content (e.g. a session-memory user turn) so the summary
+	// preserves it. The injected slice feeds the summariser only; the
+	// live history keeps the originals.
+	if opts.OnBeforeCompact != nil {
+		if modified := opts.OnBeforeCompact(messages); modified != nil {
+			if reCompacted, reInfo, reOk := maybeCompact(modified, opts.Model, opts.CompactThresholdRatio, opts.CompactPreserveRecent); reOk {
+				compacted, info = reCompacted, reInfo
 			}
 		}
 	}
+	messages = compacted
+	if opts.OnCompact != nil {
+		opts.OnCompact(info)
+	}
+	// Re-anchor the task list after the squeeze (Grok-style reseed):
+	// the todo file survived on disk, the model's view of it did not.
+	if hasTodoTool(opts.Tools) {
+		messages = append(messages, todoReseedMessage())
+	}
+	return messages
+}
 
-	return &TextResult{
-		Text:         lastText,
-		ToolCalls:    lastToolCalls,
-		Steps:        steps,
-		TotalUsage:   totalUsage,
-		FinishReason: lastFinish,
-		Messages:     messages,
-	}, nil
+// finalDrainInbox is the end-of-turn twin of drainOperatorInbox: called
+// when the model produced a final (no-tool) answer, it checks the inbox
+// one last time. When messages are waiting it appends the model's final
+// text as an assistant turn (so the history stays coherent) followed by
+// the operator message, and reports ok=true so the caller loops for one
+// more turn instead of finishing — the claw analog of claude_code's
+// Stop hook with BlockStop.
+func finalDrainInbox(ctx context.Context, messages []api.Message, finalText string, opts GenerationOptions) ([]api.Message, bool) {
+	operatorMsg, ok := consumeAndDrainInbox(ctx, opts)
+	if !ok {
+		return messages, false
+	}
+	if finalText != "" {
+		messages = append(messages, api.Message{
+			Role:    "assistant",
+			Content: []api.ContentBlock{{Type: "text", Text: finalText}},
+		})
+	}
+	return append(messages, operatorMsg), true
+}
+
+// drainOperatorInbox drains operator-queued chatbox messages AFTER
+// compaction so they always land in the preserved-recent window.
+func drainOperatorInbox(ctx context.Context, messages []api.Message, opts GenerationOptions) []api.Message {
+	if operatorMsg, ok := consumeAndDrainInbox(ctx, opts); ok {
+		messages = append(messages, operatorMsg)
+	}
+	return messages
+}
+
+// consumeAndDrainInbox is the shared drain core: Consume runs FIRST so
+// the studio inbox transitions delivered → consumed in lockstep with the
+// next request, then any newly-queued texts are wrapped into one
+// synthetic operator turn.
+func consumeAndDrainInbox(ctx context.Context, opts GenerationOptions) (api.Message, bool) {
+	if opts.Inbox == nil {
+		return api.Message{}, false
+	}
+	opts.Inbox.Consume(ctx)
+	drained := opts.Inbox.Drain(ctx)
+	if len(drained) == 0 {
+		return api.Message{}, false
+	}
+	return buildOperatorMessage(drained), true
 }
 
 // buildOperatorMessage wraps any operator-queued chat messages into a

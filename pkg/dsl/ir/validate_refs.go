@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"net/netip"
 	"path"
+	"slices"
 	"strings"
 
 	"github.com/SocialGouv/iterion/pkg/dsl/expr"
@@ -422,6 +423,17 @@ func (c *compiler) validateOutputsRef(w *Workflow, rc refContext, predecessors m
 
 	// Skip runtime-injected fields (e.g. _session_id) not declared in schemas.
 	if isRuntimeInjectedField(fieldName) {
+		return
+	}
+
+	// Nodes with a FIXED implicit output shape (no declared schema):
+	// exactly those fields are valid, anything else is a hard error.
+	if implicit := NodeImplicitOutputFields(targetNode); implicit != nil {
+		if !slices.Contains(implicit, fieldName) {
+			c.errorf(DiagRefFieldNotInSchema,
+				"%s: reference %s accesses field %q on %s node %q — its only output field(s): %s",
+				rc.Location, rc.Ref.Raw, fieldName, targetNode.NodeKind(), targetNodeID, strings.Join(implicit, ", "))
+		}
 		return
 	}
 

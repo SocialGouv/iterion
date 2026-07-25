@@ -161,8 +161,10 @@ func TestRunMessage_ValidateNilReceiver(t *testing.T) {
 func TestSchemaVersionConstant(t *testing.T) {
 	// Pinning the constant is a deliberate guard: bumping it should be a
 	// conscious commit, not an accident. v=4 (2026-07-11) added Budget
-	// so launch-time budget overrides reach the cloud runner.
-	if SchemaVersion != 4 {
-		t.Errorf("SchemaVersion = %d, want 4 (bump intentionally)", SchemaVersion)
+	// so launch-time budget overrides reach the cloud runner. v=5
+	// (2026-07-20) added Contributions so enabled-plugin skills and DSL
+	// `skills:` library references reach the runner pod's empty iterion home.
+	if SchemaVersion != 5 {
+		t.Errorf("SchemaVersion = %d, want 5 (bump intentionally)", SchemaVersion)
 	}
 }

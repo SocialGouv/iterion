@@ -37,6 +37,7 @@ type WireWorkflow struct {
 type WireNode struct {
 	ID              string            `json:"id"`
 	Kind            string            `json:"kind"`
+	Description     string            `json:"description,omitempty"`
 	Model           string            `json:"model,omitempty"`
 	Backend         string            `json:"backend,omitempty"`
 	ReasoningEffort string            `json:"reasoning_effort,omitempty"`
@@ -166,9 +167,9 @@ func buildWireWorkflowFromRun(r *store.Run, cache *wireWorkflowCache) (*WireWork
 	)
 	switch {
 	case r.FilePath != "":
-		filePath := runSourcePath(r.FilePath, r.WorkDir)
-		cacheKey = filePath
-		wf, hash, err = CompileWorkflowWithHash(filePath)
+		path := resolveWorkflowPath(r)
+		cacheKey = path
+		wf, hash, err = CompileWorkflowWithHash(path)
 	case r.BundlePath != "":
 		bundlePath := runSourcePath(r.BundlePath, r.WorkDir)
 		cacheKey = bundlePath
@@ -252,6 +253,11 @@ const IRWorkflowEndpointPath = "/api/runs/{id}/workflow"
 // wf.Schemas; pass nil when only LLM nodes are projected.
 func projectNode(id string, n ir.Node, wf *ir.Workflow) WireNode {
 	out := WireNode{ID: id, Kind: n.NodeKind().String()}
+	// Every ir node embeds BaseNode, which promotes NodeDescription; the
+	// assertion keeps the ir.Node interface itself unchanged.
+	if d, ok := n.(interface{ NodeDescription() string }); ok {
+		out.Description = d.NodeDescription()
+	}
 	switch v := n.(type) {
 	case *ir.AgentNode:
 		out.Model = v.Model

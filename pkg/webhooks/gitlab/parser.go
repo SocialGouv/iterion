@@ -101,6 +101,14 @@ func (p Parsed) IsReviewable() bool {
 	}
 }
 
+// IsSynchronize reports whether this MR event is a push to the source branch
+// (action "update" carrying an OldRev — the code changed, not just metadata).
+// IsReviewable excludes it; the merge gate opts back in via ReviewOnSync so the
+// revi/review status re-evaluates on the new head.
+func (p Parsed) IsSynchronize() bool {
+	return !p.Draft && p.Action == "update" && p.OldRev != ""
+}
+
 // SubjectID is the stable per-MR identifier used in delivery records.
 func (p Parsed) SubjectID() string {
 	return "mr:" + strconv.FormatInt(p.MRIID, 10)

@@ -9,6 +9,7 @@ package delegate
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"strings"
 	"time"
 
@@ -34,6 +35,25 @@ const interactionSystemInstruction = "\n\n[INTERACTION PROTOCOL]\n" +
 	"  \"_interaction_questions\": {\"question_key\": \"your question text\"}\n" +
 	"Include as many question keys as needed. If you do NOT need human input, " +
 	"do not include these fields and complete your task normally."
+
+// asyncInteractionSystemInstruction is appended (after the base
+// interaction protocol) for interaction: async nodes (ADR-081): the agent
+// may post non-blocking questions and keep working; answers arrive in its
+// message queue; await_answers is the explicit sync point.
+const asyncInteractionSystemInstruction = "\n\n[ASYNC QUESTIONS]\n" +
+	"You can ask the human operator questions WITHOUT stopping your work:\n" +
+	"- ask_user_async(question, options?, allow_free_text?) posts a question and " +
+	"returns immediately. Keep working on everything that does not depend on the " +
+	"answer. The operator's answer will arrive later in your conversation as an " +
+	"operator message tagged with the question id — incorporate it when it shows up.\n" +
+	"- Post questions as EARLY as possible (front-load them), so the operator has " +
+	"time to answer while you work.\n" +
+	"- await_answers() is the sync point: call it ONLY when you truly cannot " +
+	"proceed without the pending answers. If everything is already answered it " +
+	"returns the answers immediately; otherwise the run pauses until the operator " +
+	"replies.\n" +
+	"- For a question that must block right now (a destructive or irreversible " +
+	"decision), use the blocking ask_user tool instead."
 
 // ultracodeOrchestrationInstruction is the standing-consent prompt appended
 // when Task.Ultracode is set. It mirrors Anthropic's documented
@@ -195,10 +215,16 @@ func SystemPromptModeForBackend(backend string) SystemPromptMode {
 	switch backend {
 	case BackendClaudeCode:
 		return SystemPromptAppendToNative
+	case BackendGrok:
+		// Grok Build CLI: node's system: is delivered via --rules (append to
+		// the CLI's native agentic baseline). Override would strip that
+		// baseline — same trap as claude_code --system-prompt.
+		return SystemPromptAppendToNative
 	case BackendClaw:
 		return SystemPromptAuthoredBase
 	default:
-		// codex and any future/legacy backend: author text is the whole prompt.
+		// codex, kimi, and any future/legacy backend: author text is the
+		// whole prompt (kimi folds it into -p; codex replaces).
 		return SystemPromptStandalone
 	}
 }
@@ -388,6 +414,22 @@ type Task struct {
 	// generates it, registers grants, and revokes on run completion.
 	BoardRunToken string
 
+	// AskUserHTTPEndpoint is the URL of the per-run ask-user MCP HTTP
+	// endpoint the engine binds next to the sandbox (ADR-082 Phase 3).
+	// Sandboxed claude_code registers an HTTP MCP server pointing here
+	// instead of the stdio `iterion __mcp-ask-user` subcommand (whose
+	// host binary path is invisible in-container); the PreToolUse hooks
+	// — and therefore the interaction-store paths — are identical on
+	// both transports. Empty on a sandboxed task = ask-user MCP
+	// disabled for the node (loud warning; the [INTERACTION PROTOCOL]
+	// JSON fallback still allows a blocking escalation).
+	AskUserHTTPEndpoint string
+
+	// AskUserRunToken is the ephemeral per-run token authorizing calls
+	// to AskUserHTTPEndpoint (sent as the X-Iterion-Run header). Minted
+	// by the engine at sandbox start; dies with the per-run listener.
+	AskUserRunToken string
+
 	// ToolDefs provides full tool definitions for backends that manage tool
 	// loops internally (e.g. claw). CLI-based backends ignore this field.
 	ToolDefs []ToolDef
@@ -432,6 +474,17 @@ type Task struct {
 
 	// WorkDir is the working directory for the CLI subprocess.
 	WorkDir string
+
+	// ExtraEnv is a list of KEY=value process-environment additions for
+	// every subprocess this task spawns on the HOST — delegate CLI
+	// spawns (claude_code, kimi/grok) and the claw bash builtin. The
+	// executor populates it from run-level provisioning (the devbox
+	// profile bin dirs prepended to PATH on runs without a sandbox).
+	// Entries are appended after the inherited environment, so on a
+	// duplicate key the ExtraEnv value wins (os/exec keeps the last
+	// occurrence). Sandboxed tasks never carry entries here: the
+	// container's env is settled at container creation.
+	ExtraEnv []string
 
 	// BaseDir is the allowed base directory for WorkDir validation.
 	// If set, WorkDir must resolve to a path within BaseDir.
@@ -642,7 +695,60 @@ type Task struct {
 	// executor populates it from its bound InboxBinder; nil means the
 	// run opted out of the inbox (CLI manual runs, …).
 	InboxDrain func() []string
+
+	// Async-interaction closures (ADR-081), bound by the executor for
+	// nodes with `interaction: async`. All three are nil otherwise —
+	// backends must treat a nil closure as "async ask not available for
+	// this node" and surface an explicit tool error, never a silent no-op.
+
+	// PostAsyncQuestion persists a pending Kind=async Interaction for
+	// this node and emits human_input_requested{async:true}. Returns the
+	// interaction ID the answer will reference.
+	PostAsyncQuestion func(q AsyncQuestion) (interactionID string, err error)
+
+	// PendingAsyncQuestions lists this node's still-unanswered async
+	// questions (oldest first).
+	PendingAsyncQuestions func() ([]PendingAsync, error)
+
+	// CollectAsyncAnswers formats every answered async question of this
+	// node into a single human-readable block (the await_answers tool
+	// result when nothing is pending).
+	CollectAsyncAnswers func() (string, error)
 }
+
+// AsyncQuestion is the input of a non-blocking ask_user_async call
+// (ADR-081). Same wire shape as the blocking ask_user question.
+type AsyncQuestion struct {
+	Question      string
+	Options       []AskUserOption
+	AllowFreeText bool
+}
+
+// PendingAsync identifies one still-unanswered async question.
+type PendingAsync struct {
+	InteractionID string
+	Question      string
+}
+
+// AwaitPauseQuestion renders the operator-facing question of an
+// await_answers pause: the agent is blocked on these still-pending
+// async questions. One formatter for both backends so the pause card
+// text never drifts.
+func AwaitPauseQuestion(pending []PendingAsync) string {
+	var b strings.Builder
+	b.WriteString("The agent is waiting for your answer(s) to continue:")
+	for _, p := range pending {
+		fmt.Fprintf(&b, "\n- [%s] %s", p.InteractionID, p.Question)
+	}
+	return b.String()
+}
+
+// AsyncQuestionPostedText is the ask_user_async success result on every
+// transport (claw exec, __mcp-ask-user server): identical prompting on
+// both backends is an ADR-081 goal, so the text lives here once.
+const AsyncQuestionPostedText = "Question posted. The operator's answer will arrive in your conversation " +
+	"as an operator message tagged with the question id — keep working on everything that does not " +
+	"depend on it. Call await_answers only when you cannot proceed without the pending answers."
 
 // TaskHooks are optional callbacks a backend can fire during execution
 // to stream observability events back to the engine. Each callback runs
@@ -748,6 +854,10 @@ func (t Task) BuildSystemPrompt() string {
 	b.WriteString(base)
 	if t.InteractionEnabled {
 		b.WriteString(interactionSystemInstruction)
+		// PostAsyncQuestion bound ⇒ the node is interaction: async.
+		if t.PostAsyncQuestion != nil {
+			b.WriteString(asyncInteractionSystemInstruction)
+		}
 	}
 	if t.Ultracode {
 		b.WriteString(ultracodeOrchestrationInstruction)
@@ -854,6 +964,51 @@ type ErrAskUser struct {
 	// surfaces as an approval card and the runtime can compute the grant
 	// on resume. See pkg/backend/permission.Marker.
 	PermissionMarker map[string]any
+
+	// AwaitPending is set (non-empty) when this suspension is an
+	// await_answers escalation (ADR-081): the agent asked to sync while
+	// async questions were still unanswered. It carries the pending
+	// question refs so the pause interaction can list them and the
+	// resume path can fan the operator's answers back out.
+	AwaitPending []PendingAsync
+}
+
+// AwaitPendingToQuestions serializes an AwaitPending slice into the
+// JSON-friendly shape stored under AwaitPendingInteractionsKey in
+// Interaction.Questions ([]any of map{"interaction_id","question"}).
+func AwaitPendingToQuestions(pending []PendingAsync) []any {
+	out := make([]any, 0, len(pending))
+	for _, p := range pending {
+		out = append(out, map[string]any{
+			"interaction_id": p.InteractionID,
+			"question":       p.Question,
+		})
+	}
+	return out
+}
+
+// ParseAwaitPending decodes the AwaitPendingInteractionsKey value back
+// into PendingAsync refs. Tolerant of the JSON round-trip shapes
+// (checkpoint persistence turns everything into []any / map[string]any).
+func ParseAwaitPending(v any) []PendingAsync {
+	list, ok := v.([]any)
+	if !ok {
+		return nil
+	}
+	out := make([]PendingAsync, 0, len(list))
+	for _, item := range list {
+		m, ok := item.(map[string]any)
+		if !ok {
+			continue
+		}
+		id, _ := m["interaction_id"].(string)
+		q, _ := m["question"].(string)
+		if id == "" {
+			continue
+		}
+		out = append(out, PendingAsync{InteractionID: id, Question: q})
+	}
+	return out
 }
 
 // AskUserOption is one selectable answer of a structured ask_user call.
@@ -878,7 +1033,23 @@ func (e *ErrAskUser) Error() string {
 type ErrRateLimited struct {
 	Provider string // "claude_code", "claw", "codex", etc.
 	Detail   string // raw upstream message for diagnostics
+	// Kind refines the condition: RateLimitKindUsageWindow marks a
+	// subscription/quota WINDOW exhaustion (the Anthropic forfait 5h /
+	// weekly cap — waiting is the only cure), RateLimitKindTransient a
+	// plain throttle worth retrying soon. Empty = unclassified
+	// (legacy), treated as transient.
+	Kind string
+	// ResetAt is the best-effort parsed reset instant from the upstream
+	// text ("resets 3pm", "reset at 2026-07-17 19:00"). Zero when not
+	// parseable — callers must not depend on it.
+	ResetAt time.Time
 }
+
+// ErrRateLimited.Kind values.
+const (
+	RateLimitKindUsageWindow = "usage_window"
+	RateLimitKindTransient   = "transient"
+)
 
 func (e *ErrRateLimited) Error() string {
 	if e.Provider != "" {
@@ -1005,6 +1176,23 @@ const (
 	// session-continuity wiring and by the engine's fork rehydration path
 	// so a forked claude_code node picks up the parent's CLI session.
 	SessionIDKey = "_session_id"
+)
+
+// AwaitPendingInteractionsKey is the reserved Interaction.Questions key
+// marking an await_answers-tool escalation (ADR-081): the agent called
+// await_answers while async questions were still pending, so the run
+// paused on a synthetic Kind=await interaction. Value shape: []any of
+// map{"interaction_id","question"} — the pending async questions at
+// pause time. The resume path fans the operator's answers out onto the
+// referenced async interaction records before re-invoking the backend.
+const AwaitPendingInteractionsKey = "_await_pending_interactions"
+
+// Canonical tool names of the async-interaction pair (ADR-081). The
+// claude_code side prefixes them with the MCP server namespace
+// (mcp__iterion__…); claw registers them under these bare names.
+const (
+	AskUserAsyncToolName = "ask_user_async"
+	AwaitAnswersToolName = "await_answers"
 )
 
 // QueuedOperatorMessagesKey is the reserved Interaction.Questions key

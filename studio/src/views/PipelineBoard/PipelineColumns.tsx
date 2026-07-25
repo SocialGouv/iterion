@@ -32,7 +32,6 @@ import { useConfirm } from "@/hooks/useConfirm";
 import { errorMessage } from "@/lib/errorHints";
 import { formatRelative } from "@/lib/format";
 import { useBotsStore } from "@/store/bots";
-import { useTabsStore } from "@/store/tabs";
 import { useUIStore } from "@/store/ui";
 
 import { cardRoutePath } from "./cardRoute";
@@ -96,6 +95,11 @@ interface Props {
     allKinds: string[];
     allFamilies: string[];
   };
+  /** Repo-first scoping (cloud): forwarded to the filter bar's
+   *  "Include unscoped" affordance. */
+  repoScope?: string | null;
+  includeUnscoped?: boolean;
+  onIncludeUnscopedChange?: (v: boolean) => void;
 }
 
 // isInteractiveClick: card body always opens the drawer. Only the footer
@@ -191,6 +195,9 @@ export function PipelineColumns({
   onFiltersChange,
   onFiltersReset,
   filterOptions,
+  repoScope,
+  includeUnscoped,
+  onIncludeUnscopedChange,
 }: Props) {
   const { cards } = board;
   const [actionError, setActionError] = useState<string | null>(null);
@@ -476,6 +483,9 @@ export function PipelineColumns({
               onReset={onFiltersReset}
               showInventoryChrome
               tabCounts={tabCounts}
+              repoScope={repoScope}
+              includeUnscoped={includeUnscoped}
+              onIncludeUnscopedChange={onIncludeUnscopedChange}
             />
           )}
 
@@ -713,14 +723,7 @@ export function PipelineCard({
         setLocation(cardRoutePath(card));
         break;
       case "edit_bot":
-        if (botFile) {
-          // Bind the destination before changing routes. Relying on
-          // EditorTabsView's post-navigation effect leaves the previously
-          // active (often untitled) editor mounted long enough to consume
-          // the global ?file= deep-link.
-          useTabsStore.getState().openTab("editor", { file: botFile });
-          setLocation(`/editor?file=${encodeURIComponent(botFile)}`);
-        }
+        if (botFile) setLocation(`/editor?file=${encodeURIComponent(botFile)}`);
         break;
       default:
         break;

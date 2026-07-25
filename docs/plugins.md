@@ -8,8 +8,8 @@ out-of-process** packages. A plugin never injects Go code (iterion ships static
 
 Plugins are installable-by-default, uninstallable, replaceable, and composable —
 `rtk` (the command-output compressor) ships as a plugin enabled by default; the
-knowledge-graph explorers `graphify` and `repo-falcon` and the web toolkit
-`firecrawl` (Firecrawl search/scrape/crawl MCP — see
+knowledge-graph explorers `graphify`, `repo-falcon` and `codeindex` and the web
+toolkit `firecrawl` (Firecrawl search/scrape/crawl MCP — see
 [web-search.md](web-search.md)) ship disabled.
 
 ## Contribution kinds (v1)
@@ -49,7 +49,7 @@ A single plugin may contribute several kinds (repo-falcon ships `mcp_servers` +
 ## Where plugins live
 
 - **Builtins** are embedded in the binary under `pkg/plugin/builtin/<name>/`
-  (`rtk`, `graphify`, `repo-falcon`, `firecrawl`).
+  (`rtk`, `graphify`, `repo-falcon`, `codeindex`, `firecrawl`).
 - **Installed** plugins live under `~/.iterion/plugins/<name>/` (a directory
   with a `plugin.yaml`). `iterion plugin install <path|git-url>` puts them there.
 - **Enable/disable state** is persisted in `~/.iterion/plugins.yaml`; the
@@ -77,6 +77,63 @@ env:
 ITERION_PLUGINS_ENABLE=firecrawl
 ITERION_PLUGIN_FIRECRAWL_API_URL=http://iterion-firecrawl:3002
 ```
+
+### Markdown contributions reach cloud runs (ADR-079)
+
+Env-based enablement above is what a runner pod needs for **process-local**
+kinds (`rewriters`, `mcp_servers`, `lifecycle`): those run *in* the pod, so the
+pod's own registry must know about them.
+
+The **markdown** kinds (`skills`, `commands`, `agents`) work differently, and
+used not to work on cloud at all. A runner pod's iterion home is ephemeral and
+empty, so an *installed* plugin — one living in the studio/server instance's
+`~/.iterion/plugins/`, which no env var can conjure onto a pod — mirrored
+nothing there, silently (mirroring is best-effort so no error surfaced).
+
+Since **ADR-079** the launching instance resolves the enabled plugins' markdown
+files and ships them on the queue message (`RunMessage.Contributions`, schema
+v5); the runner mirrors that payload with the same collision policy and
+precedence. So an org-private plugin installed + enabled on a cloud studio now
+reaches its runs. Two consequences worth knowing:
+
+- **`hooks` are not carried yet** — they merge into `.claude/settings.json`
+  rather than mirroring markdown, so they still need the pod's own registry
+  (env-based enablement).
+- Enablement of *installed* plugins stays **global per instance**. For a
+  **team-scoped, private** plugin see the next section.
+
+### Org-private plugins from a git repo (ADR-080)
+
+Installing a plugin into a cloud pod's iterion home is **not durable** — the pod
+is ephemeral, so the plugin silently disappears on the next restart and runs
+proceed without it. And a single `plugins.yaml` per instance cannot give one
+team a private plugin.
+
+A **plugin source** fixes both: a team-scoped record naming the git repository
+that holds the plugin, persisted in Mongo (the durable cloud substrate). The
+checkout is only a re-derivable cache, so a restart rebuilds it.
+
+```sh
+# team admin/owner
+POST /api/teams/{id}/plugin-sources
+{ "name": "deploy-k8s-acme", "git_url": "https://github.com/acme/iterion-deploy.git",
+  "ref": "v1.0.0", "secret_id": "<generic secret: PAT or deploy key>", "enabled": true }
+```
+
+The repo may carry a full `plugin.yaml` or be a bare `skills/` library (a
+skills-only manifest is synthesized, as with `iterion plugin install`). The
+credential is consumed **by reference** — passed to git through an askpass
+helper, never argv, never the URL, and redacted from output.
+
+**Pin `ref` to a tag or sha.** A pinned ref makes the checkout immutable: every
+launch after the first costs no network, *and* updating the plugin becomes an
+explicit, auditable bump instead of a skill that changes under a running bot. A
+moving branch is allowed but warns, and `pinned_ref` is exposed on the API so
+the UI can flag it.
+
+Unlike an installed plugin (best-effort, skipped on error), a source the
+operator **enabled** that fails to fetch **fails the launch** — a run missing
+its platform skill would otherwise succeed while doing the wrong thing.
 
 ## Manifest reference (`plugin.yaml`)
 
@@ -197,7 +254,7 @@ Diagnostic `C102` flags an invalid `compress:` value.
 
 ## Knowledge-graph explorers
 
-Two are shipped as disabled builtins; enable either to give agents code-graph
+Three are shipped as disabled builtins; enable any to give agents code-graph
 context:
 
 - **repo-falcon** — a deterministic Go MCP server. Enabling it injects the
@@ -208,11 +265,32 @@ context:
 - **graphify** — a CLI + skill that builds a queryable graph (`graphify-out/`)
   spanning code and docs; the skill guides agents to `graphify query` / read the
   report. Its `lifecycle` builds/updates the graph.
+- **codeindex** — a deterministic, zero-dependency repo-indexing engine
+  distributed on npm (`@maxgfr/codeindex`, version-pinned `npx` like
+  `firecrawl`). It is the **broadest** contributor shipped: `mcp_servers`
+  (26 tools — link-graph, symbols, callers, references, BM25/semantic search,
+  hotspots, change coupling, complexity, dead code, architecture rules, agent
+  memories and symbolic edits), `lifecycle` (incremental `.codeindex/`
+  artifacts), `skills`, `commands` (`/codeindex-map`, `/codeindex-impact`,
+  `/codeindex-risk`), `agents` (`codebase-cartographer`) **and** a `rewriter`.
+  Its MCP server is pinned to the workspace (`mcp --repo {{workspace}}`), so
+  agents never pass an absolute path. Its rewriter maps a tree-wide `grep -r` /
+  `rg` onto the indexed equivalent — it locates a real `codeindex` binary
+  (Homebrew, `npm -g`, or the runner image's pre-installed global) and degrades
+  to passthrough when none is present, so it never pays `npx` startup on a
+  per-command hook. Priming the index first turns MCP activation into a load
+  rather than a rebuild, which is what `auto_index: true` does before a run.
 
 ```sh
 iterion plugin enable repo-falcon
 iterion plugin run repo-falcon index   # build the snapshot for this workspace
 # now any bot run exposes falcon_* tools to its agents
+
+iterion plugin enable codeindex
+iterion plugin run codeindex index     # writes <workspace>/.codeindex/
+iterion plugin config codeindex --set max_files=50000   # large monorepo
+# optional: RRF-fused semantic search instead of lexical-only
+iterion plugin config codeindex --set embed_endpoint=http://iterion-codeindex-embed:8756
 ```
 
 ## CLI
@@ -235,11 +313,12 @@ legacy entries) so bots and plugins share one hosted registry. `iterion
 marketplace list` can filter by kind; installing a plugin entry resolves its
 repo coordinates and runs the same `plugin install` path.
 
-## Roadmap — full Claude plugin taxonomy & parity
+## Contribution parity status
 
-The `contributes:` design is deliberately open so iterion can grow to configure
-**every Claude Code plugin type** from the UI and the marketplace. Planned kinds
-map onto Claude Code's plugin model:
+The `contributes:` design covers the Claude Code plugin taxonomy from the UI,
+CLI, and marketplace. Backend parity is complete for skills and MCP servers;
+the remaining work is claw-side discovery/execution for commands, named agents,
+and hooks:
 
 | Claude plugin type | iterion kind | parity note |
 |--------------------|--------------|-------------|
@@ -255,8 +334,9 @@ source) so a plugin behaves identically on either backend, rather than papered
 over with a claude_code-only adapter. Adaptation bridges are acceptable as an
 interim only when native parity is impractical.
 
-The `commands`/`agents`/`hooks` kinds are tracked as a follow-on; the manifest
-schema and registry already accommodate new kinds without a breaking change.
+The `commands`, `agents`, and `hooks` manifest kinds are shipped today. Their
+claude_code wiring is live; only the claw parity work called out in the table is
+follow-on.
 
 ## Public skill libraries (shipped)
 

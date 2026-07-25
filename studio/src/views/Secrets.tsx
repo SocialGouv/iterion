@@ -1,5 +1,6 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useState } from "react";
 import { LockClosedIcon } from "@radix-ui/react-icons";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 
 import {
   type LocalSecretView,
@@ -11,6 +12,7 @@ import {
 } from "@/api/secrets";
 import { errorMessage } from "@/lib/errorHints";
 import { useAsyncAction } from "@/hooks/useAsyncAction";
+import { useConfirm } from "@/hooks/useConfirm";
 import { Badge } from "@/components/ui/Badge";
 import { Button } from "@/components/ui/Button";
 import { Dialog } from "@/components/ui/Dialog";
@@ -20,42 +22,61 @@ import { Input } from "@/components/ui/Input";
 import { PageHeader } from "@/components/ui/PageHeader";
 import { Select } from "@/components/ui/Select";
 import { Table, THead, Th, TBody, Tr, Td, TableSkeleton } from "@/components/ui/Table";
-import ConfirmDialog from "@/components/shared/ConfirmDialog";
 
 // Secrets manages the local (non-cloud) sealed secret store: machine-global
 // ~/.iterion/secrets.json plus an optional per-project override. Values are
 // AES-GCM sealed at rest, injected into runs at tool/shell exec time, and
 // never enter the agent's context. Backed by /api/local/secrets
 // (server_info.secrets_enabled).
+// Stable empty fallback for the errored state, so renders don't hand the
+// table a fresh [] reference each time.
+const EMPTY_SECRETS: LocalSecretView[] = [];
+
 export default function Secrets() {
-  const [secrets, setSecrets] = useState<LocalSecretView[] | null>(null);
-  const [error, setError] = useState<string | null>(null);
+  const queryClient = useQueryClient();
   const [creating, setCreating] = useState(false);
   const [rotating, setRotating] = useState<LocalSecretView | null>(null);
-  const [deleting, setDeleting] = useState<LocalSecretView | null>(null);
+  const { confirm, dialog } = useConfirm();
 
-  const reload = useCallback(async () => {
-    setError(null);
+  const secretsQuery = useQuery<LocalSecretView[]>({
+    queryKey: ["local-secrets"],
+    queryFn: listLocalSecrets,
+  });
+  // On a fetch error the list reads as empty (banner over the empty
+  // state, not a stale table or an endless skeleton).
+  const secrets = secretsQuery.isError
+    ? EMPTY_SECRETS
+    : (secretsQuery.data ?? null);
+  // Delete failures share the fetch error's banner; any reload clears
+  // them (the fetch side clears itself on refetch).
+  const [actionError, setActionError] = useState<string | null>(null);
+  const error =
+    actionError ??
+    (secretsQuery.error && !secretsQuery.isFetching
+      ? errorMessage(secretsQuery.error)
+      : null);
+
+  // Post-mutation reload (delete / create / rotate): invalidate so the
+  // list refetches.
+  const reload = useCallback(() => {
+    setActionError(null);
+    void queryClient.invalidateQueries({ queryKey: ["local-secrets"] });
+  }, [queryClient]);
+
+  const doDelete = async (rec: LocalSecretView) => {
+    const ok = await confirm({
+      title: `Delete ${rec.name}?`,
+      message:
+        "Bots that reference this secret by name will fail to resolve it until you add it again.",
+      confirmLabel: "Delete",
+      confirmVariant: "danger",
+    });
+    if (!ok) return;
     try {
-      setSecrets(await listLocalSecrets());
+      await deleteLocalSecret(rec.id);
+      reload();
     } catch (e) {
-      setError(errorMessage(e));
-      setSecrets([]);
-    }
-  }, []);
-
-  useEffect(() => {
-    void reload();
-  }, [reload]);
-
-  const doDelete = async () => {
-    if (!deleting) return;
-    try {
-      await deleteLocalSecret(deleting.id);
-      setDeleting(null);
-      void reload();
-    } catch (e) {
-      setError(errorMessage(e));
+      setActionError(errorMessage(e));
     }
   };
 
@@ -75,7 +96,14 @@ export default function Secrets() {
         }
         actions={
           <div className="flex items-center gap-2">
-            <Button variant="secondary" size="sm" onClick={() => void reload()}>
+            <Button
+              variant="secondary"
+              size="sm"
+              onClick={() => {
+                setActionError(null);
+                void secretsQuery.refetch();
+              }}
+            >
               Refresh
             </Button>
             <Button variant="primary" size="sm" onClick={() => setCreating(true)}>
@@ -103,7 +131,7 @@ export default function Secrets() {
           <SecretsTable
             secrets={secrets}
             onRotate={setRotating}
-            onDelete={setDeleting}
+            onDelete={(rec) => void doDelete(rec)}
           />
         )}
       </div>
@@ -113,7 +141,7 @@ export default function Secrets() {
           onClose={() => setCreating(false)}
           onDone={() => {
             setCreating(false);
-            void reload();
+            reload();
           }}
         />
       )}
@@ -124,20 +152,12 @@ export default function Secrets() {
           onClose={() => setRotating(null)}
           onDone={() => {
             setRotating(null);
-            void reload();
+            reload();
           }}
         />
       )}
 
-      <ConfirmDialog
-        open={deleting !== null}
-        title={`Delete ${deleting?.name ?? ""}?`}
-        message="Bots that reference this secret by name will fail to resolve it until you add it again."
-        confirmLabel="Delete"
-        confirmVariant="danger"
-        onConfirm={() => void doDelete()}
-        onCancel={() => setDeleting(null)}
-      />
+      {dialog}
     </div>
   );
 }

@@ -238,3 +238,67 @@ func TestAppClient_CreateHookUsesInstallationToken(t *testing.T) {
 		t.Errorf("expected 1 token mint (cached), got %d", mints)
 	}
 }
+
+// AppClient.rest requests the OPTIONAL statuses:write (the merge-gate commit
+// status) on top of the core baseline, and — when the installation did not
+// grant it (422 permissions-not-granted) — falls back to the core set so every
+// other capability keeps working (the gate then advises, non-fatal). This is
+// the multi-tenant safety guarantee: a third-party install without statuses is
+// never broken by the gate feature.
+func TestAppClientRest_StatusesFallback(t *testing.T) {
+	pemStr, _ := testKeyPEM(t)
+	var reqPerms []map[string]any
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body map[string]any
+		_ = json.NewDecoder(r.Body).Decode(&body)
+		perms, _ := body["permissions"].(map[string]any)
+		reqPerms = append(reqPerms, perms)
+		if _, wantsStatuses := perms["statuses"]; wantsStatuses {
+			w.WriteHeader(http.StatusUnprocessableEntity)
+			_ = json.NewEncoder(w).Encode(map[string]any{"message": "The permissions requested are not granted to this installation."})
+			return
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{"token": "ghs_core", "expires_at": "2099-01-01T00:00:00Z"})
+	}))
+	defer srv.Close()
+	a := &AppClient{HTTP: srv.Client(), WebBaseURL: srv.URL, Cfg: AppConfig{AppID: 42, PrivateKeyPEM: pemStr}, InstallationID: 99, Now: func() time.Time { return time.Unix(1700000000, 0) }}
+	rc, err := a.rest(context.Background())
+	if err != nil {
+		t.Fatalf("rest fell over instead of falling back: %v", err)
+	}
+	if rc == nil || rc.Token != "ghs_core" {
+		t.Fatalf("expected the core-set token after fallback, got %+v", rc)
+	}
+	if len(reqPerms) != 2 {
+		t.Fatalf("expected 2 mint attempts (statuses, then core), got %d", len(reqPerms))
+	}
+	if _, ok := reqPerms[0]["statuses"]; !ok {
+		t.Errorf("first attempt must request statuses:write, got %v", reqPerms[0])
+	}
+	if _, ok := reqPerms[1]["statuses"]; ok {
+		t.Errorf("fallback attempt must DROP statuses, got %v", reqPerms[1])
+	}
+	if reqPerms[1]["pull_requests"] != "write" {
+		t.Errorf("fallback must keep the core baseline, got %v", reqPerms[1])
+	}
+}
+
+// When the installation DOES grant statuses:write, the first mint succeeds and
+// the token carries it — the gate can post for real (no fallback, one request).
+func TestAppClientRest_StatusesGranted(t *testing.T) {
+	pemStr, _ := testKeyPEM(t)
+	var attempts int
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		attempts++
+		_ = json.NewEncoder(w).Encode(map[string]any{"token": "ghs_full", "expires_at": "2099-01-01T00:00:00Z"})
+	}))
+	defer srv.Close()
+	a := &AppClient{HTTP: srv.Client(), WebBaseURL: srv.URL, Cfg: AppConfig{AppID: 42, PrivateKeyPEM: pemStr}, InstallationID: 99, Now: func() time.Time { return time.Unix(1700000000, 0) }}
+	rc, err := a.rest(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rc.Token != "ghs_full" || attempts != 1 {
+		t.Fatalf("granted statuses → one successful mint, got token=%q attempts=%d", rc.Token, attempts)
+	}
+}

@@ -1,7 +1,7 @@
 import { errorMessage } from "@/lib/errorHints";
-import { useCallback, useEffect, useState } from "react";
+import { useQuery } from "@tanstack/react-query";
 
-import { getRunWorkflow, type WireSchemaField } from "@/api/runs";
+import { getRunWorkflow, type WireSchemaField, type WireWorkflow } from "@/api/runs";
 
 interface State {
   fields: WireSchemaField[] | null;
@@ -11,8 +11,9 @@ interface State {
 }
 
 export interface HumanNodeSchema extends State {
-  // reload re-fetches the run workflow (used by the "Retry" affordance
-  // when the first fetch failed — see HumanPromptForm). Stable identity.
+  // reload re-fetches the run workflow — the "Retry" affordance when the
+  // first fetch failed (see HumanPromptForm). Backed by react-query's
+  // refetch, so it re-runs the query and repopulates the shared cache.
   reload: () => void;
 }
 
@@ -32,44 +33,44 @@ export function useHumanNodeSchema(
   runId: string | null,
   nodeId: string | undefined,
 ): HumanNodeSchema {
-  const [state, setState] = useState<State>(initial);
-  // Bumped by reload() to force the fetch effect to run again.
-  const [nonce, setNonce] = useState(0);
+  const enabled = !!runId && !!nodeId;
+  const query = useQuery<WireWorkflow>({
+    // Shares the run console's workflow cache (useNodeLabel,
+    // useRunChatMessages, RunView). The IR is immutable per run, so a
+    // nodeId change re-derives fields from the cached workflow instead
+    // of refetching.
+    queryKey: ["run-workflow", runId],
+    queryFn: () => getRunWorkflow(runId!),
+    enabled,
+    staleTime: Infinity,
+  });
 
-  useEffect(() => {
-    if (!runId || !nodeId) {
-      setState(initial);
-      return;
-    }
-    let cancelled = false;
-    setState({ fields: null, loading: true, staleHash: false, error: null });
-    (async () => {
-      try {
-        const wf = await getRunWorkflow(runId);
-        if (cancelled) return;
-        const node = wf.nodes.find((n) => n.id === nodeId);
-        setState({
-          fields: node?.output_schema ?? null,
-          loading: false,
-          staleHash: !!wf.stale_hash,
-          error: null,
-        });
-      } catch (e) {
-        if (cancelled) return;
-        setState({
-          fields: null,
-          loading: false,
-          staleHash: false,
-          error: errorMessage(e),
-        });
-      }
-    })();
-    return () => {
-      cancelled = true;
+  const reload = () => {
+    void query.refetch();
+  };
+
+  if (!enabled) return { ...initial, reload };
+  // isPending (not isLoading): whenever we have neither data nor a
+  // settled error, report loading — never the "no schema" fallback.
+  if (query.isPending && !query.error) {
+    return { fields: null, loading: true, staleHash: false, error: null, reload };
+  }
+  if (query.error) {
+    return {
+      fields: null,
+      loading: false,
+      staleHash: false,
+      error: errorMessage(query.error),
+      reload,
     };
-  }, [runId, nodeId, nonce]);
-
-  const reload = useCallback(() => setNonce((n) => n + 1), []);
-
-  return { ...state, reload };
+  }
+  const wf = query.data;
+  const node = wf?.nodes.find((n) => n.id === nodeId);
+  return {
+    fields: node?.output_schema ?? null,
+    loading: false,
+    staleHash: !!wf?.stale_hash,
+    error: null,
+    reload,
+  };
 }

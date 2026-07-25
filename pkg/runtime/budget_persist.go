@@ -26,6 +26,7 @@ func snapshotBudgetForPersist(b *ir.Budget) *store.RunBudget {
 	return &store.RunBudget{
 		MaxCostUSD:          b.MaxCostUSD,
 		MaxTokens:           b.MaxTokens,
+		WarnTokens:          b.WarnTokens,
 		MaxIterations:       b.MaxIterations,
 		MaxDuration:         ir.ExpandEnvWithDefault(b.MaxDuration),
 		MaxParallelBranches: b.MaxParallelBranches,

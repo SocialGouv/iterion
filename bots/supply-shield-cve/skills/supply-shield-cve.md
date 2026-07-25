@@ -43,7 +43,7 @@ dedups through the shared cache.
    the worst applicable advisory severity.
 9. **sarif_gen** (tool) — SARIF 2.1.0 from the verdicts.
 10. **forge_report** (claude_code) — sticky comment + inline review +
-    code-scanning SARIF on the PR/MR (native API — `[[forge-report]]`).
+    code-scanning SARIF on the PR (native API — `[[forge-report]]`).
     Degrades to local-only with no PR/token.
 11. **update_cache** (tool) — append one `kind: cve` line per package.
 

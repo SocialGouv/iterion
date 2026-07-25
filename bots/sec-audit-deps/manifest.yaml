@@ -1,13 +1,18 @@
 name: sec-audit-deps
 display_name: Depsy
 icon: 📦
-version: 0.1.0
+version: 0.1.1
+## 0.1.1 — ADR-082 Phase 2 (sandbox-by-default): sandbox block reduced to
+## the sec-image pin (scanner toolchain); claude install gate, ~/.claude
+## mount and CLAUDE_CONFIG_DIR removed — platform defaults cover them.
 description: |
   Universal supply-chain malware auditor. Enumerates installed
   dependencies per ecosystem (npm/yarn/pnpm, pip/poetry/uv,
   go.mod/vendor, …), looks each `(ecosystem, name, version,
-  checksum)` triple up against a host-wide cache at
-  `~/.iterion/security-cache/packages.jsonl` to skip packages that
+  checksum)` triple up against a package cache (per-run scratch by
+  default; point `cache_path` at
+  `~/.iterion/security-cache/packages.jsonl` for host-wide reuse)
+  to skip packages that
   were already analysed at an acceptable scanner version, runs
   language-specific static heuristics on the rest (install-time
   hooks, eval, obfuscation, fetch+exec, base64 blobs, init()
@@ -43,3 +48,10 @@ invocations:
     mode: board
     schedule: { suggested_cron: "0 3 * * 1" }
   - kind: board
+
+## Studio launch-form hierarchy: `primary` inputs render top-level in
+## the declared order; `hidden` vars are internal plumbing kept out of
+## the form (still settable via --var / bot_args).
+launch:
+  primary: [severity_threshold]
+  hidden: [scanner_version]

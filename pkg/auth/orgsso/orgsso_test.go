@@ -103,6 +103,17 @@ func TestMemoryStore_GitHub_OnePerTenant(t *testing.T) {
 	}
 }
 
+// TestGitHubGrant_ConfigEditorNotCapped proves the config_editor capability is
+// assignable via SSO (ADR-078): unlike an admin grant (capped to member),
+// config_editor is Valid and below-admin, so RoleForGroups passes it through
+// unchanged — a "veille editors" GitHub team can grant it directly.
+func TestGitHubGrant_ConfigEditorNotCapped(t *testing.T) {
+	row := githubRow("g", "t", GitHubTeamGrant{GitHubOrg: "acme", TeamSlug: "veille-editors", Role: identity.RoleConfigEditor})
+	if r, ok := row.RoleForGroups([]string{"acme/veille-editors"}); !ok || r != identity.RoleConfigEditor {
+		t.Errorf("config_editor grant → %q,%v want config_editor (not capped like admin)", r, ok)
+	}
+}
+
 func TestMemoryStore_ListByTenantKind(t *testing.T) {
 	ctx := context.Background()
 	st := NewMemoryStore()

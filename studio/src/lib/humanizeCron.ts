@@ -14,6 +14,14 @@ const DAY_NAMES = [
 // day-of-month forms returns null and the caller shows the raw expression
 // alone — a missing hint beats a wrong translation.
 export function humanizeCron(expr: string): string | null {
+  // Cron lines may carry a `CRON_TZ=<zone> ` prefix (the crontab timezone
+  // vocabulary the scheduler accepts) — humanize the schedule part and
+  // append the zone.
+  const tzMatch = /^\s*CRON_TZ=(\S+)\s+(.*)$/.exec(expr);
+  if (tzMatch) {
+    const base = humanizeCron(tzMatch[2] ?? "");
+    return base ? `${base} (${tzMatch[1]})` : null;
+  }
   const fields = expr.trim().split(/\s+/);
   if (fields.length !== 5) return null;
   // Length checked above — safe to narrow the destructuring.

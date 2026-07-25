@@ -20,7 +20,7 @@ export interface BotIdentity {
   color: string;
 }
 
-export const BOT_IDENTITY: Record<string, BotIdentity> = {
+const BOT_IDENTITY: Record<string, BotIdentity> = {
   "whats-next": { emoji: "🧭", color: "text-persona-sky" },
   "feature-dev": { emoji: "🛠️", color: "text-persona-emerald" },
   "branch-improve-loop": { emoji: "🌿", color: "text-persona-violet" },

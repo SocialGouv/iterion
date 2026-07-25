@@ -20,7 +20,8 @@
 ##   reviewer_* -> emit    (await: wait_all)   board + markdown report
 ##   emit -> pr_gate       (deterministic: was a pr_url given?)
 ##     ├─ no  -> done
-##     └─ yes -> publish_review  (skill-guided forge PR review) ->
+##     └─ yes -> publish_review  (DETERMINISTIC forge publish via the
+##               iterion server endpoint — no LLM, no workspace token) ->
 ##               publish_health  (deterministic anti-façade gate) -> done
 ##
 ## Cross-family value: an issue flagged by BOTH families is far more
@@ -48,16 +49,23 @@
 ## and prioritise the highest-impact hunks. Port plan_chunks here when
 ## reviewing 1k+ LoC PRs becomes common.
 ##
-## FORGE PR REVIEW (v0.2.0 — implemented, the primary intended use):
-## When `--var pr_url=<PR/MR url>` is given, Revi ALSO publishes its
+## FORGE PR REVIEW (v0.3.0 — deterministic, tokenless-in-workspace):
+## When `--var pr_url=<PR url>` is given, Revi ALSO publishes its
 ## merged findings directly onto that PR as a proper forge review —
-## inline comments anchored to file:line, including ```suggestion
-## code-change blocks (when a finding carries a concrete `replacement`)
-## the author can apply in one click — on top of the native kanban
-## board + markdown report it always writes. Forge-agnostic: the
-## `publish_review` step reads the `forge-pr-review.md` skill and
-## dispatches by URL host (GitHub `gh`, GitLab `glab`, Forgejo/Gitea
-## API) — no forge names are baked into this DSL (universal-bots
+## inline comments anchored to file:line, including one-click
+## suggestion blocks (when a finding carries a concrete `replacement`)
+## — on top of the native kanban board + markdown report it always
+## writes. Publishing is a DETERMINISTIC tool node: it POSTs the
+## findings to the iterion server's /api/v1/forge/publish-review
+## endpoint (authenticated by a per-run token the server injects as
+## `forge_publish_url` / `forge_publish_token` launch vars), and the
+## SERVER posts the review through the team forge connection's LIVE
+## client — a GitHub App connection mints a fresh installation token
+## per call, so the ~1h token-freeze failure mode of a workspace-
+## mounted forge_token is structurally gone, and no LLM agent ever
+## holds a forge credential to post. Forge-agnostic: the endpoint
+## dispatches by the connection's provider (GitHub / GitLab /
+## Forgejo-Gitea) — no forge names in this DSL (universal-bots
 ## doctrine). A deterministic `publish_health` gate flags a no-op /
 ## failed publish (findings existed but 0 comments landed) so a façade
 ## is never silent. `post_to_board` remains the local sink; both run.
@@ -72,15 +80,15 @@
 ## ─────────────────────────────────────────────────────────────────
 
 secrets:
-  ## Forge API token used to post the review on a PR/MR when the run is
-  ## unattended — e.g. an org webhook launch where no forge CLI is
-  ## pre-authenticated on the host. Mounted read-only as a FILE the
-  ## publish step hands to `gh`/`glab` (path/env only, never read into a
-  ## prompt). `optional: true` so manual/local runs that rely on host
-  ## auth (or don't post at all) are unaffected when it isn't provided.
-  ## An org binds its forge credential to this name via a bot-secret
-  ## binding and can scope egress with the binding's allowed_hosts;
-  ## forge-agnostic, so the same name serves GitHub / GitLab / Forgejo.
+  ## Forge API token for OTHER forge uses (e.g. cloning a private repo on
+  ## a cloud runner). NOT used by the publish path any more: since
+  ## v0.3.0 the review is posted by the DETERMINISTIC publish_review
+  ## node through the iterion server's forge-publish endpoint, which
+  ## uses the team connection's live client — a workspace-mounted token
+  ## freezes at launch (a GitHub App installation token lives ~1h) and
+  ## must never be the posting credential. Mounted read-only as a FILE
+  ## (path/env only, never read into a prompt); `optional: true` so
+  ## runs without a binding are unaffected.
   forge_token:
     as: file
     optional: true
@@ -103,7 +111,7 @@ vars:
 
   ## Drop findings below this severity (order: low < medium < high <
   ## critical). Default "low" surfaces everything.
-  severity_threshold: string = "low"
+  severity_threshold: string [enum: "low", "medium", "high", "critical"] = "low"
 
   ## Cap the number of board issues / report rows (highest severity
   ## first). A capped run says so prominently in the report so it is
@@ -121,17 +129,19 @@ vars:
   ## repo's tree.
   report_path: string = ".review-pr/findings.md"
 
-  ## FORGE PR REVIEW (v0.2.0). When set to a pull/merge-request URL,
+  ## FORGE PR REVIEW (v0.3.0). When set to a pull-request (merge-request on GitLab) URL,
   ## Revi ALSO publishes its merged findings onto that PR as a real
   ## forge review: one inline comment per finding anchored to file:line,
-  ## emitting a one-click ```suggestion block when the finding carries a
+  ## with a one-click suggestion block when the finding carries a
   ## concrete `replacement`, else a plain inline comment. Empty (default)
   ## = today's board + markdown-report behaviour only.
   ##
-  ## Forge-agnostic: the publish step reads the `forge-pr-review.md`
-  ## skill and dispatches by the URL host — GitHub (`gh`), GitLab
-  ## (`glab`), or Forgejo/Gitea (API). The relevant CLI must be
-  ## authenticated on the host (e.g. `gh auth login`).
+  ## Publishing is deterministic + server-mediated: the publish_review
+  ## tool node POSTs the findings to the iterion server's
+  ## /api/v1/forge/publish-review endpoint, which posts through the
+  ## team forge connection's live client (GitHub / GitLab /
+  ## Forgejo-Gitea). It needs `forge_publish_url` + `forge_publish_token`
+  ## below — injected automatically by the server at launch.
   ##
   ## v1 diff model: review the LOCAL checkout (base_ref..HEAD, as
   ## always) and publish to this PR. So check out the PR's branch
@@ -142,10 +152,41 @@ vars:
 
   ## Review posting mode when pr_url is set: "inline" (default — one
   ## comment per finding anchored to file:line) or "summary" (a single
-  ## rolled-up note). Unattended webhook launches default to "summary"
-  ## for a lower failure surface (no diff-position mapping); flip to
-  ## inline once validated for the target forge.
-  pr_review_mode: string = "inline"
+  ## rolled-up review body carrying all findings). The endpoint
+  ## auto-falls back to a summary-only review when the forge rejects
+  ## the inline anchors, so "inline" is safe unattended.
+  pr_review_mode: string [enum: "inline", "summary"] = "inline"
+
+  ## MERGE GATE (v0.5.0). When pr_url is set, the deterministic publish
+  ## step ALSO posts a commit status named "revi/review" on the PR head
+  ## SHA: `success` when 0 findings meet `gate_severity`, else `failure`.
+  ## Add that context to the repo's required checks (branch protection /
+  ## merge queue) to make Revi's verdict BLOCK the merge; leave it out and
+  ## the status is a harmless advisory check. The verdict is DETERMINISTIC
+  ## — a count of findings at/above the threshold, computed here, never an
+  ## LLM judgment. Non-blocking `questions` never count. A push re-reviews
+  ## (opt-in ReviewOnSync webhook) so the status tracks the fixed head.
+  ## Set false to skip the status entirely (advisory-only reviews).
+  gate_enabled: bool = true
+
+  ## Severity floor that BLOCKS the merge (order: low < medium < high <
+  ## critical). Default "high": high + critical findings block; low +
+  ## medium advise only. A finding you "would block a PR on" is exactly
+  ## the reviewer's own bar (see review_system), so high is the sane floor.
+  gate_severity: string [enum: "low", "medium", "high", "critical"] = "high"
+
+  ## Deterministic forge publish grant — INJECTED BY THE ITERION SERVER
+  ## at launch when the run's team has a forge connection covering
+  ## pr_url's repo (studio/API launches and inbound webhooks both
+  ## inject). forge_publish_url is the server's
+  ## /api/v1/forge/publish-review endpoint; forge_publish_token is an
+  ## ephemeral per-run token scoped to posting reviews on that one repo
+  ## (24h TTL). When left empty (e.g. a bare CLI run with no server),
+  ## publish_review skips with an explicit reason and publish_health
+  ## banners it — never a silent no-op, and never a fallback to
+  ## workspace credentials.
+  forge_publish_url: string = ""
+  forge_publish_token: string = ""
 
 ## ─── Prompts ────────────────────────────────────────────────────
 
@@ -199,7 +240,26 @@ prompt review_system:
     - Rate each finding's `confidence` honestly. A guess is `low`.
     - Finding nothing is a valid, common outcome — return an empty
       `findings` array and say so in `summary`. Do NOT invent issues
-      to look thorough.
+      to look thorough. A clean review is NOT "trust me, nothing":
+      make it auditable through `questions` (next section).
+
+  OPEN QUESTIONS (falsifiability — kept STRICTLY SEPARATE from findings):
+    `findings` are issues you would BLOCK a merge on. The most valuable
+    thing a sharp human reviewer does on a clean diff is ASK — surface
+    the load-bearing assumptions the change now RELIES ON but that you
+    could not fully verify yourself:
+      - a contract MOVED to another component ("EditorView no longer
+        opens the file — does EditorTabHost guarantee it still does?"),
+      - an invariant the diff now depends on but does not itself prove,
+      - a cross-file / cross-service assumption you read AROUND but could
+        not confirm end-to-end.
+    Record each in `questions`, phrased as a concrete question a
+    maintainer can answer. They are NON-BLOCKING: never inflate one into
+    a finding, never file it to the board, never let it gate a merge —
+    their only job is to make a 0-finding review falsifiable, showing
+    WHAT you checked and WHERE the residual risk hides. Empty is correct
+    when the change is genuinely self-contained and you verified it
+    end-to-end — but reach for it before concluding a silent "nothing".
 
   OUTPUT — emit `review_output`:
     - `family`: YOUR model family — "claude" or "gpt" (the user
@@ -241,6 +301,9 @@ prompt review_system:
       complete replacement text; when empty, your one-line `suggestion`
       sketch is posted as a plain comment instead.
     - `scanned_areas`: the (axis, file) surfaces you actually audited.
+    - `questions`: non-blocking open questions / load-bearing assumptions
+      per OPEN QUESTIONS above — a string array (empty when none). These
+      are NOT findings and never reach the board or a merge gate.
     - `summary`: one paragraph — overall risk read + anything notable
       that did not rise to a finding.
 
@@ -286,6 +349,10 @@ prompt emit_system:
       operator's highest-trust signal.
     - Keep family-unique findings too (one reviewer often sees what the
       other misses), at their own confidence.
+    - Union the two `questions` arrays the same way: dedupe near-identical
+      questions, keep each family's distinct ones. Questions are NEVER
+      promoted to findings and NEVER filed to the board — they are the
+      falsifiability channel that makes a 0-finding review auditable.
 
   STEP 2 — THRESHOLD & CAP:
     - Drop findings whose severity is below `{{vars.severity_threshold}}`
@@ -341,6 +408,10 @@ prompt emit_system:
       ## Findings      (table: severity, category, file:line, title,
                         reviewers, board issue id)
       ## Agreement     (one line: N of M findings cross-confirmed)
+      ## Open questions (the merged non-blocking questions as a bulleted
+                        list — what the reviewers verified/assumed and the
+                        contracts a maintainer should confirm; "none" when
+                        empty. NEVER a findings table — these do not block.)
 
   RETURN `emit_output`:
     - `report_path`: absolute path of the markdown file you wrote.
@@ -349,13 +420,34 @@ prompt emit_system:
       post_to_board is false).
     - `failed_issues`: any board creates the runtime rejected.
     - `findings`: the FINAL merged/threshold/capped finding set as a
-      JSON array, in the SAME per-object shape the reviewers emitted —
-      preserve `file`, `line`, `line_end`, `severity`, `category`,
-      `title`, `detail`, `suggestion`, `replacement`, `confidence`, and
-      add `"reviewers": "claude" | "gpt" | "both"`. A downstream step may
-      publish these onto a forge PR, so keep `line`/`line_end` and any
-      `replacement` exactly as given. This is the same set you reported —
-      do not re-summarise or drop fields.
+      MACHINE-PARSED **JSON ARRAY OF OBJECTS** — NEVER a prose sentence,
+      NEVER a summary STRING like "4 findings kept (1 high, 2 medium)".
+      A deterministic downstream step runs `JSON.parse` on this exact
+      value to count blocking findings and post inline PR comments: a
+      string (or anything that is not a `[...]` array) fails the parse,
+      which FAIL-CLOSES the merge gate AND drops every finding from the
+      review. Emit the array itself, `[]` when there are none. Same
+      per-object shape the reviewers emitted — preserve `file`, `line`,
+      `line_end`, `severity`, `category`, `title`, `detail`, `suggestion`,
+      `replacement`, `confidence`, and add
+      `"reviewers": "claude" | "gpt" | "both"`. Keep `line`/`line_end` and
+      any `replacement` exactly as given; do not re-summarise or drop
+      fields. Example (the WHOLE value, verbatim shape):
+        [
+          {"file":"pkg/x/y.go","line":42,"line_end":42,"severity":"high",
+           "category":"correctness","title":"nil deref on empty input",
+           "detail":"…","suggestion":"guard len==0","replacement":"",
+           "confidence":"high","reviewers":"both"}
+        ]
+      (Contrast: `questions` below is a newline-joined STRING; `findings`
+      is an ARRAY. Do not swap their shapes.)
+    - `questions`: the merged, de-duplicated non-blocking questions as a
+      SINGLE STRING with ONE QUESTION PER LINE (newline-separated), NOT a
+      JSON array — empty string "" when none. (A downstream shell step
+      interpolates this value; a scalar string is shell-safe, an array is
+      not.) Carried forward so the PR summary can show what the reviewers
+      verified/assumed even on a 0-finding review. NOT findings — they never
+      gate or reach the board.
 
 prompt emit_user:
   Workspace:          {{vars.workspace_dir}}
@@ -369,88 +461,17 @@ prompt emit_user:
   Findings (JSON):
   {{outputs.reviewer_claude.findings}}
   Areas audited: {{outputs.reviewer_claude.scanned_areas}}
+  Open questions: {{outputs.reviewer_claude.questions}}
 
   ── GPT-family review ──
   Summary: {{outputs.reviewer_gpt.summary}}
   Findings (JSON):
   {{outputs.reviewer_gpt.findings}}
   Areas audited: {{outputs.reviewer_gpt.scanned_areas}}
+  Open questions: {{outputs.reviewer_gpt.questions}}
 
   Merge, dedupe, threshold, cap, publish, and report per your
   instructions.
-
-prompt publish_review_system:
-  You publish a completed code review onto a pull / merge request as a
-  proper forge review: ONE review carrying an inline comment per
-  finding, anchored to the exact `file:line` in the PR's diff. You are
-  READ-ONLY on the source code — you post comments, you never edit,
-  fix, or commit anything in the workspace.
-
-  LOAD THE `forge-pr-review.md` SKILL FIRST. It is the catalogue: how
-  to detect the forge from the PR URL, the exact CLI / API call for
-  GitHub, GitLab and Forgejo/Gitea, how to anchor an inline comment to
-  a diff line, and the per-forge ```suggestion syntax. Follow it; do
-  not improvise an API you have not confirmed there.
-
-  PROCEDURE:
-   1. Detect the forge from the PR URL host and confirm the matching
-      CLI is authenticated (the skill says how). If the forge is
-      unrecognised or the CLI is not authenticated, publish NOTHING:
-      return published=false with a precise `skipped_reason`. Never
-      pretend to have posted.
-   2. For each finding, build an inline comment anchored to its
-      `file` + `line`..`line_end`:
-        - If `replacement` is non-empty, emit a ```suggestion block
-          (per the skill's syntax for this forge) so the author can
-          apply the fix in one click. Put the `title` + `detail`
-          above the block.
-        - Otherwise post a plain inline comment: `title`, then
-          `detail`, then the one-line `suggestion` sketch.
-        - Prefix each comment with the severity + category + whether it
-          was cross-confirmed (`reviewers == "both"`).
-      A finding whose line is NOT in the PR diff cannot take an inline
-      comment — collect those and include them in the review's summary
-      body instead (do not silently drop them).
-   3. Post them as a SINGLE review (event = comment, not approve /
-      request-changes — Revi advises, it does not gate the merge) with
-      a summary body: total findings, severity counts, cross-confirmed
-      count, and any findings that could not be anchored inline.
-   4. VERIFY: re-fetch the review you just created (the skill gives the
-      read call) and COUNT the inline comments the forge actually
-      stored. Report that re-fetched count as `comments_posted` — never
-      an optimistic self-estimate. Capture the review URL.
-
-  ANTI-FAÇADE: `comments_posted` and `review_url` must come from the
-  re-fetch in step 4, and your `summary` must cite the verification
-  call you ran. A claim of success with no re-fetch evidence is a
-  façade and will be flagged by the downstream health gate.
-
-  STACK / FORGE-AGNOSTIC: the repo and the forge may be anything. Read
-  the skill and adapt; never assume a particular forge or language.
-
-prompt publish_review_user:
-  Publish this review onto the pull/merge request.
-
-  PR URL:        {{input.pr_url}}
-  Workspace:     {{input.workspace_dir}}
-  Base ref:      {{input.base_ref}}
-  Findings kept: {{input.total_findings}}
-
-  Findings to publish (JSON array — file, line, line_end, severity,
-  category, title, detail, suggestion, replacement, confidence,
-  reviewers):
-  {{input.findings}}
-
-  Follow your system prompt and the `forge-pr-review.md` skill. Post one
-  review with inline comments (```suggestion blocks where `replacement`
-  is set), then re-fetch to verify.
-
-  Your FINAL action MUST be to emit the `publish_output` structured object
-  with ALL fields set: published, forge, review_url, comments_posted,
-  suggestions_posted, skipped_reason, summary. Emit it even if some posts
-  failed — report the partial counts and put the reason in `summary`. Do NOT
-  finish with a prose message; the run fails when the structured output is
-  missing.
 
 ## ─── Schemas ────────────────────────────────────────────────────
 
@@ -464,6 +485,10 @@ schema review_output:
   ## in review_system. emit reads it as JSON.
   findings: json
   scanned_areas: string[]
+  ## Non-blocking reviewer questions / load-bearing assumptions to
+  ## confirm — the falsifiability channel, kept strictly out of findings
+  ## (never filed to the board, never gates a merge).
+  questions: string[]
   summary: string
 
 schema emit_output:
@@ -476,12 +501,20 @@ schema emit_output:
   ## per-object shape the reviewers emit (file/line/line_end/severity/
   ## category/title/detail/suggestion/replacement/confidence/reviewers).
   findings: json
+  ## Merged non-blocking questions, ONE PER LINE in a single string (NOT a
+  ## JSON array): an all-string array decodes to []string, which the tool-node
+  ## command substitution space-joins instead of JSON-encoding, breaking the
+  ## downstream publish shell (a question landing in command position → exit
+  ## 127). A scalar string is shell-escaped as one safe token. The
+  ## falsifiability channel surfaced in the report + PR summary body, never on
+  ## the board and never gating.
+  questions: string
 
 schema diff_precheck_output:
   is_empty: bool
   changed_files: int
 
-## ─── Forge PR review (v0.2.0) schemas ───────────────────────────
+## ─── Forge PR review (v0.3.0) schemas ───────────────────────────
 
 ## pr_gate: deterministic branch on whether a PR target was given, so
 ## the (LLM) publish step is reached ONLY when pr_url is non-empty.
@@ -489,26 +522,30 @@ schema diff_precheck_output:
 schema pr_gate_input:
   pr_url: string
   findings: json
+  ## questions is a scalar string (one question per line), NOT a json array —
+  ## see emit_output.questions for why (shell-safety of the publish command).
+  questions: string
   total_findings: int
 
 schema pr_gate_output:
   has_pr: bool
   pr_url: string
   findings: json
+  questions: string
   total_findings: int
 
 schema publish_input:
   pr_url: string
   findings: json
+  questions: string
   total_findings: int
-  workspace_dir: string
-  base_ref: string
 
 schema publish_output:
   ## published: a forge review was successfully created.
   published: bool
-  ## forge: "github" | "gitlab" | "forgejo" | "unknown" (detected from
-  ## the pr_url host). Free-form string, not a closed DSL enum.
+  ## forge: "github" | "gitlab" | "forgejo" | "unknown" — the team
+  ## connection's provider, echoed by the iterion forge-publish
+  ## endpoint. Free-form string, not a closed DSL enum.
   forge: string
   ## review_url: link to the posted review/comment thread (evidence).
   review_url: string
@@ -581,7 +618,12 @@ judge reviewer_gpt:
   ## Explicit backend pin: "openai/gpt-5.5" only resolves via claw.
   ## Without it the auto-resolver routes through claude_code, which
   ## doesn't recognise openai/* models and the schema validator fails.
-  backend: "claw"
+  ## Both env-overridable so an instance without a usable OpenAI quota
+  ## can run the second reviewer on the Claude forfait instead
+  ## (ITERION_VIBE_BACKEND_GPT=claude_code +
+  ## ITERION_VIBE_MODEL_GPT=claude-sonnet-4-6 — cross-model diversity
+  ## when cross-vendor isn't available).
+  backend: "${ITERION_VIBE_BACKEND_GPT:-claw}"
   model: "${ITERION_VIBE_MODEL_GPT:-openai/gpt-5.5}"
   reasoning_effort: "${ITERION_VIBE_EFFORT_GPT:-high}"
   output: review_output
@@ -610,11 +652,11 @@ agent converge:
   ## ordinary claude_code tools.
   capabilities: [board.read, board.create, board.label]
 
-## ─── Forge PR review (v0.2.0) nodes ─────────────────────────────
+## ─── Forge PR review (v0.3.0) nodes ─────────────────────────────
 
 ## Deterministic branch (no LLM): reach the forge publish step ONLY
-## when a pr_url was given. Passes emit's findings + counts through so
-## publish_review reads them as input.* (stable across the edge).
+## when a pr_url was given. Passes the merged findings + counts through
+## so publish_review reads them as input.* (stable across the edge).
 compute pr_gate:
   input: pr_gate_input
   output: pr_gate_output
@@ -622,28 +664,160 @@ compute pr_gate:
     has_pr: "input.pr_url != ''"
     pr_url: "input.pr_url"
     findings: "input.findings"
+    questions: "input.questions"
     total_findings: "input.total_findings"
 
-## Skill-guided, forge-agnostic publish. claude_code so it has Bash +
-## the host forge CLIs (gh / glab) and full read tools; it posts PR
-## comments via the CLI/API, never edits workspace source. The per-forge
-## knowledge lives in skills/forge-pr-review.md — no forge names in this
-## DSL. Self-verifies by re-fetching the posted review (anti-façade).
-agent publish_review:
-  backend: "claude_code"
-  model: "${ITERION_VIBE_MODEL_CLAUDE:-claude-opus-4-8}"
-  reasoning_effort: "${ITERION_VIBE_EFFORT_EMIT:-medium}"
+## DETERMINISTIC forge publish (no LLM, no workspace credential): map the
+## merged findings onto the iterion server's forge-publish payload and
+## POST it to {{vars.forge_publish_url}} with the per-run token. The
+## SERVER anchors the inline comments and renders the per-forge one-click
+## suggestion syntax through the team connection's LIVE forge client, so
+## a frozen workspace token can never 401 this step (prod run 019f8861's
+## failure mode). Any failure is reported honestly in skipped_reason —
+## published is true ONLY on a 2xx from the endpoint, whose counts are
+## forge-re-fetched (anti-façade), never self-estimated.
+tool publish_review:
+  command: `PUB_URL={{vars.forge_publish_url}} PUB_TOKEN={{vars.forge_publish_token}} MODE={{vars.pr_review_mode}} PR_URL={{input.pr_url}} FINDINGS={{input.findings}} QUESTIONS={{input.questions}} GATE_ENABLED={{vars.gate_enabled}} GATE_SEVERITY={{vars.gate_severity}} python3 -c "
+import os, json, urllib.request, urllib.error
+
+def emit(published, forge='unknown', review_url='', posted=0, sugg=0, skipped='', summary=''):
+    print(json.dumps({'published': published, 'forge': forge, 'review_url': review_url,
+                      'comments_posted': posted, 'suggestions_posted': sugg,
+                      'skipped_reason': skipped, 'summary': summary}))
+    raise SystemExit(0)
+
+url = os.environ.get('PUB_URL', '').strip()
+tok = os.environ.get('PUB_TOKEN', '').strip()
+pr = os.environ.get('PR_URL', '').strip()
+mode = os.environ.get('MODE', '').strip() or 'inline'
+findings_parse_failed = False
+try:
+    findings = json.loads(os.environ.get('FINDINGS') or '[]')
+except ValueError:
+    findings = []
+    findings_parse_failed = True
+if not isinstance(findings, list):
+    findings = []
+    findings_parse_failed = True
+# QUESTIONS arrives as a newline-separated string (NOT JSON): a json array of
+# strings would be space-joined by the tool-command substitution and break this
+# shell (a question in command position -> exit 127). One question per line.
+questions = [q.strip() for q in (os.environ.get('QUESTIONS') or '').split(chr(10)) if q.strip()]
+if not url or not tok:
+    emit(False, skipped='no forge publish endpoint bound to this run: launch through an iterion server with a team forge connection covering the PR repo, so it injects forge_publish_url/forge_publish_token', summary='publish skipped: run holds no server-side forge publish grant (and never uses workspace tokens to post).')
+
+nl = chr(10)
+sev_rank = {'critical': 0, 'high': 1, 'medium': 2, 'low': 3}
+counts = {}
+comments = []
+for f in findings:
+    if not isinstance(f, dict):
+        continue
+    sev = str(f.get('severity') or 'low').lower()
+    counts[sev] = counts.get(sev, 0) + 1
+    cross = str(f.get('reviewers') or '') == 'both'
+    header = '[' + sev + ' / ' + str(f.get('category') or '') + (' / cross-confirmed by both reviewers' if cross else '') + '] ' + str(f.get('title') or '')
+    body = header + nl + nl + str(f.get('detail') or '')
+    sketch = str(f.get('suggestion') or '').strip()
+    if sketch:
+        body = body + nl + nl + 'Suggested fix: ' + sketch
+    try:
+        line = int(f.get('line') or 0)
+    except (TypeError, ValueError):
+        line = 0
+    try:
+        line_end = int(f.get('line_end') or 0)
+    except (TypeError, ValueError):
+        line_end = 0
+    repl = str(f.get('replacement') or '')
+    comments.append({'path': str(f.get('file') or ''), 'line': line, 'line_end': line_end,
+                     'body': body, 'suggestion': repl if repl.strip() else ''})
+
+summary = ['## Code review by Revi (iterion)', '', str(len(findings)) + ' finding(s) kept after threshold/cap.']
+for sev in sorted(counts, key=lambda s: sev_rank.get(s, 9)):
+    summary.append('- ' + sev + ': ' + str(counts[sev]))
+cross_n = len([f for f in findings if isinstance(f, dict) and str(f.get('reviewers') or '') == 'both'])
+summary.append('')
+summary.append(str(cross_n) + ' finding(s) cross-confirmed by both model families.' if findings else 'No blocking findings.')
+if questions:
+    summary.append('')
+    summary.append('### Open questions (non-blocking — reviewer assumptions to confirm)')
+    for q in questions:
+        summary.append('- ' + q)
+elif not findings:
+    summary.append('')
+    summary.append('Reviewers verified the change end-to-end and raised no open questions.')
+
+payload = {'pr_url': pr, 'summary': nl.join(summary), 'mode': mode, 'comments': comments}
+
+# Deterministic merge-gate verdict: count findings at/above the blocking
+# severity floor. The server maps 0 blocking -> success, >0 -> failure on the
+# revi/review commit status. Questions never count.
+gate_enabled = str(os.environ.get('GATE_ENABLED', '')).strip().lower() in ('1', 'true', 'yes', 'on')
+if gate_enabled:
+    gate_sev = str(os.environ.get('GATE_SEVERITY', 'high')).strip().lower() or 'high'
+    # sev_rank is INVERTED (critical=0 .. low=3), so a SMALLER rank is MORE
+    # severe. floor is the rank of the blocking threshold; rank <= floor
+    # therefore means at least as severe as the threshold (e.g. floor=high=1
+    # blocks critical=0 and high=1, not medium=2/low=3). Unknown rank=0
+    # (most severe) always blocks -- fail closed.
+    floor = sev_rank.get(gate_sev, 1)
+    # A gate fails CLOSED: an unparseable finding set can't be evaluated, so it
+    # blocks rather than reporting a green status by omission.
+    if findings_parse_failed:
+        blocking = 1
+    else:
+        blocking = 0
+        for f in findings:
+            if not isinstance(f, dict):
+                continue
+            # An off-enum severity (a trailing-space high, a synonym like
+            # blocker or major, anything the model wrote outside the four
+            # values) is UNKNOWN, and an unknown severity must block, never
+            # silently downgrade to low. NOTE: keep this python -c body free of
+            # the double-quote character -- the whole body is wrapped by the
+            # shell in a double-quoted argument, so a stray one ends the string
+            # and truncates the script (a silent empty output, no publish).
+            # Same trap as backticks: use plain words in comments here.
+            rank = sev_rank.get(str(f.get('severity') or '').strip().lower())
+            if rank is None:
+                rank = 0
+            if rank <= floor:
+                blocking += 1
+    payload['gate'] = {'enabled': True, 'context': 'revi/review',
+                       'blocking_count': blocking, 'threshold': gate_sev,
+                       'total_findings': len(findings)}
+req = urllib.request.Request(url, data=json.dumps(payload).encode(),
+                             headers={'Content-Type': 'application/json', 'X-Iterion-Run': tok},
+                             method='POST')
+try:
+    with urllib.request.urlopen(req, timeout=120) as resp:
+        res = json.loads(resp.read().decode())
+except urllib.error.HTTPError as e:
+    try:
+        detail = e.read().decode()[:500].strip()
+    except Exception:
+        detail = ''
+    emit(False, skipped='forge publish endpoint HTTP ' + str(e.code) + ': ' + detail, summary='deterministic publish FAILED: the iterion forge-publish endpoint refused the request (HTTP ' + str(e.code) + ').')
+except Exception as e:
+    emit(False, skipped='forge publish endpoint unreachable: ' + str(e)[:300], summary='deterministic publish FAILED: could not reach the iterion forge-publish endpoint.')
+
+posted = int(res.get('comments_posted') or 0)
+sugg = int(res.get('suggestions_posted') or 0)
+fallback = str(res.get('fallback') or '')
+verified = bool(res.get('verified'))
+s = 'posted ' + str(posted) + ' inline comment(s), ' + str(sugg) + ' with one-click suggestions, via the iterion forge-publish endpoint (server-side live-token client); counts ' + ('re-fetched from the forge.' if verified else 'as submitted (forge re-fetch unavailable).')
+if fallback:
+    s = s + ' fallback=' + fallback + ': rejected inline anchors were folded into the review summary body, not dropped.'
+if bool(res.get('gate_posted')):
+    s = s + ' merge gate: revi/review=' + str(res.get('gate_state') or '') + ' on ' + str(res.get('gate_sha') or '')[:12] + '.'
+elif str(res.get('gate_error') or ''):
+    s = s + ' merge gate NOT posted: ' + str(res.get('gate_error')) + '.'
+emit(bool(res.get('published')), forge=str(res.get('provider') or 'unknown'),
+     review_url=str(res.get('review_url') or ''), posted=posted, sugg=sugg, skipped='', summary=s)
+"`
   input: publish_input
   output: publish_output
-  system: publish_review_system
-  user: publish_review_user
-  session: fresh
-  ## No `interaction: human` here: unlike the reviewers' escalation contract,
-  ## the publish step MUST reliably END by emitting the publish_output schema.
-  ## An interactive turn let the agent finish with prose instead, so the run
-  ## ended failed_resumable on a missing-fields validation even though the
-  ## inline comments had already posted. The webhook always supplies a concrete
-  ## pr_url, so there is nothing to ask a human about.
 
 ## Deterministic anti-façade gate (no LLM): when findings existed but
 ## zero inline comments landed, emit a loud banner. The board + report
@@ -699,17 +873,18 @@ workflow review_pr:
   converge -> pr_gate with {
     pr_url: "{{vars.pr_url}}",
     findings: "{{outputs.converge.findings}}",
+    questions: "{{outputs.converge.questions}}",
     total_findings: "{{outputs.converge.total_findings}}"
   }
   ## No PR target → finish after the board + report (the default,
-  ## zero extra LLM cost). PR target → skill-guided forge publish.
+  ## zero extra LLM cost). PR target → deterministic server-mediated
+  ## forge publish (no LLM, no workspace credential).
   pr_gate -> done when not has_pr
   pr_gate -> publish_review when has_pr with {
     pr_url: "{{outputs.pr_gate.pr_url}}",
     findings: "{{outputs.pr_gate.findings}}",
-    total_findings: "{{outputs.pr_gate.total_findings}}",
-    workspace_dir: "{{vars.workspace_dir}}",
-    base_ref: "{{vars.base_ref}}"
+    questions: "{{outputs.pr_gate.questions}}",
+    total_findings: "{{outputs.pr_gate.total_findings}}"
   }
   ## Deterministic anti-façade gate on the publish result, then done.
   publish_review -> publish_health with {

@@ -19,16 +19,22 @@ import (
 	"github.com/SocialGouv/iterion/pkg/auth/wsticket"
 	"github.com/SocialGouv/iterion/pkg/backend/detect"
 	"github.com/SocialGouv/iterion/pkg/backend/mcp"
+	"github.com/SocialGouv/iterion/pkg/botsource"
+	"github.com/SocialGouv/iterion/pkg/configshare"
 	"github.com/SocialGouv/iterion/pkg/forge"
 	"github.com/SocialGouv/iterion/pkg/knowledge"
 	iterlog "github.com/SocialGouv/iterion/pkg/log"
 	"github.com/SocialGouv/iterion/pkg/marketplace"
 	"github.com/SocialGouv/iterion/pkg/orgusage"
 	"github.com/SocialGouv/iterion/pkg/pat"
+	"github.com/SocialGouv/iterion/pkg/pluginsource"
 	natsq "github.com/SocialGouv/iterion/pkg/queue/nats"
+	"github.com/SocialGouv/iterion/pkg/runtime"
 	"github.com/SocialGouv/iterion/pkg/runview"
 	"github.com/SocialGouv/iterion/pkg/secrets"
 	"github.com/SocialGouv/iterion/pkg/store"
+	"github.com/SocialGouv/iterion/pkg/usernotify"
+	"github.com/SocialGouv/iterion/pkg/usernotify/webpush"
 	"github.com/SocialGouv/iterion/pkg/valkey"
 	"github.com/SocialGouv/iterion/pkg/webhooks"
 	"github.com/SocialGouv/iterion/pkg/webhooks/gitlab"
@@ -48,26 +54,45 @@ type Server struct {
 	// currentProjectID is the id of the registry entry matching
 	// cfg.WorkDir. Surfaced by /api/server/info (polled by the SPA);
 	// caching it here avoids a disk read on every poll.
-	currentProjectID string
-	cfg              Config
-	logger           *iterlog.Logger
-	mux              *recordingMux // records routes → GET /api/openapi.json
-	handler          http.Handler  // mux wrapped with auth middleware
-	server           *http.Server
-	hub              *Hub
-	watcher          *Watcher
-	runs             *runview.Service    // run console service; nil disables /api/runs endpoints
-	watchCoord       *watchCoordinator   // MVP3b issue-state fan-out; nil when no native tracker or events tail unavailable
-	triggerCoord     *TriggerCoordinator // event-driven trigger spine; nil when no TriggerStore/native tracker
+	currentProjectID  string
+	cfg               Config
+	logger            *iterlog.Logger
+	mux               *recordingMux // records routes → GET /api/openapi.json
+	handler           http.Handler  // mux wrapped with auth middleware
+	server            *http.Server
+	hub               *Hub
+	watcher           *Watcher
+	runs              *runview.Service         // run console service; nil disables /api/runs endpoints
+	watchCoord        *watchCoordinator        // MVP3b issue-state fan-out; nil when no native tracker or events tail unavailable
+	triggerCoord      *TriggerCoordinator      // event-driven trigger spine; nil when no TriggerStore/native tracker
+	cloudTriggerCoord *CloudTriggerCoordinator // cloud (mongo board) trigger spine; nil outside cloud mode
+	// userNotify + pushSink are the user-notification stack (web push on
+	// human-input pauses and run outcomes); nil when the feature is off
+	// (no subscription store / no VAPID keys). userNotifyCancel detaches
+	// the bus subscription on Close.
+	userNotify       *usernotify.Dispatcher
+	pushSink         *webpush.Sink
+	userNotifyCancel func()
 	// statsCache memoizes the per-run events.jsonl cost scan behind
 	// /api/v1/runs/stats (terminal runs only — see runs_stats_cache.go).
 	// Cleared on project switch. Non-nil after New.
 	statsCache *runStatsCache
+	// locCache memoizes the per-run three-dot LOC diff behind the run
+	// header (see runs_loc.go). Non-nil after New.
+	locCache *runLOCCache
+
 	// admissionSkipWarned dedupes the pipeline-admission "unresolvable
 	// bot" warning per (ticket, bot) so a stranded Ready ticket logs
 	// once instead of every 2s tick. Guarded by admissionSkipMu.
 	admissionSkipMu     sync.Mutex
 	admissionSkipWarned map[string]string
+
+	// finalOutputMemo caches finished runs' resolved board output. A finished
+	// run is terminal, so its final_answer/latest-artifact output never
+	// changes — computing it once per run (instead of on every 3s poll, each
+	// up to pipelineArtifactProbeCap artifact loads per DONE card) keeps the
+	// pipeline-board poll cheap on a full 500-card board (PR #193 M1).
+	finalOutputMemo finalOutputCache
 
 	authSvc        *auth.Service
 	authLimiter    authRateLimiterBackend
@@ -97,8 +122,25 @@ type Server struct {
 	pats              pat.Store
 	queue             *natsq.Conn
 	botBindings       secrets.BotSecretBindingStore
+	// pluginSources holds team-scoped, git-hosted org-private plugins. Durable
+	// (unlike a plugin installed into this pod's ephemeral iterion home), so a
+	// restart re-derives instead of silently dropping the plugin from runs.
+	pluginSources pluginsource.Store
+	// botSources holds team-authored bot bundles (pkg/botsource) — the writable,
+	// tenant-scoped counterpart to the read-only baked catalog. Non-nil enables
+	// cloud bot editing (/api/teams/:id/bot-sources + bot_editing_enabled).
+	botSources     botsource.Store
+	configShares   configshare.Store
+	configShareSvc *configshare.Service
+	// configShareFC overrides forge-client resolution in tests (nil in prod →
+	// shareFileClient resolves the team forge_token + builds a GitHub client).
+	configShareFC     func(context.Context, *configshare.Share) (forge.FileClient, error)
 	forgeConnections  forge.ConnectionStore
 	forgeIntegrations forge.RepoIntegrationStore
+	// authorTrustG is the lazily-built TTL cache behind the issue
+	// author-trust gate (webhooks + forge→board sync); use authorTrustGate().
+	authorTrustG      *authorTrust
+	authorTrustOnce   sync.Once
 	forgeOrchestrator *forge.Orchestrator
 	forgeStates       forgeStateBackend
 	forgeOAuthApps    forge.OAuthAppStore
@@ -110,6 +152,11 @@ type Server struct {
 	// webhookLaunchBot overrides the inbound-webhook launch path (test
 	// seam). nil → realWebhookLaunchBot (resolve bot source + s.runs.Launch).
 	webhookLaunchBot func(ctx context.Context, botID string, vars map[string]string, repoURL, repoRef, projectPath string, keyOverrides, secretOverrides map[string]string) (string, error)
+	// scheduleClock overrides the wall clock the schedules CRUD stamps on
+	// CreatedAt / UpdatedAt / NextFireAt (test seam — tests need a
+	// deterministic instant to assert NextFire jumps to the expected slot).
+	// nil → time.Now().UTC().
+	scheduleClock func() time.Time
 	// webhookNoteGate overrides the conversational replier gate (forge
 	// token + loop-guard + reply-in-thread detection + allowlist/role authz
 	// — test seam, the real gate calls the GitLab API). nil →
@@ -133,7 +180,16 @@ type Server struct {
 	// PR-surface command comment (the issue_comment payload carries no head
 	// branch — test seam). nil → realWebhookPRForgePRResolver.
 	webhookPRForgePRResolver func(ctx context.Context, cfg webhooks.Config, provider webhooks.Provider, p prforge.ParsedNote, route webhooks.CommandRoute) (forge.PullRef, error)
-	httpClient               *http.Client
+	// webhookIterionBotAuthor overrides the "is this PR/MR authored by iterion's
+	// own forge bot" check that keeps the PR-open auto-review lane from launching
+	// Revi on another iterion bot's PR (test seam — the real impl resolves the
+	// provisioned forge Connection). nil → realIterionBotAuthor.
+	webhookIterionBotAuthor func(ctx context.Context, cfg webhooks.Config, login string) bool
+	// webhookPriorReview overrides the lookup of the most recent review-pr (Revi)
+	// run for a PR, whose findings seed a `/billy` invocation (test seam). nil →
+	// realWebhookPriorReview. Returns "" when no prior review is found (best-effort).
+	webhookPriorReview func(ctx context.Context, cfg webhooks.Config, prURL, projectPath string, prNumber int) string
+	httpClient         *http.Client
 
 	// forgeHTTP is the SSRF-guarded client for outbound forge calls, built
 	// once (its strict flag is startup-fixed) so connection pooling is
@@ -170,11 +226,29 @@ type Server struct {
 	browserSessions mcp.BrowserRegistry
 
 	// boardMCPTokens authorizes sandboxed bots that hit the board MCP
-	// HTTP endpoint. The runtime obtains the handle via [Server.BoardMCPTokens]
-	// and calls Register/Revoke around each run. Non-nil iff
-	// cfg.NativeTrackerStore is non-nil (handler is only mounted when
-	// the board exists).
+	// HTTP endpoint. Tokens are minted per node by the closure
+	// boardMCPServiceOption hands to the runview Service, which calls
+	// Register at mint time; a Register failure degrades that node to
+	// board-disabled (empty token). Non-nil iff cfg.NativeTrackerStore
+	// is non-nil (handler is only mounted when the board exists).
 	boardMCPTokens BoardMCPTokenStore
+
+	// forgePublishTokens authorizes runs that POST their review findings
+	// to /api/v1/forge/publish-review (the deterministic, tokenless-in-
+	// workspace forge publish seam). Tokens are minted per launch by
+	// injectForgePublishVars; grants pin (team, connection, repo). Non-nil
+	// iff forgeConnections is wired.
+	forgePublishTokens ForgePublishTokenStore
+
+	// forgeReviewClientFor is a test seam overriding how the publish-review
+	// handler resolves a connection's forge.ReviewClient. Nil → real admin
+	// client via forgeAdminFor.
+	forgeReviewClientFor func(ctx context.Context, conn forge.Connection) (forge.ReviewClient, error)
+
+	// forgeGateClientFor is a test seam overriding how the publish-review
+	// handler resolves a connection's merge-gate client (head-SHA lookup +
+	// commit-status write). Nil → real admin client via forgeAdminFor.
+	forgeGateClientFor func(ctx context.Context, conn forge.Connection) (forgeGateClient, error)
 
 	// marketplace is the hosted bot registry store. Mirrors
 	// Config.Marketplace; nil disables every /api/v1/marketplace/*
@@ -216,7 +290,12 @@ func (s *Server) boardMCPServiceOption(logger *iterlog.Logger) (runview.ServiceO
 			}
 			return ""
 		}
-		reg.Register(token, caps, sourceIssueID)
+		if err := reg.Register(token, caps, sourceIssueID); err != nil {
+			if logger != nil {
+				logger.Error("board MCP: %v; sandboxed board-emit disabled for a node", err)
+			}
+			return ""
+		}
 		return token
 	}), true
 }
@@ -286,6 +365,8 @@ func New(cfg Config, logger *iterlog.Logger) *Server {
 		queue:             cfg.Queue,
 		botBindings:       cfg.BotBindings,
 		forgeConnections:  cfg.ForgeConnections,
+		pluginSources:     cfg.PluginSources,
+		botSources:        cfg.BotSources,
 		forgeIntegrations: cfg.ForgeIntegrations,
 		forgeOAuthApps:    cfg.ForgeOAuthApps,
 		forgeGitHubApp:    cfg.ForgeGitHubApp,
@@ -293,6 +374,7 @@ func New(cfg Config, logger *iterlog.Logger) *Server {
 		httpClient:        &http.Client{Timeout: 15 * time.Second},
 		browserSessions:   cfg.BrowserRegistry,
 		statsCache:        newRunStatsCache(),
+		locCache:          newRunLOCCache(),
 		marketplace:       cfg.Marketplace,
 		redis:             cfg.Redis,
 	}
@@ -302,13 +384,31 @@ func New(cfg Config, logger *iterlog.Logger) *Server {
 	if ls, ok := cfg.GenericSecrets.(*secrets.LayeredGenericSecretStore); ok {
 		s.localSecrets = ls
 	}
+	// Config-share editor store: default to in-memory (local/desktop) when
+	// cloud didn't wire a persistent one, so the scoped-editor works out of
+	// the box; the Service is stateless over it.
+	s.configShares = cfg.ConfigShares
+	if s.configShares == nil {
+		s.configShares = configshare.NewMemoryStore()
+	}
+	s.configShareSvc = configshare.NewService(s.configShares)
 	if cfg.NativeTrackerStore != nil {
 		// Valkey-backed token registry when a distributed backend is wired,
 		// else the in-memory one (replaced transparently — same interface).
 		if s.redis != nil {
-			s.boardMCPTokens = newValkeyBoardMCPTokenStore(s.redis.Redis())
+			s.boardMCPTokens = newValkeyBoardMCPTokenStore(s.redis.Redis(), s.logger)
 		} else {
 			s.boardMCPTokens = NewBoardMCPTokenRegistry()
+		}
+	}
+	if s.forgeConnections != nil {
+		// Same replica story as the board MCP tokens: a run's publish POST
+		// may land on any server pod, so a distributed backend shares the
+		// grants; single-replica keeps the in-memory registry.
+		if s.redis != nil {
+			s.forgePublishTokens = newValkeyForgePublishTokenStore(s.redis.Redis(), s.logger)
+		} else {
+			s.forgePublishTokens = NewForgePublishTokenRegistry()
 		}
 	}
 	// Auth rate limiter — eagerly built so the lazy `if s.authLimiter == nil`
@@ -397,6 +497,9 @@ func New(cfg Config, logger *iterlog.Logger) *Server {
 		svcOpts := []runview.ServiceOption{
 			runview.WithLogger(logger),
 			runview.WithMaxConcurrentPipelines(cfg.MaxConcurrentPipelines),
+			// Sandbox-by-default for studio/server-launched in-process runs
+			// (same resolution as `iterion run`).
+			runview.WithSandboxDefault(runtime.ResolveGlobalSandboxDefault()),
 		}
 		if cfg.WorkDir != "" {
 			svcOpts = append(svcOpts, runview.WithWorkDir(cfg.WorkDir))

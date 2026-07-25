@@ -41,7 +41,7 @@ export function Dialog({
       <RD.Portal>
         <RD.Overlay className={`fixed inset-0 ${overlayZ} bg-scrim-modal animate-fade-in`} />
         <RD.Content
-          className={`fixed left-1/2 top-1/2 ${contentZ} flex max-h-[min(92vh,960px)] w-[calc(100vw-2rem)] ${widthClass} -translate-x-1/2 -translate-y-1/2 flex-col overflow-hidden rounded-lg border border-border-default bg-surface-1 text-fg-default shadow-[var(--shadow-lg)] animate-fade-in`}
+          className={`fixed left-1/2 top-1/2 ${contentZ} flex max-h-[calc(100vh-2rem)] w-[calc(100vw-2rem)] ${widthClass} -translate-x-1/2 -translate-y-1/2 flex-col rounded-lg border border-border-default bg-surface-1 text-fg-default shadow-[var(--shadow-lg)] animate-fade-in`}
           onOpenAutoFocus={onOpenAutoFocus}
           // Radix warns unless every Content has a Description or an
           // explicit aria-describedby={undefined}. Dialogs without a
@@ -73,9 +73,7 @@ export function Dialog({
               )}
             </div>
           )}
-          {/* min-h-0 so tall media (image previews) scroll inside the body
-              instead of clipping the dialog top/bottom past the viewport. */}
-          <div className="min-h-0 flex-1 overflow-y-auto px-4 py-3">{children}</div>
+          <div className="flex-1 overflow-y-auto px-4 py-3">{children}</div>
           {footer && (
             <div className="flex shrink-0 items-center justify-end gap-2 border-t border-border-default px-4 py-3">
               {footer}

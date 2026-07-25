@@ -26,6 +26,41 @@ func TestParseMode(t *testing.T) {
 	}
 }
 
+func TestResolveModeSourced(t *testing.T) {
+	cases := []struct {
+		name                              string
+		override, node, workflow, envDflt string
+		wantMode                          Mode
+		wantSource                        string
+		wantErr                           bool
+	}{
+		{"all unset → off from default", "", "", "", "", ModeOff, "default", false},
+		{"override wins over everything", "deny", "ask", "off", "ask", ModeDeny, "run_override", false},
+		{"node wins below override", "", "ask", "deny", "deny", ModeAsk, "node", false},
+		{"workflow wins below node", "", "", "deny", "ask", ModeDeny, "workflow", false},
+		{"env wins below workflow", "", "", "", "ask", ModeAsk, "env", false},
+		{"whitespace-only level is unset", " ", "\t", "", "deny", ModeDeny, "env", false},
+		// First NON-EMPTY level wins even on a parse error: the error
+		// names the level the operator actually set, no silent
+		// fall-through to a lower level.
+		{"typo at winning level surfaces, not skipped", "", "askk", "deny", "", ModeOff, "node", true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			mode, source, err := ResolveModeSourced(tc.override, tc.node, tc.workflow, tc.envDflt)
+			if (err != nil) != tc.wantErr {
+				t.Fatalf("err = %v, wantErr %v", err, tc.wantErr)
+			}
+			if source != tc.wantSource {
+				t.Fatalf("source = %q, want %q", source, tc.wantSource)
+			}
+			if !tc.wantErr && mode != tc.wantMode {
+				t.Fatalf("mode = %v, want %v", mode, tc.wantMode)
+			}
+		})
+	}
+}
+
 func mustPolicy(t *testing.T, mode Mode, allow, ask, deny []string) *Policy {
 	t.Helper()
 	p, err := NewPolicy(mode, allow, ask, deny)

@@ -4,7 +4,7 @@ import type { RunEvent } from "@/api/runs";
 // the live store reducer and the time-travel snapshot reducer to
 // track loop iteration counts. Keep them in sync — the backend's
 // SnapshotBuilder uses the same convention.
-export function iterationKey(branch: string, nodeId: string): string {
+function iterationKey(branch: string, nodeId: string): string {
   return `${branch || "main"} ${nodeId}`;
 }
 

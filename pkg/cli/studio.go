@@ -15,6 +15,7 @@ import (
 	"github.com/SocialGouv/iterion/pkg/alert"
 	"github.com/SocialGouv/iterion/pkg/backend/mcp"
 	"github.com/SocialGouv/iterion/pkg/botregistry"
+	"github.com/SocialGouv/iterion/pkg/botsource"
 	"github.com/SocialGouv/iterion/pkg/dispatcher"
 	"github.com/SocialGouv/iterion/pkg/dispatcher/native"
 	iterlog "github.com/SocialGouv/iterion/pkg/log"
@@ -30,7 +31,7 @@ type StudioOptions struct {
 	Port      int
 	Bind      string // bind address (default "127.0.0.1"); use "0.0.0.0" to expose on LAN
 	Dir       string // working directory (for examples)
-	StoreDir  string // run store directory (default: nearest .iterion ancestor of Dir, or <Dir>/.iterion)
+	StoreDir  string // explicit store override; empty uses store.ResolveStoreDir anchored at Dir
 	NoBrowser bool   // skip opening browser
 	// NoBrowserPane disables every Browser-pane code path: the
 	// preview proxy, the CDP WS endpoint, and the Chromium runner.
@@ -157,10 +158,10 @@ func isLoopbackBindHost(bind string) bool {
 }
 
 func RunStudio(ctx context.Context, opts StudioOptions, p *Printer) error {
-	switch {
-	case opts.Port == 0:
+	switch opts.Port {
+	case 0:
 		opts.Port = 4891
-	case opts.Port == -1:
+	case -1:
 		opts.Port = 0
 	}
 	if opts.Bind == "" {
@@ -238,6 +239,11 @@ func RunStudio(ctx context.Context, opts StudioOptions, p *Printer) error {
 		DisableAuth: disableAuth,
 		Bots:        server.BotsConfig{Paths: opts.BotsPaths},
 		Alerts:      alertSettingsFromEnv(opts.Bind, opts.Port),
+		// Team-authored bot store. Local editing goes through /api/files/*
+		// (real filesystem), so this in-memory store is here for parity and to
+		// keep the /api/teams/:id/bot-sources surface available; the durable
+		// Mongo store is wired on the cloud path (cmd/iterion/server.go).
+		BotSources: botsource.NewMemoryStore(),
 	}
 	// Native desktop notifications: wire the Wails-backed sink the desktop
 	// host supplied, but only when the operator opted in. Browser/headless
@@ -278,6 +284,7 @@ func RunStudio(ctx context.Context, opts StudioOptions, p *Printer) error {
 	}
 	ns, nsErr := native.NewStore(filepath.Join(resolvedStoreDir, "dispatcher"))
 	if nsErr == nil {
+		ns.SetLogger(logger)
 		cfg.NativeTrackerStore = ns
 		// A Manager sits idle alongside the native store. The SPA can
 		// configure + start + pause + stop the dispatcher entirely

@@ -22,7 +22,9 @@ app EVOLVES it (brownfield detection) instead of re-scaffolding.
 | `workspace_dir` | no | Defaults to `${PROJECT_DIR}` — do not override |
 | `baseline` | no | Pre-existing failures to SKIP (meaningful on brownfield re-runs) |
 | `max_passes` / `max_interview_turns` / `max_draft_loops` | no | Loop caps (10 / 30 / 5) |
-| `open_mr` + `mr_branch` / `mr_base` / `source_issue_ref` | no | Opt-in MR tail — needs a forge remote |
+| `deploy_enabled` | no | Opt-in deploy phase after convergence (default false) — publishes via the attached `deploy-target` skill + `deploy_credential` secret |
+| `max_deploy_retries` | no | Redeploy attempts if the first deploy isn't healthy (default 2) |
+| `open_mr` + `mr_branch` / `mr_base` / `source_issue_ref` | no | Opt-in PR tail — needs a forge remote |
 
 ## Shape
 
@@ -40,6 +42,13 @@ route ─ interview ─▶ interviewer ⇄ interview_chat   (Nexie loop, session
                               derive_draft ◀── draft_review (human) ◀──────────────┘ (skipped when
                                  │ ship            │ hold_for_later                   draft_review=false)
                                  ▼                 ▼
+                              deploy_gate ─ deploy_enabled=false ─▶ mr_gate
+                                 │ enabled                            │
+                                 ▼                                    │  (opt-in deploy
+                              deploy → deploy_trace → deploy_verify   │   phase, AFTER
+                                 ▲                          │ pass    │   the app converges)
+                                 └─ deploy_retry(max) ◀─────┴─────────┤
+                                                            not pass  ▼
                               mr_gate → forge_auth_probe → finalize_mr → done
 ```
 
@@ -59,8 +68,11 @@ route ─ interview ─▶ interviewer ⇄ interview_chat   (Nexie loop, session
   as the authoritative spec. `app_prompt` is then just the tagline.
 - **First pass verify on a bare tree**: verify_build writes an
   echo-and-exit-0 script (its skill §5) until the scaffold lands;
-  verify_probe forces regeneration on pass 1 of every run, so the gate
-  picks up the real toolchain as soon as it exists.
+  verify_probe decides regeneration from a build-manifest fingerprint
+  (a sha256 over the workspace's root manifests/lockfiles/build files),
+  so the gate re-authors the script exactly when the toolchain changes —
+  the bare-tree pass 1 (no manifests) and the scaffold landing both
+  trigger it, while a reframe that only edits app code reuses the script.
 
 ## Run recipes
 

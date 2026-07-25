@@ -17,6 +17,7 @@ import { useCallback, useState } from "react";
 import * as api from "@/api/client";
 import { useDocumentStore } from "@/store/document";
 import { useRecentsStore } from "@/store/recents";
+import { useServerInfoStore } from "@/store/serverInfo";
 import { useUIStore } from "@/store/ui";
 import { createEmptyDocument } from "@/lib/defaults";
 import { downloadBlob } from "@/lib/download";
@@ -33,6 +34,9 @@ export interface UseDocumentFileOpsArgs {
 }
 
 export interface UseDocumentFileOpsResult {
+  // True when the current file can't be saved from here: cloud mode with a
+  // non-botsource (read-only catalog) file. The toolbar disables Save.
+  readOnly: boolean;
   // Loading flag for the open/import path. Surfaced as the spinner
   // pill in the toolbar.
   loading: boolean;
@@ -73,6 +77,16 @@ export function useDocumentFileOps({
   const setCurrentFilePath = useDocumentStore((s) => s.setCurrentFilePath);
   const setCurrentSource = useDocumentStore((s) => s.setCurrentSource);
   const markSaved = useDocumentStore((s) => s.markSaved);
+  const isCloud = useServerInfoStore((s) => s.info?.mode === "cloud");
+  // In cloud there is no writable filesystem: only a team-authored bot (opened
+  // under a botsource:// path) can be saved. Any other open file — a baked
+  // catalog bot at /opt/iterion/bots, a deep link — is read-only; saving it
+  // would 500 with "permission denied". Such a bot must be forked first
+  // ("Duplicate & edit"). Local mode always writes to disk.
+  const readOnly =
+    isCloud && !!currentFilePath && api.parseBotSourceEditorPath(currentFilePath) === null;
+  const READ_ONLY_MSG =
+    "This is a read-only catalog bot. Use “Duplicate & edit” on the bot's page to make an editable copy.";
   const isDirty = useDocumentStore((s) => s.isDirty);
   const addWorkflow = useDocumentStore((s) => s.addWorkflow);
   const removeWorkflow = useDocumentStore((s) => s.removeWorkflow);
@@ -231,6 +245,10 @@ export function useDocumentFileOps({
 
   const handleSave = useCallback(async () => {
     if (!document) return;
+    if (readOnly) {
+      addToast(READ_ONLY_MSG, "warning");
+      return;
+    }
     if (currentFilePath) {
       try {
         const result = await api.saveFile(currentFilePath, document);
@@ -247,7 +265,16 @@ export function useDocumentFileOps({
       setSaveFileName(`${name}.bot`);
       setShowSaveDialog(true);
     }
-  }, [document, currentFilePath, setCurrentSource, markSaved, addToast, pushRecent]);
+  }, [
+    document,
+    currentFilePath,
+    setCurrentSource,
+    markSaved,
+    addToast,
+    pushRecent,
+    readOnly,
+    READ_ONLY_MSG,
+  ]);
 
   // Always opens the Save As dialog regardless of whether a file path
   // is already bound — distinct from handleSave which fast-paths to the
@@ -264,6 +291,16 @@ export function useDocumentFileOps({
 
   const handleSaveAs = useCallback(async () => {
     if (!document || !saveFileName) return;
+    if (isCloud) {
+      // Save As targets a filesystem path, which cloud can't write. Route bot
+      // creation through the Bots page (/bots/new) or "Duplicate & edit".
+      addToast(
+        "Save As isn't available in cloud — create a bot from the Bots page, or Duplicate & edit an existing one.",
+        "warning",
+      );
+      setShowSaveDialog(false);
+      return;
+    }
     const fileName = saveFileName.endsWith(".bot") ? saveFileName : `${saveFileName}.bot`;
     try {
       const result = await api.saveFile(fileName, document);
@@ -285,6 +322,8 @@ export function useDocumentFileOps({
     markSaved,
     pushRecent,
     addToast,
+    isCloud,
+    setShowSaveDialog,
   ]);
 
   const handleDownload = useCallback(async () => {
@@ -296,8 +335,9 @@ export function useDocumentFileOps({
       downloadBlob(blob, `${name}.bot`);
     } catch (err) {
       console.error("Download failed:", err);
+      addToast("Download failed", "error");
     }
-  }, [document]);
+  }, [document, addToast]);
 
   const handleCopySource = useCallback(async () => {
     if (!document) return;
@@ -329,6 +369,7 @@ export function useDocumentFileOps({
   }, [document, activeWorkflowName, removeWorkflow, setActiveWorkflowName]);
 
   return {
+    readOnly,
     loading,
     showSaveDialog,
     setShowSaveDialog,

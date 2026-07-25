@@ -1,14 +1,14 @@
-import { useEffect, useState } from "react";
+import { useQuery } from "@tanstack/react-query";
 import { DiffEditor } from "@monaco-editor/react";
 
 import { Button, Dialog } from "@/components/ui";
 import {
   getRunFileDiff,
   type RunFile,
-  type RunFileDiff,
   type RunFilesMode,
 } from "@/api/runs";
 import { useThemeStore } from "@/store/theme";
+import { errorMessage } from "@/lib/errorHints";
 import { inferMonacoLanguage } from "@/lib/inferMonacoLanguage";
 
 interface FileDiffDialogProps {
@@ -34,39 +34,17 @@ export default function FileDiffDialog({
   onClose,
   onEdit,
 }: FileDiffDialogProps) {
-  const [diff, setDiff] = useState<RunFileDiff | null>(null);
-  const [loading, setLoading] = useState(false);
-  const [error, setError] = useState<string | null>(null);
   const resolvedTheme = useThemeStore((s) => s.resolved);
   const path = file?.path ?? null;
 
-  useEffect(() => {
-    if (!path) {
-      setDiff(null);
-      setError(null);
-      return;
-    }
-    let cancelled = false;
-    setLoading(true);
-    setError(null);
-    setDiff(null);
-    getRunFileDiff(runId, path, { mode })
-      .then((res) => {
-        if (cancelled) return;
-        setDiff(res);
-      })
-      .catch((err: unknown) => {
-        if (cancelled) return;
-        setError(err instanceof Error ? err.message : "Failed to load diff");
-      })
-      .finally(() => {
-        if (cancelled) return;
-        setLoading(false);
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [runId, path, mode]);
+  const diffQuery = useQuery({
+    queryKey: ["run-file-diff", runId, path, mode ?? ""],
+    queryFn: () => getRunFileDiff(runId, path!, { mode }),
+    enabled: !!path,
+  });
+  const diff = path ? diffQuery.data ?? null : null;
+  const error = path && diffQuery.error ? errorMessage(diffQuery.error) : null;
+  const loading = diffQuery.isLoading;
 
   const open = file !== null;
   const language = path ? inferMonacoLanguage(path) : "plaintext";

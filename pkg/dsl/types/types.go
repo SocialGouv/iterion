@@ -170,6 +170,7 @@ const (
 	InteractionLLM                               // LLM auto-answers interaction questions
 	InteractionLLMOrHuman                        // LLM decides whether to answer or escalate to human
 	InteractionReview                            // guided review-&-merge gate: companion-driven multi-turn dialogue ending in a squash-merge
+	InteractionAsync                             // agent may post non-blocking questions (ask_user_async) and sync on demand (await_answers)
 )
 
 func (im InteractionMode) String() string {
@@ -184,6 +185,8 @@ func (im InteractionMode) String() string {
 		return "llm_or_human"
 	case InteractionReview:
 		return "review"
+	case InteractionAsync:
+		return "async"
 	default:
 		return "unknown"
 	}

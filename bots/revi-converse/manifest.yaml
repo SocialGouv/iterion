@@ -4,9 +4,9 @@ icon: 💬
 version: 0.1.0
 description: |
   Conversational sibling of Revi (review-pr). Triggered when an
-  authorized forge user asks a focused QUESTION on an open merge /
-  pull request — `/revi <question>` (e.g.
-  `/revi why is the SSRF critical?`). Reads the question + the MR
+  authorized forge user asks a focused QUESTION on an open pull
+  request (PR; merge request on GitLab) — `/revi <question>` (e.g.
+  `/revi why is the SSRF critical?`). Reads the question + the PR
   diff against the branch's merge-base, formulates a CONCISE,
   GROUNDED answer (a senior code reviewer's follow-up — not a
   fresh full review), and posts the answer as a REPLY in the same
@@ -15,10 +15,10 @@ description: |
   webhook handler routes to review-pr for a fresh re-review
   instead.
 when_to_use: |
-  Use when an operator asks a follow-up question on an open MR
+  Use when an operator asks a follow-up question on an open PR
   about Revi's earlier findings or the diff itself — clarification,
   rationale, severity justification, alternative fixes. NOT for
-  re-reviewing the MR (that is review-pr / Revi), NOT for editing
+  re-reviewing the PR (that is review-pr / Revi), NOT for editing
   code (that is Billy or Featurly), NOT for triaging issues on the
   board.
 author: SocialGouv (devthejo) — revi-converse/main.bot
@@ -28,7 +28,7 @@ triggers: [revi-converse, ask, converse]
 # Forge-access requirements for the studio Integrations auto-provisioner
 # (advisory + discovery-time — the runtime does not read this).
 forge:
-  events: [pull_request_comment]  # conversational sibling only; no MR-open auto-trigger
+  events: [pull_request_comment]  # conversational sibling only; no PR-open auto-trigger
   token_scopes:
     pull_requests: write     # reply in-thread via the forge_token
     repository: read
@@ -37,7 +37,7 @@ forge:
     min_replier_role: developer
   rationale: |
     Revi-converse only answers focused /revi <question> notes on an
-    open merge/pull request. It never edits code or posts a fresh
+    open pull request. It never edits code or posts a fresh
     review.
 
 invocations:
@@ -45,3 +45,10 @@ invocations:
     mode: direct
     args_var: converse_question
     command: { name: revi, scope: pr, disambiguator: when_args_present, min_replier_role: developer }
+
+## Studio launch-form hierarchy: `primary` inputs render top-level in
+## the declared order; `hidden` vars are dispatch/webhook plumbing kept
+## out of the form (still settable via --var / bot_args).
+launch:
+  primary: [converse_question, pr_url]
+  hidden: [discussion_id, trigger_note, thread_context, replier]

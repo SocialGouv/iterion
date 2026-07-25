@@ -43,6 +43,68 @@ export interface ForgeIntegration {
   created_at: string;
 }
 
+// ForgeTeamRepo is one row of the team-wide connected-repo aggregator
+// (GET /api/teams/{id}/forge/repos) — the RepoSwitcher's data source: a
+// RepoIntegration joined with its connection server-side.
+export interface ForgeTeamRepo {
+  connection_id: string;
+  connection_status?: ForgeConnectionStatus | "degraded";
+  provider: ForgeProvider;
+  repo_full_name: string;
+  clone_url?: string;
+  web_url?: string;
+  integration_id: string;
+  bot_ids: string[];
+  sync_issues_enabled: boolean;
+}
+
+/** Stable identity of a connected repo across connections. */
+export function forgeTeamRepoKey(r: Pick<ForgeTeamRepo, "connection_id" | "repo_full_name">): string {
+  return `${r.connection_id}::${r.repo_full_name}`;
+}
+
+export async function listTeamForgeRepos(teamID: string): Promise<ForgeTeamRepo[]> {
+  const r = await guard404("forge_integrations", () =>
+    request<{ repos: ForgeTeamRepo[] }>(`/teams/${teamID}/forge/repos`),
+  );
+  return r.repos ?? [];
+}
+
+// ForgeConnectionHealth is the connection's actionable live state — for a
+// GitHub App it carries the installation's real repo scope and the GitHub
+// settings URL where the scope/permissions can be widened.
+export type ForgeConnectionHealth = components["schemas"]["forgeConnectionHealth"];
+
+export async function getForgeConnectionHealth(
+  teamID: string,
+  connID: string,
+): Promise<ForgeConnectionHealth> {
+  return (await apiGet("/api/teams/{id}/forge/connections/{conn_id}/health", {
+    params: { id: teamID, conn_id: connID },
+  })) as ForgeConnectionHealth;
+}
+
+// createForgeRepo creates a NEW repository on a connected forge (the
+// "new app → new repo" journey). Creation only — iterion never updates
+// or deletes forge repositories.
+export async function createForgeRepo(
+  teamID: string,
+  input: {
+    connection_id: string;
+    owner?: string;
+    name: string;
+    description?: string;
+    private?: boolean;
+    default_branch?: string;
+    init_readme?: boolean;
+  },
+): Promise<{ repo: ForgeRepo; clone_url: string }> {
+  return (await apiPost("/api/teams/{id}/forge/repos", {
+    params: { id: teamID },
+    body: input,
+  })) as { repo: ForgeRepo; clone_url: string };
+}
+
 /** Counts returned by a manual issue-sync run (POST …/sync). */
 export interface ForgeSyncResult {
   synced: number;
@@ -102,6 +164,11 @@ export interface ConnectForgeInput {
   display_name?: string;
   /** Studio path to return to after an OAuth / App-install round-trip. */
   next?: string;
+  /**
+   * mode=app: which of the team's GitHub Apps to install, when it holds
+   * several (one per owning org). Omitted = the team's single App for the host.
+   */
+  oauth_app_id?: string;
 }
 
 export interface ConnectForgeResult {
@@ -179,6 +246,25 @@ export async function enableForgeRepoBots(
     body: JSON.stringify({
       connection_id: connID,
       repo,
+      bot_ids: botIDs,
+      schedule_crons:
+        scheduleCrons && Object.keys(scheduleCrons).length > 0 ? scheduleCrons : undefined,
+    }),
+  });
+}
+
+// updateForgeRepoBots sets an integration's EXACT bot set (replace
+// semantics — the per-bot unbind). Empty lists are rejected server-side;
+// removing the last bot is disableForgeIntegration.
+export async function updateForgeRepoBots(
+  teamID: string,
+  integrationID: string,
+  botIDs: string[],
+  scheduleCrons?: Record<string, string>,
+): Promise<ForgeProvisionResult> {
+  return request(`/teams/${teamID}/forge/repo-bots/${integrationID}`, {
+    method: "PATCH",
+    body: JSON.stringify({
       bot_ids: botIDs,
       schedule_crons:
         scheduleCrons && Object.keys(scheduleCrons).length > 0 ? scheduleCrons : undefined,
@@ -293,7 +379,18 @@ export async function startGitHubManifest(
   teamID: string,
   // github_org creates the App UNDER that org (installable org-wide); blank =
   // the caller's personal account (then only installable there).
-  input: { forge_base_url?: string; next?: string; github_org?: string },
+  // allow_repo_creation requests administration:write on the App so iterion
+  // can CREATE repositories (opt-in, surfaced as a visible checkbox).
+  // allow_app_delivery requests workflows:write + packages:write so a bot can
+  // publish the CI that builds an app and the image it produces — without
+  // them GitHub refuses any push touching .github/workflows/**.
+  input: {
+    forge_base_url?: string;
+    next?: string;
+    github_org?: string;
+    allow_repo_creation?: boolean;
+    allow_app_delivery?: boolean;
+  },
 ): Promise<GitHubManifestStart> {
   // Body type-checked against the spec's forgeOAuthAppReq (provider is
   // required there; this endpoint is GitHub-only, so state it explicitly).

@@ -2,6 +2,7 @@ package secrets
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/http"
 	"time"
@@ -60,7 +61,26 @@ func (w *OAuthRefreshWorker) RunOnce(ctx context.Context) (int, error) {
 		if rec.Kind == OAuthKindCodex && w.CodexClientID == "" {
 			continue
 		}
+		// A payload without a refresh token can never be refreshed; only
+		// a re-connect renews it. Not a failure — skipping keeps the sweep
+		// quiet instead of erroring on the same record every cycle.
+		if rec.NotRefreshable {
+			continue
+		}
 		if err := RefreshRecord(ctx, w.Sealer, w.HTTP, w.AnthropicClientID, w.CodexClientID, &rec); err != nil {
+			if errors.Is(err, ErrNotRefreshable) {
+				// Self-heal legacy records sealed before NotRefreshable
+				// existed so future sweeps skip them without decrypting.
+				rec.NotRefreshable = true
+				rec.UpdatedAt = time.Now().UTC()
+				if uerr := w.Store.Upsert(ctx, rec); uerr != nil {
+					failures++
+					if firstErr == nil {
+						firstErr = fmt.Errorf("mark not-refreshable %s/%s: %w", rec.UserID, rec.Kind, uerr)
+					}
+				}
+				continue
+			}
 			failures++
 			if firstErr == nil {
 				firstErr = fmt.Errorf("refresh %s/%s: %w", rec.UserID, rec.Kind, err)

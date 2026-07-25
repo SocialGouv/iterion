@@ -3,6 +3,8 @@ package store
 import (
 	"bufio"
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -56,6 +58,12 @@ type QueuedUserMessage struct {
 	// operator removes a skill via a follow-up message with a
 	// different SkillRefs list. Empty for plain-text messages.
 	SkillRefs []string `json:"skill_refs,omitempty" bson:"skill_refs,omitempty"`
+	// InteractionID, when set, marks this message as the delivery of an
+	// async question's answer (ADR-081): it references the answered
+	// Kind=async Interaction. Typed provenance — the await-resume path
+	// cancels superseded deliveries by this field, never by matching
+	// the message text.
+	InteractionID string `json:"interaction_id,omitempty" bson:"interaction_id,omitempty"`
 }
 
 // ErrQueuedMessageNotFound is returned by UpdateQueuedMessageStatus
@@ -84,6 +92,9 @@ func (s *FilesystemRunStore) userMessagesPath(runID string) (string, error) {
 // Status is forced to "queued"; all transition timestamps are nil.
 func (s *FilesystemRunStore) AppendQueuedMessage(ctx context.Context, runID string, msg QueuedUserMessage) error {
 	if err := NormalizeQueuedForAppend(&msg, runID); err != nil {
+		return err
+	}
+	if err := s.guardNotDeleted(runID); err != nil {
 		return err
 	}
 	path, err := s.userMessagesPath(runID)
@@ -308,12 +319,12 @@ func InboxEventFor(typ EventType, runID string, msg QueuedUserMessage) Event {
 	}
 }
 
-// PublishInboxEvent appends an inbox status-change event to the run
-// log and fans it out to any live subscriber via publish (the
-// broker.Publish callback in local mode, nil in cloud mode where
-// the change stream surfaces transitions).
-func PublishInboxEvent(ctx context.Context, s RunStore, publish func(Event), typ EventType, runID string, msg QueuedUserMessage) {
-	evt := InboxEventFor(typ, runID, msg)
+// AppendAndPublish appends an event to the run log and fans the
+// PERSISTED copy out to any live subscriber via publish (the
+// broker.Publish callback in local mode, nil in cloud mode where the
+// change stream surfaces transitions). The persisted-or-drop invariant
+// lives here — never publish an event the store refused.
+func AppendAndPublish(ctx context.Context, s RunStore, publish func(Event), runID string, evt Event) {
 	persisted, err := s.AppendEvent(ctx, runID, evt)
 	if err != nil || persisted == nil {
 		return
@@ -321,6 +332,27 @@ func PublishInboxEvent(ctx context.Context, s RunStore, publish func(Event), typ
 	if publish != nil {
 		publish(*persisted)
 	}
+}
+
+// PublishInboxEvent appends an inbox status-change event to the run
+// log and fans it out to any live subscriber.
+func PublishInboxEvent(ctx context.Context, s RunStore, publish func(Event), typ EventType, runID string, msg QueuedUserMessage) {
+	AppendAndPublish(ctx, s, publish, runID, InboxEventFor(typ, runID, msg))
+}
+
+// NewQueuedMessageID returns a short opaque ID for inbox messages.
+// Time-prefix gives FIFO-friendly ordering at the filesystem level even
+// when wall-clock collides; the random suffix avoids ID reuse within
+// the same nanosecond.
+func NewQueuedMessageID() string {
+	var buf [6]byte
+	if _, err := rand.Read(buf[:]); err != nil {
+		// rand.Read effectively never fails on Linux; on the off
+		// chance, fall back to the timestamp alone — collisions are
+		// caught at AppendQueuedMessage (would clobber the FS row).
+		return fmt.Sprintf("msg_%d", time.Now().UnixNano())
+	}
+	return fmt.Sprintf("msg_%d_%s", time.Now().UnixNano(), hex.EncodeToString(buf[:]))
 }
 
 // DrainPending moves every "queued" row in runID's inbox to

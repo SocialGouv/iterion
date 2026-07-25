@@ -3,6 +3,7 @@ package server
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -259,5 +260,26 @@ func TestBoardMCP_HTTP_CapabilityDenied(t *testing.T) {
 	}
 	if !strings.Contains(r.Error.Message, "capability denied") {
 		t.Fatalf("expected capability-denied message, got %q", r.Error.Message)
+	}
+}
+
+// A full registry must refuse Register with an error (not a silent no-op):
+// the caller would otherwise hand out a token whose every CallTool 401s.
+func TestBoardMCPTokenRegistry_RegisterFullReturnsError(t *testing.T) {
+	reg := NewBoardMCPTokenRegistry()
+	for i := 0; i < boardMCPMaxTokens; i++ {
+		if err := reg.Register(fmt.Sprintf("tok-%d", i), []string{"board.read"}, ""); err != nil {
+			t.Fatalf("Register %d within cap: %v", i, err)
+		}
+	}
+	err := reg.Register("one-too-many", []string{"board.read"}, "")
+	if err == nil {
+		t.Fatal("Register beyond the cap should error")
+	}
+	if !strings.Contains(err.Error(), "registry full") {
+		t.Errorf("error should say the registry is full, got: %v", err)
+	}
+	if _, ok := reg.lookup("one-too-many"); ok {
+		t.Errorf("refused token must not be registered")
 	}
 }

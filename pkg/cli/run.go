@@ -37,7 +37,8 @@ type RunOptions struct {
 	Vars          map[string]string    // --var key=value overrides
 	Preset        string               // --preset <name>: applies an in-source named preset before --var
 	RunID         string               // explicit run ID (auto-generated if empty)
-	StoreDir      string               // store directory (default: nearest .iterion ancestor of the workflow, or alongside it)
+	Source        *store.RunSource     // originating-action provenance stamped on the run (schedule launches)
+	StoreDir      string               // explicit store override; empty uses store.ResolveStoreDir anchored at the workflow project
 	Timeout       time.Duration        // maximum run duration (0 = no limit)
 	LogLevel      string               // log level (default: "info", env: ITERION_LOG_LEVEL)
 	NoInteractive bool                 // disable interactive TTY prompting on human pause
@@ -66,10 +67,11 @@ type RunOptions struct {
 	// studio sets false by default to defer merge to a UI action.
 	AutoMerge bool
 	// Sandbox is the run-level override for the sandbox activation
-	// mode ("", "none", "auto"). "" inherits the project default
-	// (ITERION_SANDBOX_DEFAULT) which itself defaults to "" (no
-	// sandbox). The workflow's own `sandbox:` block is the next layer
-	// of precedence; per-node overrides win above all. See pkg/sandbox.
+	// mode ("", "none", "auto"). "" inherits the global default
+	// (ITERION_SANDBOX_DEFAULT, else "auto" — sandbox-by-default, see
+	// runtime.ResolveGlobalSandboxDefault). The workflow's own
+	// `sandbox:` block is the next layer of precedence; per-node
+	// overrides win above all. See pkg/sandbox.
 	Sandbox string
 	// SandboxDefaultImage overrides the image ref used by `sandbox: auto`
 	// when no .devcontainer/devcontainer.json is found in the workspace.
@@ -317,7 +319,7 @@ func RunRun(ctx context.Context, opts RunOptions, p *Printer) error {
 	if err != nil {
 		return fmt.Errorf("cannot acquire run lock: %w", err)
 	}
-	defer lock.Unlock()
+	defer func() { _ = lock.Unlock() }()
 
 	// Managed-runner mode: the studio server writes the .pid file on
 	// our behalf at spawn time, so we only need to remove it on exit.
@@ -465,6 +467,11 @@ func buildRunExecutor(
 		// Studio/server wire this via service_launch; the CLI did not,
 		// so supervisor steering silently never reached the agent.
 		Inbox: &model.StoreInboxBinder{Store: s},
+		// Async questions (ADR-081) work CLI-side too: answers written to
+		// the same store (studio, `iterion runs answer`, REST) reach the
+		// agent through the store-backed inbox; the await node's poll
+		// ticker covers the cross-process doorbell gap.
+		AsyncAsk: &model.StoreAsyncAskBinder{Store: s},
 	}
 	localStore, localSealer, err := localSecretsForRun(len(wf.Secrets) > 0, storeDir, logger)
 	if err != nil {
@@ -498,6 +505,13 @@ func subbotRunnerForCLI(parentPath, storeDir string, s store.RunStore, logger *i
 			return nil, fmt.Errorf("subbot recursion too deep (>%d) at %q — possible cycle", maxSubbotDepth, req.Source)
 		}
 
+		// Re-attach to an in-flight/finished child from a prior (interrupted)
+		// execution of this subbot node before spawning a fresh one (mirrors
+		// the runview runner so a bot behaves identically on either surface).
+		if out, aerr, handled := runview.ReattachSubbotChild(ctx, s, req, logger); handled {
+			return out, aerr
+		}
+
 		childPath := req.Source
 		if !filepath.IsAbs(childPath) {
 			childPath = filepath.Join(parentDir, childPath)
@@ -510,6 +524,9 @@ func subbotRunnerForCLI(parentPath, storeDir string, s store.RunStore, logger *i
 		if err != nil {
 			return nil, err
 		}
+		// Record the child on the parent BEFORE running it, so a restart while
+		// parked below re-attaches instead of spawning fresh.
+		runview.RecordSubbotChild(ctx, s, req, childRunID, logger)
 
 		childAuthoritySince := time.Now().UTC()
 		childExec, err := buildRunExecutor(opts, childWf, s, childRunID, storeDir, logger, nil)
@@ -548,6 +565,15 @@ func subbotRunnerForCLI(parentPath, storeDir string, s store.RunStore, logger *i
 				}
 			}),
 		)
+		// Unlike the studio's in-process runner (runview.subbotRunnerFor, which
+		// registers the child with the run Manager for per-child studio
+		// Cancel/Pause), the CLI has no per-run control plane — no HTTP API and
+		// no Manager to target a single child. Its only control signal is
+		// SIGINT/SIGTERM on the process (cmd/iterion/main.go's root ctx), which
+		// cancels the whole run: childCtx descends from that ctx, so an
+		// interrupt propagates into a mid-flight child here exactly as it does
+		// to the parent. There is thus nothing to register — a Manager here
+		// would have no caller. Per-child control is a studio-only capability.
 		childCtx := context.WithValue(ctx, subbotDepthKey{}, depth+1)
 		// Hold the child's own lock for the complete in-process execution.
 		// This closes the CreateRun -> parent-link persistence window against
@@ -576,11 +602,19 @@ func subbotRunnerForCLI(parentPath, storeDir string, s store.RunStore, logger *i
 			// answers the child's review (pipeline-board sidebar / `iterion
 			// resume --run-id <child>`) and the child reaches a terminal
 			// state, then pick up its output from the store.
-			if errors.Is(runErr, runtime.ErrRunPaused) || errors.Is(runErr, runtime.ErrRunPausedOperator) {
-				return runview.AwaitSubbotTerminal(childCtx, s, childRunID, logger)
+			if errors.Is(err, runtime.ErrRunPaused) || errors.Is(err, runtime.ErrRunPausedOperator) {
+				out, aerr := runview.AwaitSubbotTerminal(childCtx, s, childRunID, logger)
+				if aerr == nil {
+					// Consumed — tidy the record. On error (shutdown mid-park or
+					// a failed child) LEAVE it for the resume-time re-attach.
+					runview.ClearSubbotChild(ctx, s, req)
+				}
+				return out, aerr
 			}
-			return nil, runErr
+			// Non-pause error: leave the re-attach record for the resume path.
+			return nil, err
 		}
+		runview.ClearSubbotChild(ctx, s, req)
 		return last, nil
 	}
 }
@@ -605,7 +639,7 @@ func buildEngine(
 	bundleHandle *bundle.Bundle,
 	base []runtime.EngineOption,
 ) *runtime.Engine {
-	sandboxDefault := strings.ToLower(os.Getenv("ITERION_SANDBOX_DEFAULT"))
+	sandboxDefault := runtime.ResolveGlobalSandboxDefault()
 	sandboxHostStateDefault := strings.ToLower(os.Getenv("ITERION_SANDBOX_HOST_STATE"))
 	return runtime.New(wf, s, executor,
 		append(base,
@@ -623,6 +657,7 @@ func buildEngine(
 			runtime.WithSandboxHostStateDefault(sandboxHostStateDefault),
 			runtime.WithBundle(bundleHandle),
 			runtime.WithPreset(opts.Preset),
+			runtime.WithSource(opts.Source),
 		)...,
 	)
 }
@@ -722,29 +757,16 @@ func resolveWorkflow(opts RunOptions) (wf *ir.Workflow, hash, filePath, displayN
 	return raw, h, resolved, raw.Name, nil, cleanup, nil
 }
 
-// bundleParentOf returns the absolute path of `path`'s parent
-// directory when the parent looks like a bundle (has skills/ or
-// manifest.yaml) AND `path` is named main.bot (the canonical bundle
-// entrypoint). Returns "" when no promotion is warranted.
+// bundleParentOf returns the absolute path of `path`'s parent directory
+// when that parent is a bundle and `path` is its main.bot. Returns "" when
+// no promotion is warranted.
+//
 // Conservative on purpose — promoting an arbitrary `*.bot` inside a
 // folder with a sibling `skills/` could surprise operators who
-// intentionally split bundle vs. one-off bots.
+// intentionally split bundle vs. one-off bots. What counts as a bundle is
+// pkg/bundle's to define, not this package's.
 func bundleParentOf(path string) string {
-	abs, err := filepath.Abs(path)
-	if err != nil {
-		return ""
-	}
-	base := filepath.Base(abs)
-	if base != "main.bot" {
-		return ""
-	}
-	parent := filepath.Dir(abs)
-	for _, marker := range []string{"skills", "manifest.yaml"} {
-		if _, err := os.Stat(filepath.Join(parent, marker)); err == nil {
-			return parent
-		}
-	}
-	return ""
+	return bundle.DirForMainBot(path)
 }
 
 // enrichPausedResult loads checkpoint and interaction details from the store

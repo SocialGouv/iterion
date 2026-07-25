@@ -1,10 +1,21 @@
 # Routers
 
-Routers control how execution flows through the workflow graph. When a router is reached, it decides which downstream node(s) to activate next. There are four routing modes, each suited to different orchestration patterns.
+Routers are the branch points of the graph — the difference between a linear script and a real workflow. A router decides which downstream node(s) fire next: fan out in parallel, replay a branch per array element, pick one path on a condition, rotate through options, or let an LLM choose. Five modes, each suited to a different orchestration pattern.
+
+```mermaid
+flowchart LR
+  R{"🔀 Router"} --> A["🅰️ Branch A"]
+  R --> B["🅱️ Branch B"]
+  R --> C["🌿 Branch C"]
+  A --> J(["🔗 Downstream node<br/>await: wait_all"])
+  B --> J
+  C --> J
+```
 
 ## Overview
 
 - **`fan_out_all`** — run all downstream branches in parallel
+- **`fan_out_each`** — replay one template branch for every element of a runtime array
 - **`condition`** — pick one branch based on a boolean field from a previous node
 - **`round_robin`** — cycle through branches in order, one per traversal
 - **`llm`** — let an LLM decide which branch(es) to take
@@ -13,7 +24,7 @@ Routers control how execution flows through the workflow graph. When a router is
 
 ```iter
 router <name>:
-  mode: fan_out_all | condition | round_robin | llm
+  mode: fan_out_all | fan_out_each | condition | round_robin | llm
 ```
 
 LLM routers accept additional properties:
@@ -22,9 +33,11 @@ LLM routers accept additional properties:
 router fix_router:
   mode: llm
   model: "anthropic/claude-sonnet-4-6"   # or backend: "claude_code"
+  provider: "anthropic"                  # optional credential route/fallback chain
   system: routing_prompt                  # optional prompt ref
   user: user_prompt                       # optional prompt ref
   multi: true                             # select multiple routes (default: false)
+  reasoning_effort: high                  # optional
 ```
 
 Using `model` makes a direct API call (via the in-process `claw` backend — supports `anthropic/...`, `openai/...`, etc.). Using `backend` routes through an external CLI agent — `claude_code` is the recommended CLI backend. (`codex` is also supported but discouraged; see [Delegation](delegation.md) for the rationale.) If neither is set, the engine falls back to a built-in default model.
@@ -54,6 +67,53 @@ workflow example:
 ```
 
 The router itself is a pass-through — it forwards its input unchanged to all targets. The number of concurrent branches is bounded by the `max_parallel_branches` budget setting. For workspace safety, only one mutating branch (an agent or human with tools) is allowed at a time; read-only branches can run freely in parallel.
+
+---
+
+## `fan_out_each` — data-driven parallel map
+
+`fan_out_each` resolves `over:` to an array at runtime and replays its single outgoing template branch once per item. The current item is exposed on the router output under the binding named by `as:` (default `item`).
+
+```iter
+router dispatch:
+  mode: fan_out_each
+  over: "{{outputs.plan.tickets}}"
+  as: ticket
+
+agent implement:
+  model: "anthropic/claude-sonnet-4-6"
+  user: implement_prompt
+  readonly: true
+
+agent collect:
+  model: "anthropic/claude-sonnet-4-6"
+  user: collect_prompt
+  await: wait_all
+
+workflow example:
+  entry: plan
+  plan -> dispatch
+  dispatch -> implement with {
+    ticket: "{{outputs.dispatch.ticket}}"
+  }
+  implement -> collect
+  collect -> done
+```
+
+The router must have exactly one unconditional outgoing edge: it is the head of the per-item template. An empty array skips directly to the convergence node when one exists. Branch concurrency is bounded by `budget.max_parallel_branches` and any node `needs:` resource leases.
+
+Optional `key:` and `depends_on:` fields turn the array into a dependency DAG. `key` names the unique-id field on each item; `depends_on` names an array field containing prerequisite ids. Independent items run concurrently, dependants wait, failed prerequisites skip their dependants, and a dependency cycle fails the run.
+
+```iter
+router dispatch:
+  mode: fan_out_each
+  over: "{{outputs.plan.tickets}}"
+  as: ticket
+  key: id
+  depends_on: deps
+```
+
+Workspace safety remains fail-closed. Concurrent template replays may contain read-only agents/judges, an `isolated: true` subbot, or a `parallel_safe: true` tool whose writes are genuinely item-partitioned. Otherwise set `max_parallel_branches: 1` or give each replay an isolated workspace. See [groups, iteration, resources, and sub-bots](groups-iteration-subbots.md) for the full contract and examples.
 
 ---
 
@@ -175,7 +235,7 @@ When using `backend`, the named backend (e.g. `claude_code`) handles the LLM cal
 
 ## Convergence with `await`
 
-Parallel branches — whether from `fan_out_all` or `llm` multi-mode — converge at a real downstream node (agent, judge, human, tool, or compute) with multiple incoming edges. That target node declares `await: wait_all` to require every branch, or `await: best_effort` to continue with successful branches while tolerating failures.
+Parallel branches — whether from `fan_out_all`, `fan_out_each`, or `llm` multi-mode — converge at a real downstream node (agent, judge, human, tool, or compute) with multiple incoming edges. That target node declares `await: wait_all` to require every branch, or `await: best_effort` to continue with successful branches while tolerating failures.
 
 Routers are fan-out sources and do not declare `await:` themselves.
 
@@ -185,6 +245,7 @@ Routers are fan-out sources and do not declare `await:` themselves.
 
 The compiler catches common mistakes at compile time:
 
-- **LLM-only properties on non-LLM routers** — using `model`, `backend`, `system`, `user`, or `multi` on a `fan_out_all`, `condition`, or `round_robin` router is an error.
+- **Mode-specific properties** — `model`, `backend`, `system`, `user`, `multi`, and `reasoning_effort` are flagged (C023) when set on a non-`llm` router; `over`, `as`, `key`, and `depends_on` belong to `fan_out_each`. (`provider` is meaningful only to `llm` routers too, but is not compiler-gated — it is silently accepted elsewhere.)
 - **Missing model and backend on LLM routers** — if neither `model` nor `backend` is set, a warning is emitted (the built-in default model will be used at runtime).
 - **Conditional edges on LLM routers** — LLM routers must use unconditional edges because the LLM decides the route, not edge conditions.
+- **Malformed per-item fan-out** — `fan_out_each` requires `over:`, exactly one unconditional outgoing template edge, and `key:` whenever `depends_on:` is set.

@@ -15,9 +15,15 @@ interface Props {
   onUpdate: () => void;
   onUninstall: () => void;
   onClose: () => void;
-  /** Anonymous viewers download the `.botz` (bots) or copy the CLI
-   *  install command (plugins) instead of installing. */
+  /** Viewers without an installable workspace (anonymous, restricted,
+   *  or any cloud tenant — the server refuses install in cloud mode)
+   *  download the `.botz` (bots) or copy the CLI install command
+   *  (plugins) instead of installing. */
   anonymous?: boolean;
+  /** Signed-in cloud tenant: same affordances as anonymous, but the
+   *  footer explains installs happen on a local studio instead of
+   *  inviting them to "sign in". */
+  cloud?: boolean;
 }
 
 /** MarketplaceDetail is the right-side drawer that opens when the
@@ -33,6 +39,7 @@ export function MarketplaceDetail({
   onUninstall,
   onClose,
   anonymous = false,
+  cloud = false,
 }: Props) {
   const label = entry.display_name?.trim() || entry.name;
   const isPlugin = (entry.kind ?? "bot") === "plugin";
@@ -63,7 +70,14 @@ export function MarketplaceDetail({
         <>
           <span className="mr-auto text-caption text-fg-subtle">
             {anonymous ? (
-              isPlugin ? (
+              cloud ? (
+                <>
+                  Installing runs on a local studio pointed at your
+                  workspace — {isPlugin ? "copy the CLI command" : (
+                    <>download the <code className="text-fg-default">.botz</code> bundle</>
+                  )} and install there.
+                </>
+              ) : isPlugin ? (
                 <>
                   Copy the CLI command, download the source{" "}
                   <code className="text-fg-default">.zip</code>, or sign in to install.

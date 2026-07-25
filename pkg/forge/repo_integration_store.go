@@ -44,6 +44,10 @@ type RepoIntegration struct {
 	// LastSyncedAt is the high-water mark of the last successful issue sync,
 	// passed as the `since` filter on the next sweep for incremental sync.
 	LastSyncedAt time.Time `bson:"last_synced_at,omitempty" json:"last_synced_at,omitempty"`
+	// MinAuthorRole is the minimum repo role (gitlab vocabulary; "" →
+	// developer ≡ write) an issue author must hold for their synced card to
+	// be stamped triage:auto (auto-triage) instead of parked needs:approval.
+	MinAuthorRole string `bson:"min_author_role,omitempty" json:"min_author_role,omitempty"`
 
 	CreatedBy string    `bson:"created_by" json:"created_by"`
 	CreatedAt time.Time `bson:"created_at" json:"created_at"`

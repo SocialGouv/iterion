@@ -6,7 +6,7 @@ dispatches tickets, verifies whether issues are still relevant against
 the code and git history, and remembers the session (same LLM session
 across turns + a cross-run `CONTEXT_BRIEF.md`).
 
-## Shape (v2)
+## Shape (v3)
 
 ```
 seed (compute) → nexie (agent) → gate (compute) ── is_close ──▶ done
@@ -76,5 +76,5 @@ All under [`skills/`](skills/), mirrored to `<workspace>/.claude/skills/`
 at run start: `whats-next` (playbook), `iterion-board`,
 `iterion-bot-catalog` (generated — edit bot manifests, not the file),
 `iterion-label-vocabulary`, `repo-survey`, `roadmap-synthesis`,
-`priority-elicitation`, `session-continuity`, `iterion-dsl-quickref`,
-`dogfood-cycle`.
+`operator-arbitrage`, `factory-ops`, `session-continuity`,
+`iterion-dsl-quickref`, `dogfood-cycle`.

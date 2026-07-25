@@ -262,6 +262,14 @@ func mirrorBundleSkills(workDir string, b *bundle.Bundle, logger *iterlog.Logger
 			mirrored++
 			continue
 		}
+		// Only .md files are skills. Anything else at the top level
+		// (.gitkeep placeholders, editor droppings) must be skipped:
+		// a non-.md name keeps its full basename as the stem, so its
+		// directory form and flat alias collide on the SAME path and
+		// the mirror errors with "is a directory".
+		if !strings.HasSuffix(name, ".md") {
+			continue
+		}
 		// File skill → both the directory form (native Skill-tool discovery)
 		// and the flat <name>.md alias (prompt Reads). Shared with
 		// MirrorSingleSkill via mirrorFileSkill.

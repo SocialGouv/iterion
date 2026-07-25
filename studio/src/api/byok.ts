@@ -32,6 +32,8 @@ export interface OAuthConnection {
   scopes?: string[];
   access_token_expires_at?: string;
   last_refreshed_at?: string;
+  /** False when the stored payload has no refresh token — only a manual reconnect renews it. */
+  refreshable?: boolean;
   created_at: string;
   updated_at: string;
 }

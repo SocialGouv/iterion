@@ -154,7 +154,7 @@ Status legend: ✅ implemented · 🚧 planned.
 | Supervisors | `TestLive_Feat_Supervisor` | ✅ |
 | Cursors | `TestLive_Feat_Cursors` | ✅ |
 | Board capabilities | `TestLive_Feat_BoardCaps` | ✅ |
-| rtk compression | `TestLive_Feat_Rtk` (rtk binary) | ✅ |
+| rtk compression | `TestLive_Feat_Compress` (rtk binary) | ✅ |
 | Verified Action recovery | `TestLive_Feat_VerifiedAction` | ✅ |
 | Budget + resume + fork | `TestLive_Feat_Budget`, `_BudgetResume`, `_Fork` | ✅ |
 | Worktree finalization | `TestLive_Feat_Worktree` | ✅ |

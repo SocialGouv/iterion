@@ -1,5 +1,3 @@
-[← docs index](README.md) · [← desktop-qa-checklist.md](desktop-qa-checklist.md) · [← desktop-distribution.md](desktop-distribution.md)
-
 # Desktop — release checklist
 
 Walk this checklist before pushing a `desktop-v*` (or `v*` if CLI + desktop release together) tag. It's the gate between "code is QA-clean on every platform" (covered by [desktop-qa-checklist.md](desktop-qa-checklist.md)) and "the release is published, signed, and announced".

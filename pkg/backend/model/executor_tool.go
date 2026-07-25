@@ -289,7 +289,7 @@ func (e *ClawExecutor) runToolNodeCore(
 	// `[detached HEAD ...]` line, a `script: js` body's console.error)
 	// without that prose breaking the JSON parse downstream.
 	// CombinedOutput() conflated the two and poisoned the parse.
-	stdoutBytes, runErr, stderrStr := runWithSeparateStreams(cmd)
+	stdoutBytes, stderrStr, runErr := runWithSeparateStreams(cmd)
 	outputStr := string(stdoutBytes)
 	duration := time.Since(start)
 
@@ -416,16 +416,16 @@ func (e *ClawExecutor) checkToolNodePolicy(ctx context.Context, node *ir.ToolNod
 }
 
 // runWithSeparateStreams runs cmd with stdout and stderr captured into
-// distinct buffers. Returns (stdout bytes, run error, stderr string).
+// distinct buffers. Returns (stdout bytes, stderr string, run error).
 // Use this for tool nodes where downstream needs to parse stdout as a
 // structured payload while leaving stderr free for diagnostic chatter.
-func runWithSeparateStreams(cmd *exec.Cmd) ([]byte, error, string) {
+func runWithSeparateStreams(cmd *exec.Cmd) ([]byte, string, error) {
 	var stderrBuf bytes.Buffer
 	cmd.Stderr = &stderrBuf
 	stdoutBytes, runErr := cmd.Output()
 	// exec.ExitError carries stderr it captured before we set ours; the
 	// buffer we provided is still the source of truth in our path.
-	return stdoutBytes, runErr, stderrBuf.String()
+	return stdoutBytes, stderrBuf.String(), runErr
 }
 
 // combineStreamsForLog formats stdout + stderr into a single string for
@@ -499,7 +499,8 @@ func (e *ClawExecutor) scriptRecipe(ctx context.Context, node *ir.ToolNode, inpu
 			// Materialise secret placeholders into the executed script body
 			// only. `resolved` (placeholder form) stays the value passed to
 			// hooks/logs, so the real secret never reaches the event stream.
-			if _, werr := tmpFile.WriteString(e.secretGuard.MaterializeShell(resolved)); werr != nil {
+			body := e.secretGuard.MaterializeShell(resolved)
+			if _, werr := tmpFile.WriteString(body); werr != nil {
 				_ = tmpFile.Close()
 				cleanup()
 				return nil, nil, fmt.Errorf("model: tool node %q: write temp script: %w", node.ID, werr)
@@ -508,9 +509,31 @@ func (e *ClawExecutor) scriptRecipe(ctx context.Context, node *ir.ToolNode, inpu
 				cleanup()
 				return nil, nil, fmt.Errorf("model: tool node %q: close temp script: %w", node.ID, cerr)
 			}
+			base := filepath.Base(tmpPath)
+			// Copy-based sandboxes (kubernetes: workspace tar-copied at
+			// Prepare time) never see a host-side file created mid-run, so
+			// the script must ALSO be pushed through the write-through seam.
+			// The in-pod copy is removed on cleanup — a stray workspace
+			// dotfile would otherwise be swept up by a later `git add -A`.
+			if e.sandbox != nil && !e.nodeOptsOutOfSandbox(toolNodeOptOut) {
+				if refresher, ok := e.sandbox.(sandbox.WorkspaceFileRefresher); ok {
+					if rerr := refresher.RefreshWorkspaceFile(ctx, base, []byte(body)); rerr != nil {
+						cleanup()
+						return nil, nil, fmt.Errorf("model: tool node %q: write script into sandbox: %w", node.ID, rerr)
+					}
+					hostCleanup := cleanup
+					sb := e.sandbox
+					cleanup = func() {
+						hostCleanup()
+						rmCtx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+						defer cancel()
+						_, _ = sb.Exec(rmCtx, []string{"rm", "-f", base}, sandbox.ExecOpts{})
+					}
+				}
+			}
 			// Pass just the basename for the in-sandbox view (the bind mount
 			// uses the same path; portable whether we run via sandbox or host).
-			return e.toolNodeScriptCommand(ctx, interp, filepath.Base(tmpPath)), cleanup, nil
+			return e.toolNodeScriptCommand(ctx, interp, base), cleanup, nil
 		}
 }
 
@@ -543,9 +566,14 @@ func (e *ClawExecutor) toolNodeScriptCommand(ctx context.Context, interpreter, s
 	cmd := exec.CommandContext(ctx, interpreter, scriptBasename)
 	configureToolNodeProcessGroup(cmd)
 	// Host path only: sandboxed commands already see the variable from the
-	// container env (the same dir is bind-mounted there).
-	if e.artifactFilesDir != "" {
-		cmd.Env = append(os.Environ(), "ITERION_ARTIFACT_FILES_DIR="+e.artifactFilesDir)
+	// container env (the same dir is bind-mounted there). runExtraEnv
+	// carries run-level provisioning (devbox profile PATH), appended
+	// after the inherited env so on a duplicate key it wins.
+	if e.artifactFilesDir != "" || len(e.runExtraEnv) > 0 {
+		cmd.Env = append(os.Environ(), e.runExtraEnv...)
+		if e.artifactFilesDir != "" {
+			cmd.Env = append(cmd.Env, "ITERION_ARTIFACT_FILES_DIR="+e.artifactFilesDir)
+		}
 	}
 	if e.workDir != "" {
 		cmd.Dir = e.workDir
@@ -587,9 +615,11 @@ func (e *ClawExecutor) toolNodeCommand(ctx context.Context, resolved string, env
 		return e.sandbox.Command(ctx, []string{"bash", "-c", resolved}, sandbox.ExecOpts{Env: env})
 	}
 	cmd := exec.CommandContext(ctx, "bash", "-c", resolved)
-	configureToolNodeProcessGroup(cmd)
-	if len(env) > 0 || e.artifactFilesDir != "" {
+	if len(env) > 0 || e.artifactFilesDir != "" || len(e.runExtraEnv) > 0 {
 		cmd.Env = os.Environ()
+		// Run-level provisioning (devbox profile PATH) — appended after
+		// the inherited env so on a duplicate key it wins.
+		cmd.Env = append(cmd.Env, e.runExtraEnv...)
 		// Host path only: sandboxed commands already see the variable from
 		// the container env (the same dir is bind-mounted there).
 		if e.artifactFilesDir != "" {

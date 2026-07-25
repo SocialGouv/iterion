@@ -1,5 +1,3 @@
-[← Documentation index](README.md)
-
 # Skill library
 
 The **skill library** is a curated, standalone collection of Claude-Code-style
@@ -84,6 +82,20 @@ separator, leading dot, empty) warns at compile time as **C199**.
 same-named bundle or plugin skill wins, and a file you placed by hand in
 `.claude/skills/` (no `.iterion-managed` marker) shadows all three. Collisions
 are logged, never silent.
+
+### Cloud runs (ADR-079)
+
+The library lives on the filesystem (`~/.iterion/skills`), which a **cloud
+runner pod** does not have — its iterion home is ephemeral and empty. A DSL
+`skills:` reference travels inside the IR as a bare *name*, so before
+**ADR-079** the pod resolved that name against an empty store and mirrored
+nothing, warning but not failing (the reference is soft by design).
+
+Now the launching instance resolves each referenced skill's body + description
+and ships them on the queue message (`RunMessage.Contributions`, schema v5);
+the runner mirrors that payload through the same collision policy, so
+precedence and the `## Skills` prompt hint are identical to a local run. No
+authoring change is required — reference skills by name exactly as before.
 
 ### Scope
 

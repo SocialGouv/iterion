@@ -14,11 +14,11 @@ import SecretsTab from "@/views/teams/tabs/SecretsTab";
 import BindingsTab from "@/views/teams/tabs/BindingsTab";
 import ModelProvidersTab from "./ModelProvidersTab";
 
-// FORGES_LABEL is the user-facing name of the forge-connection tab. It's a
-// single constant on purpose: we're comparing "Forges" / "Git forges" /
-// "Repositories" live to see which reads most intuitively — flip this one
-// string to try another.
-const FORGES_LABEL = "Forges";
+// FORGES_LABEL is the user-facing name of the forge-connection tab. The
+// internal id stays `forges` so deep links keep working; the label
+// matches the "Repositories" section heading and the wizard CTA so the
+// operator navigates one vocabulary instead of three.
+const FORGES_LABEL = "Repositories";
 
 // Integrations is its own top-level destination (/integrations), distinct from
 // "Team settings" (/teams/:id, reached from the account chip). Everything here
@@ -71,7 +71,7 @@ export default function IntegrationsPage() {
         <div className="max-w-6xl mx-auto p-3 sm:p-6">
           <CloudOnlyNotice
             title="Integrations"
-            feature="Team integration management (forges, webhooks, secrets, model providers)"
+            feature="Team integration management (repositories, webhooks, secrets, model providers)"
           />
         </div>
       </div>
@@ -83,8 +83,8 @@ export default function IntegrationsPage() {
       <div className="h-full overflow-auto">
         <div className="max-w-6xl mx-auto p-3 sm:p-6">
           <InlineBanner tone="info" layout="inline">
-            Select a team to manage its integrations. Integrations (forges, webhooks, secrets,
-            model providers) are team-scoped.
+            Select a team to manage its integrations. Integrations (repositories, webhooks,
+            secrets, model providers) are team-scoped.
           </InlineBanner>
         </div>
       </div>

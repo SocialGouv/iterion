@@ -31,6 +31,10 @@ interface TicketTabProps {
   allAssignees: string[];
   fields: Record<string, string>;
   setFields: (v: Record<string, string>) => void;
+  // Pre-built repo-first scoping picker/note; IssueModal owns the state
+  // (uses useActiveRepo + issue.external) and passes down a ready node.
+  // Undefined outside cloud mode (or with zero connected repos).
+  repositoryField?: React.ReactNode;
 }
 
 export function TicketTab({
@@ -51,6 +55,7 @@ export function TicketTab({
   allAssignees,
   fields,
   setFields,
+  repositoryField,
 }: TicketTabProps) {
   return (
     <div className="space-y-3 py-3">
@@ -124,6 +129,8 @@ export function TicketTab({
           />
         </Field>
       </div>
+
+      {repositoryField}
 
       {initial &&
         (initial.runs?.length || initial.last_run_id || initial.last_workdir) && (

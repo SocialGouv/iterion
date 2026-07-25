@@ -45,6 +45,39 @@ func (s *Store) CreateRun(ctx context.Context, id, workflowName string, inputs m
 	return r, nil
 }
 
+var _ store.ParentedRunCreator = (*Store)(nil)
+
+// CreateChildRun inserts a new run document (status=queued, like
+// CreateRun) with ParentRunID stamped in the same insert, so the cloud
+// launch path persists the parent link without a follow-up SaveRun.
+// Implements store.ParentedRunCreator.
+func (s *Store) CreateChildRun(ctx context.Context, id, workflowName, parentRunID string, inputs map[string]any) (*store.Run, error) {
+	now := time.Now().UTC()
+	r := &store.Run{
+		FormatVersion:  store.RunFormatVersion,
+		ID:             id,
+		WorkflowName:   workflowName,
+		ParentRunID:    parentRunID,
+		Status:         store.RunStatusQueued,
+		Inputs:         inputs,
+		CreatedAt:      now,
+		UpdatedAt:      now,
+		QueuedAt:       &now,
+		SchemaVersion:  SchemaVersion,
+		CASVersion:     1,
+		LaunchEnv:      store.CaptureLaunchEnv(),
+		IterionVersion: appinfo.FullVersion(),
+	}
+	stampTenant(ctx, r)
+	if _, err := s.runs.InsertOne(ctx, r); err != nil {
+		if mongo.IsDuplicateKeyError(err) {
+			return nil, fmt.Errorf("store/mongo: run %s already exists", id)
+		}
+		return nil, fmt.Errorf("store/mongo: insert child run: %w", err)
+	}
+	return r, nil
+}
+
 // LoadRun fetches the run document by _id. The query is implicitly
 // scoped by tenant_id when the ctx carries one — a tenant-scoped
 // caller asking for a run that belongs to another tenant gets a
@@ -56,6 +89,9 @@ func (s *Store) LoadRun(ctx context.Context, id string) (*store.Run, error) {
 		fmt.Sprintf("store/mongo: load run %s", id))
 	if err != nil {
 		return nil, err
+	}
+	if r.DeletedAt != nil {
+		return nil, fmt.Errorf("store/mongo: run %s: %w", id, store.ErrRunDeleted)
 	}
 	if r.SchemaVersion > SchemaVersion {
 		return nil, fmt.Errorf("store/mongo: run %s schema version %d unknown, upgrade required", id, r.SchemaVersion)
@@ -120,20 +156,78 @@ func (s *Store) DeleteRun(ctx context.Context, id string) error {
 			return fmt.Errorf("store/mongo: delete %s for run %s: %w", c.name, id, err)
 		}
 	}
-	if _, err := s.runs.DeleteOne(ctx, withTenantFilter(ctx, bson.M{"_id": id})); err != nil {
-		return fmt.Errorf("store/mongo: delete run %s: %w", id, err)
+	// Durable tombstone (the Mongo twin of the filesystem .deleted
+	// marker): strip the run document down to a skeleton stamped
+	// deleted_at instead of removing it, so a late writer's
+	// upsert/update matches the tombstone and gets ErrRunDeleted
+	// instead of silently resurrecting the run. Reaped by runs prune.
+	now := time.Now().UTC()
+	tomb := bson.M{"$set": bson.M{"deleted_at": now, "status": "deleted", "updated_at": now},
+		"$unset": bson.M{"checkpoint": "", "inputs": "", "launch_env": "", "model_overrides": "",
+			"budget": "", "loop_overrides": "", "budget_raises": "", "attachments": ""}}
+	if _, err := s.runs.UpdateOne(ctx, withTenantFilter(ctx, bson.M{"_id": id}), tomb); err != nil {
+		return fmt.Errorf("store/mongo: tombstone run %s: %w", id, err)
 	}
 	return nil
+}
+
+// PruneDeletionMarkers reaps tombstone skeleton docs older than cutoff.
+func (s *Store) PruneDeletionMarkers(ctx context.Context, cutoff time.Time) (int, error) {
+	res, err := s.runs.DeleteMany(ctx, withTenantFilter(ctx, bson.M{
+		"deleted_at": bson.M{"$exists": true, "$lt": cutoff},
+	}))
+	if err != nil {
+		return 0, fmt.Errorf("store/mongo: prune deletion markers: %w", err)
+	}
+	return int(res.DeletedCount), nil
+}
+
+// runDeleted reports whether the run document carries the deletion
+// tombstone. Used by the append-shaped writers (events, messages,
+// interactions, attachments) whose inserts have no run-doc filter to
+// piggyback the predicate on.
+func (s *Store) runDeleted(ctx context.Context, id string) bool {
+	var doc struct {
+		DeletedAt *time.Time `bson:"deleted_at"`
+	}
+	err := s.runs.FindOne(ctx, withTenantFilter(ctx, bson.M{"_id": id}),
+		options.FindOne().SetProjection(bson.M{"deleted_at": 1})).Decode(&doc)
+	return err == nil && doc.DeletedAt != nil
+}
+
+// guardNotDeleted is the shared typed refusal for tombstoned runs.
+func (s *Store) guardNotDeleted(ctx context.Context, id string) error {
+	if s.runDeleted(ctx, id) {
+		return fmt.Errorf("store/mongo: run %s: %w", id, store.ErrRunDeleted)
+	}
+	return nil
+}
+
+// notDeleted adds the tombstone-exclusion predicate to a runs-collection
+// filter, so UpdateOne-shaped writers can never land on a skeleton doc.
+func notDeleted(filter bson.M) bson.M {
+	filter["deleted_at"] = bson.M{"$exists": false}
+	return filter
 }
 
 // SaveRun replaces the run document atomically. Tenant-scoped
 // callers can only overwrite documents belonging to their tenant.
 func (s *Store) SaveRun(ctx context.Context, r *store.Run) error {
+	if err := s.guardNotDeleted(ctx, r.ID); err != nil {
+		return err
+	}
 	r.UpdatedAt = time.Now().UTC()
 	r.SchemaVersion = SchemaVersion
 	stampTenant(ctx, r)
-	_, err := s.runs.ReplaceOne(ctx, withTenantFilter(ctx, bson.M{"_id": r.ID}), r, options.Replace().SetUpsert(true))
+	// The notDeleted predicate closes the guard's TOCTOU window: a
+	// DeleteRun racing between the check above and this write leaves a
+	// tombstoned doc the filter no longer matches, and the upsert then
+	// trips the duplicate-_id error instead of resurrecting the run.
+	_, err := s.runs.ReplaceOne(ctx, notDeleted(withTenantFilter(ctx, bson.M{"_id": r.ID})), r, options.Replace().SetUpsert(true))
 	if err != nil {
+		if mongo.IsDuplicateKeyError(err) {
+			return fmt.Errorf("store/mongo: run %s: %w", r.ID, store.ErrRunDeleted)
+		}
 		return fmt.Errorf("store/mongo: replace run %s: %w", r.ID, err)
 	}
 	return nil
@@ -171,6 +265,47 @@ func (s *Store) RemoveWatchedIssues(ctx context.Context, runID string, issueIDs 
 		"$inc":  bson.M{"version": 1},
 	}
 	return s.updateWatched(ctx, runID, update)
+}
+
+// SetSubbotChild records childRunID under key in the parent run's
+// subbot_children map. Per-key $set is atomic in Mongo, so concurrent
+// fan-out branches writing distinct keys don't conflict. No-op when key
+// is empty. key must be a Mongo-safe field name (no '.'/'$') — the engine
+// sanitizes it at construction.
+func (s *Store) SetSubbotChild(ctx context.Context, parentRunID, key, childRunID string) error {
+	if key == "" {
+		return nil
+	}
+	update := bson.M{
+		"$set": bson.M{"subbot_children." + key: childRunID, "updated_at": time.Now().UTC()},
+		"$inc": bson.M{"version": 1},
+	}
+	return s.updateSubbotChildren(ctx, parentRunID, update)
+}
+
+// ClearSubbotChild removes key from the parent run's subbot_children map.
+// No-op when key is empty.
+func (s *Store) ClearSubbotChild(ctx context.Context, parentRunID, key string) error {
+	if key == "" {
+		return nil
+	}
+	update := bson.M{
+		"$unset": bson.M{"subbot_children." + key: ""},
+		"$set":   bson.M{"updated_at": time.Now().UTC()},
+		"$inc":   bson.M{"version": 1},
+	}
+	return s.updateSubbotChildren(ctx, parentRunID, update)
+}
+
+func (s *Store) updateSubbotChildren(ctx context.Context, runID string, update bson.M) error {
+	res, err := s.runs.UpdateOne(ctx, withTenantFilter(ctx, bson.M{"_id": runID}), update)
+	if err != nil {
+		return fmt.Errorf("store/mongo: update subbot children %s: %w", runID, err)
+	}
+	if res.MatchedCount == 0 {
+		return fmt.Errorf("store/mongo: run %s not found", runID)
+	}
+	return nil
 }
 
 func (s *Store) updateWatched(ctx context.Context, runID string, update bson.M) ([]string, error) {
@@ -214,7 +349,7 @@ func (s *Store) watchedIssues(ctx context.Context, runID string) ([]string, erro
 func (s *Store) ListRuns(ctx context.Context) ([]string, error) {
 	cur, err := s.runs.Find(
 		ctx,
-		withTenantFilter(ctx, bson.M{}),
+		notDeleted(withTenantFilter(ctx, bson.M{})),
 		options.Find().SetProjection(bson.M{"_id": 1}).SetSort(bson.D{{Key: "created_at", Value: 1}}),
 	)
 	if err != nil {
@@ -249,6 +384,18 @@ func (s *Store) ListRunsBySourceIssue(ctx context.Context, issueID string) ([]st
 	return s.listRunIDsBy(ctx, bson.M{"source.issue_id": issueID}, "list runs by source issue")
 }
 
+// ListRunsBySchedule returns the ids of runs whose source.schedule_id
+// equals scheduleID (the schedule←run reverse edge used by the
+// pkg/schedgate overlap gate), sorted by created_at ascending. Indexed
+// by (tenant_id, source.schedule_id, created_at); tenant scope is
+// enforced when ctx carries a tenant_id.
+func (s *Store) ListRunsBySchedule(ctx context.Context, scheduleID string) ([]string, error) {
+	if scheduleID == "" {
+		return []string{}, nil
+	}
+	return s.listRunIDsBy(ctx, bson.M{"source.schedule_id": scheduleID}, "list runs by schedule")
+}
+
 // ListChildRuns returns the ids of runs whose parent_run_id equals
 // parentRunID (a run's shard/child subtree), sorted by created_at
 // ascending. Indexed by (tenant_id, parent_run_id, created_at); tenant
@@ -266,7 +413,7 @@ func (s *Store) ListChildRuns(ctx context.Context, parentRunID string) ([]string
 func (s *Store) listRunIDsBy(ctx context.Context, filter bson.M, what string) ([]string, error) {
 	cur, err := s.runs.Find(
 		ctx,
-		withTenantFilter(ctx, filter),
+		notDeleted(withTenantFilter(ctx, filter)),
 		options.Find().SetProjection(bson.M{"_id": 1}).SetSort(bson.D{{Key: "created_at", Value: 1}}),
 	)
 	if err != nil {
@@ -332,6 +479,65 @@ func (s *Store) ListStaleActiveRuns(ctx context.Context, statuses []store.RunSta
 	return out, nil
 }
 
+// NotifiableRunRef is one row of ListNotifiableRuns: run id + the fields
+// the usernotify sweep needs to derive the notification episode key
+// (status + pending interaction + updated_at) and to keyset-paginate,
+// without loading the run.
+type NotifiableRunRef struct {
+	ID         string    `bson:"_id"`
+	Status     string    `bson:"status"`
+	UpdatedAt  time.Time `bson:"updated_at"`
+	Checkpoint struct {
+		InteractionID string `bson:"interaction_id"`
+	} `bson:"checkpoint"`
+}
+
+// ListNotifiableRuns returns one page of the runs the usernotify
+// reconciliation sweep should (re-)examine: every run currently paused on
+// a human interaction (no time bound — it is still waiting, however old),
+// plus runs that reached a terminal status since `since`; restricted to
+// updated_at < `before` when non-zero (the sweep's keyset cursor, so a
+// backlog beyond one page cannot starve the oldest rows). Platform-level
+// scan: callers pass a WithoutTenantFilter ctx. The sent-notifications
+// claim makes replays idempotent, so over-listing is cheap and
+// under-listing is the only real failure.
+func (s *Store) ListNotifiableRuns(ctx context.Context, since, before time.Time, limit int) ([]NotifiableRunRef, error) {
+	if limit <= 0 || limit > 500 {
+		limit = 500
+	}
+	terminal := []string{
+		string(store.RunStatusFinished),
+		string(store.RunStatusFailed),
+		string(store.RunStatusFailedResumable),
+		string(store.RunStatusCancelled),
+	}
+	filter := bson.M{"$or": []bson.M{
+		{"status": string(store.RunStatusPausedWaitingHuman)},
+		{"status": bson.M{"$in": terminal}, "updated_at": bson.M{"$gte": since}},
+	}}
+	if !before.IsZero() {
+		filter = bson.M{"$and": []bson.M{
+			{"updated_at": bson.M{"$lt": before}},
+			filter,
+		}}
+	}
+	cur, err := s.runs.Find(ctx,
+		withTenantFilter(ctx, filter),
+		options.Find().
+			SetProjection(bson.M{"_id": 1, "status": 1, "updated_at": 1, "checkpoint.interaction_id": 1}).
+			SetSort(bson.M{"updated_at": -1}).
+			SetLimit(int64(limit)))
+	if err != nil {
+		return nil, fmt.Errorf("store/mongo: list notifiable runs: %w", err)
+	}
+	defer cur.Close(ctx)
+	var out []NotifiableRunRef
+	if err := cur.All(ctx, &out); err != nil {
+		return nil, fmt.Errorf("store/mongo: decode notifiable runs: %w", err)
+	}
+	return out, nil
+}
+
 // CountActiveRunsByTenant counts the org's queued + running runs.
 // Consumed by the server's launch gate (per-org concurrency cap) with
 // an explicit tenant — deliberately NOT the ctx-derived tenant filter,
@@ -351,6 +557,27 @@ func (s *Store) CountActiveRunsByTenant(ctx context.Context, tenantID string) (i
 // UpdateRunStatus mutates only the status / error / timestamps and
 // bumps the CAS counter. Resume paths clear the FinishedAt sentinel
 // (plan parity with FilesystemRunStore.UpdateRunStatus).
+// PatchRunSteering persists the live-steering state (loop grants +
+// absolute budget raises) with a partial $set, tenant-scoped. Partial:
+// nil inputs leave the stored field untouched.
+func (s *Store) PatchRunSteering(ctx context.Context, id string, loopOverrides map[string]int, budgetRaises *store.RunBudgetRaises) error {
+	set := bson.M{"updated_at": time.Now().UTC()}
+	if loopOverrides != nil {
+		set["loop_overrides"] = loopOverrides
+	}
+	if budgetRaises != nil {
+		set["budget_raises"] = budgetRaises
+	}
+	res, err := s.runs.UpdateOne(ctx, notDeleted(withTenantFilter(ctx, bson.M{"_id": id})), bson.M{"$set": set})
+	if err != nil {
+		return fmt.Errorf("store/mongo: patch run steering: %w", err)
+	}
+	if res.MatchedCount == 0 {
+		return store.ErrRunNotFound
+	}
+	return nil
+}
+
 func (s *Store) UpdateRunStatus(ctx context.Context, id string, status store.RunStatus, runErr string) error {
 	now := time.Now().UTC()
 	set := bson.M{
@@ -378,7 +605,7 @@ func (s *Store) UpdateRunStatus(ctx context.Context, id string, status store.Run
 	if len(unset) > 0 {
 		update["$unset"] = unset
 	}
-	return mongoutil.UpdateOneChecked(ctx, s.runs, withTenantFilter(ctx, bson.M{"_id": id}), update,
+	return mongoutil.UpdateOneChecked(ctx, s.runs, notDeleted(withTenantFilter(ctx, bson.M{"_id": id})), update,
 		fmt.Errorf("store/mongo: run %s not found", id), fmt.Sprintf("store/mongo: update status %s", id))
 }
 

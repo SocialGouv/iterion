@@ -86,12 +86,31 @@ func ParseMode(s string) Mode {
 // node, workflow, or the ITERION_COMPRESS env) still wins. First non-empty
 // level wins; all empty → def.
 func ResolveWithDefault(override, node, workflow, envDefault string, def Mode) Mode {
-	for _, s := range []string{override, node, workflow, envDefault} {
-		if strings.TrimSpace(s) != "" {
-			return ParseMode(s)
+	m, _ := ResolveWithDefaultSourced(override, node, workflow, envDefault, def)
+	return m
+}
+
+// ResolveWithDefaultSourced is ResolveWithDefault plus the winning
+// precedence level ("run_override" | "node" | "workflow" | "env" |
+// "default") — the studio's settings-provenance caption reads it so an
+// operator can see WHY a knob is what it is (e.g. an env var set but
+// surclassed).
+func ResolveWithDefaultSourced(override, node, workflow, envDefault string, def Mode) (Mode, string) {
+	levels := []struct {
+		value  string
+		source string
+	}{
+		{override, "run_override"},
+		{node, "node"},
+		{workflow, "workflow"},
+		{envDefault, "env"},
+	}
+	for _, l := range levels {
+		if strings.TrimSpace(l.value) != "" {
+			return ParseMode(l.value), l.source
 		}
 	}
-	return def
+	return def, "default"
 }
 
 // ResolveToolNode is the compression mode for a tool node. Tool-node output is

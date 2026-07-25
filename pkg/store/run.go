@@ -19,6 +19,14 @@ import (
 // wraps os.ErrNotExist, so errors.Is(err, os.ErrNotExist) also holds there.
 var ErrRunNotFound = errors.New("store: run not found")
 
+// ErrRunDeleted marks a run that was DELIBERATELY deleted (DeleteRun
+// left a durable tombstone). Distinct from ErrRunNotFound so late
+// writers — a detached engine goroutine, a stale runner, a replayed
+// message — get a hard, typed refusal instead of silently resurrecting
+// the run by re-creating its directory / upserting its document. The
+// HTTP layer maps it to 410 Gone.
+var ErrRunDeleted = errors.New("store: run was deleted")
+
 // ---------------------------------------------------------------------------
 // RunStatus — lifecycle state of a run
 // ---------------------------------------------------------------------------
@@ -112,22 +120,22 @@ type RunModelOverride struct {
 type RunBudget struct {
 	MaxCostUSD          float64 `json:"max_cost_usd,omitempty" bson:"max_cost_usd,omitempty"`
 	MaxTokens           int     `json:"max_tokens,omitempty" bson:"max_tokens,omitempty"`
+	WarnTokens          int     `json:"warn_tokens,omitempty" bson:"warn_tokens,omitempty"`
 	MaxIterations       int     `json:"max_iterations,omitempty" bson:"max_iterations,omitempty"`
 	MaxDuration         string  `json:"max_duration,omitempty" bson:"max_duration,omitempty"`
 	MaxParallelBranches int     `json:"max_parallel_branches,omitempty" bson:"max_parallel_branches,omitempty"`
 }
 
-// WorktreeOwnership records how Iterion acquired lifecycle authority over a
-// linked worktree. Managed worktrees are created under the run store by
-// `worktree: auto`; delegated worktrees are pre-existing isolated worktrees
-// explicitly handed to the engine by its launcher. Delegation grants Git
-// finalization authority, but teardown ownership remains with the launcher.
-type WorktreeOwnership string
-
-const (
-	WorktreeOwnershipManaged   WorktreeOwnership = "managed"
-	WorktreeOwnershipDelegated WorktreeOwnership = "delegated"
-)
+// RunBudgetRaises is the live-steering (raise_budget) counterpart of
+// RunBudget: the ABSOLUTE caps granted mid-run, persisted so resume
+// re-applies them (raise-only) over the workflow's declared budget.
+// Zero fields were never raised.
+type RunBudgetRaises struct {
+	MaxCostUSD    float64 `json:"max_cost_usd,omitempty" bson:"max_cost_usd,omitempty"`
+	MaxTokens     int     `json:"max_tokens,omitempty" bson:"max_tokens,omitempty"`
+	MaxIterations int     `json:"max_iterations,omitempty" bson:"max_iterations,omitempty"`
+	MaxDuration   string  `json:"max_duration,omitempty" bson:"max_duration,omitempty"`
+}
 
 type Run struct {
 	FormatVersion int    `json:"format_version" bson:"format_version"`
@@ -151,9 +159,18 @@ type Run struct {
 	ShardIndex   int    `json:"shard_index,omitempty" bson:"shard_index,omitempty"`
 	ShardCount   int    `json:"shard_count,omitempty" bson:"shard_count,omitempty"`
 	ShardLabel   string `json:"shard_label,omitempty" bson:"shard_label,omitempty"`
-	WorkflowName string `json:"workflow_name" bson:"workflow_name"`
-	WorkflowHash string `json:"workflow_hash,omitempty" bson:"workflow_hash,omitempty"` // SHA-256 of the .bot source at run start
-	FilePath     string `json:"file_path,omitempty" bson:"file_path,omitempty"`         // absolute .bot source path captured at launch (resume without re-supplying file)
+	// SubbotChildren maps a subbot-node execution key (node id +
+	// loop-iteration path + fan-out branch id) to the child run id that
+	// execution spawned. Written when the child is launched and cleared
+	// when its terminal output is consumed, so a PARENT resumed after a
+	// process restart RE-ATTACHES to the in-flight child (paused on its
+	// human gate, or since finished) instead of spawning a fresh one and
+	// losing the answered child's work. Empty for parents with no subbot
+	// nodes and for runs that predate this field. Set only on the parent.
+	SubbotChildren map[string]string `json:"subbot_children,omitempty" bson:"subbot_children,omitempty"`
+	WorkflowName   string            `json:"workflow_name" bson:"workflow_name"`
+	WorkflowHash   string            `json:"workflow_hash,omitempty" bson:"workflow_hash,omitempty"` // SHA-256 of the .bot source at run start
+	FilePath       string            `json:"file_path,omitempty" bson:"file_path,omitempty"`         // absolute .bot source path captured at launch (resume without re-supplying file)
 	// Preset is the in-source preset name selected at launch via
 	// `--preset <name>` (or the studio Launch modal). Persisted so
 	// `iterion resume` re-applies the same parameter set without the
@@ -177,6 +194,27 @@ type Run struct {
 	// budget meters with a denominator. Nil when the workflow declares
 	// no budget: block and no overrides applied. See RunBudget.
 	Budget *RunBudget `json:"budget,omitempty" bson:"budget,omitempty"`
+	// LoopOverrides is the accumulated per-loop iteration grant applied
+	// by live steering (bump_loop): loop name → extra iterations on top
+	// of the loop's declared/expr-resolved max. AUTHORITATIVE for
+	// enforcement across resume (the engine re-seeds from it); written
+	// by the engine goroutine via PatchRunSteering. Empty for runs
+	// never bumped.
+	LoopOverrides map[string]int `json:"loop_overrides,omitempty" bson:"loop_overrides,omitempty"`
+	// BudgetRaises captures the ABSOLUTE budget caps applied by live
+	// steering (raise_budget) — not deltas, so a resume on another
+	// machine re-applies the exact ceilings. AUTHORITATIVE for
+	// enforcement across resume (re-applied before the budget is
+	// rebuilt); raise-only vs the workflow's declared budget. Nil for
+	// runs never raised.
+	BudgetRaises *RunBudgetRaises `json:"budget_raises,omitempty" bson:"budget_raises,omitempty"`
+	// DeletedAt is the Mongo-side durable tombstone (the filesystem
+	// twin is the .deleted marker file): DeleteRun strips the run's
+	// data and leaves a skeleton doc carrying this stamp, so a late
+	// writer's upsert/update matches the tombstone and is refused
+	// (ErrRunDeleted) instead of resurrecting the run. Reaped by
+	// `iterion runs prune`.
+	DeletedAt *time.Time `json:"deleted_at,omitempty" bson:"deleted_at,omitempty"`
 	// BundleHash is the SHA-256 of the logical content (sorted
 	// (relative-path, file-bytes) sequence) of the `.botz` archive
 	// backing this run. Format-independent, so it is stable whether the
@@ -505,11 +543,13 @@ func removeWatchedIssues(existing, drop []string) []string {
 // known set today.
 const (
 	RunSourceKindDispatcher = "dispatcher"
+	RunSourceKindSchedule   = "schedule"
 )
 
 // RunSource captures who originated this run. Populated by the
-// dispatcher when an issue is claimed; empty for CLI / studio /
-// fork-spawned runs.
+// dispatcher when an issue is claimed and by the scheduled-launch
+// paths (host-cron, trigger spine, cloudsched); empty for CLI /
+// studio / fork-spawned runs.
 type RunSource struct {
 	// Kind is the producer of this run (see RunSourceKind* consts).
 	Kind string `json:"kind,omitempty" bson:"kind,omitempty"`
@@ -525,6 +565,16 @@ type RunSource struct {
 	// not re-fetched on resume, so a later title edit doesn't
 	// rewrite the historical run record.
 	IssueTitle string `json:"issue_title,omitempty" bson:"issue_title,omitempty"`
+	// ScheduleID is the stable schedule identity for
+	// RunSourceKindSchedule runs: ScheduleEntry.Name (host-cron),
+	// trigger.Subscription.ID (spine), cloudsched.ScheduledBot.ID
+	// (cloud). Deliberately distinct from IssueID — the overlap gate
+	// queries it (ListRunsBySchedule) and the issue index must not be
+	// polluted with schedule identities.
+	ScheduleID string `json:"schedule_id,omitempty" bson:"schedule_id,omitempty"`
+	// ScheduleName is the human label of the schedule when it differs
+	// from ScheduleID (display only).
+	ScheduleName string `json:"schedule_name,omitempty" bson:"schedule_name,omitempty"`
 }
 
 // ForkAnchor identifies where a forked run resumes inside the parent's
@@ -726,11 +776,25 @@ type AttachmentRecord struct {
 // Interaction — human input/output exchange
 // ---------------------------------------------------------------------------
 
+// Interaction kinds (ADR-081). The zero value ("") is a legacy/blocking
+// pause interaction — the run is paused_waiting_human on it.
+const (
+	// InteractionKindAsync is a non-blocking question posted by an
+	// interaction: async agent via the ask_user_async tool. The run keeps
+	// executing; pending = AnsweredAt == nil.
+	InteractionKindAsync = "async"
+	// InteractionKindAwait is the synthetic pause interaction created when
+	// an agent calls the await_answers tool while async questions are
+	// still pending. Its Questions carry the pending async interaction IDs.
+	InteractionKindAwait = "await"
+)
+
 // Interaction records a human pause/resume exchange.
 type Interaction struct {
 	ID          string         `json:"id" bson:"interaction_id"`
 	RunID       string         `json:"run_id" bson:"run_id"`
 	NodeID      string         `json:"node_id" bson:"node_id"`
+	Kind        string         `json:"kind,omitempty" bson:"kind,omitempty"` // "" (blocking pause) | InteractionKindAsync | InteractionKindAwait
 	RequestedAt time.Time      `json:"requested_at" bson:"requested_at"`
 	AnsweredAt  *time.Time     `json:"answered_at,omitempty" bson:"answered_at,omitempty"`
 	Questions   map[string]any `json:"questions,omitempty" bson:"questions,omitempty"`

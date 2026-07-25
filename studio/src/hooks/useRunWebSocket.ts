@@ -1,71 +1,37 @@
+// Run WebSocket client — the composition shell. The separable concerns
+// live under ./runWs/ (url derivation, connection policy, wire
+// protocol builders, microtask event coalescing, inbound message
+// routing, heartbeat management, alert side-channel); this hook owns
+// the ordering-sensitive connection lifecycle: connect/reconnect
+// choreography, socket handler wiring, and effect cleanup.
+
 import { useCallback, useEffect, useMemo, useRef } from "react";
 
-import { isSafeStoreParam, type RunEvent, type RunSnapshot } from "@/api/runs";
-import { toastForEvent } from "@/hooks/useRunToasts";
-import { buildWsUrl } from "@/lib/wsUrl";
 import { useRunStore, useRunStoreInstance } from "@/store/run";
-import { useUIStore } from "@/store/ui";
 
-interface WsEnvelope {
-  type: string;
-  payload?: unknown;
-  ack_id?: string;
-}
-
-// readStoreOverrideFromURL returns the current page's `?store=` query
-// param, if any. Same helper as in api/runs.ts but inlined to avoid an
-// import cycle (hooks → api → hooks would not actually cycle, but
-// keeping it local minimises coupling). The WS URL must carry the
-// override so the daemon's WS handler routes via resolveCrossStore
-// AND streams events from the foreign store (pkg/server/runs_ws.go's
-// streamEventsCrossStore path).
-function readStoreOverrideFromURL(): string {
-  if (typeof window === "undefined") return "";
-  try {
-    const v = new URLSearchParams(window.location.search).get("store");
-    // Defence-in-depth: validate the shape before forwarding to the
-    // daemon WS. Server still does its own check via resolveCrossStore,
-    // but a malformed value should be dropped client-side too.
-    return isSafeStoreParam(v) ? (v as string) : "";
-  } catch {
-    return "";
-  }
-}
-
-function appendStoreParam(wsURL: string): string {
-  const override = readStoreOverrideFromURL();
-  if (!override) return wsURL;
-  const sep = wsURL.includes("?") ? "&" : "?";
-  return `${wsURL}${sep}store=${encodeURIComponent(override)}`;
-}
-
-async function deriveWsUrl(runId: string): Promise<string> {
-  return appendStoreParam(
-    await buildWsUrl(`/ws/runs/${encodeURIComponent(runId)}`),
-  );
-}
-
-interface LogChunkPayload {
-  offset: number;
-  text: string;
-  total?: number;
-}
-
-// Application-level heartbeat. The browser auto-answers server WS ping
-// FRAMES but never surfaces them to JS, so an idle-but-alive run yields
-// zero observable inbound traffic and a half-open socket (peer vanished
-// without a FIN — laptop sleep, wifi switch, proxy/NAT idle-drop) is
-// never noticed: onclose never fires, no reconnect is scheduled, the
-// status pill stays "running" forever. We therefore ping at the JSON-
-// envelope layer and watch for ANY inbound frame (event/ack/pong) to
-// prove liveness; if none arrives within HEARTBEAT_STALE_MS we force a
-// reconnect. HEARTBEAT_STALE_MS tolerates one missed ping plus margin.
-const HEARTBEAT_MS = 20_000;
-const HEARTBEAT_STALE_MS = 45_000;
-
-// Terminal statuses never emit further events, so we stop the heartbeat
-// once the run reaches one (pinging a finished run is pointless churn).
-const TERMINAL_RUN_STATUSES = new Set(["finished", "failed", "cancelled"]);
+import { handleAlertEvent } from "./runWs/alerts";
+import { createEventBuffer } from "./runWs/eventBuffer";
+import { createHeartbeat } from "./runWs/heartbeat";
+import {
+  routeRunWsMessage,
+  type RunWsMessageSinks,
+} from "./runWs/messageRouter";
+import {
+  INITIAL_RECONNECT_DELAY_MS,
+  isInboundQuiet,
+  isTerminalRunStatus,
+  nextReconnectDelay,
+} from "./runWs/policy";
+import {
+  pingEnvelope,
+  resubscribeLogsEnvelope,
+  subscribeEnvelope,
+  subscribeLogsEnvelope,
+  unsubscribeEnvelope,
+  unsubscribeLogsEnvelope,
+  type WsEnvelope,
+} from "./runWs/protocol";
+import { deriveWsUrl } from "./runWs/url";
 
 /** Imperative handle returned by useRunWebSocket — call send() for cancel
  *  and answer commands; the connection lifecycle is managed by the hook.
@@ -86,14 +52,13 @@ export interface RunWsHandle {
 export function useRunWebSocket(runId: string | null): RunWsHandle {
   const wsRef = useRef<WebSocket | null>(null);
   const reconnectTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const reconnectDelay = useRef(1000);
+  const reconnectDelay = useRef(INITIAL_RECONNECT_DELAY_MS);
   const aliveRef = useRef(false);
   // Timestamp (ms) of the last inbound frame — updated on every
   // onmessage. The heartbeat watchdog compares against it to detect a
   // silently-dead socket. Bumped on connect so a fresh socket starts
   // with a clean clock.
   const lastInboundAtRef = useRef(0);
-  const heartbeatTimer = useRef<ReturnType<typeof setInterval> | null>(null);
   // Track whether we asked for log streaming on this connection so a
   // reconnect can re-subscribe automatically — symmetric with the
   // event from_seq replay below. Reset on runId change.
@@ -130,7 +95,7 @@ export function useRunWebSocket(runId: string | null): RunWsHandle {
   useEffect(() => {
     if (!runId) return;
     aliveRef.current = true;
-    reconnectDelay.current = 1000;
+    reconnectDelay.current = INITIAL_RECONNECT_DELAY_MS;
     if (prevRunIdRef.current !== runId) {
       // Run changed — wipe inherited subscriber state.
       logSubscriberCountRef.current = 0;
@@ -147,42 +112,39 @@ export function useRunWebSocket(runId: string | null): RunWsHandle {
     const setLogSubscribed = store.getState().setLogSubscribed;
 
     // Coalesce events that arrive in the same microtask before pushing
-    // them to the store. Replay (from_seq=0) on a long run can dump
-    // hundreds–thousands of envelopes onto the message queue back-to-back;
-    // committing them one-by-one through `applyEvent` triggered an
-    // O(N²) array spread plus a re-render per event. Batching turns
-    // that into a single state mutation per JS task.
-    const eventBuffer: RunEvent[] = [];
-    let flushScheduled = false;
-    const flushEvents = () => {
-      flushScheduled = false;
-      if (eventBuffer.length === 0) return;
-      const drained = eventBuffer.splice(0, eventBuffer.length);
-      applyEventsBatch(drained);
-    };
-    const queueEvent = (evt: RunEvent) => {
-      eventBuffer.push(evt);
-      if (!flushScheduled) {
-        flushScheduled = true;
-        queueMicrotask(flushEvents);
-      }
-    };
+    // them to the store (see createEventBuffer for the O(N²) rationale).
+    const eventBuffer = createEventBuffer(applyEventsBatch);
 
-    // Run-health alert events (pkg/store.EventAlert) are in-process-only:
-    // they are NEVER persisted to events.jsonl and the broker fans them
-    // out WITHOUT a seq (Seq=0). Feeding them through the seq-ordered
-    // event store would (a) get them dropped by reduceEvents' `seq <=
-    // lastSeq` guard once any real event has advanced the high-water
-    // mark, and (b) corrupt the WS reconnect `from_seq` computation
-    // (events[last].seq + 1). So we handle them out-of-band here: render
-    // the toast + light the notification dot directly, and keep them out
-    // of the events array entirely. Because they are never persisted,
-    // they only ever arrive once on the live tail — no replay/dedup risk.
-    const handleAlertEvent = (evt: RunEvent) => {
-      const ui = useUIStore.getState();
-      const toast = toastForEvent(evt);
-      if (toast) ui.addToast(toast.message, toast.type);
-      ui.bumpAlertUnseen();
+    const runIsTerminal = () =>
+      isTerminalRunStatus(runStoreRef.current.getState().snapshot?.run.status);
+
+    // Heartbeat watchdog: pings on an interval and escalates a stale
+    // socket to forceReconnect (see ./runWs/heartbeat.ts + policy.ts).
+    const heartbeat = createHeartbeat({
+      getSocket: () => wsRef.current,
+      isAlive: () => aliveRef.current,
+      isTerminal: runIsTerminal,
+      getLastInboundAt: () => lastInboundAtRef.current,
+      onStale: () => forceReconnect(),
+      sendPing: (ws) => ws.send(JSON.stringify(pingEnvelope())),
+    });
+
+    // Inbound routing targets. Alert events go out-of-band (never into
+    // the seq-ordered store — see ./runWs/alerts.ts); `terminated`
+    // keeps the socket open (the server closes it eventually) but
+    // stops the heartbeat — a finished run needs no liveness probing.
+    const sinks: RunWsMessageSinks = {
+      applySnapshot,
+      queueEvent: eventBuffer.queue,
+      flushEvents: eventBuffer.flush,
+      applyEventsBatch,
+      applyLogChunk,
+      markLogTerminated,
+      onAlertEvent: handleAlertEvent,
+      onTerminated: () => {
+        heartbeat.stop();
+        setWsState("closed");
+      },
     };
 
     const connect = async () => {
@@ -205,37 +167,15 @@ export function useRunWebSocket(runId: string | null): RunWsHandle {
 
       ws.onopen = () => {
         setWsState("open");
-        reconnectDelay.current = 1000;
+        reconnectDelay.current = INITIAL_RECONNECT_DELAY_MS;
         // Fresh socket → reset the liveness clock and arm the heartbeat.
         lastInboundAtRef.current = Date.now();
-        startHeartbeat();
+        heartbeat.start();
 
-        // Resume from the highest seq the store has actually consumed.
-        // We can't use snapshot.last_seq alone: the REST `getRun` call in
-        // RunView seeds the snapshot before any events arrive, so an
-        // events-less store with last_seq=N would otherwise request
-        // from_seq=N+1 and miss the entire history (the bug that hid
-        // edges on finished runs).
-        //
-        // replay_history is true ONLY when we already have events
-        // locally (i.e., this is a reconnect after an outage): the
-        // server fills the gap between FromSeq and snapshotSeq. On
-        // initial connect (empty store) we run lazy — snapshot only,
-        // then live tail — and let loadEventHistoryIfMissing pull
-        // the historical events via HTTP if and when something needs
-        // them. Eliminates the 30s replay-stall on first open.
+        // Resume from the highest seq the store has actually consumed;
+        // replay history only on reconnect (see subscribeEnvelope).
         const events = runStoreRef.current.getState().events;
-        const fromSeq =
-          events.length > 0 ? events[events.length - 1]!.seq + 1 : 0;
-        ws.send(
-          JSON.stringify({
-            type: "subscribe",
-            payload: {
-              from_seq: fromSeq,
-              replay_history: events.length > 0,
-            },
-          } satisfies WsEnvelope),
-        );
+        ws.send(JSON.stringify(subscribeEnvelope(events)));
 
         // Re-subscribe to logs if the user had opened the Logs tab
         // before the disconnect. We resume from the byte after our
@@ -248,12 +188,7 @@ export function useRunWebSocket(runId: string | null): RunWsHandle {
           // run console's multi-byte glyphs and made the backend resend
           // overlapping tails that the client re-appended as duplicates.
           const fromOffset = log.nextByte;
-          ws.send(
-            JSON.stringify({
-              type: "subscribe_logs",
-              payload: fromOffset > 0 ? { from_offset: fromOffset } : undefined,
-            } satisfies WsEnvelope),
-          );
+          ws.send(JSON.stringify(resubscribeLogsEnvelope(fromOffset)));
           setLogSubscribed(true);
         }
       };
@@ -264,69 +199,7 @@ export function useRunWebSocket(runId: string | null): RunWsHandle {
         lastInboundAtRef.current = Date.now();
         try {
           const env = JSON.parse(msgEv.data) as WsEnvelope;
-          switch (env.type) {
-            case "snapshot":
-              // Drain any queued events before swapping the snapshot
-              // so they aren't applied against the new (empty) base.
-              flushEvents();
-              applySnapshot(env.payload as RunSnapshot);
-              break;
-            case "event": {
-              const evt = env.payload as RunEvent;
-              if (evt.type === "alert") {
-                handleAlertEvent(evt);
-                break;
-              }
-              queueEvent(evt);
-              break;
-            }
-            case "event_batch": {
-              // Server-side bulk envelope (replay path): payload is
-              // already an array. Drain the live-event microtask
-              // buffer first so seq order is preserved across
-              // batches, then push the whole array in one shot —
-              // bypasses the per-event microtask round-trip. Alert
-              // events are never persisted so they don't appear in a
-              // replay batch, but partition defensively in case a sink
-              // ever multiplexes one in.
-              flushEvents();
-              const batch = env.payload as RunEvent[];
-              const persisted: RunEvent[] = [];
-              for (const e of batch) {
-                if (e.type === "alert") handleAlertEvent(e);
-                else persisted.push(e);
-              }
-              if (persisted.length > 0) applyEventsBatch(persisted);
-              break;
-            }
-            case "log_chunk":
-              applyLogChunk(env.payload as LogChunkPayload);
-              break;
-            case "log_terminated":
-              markLogTerminated();
-              break;
-            case "pong":
-              // Heartbeat reply — liveness already recorded above.
-              break;
-            case "terminated":
-              // The run reached a terminal status; the broker has
-              // closed the channel. We keep the socket open; the
-              // server-side will eventually close it too. Stop the
-              // heartbeat — a finished run needs no liveness probing.
-              stopHeartbeat();
-              setWsState("closed");
-              break;
-            case "error":
-              // Surface but don't tear down — a single bad command
-              // shouldn't kill the live stream.
-              console.warn("run ws error:", env.payload);
-              break;
-            case "ack":
-              // No-op for now; the UI doesn't track ack_ids yet.
-              break;
-            default:
-              break;
-          }
+          routeRunWsMessage(env, sinks);
         } catch (err) {
           // A single malformed envelope shouldn't kill the stream, but
           // silently swallowing it hid genuine bugs (reducer crashes on
@@ -366,21 +239,9 @@ export function useRunWebSocket(runId: string | null): RunWsHandle {
       if (reconnectTimer.current) clearTimeout(reconnectTimer.current);
       reconnectTimer.current = setTimeout(() => {
         reconnectTimer.current = null;
-        reconnectDelay.current = Math.min(reconnectDelay.current * 2, 30_000);
+        reconnectDelay.current = nextReconnectDelay(reconnectDelay.current);
         void connect();
       }, reconnectDelay.current);
-    };
-
-    const runIsTerminal = () => {
-      const status = runStoreRef.current.getState().snapshot?.run.status;
-      return status != null && TERMINAL_RUN_STATUSES.has(status);
-    };
-
-    const stopHeartbeat = () => {
-      if (heartbeatTimer.current) {
-        clearInterval(heartbeatTimer.current);
-        heartbeatTimer.current = null;
-      }
     };
 
     // forceReconnect tears down the current socket and dials a fresh one
@@ -390,7 +251,7 @@ export function useRunWebSocket(runId: string | null): RunWsHandle {
     // onclose→scheduleReconnect path — they must redial directly.
     const forceReconnect = () => {
       if (!aliveRef.current || runIsTerminal()) return;
-      stopHeartbeat();
+      heartbeat.stop();
       if (reconnectTimer.current) {
         clearTimeout(reconnectTimer.current);
         reconnectTimer.current = null;
@@ -410,35 +271,9 @@ export function useRunWebSocket(runId: string | null): RunWsHandle {
         }
         wsRef.current = null;
       }
-      reconnectDelay.current = 1000;
+      reconnectDelay.current = INITIAL_RECONNECT_DELAY_MS;
       setWsState("reconnecting");
       void connect();
-    };
-
-    const startHeartbeat = () => {
-      stopHeartbeat();
-      heartbeatTimer.current = setInterval(() => {
-        if (!aliveRef.current) return;
-        // Nothing to probe on a finished run — stand the heartbeat down.
-        if (runIsTerminal()) {
-          stopHeartbeat();
-          return;
-        }
-        const ws = wsRef.current;
-        if (!ws || ws.readyState !== WebSocket.OPEN) return; // onclose owns this
-        // No inbound frame for too long → the socket is dead even though
-        // the browser never surfaced a close. Redial.
-        if (Date.now() - lastInboundAtRef.current > HEARTBEAT_STALE_MS) {
-          forceReconnect();
-          return;
-        }
-        try {
-          ws.send(JSON.stringify({ type: "ping" } satisfies WsEnvelope));
-        } catch {
-          // send raced a close — let the next tick's readyState guard or
-          // the watchdog handle it.
-        }
-      }, HEARTBEAT_MS);
     };
 
     // Proactive recovery on the two events that most often coincide with
@@ -449,7 +284,7 @@ export function useRunWebSocket(runId: string | null): RunWsHandle {
     const revalidate = () => {
       if (!aliveRef.current || runIsTerminal()) return;
       const wsDown = runStoreRef.current.getState().wsState !== "open";
-      const stale = Date.now() - lastInboundAtRef.current > HEARTBEAT_MS;
+      const stale = isInboundQuiet(Date.now(), lastInboundAtRef.current);
       if (wsDown || stale) forceReconnect();
     };
     const onVisibility = () => {
@@ -465,10 +300,10 @@ export function useRunWebSocket(runId: string | null): RunWsHandle {
       aliveRef.current = false;
       document.removeEventListener("visibilitychange", onVisibility);
       window.removeEventListener("online", onOnline);
-      stopHeartbeat();
+      heartbeat.stop();
       // Drain any events buffered for the next microtask so we don't
       // lose them when React unmounts the hook before the flush fires.
-      flushEvents();
+      eventBuffer.flush();
       if (reconnectTimer.current) {
         clearTimeout(reconnectTimer.current);
         reconnectTimer.current = null;
@@ -484,7 +319,7 @@ export function useRunWebSocket(runId: string | null): RunWsHandle {
         ws.onerror = null;
         ws.onclose = null;
         try {
-          ws.send(JSON.stringify({ type: "unsubscribe" } satisfies WsEnvelope));
+          ws.send(JSON.stringify(unsubscribeEnvelope()));
         } catch {
           // ignore — the socket may already be closed
         }
@@ -517,43 +352,31 @@ export function useRunWebSocket(runId: string | null): RunWsHandle {
   }, []);
   const subscribeLogs = useCallback((fromOffset?: number) => {
     logSubscriberCountRef.current += 1;
-      if (logSubscriberCountRef.current > 1) return;
-      logsRequestedRef.current = true;
-      const ws = wsRef.current;
-      if (!ws || ws.readyState !== WebSocket.OPEN) {
-        // onopen re-fires subscribe_logs when logsRequestedRef is set,
-        // so the only path missed by the early return is the unusual
-        // case where ws closed between subscribeLogs() call and the
-        // socket actually being open. Logged so a future regression is
-        // visible in DevTools. F-NEW-3 instrumentation.
-        console.warn(
-          "[useRunWebSocket] subscribe_logs deferred: ws not open",
-          { readyState: ws?.readyState ?? "no_ws" },
-        );
-        return;
-      }
-      const offset =
-        typeof fromOffset === "number"
-          ? fromOffset
-          : (() => {
-              const log = runStoreRef.current.getState().log;
-              // Byte-accurate cursor (see the onopen reconnect path).
-              return log.nextByte;
-            })();
-      ws.send(
-        JSON.stringify({
-          type: "subscribe_logs",
-          // ALWAYS send from_offset (even when 0). The server's payload
-          // unmarshal short-circuits when payload is empty; the path
-          // worked fine for offset=0 because FromOffset's zero value is
-          // 0, but being explicit removes ambiguity and matches the
-          // shape of every other subscribe_logs message we send (the
-          // onopen reconnect path also sends explicit offsets > 0).
-          payload: { from_offset: offset },
-        } satisfies WsEnvelope),
-      );
-      runStoreRef.current.getState().setLogSubscribed(true);
-    }, []);
+    if (logSubscriberCountRef.current > 1) return;
+    logsRequestedRef.current = true;
+    const ws = wsRef.current;
+    if (!ws || ws.readyState !== WebSocket.OPEN) {
+      // onopen re-fires subscribe_logs when logsRequestedRef is set,
+      // so the only path missed by the early return is the unusual
+      // case where ws closed between subscribeLogs() call and the
+      // socket actually being open. Logged so a future regression is
+      // visible in DevTools. F-NEW-3 instrumentation.
+      console.warn("[useRunWebSocket] subscribe_logs deferred: ws not open", {
+        readyState: ws?.readyState ?? "no_ws",
+      });
+      return;
+    }
+    const offset =
+      typeof fromOffset === "number"
+        ? fromOffset
+        : (() => {
+            const log = runStoreRef.current.getState().log;
+            // Byte-accurate cursor (see the onopen reconnect path).
+            return log.nextByte;
+          })();
+    ws.send(JSON.stringify(subscribeLogsEnvelope(offset)));
+    runStoreRef.current.getState().setLogSubscribed(true);
+  }, []);
   const unsubscribeLogs = useCallback(() => {
     if (logSubscriberCountRef.current === 0) return;
     logSubscriberCountRef.current -= 1;
@@ -561,9 +384,7 @@ export function useRunWebSocket(runId: string | null): RunWsHandle {
     logsRequestedRef.current = false;
     const ws = wsRef.current;
     if (ws && ws.readyState === WebSocket.OPEN) {
-      ws.send(
-        JSON.stringify({ type: "unsubscribe_logs" } satisfies WsEnvelope),
-      );
+      ws.send(JSON.stringify(unsubscribeLogsEnvelope()));
     }
     runStoreRef.current.getState().setLogSubscribed(false);
   }, []);

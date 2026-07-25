@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { InlineBanner } from "@/components/ui/InlineBanner";
 import { clickableRowProps } from "@/lib/a11y";
+import { formatDateTime } from "@/lib/format";
 
 import {
   FeatureUnavailableError,
@@ -15,11 +16,13 @@ import {
 import { fmtBytes, pct } from "@/api/usage";
 
 import { Button } from "@/components/ui/Button";
+import { Combobox, type ComboboxOption } from "@/components/ui/Combobox";
 import { EmptyState } from "@/components/ui/EmptyState";
 import { Input } from "@/components/ui/Input";
 import { Select } from "@/components/ui/Select";
 import { Spinner } from "@/components/ui/Spinner";
 import { useAsyncAction } from "@/hooks/useAsyncAction";
+import { useBotsStore } from "@/store/bots";
 
 interface Props {
   teamID: string;
@@ -44,6 +47,20 @@ export default function MemoryTab({ teamID: _teamID }: Props) {
   const [selected, setSelected] = useState<MemoryDocumentMeta | null>(null);
   const [body, setBody] = useState<string>("");
   const [unavailable, setUnavailable] = useState(false);
+  // Bots come from the shared catalog cache so the picker matches every
+  // other bot-scoped surface (Bindings, Webhooks). freeSolo keeps
+  // typed-only ids (a bot not in the catalog, or an obsolete slug) usable.
+  const bots = useBotsStore((s) => s.bots) ?? [];
+  const fetchBots = useBotsStore((s) => s.fetch);
+  useEffect(() => {
+    void fetchBots();
+  }, [fetchBots]);
+  const botOptions: ComboboxOption[] = bots.map((b) => ({
+    value: b.name,
+    label: b.name,
+    description: b.display_name && b.display_name !== b.name ? b.display_name : undefined,
+    searchHaystack: `${b.name} ${b.display_name ?? ""}`,
+  }));
   // Single busy/error channel for both the list-load and the document
   // open — Load button mirrors `busy`, banner above mirrors `error`.
   // setError handles the pre-flight "needs a bot id" guard without
@@ -136,10 +153,12 @@ export default function MemoryTab({ teamID: _teamID }: Props) {
         {cur?.needsBot && (
           <label className="block text-xs">
             <div className="text-fg-muted mb-1">Bot id</div>
-            <Input
+            <Combobox
               value={ref.bot ?? ""}
-              onChange={(e) => setRef((r) => ({ ...r, bot: e.target.value }))}
-              placeholder="bot-name"
+              options={botOptions}
+              onChange={(v) => setRef((r) => ({ ...r, bot: v || undefined }))}
+              placeholder="Pick or type a bot id"
+              freeSolo
             />
           </label>
         )}
@@ -210,7 +229,7 @@ export default function MemoryTab({ teamID: _teamID }: Props) {
                   <div className="font-mono text-xs">{d.path}</div>
                   <div className="text-xs text-fg-muted">
                     {fmtBytes(d.size)} ·{" "}
-                    {d.updated_at ? new Date(d.updated_at).toLocaleString() : ""}
+                    {d.updated_at ? formatDateTime(d.updated_at) : ""}
                   </div>
                 </li>
               ))}

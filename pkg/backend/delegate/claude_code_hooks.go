@@ -22,6 +22,13 @@ const askUserMCPServerName = "iterion"
 // CLI exposes it to the LLM.
 const askUserMCPToolName = "mcp__iterion__ask_user"
 
+// Fully-qualified names of the async-interaction pair (ADR-081), served
+// by the same iterion MCP server.
+const (
+	askUserAsyncMCPToolName = "mcp__iterion__" + AskUserAsyncToolName
+	awaitAnswersMCPToolName = "mcp__iterion__" + AwaitAnswersToolName
+)
+
 // askUserMCPSubcommand is the hidden iterion subcommand that runs an MCP stdio
 // server exposing only the ask_user tool. See cmd/iterion/mcp_ask_user.go.
 const askUserMCPSubcommand = "__mcp-ask-user"
@@ -97,32 +104,59 @@ type pendingAskUser struct {
 	Question      string
 	Options       []AskUserOption
 	AllowFreeText bool
+	// AwaitPending marks an await_answers escalation (ADR-081): the
+	// still-unanswered async questions the agent chose to block on.
+	AwaitPending []PendingAsync
 }
 
 // wireAskUserHook registers iterion's native ask_user MCP server and a
 // PreToolUse hook that captures the question and cancels the stream the
 // moment the LLM calls ask_user (mirrors the claw backend's in-process
-// path). Disabled when sandboxed: the stdio MCP server's host binary path
-// (os.Executable) and the host /tmp --mcp-config are both invisible inside
-// the container, so claude would reject the missing config and exit before
-// producing a result — the [INTERACTION PROTOCOL] JSON fallback covers that
-// case. Stores the captured question (with any structured options) into
+// path). Stores the captured question (with any structured options) into
 // pendingQuestion and extends extras with the ask_user tool name only when
 // the node already restricts its toolset (an empty AllowedTools means "no
 // restriction").
+//
+// Transport is sandbox-dependent (ADR-082 Phase 3, mirroring wireBoardMCP):
+//
+//   - unsandboxed → the stdio `iterion __mcp-ask-user` subcommand
+//     (host binary path via proc.LocateIterionBinary);
+//   - sandboxed → an HTTP MCP server pointing at the per-run
+//     gateway-reachable listener the engine bound at sandbox start
+//     (Task.AskUserHTTPEndpoint + AskUserRunToken), since the stdio
+//     server's host binary path is invisible inside the container.
+//     When the runtime didn't bind the endpoint the tools are disabled
+//     LOUDLY (never silently); the [INTERACTION PROTOCOL] JSON
+//     fallback still allows a blocking escalation.
+//
+// The PreToolUse hooks below run host-side over the SDK control channel
+// on BOTH transports, so the interception semantics — and the
+// interaction-store paths behind Task.PostAsyncQuestion — are identical.
 func (b *ClaudeCodeBackend) wireAskUserHook(task Task, opts []claudesdk.Option, extras *[]string, pendingQuestion *atomic.Value, cancelStream context.CancelFunc) []claudesdk.Option {
-	if !task.InteractionEnabled || task.Sandbox != nil {
+	if !task.InteractionEnabled {
 		return opts
 	}
-	selfPath := proc.LocateIterionBinary()
-	if selfPath == "" {
-		b.Logger.Warn("[%s#%d/claude-code] could not resolve iterion CLI binary path; native ask_user MCP server disabled (falling back to JSON _needs_interaction protocol)", task.NodeID, task.Iteration)
-		return opts
+	if task.Sandbox != nil {
+		srv := askUserSandboxHTTPServer(task)
+		if srv == nil {
+			b.Logger.Warn("[%s#%d/claude-code] sandboxed run has no ask-user MCP HTTP endpoint (listener not bound); native ask_user disabled for this node (falling back to JSON _needs_interaction protocol)", task.NodeID, task.Iteration)
+			if task.PostAsyncQuestion != nil {
+				b.Logger.Warn("[%s#%d/claude-code] interaction: async unavailable without the ask-user HTTP endpoint — ask_user_async/await_answers disabled for this node; the [INTERACTION PROTOCOL] JSON fallback still allows a blocking escalation", task.NodeID, task.Iteration)
+			}
+			return opts
+		}
+		opts = append(opts, claudesdk.WithMCPServer(askUserMCPServerName, srv))
+	} else {
+		selfPath := proc.LocateIterionBinary()
+		if selfPath == "" {
+			b.Logger.Warn("[%s#%d/claude-code] could not resolve iterion CLI binary path; native ask_user MCP server disabled (falling back to JSON _needs_interaction protocol)", task.NodeID, task.Iteration)
+			return opts
+		}
+		opts = append(opts, claudesdk.WithMCPServer(askUserMCPServerName, &claudesdk.MCPStdioServer{
+			Command: selfPath,
+			Args:    []string{askUserMCPSubcommand},
+		}))
 	}
-	opts = append(opts, claudesdk.WithMCPServer(askUserMCPServerName, &claudesdk.MCPStdioServer{
-		Command: selfPath,
-		Args:    []string{askUserMCPSubcommand},
-	}))
 	if len(task.AllowedTools) > 0 {
 		*extras = append(*extras, askUserMCPToolName)
 	}
@@ -140,6 +174,99 @@ func (b *ClaudeCodeBackend) wireAskUserHook(task Task, opts []claudesdk.Option, 
 				Decision:      "deny",
 				Continue:      &noContinue,
 				SystemMessage: "ask_user has been escalated to the iterion runtime; stop generating.",
+			}, nil
+		},
+	}))
+	return b.wireAsyncAskHooks(task, opts, extras, pendingQuestion, cancelStream)
+}
+
+// askUserSandboxHTTPServer builds the HTTP MCP server config a sandboxed
+// task uses to reach the per-run ask-user listener, or nil when the
+// runtime didn't bind the endpoint (no listener / bind failure — the
+// caller degrades loudly). AlwaysLoad forces the server past
+// claude-code's tool-search deferral so ask_user surfaces without a
+// ToolSearch hit and an unreachable endpoint fails loudly at session
+// start — the same rationale as the board HTTP transport (C082).
+func askUserSandboxHTTPServer(task Task) *claudesdk.MCPHTTPServer {
+	if task.AskUserHTTPEndpoint == "" || task.AskUserRunToken == "" {
+		return nil
+	}
+	return &claudesdk.MCPHTTPServer{
+		URL: task.AskUserHTTPEndpoint,
+		Headers: map[string]string{
+			"X-Iterion-Run": task.AskUserRunToken,
+		},
+		AlwaysLoad: true,
+	}
+}
+
+// wireAsyncAskHooks adds the non-blocking question pair (ADR-081) on top
+// of the ask_user MCP server wireAskUserHook just registered. Only wired
+// when the executor bound the async closures (interaction: async).
+//
+//   - ask_user_async: the PreToolUse hook persists the pending
+//     interaction (Task.PostAsyncQuestion) and ALLOWS the call — the
+//     stdio server's canned success text tells the model to keep
+//     working. On a post error, deny with the error so nothing is
+//     silently lost.
+//   - await_answers: nothing pending → deny with DecisionReason carrying
+//     the formatted answers (the deny channel is the only hook path that
+//     can return content; the reason is phrased as the success payload —
+//     permission-gate precedent). Pending → capture + cancel the stream,
+//     exactly the blocking ask_user shape; the post-session check turns
+//     it into an await-tagged pause.
+func (b *ClaudeCodeBackend) wireAsyncAskHooks(task Task, opts []claudesdk.Option, extras *[]string, pendingQuestion *atomic.Value, cancelStream context.CancelFunc) []claudesdk.Option {
+	if task.PostAsyncQuestion == nil {
+		return opts
+	}
+	if len(task.AllowedTools) > 0 {
+		*extras = append(*extras, askUserAsyncMCPToolName, awaitAnswersMCPToolName)
+	}
+	noContinue := false
+	deny := func(format string, a ...any) (claudesdk.HookOutput, error) {
+		return claudesdk.HookOutput{
+			Decision:       "deny",
+			DecisionReason: fmt.Sprintf(format, a...),
+		}, nil
+	}
+
+	asyncMatcher := "^" + askUserAsyncMCPToolName + "$"
+	opts = append(opts, claudesdk.WithHook(claudesdk.HookPreToolUse, claudesdk.HookMatcher{
+		Matcher: &asyncMatcher,
+		Handler: func(_ context.Context, in claudesdk.HookCallbackInput) (claudesdk.HookOutput, error) {
+			q, _ := in.ToolInput["question"].(string)
+			options, allowFree := ParseAskUserToolInput(in.ToolInput)
+			id, err := task.PostAsyncQuestion(AsyncQuestion{Question: q, Options: options, AllowFreeText: allowFree})
+			if err != nil {
+				return deny("ask_user_async failed: %v", err)
+			}
+			b.Logger.Info("[%s#%d/claude-code] 💬 async question posted (%s)", task.NodeID, task.Iteration, id)
+			return claudesdk.HookOutput{}, nil
+		},
+	}))
+
+	awaitMatcher := "^" + awaitAnswersMCPToolName + "$"
+	opts = append(opts, claudesdk.WithHook(claudesdk.HookPreToolUse, claudesdk.HookMatcher{
+		Matcher: &awaitMatcher,
+		Handler: func(_ context.Context, _ claudesdk.HookCallbackInput) (claudesdk.HookOutput, error) {
+			pending, err := task.PendingAsyncQuestions()
+			if err != nil {
+				return deny("await_answers failed: %v", err)
+			}
+			if len(pending) == 0 {
+				answers, err := task.CollectAsyncAnswers()
+				if err != nil {
+					return deny("await_answers failed: %v", err)
+				}
+				return deny("%s\n(No pause was needed — every posted question is already answered. Use these answers and continue.)", answers)
+			}
+			b.Logger.Info("[%s#%d/claude-code] ⏸ await_answers with %d pending question(s) — escalating to pause", task.NodeID, task.Iteration, len(pending))
+			pendingQuestion.Store(pendingAskUser{Question: AwaitPauseQuestion(pending), AwaitPending: pending})
+			cancelStream()
+			return claudesdk.HookOutput{
+				Decision:      "deny",
+				Continue:      &noContinue,
+				SystemMessage: "await_answers has been escalated to the iterion runtime; stop generating.",
 			}, nil
 		},
 	}))

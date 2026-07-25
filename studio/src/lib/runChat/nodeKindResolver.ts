@@ -84,6 +84,21 @@ export interface NodeKindResolver {
   postProcess?(messages: RunChatMessage[]): RunChatMessage[];
 }
 
+// humanizeNodeId turns an ir_node_id into a readable step label:
+// underscores/dashes become spaces, a leading stage token (s2, p1,
+// step3) is dropped, and the first word is capitalized. The raw id
+// stays available as a muted suffix wherever precision matters — this
+// is presentation, never identity.
+export function humanizeNodeId(id: string): string {
+  const tokens = id.split(/[_-]+/).filter(Boolean);
+  if (tokens.length === 0) return id;
+  if (tokens.length > 1 && /^(?:[sp]|step|phase)\d+$/i.test(tokens[0]!)) {
+    tokens.shift();
+  }
+  const text = tokens.join(" ");
+  return text.charAt(0).toUpperCase() + text.slice(1);
+}
+
 // irKindResolver maps the workflow's IR node kinds to the chat shape.
 // agent/judge/tool/compute → banner; human → human (free-text by
 // default); router/done/fail → silent (the run-level termination
@@ -96,9 +111,11 @@ export function irKindResolver(workflow: WireWorkflow | null): NodeKindResolver 
   // every lookup falls back to "banner" so events render *something*
   // (better degradation than dropping all events while we wait for
   // the workflow fetch to land).
-  const byId = new Map<string, { kind: string }>();
+  const byId = new Map<string, { kind: string; description?: string }>();
   if (workflow) {
-    for (const n of workflow.nodes) byId.set(n.id, { kind: n.kind });
+    for (const n of workflow.nodes) {
+      byId.set(n.id, { kind: n.kind, description: n.description });
+    }
   }
   return {
     kind(nodeId) {
@@ -120,7 +137,11 @@ export function irKindResolver(workflow: WireWorkflow | null): NodeKindResolver 
       }
     },
     label(nodeId) {
-      return nodeId;
+      // An authored `description:` on the .bot node wins; the
+      // humanizeNodeId heuristic is the fallback. The raw node id
+      // stays available on the message (`nodeId`) for tooltips/suffixes.
+      const desc = byId.get(nodeId)?.description;
+      return desc && desc.trim() !== "" ? desc : humanizeNodeId(nodeId);
     },
     emitsOutputCard(nodeId) {
       const node = byId.get(nodeId);

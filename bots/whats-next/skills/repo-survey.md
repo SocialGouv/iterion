@@ -1,188 +1,169 @@
 ---
 name: repo-survey
-description: Survey checklist for the whats-next.bot `explore` phase — produces the structured explore_output that the propose phase consumes.
+description: Read-only survey method for Nexie — a tight single-pass survey for scoped questions, and a 3-audit parallel fan-out (docs/ADRs, code gaps, operational state) with structured briefs for roadmap-scale questions.
 ---
 
-# Repo Survey — for whats-next.bot's `explore` phase
+# Repo Survey — single pass or audit fan-out
 
-Use this skill at the start of the `explore` phase. Your job is to
-produce a structured `explore_output` object that the downstream
-`propose_roadmap` agent (also claw + GPT-5.5) will consume to draft
-a roadmap recommendation. Every field below maps directly to that
-schema:
+You survey to GROUND recommendations, never to dump. Everything here is
+read-only: `bash` (inspection only), `read_file`, `glob`, `grep`. Never
+write, commit, push, or mutate the board from a survey.
 
-```
-explore_output:
-  summary:        string    # 5–10 lines, narrative
-  toplevel_dirs:  json      # array of {name, role}
-  recent_commits: json      # array of {hash, line, theme}
-  open_questions: json      # array of short strings — see §7
-  observations:   string    # 3–6 lines of judgment calls
-```
+**Anchor every command on the workspace, never on your cwd.** Your
+shell starts in the run's working directory, which may be a DIFFERENT
+tree than the workspace you were asked to survey (a launch dir, a
+stale worktree cut from an older base). Set `WS` to the workspace root
+the mission names and use it everywhere — `git -C "$WS"`, `"$WS"/…`
+paths, `ls "$WS"/pkg` — or `cd "$WS"` once and stay there. A
+relative-path read in the wrong tree produces verdicts that are right
+for the wrong tree, which is worse than no verdict: state which tree
+you read (`git -C "$WS" rev-parse HEAD`) when the evidence matters.
 
-## Phase contract
+Two regimes. Pick by the size of the question, not by keywords:
 
-You have these tools and **only** these tools: `bash`, `read_file`,
-`glob`, `grep`. `bash` is restricted to read-only inspection (see
-the system prompt's bash allowlist). `readonly: true` is set at the
-node level; mutations are runtime-blocked even if your prompt
-appears to ask for one.
+- **Single pass** — the operator asks a scoped question ("what does this
+  repo need?", "is the board stale?") or the board is empty and one
+  direction is obvious. One surveyor (you), ≤25 tool calls.
+- **Audit fan-out** — the operator asks a roadmap-scale question ("quels
+  sont les prochains chantiers ?", "où va-t-on ce trimestre ?", "étudie
+  le projet"). Three read-only sub-agents in parallel (the Task tool),
+  one per audit axis; you stay in your own context and synthesise.
 
-Budget: ~25 tool calls total. Go deep on what matters, skip the
-rest.
+A small question gets a small survey. The fan-out triggers on scale.
 
-## 1. Map the top level → `toplevel_dirs`
+## Single pass (≤25 tool calls)
 
-```bash
-find "$WORKSPACE" -maxdepth 1 -mindepth 1 -type d -printf '%f\n' | sort
-```
+Go deep on what matters, skip the rest:
 
-Emit each entry as `{name, role}`. Roles to use:
-`code | tests | docs | tooling | examples | infra | vendored |
-runtime-data | unknown`.
+1. **Top level** — `find "$WS" -maxdepth 1 -mindepth 1 -type d | sort`;
+   classify roles (code / tests / docs / tooling / examples / infra /
+   vendored / runtime-data).
+2. **Convention files** — `README.md`, `CLAUDE.md`, `CONTRIBUTING.md`:
+   product framing, build/test entry point.
+3. **Stack** — build files (`Taskfile.yml`, `devbox.json`, `go.mod`,
+   `package.json`, `Cargo.toml`, `pyproject.toml`…): languages +
+   package managers.
+4. **Bots** — `.bot`/`.botz` files outside vendor dirs (paths, not just
+   names). Empty is a valid signal on a non-iterion repo.
+5. **Recent activity** — `git -C "$WS" log -n 20 --oneline`; tag themes
+   and note what's hot.
+6. **ADRs / architecture docs** — never recommend work that contradicts
+   an accepted ADR; surface tensions instead.
+7. **TODO/FIXME hotspots** — first-party only
+   (`--exclude-dir=vendor --exclude-dir=node_modules`), report
+   hotspots, not every marker.
 
-Classify hidden dirs only when relevant (`.iterion/` = runtime-data,
-`.github/` = infra, `.claude/` = tooling — see §6 about
-`.claude/skills/`).
+Report conclusions in your own reply, cited compactly (`file:line`,
+sha). There is no output schema — you are speaking to the operator.
 
-## 2. Read the convention files → `summary` line 1–2
+## Audit fan-out (roadmap-scale)
 
-Always read (if present): `README.md`, `CLAUDE.md`,
-`CONTRIBUTING.md`. Capture in `summary`:
-- Product framing (1 sentence)
-- Build / test entry point (e.g. `devbox run -- task build`)
-- The `.bot`/`.bot` distinction if iterion
+Spawn THREE parallel read-only sub-agents with the Task tool — one per
+axis. Keep your own context clean for the synthesis. Do not ask
+permission to spawn them; the fan-out is the method.
 
-## 3. Identify the stack → `summary` line 3–4
+**Await the audits within the SAME turn** (blocking task wait):
+background sub-agents do NOT survive the turn boundary — ending the
+turn with audits still in flight forfeits them. If you inherit a
+session where that happened, say so and relaunch the missing audits
+rather than stalling or inventing their conclusions.
 
-```bash
-find "$WORKSPACE" -maxdepth 2 \
-  \( -name 'Taskfile.yml' -o -name 'devbox.json' -o -name 'go.mod' \
-     -o -name 'package.json' -o -name 'Cargo.toml' \
-     -o -name 'pyproject.toml' \) -printf '%P\n'
-```
+The three canonical axes:
 
-State the primary language(s) and package manager(s) so
-`propose_roadmap` knows which bot ecosystem fits.
+- **docs-adr** — docs/ADR follow-ons: accepted ADRs whose
+  implementation drifted, follow-ups explicitly deferred ("later",
+  "phase 2", "out of scope for this ADR"), contradictions between
+  ADRs, reference docs that describe code that no longer exists.
+- **code-gaps** — first-party TODO/FIXME/XXX hotspots, deprecated
+  markers, half-wired seams (interfaces with one lonely impl, feature
+  flags never flipped), dead or unread config, skipped tests.
+- **operational-state** — the board state-by-state (via the board
+  tools BEFORE spawning, or handed to the sub-agent as text), bot
+  manifests vs what the catalog says, git cadence over the last weeks,
+  schedules/dispatcher config present in the repo, open PRs if a forge
+  remote is visible.
 
-## 4. Discover bots → `summary` line 5 + downstream signal
+Adapt an axis when the workspace demands it (a docs-only repo has no
+code-gaps axis; a monorepo may need a fourth axis per subsystem) — but
+say in your reply which axes ran.
 
-This is **the** field `propose_roadmap` needs most. List every
-`.bot` / `.bot` / `.botz` file in the workspace:
+### The audit brief (per sub-agent)
 
-```bash
-find "$WORKSPACE" -maxdepth 4 \
-  \( -name '*.bot' -o -name '*.bot' -o -name '*.botz' \) \
-  -not -path '*/vendor/*' -not -path '*/.iterion/*' \
-  -printf '%P\n' | sort
-```
-
-Record the path of each bot in `summary` (NOT just names — paths,
-because `propose_roadmap.next_action.bot_path` will need them).
-If the repo is not iterion, this may be empty — that's a valid
-signal.
-
-## 5. Recent activity → `recent_commits`
-
-```bash
-git -C "$WORKSPACE" log -n 20 --oneline
-```
-
-For each commit, emit `{hash, line, theme}`. Themes are
-free-text but stick to a small vocabulary you reuse across
-commits (e.g. "editor", "dispatcher", "dsl", "test", "docs",
-"runtime", "sandbox"). The propose phase will use `theme`
-frequencies to spot what's hot.
-
-## 6. ADRs and architectural intent → `observations`
-
-```bash
-find "$WORKSPACE/docs" -maxdepth 3 \
-  \( -name 'adr*' -o -name 'architecture*' \) -type f \
-  -printf '%P\n'
-```
-
-If there are accepted ADRs, note them. The propose phase MUST NOT
-recommend work that contradicts them; surface any tension you
-spot in `observations`.
-
-## 7. Open questions → `open_questions`
-
-These are the things YOU want the operator to clarify before
-`propose_roadmap` runs. The downstream `ask_priorities` human
-node will surface them. Examples of good open_questions:
-
-- "Recent commits are heavy on dispatcher work — is that still
-  the priority, or has it shipped?"
-- "I see both editor TODO markers and runtime TODOs — which area
-  is more painful right now?"
-- "Stack is multi-language (Go + React + Helm). Which subsystem
-  should the next action focus on?"
-
-Examples of bad open_questions (don't emit these):
-- "What do you want to do?" (too broad — that's what
-  ask_priorities already asks)
-- "Should I run feature_dev or whole_improve_loop?"
-  (premature — the propose phase decides this, not you)
-
-Keep open_questions to 0–4 items. Empty is fine if the survey
-makes the priorities obvious.
-
-## 7b. Findings inbox → `observations` (dispatcher bot handoff)
-
-Other dispatcher-spawned bots post **findings** — observations
-they noticed during their own runs but did not treat — as issues
-on the board's `inbox` state (sentinel label `findings`). List
-them with the board MCP tool:
-
-```json
-mcp__iterion_board__list_issues  { "state": "inbox" }
-```
-
-Empty response ⇒ no findings to surface; skip the rest. No board
-mutation is allowed from this node (capability `board.read` only).
-
-For each inbox issue, the response already includes title, labels
-(`findings`, `kind:bug` / `kind:drift` / …, `source:<bot>`,
-`area:<…>`, `severity:<…>`) and a truncated body. Call
-`mcp__iterion_board__get_issue` only when the truncated body looks
-high-priority and you need the full text.
-
-Fold the catalogue into `observations` as bullet lines of the
-form:
+Compose each Task prompt from this template — the envelope is the
+contract that lets you synthesise without re-reading their transcripts:
 
 ```
-[finding:<source_label>:<kind_label>] <issue_id> — <title>
+You are a read-only audit sub-agent for a roadmap study.
+
+Area: <docs-adr | code-gaps | operational-state | …>
+Workspace: <absolute path>
+Baseline (read if present): <CONTEXT_BRIEF.md path> · <findings/ dir path>
+
+Tools: bash (read-only inspection), read_file, glob, grep.
+NEVER write, commit, push, or mutate anything.
+Budget: ≤20 tool calls, then reply.
+
+Return EXACTLY this markdown envelope, nothing before or after:
+
+## Summary
+5-8 lines. Key observations, in the operator's language.
+
+## Findings
+5-12 bullets: "<one-line finding> — evidence: <file:line | sha | log excerpt>"
+
+## Candidate chantiers
+2-4 bullets: "<short name>: <one-sentence why> — evidence: <ref>"
+
+## Gaps in scope
+0-3 bullets: what you did NOT get to survey (out of scope or budget).
+
+Rules: every claim carries concrete evidence — no vibes. DESCRIBE,
+don't recommend; the synthesis is not your job.
 ```
 
-…where `<issue_id>` is the value returned by `list_issues` (full
-id, no truncation). The exact id matters: `emit_action` needs it
-to `transition_issue` the inbox card to `backlog` when the
-operator's approved roadmap ingests this finding.
+### Composing the three reports
 
-Empty inbox → no bullets. Do NOT manufacture findings.
+- A candidate chantier cited by **≥2 axes** is high signal — merge the
+  bullets into ONE named chantier.
+- Never paste the raw reports into your reply. Cite the top findings
+  inline (`file:line`, sha) and keep the rest in your context.
+- Honour `## Gaps in scope` — they feed the blind-spots list, and your
+  reply must be honest about what was NOT surveyed.
+- Cross-reference workspace memory (see `session-continuity`): open
+  threads in `CONTEXT_BRIEF.md` that a finding resolves get surfaced
+  ("le fil X est clos par <sha>"); findings that reopen a thread too.
 
-Do NOT mutate inbox issues in this node. Read + report only; the
-promote-or-leave decision happens in `emit_action`.
+### Blind-spots checklist
 
-## 8. Don't drown in TODO/FIXME
+After the synthesis, walk this list. Any axis NO audit touched is named
+explicitly as an angle mort in your reply — the operator decides to
+punt, ticket it, or dispatch a targeted audit:
 
-Scan first-party only:
+adoption/users · public docs & onboarding · security posture ·
+GDPR/privacy · backups/DR · cost trend · release/versioning ·
+ecosystem/dependency risk.
 
-```bash
-grep -RInE 'TODO|FIXME' --include='*.go' --include='*.ts' \
-  --include='*.tsx' --include='*.py' --include='*.rs' \
-  --exclude-dir=vendor --exclude-dir=node_modules \
-  "$WORKSPACE" | head -50
-```
+The tiering, quick-wins and top-3 that follow the survey are specified
+in `roadmap-synthesis`.
 
-Note hotspots in `observations`, not every individual TODO.
+## Findings inbox (cross-bot handoff)
 
-## 9. What you do NOT do
+Other bots post **findings** — things they noticed but did not treat —
+as board issues in state `inbox` (sentinel label `findings`), and as
+markdown files in the workspace-memory `findings/` scope (see
+`session-continuity`). During any survey:
 
-- You do NOT propose a roadmap. That's `propose_roadmap`'s job.
-- You do NOT pick a `bot_to_run`. That's also `propose_roadmap`.
-- You do NOT read the operator's mind. Use `open_questions`
-  instead.
-- You do NOT modify any file. `readonly: true` plus the bash
-  allowlist enforce this — your job is observation only.
+- `list_issues {"state": "inbox"}` — fold relevant entries into your
+  conclusions as `[finding:<source>:<kind>] <issue_id> — <title>`,
+  keeping the full id (a later promotion needs it).
+- Read `findings/*.md` when present; cite, don't copy.
+- Empty inbox → no bullets. Do NOT manufacture findings, and do NOT
+  mutate inbox issues during a survey — promote-or-close decisions
+  happen later, with the operator.
+
+## What a survey never does
+
+- Recommend a bot or dispatch anything (that's synthesis + arbitrage).
+- Mutate files, git state, or the board.
+- Pad conclusions beyond the evidence — a thin repo yields a thin
+  survey, and saying so is the correct output.

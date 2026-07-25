@@ -126,14 +126,6 @@ export async function createWebhook(
   );
 }
 
-export async function getWebhook(teamID: string, webhookID: string): Promise<WebhookConfig> {
-  return guard404("webhooks", () =>
-    request<WebhookConfig>(
-      `/teams/${encodeURIComponent(teamID)}/webhooks/${encodeURIComponent(webhookID)}`,
-    ),
-  );
-}
-
 export async function updateWebhook(
   teamID: string,
   webhookID: string,

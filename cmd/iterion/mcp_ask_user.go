@@ -2,19 +2,23 @@ package main
 
 import (
 	"encoding/json"
-	"fmt"
 	"io"
 	"os"
 
 	"github.com/spf13/cobra"
+
+	"github.com/SocialGouv/iterion/pkg/askusermcp"
 )
 
-// mcpAskUserCmd runs a minimal MCP stdio server that exposes a single tool,
-// `ask_user`, advertised to the claude CLI subprocess. The claude_code delegate
-// registers this server (via os.Executable() + this subcommand) so the LLM has
-// a native tool to call when it needs human input. iterion intercepts the call
-// at the SDK PreToolUse hook level — this server's tools/call handler is a
-// defensive fallback in case the hook is bypassed.
+// mcpAskUserCmd runs a minimal MCP stdio server that exposes the ask-user
+// tool set (ask_user, ask_user_async, await_answers) advertised to the claude
+// CLI subprocess. The claude_code delegate registers this server (via
+// os.Executable() + this subcommand) so the LLM has a native tool to call when
+// it needs human input. iterion intercepts the calls at the SDK PreToolUse
+// hook level — this server's tools/call handler is a defensive fallback in
+// case a hook is bypassed (and the canned success path for ask_user_async).
+// The tool descriptors + call results live in pkg/askusermcp, shared with the
+// HTTP transport the engine binds for sandboxed runs (ADR-082 Phase 3).
 //
 // The "__" prefix marks this as an internal subcommand: not user-facing and not
 // listed in help output.
@@ -32,40 +36,6 @@ func init() {
 	rootCmd.AddCommand(mcpAskUserCmd)
 }
 
-const askUserToolName = "ask_user"
-
-// askUserInputSchema is the JSON Schema for the ask_user tool input.
-// Mirrors claw-code-go's native ask_user tool shape (options + free
-// text) so both backends offer the LLM the same structured contract.
-var askUserInputSchema = json.RawMessage(`{
-  "type": "object",
-  "properties": {
-    "question": {
-      "type": "string",
-      "description": "The clarifying question to ask the human user."
-    },
-    "options": {
-      "type": "array",
-      "description": "Optional list of selectable answers rendered as clickable choices. Each option must have an id and a label.",
-      "items": {
-        "type": "object",
-        "properties": {
-          "id": {"type": "string", "description": "Stable identifier returned to the model."},
-          "label": {"type": "string", "description": "Human-readable text shown to the user."}
-        },
-        "required": ["id", "label"],
-        "additionalProperties": false
-      }
-    },
-    "allow_free_text": {
-      "type": "boolean",
-      "description": "When true (default if no options are provided), the user may type a free-text response instead of selecting an option."
-    }
-  },
-  "required": ["question"],
-  "additionalProperties": false
-}`)
-
 // runMCPAskUserServer runs a line-delimited JSON-RPC loop on the given streams.
 // It returns nil on clean EOF. MCP messages can exceed the 64KB default
 // buffer, so the loop is sized at 1MB.
@@ -80,15 +50,16 @@ func dispatchMCPAskUser(req mcpRequest) mcpResponse {
 	case "initialize":
 		resp.Result = mcpInitializeResult("iterion-ask-user")
 	case "tools/list":
-		resp.Result = map[string]any{
-			"tools": []map[string]any{
-				{
-					"name":        askUserToolName,
-					"description": "Pause execution and ask the human running this workflow a clarifying question. Use this when you need information, approval, or guidance you cannot derive yourself. Optional `options` present the user with clickable choices; when `allow_free_text` is true the user may also type a free response.",
-					"inputSchema": askUserInputSchema,
-				},
-			},
+		tools := askusermcp.Tools()
+		entries := make([]map[string]any, 0, len(tools))
+		for _, t := range tools {
+			entries = append(entries, map[string]any{
+				"name":        t.Name,
+				"description": t.Description,
+				"inputSchema": t.InputSchema,
+			})
 		}
+		resp.Result = map[string]any{"tools": entries}
 	case "tools/call":
 		var params struct {
 			Name      string         `json:"name"`
@@ -98,20 +69,7 @@ func dispatchMCPAskUser(req mcpRequest) mcpResponse {
 			resp.Error = mcpInvalidParamsError(err)
 			return resp
 		}
-		// Defensive fallback: this handler should not be reached in practice because
-		// iterion intercepts ask_user at the SDK PreToolUse hook level. If we get here,
-		// the hook was bypassed — return a tool_result that tells the LLM to stop and
-		// flag the situation.
-		question, _ := params.Arguments["question"].(string)
-		resp.Result = map[string]any{
-			"content": []map[string]any{
-				{
-					"type": "text",
-					"text": fmt.Sprintf("ESCALATION_NOT_INTERCEPTED: ask_user(%q) was not handled by the iterion runtime. Stop and report this issue.", question),
-				},
-			},
-			"isError": true,
-		}
+		resp.Result = askusermcp.CallResult(params.Name, params.Arguments)
 	default:
 		resp.Error = mcpMethodNotFoundError(req.Method)
 	}

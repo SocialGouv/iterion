@@ -98,7 +98,7 @@ function looksLikePathTag(t: string): boolean {
   // "ÉP 1/5" / "v2/final" ok; "assets/foo" has letters on both sides with
   // no digit-only side — still a path-ish label. Prefer: allow only when
   // at least one side is purely numeric (episode fractions).
-  const [left, right] = t.split("/");
+  const [left = "", right = ""] = t.split("/");
   const leftNum = /^\d+$/.test(left.trim()) || /\b\d+$/.test(left.trim());
   const rightNum = /^\d+$/.test(right.trim());
   return !(leftNum || rightNum);

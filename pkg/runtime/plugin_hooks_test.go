@@ -1,6 +1,7 @@
 package runtime
 
 import (
+	"bytes"
 	"encoding/json"
 	"os"
 	"path/filepath"
@@ -87,5 +88,56 @@ func TestMergePluginHooks_InjectIdempotentRemove(t *testing.T) {
 	}
 	if n := preToolUseLen(t, settingsPath); n != 1 {
 		t.Fatalf("after disable: PreToolUse = %d, want 1 (user hook only)", n)
+	}
+}
+
+// A malformed (but existing) user settings.json must never be destroyed by the
+// merge: mergePluginHooks returns an error and leaves the file bytes intact.
+func TestMergePluginHooks_MalformedSettingsRefusesRewrite(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("ITERION_HOME", home)
+	ws := t.TempDir()
+	settingsPath := filepath.Join(ws, ".claude", "settings.json")
+	if err := os.MkdirAll(filepath.Join(ws, ".claude"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	malformed := []byte(`{"permissions":`)
+	if err := os.WriteFile(settingsPath, malformed, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	writeHookyPlugin(t, home, true)
+
+	if err := mergePluginHooks(ws, nil); err == nil {
+		t.Fatal("want error for malformed settings.json, got nil")
+	}
+	got, err := os.ReadFile(settingsPath)
+	if err != nil {
+		t.Fatalf("read back settings.json: %v", err)
+	}
+	if !bytes.Equal(got, malformed) {
+		t.Fatalf("settings.json was rewritten despite parse error:\n got: %s\nwant: %s", got, malformed)
+	}
+}
+
+// A settings.json containing literal `null` unmarshals into a nil map without
+// error; the merge must treat it as empty (no panic, no error) and proceed.
+func TestMergePluginHooks_NullSettings(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("ITERION_HOME", home)
+	ws := t.TempDir()
+	settingsPath := filepath.Join(ws, ".claude", "settings.json")
+	if err := os.MkdirAll(filepath.Join(ws, ".claude"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(settingsPath, []byte("null\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	writeHookyPlugin(t, home, true)
+
+	if err := mergePluginHooks(ws, nil); err != nil {
+		t.Fatalf("merge over null settings: %v", err)
+	}
+	if n := preToolUseLen(t, settingsPath); n != 1 {
+		t.Fatalf("after merge over null: PreToolUse = %d, want 1 (plugin hook)", n)
 	}
 }

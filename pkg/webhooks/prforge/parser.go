@@ -123,6 +123,17 @@ func (p Parsed) IsReviewable() bool {
 	}
 }
 
+// IsSynchronize reports whether this is a push to the PR head — GitHub spells
+// it "synchronize", Gitea/Forgejo "synchronized". A DRAFT PR is excluded (the
+// author is still iterating; re-reviewing a WIP push wastes budget) — matching
+// IsReviewable's draft guard and the GitLab IsSynchronize counterpart.
+// IsReviewable deliberately excludes synchronize entirely (re-review is
+// on-demand); the merge gate opts back in via the webhook's ReviewOnSync so
+// the required status re-evaluates on each new head.
+func (p Parsed) IsSynchronize() bool {
+	return !p.Draft && (p.Action == "synchronize" || p.Action == "synchronized")
+}
+
 // SubjectID is the stable per-PR identifier used in delivery records.
 func (p Parsed) SubjectID() string {
 	return "pr:" + strconv.FormatInt(p.PRNumber, 10)

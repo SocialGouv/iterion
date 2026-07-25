@@ -66,9 +66,9 @@ func fallbackAgentNode(id, backend, provider string) *ir.AgentNode {
 func fallbackAgentNodeModel(id, backend, provider, model string) *ir.AgentNode {
 	n := &ir.AgentNode{}
 	n.ID = id
-	n.LLMFields.Backend = backend
-	n.LLMFields.Provider = provider
-	n.LLMFields.Model = model
+	n.Backend = backend
+	n.Provider = provider
+	n.Model = model
 	return n
 }
 

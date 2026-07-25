@@ -133,6 +133,22 @@ func routeSchemas() map[string]routeOp {
 				State    string `json:"state"`
 			}{},
 		},
+
+		"GET /api/teams/{id}/forge/repos": {
+			response: struct {
+				Repos []forgeTeamRepo `json:"repos"`
+			}{},
+		},
+		"POST /api/teams/{id}/forge/repos": {
+			request: forgeCreateRepoReq{},
+			response: struct {
+				Repo     forge.RepoSummary `json:"repo"`
+				CloneURL string            `json:"clone_url"`
+			}{},
+		},
+		"GET /api/teams/{id}/forge/connections/{conn_id}/health": {
+			response: forgeConnectionHealth{},
+		},
 	}
 }
 

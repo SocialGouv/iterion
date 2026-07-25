@@ -150,7 +150,7 @@ coverage. To add/adjust Python scanning, edit this block — no DSL change.
 
 <!-- iterion:scanners
 [
-  {"id":"semgrep-py","output":"py-semgrep.json","cmd":"semgrep --config=p/python --config=p/django --config=p/flask --config=p/owasp-top-ten --json --output=$SCAN_DIR/py-semgrep.json --metrics=off --quiet --exclude='.iterion' --exclude='.works' --exclude='**/migrations/**' --exclude='**/__pycache__' --exclude='**/venv' --exclude='**/.venv' --exclude='**/test_*.py' --exclude='**/*_test.py' $WORKSPACE_DIR || true"},
-  {"id":"bandit","output":"bandit.json","cmd":"bandit --recursive --format=json --output=$SCAN_DIR/bandit.json --severity-level=low --confidence-level=low --skip B101 --exclude='*/test_*.py,*/tests/*,*/.venv/*,*/venv/*,*/migrations/*,*/.iterion/*,*/.works/*' --quiet $WORKSPACE_DIR || true"}
+  {"id":"semgrep-py","output":"py-semgrep.json","cmd":"semgrep --config=p/python --config=p/django --config=p/flask --config=p/owasp-top-ten --json --output=$SCAN_DIR/py-semgrep.json --metrics=off --quiet --exclude='.iterion' --exclude='.sec-audit' --exclude='.works' --exclude='**/migrations/**' --exclude='**/__pycache__' --exclude='**/venv' --exclude='**/.venv' --exclude='**/test_*.py' --exclude='**/*_test.py' $WORKSPACE_DIR || true"},
+  {"id":"bandit","output":"bandit.json","cmd":"bandit --recursive --format=json --output=$SCAN_DIR/bandit.json --severity-level=low --confidence-level=low --skip B101 --exclude='*/test_*.py,*/tests/*,*/.venv/*,*/venv/*,*/migrations/*,*/.iterion/*,*/.sec-audit/*,*/.works/*' --quiet $WORKSPACE_DIR || true"}
 ]
 -->

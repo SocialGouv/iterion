@@ -1,6 +1,7 @@
 package server
 
 import (
+	"strings"
 	"testing"
 	"time"
 
@@ -25,7 +26,9 @@ func TestValkeyForgeStateStore_TakeOnceAndTTL(t *testing.T) {
 	s := newValkeyForgeStateStore(rdb, 10*time.Minute)
 
 	p := forgePending{State: "abc", Provider: "github", TenantID: "t1", UserID: "u1", IssuedAt: time.Now()}
-	s.put(p)
+	if err := s.put(p); err != nil {
+		t.Fatalf("put: %v", err)
+	}
 
 	got, ok := s.take("abc")
 	if !ok || got.State != "abc" || got.UserID != "u1" {
@@ -36,7 +39,9 @@ func TestValkeyForgeStateStore_TakeOnceAndTTL(t *testing.T) {
 		t.Errorf("second take should miss (GETDEL consumed it)")
 	}
 	// TTL: a fresh entry expires after the window.
-	s.put(forgePending{State: "ttl", IssuedAt: time.Now()})
+	if err := s.put(forgePending{State: "ttl", IssuedAt: time.Now()}); err != nil {
+		t.Fatalf("put: %v", err)
+	}
 	mr.FastForward(11 * time.Minute)
 	if _, ok := s.take("ttl"); ok {
 		t.Errorf("entry should have expired via TTL")
@@ -47,11 +52,33 @@ func TestValkeyForgeStateStore_TakeOnceAndTTL(t *testing.T) {
 	}
 }
 
+// A Valkey write failure must surface from put — silently dropping the state
+// would doom the OAuth callback with an unexplained "state expired or invalid".
+func TestValkeyForgeStateStore_PutSurfacesSetFailure(t *testing.T) {
+	mr, rdb := newTestRedis(t)
+	s := newValkeyForgeStateStore(rdb, 10*time.Minute)
+
+	mr.SetError("valkey down")
+	err := s.put(forgePending{State: "boom", Provider: "github", TenantID: "t1", IssuedAt: time.Now()})
+	if err == nil {
+		t.Fatal("put should surface the Set failure")
+	}
+	// The error must carry context but NEVER the state token.
+	if strings.Contains(err.Error(), "boom") {
+		t.Errorf("error must not leak the state token: %v", err)
+	}
+	if !strings.Contains(err.Error(), "provider=github") || !strings.Contains(err.Error(), "team=t1") {
+		t.Errorf("error should carry provider+team context: %v", err)
+	}
+}
+
 func TestValkeyBoardMCPTokenStore_RegisterLookupRevoke(t *testing.T) {
 	mr, rdb := newTestRedis(t)
-	s := newValkeyBoardMCPTokenStore(rdb)
+	s := newValkeyBoardMCPTokenStore(rdb, nil)
 
-	s.Register("tok1", []string{"board.read", "board.move"}, "")
+	if err := s.Register("tok1", []string{"board.read", "board.move"}, ""); err != nil {
+		t.Fatalf("Register: %v", err)
+	}
 	g, ok := s.lookup("tok1")
 	if !ok || !g.Capabilities["board.read"] || !g.Capabilities["board.move"] {
 		t.Fatalf("lookup = %+v ok=%v", g.Capabilities, ok)
@@ -64,10 +91,32 @@ func TestValkeyBoardMCPTokenStore_RegisterLookupRevoke(t *testing.T) {
 		t.Errorf("revoked token should miss")
 	}
 	// TTL eviction.
-	s.Register("tok2", []string{"board.read"}, "")
+	if err := s.Register("tok2", []string{"board.read"}, ""); err != nil {
+		t.Fatalf("Register: %v", err)
+	}
 	mr.FastForward(boardMCPDefaultTTL + time.Minute)
 	if _, ok := s.lookup("tok2"); ok {
 		t.Errorf("token should have expired via TTL")
+	}
+}
+
+// A Valkey write failure must surface from Register — otherwise the minter
+// hands the run a token whose every CallTool 401s with no explanation.
+func TestValkeyBoardMCPTokenStore_RegisterSurfacesSetFailure(t *testing.T) {
+	mr, rdb := newTestRedis(t)
+	s := newValkeyBoardMCPTokenStore(rdb, nil)
+
+	mr.SetError("valkey down")
+	err := s.Register("secret-token", []string{"board.read"}, "")
+	if err == nil {
+		t.Fatal("Register should surface the Set failure")
+	}
+	// Caps are safe in the error; the token is not.
+	if strings.Contains(err.Error(), "secret-token") {
+		t.Errorf("error must not leak the token: %v", err)
+	}
+	if !strings.Contains(err.Error(), "board.read") {
+		t.Errorf("error should carry the caps context: %v", err)
 	}
 }
 

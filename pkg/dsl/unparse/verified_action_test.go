@@ -60,3 +60,33 @@ workflow w:
 		t.Fatalf("recovery not preserved: %+v", tn.Recovery)
 	}
 }
+
+// parallel_safe must survive an IR→.bot round-trip so `iterion resume`
+// change-detection hashing stays correct.
+func TestUnparseParallelSafe_RoundTrip(t *testing.T) {
+	src := `tool render_scene:
+  command: "render --scene {{outputs.dispatch.item.id}}"
+  parallel_safe: true
+
+workflow w:
+  entry: render_scene
+  render_scene -> done
+`
+	res := parser.Parse("test.bot", src)
+	if len(res.Diagnostics) != 0 {
+		t.Fatalf("unexpected diagnostics: %+v", res.Diagnostics)
+	}
+
+	out := unparse.Unparse(res.File)
+	if !strings.Contains(out, "parallel_safe: true") {
+		t.Fatalf("unparse output missing parallel_safe:\n%s", out)
+	}
+
+	res2 := parser.Parse("test.bot", out)
+	if len(res2.Diagnostics) != 0 {
+		t.Fatalf("reparse diagnostics: %+v\nsource:\n%s", res2.Diagnostics, out)
+	}
+	if !res2.File.Tools[0].ParallelSafe {
+		t.Fatal("parallel_safe not preserved across round-trip")
+	}
+}

@@ -1,17 +1,16 @@
-[← Documentation index](README.md)
-
 # Bundles — `.botz` packaged workflows
 
-A **bundle** is a tar.gz that ships a workflow (`main.bot`) alongside
-the resources it depends on — Claude Code skills, reusable prompts,
-default attachments, a manifest. The result is a single `.botz` file
+A **bundle** is a deterministic ZIP archive that ships a workflow
+(`main.bot`) alongside the resources it depends on — Claude Code skills,
+reusable prompts, default attachments, a manifest (legacy `tar.gz`
+bundles are still read for back-compat). The result is a single `.botz` file
 you can email, commit, or drop into S3, and that any `iterion` install
 can run with one command.
 
 ```bash
-iterion bundle init  my-bot         # scaffold
-$EDITOR my-bot/main.bot             # write your workflow
-iterion bundle pack  my-bot         # → my-bot.botz
+iterion bots create  my-bot         # scaffold
+$EDITOR bots/my-bot/main.bot        # write your workflow
+iterion bundle pack  bots/my-bot    # → my-bot.botz
 iterion run          my-bot.botz    # run it
 ```
 
@@ -30,16 +29,16 @@ workflows (templates, examples, organisation-internal recipes).
 ## Quick start
 
 ```bash
-# 1. Scaffold a layout under ./my-bot.
-iterion bundle init my-bot
+# 1. Scaffold a layout under ./bots/my-bot.
+iterion bots create my-bot
 
 # 2. Edit main.bot, drop skills/prompts/attachments as needed.
-$EDITOR my-bot/main.bot
-echo "# my skill" > my-bot/skills/probe.md
-echo "Hello {{vars.topic}}" > my-bot/prompts/helper.md
+$EDITOR bots/my-bot/main.bot
+echo "# my skill" > bots/my-bot/skills/probe.md
+echo "Hello {{vars.topic}}" > bots/my-bot/prompts/helper.md
 
 # 3. Build the deterministic archive.
-iterion bundle pack my-bot
+iterion bundle pack bots/my-bot
 #  → my-bot.botz   (next to the source dir)
 
 # 4. Run it like any workflow file.
@@ -58,8 +57,10 @@ my-bot/
 │   └── probe.md
 ├── prompts/           # optional — reusable .md prompts
 │   └── helper.md
-└── attachments/       # optional — default values for `attachments:` block
-    └── logo.png
+├── attachments/       # optional — default values for `attachments:` block
+│   └── logo.png
+└── presets/           # optional — file-based presets ("sous-bots")
+    └── sre.md
 ```
 
 | Entry             | Purpose |
@@ -69,6 +70,7 @@ my-bot/
 | `skills/`         | Claude Code skills. Mirrored into `<workDir>/.claude/skills/` at run time. Workspace files always win on collision (warn-logged). |
 | `prompts/`        | Reusable `.md` prompts. Each file is auto-registered with name equal to the filename stem — `prompts/helper.md` makes `system: helper` resolvable from `main.bot`. Workflow-declared prompts always win on collision. |
 | `attachments/`    | Default binary inputs the manifest can map to declared `attachments:` entries. Runtime uploads (Launch modal, cloud) override these. |
+| `presets/`        | File-based presets ("sous-bots"): each `presets/<name>.md` (YAML frontmatter + markdown body) is a named launch-time specialization selected with `--preset <name>`, layering variable overrides + a system-prompt bias + skill hints onto the bot. |
 
 ## Manifest schema
 
@@ -99,11 +101,9 @@ upgrade hint.
 `iterion bundle pack` produces a **reproducible** archive:
 
 - entries sorted alphabetically;
-- timestamps zeroed (tar `ModTime`, gzip `ModTime`);
-- ownership stripped (uid/gid 0, uname/gname empty);
+- every ZIP entry stamped with a fixed modtime (1980-01-01, `zipEpoch`);
 - modes normalised (`0o644` for files, `0o755` for dirs);
-- gzip OS byte set to `unknown`, gzip `Name`/`Comment` stripped;
-- USTAR format pinned (`tar.FormatUSTAR`).
+- compression pinned to `zip.Deflate`.
 
 ```bash
 iterion bundle pack my-bot -o a.botz
@@ -113,9 +113,13 @@ sha256sum a.botz b.botz
 # 03551558…  b.botz   ← identical
 ```
 
-This matters because the **uncompressed tar SHA-256** is the cache key
-the consumer side uses to look up the extraction slot at
-`~/.cache/iterion/bundles/<hash16>/`. Two machines packing the same
+This matters because a **container-independent SHA-256 over the sorted
+`(path, file-bytes)` pairs** is the cache key the consumer side uses to
+look up the extraction slot at
+`~/.cache/iterion/bundles/<first-2>/<full-hash>/` (Windows truncates the
+slot name to 16 chars to stay under MAX_PATH). The digest ignores the
+container format, so a ZIP and a legacy tar.gz of the same files share a
+cache slot. Two machines packing the same
 source produce the same hash → cache hits become trivially shareable
 (e.g. via a CDN that serves the archive but lets each machine extract
 locally).
@@ -176,7 +180,7 @@ persisted `BundlePath` automatically — the user doesn't re-type
 ## CLI reference
 
 ```
-iterion bundle init <dir>                Scaffold a bundle source layout.
+iterion bots create <slug>               Scaffold a bundle source layout.
 iterion bundle pack <dir> [-o file]      Build a deterministic .botz from a dir.
                        [--force]         Overwrite the output if it exists.
 iterion validate <bundle.botz|dir>       Validate a bundle and its workflow.

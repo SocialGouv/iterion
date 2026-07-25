@@ -21,7 +21,9 @@ const ghLabeledIssue = `{
     "title": "Add a CSV export endpoint",
     "body": "Users need their data as CSV.",
     "html_url": "https://github.com/acme/widgets/issues/42",
-    "state": "open"
+    "state": "open",
+    "user": {"login": "maintainer-bob"},
+    "author_association": "MEMBER"
   },
   "label": {"name": "implement"},
   "repository": {"id": 7, "full_name": "acme/widgets", "clone_url": "https://github.com/acme/widgets.git"},
@@ -145,6 +147,47 @@ func TestGitHubWebhook_IssueOpened_ZeroTouch(t *testing.T) {
 	// Same implementer contract as the labeled path — it opens a back-linked PR.
 	if gotVars["open_mr"] != "true" || gotVars["source_issue_ref"] == "" {
 		t.Fatalf("zero-touch must carry the implement contract: %v", gotVars)
+	}
+}
+
+// Zero-touch lane, UNTRUSTED author: an opened issue whose author has no
+// proven repo rights (author_association NONE, no allowlist, no forge token
+// for the API fallback) must be filtered — the budget boundary against
+// drive-by issues. The labeled lane stays ungated (labeling needs triage+
+// rights on the forge already).
+func TestGitHubWebhook_IssueOpened_UntrustedAuthorParked(t *testing.T) {
+	s := newWebhookTestServer(t)
+	s.webhookLaunchBot = func(context.Context, string, map[string]string, string, string, string, map[string]string, map[string]string) (string, error) {
+		t.Fatal("untrusted author's opened issue must not launch")
+		return "", nil
+	}
+	cfg, pt := issueConfig(t, s)
+	cfg.AutoImplementOnOpen = true
+	body := strings.Replace(ghLabeledIssue, `"action": "labeled"`, `"action": "opened"`, 1)
+	body = strings.Replace(body, `"user": {"login": "maintainer-bob"}`, `"user": {"login": "drive-by"}`, 1)
+	body = strings.Replace(body, `"author_association": "MEMBER"`, `"author_association": "NONE"`, 1)
+	w := httptest.NewRecorder()
+	s.handleGitHubWebhook(w, ghReq(ghCtx(cfg), body, prforge.EventHeaderIssues, pt))
+	if w.Code != http.StatusOK {
+		t.Fatalf("untrusted opened: code=%d body=%s", w.Code, w.Body.String())
+	}
+	var resp map[string]string
+	json.Unmarshal(w.Body.Bytes(), &resp)
+	if resp["status"] != webhooks.StatusFiltered {
+		t.Fatalf("untrusted opened should be filtered: %v", resp)
+	}
+
+	// Same author, but on the operator's static allowlist → launches.
+	cfg.AuthorAllowlist = []string{"drive-by"}
+	var calls int
+	s.webhookLaunchBot = func(context.Context, string, map[string]string, string, string, string, map[string]string, map[string]string) (string, error) {
+		calls++
+		return "run-a", nil
+	}
+	w = httptest.NewRecorder()
+	s.handleGitHubWebhook(w, ghReq(ghCtx(cfg), body, prforge.EventHeaderIssues, pt))
+	if w.Code != http.StatusAccepted || calls != 1 {
+		t.Fatalf("allowlisted author should launch: code=%d calls=%d body=%s", w.Code, calls, w.Body.String())
 	}
 }
 

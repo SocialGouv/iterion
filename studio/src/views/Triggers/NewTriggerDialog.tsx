@@ -1,19 +1,24 @@
-import { useState } from "react";
+import { useMemo, useState } from "react";
 
 import { Dialog } from "@/components/ui/Dialog";
 import { Button } from "@/components/ui/Button";
+import { Combobox, type ComboboxOption } from "@/components/ui/Combobox";
 import { Input } from "@/components/ui/Input";
 import { Select } from "@/components/ui/Select";
 import { FieldLabel } from "@/components/ui/FieldLabel";
 import { InlineBanner } from "@/components/ui/InlineBanner";
+import { useActiveRepo } from "@/hooks/useActiveRepo";
 import { useAsyncAction } from "@/hooks/useAsyncAction";
 
 import {
   createTrigger,
+  updateTrigger,
+  toSubscriptionInput,
   type SubscriptionInput,
   type TriggerInvocation,
   type TriggerMatcher,
   type TriggerSource,
+  type TriggerSubscription,
 } from "@/api/triggers";
 
 // TriggerType is the operator-facing choice that drives the source + sensible
@@ -41,29 +46,54 @@ function csv(s: string): string[] | undefined {
   return out.length ? out : undefined;
 }
 
+// typeFromSubscription recovers the operator-facing type from a stored
+// subscription: the matcher's pinned source when it maps to a type, else the
+// invocation kind, else "custom".
+function typeFromSubscription(sub: TriggerSubscription): TriggerType {
+  const s = sub.match?.sources?.[0];
+  if (s && s in TYPE_META) return s as TriggerType;
+  if (sub.invocation === "schedule" || sub.invocation === "board" || sub.invocation === "forge") {
+    return sub.invocation;
+  }
+  return "custom";
+}
+
+const DEFAULT_CRON = "0 2 * * *";
+
 interface Props {
   open: boolean;
   onOpenChange: (open: boolean) => void;
+  /** Called after a successful create OR edit save. */
   onCreated: () => void;
+  /** Edit mode: the subscription under edit. The dialog re-seeds from it on
+   *  open and saves via PUT instead of POST. Null/omitted = create mode. */
+  editing?: TriggerSubscription | null;
   /** Pre-fills the Bot field when opened from a bot-scoped surface (the
    *  bot home's "Add trigger…"). Omitted = current behaviour (empty). */
   defaultBotId?: string;
+  /** Pre-fills the Repo field with an explicit owner/repo slug. When
+   *  omitted the dialog falls back to the sidebar's active repo in cloud
+   *  mode. Free text stays accepted for repos not yet connected. */
+  defaultRepo?: string;
 }
 
-export default function NewTriggerDialog({ open, onOpenChange, onCreated, defaultBotId }: Props) {
+export default function NewTriggerDialog({
+  open,
+  onOpenChange,
+  onCreated,
+  editing = null,
+  defaultBotId,
+  defaultRepo,
+}: Props) {
   const [type, setType] = useState<TriggerType>("board");
   const [botId, setBotId] = useState(defaultBotId ?? "");
-
-  // Re-seed the bot field each time the dialog opens so a stale edit
-  // from a previous open doesn't leak into a bot-scoped dialog.
-  // Adjust-state-during-render (not an effect) per the React guidance.
-  const [wasOpen, setWasOpen] = useState(open);
-  if (open !== wasOpen) {
-    setWasOpen(open);
-    if (open && defaultBotId) setBotId(defaultBotId);
-  }
-  const [repo, setRepo] = useState("");
-  const [cron, setCron] = useState("0 2 * * *");
+  // Repo picker is fed by the connected-repos list the sidebar switcher
+  // uses; free text stays accepted for repos not yet connected on the
+  // team. Fallback prefill: caller's defaultRepo, else the active repo.
+  const { activeRepo, repos: connectedRepos, enabled: repoScopeEnabled } = useActiveRepo();
+  const initialRepo = defaultRepo ?? (repoScopeEnabled ? activeRepo?.repo_full_name ?? "" : "");
+  const [repo, setRepo] = useState(initialRepo);
+  const [cron, setCron] = useState(DEFAULT_CRON);
   const [kinds, setKinds] = useState("");
   const [states, setStates] = useState("ready");
   const [labels, setLabels] = useState("feature");
@@ -71,7 +101,51 @@ export default function NewTriggerDialog({ open, onOpenChange, onCreated, defaul
   const [argsVar, setArgsVar] = useState("");
   const action = useAsyncAction();
 
+  // Re-seed the whole draft each time the dialog opens (or the edited
+  // subscription changes) so a stale draft from a previous open never
+  // leaks. Adjust-state-during-render (not an effect) per the React
+  // guidance — same pattern as EditScheduleDialog's seededFor.
+  const seedKey = open ? (editing ? `edit:${editing.id}` : "create") : null;
+  const [seededFor, setSeededFor] = useState<string | null>(null);
+  if (seedKey !== seededFor) {
+    setSeededFor(seedKey);
+    if (seedKey) {
+      if (editing) {
+        setType(typeFromSubscription(editing));
+        setBotId(editing.bot_id);
+        setRepo(editing.repo ?? "");
+        setCron(editing.cron || DEFAULT_CRON);
+        setKinds(editing.match?.kinds?.join(", ") ?? "");
+        setStates(editing.match?.subject_states?.join(", ") ?? "");
+        setLabels(editing.match?.labels?.join(", ") ?? "");
+        setAuthors(editing.match?.authors?.join(", ") ?? "");
+        setArgsVar(editing.args_var ?? "");
+      } else {
+        setType("board");
+        setBotId(defaultBotId ?? "");
+        setRepo(initialRepo);
+        setCron(DEFAULT_CRON);
+        setKinds("");
+        setStates("ready");
+        setLabels("feature");
+        setAuthors("");
+        setArgsVar("");
+      }
+      action.clearError();
+    }
+  }
+
   const meta = TYPE_META[type];
+
+  const repoOptions = useMemo<ComboboxOption[]>(
+    () =>
+      connectedRepos.map((r) => ({
+        value: r.repo_full_name,
+        label: r.repo_full_name,
+        description: r.provider,
+      })),
+    [connectedRepos],
+  );
 
   async function submit() {
     if (!botId.trim()) {
@@ -87,7 +161,11 @@ export default function NewTriggerDialog({ open, onOpenChange, onCreated, defaul
       match.kinds = csv(kinds);
       if (type === "run" || type === "forge") match.authors = csv(authors);
     }
+    // Edit mode starts from the full projection of the current subscription
+    // (PUT replaces every request field — vars + schedgate policy would be
+    // cleared otherwise), then overlays the dialog fields.
     const input: SubscriptionInput = {
+      ...(editing ? toSubscriptionInput(editing) : {}),
       bot_id: botId.trim(),
       repo: repo.trim() || undefined,
       invocation: meta.invocation,
@@ -95,14 +173,21 @@ export default function NewTriggerDialog({ open, onOpenChange, onCreated, defaul
       match,
       cron: type === "schedule" ? cron.trim() : undefined,
       args_var: argsVar.trim() || undefined,
-      enabled: true,
+      enabled: editing ? editing.enabled : true,
     };
-    const res = await action.run(() => createTrigger(input));
+    const res = await action.run(() =>
+      editing ? updateTrigger(editing.id, input) : createTrigger(input),
+    );
     if (res) onCreated();
   }
 
   return (
-    <Dialog open={open} onOpenChange={onOpenChange} title="New trigger" widthClass="max-w-xl">
+    <Dialog
+      open={open}
+      onOpenChange={onOpenChange}
+      title={editing ? "Edit trigger" : "New trigger"}
+      widthClass="max-w-xl"
+    >
       <div className="flex flex-col gap-3 px-4 py-3">
         <div>
           <FieldLabel>Trigger type</FieldLabel>
@@ -123,14 +208,21 @@ export default function NewTriggerDialog({ open, onOpenChange, onCreated, defaul
           </div>
           <div>
             <FieldLabel>Repo (optional)</FieldLabel>
-            <Input value={repo} onChange={(e) => setRepo(e.target.value)} placeholder="owner/repo" />
+            <Combobox
+              value={repo}
+              options={repoOptions}
+              placeholder="owner/repo"
+              emptyLabel="Any repository"
+              onChange={(v) => setRepo(v)}
+              freeSolo
+            />
           </div>
         </div>
 
         {type === "schedule" && (
           <div>
             <FieldLabel>Cron (5-field)</FieldLabel>
-            <Input value={cron} onChange={(e) => setCron(e.target.value)} placeholder="0 2 * * *" />
+            <Input value={cron} onChange={(e) => setCron(e.target.value)} placeholder={DEFAULT_CRON} />
           </div>
         )}
 
@@ -174,7 +266,7 @@ export default function NewTriggerDialog({ open, onOpenChange, onCreated, defaul
         </div>
 
         {action.error && (
-          <InlineBanner tone="danger" title="Couldn't create trigger">
+          <InlineBanner tone="danger" title={editing ? "Couldn't save trigger" : "Couldn't create trigger"}>
             {action.error}
           </InlineBanner>
         )}
@@ -185,7 +277,13 @@ export default function NewTriggerDialog({ open, onOpenChange, onCreated, defaul
           Cancel
         </Button>
         <Button variant="primary" size="sm" onClick={() => void submit()} disabled={action.busy}>
-          {action.busy ? "Creating…" : "Create trigger"}
+          {editing
+            ? action.busy
+              ? "Saving…"
+              : "Save changes"
+            : action.busy
+              ? "Creating…"
+              : "Create trigger"}
         </Button>
       </div>
     </Dialog>

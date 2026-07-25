@@ -7,6 +7,7 @@ import (
 
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
 	iterlog "github.com/SocialGouv/iterion/pkg/log"
+	"github.com/SocialGouv/iterion/pkg/store"
 )
 
 // ErrBudgetExceeded is returned when a budget limit has been reached.
@@ -29,6 +30,9 @@ type SharedBudget struct {
 	maxCostUSD    float64
 	maxIterations int
 	maxDuration   time.Duration
+	// warnTokens is advisory-only: crossing it emits a single
+	// budget_warning (advisory=true) but never hard-limits the run.
+	warnTokens int
 
 	// Consumed.
 	tokensUsed     int
@@ -36,8 +40,13 @@ type SharedBudget struct {
 	iterationsUsed int
 	startedAt      time.Time
 
-	// Warning tracking — each dimension warns at most once.
+	// Warning tracking — each dimension warns at most once (re-armed
+	// per axis by RaiseCaps so a raised ceiling gets fresh warnings).
 	warningsEmitted map[string]bool
+
+	// everRaised records that at least one live raise_budget landed —
+	// the trigger for persisting the (absolute) caps on the run record.
+	everRaised bool
 }
 
 const (
@@ -64,20 +73,94 @@ func newSharedBudget(b *ir.Budget, logger *iterlog.Logger) *SharedBudget {
 		}
 	}
 
-	// If no limits are set beyond MaxParallelBranches (handled elsewhere), skip.
-	if b.MaxTokens == 0 && b.MaxCostUSD == 0 && b.MaxIterations == 0 && maxDur == 0 {
+	// If no limits are set beyond MaxParallelBranches (handled elsewhere),
+	// skip. A warn-only threshold still needs the tracker: it never blocks,
+	// but consumption must be counted for the advisory to fire.
+	if b.MaxTokens == 0 && b.MaxCostUSD == 0 && b.MaxIterations == 0 && maxDur == 0 && b.WarnTokens == 0 {
 		return nil
 	}
 
 	return &SharedBudget{
 		logger:          logger,
 		maxTokens:       b.MaxTokens,
+		warnTokens:      b.WarnTokens,
 		maxCostUSD:      b.MaxCostUSD,
 		maxIterations:   b.MaxIterations,
 		maxDuration:     maxDur,
 		startedAt:       time.Now(),
 		warningsEmitted: make(map[string]bool),
 	}
+}
+
+// RaiseCaps raises any of the four caps to the supplied ABSOLUTE values
+// (live steering, raise_budget). Raise-only: a value lower than or equal
+// to the current cap — or zero — is ignored, so a stale/duplicate command
+// can never SHRINK a running budget. Each raised axis re-arms its
+// warning so the operator gets a fresh 80% tick against the new ceiling.
+// Returns the effective caps after clamping and whether anything
+// changed. Nil-safe (no-op, raised=false): the caller maps a nil budget
+// to its "no budget declared" error before ever calling this.
+func (b *SharedBudget) RaiseCaps(o ir.BudgetOverrides) (effective ir.BudgetOverrides, raised bool) {
+	if b == nil {
+		return ir.BudgetOverrides{}, false
+	}
+	b.mu.Lock()
+	defer b.mu.Unlock()
+
+	// An axis at 0 means UNLIMITED: "raising" it to a number would in
+	// fact constrain the run, so each clause requires a currently-set
+	// (> 0) limit before applying a strictly-greater value.
+	if b.maxCostUSD > 0 && o.MaxCostUSD > b.maxCostUSD {
+		b.maxCostUSD = o.MaxCostUSD
+		delete(b.warningsEmitted, "cost_usd")
+		raised = true
+	}
+	if b.maxTokens > 0 && o.MaxTokens > b.maxTokens {
+		b.maxTokens = o.MaxTokens
+		delete(b.warningsEmitted, "tokens")
+		raised = true
+	}
+	if b.maxIterations > 0 && o.MaxIterations > b.maxIterations {
+		b.maxIterations = o.MaxIterations
+		delete(b.warningsEmitted, "iterations")
+		raised = true
+	}
+	if b.maxDuration > 0 && o.MaxDuration != "" {
+		if d, err := time.ParseDuration(ir.ExpandEnvWithDefault(o.MaxDuration)); err == nil && d > b.maxDuration {
+			b.maxDuration = d
+			delete(b.warningsEmitted, "duration")
+			raised = true
+		}
+	}
+	if raised {
+		b.everRaised = true
+	}
+	return b.capsLocked(), raised
+}
+
+// Raises returns the current ABSOLUTE caps and whether any live raise
+// ever landed on this budget — the persistence trigger. Nil-safe.
+func (b *SharedBudget) Raises() (ir.BudgetOverrides, bool) {
+	if b == nil {
+		return ir.BudgetOverrides{}, false
+	}
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.capsLocked(), b.everRaised
+}
+
+// capsLocked snapshots the limit fields as BudgetOverrides. Caller
+// holds b.mu.
+func (b *SharedBudget) capsLocked() ir.BudgetOverrides {
+	caps := ir.BudgetOverrides{
+		MaxCostUSD:    b.maxCostUSD,
+		MaxTokens:     b.maxTokens,
+		MaxIterations: b.maxIterations,
+	}
+	if b.maxDuration > 0 {
+		caps.MaxDuration = b.maxDuration.String()
+	}
+	return caps
 }
 
 // Snapshot returns the budget's consumed amounts and elapsed active time so
@@ -116,6 +199,7 @@ type budgetCheckResult struct {
 	exceeded    bool
 	hardLimited bool // true when 90% <= ratio < 100%
 	warning     bool
+	advisory    bool   // warning came from a warn-only threshold (warn_tokens)
 	dimension   string // "tokens", "cost_usd", "iterations", "duration"
 	used        float64
 	limit       float64
@@ -227,6 +311,18 @@ func (b *SharedBudget) checkLocked() []budgetCheckResult {
 	check("cost_usd", b.costUsed, b.maxCostUSD)
 	check("duration", float64(time.Since(b.startedAt)), float64(b.maxDuration))
 
+	// The advisory token threshold reports once on the tokens axis and
+	// never blocks: the operator asked to be told (audit hint), not
+	// stopped. It shares the axis dedupe with the ratio warning above so
+	// a run surfaces at most one tokens warning.
+	if b.warnTokens > 0 && b.tokensUsed >= b.warnTokens && !b.warningsEmitted["tokens"] {
+		b.warningsEmitted["tokens"] = true
+		results = append(results, budgetCheckResult{
+			warning: true, advisory: true, dimension: "tokens",
+			used: float64(b.tokensUsed), limit: float64(b.warnTokens),
+		})
+	}
+
 	return results
 }
 
@@ -259,4 +355,113 @@ func findWarnings(results []budgetCheckResult) []budgetCheckResult {
 		}
 	}
 	return warnings
+}
+
+// ---------------------------------------------------------------------------
+// Budget helpers
+// ---------------------------------------------------------------------------
+
+// checkBudgetBeforeExec checks budget limits before a node runs.
+// It enforces both hard exceeded (100%) and hard limited (90%) thresholds.
+func (e *Engine) checkBudgetBeforeExec(rs *runState, nodeID string) error {
+	// Daily spend cap: pause (resumable) before executing the next node
+	// when the shared per-day ledger is over the cap. Checked before the
+	// per-run budget — and independently of whether a per-run budget is
+	// declared — so a cap trip pauses (resumable) rather than fails.
+	if e.dailyCap != nil {
+		if st, err := e.dailyCap.Status(rs.ctx); err != nil {
+			e.logger.Warn("daily spend cap: status check failed: %v", err)
+		} else if st.Exceeded {
+			return e.handleCostCapPause(rs, nodeID, st)
+		}
+	}
+
+	if rs.budget == nil {
+		return nil
+	}
+	checks := rs.budget.Check()
+
+	// Hard exceeded (100%+).
+	if exc := findExceeded(checks); exc != nil {
+		return e.failBudgetExceeded(rs, nodeID, exc)
+	}
+
+	// Hard limit (90%+) — refuse new node executions to prevent concurrent overage.
+	if hl := findHardLimited(checks); hl != nil {
+		_ = e.emit(rs.ctx, rs.runID, store.EventBudgetExceeded, nodeID, map[string]any{
+			"dimension":  hl.dimension,
+			"used":       hl.used,
+			"limit":      hl.limit,
+			"hard_limit": true,
+		})
+		return e.failRunErrWithCheckpoint(rs, nodeID, &RuntimeError{
+			Code:    ErrCodeBudgetExceeded,
+			Message: fmt.Sprintf("budget hard limit reached: %s at %.0f%% (%.0f/%.0f)", hl.dimension, (hl.used/hl.limit)*100, hl.used, hl.limit),
+			NodeID:  nodeID,
+			Hint:    fmt.Sprintf("increase the %s budget or optimize the workflow; new executions are blocked at 90%% to prevent concurrent overage", hl.dimension),
+		})
+	}
+
+	return nil
+}
+
+// recordAndCheckBudget records usage from a node execution and emits
+// budget_warning / budget_exceeded events as needed.
+func (e *Engine) recordAndCheckBudget(rs *runState, nodeID string, output map[string]any) error {
+	tokens, costUSD := extractUsage(output)
+
+	// Daily spend cap accounting (independent of the per-run budget so it
+	// works for workflows with no budget: block). We only record — the
+	// pause decision happens on the pre-exec path so we anchor the
+	// checkpoint at a not-yet-executed node.
+	if e.dailyCap != nil && costUSD > 0 {
+		rs.costUSDTotal += costUSD
+		if _, err := e.dailyCap.Record(rs.ctx, rs.runID, rs.costUSDTotal); err != nil {
+			e.logger.Warn("daily spend cap: record failed: %v", err)
+		}
+	}
+
+	if rs.budget == nil {
+		return nil
+	}
+
+	checks := rs.budget.RecordUsage(tokens, costUSD)
+
+	// Emit warnings.
+	for _, w := range findWarnings(checks) {
+		_ = e.emit(rs.ctx, rs.runID, store.EventBudgetWarning, nodeID, map[string]any{
+			"dimension": w.dimension,
+			"advisory":  w.advisory,
+			"used":      w.used,
+			"limit":     w.limit,
+		})
+	}
+
+	// Fail on exceeded.
+	if exc := findExceeded(checks); exc != nil {
+		return e.failBudgetExceeded(rs, nodeID, exc)
+	}
+
+	return nil
+}
+
+// failBudgetExceeded emits a budget_exceeded event for a hard-exceeded
+// (100%+) dimension and fails the run with a checkpoint-preserving
+// RuntimeError. Shared by the pre-exec (checkBudgetBeforeExec) and
+// post-exec (recordAndCheckBudget) budget checks, which produced this
+// identical event+error pair. The 90% hard-limit case stays inline in
+// checkBudgetBeforeExec — it has a distinct message, hint, and event
+// field, and is reached from only one site.
+func (e *Engine) failBudgetExceeded(rs *runState, nodeID string, exc *budgetCheckResult) error {
+	_ = e.emit(rs.ctx, rs.runID, store.EventBudgetExceeded, nodeID, map[string]any{
+		"dimension": exc.dimension,
+		"used":      exc.used,
+		"limit":     exc.limit,
+	})
+	return e.failRunErrWithCheckpoint(rs, nodeID, &RuntimeError{
+		Code:    ErrCodeBudgetExceeded,
+		Message: fmt.Sprintf("budget exceeded: %s (%.0f/%.0f)", exc.dimension, exc.used, exc.limit),
+		NodeID:  nodeID,
+		Hint:    fmt.Sprintf("increase the %s budget or optimize the workflow", exc.dimension),
+	})
 }

@@ -1,0 +1,714 @@
+## wiki-gen (Wikky) — generate + maintain a navigable OKF wiki for ANY
+## repository. One adaptive agent writes the wiki tree grounded in the
+## code; deterministic tools regenerate the indexes, validate the OKF
+## frontmatter + intra-wiki links, and enforce a docs-only scope — the
+## agent cannot ship a hallucinated or structurally-broken wiki. Output
+## conforms to Google's Open Knowledge Format v0.1 (type-only-required
+## frontmatter + Markdown-links-as-concept-edges), so the result is
+## directly ingestible by a knowledge-graph explorer (e.g. graphify).
+##
+## Distinct from Doki (docs-refresh): Doki ALIGNS a repo's existing docs
+## to its code (edits in place, docs follow code); Wikky GENERATES and
+## incrementally MAINTAINS a parallel, navigable wiki artifact it owns.
+##
+## Incrementality (openwiki-inspired): scan_repo persists git_head in an
+## out-of-tree cache and short-circuits the whole run when the wiki is
+## already current for the exact HEAD — a scheduled run on an unchanged
+## repo finishes at zero LLM cost.
+
+## ─── Vars ────────────────────────────────────────────────────────
+vars:
+  ## The workspace to document. Defaults to ${PROJECT_DIR} — resolved by
+  ## the engine to the worktree (worktree: auto). Omit the override so it
+  ## points at the clean, fully-mounted tree.
+  workspace_dir: string = "${PROJECT_DIR}"
+
+  ## Output wiki tree, repo-relative. The agent writes ONLY here; the
+  ## deterministic scope gate fails the run if anything outside it (or a
+  ## declared pointer file) changed. Changing this from "wiki" also means
+  ## adjusting any external tooling that expects the default location.
+  wiki_dir: string = "wiki"
+
+  ## OKF spec version stamped on the ROOT index.md.
+  okf_version: string = "0.1"
+
+  ## Code-survey scope. Empty = the whole workspace (the agent explores
+  ## adaptively). A glob narrows the survey for a large monorepo.
+  code_scope_globs: string = ""
+
+  ## Dirs never surveyed or documented (build/vendor/VCS/tooling noise).
+  excluded_dirs: string = ".iterion,.works,.claude,vendor,node_modules,.git,dist,build,out,.next,target,coverage"
+
+  ## Operator focus / brief. Free-form; a HINT that shapes what the wiki
+  ## emphasises, never a scope reduction. An explicit request (this or
+  ## issue_id) disables the noop short-circuit.
+  scope_notes: string = ""
+
+  ## Dispatched tracker issue id. Empty outside dispatch. When set, the
+  ## run transitions the ticket on finish AND never noop-skips.
+  issue_id: string = ""
+
+  ## The bot's own bundle path, auto-excluded from the survey so Wikky
+  ## never documents itself into a target repo.
+  bundle_self_path: string = ""
+
+  ## Persistent, OUT-OF-TREE inter-run cache (git_head + per-page shas),
+  ## keyed off the original repo root so it survives across runs. A
+  ## repo-root dotfile would NOT survive under worktree: auto (the fresh
+  ## worktree omits untracked files). Empty disables the noop gate.
+  wiki_cache_path: string = "${PROJECT_SCRATCH_DIR}/wiki-gen-cache.json"
+
+  ## Bounded continuation passes (validation feedback → author). Wiki
+  ## generation converges fast; N loop-BACKS = N+1 total passes.
+  max_passes: string = "3"
+
+## ─── Prompts ─────────────────────────────────────────────────────
+prompt author_system:
+  You are a senior technical writer-engineer building a NAVIGABLE WIKI for
+  the repository in front of you — working EXACTLY as in a productive,
+  human-driven session. You have full tools (read, grep, shell, git) and
+  own this pass end to end.
+
+  THE MISSION: produce (or incrementally update) a structured, navigable
+  wiki under the `{{input.wiki_dir}}/` directory that lets a newcomer —
+  human or agent — understand what this repository does, how it is
+  organized, and where to change things. Every claim is GROUNDED in the
+  source; you never invent files, APIs, or behaviour.
+
+  LOAD YOUR SKILLS FIRST. The bundle ships two skills under
+  `.claude/skills/` you MUST follow:
+    - `wiki-authoring.md` — the operating playbook: discovery, page
+      design, the plan-before-write discipline, grounding rules, the
+      surgical-update contract, and the inviolable boundaries.
+    - `okf-format.md` — the Open Knowledge Format contract: the required
+      frontmatter, how Markdown links model concept relationships, the
+      reserved files, and what the deterministic validator checks.
+
+  INVIOLABLE BOUNDARIES (a deterministic gate enforces these — violating
+  them fails the run, it does not merely warn):
+    1. Write ONLY under `{{input.wiki_dir}}/`. NEVER edit source code,
+       config, or any file outside the wiki tree. If you find a real code
+       bug while surveying, do NOT fix it — record it as a board finding
+       (board.create) and move on.
+    2. Do NOT hand-write directory `index.md` files. They are regenerated
+       DETERMINISTICALLY after your pass from each page's frontmatter.
+       Write the CONCEPT pages; leave the indexes to the tool.
+    3. Every concept page opens with valid OKF frontmatter (a `type:` at
+       minimum). Every intra-wiki link must resolve to a real page/anchor.
+
+  HOW TO WORK — reproduce the shape of a productive session:
+
+  1. DISCOVER, don't dump. Read the entrypoints, the build manifest, the
+     top-level package layout, and the highest-signal source + existing
+     docs (README, docs/, CLAUDE.md/AGENTS.md). Use `git log` on important
+     files to explain WHY code exists, not only what. Do NOT exhaustively
+     read every file.
+
+  2. PLAN before writing. Write a temporary `{{input.wiki_dir}}/_plan.md`
+     listing the intended concept pages (path + the concept each covers +
+     the source evidence) and the evidence-backed relationships between
+     concepts (source concept -> relationship meaning -> target concept)
+     so cross-links are designed before pages exist. DELETE `_plan.md`
+     before you finish — it must not remain in the wiki.
+
+  3. WRITE the concept pages, one canonical home per concept, organized
+     like human documentation (architecture/, workflows/, domain/, …) —
+     NOT a raw file inventory. Put a concept link in the sentence that
+     explains the relationship. A `quickstart.md` at the wiki root is the
+     mandatory entrypoint and links to every major concept. COMMIT in
+     stride (`docs(wiki): <what>`; body ending `Bot: wiki-gen`), staging
+     everything with `git add -A` before each commit — git is your
+     durable state; an interrupted run keeps every page you committed.
+
+  INCREMENTAL UPDATE (when a wiki already exists — `wiki_exists` true):
+  do NOT regenerate wholesale. Your `changed_code_files` input is the code
+  that moved since the last wiki update; touch only the concept pages that
+  code affects, keep a tight diff budget (few source changes → few page
+  edits), and never churn formatting-only. If nothing material changed for
+  a page, leave it. A no-op update is a valid, correct outcome.
+
+  PRIOR-PASS FEEDBACK: if `fail_log` is non-empty, a deterministic gate
+  REJECTED the previous pass (invalid frontmatter, dead links, or an
+  out-of-scope write). Fix exactly what it names — do not re-litigate the
+  rest.
+
+  TERMINATION CONTRACT — your structured output:
+    - wiki_complete: true ONLY when every concept you intended this pass is
+      written with valid frontmatter and resolvable links, the quickstart
+      links every major concept, and nothing outside `{{input.wiki_dir}}/`
+      was touched. Under-reporting costs one pass; over-reporting lands you
+      right back here with the same failures.
+    - pages_written: concept pages created/updated this pass (int).
+    - remaining: a short note on what a future pass should still cover
+      (empty when the wiki is complete).
+    - findings_filed: true if you filed any code-bug board finding.
+    - summary: 1-3 sentences.
+
+prompt author_user:
+  Repository wiki task.
+
+  wiki_dir: {{input.wiki_dir}}
+  okf_version: {{input.okf_version}}
+  wiki already exists: {{input.wiki_exists}}
+  existing wiki pages ({{input.wiki_pages}}):
+  top-level repo entries: {{input.repo_top}}
+  code changed since last wiki update (incremental focus, may be empty):
+  {{input.changed_code_files}}
+
+  Operator brief (a hint, not a scope limit):
+  {{input.scope_notes}}
+
+  Deterministic gate feedback from the previous pass (empty on the first
+  pass — fix exactly what it names when present):
+  {{input.fail_log}}
+
+  Build or update the wiki under {{input.wiki_dir}}/ per your skills and
+  the inviolable boundaries. Commit each page in stride. Return the
+  termination contract honestly.
+
+## ─── Schemas ─────────────────────────────────────────────────────
+schema scan_output:
+  wiki_exists: bool
+  wiki_pages: string[]
+  wiki_page_count: int
+  repo_top: string[]
+  changed_code_files: string[]
+  ## noop gate (openwiki-inspired): true when the wiki already exists AND
+  ## is current for the exact HEAD (cache git_head matches, clean tree)
+  ## AND no explicit request (issue_id) is present — routes scan_repo ->
+  ## done, zero LLM cost. noop_reason explains the decision either way.
+  noop_skip: bool
+  noop_reason: string
+  git_head: string
+
+schema author_input:
+  workspace_dir: string
+  wiki_dir: string
+  okf_version: string
+  wiki_exists: bool
+  wiki_pages: string[]
+  changed_code_files: string[]
+  repo_top: string[]
+  scope_notes: string
+  fail_log: string
+
+schema author_output:
+  wiki_complete: bool
+  pages_written: int
+  remaining: string
+  findings_filed: bool
+  summary: string
+
+schema gen_indexes_input:
+  workspace_dir: string
+  wiki_dir: string
+  okf_version: string
+
+schema gen_indexes_output:
+  indexes_written: int
+  committed: bool
+  note: string
+
+schema validate_input:
+  workspace_dir: string
+  wiki_dir: string
+  base: string
+
+schema validate_output:
+  frontmatter_valid: bool
+  links_ok: bool
+  scope_ok: bool
+  invalid_frontmatter: string[]
+  dead_links: string[]
+  orphans: string[]
+  out_of_scope: string[]
+  page_count: int
+  has_quickstart: bool
+  log: string
+
+schema mark_issue_output:
+  text: string
+
+schema update_cache_input:
+  workspace_dir: string
+  wiki_dir: string
+  cache_path: string
+
+schema update_cache_output:
+  cache_path: string
+  entries_written: int
+  git_head: string
+  skipped: string
+
+schema gate_state:
+  converged: bool
+  fail_log: string
+
+## ─── Tools ───────────────────────────────────────────────────────
+
+## scan_repo — deterministic survey + noop gate + wiki detection. Reads
+## the inter-run cache's git_head; short-circuits the whole run when the
+## wiki is already current for HEAD (clean tree, no explicit request).
+tool scan_repo:
+  command: `WS={{vars.workspace_dir}} WIKI_DIR={{vars.wiki_dir}} CODE_GLOBS={{vars.code_scope_globs}} EXCLUDED_DIRS={{vars.excluded_dirs}} BUNDLE_SELF={{vars.bundle_self_path}} CACHE_PATH={{vars.wiki_cache_path}} ISSUE_ID={{vars.issue_id}} python3 -c "
+import os, json, glob, subprocess
+ws = os.environ['WS']
+wiki_dir = os.environ.get('WIKI_DIR', 'wiki').strip('/')
+bundle_self = os.environ.get('BUNDLE_SELF', '').strip().rstrip(os.sep)
+cache_path = os.environ.get('CACHE_PATH', '').strip()
+issue_id = os.environ.get('ISSUE_ID', '').strip()
+os.chdir(ws)
+EXCLUDE = {d.strip() for d in os.environ.get('EXCLUDED_DIRS', '').split(',') if d.strip()}
+def excluded(p):
+    if any(part in EXCLUDE for part in p.split(os.sep)):
+        return True
+    if bundle_self and (p == bundle_self or p.startswith(bundle_self + os.sep)):
+        return True
+    return False
+# existing wiki pages (concept pages + indexes both count as 'exists')
+wiki_pages = []
+if os.path.isdir(wiki_dir):
+    for f in glob.glob(os.path.join(wiki_dir, '**', '*.md'), recursive=True):
+        if os.path.isfile(f):
+            wiki_pages.append(f)
+wiki_pages = sorted(wiki_pages)
+wiki_exists = len(wiki_pages) > 0
+# light top-level survey (the agent explores the rest adaptively)
+repo_top = sorted([e for e in os.listdir('.') if not excluded(e) and not e.startswith('.')])[:60]
+def git(args):
+    try:
+        return subprocess.run(['git'] + args, capture_output=True, text=True, check=True).stdout.strip()
+    except Exception:
+        return ''
+head = git(['rev-parse', 'HEAD'])
+cache_head = ''
+cache_pages = {}
+if cache_path:
+    try:
+        with open(cache_path) as cf:
+            c = json.load(cf) or {}
+        cache_head = c.get('git_head', '') or ''
+        cache_pages = c.get('pages', {}) or {}
+    except (FileNotFoundError, json.JSONDecodeError):
+        pass
+# code changed since last wiki update (incremental focus)
+changed = []
+if cache_head and head and cache_head != head:
+    diff = git(['diff', '--name-only', cache_head + '..HEAD'])
+    for l in diff.splitlines():
+        l = l.strip()
+        if not l or excluded(l):
+            continue
+        if l == wiki_dir or l.startswith(wiki_dir + '/'):
+            continue
+        changed.append(l)
+changed = sorted(changed)[:200]
+cache_abs = os.path.abspath(cache_path) if cache_path else ''
+def worktree_dirty():
+    try:
+        p = subprocess.run(['git', 'status', '--porcelain', '--untracked-files=all'], capture_output=True, text=True, check=True)
+    except Exception:
+        return True
+    for line in p.stdout.splitlines():
+        path = line[3:].strip() if len(line) > 3 else ''
+        if not path:
+            continue
+        if cache_abs and os.path.abspath(path) == cache_abs:
+            continue
+        if excluded(path):
+            continue
+        return True
+    return False
+noop_skip = False
+if not wiki_exists:
+    noop_reason = 'no wiki yet (must generate)'
+elif issue_id:
+    noop_reason = 'explicit request (issue_id set)'
+elif not head:
+    noop_reason = 'HEAD unavailable (not a git repo?)'
+elif not cache_head:
+    noop_reason = 'no cached git_head (first tracked run)'
+elif head != cache_head:
+    noop_reason = 'HEAD advanced since last wiki update'
+elif worktree_dirty():
+    noop_reason = 'worktree has uncommitted changes'
+else:
+    noop_skip = True
+    noop_reason = 'wiki already current for HEAD ' + head[:12]
+print(json.dumps({'wiki_exists': wiki_exists, 'wiki_pages': wiki_pages, 'wiki_page_count': len(wiki_pages), 'repo_top': repo_top, 'changed_code_files': changed, 'noop_skip': noop_skip, 'noop_reason': noop_reason, 'git_head': head}))
+"`
+  output: scan_output
+
+## gen_indexes — DETERMINISTIC: regenerate every directory index.md from
+## the concept pages' frontmatter (title/description), sorted. The root
+## index carries okf_version; nested indexes carry no frontmatter (OKF).
+## Reserved files (index.md, log.md) are never treated as concepts. The
+## agent is forbidden to hand-write indexes, so this is their single
+## source of truth. Commits the regenerated indexes when they changed.
+tool gen_indexes:
+  command: `WS={{input.workspace_dir}} WIKI_DIR={{input.wiki_dir}} OKF_VERSION={{input.okf_version}} python3 -c "
+import os, json, subprocess
+ws = os.environ['WS']
+wiki_dir = os.environ.get('WIKI_DIR', 'wiki').strip('/')
+okf_version = os.environ.get('OKF_VERSION', '0.1').strip()
+os.chdir(ws)
+RESERVED = {'index.md', 'log.md'}
+def read_frontmatter(path):
+    try:
+        with open(path, encoding='utf-8', errors='replace') as fh:
+            lines = fh.read().splitlines()
+    except OSError:
+        return {}
+    if not lines or lines[0].strip() != '---':
+        return {}
+    fm = {}
+    for l in lines[1:]:
+        if l.strip() == '---':
+            break
+        if ':' in l:
+            k, _, v = l.partition(':')
+            fm[k.strip()] = v.strip().strip('\"').strip(chr(39))
+    return fm
+def title_for(path, fm):
+    return fm.get('title') or os.path.splitext(os.path.basename(path))[0].replace('-', ' ').replace('_', ' ').title()
+written = 0
+if os.path.isdir(wiki_dir):
+    for dirpath, dirnames, filenames in os.walk(wiki_dir):
+        dirnames[:] = sorted(d for d in dirnames if not d.startswith('.'))
+        pages = sorted(f for f in filenames if f.endswith('.md') and f not in RESERVED)
+        subdirs = sorted(dirnames)
+        is_root = os.path.abspath(dirpath) == os.path.abspath(wiki_dir)
+        lines = []
+        if is_root:
+            lines += ['---', 'type: Documentation Index', 'okf_version: \"' + okf_version + '\"', 'title: \"' + os.path.basename(os.path.abspath(wiki_dir)) + '\"', 'description: \"Generated index of this wiki.\"', '---', '']
+        if pages:
+            lines += ['# Files', '']
+            for f in pages:
+                fm = read_frontmatter(os.path.join(dirpath, f))
+                desc = fm.get('description', '')
+                label = title_for(f, fm)
+                entry = '- [' + label + '](' + f + ')'
+                if desc:
+                    entry += ' — ' + desc
+                lines.append(entry)
+        if subdirs:
+            if pages:
+                lines.append('')
+            lines += ['# Directories', '']
+            for d in subdirs:
+                lines.append('- [' + d + '](' + d + '/)')
+        if not pages and not subdirs:
+            lines.append('# Files')
+        content = chr(10).join(lines).rstrip() + chr(10)
+        idx = os.path.join(dirpath, 'index.md')
+        old = ''
+        if os.path.exists(idx):
+            try:
+                old = open(idx, encoding='utf-8').read()
+            except OSError:
+                old = ''
+        if old != content:
+            with open(idx, 'w', encoding='utf-8') as out:
+                out.write(content)
+            written += 1
+committed = False
+note = ''
+if written:
+    try:
+        subprocess.run(['git', 'add', wiki_dir], check=True, capture_output=True, text=True)
+        staged = subprocess.run(['git', 'diff', '--cached', '--quiet'], capture_output=True)
+        if staged.returncode != 0:
+            subprocess.run(['git', 'commit', '-m', 'docs(wiki): regenerate indexes\n\nBot: wiki-gen'], check=True, capture_output=True, text=True)
+            committed = True
+    except Exception as e:
+        note = 'index commit skipped: ' + str(e)
+print(json.dumps({'indexes_written': written, 'committed': committed, 'note': note}))
+"`
+  input: gen_indexes_input
+  output: gen_indexes_output
+
+## validate_wiki — the DETERMINISTIC truth oracle (no LLM). Fails the gate
+## on: invalid OKF frontmatter on any concept page, a dead intra-wiki link
+## (missing target file or #anchor), or an out-of-scope write (anything
+## changed outside the wiki tree since the run base). Orphan concepts and
+## a missing quickstart are WARNINGS (surfaced, non-blocking).
+tool validate_wiki:
+  command: `WS={{input.workspace_dir}} WIKI_DIR={{input.wiki_dir}} BASE={{input.base}} python3 -c "
+import os, json, re, subprocess
+ws = os.environ['WS']
+wiki_dir = os.environ.get('WIKI_DIR', 'wiki').strip('/')
+base = os.environ.get('BASE', '').strip()
+os.chdir(ws)
+RESERVED = {'index.md', 'log.md'}
+def slug(t):
+    return re.sub(r'[^a-z0-9\\- ]', '', t.strip().lower()).replace(' ', '-')
+def headings(path):
+    hs = set()
+    try:
+        for l in open(path, encoding='utf-8', errors='replace'):
+            m = re.match(r'#{1,6}\\s+(.*)', l)
+            if m:
+                hs.add(slug(m.group(1)))
+    except OSError:
+        pass
+    return hs
+def frontmatter_type_ok(path):
+    try:
+        lines = open(path, encoding='utf-8', errors='replace').read().splitlines()
+    except OSError:
+        return False
+    if not lines or lines[0].strip() != '---':
+        return False
+    end = None
+    for i in range(1, len(lines)):
+        if lines[i].strip() == '---':
+            end = i
+            break
+    if end is None:
+        return False
+    for l in lines[1:end]:
+        if l.strip().startswith('type:'):
+            return bool(l.partition(':')[2].strip())
+    return False
+all_md = []
+concepts = []
+if os.path.isdir(wiki_dir):
+    for dp, dn, fn in os.walk(wiki_dir):
+        dn[:] = [d for d in dn if not d.startswith('.')]
+        for f in fn:
+            if f.endswith('.md'):
+                p = os.path.join(dp, f)
+                all_md.append(p)
+                if f not in RESERVED:
+                    concepts.append(p)
+all_md = sorted(all_md); concepts = sorted(concepts)
+invalid_fm = [p for p in concepts if not frontmatter_type_ok(p)]
+link_re = re.compile(r'\\[[^\\]]*\\]\\(([^)]+)\\)')
+wiki_abs = os.path.abspath(wiki_dir)
+def inside_wiki(path):
+    ap = os.path.abspath(path)
+    return ap == wiki_abs or ap.startswith(wiki_abs + os.sep)
+dead = []
+graph_deg = {p: 0 for p in concepts}
+for p in all_md:
+    try:
+        txt = open(p, encoding='utf-8', errors='replace').read()
+    except OSError:
+        continue
+    for target in link_re.findall(txt):
+        target = target.strip()
+        if target.startswith(('http://', 'https://', 'mailto:', '#')):
+            continue
+        path_part, _, anchor = target.partition('#')
+        if not path_part:
+            continue
+        resolved = os.path.normpath(os.path.join(os.path.dirname(p), path_part))
+        if inside_wiki(resolved):
+            # intra-wiki link: must resolve to a wiki page (or a dir's index)
+            fs = os.path.join(resolved, 'index.md') if path_part.endswith('/') else resolved
+            if not os.path.exists(fs):
+                dead.append(p + ' -> ' + target)
+                continue
+            if anchor and fs.endswith('.md') and slug(anchor) not in headings(fs):
+                dead.append(p + ' -> ' + target + ' (missing #anchor)')
+                continue
+            # concept-graph edge: both endpoints inside the wiki, non-reserved
+            if fs.endswith('.md') and fs in graph_deg and os.path.basename(p) not in RESERVED:
+                graph_deg[fs] += 1
+                if p in graph_deg:
+                    graph_deg[p] += 1
+        else:
+            # source-code / out-of-wiki reference (e.g. ../../pkg/dsl/parser/):
+            # a legitimate, valuable link in a code wiki. Valid when the path
+            # exists on disk (file OR directory); only a truly broken ref is
+            # flagged. No #anchor check (source files have no md headings).
+            if not os.path.exists(resolved):
+                dead.append(p + ' -> ' + target + ' (broken source ref)')
+orphans = sorted(p for p, d in graph_deg.items() if d == 0)
+has_quickstart = os.path.exists(os.path.join(wiki_dir, 'quickstart.md'))
+# scope: everything changed since run base must live under the wiki tree
+changed = set()
+if base:
+    try:
+        d = subprocess.run(['git', 'diff', '--name-only', base + '..HEAD'], capture_output=True, text=True, check=True).stdout
+        changed |= {l.strip() for l in d.splitlines() if l.strip()}
+    except Exception:
+        pass
+try:
+    st = subprocess.run(['git', 'status', '--porcelain', '--untracked-files=all'], capture_output=True, text=True, check=True).stdout
+    for l in st.splitlines():
+        pth = l[3:].strip() if len(l) > 3 else ''
+        if pth:
+            changed.add(pth)
+except Exception:
+    pass
+out_of_scope = sorted(p for p in changed if not (p == wiki_dir or p.startswith(wiki_dir + '/')))
+frontmatter_valid = not invalid_fm
+links_ok = not dead
+scope_ok = not out_of_scope
+parts = []
+if not scope_ok:
+    parts.append('SCOPE VIOLATION (wrote outside ' + wiki_dir + '/ — revert): ' + ', '.join(out_of_scope[:30]))
+if invalid_fm:
+    parts.append('INVALID OKF FRONTMATTER (need a non-empty type:): ' + ', '.join(invalid_fm[:30]))
+if dead:
+    parts.append('DEAD INTRA-WIKI LINKS: ' + ', '.join(dead[:30]))
+if not has_quickstart and concepts:
+    parts.append('WARNING: no ' + wiki_dir + '/quickstart.md entrypoint')
+if orphans:
+    parts.append('WARNING orphan concepts (no concept links): ' + ', '.join(orphans[:20]))
+log = ' | '.join(parts)
+print(json.dumps({'frontmatter_valid': frontmatter_valid, 'links_ok': links_ok, 'scope_ok': scope_ok, 'invalid_frontmatter': invalid_fm[:60], 'dead_links': dead[:60], 'orphans': orphans[:60], 'out_of_scope': out_of_scope[:60], 'page_count': len(concepts), 'has_quickstart': has_quickstart, 'log': log}))
+"`
+  input: validate_input
+  output: validate_output
+
+## mark_issue_for_review — transition a dispatched tracker issue out of
+## `ready` on a terminal run. No-op (exit 0) when issue_id is empty
+## (manual/scheduled). Routes through the dispatcher daemon HTTP API so
+## its in-memory cache stays consistent.
+tool mark_issue_for_review:
+  command: `if [ -n {{vars.issue_id}} ]; then ID={{vars.issue_id}}; ID_SHORT=$(printf '%s' "$ID" | sed 's/^native://'); curl -sf -X POST "http://127.0.0.1:4891/api/v1/issues/$ID_SHORT/move" -H 'Content-Type: application/json' -d '{"state":"review"}' >/dev/null 2>&1 && printf '{"text":"{\\"id\\":\\"%s\\",\\"state\\":\\"review\\"}"}' "$ID_SHORT" || printf '{"text":"{\\"skipped\\":\\"move failed or dispatcher down\\"}"}'; else printf '{"text":"{\\"skipped\\":\\"no issue_id\\"}"}'; fi`
+  output: mark_issue_output
+
+## update_cache — persist git_head + per-page shas so the NEXT run's
+## scan_repo can short-circuit (noop) when the wiki is still current.
+## Empty cache_path disables the write.
+tool update_cache:
+  command: `python3 -c "
+import os, json, hashlib, sys, pathlib, subprocess
+ws = sys.argv[1]; wiki_dir = sys.argv[2].strip('/'); cache_path = sys.argv[3]
+if not cache_path:
+    print(json.dumps({'cache_path': '', 'entries_written': 0, 'git_head': '', 'skipped': 'no cache_path'}))
+    sys.exit(0)
+os.chdir(ws)
+def git_head():
+    try:
+        return subprocess.run(['git', 'rev-parse', 'HEAD'], capture_output=True, text=True, check=True).stdout.strip()
+    except Exception:
+        return ''
+def sha(p):
+    try:
+        return hashlib.sha1(open(p, 'rb').read()).hexdigest()
+    except OSError:
+        return 'missing'
+pages = {}
+if os.path.isdir(wiki_dir):
+    import glob
+    for f in sorted(glob.glob(os.path.join(wiki_dir, '**', '*.md'), recursive=True)):
+        if os.path.isfile(f):
+            pages[f] = sha(f)
+head = git_head()
+out = pathlib.Path(cache_path)
+out.parent.mkdir(parents=True, exist_ok=True)
+with open(out, 'w') as fh:
+    json.dump({'v': 1, 'git_head': head, 'pages': pages}, fh, indent=2, sort_keys=True)
+print(json.dumps({'cache_path': str(out), 'entries_written': len(pages), 'git_head': head, 'skipped': ''}))
+" {{input.workspace_dir}} {{input.wiki_dir}} {{input.cache_path}}`
+  input: update_cache_input
+  output: update_cache_output
+
+## ─── Agent + gate ────────────────────────────────────────────────
+
+## author — the one adaptive agent. claude_code with the full native
+## toolset so it works like a native session: survey the repo, plan, write
+## the OKF wiki pages grounded in source, commit each in stride. session:
+## fresh — a fresh pass re-derives its todo from the fresh scan + git log.
+## board caps power the code-bug findings handoff (documenting the code
+## surfaces real bugs → inbox, never fixed here).
+agent author:
+  backend: "claude_code"
+  model: "${ITERION_WIKI_MODEL_CLAUDE:-claude-opus-4-8}"
+  reasoning_effort: "${ITERION_WIKI_EFFORT_CLAUDE:-high}"
+  input: author_input
+  output: author_output
+  system: author_system
+  user: author_user
+  session: fresh
+  interaction: human
+  capabilities: [board.read, board.create]
+
+## gate — deterministic continuation decision (no LLM, no shell).
+## converged = the agent reports complete AND the wiki validates
+## (frontmatter + links) AND nothing was written outside the wiki tree.
+## fail_log carries the validator's specifics back to the next pass.
+compute gate:
+  output: gate_state
+  expr:
+    converged: "outputs.author.wiki_complete && outputs.validate_wiki.frontmatter_valid && outputs.validate_wiki.links_ok && outputs.validate_wiki.scope_ok"
+    fail_log: "outputs.validate_wiki.log"
+
+## ─── Workflow ────────────────────────────────────────────────────
+workflow wiki_gen:
+  entry: scan_repo
+
+  ## Isolated worktree: the author commits pages in stride; finalize FF
+  ## keeps the operator's checkout untouched and lands the series on a
+  ## persistent branch on convergence.
+  worktree: auto
+
+  budget:
+    max_parallel_branches: 1
+    max_duration: "2h"
+    max_cost_usd: 40
+
+  compaction:
+    threshold: 0.9
+    preserve_recent: 8
+
+  ## NOOP short-circuit: wiki already current for HEAD, clean tree, no
+  ## explicit request → skip the whole run at zero LLM cost. Highest
+  ## priority; the else fallback carries the normal generate/update path.
+  scan_repo -> done when noop_skip
+  scan_repo -> author else with {
+    workspace_dir: "{{vars.workspace_dir}}",
+    wiki_dir: "{{vars.wiki_dir}}",
+    okf_version: "{{vars.okf_version}}",
+    wiki_exists: "{{outputs.scan_repo.wiki_exists}}",
+    wiki_pages: "{{outputs.scan_repo.wiki_pages}}",
+    changed_code_files: "{{outputs.scan_repo.changed_code_files}}",
+    repo_top: "{{outputs.scan_repo.repo_top}}",
+    scope_notes: "{{vars.scope_notes}}",
+    fail_log: ""
+  }
+
+  ## After every author pass: regenerate indexes deterministically, then
+  ## validate (frontmatter + links + scope) — the truth oracle.
+  author -> gen_indexes with {
+    workspace_dir: "{{vars.workspace_dir}}",
+    wiki_dir: "{{vars.wiki_dir}}",
+    okf_version: "{{vars.okf_version}}"
+  }
+  gen_indexes -> validate_wiki with {
+    workspace_dir: "{{vars.workspace_dir}}",
+    wiki_dir: "{{vars.wiki_dir}}",
+    base: "{{outputs.scan_repo.git_head}}"
+  }
+  validate_wiki -> gate
+
+  ## Converged → transition the dispatcher issue (no-op without issue_id)
+  ## and refresh the inter-run cache, then finish.
+  gate -> mark_issue_for_review when converged
+  ## Not converged → another author pass with the validator's feedback.
+  gate -> author as continuation_loop("{{vars.max_passes}}") with {
+    workspace_dir: "{{vars.workspace_dir}}",
+    wiki_dir: "{{vars.wiki_dir}}",
+    okf_version: "{{vars.okf_version}}",
+    wiki_exists: "{{outputs.scan_repo.wiki_exists}}",
+    wiki_pages: "{{outputs.scan_repo.wiki_pages}}",
+    changed_code_files: "{{outputs.scan_repo.changed_code_files}}",
+    repo_top: "{{outputs.scan_repo.repo_top}}",
+    scope_notes: "{{vars.scope_notes}}",
+    fail_log: "{{outputs.gate.fail_log}}"
+  }
+  ## continuation_loop exhausted → finish anyway, shipping what is banked
+  ## (every committed page is real work; validate_wiki.log tells the
+  ## operator what still fails).
+  gate -> mark_issue_for_review
+
+  mark_issue_for_review -> update_cache with {
+    workspace_dir: "{{vars.workspace_dir}}",
+    wiki_dir: "{{vars.wiki_dir}}",
+    cache_path: "{{vars.wiki_cache_path}}"
+  }
+  update_cache -> done

@@ -52,6 +52,22 @@ func NewCapabilities(csv string) Capabilities {
 // Has reports whether the named capability is granted.
 func (c Capabilities) Has(name string) bool { return c[name] }
 
+// AllCapabilities returns every capability required by at least one board
+// tool, deduplicated, in allTools order. Callers that want to register the
+// full tool surface (per-node access is gated downstream) use this instead
+// of hand-maintaining a list that drifts when a capability is added.
+func AllCapabilities() []string {
+	var names []string
+	seen := map[string]bool{}
+	for _, t := range allTools {
+		if !seen[t.Capability] {
+			seen[t.Capability] = true
+			names = append(names, t.Capability)
+		}
+	}
+	return names
+}
+
 // ErrCapabilityDenied is returned when a granted-cap check fails.
 var ErrCapabilityDenied = errors.New("capability denied")
 
@@ -183,7 +199,7 @@ var allTools = []Tool{
           "type":"object",
           "properties":{
             "id":{"type":"string"},
-            "bot":{"type":"string","description":"Bot name, e.g. feature_dev or whole_improve_loop. Empty string clears it."}
+            "bot":{"type":"string","description":"Bot TECHNICAL name exactly as the catalog lists it (dash form, e.g. feature-dev or whole-improve-loop). Empty string clears it."}
           },
           "required":["id","bot"]
         }`),
@@ -228,7 +244,7 @@ var toolByName = func() map[string]*Tool {
 // dispatchByName maps a tool name to its handler. Populated once at init
 // so Call can dispatch in O(1).
 var dispatchByName = map[string]func(native.BoardStore, json.RawMessage) (json.RawMessage, error){
-	"comment_issue":    doComment,
+	"comment_issue": doComment,
 	// create_issue is dispatched via doCreate in CallWithEnv (needs CallEnv).
 	"transition_issue": doTransition,
 	"assign_issue":     doAssign,

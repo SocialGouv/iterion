@@ -44,6 +44,12 @@ export interface TriggerSubscription {
   vars?: Record<string, string>;
   args_var?: string;
   cron?: string;
+  // Overlap policy + guard for schedule-kind subscriptions (pkg/schedgate).
+  overlap?: string;
+  max_concurrent?: number;
+  guard?: string;
+  guard_timeout?: string;
+  guard_var?: string;
   origin?: string;
   enabled: boolean;
   created_at?: string;
@@ -61,7 +67,35 @@ export interface SubscriptionInput {
   vars?: Record<string, string>;
   args_var?: string;
   cron?: string;
+  overlap?: string;
+  max_concurrent?: number;
+  guard?: string;
+  guard_timeout?: string;
+  guard_var?: string;
   enabled?: boolean;
+}
+
+// toSubscriptionInput projects a subscription onto the full update payload.
+// PUT replaces every request field (only id/origin/timestamps are preserved
+// server-side), so partial edits must start from this projection or they
+// silently clear vars / schedgate policy.
+export function toSubscriptionInput(sub: TriggerSubscription): SubscriptionInput {
+  return {
+    repo: sub.repo,
+    bot_id: sub.bot_id,
+    invocation: sub.invocation,
+    mode: sub.mode,
+    match: sub.match,
+    vars: sub.vars,
+    args_var: sub.args_var,
+    cron: sub.cron,
+    overlap: sub.overlap,
+    max_concurrent: sub.max_concurrent,
+    guard: sub.guard,
+    guard_timeout: sub.guard_timeout,
+    guard_var: sub.guard_var,
+    enabled: sub.enabled,
+  };
 }
 
 interface ListResponse {
@@ -119,15 +153,5 @@ export function createTriggerFromInvocation(
 // setTriggerEnabled is a convenience PUT that flips only the enabled flag,
 // preserving the rest of the subscription.
 export function setTriggerEnabled(sub: TriggerSubscription, enabled: boolean): Promise<TriggerSubscription> {
-  return updateTrigger(sub.id, {
-    repo: sub.repo,
-    bot_id: sub.bot_id,
-    invocation: sub.invocation,
-    mode: sub.mode,
-    match: sub.match,
-    vars: sub.vars,
-    args_var: sub.args_var,
-    cron: sub.cron,
-    enabled,
-  });
+  return updateTrigger(sub.id, { ...toSubscriptionInput(sub), enabled });
 }

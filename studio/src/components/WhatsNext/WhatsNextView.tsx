@@ -77,10 +77,13 @@ export default function WhatsNextView() {
     ? readQuickReplies(pendingHumanQuestion?.questions)
     : [];
 
+  // Awaited (not fire-and-forget) so the composer's draft survives a
+  // failed submit: AgentChatboxInline only clears the text when onSend
+  // resolves, and submitHumanAnswer rethrows on failure.
   const submitPending = useCallback(
-    (value: string) => {
+    async (value: string) => {
       if (!pendingHumanQuestion) return;
-      void session.submitHumanAnswer(pendingHumanQuestion.id, {
+      await session.submitHumanAnswer(pendingHumanQuestion.id, {
         [pendingAnswerKey]: value,
       });
     },
@@ -93,7 +96,7 @@ export default function WhatsNextView() {
       const trimmed = text.trim();
       if (trimmed === "") return;
       if (pendingHumanQuestion) {
-        submitPending(trimmed);
+        await submitPending(trimmed);
         return;
       }
       const status = session.runStatus;
@@ -140,6 +143,9 @@ export default function WhatsNextView() {
             }}
             busy={session.status === "launching"}
             errorMessage={session.errorMessage}
+            discoveryError={session.discoveryError}
+            onRetryDiscovery={session.retryDiscovery}
+            launchRepo={session.launchRepo}
           />
         ) : (
           <div className="flex-1 flex flex-col max-w-3xl w-full mx-auto overflow-hidden">
@@ -170,9 +176,9 @@ export default function WhatsNextView() {
                   const key = isAsk
                     ? ASK_USER_RESPONSE_KEY
                     : bot.nodeMap[m.nodeId]?.textField ?? "message";
-                  void session.submitHumanAnswer(messageId, {
-                    [key]: outcome.text,
-                  });
+                  void session
+                    .submitHumanAnswer(messageId, { [key]: outcome.text })
+                    .catch(() => {});
                 }}
               />
             )}
@@ -197,13 +203,16 @@ export default function WhatsNextView() {
                 <div className="border-t border-border-subtle">
                   {(options.length > 0 || quickReplies.length > 0) && (
                     <div className="flex flex-wrap gap-2 px-4 pt-3">
+                      {/* Chip failures already surface via the session's
+                          errorMessage banner — swallow the rethrow that
+                          exists for the composer's draft preservation. */}
                       {options.map((o) => (
                         <Button
                           key={o.id}
                           variant="secondary"
                           size="sm"
                           disabled={busyPending}
-                          onClick={() => submitPending(o.id)}
+                          onClick={() => void submitPending(o.id).catch(() => {})}
                         >
                           {o.label}
                         </Button>
@@ -214,7 +223,7 @@ export default function WhatsNextView() {
                           variant="secondary"
                           size="sm"
                           disabled={busyPending}
-                          onClick={() => submitPending(q)}
+                          onClick={() => void submitPending(q).catch(() => {})}
                         >
                           {q}
                         </Button>

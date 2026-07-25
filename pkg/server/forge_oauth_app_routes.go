@@ -1,6 +1,7 @@
 package server
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"net/http"
@@ -43,6 +44,18 @@ type forgeOAuthAppReq struct {
 	// installed org-wide. Empty = the user's personal account (a private App is
 	// then installable only there — the cause of "only your personal account").
 	GitHubOrg string `json:"github_org,omitempty"`
+	// AllowRepoCreation (github-manifest): request administration:write on
+	// the App so iterion can CREATE repositories in the installed org
+	// (opt-in — the connect wizard surfaces it as a visible checkbox;
+	// absent keeps the least-privilege baseline).
+	AllowRepoCreation bool `json:"allow_repo_creation,omitempty"`
+	// AllowAppDelivery (github-manifest): request workflows:write +
+	// packages:write so a bot can publish the CI that builds an app and the
+	// image it produces. Without them GitHub REFUSES a push touching
+	// .github/workflows/**, which blocks the build-and-deploy chain at its
+	// first step. Opt-in: workflows:write means the holder can run arbitrary
+	// code in CI.
+	AllowAppDelivery bool `json:"allow_app_delivery,omitempty"`
 }
 
 func (s *Server) handleListForgeOAuthApps(w http.ResponseWriter, r *http.Request) {
@@ -95,7 +108,7 @@ func (s *Server) handleRegisterForgeOAuthApp(w http.ResponseWriter, r *http.Requ
 			httpError(w, http.StatusBadRequest, "client_id and client_secret are required for mode=manual")
 			return
 		}
-		app, err := s.createForgeOAuthApp(r, teamID, id.UserID, provider, req.ForgeBaseURL, clientID, clientSecret, "", false, mode, "", "", "")
+		app, err := s.createForgeOAuthApp(r, teamID, id.UserID, provider, req.ForgeBaseURL, clientID, clientSecret, "", false, mode, githubAppFacts{})
 		if err != nil {
 			s.writeForgeOAuthAppError(w, err)
 			return
@@ -158,7 +171,7 @@ func (s *Server) autoCreateForgeOAuthApp(w http.ResponseWriter, r *http.Request,
 		s.writeForgeOAuthAppError(w, err)
 		return
 	}
-	app, err := s.createForgeOAuthApp(r, teamID, userID, provider, baseURL, creds.ClientID, creds.ClientSecret, creds.ProviderAppID, true, mode, "", "", "")
+	app, err := s.createForgeOAuthApp(r, teamID, userID, provider, baseURL, creds.ClientID, creds.ClientSecret, creds.ProviderAppID, true, mode, githubAppFacts{})
 	if err != nil {
 		s.writeForgeOAuthAppError(w, err)
 		return
@@ -180,6 +193,19 @@ func (s *Server) handleDeleteForgeOAuthApp(w http.ResponseWriter, r *http.Reques
 		httpError(w, http.StatusNotFound, "oauth app not found")
 		return
 	}
+	// Refuse to strand a connection. Now that a Connection names the app whose
+	// key mints its installation tokens, deleting that app out from under it
+	// would leave a connection that cannot mint — and the failure would surface
+	// later, in the background refresh worker, far from this action.
+	if used, err := s.connectionsUsingOAuthApp(ctx, teamID, appID); err != nil {
+		httpError(w, http.StatusInternalServerError, "check connections using this app: %v", err)
+		return
+	} else if len(used) > 0 {
+		httpError(w, http.StatusConflict,
+			"%d connection(s) still use this GitHub App (%s) — remove them first, then delete the app",
+			len(used), strings.Join(used, ", "))
+		return
+	}
 	if err := s.forgeOAuthApps.Delete(ctx, appID); err != nil {
 		httpError(w, http.StatusInternalServerError, "delete oauth app: %v", err)
 		return
@@ -190,9 +216,51 @@ func (s *Server) handleDeleteForgeOAuthApp(w http.ResponseWriter, r *http.Reques
 
 // createForgeOAuthApp seals the client_secret, persists the app row, and audits
 // it. Shared by the manual-register handler and (later) the auto-create modes —
+// connectionsUsingOAuthApp returns the display names of a team's connections
+// that are bound to an app record, so deletion can refuse with a message naming
+// what would break rather than a bare conflict.
+func (s *Server) connectionsUsingOAuthApp(ctx context.Context, teamID, appID string) ([]string, error) {
+	if s.forgeConnections == nil {
+		return nil, nil
+	}
+	conns, err := s.forgeConnections.ListByTenant(ctx, teamID)
+	if err != nil {
+		return nil, err
+	}
+	var used []string
+	for _, c := range conns {
+		if c.OAuthAppID == appID {
+			name := c.DisplayName
+			if name == "" {
+				name = c.ID
+			}
+			used = append(used, name)
+		}
+	}
+	return used, nil
+}
+
+// githubAppFacts carries the GitHub-App-only attributes of a forge app record.
+// They travel together (a manifest conversion produces all of them at once, and
+// every non-GitHub mode leaves all of them empty), so they are one parameter
+// rather than four positional strings.
+type githubAppFacts struct {
+	// ManageURL deep-links the App's settings page for operator cleanup.
+	ManageURL string
+	// Slug is the github.com/apps/<slug> segment used to build the install URL.
+	Slug string
+	// PrivateKeyPEM is sealed on store; its presence is what makes an app
+	// INSTALLABLE rather than merely OAuth-authorizable.
+	PrivateKeyPEM string
+	// OwnerLogin is the account the App belongs to — the discriminator once a
+	// tenant holds one App per org.
+	OwnerLogin string
+}
+
 // the latter pass the client_id/client_secret they got back from the forge.
 // Returns the stored app with SealedSecret nilled, ready to serialise.
-func (s *Server) createForgeOAuthApp(r *http.Request, teamID, userID string, provider forge.Provider, rawBaseURL, clientID, clientSecret, providerAppID string, autoCreated bool, mode, appManageURL, appSlug, privateKeyPEM string) (forge.ForgeOAuthApp, error) {
+func (s *Server) createForgeOAuthApp(r *http.Request, teamID, userID string, provider forge.Provider, rawBaseURL, clientID, clientSecret, providerAppID string, autoCreated bool, mode string, gh githubAppFacts) (forge.ForgeOAuthApp, error) {
+	appManageURL, appSlug, privateKeyPEM := gh.ManageURL, gh.Slug, gh.PrivateKeyPEM
 	baseURL := forge.CanonicalBaseURL(provider, rawBaseURL)
 	appID := uuid.NewString()
 	sealed, err := forge.SealOAuthAppSecret(s.sealer, appID, clientSecret)
@@ -214,7 +282,7 @@ func (s *Server) createForgeOAuthApp(r *http.Request, teamID, userID string, pro
 		ID: appID, TenantID: teamID, Provider: provider, ForgeBaseURL: baseURL,
 		ClientID: clientID, SealedSecret: sealed, RedirectURI: s.forgeOAuthRedirectURI(),
 		ProviderAppID: providerAppID, AutoCreated: autoCreated, AppManageURL: appManageURL,
-		AppSlug: appSlug, SealedPrivateKey: sealedKey,
+		AppSlug: appSlug, SealedPrivateKey: sealedKey, OwnerLogin: gh.OwnerLogin,
 		CreatedBy: userID, CreatedAt: now, UpdatedAt: now,
 	}
 	if err := s.forgeOAuthApps.Create(store.WithTenant(r.Context(), teamID), app); err != nil {

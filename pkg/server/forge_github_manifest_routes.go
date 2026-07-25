@@ -50,17 +50,27 @@ func (s *Server) handleStartGitHubManifest(w http.ResponseWriter, r *http.Reques
 		httpError(w, http.StatusInternalServerError, "internal error")
 		return
 	}
-	s.forgeStates.put(forgePending{
+	if err := s.forgeStates.put(forgePending{
 		State: state, Provider: forge.ProviderGitHub, ForgeBaseURL: baseURL,
 		TenantID: teamID, UserID: id.UserID, AgentBinding: binding,
 		NextURL: safeNext(req.Next), IssuedAt: time.Now().UTC(),
-	})
+	}); err != nil {
+		if s.logger != nil {
+			s.logger.Error("forge connect: %v", err)
+		}
+		httpError(w, http.StatusBadGateway, "could not persist OAuth state — try again")
+		return
+	}
 	s.setForgeAgentBindingCookie(w, binding)
 
 	home := strings.TrimRight(s.cfg.PublicURL, "/")
 	redirectURL := home + "/api/forge/github/app-manifest/callback"
 	name := "iterion-forge-" + uuid.NewString()[:8] // GitHub App names are globally unique
-	manifest := forgegithub.BuildAppManifest(name, home, redirectURL)
+	manifest := forgegithub.BuildAppManifest(name, home, redirectURL,
+		forgegithub.AppManifestOptions{
+			AllowRepoCreation: req.AllowRepoCreation,
+			AllowAppDelivery:  req.AllowAppDelivery,
+		})
 	// Create the App UNDER the chosen org so a (private) App is installable
 	// org-wide; empty org = the user's personal account.
 	target := strings.TrimRight(baseURL, "/")
@@ -106,7 +116,9 @@ func (s *Server) handleGitHubManifestCallback(w http.ResponseWriter, r *http.Req
 	manageURL := forgegithub.AppManageURL(pending.ForgeBaseURL, conv.Owner.Login, conv.Owner.Type, conv.Slug)
 	// Capture the App slug + private key (conv.PEM) so the App can be INSTALLED
 	// (least-privilege github_app), not only OAuth-authorized.
-	if _, err := s.createForgeOAuthApp(r, pending.TenantID, pending.UserID, forge.ProviderGitHub, pending.ForgeBaseURL, conv.ClientID, conv.ClientSecret, strconv.FormatInt(conv.ID, 10), true, "github_manifest", manageURL, conv.Slug, conv.PEM); err != nil {
+	app, err := s.createForgeOAuthApp(r, pending.TenantID, pending.UserID, forge.ProviderGitHub, pending.ForgeBaseURL, conv.ClientID, conv.ClientSecret, strconv.FormatInt(conv.ID, 10), true, "github_manifest",
+		githubAppFacts{ManageURL: manageURL, Slug: conv.Slug, PrivateKeyPEM: conv.PEM, OwnerLogin: conv.Owner.Login})
+	if err != nil {
 		s.writeForgeOAuthAppError(w, err)
 		return
 	}
@@ -114,5 +126,5 @@ func (s *Server) handleGitHubManifestCallback(w http.ResponseWriter, r *http.Req
 	if target == "" {
 		target = "/teams/" + pending.TenantID
 	}
-	http.Redirect(w, r, target, http.StatusFound)
+	http.Redirect(w, r, appendQueryParam(target, "installed", app.ID), http.StatusFound)
 }

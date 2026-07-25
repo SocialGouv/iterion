@@ -57,6 +57,9 @@ func (s *FilesystemRunStore) WriteAttachment(ctx context.Context, runID string, 
 	if err := sanitizePathComponent("attachment name", rec.Name); err != nil {
 		return err
 	}
+	if err := s.guardNotDeleted(runID); err != nil {
+		return err
+	}
 	// OriginalFilename is path-joined; sanitise it through the same
 	// rules so a hostile uploader can't escape the run directory.
 	filename := rec.OriginalFilename

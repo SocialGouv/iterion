@@ -65,8 +65,8 @@ uncertain verdict, never verified).
   {"scanner":"semgrep-js","cmd":"semgrep --config=p/javascript --config=p/typescript --include={file} --json --metrics=off --quiet 2>/dev/null || true","count_regex":"\"check_id\""},
   {"scanner":"bandit","cmd":"bandit -f json -t {rule} {file} 2>/dev/null || true","count_regex":"\"test_id\""},
   {"scanner":"gitleaks","cmd":"gitleaks detect --source={file} --report-format=json --no-banner --redact --exit-code=0 2>/dev/null || true","count_regex":"\"RuleID\""},
-  {"scanner":"trivy","cmd":"trivy fs --format=json --quiet --security-checks=vuln,config,secret {file} 2>/dev/null || true","count_regex":"\"RuleID\""},
-  {"scanner":"generic","cmd":"semgrep --config=auto --include={file} --json --metrics=off --quiet 2>/dev/null || true","count_regex":"\"check_id\""},
+  {"scanner":"trivy","cmd":"trivy fs --format=json --quiet --scanners=vuln,misconfig,secret {file} 2>/dev/null || true","count_regex":"\"RuleID\""},
+  {"scanner":"generic","cmd":"semgrep --config=p/default --include={file} --json --metrics=off --quiet 2>/dev/null || true","count_regex":"\"check_id\""},
   {"scanner":"deepsec","cmd":"true","count_regex":""},
   {"scanner":"custom","cmd":"true","count_regex":""}
 ]

@@ -71,26 +71,42 @@ export default function AboutTab({ desktopFeatures }: Props) {
           </>
         )}
       </dl>
-      {info && (
-        <ul className="flex flex-col gap-1 text-xs">
-          {(
+      <ul className="flex flex-col gap-1 text-xs">
+        {(
+          [
+            ["GitHub", info?.homepage ?? "https://github.com/SocialGouv/iterion"],
             [
-              ["GitHub", info.homepage],
-              ["Documentation", info.documentation],
-              ["Report an issue", info.issue_tracker],
-            ] as const
-          ).map(([label, url]) => (
-            <li key={label}>
+              "Documentation",
+              info?.documentation ?? "https://socialgouv.github.io/iterion/",
+            ],
+            [
+              "Report an issue",
+              info?.issue_tracker ??
+                "https://github.com/SocialGouv/iterion/issues",
+            ],
+          ] as const
+        ).map(([label, url]) => (
+          <li key={label}>
+            {info ? (
               <button
                 className="text-accent-text underline"
                 onClick={() => desktop.openExternal(url)}
               >
                 {label}
               </button>
-            </li>
-          ))}
-        </ul>
-      )}
+            ) : (
+              <a
+                className="text-accent-text underline"
+                href={url}
+                target="_blank"
+                rel="noreferrer"
+              >
+                {label}
+              </a>
+            )}
+          </li>
+        ))}
+      </ul>
     </div>
   );
 }

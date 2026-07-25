@@ -1,98 +1,116 @@
-[← Documentation index](README.md) · [← Iterion](../README.md)
-
 # Development
 
-This page is for contributors working on the Iterion codebase itself.
+This page is for contributors to Iterion itself. The repository's reproducible toolchain is the supported path; CI and bot verification use the same task entry points.
 
-## Prerequisites
+## Toolchain
 
-- [Devbox](https://www.jetify.com/devbox) — portable dev environment (installs Go, Task, Node)
-- [direnv](https://direnv.net/) — auto-activates the Devbox shell
+Install [Devbox](https://www.jetify.com/devbox). The checked-in `devbox.json` currently provides Go 1.26, Node 24, Go Task, golangci-lint, Helm, kubectl/kind, desktop build libraries, and supporting tools.
 
 ```bash
-eval "$(direnv hook bash)"   # or: eval "$(direnv hook zsh)"
+devbox shell
+# or run one command without entering a shell:
+devbox run -- task check
+```
+
+Optional [direnv](https://direnv.net/) integration activates the environment on entry:
+
+```bash
+eval "$(direnv hook bash)"   # use the equivalent hook for your shell
 direnv allow
 ```
 
-The repository also includes a `.devcontainer/` configuration for VS Code / GitHub Codespaces.
+The repository also ships `.devcontainer/` for VS Code/Codespaces. Task automatically reads a root `.env` when present; it is gitignored and intended for local credential/config overrides.
 
-## Build & Test
+## Build and checks
 
 ```bash
-task build          # → ./iterion
-task test           # Unit tests
-task test:e2e       # End-to-end tests (stub executor)
-task test:live      # Live e2e tests (requires API keys)
-task test:race      # Tests with race detector
-task lint           # go fmt + go vet
-task check          # lint + test
-task studio:dev     # Start studio in dev mode (HMR)
-task studio:build   # Build studio frontend
+task build             # build studio, sync embedded dispatcher bots, then ./iterion
+task lint              # gofmt + go vet + golangci-lint
+task test              # all Go unit tests
+task test:e2e          # deterministic/stub E2E suite
+task test:goldens      # recorded bot-schema/invariant replays; no credentials
+task studio:check      # ESLint + TypeScript + Vitest
+task check             # lint + unit + goldens + studio:check
 ```
 
-Or directly with Go:
+Useful narrower gates:
 
 ```bash
-go build -o iterion ./cmd/iterion
+task test:race
+task test:bundle
+task test:live:compile     # compile every -tags=live test without running/cost
+task openapi:check         # regenerate OpenAPI + studio types, fail on diff
+task sdk:ts:check          # TypeScript SDK build/typecheck/tests
+task desktop:test
+task chart:lint
+```
+
+`task test:live` and the narrower `test:live:*` tasks call real backends and require the credentials named in each task description. `test:goldens:record` also calls a real LLM and rewrites fixtures; ordinary verification should use `test:goldens`.
+
+The direct Go commands work when generated assets are already materialised:
+
+```bash
+go build -mod=vendor -o iterion ./cmd/iterion
 go test ./...
 ```
 
-## Project Structure
+Prefer `task build` after editing studio assets or any of the nine embedded dispatcher bots because it runs `studio:build` and `templates:dispatch-bots` first.
 
-The Go code follows the standard `cmd/` + `pkg/` layout:
+## Frontend and local services
 
+```bash
+task studio:dev              # backend + Vite HMR
+task studio:dev:backend
+task studio:dev:frontend
+task cloud:up                # local Mongo/NATS/MinIO/server stack
+task cloud:logs
+task cloud:down              # also removes compose volumes
 ```
+
+Desktop, chart, image, and cross-platform packaging tasks are listed by `task --list-all`; use their dedicated runbooks before releasing: [desktop build](desktop-build.md), [desktop release](desktop-release-checklist.md), and [cloud deployment](cloud-deployment.md).
+
+## Repository structure
+
+```text
 iterion/
 ├── cmd/
-│   ├── iterion/         # CLI entry point (Cobra, one file per command — run, server, runner, sandbox, …)
-│   └── iterion-desktop/ # Wails v2 desktop wrapper (proxy AssetServer over pkg/server)
+│   ├── iterion/             # Cobra entrypoint
+│   └── iterion-desktop/     # Wails desktop wrapper
 ├── pkg/
-│   ├── dsl/             # DSL pipeline
-│   │   ├── parser/         # Lexer, recursive-descent parser, diagnostics
-│   │   ├── ast/            # AST definitions and JSON marshaling
-│   │   ├── ir/             # IR compilation and validation (~60 diagnostic codes, C001–C086 sparse — incl. cursors C083–C086)
-│   │   ├── unparse/        # IR → .bot serialization
-│   │   ├── expr/           # Expression evaluator for compute nodes and quoted `when` clauses
-│   │   ├── workflowfile/   # Workflow source loading + SHA-256 hashing (drives `iterion resume` change detection)
-│   │   └── types/          # Shared enums (transports, session/router modes…)
-│   ├── backend/         # Execution stack (LLM + tools)
-│   │   ├── model/          # Executor registry, schema validation, event hooks
-│   │   ├── delegate/       # Delegation backends (claude_code, codex, claw)
-│   │   ├── tool/           # Tool registry, policies, adapters (incl. privacy_filter / privacy_unfilter)
-│   │   ├── mcp/            # MCP server lifecycle, configuration, health checks
-│   │   ├── recipe/         # Recipe handling for tool adapters and policies
-│   │   ├── cost/           # Cost estimation and budgeting
-│   │   ├── llmtypes/       # LLM SDK abstraction
-│   │   ├── detect/         # Credential auto-detection (OAuth, API keys, AWS/GCP) — feeds the studio BackendStatusPill
-│   │   └── tooldisplay/    # Human-readable rendering of tool calls for the run console / report
-│   ├── runtime/         # Workflow execution engine (scheduling, budget, recovery, worktree finalization)
-│   ├── dispatcher/      # Long-running dispatcher: actor + tracker adapters (native/github/forgejo) + native kanban store
-│   ├── bundle/          # `.botz` bundle loader (workflow + skills + recipes + prompts + attachments)
-│   ├── sandbox/         # Per-run container isolation (Docker/Podman/Kubernetes drivers + CONNECT proxy)
-│   ├── store/           # File-backed persistence (runs, events, artifacts) + Mongo/S3 in cloud mode
-│   ├── server/          # HTTP server: studio + run console + cloud REST/WS API
-│   ├── runner/          # Cloud-mode runner pod consumer loop (NATS JetStream → execution)
-│   ├── queue/           # NATS JetStream message contract & dispatch schema
-│   ├── cloud/           # Cloud-mode helpers (Prometheus metrics registry, …)
-│   ├── runview/         # Editor backend: WS event broker for live run streaming
-│   ├── git/             # Editor backend: status / diff / log for the modified-files panel
-│   ├── config/          # Runtime config (env vars + YAML, Mongo/NATS/S3/Sandbox/Runner sections)
-│   ├── auth/            # Operator authentication primitives (SSO, session cookies) for cloud-mode endpoints
-│   ├── identity/        # Operator identity types shared between auth, cloud, and dispatcher
-│   ├── secrets/         # Secret resolution (env / file / KMS) shared across backends and sandbox
-│   ├── cli/             # CLI command implementations
-│   ├── benchmark/       # Metrics collection and reporting
-│   ├── log/             # Leveled logger
-│   └── internal/        # Internal utilities (appinfo, mongoutil for cloud-mode Mongo store, proc helpers)
-├── studio/              # Web UI (React/Vite/TypeScript + XYFlow)
-├── examples/            # Reference .bot workflows + companion docs
-├── sdks/typescript/     # @iterion/sdk — typed CLI wrapper for Node/Deno/Bun
-├── e2e/                 # End-to-end test suite (stub + live)
-├── charts/iterion/      # Helm chart (server + runner Deployments, KEDA scaling, sandbox RBAC) — published to oci://ghcr.io/socialgouv/charts/iterion
-├── docker/              # Cloud-mode container helpers (LLM CLI install, MinIO init)
-├── docs/                # Format specs, references, ADRs, sandbox, privacy, observability
-├── scripts/             # Build helpers
-└── vendor/              # Vendored Go modules (incl. claw-code-go)
+│   ├── cli/                 # public CLI command implementations/templates
+│   ├── dsl/                 # lexer/parser, AST, expressions, IR/compiler, unparser
+│   ├── runtime/             # graph engine, routing, loops, budgets, recovery, worktrees
+│   ├── backend/             # model/delegated executors, MCP, tools, cost, secret guard
+│   ├── bundle/              # .botz loading; bundlelint holds C200–C230 checks
+│   ├── sandbox/             # Docker/Podman/Kubernetes isolation and egress controls
+│   ├── store/               # local and cloud persistence abstractions
+│   ├── server/ + runview/   # studio/run/cloud HTTP and streaming surfaces
+│   ├── dispatcher/          # tracker polling, leases, hooks, issue-to-bot dispatch
+│   ├── schedule-related     # cloudsched, schedgate, trigger
+│   ├── cloud-related        # queue, runner, auth, identity, orgusage, forge, webhooks
+│   └── extensions/state     # plugin, skilllib, memory, secrets, marketplace, supervise
+├── studio/                  # React/Vite/TypeScript UI
+├── bots/                    # maintained bot catalogue (main.bot + manifest/resources)
+├── examples/                # focused DSL/integration demonstrations
+├── e2e/                     # deterministic and build-tagged live E2E tests
+├── sdks/typescript/         # @iterion/sdk CLI wrapper
+├── charts/iterion/          # Helm chart and tests
+├── docker/ + sandbox/       # container images/helpers and sandbox fixtures
+├── docs/                    # living guides plus explicitly dated records
+├── scripts/ + tooling/      # generation, release, and verification helpers
+├── internal/httpx/          # module-private HTTP utility
+├── third_party/             # checked-in third-party source/assets
+└── vendor/                  # vendored Go modules, including claw-code-go
 ```
 
-**Key dependencies:** Go 1.26.0 and [`claw-code-go`](https://github.com/SocialGouv/claw-code-go) (vendored under `vendor/github.com/SocialGouv/claw-code-go/`) — a multi-provider LLM client. iterion uses `claw-code-go/pkg/api.Client.StreamResponse` directly for in-process LLM calls (Anthropic and OpenAI validated; Bedrock/Vertex/Foundry available).
+The labels `schedule-related`, `cloud-related`, and `extensions/state` above are conceptual groupings, not literal directories; inspect `pkg/` for the individual packages. This keeps the map useful as packages evolve.
+
+## Key contracts
+
+- DSL syntax lives in `pkg/dsl/parser`; compilation/semantic validation lives in the split files under `pkg/dsl/ir`. Diagnostics use sparse DSL range C001–C199; bundle checks use C200–C230.
+- `pkg/server` registers the HTTP route table that generates `openapi.json`; `task openapi:check` guards the committed spec and studio types.
+- `bots/` is the editable full catalogue. `pkg/cli/templates/dispatch_bots/` is generated for the embedded zero-config subset; do not hand-maintain the copies.
+- Studio's production build is copied into `pkg/server/static` and embedded into the Go binary.
+- The module vendors [`claw-code-go`](https://github.com/SocialGouv/claw-code-go) for in-process multi-provider execution. Keep `go.mod`, `go.sum`, and `vendor/` consistent.
+
+Before opening a change, run the smallest relevant gates and finish with `devbox run -- task check` when practical. Changes to OpenAPI, the SDK, Helm, desktop, or live-test declarations also need their domain-specific checks above.

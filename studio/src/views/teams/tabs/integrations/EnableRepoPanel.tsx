@@ -1,15 +1,17 @@
 import { errorMessage } from "@/lib/errorHints";
 import { useEffect, useState } from "react";
+import { keepPreviousData, useQuery } from "@tanstack/react-query";
 
 import type { BotEntryWithSchema } from "@/api/bots";
 import {
   type ForgeConnection,
-  type ForgeEnablePreview,
   type ForgeRepo,
   enableForgeRepoBots,
+  getForgeConnectionHealth,
   listForgeRepos,
   previewForgeEnable,
 } from "@/api/forgeConnections";
+import CronField from "@/components/shared/CronField";
 import { Button } from "@/components/ui/Button";
 import { Checkbox } from "@/components/ui/Checkbox";
 import { Input } from "@/components/ui/Input";
@@ -36,7 +38,11 @@ export function EnableRepoPanel({
   conn: ForgeConnection;
   repoBots: BotEntryWithSchema[];
   preselectBot?: string;
-  onDone: () => void;
+  /** Called once the server accepts the enable request. The optional
+   *  argument surfaces the repo that was just enabled so callers (e.g.
+   *  the connect wizard) can jump straight to it — legacy callers may
+   *  ignore it (backward-compatible with the old no-arg signature). */
+  onDone: (enabled?: { repo: string; connectionID: string }) => void;
   onCancel: () => void;
   onError: (m: string) => void;
 }) {
@@ -47,7 +53,6 @@ export function EnableRepoPanel({
   const [selectedBots, setSelectedBots] = useState<string[]>(
     preselectBot ? [preselectBot] : [],
   );
-  const [preview, setPreview] = useState<ForgeEnablePreview | null>(null);
   // Per-bot cron overrides for scheduled bots (bot name → cron); empty entries
   // fall back to the manifest suggested_cron server-side.
   const [scheduleCrons, setScheduleCrons] = useState<Record<string, string>>({});
@@ -69,27 +74,32 @@ export function EnableRepoPanel({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
+  // GitHub App installations only expose the repos the operator granted
+  // on GitHub — an empty search here used to dead-end with no
+  // explanation. The health probe surfaces the installation's live
+  // scope + the GitHub settings URL where it can be widened. Probe
+  // failures deliberately just hide the banner.
+  const healthQuery = useQuery({
+    queryKey: ["forge-connection-health", teamID, conn.id],
+    queryFn: () => getForgeConnectionHealth(teamID, conn.id),
+    enabled: conn.kind === "github_app",
+  });
+  const health = healthQuery.data ?? null;
+
   // Fetch the authoritative preview (native events the hook will subscribe
   // to + identity + any scope/forge-block conflicts) whenever the selection
   // changes, so the operator sees exactly what Enable will provision.
-  useEffect(() => {
-    if (!repo || selectedBots.length === 0) {
-      setPreview(null);
-      return;
-    }
-    let cancelled = false;
-    void previewForgeEnable(teamID, conn.id, repo, selectedBots)
-      .then((p) => {
-        if (!cancelled) setPreview(p);
-      })
-      .catch(() => {
-        if (!cancelled) setPreview(null);
-      });
-    return () => {
-      cancelled = true;
-    };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [repo, selectedBots]);
+  // Failures deliberately collapse to "no preview box".
+  const previewEnabled = repo !== "" && selectedBots.length > 0;
+  const previewQuery = useQuery({
+    queryKey: ["forge-enable-preview", teamID, conn.id, repo, selectedBots],
+    queryFn: () => previewForgeEnable(teamID, conn.id, repo, selectedBots),
+    enabled: previewEnabled,
+    // Keep the previous selection's preview on screen while the next one
+    // loads, instead of blinking the box out on every checkbox toggle.
+    placeholderData: keepPreviousData,
+  });
+  const preview = previewEnabled ? previewQuery.data ?? null : null;
 
   const toggleBot = (name: string) =>
     setSelectedBots((s) => (s.includes(name) ? s.filter((b) => b !== name) : [...s, name]));
@@ -110,7 +120,7 @@ export function EnableRepoPanel({
         }
       }
       await enableForgeRepoBots(teamID, conn.id, repo, selectedBots, crons);
-      onDone();
+      onDone({ repo, connectionID: conn.id });
     } catch (e) {
       onError(errorMessage(e));
     } finally {
@@ -144,6 +154,36 @@ export function EnableRepoPanel({
           {loadingRepos ? "…" : "Search"}
         </Button>
       </div>
+
+      {conn.kind === "github_app" && health && (
+        <div
+          className={`rounded border px-2.5 py-2 text-xs ${
+            !loadingRepos && repos.length === 0
+              ? "border-warning/40 bg-warning-soft text-warning-fg"
+              : "border-border-subtle bg-surface-1 text-fg-muted"
+          }`}
+        >
+          The GitHub App installation
+          {health.installation_account ? ` on ${health.installation_account}` : ""} covers{" "}
+          {health.installation_repos?.length ?? 0} repositor
+          {(health.installation_repos?.length ?? 0) === 1 ? "y" : "ies"}. A repo missing
+          here must first be granted to the installation on GitHub.
+          {health.manage_install_url && (
+            <>
+              {" "}
+              <a
+                href={health.manage_install_url}
+                target="_blank"
+                rel="noreferrer"
+                className="text-accent-text underline"
+              >
+                Add repositories on GitHub ↗
+              </a>{" "}
+              then hit Search again.
+            </>
+          )}
+        </div>
+      )}
 
       <div>
         <label htmlFor="forge-repo-pick" className="sr-only">
@@ -205,15 +245,18 @@ export function EnableRepoPanel({
                           </label>
                         </div>
                         {selectedBots.includes(b.name) && hasSchedule(b) && (
-                          <div className="ml-6 flex items-center gap-2">
-                            <span className="text-caption text-fg-muted">cron</span>
-                            <Input
-                              className="w-40 font-mono text-xs"
+                          <div className="ml-6 max-w-sm">
+                            <span className="text-caption text-fg-muted">
+                              cron (UTC — or prefix CRON_TZ=&lt;zone&gt;)
+                            </span>
+                            <CronField
                               value={scheduleCrons[b.name] ?? scheduleCronFor(b)}
-                              onChange={(e) =>
-                                setScheduleCrons((s) => ({ ...s, [b.name]: e.target.value }))
+                              onChange={(v) =>
+                                setScheduleCrons((s) => ({ ...s, [b.name]: v }))
                               }
-                              aria-label={`Cron schedule for ${b.display_name || b.name}`}
+                              disabled={busy}
+                              hideLabel
+                              ariaLabel={`Cron schedule for ${b.display_name || b.name} (5-field, UTC — or prefix CRON_TZ=<zone>)`}
                             />
                           </div>
                         )}

@@ -1,12 +1,15 @@
 import { errorMessage } from "@/lib/errorHints";
 import { useEffect, useState } from "react";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { InlineBanner } from "@/components/ui/InlineBanner";
+import { Badge } from "@/components/ui/Badge";
 import { Button } from "@/components/ui/Button";
 import { Input } from "@/components/ui/Input";
 import { Spinner } from "@/components/ui/Spinner";
 import { Tabs } from "@/components/ui/Tabs";
 import { useConfirm } from "@/hooks/useConfirm";
 import ApiKeysPanel from "./ApiKeys";
+import NotificationsPanel from "./NotificationsPanel";
 import OAuthConnections from "./OAuthConnections";
 import TokensPanel from "./TokensPanel";
 import {
@@ -17,6 +20,7 @@ import {
   revokeAllMySessions,
   ssoLinkStartURL,
   unlinkSSO,
+  type ProvidersResponse,
   type SSOLink,
 } from "@/api/auth";
 import { consumeQueryParams } from "@/lib/queryFlash";
@@ -24,7 +28,7 @@ import { useAuth } from "@/auth/AuthContext";
 import { useServerInfoStore } from "@/store/serverInfo";
 import { useHeaderSlot } from "@/components/shared/useHeaderSlot";
 
-type Tab = "api-keys" | "oauth" | "tokens" | "profile";
+type Tab = "api-keys" | "oauth" | "tokens" | "notifications" | "profile";
 
 export default function SettingsPage() {
   const { user } = useAuth();
@@ -54,6 +58,7 @@ export default function SettingsPage() {
     { id: "oauth", label: "OAuth subscriptions" },
   ];
   if (showAuthTabs) tabs.push({ id: "tokens", label: "Access tokens" });
+  if (serverInfo?.web_push_enabled) tabs.push({ id: "notifications", label: "Notifications" });
   tabs.push({ id: "profile", label: "Profile" });
 
   return (
@@ -72,13 +77,28 @@ export default function SettingsPage() {
           {tab === "api-keys" && <ApiKeysPanel />}
           {tab === "oauth" && <OAuthConnections />}
           {tab === "tokens" && showAuthTabs && <TokensPanel />}
+          {tab === "notifications" && serverInfo?.web_push_enabled && <NotificationsPanel />}
           {tab === "profile" && (
             <div className="space-y-6">
               <section className="space-y-3 text-sm">
                 <h2 className="text-lg font-semibold">Profile</h2>
                 <div>Email: {user?.email}</div>
                 {user?.name && <div>Name: {user.name}</div>}
-                <div>Status: {user?.status}</div>
+                {user && user.status !== "active" && (
+                  <div>
+                    Status:{" "}
+                    <Badge
+                      size="sm"
+                      variant={user.status === "disabled" ? "danger" : "warning"}
+                    >
+                      {user.status === "disabled"
+                        ? "Disabled"
+                        : user.status === "pending_password_change"
+                          ? "Password change required"
+                          : user.status}
+                    </Badge>
+                  </div>
+                )}
                 {user?.is_super_admin && (
                   <div className="text-warning-fg">You are a platform super-admin.</div>
                 )}
@@ -98,30 +118,36 @@ export default function SettingsPage() {
 // the user connect a new one (the exit from the login "an account already
 // exists — link from settings" 409) or disconnect an existing one.
 function ConnectedSSOSection({ userEmail }: { userEmail?: string }) {
-  const [links, setLinks] = useState<SSOLink[] | null>(null);
-  const [connectable, setConnectable] = useState<
-    Array<{ name: string; display: string }>
-  >([]);
-  const [err, setErr] = useState<string | null>(null);
+  const queryClient = useQueryClient();
+  const linksQuery = useQuery({
+    queryKey: ["sso-links"],
+    queryFn: async () => (await listSSOLinks()).links,
+  });
+  // null = still loading (drives the spinner below), like the old state.
+  const links = linksQuery.data ?? null;
+  // Connectable providers depend only on the email domain (an org's Keycloak
+  // shows up without its slug), so the link-list invalidation never touches
+  // them. Discovery failure just leaves the connect buttons out — they're
+  // decoration here, not a required surface (pre-existing swallow).
+  const connectableQuery = useQuery({
+    queryKey: ["sso-providers", userEmail ?? ""],
+    queryFn: () =>
+      listProviders(userEmail ? { email: userEmail } : undefined)
+        .then((p) => p.providers)
+        .catch((): ProvidersResponse["providers"] => []),
+  });
+  const connectable = connectableQuery.data ?? [];
+  // Unlink failures land here; the link-list fetch error shares the banner.
+  const [mutErr, setMutErr] = useState<string | null>(null);
+  const err =
+    mutErr ?? (linksQuery.error ? errorMessage(linksQuery.error) : null);
   const [notice, setNotice] = useState<{
     tone: "success" | "danger";
     text: string;
   } | null>(null);
   const { confirm, dialog } = useConfirm();
 
-  const loadLinks = () =>
-    void listSSOLinks()
-      .then((r) => setLinks(r.links))
-      .catch((e) => setErr(errorMessage(e)));
-
   useEffect(() => {
-    loadLinks();
-    // Connectable providers depend only on the email domain (an org's Keycloak
-    // shows up without its slug), so they're fetched here — not on every link
-    // change.
-    void listProviders(userEmail ? { email: userEmail } : undefined)
-      .then((p) => setConnectable(p.providers))
-      .catch(() => setConnectable([]));
     // Surface the post-link callback result, then clear the one-shot params.
     const f = consumeQueryParams(["sso_linked", "sso_link_error"]);
     if (f.sso_linked) {
@@ -135,8 +161,7 @@ function ConnectedSSOSection({ userEmail }: { userEmail?: string }) {
             : "Couldn't connect that SSO identity. Please try again.",
       });
     }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [userEmail]);
+  }, []);
 
   const linkedProviders = new Set((links ?? []).map((l) => l.provider));
 
@@ -151,9 +176,10 @@ function ConnectedSSOSection({ userEmail }: { userEmail?: string }) {
     try {
       await unlinkSSO(l.provider, l.provider_user_id);
       setNotice({ tone: "success", text: `Disconnected ${l.provider}.` });
-      loadLinks(); // providers are domain-derived; only the link list changed
+      // providers are domain-derived; only the link list changed
+      void queryClient.invalidateQueries({ queryKey: ["sso-links"] });
     } catch (e) {
-      setErr(errorMessage(e));
+      setMutErr(errorMessage(e));
     }
   };
 

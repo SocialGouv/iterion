@@ -91,17 +91,30 @@ func (s *Service) logPositionForRun(runID string) int64 {
 // registerRunEngine publishes the live Engine for runID so
 // activeDurationForRun can read its monotonic active elapsed. Shares
 // the runLogs lifecycle + mutex.
-func (s *Service) registerRunEngine(runID string, eng *runtime.Engine) {
+func (s *Service) registerRunEngine(runID string, eng *runtime.Engine, steer chan *runtime.OverrideMsg) {
 	s.runLogsMu.Lock()
 	s.runEngines[runID] = eng
+	if steer != nil {
+		s.runSteer[runID] = steer
+	}
 	s.runLogsMu.Unlock()
 }
 
-// unregisterRunEngine drops the Engine for runID once its goroutine exits.
+// unregisterRunEngine drops the Engine (and its steering channel) for
+// runID once its goroutine exits.
 func (s *Service) unregisterRunEngine(runID string) {
 	s.runLogsMu.Lock()
 	delete(s.runEngines, runID)
+	delete(s.runSteer, runID)
 	s.runLogsMu.Unlock()
+}
+
+// steerChannelFor returns the live run's override send channel, or nil
+// when this process does not hold the run.
+func (s *Service) steerChannelFor(runID string) chan *runtime.OverrideMsg {
+	s.runLogsMu.RLock()
+	defer s.runLogsMu.RUnlock()
+	return s.runSteer[runID]
 }
 
 // activeDurationForRun is the store.ActiveDurationFn: returns the run's

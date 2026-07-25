@@ -17,7 +17,7 @@ attribution: |
 # patch — verified candidate fixes (Go, TS/JS)
 
 Turns a confirmed finding into a candidate diff and a verdict.
-Output is inert text under `./.iterion/security/patches/`. **The
+Output is inert text under `./.sec-audit/patches/`. **The
 skill never applies a diff.** A human applies it after review.
 
 ## Languages — Go and TS/JS only
@@ -54,7 +54,7 @@ Full rationale and escalation path: `[[crypto-handling]]`.
 - A confirmed candidate from `[[triage]]` (verdict = `confirm`,
   not `dismiss`, not `uncertain`).
 - The workspace at `{{vars.workspace_dir}}`.
-- The threat model `.iterion/security/context.md` if present
+- The threat model `.sec-audit/context.md` if present
   (anchors variant hunts).
 - `[[reattack-oracles]]` for per-category re-attack recipes.
 
@@ -142,7 +142,7 @@ If the finding is not fixable as described, emit:
 ```
 
 Parse the five tagged blocks. Write the diff to
-`./.iterion/security/patches/<id>/patch.diff`. Tolerate stray ```
+`./.sec-audit/patches/<id>/patch.diff`. Tolerate stray ```
 fences and HTML-escaped angle brackets; unescape before writing.
 
 ## Phase 2 — Verification ladder
@@ -237,7 +237,7 @@ LOCATION: {file}:{line}
 CATEGORY: {finding_type}
 DIFF UNDER REVIEW:
 <diff>
-{diff_text — or "Read ./.iterion/security/patches/<id>/patch.diff"
+{diff_text — or "Read ./.sec-audit/patches/<id>/patch.diff"
 if >50 lines}
 </diff>
 
@@ -270,7 +270,7 @@ style >= 5. Otherwise REJECT.
 ## Phase 4 — Output
 
 Per finding, write
-`./.iterion/security/patches/<id>/patch_result.json`:
+`./.sec-audit/patches/<id>/patch_result.json`:
 
 ```json
 {
@@ -303,13 +303,13 @@ Style score is informational. Crypto findings ALWAYS emit
 `verdict: uncertain` (cf. `[[crypto-handling]]`).
 
 The diff lands at
-`./.iterion/security/patches/<id>/patch.diff` for human review.
+`./.sec-audit/patches/<id>/patch.diff` for human review.
 
 ## Guard rails
 
 - **Never applies diffs.** No `git apply`, no `patch`, no Edit
   against `{{vars.workspace_dir}}`. The skill writes ONLY under
-  `./.iterion/security/patches/` and a scratch worktree the
+  `./.sec-audit/patches/` and a scratch worktree the
   build/test tiers use.
 - **Reviewer isolation is non-negotiable.** Passing the reviewer
   any of `description`, `recommendation`, `exploit_hypothesis`, or

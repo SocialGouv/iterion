@@ -1,0 +1,87 @@
+name: codeindex
+version: 1.0.0
+description: Deterministic repo-indexing engine (26 MCP tools) — link-graph, symbols, callers, indexed search, hotspots, symbolic edits
+author: maxgfr (https://github.com/maxgfr/codeindex)
+schema_version: 1
+default_enabled: false
+auto_index: true
+config:
+  - key: embed_endpoint
+    label: Embedding endpoint URL
+    type: string
+    description: >-
+      Base URL of a codeindex embedding server (e.g. http://iterion-codeindex-embed:8756),
+      which upgrades the `search` tool from lexical BM25 to RRF-fused semantic
+      search. Leave empty for keyless lexical search — the default, and the only
+      tier that needs no extra deployment.
+    default: ""
+  - key: max_files
+    label: Max files walked
+    type: int
+    description: >-
+      Cap on files walked when building the index. The engine reports a `capped`
+      flag rather than silently truncating, so raise this for a large monorepo.
+    default: "20000"
+contributes:
+  mcp_servers:
+    - name: codeindex
+      transport: stdio
+      command: npx
+      # Version PINNED (supply-chain: never resolve a moving `latest`). Must
+      # match Dockerfile.runner-devbox's CODEINDEX_VERSION so the cloud runner
+      # reuses its warm pre-installed global instead of downloading.
+      args:
+        - -y
+        # renovate: datasource=npm depName=@maxgfr/codeindex versioning=npm
+        - "@maxgfr/codeindex@2.17.0"
+        - mcp
+        # Pin the server to the workspace so all 26 tools take `repo` as
+        # optional — agents never have to know the absolute checkout path.
+        - --repo
+        - "{{workspace}}"
+      env:
+        CODEINDEX_EMBED_ENDPOINT: "{{config.embed_endpoint}}"
+  rewriters:
+    # Maps a tree-wide `grep -r` / `rg` onto the indexed equivalent: bounded,
+    # structured, gitignore-correct hits instead of an unbounded wall of text.
+    # `locate` finds a real binary (brew / npm -g / the runner image's global);
+    # when none is present the chain degrades to passthrough, so this contributes
+    # nothing rather than paying npx startup on every shell command.
+    - id: codeindex
+      locate:
+        env: ITERION_CODEINDEX_BIN
+        bin: codeindex
+        paths:
+          - ~/.local/bin/codeindex
+          - /usr/local/bin/codeindex
+          - /opt/homebrew/bin/codeindex
+      invoke:
+        argv: ["rewrite", "{{command}}"]
+        timeout_ms: 5000
+        # codeindex exits 1 with empty stdout when it has no opinion, so only
+        # 0 carries a rewrite — the default, stated here for clarity.
+        apply_exit_codes: [0]
+        modes:
+          on: {}
+          # Denser output: a tighter hit cap for the same query.
+          ultra:
+            inject_flag: "--max-hits 40"
+      sandbox_mount: /usr/local/bin/codeindex
+  lifecycle:
+    # `index` is incremental (cache.json + an artifact fastpath), so refresh is
+    # the same command: an unchanged repo rewrites nothing and costs one walk.
+    # EVERY version occurrence in this file carries its own renovate comment —
+    # the regex manager captures the version on the line following the comment,
+    # so an unannotated occurrence would silently go stale.
+    # renovate: datasource=npm depName=@maxgfr/codeindex versioning=npm
+    index: "npx -y @maxgfr/codeindex@2.17.0 index --repo {{workspace}} --out {{workspace}}/.codeindex --max-files {{config.max_files}}"
+    # renovate: datasource=npm depName=@maxgfr/codeindex versioning=npm
+    refresh: "npx -y @maxgfr/codeindex@2.17.0 index --repo {{workspace}} --out {{workspace}}/.codeindex --max-files {{config.max_files}}"
+  skills:
+    - skills/code-index.md
+  commands:
+    - commands/codeindex-map.md
+    - commands/codeindex-impact.md
+    - commands/codeindex-risk.md
+  agents:
+    - agents/codebase-cartographer.md

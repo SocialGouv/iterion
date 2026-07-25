@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"strings"
 	"syscall"
 	"time"
 
@@ -13,6 +14,7 @@ import (
 	"github.com/SocialGouv/iterion/pkg/cloud/metrics"
 	"github.com/SocialGouv/iterion/pkg/cloud/tracing"
 	iterconfig "github.com/SocialGouv/iterion/pkg/config"
+	"github.com/SocialGouv/iterion/pkg/eventbus"
 	iterlog "github.com/SocialGouv/iterion/pkg/log"
 	"github.com/SocialGouv/iterion/pkg/orgusage"
 	natsq "github.com/SocialGouv/iterion/pkg/queue/nats"
@@ -21,6 +23,18 @@ import (
 	mongostore "github.com/SocialGouv/iterion/pkg/store/mongo"
 	"github.com/spf13/cobra"
 )
+
+// resolveRunnerSandboxDefault applies sandbox-by-default to the runner
+// entry point: an explicit config value (ITERION_SANDBOX_DEFAULT or the
+// config file) wins; unset resolves to auto, mirroring
+// runtime.ResolveGlobalSandboxDefault for the other entry points. Set
+// ITERION_SANDBOX_DEFAULT=none to restore the historical behaviour.
+func resolveRunnerSandboxDefault(configured string) string {
+	if v := strings.ToLower(strings.TrimSpace(configured)); v != "" {
+		return v
+	}
+	return "auto"
+}
 
 // parseLevel resolves a string level from the loader, falling back to
 // info on parse failure. Shared by the cloud-mode subcommands
@@ -199,9 +213,19 @@ func runRunner(cmd *cobra.Command, _ []string) error {
 		botsPaths = filepath.SplitList(bp)
 	}
 
+	// Event spine: publish run outcomes (finished/failed/cancelled/paused)
+	// onto the NATS event subjects so server-side consumers (user
+	// notifications, trigger chaining) see runner-pod runs. Rides the
+	// queue's connection — disjoint subject trees on one link.
+	eventsBus, err := eventbus.NewNATSBus(natsConn.NATS(), eventbus.NATSOptions{Logger: logger})
+	if err != nil {
+		return fmt.Errorf("runner: build events bus: %w", err)
+	}
+
 	// 5. Runner loop.
 	r, err := runner.New(rootCtx, runner.Config{
 		NATS:              natsConn,
+		Events:            eventsBus,
 		Store:             st,
 		RunnerID:          runnerID,
 		WorkDir:           cfg.Runner.WorkDir,
@@ -214,9 +238,15 @@ func runRunner(cmd *cobra.Command, _ []string) error {
 		MemoryStore:       memStore,
 		OrgUsage:          orgUsageCounter,
 		BotsPaths:         botsPaths,
-		SandboxDefault:    cfg.Sandbox.Default,
-		SandboxHostState:  cfg.Sandbox.HostState,
-		SandboxOverride:   cfg.Sandbox.Override,
+		// Sandbox-by-default: the runner is a product entry point like
+		// `iterion run` — an unset ITERION_SANDBOX_DEFAULT resolves to
+		// auto. Discovered live (run 019f8a05): lifting the chart's
+		// ITERION_SANDBOX_OVERRIDE=none without this left cloud runs
+		// executing unsandboxed in the runner pod, because the runner
+		// wired the raw (empty) config value and the engine is neutral.
+		SandboxDefault:   resolveRunnerSandboxDefault(cfg.Sandbox.Default),
+		SandboxHostState: cfg.Sandbox.HostState,
+		SandboxOverride:  cfg.Sandbox.Override,
 	})
 	if err != nil {
 		return fmt.Errorf("runner: build: %w", err)

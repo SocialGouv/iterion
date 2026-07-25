@@ -10,9 +10,28 @@ import (
 // isMutatingNode — workspace mutation classifier
 // ---------------------------------------------------------------------------
 
-func TestIsMutatingNode_ToolNodeAlwaysMutating(t *testing.T) {
+func TestIsMutatingNode_ToolNodeMutatingByDefault(t *testing.T) {
 	if !isMutatingNode(&ir.ToolNode{BaseNode: ir.BaseNode{ID: "tool"}}) {
-		t.Error("tool node must be classified mutating")
+		t.Error("tool node must be classified mutating by default")
+	}
+}
+
+func TestIsMutatingNode_ToolParallelSafeScopedToFanOutEach(t *testing.T) {
+	// `parallel_safe:` relaxes a tool to non-mutating ONLY on a fan_out_each
+	// template (item-keyed disjoint replays). The general classifier — used by
+	// the static fan_out_all / llm-router guard, where branches are distinct
+	// nodes with no item-key guarantee — keeps it conservatively mutating.
+	n := &ir.ToolNode{BaseNode: ir.BaseNode{ID: "tool"}, ParallelSafe: true}
+	if !isMutatingNode(n) {
+		t.Error("parallel_safe tool must stay mutating in the general (non-fan_out_each) classifier")
+	}
+	if isMutatingNodeCtx(n, "", nil, true) {
+		t.Error("parallel_safe tool must be exempt on a fan_out_each template")
+	}
+	// Without the flag, a tool is mutating in both contexts.
+	plain := &ir.ToolNode{BaseNode: ir.BaseNode{ID: "plain"}}
+	if !isMutatingNodeCtx(plain, "", nil, true) {
+		t.Error("plain tool must stay mutating even on a fan_out_each template")
 	}
 }
 
@@ -74,7 +93,7 @@ func TestIsMutatingNode_AgentWithNoTools(t *testing.T) {
 }
 
 func TestIsMutatingNode_CLIBackendWithNoTools(t *testing.T) {
-	for _, backend := range []string{"codex", "claude_code", "kimi", "custom_cli"} {
+	for _, backend := range []string{"codex", "claude_code", "kimi", "grok", "custom_cli"} {
 		n := &ir.AgentNode{
 			BaseNode:  ir.BaseNode{ID: "a"},
 			LLMFields: ir.LLMFields{Backend: backend},

@@ -17,10 +17,11 @@
 
   "containerEnv": {
     "DEVBOX_NO_PROMPT": "1"
-  },
+  }
 
-  // Initialize the devbox environment from the workspace's devbox.json.
-  // Idempotent; safe to re-run on container restart.
-  // Requires a `devbox.json` at the workspace root.
-  "postCreateCommand": "test -f /workspace/devbox.json && devbox install --quiet || true"
+  // No postCreateCommand is needed to pick up the workspace `devbox.json`:
+  // iterion installs it at container start AND prepends its profile bin
+  // dir to the container PATH, so tool nodes — which run a non-interactive
+  // `sh -c` that sources no shell profile — find the packages. A bare
+  // `devbox install` here would install them where nothing can see them.
 }

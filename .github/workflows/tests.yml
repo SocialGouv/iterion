@@ -39,6 +39,16 @@ jobs:
           rm -rf ../pkg/server/static/assets ../pkg/server/static/index.html
           cp -r dist/* ../pkg/server/static/
 
+      - name: Studio lint + typecheck + unit tests
+        # Mirror of `task studio:check` (eslint / tsc -b / vitest), inlined so
+        # the test job doesn't pull go-task. Reuses the node_modules installed
+        # by the build step above.
+        working-directory: studio
+        run: |
+          pnpm exec eslint .
+          pnpm exec tsc -b
+          pnpm exec vitest run
+
       - name: OpenAPI spec + client drift check
         # The committed openapi.json (offline-generated from the in-code route
         # table) and studio/src/api/schema.ts (typed client surface) must match
@@ -200,10 +210,16 @@ jobs:
           done
 
       - name: Mongo conformance harness
+        # Alongside the pkg/store/mongo harness, run every store suite
+        # gated on the same URI: the storekit skeleton and the paired
+        # Mongo+memory backends built on it (audit, pat, cloudsched,
+        # desktopsso, wsticket).
         env:
           ITERION_TEST_MONGO_URI: mongodb://localhost:27017/?replicaSet=rs0
         run: |
-          go test -mod=vendor -v -timeout 5m ./pkg/store/mongo/...
+          go test -mod=vendor -v -timeout 5m ./pkg/store/mongo/... \
+            ./pkg/internal/storekit/... ./pkg/audit/... ./pkg/pat/... \
+            ./pkg/cloudsched/... ./pkg/auth/desktopsso/... ./pkg/auth/wsticket/...
 
   cloud-e2e:
     # Builds the iterion image, spins kind + Helm-installs the cloud
@@ -439,6 +455,25 @@ jobs:
         run: helm lint charts/iterion -f charts/iterion/values-dev.yaml
       - name: helm lint --strict (values-prod.yaml)
         run: helm lint charts/iterion -f charts/iterion/values-prod.yaml --strict
+
+  golangci:
+    # Curated golangci-lint pass (.golangci.yml): errcheck, govet,
+    # ineffassign, staticcheck, unconvert, unused. misspell is deliberately
+    # OFF — it flags French comments as misspelled English (1097 false
+    # positives). Runs in parallel with `test`; ~1-2 min. Add to the
+    # branch-protection required checks to gate merges on a clean lint.
+    runs-on: ubuntu-latest
+    env:
+      CGO_ENABLED: "0"
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+      - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6.5.0
+        with:
+          go-version-file: go.mod
+      - name: Install golangci-lint
+        run: go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.12.2
+      - name: Run golangci-lint
+        run: golangci-lint run --timeout 5m
 
   govulncheck:
     # govulncheck is call-graph aware (only reports CVEs whose vulnerable

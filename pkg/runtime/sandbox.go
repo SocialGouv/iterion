@@ -27,12 +27,14 @@ import (
 	"strings"
 	"time"
 
+	"github.com/SocialGouv/iterion/pkg/askusermcp"
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
 	gitlib "github.com/SocialGouv/iterion/pkg/git"
 	iterlog "github.com/SocialGouv/iterion/pkg/log"
 	"github.com/SocialGouv/iterion/pkg/sandbox"
 	"github.com/SocialGouv/iterion/pkg/sandbox/devcontainer"
 	"github.com/SocialGouv/iterion/pkg/sandbox/netproxy"
+	"github.com/SocialGouv/iterion/pkg/secrets"
 	"github.com/SocialGouv/iterion/pkg/store"
 )
 
@@ -45,6 +47,9 @@ type activeSandbox struct {
 	workspaceFolder string       // in-container path the host worktree is bind-mounted to (Spec.WorkspaceFolder, e.g. "/workspace"); used by Engine to remap ${PROJECT_DIR}
 	boardEndpoint   string       // http URL of the per-run gateway-reachable board MCP listener (C082); empty when not started (no handler / not sandboxed)
 	boardListener   *http.Server // the board listener to shut down at teardown; nil when not started
+	askUserEndpoint string       // http URL of the per-run gateway-reachable ask-user MCP listener (ADR-082 Phase 3); empty when not started (no interactive node / bind failure)
+	askUserToken    string       // per-run bearer token authorizing calls to askUserEndpoint (X-Iterion-Run)
+	askUserListener *http.Server // the ask-user listener to shut down at teardown; nil when not started
 }
 
 // shutdown tears down both handles best-effort. Safe to call multiple
@@ -68,19 +73,32 @@ func (a *activeSandbox) shutdown(ctx context.Context, logger *iterlog.Logger) {
 			logger.Warn("runtime: sandbox board listener shutdown: %v", err)
 		}
 	}
+	if a.askUserListener != nil {
+		if err := a.askUserListener.Shutdown(ctx); err != nil && logger != nil {
+			logger.Warn("runtime: sandbox ask-user listener shutdown: %v", err)
+		}
+	}
 }
 
-// startBoardMCPListener binds a per-run, gateway-reachable HTTP listener
-// serving the board MCP routes (handler) so a sandboxed claude_code node
-// can reach the operator's board from inside the container (C082). It
-// reuses the egress proxy's driver-specific bind (docker → 0.0.0.0:0
-// advertised as host.docker.internal) so the container can dial it the
-// same way it dials the proxy. The listener serves the SAME in-process
-// native.Store the studio uses (via the handler), so writes serialize
-// through that Store's mutex — the reason the board transport is HTTP and
-// not a second in-container process. Returns the container-reachable
-// endpoint URL and the *http.Server (shut down at sandbox teardown).
-func startBoardMCPListener(driver sandbox.Driver, handler http.Handler) (endpoint string, srv *http.Server, err error) {
+// startSandboxMCPListener binds a per-run, gateway-reachable HTTP
+// listener serving handler at path, so a sandboxed claude_code node can
+// reach a host-side MCP endpoint from inside the container. It reuses
+// the egress proxy's driver-specific bind (docker → 0.0.0.0:0
+// advertised as host.docker.internal; kubernetes → the runner pod IP)
+// so the container can dial it the same way it dials the proxy.
+// Returns the container-reachable endpoint URL and the *http.Server
+// (shut down at sandbox teardown).
+//
+// Two per-run MCP listeners ride this helper:
+//   - the board transport (C082): serves the SAME in-process
+//     native.Store the studio uses, so writes serialize through that
+//     Store's mutex — the reason the board transport is HTTP and not a
+//     second in-container process;
+//   - the ask-user transport (ADR-082 Phase 3): serves the ask-user
+//     tool surface (pkg/askusermcp) so interactive nodes keep the
+//     native ask_user tools in-container — the stdio __mcp-ask-user
+//     subcommand's host binary path is invisible there.
+func startSandboxMCPListener(driver sandbox.Driver, handler http.Handler, path string) (endpoint string, srv *http.Server, err error) {
 	bind, advertise, err := proxyAddressesForDriver(driver)
 	if err != nil {
 		return "", nil, err
@@ -96,7 +114,7 @@ func startBoardMCPListener(driver sandbox.Driver, handler http.Handler) (endpoin
 	}
 	srv = &http.Server{Handler: handler}
 	go func() { _ = srv.Serve(ln) }()
-	endpoint = "http://" + net.JoinHostPort(advertise, port) + "/api/v1/mcp/board"
+	endpoint = "http://" + net.JoinHostPort(advertise, port) + path
 	return endpoint, srv, nil
 }
 
@@ -274,12 +292,25 @@ func resolveAndStartSandbox(ctx context.Context, p SandboxParams) (*activeSandbo
 		}
 		return err
 	}
-	spec, source, err := resolveSandboxSpec(p.Workflow, p.RepoRoot, p.CLIOverride, p.GlobalDefault, resolveDefaultSandboxImage(p.DefaultImage))
+	spec, source, skipReason, err := resolveSandboxSpec(p.Workflow, p.RepoRoot, p.CLIOverride, p.GlobalDefault, resolveDefaultSandboxImage(p.DefaultImage))
 	if err != nil {
 		return nil, err
 	}
 	if spec == nil || !spec.Mode.IsActive() {
-		// User opted out (Mode=none) or never opted in.
+		// Explicit opt-out (Mode=none / override none), or the built-in
+		// default degraded because the host can't sandbox — the latter
+		// must stay visible: emit sandbox_skipped so the run record says
+		// it executed unsandboxed and why.
+		if skipReason != "" {
+			_ = emitEvent(store.EventSandboxSkipped, map[string]any{
+				"mode":   string(sandbox.ModeAuto),
+				"source": source,
+				"reason": "sandbox-by-default degraded to unsandboxed: " + skipReason,
+			})
+			if logger != nil {
+				logger.Warn("runtime: sandbox-by-default degraded to unsandboxed for run %s: %s", p.RunID, skipReason)
+			}
+		}
 		return nil, nil
 	}
 
@@ -290,6 +321,20 @@ func resolveAndStartSandbox(ctx context.Context, p SandboxParams) (*activeSandbo
 	// is what the "configure mounts first" invariant requires.
 	driver, err := selectSandboxDriver(spec, logger)
 	if err != nil {
+		// A sandbox chosen by the built-in default must not brick runs on
+		// hosts with no container runtime — degrade to unsandboxed with a
+		// visible event. An EXPLICIT request keeps the hard error.
+		if source == sandboxDefaultSource {
+			_ = emitEvent(store.EventSandboxSkipped, map[string]any{
+				"mode":   string(spec.Mode),
+				"source": source,
+				"reason": "sandbox-by-default degraded to unsandboxed: " + err.Error(),
+			})
+			if logger != nil {
+				logger.Warn("runtime: sandbox-by-default degraded to unsandboxed for run %s: %v", p.RunID, err)
+			}
+			return nil, nil
+		}
 		return nil, err
 	}
 	caps := driver.Capabilities()
@@ -306,8 +351,16 @@ func resolveAndStartSandbox(ctx context.Context, p SandboxParams) (*activeSandbo
 		}
 		spec.Env["ITERION_ARTIFACT_FILES_DIR"] = runFilesContainerPath
 	}
-	addOptionalBindMount(spec, p.BundleHostDir, p.BundleContainerPath, "/run/iterion/bundle", "bundle", true, logger)
+	bundleContainerPath := addOptionalBindMount(spec, p.BundleHostDir, p.BundleContainerPath, "/run/iterion/bundle", "bundle", true, logger)
 	applyHostStateMounts(spec, p.Workflow, p, emitEvent, logger)
+	// Devbox provisioning (bot's bundle devbox.json + target repo's) runs
+	// after both: it needs the bundle mount's resolved container path, and
+	// it reads spec.WorkspaceFolder, which applyHostStateMounts may have
+	// just defaulted. Gated on SupportsPostCreate — a driver with no
+	// post-create hook has nothing to install into (noop has no container).
+	if caps.SupportsPostCreate {
+		applyDevboxProvisioning(spec, p, bundleContainerPath, emitEvent, logger)
+	}
 	// Host-convenience bind mounts — the claw/rtk runner binaries and the
 	// worktree .git — require a driver with a shared host filesystem. On
 	// kubernetes (SupportsHostBindMounts=false) type=bind is rejected at
@@ -354,6 +407,18 @@ func resolveAndStartSandbox(ctx context.Context, p SandboxParams) (*activeSandbo
 		return startNoopSandbox(ctx, driver, spec, source, p.RunID, p.FriendlyName, p.WorkspacePath, emitEvent)
 	}
 
+	// Claude forfait delivery (ADR-082 Phase 3 blocker 3): when the run's
+	// credentials carry a materialised Claude Code OAuth file, ship it into
+	// the sandbox on the ADR-070 file-secret channel so in-pod claude auth
+	// has a real credentials file instead of hanging on the per-spawn env
+	// token alone. After the sandbox starts, seedClaudeConfigDir below
+	// copies it into the writable CLAUDE_CONFIG_DIR the delegate points the
+	// CLI at. Added past the noop gate — a real driver is required to mount.
+	claudeOAuthMounted, err := addClaudeOAuthSecretFile(ctx, spec)
+	if err != nil {
+		return nil, fmt.Errorf("runtime: sandbox: claude forfait delivery: %w", err)
+	}
+
 	// Optionally start the network proxy. When the workflow has no
 	// explicit network policy, default to the iterion-default
 	// allowlist preset so users get sensible defaults out of the box —
@@ -363,6 +428,16 @@ func resolveAndStartSandbox(ctx context.Context, p SandboxParams) (*activeSandbo
 		return nil, fmt.Errorf("runtime: sandbox: network proxy: %w", err)
 	}
 
+	// Per-run MCP listener intents, decided BEFORE the container starts:
+	// the listeners themselves bind after Driver.Start (they need the
+	// live driver gateway), but the container's ability to RESOLVE their
+	// advertised host (host.docker.internal on docker/podman) is settled
+	// at `docker run` time — so the driver must know now that an
+	// endpoint will be advertised, proxy or no proxy (the default
+	// network: open starts none).
+	wantsBoardListener := p.BoardMCPHandler != nil && workflowHasBoardCapability(p.Workflow)
+	wantsAskUserListener := workflowHasInteractiveNode(p.Workflow)
+
 	info := sandbox.RunInfo{
 		RunID:              p.RunID,
 		FriendlyName:       p.FriendlyName,
@@ -370,6 +445,7 @@ func resolveAndStartSandbox(ctx context.Context, p SandboxParams) (*activeSandbo
 		ProxyEndpoint:      proxyEndpoint,
 		ProxyCACert:        proxyCACert,
 		MaxDurationSeconds: workflowMaxDurationSeconds(p.Workflow),
+		HostGatewayAlias:   wantsBoardListener || wantsAskUserListener,
 	}
 
 	prepared, err := driver.Prepare(ctx, *spec)
@@ -399,13 +475,28 @@ func resolveAndStartSandbox(ctx context.Context, p SandboxParams) (*activeSandbo
 
 	active := &activeSandbox{run: run, proxy: proxy, workspaceFolder: spec.WorkspaceFolder}
 
+	// Second half of the Claude forfait delivery: copy the read-only mount
+	// into the writable CLAUDE_CONFIG_DIR the claude_code delegate points
+	// sandboxed CLI spawns at. Hard error — the run resolved a forfait, so
+	// a failed seed must stop the boot, not resurface as an auth failure
+	// hours into the workflow.
+	if claudeOAuthMounted {
+		if err := seedClaudeConfigDir(ctx, run); err != nil {
+			active.shutdown(ctx, logger)
+			return nil, err
+		}
+		if logger != nil {
+			logger.Info("runtime: sandbox: claude forfait credentials delivered (CLAUDE_CONFIG_DIR=%s)", secrets.ClaudeCodeSandboxConfigDir)
+		}
+	}
+
 	// C082: when the server supplies a board MCP handler and a board-cap
 	// node exists, start a per-run gateway-reachable board listener so
 	// sandboxed claude_code can write the operator's board. Non-fatal: a
 	// failure degrades to the prior (board-disabled) behaviour rather than
 	// breaking the run.
-	if p.BoardMCPHandler != nil && workflowHasBoardCapability(p.Workflow) {
-		endpoint, srv, berr := startBoardMCPListener(driver, p.BoardMCPHandler)
+	if wantsBoardListener {
+		endpoint, srv, berr := startSandboxMCPListener(driver, p.BoardMCPHandler, "/api/v1/mcp/board")
 		if berr != nil {
 			if logger != nil {
 				logger.Warn("runtime: sandbox: board MCP listener failed to start (board-emit disabled for this run): %v", berr)
@@ -418,7 +509,57 @@ func resolveAndStartSandbox(ctx context.Context, p SandboxParams) (*activeSandbo
 			}
 		}
 	}
+
+	// ADR-082 Phase 3: when the workflow has interactive LLM nodes, bind a
+	// per-run ask-user MCP listener so sandboxed claude_code keeps the
+	// native ask_user / ask_user_async / await_answers tools (the stdio
+	// __mcp-ask-user subcommand is unreachable in-container). The
+	// interaction semantics stay host-side (delegate PreToolUse hooks +
+	// the interaction store); the listener only serves the MCP tool
+	// surface, authenticated by a per-run bearer token. Non-fatal on
+	// failure: the delegate then disables the tools per node with a loud
+	// warning (the [INTERACTION PROTOCOL] JSON fallback still applies).
+	if wantsAskUserListener {
+		token, terr := askusermcp.NewRunToken()
+		if terr != nil {
+			if logger != nil {
+				logger.Warn("runtime: sandbox: ask-user MCP token mint failed (native ask_user disabled for this run): %v", terr)
+			}
+		} else {
+			endpoint, srv, aerr := startSandboxMCPListener(driver, askusermcp.Handler(askusermcp.DefaultPath, token), askusermcp.DefaultPath)
+			if aerr != nil {
+				if logger != nil {
+					logger.Warn("runtime: sandbox: ask-user MCP listener failed to start (native ask_user disabled for this run): %v", aerr)
+				}
+			} else {
+				active.askUserEndpoint = endpoint
+				active.askUserToken = token
+				active.askUserListener = srv
+				if logger != nil {
+					logger.Info("sandbox: ask-user MCP listener on %s (sandboxed ask_user enabled)", endpoint)
+				}
+			}
+		}
+	}
 	return active, nil
+}
+
+// workflowHasInteractiveNode reports whether any LLM (agent/judge) node
+// resolves to a non-none interaction mode — the gate for binding the
+// per-run ask-user MCP listener next to a sandbox (ADR-082 Phase 3).
+// Human nodes pause in the runtime (no MCP transport involved), so only
+// LLM nodes count. The workflow-level `interaction:` default is already
+// folded into each node's Interaction field at compile time.
+func workflowHasInteractiveNode(wf *ir.Workflow) bool {
+	if wf == nil {
+		return false
+	}
+	for _, n := range wf.Nodes {
+		if ln, ok := n.(ir.LLMNode); ok && ln.GetInteractionFields().Interaction != ir.InteractionNone {
+			return true
+		}
+	}
+	return false
 }
 
 // secretEgressRewriter is the structural view of the executor's secret
@@ -625,26 +766,39 @@ func ResolveNetworkPolicy(spec *sandbox.Spec) (netproxy.Mode, []string) {
 }
 
 // resolveSandboxSpec applies the precedence chain
-// (CLI > workflow > global default) and produces a [sandbox.Spec] plus
-// a `source` string describing where the spec came from (used in the
-// sandbox_skipped event).
+// (CLI > workflow > global default > built-in auto) and produces a
+// [sandbox.Spec] plus a `source` string describing where the spec came
+// from (used in the sandbox_skipped event).
 //
 // CLI override syntax: "" (no override), "none" (force off), "auto"
 // (force on, read devcontainer.json). Inline mode requires a DSL
 // block and so cannot be expressed via the flag.
+//
+// The third return (skipReason) is non-empty ONLY when the mode was
+// chosen by the built-in default and the host cannot honour it (not a
+// git repo, unreadable devcontainer): the run degrades to unsandboxed
+// and the caller must surface the reason (sandbox_skipped event). An
+// EXPLICIT sandbox request never degrades — it errors.
 func resolveSandboxSpec(
 	wf *ir.Workflow,
 	repoRoot, cliOverride, globalDefault, defaultImage string,
-) (*sandbox.Spec, string, error) {
+) (*sandbox.Spec, string, string, error) {
 	mode, source := pickMode(wf, cliOverride, globalDefault)
 	if mode == "" || mode == string(sandbox.ModeNone) {
-		return nil, source, nil
+		return nil, source, "", nil
 	}
+	byDefault := source == sandboxDefaultSource
 
 	switch mode {
 	case string(sandbox.ModeAuto):
 		if repoRoot == "" {
-			return nil, source, fmt.Errorf("runtime: sandbox: mode=auto requires a git repository (worktree must be active or workdir must be inside a repo)")
+			if byDefault {
+				// auto is repo-bound by design (it mounts the repo tree);
+				// outside a repo the default is simply not applicable —
+				// quiet skip (no event), unlike the degrade cases below.
+				return nil, source + " — not applicable (outside a git repository)", "", nil
+			}
+			return nil, source, "", fmt.Errorf("runtime: sandbox: mode=auto requires a git repository (worktree must be active or workdir must be inside a repo)")
 		}
 		dc, path, err := devcontainer.ReadFromRepo(repoRoot)
 		if err != nil {
@@ -661,14 +815,35 @@ func resolveSandboxSpec(
 					spec.Mode = sandbox.ModeAuto
 					spec.Image = defaultImage
 					expandSandboxSpec(&spec, repoRoot)
-					return &spec, source + " (default image: " + defaultImage + ")", nil
+					return &spec, source + " (default image: " + defaultImage + ")", "", nil
 				}
-				return nil, source, fmt.Errorf("runtime: sandbox: mode=auto but no .devcontainer/devcontainer.json found at %s — add one or switch to inline mode", repoRoot)
+				return nil, source, "", fmt.Errorf("runtime: sandbox: mode=auto but no .devcontainer/devcontainer.json found at %s — add one or switch to inline mode", repoRoot)
 			}
-			return nil, source, fmt.Errorf("runtime: sandbox: read devcontainer.json: %w", err)
+			if byDefault {
+				// Ambient default: a devcontainer the sandbox cannot use
+				// (parse error, refused runArgs like --privileged, …) must
+				// not disable sandboxing when a default image exists — the
+				// repo's devcontainer serves human dev environments first,
+				// and rejecting it would leave every run on such a repo
+				// permanently unsandboxed (observed live: iterion's own
+				// devcontainer declares --privileged; run 019f8a0b degraded
+				// to unsandboxed instead of using the default image).
+				if defaultImage != "" {
+					var spec sandbox.Spec
+					if wf != nil && wf.Sandbox != nil {
+						spec = fromIRSpec(wf.Sandbox)
+					}
+					spec.Mode = sandbox.ModeAuto
+					spec.Image = defaultImage
+					expandSandboxSpec(&spec, repoRoot)
+					return &spec, source + fmt.Sprintf(" (devcontainer unusable — %v — default image: %s)", err, defaultImage), "", nil
+				}
+				return nil, source, fmt.Sprintf("devcontainer.json unreadable: %v", err), nil
+			}
+			return nil, source, "", fmt.Errorf("runtime: sandbox: read devcontainer.json: %w", err)
 		}
 		spec := devcontainer.ToSandboxSpec(dc)
-		return &spec, source + " (" + path + ")", nil
+		return &spec, source + " (" + path + ")", "", nil
 
 	case string(sandbox.ModeInline):
 		// Inline mode requires the workflow's DSL to carry the spec
@@ -677,7 +852,7 @@ func resolveSandboxSpec(
 		// parser lands. The IR field still goes through unchanged so
 		// future block-form parsing wires up automatically.
 		if wf == nil || wf.Sandbox == nil {
-			return nil, source, fmt.Errorf("runtime: sandbox: mode=inline but no sandbox: block on the workflow")
+			return nil, source, "", fmt.Errorf("runtime: sandbox: mode=inline but no sandbox: block on the workflow")
 		}
 		spec := fromIRSpec(wf.Sandbox)
 		// Expand devcontainer-style host-side variables in the inline
@@ -687,10 +862,10 @@ func resolveSandboxSpec(
 		// expansion docker run rejects the literal `${localEnv:HOME}`
 		// string with "mount path must be absolute".
 		expandSandboxSpec(&spec, repoRoot)
-		return &spec, source, nil
+		return &spec, source, "", nil
 	}
 
-	return nil, source, fmt.Errorf("runtime: sandbox: unknown mode %q", mode)
+	return nil, source, "", fmt.Errorf("runtime: sandbox: unknown mode %q", mode)
 }
 
 // ResolveSandboxSpecForDoctor produces the effective sandbox spec a run
@@ -718,16 +893,45 @@ func ResolveSandboxSpecForDoctor(
 	wf *ir.Workflow,
 	repoRoot, cliOverride, globalDefault, defaultImageFlag, hostStateOverride, hostStateDefault string,
 ) (*sandbox.Spec, string, error) {
-	spec, source, err := resolveSandboxSpec(wf, repoRoot, cliOverride, globalDefault, resolveDefaultSandboxImage(defaultImageFlag))
+	spec, source, skipReason, err := resolveSandboxSpec(wf, repoRoot, cliOverride, globalDefault, resolveDefaultSandboxImage(defaultImageFlag))
 	if err != nil {
 		return nil, source, err
 	}
 	if spec == nil || !spec.Mode.IsActive() {
+		if skipReason != "" {
+			source += " — would degrade to unsandboxed: " + skipReason
+		}
 		return spec, source, nil
 	}
 	resolvedHostState, _ := pickHostState(workflowHostState(wf), hostStateOverride, hostStateDefault)
 	spec.HostState = sandbox.HostState(resolvedHostState)
 	return spec, source, nil
+}
+
+// sandboxDefaultSource labels a mode chosen at the GLOBAL-DEFAULT tier
+// (ITERION_SANDBOX_DEFAULT, or the sandbox-by-default policy that
+// product entry points install via [ResolveGlobalSandboxDefault]), as
+// opposed to an explicit per-run request from the CLI flag or the
+// workflow's own block. Downstream resolution keys degrade-vs-fail on
+// this: an explicit sandbox request that cannot be honoured must
+// hard-error (never silently soften), but the ambient default must not
+// brick runs on hosts that cannot sandbox (no container runtime) —
+// those degrade to unsandboxed with a visible sandbox_skipped event.
+const sandboxDefaultSource = "global sandbox default"
+
+// ResolveGlobalSandboxDefault returns the effective global sandbox
+// default a PRODUCT ENTRY POINT (iterion run / resume / studio /
+// dispatch) should install via [WithSandboxDefault]: the
+// ITERION_SANDBOX_DEFAULT env value when set, else "auto" —
+// sandbox-by-default. The policy deliberately lives at the entry
+// points, not in the engine: an Engine constructed without
+// [WithSandboxDefault] (tests, embedders) stays neutral and runs
+// unsandboxed workflows unsandboxed.
+func ResolveGlobalSandboxDefault() string {
+	if v := strings.ToLower(strings.TrimSpace(os.Getenv("ITERION_SANDBOX_DEFAULT"))); v != "" {
+		return v
+	}
+	return string(sandbox.ModeAuto)
 }
 
 // pickMode walks the precedence chain and returns the first
@@ -755,7 +959,7 @@ func pickMode(wf *ir.Workflow, cli, global string) (string, string) {
 		return wf.Sandbox.Mode, "workflow sandbox: block"
 	}
 	if global != "" {
-		return global, "ITERION_SANDBOX_DEFAULT"
+		return global, sandboxDefaultSource
 	}
 	return "", "default (no sandbox)"
 }
@@ -1130,6 +1334,17 @@ type boardMCPSetter interface {
 	SetBoardEndpoint(endpoint string)
 }
 
+// askUserMCPSetter is the optional interface ClawExecutor implements so
+// the engine can push the per-run ask-user MCP HTTP endpoint + bearer
+// token (started with the sandbox) into the executor after the run
+// starts (ADR-082 Phase 3). The executor sets
+// Task.AskUserHTTPEndpoint/AskUserRunToken from it for sandboxed
+// interactive nodes. Type-asserted at call time so test stubs need not
+// implement it.
+type askUserMCPSetter interface {
+	SetAskUserEndpoint(endpoint, token string)
+}
+
 // startSandbox boots the run's sandbox container (if the workflow opts
 // in), wires it into the executor, stashes the in-container workspace
 // path, and returns a no-arg cleanup the caller must defer.
@@ -1187,10 +1402,7 @@ func (e *Engine) startSandbox(ctx context.Context, runID string, repoRoot string
 		}
 	}
 
-	var bundleHost string
-	if e.bundle != nil {
-		bundleHost = e.bundle.Dir
-	}
+	bundleHost := bundleResourceDir(e.bundle, e.filePath)
 	var secretVars map[string]any
 	if workflowHasFileSecrets(e.workflow) {
 		secretVars = e.resolveVars(inputs)
@@ -1222,6 +1434,16 @@ func (e *Engine) startSandbox(ctx context.Context, runID string, repoRoot string
 	if sbErr != nil {
 		return noopCleanup, sbErr
 	}
+	// No sandbox → every command of this run executes directly on this
+	// host (the cloud runner pod under ITERION_SANDBOX_OVERRIDE=none, or
+	// a local run without a sandbox declaration). The sandbox-side devbox
+	// provisioning above never fires on that path, so the bot's/repo's
+	// devbox.json is honoured here instead — installed on the host and
+	// exposed on the run's PATH.
+	hostDevboxCleanup := noopCleanup
+	if active == nil {
+		hostDevboxCleanup = e.provisionHostDevbox(ctx, runID)
+	}
 	if active != nil && active.run != nil {
 		if s, ok := e.executor.(sandboxSetter); ok {
 			s.SetSandbox(active.run)
@@ -1242,6 +1464,16 @@ func (e *Engine) startSandbox(ctx context.Context, runID string, repoRoot string
 				bs.SetBoardEndpoint(active.boardEndpoint)
 			}
 		}
+		// ADR-082 Phase 3: hand the per-run ask-user MCP endpoint + token
+		// to the executor so it can wire Task.AskUserHTTPEndpoint/
+		// AskUserRunToken for sandboxed interactive nodes. Empty when no
+		// listener started (no interactive node / bind failure) — the
+		// delegate then disables the tools loudly.
+		if active.askUserEndpoint != "" {
+			if as, ok := e.executor.(askUserMCPSetter); ok {
+				as.SetAskUserEndpoint(active.askUserEndpoint, active.askUserToken)
+			}
+		}
 		// Stash the in-container bind-mount target so resolveVars can
 		// remap ${PROJECT_DIR} to a path processes RUNNING in the
 		// sandbox can actually open.
@@ -1251,12 +1483,61 @@ func (e *Engine) startSandbox(ctx context.Context, runID string, repoRoot string
 		}
 	}
 	cleanup := func() {
+		hostDevboxCleanup()
 		if active == nil {
 			return
+		}
+		if active.run != nil {
+			exportSandboxWorkspaceOnCleanup(active.run, e.logger, emitForSandbox)
 		}
 		cleanupCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 		defer cancel()
 		active.shutdown(cleanupCtx, e.logger)
 	}
 	return cleanup, nil
+}
+
+// sandboxWorkspaceExportTimeout bounds the end-of-run pod→host workspace
+// export (a tar stream of the whole workspace — sized for large repos,
+// distinct from the 30s teardown bound).
+const sandboxWorkspaceExportTimeout = 5 * time.Minute
+
+// exportSandboxWorkspaceOnCleanup performs the pod→host workspace
+// write-back (ADR-082 Phase 3 blocker 1) at sandbox teardown: copy-based
+// drivers (kubernetes) must export the pod workspace back BEFORE the
+// sandbox is destroyed — the in-pod commits only exist there, and the
+// host-side consumers that run after this cleanup (the deferred
+// finalizeOnExit in Engine.Run — LIFO puts this cleanup first — and the
+// cloud runner's recordRunGitMeta / diff capture after Run returns) read
+// the HOST workspace. Drivers that share the host filesystem
+// (docker bind mount, noop) don't implement the interface — no-op.
+//
+// Runs on its own background ctx: the run ctx is typically
+// cancelled/expired by now, and a cancelled export would silently lose
+// the run's work. A failure is loud (warn + event), never silent — it
+// means un-pushed commits are about to be destroyed with the pod.
+func exportSandboxWorkspaceOnCleanup(
+	run sandbox.Run,
+	logger *iterlog.Logger,
+	emitEvent func(store.EventType, map[string]any) error,
+) {
+	exporter, ok := run.(sandbox.WorkspaceExporter)
+	if !ok {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), sandboxWorkspaceExportTimeout)
+	defer cancel()
+	if err := exporter.ExportWorkspace(ctx); err != nil {
+		if logger != nil {
+			logger.Warn("runtime: sandbox workspace export back to host FAILED — in-pod commits not visible host-side (a bot-side push, if any, still delivered them): %v", err)
+		}
+		_ = emitEvent(store.EventSandboxWorkspaceExportFailed, map[string]any{
+			"driver": run.Driver(),
+			"error":  err.Error(),
+		})
+		return
+	}
+	if logger != nil {
+		logger.Info("runtime: sandbox workspace exported back to host")
+	}
 }

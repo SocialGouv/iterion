@@ -39,8 +39,8 @@ the gaps *inside the existing abstraction*; we do **not** fork a forge and we do
 
 Rationale:
 
-- **Moat / focus.** iterion's differentiation is bot orchestration — the DSL,
-  the trigger spine, the BaaS event→agent-with-bound-creds→post-back loop. Git
+- **Moat / focus.** iterion's differentiation is agent-workflow orchestration —
+  the DSL, the trigger spine, the event→workflow-with-bound-creds→post-back loop. Git
   hosting is solved and commoditized (≥3 mature OSS forges). Engineering spent
   *owning* a forge is spent on the part competitors give away.
 - **Forge-agnosticism is a feature.** Today iterion lands in an org already on

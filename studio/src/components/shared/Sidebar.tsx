@@ -6,6 +6,7 @@ import {
 
 import NavLinks from "./NavLinks";
 import OrgSwitcher from "./OrgSwitcher";
+import RepoSwitcher from "./RepoSwitcher";
 import SidebarContext from "./SidebarContext";
 import { BrandMark } from "@/components/ui/BrandMark";
 import { BrandWordmark } from "@/components/ui/BrandWordmark";
@@ -84,6 +85,13 @@ export default function Sidebar() {
         <OrgSwitcher collapsed={collapsed} />
       </div>
 
+      {/* Repo-first context: the active repository scopes most views and
+          pre-fills repo-targeting actions. Cloud-only; the zero-repo state
+          doubles as the connect CTA. */}
+      <div className={`shrink-0 ${collapsed ? "px-1.5 pt-1.5" : "px-2 pt-1.5"}`}>
+        <RepoSwitcher collapsed={collapsed} />
+      </div>
+
       {/* Context block: project + search/command palette */}
       <div className={`shrink-0 ${collapsed ? "px-1.5 py-2" : "px-2 py-2"}`}>
         <SidebarContext collapsed={collapsed} />
@@ -106,8 +114,8 @@ export default function Sidebar() {
             type="button"
             onClick={openSettings}
             className="inline-flex items-center justify-center h-7 w-7 rounded text-fg-subtle hover:text-fg-default hover:bg-surface-2 transition-colors"
-            title="Settings"
-            aria-label="Open settings"
+            title="Preferences"
+            aria-label="Open preferences"
           >
             <GearIcon className="w-4 h-4" />
           </button>
@@ -119,7 +127,7 @@ export default function Sidebar() {
             aria-label="Open settings"
           >
             <GearIcon className="w-4 h-4 shrink-0" />
-            <span>Settings</span>
+            <span>Preferences</span>
           </button>
         )}
       </div>

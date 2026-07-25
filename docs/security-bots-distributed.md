@@ -1,5 +1,3 @@
-[← Security bots](security-bots.md)
-
 # Distributed security scans — design (Cap. 3)
 
 > **Status: deepsec parity SHIPPED.** Local-mode primitive +
@@ -128,7 +126,7 @@ Behavior:
 
 5. **Cleanup**. Child runs remain in the store for audit; their
    FileRecords are already merged into the parent's
-   `.iterion/security/files/` (cross-run, append-only).
+   `.sec-audit/files/` (cross-run, append-only).
 
 ## Bundle integration
 
@@ -212,7 +210,7 @@ can dedicate one big box to a scan.
 ## Open questions
 
 - **Children writing to the parent's FileRecords directory** — V1
-  has them all write to `<workspace>/.iterion/security/files/`. Two
+  has them all write to `<workspace>/.sec-audit/files/`. Two
   children scanning overlapping files would race. Decided: shard
   boundaries are by file path, so each child writes a disjoint set.
   Future: a child computes its filename hash range and only writes
@@ -267,9 +265,11 @@ shard_concurrency` (default 4), `--var file_filter` (CSV of
 paths). Two new tool nodes:
 - `plan_shards`: walks the workspace (same exclusions as the
   scanners) and writes the file list to
-  `.iterion/security/scan/shard-files.json` when `shard_size > 0`.
+  `<scan_dir>/shard-files.json` when `shard_size > 0` (scan_dir
+  defaults to the engine's out-of-tree run scratch,
+  `${PROJECT_SCRATCH_DIR}/sec-audit-source/scan`).
 - `dispatch_shards`: invokes `iterion __scan-shards`, captures
-  the JSON envelope to `.iterion/security/scan/shards.json`, and
+  the JSON envelope to `<scan_dir>/shards.json`, and
   returns a structured summary. Children re-run the same workflow
   with `shard_size=0` so they fall through to the single-process
   pipeline on their assigned `file_filter` slice.

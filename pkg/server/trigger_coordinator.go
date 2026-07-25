@@ -1,11 +1,35 @@
 package server
 
 import (
+	"context"
+	"os"
+	"time"
+
 	"github.com/SocialGouv/iterion/pkg/dispatcher/native"
 	"github.com/SocialGouv/iterion/pkg/eventbus"
+	"github.com/SocialGouv/iterion/pkg/internal/jsonl"
 	iterlog "github.com/SocialGouv/iterion/pkg/log"
+	"github.com/SocialGouv/iterion/pkg/schedgate"
+	"github.com/SocialGouv/iterion/pkg/store"
 	"github.com/SocialGouv/iterion/pkg/trigger"
 )
+
+// defaultSchedulerTickInterval is the in-process scheduler's tick
+// resolution. It is well below a minute so sub-minute keepalive
+// subscriptions fire near their cadence out of the box; a cron
+// subscription is unaffected (its next-fire is minute-aligned, so a
+// faster tick never over-fires it). Override with ITERION_SCHEDULER_INTERVAL
+// (a Go duration).
+const defaultSchedulerTickInterval = 15 * time.Second
+
+func schedulerTickInterval() time.Duration {
+	if v := os.Getenv("ITERION_SCHEDULER_INTERVAL"); v != "" {
+		if d, err := time.ParseDuration(v); err == nil && d > 0 {
+			return d
+		}
+	}
+	return defaultSchedulerTickInterval
+}
 
 // TriggerCoordinator wires the event-driven trigger spine for the native
 // board: an in-process eventbus, a board source tailing the shared
@@ -30,11 +54,16 @@ type TriggerCoordinator struct {
 // the dispatcher poll remains the backstop. nudger (the dispatcher Manager)
 // and launcher (direct-mode runs) may be nil; a nil nudger just means a
 // promoted card waits for the next poll instead of being dispatched now.
-func StartTriggerCoordinator(ns *native.Store, subs trigger.SubscriptionStore, nudger trigger.Nudger, launcher trigger.Launcher, logger *iterlog.Logger) *TriggerCoordinator {
+// bus, when non-nil, is the process-wide event spine to ride (the cloud
+// NATSBus) so every run-outcome consumer — evaluator, usernotify — sees one
+// stream; nil builds the local InProcBus.
+func StartTriggerCoordinator(ns *native.Store, subs trigger.SubscriptionStore, nudger trigger.Nudger, launcher trigger.Launcher, gate *trigger.ScheduleGate, bus eventbus.Bus, logger *iterlog.Logger) *TriggerCoordinator {
 	if ns == nil || subs == nil {
 		return nil
 	}
-	bus := eventbus.NewInProcBus(logger)
+	if bus == nil {
+		bus = eventbus.NewInProcBus(logger)
+	}
 	effect := trigger.NewNativeBoardEffect(ns, nudger, logger)
 	eval := trigger.NewEvaluator(subs,
 		trigger.WithBoardEffect(effect),
@@ -58,10 +87,75 @@ func StartTriggerCoordinator(ns *native.Store, subs trigger.SubscriptionStore, n
 	// useful when a launcher is wired (something to launch); scoped to the
 	// local tenant "" so it's a no-op in cloud mode (cloudsched owns that).
 	if launcher != nil {
-		tc.scheduler = trigger.NewScheduler(subs, launcher, trigger.WithSchedulerLogger(logger))
+		tc.scheduler = trigger.NewScheduler(subs, launcher,
+			trigger.WithSchedulerLogger(logger),
+			trigger.WithSchedulerGate(gate),
+			trigger.WithSchedulerInterval(schedulerTickInterval()),
+		)
 		tc.scheduler.Start()
 	}
 	return tc
+}
+
+// scheduleGate wires the trigger scheduler's overlap/guard gate onto
+// the server's run store and the local tick-audit JSONL (the same file
+// `iterion schedule audit` reads). Audit appends are best-effort: a
+// failed append is logged, never turns a tick decision into a failure.
+func (s *Server) scheduleGate() *trigger.ScheduleGate {
+	// The overlap/staleness gate needs the run store. runview owns it in
+	// both modes — RunStore() returns the injected cfg.Store in cloud and
+	// the storeDir-built store locally — so it is the single canonical
+	// accessor every run-touching call site in this package uses. (Reaching
+	// for cfg.Store directly misses the local case, where it is nil.)
+	if s.runs == nil {
+		return nil
+	}
+	rs := s.runs.RunStore()
+	if rs == nil {
+		return nil
+	}
+	gate := &trigger.ScheduleGate{Lister: rs, GuardDir: s.cfg.WorkDir}
+	// Reap keepalive zombies: a stale run the gate dropped is CAS-flipped
+	// running→failed_resumable so it stops counting as live and frees its
+	// resources (resumable so an operator can still inspect/continue it).
+	gate.Reap = func(ctx context.Context, ids []string) {
+		for _, id := range ids {
+			changed, rerr := rs.UpdateRunStatusIf(ctx, id, store.RunStatusFailedResumable,
+				"keepalive: run silent past stale_after — reaped so a fresh run could relaunch",
+				[]store.RunStatus{store.RunStatusRunning})
+			if rerr != nil {
+				s.logger.Warn("server: keepalive reap %s failed: %v", id, rerr)
+			} else if changed {
+				s.logger.Info("server: keepalive reaped stale run %s", id)
+			}
+		}
+	}
+	auditPath, err := schedgate.DefaultLocalAuditPath()
+	if err != nil {
+		s.logger.Warn("server: trigger tick audit disabled: %v", err)
+		return gate
+	}
+	gate.Audit = func(rec schedgate.TickRecord) {
+		if aerr := jsonl.AppendJSON(auditPath, rec); aerr != nil {
+			s.logger.Warn("server: tick audit append failed (%s): %v", auditPath, aerr)
+		}
+	}
+	return gate
+}
+
+// SchedulerStatus reports the schedule-scheduler's liveness snapshot.
+// Nil-safe (zero value when the coordinator or scheduler is absent).
+func (t *TriggerCoordinator) SchedulerStatus() trigger.SchedulerStatus {
+	if t == nil {
+		return trigger.SchedulerStatus{}
+	}
+	return t.scheduler.Status()
+}
+
+// SchedulerRunning reports whether a schedule scheduler is wired at
+// all (false in dispatch-only mode where launcher is nil). Nil-safe.
+func (t *TriggerCoordinator) SchedulerRunning() bool {
+	return t != nil && t.scheduler != nil
 }
 
 // Bus returns the coordinator's event bus so other producers (the run

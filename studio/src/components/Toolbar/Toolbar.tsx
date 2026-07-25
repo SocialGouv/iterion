@@ -22,6 +22,14 @@ import {
 } from "@/components/ui";
 import ToolbarGroup from "./ToolbarGroup";
 import { useDocumentFileOps } from "./useDocumentFileOps";
+import BundleFilesDrawer from "@/components/Editor/BundleFilesDrawer";
+import { forkBotSource } from "@/api/botSources";
+import { botSourceEditorPath } from "@/api/client";
+import { useAuth } from "@/auth/AuthContext";
+import { useBotsStore } from "@/store/bots";
+import { usePromptText } from "@/hooks/usePromptText";
+import { useTabsStore } from "@/store/tabs";
+import { toastError } from "@/lib/errorHints";
 import {
   FilePlusIcon,
   DownloadIcon,
@@ -57,6 +65,7 @@ export default function Toolbar() {
   const canUndo = useDocumentStore((s) => s.canUndo);
   const canRedo = useDocumentStore((s) => s.canRedo);
   const isDirty = useDocumentStore((s) => s.isDirty);
+  const addToast = useUIStore((s) => s.addToast);
   const sourceViewOpen = useUIStore((s) => s.sourceViewOpen);
   const toggleSourceView = useUIStore((s) => s.toggleSourceView);
   const diagnosticsPanelOpen = useUIStore((s) => s.diagnosticsPanelOpen);
@@ -107,6 +116,7 @@ export default function Toolbar() {
   // and returns stable callbacks; the Toolbar stays a layout shell.
   const ops = useDocumentFileOps({ confirm });
   const {
+    readOnly,
     loading,
     showSaveDialog,
     setShowSaveDialog,
@@ -152,6 +162,41 @@ export default function Toolbar() {
   }, [undo, redo, handleSave]);
 
   const workflows = document?.workflows ?? [];
+
+  // A team-authored cloud bot is a multi-file bundle: expose its files (skills,
+  // manifest, …) via the Bundle-files drawer. Detected from the botsource://
+  // virtual path the editor loads a tenant bot under.
+  const bundleRef = api.parseBotSourceEditorPath(currentFilePath ?? "");
+  const [bundleDrawerOpen, setBundleDrawerOpen] = useState(false);
+
+  // "Duplicate & edit" for a read-only catalog bot open in the cloud editor:
+  // fork it into the team's bot store and reopen the editable tenant copy.
+  const { activeTeamID } = useAuth();
+  const refetchBots = useBotsStore((s) => s.refetch);
+  const { prompt: promptText, dialog: promptDialog } = usePromptText();
+  const onDuplicateCatalog = async () => {
+    const from = api.inferCatalogBotId(currentFilePath ?? "");
+    if (!from) return;
+    const slug = await promptText({
+      title: `Duplicate ${from}`,
+      message: "Copies this read-only catalog bot into an editable team bot.",
+      label: "New bot id (lowercase, digits, - or _)",
+      defaultValue: `${from}-copy`,
+      confirmLabel: "Duplicate",
+      validate: (v) =>
+        /^[a-z0-9_-]+$/.test(v) ? null : "Use lowercase letters, digits, '-' or '_'",
+    });
+    if (!slug) return;
+    try {
+      const forked = await forkBotSource(activeTeamID, slug, from);
+      await refetchBots();
+      const file = botSourceEditorPath(activeTeamID, forked.slug);
+      useTabsStore.getState().openTab("editor", { file });
+      setLocation(`/editor?file=${encodeURIComponent(file)}`);
+    } catch (err) {
+      toastError(addToast, err, "Duplicate bot failed");
+    }
+  };
 
   return (
     <div className="flex items-center gap-1 px-4 h-10 text-sm bg-surface-1 border-b border-border-default">
@@ -254,12 +299,42 @@ export default function Toolbar() {
           size="sm"
           leadingIcon={<DownloadIcon />}
           onClick={handleSave}
-          disabled={!document}
-          title={currentFilePath ? `Save to ${currentFilePath} (Ctrl+S)` : "Save as… (Ctrl+S)"}
+          disabled={!document || readOnly}
+          title={
+            readOnly
+              ? "Read-only catalog bot — use “Duplicate & edit” to make an editable copy"
+              : currentFilePath
+                ? `Save to ${currentFilePath} (Ctrl+S)`
+                : "Save as… (Ctrl+S)"
+          }
         >
-          {currentFilePath ? "Save" : "Save As"}
+          {readOnly ? "Read-only" : currentFilePath ? "Save" : "Save As"}
         </Button>
+        {readOnly && (
+          <Button
+            variant="secondary"
+            size="sm"
+            onClick={() => void onDuplicateCatalog()}
+            title="Copy this catalog bot into an editable team bot"
+          >
+            Duplicate & edit
+          </Button>
+        )}
       </ToolbarGroup>
+
+      {/* Bundle files (team-authored cloud bots only) */}
+      {bundleRef && (
+        <ToolbarGroup>
+          <IconButton
+            label="Bundle files"
+            tooltip="Bundle files (skills, manifest…)"
+            size="sm"
+            onClick={() => setBundleDrawerOpen(true)}
+          >
+            <StackIcon />
+          </IconButton>
+        </ToolbarGroup>
+      )}
 
       {/* Edit */}
       <ToolbarGroup>
@@ -393,13 +468,13 @@ export default function Toolbar() {
           {backendProbed && !hasResolvedBackend && currentFilePath && (
             // Run is disabled for two reasons (no file / no credential) but
             // both share one tooltip. When the *credential* is the blocker,
-            // surface a clickable nudge straight to Settings → Backends —
+            // surface a clickable nudge straight to Preferences → Backends —
             // otherwise the only signal is a silently greyed-out button.
             <IconButton
               variant="warning"
               size="sm"
-              label="No LLM credential detected — open Settings → Backends"
-              tooltip="No LLM credential detected — click to open Settings → Backends"
+              label="No LLM credential detected — open Preferences → Backends"
+              tooltip="No LLM credential detected — click to open Preferences → Backends"
               onClick={() =>
                 window.dispatchEvent(
                   new CustomEvent("iterion:open-settings", {
@@ -431,7 +506,7 @@ export default function Toolbar() {
               !currentFilePath && !document
                 ? "Write or open a workflow first to launch a run"
                 : !hasResolvedBackend
-                ? "No LLM credentials detected — open Settings → Backends to configure."
+                ? "No LLM credentials detected — open Preferences → Backends to configure."
                 : currentFilePath
                 ? `Launch ${currentFilePath}`
                 : "Launch the unsaved workflow"
@@ -511,6 +586,15 @@ export default function Toolbar() {
 
       <ShortcutsHelp open={showShortcuts} onClose={() => setShowShortcuts(false)} />
       {confirmDialog}
+      {bundleRef && (
+        <BundleFilesDrawer
+          teamID={bundleRef.teamID}
+          slug={bundleRef.slug}
+          open={bundleDrawerOpen}
+          onOpenChange={setBundleDrawerOpen}
+        />
+      )}
+      {promptDialog}
     </div>
   );
 }

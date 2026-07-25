@@ -1,0 +1,170 @@
+name: 🧱 Sandbox Base Images
+
+# The heavy, rarely-changing sandbox tool bases (iterion-sandbox-*-base):
+# slim-base → full-base → sec-base (serial: each FROM the previous), plus
+# browser-base off slim-base in parallel. They contain NO iterion binary —
+# sandbox/finalize/Dockerfile stamps it on to produce the published
+# iterion-sandbox-* images (see _finalize.yml).
+#
+# Deliberately a separate workflow from image.yml: its declarative `paths`
+# filter means the ~26-min chain only runs when sandbox/ inputs change, and
+# its own concurrency queue means app pushes never wait behind it. It is OFF
+# the deploy critical path — sandbox images are pulled at bot-run time, not by
+# the server/runner deploy.
+#
+# Two shapes: (1) sandbox/** push → rebuild the bases, then finalize; (2)
+# image.yml completes on main (workflow_run) → skip the bases, refold the
+# finalizes with the fresh binary. Bases publish `:edge` only, always
+# multi-arch. Release (`:vX.Y.Z`, multi-arch, signed) sandbox images are
+# produced by release-images.yml, not here.
+#
+# All four bases share ONE buildkit-operator routing-name
+# (`iterion-sandbox-base`): the chain is serial, so contention is negligible,
+# and a single warm daemon means one shared content store (full-base FROM
+# slim-base pulls blobs the daemon just built) and shared apt cache mounts
+# across the debian-based variants — instead of four isolated PVCs each
+# re-pulling the chain.
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - "sandbox/**"
+      - ".github/workflows/sandbox-images.yml"
+      - ".github/workflows/_build-image.yml"
+      - ".github/workflows/_finalize.yml"
+  # Refold the finalizes with the fresh binary when the server image publishes
+  # (image.yml on main). Bases are skipped on this event (tools unchanged) —
+  # only the cheap COPY-layer finalize runs. Off the deploy critical path.
+  workflow_run:
+    workflows: ["🐳 Container Image"]
+    types: [completed]
+  pull_request:
+    paths:
+      - "sandbox/**"
+      - ".github/workflows/sandbox-images.yml"
+      - ".github/workflows/_finalize.yml"
+      - ".github/workflows/_build-image.yml"
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  # Cancel obsolete iterations on PRs; serialise on main so concurrent base
+  # builds never clobber a `:edge` tag mid-push.
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+permissions:
+  contents: read
+  packages: write
+  # cosign keyless OIDC signing + the operator's GitHub OIDC /route auth need an
+  # OIDC token at workflow level; reusable-workflow jobs request it per-job.
+  id-token: write
+
+jobs:
+  prep:
+    # On a workflow_run trigger, only proceed for a SUCCESSFUL MAIN image.yml
+    # build (tags/PRs of image.yml don't refresh the sandbox :edge). Other
+    # events (sandbox/** push, PR, dispatch) always proceed.
+    if: >-
+      ${{ github.event_name != 'workflow_run' ||
+          (github.event.workflow_run.conclusion == 'success' &&
+           github.event.workflow_run.head_branch == 'main' &&
+           (github.event.workflow_run.event == 'push' ||
+            github.event.workflow_run.event == 'workflow_dispatch')) }}
+    runs-on: ubuntu-latest
+    outputs:
+      owner_lc: ${{ steps.vars.outputs.owner_lc }}
+    steps:
+      - id: vars
+        run: echo "owner_lc=$(echo "${GITHUB_REPOSITORY_OWNER}" | tr '[:upper:]' '[:lower:]')" >> "$GITHUB_OUTPUT"
+
+  # The heavy tool bases rebuild ONLY when sandbox/ inputs change (push / PR /
+  # dispatch) — never on a workflow_run refold (the tools are unchanged then,
+  # only the binary is fresh).
+  base-slim:
+    needs: prep
+    if: ${{ github.event_name != 'workflow_run' }}
+    uses: ./.github/workflows/_build-image.yml
+    secrets: inherit
+    with:
+      image-name: iterion-sandbox-slim-base
+      routing-name: iterion-sandbox-base
+      context: sandbox/slim
+      file: sandbox/slim/Dockerfile
+      is-pr: ${{ github.event_name == 'pull_request' }}
+      multiarch: true
+
+  # full-base — FROM the freshly-built slim-base. (On PRs the pr-validate leg
+  # builds against the *published* slim-base:edge, since PR builds don't push.)
+  base-full:
+    needs: [prep, base-slim]
+    if: ${{ github.event_name != 'workflow_run' }}
+    uses: ./.github/workflows/_build-image.yml
+    secrets: inherit
+    with:
+      image-name: iterion-sandbox-full-base
+      routing-name: iterion-sandbox-base
+      context: sandbox/full
+      file: sandbox/full/Dockerfile
+      build-args: BASE=ghcr.io/${{ needs.prep.outputs.owner_lc }}/iterion-sandbox-slim-base:edge
+      is-pr: ${{ github.event_name == 'pull_request' }}
+      multiarch: true
+
+  # sec-base — FROM the freshly-built full-base. Tool floor of the
+  # sec-audit-source / sec-audit-deps bots (they pin the finalized
+  # iterion-sandbox-sec via sandbox.image).
+  base-sec:
+    needs: [prep, base-full]
+    if: ${{ github.event_name != 'workflow_run' }}
+    uses: ./.github/workflows/_build-image.yml
+    secrets: inherit
+    with:
+      image-name: iterion-sandbox-sec-base
+      routing-name: iterion-sandbox-base
+      context: sandbox/sec
+      file: sandbox/sec/Dockerfile
+      build-args: BASE=ghcr.io/${{ needs.prep.outputs.owner_lc }}/iterion-sandbox-full-base:edge
+      is-pr: ${{ github.event_name == 'pull_request' }}
+      multiarch: true
+
+  # browser-base — Chromium + Playwright MCP off slim-base, parallel to the
+  # full/sec leg.
+  base-browser:
+    needs: [prep, base-slim]
+    if: ${{ github.event_name != 'workflow_run' }}
+    uses: ./.github/workflows/_build-image.yml
+    secrets: inherit
+    with:
+      image-name: iterion-sandbox-browser-base
+      routing-name: iterion-sandbox-base
+      context: sandbox/browser
+      file: sandbox/browser/Dockerfile
+      build-args: BASE=ghcr.io/${{ needs.prep.outputs.owner_lc }}/iterion-sandbox-slim-base:edge
+      is-pr: ${{ github.event_name == 'pull_request' }}
+      multiarch: true
+
+  # Fold the fresh tool bases + the current `:edge` iterion binary into the
+  # published iterion-sandbox-*:edge images. Runs after a base rebuild (push /
+  # PR) AND on a workflow_run refold (bases skipped → this is the only job).
+  # The skipped-base tolerance lets it run in both shapes.
+  finalize:
+    needs: [prep, base-sec, base-browser]
+    # Two legitimate shapes: a workflow_run refold (bases deliberately skipped),
+    # or a base rebuild that SUCCEEDED. Never on a base FAILURE — a `skipped`
+    # base can also mean "an upstream base build failed and skipped the rest",
+    # so only tolerate skipped bases on the workflow_run path; on a real base
+    # build require success (sec+browser success ⇒ the whole slim→full→sec and
+    # slim→browser chains succeeded), else we'd publish sandbox images stamped
+    # onto stale *-base tools.
+    if: >-
+      ${{ !cancelled() && needs.prep.result == 'success' &&
+          (github.event_name == 'workflow_run' ||
+           (needs.base-sec.result == 'success' && needs.base-browser.result == 'success')) }}
+    uses: ./.github/workflows/_finalize.yml
+    secrets: inherit
+    with:
+      owner_lc: ${{ needs.prep.outputs.owner_lc }}
+      iterion_tag: edge
+      is-pr: ${{ github.event_name == 'pull_request' }}
+      multiarch: false

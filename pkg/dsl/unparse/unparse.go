@@ -35,6 +35,7 @@ func Unparse(f *ast.File) string {
 	w.writeComputes(f.Computes)
 	w.writeEmits(f.Emits)
 	w.writeWaits(f.Waits)
+	w.writeAwaitAnswers(f.AwaitAnswers)
 	w.writeSubbots(f.Subbots)
 	w.writeWorkflows(f.Workflows)
 	return w.b.String()
@@ -149,16 +150,7 @@ func (w *fileWriter) writeSchemas(schemas []*ast.SchemaDecl) {
 			w.b.WriteString(field.Name)
 			w.b.WriteString(": ")
 			w.b.WriteString(field.Type.String())
-			if len(field.EnumValues) > 0 {
-				w.b.WriteString(" [enum: ")
-				for i, v := range field.EnumValues {
-					if i > 0 {
-						w.b.WriteString(", ")
-					}
-					fmt.Fprintf(&w.b, "%q", v)
-				}
-				w.b.WriteByte(']')
-			}
+			writeEnumConstraint(&w.b, field.EnumValues)
 			w.b.WriteByte('\n')
 		}
 	}
@@ -198,6 +190,9 @@ func (w *fileWriter) writeAgents(agents []*ast.AgentDecl) {
 	for _, a := range agents {
 		w.blankLine()
 		fmt.Fprintf(&w.b, "agent %s:\n", a.Name)
+		if a.Description != "" {
+			writeQuotedProp(&w.b, "description", a.Description)
+		}
 		if a.MCP != nil {
 			writeMCPConfigBlock(&w.b, a.MCP, "  ")
 		}
@@ -229,6 +224,9 @@ func (w *fileWriter) writeJudges(judges []*ast.JudgeDecl) {
 	for _, j := range judges {
 		w.blankLine()
 		fmt.Fprintf(&w.b, "judge %s:\n", j.Name)
+		if j.Description != "" {
+			writeQuotedProp(&w.b, "description", j.Description)
+		}
 		if j.MCP != nil {
 			writeMCPConfigBlock(&w.b, j.MCP, "  ")
 		}
@@ -260,6 +258,9 @@ func (w *fileWriter) writeRouters(routers []*ast.RouterDecl) {
 	for _, r := range routers {
 		w.blankLine()
 		fmt.Fprintf(&w.b, "router %s:\n", r.Name)
+		if r.Description != "" {
+			writeQuotedProp(&w.b, "description", r.Description)
+		}
 		writeProp(&w.b, "mode", r.Mode.String())
 		if r.Mode == ast.RouterLLM {
 			if r.Model != "" {
@@ -308,6 +309,9 @@ func (w *fileWriter) writeHumans(humans []*ast.HumanDecl) {
 	for _, h := range humans {
 		w.blankLine()
 		fmt.Fprintf(&w.b, "human %s:\n", h.Name)
+		if h.Description != "" {
+			writeQuotedProp(&w.b, "description", h.Description)
+		}
 		if h.Input != "" {
 			writeProp(&w.b, "input", h.Input)
 		}
@@ -368,6 +372,9 @@ func (w *fileWriter) writeTools(tools []*ast.ToolNodeDecl) {
 	for _, t := range tools {
 		w.blankLine()
 		fmt.Fprintf(&w.b, "tool %s:\n", t.Name)
+		if t.Description != "" {
+			writeQuotedProp(&w.b, "description", t.Description)
+		}
 		if t.Command != "" {
 			writeQuotedProp(&w.b, "command", t.Command)
 		}
@@ -443,6 +450,9 @@ func (w *fileWriter) writeSubbots(subbots []*ast.SubbotDecl) {
 	for _, s := range subbots {
 		w.blankLine()
 		fmt.Fprintf(&w.b, "subbot %s:\n", s.Name)
+		if s.Description != "" {
+			writeQuotedProp(&w.b, "description", s.Description)
+		}
 		if s.Source != "" {
 			writeQuotedProp(&w.b, "source", s.Source)
 		}
@@ -469,6 +479,9 @@ func (w *fileWriter) writeComputes(computes []*ast.ComputeDecl) {
 	for _, c := range computes {
 		w.blankLine()
 		fmt.Fprintf(&w.b, "compute %s:\n", c.Name)
+		if c.Description != "" {
+			writeQuotedProp(&w.b, "description", c.Description)
+		}
 		if c.Input != "" {
 			writeProp(&w.b, "input", c.Input)
 		}
@@ -494,6 +507,9 @@ func (w *fileWriter) writeEmits(emits []*ast.EmitDecl) {
 	for _, e := range emits {
 		w.blankLine()
 		fmt.Fprintf(&w.b, "emit %s:\n", e.Name)
+		if e.Description != "" {
+			writeQuotedProp(&w.b, "description", e.Description)
+		}
 		if e.Event != "" {
 			writeQuotedProp(&w.b, "event", e.Event)
 		}
@@ -511,6 +527,9 @@ func (w *fileWriter) writeWaits(waits []*ast.WaitDecl) {
 	for _, wt := range waits {
 		w.blankLine()
 		fmt.Fprintf(&w.b, "wait %s:\n", wt.Name)
+		if wt.Description != "" {
+			writeQuotedProp(&w.b, "description", wt.Description)
+		}
 		if wt.Event != "" {
 			writeQuotedProp(&w.b, "event", wt.Event)
 		}
@@ -519,6 +538,22 @@ func (w *fileWriter) writeWaits(waits []*ast.WaitDecl) {
 		}
 		if wt.Output != "" {
 			writeProp(&w.b, "output", wt.Output)
+		}
+	}
+}
+
+func (w *fileWriter) writeAwaitAnswers(decls []*ast.AwaitAnswersDecl) {
+	for _, aa := range decls {
+		w.blankLine()
+		fmt.Fprintf(&w.b, "await_answers %s:\n", aa.Name)
+		if aa.Description != "" {
+			writeQuotedProp(&w.b, "description", aa.Description)
+		}
+		if aa.From != "" {
+			writeProp(&w.b, "from", aa.From)
+		}
+		if aa.Timeout != "" {
+			writeQuotedProp(&w.b, "timeout", aa.Timeout)
 		}
 	}
 }
@@ -667,12 +702,29 @@ func writeVarsBlock(b *strings.Builder, vars *ast.VarsBlock, indent string) {
 		b.WriteString(v.Name)
 		b.WriteString(": ")
 		b.WriteString(v.Type.String())
+		writeEnumConstraint(b, v.EnumValues)
 		if v.Default != nil {
 			b.WriteString(" = ")
 			writeLiteral(b, v.Default)
 		}
 		b.WriteByte('\n')
 	}
+}
+
+// writeEnumConstraint emits ` [enum: "a", "b"]` after a type for schema
+// fields and var declarations alike. No-op on an empty value set.
+func writeEnumConstraint(b *strings.Builder, vals []string) {
+	if len(vals) == 0 {
+		return
+	}
+	b.WriteString(" [enum: ")
+	for i, v := range vals {
+		if i > 0 {
+			b.WriteString(", ")
+		}
+		fmt.Fprintf(b, "%q", v)
+	}
+	b.WriteByte(']')
 }
 
 func writeSecretsBlock(b *strings.Builder, sb *ast.SecretsBlock, indent string) {
@@ -1194,6 +1246,9 @@ func writeBudget(b *strings.Builder, budget *ast.BudgetBlock) {
 	if budget.MaxTokens > 0 {
 		fmt.Fprintf(b, "    max_tokens: %d\n", budget.MaxTokens)
 	}
+	if budget.WarnTokens > 0 {
+		fmt.Fprintf(b, "    warn_tokens: %d\n", budget.WarnTokens)
+	}
 	if budget.MaxIterations > 0 {
 		fmt.Fprintf(b, "    max_iterations: %d\n", budget.MaxIterations)
 	}
@@ -1228,6 +1283,9 @@ func writeResources(b *strings.Builder, res *ast.ResourcesBlock) {
 
 func writeEdge(b *strings.Builder, e *ast.Edge) {
 	fmt.Fprintf(b, "  %s -> %s", e.From, e.To)
+	if e.IsElse {
+		b.WriteString(" else")
+	}
 	if e.When != nil {
 		if e.When.Expr != "" {
 			fmt.Fprintf(b, " when %q", e.When.Expr)

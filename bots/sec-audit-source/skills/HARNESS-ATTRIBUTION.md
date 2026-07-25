@@ -16,9 +16,9 @@ pipeline.
 
 | Seki skill | Upstream skill | Adaptation |
 |---|---|---|
-| `threat-model.md` | `.claude/skills/threat-model/SKILL.md` | Output captured in `.iterion/security/context.md` (markdown only, no JSON emission). Maps section-4 threats to iterion's twelve-category `finding-taxonomy.md`. Findings reference the kanban surface defined in `iterion-board.md` with `severity:*`, `type:*`, `source:sec-audit-source` labels. |
+| `threat-model.md` | `.claude/skills/threat-model/SKILL.md` | Output captured in `.sec-audit/context.md` (markdown only, no JSON emission). Maps section-4 threats to iterion's twelve-category `finding-taxonomy.md`. Findings reference the kanban surface defined in `iterion-board.md` with `severity:*`, `type:*`, `source:sec-audit-source` labels. |
 | `vuln-scan.md` | `.claude/skills/vuln-scan/SKILL.md` | Scanner set delegated to the `iterion:scanners` data blocks in `lang-*.md` (no duplicated list). Validation step wired to Seki's `scan_health` smoke gate. C/C++/ASAN guidance replaced by Go/TS focus areas. Adds an explicit single-file re-attack lens used during remediation. |
-| `triage.md` | `.claude/skills/triage/SKILL.md` | JSON checkpoint emission dropped — verdicts flow through Seki's `merge_verdicts` and `report_card` nodes. The N-vote majority is reframed as a "disprove" protocol (cross-link `disprove-voting.md`). FP memory is iterion-native (`.iterion/security/fp-known.yaml` via `fp-memory.md`). |
+| `triage.md` | `.claude/skills/triage/SKILL.md` | JSON checkpoint emission dropped — verdicts flow through Seki's `merge_verdicts` and `report_card` nodes. The N-vote majority is reframed as a "disprove" protocol (cross-link `disprove-voting.md`). FP memory is iterion-native (`.sec-audit/fp-known.yaml` via `fp-memory.md`). |
 | `patch.md` | `.claude/skills/patch/SKILL.md` | Language scope narrowed to **Go and TS/JS** (the reference's C/C++/ASAN ladder is replaced by `go build`/`go test` and `npm|pnpm build|test` or `tsc --noEmit`). Re-attack tier cross-links Seki's per-category recipes in `reattack-oracles.md`. Adds a hard-stop policy for crypto findings (`crypto-handling.md`) and an explicit reviewer-isolation contract (`reviewer-isolation.md`). |
 
 ## What is retained from the reference
@@ -54,7 +54,7 @@ pipeline.
   and the kanban issue is labeled `human-review` + `risk:crypto`.
 - **Trust-boundary input.** The reference reads
   `<target>/THREAT_MODEL.md`. Seki reads
-  `.iterion/security/context.md` (same shape, iterion-native path).
+  `.sec-audit/context.md` (same shape, iterion-native path).
 
 ## License
 

@@ -10,7 +10,7 @@ own tooling**, and leave a re-runnable script for the deterministic gate.
 
 This is the backstop for the whole-improve-loop review. Reviewers read **one
 chunk of source at a time**, so a change that breaks compilation in *another*
-file (a renamed or retyped symbol with a caller the chunk reviewer never saw)
+file (a renamed or retyped symbol with a caller the current pass never exercised)
 or a bug only a test catches is invisible to them. The build + tests are what
 catch it — that is the entire reason this step exists.
 
@@ -65,7 +65,7 @@ stubs, generated mocks, a Helm chart version pinned to a package file — and
 enforce in CI that the committed copy matches a fresh regeneration
 (`regenerate && git diff --exit-code`). A change that adds an API route, a
 proto message, or a schema field but forgets to regenerate ships **green
-build + red CI** — exactly the drift the downstream reviewer/CI catches that
+build + red CI** — exactly the drift the deterministic gate or CI catches that
 you should catch here instead.
 
 So your `verify.sh` **must** mirror CI's gates, not just build+test — a build+test-only
@@ -128,7 +128,7 @@ canonical way a change lands green-locally / red-in-CI.
 ## 3. Run it, and fix what the just-applied changes broke
 
 Run your script. If it fails, the failure is almost always introduced by the
-changes the review loop just applied. Read the error and fix it **at the
+changes the preceding work just applied. Read the error and fix it **at the
 source** with the **smallest** change that restores build + tests: update the
 missed caller, correct the signature, fix the read/write mode, repair the test.
 Do **not** refactor or change behaviour beyond what is needed to compile and

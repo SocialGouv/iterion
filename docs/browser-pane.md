@@ -38,6 +38,22 @@ echo "[iterion] preview_url=https://my-preview.example.com"
   refuses RFC1918, link-local, cloud-metadata, and `*.svc.cluster.local`
   addresses to mitigate SSRF.
 
+### Headline result-links (`kind=pr` / `deploy` / `app`)
+
+When `kind` is a **result kind** — `pr`, `deploy`, or `app` — the URL is
+additionally surfaced as a prominent, always-visible **result-link** in
+the run summary (the run header's result-links bar), like a CI run's
+"View deployment" button. The links are deduped by URL and kept in
+discovery order, so one run can advertise both a PR and a deploy. They
+are event-derived, so a reloaded terminal run rebuilds them from its
+event log. A `kind=pr` link is **link-only** (GitHub/GitLab block
+iframing, so it never loads in the Browser pane); `deploy`/`app` live
+sites keep the Browser pane too. The catalog PR-tail bots
+(`docs-refresh`, `feature-dev`, `app-dev`, `branch-improve-loop`,
+`whole-improve-loop`) emit `kind=pr` from a deterministic tool node once
+`finalize_mr` opens a PR; `app-dev` also emits `kind=deploy` for a
+healthy deploy.
+
 ## Capturing screenshots
 
 A tool node can also publish a screenshot it took (puppeteer,

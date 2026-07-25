@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
+	"time"
 
 	"go.yaml.in/yaml/v2"
 )
@@ -139,6 +140,141 @@ type Manifest struct {
 	// declares only a legacy forge: block is treated as having the
 	// synthetic set from SyntheticInvocations.
 	Invocations []Invocation `yaml:"invocations,omitempty"`
+
+	// Repo declares this bot's RUNTIME repository need: whether a run
+	// should target a git repository, and whether the launch surface may
+	// offer to CREATE a new one on a connected forge (Appy's "new app,
+	// new repo" journey). Advisory launch-surface metadata like
+	// DispatchVars — the runtime only consumes the resolved
+	// repo_url/repo_ref on the launch spec. It expresses a NEED ("point
+	// me at a repo"), never a target-repo assumption: catalog bots stay
+	// repo-agnostic.
+	Repo *RepoRequirement `yaml:"repo,omitempty"`
+
+	// ConfigShare declares this bot's SCOPED CONFIG-SHARE surface: which
+	// fields of its workspace config file a non-operator may edit through a
+	// scoped share URL (pkg/configshare), so a share can be minted for THIS
+	// bot without the operator hand-typing the config file's JSON paths. The
+	// mint DERIVES the grant's editable/visible paths and config file from
+	// this block (expanding a {category} placeholder for a per-category
+	// config), pinning them at mint time — a share can never be minted
+	// outside the surface the bot committed to git. Advisory declaration like
+	// Repo/Forge (the runtime never reads it; the config-share mint does).
+	// A second bot adopts the whole config-share editor by adding this block
+	// alone — no server or SPA change.
+	ConfigShare *ConfigShareSpec `yaml:"config_share,omitempty"`
+
+	// Launch opinionates the studio launch form for this bot: which
+	// workflow vars are primary (surfaced top-level, in order) and which
+	// are hidden (never rendered, still settable via --var). Advisory
+	// launch-surface metadata like Repo/DispatchVars — the runtime never
+	// reads it. Names are normalized at parse time (trim, drop empties,
+	// dedupe) but NOT validated against the workflow's vars block —
+	// manifests load without the DSL, so an unknown name is a soft
+	// authoring mistake for the studio to surface, never a load error.
+	Launch *LaunchHints `yaml:"launch,omitempty"`
+}
+
+// LaunchHints is a bot's declared launch-form opinion (manifest
+// `launch:` block), carried by discovery onto the bot entry served at
+// /api/v1/bots so the studio can order and prune the var form.
+type LaunchHints struct {
+	// Primary lists the bot inputs to surface top-level, in this order.
+	Primary []string `json:"primary,omitempty" yaml:"primary,omitempty"`
+	// Hidden lists the bot inputs the launch form never renders.
+	Hidden []string `json:"hidden,omitempty" yaml:"hidden,omitempty"`
+}
+
+// normalized returns the hints with each list cleaned — entries
+// trimmed, empties dropped, duplicates removed keeping the first
+// occurrence — and collapses to nil when nothing remains, so an
+// effectively-empty block serialises as an absent `launch` key.
+func (l *LaunchHints) normalized() *LaunchHints {
+	if l == nil {
+		return nil
+	}
+	primary := normalizeNameList(l.Primary)
+	hidden := normalizeNameList(l.Hidden)
+	if len(primary) == 0 && len(hidden) == 0 {
+		return nil
+	}
+	return &LaunchHints{Primary: primary, Hidden: hidden}
+}
+
+// normalizeNameList trims each entry, drops empties, and dedupes
+// keeping first-occurrence order. Returns nil when nothing survives.
+func normalizeNameList(names []string) []string {
+	var out []string
+	seen := make(map[string]bool, len(names))
+	for _, n := range names {
+		n = strings.TrimSpace(n)
+		if n == "" || seen[n] {
+			continue
+		}
+		seen[n] = true
+		out = append(out, n)
+	}
+	return out
+}
+
+// Valid RepoRequirement.Mode values.
+const (
+	RepoModeRequired = "required"
+	RepoModeOptional = "optional"
+	RepoModeNone     = "none"
+)
+
+// RepoRequirement is a bot's declared repository need, rendered by the
+// launch surfaces as a "Target repository" section (active repo
+// preselected → other connected repo → create new → none).
+type RepoRequirement struct {
+	// Mode is "required" (launch soft-blocks without a target repo),
+	// "optional" (section offered, skippable), or "none" (explicit
+	// repo-independence — same as omitting the block; kept so a bot can
+	// document the choice).
+	Mode string `yaml:"mode" json:"mode"`
+	// AllowCreate offers "create a new repository" (forge RepoCreator)
+	// next to "attach an existing one".
+	AllowCreate bool `yaml:"allow_create,omitempty" json:"allow_create,omitempty"`
+	// Purpose is a one-line operator-facing explanation of what the bot
+	// does with the repo, shown under the section title.
+	Purpose string `yaml:"purpose,omitempty" json:"purpose,omitempty"`
+	// DefaultBranch seeds a created repo's default branch name (empty =
+	// the forge's default).
+	DefaultBranch string `yaml:"default_branch,omitempty" json:"default_branch,omitempty"`
+	// Visibility seeds a created repo's visibility: "private" (the
+	// default) or "public".
+	Visibility string `yaml:"visibility,omitempty" json:"visibility,omitempty"`
+}
+
+// ConfigShareSpec is a bot's declared scoped config-share surface — the
+// contract that lets an operator mint a share for the bot (pkg/configshare)
+// without knowing its config file's JSON structure, and that a share can never
+// exceed. A second bot adopts the config-share editor by adding this block
+// alone: no server or SPA change.
+type ConfigShareSpec struct {
+	// ConfigPath is the config file inside the target repo a share edits
+	// (e.g. "feed-watch.json"). Repo-relative; normalized + guarded at mint
+	// (no traversal, no .git/.github, inside the workspace).
+	ConfigPath string `yaml:"config_path" json:"config_path"`
+	// EditablePaths are the dotted leaf paths a share may WRITE. A
+	// "{category}" placeholder is expanded to the concrete category at mint
+	// (e.g. "categories.{category}.feeds"), so ONE declaration covers every
+	// category; a config with no categories lists literal paths. No globs —
+	// every entry is a full leaf path.
+	EditablePaths []string `yaml:"editable_paths" json:"editable_paths"`
+	// VisiblePaths are extra READ-ONLY dotted paths a share may read back as
+	// context (e.g. "categories.{category}.digest_title"). The GET projection
+	// returns EditablePaths ∪ VisiblePaths and nothing else. Same {category}
+	// expansion. Optional.
+	VisiblePaths []string `yaml:"visible_paths,omitempty" json:"visible_paths,omitempty"`
+	// EditorTitle overrides the generic "Config editor" heading in the
+	// signed-in config_editor shell with a bot-specific name (e.g. "Éditeur de
+	// veilles"). Optional; empty falls back to the generic title.
+	EditorTitle string `yaml:"editor_title,omitempty" json:"editor_title,omitempty"`
+	// EditorDescription is a one-line subtitle under EditorTitle explaining
+	// what the editor edits ("Sources et éditorial de vos veilles"). Optional.
+	EditorDescription string `yaml:"editor_description,omitempty" json:"editor_description,omitempty"`
 }
 
 // Normalized forge event vocabulary used in a manifest `forge.events`
@@ -185,6 +321,7 @@ var (
 		"repository":    true,
 		"issues":        true,
 		"webhooks":      true,
+		"statuses":      true, // commit statuses (the revi/review merge gate)
 	}
 	knownForgeScopeLevels = map[string]bool{
 		"read":  true,
@@ -270,14 +407,25 @@ const (
 	// InvocationKindBoard marks the bot as a dispatcher target: an issue whose
 	// Bot == this bot's name is picked up and run. No payload.
 	InvocationKindBoard InvocationKind = "board"
+	// InvocationKindKeepalive runs the bot always-on: a fresh, individually
+	// budgeted run is relaunched every `interval` with at-most-one-live
+	// semantics (a stale run is reaped, not stacked). Sub-minute cadence
+	// requires the resident in-process scheduler (host crontab floors at 1m).
+	// The bot's own supervisor: block, if any, attaches per launched run.
+	InvocationKindKeepalive InvocationKind = "keepalive"
 )
 
 var knownInvocationKinds = map[InvocationKind]bool{
-	InvocationKindForge:    true,
-	InvocationKindCommand:  true,
-	InvocationKindSchedule: true,
-	InvocationKindBoard:    true,
+	InvocationKindForge:     true,
+	InvocationKindCommand:   true,
+	InvocationKindSchedule:  true,
+	InvocationKindBoard:     true,
+	InvocationKindKeepalive: true,
 }
+
+// KeepaliveMinInterval is the floor on a keepalive invocation's interval: a
+// guardrail against a launch storm (each tick is a fresh budgeted run).
+const KeepaliveMinInterval = 5 * time.Second
 
 // ExecutionMode controls how a fired invocation becomes a run.
 //
@@ -322,10 +470,11 @@ type Invocation struct {
 	// still wins).
 	ContextVars map[string]string `yaml:"context_vars,omitempty" json:"context_vars,omitempty"`
 
-	Forge    *InvocationForge    `yaml:"forge,omitempty" json:"forge,omitempty"`
-	Command  *InvocationCommand  `yaml:"command,omitempty" json:"command,omitempty"`
-	Schedule *InvocationSchedule `yaml:"schedule,omitempty" json:"schedule,omitempty"`
-	Board    *InvocationBoard    `yaml:"board,omitempty" json:"board,omitempty"`
+	Forge     *InvocationForge     `yaml:"forge,omitempty" json:"forge,omitempty"`
+	Command   *InvocationCommand   `yaml:"command,omitempty" json:"command,omitempty"`
+	Schedule  *InvocationSchedule  `yaml:"schedule,omitempty" json:"schedule,omitempty"`
+	Board     *InvocationBoard     `yaml:"board,omitempty" json:"board,omitempty"`
+	Keepalive *InvocationKeepalive `yaml:"keepalive,omitempty" json:"keepalive,omitempty"`
 }
 
 // EffectiveMode returns the execution mode, defaulting an empty value to
@@ -389,6 +538,20 @@ type InvocationSchedule struct {
 	DefaultVars map[string]string `yaml:"default_vars,omitempty" json:"default_vars,omitempty"`
 }
 
+// InvocationKeepalive is the payload of a kind=keepalive invocation.
+type InvocationKeepalive struct {
+	// Interval is how often to relaunch the bot (Go duration, e.g. "30s",
+	// "5m"). Required, must be >= KeepaliveMinInterval. Sub-minute values
+	// need the resident in-process scheduler.
+	Interval string `yaml:"interval" json:"interval"`
+	// StaleAfter is the silence cutoff: a running run whose last progress is
+	// older than this is treated as dead, so a fresh run relaunches and the
+	// zombie is reaped. Empty defaults to schedgate.DefaultStaleAfter.
+	StaleAfter string `yaml:"stale_after,omitempty" json:"stale_after,omitempty"`
+	// DefaultVars are vars stamped on each relaunched run.
+	DefaultVars map[string]string `yaml:"default_vars,omitempty" json:"default_vars,omitempty"`
+}
+
 // Board card-event kinds a kind=board invocation may filter on. These mirror
 // the trigger package's Kind* constants; bundle can't import trigger (trigger
 // imports bundle), so they are duplicated here and kept in sync — the closed
@@ -424,6 +587,12 @@ type InvocationBoard struct {
 	// AllLabels requires the card to carry every listed label (AND). Empty =
 	// no label constraint.
 	AllLabels []string `yaml:"all_labels,omitempty" json:"all_labels,omitempty"`
+	// ConsumeLabels strips the AllLabels set from the card atomically before
+	// firing, so the labels act as a one-shot trigger: a card-event storm
+	// (forge re-syncs, edits) cannot re-fire, and re-adding the label re-arms
+	// the trigger. Only meaningful with mode=direct (the promote path is
+	// already idempotent); requires a non-empty AllLabels.
+	ConsumeLabels bool `yaml:"consume_labels,omitempty" json:"consume_labels,omitempty"`
 }
 
 var (
@@ -441,7 +610,7 @@ func validateInvocations(invs []Invocation) error {
 	seenCmd := map[string]bool{}
 	for idx, inv := range invs {
 		if !knownInvocationKinds[inv.Kind] {
-			return fmt.Errorf("invocations[%d]: unknown kind %q (known: forge, command, schedule, board)", idx, inv.Kind)
+			return fmt.Errorf("invocations[%d]: unknown kind %q (known: forge, command, schedule, board, keepalive)", idx, inv.Kind)
 		}
 		if !knownExecutionModes[inv.Mode] {
 			return fmt.Errorf("invocations[%d]: invalid mode %q (want direct or board)", idx, inv.Mode)
@@ -454,8 +623,8 @@ func validateInvocations(invs []Invocation) error {
 			if !KnownForgeEvents[inv.Forge.Event] {
 				return fmt.Errorf("invocations[%d].forge: unknown event %q (known: %s, %s)", idx, inv.Forge.Event, ForgeEventPullRequest, ForgeEventPullRequestComment)
 			}
-			if inv.Command != nil || inv.Schedule != nil {
-				return fmt.Errorf("invocations[%d]: kind=forge must not set command:/schedule:", idx)
+			if inv.Command != nil || inv.Schedule != nil || inv.Keepalive != nil {
+				return fmt.Errorf("invocations[%d]: kind=forge must not set a command:/schedule:/keepalive: block", idx)
 			}
 		case InvocationKindCommand:
 			if inv.Command == nil {
@@ -477,8 +646,8 @@ func validateInvocations(invs []Invocation) error {
 				}
 				seenCmd[lc] = true
 			}
-			if inv.Forge != nil || inv.Schedule != nil {
-				return fmt.Errorf("invocations[%d]: kind=command must not set forge:/schedule:", idx)
+			if inv.Forge != nil || inv.Schedule != nil || inv.Keepalive != nil {
+				return fmt.Errorf("invocations[%d]: kind=command must not set a forge:/schedule:/keepalive: block", idx)
 			}
 		case InvocationKindSchedule:
 			if inv.Schedule == nil {
@@ -489,12 +658,12 @@ func validateInvocations(invs []Invocation) error {
 					return fmt.Errorf("invocations[%d].schedule: suggested_cron %q must be a 5-field cron expression", idx, c)
 				}
 			}
-			if inv.Forge != nil || inv.Command != nil {
-				return fmt.Errorf("invocations[%d]: kind=schedule must not set forge:/command:", idx)
+			if inv.Forge != nil || inv.Command != nil || inv.Keepalive != nil {
+				return fmt.Errorf("invocations[%d]: kind=schedule must not set a forge:/command:/keepalive: block", idx)
 			}
 		case InvocationKindBoard:
-			if inv.Forge != nil || inv.Command != nil || inv.Schedule != nil {
-				return fmt.Errorf("invocations[%d]: kind=board takes only an optional board: block (not forge:/command:/schedule:)", idx)
+			if inv.Forge != nil || inv.Command != nil || inv.Schedule != nil || inv.Keepalive != nil {
+				return fmt.Errorf("invocations[%d]: kind=board takes only an optional board: block (not forge:/command:/schedule:/keepalive:)", idx)
 			}
 			if inv.Board != nil {
 				for _, k := range inv.Board.On {
@@ -502,6 +671,36 @@ func validateInvocations(invs []Invocation) error {
 						return fmt.Errorf("invocations[%d].board: unknown on %q (known: %s, %s, %s, %s)", idx, k, BoardKindCardCreated, BoardKindCardMoved, BoardKindCardLabeled, BoardKindCardUpdated)
 					}
 				}
+				if inv.Board.ConsumeLabels && len(inv.Board.AllLabels) == 0 {
+					return fmt.Errorf("invocations[%d].board: consume_labels requires a non-empty all_labels", idx)
+				}
+			}
+		case InvocationKindKeepalive:
+			if inv.Keepalive == nil {
+				return fmt.Errorf("invocations[%d]: kind=keepalive requires a keepalive: block", idx)
+			}
+			iv := strings.TrimSpace(inv.Keepalive.Interval)
+			if iv == "" {
+				return fmt.Errorf("invocations[%d].keepalive: interval is required", idx)
+			}
+			d, err := time.ParseDuration(iv)
+			if err != nil {
+				return fmt.Errorf("invocations[%d].keepalive: invalid interval %q: %w", idx, iv, err)
+			}
+			if d < KeepaliveMinInterval {
+				return fmt.Errorf("invocations[%d].keepalive: interval %q is below the %s floor", idx, iv, KeepaliveMinInterval)
+			}
+			if sa := strings.TrimSpace(inv.Keepalive.StaleAfter); sa != "" {
+				sd, err := time.ParseDuration(sa)
+				if err != nil {
+					return fmt.Errorf("invocations[%d].keepalive: invalid stale_after %q: %w", idx, sa, err)
+				}
+				if sd <= 0 {
+					return fmt.Errorf("invocations[%d].keepalive: stale_after must be > 0 (got %q)", idx, sa)
+				}
+			}
+			if inv.Forge != nil || inv.Command != nil || inv.Schedule != nil || inv.Board != nil {
+				return fmt.Errorf("invocations[%d]: kind=keepalive must not set a forge:/command:/schedule:/board: block", idx)
 			}
 		}
 	}
@@ -563,6 +762,9 @@ func decodeManifest(body []byte, srcLabel string) (*Manifest, error) {
 	if len(m.Icon) > maxIconLen {
 		return nil, fmt.Errorf("bundle: manifest %s: icon %q exceeds %d bytes — expected a short emoji", srcLabel, m.Icon, maxIconLen)
 	}
+	// Soft-normalize only — launch names may reference workflow vars,
+	// which the manifest loader cannot see, so nothing here hard-fails.
+	m.Launch = m.Launch.normalized()
 	// Every attachment value is later joined to the bundle's attachments/
 	// directory and opened as a file by the runtime. Reject absolute or
 	// "../"-escaping values at parse time so a hostile bundle can't turn
@@ -580,7 +782,29 @@ func decodeManifest(body []byte, srcLabel string) (*Manifest, error) {
 	if err := validateInvocations(m.Invocations); err != nil {
 		return nil, fmt.Errorf("bundle: manifest %s: %w", srcLabel, err)
 	}
+	if err := validateRepoRequirement(m.Repo); err != nil {
+		return nil, fmt.Errorf("bundle: manifest %s: %w", srcLabel, err)
+	}
 	return &m, nil
+}
+
+// validateRepoRequirement rejects unknown mode/visibility values at parse
+// time so a typo fails fast (same bar as forge: and invocations:).
+func validateRepoRequirement(r *RepoRequirement) error {
+	if r == nil {
+		return nil
+	}
+	switch r.Mode {
+	case RepoModeRequired, RepoModeOptional, RepoModeNone:
+	default:
+		return fmt.Errorf("repo: unknown mode %q (known: %s, %s, %s)", r.Mode, RepoModeRequired, RepoModeOptional, RepoModeNone)
+	}
+	switch r.Visibility {
+	case "", "private", "public":
+	default:
+		return fmt.Errorf("repo: unknown visibility %q (known: private, public)", r.Visibility)
+	}
+	return nil
 }
 
 // validateForgeRequirements rejects an unknown event name or a malformed
@@ -599,7 +823,7 @@ func validateForgeRequirements(f *ForgeRequirements) error {
 	}
 	for key, level := range f.TokenScopes {
 		if !knownForgeScopeKeys[key] {
-			return fmt.Errorf("forge.token_scopes: unknown scope %q (known: pull_requests, repository, issues, webhooks)", key)
+			return fmt.Errorf("forge.token_scopes: unknown scope %q (known: pull_requests, repository, issues, webhooks, statuses)", key)
 		}
 		if !knownForgeScopeLevels[level] {
 			return fmt.Errorf("forge.token_scopes[%s]: invalid level %q (want read, write, or admin)", key, level)

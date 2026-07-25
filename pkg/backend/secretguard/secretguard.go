@@ -28,11 +28,16 @@
 package secretguard
 
 import (
+	"errors"
+	"fmt"
+	"os"
+	"path/filepath"
 	"regexp"
 	"sort"
 	"strings"
 
 	"github.com/SocialGouv/iterion/pkg/backend/tool/privacy/detector"
+	"github.com/SocialGouv/iterion/pkg/secrets"
 )
 
 // Secret is one protected value. Value is the plaintext; Placeholder
@@ -110,6 +115,10 @@ func DefaultConfig() Config {
 func PlaceholderForName(name string) string { return defaultPlaceholder(name) }
 
 // Guard is an immutable, concurrency-safe scrubber built once per run.
+// The one documented mutation seam is MaterializeHostFiles, which rewrites
+// filePathByName / fileHints exactly once per run under a caller-provided
+// sync.Once so the rewrite happens strictly before any concurrent Execute
+// consults ResolveSecretRef.
 type Guard struct {
 	secrets            []Secret
 	literalPlaceholder map[string]string // every encoding → its placeholder
@@ -117,6 +126,7 @@ type Guard struct {
 	placeholderValue   map[string]string // placeholder → raw value (Materialize)
 	filePathByName     map[string]string // secret name → mounted file path
 	fileHints          []FileSecretHint
+	fileValueByName    map[string]string   // secret name → file plaintext (host materialisation)
 	encodingsByName    map[string][]string // secret name → its value encodings (egress DLP)
 	det                *detector.Detector
 	cfg                Config
@@ -170,6 +180,16 @@ func New(secrets []Secret, cfg Config) *Guard {
 		if s.FilePath != "" {
 			g.filePathByName[s.Name] = s.FilePath
 			g.fileHints = append(g.fileHints, FileSecretHint{Name: s.Name, Path: s.FilePath, Env: s.Env})
+			// Keep the plaintext for host materialisation, even for values
+			// below MinLen (which the redaction/DLP path drops as unsafe to
+			// taint). MaterializeHostFiles is the only reader; the exported
+			// SecretFileHints never carries it.
+			if s.Value != "" {
+				if g.fileValueByName == nil {
+					g.fileValueByName = make(map[string]string, 1)
+				}
+				g.fileValueByName[s.Name] = s.Value
+			}
 		}
 		if len([]rune(s.Value)) < cfg.MinLen {
 			continue
@@ -511,4 +531,68 @@ func (g *Guard) SecretFileHints() []FileSecretHint {
 	out := make([]FileSecretHint, len(g.fileHints))
 	copy(out, g.fileHints)
 	return out
+}
+
+// MaterializeHostFiles writes each file secret's plaintext to
+// dir/<sanitized-name> (files 0600) and rewrites the guard so
+// ResolveSecretRef + SecretFileHints return the HOST path instead of the
+// sandbox mount path. It is the non-sandbox counterpart to the sandbox
+// driver's SecretFiles bind-mounts: on a host (non-sandbox) run nothing
+// else writes the mount path, so a {{secrets.X.path}} reference would
+// otherwise resolve to /run/iterion/secrets/X and fail on read.
+//
+// File secrets with no resolved value (Optional + unbound) are skipped
+// verbatim — the guard keeps the sandbox mount path so the tool sees the
+// same "no such file" it would in a sandbox, mirroring
+// pkg/runtime/sandbox_secret_files.go's skip.
+//
+// Concurrency: the caller MUST serialise this method against any concurrent
+// ResolveSecretRef / SecretFileHints reader (the executor guards it with a
+// sync.Once fired before dispatching any node). The returned cleanup removes
+// each written file; callers typically wrap it to also remove `dir`. Nil-safe.
+func (g *Guard) MaterializeHostFiles(dir string) (func(), error) {
+	if g == nil || len(g.fileHints) == 0 {
+		return func() {}, nil
+	}
+	if strings.TrimSpace(dir) == "" {
+		return nil, errors.New("secretguard: host materialisation dir is empty")
+	}
+	var written []string
+	cleanup := func() {
+		for _, p := range written {
+			_ = os.Remove(p)
+		}
+	}
+	for i, h := range g.fileHints {
+		val, ok := g.fileValueByName[h.Name]
+		if !ok || val == "" {
+			continue
+		}
+		// A file already present at the DECLARED mount path is the cloud
+		// runner's own materialisation (materializeFileSecretsNoSandbox),
+		// which the runner's mid-run refresh loop keeps LIVE as the store
+		// record rotates. Keep the hint pointing there instead of taking a
+		// per-run tempdir snapshot: the snapshot freezes the launch-time
+		// value, so an agent reading the hinted path after the token's
+		// lifetime (a GitHub App installation token lives ~1h; the forge
+		// review post is the run's LAST action) would 401 — the live prod
+		// failure this closes. Local host runs have nothing at the mount
+		// path (creating /run/iterion/secrets needs root) and keep the
+		// tempdir path below.
+		if h.Path != "" {
+			if _, err := os.Stat(h.Path); err == nil {
+				g.filePathByName[h.Name] = h.Path
+				continue
+			}
+		}
+		hostPath := filepath.Join(dir, secrets.SanitizeFileName(h.Name))
+		if err := os.WriteFile(hostPath, []byte(val), 0o600); err != nil {
+			cleanup()
+			return nil, fmt.Errorf("secretguard: write host secret file %q: %w", h.Name, err)
+		}
+		written = append(written, hostPath)
+		g.fileHints[i].Path = hostPath
+		g.filePathByName[h.Name] = hostPath
+	}
+	return cleanup, nil
 }

@@ -204,7 +204,7 @@ function findSelectableItems(
     const cv = coerceMaybeJson(v);
     if (!Array.isArray(cv) || cv.length === 0) continue;
     if (!cv.every(looksLikeSelectable)) continue;
-    return (cv as Array<Record<string, unknown>>).map(toOption);
+    return cv.map(toOption);
   }
   // Pass 2: descend into sibling objects. Collect arrays of card-
   // shaped items across all eligible nested fields and concatenate
@@ -227,13 +227,13 @@ function findSelectableItems(
           usable = false;
           break;
         }
-        collected.push(...(inner as Array<Record<string, unknown>>));
+        collected.push(...inner);
         continue;
       }
       // Singular "next_action"-shaped sub-object: treat as a length-1
       // array iff it independently looks selectable.
       if (looksLikeSelectable(inner)) {
-        collected.push(inner as Record<string, unknown>);
+        collected.push(inner);
       }
       // Anything else (strings, numbers, foreign objects) is just
       // ignored — these are typically explanatory siblings like
@@ -254,12 +254,10 @@ function isPlainObject(v: unknown): v is Record<string, unknown> {
   );
 }
 
-function looksLikeSelectable(v: unknown): boolean {
+function looksLikeSelectable(v: unknown): v is Record<string, unknown> {
   if (!isPlainObject(v)) return false;
-  const idOk =
-    typeof v.id === "string" && (v.id as string).length > 0;
-  const titleOk =
-    typeof v.title === "string" && (v.title as string).length > 0;
+  const idOk = typeof v.id === "string" && v.id.length > 0;
+  const titleOk = typeof v.title === "string" && v.title.length > 0;
   return idOk || titleOk;
 }
 
@@ -267,11 +265,11 @@ function toOption(it: Record<string, unknown>): QuestionOption {
   // Prefer `id` as the option value when present (canonical for
   // board issues) — falls back to `title` when items only carry
   // human-readable identifiers, e.g. LLM-emitted roadmap_items
-  // before emit_action assigns board ids.
-  const value =
-    typeof it.id === "string" && (it.id as string).length > 0
-      ? (it.id as string)
-      : (it.title as string);
+  // before emit_action assigns board ids. looksLikeSelectable
+  // guarantees at least one of id/title is a non-empty string.
+  const id = typeof it.id === "string" ? it.id : "";
+  const title = typeof it.title === "string" ? it.title : "";
+  const value = id.length > 0 ? id : title;
   const titleSrc =
     typeof it.title === "string"
       ? it.title

@@ -213,6 +213,7 @@ func TestPresetIterionDefault(t *testing.T) {
 	allowed := []string{
 		"api.anthropic.com",
 		"api.openai.com",
+		"api.x.ai",
 		"registry.npmjs.org",
 		"github.com",
 		"raw.github.com",

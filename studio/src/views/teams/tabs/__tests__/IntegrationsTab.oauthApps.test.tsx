@@ -1,6 +1,7 @@
 // @vitest-environment jsdom
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 
 vi.mock("@/api/forgeConnections", async () => {
   const actual =
@@ -25,6 +26,17 @@ vi.mock("@/api/bots", async () => {
 import * as forgeApi from "@/api/forgeConnections";
 import IntegrationsTab from "../IntegrationsTab";
 
+// The tab reads its forge lists through react-query — give each render a
+// fresh client (retry off so a mock failure surfaces immediately).
+const renderTab = () =>
+  render(
+    <QueryClientProvider
+      client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}
+    >
+      <IntegrationsTab teamID="t1" canManage />
+    </QueryClientProvider>,
+  );
+
 describe("IntegrationsTab — OAuth apps", () => {
   beforeEach(() => {
     vi.clearAllMocks();
@@ -33,14 +45,22 @@ describe("IntegrationsTab — OAuth apps", () => {
     cleanup();
   });
 
+  // The legacy OAuth-apps + connect forms live behind the collapsed
+  // "Manual setup (advanced)" disclosure — open it before asserting.
+  const openManualSetup = async () => {
+    fireEvent.click(await screen.findByRole("button", { name: /Manual setup \(advanced\)/ }));
+  };
+
   it("renders the OAuth apps section with an empty state", async () => {
-    render(<IntegrationsTab teamID="t1" canManage />);
+    renderTab();
+    await openManualSetup();
     await screen.findByText("Forge OAuth apps");
     await screen.findByText("No OAuth app registered yet.");
   });
 
   it("registers an app via the default auto (admin-token) flow", async () => {
-    render(<IntegrationsTab teamID="t1" canManage />);
+    renderTab();
+    await openManualSetup();
     fireEvent.click(await screen.findByText("+ Register an OAuth app"));
     // Default mode is auto → an admin-token field is shown.
     const tokenInput = await screen.findByPlaceholderText(/Admin token/i);
@@ -55,7 +75,8 @@ describe("IntegrationsTab — OAuth apps", () => {
   });
 
   it("registers an app via the manual (paste credentials) flow", async () => {
-    render(<IntegrationsTab teamID="t1" canManage />);
+    renderTab();
+    await openManualSetup();
     fireEvent.click(await screen.findByText("+ Register an OAuth app"));
     fireEvent.click(screen.getByLabelText("Paste credentials"));
     fireEvent.change(await screen.findByPlaceholderText(/Client ID/i), {

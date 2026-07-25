@@ -277,7 +277,7 @@ func (l *Logger) LogBlock(level Level, emoji string, header string, body string)
 	ts := time.Now().Format("15:04:05")
 
 	var buf strings.Builder
-	buf.WriteString(fmt.Sprintf("%s %s %s\n", ts, emoji, header))
+	fmt.Fprintf(&buf, "%s %s %s\n", ts, emoji, header)
 
 	if body != "" {
 		// TrimRight on trailing newlines so a body ending with "\n"

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"sync"
 	"testing"
 
@@ -279,7 +280,10 @@ func TestLiftBoardLaunchContext(t *testing.T) {
 		boardKeyOverridesKey:    `{"anthropic":"key-1"}`,
 		boardSecretOverridesKey: `{"forge_token":"sec-1"}`,
 	}
-	lc := liftBoardLaunchContext(botArgs)
+	lc, err := liftBoardLaunchContext(botArgs)
+	if err != nil {
+		t.Fatalf("liftBoardLaunchContext: %v", err)
+	}
 	if lc.RepoURL != "https://github.com/acme/api.git" || lc.RepoRef != "main" {
 		t.Errorf("repo lifted wrong: %q %q", lc.RepoURL, lc.RepoRef)
 	}
@@ -297,9 +301,16 @@ func TestLiftBoardLaunchContext(t *testing.T) {
 			t.Errorf("reserved key %q leaked into bot vars", reserved)
 		}
 	}
-	// A malformed override blob must not fail the lift (best-effort).
-	bad := liftBoardLaunchContext(map[string]string{boardKeyOverridesKey: "{not json"})
-	if bad.KeyOverrides != nil && len(bad.KeyOverrides) != 0 {
-		t.Errorf("malformed blob should yield no overrides, got %v", bad.KeyOverrides)
+	// A malformed override blob must fail the lift: silently dropping it
+	// would launch without the webhook's key/secret overrides.
+	if _, err := liftBoardLaunchContext(map[string]string{boardKeyOverridesKey: "{not json"}); err == nil {
+		t.Errorf("malformed key-override blob should error")
+	} else if !strings.Contains(err.Error(), boardKeyOverridesKey) {
+		t.Errorf("error should name the offending bot-arg key, got: %v", err)
+	}
+	if _, err := liftBoardLaunchContext(map[string]string{boardSecretOverridesKey: "{not json"}); err == nil {
+		t.Errorf("malformed secret-override blob should error")
+	} else if !strings.Contains(err.Error(), boardSecretOverridesKey) {
+		t.Errorf("error should name the offending bot-arg key, got: %v", err)
 	}
 }

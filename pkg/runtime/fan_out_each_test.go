@@ -487,11 +487,11 @@ func TestFanOutEach_DAG_DiamondOrderingAndParallelism(t *testing.T) {
 		return -1
 	}
 	// Dependency: A ends before B and C start.
-	if !(idx("A:end") < idx("B:start") && idx("A:end") < idx("C:start")) {
+	if idx("A:end") >= idx("B:start") || idx("A:end") >= idx("C:start") {
 		t.Errorf("A must finish before B/C start; order=%v", order)
 	}
 	// Dependency: D starts only after B and C end.
-	if !(idx("D:start") > idx("B:end") && idx("D:start") > idx("C:end")) {
+	if idx("D:start") <= idx("B:end") || idx("D:start") <= idx("C:end") {
 		t.Errorf("D must start after B/C end; order=%v", order)
 	}
 }

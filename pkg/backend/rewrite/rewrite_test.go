@@ -65,6 +65,32 @@ func TestResolveWithDefault(t *testing.T) {
 	}
 }
 
+func TestResolveWithDefaultSourced(t *testing.T) {
+	cases := []struct {
+		name                              string
+		override, node, workflow, envDflt string
+		def                               Mode
+		wantMode                          Mode
+		wantSource                        string
+	}{
+		{"all unset falls to default", "", "", "", "", On, On, "default"},
+		{"override wins over everything", "off", "on", "ultra", "on", On, Off, "run_override"},
+		{"node wins below override", "", "ultra", "on", "off", Off, Ultra, "node"},
+		{"workflow wins below node", "", "", "on", "off", Off, On, "workflow"},
+		{"env wins below workflow", "", "", "", "ultra", Off, Ultra, "env"},
+		{"whitespace-only level is unset", "  ", "\t", "", "on", Off, On, "env"},
+		{"unparsable non-empty level still wins (as off)", "", "banana", "ultra", "", On, Off, "node"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			mode, source := ResolveWithDefaultSourced(tc.override, tc.node, tc.workflow, tc.envDflt, tc.def)
+			if mode != tc.wantMode || source != tc.wantSource {
+				t.Fatalf("got (%v, %q), want (%v, %q)", mode, source, tc.wantMode, tc.wantSource)
+			}
+		})
+	}
+}
+
 func TestChainRewriteApplies(t *testing.T) {
 	// Script: print "fake <the command arg>" (arg $2 is the {{command}}).
 	spec := fakeRewriter(t, `printf 'fake %s' "$2"`, []int{0}, nil)

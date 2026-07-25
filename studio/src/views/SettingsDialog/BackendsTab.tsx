@@ -6,8 +6,7 @@ import { InlineBanner } from "@/components/ui/InlineBanner";
 import type { BackendStatus } from "@/api/backends";
 import { desktop, isDesktop } from "@/lib/desktopBridge";
 
-const DOCS_BACKENDS_URL =
-  "https://github.com/SocialGouv/iterion/blob/main/docs/backends.md";
+const DOCS_BACKENDS_URL = "https://socialgouv.github.io/iterion/backends";
 
 function openDocs(e: React.MouseEvent<HTMLAnchorElement>) {
   if (isDesktop()) {

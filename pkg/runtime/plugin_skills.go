@@ -21,9 +21,17 @@ import (
 // rather than clobbering it. A registry-load failure or a single broken plugin
 // is logged and skipped — a plugin must never break a run's setup. No-op when
 // workDir is empty.
-func mirrorPluginContributions(workDir string, logger *iterlog.Logger) error {
+//
+// When inj is non-nil the payload is AUTHORITATIVE: the files it carries are
+// mirrored and the local plugin registry is never consulted. That is the cloud
+// path — a runner pod's iterion home is empty, so the launching instance
+// resolved the enabled plugins' files for it (see Contributions).
+func mirrorPluginContributions(workDir string, inj *Contributions, logger *iterlog.Logger) error {
 	if workDir == "" {
 		return nil
+	}
+	if inj != nil {
+		return mirrorInjectedPluginFiles(workDir, inj.Plugin, logger)
 	}
 	reg, err := plugin.Load()
 	if err != nil {

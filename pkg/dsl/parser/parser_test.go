@@ -290,6 +290,47 @@ func TestVarsWithDefaults(t *testing.T) {
 	assertEq(t, "debug.Default", vb.Fields[3].Default.BoolVal, false)
 }
 
+func TestVarsWithEnum(t *testing.T) {
+	src := `vars:
+  mode: string [enum: "autonomous", "interview"] = "autonomous"
+  bare: string [enum: "a", "b"]
+  plain: string = "x"
+`
+	res := parser.Parse("test.bot", src)
+	assertNoDiags(t, res)
+
+	vb := res.File.Vars
+	if vb == nil || len(vb.Fields) != 3 {
+		t.Fatalf("expected 3 var fields, got %v", vb)
+	}
+	f := vb.Fields[0]
+	assertEq(t, "mode.Type", f.Type, ast.TypeString)
+	if len(f.EnumValues) != 2 {
+		t.Fatalf("expected 2 enum values, got %d", len(f.EnumValues))
+	}
+	assertEq(t, "mode.enum[0]", f.EnumValues[0], "autonomous")
+	assertEq(t, "mode.enum[1]", f.EnumValues[1], "interview")
+	assertEq(t, "mode.Default", f.Default.StrVal, "autonomous")
+	// Enum without a default parses too.
+	if len(vb.Fields[1].EnumValues) != 2 || vb.Fields[1].Default != nil {
+		t.Errorf("bare enum var: enum=%v default=%v", vb.Fields[1].EnumValues, vb.Fields[1].Default)
+	}
+	// A var without a constraint carries no enum values.
+	if vb.Fields[2].EnumValues != nil {
+		t.Errorf("plain var should have nil EnumValues, got %v", vb.Fields[2].EnumValues)
+	}
+}
+
+func TestVarsEnumRejectsUnquotedValues(t *testing.T) {
+	src := `vars:
+  mode: string [enum: autonomous, "interview"]
+`
+	res := parser.Parse("test.bot", src)
+	if !hasDiagCode(res, parser.DiagInvalidValue) {
+		t.Fatal("expected DiagInvalidValue for an unquoted enum value in a var declaration")
+	}
+}
+
 func TestAttachmentsBlock_Short(t *testing.T) {
 	src := `attachments:
   logo: image
@@ -405,6 +446,45 @@ func TestEdgeLoopTemplatedCap(t *testing.T) {
 	assertEq(t, "Loop.Name", e.Loop.Name, "fix_loop")
 	assertEq(t, "Loop.MaxIterations", e.Loop.MaxIterations, 0)
 	assertEq(t, "Loop.MaxIterationsExpr", e.Loop.MaxIterationsExpr, "{{outputs.select.cap}}")
+}
+
+func TestEdgeLoopQuotedIntLiteralCap(t *testing.T) {
+	// A quoted plain integer (`as fix("2")`) sits between the unquoted
+	// literal `as fix(2)` and the quoted template `as fix("{{x}}")`. It is
+	// an easy mistake since every template form is quoted. It must be read
+	// as the integer 2 (MaxIterations), NOT stored as a template with no
+	// refs — which would silently resolve to 0 and skip the loop edge as
+	// exhausted on the first traversal.
+	src := `workflow test:
+  entry: a
+
+  a -> b as fix("2")
+`
+	res := parser.Parse("test.bot", src)
+	assertNoDiags(t, res)
+
+	e := res.File.Workflows[0].Edges[0]
+	if e.Loop == nil {
+		t.Fatal("expected loop clause")
+	}
+	assertEq(t, "Loop.Name", e.Loop.Name, "fix")
+	assertEq(t, "Loop.MaxIterations", e.Loop.MaxIterations, 2)
+	assertEq(t, "Loop.MaxIterationsExpr", e.Loop.MaxIterationsExpr, "")
+}
+
+func TestEdgeLoopQuotedNonNumericCapRejected(t *testing.T) {
+	// A quoted non-numeric, non-template cap has no template refs and would
+	// silently cap the loop at 0. Reject it at parse time rather than let it
+	// through as a template that resolves to nothing.
+	src := `workflow test:
+  entry: a
+
+  a -> b as fix("two")
+`
+	res := parser.Parse("test.bot", src)
+	if len(res.Diagnostics) == 0 {
+		t.Fatal("expected a diagnostic for a quoted non-numeric loop cap")
+	}
 }
 
 func TestEdgeWhenNot(t *testing.T) {
@@ -811,6 +891,7 @@ func TestBudgetBlock(t *testing.T) {
     max_duration: "60m"
     max_cost_usd: 30.5
     max_tokens: 400000
+    warn_tokens: 250000
     max_iterations: 10
   a -> done
 `
@@ -825,6 +906,7 @@ func TestBudgetBlock(t *testing.T) {
 	assertEq(t, "MaxDuration", b.MaxDuration, "60m")
 	assertEq(t, "MaxCostUSD", b.MaxCostUSD, 30.5)
 	assertEq(t, "MaxTokens", b.MaxTokens, 400000)
+	assertEq(t, "WarnTokens", b.WarnTokens, 250000)
 	assertEq(t, "MaxIterations", b.MaxIterations, 10)
 }
 

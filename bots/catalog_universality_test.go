@@ -49,32 +49,21 @@ var violationPatterns = []string{
 
 // allowlist records (bot dir, var name, pattern) triples that are
 // known iterion-specific defaults still pending a universal rewrite.
-// Keep this list SHRINKING — every entry is debt. A new violation on
-// a bot NOT in this list fails the test.
+// Keep this list EMPTY — every entry is debt, and any violation on
+// any bot fails the test outright.
+//
+// Empty since the sec-audit relocation: per-run scratch (scanner
+// output, deps package cache) moved to ${PROJECT_SCRATCH_DIR}/<bot>/,
+// and durable operator-facing state (FP memory, file records,
+// matchers, context, patches) moved to the target repo's neutral,
+// gitignorable `.sec-audit/` dotdir. If you must add an entry back,
+// it is a regression to justify in the entry's reason — and to shrink
+// away again.
 type allowEntry struct {
-	bot, varName, pattern, reason string
+	bot, varName, pattern, reason string //nolint:unused // reason is the justification slot filled when an exemption is re-added (see doc above)
 }
 
-var allowlist = []allowEntry{
-	// sec-audit-* write scan scratch + caches under .iterion/ in the
-	// target repo. Softer than a code-layout glob (it's gitignored
-	// scratch, not a scanner that does iterion-specific work), but
-	// still scatters .iterion/ into someone else's tree. Tracked for
-	// relocation to a neutral scratch dir.
-	{"sec-audit-deps", "scan_dir", ".iterion/", "scratch dir; pending relocation to neutral path"},
-	{"sec-audit-deps", "cache_dir", ".iterion/", "host cache; pending relocation"},
-	{"sec-audit-deps", "cache_path", ".iterion/", "host cache; pending relocation"},
-	{"sec-audit-source", "scan_dir", ".iterion/", "scratch dir; pending relocation"},
-	{"sec-audit-source", "fp_path", ".iterion/", "scratch dir; pending relocation"},
-	{"sec-audit-source", "records_dir", ".iterion/", "scratch dir; pending relocation"},
-	{"sec-audit-source", "matchers_dir", ".iterion/", "scratch dir; pending relocation"},
-	// deepsec defaults added by the enable_deepsec-by-default work — same
-	// .iterion/security/ scratch convention as the entries above, tracked
-	// for the same neutral-path relocation.
-	{"sec-audit-source", "context_path", ".iterion/", "security context; pending relocation"},
-	{"sec-audit-source", "deepsec_out", ".iterion/", "deepsec scan output; pending relocation"},
-	{"sec-audit-source", "patch_dir", ".iterion/", "patch scratch; pending relocation"},
-}
+var allowlist = []allowEntry{}
 
 func isAllowed(bot, varName, pattern string) bool {
 	for _, a := range allowlist {

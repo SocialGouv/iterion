@@ -6,6 +6,8 @@ import (
 	"math"
 	"os"
 	"path/filepath"
+	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -441,6 +443,7 @@ func (c *compiler) compile() *Workflow {
 	c.compileComputes()
 	c.compileEmits()
 	c.compileWaits()
+	c.compileAwaitAnswers()
 	c.compileSubbots()
 
 	// Add terminal nodes. Safe by construction now: validateNodeNames
@@ -813,7 +816,7 @@ func (c *compiler) compileAgents() {
 			continue
 		}
 		c.nodes[a.Name] = &AgentNode{
-			BaseNode:          BaseNode{ID: a.Name},
+			BaseNode:          BaseNode{ID: a.Name, Description: a.Description},
 			LLMFields:         llm,
 			SchemaFields:      sch,
 			InteractionFields: inter,
@@ -849,7 +852,7 @@ func (c *compiler) compileJudges() {
 			continue
 		}
 		c.nodes[j.Name] = &JudgeNode{
-			BaseNode:          BaseNode{ID: j.Name},
+			BaseNode:          BaseNode{ID: j.Name, Description: j.Description},
 			LLMFields:         llm,
 			SchemaFields:      sch,
 			InteractionFields: inter,
@@ -887,7 +890,7 @@ func (c *compiler) compileRouters() {
 		}
 		mode := r.Mode
 		node := &RouterNode{
-			BaseNode:   BaseNode{ID: r.Name},
+			BaseNode:   BaseNode{ID: r.Name, Description: r.Description},
 			RouterMode: mode,
 			Needs:      r.Needs,
 		}
@@ -990,14 +993,22 @@ func (c *compiler) compileHumans() {
 		// can override when the node doesn't set interaction explicitly.
 		if h.Interaction == 0 {
 			wfDefault := c.workflowInteractionDefault()
-			if wfDefault != InteractionNone {
+			if wfDefault != InteractionNone && wfDefault != InteractionAsync {
 				interaction = wfDefault
 			} else {
 				interaction = InteractionHuman
 			}
 		}
+		// interaction: async is an agent/judge posture (post questions, keep
+		// working) — a human node IS the blocking question, so async on it is
+		// a contradiction, not a mode.
+		if interaction == InteractionAsync {
+			c.errorfAt(DiagAsyncOnHuman, h.Name, "",
+				"human %q cannot use interaction: async — async questions are posted by agent/judge nodes (use interaction: async on the asking node and an await_answers node as the sync point)", h.Name)
+			interaction = InteractionHuman
+		}
 		node := &HumanNode{
-			BaseNode: BaseNode{ID: h.Name},
+			BaseNode: BaseNode{ID: h.Name, Description: h.Description},
 			SchemaFields: SchemaFields{
 				InputSchema:  h.Input,
 				OutputSchema: h.Output,
@@ -1165,7 +1176,7 @@ func (c *compiler) compileTools() {
 		}
 
 		c.nodes[t.Name] = &ToolNode{
-			BaseNode: BaseNode{ID: t.Name},
+			BaseNode: BaseNode{ID: t.Name, Description: t.Description},
 			SchemaFields: SchemaFields{
 				InputSchema:  t.Input,
 				OutputSchema: t.Output,
@@ -1227,7 +1238,7 @@ func (c *compiler) compileComputes() {
 			})
 		}
 		c.nodes[cd.Name] = &ComputeNode{
-			BaseNode: BaseNode{ID: cd.Name},
+			BaseNode: BaseNode{ID: cd.Name, Description: cd.Description},
 			SchemaFields: SchemaFields{
 				InputSchema:  cd.Input,
 				OutputSchema: cd.Output,
@@ -1255,7 +1266,7 @@ func (c *compiler) compileSubbots() {
 			c.validateSchemaRef(sd.Name, "output", sd.Output)
 		}
 		c.nodes[sd.Name] = &SubbotNode{
-			BaseNode:     BaseNode{ID: sd.Name},
+			BaseNode:     BaseNode{ID: sd.Name, Description: sd.Description},
 			Source:       sd.Source,
 			With:         c.compileWithMappings(sd.Name, sd.With),
 			OutputSchema: sd.Output,
@@ -1294,7 +1305,7 @@ func (c *compiler) compileEmits() {
 			c.errorfAt(DiagEventNoName, ed.Name, "", "emit %q has no `event:` name", ed.Name)
 		}
 		c.nodes[ed.Name] = &EmitNode{
-			BaseNode: BaseNode{ID: ed.Name},
+			BaseNode: BaseNode{ID: ed.Name, Description: ed.Description},
 			Event:    ed.Event,
 			With:     c.compileWithMappings(ed.Name, ed.With),
 		}
@@ -1329,10 +1340,40 @@ func (c *compiler) compileWaits() {
 			c.validateSchemaRef(wd.Name, "output", wd.Output)
 		}
 		c.nodes[wd.Name] = &WaitNode{
-			BaseNode:     BaseNode{ID: wd.Name},
+			BaseNode:     BaseNode{ID: wd.Name, Description: wd.Description},
 			SchemaFields: SchemaFields{OutputSchema: wd.Output},
 			Event:        wd.Event,
 			Timeout:      timeout,
+		}
+	}
+}
+
+// compileAwaitAnswers compiles `await_answers` nodes (ADR-081): the
+// deterministic sync point for async human questions, with a mandatory timeout
+// (the no-silent-infinity invariant) and an optional `from:` scope.
+func (c *compiler) compileAwaitAnswers() {
+	for _, ad := range c.file.AwaitAnswers {
+		if _, exists := c.nodes[ad.Name]; exists {
+			continue
+		}
+		if ast.ReservedTargets[ad.Name] {
+			continue
+		}
+		var timeout time.Duration
+		if ad.Timeout == "" {
+			c.errorfAt(DiagAwaitAnswersNoTimeout, ad.Name, "",
+				"await_answers %q has no `timeout:` — a mandatory bound is required (the no-silent-infinity invariant)", ad.Name)
+		} else if d, err := time.ParseDuration(ad.Timeout); err != nil {
+			c.errorfAt(DiagAwaitAnswersNoTimeout, ad.Name, "", "await_answers %q has an invalid `timeout:` %q: %v", ad.Name, ad.Timeout, err)
+		} else if d <= 0 {
+			c.errorfAt(DiagAwaitAnswersNoTimeout, ad.Name, "", "await_answers %q `timeout:` must be positive, got %q", ad.Name, ad.Timeout)
+		} else {
+			timeout = d
+		}
+		c.nodes[ad.Name] = &AwaitAnswersNode{
+			BaseNode: BaseNode{ID: ad.Name, Description: ad.Description},
+			From:     ad.From,
+			Timeout:  timeout,
 		}
 	}
 }
@@ -1356,8 +1397,9 @@ func (c *compiler) compileEdges(astEdges []*ast.Edge) ([]*Edge, map[string]*Loop
 		}
 
 		e := &Edge{
-			From: ae.From,
-			To:   ae.To,
+			From:   ae.From,
+			To:     ae.To,
+			IsElse: ae.IsElse,
 		}
 
 		// Condition: either a simple field name (legacy) or a parsed expression.
@@ -1408,6 +1450,23 @@ func (c *compiler) compileEdges(astEdges []*ast.Edge) ([]*Edge, map[string]*Loop
 						c.errorf(DiagBadTemplateRef,
 							"loop %q: template cap %q: %v",
 							ae.Loop.Name, ae.Loop.MaxIterationsExpr, err)
+					}
+					// A cap expr with no template refs is a static string
+					// (the parser catches the `as fix("2")` DSL form, but
+					// group `${}` substitution and AST-JSON import can also
+					// land a bare literal here). It would silently resolve to
+					// MaxIterations=0 and skip the loop edge as exhausted on
+					// the first traversal, so fold a plain integer into the
+					// literal cap and reject anything else outright.
+					if len(refs) == 0 {
+						if n, aerr := strconv.Atoi(strings.TrimSpace(ae.Loop.MaxIterationsExpr)); aerr == nil {
+							loop.MaxIterations = n
+							loop.MaxIterationsExpr = ""
+						} else {
+							c.errorf(DiagBadTemplateRef,
+								"loop %q: cap %q has no template refs and is not an integer — a static non-numeric cap would silently limit the loop to 0 iterations",
+								ae.Loop.Name, ae.Loop.MaxIterationsExpr)
+						}
 					}
 					loop.MaxIterationsExprRefs = refs
 				}
@@ -1475,6 +1534,9 @@ func (c *compiler) compileVars(topLevel *ast.VarsBlock, workflowLevel *ast.VarsB
 				Name: f.Name,
 				Type: convertVarType(f.Type),
 			}
+			if len(f.EnumValues) > 0 {
+				v.EnumValues = c.compileVarEnum(f)
+			}
 			if f.Default != nil {
 				v.HasDefault = true
 				// Reuse the preset coercion so a var default is validated and
@@ -1494,6 +1556,15 @@ func (c *compiler) compileVars(topLevel *ast.VarsBlock, workflowLevel *ast.VarsB
 					}
 				}
 			}
+			// A default on an enum-constrained var must be one of the
+			// declared values. A non-string default is C109 territory
+			// (type mismatch) and deliberately not double-flagged here.
+			if len(v.EnumValues) > 0 && v.HasDefault {
+				if s, ok := v.Default.(string); ok && !slices.Contains(v.EnumValues, s) {
+					c.errorf(DiagVarDefaultNotInEnum,
+						"var %q default %q is not one of the enum values (%s)", f.Name, s, quoteList(v.EnumValues))
+				}
+			}
 			vars[f.Name] = v
 		}
 	}
@@ -1503,6 +1574,40 @@ func (c *compiler) compileVars(topLevel *ast.VarsBlock, workflowLevel *ast.VarsB
 	addVars(workflowLevel)
 
 	return vars
+}
+
+// compileVarEnum validates a var's `[enum: ...]` constraint: enums are
+// only meaningful on string vars (C125), and duplicate values are
+// deduplicated with a warning (C127). Returns the deduplicated value
+// set, or nil when the constraint is invalid for the var's type.
+func (c *compiler) compileVarEnum(f *ast.VarField) []string {
+	vt := convertVarType(f.Type)
+	if vt != VarString {
+		c.errorf(DiagVarEnumNonString,
+			"var %q: [enum: ...] is only valid on string vars, not %s", f.Name, vt.String())
+		return nil
+	}
+	seen := make(map[string]bool, len(f.EnumValues))
+	vals := make([]string, 0, len(f.EnumValues))
+	for _, ev := range f.EnumValues {
+		if seen[ev] {
+			c.warnf(DiagVarEnumDuplicate,
+				"var %q: duplicate enum value %q — keeping first occurrence", f.Name, ev)
+			continue
+		}
+		seen[ev] = true
+		vals = append(vals, ev)
+	}
+	return vals
+}
+
+// quoteList renders enum values as `"a", "b"` for diagnostics.
+func quoteList(vals []string) string {
+	quoted := make([]string, len(vals))
+	for i, v := range vals {
+		quoted[i] = fmt.Sprintf("%q", v)
+	}
+	return strings.Join(quoted, ", ")
 }
 
 // compileSecrets resolves a top-level `secrets:` block into the IR map.
@@ -1720,6 +1825,7 @@ func (c *compiler) compileBudget(b *ast.BudgetBlock) *Budget {
 		MaxDuration:         b.MaxDuration,
 		MaxCostUSD:          cost,
 		MaxTokens:           b.MaxTokens,
+		WarnTokens:          b.WarnTokens,
 		MaxIterations:       b.MaxIterations,
 	}
 }

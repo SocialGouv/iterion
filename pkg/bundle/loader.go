@@ -30,7 +30,7 @@ func hasPrefix(b, prefix []byte) bool {
 // botFileNames is the set of accepted workflow source file names at the
 // bundle root. The canonical name is `main.bot` (familiar `main.go` /
 // `main.rs` convention, independent of the bundle directory name).
-var botFileNames = []string{"main.bot"}
+var botFileNames = []string{MainBotFile}
 
 // Detect classifies path as a plain `.bot` file, a `.botz` archive, or a
 // directory bundle.
@@ -291,24 +291,28 @@ func assembleBundle(dir string) (*Bundle, error) {
 	if b.IterPath == "" {
 		return nil, fmt.Errorf("bundle: %s contains no main.bot at root", dir)
 	}
-	if info, err := os.Stat(filepath.Join(dir, "skills")); err == nil && info.IsDir() {
-		b.SkillsDir = filepath.Join(dir, "skills")
+	// Each layout dir resolves to its absolute path when present, "" when
+	// absent. Driven by a table so the names live only in bundle.go.
+	for _, d := range []struct {
+		name string
+		dst  *string
+	}{
+		{DirSkills, &b.SkillsDir},
+		{DirPrompts, &b.PromptsDir},
+		{DirAttachments, &b.AttachmentsDir},
+		{DirPresets, &b.PresetsDir},
+	} {
+		p := filepath.Join(dir, d.name)
+		if info, err := os.Stat(p); err == nil && info.IsDir() {
+			*d.dst = p
+		}
 	}
-	if info, err := os.Stat(filepath.Join(dir, "prompts")); err == nil && info.IsDir() {
-		b.PromptsDir = filepath.Join(dir, "prompts")
-	}
-	if info, err := os.Stat(filepath.Join(dir, "attachments")); err == nil && info.IsDir() {
-		b.AttachmentsDir = filepath.Join(dir, "attachments")
-	}
-	if info, err := os.Stat(filepath.Join(dir, "presets")); err == nil && info.IsDir() {
-		b.PresetsDir = filepath.Join(dir, "presets")
-	}
-	manifest, err := LoadManifest(filepath.Join(dir, "manifest.yaml"))
+	manifest, err := LoadManifest(filepath.Join(dir, ManifestFile))
 	if err != nil {
 		return nil, err
 	}
 	if manifest == nil {
-		manifest, err = LoadManifest(filepath.Join(dir, "manifest.yml"))
+		manifest, err = LoadManifest(filepath.Join(dir, ManifestFileAlt))
 		if err != nil {
 			return nil, err
 		}

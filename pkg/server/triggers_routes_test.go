@@ -28,7 +28,7 @@ func newEmitTestServer(t *testing.T) *Server {
 	}
 	t.Cleanup(func() { _ = ns.Close() })
 	subs := trigger.NewMemorySubscriptionStore()
-	coord := StartTriggerCoordinator(ns, subs, nil, &recordingLauncher{}, iterlog.New(iterlog.LevelError, nil))
+	coord := StartTriggerCoordinator(ns, subs, nil, &recordingLauncher{}, nil, nil, iterlog.New(iterlog.LevelError, nil))
 	if coord == nil {
 		t.Skip("trigger coordinator unavailable (fsnotify)")
 	}
@@ -260,7 +260,7 @@ func TestEmitTrigger_PublishesAndFires(t *testing.T) {
 		Match: trigger.Matcher{Sources: []trigger.Source{trigger.SourceCustom}, Kinds: []string{"ci.done"}},
 	})
 	rl := &recordingLauncher{}
-	coord := StartTriggerCoordinator(ns, subs, nil, rl, iterlog.New(iterlog.LevelError, nil))
+	coord := StartTriggerCoordinator(ns, subs, nil, rl, nil, nil, iterlog.New(iterlog.LevelError, nil))
 	if coord == nil {
 		t.Skip("trigger coordinator unavailable (fsnotify)")
 	}

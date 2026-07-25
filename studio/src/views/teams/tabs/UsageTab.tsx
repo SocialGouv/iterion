@@ -1,5 +1,5 @@
 import { errorMessage } from "@/lib/errorHints";
-import { useEffect, useState } from "react";
+import { keepPreviousData, useQuery } from "@tanstack/react-query";
 import { InlineBanner } from "@/components/ui/InlineBanner";
 
 import {
@@ -19,27 +19,19 @@ interface Props {
 }
 
 export default function UsageTab({ orgID }: Props) {
-  const [usage, setUsage] = useState<OrgUsage | null>(null);
-  const [err, setErr] = useState<string | null>(null);
-  const [unavailable, setUnavailable] = useState(false);
-
-  useEffect(() => {
-    let alive = true;
-    setErr(null);
-    setUnavailable(false);
-    getOrgUsage(orgID)
-      .then((u) => {
-        if (alive) setUsage(u);
-      })
-      .catch((e) => {
-        if (!alive) return;
-        if (e instanceof FeatureUnavailableError) setUnavailable(true);
-        else setErr(errorMessage(e));
-      });
-    return () => {
-      alive = false;
-    };
-  }, [orgID]);
+  const query = useQuery<OrgUsage>({
+    queryKey: ["org-usage", orgID],
+    queryFn: () => getOrgUsage(orgID),
+    // An org switch keeps the previous org's figures on screen while the
+    // new ones load, instead of dropping back to the whole-tab panel.
+    placeholderData: keepPreviousData,
+  });
+  const usage = query.data ?? null;
+  const unavailable = query.error instanceof FeatureUnavailableError;
+  const err =
+    query.error && !unavailable && !query.isFetching
+      ? errorMessage(query.error)
+      : null;
 
   if (unavailable) {
     return (

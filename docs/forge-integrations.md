@@ -1,5 +1,3 @@
-[← Documentation index](README.md) · [← BaaS overview](baas-overview.md) · [← Inbound webhooks](webhooks.md)
-
 # Forge integrations (connect a repo, auto-provision)
 
 **Audience.** Org admins who want to wire a GitLab/GitHub/Forgejo repo to a
@@ -62,8 +60,12 @@ Normalized event vocabulary (mapped to the forge's native names by
 
 | normalized | GitLab | GitHub | Forgejo |
 |---|---|---|---|
-| `pull_request` | `merge_requests_events` | `pull_request` | `pull_request` |
-| `pull_request_comment` | `note_events` | `issue_comment` | `issue_comment` |
+| `pull_request` | `merge_request` | `pull_request` | `pull_request` |
+| `pull_request_comment` | `note` | `issue_comment` | `issue_comment` |
+
+(GitLab's native names `merge_request` / `note` are translated a second
+time — to the boolean request-body fields `merge_requests_events` /
+`note_events` — inside the GitLab admin client when the hook is created.)
 
 Unknown events / scope keys / levels fail manifest parsing
 ([pkg/bundle/manifest.go:validateForgeRequirements](../pkg/bundle/manifest.go)).
@@ -92,16 +94,14 @@ PAT connections never refresh.
 
 ## Configuration (cloud)
 
-The Mongo stores (`forge_connections`, `repo_integrations`) and the routes
-are wired automatically in `iterion server` cloud mode. OAuth apps are
-opt-in per provider via env (a provider with no client id offers only the
-PAT path):
-
-```
-ITERION_FORGE_GITLAB_OAUTH_CLIENT_ID / _CLIENT_SECRET
-ITERION_FORGE_GITHUB_OAUTH_CLIENT_ID / _CLIENT_SECRET   (Phase 3)
-ITERION_FORGE_FORGEJO_OAUTH_CLIENT_ID / _CLIENT_SECRET  (Phase 4)
-```
+The Mongo stores (`forge_connections`, `repo_integrations`,
+`forge_oauth_apps`) and the routes are wired automatically in `iterion
+server` cloud mode. OAuth apps are registered **per team, per provider,
+per instance** at runtime via the `/api/teams/{id}/forge/oauth-apps`
+store — the legacy process-global `ITERION_FORGE_*_OAUTH_*` env map has
+been replaced and is no longer read. A `(tenant, provider, base URL)`
+with no registered app offers only the PAT path; register one (or use the
+GitHub App-manifest flow) to enable OAuth, with no redeploy.
 
 `PublicURL` must be set (the OAuth redirect + the forge hook URL are built
 from it).
@@ -109,9 +109,11 @@ from it).
 ## Security envelopes
 
 - Connection tokens are sealed with AAD `forge_conn:<id>`; the managed
-  secret keeps the existing `generic_secret:<id>` AAD; the GitHub-App
-  private key (Phase 2) lives in deployment config, never in Mongo. No token
-  is ever logged or placed in a URL.
+  secret keeps the existing `generic_secret:<id>` AAD; a **self-service
+  manifest-created** GitHub App's private key is sealed in the
+  `forge_oauth_apps` store (AAD `forge_oauth_app_key:<id>`), while the
+  legacy **platform-global** GitHub-App key lives in deployment config. No
+  token is ever logged or placed in a URL.
 - `Connection.ForgeBaseURL` is threaded onto `webhooks.Config.ForgeBaseURL`
   so the existing inbound SSRF host-pin keeps applying; the global
   `ITERION_WEBHOOK_FORGE_HOSTS` allowlist still wins.
@@ -132,13 +134,14 @@ agent-binding cookie:
 | Method | Path | Purpose |
 |---|---|---|
 | GET | `/connections` | list connections |
-| POST | `/connections` | connect (`mode: pat` \| `oauth`) → `{connection}` or `{authorize_url}` |
+| POST | `/connections` | connect (`mode: pat` \| `oauth` \| `app`) → `{connection}`, `{authorize_url}`, or `{install_url}` (GitHub-only `app`) |
 | DELETE | `/connections/{conn_id}` | disconnect (deprovisions every repo first) |
 | GET | `/connections/{conn_id}/repos?search=&page=` | repo picker (admin-capable only) |
 | GET | `/api/forge/oauth/callback` | **public** OAuth redirect target |
 | GET | `/repo-bots` | list active integrations |
-| GET | `/repo-bots/preview?connection_id=&repo=&bots=` | events + scopes + conflicts, no writes |
+| GET | `/repo-bots/preview?connection_id=&bots=` | events + scopes + conflicts, no writes |
 | POST | `/repo-bots` | enable `{connection_id, repo, bot_ids}` → `ProvisionResult` |
+| PATCH | `/repo-bots/{integration_id}` | update an integration's bot set |
 | DELETE | `/repo-bots/{integration_id}` | disable |
 
 ## Provider support
@@ -155,8 +158,10 @@ mode there.
 
 The **GitHub App** mode (a third connect option for GitHub) authenticates
 with a per-installation token minted on demand from the App private key
-(RS256 JWT → `POST /app/installations/{id}/access_tokens`, cached, re-minted
-≈60 s before its ~1 h expiry by the refresh worker). The operator installs
+(RS256 JWT → `POST /app/installations/{id}/access_tokens`, cached in the App
+client and re-minted ≈60 s before its ~1 h expiry — distinct from the
+`RefreshWorker`, whose 5-minute lead rewrites the managed `forge_token` for
+OAuth/PAT refresh-token connections). The operator installs
 the App via `github.com/apps/<slug>/installations/new?state=…`; GitHub's
 "Setup URL" must point at `<PublicURL>/api/forge/github/app/callback`. The
 App posts as itself (`<slug>[bot]`), needs no user seat, and uses

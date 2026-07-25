@@ -40,6 +40,12 @@ const appendEventBackoffBase = 20 * time.Millisecond
 //
 // Plan §D.3.
 func (s *Store) AppendEvent(ctx context.Context, runID string, evt store.Event) (*store.Event, error) {
+	// Tombstone guard: the events collection has no run-doc filter to
+	// piggyback the predicate on, so a late writer's insert would
+	// otherwise re-grow a deleted run's event stream.
+	if err := s.guardNotDeleted(ctx, runID); err != nil {
+		return nil, err
+	}
 	if evt.Timestamp.IsZero() {
 		evt.Timestamp = time.Now().UTC()
 	}

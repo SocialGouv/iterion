@@ -1,7 +1,10 @@
 name: feature-dev
 display_name: Featurly
 icon: 🛠️
-version: 2.0.0
+version: 2.0.1
+## 2.0.1 — ADR-082 Phase 2 (sandbox-by-default): removed the `sandbox:`
+## block — isolation is the platform's job; gh/glab move to the bot's
+## pinned devbox.json.
 ## 2.0.0 — RADICAL SIMPLIFICATION (ADR-058 minimal-framing). Replaces the
 ## v1 staged pipeline (plan → act → simplify session chain → alt condition
 ## router → reviewer_claude/reviewer_gpt → streak_check → fix_claude/
@@ -10,7 +13,7 @@ version: 2.0.0
 ## contract (living todo of slices, one verified commit per slice in
 ## stride, ADR-authoring obligation, G5 baseline, findings→board
 ## handoff), a deterministic build/test gate, a bounded continuation
-## loop, and the opt-in MR tail. The review_mode/mono_family topology
+## loop, and the opt-in PR tail. The review_mode/mono_family topology
 ## vars are retired (ADR-052 no longer applies — no reviewer nodes). git
 ## is the durable state. See docs/references/productive-session-patterns.md.
 description: |
@@ -20,8 +23,8 @@ description: |
   feature one verified semantic commit at a time (tests included, ADRs
   authored for non-trivial decisions). A deterministic build/test gate +
   bounded continuation loop re-poke it until the feature is complete and
-  the tree is green; an opt-in MR tail pushes the series and opens the
-  merge/pull request.
+  the tree is green; an opt-in tail pushes the series and opens the
+  pull request (PR; merge request on GitLab).
 when_to_use: |
   Use when an item can be phrased as one feature with a clear,
   externally-visible "done" state (new endpoint, UI affordance, CLI
@@ -35,13 +38,13 @@ dispatch_vars:
     {{issue.title}}
 
     {{issue.body}}
-  ## Board/comment-dispatched runs open a merge/pull request at the end
+  ## Board/comment-dispatched runs open a pull request at the end
   ## and post the URL back onto the source issue. CLI runs keep the
   ## defaults (open_mr=false) so a plain local run just commits.
   open_mr: "true"
   source_issue_ref: "{{issue.id}}"
 
-## Forge access for the MR/PR push + creation + the issue back-link.
+## Forge access for the PR push + creation + the issue back-link.
 ## The auto-provisioner requests these scopes and binds the connection
 ## token under `forge_token` (cross-ref main.bot `secrets: { forge_token }`).
 forge:
@@ -50,9 +53,9 @@ forge:
   ## pull_request_comment: the on-demand `/featurly <prompt>` slash command.
   events: [issue_labeled, pull_request_comment]
   token_scopes:
-    pull_requests: write     # open the MR/PR
+    pull_requests: write     # open the PR
     repository: write         # push the branch
-    issues: write             # post the MR URL back onto the source issue
+    issues: write             # post the PR URL back onto the source issue
   secret: forge_token
 
 invocations:
@@ -61,3 +64,10 @@ invocations:
     args_var: feature_prompt
     command: { name: featurly, aliases: [feature-dev], scope: any, min_replier_role: maintainer, opens_mr: true }
   - kind: board
+
+## Studio launch-form hierarchy: `primary` inputs render top-level in
+## the declared order; `hidden` vars are dispatch/webhook plumbing kept
+## out of the form (still settable via --var / bot_args).
+launch:
+  primary: [feature_prompt]
+  hidden: [source_issue_ref]

@@ -1,7 +1,10 @@
 name: branch-improve-loop
 display_name: Billy
 icon: 🌿
-version: 1.0.0
+version: 1.0.1
+## 1.0.1 — ADR-082 Phase 2 (sandbox-by-default): removed the `sandbox:`
+## block — isolation is the platform's job; gh/glab move to the bot's
+## pinned devbox.json.
 ## 1.0.0 — RADICAL SIMPLIFICATION (mechanism change, ADR-058). Replaces the v1
 ## chunked cross-family review loop (~11 nodes: plan_chunks → alt →
 ## reviewer_claude/reviewer_gpt → streak_check → fix_claude/fix_gpt →
@@ -29,7 +32,8 @@ description: |
   can't self-certify); RED routes back with the failure log, green + branch
   clean converges. git IS the durable state — an interrupted / budget-capped
   run keeps every committed fix, and a re-dispatch re-runs the campaign. Bounded
-  by a max_passes cap. Optional MR/PR path ships the series of per-pass commits.
+  by a max_passes cap. An optional PR path (merge request on GitLab) ships the
+  series of per-pass commits.
   Sibling of whole-improve-loop v2 (ADR-058). See
   docs/references/productive-session-patterns.md.
 when_to_use: |
@@ -48,31 +52,38 @@ dispatch_vars:
     {{issue.title}}
 
     {{issue.body}}
-  ## Board/comment-dispatched runs open a merge/pull request at the end
+  ## Board/comment-dispatched runs open a pull request at the end
   ## and post the URL back onto the source issue. CLI runs keep the
   ## defaults (open_mr=false) so a plain local run just commits.
   open_mr: "true"
   source_issue_ref: "{{issue.id}}"
 
-## Forge access for the MR/PR push + creation + the issue back-link.
+## Forge access for the PR push + creation + the issue back-link.
 ## The auto-provisioner requests these scopes and binds the connection
 ## token under `forge_token` (cross-ref main.bot `secrets: { forge_token }`).
 forge:
   events: [pull_request_comment]
   token_scopes:
-    pull_requests: write     # open the MR/PR
+    pull_requests: write     # open the PR
     repository: write         # push the branch
-    issues: write             # post the MR URL back onto the source issue
+    issues: write             # post the PR URL back onto the source issue
   secret: forge_token
 
 invocations:
+  # Billy runs on a PR ONLY on this deliberate `/billy` (alias `/improve`)
+  # slash-command, gated on the commenter's repo rights (min_replier_role).
+  # There is NO PR-open auto-launch: opening a PR only ever auto-REVIEWS it
+  # (Revi). `/billy` picks up where Revi left off — the handler seeds
+  # `prior_review` from Revi's most recent review of the PR.
   - kind: command
     mode: board
     args_var: scope_notes
-    command: { name: billy, aliases: [branch-improve-loop], scope: any, min_replier_role: maintainer }
-  # A same-repo PR that implements a tracked issue auto-launches Billy to harden
-  # it (fork guard + ticket dedup live in the inbound handler: selectForgePRBot).
-  - kind: forge
-    mode: direct
-    forge: { event: pull_request, actions: [opened, reopened] }
+    command: { name: billy, aliases: [branch-improve-loop, improve], scope: any, min_replier_role: maintainer }
   - kind: board
+
+## Studio launch-form hierarchy: `primary` inputs render top-level in
+## the declared order; `hidden` vars are dispatch/webhook plumbing kept
+## out of the form (still settable via --var / bot_args).
+launch:
+  primary: [base_ref]
+  hidden: [source_issue_ref]

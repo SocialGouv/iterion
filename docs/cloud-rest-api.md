@@ -1,5 +1,3 @@
-[← Documentation index](README.md) · [← BaaS overview](baas-overview.md)
-
 # Cloud REST API reference
 
 **Audience.** Anyone calling iterion programmatically — a CI job, an
@@ -37,13 +35,14 @@ JWT layer.
 | `POST` | `/api/auth/password/change` | public (legacy) | First-login password rotation for `pending_password_change` users |
 | `POST` | `/api/auth/password/reset/request` | public | Mint + email a reset token (always 200, no enumeration) |
 | `POST` | `/api/auth/password/reset/confirm` | public | Redeem `iar_…`, set new password, issue fresh session |
-| `GET` | `/api/auth/providers` | public | List configured OIDC connectors |
+| `GET` | `/api/auth/providers` | public | List configured OIDC connectors + `signup_mode` |
 | `GET` | `/api/auth/oidc/{provider}/start` | public | Start OIDC dance |
 | `GET` | `/api/auth/oidc/{provider}/callback` | public | OIDC redirect target |
 | `GET` | `/api/auth/invitations/lookup` | public | Resolve invitation token → email + team |
 | `POST` | `/api/auth/invitations/accept` | member | Accept an invitation while logged in |
 | `GET` | `/api/auth/me` | member | Current user + active team identity |
 | `POST` | `/api/auth/me/team/{team_id}` | member | Switch active team |
+| `POST` | `/api/auth/me/org/{org_id}` | member | Switch active org (re-issues the JWT; validates org then team) |
 | `POST` | `/api/me/password` | member | Self-service password change |
 | `POST` | `/api/me/sessions/revoke-all` | member | Sign out every device |
 
@@ -62,8 +61,39 @@ Source: [pkg/server/auth_routes.go](../pkg/server/auth_routes.go) +
 | `GET` | `/api/teams/{id}/invitations` | team admin | List pending invitations |
 | `POST` | `/api/teams/{id}/invitations` | team admin | Mint a token (shown once) |
 | `DELETE` | `/api/teams/{id}/invitations/{invite_id}` | team admin | Revoke |
-| `GET` | `/api/teams/{id}/usage` | team member | Org-admin mirror of admin usage view (see below) |
+| `GET` | `/api/orgs/{id}/usage` | org member | Org-member mirror of the admin usage view (see below) |
 | `GET` | `/api/teams/{id}/audit` | team admin | Tenant audit log |
+
+## Organisations — self-serve (org members, teams, SSO)
+
+The org-admin self-serve mirror of the super-admin org views (two-level
+tenancy, ADR-048). All routes are `requireAuth`; the org role is checked
+in-handler — read routes need org **membership** (`canViewOrg`), mutations
+need org **admin/owner** (`canManageOrg`). Sources:
+[pkg/server/orgs_routes.go](../pkg/server/orgs_routes.go),
+[pkg/server/org_sso_routes.go](../pkg/server/org_sso_routes.go),
+[pkg/server/org_sso_domain_routes.go](../pkg/server/org_sso_domain_routes.go).
+
+| Method | Path | Auth | Purpose |
+|---|---|---|---|
+| `GET` | `/api/orgs/{id}/members` | org member | List org members + roles |
+| `PATCH` | `/api/orgs/{id}/members/{user_id}` | org admin | Change a member's org role (`member\|admin\|owner`) |
+| `DELETE` | `/api/orgs/{id}/members/{user_id}` | org admin | Remove a member |
+| `GET` | `/api/orgs/{id}/invitations` | org admin | List pending org invitations |
+| `POST` | `/api/orgs/{id}/invitations` | org admin | Mint an org invitation token |
+| `DELETE` | `/api/orgs/{id}/invitations/{invite_id}` | org admin | Revoke |
+| `GET` | `/api/orgs/{id}/teams` | org member | List the org's teams |
+| `POST` | `/api/orgs/{id}/teams` | org admin | Create a team in the org |
+| `GET` | `/api/orgs/{id}/audit` | org admin | Org audit log |
+| `GET` | `/api/orgs/{id}/sso/providers` | org member | List SSO providers |
+| `POST` | `/api/orgs/{id}/sso/providers` | org admin | Add an SSO provider (OIDC) |
+| `PATCH` | `/api/orgs/{id}/sso/providers/{provider_id}` | org admin | Update a provider |
+| `DELETE` | `/api/orgs/{id}/sso/providers/{provider_id}` | org admin | Remove a provider |
+| `POST` | `/api/orgs/{id}/sso/providers/{provider_id}/test` | org admin | Test a provider's config |
+| `GET` | `/api/orgs/{id}/sso/domains` | org member | List claimed SSO domains |
+| `POST` | `/api/orgs/{id}/sso/domains` | org admin | Claim a domain |
+| `POST` | `/api/orgs/{id}/sso/domains/{domain_id}/verify` | org admin | Verify a claimed domain |
+| `DELETE` | `/api/orgs/{id}/sso/domains/{domain_id}` | org admin | Release a domain |
 
 ## BYOK LLM keys + generic secrets + bindings
 
@@ -98,6 +128,73 @@ Sources:
 [pkg/server/generic_secrets_routes.go](../pkg/server/generic_secrets_routes.go),
 [pkg/server/bot_bindings_routes.go](../pkg/server/bot_bindings_routes.go).
 Full semantics in [secrets-reference.md](secrets-reference.md).
+
+## Team bot sources (cloud bot editing)
+
+Team-authored bot bundles — the writable, tenant-scoped store the studio
+editor saves into (cloud pods bake the catalog read-only). Each source is a
+multi-file bundle (`main.bot` + `manifest.yaml` + `skills/`…). Edit rights =
+the `config_editor` capability, team admin, or owner (`canEditBots`); if the
+server has no bot-source store wired every route returns `501 bot editing is
+not enabled on this server`.
+
+| Method | Path | Access | Purpose |
+|---|---|---|---|
+| `GET` | `/api/teams/{id}/bot-sources` | bot editor | List the team's bots (metadata only — file bodies omitted) |
+| `GET` | `/api/teams/{id}/bot-sources/{slug}` | bot editor | One bot with its full file map |
+| `PUT` | `/api/teams/{id}/bot-sources/{slug}` | bot editor | Create or replace the whole bundle (`{files, version?}`) |
+| `PUT` | `/api/teams/{id}/bot-sources/{slug}/files/{path...}` | bot editor | Per-file save (`{content, version?}`) |
+| `DELETE` | `/api/teams/{id}/bot-sources/{slug}/files/{path...}` | bot editor | Delete one file (never `main.bot`) |
+| `DELETE` | `/api/teams/{id}/bot-sources/{slug}` | bot editor | Delete the bot |
+| `POST` | `/api/teams/{id}/bot-sources/{slug}/fork` | bot editor | Fork a baked catalog bot (`{from}`) into an editable copy |
+
+Every write **compiles the bundle before it persists** — a bot that fails to
+parse/compile is rejected `400 bot does not compile: <diagnostics>`, never
+left to fail at launch. A non-zero `version` is an optimistic if-match token
+(`409` if a concurrent editor advanced it); slug collisions are `409`. Source:
+[pkg/server/bot_sources_routes.go](../pkg/server/bot_sources_routes.go),
+store [pkg/botsource/](../pkg/botsource/botsource.go).
+
+## Forge integrations (connections, OAuth apps, repo-bots)
+
+The team-scoped, **outbound** forge layer behind the studio's repo-first shell
+([docs/repo-scope.md](repo-scope.md)): connect a forge, hold an OAuth app /
+GitHub App credential, and provision a set of bots onto a repo (webhook + hook
++ managed secret + bindings). All routes are `requireAuth`; the team role is
+checked in-handler — read routes need team **membership** (`canViewTeam`),
+mutations need team **admin/owner** (`canManageTeam`). Sources:
+[pkg/server/forge_routes.go](../pkg/server/forge_routes.go),
+[forge_connect_routes.go](../pkg/server/forge_connect_routes.go),
+[forge_oauth_app_routes.go](../pkg/server/forge_oauth_app_routes.go),
+[forge_github_manifest_routes.go](../pkg/server/forge_github_manifest_routes.go),
+[forge_provisioning_routes.go](../pkg/server/forge_provisioning_routes.go),
+[board_forge.go](../pkg/server/board_forge.go).
+
+| Method | Path | Auth | Purpose |
+|---|---|---|---|
+| `GET` | `/api/teams/{id}/forge/connections` | team member | List forge connections |
+| `POST` | `/api/teams/{id}/forge/connections` | team admin | Connect a forge (PAT / OAuth / GitHub-App install) |
+| `DELETE` | `/api/teams/{id}/forge/connections/{conn_id}` | team admin | Remove a connection |
+| `GET` | `/api/teams/{id}/forge/connections/{conn_id}/health` | team member | Connection health / token probe |
+| `GET` | `/api/teams/{id}/forge/connections/{conn_id}/repos` | team member | Repos visible to the connection |
+| `GET` | `/api/teams/{id}/forge/repos` | team member | Team's forge-linked repos |
+| `POST` | `/api/teams/{id}/forge/repos` | team admin | Create a repo (opt-in `RepoCreator` capability) |
+| `GET` | `/api/teams/{id}/forge/oauth-apps` | team member | List per-tenant OAuth apps |
+| `POST` | `/api/teams/{id}/forge/oauth-apps` | team admin | Register an OAuth app (`manual` / `auto` / `auto_from_connection`) |
+| `DELETE` | `/api/teams/{id}/forge/oauth-apps/{app_id}` | team admin | Remove an OAuth app |
+| `POST` | `/api/teams/{id}/forge/oauth-apps/github-manifest` | team admin | Start the GitHub App-manifest auto-create flow |
+| `GET` | `/api/teams/{id}/forge/repo-bots` | team member | List repo→bot provisionings (integrations) |
+| `GET` | `/api/teams/{id}/forge/repo-bots/preview` | team member | Preview what enabling a bot set subscribes to (no forge writes) |
+| `POST` | `/api/teams/{id}/forge/repo-bots` | team admin | Enable bots on a repo (provision webhook + hook + secret + bindings) |
+| `PATCH` | `/api/teams/{id}/forge/repo-bots/{integration_id}` | team admin | Set the exact bot set (replace semantics) |
+| `DELETE` | `/api/teams/{id}/forge/repo-bots/{integration_id}` | team admin | Disable / deprovision (tears down webhook + hook) |
+| `PATCH` | `/api/teams/{id}/forge/integrations/{iid}` | team admin | Update an integration (incl. `sync_issues_enabled`) |
+| `POST` | `/api/teams/{id}/forge/integrations/{iid}/sync` | team admin | Run the forge→board issue sync now (one-way, forge is source) |
+| `GET` | `/api/teams/{id}/forge/integrations/{iid}/hooks` | team member | List the webhooks on an integration |
+
+The OAuth handshake completes on public callbacks the SPA is redirected to:
+`GET /api/forge/oauth/callback`, `GET /api/forge/github/app/callback`, and
+`GET /api/forge/github/app-manifest/callback`.
 
 ## Inbound webhooks
 
@@ -203,10 +300,14 @@ Source: [pkg/server/runs.go](../pkg/server/runs.go).
 | `POST` | `/api/admin/orgs` | super-admin | Create org |
 | `GET` | `/api/admin/orgs/{id}` | super-admin | Read |
 | `PATCH` | `/api/admin/orgs/{id}` | super-admin | Update name / slug / quotas |
+| `DELETE` | `/api/admin/orgs/{id}` | super-admin | Schedule org deletion (reversible until it runs) |
+| `POST` | `/api/admin/orgs/{id}/restore` | super-admin | Cancel a scheduled deletion |
 | `POST` | `/api/admin/orgs/{id}/status` | super-admin | Suspend / read-only / activate |
 | `GET` | `/api/admin/orgs/{id}/usage` | super-admin | Usage snapshot |
-| `GET` | `/api/admin/users` | super-admin | List users (filter `?email=`) |
+| `GET` | `/api/admin/orgs/{id}/teams` | super-admin | List the org's teams |
+| `GET` | `/api/admin/users` | super-admin | List users (`?offset=&limit=` pagination; limit default 50, max 200) |
 | `PATCH` | `/api/admin/users/{id}` | super-admin | Status / super-admin flag |
+| `POST` | `/api/admin/users/{id}/reset-password` | super-admin | Force a user's password reset |
 | `GET` | `/api/admin/audit` | super-admin | Platform audit log (filters: `action`, `actor`, `from`, `to`, `offset`, `limit`) |
 | `GET` | `/api/admin/dlq` | super-admin | List parked messages |
 | `GET` | `/api/admin/dlq/{seq}` | super-admin | Peek payload |
@@ -220,7 +321,7 @@ Sources: [pkg/server/admin_orgs_routes.go](../pkg/server/admin_orgs_routes.go),
 
 | Method | Path | Auth | Purpose |
 |---|---|---|---|
-| `GET` | `/api/server/info` | public | Build info, signup mode, `email_enabled`, OAuth-forfait config |
+| `GET` | `/api/server/info` | public | Mode, version, `auth_required`, `email_enabled`, per-feature enablement flags, upload limits |
 | `GET` | `/healthz` | public | Liveness — HTTP listener up |
 | `GET` | `/readyz` | public | Readiness — Mongo + NATS + S3 reachable under 1s deadline |
 | `GET` | `/metrics` | public on the metrics port (ClusterIP-only by design) | Prometheus scrape |
@@ -276,11 +377,11 @@ Plus the header `Retry-After: <seconds>` on `concurrency_cap_exceeded`
 and `launch_rate_limited`. Token list and HTTP semantics in
 [quotas-and-limits.md](quotas-and-limits.md).
 
-### `GET /api/teams/{id}/usage` (also `/api/admin/orgs/{id}/usage`)
+### `GET /api/orgs/{id}/usage` (also `/api/admin/orgs/{id}/usage`)
 
 See [quotas-and-limits.md → Reading usage](quotas-and-limits.md#reading-usage)
 for the full `orgUsageView` schema. Same shape on both routes — the
-admin endpoint is super-admin only, the team endpoint is any member.
+admin endpoint is super-admin only, the member endpoint is any org member.
 
 ### `POST /api/me/tokens` — create PAT
 

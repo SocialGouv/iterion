@@ -9,7 +9,7 @@ This runbook covers the durable state iterion owns in cloud-mode:
 | Interactions | Mongo (`interactions`) | Pause/resume answers | Affected runs stuck at `paused_waiting_human` |
 | Identity + auth | Mongo (`users`/`teams`/`memberships`/`sessions`/`oidc_links`) | Login + RBAC | All users logged out, RBAC lost |
 | Secrets (BYOK, OAuth, run secrets) | Mongo, encrypted with `ITERION_SECRETS_KEY` | Per-tenant credentials | Secrets unrecoverable if the secrets key is also lost |
-| Artifact bodies | S3 / blob | Versioned `artifacts/<node>/<v>.json` | Artifacts lost; checkpoints reference dead keys |
+| Artifact bodies | S3 / blob | Versioned `artifacts/<run-id>/<node>/<v>.json` | Artifacts lost; checkpoints reference dead keys |
 
 **Critical invariant:** the Mongo backup and the blob backup must
 overlap in time. A Mongo restore that references blob keys deleted
@@ -154,8 +154,9 @@ Recommended baseline (tune to your compliance posture):
 | Warm | Weekly | 35 days | Different region |
 | Cold | Monthly | 13 months | Glacier / Archive tier |
 
-Mongo dump size grows with `events` collection — the chart sets a
-`schedule_events_ttl_days` (default 30) that bounds it. A heavy
+Mongo dump size grows with `events` collection — the config's
+`mongo.events_ttl_days` (env `ITERION_MONGO_EVENTS_TTL_DAYS`, default 90)
+bounds it. A heavy
 operator-driven backfill of long runs can spike this temporarily.
 
 ---
@@ -207,10 +208,13 @@ that has never been restored is unverified.
   re-creates the tracker view; in-flight retries restart from the
   tracker's source of truth (GitHub Issues, Forgejo, native kanban).
 
-For the JetStream gap, run the [chart's `nats-backup` Helm value](https://github.com/SocialGouv/iterion/blob/main/charts/iterion/values-prod.yaml)
-or use NATS' own `nats-server -js -reset` documented procedure if
-your durable subjects exceed the loss tolerance — that's an explicit
-operator choice, not a default.
+For the JetStream gap there is no chart-provided backup value — the
+bundled `nats` sub-chart only exposes `nats.enabled` +
+`nats.config.jetstream.enabled`. Back the durable streams up with NATS'
+own tooling (`nats stream backup <stream>` / `nats account backup`, or a
+volume snapshot of the JetStream file store) if your durable subjects
+exceed the loss tolerance — that's an explicit operator choice, not a
+default.
 
 See also:
 

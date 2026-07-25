@@ -1,0 +1,22 @@
+name: heartbeat
+display_name: Heartbeat (always-on demo)
+icon: 💓
+version: 1.0.0
+description: |
+  Tool-only demo of an always-on agent. Relaunched continuously by an
+  `overlap: keepalive` schedule with at-most-one-live semantics and
+  staleness reaping — the pattern for keeping a watcher/poller/your own
+  long-lived bot running as a stream of fresh, individually-budgeted runs
+  rather than one immortal run. No LLM, no API keys.
+author: SocialGouv (devthejo) — examples/keepalive/heartbeat.bot
+schema_version: 1
+
+invocations:
+  ## Always-on: relaunch every 15s, treat a run silent past 2m as dead and
+  ## relaunch it. Sub-minute cadence requires the resident scheduler
+  ## (iterion studio / server); host crontab floors at 1 minute.
+  - kind: keepalive
+    mode: direct
+    keepalive:
+      interval: 15s
+      stale_after: 2m

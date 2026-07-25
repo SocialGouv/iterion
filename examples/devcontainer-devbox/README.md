@@ -12,10 +12,17 @@ devbox.json                       # your workflow's toolchain
 ```
 
 When a workflow with `sandbox: auto` runs, iterion reads the
-devcontainer above, pulls `iterion-sandbox-slim:<iterion-version>`, and
-runs `devbox install` once during `postCreateCommand` to materialise
-the packages declared in `devbox.json`. Subsequent commands invoked
-through tool nodes inherit the devbox environment.
+devcontainer above, pulls `iterion-sandbox-slim:<iterion-version>`,
+runs `devbox install` once at container start to materialise the
+packages declared in `devbox.json`, and prepends the resulting profile
+bin dir (`<workspace>/.devbox/nix/profile/default/bin`) to the
+container `PATH`. Every node then finds the packages — including tool
+nodes, which run a non-interactive `sh -c` that sources no shell
+profile and would otherwise see nothing an install put in place.
+
+A `devbox.json` shipped next to a bot's `main.bot` composes with this
+one: both are installed, both land on `PATH`, repo first. See
+[docs/sandbox.md](../../docs/sandbox.md#devbox-tools-devboxjson).
 
 ## What you get for free in iterion-sandbox-slim
 

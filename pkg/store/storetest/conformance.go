@@ -56,17 +56,71 @@ func RunWithOpts(t *testing.T, factory Factory, opts Opts) {
 	t.Run("StatusTransitions", func(t *testing.T) { testStatusTransitions(t, factory(t)) })
 	t.Run("EventSeqMonotone", func(t *testing.T) { testEventSeqMonotone(t, factory(t)) })
 	t.Run("EventSeqUnderConcurrency", func(t *testing.T) { testEventSeqConcurrent(t, factory(t)) })
+	t.Run("EventDataDecodeShape", func(t *testing.T) { testEventDataDecodeShape(t, factory(t)) })
 	t.Run("ArtifactVersionsMonotone", func(t *testing.T) { testArtifactVersions(t, factory(t)) })
 	t.Run("LockExclusivity", func(t *testing.T) { testLockExclusive(t, factory(t)) })
 	t.Run("CapabilitiesReported", func(t *testing.T) { testCapabilitiesReported(t, factory(t)) })
 	t.Run("UserMessagesInbox", func(t *testing.T) { testUserMessagesInbox(t, factory(t)) })
 	t.Run("WatchedIssues", func(t *testing.T) { testWatchedIssues(t, factory(t)) })
+	t.Run("SubbotChildren", func(t *testing.T) { testSubbotChildren(t, factory(t)) })
 	t.Run("ReverseTreeQueries", func(t *testing.T) { testReverseTreeQueries(t, factory(t)) })
+	t.Run("ScheduleReverseQuery", func(t *testing.T) { testScheduleReverseQuery(t, factory(t)) })
 	t.Run("DeleteRun", func(t *testing.T) { testDeleteRun(t, factory(t)) })
 	t.Run("RunLogStore", func(t *testing.T) { testRunLogStore(t, factory(t)) })
 	t.Run("TurnStore", func(t *testing.T) { testTurnStore(t, factory(t)) })
 	t.Run("ToolBlobStore", func(t *testing.T) { testToolBlobStore(t, factory(t)) })
 	t.Run("RunFilesStore", func(t *testing.T) { testRunFilesStore(t, factory(t)) })
+	t.Run("ParentedRunCreator", func(t *testing.T) { testParentedRunCreator(t, factory(t)) })
+}
+
+// testParentedRunCreator exercises the optional ParentedRunCreator surface
+// (spawnRun's atomic child precreate, PR #193 M3): the ParentRunID must
+// round-trip from the SINGLE create write — no follow-up SaveRun — and the
+// child must be reachable through ListChildRuns. Also asserts the
+// no-clobber contract (a reused id fails). Skipped otherwise.
+func testParentedRunCreator(t *testing.T, s store.RunStore) {
+	t.Helper()
+	pc := store.AsParentedRunCreator(s)
+	if pc == nil {
+		t.Skip("backend does not implement ParentedRunCreator")
+	}
+	ctx := testCtx()
+	const parentID = "run_parent"
+	const childID = "run_child"
+	if _, err := s.CreateRun(ctx, parentID, "demo", nil); err != nil {
+		t.Fatalf("CreateRun(parent): %v", err)
+	}
+	child, err := pc.CreateChildRun(ctx, childID, "demo", parentID, map[string]any{"k": "v"})
+	if err != nil {
+		t.Fatalf("CreateChildRun: %v", err)
+	}
+	// The returned doc carries the parent link with no extra write.
+	if child.ParentRunID != parentID {
+		t.Errorf("CreateChildRun returned ParentRunID = %q; want %q", child.ParentRunID, parentID)
+	}
+	// It is durable: a fresh load sees the link (not just the in-memory copy).
+	loaded, err := s.LoadRun(ctx, childID)
+	if err != nil {
+		t.Fatalf("LoadRun(child): %v", err)
+	}
+	if loaded.ParentRunID != parentID {
+		t.Errorf("persisted ParentRunID = %q; want %q", loaded.ParentRunID, parentID)
+	}
+	if got := loaded.Inputs["k"]; got != "v" {
+		t.Errorf("persisted Inputs[k] = %v; want v", got)
+	}
+	// And it is reachable through the child reverse query.
+	kids, err := s.ListChildRuns(ctx, parentID)
+	if err != nil {
+		t.Fatalf("ListChildRuns: %v", err)
+	}
+	if !sameOrderedSlice(kids, []string{childID}) {
+		t.Errorf("ListChildRuns(%s) = %v; want [%s]", parentID, kids, childID)
+	}
+	// No-clobber: reusing an id must fail, never reset the existing doc.
+	if _, err := pc.CreateChildRun(ctx, childID, "demo", parentID, nil); err == nil {
+		t.Errorf("CreateChildRun(duplicate id): expected error, got nil")
+	}
 }
 
 // testRunFilesStore exercises the optional RunFilesStore surface
@@ -495,6 +549,52 @@ func testDeleteRun(t *testing.T, s store.RunStore) {
 	if err := s.DeleteRun(ctx, "run_del"); err != nil {
 		t.Errorf("second DeleteRun should be a no-op, got: %v", err)
 	}
+
+	// Durable tombstone: every late writer gets the TYPED refusal and
+	// resurrects nothing. This is the contract that makes DeleteRun
+	// final — before it, AppendEvent's MkdirAll (fs) and SaveRun's
+	// upsert (Mongo) silently rebuilt deleted runs.
+	if _, err := s.AppendEvent(ctx, "run_del", store.Event{Type: store.EventNodeStarted, Timestamp: time.Now().UTC()}); !errors.Is(err, store.ErrRunDeleted) {
+		t.Errorf("AppendEvent after delete: err = %v, want ErrRunDeleted", err)
+	}
+	if err := s.SaveRun(ctx, &store.Run{ID: "run_del", WorkflowName: "zombie", Status: store.RunStatusRunning}); !errors.Is(err, store.ErrRunDeleted) {
+		t.Errorf("SaveRun after delete: err = %v, want ErrRunDeleted", err)
+	}
+	if _, err := s.CreateRun(ctx, "run_del", "zombie", nil); !errors.Is(err, store.ErrRunDeleted) {
+		// Mongo CreateRun may not exist as a distinct guard (SaveRun
+		// covers the upsert path); only enforce when the impl surfaced
+		// a typed error at all.
+		if err == nil {
+			t.Errorf("CreateRun after delete resurrected the run")
+		}
+	}
+	if err := s.AppendQueuedMessage(ctx, "run_del", store.QueuedUserMessage{ID: "late-msg", Text: "late"}); !errors.Is(err, store.ErrRunDeleted) {
+		t.Errorf("AppendQueuedMessage after delete: err = %v, want ErrRunDeleted", err)
+	}
+	// LoadRun reports the deliberate deletion distinctly from absence.
+	if _, err := s.LoadRun(ctx, "run_del"); !errors.Is(err, store.ErrRunDeleted) {
+		t.Errorf("LoadRun after delete: err = %v, want ErrRunDeleted", err)
+	}
+	// And the run STILL doesn't reappear anywhere.
+	ids, err = s.ListRuns(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if containsStr(ids, "run_del") {
+		t.Errorf("late writers resurrected run_del in ListRuns: %v", ids)
+	}
+
+	// The tombstone is reaped past the retention horizon — and only then.
+	if n, err := s.PruneDeletionMarkers(ctx, time.Now().Add(-time.Hour)); err != nil || n != 0 {
+		t.Errorf("PruneDeletionMarkers(too old cutoff) = (%d, %v), want (0, nil)", n, err)
+	}
+	if n, err := s.PruneDeletionMarkers(ctx, time.Now().Add(time.Hour)); err != nil || n != 1 {
+		t.Errorf("PruneDeletionMarkers(future cutoff) = (%d, %v), want (1, nil)", n, err)
+	}
+	// Post-reap, the id is a plain 404 again (history fully released).
+	if _, err := s.LoadRun(ctx, "run_del"); !errors.Is(err, store.ErrRunNotFound) {
+		t.Errorf("LoadRun after tombstone reap: err = %v, want ErrRunNotFound", err)
+	}
 }
 
 func containsStr(xs []string, want string) bool {
@@ -556,6 +656,64 @@ func testWatchedIssues(t *testing.T, s store.RunStore) {
 	}
 	if len(got) != 0 {
 		t.Errorf("after remove all: got %v want empty", got)
+	}
+}
+
+// testSubbotChildren exercises the subbot re-attach map: SetSubbotChild
+// records a childRunID under a per-execution key (atomic per-key so distinct
+// keys coexist), LoadRun surfaces it, and ClearSubbotChild removes exactly
+// that key. Empty keys are silent no-ops.
+func testSubbotChildren(t *testing.T, s store.RunStore) {
+	t.Helper()
+	ctx := testCtx()
+	if _, err := s.CreateRun(ctx, "run_subbot_parent", "demo", nil); err != nil {
+		t.Fatal(err)
+	}
+
+	// Two distinct execution keys (e.g. two fan-out branches of the same
+	// subbot node) coexist without clobbering each other.
+	if err := s.SetSubbotChild(ctx, "run_subbot_parent", "node_a#branch_0", "child-A"); err != nil {
+		t.Fatalf("SetSubbotChild A: %v", err)
+	}
+	if err := s.SetSubbotChild(ctx, "run_subbot_parent", "node_a#branch_1", "child-B"); err != nil {
+		t.Fatalf("SetSubbotChild B: %v", err)
+	}
+
+	r, err := s.LoadRun(ctx, "run_subbot_parent")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if r.SubbotChildren["node_a#branch_0"] != "child-A" || r.SubbotChildren["node_a#branch_1"] != "child-B" {
+		t.Errorf("after set: got %v want {node_a#branch_0:child-A, node_a#branch_1:child-B}", r.SubbotChildren)
+	}
+
+	// Re-set overwrites the same key in place (re-attach to a fresh child
+	// after the prior one ended badly).
+	if err := s.SetSubbotChild(ctx, "run_subbot_parent", "node_a#branch_0", "child-A2"); err != nil {
+		t.Fatalf("SetSubbotChild A2: %v", err)
+	}
+
+	// Clear removes exactly the named key, leaving the sibling.
+	if err := s.ClearSubbotChild(ctx, "run_subbot_parent", "node_a#branch_0"); err != nil {
+		t.Fatalf("ClearSubbotChild A: %v", err)
+	}
+	r, err = s.LoadRun(ctx, "run_subbot_parent")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := r.SubbotChildren["node_a#branch_0"]; ok {
+		t.Errorf("after clear: node_a#branch_0 still present in %v", r.SubbotChildren)
+	}
+	if r.SubbotChildren["node_a#branch_1"] != "child-B" {
+		t.Errorf("after clear: sibling lost, got %v", r.SubbotChildren)
+	}
+
+	// Empty key is a no-op on both paths.
+	if err := s.SetSubbotChild(ctx, "run_subbot_parent", "", "ignored"); err != nil {
+		t.Errorf("SetSubbotChild empty key: %v", err)
+	}
+	if err := s.ClearSubbotChild(ctx, "run_subbot_parent", ""); err != nil {
+		t.Errorf("ClearSubbotChild empty key: %v", err)
 	}
 }
 
@@ -664,6 +822,71 @@ func testReverseTreeQueries(t *testing.T, s store.RunStore) {
 			t.Errorf("shard_0 ParentNodeID = %q, want %q", child.ParentNodeID, "sb_node")
 		}
 	})
+}
+
+// testScheduleReverseQuery exercises ListRunsBySchedule (the
+// schedule←run reverse edge counted by the pkg/schedgate overlap
+// gate): exactly the matching ids, created_at ascending, empty for
+// unknown/empty schedule ids, and ScheduleID/ScheduleName round-trip
+// on RunSource.
+func testScheduleReverseQuery(t *testing.T, s store.RunStore) {
+	t.Helper()
+	ctx := testCtx()
+
+	saveScheduled := func(id, scheduleID string, createdAt time.Time) {
+		if _, err := s.CreateRun(ctx, id, "demo", nil); err != nil {
+			t.Fatalf("CreateRun %s: %v", id, err)
+		}
+		r, err := s.LoadRun(ctx, id)
+		if err != nil {
+			t.Fatalf("LoadRun %s: %v", id, err)
+		}
+		if scheduleID != "" {
+			r.Source = &store.RunSource{
+				Kind:         store.RunSourceKindSchedule,
+				ScheduleID:   scheduleID,
+				ScheduleName: scheduleID + "-label",
+			}
+		}
+		r.CreatedAt = createdAt
+		if err := s.SaveRun(ctx, r); err != nil {
+			t.Fatalf("SaveRun %s: %v", id, err)
+		}
+	}
+
+	base := time.Date(2026, 7, 17, 2, 0, 0, 0, time.UTC)
+	// Saved out of chronological order to assert the query re-sorts.
+	saveScheduled("sched_b", "weekly-audit", base.Add(2*time.Minute))
+	saveScheduled("sched_a", "weekly-audit", base.Add(1*time.Minute))
+	saveScheduled("sched_other", "nightly-docs", base.Add(3*time.Minute))
+	saveScheduled("manual", "", base.Add(4*time.Minute))
+
+	got, err := s.ListRunsBySchedule(ctx, "weekly-audit")
+	if err != nil {
+		t.Fatalf("ListRunsBySchedule: %v", err)
+	}
+	if want := []string{"sched_a", "sched_b"}; !sameOrderedSlice(got, want) {
+		t.Errorf("ListRunsBySchedule(weekly-audit) = %v, want %v", got, want)
+	}
+
+	for _, q := range []string{"absent-schedule", ""} {
+		got, err = s.ListRunsBySchedule(ctx, q)
+		if err != nil {
+			t.Fatalf("ListRunsBySchedule(%q): %v", q, err)
+		}
+		if len(got) != 0 {
+			t.Errorf("ListRunsBySchedule(%q) = %v, want empty", q, got)
+		}
+	}
+
+	r, err := s.LoadRun(ctx, "sched_a")
+	if err != nil {
+		t.Fatalf("LoadRun sched_a: %v", err)
+	}
+	if r.Source == nil || r.Source.Kind != store.RunSourceKindSchedule ||
+		r.Source.ScheduleID != "weekly-audit" || r.Source.ScheduleName != "weekly-audit-label" {
+		t.Errorf("RunSource round-trip mismatch: %+v", r.Source)
+	}
 }
 
 // sameOrderedSlice reports whether got and want are element-wise equal
@@ -810,6 +1033,81 @@ func testEventSeqConcurrent(t *testing.T, s store.RunStore) {
 			t.Errorf("negative seq at index %d: %d", i, ev.Seq)
 		}
 	}
+}
+
+// testEventDataDecodeShape pins the cross-backend contract for the
+// open-shaped Event.Data payload: whatever a backend puts on the wire,
+// nested documents must load back as plain map[string]any, nested
+// arrays as plain []any, and integers within the int / int64 / float64
+// family. Shared consumers (runview snapshot reducers, subbot
+// terminal-output recovery) type-assert exactly these shapes and
+// silently produce nothing on any other — a backend leaking its
+// codec's defined types (bson.D / bson.A / int32) breaks every one of
+// them while JSON round-trips keep looking correct.
+func testEventDataDecodeShape(t *testing.T, s store.RunStore) {
+	t.Helper()
+	ctx := testCtx()
+	const runID = "run_event_decode_shape"
+	if _, err := s.CreateRun(ctx, runID, "demo", nil); err != nil {
+		t.Fatal(err)
+	}
+	in := store.Event{
+		Type:      store.EventNodeFinished,
+		NodeID:    "deploy",
+		Timestamp: time.Now().UTC(),
+		Data: map[string]any{
+			"output": map[string]any{
+				"_backend":     "claude_code",
+				"deployed_url": "https://app.example.test",
+				"steps":        []any{map[string]any{"name": "build", "ok": true}},
+			},
+			"iteration": 3,
+		},
+	}
+	if _, err := s.AppendEvent(ctx, runID, in); err != nil {
+		t.Fatalf("AppendEvent: %v", err)
+	}
+
+	assertShape := func(source string, e *store.Event) {
+		t.Helper()
+		output, ok := e.Data["output"].(map[string]any)
+		if !ok {
+			t.Fatalf("%s: Data[output] loaded as %T, want map[string]any", source, e.Data["output"])
+		}
+		steps, ok := output["steps"].([]any)
+		if !ok {
+			t.Fatalf("%s: output[steps] loaded as %T, want []any", source, output["steps"])
+		}
+		if _, ok := steps[0].(map[string]any); !ok {
+			t.Fatalf("%s: steps[0] loaded as %T, want map[string]any", source, steps[0])
+		}
+		switch e.Data["iteration"].(type) {
+		case int, int64, float64:
+		default:
+			t.Fatalf("%s: Data[iteration] loaded as %T, want int / int64 / float64", source, e.Data["iteration"])
+		}
+	}
+
+	all, err := s.LoadEvents(ctx, runID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(all) != 1 {
+		t.Fatalf("LoadEvents: got %d events, want 1", len(all))
+	}
+	assertShape("LoadEvents", all[0])
+
+	var scanned *store.Event
+	if err := s.ScanEvents(ctx, runID, func(e *store.Event) bool {
+		scanned = e
+		return true
+	}); err != nil {
+		t.Fatalf("ScanEvents: %v", err)
+	}
+	if scanned == nil {
+		t.Fatal("ScanEvents visited no events")
+	}
+	assertShape("ScanEvents", scanned)
 }
 
 func testArtifactVersions(t *testing.T, s store.RunStore) {

@@ -4,6 +4,7 @@ import (
 	"context"
 
 	"github.com/SocialGouv/iterion/pkg/bundle"
+	"github.com/SocialGouv/iterion/pkg/store"
 )
 
 // LaunchPlan is the resolved intent the Evaluator hands to an effect: launch
@@ -26,6 +27,12 @@ type LaunchPlan struct {
 	RepoRef string
 	// Event is the originating event (provenance, run→source back-link).
 	Event Event
+	// SourceRef, when non-nil, stamps typed provenance on the launched
+	// run (runview.LaunchSpec.SourceRef → run.json source). The
+	// Scheduler populates it for schedule fires so the schedgate
+	// overlap gate can count this schedule's live runs; other paths
+	// leave it nil.
+	SourceRef *store.RunSource
 }
 
 // Launcher launches a run directly (ExecutionDirect). The production impl
@@ -43,6 +50,17 @@ type Launcher interface {
 // event fast-path and the poll safety-net structurally unable to double-launch.
 type BoardEffect interface {
 	Promote(ctx context.Context, plan LaunchPlan) (issueID string, err error)
+}
+
+// LabelConsumer is the optional capability a BoardEffect exposes for
+// consume_labels subscriptions: atomically strip the matcher's label set from
+// a card before a direct launch. consumed=false (no error) means another
+// evaluation already stripped them — the caller must skip the launch, which
+// is what makes the label a one-shot trigger under duplicate card events.
+// tenantID scopes the card on a multi-tenant (cloud) board; the local
+// single-store effect ignores it.
+type LabelConsumer interface {
+	ConsumeMatchLabels(ctx context.Context, tenantID, issueID string, labels []string) (consumed bool, err error)
 }
 
 // Nudger asks a consumer to act on a just-promoted card immediately instead

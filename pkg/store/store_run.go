@@ -1,0 +1,638 @@
+package store
+
+import (
+	"context"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"io/fs"
+	"os"
+	"path/filepath"
+	"sort"
+	"time"
+
+	"github.com/SocialGouv/iterion/pkg/internal/appinfo"
+)
+
+// ---------------------------------------------------------------------------
+// Run lifecycle
+// ---------------------------------------------------------------------------
+
+// CreateRun persists a new run with status "running". Captures the
+// iterion-relevant launch env (model/effort/provider knobs) and
+// iterion build version so the run record is reproducible later —
+// without these, "why did the same recipe + same inputs produce
+// different outputs across two daemon builds" is unanswerable.
+//
+// CreateRun is intentionally no-clobber: reusing a run ID must fail
+// instead of resetting an existing run's metadata/checkpoint. Resume and
+// crash-recovery code relies on run.json being the authoritative identity
+// and checkpoint record for a run.
+func (s *FilesystemRunStore) CreateRun(_ context.Context, id, workflowName string, inputs map[string]any) (*Run, error) {
+	if err := sanitizePathComponent("run ID", id); err != nil {
+		return nil, err
+	}
+	// A deleted run id is never reusable: run ids are time-prefixed so
+	// honest collisions are impraticable, and re-creating one is
+	// exactly the resurrection the tombstone exists to block.
+	if err := s.guardNotDeleted(id); err != nil {
+		return nil, err
+	}
+	now := time.Now().UTC()
+	r := &Run{
+		FormatVersion:  RunFormatVersion,
+		ID:             id,
+		WorkflowName:   workflowName,
+		Status:         RunStatusRunning,
+		Inputs:         inputs,
+		CreatedAt:      now,
+		UpdatedAt:      now,
+		LaunchEnv:      CaptureLaunchEnv(),
+		IterionVersion: appinfo.FullVersion(),
+	}
+	if err := s.writeRunNew(r); err != nil {
+		return nil, err
+	}
+	return r, nil
+}
+
+var _ ParentedRunCreator = (*FilesystemRunStore)(nil)
+
+// CreateChildRun persists a new run with status "running", stamping
+// ParentRunID in the same exclusive-create write as the run document.
+// It exists so spawnRun's precreate never leaves a running child doc
+// behind a failed second SaveRun (see store.ParentedRunCreator).
+func (s *FilesystemRunStore) CreateChildRun(_ context.Context, id, workflowName, parentRunID string, inputs map[string]any) (*Run, error) {
+	if err := sanitizePathComponent("run ID", id); err != nil {
+		return nil, err
+	}
+	if err := s.guardNotDeleted(id); err != nil {
+		return nil, err
+	}
+	now := time.Now().UTC()
+	r := &Run{
+		FormatVersion:  RunFormatVersion,
+		ID:             id,
+		WorkflowName:   workflowName,
+		ParentRunID:    parentRunID,
+		Status:         RunStatusRunning,
+		Inputs:         inputs,
+		CreatedAt:      now,
+		UpdatedAt:      now,
+		LaunchEnv:      CaptureLaunchEnv(),
+		IterionVersion: appinfo.FullVersion(),
+	}
+	if err := s.writeRunNew(r); err != nil {
+		return nil, err
+	}
+	return r, nil
+}
+
+// CreateQueuedRun persists a new run with status "queued" — the state
+// the pipeline board renders in its TODO lane while the run waits for a
+// local concurrency slot. It mirrors CreateRun's exclusive-create
+// contract (a reused run ID fails) but additionally stamps the file path
+// and bot id so the local scheduler can compile + start the run later,
+// and the board can render a meaningful card, without an in-memory
+// launch spec. The engine's runResolveDoc transitions the doc
+// queued→running on pickup, so no engine change is needed to start it.
+//
+// Implements store.QueuedRunCreator (filesystem-only; cloud stores
+// already create runs queued via CreateRun).
+func (s *FilesystemRunStore) CreateQueuedRun(_ context.Context, id, workflowName, filePath, botID string, inputs map[string]any) (*Run, error) {
+	if err := sanitizePathComponent("run ID", id); err != nil {
+		return nil, err
+	}
+	// Same tombstone rule as CreateRun: a deleted run id is never
+	// reusable. Without the guard the exclusive create would succeed —
+	// a tombstoned dir has no run.json — and resurrect the run as an
+	// unreadable zombie (run.json and the deletion marker side by side).
+	if err := s.guardNotDeleted(id); err != nil {
+		return nil, err
+	}
+	now := time.Now().UTC()
+	r := &Run{
+		FormatVersion:  RunFormatVersion,
+		ID:             id,
+		WorkflowName:   workflowName,
+		FilePath:       filePath,
+		BotID:          botID,
+		Status:         RunStatusQueued,
+		Inputs:         inputs,
+		CreatedAt:      now,
+		UpdatedAt:      now,
+		QueuedAt:       &now,
+		LaunchEnv:      CaptureLaunchEnv(),
+		IterionVersion: appinfo.FullVersion(),
+	}
+	if err := s.writeRunNew(r); err != nil {
+		return nil, err
+	}
+	return r, nil
+}
+
+// SaveRun persists the run metadata to disk. Protected by mu so it
+// cannot race against UpdateRunStatus / SaveCheckpoint / WriteArtifact
+// — two runners reconciling the same orphan via RecoverFinalize, or a
+// finalize path concurrent with an engine status update, would
+// otherwise read-modify-write through each other and lose fields.
+func (s *FilesystemRunStore) SaveRun(_ context.Context, r *Run) error {
+	if err := s.guardNotDeleted(r.ID); err != nil {
+		return err
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.writeRun(r)
+}
+
+// loadRunRaw is the pure-read variant of LoadRun: it parses run.json
+// and returns the Run without firing the name backfill or
+// finished_at heal. Used by every method that holds s.mu around its
+// own read-modify-write — the public LoadRun's healing side-effects
+// would otherwise sneak a second writeRun into a critical section
+// the caller didn't account for (its own follow-up writeRun would
+// then race the persisted state against its own in-memory copy).
+func (s *FilesystemRunStore) loadRunRaw(id string) (*Run, error) {
+	if err := sanitizePathComponent("run ID", id); err != nil {
+		return nil, err
+	}
+	p := s.runJSONPath(id)
+	data, err := os.ReadFile(p)
+	if err != nil {
+		if os.IsNotExist(err) {
+			// A tombstoned run has no run.json but DOES carry the
+			// deletion marker — surface the deliberate deletion (410)
+			// distinctly from genuine absence (404).
+			if s.runDeleted(id) {
+				return nil, fmt.Errorf("store: load run %s: %w", id, ErrRunDeleted)
+			}
+			// Wrap the shared sentinel (alongside the underlying
+			// os.ErrNotExist the ReadFile error already carries) so callers
+			// can distinguish genuine absence from a transient read failure
+			// via errors.Is(err, ErrRunNotFound) — see ErrRunNotFound.
+			return nil, fmt.Errorf("store: load run %s: %w: %w", id, ErrRunNotFound, err)
+		}
+		return nil, fmt.Errorf("store: load run %s: %w", id, err)
+	}
+	var r Run
+	if err := json.Unmarshal(data, &r); err != nil {
+		return nil, fmt.Errorf("store: decode run %s: %w", id, err)
+	}
+	return &r, nil
+}
+
+// healRun applies the on-read fixups (legacy-name backfill,
+// finished_at sanity check) and returns true if a write is needed.
+// Pure data manipulation; the caller decides when to persist.
+func healRun(r *Run) bool {
+	changed := false
+	if r.Name == "" {
+		r.Name = GenerateRunName(r.FilePath + ":" + r.ID)
+		changed = true
+	}
+	if r.Status == RunStatusRunning && r.FinishedAt != nil {
+		r.FinishedAt = nil
+		changed = true
+	}
+	return changed
+}
+
+// loadRunHealBeforeLockHook is a test hook used to deterministically
+// exercise the stale-read window before LoadRun's heal persistence enters the
+// run-mutation critical section. Nil in production.
+var loadRunHealBeforeLockHook func()
+
+// LoadRun reads run.json for the given run ID.
+//
+// The run ID is sanitised before path-joining so a hostile or
+// network-sourced ID cannot escape the store root. The write side
+// (CreateRun/WriteArtifact/WriteInteraction) already sanitises its inputs;
+// the read paths must do the same so the defence is symmetric.
+//
+// As a one-shot migration step, a legacy run with empty Name gets a
+// deterministic friendly label generated and persisted on read. After
+// the first call the field is on disk; subsequent LoadRuns skip the
+// fixup. The seed mirrors the CLI/launch path (file_path:run_id) so the
+// backfill produces the exact name a new launch would have produced.
+//
+// Callers that already hold s.mu and intend to write the run
+// themselves should use loadRunRaw to avoid the embedded writeRun
+// from the heal path interleaving with their own write.
+func (s *FilesystemRunStore) LoadRun(_ context.Context, id string) (*Run, error) {
+	r, err := s.loadRunRaw(id)
+	if err != nil {
+		return nil, err
+	}
+	if healRun(r) {
+		if loadRunHealBeforeLockHook != nil {
+			loadRunHealBeforeLockHook()
+		}
+		// Persist heal-on-read under the same mutex as every other run.json
+		// read-modify-write. The first load above may have observed a legacy
+		// stale copy; before writing the heal, re-read the current on-disk run
+		// while holding s.mu so a concurrent SaveCheckpoint/UpdateRunStatus/
+		// SaveRun cannot have its authoritative fields clobbered by this
+		// best-effort migration write.
+		s.mu.Lock()
+		fresh, reloadErr := s.loadRunRaw(id)
+		if reloadErr == nil {
+			if healRun(fresh) {
+				if writeErr := s.writeRun(fresh); writeErr != nil && s.logger != nil {
+					s.logger.Warn("store: heal-on-read for run %s failed: %v", id, writeErr)
+				}
+			}
+			s.mu.Unlock()
+			return fresh, nil
+		}
+		s.mu.Unlock()
+
+		// Best-effort persist; a write/reload failure (read-only fs, racing
+		// process, deleted run) leaves the in-memory heal applied and lets the
+		// next successful write fix it up. Never fail LoadRun on this path.
+		if s.logger != nil {
+			s.logger.Warn("store: reload for heal-on-read for run %s failed: %v", id, reloadErr)
+		}
+	}
+	return r, nil
+}
+
+// UpdateRunStatus updates the status (and optional error) of a run.
+// Protected by mu to prevent concurrent read-modify-write races.
+func (s *FilesystemRunStore) UpdateRunStatus(ctx context.Context, id string, status RunStatus, runErr string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	r, err := s.loadRunRaw(id)
+	if err != nil {
+		return err
+	}
+	return s.applyStatusTransition(r, status, runErr)
+}
+
+// PatchRunSteering persists the live-steering state on run.json.
+// Partial: a nil loopOverrides / nil budgetRaises leaves the stored
+// field untouched, so the two commands patch independently.
+func (s *FilesystemRunStore) PatchRunSteering(_ context.Context, id string, loopOverrides map[string]int, budgetRaises *RunBudgetRaises) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	r, err := s.loadRunRaw(id)
+	if err != nil {
+		return err
+	}
+	if loopOverrides != nil {
+		r.LoopOverrides = loopOverrides
+	}
+	if budgetRaises != nil {
+		r.BudgetRaises = budgetRaises
+	}
+	r.UpdatedAt = time.Now().UTC()
+	return s.writeRun(r)
+}
+
+// UpdateRunStatusIf is a compare-and-set on the status field: the
+// write only lands when the current status is in expectedFrom. Used
+// by callers that need to avoid racing with a concurrent transition
+// (e.g. a Cancel firing while a Resume is republishing). Returns
+// changed=true on a successful write, false if the status had
+// drifted since the caller's last read.
+func (s *FilesystemRunStore) UpdateRunStatusIf(ctx context.Context, id string, status RunStatus, runErr string, expectedFrom []RunStatus) (bool, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	r, err := s.loadRunRaw(id)
+	if err != nil {
+		return false, err
+	}
+	matched := false
+	for _, want := range expectedFrom {
+		if r.Status == want {
+			matched = true
+			break
+		}
+	}
+	if !matched {
+		return false, nil
+	}
+	if err := s.applyStatusTransition(r, status, runErr); err != nil {
+		return false, err
+	}
+	return true, nil
+}
+
+// applyStatusTransition is the shared tail of UpdateRunStatus and
+// UpdateRunStatusIf: mutate r in-place (status, timestamps, terminal
+// finished_at / resume FinishedAt clear, checkpoint clear when leaving
+// paused state), then persist via writeRun. Caller must hold s.mu.
+func (s *FilesystemRunStore) applyStatusTransition(r *Run, status RunStatus, runErr string) error {
+	r.Status = status
+	r.UpdatedAt = time.Now().UTC()
+	r.Error = runErr
+	switch status {
+	case RunStatusFinished, RunStatusFailed, RunStatusFailedResumable, RunStatusCancelled:
+		t := r.UpdatedAt
+		r.FinishedAt = &t
+	case RunStatusRunning, RunStatusPausedWaitingHuman:
+		// Resume paths (failed_resumable/cancelled → running) must clear
+		// FinishedAt — otherwise the studio's duration ticker uses the
+		// stale terminal timestamp and freezes mid-run.
+		r.FinishedAt = nil
+	}
+	// Clear checkpoint when leaving paused state (preserved for failed_resumable and cancelled).
+	if status == RunStatusRunning || status == RunStatusFinished || status == RunStatusFailed {
+		r.Checkpoint = nil
+	}
+	return s.writeRun(r)
+}
+
+// SaveCheckpoint persists a checkpoint on a paused run.
+// Protected by mu to prevent concurrent read-modify-write races.
+func (s *FilesystemRunStore) SaveCheckpoint(ctx context.Context, id string, cp *Checkpoint) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	r, err := s.loadRunRaw(id)
+	if err != nil {
+		return err
+	}
+	r.Checkpoint = cp
+	r.UpdatedAt = time.Now().UTC()
+	return s.writeRun(r)
+}
+
+// PauseRun atomically sets the checkpoint and updates the status to paused
+// in a single write, preventing inconsistency if one of two separate
+// operations were to fail.
+func (s *FilesystemRunStore) PauseRun(ctx context.Context, id string, cp *Checkpoint) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	r, err := s.loadRunRaw(id)
+	if err != nil {
+		return err
+	}
+	r.Checkpoint = cp
+	r.Status = RunStatusPausedWaitingHuman
+	r.UpdatedAt = time.Now().UTC()
+	return s.writeRun(r)
+}
+
+// FailRunResumable atomically sets the checkpoint, error message, and status
+// to failed_resumable in a single write, enabling resume from the last
+// successfully completed node.
+func (s *FilesystemRunStore) FailRunResumable(ctx context.Context, id string, cp *Checkpoint, runErr string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	r, err := s.loadRunRaw(id)
+	if err != nil {
+		return err
+	}
+	r.Checkpoint = cp
+	r.Status = RunStatusFailedResumable
+	r.Error = runErr
+	t := time.Now().UTC()
+	r.UpdatedAt = t
+	r.FinishedAt = &t
+	return s.writeRun(r)
+}
+
+// AddWatchedIssues merges issueIDs into the run's WatchedIssueIDs set
+// (dedup, insertion order preserved) and returns the resulting set.
+func (s *FilesystemRunStore) AddWatchedIssues(_ context.Context, runID string, issueIDs []string) ([]string, error) {
+	return s.mutateWatched(runID, func(cur []string) []string { return mergeWatchedIssues(cur, issueIDs) })
+}
+
+// RemoveWatchedIssues drops issueIDs from the run's WatchedIssueIDs set
+// and returns the resulting set.
+func (s *FilesystemRunStore) RemoveWatchedIssues(_ context.Context, runID string, issueIDs []string) ([]string, error) {
+	return s.mutateWatched(runID, func(cur []string) []string { return removeWatchedIssues(cur, issueIDs) })
+}
+
+// mutateWatched applies apply to the run's WatchedIssueIDs under mu —
+// parallel branches' onNodeFinished hooks and the watch API can call
+// this concurrently.
+func (s *FilesystemRunStore) mutateWatched(runID string, apply func([]string) []string) ([]string, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	r, err := s.loadRunRaw(runID)
+	if err != nil {
+		return nil, err
+	}
+	r.WatchedIssueIDs = apply(r.WatchedIssueIDs)
+	r.UpdatedAt = time.Now().UTC()
+	if err := s.writeRun(r); err != nil {
+		return nil, err
+	}
+	return r.WatchedIssueIDs, nil
+}
+
+// SetSubbotChild records childRunID under key in the parent run's
+// SubbotChildren map (atomic RMW under mu — concurrent fan-out branches
+// write distinct keys). No-op when key is empty.
+func (s *FilesystemRunStore) SetSubbotChild(_ context.Context, parentRunID, key, childRunID string) error {
+	if key == "" {
+		return nil
+	}
+	return s.mutateSubbotChildren(parentRunID, func(m map[string]string) map[string]string {
+		if m == nil {
+			m = make(map[string]string, 1)
+		}
+		m[key] = childRunID
+		return m
+	})
+}
+
+// ClearSubbotChild removes key from the parent run's SubbotChildren map.
+// No-op when key is empty or already absent.
+func (s *FilesystemRunStore) ClearSubbotChild(_ context.Context, parentRunID, key string) error {
+	if key == "" {
+		return nil
+	}
+	return s.mutateSubbotChildren(parentRunID, func(m map[string]string) map[string]string {
+		delete(m, key)
+		if len(m) == 0 {
+			return nil
+		}
+		return m
+	})
+}
+
+// mutateSubbotChildren applies apply to the run's SubbotChildren under mu.
+func (s *FilesystemRunStore) mutateSubbotChildren(runID string, apply func(map[string]string) map[string]string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	r, err := s.loadRunRaw(runID)
+	if err != nil {
+		return err
+	}
+	r.SubbotChildren = apply(r.SubbotChildren)
+	r.UpdatedAt = time.Now().UTC()
+	return s.writeRun(r)
+}
+
+// ListRuns returns the IDs of all persisted runs.
+func (s *FilesystemRunStore) ListRuns(_ context.Context) ([]string, error) {
+	runsDir := filepath.Join(s.root, "runs")
+	entries, err := os.ReadDir(runsDir)
+	if err != nil {
+		return nil, fmt.Errorf("store: list runs: %w", err)
+	}
+	var ids []string
+	for _, e := range entries {
+		if !e.IsDir() {
+			continue
+		}
+		// Tombstoned runs (deletion marker, no data) are not listed —
+		// they'd surface as phantom rows failing every LoadRun.
+		if s.runDeleted(e.Name()) {
+			continue
+		}
+		ids = append(ids, e.Name())
+	}
+	sort.Strings(ids)
+	return ids, nil
+}
+
+// ListRunsBySourceIssue returns the ids of runs whose Source.IssueID
+// equals issueID (the card←run reverse edge), sorted by created_at
+// ascending. At local scale we scan ListRuns + LoadRun each and filter
+// — mirroring how the other fs-side filters work (runview.List) — since
+// the filesystem store has no secondary index. Runs that fail to load
+// are skipped rather than failing the whole query.
+func (s *FilesystemRunStore) ListRunsBySourceIssue(ctx context.Context, issueID string) ([]string, error) {
+	if issueID == "" {
+		return []string{}, nil
+	}
+	return s.filterRunsSorted(ctx, func(r *Run) bool {
+		return r.Source != nil && r.Source.IssueID == issueID
+	})
+}
+
+// ListRunsBySchedule returns the ids of runs whose Source.ScheduleID
+// equals scheduleID (the schedule←run reverse edge used by the
+// pkg/schedgate overlap gate), sorted by created_at ascending. Same
+// scan-and-filter strategy as ListRunsBySourceIssue.
+func (s *FilesystemRunStore) ListRunsBySchedule(ctx context.Context, scheduleID string) ([]string, error) {
+	if scheduleID == "" {
+		return []string{}, nil
+	}
+	return s.filterRunsSorted(ctx, func(r *Run) bool {
+		return r.Source != nil && r.Source.ScheduleID == scheduleID
+	})
+}
+
+// ListChildRuns returns the ids of runs whose ParentRunID equals
+// parentRunID (a run's shard/child subtree), sorted by created_at
+// ascending. Same scan-and-filter strategy as ListRunsBySourceIssue.
+func (s *FilesystemRunStore) ListChildRuns(ctx context.Context, parentRunID string) ([]string, error) {
+	if parentRunID == "" {
+		return []string{}, nil
+	}
+	return s.filterRunsSorted(ctx, func(r *Run) bool {
+		return r.ParentRunID == parentRunID
+	})
+}
+
+// filterRunsSorted scans every run, keeps those matching pred, and
+// returns their ids sorted by CreatedAt ascending. Shared by the
+// fs-side reverse-tree queries.
+func (s *FilesystemRunStore) filterRunsSorted(ctx context.Context, pred func(*Run) bool) ([]string, error) {
+	ids, err := s.ListRuns(ctx)
+	if err != nil {
+		return nil, err
+	}
+	type match struct {
+		id string
+		at time.Time
+	}
+	var matches []match
+	for _, id := range ids {
+		r, err := s.LoadRun(ctx, id)
+		if err != nil {
+			if s.logger != nil {
+				s.logger.Warn("store: skip run %s during reverse-query scan: %v", id, err)
+			}
+			continue
+		}
+		if pred(r) {
+			matches = append(matches, match{id: r.ID, at: r.CreatedAt})
+		}
+	}
+	sort.SliceStable(matches, func(i, j int) bool {
+		return matches[i].at.Before(matches[j].at)
+	})
+	out := make([]string, 0, len(matches))
+	for _, m := range matches {
+		out = append(out, m.id)
+	}
+	return out, nil
+}
+
+func (s *FilesystemRunStore) writeRunNew(r *Run) error {
+	// Defence in depth for CreateRun's exclusive create path: sanitise here as
+	// well as at the public entry point so future internal callers cannot path
+	// join a tampered Run.ID outside the store root.
+	if err := sanitizePathComponent("run ID", r.ID); err != nil {
+		return err
+	}
+	dir := s.runDir(r.ID)
+	if err := os.MkdirAll(dir, dirPerm); err != nil {
+		return fmt.Errorf("store: mkdir run: %w", err)
+	}
+	// Tighten existing directories (MkdirAll is a no-op on them). A stale or
+	// pre-created run directory must not remain world-readable.
+	if err := os.Chmod(dir, dirPerm); err != nil {
+		return fmt.Errorf("store: chmod run: %w", err)
+	}
+	data, err := json.MarshalIndent(r, "", "  ")
+	if err != nil {
+		return fmt.Errorf("store: marshal run: %w", err)
+	}
+	if err := WriteFileAtomicNew(s.runJSONPath(r.ID), data, filePerm); err != nil {
+		if errors.Is(err, fs.ErrExist) {
+			return fmt.Errorf("store: run %s already exists: %w", r.ID, fs.ErrExist)
+		}
+		return err
+	}
+	return nil
+}
+
+func (s *FilesystemRunStore) writeRun(r *Run) error {
+	// Defence in depth: every public entry point that mutates a run
+	// (SaveRun, UpdateRunStatus, SaveCheckpoint, PauseRun,
+	// FailRunResumable) flows through here. Sanitise once, here, so
+	// e.g. a Run loaded with a tampered ID can't be re-serialised to a
+	// path outside the store root.
+	if err := sanitizePathComponent("run ID", r.ID); err != nil {
+		return err
+	}
+	dir := s.runDir(r.ID)
+	if err := os.MkdirAll(dir, dirPerm); err != nil {
+		return fmt.Errorf("store: mkdir run: %w", err)
+	}
+	if err := os.Chmod(dir, dirPerm); err != nil {
+		return fmt.Errorf("store: chmod run: %w", err)
+	}
+	data, err := json.MarshalIndent(r, "", "  ")
+	if err != nil {
+		return fmt.Errorf("store: marshal run: %w", err)
+	}
+	// Write-ahead ordering barrier: if an earlier AppendEvent fsync
+	// failed, re-sync events.jsonl BEFORE the checkpoint write. run.json
+	// is written atomically with fsync, so without the barrier a power
+	// loss could recover a checkpoint that references events which never
+	// reached disk. Failing here is consistent with writeFileAtomic's
+	// own hard-fail on fsync: if the disk can't persist the log, it
+	// can't persist the checkpoint either.
+	if s.eventsUnsynced[r.ID] {
+		if err := s.syncEventsLocked(r.ID); err != nil {
+			return fmt.Errorf("store: write run %s blocked — events.jsonl re-sync after an earlier fsync failure: %w", r.ID, err)
+		}
+	}
+	// Atomic write: run.json is the authoritative resume checkpoint
+	// (per CLAUDE.md). A torn write would lose all prior checkpoint state.
+	return writeFileAtomic(s.runJSONPath(r.ID), data, filePerm)
+}

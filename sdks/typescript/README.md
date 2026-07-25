@@ -21,35 +21,30 @@ to its absolute path.
 ## Quickstart
 
 ```ts
-import { IterionClient, IterionRuntimeError } from "@iterion/sdk";
+import { IterionClient } from "@iterion/sdk";
 
 const iterion = new IterionClient({ storeDir: ".iterion" });
 
-try {
-  const result = await iterion.run("bots/whats-next/main.bot", {
-    vars: { repo: "my-repo" },
-    logLevel: "info",
-  });
+const result = await iterion.run("examples/clarify/main.bot", {
+  vars: {
+    transcript: "User A: ship it. User B: ship what?",
+    latest_message: "User B: ship what?",
+    thread_id: "thread-1",
+  },
+  logLevel: "info",
+});
 
-  // By default `run()` THROWS on `status: "failed"` (see throwOn below).
-  // The remaining terminal statuses are returned for the caller to branch on.
-  switch (result.status) {
-    case "finished":
-      console.log("done", result.run_id);
-      break;
-    case "paused_waiting_human":
-      console.log("waiting for", result.questions);
-      break;
-    case "cancelled":
-      console.warn("cancelled");
-      break;
-  }
-} catch (err) {
-  if (err instanceof IterionRuntimeError) {
-    console.error(`workflow failed [${err.code}]:`, err.message);
-  } else {
-    throw err;
-  }
+// By default `run()` throws on `status: "failed"` (see throwOn below).
+switch (result.status) {
+  case "finished":
+    console.log("done", result.run_id);
+    break;
+  case "paused_waiting_human":
+    console.log("waiting for", result.questions);
+    break;
+  case "cancelled":
+    console.warn("cancelled");
+    break;
 }
 ```
 
@@ -91,8 +86,10 @@ The public surface is documented in source under `src/`:
 
 ## Status
 
-This package targets iterion `v0.2.x`. APIs may change without notice
-while iterion itself is experimental.
+The SDK is versioned independently (`0.1.x` at the time of this checkout) and
+tracks the CLI JSON/persisted-format contracts in the same Iterion repository.
+Use matching SDK and CLI releases; both surfaces remain experimental and may
+change before a stable compatibility policy is declared.
 
 ## License
 

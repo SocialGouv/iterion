@@ -1,4 +1,5 @@
 import {
+  ClockIcon,
   LightningBoltIcon,
   PersonIcon,
   RocketIcon,
@@ -16,12 +17,13 @@ import type { RunSourceKind, RunSummary } from "@/api/runs";
 type RadixIcon = typeof PersonIcon;
 
 // Concrete order the chip row and group headers walk. Trigger sources
-// (manual / webhook / dispatcher) come first — they're how an operator
-// thinks about "where did this run come from"; structural ones
+// (manual / webhook / schedule / dispatcher) come first — they're how an
+// operator thinks about "where did this run come from"; structural ones
 // (fork / shard) follow. The "all" pseudo-value is rendered separately.
 export const SOURCE_KIND_ORDER: ReadonlyArray<RunSourceKind> = [
   "manual",
   "webhook",
+  "schedule",
   "dispatcher",
   "fork",
   "shard",
@@ -55,6 +57,16 @@ export const SOURCE_META: Record<RunSourceKind, SourceMeta> = {
     description: "Triggered by an inbound webhook event.",
     Icon: LightningBoltIcon,
     variant: "accent",
+  },
+  // Recurring cron schedule — host-crontab, trigger spine, or the cloud
+  // ticker. Stamped with the schedule identity the overlap gate meters on.
+  schedule: {
+    label: "Schedule",
+    description: "Fired by a recurring cron schedule.",
+    Icon: ClockIcon,
+    // Shares dispatcher's palette on purpose — both are autonomous machine
+    // triggers; the clock glyph is what tells them apart.
+    variant: "info",
   },
   // Long-running dispatcher polling an issue tracker (native kanban,
   // GitHub Issues, Forgejo). The most autonomous trigger source.
@@ -91,6 +103,7 @@ export const SOURCE_META: Record<RunSourceKind, SourceMeta> = {
 export function normalizeSourceKind(raw: string | undefined | null): RunSourceKind {
   switch (raw) {
     case "webhook":
+    case "schedule":
     case "dispatcher":
     case "fork":
     case "shard":

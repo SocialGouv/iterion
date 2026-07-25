@@ -29,8 +29,11 @@ const MarketplaceView = lazy(() => import("@/views/Marketplace"));
 const PluginsView = lazy(() => import("@/views/Plugins"));
 const SecretsView = lazy(() => import("@/views/Secrets"));
 const SkillsView = lazy(() => import("@/views/Skills"));
+const ConfigEditorView = lazy(() => import("@/views/ConfigEditor"));
 const OrgsAdminPage = lazy(() => import("@/views/admin/OrgsAdminPage"));
 const UsersAdminPage = lazy(() => import("@/views/admin/UsersAdminPage"));
+const AuditAdminPage = lazy(() => import("@/views/admin/AuditAdminPage"));
+const DLQAdminPage = lazy(() => import("@/views/admin/DLQAdminPage"));
 const Welcome = lazy(() => import("@/views/Welcome"));
 const SettingsDialog = lazy(() => import("@/views/SettingsDialog"));
 const ProjectSwitcher = lazy(() => import("@/views/ProjectSwitcher"));
@@ -38,6 +41,9 @@ const CloudReloginModal = lazy(() => import("@/components/shared/CloudReloginMod
 const SettingsPage = lazy(() => import("@/views/account/SettingsPage"));
 const TeamPage = lazy(() => import("@/views/teams/TeamPage"));
 const IntegrationsPage = lazy(() => import("@/views/integrations/IntegrationsPage"));
+const ConnectRepoWizardView = lazy(() => import("@/views/integrations/ConnectRepoWizard"));
+const BindBotWizardView = lazy(() => import("@/views/integrations/BindBotWizard"));
+const RepoDetailView = lazy(() => import("@/views/RepoDetail"));
 const OrgPage = lazy(() => import("@/views/orgs/OrgPage"));
 
 // Auth side-doors reachable when anonymous (forced password rotation,
@@ -46,14 +52,18 @@ const ForcedPasswordChange = lazy(() => import("@/views/auth/ForcedPasswordChang
 const ForgotPassword = lazy(() => import("@/views/auth/ForgotPassword"));
 const ResetPassword = lazy(() => import("@/views/auth/ResetPassword"));
 const AcceptInvitation = lazy(() => import("@/views/auth/AcceptInvitation"));
+const Login = lazy(() => import("@/views/Login"));
 
 import { ErrorBoundary } from "@/components/shared/ErrorBoundary";
+import FeatureUnavailable from "@/components/shared/FeatureUnavailable";
 import GlobalCommandPalette from "@/components/shared/GlobalCommandPalette";
 import ToastContainer from "@/components/shared/Toast";
 import MissingCLIBanner from "@/components/MissingCLIBanner";
 import CloudLanding, { PublicTopBar } from "@/views/CloudLanding";
 const RestrictedShell = lazy(() => import("@/views/RestrictedShell"));
+const ConfigEditorShell = lazy(() => import("@/views/ConfigEditorShell"));
 const CliAuthPage = lazy(() => import("@/views/CliAuthPage"));
+const ConfigShareView = lazy(() => import("@/views/ConfigShare"));
 import { useDesktop } from "@/hooks/useDesktop";
 import { useDocumentTitle } from "@/hooks/useDocumentTitle";
 import { useProjectSwitchListener } from "@/hooks/useProjectSwitchListener";
@@ -112,7 +122,7 @@ function ScopedPaneReauth() {
 // session so the AuthGate consults the URL when it sees the
 // "anonymous" state and dispatches to the matching public view.
 function AuthGate() {
-  const { status, signOut, isRestricted, retryConnection } = useAuth();
+  const { status, signOut, isRestricted, activeRole, retryConnection } = useAuth();
   const [location] = useLocation();
   const serverInfo = useServerInfoStore((s) => s.info);
 
@@ -141,10 +151,24 @@ function AuthGate() {
     return (
       <Suspense fallback={<BootLoading />}>
         <Switch>
+          {/* Dedicated sign-in page: every "Sign in" button and the
+              auth side-doors' navigate("/login") land on the plain
+              SignInCard instead of scrolling the marketing landing. */}
+          <Route path="/login" component={Login} />
           <Route path="/auth/password/change" component={ForcedPasswordChange} />
           <Route path="/auth/forgot-password" component={ForgotPassword} />
           <Route path="/auth/reset" component={ResetPassword} />
           <Route path="/invitations/accept" component={AcceptInvitation} />
+          {/* Self-authenticating config-share editor. Renders shell-less
+              (no AppShell/Sidebar/Header) — the visitor is NOT an
+              operator, and the token in the URL fragment authenticates
+              them. Mounted in the anonymous branch so a share link
+              works without any session cookie. */}
+          <Route path="/config/:id">
+            <ErrorBoundary area="Config share editor">
+              <ConfigShareView />
+            </ErrorBoundary>
+          </Route>
           {/* Public marketplace — browsable + downloadable without an
               account (submit/install gate behind sign-in). Outside the
               AppShell, so it carries its own slim top bar. */}
@@ -181,6 +205,30 @@ function AuthGate() {
     return (
       <Suspense fallback={<BootLoading />}>
         <CliAuthPage />
+      </Suspense>
+    );
+  }
+  // Config-share editor — deliberately shell-less even when the operator is
+  // signed in (opening the link in the same browser must NOT reveal any
+  // studio chrome; the editor authenticates on the share token alone). The
+  // isolated fetch client at @/api/configShare pins credentials: "omit", so
+  // the operator's cookie is never sent even though same-origin.
+  if (location.startsWith("/config/")) {
+    return (
+      <Suspense fallback={<BootLoading />}>
+        <ConfigShareView />
+      </Suspense>
+    );
+  }
+  // The least-privilege `config_editor` role gets a limited shell that can
+  // ONLY edit the team's config-shares — no Sidebar, no runs/board/launch.
+  // It's a real team member (isRestricted is false for them), so this branch
+  // must sit ABOVE the isRestricted check. The auth side-doors above
+  // (/invitations/accept, /cli-auth, /config/:id) stay reachable for them.
+  if (activeRole === "config_editor") {
+    return (
+      <Suspense fallback={<BootLoading />}>
+        <ConfigEditorShell />
       </Suspense>
     );
   }
@@ -252,9 +300,13 @@ function AuthedApp() {
       ),
     ];
     // Listen for the SPA-emitted open-switcher event from ProjectLabel
-    // (clicking the project chip in the toolbar / run header).
+    // (clicking the project chip in the toolbar / run header). Cloud has no
+    // project concept and never mounts ProjectSwitcher — no listener there so
+    // stray dispatches don't try to open an unmounted dialog.
     const onOpenSwitcher = () => setSwitcherOpen(true);
-    window.addEventListener("iterion:open-project-switcher", onOpenSwitcher);
+    if (serverInfo?.mode !== "cloud") {
+      window.addEventListener("iterion:open-project-switcher", onOpenSwitcher);
+    }
     // Sidebar Settings button (and any other SPA caller) dispatches this
     // to surface the dialog. The optional `tab` detail lets callers
     // land on a specific section (Appearance, Backends, …).
@@ -291,11 +343,15 @@ function AuthedApp() {
       window.removeEventListener("iterion:open-settings", onOpenSettings as EventListener);
       window.removeEventListener("message", onShellMenu);
     };
-  }, [pickAndAddProject, isDesktop]);
+  }, [pickAndAddProject, isDesktop, serverInfo?.mode]);
 
   useEffect(() => {
+    // Ctrl/Cmd+P opens the ProjectSwitcher — a folder concept that only
+    // exists in local/desktop. Skipping the shortcut in cloud avoids the
+    // silent no-op where the dialog isn't mounted.
+    const isCloud = serverInfo?.mode === "cloud";
     const onKey = (e: KeyboardEvent) => {
-      if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "p") {
+      if (!isCloud && (e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "p") {
         e.preventDefault();
         setSwitcherOpen(true);
       }
@@ -307,7 +363,7 @@ function AuthedApp() {
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, []);
+  }, [serverInfo?.mode]);
 
   if (!ready) {
     return (
@@ -366,22 +422,51 @@ function AuthedApp() {
           <Route path="/account" component={SettingsPage} />
           <Route path="/orgs/:id" component={OrgPage} />
           <Route path="/teams/:id" component={TeamPage} />
+          <Route path="/integrations/connect" component={ConnectRepoWizardView} />
+          <Route path="/integrations/bind" component={BindBotWizardView} />
           <Route path="/integrations" component={IntegrationsPage} />
+          <Route path="/repos/:key">
+            <ErrorBoundary area="Repository view">
+              <RepoDetailView />
+            </ErrorBoundary>
+          </Route>
           <Route path="/admin" component={OrgsAdminPage} />
           <Route path="/admin/orgs" component={OrgsAdminPage} />
           <Route path="/admin/users" component={UsersAdminPage} />
-          {serverInfo?.native_tracker_enabled && (
+          <Route path="/admin/audit" component={AuditAdminPage} />
+          <Route path="/admin/dlq" component={DLQAdminPage} />
+          {serverInfo?.native_tracker_enabled ? (
             <Route path="/board/labels">
               <ErrorBoundary area="Board labels view">
                 <LabelsView />
               </ErrorBoundary>
             </Route>
+          ) : (
+            <Route path="/board/labels">
+              <FeatureUnavailable
+                title="Board labels"
+                description="Label vocabulary of the native kanban tracker."
+                reason="The native kanban tracker isn't wired on this server."
+                ctaLabel="Open Runs"
+                ctaHref="/runs"
+              />
+            </Route>
           )}
-          {serverInfo?.native_tracker_enabled && (
+          {serverInfo?.native_tracker_enabled ? (
             <Route path="/board/fields">
               <ErrorBoundary area="Board fields view">
                 <FieldsView />
               </ErrorBoundary>
+            </Route>
+          ) : (
+            <Route path="/board/fields">
+              <FeatureUnavailable
+                title="Board fields"
+                description="Custom card fields of the native kanban tracker."
+                reason="The native kanban tracker isn't wired on this server."
+                ctaLabel="Open Runs"
+                ctaHref="/runs"
+              />
             </Route>
           )}
           <Route path="/insights">
@@ -389,67 +474,132 @@ function AuthedApp() {
               <RunsAnalyticsView />
             </ErrorBoundary>
           </Route>
-          {serverInfo?.plugins_enabled && (
+          {serverInfo?.plugins_enabled ? (
             <Route path="/plugins">
               <ErrorBoundary area="Plugins view">
                 <PluginsView />
               </ErrorBoundary>
             </Route>
+          ) : (
+            <Route path="/plugins">
+              <FeatureUnavailable
+                title="Plugins"
+                description="Installable packages contributing rewriters (command-output compression), MCP servers, skills, and hooks."
+                reason="This server doesn't expose the plugin registry."
+                ctaHint="Plugins are managed on the server host with the `iterion plugin` CLI."
+              />
+            </Route>
           )}
-          {serverInfo?.secrets_enabled && (
+          {serverInfo?.secrets_enabled ? (
             <Route path="/secrets">
               <ErrorBoundary area="Secrets view">
                 <SecretsView />
               </ErrorBoundary>
             </Route>
+          ) : (
+            <Route path="/secrets">
+              <FeatureUnavailable
+                title="Secrets"
+                description="Local sealed secret store — API keys and named secrets resolved into runs."
+                reason="The local secret store lives on the studio host (sealed with the OS keychain), so it isn't available on this server."
+                ctaHint="In cloud mode, manage secrets from your team page's Secrets tab; locally, use `iterion secret set|list|rm`."
+              />
+            </Route>
           )}
-          {serverInfo?.skills_enabled && (
+          {serverInfo?.skills_enabled ? (
             <Route path="/skills">
               <ErrorBoundary area="Skills view">
                 <SkillsView />
               </ErrorBoundary>
             </Route>
-          )}
-          {serverInfo?.native_tracker_enabled && (
-            <Route path="/pipelines/cards/:kind/:id">
-              <ErrorBoundary area="Pipeline card page">
-                <PipelineCardPage />
-              </ErrorBoundary>
+          ) : (
+            <Route path="/skills">
+              <FeatureUnavailable
+                title="Skills"
+                description="Operator-curated skill library referenced by workflows via the DSL `skills:` field."
+                reason="The skill library lives on the studio host's filesystem, so it's only available in local (non-cloud) mode."
+                ctaLabel="Open Bots"
+                ctaHref="/bots"
+                ctaHint="Bots still ship their own bundled skills — browse them from the catalog."
+              />
             </Route>
           )}
-          {serverInfo?.native_tracker_enabled && (
+          {serverInfo?.native_tracker_enabled ? (
             <Route path="/pipelines">
               <ErrorBoundary area="Pipeline board view">
                 <PipelineBoardView />
               </ErrorBoundary>
             </Route>
+          ) : (
+            <Route path="/pipelines">
+              <FeatureUnavailable
+                title="Pipelines"
+                description="Global control-center board tracking staged tasks and their in-flight runs."
+                reason="The pipeline board sits on the native kanban tracker, which isn't wired on this server."
+                ctaLabel="Open Runs"
+                ctaHref="/runs"
+                ctaHint="Runs launched on this server remain visible in the Runs view."
+              />
+            </Route>
           )}
-          {serverInfo?.native_tracker_enabled && (
+          {serverInfo?.native_tracker_enabled ? (
             <Route path="/board">
               <ErrorBoundary area="Board view">
                 <BoardView />
               </ErrorBoundary>
             </Route>
+          ) : (
+            <Route path="/board">
+              <FeatureUnavailable
+                title="Board"
+                description="Native kanban tracker — issues, labels, and drag-and-drop states feeding the dispatcher."
+                reason="The native kanban tracker isn't wired on this server."
+                ctaLabel="Open Runs"
+                ctaHref="/runs"
+                ctaHint="Work dispatched on this server still shows up in the Runs view."
+              />
+            </Route>
           )}
-          {serverInfo?.dispatcher_enabled && (
+          {serverInfo?.dispatcher_enabled ? (
             <Route path="/dispatcher">
               <ErrorBoundary area="Dispatcher view">
                 <DispatcherView />
               </ErrorBoundary>
             </Route>
-          )}
-          {serverInfo?.triggers_enabled && (
-            <Route path="/triggers">
-              <ErrorBoundary area="Automations view">
-                <TriggersView />
-              </ErrorBoundary>
+          ) : (
+            <Route path="/dispatcher">
+              <FeatureUnavailable
+                title="Dispatcher"
+                description="Long-running dispatcher: polls an issue tracker and launches a workflow per eligible issue."
+                ctaLabel="Open Pipelines"
+                ctaHref="/pipelines"
+                ctaHint="The pipeline board tracks staged tasks and their in-flight runs on this server."
+              />
             </Route>
           )}
-          {serverInfo?.marketplace_enabled && (
+          {/* Not gated on triggers_enabled: the view handles a missing
+              trigger store per tab, and cloud servers carry Schedules
+              even when the event-trigger spine is off. */}
+          <Route path="/triggers">
+            <ErrorBoundary area="Automations view">
+              <TriggersView />
+            </ErrorBoundary>
+          </Route>
+          {serverInfo?.marketplace_enabled ? (
             <Route path="/marketplace">
               <ErrorBoundary area="Marketplace view">
                 <MarketplaceView />
               </ErrorBoundary>
+            </Route>
+          ) : (
+            <Route path="/marketplace">
+              <FeatureUnavailable
+                title="Marketplace"
+                description="Hosted registry of shareable bots and plugins."
+                ctaLabel="Open Bots"
+                ctaHref="/bots"
+                ctaHint="Browse the bots already discoverable in this workspace."
+              />
             </Route>
           )}
           <Route path="/editor">
@@ -460,6 +610,11 @@ function AuthedApp() {
           <Route path="/whats-next">
             <ErrorBoundary area="What's Next view">
               <WhatsNextView />
+            </ErrorBoundary>
+          </Route>
+          <Route path="/config-editor">
+            <ErrorBoundary area="Config editor view">
+              <ConfigEditorView />
             </ErrorBoundary>
           </Route>
           <Route path="/" component={HomeView} />
@@ -478,10 +633,10 @@ function AuthedApp() {
           onTabChange={setSettingsTab}
           desktopFeatures={isDesktop}
         />
-        {/* ProjectSwitcher renders in both desktop and local-server modes.
-            Cloud mode (no work_dir) renders nothing useful; we still mount
-            it so the Ctrl+P shortcut and ProjectLabel chip have somewhere
-            to dispatch — the dialog just shows an empty list there. */}
+        {/* ProjectSwitcher renders in desktop and local-server modes only —
+            cloud has no work_dir concept and the Ctrl+P shortcut plus every
+            open-switcher dispatch are gated on non-cloud, so the dialog
+            never needs to mount there. */}
         {serverInfo?.mode !== "cloud" && (
           <ProjectSwitcher open={switcherOpen} onClose={() => setSwitcherOpen(false)} />
         )}

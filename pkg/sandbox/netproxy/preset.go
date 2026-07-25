@@ -37,6 +37,11 @@ func iterionDefaultRules() []string {
 		"api.anthropic.com",
 		"api.openai.com",
 		"openrouter.ai",
+		// xAI Grok (OpenAI-compatible chat completions). Required for
+		// `model: "xai/grok-…"` under sandbox.network allowlist —
+		// without it the CONNECT proxy blocks the upstream and the
+		// claw call fails before any token is produced.
+		"api.x.ai",
 		"**.bedrock.amazonaws.com",
 		"**.googleapis.com",
 		"**.openai.azure.com",

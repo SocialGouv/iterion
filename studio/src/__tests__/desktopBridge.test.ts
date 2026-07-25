@@ -74,7 +74,6 @@ describe("desktopBridge — desktop mode (mocked bindings)", () => {
             RemoveProject: vi.fn().mockResolvedValue(undefined),
             SwitchProject: vi.fn().mockResolvedValue(undefined),
             PickProjectDirectory: vi.fn().mockResolvedValue("/tmp/p"),
-            ScaffoldProject: vi.fn().mockResolvedValue(undefined),
             GetKnownSecretKeys: vi.fn().mockResolvedValue(["ANTHROPIC_API_KEY"]),
           },
         },
@@ -115,7 +114,6 @@ describe("desktopBridge — desktop mode (mocked bindings)", () => {
 
   it("getDesktopWsBase returns absolute ws URL with token query", async () => {
     const mod = await import("@/lib/desktopBridge");
-    mod.resetDesktopWsCache();
     const url = await mod.getDesktopWsBase("/api/ws");
     // The bindings stub returns http://127.0.0.1:54321/ and token "tok".
     // The dialer must produce ws://127.0.0.1:54321/api/ws?t=tok so the
@@ -126,7 +124,6 @@ describe("desktopBridge — desktop mode (mocked bindings)", () => {
 
   it("getDesktopWsBase reuses cache when serverURL unchanged across calls", async () => {
     const mod = await import("@/lib/desktopBridge");
-    mod.resetDesktopWsCache();
     const url1 = await mod.getDesktopWsBase("/api/ws");
     const url2 = await mod.getDesktopWsBase("/api/ws/runs/abc");
     // Cache hit on the second call: same serverURL, different path.
@@ -142,7 +139,6 @@ describe("desktopBridge — desktop mode (mocked bindings)", () => {
 
   it("getDesktopWsBase rebuilds when serverURL changes (project switch)", async () => {
     const mod = await import("@/lib/desktopBridge");
-    mod.resetDesktopWsCache();
     const url1 = await mod.getDesktopWsBase("/api/ws");
     expect(url1).toBe("ws://127.0.0.1:54321/api/ws?t=tok");
     // Simulate a project switch: the embedded server rebinds on a fresh
@@ -162,7 +158,6 @@ describe("desktopBridge — getDesktopWsBase in browser mode", () => {
 
   it("returns null in browser mode so caller can fall back to relative URL", async () => {
     const mod = await import("@/lib/desktopBridge");
-    mod.resetDesktopWsCache();
     const url = await mod.getDesktopWsBase("/api/ws");
     expect(url).toBeNull();
   });

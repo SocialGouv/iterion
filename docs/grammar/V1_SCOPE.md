@@ -1,43 +1,68 @@
-# V1 Scope — Iterion Grammar & AST
+# Current scope of the V1 grammar and AST
 
-## Primitives Covered by the V1 Grammar and AST
+The filename and grammar version remain `V1` for compatibility: Iterion has
+evolved the original language additively rather than introducing a second file
+format. This is therefore a living scope statement, not the 2025 launch
+feature list. For exact productions, use
+[`iterion_v1.ebnf`](iterion_v1.ebnf); for authoring guidance, use
+[`../dsl.md`](../dsl.md).
 
-| Primitive | DSL Keyword | AST Node | Notes |
-|-----------|-------------|----------|-------|
-| Variables | `vars:` | `VarsBlock`, `VarField` | Top-level and workflow-level |
-| Prompts | `prompt <name>:` | `PromptDecl` | Free text with `{{...}}` |
-| Schemas | `schema <name>:` | `SchemaDecl`, `SchemaField` | Types: string, bool, int, float, json, string[]; enum constraint |
-| Agent | `agent <name>:` | `AgentDecl` | model, input, output, publish, system, user, session, tools, tool_max_steps |
-| Judge | `judge <name>:` | `JudgeDecl` | Structurally identical to agent |
-| Router | `router <name>:` | `RouterDecl` | Modes: fan_out_all, condition, round_robin, llm |
-| Await / convergence | `await: wait_all` / `await: best_effort` | `AwaitMode` on supported nodes | Declared on agent, judge, human, tool, or compute nodes that consume multiple incoming branches |
-| Human | `human <name>:` | `HumanDecl` | input, output, publish, instructions, interaction, interaction_prompt, interaction_model, model, system, min_answers. Interaction values: human (default), llm, llm_or_human, none |
-| Tool (node) | `tool <name>:` | `ToolNodeDecl` | command or script (mutually exclusive), language, input, output, await, sandbox; direct execution without LLM |
-| done / fail | (reserved) | Edge targets | No declaration, recognized by the parser |
-| Workflow | `workflow <name>:` | `WorkflowDecl` | vars, attachments, entry, default_backend, tool_policy/capabilities, mcp, budget, compaction, interaction, worktree, sandbox, edges |
-| Budget | `budget:` | `BudgetBlock` | max_parallel_branches, max_duration, max_cost_usd, max_tokens, max_iterations |
-| Edge | `src -> dst` | `Edge` | with, when, as (loop) |
-| When | `when [not] <cond>` or `when "<expr>"` | `WhenClause` | Simple boolean-field shorthand plus quoted expressions with boolean operators, comparisons, and built-ins such as length, concat, unique, contains, join |
-| Loop | `as <name>(<N>)` | `LoopClause` | Named and bounded loop |
-| With | `with { ... }` | `WithEntry` | Inter-node data mapping |
-| Session | `session:` | `SessionMode` | fresh, inherit, fork, artifacts_only |
-| Publish | `publish:` | Field on Agent/Judge/Human | Persistent artifact |
-| Template | `{{...}}` | In string values | vars.X, input.X, outputs.X[.Y], artifacts.X |
-| Env refs | `${...}` | In string values | Runtime resolution |
-| Comments | `## ...` | `Comment` | In file and in workflow |
+## Parsed declaration families
 
-## Explicitly Out of V1
+| Family | Current surface |
+|---|---|
+| Inputs and reuse | top-level or workflow `vars` / `attachments`; top-level `presets` / `secrets`; workflow `resources`; compile-time `group` / `use` |
+| Prompt and shape | `prompt` with bounded relative `include`, flat `schema`, cursor declarations |
+| LLM execution | `agent`, `judge`, model/backend/provider selection, prompts, sessions, tools, permissions, skills, MCP, memory, cursors, compaction, reasoning/timeout limits |
+| Deterministic execution | `tool`, Verified Action policy/recovery, `compute`, event `emit`, bounded event `wait` |
+| Human control | `human` with `none`, `human`, `llm`, `llm_or_human`, or `review` interaction and review/merge fields |
+| Routing | `router` modes `fan_out_all`, `fan_out_each`, `condition`, `round_robin`, and `llm` |
+| Nested execution | `subbot` child runs, variable mapping, resource leases, and `isolated` workspace-safety assertion |
+| Concurrent observation | `supervisor` declarations with watched nodes, cooldown, evaluation cap, model, and system prompt |
+| Workflow | one `workflow` per file, entry, edges, defaults, permissions/capabilities/skills/MCP, budget, resources, interaction, worktree, compression, sandbox |
 
-| Concept | Reason |
-|---------|--------|
-| **Imports / includes** | One file = one workflow. No module system in V1. |
-| **Node inheritance** | No `extends` or node composition. Duplication is acceptable. |
-| **Composite types in schemas** | No nested types or `map`. `json` serves as a catch-all type. |
-| **Sub-workflows / workflow calls** | A workflow cannot call another workflow. |
-| **Retry / backoff on nodes** | Handled at runtime/policy level, not in the DSL. |
-| **Per-node timeouts** | Only the global budget `max_duration` is supported in V1. |
-| **Dynamic variables** | Vars are declared statically; no computed vars. |
-| **Annotations / metadata** | No free-form annotation system on nodes. |
-| **Semantic validation** | The grammar and AST do not validate cross-references; that is handled in P2 (AST → IR compilation). |
-| **Template typing** | `{{...}}` are opaque strings in the AST; type checking is done at compilation. |
-| **Multi-workflow per file** | Technically possible in the grammar (the `Workflows` field is a slice), but one workflow per file is the V1 convention. |
+Supported scalar/schema types are `string`, `bool`, `int`, `float`, `json`,
+and `string[]`; string declarations may carry an enum constraint.
+
+## Edges, iteration, and convergence
+
+Edges support data mapping with `with`, guarded routing with `when` or `else`,
+and one iteration clause:
+
+- bounded named loops, including runtime-resolved caps;
+- explicit `unbounded` loops with fuel and runtime liveness protection;
+- ordered finite `as foreach name(item in collection)` iteration.
+
+Every graph cycle must be declared. Static and data-driven fan-out converge on
+a supported node with `await: wait_all` or `await: best_effort`.
+`fan_out_each` adds `over`, `as`, and optional `key` / `depends_on` fields for
+parallel map or DAG scheduling.
+
+## Expressions and templates
+
+Quoted `when` and `compute` fields share the bounded expression language:
+field/index access, arithmetic, comparisons, booleans, conditionals,
+map/filter/reduce forms, and total collection built-ins. Expressions do not
+admit arbitrary functions or recursion.
+
+Runtime templates cover `vars`, `input`, prior `outputs` and histories,
+artifacts, attachments, secrets, loop/foreach state, and run metadata.
+Compile-time group expansion additionally consumes `{{params.name}}`.
+Environment references use `${...}`. Tool commands distinguish shell-escaped
+`{{input.x}}` from explicit raw `{{!input.x}}` substitution.
+
+## Still outside V1
+
+| Concept | Boundary |
+|---|---|
+| General source modules/imports | Prompt files can be included and groups can be expanded, but a `.bot` cannot import arbitrary declarations from another source file. Use a `subbot` for runtime composition. |
+| Multiple workflows in one file | The parser can represent them, but IR compilation emits C007; one file selects exactly one workflow. |
+| Nested schema declarations | Schemas remain flat; use `json` for nested or open shapes. |
+| Runtime node creation or inheritance | Groups clone a statically declared cluster at compile time; they do not create dynamic graph nodes or provide `extends`. |
+| Arbitrary expression-language effects | Expressions cannot perform I/O, recurse, or invoke user-defined functions. Use a `tool` or an LLM node for effectful work. |
+| Computed variable declarations | Variables are declared statically and resolved from defaults/presets/recipes/launch inputs. Dynamic values flow through node outputs and edge mappings. |
+| Arbitrary annotations | The DSL exposes defined metadata such as descriptions and artifact labels, not an open annotation bag. |
+
+Parsing only builds the AST. Cross-reference checks, group expansion, graph
+validation, capability checks, routing safety, diagnostics, and IR generation
+remain compiler responsibilities under [`../../pkg/dsl/ir/`](../../pkg/dsl/ir/).

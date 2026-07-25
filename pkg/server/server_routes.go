@@ -45,8 +45,11 @@ func (s *Server) routes() {
 	// as the rest of /api/* (the wrapper at line ~427 wraps the mux).
 	s.mux.HandleFunc("GET /api/v1/plugins", s.handlePluginsList)
 	s.mux.HandleFunc("GET /api/v1/plugins/{name}", s.handlePluginDetail)
-	s.mux.HandleFunc("POST /api/v1/plugins/{name}/enable", s.handlePluginEnable(true))
-	s.mux.HandleFunc("POST /api/v1/plugins/{name}/disable", s.handlePluginEnable(false))
+	// enable/disable rewrite the host-global plugins.yaml — on a shared
+	// cloud server that changes behavior for every tenant, so they take
+	// the same super-admin gate as install (operator-open in local mode).
+	s.mux.Handle("POST /api/v1/plugins/{name}/enable", s.requireSuperAdmin(s.handlePluginEnable(true)))
+	s.mux.Handle("POST /api/v1/plugins/{name}/disable", s.requireSuperAdmin(s.handlePluginEnable(false)))
 	// install/uninstall mutate the shared plugin tree (clone an arbitrary
 	// source server-side), so they're gated to platform super-admins —
 	// requireSuperAdmin synthesizes a super-admin in local/dev mode, so the
@@ -66,6 +69,7 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("GET /api/v1/bots/templates", s.handleBotTemplates)
 	s.mux.HandleFunc("POST /api/v1/bots/install", s.handleBotInstall)
 	s.mux.HandleFunc("POST /api/v1/bots/upload", s.handleBotUpload)
+	s.mux.HandleFunc("POST /api/v1/bots/import", s.handleBotImport)
 	s.mux.HandleFunc("GET /api/v1/bots/{name}", s.handleBotsGet)
 	s.mux.HandleFunc("PUT /api/v1/bots/{name}", s.handleBotsPut)
 	s.mux.HandleFunc("PUT /api/v1/bots/{name}/overlay", s.handleBotOverlay)
@@ -176,6 +180,31 @@ func (s *Server) routes() {
 	// Bot-secret bindings (policy wrapper over generic secrets).
 	if s.botBindings != nil && s.authSvc != nil {
 		s.registerBotBindingRoutes()
+		s.registerPluginSourceRoutes()
+	}
+
+	// Team-authored bot sources — the writable, tenant-scoped bot store that
+	// makes cloud bot editing possible. Needs the store + the auth stack
+	// (team-scoped CRUD behind canEditBots).
+	if s.botSources != nil && s.authSvc != nil {
+		s.registerBotSourceRoutes()
+	}
+
+	// Recurring cloud schedules — team-scoped CRUD. Cloud-only (the ticker
+	// that fires them lives on the same Server.cfg.ScheduledBots handle).
+	if s.cfg.ScheduledBots != nil && s.authSvc != nil {
+		s.registerScheduleRoutes()
+	}
+
+	// Scoped config-share editor. Needs the store (defaulted in New) + the
+	// generic-secret stack (to resolve the repo's forge_token) + the auth
+	// stack (operator CRUD). Public self-auth routes + operator CRUD.
+	if s.configShares != nil && s.genericSecrets != nil && s.sealer != nil && s.authSvc != nil {
+		s.registerConfigSharePublicRoutes()
+		s.registerConfigShareAdminRoutes()
+		// Authenticated config-editor surface (ADR-078): SSO-team-scoped session
+		// editing, distinct from the public token path.
+		s.registerConfigEditorRoutes()
 	}
 
 	// Outbound forge integrations (connect a repo + auto-provision). Gated
@@ -210,6 +239,11 @@ func (s *Server) routes() {
 	// Personal access tokens (programmatic API access).
 	if s.pats != nil && s.authSvc != nil {
 		s.registerPATRoutes()
+	}
+
+	// Browser push notifications (subscription CRUD + prefs + test push).
+	if s.webPushEnabled() && s.authSvc != nil {
+		s.registerNotificationRoutes()
 	}
 
 	// Super-admin DLQ inspection/replay (cloud only — needs the queue).
@@ -257,6 +291,12 @@ func (s *Server) routes() {
 	}
 	if s.cfg.Dispatcher != nil {
 		s.cfg.Dispatcher.RegisterRoutesWithMiddleware(s.mux.ServeMux, "/api/v1/dispatcher", s.requireAuth)
+	}
+	// Deterministic forge review publishing. Like the board MCP endpoint it
+	// authenticates via its own per-run X-Iterion-Run token (minted at launch
+	// by injectForgePublishVars), so it intentionally bypasses requireAuth.
+	if s.forgeConnections != nil && s.forgePublishTokens != nil {
+		s.mux.ServeMux.HandleFunc("POST /api/v1/forge/publish-review", s.handleForgePublishReview)
 	}
 	// Event-driven trigger subscription CRUD backing the Triggers /
 	// Automations view. No-op without a TriggerStore.

@@ -7,24 +7,28 @@ import (
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
 )
 
-// TestSchemaToJSON_JSONFieldIsAnyType is a regression for a live bug seen
-// on secured-renovacy/main.bot run_1778786106222 (sonnet+high) and
-// run_1778784391171 (opus+max). detect_stack populated the recipe's
-// `ecosystems: json` field as a JSON array (the only sensible shape for
-// "list of per-ecosystem profiles"). The model-formatter pass invoked
-// `claude --json-schema <derived>` to normalise the agent's response;
-// the derived schema declared `"ecosystems": {"type": "object"}`, which
-// JSON Schema interprets as "must be a JSON object — arrays REJECTED".
-// The formatter stripped the agent's array-shaped output to nothing,
-// surfacing as `raw_output_len: 0` + a "missing required field
-// ecosystems / primary_ecosystem_id / pkg_manager / …" validation error
-// (the validator now seeing an empty `{}`).
+// TestSchemaToJSON_JSONFieldIsAnyType pins the JSON-schema shape of a
+// FieldTypeJSON property against two live bugs that pull in opposite
+// directions:
 //
-// FieldTypeJSON's contract is "accepts any value", so the JSON Schema
-// for that property must be the empty schema `{}` — which JSON Schema
-// treats as "any value of any type". Empty schema with `additional
-// Properties: false` on the parent object still allows the property to
-// be present with any contents.
+//  1. A single `"type": "object"` rejected every non-object shape. Seen
+//     on secured-renovacy/main.bot run_1778786106222 (sonnet+high) and
+//     run_1778784391171 (opus+max): detect_stack populated the recipe's
+//     `ecosystems: json` field as a JSON array (the only sensible shape
+//     for "list of per-ecosystem profiles"), the formatter's derived
+//     schema declared it `{"type": "object"}`, JSON Schema rejected the
+//     array, and the value was stripped to nothing → `raw_output_len: 0`
+//     + "missing required field ecosystems".
+//  2. The opposite fix — the empty schema `{}` (no "type" key at all) —
+//     is rejected by OpenAI/codex's structured-output formatting pass
+//     with `invalid_json_schema: In context=('properties', <field>),
+//     schema must have a 'type' key`, failing the whole node (surfacing
+//     as `codex formatting pass returned empty structured output`).
+//
+// FieldTypeJSON's contract is "accepts any value", so the property must
+// carry a "type" *union* over every JSON kind: the "type" key satisfies
+// providers that require one (bug 2), and every JSON shape stays valid
+// (bug 1).
 func TestSchemaToJSON_JSONFieldIsAnyType(t *testing.T) {
 	schema := &ir.Schema{
 		Name: "stack_profile",
@@ -51,8 +55,28 @@ func TestSchemaToJSON_JSONFieldIsAnyType(t *testing.T) {
 	if !ok {
 		t.Fatalf("ecosystems property missing from generated schema: %s", raw)
 	}
-	if typ, hasType := eco["type"]; hasType {
-		t.Fatalf("ecosystems (FieldTypeJSON) must NOT declare a JSON-schema type — doing so constrains the value to one JSON primitive type and rejects the others (the live bug rejected arrays). got type=%v in: %s", typ, raw)
+	// Bug 2: the property MUST declare a "type" key (codex/OpenAI reject
+	// a type-less property).
+	rawType, hasType := eco["type"]
+	if !hasType {
+		t.Fatalf("ecosystems (FieldTypeJSON) must declare a JSON-schema 'type' key — codex/OpenAI's formatting pass 400s on a type-less property (invalid_json_schema). got: %s", raw)
+	}
+	// Bug 1: the type must be a union that still admits arrays (and every
+	// other JSON kind) — never a single scalar type that would reject them.
+	typeList, ok := rawType.([]any)
+	if !ok {
+		t.Fatalf("ecosystems type must be a union list over all JSON kinds, not a single type (a single type re-introduces the array-rejection bug). got type=%v in: %s", rawType, raw)
+	}
+	got := make(map[string]bool, len(typeList))
+	for _, v := range typeList {
+		if s, ok := v.(string); ok {
+			got[s] = true
+		}
+	}
+	for _, want := range []string{"object", "array", "string", "number", "boolean", "null"} {
+		if !got[want] {
+			t.Errorf("ecosystems type union missing %q — FieldTypeJSON must accept every JSON kind. got=%v", want, typeList)
+		}
 	}
 
 	// Sanity: a typed field still gets its type.

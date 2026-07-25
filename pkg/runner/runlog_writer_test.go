@@ -202,7 +202,7 @@ func TestRunLogWriter_WriteNeverBlocksOnStore(t *testing.T) {
 	done := make(chan struct{})
 	go func() {
 		for i := 0; i < 100; i++ {
-			_, _ = w.Write([]byte(fmt.Sprintf("line %d\n", i)))
+			_, _ = fmt.Fprintf(w, "line %d\n", i)
 		}
 		close(done)
 	}()

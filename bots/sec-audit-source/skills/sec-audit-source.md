@@ -53,7 +53,7 @@ Branches in V1:
 
 Reads:
 - the scanner outputs from `{{vars.scan_dir}}`,
-- `.iterion/security/fp-known.yaml` (if present),
+- `.sec-audit/fp-known.yaml` (if present),
 - `[[finding-taxonomy]]` (this skill),
 - one or more `[[lang-*]]` skills (which match the detected stack).
 
@@ -96,7 +96,7 @@ last analysis. See [[file-records]] for the full design.
 `filter_cached_files`:
 - Computes the current sha256 of each file referenced by the
   triage candidates.
-- Loads `.iterion/security/files/<sha1(path)>.json` records.
+- Loads `.sec-audit/files/<sha1(path)>.json` records.
 - Emits two streams: `fresh_candidates` (file changed, cold, or
   stale TTL/scanner_version) and `cached_candidates` (cache hit
   — its verdict is replayed from the FileRecord's latest history
@@ -152,7 +152,7 @@ Per surviving finding:
 
 After `report_card` succeeds, appends one history entry per file
 mentioned in the run's candidates to
-`<workspace>/.iterion/security/files/<sha1(rel_path)>.json`. The
+`<workspace>/.sec-audit/files/<sha1(rel_path)>.json`. The
 entry captures the file's current content_hash, the candidates
 targeting it, the verdicts produced for those candidates, and the
 board issue ids created. See [[file-records]].

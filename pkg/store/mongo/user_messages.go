@@ -34,6 +34,9 @@ func (s *Store) AppendQueuedMessage(ctx context.Context, runID string, msg store
 	if err := store.NormalizeQueuedForAppend(&msg, runID); err != nil {
 		return fmt.Errorf("store/mongo: %w", err)
 	}
+	if err := s.guardNotDeleted(ctx, runID); err != nil {
+		return err
+	}
 	stampTenantOnQueuedMessage(ctx, &msg)
 	doc := userMessageDoc{
 		ID:                userMessageID{RunID: runID, MessageID: msg.ID},

@@ -22,7 +22,7 @@ iterion dispatch
 Called without an argument, the dispatcher boots with a built-in
 preset: the [native kanban](native-tracker.md) tracker, the studio HTTP
 surface on `http://localhost:4892`, polling every 30 s, and an
-**embedded bot catalogue** that exposes the workflows from `examples/`
+**embedded bot catalogue** containing the nine default bots from `bots/`
 as assignees. Out of the box you can:
 
 1. Open `http://localhost:4892/board` and create a ticket.
@@ -41,15 +41,15 @@ Open that run and the console records the ticket it came from (the
 
 ![Studio run console — the From-ticket header linking a dispatched run back to its issue](images/studio/run-from-ticket.png)
 
-Built-in assignees ([source bots](../examples/)):
+Built-in assignees ([source bots](../bots/)):
 
 | Persona | Assignee | Backing bot | What it does |
 |---|---|---|---|
-| 🛠️ Featurly | `feature-dev` | `bots/feature-dev/` | Autonomous feature dev: plan → act → simplify → alternating Claude/GPT review loop |
-| 🌍 Willy | `whole-improve-loop` | `bots/whole-improve-loop/` | Whole-codebase improvement loop with alternating cross-family verdicts |
-| 🌿 Billy | `branch-improve-loop` | `bots/branch-improve-loop/` | Branch-scoped improvement + auto-commit on convergence |
-| 🧭 Nexie | `whats-next` | `bots/whats-next/` | Repo survey → roadmap synthesis → kanban materialisation |
-| 📚 Doki | `docs-refresh` | `bots/docs-refresh/` | Detect & fix doc/code mismatches |
+| 🛠️ Featurly | `feature-dev` | `bots/feature-dev/` | One adaptive feature campaign with verified commits and deterministic build/test gates |
+| 🌍 Willy | `whole-improve-loop` | `bots/whole-improve-loop/` | Whole-codebase campaign applying one improvement axis site by site |
+| 🌿 Billy | `branch-improve-loop` | `bots/branch-improve-loop/` | Branch-diff review/improvement campaign with verified in-stride commits |
+| 🧭 Nexie | `whats-next` | `bots/whats-next/` | Conversational co-CTO for recommendation, board curation, roadmap study, and dispatch |
+| 📚 Doki | `docs-refresh` | `bots/docs-refresh/` | One doc-only campaign over a deterministic code/document drift manifest |
 | 🔎 Revi | `review-pr` | `bots/review-pr/` | Read-only cross-family code review; publishes findings to the board |
 | 🛡️ Seki | `sec-audit-source` | `bots/sec-audit-source/` | Source-code security audit (gitleaks/trivy/semgrep/gosec) |
 | 📦 Depsy | `sec-audit-deps` | `bots/sec-audit-deps/` | Supply-chain dep audit + LLM review |
@@ -104,7 +104,7 @@ the in-flight runs, and the retry queue, with pause/stop controls:
 
 ```mermaid
 flowchart LR
-  TRK["Tracker<br/>(native / GH /<br/>Forgejo)"]
+  TRK["Tracker<br/>(native / GH /<br/>Forgejo / GitLab)"]
   DSP["Dispatcher<br/>(1 actor goro)"]
   RUN["Runner<br/>(engine = LLM<br/>+ tools)"]
 
@@ -244,20 +244,19 @@ re-dispatching).
 
 ## Workspace lifecycle
 
-`<workspace.root>/.issue-workspaces-v2/<sanitized-issue-id>--<sha256>/`
-is created on first dispatch. The digest covers the original issue ID and a
-logical workspace generation (seeded by the first run ID and carried across
-resumed or fresh retries). Retries keep their incremental state, while a later
-logical run of the same ticket receives a different absolute path. This
-generation boundary prevents a sleeping process from an old run writing into a
-new run after cleanup. Sanitized-ID collisions therefore cannot share a
-workspace either.
+`<workspace.root>/<sanitized-issue-id>/` is created on first dispatch
+for that issue and preserved across retries (so the agent's incremental
+state survives a failure). By default it is **never** auto-removed —
+cleanup is opt-in via the `workspace.persist` policy.
 
-| `workspace.persist`     | Behaviour                                                        |
-|-------------------------|------------------------------------------------------------------|
-| `keep`                  | Never delete. _(default)_                                        |
-| `cleanup_on_done`       | Attempt verified cleanup when the engine returns success.        |
-| `cleanup_on_terminal`   | Attempt verified cleanup at terminal success.                    |
+| `workspace.persist`     | Behaviour                                                 |
+|--------------------------|----------------------------------------------------------|
+| `keep`                   | Never delete. **Default** (the empty value).            |
+| `cleanup_on_done`        | Delete on a clean dispatch return (engine success).      |
+| `cleanup_on_terminal`    | v1: identical to `cleanup_on_done` (terminal-state branching is unimplemented). |
+
+Failed / cancelled dispatches always retain the workspace so a retry can
+resume from it.
 
 “Verified cleanup” is intentionally conservative. Before hooks or Git
 mutation, the dispatcher retires an external ownership marker for the exact
@@ -452,14 +451,16 @@ See [pkg/dispatcher/loop.go](../pkg/dispatcher/loop.go)
 [pkg/dispatcher/routing_runner.go](../pkg/dispatcher/routing_runner.go)
 for the stock assignee workflow selection.
 
-**How to set `bot` / `bot_args` today**: REST API only —
-`POST /api/v1/native/issues` or `PATCH /api/v1/native/issues/{id}`
-with `{ "bot": "feature_dev", "bot_args": { "feature_prompt": "…" } }`.
-The `iterion issue create/update` CLI does **not** yet expose
-dedicated bot-selection or bot-argument flags; `--field key=value` lands in
-the freeform `Fields` map, not in `BotArgs`, and is not merged into dispatch
-vars. Operators driving routing purely through the CLI should rely on
-`assignee_workflows:` + `assignee_dispatch:` instead.
+**How to set `bot` / `bot_args`**: `iterion issue create` exposes
+`--bot <id>` and repeatable `--bot-arg key=value` (the latter lands in
+`BotArgs`, merged over the rendered dispatch vars) — see
+[native-tracker.md](native-tracker.md). The same fields are settable over
+REST (`POST /api/v1/native/issues` or `PATCH /api/v1/native/issues/{id}`
+with `{ "bot": "feature_dev", "bot_args": { "feature_prompt": "…" } }`), via
+the board MCP `set_bot`, or in the studio Launch modal. Only `iterion issue
+update` still lacks dedicated flags — change routing on an existing card via
+REST `PATCH`, `set_bot`, or the studio. Operators can also route purely
+through `assignee_workflows:` + `assignee_dispatch:`.
 
 ### Per-assignee dispatch overrides
 
@@ -648,15 +649,40 @@ tracker:
       in_progress: { labels_include: [claimed] }
 ```
 
-Same label-driven semantics as GitHub; label updates go through
-`PUT /api/v1/repos/<owner>/<repo>/issues/<n>/labels` so iterion does
-not need to resolve numeric label IDs.
+Same label-driven semantics as GitHub. `Claim` adds the claimed label
+via `POST /api/v1/repos/<owner>/<repo>/issues/<n>/labels` (add-only);
+`Release` resolves the label's numeric id and `DELETE`s it by id. The
+bulk `PUT .../labels` replace endpoint is used only when the full label
+set is being rewritten.
+
+### `tracker.kind: gitlab`
+
+Direct GitLab v4 REST client. Auth is a personal/project access token.
+
+```yaml
+tracker:
+  kind: gitlab
+  gitlab:
+    host: https://gitlab.com
+    repo: group/project              # or a numeric project id
+    token: $GITLAB_TOKEN
+    include_labels: [ready]
+    exclude_labels: [blocked]
+    claimed_label: iterion-claimed   # required
+    state_mapping:
+      ready:       { labels_include: [ready] }
+      in_progress: { labels_include: [claimed] }
+```
+
+Same label-driven claim/release semantics as the other forge trackers,
+mapped onto GitLab issues + labels.
 
 ## HTTP / WS surface
 
 The `server.port` setting starts the dispatcher's HTTP server (the
 same SPA the studio serves, so you get the kanban + dashboard at
-`http://localhost:<port>`).
+`http://localhost:<port>`). To run fully headless — no HTTP surface even
+when `server.port` is set — pass `iterion dispatch --no-server`.
 
 | Endpoint                                            | Method | Description                              |
 |-----------------------------------------------------|--------|------------------------------------------|

@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useState } from "react";
 import { MixIcon } from "@radix-ui/react-icons";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 
 import {
   type LibrarySkill,
@@ -12,6 +13,7 @@ import {
 } from "@/api/skills";
 import { errorMessage } from "@/lib/errorHints";
 import { useAsyncAction } from "@/hooks/useAsyncAction";
+import { useConfirm } from "@/hooks/useConfirm";
 import { Badge } from "@/components/ui/Badge";
 import { Button } from "@/components/ui/Button";
 import { Dialog } from "@/components/ui/Dialog";
@@ -22,7 +24,6 @@ import { Select } from "@/components/ui/Select";
 import { Table, THead, Th, TBody, Tr, Td, TableSkeleton } from "@/components/ui/Table";
 import { Textarea } from "@/components/ui/Textarea";
 import { PageHeader } from "@/components/ui/PageHeader";
-import ConfirmDialog from "@/components/shared/ConfirmDialog";
 
 const NEW_SKILL_TEMPLATE = `---
 name: my-skill
@@ -39,35 +40,53 @@ Imperative guidance the agent follows when this skill is loaded.
 // markdown (SKILL.md), referenced from a workflow's `skills:` field and
 // mirrored into a run's .claude/skills/ at launch. Backed by /api/local/skills
 // (server_info.skills_enabled).
+// Stable empty fallback for the errored state, so renders don't hand the
+// table a fresh [] reference each time.
+const EMPTY_SKILLS: LibrarySkill[] = [];
+
 export default function Skills() {
-  const [skills, setSkills] = useState<LibrarySkill[] | null>(null);
-  const [error, setError] = useState<string | null>(null);
+  const queryClient = useQueryClient();
   const [creating, setCreating] = useState(false);
   const [editing, setEditing] = useState<LibrarySkill | null>(null);
-  const [deleting, setDeleting] = useState<LibrarySkill | null>(null);
+  const { confirm, dialog } = useConfirm();
 
-  const reload = useCallback(async () => {
-    setError(null);
+  const skillsQuery = useQuery<LibrarySkill[]>({
+    queryKey: ["local-skills"],
+    queryFn: listLocalSkills,
+  });
+  // On a fetch error the list reads as empty (banner over the empty
+  // state, not a stale table or an endless skeleton).
+  const skills = skillsQuery.isError ? EMPTY_SKILLS : (skillsQuery.data ?? null);
+  // Delete failures share the fetch error's banner; any reload clears
+  // them (the fetch side clears itself on refetch).
+  const [actionError, setActionError] = useState<string | null>(null);
+  const error =
+    actionError ??
+    (skillsQuery.error && !skillsQuery.isFetching
+      ? errorMessage(skillsQuery.error)
+      : null);
+
+  // Post-mutation reload (delete / create / edit): invalidate so the
+  // list refetches.
+  const reload = useCallback(() => {
+    setActionError(null);
+    void queryClient.invalidateQueries({ queryKey: ["local-skills"] });
+  }, [queryClient]);
+
+  const doDelete = async (rec: LibrarySkill) => {
+    const ok = await confirm({
+      title: `Delete ${rec.name}?`,
+      message:
+        "Bots that reference this skill by name will no longer have it mirrored into their runs.",
+      confirmLabel: "Delete",
+      confirmVariant: "danger",
+    });
+    if (!ok) return;
     try {
-      setSkills(await listLocalSkills());
+      await deleteLocalSkill(rec.name, rec.scope);
+      reload();
     } catch (e) {
-      setError(errorMessage(e));
-      setSkills([]);
-    }
-  }, []);
-
-  useEffect(() => {
-    void reload();
-  }, [reload]);
-
-  const doDelete = async () => {
-    if (!deleting) return;
-    try {
-      await deleteLocalSkill(deleting.name, deleting.scope);
-      setDeleting(null);
-      void reload();
-    } catch (e) {
-      setError(errorMessage(e));
+      setActionError(errorMessage(e));
     }
   };
 
@@ -87,7 +106,14 @@ export default function Skills() {
         }
         actions={
           <div className="flex items-center gap-2">
-            <Button variant="secondary" size="sm" onClick={() => void reload()}>
+            <Button
+              variant="secondary"
+              size="sm"
+              onClick={() => {
+                setActionError(null);
+                void skillsQuery.refetch();
+              }}
+            >
               Refresh
             </Button>
             <Button variant="primary" size="sm" onClick={() => setCreating(true)}>
@@ -112,7 +138,11 @@ export default function Skills() {
             message="Add a skill, then reference it from a bot's skills: field by name."
           />
         ) : (
-          <SkillsTable skills={skills} onEdit={setEditing} onDelete={setDeleting} />
+          <SkillsTable
+            skills={skills}
+            onEdit={setEditing}
+            onDelete={(rec) => void doDelete(rec)}
+          />
         )}
       </div>
 
@@ -121,7 +151,7 @@ export default function Skills() {
           onClose={() => setCreating(false)}
           onDone={() => {
             setCreating(false);
-            void reload();
+            reload();
           }}
         />
       )}
@@ -132,20 +162,12 @@ export default function Skills() {
           onClose={() => setEditing(null)}
           onDone={() => {
             setEditing(null);
-            void reload();
+            reload();
           }}
         />
       )}
 
-      <ConfirmDialog
-        open={deleting !== null}
-        title={`Delete ${deleting?.name ?? ""}?`}
-        message="Bots that reference this skill by name will no longer have it mirrored into their runs."
-        confirmLabel="Delete"
-        confirmVariant="danger"
-        onConfirm={() => void doDelete()}
-        onCancel={() => setDeleting(null)}
-      />
+      {dialog}
     </div>
   );
 }

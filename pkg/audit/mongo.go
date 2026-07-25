@@ -9,15 +9,16 @@ import (
 	"go.mongodb.org/mongo-driver/v2/mongo/options"
 
 	"github.com/SocialGouv/iterion/pkg/internal/mongoutil"
+	"github.com/SocialGouv/iterion/pkg/internal/storekit"
 )
 
 const colAudit = "audit_events"
 
 // MongoStore is the production audit log.
-type MongoStore struct{ col *mongo.Collection }
+type MongoStore struct{ kit *storekit.Mongo[Event] }
 
 func NewMongoStore(db *mongo.Database) *MongoStore {
-	return &MongoStore{col: db.Collection(colAudit)}
+	return &MongoStore{kit: storekit.NewMongo[Event](db.Collection(colAudit), ErrNotFound, "audit")}
 }
 
 // EnsureSchema creates the audit indexes idempotently.
@@ -35,10 +36,7 @@ func EnsureSchema(ctx context.Context, db *mongo.Database) error {
 }
 
 func (s *MongoStore) Insert(ctx context.Context, e Event) error {
-	if _, err := s.col.InsertOne(ctx, e); err != nil {
-		return fmt.Errorf("audit: insert: %w", err)
-	}
-	return nil
+	return s.kit.Insert(ctx, e, nil, "insert")
 }
 
 func (s *MongoStore) ListByTenant(ctx context.Context, tenantID string, p Page) ([]Event, error) {
@@ -67,17 +65,8 @@ func (s *MongoStore) list(ctx context.Context, filter bson.M, p Page) ([]Event, 
 	if len(created) > 0 {
 		filter["created_at"] = created
 	}
-	cur, err := s.col.Find(ctx, filter, options.Find().
+	return s.kit.List(ctx, filter, "list", "decode", options.Find().
 		SetSort(bson.M{"created_at": -1}).
 		SetSkip(int64(p.Offset)).
 		SetLimit(int64(ClampLimit(p.Limit))))
-	if err != nil {
-		return nil, fmt.Errorf("audit: list: %w", err)
-	}
-	defer cur.Close(ctx)
-	var out []Event
-	if err := cur.All(ctx, &out); err != nil {
-		return nil, fmt.Errorf("audit: decode: %w", err)
-	}
-	return out, nil
 }

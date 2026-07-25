@@ -1,7 +1,10 @@
 name: whole-improve-loop
 display_name: Willy
 icon: 🌍
-version: 2.0.0
+version: 2.0.1
+## 2.0.1 — ADR-082 Phase 2 (sandbox-by-default): removed the `sandbox:`
+## block — isolation is the platform's job; gh/glab move to the bot's
+## pinned devbox.json.
 ## 2.0.0 — RADICAL SIMPLIFICATION (mechanism change). Replaces the v1
 ## axis-sweep (ADR-057, ~16 nodes: enumerate/next_item/transform/verify/
 ## review/commit/advance/re_enumerate + a worklist/cursor scratch state) with
@@ -32,8 +35,8 @@ description: |
   durable state — an interrupted / budget-capped run keeps every committed
   site, and a re-dispatch re-runs the campaign, which reads `git log` and
   continues (no worklist/cursor scratch). Bounded by a max_passes cap so a
-  pathological axis terminates. Optional MR/PR path ships the series of
-  per-pass commits. Supersedes the v1 axis-sweep (ADR-057). See
+  pathological axis terminates. An optional PR path (merge request on
+  GitLab) ships the series of per-pass commits. Supersedes the v1 axis-sweep (ADR-057). See
   docs/references/productive-session-patterns.md.
 when_to_use: |
   Use on EXISTING code to apply one determined, cross-cutting improvement AXIS
@@ -56,21 +59,21 @@ dispatch_vars:
 
     {{issue.body}}
   scope_notes: "{{issue.body}}"
-  ## Board/comment-dispatched runs open a merge/pull request at the end
+  ## Board/comment-dispatched runs open a pull request at the end
   ## and post the URL back onto the source issue. CLI runs keep the
   ## defaults (open_mr=false) so a plain local run just commits.
   open_mr: "true"
   source_issue_ref: "{{issue.id}}"
 
-## Forge access for the MR/PR push + creation + the issue back-link.
+## Forge access for the PR push + creation + the issue back-link.
 ## The auto-provisioner requests these scopes and binds the connection
 ## token under `forge_token` (cross-ref main.bot `secrets: { forge_token }`).
 forge:
   events: [pull_request_comment]
   token_scopes:
-    pull_requests: write     # open the MR/PR
+    pull_requests: write     # open the PR
     repository: write         # push the branch
-    issues: write             # post the MR URL back onto the source issue
+    issues: write             # post the PR URL back onto the source issue
   secret: forge_token
 
 invocations:
@@ -79,3 +82,10 @@ invocations:
     args_var: improvement_prompt
     command: { name: willy, aliases: [whole-improve-loop], scope: any, min_replier_role: maintainer, opens_mr: true }
   - kind: board
+
+## Studio launch-form hierarchy: `primary` inputs render top-level in
+## the declared order; `hidden` vars are dispatch/webhook plumbing kept
+## out of the form (still settable via --var / bot_args).
+launch:
+  primary: [improvement_prompt]
+  hidden: [source_issue_ref]

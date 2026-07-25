@@ -2,8 +2,6 @@ package runview
 
 import (
 	"context"
-	"crypto/rand"
-	"encoding/hex"
 	"errors"
 	"fmt"
 	"slices"
@@ -174,11 +172,12 @@ func (s *Service) QueueMessage(ctx context.Context, runID, text string, opts ...
 		opt(&cfg)
 	}
 	msg := store.QueuedUserMessage{
-		ID:        newQueuedMessageID(),
-		Text:      text,
-		TenantID:  r.TenantID,
-		NodeID:    cfg.nodeID,
-		SkillRefs: cfg.skillRefs,
+		ID:            newQueuedMessageID(),
+		Text:          text,
+		TenantID:      r.TenantID,
+		NodeID:        cfg.nodeID,
+		SkillRefs:     cfg.skillRefs,
+		InteractionID: cfg.interactionID,
 	}
 	if err := s.store.AppendQueuedMessage(ctx, runID, msg); err != nil {
 		return nil, fmt.Errorf("append queued message: %w", err)
@@ -195,8 +194,9 @@ func (s *Service) QueueMessage(ctx context.Context, runID, text string, opts ...
 // private struct so the public surface stays narrow (callers see
 // only the option-builder helpers below).
 type queueMessageConfig struct {
-	skillRefs []string
-	nodeID    string
+	skillRefs     []string
+	nodeID        string
+	interactionID string
 }
 
 // QueueMessageOption is the functional-option form of QueueMessage's
@@ -222,6 +222,14 @@ func WithMessageSkills(skills []string) QueueMessageOption {
 // (the default for operator-typed chatbox messages).
 func WithMessageNode(nodeID string) QueueMessageOption {
 	return func(c *queueMessageConfig) { c.nodeID = nodeID }
+}
+
+// WithMessageInteraction marks the queued message as the delivery of an
+// async question's answer (ADR-081), referencing the answered
+// interaction. The await-resume path cancels superseded deliveries by
+// this typed field.
+func WithMessageInteraction(interactionID string) QueueMessageOption {
+	return func(c *queueMessageConfig) { c.interactionID = interactionID }
 }
 
 // CancelQueuedMessage marks a queued (not-yet-delivered) message as
@@ -261,19 +269,9 @@ func (s *Service) brokerPublish() func(store.Event) {
 }
 
 // newQueuedMessageID returns a short opaque ID for inbox messages.
-// Time-prefix gives FIFO-friendly ordering at the filesystem level
-// even when wall-clock collides; the random suffix avoids ID reuse
-// within the same nanosecond.
-func newQueuedMessageID() string {
-	var buf [6]byte
-	if _, err := rand.Read(buf[:]); err != nil {
-		// rand.Read effectively never fails on Linux; on the off
-		// chance, fall back to the timestamp alone — collisions are
-		// caught at AppendQueuedMessage (would clobber the FS row).
-		return fmt.Sprintf("msg_%d", time.Now().UnixNano())
-	}
-	return fmt.Sprintf("msg_%d_%s", time.Now().UnixNano(), hex.EncodeToString(buf[:]))
-}
+// The format is owned by the store so every producer (service, CLI)
+// mints the same shape.
+func newQueuedMessageID() string { return store.NewQueuedMessageID() }
 
 // ---------------------------------------------------------------------------
 // Deferred merge

@@ -24,7 +24,10 @@
 // the UI would render the answered first iteration in place of the
 // pending second one.
 
-import type { RunEvent, RunSnapshot } from "@/api/runs";
+import type { NodeFinishedEvent, RunEvent, RunSnapshot } from "@/api/runs";
+import { isAsyncHumanInput } from "@/api/runs";
+import { ASK_USER_RESPONSE_KEY } from "@/lib/askUserOptions";
+import { isRecord } from "@/lib/isRecord";
 
 import type { NodeKindResolver } from "./nodeKindResolver";
 import type {
@@ -53,10 +56,12 @@ function checkpointOutput(
   snapshot: RunSnapshot | null,
   nodeId: string,
 ): Record<string, unknown> | null {
-  const checkpoint = (snapshot?.run.checkpoint ?? null) as
-    | { outputs?: Record<string, Record<string, unknown>> }
-    | null;
-  return checkpoint?.outputs?.[nodeId] ?? null;
+  // `outputs` sits behind RunCheckpoint's opaque index signature —
+  // narrow the map and the per-node entry at runtime.
+  const outputs = snapshot?.run.checkpoint?.outputs;
+  if (!isRecord(outputs)) return null;
+  const out = outputs[nodeId];
+  return isRecord(out) ? out : null;
 }
 
 // Pulls the structured `output` map out of a node_finished event. The
@@ -64,13 +69,12 @@ function checkpointOutput(
 // part of the event payload, so consumers don't have to wait for the
 // next snapshot refetch to learn what a node produced.
 function extractEventOutput(
-  evt: RunEvent,
+  evt: NodeFinishedEvent,
 ): Record<string, unknown> | null {
-  const data = evt.data;
-  if (!data || typeof data !== "object") return null;
-  const out = (data as Record<string, unknown>).output;
-  if (!out || typeof out !== "object" || Array.isArray(out)) return null;
-  return out as Record<string, unknown>;
+  // Typed as a map on the wire; isRecord keeps the legacy/defensive
+  // guard against a non-object payload without a cast.
+  const out = evt.data?.output;
+  return isRecord(out) ? out : null;
 }
 
 // pickToolHint extracts a short human-readable hint from a tool_started
@@ -81,22 +85,20 @@ function pickToolHint(
   data: Record<string, unknown>,
   toolName: string | undefined,
 ): string | undefined {
-  const input = (data.input ?? data.arguments ?? null) as
-    | Record<string, unknown>
-    | string
-    | null;
+  const input: unknown = data.input ?? data.arguments ?? null;
   if (typeof input === "string") {
     // Some tools serialise input as a JSON string; try to parse and
     // recurse, otherwise treat the whole string as the hint.
     try {
-      const parsed = JSON.parse(input) as Record<string, unknown>;
-      return pickToolHintFromObject(parsed, toolName);
+      const parsed: unknown = JSON.parse(input);
+      if (isRecord(parsed)) return pickToolHintFromObject(parsed, toolName);
+      return truncateHint(input);
     } catch {
       return truncateHint(input);
     }
   }
-  if (input && typeof input === "object") {
-    return pickToolHintFromObject(input as Record<string, unknown>, toolName);
+  if (isRecord(input)) {
+    return pickToolHintFromObject(input, toolName);
   }
   return undefined;
 }
@@ -392,12 +394,14 @@ function processEvent(
       // back triggers a full refold against the now-current snapshot.
       // Falls back to the snapshot path for any (legacy) event missing
       // the embedded output.
+      const existing = out[idx];
+      if (!existing || existing.kind !== "banner") break;
       const eventOutput = extractEventOutput(evt) ?? checkpointOutput(snapshot, nodeId);
       const summary = resolver.bannerSummary
         ? resolver.bannerSummary(nodeId, eventOutput)
         : undefined;
       const updated: BannerMessage = {
-        ...(out[idx] as BannerMessage),
+        ...existing,
         status: "done",
         summary: summary || undefined,
         // Drop the live progress once the banner is done — the
@@ -445,10 +449,10 @@ function processEvent(
       if (!nodeId) break;
       const idx = activeBannerByNode.get(nodeId);
       if (idx === undefined) break;
-      const banner = out[idx] as BannerMessage;
+      const banner = out[idx];
+      if (!banner || banner.kind !== "banner") break;
       const data = evt.data ?? {};
-      const toolName =
-        typeof data.tool === "string" && data.tool ? data.tool : undefined;
+      const toolName = data.tool || undefined;
       const prev = banner.progress ?? { toolCount: 0 };
       out[idx] = {
         ...banner,
@@ -469,7 +473,7 @@ function processEvent(
       const nodeId = evt.node_id;
       if (!nodeId) break;
       if (resolver.kind(nodeId) === "silent") break;
-      const text = typeof evt.data?.text === "string" ? evt.data.text.trim() : "";
+      const text = (evt.data?.text ?? "").trim();
       if (!text) break;
       const iter = nodeIteration.get(nodeId) ?? iterationOf(evt);
       // Merge consecutive chunks from the same node turn into one
@@ -506,9 +510,9 @@ function processEvent(
       if (!nodeId) break;
       const idx = activeBannerByNode.get(nodeId);
       if (idx === undefined) break;
-      const banner = out[idx] as BannerMessage;
-      const data = evt.data ?? {};
-      const errText = typeof data.error === "string" ? data.error : "";
+      const banner = out[idx];
+      if (!banner || banner.kind !== "banner") break;
+      const errText = evt.data?.error ?? "";
       const prev = banner.progress ?? { toolCount: 0 };
       out[idx] = {
         ...banner,
@@ -524,14 +528,38 @@ function processEvent(
     case "human_input_requested": {
       const nodeId = evt.node_id;
       if (!nodeId) break;
+      const data = evt.data;
+      // Async question (ADR-081, ask_user_async): the run keeps
+      // executing — push a non-blocking answer card keyed on the
+      // interaction id, and do NOT mark it as the latest pending
+      // (blocking) turn.
+      if (isAsyncHumanInput(evt)) {
+        const asyncId = data?.interaction_id;
+        if (!asyncId || humanIdx.has(asyncId)) break;
+        const q = data?.questions;
+        const asyncPromptRaw = q?.[ASK_USER_RESPONSE_KEY];
+        const asyncPrompt =
+          typeof asyncPromptRaw === "string"
+            ? asyncPromptRaw
+            : "The agent asked a question (it keeps working meanwhile).";
+        const asyncIdx = out.length;
+        out.push({
+          kind: "human-question",
+          id: asyncId,
+          nodeId,
+          prompt: asyncPrompt,
+          status: "pending",
+          questions: q,
+          async: true,
+        } satisfies HumanQuestionMessage);
+        humanIdx.set(asyncId, asyncIdx);
+        break;
+      }
       // Pull through the runtime-supplied questions payload (set when
       // the engine resolved field definitions from the workflow's
       // human node or from an LLM-fill step). The form renderer uses
       // it to label inputs, hint at allowed values, etc.
-      const questions =
-        evt.data?.questions && typeof evt.data.questions === "object"
-          ? (evt.data.questions as Record<string, unknown>)
-          : undefined;
+      const questions = data?.questions;
       // ask_user pauses live on AGENT nodes (the agent called the
       // ask_user tool mid-turn, questions carry `ask_user_response`).
       // Recovery pauses do too (graceful-failure asks the operator to
@@ -556,10 +584,7 @@ function processEvent(
       // engine-side), and the nodeId:iter key would dedupe every pause
       // after the first. Human nodes keep the nodeId:iter key so a
       // revise loop's turns stay distinct.
-      const interactionId =
-        typeof evt.data?.interaction_id === "string" && evt.data.interaction_id
-          ? (evt.data.interaction_id as string)
-          : undefined;
+      const interactionId = data?.interaction_id || undefined;
       const key =
         kind !== "human" && interactionId ? interactionId : humanId(nodeId, iter);
       if (humanIdx.has(key)) break; // dedupe replay
@@ -569,44 +594,35 @@ function processEvent(
       // bot's per-situation context is shown instead of "Reply to
       // continue." A first-class bot's bespoke hint still wins when set.
       const instructions =
-        typeof evt.data?.instructions === "string" &&
-        evt.data.instructions.trim().length > 0
-          ? (evt.data.instructions as string)
+        data?.instructions && data.instructions.trim().length > 0
+          ? data.instructions
           : undefined;
       // Guided review-&-merge gate (interaction: review): the event carries
       // the companion dialogue + merge config so ReviewMergeCard renders
       // self-contained.
       const review =
-        evt.data?.review === true
+        data?.review === true
           ? ({
-              turns: Array.isArray(evt.data?.turns)
-                ? (evt.data.turns as ReviewGateMeta["turns"])
-                : [],
-              posture: String(evt.data?.posture ?? "human_required"),
-              mergeStrategy: String(evt.data?.merge_strategy ?? "squash"),
-              mergeInto: String(evt.data?.merge_into ?? "current"),
-              maxTurns: Number(evt.data?.max_turns ?? 0),
-              reviewUrl:
-                typeof evt.data?.review_url === "string"
-                  ? (evt.data.review_url as string)
-                  : undefined,
-              verdict:
-                evt.data?.verdict && typeof evt.data.verdict === "object"
-                  ? (evt.data.verdict as Record<string, unknown>)
-                  : undefined,
+              turns: data.turns ?? [],
+              posture: data.posture ?? "human_required",
+              mergeStrategy: data.merge_strategy ?? "squash",
+              mergeInto: data.merge_into ?? "current",
+              maxTurns: data.max_turns ?? 0,
+              reviewUrl: data.review_url,
+              verdict: data.verdict,
             } satisfies ReviewGateMeta)
           : undefined;
       // ask_user prompt = the agent's question text itself (there is
       // no instructions: prompt on an agent pause).
       const askUserPrompt =
         isAskUser && typeof questions?.ask_user_response === "string"
-          ? (questions.ask_user_response as string)
+          ? questions.ask_user_response
           : undefined;
       // Recovery pause: the acknowledge_recovery value is the
       // operator-facing guidance ("re-authenticate, then resume…").
       const recoveryPrompt =
         typeof questions?.acknowledge_recovery === "string"
-          ? (questions.acknowledge_recovery as string)
+          ? questions.acknowledge_recovery
           : undefined;
       const idx = out.length;
       out.push({
@@ -630,6 +646,24 @@ function processEvent(
       break;
     }
 
+    case "interaction_answered": {
+      // Async question answered (ADR-081) — flip the non-blocking card.
+      const asyncKey = evt.data?.interaction_id;
+      if (!asyncKey) break;
+      const asyncIdx = humanIdx.get(asyncKey);
+      if (asyncIdx === undefined) break;
+      const asyncCur = out[asyncIdx];
+      if (!asyncCur || asyncCur.kind !== "human-question") break;
+      const answerText =
+        typeof evt.data?.answer === "string" ? evt.data.answer : "";
+      out[asyncIdx] = {
+        ...asyncCur,
+        status: "answered",
+        userReply: answerText || asyncCur.userReply,
+      };
+      break;
+    }
+
     case "human_answers_recorded": {
       // The runtime stamps the user's answers on the human node.
       // Match the answered turn by node_id (more reliable than
@@ -642,15 +676,13 @@ function processEvent(
       let key: string;
       // ask_user turns are keyed on the interaction id (see the
       // human_input_requested case) — match on it first.
-      const answeredInteractionId =
-        typeof evt.data?.interaction_id === "string" && evt.data.interaction_id
-          ? (evt.data.interaction_id as string)
-          : undefined;
+      const answeredInteractionId = evt.data?.interaction_id || undefined;
       if (answeredInteractionId && humanIdx.has(answeredInteractionId)) {
         key = answeredInteractionId;
         if (!nodeId) {
-          const entry = out[humanIdx.get(key)!] as HumanQuestionMessage | undefined;
-          nodeId = entry?.nodeId;
+          const entryIdx = humanIdx.get(key);
+          const entry = entryIdx === undefined ? undefined : out[entryIdx];
+          if (entry?.kind === "human-question") nodeId = entry.nodeId;
         }
       } else if (nodeId) {
         // Same iteration-fallback rationale as human_input_requested:
@@ -662,8 +694,8 @@ function processEvent(
         key = latestPendingHumanKey;
         const fallbackEntry = humanIdx.get(key);
         if (fallbackEntry === undefined) break;
-        const pending = out[fallbackEntry] as HumanQuestionMessage | undefined;
-        nodeId = pending?.nodeId;
+        const pending = out[fallbackEntry];
+        if (pending?.kind === "human-question") nodeId = pending.nodeId;
       } else {
         break;
       }
@@ -673,8 +705,9 @@ function processEvent(
       // human node or ask_user agent pause alike).
       const idx = humanIdx.get(key);
       if (idx === undefined) break;
-      const current = out[idx] as HumanQuestionMessage;
-      const answers = (evt.data?.answers ?? null) as Record<string, unknown> | null;
+      const current = out[idx];
+      if (!current || current.kind !== "human-question") break;
+      const answers = evt.data?.answers ?? null;
       // Extraction strategy: resolver-supplied override wins (whats-next
       // uses bot-declared textField/approvedField), else fall back to
       // a generic "longest string + approved bool" pass. Both are
@@ -772,9 +805,9 @@ function processEvent(
       break;
 
     case "user_message_queued": {
-      const data = (evt.data ?? {}) as Record<string, unknown>;
-      const id = typeof data.id === "string" ? data.id : "";
-      const text = typeof data.text === "string" ? data.text : "";
+      const data = evt.data ?? {};
+      const id = data.id ?? "";
+      const text = data.text ?? "";
       if (id === "") break;
       if (state.userMessageIdx.has(id)) break; // dedupe on replay
       const idx = out.length;
@@ -791,8 +824,8 @@ function processEvent(
     case "user_message_delivered":
     case "user_message_consumed":
     case "user_message_cancelled": {
-      const data = (evt.data ?? {}) as Record<string, unknown>;
-      const id = typeof data.id === "string" ? data.id : "";
+      const data = evt.data ?? {};
+      const id = data.id ?? "";
       if (id === "") break;
       const status = userMessageStatusForEvent(evt.type);
       const idx = state.userMessageIdx.get(id);
@@ -801,7 +834,7 @@ function processEvent(
         // reconnect dropped it). Push the card now at the current
         // status so the operator still sees the message in the
         // transcript.
-        const text = typeof data.text === "string" ? data.text : "";
+        const text = data.text ?? "";
         if (text === "") break; // can't synthesise a placeholder
         const newIdx = out.length;
         out.push({

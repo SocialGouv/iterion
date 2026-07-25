@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/SocialGouv/iterion/pkg/bundle"
+	"github.com/SocialGouv/iterion/pkg/cloudsched"
 	"github.com/SocialGouv/iterion/pkg/forge"
 	"github.com/SocialGouv/iterion/pkg/secrets"
 	"github.com/SocialGouv/iterion/pkg/webhooks"
@@ -256,5 +257,180 @@ func TestForgePreview_FlagsBotsWithoutForgeBlock(t *testing.T) {
 	}
 	if len(p.Conflicts) != 1 || !strings.Contains(p.Conflicts[0], "ghost-bot") {
 		t.Errorf("expected a conflict for ghost-bot, got %v", p.Conflicts)
+	}
+}
+
+// TestListTeamForgeRepos_Aggregator covers the RepoSwitcher data source:
+// integration×connection join, URL derivation, deterministic order, and
+// tenant isolation.
+func TestListTeamForgeRepos_Aggregator(t *testing.T) {
+	s := newForgeTestServer(t)
+	ctx := superAdminCtx()
+	bg := context.Background()
+
+	mkConn := func(id, tenant string) {
+		t.Helper()
+		if err := s.forgeConnections.Create(bg, forge.Connection{
+			ID: id, TenantID: tenant, Provider: forge.ProviderGitHub,
+			Kind: forge.KindPAT, Status: forge.StatusActive,
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	mkInt := func(id, tenant, connID, repo string, bots []string) {
+		t.Helper()
+		if err := s.forgeIntegrations.Create(bg, forge.RepoIntegration{
+			ID: id, TenantID: tenant, ConnectionID: connID,
+			Provider: forge.ProviderGitHub, RepoFullName: repo, BotIDs: bots,
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	mkConn("c1", "t1")
+	mkConn("c2", "t2")
+	mkInt("i1", "t1", "c1", "org/zeta", []string{"review-pr"})
+	mkInt("i2", "t1", "c1", "org/alpha", nil)
+	mkInt("i3", "t2", "c2", "org/other", nil)
+
+	w := httptest.NewRecorder()
+	s.handleListTeamForgeRepos(w, forgeReq(ctx, "GET", "/api/teams/t1/forge/repos", "", "t1"))
+	if w.Code != http.StatusOK {
+		t.Fatalf("code=%d body=%s", w.Code, w.Body.String())
+	}
+	var resp struct {
+		Repos []forgeTeamRepo `json:"repos"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatal(err)
+	}
+	if len(resp.Repos) != 2 {
+		t.Fatalf("want 2 repos for t1, got %d: %+v", len(resp.Repos), resp.Repos)
+	}
+	if resp.Repos[0].RepoFullName != "org/alpha" || resp.Repos[1].RepoFullName != "org/zeta" {
+		t.Fatalf("want sorted [org/alpha org/zeta], got %+v", resp.Repos)
+	}
+	first := resp.Repos[0]
+	if first.CloneURL != "https://github.com/org/alpha.git" || first.WebURL != "https://github.com/org/alpha" {
+		t.Fatalf("URL derivation wrong: %+v", first)
+	}
+	if first.ConnectionStatus != "active" || first.ConnectionID != "c1" || first.IntegrationID != "i2" {
+		t.Fatalf("join wrong: %+v", first)
+	}
+	if first.BotIDs == nil {
+		t.Fatalf("bot_ids must be [] not null")
+	}
+	for _, r := range resp.Repos {
+		if r.RepoFullName == "org/other" {
+			t.Fatalf("tenant isolation broken: t2 repo leaked into t1: %+v", resp.Repos)
+		}
+	}
+
+	// Empty tenant → 200 with [].
+	w = httptest.NewRecorder()
+	s.handleListTeamForgeRepos(w, forgeReq(ctx, "GET", "/api/teams/t9/forge/repos", "", "t9"))
+	if w.Code != http.StatusOK {
+		t.Fatalf("empty tenant code=%d", w.Code)
+	}
+	var empty struct {
+		Repos []forgeTeamRepo `json:"repos"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &empty); err != nil {
+		t.Fatal(err)
+	}
+	if empty.Repos == nil || len(empty.Repos) != 0 {
+		t.Fatalf("want empty [] repos, got %+v", empty.Repos)
+	}
+}
+
+func TestAppendQueryParam(t *testing.T) {
+	cases := []struct{ in, key, val, want string }{
+		{"/integrations/connect", "connected", "abc", "/integrations/connect?connected=abc"},
+		{"/integrations/connect?step=2&provider=github", "connected", "c-1", "/integrations/connect?connected=c-1&provider=github&step=2"},
+		{"/teams/t1", "installed", "x y", "/teams/t1?installed=x+y"},
+		{"://bad url", "k", "v", "://bad url"},
+	}
+	for _, c := range cases {
+		if got := appendQueryParam(c.in, c.key, c.val); got != c.want {
+			t.Errorf("appendQueryParam(%q,%q,%q)=%q want %q", c.in, c.key, c.val, got, c.want)
+		}
+	}
+}
+
+// TestForgeConnectionHealth_PAT covers the health endpoint's base path
+// (stored status + provisioned count, no live GitHub probe) and tenant
+// isolation.
+func TestForgeConnectionHealth_PAT(t *testing.T) {
+	s := newForgeTestServer(t)
+	ctx := superAdminCtx()
+	bg := context.Background()
+
+	if err := s.forgeConnections.Create(bg, forge.Connection{
+		ID: "c1", TenantID: "t1", Provider: forge.ProviderGitLab,
+		Kind: forge.KindPAT, Status: forge.StatusActive, AccountLogin: "botuser",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.forgeIntegrations.Create(bg, forge.RepoIntegration{
+		ID: "i1", TenantID: "t1", ConnectionID: "c1",
+		Provider: forge.ProviderGitLab, RepoFullName: "group/api",
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	req := forgeReq(ctx, "GET", "/api/teams/t1/forge/connections/c1/health", "", "t1")
+	req.SetPathValue("conn_id", "c1")
+	w := httptest.NewRecorder()
+	s.handleForgeConnectionHealth(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("code=%d body=%s", w.Code, w.Body.String())
+	}
+	var h forgeConnectionHealth
+	if err := json.Unmarshal(w.Body.Bytes(), &h); err != nil {
+		t.Fatal(err)
+	}
+	if h.Status != "active" || h.Kind != "pat" || h.ProvisionedRepoCount != 1 {
+		t.Fatalf("unexpected health: %+v", h)
+	}
+
+	// Cross-tenant access → 404 (not 403), matching forgeConnForTenant.
+	req2 := forgeReq(ctx, "GET", "/api/teams/t2/forge/connections/c1/health", "", "t2")
+	req2.SetPathValue("conn_id", "c1")
+	w2 := httptest.NewRecorder()
+	s.handleForgeConnectionHealth(w2, req2)
+	if w2.Code != http.StatusNotFound {
+		t.Fatalf("cross-tenant health must 404, got %d", w2.Code)
+	}
+}
+
+func TestScheduleRepoCandidates(t *testing.T) {
+	sched := []cloudsched.ScheduledBot{
+		{RepoURL: "https://github.com/SocialGouv/iterion-veille"}, // on host, new → candidate
+		{RepoURL: "https://github.com/SocialGouv/iterion-veille"}, // dup → collapsed
+		{RepoURL: "https://github.com/SocialGouv/iterion.git"},    // on host but in base → skip
+		{RepoURL: "https://gitlab.com/acme/other"},                // different host → skip
+		{RepoURL: ""}, // empty → skip
+	}
+	got := scheduleRepoCandidates(sched, []string{"iterion"}, "https://github.com")
+	if len(got) != 1 || got[0] != "iterion-veille" {
+		t.Fatalf("candidates = %v, want [iterion-veille]", got)
+	}
+	// No schedules on host → nothing added.
+	if c := scheduleRepoCandidates(sched, []string{"iterion"}, "https://git.example.org"); len(c) != 0 {
+		t.Fatalf("off-host candidates = %v, want none", c)
+	}
+}
+
+func TestShortRepoName(t *testing.T) {
+	cases := map[string]string{
+		"SocialGouv/iterion-veille":                    "iterion-veille",
+		"https://github.com/SocialGouv/iterion-veille": "iterion-veille",
+		"https://github.com/SocialGouv/iterion.git":    "iterion",
+		"iterion": "iterion",
+		"":        "",
+	}
+	for in, want := range cases {
+		if got := shortRepoName(in); got != want {
+			t.Errorf("shortRepoName(%q) = %q, want %q", in, got, want)
+		}
 	}
 }

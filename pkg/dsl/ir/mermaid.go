@@ -221,7 +221,7 @@ func styleClasses(w *Workflow) string {
 
 	for kind, nodeIDs := range groups {
 		sort.Strings(nodeIDs)
-		b.WriteString(fmt.Sprintf("    class %s %s\n", strings.Join(nodeIDs, ","), kind.String()))
+		fmt.Fprintf(&b, "    class %s %s\n", strings.Join(nodeIDs, ","), kind.String())
 	}
 
 	return b.String()
@@ -246,6 +246,8 @@ func kindIcon(k NodeKind) string {
 		return "📤"
 	case NodeWait:
 		return "⏳"
+	case NodeAwaitAnswers:
+		return "💬"
 	case NodeDone:
 		return "✅"
 	case NodeFail:
@@ -466,7 +468,7 @@ func workflowMetadata(w *Workflow) string {
 		title += " (entry: " + w.Entry + ")"
 	}
 
-	b.WriteString(fmt.Sprintf("    subgraph workflow_meta[\"%s\"]\n", title))
+	fmt.Fprintf(&b, "    subgraph workflow_meta[\"%s\"]\n", title)
 	b.WriteString("        direction LR\n")
 	for _, node := range metaNodes {
 		b.WriteString(node)

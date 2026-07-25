@@ -24,11 +24,23 @@ func TestScaffold_Minimal(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Scaffold: %v", err)
 	}
-	if len(res.Files) != 3 {
-		t.Fatalf("Files = %v, want main.bot + manifest.yaml + README.md", res.Files)
+	// Every scaffolded bot ships the full .botz layout so `bundle pack`
+	// works on it as-is and authors have an obvious home for each
+	// resource kind.
+	want := []string{
+		"main.bot", "manifest.yaml", "README.md", ".gitignore",
+		filepath.Join("presets", "example.md"),
+		filepath.Join("skills", ".gitkeep"),
+		filepath.Join("prompts", ".gitkeep"),
+		filepath.Join("attachments", ".gitkeep"),
 	}
-	if _, err := os.Stat(filepath.Join(dir, "skills")); err != nil {
-		t.Errorf("skills/ dir missing: %v", err)
+	if len(res.Files) != len(want) {
+		t.Fatalf("Files = %v, want %d entries (%v)", res.Files, len(want), want)
+	}
+	for _, name := range want {
+		if _, err := os.Stat(filepath.Join(dir, name)); err != nil {
+			t.Errorf("%s missing: %v", name, err)
+		}
 	}
 	m, err := bundle.LoadManifest(filepath.Join(dir, "manifest.yaml"))
 	if err != nil || m == nil {
@@ -160,5 +172,26 @@ func TestScaffold_RefusesExistingBundle(t *testing.T) {
 	_, err := Scaffold(dir, minimalSpec())
 	if err == nil || !strings.Contains(err.Error(), "already contains") {
 		t.Fatalf("expected already-contains error, got %v", err)
+	}
+}
+
+// TestBundleGitignore_MatchesPackerSkips turns the scaffolded
+// .gitignore's relationship with the packer into a machine-checked
+// invariant: every entry we tell authors to ignore must be something
+// PackDir already excludes. A comment asserting this would drift the
+// first time either list changed.
+func TestBundleGitignore_MatchesPackerSkips(t *testing.T) {
+	for _, line := range strings.Split(strings.TrimSpace(bundleGitignore), "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+		// Turn the gitignore entry into a concrete path the packer
+		// would see: `*.botz` → `x.botz`, `.iterion/` → `.iterion`.
+		sample := strings.TrimSuffix(strings.Replace(line, "*", "x", 1), "/")
+		if !bundle.IsPackSkipped(sample) {
+			t.Errorf("scaffolded .gitignore lists %q but PackDir would still archive %q",
+				line, sample)
+		}
 	}
 }

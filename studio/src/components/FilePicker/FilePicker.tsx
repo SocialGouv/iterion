@@ -1,6 +1,8 @@
 import { useEffect, useMemo, useState } from "react";
+import { useQuery } from "@tanstack/react-query";
 import * as api from "@/api/client";
 import type { FileEntry } from "@/api/types";
+import { errorMessage } from "@/lib/errorHints";
 import { useRecentsStore } from "@/store/recents";
 import {
   Badge,
@@ -20,44 +22,53 @@ interface FilePickerProps {
   onPick: (kind: "file" | "example", path: string) => void;
 }
 
+// Stable empty fallbacks so error/pre-load renders don't hand the
+// search memo a fresh [] reference each render.
+const EMPTY_FILES: FileEntry[] = [];
+const EMPTY_EXAMPLE_NAMES: string[] = [];
+
 export default function FilePicker({ open, onOpenChange, onPick }: FilePickerProps) {
   const [tab, setTab] = useState<string>("recents");
-  const [files, setFiles] = useState<FileEntry[]>([]);
-  const [examples, setExamples] = useState<string[]>([]);
   const [query, setQuery] = useState("");
-  const [loadingFiles, setLoadingFiles] = useState(false);
-  const [filesError, setFilesError] = useState<string | null>(null);
-  const [loadingExamples, setLoadingExamples] = useState(false);
-  const [examplesError, setExamplesError] = useState<string | null>(null);
   const recents = useRecentsStore((s) => s.recents);
   const removeRecent = useRecentsStore((s) => s.removeRecent);
   const clearRecents = useRecentsStore((s) => s.clearRecents);
 
+  // Both queries gate on the dialog being open and refetch on every
+  // open (staleTime 0). Loading + error stay tracked per source so the
+  // panels can distinguish "still fetching" / "fetch failed" /
+  // "genuinely empty" — collapsing a failure into an empty list hides
+  // the real problem from the user. isFetching (not isLoading) so each
+  // reopen shows the loading state again, like the pre-query behavior.
+  const filesQuery = useQuery<FileEntry[]>({
+    queryKey: ["workspace-files"],
+    queryFn: () => api.listFiles(),
+    enabled: open,
+  });
+  const examplesQuery = useQuery({
+    queryKey: ["example-entries"],
+    queryFn: () => api.listExampleEntries(),
+    enabled: open,
+  });
+  const loadingFiles = filesQuery.isFetching;
+  const filesError =
+    !loadingFiles && filesQuery.error ? errorMessage(filesQuery.error) : null;
+  const files = filesQuery.error ? EMPTY_FILES : (filesQuery.data ?? EMPTY_FILES);
+  const loadingExamples = examplesQuery.isFetching;
+  const examplesError =
+    !loadingExamples && examplesQuery.error
+      ? errorMessage(examplesQuery.error)
+      : null;
+  const examples = useMemo<string[]>(
+    () =>
+      examplesQuery.error
+        ? EMPTY_EXAMPLE_NAMES
+        : (examplesQuery.data?.map((e) => e.name) ?? EMPTY_EXAMPLE_NAMES),
+    [examplesQuery.data, examplesQuery.error],
+  );
+
   useEffect(() => {
     if (!open) return;
-    // Track loading + error per source so the panels can distinguish
-    // "still fetching" / "fetch failed" / "genuinely empty" — collapsing
-    // a failure into an empty list hides the real problem from the user.
-    setLoadingFiles(true);
-    setFilesError(null);
-    api
-      .listFiles()
-      .then((f) => setFiles(f))
-      .catch((e: unknown) => {
-        setFilesError(e instanceof Error ? e.message : String(e));
-        setFiles([]);
-      })
-      .finally(() => setLoadingFiles(false));
-    setLoadingExamples(true);
-    setExamplesError(null);
-    api
-      .listExamples()
-      .then((e) => setExamples(e))
-      .catch((e: unknown) => {
-        setExamplesError(e instanceof Error ? e.message : String(e));
-        setExamples([]);
-      })
-      .finally(() => setLoadingExamples(false));
     setQuery("");
     // Fresh / first-time users have no recents — Examples is a better
     // discovery surface than the raw workspace file listing. Returning

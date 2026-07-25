@@ -12,9 +12,12 @@ const whatsNext = FIRST_CLASS_BOTS["whats-next"] as FirstClassBot;
 
 let nextSeq = 1;
 function evt(
-  type: string,
+  type: RunEvent["type"],
   fields: Partial<Omit<RunEvent, "type">> = {},
 ): RunEvent {
+  // The cast re-associates the decomposed type/data pair with the
+  // discriminated union — call sites pass a literal type plus the
+  // matching payload shape.
   return {
     seq: fields.seq ?? nextSeq++,
     timestamp: fields.timestamp ?? new Date().toISOString(),
@@ -23,7 +26,7 @@ function evt(
     branch_id: fields.branch_id,
     node_id: fields.node_id,
     data: fields.data,
-  };
+  } as RunEvent;
 }
 
 describe("messagesFromEvents (whats-next v2)", () => {

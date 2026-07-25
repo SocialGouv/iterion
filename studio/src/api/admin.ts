@@ -44,3 +44,17 @@ export function updateAdminUser(
     }),
   );
 }
+
+// Mints a one-shot temporary password for a locked-out account (shown
+// once); the user's next sign-in goes through the forced-rotation flow
+// with it. Super-admin only.
+export function resetAdminUserPassword(
+  userID: string,
+): Promise<{ temp_password: string }> {
+  return guard404("admin-users", () =>
+    request<{ temp_password: string }>(
+      `/admin/users/${encodeURIComponent(userID)}/reset-password`,
+      { method: "POST" },
+    ),
+  );
+}

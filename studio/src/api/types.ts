@@ -37,6 +37,9 @@ export interface VarField {
   name: string;
   type: TypeExpr;
   default?: Literal;
+  /** DSL `[enum: "a", "b"]` constraint — present only on string vars.
+   *  Non-empty ⇒ the var renders as a fixed-choice select. */
+  enum?: string[];
 }
 
 export type TypeExpr = "string" | "bool" | "int" | "float" | "json" | "string[]";
@@ -146,14 +149,36 @@ export interface ServerInfo {
   // triggers_enabled is true when the event-driven trigger store is wired.
   // The SPA exposes the Automations (Triggers) view + nav entry conditionally.
   triggers_enabled?: boolean;
+  // config_shares_enabled is true when the scoped config-share editor is wired
+  // (store + generic-secret stack + auth). The SPA exposes the operator "Share
+  // config" surface on the bot home when set; the shell-less /config/:id
+  // editor route is always mounted (a public link renders its own error state
+  // when the share is unknown or the feature is off).
+  config_shares_enabled?: boolean;
   // plugins_enabled is always true: the plugin registry is available in every
   // mode, so the SPA can surface the Plugins management view + nav entry.
   plugins_enabled?: boolean;
+  // bot_editing_enabled is true when the .bot editor + /bots/new builder +
+  // "Duplicate & edit" fork are available. Always true in local mode (edits the
+  // real filesystem); in cloud mode true only when the team-authored bot store
+  // is wired. Gates the Editor nav entry and the per-bot edit affordances.
+  bot_editing_enabled?: boolean;
+  // web_push_enabled is true when the server can deliver browser push
+  // notifications (VAPID keys + subscription store wired). Gates the
+  // Notifications settings panel.
+  web_push_enabled?: boolean;
+  // web_push_vapid_public_key is the applicationServerKey this browser
+  // subscribes with (public by design).
+  web_push_vapid_public_key?: string;
   // secrets_enabled is true in local (non-cloud) mode when a sealed secret
   // store + sealer are wired. The SPA exposes the local Secrets view + nav
   // entry conditionally. Cloud mode uses the auth-gated team/personal secrets
   // UI instead (this flag stays false there).
   secrets_enabled?: boolean;
+  // run_shell_enabled is true in local (non-cloud) mode: the run view
+  // offers the post-mortem shell (GET /api/ws/runs/{id}/shell) on
+  // terminal runs whose preserved worktree still exists.
+  run_shell_enabled?: boolean;
   // skills_enabled is true in local (non-cloud) mode: the SPA surfaces the
   // Skills library management view + nav entry. No sealing, so it gates on
   // mode alone.

@@ -13,6 +13,7 @@ package cloudpublisher
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
 	"sync"
@@ -23,6 +24,7 @@ import (
 
 	"os"
 
+	"github.com/SocialGouv/iterion/pkg/botsource"
 	"github.com/SocialGouv/iterion/pkg/cloud/metrics"
 	"github.com/SocialGouv/iterion/pkg/dsl/ast"
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
@@ -30,6 +32,7 @@ import (
 	"github.com/SocialGouv/iterion/pkg/forge"
 	"github.com/SocialGouv/iterion/pkg/identity"
 	iterlog "github.com/SocialGouv/iterion/pkg/log"
+	"github.com/SocialGouv/iterion/pkg/pluginsource"
 	"github.com/SocialGouv/iterion/pkg/queue"
 	natsq "github.com/SocialGouv/iterion/pkg/queue/nats"
 	"github.com/SocialGouv/iterion/pkg/runview"
@@ -80,6 +83,16 @@ type Config struct {
 	// attributed to the App bot (the runner can't self-resolve it — see
 	// RunBundle.ForgeAppBotLogin).
 	ForgeConnections forge.ConnectionStore
+	// PluginSources, when non-nil, resolves the launching team's git-hosted
+	// org-private plugins at launch (pkg/pluginsource). This is the DURABLE
+	// counterpart to a plugin installed into the pod's iterion home, which a
+	// restart silently loses. Nil keeps local-only resolution.
+	PluginSources *pluginsource.Resolver
+	// BotSources, when non-nil, resolves the launching team's authored bot
+	// bundles (pkg/botsource) so a tenant bot's skills/ reach the runner via the
+	// Contributions channel — the runner's baked BotsPaths cannot resolve a
+	// tenant bundle, so this is the only way its skills mirror into the workspace.
+	BotSources botsource.Store
 	// Identity, when non-nil, lets the publisher resolve a run's team
 	// to its parent org so the RunMessage carries the org id the launch
 	// gate metered the run on. The runner charges LLM spend to that key
@@ -115,6 +128,8 @@ type Publisher struct {
 	sealer         secrets.Sealer
 	oauthForfait   secrets.OAuthStore
 	forgeConns     forge.ConnectionStore
+	pluginSources  *pluginsource.Resolver
+	botSources     botsource.Store
 	identity       TeamResolver
 
 	// orgCache memoizes team → org id so the publish hot path doesn't
@@ -204,6 +219,8 @@ func New(cfg Config) (*Publisher, error) {
 		sealer:         cfg.Sealer,
 		oauthForfait:   cfg.OAuthForfait,
 		forgeConns:     cfg.ForgeConnections,
+		pluginSources:  cfg.PluginSources,
+		botSources:     cfg.BotSources,
 		identity:       cfg.Identity,
 	}, nil
 }
@@ -534,6 +551,16 @@ func (p *Publisher) SubmitLaunch(ctx context.Context, runID string, spec runview
 		CallbackToken:      spec.CallbackToken,
 		CallbackAnswerNode: spec.CallbackAnswerNode,
 	}
+	// Typed provenance (schedule / dispatcher / trigger spine). The queued
+	// doc is the ONLY carrier: the RunMessage has no source field, and the
+	// runner's engine only stamps run.Source when it was given one, so a
+	// value lost here is lost for good — taking the run's source_kind back
+	// to "manual" and blinding the overlap gate, which counts a schedule's
+	// live runs through source.schedule_id.
+	if spec.SourceRef != nil {
+		src := *spec.SourceRef // copy: never share the caller's pointer
+		r.Source = &src
+	}
 	// 1b. Resolve BYOK credentials and seal them under a fresh
 	//     secrets_ref. Empty ref means "no team-scoped credentials
 	//     configured" — the runner falls back to env. This runs BEFORE the
@@ -557,8 +584,17 @@ func (p *Publisher) SubmitLaunch(ctx context.Context, runID string, spec runview
 	if err != nil {
 		return 0, err
 	}
+	// Plugin/library skills resolved HERE, from this instance's iterion home:
+	// the runner pod's is empty, so an operator-installed plugin's skill would
+	// otherwise never reach the workspace (see resolveContributions).
+	contributions, err := resolveContributionsFor(ctx, wf, "", tenantID, p.pluginSources, p.logger)
+	if err != nil {
+		return 0, err
+	}
+	contributions = p.appendTenantBotSkills(ctx, contributions, tenantID, spec.BotID)
 	msg := &queue.RunMessage{
 		V:              queue.SchemaVersion,
+		Contributions:  contributions,
 		RunID:          runID,
 		WorkflowName:   wf.Name,
 		WorkflowHash:   hash,
@@ -591,11 +627,16 @@ func (p *Publisher) SubmitLaunch(ctx context.Context, runID string, spec runview
 		Budget:  budgetForWire(spec.Budget),
 	}
 	if err := p.publish(ctx, msg); err != nil {
-		// Best-effort: roll the run doc back to failed so the studio
-		// surfaces the queue failure rather than a stuck "queued"
-		// row that never moves.
-		_ = p.store.UpdateRunStatus(ctx, runID, store.RunStatusFailed, fmt.Sprintf("queue publish: %v", err))
-		return 0, fmt.Errorf("cloudpublisher: publish: %w", err)
+		pubErr := fmt.Errorf("cloudpublisher: publish: %w", err)
+		// Roll the run doc back to failed so the studio surfaces the
+		// queue failure rather than a stuck "queued" row that never
+		// moves. Roll back on a cancel-immune ctx: a publish failure
+		// caused by request cancellation must not also doom the status
+		// rollback.
+		if uerr := p.store.UpdateRunStatus(context.WithoutCancel(ctx), runID, store.RunStatusFailed, fmt.Sprintf("queue publish: %v", err)); uerr != nil {
+			return 0, errors.Join(pubErr, fmt.Errorf("cloudpublisher: mark run %s failed after publish failure (run may be stuck queued): %w", runID, uerr))
+		}
+		return 0, pubErr
 	}
 	if p.metrics != nil {
 		p.metrics.RunsCreatedTotal.WithLabelValues(string(store.RunStatusQueued)).Inc()
@@ -714,12 +755,20 @@ func (p *Publisher) SubmitResume(ctx context.Context, spec runview.ResumeSpec, w
 	if err := p.store.UpdateRunStatus(ctx, spec.RunID, store.RunStatusQueued, ""); err != nil {
 		return fmt.Errorf("cloudpublisher: requeue %s: %w", spec.RunID, err)
 	}
+	// Re-resolved on resume too: the engine re-mirrors skills on every resume,
+	// so a resumed run must carry the same payload a fresh launch would.
+	contributions, contribErr := resolveContributionsFor(ctx, wf, "", prior.TenantID, p.pluginSources, p.logger)
+	if contribErr != nil {
+		return contribErr
+	}
+	contributions = p.appendTenantBotSkills(ctx, contributions, prior.TenantID, prior.BotID)
 	msg := &queue.RunMessage{
-		V:            queue.SchemaVersion,
-		RunID:        spec.RunID,
-		WorkflowName: wf.Name,
-		WorkflowHash: hash,
-		IRCompiled:   body,
+		V:             queue.SchemaVersion,
+		Contributions: contributions,
+		RunID:         spec.RunID,
+		WorkflowName:  wf.Name,
+		WorkflowHash:  hash,
+		IRCompiled:    body,
 		Resume: &queue.ResumeSpec{
 			Answers: spec.Answers,
 			Force:   spec.Force,

@@ -21,16 +21,33 @@ interface Props {
   bare?: boolean;
 }
 
-// Replay speeds: how many seqs to advance per tick, paired with the
-// tick period in ms. Picked to feel "fast enough not to wait, slow
-// enough to read": a 5k-event run finishes in ~10s on 5×, ~2s on 25×.
-// The user can hit pause + drag at any time; dragging implicitly
-// pauses to keep the interaction predictable.
-const REPLAY_SPEEDS: ReadonlyArray<{ label: string; step: number; tickMs: number }> = [
-  { label: "1×", step: 1, tickMs: 50 },
-  { label: "5×", step: 5, tickMs: 50 },
-  { label: "25×", step: 25, tickMs: 50 },
+// Replay speeds are TRUE wall-clock multipliers: playback waits the real
+// inter-event gap divided by the multiplier, so ×5 replays a 10-minute
+// run in ~2 minutes. Idle gaps whose *playback* wait would exceed
+// GAP_CAP_MS (human pauses, long LLM turns) are compressed to the cap
+// and surfaced via the ⏩ indicator — ×1 stays watchable without lying
+// about the pace of the busy sections. "Instant" keeps the old
+// fixed-seq-stepping behaviour for skimming a run's shape.
+const REPLAY_SPEEDS: ReadonlyArray<{ label: string; mult: number }> = [
+  { label: "×1", mult: 1 },
+  { label: "×2", mult: 2 },
+  { label: "×5", mult: 5 },
+  { label: "×10", mult: 10 },
+  { label: "×25", mult: 25 },
+  { label: "Instant", mult: 0 },
 ];
+// Max playback wait for a single inter-event gap.
+const GAP_CAP_MS = 3_000;
+// Hops shorter than ~a frame are coalesced into one slider advance so
+// log bursts don't schedule hundreds of near-zero timeouts.
+const BATCH_MS = 16;
+// Fallback hop when an event has no parsable timestamp.
+const NO_TS_HOP_MS = 50;
+// Legacy "Instant" pace (the old 25× seq-stepping).
+const INSTANT_STEP = 25;
+const INSTANT_TICK_MS = 50;
+// Only surface gap compression worth noticing (in real run time).
+const SKIP_NOTE_MIN_MS = 5_000;
 
 const MARK_COLORS: Record<string, string> = {
   run_started: "bg-info",
@@ -41,6 +58,16 @@ const MARK_COLORS: Record<string, string> = {
   run_cancelled: "bg-fg-muted",
   human_input_requested: "bg-warning",
 };
+
+function fmtClock(ms: number): string {
+  const s = Math.max(0, Math.round(ms / 1000));
+  const h = Math.floor(s / 3600);
+  const m = Math.floor((s % 3600) / 60);
+  const sec = s % 60;
+  const ss = String(sec).padStart(2, "0");
+  if (h > 0) return `${h}:${String(m).padStart(2, "0")}:${ss}`;
+  return `${m}:${ss}`;
+}
 
 export default function Scrubber({
   events,
@@ -55,32 +82,176 @@ export default function Scrubber({
   const value = scrubSeq ?? liveSeq;
   const max = Math.max(0, liveSeq);
 
+  // seq→timestamp walk table. Events arrive seq-ordered from the
+  // stream; the defensive sort keeps the walker correct on refetches.
+  const timeline = useMemo(() => {
+    const rows = events.map((e) => {
+      const ts = Date.parse(e.timestamp);
+      return { seq: e.seq, ts: Number.isFinite(ts) ? ts : NaN };
+    });
+    rows.sort((a, b) => a.seq - b.seq);
+    return rows;
+  }, [events]);
+
+  // First/last known timestamps — power the T+elapsed / total display.
+  const bounds = useMemo(() => {
+    let first = NaN;
+    let last = NaN;
+    for (const r of timeline) {
+      if (!Number.isFinite(r.ts)) continue;
+      if (!Number.isFinite(first)) first = r.ts;
+      last = r.ts;
+    }
+    return Number.isFinite(first) ? { first, last } : null;
+  }, [timeline]);
+
+  const elapsedMs = useMemo(() => {
+    if (!bounds) return null;
+    let cur = bounds.first;
+    for (const r of timeline) {
+      if (r.seq > value) break;
+      if (Number.isFinite(r.ts)) cur = r.ts;
+    }
+    return cur - bounds.first;
+  }, [bounds, timeline, value]);
+
   // Replay state. Lives in the Scrubber rather than RunView because
   // it's purely a UI affordance: the actual time-travel happens by
   // mutating scrubSeq (via onChange), which the rest of the app
   // already renders correctly. Pause-on-drag keeps the slider's
   // direct manipulation responsive.
   const [playing, setPlaying] = useState(false);
-  const [speedIdx, setSpeedIdx] = useState(1); // default 5×
-  const scrubSeqRef = useRef(scrubSeq);
+  const [speedIdx, setSpeedIdx] = useState(2); // default ×5
+  // Transient "⏩ +2m14s" note when idle gaps get compressed.
+  const [skipNote, setSkipNote] = useState<{ ms: number; key: number } | null>(null);
+
+  // The playback loop reads everything through a ref so speed changes
+  // and live event growth never restart an in-flight timer. Updated in
+  // an effect (declared before the loop effect, so mount ordering keeps
+  // it fresh) rather than during render.
+  const stateRef = useRef({ scrubSeq, max, timeline, mult: 1, onChange });
   useEffect(() => {
-    scrubSeqRef.current = scrubSeq;
-  }, [scrubSeq]);
+    stateRef.current = {
+      scrubSeq,
+      max,
+      timeline,
+      mult: REPLAY_SPEEDS[speedIdx]?.mult ?? 1,
+      onChange,
+    };
+  }, [scrubSeq, max, timeline, speedIdx, onChange]);
+
   useEffect(() => {
     if (!playing) return;
-    const { step, tickMs } = REPLAY_SPEEDS[speedIdx]!;
-    const handle = window.setInterval(() => {
-      const cur = scrubSeqRef.current ?? -1;
-      const next = cur + step;
-      if (next >= max) {
-        onChange(null); // back to live
-        setPlaying(false);
+    let cancelled = false;
+    let timer: number | null = null;
+
+    const finish = () => {
+      stateRef.current.onChange(null); // back to live
+      setPlaying(false);
+    };
+
+    // `curOverride` threads the position along the timeout chain: the
+    // React state behind stateRef only syncs after a re-render, so the
+    // continuation right after onChange(target) would otherwise read a
+    // stale position and re-schedule (= double) every hop.
+    const tick = (curOverride?: number) => {
+      if (cancelled) return;
+      const { scrubSeq, max, timeline, mult, onChange } = stateRef.current;
+      const cur = curOverride ?? scrubSeq ?? -1;
+
+      if (mult === 0) {
+        // Instant: legacy fixed seq stepping.
+        const next = cur + INSTANT_STEP;
+        if (next >= max) {
+          finish();
+          return;
+        }
+        onChange(next);
+        timer = window.setTimeout(() => tick(next), INSTANT_TICK_MS);
         return;
       }
-      onChange(next);
-    }, tickMs);
-    return () => window.clearInterval(handle);
-  }, [playing, speedIdx, max, onChange]);
+
+      // Lower-bound binary search: first timeline row with seq > cur.
+      let lo = 0;
+      let hi = timeline.length;
+      while (lo < hi) {
+        const mid = (lo + hi) >> 1;
+        const row = timeline[mid];
+        if (row === undefined || row.seq <= cur) lo = mid + 1;
+        else hi = mid;
+      }
+      let i = lo;
+      const head = timeline[i];
+      if (head === undefined || head.seq >= max) {
+        finish();
+        return;
+      }
+
+      // Baseline timestamp: last known ts at or before cur.
+      let prevTs = NaN;
+      for (let j = i - 1; j >= 0; j--) {
+        const row = timeline[j];
+        if (row !== undefined && Number.isFinite(row.ts)) {
+          prevTs = row.ts;
+          break;
+        }
+      }
+
+      // Coalesce sub-frame hops; a gap that stands on its own gets its
+      // own timeout so burst events surface BEFORE the gap, not after.
+      // `delay` is playback wait, `skipped` is real run time dropped by
+      // the gap cap.
+      let delay = 0;
+      let skipped = 0;
+      let target = cur;
+      for (;;) {
+        const row = timeline[i];
+        if (row === undefined || row.seq >= max) break;
+        const real =
+          Number.isFinite(row.ts) && Number.isFinite(prevTs)
+            ? Math.max(0, row.ts - prevTs)
+            : NaN;
+        const scaled = Number.isFinite(real) ? real / mult : NO_TS_HOP_MS;
+        const capped = Math.min(scaled, GAP_CAP_MS);
+        // Flush the accumulated batch before starting a standalone gap.
+        if (delay > 0 && delay + capped > BATCH_MS) break;
+        if (Number.isFinite(real)) {
+          skipped += Math.max(0, real - capped * mult);
+          prevTs = row.ts;
+        }
+        delay += capped;
+        target = row.seq;
+        i++;
+        if (delay > BATCH_MS) break;
+      }
+
+      if (skipped >= SKIP_NOTE_MIN_MS) {
+        setSkipNote((prev) => ({
+          ms: (prev?.ms ?? 0) + skipped,
+          key: (prev?.key ?? 0) + 1,
+        }));
+      }
+
+      timer = window.setTimeout(() => {
+        if (cancelled) return;
+        stateRef.current.onChange(target);
+        tick(target);
+      }, delay);
+    };
+
+    tick();
+    return () => {
+      cancelled = true;
+      if (timer !== null) window.clearTimeout(timer);
+    };
+  }, [playing]);
+
+  // The ⏩ note fades on its own shortly after the last compression.
+  useEffect(() => {
+    if (!skipNote) return;
+    const h = window.setTimeout(() => setSkipNote(null), 2500);
+    return () => window.clearTimeout(h);
+  }, [skipNote]);
 
   if (!visible || liveSeq <= 0) return null;
 
@@ -124,7 +295,7 @@ export default function Scrubber({
         fit
         value={speedIdx}
         onChange={(e) => setSpeedIdx(Number(e.target.value))}
-        title="Replay speed"
+        title="Replay speed (wall-clock multiplier)"
         aria-label="Replay speed"
         className="font-mono"
       >
@@ -134,9 +305,14 @@ export default function Scrubber({
           </option>
         ))}
       </Select>
-      <span className="text-caption text-fg-subtle font-mono whitespace-nowrap">
-        seq
-      </span>
+      {skipNote && (
+        <span
+          className="text-caption text-warning-fg font-mono whitespace-nowrap"
+          title="Idle gap compressed — real run time skipped by the replay"
+        >
+          ⏩ +{fmtClock(skipNote.ms)}
+        </span>
+      )}
       <div className="flex-1 relative h-5">
         <input
           type="range"
@@ -172,6 +348,14 @@ export default function Scrubber({
           </div>
         )}
       </div>
+      {bounds && elapsedMs !== null && (
+        <span
+          className="text-caption text-fg-subtle font-mono whitespace-nowrap"
+          title="Run time at the current position / total run time"
+        >
+          T+{fmtClock(elapsedMs)} / {fmtClock(bounds.last - bounds.first)}
+        </span>
+      )}
       <span className="text-caption text-fg-subtle font-mono whitespace-nowrap">
         {value} / {max}
       </span>

@@ -42,7 +42,7 @@
 ##                  → ship; else loop back to `campaign` (RED → with the
 ##                  failure log so the agent fixes what it broke; green but
 ##                  sites remain → another pass). No LLM, no shell.
-##   mr_gate      — deterministic: open the optional MR/PR (the series of
+##   mr_gate      — deterministic: open the optional PR (the series of
 ##     + finalize_mr per-pass commits) when open_mr, else finish.
 ##
 ## CONTINUATION IS BOUNDED. The single declared loop
@@ -119,27 +119,28 @@ vars:
   ## dogfood 019f3d4d-1aed).
   max_passes: int = 8
 
-  ## ─── MR/PR finalization (opt-in) ───────────────────────────────
+  ## ─── PR finalization (opt-in) ───────────────────────────────
   ## When open_mr=true, after convergence finalize_mr pushes the run's HEAD
-  ## (the SERIES of per-pass commits) to the forge and opens a merge/pull
-  ## request. Off by default so a plain local run just leaves the commits on
-  ## the operator's branch. The comment→MR trigger sets this true. This bot
+  ## (the SERIES of per-pass commits) to the forge and opens a pull
+  ## request (PR; merge request on GitLab). Off by default so a plain
+  ## local run just leaves the commits on
+  ## the operator's branch. The comment→PR trigger sets this true. This bot
   ## runs in a per-run git worktree (engine default `worktree: auto`), so the
   ## commits advance the worktree HEAD and finalize_mr pushes that branch.
   ## Requires a forge_token secret (or host-authenticated gh/glab).
   open_mr: bool = false
-  ## Branch name to push + open the MR from. Empty = derive a stable name
+  ## Branch name to push + open the PR from. Empty = derive a stable name
   ## from the run (iterion/improve/<run-id>).
   mr_branch: string = ""
-  ## Integration base the MR targets. Empty = the repo's default branch.
+  ## Integration base the PR targets. Empty = the repo's default branch.
   mr_base: string = ""
   ## Optional back-link target: the source issue this run answers, as
   ## "native:<id>" (local board) or a forge issue URL. When set, finalize_mr
-  ## posts the opened MR's URL back as a comment on it.
+  ## posts the opened PR's URL back as a comment on it.
   source_issue_ref: string = ""
 
 secrets:
-  ## Forge access for push + MR creation + the issue back-link. Mounted as a
+  ## Forge access for push + PR creation + the issue back-link. Mounted as a
   ## read-only file the gh/glab CLI authenticates from; never read into a
   ## prompt. optional:true so manual/local runs relying on host-authenticated
   ## gh/glab still work. See skills/forge-mr-create.md.
@@ -300,33 +301,41 @@ prompt verify_user:
   skill). Do NOT change code; the deterministic gate runs your script and the
   campaign fixes any red on the next pass.
 
-## ─── MR/PR finalization prompts (opt-in) ────────────────────────────
+  MANDATORY (skill section 1b): if the repo's own CI enforces a
+  codegen-drift gate (git diff --exit-code after a regen/vendor step, a
+  drift-check task, test -z on git status --porcelain), verify.sh MUST
+  mirror it — run the repo's regen command(s), then fail on drift. The
+  deterministic precheck rejects a gateless verify.sh in that case
+  (exit 3) and the loop burns a full pass re-learning this.
+
+## ─── PR finalization prompts (opt-in) ────────────────────────────
 
 prompt finalize_mr_system:
-  You finalize a converged improvement run by opening ONE merge/pull request
-  for the SERIES of per-pass commits this run produced, then (optionally)
-  posting the MR link back to the source issue. You make NO further code
+  You finalize a converged improvement run by opening ONE pull request
+  (PR; merge request on GitLab) for the SERIES of per-pass commits this
+  run produced, then (optionally)
+  posting the PR link back to the source issue. You make NO further code
   changes.
 
   Read the `forge-mr-create` skill FIRST — it tells you how to detect the
   forge, authenticate from the mounted forge_token, push the branch, and open
-  the MR/PR (GitHub via gh, GitLab via glab, Forgejo/Gitea via REST).
+  the PR (GitHub via gh, GitLab via glab, Forgejo/Gitea via REST).
 
   Procedure:
     1. Confirm there are commits to ship: the run's HEAD must be ahead of the
-       base (`git rev-list --count <base>..HEAD` > 0). If not, set
+       base (`git rev-list --count origin/<base>..HEAD` > 0). If not, set
        opened=false with skipped_reason "no commits ahead of base" — do NOT
-       open an empty MR.
+       open an empty PR.
     2. Determine the branch name (mr_branch if set, else a stable
        iterion/improve/<run-id> name) and the base (mr_base if set, else the
        repo's default branch — see the skill).
     3. Authenticate the matching forge CLI from the mounted forge_token file
        when present; otherwise assume host auth. If neither is available, set
        opened=false with a precise skipped_reason — never pretend.
-    4. Push HEAD to the branch on the origin remote, then open the MR/PR from
+    4. Push HEAD to the branch on the origin remote, then open the PR from
        that branch into the base, with a clear title + body summarising the
        improvement axis and the sites landed (use scope_notes for context).
-    5. If source_issue_ref is set, post the opened MR URL back to it: a forge
+    5. If source_issue_ref is set, post the opened PR URL back to it: a forge
        issue URL → comment via the same forge CLI; a "native:<id>" ref → use
        the board comment tool. Set back_linked accordingly.
 
@@ -340,7 +349,7 @@ prompt finalize_mr_user:
   Source issue to back-link (may be empty): {{input.source_issue_ref}}
   Context / scope: {{input.scope_notes}}
 
-  Push the branch, open the MR/PR, post the back-link when a source issue is
+  Push the branch, open the PR, post the back-link when a source issue is
   given, and return the structured result.
 
 ## ─── Schemas ────────────────────────────────────────────────────
@@ -453,7 +462,7 @@ agent campaign:
 ## a prior run may have left in a persistent (non-sandbox) scratch dir. python3
 ## for safe JSON + no quote clashes (mirrors verify_run); read-only, idempotent.
 tool verify_probe:
-  command: `SCRATCH={{vars.scratch_dir}} ITER="{{input.iteration}}" python3 -c "
+  command: `SCRATCH={{vars.scratch_dir}} ITER={{input.iteration}} python3 -c "
 import os, subprocess, json
 scratch = os.environ.get('SCRATCH', '.')
 script = os.path.join(scratch, 'verify.sh')
@@ -540,7 +549,14 @@ if rc == 0:
     import glob
     def has_drift_gate(text):
         for l in text.splitlines():
-            if ('diff' in l and ('--exit-code' in l or '--quiet' in l)) or 'status --porcelain' in l:
+            # git diff --exit-code is the canonical build-failing gate.
+            if 'diff' in l and '--exit-code' in l:
+                return True
+            # --quiet / status --porcelain also appear as commit-if-changed
+            # control flow in updater workflows (e.g. a Homebrew tap bump) --
+            # only count them when the same line actually fails the build.
+            gated = ('exit 1' in l) or ('|| exit' in l) or ('test -z' in l) or ('[ -z' in l)
+            if gated and (('diff' in l and '--quiet' in l) or 'status --porcelain' in l):
                 return True
         return False
     ci_hit = ''
@@ -598,7 +614,7 @@ compute mr_gate:
   expr:
     open_mr: "vars.open_mr"
 
-## finalize_mr — opt-in MR/PR creation shipping the SERIES of per-pass commits.
+## finalize_mr — opt-in PR creation shipping the SERIES of per-pass commits.
 ## claude_code so the bundled forge-mr-create skill is mirrored and the board
 ## comment tool (native back-link) is available.
 ## forge_auth_probe — DETERMINISTIC pre-flight for the push. finalize_mr is an
@@ -640,10 +656,29 @@ agent finalize_mr:
   user: finalize_mr_user
   tools: [bash, read_file, glob, grep]
   capabilities: [board.read, board.comment]
-  ## 20 is ample for push + open-MR + back-link (~5-8 commands nominal); 40 was
+  ## 20 is ample for push + open-PR + back-link (~5-8 commands nominal); 40 was
   ## headroom for a degenerate credential-probe spin that forge_auth_probe now
   ## makes impossible (the node is only entered when a push credential exists).
   tool_max_steps: 20
+
+## surface_pr_link — DETERMINISTIC result-link emitter for the studio run
+## summary. finalize_mr is an LLM agent, but the studio surfaces a run's
+## headline PR link from the deterministic `[iterion] preview_url=… kind=pr`
+## directive a tool node prints on stdout — never from agent prose. Reached
+## only when finalize_mr actually opened a PR (opened=true ⇒ url set); the
+## python guard drops an empty url so the scanner never sees a malformed
+## directive. read-only, idempotent.
+schema surface_pr_link_input:
+  url: string
+
+tool surface_pr_link:
+  input: surface_pr_link_input
+  command: `URL={{input.url}} python3 -c "
+import os
+u = (os.environ.get('URL') or '').strip()
+if u:
+    print('[iterion] preview_url=' + u + ' kind=pr scope=external')
+"`
 
 ## ─── Workflow ───────────────────────────────────────────────────
 
@@ -654,17 +689,11 @@ workflow whole_improve_loop:
   ## `git log` and continues from the commits earlier passes banked.
   entry: campaign
 
-  ## Container isolation. campaign runs the repo's build, tests, linters and
-  ## git; verify runs the build/test. Inline sandbox config (vs `mode: auto`)
-  ## so the post_create that installs claude inside the container is honoured
-  ## — see feature_dev/main.bot for the full rationale.
-  sandbox:
-    image: "ghcr.io/socialgouv/iterion-sandbox-full:edge"
-    user: "1000:1000"
-    mounts: ["type=bind,source=${localEnv:HOME}/.claude,target=/home/devbox/.claude,consistency=cached"]
-    env:
-      CLAUDE_CONFIG_DIR: "/home/devbox/.claude"
-    post_create: "set -e; claude --version >/dev/null 2>&1 || sudo npm install -g @anthropic-ai/claude-code@latest; claude --version >/dev/null 2>&1 || { echo 'claude install verification failed' >&2; exit 1; }"
+  ## No `sandbox:` block (ADR-082): the platform sandboxes by default
+  ## (`sandbox: auto` — target repo's devcontainer, else the default
+  ## image). The bot's own tools (gh/glab for the PR-comment tail) come
+  ## from the sibling devbox.json; the target repo's toolchain from its
+  ## own devcontainer/devbox.json.
 
   budget:
     max_parallel_branches: 1
@@ -689,7 +718,7 @@ workflow whole_improve_loop:
   verify_run -> gate
 
   ## Converged (green AND the campaign reports the axis fully applied) → ship
-  ## what is banked (optional MR, else finish).
+  ## what is banked (optional PR, else finish).
   gate -> mr_gate when converged
   ## Not converged → another campaign pass. RED carries the failure log so the
   ## agent fixes what it broke; green-but-more-work carries an empty log so the
@@ -705,14 +734,14 @@ workflow whole_improve_loop:
   ## Unconditional fallthrough after the loop-back retries are spent.
   gate -> mr_gate
 
-  ## Converged (or capped) → optional MR path, else finish. When open_mr, first
+  ## Converged (or capped) → optional PR path, else finish. When open_mr, first
   ## the deterministic forge_auth_probe checks a push credential EXISTS before we
   ## pay the finalize_mr agent turn.
   mr_gate -> forge_auth_probe when open_mr
   mr_gate -> done when not open_mr
 
   ## Push credential present → finalize_mr pushes the run's HEAD (the series of
-  ## per-pass commits) + opens the MR/PR and (when source_issue_ref is set)
+  ## per-pass commits) + opens the PR and (when source_issue_ref is set)
   ## posts the URL back. Absent → finish cleanly; the commits are on the
   ## engine's persistent iterion/run/<name> storage branch for a manual push.
   forge_auth_probe -> finalize_mr when available with {
@@ -723,4 +752,9 @@ workflow whole_improve_loop:
     scope_notes:      "{{vars.scope_notes}}"
   }
   forge_auth_probe -> done when not available
-  finalize_mr -> done
+  ## PR opened → surface its URL as a headline result-link in the run summary
+  ## (deterministic stdout directive → preview_url_available kind=pr), then
+  ## finish. Nothing opened (empty diff / refused PR) → straight to done.
+  finalize_mr -> surface_pr_link when opened with { url: "{{outputs.finalize_mr.url}}" }
+  finalize_mr -> done when not opened
+  surface_pr_link -> done

@@ -72,6 +72,12 @@ secrets:
   storage:
     create: false
     existingSecret: iterion-storage
+  # Claude Code OAuth forfait token — secret managed by hand in k8s
+  # (kubectl), mounted optional on the runner so claude_code runs on the
+  # subscription. Absent secret = no-op (optional: true).
+  forfait:
+    enabled: true
+    existingSecret: iterion-forfait
 
 # Sub-charts disabled — bring your own managed services.
 mongodb:

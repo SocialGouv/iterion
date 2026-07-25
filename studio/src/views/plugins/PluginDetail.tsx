@@ -1,4 +1,5 @@
-import { useEffect, useState, type ReactNode } from "react";
+import { useState, type ReactNode } from "react";
+import { useQuery } from "@tanstack/react-query";
 
 import {
   getPluginDetail,
@@ -7,6 +8,7 @@ import {
   type PluginLifecycleResult,
   type PluginView,
 } from "@/api/plugins";
+import { errorMessage } from "@/lib/errorHints";
 import { Badge } from "@/components/ui/Badge";
 import { Button } from "@/components/ui/Button";
 import { Drawer } from "@/components/ui/Drawer";
@@ -42,24 +44,18 @@ export default function PluginDetail({
   onClose,
   onConfigSaved,
 }: Props) {
-  const [detail, setDetail] = useState<PluginDetailData | null>(null);
-  const [detailErr, setDetailErr] = useState<string | null>(null);
-
-  useEffect(() => {
-    let cancelled = false;
-    setDetail(null);
-    setDetailErr(null);
-    getPluginDetail(plugin.name)
-      .then((d) => {
-        if (!cancelled) setDetail(d);
-      })
-      .catch((e) => {
-        if (!cancelled) setDetailErr(e instanceof Error ? e.message : String(e));
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [plugin.name]);
+  const detailQuery = useQuery<PluginDetailData>({
+    queryKey: ["plugin-detail", plugin.name],
+    queryFn: () => getPluginDetail(plugin.name),
+  });
+  // isFetching (not isLoading) so a reopen shows the loading state until
+  // the fresh detail lands — every load is a visible reload, and the
+  // loading / loaded / errored states stay mutually exclusive as before.
+  const detailLoading = detailQuery.isFetching;
+  const detail =
+    detailLoading || detailQuery.error ? null : (detailQuery.data ?? null);
+  const detailErr =
+    detailQuery.error && !detailLoading ? errorMessage(detailQuery.error) : null;
 
   const configurable = canManage && (plugin.config_schema?.length ?? 0) > 0;
 
@@ -94,15 +90,21 @@ export default function PluginDetail({
               Remove
             </Button>
           )}
-          <Button
-            variant={plugin.enabled ? "secondary" : "primary"}
-            size="sm"
-            loading={busy}
-            disabled={busy}
-            onClick={onToggle}
-          >
-            {plugin.enabled ? "Disable" : "Enable"}
-          </Button>
+          {canManage ? (
+            <Button
+              variant={plugin.enabled ? "secondary" : "primary"}
+              size="sm"
+              loading={busy}
+              disabled={busy}
+              onClick={onToggle}
+            >
+              {plugin.enabled ? "Disable" : "Enable"}
+            </Button>
+          ) : (
+            <span className="text-caption text-fg-subtle">
+              {plugin.enabled ? "Enabled" : "Disabled"} by admin
+            </span>
+          )}
         </>
       }
     >

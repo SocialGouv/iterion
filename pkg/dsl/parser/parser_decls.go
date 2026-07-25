@@ -66,6 +66,13 @@ func (p *parser) parseVarField() *ast.VarField {
 	p.expect(TokenColon)
 	te := p.parseTypeExpr()
 
+	// Optional enum constraint between the type and the default, same
+	// syntax as a schema field's: `mode: string [enum: "a", "b"] = "a"`.
+	var enumVals []string
+	if p.peek().Type == TokenLBrack {
+		enumVals = p.parseEnumConstraint()
+	}
+
 	var def *ast.Literal
 	if p.peek().Type == TokenEquals {
 		p.next() // consume =
@@ -74,10 +81,11 @@ func (p *parser) parseVarField() *ast.VarField {
 	p.skipNewlines()
 
 	return &ast.VarField{
-		Name:    name,
-		Type:    te,
-		Default: def,
-		Span:    ast.Span{Start: p.pos(nameT), End: p.pos(nameT)},
+		Name:       name,
+		Type:       te,
+		EnumValues: enumVals,
+		Default:    def,
+		Span:       ast.Span{Start: p.pos(nameT), End: p.pos(nameT)},
 	}
 }
 

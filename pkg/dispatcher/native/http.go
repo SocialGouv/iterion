@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"strings"
 
+	"github.com/SocialGouv/iterion/internal/httpx"
 	"github.com/SocialGouv/iterion/pkg/dispatcher/tracker"
 )
 
@@ -139,14 +140,18 @@ func (h *BoardAPI) admin(w http.ResponseWriter, s BoardStore) (BoardAdmin, bool)
 // ---------------------------------------------------------------------------
 
 type issueCreateReq struct {
-	Title    string            `json:"title"`
-	Body     string            `json:"body,omitempty"`
-	State    string            `json:"state,omitempty"`
-	Labels   []string          `json:"labels,omitempty"`
-	Priority int               `json:"priority,omitempty"`
-	Assignee string            `json:"assignee,omitempty"`
-	Blockers []string          `json:"blockers,omitempty"`
-	Fields   map[string]any    `json:"fields,omitempty"`
+	Title    string         `json:"title"`
+	Body     string         `json:"body,omitempty"`
+	State    string         `json:"state,omitempty"`
+	Labels   []string       `json:"labels,omitempty"`
+	Priority int            `json:"priority,omitempty"`
+	Assignee string         `json:"assignee,omitempty"`
+	Blockers []string       `json:"blockers,omitempty"`
+	Fields   map[string]any `json:"fields,omitempty"`
+	// External links the card to a forge repo at creation (repo-first
+	// board scoping); number/url/state stay empty until push-to-forge
+	// or the sync worker populate them.
+	External *ExternalRef      `json:"external,omitempty"`
 	Bot      string            `json:"bot,omitempty"`
 	BotArgs  map[string]string `json:"bot_args,omitempty"`
 }
@@ -190,6 +195,7 @@ func (h *BoardAPI) handleCreateIssue(w http.ResponseWriter, r *http.Request) {
 		Assignee: in.Assignee,
 		Blockers: in.Blockers,
 		Fields:   in.Fields,
+		External: in.External,
 		Bot:      in.Bot,
 		BotArgs:  in.BotArgs,
 	})
@@ -205,13 +211,16 @@ func (h *BoardAPI) handleCreateIssue(w http.ResponseWriter, r *http.Request) {
 // ---------------------------------------------------------------------------
 
 type issuePatchReq struct {
-	Title    *string            `json:"title,omitempty"`
-	Body     *string            `json:"body,omitempty"`
-	Labels   *[]string          `json:"labels,omitempty"`
-	Priority *int               `json:"priority,omitempty"`
-	Assignee *string            `json:"assignee,omitempty"`
-	Blockers *[]string          `json:"blockers,omitempty"`
-	Fields   map[string]any     `json:"fields,omitempty"`
+	Title    *string        `json:"title,omitempty"`
+	Body     *string        `json:"body,omitempty"`
+	Labels   *[]string      `json:"labels,omitempty"`
+	Priority *int           `json:"priority,omitempty"`
+	Assignee *string        `json:"assignee,omitempty"`
+	Blockers *[]string      `json:"blockers,omitempty"`
+	Fields   map[string]any `json:"fields,omitempty"`
+	// External, when present, re-links the card's forge repo (absent =
+	// unchanged; the store keeps sync-owned number/url/state semantics).
+	External *ExternalRef       `json:"external,omitempty"`
 	Bot      *string            `json:"bot,omitempty"`
 	BotArgs  *map[string]string `json:"bot_args,omitempty"`
 }
@@ -280,6 +289,7 @@ func (h *BoardAPI) handlePatchIssue(w http.ResponseWriter, r *http.Request) {
 		Assignee: in.Assignee,
 		Blockers: in.Blockers,
 		Fields:   in.Fields,
+		External: in.External,
 		Bot:      in.Bot,
 		BotArgs:  in.BotArgs,
 	})
@@ -829,9 +839,7 @@ func statusForErr(err error) int {
 }
 
 func writeJSON(w http.ResponseWriter, status int, v any) {
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(status)
-	_ = json.NewEncoder(w).Encode(v)
+	httpx.WriteJSON(w, status, v)
 }
 
 func writeErr(w http.ResponseWriter, status int, err error) {

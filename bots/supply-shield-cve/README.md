@@ -5,7 +5,8 @@ CVE-focused sibling of `supply-shield` (Shieldy). Same pipeline, but the
 analysis axis is **known vulnerabilities**, not malware: it inspects only
 the dependency versions a change adds or upgrades, matches each against
 the advisory databases, validates applicability, reuses a **shared
-cache**, and **reports back onto the PR/MR** via the native forge API.
+cache**, and **reports back onto the PR** (merge request on GitLab)
+via the native forge API.
 
 ## What it does
 
@@ -23,7 +24,7 @@ cache**, and **reports back onto the PR/MR** via the native forge API.
    and de-dups cross-scanner duplicates.
 5. **Shared store** — verdicts cache as `kind: cve` lines with a short TTL
    + `advisory_db_date` (a clean-today version can gain a CVE tomorrow).
-6. **Reports back** — sticky PR/MR comment + inline review + SARIF /
+6. **Reports back** — sticky PR comment + inline review + SARIF /
    code-scanning, plus board cards labelled `source:supply-shield-cve`.
 
 ## Run

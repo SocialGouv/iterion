@@ -178,6 +178,23 @@ func (s *Server) warnAdmissionSkipOnce(ticketID, bot string, found bool) {
 // projection folds them into one card. A launch failure reverts the ticket
 // to Backlog.
 func (s *Server) launchReadyTicket(runs *runview.Service, board native.BoardStore, iss *native.Issue) {
+	// Atomically claim the Ready ticket before launching so a live dispatcher
+	// and this admission loop can't both win the same one in the check-then-act
+	// window (PR #193 M2). On backends without the CAS we degrade to the
+	// best-effort SetState claim inside launchTicketNow (the documented V1
+	// window). When the CAS wins, launchTicketNow's own SetState(InProgress) is
+	// an idempotent no-op (already in that state).
+	if claimer := native.AsLaunchClaimer(board); claimer != nil {
+		_, won, err := claimer.ClaimForLaunch(iss.ID)
+		if err != nil {
+			s.logger.Warn("pipeline admission: claim ticket %s: %v", iss.ID, err)
+			return
+		}
+		if !won {
+			// Another launcher (dispatcher or a concurrent tick) took it first.
+			return
+		}
+	}
 	if _, err := s.launchTicketNow(runs, board, iss); err != nil {
 		// launchTicketNow already logged the specifics; the loop is
 		// best-effort and simply retries on the next tick.

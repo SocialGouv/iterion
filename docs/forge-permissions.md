@@ -83,7 +83,8 @@ Prefer narrowing the *connection*, not the user:
 
 - **GitHub App** (`github_app`) — the bot acts as the App with exactly the
   permissions in its manifest (`contents:write`, `pull_requests:write`,
-  `repository_hooks:write` for the per-repo inbound webhook, `metadata:read`),
+  `issues:write` for posting the PR/MR back-link on the source issue,
+  `metadata:read`, `repository_hooks:write` for the per-repo inbound webhook),
   scoped to the repos the App is installed on. It deliberately does **not**
   request `administration` (repo deletion/settings/teams/branch-protection) —
   that is over-privileged, and per GitHub docs webhooks require
@@ -123,6 +124,45 @@ it** is recorded: `RepoIntegration.CreatedBy` / the run's `ActorID` and the
 tenant audit log ([pkg/audit](../pkg/audit)). So “a PR opened by the connection
 bot” is traceable to the iterion user (and run) that launched it, even though
 the GitHub author is the connection.
+
+## Shared branded App vs per-org App
+
+iterion resolves a GitHub App **per connection** ([`Connection.OAuthAppID`](../pkg/forge/types.go)),
+so an instance can offer both shapes at once. Which one an operator wants is a
+product decision, not a technical constraint:
+
+| | Branding | Least privilege | Install friction |
+|---|---|---|---|
+| **Shared branded App** (one public "iterion" App, its own name + logo) | one-click, recognisable | every adopter grants the App's full permission set | lowest |
+| **Per-org App** (manifest-created, today's default) | none — a generated `iterion-forge-<hash>` name | each org grants only what it wants | an extra creation step |
+
+The tradeoff is narrower than it looks, and one common worry is unfounded:
+
+- **A public App can still be installed on selected repositories.** Repository
+  scope is chosen by whoever *installs*, not by the App. "Public" only means
+  anyone may install it.
+- **Permissions, however, are per-App, not per-installation.** An adopter takes
+  the whole requested set or declines. So a single branded App carrying
+  `administration` + `workflows` + `packages` forces a team that only wants PR
+  review to grant repo-creation and CI-rewrite rights too. Splitting into
+  capability tiers (a baseline App and a delivery App) is the honest way to
+  keep one-click onboarding without over-granting.
+
+### Enabling the shared App — the non-negotiable part
+
+Configure `ITERION_FORGE_GITHUB_APP_ID` / `_PRIVATE_KEY` / `_SLUG`, **and**
+`_CLIENT_ID` / `_CLIENT_SECRET`, and enable *"Request user authorization
+(OAuth) during installation"* on the App.
+
+The client credentials are not optional hardening. A shared App's private key
+can mint a token for **any** installation of that App, and `installation_id`
+arrives as an enumerable integer on a public callback URL — so without
+ownership verification an attacker substitutes a victim org's id and obtains a
+connection that mints tokens against their repositories. The install callback
+therefore **refuses** a shared-App install it cannot verify
+([`handleForgeGitHubAppCallback`](../pkg/server/forge_connect_routes.go)); a
+per-org App is key-scoped and cannot reach another tenant's installation, which
+is why it skips the check.
 
 ## Possible evolutions (not built today)
 

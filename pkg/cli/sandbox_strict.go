@@ -104,7 +104,7 @@ func buildStrictReport(ctx context.Context, wf *ir.Workflow, opts SandboxDoctorO
 
 	spec, source, err := runtime.ResolveSandboxSpecForDoctor(
 		wf, doctorRepoRoot(opts.File), opts.Sandbox,
-		strings.ToLower(os.Getenv("ITERION_SANDBOX_DEFAULT")),
+		runtime.ResolveGlobalSandboxDefault(),
 		opts.SandboxDefaultImage, opts.SandboxHostState,
 		strings.ToLower(os.Getenv("ITERION_SANDBOX_HOST_STATE")),
 	)
@@ -480,7 +480,7 @@ func loadWorkflowForDoctor(path string) (*ir.Workflow, error) {
 	path = ResolveRecipePath(path)
 
 	b, iterPath, kind, cleanup, err := openBundleOrFile(path)
-	defer cleanup()
+	defer func() { _ = cleanup() }()
 	if err != nil {
 		switch kind {
 		case bundle.KindBundle:

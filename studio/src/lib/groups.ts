@@ -49,7 +49,7 @@ export function groupNameFromComment(comment: Comment): string | null {
 }
 
 /** Group node ID prefix for XYFlow. */
-export const GROUP_PREFIX_ID = "__group__:";
+const GROUP_PREFIX_ID = "__group__:";
 
 export function makeGroupNodeId(groupName: string): string {
   return `${GROUP_PREFIX_ID}${groupName}`;

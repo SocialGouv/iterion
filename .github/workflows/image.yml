@@ -1,8 +1,20 @@
 name: 🐳 Container Image
 
-# Each image is built by the reusable _build-image.yml: amd64 on the in-house
-# buildkit-operator warm daemon, arm64 natively on a GitHub arm runner, merged
-# into one multi-arch index and cosign-signed. PR events validate locally
+# THE SERVER IMAGE ONLY (`iterion`), amd64, published fast — this workflow's
+# completion is THE "server ready to redeploy" signal a CD watcher keys on.
+# Nothing deploy-irrelevant rides here: the runner image, the sandbox
+# finalizes, and the release arm64+sign each live in their own downstream
+# workflow so this signal never waits on them (docs/ci-pipeline-topology.md).
+#
+#   this (image.yml)        → iterion (server) amd64      ⟹ SIGNAL "server ready"
+#   runner-image.yml        → runner-devbox amd64          ⟹ SIGNAL "runner ready"  (workflow_run)
+#   sandbox-images.yml      → bases + finalizes            (off deploy path)
+#   release-images.yml      → everything multiarch+signed  (tags only, off deploy path)
+#
+# amd64-only on purpose, main AND tags: the OVH clusters are amd64 (12/12
+# nodes), so the deployable tag must not wait on the slower arm64 leg. arm64 is
+# kept but folded into a signed multi-arch index later by release-images.yml —
+# the deploy pulls the amd64 manifest throughout. PR events validate locally
 # (amd64 --load, no operator/secrets). See _build-image.yml for the rationale.
 
 on:
@@ -15,7 +27,6 @@ on:
     paths:
       - "Dockerfile"
       - "docker/**"
-      - "sandbox/**"
       - ".github/workflows/image.yml"
       - ".github/workflows/_build-image.yml"
       - "go.mod"
@@ -36,9 +47,9 @@ permissions:
   id-token: write
 
 jobs:
-  # Shared values: lowercase owner (OCI refs must be lowercase) + the base image
-  # tag the sandbox chain bakes in — the release tag on a tag push, else the
-  # rolling `edge` (also `edge` on PRs, which reference the published base).
+  # Shared values: lowercase owner (OCI refs must be lowercase) + the image
+  # tag this run builds against — the release tag on a tag push, else the
+  # rolling `edge` (also `edge` on PRs, which reference published images).
   prep:
     runs-on: ubuntu-latest
     env:
@@ -47,11 +58,8 @@ jobs:
       owner_lc: ${{ steps.vars.outputs.owner_lc }}
       base_tag: ${{ steps.vars.outputs.base_tag }}
       app_version: ${{ steps.vars.outputs.app_version }}
-      build_sandbox: ${{ steps.vars.outputs.build_sandbox }}
     steps:
       - id: vars
-        env:
-          BEFORE: ${{ github.event.before }}
         run: |
           echo "owner_lc=$(echo "${GITHUB_REPOSITORY_OWNER}" | tr '[:upper:]' '[:lower:]')" >> "$GITHUB_OUTPUT"
           if [ "${GITHUB_REF_TYPE}" = "tag" ]; then
@@ -67,31 +75,17 @@ jobs:
           # package.json is the single source of truth — release tags are
           # release-it bumps of it, so tag builds and main builds agree.
           echo "app_version=$(gh api "repos/${GITHUB_REPOSITORY}/contents/package.json?ref=${GITHUB_SHA}" --jq '.content' | base64 -d | jq -r '.version')" >> "$GITHUB_OUTPUT"
-          # Whether to (re)build the sandbox image chain (slim→full→sec). It is
-          # sequential + expensive (~26 min) and prod's server/runner image does
-          # NOT depend on it, so we do NOT rebuild it on every main push — only
-          # on release tags, manual dispatch, PR validation (the whole run is
-          # already paths-gated for PRs), or when sandbox/build inputs actually
-          # changed. The baked iterion binary in the sandbox image may therefore
-          # lag `:edge` between tags — acceptable for sandboxed bot runs.
-          bs=false
-          case "${GITHUB_EVENT_NAME}/${GITHUB_REF_TYPE}" in
-            push/tag)            bs=true ;;
-            workflow_dispatch/*) bs=true ;;
-            pull_request/*)      bs=true ;;
-            push/branch)
-              if printf '%s' "$BEFORE" | grep -qE '^0+$'; then
-                bs=true   # no base commit (branch (re)created) → rebuild to be safe
-              elif gh api "repos/${GITHUB_REPOSITORY}/compare/${BEFORE}...${GITHUB_SHA}" \
-                     --jq '.files[].filename' 2>/dev/null \
-                   | grep -qE '^(sandbox/|go\.mod$|go\.sum$|Dockerfile$)'; then
-                bs=true
-              fi
-              ;;
-          esac
-          echo "build_sandbox=$bs" >> "$GITHUB_OUTPUT"
 
-  # Main iterion image.
+  # The iterion server image — the deployable tag, published as soon as it is
+  # built; this job finishing = the workflow finishing = the deploy signal.
+  #   - main: `:edge`, amd64-only + unsigned (OVH prod is amd64, :edge is
+  #     ephemeral) → the fast test→fix→redeploy loop, ~2-3 min.
+  #   - tag:  `:vX.Y.Z`+`:maj.min`, multi-arch + cosign-signed — the release
+  #     server artifact prod deploys. arm64 IS the artifact here (a signed
+  #     multi-arch index), so it is built in-line; releases are infrequent.
+  # The runner image + sandbox finalizes (main) and the release runner/sandbox
+  # multi-arch tags are built in their own downstream workflows so this signal
+  # never waits on them.
   build:
     needs: prep
     uses: ./.github/workflows/_build-image.yml
@@ -104,83 +98,5 @@ jobs:
       build-args: |
         VERSION=${{ needs.prep.outputs.app_version }}
         COMMIT=${{ github.sha }}
-      is-pr: ${{ github.event_name == 'pull_request' }}
-      # Full multi-arch (+ sign + SBOM) ONLY on release tags. main's `:edge` is
-      # amd64-only + unsigned: the OVH clusters are amd64, `:edge` is ephemeral,
-      # and dropping the arm64 leg + cosign/SBOM keeps the test→fix loop fast
-      # (~5-6 min). A `docker pull :edge` on an arm Mac won't resolve — pull a
-      # tagged release there instead.
-      multiarch: ${{ startsWith(github.ref, 'refs/tags/v') }}
-
-  # iterion-sandbox-slim — bakes in the iterion binary via COPY --from, so it
-  # needs the iterion image (and its :edge / :vX.Y.Z tag) published first.
-  build-sandbox-slim:
-    needs: [prep, build]
-    if: ${{ needs.prep.outputs.build_sandbox == 'true' }}
-    uses: ./.github/workflows/_build-image.yml
-    secrets: inherit
-    with:
-      image-name: iterion-sandbox-slim
-      routing-name: iterion-sandbox-slim
-      context: sandbox/slim
-      file: sandbox/slim/Dockerfile
-      build-args: ITERION_IMAGE=ghcr.io/${{ needs.prep.outputs.owner_lc }}/iterion:${{ needs.prep.outputs.base_tag }}
-      is-pr: ${{ github.event_name == 'pull_request' }}
-      # Multi-arch (+ sign + SBOM) only on release tags (matches the app image);
-      # the rolling `:edge` sandbox images are amd64-only.
-      multiarch: ${{ startsWith(github.ref, 'refs/tags/v') }}
-
-  # iterion-sandbox-full — FROM the freshly-built slim image.
-  build-sandbox-full:
-    needs: [prep, build-sandbox-slim]
-    if: ${{ needs.prep.outputs.build_sandbox == 'true' }}
-    uses: ./.github/workflows/_build-image.yml
-    secrets: inherit
-    with:
-      image-name: iterion-sandbox-full
-      routing-name: iterion-sandbox-full
-      context: sandbox/full
-      file: sandbox/full/Dockerfile
-      build-args: BASE=ghcr.io/${{ needs.prep.outputs.owner_lc }}/iterion-sandbox-slim:${{ needs.prep.outputs.base_tag }}
-      is-pr: ${{ github.event_name == 'pull_request' }}
-      # Multi-arch (+ sign + SBOM) only on release tags (matches the app image);
-      # the rolling `:edge` sandbox images are amd64-only.
-      multiarch: ${{ startsWith(github.ref, 'refs/tags/v') }}
-
-  # iterion-sandbox-sec — FROM the freshly-built full image. Required by
-  # sec-audit-source / sec-audit-deps (pinned via sandbox.image).
-  build-sandbox-sec:
-    needs: [prep, build-sandbox-full]
-    if: ${{ needs.prep.outputs.build_sandbox == 'true' }}
-    uses: ./.github/workflows/_build-image.yml
-    secrets: inherit
-    with:
-      image-name: iterion-sandbox-sec
-      routing-name: iterion-sandbox-sec
-      context: sandbox/sec
-      file: sandbox/sec/Dockerfile
-      build-args: BASE=ghcr.io/${{ needs.prep.outputs.owner_lc }}/iterion-sandbox-full:${{ needs.prep.outputs.base_tag }}
-      is-pr: ${{ github.event_name == 'pull_request' }}
-      # Multi-arch (+ sign + SBOM) only on release tags (matches the app image);
-      # the rolling `:edge` sandbox images are amd64-only.
-      multiarch: ${{ startsWith(github.ref, 'refs/tags/v') }}
-
-  # iterion-runner-devbox — the devbox-first-class cloud runner image: Nix +
-  # devbox on top of the runner toolset, so a build-needing bot (Billy /
-  # feature-dev) runs `devbox run -- <build>` and the TARGET repo's devbox.json
-  # provisions its exact toolchain (cross-language, cross-version). Bakes the
-  # iterion binary via COPY --from, so it needs the iterion image published
-  # first. UNGATED (builds every push) so the runner tracks the latest code —
-  # unlike the sandbox images, a stale runner would run bots on old code.
-  build-runner-devbox:
-    needs: [prep, build]
-    uses: ./.github/workflows/_build-image.yml
-    secrets: inherit
-    with:
-      image-name: iterion-runner-devbox
-      routing-name: iterion-runner-devbox
-      context: .
-      file: Dockerfile.runner-devbox
-      build-args: ITERION_IMAGE=ghcr.io/${{ needs.prep.outputs.owner_lc }}/iterion:${{ needs.prep.outputs.base_tag }}
       is-pr: ${{ github.event_name == 'pull_request' }}
       multiarch: ${{ startsWith(github.ref, 'refs/tags/v') }}

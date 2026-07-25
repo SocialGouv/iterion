@@ -21,6 +21,7 @@ import { Checkbox } from "@/components/ui/Checkbox";
 import { Dialog } from "@/components/ui/Dialog";
 import { Input } from "@/components/ui/Input";
 import { Select } from "@/components/ui/Select";
+import { useServerInfoStore } from "@/store/serverInfo";
 
 import { BOARD_PALETTE, defaultStateColor } from "./boardShared";
 import { ModalActions } from "./ModalActions";
@@ -47,6 +48,12 @@ function ColumnAppearance({
   }) => void;
 }) {
   const effectiveAuto = defaultStateColor(fallbackName, eligible, terminal);
+  // Without a dispatcher, the eligible lane is where a staged card
+  // launches its assigned bot — describe it that way instead of
+  // referencing a dispatcher that isn't running.
+  const dispatcherEnabled = useServerInfoStore(
+    (s) => s.info?.dispatcher_enabled === true,
+  );
   return (
     <>
       <label className="block space-y-1">
@@ -98,9 +105,11 @@ function ColumnAppearance({
             className="mt-0.5"
           />
           <span className="text-micro">
-            <span className="text-fg-default font-medium">Eligible</span> — the
-            dispatcher may pick up issues in this column (the “Let’s go” lane is
-            the first eligible, non-terminal column).
+            <span className="text-fg-default font-medium">Eligible</span> —{" "}
+            {dispatcherEnabled
+              ? "the dispatcher may pick up issues in this column"
+              : "the staging/ready lane — cards here launch their assigned bot"}{" "}
+            (the “Let’s go” lane is the first eligible, non-terminal column).
           </span>
         </label>
         <label className="flex items-start gap-2">
@@ -116,7 +125,9 @@ function ColumnAppearance({
         </label>
         {eligible && terminal && (
           <p className="text-micro text-warning-fg">
-            A terminal column is never the dispatch lane even when eligible.
+            A terminal column is never the{" "}
+            {dispatcherEnabled ? "dispatch" : "staging"} lane even when
+            eligible.
           </p>
         )}
       </div>
@@ -142,6 +153,9 @@ export function AddColumnDialog({
   const [color, setColor] = useState("");
   const [eligible, setEligible] = useState(false);
   const [terminal, setTerminal] = useState(false);
+  const dispatcherEnabled = useServerInfoStore(
+    (s) => s.info?.dispatcher_enabled === true,
+  );
 
   const trimmed = name.trim();
   const duplicate = existingNames.includes(trimmed);
@@ -178,7 +192,8 @@ export function AddColumnDialog({
       <div className="space-y-3">
         <label className="block space-y-1">
           <span className="text-micro text-fg-muted">
-            Machine name (lowercase, used by bots &amp; the dispatcher)
+            Machine name (lowercase, used by bots
+            {dispatcherEnabled ? " & the dispatcher" : ""})
           </span>
           <Input
             type="text"

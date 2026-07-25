@@ -10,13 +10,11 @@ package wsticket
 
 import (
 	"context"
-	"crypto/rand"
-	"encoding/base64"
 	"errors"
-	"sync"
 	"time"
 
 	"github.com/SocialGouv/iterion/pkg/auth"
+	"github.com/SocialGouv/iterion/pkg/internal/storekit"
 )
 
 // ErrTicketNotFound is returned by Redeem for an unknown, already-redeemed, or
@@ -29,24 +27,10 @@ type Store interface {
 	Redeem(ctx context.Context, ticket string) (auth.Identity, error)
 }
 
-func newTicket() (string, error) {
-	buf := make([]byte, 32)
-	if _, err := rand.Read(buf); err != nil {
-		return "", err
-	}
-	return base64.RawURLEncoding.EncodeToString(buf), nil
-}
-
 // MemoryStore is the per-process default (single instance / local desktop).
 type MemoryStore struct {
-	mu  sync.Mutex
-	m   map[string]memEntry
+	kit *storekit.TicketMemory[auth.Identity]
 	ttl time.Duration
-}
-
-type memEntry struct {
-	id     auth.Identity
-	expiry time.Time
 }
 
 // NewMemoryStore returns an in-memory WS-ticket store with the given TTL.
@@ -54,40 +38,17 @@ func NewMemoryStore(ttl time.Duration) *MemoryStore {
 	if ttl <= 0 {
 		ttl = time.Minute
 	}
-	return &MemoryStore{m: make(map[string]memEntry), ttl: ttl}
+	return &MemoryStore{kit: storekit.NewTicketMemory[auth.Identity](), ttl: ttl}
 }
 
 func (s *MemoryStore) Mint(_ context.Context, id auth.Identity) (string, error) {
-	ticket, err := newTicket()
-	if err != nil {
-		return "", err
-	}
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	s.sweepLocked()
-	s.m[ticket] = memEntry{id: id, expiry: time.Now().Add(s.ttl)}
-	return ticket, nil
+	return s.kit.Mint(id, s.ttl)
 }
 
 func (s *MemoryStore) Redeem(_ context.Context, ticket string) (auth.Identity, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	e, ok := s.m[ticket]
+	id, ok := s.kit.Redeem(ticket)
 	if !ok {
 		return auth.Identity{}, ErrTicketNotFound
 	}
-	delete(s.m, ticket)
-	if time.Now().After(e.expiry) {
-		return auth.Identity{}, ErrTicketNotFound
-	}
-	return e.id, nil
-}
-
-func (s *MemoryStore) sweepLocked() {
-	now := time.Now()
-	for k, v := range s.m {
-		if now.After(v.expiry) {
-			delete(s.m, k)
-		}
-	}
+	return id, nil
 }

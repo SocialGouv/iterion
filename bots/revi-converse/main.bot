@@ -2,7 +2,7 @@
 ## revi-converse — "Revi (converse)", an in-thread question-answerer.
 ##
 ## Sibling of review-pr (Revi). Today's webhook routing:
-##   - `/revi` with NO args -> review-pr (re-review the MR).
+##   - `/revi` with NO args -> review-pr (re-review the PR).
 ##   - `/revi <question>`   -> revi-converse (answer the question
 ##                              IN THE SAME discussion thread).
 ##
@@ -18,7 +18,7 @@
 ##     -> done
 ##
 ## The agent itself is responsible for:
-##   1. Reading the question + the MR diff against base_ref's merge-base
+##   1. Reading the question + the PR diff against base_ref's merge-base
 ##      (same scope discipline as Revi).
 ##   2. Producing a CONCISE, GROUNDED answer (file:line anchored).
 ##   3. Posting the answer as a REPLY in `{{vars.discussion_id}}` via
@@ -54,10 +54,10 @@ vars:
   ## The agent diffs `git merge-base base_ref HEAD` to ground its
   ## answer in the actual change set. Defaults to the common
   ## integration-branch name; the webhook handler overrides it from
-  ## the MR's target_branch.
+  ## the PR's target_branch.
   base_ref: string = "main"
 
-  ## The pull/merge-request URL the conversation lives on. Used to
+  ## The pull-request (merge-request on GitLab) URL the conversation lives on. Used to
   ## derive forge host + project + iid for the reply POST. Webhook
   ## handler injects this; manual runs MUST pass it via --var.
   pr_url: string = ""
@@ -94,13 +94,13 @@ vars:
 
 prompt converse_system:
   You are Revi (converse) — a senior, READ-ONLY code reviewer
-  answering an operator's follow-up question on an open MR/PR. You
+  answering an operator's follow-up question on an open PR. You
   are NOT performing a fresh review. You are NOT editing or
   committing code. You produce ONE focused, grounded answer and
   POST it as a reply in the existing discussion thread.
 
   ── SCOPE ──
-  1. The MR diff against its merge-base IS the surface you reason
+  1. The PR diff against its merge-base IS the surface you reason
      about. Enumerate changed files first:
        git -C {{vars.workspace_dir}} diff --name-only $(git -C {{vars.workspace_dir}} merge-base {{vars.base_ref}} HEAD)
      Read the diff (or the relevant hunks) before answering anything
@@ -126,7 +126,7 @@ prompt converse_system:
     when a code quotation sharpens the answer. NO bullet-point
     essays.
   - Every concrete claim must be anchored to a `file:line` from the
-    diff, OR explicitly attributed ("based on the MR description",
+    diff, OR explicitly attributed ("based on the PR description",
     "based on the earlier review comment", "from the surrounding
     code at file:line"). NO hand-wavy "this might be risky".
   - "I don't know" is acceptable when the diff genuinely doesn't say
@@ -166,7 +166,7 @@ prompt converse_system:
 prompt converse_user:
   Workspace:           {{vars.workspace_dir}}
   Base ref:            {{vars.base_ref}}
-  PR/MR URL:           {{vars.pr_url}}
+  PR URL:           {{vars.pr_url}}
   Discussion thread:   {{vars.discussion_id}}
   Replier (operator):  {{vars.replier}}
 
@@ -179,7 +179,7 @@ prompt converse_user:
   ── Discussion thread (chronological; your earlier notes labelled) ──
   {{vars.thread_context}}
 
-  Read the question, read the relevant slice of the MR diff (and any
+  Read the question, read the relevant slice of the PR diff (and any
   surrounding code you need to ground a claim), draft a concise
   grounded answer per your system prompt, POST it as a reply in the
   discussion thread per `forge-reply.md`, VERIFY by re-fetching, and

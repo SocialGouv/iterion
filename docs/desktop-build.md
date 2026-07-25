@@ -280,5 +280,6 @@ generally don't work. Each target must be built on a matching host:
   editor, can run a `.bot` workflow end-to-end.
 - The AppImage produced by `task desktop:package:linux:amd64` runs on a
   freshly-installed Debian or Ubuntu without devbox installed.
-- Drop a `v*` tag → `desktop-release.yml` job is green for all six matrix
-  entries.
+- Drop a `v*` tag → `desktop-release.yml` job is green for all five matrix
+  entries (darwin/universal, windows/amd64, windows/arm64, linux/amd64,
+  linux/arm64 — the two macOS jobs are collapsed into one universal build).

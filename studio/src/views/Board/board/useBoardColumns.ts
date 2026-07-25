@@ -27,6 +27,8 @@ export function useBoardColumns({
   assigneeFilter,
   botFilter,
   sortMode,
+  repoScope = null,
+  includeUnlinked = false,
 }: {
   board: NativeBoard | null;
   issues: NativeIssue[];
@@ -35,6 +37,12 @@ export function useBoardColumns({
   assigneeFilter: string;
   botFilter: string;
   sortMode: SortMode;
+  // repo-first scoping: when set (repo_full_name), keep only cards linked
+  // to that repo; `includeUnlinked` widens the filter to also let cards
+  // with no external link through. Null = no repo filter (overview /
+  // outside cloud mode).
+  repoScope?: string | null;
+  includeUnlinked?: boolean;
 }): UseBoardColumnsResult {
   // Distinct values exposed in the filter dropdowns. Derived from the
   // current issues list so the dropdowns track what the user actually
@@ -65,7 +73,8 @@ export function useBoardColumns({
     const labels = labelFilter;
     const assignee = assigneeFilter.trim();
     const bot = botFilter.trim();
-    if (!q && labels.size === 0 && !assignee && !bot) return issues;
+    const scope = repoScope ?? "";
+    if (!q && labels.size === 0 && !assignee && !bot && !scope) return issues;
     return issues.filter((iss) => {
       if (q) {
         const hay =
@@ -80,9 +89,15 @@ export function useBoardColumns({
       }
       if (assignee && iss.assignee !== assignee) return false;
       if (bot && iss.bot !== bot) return false;
+      if (scope) {
+        const linkedRepo = iss.external?.repo ?? "";
+        if (linkedRepo === scope) return true;
+        if (includeUnlinked && !linkedRepo) return true;
+        return false;
+      }
       return true;
     });
-  }, [issues, searchQuery, labelFilter, assigneeFilter, botFilter]);
+  }, [issues, searchQuery, labelFilter, assigneeFilter, botFilter, repoScope, includeUnlinked]);
 
   // Group filtered issues by state for column rendering. Issues whose
   // state does not appear on the board land in an "unmapped" bucket so

@@ -8,43 +8,32 @@
 // resurrecting a stale session. Auto-attach to an already-running
 // session is wired in Étape 5 — for now, mounting the hook with
 // `null` keeps it idle.
+//
+// The hook is a composition shell over the concern modules in this
+// directory:
+//   - sessionScope        — repo-first scope key + launch repo
+//   - useSessionDiscovery — startup auto-attach (live run > remembered)
+//   - useSessionMessages  — event fold → transcript + pause-gap refetch
+//   - useSessionLifecycle — launch / newSession
+//   - useSessionSteering  — submitHumanAnswer / resume choreography
+//   - sessionStatus       — WhatsNextStatus + terminal classification
 
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-// Aliased: this hook binds a local `errorMessage` state field of its own.
-import { errorMessage as toMessage } from "@/lib/errorHints";
+import { useEffect, useRef, useState } from "react";
 
-import {
-  createRun,
-  getRun,
-  getRunWithRetry,
-  listRuns,
-  loadEvents,
-  resumeRun,
-  type RunStatus,
-  type RunSummary,
-} from "@/api/runs";
+import { type RunStatus } from "@/api/runs";
 import { useRunWebSocket } from "@/hooks/useRunWebSocket";
 import type { FirstClassBot } from "@/lib/whats-next/firstClassBots";
 import type { WhatsNextMessage } from "@/lib/whats-next/messages";
-import { runStore, useRunStore } from "@/store/run";
-import { useServerInfoStore } from "@/store/serverInfo";
+import { useRunStore } from "@/store/run";
 
-import {
-  messagesFromEventsCached,
-  type MessagesFoldCache,
-} from "./messagesFromEvents";
-import {
-  forgetSessionRunId,
-  recallSessionRunId,
-  rememberSessionRunId,
-} from "./sessionStorage";
+import { useSessionScope } from "./sessionScope";
+import { isEndedRunStatus, type WhatsNextStatus } from "./sessionStatus";
+import { useSessionDiscovery } from "./useSessionDiscovery";
+import { useSessionLifecycle } from "./useSessionLifecycle";
+import { useSessionMessages } from "./useSessionMessages";
+import { useSessionSteering } from "./useSessionSteering";
 
-export type WhatsNextStatus =
-  | "idle"
-  | "launching"
-  | "active"
-  | "submitting"
-  | "ended";
+export type { WhatsNextStatus } from "./sessionStatus";
 
 export interface UseWhatsNextSession {
   status: WhatsNextStatus;
@@ -67,6 +56,19 @@ export interface UseWhatsNextSession {
   // in this mount (e.g. after auto-attach), in which case the bot's
   // var defaults apply.
   lastVars: Record<string, string> | null;
+  // Startup discovery failure (couldn't list runs to find a live
+  // session). Surfaced so the launcher can warn: launching blind may
+  // start a second parallel session. Null when discovery succeeded.
+  discoveryError: string | null;
+  // Re-run the startup discovery after a failure.
+  retryDiscovery: () => void;
+  // The attached session's repo identity (run.project_path), for the
+  // header's repo pill + scope-mismatch banner. Null when unknown or
+  // repo-less.
+  sessionRepo: string | null;
+  // The repo the NEXT launch will operate on (cloud: the sidebar's
+  // active repo). Null = board-only launch (no repo connected / overview).
+  launchRepo: string | null;
   // Imperative actions.
   launch: (vars: Record<string, string>) => Promise<void>;
   submitHumanAnswer: (
@@ -91,9 +93,6 @@ export function useWhatsNextSession(bot: FirstClassBot): UseWhatsNextSession {
   const [status, setStatus] = useState<WhatsNextStatus>("idle");
   const [busyMessageId, setBusyMessageId] = useState<string | null>(null);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
-  // Remembers the vars of the most recent launch so a re-seed (typing
-  // into the composer after the run closed) reuses the same scope.
-  const lastVarsRef = useRef<Record<string, string> | null>(null);
 
   // Hook-lifetime abort handle for the launch path's getRunWithRetry:
   // without it, an abandoned launch (user navigates away mid-launch)
@@ -119,144 +118,22 @@ export function useWhatsNextSession(bot: FirstClassBot): UseWhatsNextSession {
   // and our reads of useRunStore here pick up the same updates.
   useRunWebSocket(runId);
 
-  // Auto-attach: on mount, if we remembered a runId for this bot+project,
-  // try to fetch its snapshot and (if it's still live) attach. Otherwise
-  // forget the stale id.
-  //
-  // Fallback path: when localStorage is empty (fresh tab on the dev
-  // origin, freshly-cleared storage, different origin from the run's
-  // launch context), query the backend for the most recent non-terminal
-  // run on this bot's workflow and auto-attach to it. This means an
-  // operator who closed their /whats-next tab while a run was in
-  // flight can navigate back and resume without having to dig the
-  // run id out of /runs.
-  const projectId = useServerInfoStore((s) => s.info?.current_project_id ?? null);
-  const attachAttemptedRef = useRef(false);
-  useEffect(() => {
-    if (attachAttemptedRef.current) return;
-    if (!bot.id) return;
-    attachAttemptedRef.current = true;
-    const controller = new AbortController();
-    let cancelled = false;
+  // Repo-first scope: (team, active repo) in cloud, project dir
+  // locally. The key participates in session storage + discovery.
+  const { scopeKey, repoScopeEnabled, overview, activeRepo, projectId, launchRepo } =
+    useSessionScope();
 
-    const attachTo = async (runIdToAttach: string) => {
-      // Retry-on-404: a run surfaced by findLiveRunForBot (or another
-      // tab's launch) may still be mid-flush — run.json can lag the
-      // listing by a beat. See getRunWithRetry for the race rationale.
-      const snap = await getRunWithRetry(runIdToAttach, {
-        signal: controller.signal,
-      });
-      if (cancelled) return;
-      // Continuity is the central whats-next promise: when the user
-      // returns to /whats-next after a previous session ended, they
-      // expect to see the full transcript of that exchange, not a
-      // blank launcher offering them to start over.
-      runStore.getState().reset();
-      runStore.getState().applySnapshot(snap);
-      // setRunId on the store FIRST so loadEventHistoryIfMissing's
-      // post-await guard (`state.runId !== runId` → return) passes.
-      runStore.getState().setRunId(runIdToAttach);
-      try {
-        await runStore.getState().loadEventHistoryIfMissing(runIdToAttach);
-      } catch {
-        // ignore — the live WS will eventually fill any gap.
-      }
-      // Remember now so subsequent mounts (within the same origin)
-      // skip the discovery query and re-attach via localStorage.
-      rememberSessionRunId(bot.id, projectId, runIdToAttach);
-      setRunId(runIdToAttach);
-    };
-
-    const remembered = recallSessionRunId(bot.id, projectId);
-    setStatus("launching");
-    // Discovery decides between three signals, in order:
-    //   1. A live (non-terminal) run for this bot — even if localStorage
-    //      remembers an older terminal session, the operator landing on
-    //      /whats-next while a paused/running session exists ALMOST
-    //      ALWAYS wants the live one (they relaunched from /runs, the
-    //      CLI, or another tab). Continuity is good; surfacing a stale
-    //      "Ended · cancelled" session while a live one waits at a
-    //      human gate is much worse.
-    //   2. The remembered run, terminal or not, for continuity ("show
-    //      me what I just did").
-    //   3. Idle, so the launcher renders.
-    const startup = (async () => {
-      try {
-        const live = await findLiveRunForBot();
-        if (cancelled) return;
-        if (live) {
-          await attachTo(live);
-          return;
-        }
-        if (remembered) {
-          try {
-            await attachTo(remembered);
-            return;
-          } catch (err) {
-            if (
-              controller.signal.aborted ||
-              (err as Error)?.name === "AbortError"
-            ) {
-              return;
-            }
-            // Remembered run no longer exists (rotated, store wiped).
-            // Drop the memory; we have no live run either, so fall
-            // through to idle.
-            forgetSessionRunId(bot.id, projectId);
-          }
-        }
-        setStatus("idle");
-      } catch (err) {
-        if (
-          controller.signal.aborted ||
-          (err as Error)?.name === "AbortError"
-        ) {
-          return;
-        }
-        if (typeof console !== "undefined") {
-          console.warn("[whats-next] startup discovery failed", err);
-        }
-        setStatus("idle");
-      }
-    })();
-
-    // findLiveRunForBot returns the id of the most recent non-terminal
-    // run for this bot's workflow, or null when nothing live exists.
-    // Mirrors the workflow-name probe formerly inline in
-    // discoverAndAttach (kept here as a helper so both the live-first
-    // discovery and the legacy fallback share the same logic).
-    async function findLiveRunForBot(): Promise<string | null> {
-      const candidates = [bot.id.replace(/-/g, "_"), bot.id];
-      const seen = new Set<string>();
-      const matches: RunSummary[] = [];
-      for (const workflow of candidates) {
-        if (seen.has(workflow)) continue;
-        seen.add(workflow);
-        const runs = await listRuns({ workflow, limit: 10 });
-        matches.push(...runs);
-      }
-      const active = matches.find(
-        (r) =>
-          r.status === "queued" ||
-          r.status === "running" ||
-          r.status === "paused_waiting_human",
-      );
-      return active?.id ?? null;
-    }
-
-    void startup;
-    return () => {
-      cancelled = true;
-      controller.abort();
-      // Reset the gate so the strict-mode double-mount (and any
-      // legitimate re-mount triggered by deps changing) re-runs the
-      // discovery cleanly. Without this, mount #2's effect short-
-      // circuits, mount #1's aborted discovery never sets runId, and
-      // status stays "idle" → the launcher mistakenly shows even
-      // when a paused run is sitting on disk waiting to be resumed.
-      attachAttemptedRef.current = false;
-    };
-  }, [bot.id, projectId]);
+  // Startup auto-attach: live run first, remembered run second, idle
+  // launcher last. Owns discoveryError + retry.
+  const { discoveryError, retryDiscovery } = useSessionDiscovery({
+    bot,
+    scopeKey,
+    repoScopeEnabled,
+    overview,
+    activeRepo,
+    onAttached: setRunId,
+    setStatus,
+  });
 
   // Reset to "idle" state when runId becomes null (Étape 5 lets the
   // user start fresh after a session-closed message via newSession()).
@@ -280,14 +157,7 @@ export function useWhatsNextSession(bot: FirstClassBot): UseWhatsNextSession {
   const events = useRunStore((s) => s.events);
   const snapshot = useRunStore((s) => s.snapshot);
   const pendingHuman = useRunStore((s) => s.pendingHumanInput);
-  const setRunStatus = useRunStore((s) => s.setRunStatus);
-  const requestWsReconnect = useRunStore((s) => s.requestWsReconnect);
-  const applySnapshot = useRunStore((s) => s.applySnapshot);
-  const reset = useRunStore((s) => s.reset);
   const setStoreRunId = useRunStore((s) => s.setRunId);
-  const loadEventHistoryIfMissing = useRunStore(
-    (s) => s.loadEventHistoryIfMissing,
-  );
 
   // Mirror our local runId onto the run store so its actions that gate
   // on store.runId (loadEventHistoryIfMissing, setRunStatus, etc.)
@@ -324,306 +194,41 @@ export function useWhatsNextSession(bot: FirstClassBot): UseWhatsNextSession {
     // a live composer via the view's always-on footer, which re-seeds
     // a fresh session on the next message — so "ended" is no longer a
     // dead end. The user can also start over via newSession().
-    if (
-      runStatus === "finished" ||
-      runStatus === "failed" ||
-      runStatus === "cancelled" ||
-      runStatus === "failed_resumable"
-    ) {
+    if (isEndedRunStatus(runStatus)) {
       setStatus("ended");
     } else {
       setStatus("active");
     }
   }, [bot.id, projectId, runId, runStatus, status]);
 
-  // Derive the transcript with an incremental fold. The cached folder
-  // resumes from the last processed seq instead of replaying the whole
-  // event stream every push (O(K) per tick instead of O(N)). The cache
-  // is invalidated implicitly when bot changes (new session) or when
-  // the first event seq differs (full replay after reconnect).
-  // Snapshot updates don't invalidate: the fold reads snapshot only at
-  // node_finished time and bakes the summary into the message, so a
-  // resumed fold under a stale snapshot produces the same output a
-  // fresh refold would have.
-  const transcriptCacheRef = useRef<MessagesFoldCache | null>(null);
-  const messages = useMemo(() => {
-    const { messages: out, cache } = messagesFromEventsCached(
-      { bot, events, snapshot },
-      transcriptCacheRef.current,
-    );
-    transcriptCacheRef.current = cache;
-    // Return a fresh array reference so memo consumers see a new value
-    // when new events land. (Mutating `out` in place wouldn't propagate
-    // through React.)
-    return out.slice();
-  }, [bot, events, snapshot]);
+  // Transcript fold + pending-question tracking + pause-gap refetch.
+  const messages = useSessionMessages({
+    bot,
+    runId,
+    runStatus,
+    events,
+    snapshot,
+    pendingHuman,
+  });
 
-  // Track the latest pending human message id so submitHumanAnswer
-  // can route to the right turn without the caller having to look it
-  // up. We keep both the id and the node_id (used by resumeRun) in a
-  // ref so the submit callback stays stable.
-  const pendingRef = useRef<{ messageId: string; nodeId: string } | null>(null);
+  const { launch, newSession, lastVarsRef } = useSessionLifecycle({
+    bot,
+    scopeKey,
+    repoScopeEnabled,
+    activeRepo,
+    lifetimeAbortRef,
+    setRunId,
+    setStatus,
+    setBusyMessageId,
+    setErrorMessage,
+  });
 
-  // Belt-and-braces snapshot refresh scheduled by submitHumanAnswer.
-  // Held in a ref so we can cancel a pending timer when the hook
-  // unmounts or when a new submit supersedes the previous one — without
-  // this, a fast WhatsNext-to-WhatsNext navigation would let an old timer
-  // apply a stale snapshot to a different bot's session.
-  const refreshTimerRef = useRef<number | null>(null);
-  useEffect(() => {
-    return () => {
-      if (refreshTimerRef.current !== null) {
-        window.clearTimeout(refreshTimerRef.current);
-        refreshTimerRef.current = null;
-      }
-    };
-  }, []);
-  useEffect(() => {
-    if (!pendingHuman?.node_id) {
-      pendingRef.current = null;
-      return;
-    }
-    // Match the same id rule as messagesFromEvents
-    // (`${nodeId}:${iter}:question`). We don't have the iter from
-    // pendingHuman, but the latest pending in `messages` is the only
-    // one in "pending" state — find and stash it.
-    const latestPending = [...messages]
-      .reverse()
-      .find((m) => m.kind === "human-question" && m.status === "pending");
-    if (latestPending && latestPending.kind === "human-question") {
-      pendingRef.current = {
-        messageId: latestPending.id,
-        nodeId: latestPending.nodeId,
-      };
-    }
-  }, [pendingHuman, messages]);
-
-  // Human-gate lag mitigation (belt-and-braces). The pending question
-  // FORM is derived from the `human_input_requested` EVENT via the
-  // transcript fold — but the run's paused status can reach us through
-  // a snapshot alone (REST getRun refresh, or the WS "snapshot"
-  // envelope) when a WS disconnect/reconnect races the pause window and
-  // the event never arrives. (Broker subscribers survive a pause since
-  // 45bba653e, so this is a rare disconnect race, not the normal path.)
-  // rehydratePendingHumanInput then fills the store's pendingHumanInput
-  // from the checkpoint, but the fold has no event → no question message
-  // → the form lags until a reload refetches history. When we observe
-  // that inconsistent state, pull the event tail once per pause
-  // transition (the ref resets whenever the run leaves
-  // paused_waiting_human, and stays set otherwise, so a late backend
-  // flush can't trigger a refetch loop).
-  // We can't route through loadEventHistoryIfMissing here: it dedupes
-  // via historyFetchedForRun, which is already stamped for this run.
-  const pauseRefetchedForRef = useRef<string | null>(null);
-  useEffect(() => {
-    if (runStatus !== "paused_waiting_human") {
-      pauseRefetchedForRef.current = null;
-      return;
-    }
-    if (!runId) return;
-    // Once-per-pause guard first: it's O(1) and satisfied in the steady
-    // state, so the O(n) transcript scan below only runs until the one
-    // refetch this pause is allowed has been issued.
-    if (pauseRefetchedForRef.current === runId) return;
-    const hasPendingQuestion = messages.some(
-      (m) => m.kind === "human-question" && m.status === "pending",
-    );
-    if (hasPendingQuestion) return;
-    pauseRefetchedForRef.current = runId;
-    const stored = runStore.getState().events;
-    const tail = stored[stored.length - 1];
-    const fromSeq = tail ? tail.seq + 1 : 0;
-    loadEvents(runId, fromSeq)
-      .then((evts) => {
-        if (runStore.getState().runId !== runId) return;
-        if (evts.length > 0) runStore.getState().applyEventsBatch(evts);
-      })
-      .catch((err) => {
-        // One shot per pause by design (loop guard); on failure the
-        // WS/resume resync paths remain the fallback. Surface it in
-        // devtools so silent 401/5xx don't go unnoticed.
-        console.warn("[whats-next] pause-gate event refetch failed", err);
-      });
-  }, [runId, runStatus, messages]);
-
-  const launch = useCallback(
-    async (vars: Record<string, string>) => {
-      setErrorMessage(null);
-      setStatus("launching");
-      // Remember the scope so a later re-seed (composer send after the
-      // run closed) reuses it.
-      lastVarsRef.current = vars;
-      // Make sure we start from a clean store: the studio session may
-      // have a previous run loaded.
-      reset();
-      try {
-        const res = await createRun({
-          file_path: bot.workflowPath,
-          // Cloud: the server resolves the bundle (source + skills) off the
-          // pod FS by id, so Nexie launches without uploading bytes.
-          bot_id: bot.id,
-          vars,
-        });
-        rememberSessionRunId(bot.id, projectId, res.run_id);
-        // Pin the store's runId early so loadEventHistoryIfMissing's
-        // `state.runId !== runId` guard doesn't drop the fetched batch
-        // after its await — same trick the auto-attach branch uses.
-        runStore.getState().setRunId(res.run_id);
-        setRunId(res.run_id);
-        // Seed the store with the freshly-created run's snapshot AND
-        // any events the runtime persisted between createRun and now.
-        // Without the second call, the WS subscribes at snap.last_seq+1
-        // and silently misses everything up to that point — typically
-        // run_started + the first node_started, which leaves the
-        // transcript blank until propose_roadmap fires.
-        try {
-          // Retry-on-404: the launch API returns before the engine
-          // goroutine flushed run.json, so an immediate getRun can 404
-          // into this ignore-catch and skip the seeding entirely. The
-          // hook-lifetime signal stops the retry loop on unmount (the
-          // AbortError lands in the ignore-catch below).
-          const snap = await getRunWithRetry(res.run_id, {
-            signal: lifetimeAbortRef.current?.signal,
-          });
-          applySnapshot(snap);
-          await loadEventHistoryIfMissing(res.run_id);
-        } catch {
-          // ignore; the WS will deliver the snapshot.
-        }
-      } catch (e) {
-        setErrorMessage(toMessage(e));
-        setStatus("idle");
-      }
-    },
-    [
-      bot.workflowPath,
-      bot.id,
-      projectId,
-      reset,
-      applySnapshot,
-      loadEventHistoryIfMissing,
-    ],
-  );
-
-  // Explicit "start a fresh session" action. WhatsNextView wires this
-  // to a header button visible when status === "ended". Without it the
-  // user has no way to clear an ended session and reach the launcher
-  // again (continuity by default keeps the previous run visible across
-  // app restarts).
-  const newSession = useCallback(() => {
-    forgetSessionRunId(bot.id, projectId);
-    runStore.getState().reset();
-    setRunId(null);
-    setBusyMessageId(null);
-    setErrorMessage(null);
-    // setStatus("idle") happens automatically via the runId-null effect
-    // (line that watches runId for null → resets to idle).
-  }, [bot.id, projectId]);
-
-  const submitHumanAnswer = useCallback(
-    async (messageId: string, answers: Record<string, unknown>) => {
-      if (!runId) {
-        console.warn("[whats-next] submitHumanAnswer: no runId, aborting");
-        return;
-      }
-      setErrorMessage(null);
-      setBusyMessageId(messageId);
-      setStatus("submitting");
-      try {
-        // `force: true` is intentional. After any bot edit (the
-        // operator iterates on prompts mid-session) the workflow
-        // hash changes; the engine's checkWorkflowHash silently
-        // rejects the resume — but the HTTP layer returns 202
-        // before the goroutine validates, so the SPA sees a fake
-        // success while the engine sits idle. Resume from inside
-        // /whats-next is unambiguously "retry with my edits", so we
-        // pass force every time. The /runs/<id> console retains the
-        // explicit toggle for the rare hash-pinned case.
-        await resumeRun(runId, { answers, force: true });
-        setRunStatus("running");
-        // Re-dial the WS so the resumed engine's events reach us even
-        // if the connection silently dropped across the pause window.
-        // Belt-and-braces: subscribers survive a pause since 45bba653e,
-        // so this only covers disconnect/reconnect races. Same trick
-        // the generic HumanPromptForm uses.
-        requestWsReconnect();
-        // Belt-and-braces: refresh the snapshot ~600ms later so a
-        // short-lived run that finishes before the WS redial still
-        // surfaces a final state. We capture the target runId so a
-        // late-firing timer can't apply a snapshot for a stale session
-        // (e.g. after WhatsNext-to-WhatsNext navigation within 600ms), and
-        // we cancel any previous pending timer so only the most recent
-        // submit's refresh wins.
-        if (refreshTimerRef.current !== null) {
-          window.clearTimeout(refreshTimerRef.current);
-        }
-        const targetRunId = runId;
-        refreshTimerRef.current = window.setTimeout(() => {
-          refreshTimerRef.current = null;
-          if (runStore.getState().runId !== targetRunId) return;
-          getRun(targetRunId)
-            .then(applySnapshot)
-            .catch((e) => {
-              // The WS will recover the state, but surface the failure
-              // in devtools so silent 401/5xx don't go unnoticed.
-              console.warn("whats-next snapshot refresh failed", e);
-            });
-        }, 600);
-        setStatus("active");
-      } catch (e) {
-        if (typeof console !== "undefined") {
-          console.error("[whats-next] submitHumanAnswer error", e);
-        }
-        setErrorMessage(toMessage(e));
-        setStatus("active");
-      } finally {
-        setBusyMessageId(null);
-      }
-    },
-    [runId, setRunStatus, requestWsReconnect, applySnapshot],
-  );
-
-  // Bare-resume entry point: re-enter the run from its checkpoint
-  // without supplying new human answers. Used for failed_resumable
-  // (transient backend errors, missing tools, schema mismatches the
-  // operator fixed in source) and for cancelled runs the operator
-  // wants to bring back. The submit path lives on submitHumanAnswer
-  // because most resumes carry user input — this one is the rarer
-  // "I fixed the code, please retry" flow.
-  //
-  // `force: true` is intentional: the bare-resume entry point is
-  // typically triggered AFTER the operator edited the bot to fix the
-  // root cause of the failure, which changes the workflow hash. The
-  // operator's intent ("retry with my fix") is unambiguous — we'd
-  // bounce them to /runs/<id> to find the "Force resume" toggle
-  // otherwise, which defeats the point of an inline button.
-  const resume = useCallback(async () => {
-    if (!runId) return;
-    setErrorMessage(null);
-    setStatus("submitting");
-    try {
-      await resumeRun(runId, { answers: {}, force: true });
-      setRunStatus("running");
-      requestWsReconnect();
-      if (refreshTimerRef.current !== null) {
-        window.clearTimeout(refreshTimerRef.current);
-      }
-      const targetRunId = runId;
-      refreshTimerRef.current = window.setTimeout(() => {
-        refreshTimerRef.current = null;
-        if (runStore.getState().runId !== targetRunId) return;
-        getRun(targetRunId)
-          .then(applySnapshot)
-          .catch((e) => {
-            console.warn("whats-next snapshot refresh failed", e);
-          });
-      }, 600);
-      setStatus("active");
-    } catch (e) {
-      setErrorMessage(toMessage(e));
-      setStatus("ended");
-    }
-  }, [runId, setRunStatus, requestWsReconnect, applySnapshot]);
+  const { submitHumanAnswer, resume } = useSessionSteering({
+    runId,
+    setStatus,
+    setBusyMessageId,
+    setErrorMessage,
+  });
 
   return {
     status,
@@ -633,6 +238,10 @@ export function useWhatsNextSession(bot: FirstClassBot): UseWhatsNextSession {
     runStatus,
     errorMessage,
     lastVars: lastVarsRef.current,
+    discoveryError,
+    retryDiscovery,
+    sessionRepo: snapshot?.run.project_path ?? null,
+    launchRepo,
     launch,
     submitHumanAnswer,
     newSession,

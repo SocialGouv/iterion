@@ -1,4 +1,4 @@
-import { CopyButton } from "@/components/ui";
+import { CopyButton, LinkifiedText } from "@/components/ui";
 import type { RunHeader } from "@/api/runs";
 
 import { Section } from "../InfoPrimitives";
@@ -37,7 +37,7 @@ export function BriefingSection({ run }: BriefingSectionProps) {
           }
         >
           <pre className="m-0 max-h-64 overflow-auto whitespace-pre-wrap break-words rounded border border-border-subtle bg-surface-2 px-2 py-1.5 font-mono text-caption text-fg-default">
-            {axis}
+            <LinkifiedText text={axis} />
           </pre>
         </Section>
       )}
@@ -123,7 +123,7 @@ function InputRow({ label, value }: InputRowProps) {
           className="font-mono text-caption text-fg-default break-all min-w-0"
           title={asString}
         >
-          {asString}
+          <LinkifiedText text={asString} />
         </code>
         <CopyButton
           value={asString}
@@ -149,7 +149,7 @@ function InputRow({ label, value }: InputRowProps) {
         />
       </div>
       <pre className="m-0 max-h-40 overflow-auto whitespace-pre-wrap break-words rounded border border-border-subtle bg-surface-2 px-2 py-1.5 font-mono text-caption text-fg-default">
-        {asString}
+        <LinkifiedText text={asString} />
       </pre>
     </div>
   );

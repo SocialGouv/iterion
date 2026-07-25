@@ -6,12 +6,17 @@ import { Input } from "@/components/ui/Input";
 import { useLocation } from "wouter";
 
 import { requestPasswordReset } from "@/api/auth";
+import { useServerInfoStore } from "@/store/serverInfo";
 
 // ForgotPassword fires the reset-mail request. The server is
 // anti-enumeration (always 200), so the view shows the same generic
 // confirmation regardless of whether the email matched an account.
+// When the deployment has no outbound email, self-reset can't work —
+// the view then explains the admin-assisted path instead of offering
+// a form that silently goes nowhere.
 export default function ForgotPassword() {
   const [, navigate] = useLocation();
+  const emailEnabled = useServerInfoStore((s) => s.info?.email_enabled === true);
   const [email, setEmail] = useState("");
   const [busy, setBusy] = useState(false);
   const [sent, setSent] = useState(false);
@@ -30,6 +35,24 @@ export default function ForgotPassword() {
       setBusy(false);
     }
   };
+
+  if (!emailEnabled) {
+    return (
+      <div className="min-h-screen flex items-center justify-center bg-surface-0 text-fg-default px-4">
+        <div className="w-full max-w-md bg-surface-1 border border-border-subtle rounded-[var(--radius-lg)] p-8 shadow-[var(--shadow-lg)] space-y-4">
+          <h1 className="text-headline font-semibold">Forgot your password?</h1>
+          <p className="text-sm text-fg-muted">
+            Self-service reset is unavailable — this deployment doesn&apos;t
+            send email. Ask a workspace administrator to reset your access
+            (they can issue you a fresh invitation or a temporary password).
+          </p>
+          <Button variant="ghost" size="sm" onClick={() => navigate("/login")}>
+            Back to sign-in
+          </Button>
+        </div>
+      </div>
+    );
+  }
 
   if (sent) {
     return (
