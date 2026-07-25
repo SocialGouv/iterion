@@ -6522,6 +6522,38 @@
         }
       ]
     },
+    "/api/teams/{id}/forge/connections/{conn_id}/refresh": {
+      "parameters": [
+        {
+          "in": "path",
+          "name": "id",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        },
+        {
+          "in": "path",
+          "name": "conn_id",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        }
+      ],
+      "post": {
+        "operationId": "postTeamsByIdForgeConnectionsByConnIdRefresh",
+        "responses": {
+          "default": {
+            "description": "Response"
+          }
+        },
+        "summary": "POST /api/teams/{id}/forge/connections/{conn_id}/refresh",
+        "tags": [
+          "teams"
+        ]
+      }
+    },
     "/api/teams/{id}/forge/connections/{conn_id}/repos": {
       "get": {
         "operationId": "getTeamsByIdForgeConnectionsByConnIdRepos",

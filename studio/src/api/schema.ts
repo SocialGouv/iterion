@@ -2983,6 +2983,26 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/teams/{id}/forge/connections/{conn_id}/refresh": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+                conn_id: string;
+            };
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** POST /api/teams/{id}/forge/connections/{conn_id}/refresh */
+        post: operations["postTeamsByIdForgeConnectionsByConnIdRefresh"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/teams/{id}/forge/connections/{conn_id}/repos": {
         parameters: {
             query?: never;
@@ -8961,6 +8981,27 @@ export interface operations {
                 content: {
                     "application/json": components["schemas"]["forgeConnectionHealth"];
                 };
+            };
+        };
+    };
+    postTeamsByIdForgeConnectionsByConnIdRefresh: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+                conn_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Response */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
             };
         };
     };
