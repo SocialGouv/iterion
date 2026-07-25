@@ -122,7 +122,11 @@ func (s *Store) UploadRunFiles(ctx context.Context, runID string) (int, error) {
 			_ = file.Close()
 			return nil
 		}
-		putErr := s.blob.PutRunFile(ctx, runID, filepath.ToSlash(rel), "", file, fi.Size())
+		// Advertise exactly fi.Size() bytes and cap the stream at it: a tool
+		// still appending to the file between Stat and read (the pre-pause
+		// review-media flush can run mid-pass) would otherwise send more bytes
+		// than the ContentLength and the S3 PUT would reject the body.
+		putErr := s.blob.PutRunFile(ctx, runID, filepath.ToSlash(rel), "", io.LimitReader(file, fi.Size()), fi.Size())
 		closeErr := file.Close()
 		if putErr != nil {
 			return fmt.Errorf("put %s: %w", rel, putErr)
