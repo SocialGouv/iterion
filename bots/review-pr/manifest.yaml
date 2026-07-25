@@ -1,7 +1,14 @@
 name: review-pr
 display_name: Revi
 icon: 🔎
-version: 0.5.1
+version: 0.5.2
+## 0.5.2 — fix: SECOND publish_review shell bug (silent empty output → no
+## publish, no gate status, publish_health then crashes). A python COMMENT in
+## the publish_review body contained double-quote characters ("high"/"blocker"
+## …); the body is wrapped by the shell in python3 -c "…", so a stray double
+## quote ends the string and truncates the script. Same trap as backticks.
+## Comment rewritten quote-free; a catalog test now greps every python -c body
+## for stray double-quotes/backticks so this class can't regress.
 ## 0.5.1 — fix: publish_review shell exit-127 crash. The v0.5.0 `questions`
 ## channel passed a json array of strings via QUESTIONS={{input.questions}};
 ## a tool-node substitution space-joins an all-string array (known engine bug,
