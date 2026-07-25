@@ -8,8 +8,8 @@ out-of-process** packages. A plugin never injects Go code (iterion ships static
 
 Plugins are installable-by-default, uninstallable, replaceable, and composable —
 `rtk` (the command-output compressor) ships as a plugin enabled by default; the
-knowledge-graph explorers `graphify` and `repo-falcon` and the web toolkit
-`firecrawl` (Firecrawl search/scrape/crawl MCP — see
+knowledge-graph explorers `graphify`, `repo-falcon` and `codeindex` and the web
+toolkit `firecrawl` (Firecrawl search/scrape/crawl MCP — see
 [web-search.md](web-search.md)) ship disabled.
 
 ## Contribution kinds (v1)
@@ -49,7 +49,7 @@ A single plugin may contribute several kinds (repo-falcon ships `mcp_servers` +
 ## Where plugins live
 
 - **Builtins** are embedded in the binary under `pkg/plugin/builtin/<name>/`
-  (`rtk`, `graphify`, `repo-falcon`, `firecrawl`).
+  (`rtk`, `graphify`, `repo-falcon`, `codeindex`, `firecrawl`).
 - **Installed** plugins live under `~/.iterion/plugins/<name>/` (a directory
   with a `plugin.yaml`). `iterion plugin install <path|git-url>` puts them there.
 - **Enable/disable state** is persisted in `~/.iterion/plugins.yaml`; the
@@ -254,7 +254,7 @@ Diagnostic `C102` flags an invalid `compress:` value.
 
 ## Knowledge-graph explorers
 
-Two are shipped as disabled builtins; enable either to give agents code-graph
+Three are shipped as disabled builtins; enable any to give agents code-graph
 context:
 
 - **repo-falcon** — a deterministic Go MCP server. Enabling it injects the
@@ -265,11 +265,32 @@ context:
 - **graphify** — a CLI + skill that builds a queryable graph (`graphify-out/`)
   spanning code and docs; the skill guides agents to `graphify query` / read the
   report. Its `lifecycle` builds/updates the graph.
+- **codeindex** — a deterministic, zero-dependency repo-indexing engine
+  distributed on npm (`@maxgfr/codeindex`, version-pinned `npx` like
+  `firecrawl`). It is the **broadest** contributor shipped: `mcp_servers`
+  (26 tools — link-graph, symbols, callers, references, BM25/semantic search,
+  hotspots, change coupling, complexity, dead code, architecture rules, agent
+  memories and symbolic edits), `lifecycle` (incremental `.codeindex/`
+  artifacts), `skills`, `commands` (`/codeindex-map`, `/codeindex-impact`,
+  `/codeindex-risk`), `agents` (`codebase-cartographer`) **and** a `rewriter`.
+  Its MCP server is pinned to the workspace (`mcp --repo {{workspace}}`), so
+  agents never pass an absolute path. Its rewriter maps a tree-wide `grep -r` /
+  `rg` onto the indexed equivalent — it locates a real `codeindex` binary
+  (Homebrew, `npm -g`, or the runner image's pre-installed global) and degrades
+  to passthrough when none is present, so it never pays `npx` startup on a
+  per-command hook. Priming the index first turns MCP activation into a load
+  rather than a rebuild, which is what `auto_index: true` does before a run.
 
 ```sh
 iterion plugin enable repo-falcon
 iterion plugin run repo-falcon index   # build the snapshot for this workspace
 # now any bot run exposes falcon_* tools to its agents
+
+iterion plugin enable codeindex
+iterion plugin run codeindex index     # writes <workspace>/.codeindex/
+iterion plugin config codeindex --set max_files=50000   # large monorepo
+# optional: RRF-fused semantic search instead of lexical-only
+iterion plugin config codeindex --set embed_endpoint=http://iterion-codeindex-embed:8756
 ```
 
 ## CLI
