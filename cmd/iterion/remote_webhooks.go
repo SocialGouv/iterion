@@ -141,6 +141,24 @@ var remoteForgeConnectionsCmd = &cobra.Command{
 	}),
 }
 
+var remoteForgeRefreshCmd = &cobra.Command{
+	Use:   "refresh <conn-id>",
+	Short: "Re-probe a GitHub-App connection and re-sync its granted permissions now",
+	Long: "Re-probe the installation and re-sync the stored granted permissions " +
+		"immediately, so a just-changed App permission (e.g. Commit statuses: write " +
+		"for the merge gate) is picked up without waiting for the periodic refresh " +
+		"worker or a server restart. Prints what the installation GRANTS vs what the " +
+		"minted token CARRIES (they differ, and the token is what acts).",
+	Args: cobra.ExactArgs(1),
+	RunE: remoteRunE(func(cmd *cobra.Command, args []string, c *cli.RemoteClient, p *cli.Printer) error {
+		base, err := teamBase(cmd, c, "/forge/connections")
+		if err != nil {
+			return err
+		}
+		return cli.RemoteForgeRefresh(cmd.Context(), c, p, base+"/"+args[0]+"/refresh")
+	}),
+}
+
 var remoteForgeRepoBotsCmd = &cobra.Command{
 	Use:   "repo-bots [create|preview|delete <integration-id>]",
 	Short: "Repo↔bot provisioning (forge integrations)",
@@ -227,6 +245,6 @@ func init() {
 		remoteWebhooksListCmd, remoteWebhooksGetCmd, remoteWebhooksCreateCmd,
 		remoteWebhooksUpdateCmd, remoteWebhooksDeleteCmd, remoteWebhooksRotateCmd, remoteWebhooksDeliveriesCmd,
 	)
-	remoteForgeCmd.AddCommand(remoteForgeConnectionsCmd, remoteForgeRepoBotsCmd, remoteForgeOAuthAppsCmd, remoteForgeIntegrationsCmd)
+	remoteForgeCmd.AddCommand(remoteForgeRefreshCmd, remoteForgeConnectionsCmd, remoteForgeRepoBotsCmd, remoteForgeOAuthAppsCmd, remoteForgeIntegrationsCmd)
 	remoteCmd.AddCommand(remoteWebhooksCmd, remoteForgeCmd)
 }
