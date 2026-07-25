@@ -420,13 +420,27 @@ prompt emit_system:
       post_to_board is false).
     - `failed_issues`: any board creates the runtime rejected.
     - `findings`: the FINAL merged/threshold/capped finding set as a
-      JSON array, in the SAME per-object shape the reviewers emitted —
-      preserve `file`, `line`, `line_end`, `severity`, `category`,
-      `title`, `detail`, `suggestion`, `replacement`, `confidence`, and
-      add `"reviewers": "claude" | "gpt" | "both"`. A downstream step may
-      publish these onto a forge PR, so keep `line`/`line_end` and any
-      `replacement` exactly as given. This is the same set you reported —
-      do not re-summarise or drop fields.
+      MACHINE-PARSED **JSON ARRAY OF OBJECTS** — NEVER a prose sentence,
+      NEVER a summary STRING like "4 findings kept (1 high, 2 medium)".
+      A deterministic downstream step runs `JSON.parse` on this exact
+      value to count blocking findings and post inline PR comments: a
+      string (or anything that is not a `[...]` array) fails the parse,
+      which FAIL-CLOSES the merge gate AND drops every finding from the
+      review. Emit the array itself, `[]` when there are none. Same
+      per-object shape the reviewers emitted — preserve `file`, `line`,
+      `line_end`, `severity`, `category`, `title`, `detail`, `suggestion`,
+      `replacement`, `confidence`, and add
+      `"reviewers": "claude" | "gpt" | "both"`. Keep `line`/`line_end` and
+      any `replacement` exactly as given; do not re-summarise or drop
+      fields. Example (the WHOLE value, verbatim shape):
+        [
+          {"file":"pkg/x/y.go","line":42,"line_end":42,"severity":"high",
+           "category":"correctness","title":"nil deref on empty input",
+           "detail":"…","suggestion":"guard len==0","replacement":"",
+           "confidence":"high","reviewers":"both"}
+        ]
+      (Contrast: `questions` below is a newline-joined STRING; `findings`
+      is an ARRAY. Do not swap their shapes.)
     - `questions`: the merged, de-duplicated non-blocking questions as a
       SINGLE STRING with ONE QUESTION PER LINE (newline-separated), NOT a
       JSON array — empty string "" when none. (A downstream shell step
