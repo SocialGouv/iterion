@@ -92,6 +92,12 @@ export default function PauseForm({
   }, [runId, fieldKey]);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  // Answers of the last attempt the server rejected because the
+  // workflow source changed since the run started; non-null renders a
+  // one-click retry that replays them with force: true.
+  const [forceRetry, setForceRetry] = useState<Record<string, string> | null>(
+    null,
+  );
   const currentSource = useDocumentStore((s) => s.currentSource);
   // An explicit prop (including null) wins over the editor buffer; null →
   // undefined so the resume carries no source and the server falls back to
@@ -103,17 +109,25 @@ export default function PauseForm({
     setValues((prev) => ({ ...prev, [name]: next }));
   };
 
-  const onSubmit = async () => {
+  const onSubmit = async (answers?: Record<string, string>, force = false) => {
+    const payload = answers ?? values;
     setBusy(true);
     setError(null);
+    setForceRetry(null);
     try {
       // The runtime accepts a generic answers map; values are passed
       // through to the resumed node's inputs. Strings are the safest
       // common type for an ad-hoc pause UI.
-      await resumeRun(runId, { answers: values, source: resolvedSource });
+      await resumeRun(runId, {
+        answers: payload,
+        source: resolvedSource,
+        ...(force ? { force: true } : {}),
+      });
       onSubmitted?.();
     } catch (e) {
-      setError(errorMessage(e));
+      const msg = errorMessage(e);
+      setError(msg);
+      if (/source has changed/i.test(msg)) setForceRetry(payload);
     } finally {
       setBusy(false);
     }
@@ -123,21 +137,53 @@ export default function PauseForm({
   // approval buttons ("allow"/"allow always"/"deny" become a grant rule
   // or refusal) and by the structured-options buttons (the picked
   // option's id, or typed free text).
-  const decide = async (decision: string) => {
+  const decide = async (decision: string, force = false) => {
     setBusy(true);
     setError(null);
+    setForceRetry(null);
     try {
       await resumeRun(runId, {
         answers: { [ASK_USER_KEY]: decision },
         source: resolvedSource,
+        ...(force ? { force: true } : {}),
       });
       onSubmitted?.();
     } catch (e) {
-      setError(errorMessage(e));
+      const msg = errorMessage(e);
+      setError(msg);
+      if (/source has changed/i.test(msg)) {
+        setForceRetry({ [ASK_USER_KEY]: decision });
+      }
     } finally {
       setBusy(false);
     }
   };
+
+  // Shared "replay with force" affordance rendered next to every error
+  // spot. The decide() path snapshots its single answer under
+  // ASK_USER_KEY, so replaying through decide() keeps its semantics.
+  const forceRetryButton = forceRetry && (
+    <div className="flex items-center gap-2">
+      <Button
+        variant="primary"
+        size="sm"
+        disabled={busy}
+        onClick={() => {
+          const single = forceRetry[ASK_USER_KEY];
+          if (Object.keys(forceRetry).length === 1 && single !== undefined) {
+            void decide(single, true);
+          } else {
+            void onSubmit(forceRetry, true);
+          }
+        }}
+      >
+        Resume with updated workflow (force)
+      </Button>
+      <span className="text-micro text-fg-subtle">
+        Replays your answer against the current workflow source.
+      </span>
+    </div>
+  );
 
   if (marker) {
     const prompt = String(questions[ASK_USER_KEY] ?? "");
@@ -163,6 +209,7 @@ export default function PauseForm({
             {error}
           </p>
         )}
+        {forceRetryButton}
         <div className="flex flex-wrap gap-2">
           <Button variant="primary" size="sm" loading={busy} onClick={() => void decide("allow")}>
             Allow once
@@ -231,6 +278,7 @@ export default function PauseForm({
             </p>
           )}
         </div>
+        {forceRetryButton}
       </div>
     );
   }
@@ -297,6 +345,7 @@ export default function PauseForm({
           {error}
         </p>
       )}
+      {forceRetryButton}
       <div className="flex gap-2">
         <Button type="submit" variant="primary" size="sm" loading={busy}>
           Submit &amp; Resume

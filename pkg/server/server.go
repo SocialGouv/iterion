@@ -63,6 +63,11 @@ type Server struct {
 	// /api/v1/runs/stats (terminal runs only — see runs_stats_cache.go).
 	// Cleared on project switch. Non-nil after New.
 	statsCache *runStatsCache
+	// admissionSkipWarned dedupes the pipeline-admission "unresolvable
+	// bot" warning per (ticket, bot) so a stranded Ready ticket logs
+	// once instead of every 2s tick. Guarded by admissionSkipMu.
+	admissionSkipMu     sync.Mutex
+	admissionSkipWarned map[string]string
 
 	authSvc        *auth.Service
 	authLimiter    authRateLimiterBackend
@@ -203,7 +208,7 @@ func (s *Server) boardMCPServiceOption(logger *iterlog.Logger) (runview.ServiceO
 	mux := http.NewServeMux()
 	RegisterBoardMCPRoutes(mux, "/api/v1/mcp/board", s.cfg.NativeTrackerStore, s.boardMCPTokens)
 	reg := s.boardMCPTokens
-	return runview.WithBoardMCP(mux, func(caps []string) string {
+	return runview.WithBoardMCP(mux, func(caps []string, sourceIssueID string) string {
 		token := newBoardMCPToken()
 		if token == "" {
 			if logger != nil {
@@ -211,7 +216,7 @@ func (s *Server) boardMCPServiceOption(logger *iterlog.Logger) (runview.ServiceO
 			}
 			return ""
 		}
-		reg.Register(token, caps)
+		reg.Register(token, caps, sourceIssueID)
 		return token
 	}), true
 }

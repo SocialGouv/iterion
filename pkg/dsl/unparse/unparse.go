@@ -408,6 +408,9 @@ func (w *fileWriter) writeTools(tools []*ast.ToolNodeDecl) {
 		if t.Policy != "" {
 			writeProp(&w.b, "policy", t.Policy)
 		}
+		if t.ParallelSafe {
+			writeProp(&w.b, "parallel_safe", "true")
+		}
 		if t.Recovery != nil {
 			writeRecoveryBlock(&w.b, t.Recovery, "  ")
 		}

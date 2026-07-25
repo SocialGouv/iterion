@@ -1456,6 +1456,13 @@ func (s *FilesystemRunStore) ListRunFiles(_ context.Context, runID string) ([]Ru
 			}
 			return walkErr
 		}
+		// artifact_files is writable by sandboxed tools. Never surface a
+		// symlink as a produced file: d.Info may follow a link to a regular
+		// file, while OpenRunFile correctly refuses that same path, yielding a
+		// misleading manifest entry (and a dead review attachment).
+		if d.Type()&fs.ModeSymlink != 0 {
+			return nil
+		}
 		if d.IsDir() {
 			return nil
 		}

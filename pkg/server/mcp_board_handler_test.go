@@ -66,7 +66,7 @@ func TestBoardMCP_HTTP_UnknownToken(t *testing.T) {
 // board MCP from ever registering. The field must always be present.
 func TestBoardMCP_HTTP_InitializeServerInfoVersion(t *testing.T) {
 	srv, reg, _ := newMCPBoardTestServer(t)
-	reg.Register("tok", []string{"board.read"})
+	reg.Register("tok", []string{"board.read"}, "")
 	defer reg.Revoke("tok")
 	resp := doMCP(t, srv, "tok", map[string]any{"jsonrpc": "2.0", "id": 1, "method": "initialize"})
 	defer resp.Body.Close()
@@ -94,7 +94,7 @@ func TestBoardMCP_HTTP_InitializeServerInfoVersion(t *testing.T) {
 
 func TestBoardMCP_HTTP_ToolsListFiltersByCaps(t *testing.T) {
 	srv, reg, _ := newMCPBoardTestServer(t)
-	reg.Register("tok", []string{"board.read"})
+	reg.Register("tok", []string{"board.read"}, "")
 	defer reg.Revoke("tok")
 	resp := doMCP(t, srv, "tok", map[string]any{"jsonrpc": "2.0", "id": 1, "method": "tools/list"})
 	defer resp.Body.Close()
@@ -126,7 +126,7 @@ func TestBoardMCP_HTTP_ToolsListFiltersByCaps(t *testing.T) {
 
 func TestBoardMCP_HTTP_CreateAndRead(t *testing.T) {
 	srv, reg, store := newMCPBoardTestServer(t)
-	reg.Register("tok", []string{"board.create", "board.read"})
+	reg.Register("tok", []string{"board.create", "board.read"}, "")
 	defer reg.Revoke("tok")
 
 	resp := doMCP(t, srv, "tok", map[string]any{
@@ -159,9 +159,87 @@ func TestBoardMCP_HTTP_CreateAndRead(t *testing.T) {
 	}
 }
 
+// A sandboxed planner reaches the board over THIS transport. Without the
+// owning ticket on the grant, board.create publishes orphan children —
+// parent_id stays empty, so the parent card can't show its "N / M closed"
+// children counter. The stdio and in-process transports already stamp it;
+// this locks in parity for the HTTP one.
+func TestBoardMCP_HTTP_CreateStampsParentFromGrant(t *testing.T) {
+	srv, reg, store := newMCPBoardTestServer(t)
+	parent, err := store.Create(native.Issue{Title: "Planner"})
+	if err != nil {
+		t.Fatalf("create parent: %v", err)
+	}
+	reg.Register("tok", []string{"board.create", "board.read"}, parent.ID)
+	defer reg.Revoke("tok")
+
+	resp := doMCP(t, srv, "tok", map[string]any{
+		"jsonrpc": "2.0", "id": 1, "method": "tools/call",
+		"params": map[string]any{
+			"name":      "create_issue",
+			"arguments": map[string]any{"title": "Spawned child"},
+		},
+	})
+	defer resp.Body.Close()
+	var r struct {
+		Result struct {
+			Content []map[string]any `json:"content"`
+			IsError bool             `json:"isError"`
+		} `json:"result"`
+	}
+	_ = json.NewDecoder(resp.Body).Decode(&r)
+	if r.Result.IsError {
+		t.Fatalf("expected success, got isError=true: %+v", r.Result.Content)
+	}
+	var iss native.Issue
+	_ = json.Unmarshal([]byte(r.Result.Content[0]["text"].(string)), &iss)
+	if iss.ParentID != parent.ID {
+		t.Fatalf("parent_id = %q, want %q (auto-stamped from the grant)", iss.ParentID, parent.ID)
+	}
+	got, _ := store.Get(iss.ID)
+	if got == nil || got.ParentID != parent.ID {
+		t.Fatalf("stored parent_id = %+v, want %q", got, parent.ID)
+	}
+	if got.BotArgs[native.BotArgSpawnedFrom] != parent.ID {
+		t.Fatalf("spawned_from = %q, want %q", got.BotArgs[native.BotArgSpawnedFrom], parent.ID)
+	}
+}
+
+// An explicit parent_id argument still wins over the grant's default.
+func TestBoardMCP_HTTP_ExplicitParentOverridesGrant(t *testing.T) {
+	srv, reg, store := newMCPBoardTestServer(t)
+	grantParent, _ := store.Create(native.Issue{Title: "Grant planner"})
+	otherParent, _ := store.Create(native.Issue{Title: "Explicit planner"})
+	reg.Register("tok", []string{"board.create", "board.read"}, grantParent.ID)
+	defer reg.Revoke("tok")
+
+	resp := doMCP(t, srv, "tok", map[string]any{
+		"jsonrpc": "2.0", "id": 1, "method": "tools/call",
+		"params": map[string]any{
+			"name": "create_issue",
+			"arguments": map[string]any{
+				"title":     "Child",
+				"parent_id": otherParent.ID,
+			},
+		},
+	})
+	defer resp.Body.Close()
+	var r struct {
+		Result struct {
+			Content []map[string]any `json:"content"`
+		} `json:"result"`
+	}
+	_ = json.NewDecoder(resp.Body).Decode(&r)
+	var iss native.Issue
+	_ = json.Unmarshal([]byte(r.Result.Content[0]["text"].(string)), &iss)
+	if iss.ParentID != otherParent.ID {
+		t.Fatalf("parent_id = %q, want the explicit %q", iss.ParentID, otherParent.ID)
+	}
+}
+
 func TestBoardMCP_HTTP_CapabilityDenied(t *testing.T) {
 	srv, reg, _ := newMCPBoardTestServer(t)
-	reg.Register("tok", []string{"board.read"})
+	reg.Register("tok", []string{"board.read"}, "")
 	defer reg.Revoke("tok")
 
 	resp := doMCP(t, srv, "tok", map[string]any{

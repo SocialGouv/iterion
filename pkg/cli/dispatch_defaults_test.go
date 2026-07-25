@@ -124,11 +124,10 @@ func TestBuildDefaultConfig_RejectsEmptyStoreDir(t *testing.T) {
 	}
 }
 
-// When projectDir is non-empty, BuildDefaultConfig wires after_create
-// + before_remove hooks that seed/remove a git worktree of the host
-// repo into each per-issue workspace. The hook scripts embed the
-// resolved absolute projectDir so workers (cwd=workspace) don't
-// resolve PROJECT_DIR against the wrong root.
+// When projectDir is non-empty, BuildDefaultConfig wires an after_create hook
+// that seeds a git worktree of the host repo into each per-issue workspace.
+// Teardown is deliberately not a shell hook: the dispatcher uses runtime's
+// verified, lock-protected worktree cleanup instead of `remove --force`.
 func TestBuildDefaultConfig_SeedHookWhenProjectDirSet(t *testing.T) {
 	skipIfCatalogueEmpty(t)
 	storeDir := t.TempDir()
@@ -140,8 +139,8 @@ func TestBuildDefaultConfig_SeedHookWhenProjectDirSet(t *testing.T) {
 	if cfg.Hooks.AfterCreate == nil {
 		t.Fatal("expected after_create hook when projectDir is set")
 	}
-	if cfg.Hooks.BeforeRemove == nil {
-		t.Fatal("expected before_remove hook when projectDir is set")
+	if cfg.Hooks.BeforeRemove != nil {
+		t.Fatalf("expected no destructive before_remove default, got %+v", cfg.Hooks.BeforeRemove)
 	}
 	if !strings.Contains(cfg.Hooks.AfterCreate.Script, projectDir) {
 		t.Fatalf("after_create hook should reference projectDir %q; got %q", projectDir, cfg.Hooks.AfterCreate.Script)

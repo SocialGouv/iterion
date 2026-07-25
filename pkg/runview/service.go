@@ -165,6 +165,12 @@ type LaunchSpec struct {
 	// worktree so `${PROJECT_DIR}` in bot var defaults expands to that
 	// worktree, not the daemon's cwd. Empty inherits WithWorkDir.
 	WorkDir string
+	// WorktreeAuthoritySince is an optional trusted process-census boundary
+	// captured by an upstream launcher before any run-scoped hooks or
+	// subprocesses. The dispatcher supplies its external workspace-owner
+	// timestamp; ordinary callers leave it empty and the service captures one
+	// immediately before executor construction.
+	WorktreeAuthoritySince time.Time
 	// ExtraObservers are per-launch event observers fired on EVERY run
 	// event — both the engine-level events runtime.WithEventObserver sees
 	// AND the high-frequency tool_started/tool_called events the backend
@@ -378,7 +384,7 @@ type Service struct {
 	// board tokens. Both nil unless the server wires them via
 	// WithBoardMCP — sandboxed board-emit then stays disabled.
 	boardMCPHandler http.Handler
-	boardRegister   func(caps []string) string
+	boardRegister   func(caps []string, sourceIssueID string) string
 	// workDir is the directory the engine should treat as ${PROJECT_DIR}
 	// and as the repo-lookup seed for worktree: auto. Empty means
 	// "default to os.Getwd() at Run() time" — the right thing for the
@@ -628,7 +634,7 @@ func WithStore(s store.RunStore) ServiceOption {
 // server mux. register mints a per-node run token against the server's
 // BoardMCPTokenRegistry. Both are threaded into the engine + executor so
 // sandboxed claude_code can write the operator's board.
-func WithBoardMCP(handler http.Handler, register func(caps []string) string) ServiceOption {
+func WithBoardMCP(handler http.Handler, register func(caps []string, sourceIssueID string) string) ServiceOption {
 	return func(svc *Service) {
 		svc.boardMCPHandler = handler
 		svc.boardRegister = register

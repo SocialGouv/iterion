@@ -47,6 +47,20 @@ const (
 	reviewActionRequestChanges = "request_changes"
 )
 
+const reviewCompanionMessageContract = `
+
+# Human-facing message contract (mandatory)
+
+The first sentence must tell the operator exactly what action to take now.
+Keep the complete message under 120 words and 800 characters. After that first
+sentence, give at most three short numbered or bulleted checks. Use plain,
+non-technical language. Do not mention implementation jargon, internal field
+names, statuses or identifiers, file paths, URLs, commit hashes, or raw diff
+content. Refer to an attached file only by its human caption; keep its path in
+media_refs. Do not ask the operator to repeat checks the automated review has
+already settled.
+`
+
 // ReviewCompanion is implemented by executors that can drive a review gate's
 // companion LLM. The production ClawExecutor implements it; the e2e scenario
 // stub may implement it to script companion turns without a real model.
@@ -194,9 +208,7 @@ func (e *Engine) gateResolveAndRun(ctx context.Context, r *store.Run, rs *runSta
 	// Run-end finalize: the gate-merge already created the storage branch +
 	// recorded merge_status, so finalizeOnExit skips the re-merge (see the
 	// idempotency guard) and just tears down the worktree when present.
-	if wtCtx := e.reconstructWorktreeContext(r); wtCtx != nil {
-		e.finalizeOnExit(ctx, rs.runID, wtCtx, nil, loopErr)
-	}
+	e.finalizeReconstructedWorktree(ctx, rs.runID, r, loopErr)
 	return loopErr
 }
 
@@ -273,6 +285,9 @@ func (e *Engine) performGateMerge(ctx context.Context, rs *runState, hn *ir.Huma
 	r, err := e.store.LoadRun(ctx, rs.runID)
 	if err != nil {
 		return fmt.Errorf("load run: %w", err)
+	}
+	if ownershipErr := verifyFinalizationWorktreeOwnership(e.store, r); ownershipErr != nil {
+		return fmt.Errorf("review gate refuses worktree mutation: %w", ownershipErr)
 	}
 	wtCtx := e.reconstructWorktreeContext(r)
 	if wtCtx == nil {
@@ -393,6 +408,10 @@ func (e *Engine) pauseReviewGate(rs *runState, nodeID string, hn *ir.HumanNode, 
 		"max_turns":      hn.MaxTurns,
 		"turns":          turns, // the full companion↔human thread, for self-contained studio rendering
 	}
+	// Keep the key even for an empty selection: presence tells doPause that
+	// the companion's choice is authoritative and prevents a fallback to any
+	// media_refs supplied as node input.
+	extra["media"] = companionMedia(companion)
 	if url := e.resolveReviewURL(hn, questions, rs); url != "" {
 		extra["review_url"] = url
 	}
@@ -420,7 +439,8 @@ func (e *Engine) runReviewCompanion(ctx context.Context, rs *runState, hn *ir.Hu
 			systemText = e.renderHumanInstructions(p, questions, rs)
 		}
 	}
-	userMessage := e.buildCompanionMessage(rs, hn, turns)
+	availableMedia := e.availableReviewMedia(rs)
+	userMessage := e.buildCompanionMessage(rs, hn, turns, availableMedia)
 
 	out, err := rc.ExecuteReviewCompanion(ctx, hn, systemText, userMessage)
 	if err != nil {
@@ -429,12 +449,17 @@ func (e *Engine) runReviewCompanion(ctx context.Context, rs *runState, hn *ir.Hu
 		}
 		return map[string]any{"needs_human_input": true}
 	}
+	// The model selects exact paths only. Replace its objects with metadata
+	// from the actual run-file manifest before anything is persisted/emitted.
+	out[reviewMediaRefsKey] = normalizeReviewMediaRefs(out[reviewMediaRefsKey], availableMedia)
 	return out
 }
 
 // buildCompanionMessage assembles the companion's user message: a bounded
-// diff of the run's commits, then the dialogue transcript so far.
-func (e *Engine) buildCompanionMessage(rs *runState, hn *ir.HumanNode, turns []store.InteractionTurn) string {
+// diff of the run's commits, the passive-attachment manifest, then the dialogue
+// transcript so far. The manifest is the companion's entire attachment
+// authority: it cannot attach arbitrary URLs or files outside this list.
+func (e *Engine) buildCompanionMessage(rs *runState, hn *ir.HumanNode, turns []store.InteractionTurn, availableMedia []store.ReviewMediaRef) string {
 	var b strings.Builder
 	if r, err := e.store.LoadRun(rs.ctx, rs.runID); err == nil {
 		if wtCtx := e.reconstructWorktreeContext(r); wtCtx != nil && wtCtx.originalTip != "" {
@@ -445,9 +470,12 @@ func (e *Engine) buildCompanionMessage(rs *runState, hn *ir.HumanNode, turns []s
 			}
 		}
 	}
+	writeReviewMediaInventory(&b, availableMedia)
 	if len(turns) == 0 {
-		b.WriteString("Begin the review: write precise, numbered steps for the human to test this change. " +
-			"Then set needs_human_input=true to wait for their report.")
+		b.WriteString("Begin the review with only the consequential checks that still require human judgment. " +
+			"Then set needs_human_input=true to wait for their report. Attach only relevant items from " +
+			"the available-review-attachments list in media_refs; use [] when none are relevant.")
+		b.WriteString(reviewCompanionMessageContract)
 		return b.String()
 	}
 	b.WriteString("# Conversation so far\n\n")
@@ -457,11 +485,40 @@ func (e *Engine) buildCompanionMessage(rs *runState, hn *ir.HumanNode, turns []s
 			role = "human"
 		}
 		b.WriteString(strings.ToUpper(role[:1]) + role[1:] + ": " + t.Content + "\n\n")
+		for _, media := range t.Media {
+			fmt.Fprintf(&b, "Attached media: %q", media.Path)
+			if media.Caption != "" {
+				fmt.Fprintf(&b, " — %q", media.Caption)
+			}
+			b.WriteString("\n")
+		}
 	}
 	b.WriteString("Respond to the human's latest message. If their testing confirms the change works, " +
 		"set decision=approved with your confidence; if they report problems, set decision=changes_requested " +
-		"and list the blockers. Set needs_human_input=false only when you have reached a confident verdict.")
+		"and list the blockers. Set needs_human_input=false only when you have reached a confident verdict. " +
+		"Attach only relevant items from the available-review-attachments list in media_refs; use [] when none are relevant.")
+	b.WriteString(reviewCompanionMessageContract)
 	return b.String()
+}
+
+func writeReviewMediaInventory(b *strings.Builder, media []store.ReviewMediaRef) {
+	if b == nil {
+		return
+	}
+	b.WriteString("# Available review attachments\n\n")
+	if len(media) == 0 {
+		b.WriteString("No review attachments are available. Return media_refs as an empty array.\n\n")
+		return
+	}
+	const promptLimit = 100
+	for i, ref := range media {
+		if i == promptLimit {
+			fmt.Fprintf(b, "- … %d more file(s) omitted; do not attach omitted paths\n", len(media)-promptLimit)
+			break
+		}
+		fmt.Fprintf(b, "- %q (%s, %s, %d bytes)\n", ref.Path, ref.Kind, ref.MIME, ref.Size)
+	}
+	b.WriteString("\nSelect media_refs only from the exact paths above. Each item must contain path and a short human caption.\n\n")
 }
 
 // reviewDiffContext returns a bounded diff of the run's commits for the
@@ -565,8 +622,38 @@ func companionTurn(companion map[string]any) store.InteractionTurn {
 		Role:    "companion",
 		Content: stringAnswer(companion, "message"),
 		Verdict: reviewVerdict(companion),
+		Media:   companionMedia(companion),
 		At:      time.Now().UTC(),
 	}
+}
+
+func companionMedia(companion map[string]any) []store.ReviewMediaRef {
+	if companion == nil {
+		return nil
+	}
+	media, _ := companion[reviewMediaRefsKey].([]store.ReviewMediaRef)
+	return media
+}
+
+// checkpointReviewGateState turns the typed values assembled by
+// pauseReviewGate into the checkpoint-owned read model used by projections
+// that deliberately do not replay events. Nil means an ordinary human pause.
+func checkpointReviewGateState(eventExtra map[string]any, turns []store.InteractionTurn) *store.ReviewGateState {
+	if eventExtra == nil || eventExtra["review"] != true {
+		return nil
+	}
+	state := &store.ReviewGateState{
+		Turns: append([]store.InteractionTurn(nil), turns...),
+	}
+	state.Posture, _ = eventExtra["posture"].(string)
+	state.MergeStrategy, _ = eventExtra["merge_strategy"].(string)
+	state.MergeInto, _ = eventExtra["merge_into"].(string)
+	state.MaxTurns, _ = eventExtra["max_turns"].(int)
+	state.ReviewURL, _ = eventExtra["review_url"].(string)
+	if verdict, ok := eventExtra["verdict"].(map[string]any); ok {
+		state.Verdict = cloneMap(verdict)
+	}
+	return state
 }
 
 // reviewVerdict extracts the verdict fields (decision/confidence/blockers)

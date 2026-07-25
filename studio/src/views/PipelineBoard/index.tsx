@@ -1,17 +1,19 @@
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
-import { Link } from "wouter";
 
 import { getPipelineBoard, type PipelineBoardCard } from "@/api/pipelineBoards";
 import { useHeaderSlot } from "@/components/shared/useHeaderSlot";
 import { Button, EmptyState, InlineBanner, Spinner } from "@/components/ui";
 import { errorMessage } from "@/lib/errorHints";
 import { formatRelative } from "@/lib/format";
+import { useUIStore } from "@/store/ui";
 
 import AddTaskDialog from "./AddTaskDialog";
 import PipelineCardDetails from "./PipelineCardDetails";
-import { PipelineColumns } from "./PipelineColumns";
-import { PipelineFilters } from "./PipelineFilters";
+import {
+  PipelineColumns,
+  type OpenCardFocus,
+} from "./PipelineColumns";
 import {
   collectFilterOptions,
   emptyPipelineFilters,
@@ -24,12 +26,13 @@ const POLL_INTERVAL_MS = 3000;
 export default function PipelineBoardView() {
   const [addTaskOpen, setAddTaskOpen] = useState(false);
   const [editTask, setEditTask] = useState<PipelineBoardCard | null>(null);
-  // The card whose details sidebar is open. Held as the click-time snapshot;
-  // its live version is re-derived from each poll so status / reviews /
-  // produced elements stay current while the drawer is open.
   const [selected, setSelected] = useState<PipelineBoardCard | null>(null);
-  // Client-side filters (search / bot / labels), mirroring /board's bar.
+  const [drawerFocus, setDrawerFocus] = useState<OpenCardFocus>("default");
   const [filters, setFilters] = useState(emptyPipelineFilters);
+  const addToast = useUIStore((s) => s.addToast);
+  // issue_id → run_id snapshot for launch-toast detection.
+  const prevIssueRuns = useRef<Map<string, string>>(new Map());
+  const launchToastPrimed = useRef(false);
 
   const query = useQuery({
     queryKey: ["pipeline-board"],
@@ -38,6 +41,46 @@ export default function PipelineBoardView() {
     refetchIntervalInBackground: false,
     retry: false,
   });
+
+  // Toast when a ticket-backed card gains a new run_id while in progress
+  // (admission loop or dispatcher just launched it).
+  useEffect(() => {
+    const cards = query.data?.cards;
+    if (!cards) return;
+    const next = new Map<string, string>();
+    for (const c of cards) {
+      if (c.issue_id && c.run_id) next.set(c.issue_id, c.run_id);
+    }
+    if (!launchToastPrimed.current) {
+      prevIssueRuns.current = next;
+      launchToastPrimed.current = true;
+      return;
+    }
+    for (const [issueId, runId] of next) {
+      const prev = prevIssueRuns.current.get(issueId);
+      if (prev === runId) continue;
+      if (prev && prev === runId) continue;
+      // New or changed run id for this issue.
+      if (!prev || prev !== runId) {
+        const card = cards.find((c) => c.issue_id === issueId);
+        if (card?.column_id === "in_progress") {
+          addToast(
+            `Started “${card.title}” · ${runId.slice(0, 12)}…`,
+            "success",
+            {
+              action: {
+                label: "Open run",
+                onClick: () => {
+                  window.location.href = `/runs/${encodeURIComponent(runId)}`;
+                },
+              },
+            },
+          );
+        }
+      }
+    }
+    prevIssueRuns.current = next;
+  }, [query.data?.cards, addToast]);
 
   useHeaderSlot({
     left: <span className="text-xs font-medium text-fg-default">Pipelines</span>,
@@ -86,32 +129,31 @@ export default function PipelineBoardView() {
   const board = query.data;
   const { concurrency } = board;
 
-  // Re-locate the open card in the latest projection (id can change as a task
-  // becomes a run); fall back to the snapshot and flag it stale when the card
-  // has left the board entirely. Selection tracks the FULL card set — a card
-  // hidden by a filter keeps its open sidebar.
   const liveSelected = selected ? findFollowCard(board.cards, selected) : null;
   const detailCard = liveSelected ?? selected;
   const detailStale = selected !== null && liveSelected === null;
 
+  const textFiltered = filterPipelineCards(board.cards, filters);
   const filterOptions = collectFilterOptions(board.cards);
-  const filteredCards = filterPipelineCards(board.cards, filters);
+
+  const openCard = (card: PipelineBoardCard, focus: OpenCardFocus = "default") => {
+    setDrawerFocus(focus);
+    setSelected(card);
+  };
 
   return (
     <div className="flex h-full min-h-0 flex-col overflow-hidden">
       <div className="shrink-0 space-y-2 px-4 py-3">
         <div className="flex flex-wrap items-start gap-3">
           <div className="min-w-0 flex-1">
-            <h1 className="text-display font-semibold text-fg-default">Pipeline board</h1>
+            <h1 className="text-display font-semibold text-fg-default">Pipelines</h1>
             <p className="mt-0.5 max-w-3xl text-xs text-fg-muted">
-              Every launched pipeline (and not-yet-started task) across all bots, bucketed
-              into five fixed lanes. Running cards are placed by run state; stage a Backlog
-              ticket with its “→ Todo” button (or edit it first), retry a Failed one, and
-              click any card for details. This is an execution-centric alternative to the{" "}
-              <Link href="/board" className="text-accent-text hover:underline">
-                Board
-              </Link>{" "}
-              view — the two will likely converge into a single board eventually.
+              Live runs up top. Inventory tabs{" "}
+              <strong className="font-medium text-fg-default">Opened</strong>{" "}
+              (default) and{" "}
+              <strong className="font-medium text-fg-default">Closed</strong>.
+              Queue banner shows ready / waiting / next up. One primary action
+              per card; more in ⋯.
             </p>
           </div>
           <div className="flex items-center gap-2 text-caption text-fg-subtle">
@@ -144,24 +186,12 @@ export default function PipelineBoardView() {
         )}
       </div>
 
-      {board.cards.length > 0 && (
-        <PipelineFilters
-          filters={filters}
-          allBots={filterOptions.allBots}
-          allLabels={filterOptions.allLabels}
-          total={board.cards.length}
-          filtered={filteredCards.length}
-          onChange={setFilters}
-          onReset={() => setFilters(emptyPipelineFilters())}
-        />
-      )}
-
-      <div className="flex min-h-0 flex-1 overflow-hidden">
-        <div className="flex min-w-0 flex-1 flex-col overflow-hidden">
+      <div className="relative min-h-0 flex-1 overflow-hidden">
+        <div className="flex h-full min-w-0 flex-col overflow-hidden">
           {board.cards.length === 0 ? (
             <EmptyState
               title="No pipelines yet"
-              message="Add a task to feed Todo, or launch a bot. Running pipelines and their human reviews appear here automatically."
+              message="Add a task or launch a bot. Running pipelines and their human reviews appear here automatically."
               action={
                 <Button variant="primary" size="sm" onClick={() => setAddTaskOpen(true)}>
                   Add first task
@@ -171,10 +201,15 @@ export default function PipelineBoardView() {
             />
           ) : (
             <PipelineColumns
-              board={{ ...board, cards: filteredCards }}
+              board={{ ...board, cards: textFiltered }}
+              allCardsForQueue={board.cards}
               onRefetch={() => void query.refetch()}
               onEditTask={setEditTask}
-              onOpenCard={setSelected}
+              onOpenCard={openCard}
+              filters={filters}
+              onFiltersChange={setFilters}
+              onFiltersReset={() => setFilters(emptyPipelineFilters())}
+              filterOptions={filterOptions}
             />
           )}
         </div>
@@ -183,7 +218,12 @@ export default function PipelineBoardView() {
           <PipelineCardDetails
             card={detailCard}
             stale={detailStale}
-            onClose={() => setSelected(null)}
+            presentation="overlay"
+            focusSection={drawerFocus}
+            onClose={() => {
+              setSelected(null);
+              setDrawerFocus("default");
+            }}
             onRefetch={() => void query.refetch()}
           />
         )}

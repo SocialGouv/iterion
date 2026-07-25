@@ -1170,6 +1170,7 @@ func (r *Runner) executeRun(ctx context.Context, msg *queue.RunMessage) error {
 		runLogger = iterlog.New(r.cfg.Logger.Level(), io.MultiWriter(r.cfg.Logger.Writer(), w))
 	}
 
+	worktreeAuthoritySince := time.Now().UTC()
 	executor, usage, err := r.buildExecutor(ctx, msg, wf, runLogger)
 	if err != nil {
 		return err
@@ -1182,6 +1183,7 @@ func (r *Runner) executeRun(ctx context.Context, msg *queue.RunMessage) error {
 		runtime.WithLogger(runLogger),
 		runtime.WithWorkflowHash(msg.WorkflowHash),
 		runtime.WithWorkDir(workDir),
+		runtime.WithWorktreeAuthoritySince(worktreeAuthoritySince),
 		// Sandbox defaults from the operator config (ITERION_SANDBOX_DEFAULT /
 		// ITERION_SANDBOX_HOST_STATE). pkg/cli/run.go wires these for `iterion
 		// run`; the cloud runner must too — else cfg.Sandbox.* is read and

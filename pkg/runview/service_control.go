@@ -76,9 +76,35 @@ func (s *Service) CancelInactiveCtx(ctx context.Context, runID string) (bool, er
 	if runID == "" {
 		return false, errors.New("runview: run_id is required")
 	}
+	// Filesystem LockRun creates its lock directory, so prove the row exists
+	// before locking; otherwise a typo/hostile ID would become a ghost run in
+	// ListRuns. This first read grants no mutation authority: every precondition
+	// is checked again from a fresh LoadRun under the lock below.
+	if _, err := s.store.LoadRun(ctx, runID); err != nil {
+		return false, fmt.Errorf("load run: %w", err)
+	}
+	// Serialize the authoritative status re-check, transition, and Git recovery
+	// against every live/resuming engine. A paused row can become running
+	// between the preflight LoadRun and LockRun; the reload below closes that
+	// race.
+	lock, err := s.store.LockRun(ctx, runID)
+	if err != nil {
+		return false, fmt.Errorf("runview: cancel inactive: run %s is active or locked: %w", runID, err)
+	}
+	defer func() { _ = lock.Unlock() }()
+
 	r, err := s.store.LoadRun(ctx, runID)
 	if err != nil {
 		return false, fmt.Errorf("load run: %w", err)
+	}
+	// The acquired child lock is the authority for a synchronous subbot. Its
+	// parent legitimately remains Manager-active while waiting for this paused
+	// child to become terminal; treating that ancestor as the child's owner
+	// would make operator cancellation impossible and deadlock the parent wait.
+	// Keep the direct Manager check for the narrow unlock→Deregister window of
+	// a root run whose engine just released its store lock.
+	if s.manager.Active(runID) {
+		return false, fmt.Errorf("runview: cancel inactive: run %s is still active", runID)
 	}
 	switch r.Status {
 	case store.RunStatusPausedWaitingHuman, store.RunStatusFailedResumable, store.RunStatusPausedOperator:
@@ -88,15 +114,31 @@ func (s *Service) CancelInactiveCtx(ctx context.Context, runID string) (bool, er
 	default:
 		return false, nil // already terminal — no-op
 	}
-	if err := s.store.UpdateRunStatus(ctx, runID, store.RunStatusCancelled, "cancelled by operator (was "+string(r.Status)+")"); err != nil {
+	expected := []store.RunStatus{
+		store.RunStatusPausedWaitingHuman,
+		store.RunStatusFailedResumable,
+		store.RunStatusPausedOperator,
+	}
+	changed, err := s.store.UpdateRunStatusIf(
+		ctx,
+		runID,
+		store.RunStatusCancelled,
+		"cancelled by operator (was "+string(r.Status)+")",
+		expected,
+	)
+	if err != nil {
 		return false, fmt.Errorf("update status: %w", err)
+	}
+	if !changed {
+		return false, nil
 	}
 	// Re-load post-flip so RecoverFinalize sees the new status.
 	r, err = s.store.LoadRun(ctx, runID)
-	if err == nil {
-		if recErr := runtime.RecoverFinalize(ctx, s.store, r, s.logger); recErr != nil && s.logger != nil {
-			s.logger.Warn("runview: post-cancel-inactive finalize for %s: %v", runID, recErr)
-		}
+	if err != nil {
+		return true, fmt.Errorf("reload cancelled run: %w", err)
+	}
+	if recErr := runtime.RecoverFinalize(ctx, s.store, r, s.logger); recErr != nil && s.logger != nil {
+		s.logger.Warn("runview: post-cancel-inactive finalize for %s: %v", runID, recErr)
 	}
 	return true, nil
 }
@@ -443,9 +485,35 @@ func (s *Service) CommitAndFinalizeCtx(ctx context.Context, runID, message strin
 	if runID == "" {
 		return nil, errors.New("runview: run_id is required")
 	}
+	// Avoid creating a lock-only ghost directory for an unknown run ID.
+	// Authority still comes solely from the post-lock reload.
+	if _, err := s.store.LoadRun(ctx, runID); err != nil {
+		return nil, err
+	}
+	// Git commit + promotion must be mutually exclusive with launch/resume and
+	// orphan recovery. Every precondition is checked against the state reloaded
+	// under the lock for the whole mutation.
+	lock, err := s.store.LockRun(ctx, runID)
+	if err != nil {
+		return nil, fmt.Errorf("runview: commit-and-finalize: run %s is active or locked: %w", runID, err)
+	}
+	defer func() { _ = lock.Unlock() }()
+
 	r, err := s.store.LoadRun(ctx, runID)
 	if err != nil {
 		return nil, err
+	}
+	// As in CancelInactiveCtx, an active synchronous parent is expected while
+	// a terminal child is being inspected. The successfully acquired child
+	// lock excludes its engine; only a direct in-process handle is conflicting.
+	if s.manager.Active(runID) {
+		return nil, fmt.Errorf("runview: commit-and-finalize: run %s is still active", runID)
+	}
+	switch r.Status {
+	case store.RunStatusFinished, store.RunStatusCancelled:
+		// The studio exposes this action only for these terminal states.
+	default:
+		return nil, fmt.Errorf("runview: commit-and-finalize: run %s is not terminally mergeable (status=%s)", runID, r.Status)
 	}
 	if err := runtime.CommitUncommittedAndFinalize(ctx, s.store, r, message, s.logger); err != nil {
 		return nil, err

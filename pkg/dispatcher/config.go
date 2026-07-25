@@ -271,14 +271,14 @@ const (
 	// WorkspacePersistKeep keeps every workspace forever (the default
 	// when the field is empty). Operators clean up manually.
 	WorkspacePersistKeep WorkspacePersistPolicy = "keep"
-	// WorkspacePersistCleanupOnDone removes the workspace on a clean
-	// dispatch return (err == nil from the runner). Failed / cancelled
-	// dispatches retain the workspace so retries can resume from it.
+	// WorkspacePersistCleanupOnDone requests verified workspace cleanup on a
+	// clean dispatch return (err == nil from the runner). An inconclusive
+	// durability/ownership proof preserves it. Failed / cancelled dispatches
+	// retain the workspace so retries can resume from it.
 	WorkspacePersistCleanupOnDone WorkspacePersistPolicy = "cleanup_on_done"
-	// WorkspacePersistCleanupOnTerminal removes the workspace on a
-	// clean dispatch return when the issue has reached a terminal
-	// tracker state. v1 treats it the same as cleanup_on_done; v2
-	// will branch on the post-run state.
+	// WorkspacePersistCleanupOnTerminal requests verified cleanup on a clean
+	// dispatch return when the issue has reached a terminal tracker state. v1
+	// treats it the same as cleanup_on_done; v2 will branch on post-run state.
 	WorkspacePersistCleanupOnTerminal WorkspacePersistPolicy = "cleanup_on_terminal"
 )
 

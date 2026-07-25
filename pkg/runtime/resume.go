@@ -197,9 +197,7 @@ func (e *Engine) resumeFromPause(ctx context.Context, r *store.Run, answers map[
 		// that paused on an agent/judge ask_user finishes with its commits
 		// reachable only via reflog (GC-eligible), the exact F-RT-1 failure
 		// finalizeOnExit exists to prevent.
-		if wtCtx := e.reconstructWorktreeContext(r); wtCtx != nil {
-			e.finalizeOnExit(ctx, runID, wtCtx, nil, loopErr)
-		}
+		e.finalizeReconstructedWorktree(ctx, runID, r, loopErr)
 		return loopErr
 	}
 
@@ -214,9 +212,7 @@ func (e *Engine) resumeFromPause(ctx context.Context, r *store.Run, answers map[
 	// Resumed worktree runs need the same persistent-branch + FF step
 	// fresh launches get; without this the GC guard never lands and
 	// commits are reachable only via reflog. See F-RT-1.
-	if wtCtx := e.reconstructWorktreeContext(r); wtCtx != nil {
-		e.finalizeOnExit(ctx, runID, wtCtx, nil, loopErr)
-	}
+	e.finalizeReconstructedWorktree(ctx, runID, r, loopErr)
 	return loopErr
 }
 
@@ -420,6 +416,7 @@ func (e *Engine) resumeRebuildState(ctx context.Context, r *store.Run, cp *store
 	rs.artifactVersions = artifactVersions
 	rs.nodeAttempts = restoreNodeAttempts(cp.NodeAttempts)
 	restoreLoopSnapshots(rs, cp)
+	e.restoreIncomingEdge(rs, cp)
 	restoreBudgetAccounting(rs, cp)
 
 	// Push the freshly-resolved vars into the executor so substitutions
@@ -579,6 +576,7 @@ func (e *Engine) resumeFromFailure(ctx context.Context, r *store.Run) error {
 		}
 		rs.nodeAttempts = restoreNodeAttempts(cp.NodeAttempts)
 		restoreLoopSnapshots(rs, cp)
+		e.restoreIncomingEdge(rs, cp)
 		restoreBudgetAccounting(rs, cp)
 		// Fork rehydration: when the checkpoint carries a backend
 		// conversation (claw) or session id (claude_code), pin them to
@@ -605,9 +603,7 @@ func (e *Engine) resumeFromFailure(ctx context.Context, r *store.Run) error {
 	// Mirrors resumeFromPause: a worktree run that fails resumably and
 	// then completes on resume must finalize, otherwise its commits
 	// stay reflog-only. See F-RT-1.
-	if wtCtx := e.reconstructWorktreeContext(r); wtCtx != nil {
-		e.finalizeOnExit(ctx, runID, wtCtx, nil, loopErr)
-	}
+	e.finalizeReconstructedWorktree(ctx, runID, r, loopErr)
 	return loopErr
 }
 
@@ -782,11 +778,12 @@ func (e *Engine) pauseAtHuman(rs *runState, nodeID string, node ir.Node) error {
 // before calling this method.
 func (e *Engine) persistPause(rs *runState, nodeID string) error {
 	questions := e.buildNodeInputRS(nodeID, resolveScope{
-		vars:      rs.vars,
-		outputs:   rs.outputs,
-		runInputs: nil,
-		artifacts: rs.artifacts,
-		rs:        rs,
+		vars:         rs.vars,
+		outputs:      rs.outputs,
+		runInputs:    nil,
+		artifacts:    rs.artifacts,
+		incomingEdge: rs.incomingEdge,
+		rs:           rs,
 	})
 	return e.doPause(rs, nodeID, questions, e.humanInstructionsExtra(nodeID, questions, rs), pauseInfo{})
 }
@@ -1288,12 +1285,27 @@ func (e *Engine) doPause(rs *runState, nodeID string, questions map[string]any, 
 		}
 		questions[delegate.QueuedOperatorMessagesKey] = queuedTexts
 	}
+	// Resolve media only after the node's input is final. Both ordinary human
+	// nodes (input.media_refs) and review companions (eventExtra.media) flow
+	// through the same manifest validation; no model-supplied URL or metadata
+	// is persisted as authoritative.
+	media := e.reviewMediaForPause(rs, questions, eventExtra)
+	// media_refs is transport metadata, not a question the human should
+	// answer. Drop the untrusted/raw value after resolution so it cannot leak
+	// into Interaction, event, checkpoint, or PauseForm's fallback fields.
+	delete(questions, reviewMediaRefsKey)
+	// ai_review_points is model-to-runtime presentation metadata, never a
+	// question for the operator. Consume it once, validate the complete brief,
+	// and stamp its provenance before any pause read model is persisted.
+	brief := extractHumanReviewBrief(questions)
+	e.flushReviewMediaForPause(rs, media)
 	interaction := &store.Interaction{
 		ID:          interactionID,
 		RunID:       rs.runID,
 		NodeID:      nodeID,
 		RequestedAt: time.Now().UTC(),
 		Questions:   questions,
+		ReviewBrief: brief,
 		Turns:       info.Turns,
 	}
 	if err := e.store.WriteInteraction(rs.ctx, interaction); err != nil {
@@ -1308,6 +1320,16 @@ func (e *Engine) doPause(rs *runState, nodeID string, questions map[string]any, 
 	for k, v := range eventExtra {
 		eventData[k] = v
 	}
+	if len(media) > 0 {
+		eventData["media"] = media
+	} else {
+		// eventExtra is assembled partly from model output. Do not let an
+		// unvalidated raw media value survive when every selection was rejected.
+		delete(eventData, "media")
+	}
+	if brief != nil {
+		eventData["review_brief"] = brief
+	}
 	if err := e.emit(rs.ctx, rs.runID, store.EventHumanInputRequested, nodeID, eventData); err != nil {
 		return err
 	}
@@ -1321,6 +1343,12 @@ func (e *Engine) doPause(rs *runState, nodeID string, questions map[string]any, 
 	cp := buildCheckpoint(rs, nodeID)
 	cp.InteractionID = interactionID
 	cp.InteractionQuestions = questions
+	if instr, ok := eventExtra["instructions"].(string); ok {
+		cp.InteractionInstructions = instr
+	}
+	cp.InteractionReviewBrief = brief
+	cp.InteractionMedia = media
+	cp.InteractionReview = checkpointReviewGateState(eventExtra, info.Turns)
 	cp.BackendSessionID = info.BackendSessionID
 	cp.BackendName = info.BackendName
 	cp.BackendConversation = info.BackendConversation

@@ -410,6 +410,7 @@ type jsonToolNodeDecl struct {
 	Policy         string             `json:"policy,omitempty"`
 	Recovery       *jsonRecoveryBlock `json:"recovery,omitempty"`
 	Needs          []string           `json:"needs,omitempty"`
+	ParallelSafe   bool               `json:"parallel_safe,omitempty"`
 }
 
 // jsonRecoveryBlock is the JSON form of an ast.RecoveryBlock (ADR-044).
@@ -740,6 +741,7 @@ func toJSON(f *File) *jsonFile {
 			Policy:         t.Policy,
 			Recovery:       recoveryBlockToJSON(t.Recovery),
 			Needs:          t.Needs,
+			ParallelSafe:   t.ParallelSafe,
 		})
 	}
 	for _, c := range f.Computes {
@@ -1353,6 +1355,7 @@ func fromJSON(jf *jsonFile) (*File, error) {
 			Policy:         jt.Policy,
 			Recovery:       recoveryBlockFromJSON(jt.Recovery),
 			Needs:          jt.Needs,
+			ParallelSafe:   jt.ParallelSafe,
 		})
 	}
 

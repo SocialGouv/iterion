@@ -630,7 +630,15 @@ type ToolNodeDecl struct {
 	Postcondition string         // cheap deterministic check (shell, exit 0 = met); single source of truth for success
 	Policy        string         // required | recover | best_effort ("" defaults to required when Postcondition is set)
 	Recovery      *RecoveryBlock // bounded recovery rung config (nil = no recovery rungs)
-	Span          Span
+
+	// ParallelSafe (`parallel_safe: true`) asserts that concurrent fan-out
+	// replays of this tool write only to disjoint, item-keyed targets and never
+	// race one another on the shared workspace, letting the workspace-safety
+	// guard fan the tool out in parallel. Mirror of a subbot's `isolated:` /
+	// an agent-judge `readonly:`, for a tool that still writes but partitions
+	// its writes. Default false = conservatively mutating (serialized fan-out).
+	ParallelSafe bool
+	Span         Span
 }
 
 // RecoveryBlock configures the bounded recovery rungs of a Verified Action

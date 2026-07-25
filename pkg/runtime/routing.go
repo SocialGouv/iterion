@@ -75,6 +75,7 @@ func (e *Engine) execRoundRobin(ctx context.Context, rs *runState, routerNodeID 
 	}); err != nil {
 		return "", err
 	}
+	e.setIncomingEdge(rs, selected)
 
 	return selected.To, nil
 }
@@ -192,6 +193,12 @@ func (e *Engine) execLLMRouterSingle(rs *runState, routerNodeID string, output m
 		"to":   selected,
 	}); err != nil {
 		return "", err
+	}
+	for _, edge := range e.workflow.Edges {
+		if edge.From == routerNodeID && edge.To == selected {
+			e.setIncomingEdge(rs, edge)
+			break
+		}
 	}
 
 	return selected, nil

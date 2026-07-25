@@ -239,6 +239,7 @@ func buildCheckpoint(rs *runState, nodeID string) *store.Checkpoint {
 	tokens, cost, iterations, elapsed := rs.budget.Snapshot()
 	return &store.Checkpoint{
 		NodeID:             nodeID,
+		IncomingEdgeIndex:  rs.incomingEdgeIndex,
 		Outputs:            rs.outputs,
 		LoopCounters:       rs.loopCounters,
 		RoundRobinCounters: rs.roundRobinCounters,
@@ -255,6 +256,22 @@ func buildCheckpoint(rs *runState, nodeID string) *store.Checkpoint {
 		BudgetElapsedNS:      elapsed.Nanoseconds(),
 		CostUSDTotal:         rs.costUSDTotal,
 	}
+}
+
+// restoreIncomingEdge rehydrates the concrete selected edge recorded by a
+// checkpoint. The workflow hash normally guarantees an identical edge list;
+// bounds and target checks keep force-resume and legacy checkpoints safe by
+// falling back to merge-all input resolution when the identity is unusable.
+func (e *Engine) restoreIncomingEdge(rs *runState, cp *store.Checkpoint) {
+	if cp == nil || cp.IncomingEdgeIndex <= 0 || cp.IncomingEdgeIndex > len(e.workflow.Edges) {
+		return
+	}
+	edge := e.workflow.Edges[cp.IncomingEdgeIndex-1]
+	if edge == nil || edge.To != cp.NodeID {
+		return
+	}
+	rs.incomingEdge = edge
+	rs.incomingEdgeIndex = cp.IncomingEdgeIndex
 }
 
 // cloneMap returns a shallow copy of m (nil in → nil out).

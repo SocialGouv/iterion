@@ -94,6 +94,24 @@ export function resolveSubbotSource(parentFilePath: string | null, source: strin
   return parts.join("/");
 }
 
+/**
+ * Resolve the file opened by the Inspector's "Open child bot" action.
+ * The document store path is authoritative; the active tab binding covers
+ * the short hydration window before EditorTabHost copies that path into the
+ * store. With neither parent, returning null is safer than treating a
+ * parent-relative source as workspace-relative.
+ */
+export function resolveChildBotOpenPath(
+  documentFilePath: string | null,
+  activeEditorFile: string | null,
+  source: string,
+): string | null {
+  const parentFilePath = documentFilePath ?? activeEditorFile;
+  return parentFilePath
+    ? resolveSubbotSource(parentFilePath, source)
+    : null;
+}
+
 /** Topology fingerprint of the expansion state: which subbots have a loaded
  *  (or failed) child document, and each loaded child's own topology —
  *  RECURSIVELY, so a nested child doc arriving re-fires the editor's ELK

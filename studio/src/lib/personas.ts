@@ -59,7 +59,7 @@ const FALLBACK_COLORS = [
 /** Canonicalise a technical bot id: lower-case, collapse runs of `_`/`-`
  *  into a single `-`. So `feature_dev`, `feature-dev` and `Feature_Dev`
  *  all map to the same key. */
-function canon(name: string): string {
+export function canon(name: string): string {
   return name.trim().toLowerCase().replace(/[_-]+/g, "-");
 }
 

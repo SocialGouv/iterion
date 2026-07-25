@@ -29,13 +29,22 @@ interface BotsState {
 }
 
 let inflight: Promise<void> | null = null;
+// Monotonic request stamp: only the LATEST load may write the store.
+// Without it, a slow initial fetch scoped to the previous project can
+// resolve after the project-switch refetch and clobber the new catalog
+// with stale bots for the rest of the session (fetch() no-ops once
+// bots !== null).
+let loadSeq = 0;
 
 async function load(set: (partial: Partial<BotsState>) => void): Promise<void> {
+  const seq = ++loadSeq;
   set({ loading: true, error: null });
   try {
     const bots = await listBots();
+    if (seq !== loadSeq) return; // superseded (e.g. project switch)
     set({ bots, loading: false });
   } catch (e) {
+    if (seq !== loadSeq) return;
     set({ error: errorMessage(e), loading: false });
   }
 }

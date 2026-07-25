@@ -32,15 +32,23 @@ func TestSandboxImageTag(t *testing.T) {
 }
 
 func TestFullVersion(t *testing.T) {
-	origV, origC := Version, Commit
-	t.Cleanup(func() { Version, Commit = origV, origC })
+	origV, origC, origM := Version, Commit, Modified
+	t.Cleanup(func() { Version, Commit, Modified = origV, origC, origM })
 
-	Version, Commit = "v0.32.0", "abcdef123456789"
+	Version, Commit, Modified = "v0.32.0", "abcdef123456789", false
 	if got, want := FullVersion(), "v0.32.0+abcdef123456"; got != want {
 		t.Errorf("FullVersion() = %q, want %q (commit truncated to 12)", got, want)
 	}
-	Version, Commit = "", ""
+	Version, Commit, Modified = "", "", false
 	if got := FullVersion(); got != "dev" {
 		t.Errorf("FullVersion() with empty Version = %q, want \"dev\"", got)
+	}
+	Version, Commit, Modified = "dev", "abcdef123456789", true
+	if got, want := FullVersion(), "dev+abcdef123456-dirty"; got != want {
+		t.Errorf("FullVersion() for modified build = %q, want %q", got, want)
+	}
+	Version, Commit, Modified = "", "", true
+	if got, want := FullVersion(), "dev-dirty"; got != want {
+		t.Errorf("FullVersion() for modified build without commit = %q, want %q", got, want)
 	}
 }

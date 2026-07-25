@@ -10,6 +10,7 @@ import {
   isSubbotChildId,
   makeSubbotChildId,
   parseSubbotChildId,
+  resolveChildBotOpenPath,
   resolveSubbotSource,
   subbotLocalName,
   type SubbotDocEntry,
@@ -142,6 +143,43 @@ describe("resolveSubbotSource", () => {
 
   it("never escapes above the workspace root", () => {
     expect(resolveSubbotSource("main.bot", "../../child.bot")).toBe("child.bot");
+  });
+});
+
+describe("resolveChildBotOpenPath", () => {
+  const parent =
+    "iterion/bots/town-vertical-pipeline/town-dev/main.bot";
+  const child =
+    "iterion/bots/town-vertical-pipeline/town-dev/subbots/epic-foundation.bot";
+
+  it("uses the active editor tab while the document path hydrates", () => {
+    expect(
+      resolveChildBotOpenPath(
+        null,
+        parent,
+        "subbots/epic-foundation.bot",
+      ),
+    ).toBe(child);
+  });
+
+  it("prefers the document path once it is available", () => {
+    expect(
+      resolveChildBotOpenPath(
+        parent,
+        "bots/stale/main.bot",
+        "subbots/epic-foundation.bot",
+      ),
+    ).toBe(child);
+  });
+
+  it("never sends a parent-relative source to the workspace-root API", () => {
+    expect(
+      resolveChildBotOpenPath(
+        null,
+        null,
+        "subbots/epic-foundation.bot",
+      ),
+    ).toBeNull();
   });
 });
 

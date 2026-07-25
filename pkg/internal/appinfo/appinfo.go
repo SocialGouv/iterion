@@ -28,18 +28,27 @@ var Version = "dev"
 // It can be set via -ldflags or inferred from Go build settings.
 var Commit = ""
 
+// Modified reports whether the binary was built from a worktree with local
+// changes. It is inferred from Go's vcs.modified build setting. Keep it
+// separate from Version so release/updater comparisons continue to use the
+// injected semantic version while FullVersion can make non-reproducible builds
+// explicit to operators.
+var Modified bool
+
 func init() {
-	if strings.TrimSpace(Commit) != "" {
-		return
-	}
 	bi, ok := debug.ReadBuildInfo()
 	if !ok {
 		return
 	}
 	for _, s := range bi.Settings {
-		if s.Key == "vcs.revision" {
+		switch s.Key {
+		case "vcs.revision":
+			if strings.TrimSpace(Commit) != "" {
+				continue
+			}
 			Commit = strings.TrimSpace(s.Value)
-			break
+		case "vcs.modified":
+			Modified = strings.EqualFold(strings.TrimSpace(s.Value), "true")
 		}
 	}
 }
@@ -51,12 +60,19 @@ func FullVersion() string {
 	}
 	c := strings.TrimSpace(Commit)
 	if c == "" {
+		if Modified {
+			return v + "-dirty"
+		}
 		return v
 	}
 	if len(c) > 12 {
 		c = c[:12]
 	}
-	return v + "+" + c
+	full := v + "+" + c
+	if Modified {
+		full += "-dirty"
+	}
+	return full
 }
 
 // SandboxImageTag returns the tag to use when picking a default

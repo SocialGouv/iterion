@@ -301,6 +301,7 @@ func (r *EngineRunner) Dispatch(ctx context.Context, spec DispatchSpec) error {
 		runtime.WithWorkflowHash(r.workflowHash),
 		runtime.WithFilePath(r.workflowPath),
 		runtime.WithRunName(store.GenerateRunName(r.workflowPath + ":" + spec.RunID)),
+		runtime.WithWorktreeAuthoritySince(spec.WorktreeAuthoritySince),
 		// Without this, every transient hiccup (http2 timeout against
 		// the ChatGPT-codex endpoint, an LLM rate-limit 429, a DNS
 		// flutter, …) fails the run terminally at the first attempt —
@@ -393,11 +394,12 @@ func (r *EngineRunner) Dispatch(ctx context.Context, spec DispatchSpec) error {
 // logic is byte-identical.
 func (r *EngineRunner) dispatchViaService(ctx context.Context, spec DispatchSpec) error {
 	ls := runview.LaunchSpec{
-		FilePath: r.workflowPath,
-		RunID:    spec.RunID,
-		Vars:     stringifyVars(spec.Vars),
-		WorkDir:  spec.WorkspacePath,
-		DailyCap: spec.DailyCap,
+		FilePath:               r.workflowPath,
+		RunID:                  spec.RunID,
+		Vars:                   stringifyVars(spec.Vars),
+		WorkDir:                spec.WorkspacePath,
+		DailyCap:               spec.DailyCap,
+		WorktreeAuthoritySince: spec.WorktreeAuthoritySince,
 	}
 	if spec.Issue != nil && spec.Issue.ID != "" {
 		ls.SourceRef = &store.RunSource{

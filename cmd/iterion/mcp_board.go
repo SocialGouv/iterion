@@ -7,6 +7,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"github.com/SocialGouv/iterion/pkg/dispatcher/native"
 	"github.com/SocialGouv/iterion/pkg/dispatcher/native/boardops"
@@ -34,7 +35,10 @@ var mcpBoardCmd = &cobra.Command{
 			return err
 		}
 		caps := boardops.NewCapabilities(os.Getenv("ITERION_BOARD_CAPS"))
-		return runMCPBoardServer(os.Stdin, os.Stdout, store, caps)
+		// Planner provenance: the runtime stamps the source ticket so
+		// create_issue can auto-set parent_id when the agent omits it.
+		env := boardops.CallEnv{SpawnParentID: strings.TrimSpace(os.Getenv("ITERION_SOURCE_ISSUE_ID"))}
+		return runMCPBoardServer(os.Stdin, os.Stdout, store, caps, env)
 	},
 }
 
@@ -58,13 +62,13 @@ func openBoardStoreFromEnv() (*native.Store, error) {
 	return native.NewStore(root)
 }
 
-func runMCPBoardServer(in io.Reader, out io.Writer, store *native.Store, caps boardops.Capabilities) error {
+func runMCPBoardServer(in io.Reader, out io.Writer, store *native.Store, caps boardops.Capabilities, env boardops.CallEnv) error {
 	return runMCPLoop(in, out, 1024*1024, func(req mcpRequest) mcpResponse {
-		return dispatchMCPBoard(req, store, caps)
+		return dispatchMCPBoard(req, store, caps, env)
 	})
 }
 
-func dispatchMCPBoard(req mcpRequest, store *native.Store, caps boardops.Capabilities) mcpResponse {
+func dispatchMCPBoard(req mcpRequest, store *native.Store, caps boardops.Capabilities, env boardops.CallEnv) mcpResponse {
 	resp := mcpResponse{JSONRPC: "2.0", ID: req.ID}
 
 	switch req.Method {
@@ -90,7 +94,7 @@ func dispatchMCPBoard(req mcpRequest, store *native.Store, caps boardops.Capabil
 			resp.Error = mcpInvalidParamsError(err)
 			return resp
 		}
-		raw, err := boardops.Call(store, caps, params.Name, params.Arguments)
+		raw, err := boardops.CallWithEnv(store, caps, params.Name, params.Arguments, env)
 		if err != nil {
 			if errors.Is(err, boardops.ErrCapabilityDenied) {
 				resp.Error = &mcpError{Code: -32601, Message: err.Error()}

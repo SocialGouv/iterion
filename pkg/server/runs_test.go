@@ -592,3 +592,60 @@ func TestArtifactFile_DispositionToggle(t *testing.T) {
 		})
 	}
 }
+
+func TestArtifactFile_ByteRanges(t *testing.T) {
+	srv, hs := newTestServer(t)
+	const runID = "art-range-run"
+	seedRun(t, srv, runID, "wf", store.RunStatusFinished)
+
+	dir := filepath.Join(srv.cfg.StoreDir, "runs", runID, "artifact_files")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatalf("mkdir artifact_files: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "clip.mp4"), []byte("0123456789"), 0o644); err != nil {
+		t.Fatalf("write artifact: %v", err)
+	}
+
+	for _, tc := range []struct {
+		name             string
+		rangeHeader      string
+		wantStatus       int
+		wantBody         string
+		wantContentRange string
+	}{
+		{name: "bounded", rangeHeader: "bytes=2-5", wantStatus: http.StatusPartialContent, wantBody: "2345", wantContentRange: "bytes 2-5/10"},
+		{name: "open ended", rangeHeader: "bytes=7-", wantStatus: http.StatusPartialContent, wantBody: "789", wantContentRange: "bytes 7-9/10"},
+		{name: "suffix", rangeHeader: "bytes=-3", wantStatus: http.StatusPartialContent, wantBody: "789", wantContentRange: "bytes 7-9/10"},
+		{name: "past end", rangeHeader: "bytes=99-", wantStatus: http.StatusRequestedRangeNotSatisfiable, wantContentRange: "bytes */10"},
+		{name: "multiple unsupported", rangeHeader: "bytes=0-1,4-5", wantStatus: http.StatusRequestedRangeNotSatisfiable, wantContentRange: "bytes */10"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			req, err := http.NewRequest(http.MethodGet, hs.URL+"/api/runs/"+runID+"/artifact-files/clip.mp4", nil)
+			if err != nil {
+				t.Fatalf("NewRequest: %v", err)
+			}
+			req.Header.Set("Range", tc.rangeHeader)
+			resp, err := http.DefaultClient.Do(req)
+			if err != nil {
+				t.Fatalf("GET: %v", err)
+			}
+			defer resp.Body.Close()
+			if resp.StatusCode != tc.wantStatus {
+				t.Fatalf("status = %d, want %d", resp.StatusCode, tc.wantStatus)
+			}
+			if got := resp.Header.Get("Content-Range"); got != tc.wantContentRange {
+				t.Errorf("Content-Range = %q, want %q", got, tc.wantContentRange)
+			}
+			if got := resp.Header.Get("Accept-Ranges"); got != "bytes" {
+				t.Errorf("Accept-Ranges = %q, want bytes", got)
+			}
+			body, err := io.ReadAll(resp.Body)
+			if err != nil {
+				t.Fatalf("read body: %v", err)
+			}
+			if tc.wantBody != "" && string(body) != tc.wantBody {
+				t.Errorf("body = %q, want %q", body, tc.wantBody)
+			}
+		})
+	}
+}

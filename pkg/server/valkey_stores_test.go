@@ -51,7 +51,7 @@ func TestValkeyBoardMCPTokenStore_RegisterLookupRevoke(t *testing.T) {
 	mr, rdb := newTestRedis(t)
 	s := newValkeyBoardMCPTokenStore(rdb)
 
-	s.Register("tok1", []string{"board.read", "board.move"})
+	s.Register("tok1", []string{"board.read", "board.move"}, "")
 	g, ok := s.lookup("tok1")
 	if !ok || !g.Capabilities["board.read"] || !g.Capabilities["board.move"] {
 		t.Fatalf("lookup = %+v ok=%v", g.Capabilities, ok)
@@ -64,7 +64,7 @@ func TestValkeyBoardMCPTokenStore_RegisterLookupRevoke(t *testing.T) {
 		t.Errorf("revoked token should miss")
 	}
 	// TTL eviction.
-	s.Register("tok2", []string{"board.read"})
+	s.Register("tok2", []string{"board.read"}, "")
 	mr.FastForward(boardMCPDefaultTTL + time.Minute)
 	if _, ok := s.lookup("tok2"); ok {
 		t.Errorf("token should have expired via TTL")

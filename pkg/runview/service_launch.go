@@ -169,6 +169,14 @@ func (s *Service) startInProcess(parent context.Context, runID string, spec Laun
 	// observers via ExecutorSpec.EventObservers; engine events fire them
 	// via runtime.WithEventObserver (wired in engineOptions from
 	// launchExtras.observers). The raw store keeps every capability.
+	sourceIssueID := ""
+	if spec.SourceRef != nil {
+		sourceIssueID = strings.TrimSpace(spec.SourceRef.IssueID)
+	}
+	worktreeAuthoritySince := spec.WorktreeAuthoritySince
+	if worktreeAuthoritySince.IsZero() {
+		worktreeAuthoritySince = time.Now().UTC()
+	}
 	executor, err := BuildExecutor(ExecutorSpec{
 		Workflow:       wf,
 		Vars:           spec.Vars,
@@ -177,6 +185,7 @@ func (s *Service) startInProcess(parent context.Context, runID string, spec Laun
 		RunID:          runID,
 		Logger:         runLogger,
 		StoreDir:       s.storeDir,
+		SourceIssueID:  sourceIssueID,
 		Inbox:          s.inboxBinder(),
 		Backend:        spec.Backend,
 		ModelOverrides: toModelOverrides(spec.ModelOverrides),
@@ -259,16 +268,23 @@ func (s *Service) startInProcess(parent context.Context, runID string, spec Laun
 		spec.AttachmentPromote, spec.Preset, toRunModelOverrides(spec.ModelOverrides),
 		spec.ParentRunID,
 		precreateInputs,
-		launchExtras{workDir: spec.WorkDir, dailyCap: spec.DailyCap, source: spec.SourceRef, onOutcome: spec.OnOutcome, observers: spec.ExtraObservers},
+		launchExtras{
+			workDir:                spec.WorkDir,
+			worktreeAuthoritySince: worktreeAuthoritySince,
+			dailyCap:               spec.DailyCap,
+			source:                 spec.SourceRef,
+			onOutcome:              spec.OnOutcome,
+			observers:              spec.ExtraObservers,
+		},
 		s.store,
 		func(ctx context.Context, eng *runtime.Engine) error {
 			return eng.Run(ctx, runID, inputs)
 		})
 }
 
-// Resume re-enters a paused, failed_resumable, or cancelled run with
-// optional answers. The .bot source must be supplied (and must hash-
-// match the original unless spec.Force).
+// Resume re-enters a human-paused, operator-paused, failed_resumable,
+// or cancelled run with optional answers. The .bot source must be
+// supplied (and must hash-match the original unless spec.Force).
 func (s *Service) Resume(parent context.Context, spec ResumeSpec) (*LaunchResult, error) {
 	if s.draining.Load() {
 		return nil, runtime.ErrServerDraining
@@ -398,7 +414,7 @@ func validateResumable(r *store.Run, answers map[string]any) error {
 			return fmt.Errorf("no answers provided; resume of paused run requires answers")
 		}
 		return nil
-	case store.RunStatusFailedResumable, store.RunStatusCancelled:
+	case store.RunStatusPausedOperator, store.RunStatusFailedResumable, store.RunStatusCancelled:
 		return nil
 	default:
 		return fmt.Errorf("run %q cannot be resumed (status: %s)", r.ID, r.Status)
@@ -634,9 +650,10 @@ type finalizationOpts struct {
 // (s.workDir / s.dailyCap) when set; the zero value inherits it. Resume
 // and subbot launches pass the zero value.
 type launchExtras struct {
-	workDir  string
-	dailyCap *runtime.DailyCapGuard
-	source   *store.RunSource
+	workDir                string
+	worktreeAuthoritySince time.Time
+	dailyCap               *runtime.DailyCapGuard
+	source                 *store.RunSource
 	// onOutcome mirrors LaunchSpec.OnOutcome: fired once in the run
 	// goroutine with the terminal body error before Done closes, so a
 	// blocking caller reads the same typed error engine.Run returned.
@@ -664,6 +681,9 @@ func (s *Service) engineOptions(runLogger *iterlog.Logger, hash, filePath, runNa
 		runtime.WithRecoveryDispatch(s.recoveryDispatch),
 		runtime.WithEventObserver(s.broker.Publish),
 		runtime.WithOnNodeFinished(s.stampWatchedFromOutput),
+	}
+	if !ex.worktreeAuthoritySince.IsZero() {
+		opts = append(opts, runtime.WithWorktreeAuthoritySince(ex.worktreeAuthoritySince))
 	}
 	// Per-launch WorkDir (ADR-046) overrides the service default; the
 	// dispatcher points it at the per-issue worktree so ${PROJECT_DIR}

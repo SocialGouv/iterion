@@ -3,6 +3,7 @@ import { useLocation } from "wouter";
 
 import { fileWatcher } from "@/api/ws";
 import { refreshServerProjects } from "@/hooks/useProjects";
+import { useBotsStore } from "@/store/bots";
 import { resetAllRunStores } from "@/store/run";
 import { useServerInfoStore } from "@/store/serverInfo";
 import { useUIStore } from "@/store/ui";
@@ -15,12 +16,14 @@ import { useUIStore } from "@/store/ui";
 //      would otherwise still be visible on the new project's home).
 //   2. Refetches /api/server/info so ProjectLabel + run-list scope
 //      pick up the new work_dir.
-//   3. Refreshes the projects MRU so the highlighted "current" row
+//   3. Refetches the bot catalog (workspace-scoped on the server) so
+//      the board pickers offer the new project's bots.
+//   4. Refreshes the projects MRU so the highlighted "current" row
 //      tracks the new selection.
-//   4. Navigates to "/" — the new project's home — so the user lands
+//   5. Navigates to "/" — the new project's home — so the user lands
 //      on a familiar surface instead of a 404 from a run id that
 //      belongs to the previous store.
-//   5. Surfaces a toast so the swap is visible even if the user was
+//   6. Surfaces a toast so the swap is visible even if the user was
 //      reading logs and missed the navigation.
 //
 // Mount once in AuthedApp so the listener is global to the session.
@@ -32,6 +35,10 @@ export function useProjectSwitchListener(): void {
       if (event.type !== "project_switched") return;
       resetAllRunStores();
       void useServerInfoStore.getState().refresh();
+      // The bot catalog is workspace-scoped (server derives it from the
+      // current work_dir): refetch so the board pickers / AddTaskDialog
+      // offer the NEW project's bots instead of the cached previous list.
+      void useBotsStore.getState().refetch();
       refreshServerProjects();
       setLocation("/");
       useUIStore.getState().addToast(

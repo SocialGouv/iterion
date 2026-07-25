@@ -68,6 +68,7 @@ func (s *Server) registerRunRoutes() {
 	s.mux.HandleFunc("GET /api/runs/{id}/files", s.handleListRunFiles)
 	s.mux.HandleFunc("GET /api/runs/{id}/files/touched", s.handleListRunTouchedFiles)
 	s.mux.HandleFunc("GET /api/runs/{id}/files/diff", s.handleGetRunFileDiff)
+	s.mux.HandleFunc("GET /api/runs/{id}/files/preview/{path...}", s.handlePreviewRunWorktreeImage)
 	s.mux.HandleFunc("GET /api/runs/{id}/files/content", s.handleGetRunFileContent)
 	s.mux.HandleFunc("PUT /api/runs/{id}/files/content", s.handleSaveRunFileContent)
 	s.mux.HandleFunc("GET /api/runs/{id}/commits", s.handleListRunCommits)
@@ -823,12 +824,11 @@ func (s *Server) handleListArtifactFiles(w http.ResponseWriter, r *http.Request)
 	s.writeJSONFor(w, r, map[string]any{"files": files})
 }
 
-// handleGetArtifactFile streams one tool-produced file by relative
-// path. Path-traversal guards live in the store layer; this handler
-// just unwraps the wildcard path component and sets a Content-
-// Disposition + best-effort Content-Type. Errors map to 404 to keep
-// path-probing attacks from distinguishing missing-file vs traversal-
-// rejected vs non-RunFilesStore (cloud) backends.
+// handleGetArtifactFile streams one tool-produced file by relative path.
+// Single byte ranges are supported so browser audio/video elements can start
+// and seek without first buffering the entire object. Path-traversal guards
+// live in the store layer. Errors map to 404 to keep path-probing attacks from
+// distinguishing missing-file vs traversal-rejected vs unsupported stores.
 func (s *Server) handleGetArtifactFile(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 	relPath := r.PathValue("path")
@@ -848,8 +848,9 @@ func (s *Server) handleGetArtifactFile(w http.ResponseWriter, r *http.Request) {
 	}
 	defer rc.Close()
 	w.Header().Set("Content-Type", artifactFileContentType(info.Path))
-	if info.Size > 0 {
-		w.Header().Set("Content-Length", strconv.FormatInt(info.Size, 10))
+	w.Header().Set("Accept-Ranges", "bytes")
+	if !info.ModifiedAt.IsZero() {
+		w.Header().Set("Last-Modified", info.ModifiedAt.UTC().Format(http.TimeFormat))
 	}
 	// Disposition: `inline` by default lets browsers preview .md /
 	// .json / images directly; `?download=1` switches to `attachment`
@@ -861,12 +862,88 @@ func (s *Server) handleGetArtifactFile(w http.ResponseWriter, r *http.Request) {
 		disposition = "attachment"
 	}
 	w.Header().Set("Content-Disposition", fmt.Sprintf(`%s; filename=%q`, disposition, filepath.Base(info.Path)))
-	if _, copyErr := io.Copy(w, rc); copyErr != nil {
+
+	start, length, partial, rangeErr := artifactByteRange(r.Header.Get("Range"), info.Size)
+	if rangeErr != nil {
+		w.Header().Set("Content-Range", fmt.Sprintf("bytes */%d", info.Size))
+		http.Error(w, "requested range not satisfiable", http.StatusRequestedRangeNotSatisfiable)
+		return
+	}
+	if partial {
+		end := start + length - 1
+		w.Header().Set("Content-Range", fmt.Sprintf("bytes %d-%d/%d", start, end, info.Size))
+		w.Header().Set("Content-Length", strconv.FormatInt(length, 10))
+		w.WriteHeader(http.StatusPartialContent)
+	} else {
+		w.Header().Set("Content-Length", strconv.FormatInt(info.Size, 10))
+	}
+	if r.Method == http.MethodHead {
+		return
+	}
+	if start > 0 {
+		if _, err := io.CopyN(io.Discard, rc, start); err != nil {
+			s.logger.Warn("artifact file range seek failed for run %s path %s: %v", id, info.Path, err)
+			return
+		}
+	}
+	var copyErr error
+	if partial {
+		_, copyErr = io.CopyN(w, rc, length)
+	} else {
+		_, copyErr = io.Copy(w, rc)
+	}
+	if copyErr != nil {
 		// Body partially written by now — can't surface a clean error
 		// status. Log via the standard server error path; the client
 		// will see a truncated response.
 		s.logger.Warn("artifact file copy failed for run %s path %s: %v", id, info.Path, copyErr)
 	}
+}
+
+// artifactByteRange parses the single-range subset browsers use for media.
+// Multiple ranges would require a multipart/byteranges response; rejecting
+// them is preferable to silently serving the wrong bytes. A missing header
+// returns the whole object (partial=false).
+func artifactByteRange(header string, size int64) (start, length int64, partial bool, err error) {
+	if header == "" {
+		return 0, size, false, nil
+	}
+	if size <= 0 || !strings.HasPrefix(header, "bytes=") {
+		return 0, 0, false, fmt.Errorf("invalid byte range")
+	}
+	spec := strings.TrimSpace(strings.TrimPrefix(header, "bytes="))
+	if spec == "" || strings.Contains(spec, ",") {
+		return 0, 0, false, fmt.Errorf("unsupported byte range")
+	}
+	parts := strings.SplitN(spec, "-", 2)
+	if len(parts) != 2 {
+		return 0, 0, false, fmt.Errorf("invalid byte range")
+	}
+	if parts[0] == "" {
+		suffix, parseErr := strconv.ParseInt(parts[1], 10, 64)
+		if parseErr != nil || suffix <= 0 {
+			return 0, 0, false, fmt.Errorf("invalid byte range suffix")
+		}
+		if suffix > size {
+			suffix = size
+		}
+		return size - suffix, suffix, true, nil
+	}
+	start, parseErr := strconv.ParseInt(parts[0], 10, 64)
+	if parseErr != nil || start < 0 || start >= size {
+		return 0, 0, false, fmt.Errorf("invalid byte range start")
+	}
+	end := size - 1
+	if parts[1] != "" {
+		end, parseErr = strconv.ParseInt(parts[1], 10, 64)
+		if parseErr != nil || end < start {
+			return 0, 0, false, fmt.Errorf("invalid byte range end")
+		}
+		if end >= size {
+			end = size - 1
+		}
+	}
+	return start, end - start + 1, true, nil
 }
 
 // artifactFileContentType picks a sensible MIME type by extension.

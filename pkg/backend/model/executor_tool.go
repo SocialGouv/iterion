@@ -541,6 +541,7 @@ func (e *ClawExecutor) toolNodeScriptCommand(ctx context.Context, interpreter, s
 		return e.sandbox.Command(ctx, []string{interpreter, scriptBasename}, sandbox.ExecOpts{})
 	}
 	cmd := exec.CommandContext(ctx, interpreter, scriptBasename)
+	configureToolNodeProcessGroup(cmd)
 	// Host path only: sandboxed commands already see the variable from the
 	// container env (the same dir is bind-mounted there).
 	if e.artifactFilesDir != "" {
@@ -586,6 +587,7 @@ func (e *ClawExecutor) toolNodeCommand(ctx context.Context, resolved string, env
 		return e.sandbox.Command(ctx, []string{"bash", "-c", resolved}, sandbox.ExecOpts{Env: env})
 	}
 	cmd := exec.CommandContext(ctx, "bash", "-c", resolved)
+	configureToolNodeProcessGroup(cmd)
 	if len(env) > 0 || e.artifactFilesDir != "" {
 		cmd.Env = os.Environ()
 		// Host path only: sandboxed commands already see the variable from

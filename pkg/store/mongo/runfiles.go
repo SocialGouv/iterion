@@ -105,27 +105,30 @@ func (s *Store) UploadRunFiles(ctx context.Context, runID string) (int, error) {
 		if relErr != nil {
 			return relErr
 		}
-		// Bound per-file memory the same way WriteAttachment does: the
-		// whole body is read into RAM before the S3 PUT, so an oversized
-		// tool-produced file could OOM the runner pod. Skip (best-effort,
-		// don't fail the whole upload — the small artifacts still land)
-		// and log, mirroring the attachment cap's OOM rationale.
-		maxBytes := s.maxAttachmentBytes
-		if maxBytes <= 0 {
-			maxBytes = defaultMaxAttachmentBytes
+		// Run files include potentially large audio/video review outputs. Stream
+		// from the scratch file into the blob backend; the attachment byte cap is
+		// intentionally unrelated and must not make a checkpoint reference a
+		// file that the uploader silently discards.
+		file, openErr := os.Open(path)
+		if openErr != nil {
+			return fmt.Errorf("open %s: %w", rel, openErr)
 		}
-		if fi, statErr := d.Info(); statErr == nil && fi.Size() > maxBytes {
-			if s.logger != nil {
-				s.logger.Warn("store/mongo: run %s: skipping artifact file %q (%d bytes > %d-byte cap)", runID, rel, fi.Size(), maxBytes)
-			}
+		fi, statErr := file.Stat()
+		if statErr != nil {
+			_ = file.Close()
+			return fmt.Errorf("stat %s: %w", rel, statErr)
+		}
+		if !fi.Mode().IsRegular() {
+			_ = file.Close()
 			return nil
 		}
-		body, readErr := os.ReadFile(path)
-		if readErr != nil {
-			return fmt.Errorf("read %s: %w", rel, readErr)
+		putErr := s.blob.PutRunFile(ctx, runID, filepath.ToSlash(rel), "", file, fi.Size())
+		closeErr := file.Close()
+		if putErr != nil {
+			return fmt.Errorf("put %s: %w", rel, putErr)
 		}
-		if err := s.blob.PutRunFile(ctx, runID, filepath.ToSlash(rel), "", body); err != nil {
-			return fmt.Errorf("put %s: %w", rel, err)
+		if closeErr != nil {
+			return fmt.Errorf("close %s: %w", rel, closeErr)
 		}
 		uploaded++
 		return nil

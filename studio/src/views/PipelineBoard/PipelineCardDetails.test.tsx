@@ -113,7 +113,13 @@ describe("PipelineCardDetailsBody", () => {
         status: "running",
         entry_input: { topic: "jazz" },
         pending_reviews: [
-          { run_id: "run-child", node_id: "approval", depth: 1, questions: { approved: "Ship it?" } },
+          {
+            run_id: "run-child",
+            node_id: "approval",
+            depth: 1,
+            updated_at: "2026-07-15T09:30:00Z",
+            questions: { approved: "Ship it?" },
+          },
         ],
       }),
     );
@@ -132,7 +138,14 @@ describe("PipelineCardDetailsBody", () => {
         run_id: "run-orphan",
         status: "failed_resumable",
         failed: true,
-        pending_reviews: [{ run_id: "c1", node_id: "review", depth: 1 }],
+        pending_reviews: [
+          {
+            run_id: "c1",
+            node_id: "review",
+            depth: 1,
+            updated_at: "2026-07-15T09:30:00Z",
+          },
+        ],
       }),
     );
     expect(html).toContain("Response required");
@@ -146,7 +159,14 @@ describe("PipelineCardDetailsBody", () => {
         column_id: "in_progress",
         run_id: "run-ok",
         status: "running",
-        pending_reviews: [{ run_id: "c1", node_id: "review", depth: 1 }],
+        pending_reviews: [
+          {
+            run_id: "c1",
+            node_id: "review",
+            depth: 1,
+            updated_at: "2026-07-15T09:30:00Z",
+          },
+        ],
       }),
     );
     expect(html).toContain("Response required");
@@ -156,9 +176,10 @@ describe("PipelineCardDetailsBody", () => {
   it("Failed card shows the failure reason + inputs + produced elements", () => {
     const html = render(
       makeCard({
-        column_id: "failed",
+        column_id: "closed",
         run_id: "run-ko",
         status: "failed_resumable",
+        failed: true,
         error: "budget exceeded at node compose",
         entry_input: { topic: "jazz" },
       }),
@@ -170,10 +191,10 @@ describe("PipelineCardDetailsBody", () => {
     expect(html).toContain('data-run-ids="run-ko"');
   });
 
-  it("Done card shows inputs + result + produced elements", () => {
+  it("successful Closed card shows inputs + result + produced elements", () => {
     const html = render(
       makeCard({
-        column_id: "done",
+        column_id: "closed",
         run_id: "run-done",
         status: "finished",
         entry_input: { topic: "jazz" },
@@ -188,7 +209,64 @@ describe("PipelineCardDetailsBody", () => {
 
   it("renders a 'No inputs recorded' fallback and a stale banner", () => {
     const html = render(makeCard({ column_id: "todo", kind: "task" }), true);
-    expect(html).toContain("No inputs recorded");
+    expect(html).toContain("No additional inputs");
     expect(html).toContain("no longer on the board");
+  });
+});
+
+describe("InputsList image carousel", () => {
+  it("renders a JSON list of image paths as a carousel of workspace-image URLs", () => {
+    const html = render(
+      makeCard({
+        column_id: "todo",
+        entry_input: {
+          character: "Boudicca",
+          character_refs:
+            '["assets/characters/histoire/boudicca/refs/master.png", "assets/characters/histoire/boudicca/refs/full_body.png"]',
+        },
+      }),
+    );
+    expect(html).toContain(
+      "/api/v1/pipeline-board/workspace-images/assets/characters/histoire/boudicca/refs/master.png",
+    );
+    // One image at a time, with a position counter and cycling controls.
+    expect(html).toContain("1/2");
+    expect(html).toContain("Next image");
+    expect(html).toContain("Previous image");
+    // Sibling non-image values keep the plain monospace rendering.
+    expect(html).toContain("Boudicca");
+  });
+
+  it("renders a single bare image path as an image without cycling controls", () => {
+    const html = render(
+      makeCard({
+        column_id: "todo",
+        entry_input: { cover: "assets/cover art/../covers/final.png" },
+      }),
+    );
+    expect(html).not.toContain("workspace-images");
+    // Path with whitespace stays plain text; a clean single path renders.
+    const clean = render(
+      makeCard({
+        column_id: "todo",
+        entry_input: { cover: "assets/covers/final.png" },
+      }),
+    );
+    expect(clean).toContain("/api/v1/pipeline-board/workspace-images/assets/covers/final.png");
+    expect(clean).not.toContain("Next image");
+  });
+
+  it("keeps sentences and mixed arrays as plain text", () => {
+    const html = render(
+      makeCard({
+        column_id: "todo",
+        entry_input: {
+          notes: "voir le rendu final dans exports/preview.png",
+          mixed: '["assets/refs/master.png", "pas une image"]',
+        },
+      }),
+    );
+    expect(html).not.toContain("workspace-images");
+    expect(html).toContain("voir le rendu final");
   });
 });

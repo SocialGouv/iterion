@@ -2,14 +2,26 @@ package runtime
 
 import (
 	"context"
+	"encoding/json"
+	"errors"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
+	iterlog "github.com/SocialGouv/iterion/pkg/log"
 	"github.com/SocialGouv/iterion/pkg/store"
 )
+
+type saveFailRunStore struct {
+	store.RunStore
+}
+
+func (saveFailRunStore) SaveRun(context.Context, *store.Run) error {
+	return errors.New("injected SaveRun failure")
+}
 
 func mustRun(t *testing.T, dir string, name string, args ...string) {
 	t.Helper()
@@ -38,6 +50,17 @@ func writeFile(t *testing.T, path, content string) {
 	}
 }
 
+func addOwnedWorktree(t *testing.T, st store.RunStore, repo, runID string) string {
+	t.Helper()
+	wt := filepath.Join(st.Root(), "worktrees", runID)
+	if err := os.MkdirAll(filepath.Dir(wt), 0o755); err != nil {
+		t.Fatalf("create owned worktree parent: %v", err)
+	}
+	mustRun(t, repo, "git", "worktree", "add", wt, "HEAD")
+	t.Cleanup(func() { _ = exec.Command("git", "-C", repo, "worktree", "remove", "--force", wt).Run() })
+	return wt
+}
+
 // initBareishRepo creates a fresh repo with one commit, suitable as
 // the "main worktree" for finalize tests. Returns the absolute repo
 // path and the SHA of the initial commit.
@@ -53,6 +76,25 @@ func initBareishRepo(t *testing.T) (string, string) {
 	mustRun(t, dir, "git", "commit", "-m", "init")
 	sha := strings.TrimSpace(string(mustOutput(t, dir, "git", "rev-parse", "HEAD")))
 	return dir, sha
+}
+
+func testWorktreeAuthority() time.Time {
+	// Most cleanup tests do not launch an inaccessible child. Keep their
+	// synthetic boundary close to the census so unrelated processes created by
+	// concurrently-running packages do not become false in-scope blockers.
+	// Tests for denied children capture an explicit pre-launch boundary.
+	return time.Now().UTC()
+}
+
+func assumeQuiescentProcessCensus(t *testing.T) {
+	t.Helper()
+	previous := cleanupProcessReferences
+	cleanupProcessReferences = func(string, time.Time) ([]int, error) {
+		return nil, nil
+	}
+	t.Cleanup(func() {
+		cleanupProcessReferences = previous
+	})
 }
 
 // addCommit makes a single commit in the worktree at wtPath. Returns the
@@ -127,6 +169,293 @@ func TestFinalizeWorktree_RefusesRepoRootAsWorktree(t *testing.T) {
 	// No storage branch either.
 	if br, _ := exec.Command("git", "-C", repo, "branch", "--list", "iterion/run/*").Output(); strings.TrimSpace(string(br)) != "" {
 		t.Errorf("storage branch created: %q — expected none", string(br))
+	}
+}
+
+// TestFinalizeWorktree_PreservesWhenCleanlinessUnknown proves that a failed
+// `git status` probe is not treated as a clean worktree. The linked worktree's
+// index is corrupted after adding an untracked output file: rev-parse HEAD
+// remains readable, but status fails. Finalization must leave every file and
+// ref untouched and signal the caller to skip force-removal.
+func TestFinalizeWorktree_PreservesWhenCleanlinessUnknown(t *testing.T) {
+	repo, originalTip := initBareishRepo(t)
+	wt := filepath.Join(t.TempDir(), "wt")
+	mustRun(t, repo, "git", "worktree", "add", wt, "HEAD")
+	t.Cleanup(func() { _ = exec.Command("git", "-C", repo, "worktree", "remove", "--force", wt).Run() })
+
+	writeFile(t, filepath.Join(wt, "run-output.txt"), "must survive\n")
+	indexPath := strings.TrimSpace(string(mustOutput(t, wt, "git", "rev-parse", "--git-path", "index")))
+	if !filepath.IsAbs(indexPath) {
+		indexPath = filepath.Join(wt, indexPath)
+	}
+	indexBefore, err := os.ReadFile(indexPath)
+	if err != nil {
+		t.Fatalf("read worktree index: %v", err)
+	}
+	t.Cleanup(func() { _ = os.WriteFile(indexPath, indexBefore, 0o644) })
+	if err := os.WriteFile(indexPath, []byte("not a git index"), 0o644); err != nil {
+		t.Fatalf("corrupt worktree index: %v", err)
+	}
+
+	res := finalizeWorktree(worktreeContext{
+		repoRoot:       repo,
+		wtPath:         wt,
+		originalBranch: "main",
+		originalTip:    originalTip,
+	}, finalizeOptions{runName: "status-error", runID: "run_status_error"}, nil)
+
+	if !res.PreserveWorktree {
+		t.Fatalf("PreserveWorktree=false, want true after failed cleanliness probe: %+v", res)
+	}
+	if res.FinalCommit != "" || res.FinalBranch != "" {
+		t.Fatalf("cleanliness-unknown finalization must not promote partial state: %+v", res)
+	}
+	if _, err := os.Stat(filepath.Join(wt, "run-output.txt")); err != nil {
+		t.Fatalf("run output was not preserved: %v", err)
+	}
+}
+
+// TestFinalizeWorktree_PreservesWhenStorageBranchFails creates a ref namespace
+// collision (`refs/heads/iterion` blocks `refs/heads/iterion/run/...`). The
+// commit has no storage ref, so removing its worktree would leave it reachable
+// only through reflog; finalization must fail closed.
+func TestFinalizeWorktree_PreservesWhenStorageBranchFails(t *testing.T) {
+	repo, originalTip := initBareishRepo(t)
+	wt := filepath.Join(t.TempDir(), "wt")
+	mustRun(t, repo, "git", "worktree", "add", wt, "HEAD")
+	t.Cleanup(func() { _ = exec.Command("git", "-C", repo, "worktree", "remove", "--force", wt).Run() })
+
+	finalSHA := addCommit(t, wt, "feature.go", "package feature\n", "feat: branch collision")
+	mustRun(t, repo, "git", "branch", "iterion", originalTip)
+
+	res := finalizeWorktree(worktreeContext{
+		repoRoot:       repo,
+		wtPath:         wt,
+		originalBranch: "main",
+		originalTip:    originalTip,
+	}, finalizeOptions{runName: "branch-error", runID: "run_branch_error"}, nil)
+
+	if res.FinalCommit != finalSHA {
+		t.Fatalf("FinalCommit=%q, want %q: %+v", res.FinalCommit, finalSHA, res)
+	}
+	if res.FinalBranch != "" || res.FinalBranchError == "" {
+		t.Fatalf("expected an explicit storage-branch failure: %+v", res)
+	}
+	if !res.PreserveWorktree {
+		t.Fatalf("PreserveWorktree=false, want true without a durable storage ref: %+v", res)
+	}
+}
+
+// TestFinalizeOnExit_ReviewGateProbeErrorPreservesWorktree covers the separate
+// idempotency path used after an interaction:review gate already finalized the
+// commits. If the final status probe fails, cleanup must not run: the runtime
+// cannot prove that post-gate output is absent.
+func TestFinalizeOnExit_ReviewGateProbeErrorPreservesWorktree(t *testing.T) {
+	st := tmpStore(t)
+	const runID = "run_review_gate_probe_error"
+	r := &store.Run{
+		ID:          runID,
+		Status:      store.RunStatusFinished,
+		MergeStatus: store.MergeStatusSkipped,
+	}
+	if err := st.SaveRun(context.Background(), r); err != nil {
+		t.Fatalf("seed save: %v", err)
+	}
+
+	nonGitWorkdir := t.TempDir()
+	eng := &Engine{store: st}
+	cleanupCalled := false
+	eng.finalizeOnExit(context.Background(), runID, &worktreeContext{
+		repoRoot: t.TempDir(),
+		wtPath:   nonGitWorkdir,
+	}, func(string, string) (WorktreeCleanupResult, error) {
+		cleanupCalled = true
+		return WorktreeCleanupResult{}, nil
+	}, nil)
+
+	if cleanupCalled {
+		t.Fatal("review-gate finalize called cleanup after cleanliness probe failed")
+	}
+}
+
+// TestFinalizeOnExit_ReviewGatePostCommitPreservesWorktree ensures a clean
+// post-review commit is not mistaken for the exact HEAD the review gate
+// protected. Cleanliness alone cannot authorize deletion.
+func TestFinalizeOnExit_ReviewGatePostCommitPreservesWorktree(t *testing.T) {
+	repo, originalTip := initBareishRepo(t)
+	wt := filepath.Join(t.TempDir(), "wt")
+	mustRun(t, repo, "git", "worktree", "add", wt, "HEAD")
+	t.Cleanup(func() { _ = exec.Command("git", "-C", repo, "worktree", "remove", "--force", wt).Run() })
+
+	reviewedSHA := addCommit(t, wt, "reviewed.go", "package reviewed\n", "feat: reviewed output")
+	const finalBranch = "iterion/run/reviewed-output"
+	mustRun(t, repo, "git", "branch", finalBranch, reviewedSHA)
+	postReviewSHA := addCommit(t, wt, "after.go", "package after\n", "feat: post-review output")
+
+	st := tmpStore(t)
+	const runID = "run_review_gate_post_commit"
+	if err := st.SaveRun(context.Background(), &store.Run{
+		ID:          runID,
+		Status:      store.RunStatusFinished,
+		MergeStatus: store.MergeStatusSkipped,
+		FinalCommit: reviewedSHA,
+		FinalBranch: finalBranch,
+	}); err != nil {
+		t.Fatalf("seed save: %v", err)
+	}
+	eng := &Engine{store: st}
+	cleanupCalled := false
+	eng.finalizeOnExit(context.Background(), runID, &worktreeContext{
+		repoRoot:    repo,
+		wtPath:      wt,
+		originalTip: originalTip,
+	}, func(string, string) (WorktreeCleanupResult, error) {
+		cleanupCalled = true
+		return WorktreeCleanupResult{}, nil
+	}, nil)
+
+	if cleanupCalled {
+		t.Fatal("review-gate finalize removed a clean post-review commit")
+	}
+	if got := readHEAD(wt); got != postReviewSHA {
+		t.Fatalf("post-review HEAD changed: got %q, want %q", got, postReviewSHA)
+	}
+	if got, err := readBranchCommit(repo, finalBranch); err != nil || got != reviewedSHA {
+		t.Fatalf("review branch changed: got=%q err=%v, want %q", got, err, reviewedSHA)
+	}
+}
+
+// TestFinalizeOnExit_MetadataSaveFailurePreservesWorktree pins the ordering
+// between branch promotion, run metadata durability, and removal.
+func TestFinalizeOnExit_MetadataSaveFailurePreservesWorktree(t *testing.T) {
+	repo, originalTip := initBareishRepo(t)
+	baseStore := tmpStore(t)
+	const runID = "run_finalize_metadata_failure"
+	wt := addOwnedWorktree(t, baseStore, repo, runID)
+	finalSHA := addCommit(t, wt, "durable.go", "package durable\n", "feat: durable output")
+
+	if err := baseStore.SaveRun(context.Background(), &store.Run{
+		ID:         runID,
+		Name:       "metadata-failure",
+		Status:     store.RunStatusFinished,
+		Worktree:   true,
+		WorkDir:    wt,
+		RepoRoot:   repo,
+		BaseCommit: originalTip,
+	}); err != nil {
+		t.Fatalf("seed save: %v", err)
+	}
+	eng := &Engine{
+		store:   saveFailRunStore{RunStore: baseStore},
+		runName: "metadata-failure",
+	}
+	cleanupCalled := false
+	eng.finalizeOnExit(context.Background(), runID, &worktreeContext{
+		repoRoot:       repo,
+		wtPath:         wt,
+		originalBranch: "main",
+		originalTip:    originalTip,
+	}, func(string, string) (WorktreeCleanupResult, error) {
+		cleanupCalled = true
+		return WorktreeCleanupResult{}, nil
+	}, nil)
+
+	if cleanupCalled {
+		t.Fatal("finalize removed worktree after metadata save failure")
+	}
+	if got := readHEAD(wt); got != finalSHA {
+		t.Fatalf("worktree HEAD changed: got %q, want %q", got, finalSHA)
+	}
+	if _, err := os.Stat(wt); err != nil {
+		t.Fatalf("worktree not preserved: %v", err)
+	}
+	if got, err := readBranchCommit(repo, "iterion/run/metadata-failure"); err != nil || got != finalSHA {
+		t.Fatalf("storage branch was not durably created: got=%q err=%v, want %q", got, err, finalSHA)
+	}
+	persisted, err := baseStore.LoadRun(context.Background(), runID)
+	if err != nil {
+		t.Fatalf("reload run: %v", err)
+	}
+	if persisted.FinalCommit != "" || persisted.FinalBranch != "" {
+		t.Fatalf("failed save leaked finalization metadata: %+v", persisted)
+	}
+}
+
+// TestRecoverFinalize_ReconcilesAutoMergeAfterMetadataFailure covers the
+// two-phase crash window where the squash landed on main but SaveRun failed.
+// Recovery must not tell the UI the merge was skipped.
+func TestRecoverFinalize_ReconcilesAutoMergeAfterMetadataFailure(t *testing.T) {
+	assumeQuiescentProcessCensus(t)
+	repo, originalTip := initBareishRepo(t)
+	baseStore := tmpStore(t)
+	const runID = "run_automerge_metadata_failure"
+	wt := addOwnedWorktree(t, baseStore, repo, runID)
+	finalSHA := addCommit(t, wt, "landed.go", "package landed\n", "feat: landed output")
+
+	seed := &store.Run{
+		ID:                runID,
+		Name:              "automerge-save-failure",
+		Status:            store.RunStatusFinished,
+		Worktree:          true,
+		WorkDir:           wt,
+		RepoRoot:          repo,
+		BaseCommit:        originalTip,
+		WorktreeCreatedAt: testWorktreeAuthority(),
+		AutoMerge:         true,
+		MergeStrategy:     store.MergeStrategySquash,
+	}
+	if err := baseStore.SaveRun(context.Background(), seed); err != nil {
+		t.Fatalf("seed save: %v", err)
+	}
+	eng := &Engine{
+		store:         saveFailRunStore{RunStore: baseStore},
+		runName:       seed.Name,
+		autoMerge:     true,
+		mergeStrategy: string(store.MergeStrategySquash),
+	}
+	cleanupCalled := false
+	eng.finalizeOnExit(context.Background(), runID, &worktreeContext{
+		repoRoot:       repo,
+		wtPath:         wt,
+		originalBranch: "main",
+		originalTip:    originalTip,
+	}, func(string, string) (WorktreeCleanupResult, error) {
+		cleanupCalled = true
+		return WorktreeCleanupResult{}, nil
+	}, nil)
+	if cleanupCalled {
+		t.Fatal("metadata failure removed worktree after successful Git merge")
+	}
+	mainAfterMerge := readHEAD(repo)
+	if mainAfterMerge == "" || mainAfterMerge == originalTip {
+		t.Fatalf("precondition: squash did not advance main (HEAD=%q)", mainAfterMerge)
+	}
+	mainTree := readGitObject(repo, mainAfterMerge+"^{tree}")
+	finalTree := readGitObject(repo, finalSHA+"^{tree}")
+	if mainTree == "" || mainTree != finalTree {
+		t.Fatalf("precondition: squash tree=%q, finalized tree=%q", mainTree, finalTree)
+	}
+
+	persisted, err := baseStore.LoadRun(context.Background(), runID)
+	if err != nil {
+		t.Fatalf("reload after failed save: %v", err)
+	}
+	if persisted.MergeStatus != "" || persisted.MergedInto != "" {
+		t.Fatalf("failed metadata save unexpectedly persisted merge: %+v", persisted)
+	}
+	if err := RecoverFinalize(context.Background(), baseStore, persisted, nil); err != nil {
+		t.Fatalf("RecoverFinalize: %v", err)
+	}
+	if persisted.MergeStatus != store.MergeStatusMerged ||
+		persisted.MergedInto != "main" ||
+		persisted.MergedCommit != mainAfterMerge {
+		t.Fatalf("recovered merge metadata mismatch: %+v", persisted)
+	}
+	if persisted.FinalCommit != finalSHA || persisted.FinalBranch != "iterion/run/automerge-save-failure" {
+		t.Fatalf("recovered finalization metadata mismatch: %+v", persisted)
+	}
+	if _, err := os.Stat(wt); !os.IsNotExist(err) {
+		t.Fatalf("recovered worktree still exists: %v", err)
 	}
 }
 
@@ -586,26 +915,26 @@ func TestResolveMergeTarget(t *testing.T) {
 // persistent branch, and persist FinalCommit/FinalBranch/MergeStatus
 // to run.json. Reproduces the 2026-05-14 run_1778749561103 scenario.
 func TestRecoverFinalize_HappyPath(t *testing.T) {
+	assumeQuiescentProcessCensus(t)
 	repo, originalTip := initBareishRepo(t)
-	wt := filepath.Join(t.TempDir(), "wt")
-	mustRun(t, repo, "git", "worktree", "add", wt, "HEAD")
-	t.Cleanup(func() { _ = exec.Command("git", "-C", repo, "worktree", "remove", "--force", wt).Run() })
-
-	finalSHA := addCommit(t, wt, "feature.go", "package main\n", "feat: add feature")
-
 	// Filesystem store with a temp root.
 	st, err := store.New(t.TempDir())
 	if err != nil {
 		t.Fatalf("store new: %v", err)
 	}
+	const runID = "run_test_recover_finalize"
+	wt := addOwnedWorktree(t, st, repo, runID)
+	finalSHA := addCommit(t, wt, "feature.go", "package main\n", "feat: add feature")
+
 	r := &store.Run{
-		ID:         "run_test_recover_finalize",
-		Name:       "swift-cedar-a3f2",
-		Status:     store.RunStatusFinished, // engine got this far
-		Worktree:   true,
-		WorkDir:    wt,
-		RepoRoot:   repo,
-		BaseCommit: originalTip,
+		ID:                runID,
+		Name:              "swift-cedar-a3f2",
+		Status:            store.RunStatusFinished, // engine got this far
+		Worktree:          true,
+		WorkDir:           wt,
+		RepoRoot:          repo,
+		BaseCommit:        originalTip,
+		WorktreeCreatedAt: testWorktreeAuthority(),
 		// FinalCommit / FinalBranch deliberately empty — the failure
 		// mode RecoverFinalize is meant to repair.
 	}
@@ -635,6 +964,684 @@ func TestRecoverFinalize_HappyPath(t *testing.T) {
 	if got := strings.TrimSpace(string(out)); got != finalSHA {
 		t.Errorf("branch tip = %q, want %q", got, finalSHA)
 	}
+	if _, err := os.Stat(wt); !os.IsNotExist(err) {
+		t.Fatalf("recovered worktree still exists after durable branch + metadata save: err=%v", err)
+	}
+	if registered, err := registeredWorktree(repo, wt); err != nil {
+		t.Fatalf("list worktrees after recovery: %v", err)
+	} else if registered {
+		t.Fatalf("recovered worktree remains registered after cleanup: %s", wt)
+	}
+}
+
+// TestRecoverFinalize_NoCommitsCleansWorktree covers the zero-result case:
+// there is no branch metadata to persist, but a clean worktree still at the
+// recorded BaseCommit is safe to remove.
+func TestRecoverFinalize_NoCommitsCleansWorktree(t *testing.T) {
+	assumeQuiescentProcessCensus(t)
+	repo, originalTip := initBareishRepo(t)
+	st, err := store.New(t.TempDir())
+	if err != nil {
+		t.Fatalf("store new: %v", err)
+	}
+	const runID = "run_recover_no_commits"
+	wt := addOwnedWorktree(t, st, repo, runID)
+	r := &store.Run{
+		ID:                runID,
+		Status:            store.RunStatusFinished,
+		Worktree:          true,
+		WorkDir:           wt,
+		RepoRoot:          repo,
+		BaseCommit:        originalTip,
+		WorktreeCreatedAt: testWorktreeAuthority(),
+	}
+	if err := RecoverFinalize(context.Background(), st, r, nil); err != nil {
+		t.Fatalf("recover no-commit worktree: %v", err)
+	}
+	if _, err := os.Stat(wt); !os.IsNotExist(err) {
+		t.Fatalf("no-commit recovered worktree still exists: err=%v", err)
+	}
+}
+
+// TestRecoverFinalize_BranchFailurePersistsDiagnosticAndWorktree verifies both
+// halves of fail-closed recovery: the operator gets the exact branch failure in
+// run metadata, and the worktree remains registered as the commit's GC guard.
+func TestRecoverFinalize_BranchFailurePersistsDiagnosticAndWorktree(t *testing.T) {
+	repo, originalTip := initBareishRepo(t)
+	st, err := store.New(t.TempDir())
+	if err != nil {
+		t.Fatalf("store new: %v", err)
+	}
+	const runID = "run_recover_branch_failure"
+	wt := addOwnedWorktree(t, st, repo, runID)
+	finalSHA := addCommit(t, wt, "partial.go", "package partial\n", "feat: partial")
+	mustRun(t, repo, "git", "branch", "iterion", originalTip)
+	r := &store.Run{
+		ID:                runID,
+		Name:              "blocked-storage-ref",
+		Status:            store.RunStatusFinished,
+		Worktree:          true,
+		WorkDir:           wt,
+		RepoRoot:          repo,
+		BaseCommit:        originalTip,
+		WorktreeCreatedAt: testWorktreeAuthority(),
+	}
+	if err := st.SaveRun(context.Background(), r); err != nil {
+		t.Fatalf("seed save: %v", err)
+	}
+	if err := RecoverFinalize(context.Background(), st, r, nil); err != nil {
+		t.Fatalf("recover branch failure: %v", err)
+	}
+	if r.FinalCommit != finalSHA || r.FinalBranch != "" || r.FinalBranchError == "" {
+		t.Fatalf("recovery diagnostic mismatch: %+v", r)
+	}
+	if _, err := os.Stat(wt); err != nil {
+		t.Fatalf("worktree was removed despite branch failure: %v", err)
+	}
+	if registered, err := registeredWorktree(repo, wt); err != nil {
+		t.Fatalf("list worktrees: %v", err)
+	} else if !registered {
+		t.Fatal("worktree no longer registered after storage-branch failure")
+	}
+	reloaded, err := st.LoadRun(context.Background(), r.ID)
+	if err != nil {
+		t.Fatalf("reload run: %v", err)
+	}
+	if reloaded.FinalBranchError == "" {
+		t.Fatal("FinalBranchError was not persisted")
+	}
+}
+
+// TestRecoverFinalize_RefusesForeignRegisteredWorktree proves that appearing in
+// `git worktree list` is not sufficient authority. Corrupt metadata for one run
+// must never promote, commit, or remove another run's registered worktree.
+func TestRecoverFinalize_RefusesForeignRegisteredWorktree(t *testing.T) {
+	repo, originalTip := initBareishRepo(t)
+	st, err := store.New(t.TempDir())
+	if err != nil {
+		t.Fatalf("store new: %v", err)
+	}
+	const (
+		victimID = "run_recover_ownership_victim"
+		otherID  = "run_recover_ownership_other"
+	)
+	victimWT := addOwnedWorktree(t, st, repo, victimID)
+	otherWT := addOwnedWorktree(t, st, repo, otherID)
+	otherSHA := addCommit(t, otherWT, "foreign.go", "package foreign\n", "feat: foreign output")
+
+	r := &store.Run{
+		ID:         victimID,
+		Name:       "ownership-victim",
+		Status:     store.RunStatusFinished,
+		Worktree:   true,
+		WorkDir:    otherWT, // corrupt: points at another run's owned worktree
+		RepoRoot:   repo,
+		BaseCommit: originalTip,
+	}
+	err = RecoverFinalize(context.Background(), st, r, nil)
+	if err == nil || !strings.Contains(err.Error(), "does not own recovered worktree") {
+		t.Fatalf("RecoverFinalize error=%v, want ownership refusal", err)
+	}
+	if r.FinalCommit != "" || r.FinalBranch != "" || r.MergeStatus != "" {
+		t.Fatalf("ownership refusal mutated run: %+v", r)
+	}
+	if got := readHEAD(otherWT); got != otherSHA {
+		t.Fatalf("foreign worktree HEAD changed: got %q, want %q", got, otherSHA)
+	}
+	for _, path := range []string{victimWT, otherWT} {
+		if _, statErr := os.Stat(path); statErr != nil {
+			t.Fatalf("ownership refusal removed %s: %v", path, statErr)
+		}
+	}
+	if branches := strings.TrimSpace(string(mustOutput(t, repo, "git", "branch", "--list", "iterion/run/ownership-victim*"))); branches != "" {
+		t.Fatalf("ownership refusal created branch(es): %q", branches)
+	}
+}
+
+func TestFinalizeReconstructedWorktreeRefusesForeignRegisteredWorktree(t *testing.T) {
+	repo, originalTip := initBareishRepo(t)
+	st, err := store.New(t.TempDir())
+	if err != nil {
+		t.Fatalf("store new: %v", err)
+	}
+	const (
+		victimID = "run_resume_ownership_victim"
+		otherID  = "run_resume_ownership_other"
+	)
+	victimWT := addOwnedWorktree(t, st, repo, victimID)
+	otherWT := addOwnedWorktree(t, st, repo, otherID)
+	foreignSHA := addCommit(t, otherWT, "foreign-resume.go", "package foreignresume\n", "feat: foreign resume output")
+
+	r, err := st.CreateRun(context.Background(), victimID, "wf", nil)
+	if err != nil {
+		t.Fatalf("CreateRun: %v", err)
+	}
+	r.Status = store.RunStatusFinished
+	r.Worktree = true
+	r.WorkDir = otherWT // corrupt: points at another run's owned worktree
+	r.RepoRoot = repo
+	r.BaseCommit = originalTip
+	if err := st.SaveRun(context.Background(), r); err != nil {
+		t.Fatalf("SaveRun: %v", err)
+	}
+
+	eng := &Engine{store: st, logger: iterlog.Nop()}
+	eng.finalizeReconstructedWorktree(context.Background(), victimID, r, nil)
+
+	if got := readHEAD(otherWT); got != foreignSHA {
+		t.Fatalf("foreign worktree HEAD changed: got %q, want %q", got, foreignSHA)
+	}
+	for _, path := range []string{victimWT, otherWT} {
+		if _, statErr := os.Stat(path); statErr != nil {
+			t.Fatalf("reconstructed ownership refusal removed %s: %v", path, statErr)
+		}
+	}
+}
+
+func TestRecoverFinalizeRefusesDelegatedGitDirIdentityMismatch(t *testing.T) {
+	repo, originalTip := initBareishRepo(t)
+	st, err := store.New(t.TempDir())
+	if err != nil {
+		t.Fatalf("store new: %v", err)
+	}
+	victimWT := filepath.Join(t.TempDir(), "delegated-victim")
+	otherWT := filepath.Join(t.TempDir(), "delegated-other")
+	mustRun(t, repo, "git", "worktree", "add", "--detach", victimWT, "HEAD")
+	mustRun(t, repo, "git", "worktree", "add", "--detach", otherWT, "HEAD")
+	t.Cleanup(func() { _ = exec.Command("git", "-C", repo, "worktree", "remove", "--force", victimWT).Run() })
+	t.Cleanup(func() { _ = exec.Command("git", "-C", repo, "worktree", "remove", "--force", otherWT).Run() })
+	otherSHA := addCommit(t, otherWT, "delegated-foreign.go", "package delegatedforeign\n", "feat: delegated foreign output")
+	victimGitDir, err := canonicalExistingPath(resolveWorktreeGitDir(repo, victimWT))
+	if err != nil {
+		t.Fatalf("canonical victim Git dir: %v", err)
+	}
+
+	r := &store.Run{
+		ID:                "run_delegated_identity_mismatch",
+		Name:              "delegated-identity-mismatch",
+		Status:            store.RunStatusFinished,
+		Worktree:          true,
+		WorktreeOwnership: store.WorktreeOwnershipDelegated,
+		WorktreeGitDir:    victimGitDir,
+		WorkDir:           otherWT, // corrupt: path and persisted Git identity disagree
+		RepoRoot:          repo,
+		BaseCommit:        originalTip,
+	}
+	err = RecoverFinalize(context.Background(), st, r, nil)
+	if err == nil || !strings.Contains(err.Error(), "private Git directory changed") {
+		t.Fatalf("RecoverFinalize error=%v, want delegated identity refusal", err)
+	}
+	if got := readHEAD(otherWT); got != otherSHA {
+		t.Fatalf("foreign delegated HEAD changed: got %q, want %q", got, otherSHA)
+	}
+	if _, statErr := os.Stat(otherWT); statErr != nil {
+		t.Fatalf("foreign delegated worktree was removed: %v", statErr)
+	}
+}
+
+func TestCommitUncommittedRefusesForeignRegisteredWorktree(t *testing.T) {
+	repo, originalTip := initBareishRepo(t)
+	st, err := store.New(t.TempDir())
+	if err != nil {
+		t.Fatalf("store new: %v", err)
+	}
+	const (
+		victimID = "run_commit_ownership_victim"
+		otherID  = "run_commit_ownership_other"
+	)
+	victimWT := addOwnedWorktree(t, st, repo, victimID)
+	otherWT := addOwnedWorktree(t, st, repo, otherID)
+	writeFile(t, filepath.Join(otherWT, "foreign-uncommitted.go"), "package foreignuncommitted\n")
+	before := readHEAD(otherWT)
+
+	r := &store.Run{
+		ID:         victimID,
+		Name:       "commit-ownership-victim",
+		Status:     store.RunStatusFinished,
+		Worktree:   true,
+		WorkDir:    otherWT, // corrupt: points at another run's owned worktree
+		RepoRoot:   repo,
+		BaseCommit: originalTip,
+	}
+	err = CommitUncommittedAndFinalize(context.Background(), st, r, "feat: must not land", nil)
+	if err == nil || !strings.Contains(err.Error(), "does not own recovered worktree") {
+		t.Fatalf("CommitUncommittedAndFinalize error=%v, want ownership refusal", err)
+	}
+	if got := readHEAD(otherWT); got != before {
+		t.Fatalf("foreign uncommitted worktree was committed: got HEAD %q, want %q", got, before)
+	}
+	for _, path := range []string{victimWT, otherWT} {
+		if _, statErr := os.Stat(path); statErr != nil {
+			t.Fatalf("commit ownership refusal removed %s: %v", path, statErr)
+		}
+	}
+}
+
+// TestRecoverFinalize_SaveFailureKeepsWorktree proves the persistence ordering:
+// even after a storage branch was created, recovery must not remove the
+// worktree until finalization metadata is durably saved.
+func TestRecoverFinalize_SaveFailureKeepsWorktree(t *testing.T) {
+	assumeQuiescentProcessCensus(t)
+	repo, originalTip := initBareishRepo(t)
+	baseStore, err := store.New(t.TempDir())
+	if err != nil {
+		t.Fatalf("store new: %v", err)
+	}
+	const runID = "run_recover_save_failure"
+	wt := addOwnedWorktree(t, baseStore, repo, runID)
+	finalSHA := addCommit(t, wt, "save-failure.go", "package saved\n", "feat: survive metadata failure")
+	r := &store.Run{
+		ID:                runID,
+		Name:              "save-failure",
+		Status:            store.RunStatusFinished,
+		Worktree:          true,
+		WorkDir:           wt,
+		RepoRoot:          repo,
+		BaseCommit:        originalTip,
+		WorktreeCreatedAt: testWorktreeAuthority(),
+	}
+	err = RecoverFinalize(context.Background(), saveFailRunStore{RunStore: baseStore}, r, nil)
+	if err == nil || !strings.Contains(err.Error(), "injected SaveRun failure") {
+		t.Fatalf("RecoverFinalize error=%v, want injected SaveRun failure", err)
+	}
+	if r.FinalCommit != "" || r.FinalBranch != "" || r.MergeStatus != "" {
+		t.Fatalf("failed metadata save mutated caller-visible run: %+v", r)
+	}
+	if _, statErr := os.Stat(wt); statErr != nil {
+		t.Fatalf("worktree removed after SaveRun failure: %v", statErr)
+	}
+	if registered, regErr := registeredWorktree(repo, wt); regErr != nil {
+		t.Fatalf("list worktrees: %v", regErr)
+	} else if !registered {
+		t.Fatal("worktree unregistered after SaveRun failure")
+	}
+
+	// Retry with the exact same pointer. The storage branch created before the
+	// failed save must be reused (not suffixed), metadata must become durable,
+	// and only then may the worktree be removed.
+	if err := RecoverFinalize(context.Background(), baseStore, r, nil); err != nil {
+		t.Fatalf("retry RecoverFinalize: %v", err)
+	}
+	if r.FinalCommit != finalSHA || r.FinalBranch != "iterion/run/save-failure" {
+		t.Fatalf("retry finalization metadata mismatch: %+v", r)
+	}
+	if branches := strings.TrimSpace(string(mustOutput(t, repo, "git", "branch", "--list", "iterion/run/save-failure*"))); branches != "iterion/run/save-failure" {
+		t.Fatalf("retry created unexpected suffixed branch: %q", branches)
+	}
+	if _, statErr := os.Stat(wt); !os.IsNotExist(statErr) {
+		t.Fatalf("worktree remains after successful retry: %v", statErr)
+	}
+}
+
+// TestCleanupRecoveredWorktreeRefusesDirty is the final race/backstop: even
+// with a matching HEAD, recovery uses non-forced removal and rechecks status.
+func TestCleanupRecoveredWorktreeRefusesDirty(t *testing.T) {
+	repo, originalTip := initBareishRepo(t)
+	wt := filepath.Join(t.TempDir(), "wt")
+	mustRun(t, repo, "git", "worktree", "add", wt, "HEAD")
+	t.Cleanup(func() { _ = exec.Command("git", "-C", repo, "worktree", "remove", "--force", wt).Run() })
+	writeFile(t, filepath.Join(wt, "late-output.txt"), "arrived after finalize\n")
+
+	err := cleanupRecoveredWorktree(repo, wt, "", originalTip, testWorktreeAuthority())
+	if err == nil || !strings.Contains(err.Error(), "dirty") {
+		t.Fatalf("cleanup error=%v, want dirty-worktree refusal", err)
+	}
+	if _, statErr := os.Stat(filepath.Join(wt, "late-output.txt")); statErr != nil {
+		t.Fatalf("dirty output was removed: %v", statErr)
+	}
+}
+
+func TestCleanupRecoveredWorktreePreservesIgnoredOutput(t *testing.T) {
+	repo, _ := initBareishRepo(t)
+	writeFile(t, filepath.Join(repo, ".gitignore"), "generated-export.zip\nnode_modules/\n")
+	mustRun(t, repo, "git", "add", ".gitignore")
+	mustRun(t, repo, "git", "commit", "-m", "chore: ignore generated output")
+	expectedHEAD := readHEAD(repo)
+
+	wt := filepath.Join(t.TempDir(), "wt")
+	mustRun(t, repo, "git", "worktree", "add", wt, "HEAD")
+	t.Cleanup(func() { _ = exec.Command("git", "-C", repo, "worktree", "remove", "--force", wt).Run() })
+	writeFile(t, filepath.Join(wt, "generated-export.zip"), "only copy\n")
+
+	err := cleanupRecoveredWorktree(repo, wt, "", expectedHEAD, testWorktreeAuthority())
+	if err == nil || !strings.Contains(err.Error(), "ignored non-disposable output") {
+		t.Fatalf("cleanup error=%v, want ignored-output refusal", err)
+	}
+	if _, statErr := os.Stat(filepath.Join(wt, "generated-export.zip")); statErr != nil {
+		t.Fatalf("ignored output was removed: %v", statErr)
+	}
+}
+
+func TestCleanupRecoveredWorktreeDiscardsKnownDependencyCache(t *testing.T) {
+	assumeQuiescentProcessCensus(t)
+	repo, _ := initBareishRepo(t)
+	writeFile(t, filepath.Join(repo, ".gitignore"), "node_modules/\n")
+	mustRun(t, repo, "git", "add", ".gitignore")
+	mustRun(t, repo, "git", "commit", "-m", "chore: ignore dependencies")
+	expectedHEAD := readHEAD(repo)
+
+	wt := filepath.Join(t.TempDir(), "wt")
+	mustRun(t, repo, "git", "worktree", "add", wt, "HEAD")
+	t.Cleanup(func() { _ = exec.Command("git", "-C", repo, "worktree", "remove", "--force", wt).Run() })
+	if err := os.MkdirAll(filepath.Join(wt, "node_modules", "example"), 0o755); err != nil {
+		t.Fatalf("create dependency cache: %v", err)
+	}
+	writeFile(t, filepath.Join(wt, "node_modules", "example", "index.js"), "module.exports = true\n")
+
+	if err := cleanupRecoveredWorktree(repo, wt, "", expectedHEAD, testWorktreeAuthority()); err != nil {
+		t.Fatalf("cleanup with disposable dependency cache: %v", err)
+	}
+	if _, statErr := os.Stat(wt); !os.IsNotExist(statErr) {
+		t.Fatalf("worktree still exists after disposable-cache cleanup: %v", statErr)
+	}
+}
+
+func TestCleanupRecoveredWorktreeQuarantinesLateIgnoredWriter(t *testing.T) {
+	repo, _ := initBareishRepo(t)
+	writeFile(t, filepath.Join(repo, ".gitignore"), "generated/\n")
+	mustRun(t, repo, "git", "add", ".gitignore")
+	mustRun(t, repo, "git", "commit", "-m", "chore: ignore generated output")
+	expectedHEAD := readHEAD(repo)
+
+	wt := filepath.Join(t.TempDir(), "wt")
+	mustRun(t, repo, "git", "worktree", "add", wt, "HEAD")
+
+	// Start a real background process before cleanup. Its cwd is the worktree
+	// inode; after the atomic rename, a relative write must land in the
+	// recovery copy rather than being deleted or recreating the old path.
+	writer := exec.Command(os.Args[0], "-test.run=^TestWorktreeCleanupLateWriterHelper$")
+	writer.Env = append(os.Environ(), "GO_WANT_WORKTREE_LATE_WRITER=1")
+	writer.Dir = wt
+	writerInput, err := writer.StdinPipe()
+	if err != nil {
+		t.Fatalf("late writer stdin: %v", err)
+	}
+	if err := writer.Start(); err != nil {
+		t.Fatalf("start late writer: %v", err)
+	}
+	writerWaited := false
+	t.Cleanup(func() {
+		if writerWaited {
+			return
+		}
+		_ = writer.Process.Kill()
+		_ = writer.Wait()
+	})
+
+	var writerErr error
+	hooks := &worktreeCleanupTestHooks{
+		afterRename: func(WorktreeCleanupResult) {
+			if _, err := writerInput.Write([]byte{'x'}); err != nil {
+				writerErr = err
+				return
+			}
+			if err := writerInput.Close(); err != nil {
+				writerErr = err
+				return
+			}
+			writerErr = writer.Wait()
+			writerWaited = true
+		},
+	}
+	result, err := cleanupRecoveredWorktreeForRun(
+		"run-late-ignored-writer",
+		repo,
+		wt,
+		"",
+		expectedHEAD,
+		testWorktreeAuthority(),
+		hooks,
+	)
+	if err != nil {
+		t.Fatalf("quarantine finalized worktree: %v", err)
+	}
+	if writerErr != nil {
+		t.Fatalf("late writer: %v", writerErr)
+	}
+	if result.RecoveryPath == "" || result.RecoveryMarker == "" {
+		t.Fatalf("cleanup did not expose its recovery copy: %+v", result)
+	}
+	if !strings.Contains(result.LateWrite, "ignored non-disposable output") {
+		t.Fatalf("late-write diagnostic=%q, want ignored-output warning", result.LateWrite)
+	}
+	if _, err := os.Lstat(wt); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("canonical worktree path still exists after retirement: %v", err)
+	}
+	lateOutput := filepath.Join(result.RecoveryPath, "generated", "late-report.json")
+	if got, err := os.ReadFile(lateOutput); err != nil {
+		t.Fatalf("late ignored output was not preserved in recovery copy: %v", err)
+	} else if string(got) != `{"late":true}` {
+		t.Fatalf("late ignored output=%q", got)
+	}
+	if registered, err := registeredWorktree(repo, result.RecoveryPath); err != nil {
+		t.Fatalf("verify recovery registration: %v", err)
+	} else if !registered {
+		t.Fatalf("recovery copy is not a registered Git worktree: %s", result.RecoveryPath)
+	}
+
+	rawMarker, err := os.ReadFile(result.RecoveryMarker)
+	if err != nil {
+		t.Fatalf("read recovery marker: %v", err)
+	}
+	var marker worktreeRecoveryManifest
+	if err := json.Unmarshal(rawMarker, &marker); err != nil {
+		t.Fatalf("decode recovery marker: %v", err)
+	}
+	if marker.RunID != "run-late-ignored-writer" ||
+		marker.OriginalPath != wt ||
+		marker.RecoveryPath != result.RecoveryPath ||
+		marker.ExpectedHEAD != expectedHEAD {
+		t.Fatalf("recovery marker does not identify the retired worktree: %+v", marker)
+	}
+}
+
+func TestCleanupRecoveredWorktreeRetainsLiveWriterBeforeItWrites(t *testing.T) {
+	repo, _ := initBareishRepo(t)
+	writeFile(t, filepath.Join(repo, ".gitignore"), "generated/\n")
+	mustRun(t, repo, "git", "add", ".gitignore")
+	mustRun(t, repo, "git", "commit", "-m", "chore: ignore generated output")
+	expectedHEAD := readHEAD(repo)
+
+	wt := filepath.Join(t.TempDir(), "wt")
+	mustRun(t, repo, "git", "worktree", "add", wt, "HEAD")
+
+	// The writer is alive with cwd inside the checkout but has not changed any
+	// file when cleanup runs. Cleanliness alone would authorize deletion; the
+	// process-reference proof must retain the renamed checkout.
+	writer := exec.Command(os.Args[0], "-test.run=^TestWorktreeCleanupLateWriterHelper$")
+	writer.Env = append(os.Environ(), "GO_WANT_WORKTREE_LATE_WRITER=1")
+	writer.Dir = wt
+	writerInput, err := writer.StdinPipe()
+	if err != nil {
+		t.Fatalf("late writer stdin: %v", err)
+	}
+	if err := writer.Start(); err != nil {
+		t.Fatalf("start late writer: %v", err)
+	}
+	writerWaited := false
+	t.Cleanup(func() {
+		if writerWaited {
+			return
+		}
+		_ = writer.Process.Kill()
+		_ = writer.Wait()
+	})
+
+	result, err := cleanupRecoveredWorktreeForRun(
+		"run-live-writer",
+		repo,
+		wt,
+		"",
+		expectedHEAD,
+		testWorktreeAuthority(),
+		nil,
+	)
+	if err != nil {
+		t.Fatalf("quarantine with live writer: %v", err)
+	}
+	if result.RecoveryPath == "" {
+		t.Fatalf("live writer did not retain a recovery worktree: %+v", result)
+	}
+	if !strings.Contains(result.RetentionReason, "live process references") {
+		t.Fatalf("retention reason=%q, want live-process proof", result.RetentionReason)
+	}
+
+	if _, err := writerInput.Write([]byte{'x'}); err != nil {
+		t.Fatalf("release late writer: %v", err)
+	}
+	if err := writerInput.Close(); err != nil {
+		t.Fatalf("close late writer input: %v", err)
+	}
+	if err := writer.Wait(); err != nil {
+		t.Fatalf("late writer: %v", err)
+	}
+	writerWaited = true
+
+	output := filepath.Join(result.RecoveryPath, "generated", "late-report.json")
+	if got, err := os.ReadFile(output); err != nil {
+		t.Fatalf("live writer output was not preserved: %v", err)
+	} else if string(got) != `{"late":true}` {
+		t.Fatalf("live writer output=%q", got)
+	}
+}
+
+func TestCleanupRecoveredWorktreePreservesRecreatedAbsolutePath(t *testing.T) {
+	repo, expectedHEAD := initBareishRepo(t)
+	wt := filepath.Join(t.TempDir(), "wt")
+	mustRun(t, repo, "git", "worktree", "add", wt, "HEAD")
+
+	var hookErr error
+	hooks := &worktreeCleanupTestHooks{
+		afterRename: func(WorktreeCleanupResult) {
+			if err := os.MkdirAll(wt, 0o755); err != nil {
+				hookErr = err
+				return
+			}
+			hookErr = os.WriteFile(filepath.Join(wt, "absolute-late-output.txt"), []byte("preserve me\n"), 0o644)
+		},
+	}
+	result, err := cleanupRecoveredWorktreeForRun(
+		"run-absolute-late-writer",
+		repo,
+		wt,
+		"",
+		expectedHEAD,
+		testWorktreeAuthority(),
+		hooks,
+	)
+	if hookErr != nil {
+		t.Fatalf("absolute-path writer fixture: %v", hookErr)
+	}
+	if err == nil || !strings.Contains(err.Error(), "was recreated during quarantine") {
+		t.Fatalf("cleanup error=%v, want recreated-path fail-closed diagnostic", err)
+	}
+	if result.RecoveryPath == "" {
+		t.Fatalf("cleanup did not report the recovery copy after recreation: %+v", result)
+	}
+	if got, err := os.ReadFile(filepath.Join(wt, "absolute-late-output.txt")); err != nil {
+		t.Fatalf("absolute-path output was deleted: %v", err)
+	} else if string(got) != "preserve me\n" {
+		t.Fatalf("absolute-path output=%q", got)
+	}
+	if got := readHEAD(result.RecoveryPath); got != expectedHEAD {
+		t.Fatalf("recovery HEAD=%q, want %q", got, expectedHEAD)
+	}
+	if registered, err := registeredWorktree(repo, result.RecoveryPath); err != nil {
+		t.Fatalf("verify recovery registration: %v", err)
+	} else if !registered {
+		t.Fatalf("recovery copy is not registered after absolute-path recreation: %s", result.RecoveryPath)
+	}
+}
+
+func TestWorktreeCleanupLateWriterHelper(t *testing.T) {
+	if os.Getenv("GO_WANT_WORKTREE_LATE_WRITER") != "1" {
+		return
+	}
+	var release [1]byte
+	if _, err := os.Stdin.Read(release[:]); err != nil {
+		os.Exit(2)
+	}
+	if err := os.MkdirAll(filepath.Join("generated"), 0o755); err != nil {
+		os.Exit(3)
+	}
+	if err := os.WriteFile(
+		filepath.Join("generated", "late-report.json"),
+		[]byte(`{"late":true}`),
+		0o644,
+	); err != nil {
+		os.Exit(4)
+	}
+	os.Exit(0)
+}
+
+func TestWorktreeCleanupLocksBlockLateCommit(t *testing.T) {
+	repo, _ := initBareishRepo(t)
+	wt := filepath.Join(t.TempDir(), "wt")
+	mustRun(t, repo, "git", "worktree", "add", "-b", "cleanup-lock-topic", wt, "HEAD")
+	t.Cleanup(func() { _ = exec.Command("git", "-C", repo, "worktree", "remove", "--force", wt).Run() })
+	before := readHEAD(wt)
+
+	unlock, err := acquireWorktreeCleanupLocks(repo, wt)
+	if err != nil {
+		t.Fatalf("acquire cleanup locks: %v", err)
+	}
+	defer unlock()
+	cmd := exec.Command("git", "-C", wt, "commit", "--allow-empty", "-m", "late commit")
+	if out, commitErr := cmd.CombinedOutput(); commitErr == nil {
+		t.Fatalf("late commit succeeded while cleanup locks were held: %s", out)
+	}
+	if got := readHEAD(wt); got != before {
+		t.Fatalf("worktree HEAD moved under cleanup locks: got %q, want %q", got, before)
+	}
+}
+
+func TestCleanupRecoveredWorktreeRemovesAttachedFinalBranch(t *testing.T) {
+	assumeQuiescentProcessCensus(t)
+	repo, _ := initBareishRepo(t)
+	wt := filepath.Join(t.TempDir(), "wt")
+	const branch = "nested/attached-cleanup"
+	mustRun(t, repo, "git", "worktree", "add", "-b", branch, wt, "HEAD")
+	t.Cleanup(func() { _ = exec.Command("git", "-C", repo, "worktree", "remove", "--force", wt).Run() })
+	finalSHA := addCommit(t, wt, "attached.go", "package attached\n", "feat: attached output")
+	mustRun(t, repo, "git", "pack-refs", "--all", "--prune")
+	looseRef := filepath.Join(repo, ".git", "refs", "heads", "nested", "attached-cleanup")
+	if _, statErr := os.Stat(looseRef); !os.IsNotExist(statErr) {
+		t.Fatalf("attached branch was not packed for the regression fixture: %v", statErr)
+	}
+
+	if err := cleanupRecoveredWorktree(repo, wt, branch, finalSHA, testWorktreeAuthority()); err != nil {
+		t.Fatalf("cleanup attached finalized worktree: %v", err)
+	}
+	if _, statErr := os.Stat(wt); !os.IsNotExist(statErr) {
+		t.Fatalf("attached worktree still exists after cleanup: %v", statErr)
+	}
+	guards := strings.TrimSpace(string(mustOutput(t, repo, "git", "for-each-ref", "--format=%(refname)", "refs/iterion/cleanup-guards/")))
+	if guards != "" {
+		t.Fatalf("cleanup guard leaked after attached cleanup: %q", guards)
+	}
+}
+
+func TestCleanupGuardRetainedWhenStorageBranchMoves(t *testing.T) {
+	repo, originalTip := initBareishRepo(t)
+	wt := filepath.Join(t.TempDir(), "wt")
+	mustRun(t, repo, "git", "worktree", "add", wt, "HEAD")
+	t.Cleanup(func() { _ = exec.Command("git", "-C", repo, "worktree", "remove", "--force", wt).Run() })
+	finalSHA := addCommit(t, wt, "guarded.go", "package guarded\n", "feat: guarded")
+	const branch = "iterion/run/guard-race"
+	mustRun(t, repo, "git", "branch", branch, finalSHA)
+
+	guardRef, err := createCleanupGuard(repo, finalSHA)
+	if err != nil {
+		t.Fatalf("create guard: %v", err)
+	}
+	t.Cleanup(func() { _ = exec.Command("git", "-C", repo, "update-ref", "-d", guardRef).Run() })
+	mustRun(t, repo, "git", "branch", "-f", branch, originalTip)
+	if err := releaseCleanupGuard(repo, guardRef, branch, finalSHA); err == nil {
+		t.Fatal("cleanup guard was released after storage branch moved")
+	}
+	if got := readGitObject(repo, guardRef+"^{commit}"); got != finalSHA {
+		t.Fatalf("retained cleanup guard=%q, want %q", got, finalSHA)
+	}
 }
 
 // TestRecoverFinalize_Idempotent — calling RecoverFinalize a second
@@ -661,6 +1668,87 @@ func TestRecoverFinalize_Idempotent(t *testing.T) {
 	}
 }
 
+// TestRecoverFinalize_AlreadyFinalizedCleansLeftoverWorktree simulates a crash
+// after final metadata was saved but before cleanup. Reconciliation must not
+// create a suffixed branch; it only verifies the persisted branch/commit and
+// removes the clean leftover worktree.
+func TestRecoverFinalize_AlreadyFinalizedCleansLeftoverWorktree(t *testing.T) {
+	assumeQuiescentProcessCensus(t)
+	repo, originalTip := initBareishRepo(t)
+	st, err := store.New(t.TempDir())
+	if err != nil {
+		t.Fatalf("store new: %v", err)
+	}
+	const runID = "run_already_finalized_with_worktree"
+	wt := addOwnedWorktree(t, st, repo, runID)
+	finalSHA := addCommit(t, wt, "done.go", "package done\n", "feat: finalized")
+	const finalBranch = "iterion/run/already-finalized"
+	mustRun(t, repo, "git", "branch", finalBranch, finalSHA)
+
+	r := &store.Run{
+		ID:                runID,
+		Status:            store.RunStatusFinished,
+		Worktree:          true,
+		WorkDir:           wt,
+		RepoRoot:          repo,
+		BaseCommit:        originalTip,
+		FinalCommit:       finalSHA,
+		FinalBranch:       finalBranch,
+		WorktreeCreatedAt: testWorktreeAuthority(),
+	}
+	if err := RecoverFinalize(context.Background(), st, r, nil); err != nil {
+		t.Fatalf("cleanup already-finalized worktree: %v", err)
+	}
+	if _, err := os.Stat(wt); !os.IsNotExist(err) {
+		t.Fatalf("already-finalized worktree still exists: err=%v", err)
+	}
+	branches := strings.TrimSpace(string(mustOutput(t, repo, "git", "branch", "--list", finalBranch+"*")))
+	if strings.Count(branches, finalBranch) != 1 {
+		t.Fatalf("recovery created an unexpected suffixed branch: %q", branches)
+	}
+}
+
+func TestRecoverFinalize_LegacyRunWithoutTrustedCreationTimeIsPreserved(t *testing.T) {
+	repo, originalTip := initBareishRepo(t)
+	st, err := store.New(t.TempDir())
+	if err != nil {
+		t.Fatalf("store new: %v", err)
+	}
+	const runID = "run_legacy_without_creation_time"
+	wt := addOwnedWorktree(t, st, repo, runID)
+	finalSHA := addCommit(t, wt, "legacy.go", "package legacy\n", "feat: legacy output")
+
+	r := &store.Run{
+		ID:         runID,
+		Name:       "legacy-without-authority",
+		Status:     store.RunStatusFinished,
+		Worktree:   true,
+		WorkDir:    wt,
+		RepoRoot:   repo,
+		BaseCommit: originalTip,
+		// WorktreeCreatedAt is deliberately empty: old persisted runs do not
+		// have a trustworthy process-census boundary.
+	}
+	if err := st.SaveRun(context.Background(), r); err != nil {
+		t.Fatalf("seed save: %v", err)
+	}
+
+	if err := RecoverFinalize(context.Background(), st, r, nil); err != nil {
+		t.Fatalf("recover legacy worktree: %v", err)
+	}
+	if r.FinalCommit != finalSHA || r.FinalBranch == "" {
+		t.Fatalf("legacy finalization metadata mismatch: %+v", r)
+	}
+	if _, err := os.Stat(wt); err != nil {
+		t.Fatalf("legacy worktree was removed without trusted creation time: %v", err)
+	}
+	if registered, err := registeredWorktree(repo, wt); err != nil {
+		t.Fatalf("list legacy worktrees: %v", err)
+	} else if !registered {
+		t.Fatal("legacy worktree no longer registered")
+	}
+}
+
 // TestRecoverFinalize_SkipsNonWorktree — a run without worktree
 // (worktree: none in the workflow, or never set) must be a no-op
 // regardless of status — there's no worktree HEAD to promote.
@@ -679,30 +1767,23 @@ func TestRecoverFinalize_SkipsNonWorktree(t *testing.T) {
 	}
 }
 
-// TestRecoverFinalize_SkipsNonFinished — failed_resumable + failed
-// runs must be no-ops. failed_resumable runs keep their worktree for
-// resume; pre-finalizing there would leave a stale branch the operator
-// then has to disambiguate from the post-resume finalize's branch.
-// failed runs are excluded for a different reason: a hard failure
-// suggests the commits aren't safe to expose to a one-click merge.
-func TestRecoverFinalize_SkipsNonFinished(t *testing.T) {
-	for _, status := range []store.RunStatus{store.RunStatusFailedResumable, store.RunStatusFailed} {
-		t.Run(string(status), func(t *testing.T) {
-			st, _ := store.New(t.TempDir())
-			r := &store.Run{
-				ID:       "run_" + string(status),
-				Status:   status,
-				Worktree: true,
-				WorkDir:  "/tmp/wt",
-				RepoRoot: "/tmp/repo",
-			}
-			if err := RecoverFinalize(context.Background(), st, r, nil); err != nil {
-				t.Fatalf("non-finished path errored: %v", err)
-			}
-			if r.FinalCommit != "" || r.FinalBranch != "" {
-				t.Errorf("non-finished path mutated state: %+v", r)
-			}
-		})
+// TestRecoverFinalize_SkipsFailedResumable — resumable runs keep their
+// worktree and checkpoint for a future resume. Pre-finalizing there would
+// create a stale storage branch before the resumed run reaches its real tip.
+func TestRecoverFinalize_SkipsFailedResumable(t *testing.T) {
+	st, _ := store.New(t.TempDir())
+	r := &store.Run{
+		ID:       "run_failed_resumable",
+		Status:   store.RunStatusFailedResumable,
+		Worktree: true,
+		WorkDir:  "/tmp/wt",
+		RepoRoot: "/tmp/repo",
+	}
+	if err := RecoverFinalize(context.Background(), st, r, nil); err != nil {
+		t.Fatalf("failed_resumable path errored: %v", err)
+	}
+	if r.FinalCommit != "" || r.FinalBranch != "" {
+		t.Errorf("failed_resumable path mutated state: %+v", r)
 	}
 }
 
@@ -712,18 +1793,15 @@ func TestRecoverFinalize_SkipsNonFinished(t *testing.T) {
 // storage branch" and the operator has to recover by hand.
 func TestRecoverFinalize_CancelledRun(t *testing.T) {
 	repo, originalTip := initBareishRepo(t)
-	wt := filepath.Join(t.TempDir(), "wt")
-	mustRun(t, repo, "git", "worktree", "add", wt, "HEAD")
-	t.Cleanup(func() { _ = exec.Command("git", "-C", repo, "worktree", "remove", "--force", wt).Run() })
-
-	finalSHA := addCommit(t, wt, "partial.go", "package main\n", "feat: partial work")
-
 	st, err := store.New(t.TempDir())
 	if err != nil {
 		t.Fatalf("store new: %v", err)
 	}
+	const runID = "run_cancelled_partial"
+	wt := addOwnedWorktree(t, st, repo, runID)
+	finalSHA := addCommit(t, wt, "partial.go", "package main\n", "feat: partial work")
 	r := &store.Run{
-		ID:         "run_cancelled_partial",
+		ID:         runID,
 		Name:       "fierce-oak-c9d4",
 		Status:     store.RunStatusCancelled,
 		Worktree:   true,
@@ -743,6 +1821,44 @@ func TestRecoverFinalize_CancelledRun(t *testing.T) {
 	}
 	if r.FinalBranch != "iterion/run/fierce-oak-c9d4" {
 		t.Errorf("FinalBranch = %q", r.FinalBranch)
+	}
+	if _, err := os.Stat(wt); err != nil {
+		t.Fatalf("cancelled run worktree should remain inspectable: %v", err)
+	}
+}
+
+// TestRecoverFinalize_FailedRun keeps the implementation and regression suite
+// aligned: hard-failed runs are terminal and their partial commits are promoted
+// for inspection, while failed_resumable runs above remain untouched.
+func TestRecoverFinalize_FailedRun(t *testing.T) {
+	repo, originalTip := initBareishRepo(t)
+	st, err := store.New(t.TempDir())
+	if err != nil {
+		t.Fatalf("store new: %v", err)
+	}
+	const runID = "run_failed_partial"
+	wt := addOwnedWorktree(t, st, repo, runID)
+	finalSHA := addCommit(t, wt, "failed.go", "package failed\n", "wip: failed run output")
+	r := &store.Run{
+		ID:         runID,
+		Name:       "failed-partial",
+		Status:     store.RunStatusFailed,
+		Worktree:   true,
+		WorkDir:    wt,
+		RepoRoot:   repo,
+		BaseCommit: originalTip,
+	}
+	if err := st.SaveRun(context.Background(), r); err != nil {
+		t.Fatalf("seed save: %v", err)
+	}
+	if err := RecoverFinalize(context.Background(), st, r, nil); err != nil {
+		t.Fatalf("recover failed run: %v", err)
+	}
+	if r.FinalCommit != finalSHA || r.FinalBranch != "iterion/run/failed-partial" {
+		t.Fatalf("failed run recovery mismatch: %+v", r)
+	}
+	if _, err := os.Stat(wt); err != nil {
+		t.Fatalf("failed run worktree should remain inspectable: %v", err)
 	}
 }
 

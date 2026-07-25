@@ -49,6 +49,16 @@ export function usePreview(runId: string | null): UsePreviewResult {
   const [preview, setPreview] = useState<PreviewState | null>(null);
   const previewGenRef = useRef(0);
 
+  // A pipeline review turn can disappear while its media fetch is in flight
+  // (the operator advances to the next queued review). Invalidate that fetch
+  // on unmount so it cannot create an orphaned ObjectURL afterwards.
+  useEffect(
+    () => () => {
+      ++previewGenRef.current;
+    },
+    [],
+  );
+
   // Revoke the blob URL we created for the *previous* preview when
   // the URL value changes. Capture the URL in the closure so the
   // cleanup function frees the right one — a prior implementation
@@ -64,6 +74,10 @@ export function usePreview(runId: string | null): UsePreviewResult {
   }, [preview?.blobURL]);
 
   const closePreview = useCallback(() => {
+    // Invalidate an in-flight fetch as well as clearing visible state. Without
+    // this, closing a loading review attachment lets its late response set a
+    // fresh preview (and object URL) after the dialog has already disappeared.
+    ++previewGenRef.current;
     setPreview(null);
   }, []);
 
@@ -87,6 +101,10 @@ export function usePreview(runId: string | null): UsePreviewResult {
           const isText = TEXT_MIME_PREFIXES.some((p) => contentType.startsWith(p));
           if (isText) {
             const textBody = await blob.text();
+            // blob.text() is a second asynchronous boundary. The operator may
+            // have closed this preview or opened another file while decoding;
+            // do not let that stale text resurrect/replace the current dialog.
+            if (myGen !== previewGenRef.current) return;
             setPreview({
               path: target.path,
               size: target.size,

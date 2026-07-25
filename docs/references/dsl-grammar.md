@@ -322,8 +322,11 @@ compilation.
 
 `worktree: auto` runs the workflow inside a per-run git worktree at
 `<store-dir>/worktrees/<run-id>/` so the user's main working tree
-stays untouched; on a clean exit the worktree is removed automatically,
-on failure it is preserved so the operator can inspect. Omit the
+stays untouched. On a clean exit, Iterion first creates a durable result
+branch, atomically quarantines the checkout, and removes it without force only
+when cleanliness and process quiescence are conclusive. Failure, late activity,
+unsupported process inspection, or legacy metadata without a trusted
+pre-executor creation boundary preserves the worktree for inspection. Omit the
 field (or set `none`) to run in place. See
 [bots/feature-dev/main.bot](../../bots/feature-dev/main.bot)
 for a workflow that opts in.

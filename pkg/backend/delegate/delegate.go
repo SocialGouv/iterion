@@ -293,6 +293,11 @@ type Task struct {
 	// NodeID is the IR node identifier, used for observability hooks.
 	NodeID string
 
+	// SourceIssueID is the native ticket that owns this run (dispatcher
+	// or pipeline launch). Board MCP create_issue auto-stamps children
+	// with this parent when set. Empty for ad-hoc runs.
+	SourceIssueID string
+
 	// Iteration is the 0-based loop iteration counter for this
 	// execution. Aligned with the loop_iteration field exposed in
 	// events / ExecutionState. Zero for nodes outside any loop.

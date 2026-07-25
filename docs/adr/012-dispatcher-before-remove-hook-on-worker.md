@@ -10,7 +10,11 @@
   success branch no longer cleans up),
   [`pkg/dispatcher/hooks.go`](../../pkg/dispatcher/hooks.go) (`Hooks.BeforeRemove`,
   `Hook.Run`), [`pkg/cli/dispatch_defaults.go`](../../pkg/cli/dispatch_defaults.go)
-  (`BuildDefaultConfig` wires the default `git worktree remove` before_remove hook),
+  (the former destructive default hook is intentionally absent),
+  [`pkg/runtime/worktree.go`](../../pkg/runtime/worktree.go)
+  (ownership/durability proof, atomic quarantine, process-quiescence proof),
+  [`pkg/dispatcher/workspace.go`](../../pkg/dispatcher/workspace.go)
+  (run-generation paths and external ownership tombstones),
   [`pkg/dispatcher/config.go`](../../pkg/dispatcher/config.go)
   (`WorkspacePersistPolicy`). Tests:
   [`pkg/dispatcher/cleanup_workspace_test.go`](../../pkg/dispatcher/cleanup_workspace_test.go).
@@ -22,12 +26,11 @@
 The dispatcher has four workspace-lifecycle hooks (`after_create`,
 `before_run`, `after_run`, `before_remove`). Three were invoked by `runWorker`;
 `before_remove` was **declared, validated, path-expanded, wired by default, and
-documented as load-bearing — but never called anywhere**. `BuildDefaultConfig`
-installs a `before_remove` hook running `git -C $PROJECT_DIR worktree remove
---force $ITERION_WORKSPACE` whenever `projectDir` is set (the standard `iterion
-dispatch` / `iterion studio` path); its own comment states that without it
-`git worktree list` accumulates stale entries, because the dispatcher's
-`Workspaces.Remove` only deletes the directory — it doesn't talk to git.
+documented as load-bearing — but never called anywhere**. At the time of the
+original decision, `BuildDefaultConfig` installed a hook running `git -C
+$PROJECT_DIR worktree remove --force $ITERION_WORKSPACE`; meanwhile
+`Workspaces.Remove` only recursively deleted the directory and did not update
+Git registration.
 
 Teardown lived in `finishRun`'s clean-success branch (`cleanupWorkspace`), which
 called `Workspaces.Remove` → `os.RemoveAll` only. `finishRun` runs on the
@@ -50,16 +53,37 @@ dispatcher → result loop.
 
 ## Decision
 
-Perform workspace teardown — the `before_remove` hook **and** the directory
-removal — in `runWorker` (the per-dispatch worker goroutine), immediately after
-a clean `Runner.Dispatch` return and **before** `postFinished`. `finishRun`'s
-success branch no longer cleans up.
+Perform workspace teardown in `runWorker` (the per-dispatch worker goroutine),
+immediately after a clean `Runner.Dispatch` return and **before**
+`postFinished`. `finishRun`'s success branch no longer cleans up.
 
-`cleanupWorkspace` keeps the persist-policy gate, then runs `before_remove`
-(best-effort: a failure is logged but removal still proceeds, so a bad hook
-never strands the directory), then `Workspaces.Remove`. The hook receives the
-same `ITERION_*` env and the same config-snapshotted `Hooks` value the other
-three hooks use, so a mid-flight reload can't swap the callback body.
+The current fail-closed sequence is:
+
+1. Retire the external ownership marker for the exact issue/run generation.
+   A later logical run has a different path; this generation can never become
+   authoritative again.
+2. Prove persisted run identity, explicit managed/delegated ownership, exact
+   HEAD, durable branch protection, cleanliness, and ignored-output policy.
+3. Run the snapshotted `before_remove` hook. Hook failure preserves the
+   workspace; successful hooks are followed by the complete proof again.
+4. Under Git lockfiles and a temporary guard ref, atomically rename the
+   worktree to a random same-parent `.iterion-recovery-*` path and repair its
+   Git registration. A JSON sidecar records the run, old/new paths, SHA, branch,
+   and timestamp.
+5. Remove that recovery worktree through non-forced Git cleanup only if it
+   remains clean and no same-user process holds a cwd, open descriptor, or
+   writable memory mapping inside it across the quiescence window. Linux
+   performs a `/proc` census (same-user inspection failures are fail-closed for
+   processes created during the worktree lifetime), and macOS uses `lsof`.
+   Windows treats the proof as unsupported because `FILE_SHARE_DELETE` permits
+   writable delete-pending handles. Any late activity or inconclusive proof
+   retains the registered recovery copy and manifest.
+
+The hook receives the same `ITERION_*` environment and the same
+config-snapshotted `Hooks` value the other hooks use, so a mid-flight reload
+cannot swap the callback body. The old default `--force` hook was removed:
+custom hooks remain explicit operator code, but stock teardown never delegates
+its safety decision to a shell snippet.
 
 Teardown is confined to the clean-finish path. Cancelled/failed dispatches keep
 the workspace (retry resumes from it, the operator inspects it) — unchanged.
@@ -100,9 +124,12 @@ drains cleanup via the worker's existing `workersWG` membership.
 ## Consequences
 
 - The default `git worktree` workflow is now correct under `cleanup_on_done` /
-  `cleanup_on_terminal`: the worktree is deregistered before its directory is
-  deleted, so `git worktree list` stays clean and re-dispatching a previously
-  cleaned issue no longer fails at `after_create`.
+  `cleanup_on_terminal`: clean and quiescent worktrees are deregistered without
+  force. Active or changed recovery copies remain deliberately visible in
+  `git worktree list` and in their manifest until an operator resolves them.
+- Workspace paths include the logical run generation. Re-dispatching a ticket
+  cannot collide with an old retired path, even if an old absolute-path writer
+  wakes after the new run starts.
 - **Behaviour change:** workspace removal (and any `before_remove` hook) now
   happens on the worker goroutine just before the run is reported finished,
   rather than on the actor just after. The directory is gone slightly earlier
@@ -111,8 +138,11 @@ drains cleanup via the worker's existing `workersWG` membership.
   reads `run.json`, not the workspace tree).
 - `cleanupWorkspace`'s signature changed to take the snapshotted `*Hook` and
   env; its only caller is `runWorker`.
-- Best-effort throughout: a failing or slow `before_remove` is logged and the
-  directory is still removed; a hung hook is bounded by `Hook.Run`'s own
-  timeout + `WaitDelay`, and `Stop()` waits it out via `workersWG`.
+- Follow-up safety hardening (2026-07): a failed or state-changing
+  `before_remove` now preserves the workspace. The shipped destructive
+  `worktree remove --force` hook was removed; dispatcher teardown goes through
+  runtime's exact-HEAD/durable-ref proof, atomic quarantine, live-process
+  census, and non-forced Git cleanup. This closes clean-commit,
+  ignored-output, direct-writer, and inter-run path-reuse loss windows.
 - Default `workspace.persist: keep` is unaffected — teardown (and therefore the
   hook) remains a no-op, asserted by `TestCleanupWorkspace_SkippedUnderKeepPolicy`.

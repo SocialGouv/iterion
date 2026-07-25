@@ -2,7 +2,7 @@
 // Modified-files panel — git status + diff for the run's working dir,
 // plus the live-worktree file editor read/write endpoints.
 
-import { request } from "./client";
+import { apiURL, request } from "./client";
 import type {
   RunFileContent,
   RunFileDiff,
@@ -56,6 +56,16 @@ export async function getRunFileContent(
   const qs = new URLSearchParams({ path });
   return request(
     `/runs/${encodeURIComponent(runId)}/files/content?${qs.toString()}`,
+  );
+}
+
+// runFilePreviewURL serves a passive image from the exact paused run's live
+// worktree. Unlike workspace-level image URLs, this also works for isolated
+// worktrees whose files have not been merged back into the project.
+export function runFilePreviewURL(runId: string, relPath: string): string {
+  const segments = relPath.split("/").map(encodeURIComponent).join("/");
+  return apiURL(
+    `/runs/${encodeURIComponent(runId)}/files/preview/${segments}`,
   );
 }
 

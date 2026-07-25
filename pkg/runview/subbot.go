@@ -62,6 +62,7 @@ func (s *Service) subbotRunnerFor(parentPath string, runLogger *iterlog.Logger) 
 			return nil, err
 		}
 
+		childAuthoritySince := time.Now().UTC()
 		childExec, err := BuildExecutor(ExecutorSpec{
 			Ctx:           ctx,
 			Workflow:      childWf,
@@ -91,6 +92,7 @@ func (s *Service) subbotRunnerFor(parentPath string, runLogger *iterlog.Logger) 
 		opts = append(opts,
 			runtime.WithParentRunID(req.ParentRunID),
 			runtime.WithParentNodeID(req.NodeID),
+			runtime.WithWorktreeAuthoritySince(childAuthoritySince),
 			// Recursive wiring so a child that itself declares subbot nodes can
 			// run them (grandchild sources resolve relative to the CHILD's dir);
 			// the ctx-carried depth keeps the recursion bounded.
@@ -106,12 +108,37 @@ func (s *Service) subbotRunnerFor(parentPath string, runLogger *iterlog.Logger) 
 		)
 		childEng := runtime.New(childWf, s.store, childExec, opts...)
 		childCtx := context.WithValue(ctx, subbotDepthKey{}, depth+1)
+
+		// A synchronous subbot has no Manager entry of its own, but it still
+		// needs an unambiguous cross-process liveness signal. Acquire the child
+		// run lock before Engine.Run creates its document so an observer can
+		// never see a transient unlocked `running` child and reconcile it as an
+		// orphan. Release immediately after Run returns: a paused child must be
+		// claimable by the external resume that AwaitSubbotTerminal observes.
+		childLock, err := s.store.LockRun(childCtx, childRunID)
+		if err != nil {
+			if c, ok := any(childExec).(io.Closer); ok {
+				_ = c.Close()
+			}
+			return nil, fmt.Errorf("lock subbot child run %s: %w", childRunID, err)
+		}
+		lockHeld := true
+		defer func() {
+			if lockHeld {
+				_ = childLock.Unlock()
+			}
+		}()
 		runErr := childEng.Run(childCtx, childRunID, req.Vars)
+		unlockErr := childLock.Unlock()
+		lockHeld = false
 		// Close promptly — BEFORE a potentially hours-long human wait below —
 		// so per-child MCP servers / board-store watchers don't accumulate
 		// under parallel fan-out (the inotify-instance exhaustion #197 fixed).
 		if c, ok := any(childExec).(io.Closer); ok {
 			_ = c.Close()
+		}
+		if unlockErr != nil {
+			return nil, fmt.Errorf("unlock subbot child run %s: %w", childRunID, unlockErr)
 		}
 		if runErr != nil {
 			// A human gate inside the child pauses the CHILD run (its doc is

@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -155,16 +156,23 @@ func (e *pipelineBoardTestEnv) projection(t *testing.T) PipelineBoardResponse {
 }
 
 // The five fixed lanes, in order.
-func TestPipelineBoardHasFourFixedColumns(t *testing.T) {
+func TestPipelineBoardHasThreeFixedColumns(t *testing.T) {
 	env := newPipelineBoardTestEnv(t)
 	projection := env.projection(t)
-	want := []string{pipelineColumnBacklog, pipelineColumnTodo, pipelineColumnInProgress, pipelineColumnDone, pipelineColumnFailed}
+	want := []struct{ id, title string }{
+		{pipelineColumnOpened, "Opened"},
+		{pipelineColumnInProgress, "In progress"},
+		{pipelineColumnClosed, "Closed"},
+	}
 	if len(projection.Columns) != len(want) {
 		t.Fatalf("columns = %+v, want %v", projection.Columns, want)
 	}
-	for i, id := range want {
-		if projection.Columns[i].ID != id {
-			t.Errorf("column[%d] = %q, want %q", i, projection.Columns[i].ID, id)
+	for i, w := range want {
+		if projection.Columns[i].ID != w.id {
+			t.Errorf("column[%d] id = %q, want %q", i, projection.Columns[i].ID, w.id)
+		}
+		if projection.Columns[i].Title != w.title {
+			t.Errorf("column[%d] title = %q, want %q", i, projection.Columns[i].Title, w.title)
 		}
 	}
 }
@@ -197,6 +205,31 @@ func TestPipelineBoardFoldsDescendantsAndCollectsReviews(t *testing.T) {
 			NodeID:               "child_approval",
 			InteractionID:        "int-child",
 			InteractionQuestions: map[string]any{"approved": "Ship it?"},
+			InteractionReviewBrief: &store.HumanReviewBrief{
+				Version: store.HumanReviewBriefVersion,
+				Source:  store.HumanReviewBriefSourceAI,
+				Points: []string{
+					"Check that the final cut tells the intended story.",
+					"Confirm that the pacing remains clear throughout.",
+				},
+			},
+			InteractionMedia: []store.ReviewMediaRef{
+				{
+					RunID: "run-child", Path: "renders/candidate.mp4", Kind: "video",
+					MIME: "video/mp4", Size: 1234, Caption: "Validate the final cut",
+				},
+			},
+			InteractionReview: &store.ReviewGateState{
+				Turns: []store.InteractionTurn{
+					{Role: "companion", Content: "Play the final cut end to end."},
+				},
+				Posture:       "human_required",
+				MergeStrategy: "squash",
+				MergeInto:     "main",
+				MaxTurns:      4,
+				ReviewURL:     "https://review.example.test/candidate",
+				Verdict:       map[string]any{"decision": "approved", "confidence": "high"},
+			},
 		}
 	})
 	if err := env.board.SetLastRun(issue.ID, "run-root", ""); err != nil {
@@ -236,6 +269,26 @@ func TestPipelineBoardFoldsDescendantsAndCollectsReviews(t *testing.T) {
 	if pr.InteractionID != "int-child" || pr.Questions["approved"] != "Ship it?" {
 		t.Errorf("pending review interaction = %+v", pr)
 	}
+	if pr.ReviewBrief == nil ||
+		pr.ReviewBrief.Version != store.HumanReviewBriefVersion ||
+		pr.ReviewBrief.Source != store.HumanReviewBriefSourceAI ||
+		len(pr.ReviewBrief.Points) != 2 ||
+		pr.ReviewBrief.Points[0] != "Check that the final cut tells the intended story." {
+		t.Errorf("pending review brief = %+v", pr.ReviewBrief)
+	}
+	if len(pr.Media) != 1 || pr.Media[0].Path != "renders/candidate.mp4" ||
+		pr.Media[0].RunID != "run-child" || pr.Media[0].Kind != "video" ||
+		pr.Media[0].Caption != "Validate the final cut" {
+		t.Errorf("pending review media = %+v", pr.Media)
+	}
+	if pr.Review == nil || len(pr.Review.Turns) != 1 ||
+		pr.Review.Turns[0].Content != "Play the final cut end to end." ||
+		pr.Review.Posture != "human_required" || pr.Review.MergeStrategy != "squash" ||
+		pr.Review.MergeInto != "main" || pr.Review.MaxTurns != 4 ||
+		pr.Review.ReviewURL != "https://review.example.test/candidate" ||
+		pr.Review.Verdict["decision"] != "approved" {
+		t.Errorf("pending guided review = %+v", pr.Review)
+	}
 	// The whole tree's run ids surface so the studio can aggregate a sub-bot's
 	// produced elements onto the root card (root first, then descendants).
 	if len(root.TreeRunIDs) != 2 || root.TreeRunIDs[0] != "run-root" || root.TreeRunIDs[1] != "run-child" {
@@ -246,23 +299,102 @@ func TestPipelineBoardFoldsDescendantsAndCollectsReviews(t *testing.T) {
 	}
 }
 
+func TestPipelineBoardPendingReviewsOldestUpdateFirstAndRepauseMovesToBack(t *testing.T) {
+	env := newPipelineBoardTestEnv(t)
+	base := time.Date(2026, time.July, 22, 10, 0, 0, 0, time.UTC)
+	env.seedRun(t, "review-root", "review", store.RunStatusRunning, func(run *store.Run) {
+		run.CreatedAt = base.Add(-time.Hour)
+		run.UpdatedAt = run.CreatedAt
+	})
+
+	seedReview := func(id string, createdAt, requestedAt time.Time) {
+		t.Helper()
+		interactionID := id + "_gate"
+		env.seedRun(t, id, "review", store.RunStatusPausedWaitingHuman, func(run *store.Run) {
+			run.ParentRunID = "review-root"
+			run.CreatedAt = createdAt
+			run.UpdatedAt = requestedAt
+			run.Checkpoint = &store.Checkpoint{
+				NodeID:               "gate",
+				InteractionID:        interactionID,
+				InteractionQuestions: map[string]any{"reply": id + "?"},
+			}
+		})
+		if err := env.runStore(t).WriteInteraction(context.Background(), &store.Interaction{
+			ID:          interactionID,
+			RunID:       id,
+			NodeID:      "gate",
+			RequestedAt: requestedAt,
+			Questions:   map[string]any{"reply": id + "?"},
+		}); err != nil {
+			t.Fatalf("WriteInteraction(%s): %v", id, err)
+		}
+	}
+
+	// Tree order is A, B, C by creation time. The review queue initially has
+	// the same order for a different reason: the pending-turn update stamps.
+	seedReview("ai-a", base.Add(-3*time.Minute), base)
+	seedReview("ai-b", base.Add(-2*time.Minute), base.Add(time.Minute))
+	seedReview("ai-c", base.Add(-time.Minute), base.Add(2*time.Minute))
+
+	assertQueue := func(wantIDs []string, wantTimes []time.Time) {
+		t.Helper()
+		card := findPipelineCard(t, env.projection(t).Cards, "run:review-root")
+		if len(card.PendingReviews) != len(wantIDs) {
+			t.Fatalf("pending_reviews = %+v, want %v", card.PendingReviews, wantIDs)
+		}
+		for i, wantID := range wantIDs {
+			got := card.PendingReviews[i]
+			if got.RunID != wantID || !got.UpdatedAt.Equal(wantTimes[i]) {
+				t.Errorf("pending_reviews[%d] = (%s, %s), want (%s, %s)",
+					i, got.RunID, got.UpdatedAt, wantID, wantTimes[i])
+			}
+		}
+	}
+
+	assertQueue(
+		[]string{"ai-a", "ai-b", "ai-c"},
+		[]time.Time{base, base.Add(time.Minute), base.Add(2 * time.Minute)},
+	)
+
+	// Guided reviews reuse the same run/node/interaction ID. Rewriting A's
+	// interaction with a fresh request stamp models its next AI turn: it must
+	// join the back instead of reclaiming A's structural position in the tree.
+	if err := env.runStore(t).WriteInteraction(context.Background(), &store.Interaction{
+		ID:          "ai-a_gate",
+		RunID:       "ai-a",
+		NodeID:      "gate",
+		RequestedAt: base.Add(3 * time.Minute),
+		Questions:   map[string]any{"reply": "ai-a next turn?"},
+	}); err != nil {
+		t.Fatalf("rewrite ai-a interaction: %v", err)
+	}
+	assertQueue(
+		[]string{"ai-b", "ai-c", "ai-a"},
+		[]time.Time{base.Add(time.Minute), base.Add(2 * time.Minute), base.Add(3 * time.Minute)},
+	)
+}
+
 // Root status maps to the five lanes; queued is TODO (waiting for a slot).
 func TestPipelineBoardColumnBucketing(t *testing.T) {
 	env := newPipelineBoardTestEnv(t)
 	cases := []struct {
-		id     string
-		status store.RunStatus
-		column string
+		id         string
+		status     store.RunStatus
+		column     string
+		wantFailed bool
 	}{
-		{"r-running", store.RunStatusRunning, pipelineColumnInProgress},
-		{"r-paused", store.RunStatusPausedWaitingHuman, pipelineColumnInProgress},
-		{"r-finished", store.RunStatusFinished, pipelineColumnDone},
-		{"r-failed", store.RunStatusFailed, pipelineColumnFailed},
-		{"r-resumable", store.RunStatusFailedResumable, pipelineColumnFailed},
-		{"r-cancelled", store.RunStatusCancelled, pipelineColumnFailed},
+		{"r-running", store.RunStatusRunning, pipelineColumnInProgress, false},
+		{"r-paused", store.RunStatusPausedWaitingHuman, pipelineColumnInProgress, false},
+		// Finished (success) and failed/cancelled all fold into CLOSED; the
+		// Failed flag distinguishes the outcome for the lane's filter + badge.
+		{"r-finished", store.RunStatusFinished, pipelineColumnClosed, false},
+		{"r-failed", store.RunStatusFailed, pipelineColumnClosed, true},
+		{"r-resumable", store.RunStatusFailedResumable, pipelineColumnClosed, true},
+		{"r-cancelled", store.RunStatusCancelled, pipelineColumnClosed, true},
 		// An operator soft-pause is resumable mid-flight state, NOT a
 		// failure — it must never offer Retry-from-zero (L1, PR review).
-		{"r-operator", store.RunStatusPausedOperator, pipelineColumnInProgress},
+		{"r-operator", store.RunStatusPausedOperator, pipelineColumnInProgress, false},
 	}
 	for _, c := range cases {
 		env.seedRun(t, c.id, "review", c.status, func(run *store.Run) {
@@ -287,10 +419,11 @@ func TestPipelineBoardColumnBucketing(t *testing.T) {
 		if card.ColumnID != c.column {
 			t.Errorf("%s column = %q, want %q", c.id, card.ColumnID, c.column)
 		}
-		// Failed runs land in the FAILED lane and must carry the Failed flag
-		// so the UI offers Retry and shows the error as the reason.
-		if c.column == pipelineColumnFailed && !card.Failed {
-			t.Errorf("%s in Failed must have Failed=true", c.id)
+		// A failed/cancelled run in CLOSED must carry the Failed flag so the
+		// UI offers Retry, filters it as "failed", and shows the reason; a
+		// successful finish must not.
+		if card.Failed != c.wantFailed {
+			t.Errorf("%s Failed = %v, want %v", c.id, card.Failed, c.wantFailed)
 		}
 	}
 	queued := findPipelineCard(t, projection.Cards, "run:r-queued")
@@ -334,8 +467,11 @@ func TestPipelineBoardProgressAndOutput(t *testing.T) {
 	}
 
 	out := findPipelineCard(t, projection.Cards, "run:run-output")
-	if out.ColumnID != pipelineColumnDone {
-		t.Errorf("finished column = %q, want done", out.ColumnID)
+	if out.ColumnID != pipelineColumnClosed {
+		t.Errorf("finished column = %q, want closed", out.ColumnID)
+	}
+	if out.Failed {
+		t.Errorf("finished run must not be flagged Failed")
 	}
 	if out.ExecutedNodes != out.TotalNodes || out.TotalNodes != 3 {
 		t.Errorf("finished progress = %d/%d, want 3/3 (100%% clamp)", out.ExecutedNodes, out.TotalNodes)
@@ -425,6 +561,45 @@ func TestPipelineBoardTaskCreateEnsuresUniqueTitle(t *testing.T) {
 	// A distinct title is untouched.
 	if got := create("Other"); got != "Other" {
 		t.Errorf("distinct = %q, want %q", got, "Other")
+	}
+	longTitle := strings.Repeat("é", pipelineTitleMaxRunes+20)
+	if got := create(longTitle); len([]rune(got)) != pipelineTitleMaxRunes {
+		t.Errorf("long first title has %d runes, want %d", len([]rune(got)), pipelineTitleMaxRunes)
+	}
+	if got := create(longTitle); len([]rune(got)) != pipelineTitleMaxRunes || !strings.HasPrefix(got, "#2 - ") {
+		t.Errorf("long duplicate = %q, want bounded title with #2 prefix", got)
+	}
+}
+
+func TestPipelineBoardTaskCreateCompactsLongTitle(t *testing.T) {
+	env := newPipelineBoardTestEnv(t)
+	rawTitle := "A detailed product idea\n\n" + strings.Repeat("with extensive context ", 20)
+	payload, err := json.Marshal(map[string]string{
+		"bot":   "review",
+		"title": rawTitle,
+	})
+	if err != nil {
+		t.Fatalf("Marshal: %v", err)
+	}
+	resp, err := http.Post(
+		env.http.URL+"/api/v1/pipeline-board/tasks",
+		"application/json",
+		bytes.NewReader(payload),
+	)
+	if err != nil {
+		t.Fatalf("POST: %v", err)
+	}
+	if resp.StatusCode != http.StatusCreated {
+		resp.Body.Close()
+		t.Fatalf("status = %d, want %d", resp.StatusCode, http.StatusCreated)
+	}
+	var out native.Issue
+	decodeJSONResp(t, resp, &out)
+	if want := compactPipelineTitle(rawTitle); out.Title != want {
+		t.Fatalf("stored title = %q, want %q", out.Title, want)
+	}
+	if strings.Contains(out.Title, "\n") {
+		t.Fatalf("stored title still contains a newline: %q", out.Title)
 	}
 }
 
@@ -518,8 +693,8 @@ func TestPipelineBoardAssociatesInflightSourceAndStandaloneRun(t *testing.T) {
 	if inflight.IssueID != issue.ID || inflight.Title != issue.Title {
 		t.Errorf("inflight source association = %+v", inflight)
 	}
-	if findPipelineCard(t, projection.Cards, "run:run-manual").ColumnID != pipelineColumnDone {
-		t.Error("manual finished run should be projected in Done")
+	if findPipelineCard(t, projection.Cards, "run:run-manual").ColumnID != pipelineColumnClosed {
+		t.Error("manual finished run should be projected in Closed")
 	}
 	for _, card := range projection.Cards {
 		if card.Kind == "task" {
@@ -550,13 +725,14 @@ func TestPipelineBoardFoldsChildOfAnotherBot(t *testing.T) {
 	}
 }
 
-// A not-yet-ready native task (non-eligible state) is a Draft card; an
-// eligible (ready) one is a Todo card the launch loop will start.
+// Both a not-yet-ready native task (non-eligible state) and an eligible
+// (ready) one live in the TODO lane now; the Ready flag distinguishes them
+// (drives the Ready/Draft badge + the Todo lane's readiness filter).
 func TestPipelineBoardProjectsTaskDraftVsTodo(t *testing.T) {
 	env := newPipelineBoardTestEnv(t)
 	draft, err := env.board.Create(native.Issue{
 		Title:   "Being prepared",
-		State:   native.StateInbox, // non-eligible → Draft
+		State:   native.StateInbox, // non-eligible → Todo, not ready (Draft badge)
 		Bot:     "review",
 		BotArgs: map[string]string{"scope": "api"},
 	})
@@ -565,7 +741,7 @@ func TestPipelineBoardProjectsTaskDraftVsTodo(t *testing.T) {
 	}
 	ready, err := env.board.Create(native.Issue{
 		Title: "Ready to run",
-		State: native.StateReady, // eligible → Todo
+		State: native.StateReady, // eligible → Todo, ready
 		Bot:   "review",
 	})
 	if err != nil {
@@ -574,8 +750,8 @@ func TestPipelineBoardProjectsTaskDraftVsTodo(t *testing.T) {
 
 	projection := env.projection(t)
 	d := findPipelineCard(t, projection.Cards, "task:"+draft.ID)
-	if d.Kind != "task" || d.ColumnID != pipelineColumnBacklog || d.Ready {
-		t.Errorf("draft card = %+v, want kind=task column=draft ready=false", d)
+	if d.Kind != "task" || d.ColumnID != pipelineColumnTodo || d.Ready {
+		t.Errorf("draft card = %+v, want kind=task column=todo ready=false", d)
 	}
 	if d.EntryInput["scope"] != "api" {
 		t.Errorf("draft entry_input = %+v, want bot_args", d.EntryInput)
@@ -617,11 +793,12 @@ func TestPipelineBoardTaskReadyTogglesState(t *testing.T) {
 	if card := findPipelineCard(t, env.projection(t).Cards, "task:"+issue.ID); card.ColumnID != pipelineColumnTodo || !card.Ready {
 		t.Errorf("after ready: card = %+v, want column=todo ready=true", card)
 	}
-	if got := post(false); got.State != native.StateInbox {
-		t.Errorf("ready=false state = %q, want %q", got.State, native.StateInbox)
+	if got := post(false); got.State != native.StateBacklog {
+		t.Errorf("ready=false state = %q, want %q", got.State, native.StateBacklog)
 	}
-	if card := findPipelineCard(t, env.projection(t).Cards, "task:"+issue.ID); card.ColumnID != pipelineColumnBacklog {
-		t.Errorf("after unready: card column = %q, want draft", card.ColumnID)
+	// Unstaged, the ticket stays in Todo but loses its Ready flag (Draft badge).
+	if card := findPipelineCard(t, env.projection(t).Cards, "task:"+issue.ID); card.ColumnID != pipelineColumnTodo || card.Ready {
+		t.Errorf("after unready: card = %+v, want column=todo ready=false", card)
 	}
 }
 
@@ -652,9 +829,9 @@ func TestPipelineBoardTaskUpdateEditsDraft(t *testing.T) {
 	if out.Title != "Polished" || out.Priority != 3 || out.BotArgs["scope"] != "new" || out.BotArgs["extra"] != "1" {
 		t.Errorf("updated issue = %+v", out)
 	}
-	// The edit shows on the board's Draft card.
+	// The edit shows on the board's Todo (draft) card.
 	card := findPipelineCard(t, env.projection(t).Cards, "task:"+issue.ID)
-	if card.Title != "Polished" || card.ColumnID != pipelineColumnBacklog || card.EntryInput["scope"] != "new" {
+	if card.Title != "Polished" || card.ColumnID != pipelineColumnTodo || card.EntryInput["scope"] != "new" {
 		t.Errorf("edited draft card = %+v", card)
 	}
 
@@ -765,4 +942,416 @@ func hasPipelineCard(cards []PipelineBoardCard, id string) bool {
 		}
 	}
 	return false
+}
+
+func TestPipelineBoardWorkspaceImageServesGuardsAndRefuses(t *testing.T) {
+	env := newPipelineBoardTestEnv(t)
+	refDir := filepath.Join(env.workDir, "assets", "characters", "histoire", "boudicca", "refs")
+	if err := os.MkdirAll(refDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	payload := []byte("\x89PNG fake-bytes")
+	if err := os.WriteFile(filepath.Join(refDir, "master.png"), payload, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(env.workDir, "secret.txt"), []byte("nope"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	// Nominal: a workdir-relative image is served with its content type.
+	resp, err := http.Get(env.http.URL + "/api/v1/pipeline-board/workspace-images/assets/characters/histoire/boudicca/refs/master.png")
+	if err != nil {
+		t.Fatal(err)
+	}
+	body := new(bytes.Buffer)
+	if _, err := body.ReadFrom(resp.Body); err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, want 200 (%s)", resp.StatusCode, body.String())
+	}
+	if got := resp.Header.Get("Content-Type"); got != "image/png" {
+		t.Fatalf("content-type = %q, want image/png", got)
+	}
+	if !bytes.Equal(body.Bytes(), payload) {
+		t.Fatalf("body = %q, want the file bytes", body.Bytes())
+	}
+
+	// Image-only allowlist: a non-image workdir file is refused even though
+	// it exists — this endpoint must not become a generic file reader.
+	resp, err = http.Get(env.http.URL + "/api/v1/pipeline-board/workspace-images/secret.txt")
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusNotFound {
+		t.Fatalf("non-image status = %d, want 404", resp.StatusCode)
+	}
+
+	// Traversal out of the workdir is rejected by safePath. The raw path
+	// must bypass Go's client-side dot-segment cleaning to reach the server.
+	req, err := http.NewRequest(http.MethodGet, env.http.URL+"/api/v1/pipeline-board/workspace-images/escape.png", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.URL.Path = "/api/v1/pipeline-board/workspace-images/../../../etc/passwd.png"
+	req.URL.RawPath = "/api/v1/pipeline-board/workspace-images/..%2F..%2F..%2Fetc%2Fpasswd.png"
+	resp, err = http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode == http.StatusOK {
+		t.Fatalf("traversal returned 200, want an error status")
+	}
+
+	// Missing file: clean 404.
+	resp, err = http.Get(env.http.URL + "/api/v1/pipeline-board/workspace-images/assets/absent.png")
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusNotFound {
+		t.Fatalf("missing file status = %d, want 404", resp.StatusCode)
+	}
+}
+
+func TestTitleFromContentInputs_ShortsEpisode(t *testing.T) {
+	got := titleFromContentInputs(map[string]any{
+		"character":     "Boudicca",
+		"episode_no":    "1",
+		"episode_total": "5",
+		"episode_title": "Le Fouet et le Serment",
+		"hook":          "Rome croyait frapper une veuve…",
+	})
+	want := "Boudicca · ÉP 1/5 — Le Fouet et le Serment"
+	if got != want {
+		t.Fatalf("got %q, want %q", got, want)
+	}
+}
+
+func TestTitleFromContentInputs_SubjectOnly(t *testing.T) {
+	got := titleFromContentInputs(map[string]any{"requested_character": "Boudicca"})
+	if got != "Boudicca" {
+		t.Fatalf("got %q, want Boudicca", got)
+	}
+}
+
+func TestTitleFromContentInputs_Empty(t *testing.T) {
+	if got := titleFromContentInputs(nil); got != "" {
+		t.Fatalf("nil → %q", got)
+	}
+	if got := titleFromContentInputs(map[string]any{"max_script_rewrites": "2"}); got != "" {
+		t.Fatalf("noise-only keys should not yield a title, got %q", got)
+	}
+}
+
+func TestPipelineDisplayTitle_PrefersContentOverRunCodename(t *testing.T) {
+	root := &store.Run{
+		Name:         "orbital-plunge-borealroar-707f",
+		WorkflowName: "shorts_historical_episode",
+		Inputs: map[string]any{
+			"character":     "Boudicca",
+			"episode_no":    "4",
+			"episode_total": "5",
+			"episode_title": "Londinium Sacrifiée",
+		},
+	}
+	got := pipelineDisplayTitle(nil, root)
+	want := "Boudicca · ÉP 4/5 — Londinium Sacrifiée"
+	if got != want {
+		t.Fatalf("got %q, want %q", got, want)
+	}
+}
+
+func TestPipelineDisplayTitle_IssueTitleWhenNoContent(t *testing.T) {
+	issue := &native.Issue{Title: "Review the release"}
+	root := &store.Run{Name: "comet-bonk-novazap-d859", WorkflowName: "review"}
+	got := pipelineDisplayTitle(issue, root)
+	if got != "Review the release" {
+		t.Fatalf("got %q, want issue title", got)
+	}
+}
+
+func TestPipelineDisplayTitle_TaskFromBotArgs(t *testing.T) {
+	issue := &native.Issue{
+		Title: "draft ticket",
+		BotArgs: map[string]string{
+			"character":     "Boudicca",
+			"episode_no":    "2",
+			"episode_total": "5",
+			"episode_title": "La Ville sans Murailles",
+		},
+	}
+	got := pipelineDisplayTitle(issue, nil)
+	want := "Boudicca · ÉP 2/5 — La Ville sans Murailles"
+	if got != want {
+		t.Fatalf("got %q, want %q", got, want)
+	}
+}
+
+func TestPipelineDisplayTitle_IgnoresLongFormInput(t *testing.T) {
+	root := &store.Run{
+		BundleDisplayName: "Ida",
+		Inputs: map[string]any{
+			"idea": strings.Repeat("A full product brief with Markdown. ", 400),
+		},
+	}
+	if got := pipelineDisplayTitle(nil, root); got != "Ida" {
+		t.Fatalf("got %q, want bundle display name", got)
+	}
+}
+
+func TestPipelineDisplayTitle_CompactsAndTruncatesLongCandidate(t *testing.T) {
+	root := &store.Run{
+		Inputs: map[string]any{
+			"topic": "A detailed product idea " + strings.Repeat("with extensive context ", 10) + "\n\nIgnored details",
+		},
+	}
+	got := pipelineDisplayTitle(nil, root)
+	if strings.Contains(got, "\n") {
+		t.Fatalf("title still contains a newline: %q", got)
+	}
+	if len([]rune(got)) > pipelineTitleMaxRunes {
+		t.Fatalf("title has %d runes, want at most %d: %q", len([]rune(got)), pipelineTitleMaxRunes, got)
+	}
+	if !strings.HasSuffix(got, "…") {
+		t.Fatalf("truncated title = %q, want ellipsis", got)
+	}
+}
+
+// Content inputs on a live root must surface on the board projection even
+// when no native ticket is linked (the common studio launch path).
+func TestPipelineBoardCardTitleFromRunInputs(t *testing.T) {
+	env := newPipelineBoardTestEnv(t)
+	env.seedRun(t, "run-ep", "shorts_historical_episode", store.RunStatusRunning, func(run *store.Run) {
+		run.Name = "orbital-plunge-borealroar-707f"
+		run.BotID = "shorts-episode"
+		run.Inputs = map[string]any{
+			"character":     "Boudicca",
+			"episode_no":    "1",
+			"episode_total": "5",
+			"episode_title": "Le Fouet et le Serment",
+		}
+	})
+	projection := env.projection(t)
+	card := findPipelineCard(t, projection.Cards, "run:run-ep")
+	want := "Boudicca · ÉP 1/5 — Le Fouet et le Serment"
+	if card.Title != want {
+		t.Fatalf("card title = %q, want %q", card.Title, want)
+	}
+}
+
+// A ticket restaged to ready after its last run was cancelled must appear
+// as an Opened/Ready TASK card — not stuck in Closed behind the old run.
+// Regression for: "episode invisible but not lost: ready, waiting for a slot".
+func TestPipelineBoardRestagedReadyAfterCancelShowsOpenedTask(t *testing.T) {
+	env := newPipelineBoardTestEnv(t)
+	issue, err := env.board.Create(native.Issue{
+		Title: "Episode 5",
+		State: native.StateReady,
+		Bot:   "review",
+		BotArgs: map[string]string{
+			"character":     "Boudicca",
+			"episode_no":    "5",
+			"episode_total": "5",
+			"episode_title": "Le Dernier Fracas",
+		},
+	})
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	env.seedRun(t, "run-cancelled-ep5", "shorts_historical_episode", store.RunStatusCancelled, func(run *store.Run) {
+		run.Name = "void-smash-synthsnarl-0db8"
+		run.BotID = "shorts-episode"
+		run.Inputs = map[string]any{
+			"character":     "Boudicca",
+			"episode_no":    "5",
+			"episode_total": "5",
+			"episode_title": "Le Dernier Fracas",
+		}
+	})
+	if err := env.board.SetLastRun(issue.ID, "run-cancelled-ep5", ""); err != nil {
+		t.Fatalf("SetLastRun: %v", err)
+	}
+
+	projection := env.projection(t)
+
+	// Must NOT project the cancelled run as the primary closed card.
+	if hasPipelineCard(projection.Cards, "run:run-cancelled-ep5") {
+		t.Fatalf("cancelled prior run must not be the board card when ticket is restaged ready: %+v", projection.Cards)
+	}
+	card := findPipelineCard(t, projection.Cards, "task:"+issue.ID)
+	if card.ColumnID != pipelineColumnOpened && card.ColumnID != pipelineColumnTodo {
+		t.Errorf("column = %q, want opened", card.ColumnID)
+	}
+	if !card.Ready {
+		t.Errorf("ready = false, want true (ticket is StateReady)")
+	}
+	if card.Kind != "task" {
+		t.Errorf("kind = %q, want task", card.Kind)
+	}
+	wantTitle := "Boudicca · ÉP 5/5 — Le Dernier Fracas"
+	if card.Title != wantTitle {
+		t.Errorf("title = %q, want %q", card.Title, wantTitle)
+	}
+	// Prior attempt still listed for history / drawer.
+	foundAttempt := false
+	for _, a := range card.Attempts {
+		if a.RunID == "run-cancelled-ep5" {
+			foundAttempt = true
+			break
+		}
+	}
+	if !foundAttempt {
+		t.Errorf("attempts missing cancelled prior run: %+v", card.Attempts)
+	}
+}
+
+// A cancelled run whose ticket is STILL in_progress (not restaged) stays
+// Closed — restaging is what flips projection back to Opened.
+func TestPipelineBoardCancelledRunWithoutRestageStaysClosed(t *testing.T) {
+	env := newPipelineBoardTestEnv(t)
+	issue, err := env.board.Create(native.Issue{
+		Title: "Still closed",
+		State: native.StateInProgress,
+		Bot:   "review",
+	})
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	env.seedRun(t, "run-still-closed", "review", store.RunStatusCancelled, nil)
+	if err := env.board.SetLastRun(issue.ID, "run-still-closed", ""); err != nil {
+		t.Fatalf("SetLastRun: %v", err)
+	}
+	projection := env.projection(t)
+	card := findPipelineCard(t, projection.Cards, "run:run-still-closed")
+	if card.ColumnID != pipelineColumnClosed {
+		t.Errorf("column = %q, want closed", card.ColumnID)
+	}
+	if !card.Failed {
+		t.Error("failed flag should be set for cancelled run")
+	}
+}
+
+func TestPipelineIssueRestagedForRelaunch(t *testing.T) {
+	ready := &native.Issue{State: native.StateReady}
+	inProg := &native.Issue{State: native.StateInProgress}
+	cancelled := &store.Run{Status: store.RunStatusCancelled}
+	finished := &store.Run{Status: store.RunStatusFinished}
+	running := &store.Run{Status: store.RunStatusRunning}
+	if !pipelineIssueRestagedForRelaunch(ready, cancelled) {
+		t.Error("ready+cancelled should restage")
+	}
+	if pipelineIssueRestagedForRelaunch(ready, finished) {
+		t.Error("ready+finished must not restage (success not relaunched)")
+	}
+	if pipelineIssueRestagedForRelaunch(ready, running) {
+		t.Error("ready+running must not restage")
+	}
+	if pipelineIssueRestagedForRelaunch(inProg, cancelled) {
+		t.Error("in_progress+cancelled is not restaged (still owns the attempt)")
+	}
+}
+
+func TestPipelineBoardParentChildProjection(t *testing.T) {
+	env := newPipelineBoardTestEnv(t)
+	parent, err := env.board.Create(native.Issue{
+		Title:   "Plan series",
+		State:   native.StateDone,
+		Bot:     "review",
+		BotArgs: map[string]string{native.BotArgRole: "planner"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	child, err := env.board.Create(native.Issue{
+		Title:    "Episode 1",
+		State:    native.StateReady,
+		Bot:      "review",
+		ParentID: parent.ID,
+		BotArgs: map[string]string{
+			native.BotArgSpawnedFrom: parent.ID,
+			native.BotArgRole:        "producer",
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	proj := env.projection(t)
+	pCard := findPipelineCard(t, proj.Cards, "task:"+parent.ID)
+	if pCard.Role != "planner" {
+		t.Errorf("parent role = %q", pCard.Role)
+	}
+	if pCard.ChildrenSummary == nil || pCard.ChildrenSummary.Total != 1 {
+		t.Fatalf("children summary = %+v", pCard.ChildrenSummary)
+	}
+	if len(pCard.Children) != 1 || pCard.Children[0].IssueID != child.ID {
+		t.Fatalf("children = %+v", pCard.Children)
+	}
+	cCard := findPipelineCard(t, proj.Cards, "task:"+child.ID)
+	if cCard.ParentIssueID != parent.ID {
+		t.Errorf("child parent = %q", cCard.ParentIssueID)
+	}
+	if cCard.ParentTitle != "Plan series" {
+		t.Errorf("parent title = %q", cCard.ParentTitle)
+	}
+}
+
+// A planner parent is an ORDINARY card: once its own run finishes it lands
+// in Closed, even while spawned children are still open. (It used to be
+// pinned to Opened with launch_blocked_reason=awaiting_children until every
+// child closed — that made the parent's lane contradict its own run status.)
+// The relation survives as data: the children summary on the parent, and
+// parent_id / parent_title on each child.
+func TestPipelineBoardParentClosesIndependentlyOfChildren(t *testing.T) {
+	env := newPipelineBoardTestEnv(t)
+	parent, err := env.board.Create(native.Issue{
+		Title:   "Plan series",
+		State:   native.StateDone,
+		Bot:     "review",
+		BotArgs: map[string]string{native.BotArgRole: "planner"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	env.seedRun(t, "run-plan", "shorts_series_plan", store.RunStatusFinished, func(run *store.Run) {
+		run.BotID = "shorts-series-plan"
+	})
+	if err := env.board.SetLastRun(parent.ID, "run-plan", ""); err != nil {
+		t.Fatal(err)
+	}
+	child, err := env.board.Create(native.Issue{
+		Title:    "Episode 1",
+		State:    native.StateReady,
+		Bot:      "review",
+		ParentID: parent.ID,
+		BotArgs: map[string]string{
+			native.BotArgSpawnedFrom: parent.ID,
+			native.BotArgRole:        "producer",
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	proj := env.projection(t)
+	pCard := findPipelineCard(t, proj.Cards, "run:run-plan")
+	if pCard.ColumnID != pipelineColumnClosed {
+		t.Fatalf("parent column = %q, want closed (its own run finished)", pCard.ColumnID)
+	}
+	if pCard.LaunchBlockedReason == "awaiting_children" {
+		t.Fatal("awaiting_children must no longer be emitted")
+	}
+	if pCard.ChildrenSummary == nil || pCard.ChildrenSummary.Total != 1 {
+		t.Fatalf("parent lost its children counter: %+v", pCard.ChildrenSummary)
+	}
+	cCard := findPipelineCard(t, proj.Cards, "task:"+child.ID)
+	if cCard.ColumnID != pipelineColumnOpened {
+		t.Fatalf("child column = %q, want opened", cCard.ColumnID)
+	}
+	if cCard.ParentIssueID != parent.ID || cCard.ParentTitle != "Plan series" {
+		t.Fatalf("child lost its parent link: %q / %q", cCard.ParentIssueID, cCard.ParentTitle)
+	}
 }

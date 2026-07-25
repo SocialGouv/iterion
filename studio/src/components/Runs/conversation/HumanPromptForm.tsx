@@ -6,7 +6,11 @@ import { Button } from "@/components/ui/Button";
 import { WizardForm } from "@/components/ui/WizardForm";
 import { useHumanNodeSchema } from "@/hooks/useHumanNodeSchema";
 import { ASK_USER_RESPONSE_KEY } from "@/lib/askUserOptions";
-import type { FormAnswer, FormSpec } from "@/lib/whats-next/questionForm";
+import type {
+  FormAnswer,
+  FormQuestion,
+  FormSpec,
+} from "@/lib/whats-next/questionForm";
 import {
   coerceFormAnswerToSchema,
   formSpecFromSchema,
@@ -138,10 +142,23 @@ export default function HumanPromptForm({
     // keeps every input (feedback + any per-item selector like
     // whats-next's `selected_titles`) visible alongside the buttons.
     const mode = verdict ? "flat" : undefined;
-    return formSpecFromSchema(visible, questions, {
+    const spec = formSpecFromSchema(visible, questions, {
       submitLabel: "Submit & Resume",
       mode,
     });
+    const rework = approve
+      ? visible.find(
+          (field) =>
+            field.name === "rework_target" &&
+            (field.enum_values?.length ?? 0) > 0,
+        )
+      : undefined;
+    return approve
+      ? makeApprovalFormFriendly(
+          spec,
+          requiresConcreteRevisionTarget(rework?.enum_values),
+        )
+      : spec;
   }, [fields, questions]);
 
   useEffect(() => {
@@ -239,13 +256,45 @@ export default function HumanPromptForm({
   const visibleFields = verdictField
     ? (fields ?? []).filter((f) => f.name !== verdictField.name)
     : fields ?? [];
+  const reworkField = approveField
+    ? visibleFields.find(
+        (field) =>
+          field.name === "rework_target" &&
+          (field.enum_values?.length ?? 0) > 0,
+      )
+    : undefined;
+  const concreteRevisionRequired = requiresConcreteRevisionTarget(
+    reworkField?.enum_values,
+  );
 
   const submitWithVerdict = (value: boolean | string) => {
     if (!fields || !verdictField) return;
-    const answerWithDefaults = {
+    const answerWithDefaults: FormAnswer = {
       ...defaultAnswerForSpec(formSpec),
       ...latestAnswer,
     };
+    // Approval schemas commonly pair `approved: bool` with a technical
+    // `rework_target: none|…` routing field. The operator should not have to
+    // understand that invariant: approving selects `none` automatically,
+    // while plan/concept reviews ask for a concrete correction target. Other
+    // workflows keep `none` available because it may mean a final rejection.
+    if (approveField && typeof value === "boolean") {
+      if (reworkField) {
+        if (value && reworkField.enum_values?.includes("none")) {
+          answerWithDefaults[reworkField.name] = "none";
+        } else if (!value && concreteRevisionRequired) {
+          const selected = answerWithDefaults[reworkField.name];
+          if (
+            typeof selected !== "string" ||
+            selected.trim() === "" ||
+            selected === "none"
+          ) {
+            setError("Choose what should be revised before requesting changes.");
+            return;
+          }
+        }
+      }
+    }
     const { answers, errors } = coerceFormAnswerToSchema(
       visibleFields,
       answerWithDefaults,
@@ -294,11 +343,11 @@ export default function HumanPromptForm({
   const showQuickActions = !verdictField && quickActions.length > 0;
 
   return (
-    <div className="space-y-2">
+    <div className="space-y-3">
       {staleHash && (
-        <div className="text-caption text-warning-fg" role="status">
-          The workflow source changed since this run started. Submit will still
-          try — if the server rejects it, a force-retry button will appear.
+        <div className="text-body text-warning-fg" role="status">
+          The workflow was updated after this review started. Your answer is
+          still safe to submit.
         </div>
       )}
       {loading && !isAskUserPause ? (
@@ -383,7 +432,11 @@ export default function HumanPromptForm({
                 disabled={busy}
                 onClick={() => submitWithVerdict(false)}
               >
-                {busy ? "…" : "Reject"}
+                {busy
+                  ? "…"
+                  : reworkField && !concreteRevisionRequired
+                    ? "Reject"
+                    : "Request changes"}
               </Button>
             </div>
           )}
@@ -423,6 +476,75 @@ export default function HumanPromptForm({
       )}
     </div>
   );
+}
+
+function makeApprovalFormFriendly(
+  spec: FormSpec,
+  concreteRevisionRequired: boolean,
+): FormSpec {
+  return {
+    ...spec,
+    questions: spec.questions.map((question): FormQuestion => {
+      if (
+        question.id === "rework_target" &&
+        (question.kind === "radio" || question.kind === "select")
+      ) {
+        const labels: Record<string, string> = {
+          none: "Reject without another revision",
+          plan: "The plan",
+          concept: "The visual concept",
+          implementation: "The implementation",
+        };
+        return {
+          ...question,
+          label: "What should be revised?",
+          description: concreteRevisionRequired
+            ? "Choose an area only when requesting changes."
+            : "Choose an area to request changes, or reject without another revision.",
+          required: concreteRevisionRequired ? false : question.required,
+          // In the plan/concept gate, `none` is only an internal approval
+          // value. Other workflows may route a rejected `none` to a terminal
+          // state, so keep it visible there with a human-readable label.
+          options: question.options
+            .filter(
+              (option) =>
+                !concreteRevisionRequired || option.value !== "none",
+            )
+            .map((option) => ({
+              ...option,
+              label: labels[option.value] ?? humanizeActionValue(option.value),
+            })),
+        };
+      }
+      if (question.id === "reviewer" && question.kind === "free_text") {
+        return {
+          ...question,
+          label: "Your name",
+          rows: 1,
+          placeholder: "Optional",
+        };
+      }
+      if (
+        (question.id === "notes" || question.id === "feedback") &&
+        question.kind === "free_text"
+      ) {
+        return {
+          ...question,
+          label: "Feedback",
+          placeholder: "Briefly describe what should change (optional)",
+        };
+      }
+      return question;
+    }),
+  };
+}
+
+function requiresConcreteRevisionTarget(
+  values: readonly string[] | undefined,
+): boolean {
+  if (!values || values.length !== 3) return false;
+  const set = new Set(values);
+  return set.has("none") && set.has("plan") && set.has("concept");
 }
 
 function defaultAnswerForSpec(spec: FormSpec | null): FormAnswer {

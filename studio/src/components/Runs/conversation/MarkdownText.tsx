@@ -5,9 +5,10 @@ import rehypeHighlight from "rehype-highlight";
 
 interface Props {
   value: string;
-  // Optional: shrink the prose for inline node-output cards. Default
-  // keeps the standard 12px body size used elsewhere in the run view.
-  size?: "sm" | "md";
+  // Optional sizing by context: `sm` is compact node-card prose, `md` is the
+  // regular run view, and `lg` is reserved for text the operator must read
+  // before making a human-review decision.
+  size?: "sm" | "md" | "lg";
 }
 
 // Module-scoped so the reference is stable across renders.
@@ -127,9 +128,18 @@ const REHYPE_PLUGINS: Options["rehypePlugins"] = [
 // exact. Without it react-markdown re-parses every visible prompt/output
 // card on each event tick of a streaming run.
 function MarkdownText({ value, size = "md" }: Props) {
-  const base = size === "sm" ? "text-micro" : "text-body";
+  const base =
+    size === "sm"
+      ? "text-micro"
+      : size === "lg"
+        ? "text-title leading-relaxed"
+        : "text-body";
   return (
-    <div className={`prose-iterion ${base} text-fg-default leading-snug`}>
+    <div
+      className={`prose-iterion ${base} text-fg-default ${
+        size === "lg" ? "" : "leading-snug"
+      }`}
+    >
       <ReactMarkdown
         remarkPlugins={REMARK_PLUGINS}
         rehypePlugins={REHYPE_PLUGINS}

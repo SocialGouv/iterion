@@ -124,11 +124,13 @@ func (e *Engine) execFanOutEach(ctx context.Context, rs *runState, routerNodeID 
 			if e.logger != nil {
 				e.logger.Warn("fan_out_each from %s: 'over' resolved to an empty array and the template has no convergence node — running the template once with no item binding (count=0)", routerNodeID)
 			}
+			e.setIncomingEdge(rs, tmplEdge)
 			return tmplEdge.To, nil
 		}
 		if e.logger != nil {
 			e.logger.Warn("fan_out_each from %s: 'over' resolved to an empty array — skipping to convergence %s", routerNodeID, convergence)
 		}
+		e.setIncomingEdge(rs, nil)
 		return convergence, nil
 	}
 

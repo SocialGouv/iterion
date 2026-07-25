@@ -334,6 +334,17 @@ type ToolNode struct {
 	Recovery      *RecoverySpec // bounded recovery rung config (nil = no rungs)
 
 	Needs []string // resource names this node acquires before running (counting semaphores)
+
+	// ParallelSafe asserts that concurrent fan-out replays of this tool write
+	// only to disjoint, item-keyed targets and never race one another on the
+	// shared workspace, letting the workspace-safety guard fan the tool out in
+	// parallel (max_parallel_branches > 1). It is scoped to a fan_out_each
+	// template — the one place a single node is replayed over items; it has no
+	// effect on a static fan_out_all / llm-router (distinct branches, no item
+	// key). Unlike a subbot's Isolated, the tool still writes to the shared
+	// workspace — it just partitions those writes; unlike an agent/judge
+	// Readonly, it is not read-only. Default false = conservatively mutating.
+	ParallelSafe bool
 }
 
 // Verified Action policy values (ADR-044).

@@ -28,8 +28,8 @@ func gitOut(t *testing.T, dir string, args ...string) string {
 
 // TestRunPersistWorkspace_WorkspaceAuthority pins the managed-worktree
 // promotion gate: a linked-worktree workspace is adopted as a managed
-// baseline (Worktree=true → finalization authority: iterion/run/*
-// branch + best-effort FF + cleanup on close) ONLY when the workspace
+// baseline (Worktree=true → Git finalization authority: iterion/run/*
+// branch + best-effort FF; teardown stays with the launcher) ONLY when the workspace
 // was delegated to the engine via WithWorkDir (dispatcher-seeded
 // per-issue worktrees, studio-bound dirs). A defaulted-CWD run from
 // inside a FOREIGN linked worktree — a Claude Code session worktree,
@@ -49,12 +49,13 @@ func TestRunPersistWorkspace_WorkspaceAuthority(t *testing.T) {
 	wf := &ir.Workflow{Name: "authority", Nodes: map[string]ir.Node{}}
 
 	cases := []struct {
-		name         string
-		delegated    bool
-		wantWorktree bool
+		name          string
+		delegated     bool
+		wantWorktree  bool
+		wantOwnership store.WorktreeOwnership
 	}{
-		{"foreign linked worktree (defaulted CWD) is NOT promoted", false, false},
-		{"delegated linked worktree (WithWorkDir) IS promoted", true, true},
+		{"foreign linked worktree (defaulted CWD) is NOT promoted", false, false, ""},
+		{"delegated linked worktree (WithWorkDir) IS promoted", true, true, store.WorktreeOwnershipDelegated},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -87,8 +88,14 @@ func TestRunPersistWorkspace_WorkspaceAuthority(t *testing.T) {
 				t.Errorf("Worktree = %v, want %v (repo_root=%q base=%q)",
 					got.Worktree, tc.wantWorktree, got.RepoRoot, got.BaseCommit)
 			}
+			if got.WorktreeOwnership != tc.wantOwnership {
+				t.Errorf("WorktreeOwnership = %q, want %q", got.WorktreeOwnership, tc.wantOwnership)
+			}
 			if tc.wantWorktree && got.RepoRoot == "" {
 				t.Error("promoted run must carry the main repo root as its baseline")
+			}
+			if tc.wantWorktree && got.WorktreeGitDir == "" {
+				t.Error("promoted run must bind its private Git directory")
 			}
 		})
 	}

@@ -14,6 +14,13 @@ type Issue struct {
 	Priority int            `json:"priority,omitempty"`
 	Assignee string         `json:"assignee,omitempty"`
 	Blockers []string       `json:"blockers,omitempty"`
+	// ParentID is the planner (or prior planner) ticket that spawned this
+	// one. Distinct from Blockers (scheduling deps): ParentID is provenance
+	// / campaign ownership so the /pipelines UI can nest children under a
+	// plan. Empty for root tickets. Stamped automatically by board.create
+	// when the creating run is sourced from a ticket, or set explicitly via
+	// create_issue parent_id / bot_args.spawned_from.
+	ParentID string         `json:"parent_id,omitempty"`
 	Fields   map[string]any `json:"fields,omitempty"`
 	// Bot, when non-empty, overrides the dispatcher's per-assignee /
 	// global workflow selection for this ticket. The dispatcher

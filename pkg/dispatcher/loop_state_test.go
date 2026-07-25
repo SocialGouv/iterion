@@ -273,9 +273,14 @@ func TestDispatch_RevertsOnWorkspaceCreateFailure(t *testing.T) {
 	if err := os.MkdirAll(wsDir, 0o755); err != nil {
 		t.Fatalf("mkdir ws: %v", err)
 	}
-	// Seed a file where the workspace directory should land. The
-	// sanitized key for "fake:t4" replaces ':' with '_'.
-	collidingFile := filepath.Join(wsDir, "fake_t4")
+	ws, err := NewWorkspaces(wsDir)
+	if err != nil {
+		t.Fatalf("NewWorkspaces: %v", err)
+	}
+	// Seed a file where the v2 workspace namespace must be a directory.
+	// Create must refuse to adopt or replace it, independently of the freshly
+	// generated run-specific path.
+	collidingFile := filepath.Join(wsDir, workspaceKeyNamespace)
 	if err := os.WriteFile(collidingFile, []byte("collision"), 0o644); err != nil {
 		t.Fatalf("seed colliding file: %v", err)
 	}
@@ -288,10 +293,6 @@ func TestDispatch_RevertsOnWorkspaceCreateFailure(t *testing.T) {
 		Agent:     AgentConfig{MaxConcurrent: 4, MaxRetryBackoffMS: 1000, RunningState: "in_progress"},
 		Workspace: WorkspaceConfig{Root: wsDir},
 		Stall:     StallConfig{TimeoutMS: 0},
-	}
-	ws, err := NewWorkspaces(wsDir)
-	if err != nil {
-		t.Fatalf("NewWorkspaces: %v", err)
 	}
 	c, err := New(Options{
 		Config:     cfg,

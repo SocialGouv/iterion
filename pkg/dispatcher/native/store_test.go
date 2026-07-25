@@ -67,11 +67,15 @@ func TestNewStorePrependsInboxToLegacyBoard(t *testing.T) {
 	}
 
 	got := s.Board().States
-	if len(got) != 4 {
-		t.Fatalf("want 4 states after inbox prepend, got %d: %+v", len(got), got)
+	// Upgrade also inserts waiting_deps after ready → 5 states.
+	if len(got) != 5 {
+		t.Fatalf("want 5 states after schema upgrade, got %d: %+v", len(got), got)
 	}
 	if got[0].Name != StateInbox {
 		t.Fatalf("want inbox as first state, got %q", got[0].Name)
+	}
+	if got[2].Name != StateReady || got[3].Name != StateWaitingDeps {
+		t.Fatalf("want waiting_deps after ready, got %+v", got)
 	}
 
 	// Re-load to confirm the upgrade was persisted (idempotent: a
@@ -80,8 +84,8 @@ func TestNewStorePrependsInboxToLegacyBoard(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewStore (second pass): %v", err)
 	}
-	if len(s2.Board().States) != 4 {
-		t.Fatalf("inbox prepended twice: %+v", s2.Board().States)
+	if len(s2.Board().States) != 5 {
+		t.Fatalf("schema upgrade ran twice: %+v", s2.Board().States)
 	}
 }
 
@@ -114,14 +118,23 @@ func TestNewStoreInsertsAwaitingInputAfterInProgress(t *testing.T) {
 	}
 
 	got := s.Board().States
-	if len(got) != 5 {
-		t.Fatalf("want 5 states after awaiting-input insert, got %d: %+v", len(got), got)
+	// Upgrade inserts waiting_deps (after ready) + awaiting_input (after in_progress).
+	// Legacy had: inbox, ready, in_progress, done → +2 = 6.
+	if len(got) != 6 {
+		t.Fatalf("want 6 states after schema upgrade, got %d: %+v", len(got), got)
 	}
-	if got[2].Name != StateInProgress || got[3].Name != StateAwaitingInput {
+	// ready → waiting_deps → in_progress → awaiting_input
+	if got[1].Name != StateReady || got[2].Name != StateWaitingDeps {
+		t.Fatalf("want waiting_deps right after ready, got %+v", got)
+	}
+	if got[2].Eligible || got[2].Terminal {
+		t.Fatalf("waiting_deps must be non-eligible, non-terminal: %+v", got[2])
+	}
+	if got[3].Name != StateInProgress || got[4].Name != StateAwaitingInput {
 		t.Fatalf("want awaiting_input right after in_progress, got %+v", got)
 	}
-	if got[3].Eligible || got[3].Terminal {
-		t.Fatalf("awaiting_input must be non-eligible, non-terminal: %+v", got[3])
+	if got[4].Eligible || got[4].Terminal {
+		t.Fatalf("awaiting_input must be non-eligible, non-terminal: %+v", got[4])
 	}
 
 	// Re-load to confirm the upgrade was persisted and is idempotent.
@@ -129,8 +142,8 @@ func TestNewStoreInsertsAwaitingInputAfterInProgress(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewStore (second pass): %v", err)
 	}
-	if len(s2.Board().States) != 5 {
-		t.Fatalf("awaiting_input inserted twice: %+v", s2.Board().States)
+	if len(s2.Board().States) != 6 {
+		t.Fatalf("schema upgrade inserted twice: %+v", s2.Board().States)
 	}
 }
 
@@ -150,7 +163,7 @@ func TestUpgradeBoardSchema(t *testing.T) {
 	for _, s := range legacy.States {
 		names = append(names, s.Name)
 	}
-	want := []string{StateInbox, StateBacklog, StateReady, StateInProgress, StateAwaitingInput, StateDone}
+	want := []string{StateInbox, StateBacklog, StateReady, StateWaitingDeps, StateInProgress, StateAwaitingInput, StateDone}
 	if len(names) != len(want) {
 		t.Fatalf("states = %v, want %v", names, want)
 	}

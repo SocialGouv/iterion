@@ -95,7 +95,7 @@ describe("HumanPromptForm — schema fetch failure (iterion#244)", () => {
     );
 
     const reject = await waitFor(() =>
-      screen.getByRole("button", { name: "Reject" }),
+      screen.getByRole("button", { name: "Request changes" }),
     );
     fireEvent.change(screen.getByRole("textbox"), {
       target: { value: "spacing is off" },
@@ -110,5 +110,196 @@ describe("HumanPromptForm — schema fetch failure (iterion#244)", () => {
         }),
       ),
     );
+  });
+
+  it("hides routing jargon and fills the approval target automatically", async () => {
+    getRunWorkflow.mockResolvedValue({
+      nodes: [
+        {
+          id: "plan_review",
+          output_schema: [
+            { name: "approved", type: "bool" },
+            {
+              name: "rework_target",
+              type: "string",
+              enum_values: ["none", "plan", "concept"],
+            },
+            { name: "reviewer", type: "string" },
+            { name: "notes", type: "string" },
+          ],
+        },
+      ],
+      stale_hash: false,
+    });
+
+    render(
+      <HumanPromptForm
+        runId="run-1"
+        nodeId="plan_review"
+        questions={{}}
+        sourceOverride={null}
+      />,
+    );
+
+    await waitFor(() =>
+      expect(screen.getByText("What should be revised?")).toBeTruthy(),
+    );
+    expect(screen.queryByText("none")).toBeNull();
+    expect(screen.getByText("The plan")).toBeTruthy();
+    expect(screen.getByText("The visual concept")).toBeTruthy();
+    expect(screen.getByText("Your name")).toBeTruthy();
+
+    fireEvent.click(screen.getByRole("button", { name: "Approve" }));
+    await waitFor(() =>
+      expect(resumeRun).toHaveBeenCalledWith(
+        "run-1",
+        expect.objectContaining({
+          answers: expect.objectContaining({
+            approved: true,
+            rework_target: "none",
+          }),
+        }),
+      ),
+    );
+  });
+
+  it("requires a concrete correction target before requesting changes", async () => {
+    getRunWorkflow.mockResolvedValue({
+      nodes: [
+        {
+          id: "plan_review",
+          output_schema: [
+            { name: "approved", type: "bool" },
+            {
+              name: "rework_target",
+              type: "string",
+              enum_values: ["none", "plan", "concept"],
+            },
+          ],
+        },
+      ],
+      stale_hash: false,
+    });
+
+    render(
+      <HumanPromptForm
+        runId="run-1"
+        nodeId="plan_review"
+        questions={{}}
+        sourceOverride={null}
+      />,
+    );
+
+    const requestChanges = await waitFor(() =>
+      screen.getByRole("button", { name: "Request changes" }),
+    );
+    fireEvent.click(requestChanges);
+    expect(screen.getByRole("alert").textContent).toMatch(
+      /Choose what should be revised/,
+    );
+    expect(resumeRun).not.toHaveBeenCalled();
+
+    fireEvent.click(screen.getByText("The plan"));
+    fireEvent.click(requestChanges);
+    await waitFor(() =>
+      expect(resumeRun).toHaveBeenCalledWith(
+        "run-1",
+        expect.objectContaining({
+          answers: expect.objectContaining({
+            approved: false,
+            rework_target: "plan",
+          }),
+        }),
+      ),
+    );
+  });
+
+  it("keeps a terminal rejection available for workflows where none is meaningful", async () => {
+    getRunWorkflow.mockResolvedValue({
+      nodes: [
+        {
+          id: "concept_review",
+          output_schema: [
+            { name: "approved", type: "bool" },
+            {
+              name: "rework_target",
+              type: "string",
+              enum_values: ["none", "contract", "images"],
+            },
+          ],
+        },
+      ],
+      stale_hash: false,
+    });
+
+    render(
+      <HumanPromptForm
+        runId="run-1"
+        nodeId="concept_review"
+        questions={{}}
+        sourceOverride={null}
+      />,
+    );
+
+    fireEvent.click(
+      await screen.findByText("Reject without another revision"),
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Reject" }));
+
+    await waitFor(() =>
+      expect(resumeRun).toHaveBeenCalledWith(
+        "run-1",
+        expect.objectContaining({
+          answers: expect.objectContaining({
+            approved: false,
+            rework_target: "none",
+          }),
+        }),
+      ),
+    );
+  });
+
+  it("humanizes a large rework selector without dropping its none option", async () => {
+    getRunWorkflow.mockResolvedValue({
+      nodes: [
+        {
+          id: "asset_review",
+          output_schema: [
+            { name: "approved", type: "bool" },
+            {
+              name: "rework_target",
+              type: "string",
+              enum_values: [
+                "none",
+                "body_geometry",
+                "skeleton",
+                "weights",
+                "export",
+              ],
+            },
+          ],
+        },
+      ],
+      stale_hash: false,
+    });
+
+    render(
+      <HumanPromptForm
+        runId="run-1"
+        nodeId="asset_review"
+        questions={{}}
+        sourceOverride={null}
+      />,
+    );
+
+    expect(await screen.findByText("What should be revised?")).toBeTruthy();
+    expect(
+      screen.getByRole("option", {
+        name: "Reject without another revision",
+      }),
+    ).toBeTruthy();
+    expect(
+      screen.getByRole("option", { name: "Body geometry" }),
+    ).toBeTruthy();
   });
 });

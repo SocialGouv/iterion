@@ -3,6 +3,7 @@ package runtime
 import (
 	"context"
 	"net/http"
+	"time"
 
 	"github.com/SocialGouv/iterion/pkg/bundle"
 	iterlog "github.com/SocialGouv/iterion/pkg/log"
@@ -295,6 +296,17 @@ func WithWorkDir(dir string) EngineOption {
 		e.workDir = dir
 		e.workDirDelegated = dir != ""
 	}
+}
+
+// WithWorktreeAuthoritySince supplies the trusted lower bound used by managed
+// worktree cleanup's process census. Launchers that construct or health-check
+// run-scoped subprocesses before Engine.Run must capture this timestamp before
+// doing so; otherwise an inaccessible early child could look unrelated merely
+// because it predates `git worktree add`. The timestamp is persisted outside
+// the checkout. Callers that do not start anything early may omit this option;
+// setupWorktree then captures the boundary immediately before creation.
+func WithWorktreeAuthoritySince(since time.Time) EngineOption {
+	return func(e *Engine) { e.worktreeAuthoritySince = since.UTC() }
 }
 
 // WithBundle attaches a resolved `.botz` bundle to the engine. The

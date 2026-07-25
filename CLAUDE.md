@@ -949,7 +949,7 @@ iterion inspect [--run-id] [--events]   # View run state and events
 iterion resume --run-id --file [--answers-file] [--force]  # Resume paused/failed/cancelled run
 iterion fork --run-id <parent> --node <id> [--turn N] [--rewind-code]  # Fork a run at a prior LLM turn (resume with `iterion resume`)
 iterion diagram <file.bot> [--view]    # Generate Mermaid diagram (compact|detailed|full)
-iterion studio [--port] [--dir] [--bind] [--bots-path] [--no-browser-pane] [--max-concurrent-pipelines]  # Launch visual workflow editor (+ kanban /board, global /pipelines control-center board, /dispatcher dashboard, Browser pane, Launch modal, /bots gallery + per-bot home + guided builder at /bots/new). --max-concurrent-pipelines (default 3) caps concurrent root pipelines; excess wait in /pipelines Todo.
+iterion studio [--port] [--dir] [--bind] [--bots-path] [--no-browser-pane] [--max-concurrent-pipelines]  # Launch visual workflow editor (+ kanban /board, global /pipelines control-center board, /dispatcher dashboard, Browser pane, Launch modal, /bots gallery + per-bot home + guided builder at /bots/new). --max-concurrent-pipelines (default 3) caps concurrent root pipelines; excess wait in the /pipelines Ready lane.
 iterion report --run-id <id> [--store-dir] [--output]  # Generate chronological run report
 iterion dispatch <config.yaml> [--port]  # Long-running dispatcher (tracker → workflow per issue)
 iterion schedule add|list|remove|run|install|uninstall  # Cron recurring bots via the host crontab — no daemon (see docs/scheduling.md)

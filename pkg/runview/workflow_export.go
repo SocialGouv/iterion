@@ -3,6 +3,7 @@ package runview
 import (
 	"context"
 	"fmt"
+	"path/filepath"
 	"sync"
 
 	"github.com/SocialGouv/iterion/pkg/bundle"
@@ -165,13 +166,15 @@ func buildWireWorkflowFromRun(r *store.Run, cache *wireWorkflowCache) (*WireWork
 	)
 	switch {
 	case r.FilePath != "":
-		cacheKey = r.FilePath
-		wf, hash, err = CompileWorkflowWithHash(r.FilePath)
+		filePath := runSourcePath(r.FilePath, r.WorkDir)
+		cacheKey = filePath
+		wf, hash, err = CompileWorkflowWithHash(filePath)
 	case r.BundlePath != "":
-		cacheKey = r.BundlePath
-		b, oerr := bundle.OpenDir(r.BundlePath)
+		bundlePath := runSourcePath(r.BundlePath, r.WorkDir)
+		cacheKey = bundlePath
+		b, oerr := bundle.OpenDir(bundlePath)
 		if oerr != nil {
-			return nil, fmt.Errorf("open bundle %s: %w", r.BundlePath, oerr)
+			return nil, fmt.Errorf("open bundle %s: %w", bundlePath, oerr)
 		}
 		wf, hash, err = CompileBundleWorkflow(b.IterPath, b)
 	default:
@@ -216,6 +219,19 @@ func buildWireWorkflowFromRun(r *store.Run, cache *wireWorkflowCache) (*WireWork
 		cache.put(cacheKey, hash, out)
 	}
 	return out, nil
+}
+
+// runSourcePath resolves historical/project-relative source paths against the
+// exact directory in which the run executed. Studio daemons are often started
+// from the Iterion repository while serving another project through --dir; in
+// that topology resolving a relative FilePath against the daemon cwd makes the
+// workflow schema unavailable (and human gates fall back to an untyped Resume
+// button). Newer runs may already persist an absolute path, which is preserved.
+func runSourcePath(path, workDir string) string {
+	if path == "" || filepath.IsAbs(path) || workDir == "" {
+		return path
+	}
+	return filepath.Join(workDir, path)
 }
 
 // IRWorkflowEndpointPath is exposed for symmetry with other runview

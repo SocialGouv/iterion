@@ -341,7 +341,7 @@ workflow safe_pr_fix:
   ...
 ```
 
-- **`worktree: auto`** — the engine creates `<store-dir>/worktrees/<run-id>`, executes the workflow there, then on a clean exit creates a persistent branch (default `iterion/run/<friendly-name>`) and fast-forwards the user's currently-checked-out branch to that HEAD. Override with `--merge-into`, `--branch-name`, `--merge-strategy`, or `--auto-merge=false`. See [resume.md](resume.md).
+- **`worktree: auto`** — the engine creates `<store-dir>/worktrees/<run-id>`, executes the workflow there, then on a clean exit creates a persistent branch (default `iterion/run/<friendly-name>`) and fast-forwards the user's currently-checked-out branch to that HEAD. Override with `--merge-into`, `--branch-name`, `--merge-strategy`, or `--auto-merge=false`. Before executor/MCP startup, the launcher records a trusted process boundary outside the checkout. Final cleanup atomically quarantines the worktree and removes it without force only after Git durability, cleanliness, and process-quiescence checks; an old run without that boundary or any inconclusive check is preserved. See [resume.md](resume.md).
 - **`sandbox: auto`** — reads `.devcontainer/devcontainer.json` (or falls back to the default iterion sandbox image) and runs each agent/tool node inside an isolated container with the worktree bind-mounted at `/workspace`, plus an HTTP CONNECT proxy enforcing a network allowlist. `claw` backend calls run through the hidden `iterion __claw-runner` subprocess inside the container, so custom images must provide `iterion` on PATH or allow the host binary to be bind-mounted. Use `iterion sandbox doctor` to verify host capabilities. See [sandbox.md](sandbox.md).
 
 ---

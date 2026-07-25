@@ -20,19 +20,18 @@ import (
 // Input resolution
 // ---------------------------------------------------------------------------
 
-// resolveScope groups the five context maps + runState that every
-// reference-resolution call needs. It exists purely to flatten what was
-// a 5-param tail repeated across buildNodeInputRS / resolveMapping /
-// resolveRef and all their call sites — no behaviour change. Fields are
-// passed by reference value (map / pointer) just as before, so callers
-// can still mutate the underlying maps where they did previously
-// (e.g. fan_out's `merged` maps).
+// resolveScope groups the context maps + runState that every reference-
+// resolution call needs. incomingEdge is copied explicitly instead of read
+// through rs so parallel branch scopes can leave it nil and never race a main-
+// path transition. Fields are passed by reference value (map / pointer), so
+// callers can still provide merged branch-local views where needed.
 type resolveScope struct {
-	vars      map[string]any
-	outputs   map[string]map[string]any
-	runInputs map[string]any
-	artifacts map[string]map[string]any
-	rs        *runState
+	vars         map[string]any
+	outputs      map[string]map[string]any
+	runInputs    map[string]any
+	artifacts    map[string]map[string]any
+	incomingEdge *ir.Edge
+	rs           *runState
 }
 
 // scope returns a resolveScope wired straight from rs — the common
@@ -42,11 +41,12 @@ type resolveScope struct {
 // runInputs) construct a literal resolveScope{} instead.
 func (rs *runState) scope() resolveScope {
 	return resolveScope{
-		vars:      rs.vars,
-		outputs:   rs.outputs,
-		runInputs: rs.runInputs,
-		artifacts: rs.artifacts,
-		rs:        rs,
+		vars:         rs.vars,
+		outputs:      rs.outputs,
+		runInputs:    rs.runInputs,
+		artifacts:    rs.artifacts,
+		incomingEdge: rs.incomingEdge,
+		rs:           rs,
 	}
 }
 
@@ -60,11 +60,24 @@ func (rs *runState) scope() resolveScope {
 func (e *Engine) buildNodeInputRS(nodeID string, sc resolveScope) map[string]any {
 	result := make(map[string]any)
 
+	// A sequential visit has one concrete incoming edge. Keep that identity
+	// for bounded-iteration edges: outputs from older correction loops remain
+	// in run state, but their mappings must not participate in this visit.
+	// Fan-out convergence has no single incoming edge and deliberately keeps
+	// the historical merge-all behaviour so inputs from every branch combine.
+	var selectedIncoming *ir.Edge
+	if sc.incomingEdge != nil && sc.incomingEdge.To == nodeID {
+		selectedIncoming = sc.incomingEdge
+	}
+
 	// applyEdge merges one edge's with-mappings into result. Only edges whose
 	// source has already produced output contribute (so a not-yet-run source
 	// leaves the mapping to a later-firing edge / the entry fallback).
 	applyEdge := func(edge *ir.Edge) {
 		if edge.To != nodeID || len(edge.With) == 0 {
+			return
+		}
+		if selectedIncoming != nil && edge.IsBoundedIteration() && edge != selectedIncoming {
 			return
 		}
 		if _, ok := sc.outputs[edge.From]; !ok && edge.From != "" {
@@ -106,12 +119,14 @@ func (e *Engine) buildNodeInputRS(nodeID string, sc resolveScope) map[string]any
 		}
 	}
 
-	// Merge with-mappings from ALL edges targeting this node whose source has
-	// produced output, in TWO precedence passes:
+	// Merge eligible with-mappings targeting this node in TWO precedence
+	// passes:
 	//
 	//  1. Non-iteration (forward / entry) edges first.
-	//  2. Bounded-iteration back-edges (loop / foreach) last, so they WIN on a
-	//     shared key.
+	//  2. Bounded-iteration back-edges (loop / foreach) last, so the selected
+	//     back-edge WINS on a shared key. At a convergence/legacy checkpoint,
+	//     where no concrete edge identity exists, all resolved back-edges retain
+	//     the historical merge behaviour.
 	//
 	// The head of a bounded loop is targeted by both its entry edge(s) AND its
 	// back-edge(s). On re-entry, both an entry edge's source and the back-edge's
@@ -125,8 +140,11 @@ func (e *Engine) buildNodeInputRS(nodeID string, sc resolveScope) map[string]any
 	// iteration" and is the authoritative source of a re-entering head's input,
 	// so it must take precedence. On FIRST entry the back-edge's source hasn't
 	// run yet, so it contributes nothing and the entry edge supplies the value —
-	// correct in both phases. Different-key convergence merges are unaffected
-	// (each edge only overwrites the keys it sets).
+	// correct in both phases. When several independent loops target the same
+	// head, selectedIncoming additionally excludes stale back-edges: their
+	// source outputs may still exist, but they were not traversed for this
+	// visit. Different-key convergence merges are unaffected (each edge only
+	// overwrites the keys it sets).
 	for _, edge := range e.workflow.Edges {
 		if !edge.IsBoundedIteration() {
 			applyEdge(edge)
@@ -163,13 +181,79 @@ func (e *Engine) buildNodeInputRS(nodeID string, sc resolveScope) map[string]any
 }
 
 // resolveMapping resolves a DataMapping's references to concrete values.
-// For simplicity in the minimal runtime, if there is exactly one ref we
-// return the resolved value directly; otherwise we return the raw template.
+// A mapping made exclusively of one reference is a typed passthrough: maps,
+// arrays, booleans, numbers and nil keep their native value.  As soon as the
+// reference is embedded in text (or the template contains several refs), the
+// mapping is a string template and every reference is interpolated.
+//
+// Keeping these cases distinct matters for mappings such as:
+//
+//	generation_request_id: "{{run.id}}:human:{{loop.fix.iteration}}"
+//
+// Previously, the one-ref form discarded its surrounding text and the
+// multiple-ref form returned dm.Raw verbatim, leaking {{...}} into tool input.
 func (e *Engine) resolveMapping(dm *ir.DataMapping, sc resolveScope) any {
-	if len(dm.Refs) == 1 {
+	if len(dm.Refs) == 1 && dm.Raw == mappingRefRaw(dm.Refs[0]) {
 		return e.resolveRef(dm.Refs[0], sc)
 	}
-	return dm.Raw
+	if len(dm.Refs) == 0 {
+		return dm.Raw
+	}
+
+	// Render occurrence-by-occurrence instead of repeatedly replacing the
+	// whole string.  A resolved value may itself contain {{...}} text; it must
+	// remain data and must not be interpreted as another mapping expression.
+	var rendered strings.Builder
+	rest := dm.Raw
+	rendered.Grow(len(dm.Raw))
+	for _, ref := range dm.Refs {
+		raw := mappingRefRaw(ref)
+		idx := strings.Index(rest, raw)
+		if idx < 0 {
+			// DataMappings normally come from ir.ParseRefs, so this only protects
+			// programmatically-constructed inconsistent IR. Preserve the
+			// unmatched text rather than corrupting it.
+			continue
+		}
+		rendered.WriteString(rest[:idx])
+		rendered.WriteString(formatMappingValue(e.resolveRef(ref, sc)))
+		rest = rest[idx+len(raw):]
+	}
+	rendered.WriteString(rest)
+	return rendered.String()
+}
+
+// mappingRefRaw returns the source spelling for a reference. Compiled IR
+// always carries Ref.Raw; reconstructing it keeps resolveMapping compatible
+// with programmatically-created workflows (including many runtime tests) that
+// historically populated only Kind and Path.
+func mappingRefRaw(ref *ir.Ref) string {
+	if ref.Raw != "" {
+		return ref.Raw
+	}
+	prefix := ""
+	if ref.Unquoted {
+		prefix = "!"
+	}
+	return "{{" + prefix + ref.Kind.String() + "." + strings.Join(ref.Path, ".") + "}}"
+}
+
+// formatMappingValue is the plain-text rendering used inside a composite
+// edge mapping. Strings pass through, nil becomes an empty segment, and
+// structured/scalar non-string values use JSON so interpolation is stable and
+// consistent with prompt templates.
+func formatMappingValue(v any) string {
+	if v == nil {
+		return ""
+	}
+	if s, ok := v.(string); ok {
+		return s
+	}
+	b, err := json.Marshal(v)
+	if err != nil {
+		return fmt.Sprintf("%v", v)
+	}
+	return string(b)
 }
 
 // resolveRef resolves a single Ref to a concrete value. The runState

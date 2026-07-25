@@ -3,10 +3,12 @@ package server
 import (
 	"bytes"
 	"errors"
+	"mime"
 	"net/http"
 	"os"
 	"path/filepath"
 	"sort"
+	"strings"
 
 	gitlib "github.com/SocialGouv/iterion/pkg/git"
 	"github.com/SocialGouv/iterion/pkg/store"
@@ -18,6 +20,26 @@ import (
 // blob into Monaco (it would freeze the browser) nor accept an unbounded
 // write body. 4 MiB comfortably covers any hand-edited source/.gitignore.
 const maxRunFileEditBytes = 4 << 20
+
+// runWorktreePreviewImageType is deliberately narrower than the generic
+// artifact-file endpoint. Human reviews may refer to files in a live worktree,
+// but this route must never become a run-scoped arbitrary file reader. Only
+// passive raster formats are eligible; active SVG/HTML and every non-image
+// format remain inaccessible.
+func runWorktreePreviewImageType(path string) (string, bool) {
+	switch filepath.Ext(strings.ToLower(path)) {
+	case ".png":
+		return "image/png", true
+	case ".jpg", ".jpeg":
+		return "image/jpeg", true
+	case ".webp":
+		return "image/webp", true
+	case ".gif":
+		return "image/gif", true
+	default:
+		return "", false
+	}
+}
 
 // fileMode selects the source-of-truth for /api/runs/{id}/files:
 //
@@ -600,6 +622,67 @@ type runFileContentResponse struct {
 	Content string `json:"content"`
 	Binary  bool   `json:"binary"`
 	Exists  bool   `json:"exists"`
+}
+
+// handlePreviewRunWorktreeImage serves one passive raster image from a run's
+// live worktree. It exists for human-review evidence that is produced in the
+// project tree rather than ITERION_ARTIFACT_FILES_DIR.
+//
+// The route is intentionally image-only. Request paths cross both boundaries
+// used by the run file editor: ValidateRelPath rejects lexical traversal and
+// resolveRunWorktreePath applies safePathWithin's symlink-aware containment
+// against this run's own WorkDir. A run can therefore expose neither another
+// run's worktree nor an arbitrary host file.
+func (s *Server) handlePreviewRunWorktreeImage(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	if id == "" {
+		s.httpErrorFor(w, r, http.StatusBadRequest, "missing run id")
+		return
+	}
+	path := r.PathValue("path")
+	if err := gitlib.ValidateRelPath(path); err != nil {
+		s.httpErrorFor(w, r, http.StatusBadRequest, "invalid path: %v", err)
+		return
+	}
+	contentType, supported := runWorktreePreviewImageType(path)
+	if !supported {
+		// Match the artifact/workspace-image read surfaces: do not reveal
+		// whether an unsupported arbitrary file exists.
+		s.httpErrorFor(w, r, http.StatusNotFound, "run image preview: unsupported file type")
+		return
+	}
+	run, err := s.runs.LoadRunCtx(r.Context(), id)
+	if err != nil {
+		s.httpErrorFor(w, r, http.StatusNotFound, "run not found: %v", err)
+		return
+	}
+	abs, ok := s.resolveRunWorktreePath(w, r, run, path)
+	if !ok {
+		return
+	}
+	// #nosec G304 — abs is the output of safePathWithin (symlink-aware
+	// containment against this run's persisted WorkDir).
+	info, err := os.Stat(abs)
+	if err != nil || !info.Mode().IsRegular() {
+		s.httpErrorFor(w, r, http.StatusNotFound, "run image preview: not found")
+		return
+	}
+	// #nosec G304 — see the containment rationale above.
+	file, err := os.Open(abs)
+	if err != nil {
+		s.httpErrorFor(w, r, http.StatusNotFound, "run image preview: not found")
+		return
+	}
+	defer file.Close()
+
+	w.Header().Set("Content-Type", contentType)
+	w.Header().Set("X-Content-Type-Options", "nosniff")
+	w.Header().Set("Content-Disposition", mime.FormatMediaType("inline", map[string]string{
+		"filename": filepath.Base(path),
+	}))
+	// Worktree evidence can be regenerated in place while the run is paused.
+	w.Header().Set("Cache-Control", "no-cache")
+	http.ServeContent(w, r, filepath.Base(path), info.ModTime(), file)
 }
 
 // saveRunFileRequest is the body of PUT /api/runs/{id}/files/content.

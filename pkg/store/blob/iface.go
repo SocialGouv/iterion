@@ -106,9 +106,10 @@ type Client interface {
 	// PutRunFile uploads a tool-produced artifact file (run report, SBOM,
 	// …) under `runfiles/<runID>/<relPath>`. relPath may contain nested
 	// segments. Idempotent. Backs the cloud RunFilesStore twin: the runner
-	// walks its local scratch dir post-run and PUTs each file here so the
-	// server pod can serve them.
-	PutRunFile(ctx context.Context, runID, relPath, contentType string, body []byte) error
+	// walks its local scratch dir and streams each file here so large review
+	// media never has to be buffered in the runner's memory. size is the exact
+	// byte length advertised to the blob backend.
+	PutRunFile(ctx context.Context, runID, relPath, contentType string, body io.Reader, size int64) error
 
 	// ListRunFiles enumerates every artifact file under
 	// `runfiles/<runID>/` as area-relative paths. Empty slice (no error)

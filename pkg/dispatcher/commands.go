@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -15,6 +16,7 @@ import (
 	"github.com/SocialGouv/iterion/pkg/dispatcher/tracker"
 	iterlog "github.com/SocialGouv/iterion/pkg/log"
 	"github.com/SocialGouv/iterion/pkg/runtime"
+	"github.com/SocialGouv/iterion/pkg/store"
 )
 
 // cancelGracePeriod is how long we wait after firing the engine-level
@@ -797,65 +799,194 @@ func (c *Dispatcher) runFinalCommit(runID string) string {
 	return probe.FinalCommit
 }
 
-// cleanupWorkspace tears down the per-issue workspace after a clean
-// dispatch when the active persist policy calls for it. The optional
-// before_remove hook runs first so an operator-configured teardown — the
-// default `git worktree remove` wired by BuildDefaultConfig — can
-// deregister the workspace from the host repo BEFORE the directory is
-// deleted. Without it `git worktree list` accumulates stale entries and a
-// later re-dispatch of the same issue fails its `git worktree add`.
+// cleanupWorkspace tears down the per-issue workspace after a clean dispatch
+// when the active persist policy calls for it. Cleanup is fail-closed: persisted
+// run metadata must prove that the run finished, the launcher owns this exact
+// linked worktree, its HEAD is the finalized/base commit, every produced commit
+// has a durable branch, and no tracked, untracked, or protected ignored output
+// would be lost.
 //
 // MUST be called from the dispatch worker goroutine (runWorker), never the
 // actor: the hook is a shell command bounded only by its own timeout
 // (default 60s) and would otherwise stall polling/dispatch/snapshots.
 // beforeRemove is the hook snapshotted by the caller (nil = no-op; Hook.Run
 // tolerates a nil receiver); env is the same ITERION_* set the other hooks
-// receive. Best-effort throughout: a failing hook is logged but the
-// directory is still removed, so a bad hook never strands the workspace.
+// receive. A hook failure or any post-hook state change preserves the
+// workspace. Final retirement uses runtime's atomic-quarantine,
+// process-quiescence, non-forced Git cleanup path instead of recursively
+// deleting the directory.
 func (c *Dispatcher) cleanupWorkspace(entry *runningEntry, beforeRemove *Hook, env []string) {
 	if !c.cfg.Load().Workspace.Persist.shouldCleanupOnSuccess() {
 		return
 	}
-	// Stranded-work guard: the external workspace is a detached-HEAD
-	// worktree with NO finalize/commit stage of its own. A bot without
-	// `worktree: auto` writes straight into it — if it exits without
-	// committing, the teardown below (`git worktree remove --force` via
-	// the before_remove hook + directory removal) would silently destroy
-	// finished work, unrecoverable even from the reflog. Keep the
-	// workspace instead and say so; the operator inspects/commits by
-	// hand. Probe failures (non-git workspace, git missing) fall through
-	// to normal cleanup — the guard only bites on positive evidence.
-	if dirty, err := workspaceIsDirty(entry.WorkspacePath); err == nil && dirty {
-		c.logger.Warn("dispatcher: workspace %s has UNCOMMITTED changes — keeping %s (inspect and commit by hand; cleanup skipped)",
-			entry.Identifier, entry.WorkspacePath)
+	// Revoke reuse authority before the first proof or hook. If anything from
+	// this point onward fails, the retired ownership tombstone keeps a late
+	// writer (or a partially-mutating hook) from making the same path look
+	// reusable to a future dispatch.
+	workspaceGeneration := entryWorkspaceGeneration(entry)
+	if err := c.workspaces.RetireForRun(entry.IssueID, workspaceGeneration); err != nil {
+		c.logger.Warn("dispatcher: preserving workspace %s at %s — cannot retire ownership: %v",
+			entry.Identifier, entry.WorkspacePath, err)
+		return
+	}
+	authoritySince, err := c.workspaces.AuthoritySinceForRun(entry.IssueID, workspaceGeneration)
+	if err != nil {
+		c.logger.Warn("dispatcher: preserving workspace %s at %s — missing trusted ownership epoch: %v",
+			entry.Identifier, entry.WorkspacePath, err)
+		return
+	}
+	if _, err := c.verifyWorkspaceCleanupSafe(entry); err != nil {
+		c.logger.Warn("dispatcher: preserving workspace %s at %s — cleanup safety proof failed: %v",
+			entry.Identifier, entry.WorkspacePath, err)
 		return
 	}
 	if err := beforeRemove.Run(context.Background(), c.logger, "before_remove", entry.WorkspacePath, env); err != nil {
-		c.logger.Warn("dispatcher: before_remove hook for %s: %v", entry.Identifier, err)
+		c.logger.Warn("dispatcher: preserving workspace %s at %s — before_remove hook failed: %v",
+			entry.Identifier, entry.WorkspacePath, err)
+		return
 	}
-	if err := c.workspaces.Remove(entry.IssueID); err != nil {
-		c.logger.Warn("dispatcher: cleanup workspace %s: %v", entry.Identifier, err)
+
+	// A custom hook is allowed to perform its own teardown. That destructive
+	// action is explicit operator authority; if the path is already gone there
+	// is nothing left for the dispatcher to remove.
+	if _, err := os.Lstat(entry.WorkspacePath); errors.Is(err, os.ErrNotExist) {
+		// Keep the retired generation marker. A later dispatch gets a new
+		// run-specific path; permanently refusing this old absolute path is what
+		// prevents a sleeping writer from contaminating a future run.
+		return
+	} else if err != nil {
+		c.logger.Warn("dispatcher: preserving workspace %s at %s — post-hook path probe failed: %v",
+			entry.Identifier, entry.WorkspacePath, err)
+		return
 	}
+
+	// Hooks may commit, create ignored output, or replace the path after the
+	// first proof. Reload run.json and repeat every check before entering the
+	// runtime's independently rechecking/locking removal path.
+	run, err := c.verifyWorkspaceCleanupSafe(entry)
+	if err != nil {
+		c.logger.Warn("dispatcher: preserving workspace %s at %s — post-hook cleanup safety proof failed: %v",
+			entry.Identifier, entry.WorkspacePath, err)
+		return
+	}
+	cleanupResult, err := runtime.CleanupLauncherWorktreeSince(
+		run,
+		entry.WorkspacePath,
+		authoritySince,
+	)
+	if cleanupResult.RecoveryPath != "" {
+		c.logger.Info(
+			"dispatcher: workspace %s retired; recovery copy preserved at %s (manifest: %s)",
+			entry.Identifier,
+			cleanupResult.RecoveryPath,
+			cleanupResult.RecoveryMarker,
+		)
+	}
+	if cleanupResult.LateWrite != "" {
+		c.logger.Warn(
+			"dispatcher: late workspace activity detected for %s; output remains recoverable at %s: %s",
+			entry.Identifier,
+			cleanupResult.RecoveryPath,
+			cleanupResult.LateWrite,
+		)
+	}
+	if cleanupResult.RetentionReason != "" {
+		c.logger.Warn(
+			"dispatcher: recovery workspace retained for %s at %s: %s",
+			entry.Identifier,
+			cleanupResult.RecoveryPath,
+			cleanupResult.RetentionReason,
+		)
+	}
+	if err != nil {
+		c.logger.Warn("dispatcher: preserving workspace %s at %s — safe Git cleanup failed: %v",
+			entry.Identifier, entry.WorkspacePath, err)
+		return
+	}
+	// Do not release the retired generation marker. New runs use new paths;
+	// this exact run path remains a permanent tombstone against late absolute
+	// writers.
 }
 
-// workspaceIsDirty reports whether the workspace's git working tree has
-// uncommitted changes (`git status --porcelain` non-empty). An error means
-// the probe itself failed (not a git checkout, git absent) — callers treat
-// that as "unknown", not as dirty.
-func workspaceIsDirty(path string) (bool, error) {
-	// Bounded: this runs on the dispatcher's single actor goroutine (see
-	// docs/dispatcher.md), so a wedged git process here (stale
-	// index.lock, a hung network-mounted workspace) would stall the
-	// entire actor loop, not just this call.
-	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
-	defer cancel()
-	cmd := exec.CommandContext(ctx, "git", "status", "--porcelain")
-	cmd.Dir = path
-	out, err := cmd.Output()
-	if err != nil {
-		return false, err
+// verifyWorkspaceCleanupSafe binds the worker's entry back to both the
+// Workspaces manager and the persisted run record, then delegates the Git
+// durability proof to runtime. Every read/decode/probe failure is an error:
+// cleanup may leak a workspace, but can never guess that it is disposable.
+func (c *Dispatcher) verifyWorkspaceCleanupSafe(entry *runningEntry) (*store.Run, error) {
+	if entry == nil {
+		return nil, fmt.Errorf("missing running entry")
 	}
-	return len(bytes.TrimSpace(out)) > 0, nil
+	if entry.IssueID == "" || entry.RunID == "" {
+		return nil, fmt.Errorf("missing issue or run ID")
+	}
+	if entry.RunID == "." || entry.RunID == ".." ||
+		strings.Contains(entry.RunID, "/") || strings.Contains(entry.RunID, `\`) {
+		return nil, fmt.Errorf("invalid run ID %q", entry.RunID)
+	}
+	expectedPath, err := canonicalDispatcherWorkspacePath(
+		c.workspaces.PathForRun(entry.IssueID, entryWorkspaceGeneration(entry)),
+	)
+	if err != nil {
+		return nil, fmt.Errorf("resolve managed workspace path: %w", err)
+	}
+	actualPath, err := canonicalDispatcherWorkspacePath(entry.WorkspacePath)
+	if err != nil {
+		return nil, fmt.Errorf("resolve running workspace path: %w", err)
+	}
+	if expectedPath != actualPath {
+		return nil, fmt.Errorf("running workspace %s does not match managed path %s", actualPath, expectedPath)
+	}
+
+	var run store.Run
+	if !c.probeRunJSON(entry.RunID, &run) {
+		return nil, fmt.Errorf("cannot read persisted run metadata")
+	}
+	if run.ID != entry.RunID {
+		return nil, fmt.Errorf("persisted run ID %q does not match %q", run.ID, entry.RunID)
+	}
+	if run.WorktreeOwnership == store.WorktreeOwnershipManaged {
+		expectedManagedPath, err := filepath.Abs(filepath.Join(c.storeDir, "worktrees", entry.RunID))
+		if err != nil {
+			return nil, fmt.Errorf("resolve expected runtime worktree path: %w", err)
+		}
+		actualManagedPath, err := filepath.Abs(run.WorkDir)
+		if err != nil {
+			return nil, fmt.Errorf("resolve persisted runtime worktree path: %w", err)
+		}
+		if filepath.Clean(expectedManagedPath) != filepath.Clean(actualManagedPath) {
+			return nil, fmt.Errorf(
+				"managed run worktree %s does not match store-owned path %s",
+				actualManagedPath, expectedManagedPath,
+			)
+		}
+	}
+	if err := runtime.VerifyLauncherWorktreeCleanup(&run, actualPath); err != nil {
+		return nil, err
+	}
+	return &run, nil
+}
+
+func entryWorkspaceGeneration(entry *runningEntry) string {
+	if entry == nil {
+		return ""
+	}
+	if entry.WorkspaceGeneration != "" {
+		return entry.WorkspaceGeneration
+	}
+	// Compatibility for reconstructed/tests entries created before the lease
+	// field existed. Production buildRunningEntry always sets it.
+	return entry.RunID
+}
+
+func canonicalDispatcherWorkspacePath(path string) (string, error) {
+	if strings.TrimSpace(path) == "" {
+		return "", fmt.Errorf("path is empty")
+	}
+	absolute, err := filepath.Abs(path)
+	if err != nil {
+		return "", err
+	}
+	return filepath.EvalSymlinks(absolute)
 }
 
 // cmdRetryDue fires when a retry timer expires. We simply drop the

@@ -19,6 +19,7 @@ const BotHomeView = lazy(() => import("@/views/Bots/BotHome"));
 const BotBuilderView = lazy(() => import("@/views/Bots/BotBuilder"));
 const BoardView = lazy(() => import("@/views/Board"));
 const PipelineBoardView = lazy(() => import("@/views/PipelineBoard"));
+const PipelineCardPage = lazy(() => import("@/views/PipelineBoard/PipelineCardPage"));
 const LabelsView = lazy(() => import("@/views/Board/Labels"));
 const FieldsView = lazy(() => import("@/views/Board/Fields"));
 const RunsAnalyticsView = lazy(() => import("@/views/RunsAnalytics"));
@@ -406,6 +407,13 @@ function AuthedApp() {
             <Route path="/skills">
               <ErrorBoundary area="Skills view">
                 <SkillsView />
+              </ErrorBoundary>
+            </Route>
+          )}
+          {serverInfo?.native_tracker_enabled && (
+            <Route path="/pipelines/cards/:kind/:id">
+              <ErrorBoundary area="Pipeline card page">
+                <PipelineCardPage />
               </ErrorBoundary>
             </Route>
           )}

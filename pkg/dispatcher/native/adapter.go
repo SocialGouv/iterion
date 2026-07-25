@@ -24,21 +24,19 @@ func NewAdapter(store BoardStore) *Adapter { return &Adapter{store: store} }
 func (a *Adapter) Name() string { return "native" }
 
 // ListCandidates returns unclaimed issues whose state is marked
-// eligible on the board, excluding those whose blockers are not all
-// terminal. Missing blockers are treated as open.
+// eligible on the board, excluding those whose hard blockers are not
+// all StateDone (see BlockersSatisfied / CanLaunch). Missing blockers
+// are treated as open (fail closed). Terminal non-success states such
+// as StateBlocked do NOT satisfy a dependency.
 func (a *Adapter) ListCandidates(ctx context.Context) ([]tracker.Issue, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
 	b := a.store.Board()
 	eligible := make([]string, 0, len(b.States))
-	terminal := make(map[string]bool, len(b.States))
 	for _, s := range b.States {
 		if s.Eligible {
 			eligible = append(eligible, s.Name)
-		}
-		if s.Terminal {
-			terminal[s.Name] = true
 		}
 	}
 	if len(eligible) == 0 {
@@ -51,25 +49,15 @@ func (a *Adapter) ListCandidates(ctx context.Context) ([]tracker.Issue, error) {
 	}
 	out := make([]tracker.Issue, 0, len(issues))
 	for _, iss := range issues {
-		if a.hasOpenBlocker(iss.Blockers, terminal) {
+		// Same hard-dep rule as the pipeline launch loop (CanLaunch's
+		// blocker half, including optional require_blocker_labels).
+		ok, _ := BlockersSatisfiedForIssue(a.store, iss)
+		if !ok {
 			continue
 		}
 		out = append(out, toTrackerIssue(iss))
 	}
 	return out, nil
-}
-
-func (a *Adapter) hasOpenBlocker(blockers []string, terminal map[string]bool) bool {
-	for _, id := range blockers {
-		iss, err := a.store.Get(id)
-		if err != nil {
-			return true
-		}
-		if !terminal[iss.State] {
-			return true
-		}
-	}
-	return false
 }
 
 // RefreshStates returns the current state for each requested ID;

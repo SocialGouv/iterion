@@ -11,10 +11,15 @@ import (
 // the shipped defaults should use the constants so renames stay
 // compile-checked.
 const (
-	StateInbox      = "inbox"
-	StateBacklog    = "backlog"
-	StateReady      = "ready"
-	StateInProgress = "in_progress"
+	StateInbox   = "inbox"
+	StateBacklog = "backlog"
+	StateReady   = "ready"
+	// StateWaitingDeps holds a ticket whose hard blockers are not yet
+	// StateDone. Non-eligible and non-terminal: the launch loop and the
+	// dispatcher skip it, and it does not satisfy anyone else's blockers
+	// (unlike StateBlocked, which is terminal "won't do").
+	StateWaitingDeps = "waiting_deps"
+	StateInProgress  = "in_progress"
 	// StateAwaitingInput holds a dispatched card whose run paused waiting for
 	// a human answer (paused_waiting_human). Non-eligible (the dispatcher
 	// never re-picks it) and non-terminal (the run resumes on answer). The
@@ -22,7 +27,10 @@ const (
 	StateAwaitingInput = "awaiting_input"
 	StateReview        = "review"
 	StateDone          = "done"
-	StateBlocked       = "blocked"
+	// StateBlocked is terminal "won't do" / abandoned — not a temporary
+	// hold for open deps (use StateWaitingDeps). A ticket in blocked does
+	// NOT satisfy hard blockers of dependents (see BlockerSatisfied).
+	StateBlocked = "blocked"
 )
 
 // FieldType enumerates the supported custom-field value kinds.
@@ -99,6 +107,7 @@ func DefaultBoard() *Board {
 			{Name: StateInbox, Display: "Inbox"},
 			{Name: StateBacklog, Display: "Backlog"},
 			{Name: StateReady, Display: "Ready", Eligible: true},
+			{Name: StateWaitingDeps, Display: "Waiting on deps"},
 			{Name: StateInProgress, Display: "In progress", Eligible: true},
 			{Name: StateAwaitingInput, Display: "Awaiting input"},
 			{Name: StateReview, Display: "Review"},
@@ -130,6 +139,10 @@ func (b *Board) StateByName(name string) *State {
 // their ordering.
 //
 //   - `inbox` (bot-emitted findings land there) is prepended when missing.
+//   - `waiting_deps` (tickets with open hard blockers) is inserted right
+//     after `ready` when missing; if there is no `ready`, after `backlog`.
+//     Boards with neither are left untouched — the launch gate still
+//     works via open_blocker_count alone.
 //   - `awaiting_input` (the dispatcher parks a paused card there) is
 //     inserted right after `in_progress` when missing. Boards without an
 //     `in_progress` state are fully custom — left untouched; the
@@ -139,6 +152,12 @@ func UpgradeBoardSchema(b *Board) bool {
 	if b.StateByName(StateInbox) == nil {
 		b.States = append([]State{{Name: StateInbox, Display: "Inbox"}}, b.States...)
 		changed = true
+	}
+	if b.StateByName(StateWaitingDeps) == nil {
+		if insertStateAfter(b, StateReady, State{Name: StateWaitingDeps, Display: "Waiting on deps"}) ||
+			insertStateAfter(b, StateBacklog, State{Name: StateWaitingDeps, Display: "Waiting on deps"}) {
+			changed = true
+		}
 	}
 	if b.StateByName(StateAwaitingInput) == nil {
 		for i, st := range b.States {
@@ -155,6 +174,26 @@ func UpgradeBoardSchema(b *Board) bool {
 		}
 	}
 	return changed
+}
+
+// insertStateAfter inserts st immediately after the state named after, if
+// that anchor exists. Returns true when it modified the board.
+func insertStateAfter(b *Board, after string, st State) bool {
+	if b == nil {
+		return false
+	}
+	for i, cur := range b.States {
+		if cur.Name != after {
+			continue
+		}
+		states := make([]State, 0, len(b.States)+1)
+		states = append(states, b.States[:i+1]...)
+		states = append(states, st)
+		states = append(states, b.States[i+1:]...)
+		b.States = states
+		return true
+	}
+	return false
 }
 
 // stateIndex returns the position of the state matching name, or -1.
