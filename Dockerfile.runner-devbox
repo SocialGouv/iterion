@@ -59,6 +59,18 @@ ARG FIRECRAWL_MCP_VERSION=3.22.3
 RUN --mount=type=cache,target=/root/.npm \
     npm install -g "firecrawl-mcp@${FIRECRAWL_MCP_VERSION}"
 
+# Pre-install codeindex (shipped `codeindex` builtin plugin) for the same
+# cold-start reason as firecrawl above: its MCP server must answer tools/list
+# immediately, and its `lifecycle` index runs before the workflow starts.
+# The global install ALSO puts `codeindex` on PATH, which is what the plugin's
+# rewriter locates — without it the rewriter degrades to passthrough (harmless,
+# but it contributes nothing). Version PINNED and MUST match all three pins in
+# pkg/plugin/builtin/codeindex/plugin.yaml.
+# renovate: datasource=npm depName=@maxgfr/codeindex versioning=npm
+ARG CODEINDEX_VERSION=2.17.0
+RUN --mount=type=cache,target=/root/.npm \
+    npm install -g "@maxgfr/codeindex@${CODEINDEX_VERSION}"
+
 # gh + glab (Revi posts reviews from the runner pod) + kubectl (parity with the
 # base runner image; also used by the k8s sandbox driver if ever enabled).
 ARG GLAB_VERSION=1.102.0
