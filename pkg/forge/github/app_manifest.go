@@ -66,6 +66,10 @@ type AppManifestOptions struct {
 // grant when opts.AllowRepoCreation asks for the create-repo capability.
 func BuildAppManifest(name, homeURL, redirectURL string, opts ...AppManifestOptions) AppManifest {
 	perms := RuntimeInstallationPermissions()
+	// statuses:write lets Revi post its revi/review merge-gate commit status.
+	// Optional at runtime (the mint falls back without it — see AppClient.rest),
+	// but requested at App creation so new installations grant it up front.
+	perms["statuses"] = "write"
 	for _, o := range opts {
 		if o.AllowRepoCreation {
 			perms["administration"] = "write"
