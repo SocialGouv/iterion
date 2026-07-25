@@ -48,6 +48,15 @@ PR opened / pushed ──▶ Revi runs (2 reviewers → merge → publish)
    call — no workspace credential, no ~1h token freeze). Forge-agnostic:
    GitHub commit-status / GitLab commit status / Forgejo commit status all
    expose the same primitive ([`pkg/forge/status.go`](../pkg/forge/status.go)).
+
+   > **Forge permission (required).** Posting a commit status needs write on
+   > statuses: a **GitHub App** must grant **Commit statuses: Read and write**
+   > (a token connection needs `repo:status`); GitLab/Forgejo tokens need `api`
+   > / `write:repository`. Without it `SetCommitStatus` returns 403
+   > *insufficient scope* — the review still posts and the failure is reported
+   > (`gate_error`) + logged (`forge gate: … not posted: … insufficient
+   > scope`), so the gate silently *advises* instead of blocking. Grant the
+   > permission and re-accept the installation before relying on the gate.
 4. **Enforcement.** List `revi/review` in the repo's **required status
    checks** (branch-protection ruleset). Until you do, the status is a
    harmless advisory check you can preview on every PR.

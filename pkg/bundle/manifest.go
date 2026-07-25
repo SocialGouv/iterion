@@ -321,6 +321,7 @@ var (
 		"repository":    true,
 		"issues":        true,
 		"webhooks":      true,
+		"statuses":      true, // commit statuses (the revi/review merge gate)
 	}
 	knownForgeScopeLevels = map[string]bool{
 		"read":  true,
@@ -822,7 +823,7 @@ func validateForgeRequirements(f *ForgeRequirements) error {
 	}
 	for key, level := range f.TokenScopes {
 		if !knownForgeScopeKeys[key] {
-			return fmt.Errorf("forge.token_scopes: unknown scope %q (known: pull_requests, repository, issues, webhooks)", key)
+			return fmt.Errorf("forge.token_scopes: unknown scope %q (known: pull_requests, repository, issues, webhooks, statuses)", key)
 		}
 		if !knownForgeScopeLevels[level] {
 			return fmt.Errorf("forge.token_scopes[%s]: invalid level %q (want read, write, or admin)", key, level)

@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -395,9 +396,22 @@ func (a *AppClient) rest(ctx context.Context) (*AdminClient, error) {
 	if a.token == "" || a.clock().After(a.exp.Add(-60*time.Second)) {
 		// Least-privilege: pin the management token to iterion's minimal
 		// permission set (webhook + metadata + code + PR), never the
-		// installation's full grant.
+		// installation's full grant — plus the OPTIONAL statuses:write the
+		// merge gate needs to post its revi/review commit status.
+		perms := map[string]string{"statuses": "write"}
+		for k, v := range RuntimeInstallationPermissions() {
+			perms[k] = v
+		}
 		tok, exp, err := MintInstallationToken(ctx, a.HTTP, a.apiBase(), a.Cfg, a.InstallationID, a.clock(),
-			&InstallationTokenOptions{Permissions: RuntimeInstallationPermissions()})
+			&InstallationTokenOptions{Permissions: perms})
+		if errors.Is(err, forge.ErrPermissionsNotGranted) {
+			// An installation created before the merge gate (or one that
+			// declined statuses:write) still works — the gate then advises
+			// instead of blocking (SetCommitStatus 403s, non-fatal). Retry with
+			// the core baseline so every other capability keeps functioning.
+			tok, exp, err = MintInstallationToken(ctx, a.HTTP, a.apiBase(), a.Cfg, a.InstallationID, a.clock(),
+				&InstallationTokenOptions{Permissions: RuntimeInstallationPermissions()})
+		}
 		if err != nil {
 			return nil, err
 		}

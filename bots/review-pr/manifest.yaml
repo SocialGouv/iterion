@@ -1,7 +1,14 @@
 name: review-pr
 display_name: Revi
 icon: 🔎
-version: 0.5.2
+version: 0.5.3
+## 0.5.3 — declare the `statuses: write` forge scope the merge gate needs
+## (advisory/provisioning hint; the runtime does not read it). Live e2e on
+## prod proved the full chain — Revi reviews, the bot sends the gate verdict,
+## the server resolves the head SHA and calls SetCommitStatus — but the
+## GitHub App lacked "Commit statuses: write", so the status 403'd
+## "insufficient scope" (non-fatal: the review still posts, the gate advises
+## instead of blocking). Grant the App perm + re-accept the install to enforce.
 ## 0.5.2 — fix: SECOND publish_review shell bug (silent empty output → no
 ## publish, no gate status, publish_health then crashes). A python COMMENT in
 ## the publish_review body contained double-quote characters ("high"/"blocker"
@@ -66,6 +73,11 @@ forge:
   token_scopes:
     pull_requests: write     # post the review + inline ```suggestion blocks
     repository: read         # clone + read the diff
+    statuses: write          # post the revi/review merge-gate commit status
+                             # (GitHub App perm "Commit statuses: Read and
+                             # write"; without it SetCommitStatus 403s
+                             # "insufficient scope" and the gate silently
+                             # advises instead of blocking)
   secret: forge_token        # cross-ref with main.bot `secrets: { forge_token }`
   webhook:
     launch_vars:
