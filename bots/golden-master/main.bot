@@ -89,6 +89,11 @@ prompt campaign_user:
   measurement. Lowering a floor, deleting a mutant, or removing an entry that
   refused to move are all ways of passing without seeing.
 
+  Report ONE short line in `work_remaining`: what is left to do, or "nothing".
+  Anything you want to say at length goes in `{{vars.oracle_dir}}/REPORT.md`,
+  which you commit — a report a human can read and diff is worth more than a
+  paragraph in a status field, and this field must parse strictly.
+
 prompt adversary_system:
   You are an adversarial lens on a non-regression net. Your job is to propose
   mutations that the existing comparators would MISS.
@@ -121,12 +126,18 @@ prompt adversary_user:
 schema campaign_input:
   fail_log: string
 
+## One field, deliberately. The graph reads NONE of what a campaign reports —
+## the deterministic gate is the sole authority and the agent's self-assessment
+## is irrelevant by design. Every field beyond this one was either unread
+## (`summary`, `corpus_size`), unauthoritative (`oracle_ready` — the gate
+## decides), or derivable from the artefact itself (`commits_this_pass` is
+## `git log`). Required fields nobody reads can only ever cost: one run burned
+## six LLM round-trips failing to emit them, alternating between two of them,
+## and would have failed the delegation outright a few attempts later.
+## The narrative belongs in the committed REPORT.md, which a human can read,
+## diff and audit — not in a control-plane message that must parse strictly.
 schema campaign_output:
-  oracle_ready: bool
-  corpus_size: int
-  commits_this_pass: int
   work_remaining: string
-  summary: string
 
 schema adversary_output:
   mutants_added: int
@@ -214,7 +225,12 @@ tool oracle_run:
     os.environ['GM_WORKSPACE'] = {{vars.workspace_dir}}
     os.environ['GM_DIR'] = {{vars.oracle_dir}}
     os.environ['GM_MUTATION_FLOOR'] = str({{vars.mutation_floor}})
-    os.environ['GM_SEALED_DIR'] = os.path.join({{vars.scratch_dir}}, 'holdout-sealed')
+    # PAR RUN, pas par projet : le scratch d'un projet survit d'un run a l'autre,
+    # et les held-out d'un run precedent s'y accumulaient. Deux runs numerotant
+    # leurs entrees 001-020, les vieux mutants visaient des identifiants qui
+    # existent toujours mais ne designent plus la meme chose : ils echouaient, et
+    # la porte concluait au sur-apprentissage alors qu'il n'y en avait pas.
+    os.environ['GM_SEALED_DIR'] = os.path.join({{vars.scratch_dir}}, 'holdout-sealed', {{run.id}})
     os.environ['GM_MODE'] = 'gate'  # force: un GM_MODE herite ferait passer la porte en selfcheck
     import hashlib
     import http.cookiejar
