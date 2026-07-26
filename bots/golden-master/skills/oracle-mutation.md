@@ -98,6 +98,14 @@ revert.sh    undo it. Must restore the exact prior state; idempotent.
 meta.json    what it is and what it must move.
 ```
 
+**Both scripts are run honouring their shebang, and must be executable**
+(`chmod +x`). A non-executable script falls back to `sh`, which on most systems
+is dash — and dash has no `source`. A helper file pulled in with `source` then
+never loads, every function it defined is "not found", and the mutant dies with
+a bare `exit 127` that says nothing about the shell having been substituted.
+Either write POSIX `sh` and use `.` instead of `source`, or declare
+`#!/usr/bin/env bash` and make the file executable.
+
 ```json
 {
   "class": "data",

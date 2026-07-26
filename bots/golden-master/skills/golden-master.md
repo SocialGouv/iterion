@@ -65,7 +65,21 @@ notice that the bytes reaching the browser changed, and a scan of source files c
 2. **Enumerate the surface** and choose a corpus with real width ([[surface-discovery]]).
 3. **Capture, and make the capture deterministic** ([[canonicalization]]). Do not proceed while
    two identical runs disagree.
-4. **Record the references.**
+4. **Record the references — with the harness, not with your own capture.**
+
+   ```
+   GM_WORKSPACE=<repo> GM_DIR=.golden-master GM_MODE=record python3 <harness>
+   ```
+
+   The harness path is printed in the failure log, and a reviewable copy ships
+   as `oracle-harness.py` in this bundle. Use it. Writing your own capture
+   script means the references are produced by one code path and judged by
+   another: any difference in redirect handling, header selection or decoding
+   shows up later as a stability failure you will spend a pass chasing.
+
+   Re-run `GM_MODE=record` freely while the corpus is still moving. Once the
+   references are the baseline, re-recording is a re-baseline and carries the
+   obligations below.
 5. **Prove they see** ([[oracle-mutation]]). This is the step that distinguishes a net from a
    decoration.
 6. **Emit the runner and the report** so a third party can re-run the whole thing.

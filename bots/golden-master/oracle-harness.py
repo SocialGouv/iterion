@@ -45,6 +45,7 @@ import http.cookiejar
 import importlib.util
 import json
 import os
+import shlex
 import shutil
 import subprocess
 import sys
@@ -273,8 +274,49 @@ def missing_archetypes(corpus, mutants):
     return gaps
 
 
-def load_mutants(gm_dir, holdout):
-    root = os.path.join(gm_dir, "mutants", "holdout" if holdout else "")
+def seal_holdout(gm_dir, sealed_dir):
+    """Move the held-out set OUT of the worktree, once, at the first gate.
+
+    The seal was a sentence in a skill and nothing enforced it: on the first
+    real run the campaign simply executed the held-out mutants itself, learned
+    which ones escaped, and could then harden against them — which is exactly
+    the overfitting the set exists to prevent. Relocating them makes the seal
+    mechanical from the second pass onward, which is where hardening actually
+    compounds.
+
+    Returns True when the set now lives outside the workspace.
+    """
+    src = os.path.join(gm_dir, "mutants", "holdout")
+    os.makedirs(sealed_dir, exist_ok=True)
+    if os.path.isdir(src):
+        for name in sorted(os.listdir(src)):
+            target = os.path.join(sealed_dir, name)
+            if not os.path.exists(target):
+                shutil.move(os.path.join(src, name), target)
+        try:
+            os.rmdir(src)
+        except OSError:
+            pass
+    return bool(os.listdir(sealed_dir))
+
+
+def load_mutants(gm_dir, holdout, sealed_dir=None):
+    if holdout:
+        root = sealed_dir or os.path.join(gm_dir, "mutants", "holdout")
+        if not os.path.isdir(root):
+            return []
+        out = []
+        for name in sorted(os.listdir(root)):
+            d = os.path.join(root, name)
+            meta_path = os.path.join(d, "meta.json")
+            if not os.path.isdir(d) or not os.path.isfile(meta_path):
+                continue
+            with open(meta_path, encoding="utf-8") as f:
+                meta = json.load(f)
+            meta["id"], meta["dir"] = name, d
+            out.append(meta)
+        return out
+    root = os.path.join(gm_dir, "mutants", "")
     if not os.path.isdir(root):
         return []
     out = []
@@ -307,12 +349,26 @@ def data_fingerprint(meta, ws):
     return hashlib.sha256(out.encode()).hexdigest()
 
 
+def run_script(path, ws, timeout=600):
+    """Run a mutant script HONOURING ITS SHEBANG.
+
+    Forcing `sh` here silently substitutes the interpreter: on most systems
+    /bin/sh is dash, which has no `source`, so a script written for bash fails
+    with a bare `exit 127` and a "command not found" for whatever the sourced
+    file was meant to define. The author sees a broken mutant and no hint that
+    the shell was swapped under them. Observed on the first real run.
+    """
+    if os.access(path, os.X_OK):
+        return run(shlex.quote(path), ws, timeout)
+    return run("sh %s" % shlex.quote(path), ws, timeout)
+
+
 def apply_mutant(meta, ws):
-    return run("sh %s" % os.path.join(meta["dir"], "apply.sh"), ws, timeout=600)
+    return run_script(os.path.join(meta["dir"], "apply.sh"), ws)
 
 
 def revert_mutant(meta, ws):
-    return run("sh %s" % os.path.join(meta["dir"], "revert.sh"), ws, timeout=600)
+    return run_script(os.path.join(meta["dir"], "revert.sh"), ws)
 
 
 # ─── Comparison ─────────────────────────────────────────────────────────────
@@ -436,6 +492,8 @@ def stability(config, corpus, canon, ws):
 def main():
     ws = os.environ.get("GM_WORKSPACE", ".")
     gm_dir = os.path.join(ws, os.environ.get("GM_DIR", ".golden-master"))
+    sealed_dir = os.environ.get("GM_SEALED_DIR") or os.path.join(
+        os.environ.get("GM_SCRATCH", os.path.join(ws, "..")), "gm-holdout")
     floor = int(os.environ.get("GM_MUTATION_FLOOR", "90"))
     mode = os.environ.get("GM_MODE", "gate")   # gate | record
 
@@ -467,9 +525,33 @@ def main():
     refs_dir = os.path.join(gm_dir, "refs")
     os.makedirs(refs_dir, exist_ok=True)
 
+    # The harness materialises itself into the target repo. Three things need
+    # it there and none of them can reach the bundle: the emitted
+    # verify-oracle.sh, a CI job, and the campaign on a later pass wanting to
+    # (re)record with the code path that will judge it. Copying from __file__
+    # keeps one source of truth — the inlined node — rather than a second copy
+    # drifting in a sibling node.
+    try:
+        shutil.copyfile(__file__, os.path.join(gm_dir, "harness.py"))
+    except (OSError, NameError):
+        pass
+
     visible = load_mutants(gm_dir, holdout=False)
     if mode != "record":
-        gaps = missing_archetypes(corpus, visible + load_mutants(gm_dir, holdout=True))
+        seal_holdout(gm_dir, sealed_dir)
+        held_meta = load_mutants(gm_dir, holdout=True, sealed_dir=sealed_dir)
+        # The held-out set lives outside the workspace once sealed. If the
+        # sealed directory moved or was wiped, it is GONE — and the archetype
+        # check below would then blame the campaign for an archetype it did
+        # write, sending it off to duplicate work that already exists. Say what
+        # actually happened instead.
+        if not held_meta and not os.path.isdir(os.path.join(gm_dir, "mutants", "holdout")):
+            bail("the sealed held-out set is missing from %s and no longer in the "
+                 "workspace. It was relocated by an earlier gate and the sealed "
+                 "directory has since changed or been cleared; GM_SEALED_DIR must be "
+                 "stable across passes. Restore it, or re-create the held-out set "
+                 "knowing the previous seal is broken." % sealed_dir)
+        gaps = missing_archetypes(corpus, visible + held_meta)
         if gaps:
             report["missing_archetypes"] = gaps
             bail("no mutant covers these required (surface, archetype) pairs: %s. Each "
@@ -527,7 +609,7 @@ def main():
                               "why": "these references did not move for a change they cover"})
 
         held = [score_mutant(m, config, corpus, canon, refs, ws, 1000 + i)
-                for i, m in enumerate(load_mutants(gm_dir, holdout=True))]
+                for i, m in enumerate(held_meta)]
 
         valid = [v for v in verdicts if v.get("valid")]
         detected = [v for v in valid if v.get("detected")]
