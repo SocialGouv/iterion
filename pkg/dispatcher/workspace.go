@@ -137,6 +137,13 @@ func (w *Workspaces) CreateForRun(issueID, runID string) (path string, created b
 	if !ownersInfo.IsDir() || ownersInfo.Mode()&os.ModeSymlink != 0 {
 		return "", false, fmt.Errorf("workspace: ownership namespace %s is not a real directory", ownersDir)
 	}
+	ownersCanon, err := filepath.EvalSymlinks(ownersDir)
+	if err != nil {
+		return "", false, fmt.Errorf("workspace: canonicalize ownership namespace: %w", err)
+	}
+	if !isWithin(ownersCanon, rootCanon) {
+		return "", false, fmt.Errorf("workspace: ownership namespace %q escapes root %q", ownersCanon, rootCanon)
+	}
 
 	target := w.PathForRun(issueID, runID)
 	ownerPath := w.ownerPathForRun(issueID, runID)
@@ -250,7 +257,8 @@ func (w *Workspaces) RetireForRun(issueID, runID string) error {
 }
 
 // Remove preserves the pre-generational API while applying the same safe
-// active→retired→deleted lifecycle to the stable workspace.
+// active→retired→deleted lifecycle to the stable workspace. It is idempotent
+// when both the stable target and its ownership marker are already absent.
 func (w *Workspaces) Remove(issueID string) error {
 	retireErr := w.RetireForRun(issueID, "")
 	if retireErr == nil {
@@ -264,9 +272,12 @@ func (w *Workspaces) Remove(issueID string) error {
 }
 
 // RemoveForRun deletes an explicitly retired generation. If teardown was
-// interrupted after directory removal, a later call safely clears the retired
-// marker. An active marker with a missing target remains fail-closed because
-// its disappearance was not authorized by this lifecycle.
+// interrupted after directory removal, a later RemoveForRun call safely clears
+// the retired marker. CreateForRun deliberately does not clear a run-specific
+// tombstone: callers must finish or retry RemoveForRun before reusing that exact
+// issue/run generation, preserving isolation from late writers. An active marker
+// with a missing target remains fail-closed because its disappearance was not
+// authorized by this lifecycle.
 func (w *Workspaces) RemoveForRun(issueID, runID string) error {
 	if issueID == "" {
 		return errors.New("workspace: issue id required")
@@ -347,39 +358,92 @@ func (w *Workspaces) ownerPathForRun(issueID, runID string) string {
 // an older keep-mode dispatch; if that unique shape exists but is invalid, we
 // fail closed instead of falling through to an unrelated stable workspace.
 // The probes are deliberately lock-free: they run on the dispatcher actor and
-// must never wait behind a worker's recursive delete.
-func (w *Workspaces) resumeGeneration(issueID, runID string) (string, bool) {
-	if w.generationShapeExists(issueID, runID) {
-		return runID, w.generationIsManaged(issueID, runID)
+// must never wait behind a worker's recursive delete. Invalid ownership shapes
+// return managed=false so a fresh generation can be isolated; operational
+// filesystem failures are returned so dispatch is deferred visibly.
+func (w *Workspaces) resumeGeneration(issueID, runID string) (string, bool, error) {
+	exists, err := w.generationShapeExists(issueID, runID)
+	if err != nil {
+		return runID, false, err
 	}
-	if w.generationShapeExists(issueID, "") {
-		return "", w.generationIsManaged(issueID, "")
+	if exists {
+		managed, err := w.generationIsManaged(issueID, runID)
+		return runID, managed, err
 	}
-	return "", false
+	exists, err = w.generationShapeExists(issueID, "")
+	if err != nil {
+		return "", false, err
+	}
+	if exists {
+		managed, err := w.generationIsManaged(issueID, "")
+		return "", managed, err
+	}
+	return "", false, nil
 }
 
-func (w *Workspaces) generationShapeExists(issueID, runID string) bool {
+func (w *Workspaces) generationShapeExists(issueID, runID string) (bool, error) {
 	for _, path := range []string{
 		w.PathForRun(issueID, runID),
 		w.ownerPathForRun(issueID, runID),
 	} {
-		if _, err := os.Lstat(path); err == nil || !errors.Is(err, os.ErrNotExist) {
-			return true
+		if _, err := os.Lstat(path); err == nil {
+			return true, nil
+		} else if !errors.Is(err, os.ErrNotExist) {
+			return false, fmt.Errorf("workspace: probe generation path %s: %w", path, err)
 		}
 	}
-	return false
+	return false, nil
 }
 
-func (w *Workspaces) generationIsManaged(issueID, runID string) bool {
-	owner, err := readWorkspaceOwner(w.ownerPathForRun(issueID, runID))
+func (w *Workspaces) generationIsManaged(issueID, runID string) (bool, error) {
+	ownerPath := w.ownerPathForRun(issueID, runID)
+	data, err := os.ReadFile(ownerPath)
 	if err != nil {
-		return false
+		if errors.Is(err, os.ErrNotExist) {
+			return false, nil
+		}
+		return false, fmt.Errorf("workspace: read ownership marker %s during generation probe: %w", ownerPath, err)
+	}
+	var owner workspaceOwnerRecord
+	if err := json.Unmarshal(data, &owner); err != nil {
+		// A malformed marker is an invalid v2 shape, not an operational
+		// filesystem failure. Reject the resume so the caller can isolate a
+		// fresh generation while preserving the corrupt shape for recovery.
+		return false, nil
 	}
 	if err := verifyWorkspaceOwner(owner, issueID, runID, workspaceOwnerActive); err != nil {
-		return false
+		return false, nil
 	}
-	_, err = w.verifyOwnedTarget(issueID, runID)
-	return err == nil
+
+	target := w.PathForRun(issueID, runID)
+	info, err := os.Lstat(target)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return false, nil
+		}
+		return false, fmt.Errorf("workspace: stat owned target during generation probe: %w", err)
+	}
+	if !info.IsDir() || info.Mode()&os.ModeSymlink != 0 {
+		return false, nil
+	}
+	canon, err := filepath.EvalSymlinks(target)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return false, nil
+		}
+		return false, fmt.Errorf("workspace: canonicalize owned target during generation probe: %w", err)
+	}
+	rootCanon, err := filepath.EvalSymlinks(w.root)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return false, nil
+		}
+		return false, fmt.Errorf("workspace: canonicalize root during generation probe: %w", err)
+	}
+	if !isWithin(canon, rootCanon) {
+		return false, nil
+	}
+	return true, nil
 }
 
 func (w *Workspaces) verifyOwnedTarget(issueID, runID string) (string, error) {

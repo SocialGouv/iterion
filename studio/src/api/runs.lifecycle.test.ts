@@ -1,6 +1,69 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
-import { mergeActionReady, type RunStatus } from "./runs";
+import { ApiError } from "./client";
+import {
+  isWorkflowSourceChangedError,
+  mergeActionReady,
+  resumeRun,
+  type RunStatus,
+  WORKFLOW_SOURCE_CHANGED_ERROR_CODE,
+} from "./runs";
+
+afterEach(() => {
+  vi.unstubAllGlobals();
+});
+
+describe("resume error contract", () => {
+  it("preserves error_code on ApiError", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue(
+        new Response(
+          JSON.stringify({
+            error: "resume refused",
+            error_code: WORKFLOW_SOURCE_CHANGED_ERROR_CODE,
+          }),
+          {
+            status: 400,
+            headers: { "Content-Type": "application/json" },
+          },
+        ),
+      ),
+    );
+
+    let caught: unknown;
+    try {
+      await resumeRun("run-1", { answers: { reviewer: "Victor" } });
+    } catch (err) {
+      caught = err;
+    }
+
+    expect(caught).toBeInstanceOf(ApiError);
+    expect(caught).toMatchObject({
+      status: 400,
+      errorCode: WORKFLOW_SOURCE_CHANGED_ERROR_CODE,
+      message: "API error 400: resume refused",
+    });
+    expect(isWorkflowSourceChangedError(caught)).toBe(true);
+  });
+
+  it("uses prose only for errors without a structured code", () => {
+    expect(
+      isWorkflowSourceChangedError(
+        new ApiError(400, "API error 400: source has changed"),
+      ),
+    ).toBe(true);
+    expect(
+      isWorkflowSourceChangedError(
+        new ApiError(
+          400,
+          "API error 400: source has changed",
+          "another_error",
+        ),
+      ),
+    ).toBe(false);
+  });
+});
 
 // mergeActionReady gates the "Squash & merge" action (terminal state +
 // storage branch). The FilesPanel always defaults to the "combined" (All

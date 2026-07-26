@@ -1,7 +1,7 @@
 import { errorMessage } from "@/lib/errorHints";
 import { useEffect, useMemo, useState } from "react";
 
-import { resumeRun } from "@/api/runs";
+import { isWorkflowSourceChangedError, resumeRun } from "@/api/runs";
 import { Button, Textarea } from "@/components/ui";
 import {
   askUserAllowsFreeText,
@@ -40,6 +40,10 @@ interface PermissionMarker {
   input?: Record<string, unknown>;
   rule?: string;
 }
+
+type ForceRetry =
+  | { kind: "form" }
+  | { kind: "decision"; decision: string };
 
 function permissionMarker(questions: Record<string, unknown>): PermissionMarker | null {
   const m = questions?.[PERMISSION_MARKER_KEY];
@@ -80,24 +84,27 @@ export default function PauseForm({
   const [values, setValues] = useState<Record<string, string>>(() =>
     Object.fromEntries(fieldNames.map((k) => [k, ""])),
   );
-  // Reset draft answers when the question set changes (e.g. a second
-  // pause on the same run with different fields, or a navigation
-  // between two paused runs without unmount). The lazy initialiser
-  // above runs once; without this, new field names show old values
-  // and old field names leak into the submit payload.
-  const fieldKey = fieldNames.join("\x00");
-  useEffect(() => {
-    setValues(Object.fromEntries(fieldNames.map((k) => [k, ""])));
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [runId, fieldKey]);
+  // Reset draft/error/retry state when the question payload changes (e.g. a
+  // second pause on the same run, including reserved-only permission prompts)
+  // or when navigation reuses the component for another run. The lazy values
+  // initialiser above runs once; without this, old values or an old one-click
+  // decision can leak into the next resume.
+  const questionKey = useMemo(
+    () => JSON.stringify(questions ?? {}),
+    [questions],
+  );
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  // Answers of the last attempt the server rejected because the
-  // workflow source changed since the run started; non-null renders a
-  // one-click retry that replays them with force: true.
-  const [forceRetry, setForceRetry] = useState<Record<string, string> | null>(
-    null,
-  );
+  // The last attempt the server rejected because the workflow source changed.
+  // Form retries deliberately read the live values state when clicked, while
+  // one-click decisions retain the exact permission/option token selected.
+  const [forceRetry, setForceRetry] = useState<ForceRetry | null>(null);
+  useEffect(() => {
+    setValues(Object.fromEntries(fieldNames.map((k) => [k, ""])));
+    setError(null);
+    setForceRetry(null);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [runId, questionKey]);
   const currentSource = useDocumentStore((s) => s.currentSource);
   // An explicit prop (including null) wins over the editor buffer; null →
   // undefined so the resume carries no source and the server falls back to
@@ -127,7 +134,7 @@ export default function PauseForm({
     } catch (e) {
       const msg = errorMessage(e);
       setError(msg);
-      if (/source has changed/i.test(msg)) setForceRetry(payload);
+      if (isWorkflowSourceChangedError(e)) setForceRetry({ kind: "form" });
     } finally {
       setBusy(false);
     }
@@ -151,17 +158,17 @@ export default function PauseForm({
     } catch (e) {
       const msg = errorMessage(e);
       setError(msg);
-      if (/source has changed/i.test(msg)) {
-        setForceRetry({ [ASK_USER_KEY]: decision });
+      if (isWorkflowSourceChangedError(e)) {
+        setForceRetry({ kind: "decision", decision });
       }
     } finally {
       setBusy(false);
     }
   };
 
-  // Shared "replay with force" affordance rendered next to every error
-  // spot. The decide() path snapshots its single answer under
-  // ASK_USER_KEY, so replaying through decide() keeps its semantics.
+  // Shared "replay with force" affordance rendered next to every error spot.
+  // A normal form submits its values as they exist at click time; decide()
+  // preserves the exact one-click permission/option token from the rejection.
   const forceRetryButton = forceRetry && (
     <div className="flex items-center gap-2">
       <Button
@@ -169,11 +176,10 @@ export default function PauseForm({
         size="sm"
         disabled={busy}
         onClick={() => {
-          const single = forceRetry[ASK_USER_KEY];
-          if (Object.keys(forceRetry).length === 1 && single !== undefined) {
-            void decide(single, true);
+          if (forceRetry.kind === "decision") {
+            void decide(forceRetry.decision, true);
           } else {
-            void onSubmit(forceRetry, true);
+            void onSubmit(undefined, true);
           }
         }}
       >
@@ -307,6 +313,7 @@ export default function PauseForm({
             </p>
           )}
         </div>
+        {forceRetryButton}
       </div>
     );
   }

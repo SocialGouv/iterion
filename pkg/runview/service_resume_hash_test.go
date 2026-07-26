@@ -1,0 +1,197 @@
+package runview
+
+import (
+	"context"
+	"errors"
+	"os"
+	"path/filepath"
+	"testing"
+	"time"
+
+	"github.com/SocialGouv/iterion/pkg/dsl/ir"
+	iterlog "github.com/SocialGouv/iterion/pkg/log"
+	"github.com/SocialGouv/iterion/pkg/runtime"
+	"github.com/SocialGouv/iterion/pkg/store"
+)
+
+const resumeHashBotOriginal = `
+schema gate_out:
+  approved: bool
+
+prompt gate_prompt:
+  Approve the original workflow?
+
+human gate:
+  instructions: gate_prompt
+  output: gate_out
+  interaction: human
+
+workflow resume_hash:
+  entry: gate
+  gate -> done when approved
+  gate -> fail when not approved
+`
+
+const resumeHashBotModified = `
+schema gate_out:
+  approved: bool
+
+prompt gate_prompt:
+  Approve the modified workflow?
+
+human gate:
+  instructions: gate_prompt
+  output: gate_out
+  interaction: human
+
+workflow resume_hash:
+  entry: gate
+  gate -> done when approved
+  gate -> fail when not approved
+`
+
+type resumeHashPublisher struct {
+	resumeCalls int
+}
+
+func (*resumeHashPublisher) SubmitLaunch(context.Context, string, LaunchSpec, *ir.Workflow, string) (int, error) {
+	return 1, nil
+}
+
+func (*resumeHashPublisher) CancelRun(context.Context, string) error {
+	return nil
+}
+
+func (p *resumeHashPublisher) SubmitResume(context.Context, ResumeSpec, *ir.Workflow, string) error {
+	p.resumeCalls++
+	return nil
+}
+
+func seedChangedWorkflowRun(t *testing.T, svc *Service, runID, botPath string) {
+	t.Helper()
+	if _, err := svc.store.CreateRun(context.Background(), runID, "resume_hash", nil); err != nil {
+		t.Fatalf("CreateRun: %v", err)
+	}
+	r, err := svc.store.LoadRun(context.Background(), runID)
+	if err != nil {
+		t.Fatalf("LoadRun: %v", err)
+	}
+	_, originalHash, err := CompileWorkflowFromSource(botPath, resumeHashBotOriginal)
+	if err != nil {
+		t.Fatalf("compile original workflow: %v", err)
+	}
+	r.Status = store.RunStatusFailedResumable
+	r.FilePath = botPath
+	r.WorkflowHash = originalHash
+	if err := svc.store.SaveRun(context.Background(), r); err != nil {
+		t.Fatalf("SaveRun: %v", err)
+	}
+}
+
+func newChangedWorkflowService(
+	t *testing.T,
+	publisher LaunchPublisher,
+) (*Service, string) {
+	t.Helper()
+	dir := t.TempDir()
+	botPath := filepath.Join(dir, "resume_hash.bot")
+	if err := os.WriteFile(botPath, []byte(resumeHashBotModified), 0o644); err != nil {
+		t.Fatalf("write modified workflow: %v", err)
+	}
+	opts := []ServiceOption{WithLogger(iterlog.Nop())}
+	if publisher != nil {
+		opts = append(opts, WithLaunchPublisher(publisher))
+	}
+	svc, err := NewService(dir, opts...)
+	if err != nil {
+		t.Fatalf("NewService: %v", err)
+	}
+	seedChangedWorkflowRun(t, svc, "run-source-changed", botPath)
+	return svc, botPath
+}
+
+func TestServiceResumeRejectsChangedWorkflowSynchronouslyAcrossModes(t *testing.T) {
+	tests := []struct {
+		name      string
+		detached  bool
+		publisher bool
+	}{
+		{name: "in process"},
+		{name: "detached", detached: true},
+		{name: "cloud publisher", publisher: true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if tt.detached {
+				t.Setenv(envDetached, "1")
+			} else {
+				t.Setenv(envDetached, "0")
+			}
+			var publisher *resumeHashPublisher
+			if tt.publisher {
+				publisher = &resumeHashPublisher{}
+			}
+			svc, botPath := newChangedWorkflowService(t, publisher)
+
+			result, err := svc.Resume(context.Background(), ResumeSpec{
+				RunID:    "run-source-changed",
+				FilePath: botPath,
+			})
+			if result != nil {
+				t.Fatalf("result = %#v, want nil on synchronous hash refusal", result)
+			}
+			if !errors.Is(err, runtime.ErrWorkflowSourceChanged) {
+				t.Fatalf("error = %v, want ErrWorkflowSourceChanged", err)
+			}
+			if publisher != nil && publisher.resumeCalls != 0 {
+				t.Fatalf("publisher called %d times before hash refusal, want 0", publisher.resumeCalls)
+			}
+		})
+	}
+}
+
+func TestServiceResumeForceAllowsChangedWorkflow(t *testing.T) {
+	t.Run("in process", func(t *testing.T) {
+		t.Setenv(envDetached, "0")
+		svc, botPath := newChangedWorkflowService(t, nil)
+
+		result, err := svc.Resume(context.Background(), ResumeSpec{
+			RunID:    "run-source-changed",
+			FilePath: botPath,
+			Force:    true,
+		})
+		if err != nil {
+			t.Fatalf("forced Resume: %v", err)
+		}
+		if result == nil {
+			t.Fatal("forced Resume returned nil result")
+		}
+		select {
+		case <-result.Done:
+		case <-time.After(5 * time.Second):
+			t.Fatal("forced in-process resume did not terminate")
+		}
+	})
+
+	t.Run("cloud publisher", func(t *testing.T) {
+		t.Setenv(envDetached, "0")
+		publisher := &resumeHashPublisher{}
+		svc, botPath := newChangedWorkflowService(t, publisher)
+
+		result, err := svc.Resume(context.Background(), ResumeSpec{
+			RunID:    "run-source-changed",
+			FilePath: botPath,
+			Force:    true,
+		})
+		if err != nil {
+			t.Fatalf("forced Resume: %v", err)
+		}
+		if result == nil {
+			t.Fatal("forced Resume returned nil result")
+		}
+		if publisher.resumeCalls != 1 {
+			t.Fatalf("publisher called %d times, want 1", publisher.resumeCalls)
+		}
+	})
+}

@@ -1,18 +1,14 @@
 ## Child bot of the pipeline-board demo: produces one episode's media into its
 ## OWN run's artifact area (a real 8x8 PNG cover, a real playable 0.5s WAV
 ## track, a real tiny MP4), then pauses on a HUMAN review — which surfaces in the
-## parent's card on /pipelines as an answerable review, with the media
-## previewable from the sidebar. Tool-only + human: no LLM, no API keys.
+## parent's card on /pipelines as an answerable review. Tool-only + human:
+## no LLM, no API keys.
 vars:
   episode: string = "ep"
 
 schema produce_out:
   episode: string
   ready: bool
-  media_refs: json
-
-schema review_input:
-  media_refs: json
 
 schema review_out:
   approved: bool
@@ -31,13 +27,12 @@ mkdir -p "$ITERION_ARTIFACT_FILES_DIR"
 printf 'iVBORw0KGgoAAAANSUhEUgAAAAgAAAAICAIAAABLbSncAAAAEUlEQVR4nGM4YWODFTEMLQkAZZlQAVIPr1MAAAAASUVORK5CYII=' | base64 -d > "$ITERION_ARTIFACT_FILES_DIR/cover-$EP.png"
 { printf 'UklGRmQfAABXQVZFZm10IBAAAAABAAEAQB8AAIA+AAACABAAZGF0YUAfAAA=' | base64 -d; dd if=/dev/zero bs=1000 count=8 2>/dev/null; } > "$ITERION_ARTIFACT_FILES_DIR/track-$EP.wav"
 printf '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' | base64 -d > "$ITERION_ARTIFACT_FILES_DIR/clip-$EP.mp4"
-printf '{"episode":"%s","ready":true,"media_refs":[{"path":"cover-%s.png","caption":"Validate the episode cover"},{"path":"track-%s.wav","caption":"Validate the audio mix"},{"path":"clip-%s.mp4","caption":"Validate the final video"}]}' "$EP" "$EP" "$EP" "$EP"`
+printf '{"episode":"%s","ready":true}' "$EP"`
   output: produce_out
 
 ## The sub-bot's human gate: the parent parks this branch until the review is
 ## answered from the pipeline-board sidebar (or `iterion resume`).
 human review:
-  input: review_input
   output: review_out
 
 compute wrap:
@@ -48,12 +43,7 @@ compute wrap:
 
 workflow episode:
   entry: produce
-  ## `media_refs` is a reserved human-review input. The runtime validates each
-  ## path against this run's actual artifact-files manifest before the board
-  ## renders it beside the approval form.
-  produce -> review with {
-    media_refs: "{{outputs.produce.media_refs}}"
-  }
+  produce -> review
   review  -> wrap when approved
   review  -> fail when not approved
   wrap    -> done

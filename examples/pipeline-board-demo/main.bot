@@ -7,11 +7,10 @@
 ##
 ## What to watch on /pipelines while it runs:
 ##   - the card sits In progress with tree progress + "+3 children";
-##   - each child writes a real PNG cover + a real WAV track + an mp4 stub
+##   - each child writes a real PNG cover + a real WAV track + a tiny MP4
 ##     into its own artifact area, then PAUSES on its own human review —
-##     the card's sidebar shows "Review 1 of 3" with that child's cover,
-##     audio and video explicitly attached beside the approval form; the
-##     Produced elements section still aggregates every child's outputs;
+##     the card's sidebar shows "Review 1 of 3"; the Produced elements
+##     section aggregates every child's outputs;
 ##   - answer the three child reviews from the sidebar (Approve), then the
 ##     PARENT's final review appears — approve it too;
 ##   - the card lands in Done with the final_answer summary + all produced

@@ -155,7 +155,10 @@ func TestDispatchWorkspaceLifecycleFollowsPersistPolicy(t *testing.T) {
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			generation, cleanup := d.dispatchWorkspaceLifecycle("native:policy", tc.persist, runID, false)
+			generation, cleanup, err := d.dispatchWorkspaceLifecycle("native:policy", tc.persist, runID, false)
+			if err != nil {
+				t.Fatalf("dispatchWorkspaceLifecycle(%q): %v", tc.persist, err)
+			}
 			if generation != tc.generation || cleanup != tc.cleanup {
 				t.Fatalf(
 					"dispatchWorkspaceLifecycle(%q) = (%q, %t), want (%q, %t)",
@@ -177,13 +180,13 @@ func TestDispatchWorkspaceLifecyclePreservesResumeShapeAcrossPolicyChange(t *tes
 	if _, _, err := w.Create(stableIssue); err != nil {
 		t.Fatalf("Create(stable): %v", err)
 	}
-	if generation, cleanup := d.dispatchWorkspaceLifecycle(
+	if generation, cleanup, err := d.dispatchWorkspaceLifecycle(
 		stableIssue,
 		WorkspacePersistCleanupOnDone,
 		"run-stable",
 		true,
-	); generation != "" || !cleanup {
-		t.Fatalf("stable resume after keep→cleanup = (%q, %t), want (empty, true)", generation, cleanup)
+	); err != nil || generation != "" || !cleanup {
+		t.Fatalf("stable resume after keep→cleanup = (%q, %t, %v), want (empty, true, nil)", generation, cleanup, err)
 	}
 
 	runIssue := "native:resume-run"
@@ -191,13 +194,13 @@ func TestDispatchWorkspaceLifecyclePreservesResumeShapeAcrossPolicyChange(t *tes
 	if _, _, err := w.CreateForRun(runIssue, runID); err != nil {
 		t.Fatalf("CreateForRun: %v", err)
 	}
-	if generation, cleanup := d.dispatchWorkspaceLifecycle(
+	if generation, cleanup, err := d.dispatchWorkspaceLifecycle(
 		runIssue,
 		WorkspacePersistKeep,
 		runID,
 		true,
-	); generation != runID || cleanup {
-		t.Fatalf("run resume after cleanup→keep = (%q, %t), want (%q, false)", generation, cleanup, runID)
+	); err != nil || generation != runID || cleanup {
+		t.Fatalf("run resume after cleanup→keep = (%q, %t, %v), want (%q, false, nil)", generation, cleanup, err, runID)
 	}
 }
 
@@ -213,8 +216,8 @@ func TestWorkspaceResumeGenerationDoesNotAdoptLegacyPath(t *testing.T) {
 		t.Fatalf("mkdir legacy workspace: %v", err)
 	}
 
-	if generation, ok := w.resumeGeneration(issueID, "run-legacy"); ok {
-		t.Fatalf("legacy unowned path was treated as managed generation %q", generation)
+	if generation, ok, err := w.resumeGeneration(issueID, "run-legacy"); err != nil || ok {
+		t.Fatalf("legacy unowned path probe = (%q, %t, %v), want unmanaged without error", generation, ok, err)
 	}
 	if _, err := os.Stat(legacyPath); err != nil {
 		t.Fatalf("legacy workspace changed during ownership probe: %v", err)
@@ -235,9 +238,9 @@ func TestWorkspaceResumeGenerationRejectsInvalidRunShapeBeforeStableFallback(t *
 		t.Fatalf("mkdir unowned run target: %v", err)
 	}
 
-	generation, ok := w.resumeGeneration(issueID, runID)
-	if ok || generation != runID {
-		t.Fatalf("invalid run shape fell back to stable workspace: generation=%q managed=%t", generation, ok)
+	generation, ok, err := w.resumeGeneration(issueID, runID)
+	if err != nil || ok || generation != runID {
+		t.Fatalf("invalid run shape fell back to stable workspace: generation=%q managed=%t err=%v", generation, ok, err)
 	}
 
 	retiredIssue := "native:retired-resume-shape"
@@ -248,8 +251,8 @@ func TestWorkspaceResumeGenerationRejectsInvalidRunShapeBeforeStableFallback(t *
 	if err := w.RetireForRun(retiredIssue, retiredRun); err != nil {
 		t.Fatalf("RetireForRun: %v", err)
 	}
-	if generation, ok := w.resumeGeneration(retiredIssue, retiredRun); ok || generation != retiredRun {
-		t.Fatalf("retired run shape was resumable: generation=%q managed=%t", generation, ok)
+	if generation, ok, err := w.resumeGeneration(retiredIssue, retiredRun); err != nil || ok || generation != retiredRun {
+		t.Fatalf("retired run shape probe = (%q, %t, %v), want unmanaged without error", generation, ok, err)
 	}
 
 	corruptIssue := "native:corrupt-resume-shape"
@@ -260,8 +263,47 @@ func TestWorkspaceResumeGenerationRejectsInvalidRunShapeBeforeStableFallback(t *
 	if err := os.WriteFile(w.ownerPathForRun(corruptIssue, corruptRun), []byte("{broken"), 0o600); err != nil {
 		t.Fatalf("corrupt marker: %v", err)
 	}
-	if generation, ok := w.resumeGeneration(corruptIssue, corruptRun); ok || generation != corruptRun {
-		t.Fatalf("corrupt run shape was resumable: generation=%q managed=%t", generation, ok)
+	if generation, ok, err := w.resumeGeneration(corruptIssue, corruptRun); err != nil || ok || generation != corruptRun {
+		t.Fatalf("corrupt run shape probe = (%q, %t, %v), want unmanaged without error", generation, ok, err)
+	}
+}
+
+func TestWorkspaceGenerationProbePropagatesFilesystemError(t *testing.T) {
+	root := t.TempDir()
+	w, err := NewWorkspaces(root)
+	if err != nil {
+		t.Fatalf("NewWorkspaces: %v", err)
+	}
+	namespace := filepath.Join(root, workspaceKeyNamespace)
+	if err := os.MkdirAll(namespace, 0o755); err != nil {
+		t.Fatalf("mkdir namespace: %v", err)
+	}
+	// A regular file where .owners must be a directory makes Lstat on an
+	// owner marker fail with a deterministic non-ENOENT error (typically
+	// ENOTDIR). Unlike chmod-based EACCES fixtures, this works under root
+	// and on platforms whose permission model differs.
+	if err := os.WriteFile(filepath.Join(namespace, workspaceOwnersDir), []byte("broken"), 0o600); err != nil {
+		t.Fatalf("plant invalid ownership namespace: %v", err)
+	}
+
+	const (
+		issueID = "native:probe-io-error"
+		runID   = "run-probe-io-error"
+	)
+	generation, managed, err := w.resumeGeneration(issueID, runID)
+	if err == nil {
+		t.Fatalf("resumeGeneration = (%q, %t, nil), want filesystem error", generation, managed)
+	}
+	if errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("resumeGeneration misclassified filesystem error as absent: %v", err)
+	}
+	if generation != runID || managed {
+		t.Fatalf("resumeGeneration = (%q, %t, %v), want (%q, false, error)", generation, managed, err, runID)
+	}
+
+	d := &Dispatcher{workspaces: w}
+	if _, _, err := d.dispatchWorkspaceLifecycle(issueID, WorkspacePersistKeep, runID, false); err == nil {
+		t.Fatal("dispatchWorkspaceLifecycle swallowed ownership probe filesystem error")
 	}
 }
 
@@ -277,14 +319,14 @@ func TestDispatchWorkspaceLifecycleIsolatesPoisonedStableKeepPath(t *testing.T) 
 	d := &Dispatcher{workspaces: w}
 	const runID = "run-isolated"
 
-	generation, cleanup := d.dispatchWorkspaceLifecycle(
+	generation, cleanup, err := d.dispatchWorkspaceLifecycle(
 		issueID,
 		WorkspacePersistKeep,
 		runID,
 		false,
 	)
-	if generation != runID || cleanup {
-		t.Fatalf("poisoned keep lifecycle = (%q, %t), want (%q, false)", generation, cleanup, runID)
+	if err != nil || generation != runID || cleanup {
+		t.Fatalf("poisoned keep lifecycle = (%q, %t, %v), want (%q, false, nil)", generation, cleanup, err, runID)
 	}
 }
 
@@ -700,5 +742,26 @@ func TestWorkspaceRemove(t *testing.T) {
 	// idempotent
 	if err := w.Remove("x"); err != nil {
 		t.Fatalf("Remove (absent): %v", err)
+	}
+}
+
+func TestWorkspaceRemoveAbsentIsIdempotent(t *testing.T) {
+	w, err := NewWorkspaces(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewWorkspaces: %v", err)
+	}
+	const issueID = "native:never-created"
+
+	// The compatibility API intentionally treats a fully absent stable
+	// workspace as already removed, even though RetireForRun cannot observe
+	// an active→retired transition.
+	if err := w.Remove(issueID); err != nil {
+		t.Fatalf("Remove(absent): %v", err)
+	}
+	if _, err := os.Lstat(w.Path(issueID)); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("absent target changed: %v", err)
+	}
+	if _, err := os.Lstat(w.ownerPathForRun(issueID, "")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("absent ownership marker changed: %v", err)
 	}
 }

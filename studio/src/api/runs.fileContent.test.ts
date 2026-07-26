@@ -2,7 +2,6 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 
 import {
   getRunFileContent,
-  runFilePreviewURL,
   saveRunFileContent,
   type RunFileContent,
 } from "./runs";
@@ -67,16 +66,6 @@ describe("getRunFileContent", () => {
     // The slash is percent-encoded by URLSearchParams, so the server sees a
     // single ?path= value (still validated server-side by ValidateRelPath).
     expect(url).toContain("path=a%2Fb.txt");
-  });
-});
-
-describe("runFilePreviewURL", () => {
-  it("targets the exact run and preserves encoded path segments", () => {
-    expect(
-      runFilePreviewURL("run/1", "renders/final image.png"),
-    ).toContain(
-      "/runs/run%2F1/files/preview/renders/final%20image.png",
-    );
   });
 });
 

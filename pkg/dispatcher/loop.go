@@ -386,12 +386,25 @@ func (c *Dispatcher) dispatch(ctx context.Context, iss tracker.Issue) {
 	if !ok {
 		return
 	}
-	workspaceGeneration, cleanupWorkspaceOnSuccess := c.dispatchWorkspaceLifecycle(
+	workspaceGeneration, cleanupWorkspaceOnSuccess, err := c.dispatchWorkspaceLifecycle(
 		iss.ID,
 		cfg.Workspace.Persist,
 		runID,
 		resumeFromRunID != "",
 	)
+	if err != nil {
+		reason := fmt.Sprintf("workspace ownership probe failed: %v", err)
+		c.logger.Warn("dispatcher: %s: %s — dispatch deferred", iss.Identifier, reason)
+		c.recordDispatchSkip(iss, reason)
+		c.releaseClaim(ctx, iss.ID, iss.Identifier)
+		return
+	}
+	// A fired retry remains authoritative until every synchronous dispatch
+	// decision has succeeded. In particular, an empty PrevRunID may encode a
+	// deliberate fresh restart after a source-change failure; consuming it in
+	// resolveRunID would let a lifecycle-probe failure make the next tick fall
+	// back to the stale persisted last_run pointer.
+	delete(c.state.retries, iss.ID)
 
 	runCtx, cancel := context.WithCancel(ctx)
 	entry := c.buildRunningEntry(
@@ -433,27 +446,40 @@ func (c *Dispatcher) dispatchWorkspaceLifecycle(
 	persist WorkspacePersistPolicy,
 	runID string,
 	resuming bool,
-) (generation string, cleanupOnSuccess bool) {
+) (generation string, cleanupOnSuccess bool, err error) {
 	cleanupOnSuccess = persist.shouldCleanupOnSuccess()
 	if resuming {
 		// Preserve the workspace shape that started the run across reloads,
 		// restarts, and the stable→generational migration.
-		if generation, ok := c.workspaces.resumeGeneration(issueID, runID); ok {
-			return generation, cleanupOnSuccess
+		generation, managed, err := c.workspaces.resumeGeneration(issueID, runID)
+		if err != nil {
+			return "", false, err
+		}
+		if managed {
+			return generation, cleanupOnSuccess, nil
 		}
 	}
 	if cleanupOnSuccess {
-		return runID, cleanupOnSuccess
+		return runID, cleanupOnSuccess, nil
 	}
 	// persist=keep intentionally retains the stable per-issue workspace and
 	// its cross-dispatch context. If that shape exists but cannot prove active
 	// ownership, isolate this fresh run instead of retrying the same poisoned
 	// stable path forever.
-	if c.workspaces.generationShapeExists(issueID, "") &&
-		!c.workspaces.generationIsManaged(issueID, "") {
-		return runID, false
+	exists, err := c.workspaces.generationShapeExists(issueID, "")
+	if err != nil {
+		return "", false, err
 	}
-	return "", false
+	if exists {
+		managed, err := c.workspaces.generationIsManaged(issueID, "")
+		if err != nil {
+			return "", false, err
+		}
+		if !managed {
+			return runID, false, nil
+		}
+	}
+	return "", false, nil
 }
 
 // resolveExplicitBot enforces honest-fail on explicit-bot resolution.
@@ -559,10 +585,11 @@ func (c *Dispatcher) applyBotLabelBestEffort(ctx context.Context, id, label stri
 
 // resolveRunID picks the runID (resumed vs freshly minted) and the
 // retry attempt for an issue we just claimed. Runs on the actor
-// goroutine (reads + mutates c.state.retries). Returns ok=false when a
-// fresh runID can't be minted — in that case the claim is released
-// inline and the caller must abort dispatch immediately, before
-// allocating a slot. See ADR-028 Step 4.
+// goroutine (reads c.state.retries). Returns ok=false when a workspace resume
+// probe fails operationally or a fresh runID can't be minted — in either case
+// the claim is released inline and the caller must abort dispatch immediately,
+// before allocating a slot. The retry entry is consumed later by dispatch,
+// only after dispatchWorkspaceLifecycle succeeds. See ADR-028 Step 4.
 //
 // Returns:
 //   - runID:           the run id to use (resume target or freshly minted)
@@ -589,13 +616,13 @@ func (c *Dispatcher) resolveRunID(ctx context.Context, iss tracker.Issue) (runID
 		// every upstream node. A clean retry (PrevRunID empty) falls
 		// through to GenerateRunID below.
 		resumeFromRunID = cur.PrevRunID
-		// The retry entry has done its job — surrender it now so the
-		// new runningEntry is the sole bookkeeping. (cmdRetryDue
-		// already stopped the timer when it fired.)
+		// cmdRetryDue already stopped the timer when it fired. Keep the
+		// entry itself until dispatchWorkspaceLifecycle succeeds: its
+		// PrevRunID (including an intentional empty value) remains the
+		// authority if a later synchronous probe defers this dispatch.
 		if cur.Timer != nil {
 			cur.Timer.Stop()
 		}
-		delete(c.state.retries, iss.ID)
 	}
 	// Cross-restart fallback: when no in-memory retry entry exists
 	// (daemon was restarted, or the dispatcher is picking up an
@@ -623,7 +650,15 @@ func (c *Dispatcher) resolveRunID(ctx context.Context, iss tracker.Issue) (runID
 		}
 	}
 	if resumeFromRunID != "" {
-		if _, managed := c.workspaces.resumeGeneration(iss.ID, resumeFromRunID); !managed {
+		_, managed, err := c.workspaces.resumeGeneration(iss.ID, resumeFromRunID)
+		if err != nil {
+			reason := fmt.Sprintf("workspace ownership probe failed for run %s: %v", resumeFromRunID, err)
+			c.logger.Warn("dispatcher: %s: %s — dispatch deferred", iss.Identifier, reason)
+			c.recordDispatchSkip(iss, reason)
+			c.releaseClaim(ctx, iss.ID, iss.Identifier)
+			return "", "", attempt, false
+		}
+		if !managed {
 			// Pre-v2 paths were derived through a many-to-one sanitizer, so
 			// ownership cannot be proven from the directory name. Never run
 			// hooks in a new v2 workspace while Engine.Resume silently restores
@@ -943,11 +978,11 @@ func (c *Dispatcher) declaredVarsFor(routeKey string) map[string]struct{} {
 	return vd.DeclaredVars(routeKey)
 }
 
-// recordDispatchSkip notes that the actor refused to dispatch iss this
-// scan because its explicit bot is unresolvable / unrouteable. Surfaced
-// in the Snapshot so the board + dashboard can show WHY an eligible
-// ticket is idle. Runs on the actor goroutine; pruned in tick() once the
-// issue stops being a candidate and cleared in dispatch() once it claims.
+// recordDispatchSkip notes that the actor refused to dispatch iss this scan,
+// for example because its explicit bot is unresolvable or a workspace probe
+// failed. Surfaced in the Snapshot so the board + dashboard can show WHY an
+// eligible ticket is idle. Runs on the actor goroutine; pruned in tick() once
+// the issue stops being a candidate and cleared in dispatch() once it claims.
 func (c *Dispatcher) recordDispatchSkip(iss tracker.Issue, reason string) {
 	if c.state.dispatchSkips == nil {
 		c.state.dispatchSkips = map[string]DispatchSkipView{}

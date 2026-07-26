@@ -64,7 +64,7 @@ export function useDocumentTitle() {
       context = "Runs";
     } else if (location.startsWith("/pipelines/cards/")) {
       context = "Pipeline card";
-    } else if (location === "/pipelines" || location.startsWith("/pipelines")) {
+    } else if (location === "/pipelines" || location.startsWith("/pipelines/")) {
       context = "Pipelines";
     } else if (location === "/account") {
       context = "Account";

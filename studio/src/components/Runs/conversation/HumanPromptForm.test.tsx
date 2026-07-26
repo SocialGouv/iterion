@@ -10,6 +10,9 @@ import {
 import type { ReactElement } from "react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
+import { ApiError } from "@/api/client";
+import { WORKFLOW_SOURCE_CHANGED_ERROR_CODE } from "@/api/runs";
+
 import HumanPromptForm from "./HumanPromptForm";
 
 // useHumanNodeSchema fetches the run workflow via react-query, so every
@@ -24,11 +27,15 @@ const getRunWorkflow = vi.fn();
 const getRun = vi.fn().mockResolvedValue({});
 const resumeRun = vi.fn().mockResolvedValue({ run_id: "run-1", status: "running" });
 
-vi.mock("@/api/runs", () => ({
-  getRun: (...args: unknown[]) => getRun(...args),
-  getRunWorkflow: (...args: unknown[]) => getRunWorkflow(...args),
-  resumeRun: (...args: unknown[]) => resumeRun(...args),
-}));
+vi.mock("@/api/runs", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@/api/runs")>();
+  return {
+    ...actual,
+    getRun: (...args: unknown[]) => getRun(...args),
+    getRunWorkflow: (...args: unknown[]) => getRunWorkflow(...args),
+    resumeRun: (...args: unknown[]) => resumeRun(...args),
+  };
+});
 
 vi.mock("@/store/document", () => ({
   useDocumentStore: (select: (state: { currentSource: string | null }) => unknown) =>
@@ -49,6 +56,14 @@ afterEach(() => {
   cleanup();
   vi.clearAllMocks();
 });
+
+function sourceChangedError() {
+  return new ApiError(
+    400,
+    "API error 400: resume rejected",
+    WORKFLOW_SOURCE_CHANGED_ERROR_CODE,
+  );
+}
 
 describe("HumanPromptForm — schema fetch failure (iterion#244)", () => {
   it("surfaces the load error + a Retry instead of silently dropping to a verdict-less fallback", async () => {
@@ -126,5 +141,147 @@ describe("HumanPromptForm — schema fetch failure (iterion#244)", () => {
         }),
       ),
     );
+  });
+});
+
+describe("HumanPromptForm force resume", () => {
+  it("re-coerces the current wizard draft when force retry is clicked", async () => {
+    getRunWorkflow.mockResolvedValue({
+      nodes: [
+        {
+          id: "review",
+          output_schema: [{ name: "notes", type: "string" }],
+        },
+      ],
+      stale_hash: false,
+    });
+    resumeRun
+      .mockRejectedValueOnce(sourceChangedError())
+      .mockResolvedValueOnce({ run_id: "run-1", status: "running" });
+
+    renderWithClient(
+      <HumanPromptForm
+        runId="run-1"
+        nodeId="review"
+        questions={{}}
+        sourceOverride={null}
+      />,
+    );
+
+    const notes = await waitFor(() => screen.getByRole("textbox"));
+    fireEvent.change(notes, { target: { value: "before rejection" } });
+    fireEvent.click(
+      screen.getByRole("button", { name: "Submit & Resume" }),
+    );
+
+    const force = await screen.findByRole("button", {
+      name: "Resume with updated workflow (force)",
+    });
+    fireEvent.change(notes, { target: { value: "edited after rejection" } });
+    fireEvent.click(force);
+
+    await waitFor(() => expect(resumeRun).toHaveBeenCalledTimes(2));
+    expect(resumeRun).toHaveBeenNthCalledWith(2, "run-1", {
+      answers: { notes: "edited after rejection" },
+      source: undefined,
+      force: true,
+    });
+  });
+
+  it("preserves the rejected verdict while merging the current editable fields", async () => {
+    getRunWorkflow.mockResolvedValue({
+      nodes: [
+        {
+          id: "review",
+          output_schema: [
+            { name: "approved", type: "bool" },
+            { name: "notes", type: "string" },
+          ],
+        },
+      ],
+      stale_hash: false,
+    });
+    resumeRun
+      .mockRejectedValueOnce(sourceChangedError())
+      .mockResolvedValueOnce({ run_id: "run-1", status: "running" });
+
+    renderWithClient(
+      <HumanPromptForm
+        runId="run-1"
+        nodeId="review"
+        questions={{}}
+        sourceOverride={null}
+      />,
+    );
+
+    const notes = await waitFor(() => screen.getByRole("textbox"));
+    fireEvent.change(notes, { target: { value: "initial feedback" } });
+    fireEvent.click(screen.getByRole("button", { name: "Reject" }));
+
+    const force = await screen.findByRole("button", {
+      name: "Resume with updated workflow (force)",
+    });
+    fireEvent.change(notes, { target: { value: "updated feedback" } });
+    fireEvent.click(force);
+
+    await waitFor(() => expect(resumeRun).toHaveBeenCalledTimes(2));
+    expect(resumeRun).toHaveBeenNthCalledWith(2, "run-1", {
+      answers: { approved: false, notes: "updated feedback" },
+      source: undefined,
+      force: true,
+    });
+  });
+
+  it("preserves the rejected quick-action token while merging the current wizard fields", async () => {
+    getRunWorkflow.mockResolvedValue({
+      nodes: [
+        {
+          id: "review",
+          output_schema: [
+            { name: "response", type: "string" },
+            { name: "notes", type: "string" },
+          ],
+        },
+      ],
+      stale_hash: false,
+    });
+    resumeRun
+      .mockRejectedValueOnce(sourceChangedError())
+      .mockResolvedValueOnce({ run_id: "run-1", status: "running" });
+
+    renderWithClient(
+      <HumanPromptForm
+        runId="run-1"
+        nodeId="review"
+        questions={{}}
+        sourceOverride={null}
+      />,
+    );
+
+    const quickSkip = await waitFor(() =>
+      screen.getByTitle(
+        "Submit a skip token; the bot will route accordingly.",
+      ),
+    );
+    fireEvent.click(quickSkip);
+
+    const force = await screen.findByRole("button", {
+      name: "Resume with updated workflow (force)",
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Next →" }));
+    fireEvent.change(screen.getByRole("textbox"), {
+      target: { value: "current side note" },
+    });
+    fireEvent.click(force);
+
+    await waitFor(() => expect(resumeRun).toHaveBeenCalledTimes(2));
+    expect(resumeRun).toHaveBeenNthCalledWith(2, "run-1", {
+      answers: {
+        response: "[QA:skip]",
+        notes: "current side note",
+      },
+      source: undefined,
+      force: true,
+    });
   });
 });

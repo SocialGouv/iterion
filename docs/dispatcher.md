@@ -262,6 +262,9 @@ generation; the failed generation remains available for operator recovery.
 Before successful cleanup, the ownership marker is atomically changed from
 `active` to `retired`; interrupted directory/marker deletion therefore cannot
 block a later run-ID generation.
+The legacy stable-workspace `Workspaces.Remove` API is idempotent: when both
+the target and its ownership marker are already absent, removal succeeds
+without requiring an observed retirement transition.
 
 Directories created by older versions directly under
 `<workspace.root>/<sanitized-issue-id>/` are deliberately not adopted or

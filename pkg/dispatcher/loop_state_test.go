@@ -286,12 +286,16 @@ func TestDispatch_RevertsOnWorkspaceCreateFailure(t *testing.T) {
 	}
 
 	cfg := &Config{
-		Name:      "test",
-		Workflow:  t.TempDir() + "/fake.bot",
-		Tracker:   TrackerConfig{Kind: "fake"},
-		Polling:   PollingConfig{IntervalMS: 50},
-		Agent:     AgentConfig{MaxConcurrent: 4, MaxRetryBackoffMS: 1000, RunningState: "in_progress"},
-		Workspace: WorkspaceConfig{Root: wsDir},
+		Name:     "test",
+		Workflow: t.TempDir() + "/fake.bot",
+		Tracker:  TrackerConfig{Kind: "fake"},
+		Polling:  PollingConfig{IntervalMS: 50},
+		Agent:    AgentConfig{MaxConcurrent: 4, MaxRetryBackoffMS: 1000, RunningState: "in_progress"},
+		// A cleanup policy selects the fresh run generation without probing
+		// the stable keep shape first. This keeps the fixture focused on the
+		// asynchronous CreateForRun failure path; operational probe failures
+		// are now deferred synchronously and covered by workspace probe tests.
+		Workspace: WorkspaceConfig{Root: wsDir, Persist: WorkspacePersistCleanupOnDone},
 		Stall:     StallConfig{TimeoutMS: 0},
 	}
 	c, err := New(Options{
@@ -371,6 +375,92 @@ func TestDispatch_RevertsOnWorkspaceCreateFailure(t *testing.T) {
 		t.Fatal("workspace-create failure should reuse finishRun and schedule a retry")
 	} else if e.Timer != nil {
 		e.Timer.Stop()
+	}
+}
+
+func TestDispatchConsumesRetryOnlyAfterWorkspaceLifecycleProbeSucceeds(t *testing.T) {
+	ft := newStateAwareTracker()
+	iss := tracker.Issue{
+		ID: "fake:retry-probe", Identifier: "fake#retry-probe",
+		Title: "go", WorkflowState: "ready",
+	}
+	ft.add(iss)
+	c, wsDir := newStateTestDispatcher(t, &StubRunner{}, ft, time.Hour, "in_progress")
+
+	// PrevRunID="" is an authoritative retry decision: start fresh instead
+	// of falling back to a persisted last run whose source changed.
+	retry := &retryEntry{
+		IssueID:    iss.ID,
+		Identifier: iss.Identifier,
+		Attempt:    2,
+		Fired:      true,
+		PrevRunID:  "",
+	}
+	c.state.retries[iss.ID] = retry
+
+	namespace := filepath.Join(wsDir, workspaceKeyNamespace)
+	if err := os.MkdirAll(namespace, 0o755); err != nil {
+		t.Fatalf("mkdir workspace namespace: %v", err)
+	}
+	ownersPath := filepath.Join(namespace, workspaceOwnersDir)
+	if err := os.WriteFile(ownersPath, []byte("broken"), 0o600); err != nil {
+		t.Fatalf("plant invalid ownership namespace: %v", err)
+	}
+
+	ctx := context.Background()
+	c.dispatch(ctx, iss)
+
+	if got := c.state.retries[iss.ID]; got != retry {
+		t.Fatalf("second-probe failure consumed or replaced retry: got=%p want=%p", got, retry)
+	}
+	if _, running := c.state.running[iss.ID]; running {
+		t.Fatal("second-probe failure allocated a running entry")
+	}
+	if _, visible := c.state.dispatchSkips[iss.ID]; !visible {
+		t.Fatal("second-probe failure was not surfaced as a dispatch skip")
+	}
+	ft.mu.Lock()
+	_, stillClaimed := ft.claims[iss.ID]
+	ft.mu.Unlock()
+	if stillClaimed {
+		t.Fatal("second-probe failure did not release the tracker claim")
+	}
+
+	// Repair the operational filesystem failure. The same retry decision is
+	// consumed only once the next dispatch has completed every synchronous
+	// workspace probe and is ready to allocate its running entry.
+	if err := os.Remove(ownersPath); err != nil {
+		t.Fatalf("repair ownership namespace: %v", err)
+	}
+	c.dispatch(ctx, iss)
+
+	if _, queued := c.state.retries[iss.ID]; queued {
+		t.Fatal("successful workspace lifecycle did not consume retry")
+	}
+	if _, running := c.state.running[iss.ID]; !running {
+		t.Fatal("successful workspace lifecycle did not allocate running entry")
+	}
+
+	// Let the no-op setup/run worker finish, then apply its two FIFO actor
+	// commands so the test leaves no running entry or tracker claim behind.
+	c.workersWG.Wait()
+	for i := 0; i < 2; i++ {
+		select {
+		case command := <-c.cmds:
+			command.apply(c, ctx)
+		case <-time.After(10 * time.Second):
+			t.Fatal("successful dispatch did not post setup and finish commands")
+		}
+	}
+	c.workersWG.Wait()
+	if _, running := c.state.running[iss.ID]; running {
+		t.Fatal("successful dispatch teardown left a running entry")
+	}
+	ft.mu.Lock()
+	_, stillClaimed = ft.claims[iss.ID]
+	ft.mu.Unlock()
+	if stillClaimed {
+		t.Fatal("successful dispatch teardown left the tracker claim")
 	}
 }
 

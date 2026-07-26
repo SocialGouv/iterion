@@ -33,7 +33,10 @@ describe("Combobox", () => {
         <Combobox value="" options={OPTIONS} onChange={() => {}} />
       </div>,
     );
-    fireEvent.click(screen.getByRole("button"));
+    const trigger = screen.getByRole("button");
+    expect(trigger.getAttribute("aria-expanded")).toBe("false");
+    fireEvent.click(trigger);
+    expect(trigger.getAttribute("aria-expanded")).toBe("true");
 
     const listbox = screen.getByRole("listbox");
     expect(container.contains(listbox)).toBe(false);

@@ -335,11 +335,10 @@ func (s *Service) launchDetached(parent context.Context, runID string, spec Laun
 }
 
 // resumeDetached is the Resume counterpart to launchDetached.
+// Service.Resume has already compiled the workflow and performed the
+// synchronous source-hash preflight before reaching this asynchronous path.
+// The detached CLI compiles and checks again after startup as a TOCTOU guard.
 func (s *Service) resumeDetached(parent context.Context, spec ResumeSpec) (*LaunchResult, error) {
-	if _, _, err := CompileWorkflowWithHash(spec.FilePath); err != nil {
-		return nil, err
-	}
-
 	s.prepareRunLogNoFile(spec.RunID)
 
 	answers, convErr := resumeAnswersToStrings(spec.Answers)

@@ -86,6 +86,8 @@ func (r *runFileUploadReader) Read(p []byte) (int, error) {
 	if err == io.EOF && offset+int64(n) < r.Size() {
 		return n, io.ErrUnexpectedEOF
 	}
+	// offset+n == Size is the normal terminal read: preserve io.EOF at the
+	// advertised section boundary and only rewrite an EOF that arrived early.
 	return n, err
 }
 

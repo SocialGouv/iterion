@@ -305,15 +305,27 @@ func (s *Service) Resume(parent context.Context, spec ResumeSpec) (*LaunchResult
 		return nil, err
 	}
 
+	// Compile and compare synchronously before handing the resume to any
+	// asynchronous execution mode. Without this preflight, in-process runs
+	// returned from spawnRun before Engine.Resume checked the hash, while
+	// detached/cloud runners only discovered the mismatch after this service
+	// had already reported success to the HTTP caller.
+	//
+	// Engine.Resume repeats the same check after acquiring the run lock, so a
+	// source/status change between this point and execution still fails closed.
+	wf, hash, err := compileForLaunch(spec.FilePath, spec.Source)
+	if err != nil {
+		return nil, err
+	}
+	if err := runtime.ValidateResumeWorkflowHash(r.ID, r.WorkflowHash, hash, spec.Force); err != nil {
+		return nil, err
+	}
+
 	// Cloud-mode resume: republish the RunMessage with ResumeSpec
 	// set so the runner pool re-enters the engine via Engine.Resume.
 	// Plan §F (T-33). CAS protection on the Mongo checkpoint lives
 	// in MongoRunStore.SaveCheckpoint (CASVersion increment).
 	if s.publisher != nil {
-		wf, hash, err := compileForLaunch(spec.FilePath, spec.Source)
-		if err != nil {
-			return nil, err
-		}
 		if err := s.publisher.SubmitResume(parent, spec, wf, hash); err != nil {
 			return nil, err
 		}
@@ -324,16 +336,6 @@ func (s *Service) Resume(parent context.Context, spec ResumeSpec) (*LaunchResult
 
 	if detachedEnabled() {
 		return s.resumeDetached(parent, spec)
-	}
-
-	// Honour spec.Source when supplied (cloud-mode callers materialise
-	// .bot contents inline; the runner pod may have no FilePath on
-	// disk). The publish path above already uses compileForLaunch for
-	// the same reason — this branch was the only one still routing
-	// through the disk-only CompileWorkflowWithHash.
-	wf, hash, err := compileForLaunch(spec.FilePath, spec.Source)
-	if err != nil {
-		return nil, err
 	}
 
 	_, runLogger := s.prepareRunLog(spec.RunID)

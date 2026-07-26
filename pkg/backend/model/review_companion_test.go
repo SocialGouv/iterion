@@ -8,7 +8,7 @@ import (
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
 )
 
-func TestReviewCompanionJSONSchemaIncludesStrictMediaRefs(t *testing.T) {
+func TestReviewCompanionJSONSchemaBoundsHumanMessage(t *testing.T) {
 	raw, err := reviewCompanionJSONSchema(&ir.Schema{
 		Name: "verdict",
 		Fields: []*ir.SchemaField{
@@ -23,6 +23,14 @@ func TestReviewCompanionJSONSchemaIncludesStrictMediaRefs(t *testing.T) {
 		t.Fatalf("decode schema: %v", err)
 	}
 	properties, _ := schema["properties"].(map[string]any)
+	decision, _ := properties["decision"].(map[string]any)
+	if decision["type"] != "string" {
+		t.Fatalf("base verdict field was not preserved: %#v", decision)
+	}
+	needsHuman, _ := properties["needs_human_input"].(map[string]any)
+	if needsHuman["type"] != "boolean" {
+		t.Fatalf("needs_human_input schema = %#v, want boolean", needsHuman)
+	}
 	message, _ := properties["message"].(map[string]any)
 	if message["type"] != "string" ||
 		message["maxLength"] != float64(maxReviewCompanionMessageChars) {
@@ -41,25 +49,16 @@ func TestReviewCompanionJSONSchemaIncludesStrictMediaRefs(t *testing.T) {
 		}
 	}
 
-	media, _ := properties["media_refs"].(map[string]any)
-	if media["type"] != "array" || media["maxItems"] != float64(12) {
-		t.Fatalf("media_refs schema = %#v, want array maxItems=12", media)
+	if _, exists := properties["media_refs"]; exists {
+		t.Error("media_refs must not be requested without the removed runtime media pipeline")
 	}
-	items, _ := media["items"].(map[string]any)
-	if items["additionalProperties"] != false {
-		t.Errorf("media_refs items must reject extra model-controlled fields: %#v", items)
-	}
-	itemProps, _ := items["properties"].(map[string]any)
-	if _, ok := itemProps["path"]; !ok {
-		t.Error("media_refs item missing path")
-	}
-	if _, ok := itemProps["caption"]; !ok {
-		t.Error("media_refs item missing caption")
+	if schema["additionalProperties"] != false {
+		t.Errorf("additionalProperties = %#v, want false", schema["additionalProperties"])
 	}
 
 	required, _ := schema["required"].([]any)
 	wantRequired := map[string]bool{
-		"decision": false, "needs_human_input": false, "message": false, "media_refs": false,
+		"decision": false, "needs_human_input": false, "message": false,
 	}
 	for _, value := range required {
 		if key, ok := value.(string); ok {
@@ -76,7 +75,7 @@ func TestReviewCompanionJSONSchemaIncludesStrictMediaRefs(t *testing.T) {
 }
 
 func TestReviewCompanionJSONSchemaRejectsReservedFieldCollision(t *testing.T) {
-	for _, name := range []string{"needs_human_input", "message", "media_refs"} {
+	for _, name := range []string{"needs_human_input", "message"} {
 		t.Run(name, func(t *testing.T) {
 			_, err := reviewCompanionJSONSchema(&ir.Schema{
 				Name: "bad",
