@@ -131,8 +131,16 @@ Either write POSIX `sh` and use `.` instead of `source`, or declare
 
 ## The held-out set — the one piece that must survive
 
-`.golden-master/mutants/holdout/` is **sealed**. Never shown to the hardening loop, never quoted
-in a failure log, scored exactly once at the final gate.
+`.golden-master/mutants/holdout/` is **sealed**, and the seal is mechanical, not a promise:
+
+- the first check **relocates the set out of the workspace** — you lose file access after it;
+- `GM_MODE=selfcheck` runs stability, the negative control and the visible mutants, and
+  **withholds the held-out score**;
+- only the final gate, which the workflow triggers and you do not, ever scores it.
+
+The withholding is the point. A number you can watch rise is a number you can tune against: seeing
+"3/5" tells you to keep hardening just as surely as reading the mutants would. Never shown to the
+hardening loop, never quoted in a failure log, scored exactly once.
 
 Without it, the loop overfits. The agent sees which mutants escaped, hardens the comparator until
 it catches precisely those, and the oracle goes green **on its own training set**. That is the

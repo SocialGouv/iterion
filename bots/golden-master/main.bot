@@ -215,7 +215,7 @@ tool oracle_run:
     os.environ['GM_DIR'] = {{vars.oracle_dir}}
     os.environ['GM_MUTATION_FLOOR'] = str({{vars.mutation_floor}})
     os.environ['GM_SEALED_DIR'] = os.path.join({{vars.scratch_dir}}, 'holdout-sealed')
-    os.environ.setdefault('GM_MODE', 'gate')
+    os.environ['GM_MODE'] = 'gate'  # force: un GM_MODE herite ferait passer la porte en selfcheck
     import hashlib
     import http.cookiejar
     import importlib.util
@@ -673,9 +673,9 @@ tool oracle_run:
         floor = int(os.environ.get("GM_MUTATION_FLOOR", "90"))
         mode = os.environ.get("GM_MODE", "gate")   # gate | record
 
-        report = {"total": 0, "valid": 0, "detected": 0, "score_pct": 0,
+        report = {"mode": mode, "total": 0, "valid": 0, "detected": 0, "score_pct": 0,
                   "noop_silent": False, "revert_clean": True, "collateral": 0,
-                  "uncontrolled": [], "blind_lanes": [], "missing_archetypes": [],
+                  "notice": "", "uncontrolled": [], "blind_lanes": [], "missing_archetypes": [],
                   "holdout_detected": 0, "holdout_total": 0, "stable": False,
                   "log_tail": ""}
 
@@ -747,7 +747,12 @@ tool oracle_run:
                 for k, v in snap.items():
                     with open(os.path.join(refs_dir, k + ".txt"), "w", encoding="utf-8") as f:
                         f.write(v)
-                report["log_tail"] = "recorded %d references" % len(snap)
+                # Record mode returns the gate skeleton with its default values, so
+                # `noop_silent: false, score_pct: 0` reads exactly like a failed gate
+                # to anyone glancing at it. The mode field and an unambiguous tail
+                # are what tell the two apart.
+                report["log_tail"] = "MODE=record — %d references written. No gate was run: the " \
+                                     "zeroed fields above are defaults, not a verdict." % len(snap)
                 print(json.dumps(report))
                 return
 
@@ -784,8 +789,14 @@ tool oracle_run:
                                   "mutant_id": v["id"], "entries": v["undetected_targets"],
                                   "why": "these references did not move for a change they cover"})
 
-            held = [score_mutant(m, config, corpus, canon, refs, ws, 1000 + i)
-                    for i, m in enumerate(held_meta)]
+            # The seal relocates the held-out set in BOTH modes — the campaign must
+            # lose file access early — but selfcheck neither scores it nor reports
+            # it. Revealing `holdout_detected` to whoever runs the check is enough to
+            # steer hardening: seeing 3/5 says "keep tuning" even with the files out
+            # of reach. The held-out result belongs to the final gate alone.
+            held = [] if mode == "selfcheck" else [
+                score_mutant(m, config, corpus, canon, refs, ws, 1000 + i)
+                for i, m in enumerate(held_meta)]
 
             valid = [v for v in verdicts if v.get("valid")]
             detected = [v for v in valid if v.get("detected")]
@@ -801,6 +812,14 @@ tool oracle_run:
                 holdout_total=len([v for v in held if v.get("valid")]),
                 holdout_detected=len([v for v in held if v.get("valid") and v.get("detected")]),
             )
+            if mode == "selfcheck":
+                # Withheld, not zero-because-failed. The two numbers are made
+                # DELIBERATELY UNEQUAL: the gate converges on
+                # `holdout_detected == holdout_total`, so a selfcheck report that
+                # ever reached the gate must fail it rather than sail through on a
+                # -1 == -1 coincidence.
+                report["holdout_total"] = len(held_meta)
+                report["holdout_detected"] = -1
 
             problems = []
             if not report["noop_silent"]:
@@ -831,7 +850,12 @@ tool oracle_run:
             if report["score_pct"] < floor:
                 problems.append("mutation score %d%% is under the %d%% floor"
                                 % (report["score_pct"], floor))
-            if report["holdout_total"] and report["holdout_detected"] < report["holdout_total"]:
+            if mode == "selfcheck":
+                report["notice"] = ("MODE=selfcheck — the held-out set was sealed but NOT scored; "
+                                    "its result is withheld on purpose. Only the final gate scores "
+                                    "it. An empty log_tail here means the VISIBLE set is clean, "
+                                    "which is not the same as a green gate.")
+            elif report["holdout_total"] and report["holdout_detected"] < report["holdout_total"]:
                 problems.append("HELD-OUT set: %d/%d detected. The oracle was hardened against "
                                 "the mutants it could see, not against divergence in general."
                                 % (report["holdout_detected"], report["holdout_total"]))

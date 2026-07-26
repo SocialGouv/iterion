@@ -81,8 +81,21 @@ notice that the bytes reaching the browser changed, and a scan of source files c
    references are the baseline, re-recording is a re-baseline and carries the
    obligations below.
 5. **Prove they see** ([[oracle-mutation]]). This is the step that distinguishes a net from a
-   decoration.
-6. **Emit the runner and the report** so a third party can re-run the whole thing.
+   decoration. Check your own work with:
+
+   ```
+   GM_MODE=selfcheck python3 <repo>/.golden-master/harness.py
+   ```
+
+   Selfcheck runs the stability probe, the negative control and the VISIBLE mutants, and
+   **withholds the held-out result on purpose** — seeing it would tell you whether to keep tuning,
+   which is the overfitting the sealed set exists to prevent. An empty `log_tail` here means the
+   visible set is clean; it is not a green gate.
+
+6. **Stop.** The runner and the report are emitted by the workflow, not by you. Writing a
+   `REPORT.md` of your own is welcome when you have something the template cannot say — your
+   documented blind spots, the causes behind your canonicalisation rules — and it will not be
+   overwritten. Do not write `verify-oracle.sh`.
 
 ## Re-baselining, and why it kills nets
 
