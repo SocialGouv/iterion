@@ -122,7 +122,7 @@ func (s *Store) UploadRunFiles(ctx context.Context, runID string) (int, error) {
 		return 0, fmt.Errorf("store/mongo: run files scratch %s is not a directory", runID)
 	}
 	var uploaded int
-	walkErr := filepath.WalkDir(root, func(path string, d fs.DirEntry, walkErr error) error {
+	walkErr := filepath.WalkDir(root, func(path string, d fs.DirEntry, walkErr error) (retErr error) {
 		if walkErr != nil {
 			return walkErr
 		}
@@ -147,13 +147,23 @@ func (s *Store) UploadRunFiles(ctx context.Context, runID string) (int, error) {
 		if openErr != nil {
 			return fmt.Errorf("open %s: %w", rel, openErr)
 		}
+		putSucceeded := false
+		defer func() {
+			closeErr := file.Close()
+			if closeErr != nil {
+				retErr = errors.Join(retErr, fmt.Errorf("close %s: %w", rel, closeErr))
+			}
+			// Preserve the historical count contract: a file is counted only
+			// after both its PUT and local handle close succeeded.
+			if putSucceeded && closeErr == nil {
+				uploaded++
+			}
+		}()
 		fi, statErr := file.Stat()
 		if statErr != nil {
-			_ = file.Close()
 			return fmt.Errorf("stat %s: %w", rel, statErr)
 		}
 		if !fi.Mode().IsRegular() {
-			_ = file.Close()
 			return nil
 		}
 		// Advertise exactly fi.Size() bytes and expose a seekable view capped at
@@ -161,15 +171,10 @@ func (s *Store) UploadRunFiles(ctx context.Context, runID string) (int, error) {
 		// AWS SDK can rewind the body for a transient-error retry. A concurrent
 		// truncate produces io.ErrUnexpectedEOF and keeps the scratch tree for
 		// the later authoritative upload once the writer is quiescent.
-		putErr := s.blob.PutRunFile(ctx, runID, filepath.ToSlash(rel), "", newRunFileUploadReader(file, fi.Size()), fi.Size())
-		closeErr := file.Close()
-		if putErr != nil {
-			return fmt.Errorf("put %s: %w", rel, errors.Join(putErr, closeErr))
+		if putErr := s.blob.PutRunFile(ctx, runID, filepath.ToSlash(rel), "", newRunFileUploadReader(file, fi.Size()), fi.Size()); putErr != nil {
+			return fmt.Errorf("put %s: %w", rel, putErr)
 		}
-		if closeErr != nil {
-			return fmt.Errorf("close %s: %w", rel, closeErr)
-		}
-		uploaded++
+		putSucceeded = true
 		return nil
 	})
 	if walkErr != nil {

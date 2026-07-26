@@ -50,16 +50,21 @@ describe("resume error contract", () => {
   it("uses prose only for errors without a structured code", () => {
     expect(
       isWorkflowSourceChangedError(
-        new ApiError(400, "API error 400: source has changed"),
+        new ApiError(400, "API error 400: workflow source has changed"),
       ),
     ).toBe(true);
     expect(
       isWorkflowSourceChangedError(
         new ApiError(
           400,
-          "API error 400: source has changed",
+          "API error 400: workflow source has changed",
           "another_error",
         ),
+      ),
+    ).toBe(false);
+    expect(
+      isWorkflowSourceChangedError(
+        new ApiError(502, "API error 502: upstream source has changed"),
       ),
     ).toBe(false);
   });

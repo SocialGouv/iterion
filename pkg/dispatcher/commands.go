@@ -889,10 +889,17 @@ func workspaceIsDirty(path string) (bool, error) {
 // path is returned: a standalone repository's .git directory disappears with
 // the workspace and must never be used as a post-delete cleanup target.
 func workspaceGitCommonDir(path string) (string, error) {
+	workspaceDir, err := filepath.EvalSymlinks(path)
+	if err != nil {
+		return "", fmt.Errorf("canonicalize git workspace: %w", err)
+	}
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
-	cmd := exec.CommandContext(ctx, "git", "rev-parse", "--path-format=absolute", "--git-common-dir")
-	cmd.Dir = path
+	// Do not use rev-parse --path-format=absolute here: that flag requires Git
+	// 2.31, while --git-common-dir itself works on every Git version that
+	// supports linked worktrees. Resolve its possibly-relative output below.
+	cmd := exec.CommandContext(ctx, "git", "rev-parse", "--git-common-dir")
+	cmd.Dir = workspaceDir
 	out, err := cmd.Output()
 	if err != nil {
 		return "", err
@@ -901,13 +908,12 @@ func workspaceGitCommonDir(path string) (string, error) {
 	if commonDir == "" {
 		return "", errors.New("git returned an empty common directory")
 	}
+	if !filepath.IsAbs(commonDir) {
+		commonDir = filepath.Join(workspaceDir, commonDir)
+	}
 	commonDir, err = filepath.EvalSymlinks(filepath.Clean(commonDir))
 	if err != nil {
 		return "", fmt.Errorf("canonicalize git common directory: %w", err)
-	}
-	workspaceDir, err := filepath.EvalSymlinks(path)
-	if err != nil {
-		return "", fmt.Errorf("canonicalize git workspace: %w", err)
 	}
 	if isWithin(commonDir, workspaceDir) {
 		return "", errors.New("git common directory is inside workspace")
@@ -919,15 +925,28 @@ func workspaceGitCommonDir(path string) (string, error) {
 // registration. Listing first makes this idempotent with custom before_remove
 // hooks that already deregistered the checkout.
 func removeGitWorktreeRegistration(commonDir, workspacePath string) error {
-	listCtx, cancelList := context.WithTimeout(context.Background(), 15*time.Second)
-	listCmd := exec.CommandContext(listCtx, "git", "--git-dir", commonDir, "worktree", "list", "--porcelain", "-z")
-	out, err := listCmd.Output()
-	cancelList()
+	out, err := listGitWorktrees(commonDir, true)
+	nulDelimited := err == nil
 	if err != nil {
-		return fmt.Errorf("git worktree list: %w", err)
+		// `worktree list -z` was added after --porcelain. Generated workspace
+		// names contain no newlines, but a configured root technically can; in
+		// that exceptional case the legacy line format cannot be parsed
+		// unambiguously and we fail closed with an upgrade hint.
+		if strings.ContainsAny(workspacePath, "\r\n") {
+			return fmt.Errorf("git worktree list -z unsupported for a newline-containing workspace path (Git 2.36+ required): %w", err)
+		}
+		legacyOut, legacyErr := listGitWorktrees(commonDir, false)
+		if legacyErr != nil {
+			return fmt.Errorf("git worktree list: %w", errors.Join(err, legacyErr))
+		}
+		out = legacyOut
 	}
 	found := false
-	for _, field := range bytes.Split(out, []byte{0}) {
+	separator := []byte{0}
+	if !nulDelimited {
+		separator = []byte{'\n'}
+	}
+	for _, field := range bytes.Split(out, separator) {
 		const prefix = "worktree "
 		if !bytes.HasPrefix(field, []byte(prefix)) {
 			continue
@@ -949,6 +968,16 @@ func removeGitWorktreeRegistration(commonDir, workspacePath string) error {
 		return fmt.Errorf("git worktree remove: %w (%s)", err, strings.TrimSpace(string(out)))
 	}
 	return nil
+}
+
+func listGitWorktrees(commonDir string, nulDelimited bool) ([]byte, error) {
+	listCtx, cancelList := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancelList()
+	args := []string{"--git-dir", commonDir, "worktree", "list", "--porcelain"}
+	if nulDelimited {
+		args = append(args, "-z")
+	}
+	return exec.CommandContext(listCtx, "git", args...).Output()
 }
 
 // cmdRetryDue fires when a retry timer expires. We simply drop the

@@ -538,6 +538,10 @@ func TestWorkspaceRefusesExistingUnownedV2Target(t *testing.T) {
 
 	if _, _, err := createTestWorkspace(w, issueID); err == nil {
 		t.Fatal("Create adopted an existing target without an ownership marker")
+	} else if ownerPath := w.ownerPathForRun(issueID, ""); !strings.Contains(err.Error(), target) ||
+		!strings.Contains(err.Error(), ownerPath) ||
+		!strings.Contains(err.Error(), "manual recovery") {
+		t.Fatalf("unowned-target error lacks recovery paths: %v", err)
 	}
 	if got, err := os.ReadFile(sentinel); err != nil || string(got) != "preserve" {
 		t.Fatalf("unowned target was mutated: data=%q err=%v", got, err)

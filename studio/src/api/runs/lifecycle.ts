@@ -19,7 +19,10 @@ export const WORKFLOW_SOURCE_CHANGED_ERROR_CODE = "workflow_source_changed";
 
 // isWorkflowSourceChangedError prefers the structured API contract. The prose
 // fallback only applies when no error_code was supplied, preserving force
-// resume against older servers and direct/plain-error test doubles.
+// resume against servers predating workflow_source_changed and direct/plain
+// error test doubles. Match the old server's canonical phrase narrowly so an
+// unrelated proxy message containing "source has changed" cannot opt into
+// force-resume.
 export function isWorkflowSourceChangedError(err: unknown): boolean {
   if (err instanceof ApiError && err.errorCode !== undefined) {
     return err.errorCode === WORKFLOW_SOURCE_CHANGED_ERROR_CODE;
@@ -32,7 +35,7 @@ export function isWorkflowSourceChangedError(err: unknown): boolean {
         : typeof (err as { message?: unknown } | null)?.message === "string"
           ? String((err as { message: string }).message)
           : "";
-  return /source has changed/i.test(message);
+  return /workflow source has changed/i.test(message);
 }
 
 export async function createRun(req: CreateRunRequest): Promise<CreateRunResponse> {

@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -213,6 +214,10 @@ func TestCleanupWorkspace_RemovesLinkedWorktreeRegistration(t *testing.T) {
 		t.Fatalf("ws.CreateForRun: %v", err)
 	}
 	runCleanupGit(t, hostRepo, "worktree", "add", "--detach", wsPath, "HEAD")
+	commonDir, err := workspaceGitCommonDir(wsPath)
+	if err != nil {
+		t.Fatalf("workspaceGitCommonDir: %v", err)
+	}
 
 	otherPath := filepath.Join(dir, "other-missing-worktree")
 	runCleanupGit(t, hostRepo, "worktree", "add", "--detach", otherPath, "HEAD")
@@ -242,6 +247,11 @@ func TestCleanupWorkspace_RemovesLinkedWorktreeRegistration(t *testing.T) {
 	if listed := runCleanupGit(t, hostRepo, "worktree", "list", "--porcelain"); !strings.Contains(listed, otherPath) {
 		t.Fatalf("cleanup removed unrelated missing worktree registration:\n%s", listed)
 	}
+	// A legacy/custom before_remove hook may have deregistered the path first.
+	// Repeating the exact post-delete cleanup must remain a clean no-op.
+	if err := removeGitWorktreeRegistration(commonDir, wsPath); err != nil {
+		t.Fatalf("idempotent worktree deregistration: %v", err)
+	}
 
 	// A later logical dispatch gets a new absolute path, so a stale writer
 	// cannot contaminate it; exact deregistration also lets Git seed it.
@@ -253,6 +263,77 @@ func TestCleanupWorkspace_RemovesLinkedWorktreeRegistration(t *testing.T) {
 		t.Fatalf("next workspace = (%q, %t), must differ from retired %q", recreatedPath, created, wsPath)
 	}
 	runCleanupGit(t, hostRepo, "worktree", "add", "--detach", recreatedPath, "HEAD")
+}
+
+func TestGitWorktreeCleanupSupportsLegacyPorcelain(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("fake git fixture uses a POSIX shell")
+	}
+	base := t.TempDir()
+	workspace := filepath.Join(base, "workspace with space")
+	commonDir := filepath.Join(base, "common")
+	fakeBin := filepath.Join(base, "bin")
+	for _, dir := range []string{workspace, commonDir, fakeBin} {
+		if err := os.Mkdir(dir, 0o755); err != nil {
+			t.Fatalf("mkdir %s: %v", dir, err)
+		}
+	}
+	logPath := filepath.Join(base, "git.log")
+	fakeGit := filepath.Join(fakeBin, "git")
+	const script = `#!/bin/sh
+printf '%s\n' "$*" >> "$FAKE_GIT_LOG"
+if [ "$1" = "rev-parse" ] && [ "$2" = "--git-common-dir" ]; then
+  printf '../common\n'
+  exit 0
+fi
+if [ "$1" = "--git-dir" ] && [ "$3" = "worktree" ] && [ "$4" = "list" ]; then
+  if [ "${6:-}" = "-z" ]; then
+    exit 129
+  fi
+  printf 'worktree %s\nHEAD deadbeef\ndetached\n\n' "$FAKE_WORKSPACE"
+  exit 0
+fi
+if [ "$1" = "--git-dir" ] && [ "$3" = "worktree" ] && [ "$4" = "remove" ]; then
+  exit 0
+fi
+exit 2
+`
+	if err := os.WriteFile(fakeGit, []byte(script), 0o755); err != nil {
+		t.Fatalf("write fake git: %v", err)
+	}
+	t.Setenv("PATH", fakeBin+string(os.PathListSeparator)+os.Getenv("PATH"))
+	t.Setenv("FAKE_GIT_LOG", logPath)
+	t.Setenv("FAKE_WORKSPACE", workspace)
+
+	gotCommon, err := workspaceGitCommonDir(workspace)
+	if err != nil {
+		t.Fatalf("workspaceGitCommonDir with legacy git: %v", err)
+	}
+	if gotCommon != commonDir {
+		t.Fatalf("workspaceGitCommonDir = %q, want %q", gotCommon, commonDir)
+	}
+	if err := removeGitWorktreeRegistration(gotCommon, workspace); err != nil {
+		t.Fatalf("removeGitWorktreeRegistration with legacy git: %v", err)
+	}
+
+	logged, err := os.ReadFile(logPath)
+	if err != nil {
+		t.Fatalf("read fake git log: %v", err)
+	}
+	logText := string(logged)
+	for _, want := range []string{
+		"rev-parse --git-common-dir",
+		"worktree list --porcelain -z",
+		"worktree list --porcelain",
+		"worktree remove --force " + workspace,
+	} {
+		if !strings.Contains(logText, want) {
+			t.Errorf("fake git log missing %q:\n%s", want, logText)
+		}
+	}
+	if strings.Contains(logText, "--path-format") {
+		t.Errorf("legacy git received unsupported --path-format:\n%s", logText)
+	}
 }
 
 // TestCleanupWorkspace_SkippedUnderKeepPolicy asserts the default policy is

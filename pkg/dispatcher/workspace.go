@@ -165,7 +165,8 @@ func (w *Workspaces) CreateForRun(issueID, runID string) (path string, created b
 	case targetErr == nil:
 		if ownerErr != nil {
 			return "", false, fmt.Errorf(
-				"workspace: refusing to adopt existing target %s without valid ownership marker %s: %w",
+				"workspace: refusing to adopt existing target %s without valid ownership marker %s: %w; "+
+					"manual recovery: inspect the unowned target and remove or relocate it before retrying",
 				target, ownerPath, ownerErr,
 			)
 		}
@@ -199,8 +200,8 @@ func (w *Workspaces) CreateForRun(issueID, runID string) (path string, created b
 			// Never remove the target here: even in this narrow failure
 			// window another process may already have written into it.
 			return "", false, fmt.Errorf(
-				"workspace: publish ownership marker (target preserved unowned at %s): %w",
-				target, err,
+				"workspace: publish ownership marker %s (target preserved unowned at %s for manual recovery): %w",
+				ownerPath, target, err,
 			)
 		}
 		targetInfo, targetErr = os.Lstat(target)

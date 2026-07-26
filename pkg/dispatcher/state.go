@@ -102,7 +102,10 @@ type runningEntry struct {
 	// WorkspaceGeneration is normally the run ID under cleanup policies. It
 	// is empty under persist=keep, and for resumed runs that started on the
 	// stable pre-generational path.
-	WorkspaceGeneration       string
+	WorkspaceGeneration string
+	// CleanupWorkspaceOnSuccess snapshots the persist policy at dispatch
+	// time. A config reload never retroactively deletes (or preserves) a
+	// workspace already owned by an in-flight run.
 	CleanupWorkspaceOnSuccess bool
 	WorkflowState             string
 	WorkspacePath             string

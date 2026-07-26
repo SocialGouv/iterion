@@ -8,6 +8,8 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+
+	"github.com/aws/smithy-go"
 )
 
 // TestRunFiles_ScratchToS3Bridge models the two-pod cloud reality without
@@ -164,6 +166,7 @@ type probingRunFileBlob struct {
 	beforeRead   func() error
 	declaredSize int64
 	seekable     bool
+	wrapReadErr  bool
 	reads        [][]byte
 }
 
@@ -188,6 +191,13 @@ func (b *probingRunFileBlob) PutRunFile(_ context.Context, _, _, _ string, body 
 		payload, err := io.ReadAll(rs)
 		b.reads = append(b.reads, append([]byte(nil), payload...))
 		if err != nil {
+			if b.wrapReadErr {
+				return &smithy.OperationError{
+					ServiceID:     "S3",
+					OperationName: "PutObject",
+					Err:           err,
+				}
+			}
 			return err
 		}
 	}
@@ -252,7 +262,12 @@ func TestUploadRunFiles_BodyIsRewindableAndBoundedAtStatSize(t *testing.T) {
 // next attempt re-stats the now-quiescent file and can upload its new size.
 func TestUploadRunFiles_TruncateDuringPutIsRetriable(t *testing.T) {
 	ctx := context.Background()
-	b := &probingRunFileBlob{inMemoryBlob: newInMemoryBlob()}
+	b := &probingRunFileBlob{
+		inMemoryBlob: newInMemoryBlob(),
+		// The real S3 client wraps request-body failures in OperationError.
+		// Pin errors.Is propagation through that production wrapper.
+		wrapReadErr: true,
+	}
 	runner := &Store{blob: b, runFilesScratch: t.TempDir()}
 
 	const runID = "run_truncate"

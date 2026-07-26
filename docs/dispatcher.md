@@ -256,6 +256,10 @@ the sibling `.owners/` directory.
 | `cleanup_on_done`        | Use a run-ID generation and delete it on a clean dispatch return (engine success). |
 | `cleanup_on_terminal`    | v1: identical to `cleanup_on_done` (terminal-state branching is unimplemented). |
 
+The persist policy is snapshotted when a dispatch starts. Reloading it affects
+new dispatches only; an in-flight run keeps the cleanup decision under which
+its workspace was allocated.
+
 Failed / cancelled dispatches retain their workspace. A resumable retry keeps
 the same run ID and generation. A non-resumable retry starts a fresh
 generation; the failed generation remains available for operator recovery.
@@ -271,6 +275,10 @@ Directories created by older versions directly under
 deleted: the old sanitizer was many-to-one, so ownership cannot be proven from
 the name. A resumable run with only such a legacy/unowned workspace is restarted
 fresh in v2 while the old directory is left untouched for operator recovery.
+This loss of resume continuity is an accepted one-time migration cost. To
+reclaim legacy directories, first confirm that no active/resumable run still
+references them, then inspect and move or delete them manually; automatic
+cleanup would risk deleting a different issue's colliding legacy workspace.
 The resolver also refuses workspaces whose symlink resolution lands outside the
 configured root.
 
@@ -313,6 +321,10 @@ exports five environment variables before invoking the hook:
 A failed `after_create` or `before_run` aborts the dispatch and feeds
 the retry queue; failed `after_run` / `before_remove` are logged at
 WARN.
+Legacy/custom `before_remove` hooks that already run
+`git worktree remove --force` remain compatible: the dispatcher's exact
+post-delete deregistration first lists registrations and becomes a no-op when
+the hook already removed that path.
 
 ## Dispatch templates
 

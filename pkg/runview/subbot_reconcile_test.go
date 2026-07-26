@@ -108,14 +108,25 @@ func TestServicePeriodicReconcileDoesNotFailExecutingSubbot(t *testing.T) {
 		t.Fatal("subbot child run was never persisted")
 	}
 
-	// Cross many 10ms reconcile ticks while the gated child tool is live.
-	time.Sleep(150 * time.Millisecond)
-	child, err := svc.store.LoadRun(context.Background(), childID)
-	if err != nil {
-		t.Fatalf("LoadRun(child): %v", err)
-	}
-	if child.Status != store.RunStatusRunning {
-		t.Fatalf("child status during live tool = %q (error %q), want running", child.Status, child.Error)
+	// Drive repeated reconciliation passes explicitly while the gated child
+	// tool is live. The 10ms background tick still runs concurrently, but
+	// correctness coverage no longer depends on how many timer goroutines a
+	// loaded -race worker happens to schedule inside a fixed sleep.
+	for pass := 1; pass <= 10; pass++ {
+		svc.reconcileOrphans()
+		observer.reconcileOrphans()
+		child, loadErr := svc.store.LoadRun(context.Background(), childID)
+		if loadErr != nil {
+			t.Fatalf("LoadRun(child) after reconcile pass %d: %v", pass, loadErr)
+		}
+		if child.Status != store.RunStatusRunning {
+			t.Fatalf(
+				"child status after reconcile pass %d = %q (error %q), want running",
+				pass,
+				child.Status,
+				child.Error,
+			)
+		}
 	}
 
 	if err := releaseChild(); err != nil {
