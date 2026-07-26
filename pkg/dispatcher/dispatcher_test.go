@@ -634,9 +634,26 @@ func TestDispatcherCancel(t *testing.T) {
 		t.Fatal("dispatch never started")
 	}
 
+	deadline := time.Now().Add(10 * time.Second)
+	for time.Now().Before(deadline) {
+		running := c.Snapshot().Running
+		if len(running) == 1 && running[0].IssueID == "fake:4" {
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	running := c.Snapshot().Running
+	if len(running) != 1 || running[0].IssueID != "fake:4" {
+		t.Fatal("running entry was not published")
+	}
+
+	// Cancellation intentionally makes the issue eligible for dispatch again.
+	// Pause new dispatches so this assertion observes the cancelled run's
+	// teardown instead of racing its legitimate redispatch.
+	c.Pause()
 	c.Cancel("fake:4")
 
-	deadline := time.Now().Add(10 * time.Second)
+	deadline = time.Now().Add(10 * time.Second)
 	for time.Now().Before(deadline) {
 		if len(c.Snapshot().Running) == 0 {
 			return
