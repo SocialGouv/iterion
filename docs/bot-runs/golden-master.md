@@ -2,6 +2,104 @@
 
 Index + template: [README.md](README.md). Newest first.
 
+## 2026-07-26 — GATE CONVERGED on a legacy Java/Spring application: 5/5 visible, 5/5 sealed held-out, no blind lane (run 019f9e47)
+
+- Status: **VALIDATED** for the `http` lane — the graph-triggered `oracle_run` converged. One
+  defect remained, on the last node, after convergence.
+- Versions: bot v0.1.0 + the four fixes from the previous entry · iterion `dev+75eb03daaedc` ·
+  `--sandbox none` · `min_corpus=12`, `max_passes=3`, `adversarial=false`, `--max-duration 2h`.
+- Campaign: **37.1 min, 123 388 tokens**, one pass. Gate: **46.5 s**.
+
+### The verdict (authoritative, from the graph — not the agent's self-check)
+
+```
+stable ✅  noop_silent ✅  revert_clean ✅
+total 5  valid 5  detected 5  score_pct 100
+collateral 0  uncontrolled []  blind_lanes []  missing_archetypes []
+holdout_detected 5 / holdout_total 5     log_tail: (empty)
+→ oracle_gate: converged
+```
+
+### What the four fixes bought, measured
+
+- **`GM_MODE=record` used 3 times, zero shadow harness written** (the previous run built its own
+  capture script *and* its own mutation scorer with divergent semantics). The campaign now
+  self-checks with the code path that judges it.
+- **`harness.py` materialised** (29 504 bytes) — the emitted runner has something to call, and the
+  campaign can record with it.
+- **The seal held**: `mutants/holdout/` left the worktree at the first gate; the five held-out
+  mutants were scored from outside the workspace.
+- **Shebang honoured** — no repeat of the `exit 127` that invalidated every mutant last time.
+
+### Deliverable quality — above what was asked
+
+The campaign's own `REPORT.md` is better than the emitted template, which is why `emit_runner`
+now refuses to overwrite one that already exists. Three things it did that the reference
+implementation (hand-written, by a human) did **not**:
+
+- **`order_flip` via a non-serialised column.** It reorders the page through `date`, which carries
+  `@JsonIgnore` — the order changes with *no displayed value changing at all*, not even at day
+  granularity. Placed in the held-out set. A canonicaliser that sorts arrays is totally blind to
+  it.
+- **Volatility neutralised by JSON key name, not by regex.** `timestamp` → `<TS>`, with the
+  explicit note that `publicationStartDate` shares the ISO format but is business data and stays.
+  The hand-written oracle used an ISO regex — coarser, and exposed to the over-scrubbing the
+  `canonicalization` skill warns about.
+- **A second cause for scrubbing stack traces that was not previously known**: beyond the
+  per-boot CGLIB proxy hash, JVM reflection inflation renames `NativeMethodAccessorImpl` to
+  `GeneratedMethodAccessorNNN` after ~15 reflective calls. A trace in a reference therefore drifts
+  with *request volume*, not just with restarts.
+
+It also documented its blind spots without being asked to justify them away: no true 404 (the
+`/{slug}` catch-all returns a 200 shell), binary exports out of scope, mail flows not exercised,
+four roles with no seeded account and how they are covered by substitution.
+
+Non-vacuity, the consultancy's failure, avoided: public search renders **349 records**, not `content: []`.
+Credit where due — the fixture in the target's baseline harness already widened the publication
+window; the campaign inherited that rather than diagnosing it.
+
+### The seventh defect: `emit_runner` (fixed in `322230023`)
+
+The run failed on its **last node, after the gate had converged**:
+
+```
+"GM_DIR=" + json.dumps({{vars.oracle_dir}) + "}"
+                                        ^ SyntaxError
+```
+
+The DSL expands environment expressions — **including the `${VAR:-default}` form** — before the
+script runs. The default clause ran to the first closing brace, which was the closing brace of
+the next template substitution. **Shell brace syntax is unusable inside a `.bot` script body.**
+The emitted runner now uses no shell braces at all (`[ -n "$VAR" ] || VAR=…`, and `set -e`
+without `-u`, since the usual guard for `-u` would itself need `${VAR-}`).
+
+### Corrections to the previous entry
+
+- "The campaign does not commit as it goes" was true of run 019f9e18, **not** a general property:
+  this run banked two commits (`golden-master: behavioural net`, then `add REPORT.md`).
+- The 60% held-out figure reported by the previous run's *shadow* scorer conflated three failure
+  modes. The real harness separates them: one invalid mutant, one under-declared blast radius,
+  zero actual blindness.
+
+### Residual weaknesses, not yet fixed
+
+- **Gate mode reveals the held-out score to whoever runs it.** The seal stops the campaign
+  *re-reading* the mutants, but an agent running gate mode still sees `holdout_detected`. Seeing
+  3/5 would tell it to keep tuning even without file access. A `selfcheck` mode that scores the
+  visible set and stays silent on the held-out one would close this.
+- **Record mode returns the full gate skeleton** (`total: 0`, `noop_silent: false`,
+  `score_pct: 0`) with only `log_tail: "recorded N references"` to distinguish it. It reads as a
+  failed gate. The report should carry its mode.
+- The `golden-master` skill's method list ends with "emit the runner and the report", a step the
+  **graph** performs — which is why the campaign wrote its own `REPORT.md`.
+
+### Budget, measured
+
+The forfait usage endpoint (`api/oauth/usage`) is **itself rate-limited**: a 90 s watchdog plus a
+120 s sampler earned an HTTP 429 and disarmed the guard at the moment it was needed. One prober,
+5 min minimum. Over 37 minutes of active campaign the 7-day window did not move a measurable
+point (integer resolution).
+
 ## 2026-07-26 — first real runs on a legacy Java/Spring app: 6 defects found, 4 in the bot (runs 019f9e0b → 019f9e18)
 
 - Status: **PARTIAL** — the bot-owned half is validated end to end against a real legacy
