@@ -267,9 +267,9 @@ func (s *Service) startInProcess(parent context.Context, runID string, spec Laun
 		})
 }
 
-// Resume re-enters a paused, failed_resumable, or cancelled run with
-// optional answers. The .bot source must be supplied (and must hash-
-// match the original unless spec.Force).
+// Resume re-enters a human-paused, operator-paused, failed_resumable,
+// or cancelled run with optional answers. The .bot source must be
+// supplied (and must hash-match the original unless spec.Force).
 func (s *Service) Resume(parent context.Context, spec ResumeSpec) (*LaunchResult, error) {
 	if s.draining.Load() {
 		return nil, runtime.ErrServerDraining
@@ -305,15 +305,26 @@ func (s *Service) Resume(parent context.Context, spec ResumeSpec) (*LaunchResult
 		return nil, err
 	}
 
+	// Compile and validate the workflow hash before handing the resume to
+	// any asynchronous execution path. Engine.Resume keeps the same check as
+	// a defence-in-depth/TOCTOU guard, but doing it only inside spawnRun's
+	// goroutine makes the HTTP API return 202 before a mismatch is known. The
+	// studio then treats the human answer as accepted and hides the form even
+	// though the run remains paused. A synchronous error lets the existing UI
+	// preserve the answer and offer its explicit force-resume retry.
+	wf, hash, err := compileForLaunch(spec.FilePath, spec.Source)
+	if err != nil {
+		return nil, err
+	}
+	if err := validateResumeWorkflowHash(r, hash, spec.Force); err != nil {
+		return nil, err
+	}
+
 	// Cloud-mode resume: republish the RunMessage with ResumeSpec
 	// set so the runner pool re-enters the engine via Engine.Resume.
 	// Plan §F (T-33). CAS protection on the Mongo checkpoint lives
 	// in MongoRunStore.SaveCheckpoint (CASVersion increment).
 	if s.publisher != nil {
-		wf, hash, err := compileForLaunch(spec.FilePath, spec.Source)
-		if err != nil {
-			return nil, err
-		}
 		if err := s.publisher.SubmitResume(parent, spec, wf, hash); err != nil {
 			return nil, err
 		}
@@ -324,16 +335,6 @@ func (s *Service) Resume(parent context.Context, spec ResumeSpec) (*LaunchResult
 
 	if detachedEnabled() {
 		return s.resumeDetached(parent, spec)
-	}
-
-	// Honour spec.Source when supplied (cloud-mode callers materialise
-	// .bot contents inline; the runner pod may have no FilePath on
-	// disk). The publish path above already uses compileForLaunch for
-	// the same reason — this branch was the only one still routing
-	// through the disk-only CompileWorkflowWithHash.
-	wf, hash, err := compileForLaunch(spec.FilePath, spec.Source)
-	if err != nil {
-		return nil, err
 	}
 
 	_, runLogger := s.prepareRunLog(spec.RunID)
@@ -400,11 +401,34 @@ func validateResumable(r *store.Run, answers map[string]any) error {
 			return fmt.Errorf("no answers provided; resume of paused run requires answers")
 		}
 		return nil
-	case store.RunStatusFailedResumable, store.RunStatusCancelled:
+	case store.RunStatusPausedOperator, store.RunStatusFailedResumable, store.RunStatusCancelled:
 		return nil
 	default:
 		return fmt.Errorf("run %q cannot be resumed (status: %s)", r.ID, r.Status)
 	}
+}
+
+// validateResumeWorkflowHash is the synchronous Service.Resume preflight for
+// the engine's workflow-hash guard. Keep the runtime check too: it protects
+// direct Engine.Resume callers and remains the final check inside the locked
+// resume goroutine.
+func validateResumeWorkflowHash(r *store.Run, currentHash string, force bool) error {
+	if force || r.WorkflowHash == "" || currentHash == "" || r.WorkflowHash == currentHash {
+		return nil
+	}
+	return fmt.Errorf(
+		"runtime: workflow source has changed since run %q was started (expected hash %s, got %s); re-run from scratch or use --force",
+		r.ID,
+		shortWorkflowHash(r.WorkflowHash),
+		shortWorkflowHash(currentHash),
+	)
+}
+
+func shortWorkflowHash(hash string) string {
+	if len(hash) > 12 {
+		return hash[:12]
+	}
+	return hash
 }
 
 // spawnRun owns the lock + register + goroutine + defer-cleanup

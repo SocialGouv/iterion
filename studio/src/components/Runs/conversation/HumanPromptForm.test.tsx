@@ -127,4 +127,74 @@ describe("HumanPromptForm — schema fetch failure (iterion#244)", () => {
       ),
     );
   });
+
+  it("replays the exact approval answer with force after a stale-workflow rejection", async () => {
+    getRunWorkflow.mockResolvedValue({
+      nodes: [
+        {
+          id: "approve_audio",
+          output_schema: [
+            { name: "approved", type: "bool" },
+            { name: "reviewer", type: "string" },
+            { name: "notes", type: "string" },
+          ],
+        },
+      ],
+      stale_hash: true,
+    });
+    resumeRun
+      .mockRejectedValueOnce(
+        new Error(
+          'runtime: workflow source has changed since run "run-1" was started',
+        ),
+      )
+      .mockResolvedValueOnce({ run_id: "run-1", status: "running" });
+
+    renderWithClient(
+      <HumanPromptForm
+        runId="run-1"
+        nodeId="approve_audio"
+        questions={{}}
+        sourceOverride={null}
+      />,
+    );
+
+    const textboxes = await screen.findAllByRole("textbox");
+    expect(textboxes).toHaveLength(2);
+    const [reviewer, notes] = textboxes;
+    if (!reviewer || !notes) {
+      throw new Error("reviewer and notes fields were not rendered");
+    }
+    fireEvent.change(reviewer, { target: { value: "Victor" } });
+    fireEvent.change(notes, {
+      target: { value: "Corriger la formulation de la scène 6." },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Reject" }));
+
+    const answers = {
+      approved: false,
+      reviewer: "Victor",
+      notes: "Corriger la formulation de la scène 6.",
+    };
+    await waitFor(() =>
+      expect(resumeRun).toHaveBeenNthCalledWith(1, "run-1", {
+        answers,
+        source: undefined,
+      }),
+    );
+
+    fireEvent.click(
+      await screen.findByRole("button", {
+        name: "Resume with updated workflow (force)",
+      }),
+    );
+
+    await waitFor(() =>
+      expect(resumeRun).toHaveBeenNthCalledWith(2, "run-1", {
+        answers,
+        source: undefined,
+        force: true,
+      }),
+    );
+  });
 });
