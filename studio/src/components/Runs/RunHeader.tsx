@@ -34,6 +34,7 @@ import ForkedFromRow from "./runHeader/ForkedFromRow";
 import RunChildrenPanel from "./runHeader/RunChildrenPanel";
 import NotesRow from "./runHeader/NotesRow";
 import ResultLinksRow from "./runHeader/ResultLinksRow";
+import RunInformationAccordion from "./runHeader/RunInformationAccordion";
 import RunNameEditor from "./runHeader/RunNameEditor";
 import RunTagsRow from "./runHeader/RunTagsRow";
 import SourceTicketRow from "./runHeader/SourceTicketRow";
@@ -404,14 +405,6 @@ export default function RunHeader({ run, active, wsState, onResetLayout, bare = 
           {/* run id lives on the copy-id button (row 1) + the Overview's
               Advanced details — no need to repeat the raw string here. */}
         </div>
-        {/* Row 3: the resolved backend/model chip row — one chip per
-            distinct pair the run's LLM nodes ran on. Nothing renders for
-            tool/compute-only runs. */}
-        {run.backends_used && run.backends_used.length > 0 && (
-          <BackendsUsedRow backends={run.backends_used} />
-        )}
-        {/* Row 4: operator-assigned filter/group tags (chips). */}
-        <RunTagsRow runId={run.id} />
       </div>
       {error && (
         <InlineBanner
@@ -426,32 +419,42 @@ export default function RunHeader({ run, active, wsState, onResetLayout, bare = 
       {liveStreamExpected && (
         <WSDisconnectBanner state={wsState} onReconnect={requestWsReconnect} />
       )}
-      {/* Headline result-links (opened PR, live deploy) — the run's
-          "what did it produce" at a glance, the topmost outcome bar above
-          the detailed deployment/finalization rows. */}
-      <ResultLinksRow links={resultLinks} />
-      {/* What the run shipped, above where its commits landed: the live
-          URL is the operator's destination at the end of a deploy run. */}
-      {run.deployment && <DeploymentRow deployment={run.deployment} />}
-      {showFinalization && <FinalizationRow run={run} />}
-      {shellEligible && (
-        <div className="shrink-0 px-4 py-1.5 bg-surface-2/40 border-b border-border-default flex items-center gap-2 text-micro">
-          <span className="text-fg-muted">worktree preserved</span>
-          <button
-            type="button"
-            className="text-accent hover:underline"
-            onClick={() => setShellOpen(true)}
-            title="Open an interactive shell in the run's preserved worktree (local mode)"
-          >
-            Open post-mortem shell
-          </button>
+      <RunInformationAccordion>
+        <div className="shrink-0 border-b border-border-default px-3 py-2 sm:px-4 flex flex-col gap-1.5 text-sm">
+          {/* Resolved backend/model chips. Nothing renders for
+              tool/compute-only runs. */}
+          {run.backends_used && run.backends_used.length > 0 && (
+            <BackendsUsedRow backends={run.backends_used} />
+          )}
+          <RunTagsRow runId={run.id} />
         </div>
-      )}
-      {run.forked_from && <ForkedFromRow run={run} />}
-      <RunChildrenPanel run={run} />
-      {run.source?.issue_id && <SourceTicketRow source={run.source} />}
-      <ErrorHintRow run={run} onResume={() => setResumeOpen(true)} />
-      <NotesRow runId={run.id} />
+        {/* Headline result-links (opened PR, live deploy) — the run's
+            "what did it produce" at a glance, above the detailed
+            deployment/finalization rows. */}
+        <ResultLinksRow links={resultLinks} />
+        {/* What the run shipped, above where its commits landed: the live
+            URL is the operator's destination at the end of a deploy run. */}
+        {run.deployment && <DeploymentRow deployment={run.deployment} />}
+        {showFinalization && <FinalizationRow run={run} />}
+        {shellEligible && (
+          <div className="shrink-0 px-4 py-1.5 bg-surface-2/40 border-b border-border-default flex items-center gap-2 text-micro">
+            <span className="text-fg-muted">worktree preserved</span>
+            <button
+              type="button"
+              className="text-accent hover:underline"
+              onClick={() => setShellOpen(true)}
+              title="Open an interactive shell in the run's preserved worktree (local mode)"
+            >
+              Open post-mortem shell
+            </button>
+          </div>
+        )}
+        {run.forked_from && <ForkedFromRow run={run} />}
+        <RunChildrenPanel run={run} />
+        {run.source?.issue_id && <SourceTicketRow source={run.source} />}
+        <ErrorHintRow run={run} onResume={() => setResumeOpen(true)} />
+        <NotesRow runId={run.id} />
+      </RunInformationAccordion>
 
       {canResume && (
         <ResumeDialog
