@@ -267,6 +267,7 @@ dispatcher routes on it), never the persona.
 | Featurly | `feature-dev` |
 | Fini | `feature-gap-fill` |
 | Vigie | `feed-watch` |
+| Goldy | `golden-master` |
 | Heartbeat (always-on demo) | `heartbeat` |
 | Triagy | `issue-triage` |
 | Nested Subbots Demo | `nested-subbots-demo` |
@@ -656,6 +657,40 @@ schemes by default (opt into internal feeds with
   (use a plain research bot) and it never edits code.
 - **Vars**: `allow_private_feeds` (bool), `category` (string), `config_path` (string), `dry_run` (bool), `fetch_timeout_secs` (int), `max_digest_items` (int), `max_items_per_feed` (int), `mode` (string), `scratch_dir` (string), `state_commit` (bool), `state_dir` (string), `workspace_dir` (string)
 - **Path**: `bots/feed-watch/main.bot`
+
+### `golden-master` — Goldy
+
+Builds a behavioural non-regression net for an EXISTING application, and
+PROVES it is not blind. Records what the app observably does (HTTP responses
+across a representative catalogue, per persona), canonicalises away what is
+volatile, and commits the references into `.golden-master/` in the target
+repo. The part that makes it worth having: a deterministic mutation
+counter-test. Known divergences are injected one at a time and the oracle
+MUST see every one of them, while a no-op mutation MUST leave it silent —
+the first kills a blind judge, the second kills a hysterical one. A sealed
+held-out set, never shown to the hardening loop, is scored exactly once at
+the final gate so the oracle cannot be tuned to pass its own training set.
+The gate is a pure conjunction computed in shell and expressions, never by
+an LLM: no lane may be blind, no mutant may be invalid, no collateral drift,
+and the held-out set must be fully detected. An aggregate score is not
+allowed to average a blind lane away. Emits `verify-oracle.sh` (one entry
+point for CI and for humans) and `REPORT.md`. Repo-agnostic: it knows
+nothing about any language or framework — the app's toolchain comes from the
+target repo's own devbox/devcontainer.
+
+- **Use when**:
+  Use BEFORE modernising, migrating or refactoring an existing application
+  whose test suite is thin, absent, or untrusted — the net you put underneath
+  the work so a behavioural change cannot pass unnoticed. Typical trigger: a
+  framework/runtime/database migration is planned and nothing today would
+  detect an iso-functionality break. Also use to AUDIT an existing golden
+  master or approval-test suite: point it at one and the mutation counter-test
+  reports which references are provably blind. Do NOT use it to write unit
+  tests for new code (that is a test-coverage bot's job), and do NOT use it to
+  encode intended behaviour — it records the status quo, bugs included, which
+  is exactly what a migration must preserve.
+- **Vars**: `adversarial` (bool), `max_passes` (int), `min_corpus` (int), `mutation_floor` (int), `oracle_dir` (string), `scratch_dir` (string), `source_issue_ref` (string), `surface_scope` (string), `workspace_dir` (string)
+- **Path**: `bots/golden-master/main.bot`
 
 ### `heartbeat` — Heartbeat (always-on demo)
 
