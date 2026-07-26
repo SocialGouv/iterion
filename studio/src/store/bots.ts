@@ -19,7 +19,7 @@ interface BotsState {
   error: string | null;
   /** Fetch once (no-op if already loaded or in flight). */
   fetch: () => Promise<void>;
-  /** Force a re-fetch, bypassing the loaded check. */
+  /** Force a new request that supersedes any in-flight catalog load. */
   refetch: () => Promise<void>;
   /** Persist manifest metadata, then refresh the cache. Returns the
    *  updated entry; throws on failure (caller toasts). */

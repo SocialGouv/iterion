@@ -58,9 +58,10 @@ func TestCleanupWorkspace_RunsBeforeRemoveBeforeDeletingDir(t *testing.T) {
 	c, ws := newCleanupTestDispatcher(t, WorkspacePersistCleanupOnDone, wsRoot)
 
 	issueID := "fake:cleanup-1"
-	wsPath, _, err := ws.Create(issueID)
+	runID := "run-cleanup-1"
+	wsPath, _, err := ws.CreateForRun(issueID, runID)
 	if err != nil {
-		t.Fatalf("ws.Create: %v", err)
+		t.Fatalf("ws.CreateForRun: %v", err)
 	}
 
 	// before_remove records — into a sentinel OUTSIDE the workspace —
@@ -72,11 +73,13 @@ func TestCleanupWorkspace_RunsBeforeRemoveBeforeDeletingDir(t *testing.T) {
 		`if [ -d "$ITERION_WORKSPACE" ]; then printf '%%s' "$ITERION_WORKSPACE" > %q; fi`, sentinel)}
 
 	entry := &runningEntry{
-		IssueID:       issueID,
-		Identifier:    "fake#cleanup-1",
-		RunID:         "run-cleanup-1",
-		WorkflowState: "in_progress",
-		WorkspacePath: wsPath,
+		IssueID:                   issueID,
+		Identifier:                "fake#cleanup-1",
+		RunID:                     runID,
+		WorkspaceGeneration:       runID,
+		CleanupWorkspaceOnSuccess: true,
+		WorkflowState:             "in_progress",
+		WorkspacePath:             wsPath,
 	}
 	env := c.dispatchEnv(entry, DispatchSpec{RunID: entry.RunID, WorkspacePath: wsPath})
 
@@ -103,11 +106,15 @@ func TestCleanupWorkspace_RemovesEvenWhenBeforeRemoveFails(t *testing.T) {
 	c, ws := newCleanupTestDispatcher(t, WorkspacePersistCleanupOnDone, wsRoot)
 
 	issueID := "fake:cleanup-2"
-	wsPath, _, err := ws.Create(issueID)
+	runID := "run-cleanup-2"
+	wsPath, _, err := ws.CreateForRun(issueID, runID)
 	if err != nil {
-		t.Fatalf("ws.Create: %v", err)
+		t.Fatalf("ws.CreateForRun: %v", err)
 	}
-	entry := &runningEntry{IssueID: issueID, Identifier: "fake#cleanup-2", WorkspacePath: wsPath}
+	entry := &runningEntry{
+		IssueID: issueID, Identifier: "fake#cleanup-2", RunID: runID,
+		WorkspaceGeneration: runID, CleanupWorkspaceOnSuccess: true, WorkspacePath: wsPath,
+	}
 	hook := &Hook{Script: "exit 3"} // non-zero → Hook.Run returns an error
 
 	c.cleanupWorkspace(entry, hook, c.dispatchEnv(entry, DispatchSpec{WorkspacePath: wsPath}))
@@ -117,11 +124,65 @@ func TestCleanupWorkspace_RemovesEvenWhenBeforeRemoveFails(t *testing.T) {
 	}
 }
 
+func TestCleanupWorkspace_RetireFailurePreservesWorkspaceAndSkipsHook(t *testing.T) {
+	dir := t.TempDir()
+	wsRoot := filepath.Join(dir, "ws")
+	c, ws := newCleanupTestDispatcher(t, WorkspacePersistCleanupOnDone, wsRoot)
+
+	issueID := "fake:cleanup-retire-failure"
+	runID := "run-cleanup-retire-failure"
+	wsPath, _, err := ws.CreateForRun(issueID, runID)
+	if err != nil {
+		t.Fatalf("ws.CreateForRun: %v", err)
+	}
+	if err := os.WriteFile(ws.ownerPathForRun(issueID, runID), []byte("{broken"), 0o600); err != nil {
+		t.Fatalf("corrupt ownership marker: %v", err)
+	}
+
+	sentinel := filepath.Join(dir, "before_remove_must_not_run")
+	hook := &Hook{Script: fmt.Sprintf(`printf ran > %q`, sentinel)}
+	entry := &runningEntry{
+		IssueID: issueID, Identifier: "fake#cleanup-retire-failure", RunID: runID,
+		WorkspaceGeneration: runID, CleanupWorkspaceOnSuccess: true, WorkspacePath: wsPath,
+	}
+	c.cleanupWorkspace(entry, hook, c.dispatchEnv(entry, DispatchSpec{WorkspacePath: wsPath}))
+
+	if _, err := os.Stat(sentinel); !os.IsNotExist(err) {
+		t.Fatal("before_remove ran without a valid retirement authority")
+	}
+	if _, err := os.Stat(wsPath); err != nil {
+		t.Fatalf("workspace changed after retirement failure: %v", err)
+	}
+}
+
+func TestCleanupWorkspace_CleansStableWorkspaceFromResumedOlderRun(t *testing.T) {
+	dir := t.TempDir()
+	wsRoot := filepath.Join(dir, "ws")
+	c, ws := newCleanupTestDispatcher(t, WorkspacePersistCleanupOnDone, wsRoot)
+
+	issueID := "fake:cleanup-stable-resume"
+	runID := "run-cleanup-stable-resume"
+	wsPath, _, err := ws.Create(issueID)
+	if err != nil {
+		t.Fatalf("ws.Create: %v", err)
+	}
+	entry := &runningEntry{
+		IssueID: issueID, Identifier: "fake#cleanup-stable-resume", RunID: runID,
+		CleanupWorkspaceOnSuccess: true, WorkspacePath: wsPath,
+	}
+
+	c.cleanupWorkspace(entry, nil, c.dispatchEnv(entry, DispatchSpec{WorkspacePath: wsPath}))
+
+	if _, err := os.Stat(wsPath); !os.IsNotExist(err) {
+		t.Fatalf("stable resumed workspace %q not removed (stat err=%v)", wsPath, err)
+	}
+}
+
 // TestCleanupWorkspace_RemovesLinkedWorktreeRegistration covers the default
 // dispatch configuration's lifecycle: after_create uses `git worktree add`
 // to seed the owned directory, while cleanup deliberately has no destructive
 // before_remove hook. Once the directory is gone its host-repository
-// registration must be removed so the same issue path can be seeded again.
+// registration must be removed before a later generation is seeded.
 // Deregistration is exact: another missing checkout in the same repository
 // remains registered for its own recovery path.
 func TestCleanupWorkspace_RemovesLinkedWorktreeRegistration(t *testing.T) {
@@ -146,9 +207,10 @@ func TestCleanupWorkspace_RemovesLinkedWorktreeRegistration(t *testing.T) {
 	wsRoot := filepath.Join(dir, "ws")
 	c, ws := newCleanupTestDispatcher(t, WorkspacePersistCleanupOnDone, wsRoot)
 	issueID := "fake:linked-worktree"
-	wsPath, _, err := ws.Create(issueID)
+	runID := "run-linked-worktree"
+	wsPath, _, err := ws.CreateForRun(issueID, runID)
 	if err != nil {
-		t.Fatalf("ws.Create: %v", err)
+		t.Fatalf("ws.CreateForRun: %v", err)
 	}
 	runCleanupGit(t, hostRepo, "worktree", "add", "--detach", wsPath, "HEAD")
 
@@ -159,10 +221,12 @@ func TestCleanupWorkspace_RemovesLinkedWorktreeRegistration(t *testing.T) {
 	}
 
 	entry := &runningEntry{
-		IssueID:       issueID,
-		Identifier:    "fake#linked-worktree",
-		RunID:         "run-linked-worktree",
-		WorkspacePath: wsPath,
+		IssueID:                   issueID,
+		Identifier:                "fake#linked-worktree",
+		RunID:                     runID,
+		WorkspaceGeneration:       runID,
+		CleanupWorkspaceOnSuccess: true,
+		WorkspacePath:             wsPath,
 	}
 	c.cleanupWorkspace(entry, nil, c.dispatchEnv(entry, DispatchSpec{
 		RunID:         entry.RunID,
@@ -179,15 +243,14 @@ func TestCleanupWorkspace_RemovesLinkedWorktreeRegistration(t *testing.T) {
 		t.Fatalf("cleanup removed unrelated missing worktree registration:\n%s", listed)
 	}
 
-	// This is the user-visible regression: a later dispatch of the same
-	// issue gets the deterministic path again, and git worktree add must no
-	// longer reject it as "missing but already registered".
-	recreatedPath, created, err := ws.Create(issueID)
+	// A later logical dispatch gets a new absolute path, so a stale writer
+	// cannot contaminate it; exact deregistration also lets Git seed it.
+	recreatedPath, created, err := ws.CreateForRun(issueID, "run-linked-next")
 	if err != nil {
-		t.Fatalf("ws.Create after cleanup: %v", err)
+		t.Fatalf("ws.CreateForRun after cleanup: %v", err)
 	}
-	if !created || recreatedPath != wsPath {
-		t.Fatalf("recreated workspace = (%q, %t), want (%q, true)", recreatedPath, created, wsPath)
+	if !created || recreatedPath == wsPath {
+		t.Fatalf("next workspace = (%q, %t), must differ from retired %q", recreatedPath, created, wsPath)
 	}
 	runCleanupGit(t, hostRepo, "worktree", "add", "--detach", recreatedPath, "HEAD")
 }
@@ -200,13 +263,17 @@ func TestCleanupWorkspace_SkippedUnderKeepPolicy(t *testing.T) {
 	c, ws := newCleanupTestDispatcher(t, WorkspacePersistKeep, wsRoot)
 
 	issueID := "fake:cleanup-3"
+	runID := "run-cleanup-3"
 	wsPath, _, err := ws.Create(issueID)
 	if err != nil {
 		t.Fatalf("ws.Create: %v", err)
 	}
 	sentinel := filepath.Join(dir, "should_not_exist")
 	hook := &Hook{Script: fmt.Sprintf(`printf ran > %q`, sentinel)}
-	entry := &runningEntry{IssueID: issueID, Identifier: "fake#cleanup-3", WorkspacePath: wsPath}
+	entry := &runningEntry{
+		IssueID: issueID, Identifier: "fake#cleanup-3", RunID: runID,
+		WorkspacePath: wsPath,
+	}
 
 	c.cleanupWorkspace(entry, hook, c.dispatchEnv(entry, DispatchSpec{WorkspacePath: wsPath}))
 
@@ -215,6 +282,9 @@ func TestCleanupWorkspace_SkippedUnderKeepPolicy(t *testing.T) {
 	}
 	if _, err := os.Stat(wsPath); err != nil {
 		t.Fatalf("workspace removed under persist=keep — it must be retained: %v", err)
+	}
+	if reused, created, err := ws.Create(issueID); err != nil || created || reused != wsPath {
+		t.Fatalf("persist=keep lost stable workspace reuse: path=%q created=%t err=%v", reused, created, err)
 	}
 }
 
@@ -229,19 +299,21 @@ func TestFinishRun_DefersWorkspaceTeardownToWorker(t *testing.T) {
 	c, ws := newCleanupTestDispatcher(t, WorkspacePersistCleanupOnDone, wsRoot)
 
 	issueID := "fake:cleanup-4"
-	wsPath, _, err := ws.Create(issueID)
+	runID := "run-cleanup-4"
+	wsPath, _, err := ws.CreateForRun(issueID, runID)
 	if err != nil {
-		t.Fatalf("ws.Create: %v", err)
+		t.Fatalf("ws.CreateForRun: %v", err)
 	}
 	c.tracker.(*fakeTracker).add(tracker.Issue{
 		ID: issueID, Identifier: "fake#cleanup-4", WorkflowState: "in_progress",
 	})
 	c.state.running[issueID] = &runningEntry{
-		IssueID:       issueID,
-		Identifier:    "fake#cleanup-4",
-		RunID:         "run-cleanup-4",
-		WorkflowState: "in_progress",
-		WorkspacePath: wsPath,
+		IssueID:             issueID,
+		Identifier:          "fake#cleanup-4",
+		RunID:               runID,
+		WorkspaceGeneration: runID,
+		WorkflowState:       "in_progress",
+		WorkspacePath:       wsPath,
 	}
 
 	c.finishRun(context.Background(), issueID, nil)
@@ -263,9 +335,10 @@ func TestCleanupWorkspace_KeepsDirtyGitWorkspace(t *testing.T) {
 	c, ws := newCleanupTestDispatcher(t, WorkspacePersistCleanupOnDone, wsRoot)
 
 	issueID := "fake:cleanup-dirty"
-	wsPath, _, err := ws.Create(issueID)
+	runID := "run-cleanup-dirty"
+	wsPath, _, err := ws.CreateForRun(issueID, runID)
 	if err != nil {
-		t.Fatalf("ws.Create: %v", err)
+		t.Fatalf("ws.CreateForRun: %v", err)
 	}
 	// Make the workspace a git checkout with uncommitted changes.
 	for _, args := range [][]string{
@@ -285,7 +358,10 @@ func TestCleanupWorkspace_KeepsDirtyGitWorkspace(t *testing.T) {
 
 	sentinel := filepath.Join(dir, "before_remove_ran")
 	hook := &Hook{Script: fmt.Sprintf(`printf ran > %q`, sentinel)}
-	entry := &runningEntry{IssueID: issueID, Identifier: "fake#cleanup-dirty", WorkspacePath: wsPath}
+	entry := &runningEntry{
+		IssueID: issueID, Identifier: "fake#cleanup-dirty", RunID: runID,
+		WorkspaceGeneration: runID, CleanupWorkspaceOnSuccess: true, WorkspacePath: wsPath,
+	}
 
 	c.cleanupWorkspace(entry, hook, c.dispatchEnv(entry, DispatchSpec{WorkspacePath: wsPath}))
 
@@ -294,6 +370,9 @@ func TestCleanupWorkspace_KeepsDirtyGitWorkspace(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(wsPath, "uncommitted.go")); err != nil {
 		t.Fatalf("dirty workspace was destroyed (uncommitted.go gone: %v) — it must be preserved for recovery", err)
+	}
+	if samePath, created, err := ws.CreateForRun(issueID, runID); err != nil || created || samePath != wsPath {
+		t.Fatalf("dirty workspace ownership was retired: path=%q created=%t err=%v", samePath, created, err)
 	}
 }
 

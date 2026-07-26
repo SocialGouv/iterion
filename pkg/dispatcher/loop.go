@@ -386,9 +386,22 @@ func (c *Dispatcher) dispatch(ctx context.Context, iss tracker.Issue) {
 	if !ok {
 		return
 	}
+	workspaceGeneration, cleanupWorkspaceOnSuccess := c.dispatchWorkspaceLifecycle(
+		iss.ID,
+		cfg.Workspace.Persist,
+		runID,
+		resumeFromRunID != "",
+	)
 
 	runCtx, cancel := context.WithCancel(ctx)
-	entry := c.buildRunningEntry(iss, runID, attempt, cancel)
+	entry := c.buildRunningEntry(
+		iss,
+		runID,
+		workspaceGeneration,
+		cleanupWorkspaceOnSuccess,
+		attempt,
+		cancel,
+	)
 
 	spec := c.buildSpec(cfg, iss, runID, entry.WorkspacePath, attempt, entry)
 	spec.ResumeFromRunID = resumeFromRunID
@@ -404,14 +417,43 @@ func (c *Dispatcher) dispatch(ctx context.Context, iss tracker.Issue) {
 	// the same goroutine. The actor returns here immediately, staying
 	// responsive while the (potentially slow) tracker transition runs.
 	c.launchDispatchSetup(dispatchSetupPlan{
-		issueID:       iss.ID,
-		identifier:    iss.Identifier,
-		sourceState:   iss.WorkflowState,
-		runningTarget: cfg.Agent.RunningState,
-		runCtx:        runCtx,
-		entry:         entry,
-		spec:          spec,
+		issueID:             iss.ID,
+		identifier:          iss.Identifier,
+		sourceState:         iss.WorkflowState,
+		runningTarget:       cfg.Agent.RunningState,
+		workspaceGeneration: workspaceGeneration,
+		runCtx:              runCtx,
+		entry:               entry,
+		spec:                spec,
 	})
+}
+
+func (c *Dispatcher) dispatchWorkspaceLifecycle(
+	issueID string,
+	persist WorkspacePersistPolicy,
+	runID string,
+	resuming bool,
+) (generation string, cleanupOnSuccess bool) {
+	cleanupOnSuccess = persist.shouldCleanupOnSuccess()
+	if resuming {
+		// Preserve the workspace shape that started the run across reloads,
+		// restarts, and the stable→generational migration.
+		if generation, ok := c.workspaces.resumeGeneration(issueID, runID); ok {
+			return generation, cleanupOnSuccess
+		}
+	}
+	if cleanupOnSuccess {
+		return runID, cleanupOnSuccess
+	}
+	// persist=keep intentionally retains the stable per-issue workspace and
+	// its cross-dispatch context. If that shape exists but cannot prove active
+	// ownership, isolate this fresh run instead of retrying the same poisoned
+	// stable path forever.
+	if c.workspaces.generationShapeExists(issueID, "") &&
+		!c.workspaces.generationIsManaged(issueID, "") {
+		return runID, false
+	}
+	return "", false
 }
 
 // resolveExplicitBot enforces honest-fail on explicit-bot resolution.
@@ -581,6 +623,21 @@ func (c *Dispatcher) resolveRunID(ctx context.Context, iss tracker.Issue) (runID
 		}
 	}
 	if resumeFromRunID != "" {
+		if _, managed := c.workspaces.resumeGeneration(iss.ID, resumeFromRunID); !managed {
+			// Pre-v2 paths were derived through a many-to-one sanitizer, so
+			// ownership cannot be proven from the directory name. Never run
+			// hooks in a new v2 workspace while Engine.Resume silently restores
+			// a different legacy/missing WorkDir; restart safely instead and
+			// leave the old directory untouched for operator recovery.
+			c.logger.Warn(
+				"dispatcher: %s run %s has no managed v2 workspace ownership — starting fresh; legacy/unowned workspace left untouched",
+				iss.Identifier,
+				resumeFromRunID,
+			)
+			resumeFromRunID = ""
+		}
+	}
+	if resumeFromRunID != "" {
 		return resumeFromRunID, resumeFromRunID, attempt, true
 	}
 	freshID, err := store.GenerateRunID()
@@ -607,25 +664,33 @@ func (c *Dispatcher) resolveRunID(ctx context.Context, iss tracker.Issue) (runID
 // isClaimed/the dispatch loop skip the issue. The off-actor setup
 // worker fills TransitionedFromState via cmdDispatchSetupDone once the
 // in-progress transition has run.
-func (c *Dispatcher) buildRunningEntry(iss tracker.Issue, runID string, attempt int, cancel context.CancelFunc) *runningEntry {
-	// The per-issue workspace path is deterministic from the issue ID
-	// (Workspaces.Path == the directory Create materialises), so it is known
-	// here on the actor for the spec/env even though the actual mkdir +
-	// in-progress transition run off-actor below. See ADR-028 Step 4.
-	wsPath := c.workspaces.Path(iss.ID)
+func (c *Dispatcher) buildRunningEntry(
+	iss tracker.Issue,
+	runID, workspaceGeneration string,
+	cleanupWorkspaceOnSuccess bool,
+	attempt int,
+	cancel context.CancelFunc,
+) *runningEntry {
+	// The path is deterministic from the issue + logical generation
+	// (PathForRun == the directory CreateForRun materialises), so it is known
+	// before the off-actor mkdir. Resumes preserve the originating shape;
+	// fresh cleanup-policy runs receive a new run-ID generation.
+	wsPath := c.workspaces.PathForRun(iss.ID, workspaceGeneration)
 	now := time.Now().UTC()
 	entry := &runningEntry{
-		IssueID:       iss.ID,
-		Identifier:    iss.Identifier,
-		RunID:         runID,
-		WorkflowState: iss.WorkflowState,
-		WorkspacePath: wsPath,
-		StartedAt:     now,
-		LastEventAt:   now,
-		Attempt:       attempt,
-		Cancel:        cancel,
-		issueSnapshot: iss,
-		setupPending:  true,
+		IssueID:                   iss.ID,
+		Identifier:                iss.Identifier,
+		RunID:                     runID,
+		WorkspaceGeneration:       workspaceGeneration,
+		CleanupWorkspaceOnSuccess: cleanupWorkspaceOnSuccess,
+		WorkflowState:             iss.WorkflowState,
+		WorkspacePath:             wsPath,
+		StartedAt:                 now,
+		LastEventAt:               now,
+		Attempt:                   attempt,
+		Cancel:                    cancel,
+		issueSnapshot:             iss,
+		setupPending:              true,
 	}
 	entry.touchEvent(time.Now())
 	c.state.running[iss.ID] = entry
@@ -654,13 +719,14 @@ func (c *Dispatcher) buildRunningEntry(iss tracker.Issue, runID string, attempt 
 // split the decision. entry/spec are carried through solely to hand to
 // runWorker AFTER setup; the setup portion never touches them.
 type dispatchSetupPlan struct {
-	issueID       string
-	identifier    string
-	sourceState   string // iss.WorkflowState at claim time (the transition source)
-	runningTarget string // cfg.Agent.RunningState snapshot at claim time
-	runCtx        context.Context
-	entry         *runningEntry
-	spec          DispatchSpec
+	issueID             string
+	identifier          string
+	sourceState         string // iss.WorkflowState at claim time (the transition source)
+	runningTarget       string // cfg.Agent.RunningState snapshot at claim time
+	workspaceGeneration string
+	runCtx              context.Context
+	entry               *runningEntry
+	spec                DispatchSpec
 }
 
 // launchDispatchSetup runs the post-claim dispatch setup OFF the actor and,
@@ -719,7 +785,12 @@ func (c *Dispatcher) runDispatchSetup(plan dispatchSetupPlan) (created bool, ok 
 		}
 	}
 
-	_, created, err := c.workspaces.Create(plan.issueID)
+	var err error
+	if plan.workspaceGeneration == "" {
+		_, created, err = c.workspaces.Create(plan.issueID)
+	} else {
+		_, created, err = c.workspaces.CreateForRun(plan.issueID, plan.workspaceGeneration)
+	}
 	if err != nil {
 		c.logger.Warn("dispatcher: workspace create %s: %v", plan.identifier, err)
 		// Carry transitionedFrom so the actor records it on the entry BEFORE

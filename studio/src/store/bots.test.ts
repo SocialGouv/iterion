@@ -68,4 +68,23 @@ describe("useBotsStore load sequencing", () => {
     expect(useBotsStore.getState().error).toBeNull();
     expect(useBotsStore.getState().bots?.map((b) => b.name)).toEqual(["beta"]);
   });
+
+  it("starts a new request for each refetch so the latest project wins", async () => {
+    const oldProject = deferred<BotEntryWithSchema[]>();
+    const newProject = deferred<BotEntryWithSchema[]>();
+    (listBots as Mock)
+      .mockReturnValueOnce(oldProject.promise)
+      .mockReturnValueOnce(newProject.promise);
+
+    const oldLoad = useBotsStore.getState().refetch();
+    const newLoad = useBotsStore.getState().refetch();
+    expect(listBots).toHaveBeenCalledTimes(2);
+
+    newProject.resolve([entry("beta")]);
+    await newLoad;
+    oldProject.resolve([entry("alpha")]);
+    await oldLoad;
+
+    expect(useBotsStore.getState().bots?.map((b) => b.name)).toEqual(["beta"]);
+  });
 });

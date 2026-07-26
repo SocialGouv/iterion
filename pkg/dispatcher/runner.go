@@ -2,7 +2,6 @@ package dispatcher
 
 import (
 	"context"
-	"time"
 
 	"github.com/SocialGouv/iterion/pkg/runtime"
 )
@@ -15,11 +14,6 @@ type DispatchSpec struct {
 	WorkspacePath string
 	StoreDir      string
 	Vars          map[string]any
-	// WorktreeAuthoritySince is the trusted process-census boundary published
-	// by the workspace owner marker before after_create/before_run hooks. Fresh
-	// dispatcher runs propagate it through every launcher path to the nested
-	// runtime worktree; resumes use the boundary already persisted on the run.
-	WorktreeAuthoritySince time.Time
 
 	// ResumeFromRunID, when non-empty, signals the runner to resume
 	// the named prior run (via runtime.Engine.Resume) instead of

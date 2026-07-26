@@ -798,10 +798,10 @@ func (c *Dispatcher) runFinalCommit(runID string) string {
 	return probe.FinalCommit
 }
 
-// cleanupWorkspace tears down the per-issue workspace after a clean
-// dispatch when the active persist policy calls for it. The optional
-// before_remove hook runs first, while the checkout still exists, so custom
-// configurations can archive output or perform their own teardown.
+// cleanupWorkspace tears down one generation after a clean dispatch when the
+// active persist policy calls for it. The optional before_remove hook runs
+// while the checkout still exists, so custom configurations can archive output
+// or perform their own teardown.
 //
 // When the workspace is a linked Git worktree, its common Git directory is
 // captured before the hook runs. After the owned directory is gone we remove
@@ -816,10 +816,12 @@ func (c *Dispatcher) runFinalCommit(runID string) string {
 // (default 60s) and would otherwise stall polling/dispatch/snapshots.
 // beforeRemove is the hook snapshotted by the caller (nil = no-op; Hook.Run
 // tolerates a nil receiver); env is the same ITERION_* set the other hooks
-// receive. Best-effort throughout: a failing hook is logged but the
-// directory is still removed, so a bad hook never strands the workspace.
+// receive. Retirement is fail-closed: if ownership cannot be revoked, neither
+// the hook nor deletion runs. New cleanup-policy dispatches use unique paths,
+// so partial teardown cannot strand them. A failing hook is logged but the
+// retired directory is still removed.
 func (c *Dispatcher) cleanupWorkspace(entry *runningEntry, beforeRemove *Hook, env []string) {
-	if !c.cfg.Load().Workspace.Persist.shouldCleanupOnSuccess() {
+	if entry == nil || !entry.CleanupWorkspaceOnSuccess {
 		return
 	}
 	// Stranded-work guard: the external workspace is a detached-HEAD
@@ -835,6 +837,12 @@ func (c *Dispatcher) cleanupWorkspace(entry *runningEntry, beforeRemove *Hook, e
 			entry.Identifier, entry.WorkspacePath)
 		return
 	}
+	workspaceGeneration := entry.WorkspaceGeneration
+	if err := c.workspaces.RetireForRun(entry.IssueID, workspaceGeneration); err != nil {
+		c.logger.Warn("dispatcher: preserving workspace %s at %s — cannot retire ownership: %v",
+			entry.Identifier, entry.WorkspacePath, err)
+		return
+	}
 	// Best-effort discovery. A plain directory or standalone repository has
 	// no surviving metadata to update after its directory disappears; a
 	// linked worktree resolves to the host repository's common gitdir.
@@ -842,14 +850,12 @@ func (c *Dispatcher) cleanupWorkspace(entry *runningEntry, beforeRemove *Hook, e
 	if err := beforeRemove.Run(context.Background(), c.logger, "before_remove", entry.WorkspacePath, env); err != nil {
 		c.logger.Warn("dispatcher: before_remove hook for %s: %v", entry.Identifier, err)
 	}
-	if err := c.workspaces.Remove(entry.IssueID); err != nil {
+	if err := c.workspaces.RemoveForRun(entry.IssueID, workspaceGeneration); err != nil {
 		c.logger.Warn("dispatcher: cleanup workspace %s: %v", entry.Identifier, err)
 	}
-	// A custom before_remove hook may itself remove the checkout, in which
-	// case Workspaces.Remove can report that its ownership marker remains.
-	// Exact deregistration is still safe whenever the checkout path is now
-	// absent. If a late writer recreated the path, skip here and let Git
-	// retain the registration fail-closed.
+	// A custom before_remove hook may itself remove the checkout. Exact
+	// deregistration is still safe whenever the path is now absent. If a late
+	// writer recreated it, retain the registration fail-closed.
 	if gitCommonDir != "" {
 		if _, err := os.Lstat(entry.WorkspacePath); errors.Is(err, os.ErrNotExist) {
 			if err := removeGitWorktreeRegistration(gitCommonDir, entry.WorkspacePath); err != nil {
@@ -913,11 +919,10 @@ func workspaceGitCommonDir(path string) (string, error) {
 // registration. Listing first makes this idempotent with custom before_remove
 // hooks that already deregistered the checkout.
 func removeGitWorktreeRegistration(commonDir, workspacePath string) error {
-	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
-	defer cancel()
-
-	listCmd := exec.CommandContext(ctx, "git", "--git-dir", commonDir, "worktree", "list", "--porcelain", "-z")
+	listCtx, cancelList := context.WithTimeout(context.Background(), 15*time.Second)
+	listCmd := exec.CommandContext(listCtx, "git", "--git-dir", commonDir, "worktree", "list", "--porcelain", "-z")
 	out, err := listCmd.Output()
+	cancelList()
 	if err != nil {
 		return fmt.Errorf("git worktree list: %w", err)
 	}
@@ -937,7 +942,9 @@ func removeGitWorktreeRegistration(commonDir, workspacePath string) error {
 		return nil
 	}
 
-	cmd := exec.CommandContext(ctx, "git", "--git-dir", commonDir, "worktree", "remove", "--force", workspacePath)
+	removeCtx, cancelRemove := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancelRemove()
+	cmd := exec.CommandContext(removeCtx, "git", "--git-dir", commonDir, "worktree", "remove", "--force", workspacePath)
 	if out, err := cmd.CombinedOutput(); err != nil {
 		return fmt.Errorf("git worktree remove: %w (%s)", err, strings.TrimSpace(string(out)))
 	}

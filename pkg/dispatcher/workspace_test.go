@@ -9,12 +9,22 @@ import (
 	"testing"
 )
 
+const testWorkspaceRunID = "run-test"
+
+func createTestWorkspace(w *Workspaces, issueID string) (string, bool, error) {
+	return w.Create(issueID)
+}
+
+func testWorkspacePath(w *Workspaces, issueID string) string {
+	return w.Path(issueID)
+}
+
 func TestWorkspaceCreateAndPath(t *testing.T) {
 	w, err := NewWorkspaces(t.TempDir())
 	if err != nil {
 		t.Fatalf("NewWorkspaces: %v", err)
 	}
-	path, created, err := w.Create("native:abc-123")
+	path, created, err := createTestWorkspace(w, "native:abc-123")
 	if err != nil {
 		t.Fatalf("Create: %v", err)
 	}
@@ -29,7 +39,7 @@ func TestWorkspaceCreateAndPath(t *testing.T) {
 	}
 
 	// Idempotent: re-create reports created=false.
-	_, created2, err := w.Create("native:abc-123")
+	_, created2, err := createTestWorkspace(w, "native:abc-123")
 	if err != nil {
 		t.Fatalf("re-Create: %v", err)
 	}
@@ -40,7 +50,7 @@ func TestWorkspaceCreateAndPath(t *testing.T) {
 
 func TestWorkspaceSanitize(t *testing.T) {
 	w, _ := NewWorkspaces(t.TempDir())
-	path, _, err := w.Create("github:owner/repo#42")
+	path, _, err := createTestWorkspace(w, "github:owner/repo#42")
 	if err != nil {
 		t.Fatalf("Create: %v", err)
 	}
@@ -60,15 +70,15 @@ func TestWorkspaceKeysSeparateSanitizationCollisions(t *testing.T) {
 	if sanitizeKey(firstID) != sanitizeKey(secondID) {
 		t.Fatal("test fixture does not exercise a legacy sanitization collision")
 	}
-	if first, second := w.Path(firstID), w.Path(secondID); first == second {
+	if first, second := testWorkspacePath(w, firstID), testWorkspacePath(w, secondID); first == second {
 		t.Fatalf("colliding issue IDs resolved to the same workspace: %q", first)
 	}
 
-	first, firstCreated, err := w.Create(firstID)
+	first, firstCreated, err := createTestWorkspace(w, firstID)
 	if err != nil {
 		t.Fatalf("Create(%q): %v", firstID, err)
 	}
-	second, secondCreated, err := w.Create(secondID)
+	second, secondCreated, err := createTestWorkspace(w, secondID)
 	if err != nil {
 		t.Fatalf("Create(%q): %v", secondID, err)
 	}
@@ -126,6 +136,158 @@ func TestWorkspaceRunGenerationsNeverReuseAbsolutePath(t *testing.T) {
 	}
 }
 
+func TestDispatchWorkspaceLifecycleFollowsPersistPolicy(t *testing.T) {
+	w, err := NewWorkspaces(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewWorkspaces: %v", err)
+	}
+	d := &Dispatcher{workspaces: w}
+	const runID = "run-policy"
+	tests := []struct {
+		name       string
+		persist    WorkspacePersistPolicy
+		generation string
+		cleanup    bool
+	}{
+		{name: "keep", persist: WorkspacePersistKeep},
+		{name: "cleanup_on_done", persist: WorkspacePersistCleanupOnDone, generation: runID, cleanup: true},
+		{name: "cleanup_on_terminal", persist: WorkspacePersistCleanupOnTerminal, generation: runID, cleanup: true},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			generation, cleanup := d.dispatchWorkspaceLifecycle("native:policy", tc.persist, runID, false)
+			if generation != tc.generation || cleanup != tc.cleanup {
+				t.Fatalf(
+					"dispatchWorkspaceLifecycle(%q) = (%q, %t), want (%q, %t)",
+					tc.persist, generation, cleanup, tc.generation, tc.cleanup,
+				)
+			}
+		})
+	}
+}
+
+func TestDispatchWorkspaceLifecyclePreservesResumeShapeAcrossPolicyChange(t *testing.T) {
+	w, err := NewWorkspaces(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewWorkspaces: %v", err)
+	}
+	d := &Dispatcher{workspaces: w}
+
+	stableIssue := "native:resume-stable"
+	if _, _, err := w.Create(stableIssue); err != nil {
+		t.Fatalf("Create(stable): %v", err)
+	}
+	if generation, cleanup := d.dispatchWorkspaceLifecycle(
+		stableIssue,
+		WorkspacePersistCleanupOnDone,
+		"run-stable",
+		true,
+	); generation != "" || !cleanup {
+		t.Fatalf("stable resume after keep→cleanup = (%q, %t), want (empty, true)", generation, cleanup)
+	}
+
+	runIssue := "native:resume-run"
+	const runID = "run-generation"
+	if _, _, err := w.CreateForRun(runIssue, runID); err != nil {
+		t.Fatalf("CreateForRun: %v", err)
+	}
+	if generation, cleanup := d.dispatchWorkspaceLifecycle(
+		runIssue,
+		WorkspacePersistKeep,
+		runID,
+		true,
+	); generation != runID || cleanup {
+		t.Fatalf("run resume after cleanup→keep = (%q, %t), want (%q, false)", generation, cleanup, runID)
+	}
+}
+
+func TestWorkspaceResumeGenerationDoesNotAdoptLegacyPath(t *testing.T) {
+	root := t.TempDir()
+	w, err := NewWorkspaces(root)
+	if err != nil {
+		t.Fatalf("NewWorkspaces: %v", err)
+	}
+	issueID := "native:legacy-resume"
+	legacyPath := filepath.Join(root, sanitizeKey(issueID))
+	if err := os.MkdirAll(legacyPath, 0o755); err != nil {
+		t.Fatalf("mkdir legacy workspace: %v", err)
+	}
+
+	if generation, ok := w.resumeGeneration(issueID, "run-legacy"); ok {
+		t.Fatalf("legacy unowned path was treated as managed generation %q", generation)
+	}
+	if _, err := os.Stat(legacyPath); err != nil {
+		t.Fatalf("legacy workspace changed during ownership probe: %v", err)
+	}
+}
+
+func TestWorkspaceResumeGenerationRejectsInvalidRunShapeBeforeStableFallback(t *testing.T) {
+	w, err := NewWorkspaces(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewWorkspaces: %v", err)
+	}
+	issueID := "native:invalid-resume-shape"
+	if _, _, err := w.Create(issueID); err != nil {
+		t.Fatalf("Create(stable): %v", err)
+	}
+	runID := "run-invalid"
+	if err := os.MkdirAll(w.PathForRun(issueID, runID), 0o755); err != nil {
+		t.Fatalf("mkdir unowned run target: %v", err)
+	}
+
+	generation, ok := w.resumeGeneration(issueID, runID)
+	if ok || generation != runID {
+		t.Fatalf("invalid run shape fell back to stable workspace: generation=%q managed=%t", generation, ok)
+	}
+
+	retiredIssue := "native:retired-resume-shape"
+	retiredRun := "run-retired"
+	if _, _, err := w.CreateForRun(retiredIssue, retiredRun); err != nil {
+		t.Fatalf("CreateForRun(retired): %v", err)
+	}
+	if err := w.RetireForRun(retiredIssue, retiredRun); err != nil {
+		t.Fatalf("RetireForRun: %v", err)
+	}
+	if generation, ok := w.resumeGeneration(retiredIssue, retiredRun); ok || generation != retiredRun {
+		t.Fatalf("retired run shape was resumable: generation=%q managed=%t", generation, ok)
+	}
+
+	corruptIssue := "native:corrupt-resume-shape"
+	corruptRun := "run-corrupt"
+	if _, _, err := w.CreateForRun(corruptIssue, corruptRun); err != nil {
+		t.Fatalf("CreateForRun(corrupt): %v", err)
+	}
+	if err := os.WriteFile(w.ownerPathForRun(corruptIssue, corruptRun), []byte("{broken"), 0o600); err != nil {
+		t.Fatalf("corrupt marker: %v", err)
+	}
+	if generation, ok := w.resumeGeneration(corruptIssue, corruptRun); ok || generation != corruptRun {
+		t.Fatalf("corrupt run shape was resumable: generation=%q managed=%t", generation, ok)
+	}
+}
+
+func TestDispatchWorkspaceLifecycleIsolatesPoisonedStableKeepPath(t *testing.T) {
+	w, err := NewWorkspaces(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewWorkspaces: %v", err)
+	}
+	issueID := "native:poisoned-stable"
+	if err := os.MkdirAll(w.Path(issueID), 0o755); err != nil {
+		t.Fatalf("mkdir unowned stable target: %v", err)
+	}
+	d := &Dispatcher{workspaces: w}
+	const runID = "run-isolated"
+
+	generation, cleanup := d.dispatchWorkspaceLifecycle(
+		issueID,
+		WorkspacePersistKeep,
+		runID,
+		false,
+	)
+	if generation != runID || cleanup {
+		t.Fatalf("poisoned keep lifecycle = (%q, %t), want (%q, false)", generation, cleanup, runID)
+	}
+}
+
 func TestWorkspaceConcurrentCreateHasSingleAuthority(t *testing.T) {
 	w, err := NewWorkspaces(t.TempDir())
 	if err != nil {
@@ -146,7 +308,7 @@ func TestWorkspaceConcurrentCreateHasSingleAuthority(t *testing.T) {
 		go func() {
 			ready.Done()
 			<-start
-			path, created, err := w.Create("native:concurrent-authority")
+			path, created, err := createTestWorkspace(w, "native:concurrent-authority")
 			results <- result{path: path, created: created, err: err}
 		}()
 	}
@@ -298,7 +460,7 @@ func TestWorkspaceLegacyCollisionPathIsPreservedNotAdopted(t *testing.T) {
 		t.Fatalf("write legacy sentinel: %v", err)
 	}
 
-	newPath, created, err := w.Create(issueID)
+	newPath, created, err := createTestWorkspace(w, issueID)
 	if err != nil {
 		t.Fatalf("Create: %v", err)
 	}
@@ -323,7 +485,7 @@ func TestWorkspaceRefusesExistingUnownedV2Target(t *testing.T) {
 		t.Fatalf("NewWorkspaces: %v", err)
 	}
 	issueID := "native:late-writer"
-	target := w.Path(issueID)
+	target := testWorkspacePath(w, issueID)
 	if err := os.MkdirAll(target, 0o755); err != nil {
 		t.Fatalf("plant unowned target: %v", err)
 	}
@@ -332,7 +494,7 @@ func TestWorkspaceRefusesExistingUnownedV2Target(t *testing.T) {
 		t.Fatalf("write late output: %v", err)
 	}
 
-	if _, _, err := w.Create(issueID); err == nil {
+	if _, _, err := createTestWorkspace(w, issueID); err == nil {
 		t.Fatal("Create adopted an existing target without an ownership marker")
 	}
 	if got, err := os.ReadFile(sentinel); err != nil || string(got) != "preserve" {
@@ -340,60 +502,103 @@ func TestWorkspaceRefusesExistingUnownedV2Target(t *testing.T) {
 	}
 }
 
-func TestWorkspaceRetireBlocksReuseUntilAbsentAndReleased(t *testing.T) {
+func TestWorkspaceRemoveRequiresRetirementAndIsIdempotent(t *testing.T) {
 	w, err := NewWorkspaces(t.TempDir())
 	if err != nil {
 		t.Fatalf("NewWorkspaces: %v", err)
 	}
 	issueID := "native:retired"
+	path, _, err := w.CreateForRun(issueID, testWorkspaceRunID)
+	if err != nil {
+		t.Fatalf("CreateForRun: %v", err)
+	}
+	if err := w.RemoveForRun(issueID, testWorkspaceRunID); err == nil {
+		t.Fatal("RemoveForRun deleted an active workspace")
+	}
+	if err := w.RetireForRun(issueID, testWorkspaceRunID); err != nil {
+		t.Fatalf("RetireForRun: %v", err)
+	}
+	if _, _, err := w.CreateForRun(issueID, testWorkspaceRunID); err == nil {
+		t.Fatal("CreateForRun reused a retired workspace")
+	}
+	if err := w.RemoveForRun(issueID, testWorkspaceRunID); err != nil {
+		t.Fatalf("RemoveForRun: %v", err)
+	}
+	if _, err := os.Stat(path); !os.IsNotExist(err) {
+		t.Fatalf("workspace not removed: %v", err)
+	}
+	if err := w.RemoveForRun(issueID, testWorkspaceRunID); err != nil {
+		t.Fatalf("RemoveForRun(absent): %v", err)
+	}
+}
+
+func TestWorkspaceInterruptedRemovalClearsRetiredMarker(t *testing.T) {
+	w, err := NewWorkspaces(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewWorkspaces: %v", err)
+	}
+	issueID := "native:interrupted-remove"
+	oldRun := "run-old"
+	path, _, err := w.CreateForRun(issueID, oldRun)
+	if err != nil {
+		t.Fatalf("CreateForRun: %v", err)
+	}
+	if err := w.RetireForRun(issueID, oldRun); err != nil {
+		t.Fatalf("RetireForRun: %v", err)
+	}
+	// Simulate a crash after directory removal but before marker removal.
+	if err := os.RemoveAll(path); err != nil {
+		t.Fatalf("remove target fixture: %v", err)
+	}
+	if err := w.RemoveForRun(issueID, oldRun); err != nil {
+		t.Fatalf("RemoveForRun should finalize retired marker: %v", err)
+	}
+
+	nextPath, created, err := w.CreateForRun(issueID, "run-next")
+	if err != nil || !created {
+		t.Fatalf("CreateForRun(next) = (%q, %t, %v)", nextPath, created, err)
+	}
+	if nextPath == path {
+		t.Fatalf("next generation reused interrupted path %q", path)
+	}
+}
+
+func TestWorkspaceStableCreateRepairsInterruptedRetiredRemoval(t *testing.T) {
+	w, err := NewWorkspaces(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewWorkspaces: %v", err)
+	}
+	issueID := "native:stable-interrupted-remove"
 	path, _, err := w.Create(issueID)
 	if err != nil {
 		t.Fatalf("Create: %v", err)
 	}
-	if err := os.WriteFile(filepath.Join(path, "preserved-output"), []byte("kept"), 0o644); err != nil {
-		t.Fatalf("write preserved output: %v", err)
+	if err := w.RetireForRun(issueID, ""); err != nil {
+		t.Fatalf("RetireForRun(stable): %v", err)
 	}
-	if err := w.Retire(issueID); err != nil {
-		t.Fatalf("Retire: %v", err)
-	}
-	if _, _, err := w.Create(issueID); err == nil {
-		t.Fatal("Create reused a retired workspace")
-	}
-	if err := w.Release(issueID); err == nil {
-		t.Fatal("Release succeeded while the retired target still existed")
+	if err := os.RemoveAll(path); err != nil {
+		t.Fatalf("remove target fixture: %v", err)
 	}
 
-	recovery := path + ".recovery"
-	if err := os.Rename(path, recovery); err != nil {
-		t.Fatalf("quarantine fixture: %v", err)
-	}
-	if err := w.Release(issueID); err != nil {
-		t.Fatalf("Release after quarantine: %v", err)
-	}
-	fresh, created, err := w.Create(issueID)
-	if err != nil {
-		t.Fatalf("Create after release: %v", err)
-	}
-	if !created || fresh != path {
-		t.Fatalf("fresh workspace = (%q, created=%t), want (%q, true)", fresh, created, path)
-	}
-	if got, err := os.ReadFile(filepath.Join(recovery, "preserved-output")); err != nil || string(got) != "kept" {
-		t.Fatalf("quarantined output was not preserved: data=%q err=%v", got, err)
+	recreated, created, err := w.Create(issueID)
+	if err != nil || !created || recreated != path {
+		t.Fatalf("Create after interrupted Remove = (%q, %t, %v), want (%q, true, nil)", recreated, created, err, path)
 	}
 }
 
-func TestWorkspaceRetiredMarkerBlocksLatePathRecreation(t *testing.T) {
+func TestWorkspaceRetiredGenerationIsolatesLatePathRecreation(t *testing.T) {
 	w, err := NewWorkspaces(t.TempDir())
 	if err != nil {
 		t.Fatalf("NewWorkspaces: %v", err)
 	}
 	issueID := "native:absolute-late-writer"
-	path, _, err := w.Create(issueID)
+	oldRun := "run-old"
+	path, _, err := w.CreateForRun(issueID, oldRun)
 	if err != nil {
-		t.Fatalf("Create: %v", err)
+		t.Fatalf("CreateForRun(old): %v", err)
 	}
-	if err := w.Retire(issueID); err != nil {
-		t.Fatalf("Retire: %v", err)
+	if err := w.RetireForRun(issueID, oldRun); err != nil {
+		t.Fatalf("RetireForRun(old): %v", err)
 	}
 	if err := os.RemoveAll(path); err != nil {
 		t.Fatalf("remove original target: %v", err)
@@ -406,20 +611,48 @@ func TestWorkspaceRetiredMarkerBlocksLatePathRecreation(t *testing.T) {
 		t.Fatalf("late writer output: %v", err)
 	}
 
-	if err := w.Release(issueID); err == nil {
-		t.Fatal("Release removed the tombstone despite a recreated path")
+	if _, _, err := w.CreateForRun(issueID, oldRun); err == nil {
+		t.Fatal("CreateForRun adopted a recreated path behind a retired tombstone")
 	}
-	if _, _, err := w.Create(issueID); err == nil {
-		t.Fatal("Create adopted a recreated path behind a retired tombstone")
+	nextPath, created, err := w.CreateForRun(issueID, "run-next")
+	if err != nil || !created {
+		t.Fatalf("CreateForRun(next) = (%q, %t, %v)", nextPath, created, err)
+	}
+	if _, err := os.Stat(filepath.Join(nextPath, "ignored-output")); !os.IsNotExist(err) {
+		t.Fatalf("late output contaminated next generation: %v", err)
 	}
 	if got, err := os.ReadFile(output); err != nil || string(got) != "late" {
 		t.Fatalf("late writer output was lost: data=%q err=%v", got, err)
 	}
 }
 
+func TestWorkspaceActiveMarkerWithMissingTargetReportsRecoveryPath(t *testing.T) {
+	w, err := NewWorkspaces(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewWorkspaces: %v", err)
+	}
+	issueID := "native:orphan-active"
+	path, _, err := w.CreateForRun(issueID, testWorkspaceRunID)
+	if err != nil {
+		t.Fatalf("CreateForRun: %v", err)
+	}
+	if err := os.RemoveAll(path); err != nil {
+		t.Fatalf("remove target fixture: %v", err)
+	}
+	ownerPath := w.ownerPathForRun(issueID, testWorkspaceRunID)
+
+	err = w.RemoveForRun(issueID, testWorkspaceRunID)
+	if err == nil {
+		t.Fatal("RemoveForRun accepted an active marker with a missing target")
+	}
+	if !strings.Contains(err.Error(), ownerPath) || !strings.Contains(err.Error(), "manual recovery") {
+		t.Fatalf("error %q does not identify recovery marker %q", err, ownerPath)
+	}
+}
+
 func TestWorkspaceRejectsHiddenName(t *testing.T) {
 	w, _ := NewWorkspaces(t.TempDir())
-	path, _, err := w.Create(".hidden")
+	path, _, err := createTestWorkspace(w, ".hidden")
 	if err != nil {
 		t.Fatalf("Create: %v", err)
 	}
@@ -435,7 +668,7 @@ func TestWorkspaceRefusesSymlinkEscape(t *testing.T) {
 
 	// Pre-plant a symlink at the exact v2 target that points outside the root.
 	id := "evil_link"
-	planted := w.Path(id)
+	planted := testWorkspacePath(w, id)
 	if err := os.MkdirAll(filepath.Dir(planted), 0o755); err != nil {
 		t.Fatalf("mkdir namespace: %v", err)
 	}
@@ -443,7 +676,7 @@ func TestWorkspaceRefusesSymlinkEscape(t *testing.T) {
 		t.Skipf("symlink unsupported on this fs: %v", err)
 	}
 
-	_, _, err := w.Create(id)
+	_, _, err := createTestWorkspace(w, id)
 	if err == nil {
 		t.Fatal("expected symlink/unowned-target rejection")
 	}
@@ -454,7 +687,7 @@ func TestWorkspaceRefusesSymlinkEscape(t *testing.T) {
 
 func TestWorkspaceRemove(t *testing.T) {
 	w, _ := NewWorkspaces(t.TempDir())
-	path, _, err := w.Create("x")
+	path, _, err := createTestWorkspace(w, "x")
 	if err != nil {
 		t.Fatalf("Create: %v", err)
 	}

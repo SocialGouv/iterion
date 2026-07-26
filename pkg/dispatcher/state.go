@@ -96,16 +96,21 @@ func (s *state) isClaimed(issueID string) bool {
 // off-actor liveness signal is the separate atomic heartbeat pointer
 // below, which is intentionally shared with DispatchSpec.OnEvent.
 type runningEntry struct {
-	IssueID       string
-	Identifier    string
-	RunID         string
-	WorkflowState string
-	WorkspacePath string
-	StartedAt     time.Time
-	LastEventAt   time.Time
-	LastEventName string
-	Attempt       int
-	Cancel        context.CancelFunc
+	IssueID    string
+	Identifier string
+	RunID      string
+	// WorkspaceGeneration is normally the run ID under cleanup policies. It
+	// is empty under persist=keep, and for resumed runs that started on the
+	// stable pre-generational path.
+	WorkspaceGeneration       string
+	CleanupWorkspaceOnSuccess bool
+	WorkflowState             string
+	WorkspacePath             string
+	StartedAt                 time.Time
+	LastEventAt               time.Time
+	LastEventName             string
+	Attempt                   int
+	Cancel                    context.CancelFunc
 
 	// CancelIssuedAt is non-zero once reconcileStalled has called
 	// Cancel(); subsequent ticks suppress the cancel + warn re-spam

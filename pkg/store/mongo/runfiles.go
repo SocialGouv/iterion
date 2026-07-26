@@ -2,6 +2,7 @@ package mongo
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"io/fs"
@@ -75,6 +76,8 @@ func newRunFileUploadReader(file *os.File, size int64) *runFileUploadReader {
 }
 
 func (r *runFileUploadReader) Read(p []byte) (int, error) {
+	// SectionReader tracks its offset in memory, so SeekCurrent is O(1) and
+	// does not issue another syscall against the underlying file.
 	offset, err := r.Seek(0, io.SeekCurrent)
 	if err != nil {
 		return 0, err
@@ -159,7 +162,7 @@ func (s *Store) UploadRunFiles(ctx context.Context, runID string) (int, error) {
 		putErr := s.blob.PutRunFile(ctx, runID, filepath.ToSlash(rel), "", newRunFileUploadReader(file, fi.Size()), fi.Size())
 		closeErr := file.Close()
 		if putErr != nil {
-			return fmt.Errorf("put %s: %w", rel, putErr)
+			return fmt.Errorf("put %s: %w", rel, errors.Join(putErr, closeErr))
 		}
 		if closeErr != nil {
 			return fmt.Errorf("close %s: %w", rel, closeErr)
