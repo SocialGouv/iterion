@@ -37,7 +37,7 @@ Work them in this order. Each is only worth opening once the previous one is sta
 | Lane | Captures | Opens on |
 |---|---|---|
 | `http` | status, meaningful headers, body | always — the widest surface for the least machinery |
-| `binary` | PDF, spreadsheets, CSV exports | the app generates documents |
+| `binary` | PDF, spreadsheets, CSV exports | the app generates documents — see [[binary-lane]] |
 | `screen` | deterministic screenshots | the rendering is part of the contract |
 | `asset` | SHA-256 of assets **served by the build** | a library bump could change what ships |
 | `a11y` | pinned-ruleset accessibility snapshot | accessibility is in scope |

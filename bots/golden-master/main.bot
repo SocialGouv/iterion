@@ -174,7 +174,7 @@ agent oracle_campaign:
   user: campaign_user
   session: fresh
   interaction: human
-  skills: ["golden-master", "surface-discovery", "deterministic-fixture", "canonicalization", "oracle-mutation"]
+  skills: ["golden-master", "surface-discovery", "deterministic-fixture", "canonicalization", "oracle-mutation", "binary-lane"]
 
 ## adversary_gate lifts vars.adversarial into a bool output field so both
 ## outgoing edges test the same name (C012-exhaustive). No LLM, no shell.

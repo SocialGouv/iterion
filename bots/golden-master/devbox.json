@@ -2,7 +2,8 @@
   "$schema": "https://raw.githubusercontent.com/jetify-com/devbox/0.17.2/.schema/devbox.schema.json",
   "packages": [
     "python3@3.12.8",
-    "jq@1.7.1"
+    "jq@1.7.1",
+    "poppler_utils@24.02.0"
   ],
   "env": {
     "DEVBOX_NO_PROMPT": "true"
