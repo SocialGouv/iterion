@@ -408,6 +408,10 @@ func TestFinishRun_RevertsOnCancel(t *testing.T) {
 		t.Fatalf("issue state = %q after dispatch, want in_progress", got)
 	}
 
+	// Cancellation makes the reverted issue immediately eligible for a fresh
+	// dispatch. Pause discovery so the assertions below observe this run's
+	// ready transition instead of racing the next legitimate in_progress one.
+	c.Pause()
 	c.Cancel("fake:t5")
 
 	// Wait for the cancel to propagate through finishRun.
