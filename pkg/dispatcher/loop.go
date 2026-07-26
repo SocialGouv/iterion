@@ -924,17 +924,16 @@ func (c *Dispatcher) runWorker(ctx context.Context, entry *runningEntry, created
 		c.logger.Warn("dispatcher: after_run hook for %s: %v", entry.Identifier, err)
 	}
 
-	// On a clean finish, tear down the workspace per the persist policy —
-	// running before_remove first so an operator-configured hook (the
-	// default `git worktree remove`, see BuildDefaultConfig) can
-	// deregister the workspace from the host repo BEFORE the directory is
-	// deleted. Done here on the worker goroutine (never the actor, where a
-	// shell hook would freeze polling/dispatch/snapshots) and BEFORE
-	// postFinished, so teardown completes before the actor releases the
-	// claim and the issue becomes re-dispatchable — no Create/Remove race
-	// on the shared per-issue workspace path. Failed/cancelled dispatches
-	// keep the workspace (retry resumes from it / the operator inspects
-	// it), matching finishRun's cancel + default branches.
+	// On a clean finish, tear down the workspace per the persist policy.
+	// cleanupWorkspace runs before_remove while the checkout exists, removes
+	// the owned directory, then deregisters that exact linked worktree.
+	// Done here on the worker goroutine (never the actor, where a shell hook
+	// or Git process would freeze polling/dispatch/snapshots) and BEFORE
+	// postFinished, so teardown completes before the actor releases the claim
+	// and the issue becomes re-dispatchable — no Create/Remove race on the
+	// shared per-issue workspace path. Failed/cancelled dispatches keep the
+	// workspace (retry resumes from it / the operator inspects it), matching
+	// finishRun's cancel + default branches.
 	if dispatchErr == nil {
 		c.cleanupWorkspace(entry, hooks.BeforeRemove, env)
 	}

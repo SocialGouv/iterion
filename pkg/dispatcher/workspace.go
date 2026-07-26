@@ -445,24 +445,50 @@ func verifyWorkspaceOwner(owner workspaceOwnerRecord, issueID, runID string, sta
 }
 
 func createWorkspaceOwner(path string, owner workspaceOwnerRecord) error {
+	return createWorkspaceOwnerWithOpener(path, owner, func(name string, flag int, perm os.FileMode) (workspaceOwnerFile, error) {
+		return os.OpenFile(name, flag, perm)
+	})
+}
+
+type workspaceOwnerFile interface {
+	Write([]byte) (int, error)
+	Sync() error
+	Close() error
+}
+
+type workspaceOwnerFileOpener func(name string, flag int, perm os.FileMode) (workspaceOwnerFile, error)
+
+func createWorkspaceOwnerWithOpener(path string, owner workspaceOwnerRecord, open workspaceOwnerFileOpener) error {
 	data, err := json.Marshal(owner)
 	if err != nil {
 		return err
 	}
-	f, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
+	f, err := open(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
 	if err != nil {
 		return err
 	}
-	writeErr := error(nil)
+	publishErr := error(nil)
 	if _, err := f.Write(append(data, '\n')); err != nil {
-		writeErr = err
+		publishErr = err
 	} else if err := f.Sync(); err != nil {
-		writeErr = err
+		publishErr = err
 	}
-	if err := f.Close(); writeErr == nil {
-		writeErr = err
+	if err := f.Close(); publishErr == nil {
+		publishErr = err
 	}
-	return writeErr
+	if publishErr == nil {
+		return nil
+	}
+
+	// OpenFile(O_EXCL) proves this invocation created the marker. If
+	// publication fails, remove that marker so callers never mistake
+	// truncated JSON (or a close whose durability is unknown) for a valid
+	// ownership record. The workspace directory is deliberately untouched:
+	// another process may already have written recoverable output into it.
+	if err := os.Remove(path); err != nil && !errors.Is(err, os.ErrNotExist) {
+		return errors.Join(publishErr, fmt.Errorf("workspace: remove failed ownership marker: %w", err))
+	}
+	return publishErr
 }
 
 func replaceWorkspaceOwner(path string, owner workspaceOwnerRecord) error {

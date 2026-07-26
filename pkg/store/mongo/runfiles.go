@@ -57,6 +57,35 @@ func (s *Store) EnsureRunFilesDir(_ context.Context, runID string) (string, erro
 	return dir, nil
 }
 
+// runFileUploadReader is a seekable, stat-size-bounded view of an open
+// scratch file. The AWS SDK needs Seek to rewind a request body before a
+// retry; io.LimitReader would preserve the size bound but hide that method.
+//
+// If the file is truncated in place after Stat, turn the early EOF into
+// io.ErrUnexpectedEOF. The blob PUT then fails and UploadRunFiles retains the
+// scratch tree for a later retry, instead of accepting a shorter object under
+// the advertised Content-Length. Avoiding this race entirely would require
+// snapshotting potentially very large review media.
+type runFileUploadReader struct {
+	*io.SectionReader
+}
+
+func newRunFileUploadReader(file *os.File, size int64) *runFileUploadReader {
+	return &runFileUploadReader{SectionReader: io.NewSectionReader(file, 0, size)}
+}
+
+func (r *runFileUploadReader) Read(p []byte) (int, error) {
+	offset, err := r.Seek(0, io.SeekCurrent)
+	if err != nil {
+		return 0, err
+	}
+	n, err := r.SectionReader.Read(p)
+	if err == io.EOF && offset+int64(n) < r.Size() {
+		return n, io.ErrUnexpectedEOF
+	}
+	return n, err
+}
+
 // UploadRunFiles implements store.RunFilesUploader: walk the run's local
 // scratch dir and PUT each file to S3 under runfiles/<runID>/<relPath>.
 // Returns the number of files uploaded. A missing scratch dir (the run
@@ -122,11 +151,12 @@ func (s *Store) UploadRunFiles(ctx context.Context, runID string) (int, error) {
 			_ = file.Close()
 			return nil
 		}
-		// Advertise exactly fi.Size() bytes and cap the stream at it: a tool
-		// still appending to the file between Stat and read (the pre-pause
-		// review-media flush can run mid-pass) would otherwise send more bytes
-		// than the ContentLength and the S3 PUT would reject the body.
-		putErr := s.blob.PutRunFile(ctx, runID, filepath.ToSlash(rel), "", io.LimitReader(file, fi.Size()), fi.Size())
+		// Advertise exactly fi.Size() bytes and expose a seekable view capped at
+		// that size. A concurrent append cannot exceed Content-Length, while the
+		// AWS SDK can rewind the body for a transient-error retry. A concurrent
+		// truncate produces io.ErrUnexpectedEOF and keeps the scratch tree for
+		// the later authoritative upload once the writer is quiescent.
+		putErr := s.blob.PutRunFile(ctx, runID, filepath.ToSlash(rel), "", newRunFileUploadReader(file, fi.Size()), fi.Size())
 		closeErr := file.Close()
 		if putErr != nil {
 			return fmt.Errorf("put %s: %w", rel, putErr)

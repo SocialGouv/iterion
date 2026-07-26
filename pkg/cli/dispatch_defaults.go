@@ -194,10 +194,11 @@ fi
 `, projectDir),
 			TimeoutMS: 120_000,
 		}
-		// No destructive before_remove default: the dispatcher tears linked
-		// worktrees down itself through runtime's exact-HEAD, durable-ref,
-		// ignored-output and Git-lock protected cleanup path. A shell-level
-		// `git worktree remove --force` would reopen a commit-vs-remove race.
+		// No destructive before_remove default: after removing an owned,
+		// clean workspace the dispatcher deregisters that exact linked
+		// worktree through the surviving host-repository metadata. A
+		// shell-level `git worktree remove --force` before deletion would
+		// reopen a commit-vs-remove race.
 	}
 
 	// Discover the bots so routing + per-bot dispatch vars come from each

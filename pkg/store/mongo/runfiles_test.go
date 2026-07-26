@@ -157,6 +157,150 @@ func TestUploadRunFiles_StreamsPastAttachmentCap(t *testing.T) {
 	}
 }
 
+var errRunFileBodyNotSeekable = errors.New("run file body is not seekable")
+
+type probingRunFileBlob struct {
+	*inMemoryBlob
+	beforeRead   func() error
+	declaredSize int64
+	seekable     bool
+	reads        [][]byte
+}
+
+func (b *probingRunFileBlob) PutRunFile(_ context.Context, _, _, _ string, body io.Reader, size int64) error {
+	b.declaredSize = size
+	if b.beforeRead != nil {
+		if err := b.beforeRead(); err != nil {
+			return err
+		}
+	}
+	rs, ok := body.(io.ReadSeeker)
+	b.seekable = ok
+	if !ok {
+		return errRunFileBodyNotSeekable
+	}
+	for attempt := 0; attempt < 2; attempt++ {
+		if attempt > 0 {
+			if _, err := rs.Seek(0, io.SeekStart); err != nil {
+				return err
+			}
+		}
+		payload, err := io.ReadAll(rs)
+		b.reads = append(b.reads, append([]byte(nil), payload...))
+		if err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// The upload body must remain rewindable for AWS retries while exposing only
+// the bytes covered by the file's stat-time size. In particular, an append
+// racing with the PUT must not make the body longer than Content-Length.
+func TestUploadRunFiles_BodyIsRewindableAndBoundedAtStatSize(t *testing.T) {
+	ctx := context.Background()
+	b := &probingRunFileBlob{inMemoryBlob: newInMemoryBlob()}
+	runner := &Store{blob: b, runFilesScratch: t.TempDir()}
+
+	const runID = "run_rewind"
+	dir, err := runner.EnsureRunFilesDir(ctx, runID)
+	if err != nil {
+		t.Fatalf("EnsureRunFilesDir: %v", err)
+	}
+	initial := []byte("original bytes")
+	path := filepath.Join(dir, "review.mp4")
+	if err := os.WriteFile(path, initial, 0o644); err != nil {
+		t.Fatalf("write review.mp4: %v", err)
+	}
+	b.beforeRead = func() error {
+		file, err := os.OpenFile(path, os.O_WRONLY|os.O_APPEND, 0)
+		if err != nil {
+			return err
+		}
+		if _, err := file.Write([]byte(" appended later")); err != nil {
+			_ = file.Close()
+			return err
+		}
+		return file.Close()
+	}
+
+	n, err := runner.UploadRunFiles(ctx, runID)
+	if err != nil {
+		t.Fatalf("UploadRunFiles: %v", err)
+	}
+	if n != 1 {
+		t.Fatalf("UploadRunFiles count = %d, want 1", n)
+	}
+	if !b.seekable {
+		t.Fatal("PutRunFile body does not implement io.ReadSeeker")
+	}
+	if b.declaredSize != int64(len(initial)) {
+		t.Fatalf("PutRunFile size = %d, want stat-time size %d", b.declaredSize, len(initial))
+	}
+	if len(b.reads) != 2 {
+		t.Fatalf("PutRunFile reads = %d, want initial read plus rewind", len(b.reads))
+	}
+	for i, got := range b.reads {
+		if !bytes.Equal(got, initial) {
+			t.Fatalf("PutRunFile read %d = %q, want bounded body %q", i+1, got, initial)
+		}
+	}
+}
+
+// A file truncated after Stat cannot satisfy the advertised Content-Length.
+// Fail the attempt with io.ErrUnexpectedEOF and retain the scratch tree; the
+// next attempt re-stats the now-quiescent file and can upload its new size.
+func TestUploadRunFiles_TruncateDuringPutIsRetriable(t *testing.T) {
+	ctx := context.Background()
+	b := &probingRunFileBlob{inMemoryBlob: newInMemoryBlob()}
+	runner := &Store{blob: b, runFilesScratch: t.TempDir()}
+
+	const runID = "run_truncate"
+	dir, err := runner.EnsureRunFilesDir(ctx, runID)
+	if err != nil {
+		t.Fatalf("EnsureRunFilesDir: %v", err)
+	}
+	initial := []byte("original bytes")
+	truncated := initial[:4]
+	path := filepath.Join(dir, "review.mp4")
+	if err := os.WriteFile(path, initial, 0o644); err != nil {
+		t.Fatalf("write review.mp4: %v", err)
+	}
+	b.beforeRead = func() error {
+		return os.Truncate(path, int64(len(truncated)))
+	}
+
+	n, err := runner.UploadRunFiles(ctx, runID)
+	if !errors.Is(err, io.ErrUnexpectedEOF) {
+		t.Fatalf("UploadRunFiles error = %v, want io.ErrUnexpectedEOF", err)
+	}
+	if n != 0 {
+		t.Fatalf("UploadRunFiles count = %d, want 0", n)
+	}
+	if !b.seekable {
+		t.Fatal("PutRunFile body does not implement io.ReadSeeker")
+	}
+	if len(b.reads) != 1 || !bytes.Equal(b.reads[0], truncated) {
+		t.Fatalf("short PutRunFile body = %q, want %q", b.reads, truncated)
+	}
+	if _, statErr := os.Stat(path); statErr != nil {
+		t.Fatalf("scratch file should survive short upload: %v", statErr)
+	}
+
+	b.beforeRead = nil
+	b.reads = nil
+	n, err = runner.UploadRunFiles(ctx, runID)
+	if err != nil {
+		t.Fatalf("UploadRunFiles retry: %v", err)
+	}
+	if n != 1 {
+		t.Fatalf("UploadRunFiles retry count = %d, want 1", n)
+	}
+	if b.declaredSize != int64(len(truncated)) {
+		t.Fatalf("retry PutRunFile size = %d, want %d", b.declaredSize, len(truncated))
+	}
+}
+
 type failingRunFileBlob struct {
 	*inMemoryBlob
 }

@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/SocialGouv/iterion/pkg/dispatcher/tracker"
@@ -116,6 +117,81 @@ func TestCleanupWorkspace_RemovesEvenWhenBeforeRemoveFails(t *testing.T) {
 	}
 }
 
+// TestCleanupWorkspace_RemovesLinkedWorktreeRegistration covers the default
+// dispatch configuration's lifecycle: after_create uses `git worktree add`
+// to seed the owned directory, while cleanup deliberately has no destructive
+// before_remove hook. Once the directory is gone its host-repository
+// registration must be removed so the same issue path can be seeded again.
+// Deregistration is exact: another missing checkout in the same repository
+// remains registered for its own recovery path.
+func TestCleanupWorkspace_RemovesLinkedWorktreeRegistration(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not available")
+	}
+
+	dir := t.TempDir()
+	hostRepo := filepath.Join(dir, "host")
+	if err := os.Mkdir(hostRepo, 0o755); err != nil {
+		t.Fatalf("mkdir host repo: %v", err)
+	}
+	runCleanupGit(t, hostRepo, "init", "-b", "main")
+	runCleanupGit(t, hostRepo, "config", "user.email", "test@example.com")
+	runCleanupGit(t, hostRepo, "config", "user.name", "Test")
+	if err := os.WriteFile(filepath.Join(hostRepo, "README.md"), []byte("host\n"), 0o644); err != nil {
+		t.Fatalf("write host fixture: %v", err)
+	}
+	runCleanupGit(t, hostRepo, "add", "README.md")
+	runCleanupGit(t, hostRepo, "commit", "-m", "initial")
+
+	wsRoot := filepath.Join(dir, "ws")
+	c, ws := newCleanupTestDispatcher(t, WorkspacePersistCleanupOnDone, wsRoot)
+	issueID := "fake:linked-worktree"
+	wsPath, _, err := ws.Create(issueID)
+	if err != nil {
+		t.Fatalf("ws.Create: %v", err)
+	}
+	runCleanupGit(t, hostRepo, "worktree", "add", "--detach", wsPath, "HEAD")
+
+	otherPath := filepath.Join(dir, "other-missing-worktree")
+	runCleanupGit(t, hostRepo, "worktree", "add", "--detach", otherPath, "HEAD")
+	if err := os.RemoveAll(otherPath); err != nil {
+		t.Fatalf("remove unrelated checkout fixture: %v", err)
+	}
+
+	entry := &runningEntry{
+		IssueID:       issueID,
+		Identifier:    "fake#linked-worktree",
+		RunID:         "run-linked-worktree",
+		WorkspacePath: wsPath,
+	}
+	c.cleanupWorkspace(entry, nil, c.dispatchEnv(entry, DispatchSpec{
+		RunID:         entry.RunID,
+		WorkspacePath: wsPath,
+	}))
+
+	if _, err := os.Stat(wsPath); !os.IsNotExist(err) {
+		t.Fatalf("workspace %q not removed (stat err=%v)", wsPath, err)
+	}
+	if listed := runCleanupGit(t, hostRepo, "worktree", "list", "--porcelain"); strings.Contains(listed, wsPath) {
+		t.Fatalf("deleted workspace still registered in host repo:\n%s", listed)
+	}
+	if listed := runCleanupGit(t, hostRepo, "worktree", "list", "--porcelain"); !strings.Contains(listed, otherPath) {
+		t.Fatalf("cleanup removed unrelated missing worktree registration:\n%s", listed)
+	}
+
+	// This is the user-visible regression: a later dispatch of the same
+	// issue gets the deterministic path again, and git worktree add must no
+	// longer reject it as "missing but already registered".
+	recreatedPath, created, err := ws.Create(issueID)
+	if err != nil {
+		t.Fatalf("ws.Create after cleanup: %v", err)
+	}
+	if !created || recreatedPath != wsPath {
+		t.Fatalf("recreated workspace = (%q, %t), want (%q, true)", recreatedPath, created, wsPath)
+	}
+	runCleanupGit(t, hostRepo, "worktree", "add", "--detach", recreatedPath, "HEAD")
+}
+
 // TestCleanupWorkspace_SkippedUnderKeepPolicy asserts the default policy is
 // untouched: neither the hook nor the removal fires when persist=keep.
 func TestCleanupWorkspace_SkippedUnderKeepPolicy(t *testing.T) {
@@ -219,4 +295,15 @@ func TestCleanupWorkspace_KeepsDirtyGitWorkspace(t *testing.T) {
 	if _, err := os.Stat(filepath.Join(wsPath, "uncommitted.go")); err != nil {
 		t.Fatalf("dirty workspace was destroyed (uncommitted.go gone: %v) — it must be preserved for recovery", err)
 	}
+}
+
+func runCleanupGit(t *testing.T, dir string, args ...string) string {
+	t.Helper()
+	cmd := exec.Command("git", args...)
+	cmd.Dir = dir
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("git %v in %s: %v\n%s", args, dir, err, out)
+	}
+	return string(out)
 }

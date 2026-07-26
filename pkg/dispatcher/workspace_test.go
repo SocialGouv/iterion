@@ -1,6 +1,7 @@
 package dispatcher
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -173,6 +174,112 @@ func TestWorkspaceConcurrentCreateHasSingleAuthority(t *testing.T) {
 	if authorities != 1 {
 		t.Fatalf("created=true authorities = %d, want exactly 1", authorities)
 	}
+}
+
+func TestCreateWorkspaceOwnerRemovesMarkerOnPublishFailure(t *testing.T) {
+	injectedErr := errors.New("injected owner publication failure")
+	owner := workspaceOwnerRecord{
+		FormatVersion: 1,
+		IssueID:       "native:owner-publish",
+		State:         workspaceOwnerActive,
+	}
+
+	tests := []struct {
+		name     string
+		writeErr error
+		syncErr  error
+		closeErr error
+	}{
+		{name: "write", writeErr: injectedErr},
+		{name: "sync", syncErr: injectedErr},
+		{name: "close", closeErr: injectedErr},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			workspace := filepath.Join(dir, "workspace")
+			if err := os.Mkdir(workspace, 0o755); err != nil {
+				t.Fatalf("mkdir workspace: %v", err)
+			}
+			sentinel := filepath.Join(workspace, "recoverable-output")
+			if err := os.WriteFile(sentinel, []byte("preserve"), 0o644); err != nil {
+				t.Fatalf("write workspace sentinel: %v", err)
+			}
+			marker := filepath.Join(dir, "owner.json")
+
+			err := createWorkspaceOwnerWithOpener(marker, owner, func(name string, flag int, perm os.FileMode) (workspaceOwnerFile, error) {
+				f, err := os.OpenFile(name, flag, perm)
+				if err != nil {
+					return nil, err
+				}
+				return &failingWorkspaceOwnerFile{
+					File:     f,
+					writeErr: tc.writeErr,
+					syncErr:  tc.syncErr,
+					closeErr: tc.closeErr,
+				}, nil
+			})
+			if !errors.Is(err, injectedErr) {
+				t.Fatalf("createWorkspaceOwnerWithOpener error = %v, want injected failure", err)
+			}
+			if _, err := os.Lstat(marker); !errors.Is(err, os.ErrNotExist) {
+				t.Fatalf("failed publication left ownership marker behind: %v", err)
+			}
+			if got, err := os.ReadFile(sentinel); err != nil || string(got) != "preserve" {
+				t.Fatalf("workspace changed while rolling back marker: data=%q err=%v", got, err)
+			}
+
+			// Once the failed marker has been removed, publishing it again is
+			// recoverable without deleting the workspace.
+			if err := createWorkspaceOwner(marker, owner); err != nil {
+				t.Fatalf("retry createWorkspaceOwner: %v", err)
+			}
+			got, err := readWorkspaceOwner(marker)
+			if err != nil {
+				t.Fatalf("read owner after retry: %v", err)
+			}
+			if err := verifyWorkspaceOwner(got, owner.IssueID, owner.RunID, workspaceOwnerActive); err != nil {
+				t.Fatalf("owner after retry: %v", err)
+			}
+			if got, err := os.ReadFile(sentinel); err != nil || string(got) != "preserve" {
+				t.Fatalf("workspace changed after marker retry: data=%q err=%v", got, err)
+			}
+		})
+	}
+}
+
+type failingWorkspaceOwnerFile struct {
+	*os.File
+	writeErr error
+	syncErr  error
+	closeErr error
+}
+
+func (f *failingWorkspaceOwnerFile) Write(p []byte) (int, error) {
+	if f.writeErr == nil {
+		return f.File.Write(p)
+	}
+	// Leave a realistic truncated marker before reporting the write error.
+	n, err := f.File.Write(p[:1])
+	if err != nil {
+		return n, err
+	}
+	return n, f.writeErr
+}
+
+func (f *failingWorkspaceOwnerFile) Sync() error {
+	if f.syncErr != nil {
+		return f.syncErr
+	}
+	return f.File.Sync()
+}
+
+func (f *failingWorkspaceOwnerFile) Close() error {
+	err := f.File.Close()
+	if f.closeErr != nil {
+		return f.closeErr
+	}
+	return err
 }
 
 func TestWorkspaceLegacyCollisionPathIsPreservedNotAdopted(t *testing.T) {

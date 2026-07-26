@@ -126,8 +126,9 @@ func TestBuildDefaultConfig_RejectsEmptyStoreDir(t *testing.T) {
 
 // When projectDir is non-empty, BuildDefaultConfig wires an after_create hook
 // that seeds a git worktree of the host repo into each per-issue workspace.
-// Teardown is deliberately not a shell hook: the dispatcher uses runtime's
-// verified, lock-protected worktree cleanup instead of `remove --force`.
+// Teardown is deliberately not a shell hook: after deleting a clean workspace
+// the dispatcher safely removes its exact Git registration instead of running
+// `remove --force` against a checkout that may still be committing.
 func TestBuildDefaultConfig_SeedHookWhenProjectDirSet(t *testing.T) {
 	skipIfCatalogueEmpty(t)
 	storeDir := t.TempDir()

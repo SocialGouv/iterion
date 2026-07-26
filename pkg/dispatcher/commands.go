@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -799,11 +800,16 @@ func (c *Dispatcher) runFinalCommit(runID string) string {
 
 // cleanupWorkspace tears down the per-issue workspace after a clean
 // dispatch when the active persist policy calls for it. The optional
-// before_remove hook runs first so an operator-configured teardown — the
-// default `git worktree remove` wired by BuildDefaultConfig — can
-// deregister the workspace from the host repo BEFORE the directory is
-// deleted. Without it `git worktree list` accumulates stale entries and a
-// later re-dispatch of the same issue fails its `git worktree add`.
+// before_remove hook runs first, while the checkout still exists, so custom
+// configurations can archive output or perform their own teardown.
+//
+// When the workspace is a linked Git worktree, its common Git directory is
+// captured before the hook runs. After the owned directory is gone we remove
+// that exact registration. Deregistering after deletion is important: Git can
+// never race a final commit in a live checkout, and unrelated stale
+// registrations remain untouched. Discovering the common directory from the
+// checkout also covers custom after_create hooks, rather than coupling cleanup
+// to BuildDefaultConfig's project path.
 //
 // MUST be called from the dispatch worker goroutine (runWorker), never the
 // actor: the hook is a shell command bounded only by its own timeout
@@ -819,22 +825,37 @@ func (c *Dispatcher) cleanupWorkspace(entry *runningEntry, beforeRemove *Hook, e
 	// Stranded-work guard: the external workspace is a detached-HEAD
 	// worktree with NO finalize/commit stage of its own. A bot without
 	// `worktree: auto` writes straight into it — if it exits without
-	// committing, the teardown below (`git worktree remove --force` via
-	// the before_remove hook + directory removal) would silently destroy
-	// finished work, unrecoverable even from the reflog. Keep the
-	// workspace instead and say so; the operator inspects/commits by
-	// hand. Probe failures (non-git workspace, git missing) fall through
-	// to normal cleanup — the guard only bites on positive evidence.
+	// committing, directory removal would silently destroy finished work,
+	// unrecoverable even from the reflog. Keep the workspace instead and
+	// say so; the operator inspects/commits by hand. Probe failures
+	// (non-git workspace, git missing) fall through to normal cleanup —
+	// the guard only bites on positive evidence.
 	if dirty, err := workspaceIsDirty(entry.WorkspacePath); err == nil && dirty {
 		c.logger.Warn("dispatcher: workspace %s has UNCOMMITTED changes — keeping %s (inspect and commit by hand; cleanup skipped)",
 			entry.Identifier, entry.WorkspacePath)
 		return
 	}
+	// Best-effort discovery. A plain directory or standalone repository has
+	// no surviving metadata to update after its directory disappears; a
+	// linked worktree resolves to the host repository's common gitdir.
+	gitCommonDir, _ := workspaceGitCommonDir(entry.WorkspacePath)
 	if err := beforeRemove.Run(context.Background(), c.logger, "before_remove", entry.WorkspacePath, env); err != nil {
 		c.logger.Warn("dispatcher: before_remove hook for %s: %v", entry.Identifier, err)
 	}
 	if err := c.workspaces.Remove(entry.IssueID); err != nil {
 		c.logger.Warn("dispatcher: cleanup workspace %s: %v", entry.Identifier, err)
+	}
+	// A custom before_remove hook may itself remove the checkout, in which
+	// case Workspaces.Remove can report that its ownership marker remains.
+	// Exact deregistration is still safe whenever the checkout path is now
+	// absent. If a late writer recreated the path, skip here and let Git
+	// retain the registration fail-closed.
+	if gitCommonDir != "" {
+		if _, err := os.Lstat(entry.WorkspacePath); errors.Is(err, os.ErrNotExist) {
+			if err := removeGitWorktreeRegistration(gitCommonDir, entry.WorkspacePath); err != nil {
+				c.logger.Warn("dispatcher: remove git worktree registration for %s: %v", entry.Identifier, err)
+			}
+		}
 	}
 }
 
@@ -843,10 +864,9 @@ func (c *Dispatcher) cleanupWorkspace(entry *runningEntry, beforeRemove *Hook, e
 // the probe itself failed (not a git checkout, git absent) — callers treat
 // that as "unknown", not as dirty.
 func workspaceIsDirty(path string) (bool, error) {
-	// Bounded: this runs on the dispatcher's single actor goroutine (see
-	// docs/dispatcher.md), so a wedged git process here (stale
-	// index.lock, a hung network-mounted workspace) would stall the
-	// entire actor loop, not just this call.
+	// Bounded: cleanup runs on a worker, but an unbounded git process would
+	// still prevent the claim from being released and the issue from
+	// becoming dispatchable again.
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
 	cmd := exec.CommandContext(ctx, "git", "status", "--porcelain")
@@ -856,6 +876,72 @@ func workspaceIsDirty(path string) (bool, error) {
 		return false, err
 	}
 	return len(bytes.TrimSpace(out)) > 0, nil
+}
+
+// workspaceGitCommonDir resolves the repository metadata directory shared by
+// all worktrees while path is still present. Only a common directory outside
+// path is returned: a standalone repository's .git directory disappears with
+// the workspace and must never be used as a post-delete cleanup target.
+func workspaceGitCommonDir(path string) (string, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, "git", "rev-parse", "--path-format=absolute", "--git-common-dir")
+	cmd.Dir = path
+	out, err := cmd.Output()
+	if err != nil {
+		return "", err
+	}
+	commonDir := strings.TrimSpace(string(out))
+	if commonDir == "" {
+		return "", errors.New("git returned an empty common directory")
+	}
+	commonDir, err = filepath.EvalSymlinks(filepath.Clean(commonDir))
+	if err != nil {
+		return "", fmt.Errorf("canonicalize git common directory: %w", err)
+	}
+	workspaceDir, err := filepath.EvalSymlinks(path)
+	if err != nil {
+		return "", fmt.Errorf("canonicalize git workspace: %w", err)
+	}
+	if isWithin(commonDir, workspaceDir) {
+		return "", errors.New("git common directory is inside workspace")
+	}
+	return commonDir, nil
+}
+
+// removeGitWorktreeRegistration removes one exact, already-deleted checkout
+// registration. Listing first makes this idempotent with custom before_remove
+// hooks that already deregistered the checkout.
+func removeGitWorktreeRegistration(commonDir, workspacePath string) error {
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+
+	listCmd := exec.CommandContext(ctx, "git", "--git-dir", commonDir, "worktree", "list", "--porcelain", "-z")
+	out, err := listCmd.Output()
+	if err != nil {
+		return fmt.Errorf("git worktree list: %w", err)
+	}
+	found := false
+	for _, field := range bytes.Split(out, []byte{0}) {
+		const prefix = "worktree "
+		if !bytes.HasPrefix(field, []byte(prefix)) {
+			continue
+		}
+		registeredPath := filepath.Clean(string(bytes.TrimPrefix(field, []byte(prefix))))
+		if registeredPath == filepath.Clean(workspacePath) {
+			found = true
+			break
+		}
+	}
+	if !found {
+		return nil
+	}
+
+	cmd := exec.CommandContext(ctx, "git", "--git-dir", commonDir, "worktree", "remove", "--force", workspacePath)
+	if out, err := cmd.CombinedOutput(); err != nil {
+		return fmt.Errorf("git worktree remove: %w (%s)", err, strings.TrimSpace(string(out)))
+	}
+	return nil
 }
 
 // cmdRetryDue fires when a retry timer expires. We simply drop the
