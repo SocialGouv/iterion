@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/SocialGouv/iterion/pkg/backend/delegate"
@@ -202,6 +203,62 @@ type storeHooks struct {
 	toolBlobSink   ToolBlobWriter
 	turnSink       TurnWriter
 	planSink       PlanWriter
+
+	// recentInputs holds a redacted preview of each in-flight tool call's
+	// input, keyed by ToolUseID, so the error path can show WHAT was rejected.
+	// Without it a schema-validation failure logs only "must have required
+	// property 'x'", and the offending payload has to be dug out of
+	// events.jsonl by hand — which is how one run's six consecutive failures
+	// went misdiagnosed as truncation when the model had in fact emitted XML
+	// parameter tags inside a JSON string value.
+	inputsMu     sync.Mutex
+	recentInputs map[string]string
+}
+
+// toolInputPreviewMax bounds what the error line carries: enough to see the
+// shape of a malformed payload, not enough to flood a console with a large
+// tool input.
+const toolInputPreviewMax = 600
+
+// maxRecentInputs caps the in-flight map. Entries are normally short-lived
+// (one tool start, one tool completion), but a call that never completes would
+// otherwise leak; oldest-wins eviction keeps the bound hard.
+const maxRecentInputs = 64
+
+func (h *storeHooks) rememberInput(toolUseID string, input []byte) {
+	if toolUseID == "" || len(input) == 0 {
+		return
+	}
+	preview := string(input)
+	if len(preview) > toolInputPreviewMax {
+		preview = preview[:toolInputPreviewMax] + "…"
+	}
+	if h.red != nil {
+		preview = h.red(preview)
+	}
+	h.inputsMu.Lock()
+	defer h.inputsMu.Unlock()
+	if h.recentInputs == nil {
+		h.recentInputs = make(map[string]string, maxRecentInputs)
+	}
+	if len(h.recentInputs) >= maxRecentInputs {
+		for k := range h.recentInputs {
+			delete(h.recentInputs, k)
+			break
+		}
+	}
+	h.recentInputs[toolUseID] = preview
+}
+
+func (h *storeHooks) takeInput(toolUseID string) string {
+	if toolUseID == "" {
+		return ""
+	}
+	h.inputsMu.Lock()
+	defer h.inputsMu.Unlock()
+	preview := h.recentInputs[toolUseID]
+	delete(h.recentInputs, toolUseID)
+	return preview
 }
 
 // emit is the closure-local shorthand for AppendEvent calls that share
@@ -519,6 +576,7 @@ func (h *storeHooks) onToolStarted(nodeID string, info LLMToolStartedInfo) {
 	// 4 KB preview + a ref the studio uses to fetch the rest
 	// paginated.
 	persistToolPayload(h.ctx, h.guard, h.toolBlobSink, h.runID, info.ToolUseID, "input", info.Input, data)
+	h.rememberInput(info.ToolUseID, info.Input)
 	h.emit(nodeID, store.EventToolStarted, data)
 	// ADDITIONAL, best-effort: when the tool is a plan write (claude_code
 	// TodoWrite / claw todo_write), also snapshot the plan to the per-run
@@ -659,8 +717,17 @@ func (h *storeHooks) onToolCall(nodeID string, info LLMToolCallInfo) {
 	// and rendered by the Tools tab + in-flight footer in the
 	// run view, so a per-call log line is just noise.
 	if info.Error != nil {
-		h.logger.Error("Tool error [%s]: %s — %v (%dms)",
-			nodeID, info.ToolName, info.Error, info.Duration.Milliseconds())
+		// The rejected input goes on the same line: an error naming a missing
+		// property is not actionable without the payload that omitted it.
+		if preview := h.takeInput(info.ToolUseID); preview != "" {
+			h.logger.Error("Tool error [%s]: %s — %v (%dms)\n  rejected input: %s",
+				nodeID, info.ToolName, info.Error, info.Duration.Milliseconds(), preview)
+		} else {
+			h.logger.Error("Tool error [%s]: %s — %v (%dms)",
+				nodeID, info.ToolName, info.Error, info.Duration.Milliseconds())
+		}
+	} else {
+		h.takeInput(info.ToolUseID)
 	}
 }
 
