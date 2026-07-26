@@ -16,7 +16,7 @@ schema result:
   ok: bool
 
 tool slow:
-  command: ` + "`sleep 500ms; printf '{\"ok\":true}'`" + `
+  command: ` + "`until [ -f \"$ITERION_RECONCILE_CHILD_RELEASE\" ]; do sleep 10ms; done; printf '{\"ok\":true}'`" + `
   output: result
 
 workflow reconcile_slow_child:
@@ -45,6 +45,8 @@ workflow reconcile_parent:
 func TestServicePeriodicReconcileDoesNotFailExecutingSubbot(t *testing.T) {
 	t.Setenv("ITERION_ORPHAN_RECONCILE_INTERVAL", "10ms")
 	dir := t.TempDir()
+	releasePath := filepath.Join(dir, "release-child")
+	t.Setenv("ITERION_RECONCILE_CHILD_RELEASE", releasePath)
 	childPath := filepath.Join(dir, "reconcile_slow_child.bot")
 	if err := os.WriteFile(childPath, []byte(reconcileSlowChildBot), 0o644); err != nil {
 		t.Fatalf("write child bot: %v", err)
@@ -54,7 +56,7 @@ func TestServicePeriodicReconcileDoesNotFailExecutingSubbot(t *testing.T) {
 		t.Fatalf("write parent bot: %v", err)
 	}
 
-	svc, err := NewService(dir, WithLogger(iterlog.Nop()))
+	svc, err := NewService(dir, WithLogger(iterlog.Nop()), WithWorkDir(dir))
 	if err != nil {
 		t.Fatalf("NewService: %v", err)
 	}
@@ -64,7 +66,7 @@ func TestServicePeriodicReconcileDoesNotFailExecutingSubbot(t *testing.T) {
 	// store. It has no Manager handle for svc's runs, so the persisted child
 	// flock (and typed ancestor fallback) must protect the synchronous child
 	// from that observer's reconcile tick.
-	observer, err := NewService(dir, WithLogger(iterlog.Nop()))
+	observer, err := NewService(dir, WithLogger(iterlog.Nop()), WithWorkDir(dir))
 	if err != nil {
 		t.Fatalf("NewService(observer): %v", err)
 	}
@@ -74,9 +76,16 @@ func TestServicePeriodicReconcileDoesNotFailExecutingSubbot(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Launch: %v", err)
 	}
+	// Keep the child live until the reconcile assertions have run. A fixed
+	// tool sleep made child creation race the test on loaded -race runners:
+	// startup alone can exceed the old five-second observation window.
+	releaseChild := func() error {
+		return os.WriteFile(releasePath, nil, 0o644)
+	}
+	defer func() { _ = releaseChild() }()
 
 	var childID string
-	deadline := time.Now().Add(5 * time.Second)
+	deadline := time.Now().Add(30 * time.Second)
 	for childID == "" && time.Now().Before(deadline) {
 		runs, listErr := svc.ListRunRecordsCtx(context.Background(), ListFilter{})
 		if listErr != nil {
@@ -92,14 +101,14 @@ func TestServicePeriodicReconcileDoesNotFailExecutingSubbot(t *testing.T) {
 			}
 		}
 		if childID == "" {
-			time.Sleep(2 * time.Millisecond)
+			time.Sleep(50 * time.Millisecond)
 		}
 	}
 	if childID == "" {
 		t.Fatal("subbot child run was never persisted")
 	}
 
-	// Cross many 10ms reconcile ticks while the child's 500ms tool is live.
+	// Cross many 10ms reconcile ticks while the gated child tool is live.
 	time.Sleep(150 * time.Millisecond)
 	child, err := svc.store.LoadRun(context.Background(), childID)
 	if err != nil {
@@ -109,6 +118,9 @@ func TestServicePeriodicReconcileDoesNotFailExecutingSubbot(t *testing.T) {
 		t.Fatalf("child status during live tool = %q (error %q), want running", child.Status, child.Error)
 	}
 
+	if err := releaseChild(); err != nil {
+		t.Fatalf("release child: %v", err)
+	}
 	select {
 	case <-res.Done:
 	case <-time.After(10 * time.Second):
