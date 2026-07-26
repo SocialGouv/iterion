@@ -74,6 +74,7 @@ import {
   isTicketEditable,
   moveTicket,
 } from "./PipelineColumns";
+import { resumePipelineRun } from "./resumePipelineRun";
 
 // Three fixed lanes: Opened (backlog + ready staging), In progress, Closed
 // (success + failure).
@@ -124,6 +125,53 @@ beforeEach(() => {
   pauseRunMock.mockReset();
   resumeRunMock.mockReset();
   cancelRunMock.mockReset();
+});
+
+describe("resumePipelineRun", () => {
+  it("resumes normally when the workflow source is unchanged", async () => {
+    resumeRunMock.mockResolvedValueOnce({ run_id: "r1", status: "running" });
+
+    await resumePipelineRun("r1", vi.fn());
+
+    expect(resumeRunMock).toHaveBeenCalledOnce();
+    expect(resumeRunMock).toHaveBeenCalledWith("r1", {});
+  });
+
+  it("asks before retrying a stale run with the current workflow", async () => {
+    resumeRunMock
+      .mockRejectedValueOnce(
+        new Error("runtime: workflow source has changed since this run was started"),
+      )
+      .mockResolvedValueOnce({ run_id: "r1", status: "running" });
+    const confirmUpdatedWorkflow = vi.fn().mockResolvedValue(true);
+
+    await resumePipelineRun("r1", confirmUpdatedWorkflow);
+
+    expect(confirmUpdatedWorkflow).toHaveBeenCalledOnce();
+    expect(resumeRunMock).toHaveBeenNthCalledWith(1, "r1", {});
+    expect(resumeRunMock).toHaveBeenNthCalledWith(2, "r1", { force: true });
+  });
+
+  it("does not force-resume when the operator declines", async () => {
+    resumeRunMock.mockRejectedValueOnce(
+      new Error("runtime: workflow source has changed since this run was started"),
+    );
+
+    await resumePipelineRun("r1", vi.fn().mockResolvedValue(false));
+
+    expect(resumeRunMock).toHaveBeenCalledOnce();
+  });
+
+  it("does not hide unrelated resume errors", async () => {
+    const error = new Error("cannot be resumed (status: finished)");
+    resumeRunMock.mockRejectedValueOnce(error);
+    const confirmUpdatedWorkflow = vi.fn();
+
+    await expect(
+      resumePipelineRun("r1", confirmUpdatedWorkflow),
+    ).rejects.toBe(error);
+    expect(confirmUpdatedWorkflow).not.toHaveBeenCalled();
+  });
 });
 
 describe("PipelineColumns", () => {
