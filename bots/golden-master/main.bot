@@ -908,9 +908,14 @@ tool emit_runner:
     runner = os.path.join(gm, "verify-oracle.sh")
     lines = [
         "#!/bin/sh",
-        "# Replays the recorded references and reports drift.",
-        "# --self-check also re-runs the mutation counter-test, which is what",
-        "# proves the references can still SEE. A replay alone cannot.",
+        "# No argument: the full gate — replay, negative control, every mutant,",
+        "# and the sealed held-out set. This is what proves the references can",
+        "# still SEE; a replay on its own never could.",
+        "#   --self-check  same, but the held-out set is scored and reported by",
+        "#                 the gate alone, never here.",
+        "#   --record      re-record the references. That is a RE-BASELINE: it",
+        "#                 needs a written cause per reference and a full",
+        "#                 counter-test afterwards.",
         # `set -e` only, deliberately: with `-u` an unset GM_DIR or a missing $1
         # aborts the script, and the usual guard for that is `${VAR-}` -- braces,
         # which the DSL would eat. The defaults below cover every unset case.
@@ -920,6 +925,7 @@ tool emit_runner:
         '[ -n "$GM_MUTATION_FLOOR" ] || GM_MUTATION_FLOOR=' + str(floor),
         "export GM_DIR GM_WORKSPACE GM_MUTATION_FLOOR",
         'if [ "$1" = "--record" ]; then GM_MODE=record; export GM_MODE; fi',
+        'if [ "$1" = "--self-check" ]; then GM_MODE=selfcheck; export GM_MODE; fi',
         'exec python3 "$GM_WORKSPACE/$GM_DIR/harness.py"',
     ]
     with open(runner, "w") as f:
