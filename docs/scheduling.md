@@ -256,6 +256,63 @@ Idempotence stays with the workflow (mutate the state you poll — e.g.
 the bot relabels the issue), exactly like the dispatcher's tracker
 loop: the guard is a gate + input source, not a dedup engine.
 
+## Retry — a provider quota window is waited out, not re-attempted
+
+A scheduled run that dies because the LLM provider's quota window is
+exhausted (the Anthropic forfait 5h / session / daily / **weekly** caps) is
+not a failure of the run: nothing about it is wrong, it just arrived while
+the door was shut. Retrying it inside a node's retry budget, or handing it
+back to the work queue, cannot help — a weekly reset can be **seven days**
+away, and each attempt costs a fresh pod against a wall that will not move.
+
+So iterion **waits for the reset and resumes**, and the wait is durable
+(cloud mode: the intent lives in the run document, a server-side sweeper
+acts on it). The schedule itself is unaffected: it keeps firing on its own
+cadence, and the retry is about the run that already failed.
+
+```yaml
+retry:
+  usage_window: resume   # resume (default) | off
+  max_attempts: 5        # over the run's WHOLE lifetime; never reset
+  max_wait: 192h         # cap on how far ahead a retry may be scheduled (8d)
+  jitter: 10m            # spread runs that share one reset instant
+```
+
+**Where to declare it.** The same block is accepted on four layers, and
+each one overrides only the fields it actually sets:
+
+| priority | layer | where |
+|---|---|---|
+| 1 | per-run override | launch API / CLI |
+| 2 | launching surface | a cloud schedule row, a trigger subscription, a webhook config, a `schedules.yaml` entry |
+| 3 | the bot | `retry:` in the bundle's `manifest.yaml` |
+| 4 | machine default | `ITERION_RETRY_USAGE_WINDOW` / `_MAX_ATTEMPTS` / `_MAX_WAIT` / `_JITTER` |
+
+A platform ceiling (`ITERION_CLOUD_RETRY_MAX_ATTEMPTS`,
+`ITERION_CLOUD_RETRY_MAX_WAIT`) is applied **last** and can only *lower* a
+resolved policy, so a tenant cannot reserve a hundred attempts over thirty
+days on their own schedule.
+
+**Choosing a value.** The question a bot author is answering is *is this
+output still worth having late?* A weekly digest is (`resume`); a "what
+changed in the last hour" report is not (`usage_window: off` — let the next
+tick produce a fresh one). `max_wait` is the honest expression of that:
+`36h` says "if it cannot run by tomorrow, do not bother".
+
+**What you see.** The run stays `failed_resumable` while it waits, with a
+`run_retry_scheduled` event naming the instant, the attempt number and how
+the instant was derived. When the window reopens the run emits
+`run_auto_resumed` and continues from its checkpoint — the same pair the
+CLI's in-process `--auto-resume` loop writes, so the timeline reads
+identically local and cloud. A run that stops retrying records **why**
+(budget spent, admission denied, source no longer resolvable) rather than
+going quiet.
+
+Not covered by this: a budget cap (`max_cost_usd` and friends) still needs
+a human to raise the cap and resume — retrying the same cap would re-fail
+instantly. Nor an auth failure, which is a credential problem time does not
+fix.
+
 ## Retention — pair recurring schedules with `iterion runs prune`
 
 Every scheduled run persists forever under `<store-dir>/runs/<run_id>/`;
