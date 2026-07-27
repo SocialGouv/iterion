@@ -2,6 +2,96 @@
 
 Index + template: [README.md](README.md). Newest first.
 
+## 2026-07-26 — binary lane built and proven, and a false overfitting diagnosis (run 019f9ed4)
+
+- Status: **ABORTED on a harness defect** — the campaign delivered, the gate lied. Two fixes
+  landed; the run that validates them has not been spent yet.
+- Versions: bot v0.1.0 + binary lane (`5886cdc4d`) · iterion `76df5e75d` · `--sandbox none` ·
+  `min_corpus=14`, `max_passes=3`, `adversarial=false`, `--max-duration 2h`.
+- Campaign: **54 min, 176 000 tokens** for **18 http + 2 binary** references and **7+7** mutants —
+  **+42 %** over the http-only campaign, which is the price of the lane.
+
+### The defect that matters: the seal was not scoped to the run
+
+The gate reported a held-out set of **12 where 7 were written**. The sealed directory was a fixed
+path under the project scratch, so held-out mutants from earlier runs accumulated into it and the
+gate scored a mixed population.
+
+This is the worst failure mode available to this bot, and it is worth naming precisely: it does
+not let a bad oracle through, it **makes a sound oracle look overfitted**. A false red is not the
+safe direction here — it is the direction that gets the whole net distrusted and re-tuned against
+noise. Fixed by scoping the seal with `{{run.id}}` (`6df7fd0c1`).
+
+Same commit: the campaign's output schema required **five fields, not one of which any node
+read**. Five obligations on the agent, zero consumers — pure Goodhart surface. Reduced to the one
+field the graph actually uses.
+
+### The three residual weaknesses of the previous entry, closed (`babc22ef8`)
+
+- **`selfcheck` mode** — scores the visible set, and withholds the held-out score rather than
+  reporting it as zero. It is set to `-1` **deliberately unequal** to the total, so a selfcheck
+  report that ever reached the gate must fail it rather than pass on a coincidence.
+- **The report carries its mode**, so a record-mode skeleton stops reading as a failed gate.
+- `GM_MODE=gate` is **forced** at the gate node, not defaulted — an agent cannot leave a stale
+  mode in the environment and have the gate honour it.
+- The `golden-master` skill no longer ends its method list with a step the graph performs.
+
+### The binary lane, and a premise of mine that measurement disproved
+
+Built and proven by hand before handing it to the campaign: **green gate at 7 mutants** (5 http +
+2 binary) on the target's PDF exports, with `content_empty` detected.
+
+The skill originally asserted that *rendering alone is never enough*. That is **false**, and the
+measurement says so: a **raster-only** comparator, with no text assertion at all, detects
+`content_empty` and passes a full gate on this application. Rasterising is not a weak method.
+
+What made the reference failure possible — a public-sector modernisation whose PDF comparator
+validated blank pages for an entire milestone — is that *their* renderer had **no font data**
+(pdf.js in a hermetic context, `disableFontFace`, no standard-font URL). It drew nothing, and
+blank matched blank. The same comparator with fontconfig access catches everything.
+
+The rule that replaced mine, now in [binary-lane.md](../../bots/golden-master/skills/binary-lane.md):
+
+> A rendering comparator is exactly as good as its renderer's font access — and that property is
+> **invisible in the diff**. Nothing in a green result tells you which of the two situations you
+> are in.
+
+Which reframes the `content_empty` mutant: it is not only a trap detector, it is a **positive
+diagnostic that tells you which renderer you have**. Archetypes for the lane are enforced as
+harness data (`content_empty`, `value_change`), not left to the agent's judgement.
+
+### Target-side defects found (baseline harness, the target repository)
+
+- **The jar was rebuilt only when missing** (`bc0eedd`). Every mutant touching code or a template
+  — the only way to build some mutations, including a structurally valid document with no text —
+  had **no observable effect**: the net replayed the old jar and declared the mutant invalid. A
+  mutation harness that silently tests a stale artifact is indistinguishable from a blind oracle.
+- A cold `baseline-up` **exceeds an agent's 2-minute tool timeout** (`99ea343`) — documented
+  rather than papered over, since the fix is to run it in the background, not to make it faster.
+
+### Engine improvements this run produced
+
+- `6d8401cc4` — the bundle-skill warning from the previous entry is gone: a skill already
+  satisfied by the bundle/plugin mirror no longer reports as absent from the library. It was true,
+  useless, and read as a broken run at every start.
+- `76df5e75d` — **a failing tool call now logs the payload that was rejected** (bounded to 600
+  characters, passed through the secret guard so a failure cannot turn a log line into a leak
+  channel). Six schema failures had been undiagnosable from the log. Worth recording *why*: I
+  claimed they were a truncation, and they were not — the model had emitted XML parameter tags
+  inside a JSON string value. I also claimed the payload was not recoverable; it was in
+  `events.jsonl` all along (`tool_started`, field `input`). There was no engine bug on that path.
+  The real gap was the log line, and that is what the commit fixes.
+
+### Lessons for next run
+
+- The run repo must be rebuilt with **fresh history** before each run, not merely cleaned:
+  `worktree: auto` branches from repository HEAD and prior oracles stay reachable. Verify with
+  `git rev-list --all --objects | grep -c golden-master` → 0.
+- An aborted run still leaks `mysqld` and the jar; `baseline-down` never runs on interruption.
+  Kill them before relaunching or the next run captures the previous application.
+- One forfait probe, **5 minutes minimum**. Two concurrent probers earn an HTTP 429 and disarm the
+  guard exactly when it is needed.
+
 ## 2026-07-26 — GATE CONVERGED on a legacy Java/Spring application: 5/5 visible, 5/5 sealed held-out, no blind lane (run 019f9e47)
 
 - Status: **VALIDATED** for the `http` lane — the graph-triggered `oracle_run` converged. One

@@ -76,4 +76,5 @@ first bilan for a bot lands.
 | Vigie | `feed-watch` | feed watch + LLM digest to chat (Huginn-style veille) | [feed-watch.md](feed-watch.md) |
 | ReArchi | `adr-rechallenge` | human-gated ADR re-challenge | [adr-rechallenge.md](adr-rechallenge.md) |
 | Fini | `feature-gap-fill` | gap-driven feature completion loop | [feature-gap-fill.md](feature-gap-fill.md) |
+| Goldy | `golden-master` | behavioural non-regression net, falsifiable both ways | [golden-master.md](golden-master.md) |
 | — | `examples/keepalive` | always-on (`overlap: keepalive`) demo + feature dogfood | [keepalive.md](keepalive.md) |
