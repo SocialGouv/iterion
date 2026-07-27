@@ -187,3 +187,7 @@ graphify-out/
 
 # RepoFalcon artifacts (trial comparison vs graphify).
 .falcon/
+
+# Python bytecode — bot bundles ship .py scripts and get mirrored into run worktrees
+__pycache__/
+*.pyc
