@@ -492,10 +492,17 @@ def stability(config, corpus, canon, ws):
 def main():
     ws = os.environ.get("GM_WORKSPACE", ".")
     gm_dir = os.path.join(ws, os.environ.get("GM_DIR", ".golden-master"))
+    # The seal must be run-scoped, and campaign and gate must land on the SAME
+    # directory. They are different processes and only one of them can be given
+    # an environment, so the path is DERIVED rather than passed: the workspace
+    # basename is the run id inside an iterion worktree, and a stable repo name
+    # outside one. A selfcheck that seals therefore cannot strand the held-out
+    # set somewhere the gate will not look, and two runs cannot share a pile.
     sealed_dir = os.environ.get("GM_SEALED_DIR") or os.path.join(
-        os.environ.get("GM_SCRATCH", os.path.join(ws, "..")), "gm-holdout")
+        os.environ.get("GM_SCRATCH", os.path.join(ws, "..")),
+        "gm-holdout-" + (os.path.basename(os.path.abspath(ws)) or "default"))
     floor = int(os.environ.get("GM_MUTATION_FLOOR", "90"))
-    mode = os.environ.get("GM_MODE", "gate")   # gate | record
+    mode = os.environ.get("GM_MODE", "gate")   # gate | record | selfcheck
 
     report = {"mode": mode, "total": 0, "valid": 0, "detected": 0, "score_pct": 0,
               "noop_silent": False, "revert_clean": True, "collateral": 0,
