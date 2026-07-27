@@ -97,7 +97,44 @@ code execution. This is a sharper boundary than the equivalent for
 `claude_code`, which does not execute repository TypeScript at startup.
 `ITERION_PI_TRUST_PROJECT=1` opts back in, per node.
 
-### Refuse the Anthropic subscription forfait
+### ⚠️ Anthropic subscription credentials — the original reasoning was wrong
+
+**This section's original decision (a blanket refusal) is superseded by
+evidence from Anthropic itself.** It is kept below, marked, because the
+reasoning is instructive and the *code* still defaults to refusing pending an
+explicit product decision.
+
+Driving `backend: "pi"` with a Claude subscription OAuth token against
+`anthropic/claude-haiku-4-5` produced, from Anthropic's own API:
+
+```
+400 invalid_request_error
+"Third-party apps now draw from your extra usage, not your plan limits.
+ Add more at claude.ai/settings/usage and keep going."
+```
+
+That is not a policy refusal. Anthropic **accepts** the token from a
+third-party app and bills it against a *separate extra-usage balance* instead
+of the plan's limits — a productised, supported path. The 400 only means that
+balance is empty. So the premise of the refusal below ("reusing the
+subscription outside the official CLI is out of policy") does not hold in the
+strong form it was written in; the vendor has since drawn the line at
+*billing*, not at *which client*.
+
+**Current state of the code, and what is left to decide:**
+
+- The guard and the environment strip remain, **default-off-able** via
+  `ITERION_PI_ALLOW_ANTHROPIC_OAUTH=1`, because flipping the default is a
+  product decision about every user of a deployment, not one this ADR should
+  take on the strength of one API response.
+- The empty-balance condition is now a **legible** error naming the cause and
+  the three ways out, instead of an opaque 400 that reads like a bad token.
+- **Follow-up for the same evidence:** `claw`'s equivalent guard
+  ([claw_backend.go](../../pkg/backend/model/claw_backend.go), via
+  `secrets.GuardThirdPartyOAuth`) rests on the identical premise and should be
+  revisited alongside it. That is a wider change than this ADR.
+
+### Original decision (superseded): refuse the Anthropic subscription forfait
 
 `piGuardForfait` fails a pi node whose only Anthropic credential is the stored
 Claude Pro/Max OAuth forfait, and `piResolveEnv` strips
@@ -111,14 +148,14 @@ the exemption does not transfer — and the subprocess-vs-in-process distinction
 is irrelevant, since the guard is about *which client the credential
 authorises*.
 
-**This is a legal determination, not an engineering one, and it has not been
-made.** The conservative default is deliberate: a later ruling that this is
-permitted relaxes the guard, whereas the opposite would be a retrofit after
-runs have already happened. The same open question applies to pi's
-`openai-codex` (ChatGPT plan) and `github-copilot` OAuth providers; iterion
-takes no position and injects nothing for either. A user's own `pi` login in
-`~/.pi/agent/auth.json` is their relationship with the vendor — iterion reads
-and injects nothing there.
+This was written as a legal determination pending confirmation, on the
+reasoning that a conservative default is cheap to relax and expensive to
+retrofit. **The confirmation arrived and went the other way** — see the
+superseding section above. The remaining open questions are pi's
+`openai-codex` (ChatGPT plan) and `github-copilot` OAuth providers, where
+iterion still takes no position and injects nothing. A user's own `pi` login
+in `~/.pi/agent/auth.json` is their relationship with the vendor — iterion
+reads and injects nothing there.
 
 ### Three additions to the CLI-agent seam
 

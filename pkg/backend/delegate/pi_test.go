@@ -90,14 +90,17 @@ func TestPiExtraArgsFor(t *testing.T) {
 		}
 	})
 
-	t.Run("fresh session id when task carries none", func(t *testing.T) {
+	// pi mints its own id for a fresh session and reports it in the stream
+	// header. Pinning --session-id for a session that does not exist yet
+	// works but makes pi warn on EVERY first run — observed live.
+	t.Run("fresh session is left to pi", func(t *testing.T) {
 		args := piExtraArgsFor(Task{Model: "gpt-5.5"})
-		i := slices.Index(args, "--session-id")
-		if i < 0 {
-			t.Fatalf("missing --session-id in %v", args)
+		if slices.Contains(args, "--session-id") {
+			t.Errorf("args = %v, want no --session-id for a fresh session "+
+				"(pi warns that the id does not exist yet)", args)
 		}
-		if !strings.HasPrefix(args[i+1], "iterion-") {
-			t.Errorf("session id = %q, want an iterion- prefixed fresh id", args[i+1])
+		if !slices.Contains(args, "--session-dir") {
+			t.Errorf("args = %v, want --session-dir so sessions stay with the run", args)
 		}
 	})
 
@@ -220,6 +223,23 @@ func TestPiResolveEnv(t *testing.T) {
 		}
 		if env["ZAI_API_KEY"] != "zai-token" {
 			t.Errorf("ZAI_API_KEY = %q, want zai-token", env["ZAI_API_KEY"])
+		}
+	})
+
+	t.Run("anthropic oauth opt-in lifts the strip", func(t *testing.T) {
+		t.Setenv("ITERION_PI_ALLOW_ANTHROPIC_OAUTH", "1")
+		env := piResolveEnv(context.Background())
+		if _, ok := env["ANTHROPIC_OAUTH_TOKEN"]; ok {
+			t.Error("the opt-in must let an inherited subscription token reach pi")
+		}
+		// And the guard must stand down with it, or the opt-in is inert.
+		forfaitOnly := secrets.WithCredentials(context.Background(), secrets.Credentials{
+			OAuthCredentialFiles: map[string]string{
+				string(secrets.OAuthKindClaudeCode): "/tmp/iter-oauth-fake",
+			},
+		})
+		if err := piGuardForfait(forfaitOnly, Task{Model: "anthropic/claude-haiku-4-5"}); err != nil {
+			t.Errorf("guard still refused under the opt-in: %v", err)
 		}
 	})
 
@@ -485,6 +505,39 @@ func TestParsePiOutput(t *testing.T) {
 			var rl *ErrRateLimited
 			if !errors.As(err, &rl) {
 				t.Errorf("%q → %v (%T), want *ErrRateLimited", msg, err, err)
+			}
+		}
+	})
+
+	// Observed live: Anthropic ACCEPTS a subscription OAuth token from a
+	// third-party app but bills it against a separate extra-usage balance.
+	// An empty balance is a generic 400 whose text mentions nothing about
+	// credentials, so without a translation it reads like a broken token.
+	t.Run("anthropic extra-usage exhaustion is legible", func(t *testing.T) {
+		upstream := `400 {"type":"error","error":{"type":"invalid_request_error",` +
+			`"message":"Third-party apps now draw from your extra usage, not your plan limits. ` +
+			`Add more at claude.ai/settings/usage and keep going."}}`
+		line, _ := json.Marshal(map[string]any{
+			"type": "agent_end", "willRetry": false,
+			"messages": []any{map[string]any{
+				"role": "assistant", "responseId": "r",
+				"stopReason": "error", "errorMessage": upstream,
+			}},
+		})
+		err := parsePiOutput(string(line)).Err
+		if err == nil {
+			t.Fatal("expected an error")
+		}
+		// Deterministic: a human must top the balance up. Retrying or
+		// failing over to another provider cannot resolve it.
+		var tr *ErrTransient
+		var rl *ErrRateLimited
+		if errors.As(err, &tr) || errors.As(err, &rl) {
+			t.Errorf("err = %v (%T), want a plain error — retries cannot fix an empty balance", err, err)
+		}
+		for _, want := range []string{"extra-usage", "claude.ai/settings/usage", "claude_code"} {
+			if !strings.Contains(err.Error(), want) {
+				t.Errorf("error message lacks %q, so the operator cannot act on it: %v", want, err)
 			}
 		}
 	})

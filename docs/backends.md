@@ -603,20 +603,32 @@ workflow that already works.**
 
 #### ⚖️ Subscription credentials
 
-iterion **refuses to drive an Anthropic call from pi using the stored
-Claude Pro/Max OAuth forfait**, and strips `ANTHROPIC_OAUTH_TOKEN` /
-`CLAUDE_CODE_OAUTH_TOKEN` / `CLAUDE_CONFIG_DIR` from pi's environment.
-Anthropic's Consumer Terms scope the subscription to the official Claude
-Code CLI surface; `claude_code` and `codex` are exempt because they spawn
-that CLI, which remains the authorised consumer. pi speaks the Messages API
-directly, so the exemption does not transfer. Use a metered
-`ANTHROPIC_API_KEY` for Anthropic models on pi, or run them on
+By default iterion **refuses to drive an Anthropic call from pi using the
+stored Claude Pro/Max OAuth subscription**, and strips
+`ANTHROPIC_OAUTH_TOKEN` / `CLAUDE_CODE_OAUTH_TOKEN` / `CLAUDE_CONFIG_DIR`
+from pi's environment. Set `ITERION_PI_ALLOW_ANTHROPIC_OAUTH=1` to opt in.
+
+**What we learned by trying it.** Anthropic does *not* reject a third-party
+app using a subscription token. It answers:
+
+> Third-party apps now draw from your extra usage, not your plan limits. Add
+> more at claude.ai/settings/usage and keep going.
+
+So the path is supported, but billed against a **separate extra-usage
+balance** rather than your plan's limits. When that balance is empty you get a
+`400 invalid_request_error` whose text says nothing about credentials —
+iterion translates it into a message naming the cause and the ways out, so it
+does not read like a broken token.
+
+The default stays conservative because flipping it is a decision about every
+user of a deployment, not a per-developer one. For production Anthropic work
+on pi, prefer a metered `ANTHROPIC_API_KEY`, or run the node on
 `claude_code`.
 
 Your *own* `pi` login in `~/.pi/agent/auth.json` is your relationship with
-the vendor, not iterion's — nothing is read or injected. The same open
-question applies to pi's `openai-codex` (ChatGPT plan) and `github-copilot`
-OAuth providers; iterion takes no position and injects nothing there either.
+the vendor — nothing is read or injected. pi's `openai-codex` (ChatGPT plan)
+and `github-copilot` OAuth providers remain open questions on which iterion
+takes no position and injects nothing.
 
 #### Environment variables
 

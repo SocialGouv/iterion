@@ -2,8 +2,6 @@ package delegate
 
 import (
 	"context"
-	"crypto/rand"
-	"encoding/hex"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -38,9 +36,9 @@ import (
 // replace claude_code on a workflow that already works.
 //
 // Credentials are resolved by pi itself from ~/.pi/agent/auth.json and the
-// provider env vars; ResolveEnv only layers per-run BYOK keys on top and
-// strips the Anthropic OAuth forfait (see piResolveEnv). See ADR-065 for
-// the CLI-agent seam and ADR-085 for this backend.
+// provider env vars; ResolveEnv only layers per-run BYOK keys on top and, by
+// default, strips the Anthropic OAuth subscription (see piGuardForfait). See
+// ADR-065 for the CLI-agent seam and ADR-085 for this backend.
 const BackendPi = "pi"
 
 // piProtocol describes pi's headless invocation.
@@ -133,21 +131,29 @@ func (b *PiBackend) Execute(ctx context.Context, task Task) (Result, error) {
 	return b.print.Execute(ctx, task)
 }
 
-// piGuardForfait refuses to drive an Anthropic call from pi with the stored
-// OAuth forfait.
+// piGuardForfait refuses, by default, to drive an Anthropic call from pi with
+// the stored Claude Pro/Max OAuth subscription. Lifted by
+// ITERION_PI_ALLOW_ANTHROPIC_OAUTH.
 //
-// Anthropic's Consumer Terms scope the Claude Pro/Max subscription to the
-// official Claude Code CLI surface. The claude_code and codex delegates are
-// exempt because they spawn the upstream CLI, which remains the authorised
-// consumer — pi is not that CLI, it speaks the Messages API directly, so the
-// exemption does not transfer. The refusal is deliberately conservative: a
-// later ruling that this is permitted would relax the guard, whereas the
-// reverse would be a retrofit after the fact.
+// The guard was written on the reading that the Consumer Terms scope the
+// subscription to the official Claude Code CLI (which claude_code and codex
+// spawn, and pi does not). **Anthropic's API says otherwise**: it accepts the
+// token from a third-party app and bills it against a separate *extra-usage*
+// balance instead of the plan's limits — see piIsExtraUsageExhausted for the
+// response it returns when that balance runs out. So the line the vendor draws
+// is about billing, not about which client.
+//
+// The default nonetheless stays conservative, because flipping it is a
+// decision about every user of a deployment rather than a per-developer one.
+// ADR-085 records the evidence and leaves the flip as an explicit call.
 //
 // A user's own `pi` login in ~/.pi/agent/auth.json is their relationship
 // with the vendor, not iterion's: nothing is read or injected here, and
 // piResolveEnv only strips what iterion would otherwise have supplied.
 func piGuardForfait(ctx context.Context, task Task) error {
+	if piAnthropicOAuthAllowed() {
+		return nil
+	}
 	provider, _ := piResolveModel(task.Model, task.ProviderHint)
 	if provider != "anthropic" {
 		return nil
@@ -156,6 +162,30 @@ func piGuardForfait(ctx context.Context, task Task) error {
 		return fmt.Errorf("pi backend: %w", err)
 	}
 	return nil
+}
+
+// piAnthropicOAuthAllowed reports whether the operator has explicitly opted
+// into driving Anthropic from pi with a Claude subscription OAuth token.
+//
+// **Local development only, and off by default.** Setting it disables both
+// halves of the protection: the `piGuardForfait` refusal and the environment
+// strip in `piResolveEnv`. It exists because a developer validating this
+// backend against a real Anthropic model on their OWN subscription is a
+// defensible local call, and hacking the guard out of the source to do it is
+// worse than an explicit, named, default-off switch.
+//
+// Anthropic does accept the token from a third-party app — it bills it against
+// a separate extra-usage balance rather than the plan's limits (see
+// piGuardForfait). That makes this a billing choice more than a policy one,
+// but two things still hold:
+//
+//   - never set it in a shared or cloud runner, where it would extend one
+//     developer's local tolerance into a product decision taken on behalf of
+//     every user of that deployment, and spend a balance nobody agreed to;
+//   - a workflow that needs Anthropic in production should use a metered
+//     ANTHROPIC_API_KEY, or run the node on `claude_code`.
+func piAnthropicOAuthAllowed() bool {
+	return strings.TrimSpace(os.Getenv("ITERION_PI_ALLOW_ANTHROPIC_OAUTH")) == "1"
 }
 
 // piProviderPrefixes maps an iterion routing prefix onto pi's provider id.
@@ -241,17 +271,17 @@ func piExtraArgsFor(task Task) []string {
 		args = append(args, "--model", modelID)
 	}
 
-	// Sessions. pi's --session-id addresses an exact project session and
-	// creates it when absent, so a fresh id is generated up front: the
-	// Result then carries a session id even for a run that produced no
-	// parsable output.
+	// Sessions. Only pinned when resuming or forking an existing one: pi
+	// mints its own id for a fresh session and reports it in the stream
+	// header, which parsePiOutput reads. Passing --session-id for a session
+	// that does not exist yet works, but makes pi warn ("No project session
+	// found with id …; creating a new session with that id") on *every*
+	// first run — noise on the operator's console for no gain.
 	switch {
 	case task.SessionID != "" && task.ForkSession:
 		args = append(args, "--fork", task.SessionID)
 	case task.SessionID != "":
 		args = append(args, "--session-id", task.SessionID)
-	default:
-		args = append(args, "--session-id", piNewSessionID())
 	}
 	args = append(args, "--session-dir", piSessionDir(task))
 
@@ -302,17 +332,6 @@ func piSessionDir(task Task) string {
 	return filepath.Join(os.TempDir(), "iterion-pi-sessions")
 }
 
-// piNewSessionID returns a random session identifier for a fresh session.
-func piNewSessionID() string {
-	var buf [16]byte
-	if _, err := rand.Read(buf[:]); err != nil {
-		// crypto/rand failing is not recoverable here, and an empty id
-		// would make pi allocate its own — which is a correct fallback.
-		return ""
-	}
-	return "iterion-" + hex.EncodeToString(buf[:])
-}
-
 // piEnvKeys maps a pi provider id onto the API-key environment variable pi
 // reads for it. Only providers iterion can supply a BYOK credential for
 // appear; everything else pi resolves from its own credential store.
@@ -334,10 +353,11 @@ var piEnvKeys = map[secrets.Provider]string{
 // environment on any provider path. An empty value is an unset on both the
 // host and the sandbox ExecOpts path.
 func piResolveEnv(ctx context.Context) map[string]string {
-	env := map[string]string{
-		"ANTHROPIC_OAUTH_TOKEN":   "",
-		"CLAUDE_CODE_OAUTH_TOKEN": "",
-		"CLAUDE_CONFIG_DIR":       "",
+	env := map[string]string{}
+	if !piAnthropicOAuthAllowed() {
+		env["ANTHROPIC_OAUTH_TOKEN"] = ""
+		env["CLAUDE_CODE_OAUTH_TOKEN"] = ""
+		env["CLAUDE_CONFIG_DIR"] = ""
 	}
 
 	if creds, ok := secrets.CredentialsFromContext(ctx); ok {
@@ -452,6 +472,20 @@ func piClassifyFailure(m pisdk.Message) error {
 		return fmt.Errorf("pi: upstream %d: %s", status, msg)
 	}
 
+	// Anthropic's "extra usage" condition, seen live: a subscription OAuth
+	// token driving a third-party app is ACCEPTED, but billed against a
+	// separate extra-usage balance rather than the plan's own limits. When
+	// that balance is empty the API answers 400 invalid_request_error with a
+	// message that says nothing about credentials — so without this the
+	// operator gets an opaque 400 and reasonably concludes the token is bad.
+	// Deterministic by nature: it needs a human to top the balance up.
+	if piIsExtraUsageExhausted(msg) {
+		return fmt.Errorf("pi: Anthropic subscription extra-usage balance is empty — "+
+			"third-party apps bill against extra usage, not your plan limits. "+
+			"Top it up at claude.ai/settings/usage, use a metered ANTHROPIC_API_KEY, "+
+			"or run this node on backend: \"claude_code\". Upstream: %s", msg)
+	}
+
 	// No status reported — fall back to the message text.
 	//
 	// Deliberately NOT isRateLimitMessage(): that detector is tuned for
@@ -471,6 +505,16 @@ func piClassifyFailure(m pisdk.Message) error {
 	}
 	// Everything else is deterministic.
 	return fmt.Errorf("pi: %s", msg)
+}
+
+// piIsExtraUsageExhausted matches Anthropic's response when a subscription
+// OAuth token is used by a third-party app and the extra-usage balance is
+// empty. Matched on the distinctive phrasing rather than the status, because
+// the status is a generic 400.
+func piIsExtraUsageExhausted(msg string) bool {
+	lower := strings.ToLower(msg)
+	return strings.Contains(lower, "extra usage") &&
+		(strings.Contains(lower, "third-party") || strings.Contains(lower, "plan limits"))
 }
 
 // piRateLimitSignals are provider-shaped rate-limit forms. Safe to keep
