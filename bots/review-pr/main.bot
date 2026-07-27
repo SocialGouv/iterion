@@ -526,6 +526,15 @@ schema pr_gate_input:
   ## see emit_output.questions for why (shell-safety of the publish command).
   questions: string
   total_findings: int
+  ## RECOVERY INPUTS: the two reviewers' own raw finding arrays, carried
+  ## untouched past converge. When converge's merged `findings` comes back
+  ## unreadable (the LLM has emitted prose such as "See structured findings
+  ## array." instead of the array — observed on PR #300, 8 findings lost),
+  ## publish falls back to the union of these two, de-duplicated
+  ## DETERMINISTICALLY by anchor. Losing the LLM's merge is far better than
+  ## losing every finding.
+  claude_findings: json
+  gpt_findings: json
 
 schema pr_gate_output:
   has_pr: bool
@@ -533,12 +542,16 @@ schema pr_gate_output:
   findings: json
   questions: string
   total_findings: int
+  claude_findings: json
+  gpt_findings: json
 
 schema publish_input:
   pr_url: string
   findings: json
   questions: string
   total_findings: int
+  claude_findings: json
+  gpt_findings: json
 
 schema publish_output:
   ## published: a forge review was successfully created.
@@ -666,6 +679,8 @@ compute pr_gate:
     findings: "input.findings"
     questions: "input.questions"
     total_findings: "input.total_findings"
+    claude_findings: "input.claude_findings"
+    gpt_findings: "input.gpt_findings"
 
 ## DETERMINISTIC forge publish (no LLM, no workspace credential): map the
 ## merged findings onto the iterion server's forge-publish payload and
@@ -677,7 +692,7 @@ compute pr_gate:
 ## published is true ONLY on a 2xx from the endpoint, whose counts are
 ## forge-re-fetched (anti-façade), never self-estimated.
 tool publish_review:
-  command: `PUB_URL={{vars.forge_publish_url}} PUB_TOKEN={{vars.forge_publish_token}} MODE={{vars.pr_review_mode}} PR_URL={{input.pr_url}} FINDINGS={{input.findings}} QUESTIONS={{input.questions}} GATE_ENABLED={{vars.gate_enabled}} GATE_SEVERITY={{vars.gate_severity}} python3 -c "
+  command: `PUB_URL={{vars.forge_publish_url}} PUB_TOKEN={{vars.forge_publish_token}} MODE={{vars.pr_review_mode}} PR_URL={{input.pr_url}} FINDINGS={{input.findings}} QUESTIONS={{input.questions}} CLAUDE_FINDINGS={{input.claude_findings}} GPT_FINDINGS={{input.gpt_findings}} GATE_ENABLED={{vars.gate_enabled}} GATE_SEVERITY={{vars.gate_severity}} python3 -c "
 import os, json, urllib.request, urllib.error
 
 def emit(published, forge='unknown', review_url='', posted=0, sugg=0, skipped='', summary=''):
@@ -699,6 +714,36 @@ except ValueError:
 if not isinstance(findings, list):
     findings = []
     findings_parse_failed = True
+
+# RECOVERY: converge is an LLM step and sometimes emits its findings as prose
+# (observed: 'See structured findings array.') instead of the array, which
+# would silently drop EVERY finding from the review and fail-close the gate on
+# a lie. Fall back to the reviewers own raw arrays, unioned and de-duplicated
+# DETERMINISTICALLY by anchor. The LLM merge (cross-confirmation, threshold,
+# cap) is lost -- publishing an un-merged set beats publishing nothing.
+recovered_from_reviewers = False
+if findings_parse_failed:
+    union = []
+    for env_name in ('CLAUDE_FINDINGS', 'GPT_FINDINGS'):
+        try:
+            arr = json.loads(os.environ.get(env_name) or '[]')
+        except ValueError:
+            arr = []
+        if isinstance(arr, list):
+            union.extend([f for f in arr if isinstance(f, dict)])
+    seen = set()
+    deduped = []
+    for f in union:
+        key = (str(f.get('file') or ''), str(f.get('line') or ''),
+               str(f.get('title') or '').strip().lower()[:80])
+        if key in seen:
+            continue
+        seen.add(key)
+        deduped.append(f)
+    if deduped:
+        findings = deduped
+        recovered_from_reviewers = True
+        findings_parse_failed = False
 # QUESTIONS arrives as a newline-separated string (NOT JSON): a json array of
 # strings would be space-joined by the tool-command substitution and break this
 # shell (a question in command position -> exit 127). One question per line.
@@ -734,6 +779,12 @@ for f in findings:
                      'body': body, 'suggestion': repl if repl.strip() else ''})
 
 summary = ['## Code review by Revi (iterion)', '', str(len(findings)) + ' finding(s) kept after threshold/cap.']
+if recovered_from_reviewers:
+    summary.append('')
+    summary.append(chr(9888) + ' DEGRADED: the merged finding set was unreadable, so these were recovered directly from the two reviewers and de-duplicated by anchor. Cross-confirmation, severity threshold and cap were NOT applied.')
+elif findings_parse_failed:
+    summary.append('')
+    summary.append(chr(9888) + ' DEGRADED: the review produced findings but their machine-readable form was unreadable, and no reviewer fallback was available. Nothing could be anchored inline; the merge gate fails closed.')
 for sev in sorted(counts, key=lambda s: sev_rank.get(s, 9)):
     summary.append('- ' + sev + ': ' + str(counts[sev]))
 cross_n = len([f for f in findings if isinstance(f, dict) and str(f.get('reviewers') or '') == 'both'])
@@ -787,6 +838,13 @@ if gate_enabled:
     payload['gate'] = {'enabled': True, 'context': 'revi/review',
                        'blocking_count': blocking, 'threshold': gate_sev,
                        'total_findings': len(findings)}
+    # Never let the status describe an unreadable review as a real blocking
+    # finding: that message sent an operator hunting for a finding that was
+    # never published. The note field overrides the server description.
+    if findings_parse_failed:
+        payload['gate']['note'] = 'review output unreadable (findings were not machine-readable) - gate fails closed; re-run /revi'
+    elif recovered_from_reviewers:
+        payload['gate']['note'] = str(blocking) + ' blocking of ' + str(len(findings)) + ' finding(s) recovered from the reviewers (merge step degraded)'
 req = urllib.request.Request(url, data=json.dumps(payload).encode(),
                              headers={'Content-Type': 'application/json', 'X-Iterion-Run': tok},
                              method='POST')
@@ -874,7 +932,9 @@ workflow review_pr:
     pr_url: "{{vars.pr_url}}",
     findings: "{{outputs.converge.findings}}",
     questions: "{{outputs.converge.questions}}",
-    total_findings: "{{outputs.converge.total_findings}}"
+    total_findings: "{{outputs.converge.total_findings}}",
+    claude_findings: "{{outputs.reviewer_claude.findings}}",
+    gpt_findings: "{{outputs.reviewer_gpt.findings}}"
   }
   ## No PR target → finish after the board + report (the default,
   ## zero extra LLM cost). PR target → deterministic server-mediated
@@ -884,7 +944,9 @@ workflow review_pr:
     pr_url: "{{outputs.pr_gate.pr_url}}",
     findings: "{{outputs.pr_gate.findings}}",
     questions: "{{outputs.pr_gate.questions}}",
-    total_findings: "{{outputs.pr_gate.total_findings}}"
+    total_findings: "{{outputs.pr_gate.total_findings}}",
+    claude_findings: "{{outputs.pr_gate.claude_findings}}",
+    gpt_findings: "{{outputs.pr_gate.gpt_findings}}"
   }
   ## Deterministic anti-façade gate on the publish result, then done.
   publish_review -> publish_health with {

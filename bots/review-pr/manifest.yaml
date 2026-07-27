@@ -1,7 +1,20 @@
 name: review-pr
 display_name: Revi
 icon: 🔎
-version: 0.5.4
+version: 0.5.5
+## 0.5.5 — never LOSE findings when the merge step degrades, and never LIE
+## about why the gate is red. Observed live on PR #300 (run 019fa02b): converge
+## returned `findings` as the prose "See structured findings array." while
+## total_findings said 8 — publish parsed nothing, so the review showed "0
+## findings kept" with 0 inline comments (8 real findings never shown) and the
+## fail-closed gate reported "1 blocking finding >=high", sending the operator
+## hunting for a finding that was never published. Now: (a) the two reviewers'
+## raw finding arrays are threaded past converge, and publish falls back to
+## their union de-duplicated DETERMINISTICALLY by anchor when the merged set is
+## unreadable (an un-merged set beats nothing); (b) the gate carries an explicit
+## `note` the server renders instead of the count, so an unreadable review says
+## so. Prompt hardening (0.5.4) was necessary but not sufficient — an LLM field
+## shape cannot be guaranteed by instruction alone.
 ## 0.5.4 — emit reliability: harden the `findings` output contract. The
 ## converge/emit LLM sometimes returned `findings` as a PROSE STRING ("4
 ## findings kept (1 high…)") instead of the JSON array the schema intends —

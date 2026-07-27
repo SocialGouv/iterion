@@ -33,7 +33,7 @@ contributes:
       args:
         - -y
         # renovate: datasource=npm depName=@maxgfr/codeindex versioning=npm
-        - "@maxgfr/codeindex@2.17.0"
+        - "@maxgfr/codeindex@2.17.1"
         - mcp
         # Pin the server to the workspace so all 26 tools take `repo` as
         # optional — agents never have to know the absolute checkout path.
@@ -63,10 +63,20 @@ contributes:
         apply_exit_codes: [0]
         modes:
           on: {}
-          # Denser output: a tighter hit cap for the same query.
+          # Denser output: a tighter hit cap for the same query. The flag is
+          # spliced in right after the binary name, so it lands BEFORE the
+          # subcommand — which codeindex accepts as of 2.17.1.
           ultra:
             inject_flag: "--max-hits 40"
-      sandbox_mount: /usr/local/bin/codeindex
+      # NO sandbox_mount, deliberately. rtk can bind-mount its host binary into
+      # the container because it is a single static executable; codeindex is a
+      # Node bundle whose bin entry `import`s ./engine.mjs as a SIBLING file.
+      # Mounting only the bin path would land a module that cannot resolve its
+      # own import — and worse, it would shadow the working global that
+      # Dockerfile.runner-devbox installs at exactly /usr/local/bin/codeindex.
+      # This is the "production images may bake the binary in instead" case
+      # addRewriterMounts already anticipates; sandboxed runs use the in-image
+      # install, and a host-only install degrades to passthrough.
   lifecycle:
     # `index` is incremental (cache.json + an artifact fastpath), so refresh is
     # the same command: an unchanged repo rewrites nothing and costs one walk.
@@ -74,9 +84,9 @@ contributes:
     # the regex manager captures the version on the line following the comment,
     # so an unannotated occurrence would silently go stale.
     # renovate: datasource=npm depName=@maxgfr/codeindex versioning=npm
-    index: "npx -y @maxgfr/codeindex@2.17.0 index --repo {{workspace}} --out {{workspace}}/.codeindex --max-files {{config.max_files}}"
+    index: "npx -y @maxgfr/codeindex@2.17.1 index --repo {{workspace}} --out {{workspace}}/.codeindex --max-files {{config.max_files}}"
     # renovate: datasource=npm depName=@maxgfr/codeindex versioning=npm
-    refresh: "npx -y @maxgfr/codeindex@2.17.0 index --repo {{workspace}} --out {{workspace}}/.codeindex --max-files {{config.max_files}}"
+    refresh: "npx -y @maxgfr/codeindex@2.17.1 index --repo {{workspace}} --out {{workspace}}/.codeindex --max-files {{config.max_files}}"
   skills:
     - skills/code-index.md
   commands:
