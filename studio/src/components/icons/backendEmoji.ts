@@ -7,6 +7,7 @@ const BACKEND_EMOJI: Record<string, string> = {
   claw: "\u{1F980}",        // 🦀
   claude_code: "\u{1F916}", // 🤖
   codex: "\u{1F419}",       // 🐙
+  pi: "\u{03C0}",           // π — pi's own mark
   direct: "\u{1F310}",      // 🌐
 };
 

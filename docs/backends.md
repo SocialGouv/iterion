@@ -2,18 +2,18 @@
 
 A backend is the engine iterion routes a node to — a direct in-process LLM
 call for *thinking*, or a full agent CLI for *acting* — and one workflow can
-mix them per node. Iterion ships five: `claw` (in-process LLM SDK),
-`claude_code` (Claude Code CLI), `kimi` (Kimi Code CLI), `grok` (Grok Build
-CLI), and the deprecated `codex` compatibility delegate. It auto-detects
-whatever credentials you already have signed in: the default preference
-considers `claude_code` and `claw`; the other three require an explicit opt-in.
-This page documents the resolution chain, credentials, support boundaries, and
-overrides.
+mix them per node. Iterion ships six: `claw` (in-process LLM SDK),
+`claude_code` (Claude Code CLI), `pi` (pi coding agent), `kimi` (Kimi Code
+CLI), `grok` (Grok Build CLI), and the deprecated `codex` compatibility
+delegate. It auto-detects whatever credentials you already have signed in: the
+default preference considers `claude_code` and `claw`; the other four require
+an explicit opt-in. This page documents the resolution chain, credentials,
+support boundaries, and overrides.
 
 ```mermaid
 flowchart LR
   NODE{"🧠 Workflow node"} -->|"model:"| DIRECT(["⚡ Direct in-process<br/>LLM call · claw"])
-  NODE -->|"backend:"| CLI[["🛠️ Delegated CLI agent<br/>claude_code · kimi · grok"]]
+  NODE -->|"backend:"| CLI[["🛠️ Delegated CLI agent<br/>claude_code · pi · kimi · grok"]]
   DIRECT --> THINK["💭 Think<br/>plan · judge · route"]
   CLI --> ACT["✋ Act<br/>edit files · run shell · drive git"]
 ```
@@ -29,6 +29,7 @@ flowchart LR
 |---|---|---|
 | `claw` | Recommended in-process backend for direct provider calls and native Iterion tools. | Automatic or explicit. |
 | `claude_code` | Recommended CLI-agent backend for implementation work and Claude subscription/OAuth use. | Automatic when Claude Code OAuth is detected, or explicit. |
+| `pi` | Supported through the generic CLI-agent protocol (print mode). Reaches ~36 providers and reports a provider-computed cost; no MCP, no board tools, no ask_user. | Explicit only. |
 | `kimi` | Supported through the generic CLI-agent protocol; session resume/fork is not wired. | Explicit only. |
 | `grok` | Supported through the generic CLI-agent protocol; session resume/fork is not wired. | Explicit only. |
 | `codex` | **Deprecated and frozen.** Compatibility/live-test path only; the compiler emits C030. | Per-node/workflow opt-in, or explicit addition to `ITERION_BACKEND_PREFERENCE`. |
@@ -494,7 +495,7 @@ gray-area but has no explicit prohibition today. We treat this as
 pragmatic — if OpenAI changes the terms or tightens enforcement, set
 `ITERION_OPENAI_USE_OAUTH=0` and fall back to `OPENAI_API_KEY`.
 
-## Third-party agent CLIs (`kimi`, `grok`, and the CLI-agent seam)
+## Third-party agent CLIs (`pi`, `kimi`, `grok`, and the CLI-agent seam)
 
 Some agent CLIs have an argument protocol **disjoint from claude-code's**
 Session mode (`--print`, prompt on stdin, `--append-system-prompt`, …), so
@@ -507,6 +508,116 @@ iterion ships dedicated backends for these as instances of a generic
 active), parse stdout into a structured result, retry on no-output /
 network transient. Adding another such CLI is a new protocol *value*, not
 new plumbing.
+
+### `pi` (pi coding agent)
+
+[pi](https://pi.dev) ([earendil-works/pi](https://github.com/earendil-works/pi))
+is a multi-provider agent harness. It is the backend to reach for when you
+need **a model the other backends cannot run**.
+
+```yaml
+agent review:
+  backend: "pi"
+  model: "openai/gpt-5.5"   # or cerebras/…, groq/…, zai/…, github-copilot/…
+  system: "…the task…"
+```
+
+**Install:** `npm install -g @earendil-works/pi-coding-agent` (Node ≥ 22.19)
+or `curl -fsSL https://pi.dev/install.sh | sh`. Pin a specific binary with
+`ITERION_PI_BIN`, or per node with `command:`.
+
+#### What it brings
+
+- **~36 first-class providers** behind one agent loop, with an
+  auto-refreshing model catalogue: anthropic, openai, openai-codex, google,
+  vertex, bedrock, azure, github-copilot, xai, zai, moonshot, deepseek,
+  groq, cerebras, mistral, minimax, openrouter, together, fireworks, and
+  more. `pi --list-models` is the authoritative list for your install.
+- **A provider-computed cost**, not an estimate. pi reports
+  `usage.cost.total` per message against its own pricing catalogue; iterion
+  records it verbatim (`cost.AnnotateWithUSD`) instead of guessing from the
+  static table. It also reports the real input/output split, where the other
+  CLI-agent backends book every token at the output rate. This makes
+  `max_cost_usd` and the spend cap quantitatively correct on a CLI backend
+  for the first time.
+- **Its own credential store** (`~/.pi/agent/auth.json`) with OAuth flows
+  for Anthropic, OpenAI (ChatGPT/Codex) and GitHub Copilot — an
+  authentication path independent of iterion's.
+
+#### What it does NOT bring
+
+pi deliberately ships a small tool set: `read, bash, edit, write, grep,
+find, ls`. There is **no MCP client at all**, no subagent/`Task`, no todo,
+no web fetch/search, no notebook, no background bash. Consequences for a
+`backend: "pi"` node:
+
+- **board `capabilities:` do not work** — they are served over MCP.
+- **`ask_user` / async interaction do not work** — same reason.
+- **workflow `mcp_server` blocks are not forwarded.**
+- **`__ITERION_SECRET_*__` placeholders are not materialised.** Use file
+  secrets instead ([secrets.md](secrets.md)) — they are real mounted files
+  and work unchanged.
+- **node `tools:` lists are advisory**, as for every CLI-agent backend. The
+  one exception iterion enforces is a `readonly:` node, which pins pi to
+  `--tools read,grep,find,ls`.
+
+A node needing any of the above should stay on `claude_code` or `claw`.
+**pi's value is the models those cannot reach, not replacing them on a
+workflow that already works.**
+
+#### Behaviour worth knowing
+
+- **`AGENTS.md` is read alongside `CLAUDE.md`.** pi walks up from the
+  working directory and injects both. If your repo carries an `AGENTS.md`
+  meant for a different agent, it reaches pi nodes too.
+- **The target repo's `.pi/` directory is refused.** pi executes
+  project-local extensions as TypeScript *inside the agent process* — the
+  process holding the run's credentials — so trusting a checked-out
+  repository turns prompt injection into code execution. iterion passes
+  `--no-approve`. Opt in per node with `ITERION_PI_TRUST_PROJECT=1`, and
+  only for a repository you control.
+- **Skills are passed explicitly.** iterion mirrors bundle/plugin/library
+  skills into `<workspace>/.claude/skills/`, which is not one of pi's own
+  lookup roots, so it hands pi that path via `--skill`.
+- **Sessions live with the run**, under the store dir (or the workspace when
+  sandboxed) — never `~/.pi/agent/sessions`, so concurrent nodes cannot
+  collide and a pruned run takes its sessions with it.
+- **pi retries upstream failures itself** (3 attempts by default) *inside*
+  iterion's own retry loop. Those attempts are invisible to iterion's
+  rate-limit classifier. Print mode has no lever to disable this; pin
+  `ITERION_PI_AGENT_DIR` to an agent dir whose `settings.json` sets
+  `retry.enabled: false` if it matters for your quota accounting.
+- **Model patterns are fuzzy-matched.** pi resolves an unknown pattern
+  against its catalogue rather than failing, so a typo can silently run a
+  different model. iterion logs a warning when the model pi actually used
+  differs from the one requested — watch for it on first use.
+
+#### ⚖️ Subscription credentials
+
+iterion **refuses to drive an Anthropic call from pi using the stored
+Claude Pro/Max OAuth forfait**, and strips `ANTHROPIC_OAUTH_TOKEN` /
+`CLAUDE_CODE_OAUTH_TOKEN` / `CLAUDE_CONFIG_DIR` from pi's environment.
+Anthropic's Consumer Terms scope the subscription to the official Claude
+Code CLI surface; `claude_code` and `codex` are exempt because they spawn
+that CLI, which remains the authorised consumer. pi speaks the Messages API
+directly, so the exemption does not transfer. Use a metered
+`ANTHROPIC_API_KEY` for Anthropic models on pi, or run them on
+`claude_code`.
+
+Your *own* `pi` login in `~/.pi/agent/auth.json` is your relationship with
+the vendor, not iterion's — nothing is read or injected. The same open
+question applies to pi's `openai-codex` (ChatGPT plan) and `github-copilot`
+OAuth providers; iterion takes no position and injects nothing there either.
+
+#### Environment variables
+
+| Variable | Effect |
+|---|---|
+| `ITERION_PI_BIN` | Absolute path to the `pi` binary (e.g. a `bun --compile` single-file build on a host with no Node). |
+| `ITERION_PI_MODE` | `print` pins the one-shot transport. Reserved for the richer `rpc` transport. |
+| `ITERION_PI_AGENT_DIR` | Pins `PI_CODING_AGENT_DIR`. Reproducible pi config, but hides the operator's own `auth.json` — so the OAuth breadth above goes with it. |
+| `ITERION_PI_OFFLINE` | `0` re-enables pi's catalogue refresh inside a sandbox (off by default there: an egress policy would stall startup). |
+| `ITERION_PI_TRUST_PROJECT` | `1` trusts the target repo's `.pi/` resources. See the warning above. |
 
 ### `kimi` (Moonshot kimi-code)
 

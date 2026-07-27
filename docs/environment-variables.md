@@ -19,6 +19,11 @@ falls back to the listed default.
 | `ITERION_CLAUDE_CODE_THINKING_DISPLAY` | Controls the `claude_code` thinking-block display flag: unset/other → `summarized` (readable summary); `omitted` → the CLI's latency-optimised default; `off` → stop passing the flag (required for `claude` CLIs older than the flag). | `summarized` |
 | `ITERION_CLAW_COMPACT_THRESHOLD_RATIO` | Context-window fraction (`0 < r ≤ 1`) at which the `claw` router compacts the conversation. Used only when the workflow does not set the field. | engine default |
 | `ITERION_CLAW_COMPACT_PRESERVE_RECENT` | Number of most-recent messages kept verbatim when `claw` compacts. Used only when the workflow does not set the field. | engine default |
+| `ITERION_PI_BIN` | Absolute path to the `pi` binary — e.g. a `bun --compile` single-file build on a host with no Node runtime. | `pi` on `PATH` |
+| `ITERION_PI_MODE` | Pins the `pi` transport. `print` forces the one-shot `--mode json` path; reserved for the richer `rpc` transport. | auto |
+| `ITERION_PI_AGENT_DIR` | Pins `PI_CODING_AGENT_DIR` for `pi`. Gives a reproducible pi config (and the only print-mode lever to disable pi's own retry loop), but **hides the operator's `~/.pi/agent/auth.json`** — and with it the OAuth provider breadth that motivates the backend. | unset (pi's own dir) |
+| `ITERION_PI_OFFLINE` | `0` re-enables pi's model-catalogue refresh inside a sandbox. Off by default there because a network egress policy would stall startup on the refresh. | off under sandbox |
+| `ITERION_PI_TRUST_PROJECT` | `1` trusts the **target repository's** `.pi/` extensions, skills and settings. pi executes project-local extensions as TypeScript inside the agent process, so this turns prompt injection into code execution — only for a repo you control. | refused |
 
 Backend selection and provider routing use `ITERION_DEFAULT_BACKEND`,
 `ITERION_BACKEND_PREFERENCE`, `ITERION_OPENAI_USE_OAUTH`, and

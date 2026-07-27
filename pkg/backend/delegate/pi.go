@@ -1,0 +1,442 @@
+package delegate
+
+import (
+	"context"
+	"crypto/rand"
+	"encoding/hex"
+	"fmt"
+	"os"
+	"path/filepath"
+	"strings"
+	"time"
+
+	"github.com/SocialGouv/iterion/pkg/backend/delegate/pisdk"
+	iterlog "github.com/SocialGouv/iterion/pkg/log"
+	"github.com/SocialGouv/iterion/pkg/secrets"
+)
+
+// BackendPi is the registration name for the pi coding-agent backend
+// (`backend: "pi"` in the DSL). pi (https://pi.dev,
+// github.com/earendil-works/pi) is a multi-provider agent harness whose
+// headless protocol is disjoint from claude-code's Session mode:
+//
+//	pi --mode json --provider <p> --model <id> [--thinking <level>] \
+//	   --append-system-prompt <file> [--session-id <id>] < prompt
+//
+// What pi brings that no other wired backend does is provider breadth —
+// ~36 first-class providers behind one agent loop, with its own credential
+// store and OAuth flows — plus a per-message cost figure the provider
+// computed, which makes budget enforcement quantitatively correct instead
+// of estimated.
+//
+// What it does NOT bring, and what workflows must not assume: pi's built-in
+// tool set (read, bash, edit, write, grep, find, ls) is a strict subset of
+// claude_code's. There is no todo, no subagent/Task, no web fetch/search,
+// no notebook, no background bash, and no MCP client at all — so board
+// capabilities, ask_user and workflow-declared `mcp_server` blocks do not
+// reach a pi node. Reach for pi to run a model claude_code cannot, not to
+// replace claude_code on a workflow that already works.
+//
+// Credentials are resolved by pi itself from ~/.pi/agent/auth.json and the
+// provider env vars; ResolveEnv only layers per-run BYOK keys on top and
+// strips the Anthropic OAuth forfait (see piResolveEnv). See ADR-065 for
+// the CLI-agent seam and ADR-085 for this backend.
+const BackendPi = "pi"
+
+// piProtocol describes pi's headless invocation.
+var piProtocol = CLIAgentProtocol{
+	Name:          BackendPi,
+	DefaultBinary: "pi",
+
+	// Prompt on stdin, with no flag. Three independent reasons, each
+	// sufficient on its own:
+	//
+	//  1. `-p <prompt>` silently DROPS a prompt starting with "-" or "@":
+	//     pi only consumes the next argv entry as the message when it
+	//     doesn't look like a flag or a file attachment. An iterion prompt
+	//     routinely starts with a markdown bullet.
+	//  2. A composed prompt can exceed MAX_ARG_STRLEN (128 KiB).
+	//  3. pi reads non-TTY stdin to EOF and merges it into the initial
+	//     message. Handing it a reader that EOFs immediately is what makes
+	//     that behaviour benign — a pipe left open would hang pi forever.
+	PromptViaStdin: true,
+	PromptFlag:     "",
+
+	// pi ships a native agentic system prompt assembled from the ACTIVE
+	// tool set, so `--system-prompt` (which replaces it) would strip the
+	// per-tool guidelines the agent expects — the same trap as
+	// claude_code's `--system-prompt` and grok's `--system-prompt-override`.
+	// Pairs with SystemPromptAppendToNative.
+	SystemPromptFlag:    "--append-system-prompt",
+	SystemPromptViaFile: true,
+
+	// Provider and model are emitted together by piExtraArgsFor: pi only
+	// strips a `provider/` prefix from the model pattern when it matches an
+	// explicit --provider, so emitting the halves independently can yield an
+	// unresolvable pattern.
+	ModelFlag: "",
+	MapModel:  nil,
+
+	MapEffort:       piMapEffort,
+	ExtraArgsFor:    piExtraArgsFor,
+	ParseOutputRich: parsePiOutput,
+	ResolveEnv:      piResolveEnv,
+
+	ExtraArgs: []string{
+		"--mode", "json",
+		// Refuse the target repository's own .pi/ resources. pi executes
+		// project-local extensions as TypeScript inside the agent process —
+		// the process holding the run's credentials — so trusting a
+		// checked-out repo turns prompt injection into code execution.
+		// Opt back in per node with ITERION_PI_TRUST_PROJECT=1.
+		"--no-approve",
+		// iterion owns prompt composition; pi's own template/theme
+		// discovery would make a run's prompt depend on operator state.
+		"--no-prompt-templates", "--no-themes",
+	},
+}
+
+// NewPiBackend constructs the pi backend. command overrides the default `pi`
+// binary (a pinned build or wrapper path); empty uses the binary on PATH.
+func NewPiBackend(logger *iterlog.Logger, command string) *PiBackend {
+	return &PiBackend{
+		print: &CLIAgentBackend{
+			Protocol: piProtocol,
+			Command:  command,
+			Logger:   logger,
+		},
+		Logger: logger,
+	}
+}
+
+// PiBackend drives pi. It wraps the print-mode CLIAgentBackend with the
+// checks that cannot live in a pure-data CLIAgentProtocol, and is the seam
+// where the richer `--mode rpc` transport is selected once it lands: print
+// vs RPC is a transport, not a contract, so both share this backend name and
+// every mapping below. ITERION_PI_MODE pins one for an operator who needs to
+// roll back.
+type PiBackend struct {
+	print *CLIAgentBackend
+	// rpc drives `pi --mode rpc`; nil until that transport ships.
+	rpc    Backend
+	Logger *iterlog.Logger
+}
+
+// Execute runs the task through the selected pi transport.
+func (b *PiBackend) Execute(ctx context.Context, task Task) (Result, error) {
+	if err := piGuardForfait(ctx, task); err != nil {
+		return Result{BackendName: BackendPi, ExitCode: -1}, err
+	}
+	if b.rpc != nil && strings.TrimSpace(os.Getenv("ITERION_PI_MODE")) != "print" {
+		return b.rpc.Execute(ctx, task)
+	}
+	return b.print.Execute(ctx, task)
+}
+
+// piGuardForfait refuses to drive an Anthropic call from pi with the stored
+// OAuth forfait.
+//
+// Anthropic's Consumer Terms scope the Claude Pro/Max subscription to the
+// official Claude Code CLI surface. The claude_code and codex delegates are
+// exempt because they spawn the upstream CLI, which remains the authorised
+// consumer — pi is not that CLI, it speaks the Messages API directly, so the
+// exemption does not transfer. The refusal is deliberately conservative: a
+// later ruling that this is permitted would relax the guard, whereas the
+// reverse would be a retrofit after the fact.
+//
+// A user's own `pi` login in ~/.pi/agent/auth.json is their relationship
+// with the vendor, not iterion's: nothing is read or injected here, and
+// piResolveEnv only strips what iterion would otherwise have supplied.
+func piGuardForfait(ctx context.Context, task Task) error {
+	provider, _ := piResolveModel(task.Model, task.ProviderHint)
+	if provider != "anthropic" {
+		return nil
+	}
+	if err := secrets.GuardThirdPartyOAuth(ctx, secrets.ProviderAnthropic, secrets.OAuthKindClaudeCode); err != nil {
+		return fmt.Errorf("pi backend: %w", err)
+	}
+	return nil
+}
+
+// piProviderPrefixes maps an iterion routing prefix onto pi's provider id.
+// Prefixes absent from the table pass through verbatim: pi registers ~36
+// providers under their common names, so identity is the right default and
+// an unknown one is pi's error to report, not ours to guess at.
+var piProviderPrefixes = map[string]string{
+	"google":   "google",
+	"gemini":   "google",
+	"vertex":   "google-vertex",
+	"bedrock":  "amazon-bedrock",
+	"foundry":  "azure-openai-responses",
+	"azure":    "azure-openai-responses",
+	"copilot":  "github-copilot",
+	"moonshot": "moonshotai",
+	"kimi":     "moonshotai",
+}
+
+// piResolveModel splits an iterion model spec into pi's --provider/--model
+// pair. A bare id yields an empty provider, letting pi resolve it against
+// its own catalogue.
+//
+// hint (the node's `provider:` chain entry) OVERRIDES the spec's own prefix.
+// That is not a stylistic choice — it is what makes z.ai work. iterion
+// expresses z.ai as `model: "anthropic/glm-5.2"` + `provider: "zai"`,
+// because z.ai serves an Anthropic-compatible surface behind
+// ANTHROPIC_BASE_URL. pi instead has a first-class `zai` provider, so the
+// correct invocation is `--provider zai --model glm-5.2`; passing
+// `anthropic/glm-5.2` through would fuzzy-match Anthropic's own catalogue
+// and silently run a different model.
+func piResolveModel(model, hint string) (provider, modelID string) {
+	model = strings.TrimSpace(model)
+	hint = strings.TrimSpace(strings.ToLower(hint))
+
+	modelID = model
+	if idx := strings.Index(model, "/"); idx > 0 {
+		prefix := strings.ToLower(model[:idx])
+		rest := strings.TrimSpace(model[idx+1:])
+		if rest != "" {
+			provider = piMapProvider(prefix)
+			modelID = rest
+		}
+	}
+	if hint != "" {
+		provider = piMapProvider(hint)
+	}
+	return provider, modelID
+}
+
+func piMapProvider(name string) string {
+	if mapped, ok := piProviderPrefixes[name]; ok {
+		return mapped
+	}
+	return name
+}
+
+// piMapEffort maps iterion's reasoning_effort dial onto pi's --thinking
+// flag. pi accepts off|minimal|low|medium|high|xhigh|max, a strict superset
+// of iterion's levels, so every level passes through unchanged.
+//
+// `ultracode` is remapped to `xhigh` defensively: the runtime already does
+// this on the wire, and pi has no subagent tool, so ultracode's
+// orchestration half is inexpressible here regardless (see docs/ultracode.md).
+func piMapEffort(effort string) []string {
+	effort = strings.TrimSpace(strings.ToLower(effort))
+	switch effort {
+	case "":
+		return nil
+	case "ultracode":
+		effort = "xhigh"
+	}
+	return []string{"--thinking", effort}
+}
+
+// piExtraArgsFor emits the per-task half of pi's argv.
+func piExtraArgsFor(task Task) []string {
+	var args []string
+
+	if provider, modelID := piResolveModel(task.Model, task.ProviderHint); modelID != "" {
+		if provider != "" {
+			args = append(args, "--provider", provider)
+		}
+		args = append(args, "--model", modelID)
+	}
+
+	// Sessions. pi's --session-id addresses an exact project session and
+	// creates it when absent, so a fresh id is generated up front: the
+	// Result then carries a session id even for a run that produced no
+	// parsable output.
+	switch {
+	case task.SessionID != "" && task.ForkSession:
+		args = append(args, "--fork", task.SessionID)
+	case task.SessionID != "":
+		args = append(args, "--session-id", task.SessionID)
+	default:
+		args = append(args, "--session-id", piNewSessionID())
+	}
+	args = append(args, "--session-dir", piSessionDir(task))
+
+	// Skills. iterion mirrors bundle/plugin/library skills into the
+	// workspace's .claude/skills/, which is not one of pi's own lookup
+	// roots — but --skill takes an explicit path, and CLI-supplied skill
+	// paths bypass the project-trust gate that --no-approve closes.
+	if len(task.SkillHints) > 0 && task.WorkDir != "" {
+		args = append(args, "--skill", filepath.Join(task.WorkDir, ".claude", "skills"))
+	}
+
+	// The one tool gate pi expresses cleanly. iterion's `tools:` names do
+	// not map onto pi's built-ins, and a partial mapping would silently
+	// disable `bash` for any node listing iterion names — so the general
+	// case stays advisory (ADR-065), and only readonly is enforced.
+	if task.Readonly {
+		args = append(args, "--tools", "read,grep,find,ls")
+	}
+
+	// Inside the sandbox the bundled model catalogue is authoritative:
+	// a network egress policy would otherwise stall startup on pi's
+	// catalogue refresh.
+	if task.Sandbox != nil && strings.TrimSpace(os.Getenv("ITERION_PI_OFFLINE")) != "0" {
+		args = append(args, "--offline")
+	}
+
+	if strings.TrimSpace(os.Getenv("ITERION_PI_TRUST_PROJECT")) == "1" {
+		args = append(args, "--approve")
+	}
+
+	return args
+}
+
+// piSessionDir picks where pi keeps this run's session files. Never the
+// operator's ~/.pi/agent/sessions: run sessions must be per-run and
+// GC-able, and concurrent nodes must not collide. Sandboxed runs need a
+// path visible inside the container, which means workspace-relative.
+func piSessionDir(task Task) string {
+	if task.Sandbox != nil && task.WorkDir != "" {
+		return filepath.Join(task.WorkDir, ".iterion", "pi", "sessions")
+	}
+	if task.StoreDir != "" {
+		return filepath.Join(task.StoreDir, "pi", "sessions")
+	}
+	if task.WorkDir != "" {
+		return filepath.Join(task.WorkDir, ".iterion", "pi", "sessions")
+	}
+	return filepath.Join(os.TempDir(), "iterion-pi-sessions")
+}
+
+// piNewSessionID returns a random session identifier for a fresh session.
+func piNewSessionID() string {
+	var buf [16]byte
+	if _, err := rand.Read(buf[:]); err != nil {
+		// crypto/rand failing is not recoverable here, and an empty id
+		// would make pi allocate its own — which is a correct fallback.
+		return ""
+	}
+	return "iterion-" + hex.EncodeToString(buf[:])
+}
+
+// piEnvKeys maps a pi provider id onto the API-key environment variable pi
+// reads for it. Only providers iterion can supply a BYOK credential for
+// appear; everything else pi resolves from its own credential store.
+var piEnvKeys = map[secrets.Provider]string{
+	secrets.ProviderAnthropic:  "ANTHROPIC_API_KEY",
+	secrets.ProviderOpenAI:     "OPENAI_API_KEY",
+	secrets.ProviderXAI:        "XAI_API_KEY",
+	secrets.ProviderZAI:        "ZAI_API_KEY",
+	secrets.ProviderOpenRouter: "OPENROUTER_API_KEY",
+}
+
+// piResolveEnv layers per-run credential overrides onto the inherited
+// environment.
+//
+// It also UNSETS the Anthropic OAuth forfait variables unconditionally.
+// piGuardForfait already refuses an Anthropic node backed only by the
+// forfait, but the strip is what makes that guarantee hold for the whole
+// process: pi would otherwise pick the token up from an inherited
+// environment on any provider path. An empty value is an unset on both the
+// host and the sandbox ExecOpts path.
+func piResolveEnv(ctx context.Context) map[string]string {
+	env := map[string]string{
+		"ANTHROPIC_OAUTH_TOKEN":   "",
+		"CLAUDE_CODE_OAUTH_TOKEN": "",
+		"CLAUDE_CONFIG_DIR":       "",
+	}
+
+	if creds, ok := secrets.CredentialsFromContext(ctx); ok {
+		for provider, envKey := range piEnvKeys {
+			if key := creds.APIKey(provider); key != "" {
+				env[envKey] = key
+			}
+		}
+	}
+
+	// Pinning pi's agent dir hides the operator's own auth.json — the OAuth
+	// credential breadth that motivates this backend — so it is opt-in, for
+	// operators who want a fully reproducible pi configuration (which is
+	// also the only print-mode lever to disable pi's nested auto-retry).
+	if dir := strings.TrimSpace(os.Getenv("ITERION_PI_AGENT_DIR")); dir != "" {
+		env["PI_CODING_AGENT_DIR"] = dir
+	}
+
+	return env
+}
+
+// parsePiOutput extracts the assistant's answer and accounting from a
+// `--mode json` stream.
+//
+// The failure path is the subtle half: pi's json mode exits 0 even when the
+// turn failed (only its text mode maps an error to exit 1), so the exit code
+// carries no signal and the stop reason is the only truth. Errors are
+// re-typed with the shared, backend-agnostic classifiers so the executor's
+// retry policy treats a pi rate limit exactly like a claude_code one.
+func parsePiOutput(stdout string) CLIAgentParse {
+	stream := pisdk.DecodeStreamString(stdout)
+
+	var parse CLIAgentParse
+	if stream.Header != nil {
+		parse.SessionID = stream.Header.ID
+	}
+
+	messages := stream.AssistantMessages()
+	if len(messages) == 0 {
+		// Nothing recognisable — hand back the raw stream so the shared
+		// schema-aware fallback can still try to recover a JSON object.
+		parse.Text = stdout
+		return parse
+	}
+
+	for _, m := range messages {
+		if m.Usage == nil {
+			continue
+		}
+		parse.InputTokens += m.Usage.Input
+		parse.OutputTokens += m.Usage.Output
+		parse.ThinkingTokens += m.Usage.ReasoningTokens()
+		parse.CostUSD += m.Usage.Cost.Total
+		if ctxTokens := m.Usage.ContextTokens(); ctxTokens > parse.PeakInputTokens {
+			parse.PeakInputTokens = ctxTokens
+		}
+	}
+
+	last := messages[len(messages)-1]
+	parse.Text = last.Text()
+	parse.EffectiveModel = last.EffectiveModel()
+	parse.Err = piClassifyFailure(last)
+
+	return parse
+}
+
+// piClassifyFailure re-types a failed turn onto iterion's error taxonomy, so
+// the executor retries, falls back, or fails fast the same way it would for
+// any other backend. Returns nil for a turn that ended normally.
+func piClassifyFailure(m pisdk.Message) error {
+	if !m.StopReason.Failed() {
+		return nil
+	}
+	if m.StopReason == pisdk.StopAborted {
+		return &ErrTransient{
+			Provider: BackendPi,
+			Reason:   "aborted",
+			Detail:   m.ErrorMessage,
+		}
+	}
+
+	msg := m.ErrorMessage
+	if msg == "" {
+		msg = "pi reported a failed turn with no error message"
+	}
+	if isRateLimitMessage(msg) {
+		kind, resetAt := classifyRateLimit(msg, time.Now())
+		return &ErrRateLimited{
+			Provider: BackendPi,
+			Kind:     kind,
+			ResetAt:  resetAt,
+			Detail:   msg,
+		}
+	}
+	if MatchesNetworkSignature(msg) || isTransientAPIErrorResult(msg) {
+		return &ErrTransient{Provider: BackendPi, Reason: "upstream", Detail: msg}
+	}
+	// Auth failures and everything else are deterministic: surfacing them
+	// as a plain error keeps the executor from burning retries on a
+	// misconfiguration.
+	return fmt.Errorf("pi: %s", msg)
+}

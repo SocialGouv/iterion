@@ -12,11 +12,14 @@ export const BACKEND_OPTIONS: SelectOption[] = [
   { value: "", label: "(unset · resolves to claw)" },
   { value: "claw", label: "claw" },
   { value: "claude_code", label: "claude_code" },
+  { value: "pi", label: "pi" },
+  { value: "kimi", label: "kimi" },
+  { value: "grok", label: "grok" },
   { value: "codex", label: "codex" },
 ];
 
 export const BACKEND_HELP =
-  "Execution backend. Empty resolves to the workflow default (claw if not set). claude_code/codex shell out to the corresponding CLI; claw runs in-process.";
+  "Execution backend. Empty resolves to the workflow default (claw if not set). claw runs in-process; every other value shells out to that agent CLI. Pick pi/kimi/grok to reach a model claude_code cannot — they run their own tool set, so board capabilities, ask_user and mcp_server blocks do not apply to those nodes.";
 
 export const AWAIT_OPTIONS: SelectOption[] = [
   { value: "none", label: "none" },

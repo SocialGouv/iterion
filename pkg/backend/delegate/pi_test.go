@@ -1,0 +1,533 @@
+package delegate
+
+import (
+	"context"
+	"encoding/json"
+	"errors"
+	"os"
+	"path/filepath"
+	"reflect"
+	"runtime"
+	"slices"
+	"strings"
+	"testing"
+
+	"github.com/SocialGouv/iterion/pkg/secrets"
+)
+
+func TestPiResolveModel(t *testing.T) {
+	cases := []struct {
+		name         string
+		model, hint  string
+		wantProvider string
+		wantModel    string
+	}{
+		{name: "bare id lets pi resolve", model: "gpt-5.5", wantProvider: "", wantModel: "gpt-5.5"},
+		{name: "known prefix passes through", model: "anthropic/claude-opus-4-8", wantProvider: "anthropic", wantModel: "claude-opus-4-8"},
+		{name: "gemini alias", model: "gemini/gemini-3-pro", wantProvider: "google", wantModel: "gemini-3-pro"},
+		{name: "vertex alias", model: "vertex/gemini-3-pro", wantProvider: "google-vertex", wantModel: "gemini-3-pro"},
+		{name: "bedrock alias", model: "bedrock/claude-sonnet-4-6", wantProvider: "amazon-bedrock", wantModel: "claude-sonnet-4-6"},
+		{name: "azure alias", model: "azure/gpt-5.5", wantProvider: "azure-openai-responses", wantModel: "gpt-5.5"},
+		{name: "kimi alias", model: "kimi/kimi-k2", wantProvider: "moonshotai", wantModel: "kimi-k2"},
+		{name: "unknown prefix passes through verbatim", model: "cerebras/llama-4", wantProvider: "cerebras", wantModel: "llama-4"},
+		{name: "hint alone", model: "gpt-5.5", hint: "groq", wantProvider: "groq", wantModel: "gpt-5.5"},
+
+		// The z.ai landmine: iterion routes z.ai through the Anthropic-
+		// compatible surface, so the SPEC says anthropic while the hint says
+		// zai. pi has a first-class zai provider — taking the spec's prefix
+		// would fuzzy-match Anthropic's own catalogue and silently run a
+		// different model.
+		{name: "hint overrides spec prefix (z.ai)", model: "anthropic/glm-5.2", hint: "zai", wantProvider: "zai", wantModel: "glm-5.2"},
+
+		{name: "trailing slash is not a prefix", model: "weird/", wantProvider: "", wantModel: "weird/"},
+		{name: "empty", model: "", wantProvider: "", wantModel: ""},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			gotProvider, gotModel := piResolveModel(tc.model, tc.hint)
+			if gotProvider != tc.wantProvider || gotModel != tc.wantModel {
+				t.Errorf("piResolveModel(%q,%q) = (%q,%q), want (%q,%q)",
+					tc.model, tc.hint, gotProvider, gotModel, tc.wantProvider, tc.wantModel)
+			}
+		})
+	}
+}
+
+func TestPiMapEffort(t *testing.T) {
+	cases := map[string][]string{
+		"":          nil,
+		"low":       {"--thinking", "low"},
+		"medium":    {"--thinking", "medium"},
+		"high":      {"--thinking", "high"},
+		"xhigh":     {"--thinking", "xhigh"},
+		"max":       {"--thinking", "max"},
+		"ultracode": {"--thinking", "xhigh"}, // pi has no subagent tool
+		"  HIGH  ":  {"--thinking", "high"},
+	}
+	for in, want := range cases {
+		if got := piMapEffort(in); !reflect.DeepEqual(got, want) {
+			t.Errorf("piMapEffort(%q) = %v, want %v", in, got, want)
+		}
+	}
+}
+
+func TestPiExtraArgsFor(t *testing.T) {
+	t.Run("provider and model emitted together", func(t *testing.T) {
+		args := piExtraArgsFor(Task{Model: "anthropic/claude-opus-4-8"})
+		if i := slices.Index(args, "--provider"); i < 0 || args[i+1] != "anthropic" {
+			t.Fatalf("missing --provider anthropic in %v", args)
+		}
+		if i := slices.Index(args, "--model"); i < 0 || args[i+1] != "claude-opus-4-8" {
+			t.Fatalf("missing --model claude-opus-4-8 in %v", args)
+		}
+	})
+
+	t.Run("bare model omits provider", func(t *testing.T) {
+		args := piExtraArgsFor(Task{Model: "gpt-5.5"})
+		if slices.Contains(args, "--provider") {
+			t.Fatalf("unexpected --provider for a bare model: %v", args)
+		}
+	})
+
+	t.Run("fresh session id when task carries none", func(t *testing.T) {
+		args := piExtraArgsFor(Task{Model: "gpt-5.5"})
+		i := slices.Index(args, "--session-id")
+		if i < 0 {
+			t.Fatalf("missing --session-id in %v", args)
+		}
+		if !strings.HasPrefix(args[i+1], "iterion-") {
+			t.Errorf("session id = %q, want an iterion- prefixed fresh id", args[i+1])
+		}
+	})
+
+	t.Run("resume uses session-id, fork uses fork", func(t *testing.T) {
+		resume := piExtraArgsFor(Task{SessionID: "s1"})
+		if i := slices.Index(resume, "--session-id"); i < 0 || resume[i+1] != "s1" {
+			t.Errorf("resume args = %v, want --session-id s1", resume)
+		}
+		fork := piExtraArgsFor(Task{SessionID: "s1", ForkSession: true})
+		if i := slices.Index(fork, "--fork"); i < 0 || fork[i+1] != "s1" {
+			t.Errorf("fork args = %v, want --fork s1", fork)
+		}
+		if slices.Contains(fork, "--session-id") {
+			t.Errorf("fork must not also pin --session-id: %v", fork)
+		}
+	})
+
+	t.Run("session dir never the operator's pi home", func(t *testing.T) {
+		args := piExtraArgsFor(Task{StoreDir: "/store"})
+		i := slices.Index(args, "--session-dir")
+		if i < 0 {
+			t.Fatalf("missing --session-dir in %v", args)
+		}
+		if got := args[i+1]; got != filepath.Join("/store", "pi", "sessions") {
+			t.Errorf("session dir = %q, want it under the run store", got)
+		}
+	})
+
+	t.Run("skills mirrored dir passed when the node has skills", func(t *testing.T) {
+		none := piExtraArgsFor(Task{WorkDir: "/w"})
+		if slices.Contains(none, "--skill") {
+			t.Errorf("unexpected --skill with no skill hints: %v", none)
+		}
+		some := piExtraArgsFor(Task{WorkDir: "/w", SkillHints: []SkillHint{{Name: "s"}}})
+		i := slices.Index(some, "--skill")
+		if i < 0 || some[i+1] != filepath.Join("/w", ".claude", "skills") {
+			t.Errorf("args = %v, want --skill pointing at the mirrored skills dir", some)
+		}
+	})
+
+	t.Run("readonly is the only enforced tool gate", func(t *testing.T) {
+		rw := piExtraArgsFor(Task{Model: "m"})
+		if slices.Contains(rw, "--tools") {
+			t.Errorf("unexpected --tools on a writable node: %v", rw)
+		}
+		ro := piExtraArgsFor(Task{Model: "m", Readonly: true})
+		i := slices.Index(ro, "--tools")
+		if i < 0 || strings.Contains(ro[i+1], "bash") || strings.Contains(ro[i+1], "write") {
+			t.Errorf("args = %v, want a read-only tool set", ro)
+		}
+	})
+
+	t.Run("offline only under sandbox, with an escape hatch", func(t *testing.T) {
+		if slices.Contains(piExtraArgsFor(Task{Model: "m"}), "--offline") {
+			t.Error("--offline must not be forced on a host run")
+		}
+		sandboxed := Task{Model: "m", Sandbox: &recordingRun{}}
+		if !slices.Contains(piExtraArgsFor(sandboxed), "--offline") {
+			t.Error("--offline expected under sandbox (catalogue refresh would stall on an egress policy)")
+		}
+		t.Setenv("ITERION_PI_OFFLINE", "0")
+		if slices.Contains(piExtraArgsFor(sandboxed), "--offline") {
+			t.Error("ITERION_PI_OFFLINE=0 must disable --offline")
+		}
+	})
+
+	t.Run("project trust is opt-in", func(t *testing.T) {
+		if slices.Contains(piExtraArgsFor(Task{}), "--approve") {
+			t.Error("target-repo .pi/ resources must not be trusted by default")
+		}
+		t.Setenv("ITERION_PI_TRUST_PROJECT", "1")
+		if !slices.Contains(piExtraArgsFor(Task{}), "--approve") {
+			t.Error("ITERION_PI_TRUST_PROJECT=1 must opt into project trust")
+		}
+	})
+}
+
+// TestPiProtocolNeverPassesPromptAsArg is the regression guard for pi's
+// argv parser silently dropping a message that starts with "-" or "@".
+func TestPiProtocolNeverPassesPromptAsArg(t *testing.T) {
+	b := &CLIAgentBackend{Protocol: piProtocol, Logger: testLogger()}
+	prompt := "- Fix the failing test\n- Then report"
+	args, stdin := b.buildArgs(piProtocol, Task{UserPrompt: prompt}, prompt, "")
+
+	if slices.Contains(args, "-p") || slices.Contains(args, "--prompt") {
+		t.Fatalf("prompt must never travel as an argv value: %v", args)
+	}
+	if slices.Contains(args, prompt) {
+		t.Fatalf("prompt leaked into argv: %v", args)
+	}
+	if stdin != prompt {
+		t.Fatalf("stdin = %q, want the prompt verbatim", stdin)
+	}
+}
+
+func TestPiResolveEnv(t *testing.T) {
+	t.Run("strips the anthropic oauth forfait", func(t *testing.T) {
+		env := piResolveEnv(context.Background())
+		for _, key := range []string{"ANTHROPIC_OAUTH_TOKEN", "CLAUDE_CODE_OAUTH_TOKEN", "CLAUDE_CONFIG_DIR"} {
+			v, ok := env[key]
+			if !ok {
+				t.Errorf("%s absent from the override map — an inherited value would reach pi", key)
+			}
+			if v != "" {
+				t.Errorf("%s = %q, want empty (an unset)", key, v)
+			}
+		}
+	})
+
+	t.Run("injects per-run BYOK keys", func(t *testing.T) {
+		ctx := secrets.WithCredentials(context.Background(), secrets.Credentials{
+			APIKeys: map[secrets.Provider]string{
+				secrets.ProviderOpenAI: "sk-openai",
+				secrets.ProviderZAI:    "zai-token",
+			},
+		})
+		env := piResolveEnv(ctx)
+		if env["OPENAI_API_KEY"] != "sk-openai" {
+			t.Errorf("OPENAI_API_KEY = %q, want sk-openai", env["OPENAI_API_KEY"])
+		}
+		if env["ZAI_API_KEY"] != "zai-token" {
+			t.Errorf("ZAI_API_KEY = %q, want zai-token", env["ZAI_API_KEY"])
+		}
+	})
+
+	t.Run("agent dir pinning is opt-in", func(t *testing.T) {
+		if _, ok := piResolveEnv(context.Background())["PI_CODING_AGENT_DIR"]; ok {
+			t.Error("pinning the agent dir by default would hide the operator's own auth.json")
+		}
+		t.Setenv("ITERION_PI_AGENT_DIR", "/pinned")
+		if got := piResolveEnv(context.Background())["PI_CODING_AGENT_DIR"]; got != "/pinned" {
+			t.Errorf("PI_CODING_AGENT_DIR = %q, want /pinned", got)
+		}
+	})
+}
+
+func TestPiGuardForfait(t *testing.T) {
+	forfaitOnly := secrets.WithCredentials(context.Background(), secrets.Credentials{
+		OAuthCredentialFiles: map[string]string{
+			string(secrets.OAuthKindClaudeCode): "/tmp/iter-oauth-fake",
+		},
+	})
+
+	t.Run("anthropic on the forfait is refused", func(t *testing.T) {
+		if err := piGuardForfait(forfaitOnly, Task{Model: "anthropic/claude-opus-4-8"}); err == nil {
+			t.Fatal("expected a refusal: the Consumer Terms scope the forfait to the official CLI")
+		}
+	})
+
+	t.Run("anthropic with an api key is allowed", func(t *testing.T) {
+		withKey := secrets.WithCredentials(context.Background(), secrets.Credentials{
+			APIKeys: map[secrets.Provider]string{secrets.ProviderAnthropic: "sk-ant-key"},
+			OAuthCredentialFiles: map[string]string{
+				string(secrets.OAuthKindClaudeCode): "/tmp/iter-oauth-fake",
+			},
+		})
+		if err := piGuardForfait(withKey, Task{Model: "anthropic/claude-opus-4-8"}); err != nil {
+			t.Fatalf("unexpected refusal with a metered key: %v", err)
+		}
+	})
+
+	t.Run("other providers are unaffected", func(t *testing.T) {
+		if err := piGuardForfait(forfaitOnly, Task{Model: "openai/gpt-5.5"}); err != nil {
+			t.Fatalf("unexpected refusal on a non-anthropic model: %v", err)
+		}
+	})
+
+	t.Run("z.ai routed through the anthropic surface is not the forfait", func(t *testing.T) {
+		if err := piGuardForfait(forfaitOnly, Task{Model: "anthropic/glm-5.2", ProviderHint: "zai"}); err != nil {
+			t.Fatalf("z.ai must not be caught by the Anthropic forfait guard: %v", err)
+		}
+	})
+}
+
+const piHappyStream = `{"type":"session","version":3,"id":"sess-1","timestamp":"2026-07-27T10:00:00Z","cwd":"/w"}
+{"type":"agent_start"}
+{"type":"message_end","message":{"role":"assistant","model":"gpt-5.5","responseId":"r1","timestamp":1,"content":[{"type":"text","text":"partial"}],"stopReason":"toolUse","usage":{"input":100,"output":10,"cacheRead":5,"cacheWrite":0,"totalTokens":110,"cost":{"input":0.1,"output":0.02,"cacheRead":0,"cacheWrite":0,"total":0.12}}}}
+{"type":"agent_end","willRetry":false,"messages":[{"role":"user","content":"hi","timestamp":0},{"role":"assistant","model":"gpt-5.5","responseModel":"gpt-5.5-2026","responseId":"r1","timestamp":1,"content":[{"type":"text","text":"partial"}],"stopReason":"toolUse","usage":{"input":100,"output":10,"cacheRead":5,"cacheWrite":0,"totalTokens":110,"cost":{"input":0.1,"output":0.02,"cacheRead":0,"cacheWrite":0,"total":0.12}}},{"role":"assistant","model":"gpt-5.5","responseId":"r2","timestamp":2,"content":[{"type":"text","text":"{\"answer\":\"42\"}"}],"stopReason":"stop","usage":{"input":200,"output":30,"cacheRead":50,"cacheWrite":10,"reasoning":12,"totalTokens":230,"cost":{"input":0.2,"output":0.06,"cacheRead":0,"cacheWrite":0,"total":0.26}}}]}
+{"type":"agent_settled"}`
+
+func TestParsePiOutput(t *testing.T) {
+	t.Run("happy path", func(t *testing.T) {
+		got := parsePiOutput(piHappyStream)
+		if got.Err != nil {
+			t.Fatalf("unexpected Err: %v", got.Err)
+		}
+		if got.SessionID != "sess-1" {
+			t.Errorf("SessionID = %q, want sess-1", got.SessionID)
+		}
+		if got.Text != `{"answer":"42"}` {
+			t.Errorf("Text = %q, want the LAST assistant message", got.Text)
+		}
+		if got.InputTokens != 300 || got.OutputTokens != 40 {
+			t.Errorf("tokens = (%d,%d), want (300,40)", got.InputTokens, got.OutputTokens)
+		}
+		if got.ThinkingTokens != 12 {
+			t.Errorf("ThinkingTokens = %d, want 12", got.ThinkingTokens)
+		}
+		// Reasoning is a subset of output — it must not inflate the total.
+		if got.OutputTokens < got.ThinkingTokens {
+			t.Errorf("thinking (%d) must be a subset of output (%d)", got.ThinkingTokens, got.OutputTokens)
+		}
+		if got.CostUSD < 0.379 || got.CostUSD > 0.381 {
+			t.Errorf("CostUSD = %v, want ~0.38", got.CostUSD)
+		}
+		// input+cacheRead+cacheWrite of the heaviest message: 200+50+10.
+		if got.PeakInputTokens != 260 {
+			t.Errorf("PeakInputTokens = %d, want 260", got.PeakInputTokens)
+		}
+		if got.EffectiveModel != "gpt-5.5" {
+			t.Errorf("EffectiveModel = %q, want gpt-5.5 (the last message reports no override)", got.EffectiveModel)
+		}
+	})
+
+	// The regression this fixture exists for: message_update re-emits the
+	// SAME message on every streaming delta. Accumulating it would multiply
+	// the bill by the delta count.
+	t.Run("message_update deltas never double-count", func(t *testing.T) {
+		stream := `{"type":"message_update","message":{"role":"assistant","responseId":"r1","content":[{"type":"text","text":"a"}],"usage":{"input":100,"output":5,"totalTokens":105,"cost":{"total":0.1}}}}
+{"type":"message_update","message":{"role":"assistant","responseId":"r1","content":[{"type":"text","text":"ab"}],"usage":{"input":100,"output":5,"totalTokens":105,"cost":{"total":0.1}}}}
+{"type":"message_end","message":{"role":"assistant","responseId":"r1","content":[{"type":"text","text":"ab"}],"stopReason":"stop","usage":{"input":100,"output":5,"totalTokens":105,"cost":{"total":0.1}}}}`
+		got := parsePiOutput(stream)
+		if got.InputTokens != 100 || got.OutputTokens != 5 {
+			t.Errorf("tokens = (%d,%d), want (100,5) counted exactly once", got.InputTokens, got.OutputTokens)
+		}
+		if got.CostUSD < 0.099 || got.CostUSD > 0.101 {
+			t.Errorf("CostUSD = %v, want 0.1 counted exactly once", got.CostUSD)
+		}
+	})
+
+	t.Run("a discarded attempt is ignored in favour of the real one", func(t *testing.T) {
+		stream := `{"type":"agent_end","willRetry":true,"messages":[{"role":"assistant","responseId":"bad","content":[{"type":"text","text":"boom"}],"stopReason":"error","errorMessage":"overloaded","usage":{"input":9,"output":9,"totalTokens":18,"cost":{"total":9}}}]}
+{"type":"agent_end","willRetry":false,"messages":[{"role":"assistant","responseId":"good","content":[{"type":"text","text":"ok"}],"stopReason":"stop","usage":{"input":1,"output":1,"totalTokens":2,"cost":{"total":0.01}}}]}`
+		got := parsePiOutput(stream)
+		if got.Err != nil {
+			t.Fatalf("unexpected Err from a retried-then-succeeded run: %v", got.Err)
+		}
+		if got.Text != "ok" || got.InputTokens != 1 {
+			t.Errorf("got %+v, want only the surviving transcript", got)
+		}
+	})
+
+	// pi's --mode json exits 0 even on a failed turn, so stopReason is the
+	// only failure signal there is.
+	t.Run("failure typing", func(t *testing.T) {
+		cases := []struct {
+			name, stopReason, errMsg string
+			check                    func(*testing.T, error)
+		}{
+			{
+				name: "rate limit", stopReason: "error", errMsg: "You've hit your usage limit. Resets 3pm.",
+				check: func(t *testing.T, err error) {
+					var rl *ErrRateLimited
+					if !errors.As(err, &rl) {
+						t.Fatalf("err = %v (%T), want *ErrRateLimited", err, err)
+					}
+					if rl.Provider != BackendPi {
+						t.Errorf("Provider = %q, want %q", rl.Provider, BackendPi)
+					}
+				},
+			},
+			{
+				name: "network", stopReason: "error", errMsg: "connection reset by peer",
+				check: func(t *testing.T, err error) {
+					var tr *ErrTransient
+					if !errors.As(err, &tr) {
+						t.Fatalf("err = %v (%T), want *ErrTransient", err, err)
+					}
+				},
+			},
+			{
+				name: "aborted", stopReason: "aborted",
+				check: func(t *testing.T, err error) {
+					var tr *ErrTransient
+					if !errors.As(err, &tr) {
+						t.Fatalf("err = %v (%T), want *ErrTransient", err, err)
+					}
+				},
+			},
+			{
+				name: "auth is deterministic, not retryable", stopReason: "error", errMsg: "invalid x-api-key",
+				check: func(t *testing.T, err error) {
+					var tr *ErrTransient
+					var rl *ErrRateLimited
+					if errors.As(err, &tr) || errors.As(err, &rl) {
+						t.Fatalf("err = %v, want a plain error so retries are not burnt", err)
+					}
+					if err == nil {
+						t.Fatal("expected an error")
+					}
+				},
+			},
+		}
+		for _, tc := range cases {
+			t.Run(tc.name, func(t *testing.T) {
+				msg := map[string]any{
+					"role": "assistant", "responseId": "r", "stopReason": tc.stopReason,
+					"content": []any{map[string]any{"type": "text", "text": "partial"}},
+				}
+				if tc.errMsg != "" {
+					msg["errorMessage"] = tc.errMsg
+				}
+				line, _ := json.Marshal(map[string]any{
+					"type": "agent_end", "willRetry": false, "messages": []any{msg},
+				})
+				got := parsePiOutput(string(line))
+				tc.check(t, got.Err)
+			})
+		}
+	})
+
+	t.Run("unrecognisable output falls back to raw stdout", func(t *testing.T) {
+		got := parsePiOutput("pi: command not found\n")
+		if got.Text != "pi: command not found\n" {
+			t.Errorf("Text = %q, want the raw stream so the schema fallback can still try", got.Text)
+		}
+	})
+
+	t.Run("empty output", func(t *testing.T) {
+		if got := parsePiOutput(""); got.Text != "" || got.Err != nil {
+			t.Errorf("got %+v, want a zero parse", got)
+		}
+	})
+}
+
+func TestDefaultRegistryIncludesPi(t *testing.T) {
+	b, err := DefaultRegistry(testLogger()).Resolve(BackendPi)
+	if err != nil {
+		t.Fatalf("Resolve(%q): %v", BackendPi, err)
+	}
+	if _, ok := b.(*PiBackend); !ok {
+		t.Fatalf("Resolve(%q) = %T, want *PiBackend", BackendPi, b)
+	}
+}
+
+func TestPiSystemPromptMode(t *testing.T) {
+	// pi has its own agentic prompt, AGENTS.md/CLAUDE.md loading and skills;
+	// replacing it would strip the per-tool guidelines it assembles.
+	if got := SystemPromptModeForBackend(BackendPi); got != SystemPromptAppendToNative {
+		t.Errorf("SystemPromptModeForBackend(pi) = %v, want SystemPromptAppendToNative", got)
+	}
+}
+
+// TestPiExecuteEndToEnd drives the backend against a fake `pi` that emits a
+// print-mode stream, asserting argv, the system-prompt file, stdout parsing,
+// structured-output extraction and cost annotation.
+func TestPiExecuteEndToEnd(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("shell-script fake CLI is POSIX-only")
+	}
+	workDir := t.TempDir()
+	binDir := t.TempDir()
+	fake := filepath.Join(binDir, "fakepi")
+	argvDump := filepath.Join(binDir, "argv")
+	stdinDump := filepath.Join(binDir, "stdin")
+
+	script := `#!/bin/sh
+printf '%s\n' "$@" > ` + argvDump + `
+cat > ` + stdinDump + `
+printf '%s\n' '{"type":"session","version":3,"id":"sess-9","timestamp":"t","cwd":"/w"}'
+printf '%s\n' '{"type":"agent_end","willRetry":false,"messages":[{"role":"assistant","model":"gpt-5.5","responseId":"r1","content":[{"type":"text","text":"{\"answer\":\"42\"}"}],"stopReason":"stop","usage":{"input":120,"output":30,"totalTokens":150,"cost":{"total":0.5}}}]}'
+printf '%s\n' '{"type":"agent_settled"}'
+`
+	if err := os.WriteFile(fake, []byte(script), 0o755); err != nil { // #nosec G306 — test fixture must be executable
+		t.Fatal(err)
+	}
+
+	b := NewPiBackend(testLogger(), fake)
+	task := Task{
+		NodeID:           "review",
+		WorkDir:          workDir,
+		BaseDir:          workDir,
+		SystemPrompt:     "be terse",
+		SystemPromptMode: SystemPromptAppendToNative,
+		UserPrompt:       "- what is the answer",
+		Model:            "openai/gpt-5.5",
+		ReasoningEffort:  "high",
+		OutputSchema:     json.RawMessage(`{"type":"object","properties":{"answer":{"type":"string"}}}`),
+	}
+	res, err := b.Execute(context.Background(), task)
+	if err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+
+	if res.BackendName != BackendPi {
+		t.Errorf("BackendName = %q, want %q", res.BackendName, BackendPi)
+	}
+	if res.SessionID != "sess-9" {
+		t.Errorf("SessionID = %q, want sess-9", res.SessionID)
+	}
+	if res.Output["answer"] != "42" {
+		t.Errorf("Output[answer] = %v, want 42", res.Output["answer"])
+	}
+	if res.Tokens != 150 {
+		t.Errorf("Tokens = %d, want 150 (real input+output split)", res.Tokens)
+	}
+	// The provider's own figure must win over iterion's estimate table.
+	if got := res.Output["_cost_usd"]; got != 0.5 {
+		t.Errorf("_cost_usd = %v, want 0.5 (pi's provider-computed cost)", got)
+	}
+
+	rawStdin, err := os.ReadFile(stdinDump) // #nosec G304 — test fixture path
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(rawStdin), "- what is the answer") {
+		t.Errorf("stdin = %q, want the prompt delivered on stdin", rawStdin)
+	}
+
+	rawArgv, err := os.ReadFile(argvDump) // #nosec G304 — test fixture path
+	if err != nil {
+		t.Fatal(err)
+	}
+	argv := strings.Split(strings.TrimSpace(string(rawArgv)), "\n")
+	for _, want := range []string{"--mode", "json", "--no-approve", "--thinking", "high", "--provider", "openai", "--model", "gpt-5.5"} {
+		if !slices.Contains(argv, want) {
+			t.Errorf("argv missing %q: %v", want, argv)
+		}
+	}
+
+	// The composed system prompt travels as a path, and the file is cleaned
+	// up so it never shows in the run's diff.
+	i := slices.Index(argv, "--append-system-prompt")
+	if i < 0 {
+		t.Fatalf("missing --append-system-prompt: %v", argv)
+	}
+	promptPath := argv[i+1]
+	if !strings.HasPrefix(promptPath, workDir) || !strings.HasSuffix(promptPath, ".sysprompt.md") {
+		t.Errorf("system prompt arg = %q, want a workspace-relative file path", promptPath)
+	}
+	if _, err := os.Stat(promptPath); !os.IsNotExist(err) {
+		t.Errorf("system-prompt file %q survived the run", promptPath)
+	}
+}
