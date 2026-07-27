@@ -2,6 +2,103 @@
 
 Index + template: [README.md](README.md). Newest first.
 
+## 2026-07-27 — FULL GATE GREEN, http + binary, 7/7 sealed held-out (run 019fa4fb)
+
+- Status: **VALIDATED** — every conjunct satisfied, `emit_runner` reached, run `finished`. This
+  closes M1 and M2 together.
+- Versions: bot v0.1.0 + `065fe48f7` (derived seal) · iterion built **from HEAD** (see the stale
+  binary finding below) · `--sandbox none` · `min_corpus=14`, `max_passes=3`, `adversarial=false`,
+  `--max-duration 2h`.
+- Campaign **57.7 min, 150 001 tokens, $11.24**, one pass. Gate **3.3 min** for 14 mutants. Total
+  wall 61 min.
+
+### The verdict
+
+```
+mode gate    stable ✅  noop_silent ✅  revert_clean ✅
+total 7  valid 7  detected 7  score_pct 100
+collateral 0  uncontrolled []  blind_lanes []  missing_archetypes []
+holdout_detected 7 / holdout_total 7      log_tail: (empty)
+```
+
+Corpus: **18 references, 16 http + 2 binary**. Mutants: 7 visible covering all five http
+archetypes plus both binary ones, 7 held-out mirroring them.
+
+### The seal fix, proven in the one place it could be proven
+
+The previous entry's fix was **incomplete, and the incompleteness was fatal** — found by reading
+the code before spending the run, not by the run itself. Scoping the seal to the run by forcing
+`GM_SEALED_DIR` at the gate ignored that the campaign seals too: the `golden-master` skill has it
+run `selfcheck`, in another process, without that environment. It fell back to the shared path and
+**moved** the held-out set there; the gate would then have looked in the run-scoped path, found
+nothing, and bailed on a seal it had itself broken.
+
+`065fe48f7` removes the coordination instead of repairing it. Both sides **derive** the same path
+from the same rule — the workspace basename is the run id inside a worktree, a stable repo name
+outside one. This run confirms it end to end:
+
+```
+worktrees/gm-holdout-019fa4fb-…/   h1…h7 — sealed by the campaign's selfcheck
+worktrees/gm-holdout               — never recreated
+```
+
+The general lesson, which cost two runs to learn: **a fix that changes where a value is read must
+change where it is written, in the same commit.** Moving one end of a rendezvous is not a fix, it
+is a second defect that looks like a fix.
+
+Detail worth keeping: the campaign put `content_empty` on the **xlsx** lane in the held-out set
+while the visible set has it on the **PDF**. A mirror with variation, not a copy — which is what a
+held-out set is for.
+
+### Three earlier fixes validated in production at the same time
+
+- **`selfcheck` withholds the held-out score.** The campaign's own report carried
+  `holdout_detected: -1, holdout_total: 7` — deliberately unequal, so a selfcheck report that ever
+  reached the gate must fail it rather than pass by coincidence. The campaign saw `score_pct: 100`
+  on the visible set and learned nothing about the sealed one.
+- **Record mode reads as a record**, not as a failed gate: `MODE=record — 18 references written.
+  No gate was run: the zeroed fields above are defaults, not a verdict.`
+- **`emit_runner` passed.** It is the node that died on a `SyntaxError` two runs ago.
+
+### The stale binary — a finding that invalidates a claim in the previous entry
+
+The first launch of this run emitted the six bundle-skill warnings that `34b2f3b4e` was supposed
+to have removed. The installed `iterion` on PATH was **ten days old** and predated every engine
+commit in this campaign. Consequences, stated plainly:
+
+- The engine fixes recorded in earlier entries as "fixed" had **never been exercised** — every
+  prior run used an engine without them. They are now genuinely validated: the warnings are gone,
+  and a failing tool call logs its rejected payload (see below).
+- The same stale binary rejects six catalog bots at `iterion validate` with
+  `E002: expected variable name, got [` — the `[enum: …]` variable syntax postdates it. Nothing is
+  wrong with those bots; **validate against a binary built from HEAD**, or the diagnosis is about
+  the tool.
+
+General form, worth generalising beyond this bot: **a dogfood run proves the code that ran, not
+the code in the tree.** Record the binary's provenance in the bilan, not just the repo sha.
+
+### Frictions observed (none fatal, none bot defects)
+
+- A shell hook on the operator's machine rewrote the agent's `find … -exec` into a wrapper that
+  does not support `-exec`. The agent recovered on the next turn. Visible **only** because
+  `ea1e8a0da` now prints the rejected payload — without it the log said `Exit code 1` and nothing
+  else.
+- The `sleep`-then-check guard fired once. The agent immediately adopted the
+  `until <check>; do sleep 10; done` form the error message suggests. A guard whose message
+  teaches the correct form costs one turn and is doing its job — reclassified from "friction" to
+  "working as intended".
+- `finalize` banked uncommitted worktree changes as wip commit `aebb064` on the storage branch,
+  unmerged. Expected with `--auto-merge=false`.
+
+### Lessons for next run
+
+- `min_corpus` is **enforced nowhere** — it exists only in the campaign prompt. The same family as
+  the seal that was "a sentence in a skill". Counting **distinct** reference hashes against the
+  floor closes it, and simultaneously stops byte-identical references on different paths from
+  inflating apparent width (a defect observed on a real third-party net: two distinct export
+  endpoints, one reference, so the only behavioural difference between them was captured nowhere).
+- The adversarial lens is still off. Turn it on only now that a run converges without it.
+
 ## 2026-07-26 — binary lane built and proven, and a false overfitting diagnosis (run 019f9ed4)
 
 - Status: **ABORTED on a harness defect** — the campaign delivered, the gate lied. Two fixes
