@@ -48,6 +48,7 @@ import (
 	"github.com/SocialGouv/iterion/pkg/queue"
 	natsq "github.com/SocialGouv/iterion/pkg/queue/nats"
 	"github.com/SocialGouv/iterion/pkg/runtime"
+	"github.com/SocialGouv/iterion/pkg/runtime/recovery"
 	"github.com/SocialGouv/iterion/pkg/runview"
 	"github.com/SocialGouv/iterion/pkg/sandbox"
 	"github.com/SocialGouv/iterion/pkg/secrets"
@@ -1131,6 +1132,14 @@ func (r *Runner) executeRun(ctx context.Context, msg *queue.RunMessage) error {
 		// runner that is itself the isolation boundary beats a bot's inline
 		// sandbox block, so the run executes directly in the runner pod.
 		runtime.WithSandboxOverride(r.cfg.SandboxOverride),
+		// Recovery recipes. Every other host wires these (pkg/cli/run.go,
+		// pkg/runview, pkg/dispatcher); the cloud runner did not, so
+		// recovery.Classify was never called on the one surface that runs
+		// unattended — no transient-network backoff, no compaction retry,
+		// and every terminal failure reported as EXECUTION_FAILED whatever
+		// its cause. Cloud runs got strictly less recovery than a local
+		// `iterion run` of the same bot.
+		runtime.WithRecoveryDispatch(recovery.Dispatch(recovery.DefaultRecipes())),
 	}
 	// Sandbox-run observer: registers the live sandbox Run so the mid-run
 	// credential refreshers can write rotated tokens THROUGH into the

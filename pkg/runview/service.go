@@ -92,6 +92,13 @@ type LaunchSpec struct {
 	// / "auto" resolves from detected provider credentials at launch;
 	// "mono"/"dual" force it. See pkg/reviewtopology.
 	ReviewMode string
+	// RetryPolicy is the retry contract already RESOLVED across its layers
+	// by the launch site (per-run override → launching surface → bot
+	// manifest → machine default, clamped by the platform ceiling). It is
+	// snapshotted verbatim onto the run document so the runner can read it
+	// without knowing schedules or manifests exist. Nil = the consumer
+	// applies pkg/retrypolicy's defaults.
+	RetryPolicy *store.RunRetryPolicy
 	// ModelOverrides are launch-time per-node/-group backend+model overrides
 	// (studio Launch dropdowns). Each entry targets nodes by selector (node id,
 	// id glob, or kind keyword agent|judge) and wins over the node's DSL

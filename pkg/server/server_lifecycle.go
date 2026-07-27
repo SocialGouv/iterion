@@ -217,6 +217,21 @@ func (s *Server) ListenAndServe() error {
 			s.runQueueSweeper(ctx, lister, s.queue)
 		}()
 	}
+	// Retry sweeper (cloud only): resumes runs whose provider quota window
+	// has reopened. Needs only the store — unlike the orphan sweeper it
+	// asks no question of the queue, because the retry instant was decided
+	// when the run failed. Multi-replica-safe via the store CAS.
+	if lister, ok := s.cfg.Store.(retryDueLister); ok && s.runs != nil {
+		go func() {
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			go func() {
+				<-s.shutdown
+				cancel()
+			}()
+			s.runRetrySweeper(ctx, lister)
+		}()
+	}
 	// Cloud scheduler: fire due cron-scheduled bots. Multi-replica-safe via the
 	// store CAS (no leader election). Absent in local mode (ScheduledBots nil).
 	if s.cfg.ScheduledBots != nil {

@@ -561,6 +561,15 @@ func (p *Publisher) SubmitLaunch(ctx context.Context, runID string, spec runview
 		src := *spec.SourceRef // copy: never share the caller's pointer
 		r.Source = &src
 	}
+	// Same "the queued doc is the only carrier" reasoning as Source above:
+	// the RunMessage has no retry field, and the launch site is the only
+	// place that could see every layer of the policy. A value lost here
+	// leaves the runner falling back to defaults for a run whose owner
+	// asked for something else.
+	if spec.RetryPolicy != nil {
+		rp := *spec.RetryPolicy // copy: never share the caller's pointer
+		r.RetryPolicy = &rp
+	}
 	// 1b. Resolve BYOK credentials and seal them under a fresh
 	//     secrets_ref. Empty ref means "no team-scoped credentials
 	//     configured" — the runner falls back to env. This runs BEFORE the

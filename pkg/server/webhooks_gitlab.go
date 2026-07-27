@@ -15,6 +15,7 @@ import (
 	"github.com/SocialGouv/iterion/pkg/botregistry"
 	"github.com/SocialGouv/iterion/pkg/cloudsched"
 	"github.com/SocialGouv/iterion/pkg/knowledge"
+	"github.com/SocialGouv/iterion/pkg/retrypolicy"
 	"github.com/SocialGouv/iterion/pkg/runview"
 	"github.com/SocialGouv/iterion/pkg/secrets"
 	"github.com/SocialGouv/iterion/pkg/store"
@@ -774,7 +775,11 @@ func (s *Server) launchScheduledBot(ctx context.Context, sb cloudsched.Scheduled
 	if err != nil {
 		return err
 	}
-	_, err = s.runs.Launch(ctx, buildScheduledLaunchSpec(sb, path, source))
+	retry := s.resolveRunRetryPolicy(sb.BotID, retrypolicy.Layer{
+		Source: retrypolicy.SourceSchedule,
+		Policy: sb.RetryPolicy(),
+	})
+	_, err = s.runs.Launch(ctx, buildScheduledLaunchSpec(sb, path, source, retry))
 	return err
 }
 
@@ -783,7 +788,7 @@ func (s *Server) launchScheduledBot(ctx context.Context, sb cloudsched.Scheduled
 // the schedule's Vars + repo binding onto the LaunchSpec so the runner clones
 // the pinned repo (mandatory for stateful bots persisting state to git) and
 // stamps the BotID for the publisher's credential-resolution path.
-func buildScheduledLaunchSpec(sb cloudsched.ScheduledBot, path, source string) runview.LaunchSpec {
+func buildScheduledLaunchSpec(sb cloudsched.ScheduledBot, path, source string, retry *store.RunRetryPolicy) runview.LaunchSpec {
 	return runview.LaunchSpec{
 		FilePath: path,
 		Source:   source,
@@ -791,6 +796,11 @@ func buildScheduledLaunchSpec(sb cloudsched.ScheduledBot, path, source string) r
 		Vars:     sb.Vars,
 		RepoURL:  sb.RepoURL,
 		RepoRef:  sb.RepoRef,
+		// Resolved by the caller across the schedule row, the bot manifest
+		// and the machine default — the schedule is the layer an operator
+		// reaches for when one bot's cadence needs different retry limits
+		// from the same bot on another cadence.
+		RetryPolicy: retry,
 		// Typed provenance: the schedgate overlap gate counts this
 		// schedule's live runs through source.schedule_id.
 		SourceRef: &store.RunSource{

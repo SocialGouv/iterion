@@ -445,33 +445,16 @@ func (s *Server) handleResumeRun(w http.ResponseWriter, r *http.Request) {
 	filePath := req.FilePath
 	if filePath == "" {
 		filePath = runMeta.FilePath
-		if filePath == "" && req.Source == "" {
-			s.httpErrorFor(w, r, http.StatusBadRequest, "file_path or source is required (run has no persisted FilePath)")
-			span.SetStatus(codes.Error, "missing file_path/source")
-			return
-		}
 	}
-	// Cloud mode has no operator filesystem, so resume must carry inline
-	// source — UNLESS the run's (persisted) FilePath is a catalog bundle
-	// present on the pod, which we read off the pod FS just like launch.
-	// The run's BotID is already persisted + propagated by SubmitResume, so
-	// the runner still mirrors skills; here we only need the source bytes.
-	if s.cfg.Mode == "cloud" && req.Source == "" {
-		if src, _, _, ok := s.catalogBotSource("", filePath); ok {
-			req.Source = src
-		}
-	}
-	if s.cfg.Mode == "cloud" && req.Source == "" {
-		s.httpErrorFor(w, r, http.StatusBadRequest, "cloud mode: source or a catalog bot is required (file_path is not portable across the server pod's filesystem)")
-		span.SetStatus(codes.Error, "cloud mode requires source")
-		return
-	}
-	absPath, pathErr := s.resolveWorkflowPath(filePath, req.Source)
+	// Shared with the retry sweeper so the automated resume resolves its
+	// source exactly like this one (see resolveResumeSource).
+	absPath, resolvedSource, pathErr := s.resolveResumeSource(filePath, req.Source)
 	if pathErr != nil {
-		s.httpErrorFor(w, r, http.StatusBadRequest, "invalid file_path: %v", pathErr)
-		span.SetStatus(codes.Error, "invalid file_path")
+		s.httpErrorFor(w, r, http.StatusBadRequest, "%v", pathErr)
+		span.SetStatus(codes.Error, "resume source unresolvable")
 		return
 	}
+	req.Source = resolvedSource
 	timeout, err := parseTimeout(req.Timeout)
 	if err != nil {
 		s.httpErrorFor(w, r, http.StatusBadRequest, "invalid timeout: %v", err)
