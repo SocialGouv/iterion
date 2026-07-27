@@ -841,6 +841,15 @@ func (r *Runner) processOne(parent context.Context, delivery *natsq.Delivery) {
 	r.fireCompletionNotifier(msg)
 	r.fireOutcomeEvent(msg, err)
 
+	// Checked BEFORE the DLQ park so a usage-window failure on the FINAL
+	// delivery still arms a retry instead of being parked: the window is
+	// exactly the condition that makes every prior delivery useless, so
+	// reaching delivery 8 is evidence for retrying later, not against it.
+	if handled, retryStatus := r.parkUsageLimitRetry(runCtx, err, delivery, msg, logger); handled {
+		finalStatus = retryStatus
+		return
+	}
+
 	if handled, dlqStatus := r.parkOnDLQOnFinalDelivery(err, delivery, msg, logger); handled {
 		finalStatus = dlqStatus
 		return
