@@ -13,6 +13,7 @@ import (
 	"github.com/SocialGouv/iterion/pkg/bundle"
 	"github.com/SocialGouv/iterion/pkg/cloudsched"
 	"github.com/SocialGouv/iterion/pkg/forge"
+	"github.com/SocialGouv/iterion/pkg/retrypolicy"
 	"github.com/SocialGouv/iterion/pkg/schedgate"
 )
 
@@ -46,6 +47,12 @@ type createScheduleReq struct {
 	GuardTimeout  string `json:"guard_timeout,omitempty"`
 	GuardVar      string `json:"guard_var,omitempty"`
 	StaleAfter    string `json:"stale_after,omitempty"`
+	// Retry policy (pkg/retrypolicy; validated on create). Only the fields
+	// set here override the bot's manifest and the machine default.
+	RetryUsageWindow string `json:"retry_usage_window,omitempty"`
+	RetryMaxAttempts int    `json:"retry_max_attempts,omitempty"`
+	RetryMaxWait     string `json:"retry_max_wait,omitempty"`
+	RetryJitter      string `json:"retry_jitter,omitempty"`
 }
 
 type updateScheduleReq struct {
@@ -63,6 +70,12 @@ type updateScheduleReq struct {
 	GuardTimeout  *string `json:"guard_timeout,omitempty"`
 	GuardVar      *string `json:"guard_var,omitempty"`
 	StaleAfter    *string `json:"stale_after,omitempty"`
+	// Retry policy (pkg/retrypolicy; the merged result is validated against
+	// the row's current values on update).
+	RetryUsageWindow *string `json:"retry_usage_window,omitempty"`
+	RetryMaxAttempts *int    `json:"retry_max_attempts,omitempty"`
+	RetryMaxWait     *string `json:"retry_max_wait,omitempty"`
+	RetryJitter      *string `json:"retry_jitter,omitempty"`
 }
 
 // scheduleNow returns the UTC instant used for CreatedAt / UpdatedAt and to
@@ -148,6 +161,15 @@ func (s *Server) handleCreateSchedule(w http.ResponseWriter, r *http.Request) {
 		httpError(w, http.StatusBadRequest, "%s", err.Error())
 		return
 	}
+	if err := retrypolicy.Validate(retrypolicy.Policy{
+		UsageWindow: req.RetryUsageWindow,
+		MaxAttempts: req.RetryMaxAttempts,
+		MaxWait:     req.RetryMaxWait,
+		Jitter:      req.RetryJitter,
+	}); err != nil {
+		httpError(w, http.StatusBadRequest, "%s", err.Error())
+		return
+	}
 	now := s.scheduleNow()
 	sb := cloudsched.ScheduledBot{
 		ID:              uuid.NewString(),
@@ -169,6 +191,10 @@ func (s *Server) handleCreateSchedule(w http.ResponseWriter, r *http.Request) {
 		GuardTimeout:      req.GuardTimeout,
 		GuardVar:          req.GuardVar,
 		StaleAfter:        req.StaleAfter,
+		RetryUsageWindow:  req.RetryUsageWindow,
+		RetryMaxAttempts:  req.RetryMaxAttempts,
+		RetryMaxWait:      req.RetryMaxWait,
+		RetryJitter:       req.RetryJitter,
 		CreatedBy:         id.UserID,
 		CreatedAt:         now,
 		UpdatedAt:         now,
@@ -289,6 +315,25 @@ func (s *Server) handleUpdateSchedule(w http.ResponseWriter, r *http.Request) {
 		httpError(w, http.StatusBadRequest, "%s", err.Error())
 		return
 	}
+	// Same merge-then-validate for the retry policy: a patch touching one
+	// retry field must not be able to leave the row incoherent.
+	mergedRetry := cur.RetryPolicy()
+	if req.RetryUsageWindow != nil {
+		mergedRetry.UsageWindow = *req.RetryUsageWindow
+	}
+	if req.RetryMaxAttempts != nil {
+		mergedRetry.MaxAttempts = *req.RetryMaxAttempts
+	}
+	if req.RetryMaxWait != nil {
+		mergedRetry.MaxWait = *req.RetryMaxWait
+	}
+	if req.RetryJitter != nil {
+		mergedRetry.Jitter = *req.RetryJitter
+	}
+	if err := retrypolicy.Validate(mergedRetry); err != nil {
+		httpError(w, http.StatusBadRequest, "%s", err.Error())
+		return
+	}
 	now := s.scheduleNow()
 	patch := cloudsched.SchedulePatch{UpdatedAt: now}
 	patch.Overlap = req.Overlap
@@ -297,6 +342,10 @@ func (s *Server) handleUpdateSchedule(w http.ResponseWriter, r *http.Request) {
 	patch.GuardTimeout = req.GuardTimeout
 	patch.GuardVar = req.GuardVar
 	patch.StaleAfter = req.StaleAfter
+	patch.RetryUsageWindow = req.RetryUsageWindow
+	patch.RetryMaxAttempts = req.RetryMaxAttempts
+	patch.RetryMaxWait = req.RetryMaxWait
+	patch.RetryJitter = req.RetryJitter
 	// cron and interval_seconds are mutually exclusive cadences; whichever
 	// the request provides recomputes NextFireAt and clears the other. The
 	// exclusive switch (not two independent ifs) makes each patch field set
