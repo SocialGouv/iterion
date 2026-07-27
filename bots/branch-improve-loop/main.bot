@@ -624,7 +624,7 @@ schema finalize_mr_output:
 ## genuine mid-flight decision (kept rare by the contract).
 agent campaign:
   backend: "claude_code"
-  model: "${ITERION_VIBE_MODEL_CLAUDE:-claude-opus-4-8}"
+  model: "${ITERION_VIBE_MODEL_CLAUDE:-claude-opus-5}"
   reasoning_effort: "${ITERION_VIBE_EFFORT_CLAUDE:-high}"
   input: campaign_input
   output: campaign_output
@@ -675,7 +675,7 @@ print(json.dumps({'fresh': fresh, 'reason': reason}))
 ## session. high, not max: mechanical capture of the repo's build/test.
 agent verify_build:
   backend: "claude_code"
-  model: "${ITERION_VIBE_MODEL_CLAUDE:-claude-opus-4-8}"
+  model: "${ITERION_VIBE_MODEL_CLAUDE:-claude-opus-5}"
   reasoning_effort: "${ITERION_VIBE_EFFORT_VERIFY_BUILD:-medium}"
   output: verify_plan
   system: verify_system
@@ -789,7 +789,7 @@ print(json.dumps({'passed': rc == 0, 'skipped': False, 'exit_code': rc, 'log_tai
 ## loop so the pushed-back branch ships clean. claude_code (read/git), readonly.
 agent review:
   backend: "claude_code"
-  model: "${ITERION_VIBE_MODEL_REVIEW:-claude-opus-4-8}"
+  model: "${ITERION_VIBE_MODEL_REVIEW:-claude-opus-5}"
   reasoning_effort: "${ITERION_VIBE_EFFORT_REVIEW:-high}"
   input: review_input
   output: review_output
@@ -952,7 +952,7 @@ print(json.dumps({'pushed': False, 'reason': 'push failed after 3 rebase-retries
 ## forge_auth_probe confirmed a push credential exists.
 agent finalize_mr:
   backend: "claude_code"
-  model: "${ITERION_BRANCH_IMPROVE_MR_MODEL:-claude-opus-4-8}"
+  model: "${ITERION_BRANCH_IMPROVE_MR_MODEL:-claude-opus-5}"
   reasoning_effort: "${ITERION_BRANCH_IMPROVE_MR_EFFORT:-medium}"
   input: finalize_mr_input
   output: finalize_mr_output
@@ -990,7 +990,7 @@ if u:
 ## posts one comment). Reached on the PR-context path after push_back_tool.
 agent post_pr_feedback:
   backend: "claude_code"
-  model: "${ITERION_BRANCH_IMPROVE_FEEDBACK_MODEL:-claude-opus-4-8}"
+  model: "${ITERION_BRANCH_IMPROVE_FEEDBACK_MODEL:-claude-opus-5}"
   reasoning_effort: "${ITERION_BRANCH_IMPROVE_FEEDBACK_EFFORT:-low}"
   input: post_feedback_input
   output: post_feedback_output

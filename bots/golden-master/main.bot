@@ -177,7 +177,7 @@ schema emit_output:
 
 agent oracle_campaign:
   backend: "claude_code"
-  model: "${ITERION_VIBE_MODEL_CLAUDE:-claude-opus-4-8}"
+  model: "${ITERION_VIBE_MODEL_CLAUDE:-claude-opus-5}"
   reasoning_effort: "${ITERION_VIBE_EFFORT_CLAUDE:-high}"
   input: campaign_input
   output: campaign_output
@@ -203,7 +203,7 @@ schema adversary_state:
 ## what could evade them.
 judge mutants_adversary:
   backend: "claude_code"
-  model: "${ITERION_GOLDEN_MASTER_ADVERSARY_MODEL:-claude-opus-4-8}"
+  model: "${ITERION_GOLDEN_MASTER_ADVERSARY_MODEL:-claude-opus-5}"
   reasoning_effort: "${ITERION_GOLDEN_MASTER_ADVERSARY_EFFORT:-high}"
   output: adversary_output
   system: adversary_system

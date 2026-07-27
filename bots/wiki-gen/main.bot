@@ -618,7 +618,7 @@ print(json.dumps({'cache_path': str(out), 'entries_written': len(pages), 'git_he
 ## surfaces real bugs → inbox, never fixed here).
 agent author:
   backend: "claude_code"
-  model: "${ITERION_WIKI_MODEL_CLAUDE:-claude-opus-4-8}"
+  model: "${ITERION_WIKI_MODEL_CLAUDE:-claude-opus-5}"
   reasoning_effort: "${ITERION_WIKI_EFFORT_CLAUDE:-high}"
   input: author_input
   output: author_output

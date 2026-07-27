@@ -428,7 +428,7 @@ schema commit_result:
 
 agent analyst:
   backend: "claude_code"
-  model: "${BMADY_MODEL_CLAUDE:-claude-opus-4-8}"
+  model: "${BMADY_MODEL_CLAUDE:-claude-opus-5}"
   reasoning_effort: "${BMADY_EFFORT_PLAN:-high}"
   output: analysis_output
   system: analyst_system
@@ -446,7 +446,7 @@ human elicit_brief:
 
 agent pm:
   backend: "claude_code"
-  model: "${BMADY_MODEL_CLAUDE:-claude-opus-4-8}"
+  model: "${BMADY_MODEL_CLAUDE:-claude-opus-5}"
   reasoning_effort: "${BMADY_EFFORT_PLAN:-high}"
   input: prd_input
   output: prd_output
@@ -476,7 +476,7 @@ compute derive_prd:
 
 agent architect:
   backend: "claude_code"
-  model: "${BMADY_MODEL_CLAUDE:-claude-opus-4-8}"
+  model: "${BMADY_MODEL_CLAUDE:-claude-opus-5}"
   reasoning_effort: "${BMADY_EFFORT_PLAN:-high}"
   input: arch_input
   output: arch_output
@@ -501,7 +501,7 @@ human select_stories:
 
 agent dev:
   backend: "claude_code"
-  model: "${BMADY_MODEL_CLAUDE:-claude-opus-4-8}"
+  model: "${BMADY_MODEL_CLAUDE:-claude-opus-5}"
   reasoning_effort: "${BMADY_EFFORT_DEV:-high}"
   input: dev_input
   output: dev_output
@@ -513,7 +513,7 @@ agent dev:
 
 judge qa:
   backend: "claude_code"
-  model: "${BMADY_MODEL_QA:-claude-opus-4-8}"
+  model: "${BMADY_MODEL_QA:-claude-opus-5}"
   reasoning_effort: "${BMADY_EFFORT_QA:-medium}"
   input: qa_input
   output: qa_output

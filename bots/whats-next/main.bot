@@ -270,7 +270,7 @@ agent nexie:
   ## same-session resume (`claude --resume <id>`), and the operator
   ## chatbox drained into the session at every tool boundary.
   backend: "claude_code"
-  model: "${ITERION_WHATS_NEXT_MODEL_CLAUDE:-claude-opus-4-8}"
+  model: "${ITERION_WHATS_NEXT_MODEL_CLAUDE:-claude-opus-5}"
   ## ultracode = xhigh + the standing Workflow Orchestration consent
   ## (parallel Task sub-agents for the roadmap-study audit fan-out).
   ## Model default is opus-4-8, so no C089 degradation.

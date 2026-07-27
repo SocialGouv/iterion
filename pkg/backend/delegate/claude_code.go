@@ -22,19 +22,19 @@ import (
 
 // defaultClaudeCodeModel is the model iterion forces on the claude_code
 // backend when the workflow doesn't specify one. Mirrors the official
-// Claude Code CLI default — Opus 4.8 (1M context window). Workflows can
+// Claude Code CLI default — Opus 5 (1M context window). Workflows can
 // always override via the node's `model:` field — including the
-// env-driven form `model: "${ITERION_CLAUDE_CODE_MODEL:-claude-opus-4-8}"`
+// env-driven form `model: "${ITERION_CLAUDE_CODE_MODEL:-claude-opus-5}"`
 // which the IR expander in pkg/backend/model/executor.go resolves
 // before this backend ever sees the task. Operators who want to pin
 // every claude_code node to a single gateway-side alias (e.g. GLM 5.1
 // on z.ai) should put the env var in their .env and use the DSL form
 // above in the bots that opt in.
-const defaultClaudeCodeModel = "claude-opus-4-8"
+const defaultClaudeCodeModel = "claude-opus-5"
 
 // defaultClaudeCodeEffort is the reasoning effort iterion forces on the
 // claude_code backend when the workflow doesn't specify one. The bare API
-// default on Opus 4.8 is "high", but the claude_code backend runs
+// default on the opus tier is "high", but the claude_code backend runs
 // implementers/fixers — coding and agentic work — for which Anthropic
 // recommends starting at "xhigh" (platform.claude.com/docs/en/build-with-claude/effort).
 // Workflows can always override via `reasoning_effort:`.

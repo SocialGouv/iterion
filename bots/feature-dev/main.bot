@@ -553,7 +553,7 @@ schema finalize_mr_output:
 agent campaign:
   description: "Campaign: implement & commit units"
   backend: "claude_code"
-  model: "${ITERION_VIBE_MODEL_CLAUDE:-claude-opus-4-8}"
+  model: "${ITERION_VIBE_MODEL_CLAUDE:-claude-opus-5}"
   reasoning_effort: "${ITERION_VIBE_EFFORT_CLAUDE:-high}"
   input: campaign_input
   output: campaign_output
@@ -606,7 +606,7 @@ print(json.dumps({'fresh': fresh, 'reason': reason}))
 ## build/test.
 agent verify_build:
   backend: "claude_code"
-  model: "${ITERION_VIBE_MODEL_CLAUDE:-claude-opus-4-8}"
+  model: "${ITERION_VIBE_MODEL_CLAUDE:-claude-opus-5}"
   reasoning_effort: "${ITERION_VIBE_EFFORT_VERIFY_BUILD:-medium}"
   output: verify_plan
   system: verify_system
@@ -717,7 +717,7 @@ print(json.dumps({'passed': rc == 0, 'skipped': False, 'exit_code': rc, 'log_tai
 ## no-re-raise, blocks only verified real bugs (see review_system).
 agent review:
   backend: "claude_code"
-  model: "${ITERION_VIBE_MODEL_REVIEW:-claude-opus-4-8}"
+  model: "${ITERION_VIBE_MODEL_REVIEW:-claude-opus-5}"
   reasoning_effort: "${ITERION_VIBE_EFFORT_REVIEW:-high}"
   input: review_input
   output: review_output
@@ -782,7 +782,7 @@ print(json.dumps({'available': False, 'reason': 'no forge_token secret, no *_TOK
 
 agent finalize_mr:
   backend: "claude_code"
-  model: "${ITERION_FEATURE_DEV_MR_MODEL:-claude-opus-4-8}"
+  model: "${ITERION_FEATURE_DEV_MR_MODEL:-claude-opus-5}"
   reasoning_effort: "${ITERION_FEATURE_DEV_MR_EFFORT:-medium}"
   input: finalize_mr_input
   output: finalize_mr_output

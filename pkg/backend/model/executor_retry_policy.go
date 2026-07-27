@@ -40,7 +40,7 @@ const DefaultBackoffBase = time.Second
 // defaultRouterModel is the last-resort model for LLM routers when no model
 // is configured and ITERION_DEFAULT_SUPERVISOR_MODEL is unset. Routing
 // decisions are lightweight, so a fast/cheap model is sufficient.
-const defaultRouterModel = "anthropic/claude-sonnet-4-6"
+const defaultRouterModel = "anthropic/claude-sonnet-5"
 
 // RetryPolicy controls automatic retry on transient LLM errors.
 type RetryPolicy struct {

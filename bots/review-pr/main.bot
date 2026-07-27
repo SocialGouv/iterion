@@ -616,7 +616,7 @@ router fan:
 
 judge reviewer_claude:
   backend: "claude_code"
-  model: "${ITERION_VIBE_MODEL_CLAUDE:-claude-opus-4-8}"
+  model: "${ITERION_VIBE_MODEL_CLAUDE:-claude-opus-5}"
   reasoning_effort: "${ITERION_VIBE_EFFORT_CLAUDE:-high}"
   output: review_output
   system: review_system
@@ -634,7 +634,7 @@ judge reviewer_gpt:
   ## Both env-overridable so an instance without a usable OpenAI quota
   ## can run the second reviewer on the Claude forfait instead
   ## (ITERION_VIBE_BACKEND_GPT=claude_code +
-  ## ITERION_VIBE_MODEL_GPT=claude-sonnet-4-6 — cross-model diversity
+  ## ITERION_VIBE_MODEL_GPT=claude-sonnet-5 — cross-model diversity
   ## when cross-vendor isn't available).
   backend: "${ITERION_VIBE_BACKEND_GPT:-claw}"
   model: "${ITERION_VIBE_MODEL_GPT:-openai/gpt-5.5}"
@@ -651,7 +651,7 @@ judge reviewer_gpt:
 
 agent converge:
   backend: "claude_code"
-  model: "${ITERION_VIBE_MODEL_CLAUDE:-claude-opus-4-8}"
+  model: "${ITERION_VIBE_MODEL_CLAUDE:-claude-opus-5}"
   reasoning_effort: "${ITERION_VIBE_EFFORT_EMIT:-medium}"
   output: emit_output
   system: emit_system

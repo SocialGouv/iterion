@@ -381,7 +381,7 @@ schema gate_state:
 ## interaction: human — kept rare by the contract.
 agent campaign:
   backend: "claude_code"
-  model: "${ITERION_VIBE_MODEL_CLAUDE:-claude-opus-4-8}"
+  model: "${ITERION_VIBE_MODEL_CLAUDE:-claude-opus-5}"
   reasoning_effort: "${ITERION_VIBE_EFFORT_CLAUDE:-high}"
   input: campaign_input
   output: campaign_output
@@ -395,7 +395,7 @@ agent campaign:
 ## per-gap session.
 agent verify_build:
   backend: "claude_code"
-  model: "${ITERION_VIBE_MODEL_CLAUDE:-claude-opus-4-8}"
+  model: "${ITERION_VIBE_MODEL_CLAUDE:-claude-opus-5}"
   reasoning_effort: "${ITERION_VIBE_EFFORT_CLAUDE:-high}"
   output: verify_plan
   system: verify_system

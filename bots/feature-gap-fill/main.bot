@@ -383,7 +383,7 @@ schema gate_state:
 ## observations → inbox), replacing v1's prepare_commit handoff.
 agent campaign:
   backend: "claude_code"
-  model: "${ITERION_VIBE_MODEL_CLAUDE:-claude-opus-4-8}"
+  model: "${ITERION_VIBE_MODEL_CLAUDE:-claude-opus-5}"
   reasoning_effort: "${ITERION_VIBE_EFFORT_CLAUDE:-high}"
   input: campaign_input
   output: campaign_output
@@ -398,7 +398,7 @@ agent campaign:
 ## session. high, not max: mechanical capture of the repo's build/test.
 agent verify_build:
   backend: "claude_code"
-  model: "${ITERION_VIBE_MODEL_CLAUDE:-claude-opus-4-8}"
+  model: "${ITERION_VIBE_MODEL_CLAUDE:-claude-opus-5}"
   reasoning_effort: "${ITERION_VIBE_EFFORT_CLAUDE:-high}"
   output: verify_plan
   system: verify_system

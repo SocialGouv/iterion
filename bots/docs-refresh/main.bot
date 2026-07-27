@@ -980,7 +980,7 @@ print(json.dumps({'doc_files': files, 'doc_count': len(files), 'hints': hints, '
 ## verifying claims → inbox).
 agent campaign:
   backend: "claude_code"
-  model: "${ITERION_DOC_ALIGN_MODEL_CLAUDE:-claude-opus-4-8}"
+  model: "${ITERION_DOC_ALIGN_MODEL_CLAUDE:-claude-opus-5}"
   ## ultracode (on opus-4-8) hands the campaign the `agent` subagent
   ## tool + the orchestration prerogative — so it can fan out its own
   ## sub-auditors across the corpus, EXACTLY as a native Claude Code
@@ -1103,7 +1103,7 @@ print(json.dumps({'available': False, 'reason': 'no forge_token secret, no *_TOK
 
 agent finalize_mr:
   backend: "claude_code"
-  model: "${ITERION_DOC_ALIGN_MODEL_CLAUDE:-claude-opus-4-8}"
+  model: "${ITERION_DOC_ALIGN_MODEL_CLAUDE:-claude-opus-5}"
   reasoning_effort: "${ITERION_DOC_ALIGN_MR_EFFORT:-medium}"
   input: finalize_mr_input
   output: finalize_mr_output

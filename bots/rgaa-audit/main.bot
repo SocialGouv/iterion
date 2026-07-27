@@ -317,7 +317,7 @@ print(json.dumps({'listing': listing}))
 ## classification and deep audit share one session + prompt cache.
 agent campaign:
   backend: "claude_code"
-  model: "${ITERION_RGAA_MODEL_REVIEW:-claude-opus-4-8}"
+  model: "${ITERION_RGAA_MODEL_REVIEW:-claude-opus-5}"
   reasoning_effort: "${ITERION_RGAA_EFFORT_REVIEW:-high}"
   input: campaign_input
   output: campaign_output
@@ -422,7 +422,7 @@ agent report_card:
   ## claude_code REQUIRED: needs the bundled skills mirrored to
   ## .claude/skills/ and the board MCP server with capability-gated tools.
   backend: "claude_code"
-  model: "${ITERION_RGAA_MODEL_REPORT:-claude-opus-4-8}"
+  model: "${ITERION_RGAA_MODEL_REPORT:-claude-opus-5}"
   reasoning_effort: "${ITERION_RGAA_EFFORT_REPORT:-medium}"
   input: report_input
   output: report_output
