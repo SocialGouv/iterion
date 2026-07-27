@@ -12,6 +12,7 @@ import (
 	"github.com/SocialGouv/iterion/pkg/backend/delegate"
 	"github.com/SocialGouv/iterion/pkg/backend/forfait"
 	iterlog "github.com/SocialGouv/iterion/pkg/log"
+	"github.com/SocialGouv/iterion/pkg/retrypolicy"
 	"github.com/SocialGouv/iterion/pkg/runtime"
 	"github.com/SocialGouv/iterion/pkg/store"
 )
@@ -50,22 +51,41 @@ type autoResumeConfig struct {
 	// rather than burn attempts against a wall. <= 0 disables the check.
 	// Best-effort — an unavailable usage endpoint never blocks (see forfait).
 	ForfaitCapPct float64
+	// Retry is the shared retry contract (pkg/retrypolicy). It supplies the
+	// horizon for a provider usage window, which is the one dimension this
+	// loop could not express on its own: the cap used to be a hard 5h
+	// constant — shorter than the weekly window it is meant to wait out.
+	Retry retrypolicy.Policy
 }
 
 // resolveAutoResume builds the config from the flag + env + budget flags.
 // A non-zero flag wins; a zero flag falls back to ITERION_AUTO_RESUME; the
 // default is 0 (off).
-func resolveAutoResume(flagN int, budget BudgetOverrides) autoResumeConfig {
+func resolveAutoResume(flagN int, budget BudgetOverrides, override retrypolicy.Policy) autoResumeConfig {
 	n := flagN
 	if n == 0 {
 		if env := envAutoResume(); env > 0 {
 			n = env
 		}
 	}
+	pol, _ := retrypolicy.Resolve(
+		retrypolicy.Layer{Source: retrypolicy.SourceRunOverride, Policy: override},
+		retrypolicy.Layer{Source: retrypolicy.SourceEnv, Policy: retrypolicy.FromEnv()},
+	)
+	// The CLI loop stays OPT-IN: --auto-resume / ITERION_AUTO_RESUME is the
+	// gate, and n == 0 means off. The retry policy deliberately does NOT
+	// turn it on — its defaults describe what an unattended cloud run should
+	// do, and inheriting them here would start auto-resuming every local
+	// `iterion run` that nobody asked to be retried. What the policy DOES
+	// contribute is the horizon (max_wait) and the usage-window opt-out.
+	if n > 0 {
+		pol.MaxAttempts = n
+	}
 	return autoResumeConfig{
 		MaxAttempts:   n,
 		BudgetRaised:  !budget.IsZero(),
 		ForfaitCapPct: forfait.CapPctFromEnv(),
+		Retry:         pol,
 	}
 }
 
@@ -112,6 +132,9 @@ func gateAutoResume(code runtime.ErrorCode, cfg autoResumeConfig, budgetResumed 
 	if !autoResumeRetryableCodes[code] {
 		return autoResumeGate{reason: "not auto-recoverable (code " + nonEmptyCode(code) + ") — leaving run failed_resumable for manual review"}
 	}
+	if code == runtime.ErrCodeUsageLimitBlocked && !cfg.Retry.Enabled() {
+		return autoResumeGate{reason: "provider usage window exhausted and retry.usage_window is off — leaving run failed_resumable"}
+	}
 	if code == runtime.ErrCodeBudgetExceeded {
 		if !cfg.BudgetRaised {
 			return autoResumeGate{reason: "budget exceeded and no raised --max-* cap provided — stopping (re-run with a higher cap, e.g. --max-duration 4h)"}
@@ -150,24 +173,27 @@ func autoResumeBackoff(attempt int) time.Duration {
 // attempt).
 const usageLimitFallbackDelay = 15 * time.Minute
 
-// usageLimitMaxDelay caps a parsed reset hint so a mis-parsed
-// timestamp can never sleep the loop for days.
-const usageLimitMaxDelay = 5 * time.Hour
-
 // usageLimitDelay picks the wait for a USAGE_LIMIT_BLOCKED resume:
 // honor the provider's parsed reset instant (plus a small margin) when
 // present, else the window-scale fallback. Clamped to
 // [fallback floor when hint is in the past, usageLimitMaxDelay].
-func usageLimitDelay(err error, now time.Time) time.Duration {
+func usageLimitDelay(err error, pol retrypolicy.Policy, now time.Time) time.Duration {
 	delay := usageLimitFallbackDelay
 	var rl *delegate.ErrRateLimited
 	if errors.As(err, &rl) && !rl.ResetAt.IsZero() {
 		if until := rl.ResetAt.Sub(now) + time.Minute; until > 0 {
 			delay = until
 		}
+	} else if at, ok := delegate.ParseResetHint(err.Error(), now); ok {
+		// The typed error did not survive to here, but the notice text may
+		// still carry the instant — the same structure-first, string-last
+		// order the cloud runner uses.
+		if until := at.Sub(now) + time.Minute; until > 0 {
+			delay = until
+		}
 	}
-	if delay > usageLimitMaxDelay {
-		delay = usageLimitMaxDelay
+	if max := pol.MaxWaitDuration(); delay > max {
+		delay = max
 	}
 	return delay
 }
@@ -232,7 +258,7 @@ func autoResumeLoop(
 			// Reset-aware wait: retrying inside the forfait window can
 			// never succeed, so the delay tracks the provider's reset
 			// hint instead of the exponential backoff.
-			delay = usageLimitDelay(err, time.Now())
+			delay = usageLimitDelay(err, cfg.Retry, time.Now())
 			logger.Warn("auto-resume: provider usage window exhausted; waiting %s for the quota reset",
 				delay.Round(time.Minute))
 		}

@@ -36,6 +36,14 @@ const (
 	retryReenqueueBackoff = 15 * time.Minute
 )
 
+// runResumer is the slice of runview.Service the sweeper uses. Narrowed to
+// one method so the sweeper's failure branches (lost claim, denied
+// admission, unresolvable source, failed publish) are testable without
+// standing up a run service.
+type runResumer interface {
+	Resume(ctx context.Context, spec runview.ResumeSpec) (*runview.LaunchResult, error)
+}
+
 // retryDueLister is the store capability the sweeper scans with
 // (implemented by the Mongo store; local mode has no durable retry state
 // and no sweeper).
@@ -53,16 +61,16 @@ func (s *Server) runRetrySweeper(ctx context.Context, lister retryDueLister) {
 		case <-ctx.Done():
 			return
 		case <-t.C:
-			s.sweepDueRetries(ctx, lister, time.Now().UTC())
+			s.sweepDueRetries(ctx, lister, s.runs, time.Now().UTC())
 		}
 	}
 }
 
 // sweepDueRetries performs one pass. Extracted (with an injectable clock)
 // for tests.
-func (s *Server) sweepDueRetries(ctx context.Context, lister retryDueLister, now time.Time) {
+func (s *Server) sweepDueRetries(ctx context.Context, lister retryDueLister, resumer runResumer, now time.Time) {
 	retryStore := store.AsRunRetryStore(s.cfg.Store)
-	if retryStore == nil || s.runs == nil {
+	if retryStore == nil || resumer == nil {
 		return
 	}
 	// Platform-level scan; the per-run tenant comes back on each ref and is
@@ -73,12 +81,12 @@ func (s *Server) sweepDueRetries(ctx context.Context, lister retryDueLister, now
 		return
 	}
 	for _, ref := range refs {
-		s.resumeDueRetry(ctx, retryStore, ref)
+		s.resumeDueRetry(ctx, retryStore, resumer, ref)
 	}
 }
 
 // resumeDueRetry claims one due retry and re-enqueues the run's resume.
-func (s *Server) resumeDueRetry(ctx context.Context, retryStore store.RunRetryStore, ref mongostore.RetryDueRef) {
+func (s *Server) resumeDueRetry(ctx context.Context, retryStore store.RunRetryStore, resumer runResumer, ref mongostore.RetryDueRef) {
 	runCtx := store.WithIdentity(ctx, ref.TenantID, "retry-sweeper")
 
 	// Claim first, act second. The CAS is what makes this safe to run on
@@ -112,7 +120,7 @@ func (s *Server) resumeDueRetry(ctx context.Context, retryStore store.RunRetrySt
 		return
 	}
 
-	if _, err := s.runs.Resume(runCtx, runview.ResumeSpec{
+	if _, err := resumer.Resume(runCtx, runview.ResumeSpec{
 		RunID:    ref.ID,
 		FilePath: filePath,
 		Source:   source,

@@ -303,6 +303,14 @@ type RunSummary struct {
 	// belongs to another process or to a previous boot — Cancel won't
 	// reach it from here.
 	Active bool `json:"active"`
+	// RetryAfter is when a failed_resumable run will be resumed
+	// automatically, once its provider quota window reopens. Nil means no
+	// retry is armed — which is the whole point of surfacing it: a row
+	// that will resume in 33h and a row that never will are otherwise
+	// indistinguishable, both just "failed_resumable". RetryAttempts is
+	// the run's position in its attempt budget.
+	RetryAfter    *time.Time `json:"retry_after,omitempty"`
+	RetryAttempts int        `json:"retry_attempts,omitempty"`
 	// Worktree finalization summary (only populated for `worktree:
 	// auto` runs that reached a clean exit). See store.Run for the
 	// full semantics.

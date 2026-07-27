@@ -8,6 +8,7 @@ import (
 	"time"
 
 	iterlog "github.com/SocialGouv/iterion/pkg/log"
+	"github.com/SocialGouv/iterion/pkg/retrypolicy"
 	"github.com/SocialGouv/iterion/pkg/runtime"
 	"github.com/SocialGouv/iterion/pkg/store"
 )
@@ -68,6 +69,10 @@ type ResumeOptions struct {
 	// RunOptions.AutoResume so `iterion resume` can itself keep re-driving a
 	// transient-failing run without a human in the loop. See auto_resume.go.
 	AutoResume int
+	// Retry is the per-run retry override (pkg/retrypolicy), the highest
+	// layer of the chain. Zero value inherits ITERION_RETRY_* then the
+	// package defaults.
+	Retry retrypolicy.Policy
 }
 
 // RunResumeWithFile resumes a paused run using a workflow file and answers.
@@ -278,7 +283,7 @@ func RunResumeWithFile(ctx context.Context, iterFile string, opts ResumeOptions,
 	}
 
 	err = eng.Resume(ctx, opts.RunID, answers)
-	err = autoResumeLoop(ctx, eng, s, opts.RunID, resolveAutoResume(opts.AutoResume, opts.Budget), err, logger)
+	err = autoResumeLoop(ctx, eng, s, opts.RunID, resolveAutoResume(opts.AutoResume, opts.Budget, opts.Retry), err, logger)
 	return reportResumeOutcome(p, s, opts.RunID, err, map[string]any{
 		"run_id":   opts.RunID,
 		"workflow": wf.Name,

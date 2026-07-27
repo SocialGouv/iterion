@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/SocialGouv/iterion/pkg/backend/delegate"
+	"github.com/SocialGouv/iterion/pkg/retrypolicy"
 	"github.com/SocialGouv/iterion/pkg/runtime"
 	"github.com/SocialGouv/iterion/pkg/runtime/recovery"
 )
@@ -45,7 +46,7 @@ func TestUsageLimitDelay(t *testing.T) {
 			Kind:    delegate.RateLimitKindUsageWindow,
 			ResetAt: now.Add(90 * time.Minute),
 		})
-		got := usageLimitDelay(err, now)
+		got := usageLimitDelay(err, defaultRetryPolicy(), now)
 		if got < 90*time.Minute || got > 92*time.Minute {
 			t.Fatalf("delay = %s, want ~91m", got)
 		}
@@ -53,7 +54,7 @@ func TestUsageLimitDelay(t *testing.T) {
 
 	t.Run("no hint falls back to window-scale wait", func(t *testing.T) {
 		err := wrapAsRuntime(&delegate.ErrRateLimited{Kind: delegate.RateLimitKindUsageWindow})
-		if got := usageLimitDelay(err, now); got != usageLimitFallbackDelay {
+		if got := usageLimitDelay(err, defaultRetryPolicy(), now); got != usageLimitFallbackDelay {
 			t.Fatalf("delay = %s, want %s", got, usageLimitFallbackDelay)
 		}
 	})
@@ -63,20 +64,41 @@ func TestUsageLimitDelay(t *testing.T) {
 			Kind:    delegate.RateLimitKindUsageWindow,
 			ResetAt: now.Add(-time.Hour),
 		})
-		if got := usageLimitDelay(err, now); got != usageLimitFallbackDelay {
+		if got := usageLimitDelay(err, defaultRetryPolicy(), now); got != usageLimitFallbackDelay {
 			t.Fatalf("delay = %s, want fallback", got)
 		}
 	})
 
-	t.Run("mis-parsed far-future hint is capped", func(t *testing.T) {
+	// A weekly forfait cap resets up to seven days out. The horizon used to
+	// be a hard 5h constant, so the loop could never actually wait one out;
+	// it now comes from the policy, whose default covers a week.
+	t.Run("a multi-day reset is honored, not clamped to hours", func(t *testing.T) {
 		err := wrapAsRuntime(&delegate.ErrRateLimited{
 			Kind:    delegate.RateLimitKindUsageWindow,
 			ResetAt: now.Add(72 * time.Hour),
 		})
-		if got := usageLimitDelay(err, now); got != usageLimitMaxDelay {
-			t.Fatalf("delay = %s, want cap %s", got, usageLimitMaxDelay)
+		got := usageLimitDelay(err, defaultRetryPolicy(), now)
+		if got < 72*time.Hour || got > 73*time.Hour {
+			t.Fatalf("delay = %s, want ~72h", got)
 		}
 	})
+
+	t.Run("the policy horizon caps an implausible hint", func(t *testing.T) {
+		err := wrapAsRuntime(&delegate.ErrRateLimited{
+			Kind:    delegate.RateLimitKindUsageWindow,
+			ResetAt: now.Add(30 * 24 * time.Hour),
+		})
+		pol := retrypolicy.Normalize(retrypolicy.Policy{MaxWait: "36h"})
+		if got := usageLimitDelay(err, pol, now); got != 36*time.Hour {
+			t.Fatalf("delay = %s, want the policy cap 36h", got)
+		}
+	})
+}
+
+// defaultRetryPolicy is the normalized zero policy — what a run with no
+// retry configuration anywhere gets.
+func defaultRetryPolicy() retrypolicy.Policy {
+	return retrypolicy.Normalize(retrypolicy.Policy{})
 }
 
 // wrapAsRuntime mirrors how the executor surfaces backend errors: the

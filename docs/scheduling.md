@@ -293,6 +293,15 @@ A platform ceiling (`ITERION_CLOUD_RETRY_MAX_ATTEMPTS`,
 resolved policy, so a tenant cannot reserve a hundred attempts over thirty
 days on their own schedule.
 
+> **Local vs cloud — the wait is held differently.** In cloud mode the
+> intent is durable, so nothing extra is needed. On a **host-crontab**
+> schedule the wait is held *in-process* by the bounded auto-resume loop,
+> which stays **opt-in**: the `retry_*` fields on a `schedules.yaml` entry
+> *shape* that wait, they do not enable it. Add `--auto-resume N` (or
+> `ITERION_AUTO_RESUME`) to turn it on. The reason it is not on by default
+> is that a local `iterion run` blocks your terminal, and silently sleeping
+> it for 33 hours is not a default anyone would want.
+
 **Choosing a value.** The question a bot author is answering is *is this
 output still worth having late?* A weekly digest is (`resume`); a "what
 changed in the last hour" report is not (`usage_window: off` — let the next
