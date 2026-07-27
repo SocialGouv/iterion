@@ -508,6 +508,7 @@ def main():
               "noop_silent": False, "revert_clean": True, "collateral": 0,
               "notice": "", "uncontrolled": [], "blind_lanes": [], "missing_archetypes": [],
               "holdout_detected": 0, "holdout_total": 0, "stable": False,
+              "corpus_total": 0, "corpus_distinct": 0, "duplicate_refs": [],
               "log_tail": ""}
 
     def bail(msg):
@@ -595,6 +596,25 @@ def main():
             with open(p, encoding="utf-8") as f:
                 refs[e["id"]] = f.read()
 
+        # Width is a property of what the net can SEE, so it is counted on
+        # DISTINCT references, never on entries. Two entries whose canonical
+        # reference is byte-identical are ONE observation: a mutant that moves
+        # one moves the other, so the second buys no coverage while inflating
+        # the count. Seen on a real third-party net — two distinct export
+        # endpoints, one reference, and the single behaviour that told them
+        # apart was captured nowhere. Duplicates are reported, not banned:
+        # genuinely redundant endpoints are legal, they just stop counting
+        # twice. The FLOOR itself is applied by the gate, not here — the
+        # harness states facts, the graph decides.
+        by_hash = {}
+        for eid, text in refs.items():
+            h = hashlib.sha256(text.encode("utf-8")).hexdigest()
+            by_hash.setdefault(h, []).append(eid)
+        report["corpus_total"] = len(refs)
+        report["corpus_distinct"] = len(by_hash)
+        report["duplicate_refs"] = sorted(
+            sorted(ids) for ids in by_hash.values() if len(ids) > 1)
+
         stab, _ = stability(config, corpus, canon, ws)
         report.update(stable=stab["stable"])
         if not stab["stable"]:
@@ -681,6 +701,18 @@ def main():
         if report["score_pct"] < floor:
             problems.append("mutation score %d%% is under the %d%% floor"
                             % (report["score_pct"], floor))
+        if report["duplicate_refs"]:
+            problems.append("%d reference group(s) are byte-identical across DIFFERENT entries, "
+                            "so the corpus is %d observations wide, not %d. This is NOT always a "
+                            "defect: on a refusal lane two entries legitimately capture the same "
+                            "302, and the second is a control proving a mutant moved only the "
+                            "first. It IS a defect when the endpoints were meant to differ — then "
+                            "either one is redundant, or they differ on a path this fixture does "
+                            "not exercise and the difference is captured NOWHERE. Decide which, "
+                            "per group: %s"
+                            % (len(report["duplicate_refs"]), report["corpus_distinct"],
+                               report["corpus_total"],
+                               json.dumps(report["duplicate_refs"], ensure_ascii=False)))
         if mode == "selfcheck":
             report["notice"] = ("MODE=selfcheck — the held-out set was sealed but NOT scored; "
                                 "its result is withheld on purpose. Only the final gate scores "
