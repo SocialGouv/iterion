@@ -3,6 +3,7 @@ package pisdk
 import (
 	"encoding/json"
 	"strconv"
+	"strings"
 )
 
 // StopReason mirrors pi's StopReason union (packages/ai/src/types.ts).
@@ -177,6 +178,32 @@ func (m Message) EffectiveModel() string {
 		return m.ResponseModel
 	}
 	return m.Model
+}
+
+// HTTPStatus returns the upstream HTTP status pi recorded for this message,
+// or 0 when it reported none.
+//
+// This is the precise signal for classifying a failure. pi's diagnostics
+// carry the provider's own status code, so a caller can distinguish a 429
+// throttle from a 401 misconfiguration from a 503 blip without guessing from
+// prose. `code` is typed `string | number` upstream, so both are accepted.
+func (m Message) HTTPStatus() int {
+	for _, d := range m.Diagnostics {
+		if d.Error == nil || len(d.Error.Code) == 0 {
+			continue
+		}
+		var asNumber int
+		if json.Unmarshal(d.Error.Code, &asNumber) == nil && asNumber > 0 {
+			return asNumber
+		}
+		var asString string
+		if json.Unmarshal(d.Error.Code, &asString) == nil {
+			if n, err := strconv.Atoi(strings.TrimSpace(asString)); err == nil && n > 0 {
+				return n
+			}
+		}
+	}
+	return 0
 }
 
 // Identity keys an assistant message for de-duplication. The same message is

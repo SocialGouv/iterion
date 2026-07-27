@@ -375,6 +375,19 @@ func parsePiOutput(stdout string) CLIAgentParse {
 		parse.SessionID = stream.Header.ID
 	}
 
+	// pi's own retries are real billed calls whose transcripts are discarded,
+	// so they are absent from the accounting below. Surface them rather than
+	// let a node be slow and under-costed with no explanation.
+	if retries := stream.AutoRetries(); len(retries) > 0 {
+		last := retries[len(retries)-1]
+		parse.Notices = append(parse.Notices, fmt.Sprintf(
+			"pi retried upstream %d time(s) internally (last: attempt %d/%d after %dms — %q). "+
+				"Those attempts were billed but are absent from this node's token count and cost, "+
+				"and iterion's retry classifier never saw them. Pin ITERION_PI_AGENT_DIR to an "+
+				"agent dir with retry.enabled=false to let iterion own retry policy.",
+			len(retries), last.Attempt, last.MaxAttempts, last.DelayMs, last.ErrorMessage))
+	}
+
 	messages := stream.AssistantMessages()
 	if len(messages) == 0 {
 		// Nothing recognisable — hand back the raw stream so the shared
@@ -423,20 +436,73 @@ func piClassifyFailure(m pisdk.Message) error {
 	if msg == "" {
 		msg = "pi reported a failed turn with no error message"
 	}
-	if isRateLimitMessage(msg) {
-		kind, resetAt := classifyRateLimit(msg, time.Now())
-		return &ErrRateLimited{
-			Provider: BackendPi,
-			Kind:     kind,
-			ResetAt:  resetAt,
-			Detail:   msg,
-		}
+
+	// The upstream HTTP status is the precise signal, and pi reports it in
+	// the message's diagnostics. Prefer it over any text matching.
+	switch status := m.HTTPStatus(); {
+	case status == 429:
+		return piRateLimited(msg)
+	case status == 408, status == 409, status >= 500:
+		return &ErrTransient{Provider: BackendPi, Reason: fmt.Sprintf("upstream %d", status), Detail: msg}
+	case status == 401, status == 403, status == 402:
+		// Deterministic: a credential or billing problem. Retrying burns
+		// attempts against a failure that cannot resolve itself.
+		return fmt.Errorf("pi: auth/billing rejected (%d): %s", status, msg)
+	case status >= 400:
+		return fmt.Errorf("pi: upstream %d: %s", status, msg)
+	}
+
+	// No status reported — fall back to the message text.
+	//
+	// Deliberately NOT isRateLimitMessage(): that detector is tuned for
+	// claude_code, where the candidate is untrusted assistant PROSE, so it
+	// is kept narrow (its own comment notes that "rate_limit_error" was
+	// dropped because security-audit agents write about rate limits). Here
+	// the candidate is `errorMessage`, a structured field only pi's runtime
+	// writes, so the broader provider-shaped forms are safe — and needed:
+	// a plain `rate_limit_error: 429 too many requests` is invisible to the
+	// narrow list, which would misclassify a throttle as a permanent
+	// failure and skip both retry and provider fallback.
+	if piMatchesRateLimitText(msg) {
+		return piRateLimited(msg)
 	}
 	if MatchesNetworkSignature(msg) || isTransientAPIErrorResult(msg) {
 		return &ErrTransient{Provider: BackendPi, Reason: "upstream", Detail: msg}
 	}
-	// Auth failures and everything else are deterministic: surfacing them
-	// as a plain error keeps the executor from burning retries on a
-	// misconfiguration.
+	// Everything else is deterministic.
 	return fmt.Errorf("pi: %s", msg)
+}
+
+// piRateLimitSignals are provider-shaped rate-limit forms. Safe to keep
+// broad because they are matched against structured error metadata, never
+// against model-authored text (see piClassifyFailure).
+var piRateLimitSignals = []string{
+	"rate_limit", "rate limit", "too many requests", "429",
+	"quota", "usage limit", "overloaded", "capacity",
+}
+
+func piMatchesRateLimitText(msg string) bool {
+	if isRateLimitMessage(msg) {
+		return true
+	}
+	lower := strings.ToLower(msg)
+	for _, sig := range piRateLimitSignals {
+		if strings.Contains(lower, sig) {
+			return true
+		}
+	}
+	return false
+}
+
+// piRateLimited builds the rate-limit error, reusing the shared classifier to
+// split a subscription-window exhaustion (waiting is the only cure) from a
+// plain throttle worth retrying soon, and to recover any reset instant.
+func piRateLimited(msg string) error {
+	kind, resetAt := classifyRateLimit(msg, time.Now())
+	return &ErrRateLimited{
+		Provider: BackendPi,
+		Kind:     kind,
+		ResetAt:  resetAt,
+		Detail:   msg,
+	}
 }

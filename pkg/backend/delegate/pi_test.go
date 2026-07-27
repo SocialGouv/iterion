@@ -9,6 +9,7 @@ import (
 	"reflect"
 	"runtime"
 	"slices"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -405,6 +406,86 @@ func TestParsePiOutput(t *testing.T) {
 				got := parsePiOutput(string(line))
 				tc.check(t, got.Err)
 			})
+		}
+	})
+
+	// The upstream HTTP status pi records in diagnostics is the precise
+	// signal, and it must beat any reading of the message text.
+	t.Run("http status classification", func(t *testing.T) {
+		cases := []struct {
+			status int
+			// wantKind: "ratelimit" | "transient" | "plain"
+			wantKind string
+		}{
+			{429, "ratelimit"},
+			{503, "transient"},
+			{500, "transient"},
+			{408, "transient"},
+			{401, "plain"},
+			{403, "plain"},
+			{402, "plain"},
+			{400, "plain"},
+		}
+		for _, tc := range cases {
+			t.Run(strconv.Itoa(tc.status), func(t *testing.T) {
+				line, _ := json.Marshal(map[string]any{
+					"type": "agent_end", "willRetry": false,
+					"messages": []any{map[string]any{
+						"role": "assistant", "responseId": "r", "stopReason": "error",
+						// Deliberately bland text: the status must be what decides.
+						"errorMessage": "request failed",
+						"diagnostics": []any{map[string]any{
+							"type": "provider_error", "timestamp": 1,
+							"error": map[string]any{"message": "request failed", "code": tc.status},
+						}},
+					}},
+				})
+				err := parsePiOutput(string(line)).Err
+				var rl *ErrRateLimited
+				var tr *ErrTransient
+				switch tc.wantKind {
+				case "ratelimit":
+					if !errors.As(err, &rl) {
+						t.Fatalf("status %d → %v (%T), want *ErrRateLimited", tc.status, err, err)
+					}
+				case "transient":
+					if !errors.As(err, &tr) {
+						t.Fatalf("status %d → %v (%T), want *ErrTransient", tc.status, err, err)
+					}
+				default:
+					if errors.As(err, &rl) || errors.As(err, &tr) {
+						t.Fatalf("status %d → %v, want a plain (non-retried) error", tc.status, err)
+					}
+					if err == nil {
+						t.Fatalf("status %d → nil, want an error", tc.status)
+					}
+				}
+			})
+		}
+	})
+
+	// Regression: a provider-shaped rate-limit message with no diagnostics.
+	// The shared claude_code detector is deliberately narrow (it reads
+	// untrusted assistant prose) and does not match this, which would
+	// misclassify a throttle as permanent and skip retry + fallback.
+	t.Run("provider-shaped rate limit without a status", func(t *testing.T) {
+		for _, msg := range []string{
+			"rate_limit_error: 429 too many requests",
+			"Error: too many requests",
+			"overloaded_error: server is overloaded",
+		} {
+			line, _ := json.Marshal(map[string]any{
+				"type": "agent_end", "willRetry": false,
+				"messages": []any{map[string]any{
+					"role": "assistant", "responseId": "r",
+					"stopReason": "error", "errorMessage": msg,
+				}},
+			})
+			err := parsePiOutput(string(line)).Err
+			var rl *ErrRateLimited
+			if !errors.As(err, &rl) {
+				t.Errorf("%q → %v (%T), want *ErrRateLimited", msg, err, err)
+			}
 		}
 	})
 

@@ -222,6 +222,25 @@ func (s Stream) FinalTranscript() []Message {
 	return nil
 }
 
+// AutoRetries returns pi's own auto_retry_start events, in order.
+//
+// These matter more than they look. pi retries an upstream failure itself
+// (3 attempts, exponential backoff, by default), and each attempt is a real
+// billed call — but only the FINAL attempt's transcript survives in
+// agent_end, so the discarded attempts are absent from any token count or
+// cost derived from it. A run that reports 18 tokens may have made four
+// upstream calls. Surfacing the retries is what turns an unexplained slow
+// node with an under-reported cost into something an operator can read.
+func (s Stream) AutoRetries() []Event {
+	var out []Event
+	for _, ev := range s.Events {
+		if ev.Type == EventAutoRetryStart {
+			out = append(out, ev)
+		}
+	}
+	return out
+}
+
 // AssistantMessages returns the run's assistant messages, de-duplicated by
 // identity and in stream order.
 //

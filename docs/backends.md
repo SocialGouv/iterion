@@ -582,11 +582,20 @@ workflow that already works.**
 - **Sessions live with the run**, under the store dir (or the workspace when
   sandboxed) — never `~/.pi/agent/sessions`, so concurrent nodes cannot
   collide and a pruned run takes its sessions with it.
-- **pi retries upstream failures itself** (3 attempts by default) *inside*
-  iterion's own retry loop. Those attempts are invisible to iterion's
-  rate-limit classifier. Print mode has no lever to disable this; pin
-  `ITERION_PI_AGENT_DIR` to an agent dir whose `settings.json` sets
-  `retry.enabled: false` if it matters for your quota accounting.
+- **pi retries upstream failures itself** — 3 attempts, 2s/4s/8s backoff by
+  default — *inside* iterion's own retry loop. Two consequences, both
+  observed live:
+  - Those attempts are invisible to iterion's rate-limit classifier, which
+    only ever sees the outcome of the last one.
+  - **The reported cost is short by the discarded attempts.** Only the final
+    attempt's transcript survives in pi's `agent_end`, so a node that made
+    four billed upstream calls reports one call's tokens and cost. iterion
+    logs a WARN naming the retry count when this happens — an unexplained
+    slow node with a suspiciously low cost is the symptom.
+
+  Print mode has no lever to disable this. Pin `ITERION_PI_AGENT_DIR` to an
+  agent dir whose `settings.json` sets `retry.enabled: false` (or a small
+  `retry.baseDelayMs`) if it matters for your quota accounting.
 - **Model patterns are fuzzy-matched.** pi resolves an unknown pattern
   against its catalogue rather than failing, so a typo can silently run a
   different model. iterion logs a warning when the model pi actually used

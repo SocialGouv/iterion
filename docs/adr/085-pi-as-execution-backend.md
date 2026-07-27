@@ -161,8 +161,11 @@ those backends.
 - **`ultracode` is inexpressible** — pi has no subagent tool; it degrades to
   `xhigh`.
 - **pi auto-retries inside iterion's retry loop** (3 attempts by default),
-  invisibly to the rate-limit classifier. Print mode has no lever; the RPC
-  transport will send `set_auto_retry:false`.
+  invisibly to the rate-limit classifier **and to the cost accounting** — only
+  the last attempt's transcript survives, so a node that made four billed
+  calls reports one. Mitigated by a WARN naming the retry count; print mode
+  has no lever to disable it, and the RPC transport will send
+  `set_auto_retry:false`.
 - **`AGENTS.md` is read alongside `CLAUDE.md`** — a behavioural difference
   from every other backend.
 - **Auto-detection excludes pi.** `DefaultPreferenceOrder` stays
@@ -187,6 +190,51 @@ those backends.
   (it would hide the operator's `auth.json` — the credential breadth that
   motivates the backend), and *`~/.pi/agent/sessions` for run sessions*
   (concurrent nodes would collide and pruning a run would not reclaim them).
+
+## Validation against the real binary
+
+`pi_smoke_test.go` drives the **real `pi`** end to end with no credentials, no
+network and no cost: a test-only pi extension
+([pisdk/testdata/mock-provider.ts](../../pkg/backend/delegate/pisdk/testdata/mock-provider.ts))
+uses `pi.registerProvider` to register a model that replays a scripted
+response. It skips when `pi` is absent, so it is free for anyone without it and
+automatic drift detection for anyone with it.
+
+This exists because `pisdk/` is a *port*, and only a stream pi actually
+produced can tell you the port still matches — a hand-written fixture cannot
+notice a renamed field. Four things it found that reading the source had not:
+
+1. **`{"type":"message_start","message":{}}`** — pi emits an **empty** message
+   object at the start of an assistant turn. Decoded as a zero `Message` and
+   filtered by role; harmless, but no hand-authored fixture would have
+   contained it.
+2. **Exit code 0 on a fully failed run** — confirmed live, including through
+   pi's exhausted retry loop. `stopReason` really is the only failure signal.
+3. **pi's internal retry loop, and its cost consequence.** A scripted 429 made
+   pi retry 3 times over ~14s of backoff. Only the last attempt's transcript
+   survives in `agent_end`, so the accounting derived from it is short by the
+   discarded attempts. This produced `CLIAgentParse.Notices` (logged at WARN),
+   because otherwise the operator sees an unexplained slow node with a
+   suspiciously low cost.
+4. **A real classification bug.** The first implementation reused
+   `isRateLimitMessage`, and a plain `rate_limit_error: 429 too many requests`
+   did not match it — so a throttle was typed as a permanent failure,
+   skipping both retry and provider fallback. The detector is *deliberately*
+   narrow because for `claude_code` it scans untrusted assistant **prose**
+   (its own comment records dropping `rate_limit_error` because
+   security-audit agents write about rate limits). But pi's `errorMessage` is
+   structured metadata only the runtime writes, so the narrow list was the
+   wrong tool. Classification now prefers the upstream HTTP status pi records
+   in `diagnostics[].error.code` (`Message.HTTPStatus()`), with a broader
+   text fallback that is safe precisely because the input is structured.
+
+**Not yet validated: a real model call.** No provider credential was available
+on the validating host (`~/.pi/agent/auth.json` absent, no provider env keys,
+and the one Anthropic credential present is the OAuth forfait this backend
+refuses by design). Everything above exercises the real binary, the real event
+stream and the whole Go path; what remains unproven is a genuine provider
+round-trip — model resolution against a live catalogue, real usage figures, and
+the fuzzy-model-match warning firing on a typo.
 
 ## Follow-ups
 

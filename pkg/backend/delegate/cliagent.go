@@ -151,6 +151,13 @@ type CLIAgentParse struct {
 	ContextWindow   int
 	PeakInputTokens int
 
+	// Notices are human-readable observations the backend logs at WARN.
+	// They exist for facts a CLI reports about its own behaviour that the
+	// Result cannot express — most importantly upstream retries the CLI
+	// performed internally, which are invisible in its final transcript and
+	// therefore silently absent from the reported token count and cost.
+	Notices []string
+
 	// Err is a failure the CLI reported *in its output stream* while exiting
 	// zero. The typed value (*ErrTransient, *ErrRateLimited, or a plain
 	// error) is returned verbatim from Execute so the executor's retry
@@ -267,6 +274,12 @@ func (b *CLIAgentBackend) Execute(ctx context.Context, task Task) (Result, error
 	// Parse the CLI's stdout into the assistant's final text, then apply the
 	// shared schema-aware fallback so `output:` schemas behave uniformly.
 	parsed := b.parseStdout(proto, stdout)
+
+	if b.Logger != nil {
+		for _, notice := range parsed.Notices {
+			b.Logger.Warn("[%s#%d/%s] %s", task.NodeID, task.Iteration, backendName, notice)
+		}
+	}
 
 	result.SessionID = parsed.SessionID
 	result.Tokens = parsed.InputTokens + parsed.OutputTokens
