@@ -147,6 +147,12 @@ type publishReviewGate struct {
 	Threshold string `json:"threshold,omitempty"`
 	// TotalFindings is the full kept-finding count (for the description).
 	TotalFindings int `json:"total_findings"`
+	// Note, when set, REPLACES the rendered description. The bot uses it to
+	// state the real reason a gate is red when that reason is not "N blocking
+	// findings" — e.g. its own output was unreadable and the count is a
+	// fail-closed placeholder. Describing that as a blocking finding sends the
+	// operator hunting for one that was never published (erreurs-explicites).
+	Note string `json:"note,omitempty"`
 }
 
 type publishReviewResponse struct {
@@ -380,6 +386,10 @@ func (s *Server) postGateStatus(ctx context.Context, conn forge.Connection, repo
 	if gate.BlockingCount > 0 {
 		state = forge.CommitStateFailure
 		desc = fmt.Sprintf("%d blocking finding(s) ≥%s — address them (a push re-reviews) or a maintainer overrides", gate.BlockingCount, threshold)
+	}
+	// An explicit note is the truth the bot knows and the count cannot express.
+	if n := strings.TrimSpace(gate.Note); n != "" {
+		desc = n
 	}
 	out.state = string(state)
 
