@@ -49,11 +49,13 @@ type GateOutcome struct {
 	// Proceed it is left undecided — "fired" is only true after the
 	// launch attempt, which the caller owns.
 	Record TickRecord
-	// ReapRunIDs lists keepalive runs found stale (silent past
-	// StaleAfter) at this tick. The caller cancels them via its store so
-	// the zombies free resources; schedgate stays I/O-free. Non-empty
-	// only on the keepalive path, and only alongside Proceed (a stale
-	// run no longer blocks, so the tick fires a fresh one).
+	// ReapRunIDs lists the runs the caller must cancel at this tick. The
+	// caller does it via its own store so schedgate stays I/O-free. Two
+	// policies populate it, both alongside Proceed:
+	//   - keepalive: runs found stale (silent past StaleAfter) — zombies that
+	//     no longer block, so a fresh run fires and they are reaped;
+	//   - supersede: the LIVE runs, which the newer tick has made obsolete.
+	// Empty on every other policy.
 	ReapRunIDs []string
 }
 
@@ -71,12 +73,20 @@ func Apply(ctx context.Context, in GateInput) GateOutcome {
 		} else {
 			live = LiveRunsForSchedule(ctx, in.Lister, in.ScheduleID, in.Logger)
 		}
-		if decision, blocking := EvaluateOverlap(live, policy); decision == DecisionSkipOverlap {
+		switch decision, blocking := EvaluateOverlap(live, policy); decision {
+		case DecisionSkipOverlap:
 			rec := in.Record
 			rec.Decision = TickSkippedOverlap
 			rec.BlockingRunID = blocking
 			rec.Reason = fmt.Sprintf("blocked by live run %s (%d live, overlap=%s)", blocking, len(live), policy.Overlap)
 			return GateOutcome{Record: rec}
+		case DecisionSupersede:
+			// The newest tick wins: hand the live runs to the caller's cancel
+			// path (the same one keepalive uses to reap zombies) and fire.
+			// Falling through to Proceed without this would give supersede
+			// `allow` semantics — every tick firing alongside the runs it was
+			// supposed to replace — while the policy promises at-most-one-live.
+			reap = append(reap, live...)
 		}
 	}
 

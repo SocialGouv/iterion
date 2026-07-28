@@ -145,6 +145,26 @@ func Validate(p Policy) error {
 	return nil
 }
 
+// ValidateReapable is Validate plus the one thing Validate cannot know: some
+// launch surfaces have no way to cancel a live run, and `supersede` is
+// meaningless without one — it would silently degrade to `allow`, firing
+// alongside the very runs it promised to replace.
+//
+// A surface passes canReap=false when it drops GateOutcome.ReapRunIDs (the
+// host-cron path, and cloud schedules where the NATS lease is the liveness
+// authority). Rejecting at write time is the fail-closed choice: an operator
+// gets "not supported here" instead of semantics quietly inverted under them.
+func ValidateReapable(p Policy, canReap bool) error {
+	if err := Validate(p); err != nil {
+		return err
+	}
+	if p.Overlap == OverlapSupersede && !canReap {
+		return fmt.Errorf("schedgate: overlap=%s is not supported on this surface (it cannot cancel a live run); use %s or %s",
+			OverlapSupersede, OverlapSkip, OverlapAllow)
+	}
+	return nil
+}
+
 // GuardTimeoutDuration resolves the policy's guard timeout, falling
 // back to the default on empty or unparseable values (Validate rejects
 // the latter upstream; the fallback keeps runtime behavior total).

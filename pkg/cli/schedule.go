@@ -211,14 +211,15 @@ func validateScheduleEntry(e ScheduleEntry) error {
 			return fmt.Errorf("invalid timeout %q: %w", e.Timeout, err)
 		}
 	}
-	if err := schedgate.Validate(schedgate.Policy{
+	// canReap=false: the host-cron tick drops GateOutcome.ReapRunIDs.
+	if err := schedgate.ValidateReapable(schedgate.Policy{
 		Overlap:       e.Overlap,
 		MaxConcurrent: e.MaxConcurrent,
 		Guard:         e.Guard,
 		GuardTimeout:  e.GuardTimeout,
 		GuardVar:      e.GuardVar,
 		StaleAfter:    e.StaleAfter,
-	}); err != nil {
+	}, false); err != nil {
 		return err
 	}
 	return nil
