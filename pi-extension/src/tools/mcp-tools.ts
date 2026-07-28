@@ -14,7 +14,11 @@
 
 import { Type } from "typebox";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import { McpHttpClient, type McpCallResult } from "../mcp/http.js";
+import { McpClient } from "../mcp/client.js";
+import { HttpTransport } from "../mcp/http.js";
+import type { McpCallResult, Transport } from "../mcp/protocol.js";
+import { SseTransport } from "../mcp/sse.js";
+import { StdioTransport } from "../mcp/stdio.js";
 import type { McpServerConfig } from "../config.js";
 
 /** Renders an MCP tool result as pi tool content. */
@@ -29,42 +33,95 @@ function renderResult(result: McpCallResult): { text: string; isError: boolean }
 	return { text, isError: result.isError === true };
 }
 
-export async function installMcpServer(pi: ExtensionAPI, server: McpServerConfig): Promise<number> {
-	if (!server.url) return 0;
-
-	const client = new McpHttpClient(server.url, server.headers ?? {});
-	await client.initialize();
-	const tools = await client.listTools();
-
-	for (const tool of tools) {
-		pi.registerTool({
-			name: tool.name,
-			label: tool.name,
-			description: tool.description ?? `${tool.name} (via ${server.name})`,
-			// The server's JSON Schema is passed through unvalidated on this
-			// side: it is authoritative, and re-deriving a TypeBox schema from
-			// it would only add a second place for the shape to be wrong.
-			parameters: Type.Unsafe<Record<string, unknown>>(
-				(tool.inputSchema as Record<string, unknown>) ?? { type: "object" },
-			),
-			async execute(_toolCallId, params) {
-				try {
-					const result = await client.callTool(tool.name, params ?? {});
-					const { text, isError } = renderResult(result);
-					return { content: [{ type: "text" as const, text }], details: undefined, isError };
-				} catch (err) {
-					// Surface the cause to the model: an agent told only
-					// "failed" will retry the same call, whereas one told the
-					// capability was denied can adapt.
-					const msg = err instanceof Error ? err.message : String(err);
-					return {
-						content: [{ type: "text" as const, text: `${tool.name} failed: ${msg}` }],
-						details: undefined,
-						isError: true,
-					};
-				}
-			},
-		});
+function makeTransport(server: McpServerConfig, log: (line: string) => void): Transport {
+	switch (server.transport) {
+		case "stdio":
+			return new StdioTransport(server.command ?? "", server.args ?? [], server.env ?? {}, (line) =>
+				log(`${server.name}: ${line}`),
+			);
+		case "sse":
+			return new SseTransport(server.url ?? "", server.headers ?? {});
+		default:
+			return new HttpTransport(server.url ?? "", server.headers ?? {});
 	}
-	return tools.length;
+}
+
+/**
+ * Rejects if `work` has not settled within the budget.
+ *
+ * Bridging happens inside `session_start`, which pi awaits before the agent
+ * takes its first turn — and which iterion's own handshake is waiting on. A
+ * server that accepts a connection and then never answers would otherwise hang
+ * the session start, and with it the entire run. The budget converts that into
+ * one missing server.
+ */
+function withDeadline<T>(work: Promise<T>, ms: number, what: string): Promise<T> {
+	return new Promise<T>((resolve, reject) => {
+		const timer = setTimeout(() => reject(new Error(`${what} timed out after ${ms}ms`)), ms);
+		work.then(
+			(v) => {
+				clearTimeout(timer);
+				resolve(v);
+			},
+			(e) => {
+				clearTimeout(timer);
+				reject(e);
+			},
+		);
+	});
+}
+
+/**
+ * Connects to one server and registers everything it offers.
+ *
+ * Returns the live client so the caller can close it: a stdio server is a
+ * child process, and leaving it running would outlive the run.
+ */
+export async function installMcpServer(
+	pi: ExtensionAPI,
+	server: McpServerConfig,
+	log: (line: string) => void = () => {},
+	connectTimeoutMs = 10_000,
+): Promise<{ client: McpClient; count: number }> {
+	const client = new McpClient(makeTransport(server, log));
+	try {
+		await withDeadline(client.initialize(), connectTimeoutMs, `${server.name}: handshake`);
+		const tools = await withDeadline(client.listTools(), connectTimeoutMs, `${server.name}: tools/list`);
+
+		for (const tool of tools) {
+			pi.registerTool({
+				name: tool.name,
+				label: tool.name,
+				description: tool.description ?? `${tool.name} (via ${server.name})`,
+				// The server's JSON Schema is passed through unvalidated on this
+				// side: it is authoritative, and re-deriving a TypeBox schema from
+				// it would only add a second place for the shape to be wrong.
+				parameters: Type.Unsafe<Record<string, unknown>>(
+					(tool.inputSchema as Record<string, unknown>) ?? { type: "object" },
+				),
+				async execute(_toolCallId, params) {
+					try {
+						const result = await client.callTool(tool.name, params ?? {});
+						const { text, isError } = renderResult(result);
+						return { content: [{ type: "text" as const, text }], details: undefined, isError };
+					} catch (err) {
+						// Surface the cause to the model: an agent told only
+						// "failed" will retry the same call, whereas one told the
+						// capability was denied can adapt.
+						const msg = err instanceof Error ? err.message : String(err);
+						return {
+							content: [{ type: "text" as const, text: `${tool.name} failed: ${msg}` }],
+							details: undefined,
+							isError: true,
+						};
+					}
+				},
+			});
+		}
+		return { client, count: tools.length };
+	} catch (err) {
+		// A half-open connection is still a child process or an HTTP stream.
+		client.close();
+		throw err;
+	}
 }

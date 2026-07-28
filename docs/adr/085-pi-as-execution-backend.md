@@ -195,10 +195,12 @@ those backends.
   `claude_code` to pi is more work for less capability. pi's value is the
   models claude_code cannot reach — stated plainly so the backend is not
   adopted for the wrong reason.
-- **No MCP client at all.** Board `capabilities:`, `ask_user`/async
-  interaction, and workflow `mcp_server` blocks are all served over MCP and
-  therefore do not reach a pi node. This is the single largest gap and the
-  one most likely to be underestimated.
+- **No MCP client at all** — the single largest gap, and **resolved by the
+  extension**, which carries its own client on all three transports (http,
+  sse, stdio). Board `capabilities:` and workflow `mcp_server:` blocks reach a
+  pi node; `ask_user` rides the control channel instead. RPC transport only —
+  a print-mode node still has none of this. Async interaction (ADR-081) is
+  still pending.
 - **`__ITERION_SECRET_*__` placeholders are not materialised.** File secrets
   work unchanged. A future diagnostic should flag the combination.
 - **Tools are not host-gated** (ADR-065's standing consequence). The one
@@ -426,12 +428,23 @@ A permission `ask` uses the same suspension path, carrying a
 `permission.Marker` so the studio renders an approval card rather than a
 question.
 
-**MCP over HTTP, which is what makes board capabilities reachable.** pi has no
-MCP client, so every MCP surface iterion built was invisible to it. The
-extension carries a small JSON-RPC-over-HTTP client (hand-rolled rather than
-pulled from the MCP SDK: the bundle must stay dependency-free to load inside a
-sandbox with no `node_modules`), discovers tools via `tools/list`, and
-registers each one on pi.
+**A full MCP client, which is what makes board capabilities and workflow
+`mcp_server:` blocks reachable.** pi has no MCP client, so every MCP surface
+iterion built was invisible to it. The extension carries one — hand-rolled
+rather than pulled from the MCP SDK, because the bundle must stay
+dependency-free to load inside a sandbox with no `node_modules`, and because
+every dependency is bytes committed to this repo and a version that can drift
+from the engine driving it. It discovers tools via `tools/list` and registers
+each one on pi.
+
+The JSON-RPC conversation is written once against a `Transport` seam, and all
+three MCP bindings implement it:
+
+| Transport | Shape | Note |
+|---|---|---|
+| `http` | POST per frame | Streamable HTTP. The answer may be a JSON body **or** an SSE stream; both are legal, so both are handled. Carries `Mcp-Session-Id` when the server assigns one. |
+| `sse` | long-lived GET + POST | The legacy 2024-11-05 binding. Asymmetric: responses arrive on a stream opened *before* the request existed, and the POST URL is announced on it, not configured. |
+| `stdio` | child process, NDJSON | What most `mcp_server:` blocks declare. The declared `env:` is an overlay on the inherited one — a server launched without `PATH` generally cannot start. Closing stdin is the shutdown; killing is the backstop. |
 
 Nothing about the board is hardcoded — the server stays the source of truth for
 what exists and what it accepts, so a new board operation needs no change in
@@ -441,13 +454,31 @@ and exempts it, so renaming would make `permission: ask` pause the run on the
 very tools used to talk to the board.
 
 The board is offered **only** when the run has capabilities *and* the endpoint
-and token are wired. Registering it otherwise would hand the agent tools that
+and token are wired; a declared server is forwarded only when it carries what
+its transport needs. Registering one otherwise would hand the agent tools that
 fail on every call — worse than absent, because the model burns turns
-discovering they do not work. Bridging happens on `session_start` and a server
-that is unreachable costs its own tools, not the session.
+discovering they do not work.
 
-Verified against a real HTTP MCP server: handshake, `tools/list`, `tools/call`
-with the `X-Iterion-Run` header, and the result reaching the model.
+**Bridging is bounded, and that is not a detail.** It happens on
+`session_start`, which pi awaits before the first turn and which iterion's own
+30s RPC handshake is therefore waiting on. Left unbounded, a server that
+accepts a connection and then goes quiet hangs the session start and kills the
+run — observed, not hypothesised. Servers now connect in parallel, each capped
+by `ITERION_PI_MCP_CONNECT_TIMEOUT_MS` (default 10s), so the cost is neither
+paid serially nor multiplied by the number of servers.
+
+Bounding it surfaced a second, sharper failure: giving up on a request rejects
+a promise that has **no consumer yet** (the caller is still suspended inside
+the send), and in Node an unhandled rejection is fatal — so the first fix
+turned a hang into a crash of the whole pi process. The client marks that
+promise handled at creation. A regression test drives a real pi against a
+listener that never answers and asserts the run completes; reverting the
+one-line fix fails it.
+
+Verified against real servers on all three transports: handshake, `tools/list`,
+`tools/call`, and the result reaching the model — over HTTP (with the
+`X-Iterion-Run` header), over legacy SSE, and over a stdio child process
+(including that the declared `env:` reached it).
 
 **The control channel.** pi's extension-UI protocol is a *closed* union, so the
 channel tunnels through two of its members — `ctx.ui.input` for

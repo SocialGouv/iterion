@@ -377,11 +377,11 @@ func TestPiRPCLiveAskUser(t *testing.T) {
 // A node that cannot reach a human must not be offered a tool that pauses the
 // run — it would call it and stall.
 func TestPiRPCAskUserAbsentWhenInteractionOff(t *testing.T) {
-	env := piExtensionEnv(Task{NodeID: "n"})
+	env := piExtensionEnv(Task{NodeID: "n"}, nil)
 	if _, ok := env["ITERION_PI_INTERACTION"]; ok {
 		t.Error("ITERION_PI_INTERACTION set with interaction disabled — ask_user would be registered")
 	}
-	env = piExtensionEnv(Task{NodeID: "n", InteractionEnabled: true})
+	env = piExtensionEnv(Task{NodeID: "n", InteractionEnabled: true}, nil)
 	if env["ITERION_PI_INTERACTION"] != "sync" {
 		t.Errorf("ITERION_PI_INTERACTION = %q, want sync", env["ITERION_PI_INTERACTION"])
 	}

@@ -1,48 +1,24 @@
 /**
- * A minimal MCP client over HTTP JSON-RPC.
+ * The streamable-HTTP transport (MCP's current HTTP binding).
  *
- * pi has no MCP client at all, so every MCP surface iterion built — the board,
- * ask_user, and any `mcp_server:` a workflow declares — is unreachable from a
- * pi node. This is the smallest thing that changes that.
- *
- * It is deliberately hand-rolled rather than pulled from the MCP SDK: the
- * server side here is iterion's own, the transport is a single POST, and the
- * extension has to stay a dependency-free single bundle that loads inside a
- * sandbox with no node_modules. When stdio and SSE transports arrive for
- * third-party servers, this stays the streamable-HTTP half.
- *
- * Tools are DISCOVERED, never hardcoded: `tools/list` is the source of truth,
- * so the server's capability gating and schemas remain authoritative and a new
- * board operation needs no change here.
+ * Every frame is a POST. The server answers either with a single JSON body or
+ * with an SSE stream carrying the response — both are legal, and a server that
+ * streams is not a server that failed, so both are handled here rather than
+ * assumed away. iterion's own board endpoint answers JSON; third-party servers
+ * routinely stream.
  */
 
-export interface McpTool {
-	name: string;
-	description?: string;
-	inputSchema?: Record<string, unknown>;
-}
+import type { JsonRpcMessage, Transport } from "./protocol.js";
+import { readSseFrames } from "./sse-frames.js";
 
-export interface McpContent {
-	type: string;
-	text?: string;
-	[k: string]: unknown;
-}
+const PROTOCOL_VERSION = "2025-06-18";
 
-export interface McpCallResult {
-	content?: McpContent[];
-	isError?: boolean;
-	[k: string]: unknown;
-}
-
-interface JsonRpcResponse<T> {
-	jsonrpc?: string;
-	id?: unknown;
-	result?: T;
-	error?: { code: number; message: string };
-}
-
-export class McpHttpClient {
-	private nextId = 0;
+export class HttpTransport implements Transport {
+	private handler: (m: JsonRpcMessage) => void = () => {};
+	private sessionId?: string;
+	private closed = false;
+	/** In-flight requests, so close() can actually stop them. */
+	private readonly inflight = new Set<AbortController>();
 
 	constructor(
 		private readonly url: string,
@@ -50,49 +26,99 @@ export class McpHttpClient {
 		private readonly timeoutMs = 60_000,
 	) {}
 
-	/**
-	 * MCP requires an `initialize` handshake before anything else. iterion's
-	 * board server is lenient, but a third-party server is not, and doing it
-	 * here keeps this client honest against both.
-	 */
-	async initialize(): Promise<void> {
-		await this.rpc<unknown>("initialize", {
-			protocolVersion: "2024-11-05",
-			capabilities: {},
-			clientInfo: { name: "iterion-pi-extension", version: "1" },
-		});
+	// Nothing to establish: the transport is request-driven, and the handshake
+	// is the client's first POST.
+	async start(): Promise<void> {}
+
+	onMessage(handler: (m: JsonRpcMessage) => void): void {
+		this.handler = handler;
 	}
 
-	async listTools(): Promise<McpTool[]> {
-		const res = await this.rpc<{ tools?: McpTool[] }>("tools/list", {});
-		return res?.tools ?? [];
+	close(): void {
+		this.closed = true;
+		// A request left running would hold its connection — and, when the
+		// caller gave up on a slow server, would keep doing so for the rest of
+		// the session.
+		for (const c of this.inflight) c.abort();
+		this.inflight.clear();
 	}
 
-	async callTool(name: string, args: unknown): Promise<McpCallResult> {
-		return (await this.rpc<McpCallResult>("tools/call", { name, arguments: args })) ?? {};
-	}
-
-	private async rpc<T>(method: string, params: unknown): Promise<T | undefined> {
-		this.nextId += 1;
+	async send(message: JsonRpcMessage): Promise<void> {
+		if (this.closed) throw new Error("transport is closed");
 		const controller = new AbortController();
+		this.inflight.add(controller);
 		const timer = setTimeout(() => controller.abort(), this.timeoutMs);
 		try {
 			const res = await fetch(this.url, {
 				method: "POST",
-				headers: { "content-type": "application/json", ...this.headers },
-				body: JSON.stringify({ jsonrpc: "2.0", id: this.nextId, method, params }),
+				headers: {
+					"content-type": "application/json",
+					// Both are advertised because the server chooses which to
+					// use per response.
+					accept: "application/json, text/event-stream",
+					...(this.sessionId ? { "mcp-session-id": this.sessionId } : {}),
+					...(this.sessionId ? { "mcp-protocol-version": PROTOCOL_VERSION } : {}),
+					...this.headers,
+				},
+				body: JSON.stringify(message),
 				signal: controller.signal,
 			});
+
+			// A server that assigns a session expects it echoed on every
+			// subsequent request; dropping it restarts the conversation.
+			const assigned = res.headers.get("mcp-session-id");
+			if (assigned) this.sessionId = assigned;
+
+			// 202 is the documented answer to a notification: accepted, no body.
+			if (res.status === 202 || res.status === 204) return;
 			if (!res.ok) {
-				throw new Error(`${method}: HTTP ${res.status} ${res.statusText}`);
+				throw new Error(`HTTP ${res.status} ${res.statusText}`);
 			}
-			const body = (await res.json()) as JsonRpcResponse<T>;
-			if (body.error) {
-				throw new Error(`${method}: ${body.error.message} (code ${body.error.code})`);
+
+			const contentType = res.headers.get("content-type") ?? "";
+			if (contentType.includes("text/event-stream") && res.body) {
+				await this.consumeStream(res.body);
+				return;
 			}
-			return body.result;
+
+			const text = await res.text();
+			if (text.trim() === "") return;
+			this.dispatch(JSON.parse(text));
 		} finally {
 			clearTimeout(timer);
+			this.inflight.delete(controller);
 		}
+	}
+
+	/**
+	 * Reads the SSE stream a POST may answer with, stopping at the response.
+	 *
+	 * The spec says the server SHOULD close the stream once it has replied, but
+	 * a server that holds it open would otherwise keep `send` awaiting forever.
+	 * Returning at the first response frame makes the caller's progress depend
+	 * on the answer, not on the server's stream hygiene. Leaving the loop
+	 * cancels the body, so the connection is not held open either.
+	 */
+	private async consumeStream(body: ReadableStream<Uint8Array>): Promise<void> {
+		for await (const frame of readSseFrames(body)) {
+			if (frame.event !== "message") continue;
+			let parsed: JsonRpcMessage;
+			try {
+				parsed = JSON.parse(frame.data) as JsonRpcMessage;
+			} catch {
+				continue;
+			}
+			this.dispatch(parsed);
+			if (parsed.id !== undefined && parsed.id !== null) return;
+		}
+	}
+
+	private dispatch(parsed: unknown): void {
+		// A batch is legal JSON-RPC and some servers use it for tools/list.
+		if (Array.isArray(parsed)) {
+			for (const m of parsed) this.handler(m as JsonRpcMessage);
+			return;
+		}
+		this.handler(parsed as JsonRpcMessage);
 	}
 }

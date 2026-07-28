@@ -117,7 +117,7 @@ func (b *PiRPCBackend) Execute(ctx context.Context, task Task) (Result, error) {
 		Binary:  binary,
 		Args:    argv,
 		Dir:     task.WorkDir,
-		Env:     piRPCEnv(ctx, task),
+		Env:     piRPCEnv(ctx, task, b.Logger),
 		Spawn:   b.spawner(task, binary),
 		OnEvent: collector.onEvent,
 		OnStderr: func(line string) {
@@ -415,12 +415,12 @@ func piRPCArgs(task Task, promptFile string) []string {
 // piRPCEnv assembles the child environment: the host's, plus the shared
 // credential overrides, plus run-level provisioning (devbox PATH) last so it
 // wins on a duplicate key.
-func piRPCEnv(ctx context.Context, task Task) []string {
+func piRPCEnv(ctx context.Context, task Task, logger *iterlog.Logger) []string {
 	env := os.Environ()
 	for k, v := range piResolveEnv(ctx) {
 		env = append(env, k+"="+v)
 	}
-	for k, v := range piExtensionEnv(task) {
+	for k, v := range piExtensionEnv(task, logger) {
 		env = append(env, k+"="+v)
 	}
 	return append(env, task.ExtraEnv...)
@@ -432,7 +432,7 @@ func piRPCEnv(ctx context.Context, task Task) []string {
 // and the extension degrades to a no-op, so a run never fails because iterion
 // passed one fewer variable than the extension build expected. Secret VALUES
 // never appear here.
-func piExtensionEnv(task Task) map[string]string {
+func piExtensionEnv(task Task, logger *iterlog.Logger) map[string]string {
 	env := map[string]string{
 		"ITERION_PI_CONTRACT":  piext.ContractVersion,
 		"ITERION_PI_CTRL":      "rpc",
@@ -451,7 +451,7 @@ func piExtensionEnv(task Task) map[string]string {
 	if task.InteractionEnabled {
 		env["ITERION_PI_INTERACTION"] = "sync"
 	}
-	if servers := piMCPServers(task); len(servers) > 0 {
+	if servers := piMCPServers(task, logger); len(servers) > 0 {
 		if raw, err := json.Marshal(servers); err == nil {
 			env["ITERION_PI_MCP_SERVERS"] = string(raw)
 		}
@@ -461,33 +461,78 @@ func piExtensionEnv(task Task) map[string]string {
 
 // piMCPServerSpec is one MCP server the extension bridges onto pi.
 type piMCPServerSpec struct {
-	Name    string            `json:"name"`
-	URL     string            `json:"url"`
-	Headers map[string]string `json:"headers,omitempty"`
+	Name      string            `json:"name"`
+	Transport string            `json:"transport"`
+	URL       string            `json:"url,omitempty"`
+	Headers   map[string]string `json:"headers,omitempty"`
+	Command   string            `json:"command,omitempty"`
+	Args      []string          `json:"args,omitempty"`
+	Env       map[string]string `json:"env,omitempty"`
 }
 
 // piMCPServers lists the MCP servers this node should reach.
 //
 // pi has no MCP client, so every one of iterion's MCP surfaces is invisible to
-// it until the extension bridges them. Today that is the board; workflow-declared
-// `mcp_server:` blocks join the same list once non-HTTP transports land.
+// it until the extension bridges them: the board, plus whatever `mcp_server:`
+// blocks the workflow declared.
 //
-// The board is included only when the run actually has capabilities AND the
-// HTTP endpoint is wired. Registering it otherwise would hand the agent tools
-// that fail on every call, which is worse than not having them: the model
-// burns turns discovering they do not work.
+// A server is forwarded only when it carries what its transport needs — a url
+// for http/sse, a command for stdio. Registering an unreachable one would hand
+// the agent tools that fail on every call, which is worse than not having them:
+// the model burns turns discovering they do not work. The same reasoning gates
+// the board on the run actually holding capabilities AND a wired endpoint.
 //
 // This is also the ONLY place a token appears in the extension's configuration
 // — inside a server's headers, never as a standalone variable — so a generic
 // environment dump cannot log it.
-func piMCPServers(task Task) []piMCPServerSpec {
+//
+// Sandboxed stdio servers inherit the claude_code caveat: the command is
+// resolved inside the container, so a host-only binary is unreachable there.
+func piMCPServers(task Task, logger *iterlog.Logger) []piMCPServerSpec {
 	var out []piMCPServerSpec
 	if len(task.Capabilities) > 0 && task.BoardHTTPEndpoint != "" && task.BoardRunToken != "" {
 		out = append(out, piMCPServerSpec{
-			Name:    "iterion_board",
-			URL:     task.BoardHTTPEndpoint,
-			Headers: map[string]string{"X-Iterion-Run": task.BoardRunToken},
+			Name:      "iterion_board",
+			Transport: "http",
+			URL:       task.BoardHTTPEndpoint,
+			Headers:   map[string]string{"X-Iterion-Run": task.BoardRunToken},
 		})
+	}
+
+	warn := func(format string, args ...any) {
+		if logger != nil {
+			logger.Warn(format, args...)
+		}
+	}
+	for _, s := range task.MCPServers {
+		switch strings.ToLower(strings.TrimSpace(s.Transport)) {
+		case "http", "sse":
+			transport := strings.ToLower(strings.TrimSpace(s.Transport))
+			if s.URL == "" {
+				warn("[%s#%d/%s] MCP server %q: %s transport with empty url; skipped",
+					task.NodeID, task.Iteration, BackendPi, s.Name, transport)
+				continue
+			}
+			out = append(out, piMCPServerSpec{
+				Name:      s.Name,
+				Transport: transport,
+				URL:       s.URL,
+				Headers:   s.Headers,
+			})
+		default: // stdio
+			if s.Command == "" {
+				warn("[%s#%d/%s] MCP server %q: stdio transport with empty command; skipped",
+					task.NodeID, task.Iteration, BackendPi, s.Name)
+				continue
+			}
+			out = append(out, piMCPServerSpec{
+				Name:      s.Name,
+				Transport: "stdio",
+				Command:   s.Command,
+				Args:      s.Args,
+				Env:       s.Env,
+			})
+		}
 	}
 	return out
 }

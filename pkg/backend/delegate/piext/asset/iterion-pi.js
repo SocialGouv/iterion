@@ -14,14 +14,24 @@ function permissionMode(raw) {
       return "off";
   }
 }
+function positiveInt(raw, fallback) {
+  const n = raw === void 0 ? Number.NaN : Number.parseInt(raw, 10);
+  return Number.isFinite(n) && n > 0 ? n : fallback;
+}
+function mcpTransport(raw) {
+  return raw === "sse" || raw === "stdio" ? raw : "http";
+}
+function usableMcpServer(s) {
+  const c = s;
+  if (typeof c?.name !== "string" || c.name === "") return false;
+  return mcpTransport(c.transport) === "stdio" ? typeof c.command === "string" && c.command !== "" : typeof c.url === "string" && c.url !== "";
+}
 function parseMcpServers(raw) {
   if (!raw) return [];
   try {
     const parsed = JSON.parse(raw);
     if (!Array.isArray(parsed)) return [];
-    return parsed.filter(
-      (s) => typeof s?.name === "string" && typeof s?.url === "string"
-    );
+    return parsed.filter(usableMcpServer).map((s) => ({ ...s, transport: mcpTransport(s.transport) }));
   } catch {
     return [];
   }
@@ -41,6 +51,7 @@ function loadConfig() {
     permission: permissionMode(env("ITERION_PI_PERMISSION")),
     interaction: env("ITERION_PI_INTERACTION") === "sync" ? "sync" : "off",
     mcpServers: parseMcpServers(env("ITERION_PI_MCP_SERVERS")),
+    mcpConnectTimeoutMs: positiveInt(env("ITERION_PI_MCP_CONNECT_TIMEOUT_MS"), 1e4),
     ctrlEnabled: env("ITERION_PI_CTRL") !== "off"
   };
 }
@@ -203,54 +214,422 @@ function installAskUser(pi, cfg, ctrl) {
 // src/tools/mcp-tools.ts
 import { Type as Type2 } from "typebox";
 
+// src/mcp/client.ts
+var PROTOCOL_VERSION = "2025-06-18";
+var McpClient = class {
+  constructor(transport, timeoutMs = 6e4) {
+    this.transport = transport;
+    this.timeoutMs = timeoutMs;
+    transport.onMessage((m) => this.handle(m));
+  }
+  nextId = 0;
+  pending = /* @__PURE__ */ new Map();
+  closed = false;
+  /**
+   * Performs the MCP handshake.
+   *
+   * The `notifications/initialized` follow-up is not optional: a spec-abiding
+   * server rejects every request until it arrives. iterion's own board server
+   * is lenient, which is exactly why omitting it would go unnoticed until the
+   * first third-party server.
+   */
+  async initialize() {
+    await this.transport.start();
+    await this.request("initialize", {
+      protocolVersion: PROTOCOL_VERSION,
+      capabilities: {},
+      clientInfo: { name: "iterion-pi-extension", version: "1" }
+    });
+    await this.notify("notifications/initialized");
+  }
+  async listTools() {
+    const tools = [];
+    let cursor;
+    do {
+      const page = await this.request("tools/list", cursor ? { cursor } : {});
+      for (const t of page?.tools ?? []) tools.push(t);
+      cursor = page?.nextCursor;
+    } while (cursor);
+    return tools;
+  }
+  async callTool(name, args) {
+    return await this.request("tools/call", { name, arguments: args }) ?? {};
+  }
+  close() {
+    this.closed = true;
+    for (const [, p] of this.pending) {
+      clearTimeout(p.timer);
+      p.reject(new Error("MCP connection closed"));
+    }
+    this.pending.clear();
+    this.transport.close();
+  }
+  async request(method, params) {
+    if (this.closed) throw new Error(`${method}: client is closed`);
+    this.nextId += 1;
+    const id = this.nextId;
+    const answer = new Promise((resolve, reject) => {
+      const timer = setTimeout(() => {
+        this.pending.delete(id);
+        reject(new Error(`${method}: timed out after ${this.timeoutMs}ms`));
+      }, this.timeoutMs);
+      this.pending.set(id, { resolve, reject, timer });
+    });
+    answer.catch(() => {
+    });
+    try {
+      await this.transport.send({ jsonrpc: "2.0", id, method, params });
+    } catch (err) {
+      const p = this.pending.get(id);
+      if (p) {
+        clearTimeout(p.timer);
+        this.pending.delete(id);
+      }
+      throw err instanceof Error ? err : new Error(String(err));
+    }
+    return answer;
+  }
+  async notify(method, params) {
+    await this.transport.send({ jsonrpc: "2.0", method, params });
+  }
+  handle(message) {
+    if (typeof message.id !== "number") return;
+    const p = this.pending.get(message.id);
+    if (!p) return;
+    clearTimeout(p.timer);
+    this.pending.delete(message.id);
+    if (message.error) {
+      p.reject(new Error(`${message.error.message} (code ${message.error.code})`));
+      return;
+    }
+    p.resolve(message.result);
+  }
+};
+
+// src/mcp/sse-frames.ts
+async function* readSseFrames(body) {
+  const reader = body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = "";
+  try {
+    for (; ; ) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, { stream: true });
+      for (; ; ) {
+        const boundary = findFrameBoundary(buffer);
+        if (boundary < 0) break;
+        const raw = buffer.slice(0, boundary);
+        buffer = buffer.slice(boundary + frameSeparatorLength(buffer, boundary));
+        const frame = parseFrame(raw);
+        if (frame) yield frame;
+      }
+    }
+  } finally {
+    try {
+      await reader.cancel();
+    } catch {
+    }
+  }
+}
+function findFrameBoundary(buffer) {
+  const lf = buffer.indexOf("\n\n");
+  const crlf = buffer.indexOf("\r\n\r\n");
+  if (lf < 0) return crlf;
+  if (crlf < 0) return lf;
+  return Math.min(lf, crlf);
+}
+function frameSeparatorLength(buffer, at) {
+  return buffer.startsWith("\r\n\r\n", at) ? 4 : 2;
+}
+function parseFrame(raw) {
+  let event = "";
+  let id;
+  const data = [];
+  for (const line of raw.split("\n")) {
+    const clean = line.endsWith("\r") ? line.slice(0, -1) : line;
+    if (clean === "" || clean.startsWith(":")) continue;
+    const colon = clean.indexOf(":");
+    const field = colon < 0 ? clean : clean.slice(0, colon);
+    let value = colon < 0 ? "" : clean.slice(colon + 1);
+    if (value.startsWith(" ")) value = value.slice(1);
+    if (field === "event") event = value;
+    else if (field === "data") data.push(value);
+    else if (field === "id") id = value;
+  }
+  if (data.length === 0) return void 0;
+  return { event: event || "message", data: data.join("\n"), id };
+}
+
 // src/mcp/http.ts
-var McpHttpClient = class {
+var PROTOCOL_VERSION2 = "2025-06-18";
+var HttpTransport = class {
   constructor(url, headers = {}, timeoutMs = 6e4) {
     this.url = url;
     this.headers = headers;
     this.timeoutMs = timeoutMs;
   }
-  nextId = 0;
-  /**
-   * MCP requires an `initialize` handshake before anything else. iterion's
-   * board server is lenient, but a third-party server is not, and doing it
-   * here keeps this client honest against both.
-   */
-  async initialize() {
-    await this.rpc("initialize", {
-      protocolVersion: "2024-11-05",
-      capabilities: {},
-      clientInfo: { name: "iterion-pi-extension", version: "1" }
-    });
+  handler = () => {
+  };
+  sessionId;
+  closed = false;
+  /** In-flight requests, so close() can actually stop them. */
+  inflight = /* @__PURE__ */ new Set();
+  // Nothing to establish: the transport is request-driven, and the handshake
+  // is the client's first POST.
+  async start() {
   }
-  async listTools() {
-    const res = await this.rpc("tools/list", {});
-    return res?.tools ?? [];
+  onMessage(handler) {
+    this.handler = handler;
   }
-  async callTool(name, args) {
-    return await this.rpc("tools/call", { name, arguments: args }) ?? {};
+  close() {
+    this.closed = true;
+    for (const c of this.inflight) c.abort();
+    this.inflight.clear();
   }
-  async rpc(method, params) {
-    this.nextId += 1;
+  async send(message) {
+    if (this.closed) throw new Error("transport is closed");
     const controller = new AbortController();
+    this.inflight.add(controller);
     const timer = setTimeout(() => controller.abort(), this.timeoutMs);
     try {
       const res = await fetch(this.url, {
         method: "POST",
-        headers: { "content-type": "application/json", ...this.headers },
-        body: JSON.stringify({ jsonrpc: "2.0", id: this.nextId, method, params }),
+        headers: {
+          "content-type": "application/json",
+          // Both are advertised because the server chooses which to
+          // use per response.
+          accept: "application/json, text/event-stream",
+          ...this.sessionId ? { "mcp-session-id": this.sessionId } : {},
+          ...this.sessionId ? { "mcp-protocol-version": PROTOCOL_VERSION2 } : {},
+          ...this.headers
+        },
+        body: JSON.stringify(message),
         signal: controller.signal
       });
+      const assigned = res.headers.get("mcp-session-id");
+      if (assigned) this.sessionId = assigned;
+      if (res.status === 202 || res.status === 204) return;
       if (!res.ok) {
-        throw new Error(`${method}: HTTP ${res.status} ${res.statusText}`);
+        throw new Error(`HTTP ${res.status} ${res.statusText}`);
       }
-      const body = await res.json();
-      if (body.error) {
-        throw new Error(`${method}: ${body.error.message} (code ${body.error.code})`);
+      const contentType = res.headers.get("content-type") ?? "";
+      if (contentType.includes("text/event-stream") && res.body) {
+        await this.consumeStream(res.body);
+        return;
       }
-      return body.result;
+      const text = await res.text();
+      if (text.trim() === "") return;
+      this.dispatch(JSON.parse(text));
     } finally {
       clearTimeout(timer);
+      this.inflight.delete(controller);
+    }
+  }
+  /**
+   * Reads the SSE stream a POST may answer with, stopping at the response.
+   *
+   * The spec says the server SHOULD close the stream once it has replied, but
+   * a server that holds it open would otherwise keep `send` awaiting forever.
+   * Returning at the first response frame makes the caller's progress depend
+   * on the answer, not on the server's stream hygiene. Leaving the loop
+   * cancels the body, so the connection is not held open either.
+   */
+  async consumeStream(body) {
+    for await (const frame of readSseFrames(body)) {
+      if (frame.event !== "message") continue;
+      let parsed;
+      try {
+        parsed = JSON.parse(frame.data);
+      } catch {
+        continue;
+      }
+      this.dispatch(parsed);
+      if (parsed.id !== void 0 && parsed.id !== null) return;
+    }
+  }
+  dispatch(parsed) {
+    if (Array.isArray(parsed)) {
+      for (const m of parsed) this.handler(m);
+      return;
+    }
+    this.handler(parsed);
+  }
+};
+
+// src/mcp/sse.ts
+var SseTransport = class {
+  constructor(url, headers = {}, timeoutMs = 6e4) {
+    this.url = url;
+    this.headers = headers;
+    this.timeoutMs = timeoutMs;
+  }
+  handler = () => {
+  };
+  endpoint;
+  controller = new AbortController();
+  closed = false;
+  onMessage(handler) {
+    this.handler = handler;
+  }
+  /** Opens the event stream and resolves once the POST endpoint is known. */
+  async start() {
+    const res = await fetch(this.url, {
+      method: "GET",
+      headers: { accept: "text/event-stream", ...this.headers },
+      signal: this.controller.signal
+    });
+    if (!res.ok || !res.body) {
+      throw new Error(`SSE connect: HTTP ${res.status} ${res.statusText}`);
+    }
+    let ready;
+    let failed;
+    const announced = new Promise((resolve, reject) => {
+      ready = resolve;
+      failed = reject;
+    });
+    const timer = setTimeout(
+      () => failed(new Error(`SSE connect: no endpoint announced within ${this.timeoutMs}ms`)),
+      this.timeoutMs
+    );
+    void this.pump(res.body, ready, failed).finally(() => clearTimeout(timer));
+    await announced;
+  }
+  async send(message) {
+    if (this.closed) throw new Error("transport is closed");
+    if (!this.endpoint) throw new Error("SSE endpoint not announced yet");
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), this.timeoutMs);
+    try {
+      const res = await fetch(this.endpoint, {
+        method: "POST",
+        headers: { "content-type": "application/json", ...this.headers },
+        body: JSON.stringify(message),
+        signal: controller.signal
+      });
+      if (!res.ok) throw new Error(`HTTP ${res.status} ${res.statusText}`);
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+  close() {
+    this.closed = true;
+    this.controller.abort();
+  }
+  async pump(body, ready, failed) {
+    try {
+      for await (const frame of readSseFrames(body)) {
+        if (frame.event === "endpoint") {
+          this.endpoint = new URL(frame.data, this.url).toString();
+          ready();
+          continue;
+        }
+        if (frame.event !== "message") continue;
+        try {
+          this.handler(JSON.parse(frame.data));
+        } catch {
+        }
+      }
+      failed(new Error("SSE stream closed before announcing an endpoint"));
+    } catch (err) {
+      if (!this.closed) failed(err instanceof Error ? err : new Error(String(err)));
+    }
+  }
+};
+
+// src/mcp/stdio.ts
+import { spawn } from "node:child_process";
+var StdioTransport = class {
+  constructor(command, args = [], env2 = {}, log = () => {
+  }) {
+    this.command = command;
+    this.args = args;
+    this.env = env2;
+    this.log = log;
+  }
+  handler = () => {
+  };
+  child;
+  buffer = "";
+  closed = false;
+  onExit;
+  onMessage(handler) {
+    this.handler = handler;
+  }
+  async start() {
+    const child = spawn(this.command, this.args, {
+      // The declared env is an OVERLAY, not a replacement: a server
+      // launched without PATH or HOME generally cannot start at all, and
+      // every other backend forwards the ambient environment too.
+      env: { ...process.env, ...this.env },
+      stdio: ["pipe", "pipe", "pipe"]
+    });
+    this.child = child;
+    child.stdout?.setEncoding("utf8");
+    child.stdout?.on("data", (chunk) => this.absorb(chunk));
+    child.stderr?.setEncoding("utf8");
+    child.stderr?.on("data", (chunk) => {
+      for (const line of chunk.split("\n")) {
+        if (line.trim() !== "") this.log(line);
+      }
+    });
+    this.onExit = () => this.close();
+    process.once("exit", this.onExit);
+    await new Promise((resolve, reject) => {
+      const settleOk = () => {
+        child.off("error", settleErr);
+        resolve();
+      };
+      const settleErr = (err) => {
+        child.off("spawn", settleOk);
+        reject(new Error(`spawn ${this.command}: ${err.message}`));
+      };
+      child.once("spawn", settleOk);
+      child.once("error", settleErr);
+    });
+  }
+  async send(message) {
+    if (this.closed) throw new Error("transport is closed");
+    const stdin = this.child?.stdin;
+    if (!stdin || stdin.destroyed) throw new Error("MCP server is not running");
+    const line = `${JSON.stringify(message)}
+`;
+    await new Promise((resolve, reject) => {
+      stdin.write(line, (err) => err ? reject(err) : resolve());
+    });
+  }
+  close() {
+    if (this.closed) return;
+    this.closed = true;
+    if (this.onExit) process.off("exit", this.onExit);
+    const child = this.child;
+    if (!child) return;
+    try {
+      child.stdin?.end();
+    } catch {
+    }
+    const grace = setTimeout(() => {
+      try {
+        child.kill();
+      } catch {
+      }
+    }, 2e3);
+    grace.unref?.();
+    child.once("exit", () => clearTimeout(grace));
+  }
+  absorb(chunk) {
+    this.buffer += chunk;
+    for (; ; ) {
+      const nl = this.buffer.indexOf("\n");
+      if (nl < 0) break;
+      const line = this.buffer.slice(0, nl).trim();
+      this.buffer = this.buffer.slice(nl + 1);
+      if (line === "") continue;
+      try {
+        this.handler(JSON.parse(line));
+      } catch {
+        this.log(`non-JSON on stdout: ${line.slice(0, 200)}`);
+      }
     }
   }
 };
@@ -264,39 +643,74 @@ function renderResult(result) {
   const text = parts.length > 0 ? parts.join("\n") : JSON.stringify(result);
   return { text, isError: result.isError === true };
 }
-async function installMcpServer(pi, server) {
-  if (!server.url) return 0;
-  const client = new McpHttpClient(server.url, server.headers ?? {});
-  await client.initialize();
-  const tools = await client.listTools();
-  for (const tool of tools) {
-    pi.registerTool({
-      name: tool.name,
-      label: tool.name,
-      description: tool.description ?? `${tool.name} (via ${server.name})`,
-      // The server's JSON Schema is passed through unvalidated on this
-      // side: it is authoritative, and re-deriving a TypeBox schema from
-      // it would only add a second place for the shape to be wrong.
-      parameters: Type2.Unsafe(
-        tool.inputSchema ?? { type: "object" }
-      ),
-      async execute(_toolCallId, params) {
-        try {
-          const result = await client.callTool(tool.name, params ?? {});
-          const { text, isError } = renderResult(result);
-          return { content: [{ type: "text", text }], details: void 0, isError };
-        } catch (err) {
-          const msg = err instanceof Error ? err.message : String(err);
-          return {
-            content: [{ type: "text", text: `${tool.name} failed: ${msg}` }],
-            details: void 0,
-            isError: true
-          };
-        }
-      }
-    });
+function makeTransport(server, log) {
+  switch (server.transport) {
+    case "stdio":
+      return new StdioTransport(
+        server.command ?? "",
+        server.args ?? [],
+        server.env ?? {},
+        (line) => log(`${server.name}: ${line}`)
+      );
+    case "sse":
+      return new SseTransport(server.url ?? "", server.headers ?? {});
+    default:
+      return new HttpTransport(server.url ?? "", server.headers ?? {});
   }
-  return tools.length;
+}
+function withDeadline(work, ms, what) {
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error(`${what} timed out after ${ms}ms`)), ms);
+    work.then(
+      (v) => {
+        clearTimeout(timer);
+        resolve(v);
+      },
+      (e) => {
+        clearTimeout(timer);
+        reject(e);
+      }
+    );
+  });
+}
+async function installMcpServer(pi, server, log = () => {
+}, connectTimeoutMs = 1e4) {
+  const client = new McpClient(makeTransport(server, log));
+  try {
+    await withDeadline(client.initialize(), connectTimeoutMs, `${server.name}: handshake`);
+    const tools = await withDeadline(client.listTools(), connectTimeoutMs, `${server.name}: tools/list`);
+    for (const tool of tools) {
+      pi.registerTool({
+        name: tool.name,
+        label: tool.name,
+        description: tool.description ?? `${tool.name} (via ${server.name})`,
+        // The server's JSON Schema is passed through unvalidated on this
+        // side: it is authoritative, and re-deriving a TypeBox schema from
+        // it would only add a second place for the shape to be wrong.
+        parameters: Type2.Unsafe(
+          tool.inputSchema ?? { type: "object" }
+        ),
+        async execute(_toolCallId, params) {
+          try {
+            const result = await client.callTool(tool.name, params ?? {});
+            const { text, isError } = renderResult(result);
+            return { content: [{ type: "text", text }], details: void 0, isError };
+          } catch (err) {
+            const msg = err instanceof Error ? err.message : String(err);
+            return {
+              content: [{ type: "text", text: `${tool.name} failed: ${msg}` }],
+              details: void 0,
+              isError: true
+            };
+          }
+        }
+      });
+    }
+    return { client, count: tools.length };
+  } catch (err) {
+    client.close();
+    throw err;
+  }
 }
 
 // src/index.ts
@@ -315,16 +729,32 @@ function index_default(pi) {
   installPermissionGate(pi, cfg, ctrl);
   installAskUser(pi, cfg, ctrl);
   if (cfg.mcpServers.length > 0) {
+    const clients = [];
     pi.on("session_start", async (_event, ctx) => {
-      for (const server of cfg.mcpServers) {
-        try {
-          const count = await installMcpServer(pi, server);
-          ctrl.notify("log", { level: "info", message: `bridged ${count} tool(s) from ${server.name}` }, ctx);
-        } catch (err) {
-          const msg = err instanceof Error ? err.message : String(err);
-          ctrl.notify("log", { level: "warn", message: `MCP server ${server.name} unreachable: ${msg}` }, ctx);
-        }
-      }
+      await Promise.all(
+        cfg.mcpServers.map(async (server) => {
+          try {
+            const { client, count } = await installMcpServer(
+              pi,
+              server,
+              (line) => ctrl.notify("log", { level: "warn", message: line }, ctx),
+              cfg.mcpConnectTimeoutMs
+            );
+            clients.push(client);
+            ctrl.notify(
+              "log",
+              { level: "info", message: `bridged ${count} tool(s) from ${server.name} (${server.transport})` },
+              ctx
+            );
+          } catch (err) {
+            const msg = err instanceof Error ? err.message : String(err);
+            ctrl.notify("log", { level: "warn", message: `MCP server ${server.name} unreachable: ${msg}` }, ctx);
+          }
+        })
+      );
+    });
+    pi.on("session_shutdown", () => {
+      while (clients.length > 0) clients.pop()?.close();
     });
   }
 }

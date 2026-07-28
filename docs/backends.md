@@ -552,8 +552,9 @@ or `curl -fsSL https://pi.dev/install.sh | sh`. Pin a specific binary with
 #### What it does NOT bring
 
 pi deliberately ships a small tool set: `read, bash, edit, write, grep,
-find, ls`. There is **no MCP client at all**, no subagent/`Task`, no todo,
-no web fetch/search, no notebook, no background bash. Consequences for a
+find, ls`, and **no MCP client at all** — plus no subagent/`Task`, no todo,
+no web fetch/search, no notebook, no background bash. The iterion pi
+extension supplies the MCP half; the rest stands. Consequences for a
 `backend: "pi"` node:
 
 - **The permission gate DOES work** (from v3.7.6), supplied by the iterion pi
@@ -568,9 +569,19 @@ no web fetch/search, no notebook, no background bash. Consequences for a
   put a question to the operator, which pauses the run and resumes with their
   answer. Async questions (`ask_user_async` / `await_answers`, ADR-081) do not
   yet.
-- **workflow `mcp_server:` blocks are not forwarded yet** — only the
-  streamable-HTTP transport is implemented, and workflow-declared servers
-  commonly use stdio. Such a node should stay on `backend: "claw"`.
+- **workflow `mcp_server:` blocks DO work** (from v3.7.6, RPC transport
+  only), on all three transports: `http` (streamable HTTP), `sse` (the
+  legacy binding) and `stdio` (a child process). The extension carries its
+  own MCP client — pi has none — and discovers each server's tools through
+  `tools/list`, so schemas and capability gating stay with the server.
+  Two things to know:
+  - **A sandboxed stdio server runs inside the container**, so its
+    `command:` must resolve there. Same caveat as `claude_code`.
+  - **Connecting is bounded** by `ITERION_PI_MCP_CONNECT_TIMEOUT_MS`
+    (default 10000). Servers connect in parallel during pi's session
+    start — which iterion's own 30s handshake is waiting on — so one
+    unreachable server costs its own tools, not the run. Failures are
+    logged, not fatal.
 - **`__ITERION_SECRET_*__` placeholders are not materialised.** Use file
   secrets instead ([secrets.md](secrets.md)) — they are real mounted files
   and work unchanged.

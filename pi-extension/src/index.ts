@@ -24,6 +24,7 @@ import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { CONTRACT_VERSION, loadConfig } from "./config.js";
 import { Ctrl } from "./ctrl.js";
 import { installPermissionGate } from "./hooks/permission.js";
+import type { McpClient } from "./mcp/client.js";
 import { installAskUser } from "./tools/ask-user.js";
 import { installMcpServer } from "./tools/mcp-tools.js";
 
@@ -61,16 +62,42 @@ export default function (pi: ExtensionAPI): void {
 	// unreachable costs its tools, not the session — the agent then simply
 	// does not have them, which is visible in what it does.
 	if (cfg.mcpServers.length > 0) {
+		const clients: McpClient[] = [];
+
 		pi.on("session_start", async (_event, ctx) => {
-			for (const server of cfg.mcpServers) {
-				try {
-					const count = await installMcpServer(pi, server);
-					ctrl.notify("log", { level: "info", message: `bridged ${count} tool(s) from ${server.name}` }, ctx);
-				} catch (err) {
-					const msg = err instanceof Error ? err.message : String(err);
-					ctrl.notify("log", { level: "warn", message: `MCP server ${server.name} unreachable: ${msg}` }, ctx);
-				}
-			}
+			// In parallel and each individually bounded: pi awaits this handler
+			// before the first turn, and iterion's own handshake is waiting on
+			// that, so the cost of a slow server must not be paid twice — nor
+			// multiplied by the number of servers.
+			await Promise.all(
+				cfg.mcpServers.map(async (server) => {
+					try {
+						const { client, count } = await installMcpServer(
+							pi,
+							server,
+							(line) => ctrl.notify("log", { level: "warn", message: line }, ctx),
+							cfg.mcpConnectTimeoutMs,
+						);
+						clients.push(client);
+						ctrl.notify(
+							"log",
+							{ level: "info", message: `bridged ${count} tool(s) from ${server.name} (${server.transport})` },
+							ctx,
+						);
+					} catch (err) {
+						const msg = err instanceof Error ? err.message : String(err);
+						ctrl.notify("log", { level: "warn", message: `MCP server ${server.name} unreachable: ${msg}` }, ctx);
+					}
+				}),
+			);
+		});
+
+		// A stdio server is a child process and an http/sse one holds a
+		// connection; neither goes away on its own. Without this, every run
+		// against a stdio MCP server would leak one process for the life of
+		// the machine.
+		pi.on("session_shutdown", () => {
+			while (clients.length > 0) clients.pop()?.close();
 		});
 	}
 }

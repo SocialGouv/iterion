@@ -17,13 +17,22 @@ export const CONTRACT_VERSION = "1";
 
 export type PermissionMode = "off" | "ask" | "deny";
 
+export type McpTransport = "http" | "sse" | "stdio";
+
 /** One MCP server iterion asked the extension to bridge. */
 export interface McpServerConfig {
 	name: string;
-	/** Streamable-HTTP endpoint. Only transport supported so far. */
+	/** Empty means `http` — the shape iterion's own board server speaks. */
+	transport?: McpTransport;
+	/** Endpoint for `http` and `sse`. */
 	url?: string;
 	/** Auth and routing headers. The ONLY place a token appears. */
 	headers?: Record<string, string>;
+	/** Executable for `stdio`. */
+	command?: string;
+	args?: string[];
+	/** Extra environment for `stdio`, overlaid on the inherited one. */
+	env?: Record<string, string>;
 }
 export type InteractionMode = "off" | "sync";
 
@@ -45,6 +54,15 @@ export interface IterionConfig {
 	/** MCP servers to bridge (iterion's board, plus any the workflow declared). */
 	mcpServers: McpServerConfig[];
 
+	/**
+	 * How long one server gets to connect and list its tools.
+	 *
+	 * Bounded well under iterion's own 30s RPC handshake, which is blocked on
+	 * this: a server that accepts the connection and then goes quiet must cost
+	 * its own tools, never the run.
+	 */
+	mcpConnectTimeoutMs: number;
+
 	/** Whether the control channel is available at all. */
 	ctrlEnabled: boolean;
 }
@@ -65,6 +83,29 @@ function permissionMode(raw: string | undefined): PermissionMode {
 	}
 }
 
+function positiveInt(raw: string | undefined, fallback: number): number {
+	const n = raw === undefined ? Number.NaN : Number.parseInt(raw, 10);
+	return Number.isFinite(n) && n > 0 ? n : fallback;
+}
+
+function mcpTransport(raw: unknown): McpTransport {
+	return raw === "sse" || raw === "stdio" ? raw : "http";
+}
+
+/**
+ * A server descriptor is usable only if it carries what its transport needs.
+ * Registering one that cannot connect would hand the agent tools failing on
+ * every call — worse than absent tools, because the model burns turns
+ * discovering they do not work.
+ */
+function usableMcpServer(s: unknown): s is McpServerConfig {
+	const c = s as McpServerConfig | undefined;
+	if (typeof c?.name !== "string" || c.name === "") return false;
+	return mcpTransport(c.transport) === "stdio"
+		? typeof c.command === "string" && c.command !== ""
+		: typeof c.url === "string" && c.url !== "";
+}
+
 /**
  * Parses the MCP server list. A malformed value yields NO servers rather than
  * throwing: a broken variable must not take the whole session down with it,
@@ -75,9 +116,7 @@ function parseMcpServers(raw: string | undefined): McpServerConfig[] {
 	try {
 		const parsed = JSON.parse(raw);
 		if (!Array.isArray(parsed)) return [];
-		return parsed.filter(
-			(s): s is McpServerConfig => typeof s?.name === "string" && typeof s?.url === "string",
-		);
+		return parsed.filter(usableMcpServer).map((s) => ({ ...s, transport: mcpTransport(s.transport) }));
 	} catch {
 		return [];
 	}
@@ -99,6 +138,7 @@ export function loadConfig(): IterionConfig {
 		permission: permissionMode(env("ITERION_PI_PERMISSION")),
 		interaction: env("ITERION_PI_INTERACTION") === "sync" ? "sync" : "off",
 		mcpServers: parseMcpServers(env("ITERION_PI_MCP_SERVERS")),
+		mcpConnectTimeoutMs: positiveInt(env("ITERION_PI_MCP_CONNECT_TIMEOUT_MS"), 10_000),
 		ctrlEnabled: env("ITERION_PI_CTRL") !== "off",
 	};
 }

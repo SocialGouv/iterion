@@ -191,7 +191,7 @@ func TestPiExtAsset(t *testing.T) {
 
 func TestPiExtensionEnv(t *testing.T) {
 	t.Run("contract and identity always present", func(t *testing.T) {
-		env := piExtensionEnv(Task{NodeID: "n1", Iteration: 2})
+		env := piExtensionEnv(Task{NodeID: "n1", Iteration: 2}, nil)
 		if env["ITERION_PI_CONTRACT"] != piext.ContractVersion {
 			t.Errorf("contract = %q, want %q", env["ITERION_PI_CONTRACT"], piext.ContractVersion)
 		}
@@ -203,7 +203,7 @@ func TestPiExtensionEnv(t *testing.T) {
 	// No gate configured → no variable → the extension registers no hook, so a
 	// node without a gate pays no per-tool-call round-trip.
 	t.Run("permission absent when no gate is configured", func(t *testing.T) {
-		if _, ok := piExtensionEnv(Task{})["ITERION_PI_PERMISSION"]; ok {
+		if _, ok := piExtensionEnv(Task{}, nil)["ITERION_PI_PERMISSION"]; ok {
 			t.Error("ITERION_PI_PERMISSION set with no gate — the hook would cost a round-trip per call")
 		}
 	})
@@ -213,7 +213,7 @@ func TestPiExtensionEnv(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		env := piExtensionEnv(Task{Permission: pol})
+		env := piExtensionEnv(Task{Permission: pol}, nil)
 		if env["ITERION_PI_PERMISSION"] != "deny" {
 			t.Errorf("ITERION_PI_PERMISSION = %q, want deny", env["ITERION_PI_PERMISSION"])
 		}
@@ -221,7 +221,7 @@ func TestPiExtensionEnv(t *testing.T) {
 
 	// Secret values must never ride the extension's configuration surface.
 	t.Run("carries no secret-looking values", func(t *testing.T) {
-		for k, v := range piExtensionEnv(Task{NodeID: "n", Iteration: 0}) {
+		for k, v := range piExtensionEnv(Task{NodeID: "n", Iteration: 0}, nil) {
 			if strings.Contains(strings.ToLower(k), "token") || strings.Contains(strings.ToLower(k), "key") {
 				t.Errorf("%s=%q looks like a credential on the extension env surface", k, v)
 			}
