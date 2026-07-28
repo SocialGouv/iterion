@@ -106,6 +106,37 @@ func TestSupersede(t *testing.T) {
 		}
 	})
 
+	// The repo's pinned gate context must reach EVERY lane. A manual /revi is
+	// the documented escape hatch when the gate is red; if that lane launched
+	// with the bot's default context it would post a status the repo does not
+	// require and leave the required one stale — the escape hatch making the
+	// deadlock permanent.
+	t.Run("the operator pin reaches the command lane too", func(t *testing.T) {
+		s := newWebhookTestServer(t)
+		got := fanoutLauncher(s)
+		cfg, pt := ghConfig(t, s)
+		cfg.OperatorLaunchVars = map[string]string{"gate_context": "iterion/review"}
+		cfg.CommandMap = map[string][]webhooks.CommandRoute{
+			"revi": {{BotID: "review-pr", Scope: "pr"}},
+		}
+		comment := `{
+		  "action": "created",
+		  "repository": {"id": 42, "full_name": "acme/widgets", "clone_url": "https://github.com/acme/widgets.git"},
+		  "issue": {"number": 7, "html_url": "https://github.com/acme/widgets/pull/7",
+		    "pull_request": {"url": "https://api.github.com/repos/acme/widgets/pulls/7"}},
+		  "comment": {"id": 1, "body": "/revi", "user": {"login": "alice"}},
+		  "sender": {"login": "alice"}
+		}`
+		w := httptest.NewRecorder()
+		s.handleGitHubWebhook(w, ghReq(ghCtx(cfg), comment, "issue_comment", pt))
+
+		for _, rec := range *got {
+			if rec.vars["gate_context"] != "iterion/review" {
+				t.Fatalf("%s launched without the repo's pinned gate context: %v", rec.bot, rec.vars)
+			}
+		}
+	})
+
 	t.Run("scoping", func(t *testing.T) {
 		// EvaluateOverlap is the shared decision; assert the vocabulary is the
 		// one every other launch surface already speaks.

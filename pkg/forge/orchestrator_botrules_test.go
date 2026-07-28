@@ -216,6 +216,58 @@ func TestProvision_NoGatingBotLeavesReviewOnSyncAlone(t *testing.T) {
 	}
 }
 
+// Provision rebuilds the webhook config as a whole literal, so anything an
+// operator set only on the config is wiped by the next enable. That drift
+// already bit review_on_sync and launch_vars; overlap is the third field of
+// the same shape, and it lands on exactly the webhooks worth setting it on.
+func TestProvision_OperatorOverlapSurvivesReprovision(t *testing.T) {
+	o, _, sealer := newTestOrch(t)
+	seedConn(t, o, sealer)
+	ctx := context.Background()
+
+	res, err := o.Provision(ctx, ProvisionRequest{
+		TenantID: "t1", ConnectionID: "conn-1", RepoFullName: "group/api",
+		BotIDs: []string{"dep-guard"}, ActorID: "u1",
+		Overlap:    "supersede",
+		LaunchVars: map[string]string{"gate_context": "iterion/review"},
+	})
+	if err != nil {
+		t.Fatalf("provision: %v", err)
+	}
+	assertPinned := func(t *testing.T, when string) {
+		t.Helper()
+		cfg, err := o.Webhooks.Get(ctx, res.WebhookID)
+		if err != nil {
+			t.Fatalf("%s: get config: %v", when, err)
+		}
+		if cfg.Overlap != "supersede" {
+			t.Errorf("%s: overlap = %q, want the operator's pin", when, cfg.Overlap)
+		}
+		if cfg.OperatorLaunchVars["gate_context"] != "iterion/review" {
+			t.Errorf("%s: gate_context lost: %v", when, cfg.OperatorLaunchVars)
+		}
+	}
+	assertPinned(t, "after the first provision")
+
+	// A MUTATING re-provision (one more bot) rebuilds the whole config.
+	if _, err := o.Provision(ctx, ProvisionRequest{
+		TenantID: "t1", ConnectionID: "conn-1", RepoFullName: "group/api",
+		BotIDs: []string{"dep-guard", "review-pr"}, ActorID: "u1",
+	}); err != nil {
+		t.Fatalf("re-provision: %v", err)
+	}
+	assertPinned(t, "after enabling one more bot")
+
+	// And a NO-OP re-provision must not drop them either.
+	if _, err := o.Provision(ctx, ProvisionRequest{
+		TenantID: "t1", ConnectionID: "conn-1", RepoFullName: "group/api",
+		BotIDs: []string{"dep-guard", "review-pr"}, ActorID: "u1",
+	}); err != nil {
+		t.Fatalf("no-op re-provision: %v", err)
+	}
+	assertPinned(t, "after a no-op re-provision")
+}
+
 // The migration guard: re-enabling an unchanged bot set short-circuits, so
 // without an explicit backfill an already-provisioned repo would stay on the
 // legacy single-bot path forever — tests green, production unchanged.

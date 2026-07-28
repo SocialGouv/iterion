@@ -53,6 +53,10 @@ type forgeEnableReq struct {
 	// naming this repo's merge gate (`gate_context`) so several bots fill ONE
 	// required check, each for the PRs it owns.
 	LaunchVars map[string]string `json:"launch_vars,omitempty"`
+	// Overlap is the repo's launch concurrency policy (pkg/schedgate
+	// vocabulary: allow | skip | supersede). Empty leaves the stored one
+	// untouched; on a review webhook `supersede` is the one worth setting.
+	Overlap string `json:"overlap,omitempty"`
 }
 
 func (s *Server) handleEnableForgeRepoBots(w http.ResponseWriter, r *http.Request) {
@@ -82,6 +86,7 @@ func (s *Server) handleEnableForgeRepoBots(w http.ResponseWriter, r *http.Reques
 		BotIDs:        req.BotIDs,
 		ScheduleCrons: req.ScheduleCrons,
 		LaunchVars:    req.LaunchVars,
+		Overlap:       req.Overlap,
 		ActorID:       id.UserID,
 	})
 	if err != nil {
@@ -108,6 +113,10 @@ type forgeUpdateReq struct {
 	// naming this repo's merge gate (`gate_context`) so several bots fill ONE
 	// required check, each for the PRs it owns.
 	LaunchVars map[string]string `json:"launch_vars,omitempty"`
+	// Overlap is the repo's launch concurrency policy (pkg/schedgate
+	// vocabulary: allow | skip | supersede). Empty leaves the stored one
+	// untouched; on a review webhook `supersede` is the one worth setting.
+	Overlap string `json:"overlap,omitempty"`
 }
 
 func (s *Server) handleUpdateForgeRepoBots(w http.ResponseWriter, r *http.Request) {
@@ -139,6 +148,7 @@ func (s *Server) handleUpdateForgeRepoBots(w http.ResponseWriter, r *http.Reques
 		BotIDs:        req.BotIDs,
 		ScheduleCrons: req.ScheduleCrons,
 		LaunchVars:    req.LaunchVars,
+		Overlap:       req.Overlap,
 		ActorID:       id.UserID,
 		Replace:       true,
 	})

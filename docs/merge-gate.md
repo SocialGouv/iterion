@@ -136,6 +136,12 @@ iterion remote forge repo-bots create --data '{
   "launch_vars": { "gate_context": "iterion/review" }}'
 ```
 
+A review webhook is also where `overlap: supersede` earns its keep: with
+re-review on push, a burst of commits launches a run per push and the earlier
+ones reach a verdict about code that no longer exists. Set it on the same
+call (`"overlap": "supersede"`); it is persisted on the integration like the
+launch vars, so a later `bots enable` does not silently drop it.
+
 Pin it through the **integration's** `launch_vars`, not the webhook's:
 provisioning rewrites the whole webhook config from the bots' manifests, so
 an override PATCHed onto the webhook is dropped at the next enable. The

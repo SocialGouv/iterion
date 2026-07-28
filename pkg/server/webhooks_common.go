@@ -101,6 +101,23 @@ type webhookEventMeta struct {
 	SenderHandle string // username for audit (logged only, never in delivery audit row v1)
 }
 
+// applyWebhookVarLayers puts the two webhook-level var layers onto a
+// handler-built base, in the only order that keeps them meaning what they say:
+//
+//   - cfg.LaunchVars is the UNION of every co-enabled bot's manifest vars, so
+//     it fills in only where nothing more specific is pinned;
+//   - cfg.OperatorLaunchVars is the repo's own choice and always wins.
+//
+// Every launch lane goes through here. The operator layer is what pins a
+// repo's shared gate_context, and a lane that skipped it would post its status
+// under the bot's default context — leaving the required one stale, which is
+// exactly what a manual /revi is supposed to repair.
+func applyWebhookVarLayers(vars map[string]string, cfg webhooks.Config) map[string]string {
+	mergeVarsInto(vars, cfg.LaunchVars)
+	mergeVarsInto(vars, cfg.OperatorLaunchVars)
+	return vars
+}
+
 // mergeVarsInto copies every key from src into dst (overwriting on
 // collision) and returns dst. A nil src is a no-op. Used by the
 // webhook launch-vars builders to layer overlays (context vars,

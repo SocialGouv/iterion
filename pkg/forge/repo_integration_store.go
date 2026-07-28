@@ -46,6 +46,13 @@ type RepoIntegration struct {
 	// exactly one required check and each bot fills it for the PRs it owns.
 	LaunchVars map[string]string `bson:"launch_vars,omitempty" json:"launch_vars,omitempty"`
 
+	// Overlap is the operator's concurrency policy for this repo's webhook
+	// (pkg/schedgate vocabulary; empty = allow, the historical behaviour).
+	// Persisted here for the same reason as LaunchVars: Provision rebuilds the
+	// webhook config as a whole literal, so anything set only on the config is
+	// wiped by the next enable.
+	Overlap string `bson:"overlap,omitempty" json:"overlap,omitempty"`
+
 	// SyncIssuesEnabled, when true, makes the forge→board sync worker mirror
 	// this repo's forge issues into the team's kanban board (one-way: forge is
 	// the source; a card's column is operator-owned once created). Toggled per

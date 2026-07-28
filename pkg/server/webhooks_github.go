@@ -126,7 +126,7 @@ func (s *Server) handlePRForgeReview(ctx context.Context, w http.ResponseWriter,
 				"interleaved merge). Keep the PR's own change intact; only reconcile it with the new base. "+
 				"Push so the PR can re-enter the merge queue.\n\n%s",
 			p.DequeueReason, p.TargetBranch, p.TargetBranch, strings.TrimSpace(p.Title+"\n\n"+p.Description))
-		healVars := branchImproveVars(p.TargetBranch, p.SourceBranch, p.PRURL, mission, false, cfg.LaunchVars)
+		healVars := applyWebhookVarLayers(branchImproveVars(p.TargetBranch, p.SourceBranch, p.PRURL, mission, false, nil), cfg)
 		s.insertAndLaunchWebhook(ctx, w, r, cfg, meta, healIdem, branchImproveBotID, healVars, p.CloneURL, p.SourceBranch, payloadHash, srcIP)
 		return
 	}
@@ -253,7 +253,7 @@ func (s *Server) handleGitHubIssues(w http.ResponseWriter, r *http.Request, cfg 
 	// runner clones the repo's default branch; featurly's worktree: auto
 	// branches from there.
 	route := s.boardRouteForLabel(botID)
-	vars := issueLabeledVars(p, cfg.LaunchVars, route.ArgsVar)
+	vars := applyWebhookVarLayers(issueLabeledVars(p, nil, route.ArgsVar), cfg)
 	s.dispatchInvocation(ctx, w, r, cfg, meta, idemKey, route, vars, p.CloneURL, "", payloadHash, srcIP)
 }
 

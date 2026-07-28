@@ -145,6 +145,9 @@ type ProvisionRequest struct {
 	// integration and re-applied on every Provision (see
 	// RepoIntegration.LaunchVars). Nil leaves the stored ones untouched.
 	LaunchVars map[string]string
+	// Overlap is the operator's concurrency policy for this repo's webhook
+	// (pkg/schedgate vocabulary). Empty leaves the stored one untouched.
+	Overlap string
 	// Replace makes BotIDs the EXACT desired set instead of a union with the
 	// existing integration's bots — the per-bot unbind path. The webhook
 	// events, command map and schedules reconcile down accordingly. Removing
@@ -205,6 +208,10 @@ func (o *Orchestrator) Provision(ctx context.Context, req ProvisionRequest) (Pro
 	if operatorVars == nil && hasExisting {
 		operatorVars = existing.LaunchVars
 	}
+	operatorOverlap := req.Overlap
+	if operatorOverlap == "" && hasExisting {
+		operatorOverlap = existing.Overlap
+	}
 
 	// Resolve every bot's forge requirements (its optional forge: block for
 	// credentials/scopes) AND its invocations (the typed routing contract).
@@ -250,8 +257,9 @@ func (o *Orchestrator) Provision(ctx context.Context, req ProvisionRequest) (Pro
 		}
 		// A changed operator override is a real mutation even when the bot set
 		// is not — without this the short-circuit would silently ignore it.
-		if !maps.Equal(operatorVars, existing.LaunchVars) {
+		if !maps.Equal(operatorVars, existing.LaunchVars) || operatorOverlap != existing.Overlap {
 			existing.LaunchVars = operatorVars
+			existing.Overlap = operatorOverlap
 			existing.UpdatedAt = o.clock()
 			if uerr := o.Integrations.Update(ctx, existing); uerr != nil {
 				return ProvisionResult{}, fmt.Errorf("forge: update integration launch vars: %w", uerr)
@@ -259,6 +267,7 @@ func (o *Orchestrator) Provision(ctx context.Context, req ProvisionRequest) (Pro
 			if cfg, gerr := o.Webhooks.Get(ctx, existing.WebhookID); gerr == nil {
 				cfg.LaunchVars = nilIfEmpty(manifestLaunchVars(desiredBots, frByBot))
 				cfg.OperatorLaunchVars = nilIfEmpty(maps.Clone(operatorVars))
+				cfg.Overlap = operatorOverlap
 				cfg.UpdatedAt = o.clock()
 				if uerr := o.Webhooks.Update(ctx, cfg); uerr != nil {
 					return ProvisionResult{}, fmt.Errorf("forge: update webhook launch vars: %w", uerr)
@@ -405,6 +414,7 @@ func (o *Orchestrator) Provision(ctx context.Context, req ProvisionRequest) (Pro
 		RateLimit:          webhooks.Rate{Rate: 1, Burst: 10},
 		LaunchVars:         nilIfEmpty(launchVars),
 		OperatorLaunchVars: nilIfEmpty(maps.Clone(operatorVars)),
+		Overlap:            operatorOverlap,
 		SecretOverrides:    secretOverrides,
 		MinReplierRole:     minRole,
 		CommandMap:         commandMap,
@@ -469,6 +479,7 @@ func (o *Orchestrator) Provision(ctx context.Context, req ProvisionRequest) (Pro
 		HookURL:          hookURL,
 		ManagedSecretID:  managedSecretID,
 		LaunchVars:       nilIfEmpty(maps.Clone(operatorVars)),
+		Overlap:          operatorOverlap,
 		CreatedBy:        req.ActorID,
 		CreatedAt:        now,
 		UpdatedAt:        now,

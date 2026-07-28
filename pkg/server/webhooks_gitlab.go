@@ -170,7 +170,7 @@ func (s *Server) handleGitLabIssueEvent(ctx context.Context, w http.ResponseWrit
 	idemKey := knowledge.ChecksumHex([]byte(fmt.Sprintf("gl|issue|%s|%s|%d|%d|%s", cfg.TenantID, cfg.ID, p.ProjectID, p.IssueIID, label)))
 
 	route := s.boardRouteForLabel(botID)
-	vars := gitlabIssueLabeledVars(p, cfg.LaunchVars, route.ArgsVar)
+	vars := applyWebhookVarLayers(gitlabIssueLabeledVars(p, nil, route.ArgsVar), cfg)
 	// An issue carries no MR source branch — the bot opens its MR from the
 	// project default branch (finalize_mr cuts the branch from there).
 	s.dispatchInvocation(ctx, w, r, cfg, meta, idemKey, route, vars, p.CloneURL, p.DefaultBranch, payloadHash, srcIP)
@@ -317,7 +317,7 @@ func (s *Server) handleGitLabNote(ctx context.Context, w http.ResponseWriter, r 
 	// always reaches revi-converse — replyInThread implies the bot is enabled
 	// (the early gate above). `/revi <question>` with the converse bot absent
 	// falls back to re-review (matching pre-A5 behaviour).
-	vars := s.buildGitLabNoteVars(p, cmd, cmdArgs, cfg.LaunchVars)
+	vars := applyWebhookVarLayers(s.buildGitLabNoteVars(p, cmd, cmdArgs, nil), cfg)
 	question := cmdArgs
 	if replyInThread {
 		question = strings.TrimSpace(p.NoteBody)
@@ -408,9 +408,9 @@ func (s *Server) handleGitLabCommandNote(ctx context.Context, w http.ResponseWri
 	if s.logger != nil {
 		s.logger.Debug("webhooks: gitlab note %s/%s (/%s) by %s → %s (%s)", p.ProjectPath, surface, cmd, p.AuthorUsername, route.BotID, reason)
 	}
-	vars := buildCommandVars(p, route, cmdArgs, cfg.LaunchVars)
+	vars := applyWebhookVarLayers(buildCommandVars(p, route, cmdArgs, nil), cfg)
 	if surface == "issue" {
-		vars = buildGitLabIssueCommandVars(p, route, cmdArgs, cfg.LaunchVars)
+		vars = applyWebhookVarLayers(buildGitLabIssueCommandVars(p, route, cmdArgs, nil), cfg)
 	} else {
 		stampBranchImprovePushBack(vars, route.BotID, p.SourceBranch, cfg.BranchImproveAsPR)
 		// `/billy` on an MR seeds the run with Revi's most recent review of it
