@@ -1157,7 +1157,7 @@ iterion bundle pack                     # Pack a .botz bundle (create it with `b
 iterion sandbox doctor [file] [--strict] [--target auto|cloud|local]  # Diagnose host sandbox prerequisites; --strict validates a run's full config pre-flight (see docs/sandbox.md)
 iterion migrate to-cloud [flags]        # Migrate a local store into a cloud (Mongo + S3) backend
 iterion server [--port] [--store-dir]   # HTTP server (run console + studio), without the studio launcher
-iterion version                         # Print version
+iterion version [--commit]              # Print version; --commit prints only the 12-char git SHA (errors when the build carries none)
 
 # Operational runner and hidden subprocess entry points:
 # `iterion runner`, `iterion __claw-runner`, `iterion __mcp-ask-user`, `iterion __mcp-board`, `iterion __mcp-control`, `iterion __scan-shards`, `iterion __claude-hook-drain`
