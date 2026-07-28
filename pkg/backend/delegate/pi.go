@@ -79,6 +79,7 @@ var piProtocol = CLIAgentProtocol{
 	ExtraArgsFor:    piExtraArgsFor,
 	ParseOutputRich: parsePiOutput,
 	ResolveEnv:      piResolveEnv,
+	SandboxEnv:      piSandboxEnv,
 
 	ExtraArgs: []string{
 		"--mode", "json",
@@ -331,6 +332,58 @@ func piSessionDir(task Task) string {
 		return filepath.Join(task.WorkDir, ".iterion", "pi", "sessions")
 	}
 	return filepath.Join(os.TempDir(), "iterion-pi-sessions")
+}
+
+// piCredentialEnvNames is every environment variable pi resolves a provider
+// credential or endpoint from (packages/ai/src/env-api-keys.ts, plus the
+// Anthropic bearer/base-URL pair that routes the z.ai facade).
+//
+// It exists for the sandbox: inside a container the ONLY environment is the
+// one iterion passes through ExecOpts, so a host credential is invisible
+// unless it is forwarded by name. A blanket `os.Environ()` forward would push
+// every unrelated host secret into the container, so this is an explicit,
+// auditable allowlist instead.
+var piCredentialEnvNames = []string{
+	"AI_GATEWAY_API_KEY",
+	"ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "ANTHROPIC_OAUTH_TOKEN", "ANTHROPIC_BASE_URL",
+	"ANT_LING_API_KEY",
+	"AZURE_OPENAI_API_KEY", "AZURE_OPENAI_ENDPOINT",
+	"CEREBRAS_API_KEY", "CLOUDFLARE_API_KEY", "COPILOT_GITHUB_TOKEN",
+	"DEEPSEEK_API_KEY", "FIREWORKS_API_KEY",
+	"GEMINI_API_KEY", "GOOGLE_CLOUD_API_KEY", "GROQ_API_KEY",
+	"HF_TOKEN", "KIMI_API_KEY",
+	"MINIMAX_API_KEY", "MINIMAX_CN_API_KEY", "MISTRAL_API_KEY", "MOONSHOT_API_KEY",
+	"NVIDIA_API_KEY",
+	"OPENAI_API_KEY", "OPENAI_BASE_URL", "OPENCODE_API_KEY", "OPENROUTER_API_KEY",
+	"QWEN_TOKEN_PLAN_API_KEY", "QWEN_TOKEN_PLAN_CN_API_KEY",
+	"RADIUS_API_KEY", "TOGETHER_API_KEY",
+	"XAI_API_KEY", "XIAOMI_API_KEY",
+	"XIAOMI_TOKEN_PLAN_AMS_API_KEY", "XIAOMI_TOKEN_PLAN_CN_API_KEY", "XIAOMI_TOKEN_PLAN_SGP_API_KEY",
+	"ZAI_API_KEY", "ZAI_CODING_CN_API_KEY",
+}
+
+// piSandboxEnv is the environment a sandboxed pi receives: the credential
+// allowlist above as inherited from the host, then the per-run overrides, then
+// the run's own provisioning (devbox PATH) last so it wins on a clash.
+//
+// Without this a sandboxed pi node fails with "No API key found for <provider>"
+// even though the host has the key — the failure this function exists for.
+func piSandboxEnv(ctx context.Context, task Task) map[string]string {
+	env := map[string]string{}
+	for _, name := range piCredentialEnvNames {
+		if v, ok := os.LookupEnv(name); ok && v != "" {
+			env[name] = v
+		}
+	}
+	for k, v := range piResolveEnv(ctx) {
+		env[k] = v
+	}
+	for _, kv := range task.ExtraEnv {
+		if k, v, ok := strings.Cut(kv, "="); ok {
+			env[k] = v
+		}
+	}
+	return env
 }
 
 // piEnvKeys maps a pi provider id onto the API-key environment variable pi

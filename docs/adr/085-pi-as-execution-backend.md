@@ -41,9 +41,9 @@ Ship pi as `backend: "pi"`, staged.
 
 ### One backend name, transport upgraded transparently
 
-Print mode (`pi --mode json`) ships first; the RPC transport lands later under
-the **same** backend name, selected by `PiBackend`, with `ITERION_PI_MODE` as
-the operator's pin.
+Both transports ship under the **same** backend name, selected by `PiBackend`.
+The RPC session is the default; `ITERION_PI_MODE=print` is the operator's
+rollback.
 
 Print vs RPC is a *transport*, not a contract: every observable — `Result`
 fields, hook firing, error types, `SystemPromptMode`, model/effort mapping,
@@ -100,9 +100,9 @@ code execution. This is a sharper boundary than the equivalent for
 ### ⚠️ Anthropic subscription credentials — the original reasoning was wrong
 
 **This section's original decision (a blanket refusal) is superseded by
-evidence from Anthropic itself.** It is kept below, marked, because the
-reasoning is instructive and the *code* still defaults to refusing pending an
-explicit product decision.
+evidence from Anthropic itself, and the code now permits by default.** The
+original reasoning is kept below, marked, because it is instructive about how a
+plausible reading of vendor terms can be wrong.
 
 Driving `backend: "pi"` with a Claude subscription OAuth token against
 `anthropic/claude-haiku-4-5` produced, from Anthropic's own API:
@@ -334,12 +334,27 @@ RPC now matches, cache load goes to `PeakInputTokens` where it belongs, and
 `TestPiRPCLiveEquivalence` asserts token and cost equality across transports —
 that assertion is what gates the default staying on RPC.
 
-**Still not validated:**
+### The sandboxed path
 
-- **The sandboxed path.** Every run above used `--sandbox none`. The
-  `sandbox.Run.Command` routing, the pidfile-kill wrapper, `--offline`, and
-  the workspace-relative system-prompt/session paths are unit-tested against
-  a fake `sandbox.Run` but have never driven a real container.
+Validated in a real Docker container (`zai/glm-5.2`, correct answer, no leaked
+container or host process afterwards). It required two fixes and one image
+change:
+
+- **`pi` is now in the baked CLI set** (`docker/llm-clis/package.json` +
+  a symlink in `sandbox/finalize/Dockerfile`), alongside `claude` and `codex`.
+  Without it a sandboxed pi node cannot start at all.
+- **Host provider credentials were invisible inside the container.** A
+  container inherits nothing, and the sandbox `ExecOpts.Env` carried only the
+  per-run override map — so a node failed with `No API key found for zai`
+  while the host had the key. `CLIAgentProtocol.SandboxEnv` now forwards pi's
+  credential variables **by name** (an explicit allowlist, not a blanket
+  `os.Environ()` push that would leak every unrelated host secret).
+- **`task.ExtraEnv` was dropped on the sandboxed path** for every CLI-agent
+  backend, not just pi: a sandboxed agent could not see tools the run had just
+  provisioned for it via devbox. Fixed in the shared helper, so `kimi` and
+  `grok` benefit too.
+
+**Still not validated:**
 - **The fuzzy-model-match warning.** `Result.EffectiveModel` differing from
   the request is logged, but no run has yet resolved a typo'd model, so the
   warning has not fired in anger.

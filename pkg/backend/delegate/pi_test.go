@@ -239,6 +239,38 @@ func TestPiResolveEnv(t *testing.T) {
 		}
 	})
 
+	// Regression: a container inherits NOTHING from the host, so a provider
+	// credential sitting in the host environment is invisible to a sandboxed
+	// pi unless forwarded by name. The symptom was a sandboxed node failing
+	// with "No API key found for zai" while the host had the key — observed
+	// live, on the first real container run.
+	t.Run("sandbox forwards host provider credentials by name", func(t *testing.T) {
+		t.Setenv("ZAI_API_KEY", "zai-host-key")
+		t.Setenv("GROQ_API_KEY", "groq-host-key")
+		t.Setenv("SOME_UNRELATED_SECRET", "must-not-leak")
+
+		env := piSandboxEnv(context.Background(), Task{
+			ExtraEnv: []string{"PATH=/devbox/bin:/usr/bin"},
+		})
+
+		if env["ZAI_API_KEY"] != "zai-host-key" {
+			t.Errorf("ZAI_API_KEY = %q, want the host value forwarded", env["ZAI_API_KEY"])
+		}
+		if env["GROQ_API_KEY"] != "groq-host-key" {
+			t.Errorf("GROQ_API_KEY = %q, want the host value forwarded", env["GROQ_API_KEY"])
+		}
+		// The allowlist is the point: a blanket os.Environ() forward would push
+		// every unrelated host secret into the container.
+		if _, leaked := env["SOME_UNRELATED_SECRET"]; leaked {
+			t.Error("an unrelated host secret leaked into the container environment")
+		}
+		// The run's own provisioning must survive too, or a sandboxed agent
+		// cannot see tools the run just installed for it.
+		if env["PATH"] != "/devbox/bin:/usr/bin" {
+			t.Errorf("PATH = %q, want the run's devbox provisioning", env["PATH"])
+		}
+	})
+
 	t.Run("agent dir pinning is opt-in", func(t *testing.T) {
 		if _, ok := piResolveEnv(context.Background())["PI_CODING_AGENT_DIR"]; ok {
 			t.Error("pinning the agent dir by default would hide the operator's own auth.json")

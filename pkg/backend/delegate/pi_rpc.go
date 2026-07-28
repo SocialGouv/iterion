@@ -254,7 +254,9 @@ func (b *PiRPCBackend) spawner(task Task, binary string) pisdk.Spawner {
 		full := append([]string{binary}, argv...)
 		mark := sandboxDelegateMark(task)
 		return task.Sandbox.Command(ctx, wrapSandboxDelegateArgv(mark, full), sandbox.ExecOpts{
-			Env:     piResolveEnv(ctx),
+			// The container's environment is ONLY what we pass here, so the
+			// host's provider credentials must be forwarded by name.
+			Env:     piSandboxEnv(ctx, task),
 			WorkDir: task.WorkDir,
 			// Mandatory: the docker/k8s drivers only allocate a forwarded
 			// stdin when Stdin or KeepStdinOpen is set, and an RPC session is

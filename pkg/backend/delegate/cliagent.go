@@ -111,6 +111,13 @@ type CLIAgentProtocol struct {
 	// only encodes failure in the stream). See CLIAgentParse.
 	ParseOutputRich func(stdout string) CLIAgentParse
 
+	// SandboxEnv, when set, replaces ResolveEnv on the SANDBOXED path. A
+	// container inherits nothing from the host, so a CLI that resolves its own
+	// credentials from the ambient environment needs them forwarded by name —
+	// which ResolveEnv, built for per-run overrides, does not do. nil falls
+	// back to ResolveEnv.
+	SandboxEnv func(ctx context.Context, task Task) map[string]string
+
 	// ResolveEnv returns credential/endpoint environment overrides sourced
 	// from the target CLI's own config/env conventions (and any per-run
 	// injected credentials on the context). The returned map is layered on
@@ -503,7 +510,7 @@ func (b *CLIAgentBackend) runOnce(ctx context.Context, task Task, binary string,
 		cleanup := killSandboxDelegate(task.Sandbox, mark, b.Logger)
 		defer cleanup()
 		cmd = task.Sandbox.Command(runCtx, wrapSandboxDelegateArgv(mark, argv), sandbox.ExecOpts{
-			Env:     envSliceToMap(b.Protocol.ResolveEnv, ctx),
+			Env:     b.sandboxEnv(ctx, task),
 			WorkDir: task.WorkDir,
 			Stdin:   stdin,
 		})
@@ -537,14 +544,38 @@ func (b *CLIAgentBackend) runOnce(ctx context.Context, task Task, binary string,
 	return stdout, stderr, exitCode, nil
 }
 
-// envSliceToMap re-derives the ResolveEnv override map for the sandbox ExecOpts
-// path (the container already inherits its own base env; we only layer the
-// protocol's credential/endpoint overrides on top).
-func envSliceToMap(resolve func(context.Context) map[string]string, ctx context.Context) map[string]string {
-	if resolve == nil {
-		return nil
+// sandboxEnv builds the environment a sandboxed CLI receives.
+//
+// A container inherits NOTHING from the host, so this map is the whole
+// environment the agent gets. Besides the protocol's credential overrides it
+// must therefore carry the run's own provisioning (task.ExtraEnv — the devbox
+// profile PATH), which the earlier version dropped: a sandboxed agent could
+// not see tools the run had just installed for it.
+//
+// SandboxEnv lets a protocol forward host credentials by name, which
+// ResolveEnv (built for per-run overrides) does not do — the failure being a
+// sandboxed pi node reporting "No API key found for <provider>" while the host
+// had the key all along.
+func (b *CLIAgentBackend) sandboxEnv(ctx context.Context, task Task) map[string]string {
+	env := map[string]string{}
+	switch {
+	case b.Protocol.SandboxEnv != nil:
+		for k, v := range b.Protocol.SandboxEnv(ctx, task) {
+			env[k] = v
+		}
+	case b.Protocol.ResolveEnv != nil:
+		for k, v := range b.Protocol.ResolveEnv(ctx) {
+			env[k] = v
+		}
 	}
-	return resolve(ctx)
+	// Run-level provisioning last so it wins on a duplicate key, matching the
+	// host path's ordering.
+	for _, kv := range task.ExtraEnv {
+		if k, v, ok := strings.Cut(kv, "="); ok {
+			env[k] = v
+		}
+	}
+	return env
 }
 
 // parseStreamJSONText walks both the legacy claude-code-style NDJSON stream
