@@ -270,6 +270,7 @@ dispatcher routes on it), never the persona.
 | Goldy | `golden-master` |
 | Heartbeat (always-on demo) | `heartbeat` |
 | Triagy | `issue-triage` |
+| Morphy | `modernize` |
 | Nested Subbots Demo | `nested-subbots-demo` |
 | Pipeline Board Demo | `pipeline-board-demo` |
 | Revi (converse) | `revi-converse` |
@@ -723,6 +724,41 @@ Auto-fires via the trigger spine on cards carrying triage:auto
   pre-routed so launching is a single drag to Ready.
 - **Vars**: `issue_id` (string, required)
 - **Path**: `bots/issue-triage/main.bot`
+
+### `modernize` — Morphy
+
+Carries a repository through a programme of modernisation LOTS — steps whose
+entry and exit are both deterministic gates — one gate-to-gate step at a
+time. The unit of work is the lot, not the package: a dependency pipeline
+whose failure path is "revert this package and continue" cannot express "the
+runtime moved and nine hundred files went with it".
+
+It holds NO knowledge of any build tool or runtime. Every command it runs is
+declared in the target repository's own `.modernize/plan.yaml`, which keeps
+the bot universal and lets a human audit the programme without reading it.
+
+A lot is done if and only if three things hold together, as a conjunction and
+never as a score: its declared exit_gate exits 0 on HEAD, the behavioural
+oracle replays green, and NOT ONE line changed under the oracle's reference
+directory. That third check is the separation of powers, verified in git
+rather than trusted — the party that changes the code must not be able to
+redefine what judges it, because a golden master dies by re-baselining. The
+`status` field an agent writes is read as a bookmark and never as evidence.
+
+- **Use when**:
+  Use to execute a planned modernisation — toolchain, runtime, framework or
+  datastore — on a repository that ALREADY has a behavioural non-regression
+  net. Build the net first (see the golden-master bot): this bot refuses to
+  call a lot done without one, because a green build proves the code compiles
+  and never that it still behaves.
+  
+  Do NOT use it for routine dependency bumps — that is a dependency-upgrade
+  pipeline's job, and its per-package revert semantics are the right ones
+  there. Do NOT use it to decide WHAT to modernise: the programme is a human
+  decision recorded in the contract, and the lot DAG in particular encodes
+  compatibility knowledge that cannot be re-derived from the tree.
+- **Vars**: `max_passes` (int), `only_lot` (string), `plan_path` (string), `source_issue_ref` (string), `workspace_dir` (string)
+- **Path**: `bots/modernize/main.bot`
 
 ### `nested-subbots-demo` — Nested Subbots Demo
 

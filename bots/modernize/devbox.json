@@ -1,0 +1,4 @@
+{
+  "packages": ["yq@4.44.3", "python3@3.12.8"],
+  "shell": { "init_hook": [] }
+}
