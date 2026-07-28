@@ -379,13 +379,19 @@ func knownForgeEventNames() []string {
 // forge.token_scopes block. The provisioner unions the keys across the
 // bots co-enabled on a repo and translates them to the tightest OAuth
 // scope / GitHub-App permission that satisfies the union.
+// ForgeScopeStatuses is the token scope a bot declares when it posts a commit
+// status. Declaring it means the bot can be a REQUIRED check, which the
+// provisioner has to account for beyond the token itself — a gate that does
+// not follow the head SHA blocks the PR it guards.
+const ForgeScopeStatuses = "statuses"
+
 var (
 	knownForgeScopeKeys = map[string]bool{
-		"pull_requests": true,
-		"repository":    true,
-		"issues":        true,
-		"webhooks":      true,
-		"statuses":      true, // commit statuses (the revi/review merge gate)
+		"pull_requests":    true,
+		"repository":       true,
+		"issues":           true,
+		"webhooks":         true,
+		ForgeScopeStatuses: true, // commit statuses (the merge gate)
 	}
 	knownForgeScopeLevels = map[string]bool{
 		"read":  true,

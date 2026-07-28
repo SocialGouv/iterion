@@ -107,6 +107,13 @@ func testBotLookup(botID string) (*bundle.ForgeRequirements, error) {
 				AuthorScope:     bundle.AuthorScopeExclusive,
 			},
 		}, nil
+	case "gate-bot":
+		// Declares `statuses` → posts a commit status → can be a required check.
+		return &bundle.ForgeRequirements{
+			Events:      []string{bundle.ForgeEventPullRequest},
+			TokenScopes: map[string]string{"pull_requests": "write", "statuses": "write"},
+			Secret:      "forge_token",
+		}, nil
 	case "no-forge-bot":
 		return nil, nil
 	default:

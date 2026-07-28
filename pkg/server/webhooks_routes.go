@@ -50,6 +50,7 @@ type webhookConfigReq struct {
 	AuthorAllowlist     []string          `json:"author_allowlist,omitempty"`
 	LabelAllowlist      []string          `json:"label_allowlist,omitempty"`
 	BlockForkPRs        *bool             `json:"block_fork_prs,omitempty"`
+	ReviewOnSync        *bool             `json:"review_on_sync,omitempty"`
 	AutoImplementOnOpen *bool             `json:"auto_implement_on_open,omitempty"`
 	BranchImproveAsPR   *bool             `json:"branch_improve_as_pr,omitempty"`
 	RateLimit           *webhooks.Rate    `json:"rate_limit,omitempty"`
@@ -247,6 +248,7 @@ func (s *Server) handleCreateWebhook(w http.ResponseWriter, r *http.Request) {
 		AuthorAllowlist:     req.AuthorAllowlist,
 		LabelAllowlist:      req.LabelAllowlist,
 		BlockForkPRs:        req.BlockForkPRs != nil && *req.BlockForkPRs,
+		ReviewOnSync:        req.ReviewOnSync != nil && *req.ReviewOnSync,
 		AutoImplementOnOpen: req.AutoImplementOnOpen != nil && *req.AutoImplementOnOpen,
 		RateLimit:           rate,
 		LaunchVars:          req.LaunchVars,
@@ -410,6 +412,9 @@ func (s *Server) handleUpdateWebhook(w http.ResponseWriter, r *http.Request) {
 	}
 	if req.LabelAllowlist != nil {
 		cfg.LabelAllowlist = req.LabelAllowlist
+	}
+	if req.ReviewOnSync != nil {
+		cfg.ReviewOnSync = *req.ReviewOnSync
 	}
 	if req.BlockForkPRs != nil {
 		cfg.BlockForkPRs = *req.BlockForkPRs

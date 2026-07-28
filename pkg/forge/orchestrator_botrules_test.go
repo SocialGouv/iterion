@@ -101,6 +101,50 @@ func TestProvision_BotRulesSingleBotNoSelfDeny(t *testing.T) {
 	}
 }
 
+// A bot that declares `statuses` can be a REQUIRED check, and a required
+// check lives on ONE head SHA: if the bot does not re-run when the author
+// pushes a fix, the status is absent from the new head — indistinguishable
+// from "never reviewed" — and the PR is blocked with no way out but an admin
+// bypass. That is SocialGouv/iterion#300. Provisioning must therefore turn
+// re-review-on-sync on from the declared capability.
+func TestProvision_StatusesScopeEnablesReviewOnSync(t *testing.T) {
+	o, _, sealer := newTestOrch(t)
+	seedConn(t, o, sealer)
+	ctx := context.Background()
+
+	// dep-guard declares no `statuses` scope → no gate → no forced re-review.
+	res, err := o.Provision(ctx, ProvisionRequest{
+		TenantID: "t1", ConnectionID: "conn-1", RepoFullName: "group/api",
+		BotIDs: []string{"dep-guard"}, ActorID: "u1",
+	})
+	if err != nil {
+		t.Fatalf("provision: %v", err)
+	}
+	cfg, err := o.Webhooks.Get(ctx, res.WebhookID)
+	if err != nil {
+		t.Fatalf("get webhook config: %v", err)
+	}
+	if cfg.ReviewOnSync {
+		t.Error("no bot posts a commit status → re-review on sync must stay off (it costs a run per push)")
+	}
+
+	// gate-bot does → every push must re-evaluate the gate on the new head.
+	res2, err := o.Provision(ctx, ProvisionRequest{
+		TenantID: "t1", ConnectionID: "conn-1", RepoFullName: "group/gated",
+		BotIDs: []string{"gate-bot"}, ActorID: "u1",
+	})
+	if err != nil {
+		t.Fatalf("provision gated: %v", err)
+	}
+	cfg2, err := o.Webhooks.Get(ctx, res2.WebhookID)
+	if err != nil {
+		t.Fatalf("get webhook config 2: %v", err)
+	}
+	if !cfg2.ReviewOnSync {
+		t.Error("a bot declaring statuses:write gates merges — its status must follow the head SHA")
+	}
+}
+
 // The migration guard: re-enabling an unchanged bot set short-circuits, so
 // without an explicit backfill an already-provisioned repo would stay on the
 // legacy single-bot path forever — tests green, production unchanged.

@@ -335,6 +335,22 @@ func (o *Orchestrator) Provision(ctx context.Context, req ProvisionRequest) (Pro
 
 	botRules := resolveBotRules(desiredBots, frByBot, invByBot)
 
+	// A bot that declares `statuses` posts a commit status, i.e. it can be a
+	// REQUIRED check. A required check lives on one head SHA: if the bot does
+	// not re-run when the author pushes a fix, the status is simply absent
+	// from the new head — indistinguishable from "never reviewed" — and the
+	// PR is blocked with no way forward but an admin bypass. Observed live on
+	// SocialGouv/iterion#300. So re-review on sync is not an operator
+	// preference here, it is what makes a gate survivable; it turns on from
+	// the DECLARED capability, never from a bot id.
+	reviewOnSync := false
+	for _, b := range desiredBots {
+		if fr := frByBot[b]; fr != nil && fr.TokenScopes[bundle.ForgeScopeStatuses] != "" {
+			reviewOnSync = true
+			break
+		}
+	}
+
 	// Mint a fresh iwh_ on every mutating provision (create OR event-widen):
 	// it keeps the forge hook secret and the iterion config hash in lockstep
 	// without ever needing the prior plaintext. The operator never sees it —
@@ -366,6 +382,7 @@ func (o *Orchestrator) Provision(ctx context.Context, req ProvisionRequest) (Pro
 		ProjectAllowlist: []string{req.RepoFullName},
 		EventAllowlist:   nativeEvents,
 		AuthorAllowlist:  authorAllowlist,
+		ReviewOnSync:     reviewOnSync,
 		ForgeBaseURL:     conn.BaseURL(),
 		RateLimit:        webhooks.Rate{Rate: 1, Burst: 10},
 		LaunchVars:       nilIfEmpty(launchVars),
