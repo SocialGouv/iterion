@@ -844,3 +844,44 @@ func TestPiHidesWorkspaceSessionDirFromGit(t *testing.T) {
 		}
 	})
 }
+
+// The container's environment is ONLY what the spawner passes: pisdk ignores
+// ClientOptions.Env whenever a Spawner is set. Forwarding just the provider
+// credentials left the container with no ITERION_PI_CONTRACT, so the
+// extension's loadConfig() returned early and registered NOTHING — and since
+// sandboxing is the default, a node declaring `permission: ask|deny` ran
+// completely ungated on the default path, with no error and no warning.
+func TestPiSandboxedSpawnCarriesTheExtensionContract(t *testing.T) {
+	rec := &recordingRun{}
+	pol, err := permission.NewPolicy(permission.ModeAsk, nil, nil, nil)
+	if err != nil {
+		t.Fatalf("NewPolicy: %v", err)
+	}
+	task := Task{
+		NodeID:     "gated",
+		Iteration:  2,
+		WorkDir:    t.TempDir(),
+		Sandbox:    rec,
+		Permission: pol,
+	}
+
+	b := &PiRPCBackend{Command: "pi", Logger: testLogger()}
+	spawn := b.spawner(task, "pi")
+	if spawn == nil {
+		t.Fatal("no spawner for a sandboxed task")
+	}
+	_ = spawn(context.Background(), []string{"--mode", "rpc"})
+
+	env := rec.gotOpts.Env
+	if env["ITERION_PI_CONTRACT"] == "" {
+		t.Error("ITERION_PI_CONTRACT missing — the extension would register nothing " +
+			"and the permission gate would be INACTIVE inside the container")
+	}
+	if env["ITERION_PI_NODE_ID"] != "gated" {
+		t.Errorf("ITERION_PI_NODE_ID = %q, want the node id", env["ITERION_PI_NODE_ID"])
+	}
+	// The credentials the sandbox env already carried must survive the overlay.
+	if len(env) <= 2 {
+		t.Errorf("the overlay replaced the sandbox environment instead of merging onto it: %v", env)
+	}
+}

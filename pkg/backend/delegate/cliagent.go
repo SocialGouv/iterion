@@ -348,6 +348,17 @@ func bareModelID(spec string) string {
 // writeSystemPromptFile materialises the composed system prompt under
 // <WorkDir>/.iterion/<backend>/ and returns its path plus a cleanup closure.
 // See CLIAgentProtocol.SystemPromptViaFile for why it is workspace-relative.
+//
+// Each call owns a UNIQUE file. (NodeID, Iteration) is not unique: Iteration
+// is a LOOP counter, and under a fan_out_each router the same node id runs
+// concurrently across branches at the same iteration, so every branch would
+// compute the same path and one branch's deferred cleanup would delete the
+// file another branch's CLI is still starting on. The loss is silent rather
+// than loud, which is what makes it dangerous: the flag accepts <text|file>
+// and disambiguates by existence, so the losing branch runs with the literal
+// path string as its system prompt — discarding the composed posture, cursors
+// and skills without an error. piext.Materialise avoids the same hazard the
+// same way.
 func writeSystemPromptFile(task Task, backendName, systemPrompt string) (path string, cleanup func(), err error) {
 	if task.WorkDir == "" {
 		return "", nil, fmt.Errorf("delegate: %s: SystemPromptViaFile requires a WorkDir", backendName)
@@ -360,9 +371,21 @@ func writeSystemPromptFile(task Task, backendName, systemPrompt string) (path st
 	if node == "" {
 		node = "node"
 	}
-	path = filepath.Join(dir, fmt.Sprintf("%s-%d.sysprompt.md", sanitizeFileSegment(node), task.Iteration))
-	if err := os.WriteFile(path, []byte(systemPrompt), 0o600); err != nil {
-		return "", nil, fmt.Errorf("delegate: %s: write system prompt: %w", backendName, err)
+	f, err := os.CreateTemp(dir, fmt.Sprintf("%s-%d-*.sysprompt.md", sanitizeFileSegment(node), task.Iteration))
+	if err != nil {
+		return "", nil, fmt.Errorf("delegate: %s: create system prompt: %w", backendName, err)
+	}
+	path = f.Name()
+	_, werr := f.WriteString(systemPrompt)
+	if cerr := f.Close(); werr == nil {
+		werr = cerr
+	}
+	if werr == nil {
+		werr = os.Chmod(path, 0o600)
+	}
+	if werr != nil {
+		_ = os.Remove(path)
+		return "", nil, fmt.Errorf("delegate: %s: write system prompt: %w", backendName, werr)
 	}
 	return path, func() { _ = os.Remove(path) }, nil
 }

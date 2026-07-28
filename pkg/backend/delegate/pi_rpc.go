@@ -276,10 +276,21 @@ func (b *PiRPCBackend) spawner(task Task, binary string) pisdk.Spawner {
 	return func(ctx context.Context, argv []string) *exec.Cmd {
 		full := append([]string{binary}, argv...)
 		mark := sandboxDelegateMark(task)
+		// The container's environment is ONLY what we pass here — pisdk
+		// ignores ClientOptions.Env entirely whenever a Spawner is set — so
+		// the extension's whole configuration has to ride this map too, not
+		// just the provider credentials. Without it the container has no
+		// ITERION_PI_CONTRACT, the extension's loadConfig() returns early and
+		// registers NOTHING, and a node declaring `permission: ask|deny` runs
+		// completely ungated: the same false sense of security executePrint
+		// and the extension-install guard both refuse to allow. Sandboxing is
+		// the default, so this is the default path.
+		env := piSandboxEnv(ctx, task)
+		for k, v := range piExtensionEnv(task, b.Logger) {
+			env[k] = v
+		}
 		return task.Sandbox.Command(ctx, wrapSandboxDelegateArgv(mark, full), sandbox.ExecOpts{
-			// The container's environment is ONLY what we pass here, so the
-			// host's provider credentials must be forwarded by name.
-			Env:     piSandboxEnv(ctx, task),
+			Env:     env,
 			WorkDir: task.WorkDir,
 			// Mandatory: the docker/k8s drivers only allocate a forwarded
 			// stdin when Stdin or KeepStdinOpen is set, and an RPC session is
