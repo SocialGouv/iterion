@@ -65,6 +65,75 @@ read the project's CI / scripts to see which one the team actually
 maintains. The maintained one wins; the others are stale and not
 authoritative.
 
+## Dependencies that are not packages
+
+A package manager is not the only thing that pulls foreign code into a
+build. These four are updated by the same bots, bump the same way, and are
+exactly as able to execute code you did not review — treat them with the
+same rigour, not as "config changes".
+
+| File | What moved | Where the truth is |
+|---|---|---|
+| `Dockerfile` / `Containerfile` | base-image tag or `@sha256:` digest | the registry manifest + the image's own layers |
+| `devbox.json` / `devbox.lock` | a Nix package pin | nixhub.io / the nixpkgs commit in the lock |
+| `Chart.yaml` / `values*.yaml` | a chart version or an image tag | the chart repo + the image it references |
+| `.github/workflows/*`, `action.yml` | an Action pinned by tag or SHA | the action's repo at that ref |
+
+### Container image digests
+
+A digest bump is *usually* a rebuild of the same version — and that is
+precisely why it is worth checking rather than waving through: the tag did
+not change, so nothing else signals that the contents did.
+
+Resolve what actually moved:
+
+```sh
+# The bot's own devbox provides crane; the sandbox image has no registry
+# client of its own.
+crane digest golang:1.26                 # what the tag points at NOW
+crane manifest golang:1.26@sha256:<old>  # the pinned one
+crane config  golang:1.26@sha256:<new> | jq '.history[-3:], .config.Entrypoint, .config.User'
+```
+
+What to look at, in order: does the new digest still correspond to the tag
+the Dockerfile names (a digest that no tag resolves to is a red flag); did
+`User`, `Entrypoint` or `Cmd` change (a base image that stops dropping root
+is a real regression); did the last history entries gain a step that fetches
+something at build time. `trivy image --scanners vuln <ref>` gives the CVE
+delta between old and new — run it on both and diff, since the interesting
+answer is what the bump *fixes* versus what it *introduces*.
+
+If no registry client resolves, say so in the summary rather than implying
+you inspected the image. An unverified digest is a real caveat, not a detail.
+
+### Nix / devbox pins
+
+`devbox.json` carries the human-readable pin (`jq@1.8.2`); `devbox.lock`
+carries the resolved nixpkgs commit — the lock is what actually determines
+the bits. Check the version really exists on nixhub for that package, and
+that the lock's `resolved` URL and the version in `devbox.json` agree; a
+lock pointing at a commit unrelated to the stated version is the signal
+worth escalating. `devbox install --dry-run` (or `devbox info <pkg>`)
+confirms the pin resolves at all.
+
+### Helm charts
+
+A chart bump can change rendered manifests far beyond the version string.
+`helm template` the old and new charts with the repo's own values and diff
+the output — that is the real change set. Pay attention to anything that
+touches RBAC, `securityContext`, `hostPath`/`hostNetwork`, or a new image
+reference: a chart that quietly grants a ClusterRole is a supply-chain event
+even when the package itself is fine.
+
+### Pinned Actions
+
+An Action pinned by SHA that moves to another SHA is a code change in a
+build step that already holds a token. Read the diff between the two refs
+(`gh api repos/<owner>/<repo>/compare/<old>...<new>`), and give particular
+weight to changes in what it exfiltrates, what it writes, and any new
+network call. A tag that was re-pointed to a different commit without a
+release is the classic Action-hijack shape.
+
 ## Cache locations — keep them OUT of the workspace
 
 Most package managers default a cache (downloaded archives, compiled

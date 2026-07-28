@@ -22,7 +22,17 @@ and the correct toolchain:
 
 - **Task runner / Makefile** — `Taskfile.yml` → `task build` / `task test` /
   `task check`; `Makefile` → `make build` / `make test`; `Justfile` → `just …`.
-  This is almost always the right answer when present.
+  This is almost always the right answer when present. List the targets that
+  actually exist (`task --list`, `make -qp`, `just --list`) instead of assuming
+  the conventional names: plenty of repos have `test` and `lint` but no `check`
+  umbrella, and a verify.sh calling a target that does not exist fails for a
+  reason that has nothing to do with the change under test.
+- **A gate CI runs inline is still a gate.** When CI invokes something the task
+  runner does not expose — a coverage threshold script, a schema check, a
+  shell assertion — copy that invocation into verify.sh verbatim. `task test`
+  passing while CI's `go test … && bash hack/coverage.sh cover.out 85` fails is
+  a green local verify on a red change, which is the exact failure the
+  deterministic gate exists to prevent.
 - **Pinned toolchain — honour it or the build fails on a version mismatch.**
   `devbox.json` → prefix with `devbox run -- …`. `.tool-versions` (asdf/mise),
   `.nvmrc`, `flake.nix`, `mise.toml` → activate accordingly. For Go: if
