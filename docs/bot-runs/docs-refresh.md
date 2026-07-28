@@ -13,6 +13,48 @@ promises ledgers persist the agent's adjudications; the opt-in
 `open_mr` tail publishes ONE PR. Runs on ANY repo; iterion is the
 reference self-host case.
 
+## 2026-07-27 — forfait weekly-cap catch-up, and the weekly schedule is throwing its work away (run 019fa533)
+
+- Status: **failed to deliver** — the run finished cleanly and produced
+  ~71 doc-alignment commits, and **every one of them was discarded**. Not a
+  regression: a standing misconfiguration of the prod weekly schedule, found
+  by looking past the green status.
+- Versions: bot v3.5.x · iterion prod `:edge`.
+- Why it ran: the Monday 04:00 weekly (`019fa1ba`) died at `campaign` on the
+  forfait **weekly** quota (`resets Jul 28, 9pm (UTC)`), one of seven prod
+  runs killed by the same wall that morning. Relaunched by hand at 20:11 via
+  a one-shot cloud schedule once the forfait was verified available.
+- Result: 3h10, 5 campaign passes committing 14 / 27 / 11 / 6 / 13 = **71
+  commits**, `docs_aligned: false` on every pass, `continuation_loop`
+  exhausted 4/4, then `mr_gate → open_mr: false` → `done`. No MR, no push,
+  no `final_commit`. The clone died with the pod.
+- **The finding.** The prod weekly schedule (`306ecbc6`, `0 4 * * 1`) carries
+  **`vars: null`**. Two defaults follow from that, and both are wrong for it:
+  - `open_mr: bool = false`, and `mr_gate` computes
+    `vars.open_mr || vars.pr_url` — both empty ⇒ the PR tail never runs.
+    **The schedule has never been able to deliver anything**; it has been
+    burning a multi-hour full sweep every Monday and dropping the result.
+  - `mode: string = "full"`, so it runs the whole-corpus sweep (3h+) rather
+    than the incremental delta the weekly cadence was designed around (see
+    the 2026-07-24 entries). The memory of this schedule being "hebdo
+    incrémental" refers to an earlier row; the current one was recreated
+    2026-07-24 without vars.
+  Fix is configuration only: set `vars: {open_mr: "true", mode:
+  "incremental"}` on the schedule. Worth doing before next Monday — until
+  then the weekly is pure cost.
+- Engine hardening: this run is one of the seven that exposed the
+  usage-window retry defects (dead reset-aware wait, no recovery dispatcher
+  in the cloud runner, unparseable dated reset hint). See
+  [feed-watch.md](feed-watch.md#2026-07-27--five-digests-lost-to-the-forfait-weekly-cap-recovered-by-hand)
+  for the full account; the fix ships as the `retry:` contract.
+- Lessons for next run:
+  - **A green run is not a delivered run.** `status: finished` here means
+    "the graph reached done", not "work landed". For Doki the delivery
+    signal is `open_mr`/`final_commit`, and both were empty.
+  - When a schedule is recreated, its `vars` do not come along. A bot whose
+    useful behaviour depends on non-default vars should say so loudly —
+    `mr_gate` deciding `false` in silence is what let this run for weeks.
+
 ## 2026-07-24 — amend-on-PR validated live END-TO-END + scope_check base fix (runs 019f9429 → 019f949a)
 
 - Status: **validated** (full amend-on-PR flow, live on a real iterion PR). Enabled by a scope_check base-derivation fix (v3.5.3) the dogfood surfaced.
