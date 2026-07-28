@@ -1135,6 +1135,7 @@ tool promote_audit:
     import json
     import os
     import shutil
+    import subprocess
 
     import importlib.util
 
@@ -1194,6 +1195,36 @@ tool promote_audit:
     except OSError:
         pass
     out["audit_dir"] = os.path.relpath(dest, ws)
+
+    # COMMIT what was promoted. Moving files into the worktree is not
+    # publishing them: the worktree is destroyed when the run ends, so a
+    # promotion that only moves has produced nothing that outlives the run.
+    # It survived once by accident, because the engine banks uncommitted
+    # changes into a wip commit -- a safety net of the platform, not a property
+    # of this node. Reporting "promoted: 8" for work that evaporates is the
+    # same family as every other defect this bot was built to catch: an action
+    # whose effect does not outlive its context, announced as done.
+    rel = os.path.relpath(dest, ws)
+    add = subprocess.run(["git", "-C", ws, "add", "--", rel],
+                         capture_output=True, text=True)
+    if add.returncode != 0:
+        out["notice"] = ("promoted %d mutant(s) to %s but COULD NOT STAGE them: %s. "
+                         "They will not outlive this run."
+                         % (out["promoted"], rel, add.stderr[-300:]))
+        print(json.dumps(out)); raise SystemExit(0)
+    msg = ("test(golden-master): publish the spent held-out set of cycle " + cycle +
+           "\n\nScored once by the gate that converged this cycle, then published so "
+           "the detection figure can be replayed rather than believed. Readable now, "
+           "therefore tunable: the next hardening cycle must draw a fresh set, and the "
+           "gate refuses a repeated fingerprint.\n")
+    com = subprocess.run(["git", "-C", ws, "-c", "user.name=iterion",
+                          "-c", "user.email=iterion@localhost",
+                          "commit", "-q", "-m", msg, "--", rel],
+                         capture_output=True, text=True)
+    if com.returncode != 0:
+        out["notice"] = ("promoted %d mutant(s) to %s and staged them, but the commit "
+                         "failed: %s. They will not outlive this run."
+                         % (out["promoted"], rel, (com.stderr or com.stdout)[-300:]))
     print(json.dumps(out))
 
 compute oracle_gate:
