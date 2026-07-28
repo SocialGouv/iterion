@@ -59,6 +59,32 @@ described, can the net still observe the application?* If the honest answer is
 no, the lot is drawn wrong — widen it to the next point where the system is
 alive, or move the boundary earlier.
 
+### The same rule, in its second disguise
+
+A boundary can also fall where the system is perfectly observable and the lot is
+*still* unjudgeable — because its exit condition is unreachable by design.
+
+Seen one lot later, and worth as much as the first. A lot was scoped to close
+only the divergences that needed no application code, and its intent said, in
+writing, that the net would remain red at its exit. The gate requires a green
+net. That lot could therefore never be done: it predicted its own failure and
+was correct.
+
+> **A lot's exit must be reachable by the lot.** An intent that forecasts a red
+> gate has not described a lot, it has described a step — and a step is merged
+> with whatever makes it verifiable.
+
+Note the trap for the author. Writing "the net will stay red, that is expected"
+feels like honesty, and it reads like rigour. It is neither: it silently
+converts the gate from a verdict into a formality, because everyone now knows in
+advance that the red means nothing. The moment an exit criterion is knowingly
+unsatisfiable, either the criterion or the boundary is wrong — and it is almost
+always the boundary.
+
+Splitting work that must land together does not make it more reviewable. Two
+lots landing in two commits with two written intents is reviewable; two lots
+where the first cannot be judged is one unreviewable change wearing a costume.
+
 Note what this does **not** license. Widening a lot to absorb an unrelated
 failure is still overflow; the criterion is mechanical necessity, not
 convenience. "The upgrade demands this property or it will not boot" belongs
