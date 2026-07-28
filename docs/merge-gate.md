@@ -93,21 +93,55 @@ Webhook config ([`pkg/webhooks/types.go`](../pkg/webhooks/types.go)):
 
 ## Activating the blocking gate on a repo
 
-The code posts the status unconditionally (advisory). To make it **block**:
+The code posts the status unconditionally (advisory). To make it **block**,
+add the gate's context to the branch-protection ruleset's required status
+checks (for this repo, the "main protected — merge queue" ruleset — see
+[merge-policy.md](merge-policy.md)):
 
-1. Enable `review_on_sync` on the repo's inbound webhook.
-2. Add `revi/review` to the branch-protection ruleset's required status
-   checks (for this repo, the "main protected — merge queue" ruleset — see
-   [merge-policy.md](merge-policy.md)). Example with `gh`:
+```sh
+# inspect the current ruleset, add the context to required_status_checks,
+# then PUT it back:
+gh api repos/OWNER/REPO/rulesets/<id>
+```
 
-   ```sh
-   # inspect the current ruleset, add "revi/review" to required_status_checks,
-   # then PUT it back:
-   gh api repos/OWNER/REPO/rulesets/<id>
-   ```
+Re-review on push is **not** something you have to remember: a status lives
+on one commit, so a gate that did not follow the head would leave the check
+absent — indistinguishable from "never reviewed" and unblockable by another
+review. Provisioning therefore turns `review_on_sync` on by itself for any
+repo where a co-enabled bot declares the `statuses` scope. The field is
+still settable per webhook (`review_on_sync` on the webhook API) for the
+cases the derivation does not cover.
 
 Repo admins keep their merge-queue bypass, so a stuck gate is never a hard
 block for an admin.
+
+## One gate, several bots
+
+A required check applies to **every** pull request. So on a repo where
+different bots review different PRs — a dependency guard (Vetty) on the
+update bot's PRs, the reviewer on the humans' — neither bot's own context
+can be the required one: whichever bot did not run leaves the check
+permanently absent and blocks the PR. Requiring both is worse, since each
+then blocks the other's PRs.
+
+Give them the same context instead. `gate_context` is a var on every bot
+that can gate (`revi/review` on Revi, `vetty/deps` on Vetty by default), so
+the repo declares one shared name and each bot fills it for the PRs it owns:
+
+```sh
+iterion remote forge repo-bots create --data '{
+  "connection_id": "<conn-id>",
+  "repo": "owner/repo",
+  "bot_ids": ["review-pr", "dep-update-guard"],
+  "launch_vars": { "gate_context": "iterion/review" }}'
+```
+
+Pin it through the **integration's** `launch_vars`, not the webhook's:
+provisioning rewrites the whole webhook config from the bots' manifests, so
+an override PATCHed onto the webhook is dropped at the next enable. The
+integration's launch vars are persisted and re-applied on every provision.
+
+Then require `iterion/review` — one check, whichever bot owns the PR.
 
 ## Overriding a finding
 

@@ -1,7 +1,29 @@
 name: dep-update-guard
 display_name: Vetty
 icon: 💂
-version: 2.0.0
+version: 2.1.0
+## 2.1.0 — classify, gate, arm. (a) The bump classifier only knew package
+## manifests, so a PR moving a base-image digest, a devbox pin, a task-runner
+## tool or a composite action matched nothing — and did not stop, because
+## "no file changed" and "no manifest matched" were the same flag. Those runs
+## reached the auditor with an EMPTY diff and came back "safe": a façade on a
+## diff nobody read (3 of 4 open Renovate PRs on the first repo tried). The
+## list now covers them, a content pass catches custom-manager pins on any
+## filename, and when nothing matches `no_manifest` widens the scope to the
+## full diff instead of handing over nothing. An unresolvable base likewise
+## degrades loudly rather than reading as "nothing to do". (b) The verdict
+## becomes a MERGE GATE: a commit status carrying it, via the server's
+## publish endpoint (a run's forge_token can never post one). The state is a
+## table over the verdict the graph already computed and fails closed on
+## anything unexpected. `gate_context` is a var so several bots fill ONE
+## required check, each for the PRs it owns. (c) `arm_automerge` (opt-in,
+## default off): on a green verdict WITH a landed green gate, ask the forge
+## to merge once ITS OWN required checks pass. Vetty still never merges —
+## the immediate-merge endpoint is deliberately unreachable. (d) Skills gain
+## the dependencies that are not packages (container digests, Nix pins, Helm
+## charts, pinned Actions) and the bundle ships a devbox project for crane,
+## since the sandbox image has no registry client.
+##
 ## 2.0.0 — ADR-058 calibrated pass. The v1 `validate` agent (an LLM
 ## re-running the build and SELF-REPORTING stable:true) is replaced by
 ## the deterministic verify_build/verify_run gate shared with the other

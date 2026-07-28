@@ -110,6 +110,21 @@ vars:
   ## the integration's launch_vars.
   gate_context: string = "vetty/deps"
 
+  ## AUTO-MERGE ARMING (opt-in, OFF by default so the catalog behaviour is
+  ## unchanged). When true AND the verdict is green AND the gate landed green,
+  ## Vetty asks the forge to merge the PR *once its own required checks pass*.
+  ## It never merges: the only call made is enablePullRequestAutoMerge, which
+  ## hands the decision to the repo's required checks. The immediate-merge REST
+  ## endpoint is deliberately never used — that would bypass CI, which is the
+  ## opposite of the guarantee this bot exists to provide.
+  ##
+  ## For this to mean anything the repo MUST require at least one check on the
+  ## target branch; with none, a forge merges an armed PR straight away.
+  arm_automerge: bool = false
+
+  ## Merge method asked for when arming. Must be one the repo allows.
+  automerge_method: string [enum: "squash", "merge", "rebase"] = "squash"
+
   ## Deterministic forge publish grant — INJECTED BY THE ITERION SERVER at
   ## launch when the run's team has a forge connection covering pr_url's
   ## repo. Declaring them here is the whole opt-in (undeclared launch vars
@@ -481,6 +496,9 @@ schema feedback_input:
   escalation: string
 
 schema feedback_output:
+  ## verdict echoed back: the graph stamps it per-edge as a literal, so a
+  ## downstream node has no other way to read what was actually reported.
+  verdict: string
   posted: bool
   comment_url: string
   skipped_reason: string
@@ -504,6 +522,20 @@ schema feedback_health_input:
 schema feedback_health_output:
   degraded: bool
   banner: string
+
+schema automerge_input:
+  pr_url: string
+  verdict: string
+  gate_posted: bool
+  gate_state: string
+
+schema automerge_output:
+  ## armed: the forge accepted the auto-merge request (it merges when its own
+  ## required checks pass — Vetty never merges anything itself).
+  armed: bool
+  ## reason: why it was not armed. Always populated when armed is false, so a
+  ## PR sitting un-merged is never a mystery.
+  reason: string
 
 ## ─── Nodes ──────────────────────────────────────────────────────
 
@@ -811,7 +843,8 @@ tool post_feedback:
 
     def out(posted, comment_url="", skipped_reason="", summary="",
             gate_posted=False, gate_state="", gate_skipped_reason=""):
-        print(json.dumps({"posted": bool(posted), "comment_url": comment_url or "",
+        print(json.dumps({"verdict": s(verdict),
+                          "posted": bool(posted), "comment_url": comment_url or "",
                           "skipped_reason": skipped_reason or "", "summary": summary or "",
                           "gate_posted": bool(gate_posted), "gate_state": gate_state or "",
                           "gate_skipped_reason": gate_skipped_reason or ""}))
@@ -968,6 +1001,108 @@ print(json.dumps({'degraded': degraded or gate_degraded, 'banner': banner}))
   input: feedback_health_input
   output: feedback_health_output
 
+## Ask the forge to merge this PR once ITS OWN required checks pass.
+## DETERMINISTIC (no LLM), opt-in, GitHub-only, and fail-closed at every
+## step: a green verdict is necessary but not sufficient — the gate has to
+## have landed green too, because arming on a verdict whose status never
+## reached the PR would merge on a check nobody can see.
+##
+## The ONLY forge call is enablePullRequestAutoMerge. There is deliberately
+## no path to PUT /pulls/{n}/merge: that merges immediately, bypassing every
+## pending check, which is precisely what this bot exists to prevent.
+tool arm_automerge:
+  input: automerge_input
+  output: automerge_output
+  language: py
+  script: |
+    import json, os, re, urllib.request, urllib.error
+    null = None; true = True; false = False  # JSON-literal shim for missing refs
+    enabled = {{vars.arm_automerge}}
+    method = {{vars.automerge_method}}
+    pr_url = {{input.pr_url}}
+    verdict = {{input.verdict}}
+    gate_posted = {{input.gate_posted}}
+    gate_state = {{input.gate_state}}
+    gate_on = {{vars.gate_enabled}}
+    token_ref = {{secrets.forge_token.path}}
+
+    def s(x):
+        return (x or "").strip() if isinstance(x, str) else ("" if x is None else str(x).strip())
+
+    def out(armed, reason=""):
+        print(json.dumps({"armed": bool(armed), "reason": reason or ""}))
+        raise SystemExit(0)
+
+    if not bool(enabled):
+        out(False, "arm_automerge is off (default)")
+    if s(verdict) not in ("clean", "committed"):
+        out(False, "verdict " + (s(verdict) or "(empty)") + " is not green")
+    # The gate is what a repo makes required. Arming while it is missing would
+    # merge on the strength of a verdict the PR never displayed.
+    if bool(gate_on) and not bool(gate_posted):
+        out(False, "the merge gate did not land - not arming on a verdict the PR cannot show")
+    if bool(gate_on) and s(gate_state) and s(gate_state) != "success":
+        out(False, "merge gate is " + s(gate_state))
+
+    m = re.match(r"https?://([^/]+)/([^/]+)/([^/]+)/(?:pull|pulls)/(\d+)", s(pr_url))
+    if not m:
+        out(False, "auto-merge arming is GitHub-only; no-op for " + (s(pr_url) or "(no pr_url)"))
+    host, owner, repo, num = m.group(1), m.group(2), m.group(3), int(m.group(4))
+    if host != "github.com":
+        out(False, "auto-merge arming is GitHub-only; no-op for " + host)
+
+    token = ""
+    tref = s(token_ref)
+    if tref:
+        token = (open(tref).read().strip() if os.path.exists(tref) else tref)
+    if not token:
+        out(False, "no forge_token bound")
+
+    def graphql(query, variables):
+        req = urllib.request.Request(
+            "https://api.github.com/graphql",
+            data=json.dumps({"query": query, "variables": variables}).encode("utf-8"),
+            method="POST",
+            headers={"Authorization": "Bearer " + token, "Content-Type": "application/json",
+                     "User-Agent": "vetty-dep-update-guard"})
+        with urllib.request.urlopen(req, timeout=30) as resp:
+            payload = json.loads(resp.read().decode("utf-8"))
+        if payload.get("errors"):
+            raise RuntimeError(str(payload["errors"])[:300])
+        return payload.get("data") or {}
+
+    # Written with a placeholder sigil and swapped to the GraphQL one at
+    # runtime: a doubled brace anywhere in this file is a template reference,
+    # and a GraphQL block that produced one would be substituted away before
+    # python ever saw it.
+    q = ("query(:owner: String!, :name: String!, :number: Int!) { "
+         "repository(owner: :owner, name: :name) { "
+         "pullRequest(number: :number) { id autoMergeRequest { enabledAt } } "
+         "} }").replace(":", "$")
+    mut = ("mutation(:id: ID!, :method: PullRequestMergeMethod!) { "
+           "enablePullRequestAutoMerge(input: { pullRequestId: :id, mergeMethod: :method }) "
+           "{ clientMutationId } }").replace(":", "$")
+    try:
+        data = graphql(q, {"owner": owner, "name": repo, "number": num})
+        pr = ((data.get("repository") or {}).get("pullRequest") or {})
+        node_id = pr.get("id")
+        if not node_id:
+            out(False, "pull request not found via the forge API")
+        if pr.get("autoMergeRequest"):
+            out(True, "auto-merge was already armed")
+        graphql(mut, {"id": node_id, "method": s(method).upper() or "SQUASH"})
+        out(True, "")
+    except urllib.error.HTTPError as e:
+        detail = ""
+        try: detail = e.read().decode("utf-8")[:300]
+        except Exception: pass
+        out(False, "forge HTTP %s: %s" % (e.code, detail))
+    except Exception as e:
+        # The usual cause is auto-merge disabled on the repo, or a merge method
+        # the repo does not allow. Reported, never swallowed: an un-merged PR
+        # must always carry its reason.
+        out(False, "auto-merge request refused: " + str(e))
+
 ## ─── Workflow ───────────────────────────────────────────────────
 
 workflow dep_update_guard:
@@ -1063,4 +1198,10 @@ workflow dep_update_guard:
     gate_posted: "{{outputs.post_feedback.gate_posted}}",
     gate_skipped_reason: "{{outputs.post_feedback.gate_skipped_reason}}"
   }
-  feedback_health -> done
+  feedback_health -> arm_automerge with {
+    pr_url: "{{vars.pr_url}}",
+    verdict: "{{outputs.post_feedback.verdict}}",
+    gate_posted: "{{outputs.post_feedback.gate_posted}}",
+    gate_state: "{{outputs.post_feedback.gate_state}}"
+  }
+  arm_automerge -> done
