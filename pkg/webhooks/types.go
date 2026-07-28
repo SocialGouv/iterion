@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/SocialGouv/iterion/pkg/retrypolicy"
+	"github.com/SocialGouv/iterion/pkg/schedgate"
 )
 
 // Provider identifies the external event source.
@@ -203,6 +204,22 @@ type Config struct {
 	// several webhooks for the same bot post under different forge tokens /
 	// bot identities. See docs/byok.md.
 	SecretOverrides map[string]string `bson:"secret_overrides,omitempty" json:"secret_overrides,omitempty"`
+
+	// Overlap is the concurrency policy for runs this webhook launches,
+	// keyed on (webhook, subject, bot) — one PR's reviews, not the whole
+	// repo's. Vocabulary shared with every other launch surface
+	// (pkg/schedgate): "allow" | "skip" | "supersede".
+	//
+	// EMPTY means allow, NOT schedgate's "skip" default. A webhook is
+	// event-driven: every delivery has always launched, and silently
+	// promoting that to at-most-one-live would drop deliveries operators
+	// currently rely on. The gate applies only when explicitly set.
+	//
+	// "supersede" is the one worth setting on a review webhook: with
+	// re-review on push, three pushes in two minutes launch three runs, two
+	// of which analyse stale code and post their verdict on dead commits.
+	// Superseding keeps the run that matches what is actually on the branch.
+	Overlap string `bson:"overlap,omitempty" json:"overlap,omitempty"`
 
 	// Retry policy (pkg/retrypolicy) for a run launched through this
 	// webhook that dies on an exhausted provider usage window. The
@@ -462,6 +479,14 @@ const (
 	StatusLaunched      = "launched"
 	StatusLaunchError   = "launch_error"
 )
+
+// OverlapPolicy projects the webhook's overlap field onto the shared
+// launch-surface policy. Not normalized: schedgate's zero value means "skip"
+// and a webhook's means "allow", so the caller checks Overlap != "" before
+// evaluating rather than letting Normalize impose the wrong default here.
+func (c Config) OverlapPolicy() schedgate.Policy {
+	return schedgate.Policy{Overlap: c.Overlap}
+}
 
 // RetryPolicy projects the webhook's retry fields. Not normalized — this
 // is one layer of a precedence chain, and defaults filled here would

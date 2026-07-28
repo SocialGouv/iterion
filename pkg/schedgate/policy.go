@@ -26,10 +26,18 @@ import (
 // fresh run, and surfaced for reaping. It is what keeps a bot
 // continuously alive across short, individually-budgeted runs rather
 // than one immortal run.
+//
+// OverlapSupersede is the "only the newest input matters" policy: also
+// at-most-one-live, but the NEW work wins — the live run for the same key is
+// cancelled and the fresh one fires. Skip has it backwards for event-driven
+// work: when three pushes land in two minutes, skipping keeps the run that is
+// analysing the OLDEST code and drops the one that matches what is actually
+// on the branch.
 const (
 	OverlapSkip      = "skip"
 	OverlapAllow     = "allow"
 	OverlapKeepalive = "keepalive"
+	OverlapSupersede = "supersede"
 )
 
 // Guard defaults.
@@ -103,6 +111,10 @@ func Validate(p Policy) error {
 		if p.MaxConcurrent < 0 {
 			return fmt.Errorf("schedgate: max_concurrent must be >= 1 when set (0 = unlimited)")
 		}
+	case OverlapSupersede:
+		if p.MaxConcurrent != 0 {
+			return fmt.Errorf("schedgate: max_concurrent is invalid with overlap=supersede (at-most-one-live is the whole point)")
+		}
 	case OverlapKeepalive:
 		if p.MaxConcurrent != 0 {
 			return fmt.Errorf("schedgate: max_concurrent is invalid with overlap=keepalive (at-most-one-live is the whole point)")
@@ -117,7 +129,7 @@ func Validate(p Policy) error {
 			}
 		}
 	default:
-		return fmt.Errorf("schedgate: invalid overlap %q (want %q, %q or %q)", p.Overlap, OverlapSkip, OverlapAllow, OverlapKeepalive)
+		return fmt.Errorf("schedgate: invalid overlap %q (want %q, %q, %q or %q)", p.Overlap, OverlapSkip, OverlapAllow, OverlapKeepalive, OverlapSupersede)
 	}
 	if p.StaleAfter != "" && p.Overlap != OverlapKeepalive {
 		return fmt.Errorf("schedgate: stale_after is only valid with overlap=keepalive")
@@ -169,6 +181,11 @@ const (
 	DecisionFire Decision = iota
 	// DecisionSkipOverlap means firing would exceed the overlap policy.
 	DecisionSkipOverlap
+	// DecisionSupersede means fire, but cancel the live runs first: they are
+	// working on input the new tick has made obsolete. The caller performs the
+	// cancellation — schedgate has no I/O — and the returned ids are the runs
+	// to cancel, oldest first.
+	DecisionSupersede
 )
 
 // EvaluateOverlap decides whether a tick may fire given the schedule's
@@ -188,6 +205,9 @@ func EvaluateOverlap(liveIDs []string, p Policy) (Decision, string) {
 			return DecisionFire, ""
 		}
 		return DecisionSkipOverlap, liveIDs[0]
+	case OverlapSupersede:
+		// The newest input wins: the caller cancels the live runs and fires.
+		return DecisionSupersede, liveIDs[0]
 	default: // OverlapSkip and OverlapKeepalive: at-most-one-live.
 		// For keepalive, staleness has already emptied the live set
 		// upstream (LiveAndStaleRunsForSchedule), so any run reaching

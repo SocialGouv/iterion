@@ -12,6 +12,7 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/SocialGouv/iterion/pkg/knowledge"
+	"github.com/SocialGouv/iterion/pkg/schedgate"
 	"github.com/SocialGouv/iterion/pkg/store"
 	"github.com/SocialGouv/iterion/pkg/webhooks"
 )
@@ -539,6 +540,64 @@ type webhookLaunchResult struct {
 	httpStatus int
 }
 
+// supersedeLiveRuns cancels the runs a fresh delivery has made obsolete, when
+// the webhook opts into overlap=supersede.
+//
+// The key is (webhook, subject, bot) — ONE pull request's runs of ONE bot, not
+// the repo's. Two PRs must review concurrently, and two different bots on the
+// same PR are doing different jobs; neither supersedes the other.
+//
+// Best-effort by construction: a cancel that fails must not stop the new run
+// from launching, because the new run is the one carrying the current truth.
+// Every outcome is logged — a superseded run is a real event an operator will
+// see in the run list and needs to be able to explain.
+func (s *Server) supersedeLiveRuns(ctx context.Context, cfg webhooks.Config, meta webhookEventMeta, botID string) {
+	cancel := s.webhookCancelRun
+	if cancel == nil && s.runs != nil {
+		cancel = s.runs.Cancel
+	}
+	if cfg.Overlap == "" || s.webhookDeliveries == nil || cancel == nil {
+		return
+	}
+	if decision, _ := schedgate.EvaluateOverlap([]string{"probe"}, cfg.OverlapPolicy()); decision != schedgate.DecisionSupersede {
+		return
+	}
+	if meta.SubjectID == "" {
+		return // no subject to scope the supersede to; never cancel repo-wide
+	}
+	recent, err := s.webhookDeliveries.ListByWebhook(ctx, cfg.TenantID, cfg.ID, supersedeLookback)
+	if err != nil {
+		if s.logger != nil {
+			s.logger.Warn("webhooks: supersede lookup failed for %s %s: %v", cfg.ID, meta.SubjectID, err)
+		}
+		return
+	}
+	for _, d := range recent {
+		if d.RunID == "" || d.BotID != botID || d.SubjectID != meta.SubjectID {
+			continue
+		}
+		if d.Status != webhooks.StatusLaunched {
+			continue
+		}
+		// Cancel is a no-op on a run that already finished, so the delivery
+		// row's status is enough of a filter — no run lookup needed.
+		if cerr := cancel(d.RunID); cerr != nil {
+			if s.logger != nil {
+				s.logger.Debug("webhooks: supersede could not cancel run %s (likely already finished): %v", d.RunID, cerr)
+			}
+			continue
+		}
+		if s.logger != nil {
+			s.logger.Info("webhooks: superseded run %s (%s on %s) — a newer delivery for the same subject arrived", d.RunID, botID, meta.SubjectID)
+		}
+	}
+}
+
+// supersedeLookback bounds the delivery scan behind a supersede check. A PR's
+// live runs are necessarily among the most recent deliveries on its webhook,
+// and an unbounded scan would put the whole delivery history on the hot path.
+const supersedeLookback = 50
+
 // scheduleForgeBoardProjection kicks the near-real-time forge→board refresh
 // for a repo. Once per DELIVERY, never once per bot: a fan-out would otherwise
 // queue N identical projections against the 16-slot semaphore.
@@ -689,6 +748,11 @@ func (s *Server) launchWebhookTarget(
 			reusePriorFailure = &ex
 		}
 	}
+
+	// 1b. Supersede: this delivery's input makes the live run for the same
+	// subject obsolete (a newer commit on the same PR). Cancel before
+	// metering, so the superseded run's slot is freed for the fresh one.
+	s.supersedeLiveRuns(ctx, cfg, meta, botID)
 
 	// 2. Run-launch admission. Only reached for a genuinely new delivery
 	// (replays were filtered in step 1), so the quota CAS fires once per
