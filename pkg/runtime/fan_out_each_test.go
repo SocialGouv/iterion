@@ -718,20 +718,17 @@ func TestFanOutEachInternalCancellationAbandonsWedgedBranch(t *testing.T) {
 	eng := New(wf, s, exec)
 
 	done := make(chan error, 1)
-	start := time.Now()
+	// Released on every exit path, including the helper's Fatal.
+	var releaseOnce sync.Once
+	releaseWedged := func() { releaseOnce.Do(func() { close(release) }) }
+	t.Cleanup(releaseWedged)
 	go func() { done <- eng.Run(context.Background(), "run-fe-internal-cancel-wedged", nil) }()
-	select {
-	case err := <-done:
-		if err == nil {
-			t.Fatal("expected wait_all branch failure")
-		}
-		if elapsed := time.Since(start); elapsed > 2*time.Second {
-			t.Fatalf("fan_out_each returned too slowly after internal cancellation: %s", elapsed)
-		}
-	case <-time.After(10 * time.Second):
-		close(release)
-		t.Fatal("fan_out_each hung on a wedged branch after internal cancellation")
+	elapsed, err := awaitRunWithin(t, done, 10*time.Second,
+		"fan_out_each to abandon a wedged branch after internal cancellation")
+	if err == nil {
+		t.Fatal("expected wait_all branch failure")
 	}
-	close(release)
+	requireReturnedWithin(t, elapsed, 2*time.Second, "fan_out_each after internal cancellation")
+	releaseWedged()
 	waitBranchFinished(t, s, "run-fe-internal-cancel-wedged", "branch_dispatch_1")
 }

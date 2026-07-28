@@ -670,13 +670,10 @@ func TestFanOutBoundedCancellationNoDeadlock(t *testing.T) {
 
 	done := make(chan error, 1)
 	go func() { done <- eng.Run(ctx, "run-bounded-cancel", nil) }()
-	select {
-	case err := <-done:
-		if err == nil {
-			t.Fatal("expected a cancellation error")
-		}
-	case <-time.After(5 * time.Second):
-		t.Fatal("fan-out deadlocked under bounded parallelism + cancellation")
+	_, err := awaitRunWithin(t, done, 5*time.Second,
+		"fan-out to unwind under bounded parallelism + cancellation")
+	if err == nil {
+		t.Fatal("expected a cancellation error")
 	}
 }
 
@@ -739,17 +736,18 @@ func TestFanOutCancelAbandonsWedgedBranch(t *testing.T) {
 	eng := New(wf, s, exec)
 
 	done := make(chan error, 1)
+	// Released on every exit path, including the helper's Fatal.
+	var releaseOnce sync.Once
+	releaseWedged := func() { releaseOnce.Do(func() { close(release) }) }
+	t.Cleanup(releaseWedged)
+
 	go func() { done <- eng.Run(ctx, "run-wedged", nil) }()
-	select {
-	case err := <-done:
-		if err == nil {
-			t.Fatal("expected a cancellation error")
-		}
-	case <-time.After(10 * time.Second):
-		close(release)
-		t.Fatal("fan_out hung on a wedged branch despite cancellation (collector drain not bounded)")
+	_, err := awaitRunWithin(t, done, 10*time.Second,
+		"fan_out to bound its collector drain and abandon the wedged branch")
+	if err == nil {
+		t.Fatal("expected a cancellation error")
 	}
-	close(release) // let the wedged branch goroutine exit cleanly
+	releaseWedged() // let the wedged branch goroutine exit cleanly
 
 	// The abandoned branch keeps emitting events (its deferred branch_finished)
 	// after Run already returned. Wait for that last write before the test's
@@ -1231,21 +1229,20 @@ func TestFanOutInternalCancellationAbandonsWedgedBranch(t *testing.T) {
 	eng := New(wf, s, exec)
 
 	done := make(chan error, 1)
-	start := time.Now()
+	// Released on every exit path, including the helper's Fatal, so a wedged
+	// branch is never left blocked by a failing assertion.
+	var releaseOnce sync.Once
+	releaseWedged := func() { releaseOnce.Do(func() { close(release) }) }
+	t.Cleanup(releaseWedged)
+
 	go func() { done <- eng.Run(context.Background(), "run-internal-cancel-wedged", nil) }()
-	select {
-	case err := <-done:
-		if err == nil {
-			t.Fatal("expected wait_all branch failure")
-		}
-		if elapsed := time.Since(start); elapsed > 2*time.Second {
-			t.Fatalf("fan_out returned too slowly after internal cancellation: %s", elapsed)
-		}
-	case <-time.After(10 * time.Second):
-		close(release)
-		t.Fatal("fan_out hung on a wedged branch after internal cancellation")
+	elapsed, err := awaitRunWithin(t, done, 10*time.Second,
+		"fan_out to abandon a wedged branch after internal cancellation")
+	if err == nil {
+		t.Fatal("expected wait_all branch failure")
 	}
-	close(release)
+	requireReturnedWithin(t, elapsed, 2*time.Second, "fan_out after internal cancellation")
+	releaseWedged()
 	waitBranchFinished(t, s, "run-internal-cancel-wedged", "branch_router_agent_b")
 }
 
@@ -1337,14 +1334,11 @@ func TestFanOutAbandonedBranchDoesNotRaceRunState(t *testing.T) {
 	eng := New(wf, s, exec)
 
 	done := make(chan error, 1)
+	t.Cleanup(func() { releaseOnce.Do(func() { close(release) }) })
 	go func() { done <- eng.Run(context.Background(), "run-abandoned-race", nil) }()
-	select {
-	case <-done:
-		// Outcome (success or budget failure) is secondary — the
-		// interleaving must simply complete without deadlock or race.
-	case <-time.After(5 * time.Second):
-		releaseOnce.Do(func() { close(release) })
-		t.Fatal("run hung: abandoned-branch continuation deadlocked the main loop")
-	}
+	// Outcome (success or budget failure) is secondary — the interleaving must
+	// simply complete without deadlock or race.
+	_, _ = awaitRunWithin(t, done, 5*time.Second,
+		"the abandoned-branch continuation not to deadlock the main loop")
 	waitBranchFinished(t, s, "run-abandoned-race", "branch_router_agent_b")
 }

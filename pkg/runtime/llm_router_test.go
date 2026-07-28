@@ -580,17 +580,18 @@ func TestLLMRouterMultiCancelAbandonsWedgedBranch(t *testing.T) {
 	eng := New(wf, s, exec)
 
 	done := make(chan error, 1)
+	// Released on every exit path, including the helper's Fatal.
+	var releaseOnce sync.Once
+	releaseWedged := func() { releaseOnce.Do(func() { close(release) }) }
+	t.Cleanup(releaseWedged)
+
 	go func() { done <- eng.Run(ctx, "run-llm-wedged", nil) }()
-	select {
-	case err := <-done:
-		if err == nil {
-			t.Fatal("expected a cancellation error")
-		}
-	case <-time.After(10 * time.Second):
-		close(release)
-		t.Fatal("llm router fan_out hung on a wedged branch despite cancellation (collector drain not bounded)")
+	_, err := awaitRunWithin(t, done, 10*time.Second,
+		"the llm router's fan_out to bound its collector drain and abandon the wedged branch")
+	if err == nil {
+		t.Fatal("expected a cancellation error")
 	}
-	close(release) // let the wedged branch goroutine exit cleanly
+	releaseWedged() // let the wedged branch goroutine exit cleanly
 
 	// The abandoned branch keeps emitting events (its deferred branch_finished)
 	// after Run already returned. Wait for that last write before the test's
