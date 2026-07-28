@@ -606,12 +606,28 @@ def main():
         # check below would then blame the campaign for an archetype it did
         # write, sending it off to duplicate work that already exists. Say what
         # actually happened instead.
+        # Three ways there is no held-out set to score, and they are NOT the
+        # same event. Conflating them is how a vacuous 0 == 0 slips through the
+        # conjunction wearing a green coat.
+        holdout_spent = bool(spent_fingerprints(gm_dir))
         if not held_meta and not os.path.isdir(os.path.join(gm_dir, "mutants", "holdout")):
-            bail("the sealed held-out set is missing from %s and no longer in the "
-                 "workspace. It was relocated by an earlier gate and the sealed "
-                 "directory has since changed or been cleared; GM_SEALED_DIR must be "
-                 "stable across passes. Restore it, or re-create the held-out set "
-                 "knowing the previous seal is broken." % sealed_dir)
+            if holdout_spent:
+                # Legitimate: this cycle's set was scored once and published as
+                # evidence. The blindness proof was MADE and is replayable from
+                # mutants/audit/ — it is simply not being re-made here, and the
+                # report must say so rather than let 0 == 0 read as a pass.
+                report["notice"] = ("the held-out set for this cycle is SPENT and published "
+                                    "under mutants/audit/. This replay re-checks the visible "
+                                    "counter-test only; the held-out figure below is 0/0 and "
+                                    "proves nothing on its own. Draw a fresh set to harden "
+                                    "again — the gate refuses one that repeats a published "
+                                    "fingerprint.")
+            else:
+                bail("the sealed held-out set is missing from %s and no longer in the "
+                     "workspace. It was relocated by an earlier gate and the sealed "
+                     "directory has since changed or been cleared; GM_SEALED_DIR must be "
+                     "stable across passes. Restore it, or re-create the held-out set "
+                     "knowing the previous seal is broken." % sealed_dir)
         gaps = missing_archetypes(corpus, visible + held_meta)
         if gaps:
             report["missing_archetypes"] = gaps
