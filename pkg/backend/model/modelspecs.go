@@ -180,6 +180,11 @@ func (r *specRegistry) merge(provider, modelID string, curated ModelCapabilities
 	if spec.Temperature != nil {
 		out.Temperature = *spec.Temperature
 	}
+	// Pricing has no curated counterpart to fall back on, so it is carried
+	// through as published: zero stays zero and means "the aggregator had no
+	// price", never "free".
+	out.InputCostPerM = spec.InputCostPerM
+	out.OutputCostPerM = spec.OutputCostPerM
 	return out
 }
 

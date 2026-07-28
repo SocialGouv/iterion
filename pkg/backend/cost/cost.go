@@ -22,6 +22,7 @@
 package cost
 
 import (
+	"sort"
 	"strings"
 
 	clawapi "github.com/SocialGouv/claw-code-go/pkg/api"
@@ -43,21 +44,34 @@ type modelPricing struct {
 	outputUSDPerMillion float64
 }
 
+// Family rates, named once and shared. A missing entry costs more than a
+// stale one: an unlisted model reports NO cost at all, and on a stack where
+// the spend ceiling is not enforced in flight this table is the only figure
+// there is. Naming the rate also states the inheritance — "opus 5 is the opus
+// rate" — instead of duplicating a literal that then drifts per line.
+var (
+	opusRate   = modelPricing{15.00, 75.00}
+	sonnetRate = modelPricing{3.00, 15.00}
+	haikuRate  = modelPricing{0.25, 1.25}
+)
+
 var modelPriceTable = map[string]modelPricing{
 	// Anthropic — opus / sonnet / haiku families share rates within a
-	// family, so newer point releases inherit the same numbers until
-	// Anthropic publishes a new price.
-	"claude-opus-4-8":           {15.00, 75.00},
-	"claude-opus-4-7":           {15.00, 75.00},
-	"claude-opus-4-6":           {15.00, 75.00},
-	"claude-opus-4-5":           {15.00, 75.00},
-	"claude-opus-4":             {15.00, 75.00},
-	"claude-sonnet-4-7":         {3.00, 15.00},
-	"claude-sonnet-4-6":         {3.00, 15.00},
-	"claude-sonnet-4-5":         {3.00, 15.00},
-	"claude-sonnet-4":           {3.00, 15.00},
-	"claude-haiku-4-5":          {0.25, 1.25},
-	"claude-haiku-4-5-20251001": {0.25, 1.25},
+	// family, so newer releases inherit the same numbers until Anthropic
+	// publishes a new price.
+	"claude-opus-5":             opusRate,
+	"claude-opus-4-8":           opusRate,
+	"claude-opus-4-7":           opusRate,
+	"claude-opus-4-6":           opusRate,
+	"claude-opus-4-5":           opusRate,
+	"claude-opus-4":             opusRate,
+	"claude-sonnet-5":           sonnetRate,
+	"claude-sonnet-4-7":         sonnetRate,
+	"claude-sonnet-4-6":         sonnetRate,
+	"claude-sonnet-4-5":         sonnetRate,
+	"claude-sonnet-4":           sonnetRate,
+	"claude-haiku-4-5":          haikuRate,
+	"claude-haiku-4-5-20251001": haikuRate,
 	// OpenAI — gpt-5.5+ are priced higher than gpt-5; mini/nano variants
 	// are roughly an order of magnitude cheaper. Numbers below are best
 	// effort against the known list; refresh against the OpenAI pricing
@@ -120,4 +134,31 @@ func Annotate(output map[string]any, model string, inputTokens, outputTokens int
 		output["_cost_usd"] = cost
 	}
 	return totalTokens
+}
+
+// StaticRate returns the committed fallback rate for a model, and whether the
+// table carries one at all. Exported so the pricing audit can compare what is
+// committed against what the spec aggregator publishes: the two silently
+// disagreed for months because nothing could see both at once.
+func StaticRate(model string) (inputPerM, outputPerM float64, ok bool) {
+	if i := strings.LastIndex(model, "/"); i >= 0 {
+		model = model[i+1:]
+	}
+	p, ok := modelPriceTable[model]
+	if !ok {
+		return 0, 0, false
+	}
+	return p.inputUSDPerMillion, p.outputUSDPerMillion, true
+}
+
+// StaticTableModels returns the model keys the committed table covers, sorted.
+// The audit iterates these to report an entry the aggregator no longer knows
+// about, which is how a renamed or retired model is spotted.
+func StaticTableModels() []string {
+	out := make([]string, 0, len(modelPriceTable))
+	for k := range modelPriceTable {
+		out = append(out, k)
+	}
+	sort.Strings(out)
+	return out
 }

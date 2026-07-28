@@ -49,4 +49,16 @@ type ModelCapabilities struct {
 
 	// ContextWindow is the model's context window in tokens. Zero = unknown.
 	ContextWindow int
+
+	// InputCostPerM and OutputCostPerM are the per-million-token prices in
+	// USD as published by the spec aggregator. Zero = the aggregator had no
+	// price, which callers must treat as "unknown" and never as free.
+	//
+	// The aggregator's prices were fetched and cached long before anything
+	// read them: the cost estimator consults a different live source and
+	// then a hand-maintained table, so a model the aggregator knew the price
+	// of could still report no cost at all. Carrying the price here is what
+	// lets the two be compared instead of silently disagreeing.
+	InputCostPerM  float64
+	OutputCostPerM float64
 }

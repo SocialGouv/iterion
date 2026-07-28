@@ -36,6 +36,11 @@ type ResolvedCapabilities struct {
 	ToolCall      bool             `json:"tool_call"`
 	Temperature   bool             `json:"temperature"`
 	ContextWindow int              `json:"context_window"`
+	// Per-million-token prices as published by the aggregator. Zero means
+	// the aggregator had no price — never "free". Surfaced so the pricing
+	// audit can hold this figure next to the committed table.
+	InputCostPerM  float64 `json:"input_cost_per_m,omitempty"`
+	OutputCostPerM float64 `json:"output_cost_per_m,omitempty"`
 }
 
 // ResolveCapabilities resolves capabilities for an explicit provider + model ID,
@@ -49,14 +54,16 @@ func ResolveCapabilities(provider, modelID string) ResolvedCapabilities {
 		src = SourceAggregator
 	}
 	return ResolvedCapabilities{
-		Provider:      provider,
-		Model:         modelID,
-		Spec:          provider + "/" + modelID,
-		Source:        src,
-		Reasoning:     caps.Reasoning,
-		ToolCall:      caps.ToolCall,
-		Temperature:   caps.Temperature,
-		ContextWindow: caps.ContextWindow,
+		Provider:       provider,
+		Model:          modelID,
+		Spec:           provider + "/" + modelID,
+		Source:         src,
+		Reasoning:      caps.Reasoning,
+		ToolCall:       caps.ToolCall,
+		Temperature:    caps.Temperature,
+		ContextWindow:  caps.ContextWindow,
+		InputCostPerM:  caps.InputCostPerM,
+		OutputCostPerM: caps.OutputCostPerM,
 	}
 }
 
@@ -90,6 +97,8 @@ func RefreshModelSpecs(ctx context.Context) error {
 // exhaustive catalogue — any "provider/model-id" can be passed explicitly.
 func KnownModelSpecs() []string {
 	return []string{
+		"anthropic/claude-opus-5",
+		"anthropic/claude-sonnet-5",
 		"anthropic/claude-opus-4-8",
 		"anthropic/claude-sonnet-4-6",
 		"anthropic/claude-haiku-4-5",
