@@ -167,6 +167,20 @@ func TestPiExtraArgsFor(t *testing.T) {
 		}
 	})
 
+	// Context files stay on for parity with claude_code, but they are the
+	// dominant per-call cost on a repo with a large CLAUDE.md (measured:
+	// 26,933 input tokens vs 448 on iterion's own tree), so the off switch
+	// must exist and must be off by default.
+	t.Run("context files on by default, with an off switch", func(t *testing.T) {
+		if slices.Contains(piExtraArgsFor(Task{}), "--no-context-files") {
+			t.Error("context files must stay on by default (claude_code parity)")
+		}
+		t.Setenv("ITERION_PI_NO_CONTEXT_FILES", "1")
+		if !slices.Contains(piExtraArgsFor(Task{}), "--no-context-files") {
+			t.Error("ITERION_PI_NO_CONTEXT_FILES=1 must suppress AGENTS.md/CLAUDE.md injection")
+		}
+	})
+
 	t.Run("project trust is opt-in", func(t *testing.T) {
 		if slices.Contains(piExtraArgsFor(Task{}), "--approve") {
 			t.Error("target-repo .pi/ resources must not be trusted by default")

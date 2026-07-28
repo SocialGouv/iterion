@@ -567,9 +567,17 @@ workflow that already works.**
 
 #### Behaviour worth knowing
 
-- **`AGENTS.md` is read alongside `CLAUDE.md`.** pi walks up from the
-  working directory and injects both. If your repo carries an `AGENTS.md`
-  meant for a different agent, it reaches pi nodes too.
+- **`AGENTS.md` is read alongside `CLAUDE.md`, and it is the dominant
+  per-call cost.** pi walks up from the working directory and injects both.
+  Two consequences:
+  - If your repo carries an `AGENTS.md` meant for a different agent, it
+    reaches pi nodes too.
+  - **Measure it before you budget.** On iterion's own tree (a 103 KB
+    `CLAUDE.md`) a one-word prompt costs **26,933 input tokens with context
+    files against 448 without** — sixty times the input, on every call,
+    before the node does any work. It stays on by default for parity with
+    `claude_code`; set `ITERION_PI_NO_CONTEXT_FILES=1` to turn it off when a
+    node does not need the repo's instructions.
 - **The target repo's `.pi/` directory is refused.** pi executes
   project-local extensions as TypeScript *inside the agent process* — the
   process holding the run's credentials — so trusting a checked-out

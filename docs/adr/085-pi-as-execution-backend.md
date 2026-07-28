@@ -265,13 +265,44 @@ notice a renamed field. Four things it found that reading the source had not:
    in `diagnostics[].error.code` (`Message.HTTPStatus()`), with a broader
    text fallback that is safe precisely because the input is structured.
 
-**Not yet validated: a real model call.** No provider credential was available
-on the validating host (`~/.pi/agent/auth.json` absent, no provider env keys,
-and the one Anthropic credential present is the OAuth forfait this backend
-refuses by design). Everything above exercises the real binary, the real event
-stream and the whole Go path; what remains unproven is a genuine provider
-round-trip — model resolution against a live catalogue, real usage figures, and
-the fuzzy-model-match warning firing on a typo.
+### Real model round-trip (z.ai / GLM-5.2)
+
+Completed through the whole chain — DSL → IR → runtime → `PiBackend` →
+`CLIAgentBackend` → pi → `pisdk` → `Result` — against `zai/glm-5.2`. It
+validated the provider-computed cost path and `piResolveModel`'s z.ai
+handling, and surfaced three things:
+
+1. **Context files are the dominant per-call cost, by a factor of sixty.**
+   A one-word prompt on iterion's own tree costs **26,933 input tokens with
+   context files against 448 without** — pi injects the repo's 103 KB
+   `CLAUDE.md` on *every* call. It stays on for `claude_code` parity;
+   `ITERION_PI_NO_CONTEXT_FILES=1` is the new off switch. Any budget
+   estimate for a pi node that ignores this is wrong by an order of
+   magnitude.
+2. **A node with no `user:` prompt silently does nothing.** pi with an empty
+   prompt emits its session header and exits without a turn — 0 tokens, no
+   error. Where `claude_code` would still run, pi no-ops, and the failure
+   presents as a structured-output validation error two steps later.
+3. **The reported node cost is the LAST attempt's, not the sum.** A run whose
+   first attempt spent 26,997 tokens and whose retry spent 106 reported 106.
+   This is iterion's general retry accounting, not pi-specific, but it
+   compounds the pi-internal-retry under-reporting above — flagged, not
+   fixed here.
+
+**Still not validated:**
+
+- **The sandboxed path.** Every run above used `--sandbox none`. The
+  `sandbox.Run.Command` routing, the pidfile-kill wrapper, `--offline`, and
+  the workspace-relative system-prompt/session paths are unit-tested against
+  a fake `sandbox.Run` but have never driven a real container.
+- **The fuzzy-model-match warning.** `Result.EffectiveModel` differing from
+  the request is logged, but no run has yet resolved a typo'd model, so the
+  warning has not fired in anger.
+- **Session resume/fork.** `--session-id` / `--fork` are emitted and
+  argv-tested; no run has actually resumed a pi session.
+- **Anthropic through pi.** Reached the API and was refused for an empty
+  extra-usage balance (see above), never for a policy reason. A successful
+  Anthropic round-trip through pi remains unproven.
 
 ## Follow-ups
 
