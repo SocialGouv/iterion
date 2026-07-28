@@ -896,7 +896,12 @@ tool post_feedback:
     blocking = GATE_BLOCKING.get(s(verdict))
     if blocking is None:
         blocking = 1
+    # The status description a reviewer reads on the PR. Written per verdict
+    # because the generic "no blocking findings (≥threshold)" phrasing assumes
+    # a severity floor, and this gate turns on the audit verdict instead.
     gate_note = {
+        "clean": "supply-chain audit clean; no code alignment needed",
+        "committed": "supply-chain audit clean; alignment committed, build verified",
         "hold_security": "supply-chain risk: the bump was not applied",
         "hold_unstable": "build/tests not green after alignment",
         "needs_decision": "an architectural decision is pending a human",
@@ -1033,9 +1038,20 @@ print(json.dumps({'degraded': degraded or gate_degraded, 'banner': banner}))
 ## have landed green too, because arming on a verdict whose status never
 ## reached the PR would merge on a check nobody can see.
 ##
-## The ONLY forge call is enablePullRequestAutoMerge. There is deliberately
-## no path to PUT /pulls/{n}/merge: that merges immediately, bypassing every
-## pending check, which is precisely what this bot exists to prevent.
+## Two forge calls, and the choice between them is the forge's own answer,
+## never a judgement of this bot:
+##   - checks still pending  → enablePullRequestAutoMerge, which hands the
+##     decision to the repo's required checks;
+##   - forge reports CLEAN   → mergePullRequest pinned to the exact head we
+##     reviewed. CLEAN means "mergeable and passing commit status", so there
+##     is nothing left to wait for — and GitHub REFUSES to arm auto-merge in
+##     that state ("Pull request is in clean status"). Since the audit takes
+##     longer than CI, this is the ordinary case: without it the bot would
+##     arm nothing and merge nothing, ever.
+## There is deliberately no path to PUT /pulls/{n}/merge: that merges
+## whatever the state, bypassing every pending check, which is precisely what
+## this bot exists to prevent. expectedHeadOid is the equivalent guarantee on
+## the GraphQL side — a push landing mid-decision aborts the merge.
 tool arm_automerge:
   input: automerge_input
   output: automerge_output
@@ -1090,6 +1106,9 @@ tool arm_automerge:
             data=json.dumps({"query": query, "variables": variables}).encode("utf-8"),
             method="POST",
             headers={"Authorization": "Bearer " + token, "Content-Type": "application/json",
+                     # mergeStateStatus is behind this media type; without it the
+                     # field is rejected and the whole query fails.
+                     "Accept": "application/vnd.github.merge-info-preview+json",
                      "User-Agent": "vetty-dep-update-guard"})
         with urllib.request.urlopen(req, timeout=30) as resp:
             payload = json.loads(resp.read().decode("utf-8"))
@@ -1106,20 +1125,54 @@ tool arm_automerge:
     at = chr(36)
     q = ("query(@owner: String!, @name: String!, @number: Int!) { "
          "repository(owner: @owner, name: @name) { "
-         "pullRequest(number: @number) { id autoMergeRequest { enabledAt } } "
+         "pullRequest(number: @number) { id headRefOid mergeable mergeStateStatus "
+         "autoMergeRequest { enabledAt } } "
          "} }").replace("@", at)
-    mut = ("mutation(@id: ID!, @method: PullRequestMergeMethod!) { "
-           "enablePullRequestAutoMerge(input: { pullRequestId: @id, mergeMethod: @method }) "
-           "{ clientMutationId } }").replace("@", at)
-    try:
+    arm_mut = ("mutation(@id: ID!, @method: PullRequestMergeMethod!) { "
+               "enablePullRequestAutoMerge(input: { pullRequestId: @id, mergeMethod: @method }) "
+               "{ clientMutationId } }").replace("@", at)
+    # expectedHeadOid is the safety pin: the forge merges this exact commit or
+    # nothing, so a push racing the decision can never be merged unreviewed.
+    merge_mut = ("mutation(@id: ID!, @method: PullRequestMergeMethod!, @oid: GitObjectID!) { "
+                 "mergePullRequest(input: { pullRequestId: @id, mergeMethod: @method, "
+                 "expectedHeadOid: @oid }) { clientMutationId } }").replace("@", at)
+
+    def read_pr():
         data = graphql(q, {"owner": owner, "name": repo, "number": num})
-        pr = ((data.get("repository") or {}).get("pullRequest") or {})
+        return ((data.get("repository") or {}).get("pullRequest") or {})
+
+    def merge_now(pr, why):
+        graphql(merge_mut, {"id": pr.get("id"), "method": s(method).upper() or "SQUASH",
+                            "oid": pr.get("headRefOid")})
+        out(True, why)
+
+    # Ready to merge means every required check the forge knows about is
+    # already satisfied — the state auto-merge exists to wait for.
+    def ready(pr):
+        return s(pr.get("mergeStateStatus")).upper() == "CLEAN" and \
+               s(pr.get("mergeable")).upper() == "MERGEABLE"
+
+    try:
+        pr = read_pr()
         node_id = pr.get("id")
         if not node_id:
             out(False, "pull request not found via the forge API")
         if pr.get("autoMergeRequest"):
             out(True, "auto-merge was already armed")
-        graphql(mut, {"id": node_id, "method": s(method).upper() or "SQUASH"})
+        if ready(pr):
+            merge_now(pr, "merged: the forge reported every required check already green")
+        try:
+            graphql(arm_mut, {"id": node_id, "method": s(method).upper() or "SQUASH"})
+        except Exception as arm_err:
+            # The forge refuses to arm a PR with nothing left to wait for. The
+            # state can flip between the read above and this call, so re-read
+            # rather than trusting the first answer.
+            if "clean status" not in str(arm_err).lower():
+                raise
+            pr = read_pr()
+            if not ready(pr):
+                out(False, "auto-merge request refused: " + str(arm_err))
+            merge_now(pr, "merged: the forge reported every required check already green")
         out(True, "")
     except urllib.error.HTTPError as e:
         detail = ""

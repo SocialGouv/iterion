@@ -14,10 +14,11 @@ import (
 // TestDepUpdateGuardArmAutomerge pins the one node in the fleet that can end
 // with code merged into a default branch. Two properties carry all the weight:
 //
-//   - it NEVER merges. The only forge call it may make is
-//     enablePullRequestAutoMerge, which hands the decision to the repo's own
-//     required checks. A direct merge call would bypass CI — the opposite of
-//     what this bot exists to guarantee.
+//   - it never merges past a check. Which of the two forge calls it makes is
+//     the forge's own answer: auto-merge while checks are pending, a merge
+//     pinned to the reviewed head only once the forge itself reports CLEAN
+//     (mergeable and passing commit status), which is the state where it
+//     refuses to arm auto-merge at all.
 //   - it is fail-closed everywhere: off by default, green verdict required,
 //     the gate must actually have landed green, GitHub only, and every refusal
 //     carries a reason so an un-merged PR is never a mystery.
@@ -27,16 +28,20 @@ func TestDepUpdateGuardArmAutomerge(t *testing.T) {
 	}
 	script := toolScript(t, "dep-update-guard/main.bot", "arm_automerge")
 
-	// The source must not even contain a way to merge outright: the guarantee
-	// should be readable, not merely untested. Asserted on each forbidden
-	// marker on its own — a conjunction with "does it also mention the
-	// auto-merge mutation" is always false, since that mutation is the node's
-	// only forge call, and would let the single most dangerous regression
-	// this bot can have sail through.
-	for _, forbidden := range []string{"mergePullRequest", `/merge"`, "/merge'", "/merge%s", "/merge?"} {
+	// The REST merge endpoint merges whatever the state; it must not appear at
+	// all. Asserted on each marker on its own — a conjunction with "does it
+	// also mention the auto-merge mutation" is always false, and would let the
+	// single most dangerous regression this bot can have sail through.
+	for _, forbidden := range []string{`/merge"`, "/merge'", "/merge%s", "/merge?"} {
 		if strings.Contains(script, forbidden) {
 			t.Fatalf("arm_automerge must not reference a direct merge endpoint (%q)", forbidden)
 		}
+	}
+	// The GraphQL merge is allowed only in its pinned form: without
+	// expectedHeadOid it would merge whatever the branch holds by the time the
+	// call lands, which is the same unreviewed-code hazard by another route.
+	if strings.Contains(script, "mergePullRequest") && !strings.Contains(script, "expectedHeadOid") {
+		t.Fatal("mergePullRequest must always be pinned with expectedHeadOid")
 	}
 
 	type call struct {
@@ -44,10 +49,35 @@ func TestDepUpdateGuardArmAutomerge(t *testing.T) {
 		vars  map[string]any
 	}
 
-	run := func(t *testing.T, subs map[string]string) (map[string]any, []call, []string) {
+	// The forge's own words when a PR has nothing left to wait for.
+	const cleanRefusal = "Pull request Pull request is in clean status"
+
+	// blocked is the state where checks are still running: auto-merge is
+	// exactly what it is for.
+	blocked := map[string]any{
+		"id": "PR_node_1", "headRefOid": "d34db33f", "autoMergeRequest": nil,
+		"mergeable": "MERGEABLE", "mergeStateStatus": "BLOCKED",
+	}
+	withState := func(over map[string]any) map[string]any {
+		pr := map[string]any{}
+		for k, v := range blocked {
+			pr[k] = v
+		}
+		for k, v := range over {
+			pr[k] = v
+		}
+		return pr
+	}
+
+	// runWith drives the node against a stub forge holding `pr`. A non-empty
+	// armErr makes the auto-merge mutation fail with that message, and `after`
+	// (when set) is the state served on any read that follows — the flip a
+	// finishing check produces mid-decision.
+	runWith := func(t *testing.T, subs map[string]string, pr map[string]any, armErr string, after map[string]any) (map[string]any, []call, []string) {
 		t.Helper()
 		var calls []call
 		var paths []string
+		state := pr
 		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			paths = append(paths, r.Method+" "+r.URL.Path)
 			raw, _ := io.ReadAll(r.Body)
@@ -66,17 +96,41 @@ func TestDepUpdateGuardArmAutomerge(t *testing.T) {
 				w.WriteHeader(400)
 				return
 			}
-			if strings.Contains(body.Query, "enablePullRequestAutoMerge") {
+			// mergeStateStatus is preview-gated: the real API rejects the query
+			// without the media type, so a stub that ignores it would certify a
+			// request production refuses.
+			if strings.Contains(body.Query, "mergeStateStatus") &&
+				!strings.Contains(r.Header.Get("Accept"), "merge-info-preview") {
+				t.Errorf("mergeStateStatus queried without the merge-info-preview Accept header")
+				w.WriteHeader(400)
+				return
+			}
+			switch {
+			case strings.Contains(body.Query, "enablePullRequestAutoMerge"):
+				if armErr != "" {
+					if after != nil {
+						state = after
+					}
+					_ = json.NewEncoder(w).Encode(map[string]any{
+						"errors": []map[string]any{{"type": "UNPROCESSABLE", "message": armErr}},
+					})
+					return
+				}
 				_ = json.NewEncoder(w).Encode(map[string]any{
 					"data": map[string]any{"enablePullRequestAutoMerge": map[string]any{"clientMutationId": nil}},
 				})
-				return
+			case strings.Contains(body.Query, "mergePullRequest"):
+				if body.Variables["oid"] != state["headRefOid"] {
+					t.Errorf("merge pinned to %v, want the reviewed head %v", body.Variables["oid"], state["headRefOid"])
+				}
+				_ = json.NewEncoder(w).Encode(map[string]any{
+					"data": map[string]any{"mergePullRequest": map[string]any{"clientMutationId": nil}},
+				})
+			default:
+				_ = json.NewEncoder(w).Encode(map[string]any{
+					"data": map[string]any{"repository": map[string]any{"pullRequest": state}},
+				})
 			}
-			_ = json.NewEncoder(w).Encode(map[string]any{
-				"data": map[string]any{"repository": map[string]any{
-					"pullRequest": map[string]any{"id": "PR_node_1", "autoMergeRequest": nil},
-				}},
-			})
 		}))
 		defer srv.Close()
 
@@ -121,8 +175,21 @@ func TestDepUpdateGuardArmAutomerge(t *testing.T) {
 		}
 		return res, calls, paths
 	}
+	run := func(t *testing.T, subs map[string]string) (map[string]any, []call, []string) {
+		t.Helper()
+		return runWith(t, subs, blocked, "", nil)
+	}
 
-	t.Run("green verdict + green gate arms via the auto-merge mutation", func(t *testing.T) {
+	queried := func(calls []call, needle string) bool {
+		for _, c := range calls {
+			if strings.Contains(c.query, needle) {
+				return true
+			}
+		}
+		return false
+	}
+
+	t.Run("checks still pending: arms auto-merge and merges nothing", func(t *testing.T) {
 		res, calls, _ := run(t, nil)
 		if res["armed"] != true {
 			t.Fatalf("want armed, got %v", res)
@@ -135,13 +202,64 @@ func TestDepUpdateGuardArmAutomerge(t *testing.T) {
 					t.Errorf("merge method = %v, want SQUASH", c.vars["method"])
 				}
 			}
-			// The whole guarantee: nothing may merge the PR outright.
+			// The whole guarantee: with a check still pending, nothing merges.
 			if strings.Contains(c.query, "mergePullRequest") {
-				t.Fatal("arm_automerge must never call mergePullRequest — that bypasses the checks")
+				t.Fatal("merged a PR whose checks had not landed — that bypasses CI")
 			}
 		}
 		if !armed {
 			t.Fatal("no enablePullRequestAutoMerge call was made")
+		}
+	})
+
+	// The ordinary case: the audit outlives CI, so by the time the bot decides,
+	// the forge has nothing left to wait for and refuses to arm auto-merge. A
+	// bot that only ever armed would merge nothing, ever.
+	t.Run("forge reports CLEAN: merges pinned to the reviewed head", func(t *testing.T) {
+		res, calls, _ := runWith(t, nil, withState(map[string]any{"mergeStateStatus": "CLEAN"}), "", nil)
+		if res["armed"] != true {
+			t.Fatalf("want merged, got %v", res)
+		}
+		if !queried(calls, "mergePullRequest") {
+			t.Fatal("a PR the forge reports CLEAN must be merged, not left open forever")
+		}
+		if queried(calls, "enablePullRequestAutoMerge") {
+			t.Error("armed auto-merge on a CLEAN PR — the forge rejects that outright")
+		}
+	})
+
+	t.Run("arming refused as clean: re-reads, then merges", func(t *testing.T) {
+		// The state can flip between the read and the arm call; the refusal is
+		// the forge telling us so.
+		res, calls, _ := runWith(t, nil, blocked, cleanRefusal, withState(map[string]any{"mergeStateStatus": "CLEAN"}))
+		if res["armed"] != true {
+			t.Fatalf("want merged after the refusal, got %v", res)
+		}
+		if !queried(calls, "mergePullRequest") {
+			t.Fatal("refusal-to-arm left the PR unmerged")
+		}
+	})
+
+	t.Run("CLEAN but conflicting: merges nothing", func(t *testing.T) {
+		res, calls, _ := runWith(t, nil, withState(map[string]any{
+			"mergeStateStatus": "CLEAN", "mergeable": "CONFLICTING"}), cleanRefusal, nil)
+		if queried(calls, "mergePullRequest") {
+			t.Fatal("merged a conflicting PR")
+		}
+		if res["armed"] != false {
+			t.Errorf("want a refusal with a reason, got %v", res)
+		}
+	})
+
+	t.Run("blocked and arming refused for another reason: reports it", func(t *testing.T) {
+		// Only "clean status" means "nothing left to wait for". Any other
+		// refusal must surface, never be retried into a merge.
+		res, calls, _ := runWith(t, nil, blocked, "Base branch was modified. Review and try the merge again.", nil)
+		if queried(calls, "mergePullRequest") {
+			t.Fatal("merged a BLOCKED PR after a failed arm")
+		}
+		if res["armed"] != false {
+			t.Fatalf("want a refusal, got %v", res)
 		}
 	})
 
