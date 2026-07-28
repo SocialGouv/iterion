@@ -89,6 +89,8 @@ iterion remote api-keys create --provider openai   --name mykey --from-file ~/op
 # absent), so the connection dies silently at the next token expiry:
 iterion remote api POST /api/me/oauth/claude_code/credentials \
   --data "@$HOME/.claude/.credentials.json"
+# (Linux/WSL path. On macOS Claude Code keeps these in the Keychain, so there
+#  may be no file to read until you export it.)
 
 # OpenAI ChatGPT-forfait (claw + openai/* model) — the Codex auth.json.
 # Note `"@$HOME/…"`, not `@~/…`: the shell only expands a tilde at the START
@@ -106,7 +108,7 @@ Scope — the two credential kinds resolve **differently**:
   `(team, "", provider)` ([pkg/secrets/byok.go](../pkg/secrets/byok.go)). A run
   under a keyless team won't see another team's keys.
 - **OAuth forfaits** resolve **user-first with an org fallback**
-  ([publisher.go](../pkg/server/cloudpublisher/publisher.go): `addOAuth(ownerID,
+  ([pkg/server/cloudpublisher/publisher.go](../pkg/server/cloudpublisher/publisher.go): `addOAuth(ownerID,
   "user")` then `addOAuth(OrgOwnerKey(tenantID), "org")`), so a personal
   `/api/me/oauth/…` connection follows *you* across teams — switching the
   active team neither gains nor loses it.
