@@ -242,6 +242,7 @@ const sidebar = [
       { text: 'Quotas & limits', link: '/quotas-and-limits' },
       { text: 'Cloud CLI (remote)', link: '/cloud-cli' },
       { text: 'Cloud REST API', link: '/cloud-rest-api' },
+      { text: 'Cloud LLM credentials', link: '/cloud-llm-credentials' },
       { text: 'Cloud deployment', link: '/cloud-deployment' },
       { text: 'Cloud architecture', link: '/cloud-architecture' },
       { text: 'Cloud admin guide', link: '/cloud-admin-guide' },
