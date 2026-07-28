@@ -4831,6 +4831,9 @@ export interface components {
             project_path?: string;
             queue_position?: number;
             repo_root?: string;
+            /** Format: date-time */
+            retry_after?: string;
+            retry_attempts?: number;
             shard_count?: number;
             shard_index?: number;
             shard_label?: string;
