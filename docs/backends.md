@@ -29,7 +29,7 @@ flowchart LR
 |---|---|---|
 | `claw` | Recommended in-process backend for direct provider calls and native Iterion tools. | Automatic or explicit. |
 | `claude_code` | Recommended CLI-agent backend for implementation work and Claude subscription/OAuth use. | Automatic when Claude Code OAuth is detected, or explicit. |
-| `pi` | Supported, with iterion's permission gate. Reaches ~36 providers and reports a provider-computed cost. Runs a long-lived `--mode rpc` session by default — tool events, native steering, authoritative accounting, pre-flight handshake (`ITERION_PI_MODE=print` rolls back). Still missing: MCP, board tools, ask_user. | Explicit only. |
+| `pi` | Supported, with iterion's permission gate. Reaches ~36 providers and reports a provider-computed cost. Runs a long-lived `--mode rpc` session by default — tool events, native steering, authoritative accounting, pre-flight handshake (`ITERION_PI_MODE=print` rolls back). Permission gate, ask_user and board capabilities work via an embedded extension; workflow-declared stdio MCP servers do not yet. | Explicit only. |
 | `kimi` | Supported through the generic CLI-agent protocol; session resume/fork is not wired. | Explicit only. |
 | `grok` | Supported through the generic CLI-agent protocol; session resume/fork is not wired. | Explicit only. |
 | `codex` | **Deprecated and frozen.** Compatibility/live-test path only; the compiler emits C030. | Per-node/workflow opt-in, or explicit addition to `ITERION_BACKEND_PREFERENCE`. |
@@ -561,12 +561,16 @@ no web fetch/search, no notebook, no background bash. Consequences for a
   its `allow:`/`ask:`/`deny:` rule lists resolve through the same
   `permission.Policy` as `claude_code` and `claw`, so all three reach identical
   verdicts. RPC transport only — a print-mode node has no channel for it.
-- **board `capabilities:` do not work yet** — they are served over MCP.
+- **board `capabilities:` DO work** (from v3.7.6, RPC transport only): the
+  extension bridges iterion's board MCP endpoint onto pi and registers each
+  tool it advertises.
 - **`ask_user` DOES work** (from v3.7.6, RPC transport only): the agent can
   put a question to the operator, which pauses the run and resumes with their
   answer. Async questions (`ask_user_async` / `await_answers`, ADR-081) do not
   yet.
-- **workflow `mcp_server` blocks are not forwarded yet.**
+- **workflow `mcp_server:` blocks are not forwarded yet** — only the
+  streamable-HTTP transport is implemented, and workflow-declared servers
+  commonly use stdio. Such a node should stay on `backend: "claw"`.
 - **`__ITERION_SECRET_*__` placeholders are not materialised.** Use file
   secrets instead ([secrets.md](secrets.md)) — they are real mounted files
   and work unchanged.

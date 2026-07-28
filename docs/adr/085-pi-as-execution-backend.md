@@ -393,7 +393,7 @@ Why each of those choices:
   without that check a forgotten rebuild would silently ship yesterday's
   extension on every run.
 
-**Shipped: the permission gate and `ask_user`.** pi has no permission system at all, so a
+**Shipped: the permission gate, `ask_user`, and MCP-over-HTTP bridging.** pi has no permission system at all, so a
 workflow's `permission: ask|deny` block was silently inert on a pi node. The
 `tool_call` hook forwards each call over the control channel; the decision is
 made in Go by the **same `permission.Policy`** that drives claude_code's
@@ -426,6 +426,29 @@ A permission `ask` uses the same suspension path, carrying a
 `permission.Marker` so the studio renders an approval card rather than a
 question.
 
+**MCP over HTTP, which is what makes board capabilities reachable.** pi has no
+MCP client, so every MCP surface iterion built was invisible to it. The
+extension carries a small JSON-RPC-over-HTTP client (hand-rolled rather than
+pulled from the MCP SDK: the bundle must stay dependency-free to load inside a
+sandbox with no `node_modules`), discovers tools via `tools/list`, and
+registers each one on pi.
+
+Nothing about the board is hardcoded — the server stays the source of truth for
+what exists and what it accepts, so a new board operation needs no change in
+the extension. Tool names keep iterion's `mcp__<server>__<tool>` shape, which
+is load-bearing: the permission layer treats that namespace as infrastructure
+and exempts it, so renaming would make `permission: ask` pause the run on the
+very tools used to talk to the board.
+
+The board is offered **only** when the run has capabilities *and* the endpoint
+and token are wired. Registering it otherwise would hand the agent tools that
+fail on every call — worse than absent, because the model burns turns
+discovering they do not work. Bridging happens on `session_start` and a server
+that is unreachable costs its own tools, not the session.
+
+Verified against a real HTTP MCP server: handshake, `tools/list`, `tools/call`
+with the `X-Iterion-Run` header, and the result reaching the model.
+
 **The control channel.** pi's extension-UI protocol is a *closed* union, so the
 channel tunnels through two of its members — `ctx.ui.input` for
 request/response, `ctx.ui.notify` for one-way. No listener, no port, no token,
@@ -437,10 +460,11 @@ unmarked request is cancelled — its documented safe default — with a warning
 
 ## Follow-ups
 
-- **Extension stages 2+**: `ask_user` (+ async), board tools, Claude-Code tool
-  aliases, and an MCP client. The MCP client is the largest single item and the
-  one that unblocks a whole class of workflows; until it lands, a node needing
-  user MCP servers should use `backend: "claw"`.
+- **Extension, remaining**: async questions (`ask_user_async` /
+  `await_answers`), stdio and SSE MCP transports for third-party servers (the
+  HTTP half is done and is the reusable core), and Claude-Code tool aliases.
+  A workflow declaring a non-HTTP `mcp_server:` should still use
+  `backend: "claw"`.
 - Diagnostics for the two silent gaps: `mcp_server` on a pi node, and
   placeholder secrets on a pi node.
 - A successful Anthropic completion through pi (blocked only on an extra-usage

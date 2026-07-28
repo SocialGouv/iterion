@@ -14,9 +14,10 @@
  * modes, so an extension shipped that way would never load and never say so.
  * CLI `-e` paths bypass trust resolution entirely.
  *
- * Shipped today: the permission gate and ask_user.
- * Next: async questions, board tools, Claude-Code tool aliases, an MCP
- * client. See ADR-085.
+ * Shipped today: the permission gate, ask_user, and MCP-over-HTTP bridging
+ * (which is what makes board capabilities reachable).
+ * Next: async questions, stdio/SSE MCP transports, Claude-Code tool aliases.
+ * See ADR-085.
  */
 
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
@@ -24,6 +25,7 @@ import { CONTRACT_VERSION, loadConfig } from "./config.js";
 import { Ctrl } from "./ctrl.js";
 import { installPermissionGate } from "./hooks/permission.js";
 import { installAskUser } from "./tools/ask-user.js";
+import { installMcpServer } from "./tools/mcp-tools.js";
 
 export default function (pi: ExtensionAPI): void {
 	const cfg = loadConfig();
@@ -53,4 +55,22 @@ export default function (pi: ExtensionAPI): void {
 	const ctrl = new Ctrl({ runId: cfg.runId, nodeId: cfg.nodeId, iteration: cfg.iteration });
 	installPermissionGate(pi, cfg, ctrl);
 	installAskUser(pi, cfg, ctrl);
+
+	// MCP bridging is async (each server is asked what it offers), so it runs
+	// on session_start rather than blocking extension load. A server that is
+	// unreachable costs its tools, not the session — the agent then simply
+	// does not have them, which is visible in what it does.
+	if (cfg.mcpServers.length > 0) {
+		pi.on("session_start", async (_event, ctx) => {
+			for (const server of cfg.mcpServers) {
+				try {
+					const count = await installMcpServer(pi, server);
+					ctrl.notify("log", { level: "info", message: `bridged ${count} tool(s) from ${server.name}` }, ctx);
+				} catch (err) {
+					const msg = err instanceof Error ? err.message : String(err);
+					ctrl.notify("log", { level: "warn", message: `MCP server ${server.name} unreachable: ${msg}` }, ctx);
+				}
+			}
+		});
+	}
 }

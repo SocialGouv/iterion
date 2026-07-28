@@ -451,7 +451,45 @@ func piExtensionEnv(task Task) map[string]string {
 	if task.InteractionEnabled {
 		env["ITERION_PI_INTERACTION"] = "sync"
 	}
+	if servers := piMCPServers(task); len(servers) > 0 {
+		if raw, err := json.Marshal(servers); err == nil {
+			env["ITERION_PI_MCP_SERVERS"] = string(raw)
+		}
+	}
 	return env
+}
+
+// piMCPServerSpec is one MCP server the extension bridges onto pi.
+type piMCPServerSpec struct {
+	Name    string            `json:"name"`
+	URL     string            `json:"url"`
+	Headers map[string]string `json:"headers,omitempty"`
+}
+
+// piMCPServers lists the MCP servers this node should reach.
+//
+// pi has no MCP client, so every one of iterion's MCP surfaces is invisible to
+// it until the extension bridges them. Today that is the board; workflow-declared
+// `mcp_server:` blocks join the same list once non-HTTP transports land.
+//
+// The board is included only when the run actually has capabilities AND the
+// HTTP endpoint is wired. Registering it otherwise would hand the agent tools
+// that fail on every call, which is worse than not having them: the model
+// burns turns discovering they do not work.
+//
+// This is also the ONLY place a token appears in the extension's configuration
+// — inside a server's headers, never as a standalone variable — so a generic
+// environment dump cannot log it.
+func piMCPServers(task Task) []piMCPServerSpec {
+	var out []piMCPServerSpec
+	if len(task.Capabilities) > 0 && task.BoardHTTPEndpoint != "" && task.BoardRunToken != "" {
+		out = append(out, piMCPServerSpec{
+			Name:    "iterion_board",
+			URL:     task.BoardHTTPEndpoint,
+			Headers: map[string]string{"X-Iterion-Run": task.BoardRunToken},
+		})
+	}
+	return out
 }
 
 // handleUIRequest answers an extension UI request.

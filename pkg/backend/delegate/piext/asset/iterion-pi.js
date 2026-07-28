@@ -14,6 +14,18 @@ function permissionMode(raw) {
       return "off";
   }
 }
+function parseMcpServers(raw) {
+  if (!raw) return [];
+  try {
+    const parsed = JSON.parse(raw);
+    if (!Array.isArray(parsed)) return [];
+    return parsed.filter(
+      (s) => typeof s?.name === "string" && typeof s?.url === "string"
+    );
+  } catch {
+    return [];
+  }
+}
 function loadConfig() {
   const hostContract = env("ITERION_PI_CONTRACT") ?? "";
   const iterationRaw = env("ITERION_PI_ITERATION");
@@ -28,6 +40,7 @@ function loadConfig() {
     iteration: Number.isFinite(iteration) ? iteration : void 0,
     permission: permissionMode(env("ITERION_PI_PERMISSION")),
     interaction: env("ITERION_PI_INTERACTION") === "sync" ? "sync" : "off",
+    mcpServers: parseMcpServers(env("ITERION_PI_MCP_SERVERS")),
     ctrlEnabled: env("ITERION_PI_CTRL") !== "off"
   };
 }
@@ -187,6 +200,105 @@ function installAskUser(pi, cfg, ctrl) {
   });
 }
 
+// src/tools/mcp-tools.ts
+import { Type as Type2 } from "typebox";
+
+// src/mcp/http.ts
+var McpHttpClient = class {
+  constructor(url, headers = {}, timeoutMs = 6e4) {
+    this.url = url;
+    this.headers = headers;
+    this.timeoutMs = timeoutMs;
+  }
+  nextId = 0;
+  /**
+   * MCP requires an `initialize` handshake before anything else. iterion's
+   * board server is lenient, but a third-party server is not, and doing it
+   * here keeps this client honest against both.
+   */
+  async initialize() {
+    await this.rpc("initialize", {
+      protocolVersion: "2024-11-05",
+      capabilities: {},
+      clientInfo: { name: "iterion-pi-extension", version: "1" }
+    });
+  }
+  async listTools() {
+    const res = await this.rpc("tools/list", {});
+    return res?.tools ?? [];
+  }
+  async callTool(name, args) {
+    return await this.rpc("tools/call", { name, arguments: args }) ?? {};
+  }
+  async rpc(method, params) {
+    this.nextId += 1;
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), this.timeoutMs);
+    try {
+      const res = await fetch(this.url, {
+        method: "POST",
+        headers: { "content-type": "application/json", ...this.headers },
+        body: JSON.stringify({ jsonrpc: "2.0", id: this.nextId, method, params }),
+        signal: controller.signal
+      });
+      if (!res.ok) {
+        throw new Error(`${method}: HTTP ${res.status} ${res.statusText}`);
+      }
+      const body = await res.json();
+      if (body.error) {
+        throw new Error(`${method}: ${body.error.message} (code ${body.error.code})`);
+      }
+      return body.result;
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+};
+
+// src/tools/mcp-tools.ts
+function renderResult(result) {
+  const parts = [];
+  for (const c of result.content ?? []) {
+    if (typeof c.text === "string") parts.push(c.text);
+  }
+  const text = parts.length > 0 ? parts.join("\n") : JSON.stringify(result);
+  return { text, isError: result.isError === true };
+}
+async function installMcpServer(pi, server) {
+  if (!server.url) return 0;
+  const client = new McpHttpClient(server.url, server.headers ?? {});
+  await client.initialize();
+  const tools = await client.listTools();
+  for (const tool of tools) {
+    pi.registerTool({
+      name: tool.name,
+      label: tool.name,
+      description: tool.description ?? `${tool.name} (via ${server.name})`,
+      // The server's JSON Schema is passed through unvalidated on this
+      // side: it is authoritative, and re-deriving a TypeBox schema from
+      // it would only add a second place for the shape to be wrong.
+      parameters: Type2.Unsafe(
+        tool.inputSchema ?? { type: "object" }
+      ),
+      async execute(_toolCallId, params) {
+        try {
+          const result = await client.callTool(tool.name, params ?? {});
+          const { text, isError } = renderResult(result);
+          return { content: [{ type: "text", text }], details: void 0, isError };
+        } catch (err) {
+          const msg = err instanceof Error ? err.message : String(err);
+          return {
+            content: [{ type: "text", text: `${tool.name} failed: ${msg}` }],
+            details: void 0,
+            isError: true
+          };
+        }
+      }
+    });
+  }
+  return tools.length;
+}
+
 // src/index.ts
 function index_default(pi) {
   const cfg = loadConfig();
@@ -202,6 +314,19 @@ function index_default(pi) {
   const ctrl = new Ctrl({ runId: cfg.runId, nodeId: cfg.nodeId, iteration: cfg.iteration });
   installPermissionGate(pi, cfg, ctrl);
   installAskUser(pi, cfg, ctrl);
+  if (cfg.mcpServers.length > 0) {
+    pi.on("session_start", async (_event, ctx) => {
+      for (const server of cfg.mcpServers) {
+        try {
+          const count = await installMcpServer(pi, server);
+          ctrl.notify("log", { level: "info", message: `bridged ${count} tool(s) from ${server.name}` }, ctx);
+        } catch (err) {
+          const msg = err instanceof Error ? err.message : String(err);
+          ctrl.notify("log", { level: "warn", message: `MCP server ${server.name} unreachable: ${msg}` }, ctx);
+        }
+      }
+    });
+  }
 }
 export {
   index_default as default
