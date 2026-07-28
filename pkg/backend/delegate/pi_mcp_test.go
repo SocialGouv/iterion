@@ -139,8 +139,10 @@ func TestPiMCPServers(t *testing.T) {
 
 	for name, task := range map[string]Task{
 		"no capabilities": {BoardHTTPEndpoint: "http://h", BoardRunToken: "t"},
-		"no endpoint":     {Capabilities: []string{"board.create"}, BoardRunToken: "t"},
-		"no token":        {Capabilities: []string{"board.create"}, BoardHTTPEndpoint: "http://h"},
+		// Sandboxed without the HTTP pair there is no reachable transport:
+		// the stdio server would run on the host, outside the container.
+		"sandboxed with no endpoint": {Capabilities: []string{"board.create"}, Sandbox: &recordingRun{}, BoardRunToken: "t"},
+		"sandboxed with no token":    {Capabilities: []string{"board.create"}, Sandbox: &recordingRun{}, BoardHTTPEndpoint: "http://h"},
 	} {
 		t.Run("board withheld: "+name, func(t *testing.T) {
 			if got := piMCPServers(task, nil); len(got) != 0 {
@@ -148,6 +150,36 @@ func TestPiMCPServers(t *testing.T) {
 			}
 		})
 	}
+
+	// The runtime only fills BoardHTTPEndpoint/BoardRunToken for SANDBOXED
+	// runs, so keying the board on them alone left every non-sandboxed pi node
+	// (sandbox: none, cloud runner pods, any host with no container runtime)
+	// with no board at all — silently, unlike claude_code which wires the
+	// stdio server exactly for this case.
+	t.Run("board rides stdio when the run is not sandboxed", func(t *testing.T) {
+		bin := filepath.Join(t.TempDir(), "iterion")
+		if err := os.WriteFile(bin, []byte("#!/bin/sh\n"), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		t.Setenv("ITERION_BIN", bin)
+
+		servers := piMCPServers(Task{
+			Capabilities: []string{"board.create", "board.move"},
+			StoreDir:     "/store",
+		}, nil)
+		if len(servers) != 1 || servers[0].Name != boardMCPServerName {
+			t.Fatalf("servers = %+v, want the board over stdio", servers)
+		}
+		if servers[0].Transport != "stdio" || !slices.Contains(servers[0].Args, boardMCPSubcommand) {
+			t.Errorf("server = %+v, want the %s subcommand over stdio", servers[0], boardMCPSubcommand)
+		}
+		if servers[0].Env["ITERION_BOARD_CAPS"] != "board.create,board.move" {
+			t.Errorf("granted caps not forwarded: %+v", servers[0].Env)
+		}
+		if servers[0].Env["ITERION_STORE_DIR"] != "/store" {
+			t.Errorf("store dir not forwarded: %+v", servers[0].Env)
+		}
+	})
 
 	// The token must ride inside the server descriptor, never as its own
 	// variable, so a generic environment dump cannot log it.

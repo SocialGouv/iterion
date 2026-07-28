@@ -14,6 +14,7 @@ import (
 	"github.com/SocialGouv/iterion/pkg/backend/cost"
 	"github.com/SocialGouv/iterion/pkg/backend/delegate/piext"
 	"github.com/SocialGouv/iterion/pkg/backend/delegate/pisdk"
+	"github.com/SocialGouv/iterion/pkg/internal/proc"
 	iterlog "github.com/SocialGouv/iterion/pkg/log"
 	"github.com/SocialGouv/iterion/pkg/sandbox"
 )
@@ -300,6 +301,14 @@ func (b *PiRPCBackend) awaitSettle(ctx context.Context, client *pisdk.Client, co
 	sawFirstEvent := false
 
 	abortAndGrace := func() {
+		// Once the node ctx is cancelled the process is already gone —
+		// exec.CommandContext kills it — so Abort would write to a dead stdin
+		// and no agent_settled can ever arrive. Waiting out the grace would
+		// then stall the cancellation by piSettleGrace (30s by default) for
+		// every in-flight pi node, for nothing.
+		if ctx.Err() != nil {
+			return
+		}
 		abortCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		_ = client.Abort(abortCtx)
 		cancel()
@@ -324,8 +333,11 @@ func (b *PiRPCBackend) awaitSettle(ctx context.Context, client *pisdk.Client, co
 			}
 
 		case <-ctx.Done():
-			// Ask pi to stop rather than killing it mid-call: an aborted turn
-			// still flushes its transcript, so the partial result survives.
+			// A graceful abort would let the turn flush its transcript, but
+			// the process is bound to this same ctx and is already killed by
+			// the time we get here, so abortAndGrace returns immediately
+			// rather than stalling. Detaching the process lifetime from the
+			// node ctx is what would actually buy the partial transcript back.
 			abortAndGrace()
 			return ctx.Err()
 
@@ -499,18 +511,50 @@ type piMCPServerSpec struct {
 // resolved inside the container, so a host-only binary is unreachable there.
 func piMCPServers(task Task, logger *iterlog.Logger) []piMCPServerSpec {
 	var out []piMCPServerSpec
-	if len(task.Capabilities) > 0 && task.BoardHTTPEndpoint != "" && task.BoardRunToken != "" {
-		out = append(out, piMCPServerSpec{
-			Name:      "iterion_board",
-			Transport: "http",
-			URL:       task.BoardHTTPEndpoint,
-			Headers:   map[string]string{"X-Iterion-Run": task.BoardRunToken},
-		})
-	}
-
 	warn := func(format string, args ...any) {
 		if logger != nil {
 			logger.Warn(format, args...)
+		}
+	}
+
+	// Board transport, mirroring claude_code's wireBoardMCP: the runtime only
+	// populates BoardHTTPEndpoint/BoardRunToken for SANDBOXED runs, so keying
+	// the board solely on those left every non-sandboxed pi node (plain
+	// `sandbox: none`, ITERION_SANDBOX_DEFAULT=none, cloud runner pods, any
+	// host without a container runtime) with no board server at all — the bot
+	// looked healthy and simply never wrote. stdio is that case's transport.
+	if HasBoardCapability(task.Capabilities) {
+		switch {
+		case task.BoardHTTPEndpoint != "" && task.BoardRunToken != "":
+			out = append(out, piMCPServerSpec{
+				Name:      boardMCPServerName,
+				Transport: "http",
+				URL:       task.BoardHTTPEndpoint,
+				Headers:   map[string]string{"X-Iterion-Run": task.BoardRunToken},
+			})
+		case task.Sandbox == nil:
+			if selfPath := proc.LocateIterionBinary(); selfPath == "" {
+				warn("[%s#%d/%s] board capabilities granted but the iterion CLI binary could not be resolved; board disabled for this node",
+					task.NodeID, task.Iteration, BackendPi)
+			} else {
+				env := map[string]string{"ITERION_BOARD_CAPS": strings.Join(task.Capabilities, ",")}
+				if task.StoreDir != "" {
+					env["ITERION_STORE_DIR"] = task.StoreDir
+				}
+				if task.SourceIssueID != "" {
+					env["ITERION_SOURCE_ISSUE_ID"] = task.SourceIssueID
+				}
+				out = append(out, piMCPServerSpec{
+					Name:      boardMCPServerName,
+					Transport: "stdio",
+					Command:   selfPath,
+					Args:      []string{boardMCPSubcommand},
+					Env:       env,
+				})
+			}
+		default:
+			warn("[%s#%d/%s] board capabilities granted but the run is sandboxed and BoardHTTPEndpoint/BoardRunToken are not configured; board disabled for this node",
+				task.NodeID, task.Iteration, BackendPi)
 		}
 	}
 	for _, s := range task.MCPServers {

@@ -51,6 +51,13 @@ const assetPath = "asset/iterion-pi.js"
 // the workspace, so a file under os.TempDir() would be invisible inside the
 // container — and this needs no extra mount and works identically on the
 // kubernetes driver, which rejects host binds.
+//
+// Each call owns a UNIQUE file. Parallel branches share one WorkDir, so a
+// fixed name let one node's deferred cleanup delete the file another node's pi
+// had not read yet (`pi -e <missing path>` → a handshake failure), on top of a
+// torn read while the same path was being rewritten. The window is widest
+// under the sandbox, where the host writes the file and a container that still
+// has to boot reads it across the bind mount.
 func Materialise(workDir string) (path string, cleanup func(), err error) {
 	if workDir == "" {
 		return "", func() {}, fmt.Errorf("piext: a WorkDir is required to materialise the extension")
@@ -64,9 +71,23 @@ func Materialise(workDir string) (path string, cleanup func(), err error) {
 	if err := os.MkdirAll(dir, 0o750); err != nil {
 		return "", func() {}, fmt.Errorf("piext: create extension dir: %w", err)
 	}
-	path = filepath.Join(dir, "iterion-pi.js")
-	if err := os.WriteFile(path, body, 0o600); err != nil {
-		return "", func() {}, fmt.Errorf("piext: write extension: %w", err)
+	// The name must keep the .js suffix: pi loads it as an ES module.
+	f, err := os.CreateTemp(dir, "iterion-pi-*.js")
+	if err != nil {
+		return "", func() {}, fmt.Errorf("piext: create extension file: %w", err)
+	}
+	path = f.Name()
+	_, werr := f.Write(body)
+	cerr := f.Close()
+	if werr == nil {
+		werr = cerr
+	}
+	if werr == nil {
+		werr = os.Chmod(path, 0o600)
+	}
+	if werr != nil {
+		_ = os.Remove(path)
+		return "", func() {}, fmt.Errorf("piext: write extension: %w", werr)
 	}
 	return path, func() { _ = os.Remove(path) }, nil
 }
