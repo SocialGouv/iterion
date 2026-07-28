@@ -59,13 +59,17 @@ func TestConformance_Mongo(t *testing.T) {
 // runs land on disjoint databases (Go test packages run sequentially
 // per package, but the same package's t.Parallel() subtests can
 // otherwise collide).
+// bsonNonce returns a per-call unique suffix for a test database name.
+//
+// It returns the FULL ObjectID hex, not a prefix: the leading 8 hex chars of
+// an ObjectID are its timestamp in SECONDS, so a prefix makes every test
+// starting within the same second share one database — and therefore each
+// other's data. That went unnoticed while no test asserted on a
+// platform-wide scan; the retry sweeper's due-list does, and saw its
+// neighbours' runs.
 func bsonNonce(t *testing.T) string {
 	t.Helper()
-	id := bson.NewObjectID().Hex()
-	if len(id) < 8 {
-		return id
-	}
-	return id[:8]
+	return bson.NewObjectID().Hex()
 }
 
 // inMemoryBlob is a hash-map blob.Client implementation suitable for

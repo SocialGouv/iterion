@@ -12,6 +12,7 @@ import (
 
 	"github.com/robfig/cron/v3"
 
+	"github.com/SocialGouv/iterion/pkg/retrypolicy"
 	"github.com/SocialGouv/iterion/pkg/schedgate"
 )
 
@@ -47,6 +48,16 @@ type ScheduledBot struct {
 	// StaleAfter is the keepalive silence cutoff (Go duration); empty defaults
 	// to schedgate.DefaultStaleAfter. Only meaningful with Overlap=keepalive.
 	StaleAfter string `bson:"stale_after,omitempty" json:"stale_after,omitempty"`
+
+	// Retry policy (pkg/retrypolicy) for a run this schedule launches that
+	// dies on an exhausted provider usage window. Declared flat like the
+	// schedgate fields above so the row stays queryable; project with
+	// RetryPolicy(). Empty fields inherit the bot's manifest, then the
+	// machine default — this layer only overrides what it sets.
+	RetryUsageWindow string `bson:"retry_usage_window,omitempty" json:"retry_usage_window,omitempty"`
+	RetryMaxAttempts int    `bson:"retry_max_attempts,omitempty" json:"retry_max_attempts,omitempty"`
+	RetryMaxWait     string `bson:"retry_max_wait,omitempty" json:"retry_max_wait,omitempty"`
+	RetryJitter      string `bson:"retry_jitter,omitempty" json:"retry_jitter,omitempty"`
 
 	// NextFireAt is the next UTC instant this schedule is due. The ticker
 	// CAS-advances it the moment it claims a tick, so a second replica racing
@@ -104,7 +115,13 @@ type SchedulePatch struct {
 	GuardTimeout    *string
 	GuardVar        *string
 	StaleAfter      *string
-	UpdatedAt       time.Time
+	// Retry policy fields; nil = leave untouched. An explicit empty string
+	// (or 0) clears the field so the schedule stops overriding the bot.
+	RetryUsageWindow *string
+	RetryMaxAttempts *int
+	RetryMaxWait     *string
+	RetryJitter      *string
+	UpdatedAt        time.Time
 }
 
 // ErrNotFound is returned by Get/Delete for an unknown id.
@@ -181,6 +198,18 @@ func applySchedulePatch(sb *ScheduledBot, patch SchedulePatch) {
 	if patch.StaleAfter != nil {
 		sb.StaleAfter = *patch.StaleAfter
 	}
+	if patch.RetryUsageWindow != nil {
+		sb.RetryUsageWindow = *patch.RetryUsageWindow
+	}
+	if patch.RetryMaxAttempts != nil {
+		sb.RetryMaxAttempts = *patch.RetryMaxAttempts
+	}
+	if patch.RetryMaxWait != nil {
+		sb.RetryMaxWait = *patch.RetryMaxWait
+	}
+	if patch.RetryJitter != nil {
+		sb.RetryJitter = *patch.RetryJitter
+	}
 	if !patch.UpdatedAt.IsZero() {
 		sb.UpdatedAt = patch.UpdatedAt
 	}
@@ -197,4 +226,17 @@ func (sb ScheduledBot) Policy() schedgate.Policy {
 		GuardVar:      sb.GuardVar,
 		StaleAfter:    sb.StaleAfter,
 	})
+}
+
+// RetryPolicy projects the schedule's retry fields. Deliberately NOT
+// normalized: this is one layer of a precedence chain, and filling defaults
+// here would make the schedule appear to set fields it left open, masking
+// the bot's manifest and the machine default.
+func (sb ScheduledBot) RetryPolicy() retrypolicy.Policy {
+	return retrypolicy.Policy{
+		UsageWindow: sb.RetryUsageWindow,
+		MaxAttempts: sb.RetryMaxAttempts,
+		MaxWait:     sb.RetryMaxWait,
+		Jitter:      sb.RetryJitter,
+	}
 }

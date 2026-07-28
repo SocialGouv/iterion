@@ -15,6 +15,7 @@ import (
 	"github.com/SocialGouv/iterion/pkg/botregistry"
 	"github.com/SocialGouv/iterion/pkg/cloudsched"
 	"github.com/SocialGouv/iterion/pkg/knowledge"
+	"github.com/SocialGouv/iterion/pkg/retrypolicy"
 	"github.com/SocialGouv/iterion/pkg/runview"
 	"github.com/SocialGouv/iterion/pkg/secrets"
 	"github.com/SocialGouv/iterion/pkg/store"
@@ -774,7 +775,11 @@ func (s *Server) launchScheduledBot(ctx context.Context, sb cloudsched.Scheduled
 	if err != nil {
 		return err
 	}
-	_, err = s.runs.Launch(ctx, buildScheduledLaunchSpec(sb, path, source))
+	retry := s.resolveRunRetryPolicy(sb.BotID, retrypolicy.Layer{
+		Source: retrypolicy.SourceSchedule,
+		Policy: sb.RetryPolicy(),
+	})
+	_, err = s.runs.Launch(ctx, buildScheduledLaunchSpec(sb, path, source, retry))
 	return err
 }
 
@@ -783,7 +788,7 @@ func (s *Server) launchScheduledBot(ctx context.Context, sb cloudsched.Scheduled
 // the schedule's Vars + repo binding onto the LaunchSpec so the runner clones
 // the pinned repo (mandatory for stateful bots persisting state to git) and
 // stamps the BotID for the publisher's credential-resolution path.
-func buildScheduledLaunchSpec(sb cloudsched.ScheduledBot, path, source string) runview.LaunchSpec {
+func buildScheduledLaunchSpec(sb cloudsched.ScheduledBot, path, source string, retry *store.RunRetryPolicy) runview.LaunchSpec {
 	return runview.LaunchSpec{
 		FilePath: path,
 		Source:   source,
@@ -791,6 +796,11 @@ func buildScheduledLaunchSpec(sb cloudsched.ScheduledBot, path, source string) r
 		Vars:     sb.Vars,
 		RepoURL:  sb.RepoURL,
 		RepoRef:  sb.RepoRef,
+		// Resolved by the caller across the schedule row, the bot manifest
+		// and the machine default — the schedule is the layer an operator
+		// reaches for when one bot's cadence needs different retry limits
+		// from the same bot on another cadence.
+		RetryPolicy: retry,
 		// Typed provenance: the schedgate overlap gate counts this
 		// schedule's live runs through source.schedule_id.
 		SourceRef: &store.RunSource{
@@ -801,10 +811,19 @@ func buildScheduledLaunchSpec(sb cloudsched.ScheduledBot, path, source string) r
 	}
 }
 
-// realWebhookLaunchBot is the production launch path for an inbound
-// webhook: resolve the bot's source and submit it through the run
+// webhookLauncherFor builds the production launch path for one inbound
+// webhook config. It is a closure rather than a plain method because the
+// launch needs the config's retry policy, which the seam's positional
+// signature does not carry.
+func (s *Server) webhookLauncherFor(cfg webhooks.Config) func(context.Context, string, map[string]string, string, string, string, map[string]string, map[string]string) (string, error) {
+	return func(ctx context.Context, botID string, vars map[string]string, repoURL, repoRef, projectPath string, keyOverrides, secretOverrides map[string]string) (string, error) {
+		return s.launchWebhookBot(ctx, cfg, botID, vars, repoURL, repoRef, projectPath, keyOverrides, secretOverrides)
+	}
+}
+
+// launchWebhookBot resolves the bot's source and submits it through the run
 // service (which, in cloud mode, routes to the publisher).
-func (s *Server) realWebhookLaunchBot(ctx context.Context, botID string, vars map[string]string, repoURL, repoRef, projectPath string, keyOverrides, secretOverrides map[string]string) (string, error) {
+func (s *Server) launchWebhookBot(ctx context.Context, cfg webhooks.Config, botID string, vars map[string]string, repoURL, repoRef, projectPath string, keyOverrides, secretOverrides map[string]string) (string, error) {
 	if s.runs == nil {
 		return "", errors.New("run service unavailable")
 	}
@@ -822,6 +841,13 @@ func (s *Server) realWebhookLaunchBot(ctx context.Context, botID string, vars ma
 		BotID:           botID,
 		KeyOverrides:    keyOverrides,
 		SecretOverrides: secretOverrides,
+		// A webhook-launched run is often the one an author is waiting on,
+		// so the config's own horizon usually wants to be shorter than a
+		// nightly's — hence the layer.
+		RetryPolicy: s.resolveRunRetryPolicy(botID, retrypolicy.Layer{
+			Source: retrypolicy.SourceWebhook,
+			Policy: cfg.RetryPolicy(),
+		}),
 	})
 	if err != nil {
 		return "", err

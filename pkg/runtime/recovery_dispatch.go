@@ -12,13 +12,20 @@ import (
 // handleNodeFailure consults the recovery dispatcher (when wired) and
 // applies the resulting RecoveryAction. Returns:
 //
-//   - (true, nil)   → caller should `continue` and re-execute the same node.
-//   - (false, nil)  → caller should fail terminally (failRunWithCheckpoint).
-//   - (false, err)  → terminal outcome already produced (ErrRunPaused for
+//   - (true, code, nil)   → caller should `continue` and re-execute the same node.
+//   - (false, code, nil)  → caller should fail terminally (failRunWithCheckpoint).
+//   - (false, code, err)  → terminal outcome already produced (ErrRunPaused for
 //     RecoveryPauseForHuman, or a context cancellation).
-func (e *Engine) handleNodeFailure(ctx context.Context, rs *runState, nodeID string, execErr error) (bool, error) {
+//
+// The classified code is returned so a terminal failure carries the REAL
+// cause (USAGE_LIMIT_BLOCKED, CONTEXT_LENGTH_EXCEEDED, …) instead of a
+// blanket EXECUTION_FAILED. Hosts branch on it — a provider usage window
+// needs a reset-aware wait, a transient blip an immediate retry — and they
+// cannot tell those apart from a flattened string. An empty code means no
+// dispatcher was wired, so nothing classified the failure.
+func (e *Engine) handleNodeFailure(ctx context.Context, rs *runState, nodeID string, execErr error) (bool, ErrorCode, error) {
 	if e.recoveryDispatch == nil {
-		return false, nil
+		return false, "", nil
 	}
 
 	if rs.nodeAttempts == nil {
@@ -71,20 +78,20 @@ func (e *Engine) handleNodeFailure(ctx context.Context, rs *runState, nodeID str
 			case <-timer.C:
 			case <-ctx.Done():
 				timer.Stop()
-				return false, e.handleContextDoneWithCheckpoint(rs, nodeID, ctx.Err())
+				return false, code, e.handleContextDoneWithCheckpoint(rs, nodeID, ctx.Err())
 			}
 		}
-		return true, nil
+		return true, code, nil
 
 	case RecoveryPauseForHuman:
 		reason := action.Reason
 		if reason == "" {
 			reason = fmt.Sprintf("recovery: %s", code)
 		}
-		return false, e.pauseForRecovery(rs, nodeID, code, reason, execErr)
+		return false, code, e.pauseForRecovery(rs, nodeID, code, reason, execErr)
 	}
 
-	return false, nil
+	return false, code, nil
 }
 
 // tryCompact invokes the optional Compactor on the executor and

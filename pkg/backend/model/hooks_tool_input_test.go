@@ -66,4 +66,3 @@ func TestRecentInputsStaysBounded(t *testing.T) {
 		t.Errorf("map non bornee: %d entrees pour un plafond de %d", n, maxRecentInputs)
 	}
 }
-

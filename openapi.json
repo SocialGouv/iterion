@@ -1402,6 +1402,13 @@
           "repo_root": {
             "type": "string"
           },
+          "retry_after": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "retry_attempts": {
+            "type": "integer"
+          },
           "shard_count": {
             "type": "integer"
           },

@@ -14,6 +14,8 @@ import { BotAvatar } from "./BotAvatar";
 import {
   formatDuration,
   friendlyLabel,
+  retryAttemptLabel,
+  retryHint,
   shortRunID,
   workflowDisplay,
 } from "./runListFormat";
@@ -44,6 +46,13 @@ export const RunListCard = memo(function RunListCard({
         <Badge variant={STATUS_VARIANT[run.status]}>
           {labelForStatus(run.status)}
         </Badge>
+        {/* A parked run is waiting, not dead — say so next to the status
+            that would otherwise read as final. */}
+        {retryHint(run) && (
+          <Badge variant="info" title={retryAttemptLabel(run)}>
+            {retryHint(run)}
+          </Badge>
+        )}
         <SourceBadge run={run} />
         {run.active && (
           <LiveDot tone="live" size="sm" label="Active in this process" />

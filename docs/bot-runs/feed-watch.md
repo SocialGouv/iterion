@@ -4,6 +4,72 @@
 
 Newest first. One section per dogfooded run.
 
+## 2026-07-27 — Five digests lost to the forfait weekly cap, recovered by hand (runs 019fa511 / 019fa523 / 019fa528 / 019fa52e / 019fa538)
+
+- Status: **validated (recovery)** — all five digests delivered; the engine
+  gap the incident exposed is fixed and tested.
+- Versions: bot 1.1.1 · iterion prod `:edge` · fix branch off `58dc015e0`.
+- What happened: on Monday 2026-07-27, **seven scheduled prod runs died on the
+  same wall** within 45 minutes — five feed-watch digests (cyber daily; ia,
+  tsjs, gopyrust, java weekly), the weekly Doki, and a review-pr — all with
+  `rate_limited (claude_code): You've hit your weekly limit · resets Jul 28,
+  9pm (UTC)`. Not a dead token: the forfait's **weekly quota**, exhausted.
+  The four weekly digests would not have retried until **2026-08-03**.
+- Method: the forfait was verified FIRST from a runner pod
+  (`kubectl exec … claude -p` against `claude-opus-4-8` → `OK`), which is
+  the cheap way to tell "quota reopened" from "token broken" before
+  launching anything. Recovery then went through **one-shot cloud schedules**
+  (`cron: CRON_TZ=UTC <m> <h> 27 7 *`, deleted after firing) rather than
+  `POST /api/runs`: a manual repo-targeted launch requires a `connection_id`
+  whose reachability check `SocialGouv/iterion-veille` fails (the GitHub App
+  installation only covers `SocialGouv/iterion`), while a schedule needs no
+  connection and resolves forge creds through the team's `forge_token`
+  binding — the path that has been cloning that repo daily for ten days.
+  First one-shot run doubled as the probe: monitored to completion before
+  creating the rest, staggered ~6 min apart.
+- Result: five runs, all `finished`, full digest path each time
+  (`load_pending → synthesize → verify_message → notify → commit_state`),
+  posts confirmed in Mattermost by the operator. State pushed to
+  `iterion-veille`, so the pending queues are correctly drained. The 11
+  prod schedules were left untouched (crons and next-fire times verified
+  after cleanup).
+- Findings / misses: a fresh digest run is **idempotent after this failure**
+  because `commit_state` runs only after `notify` — the failed runs never
+  advanced state, so the queue was intact and no item was lost or
+  double-posted. Worth remembering: for feed-watch, "relaunch" is always
+  safer than "resume" after a synthesize-stage failure, and it also picks up
+  everything collected since.
+- Engine hardening (the real yield — three defects, none visible from one
+  side alone):
+  1. **The reset-aware retry was dead code on every path.** The engine
+     flattened terminal failures into a string, destroying both the
+     classified code and the typed `*delegate.ErrRateLimited` that carries
+     `ResetAt` — so the `--auto-resume` loop's `errors.As` could never match.
+  2. **The cloud runner wired no recovery dispatcher at all**, so
+     `recovery.Classify` was never called on the one surface that runs
+     unattended.
+  3. **The reset parser could not read the shape a weekly cap prints.**
+     `resets Jul 28, 9pm (UTC)` matched nothing (the pattern required a digit
+     right after `resets`), yielding a zero `ResetAt` for precisely the
+     window whose reset is furthest away.
+  Consequence in production: each failure nak'd into **8 redeliveries** — one
+  fresh pod each, against a wall ~35h away — then parked in the DLQ. 11 of
+  the 30 DLQ entries were this exact cause, going back to 2026-07-21.
+  Fixed by the `retry:` work: the runner now acks and persists *when* to
+  come back, a server sweeper resumes at the reset, and the policy is
+  configurable on four layers (see
+  [docs/scheduling.md](../scheduling.md#retry--a-provider-quota-window-is-waited-out-not-re-attempted)).
+- Lessons for next run:
+  - **Verify the forfait before diagnosing anything else.** "Regenerated the
+    token" and "have quota again" are different claims; a weekly cap is
+    immune to a new token on the same account.
+  - A **daily** category is not automatically safe to skip in a catch-up.
+    Cyber was initially left to self-heal on the next tick on the grounds
+    that no item is lost — but for security watch, a day late *is* the loss.
+    Catch up time-sensitive categories explicitly.
+  - One-shot schedules are the reliable manual-launch path for a repo the
+    forge connection cannot reach. Delete them straight after firing.
+
 ## 2026-07-17 — Security hardening: prompt-injection gate + SSRF guard + link firewall (runs 019f7092 collect / 019f709e inject-digest)
 
 - Status: **validated (host)** — the five hardening mechanisms proven on real

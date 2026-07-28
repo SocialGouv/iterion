@@ -510,7 +510,11 @@ func (s *Server) insertAndLaunchWebhook(
 	// 3. Launch.
 	launch := s.webhookLaunchBot
 	if launch == nil {
-		launch = s.realWebhookLaunchBot
+		// A closure over cfg rather than a bare method reference: the real
+		// launcher needs the webhook's own retry policy, and threading it
+		// as a ninth positional parameter would churn every test fake of
+		// this seam for one field.
+		launch = s.webhookLauncherFor(cfg)
 	}
 	// Deterministic forge review publishing: a review-shaped delivery
 	// carries a pr_url var — mint a per-run publish grant scoped to the

@@ -5,6 +5,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/SocialGouv/iterion/pkg/runview/runstream"
 	"github.com/SocialGouv/iterion/pkg/store"
@@ -214,7 +215,26 @@ func summarizeRun(r *store.Run, active bool) RunSummary {
 		ShardIndex:        r.ShardIndex,
 		ShardCount:        r.ShardCount,
 		ShardLabel:        r.ShardLabel,
+		RetryAfter:        retryAfterOf(r),
+		RetryAttempts:     retryAttemptsOf(r),
 	}
+}
+
+// retryAfterOf / retryAttemptsOf project the run's retry bookkeeping,
+// tolerating every "not armed" shape (no state, no instant) so a caller
+// never has to nil-walk two levels.
+func retryAfterOf(r *store.Run) *time.Time {
+	if r == nil || r.RetryState == nil {
+		return nil
+	}
+	return r.RetryState.RetryAfter
+}
+
+func retryAttemptsOf(r *store.Run) int {
+	if r == nil || r.RetryState == nil {
+		return 0
+	}
+	return r.RetryState.Attempts
 }
 
 // BuildChildrenFromStore returns the shard/child subtree of a run read

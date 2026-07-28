@@ -75,7 +75,7 @@ func (s *Server) ListenAndServe() error {
 		}
 		var launcher trigger.Launcher
 		if s.runs != nil {
-			launcher = newServiceLauncher(s.runs, s.effectivePaths(), s.logger)
+			launcher = newServiceLauncher(s.runs, s.effectivePaths(), s.logger, s.resolveRunRetryPolicy)
 		}
 		s.triggerCoord = StartTriggerCoordinator(s.cfg.NativeTrackerStore, s.cfg.TriggerStore, nudger, launcher, s.scheduleGate(), s.cfg.EventsBus, s.logger)
 	}
@@ -87,7 +87,7 @@ func (s *Server) ListenAndServe() error {
 	if s.cfg.NativeTrackerStore == nil && s.cfg.CloudBoardCoordinator != nil && s.cfg.TriggerStore != nil && s.runs != nil {
 		s.cloudTriggerCoord = StartCloudTriggerCoordinator(
 			s.cfg.CloudBoardCoordinator, s.cfg.TriggerStore,
-			newServiceLauncher(s.runs, s.effectivePaths(), s.logger),
+			newServiceLauncher(s.runs, s.effectivePaths(), s.logger, s.resolveRunRetryPolicy),
 			s.cfg.EventsBus, s.logger)
 	}
 	// Wire the run-completion source onto the process's single event spine
@@ -215,6 +215,21 @@ func (s *Server) ListenAndServe() error {
 				cancel()
 			}()
 			s.runQueueSweeper(ctx, lister, s.queue)
+		}()
+	}
+	// Retry sweeper (cloud only): resumes runs whose provider quota window
+	// has reopened. Needs only the store — unlike the orphan sweeper it
+	// asks no question of the queue, because the retry instant was decided
+	// when the run failed. Multi-replica-safe via the store CAS.
+	if lister, ok := s.cfg.Store.(retryDueLister); ok && s.runs != nil {
+		go func() {
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			go func() {
+				<-s.shutdown
+				cancel()
+			}()
+			s.runRetrySweeper(ctx, lister)
 		}()
 	}
 	// Cloud scheduler: fire due cron-scheduled bots. Multi-replica-safe via the

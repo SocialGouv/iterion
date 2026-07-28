@@ -5,10 +5,13 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"sort"
 	"strings"
 	"time"
 
 	"go.yaml.in/yaml/v2"
+
+	"github.com/SocialGouv/iterion/pkg/retrypolicy"
 )
 
 // CurrentManifestSchema is the manifest schema version this build understands.
@@ -173,6 +176,53 @@ type Manifest struct {
 	// manifests load without the DSL, so an unknown name is a soft
 	// authoring mistake for the studio to surface, never a load error.
 	Launch *LaunchHints `yaml:"launch,omitempty"`
+
+	// Retry is the bot author's opinion on what should happen when one of
+	// this bot's runs dies because the provider's quota window is exhausted
+	// (pkg/retrypolicy). It is the BOT layer of the retry precedence chain,
+	// below a schedule's row and above the machine default — a launch
+	// surface overrides only the fields it sets.
+	//
+	// This lives in the manifest rather than the DSL on purpose: retry
+	// decides whether a NEW run is launched, which is orchestration, not
+	// workflow semantics. Everything on the `workflow` block (compress,
+	// permission, worktree, sandbox, budget) changes how nodes execute
+	// INSIDE a run, and a DSL field would land in ir.Workflow — which the
+	// engine reads, pulling it toward being retry-aware. The precedent is
+	// InvocationKeepalive.StaleAfter: a schedgate field already declared
+	// here and defaulted down into a Subscription.
+	//
+	// The relevant author knowledge is whether the output is worth having
+	// late: a weekly digest is (retry it after the reset), a "what changed
+	// in the last hour" report is not (usage_window: off).
+	Retry *RetrySpec `yaml:"retry,omitempty"`
+}
+
+// RetrySpec is the manifest shape of a retrypolicy.Policy. It is declared
+// as its own type (rather than embedding retrypolicy.Policy) so the YAML
+// surface stays independent of the shared struct's json/bson tags, matching
+// how every other host declares these fields flat and projects them.
+type RetrySpec struct {
+	UsageWindow string `yaml:"usage_window,omitempty" json:"usage_window,omitempty"`
+	MaxAttempts int    `yaml:"max_attempts,omitempty" json:"max_attempts,omitempty"`
+	MaxWait     string `yaml:"max_wait,omitempty" json:"max_wait,omitempty"`
+	Jitter      string `yaml:"jitter,omitempty" json:"jitter,omitempty"`
+}
+
+// RetryPolicy projects the manifest's retry block. A nil block yields the
+// zero Policy, i.e. "this layer sets nothing" — deliberately NOT normalized,
+// since filling defaults here would make the bot appear to pin fields the
+// author left open and mask the machine default.
+func (m *Manifest) RetryPolicy() retrypolicy.Policy {
+	if m == nil || m.Retry == nil {
+		return retrypolicy.Policy{}
+	}
+	return retrypolicy.Policy{
+		UsageWindow: m.Retry.UsageWindow,
+		MaxAttempts: m.Retry.MaxAttempts,
+		MaxWait:     m.Retry.MaxWait,
+		Jitter:      m.Retry.Jitter,
+	}
 }
 
 // LaunchHints is a bot's declared launch-form opinion (manifest
@@ -309,6 +359,20 @@ var KnownForgeEvents = map[string]bool{
 	ForgeEventPullRequest:        true,
 	ForgeEventPullRequestComment: true,
 	ForgeEventIssueLabeled:       true,
+}
+
+// knownForgeEventNames lists the accepted events, sorted for a stable
+// message. Derived from KnownForgeEvents rather than spelled out at the
+// error site: the hardcoded version named only two of the three and stayed
+// wrong while validation correctly accepted all three, so a bot author
+// declaring the valid `issue_labeled` was told it was unknown.
+func knownForgeEventNames() []string {
+	names := make([]string, 0, len(KnownForgeEvents))
+	for name := range KnownForgeEvents {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	return names
 }
 
 // knownForgeScopeKeys / knownForgeScopeLevels constrain a manifest
@@ -621,7 +685,7 @@ func validateInvocations(invs []Invocation) error {
 				return fmt.Errorf("invocations[%d]: kind=forge requires a forge: block", idx)
 			}
 			if !KnownForgeEvents[inv.Forge.Event] {
-				return fmt.Errorf("invocations[%d].forge: unknown event %q (known: %s, %s)", idx, inv.Forge.Event, ForgeEventPullRequest, ForgeEventPullRequestComment)
+				return fmt.Errorf("invocations[%d].forge: unknown event %q (known: %s)", idx, inv.Forge.Event, strings.Join(knownForgeEventNames(), ", "))
 			}
 			if inv.Command != nil || inv.Schedule != nil || inv.Keepalive != nil {
 				return fmt.Errorf("invocations[%d]: kind=forge must not set a command:/schedule:/keepalive: block", idx)
@@ -783,6 +847,12 @@ func decodeManifest(body []byte, srcLabel string) (*Manifest, error) {
 		return nil, fmt.Errorf("bundle: manifest %s: %w", srcLabel, err)
 	}
 	if err := validateRepoRequirement(m.Repo); err != nil {
+		return nil, fmt.Errorf("bundle: manifest %s: %w", srcLabel, err)
+	}
+	// A typo in retry: must fail at parse time, next to its source. Left
+	// unvalidated it would surface days later as a silently-defaulted
+	// policy on a run nobody is watching.
+	if err := retrypolicy.Validate(m.RetryPolicy()); err != nil {
 		return nil, fmt.Errorf("bundle: manifest %s: %w", srcLabel, err)
 	}
 	return &m, nil

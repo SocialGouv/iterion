@@ -14,6 +14,8 @@ package webhooks
 import (
 	"strings"
 	"time"
+
+	"github.com/SocialGouv/iterion/pkg/retrypolicy"
 )
 
 // Provider identifies the external event source.
@@ -191,6 +193,20 @@ type Config struct {
 	// bot identities. See docs/byok.md.
 	SecretOverrides map[string]string `bson:"secret_overrides,omitempty" json:"secret_overrides,omitempty"`
 
+	// Retry policy (pkg/retrypolicy) for a run launched through this
+	// webhook that dies on an exhausted provider usage window. The
+	// launch-surface layer, same role the equivalent fields play on a
+	// schedule row or a trigger subscription: only what is set here
+	// overrides the bot's manifest and the machine default.
+	//
+	// A webhook-launched run is often the one an author is WAITING on (a
+	// PR review), so a shorter max_wait than a nightly's is usually the
+	// right call — a review that lands three days late is not a review.
+	RetryUsageWindow string `bson:"retry_usage_window,omitempty" json:"retry_usage_window,omitempty"`
+	RetryMaxAttempts int    `bson:"retry_max_attempts,omitempty" json:"retry_max_attempts,omitempty"`
+	RetryMaxWait     string `bson:"retry_max_wait,omitempty" json:"retry_max_wait,omitempty"`
+	RetryJitter      string `bson:"retry_jitter,omitempty" json:"retry_jitter,omitempty"`
+
 	// AuthorizedRepliers + MinReplierRole gate who may "talk back" to the bot
 	// via a note (a /revi command or a reply): a note author is authorized
 	// when they are in AuthorizedRepliers (usernames with/without @, or numeric
@@ -348,3 +364,15 @@ const (
 	StatusLaunched      = "launched"
 	StatusLaunchError   = "launch_error"
 )
+
+// RetryPolicy projects the webhook's retry fields. Not normalized — this
+// is one layer of a precedence chain, and defaults filled here would
+// masquerade as an explicit per-webhook choice.
+func (c Config) RetryPolicy() retrypolicy.Policy {
+	return retrypolicy.Policy{
+		UsageWindow: c.RetryUsageWindow,
+		MaxAttempts: c.RetryMaxAttempts,
+		MaxWait:     c.RetryMaxWait,
+		Jitter:      c.RetryJitter,
+	}
+}

@@ -9,6 +9,7 @@ import (
 	"github.com/robfig/cron/v3"
 
 	"github.com/SocialGouv/iterion/pkg/bundle"
+	"github.com/SocialGouv/iterion/pkg/retrypolicy"
 	"github.com/SocialGouv/iterion/pkg/schedgate"
 )
 
@@ -131,6 +132,14 @@ type Subscription struct {
 	// normalizes to schedgate.DefaultStaleAfter. Only meaningful with
 	// Overlap == keepalive.
 	StaleAfter string `json:"stale_after,omitempty" bson:"stale_after,omitempty"`
+	// Retry policy (pkg/retrypolicy) for a run this subscription launches
+	// that dies on an exhausted provider usage window. This is the
+	// binding-level layer: it sits above the bot's manifest and below a
+	// per-run override, and only the fields set here override anything.
+	RetryUsageWindow string `json:"retry_usage_window,omitempty" bson:"retry_usage_window,omitempty"`
+	RetryMaxAttempts int    `json:"retry_max_attempts,omitempty" bson:"retry_max_attempts,omitempty"`
+	RetryMaxWait     string `json:"retry_max_wait,omitempty" bson:"retry_max_wait,omitempty"`
+	RetryJitter      string `json:"retry_jitter,omitempty" bson:"retry_jitter,omitempty"`
 	// Origin records where this subscription came from so dedup and cleanup
 	// are possible: "forge:<repo_integration_id>" (orchestrator-generated,
 	// deleted by Origin on deprovision), "operator" (studio), "schedule.yaml"
@@ -174,6 +183,18 @@ func (s Subscription) Policy() schedgate.Policy {
 		GuardVar:      s.GuardVar,
 		StaleAfter:    s.StaleAfter,
 	})
+}
+
+// RetryPolicy projects the subscription's retry fields. Not normalized —
+// this is one layer of a precedence chain, and defaults filled here would
+// masquerade as an explicit binding-level choice.
+func (s Subscription) RetryPolicy() retrypolicy.Policy {
+	return retrypolicy.Policy{
+		UsageWindow: s.RetryUsageWindow,
+		MaxAttempts: s.RetryMaxAttempts,
+		MaxWait:     s.RetryMaxWait,
+		Jitter:      s.RetryJitter,
+	}
 }
 
 // EffectiveMode returns the subscription's execution mode, defaulting an empty

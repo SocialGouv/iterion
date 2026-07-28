@@ -2,6 +2,7 @@ package cli
 
 import (
 	"errors"
+	"github.com/SocialGouv/iterion/pkg/retrypolicy"
 	"testing"
 	"time"
 
@@ -11,30 +12,30 @@ import (
 func TestResolveAutoResume(t *testing.T) {
 	t.Run("flag wins over env", func(t *testing.T) {
 		t.Setenv("ITERION_AUTO_RESUME", "2")
-		cfg := resolveAutoResume(5, BudgetOverrides{})
+		cfg := resolveAutoResume(5, BudgetOverrides{}, retrypolicy.Policy{})
 		if cfg.MaxAttempts != 5 {
 			t.Errorf("MaxAttempts = %d, want 5", cfg.MaxAttempts)
 		}
 	})
 	t.Run("env fallback when flag 0", func(t *testing.T) {
 		t.Setenv("ITERION_AUTO_RESUME", "3")
-		cfg := resolveAutoResume(0, BudgetOverrides{})
+		cfg := resolveAutoResume(0, BudgetOverrides{}, retrypolicy.Policy{})
 		if cfg.MaxAttempts != 3 {
 			t.Errorf("MaxAttempts = %d, want 3", cfg.MaxAttempts)
 		}
 	})
 	t.Run("default off", func(t *testing.T) {
 		t.Setenv("ITERION_AUTO_RESUME", "")
-		cfg := resolveAutoResume(0, BudgetOverrides{})
+		cfg := resolveAutoResume(0, BudgetOverrides{}, retrypolicy.Policy{})
 		if cfg.MaxAttempts != 0 {
 			t.Errorf("MaxAttempts = %d, want 0 (off)", cfg.MaxAttempts)
 		}
 	})
 	t.Run("budgetRaised reflects --max-* flags", func(t *testing.T) {
-		if resolveAutoResume(1, BudgetOverrides{}).BudgetRaised {
+		if resolveAutoResume(1, BudgetOverrides{}, retrypolicy.Policy{}).BudgetRaised {
 			t.Error("BudgetRaised should be false with no overrides")
 		}
-		if !resolveAutoResume(1, BudgetOverrides{MaxDuration: "4h"}).BudgetRaised {
+		if !resolveAutoResume(1, BudgetOverrides{MaxDuration: "4h"}, retrypolicy.Policy{}).BudgetRaised {
 			t.Error("BudgetRaised should be true with --max-duration")
 		}
 	})
