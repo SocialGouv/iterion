@@ -58,6 +58,42 @@ should be handling them in the *capture*. If logging in updates a last-login tim
 appears in a listing, that is a canonicalisation problem ([[canonicalization]]). Solving it in the
 fixture removes a genuine test of the canonicaliser.
 
+## A check's authority must be the property it claims, never a correlated hint
+
+The single most productive defect class encountered building this bot, by a
+wide margin. Eight distinct instances in one day, in eight different files, all
+the same mistake: a check establishes something *near* what it claims, and
+reports success on the strength of the resemblance.
+
+| claimed | actually tested | how it failed |
+|---|---|---|
+| the database is up | a pidfile exists and `kill -0` succeeds | a wedged or reused pid exits 0; the app then fails telling you to start the database you just started |
+| the artifact is current | source mtimes are older than the artifact | a toolchain change rebuilds nothing, and `git archive` restores commit times, so new files look old |
+| the gate passed | the runner exited 0 | the runner printed a red report and exited 0 anyway |
+| the held-out set was detected | `detected == total` | `0 == 0` holds when the set is absent |
+| the net is complete | the references are committed | the harness that replays them was gitignored |
+| the corpus is N wide | there are N entries | two entries shared one byte-identical reference |
+
+The shape is always the same, and so is the consequence: **the failure mode is
+a false green, never a false red.** A check that under-claims annoys someone; a
+check that over-claims is trusted precisely when it is wrong.
+
+Two rules follow:
+
+1. **Test the property, not its neighbour.** "Does the server answer?" not
+   "does a process exist?". "Is this the artifact the current inputs produce?"
+   not "is it newer than the sources?". Where a direct test exists, a proxy is
+   never worth its convenience — and one usually exists, one call away.
+2. **Recover from stale state; never report it as success.** Leftovers are
+   normal — runs get killed, machines reboot. Finding one is information, and
+   the honest responses are to clean it up or to fail loudly. Exiting 0 because
+   something that looks right is present is the one response that guarantees the
+   next check inherits a lie.
+
+The test that finds these: *if the thing I am claiming were false right now,
+would this check say so?* Then make it false and watch. Every entry in the table
+above survived review and died in under a minute against that question.
+
 ## Never bake the port
 
 Environments that can host two checkouts at once **derive** their ports, so
