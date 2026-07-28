@@ -169,7 +169,15 @@ schema mutation_report:
   ## harness ships references nobody can replay — the very defect this bot
   ## exists to expose in other people's deliveries.
   runner_replayable: bool
+  ## Held-out mutants that repeat an already-scored, already-published one.
+  ## Must be empty: a set the hardening loop can read is not held out.
+  holdout_reused: string[]
   log_tail: string
+
+schema audit_state:
+  promoted: int
+  audit_dir: string
+  notice: string
 
 schema gate_state:
   converged: bool
@@ -501,6 +509,57 @@ tool oracle_run:
         return bool(os.listdir(sealed_dir))
 
 
+
+
+    def mutant_fingerprint(d):
+        """Identify a mutant by WHAT IT DOES, not by its name.
+
+        A held-out mutant that has already been scored is spent: its secrecy is a
+        property of the moment, not of the artefact, and once the gate has judged
+        it its value flips entirely to evidence. Spent sets are therefore promoted
+        to mutants/audit/ and committed, so a third party can replay the claim
+        "N/N detected" instead of taking it on trust — the exact thing that makes a
+        delivery's own reported figures worthless.
+
+        That only holds if each hardening cycle draws a FRESH set. Renaming a spent
+        mutant would defeat it, so identity is the change itself: the applied
+        script plus the entries it targets.
+        """
+        parts = []
+        for fname in ("apply.sh", "revert.sh"):
+            p = os.path.join(d, fname)
+            if os.path.isfile(p):
+                with open(p, "rb") as f:
+                    parts.append(f.read())
+        meta_path = os.path.join(d, "meta.json")
+        targets = []
+        if os.path.isfile(meta_path):
+            try:
+                with open(meta_path, encoding="utf-8") as f:
+                    targets = sorted(json.load(f).get("targets") or [])
+            except (ValueError, OSError):
+                pass
+        parts.append(("|".join(targets)).encode("utf-8"))
+        return hashlib.sha256(b"\x00".join(parts)).hexdigest()
+
+
+    def spent_fingerprints(gm_dir):
+        """Fingerprints of every held-out set already scored and committed."""
+        root = os.path.join(gm_dir, "mutants", "audit")
+        out = {}
+        if not os.path.isdir(root):
+            return out
+        for cycle in sorted(os.listdir(root)):
+            cdir = os.path.join(root, cycle)
+            if not os.path.isdir(cdir):
+                continue
+            for name in sorted(os.listdir(cdir)):
+                d = os.path.join(cdir, name)
+                if os.path.isdir(d):
+                    out[mutant_fingerprint(d)] = cycle + "/" + name
+        return out
+
+
     def load_mutants(gm_dir, holdout, sealed_dir=None):
         if holdout:
             root = sealed_dir or os.path.join(gm_dir, "mutants", "holdout")
@@ -712,6 +771,7 @@ tool oracle_run:
                   "holdout_detected": 0, "holdout_total": 0, "stable": False,
                   "corpus_total": 0, "corpus_distinct": 0, "duplicate_refs": [],
                   "runner_replayable": False,
+                  "holdout_reused": [],
                   "log_tail": ""}
 
         def bail(msg):
@@ -943,6 +1003,20 @@ tool oracle_run:
                                     "replayed by CI or by anyone who checks the repo "
                                     "out. The oracle is a deliverable: un-ignore it and "
                                     "commit it." % rel)
+            # A held-out set that repeats an already-spent one is not held out at
+            # all: its mutants are committed under mutants/audit/ where anyone,
+            # including the hardening loop, can read them. Reuse is refused by
+            # FINGERPRINT rather than by name, so renaming does not launder it.
+            spent = spent_fingerprints(gm_dir)
+            report["holdout_reused"] = sorted(
+                "%s (already scored as %s)" % (m["id"], spent[mutant_fingerprint(m["dir"])])
+                for m in held_meta if mutant_fingerprint(m["dir"]) in spent)
+            if report["holdout_reused"]:
+                problems.append("the held-out set REPEATS mutants already scored and "
+                                "published: %s. A spent set is evidence, not a test — "
+                                "draw a fresh one, or the held-out figure measures "
+                                "nothing the hardening loop could not already see."
+                                % ", ".join(report["holdout_reused"]))
             report["log_tail"] = "\n".join(problems)[-6000:]
         finally:
             app_down(config, ws)
@@ -952,6 +1026,65 @@ tool oracle_run:
 
     if __name__ == "__main__":
         main()
+## promote_audit — turn the SPENT held-out set into committed evidence.
+##
+## Runs only on the converged edge, and that placement is the whole design: at
+## the first gate the set is still protecting the hardening loop, so promoting
+## it early would hand pass 2 the answers. Once the gate has converged the set
+## is spent — its secrecy is worth nothing and its evidentiary value is at a
+## maximum, because a third party can now replay "N/N detected" instead of
+## believing it. Unverifiable self-reported figures are exactly what makes a
+## delivery's own numbers worthless.
+##
+## The next cycle must draw a FRESH set; the gate refuses one that repeats a
+## published fingerprint, so this cannot decay into theatre.
+tool promote_audit:
+  output: audit_state
+  language: py
+  script: |
+    import json
+    import os
+    import shutil
+
+    ws = {{vars.workspace_dir}}
+    gm_dir = os.path.join(ws, {{vars.oracle_dir}})
+    sealed = os.path.join({{vars.scratch_dir}}, "..", "gm-holdout-" + os.path.basename(os.path.abspath(ws)))
+    sealed = os.path.abspath(sealed)
+    cycle = {{run.id}}
+    dest = os.path.join(gm_dir, "mutants", "audit", cycle)
+
+    out = {"promoted": 0, "audit_dir": "", "notice": ""}
+    if not os.path.isdir(sealed) or not os.listdir(sealed):
+        out["notice"] = ("no sealed set to promote at %s — nothing was held out, "
+                         "or it was already promoted." % sealed)
+        print(json.dumps(out)); raise SystemExit(0)
+
+    os.makedirs(dest, exist_ok=True)
+    for name in sorted(os.listdir(sealed)):
+        src = os.path.join(sealed, name)
+        if os.path.isdir(src) and not os.path.exists(os.path.join(dest, name)):
+            shutil.move(src, os.path.join(dest, name))
+            out["promoted"] += 1
+
+    with open(os.path.join(dest, "README.md"), "w", encoding="utf-8") as f:
+        f.write("# Spent held-out set -- evidence, not a test\n\n"
+                "These mutants were withheld from the hardening loop and scored\n"
+                "exactly once, by the gate that converged this cycle. They are\n"
+                "published so the reported detection figure can be REPLAYED\n"
+                "rather than believed.\n\n"
+                "They no longer test anything: they are readable, so an oracle\n"
+                "can be tuned to them. The next hardening cycle must draw a\n"
+                "fresh set, and the gate refuses one that repeats a fingerprint\n"
+                "published here.\n\n"
+                "Re-run: `sh " + {{vars.oracle_dir}} + "/verify-oracle.sh`\n")
+
+    try:
+        os.rmdir(sealed)
+    except OSError:
+        pass
+    out["audit_dir"] = os.path.relpath(dest, ws)
+    print(json.dumps(out))
+
 compute oracle_gate:
   output: gate_state
   expr:
@@ -968,7 +1101,7 @@ compute oracle_gate:
     ## DISTINCT references: two entries with a byte-identical reference are one
     ## observation, and a corpus padded with duplicates is narrower than it
     ## looks.
-    converged: "outputs.oracle_run.stable && outputs.oracle_run.noop_silent && outputs.oracle_run.revert_clean && outputs.oracle_run.collateral == 0 && length(outputs.oracle_run.uncontrolled) == 0 && length(outputs.oracle_run.blind_lanes) == 0 && length(outputs.oracle_run.missing_archetypes) == 0 && outputs.oracle_run.corpus_distinct >= vars.min_corpus && outputs.oracle_run.runner_replayable && outputs.oracle_run.score_pct >= vars.mutation_floor && outputs.oracle_run.holdout_detected == outputs.oracle_run.holdout_total"
+    converged: "outputs.oracle_run.stable && outputs.oracle_run.noop_silent && outputs.oracle_run.revert_clean && outputs.oracle_run.collateral == 0 && length(outputs.oracle_run.uncontrolled) == 0 && length(outputs.oracle_run.blind_lanes) == 0 && length(outputs.oracle_run.missing_archetypes) == 0 && outputs.oracle_run.corpus_distinct >= vars.min_corpus && outputs.oracle_run.runner_replayable && length(outputs.oracle_run.holdout_reused) == 0 && outputs.oracle_run.score_pct >= vars.mutation_floor && outputs.oracle_run.holdout_detected == outputs.oracle_run.holdout_total"
     fail_log: "outputs.oracle_run.log_tail"
 
 ## emit_runner — one entry point for CI and for humans, plus the report a
@@ -1100,7 +1233,9 @@ workflow golden_master:
   oracle_run -> oracle_gate
 
   ## Converged → emit the runner and the report.
-  oracle_gate -> emit_runner when converged with {
+  oracle_gate -> promote_audit when converged
+
+  promote_audit -> emit_runner with {
     score_pct:        "{{outputs.oracle_run.score_pct}}",
     holdout_detected: "{{outputs.oracle_run.holdout_detected}}",
     holdout_total:    "{{outputs.oracle_run.holdout_total}}"

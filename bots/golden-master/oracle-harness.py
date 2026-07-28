@@ -300,6 +300,57 @@ def seal_holdout(gm_dir, sealed_dir):
     return bool(os.listdir(sealed_dir))
 
 
+
+
+def mutant_fingerprint(d):
+    """Identify a mutant by WHAT IT DOES, not by its name.
+
+    A held-out mutant that has already been scored is spent: its secrecy is a
+    property of the moment, not of the artefact, and once the gate has judged
+    it its value flips entirely to evidence. Spent sets are therefore promoted
+    to mutants/audit/ and committed, so a third party can replay the claim
+    "N/N detected" instead of taking it on trust — the exact thing that makes a
+    delivery's own reported figures worthless.
+
+    That only holds if each hardening cycle draws a FRESH set. Renaming a spent
+    mutant would defeat it, so identity is the change itself: the applied
+    script plus the entries it targets.
+    """
+    parts = []
+    for fname in ("apply.sh", "revert.sh"):
+        p = os.path.join(d, fname)
+        if os.path.isfile(p):
+            with open(p, "rb") as f:
+                parts.append(f.read())
+    meta_path = os.path.join(d, "meta.json")
+    targets = []
+    if os.path.isfile(meta_path):
+        try:
+            with open(meta_path, encoding="utf-8") as f:
+                targets = sorted(json.load(f).get("targets") or [])
+        except (ValueError, OSError):
+            pass
+    parts.append(("|".join(targets)).encode("utf-8"))
+    return hashlib.sha256(b"\x00".join(parts)).hexdigest()
+
+
+def spent_fingerprints(gm_dir):
+    """Fingerprints of every held-out set already scored and committed."""
+    root = os.path.join(gm_dir, "mutants", "audit")
+    out = {}
+    if not os.path.isdir(root):
+        return out
+    for cycle in sorted(os.listdir(root)):
+        cdir = os.path.join(root, cycle)
+        if not os.path.isdir(cdir):
+            continue
+        for name in sorted(os.listdir(cdir)):
+            d = os.path.join(cdir, name)
+            if os.path.isdir(d):
+                out[mutant_fingerprint(d)] = cycle + "/" + name
+    return out
+
+
 def load_mutants(gm_dir, holdout, sealed_dir=None):
     if holdout:
         root = sealed_dir or os.path.join(gm_dir, "mutants", "holdout")
@@ -510,6 +561,7 @@ def main():
               "holdout_detected": 0, "holdout_total": 0, "stable": False,
               "corpus_total": 0, "corpus_distinct": 0, "duplicate_refs": [],
               "runner_replayable": False,
+              "holdout_reused": [],
               "log_tail": ""}
 
     def bail(msg):
@@ -743,6 +795,20 @@ def main():
                                 "replayed by CI or by anyone who checks the repo "
                                 "out. The oracle is a deliverable: un-ignore it and "
                                 "commit it." % rel)
+        # A held-out set that repeats an already-spent one is not held out at
+        # all: its mutants are committed under mutants/audit/ where anyone,
+        # including the hardening loop, can read them. Reuse is refused by
+        # FINGERPRINT rather than by name, so renaming does not launder it.
+        spent = spent_fingerprints(gm_dir)
+        report["holdout_reused"] = sorted(
+            "%s (already scored as %s)" % (m["id"], spent[mutant_fingerprint(m["dir"])])
+            for m in held_meta if mutant_fingerprint(m["dir"]) in spent)
+        if report["holdout_reused"]:
+            problems.append("the held-out set REPEATS mutants already scored and "
+                            "published: %s. A spent set is evidence, not a test — "
+                            "draw a fresh one, or the held-out figure measures "
+                            "nothing the hardening loop could not already see."
+                            % ", ".join(report["holdout_reused"]))
         report["log_tail"] = "\n".join(problems)[-6000:]
     finally:
         app_down(config, ws)
