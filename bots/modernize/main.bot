@@ -116,13 +116,24 @@ schema lot_report:
   oracle_passed: bool
   refs_untouched: bool
   refs_changed: string[]
+  ## The campaign declared the lot blocked. Believed as a STOP, never as a
+  ## success: a status claiming completion could be self-serving, whereas one
+  ## claiming failure cannot cheat its way to green. A lot that cannot be
+  ## finished inside its intent is a finding, and re-running the loop against a
+  ## wall the agent has already described and proven is pure spend.
+  lot_blocked: bool
+  block_reason: string
   log_tail: string
 
 schema gate_state:
   converged: bool
+  ## Converged OR declared blocked — both end the run, for opposite reasons.
+  stop: bool
   fail_log: string
 
 schema verify_input:
+  lot_id: string
+  plan_path: string
   base_sha: string
   refs_dir: string
   exit_gate: string
@@ -263,8 +274,22 @@ tool lot_verify:
     gate_cmds = [c for c in {{input.exit_gate}}.split("\n") if c.strip()]
 
     report = {"gate_passed": False, "oracle_passed": False, "refs_untouched": False,
-              "refs_changed": [], "log_tail": ""}
+              "refs_changed": [], "lot_blocked": False, "block_reason": "", "log_tail": ""}
     problems = []
+
+    # Did the campaign declare this lot blocked? Read from the contract, which
+    # it had to commit to say so — a claim in a control-plane message would be
+    # cheaper to make and impossible to review.
+    try:
+        raw = subprocess.run(["yq", "-o=json", os.path.join(ws, {{input.plan_path}})],
+                             capture_output=True, text=True, timeout=60)
+        if raw.returncode == 0:
+            for lot in (json.loads(raw.stdout).get("lots") or []):
+                if lot.get("id") == {{input.lot_id}} and lot.get("status") == "blocked":
+                    report["lot_blocked"] = True
+                    report["block_reason"] = (lot.get("title") or "") + " -- see the committed report"
+    except (OSError, ValueError, subprocess.SubprocessError):
+        pass
 
     def run(cmd, timeout=3600):
         p = subprocess.run(cmd, shell=True, cwd=ws, capture_output=True,
@@ -327,6 +352,7 @@ compute lot_gate:
   output: gate_state
   expr:
     converged: "outputs.lot_verify.gate_passed && outputs.lot_verify.oracle_passed && outputs.lot_verify.refs_untouched"
+    stop: "(outputs.lot_verify.gate_passed && outputs.lot_verify.oracle_passed && outputs.lot_verify.refs_untouched) || outputs.lot_verify.lot_blocked"
     fail_log: "outputs.lot_verify.log_tail"
 
 workflow modernize:
@@ -364,6 +390,8 @@ workflow modernize:
   ## touched the tree. Comparing the references against anything later would
   ## compare the work with itself and always pass.
   upgrade_campaign -> lot_verify with {
+    lot_id:    "{{outputs.work_gate.lot_id}}",
+    plan_path: "{{vars.plan_path}}",
     base_sha:  "{{outputs.work_gate.base_sha}}",
     refs_dir:  "{{outputs.work_gate.refs_dir}}",
     exit_gate: "{{outputs.work_gate.exit_gate}}"
@@ -371,7 +399,10 @@ workflow modernize:
 
   lot_verify -> lot_gate
 
-  lot_gate -> done when converged
+  ## Converged, or declared blocked with a committed reason. Both end the run;
+  ## looping against a wall the agent has already described and proven costs
+  ## money and produces nothing.
+  lot_gate -> done when stop
 
   ## Not converged → another pass on the SAME lot, carrying the deterministic
   ## failure back so the agent fixes the cause rather than re-deriving it.

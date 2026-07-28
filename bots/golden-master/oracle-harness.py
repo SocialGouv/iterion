@@ -548,11 +548,29 @@ def score_noop(config, corpus, canon, refs, ws, seed):
     Nothing is mutated. Every comparator must stay silent. A comparator that
     reports a difference here is non-deterministic or unconditionally noisy,
     and its greens on real mutants mean nothing.
+
+    It covers the WHOLE corpus, and that is a correction rather than a
+    refinement. It used to sample the first six entries, which left every later
+    entry never once confronted with its own reference — a reference could be
+    stale, or frozen against a world that has since moved, and nothing would
+    say so unless a mutant happened to target it.
+
+    That is not hypothetical. A modernisation run on a different DAY replayed a
+    net whose entry 013 rendered a seeded creation date: the seed used the
+    database's current_date(), so the reference had frozen on the day the
+    fixture was first applied. The drift was permanent and invisible to both
+    guards — stability compares captures to EACH OTHER, all taken the same day,
+    and the negative control's prefix did not reach entry 013. It surfaced only
+    as collateral noise under unrelated mutants, blamed on a lot that had not
+    caused it.
+
+    Whole-corpus costs one extra pass of plain requests against an application
+    that is already up, which is nothing next to a reference nobody checks.
     """
-    sample = [e["id"] for e in corpus["entries"]][:max(CONTROL_SAMPLE, 4)]
+    ids = [e["id"] for e in corpus["entries"]]
     app_restart(config, ws)
-    captured = capture(config, corpus, canon, ids=set(sample))
-    noisy = diverged(refs, captured, sample)
+    captured = capture(config, corpus, canon)
+    noisy = diverged(refs, captured, ids)
     return {"silent": not noisy, "noisy_entries": noisy}
 
 
