@@ -300,6 +300,36 @@ handling, and surfaced three things:
    compounds the pi-internal-retry under-reporting above — flagged, not
    fixed here.
 
+### The RPC transport (`ITERION_PI_MODE=rpc`)
+
+Landed and validated live against `zai/glm-5.2` through the full chain, plus
+credential-free tests against the real `pi --mode rpc` (handshake, settle,
+hooks, failure typing, cancellation, equivalence with print). What it adds over
+print mode — none of it available on any other iterion CLI backend:
+
+- **Tool events** (`tool_execution_start/end` → `TaskHooks`), so the studio
+  timeline and files-touched panel finally populate for a CLI backend.
+- **Native steering**: `task.InboxDrain()` → pi's `steer`, where `claude_code`
+  fakes the same thing with a PostToolUse `AdditionalContext` plus a
+  Stop-blocking hook.
+- **Authoritative accounting** from `get_session_stats`, incl. context usage.
+- **A pre-flight handshake**: `get_state` resolves the model and session id in
+  ~200 ms, before a token is spent.
+- **Abort on cancellation** instead of killing a process mid-call, so a
+  partial transcript still lands.
+
+**Known divergence between the transports — the token COUNT differs.** RPC
+takes its numbers from `get_session_stats`, which folds cache reads and writes
+into the input figure; print mode sums `usage.input`/`usage.output` per
+message. The same trivial turn reported 550 tokens on print and 2078 on RPC.
+The USD cost is consistent (pi computes it either way), and RPC's number is the
+more complete one, but a workflow comparing token counts across a transport
+switch will see a step change. This is why `auto` still means print: the
+default flips once that is either reconciled or accepted deliberately.
+
+The default therefore stays print. Flipping it is one line plus a CHANGELOG
+entry, gated on the equivalence test above continuing to pass.
+
 **Still not validated:**
 
 - **The sandboxed path.** Every run above used `--sandbox none`. The
