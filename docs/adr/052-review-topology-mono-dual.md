@@ -46,13 +46,18 @@ initial sketch):
 probe host credentials, so a small package `pkg/reviewtopology` resolves
 the topology at launch and injects two vars the DSL reads:
 
-- `Resolve(detect.Report, override) → (mode, monoFamily)`: `auto` → `dual`
-  when ≥2 families are available, else `mono` on the single family;
-  `mono`/`dual` force it. Family map (operator decision):
+- `Resolve(detect.Report, override) → (mode, monoFamily)`: `auto` → `mono`
+  on the preferred available family; `mono`/`dual` force it. **`auto` is
+  frugal by design** (amended 2026-07-28): dual costs a full reviewer pass
+  per family on every run, and with the merge gate wired every push
+  re-reviews, so cross-family confirmation has to be asked for rather than
+  fall out of merely having two providers configured. `auto` only picks
+  the family for you. Family map (operator decision):
   `{anthropic, zai} → claude`, `{openai} → gpt`; cloud providers
   (foundry/bedrock/vertex) are out of scope for v1. anthropic+zai is
-  therefore **one** family — `auto` only goes dual with a real
-  claude-vs-gpt split.
+  therefore **one** family. `auto` falls back to `dual` only when NO
+  participating family is detected at all, so an unconfigured host fails
+  on the missing credential the normal way instead of on an empty router.
 - `InjectIfDeclared(wf, inputs, report, override)`: opt-in — writes
   `review_mode` + `mono_family` **only** when the workflow declares a
   `review_mode` var. Precedence: explicit flag/toggle > a `--var`
@@ -107,7 +112,7 @@ somehow skipped resolution) behaves as DUAL — a pure non-regression.
 - **Convergence risk** of round_robin→condition is guarded by
   `iterion bench asymptote` on both modes (the pilot gate) and by a
   deterministic stub e2e (`e2e/testdata/review_topology_mini.bot` +
-  `e2e/review_topology_test.go`) proving dual alternates, auto→dual, and mono
+  `e2e/review_topology_test.go`) proving dual alternates, auto→mono, and mono
   fires exactly one family — all converge.
 - **Regression guard:** `bots/review_topology_test.go` fails if any
   review-loop bot reverts to `mode: round_robin` or drops the topology

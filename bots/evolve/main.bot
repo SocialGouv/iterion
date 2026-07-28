@@ -28,6 +28,18 @@
 ##     native ask_user MCP tool (sandboxing degrades it to a JSON fallback).
 
 vars:
+  ## REVIEW TOPOLOGY (ADR-052). "mono" runs ONE family reviewer, "dual"
+  ## runs both and cross-confirms. Dual costs a full reviewer pass per
+  ## family on every round, so mono is the default; dual is a deliberate
+  ## opt-in (`--var review_mode=dual`). "auto" is resolved at LAUNCH by
+  ## pkg/reviewtopology from the host's detected credentials and also
+  ## lands on mono — it only picks the family for you.
+  review_mode: string [enum: "auto", "mono", "dual"] = "mono"
+
+  ## Which family runs in mono. Overwritten by the launch-time resolver
+  ## when only one family is usable on the host.
+  mono_family: string [enum: "claude", "gpt"] = "claude"
+
   workspace_dir: string = "${PROJECT_DIR}"
   ## Optional steering hints (objective / horizon / focus). The dispatcher
   ## fills this from the issue title + body; on an interactive
@@ -650,9 +662,16 @@ agent synthesize_vision:
     write: true
     pre_compact_inject: true
 
-## Cross-family review fan-out. fan_out_all sends the vision to both
-## reviewers in parallel; they are read-only judges so two concurrent
-## branches are workspace-safe.
+## Topology gate (ADR-052). A `condition` router picks a SINGLE target,
+## which is what mono needs; the guard cannot live on review_fanout's own
+## edges because fan_out_all collects every outgoing edge without
+## evaluating `when` (same trap as round_robin).
+router review_topology:
+  mode: condition
+
+## Cross-family review fan-out (dual only). fan_out_all sends the vision
+## to both reviewers in parallel; they are read-only judges so two
+## concurrent branches are workspace-safe.
 router review_fanout:
   mode: fan_out_all
 
@@ -700,12 +719,16 @@ judge review_gpt:
 
 ## Deterministic join: wait for BOTH reviewers, merge their verdicts into
 ## one advisory the operator sees. Not a gate — the human is the gate.
+## In MONO only one family's edge fires, so the other family's fields are
+## absent. Absent must read as "this family did not object" rather than as
+## a rejection — otherwise mono could never approve. `both_approved` is
+## therefore "no participating reviewer objected".
 compute aggregate_review:
   input: review_merge_input
   output: review_summary
-  await: wait_all
+  await: best_effort
   expr:
-    both_approved:     "input.claude_approved && input.gpt_approved"
+    both_approved:     "if(vars.review_mode == 'dual' || vars.mono_family == 'claude', input.claude_approved, true) && if(vars.review_mode == 'dual' || vars.mono_family == 'gpt', input.gpt_approved, true)"
     combined_concerns: "concat(input.claude_concerns, input.gpt_concerns)"
     combined_missing:  "concat(input.claude_missing, input.gpt_missing)"
     advisory:          "input.claude_confidence + '/' + input.gpt_confidence"
@@ -859,8 +882,21 @@ workflow evolve:
     workspace_dir: "{{vars.workspace_dir}}"
   }
 
-  ## Cross-family review fan-out (parallel, read-only judges).
-  synthesize_vision -> review_fanout
+  ## Review topology: dual takes the fan-out and runs both families; mono
+  ## goes straight to the single family reviewer, so only one LLM pass is
+  ## spent per round. The claude edge is the unconditional fallback, so an
+  ## unset/unknown review_mode degrades to the cheap path.
+  synthesize_vision -> review_topology
+  review_topology -> review_fanout when "vars.review_mode == 'dual'"
+  review_topology -> review_gpt when "vars.review_mode != 'dual' && vars.mono_family == 'gpt'" with {
+    vision:        "{{outputs.synthesize_vision}}",
+    workspace_dir: "{{vars.workspace_dir}}"
+  }
+  review_topology -> review_claude with {
+    vision:        "{{outputs.synthesize_vision}}",
+    workspace_dir: "{{vars.workspace_dir}}"
+  }
+
   review_fanout -> review_claude with {
     vision:        "{{outputs.synthesize_vision}}",
     workspace_dir: "{{vars.workspace_dir}}"

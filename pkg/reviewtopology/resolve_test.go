@@ -39,14 +39,16 @@ func TestResolve_BackendFamilies(t *testing.T) {
 		// Must now resolve a claude family (was gpt/none before the fix).
 		{"forfait claude_code → mono claude", repB(backendSt(detect.BackendClaudeCode, true)), "mono", ModeMono, FamilyClaude},
 		{"forfait claude_code auto → mono claude", repB(backendSt(detect.BackendClaudeCode, true)), "auto", ModeMono, FamilyClaude},
-		// claude_code forfait + openai provider → two families → auto dual.
+		// claude_code forfait + openai provider → two families available, but
+		// auto still resolves MONO: having two providers configured is not a
+		// request to spend two reviewer passes on every run.
 		{
-			"forfait + openai provider → dual",
+			"forfait + openai provider → mono claude",
 			detect.Report{
 				Providers: []detect.ProviderStatus{prov("openai", true)},
 				Backends:  []detect.BackendStatus{backendSt(detect.BackendClaudeCode, true)},
 			},
-			"auto", ModeDual, "",
+			"auto", ModeMono, FamilyClaude,
 		},
 		// codex backend → gpt family (symmetry).
 		{"codex backend → mono gpt", repB(backendSt(detect.BackendCodex, true)), "mono", ModeMono, FamilyGPT},
@@ -75,14 +77,14 @@ func TestResolve(t *testing.T) {
 		wantFamily string
 	}{
 		// auto: two families → dual
-		{"auto both families", rep(prov("anthropic", true), prov("openai", true)), "auto", ModeDual, ""},
-		{"empty override both families", rep(prov("anthropic", true), prov("openai", true)), "", ModeDual, ""},
+		{"auto both families → mono (dual is a deliberate spend)", rep(prov("anthropic", true), prov("openai", true)), "auto", ModeMono, FamilyClaude},
+		{"empty override both families → mono", rep(prov("anthropic", true), prov("openai", true)), "", ModeMono, FamilyClaude},
 		// auto: single family → mono on that family
 		{"auto claude only", rep(prov("anthropic", true), prov("openai", false)), "auto", ModeMono, FamilyClaude},
 		{"auto gpt only", rep(prov("anthropic", false), prov("openai", true)), "auto", ModeMono, FamilyGPT},
 		// zai counts as the claude family (operator decision)
 		{"auto zai only → claude", rep(prov("zai", true)), "auto", ModeMono, FamilyClaude},
-		{"auto zai + openai → dual", rep(prov("zai", true), prov("openai", true)), "auto", ModeDual, ""},
+		{"auto zai + openai → mono", rep(prov("zai", true), prov("openai", true)), "auto", ModeMono, FamilyClaude},
 		{"auto anthropic + zai is one family → mono claude", rep(prov("anthropic", true), prov("zai", true)), "auto", ModeMono, FamilyClaude},
 		// auto: no participating family → dual (fail normally on credential)
 		{"auto no providers", rep(), "auto", ModeDual, ""},
@@ -130,20 +132,34 @@ func TestInjectIfDeclared_optIn(t *testing.T) {
 	}
 }
 
-func TestInjectIfDeclared_autoDetectDual(t *testing.T) {
+// auto is what every unconfigured caller gets, so it must resolve to the
+// FRUGAL topology even when both families are present: dual doubles the
+// reviewer spend on every run and has to be asked for.
+func TestInjectIfDeclared_autoDetectMono(t *testing.T) {
 	wf := wfWithVars(VarReviewMode, VarMonoFamily)
 	inputs := map[string]any{VarReviewMode: ModeAuto}
+	mode, family, injected := InjectIfDeclared(wf, inputs,
+		rep(prov("anthropic", true), prov("openai", true)), "")
+	if !injected || mode != ModeMono || family != FamilyClaude {
+		t.Fatalf("got (%q,%q,injected=%v), want mono/claude/true", mode, family, injected)
+	}
+	if inputs[VarReviewMode] != ModeMono || inputs[VarMonoFamily] != FamilyClaude {
+		t.Fatalf("inputs not written: %v", inputs)
+	}
+}
+
+// Dual stays reachable — it is an explicit override, not a detection outcome.
+func TestInjectIfDeclared_explicitDual(t *testing.T) {
+	wf := wfWithVars(VarReviewMode, VarMonoFamily)
+	inputs := map[string]any{VarReviewMode: ModeDual}
 	mode, family, injected := InjectIfDeclared(wf, inputs,
 		rep(prov("anthropic", true), prov("openai", true)), "")
 	if !injected || mode != ModeDual || family != "" {
 		t.Fatalf("got (%q,%q,injected=%v), want dual/empty/true", mode, family, injected)
 	}
-	if inputs[VarReviewMode] != ModeDual || inputs[VarMonoFamily] != "" {
-		t.Fatalf("inputs not written: %v", inputs)
-	}
 }
 
-func TestInjectIfDeclared_autoDetectMono(t *testing.T) {
+func TestInjectIfDeclared_autoDetectMonoSingleFamily(t *testing.T) {
 	wf := wfWithVars(VarReviewMode, VarMonoFamily)
 	inputs := map[string]any{VarReviewMode: ModeAuto}
 	mode, family, _ := InjectIfDeclared(wf, inputs, rep(prov("openai", true)), "")

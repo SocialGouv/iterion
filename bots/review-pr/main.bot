@@ -5,8 +5,9 @@
 ## findings — it never edits, fixes, or commits code. That mutation
 ## job belongs to the improve-loops (Billy = branch_improve_loop,
 ## Willy = whole_improve_loop). Revi is the PR reviewer: it reads the
-## diff, reasons about it with two independent reviewers from
-## different model families (Claude + GPT), then a single emit step
+## diff, reasons about it with one reviewer (mono, the default) or two
+## independent reviewers from different model families (dual — opt-in via
+## `--var review_mode=dual`), then a single emit step
 ## merges + de-duplicates their findings and writes them to the
 ## iterion native kanban board (one issue per finding) plus a markdown
 ## report.
@@ -14,9 +15,11 @@
 ## Shape (single pass — no loop, no convergence, nothing to converge
 ## ON since Revi changes nothing between iterations):
 ##
-##   fan (fan_out_all)
-##     ├─ reviewer_claude  (claude_code, read-only)
-##     └─ reviewer_gpt     (claw + openai/gpt-5.5, read-only tools)
+##   topology (condition — ADR-052)
+##     ├─ mono (DEFAULT) -> the single family reviewer
+##     └─ dual           -> fan (fan_out_all)
+##                            ├─ reviewer_claude  (claude_code, read-only)
+##                            └─ reviewer_gpt     (claw + openai/gpt-5.5)
 ##   reviewer_* -> emit    (await: wait_all)   board + markdown report
 ##   emit -> pr_gate       (deterministic: was a pr_url given?)
 ##     ├─ no  -> done
@@ -24,10 +27,13 @@
 ##               iterion server endpoint — no LLM, no workspace token) ->
 ##               publish_health  (deterministic anti-façade gate) -> done
 ##
-## Cross-family value: an issue flagged by BOTH families is far more
-## likely real than one flagged by a single reviewer. emit raises the
-## confidence of cross-confirmed findings and labels them so the
-## operator can triage agreement first.
+## Cross-family value (DUAL only): an issue flagged by BOTH families is
+## far more likely real than one flagged by a single reviewer. emit raises
+## the confidence of cross-confirmed findings and labels them so the
+## operator can triage agreement first. It is worth paying for on a
+## high-stakes diff, not on every routine push — hence mono by default.
+## In mono every finding is still reported; only the cross-confirmation
+## tag is absent.
 ##
 ## Scope discipline (matches the loop bots): reviewers diff the
 ## WORKING TREE against the merge-base of `base_ref` and HEAD —
@@ -156,6 +162,24 @@ vars:
   ## auto-falls back to a summary-only review when the forge rejects
   ## the inline anchors, so "inline" is safe unattended.
   pr_review_mode: string [enum: "inline", "summary"] = "inline"
+
+  ## REVIEW TOPOLOGY (ADR-052). "mono" runs ONE family reviewer; "dual"
+  ## runs both and cross-confirms. Dual costs a full reviewer pass per
+  ## family on EVERY review — and with the merge gate wired, every push
+  ## re-reviews — so mono is the default and dual is a deliberate opt-in
+  ## (`--var review_mode=dual`, or the launch flag). "auto" is resolved at
+  ## LAUNCH by pkg/reviewtopology from the host's detected credentials and
+  ## also lands on mono; it only picks the family for you.
+  ##
+  ## Cross-family confirmation is worth paying for on a high-stakes diff,
+  ## not on every routine push: a finding either reviewer raises is still
+  ## reported, dual only adds the `cross-confirmed by both reviewers` tag.
+  review_mode: string [enum: "auto", "mono", "dual"] = "mono"
+
+  ## Which family runs in mono. Overwritten by the launch-time resolver
+  ## when it detects only one usable family (e.g. an Anthropic-forfait
+  ## instance with no OpenAI quota resolves to "claude").
+  mono_family: string [enum: "claude", "gpt"] = "claude"
 
   ## MERGE GATE (v0.5.0). When pr_url is set, the deterministic publish
   ## step ALSO posts a commit status named "revi/review" on the PR head
@@ -621,6 +645,13 @@ print(json.dumps({'is_empty': len(files) == 0, 'changed_files': len(files)}))
 "`
   output: diff_precheck_output
 
+## Topology gate. A `condition` router picks a SINGLE target, which is
+## exactly what mono needs; the guard cannot live on `fan`'s own edges
+## because fan_out_all collects every outgoing edge without evaluating
+## `when` (same trap as round_robin).
+router topology:
+  mode: condition
+
 router fan:
   mode: fan_out_all
 
@@ -926,10 +957,19 @@ workflow review_pr:
     max_cost_usd: 20
 
   ## EFFICIENCY: an empty review diff skips both LLM reviewers + emit.
-  diff_precheck -> fan when not is_empty
+  diff_precheck -> topology when not is_empty
   diff_precheck -> done when is_empty
 
-  ## Fan out to both family reviewers.
+  ## TOPOLOGY (ADR-052). Dual takes the fan-out and runs both families;
+  ## mono goes straight to the single family reviewer, so only one LLM
+  ## pass is spent. The claude edge is the unconditional fallback, so an
+  ## unset/unknown review_mode degrades to the cheap path rather than to
+  ## an empty router.
+  topology -> fan when "vars.review_mode == 'dual'"
+  topology -> reviewer_gpt when "vars.review_mode != 'dual' && vars.mono_family == 'gpt'"
+  topology -> reviewer_claude
+
+  ## Fan out to both family reviewers (dual only).
   fan -> reviewer_claude
   fan -> reviewer_gpt
 

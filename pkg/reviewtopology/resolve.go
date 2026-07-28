@@ -133,9 +133,13 @@ func preferredFamily(fams map[string]bool) string {
 //   - "mono"      → always mono; monoFamily is the preferred available
 //     family (claude first), or "" when none is detected (the run will
 //     then fail loudly on the missing credential, same as today).
-//   - "auto"/""   → dual when ≥2 families are available; mono on the single
-//     available family otherwise; dual (no downgrade) when no participating
-//     family is detected, so an unconfigured host fails the normal way
+//   - "auto"/""   → MONO on the preferred available family. Dual costs one
+//     full reviewer pass per family on every run, and auto is what every
+//     unconfigured caller gets, so the default has to be the frugal one:
+//     cross-family confirmation is a deliberate spend, not something a host
+//     opts into merely by having two providers configured. Falls back to
+//     dual only when no participating family is detected at all, so an
+//     unconfigured host fails on the missing credential the normal way
 //     instead of on an empty router.
 //
 // The returned mode is always concrete ("mono" or "dual"), never "auto".
@@ -147,9 +151,6 @@ func Resolve(rep detect.Report, override string) (mode string, monoFamily string
 	case ModeMono:
 		return ModeMono, preferredFamily(fams)
 	default: // auto / "" / unknown
-		if len(fams) >= 2 {
-			return ModeDual, ""
-		}
 		if f := preferredFamily(fams); f != "" {
 			return ModeMono, f
 		}

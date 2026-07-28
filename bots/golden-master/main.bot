@@ -1283,7 +1283,11 @@ tool emit_runner:
         "ok=(r.get(\"stable\") and r.get(\"noop_silent\") and r.get(\"revert_clean\")\n"
         "    and r.get(\"collateral\")==0 and not r.get(\"uncontrolled\")\n"
         "    and not r.get(\"blind_lanes\") and not r.get(\"missing_archetypes\")\n"
-        "    and r.get(\"runner_replayable\")\n"
+        # `holdout_reused` belongs here too. Without it the standalone entry
+        # point is WEAKER than the graph gate on the one term that stops a
+        # spent, published set from being replayed as if it were fresh -- and
+        # the standalone entry point is what CI and humans run.
+        "    and r.get(\"runner_replayable\") and not r.get(\"holdout_reused\")\n"
         "    and r.get(\"holdout_detected\")==r.get(\"holdout_total\"))\n"
         # A notice is never fatal, but it must never be silent either: the one
         # that matters here says the held-out figure is 0/0 because the set was
@@ -1313,9 +1317,24 @@ tool emit_runner:
         '[ -n "$GM_DIR" ] || GM_DIR=' + json.dumps(oracle_dir),
         '[ -n "$GM_WORKSPACE" ] || GM_WORKSPACE=.',
         '[ -n "$GM_MUTATION_FLOOR" ] || GM_MUTATION_FLOOR=' + str(floor),
-        "export GM_DIR GM_WORKSPACE GM_MUTATION_FLOOR",
-        'if [ "$1" = "--record" ]; then GM_MODE=record; export GM_MODE; fi',
-        'if [ "$1" = "--self-check" ]; then GM_MODE=selfcheck; export GM_MODE; fi',
+        # Without this default the very first redirect below writes to an empty
+        # filename and the runner dies before reaching the gate. Red, so not a
+        # false green -- but an emitted deliverable that cannot run at all.
+        '[ -n "$GM_REPORT_TMP" ] || GM_REPORT_TMP="$GM_WORKSPACE/$GM_DIR/.last-report.json"',
+        "export GM_DIR GM_WORKSPACE GM_MUTATION_FLOOR GM_REPORT_TMP",
+        # The mode comes from the ARGUMENTS and from nothing else. Inherited, it
+        # is a way to make this runner green forever WITHOUT touching a line of
+        # the repository: an ambient GM_MODE=record -- one CI project variable --
+        # turns the no-argument invocation into a re-record that exits 0, and
+        # destroys the references it was supposed to check on the way. That is
+        # cheating through the environment the judge observes through, the same
+        # move as a runtime flag slipped into the launcher the net invokes.
+        "GM_MODE=gate",
+        'if [ "$1" = "--record" ]; then GM_MODE=record',
+        'elif [ "$1" = "--self-check" ]; then GM_MODE=selfcheck',
+        'elif [ -n "$1" ]; then echo "verify-oracle.sh: unknown option $1 (expected: none, --record, --self-check)" >&2; exit 2',
+        'fi',
+        "export GM_MODE",
         # Les tests du canonicaliseur d'abord, et ils sont BLOQUANTS. C'est le
         # seul composant du filet qu'aucun mutant n'éprouve : les comparateurs
         # sont jugés par le contre-test, la porte par sa conjonction, le
@@ -1326,10 +1345,16 @@ tool emit_runner:
         # trop peu rend le filet instable, donc rouge, donc visible ; trop le
         # rend AVEUGLE, donc vert. Une règle trop large ne fait pas échouer,
         # elle fait taire.
+        #
+        # Exigés, pas « lancés s'ils sont là ». Un contrôle conditionné à la
+        # présence de son propre fichier s'éteint proprement : il suffit que le
+        # fichier manque — checkout partiel, export-ignore, oubli de commit —
+        # pour que le runner saute ses tests bloquants SANS RIEN DIRE et sorte
+        # vert. Le harnais refuse déjà de démarrer sans rules.py ; ses tests
+        # portent la même exigence.
         'CANON_TESTS="$GM_WORKSPACE/$GM_DIR/canon/test_rules.py"',
-        'if [ -f "$CANON_TESTS" ]; then',
-        '  python3 "$CANON_TESTS" >/dev/null 2>&1 || { echo "canon: les tests du normaliseur ÉCHOUENT — le filet ne peut pas être cru tant qu ils ne passent pas" >&2; python3 "$CANON_TESTS" >&2; exit 1; }',
-        'fi',
+        'if [ ! -f "$CANON_TESTS" ]; then echo "canon: $CANON_TESTS est ABSENT — le filet embarque un normaliseur que rien ne vérifie ; le runner refuse plutôt que de sauter ses propres tests en silence" >&2; exit 1; fi',
+        'python3 "$CANON_TESTS" >/dev/null 2>&1 || { echo "canon: les tests du normaliseur ÉCHOUENT — le filet ne peut pas être cru tant qu ils ne passent pas" >&2; python3 "$CANON_TESTS" >&2; exit 1; }',
         # The harness always exits 0 -- the GRAPH reads its JSON and computes
         # the verdict itself, so a non-zero exit there would look like a broken
         # node rather than a red gate. But this script is the entry point for

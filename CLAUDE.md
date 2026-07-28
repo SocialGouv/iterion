@@ -102,7 +102,7 @@ Other top-level directories: `studio/` (React/Vite frontend), `examples/` (.bot 
   - `detect/` — Backend credential auto-detection (OAuth, API keys, AWS/GCP) consumed by `model/executor.go`'s resolver and the studio toolbar BackendStatusPill
   - `tooldisplay/` — Human-readable rendering of tool calls for the run console / report
 - `pkg/runtime/` — Workflow execution engine (branch scheduling, events, budget, recovery dispatch)
-- `pkg/reviewtopology/` — Resolves the mono/dual review topology (`review_mode` / `mono_family`, **ADR-052**) from detected credentials and injects it into a run's inputs, but only for bots that opt in by declaring a `review_mode` var (`InjectIfDeclared`) — no-ops on the shipped catalog, kept for future/third-party reviewer loops. See [docs/adr/052-review-topology-mono-dual.md](docs/adr/052-review-topology-mono-dual.md)
+- `pkg/reviewtopology/` — Resolves the mono/dual review topology (`review_mode` / `mono_family`, **ADR-052**) from detected credentials and injects it into a run's inputs, but only for bots that opt in by declaring a `review_mode` var (`InjectIfDeclared`). **`auto` resolves to mono** — dual doubles the reviewer spend on every run, so it is an explicit opt-in. Consumed by `review-pr` and `evolve`. See [docs/adr/052-review-topology-mono-dual.md](docs/adr/052-review-topology-mono-dual.md)
 - `pkg/store/` — Run persistence (JSON-based, versioned artifacts, events.jsonl)
 - `pkg/server/` — HTTP server for studio backend (embedded static UI)
 - `pkg/dispatcher/` — Long-running dispatcher: native kanban store, polling actor, tracker adapters (native, github, forgejo)
@@ -785,16 +785,21 @@ fed back with "do NOT re-raise without new evidence";
 `loop.<name>.previous_output` for monotonic verdicts; bounded
 `max_iterations` as the backstop, not the design goal.
 
-**Mono/dual review topology (ADR-052) — now a generic opt-in surface.**
-[pkg/reviewtopology](pkg/reviewtopology/resolve.go) still resolves
+**Mono/dual review topology (ADR-052) — MONO IS THE DEFAULT.**
+[pkg/reviewtopology](pkg/reviewtopology/resolve.go) resolves
 `review_mode` (`auto|mono|dual`) + `mono_family` at LAUNCH and injects
 them on every surface (CLI `iterion run --review-mode`, studio/API,
 dispatcher bot_arg) — but ONLY into bots that declare a `review_mode`
-var (`InjectIfDeclared`). The five bots ADR-052 was built for have all
-migrated to the v2 shape and no longer declare it, so the resolver
-no-ops on the shipped catalog; a future or third-party reviewer-loop
-bot re-adopts the topology just by declaring the vars and using a
-`condition` router (never `round_robin` — it ignores `when` guards).
+var (`InjectIfDeclared`). **`auto` resolves to `mono`**, even when both
+families are available: dual costs a full reviewer pass per family on
+EVERY run, and with the merge gate wired every push re-reviews, so
+cross-family confirmation is a deliberate spend (`--var review_mode=dual`)
+rather than something a host opts into by having two providers configured.
+The catalog bots that still run family reviewers — `review-pr` (Revi) and
+`evolve` — declare the vars and gate their fan-out behind a `condition`
+router (never `round_robin`, and never `when` guards on a `fan_out_all`
+router's own edges: both collect every edge without evaluating the
+condition). Any new reviewer-loop bot adopts the topology the same way.
 The machinery stays guarded non-vacuously by
 `e2e/review_topology_test.go` + `e2e/testdata/review_topology_mini.bot`.
 
