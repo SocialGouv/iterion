@@ -89,6 +89,36 @@ vars:
   ## default — Vetty's primary sink is the PR comment.
   post_to_board: bool = false
 
+  ## MERGE GATE. When set, the feedback step also posts a commit status on
+  ## the PR head SHA carrying Vetty's verdict: `success` only when the bump
+  ## was audited safe AND the deterministic verify gate was green. Add the
+  ## context to the repo's required checks to make it BLOCK the merge; leave
+  ## it out and it is an advisory check. The verdict is a TABLE over the
+  ## verdict the graph already computed — never a judgment made here.
+  ##
+  ## A run's forge_token can never post a status (the runtime token is minted
+  ## without that permission on purpose), so the gate necessarily rides the
+  ## server's publish endpoint below. No endpoint, no gate — stated as such
+  ## rather than silently skipped.
+  gate_enabled: bool = true
+
+  ## The commit-status CONTEXT — the name in the repo's required checks. A
+  ## required check applies to EVERY PR, so on a repo where a reviewer takes
+  ## the human PRs and Vetty takes the bot's, both must post the SAME
+  ## context: whichever bot did not run would otherwise leave the check
+  ## permanently absent and block the PR. Pin the shared name per repo via
+  ## the integration's launch_vars.
+  gate_context: string = "vetty/deps"
+
+  ## Deterministic forge publish grant — INJECTED BY THE ITERION SERVER at
+  ## launch when the run's team has a forge connection covering pr_url's
+  ## repo. Declaring them here is the whole opt-in (undeclared launch vars
+  ## are dropped by the IR, so the injection is safe and generic). Empty on
+  ## a local run → the feedback falls back to a direct forge comment, with
+  ## no gate.
+  forge_publish_url: string = ""
+  forge_publish_token: string = ""
+
   ## Out-of-tree scratch for the deterministic gate’s verify script/log
   ## (${PROJECT_SCRATCH_DIR} resolves outside the PR checkout — never
   ## pollute the PR branch).
@@ -455,12 +485,21 @@ schema feedback_output:
   comment_url: string
   skipped_reason: string
   summary: string
+  ## gate_posted: the commit status carrying the verdict actually landed.
+  gate_posted: bool
+  gate_state: string
+  ## gate_skipped_reason: why no status landed. A gate that is required and
+  ## absent blocks the PR forever, so the reason has to be visible.
+  gate_skipped_reason: string
 
 schema feedback_health_input:
   posted: bool
   comment_url: string
   skipped_reason: string
   pr_url: string
+  gate_enabled: bool
+  gate_posted: bool
+  gate_skipped_reason: string
 
 schema feedback_health_output:
   degraded: bool
@@ -762,13 +801,20 @@ tool post_feedback:
     escalation = {{input.escalation}}
     commit_summary = {{input.commit_summary}}
     token_ref = {{secrets.forge_token.path}}
+    pub_url = {{vars.forge_publish_url}}
+    pub_token = {{vars.forge_publish_token}}
+    gate_enabled = {{vars.gate_enabled}}
+    gate_context = {{vars.gate_context}}
 
     def s(x):
         return (x or "").strip() if isinstance(x, str) else ("" if x is None else str(x).strip())
 
-    def out(posted, comment_url="", skipped_reason="", summary=""):
+    def out(posted, comment_url="", skipped_reason="", summary="",
+            gate_posted=False, gate_state="", gate_skipped_reason=""):
         print(json.dumps({"posted": bool(posted), "comment_url": comment_url or "",
-                          "skipped_reason": skipped_reason or "", "summary": summary or ""}))
+                          "skipped_reason": skipped_reason or "", "summary": summary or "",
+                          "gate_posted": bool(gate_posted), "gate_state": gate_state or "",
+                          "gate_skipped_reason": gate_skipped_reason or ""}))
         raise SystemExit(0)
 
     if not s(pr_url):
@@ -800,21 +846,77 @@ tool post_feedback:
            "hold_unstable": "Held — build/tests not green.",
            "needs_decision": "Escalated for a human decision.",
            "clean": "Nothing to align."}.get(s(verdict), "")
-    did = (s(commit_summary) + " " if s(commit_summary) else "") + did + " **Vetty did NOT merge.**"
+    did = (s(commit_summary) + " " if s(commit_summary) else "") + did + \
+        " **Vetty never merges** — it reports a verdict; the merge stays with the repo's own required checks."
     section("What Vetty did", did)
     parts.append("_\U0001F916 Posted by Vetty (dep-update-guard) — deterministic feedback._")
     body = "\n".join(parts)
+
+    # DETERMINISTIC gate verdict: a table over the verdict the graph already
+    # computed from audit_gate / align_gate / validate_gate. Never a judgment
+    # made here, and never a re-read of a model field. An unknown verdict is a
+    # state we did not anticipate, so it BLOCKS — a gate that fails open is
+    # worse than no gate.
+    GATE_BLOCKING = {"clean": 0, "committed": 0,
+                     "hold_security": 1, "hold_unstable": 1, "needs_decision": 1}
+    gate_on = bool(gate_enabled)
+    blocking = GATE_BLOCKING.get(s(verdict))
+    if blocking is None:
+        blocking = 1
+    gate_note = {
+        "hold_security": "supply-chain risk: the bump was not applied",
+        "hold_unstable": "build/tests not green after alignment",
+        "needs_decision": "an architectural decision is pending a human",
+    }.get(s(verdict), "")
+    if s(verdict) not in GATE_BLOCKING:
+        gate_note = "unrecognised verdict " + (s(verdict) or "(empty)") + " - the gate fails closed"
+
+    # The server's publish endpoint is the ONLY path that can post a status:
+    # the run's own forge_token is minted without the statuses permission.
+    if s(pub_url) and s(pub_token):
+        endpoint = s(pub_url).rstrip("/") + "/api/v1/forge/publish-review"
+        payload = {"pr_url": s(pr_url), "summary": body, "mode": "summary", "comments": []}
+        if gate_on:
+            payload["gate"] = {"enabled": True, "context": s(gate_context) or "vetty/deps",
+                               "blocking_count": blocking, "threshold": "verdict"}
+            if gate_note:
+                payload["gate"]["note"] = gate_note
+        req = urllib.request.Request(
+            endpoint, data=json.dumps(payload).encode("utf-8"), method="POST",
+            headers={"Content-Type": "application/json", "X-Iterion-Run": s(pub_token),
+                     "User-Agent": "vetty-dep-update-guard"})
+        try:
+            with urllib.request.urlopen(req, timeout=120) as resp:
+                res = json.loads(resp.read().decode("utf-8"))
+            out(bool(res.get("published")),
+                comment_url=str(res.get("review_url") or ""),
+                skipped_reason=str(res.get("skipped_reason") or ""),
+                summary="verdict=" + s(verdict) + "; published via the iterion forge-publish endpoint",
+                gate_posted=bool(res.get("gate_posted")),
+                gate_state=str(res.get("gate_state") or ""),
+                gate_skipped_reason=str(res.get("gate_error") or ""))
+        except urllib.error.HTTPError as e:
+            detail = ""
+            try: detail = e.read().decode("utf-8")[:300]
+            except Exception: pass
+            # Fall through to the direct comment: the verdict still has to
+            # reach the PR. The gate cannot follow it there.
+            gate_fallback = "publish endpoint HTTP %s: %s" % (e.code, detail)
+        except Exception as e:
+            gate_fallback = "publish endpoint error: " + str(e)
+    else:
+        gate_fallback = "no forge publish grant (local run) - a run token cannot post a commit status"
 
     token = ""
     tref = s(token_ref)
     if tref:
         token = (open(tref).read().strip() if os.path.exists(tref) else tref)
     if not token:
-        out(False, skipped_reason="no forge_token bound — cannot post")
+        out(False, skipped_reason="no forge_token bound — cannot post", gate_skipped_reason=gate_fallback)
 
     m = re.match(r"https?://([^/]+)/([^/]+)/([^/]+)/(?:pull|pulls|-/merge_requests|merge_requests)/(\d+)", s(pr_url))
     if not m:
-        out(False, skipped_reason="unparseable pr_url: " + s(pr_url))
+        out(False, skipped_reason="unparseable pr_url: " + s(pr_url), gate_skipped_reason=gate_fallback)
     host, owner, repo, num = m.group(1), m.group(2), m.group(3), m.group(4)
     if host == "github.com":
         api = "https://api.github.com/repos/%s/%s/issues/%s/comments" % (owner, repo, num)
@@ -826,32 +928,42 @@ tool post_feedback:
     req = urllib.request.Request(api, data=json.dumps({"body": body}).encode("utf-8"), method="POST", headers=headers)
     try:
         with urllib.request.urlopen(req, timeout=30) as resp:
-            payload = json.loads(resp.read().decode("utf-8"))
-        out(True, comment_url=(payload.get("html_url") or payload.get("url") or ""),
-            summary="verdict=" + s(verdict) + "; comment posted")
+            created = json.loads(resp.read().decode("utf-8"))
+        out(True, comment_url=(created.get("html_url") or created.get("url") or ""),
+            summary="verdict=" + s(verdict) + "; comment posted",
+            gate_skipped_reason=gate_fallback)
     except urllib.error.HTTPError as e:
         detail = ""
         try: detail = e.read().decode("utf-8")[:300]
         except Exception: pass
-        out(False, skipped_reason="forge POST HTTP %s: %s" % (e.code, detail))
+        out(False, skipped_reason="forge POST HTTP %s: %s" % (e.code, detail), gate_skipped_reason=gate_fallback)
     except Exception as e:
-        out(False, skipped_reason="forge POST error: " + str(e))
+        out(False, skipped_reason="forge POST error: " + str(e), gate_skipped_reason=gate_fallback)
 
 ## Deterministic anti-façade gate: a PR target was given but nothing
 ## posted → loud banner (informational; the audit/align already ran).
 tool feedback_health:
-  command: `POSTED={{input.posted}} URL={{input.comment_url}} SKIPPED={{input.skipped_reason}} PR={{input.pr_url}} python3 -c "
+  command: `POSTED={{input.posted}} URL={{input.comment_url}} SKIPPED={{input.skipped_reason}} PR={{input.pr_url}} GATE_ON={{input.gate_enabled}} GATE_POSTED={{input.gate_posted}} GATE_SKIPPED={{input.gate_skipped_reason}} python3 -c "
 import os, json, sys
 posted = os.environ.get('POSTED','false') == 'true'
 pr = os.environ.get('PR','')
 skipped = os.environ.get('SKIPPED','')
+gate_on = os.environ.get('GATE_ON','false') == 'true'
+gate_posted = os.environ.get('GATE_POSTED','false') == 'true'
+gate_skipped = os.environ.get('GATE_SKIPPED','')
 degraded = (pr != '') and (not posted)
+# A gate that is REQUIRED and absent leaves the PR blocked with no way
+# forward but an admin bypass, and looks identical to never having run. It
+# is a louder failure than a missing comment, not a quieter one.
+gate_degraded = (pr != '') and gate_on and (not gate_posted)
 if degraded:
     banner = chr(9888) + ' FEEDBACK NOT POSTED: a PR url was given but no comment landed (reason: ' + (skipped or 'none') + '). Check forge_token + the PR url.'
+elif gate_degraded:
+    banner = chr(9888) + ' MERGE GATE NOT POSTED: the verdict comment landed but no commit status did (reason: ' + (gate_skipped or 'none') + '). If the context is a required check, the PR stays blocked until a re-run posts it.'
 else:
     banner = 'feedback OK: ' + (os.environ.get('URL','') or ('skipped — ' + (skipped or 'no pr_url')))
 sys.stderr.write(banner + chr(10))
-print(json.dumps({'degraded': degraded, 'banner': banner}))
+print(json.dumps({'degraded': degraded or gate_degraded, 'banner': banner}))
 "`
   input: feedback_health_input
   output: feedback_health_output
@@ -946,6 +1058,9 @@ workflow dep_update_guard:
     posted: "{{outputs.post_feedback.posted}}",
     comment_url: "{{outputs.post_feedback.comment_url}}",
     skipped_reason: "{{outputs.post_feedback.skipped_reason}}",
-    pr_url: "{{vars.pr_url}}"
+    pr_url: "{{vars.pr_url}}",
+    gate_enabled: "{{vars.gate_enabled}}",
+    gate_posted: "{{outputs.post_feedback.gate_posted}}",
+    gate_skipped_reason: "{{outputs.post_feedback.gate_skipped_reason}}"
   }
   feedback_health -> done

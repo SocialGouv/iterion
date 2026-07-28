@@ -58,6 +58,13 @@ forge:
   token_scopes:
     pull_requests: write     # post the review comment
     repository: write        # push the code alignment onto the PR branch
+    statuses: write          # post the merge-gate commit status carrying the
+                             # verdict (GitHub App perm "Commit statuses: Read
+                             # and write"). Declaring it also tells the
+                             # provisioner this bot can be a REQUIRED check, so
+                             # the repo's webhook re-reviews on every push —
+                             # a gate that does not follow the head SHA blocks
+                             # the PR it guards.
   secret: forge_token
   webhook:
     # React ONLY to the dependency bots, never human PRs. Maps to
