@@ -509,6 +509,7 @@ def main():
               "notice": "", "uncontrolled": [], "blind_lanes": [], "missing_archetypes": [],
               "holdout_detected": 0, "holdout_total": 0, "stable": False,
               "corpus_total": 0, "corpus_distinct": 0, "duplicate_refs": [],
+              "runner_replayable": False,
               "log_tail": ""}
 
     def bail(msg):
@@ -722,6 +723,26 @@ def main():
             problems.append("HELD-OUT set: %d/%d detected. The oracle was hardened against "
                             "the mutants it could see, not against divergence in general."
                             % (report["holdout_detected"], report["holdout_total"]))
+        # Is the emitted net actually REPLAYABLE from a clean checkout? The
+        # runner shells out to harness.py, which this gate materialises into
+        # the worktree — but a campaign that gitignores it ships references
+        # nobody can re-run. That is not a hypothetical: it is the exact
+        # criticism levelled at third-party deliveries whose fixtures outlived
+        # the harness that produced them, and the first emitted net here
+        # reproduced it. A deliverable that cannot be replayed is a claim, not
+        # an artefact.
+        report["runner_replayable"] = True
+        runner = os.path.join(gm_dir, "verify-oracle.sh")
+        for needed in (os.path.join(gm_dir, "harness.py"), runner):
+            rel = os.path.relpath(needed, ws)
+            ignored = subprocess.run(["git", "-C", ws, "check-ignore", "-q", rel],
+                                     capture_output=True)
+            if ignored.returncode == 0:
+                report["runner_replayable"] = False
+                problems.append("%s is GITIGNORED, so the committed net cannot be "
+                                "replayed by CI or by anyone who checks the repo "
+                                "out. The oracle is a deliverable: un-ignore it and "
+                                "commit it." % rel)
         report["log_tail"] = "\n".join(problems)[-6000:]
     finally:
         app_down(config, ws)
