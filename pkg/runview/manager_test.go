@@ -263,3 +263,35 @@ func TestDeregister_ClosesDoneAndIsIdempotent(t *testing.T) {
 	}
 	m.Deregister("run-3") // must not panic on a closed channel
 }
+
+// A subbot child is resumed EXTERNALLY while its in-process handle is still
+// held, and its paused status reaches the store before the engine has finished
+// returning. That makes a second registration a hand-off by construction, which
+// is why the child declares it at registration instead of waiting for a
+// MarkLeaving moment that comes too late to help.
+//
+// This is the case that started the whole investigation
+// (TestServiceLaunch_SubbotChildHumanGate_ParkAndResume flaking on
+// "already registered"), and it is the case a leaving-only gate silently stops
+// covering.
+func TestExpectHandoff_MakesAChildResumeWaitRatherThanFail(t *testing.T) {
+	m := NewManager()
+	if _, err := m.Register(context.Background(), "child-1"); err != nil {
+		t.Fatalf("Register: %v", err)
+	}
+	m.ExpectHandoff("child-1")
+
+	go func() {
+		time.Sleep(80 * time.Millisecond)
+		m.Deregister("child-1")
+	}()
+
+	start := time.Now()
+	if _, err := m.Register(context.Background(), "child-1"); err != nil {
+		t.Fatalf("external resume of a child mid-release: %v — it must wait for the "+
+			"active pass to release, not fail", err)
+	}
+	if waited := time.Since(start); waited < 50*time.Millisecond {
+		t.Errorf("returned after %s — it cannot have waited for the child's release", waited)
+	}
+}

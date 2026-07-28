@@ -42,20 +42,30 @@ type runHandle struct {
 	// multiple RequestPause calls race (e.g. the user double-clicks
 	// the Pause button before the run has drained).
 	pauseRequested bool
-	// leaving is closed by MarkLeaving when the engine call has returned
-	// and this handle is on its way out. It is what tells a re-registration
-	// apart: a handle with leaving OPEN belongs to a runner that is still
-	// working, and a second registration for it must be refused at once;
-	// one with leaving CLOSED is worth waiting a moment for.
+	// handoff, once closed, says that a SECOND registration for this run id is
+	// a hand-off rather than a conflict — so AwaitHandoff should wait for this
+	// handle to go instead of letting the caller fail on "already registered".
+	// While it is open, a second registration is refused at once, which is what
+	// keeps a genuine two-runners-for-one-run attempt cheap.
+	//
+	// Two things close it, for the two shapes that are hand-offs:
+	//   - MarkLeaving, when a root run's engine call has returned and the
+	//     handle is only finishing its teardown;
+	//   - ExpectHandoff, at registration, for a subbot child — which is ALWAYS
+	//     resumed externally and whose in-process handle is released as soon as
+	//     the active pass returns, so a second registration is never a rival
+	//     runner. It has to be declared up front there: the child's paused
+	//     status reaches the store while the engine is still returning, so an
+	//     operator can be resuming it before there is any later moment to mark.
 	//
 	// Nil for a detached handle (RegisterDetached), which never takes part in a
 	// hand-off. AwaitHandoff's non-blocking select therefore falls to default
 	// on one — a receive from a nil channel blocks forever, so the ready case
 	// cannot fire. That is load-bearing: do not drop that default branch, and
-	// do not add a bare `<-h.leaving` anywhere.
-	leaving chan struct{}
-	// leavingMarked guards against a double close of leaving.
-	leavingMarked bool
+	// do not add a bare `<-h.handoff` anywhere.
+	handoff chan struct{}
+	// handoffMarked guards against a double close of handoff.
+	handoffMarked bool
 }
 
 // Manager owns the lifecycle of in-process workflow goroutines. A run
@@ -112,7 +122,7 @@ func (m *Manager) Register(parent context.Context, runID string) (context.Contex
 		done:      make(chan struct{}),
 		startedAt: time.Now().UTC(),
 		pauseCh:   make(chan struct{}),
-		leaving:   make(chan struct{}),
+		handoff:   make(chan struct{}),
 	}
 	return ctx, nil
 }
@@ -128,15 +138,25 @@ func (m *Manager) Register(parent context.Context, runID string) (context.Contex
 // that follows is what makes the window wide enough to matter: a completion
 // webhook, a supervisor drain, a broker close. Idempotent; a no-op for an
 // unknown or already-marked run.
-func (m *Manager) MarkLeaving(runID string) {
+func (m *Manager) MarkLeaving(runID string) { m.markHandoff(runID) }
+
+// ExpectHandoff declares up front that a second registration for runID will be
+// a hand-off, not a rival runner. Used for a subbot child: it is always resumed
+// externally, its in-process handle is released as soon as the active pass
+// returns, and its paused status reaches the store while the engine is still
+// returning — so there is no later moment at which marking it would still be in
+// time. Idempotent; a no-op for an unknown or detached run.
+func (m *Manager) ExpectHandoff(runID string) { m.markHandoff(runID) }
+
+func (m *Manager) markHandoff(runID string) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	h, ok := m.handles[runID]
-	if !ok || h.leaving == nil || h.leavingMarked {
+	if !ok || h.handoff == nil || h.handoffMarked {
 		return
 	}
-	h.leavingMarked = true
-	close(h.leaving)
+	h.handoffMarked = true
+	close(h.handoff)
 }
 
 // PauseSignal returns the engine-side receive-only pause channel for
@@ -267,7 +287,7 @@ func (m *Manager) AwaitHandoff(ctx context.Context, runID string) {
 		return
 	}
 	select {
-	case <-h.leaving:
+	case <-h.handoff:
 	default:
 		return // still working — not a handoff, so not ours to wait out
 	}
