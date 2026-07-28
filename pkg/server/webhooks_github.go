@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"strings"
 
+	"github.com/SocialGouv/iterion/pkg/bundle"
 	"github.com/SocialGouv/iterion/pkg/knowledge"
 	"github.com/SocialGouv/iterion/pkg/webhooks"
 	"github.com/SocialGouv/iterion/pkg/webhooks/prforge"
@@ -154,21 +155,28 @@ func (s *Server) handlePRForgeReview(ctx context.Context, w http.ResponseWriter,
 		return
 	}
 
-	// PR-open auto-lane = REVIEW ONLY (Revi). Billy is NEVER auto-launched on a
+	// PR-open auto-lane = REVIEW ONLY. Billy is NEVER auto-launched on a
 	// PR-open — it runs on a deliberate `/billy` comment (or the narrow
-	// merge-queue auto-heal above). resolveReviewBot gates AllowsBot.
-	botID, ok := s.resolveReviewBot(ctx, w, cfg, meta, payloadHash, srcIP)
-	if !ok {
+	// merge-queue auto-heal above). With a per-bot routing table the lane fans
+	// out to every bot claiming the pull_request event whose OWN author filter
+	// admits this author, so a dependency guard and a reviewer share the repo
+	// and each takes its own PRs.
+	rules := s.resolveForgeEventBots(cfg, bundle.ForgeEventPullRequest, p.SenderLogin)
+	if len(rules) == 0 {
+		s.recordTerminalWebhookDelivery(ctx, cfg, meta, webhooks.StatusFiltered, payloadHash, srcIP, "no enabled bot claims this PR (event/author routing)")
+		writeJSONStatus(w, http.StatusOK, map[string]string{"status": webhooks.StatusFiltered})
 		return
 	}
 
-	// Idempotency: one launch per (tenant, webhook, repo, PR#, head sha).
-	idemKey := knowledge.ChecksumHex([]byte(fmt.Sprintf("%s%s|%s|%s|%d|%s", idemPrefix, cfg.TenantID, cfg.ID, p.ProjectPath, p.PRNumber, p.HeadSHA)))
+	// Idempotency base: one launch per (tenant, webhook, repo, PR#, head sha)
+	// — per bot once the delivery fans out (see forgeIdemKey).
+	idemBase := fmt.Sprintf("%s%s|%s|%s|%d|%s", idemPrefix, cfg.TenantID, cfg.ID, p.ProjectPath, p.PRNumber, p.HeadSHA)
 
 	scopeNotes := strings.TrimSpace(p.Title + "\n\n" + p.Description)
-	vars := reviewPRVars(p.PRURL, p.TargetBranch, scopeNotes, cfg.LaunchVars, map[string]string{"pr_author": p.SenderLogin, "source_branch": p.SourceBranch})
+	targets := forgePREventTargets(cfg, rules, idemBase, p.PRURL, p.TargetBranch, scopeNotes, p.CloneURL, p.SourceBranch,
+		map[string]string{"pr_author": p.SenderLogin, "source_branch": p.SourceBranch})
 
-	s.insertAndLaunchWebhook(ctx, w, r, cfg, meta, idemKey, botID, vars, p.CloneURL, p.SourceBranch, payloadHash, srcIP)
+	s.insertAndLaunchWebhookMulti(ctx, w, r, cfg, meta, targets, payloadHash, srcIP)
 }
 
 // handleGitHubIssues handles a verified inbound GitHub `issues` delivery. Two

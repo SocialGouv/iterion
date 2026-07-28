@@ -442,6 +442,33 @@ type ForgeWebhookHints struct {
 	// any author). A dependency-PR bot sets ["dependabot[bot]",
 	// "renovate[bot]"] so it reacts only to the dependency bots, not humans.
 	AuthorAllowlist []string `yaml:"author_allowlist,omitempty"`
+
+	// AuthorScope declares how AuthorAllowlist interacts with the OTHER bots
+	// co-enabled on the same repo webhook:
+	//
+	//   "shared" (default/empty) — other bots also react to these authors.
+	//   "exclusive"              — the authors I claim are MINE: provisioning
+	//                              adds them to every other co-enabled bot's
+	//                              author denylist, so a general reviewer
+	//                              stops double-reviewing the PRs this bot
+	//                              owns. The reviewer's own manifest stays
+	//                              free of any knowledge that this bot exists.
+	//
+	// Only meaningful together with a non-empty AuthorAllowlist.
+	AuthorScope string `yaml:"author_scope,omitempty"`
+}
+
+// Author-scope vocabulary for ForgeWebhookHints.AuthorScope.
+const (
+	AuthorScopeShared    = "shared"
+	AuthorScopeExclusive = "exclusive"
+)
+
+// IsExclusiveAuthors reports whether this bot claims its allowlisted authors
+// exclusively against the other bots sharing the repo webhook.
+func (h *ForgeWebhookHints) IsExclusiveAuthors() bool {
+	return h != nil && len(h.AuthorAllowlist) > 0 &&
+		strings.EqualFold(strings.TrimSpace(h.AuthorScope), AuthorScopeExclusive)
 }
 
 // SecretName returns the workflow-secret name this bot binds its forge
@@ -897,6 +924,13 @@ func validateForgeRequirements(f *ForgeRequirements) error {
 		}
 		if !knownForgeScopeLevels[level] {
 			return fmt.Errorf("forge.token_scopes[%s]: invalid level %q (want read, write, or admin)", key, level)
+		}
+	}
+	if f.Webhook != nil {
+		switch scope := strings.ToLower(strings.TrimSpace(f.Webhook.AuthorScope)); scope {
+		case "", AuthorScopeShared, AuthorScopeExclusive:
+		default:
+			return fmt.Errorf("forge.webhook.author_scope: unknown value %q (known: %s, %s)", scope, AuthorScopeShared, AuthorScopeExclusive)
 		}
 	}
 	return nil

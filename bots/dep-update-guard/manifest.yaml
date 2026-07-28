@@ -62,7 +62,19 @@ forge:
   webhook:
     # React ONLY to the dependency bots, never human PRs. Maps to
     # webhooks.Config.AuthorAllowlist via the orchestrator.
-    author_allowlist: ["dependabot[bot]", "renovate[bot]"]
+    #
+    # The leading "*" is a suffix wildcard. Self-hosting Renovate/Dependabot
+    # under an org GitHub App is the usual way to make their PRs trigger CI
+    # (a GITHUB_TOKEN-authored PR does not), and doing so RENAMES the bot —
+    # "acme-renovate[bot]" instead of "renovate[bot]". Matching the family
+    # keeps those repos covered without naming any one organisation's App.
+    author_allowlist:
+      ["dependabot[bot]", "*dependabot[bot]", "renovate[bot]", "*renovate[bot]"]
+    # These authors are MINE against any bot co-enabled on the same repo: a
+    # general reviewer must not also review the PRs Vetty already guards.
+    # Provisioning materialises this into the other bots' author denylist, so
+    # a reviewer's manifest never has to know Vetty exists.
+    author_scope: exclusive
     launch_vars:
       post_to_board: "false"
   rationale: |

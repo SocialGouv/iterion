@@ -13,6 +13,7 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/SocialGouv/iterion/pkg/botregistry"
+	"github.com/SocialGouv/iterion/pkg/bundle"
 	"github.com/SocialGouv/iterion/pkg/cloudsched"
 	"github.com/SocialGouv/iterion/pkg/knowledge"
 	"github.com/SocialGouv/iterion/pkg/retrypolicy"
@@ -107,19 +108,26 @@ func (s *Server) handleGitLabMergeRequestEvent(ctx context.Context, w http.Respo
 		return
 	}
 
-	botID, ok := s.resolveReviewBot(ctx, w, cfg, meta, payloadHash, srcIP)
-	if !ok {
+	// Same per-bot fan-out as the GitHub PR lane — this MR lane is a separate
+	// function, so parity is not free and must be kept explicitly.
+	rules := s.resolveForgeEventBots(cfg, bundle.ForgeEventPullRequest, p.SenderUsername)
+	if len(rules) == 0 {
+		s.recordTerminalWebhookDelivery(ctx, cfg, meta, webhooks.StatusFiltered, payloadHash, srcIP, "no enabled bot claims this MR (event/author routing)")
+		writeJSONStatus(w, http.StatusOK, map[string]string{"status": webhooks.StatusFiltered})
 		return
 	}
 
-	// Idempotency: one launch per (tenant, webhook, project, MR, head sha).
-	// "mr|" prefix keeps the key space disjoint from the Note hook
-	// ("note|") so a /revi on the same MR can't collide with the open.
-	idemKey := knowledge.ChecksumHex([]byte(fmt.Sprintf("mr|%s|%s|%d|%d|%s", cfg.TenantID, cfg.ID, p.ProjectID, p.MRIID, p.HeadSHA)))
+	// Idempotency: one launch per (tenant, webhook, project, MR, head sha) —
+	// per bot once the delivery fans out. The "mr|" prefix keeps the key space
+	// disjoint from the Note hook ("note|") so a /revi on the same MR can't
+	// collide with the open.
+	idemBase := fmt.Sprintf("mr|%s|%s|%d|%d|%s", cfg.TenantID, cfg.ID, p.ProjectID, p.MRIID, p.HeadSHA)
 
-	vars := reviewPRVars(p.MRURL, p.TargetBranch, strings.TrimSpace(p.Title+"\n\n"+p.Description), cfg.LaunchVars, map[string]string{"pr_author": p.SenderUsername, "source_branch": p.SourceBranch})
+	targets := forgePREventTargets(cfg, rules, idemBase, p.MRURL, p.TargetBranch,
+		strings.TrimSpace(p.Title+"\n\n"+p.Description), p.CloneURL, p.SourceBranch,
+		map[string]string{"pr_author": p.SenderUsername, "source_branch": p.SourceBranch})
 
-	s.insertAndLaunchWebhook(ctx, w, r, cfg, meta, idemKey, botID, vars, p.CloneURL, p.SourceBranch, payloadHash, srcIP)
+	s.insertAndLaunchWebhookMulti(ctx, w, r, cfg, meta, targets, payloadHash, srcIP)
 }
 
 // handleGitLabIssueEvent handles a verified GitLab "Issue Hook". GitLab has no
