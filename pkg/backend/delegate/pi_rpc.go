@@ -126,7 +126,7 @@ func (b *PiRPCBackend) Execute(ctx context.Context, task Task) (Result, error) {
 			}
 		},
 		OnUIRequest: func(req pisdk.UIRequest) *pisdk.UIResponse {
-			return b.handleUIRequest(task, req)
+			return b.handleUIRequest(task, collector, req)
 		},
 	})
 
@@ -224,6 +224,12 @@ func (b *PiRPCBackend) Execute(ctx context.Context, task Task) (Result, error) {
 		}
 	}
 
+	// A suspension outranks everything else: the run is pausing for a human,
+	// not failing. The partial transcript and accounting above are still
+	// returned so the operator sees what the agent did before it asked.
+	if pause := collector.pending(); pause != nil {
+		return result, pause.err()
+	}
 	if waitErr != nil {
 		return result, waitErr
 	}
@@ -288,6 +294,8 @@ func (b *PiRPCBackend) awaitSettle(ctx context.Context, client *pisdk.Client, co
 	defer cold.Stop()
 	poll := time.NewTicker(2 * time.Second)
 	defer poll.Stop()
+	pauseTick := time.NewTicker(200 * time.Millisecond)
+	defer pauseTick.Stop()
 
 	sawFirstEvent := false
 
@@ -305,6 +313,15 @@ func (b *PiRPCBackend) awaitSettle(ctx context.Context, client *pisdk.Client, co
 		select {
 		case <-collector.settled:
 			return nil
+
+		case <-pauseTick.C:
+			// A raised suspension will not settle on its own: the agent is
+			// blocked on an answer that only a human can give. Abort so the
+			// turn unwinds and Execute can surface the pause.
+			if collector.pending() != nil {
+				abortAndGrace()
+				return nil
+			}
 
 		case <-ctx.Done():
 			// Ask pi to stop rather than killing it mid-call: an aborted turn
@@ -429,6 +446,11 @@ func piExtensionEnv(task Task) map[string]string {
 	if task.Permission.Enabled() {
 		env["ITERION_PI_PERMISSION"] = task.Permission.Mode.String()
 	}
+	// Likewise for ask_user: a node that cannot reach a human should not be
+	// offered a tool that pauses the run, or it will call it and stall.
+	if task.InteractionEnabled {
+		env["ITERION_PI_INTERACTION"] = "sync"
+	}
 	return env
 }
 
@@ -439,7 +461,7 @@ func piExtensionEnv(task Task) map[string]string {
 // third-party dialog is cancelled — its documented safe default — because
 // iterion has no operator at the other end of pi's UI and must neither block
 // the agent nor invent an answer on the operator's behalf.
-func (b *PiRPCBackend) handleUIRequest(task Task, req pisdk.UIRequest) *pisdk.UIResponse {
+func (b *PiRPCBackend) handleUIRequest(task Task, collector *piCollector, req pisdk.UIRequest) *pisdk.UIResponse {
 	env, ok := piParseCtrl(req)
 	if !ok {
 		if b.Logger != nil {
@@ -451,12 +473,36 @@ func (b *PiRPCBackend) handleUIRequest(task Task, req pisdk.UIRequest) *pisdk.UI
 
 	switch env.Op {
 	case piOpPermissionEvaluate:
-		verdict, escalate := piEvaluatePermission(task, env.Data)
+		verdict, marker := piEvaluatePermission(task, env.Data)
 		if b.Logger != nil && verdict.Decision != "allow" {
 			b.Logger.Warn("[%s#%d/%s] permission gate: %s", task.NodeID, task.Iteration, BackendPi, verdict.Reason)
 		}
-		_ = escalate // the pause path lands with ask_user; the call is blocked meanwhile
+		// `ask` suspends the run for a human. The call stays blocked in the
+		// meantime, so the tool cannot run in the window before the pause
+		// lands.
+		if marker != nil {
+			collector.setPause(&piPendingPause{
+				question:         verdict.Reason,
+				allowFreeText:    false,
+				permissionMarker: marker,
+			})
+		}
 		return piCtrlAnswer(req.ID, verdict)
+
+	case piOpAskUser:
+		pause, err := piParseAskUser(env.Data)
+		if err != nil {
+			if b.Logger != nil {
+				b.Logger.Warn("[%s#%d/%s] %v", task.NodeID, task.Iteration, BackendPi, err)
+			}
+			return piCtrlFail(req.ID, err.Error())
+		}
+		collector.setPause(pause)
+		if b.Logger != nil {
+			b.Logger.Info("[%s#%d/%s] ask_user: %s", task.NodeID, task.Iteration, BackendPi,
+				truncate(pause.question, 200))
+		}
+		return piCtrlAnswer(req.ID, map[string]any{"escalated": true})
 	default:
 		if b.Logger != nil {
 			b.Logger.Warn("[%s#%d/%s] unknown control op %q from the iterion extension "+
@@ -502,6 +548,29 @@ type piCollector struct {
 	seen      map[string]bool
 
 	retries []pisdk.Event
+
+	// pause is set when the extension raised a suspension (ask_user, or a
+	// permission escalation). Execute turns it into ErrAskUser after the turn
+	// unwinds; it cannot be raised inline because the control-channel handler
+	// must reply promptly and a pause has to travel out through Execute.
+	pause *piPendingPause
+}
+
+// setPause records the first suspension of the turn. Later ones are dropped:
+// one pause resolves one question, and the agent re-asks on resume if it still
+// needs to.
+func (c *piCollector) setPause(p *piPendingPause) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.pause == nil {
+		c.pause = p
+	}
+}
+
+func (c *piCollector) pending() *piPendingPause {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.pause
 }
 
 func (c *piCollector) onEvent(ev pisdk.Event) {

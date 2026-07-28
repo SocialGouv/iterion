@@ -89,18 +89,18 @@ func TestPiEvaluatePermission(t *testing.T) {
 	var off *permission.Policy
 
 	t.Run("off allows", func(t *testing.T) {
-		v, escalate := piEvaluatePermission(Task{Permission: off},
+		v, marker := piEvaluatePermission(Task{Permission: off},
 			json.RawMessage(`{"tool":"Bash","input":{"command":"rm -rf /"}}`))
-		if v.Decision != "allow" || escalate {
-			t.Errorf("got %+v escalate=%v, want a plain allow when no gate is configured", v, escalate)
+		if v.Decision != "allow" || marker != nil {
+			t.Errorf("got %+v marker=%v, want a plain allow when no gate is configured", v, marker)
 		}
 	})
 
 	t.Run("deny blocks with the reason", func(t *testing.T) {
-		v, escalate := piEvaluatePermission(Task{Permission: deny},
+		v, marker := piEvaluatePermission(Task{Permission: deny},
 			json.RawMessage(`{"tool":"Bash","input":{"command":"ls"}}`))
-		if v.Decision != "deny" || escalate {
-			t.Errorf("got %+v escalate=%v, want deny without escalation", v, escalate)
+		if v.Decision != "deny" || marker != nil {
+			t.Errorf("got %+v marker=%v, want deny without escalation", v, marker)
 		}
 		if !strings.Contains(v.Reason, "Bash") {
 			t.Errorf("reason %q does not name the tool, so the model cannot adapt", v.Reason)
@@ -111,10 +111,13 @@ func TestPiEvaluatePermission(t *testing.T) {
 	// It is reported as an escalation so the host pauses the run, and blocked
 	// meanwhile so the tool does not run in that window.
 	t.Run("ask escalates and blocks", func(t *testing.T) {
-		v, escalate := piEvaluatePermission(Task{Permission: ask},
+		v, marker := piEvaluatePermission(Task{Permission: ask},
 			json.RawMessage(`{"tool":"Bash","input":{"command":"ls"}}`))
-		if !escalate {
-			t.Error("ask must escalate so the host can pause for a human")
+		if marker == nil {
+			t.Fatal("ask must return a permission marker so the pause renders as an approval card")
+		}
+		if marker["tool"] != "Bash" {
+			t.Errorf("marker = %v, want it to carry the tool for the approval card", marker)
 		}
 		if v.Decision != "deny" || !v.Escalated {
 			t.Errorf("got %+v, want the call blocked while the escalation lands", v)

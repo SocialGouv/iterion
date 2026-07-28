@@ -16,6 +16,7 @@
 export const CONTRACT_VERSION = "1";
 
 export type PermissionMode = "off" | "ask" | "deny";
+export type InteractionMode = "off" | "sync";
 
 export interface IterionConfig {
 	/** True when the host and this build agree on the contract version. */
@@ -24,10 +25,13 @@ export interface IterionConfig {
 
 	runId?: string;
 	nodeId?: string;
-	iter?: number;
+	iteration?: number;
 
 	/** Permission gate mode. `off` skips the hook entirely — no round-trip. */
 	permission: PermissionMode;
+
+	/** Whether the node may reach a human. `off` registers no ask_user tool. */
+	interaction: InteractionMode;
 
 	/** Whether the control channel is available at all. */
 	ctrlEnabled: boolean;
@@ -51,8 +55,8 @@ function permissionMode(raw: string | undefined): PermissionMode {
 
 export function loadConfig(): IterionConfig {
 	const hostContract = env("ITERION_PI_CONTRACT") ?? "";
-	const iterRaw = env("ITERION_PI_ITERATION");
-	const iter = iterRaw === undefined ? undefined : Number.parseInt(iterRaw, 10);
+	const iterationRaw = env("ITERION_PI_ITERATION");
+	const iteration = iterationRaw === undefined ? undefined : Number.parseInt(iterationRaw, 10);
 
 	return {
 		// An absent contract means "not driven by iterion" — a human running pi
@@ -61,8 +65,9 @@ export function loadConfig(): IterionConfig {
 		hostContract,
 		runId: env("ITERION_PI_RUN_ID"),
 		nodeId: env("ITERION_PI_NODE_ID"),
-		iter: Number.isFinite(iter) ? iter : undefined,
+		iteration: Number.isFinite(iteration) ? iteration : undefined,
 		permission: permissionMode(env("ITERION_PI_PERMISSION")),
+		interaction: env("ITERION_PI_INTERACTION") === "sync" ? "sync" : "off",
 		ctrlEnabled: env("ITERION_PI_CTRL") !== "off",
 	};
 }

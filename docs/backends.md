@@ -562,7 +562,10 @@ no web fetch/search, no notebook, no background bash. Consequences for a
   `permission.Policy` as `claude_code` and `claw`, so all three reach identical
   verdicts. RPC transport only — a print-mode node has no channel for it.
 - **board `capabilities:` do not work yet** — they are served over MCP.
-- **`ask_user` / async interaction do not work yet** — same reason.
+- **`ask_user` DOES work** (from v3.7.6, RPC transport only): the agent can
+  put a question to the operator, which pauses the run and resumes with their
+  answer. Async questions (`ask_user_async` / `await_answers`, ADR-081) do not
+  yet.
 - **workflow `mcp_server` blocks are not forwarded yet.**
 - **`__ITERION_SECRET_*__` placeholders are not materialised.** Use file
   secrets instead ([secrets.md](secrets.md)) — they are real mounted files

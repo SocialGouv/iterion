@@ -331,3 +331,58 @@ func TestPiRPCLivePermissionGate(t *testing.T) {
 		t.Errorf("block message does not explain itself: %q", blocked[0])
 	}
 }
+
+// TestPiRPCLiveAskUser proves the suspension path end to end: the model calls
+// ask_user, the extension escalates over the control channel, and Execute
+// returns the ErrAskUser the executor's pause machinery keys on.
+//
+// Without it a workflow declaring `interaction: human` had NO surface on a pi
+// node — pi is headless with no operator attached.
+func TestPiRPCLiveAskUser(t *testing.T) {
+	bin := requirePiBinary(t)
+	ext := mockProviderPath(t)
+
+	t.Setenv("ITERION_PI_NO_CONTEXT_FILES", "1")
+	t.Setenv("ITERION_PI_MOCK_TOOL", "ask_user")
+	t.Setenv("ITERION_PI_MOCK_TOOL_ARGS", `{"question":"Which database should I target?","options":[{"id":"pg","label":"Postgres"},{"id":"my","label":"MySQL"}]}`)
+	t.Setenv("ITERION_PI_MOCK_TEXT", "unreachable")
+
+	dir := t.TempDir()
+	task := Task{
+		NodeID: "asks", WorkDir: dir, BaseDir: dir, StoreDir: dir,
+		UserPrompt: "decide", Model: "mock/scripted",
+		InteractionEnabled: true,
+	}
+
+	rpc := &PiRPCBackend{Command: bin, Logger: testLogger(), ExtraArgs: []string{"-e", ext}}
+	_, err := rpc.Execute(context.Background(), task)
+
+	var ask *ErrAskUser
+	if !errors.As(err, &ask) {
+		t.Fatalf("err = %v (%T), want *ErrAskUser — the run must PAUSE, not fail or finish", err, err)
+	}
+	if !strings.Contains(ask.Question, "database") {
+		t.Errorf("Question = %q, want the model's own question", ask.Question)
+	}
+	if len(ask.Options) != 2 || ask.Options[0].ID != "pg" {
+		t.Errorf("Options = %+v, want the two structured choices so the studio can render them", ask.Options)
+	}
+	// Options were supplied and free text was not requested, so the operator
+	// gets a choice list rather than a text box.
+	if ask.AllowFreeText {
+		t.Error("AllowFreeText true despite explicit options and no request for it")
+	}
+}
+
+// A node that cannot reach a human must not be offered a tool that pauses the
+// run — it would call it and stall.
+func TestPiRPCAskUserAbsentWhenInteractionOff(t *testing.T) {
+	env := piExtensionEnv(Task{NodeID: "n"})
+	if _, ok := env["ITERION_PI_INTERACTION"]; ok {
+		t.Error("ITERION_PI_INTERACTION set with interaction disabled — ask_user would be registered")
+	}
+	env = piExtensionEnv(Task{NodeID: "n", InteractionEnabled: true})
+	if env["ITERION_PI_INTERACTION"] != "sync" {
+		t.Errorf("ITERION_PI_INTERACTION = %q, want sync", env["ITERION_PI_INTERACTION"])
+	}
+}

@@ -26,14 +26,14 @@ import (
 
 // piCtrlEnvelope is one request from the extension.
 type piCtrlEnvelope struct {
-	Iterion int             `json:"__iterion"`
-	V       int             `json:"v"`
-	Op      string          `json:"op"`
-	RunID   string          `json:"runId,omitempty"`
-	NodeID  string          `json:"nodeId,omitempty"`
-	Iter    int             `json:"iter,omitempty"`
-	Seq     int             `json:"seq"`
-	Data    json.RawMessage `json:"data,omitempty"`
+	Iterion   int             `json:"__iterion"`
+	V         int             `json:"v"`
+	Op        string          `json:"op"`
+	RunID     string          `json:"runId,omitempty"`
+	NodeID    string          `json:"nodeId,omitempty"`
+	Iteration int             `json:"iteration,omitempty"`
+	Seq       int             `json:"seq"`
+	Data      json.RawMessage `json:"data,omitempty"`
 }
 
 // piCtrlReply is the answer, carried as the string value of the UI response.
@@ -47,7 +47,65 @@ type piCtrlReply struct {
 // Control-channel operations.
 const (
 	piOpPermissionEvaluate = "permission.evaluate"
+	piOpAskUser            = "ask_user"
 )
+
+// piPendingPause is a suspension the extension raised, waiting to be turned
+// into an ErrAskUser once the turn unwinds.
+//
+// It cannot be raised inline: the control channel's handler runs on the
+// client's dispatcher goroutine and must return a reply promptly, while a
+// pause has to travel out through Execute's return value so the executor can
+// persist an interaction and stop the run. So the handler records the pause,
+// tells the extension it escalated, and Execute picks it up — the same shape
+// as claude_code's hook, which cancels the stream and returns ErrAskUser.
+type piPendingPause struct {
+	question      string
+	options       []AskUserOption
+	allowFreeText bool
+	toolUseID     string
+	// permissionMarker is set when the pause is a permission escalation
+	// rather than an LLM ask_user call: the studio then renders an approval
+	// card instead of a question.
+	permissionMarker map[string]any
+}
+
+// err renders the pause as the sentinel the executor's pause machinery keys on.
+func (p *piPendingPause) err() error {
+	return &ErrAskUser{
+		Question:         p.question,
+		Options:          p.options,
+		AllowFreeText:    p.allowFreeText,
+		PendingToolUseID: p.toolUseID,
+		PermissionMarker: p.permissionMarker,
+	}
+}
+
+// piAskUserRequest is the payload of an ask_user op.
+type piAskUserRequest struct {
+	Question      string          `json:"question"`
+	Options       []AskUserOption `json:"options,omitempty"`
+	AllowFreeText bool            `json:"allow_free_text,omitempty"`
+	ToolUseID     string          `json:"tool_use_id,omitempty"`
+}
+
+// piParseAskUser decodes an ask_user op. A question is mandatory: pausing a
+// run on an empty prompt would strand the operator with nothing to answer.
+func piParseAskUser(data json.RawMessage) (*piPendingPause, error) {
+	var req piAskUserRequest
+	if err := json.Unmarshal(data, &req); err != nil {
+		return nil, fmt.Errorf("malformed ask_user request: %w", err)
+	}
+	if strings.TrimSpace(req.Question) == "" {
+		return nil, fmt.Errorf("ask_user needs a question")
+	}
+	return &piPendingPause{
+		question:      req.Question,
+		options:       req.Options,
+		allowFreeText: req.AllowFreeText || len(req.Options) == 0,
+		toolUseID:     req.ToolUseID,
+	}, nil
+}
 
 // piParseCtrl decodes a UI request as an iterion control envelope. Reports
 // false for anything that is not one — including a payload that merely looks
@@ -110,7 +168,7 @@ type piPermissionVerdict struct {
 //
 // `ask` is reported as an escalation: the caller pauses the run for a human,
 // which the extension cannot do from inside pi.
-func piEvaluatePermission(task Task, data json.RawMessage) (verdict piPermissionVerdict, escalate bool) {
+func piEvaluatePermission(task Task, data json.RawMessage) (verdict piPermissionVerdict, marker map[string]any) {
 	var req piPermissionRequest
 	if err := json.Unmarshal(data, &req); err != nil || req.Tool == "" {
 		// Malformed: fail closed. A gate that waves through what it cannot
@@ -118,25 +176,25 @@ func piEvaluatePermission(task Task, data json.RawMessage) (verdict piPermission
 		return piPermissionVerdict{
 			Decision: "deny",
 			Reason:   "iterion could not read the permission request for this call",
-		}, false
+		}, nil
 	}
 
 	decision, rule := task.Permission.Evaluate(req.Tool, req.Input)
 	switch decision {
 	case permission.Allow:
-		return piPermissionVerdict{Decision: "allow"}, false
+		return piPermissionVerdict{Decision: "allow"}, nil
 	case permission.Ask:
 		return piPermissionVerdict{
 			Decision:  "deny",
 			Escalated: true,
 			Rule:      rule,
 			Reason:    fmt.Sprintf("%s needs operator approval", req.Tool),
-		}, true
+		}, permission.Marker(req.Tool, req.Input, rule)
 	default:
 		return piPermissionVerdict{
 			Decision: "deny",
 			Rule:     rule,
 			Reason:   fmt.Sprintf("%s is denied by this workflow's permission policy", req.Tool),
-		}, false
+		}, nil
 	}
 }

@@ -14,8 +14,8 @@
  * modes, so an extension shipped that way would never load and never say so.
  * CLI `-e` paths bypass trust resolution entirely.
  *
- * Shipped today: the permission gate.
- * Next: ask_user (+ async), board tools, Claude-Code tool aliases, an MCP
+ * Shipped today: the permission gate and ask_user.
+ * Next: async questions, board tools, Claude-Code tool aliases, an MCP
  * client. See ADR-085.
  */
 
@@ -23,6 +23,7 @@ import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { CONTRACT_VERSION, loadConfig } from "./config.js";
 import { Ctrl } from "./ctrl.js";
 import { installPermissionGate } from "./hooks/permission.js";
+import { installAskUser } from "./tools/ask-user.js";
 
 export default function (pi: ExtensionAPI): void {
 	const cfg = loadConfig();
@@ -49,6 +50,7 @@ export default function (pi: ExtensionAPI): void {
 
 	if (!cfg.ctrlEnabled) return;
 
-	const ctrl = new Ctrl({ runId: cfg.runId, nodeId: cfg.nodeId, iter: cfg.iter });
+	const ctrl = new Ctrl({ runId: cfg.runId, nodeId: cfg.nodeId, iteration: cfg.iteration });
 	installPermissionGate(pi, cfg, ctrl);
+	installAskUser(pi, cfg, ctrl);
 }

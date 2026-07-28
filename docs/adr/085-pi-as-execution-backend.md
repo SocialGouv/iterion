@@ -393,7 +393,7 @@ Why each of those choices:
   without that check a forgotten rebuild would silently ship yesterday's
   extension on every run.
 
-**Shipped: the permission gate.** pi has no permission system at all, so a
+**Shipped: the permission gate and `ask_user`.** pi has no permission system at all, so a
 workflow's `permission: ask|deny` block was silently inert on a pi node. The
 `tool_call` hook forwards each call over the control channel; the decision is
 made in Go by the **same `permission.Policy`** that drives claude_code's
@@ -405,6 +405,26 @@ operator to ask) and blocks meanwhile.
 
 Verified against the real binary: pi calls a tool, the gate fires, and the
 model receives `bash is denied by this workflow's permission policy`.
+
+**`ask_user`** gives a pi node a way to reach a human, which it had none of —
+pi is a headless process with no operator attached, so `interaction: human` was
+inert. The tool does not answer the question: it hands it to iterion, which
+suspends the RUN, persists an interaction the studio renders, and resumes with
+the operator's reply. That is the only shape that works, because the answer may
+arrive minutes later from a different process, so the tool cannot block on it.
+
+Two details that matter more than they look:
+
+- **What the model is told.** Not "error", but "the run is now paused, the
+  question is with a human, the conversation resumes with their reply". An
+  agent handed a bare error re-asks in a loop.
+- **The tool is registered only when the node can actually reach someone**
+  (`ITERION_PI_INTERACTION`). Offering it otherwise would let the agent call it
+  and stall against a pause nobody will resolve.
+
+A permission `ask` uses the same suspension path, carrying a
+`permission.Marker` so the studio renders an approval card rather than a
+question.
 
 **The control channel.** pi's extension-UI protocol is a *closed* union, so the
 channel tunnels through two of its members — `ctx.ui.input` for

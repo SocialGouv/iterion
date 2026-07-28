@@ -28,7 +28,7 @@ export interface CtrlEnvelope {
 	op: string;
 	runId?: string;
 	nodeId?: string;
-	iter?: number;
+	iteration?: number;
 	seq: number;
 	data?: unknown;
 }
@@ -43,7 +43,7 @@ export interface CtrlReply<T = unknown> {
 export interface CtrlIdentity {
 	runId?: string;
 	nodeId?: string;
-	iter?: number;
+	iteration?: number;
 }
 
 export class Ctrl {
@@ -100,7 +100,7 @@ export class Ctrl {
 			op,
 			runId: this.identity.runId,
 			nodeId: this.identity.nodeId,
-			iter: this.identity.iter,
+			iteration: this.identity.iteration,
 			seq: this.seq,
 			data,
 		};

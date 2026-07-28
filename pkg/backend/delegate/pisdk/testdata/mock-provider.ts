@@ -25,6 +25,7 @@
  *   ITERION_PI_MOCK_COST        usage.cost.total in USD (default 0)
  *   ITERION_PI_MOCK_IN/_OUT     input/output token counts (default 11/7)
  *   ITERION_PI_MOCK_REASONING   reasoning tokens (a subset of output)
+ *   ITERION_PI_MOCK_TOOL_ARGS   JSON arguments for that call (default {command:"ls"})
  *   ITERION_PI_MOCK_TOOL        name of a tool to call instead of replying
  *                               (exercises the permission gate); the reply
  *                               text is emitted on the SECOND call
@@ -81,9 +82,17 @@ export default function (pi: ExtensionAPI) {
 			const toolName = process.env.ITERION_PI_MOCK_TOOL;
 			if (toolName && state.calls === 0) {
 				state.calls += 1;
+				let toolArgs: Record<string, unknown> = { command: "ls" };
+				if (process.env.ITERION_PI_MOCK_TOOL_ARGS) {
+					try {
+						toolArgs = JSON.parse(process.env.ITERION_PI_MOCK_TOOL_ARGS);
+					} catch {
+						/* keep the default */
+					}
+				}
 				const call: AssistantMessage = {
 					role: "assistant",
-					content: [{ type: "toolCall", id: "mock-call-1", name: toolName, arguments: { command: "ls" } }],
+					content: [{ type: "toolCall", id: "mock-call-1", name: toolName, arguments: toolArgs }],
 					api: model.api,
 					provider: model.provider,
 					model: model.id,
