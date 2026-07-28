@@ -140,6 +140,11 @@ type ProvisionRequest struct {
 	// ScheduleCrons overrides a bot's schedule cron (botID → 5-field cron) for
 	// the operator's chosen cadence; falls back to the manifest suggested_cron.
 	ScheduleCrons map[string]string
+	// LaunchVars are operator overrides stamped onto every run this repo's
+	// bots launch, layered after their manifest vars. Persisted on the
+	// integration and re-applied on every Provision (see
+	// RepoIntegration.LaunchVars). Nil leaves the stored ones untouched.
+	LaunchVars map[string]string
 	// Replace makes BotIDs the EXACT desired set instead of a union with the
 	// existing integration's bots — the per-bot unbind path. The webhook
 	// events, command map and schedules reconcile down accordingly. Removing
@@ -191,6 +196,16 @@ func (o *Orchestrator) Provision(ctx context.Context, req ProvisionRequest) (Pro
 		desiredBots = dedupSorted(append(append([]string{}, existing.BotIDs...), req.BotIDs...))
 	}
 
+	// Operator overrides survive a re-provision: Provision rewrites the whole
+	// webhook config from the manifests, so anything PATCHed onto the webhook
+	// is lost at the next enable. A nil request map means "leave them alone",
+	// not "clear them" — enabling one more bot must not silently drop the
+	// repo's own settings.
+	operatorVars := req.LaunchVars
+	if operatorVars == nil && hasExisting {
+		operatorVars = existing.LaunchVars
+	}
+
 	// Resolve every bot's forge requirements (its optional forge: block for
 	// credentials/scopes) AND its invocations (the typed routing contract).
 	// A bot is auto-provisionable when it has a forge: block OR a
@@ -231,6 +246,22 @@ func (o *Orchestrator) Provision(ctx context.Context, req ProvisionRequest) (Pro
 		for _, b := range desiredBots {
 			if err := o.ensureBotBinding(ctx, req.TenantID, b, frByBot[b].SecretName(), existing.ManagedSecretID); err != nil {
 				return ProvisionResult{}, fmt.Errorf("forge: bind %s for bot %s: %w", frByBot[b].SecretName(), b, err)
+			}
+		}
+		// A changed operator override is a real mutation even when the bot set
+		// is not — without this the short-circuit would silently ignore it.
+		if !maps.Equal(operatorVars, existing.LaunchVars) {
+			existing.LaunchVars = operatorVars
+			existing.UpdatedAt = o.clock()
+			if uerr := o.Integrations.Update(ctx, existing); uerr != nil {
+				return ProvisionResult{}, fmt.Errorf("forge: update integration launch vars: %w", uerr)
+			}
+			if cfg, gerr := o.Webhooks.Get(ctx, existing.WebhookID); gerr == nil {
+				cfg.LaunchVars = nilIfEmpty(mergeStringMaps(manifestLaunchVars(desiredBots, frByBot), operatorVars))
+				cfg.UpdatedAt = o.clock()
+				if uerr := o.Webhooks.Update(ctx, cfg); uerr != nil {
+					return ProvisionResult{}, fmt.Errorf("forge: update webhook launch vars: %w", uerr)
+				}
 			}
 		}
 		// Backfill the per-bot routing table onto a config provisioned before
@@ -385,7 +416,7 @@ func (o *Orchestrator) Provision(ctx context.Context, req ProvisionRequest) (Pro
 		ReviewOnSync:     reviewOnSync,
 		ForgeBaseURL:     conn.BaseURL(),
 		RateLimit:        webhooks.Rate{Rate: 1, Burst: 10},
-		LaunchVars:       nilIfEmpty(launchVars),
+		LaunchVars:       nilIfEmpty(mergeStringMaps(launchVars, operatorVars)),
 		SecretOverrides:  secretOverrides,
 		MinReplierRole:   minRole,
 		CommandMap:       commandMap,
@@ -449,6 +480,7 @@ func (o *Orchestrator) Provision(ctx context.Context, req ProvisionRequest) (Pro
 		HookID:           hookID,
 		HookURL:          hookURL,
 		ManagedSecretID:  managedSecretID,
+		LaunchVars:       nilIfEmpty(maps.Clone(operatorVars)),
 		CreatedBy:        req.ActorID,
 		CreatedAt:        now,
 		UpdatedAt:        now,
@@ -970,6 +1002,27 @@ func applyExclusiveAuthors(rules []webhooks.BotRule, exclusiveByBot map[string][
 		rules[i].AuthorDenylist = dedupSorted(deny)
 	}
 	return rules
+}
+
+// manifestLaunchVars re-derives the union of the bots' own manifest launch
+// vars — the layer the operator's overrides sit on top of.
+func manifestLaunchVars(bots []string, frByBot map[string]*bundle.ForgeRequirements) map[string]string {
+	out := map[string]string{}
+	for _, b := range bots {
+		if fr := frByBot[b]; fr != nil && fr.Webhook != nil {
+			maps.Copy(out, fr.Webhook.LaunchVars)
+		}
+	}
+	return out
+}
+
+// mergeStringMaps returns base with overlay applied on top (overlay wins),
+// without mutating either.
+func mergeStringMaps(base, overlay map[string]string) map[string]string {
+	out := make(map[string]string, len(base)+len(overlay))
+	maps.Copy(out, base)
+	maps.Copy(out, overlay)
+	return out
 }
 
 func sortedKeys(set map[string]bool) []string {
