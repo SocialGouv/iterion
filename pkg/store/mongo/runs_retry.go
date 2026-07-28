@@ -27,6 +27,14 @@ import (
 // one constant because every filter and update below has to agree on it.
 const retryStateField = "retry_state"
 
+// retryClaimLease bounds how long a claimed-but-not-resumed retry stays
+// off-limits. The claim is a LEASE, not a delete: if it disarmed the retry
+// outright, a server pod dying between the claim and the resume would strand
+// the run forever — retry_after gone, so no scan ever lists it again, and
+// nothing else reconciles a claimed-but-idle row. With a lease, that run
+// simply becomes claimable again once the lease lapses.
+const retryClaimLease = 10 * time.Minute
+
 func retryPath(field string) string { return retryStateField + "." + field }
 
 // ScheduleRunRetry arms a retry, conditioning on the run still being
@@ -89,31 +97,54 @@ func (s *Store) ScheduleRunRetry(ctx context.Context, runID string, at time.Time
 	return true, attempt, nil
 }
 
-// ClaimRunRetry takes an armed retry, conditioning on the retry_after value
-// the caller read. First writer wins; every other replica sees won=false.
-// This is the whole concurrency story — no lease, no leader election.
+// ClaimRunRetry leases an armed retry, conditioning on the retry_after value
+// the caller read AND on no live lease existing. First writer wins; every
+// other replica sees won=false — no leader election.
+//
+// It deliberately LEAVES retry_after in place. Unsetting it here would make
+// the claim exclusive too, but a pod dying before the resume landed would
+// then strand the run permanently. Keeping it means the worst case is a
+// retry that fires one lease later. The successful resume is what clears it
+// (ClearRunRetry).
 func (s *Store) ClaimRunRetry(ctx context.Context, runID string, expectedAfter time.Time) (bool, error) {
 	now := time.Now().UTC()
 	filter := withTenantFilter(ctx, bson.M{
 		"_id":                    runID,
 		"status":                 string(store.RunStatusFailedResumable),
 		retryPath("retry_after"): expectedAfter.UTC(),
+		"$or": []bson.M{
+			{retryPath("claimed_at"): bson.M{"$exists": false}},
+			{retryPath("claimed_at"): bson.M{"$lt": now.Add(-retryClaimLease)}},
+		},
 	})
 	update := bson.M{
 		"$set": bson.M{
 			retryPath("claimed_at"): now,
 			"updated_at":            now,
 		},
-		// Disarming inside the same update is what makes the claim
-		// exclusive: a second claimer no longer matches the filter.
-		"$unset": bson.M{retryPath("retry_after"): ""},
-		"$inc":   bson.M{"version": 1},
+		"$inc": bson.M{"version": 1},
 	}
 	res, err := s.runs.UpdateOne(ctx, filter, update)
 	if err != nil {
 		return false, fmt.Errorf("store/mongo: claim retry %s: %w", runID, err)
 	}
 	return res.MatchedCount > 0, nil
+}
+
+// ClearRunRetry disarms a retry that has been acted on — the successful
+// resume's counterpart to the lease taken by ClaimRunRetry. Without it a
+// retry_after in the past would survive on the row and re-fire the moment
+// the resumed run failed again for an unrelated reason.
+func (s *Store) ClearRunRetry(ctx context.Context, runID string) error {
+	update := bson.M{
+		"$unset": bson.M{retryPath("retry_after"): "", retryPath("claimed_at"): ""},
+		"$set":   bson.M{"updated_at": time.Now().UTC()},
+		"$inc":   bson.M{"version": 1},
+	}
+	if _, err := s.runs.UpdateOne(ctx, withTenantFilter(ctx, bson.M{"_id": runID}), update); err != nil {
+		return fmt.Errorf("store/mongo: clear retry %s: %w", runID, err)
+	}
+	return nil
 }
 
 // AbandonRunRetry records why a run stopped retrying and leaves it

@@ -7,6 +7,8 @@ import (
 	"testing"
 	"time"
 
+	"go.mongodb.org/mongo-driver/v2/bson"
+
 	"github.com/SocialGouv/iterion/pkg/store"
 )
 
@@ -194,15 +196,93 @@ func TestRunRetry_ClaimIsExclusive(t *testing.T) {
 		t.Fatalf("%d replicas won the claim, want exactly 1", won)
 	}
 
-	// A claim disarms the retry, so a later sweep does not see it again.
+	// The claim is a LEASE: the row stays armed (so a claimer that dies
+	// cannot strand it) but a second claim loses while the lease is live.
+	due, err := s.ListRunsDueForRetry(store.WithoutTenantFilter(ctx), time.Now().UTC(), 10)
+	if err != nil {
+		t.Fatalf("ListRunsDueForRetry: %v", err)
+	}
+	var stillListed bool
+	for _, d := range due {
+		if d.ID == "run-claim" {
+			stillListed = true
+		}
+	}
+	if !stillListed {
+		t.Error("the claimed run left the due set — a claimer that dies would strand it forever")
+	}
+	if won, err := s.ClaimRunRetry(ctx, "run-claim", at); err != nil || won {
+		t.Errorf("re-claim under a live lease: won=%v err=%v, want false/nil", won, err)
+	}
+}
+
+// TestRunRetry_ClearDisarmsAfterAResume pins the lease's counterpart: once
+// the resume is enqueued the retry must leave the due set, or a past
+// retry_after would re-fire the next time this run failed for any reason.
+func TestRunRetry_ClearDisarmsAfterAResume(t *testing.T) {
+	s := retryTestStore(t)
+	ctx := retryCtx()
+	seedFailedResumable(t, s, "run-clear")
+
+	at := time.Now().UTC().Add(-time.Minute).Truncate(time.Millisecond)
+	if _, _, err := s.ScheduleRunRetry(ctx, "run-clear", at, "usage_window", "USAGE_LIMIT_BLOCKED", 5); err != nil {
+		t.Fatalf("arm: %v", err)
+	}
+	if won, err := s.ClaimRunRetry(ctx, "run-clear", at); err != nil || !won {
+		t.Fatalf("claim: won=%v err=%v", won, err)
+	}
+	if err := s.ClearRunRetry(ctx, "run-clear"); err != nil {
+		t.Fatalf("ClearRunRetry: %v", err)
+	}
+
 	due, err := s.ListRunsDueForRetry(store.WithoutTenantFilter(ctx), time.Now().UTC(), 10)
 	if err != nil {
 		t.Fatalf("ListRunsDueForRetry: %v", err)
 	}
 	for _, d := range due {
-		if d.ID == "run-claim" {
-			t.Error("a claimed run is still listed as due")
+		if d.ID == "run-clear" {
+			t.Error("a cleared retry is still listed as due")
 		}
+	}
+	r, _ := s.LoadRun(ctx, "run-clear")
+	if r.RetryState != nil && r.RetryState.RetryAfter != nil {
+		t.Error("retry_after survived the clear")
+	}
+	// Attempts stay spent — clearing is not a refund.
+	if r.RetryState == nil || r.RetryState.Attempts != 1 {
+		t.Errorf("attempts = %v, want 1", r.RetryState)
+	}
+}
+
+// TestRunRetry_StrandedClaimRecoversAfterTheLease is the durability case the
+// lease exists for: a sweeper that claims and then dies must not take the
+// run with it.
+func TestRunRetry_StrandedClaimRecoversAfterTheLease(t *testing.T) {
+	s := retryTestStore(t)
+	ctx := retryCtx()
+	seedFailedResumable(t, s, "run-stranded")
+
+	at := time.Now().UTC().Add(-time.Minute).Truncate(time.Millisecond)
+	if _, _, err := s.ScheduleRunRetry(ctx, "run-stranded", at, "usage_window", "USAGE_LIMIT_BLOCKED", 5); err != nil {
+		t.Fatalf("arm: %v", err)
+	}
+	if won, err := s.ClaimRunRetry(ctx, "run-stranded", at); err != nil || !won {
+		t.Fatalf("first claim: won=%v err=%v", won, err)
+	}
+	// Simulate the pod dying right after the claim: nothing cleared, and the
+	// lease is now stale.
+	stale := time.Now().UTC().Add(-2 * retryClaimLease)
+	if _, err := s.runs.UpdateOne(ctx, bson.M{"_id": "run-stranded"},
+		bson.M{"$set": bson.M{retryPath("claimed_at"): stale}}); err != nil {
+		t.Fatalf("age the lease: %v", err)
+	}
+
+	won, err := s.ClaimRunRetry(ctx, "run-stranded", at)
+	if err != nil {
+		t.Fatalf("re-claim: %v", err)
+	}
+	if !won {
+		t.Fatal("a stranded claim never becomes re-claimable — the run is lost for good")
 	}
 }
 

@@ -40,6 +40,11 @@ const (
 	// it as UTC, so a "reset" instant can land slightly in the past; a
 	// small floor absorbs that without a second guess at the timezone.
 	usageWindowFloor = 5 * time.Minute
+	// usageRetryStoreTimeout bounds the detached store writes that arm the
+	// retry. Generous enough for a Mongo round trip on a slow day, short
+	// enough that a wedged store cannot hold the delivery past its ack
+	// deadline.
+	usageRetryStoreTimeout = 10 * time.Second
 	// usageWindowBlindWait is the fallback when the provider told us a
 	// window is exhausted but nothing in the text parses as a reset time.
 	// Deliberately bounded and short-ish: one wasted pod an hour beats
@@ -143,32 +148,84 @@ func (r *Runner) parkUsageLimitRetry(
 	msg *queue.RunMessage,
 	logger *iterlog.Logger,
 ) (bool, string) {
+	outcome := r.armUsageWindowRetry(ctx, execErr, msg.RunID, logger)
+	switch outcome {
+	case usageRetryNotApplicable:
+		return false, ""
+	case usageRetryExhausted:
+		ackTerminal(logger, delivery, "ack-usage-limit-exhausted", msg.RunID)
+		return true, "usage_limit_exhausted"
+	default:
+		ackTerminal(logger, delivery, "ack-usage-limit-retry", msg.RunID)
+		return true, "usage_limit_retry"
+	}
+}
+
+// usageRetryOutcome is what armUsageWindowRetry decided, so the delivery
+// handling stays in one place and the decision half is testable without a
+// live JetStream delivery.
+type usageRetryOutcome int
+
+const (
+	// usageRetryNotApplicable: not a usage window, or the intent could not
+	// be persisted — the caller must fall through to nak/DLQ.
+	usageRetryNotApplicable usageRetryOutcome = iota
+	// usageRetryArmed: a retry is durably scheduled.
+	usageRetryArmed
+	// usageRetryExhausted: the attempt budget is spent (or the run is no
+	// longer resumable) — ack, but nothing will come back on its own.
+	usageRetryExhausted
+)
+
+// armUsageWindowRetry is the decide-and-persist half: everything except
+// finalizing the delivery.
+func (r *Runner) armUsageWindowRetry(
+	ctx context.Context,
+	execErr error,
+	runID string,
+	logger *iterlog.Logger,
+) usageRetryOutcome {
 	retryStore := store.AsRunRetryStore(r.cfg.Store)
 	if retryStore == nil {
-		return false, "" // local/filesystem store: no durable retry surface
+		return usageRetryNotApplicable // local/filesystem store: no durable retry surface
 	}
 
-	runMeta, err := r.cfg.Store.LoadRun(ctx, msg.RunID)
+	// The run context is ALREADY CANCELLED by the time we get here: the
+	// caller must stop the heartbeat before finalizing the delivery, and
+	// that cancel is what stops it. Every store call below would therefore
+	// fail instantly on a cancelled context, we would log a warning and
+	// fall through — arming no retry, ever, in production, while the unit
+	// tests (which exercise the pure decision and the sweeper) stayed
+	// green. So detach: values (tenant/owner identity, needed by the Mongo
+	// tenant filter) are preserved, cancellation is not. Same reasoning as
+	// the engine's post-cancellation checkpoint write.
+	//
+	// Detaching HERE rather than at the call site is deliberate — the next
+	// caller would otherwise trip the same wire.
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), usageRetryStoreTimeout)
+	defer cancel()
+
+	runMeta, err := r.cfg.Store.LoadRun(ctx, runID)
 	if err != nil {
 		// Without the run doc we cannot read the policy; treating that as
 		// "no retry" is the honest degradation.
-		logger.Warn("runner: run %s: cannot read retry policy (%v) — falling back to redelivery", msg.RunID, err)
-		return false, ""
+		logger.Warn("runner: run %s: cannot read retry policy (%v) — falling back to redelivery", runID, err)
+		return usageRetryNotApplicable
 	}
 	pol := runRetryPolicy(runMeta)
 
 	at, source, ok := usageWindowRetryAt(execErr, pol, time.Now().UTC())
 	if !ok {
-		return false, ""
+		return usageRetryNotApplicable
 	}
 	if r.cfg.Metrics != nil {
 		r.cfg.Metrics.RunsUsageWindowBlocked.Inc()
 	}
 
-	scheduled, attempt, err := retryStore.ScheduleRunRetry(ctx, msg.RunID, at, "usage_window", string(runtime.ErrCodeUsageLimitBlocked), pol.MaxAttempts)
+	scheduled, attempt, err := retryStore.ScheduleRunRetry(ctx, runID, at, "usage_window", string(runtime.ErrCodeUsageLimitBlocked), pol.MaxAttempts)
 	if err != nil {
-		logger.Error("runner: run %s: could not persist the usage-window retry (%v) — falling back to redelivery so the run is not lost", msg.RunID, err)
-		return false, ""
+		logger.Error("runner: run %s: could not persist the usage-window retry (%v) — falling back to redelivery so the run is not lost", runID, err)
+		return usageRetryNotApplicable
 	}
 	if !scheduled {
 		// Either the attempt budget is spent or the run is no longer
@@ -176,25 +233,23 @@ func (r *Runner) parkUsageLimitRetry(
 		// redelivery would re-hit the same wall, and say why in the run's
 		// own error field so it does not just go quiet.
 		reason := fmt.Sprintf("usage-window retries exhausted (max %d) — resume manually once the provider quota resets", pol.MaxAttempts)
-		if abandonErr := retryStore.AbandonRunRetry(ctx, msg.RunID, reason); abandonErr != nil {
-			logger.Warn("runner: run %s: could not record the exhausted retry budget: %v", msg.RunID, abandonErr)
+		if abandonErr := retryStore.AbandonRunRetry(ctx, runID, reason); abandonErr != nil {
+			logger.Warn("runner: run %s: could not record the exhausted retry budget: %v", runID, abandonErr)
 		}
-		logger.Warn("runner: run %s: %s", msg.RunID, reason)
-		ackTerminal(logger, delivery, "ack-usage-limit-exhausted", msg.RunID)
-		return true, "usage_limit_exhausted"
+		logger.Warn("runner: run %s: %s", runID, reason)
+		return usageRetryExhausted
 	}
 
 	if r.cfg.Metrics != nil {
 		r.cfg.Metrics.RunsRetryScheduled.Inc()
 	}
-	if emitErr := r.emitRetryScheduled(ctx, msg.RunID, at, attempt, pol, source); emitErr != nil {
+	if emitErr := r.emitRetryScheduled(ctx, runID, at, attempt, pol, source); emitErr != nil {
 		// Observational only — the durable intent is already committed.
-		logger.Warn("runner: run %s: could not emit run_retry_scheduled: %v", msg.RunID, emitErr)
+		logger.Warn("runner: run %s: could not emit run_retry_scheduled: %v", runID, emitErr)
 	}
 	logger.Warn("runner: run %s hit the provider usage window — retry %d/%d armed for %s (reset source: %s), NOT redelivering",
-		msg.RunID, attempt, pol.MaxAttempts, at.Format(time.RFC3339), source)
-	ackTerminal(logger, delivery, "ack-usage-limit-retry", msg.RunID)
-	return true, "usage_limit_retry"
+		runID, attempt, pol.MaxAttempts, at.Format(time.RFC3339), source)
+	return usageRetryArmed
 }
 
 // emitRetryScheduled records the armed retry on the run's timeline so the

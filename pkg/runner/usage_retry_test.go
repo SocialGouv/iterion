@@ -1,11 +1,15 @@
 package runner
 
 import (
+	"context"
+	"errors"
 	"fmt"
+	"io"
 	"testing"
 	"time"
 
 	"github.com/SocialGouv/iterion/pkg/backend/delegate"
+	iterlog "github.com/SocialGouv/iterion/pkg/log"
 	"github.com/SocialGouv/iterion/pkg/retrypolicy"
 	"github.com/SocialGouv/iterion/pkg/runtime"
 	"github.com/SocialGouv/iterion/pkg/store"
@@ -245,3 +249,102 @@ func TestRunRetryPolicy_PlatformCeilingLowers(t *testing.T) {
 		t.Errorf("max_wait = %v, want 6h (platform ceiling)", got.MaxWaitDuration())
 	}
 }
+
+// --- the cancelled-context regression ---------------------------------
+//
+// processOne must stop the heartbeat before finalizing the delivery, and the
+// cancel that stops it is the run context's. So by the time the carve-out
+// runs, its ctx is ALREADY CANCELLED. The first version passed that ctx
+// straight to the store: every call failed instantly, the code logged a
+// warning and fell through, and no retry was ever armed in production —
+// while the pure-decision and sweeper tests stayed green. Found by review,
+// not by tests, which is exactly why this one exists.
+
+// cancelAwareStore fails every call when its context is cancelled, the way
+// a real Mongo client does.
+type cancelAwareStore struct {
+	store.RunStore
+	run     *store.Run
+	armed   bool
+	armedAt time.Time
+	calls   int
+}
+
+func (c *cancelAwareStore) LoadRun(ctx context.Context, _ string) (*store.Run, error) {
+	c.calls++
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	return c.run, nil
+}
+
+func (c *cancelAwareStore) ScheduleRunRetry(ctx context.Context, _ string, at time.Time, _, _ string, _ int) (bool, int, error) {
+	if err := ctx.Err(); err != nil {
+		return false, 0, err
+	}
+	c.armed, c.armedAt = true, at
+	return true, 1, nil
+}
+
+func (c *cancelAwareStore) ClaimRunRetry(ctx context.Context, _ string, _ time.Time) (bool, error) {
+	return false, ctx.Err()
+}
+
+func (c *cancelAwareStore) ClearRunRetry(ctx context.Context, _ string) error { return ctx.Err() }
+
+func (c *cancelAwareStore) AbandonRunRetry(ctx context.Context, _, _ string) error { return ctx.Err() }
+
+func (c *cancelAwareStore) AppendEvent(ctx context.Context, _ string, _ store.Event) (*store.Event, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	return &store.Event{}, nil
+}
+
+func TestArmUsageWindowRetry_SurvivesACancelledContext(t *testing.T) {
+	st := &cancelAwareStore{run: &store.Run{ID: "run-a", Status: store.RunStatusFailedResumable}}
+	r := &Runner{cfg: Config{Store: st}}
+
+	// Exactly what the call site hands over: a context already cancelled.
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	got := r.armUsageWindowRetry(ctx, weeklyWindowErr(time.Now().UTC().Add(30*time.Hour)), "run-a", iterlog.New(iterlog.LevelError, io.Discard))
+	if got != usageRetryArmed {
+		t.Fatalf("outcome = %v, want usageRetryArmed — a cancelled ctx must not disable the carve-out", got)
+	}
+	if !st.armed {
+		t.Fatal("no retry persisted: the store calls ran on the cancelled context")
+	}
+	if st.armedAt.IsZero() {
+		t.Error("retry armed with a zero instant")
+	}
+}
+
+// TestArmUsageWindowRetry_NotAUsageWindow pins that an unrelated failure
+// still falls through to the caller's nak/DLQ path.
+func TestArmUsageWindowRetry_NotAUsageWindow(t *testing.T) {
+	st := &cancelAwareStore{run: &store.Run{ID: "run-b", Status: store.RunStatusFailedResumable}}
+	r := &Runner{cfg: Config{Store: st}}
+
+	got := r.armUsageWindowRetry(context.Background(), errors.New("tool blew up"), "run-b", iterlog.New(iterlog.LevelError, io.Discard))
+	if got != usageRetryNotApplicable {
+		t.Errorf("outcome = %v, want usageRetryNotApplicable", got)
+	}
+	if st.armed {
+		t.Error("armed a retry for a failure that is not a usage window")
+	}
+}
+
+// TestArmUsageWindowRetry_NoRetryStoreFallsThrough pins the local-mode path:
+// a store with no durable retry surface must not swallow the delivery.
+func TestArmUsageWindowRetry_NoRetryStoreFallsThrough(t *testing.T) {
+	r := &Runner{cfg: Config{Store: plainStore{}}}
+	got := r.armUsageWindowRetry(context.Background(), weeklyWindowErr(time.Now().UTC().Add(time.Hour)), "run-c", iterlog.New(iterlog.LevelError, io.Discard))
+	if got != usageRetryNotApplicable {
+		t.Errorf("outcome = %v, want usageRetryNotApplicable", got)
+	}
+}
+
+// plainStore satisfies store.RunStore without store.RunRetryStore.
+type plainStore struct{ store.RunStore }

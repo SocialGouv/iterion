@@ -105,8 +105,11 @@ func Validate(p Policy) error {
 	default:
 		return fmt.Errorf("retrypolicy: invalid usage_window %q (want %q or %q)", p.UsageWindow, UsageWindowResume, UsageWindowOff)
 	}
+	// 0 is "unset" (Normalize fills the default), NOT "zero retries" — an
+	// author who means "never retry" writes usage_window: off. Only a
+	// negative is an error, and the message must not imply otherwise.
 	if p.MaxAttempts < 0 {
-		return fmt.Errorf("retrypolicy: max_attempts must be >= 1 when set (got %d; use usage_window=%s to disable retries)", p.MaxAttempts, UsageWindowOff)
+		return fmt.Errorf("retrypolicy: max_attempts cannot be negative (got %d; omit it to inherit the default, or set usage_window=%s to disable retries)", p.MaxAttempts, UsageWindowOff)
 	}
 	if err := validatePositiveDuration("max_wait", p.MaxWait); err != nil {
 		return err

@@ -39,6 +39,7 @@ type fakeRetryStore struct {
 	loadRun   map[string]*store.Run
 
 	claimed   []string
+	cleared   []string
 	abandoned map[string]string
 	rearmed   map[string]time.Time
 	armBudget map[string]int // run id -> max attempts seen by ScheduleRunRetry
@@ -81,6 +82,13 @@ func (f *fakeRetryStore) ScheduleRunRetry(_ context.Context, runID string, at ti
 	}
 	f.rearmed[runID] = at
 	return true, 2, nil
+}
+
+func (f *fakeRetryStore) ClearRunRetry(_ context.Context, runID string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.cleared = append(f.cleared, runID)
+	return nil
 }
 
 func (f *fakeRetryStore) AbandonRunRetry(_ context.Context, runID, reason string) error {
@@ -153,6 +161,28 @@ func TestSweepDueRetries_ResumesAClaimedRun(t *testing.T) {
 	}
 	if len(st.abandoned) != 0 {
 		t.Errorf("unexpected abandon: %v", st.abandoned)
+	}
+	// The claim is a lease, so the successful resume is what disarms it —
+	// otherwise a past retry_after survives and re-fires the next time this
+	// run fails for any unrelated reason.
+	if len(st.cleared) != 1 || st.cleared[0] != "run-a" {
+		t.Errorf("cleared = %v, want [run-a] after a successful resume", st.cleared)
+	}
+}
+
+// TestSweepDueRetries_TransientDenialReArms pins the denial classification: a
+// monthly quota refills on the 1st and a concurrency cap clears in minutes,
+// so those must defer the retry rather than throw the run away.
+func TestSweepDueRetries_TransientDenialReArms(t *testing.T) {
+	for _, reason := range []string{denyMonthlyRunQuota, denyMonthlyCostCap, denyConcurrencyCap, denyLaunchRateLimited} {
+		if !retryDenialIsTransient(reason) {
+			t.Errorf("%s classified permanent — the run would be dropped for a condition that clears itself", reason)
+		}
+	}
+	for _, reason := range []string{denyOrgSuspended, denyNoWorkspace, "some_future_code"} {
+		if retryDenialIsTransient(reason) {
+			t.Errorf("%s classified transient — it needs a human, and re-arming would loop forever", reason)
+		}
 	}
 }
 

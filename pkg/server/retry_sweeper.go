@@ -108,11 +108,17 @@ func (s *Server) resumeDueRetry(ctx context.Context, retryStore store.RunRetrySt
 	}
 
 	// An automatic resume spends real money, so it passes the same
-	// admission gate as the operator-initiated one. A denial is permanent
-	// for this window (a quota is not going to un-exceed itself within the
-	// wait), so abandon with the reason rather than re-arming into a loop.
+	// admission gate as the operator-initiated one. Whether a denial ends
+	// the retry depends on the denial: a monthly quota refills on the 1st
+	// and a concurrency/rate cap clears in minutes, so abandoning on those
+	// would throw the run away for a condition that resolves itself. A
+	// suspended org or a missing workspace needs a human.
 	adm, deny := s.gateLaunch(retryLaunchCtx(runCtx, ref))
 	if deny != nil {
+		if retryDenialIsTransient(deny.reason) {
+			s.reArmRetry(runCtx, retryStore, ref, fmt.Errorf("admission deferred: %s", deny.reason))
+			return
+		}
 		s.abandonRetry(runCtx, retryStore, ref.TenantID, ref.ID, fmt.Sprintf("auto-retry abandoned: %s", deny.reason))
 		return
 	}
@@ -141,6 +147,13 @@ func (s *Server) resumeDueRetry(ctx context.Context, retryStore store.RunRetrySt
 		return
 	}
 
+	// The claim was a lease, not a disarm (so a pod death before this point
+	// leaves the retry re-claimable). Now that the resume is enqueued, clear
+	// it — otherwise a past retry_after would survive and re-fire the moment
+	// this run failed again for an unrelated reason.
+	if err := retryStore.ClearRunRetry(runCtx, ref.ID); err != nil {
+		s.warnf("retry sweeper: clear %s: %v", ref.ID, err)
+	}
 	s.countRetry("enqueued")
 	s.auditRetry(ref, "run.retry.enqueued", map[string]any{
 		"attempt": retryAttempts(ref),
@@ -148,6 +161,19 @@ func (s *Server) resumeDueRetry(ctx context.Context, retryStore store.RunRetrySt
 	})
 	s.infof("retry sweeper: run %s (tenant %s) resumed after its provider quota window reopened (attempt %d)",
 		ref.ID, ref.TenantID, retryAttempts(ref))
+}
+
+// retryDenialIsTransient reports whether an admission denial is expected to
+// clear on its own, so the retry should be deferred rather than dropped.
+// Unknown reasons are treated as PERMANENT: a new denial code that silently
+// re-armed forever would be worse than one that stops and says why.
+func retryDenialIsTransient(reason string) bool {
+	switch reason {
+	case denyMonthlyRunQuota, denyMonthlyCostCap, denyConcurrencyCap, denyLaunchRateLimited:
+		return true
+	default:
+		return false
+	}
 }
 
 // abandonRetry records a permanent stop and audits it.

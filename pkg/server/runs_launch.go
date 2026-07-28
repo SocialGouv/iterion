@@ -344,22 +344,28 @@ func (s *Server) handleLaunchRun(w http.ResponseWriter, r *http.Request) {
 	}
 
 	res, err := s.runs.Launch(ctx, runview.LaunchSpec{
-		FilePath:           absPath,
-		Source:             req.Source,
-		BotID:              botID,
-		RunID:              req.RunID,
-		Vars:               req.Vars,
-		Preset:             req.Preset,
-		Timeout:            timeout,
-		MergeInto:          req.MergeInto,
-		BranchName:         req.BranchName,
-		MergeStrategy:      store.MergeStrategy(req.MergeStrategy),
-		AutoMerge:          req.AutoMerge,
-		AttachmentPromote:  promote,
-		Backend:            req.Backend,
-		Compress:           req.Compress,
-		Permission:         req.Permission,
-		ReviewMode:         req.ReviewMode,
+		FilePath:          absPath,
+		Source:            req.Source,
+		BotID:             botID,
+		RunID:             req.RunID,
+		Vars:              req.Vars,
+		Preset:            req.Preset,
+		Timeout:           timeout,
+		MergeInto:         req.MergeInto,
+		BranchName:        req.BranchName,
+		MergeStrategy:     store.MergeStrategy(req.MergeStrategy),
+		AutoMerge:         req.AutoMerge,
+		AttachmentPromote: promote,
+		Backend:           req.Backend,
+		Compress:          req.Compress,
+		Permission:        req.Permission,
+		ReviewMode:        req.ReviewMode,
+		// The manual path resolves the retry chain like every automated
+		// one. Skipping it here would let a bot declaring
+		// `retry: usage_window: off` be auto-retried anyway whenever a
+		// human pressed Launch — a declared directive silently violated on
+		// the one path where the author is watching.
+		RetryPolicy:        s.resolveRunRetryPolicy(botID),
 		ModelOverrides:     req.ModelOverrides,
 		Budget:             budget,
 		ParentRunID:        req.ParentRunID,
