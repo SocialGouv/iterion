@@ -375,7 +375,7 @@ tasks:
   test:live:feat:rtk:
     desc: 'Live e2e for the rtk command-output compression (needs rtk binary) feature (real cost).'
     cmds:
-      - go test -v -tags live -count=1 -run 'TestLive_Feat_Rtk$' -timeout 3m ./e2e/...
+      - go test -v -tags live -count=1 -run 'TestLive_Feat_Compress$' -timeout 3m ./e2e/...
 
   test:live:feat:budget-resume:
     desc: 'Live e2e for budget exceeded → raise cap → resume recovery (real cost).'

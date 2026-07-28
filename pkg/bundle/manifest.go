@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"sort"
 	"strings"
 	"time"
 
@@ -360,6 +361,20 @@ var KnownForgeEvents = map[string]bool{
 	ForgeEventIssueLabeled:       true,
 }
 
+// knownForgeEventNames lists the accepted events, sorted for a stable
+// message. Derived from KnownForgeEvents rather than spelled out at the
+// error site: the hardcoded version named only two of the three and stayed
+// wrong while validation correctly accepted all three, so a bot author
+// declaring the valid `issue_labeled` was told it was unknown.
+func knownForgeEventNames() []string {
+	names := make([]string, 0, len(KnownForgeEvents))
+	for name := range KnownForgeEvents {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	return names
+}
+
 // knownForgeScopeKeys / knownForgeScopeLevels constrain a manifest
 // forge.token_scopes block. The provisioner unions the keys across the
 // bots co-enabled on a repo and translates them to the tightest OAuth
@@ -670,7 +685,7 @@ func validateInvocations(invs []Invocation) error {
 				return fmt.Errorf("invocations[%d]: kind=forge requires a forge: block", idx)
 			}
 			if !KnownForgeEvents[inv.Forge.Event] {
-				return fmt.Errorf("invocations[%d].forge: unknown event %q (known: %s, %s)", idx, inv.Forge.Event, ForgeEventPullRequest, ForgeEventPullRequestComment)
+				return fmt.Errorf("invocations[%d].forge: unknown event %q (known: %s)", idx, inv.Forge.Event, strings.Join(knownForgeEventNames(), ", "))
 			}
 			if inv.Command != nil || inv.Schedule != nil || inv.Keepalive != nil {
 				return fmt.Errorf("invocations[%d]: kind=forge must not set a command:/schedule:/keepalive: block", idx)

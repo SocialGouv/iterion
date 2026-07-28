@@ -42,6 +42,38 @@ reference self-host case.
   Fix is configuration only: set `vars: {open_mr: "true", mode:
   "incremental"}` on the schedule. Worth doing before next Monday — until
   then the weekly is pure cost.
+- **What was salvaged.** The commits are gone, but the campaign's five
+  `human_note` payloads were recovered from the run events before the run
+  aged out. Two were cheap and are fixed in this branch:
+  - `Taskfile.yml:378` — `test:live:feat:rtk` ran `-run 'TestLive_Feat_Rtk$'`,
+    which matches **no test** (the real one is `TestLive_Feat_Compress`).
+    `go test -run` with no match exits 0, so the target passed green while
+    executing nothing. Retargeted.
+  - `pkg/bundle/manifest.go` — the unknown-forge-event error listed two of
+    the three valid events, omitting `issue_labeled`, so an author
+    declaring a *valid* event was told it was unknown. The list is now
+    derived from `KnownForgeEvents` instead of hardcoded at the error site,
+    which is what let it drift.
+
+  Three are handed off (not `.md`-fixable, so outside Doki's writeable set):
+  - `bots/security-bots` — `reviewer_isolation` declares
+    `tools: [read_file, glob, grep]` on `claude_code`, which is a **no-op
+    under bypassPermissions**: the node keeps bash. The injection guarantee
+    rests solely on the `project_review_input` schema projection. If
+    bash-denial is meant as defense-in-depth, switch to the claw backend or
+    add `permission: deny`. The DSL comment (`main.bot:4101-4102`) repeats
+    the overstatement.
+  - CLAUDE.md and `docs/scheduling.md` say sec-audit findings are labeled
+    `source:sec-audit-self`, but the shipped bots hardcode
+    `source:sec-audit-source` / `-deps` and read no `label_source` var —
+    the self-audit distinction is **documented but unwired**.
+  - `docs/grammar/iterion_v1.ebnf` lags the shipped async surface; five
+    catalog `manifest.yaml` descriptions drifted from their `main.bot`.
+
+  Also worth noting as infrastructure: the **board MCP
+  (`mcp__iterion_board__*`) was unavailable in the cloud runner session** on
+  every pass, so Doki could not file any of these as board issues — which
+  is precisely why they nearly died with the pod.
 - Engine hardening: this run is one of the seven that exposed the
   usage-window retry defects (dead reset-aware wait, no recovery dispatcher
   in the cloud runner, unparseable dated reset hint). See
