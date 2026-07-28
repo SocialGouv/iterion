@@ -609,10 +609,20 @@ workflow that already works.**
   Print mode has no lever to disable this. Pin `ITERION_PI_AGENT_DIR` to an
   agent dir whose `settings.json` sets `retry.enabled: false` (or a small
   `retry.baseDelayMs`) if it matters for your quota accounting.
-- **Model patterns are fuzzy-matched.** pi resolves an unknown pattern
-  against its catalogue rather than failing, so a typo can silently run a
-  different model. iterion logs a warning when the model pi actually used
-  differs from the one requested — watch for it on first use.
+- **Model patterns are fuzzy-matched, and a near miss is dangerous.** pi
+  resolves an unknown pattern against its catalogue rather than failing.
+  Measured: **`zai/glm-5` resolves to `glm-5v-turbo`** — a *vision* model, not
+  GLM 5.x. iterion logs a warning whenever the model pi actually used differs
+  from the one requested; watch for it on first use. (A *far* miss like
+  `zai/glm5` is safer: it passes through literally and the provider rejects it
+  with a clean 400, typed as deterministic so no retries are burnt.)
+
+- **`session: inherit` needs the edge to carry `_session_id`.** Session resume
+  works — but the id travels on the upstream node's *output* map, and a bare
+  `a -> b` edge does not forward it, so the node silently runs fresh and the
+  agent "forgets" the previous conversation. iterion now warns; the fix is
+  `a -> b with { _session_id: "{{outputs.a._session_id}}" }`. This is not
+  pi-specific: it applies to every backend.
 
 #### 💳 Subscription credentials bill to *extra usage*
 
