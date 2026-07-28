@@ -53,7 +53,15 @@ type retryDueLister interface {
 
 // runRetrySweeper ticks sweepDueRetries until ctx is cancelled. Started by
 // ListenAndServe in cloud mode when the store carries retry state.
+//
+// It announces itself on the way in. Every other signal this path emits reads
+// identically whether the sweeper is idle or absent — the counters sit at 0 and
+// a registered-but-never-Set gauge reports 0 — so without this line and the
+// sweep counter, "no run is waiting" and "every waiting run is stranded" are
+// the same observation. Verified against production and they were.
 func (s *Server) runRetrySweeper(ctx context.Context, lister retryDueLister) {
+	s.infof("retry sweeper: watching for runs whose provider quota window has reopened (every %s, up to %d per pass)",
+		retrySweepInterval, retrySweepBatch)
 	t := time.NewTicker(retrySweepInterval)
 	defer t.Stop()
 	for {
@@ -81,6 +89,7 @@ func (s *Server) sweepDueRetries(ctx context.Context, lister retryDueLister, res
 		return
 	}
 	if s.cfg.Metrics != nil {
+		s.cfg.Metrics.RunsRetrySweeps.Inc()
 		// Sampled, not authoritative: the batch cap bounds what one pass
 		// sees. A gauge that sits at the cap is itself the signal that
 		// retries are arriving faster than they are being resumed.

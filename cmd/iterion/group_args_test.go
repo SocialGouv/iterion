@@ -7,18 +7,46 @@ import (
 	"github.com/spf13/cobra"
 )
 
+// groupsAcceptingAPositional names the groups whose own Args deliberately
+// admits a positional, so the unknown-subcommand rejection has to come from
+// the command itself rather than from Args. Each needs its RunE driven to
+// prove it.
+//
+// Driving a RunE in-process is only safe for a command that cannot act before
+// it rejects the argument — no I/O, no global mutation, no PersistentPreRun
+// side effect. That judgment is per-command and it is why this is an explicit
+// map rather than a fallback: adding an entry means making the judgment, and
+// the reason belongs next to it.
+//
+//   - "iterion models": `[provider/model-id]` lists every model when bare and
+//     inspects one when given a spec; `models pricing` made it a group too.
+//     Its RunE parses the spec first (cli.RunModels → invalid spec error) and
+//     reaches neither the cache nor the network on a malformed one, and the
+//     command declares no PersistentPreRun. Re-check that if it grows one.
+var groupsAcceptingAPositional = map[string]bool{
+	"iterion models": true,
+}
+
 // TestRejectUnknownSubcommands_CoversEveryGroup walks the real command
-// tree and asserts every group command ends up rejecting arguments.
+// tree and asserts no group can answer a typo with help and exit 0.
 //
 // The regression this guards is silent: cobra returns ErrHelp for a
 // non-Runnable command BEFORE validating args, so a group left untouched
 // answers `iterion <group> <typo>` by printing help and exiting 0 — which
 // reads as success. A group added later without going through
 // rejectUnknownSubcommands would reintroduce exactly that.
+//
+// Every group must be Runnable (else cobra never consults Args at all) and
+// must turn an unknown positional into an error. Where that error comes from
+// is allowed to differ: `Args` for the help-only groups the sweep hardens and
+// for the runnable ones already declaring cobra.NoArgs, the command's own
+// validation for a group that legitimately takes a positional. What is NOT
+// allowed is for a group to accept the argument and act on it.
 func TestRejectUnknownSubcommands_CoversEveryGroup(t *testing.T) {
 	rejectUnknownSubcommands(rootCmd)
 
-	var groups []string
+	const typo = "definitely-not-a-subcommand"
+	var groups, viaArgs []string
 	var walk func(*cobra.Command)
 	walk = func(c *cobra.Command) {
 		for _, sub := range c.Commands() {
@@ -27,21 +55,43 @@ func TestRejectUnknownSubcommands_CoversEveryGroup(t *testing.T) {
 		if c == rootCmd || !c.HasSubCommands() {
 			return
 		}
-		groups = append(groups, c.CommandPath())
+		path := c.CommandPath()
+		groups = append(groups, path)
+
+		// A non-Runnable group short-circuits to help before Args is ever
+		// consulted, whatever Args says.
+		if !c.Runnable() {
+			t.Errorf("%q is not Runnable, so cobra short-circuits to help before Args runs", path)
+		}
 		if c.Args == nil {
-			t.Errorf("%q has subcommands but no Args validation: a typo would exit 0", c.CommandPath())
+			t.Errorf("%q has subcommands but no Args validation: a typo would exit 0", path)
 			return
 		}
-		if err := c.Args(c, []string{"definitely-not-a-subcommand"}); err == nil {
-			t.Errorf("%q accepts an unknown subcommand instead of rejecting it", c.CommandPath())
-		}
-		// A bare invocation must still be allowed — it prints help.
+		// A bare invocation must still be allowed — it prints help (or, for a
+		// group that does something itself, does it).
 		if err := c.Args(c, nil); err != nil {
-			t.Errorf("%q rejects a bare invocation (%v); it should print help", c.CommandPath(), err)
+			t.Errorf("%q rejects a bare invocation (%v); it should not", path, err)
 		}
-		if !c.Runnable() {
-			t.Errorf("%q is not Runnable, so cobra short-circuits to help before Args runs",
-				c.CommandPath())
+
+		if err := c.Args(c, []string{typo}); err != nil {
+			viaArgs = append(viaArgs, path)
+			return
+		}
+		// Args let the typo through, so the command itself is the only thing
+		// left that can reject it. Prove it does.
+		if !groupsAcceptingAPositional[path] {
+			t.Errorf("%q accepts an unknown subcommand through Args and is not a known "+
+				"positional-taking group — either give it cobra.NoArgs, or add it to "+
+				"groupsAcceptingAPositional once you have confirmed its RunE rejects a typo "+
+				"and is safe to drive in-process", path)
+			return
+		}
+		if c.RunE == nil {
+			t.Errorf("%q takes a positional but has no RunE to validate it", path)
+			return
+		}
+		if err := c.RunE(c, []string{typo}); err == nil {
+			t.Errorf("%q ran with %q and reported success — a typo must not be silently accepted", path, typo)
 		}
 	}
 	walk(rootCmd)
@@ -52,6 +102,14 @@ func TestRejectUnknownSubcommands_CoversEveryGroup(t *testing.T) {
 	if len(groups) < 20 {
 		t.Fatalf("only found %d group commands (%s) — expected the full tree",
 			len(groups), strings.Join(groups, ", "))
+	}
+	// And the rejection is broad rather than concentrated in the exceptions.
+	// Expressed as a fraction of the tree, not a fixed count: a fixed floor
+	// keeps passing if the tree contracts (groups merged away) even after the
+	// sweep has stopped working.
+	if len(viaArgs)*10 < len(groups)*9 {
+		t.Errorf("only %d of %d groups reject a typo at the Args level, want at least 90%% (%s)",
+			len(viaArgs), len(groups), strings.Join(viaArgs, ", "))
 	}
 }
 

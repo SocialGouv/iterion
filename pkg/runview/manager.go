@@ -42,6 +42,30 @@ type runHandle struct {
 	// multiple RequestPause calls race (e.g. the user double-clicks
 	// the Pause button before the run has drained).
 	pauseRequested bool
+	// handoff, once closed, says that a SECOND registration for this run id is
+	// a hand-off rather than a conflict — so AwaitHandoff should wait for this
+	// handle to go instead of letting the caller fail on "already registered".
+	// While it is open, a second registration is refused at once, which is what
+	// keeps a genuine two-runners-for-one-run attempt cheap.
+	//
+	// Two things close it, for the two shapes that are hand-offs:
+	//   - MarkLeaving, when a root run's engine call has returned and the
+	//     handle is only finishing its teardown;
+	//   - ExpectHandoff, at registration, for a subbot child — which is ALWAYS
+	//     resumed externally and whose in-process handle is released as soon as
+	//     the active pass returns, so a second registration is never a rival
+	//     runner. It has to be declared up front there: the child's paused
+	//     status reaches the store while the engine is still returning, so an
+	//     operator can be resuming it before there is any later moment to mark.
+	//
+	// Nil for a detached handle (RegisterDetached), which never takes part in a
+	// hand-off. AwaitHandoff's non-blocking select therefore falls to default
+	// on one — a receive from a nil channel blocks forever, so the ready case
+	// cannot fire. That is load-bearing: do not drop that default branch, and
+	// do not add a bare `<-h.handoff` anywhere.
+	handoff chan struct{}
+	// handoffMarked guards against a double close of handoff.
+	handoffMarked bool
 }
 
 // Manager owns the lifecycle of in-process workflow goroutines. A run
@@ -51,11 +75,15 @@ type Manager struct {
 	mu      sync.Mutex
 	handles map[string]*runHandle
 	stopped bool
+	// handoffGrace bounds the wait for a previous runner to finish leaving
+	// (see registerHandoffGrace). Overridable so a test that asserts the
+	// REFUSAL path does not have to burn the production grace on every run.
+	handoffGrace time.Duration
 }
 
 // NewManager creates an empty manager.
 func NewManager() *Manager {
-	return &Manager{handles: make(map[string]*runHandle)}
+	return &Manager{handles: make(map[string]*runHandle), handoffGrace: registerHandoffGrace}
 }
 
 // Register installs a new run handle and returns the cancellable ctx
@@ -70,6 +98,15 @@ func NewManager() *Manager {
 // already registered for runID (defensive — Service.Launch generates
 // IDs that should be unique).
 func (m *Manager) Register(parent context.Context, runID string) (context.Context, error) {
+	m.AwaitHandoff(parent, runID)
+	// A caller whose deadline expired mid-hand-off would otherwise be told
+	// "already registered" — indistinguishable from genuinely racing a live
+	// runner, though one is transient and the other is not. An automated retry
+	// chain reading the wrong one gives up (or hammers) for the wrong reason.
+	if err := parent.Err(); err != nil {
+		return nil, fmt.Errorf("runview: waiting for the previous runner of %q: %w", runID, err)
+	}
+
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
@@ -85,8 +122,41 @@ func (m *Manager) Register(parent context.Context, runID string) (context.Contex
 		done:      make(chan struct{}),
 		startedAt: time.Now().UTC(),
 		pauseCh:   make(chan struct{}),
+		handoff:   make(chan struct{}),
 	}
 	return ctx, nil
+}
+
+// MarkLeaving declares that runID's engine call has returned and the handle
+// is now only finishing its teardown. It is the evidence awaitPreviousRunner
+// needs to tell "this runner is on its way out, wait for it" from "this
+// runner is alive and well, refuse now" — without it, every duplicate
+// registration would pay the full handoff grace before failing.
+//
+// Called by the run goroutine as soon as the engine returns, which is also
+// when the STORE already carries the terminal or paused status. The teardown
+// that follows is what makes the window wide enough to matter: a completion
+// webhook, a supervisor drain, a broker close. Idempotent; a no-op for an
+// unknown or already-marked run.
+func (m *Manager) MarkLeaving(runID string) { m.markHandoff(runID) }
+
+// ExpectHandoff declares up front that a second registration for runID will be
+// a hand-off, not a rival runner. Used for a subbot child: it is always resumed
+// externally, its in-process handle is released as soon as the active pass
+// returns, and its paused status reaches the store while the engine is still
+// returning — so there is no later moment at which marking it would still be in
+// time. Idempotent; a no-op for an unknown or detached run.
+func (m *Manager) ExpectHandoff(runID string) { m.markHandoff(runID) }
+
+func (m *Manager) markHandoff(runID string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	h, ok := m.handles[runID]
+	if !ok || h.handoff == nil || h.handoffMarked {
+		return
+	}
+	h.handoffMarked = true
+	close(h.handoff)
 }
 
 // PauseSignal returns the engine-side receive-only pause channel for
@@ -142,6 +212,14 @@ func (m *Manager) RequestPause(runID string) error {
 // Unlike Register, this method does NOT create a context — detached
 // runners own their own context inside the spawned process, so the
 // server-side handle has no ctx to propagate.
+//
+// It also does NOT wait out a previous runner, deliberately. Its callers have
+// ALREADY started the subprocess by the time they get here (spawnDetached
+// Start()s, then registers), so waiting would leave two `iterion` processes
+// aimed at one run for the duration: the loser dies on the store flock while
+// the winner's registration succeeds against a dead PID, and the API reports a
+// resume that never happened. An immediate refusal keeps that failure loud.
+// A detached handoff grace has to be taken BEFORE the spawn to be safe.
 func (m *Manager) RegisterDetached(runID string, pid int, cancel context.CancelFunc, done chan struct{}) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -159,6 +237,71 @@ func (m *Manager) RegisterDetached(runID string, pid int, cancel context.CancelF
 		pid:       pid,
 	}
 	return nil
+}
+
+// registerHandoffGrace bounds how long a re-registration waits for the
+// PREVIOUS runner of the same run to finish leaving.
+//
+// The window it closes: a run parking on a human gate writes
+// paused_waiting_human to the STORE, returns ErrRunPaused, and only then does
+// the goroutine carrying it call Deregister on its way out. Between those, the
+// public signal says "resumable" while the handle is still held — and the
+// studio and the pipeline-board sidebar offer Resume on exactly that signal.
+// A resume landing in the window used to fail with "already registered",
+// which reads as a bug to the operator and is one to an automated chain.
+//
+// A few hundred milliseconds normally; seconds under load. Five is generous
+// enough to absorb a loaded host while still surfacing a genuinely stuck
+// previous runner as an error rather than hanging the caller.
+const registerHandoffGrace = 5 * time.Second
+
+// AwaitHandoff waits, bounded, for an existing handle for runID to finish —
+// but ONLY when that handle has been marked leaving. A handle whose runner is
+// still working returns immediately, so a genuine two-runners-for-one-run
+// attempt fails as fast as it always did instead of parking the caller (an
+// HTTP handler, typically) for the whole grace.
+//
+// Call it at the TOP of a launch or resume, before anything takes a resource
+// the outgoing runner still holds. The store flock is the first such resource
+// and it is released two deferred statements before the manager handle, so a
+// wait placed at Register alone covers only the gap between them — the
+// operator still gets a failure, with a different message. Register calls this
+// too, as a cheap backstop for callers that do not.
+//
+// It does NOT reserve anything: the caller's own registration check remains
+// the authority, so a previous runner that never finishes leaving still
+// yields "already registered". This only stops that guard from firing on a
+// runner that is already on its way out.
+//
+// The wait happens OUTSIDE the mutex on purpose: Deregister needs the same
+// lock to close done, so holding it here would deadlock the very thing we are
+// waiting for.
+func (m *Manager) AwaitHandoff(ctx context.Context, runID string) {
+	m.mu.Lock()
+	h, exists := m.handles[runID]
+	stopped := m.stopped
+	m.mu.Unlock()
+	// A manager already stopped is going to refuse the registration anyway;
+	// waiting first would only delay saying so.
+	if !exists || stopped {
+		return
+	}
+	select {
+	case <-h.handoff:
+	default:
+		return // still working — not a handoff, so not ours to wait out
+	}
+	grace := m.handoffGrace
+	if grace <= 0 {
+		grace = registerHandoffGrace
+	}
+	timer := time.NewTimer(grace)
+	defer timer.Stop()
+	select {
+	case <-h.done:
+	case <-ctx.Done():
+	case <-timer.C:
+	}
 }
 
 // Deregister removes the handle and closes its done channel. Called

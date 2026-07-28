@@ -50,6 +50,13 @@ func manageSubbotChild(mgr *Manager, parent context.Context, childRunID string, 
 		}
 		return parent, nil, func() {}
 	}
+	// A child is resumed EXTERNALLY and this handle is released as soon as the
+	// active pass returns, so a second registration for its id is a hand-off,
+	// never a rival runner. Declared here rather than later because the child's
+	// paused status lands in the store while childEng.Run is still returning —
+	// the pipeline-board sidebar can be resuming it before the release, and
+	// without this the resume fails on "already registered".
+	mgr.ExpectHandoff(childRunID)
 	var opts []runtime.EngineOption
 	if pauseCh, perr := mgr.PauseSignal(childRunID); perr == nil {
 		opts = append(opts, runtime.WithPauseSignal(pauseCh))

@@ -9,6 +9,10 @@ import (
 	"testing"
 	"time"
 
+	"github.com/prometheus/client_golang/prometheus"
+	dto "github.com/prometheus/client_model/go"
+
+	"github.com/SocialGouv/iterion/pkg/cloud/metrics"
 	"github.com/SocialGouv/iterion/pkg/runview"
 	"github.com/SocialGouv/iterion/pkg/store"
 	mongostore "github.com/SocialGouv/iterion/pkg/store/mongo"
@@ -304,6 +308,43 @@ type plainRunStore struct{ store.RunStore }
 // newRetrySweeperServer builds a local-mode server whose WorkDir holds the
 // fixture bot, so resolveResumeSource succeeds and the tests exercise the
 // branch they name rather than all funnelling into "source unresolvable".
+// TestSweepDueRetries_CountsEveryPassEvenWhenNothingIsDue is the liveness
+// signal, and it is not decoration: RunsRetryPending, RunsRetryScheduled and
+// RunsUsageWindowBlocked all read 0 on a healthy idle deployment AND on one
+// where the sweeper never started (a registered-but-never-Set gauge reports 0
+// either way). Checked against production and they were indistinguishable. The
+// sweep counter is the only thing that separates "nothing is waiting" from
+// "everything waiting is stranded", so a pass that forgets to bump it puts the
+// whole path back to unobservable.
+func TestSweepDueRetries_CountsEveryPassEvenWhenNothingIsDue(t *testing.T) {
+	st := newFakeRetryStore()
+	resumer := &fakeResumer{}
+	s := newRetrySweeperServer(t, st, resumer)
+	s.cfg.Metrics = metrics.New()
+
+	for i := 0; i < 3; i++ {
+		s.sweepDueRetries(context.Background(), &fakeRetryLister{}, resumer, time.Now().UTC())
+	}
+
+	if got := counterValue(t, s.cfg.Metrics.RunsRetrySweeps); got != 3 {
+		t.Errorf("iterion_runs_retry_sweeps_total = %v after 3 idle passes, want 3 — "+
+			"a flat counter is indistinguishable from a sweeper that never ran", got)
+	}
+	if len(resumer.calls) != 0 {
+		t.Errorf("resumed %d runs with nothing due", len(resumer.calls))
+	}
+}
+
+// counterValue reads a prometheus counter without a scrape.
+func counterValue(t *testing.T, c prometheus.Counter) float64 {
+	t.Helper()
+	var m dto.Metric
+	if err := c.Write(&m); err != nil {
+		t.Fatalf("read counter: %v", err)
+	}
+	return m.GetCounter().GetValue()
+}
+
 func newRetrySweeperServer(t *testing.T, st store.RunStore, resumer runResumer) *Server {
 	t.Helper()
 	_ = resumer // passed per-call, not stored on the Server
