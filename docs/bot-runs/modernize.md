@@ -4,6 +4,66 @@ Carries a repository through a programme of modernisation lots — steps whose
 entry and exit are both deterministic gates — against a behavioural oracle it
 is forbidden to rewrite. See [bots/modernize/](../../bots/modernize/).
 
+## 2026-07-28 — the modernisation converges: green gate, green net, verified twice (runs 019fa8e7, 019fa8fd)
+
+- Status: **VALIDATED.** Two major build-tool versions and four framework lines
+  crossed, with observable behaviour identical — proven, not asserted.
+- Campaigns: 13 min / $0.78 (aborted on a baseline defect) then 24 min / $2.07.
+
+### The verdict, and the second opinion
+
+```
+gate_passed true   oracle_passed true   refs_untouched true   log_tail (empty)
+```
+
+Replayed independently afterwards from the working repository, outside any run,
+against a jar the new toolchain built: 7/7 mutants detected, negative control
+silent across all 18 entries, collateral 0, exit 0. A green from the gate that
+produced the work is worth less than a green obtained somewhere else.
+
+### What the build said the whole time: nothing
+
+It was green from the moment the tooling landed, and stayed green while **seven
+behavioural divergences existed** — among them template security attributes
+passing through uninterpreted, so an anonymous visitor received the menu entries
+reserved for authenticated roles.
+
+No build check can see that. It is not what a build does. Every argument for
+putting a behavioural net underneath a modernisation reduces to this run.
+
+### Two shortcuts refused, and why they matter more than the fixes
+
+This was the first lot in the programme where **code was written to satisfy the
+net**, which is exactly when a net becomes dangerous: the pull is to treat red as
+something to remove rather than a symptom to understand. The intent carried the
+test — *would this change still be right if the reference did not exist?* — and
+the campaign applied it against itself twice.
+
+- **Pinning a library back to its previous version** would have closed one
+  divergence without touching a template. Refused: undoing the upgrade at the
+  precise point the judge is looking is not finishing it.
+- **A generally recommended code form** was refused because it added an
+  attribute to the rendered HTML. A fix that changes recorded behaviour to
+  repair a cause that does not affect it is not a fix.
+
+It also flagged its own borderline case rather than burying it among the
+obvious ones — a source-formatting change, kept because it states something true
+about the template independently of the reference, and carrying a comment so a
+later reader does not undo it by reflex. Flagging the limit case instead of
+drowning it is the difference between a report and a plea.
+
+### Lesson: entry count was the wrong metric
+
+The preceding pass expected the divergent-entry count to fall sharply after
+closing two of four causes. It did not move — 14 before, 14 after — and the pass
+diagnosed why better than the operator had: several independent causes were
+hiding behind entries already counted as divergent, and closing one cause on an
+entry carrying two does not turn it green. The measurement that meant something
+was the cause inventory: three configuration-only, four needing code.
+
+An expectation stated in an intent is falsifiable, which is the point. This one
+was falsified, and the correction came back as a finding rather than as noise.
+
 ## 2026-07-28 — second lot: a perfectly green build that does not run (run 019fa826)
 
 - Status: **the result the whole approach exists to produce.** The lot is
