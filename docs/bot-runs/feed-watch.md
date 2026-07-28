@@ -69,6 +69,29 @@ Newest first. One section per dogfooded run.
     Catch up time-sensitive categories explicitly.
   - One-shot schedules are the reliable manual-launch path for a repo the
     forge connection cannot reach. Delete them straight after firing.
+- **Baseline for verifying the retry, recorded 2026-07-28** (the fix is
+  deployed but has never been exercised, so this is what makes the next check
+  readable rather than a guess):
+  - `iterion_runs_usage_window_blocked_total` = **0**. The carve-out has not
+    run in production once. Nothing is proven yet; there is only an absence of
+    counter-evidence.
+  - DLQ: **23 entries, 4 quota-related**, the newest parked at
+    **2026-07-27T05:45:23Z** — run `019fa1ba` (the weekly Doki) with
+    `num_delivered: 8`. That entry *is* the eight-doomed-pods pattern this
+    work exists to remove. The four were deliberately NOT purged: they are the
+    "before" evidence, and the timestamp is what makes the next look
+    meaningful. **Any quota entry newer than it means the carve-out is not
+    working.**
+  - Read the counters via a port-forward to the server's `9090`
+    (`kubectl -n iterion port-forward svc/iterion 19090:9090`), not from
+    inside a pod — the container ships no `wget`/`curl`.
+  - **A zero counter is not a healthy signal on its own.** All three retry
+    metrics read 0 both on an idle deployment and on one where the sweeper
+    never started — a registered-but-never-`Set` gauge reports 0 either way.
+    Checked against production and they were indistinguishable, which is why
+    `iterion_runs_retry_sweeps_total` and a startup log line were added. Use
+    the sweep counter first: flat at 0 means the sweeper is not running, and
+    every waiting run is stranded rather than merely absent.
 
 ## 2026-07-17 — Security hardening: prompt-injection gate + SSRF guard + link firewall (runs 019f7092 collect / 019f709e inject-digest)
 
