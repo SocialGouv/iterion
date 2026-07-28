@@ -97,6 +97,36 @@ notice that the bytes reaching the browser changed, and a scan of source files c
    documented blind spots, the causes behind your canonicalisation rules — and it will not be
    overwritten. Do not write `verify-oracle.sh`.
 
+## Putting the runner in CI, and the three ways that job goes green without judging
+
+The emitted `verify-oracle.sh` is the entry point a pipeline calls. Wiring it up is where a net
+that works gets neutralised, because a CI job can be perfectly green while never judging anything.
+Ask, before writing the job: **what would make this job green without it judging anything?** There
+are three answers, and all three have been seen.
+
+**The job never runs.** `allow_failure: true`, `when: manual`, or a trigger rule that excludes the
+very pipelines that matter. The job exists, appears in the configuration, and the merge stays
+green. Refuse trigger conditions on a job of record rather than reason about them: deciding whether
+a given rule always fires means simulating the CI platform, and an analysis that gets it wrong
+hands out a green on a job that never ran.
+
+**The exit code is swallowed.** `runner.sh | tee gate.log` returns tee's status, so the job is
+green while the log it just wrote says `GATE RED` in full. `|| true`, `set +e` and a trailing
+`exit 0` do the same thing less subtly. Keep the job body to ONE committed script and `exec` the
+runner from it: the exit code then belongs to the runner structurally, with no shell left in
+between to lose it.
+
+**The environment is bent.** The runner reads its mode from `GM_MODE`; set that to `record` in the
+CI project variables and every pipeline re-records the references and exits 0 — permanently green,
+evidence destroyed, and not one line of the repository touched. The emitted runner takes its mode
+from its arguments for exactly this reason. The general shape is worth carrying elsewhere:
+**cheating through the environment the judge observes through** leaves no trace in the diff.
+
+And the job body must itself be falsifiable in both directions, which means running it: green on
+an intact tree, RED on an injected behavioural change, from a checkout of committed content only.
+A pipeline nobody has ever seen go red is a pipeline that has never been tested — the same claim
+the net refuses to accept about a comparator.
+
 ## Re-baselining, and why it kills nets
 
 A golden master dies by re-baselining. Something breaks three screens, someone regenerates the

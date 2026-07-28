@@ -78,6 +78,40 @@ exit 0.** They are the definition of the lot, so write them to be:
 A lot with no `exit_gate` is refused rather than assumed to pass. An
 unverifiable lot is indistinguishable from one that was never done.
 
+### Narrowing has a cost, and it is paid later
+
+The third bullet is the dangerous one, so it comes with an obligation. Every
+exclusion in a gate — a skipped task, a filtered subset, a disabled check —
+silences a verification lane for the whole run of the programme, not just for
+the lot that wrote it. And the exclusion propagates: lots are copied from one
+another, so the narrowing written for the first toolchain bump is still there
+four lots later, under changes it was never reasoned about.
+
+This is not hypothetical. A programme that excluded the test task from every
+gate — written down, never hidden — carried an upgrade that removed the old
+test API from the compile classpath. Three quarters of the test files stopped
+compiling. Four lots reported green, and the behavioural oracle could say
+nothing either: it watches served responses, not build tasks. The suite was
+found dark only when someone asked what a CI job would actually run.
+
+So, whenever a gate excludes something:
+
+1. **Say why in the lot's comment**, next to the command. An exclusion whose
+   reason is not written is indistinguishable from an oversight the moment its
+   author stops reading the file.
+2. **Name what still watches the excluded thing.** If the answer is nothing,
+   the exclusion is a blind spot with a schedule, and it needs a lot of its
+   own to close.
+3. **Re-widen at the end of the programme, not never.** The last lot's gate
+   should be the unexcluded one. If it cannot be, that is a finding.
+
+The general shape, and it is the same defect the oracle exists to catch one
+level down: *a check that establishes something NEAR what it claims and
+reports success on the resemblance.* `build -x test` really does establish
+"the build is green" — on what it was told to look at. The line in the report
+says "build green" without the qualifier, and everyone downstream reads the
+line.
+
 ## `rebaseline_allowed`
 
 Set `false` for any lot that must not change observable behaviour — a toolchain
