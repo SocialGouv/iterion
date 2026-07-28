@@ -29,7 +29,7 @@ flowchart LR
 |---|---|---|
 | `claw` | Recommended in-process backend for direct provider calls and native Iterion tools. | Automatic or explicit. |
 | `claude_code` | Recommended CLI-agent backend for implementation work and Claude subscription/OAuth use. | Automatic when Claude Code OAuth is detected, or explicit. |
-| `pi` | Supported. Reaches ~36 providers and reports a provider-computed cost. Two transports: one-shot print (default) and a richer `--mode rpc` session (`ITERION_PI_MODE=rpc`) with tool events, native steering and authoritative accounting. No MCP, no board tools, no ask_user on either. | Explicit only. |
+| `pi` | Supported. Reaches ~36 providers and reports a provider-computed cost. Runs a long-lived `--mode rpc` session by default — tool events, native steering, authoritative accounting, pre-flight handshake (`ITERION_PI_MODE=print` rolls back). No MCP, no board tools, no ask_user on either. | Explicit only. |
 | `kimi` | Supported through the generic CLI-agent protocol; session resume/fork is not wired. | Explicit only. |
 | `grok` | Supported through the generic CLI-agent protocol; session resume/fork is not wired. | Explicit only. |
 | `codex` | **Deprecated and frozen.** Compatibility/live-test path only; the compiler emits C030. | Per-node/workflow opt-in, or explicit addition to `ITERION_BACKEND_PREFERENCE`. |
@@ -649,7 +649,7 @@ injects nothing for either.
 | Variable | Effect |
 |---|---|
 | `ITERION_PI_BIN` | Absolute path to the `pi` binary (e.g. a `bun --compile` single-file build on a host with no Node). |
-| `ITERION_PI_MODE` | `rpc` switches to the long-lived `--mode rpc` session (tool events, native steering, authoritative accounting, pre-flight handshake). Default is the one-shot print transport. |
+| `ITERION_PI_MODE` | `print` rolls back to the one-shot transport. The default is the long-lived `--mode rpc` session (tool events, native steering, authoritative accounting, pre-flight handshake). |
 | `ITERION_PI_AGENT_DIR` | Pins `PI_CODING_AGENT_DIR`. Reproducible pi config, but hides the operator's own `auth.json` — so the OAuth breadth above goes with it. |
 | `ITERION_PI_OFFLINE` | `0` re-enables pi's catalogue refresh inside a sandbox (off by default there: an egress policy would stall startup). |
 | `ITERION_PI_TRUST_PROJECT` | `1` trusts the target repo's `.pi/` resources. See the warning above. |

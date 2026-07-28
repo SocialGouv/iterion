@@ -167,11 +167,23 @@ func (b *PiRPCBackend) Execute(ctx context.Context, task Task) (Result, error) {
 	inTok, outTok, costUSD, peak, thinkTok := collector.usage()
 	statsCtx, cancelStats := context.WithTimeout(ctx, 10*time.Second)
 	if stats, err := client.SessionStats(statsCtx); err == nil {
-		inTok = stats.Tokens.Input + stats.Tokens.CacheRead + stats.Tokens.CacheWrite
+		// Cache reads/writes stay OUT of the billed token count, matching
+		// claude_code (which sums Usage.InputTokens + OutputTokens and routes
+		// input+cache_creation+cache_read to the context gauge instead). Every
+		// backend has to agree here or a workflow's `max_tokens` budget would
+		// mean something different depending on which one ran the node.
+		inTok = stats.Tokens.Input
 		outTok = stats.Tokens.Output
 		costUSD = stats.Cost
+		// Context load — input plus everything served from or written to the
+		// cache — is the quantity the context-usage gauge tracks.
+		if loaded := stats.Tokens.Input + stats.Tokens.CacheRead + stats.Tokens.CacheWrite; loaded > peak {
+			peak = loaded
+		}
 		if stats.ContextUsage != nil {
-			peak = stats.ContextUsage.Tokens
+			if stats.ContextUsage.Tokens > peak {
+				peak = stats.ContextUsage.Tokens
+			}
 			if stats.ContextUsage.ContextWindow > 0 {
 				result.ContextWindow = stats.ContextUsage.ContextWindow
 			}

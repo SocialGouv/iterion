@@ -318,17 +318,21 @@ print mode — none of it available on any other iterion CLI backend:
 - **Abort on cancellation** instead of killing a process mid-call, so a
   partial transcript still lands.
 
-**Known divergence between the transports — the token COUNT differs.** RPC
-takes its numbers from `get_session_stats`, which folds cache reads and writes
-into the input figure; print mode sums `usage.input`/`usage.output` per
-message. The same trivial turn reported 550 tokens on print and 2078 on RPC.
-The USD cost is consistent (pi computes it either way), and RPC's number is the
-more complete one, but a workflow comparing token counts across a transport
-switch will see a step change. This is why `auto` still means print: the
-default flips once that is either reconciled or accepted deliberately.
+**RPC is the default.** `ITERION_PI_MODE=print` is the rollback.
 
-The default therefore stays print. Flipping it is one line plus a CHANGELOG
-entry, gated on the equivalence test above continuing to pass.
+Getting there required fixing a real accounting bug the first RPC version
+shipped with. It folded `get_session_stats`'s cache reads and writes into the
+input figure, so the same trivial turn reported 550 tokens on print and 2078 on
+RPC. An earlier draft of this ADR called RPC's number "the more complete one" —
+that was wrong. `claude_code` sums `Usage.InputTokens + OutputTokens` and routes
+`input + cache_creation + cache_read` to the context gauge instead, so
+**excluding cache from the billed count is the convention**, and RPC was simply
+inconsistent with it. A workflow's `max_tokens` budget has to mean the same
+thing whichever backend ran the node.
+
+RPC now matches, cache load goes to `PeakInputTokens` where it belongs, and
+`TestPiRPCLiveEquivalence` asserts token and cost equality across transports —
+that assertion is what gates the default staying on RPC.
 
 **Still not validated:**
 

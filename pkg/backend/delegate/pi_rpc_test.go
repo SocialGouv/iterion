@@ -121,6 +121,21 @@ func TestPiRPCLiveEquivalence(t *testing.T) {
 	if got := rpcRes.Output["_cost_usd"]; got == nil {
 		t.Error("rpc lost the provider-computed cost")
 	}
+
+	// The token count MUST match across transports. Both report
+	// input+output excluding cache, the convention claude_code sets — an
+	// early RPC version folded cache reads/writes into input, which made
+	// `max_tokens` mean something different depending on the transport.
+	// This assertion is what gates flipping the default.
+	if printRes.Tokens != rpcRes.Tokens {
+		t.Errorf("Tokens differ across transports: print=%d rpc=%d — a workflow's "+
+			"max_tokens budget would shift under the operator on a transport switch",
+			printRes.Tokens, rpcRes.Tokens)
+	}
+	if printRes.Output["_cost_usd"] != rpcRes.Output["_cost_usd"] {
+		t.Errorf("_cost_usd differs: print=%v rpc=%v",
+			printRes.Output["_cost_usd"], rpcRes.Output["_cost_usd"])
+	}
 }
 
 // TestPiRPCLiveHooks covers what only this transport delivers: tool events and

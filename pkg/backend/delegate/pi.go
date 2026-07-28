@@ -126,20 +126,25 @@ func (b *PiBackend) Execute(ctx context.Context, task Task) (Result, error) {
 	if err := b.noticeSubscriptionOAuth(ctx, task); err != nil {
 		return Result{BackendName: BackendPi, ExitCode: -1}, err
 	}
-	// Transport selection. RPC is strictly higher fidelity (tool events,
-	// steering, authoritative accounting, pre-flight handshake) and every
-	// mapping is shared, so `auto` will become RPC — but it defaults to print
-	// for now so the richer transport earns its promotion on real runs first.
-	// ITERION_PI_MODE is the operator's lever either way.
+	// Transport selection. RPC is the default because it is strictly higher
+	// fidelity — tool events reach the studio timeline, operator chat rides
+	// pi's native steering, accounting comes from get_session_stats, and a
+	// pre-flight handshake resolves the model before any token is spent —
+	// while every mapping (model, effort, argv, credentials, system prompt) is
+	// shared verbatim with print mode. The token count matches across both,
+	// which is what makes the switch safe for a workflow's max_tokens budget
+	// (asserted by TestPiRPCLiveEquivalence).
+	//
+	// ITERION_PI_MODE=print is the rollback for an operator who hits a
+	// transport-specific problem in the field.
 	switch strings.TrimSpace(strings.ToLower(os.Getenv("ITERION_PI_MODE"))) {
-	case "rpc":
+	case "print":
+		return b.print.Execute(ctx, task)
+	default:
 		if b.rpc == nil {
-			return Result{BackendName: BackendPi, ExitCode: -1},
-				fmt.Errorf("pi backend: ITERION_PI_MODE=rpc but no RPC transport is wired")
+			return b.print.Execute(ctx, task)
 		}
 		return b.rpc.Execute(ctx, task)
-	default:
-		return b.print.Execute(ctx, task)
 	}
 }
 

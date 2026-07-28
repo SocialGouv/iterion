@@ -612,6 +612,11 @@ printf '%s\n' '{"type":"agent_settled"}'
 		t.Fatal(err)
 	}
 
+	// This exercises the PRINT transport specifically — the fake CLI emits a
+	// print-mode stream, and RPC (now the default) would time out on its
+	// handshake against it.
+	t.Setenv("ITERION_PI_MODE", "print")
+
 	b := NewPiBackend(testLogger(), fake)
 	task := Task{
 		NodeID:           "review",
