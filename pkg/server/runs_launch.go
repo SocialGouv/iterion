@@ -25,6 +25,11 @@ import (
 // pod can hang per-node spans off of them via NATS trace propagation.
 const tracerName = "github.com/SocialGouv/iterion/pkg/server"
 
+// workflowSourceChangedErrorCode is the stable wire code consumed by the
+// studio's force-resume affordance. Keep human prose in "error" for display,
+// but never require clients to parse it.
+const workflowSourceChangedErrorCode = "workflow_source_changed"
+
 // --- Request / response shapes ---
 
 type launchRunRequest struct {
@@ -499,13 +504,26 @@ func (s *Server) handleResumeRun(w http.ResponseWriter, r *http.Request) {
 			span.SetStatus(codes.Error, "server draining")
 			return
 		}
-		s.httpErrorFor(w, r, http.StatusBadRequest, "resume: %v", err)
+		s.writeResumeError(w, r, err)
 		span.RecordError(err)
 		span.SetStatus(codes.Error, "resume failed")
 		return
 	}
 	w.WriteHeader(http.StatusAccepted)
 	s.writeJSONFor(w, r, launchRunResponse{RunID: res.RunID, Status: string(store.RunStatusRunning)})
+}
+
+// writeResumeError preserves the normal human-readable error response and
+// adds a stable code for the one resume failure the studio must act on.
+func (s *Server) writeResumeError(w http.ResponseWriter, r *http.Request, err error) {
+	if runtime.IsWorkflowSourceChanged(err) {
+		s.writeJSONError(w, r, http.StatusBadRequest, map[string]any{
+			"error":      fmt.Sprintf("resume: %v", err),
+			"error_code": workflowSourceChangedErrorCode,
+		})
+		return
+	}
+	s.httpErrorFor(w, r, http.StatusBadRequest, "resume: %v", err)
 }
 
 // parseTimeout accepts an empty string (no timeout) or a Go duration

@@ -2,11 +2,19 @@ package model
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 
 	"github.com/SocialGouv/claw-code-go/pkg/api"
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
 )
+
+const maxReviewCompanionMessageChars = 800
+
+const reviewCompanionMessageDescription = "Human-facing review instruction. Start with the action the operator " +
+	"must take, then give at most three short checks. Use plain, non-technical language and no more than " +
+	"120 words. Never include implementation jargon, internal identifiers or statuses, file paths, URLs, " +
+	"commit hashes, or raw diff excerpts."
 
 // ExecuteReviewCompanion drives a review gate's companion LLM
 // (interaction: review). Given a pre-resolved system prompt (the companion's
@@ -31,15 +39,11 @@ func (e *ClawExecutor) ExecuteReviewCompanion(ctx context.Context, node *ir.Huma
 		return nil, fmt.Errorf("model: review node %q references unknown output schema %q", node.ID, node.OutputSchema)
 	}
 
-	// Companion schema = the node's verdict schema + {needs_human_input, message}.
-	// Reuse wrapSchemaWithHumanFlag for the needs_human_input clone (same
-	// per-call, no-shared-map discipline as ExecuteHumanLLMForInteraction),
-	// then append the companion's `message` field.
-	companionSchema := wrapSchemaWithHumanFlag(base)
-	companionSchema.Name = base.Name + "_review_companion"
-	companionSchema.Fields = append(companionSchema.Fields,
-		&ir.SchemaField{Name: "message", Type: ir.FieldTypeString})
-	jsonSchema, err := SchemaToJSON(companionSchema)
+	// Companion schema = the node's verdict schema +
+	// {needs_human_input, message}.
+	// Build it per call from the verdict fields, then add the companion-only
+	// boolean and bounded human-facing message without mutating the base schema.
+	jsonSchema, err := reviewCompanionJSONSchema(base)
 	if err != nil {
 		return nil, fmt.Errorf("model: review node %q: schema conversion: %w", node.ID, err)
 	}
@@ -72,4 +76,42 @@ func (e *ClawExecutor) ExecuteReviewCompanion(ctx context.Context, node *ir.Huma
 		out = make(map[string]any)
 	}
 	return out, nil
+}
+
+// reviewCompanionJSONSchema builds the strict structured-output contract for
+// a guided review turn.
+func reviewCompanionJSONSchema(base *ir.Schema) (json.RawMessage, error) {
+	if base == nil {
+		return nil, fmt.Errorf("model: review companion: nil output schema")
+	}
+	reserved := map[string]struct{}{
+		"needs_human_input": {},
+		"message":           {},
+	}
+	for _, field := range base.Fields {
+		if _, collision := reserved[field.Name]; collision {
+			return nil, fmt.Errorf("model: review companion: output schema %q uses reserved field %q", base.Name, field.Name)
+		}
+	}
+
+	properties := make(map[string]any, len(base.Fields)+2)
+	required := make([]string, 0, len(base.Fields)+2)
+	for _, field := range base.Fields {
+		properties[field.Name] = fieldToJSONSchema(field)
+		required = append(required, field.Name)
+	}
+	properties["needs_human_input"] = map[string]any{"type": "boolean"}
+	properties["message"] = map[string]any{
+		"type":        "string",
+		"maxLength":   maxReviewCompanionMessageChars,
+		"description": reviewCompanionMessageDescription,
+	}
+	required = append(required, "needs_human_input", "message")
+
+	return json.Marshal(map[string]any{
+		"type":                 "object",
+		"properties":           properties,
+		"required":             required,
+		"additionalProperties": false,
+	})
 }

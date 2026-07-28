@@ -2,6 +2,7 @@
 // Mutating run endpoints: create, cost preview, cancel/pause, watch
 // subscription, fork, resume, rename.
 
+import { ApiError } from "../client";
 import { request } from "./client";
 import type {
   CreateRunRequest,
@@ -11,6 +12,31 @@ import type {
   PreviewCostResponse,
   ResumeRunRequest,
 } from "./types";
+
+// Stable wire code emitted by POST /runs/:id/resume when the current workflow
+// source no longer matches the run's launch hash.
+export const WORKFLOW_SOURCE_CHANGED_ERROR_CODE = "workflow_source_changed";
+
+// isWorkflowSourceChangedError prefers the structured API contract. The prose
+// fallback only applies when no error_code was supplied, preserving force
+// resume against servers predating workflow_source_changed and direct/plain
+// error test doubles. Match the old server's canonical phrase narrowly so an
+// unrelated proxy message containing "source has changed" cannot opt into
+// force-resume.
+export function isWorkflowSourceChangedError(err: unknown): boolean {
+  if (err instanceof ApiError && err.errorCode !== undefined) {
+    return err.errorCode === WORKFLOW_SOURCE_CHANGED_ERROR_CODE;
+  }
+  const message =
+    err instanceof Error
+      ? err.message
+      : typeof err === "string"
+        ? err
+        : typeof (err as { message?: unknown } | null)?.message === "string"
+          ? String((err as { message: string }).message)
+          : "";
+  return /workflow source has changed/i.test(message);
+}
 
 export async function createRun(req: CreateRunRequest): Promise<CreateRunResponse> {
   return request("/runs", {

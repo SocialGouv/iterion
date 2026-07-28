@@ -26,6 +26,46 @@ import (
 // Resume — continue a paused run
 // ---------------------------------------------------------------------------
 
+// ErrWorkflowSourceChanged is returned when a resume is attempted with a
+// workflow hash different from the one persisted at launch. Callers should
+// match it with errors.Is rather than parsing the human-readable explanation.
+var ErrWorkflowSourceChanged = errors.New("runtime: workflow source has changed")
+
+// IsWorkflowSourceChanged reports whether err is the typed source-change
+// refusal. The text fallback is intentionally limited to compatibility
+// boundaries that flatten errors to prose (notably detached CLI runners and
+// mixed-version deployments); in-process callers retain errors.Is semantics.
+func IsWorkflowSourceChanged(err error) bool {
+	if errors.Is(err, ErrWorkflowSourceChanged) {
+		return true
+	}
+	return err != nil && strings.Contains(
+		strings.ToLower(err.Error()),
+		"workflow source has changed",
+	)
+}
+
+// ValidateResumeWorkflowHash checks whether currentHash is compatible with the
+// workflow hash persisted on the run being resumed. Empty hashes are accepted
+// for legacy runs/callers that predate source hashing, and force explicitly
+// authorizes a mismatch.
+//
+// This helper is exported so launch frontends can perform the same check
+// synchronously before handing a resume to an asynchronous runner. The engine
+// still repeats it after acquiring the run lock as a TOCTOU guard.
+func ValidateResumeWorkflowHash(runID, persistedHash, currentHash string, force bool) error {
+	if persistedHash == "" || currentHash == "" || persistedHash == currentHash || force {
+		return nil
+	}
+	return fmt.Errorf(
+		"%w since run %q was started (expected hash %s, got %s); re-run from scratch or use --force",
+		ErrWorkflowSourceChanged,
+		runID,
+		shortWorkflowHash(persistedHash),
+		shortWorkflowHash(currentHash),
+	)
+}
+
 // Resume resumes a paused or failed-resumable run. For paused runs, human
 // answers are recorded and execution continues from the human node. For
 // failed-resumable runs, execution restarts from the node after the last
@@ -81,25 +121,25 @@ func (e *Engine) Resume(ctx context.Context, runID string, answers map[string]an
 // the run was started. When forceResume is set, a mismatch is logged as a
 // warning instead of causing an error.
 func (e *Engine) checkWorkflowHash(r *store.Run) error {
-	if r.WorkflowHash == "" || e.workflowHash == "" {
-		return nil
-	}
-	if r.WorkflowHash == e.workflowHash {
-		return nil
-	}
-	shortHash := func(h string) string {
-		if len(h) > 12 {
-			return h[:12]
-		}
-		return h
-	}
-	if e.forceResume {
+	err := ValidateResumeWorkflowHash(r.ID, r.WorkflowHash, e.workflowHash, e.forceResume)
+	if err == nil && e.forceResume && r.WorkflowHash != "" && e.workflowHash != "" && r.WorkflowHash != e.workflowHash {
 		if e.logger != nil {
-			e.logger.Warn("workflow source has changed since run %q was started (expected %s, got %s); resuming anyway (--force)", r.ID, shortHash(r.WorkflowHash), shortHash(e.workflowHash))
+			e.logger.Warn(
+				"workflow source has changed since run %q was started (expected %s, got %s); resuming anyway (--force)",
+				r.ID,
+				shortWorkflowHash(r.WorkflowHash),
+				shortWorkflowHash(e.workflowHash),
+			)
 		}
-		return nil
 	}
-	return fmt.Errorf("runtime: workflow source has changed since run %q was started (expected hash %s, got %s); re-run from scratch or use --force", r.ID, shortHash(r.WorkflowHash), shortHash(e.workflowHash))
+	return err
+}
+
+func shortWorkflowHash(hash string) string {
+	if len(hash) > 12 {
+		return hash[:12]
+	}
+	return hash
 }
 
 // rebuildArtifacts reconstructs the artifacts map from checkpoint outputs.

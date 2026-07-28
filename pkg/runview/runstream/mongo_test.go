@@ -376,7 +376,7 @@ func (nopBlob) GetToolBlobRange(context.Context, string, string, string, int64, 
 	return nil, 0, false, blob.ErrArtifactNotFound
 }
 func (nopBlob) DeleteRunToolBlobs(context.Context, string) error { return nil }
-func (nopBlob) PutRunFile(context.Context, string, string, string, []byte) error {
+func (nopBlob) PutRunFile(context.Context, string, string, string, io.Reader, int64) error {
 	return nil
 }
 func (nopBlob) ListRunFiles(context.Context, string) ([]blob.RunFileObject, error) {

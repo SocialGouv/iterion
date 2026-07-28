@@ -2,6 +2,7 @@ package mongo
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"io/fs"
@@ -57,6 +58,39 @@ func (s *Store) EnsureRunFilesDir(_ context.Context, runID string) (string, erro
 	return dir, nil
 }
 
+// runFileUploadReader is a seekable, stat-size-bounded view of an open
+// scratch file. The AWS SDK needs Seek to rewind a request body before a
+// retry; io.LimitReader would preserve the size bound but hide that method.
+//
+// If the file is truncated in place after Stat, turn the early EOF into
+// io.ErrUnexpectedEOF. The blob PUT then fails and UploadRunFiles retains the
+// scratch tree for a later retry, instead of accepting a shorter object under
+// the advertised Content-Length. Avoiding this race entirely would require
+// snapshotting potentially very large review media.
+type runFileUploadReader struct {
+	*io.SectionReader
+}
+
+func newRunFileUploadReader(file *os.File, size int64) *runFileUploadReader {
+	return &runFileUploadReader{SectionReader: io.NewSectionReader(file, 0, size)}
+}
+
+func (r *runFileUploadReader) Read(p []byte) (int, error) {
+	// SectionReader tracks its offset in memory, so SeekCurrent is O(1) and
+	// does not issue another syscall against the underlying file.
+	offset, err := r.Seek(0, io.SeekCurrent)
+	if err != nil {
+		return 0, err
+	}
+	n, err := r.SectionReader.Read(p)
+	if err == io.EOF && offset+int64(n) < r.Size() {
+		return n, io.ErrUnexpectedEOF
+	}
+	// offset+n == Size is the normal terminal read: preserve io.EOF at the
+	// advertised section boundary and only rewrite an EOF that arrived early.
+	return n, err
+}
+
 // UploadRunFiles implements store.RunFilesUploader: walk the run's local
 // scratch dir and PUT each file to S3 under runfiles/<runID>/<relPath>.
 // Returns the number of files uploaded. A missing scratch dir (the run
@@ -88,7 +122,7 @@ func (s *Store) UploadRunFiles(ctx context.Context, runID string) (int, error) {
 		return 0, fmt.Errorf("store/mongo: run files scratch %s is not a directory", runID)
 	}
 	var uploaded int
-	walkErr := filepath.WalkDir(root, func(path string, d fs.DirEntry, walkErr error) error {
+	walkErr := filepath.WalkDir(root, func(path string, d fs.DirEntry, walkErr error) (retErr error) {
 		if walkErr != nil {
 			return walkErr
 		}
@@ -105,29 +139,42 @@ func (s *Store) UploadRunFiles(ctx context.Context, runID string) (int, error) {
 		if relErr != nil {
 			return relErr
 		}
-		// Bound per-file memory the same way WriteAttachment does: the
-		// whole body is read into RAM before the S3 PUT, so an oversized
-		// tool-produced file could OOM the runner pod. Skip (best-effort,
-		// don't fail the whole upload — the small artifacts still land)
-		// and log, mirroring the attachment cap's OOM rationale.
-		maxBytes := s.maxAttachmentBytes
-		if maxBytes <= 0 {
-			maxBytes = defaultMaxAttachmentBytes
+		// Run files include potentially large audio/video review outputs. Stream
+		// from the scratch file into the blob backend; the attachment byte cap is
+		// intentionally unrelated and must not make a checkpoint reference a
+		// file that the uploader silently discards.
+		file, openErr := os.Open(path)
+		if openErr != nil {
+			return fmt.Errorf("open %s: %w", rel, openErr)
 		}
-		if fi, statErr := d.Info(); statErr == nil && fi.Size() > maxBytes {
-			if s.logger != nil {
-				s.logger.Warn("store/mongo: run %s: skipping artifact file %q (%d bytes > %d-byte cap)", runID, rel, fi.Size(), maxBytes)
+		putSucceeded := false
+		defer func() {
+			closeErr := file.Close()
+			if closeErr != nil {
+				retErr = errors.Join(retErr, fmt.Errorf("close %s: %w", rel, closeErr))
 			}
+			// Preserve the historical count contract: a file is counted only
+			// after both its PUT and local handle close succeeded.
+			if putSucceeded && closeErr == nil {
+				uploaded++
+			}
+		}()
+		fi, statErr := file.Stat()
+		if statErr != nil {
+			return fmt.Errorf("stat %s: %w", rel, statErr)
+		}
+		if !fi.Mode().IsRegular() {
 			return nil
 		}
-		body, readErr := os.ReadFile(path)
-		if readErr != nil {
-			return fmt.Errorf("read %s: %w", rel, readErr)
+		// Advertise exactly fi.Size() bytes and expose a seekable view capped at
+		// that size. A concurrent append cannot exceed Content-Length, while the
+		// AWS SDK can rewind the body for a transient-error retry. A concurrent
+		// truncate produces io.ErrUnexpectedEOF and keeps the scratch tree for
+		// the later authoritative upload once the writer is quiescent.
+		if putErr := s.blob.PutRunFile(ctx, runID, filepath.ToSlash(rel), "", newRunFileUploadReader(file, fi.Size()), fi.Size()); putErr != nil {
+			return fmt.Errorf("put %s: %w", rel, putErr)
 		}
-		if err := s.blob.PutRunFile(ctx, runID, filepath.ToSlash(rel), "", body); err != nil {
-			return fmt.Errorf("put %s: %w", rel, err)
-		}
-		uploaded++
+		putSucceeded = true
 		return nil
 	})
 	if walkErr != nil {

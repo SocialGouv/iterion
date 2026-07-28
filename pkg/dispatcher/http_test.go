@@ -93,6 +93,10 @@ func TestHTTPIssueDetailAndCancel(t *testing.T) {
 	}
 	r404.Body.Close()
 
+	// Cancellation intentionally makes the issue eligible for dispatch again.
+	// Pause new dispatches so this assertion observes the cancelled run's
+	// teardown instead of racing its legitimate redispatch.
+	c.Pause()
 	req, _ := http.NewRequest(http.MethodPost, srv.URL+"/issues/fake:20/cancel", nil)
 	r2, err := http.DefaultClient.Do(req)
 	if err != nil {

@@ -1,7 +1,11 @@
 import { errorMessage } from "@/lib/errorHints";
 import { useEffect, useMemo, useRef, useState } from "react";
 
-import { getRun, resumeRun } from "@/api/runs";
+import {
+  getRun,
+  isWorkflowSourceChangedError,
+  resumeRun,
+} from "@/api/runs";
 import { Button } from "@/components/ui/Button";
 import { WizardForm } from "@/components/ui/WizardForm";
 import { useHumanNodeSchema } from "@/hooks/useHumanNodeSchema";
@@ -35,6 +39,19 @@ interface Props {
   // to refetch its own view; when omitted the run-console behaviour runs.
   onResumed?: () => void;
 }
+
+type ForceRetry =
+  | { kind: "form" }
+  | {
+      kind: "verdict";
+      fieldName: string;
+      value: boolean | string;
+    }
+  | {
+      kind: "quick-action";
+      fieldName: string;
+      token: string;
+    };
 
 // HumanPromptForm renders the inline form for a pending human-pause
 // turn.
@@ -78,14 +95,11 @@ export default function HumanPromptForm({
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [submitted, setSubmitted] = useState(false);
-  // Answers of the last rejected attempt when the server refused the
-  // resume because the workflow source changed since the run started.
-  // Non-null renders a one-click "force" retry that replays them with
-  // force: true — without it the operator's answer is silently lost
-  // with no recourse but the CLI.
-  const [forceRetry, setForceRetry] = useState<Record<string, unknown> | null>(
-    null,
-  );
+  // Intent of the last attempt rejected because the workflow source changed.
+  // A force retry rebuilds editable form fields from latestAnswer at click
+  // time, while verdict and quick-action intents retain the exact immutable
+  // token the operator originally selected.
+  const [forceRetry, setForceRetry] = useState<ForceRetry | null>(null);
   // The latest form draft is captured here so the quick-action
   // Approve/Reject and skip/idk buttons can submit alongside the
   // current text. WizardForm emits FormAnswer atomically; we also
@@ -99,7 +113,8 @@ export default function HumanPromptForm({
   useEffect(() => {
     setSubmitted(false);
     setError(null);
-  }, [nodeId]);
+    setForceRetry(null);
+  }, [runId, nodeId]);
   useEffect(() => {
     return () => {
       if (snapshotTimerRef.current != null) {
@@ -154,7 +169,11 @@ export default function HumanPromptForm({
 
   if (submitted) return null;
 
-  const submit = async (answers: Record<string, unknown>, force = false) => {
+  const submit = async (
+    answers: Record<string, unknown>,
+    force = false,
+    retryIntent: ForceRetry = { kind: "form" },
+  ) => {
     setBusy(true);
     setError(null);
     setForceRetry(null);
@@ -199,7 +218,7 @@ export default function HumanPromptForm({
     } catch (e) {
       const msg = errorMessage(e);
       setError(msg);
-      if (/source has changed/i.test(msg)) setForceRetry(answers);
+      if (isWorkflowSourceChangedError(e)) setForceRetry(retryIntent);
     } finally {
       setBusy(false);
     }
@@ -240,8 +259,12 @@ export default function HumanPromptForm({
     ? (fields ?? []).filter((f) => f.name !== verdictField.name)
     : fields ?? [];
 
-  const submitWithVerdict = (value: boolean | string) => {
-    if (!fields || !verdictField) return;
+  const submitWithVerdict = (
+    value: boolean | string,
+    force = false,
+    fieldName = verdictField?.name,
+  ) => {
+    if (!fields || !fieldName) return;
     const answerWithDefaults = {
       ...defaultAnswerForSpec(formSpec),
       ...latestAnswer,
@@ -254,10 +277,14 @@ export default function HumanPromptForm({
       setError("Fix invalid fields: " + Object.keys(errors).join(", "));
       return;
     }
-    void submit({ ...answers, [verdictField.name]: value });
+    void submit(
+      { ...answers, [fieldName]: value },
+      force,
+      { kind: "verdict", fieldName, value },
+    );
   };
 
-  const submitFromWizard = (formAnswer: FormAnswer) => {
+  const submitFromWizard = (formAnswer: FormAnswer, force = false) => {
     if (!fields) return;
     const { answers, errors } = coerceFormAnswerToSchema(
       visibleFields,
@@ -267,7 +294,7 @@ export default function HumanPromptForm({
       setError("Fix invalid fields: " + Object.keys(errors).join(", "));
       return;
     }
-    void submit(answers);
+    void submit(answers, force, { kind: "form" });
   };
 
   // Quick-action submit — short-circuit the form and resume with a
@@ -277,18 +304,53 @@ export default function HumanPromptForm({
   // human nodes have one string slot and a typed value works fine
   // there for the bot's prompt-side parsing.
   const submitQuickAction = (action: "skip" | "idk" | "later") => {
+    const token = `[QA:${action}]`;
     if (!fields || fields.length === 0) {
       // No schema → resume with the token as a single "text" key.
-      void submit({ text: `[QA:${action}]` });
+      void submit(
+        { text: token },
+        false,
+        { kind: "quick-action", fieldName: "text", token },
+      );
       return;
     }
     const stringField = fields.find((f) => f.type === "string");
     if (!stringField) {
       // No string slot to take the token; fall back to a generic key.
-      void submit({ text: `[QA:${action}]` });
+      void submit(
+        { text: token },
+        false,
+        { kind: "quick-action", fieldName: "text", token },
+      );
       return;
     }
-    void submit({ [stringField.name]: `[QA:${action}]` });
+    void submit(
+      { [stringField.name]: token },
+      false,
+      { kind: "quick-action", fieldName: stringField.name, token },
+    );
+  };
+
+  const retryQuickAction = (
+    intent: Extract<ForceRetry, { kind: "quick-action" }>,
+  ) => {
+    const answerWithDefaults = {
+      ...defaultAnswerForSpec(formSpec),
+      ...latestAnswer,
+    };
+    const { answers, errors } = coerceFormAnswerToSchema(
+      visibleFields,
+      answerWithDefaults,
+    );
+    if (Object.keys(errors).length > 0) {
+      setError("Fix invalid fields: " + Object.keys(errors).join(", "));
+      return;
+    }
+    void submit(
+      { ...answers, [intent.fieldName]: intent.token },
+      true,
+      intent,
+    );
   };
 
   const showQuickActions = !verdictField && quickActions.length > 0;
@@ -358,7 +420,19 @@ export default function HumanPromptForm({
                 variant="primary"
                 size="sm"
                 disabled={busy}
-                onClick={() => void submit(forceRetry, true)}
+                onClick={() => {
+                  if (forceRetry.kind === "verdict") {
+                    submitWithVerdict(
+                      forceRetry.value,
+                      true,
+                      forceRetry.fieldName,
+                    );
+                  } else if (forceRetry.kind === "quick-action") {
+                    retryQuickAction(forceRetry);
+                  } else {
+                    submitFromWizard(latestAnswer, true);
+                  }
+                }}
               >
                 Resume with updated workflow (force)
               </Button>

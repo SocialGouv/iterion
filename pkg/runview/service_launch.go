@@ -315,18 +315,22 @@ func (s *Service) Resume(parent context.Context, spec ResumeSpec) (*LaunchResult
 		return nil, err
 	}
 
-	// Compile and validate the workflow hash before handing the resume to
-	// any asynchronous execution path. Engine.Resume keeps the same check as
-	// a defence-in-depth/TOCTOU guard, but doing it only inside spawnRun's
-	// goroutine makes the HTTP API return 202 before a mismatch is known. The
-	// studio then treats the human answer as accepted and hides the form even
-	// though the run remains paused. A synchronous error lets the existing UI
-	// preserve the answer and offer its explicit force-resume retry.
+	// Compile and compare synchronously before handing the resume to any
+	// asynchronous execution mode. Without this preflight, in-process runs
+	// returned from spawnRun before Engine.Resume checked the hash, while
+	// detached/cloud runners only discovered the mismatch after this service
+	// had already reported success (202) to the HTTP caller — the studio then
+	// treats the human answer as accepted and hides the form even though the
+	// run is still paused. A synchronous error lets the existing UI preserve
+	// the answer and offer its explicit force-resume retry.
+	//
+	// Engine.Resume repeats the same check after acquiring the run lock, so a
+	// source/status change between this point and execution still fails closed.
 	wf, hash, err := compileForLaunch(spec.FilePath, spec.Source)
 	if err != nil {
 		return nil, err
 	}
-	if err := validateResumeWorkflowHash(r, hash, spec.Force); err != nil {
+	if err := runtime.ValidateResumeWorkflowHash(r.ID, r.WorkflowHash, hash, spec.Force); err != nil {
 		return nil, err
 	}
 
@@ -416,29 +420,6 @@ func validateResumable(r *store.Run, answers map[string]any) error {
 	default:
 		return fmt.Errorf("run %q cannot be resumed (status: %s)", r.ID, r.Status)
 	}
-}
-
-// validateResumeWorkflowHash is the synchronous Service.Resume preflight for
-// the engine's workflow-hash guard. Keep the runtime check too: it protects
-// direct Engine.Resume callers and remains the final check inside the locked
-// resume goroutine.
-func validateResumeWorkflowHash(r *store.Run, currentHash string, force bool) error {
-	if force || r.WorkflowHash == "" || currentHash == "" || r.WorkflowHash == currentHash {
-		return nil
-	}
-	return fmt.Errorf(
-		"runtime: workflow source has changed since run %q was started (expected hash %s, got %s); re-run from scratch or use --force",
-		r.ID,
-		shortWorkflowHash(r.WorkflowHash),
-		shortWorkflowHash(currentHash),
-	)
-}
-
-func shortWorkflowHash(hash string) string {
-	if len(hash) > 12 {
-		return hash[:12]
-	}
-	return hash
 }
 
 // spawnRun owns the lock + register + goroutine + defer-cleanup

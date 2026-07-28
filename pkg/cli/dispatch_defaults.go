@@ -194,21 +194,11 @@ fi
 `, projectDir),
 			TimeoutMS: 120_000,
 		}
-		// before_remove: clean up the git worktree registration on
-		// the host repo before the workspace directory is deleted.
-		// Without this, `git -C $PROJECT_DIR worktree list` would
-		// accumulate stale entries pointing at gone directories
-		// (the dispatcher's Workspaces.Remove only deletes the
-		// directory, it doesn't talk to git).
-		hooks.BeforeRemove = &dispatcher.Hook{
-			Script: fmt.Sprintf(`set -e
-PROJECT_DIR=%q
-if git -C "$PROJECT_DIR" rev-parse --git-dir >/dev/null 2>&1; then
-  git -C "$PROJECT_DIR" worktree remove --force "$ITERION_WORKSPACE" 2>/dev/null || true
-fi
-`, projectDir),
-			TimeoutMS: 30_000,
-		}
+		// No destructive before_remove default: after removing an owned,
+		// clean workspace the dispatcher deregisters that exact linked
+		// worktree through the surviving host-repository metadata. A
+		// shell-level `git worktree remove --force` before deletion would
+		// reopen a commit-vs-remove race.
 	}
 
 	// Discover the bots so routing + per-bot dispatch vars come from each

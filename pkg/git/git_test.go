@@ -205,6 +205,8 @@ func TestValidateRelPath(t *testing.T) {
 		{"/etc/passwd", true},
 		{"../escape", true},
 		{"sub/../../escape", true},
+		{`C:\Windows\system.ini`, true},
+		{`sub\file.txt`, true},
 		{"with\x00nul", true},
 	}
 	for _, c := range cases {

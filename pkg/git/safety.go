@@ -25,6 +25,13 @@ func ValidateRelPath(p string) error {
 	if filepath.IsAbs(p) || strings.HasPrefix(p, "/") {
 		return fmt.Errorf("git: path must be relative")
 	}
+	// The wire format is slash-separated on every platform. Reject
+	// backslashes before applying host-OS path rules so a Windows drive path
+	// such as C:\secret is refused consistently even when the server runs on
+	// Linux (where backslash would otherwise be treated as a normal byte).
+	if strings.ContainsRune(p, '\\') {
+		return fmt.Errorf("git: path must use forward slashes")
+	}
 	// Reject a leading dash. showAt (range.go) passes `ref:<relPath>`
 	// as a single positional arg to `git show`; a path starting with
 	// "-" would be parsed as a git flag (e.g. `git show HEAD:-v` ⇒

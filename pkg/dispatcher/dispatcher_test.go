@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"os"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -496,7 +497,14 @@ func TestDispatcherRetriesOnFailure(t *testing.T) {
 	ft.add(tracker.Issue{ID: "fake:2", Identifier: "fake#2", Title: "boom", WorkflowState: "ready"})
 
 	var calls atomic.Int32
-	runner := &StubRunner{Handler: func(_ context.Context, _ DispatchSpec) error {
+	var (
+		pathsMu sync.Mutex
+		paths   []string
+	)
+	runner := &StubRunner{Handler: func(_ context.Context, spec DispatchSpec) error {
+		pathsMu.Lock()
+		paths = append(paths, spec.WorkspacePath)
+		pathsMu.Unlock()
 		calls.Add(1)
 		return errors.New("simulated failure")
 	}}
@@ -514,11 +522,61 @@ func TestDispatcherRetriesOnFailure(t *testing.T) {
 	deadline := time.Now().Add(10 * time.Second)
 	for time.Now().Before(deadline) {
 		if calls.Load() >= 2 {
+			pathsMu.Lock()
+			defer pathsMu.Unlock()
+			if len(paths) < 2 || paths[0] == "" || paths[0] != paths[1] {
+				t.Fatalf("persist=keep retry workspace paths = %q, want one stable non-empty path", paths)
+			}
 			return
 		}
 		time.Sleep(50 * time.Millisecond)
 	}
 	t.Fatalf("expected at least 2 dispatch attempts, saw %d", calls.Load())
+}
+
+func TestDispatcherCleanupPolicyUsesFreshWorkspaceForNonResumableRetry(t *testing.T) {
+	ft := newFakeTracker()
+	ft.add(tracker.Issue{ID: "fake:cleanup-retry", Identifier: "fake#cleanup-retry", Title: "boom", WorkflowState: "ready"})
+
+	var (
+		calls   atomic.Int32
+		pathsMu sync.Mutex
+		paths   []string
+	)
+	runner := &StubRunner{Handler: func(_ context.Context, spec DispatchSpec) error {
+		pathsMu.Lock()
+		paths = append(paths, spec.WorkspacePath)
+		pathsMu.Unlock()
+		calls.Add(1)
+		return errors.New("non-resumable failure")
+	}}
+
+	c := newTestDispatcher(t, runner, ft, 50*time.Millisecond)
+	cfg := c.cfg.Load()
+	cfg.Agent.MaxRetryBackoffMS = 100
+	cfg.Workspace.Persist = WorkspacePersistCleanupOnDone
+	c.cfg.Store(cfg)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	c.Start(ctx)
+	defer c.Stop()
+
+	deadline := time.Now().Add(10 * time.Second)
+	for time.Now().Before(deadline) {
+		if calls.Load() >= 2 {
+			pathsMu.Lock()
+			defer pathsMu.Unlock()
+			if len(paths) < 2 || paths[0] == "" || paths[1] == "" || paths[0] == paths[1] {
+				t.Fatalf("cleanup retry workspace paths = %q, want distinct non-empty generations", paths)
+			}
+			if _, err := os.Stat(paths[0]); err != nil {
+				t.Fatalf("failed generation was not retained for recovery: %v", err)
+			}
+			return
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	t.Fatalf("expected at least 2 cleanup-policy dispatch attempts, saw %d", calls.Load())
 }
 
 // TestDispatcherGivesUpAfterMaxAttempts is the regression guard for the
@@ -634,9 +692,26 @@ func TestDispatcherCancel(t *testing.T) {
 		t.Fatal("dispatch never started")
 	}
 
+	deadline := time.Now().Add(10 * time.Second)
+	for time.Now().Before(deadline) {
+		running := c.Snapshot().Running
+		if len(running) == 1 && running[0].IssueID == "fake:4" {
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	running := c.Snapshot().Running
+	if len(running) != 1 || running[0].IssueID != "fake:4" {
+		t.Fatal("running entry was not published")
+	}
+
+	// Cancellation intentionally makes the issue eligible for dispatch again.
+	// Pause new dispatches so this assertion observes the cancelled run's
+	// teardown instead of racing its legitimate redispatch.
+	c.Pause()
 	c.Cancel("fake:4")
 
-	deadline := time.Now().Add(10 * time.Second)
+	deadline = time.Now().Add(10 * time.Second)
 	for time.Now().Before(deadline) {
 		if len(c.Snapshot().Running) == 0 {
 			return

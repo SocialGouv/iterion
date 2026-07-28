@@ -3,6 +3,7 @@ package mongo
 import (
 	"bytes"
 	"context"
+	"fmt"
 	"io"
 	"os"
 	"testing"
@@ -253,12 +254,19 @@ func (b *inMemoryBlob) DeleteRunToolBlobs(_ context.Context, runID string) error
 	return nil
 }
 
-func (b *inMemoryBlob) PutRunFile(_ context.Context, runID, relPath, _ string, body []byte) error {
+func (b *inMemoryBlob) PutRunFile(_ context.Context, runID, relPath, _ string, body io.Reader, size int64) error {
 	key, err := blob.RunFileKey(runID, relPath)
 	if err != nil {
 		return err
 	}
-	b.data[key] = append([]byte{}, body...)
+	payload, err := io.ReadAll(body)
+	if err != nil {
+		return err
+	}
+	if int64(len(payload)) != size {
+		return fmt.Errorf("run file size = %d, want %d", len(payload), size)
+	}
+	b.data[key] = append([]byte{}, payload...)
 	return nil
 }
 

@@ -14,6 +14,12 @@ import MarkdownText from "./MarkdownText";
 interface Props {
   runId: string;
   message: HumanQuestionMessage;
+  // Board callers answer a persisted run rather than the editor buffer. An
+  // explicit null therefore suppresses `source`, matching HumanPromptForm.
+  sourceOverride?: string | null;
+  // When supplied, the caller owns refresh/navigation after resume (the
+  // pipeline board refetches its projection instead of reconnecting run WS).
+  onResumed?: () => void;
 }
 
 // Reserved answer keys — must match pkg/runtime/review.go.
@@ -28,7 +34,18 @@ const STRATEGY_KEY = "__review_merge_strategy";
 // (Approve & merge / Force-merge / Request changes). Every action resumes the
 // run with a reserved __review_action — approve/force squash-merge the
 // worktree during the pause; reply continues the dialogue (re-pauses).
-export default function ReviewMergeCard({ runId, message }: Props) {
+export default function ReviewMergeCard(props: Props) {
+  // A new review-turn id is a new form. Keying the stateful body resets its
+  // draft/submission state without a synchronous setState effect.
+  return <ReviewMergeCardTurn key={props.message.id} {...props} />;
+}
+
+function ReviewMergeCardTurn({
+  runId,
+  message,
+  sourceOverride,
+  onResumed,
+}: Props) {
   const review = message.review;
   const setRunStatus = useRunStore((s) => s.setRunStatus);
   const requestWsReconnect = useRunStore((s) => s.requestWsReconnect);
@@ -37,6 +54,8 @@ export default function ReviewMergeCard({ runId, message }: Props) {
     (s) => s.resyncEventsAfterResume,
   );
   const currentSource = useDocumentStore((s) => s.currentSource);
+  const resolvedSource =
+    (sourceOverride !== undefined ? sourceOverride : currentSource) ?? undefined;
 
   const [busy, setBusy] = useState(false);
   const [submitted, setSubmitted] = useState(false);
@@ -46,11 +65,6 @@ export default function ReviewMergeCard({ runId, message }: Props) {
   const [commitMsg, setCommitMsg] = useState("");
 
   const snapshotTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  useEffect(() => {
-    setSubmitted(false);
-    setReply("");
-    setError(null);
-  }, [message.id]);
   useEffect(
     () => () => {
       if (snapshotTimerRef.current != null) clearTimeout(snapshotTimerRef.current);
@@ -67,8 +81,12 @@ export default function ReviewMergeCard({ runId, message }: Props) {
     setBusy(true);
     setError(null);
     try {
-      await resumeRun(runId, { answers, source: currentSource ?? undefined });
+      await resumeRun(runId, { answers, source: resolvedSource });
       setSubmitted(true);
+      if (onResumed) {
+        onResumed();
+        return;
+      }
       setRunStatus("running");
       requestWsReconnect();
       resyncEventsAfterResume(runId);
@@ -106,9 +124,9 @@ export default function ReviewMergeCard({ runId, message }: Props) {
   const noMerge = review.mergeInto === "none";
 
   return (
-    <div className="mt-1 rounded-md border-2 border-warning bg-warning-soft/20 px-3 py-2 space-y-3">
-      <div className="flex flex-wrap items-center gap-2 text-micro">
-        <span className="font-medium text-warning-fg">
+    <div className="mt-1 max-w-5xl space-y-4 rounded-lg border-2 border-warning bg-warning-soft/20 p-4">
+      <div className="flex flex-wrap items-center gap-2 text-body">
+        <span className="text-label font-medium text-warning-fg">
           Review &amp; merge — test the change, then ship it
         </span>
         <code className="px-1.5 py-0.5 rounded bg-warning-soft/40 font-mono text-fg-default">
@@ -131,7 +149,7 @@ export default function ReviewMergeCard({ runId, message }: Props) {
           href={review.reviewUrl}
           target="_blank"
           rel="noreferrer"
-          className="inline-flex items-center gap-1 text-body text-accent-fg underline"
+          className="inline-flex items-center gap-1 text-title text-accent-fg underline"
         >
           ↗ Open review environment ({review.reviewUrl})
         </a>
@@ -142,8 +160,8 @@ export default function ReviewMergeCard({ runId, message }: Props) {
       {/* Continue the dialogue */}
       <div className="space-y-1">
         <textarea
-          className="w-full rounded border border-border-default bg-surface-0 px-2 py-1 text-body text-fg-default"
-          rows={2}
+          className="w-full rounded border border-border-default bg-surface-0 px-3 py-2 text-label text-fg-default"
+          rows={3}
           placeholder="Reply to the reviewer (e.g. what you tested, what you saw)…"
           value={reply}
           onChange={(e) => setReply(e.target.value)}
@@ -162,7 +180,7 @@ export default function ReviewMergeCard({ runId, message }: Props) {
       {/* Merge controls */}
       <div className="space-y-2 border-t border-border-default pt-2">
         {!noMerge && (
-          <div className="flex items-center gap-2 text-micro">
+          <div className="flex items-center gap-2 text-body">
             <label htmlFor="review-merge-strategy" className="text-fg-muted">
               Strategy
             </label>
@@ -184,7 +202,7 @@ export default function ReviewMergeCard({ runId, message }: Props) {
         )}
         {!noMerge && strategy === "squash" && (
           <textarea
-            className="w-full rounded border border-border-default bg-surface-0 px-2 py-1 text-micro font-mono text-fg-default"
+            className="w-full rounded border border-border-default bg-surface-0 px-3 py-2 text-body font-mono text-fg-default"
             rows={2}
             placeholder="(optional) squash commit message — defaults to the run's commits"
             value={commitMsg}
@@ -203,7 +221,7 @@ export default function ReviewMergeCard({ runId, message }: Props) {
             Request changes
           </Button>
         </div>
-        <p className="text-caption text-fg-subtle">
+        <p className="text-body text-fg-subtle">
           Force-merge skips the reviewer&apos;s verdict (git safety checks still
           apply). Request changes returns the run to the implementer.
         </p>
@@ -228,7 +246,7 @@ function DialogueThread({
   if (turns.length === 0) {
     return (
       <div className="text-body text-fg-default">
-        <MarkdownText value={fallback} size="sm" />
+        <MarkdownText value={fallback} size="lg" />
       </div>
     );
   }
@@ -237,7 +255,7 @@ function DialogueThread({
       {turns.map((t, i) =>
         t.role === "human" ? (
           <div key={i} className="flex justify-end">
-            <div className="max-w-[80%] rounded-md bg-accent-soft/60 px-3 py-2 text-body text-fg-default whitespace-pre-wrap break-words">
+            <div className="max-w-[80%] rounded-md bg-accent-soft/60 px-3 py-2 text-label leading-relaxed text-fg-default whitespace-pre-wrap break-words">
               {t.content?.trim() || (
                 <span className="italic text-fg-muted">(no comment)</span>
               )}
@@ -245,7 +263,7 @@ function DialogueThread({
           </div>
         ) : (
           <div key={i} className="text-body text-fg-default">
-            <MarkdownText value={t.content ?? ""} size="sm" />
+            <MarkdownText value={t.content ?? ""} size="lg" />
           </div>
         ),
       )}

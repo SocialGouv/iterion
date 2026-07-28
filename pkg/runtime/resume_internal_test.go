@@ -2,6 +2,7 @@ package runtime
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"testing"
 
@@ -40,6 +41,12 @@ func TestCheckWorkflowHash_MismatchReturnsError(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error for hash mismatch")
 	}
+	if !errors.Is(err, ErrWorkflowSourceChanged) {
+		t.Errorf("error should wrap ErrWorkflowSourceChanged: %v", err)
+	}
+	if !IsWorkflowSourceChanged(err) {
+		t.Errorf("IsWorkflowSourceChanged should recognize typed error: %v", err)
+	}
 	if !strings.Contains(err.Error(), "workflow source has changed") {
 		t.Errorf("error wording changed: %v", err)
 	}
@@ -52,11 +59,51 @@ func TestCheckWorkflowHash_MismatchReturnsError(t *testing.T) {
 	}
 }
 
+func TestIsWorkflowSourceChanged_LegacyTextCompatibility(t *testing.T) {
+	err := errors.New("resume: WORKFLOW SOURCE HAS CHANGED since this run started")
+	if !IsWorkflowSourceChanged(err) {
+		t.Fatalf("legacy text boundary should remain recognizable: %v", err)
+	}
+	if IsWorkflowSourceChanged(errors.New("resume: invalid answers")) {
+		t.Fatal("unrelated resume error classified as source change")
+	}
+}
+
 func TestCheckWorkflowHash_ForceAllowsMismatch(t *testing.T) {
 	e := &Engine{workflowHash: "abc123def456", forceResume: true}
 	r := &store.Run{ID: "r1", WorkflowHash: "deadbeefcafe"}
 	if err := e.checkWorkflowHash(r); err != nil {
 		t.Fatalf("expected --force to bypass hash check, got %v", err)
+	}
+}
+
+func TestValidateResumeWorkflowHash(t *testing.T) {
+	tests := []struct {
+		name      string
+		persisted string
+		current   string
+		force     bool
+		wantErr   bool
+	}{
+		{name: "matching", persisted: "same", current: "same"},
+		{name: "legacy persisted hash absent", current: "current"},
+		{name: "legacy current hash absent", persisted: "persisted"},
+		{name: "forced mismatch", persisted: "old", current: "new", force: true},
+		{name: "unforced mismatch", persisted: "old", current: "new", wantErr: true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := ValidateResumeWorkflowHash("run-1", tt.persisted, tt.current, tt.force)
+			if tt.wantErr {
+				if !errors.Is(err, ErrWorkflowSourceChanged) {
+					t.Fatalf("error = %v, want ErrWorkflowSourceChanged", err)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("error = %v, want nil", err)
+			}
+		})
 	}
 }
 

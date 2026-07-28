@@ -37,9 +37,10 @@ type pipelineBoardTaskRequest struct {
 	External *native.ExternalRef `json:"external,omitempty"`
 }
 
-// workspaceImageExts is the strict allowlist of the input-thumbnail endpoint:
-// it exists solely to preview images referenced by ticket inputs, so anything
-// that is not an image stays out of scope on purpose (no generic file reads).
+// workspaceImageExts is the strict allowlist for the pipeline-board workspace
+// thumbnail endpoint. It exists solely to preview image paths surfaced in card
+// inputs, so anything that is not an image stays out of scope on purpose (no
+// generic file reads).
 var workspaceImageExts = map[string]string{
 	".png":  "image/png",
 	".jpg":  "image/jpeg",

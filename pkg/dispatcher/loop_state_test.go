@@ -273,25 +273,30 @@ func TestDispatch_RevertsOnWorkspaceCreateFailure(t *testing.T) {
 	if err := os.MkdirAll(wsDir, 0o755); err != nil {
 		t.Fatalf("mkdir ws: %v", err)
 	}
-	// Seed a file where the workspace directory should land. The
-	// sanitized key for "fake:t4" replaces ':' with '_'.
-	collidingFile := filepath.Join(wsDir, "fake_t4")
+	ws, err := NewWorkspaces(wsDir)
+	if err != nil {
+		t.Fatalf("NewWorkspaces: %v", err)
+	}
+	// Seed a file where the v2 workspace namespace must be a directory.
+	// Create must refuse to adopt or replace it, independently of the freshly
+	// generated run-specific path.
+	collidingFile := filepath.Join(wsDir, workspaceKeyNamespace)
 	if err := os.WriteFile(collidingFile, []byte("collision"), 0o644); err != nil {
 		t.Fatalf("seed colliding file: %v", err)
 	}
 
 	cfg := &Config{
-		Name:      "test",
-		Workflow:  t.TempDir() + "/fake.bot",
-		Tracker:   TrackerConfig{Kind: "fake"},
-		Polling:   PollingConfig{IntervalMS: 50},
-		Agent:     AgentConfig{MaxConcurrent: 4, MaxRetryBackoffMS: 1000, RunningState: "in_progress"},
-		Workspace: WorkspaceConfig{Root: wsDir},
+		Name:     "test",
+		Workflow: t.TempDir() + "/fake.bot",
+		Tracker:  TrackerConfig{Kind: "fake"},
+		Polling:  PollingConfig{IntervalMS: 50},
+		Agent:    AgentConfig{MaxConcurrent: 4, MaxRetryBackoffMS: 1000, RunningState: "in_progress"},
+		// A cleanup policy selects the fresh run generation without probing
+		// the stable keep shape first. This keeps the fixture focused on the
+		// asynchronous CreateForRun failure path; operational probe failures
+		// are now deferred synchronously and covered by workspace probe tests.
+		Workspace: WorkspaceConfig{Root: wsDir, Persist: WorkspacePersistCleanupOnDone},
 		Stall:     StallConfig{TimeoutMS: 0},
-	}
-	ws, err := NewWorkspaces(wsDir)
-	if err != nil {
-		t.Fatalf("NewWorkspaces: %v", err)
 	}
 	c, err := New(Options{
 		Config:     cfg,
@@ -373,6 +378,92 @@ func TestDispatch_RevertsOnWorkspaceCreateFailure(t *testing.T) {
 	}
 }
 
+func TestDispatchConsumesRetryOnlyAfterWorkspaceLifecycleProbeSucceeds(t *testing.T) {
+	ft := newStateAwareTracker()
+	iss := tracker.Issue{
+		ID: "fake:retry-probe", Identifier: "fake#retry-probe",
+		Title: "go", WorkflowState: "ready",
+	}
+	ft.add(iss)
+	c, wsDir := newStateTestDispatcher(t, &StubRunner{}, ft, time.Hour, "in_progress")
+
+	// PrevRunID="" is an authoritative retry decision: start fresh instead
+	// of falling back to a persisted last run whose source changed.
+	retry := &retryEntry{
+		IssueID:    iss.ID,
+		Identifier: iss.Identifier,
+		Attempt:    2,
+		Fired:      true,
+		PrevRunID:  "",
+	}
+	c.state.retries[iss.ID] = retry
+
+	namespace := filepath.Join(wsDir, workspaceKeyNamespace)
+	if err := os.MkdirAll(namespace, 0o755); err != nil {
+		t.Fatalf("mkdir workspace namespace: %v", err)
+	}
+	ownersPath := filepath.Join(namespace, workspaceOwnersDir)
+	if err := os.WriteFile(ownersPath, []byte("broken"), 0o600); err != nil {
+		t.Fatalf("plant invalid ownership namespace: %v", err)
+	}
+
+	ctx := context.Background()
+	c.dispatch(ctx, iss)
+
+	if got := c.state.retries[iss.ID]; got != retry {
+		t.Fatalf("second-probe failure consumed or replaced retry: got=%p want=%p", got, retry)
+	}
+	if _, running := c.state.running[iss.ID]; running {
+		t.Fatal("second-probe failure allocated a running entry")
+	}
+	if _, visible := c.state.dispatchSkips[iss.ID]; !visible {
+		t.Fatal("second-probe failure was not surfaced as a dispatch skip")
+	}
+	ft.mu.Lock()
+	_, stillClaimed := ft.claims[iss.ID]
+	ft.mu.Unlock()
+	if stillClaimed {
+		t.Fatal("second-probe failure did not release the tracker claim")
+	}
+
+	// Repair the operational filesystem failure. The same retry decision is
+	// consumed only once the next dispatch has completed every synchronous
+	// workspace probe and is ready to allocate its running entry.
+	if err := os.Remove(ownersPath); err != nil {
+		t.Fatalf("repair ownership namespace: %v", err)
+	}
+	c.dispatch(ctx, iss)
+
+	if _, queued := c.state.retries[iss.ID]; queued {
+		t.Fatal("successful workspace lifecycle did not consume retry")
+	}
+	if _, running := c.state.running[iss.ID]; !running {
+		t.Fatal("successful workspace lifecycle did not allocate running entry")
+	}
+
+	// Let the no-op setup/run worker finish, then apply its two FIFO actor
+	// commands so the test leaves no running entry or tracker claim behind.
+	c.workersWG.Wait()
+	for i := 0; i < 2; i++ {
+		select {
+		case command := <-c.cmds:
+			command.apply(c, ctx)
+		case <-time.After(10 * time.Second):
+			t.Fatal("successful dispatch did not post setup and finish commands")
+		}
+	}
+	c.workersWG.Wait()
+	if _, running := c.state.running[iss.ID]; running {
+		t.Fatal("successful dispatch teardown left a running entry")
+	}
+	ft.mu.Lock()
+	_, stillClaimed = ft.claims[iss.ID]
+	ft.mu.Unlock()
+	if stillClaimed {
+		t.Fatal("successful dispatch teardown left the tracker claim")
+	}
+}
+
 // TestFinishRun_RevertsOnCancel exercises the cancel-then-finish flow:
 // the dispatcher must revert the in_progress transition so the next
 // tick can re-pick the issue from "ready".
@@ -407,6 +498,10 @@ func TestFinishRun_RevertsOnCancel(t *testing.T) {
 		t.Fatalf("issue state = %q after dispatch, want in_progress", got)
 	}
 
+	// Cancellation makes the reverted issue immediately eligible for a fresh
+	// dispatch. Pause discovery so the assertions below observe this run's
+	// ready transition instead of racing the next legitimate in_progress one.
+	c.Pause()
 	c.Cancel("fake:t5")
 
 	// Wait for the cancel to propagate through finishRun.

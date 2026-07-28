@@ -6,6 +6,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/SocialGouv/iterion/pkg/runtime"
 	"github.com/SocialGouv/iterion/pkg/store"
 )
 
@@ -124,11 +125,11 @@ func (c *Dispatcher) scheduleRetry(issueID string, prev *runningEntry, runErr er
 // run started (pkg/runtime/resume.go: "workflow source has changed ...
 // re-run from scratch or use --force"). Such a run cannot be resumed as-
 // is; the dispatcher must retry FRESH rather than reschedule the same
-// doomed resume. Matches the message substring because the error is a
-// plain fmt.Errorf, not a typed code, and survives the in-process
-// boundary as text.
+// doomed resume. The runtime exposes a typed sentinel in-process and retains a
+// compatibility fallback for detached/mixed-version boundaries that flatten
+// errors to text.
 func isResumeSourceChanged(err error) bool {
-	return err != nil && strings.Contains(err.Error(), "workflow source has changed")
+	return runtime.IsWorkflowSourceChanged(err)
 }
 
 // resumableRunID returns the runID iff the corresponding run record

@@ -244,24 +244,43 @@ re-dispatching).
 
 ## Workspace lifecycle
 
-`<workspace.root>/<sanitized-issue-id>/` is created on first dispatch
-for that issue and preserved across retries (so the agent's incremental
-state survives a failure). By default it is **never** auto-removed —
-cleanup is opt-in via the `workspace.persist` policy.
+Workspaces live below
+`<workspace.root>/.issue-workspaces-v2/<readable-slug>--<sha256>/`.
+The digest is derived from the original issue ID, so IDs that sanitize to
+the same slug cannot collide. Ownership records live outside the checkout in
+the sibling `.owners/` directory.
 
 | `workspace.persist`     | Behaviour                                                 |
 |--------------------------|----------------------------------------------------------|
-| `keep`                   | Never delete. **Default** (the empty value).            |
-| `cleanup_on_done`        | Delete on a clean dispatch return (engine success).      |
+| `keep`                   | Reuse one stable per-issue workspace; never delete. **Default** (the empty value). |
+| `cleanup_on_done`        | Use a run-ID generation and delete it on a clean dispatch return (engine success). |
 | `cleanup_on_terminal`    | v1: identical to `cleanup_on_done` (terminal-state branching is unimplemented). |
 
-Failed / cancelled dispatches always retain the workspace so a retry can
-resume from it.
+The persist policy is snapshotted when a dispatch starts. Reloading it affects
+new dispatches only; an in-flight run keeps the cleanup decision under which
+its workspace was allocated.
 
-The sanitize regex is `[^a-zA-Z0-9._-]` → `_`, with a leading dot
-escaped (so an issue named `.gitignore` doesn't produce a hidden dir).
-The resolver refuses workspaces whose symlink resolution lands outside
-the configured root.
+Failed / cancelled dispatches retain their workspace. A resumable retry keeps
+the same run ID and generation. A non-resumable retry starts a fresh
+generation; the failed generation remains available for operator recovery.
+Before successful cleanup, the ownership marker is atomically changed from
+`active` to `retired`; interrupted directory/marker deletion therefore cannot
+block a later run-ID generation.
+The legacy stable-workspace `Workspaces.Remove` API is idempotent: when both
+the target and its ownership marker are already absent, removal succeeds
+without requiring an observed retirement transition.
+
+Directories created by older versions directly under
+`<workspace.root>/<sanitized-issue-id>/` are deliberately not adopted or
+deleted: the old sanitizer was many-to-one, so ownership cannot be proven from
+the name. A resumable run with only such a legacy/unowned workspace is restarted
+fresh in v2 while the old directory is left untouched for operator recovery.
+This loss of resume continuity is an accepted one-time migration cost. To
+reclaim legacy directories, first confirm that no active/resumable run still
+references them, then inspect and move or delete them manually; automatic
+cleanup would risk deleting a different issue's colliding legacy workspace.
+The resolver also refuses workspaces whose symlink resolution lands outside the
+configured root.
 
 These dispatcher workspaces are **distinct** from the engine's per-run
 `worktree: auto` — the latter is the runtime's git-isolation
@@ -302,6 +321,10 @@ exports five environment variables before invoking the hook:
 A failed `after_create` or `before_run` aborts the dispatch and feeds
 the retry queue; failed `after_run` / `before_remove` are logged at
 WARN.
+Legacy/custom `before_remove` hooks that already run
+`git worktree remove --force` remain compatible: the dispatcher's exact
+post-delete deregistration first lists registrations and becomes a no-op when
+the hook already removed that path.
 
 ## Dispatch templates
 
@@ -543,6 +566,7 @@ The dispatcher watches `iterion.dispatcher.yaml` via fsnotify with a
 | `agent.max_retry_backoff_ms`                   | applied next retry calc              |
 | `hooks.*`                                      | applied next dispatch                |
 | `dispatch.vars`                                | applied next dispatch                |
+| `workspace.persist`                            | applied next dispatch; resumed runs preserve their original workspace shape |
 | `stall.timeout_ms`                             | applied next tick                    |
 | `workflow:`, `tracker.kind:`, `workspace.root` | warn-only; require restart           |
 | `tracker.*` credentials                        | warn-only; require restart           |

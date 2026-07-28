@@ -1,6 +1,6 @@
+import * as RP from "@radix-ui/react-popover";
 import {
   useCallback,
-  useEffect,
   useId,
   useMemo,
   useRef,
@@ -65,7 +65,6 @@ export function Combobox<T = string>({
   const [open, setOpen] = useState(false);
   const [query, setQuery] = useState("");
   const [focusIdx, setFocusIdx] = useState(-1);
-  const rootRef = useRef<HTMLDivElement | null>(null);
   const inputRef = useRef<HTMLInputElement | null>(null);
 
   const selected = useMemo(
@@ -98,16 +97,6 @@ export function Combobox<T = string>({
     setQuery("");
     setFocusIdx(-1);
   }, []);
-
-  useEffect(() => {
-    if (!open) return;
-    function onDoc(ev: MouseEvent) {
-      if (!rootRef.current) return;
-      if (!rootRef.current.contains(ev.target as Node)) close();
-    }
-    document.addEventListener("mousedown", onDoc);
-    return () => document.removeEventListener("mousedown", onDoc);
-  }, [open, close]);
 
   const sizeClass = size === "sm" ? "h-7 text-xs px-2" : "h-9 text-sm px-2.5";
 
@@ -169,33 +158,40 @@ export function Combobox<T = string>({
 
   const listboxId = useId();
 
+  // The popup rides a portaled Radix Popover instead of an absolutely
+  // positioned sibling: inside a Dialog body (overflow-y-auto) the old
+  // popup was clipped to the scroll container — ~1.5 visible rows in the
+  // AddTaskDialog. Radix portals it above the dialog, flips when space
+  // below runs out, and hands us the real available height via CSS var.
   return (
-    <div ref={rootRef} className="relative">
-      <button
-        type="button"
-        id={id}
-        disabled={disabled}
-        onClick={() => {
-          if (disabled) return;
-          setOpen((o) => !o);
-          setTimeout(() => inputRef.current?.focus(), 0);
-        }}
-        className={`w-full text-left bg-surface-1 text-fg-default rounded-md border border-border-strong outline-none transition-colors disabled:opacity-60 disabled:cursor-not-allowed focus:border-accent focus:ring-1 focus:ring-accent ${sizeClass} flex items-center justify-between gap-2`}
-        aria-haspopup="listbox"
-        aria-expanded={open}
-        aria-controls={open ? listboxId : undefined}
-      >
-        <span className={headerText ? "" : "text-fg-subtle"}>
-          {headerText || placeholder}
-        </span>
-        <span className="text-fg-subtle text-caption">▾</span>
-      </button>
-
-      {open && (
-        <div
+    <RP.Root open={open} onOpenChange={(o) => (o ? setOpen(true) : close())}>
+      <RP.Trigger asChild>
+        <button
+          type="button"
+          id={id}
+          disabled={disabled}
+          className={`w-full text-left bg-surface-1 text-fg-default rounded-md border border-border-strong outline-none transition-colors disabled:opacity-60 disabled:cursor-not-allowed focus:border-accent focus:ring-1 focus:ring-accent ${sizeClass} flex items-center justify-between gap-2`}
+          aria-haspopup="listbox"
+          aria-controls={open ? listboxId : undefined}
+        >
+          <span className={headerText ? "" : "text-fg-subtle"}>
+            {headerText || placeholder}
+          </span>
+          <span className="text-fg-subtle text-caption">▾</span>
+        </button>
+      </RP.Trigger>
+      <RP.Portal>
+        <RP.Content
           role="listbox"
           id={listboxId}
-          className="absolute z-[var(--z-popover)] mt-1 w-full max-h-72 overflow-auto rounded-md border border-border-strong bg-surface-0 shadow-[var(--shadow-popover)]"
+          align="start"
+          sideOffset={4}
+          // Focus the search input, not the popup container.
+          onOpenAutoFocus={(e) => {
+            e.preventDefault();
+            inputRef.current?.focus();
+          }}
+          className="z-[var(--z-popover)] w-[var(--radix-popover-trigger-width)] max-h-[min(18rem,var(--radix-popover-content-available-height))] overflow-auto rounded-md border border-border-strong bg-surface-0 shadow-[var(--shadow-popover)]"
         >
           <div className="p-1 sticky top-0 bg-surface-0 border-b border-border-default">
             <input
@@ -287,8 +283,8 @@ export function Combobox<T = string>({
               </li>
             )}
           </ul>
-        </div>
-      )}
-    </div>
+        </RP.Content>
+      </RP.Portal>
+    </RP.Root>
   );
 }

@@ -635,21 +635,30 @@ func (c *S3Client) DeleteRunToolBlobs(ctx context.Context, runID string) error {
 // Tool-produced artifact files (cloud RunFilesStore twin)
 // ---------------------------------------------------------------------------
 
-// PutRunFile uploads one artifact file under runfiles/<runID>/<relPath>.
-// Idempotent.
-func (c *S3Client) PutRunFile(ctx context.Context, runID, relPath, contentType string, body []byte) error {
+// PutRunFile streams one artifact file under runfiles/<runID>/<relPath>.
+// Idempotent. Unlike attachments, run files may be large audio/video outputs,
+// so the caller's reader is passed directly to the S3 client instead of first
+// materialising the complete body in runner memory.
+func (c *S3Client) PutRunFile(ctx context.Context, runID, relPath, contentType string, body io.Reader, size int64) error {
 	key, err := runFileKey(runID, relPath)
 	if err != nil {
 		return err
+	}
+	if body == nil {
+		return fmt.Errorf("blob: put run file %s: nil body", key)
+	}
+	if size < 0 {
+		return fmt.Errorf("blob: put run file %s: negative size %d", key, size)
 	}
 	if contentType == "" {
 		contentType = "application/octet-stream"
 	}
 	_, err = c.client.PutObject(ctx, &s3.PutObjectInput{
-		Bucket:      aws.String(c.bucket),
-		Key:         aws.String(key),
-		Body:        bytes.NewReader(body),
-		ContentType: aws.String(contentType),
+		Bucket:        aws.String(c.bucket),
+		Key:           aws.String(key),
+		Body:          body,
+		ContentLength: aws.Int64(size),
+		ContentType:   aws.String(contentType),
 	})
 	if err != nil {
 		return fmt.Errorf("blob: put run file %s: %w", key, err)
