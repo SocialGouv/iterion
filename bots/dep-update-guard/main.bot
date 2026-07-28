@@ -907,7 +907,10 @@ tool post_feedback:
     # The server's publish endpoint is the ONLY path that can post a status:
     # the run's own forge_token is minted without the statuses permission.
     if s(pub_url) and s(pub_token):
-        endpoint = s(pub_url).rstrip("/") + "/api/v1/forge/publish-review"
+        # The server injects the FULL endpoint URL, not a base — use it
+        # verbatim. Appending a path produces a URL that misses the
+        # auth-exempt route and is answered by the global auth middleware.
+        endpoint = s(pub_url)
         payload = {"pr_url": s(pr_url), "summary": body, "mode": "summary", "comments": []}
         if gate_on:
             payload["gate"] = {"enabled": True, "context": s(gate_context) or "vetty/deps",
