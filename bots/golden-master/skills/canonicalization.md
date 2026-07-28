@@ -23,6 +23,46 @@ change the net can no longer see.
 | the host and port of the instance | status codes |
 | `Date`, `Set-Cookie`, `Expires` headers | `Content-Type`, `Location` path |
 
+## The canonicaliser needs its own tests, and they are not optional
+
+Everything else in the net is judged by something. Comparators are judged by the
+mutation counter-test. The gate is judged by its own conjunction. The seal is
+judged by the fingerprint refusal. The canonicaliser is judged by **nothing** —
+no mutant exercises it, because a mutant that a rule swallows simply reads as
+undetected, and one that a rule leaves alone reads as detected. It is invisible
+either way.
+
+That matters because the mistake here is **asymmetric**:
+
+| mistake | what the net does | who notices |
+|---|---|---|
+| canonicalise too little | goes unstable, so RED | everyone, immediately |
+| canonicalise too much | goes BLIND, so GREEN | nobody, ever |
+
+A rule that is too wide does not fail. It **silences**. And it silences exactly
+the regression it was meant to let through, because the reason a rule gets
+widened is almost always that something legitimate kept moving.
+
+So write tests, and write them **in both directions**. The "volatile is
+neutralised" cases are easy and nearly worthless; the "business survives" cases
+are the file's reason to exist:
+
+- a field that merely *looks* like a timestamp must survive — match by exact key
+  name, never by value shape, and let a test prove it
+- the same value rendered as displayed text must stay compared while its
+  volatile serialised twin is neutralised — **match the serialisation, not the
+  concept**
+- array order must survive, because a datastore migration produces precisely
+  that kind of reordering and it is the signal, not the noise
+
+Then **falsify them**: write the over-canonicalisation you fear, watch the right
+test go red, and restore. A test suite on a canonicaliser that has never been
+seen to fail is decoration.
+
+Finally, make them **blocking in the emitted runner**, ahead of anything that
+starts the application. They cost milliseconds, and a broken canonicaliser must
+not be able to produce a verdict at all — not a red one, not a green one.
+
 ## The trap that matters most
 
 **Never sort collections "to stabilise them."**

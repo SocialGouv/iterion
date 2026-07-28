@@ -1316,6 +1316,20 @@ tool emit_runner:
         "export GM_DIR GM_WORKSPACE GM_MUTATION_FLOOR",
         'if [ "$1" = "--record" ]; then GM_MODE=record; export GM_MODE; fi',
         'if [ "$1" = "--self-check" ]; then GM_MODE=selfcheck; export GM_MODE; fi',
+        # Les tests du canonicaliseur d'abord, et ils sont BLOQUANTS. C'est le
+        # seul composant du filet qu'aucun mutant n'éprouve : les comparateurs
+        # sont jugés par le contre-test, la porte par sa conjonction, le
+        # scellage par le refus d'empreinte — mais les règles qui décident de ce
+        # qui est volatil et de ce qui est métier ne sont testées que là.
+        #
+        # L'asymétrie justifie le coût (quelques millisecondes) : canonicaliser
+        # trop peu rend le filet instable, donc rouge, donc visible ; trop le
+        # rend AVEUGLE, donc vert. Une règle trop large ne fait pas échouer,
+        # elle fait taire.
+        'CANON_TESTS="$GM_WORKSPACE/$GM_DIR/canon/test_rules.py"',
+        'if [ -f "$CANON_TESTS" ]; then',
+        '  python3 "$CANON_TESTS" >/dev/null 2>&1 || { echo "canon: les tests du normaliseur ÉCHOUENT — le filet ne peut pas être cru tant qu ils ne passent pas" >&2; python3 "$CANON_TESTS" >&2; exit 1; }',
+        'fi',
         # The harness always exits 0 -- the GRAPH reads its JSON and computes
         # the verdict itself, so a non-zero exit there would look like a broken
         # node rather than a red gate. But this script is the entry point for
