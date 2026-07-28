@@ -110,7 +110,7 @@ func (s *Server) handlePRForgeComment(ctx context.Context, w http.ResponseWriter
 		pr = &resolved
 		repoRef = resolved.SourceBranch
 	}
-	vars := buildPRForgeCommandVars(p, pr, route, cmdArgs, cfg.LaunchVars)
+	vars := applyWebhookVarLayers(buildPRForgeCommandVars(p, pr, route, cmdArgs, nil), cfg)
 	if pr != nil {
 		stampBranchImprovePushBack(vars, route.BotID, pr.SourceBranch, cfg.BranchImproveAsPR)
 		// `/billy` on a PR picks up where Revi left off: seed the run with the

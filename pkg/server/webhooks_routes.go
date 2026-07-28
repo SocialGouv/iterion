@@ -12,6 +12,7 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/SocialGouv/iterion/pkg/auth"
+	"github.com/SocialGouv/iterion/pkg/schedgate"
 	"github.com/SocialGouv/iterion/pkg/webhooks"
 )
 
@@ -50,6 +51,8 @@ type webhookConfigReq struct {
 	AuthorAllowlist     []string          `json:"author_allowlist,omitempty"`
 	LabelAllowlist      []string          `json:"label_allowlist,omitempty"`
 	BlockForkPRs        *bool             `json:"block_fork_prs,omitempty"`
+	ReviewOnSync        *bool             `json:"review_on_sync,omitempty"`
+	Overlap             *string           `json:"overlap,omitempty"`
 	AutoImplementOnOpen *bool             `json:"auto_implement_on_open,omitempty"`
 	BranchImproveAsPR   *bool             `json:"branch_improve_as_pr,omitempty"`
 	RateLimit           *webhooks.Rate    `json:"rate_limit,omitempty"`
@@ -60,6 +63,16 @@ type webhookConfigReq struct {
 	AuthorizedRepliers  []string          `json:"authorized_repliers,omitempty"`
 	MinReplierRole      *string           `json:"min_replier_role,omitempty"`
 	ForgeBaseURL        *string           `json:"forge_base_url,omitempty"`
+}
+
+// overlapOrEmpty resolves an optional overlap policy. Empty is meaningful
+// here — a webhook with no policy launches every delivery, which is the
+// historical behaviour every existing webhook relies on.
+func overlapOrEmpty(v *string) string {
+	if v == nil {
+		return ""
+	}
+	return strings.TrimSpace(*v)
 }
 
 // supportedProviders is the closed enum the create endpoint accepts.
@@ -247,6 +260,8 @@ func (s *Server) handleCreateWebhook(w http.ResponseWriter, r *http.Request) {
 		AuthorAllowlist:     req.AuthorAllowlist,
 		LabelAllowlist:      req.LabelAllowlist,
 		BlockForkPRs:        req.BlockForkPRs != nil && *req.BlockForkPRs,
+		ReviewOnSync:        req.ReviewOnSync != nil && *req.ReviewOnSync,
+		Overlap:             overlapOrEmpty(req.Overlap),
 		AutoImplementOnOpen: req.AutoImplementOnOpen != nil && *req.AutoImplementOnOpen,
 		RateLimit:           rate,
 		LaunchVars:          req.LaunchVars,
@@ -410,6 +425,16 @@ func (s *Server) handleUpdateWebhook(w http.ResponseWriter, r *http.Request) {
 	}
 	if req.LabelAllowlist != nil {
 		cfg.LabelAllowlist = req.LabelAllowlist
+	}
+	if req.ReviewOnSync != nil {
+		cfg.ReviewOnSync = *req.ReviewOnSync
+	}
+	if req.Overlap != nil {
+		cfg.Overlap = strings.TrimSpace(*req.Overlap)
+		if err := schedgate.Validate(cfg.OverlapPolicy()); cfg.Overlap != "" && err != nil {
+			httpError(w, http.StatusBadRequest, "%v", err)
+			return
+		}
 	}
 	if req.BlockForkPRs != nil {
 		cfg.BlockForkPRs = *req.BlockForkPRs

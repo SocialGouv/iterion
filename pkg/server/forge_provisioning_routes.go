@@ -47,6 +47,16 @@ type forgeEnableReq struct {
 	// from the enable dialog's cron picker; empty falls back to the manifest
 	// suggested_cron.
 	ScheduleCrons map[string]string `json:"schedule_crons,omitempty"`
+	// LaunchVars are operator overrides stamped onto every run this repo's
+	// bots launch, layered after their manifest vars and re-applied on every
+	// re-provision. Nil leaves the stored ones untouched. The canonical use is
+	// naming this repo's merge gate (`gate_context`) so several bots fill ONE
+	// required check, each for the PRs it owns.
+	LaunchVars map[string]string `json:"launch_vars,omitempty"`
+	// Overlap is the repo's launch concurrency policy (pkg/schedgate
+	// vocabulary: allow | skip | supersede). Empty leaves the stored one
+	// untouched; on a review webhook `supersede` is the one worth setting.
+	Overlap string `json:"overlap,omitempty"`
 }
 
 func (s *Server) handleEnableForgeRepoBots(w http.ResponseWriter, r *http.Request) {
@@ -75,6 +85,8 @@ func (s *Server) handleEnableForgeRepoBots(w http.ResponseWriter, r *http.Reques
 		RepoFullName:  strings.TrimSpace(req.Repo),
 		BotIDs:        req.BotIDs,
 		ScheduleCrons: req.ScheduleCrons,
+		LaunchVars:    req.LaunchVars,
+		Overlap:       req.Overlap,
 		ActorID:       id.UserID,
 	})
 	if err != nil {
@@ -95,6 +107,16 @@ type forgeUpdateReq struct {
 	// ScheduleCrons follows forgeEnableReq semantics for bots (re)gaining a
 	// schedule through this update.
 	ScheduleCrons map[string]string `json:"schedule_crons,omitempty"`
+	// LaunchVars are operator overrides stamped onto every run this repo's
+	// bots launch, layered after their manifest vars and re-applied on every
+	// re-provision. Nil leaves the stored ones untouched. The canonical use is
+	// naming this repo's merge gate (`gate_context`) so several bots fill ONE
+	// required check, each for the PRs it owns.
+	LaunchVars map[string]string `json:"launch_vars,omitempty"`
+	// Overlap is the repo's launch concurrency policy (pkg/schedgate
+	// vocabulary: allow | skip | supersede). Empty leaves the stored one
+	// untouched; on a review webhook `supersede` is the one worth setting.
+	Overlap string `json:"overlap,omitempty"`
 }
 
 func (s *Server) handleUpdateForgeRepoBots(w http.ResponseWriter, r *http.Request) {
@@ -125,6 +147,8 @@ func (s *Server) handleUpdateForgeRepoBots(w http.ResponseWriter, r *http.Reques
 		RepoFullName:  ri.RepoFullName,
 		BotIDs:        req.BotIDs,
 		ScheduleCrons: req.ScheduleCrons,
+		LaunchVars:    req.LaunchVars,
+		Overlap:       req.Overlap,
 		ActorID:       id.UserID,
 		Replace:       true,
 	})

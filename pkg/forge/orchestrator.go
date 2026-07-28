@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"maps"
+	"reflect"
 	"sort"
 	"strings"
 	"time"
@@ -138,6 +140,14 @@ type ProvisionRequest struct {
 	// ScheduleCrons overrides a bot's schedule cron (botID → 5-field cron) for
 	// the operator's chosen cadence; falls back to the manifest suggested_cron.
 	ScheduleCrons map[string]string
+	// LaunchVars are operator overrides stamped onto every run this repo's
+	// bots launch, layered after their manifest vars. Persisted on the
+	// integration and re-applied on every Provision (see
+	// RepoIntegration.LaunchVars). Nil leaves the stored ones untouched.
+	LaunchVars map[string]string
+	// Overlap is the operator's concurrency policy for this repo's webhook
+	// (pkg/schedgate vocabulary). Empty leaves the stored one untouched.
+	Overlap string
 	// Replace makes BotIDs the EXACT desired set instead of a union with the
 	// existing integration's bots — the per-bot unbind path. The webhook
 	// events, command map and schedules reconcile down accordingly. Removing
@@ -189,6 +199,20 @@ func (o *Orchestrator) Provision(ctx context.Context, req ProvisionRequest) (Pro
 		desiredBots = dedupSorted(append(append([]string{}, existing.BotIDs...), req.BotIDs...))
 	}
 
+	// Operator overrides survive a re-provision: Provision rewrites the whole
+	// webhook config from the manifests, so anything PATCHed onto the webhook
+	// is lost at the next enable. A nil request map means "leave them alone",
+	// not "clear them" — enabling one more bot must not silently drop the
+	// repo's own settings.
+	operatorVars := req.LaunchVars
+	if operatorVars == nil && hasExisting {
+		operatorVars = existing.LaunchVars
+	}
+	operatorOverlap := req.Overlap
+	if operatorOverlap == "" && hasExisting {
+		operatorOverlap = existing.Overlap
+	}
+
 	// Resolve every bot's forge requirements (its optional forge: block for
 	// credentials/scopes) AND its invocations (the typed routing contract).
 	// A bot is auto-provisionable when it has a forge: block OR a
@@ -230,6 +254,34 @@ func (o *Orchestrator) Provision(ctx context.Context, req ProvisionRequest) (Pro
 			if err := o.ensureBotBinding(ctx, req.TenantID, b, frByBot[b].SecretName(), existing.ManagedSecretID); err != nil {
 				return ProvisionResult{}, fmt.Errorf("forge: bind %s for bot %s: %w", frByBot[b].SecretName(), b, err)
 			}
+		}
+		// A changed operator override is a real mutation even when the bot set
+		// is not — without this the short-circuit would silently ignore it.
+		if !maps.Equal(operatorVars, existing.LaunchVars) || operatorOverlap != existing.Overlap {
+			existing.LaunchVars = operatorVars
+			existing.Overlap = operatorOverlap
+			existing.UpdatedAt = o.clock()
+			if uerr := o.Integrations.Update(ctx, existing); uerr != nil {
+				return ProvisionResult{}, fmt.Errorf("forge: update integration launch vars: %w", uerr)
+			}
+			if cfg, gerr := o.Webhooks.Get(ctx, existing.WebhookID); gerr == nil {
+				cfg.LaunchVars = nilIfEmpty(manifestLaunchVars(desiredBots, frByBot))
+				cfg.OperatorLaunchVars = nilIfEmpty(maps.Clone(operatorVars))
+				cfg.Overlap = operatorOverlap
+				cfg.UpdatedAt = o.clock()
+				if uerr := o.Webhooks.Update(ctx, cfg); uerr != nil {
+					return ProvisionResult{}, fmt.Errorf("forge: update webhook launch vars: %w", uerr)
+				}
+			}
+		}
+		// Backfill the per-bot routing table onto a config provisioned before
+		// BotRules existed. Without this the short-circuit is exactly what
+		// keeps an already-provisioned repo on the legacy single-bot path
+		// forever: re-enabling the same bots is a no-op, so the rules would
+		// never appear in production even though every test passes. Config
+		// write only — no token mint, no forge hook call.
+		if err := o.backfillBotRules(ctx, existing.WebhookID, desiredBots, frByBot, invByBot); err != nil {
+			return ProvisionResult{}, err
 		}
 		// An explicit cron override is a schedule mutation even when the
 		// bot/event set is unchanged — without this, re-enabling with a new
@@ -322,6 +374,10 @@ func (o *Orchestrator) Provision(ctx context.Context, req ProvisionRequest) (Pro
 		return ProvisionResult{}, err
 	}
 
+	botRules := resolveBotRules(desiredBots, frByBot, invByBot)
+
+	reviewOnSync := anyBotGatesMerges(desiredBots, frByBot)
+
 	// Mint a fresh iwh_ on every mutating provision (create OR event-widen):
 	// it keeps the forge hook secret and the iterion config hash in lockstep
 	// without ever needing the prior plaintext. The operator never sees it —
@@ -338,30 +394,34 @@ func (o *Orchestrator) Provision(ctx context.Context, req ProvisionRequest) (Pro
 
 	now := o.clock()
 	cfg := webhooks.Config{
-		ID:               webhookID,
-		TenantID:         req.TenantID,
-		Name:             provisionedWebhookName(conn.Provider, req.RepoFullName),
-		Provider:         webhooks.Provider(conn.Provider),
-		SignMode:         signModeFor(conn.Provider),
-		Enabled:          true,
-		TokenHash:        hash,
-		TokenLast4:       last4,
-		Fingerprint:      fingerprint,
-		BotIDs:           desiredBots,
-		DefaultBotID:     singleBotDefault(desiredBots),
-		ProjectAllowlist: []string{req.RepoFullName},
-		EventAllowlist:   nativeEvents,
-		AuthorAllowlist:  authorAllowlist,
-		ForgeBaseURL:     conn.BaseURL(),
-		RateLimit:        webhooks.Rate{Rate: 1, Burst: 10},
-		LaunchVars:       nilIfEmpty(launchVars),
-		SecretOverrides:  secretOverrides,
-		MinReplierRole:   minRole,
-		CommandMap:       commandMap,
-		ProvisionedBy:    "forge:" + conn.ID,
-		CreatedBy:        req.ActorID,
-		CreatedAt:        now,
-		UpdatedAt:        now,
+		ID:                 webhookID,
+		TenantID:           req.TenantID,
+		Name:               provisionedWebhookName(conn.Provider, req.RepoFullName),
+		Provider:           webhooks.Provider(conn.Provider),
+		SignMode:           signModeFor(conn.Provider),
+		Enabled:            true,
+		TokenHash:          hash,
+		TokenLast4:         last4,
+		Fingerprint:        fingerprint,
+		BotIDs:             desiredBots,
+		DefaultBotID:       singleBotDefault(desiredBots),
+		BotRules:           botRules,
+		ProjectAllowlist:   []string{req.RepoFullName},
+		EventAllowlist:     nativeEvents,
+		AuthorAllowlist:    authorAllowlist,
+		ReviewOnSync:       reviewOnSync,
+		ForgeBaseURL:       conn.BaseURL(),
+		RateLimit:          webhooks.Rate{Rate: 1, Burst: 10},
+		LaunchVars:         nilIfEmpty(launchVars),
+		OperatorLaunchVars: nilIfEmpty(maps.Clone(operatorVars)),
+		Overlap:            operatorOverlap,
+		SecretOverrides:    secretOverrides,
+		MinReplierRole:     minRole,
+		CommandMap:         commandMap,
+		ProvisionedBy:      "forge:" + conn.ID,
+		CreatedBy:          req.ActorID,
+		CreatedAt:          now,
+		UpdatedAt:          now,
 	}
 	if cfg.SignMode == webhooks.SignModeHMAC {
 		sealed, err := webhooks.SealHMACSecret(o.Sealer, cfg.ID, plaintext)
@@ -418,6 +478,8 @@ func (o *Orchestrator) Provision(ctx context.Context, req ProvisionRequest) (Pro
 		HookID:           hookID,
 		HookURL:          hookURL,
 		ManagedSecretID:  managedSecretID,
+		LaunchVars:       nilIfEmpty(maps.Clone(operatorVars)),
+		Overlap:          operatorOverlap,
 		CreatedBy:        req.ActorID,
 		CreatedAt:        now,
 		UpdatedAt:        now,
@@ -816,6 +878,182 @@ func unionAllEvents(bots []string, frByBot map[string]*bundle.ForgeRequirements,
 	out := make([]string, 0, len(set))
 	for e := range set {
 		out = append(out, e)
+	}
+	sort.Strings(out)
+	return out
+}
+
+// buildBotRules materialises one webhooks.BotRule per co-enabled bot: the
+// events it claims, its own author filter, and its own manifest launch vars.
+// This is what lets one repo webhook serve several bots that react to
+// DIFFERENT PRs — the flattened Config fields can only express a single
+// winner, so without rules a dependency guard and a reviewer sharing a repo
+// collapse into whichever one the legacy selection picks.
+//
+// The event set is derived in this order, and the order matters:
+//  1. the bot's kind=forge invocations (the typed routing contract);
+//  2. else its forge: block events MINUS the comment event — a manifest with
+//     a forge: block and no invocations must keep launching (third-party
+//     bots), but a comment must never auto-launch a bot: comments route
+//     through CommandMap;
+//  3. else no events — a command/board-only bot, reachable but never
+//     auto-launched.
+func buildBotRules(bots []string, frByBot map[string]*bundle.ForgeRequirements, invByBot map[string][]bundle.Invocation) []webhooks.BotRule {
+	rules := make([]webhooks.BotRule, 0, len(bots))
+	for _, b := range bots {
+		fr := frByBot[b]
+		rule := webhooks.BotRule{BotID: b}
+		if fr != nil && fr.Webhook != nil {
+			rule.AuthorAllowlist = append([]string(nil), fr.Webhook.AuthorAllowlist...)
+			rule.LaunchVars = nilIfEmpty(maps.Clone(fr.Webhook.LaunchVars))
+		}
+
+		eventSet := map[string]bool{}
+		actionSet := map[string]bool{}
+		for _, inv := range invByBot[b] {
+			if inv.Kind != bundle.InvocationKindForge || inv.Forge == nil {
+				continue
+			}
+			eventSet[inv.Forge.Event] = true
+			for _, a := range inv.Forge.Actions {
+				actionSet[a] = true
+			}
+			if rule.Mode == "" {
+				rule.Mode = string(inv.EffectiveMode())
+			}
+			if inv.Board != nil {
+				rule.LabelAllowlist = dedupSorted(append(rule.LabelAllowlist, inv.Board.AllLabels...))
+			}
+		}
+		if len(eventSet) == 0 && fr != nil {
+			for _, e := range fr.Events {
+				if e != bundle.ForgeEventPullRequestComment {
+					eventSet[e] = true
+				}
+			}
+		}
+		rule.Events = sortedKeys(eventSet)
+		rule.Actions = sortedKeys(actionSet)
+		rules = append(rules, rule)
+	}
+	return rules
+}
+
+// backfillBotRules reconciles what a webhook config derives from its bots'
+// manifests, when the bot/event set is otherwise unchanged: the per-bot
+// routing table and whether a push must re-review. It rewrites the config
+// ONLY when something actually differs, so the common re-enable stays a true
+// no-op.
+//
+// Both reconciliations exist for the same reason — the ALREADY-provisioned
+// repo is the production case, and it reaches the short-circuit, not the full
+// path. A derivation that only runs on a fresh provision fixes nothing that
+// is already deployed.
+func (o *Orchestrator) backfillBotRules(ctx context.Context, webhookID string, bots []string, frByBot map[string]*bundle.ForgeRequirements, invByBot map[string][]bundle.Invocation) error {
+	if webhookID == "" {
+		return nil
+	}
+	want := resolveBotRules(bots, frByBot, invByBot)
+	wantSync := anyBotGatesMerges(bots, frByBot)
+	cfg, err := o.Webhooks.Get(ctx, webhookID)
+	if err != nil {
+		// A missing config is reported by the surrounding provision paths; a
+		// backfill is best-effort reconciliation, not the authority on it.
+		return nil //nolint:nilerr
+	}
+	if reflect.DeepEqual(cfg.BotRules, want) && (!wantSync || cfg.ReviewOnSync) {
+		return nil
+	}
+	cfg.BotRules = want
+	// Only ever turned ON: an operator who deliberately disabled re-review on
+	// a repo whose bots gate must not have it silently re-enabled under them.
+	if wantSync {
+		cfg.ReviewOnSync = true
+	}
+	cfg.UpdatedAt = o.clock()
+	if err := o.Webhooks.Update(ctx, cfg); err != nil {
+		return fmt.Errorf("forge: backfill bot rules on webhook %s: %w", webhookID, err)
+	}
+	return nil
+}
+
+// anyBotGatesMerges reports whether any of these bots declares the `statuses`
+// scope — i.e. posts a commit status, i.e. can be a REQUIRED check.
+//
+// A required check lives on ONE head SHA: if the bot does not re-run when the
+// author pushes a fix, the status is simply absent from the new head —
+// indistinguishable from "never reviewed" — and the PR is blocked with no way
+// forward but an admin bypass (observed live on SocialGouv/iterion#300). So
+// re-review on sync is not an operator preference on such a repo, it is what
+// makes the gate survivable. Derived from the DECLARED capability, never from
+// a bot id.
+func anyBotGatesMerges(bots []string, frByBot map[string]*bundle.ForgeRequirements) bool {
+	for _, b := range bots {
+		if fr := frByBot[b]; fr != nil && fr.TokenScopes[bundle.ForgeScopeStatuses] != "" {
+			return true
+		}
+	}
+	return false
+}
+
+// resolveBotRules derives the complete per-bot routing table — events, author
+// filters and the exclusive claims resolved against each other — from the
+// bots' manifests. Pure: same inputs always yield the same table, so callers
+// can compare it against a stored one to decide whether a config needs a
+// backfill.
+func resolveBotRules(bots []string, frByBot map[string]*bundle.ForgeRequirements, invByBot map[string][]bundle.Invocation) []webhooks.BotRule {
+	exclusive := map[string][]string{}
+	for _, b := range bots {
+		if fr := frByBot[b]; fr != nil && fr.Webhook.IsExclusiveAuthors() {
+			exclusive[b] = append([]string(nil), fr.Webhook.AuthorAllowlist...)
+		}
+	}
+	return applyExclusiveAuthors(buildBotRules(bots, frByBot, invByBot), exclusive)
+}
+
+// applyExclusiveAuthors materialises each bot's exclusive author claim into
+// every OTHER rule's denylist, so a general reviewer stops double-reviewing
+// the PRs a dependency guard owns WITHOUT the reviewer's manifest naming that
+// guard. Storing the denylist (rather than deriving it per request) keeps the
+// suppression auditable in the config the studio renders.
+//
+// Idempotent and order-independent; a bot never denies itself.
+func applyExclusiveAuthors(rules []webhooks.BotRule, exclusiveByBot map[string][]string) []webhooks.BotRule {
+	if len(exclusiveByBot) == 0 {
+		return rules
+	}
+	for i := range rules {
+		var deny []string
+		for bot, authors := range exclusiveByBot {
+			if bot == rules[i].BotID {
+				continue
+			}
+			deny = append(deny, authors...)
+		}
+		rules[i].AuthorDenylist = dedupSorted(deny)
+	}
+	return rules
+}
+
+// manifestLaunchVars re-derives the union of the bots' own manifest launch
+// vars — the layer the operator's overrides sit on top of.
+func manifestLaunchVars(bots []string, frByBot map[string]*bundle.ForgeRequirements) map[string]string {
+	out := map[string]string{}
+	for _, b := range bots {
+		if fr := frByBot[b]; fr != nil && fr.Webhook != nil {
+			maps.Copy(out, fr.Webhook.LaunchVars)
+		}
+	}
+	return out
+}
+
+func sortedKeys(set map[string]bool) []string {
+	if len(set) == 0 {
+		return nil
+	}
+	out := make([]string, 0, len(set))
+	for k := range set {
+		out = append(out, k)
 	}
 	sort.Strings(out)
 	return out

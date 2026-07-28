@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/SocialGouv/iterion/pkg/retrypolicy"
+	"github.com/SocialGouv/iterion/pkg/schedgate"
 )
 
 // Provider identifies the external event source.
@@ -84,6 +85,17 @@ type Config struct {
 	BotIDs       []string `bson:"bot_ids" json:"bot_ids"`
 	WildcardBots bool     `bson:"wildcard_bots,omitempty" json:"wildcard_bots,omitempty"`
 	DefaultBotID string   `bson:"default_bot_id,omitempty" json:"default_bot_id,omitempty"`
+
+	// BotRules is the per-bot routing table for the event-driven lanes. When
+	// non-empty it REPLACES the single-bot SelectBot path: one delivery fans
+	// out to every rule that claims the event and admits the author, so a
+	// dependency-guard and a reviewer can share one repo webhook and each
+	// react to its own PRs. Nil on every config written before this field
+	// existed → the legacy single-bot path, byte-identical. Written only by
+	// the forge orchestrator (never by the webhook CRUD layer): the rules are
+	// derived from the co-enabled bots' manifests, so hand-editing them would
+	// re-open the drift the CommandMap design already closed.
+	BotRules []BotRule `bson:"bot_rules,omitempty" json:"bot_rules,omitempty"`
 
 	// CommandMap routes a /slash-command (lowercase key, no leading slash) to
 	// the bot(s) that claim it. Computed by the forge orchestrator from the
@@ -176,6 +188,14 @@ type Config struct {
 	RateLimit        Rate `bson:"rate_limit" json:"rate_limit"`
 	MonthlyCallLimit int  `bson:"monthly_call_limit,omitempty" json:"monthly_call_limit,omitempty"` // 0 = inherit org
 
+	// OperatorLaunchVars are the per-repo overrides an operator pinned on the
+	// integration, kept SEPARATE from LaunchVars (which is the union of every
+	// co-enabled bot's manifest vars). Layering that union last would undo the
+	// per-bot isolation BotRule.LaunchVars exists for: two bots declaring the
+	// same key with different values would both run with whichever won the
+	// union. Precedence is base < the bot's own rule vars < these.
+	OperatorLaunchVars map[string]string `bson:"operator_launch_vars,omitempty" json:"operator_launch_vars,omitempty"`
+
 	// LaunchVars are stamped onto every run launched through this webhook
 	// (e.g. severity_threshold), overriding the handler-derived vars.
 	LaunchVars map[string]string `bson:"launch_vars,omitempty" json:"launch_vars,omitempty"`
@@ -192,6 +212,22 @@ type Config struct {
 	// several webhooks for the same bot post under different forge tokens /
 	// bot identities. See docs/byok.md.
 	SecretOverrides map[string]string `bson:"secret_overrides,omitempty" json:"secret_overrides,omitempty"`
+
+	// Overlap is the concurrency policy for runs this webhook launches,
+	// keyed on (webhook, subject, bot) — one PR's reviews, not the whole
+	// repo's. Vocabulary shared with every other launch surface
+	// (pkg/schedgate): "allow" | "skip" | "supersede".
+	//
+	// EMPTY means allow, NOT schedgate's "skip" default. A webhook is
+	// event-driven: every delivery has always launched, and silently
+	// promoting that to at-most-one-live would drop deliveries operators
+	// currently rely on. The gate applies only when explicitly set.
+	//
+	// "supersede" is the one worth setting on a review webhook: with
+	// re-review on push, three pushes in two minutes launch three runs, two
+	// of which analyse stale code and post their verdict on dead commits.
+	// Superseding keeps the run that matches what is actually on the branch.
+	Overlap string `bson:"overlap,omitempty" json:"overlap,omitempty"`
 
 	// Retry policy (pkg/retrypolicy) for a run launched through this
 	// webhook that dies on an exhausted provider usage window. The
@@ -245,6 +281,93 @@ func (c *Config) AllowsBot(botID string) bool {
 		}
 	}
 	return false
+}
+
+// BotRule is one bot's OWN routing contract on a shared repo webhook: which
+// forge events it claims, whose PRs it reacts to, and the launch vars its
+// manifest declares. The forge orchestrator materialises one rule per
+// co-enabled bot, so an inbound delivery fans out to EVERY bot whose own rule
+// matches — each with its own author filter and its own vars, instead of the
+// single winner a flattened config could express.
+//
+// Events use the NORMALIZED vocabulary (bundle.ForgeEvent*, e.g.
+// "pull_request"), never a provider-native name, so one rule set serves
+// github / gitlab / forgejo identically.
+type BotRule struct {
+	BotID string `bson:"bot_id" json:"bot_id"`
+
+	// Events this bot claims, normalized. Empty = claims no event lane: a
+	// command-only bot is routed by CommandMap and never auto-launched.
+	Events []string `bson:"events,omitempty" json:"events,omitempty"`
+
+	// Actions narrows the trigger inside an event ("opened", "reopened").
+	// RECORDED BUT NOT ENFORCED: the forge also sends actions a manifest never
+	// lists but the lanes depend on ("ready_for_review" on a draft flip,
+	// "synchronize" for the merge gate), so the handler's own reviewability
+	// gate stays authoritative and this is documentation until the canonical
+	// action mapping lands.
+	Actions []string `bson:"actions,omitempty" json:"actions,omitempty"`
+
+	// AuthorAllowlist restricts which PR/MR author logins fire THIS bot.
+	// Empty = open. Same matcher as Config.AuthorAllowlist (MatchAuthor).
+	AuthorAllowlist []string `bson:"author_allowlist,omitempty" json:"author_allowlist,omitempty"`
+	// AuthorDenylist suppresses this bot for these logins; deny beats allow.
+	// Materialised by the orchestrator from another co-enabled bot's exclusive
+	// author claim (manifest forge.webhook.author_scope: exclusive) — stored
+	// rather than computed per request so the suppression is auditable.
+	AuthorDenylist []string `bson:"author_denylist,omitempty" json:"author_denylist,omitempty"`
+
+	// LabelAllowlist narrows the issue-labeled lane for this bot. Empty = any.
+	LabelAllowlist []string `bson:"label_allowlist,omitempty" json:"label_allowlist,omitempty"`
+
+	// LaunchVars are THIS bot's manifest forge.webhook.launch_vars, kept per
+	// bot so two bots' vars cannot collide in one flat map.
+	LaunchVars map[string]string `bson:"launch_vars,omitempty" json:"launch_vars,omitempty"`
+
+	// Mode mirrors the invocation's execution mode ("direct" | "board").
+	Mode string `bson:"mode,omitempty" json:"mode,omitempty"`
+}
+
+// MatchesEvent reports whether this rule claims a normalized event kind.
+func (r BotRule) MatchesEvent(event string) bool {
+	if event == "" {
+		return false
+	}
+	for _, e := range r.Events {
+		if e == "*" || strings.EqualFold(strings.TrimSpace(e), event) {
+			return true
+		}
+	}
+	return false
+}
+
+// MatchesAuthor applies this rule's own author filter (deny beats allow,
+// empty allowlist = open).
+func (r BotRule) MatchesAuthor(login string) bool {
+	return MatchAuthorRule(r.AuthorAllowlist, r.AuthorDenylist, login)
+}
+
+// HasBotRules reports whether this config carries a per-bot routing table. A
+// config without one predates the field and must keep the legacy single-bot
+// behaviour, idempotency keys included.
+func (c *Config) HasBotRules() bool { return c != nil && len(c.BotRules) > 0 }
+
+// RulesForEvent returns, in provision order, every rule claiming event whose
+// author filter admits author and whose bot the webhook still permits
+// (AllowsBot — belt to the provisioning braces, since bot scope and rules are
+// written together but read long after).
+func (c *Config) RulesForEvent(event, author string) []BotRule {
+	if !c.HasBotRules() {
+		return nil
+	}
+	var out []BotRule
+	for _, r := range c.BotRules {
+		if !r.MatchesEvent(event) || !r.MatchesAuthor(author) || !c.AllowsBot(r.BotID) {
+			continue
+		}
+		out = append(out, r)
+	}
+	return out
 }
 
 // SelectBot resolves which bot a delivery should launch: the explicit
@@ -364,6 +487,14 @@ const (
 	StatusLaunched      = "launched"
 	StatusLaunchError   = "launch_error"
 )
+
+// OverlapPolicy projects the webhook's overlap field onto the shared
+// launch-surface policy. Not normalized: schedgate's zero value means "skip"
+// and a webhook's means "allow", so the caller checks Overlap != "" before
+// evaluating rather than letting Normalize impose the wrong default here.
+func (c Config) OverlapPolicy() schedgate.Policy {
+	return schedgate.Policy{Overlap: c.Overlap}
+}
 
 // RetryPolicy projects the webhook's retry fields. Not normalized — this
 // is one layer of a precedence chain, and defaults filled here would

@@ -150,14 +150,16 @@ func (s *Server) handleCreateSchedule(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	if err := schedgate.Validate(schedgate.Policy{
+	// canReap=false: the cloud gate drops ReapRunIDs — the NATS lease is the
+	// liveness authority there (see schedules_gate.go).
+	if err := schedgate.ValidateReapable(schedgate.Policy{
 		Overlap:       overlap,
 		MaxConcurrent: req.MaxConcurrent,
 		Guard:         req.Guard,
 		GuardTimeout:  req.GuardTimeout,
 		GuardVar:      req.GuardVar,
 		StaleAfter:    req.StaleAfter,
-	}); err != nil {
+	}, false); err != nil {
 		httpError(w, http.StatusBadRequest, "%s", err.Error())
 		return
 	}
@@ -311,7 +313,7 @@ func (s *Server) handleUpdateSchedule(w http.ResponseWriter, r *http.Request) {
 	if req.StaleAfter != nil {
 		merged.StaleAfter = *req.StaleAfter
 	}
-	if err := schedgate.Validate(merged); err != nil {
+	if err := schedgate.ValidateReapable(merged, false); err != nil {
 		httpError(w, http.StatusBadRequest, "%s", err.Error())
 		return
 	}

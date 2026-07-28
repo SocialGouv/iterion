@@ -93,3 +93,54 @@ func TestMatchLabel(t *testing.T) {
 		t.Fatal("empty applied label must not match a non-empty allowlist")
 	}
 }
+
+// A self-hosted Renovate/Dependabot runs under an org App, which renames the
+// bot ("acme-renovate[bot]"), so a dependency-guard must match the family.
+func TestMatchAuthorSuffixWildcard(t *testing.T) {
+	list := []string{"dependabot[bot]", "*renovate[bot]"}
+	for _, tc := range []struct {
+		login string
+		want  bool
+	}{
+		{"renovate[bot]", true},
+		{"socialgouv-renovate[bot]", true},
+		{"SocialGouv-Renovate[Bot]", true},
+		{"dependabot[bot]", true},
+		{"alice", false},
+		{"renovate-helper", false},
+		{"", false},
+	} {
+		if got := MatchAuthor(list, tc.login); got != tc.want {
+			t.Errorf("MatchAuthor(%q) = %v, want %v", tc.login, got, tc.want)
+		}
+	}
+	// A bare "*" stays an explicit allow-all, not a suffix match on "".
+	if !MatchAuthor([]string{"*"}, "anyone") {
+		t.Error(`"*" must still allow all`)
+	}
+}
+
+func TestMatchAuthorRule(t *testing.T) {
+	deny := []string{"*renovate[bot]"}
+	for _, tc := range []struct {
+		name        string
+		allow, deny []string
+		login       string
+		want        bool
+	}{
+		{"no filter is open", nil, nil, "alice", true},
+		{"deny beats an empty (open) allowlist", nil, deny, "renovate[bot]", false},
+		{"deny beats an explicit allow", []string{"renovate[bot]"}, deny, "renovate[bot]", false},
+		{"deny leaves others alone", nil, deny, "alice", true},
+		{"allow still filters", []string{"alice"}, nil, "bob", false},
+		// An author we could not identify must not be swallowed by a "*" deny:
+		// that would silently black-hole every unattributed delivery.
+		{"empty login vs wildcard deny", nil, []string{"*"}, "", true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := MatchAuthorRule(tc.allow, tc.deny, tc.login); got != tc.want {
+				t.Errorf("MatchAuthorRule(%v, %v, %q) = %v, want %v", tc.allow, tc.deny, tc.login, got, tc.want)
+			}
+		})
+	}
+}

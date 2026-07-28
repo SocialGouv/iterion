@@ -54,8 +54,26 @@ func MatchProject(allowlist []string, projectPath string) bool {
 // to a dependency bot's PRs while ignoring human PRs on the same repo. A
 // "*" entry matches all (explicit allow-all). An empty login never matches a
 // non-empty allowlist (an author we couldn't identify is not on the list).
+//
+// A leading "*" is a suffix wildcard: "*renovate[bot]" matches both the
+// hosted "renovate[bot]" and a self-hosted App identity like
+// "acme-renovate[bot]". Self-hosting Renovate/Dependabot under an org App is
+// the common way to make their PRs trigger CI, and it renames the bot — so a
+// dependency-guard bot has to recognise the family, not one fixed login.
 func MatchAuthor(allowlist []string, login string) bool {
 	return matchCaseInsensitiveAllowlist(allowlist, login)
+}
+
+// MatchAuthorRule is MatchAuthor plus a denylist: a denied login never
+// matches, even when the allowlist is empty (= open). Deny is how a bot that
+// claims a set of authors EXCLUSIVELY (a dependency-PR guard) keeps a general
+// reviewer off the PRs it owns, without the reviewer's manifest having to know
+// that guard exists. See BotRule.
+func MatchAuthorRule(allow, deny []string, login string) bool {
+	if len(deny) > 0 && strings.TrimSpace(login) != "" && matchCaseInsensitiveAllowlist(deny, login) {
+		return false
+	}
+	return matchCaseInsensitiveAllowlist(allow, login)
 }
 
 // MatchLabel reports whether a freshly-applied issue label triggers a
@@ -71,8 +89,9 @@ func MatchLabel(allowlist []string, label string) bool {
 
 // matchCaseInsensitiveAllowlist is the shared body behind MatchAuthor and
 // MatchLabel: empty allowlist matches all; otherwise a trimmed, case-
-// insensitive match against value, with "*" as an explicit allow-all and
-// an empty value never matching a non-empty allowlist.
+// insensitive match against value, with "*" as an explicit allow-all, a
+// leading "*" as a suffix wildcard, and an empty value never matching a
+// non-empty allowlist.
 func matchCaseInsensitiveAllowlist(allowlist []string, value string) bool {
 	if len(allowlist) == 0 {
 		return true
@@ -83,7 +102,17 @@ func matchCaseInsensitiveAllowlist(allowlist []string, value string) bool {
 		if pat == "*" {
 			return true
 		}
-		if value != "" && strings.EqualFold(pat, value) {
+		if value == "" {
+			continue
+		}
+		if suffix, ok := strings.CutPrefix(pat, "*"); ok {
+			if suffix != "" && len(value) >= len(suffix) &&
+				strings.EqualFold(suffix, value[len(value)-len(suffix):]) {
+				return true
+			}
+			continue
+		}
+		if strings.EqualFold(pat, value) {
 			return true
 		}
 	}

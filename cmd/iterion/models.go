@@ -1,6 +1,9 @@
 package main
 
 import (
+	"fmt"
+	"strings"
+
 	"github.com/SocialGouv/iterion/pkg/cli"
 	"github.com/spf13/cobra"
 )
@@ -26,7 +29,21 @@ Examples:
   iterion models anthropic/glm-5.2                # resolve one model
   iterion models openai/gpt-5.5 --json            # machine-readable
   iterion models --refresh                        # refresh cache, then list`,
-	Args: cobra.MaximumNArgs(1),
+	// `models` is both a leaf (it takes a model spec) and a group (it has
+	// `pricing`), so MaximumNArgs(1) read `iterion models pricng` as a model
+	// id and answered "unknown model" — a typo silently mistaken for a
+	// lookup. A model spec is always `provider/model-id`; anything else in
+	// that position is meant to be a subcommand, so name the ones that exist.
+	Args: func(c *cobra.Command, args []string) error {
+		if err := cobra.MaximumNArgs(1)(c, args); err != nil {
+			return err
+		}
+		if len(args) == 1 && !strings.Contains(args[0], "/") {
+			return fmt.Errorf("unknown subcommand %q for %q (a model is %q; see --help)",
+				args[0], c.CommandPath(), "provider/model-id")
+		}
+		return nil
+	},
 	RunE: func(cmd *cobra.Command, args []string) error {
 		opts := cli.ModelsOptions{Refresh: modelsOpts.refresh}
 		if len(args) == 1 {

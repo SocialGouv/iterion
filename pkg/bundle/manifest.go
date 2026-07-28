@@ -379,13 +379,19 @@ func knownForgeEventNames() []string {
 // forge.token_scopes block. The provisioner unions the keys across the
 // bots co-enabled on a repo and translates them to the tightest OAuth
 // scope / GitHub-App permission that satisfies the union.
+// ForgeScopeStatuses is the token scope a bot declares when it posts a commit
+// status. Declaring it means the bot can be a REQUIRED check, which the
+// provisioner has to account for beyond the token itself — a gate that does
+// not follow the head SHA blocks the PR it guards.
+const ForgeScopeStatuses = "statuses"
+
 var (
 	knownForgeScopeKeys = map[string]bool{
-		"pull_requests": true,
-		"repository":    true,
-		"issues":        true,
-		"webhooks":      true,
-		"statuses":      true, // commit statuses (the revi/review merge gate)
+		"pull_requests":    true,
+		"repository":       true,
+		"issues":           true,
+		"webhooks":         true,
+		ForgeScopeStatuses: true, // commit statuses (the merge gate)
 	}
 	knownForgeScopeLevels = map[string]bool{
 		"read":  true,
@@ -442,6 +448,33 @@ type ForgeWebhookHints struct {
 	// any author). A dependency-PR bot sets ["dependabot[bot]",
 	// "renovate[bot]"] so it reacts only to the dependency bots, not humans.
 	AuthorAllowlist []string `yaml:"author_allowlist,omitempty"`
+
+	// AuthorScope declares how AuthorAllowlist interacts with the OTHER bots
+	// co-enabled on the same repo webhook:
+	//
+	//   "shared" (default/empty) — other bots also react to these authors.
+	//   "exclusive"              — the authors I claim are MINE: provisioning
+	//                              adds them to every other co-enabled bot's
+	//                              author denylist, so a general reviewer
+	//                              stops double-reviewing the PRs this bot
+	//                              owns. The reviewer's own manifest stays
+	//                              free of any knowledge that this bot exists.
+	//
+	// Only meaningful together with a non-empty AuthorAllowlist.
+	AuthorScope string `yaml:"author_scope,omitempty"`
+}
+
+// Author-scope vocabulary for ForgeWebhookHints.AuthorScope.
+const (
+	AuthorScopeShared    = "shared"
+	AuthorScopeExclusive = "exclusive"
+)
+
+// IsExclusiveAuthors reports whether this bot claims its allowlisted authors
+// exclusively against the other bots sharing the repo webhook.
+func (h *ForgeWebhookHints) IsExclusiveAuthors() bool {
+	return h != nil && len(h.AuthorAllowlist) > 0 &&
+		strings.EqualFold(strings.TrimSpace(h.AuthorScope), AuthorScopeExclusive)
 }
 
 // SecretName returns the workflow-secret name this bot binds its forge
@@ -897,6 +930,13 @@ func validateForgeRequirements(f *ForgeRequirements) error {
 		}
 		if !knownForgeScopeLevels[level] {
 			return fmt.Errorf("forge.token_scopes[%s]: invalid level %q (want read, write, or admin)", key, level)
+		}
+	}
+	if f.Webhook != nil {
+		switch scope := strings.ToLower(strings.TrimSpace(f.Webhook.AuthorScope)); scope {
+		case "", AuthorScopeShared, AuthorScopeExclusive:
+		default:
+			return fmt.Errorf("forge.webhook.author_scope: unknown value %q (known: %s, %s)", scope, AuthorScopeShared, AuthorScopeExclusive)
 		}
 	}
 	return nil

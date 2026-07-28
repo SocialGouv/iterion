@@ -3,6 +3,7 @@ package server
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"strings"
@@ -11,6 +12,7 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/SocialGouv/iterion/pkg/knowledge"
+	"github.com/SocialGouv/iterion/pkg/schedgate"
 	"github.com/SocialGouv/iterion/pkg/store"
 	"github.com/SocialGouv/iterion/pkg/webhooks"
 )
@@ -97,6 +99,23 @@ type webhookEventMeta struct {
 	SubjectURL   string // the subject's own web URL/ref (the issue/MR the comment is on) — back-linked as source_issue_ref for opens_mr commands
 	SubjectSHA   string // head SHA, when known
 	SenderHandle string // username for audit (logged only, never in delivery audit row v1)
+}
+
+// applyWebhookVarLayers puts the two webhook-level var layers onto a
+// handler-built base, in the only order that keeps them meaning what they say:
+//
+//   - cfg.LaunchVars is the UNION of every co-enabled bot's manifest vars, so
+//     it fills in only where nothing more specific is pinned;
+//   - cfg.OperatorLaunchVars is the repo's own choice and always wins.
+//
+// Every launch lane goes through here. The operator layer is what pins a
+// repo's shared gate_context, and a lane that skipped it would post its status
+// under the bot's default context — leaving the required one stale, which is
+// exactly what a manual /revi is supposed to repair.
+func applyWebhookVarLayers(vars map[string]string, cfg webhooks.Config) map[string]string {
+	mergeVarsInto(vars, cfg.LaunchVars)
+	mergeVarsInto(vars, cfg.OperatorLaunchVars)
+	return vars
 }
 
 // mergeVarsInto copies every key from src into dst (overwriting on
@@ -294,6 +313,80 @@ func (s *Server) resolveReviewBot(
 	return s.checkBotPermitted(ctx, w, cfg, meta, botID, payloadHash, srcIP)
 }
 
+// resolveForgeEventBots returns every bot to launch for a forge EVENT
+// delivery (never a command — those route through CommandMap). Rule-driven
+// when the config carries a per-bot routing table; otherwise the legacy
+// single-bot fallback, so a pre-BotRules config behaves EXACTLY as before.
+//
+// It writes no HTTP response. An empty result means nothing matched: the
+// caller records a `filtered` delivery + 200 (never a 4xx — a 403 on a forge
+// hook is what makes GitHub disable it).
+func (s *Server) resolveForgeEventBots(cfg webhooks.Config, event, author string) []webhooks.BotRule {
+	if cfg.HasBotRules() {
+		return cfg.RulesForEvent(event, author)
+	}
+	botID := cfg.SelectBot()
+	if botID == "" {
+		botID = defaultWebhookBotReviewPR
+		if s.logger != nil {
+			s.logger.Warn("webhooks: config %s carries no bot_rules — falling back to the pinned review default %q; re-provision the integration to route per bot", cfg.ID, botID)
+		}
+	}
+	if !cfg.AllowsBot(botID) {
+		return nil
+	}
+	return []webhooks.BotRule{{BotID: botID}}
+}
+
+// forgeIdemKey derives a delivery's idempotency key for one bot. A fan-out
+// delivery produces N runs, so the key MUST carry the bot: otherwise the
+// second bot reads the first one's claim as a replay and never launches. A
+// legacy (no BotRules) delivery keeps the historical bot-less key byte for
+// byte, so an in-flight redelivery across the upgrade still dedupes.
+func forgeIdemKey(base, botID string, multi bool) string {
+	if !multi {
+		return knowledge.ChecksumHex([]byte(base))
+	}
+	return knowledge.ChecksumHex([]byte(base + "|" + botID))
+}
+
+// forgePREventTargets turns the resolved rules into launch targets for a
+// PR-shaped delivery. Each target gets a FRESH vars map layered
+// base < rule.LaunchVars < cfg.LaunchVars (the operator pin always wins) —
+// sharing one map would hand every bot the same publish grant, since
+// injectForgePublishVars mutates in place.
+func forgePREventTargets(
+	cfg webhooks.Config,
+	rules []webhooks.BotRule,
+	idemBase, prURL, baseRef, scopeNotes, cloneURL, sourceBranch string,
+	extra map[string]string,
+) []forgeLaunchTarget {
+	targets := make([]forgeLaunchTarget, 0, len(rules))
+	for _, rule := range rules {
+		vars := reviewPRVars(prURL, baseRef, scopeNotes, nil, extra)
+		// cfg.LaunchVars is the UNION of every co-enabled bot's manifest vars,
+		// so it only applies where a rule carries none of its own — layering it
+		// over the rule would let one bot's value win for the other, which is
+		// exactly what the per-bot table exists to prevent. The operator's own
+		// overrides are a separate layer and always win.
+		for k, v := range cfg.LaunchVars {
+			if _, pinned := rule.LaunchVars[k]; !pinned {
+				vars[k] = v
+			}
+		}
+		mergeVarsInto(vars, rule.LaunchVars)
+		mergeVarsInto(vars, cfg.OperatorLaunchVars)
+		targets = append(targets, forgeLaunchTarget{
+			BotID:   rule.BotID,
+			IdemKey: forgeIdemKey(idemBase, rule.BotID, cfg.HasBotRules()),
+			Vars:    vars,
+			RepoURL: cloneURL,
+			RepoRef: sourceBranch,
+		})
+	}
+	return targets
+}
+
 // selectIssueLabeledBot picks the bot for a freshly-labeled issue. Unlike a
 // PR (which carries a diff to REVIEW), an issue must be TURNED INTO one, so
 // the reviewer default is wrong here. Precedence: an operator-pinned
@@ -419,6 +512,240 @@ func (s *Server) insertAndLaunchWebhook(
 	payloadHash string,
 	srcIP string,
 ) {
+	res := s.launchWebhookTarget(ctx, r, cfg, meta, forgeLaunchTarget{
+		BotID: botID, IdemKey: idemKey, Vars: vars, RepoURL: repoURL, RepoRef: repoRef,
+	}, payloadHash, srcIP)
+	if res.Status == webhooks.StatusLaunched {
+		s.scheduleForgeBoardProjection(meta.ProjectPath)
+	}
+	s.writeSingleLaunchResult(w, r, res)
+}
+
+// writeSingleLaunchResult reproduces, byte for byte, the response the
+// single-bot tail has always written — the shape provider handlers and the
+// studio still parse.
+func (s *Server) writeSingleLaunchResult(w http.ResponseWriter, r *http.Request, res webhookLaunchResult) {
+	switch {
+	case res.denial != nil:
+		s.writeLaunchDenial(w, r, res.denial)
+	case res.Status == webhooks.StatusDuplicate:
+		writeJSONStatus(w, http.StatusOK, map[string]string{
+			"status": webhooks.StatusDuplicate, "run_id": res.RunID, "delivery_id": res.DeliveryID,
+		})
+	case res.Status == webhooks.StatusLaunched:
+		writeJSONStatus(w, http.StatusAccepted, map[string]string{
+			"status": webhooks.StatusLaunched, "run_id": res.RunID, "delivery_id": res.DeliveryID,
+		})
+	default:
+		httpError(w, res.httpStatus, "%s", res.Error)
+	}
+}
+
+// forgeLaunchTarget is one resolved (bot, idempotency key, vars) triple of a
+// delivery. Vars MUST be a per-bot map: injectForgePublishVars mutates it in
+// place, so a map shared across bots would hand every run the same publish
+// grant.
+type forgeLaunchTarget struct {
+	BotID   string
+	IdemKey string
+	Vars    map[string]string
+	RepoURL string
+	RepoRef string
+}
+
+// webhookLaunchResult is one bot's outcome inside a (possibly multi-bot)
+// delivery. denial/httpStatus carry what the single-bot shell needs to write
+// the historical response verbatim.
+type webhookLaunchResult struct {
+	BotID      string `json:"bot"`
+	Status     string `json:"status"`
+	RunID      string `json:"run_id,omitempty"`
+	DeliveryID string `json:"delivery_id,omitempty"`
+	Error      string `json:"error,omitempty"`
+
+	denial     *launchDenial
+	httpStatus int
+}
+
+// supersedeLiveRuns cancels the runs a fresh delivery has made obsolete, when
+// the webhook opts into overlap=supersede.
+//
+// The key is (webhook, subject, bot) — ONE pull request's runs of ONE bot, not
+// the repo's. Two PRs must review concurrently, and two different bots on the
+// same PR are doing different jobs; neither supersedes the other.
+//
+// Best-effort by construction: a cancel that fails must not stop the new run
+// from launching, because the new run is the one carrying the current truth.
+// Every outcome is logged — a superseded run is a real event an operator will
+// see in the run list and needs to be able to explain.
+func (s *Server) supersedeLiveRuns(ctx context.Context, cfg webhooks.Config, meta webhookEventMeta, botID string) {
+	cancel := s.webhookCancelRun
+	if cancel == nil && s.runs != nil {
+		cancel = s.runs.Cancel
+	}
+	if cfg.Overlap == "" || s.webhookDeliveries == nil || cancel == nil {
+		return
+	}
+	if decision, _ := schedgate.EvaluateOverlap([]string{"probe"}, cfg.OverlapPolicy()); decision != schedgate.DecisionSupersede {
+		return
+	}
+	if meta.SubjectID == "" {
+		return // no subject to scope the supersede to; never cancel repo-wide
+	}
+	recent, err := s.webhookDeliveries.ListByWebhook(ctx, cfg.TenantID, cfg.ID, supersedeLookback)
+	if err != nil {
+		if s.logger != nil {
+			s.logger.Warn("webhooks: supersede lookup failed for %s %s: %v", cfg.ID, meta.SubjectID, err)
+		}
+		return
+	}
+	for _, d := range recent {
+		if d.RunID == "" || d.BotID != botID || d.SubjectID != meta.SubjectID {
+			continue
+		}
+		if d.Status != webhooks.StatusLaunched {
+			continue
+		}
+		// Cancel is a no-op on a run that already finished, so the delivery
+		// row's status is enough of a filter — no run lookup needed.
+		if cerr := cancel(d.RunID); cerr != nil {
+			if s.logger != nil {
+				s.logger.Debug("webhooks: supersede could not cancel run %s (likely already finished): %v", d.RunID, cerr)
+			}
+			continue
+		}
+		if s.logger != nil {
+			s.logger.Info("webhooks: superseded run %s (%s on %s) — a newer delivery for the same subject arrived", d.RunID, botID, meta.SubjectID)
+		}
+	}
+}
+
+// supersedeLookback bounds the delivery scan behind a supersede check. A PR's
+// live runs are necessarily among the most recent deliveries on its webhook,
+// and an unbounded scan would put the whole delivery history on the hot path.
+const supersedeLookback = 50
+
+// scheduleForgeBoardProjection kicks the near-real-time forge→board refresh
+// for a repo. Once per DELIVERY, never once per bot: a fan-out would otherwise
+// queue N identical projections against the 16-slot semaphore.
+func (s *Server) scheduleForgeBoardProjection(repo string) {
+	if s.cfg.CloudBoardFor == nil || s.forgeIntegrations == nil {
+		return
+	}
+	select {
+	case forgeProjectionSem <- struct{}{}:
+		go func() {
+			defer func() { <-forgeProjectionSem }()
+			// Fresh background context (not derived from the request ctx) so the
+			// goroutine neither is cancelled by the response nor keeps the
+			// request's scoped values alive for its 30s lifetime.
+			pctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+			defer cancel()
+			s.projectForgeWebhookToBoard(pctx, repo)
+		}()
+	default:
+		// Concurrency cap reached — skip the fast path; the periodic
+		// forge→board sweep will reconcile this repo's cards.
+		if s.logger != nil {
+			s.logger.Debug("webhooks: forge→board fast-path projection skipped for %s (concurrency cap); periodic sweep will reconcile", repo)
+		}
+	}
+}
+
+// insertAndLaunchWebhookMulti runs one target per bot and writes ONE
+// aggregated response. Every target gets an entry — a fan-out never drops a
+// bot silently. On an org-scoped denial it stops (the next bot would be denied
+// identically) and marks the untried bots "skipped".
+func (s *Server) insertAndLaunchWebhookMulti(
+	ctx context.Context,
+	w http.ResponseWriter,
+	r *http.Request,
+	cfg webhooks.Config,
+	meta webhookEventMeta,
+	targets []forgeLaunchTarget,
+	payloadHash string,
+	srcIP string,
+) {
+	if len(targets) == 1 {
+		t := targets[0]
+		s.insertAndLaunchWebhook(ctx, w, r, cfg, meta, t.IdemKey, t.BotID, t.Vars, t.RepoURL, t.RepoRef, payloadHash, srcIP)
+		return
+	}
+
+	results := make([]webhookLaunchResult, 0, len(targets))
+	var firstDenial *launchDenial
+	for i, t := range targets {
+		res := s.launchWebhookTarget(ctx, r, cfg, meta, t, payloadHash, srcIP)
+		results = append(results, res)
+		if res.denial == nil {
+			continue
+		}
+		// Denials are org-scoped (concurrency, launch rate, monthly quota,
+		// cost cap) — retrying the next bot would deny identically and
+		// re-record the same terminal row.
+		firstDenial = res.denial
+		for _, skipped := range targets[i+1:] {
+			results = append(results, webhookLaunchResult{BotID: skipped.BotID, Status: "skipped"})
+		}
+		break
+	}
+
+	launched := 0
+	var firstRunID, firstDeliveryID string
+	for _, res := range results {
+		if res.Status != webhooks.StatusLaunched {
+			continue
+		}
+		launched++
+		if firstRunID == "" {
+			firstRunID, firstDeliveryID = res.RunID, res.DeliveryID
+		}
+	}
+	if launched > 0 {
+		s.scheduleForgeBoardProjection(meta.ProjectPath)
+	}
+
+	switch {
+	case launched > 0:
+		// A sibling failure is not fatal: its row is StatusLaunchError, which
+		// the replay check treats as retryable, so a redelivery relaunches
+		// exactly the bots that failed.
+		writeJSONStatus(w, http.StatusAccepted, map[string]any{
+			"status": webhooks.StatusLaunched, "run_id": firstRunID,
+			"delivery_id": firstDeliveryID, "launches": results,
+		})
+	case firstDenial != nil:
+		s.writeLaunchDenial(w, r, firstDenial)
+	default:
+		status, code := webhooks.StatusDuplicate, http.StatusOK
+		for _, res := range results {
+			if res.Status == webhooks.StatusLaunchError || res.httpStatus >= 500 {
+				status, code = webhooks.StatusLaunchError, http.StatusBadGateway
+				break
+			}
+		}
+		writeJSONStatus(w, code, map[string]any{
+			"status": status, "run_id": firstRunID, "delivery_id": firstDeliveryID, "launches": results,
+		})
+	}
+}
+
+// launchWebhookTarget is the per-bot core of the tail: replay check →
+// admission → delivery row → publish grant → launch → trigger-spine emit. It
+// writes no HTTP response and schedules no board projection, so it composes
+// for one bot or N.
+func (s *Server) launchWebhookTarget(
+	ctx context.Context,
+	r *http.Request,
+	cfg webhooks.Config,
+	meta webhookEventMeta,
+	t forgeLaunchTarget,
+	payloadHash string,
+	srcIP string,
+) webhookLaunchResult {
+	idemKey, botID, vars := t.IdemKey, t.BotID, t.Vars
+	out := webhookLaunchResult{BotID: botID}
+
 	// 1. Idempotency replay check — BEFORE metering. gateLaunch performs the
 	// per-org quota CAS *increment* (the increment IS the metering), so a
 	// forge redelivery of an already-processed event (lost ack, operator
@@ -440,15 +767,19 @@ func (s *Server) insertAndLaunchWebhook(
 		if existing, err := s.webhookDeliveries.GetByIdempotencyKey(ctx, idemKey); err == nil {
 			if existing.Status != webhooks.StatusLaunchError {
 				s.markWebhookOutcome(cfg.Provider, webhooks.StatusDuplicate)
-				writeJSONStatus(w, http.StatusOK, map[string]string{
-					"status": webhooks.StatusDuplicate, "run_id": existing.RunID, "delivery_id": existing.ID,
-				})
-				return
+				out.Status = webhooks.StatusDuplicate
+				out.RunID, out.DeliveryID = existing.RunID, existing.ID
+				return out
 			}
 			ex := existing
 			reusePriorFailure = &ex
 		}
 	}
+
+	// 1b. Supersede: this delivery's input makes the live run for the same
+	// subject obsolete (a newer commit on the same PR). Cancel before
+	// metering, so the superseded run's slot is freed for the fresh one.
+	s.supersedeLiveRuns(ctx, cfg, meta, botID)
 
 	// 2. Run-launch admission. Only reached for a genuinely new delivery
 	// (replays were filtered in step 1), so the quota CAS fires once per
@@ -457,8 +788,10 @@ func (s *Server) insertAndLaunchWebhook(
 	adm, d := s.gateLaunch(ctx)
 	if d != nil {
 		s.recordTerminalWebhookDelivery(ctx, cfg, meta, webhooks.StatusLaunchError, payloadHash, srcIP, d.reason)
-		s.writeLaunchDenial(w, r, d)
-		return
+		out.Status = webhooks.StatusLaunchError
+		out.Error = d.reason
+		out.denial = d
+		return out
 	}
 
 	// 3. Idempotency insert (durable dedupe backstop for concurrent
@@ -474,8 +807,11 @@ func (s *Server) insertAndLaunchWebhook(
 		delivery.ReceivedAt = reusePriorFailure.ReceivedAt
 		if s.webhookDeliveries != nil {
 			if err := s.webhookDeliveries.Update(ctx, delivery); err != nil {
-				httpError(w, http.StatusInternalServerError, "reset failed delivery: %v", err)
-				return
+				adm.rollback(s.logger)
+				out.Status = webhooks.StatusLaunchError
+				out.Error = fmt.Sprintf("reset failed delivery: %v", err)
+				out.httpStatus = http.StatusInternalServerError
+				return out
 			}
 		}
 	} else if s.webhookDeliveries != nil {
@@ -493,17 +829,21 @@ func (s *Server) insertAndLaunchWebhook(
 				// surface it as a 500 instead.
 				existing, gerr := s.webhookDeliveries.GetByIdempotencyKey(ctx, idemKey)
 				if gerr != nil {
-					httpError(w, http.StatusInternalServerError, "lookup duplicate delivery: %v", gerr)
-					return
+					out.Status = webhooks.StatusLaunchError
+					out.Error = fmt.Sprintf("lookup duplicate delivery: %v", gerr)
+					out.httpStatus = http.StatusInternalServerError
+					return out
 				}
 				s.markWebhookOutcome(cfg.Provider, webhooks.StatusDuplicate)
-				writeJSONStatus(w, http.StatusOK, map[string]string{
-					"status": webhooks.StatusDuplicate, "run_id": existing.RunID, "delivery_id": existing.ID,
-				})
-				return
+				out.Status = webhooks.StatusDuplicate
+				out.RunID, out.DeliveryID = existing.RunID, existing.ID
+				return out
 			}
-			httpError(w, http.StatusInternalServerError, "record delivery: %v", err)
-			return
+			adm.rollback(s.logger)
+			out.Status = webhooks.StatusLaunchError
+			out.Error = fmt.Sprintf("record delivery: %v", err)
+			out.httpStatus = http.StatusInternalServerError
+			return out
 		}
 	}
 
@@ -524,14 +864,17 @@ func (s *Server) insertAndLaunchWebhook(
 	// meta.ProjectPath is the forge slug already parsed by the provider
 	// handler — thread it onto the launch so the run is filterable by
 	// repository in the studio.
-	runID, lerr := launch(ctx, botID, vars, repoURL, repoRef, meta.ProjectPath, cfg.KeyOverrides, cfg.SecretOverrides)
+	runID, lerr := launch(ctx, botID, vars, t.RepoURL, t.RepoRef, meta.ProjectPath, cfg.KeyOverrides, cfg.SecretOverrides)
 	if lerr != nil {
 		delivery.Status = webhooks.StatusLaunchError
 		delivery.Error = lerr.Error()
 		s.updateWebhookDelivery(ctx, delivery)
 		s.markWebhookOutcome(cfg.Provider, webhooks.StatusLaunchError)
-		httpError(w, http.StatusBadGateway, "launch failed: %v", lerr)
-		return
+		out.Status = webhooks.StatusLaunchError
+		out.Error = fmt.Sprintf("launch failed: %v", lerr)
+		out.DeliveryID = delivery.ID
+		out.httpStatus = http.StatusBadGateway
+		return out
 	}
 	launchedAt := time.Now().UTC()
 	delivery.Status = webhooks.StatusLaunched
@@ -543,37 +886,12 @@ func (s *Server) insertAndLaunchWebhook(
 	// Mirror the launch onto the trigger spine (observational; carries
 	// launched_run_id so the evaluator never re-launches). Unifies forge with
 	// board/run/schedule sources; no-op without the spine wired.
-	s.emitForgeTriggerEvent(ctx, cfg, meta, botID, vars, repoURL, repoRef, runID)
-
-	// Near-real-time forge→board projection: refresh the affected repo's cards
-	// now instead of at the next periodic sweep. Detached context + goroutine so
-	// it never delays the webhook ack; best-effort, no-op without the cloud board.
-	if s.cfg.CloudBoardFor != nil && s.forgeIntegrations != nil {
-		repo := meta.ProjectPath
-		select {
-		case forgeProjectionSem <- struct{}{}:
-			go func() {
-				defer func() { <-forgeProjectionSem }()
-				// Fresh background context (not derived from the request ctx) so the
-				// goroutine neither is cancelled by the response nor keeps the
-				// request's scoped values alive for its 30s lifetime.
-				pctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-				defer cancel()
-				s.projectForgeWebhookToBoard(pctx, repo)
-			}()
-		default:
-			// Concurrency cap reached — skip the fast path; the periodic
-			// forge→board sweep will reconcile this repo's cards.
-			if s.logger != nil {
-				s.logger.Debug("webhooks: forge→board fast-path projection skipped for %s (concurrency cap); periodic sweep will reconcile", repo)
-			}
-		}
-	}
+	s.emitForgeTriggerEvent(ctx, cfg, meta, botID, vars, t.RepoURL, t.RepoRef, runID)
 
 	if s.logger != nil {
 		s.logger.Info("webhooks: %s/%s %s launched %s run=%s", cfg.Provider, meta.ProjectPath, meta.SubjectID, botID, runID)
 	}
-	writeJSONStatus(w, http.StatusAccepted, map[string]string{
-		"status": webhooks.StatusLaunched, "run_id": runID, "delivery_id": delivery.ID,
-	})
+	out.Status = webhooks.StatusLaunched
+	out.RunID, out.DeliveryID = runID, delivery.ID
+	return out
 }

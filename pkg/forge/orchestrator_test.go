@@ -103,8 +103,16 @@ func testBotLookup(botID string) (*bundle.ForgeRequirements, error) {
 			TokenScopes: map[string]string{"pull_requests": "write", "repository": "write"},
 			Secret:      "forge_token",
 			Webhook: &bundle.ForgeWebhookHints{
-				AuthorAllowlist: []string{"dependabot[bot]", "renovate[bot]"},
+				AuthorAllowlist: []string{"dependabot[bot]", "*renovate[bot]"},
+				AuthorScope:     bundle.AuthorScopeExclusive,
 			},
+		}, nil
+	case "gate-bot":
+		// Declares `statuses` → posts a commit status → can be a required check.
+		return &bundle.ForgeRequirements{
+			Events:      []string{bundle.ForgeEventPullRequest},
+			TokenScopes: map[string]string{"pull_requests": "write", "statuses": "write"},
+			Secret:      "forge_token",
 		}, nil
 	case "no-forge-bot":
 		return nil, nil
@@ -369,7 +377,7 @@ func TestProvision_AuthorAllowlist(t *testing.T) {
 	if err != nil {
 		t.Fatalf("get webhook config: %v", err)
 	}
-	if !sameSet(cfg.AuthorAllowlist, []string{"dependabot[bot]", "renovate[bot]"}) {
+	if !sameSet(cfg.AuthorAllowlist, []string{"dependabot[bot]", "*renovate[bot]"}) {
 		t.Errorf("author allowlist = %v, want the dep bots", cfg.AuthorAllowlist)
 	}
 
