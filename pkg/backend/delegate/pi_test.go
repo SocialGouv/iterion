@@ -797,3 +797,50 @@ func TestPiPrintModeAllowsAnUngatedNode(t *testing.T) {
 		t.Errorf("an ungated node was refused by the gate guard: %v", err)
 	}
 }
+
+// A sandboxed pi run keeps its sessions inside the worktree (the container has
+// to see them), which makes them untracked files in the TARGET repo. Left
+// alone they flip workdirIsClean and ride finalizeWorktree's `git add -A` into
+// a wip-bank commit, so a run that changed no code still lands a commit full
+// of pi transcripts — and scatters iterion's `.iterion/` into someone else's
+// tree. Same self-ignoring guard devbox uses for its generated profile.
+func TestPiHidesWorkspaceSessionDirFromGit(t *testing.T) {
+	t.Run("workspace-relative dir is self-ignored", func(t *testing.T) {
+		work := t.TempDir()
+		piHideWorkspaceSessionDir(Task{WorkDir: work, Sandbox: &recordingRun{}}, testLogger())
+
+		got, err := os.ReadFile(filepath.Join(work, ".iterion", ".gitignore"))
+		if err != nil {
+			t.Fatalf("no .gitignore guard written: %v", err)
+		}
+		if strings.TrimSpace(string(got)) != "*" {
+			t.Errorf("guard = %q, want `*` so the guard ignores itself too", got)
+		}
+	})
+
+	t.Run("an operator's existing gitignore is never overwritten", func(t *testing.T) {
+		work := t.TempDir()
+		if err := os.MkdirAll(filepath.Join(work, ".iterion"), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		guard := filepath.Join(work, ".iterion", ".gitignore")
+		if err := os.WriteFile(guard, []byte("!keep-me\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		piHideWorkspaceSessionDir(Task{WorkDir: work, Sandbox: &recordingRun{}}, testLogger())
+
+		got, _ := os.ReadFile(guard)
+		if strings.TrimSpace(string(got)) != "!keep-me" {
+			t.Errorf("existing .gitignore was clobbered: %q", got)
+		}
+	})
+
+	t.Run("no workspace write when sessions live in the store", func(t *testing.T) {
+		work, store := t.TempDir(), t.TempDir()
+		piHideWorkspaceSessionDir(Task{WorkDir: work, StoreDir: store}, testLogger())
+
+		if _, err := os.Stat(filepath.Join(work, ".iterion")); !os.IsNotExist(err) {
+			t.Error("wrote .iterion/ into the workspace when sessions live in the store")
+		}
+	})
+}

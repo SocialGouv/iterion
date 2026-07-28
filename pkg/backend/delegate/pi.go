@@ -127,6 +127,7 @@ func (b *PiBackend) Execute(ctx context.Context, task Task) (Result, error) {
 	if err := b.noticeSubscriptionOAuth(ctx, task); err != nil {
 		return Result{BackendName: BackendPi, ExitCode: -1}, err
 	}
+	piHideWorkspaceSessionDir(task, b.Logger)
 	// Transport selection. RPC is the default because it is strictly higher
 	// fidelity — tool events reach the studio timeline, operator chat rides
 	// pi's native steering, accounting comes from get_session_stats, and a
@@ -370,6 +371,39 @@ func piSessionDir(task Task) string {
 		return filepath.Join(task.WorkDir, ".iterion", "pi", "sessions")
 	}
 	return filepath.Join(os.TempDir(), "iterion-pi-sessions")
+}
+
+// piHideWorkspaceSessionDir makes a workspace-relative session dir invisible
+// to the target repo's git, by dropping a self-ignoring .gitignore the way
+// devbox does for its generated profile.
+//
+// Without it, pi's transcripts are untracked files inside the worktree, so
+// they make workdirIsClean false and ride finalizeWorktree's `git add -A` into
+// a wip-bank commit — meaning a sandboxed pi run lands a commit full of
+// session transcripts in a repo that changed no code. It also writes iterion's
+// own `.iterion/` into someone else's tree, which the repo-agnostic rule
+// forbids. A no-op when the path is outside the workspace (the StoreDir case).
+func piHideWorkspaceSessionDir(task Task, logger *iterlog.Logger) {
+	dir := piSessionDir(task)
+	if task.WorkDir == "" || !strings.HasPrefix(dir, filepath.Join(task.WorkDir, ".iterion")) {
+		return
+	}
+	root := filepath.Join(task.WorkDir, ".iterion")
+	if err := os.MkdirAll(root, 0o755); err != nil {
+		if logger != nil {
+			logger.Warn("pi: cannot create %s: %v — session files may ride a `git add -A`", root, err)
+		}
+		return
+	}
+	// `*` also ignores this file, so nothing under .iterion/ is ever staged.
+	// Never overwrite: the workspace may already carry an operator's own.
+	guard := filepath.Join(root, ".gitignore")
+	if _, err := os.Stat(guard); err == nil {
+		return
+	}
+	if err := os.WriteFile(guard, []byte("*\n"), 0o644); err != nil && logger != nil {
+		logger.Warn("pi: cannot write %s: %v — session files may ride a `git add -A`", guard, err)
+	}
 }
 
 // piCredentialEnvNames is every environment variable pi resolves a provider
