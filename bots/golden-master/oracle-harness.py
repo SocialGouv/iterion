@@ -875,8 +875,15 @@ def main():
         # an artefact.
         report["runner_replayable"] = True
         runner = os.path.join(gm_dir, "verify-oracle.sh")
+        unanswerable = []
         for needed in (os.path.join(gm_dir, "harness.py"), runner):
             rel = os.path.relpath(needed, ws)
+            if not os.path.isfile(needed):
+                report["runner_replayable"] = False
+                problems.append("%s is MISSING from the workspace: whatever produced "
+                                "this tree did not carry the net's own machinery, so "
+                                "nothing here can be replayed." % rel)
+                continue
             ignored = subprocess.run(["git", "-C", ws, "check-ignore", "-q", rel],
                                      capture_output=True)
             if ignored.returncode == 0:
@@ -885,6 +892,22 @@ def main():
                                 "replayed by CI or by anyone who checks the repo "
                                 "out. The oracle is a deliverable: un-ignore it and "
                                 "commit it." % rel)
+            elif ignored.returncode != 1:
+                # git answered neither "ignored" (0) nor "tracked-or-untracked"
+                # (1): there is no repository here, or no git at all. The check
+                # then discriminates NOTHING, and staying silent would let it
+                # report the good outcome for the one reason it cannot see —
+                # exactly the shape of failure this net exists to catch. Some
+                # CI runners hand the job a COPY of the tracked files rather
+                # than a checkout; presence is then real evidence, trackedness
+                # is not, and the report says which of the two it has.
+                unanswerable.append(rel)
+        if unanswerable:
+            report["notice"] = ((report["notice"] + " | ") if report["notice"] else "") + (
+                "git could not be asked whether %s are ignored — this workspace is not a "
+                "checkout (a copy, or no git available). They are PRESENT, which is what a "
+                "copy of tracked files proves; that they are TRACKED is verified only where "
+                "a checkout exists." % ", ".join(unanswerable))
         # A held-out set that repeats an already-spent one is not held out at
         # all: its mutants are committed under mutants/audit/ where anyone,
         # including the hardening loop, can read them. Reuse is refused by
