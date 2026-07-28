@@ -578,7 +578,16 @@ var SseTransport = class {
     try {
       for await (const frame of readSseFrames(body)) {
         if (frame.event === "endpoint") {
-          this.endpoint = new URL(frame.data, this.url).toString();
+          const announced = new URL(frame.data, this.url);
+          if (announced.origin !== new URL(this.url).origin) {
+            failed(
+              new Error(
+                `SSE server announced a cross-origin endpoint (${announced.origin}, stream is ${new URL(this.url).origin}) \u2014 refusing to POST credentials there`
+              )
+            );
+            return;
+          }
+          this.endpoint = announced.toString();
           ready();
           continue;
         }
@@ -623,6 +632,7 @@ var StdioTransport = class {
       stdio: ["pipe", "pipe", "pipe"]
     });
     this.child = child;
+    child.stdin?.on("error", (err) => this.log(`stdin: ${err.message}`));
     child.stdout?.setEncoding("utf8");
     child.stdout?.on("data", (chunk) => this.absorb(chunk));
     child.stderr?.setEncoding("utf8");
@@ -636,6 +646,7 @@ var StdioTransport = class {
     await new Promise((resolve, reject) => {
       const settleOk = () => {
         child.off("error", settleErr);
+        child.on("error", (err) => this.log(`process: ${err.message}`));
         resolve();
       };
       const settleErr = (err) => {

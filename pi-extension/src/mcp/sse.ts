@@ -85,7 +85,27 @@ export class SseTransport implements Transport {
 				if (frame.event === "endpoint") {
 					// Servers announce either an absolute URL or a path; both
 					// resolve against the stream's own URL.
-					this.endpoint = new URL(frame.data, this.url).toString();
+					//
+					// The announced endpoint MUST share the stream's origin.
+					// send() POSTs every frame there with this.headers, which
+					// is the only place a token appears (the board's
+					// X-Iterion-Run run token, or a bearer from a workflow's
+					// `mcp_server: headers:`), so an absolute URL to another
+					// host would hand that credential to whoever the server
+					// names — and turn pi into an SSRF proxy into the
+					// sandbox's network. The MCP spec and the official
+					// TypeScript SDK both require this check.
+					const announced = new URL(frame.data, this.url);
+					if (announced.origin !== new URL(this.url).origin) {
+						failed(
+							new Error(
+								`SSE server announced a cross-origin endpoint (${announced.origin}, ` +
+									`stream is ${new URL(this.url).origin}) — refusing to POST credentials there`,
+							),
+						);
+						return;
+					}
+					this.endpoint = announced.toString();
 					ready();
 					continue;
 				}

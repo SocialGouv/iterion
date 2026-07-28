@@ -44,6 +44,14 @@ export class StdioTransport implements Transport {
 		});
 		this.child = child;
 
+		// A stream 'error' with no listener is an uncaughtException, which in
+		// Node terminates the whole pi process — so one bad frame to one MCP
+		// server would take the entire run down instead of failing one tool
+		// call. stdin is the one that actually fires: a server that stops
+		// reading while still alive leaves `destroyed` false, so send()'s
+		// guard passes and the write fails with EPIPE. With a listener
+		// attached the failure reaches send()'s write callback instead.
+		child.stdin?.on("error", (err: Error) => this.log(`stdin: ${err.message}`));
 		child.stdout?.setEncoding("utf8");
 		child.stdout?.on("data", (chunk: string) => this.absorb(chunk));
 		child.stderr?.setEncoding("utf8");
@@ -61,6 +69,9 @@ export class StdioTransport implements Transport {
 		await new Promise<void>((resolve, reject) => {
 			const settleOk = () => {
 				child.off("error", settleErr);
+				// settleErr was the only 'error' listener; leaving the child
+				// bare after spawn makes a later runtime error fatal to pi.
+				child.on("error", (err: Error) => this.log(`process: ${err.message}`));
 				resolve();
 			};
 			const settleErr = (err: Error) => {
