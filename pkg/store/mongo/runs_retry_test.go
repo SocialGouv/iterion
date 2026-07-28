@@ -337,13 +337,19 @@ func TestRunRetry_ListDueOrdersAndFilters(t *testing.T) {
 	arm("run-due-early", now.Add(-time.Hour))
 	arm("run-not-yet", now.Add(time.Hour))
 
-	due, err := s.ListRunsDueForRetry(store.WithoutTenantFilter(ctx), now, 10)
+	due, err := s.ListRunsDueForRetry(store.WithoutTenantFilter(ctx), now, 50)
 	if err != nil {
 		t.Fatalf("ListRunsDueForRetry: %v", err)
 	}
+	// Scoped to this test's own runs: the scan is platform-wide by design,
+	// so asserting on the whole result would couple this test to whatever
+	// else shares the database.
+	mine := map[string]bool{"run-due-late": true, "run-due-early": true, "run-not-yet": true, "run-never-armed": true}
 	var ids []string
 	for _, d := range due {
-		ids = append(ids, d.ID)
+		if mine[d.ID] {
+			ids = append(ids, d.ID)
+		}
 	}
 	if len(ids) != 2 || ids[0] != "run-due-early" || ids[1] != "run-due-late" {
 		t.Fatalf("due = %v, want [run-due-early run-due-late] (oldest first, future and unarmed excluded)", ids)
