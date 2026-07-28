@@ -188,6 +188,14 @@ type Config struct {
 	RateLimit        Rate `bson:"rate_limit" json:"rate_limit"`
 	MonthlyCallLimit int  `bson:"monthly_call_limit,omitempty" json:"monthly_call_limit,omitempty"` // 0 = inherit org
 
+	// OperatorLaunchVars are the per-repo overrides an operator pinned on the
+	// integration, kept SEPARATE from LaunchVars (which is the union of every
+	// co-enabled bot's manifest vars). Layering that union last would undo the
+	// per-bot isolation BotRule.LaunchVars exists for: two bots declaring the
+	// same key with different values would both run with whichever won the
+	// union. Precedence is base < the bot's own rule vars < these.
+	OperatorLaunchVars map[string]string `bson:"operator_launch_vars,omitempty" json:"operator_launch_vars,omitempty"`
+
 	// LaunchVars are stamped onto every run launched through this webhook
 	// (e.g. severity_threshold), overriding the handler-derived vars.
 	LaunchVars map[string]string `bson:"launch_vars,omitempty" json:"launch_vars,omitempty"`

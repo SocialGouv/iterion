@@ -27,10 +27,16 @@ func TestDepUpdateGuardArmAutomerge(t *testing.T) {
 	}
 	script := toolScript(t, "dep-update-guard/main.bot", "arm_automerge")
 
-	// The source must not even contain the immediate-merge endpoint: the
-	// guarantee should be readable, not merely untested.
-	if strings.Contains(script, "/merge") && !strings.Contains(script, "enablePullRequestAutoMerge") {
-		t.Fatal("arm_automerge must not reference a direct merge endpoint")
+	// The source must not even contain a way to merge outright: the guarantee
+	// should be readable, not merely untested. Asserted on each forbidden
+	// marker on its own — a conjunction with "does it also mention the
+	// auto-merge mutation" is always false, since that mutation is the node's
+	// only forge call, and would let the single most dangerous regression
+	// this bot can have sail through.
+	for _, forbidden := range []string{"mergePullRequest", `/merge"`, "/merge'", "/merge%s", "/merge?"} {
+		if strings.Contains(script, forbidden) {
+			t.Fatalf("arm_automerge must not reference a direct merge endpoint (%q)", forbidden)
+		}
 	}
 
 	type call struct {
@@ -51,6 +57,15 @@ func TestDepUpdateGuardArmAutomerge(t *testing.T) {
 			}
 			_ = json.Unmarshal(raw, &body)
 			calls = append(calls, call{query: body.Query, vars: body.Variables})
+			// The stub answered success for ANY body, so a query corrupted into
+			// invalid GraphQL passed CI while being rejected by the real API —
+			// the feature was green here and dead in production. Reject
+			// anything the API would.
+			if err := assertValidGraphQL(body.Query); err != "" {
+				t.Errorf("invalid GraphQL sent: %s\nquery: %s", err, body.Query)
+				w.WriteHeader(400)
+				return
+			}
 			if strings.Contains(body.Query, "enablePullRequestAutoMerge") {
 				_ = json.NewEncoder(w).Encode(map[string]any{
 					"data": map[string]any{"enablePullRequestAutoMerge": map[string]any{"clientMutationId": nil}},
@@ -170,4 +185,42 @@ func TestDepUpdateGuardArmAutomerge(t *testing.T) {
 			t.Fatalf("a clean bump with a green gate arms too: %v", res)
 		}
 	})
+}
+
+// assertValidGraphQL catches the corruption class that got past the original
+// stub: a sigil swap that also rewrote GraphQL's own separators, producing a
+// query the real API rejects while the test answered success to anything. It
+// is not a parser — it checks the invariants a careless string substitution
+// breaks. Returns "" when the query looks well-formed.
+func assertValidGraphQL(q string) string {
+	if strings.TrimSpace(q) == "" {
+		return "empty query"
+	}
+	// Every declared variable is `$name: Type` and every use `$name` — never
+	// `$name$`, which is exactly what swapping colons produces.
+	for _, frag := range strings.Split(q, "$")[1:] {
+		name := frag
+		for i, r := range frag {
+			isNameRune := r == '_' || (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9')
+			if !isNameRune {
+				name = frag[:i]
+				break
+			}
+		}
+		if name == "" {
+			return "empty variable name after $"
+		}
+		if strings.HasPrefix(strings.TrimPrefix(frag, name), "$") {
+			return "variable $" + name + " is followed by another $ (a separator was rewritten)"
+		}
+	}
+	// Fields and arguments are separated by a colon; if the swap ate them,
+	// none are left where the query needs them.
+	if !strings.Contains(q, ": ") {
+		return "no `: ` separator left in the query"
+	}
+	if strings.Count(q, "{") != strings.Count(q, "}") {
+		return "unbalanced braces"
+	}
+	return ""
 }

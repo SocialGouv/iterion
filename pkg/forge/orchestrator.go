@@ -257,7 +257,8 @@ func (o *Orchestrator) Provision(ctx context.Context, req ProvisionRequest) (Pro
 				return ProvisionResult{}, fmt.Errorf("forge: update integration launch vars: %w", uerr)
 			}
 			if cfg, gerr := o.Webhooks.Get(ctx, existing.WebhookID); gerr == nil {
-				cfg.LaunchVars = nilIfEmpty(mergeStringMaps(manifestLaunchVars(desiredBots, frByBot), operatorVars))
+				cfg.LaunchVars = nilIfEmpty(manifestLaunchVars(desiredBots, frByBot))
+				cfg.OperatorLaunchVars = nilIfEmpty(maps.Clone(operatorVars))
 				cfg.UpdatedAt = o.clock()
 				if uerr := o.Webhooks.Update(ctx, cfg); uerr != nil {
 					return ProvisionResult{}, fmt.Errorf("forge: update webhook launch vars: %w", uerr)
@@ -366,21 +367,7 @@ func (o *Orchestrator) Provision(ctx context.Context, req ProvisionRequest) (Pro
 
 	botRules := resolveBotRules(desiredBots, frByBot, invByBot)
 
-	// A bot that declares `statuses` posts a commit status, i.e. it can be a
-	// REQUIRED check. A required check lives on one head SHA: if the bot does
-	// not re-run when the author pushes a fix, the status is simply absent
-	// from the new head — indistinguishable from "never reviewed" — and the
-	// PR is blocked with no way forward but an admin bypass. Observed live on
-	// SocialGouv/iterion#300. So re-review on sync is not an operator
-	// preference here, it is what makes a gate survivable; it turns on from
-	// the DECLARED capability, never from a bot id.
-	reviewOnSync := false
-	for _, b := range desiredBots {
-		if fr := frByBot[b]; fr != nil && fr.TokenScopes[bundle.ForgeScopeStatuses] != "" {
-			reviewOnSync = true
-			break
-		}
-	}
+	reviewOnSync := anyBotGatesMerges(desiredBots, frByBot)
 
 	// Mint a fresh iwh_ on every mutating provision (create OR event-widen):
 	// it keeps the forge hook secret and the iterion config hash in lockstep
@@ -398,32 +385,33 @@ func (o *Orchestrator) Provision(ctx context.Context, req ProvisionRequest) (Pro
 
 	now := o.clock()
 	cfg := webhooks.Config{
-		ID:               webhookID,
-		TenantID:         req.TenantID,
-		Name:             provisionedWebhookName(conn.Provider, req.RepoFullName),
-		Provider:         webhooks.Provider(conn.Provider),
-		SignMode:         signModeFor(conn.Provider),
-		Enabled:          true,
-		TokenHash:        hash,
-		TokenLast4:       last4,
-		Fingerprint:      fingerprint,
-		BotIDs:           desiredBots,
-		DefaultBotID:     singleBotDefault(desiredBots),
-		BotRules:         botRules,
-		ProjectAllowlist: []string{req.RepoFullName},
-		EventAllowlist:   nativeEvents,
-		AuthorAllowlist:  authorAllowlist,
-		ReviewOnSync:     reviewOnSync,
-		ForgeBaseURL:     conn.BaseURL(),
-		RateLimit:        webhooks.Rate{Rate: 1, Burst: 10},
-		LaunchVars:       nilIfEmpty(mergeStringMaps(launchVars, operatorVars)),
-		SecretOverrides:  secretOverrides,
-		MinReplierRole:   minRole,
-		CommandMap:       commandMap,
-		ProvisionedBy:    "forge:" + conn.ID,
-		CreatedBy:        req.ActorID,
-		CreatedAt:        now,
-		UpdatedAt:        now,
+		ID:                 webhookID,
+		TenantID:           req.TenantID,
+		Name:               provisionedWebhookName(conn.Provider, req.RepoFullName),
+		Provider:           webhooks.Provider(conn.Provider),
+		SignMode:           signModeFor(conn.Provider),
+		Enabled:            true,
+		TokenHash:          hash,
+		TokenLast4:         last4,
+		Fingerprint:        fingerprint,
+		BotIDs:             desiredBots,
+		DefaultBotID:       singleBotDefault(desiredBots),
+		BotRules:           botRules,
+		ProjectAllowlist:   []string{req.RepoFullName},
+		EventAllowlist:     nativeEvents,
+		AuthorAllowlist:    authorAllowlist,
+		ReviewOnSync:       reviewOnSync,
+		ForgeBaseURL:       conn.BaseURL(),
+		RateLimit:          webhooks.Rate{Rate: 1, Burst: 10},
+		LaunchVars:         nilIfEmpty(launchVars),
+		OperatorLaunchVars: nilIfEmpty(maps.Clone(operatorVars)),
+		SecretOverrides:    secretOverrides,
+		MinReplierRole:     minRole,
+		CommandMap:         commandMap,
+		ProvisionedBy:      "forge:" + conn.ID,
+		CreatedBy:          req.ActorID,
+		CreatedAt:          now,
+		UpdatedAt:          now,
 	}
 	if cfg.SignMode == webhooks.SignModeHMAC {
 		sealed, err := webhooks.SealHMACSecret(o.Sealer, cfg.ID, plaintext)
@@ -940,29 +928,61 @@ func buildBotRules(bots []string, frByBot map[string]*bundle.ForgeRequirements, 
 	return rules
 }
 
-// backfillBotRules reconciles a webhook config's per-bot routing table when
-// the bot/event set is otherwise unchanged. It rewrites the config ONLY when
-// the table actually differs, so the common re-enable stays a true no-op.
+// backfillBotRules reconciles what a webhook config derives from its bots'
+// manifests, when the bot/event set is otherwise unchanged: the per-bot
+// routing table and whether a push must re-review. It rewrites the config
+// ONLY when something actually differs, so the common re-enable stays a true
+// no-op.
+//
+// Both reconciliations exist for the same reason — the ALREADY-provisioned
+// repo is the production case, and it reaches the short-circuit, not the full
+// path. A derivation that only runs on a fresh provision fixes nothing that
+// is already deployed.
 func (o *Orchestrator) backfillBotRules(ctx context.Context, webhookID string, bots []string, frByBot map[string]*bundle.ForgeRequirements, invByBot map[string][]bundle.Invocation) error {
 	if webhookID == "" {
 		return nil
 	}
 	want := resolveBotRules(bots, frByBot, invByBot)
+	wantSync := anyBotGatesMerges(bots, frByBot)
 	cfg, err := o.Webhooks.Get(ctx, webhookID)
 	if err != nil {
 		// A missing config is reported by the surrounding provision paths; a
 		// backfill is best-effort reconciliation, not the authority on it.
 		return nil //nolint:nilerr
 	}
-	if reflect.DeepEqual(cfg.BotRules, want) {
+	if reflect.DeepEqual(cfg.BotRules, want) && (!wantSync || cfg.ReviewOnSync) {
 		return nil
 	}
 	cfg.BotRules = want
+	// Only ever turned ON: an operator who deliberately disabled re-review on
+	// a repo whose bots gate must not have it silently re-enabled under them.
+	if wantSync {
+		cfg.ReviewOnSync = true
+	}
 	cfg.UpdatedAt = o.clock()
 	if err := o.Webhooks.Update(ctx, cfg); err != nil {
 		return fmt.Errorf("forge: backfill bot rules on webhook %s: %w", webhookID, err)
 	}
 	return nil
+}
+
+// anyBotGatesMerges reports whether any of these bots declares the `statuses`
+// scope — i.e. posts a commit status, i.e. can be a REQUIRED check.
+//
+// A required check lives on ONE head SHA: if the bot does not re-run when the
+// author pushes a fix, the status is simply absent from the new head —
+// indistinguishable from "never reviewed" — and the PR is blocked with no way
+// forward but an admin bypass (observed live on SocialGouv/iterion#300). So
+// re-review on sync is not an operator preference on such a repo, it is what
+// makes the gate survivable. Derived from the DECLARED capability, never from
+// a bot id.
+func anyBotGatesMerges(bots []string, frByBot map[string]*bundle.ForgeRequirements) bool {
+	for _, b := range bots {
+		if fr := frByBot[b]; fr != nil && fr.TokenScopes[bundle.ForgeScopeStatuses] != "" {
+			return true
+		}
+	}
+	return false
 }
 
 // resolveBotRules derives the complete per-bot routing table — events, author
@@ -1013,15 +1033,6 @@ func manifestLaunchVars(bots []string, frByBot map[string]*bundle.ForgeRequireme
 			maps.Copy(out, fr.Webhook.LaunchVars)
 		}
 	}
-	return out
-}
-
-// mergeStringMaps returns base with overlay applied on top (overlay wins),
-// without mutating either.
-func mergeStringMaps(base, overlay map[string]string) map[string]string {
-	out := make(map[string]string, len(base)+len(overlay))
-	maps.Copy(out, base)
-	maps.Copy(out, overlay)
 	return out
 }
 

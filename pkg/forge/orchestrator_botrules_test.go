@@ -145,6 +145,77 @@ func TestProvision_StatusesScopeEnablesReviewOnSync(t *testing.T) {
 	}
 }
 
+// The same migration guard for re-review: a repo already provisioned with a
+// gating bot reaches the SHORT-CIRCUIT, never the full path. A derivation that
+// only runs on a fresh provision leaves every deployed repo with the bug it
+// was written to close — the PR blocked on a status stuck to an old head.
+func TestProvision_NoOpReprovisionBackfillsReviewOnSync(t *testing.T) {
+	o, _, sealer := newTestOrch(t)
+	seedConn(t, o, sealer)
+	ctx := context.Background()
+
+	res, err := o.Provision(ctx, ProvisionRequest{
+		TenantID: "t1", ConnectionID: "conn-1", RepoFullName: "group/gated",
+		BotIDs: []string{"gate-bot"}, ActorID: "u1",
+	})
+	if err != nil {
+		t.Fatalf("provision: %v", err)
+	}
+	// Simulate the deployed state: provisioned before the derivation existed.
+	cfg, err := o.Webhooks.Get(ctx, res.WebhookID)
+	if err != nil {
+		t.Fatalf("get webhook config: %v", err)
+	}
+	cfg.ReviewOnSync = false
+	cfg.BotRules = nil
+	if err := o.Webhooks.Update(ctx, cfg); err != nil {
+		t.Fatalf("seed legacy config: %v", err)
+	}
+
+	if _, err := o.Provision(ctx, ProvisionRequest{
+		TenantID: "t1", ConnectionID: "conn-1", RepoFullName: "group/gated",
+		BotIDs: []string{"gate-bot"}, ActorID: "u1",
+	}); err != nil {
+		t.Fatalf("re-provision: %v", err)
+	}
+	after, err := o.Webhooks.Get(ctx, res.WebhookID)
+	if err != nil {
+		t.Fatalf("get webhook config 2: %v", err)
+	}
+	if !after.ReviewOnSync {
+		t.Fatal("a gating bot on an already-provisioned repo must gain re-review on push")
+	}
+}
+
+// A repo whose bots post no status keeps re-review off: it costs a run per
+// push, and nothing there needs a status to follow the head.
+func TestProvision_NoGatingBotLeavesReviewOnSyncAlone(t *testing.T) {
+	o, _, sealer := newTestOrch(t)
+	seedConn(t, o, sealer)
+	ctx := context.Background()
+
+	res, err := o.Provision(ctx, ProvisionRequest{
+		TenantID: "t1", ConnectionID: "conn-1", RepoFullName: "group/api",
+		BotIDs: []string{"dep-guard"}, ActorID: "u1",
+	})
+	if err != nil {
+		t.Fatalf("provision: %v", err)
+	}
+	if _, err := o.Provision(ctx, ProvisionRequest{
+		TenantID: "t1", ConnectionID: "conn-1", RepoFullName: "group/api",
+		BotIDs: []string{"dep-guard"}, ActorID: "u1",
+	}); err != nil {
+		t.Fatalf("re-provision: %v", err)
+	}
+	cfg, err := o.Webhooks.Get(ctx, res.WebhookID)
+	if err != nil {
+		t.Fatalf("get webhook config: %v", err)
+	}
+	if cfg.ReviewOnSync {
+		t.Error("no bot posts a status here — re-review on push must stay off")
+	}
+}
+
 // The migration guard: re-enabling an unchanged bot set short-circuits, so
 // without an explicit backfill an already-provisioned repo would stay on the
 // legacy single-bot path forever — tests green, production unchanged.

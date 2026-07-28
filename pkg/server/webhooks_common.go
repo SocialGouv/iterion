@@ -347,8 +347,18 @@ func forgePREventTargets(
 	targets := make([]forgeLaunchTarget, 0, len(rules))
 	for _, rule := range rules {
 		vars := reviewPRVars(prURL, baseRef, scopeNotes, nil, extra)
+		// cfg.LaunchVars is the UNION of every co-enabled bot's manifest vars,
+		// so it only applies where a rule carries none of its own — layering it
+		// over the rule would let one bot's value win for the other, which is
+		// exactly what the per-bot table exists to prevent. The operator's own
+		// overrides are a separate layer and always win.
+		for k, v := range cfg.LaunchVars {
+			if _, pinned := rule.LaunchVars[k]; !pinned {
+				vars[k] = v
+			}
+		}
 		mergeVarsInto(vars, rule.LaunchVars)
-		mergeVarsInto(vars, cfg.LaunchVars)
+		mergeVarsInto(vars, cfg.OperatorLaunchVars)
 		targets = append(targets, forgeLaunchTarget{
 			BotID:   rule.BotID,
 			IdemKey: forgeIdemKey(idemBase, rule.BotID, cfg.HasBotRules()),

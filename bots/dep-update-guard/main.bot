@@ -1071,17 +1071,20 @@ tool arm_automerge:
             raise RuntimeError(str(payload["errors"])[:300])
         return payload.get("data") or {}
 
-    # Written with a placeholder sigil and swapped to the GraphQL one at
-    # runtime: a doubled brace anywhere in this file is a template reference,
-    # and a GraphQL block that produced one would be substituted away before
-    # python ever saw it.
-    q = ("query(:owner: String!, :name: String!, :number: Int!) { "
-         "repository(owner: :owner, name: :name) { "
-         "pullRequest(number: :number) { id autoMergeRequest { enabledAt } } "
-         "} }").replace(":", "$")
-    mut = ("mutation(:id: ID!, :method: PullRequestMergeMethod!) { "
-           "enablePullRequestAutoMerge(input: { pullRequestId: :id, mergeMethod: :method }) "
-           "{ clientMutationId } }").replace(":", "$")
+    # The variable sigil is written as @ and swapped at runtime: a doubled
+    # brace anywhere in this file is a template reference, and a GraphQL block
+    # that produced one would be substituted away before python ever saw it.
+    # The placeholder must NOT be a character GraphQL already uses — a colon
+    # separates every field and argument, so swapping colons corrupts the
+    # whole query into something the API rejects.
+    at = chr(36)
+    q = ("query(@owner: String!, @name: String!, @number: Int!) { "
+         "repository(owner: @owner, name: @name) { "
+         "pullRequest(number: @number) { id autoMergeRequest { enabledAt } } "
+         "} }").replace("@", at)
+    mut = ("mutation(@id: ID!, @method: PullRequestMergeMethod!) { "
+           "enablePullRequestAutoMerge(input: { pullRequestId: @id, mergeMethod: @method }) "
+           "{ clientMutationId } }").replace("@", at)
     try:
         data = graphql(q, {"owner": owner, "name": repo, "number": num})
         pr = ((data.get("repository") or {}).get("pullRequest") or {})

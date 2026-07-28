@@ -170,7 +170,11 @@ func TestFanOut_VarsAreIsolatedPerBot(t *testing.T) {
 	cfg, pt := fanoutConfig(t, s)
 	cfg.BotRules[0].AuthorAllowlist = nil
 	cfg.BotRules[1].AuthorDenylist = nil
-	cfg.LaunchVars = map[string]string{"scope_notes": "operator pin"}
+	cfg.OperatorLaunchVars = map[string]string{"scope_notes": "operator pin"}
+	// The manifest UNION carries a key one bot pins for itself: the union must
+	// not override that bot's own value (that is the collision BotRule exists
+	// to prevent), but must still reach the bot that declares nothing.
+	cfg.LaunchVars = map[string]string{"max_fix_iterations": "99"}
 
 	w := httptest.NewRecorder()
 	s.handleGitHubWebhook(w, ghReq(ghCtx(cfg), ghOpenPR, prforge.EventHeaderPullRequest, pt))
@@ -188,11 +192,11 @@ func TestFanOut_VarsAreIsolatedPerBot(t *testing.T) {
 	if &recs[0].vars == &recs[1].vars {
 		t.Fatal("bots must not share a vars map")
 	}
-	if _, leaked := byBot["review-pr"]["max_fix_iterations"]; leaked {
-		t.Fatalf("the guard's manifest var leaked into the reviewer: %v", byBot["review-pr"])
-	}
 	if got := byBot["dep-update-guard"]["max_fix_iterations"]; got != "2" {
-		t.Fatalf("the guard lost its own manifest var: %v", byBot["dep-update-guard"])
+		t.Fatalf("the cross-bot union overrode the guard's own value: %v", byBot["dep-update-guard"])
+	}
+	if got := byBot["review-pr"]["max_fix_iterations"]; got != "99" {
+		t.Fatalf("a bot pinning nothing still gets the union value, got %q", got)
 	}
 	for bot, vars := range byBot {
 		if vars["scope_notes"] != "operator pin" {
