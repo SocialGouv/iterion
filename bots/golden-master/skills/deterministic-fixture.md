@@ -58,13 +58,37 @@ should be handling them in the *capture*. If logging in updates a last-login tim
 appears in a listing, that is a canonicalisation problem ([[canonicalization]]). Solving it in the
 fixture removes a genuine test of the canonicaliser.
 
+## Never bake the port
+
+Environments that can host two checkouts at once **derive** their ports, so
+that a second working copy neither refuses to start nor — far worse — captures
+the first one's application and records a net describing a different tree. Such
+an environment publishes the effective URL to a file when it comes up.
+
+A recorded `base_url` is then valid **only on the machine and path that
+recorded it**. Move the repository, hand it to a colleague, run it in CI, and
+the net cannot reach the application at all. It looks complete: references,
+mutants, runner, everything present — and it times out waiting on a port
+nothing is listening on.
+
+So prefer `base_url_file`, resolved at replay time:
+
+| | |
+|---|---|
+| `base_url_file` | path to a file the environment writes on startup — **use this whenever the port is derived** |
+| `base_url` | a genuinely fixed endpoint |
+
+`base_url_file` wins when both are present. This is the same discipline as
+committing the harness: an artefact that only works where it was born is a
+record of one run, not a net.
+
 ## The lifecycle contract
 
 `config.json` declares how the harness drives the application:
 
 ```json
 {
-  "base_url": "http://127.0.0.1:8080",
+  "base_url_file": "../.state/app/base-url.txt",
   "up":   "…bring database and application up, then apply the fixture…",
   "down": "…stop both…",
   "ready_path": "/login",

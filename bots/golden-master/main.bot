@@ -402,10 +402,45 @@ tool oracle_run:
         return seg[k + 7: seg.find('"', k + 7)]
 
 
+
+
+    def resolve_base_url(config, ws):
+        """Resolve the application's base URL, preferring a PUBLISHED one.
+
+        A recorded `base_url` is only valid on the machine and path that recorded
+        it. Environments that derive their ports (to avoid two checkouts fighting
+        over one) publish the effective URL to a file, and a net that bakes the
+        literal instead cannot run anywhere else — the same orphaned-artefact
+        failure as a harness that does not travel, one level subtler because the
+        net looks complete and simply never reaches the application.
+
+        `base_url_file` wins when present and readable; `base_url` remains the
+        right answer for a genuinely fixed endpoint.
+        """
+        rel = config.get("base_url_file")
+        if rel:
+            path = rel if os.path.isabs(rel) else os.path.join(ws, rel)
+            try:
+                with open(path, encoding="utf-8") as f:
+                    url = f.read().strip()
+                if url:
+                    return url
+            except OSError as e:
+                raise SystemExit(
+                    "config.base_url_file points at %s, which cannot be read (%s). "
+                    "That file is written when the environment comes up; either the "
+                    "app was never started, or the path is wrong for this checkout."
+                    % (path, e))
+        url = config.get("base_url")
+        if not url:
+            raise SystemExit("config.json declares neither base_url nor base_url_file")
+        return url
+
+
     def open_sessions(config):
         sessions = {}
         for p in config.get("personas", [{"name": "anon"}]):
-            s = Session(config["base_url"])
+            s = Session(resolve_base_url(config, os.environ.get("GM_WORKSPACE", ".")))
             if p.get("login"):
                 code = s.login(p["login"])
                 if code >= 400:
@@ -442,7 +477,8 @@ tool oracle_run:
         code, out = run(config["up"], ws, timeout=BOOT_TIMEOUT_S)
         if code != 0:
             raise SystemExit("config.up failed (exit %s):\n%s" % (code, out[-2000:]))
-        base, ready = config["base_url"].rstrip("/"), config.get("ready_path", "/")
+        base = resolve_base_url(config, ws).rstrip("/")
+        ready = config.get("ready_path", "/")
         deadline = time.time() + BOOT_TIMEOUT_S
         while time.time() < deadline:
             try:
