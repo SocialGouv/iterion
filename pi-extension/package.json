@@ -1,0 +1,22 @@
+{
+  "name": "@iterion/pi-extension",
+  "private": true,
+  "version": "0.0.0",
+  "type": "module",
+  "description": "Gives the `pi` backend the capabilities pi does not ship natively: iterion's permission gate today; ask_user, board tools and MCP next. Bundled to a single file and embedded in the iterion binary, so its version is structurally locked to the engine that drives it.",
+  "scripts": {
+    "build": "esbuild src/index.ts --bundle --format=esm --platform=node --target=node22 --external:@earendil-works/* --external:typebox --outfile=../pkg/backend/delegate/piext/asset/iterion-pi.js",
+    "typecheck": "tsc --noEmit"
+  },
+  "peerDependencies": {
+    "@earendil-works/pi-ai": "*",
+    "@earendil-works/pi-coding-agent": "*"
+  },
+  "devDependencies": {
+    "@earendil-works/pi-ai": "0.82.1",
+    "@earendil-works/pi-coding-agent": "0.82.1",
+    "esbuild": "0.25.10",
+    "typescript": "5.9.3",
+    "@types/node": "24.10.1"
+  }
+}

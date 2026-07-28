@@ -6,11 +6,13 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
 
 	"github.com/SocialGouv/iterion/pkg/backend/cost"
+	"github.com/SocialGouv/iterion/pkg/backend/delegate/piext"
 	"github.com/SocialGouv/iterion/pkg/backend/delegate/pisdk"
 	iterlog "github.com/SocialGouv/iterion/pkg/log"
 	"github.com/SocialGouv/iterion/pkg/sandbox"
@@ -88,6 +90,28 @@ func (b *PiRPCBackend) Execute(ctx context.Context, task Task) (Result, error) {
 
 	argv := append(piRPCArgs(task, promptFile), b.ExtraArgs...)
 
+	// The iterion extension supplies what pi has no native surface for — today
+	// the permission gate. Loaded via `-e`, which bypasses pi's project-trust
+	// gate (a `.pi/extensions/` drop would silently never load in a headless
+	// run, and never say so).
+	if extPath, cleanupExt, extErr := piext.Materialise(task.WorkDir); extErr != nil {
+		// A permission-gated node without its gate is a false sense of
+		// security, so that specific combination fails rather than degrades.
+		if task.Permission.Enabled() {
+			return Result{BackendName: BackendPi, ExitCode: -1},
+				fmt.Errorf("pi backend: this node declares a permission gate but the iterion "+
+					"extension could not be installed, which would leave the gate INACTIVE: %w", extErr)
+		}
+		if b.Logger != nil {
+			b.Logger.Warn("[%s#%d/%s] iterion extension unavailable (%v); "+
+				"iterion-specific capabilities are inactive for this node",
+				task.NodeID, task.Iteration, BackendPi, extErr)
+		}
+	} else {
+		defer cleanupExt()
+		argv = append(argv, "-e", extPath)
+	}
+
 	collector := &piCollector{task: task, logger: b.Logger, settled: make(chan struct{})}
 	client := pisdk.NewClient(pisdk.ClientOptions{
 		Binary:  binary,
@@ -101,16 +125,8 @@ func (b *PiRPCBackend) Execute(ctx context.Context, task Task) (Result, error) {
 				b.Logger.Info("[%s#%d/%s:err] %s", task.NodeID, task.Iteration, BackendPi, line)
 			}
 		},
-		// No iterion extension is loaded yet, so any UI request comes from a
-		// third-party extension the operator installed. Cancelling resolves it
-		// to its safe default: it neither blocks the agent nor invents an
-		// answer on the operator's behalf.
 		OnUIRequest: func(req pisdk.UIRequest) *pisdk.UIResponse {
-			if b.Logger != nil {
-				b.Logger.Warn("[%s#%d/%s] declining an unrecognised extension UI request (%s: %q)",
-					task.NodeID, task.Iteration, BackendPi, req.Method, truncate(req.Prompt(), 120))
-			}
-			return nil
+			return b.handleUIRequest(task, req)
 		},
 	})
 
@@ -387,7 +403,67 @@ func piRPCEnv(ctx context.Context, task Task) []string {
 	for k, v := range piResolveEnv(ctx) {
 		env = append(env, k+"="+v)
 	}
+	for k, v := range piExtensionEnv(task) {
+		env = append(env, k+"="+v)
+	}
 	return append(env, task.ExtraEnv...)
+}
+
+// piExtensionEnv is the whole configuration surface of the iterion extension.
+//
+// Every variable is optional by contract: absent means the capability is off
+// and the extension degrades to a no-op, so a run never fails because iterion
+// passed one fewer variable than the extension build expected. Secret VALUES
+// never appear here.
+func piExtensionEnv(task Task) map[string]string {
+	env := map[string]string{
+		"ITERION_PI_CONTRACT":  piext.ContractVersion,
+		"ITERION_PI_CTRL":      "rpc",
+		"ITERION_PI_ITERATION": strconv.Itoa(task.Iteration),
+	}
+	if task.NodeID != "" {
+		env["ITERION_PI_NODE_ID"] = task.NodeID
+	}
+	// Set only when a gate is actually configured, so the extension registers
+	// no hook — and the node pays no per-tool-call round-trip — otherwise.
+	if task.Permission.Enabled() {
+		env["ITERION_PI_PERMISSION"] = task.Permission.Mode.String()
+	}
+	return env
+}
+
+// handleUIRequest answers an extension UI request.
+//
+// The channel is shared with any other extension the operator installed, so a
+// request is only iterion's if it carries the control envelope. A genuine
+// third-party dialog is cancelled — its documented safe default — because
+// iterion has no operator at the other end of pi's UI and must neither block
+// the agent nor invent an answer on the operator's behalf.
+func (b *PiRPCBackend) handleUIRequest(task Task, req pisdk.UIRequest) *pisdk.UIResponse {
+	env, ok := piParseCtrl(req)
+	if !ok {
+		if b.Logger != nil {
+			b.Logger.Warn("[%s#%d/%s] declining an unrecognised extension UI request (%s: %q)",
+				task.NodeID, task.Iteration, BackendPi, req.Method, truncate(req.Prompt(), 120))
+		}
+		return nil
+	}
+
+	switch env.Op {
+	case piOpPermissionEvaluate:
+		verdict, escalate := piEvaluatePermission(task, env.Data)
+		if b.Logger != nil && verdict.Decision != "allow" {
+			b.Logger.Warn("[%s#%d/%s] permission gate: %s", task.NodeID, task.Iteration, BackendPi, verdict.Reason)
+		}
+		_ = escalate // the pause path lands with ask_user; the call is blocked meanwhile
+		return piCtrlAnswer(req.ID, verdict)
+	default:
+		if b.Logger != nil {
+			b.Logger.Warn("[%s#%d/%s] unknown control op %q from the iterion extension "+
+				"(extension newer than this engine?)", task.NodeID, task.Iteration, BackendPi, env.Op)
+		}
+		return piCtrlFail(req.ID, "unknown op "+env.Op)
+	}
 }
 
 // piWriteSystemPrompt materialises the composed prompt, reusing the print-mode

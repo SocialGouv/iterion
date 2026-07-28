@@ -25,6 +25,9 @@
  *   ITERION_PI_MOCK_COST        usage.cost.total in USD (default 0)
  *   ITERION_PI_MOCK_IN/_OUT     input/output token counts (default 11/7)
  *   ITERION_PI_MOCK_REASONING   reasoning tokens (a subset of output)
+ *   ITERION_PI_MOCK_TOOL        name of a tool to call instead of replying
+ *                               (exercises the permission gate); the reply
+ *                               text is emitted on the SECOND call
  */
 
 import {
@@ -44,6 +47,8 @@ const num = (key: string, fallback: number): number => {
 	const parsed = Number(raw);
 	return Number.isFinite(parsed) ? parsed : fallback;
 };
+
+const state = { calls: 0 };
 
 export default function (pi: ExtensionAPI) {
 	pi.registerProvider("mock", {
@@ -69,6 +74,32 @@ export default function (pi: ExtensionAPI) {
 			const input = num("ITERION_PI_MOCK_IN", 11);
 			const output = num("ITERION_PI_MOCK_OUT", 7);
 			const total = num("ITERION_PI_MOCK_COST", 0);
+
+			// Tool-call mode: the first turn calls a tool, the second replies.
+			// This is what exercises a permission gate — a text-only reply
+			// never reaches one.
+			const toolName = process.env.ITERION_PI_MOCK_TOOL;
+			if (toolName && state.calls === 0) {
+				state.calls += 1;
+				const call: AssistantMessage = {
+					role: "assistant",
+					content: [{ type: "toolCall", id: "mock-call-1", name: toolName, arguments: { command: "ls" } }],
+					api: model.api,
+					provider: model.provider,
+					model: model.id,
+					responseId: "mock-response-tool",
+					usage: {
+						input, output, cacheRead: 0, cacheWrite: 0,
+						totalTokens: input + output,
+						cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total },
+					},
+					stopReason: "toolUse",
+					timestamp: 1_800_000_000_000,
+				};
+				stream.push({ type: "start", message: call });
+				stream.push({ type: "done", message: call, reason: "toolUse" });
+				return stream;
+			}
 
 			const message: AssistantMessage = {
 				role: "assistant",

@@ -1,5 +1,6 @@
 packages:
   - "studio"
+  - "pi-extension"
   - "sdks/typescript"
   - "docs"
 

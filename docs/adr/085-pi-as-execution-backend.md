@@ -364,15 +364,64 @@ change:
   extra-usage balance (see above), never for a policy reason. A successful
   Anthropic round-trip through pi remains unproven.
 
+### The iterion pi extension
+
+`pi-extension/` is a TypeScript package bundled by esbuild into a single file
+with no runtime imports, committed as `pkg/backend/delegate/piext/asset/`,
+embedded in the binary, and loaded as `pi -e <path>`. It closes the gap between
+pi's deliberately small surface and what iterion workflows declare.
+
+Why each of those choices:
+
+- **Embedded, not installed.** The extension's version is structurally locked
+  to the engine that drives it — same commit, same binary — so the
+  Go↔extension contract cannot skew. `pi install` would mutate the operator's
+  own pi configuration and re-resolve npm at every start; `-e npm:…` needs
+  network at run start, fatal under a sandbox egress policy.
+- **`-e`, not `.pi/extensions/`.** pi's project-trust gate silently ignores
+  project extensions in non-interactive modes, so that vector would never load
+  and never say so.
+- **A single bundle with externals.** `@earendil-works/*` and `typebox` are
+  marked external because pi's loader aliases those specifiers to its own
+  bundled copies; a second typebox would make structurally-identical but
+  instance-distinct schemas. Everything else is inlined, because there is no
+  `node_modules` inside a sandbox.
+- **A contract version on both sides.** On a mismatch the extension registers
+  **nothing** and notifies loudly. Half a permission gate is worse than none,
+  because the operator would believe they had one.
+- **`task pi-ext:check` fails on a stale asset.** The asset is committed, so
+  without that check a forgotten rebuild would silently ship yesterday's
+  extension on every run.
+
+**Shipped: the permission gate.** pi has no permission system at all, so a
+workflow's `permission: ask|deny` block was silently inert on a pi node. The
+`tool_call` hook forwards each call over the control channel; the decision is
+made in Go by the **same `permission.Policy`** that drives claude_code's
+PreToolUse hook and claw's gate, because a second implementation of the rule
+parser and glob matcher in TypeScript would drift the first time either
+changed. Fail-closed on no answer: a gate that fails open is worse than a
+failed tool call. `ask` is reported as an escalation (the extension has no
+operator to ask) and blocks meanwhile.
+
+Verified against the real binary: pi calls a tool, the gate fires, and the
+model receives `bash is denied by this workflow's permission policy`.
+
+**The control channel.** pi's extension-UI protocol is a *closed* union, so the
+channel tunnels through two of its members — `ctx.ui.input` for
+request/response, `ctx.ui.notify` for one-way. No listener, no port, no token,
+and it works identically inside a sandbox where a network callback would have
+to cross the container boundary. Every payload carries `__iterion`, because the
+UI channel is **shared** with any other extension the operator installed: without
+the marker a hostile or buggy extension could fabricate a permission verdict. An
+unmarked request is cancelled — its documented safe default — with a warning.
+
 ## Follow-ups
 
-- The RPC transport, and with it: tool events into the studio timeline,
-  `steer`-based inbox drain, session resume/fork, `get_session_stats`
-  accounting, and the `extension_ui_request` channel — which is the first
-  chance for a CLI backend to suspend *inside* a tool call, matching claw.
-- A pi extension (TypeScript, in this repo, loaded with `-e`) restoring the
-  permission gate, `ask_user`, board tools and MCP.
+- **Extension stages 2+**: `ask_user` (+ async), board tools, Claude-Code tool
+  aliases, and an MCP client. The MCP client is the largest single item and the
+  one that unblocks a whole class of workflows; until it lands, a node needing
+  user MCP servers should use `backend: "claw"`.
 - Diagnostics for the two silent gaps: `mcp_server` on a pi node, and
   placeholder secrets on a pi node.
-- **File the legal question** covering Anthropic, OpenAI Codex and GitHub
-  Copilot subscription credentials, once, together.
+- A successful Anthropic completion through pi (blocked only on an extra-usage
+  balance, never on policy).

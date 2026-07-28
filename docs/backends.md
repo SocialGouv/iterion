@@ -29,7 +29,7 @@ flowchart LR
 |---|---|---|
 | `claw` | Recommended in-process backend for direct provider calls and native Iterion tools. | Automatic or explicit. |
 | `claude_code` | Recommended CLI-agent backend for implementation work and Claude subscription/OAuth use. | Automatic when Claude Code OAuth is detected, or explicit. |
-| `pi` | Supported. Reaches ~36 providers and reports a provider-computed cost. Runs a long-lived `--mode rpc` session by default — tool events, native steering, authoritative accounting, pre-flight handshake (`ITERION_PI_MODE=print` rolls back). No MCP, no board tools, no ask_user on either. | Explicit only. |
+| `pi` | Supported, with iterion's permission gate. Reaches ~36 providers and reports a provider-computed cost. Runs a long-lived `--mode rpc` session by default — tool events, native steering, authoritative accounting, pre-flight handshake (`ITERION_PI_MODE=print` rolls back). Still missing: MCP, board tools, ask_user. | Explicit only. |
 | `kimi` | Supported through the generic CLI-agent protocol; session resume/fork is not wired. | Explicit only. |
 | `grok` | Supported through the generic CLI-agent protocol; session resume/fork is not wired. | Explicit only. |
 | `codex` | **Deprecated and frozen.** Compatibility/live-test path only; the compiler emits C030. | Per-node/workflow opt-in, or explicit addition to `ITERION_BACKEND_PREFERENCE`. |
@@ -556,9 +556,14 @@ find, ls`. There is **no MCP client at all**, no subagent/`Task`, no todo,
 no web fetch/search, no notebook, no background bash. Consequences for a
 `backend: "pi"` node:
 
-- **board `capabilities:` do not work** — they are served over MCP.
-- **`ask_user` / async interaction do not work** — same reason.
-- **workflow `mcp_server` blocks are not forwarded.**
+- **The permission gate DOES work** (from v3.7.6), supplied by the iterion pi
+  extension that the backend loads automatically. `permission: ask|deny` and
+  its `allow:`/`ask:`/`deny:` rule lists resolve through the same
+  `permission.Policy` as `claude_code` and `claw`, so all three reach identical
+  verdicts. RPC transport only — a print-mode node has no channel for it.
+- **board `capabilities:` do not work yet** — they are served over MCP.
+- **`ask_user` / async interaction do not work yet** — same reason.
+- **workflow `mcp_server` blocks are not forwarded yet.**
 - **`__ITERION_SECRET_*__` placeholders are not materialised.** Use file
   secrets instead ([secrets.md](secrets.md)) — they are real mounted files
   and work unchanged.

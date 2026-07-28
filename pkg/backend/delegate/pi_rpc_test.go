@@ -11,6 +11,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/SocialGouv/iterion/pkg/backend/permission"
 )
 
 func TestPiRPCArgs(t *testing.T) {
@@ -274,4 +276,58 @@ func TestPiWriteSystemPrompt(t *testing.T) {
 		}
 		c()
 	})
+}
+
+// TestPiRPCLivePermissionGate is the whole point of the extension: pi ships NO
+// permission system, so without it a workflow's `permission:` block is silently
+// inert on a pi node. This drives the real binary, the real extension, and the
+// real control channel, and asserts a tool call is actually blocked.
+func TestPiRPCLivePermissionGate(t *testing.T) {
+	bin := requirePiBinary(t)
+	ext := mockProviderPath(t)
+
+	t.Setenv("ITERION_PI_NO_CONTEXT_FILES", "1")
+	t.Setenv("ITERION_PI_MOCK_TOOL", "bash") // first turn calls a tool
+	t.Setenv("ITERION_PI_MOCK_TEXT", "done after the block")
+
+	pol, err := permission.NewPolicy(permission.ModeDeny, nil, nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	dir := t.TempDir()
+	var blocked []string
+	var mu sync.Mutex
+	task := Task{
+		NodeID: "gated", WorkDir: dir, BaseDir: dir, StoreDir: dir,
+		UserPrompt: "run something", Model: "mock/scripted",
+		Permission: pol,
+		Hooks: TaskHooks{
+			OnToolCalled: func(toolName, id string, isError bool, output string) {
+				mu.Lock()
+				if isError {
+					blocked = append(blocked, toolName+": "+output)
+				}
+				mu.Unlock()
+			},
+		},
+	}
+
+	rpc := &PiRPCBackend{Command: bin, Logger: testLogger(), ExtraArgs: []string{"-e", ext}}
+	res, err := rpc.Execute(context.Background(), task)
+	if err != nil {
+		t.Fatalf("Execute: %v (stderr: %s)", err, res.Stderr)
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	if len(blocked) == 0 {
+		t.Fatal("no tool call was blocked — the permission gate never fired, so a " +
+			"workflow's permission: block would be silently inert on this backend")
+	}
+	// The model must learn WHY, or it cannot adapt.
+	if !strings.Contains(strings.ToLower(blocked[0]), "denied") &&
+		!strings.Contains(strings.ToLower(blocked[0]), "permission") {
+		t.Errorf("block message does not explain itself: %q", blocked[0])
+	}
 }

@@ -465,12 +465,37 @@ tasks:
       - ./{{.BINARY}} diagram {{.CLI_ARGS}}
 
   check:
-    desc: Run all checks (lint + test + golden replay + studio)
+    desc: Run all checks (lint + test + golden replay + studio + pi extension)
     cmds:
       - task: lint
       - task: test
       - task: test:goldens
       - task: studio:check
+      - task: pi-ext:check
+
+  pi-ext:typecheck:
+    desc: Typecheck the iterion pi extension
+    dir: pi-extension
+    cmds:
+      - corepack pnpm install --prefer-offline
+      - ./node_modules/.bin/tsc --noEmit
+
+  pi-ext:build:
+    desc: Bundle the iterion pi extension into the embedded Go asset
+    dir: pi-extension
+    cmds:
+      - corepack pnpm install --prefer-offline
+      - ./node_modules/.bin/esbuild src/index.ts --bundle --format=esm --platform=node --target=node22 --external:@earendil-works/* --external:typebox --outfile=../pkg/backend/delegate/piext/asset/iterion-pi.js
+
+  pi-ext:check:
+    desc: Typecheck the pi extension and verify the committed asset is in sync
+    cmds:
+      - task: pi-ext:typecheck
+      # The asset is committed and embedded in the binary, so a stale one means
+      # every pi run silently loads yesterday's extension. Rebuild and fail if
+      # the tree is dirty.
+      - task: pi-ext:build
+      - git diff --exit-code -- pkg/backend/delegate/piext/asset/iterion-pi.js || (echo "pi extension asset is stale — commit the rebuilt pkg/backend/delegate/piext/asset/iterion-pi.js" && exit 1)
 
   studio:build:
     desc: Build the studio frontend
