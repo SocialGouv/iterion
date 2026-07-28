@@ -77,4 +77,5 @@ first bilan for a bot lands.
 | ReArchi | `adr-rechallenge` | human-gated ADR re-challenge | [adr-rechallenge.md](adr-rechallenge.md) |
 | Fini | `feature-gap-fill` | gap-driven feature completion loop | [feature-gap-fill.md](feature-gap-fill.md) |
 | Goldy | `golden-master` | behavioural non-regression net, falsifiable both ways | [golden-master.md](golden-master.md) |
+| Morphy | `modernize` | gate-to-gate modernisation lots, oracle-protected | [modernize.md](modernize.md) |
 | — | `examples/keepalive` | always-on (`overlap: keepalive`) demo + feature dogfood | [keepalive.md](keepalive.md) |
