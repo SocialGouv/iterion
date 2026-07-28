@@ -231,6 +231,14 @@ func (s *Server) ListenAndServe() error {
 			}()
 			s.runRetrySweeper(ctx, lister)
 		}()
+	} else if s.cfg.ScheduledBots != nil {
+		// Cloud mode without the capability: a type assertion that quietly
+		// fails here (a store wrapped in a decorator, say) means every
+		// quota-blocked run stays parked forever with nothing to bring it
+		// back — and no other signal would say so. The local store not
+		// implementing it is expected and stays silent.
+		s.warnf("retry sweeper NOT started: the store does not implement ListRunsDueForRetry — " +
+			"runs parked on a provider quota window will never resume on their own")
 	}
 	// Cloud scheduler: fire due cron-scheduled bots. Multi-replica-safe via the
 	// store CAS (no leader election). Absent in local mode (ScheduledBots nil).

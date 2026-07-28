@@ -10,12 +10,19 @@ import (
 // groupsAcceptingAPositional names the groups whose own Args deliberately
 // admits a positional, so the unknown-subcommand rejection has to come from
 // the command itself rather than from Args. Each needs its RunE driven to
-// prove it — and RunE is only safe to drive in-process for a command with no
-// side effects, which is the judgment this map records.
+// prove it.
 //
-// `iterion models [provider/model-id]` lists every model when bare, inspects
-// one when given a spec, and `models pricing` made it a group as well. Its
-// RunE validates the spec before touching anything.
+// Driving a RunE in-process is only safe for a command that cannot act before
+// it rejects the argument — no I/O, no global mutation, no PersistentPreRun
+// side effect. That judgment is per-command and it is why this is an explicit
+// map rather than a fallback: adding an entry means making the judgment, and
+// the reason belongs next to it.
+//
+//   - "iterion models": `[provider/model-id]` lists every model when bare and
+//     inspects one when given a spec; `models pricing` made it a group too.
+//     Its RunE parses the spec first (cli.RunModels → invalid spec error) and
+//     reaches neither the cache nor the network on a malformed one, and the
+//     command declares no PersistentPreRun. Re-check that if it grows one.
 var groupsAcceptingAPositional = map[string]bool{
 	"iterion models": true,
 }
@@ -97,8 +104,11 @@ func TestRejectUnknownSubcommands_CoversEveryGroup(t *testing.T) {
 			len(groups), strings.Join(groups, ", "))
 	}
 	// And the rejection is broad rather than concentrated in the exceptions.
-	if len(viaArgs) < 20 {
-		t.Errorf("only %d of %d groups reject a typo at the Args level (%s)",
+	// Expressed as a fraction of the tree, not a fixed count: a fixed floor
+	// keeps passing if the tree contracts (groups merged away) even after the
+	// sweep has stopped working.
+	if len(viaArgs)*10 < len(groups)*9 {
+		t.Errorf("only %d of %d groups reject a typo at the Args level, want at least 90%% (%s)",
 			len(viaArgs), len(groups), strings.Join(viaArgs, ", "))
 	}
 }

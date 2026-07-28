@@ -179,7 +179,9 @@ func TestRegister_RefusesALiveRunnerImmediately(t *testing.T) {
 }
 
 // A caller that gives up (client disconnect, server draining) must not be held
-// for the rest of the grace.
+// for the rest of the grace — and must be told WHY it failed. "Already
+// registered" and "your deadline expired mid-hand-off" call for opposite
+// reactions from an automated retry chain.
 func TestRegister_HandoffWaitHonoursTheCallerContext(t *testing.T) {
 	m := NewManager()
 	m.handoffGrace = 10 * time.Second
@@ -191,11 +193,54 @@ func TestRegister_HandoffWaitHonoursTheCallerContext(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Millisecond)
 	defer cancel()
 	start := time.Now()
-	if _, err := m.Register(ctx, "run-ctx"); err == nil {
+	_, err := m.Register(ctx, "run-ctx")
+	if err == nil {
 		t.Fatal("re-Register succeeded although the previous runner never left")
 	}
 	if waited := time.Since(start); waited > time.Second {
 		t.Errorf("waited %s after the caller's ctx expired", waited)
+	}
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Errorf("error = %v, want it to wrap context.DeadlineExceeded — a caller "+
+			"cannot tell a transient hand-off timeout from racing a live runner otherwise", err)
+	}
+}
+
+// The hand-off signal must mean "that goroutine is FINISHED", not "it is
+// partway through its teardown". A successor released too early races the
+// outgoing goroutine's remaining defers, and those are keyed on run id alone:
+// dropRunLog and unregisterRunEngine would tear down the SUCCESSOR's log buffer
+// and engine registration, turning a loud "already registered" into a resume
+// that reports success with a dead log tail and no steering channel.
+//
+// Asserted here on the Manager contract that makes it possible — Deregister,
+// the only thing that closes done, must be the last teardown step in
+// spawnRun's defer chain. This test pins the half the Manager owns; the defer
+// ordering is pinned by its own comment in service_launch.go.
+func TestDeregister_IsTheLastWordOnAHandoff(t *testing.T) {
+	m := NewManager()
+	if _, err := m.Register(context.Background(), "run-order"); err != nil {
+		t.Fatalf("Register: %v", err)
+	}
+	m.MarkLeaving("run-order")
+
+	m.mu.Lock()
+	done := m.handles["run-order"].done
+	m.mu.Unlock()
+
+	// Still held: the wait must not release on MarkLeaving alone, or a
+	// successor would start while the teardown is still running.
+	select {
+	case <-done:
+		t.Fatal("done closed by MarkLeaving — the successor would race the whole teardown")
+	default:
+	}
+
+	m.Deregister("run-order")
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("Deregister did not close done")
 	}
 }
 

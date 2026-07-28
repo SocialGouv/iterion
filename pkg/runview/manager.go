@@ -46,7 +46,13 @@ type runHandle struct {
 	// and this handle is on its way out. It is what tells a re-registration
 	// apart: a handle with leaving OPEN belongs to a runner that is still
 	// working, and a second registration for it must be refused at once;
-	// one with leaving CLOSED is worth waiting a moment for. Never nil.
+	// one with leaving CLOSED is worth waiting a moment for.
+	//
+	// Nil for a detached handle (RegisterDetached), which never takes part in a
+	// hand-off. AwaitHandoff's non-blocking select therefore falls to default
+	// on one — a receive from a nil channel blocks forever, so the ready case
+	// cannot fire. That is load-bearing: do not drop that default branch, and
+	// do not add a bare `<-h.leaving` anywhere.
 	leaving chan struct{}
 	// leavingMarked guards against a double close of leaving.
 	leavingMarked bool
@@ -82,7 +88,14 @@ func NewManager() *Manager {
 // already registered for runID (defensive — Service.Launch generates
 // IDs that should be unique).
 func (m *Manager) Register(parent context.Context, runID string) (context.Context, error) {
-	m.awaitPreviousRunner(parent, runID)
+	m.AwaitHandoff(parent, runID)
+	// A caller whose deadline expired mid-hand-off would otherwise be told
+	// "already registered" — indistinguishable from genuinely racing a live
+	// runner, though one is transient and the other is not. An automated retry
+	// chain reading the wrong one gives up (or hammers) for the wrong reason.
+	if err := parent.Err(); err != nil {
+		return nil, fmt.Errorf("runview: waiting for the previous runner of %q: %w", runID, err)
+	}
 
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -222,11 +235,18 @@ func (m *Manager) RegisterDetached(runID string, pid int, cancel context.CancelF
 // previous runner as an error rather than hanging the caller.
 const registerHandoffGrace = 5 * time.Second
 
-// awaitPreviousRunner waits, bounded, for an existing handle for runID to
-// finish — but ONLY when that handle has been marked leaving. A handle whose
-// runner is still working returns immediately, so a genuine
-// two-runners-for-one-run attempt fails as fast as it always did instead of
-// parking the caller (an HTTP handler, typically) for the whole grace.
+// AwaitHandoff waits, bounded, for an existing handle for runID to finish —
+// but ONLY when that handle has been marked leaving. A handle whose runner is
+// still working returns immediately, so a genuine two-runners-for-one-run
+// attempt fails as fast as it always did instead of parking the caller (an
+// HTTP handler, typically) for the whole grace.
+//
+// Call it at the TOP of a launch or resume, before anything takes a resource
+// the outgoing runner still holds. The store flock is the first such resource
+// and it is released two deferred statements before the manager handle, so a
+// wait placed at Register alone covers only the gap between them — the
+// operator still gets a failure, with a different message. Register calls this
+// too, as a cheap backstop for callers that do not.
 //
 // It does NOT reserve anything: the caller's own registration check remains
 // the authority, so a previous runner that never finishes leaving still
@@ -236,7 +256,7 @@ const registerHandoffGrace = 5 * time.Second
 // The wait happens OUTSIDE the mutex on purpose: Deregister needs the same
 // lock to close done, so holding it here would deadlock the very thing we are
 // waiting for.
-func (m *Manager) awaitPreviousRunner(ctx context.Context, runID string) {
+func (m *Manager) AwaitHandoff(ctx context.Context, runID string) {
 	m.mu.Lock()
 	h, exists := m.handles[runID]
 	stopped := m.stopped
