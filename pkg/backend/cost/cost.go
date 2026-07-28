@@ -37,8 +37,15 @@ import (
 // observability — operators concerned with hard budget tracking should
 // pull the authoritative rates from their provider invoices.
 //
-// Last reviewed: 2026-04-29. Refresh against vendor pricing pages
-// whenever a new model is added or rates are known to change.
+// Last reviewed: 2026-07-28, against models.dev via `iterion models pricing`.
+// Run that command to see where this table and the published rates diverge;
+// it reports and never rewrites, because a price is a budget decision.
+//
+// GLM has no entry on purpose, not by oversight: 24 providers publish it at
+// rates from 0 to 1.44 per million and the aggregator cannot say which one
+// applies. It is nonetheless priced at runtime, because claw's live registry
+// resolves it from OpenRouter and is consulted BEFORE this table — a reminder
+// that this table is the fallback, not the answer.
 type modelPricing struct {
 	inputUSDPerMillion  float64
 	outputUSDPerMillion float64
@@ -49,10 +56,17 @@ type modelPricing struct {
 // the spend ceiling is not enforced in flight this table is the only figure
 // there is. Naming the rate also states the inheritance — "opus 5 is the opus
 // rate" — instead of duplicating a literal that then drifts per line.
+// Opus dropped from 15/75 to 5/25 at the 4.5 release; the table missed it and
+// kept quoting the old rate for every release since, so a week of runs was
+// logged at three times its price. claude-opus-4 legitimately keeps the old
+// number — it is the release the drop came after, and its agreeing with the
+// aggregator is what made the staleness of the rest legible.
 var (
-	opusRate   = modelPricing{15.00, 75.00}
-	sonnetRate = modelPricing{3.00, 15.00}
-	haikuRate  = modelPricing{0.25, 1.25}
+	opusLegacyRate = modelPricing{15.00, 75.00}
+	opusRate       = modelPricing{5.00, 25.00}
+	sonnetRate     = modelPricing{3.00, 15.00}
+	sonnet5Rate    = modelPricing{2.00, 10.00}
+	haikuRate      = modelPricing{1.00, 5.00}
 )
 
 var modelPriceTable = map[string]modelPricing{
@@ -64,8 +78,8 @@ var modelPriceTable = map[string]modelPricing{
 	"claude-opus-4-7":           opusRate,
 	"claude-opus-4-6":           opusRate,
 	"claude-opus-4-5":           opusRate,
-	"claude-opus-4":             opusRate,
-	"claude-sonnet-5":           sonnetRate,
+	"claude-opus-4":             opusLegacyRate,
+	"claude-sonnet-5":           sonnet5Rate,
 	"claude-sonnet-4-7":         sonnetRate,
 	"claude-sonnet-4-6":         sonnetRate,
 	"claude-sonnet-4-5":         sonnetRate,
@@ -78,12 +92,13 @@ var modelPriceTable = map[string]modelPricing{
 	// page when a new tier ships.
 	"gpt-5":        {1.25, 10.00},
 	"gpt-5-mini":   {0.25, 2.00},
-	"gpt-5.4":      {1.50, 12.00},
-	"gpt-5.4-pro":  {3.00, 25.00},
-	"gpt-5.4-mini": {0.30, 2.40},
-	"gpt-5.4-nano": {0.15, 1.20},
-	"gpt-5.5":      {2.00, 15.00},
-	"gpt-5.5-pro":  {4.00, 30.00},
+	"gpt-5.4":      {2.50, 15.00},
+	"gpt-5.4-pro":  {30.00, 180.00},
+	"gpt-5.4-mini": {0.75, 4.50},
+	"gpt-5.4-nano": {0.20, 1.25},
+	"gpt-5.5":      {5.00, 30.00},
+	"gpt-5.5-pro":  {30.00, 180.00},
+	"o3":           {2.00, 8.00},
 	"gpt-4o":       {2.50, 10.00},
 	"gpt-4o-mini":  {0.15, 0.60},
 }
@@ -161,4 +176,16 @@ func StaticTableModels() []string {
 	}
 	sort.Strings(out)
 	return out
+}
+
+// EffectiveRate reports the rate a run would actually be charged at — that is,
+// what EstimateUSD resolves after consulting the live registry and then this
+// table. The audit needs this and not just the table: a first version compared
+// the committed table against the aggregator alone and declared GLM unpriced,
+// while the live registry was pricing it all along. Reporting on a source the
+// estimator does not use produces confident, false verdicts.
+func EffectiveRate(model string) (inputPerM, outputPerM float64, ok bool) {
+	inputPerM = EstimateUSD(model, 1_000_000, 0)
+	outputPerM = EstimateUSD(model, 0, 1_000_000)
+	return inputPerM, outputPerM, inputPerM > 0 || outputPerM > 0
 }

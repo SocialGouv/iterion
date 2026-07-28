@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -315,18 +316,85 @@ func (r *specRegistry) timeout() time.Duration {
 // (the cache layout). Caller holds r.mu.
 func (r *specRegistry) indexLocked(flat map[string]fetchedSpec) {
 	full := make(map[string]fetchedSpec, len(flat))
-	byModel := make(map[string]fetchedSpec, len(flat))
-	for key, spec := range flat {
-		lk := strings.ToLower(key)
-		full[lk] = spec
-		if idx := strings.LastIndex(lk, "/"); idx >= 0 && idx < len(lk)-1 {
-			byModel[lk[idx+1:]] = spec
-		} else {
-			byModel[lk] = spec
-		}
+
+	// The bare index used to be built by assigning into a map while ranging
+	// over one — last writer wins, and Go randomises map iteration order. A
+	// bare name published by several providers therefore resolved to a
+	// DIFFERENT provider's numbers on every process start. Measured on a live
+	// aggregator snapshot: 856 of 2740 bare names carry more than one
+	// provider and 639 of those disagree. "glm-5.2" alone had 24 providers
+	// quoting anywhere from 0 to 1.44 per million, so five consecutive runs
+	// produced five different prices — and the same index feeds the context
+	// window and the capability flags, where a silent 200K instead of 1M
+	// truncates work rather than merely mis-reporting a cost.
+	//
+	// Grouping is now deterministic, and disagreement is resolved as UNKNOWN
+	// rather than by picking a provider: a field survives only when every
+	// candidate agrees on it. Zero/nil then falls through to the curated
+	// value, which is authoritative anyway. Reporting nothing is recoverable;
+	// reporting a confident number drawn at random is not.
+	groups := make(map[string][]fetchedSpec, len(flat))
+	keys := make([]string, 0, len(flat))
+	for key := range flat {
+		keys = append(keys, key)
 	}
+	sort.Strings(keys)
+	for _, key := range keys {
+		lk := strings.ToLower(key)
+		spec := flat[key]
+		full[lk] = spec
+		bare := lk
+		if idx := strings.LastIndex(lk, "/"); idx >= 0 && idx < len(lk)-1 {
+			bare = lk[idx+1:]
+		}
+		groups[bare] = append(groups[bare], spec)
+	}
+
+	byModel := make(map[string]fetchedSpec, len(groups))
+	for bare, specs := range groups {
+		byModel[bare] = consensusSpec(specs)
+	}
+
 	r.byFull = full
 	r.byModel = byModel
+}
+
+// consensusSpec keeps only the fields every candidate agrees on. A single
+// candidate is returned as-is; where candidates differ the field is zeroed
+// (numbers) or nil'd (flags), which the merge step reads as "the aggregator
+// has no answer" and leaves the curated value in place.
+func consensusSpec(specs []fetchedSpec) fetchedSpec {
+	if len(specs) == 0 {
+		return fetchedSpec{}
+	}
+	out := specs[0]
+	for _, s := range specs[1:] {
+		if s.ContextWindow != out.ContextWindow {
+			out.ContextWindow = 0
+		}
+		if s.MaxOutputTokens != out.MaxOutputTokens {
+			out.MaxOutputTokens = 0
+		}
+		if s.InputCostPerM != out.InputCostPerM {
+			out.InputCostPerM = 0
+		}
+		if s.OutputCostPerM != out.OutputCostPerM {
+			out.OutputCostPerM = 0
+		}
+		out.Reasoning = agreedFlag(out.Reasoning, s.Reasoning)
+		out.ToolCall = agreedFlag(out.ToolCall, s.ToolCall)
+		out.Temperature = agreedFlag(out.Temperature, s.Temperature)
+	}
+	return out
+}
+
+// agreedFlag returns the shared value of two optional flags, or nil as soon as
+// they differ or either side is unstated.
+func agreedFlag(a, b *bool) *bool {
+	if a == nil || b == nil || *a != *b {
+		return nil
+	}
+	return a
 }
 
 // writeCache atomically persists the fetched table. Errors degrade silently.

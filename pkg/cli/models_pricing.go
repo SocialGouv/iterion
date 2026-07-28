@@ -27,16 +27,19 @@ import (
 
 // PricingRow is one model's committed rate next to the aggregator's.
 type PricingRow struct {
-	Spec        string  `json:"spec"`
-	StaticIn    float64 `json:"static_input_per_m"`
-	StaticOut   float64 `json:"static_output_per_m"`
-	HasStatic   bool    `json:"has_static"`
-	FetchedIn   float64 `json:"fetched_input_per_m"`
-	FetchedOut  float64 `json:"fetched_output_per_m"`
-	HasFetched  bool    `json:"has_fetched"`
-	Disagrees   bool    `json:"disagrees"`
-	OnlyStatic  bool    `json:"only_static"`
-	OnlyFetched bool    `json:"only_fetched"`
+	Spec         string  `json:"spec"`
+	StaticIn     float64 `json:"static_input_per_m"`
+	StaticOut    float64 `json:"static_output_per_m"`
+	HasStatic    bool    `json:"has_static"`
+	FetchedIn    float64 `json:"fetched_input_per_m"`
+	FetchedOut   float64 `json:"fetched_output_per_m"`
+	HasFetched   bool    `json:"has_fetched"`
+	EffectiveIn  float64 `json:"effective_input_per_m"`
+	EffectiveOut float64 `json:"effective_output_per_m"`
+	HasEffective bool    `json:"has_effective"`
+	Disagrees    bool    `json:"disagrees"`
+	OnlyStatic   bool    `json:"only_static"`
+	OnlyFetched  bool    `json:"only_fetched"`
 }
 
 // PricingResult is the audit's JSON envelope.
@@ -79,6 +82,9 @@ func RunModelsPricing(ctx context.Context, opts PricingOptions, p *Printer) erro
 			bare = bare[i+1:]
 		}
 		row.StaticIn, row.StaticOut, row.HasStatic = cost.StaticRate(bare)
+		// What a run is ACTUALLY charged at, after the live registry and then
+		// the table. This is the column that matters; the other two explain it.
+		row.EffectiveIn, row.EffectiveOut, row.HasEffective = cost.EffectiveRate(spec)
 
 		if rc, err := model.ResolveSpec(spec); err == nil {
 			row.FetchedIn, row.FetchedOut = rc.InputCostPerM, rc.OutputCostPerM
@@ -86,16 +92,19 @@ func RunModelsPricing(ctx context.Context, opts PricingOptions, p *Printer) erro
 		}
 
 		switch {
-		case row.HasStatic && row.HasFetched:
-			row.Disagrees = !nearlyEqual(row.StaticIn, row.FetchedIn) ||
-				!nearlyEqual(row.StaticOut, row.FetchedOut)
-		case row.HasStatic:
-			// Not drift on its own: the aggregator legitimately lacks
-			// brand-new models, which is exactly why the table exists.
+		case row.HasEffective && row.HasFetched:
+			// Verdicts compare what a run is charged at against what is
+			// published — not the table against the aggregator. The table is
+			// only one of the two sources the estimator consults, and judging
+			// a source the estimator may never reach yields false verdicts.
+			row.Disagrees = !nearlyEqual(row.EffectiveIn, row.FetchedIn) ||
+				!nearlyEqual(row.EffectiveOut, row.FetchedOut)
+		case row.HasEffective:
+			// Priced, but the aggregator has no published rate to check it
+			// against — expected for brand-new models.
 			row.OnlyStatic = true
 		case row.HasFetched:
-			// This one IS a defect: the price is on disk and the estimator
-			// still reports nothing.
+			// A price is published and a run would still report nothing.
 			row.OnlyFetched = true
 		}
 		if row.Disagrees || row.OnlyFetched {
@@ -153,11 +162,14 @@ func printPricingHuman(r PricingResult, p *Printer) {
 		p.Line("! aggregator refresh failed: %s (comparing against the cached table only)", r.RefreshError)
 		p.Blank()
 	}
-	p.Header("Pricing audit — committed table vs published prices")
-	headers := []string{"MODEL", "COMMITTED in/out", "PUBLISHED in/out", "VERDICT"}
+	p.Header("Pricing audit — what a run is charged vs what is published")
+	headers := []string{"MODEL", "EFFECTIVE in/out", "TABLE in/out", "PUBLISHED in/out", "VERDICT"}
 	rows := make([][]string, 0, len(r.Rows))
 	for _, row := range r.Rows {
-		committed, published, verdict := "—", "—", "ok"
+		effective, committed, published, verdict := "—", "—", "—", "ok"
+		if row.HasEffective {
+			effective = fmt.Sprintf("%.2f / %.2f", row.EffectiveIn, row.EffectiveOut)
+		}
 		if row.HasStatic {
 			committed = fmt.Sprintf("%.2f / %.2f", row.StaticIn, row.StaticOut)
 		}
@@ -168,13 +180,13 @@ func printPricingHuman(r PricingResult, p *Printer) {
 		case row.Disagrees:
 			verdict = "DISAGREES"
 		case row.OnlyFetched:
-			verdict = "IGNORED — price published, estimator reports nothing"
+			verdict = "IGNORED — price published, a run reports nothing"
 		case row.OnlyStatic:
-			verdict = "table only (aggregator has no price)"
-		case !row.HasStatic && !row.HasFetched:
+			verdict = "priced, aggregator has no rate to check it against"
+		case !row.HasEffective && !row.HasFetched:
 			verdict = "no price anywhere — cost will be omitted"
 		}
-		rows = append(rows, []string{row.Spec, committed, published, verdict})
+		rows = append(rows, []string{row.Spec, effective, committed, published, verdict})
 	}
 	p.Table(headers, rows)
 	p.Blank()
