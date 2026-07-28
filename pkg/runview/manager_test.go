@@ -123,8 +123,12 @@ func TestRegister_WaitsOutAnExitingPreviousRunner(t *testing.T) {
 		t.Fatalf("first Register: %v", err)
 	}
 
-	// The previous runner is on its way out: it deregisters shortly after the
-	// resume attempt begins, exactly as the real park sequence does.
+	// The engine has returned, so the run already reads resumable — this is
+	// the window the studio offers Resume in.
+	m.MarkLeaving("run-1")
+
+	// The previous runner finishes its teardown shortly after the resume
+	// attempt begins, exactly as the real park sequence does.
 	go func() {
 		time.Sleep(80 * time.Millisecond)
 		m.Deregister("run-1")
@@ -148,9 +152,50 @@ func TestRegister_StillRefusesARunnerThatNeverLeaves(t *testing.T) {
 	if _, err := m.Register(context.Background(), "run-2"); err != nil {
 		t.Fatalf("first Register: %v", err)
 	}
-	// The handle is alive (done open), so the registration check must fire.
+	m.MarkLeaving("run-2") // marked, but the teardown never completes
 	if _, err := m.Register(context.Background(), "run-2"); err == nil {
-		t.Fatal("re-Register succeeded against a LIVE previous runner — two runners would share one run")
+		t.Fatal("re-Register succeeded against a previous runner that never left — two runners would share one run")
+	}
+}
+
+// A runner that is still WORKING is not a hand-off, and the refusal must not
+// pay the grace to say so. Otherwise every duplicate registration parks its
+// caller — an HTTP handler, typically — for the full five seconds before
+// returning the error it could have returned at once.
+func TestRegister_RefusesALiveRunnerImmediately(t *testing.T) {
+	m := NewManager()
+	m.handoffGrace = 10 * time.Second // must not be paid at all, so make it obvious
+	if _, err := m.Register(context.Background(), "run-live"); err != nil {
+		t.Fatalf("first Register: %v", err)
+	}
+
+	start := time.Now()
+	if _, err := m.Register(context.Background(), "run-live"); err == nil {
+		t.Fatal("re-Register succeeded against a live runner")
+	}
+	if waited := time.Since(start); waited > time.Second {
+		t.Errorf("refusal took %s — a live runner is not a hand-off and must fail fast", waited)
+	}
+}
+
+// A caller that gives up (client disconnect, server draining) must not be held
+// for the rest of the grace.
+func TestRegister_HandoffWaitHonoursTheCallerContext(t *testing.T) {
+	m := NewManager()
+	m.handoffGrace = 10 * time.Second
+	if _, err := m.Register(context.Background(), "run-ctx"); err != nil {
+		t.Fatalf("first Register: %v", err)
+	}
+	m.MarkLeaving("run-ctx") // in the hand-off window, but the teardown stalls
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Millisecond)
+	defer cancel()
+	start := time.Now()
+	if _, err := m.Register(ctx, "run-ctx"); err == nil {
+		t.Fatal("re-Register succeeded although the previous runner never left")
+	}
+	if waited := time.Since(start); waited > time.Second {
+		t.Errorf("waited %s after the caller's ctx expired", waited)
 	}
 }
 

@@ -9,6 +9,7 @@ package e2e
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"strings"
 	"sync"
 	"testing"
@@ -66,41 +67,30 @@ func TestBoardDispatcher_E2E_BotCreatesAndDispatches(t *testing.T) {
 	// Wait for two distinct dispatches. Generous deadline: the dispatch
 	// pipeline makes two off-actor hops per issue plus a runner round-trip, so
 	// under -race + load a 3s budget can blow.
-	deadline := time.Now().Add(10 * time.Second)
-	for time.Now().Before(deadline) {
+	countDispatched := func() int {
 		dispatchMu.Lock()
-		got := len(dispatchedRuns)
-		dispatchMu.Unlock()
-		if got >= 2 {
-			break
-		}
-		time.Sleep(20 * time.Millisecond)
+		defer dispatchMu.Unlock()
+		return len(dispatchedRuns)
 	}
-	dispatchMu.Lock()
-	if len(dispatchedRuns) < 2 {
-		dispatchMu.Unlock()
-		t.Fatalf("expected 2 dispatches, saw %d (snapshot=%+v)", len(dispatchedRuns), c.Snapshot())
-	}
-	dispatchMu.Unlock()
+	waitUntil(t, 10*time.Second, "both issues to be dispatched",
+		func() bool { return countDispatched() >= 2 },
+		func() string {
+			return fmt.Sprintf("dispatches=%d want>=2, snapshot=%+v", countDispatched(), c.Snapshot())
+		})
 
 	// Both issues must end up in a terminal state with their claim released.
-	wait := time.Now().Add(5 * time.Second)
-	for time.Now().Before(wait) {
-		list, _ := ns.List(native.ListFilter{})
-		all := true
-		for _, iss := range list {
-			st := ns.Board().StateByName(iss.State)
-			if st == nil || !st.Terminal || iss.Claim != "" {
-				all = false
-				break
+	waitUntil(t, 5*time.Second, "every issue to close and release its claim",
+		func() bool {
+			list, _ := ns.List(native.ListFilter{})
+			for _, iss := range list {
+				st := ns.Board().StateByName(iss.State)
+				if st == nil || !st.Terminal || iss.Claim != "" {
+					return false
+				}
 			}
-		}
-		if all {
-			return
-		}
-		time.Sleep(30 * time.Millisecond)
-	}
-	t.Fatalf("issues did not all close. snapshot=%+v", c.Snapshot())
+			return true
+		},
+		func() string { return fmt.Sprintf("snapshot=%+v", c.Snapshot()) })
 }
 
 // TestBoardDispatcher_E2E_BotMovesIssueToReady covers the
@@ -168,43 +158,32 @@ func TestBoardDispatcher_E2E_BotMovesIssueToReady(t *testing.T) {
 	// Generous deadline: the dispatch pipeline makes two off-actor hops
 	// (discovery → setup → worker) plus a runner round-trip; under -race +
 	// load a 3s budget can blow. 10s mirrors TestDispatcherE2E_CancelInFlight.
-	deadline := time.After(10 * time.Second)
-	for {
-		dispatchMu.Lock()
-		got := len(dispatchedRunIDs)
-		dispatchMu.Unlock()
-		if got >= 1 {
-			break
-		}
-		select {
-		case <-deadline:
-			t.Fatalf("dispatcher never dispatched after move-to-ready. snapshot=%+v", c.Snapshot())
-		case <-time.After(30 * time.Millisecond):
-		}
-	}
+	waitUntil(t, 10*time.Second, "a dispatch after the move to ready",
+		func() bool {
+			dispatchMu.Lock()
+			defer dispatchMu.Unlock()
+			return len(dispatchedRunIDs) >= 1
+		},
+		func() string { return fmt.Sprintf("snapshot=%+v", c.Snapshot()) })
 
 	// Cross-check the dispatch was for our issue by inspecting the dispatcher
 	// snapshot (DispatchSpec doesn't carry IssueID). The handler is still
 	// blocked, so the run is reliably in flight and our issue must appear in
 	// the Running set — no instant-finish race.
-	foundRunning := false
-	deadline2 := time.Now().Add(5 * time.Second)
-	for time.Now().Before(deadline2) {
-		for _, r := range c.Snapshot().Running {
-			if r.IssueID == iss.ID {
-				foundRunning = true
-				break
+	//
+	// `proceed` is released by the deferred cleanup on a failure path too: the
+	// handler also selects on ctx.Done(), which Stop() cancels.
+	defer close(proceed) // release the run so it can complete + the claim is freed
+	waitUntil(t, 5*time.Second, "the dispatched run to appear in the Running snapshot",
+		func() bool {
+			for _, r := range c.Snapshot().Running {
+				if r.IssueID == iss.ID {
+					return true
+				}
 			}
-		}
-		if foundRunning {
-			break
-		}
-		time.Sleep(20 * time.Millisecond)
-	}
-	close(proceed) // release the run so it can complete + the claim is freed
-	if !foundRunning {
-		t.Fatalf("dispatched run never appeared in the Running snapshot for issue %s", iss.ID)
-	}
+			return false
+		},
+		func() string { return fmt.Sprintf("issue %s, snapshot=%+v", iss.ID, c.Snapshot()) })
 }
 
 // TestBoardDispatcher_E2E_CapabilityGate verifies that a "PO" bot

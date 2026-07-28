@@ -366,23 +366,18 @@ func TestWhatsNext_Loop_DispatchAutoTransitionsNoReloop(t *testing.T) {
 	issY := mkIssue("Implement Y")
 
 	// Wait for both issues to reach review state.
-	deadline := time.Now().Add(10 * time.Second)
-	for time.Now().Before(deadline) {
-		xs, _ := ns.Get(issX.ID)
-		ys, _ := ns.Get(issY.ID)
-		if xs != nil && ys != nil && xs.State == native.StateReview && ys.State == native.StateReview {
-			break
-		}
-		time.Sleep(20 * time.Millisecond)
+	inReview := func(id string) bool {
+		iss, _ := ns.Get(id)
+		return iss != nil && iss.State == native.StateReview
 	}
-	finalX, _ := ns.Get(issX.ID)
-	finalY, _ := ns.Get(issY.ID)
-	if finalX == nil || finalX.State != native.StateReview {
-		t.Fatalf("issue %q never reached review — got state=%v (guard 45eafe28)", issX.Title, stateOf(finalX))
-	}
-	if finalY == nil || finalY.State != native.StateReview {
-		t.Fatalf("issue %q never reached review — got state=%v (guard 45eafe28)", issY.Title, stateOf(finalY))
-	}
+	waitUntil(t, 10*time.Second, "both issues to auto-transition to review (guard 45eafe28)",
+		func() bool { return inReview(issX.ID) && inReview(issY.ID) },
+		func() string {
+			x, _ := ns.Get(issX.ID)
+			y, _ := ns.Get(issY.ID)
+			return fmt.Sprintf("%q state=%v, %q state=%v",
+				issX.Title, stateOf(x), issY.Title, stateOf(y))
+		})
 	if got := dispatchCount.Load(); got != 2 {
 		t.Fatalf("expected exactly 2 dispatches before transition, got %d", got)
 	}
@@ -477,23 +472,18 @@ func TestWhatsNext_Loop_FindingsInboxSurvivesDispatch(t *testing.T) {
 	issY := mkReady("Implement Y")
 
 	// Wait for both work issues to auto-transition to review.
-	deadline := time.Now().Add(10 * time.Second)
-	for time.Now().Before(deadline) {
-		xs, _ := ns.Get(issX.ID)
-		ys, _ := ns.Get(issY.ID)
-		if xs != nil && ys != nil && xs.State == native.StateReview && ys.State == native.StateReview {
-			break
-		}
-		time.Sleep(20 * time.Millisecond)
+	inReview := func(id string) bool {
+		iss, _ := ns.Get(id)
+		return iss != nil && iss.State == native.StateReview
 	}
-	finalX, _ := ns.Get(issX.ID)
-	finalY, _ := ns.Get(issY.ID)
-	if finalX == nil || finalX.State != native.StateReview {
-		t.Fatalf("work issue %q never reached review — got state=%v (guard 45eafe28)", issX.Title, stateOf(finalX))
-	}
-	if finalY == nil || finalY.State != native.StateReview {
-		t.Fatalf("work issue %q never reached review — got state=%v (guard 45eafe28)", issY.Title, stateOf(finalY))
-	}
+	waitUntil(t, 10*time.Second, "both work issues to auto-transition to review (guard 45eafe28)",
+		func() bool { return inReview(issX.ID) && inReview(issY.ID) },
+		func() string {
+			x, _ := ns.Get(issX.ID)
+			y, _ := ns.Get(issY.ID)
+			return fmt.Sprintf("%q state=%v, %q state=%v",
+				issX.Title, stateOf(x), issY.Title, stateOf(y))
+		})
 	if got := dispatchCount.Load(); got != 2 {
 		t.Fatalf("expected exactly 2 work dispatches, got %d", got)
 	}

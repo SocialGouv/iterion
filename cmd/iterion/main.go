@@ -85,11 +85,6 @@ func main() {
 // command BEFORE it validates args, so Args alone would never be
 // consulted. RunE makes the group Runnable — it only ever prints help,
 // which is what a bare `iterion bundle` did before.
-//
-// Each group it hardens is stamped with groupHelpOnlyAnnotation, so a
-// group that carries its OWN positional contract (`iterion models
-// [provider/model-id]`, runnable and already validating) stays
-// distinguishable from one that exists only to host subcommands.
 func rejectUnknownSubcommands(cmd *cobra.Command) {
 	for _, sub := range cmd.Commands() {
 		rejectUnknownSubcommands(sub)
@@ -97,18 +92,8 @@ func rejectUnknownSubcommands(cmd *cobra.Command) {
 	if cmd.HasSubCommands() && !cmd.Runnable() && cmd.Args == nil {
 		cmd.Args = cobra.NoArgs
 		cmd.RunE = func(c *cobra.Command, _ []string) error { return c.Help() }
-		if cmd.Annotations == nil {
-			cmd.Annotations = map[string]string{}
-		}
-		cmd.Annotations[groupHelpOnlyAnnotation] = "true"
 	}
 }
-
-// groupHelpOnlyAnnotation marks a group whose only behaviour is printing
-// its own help — the shape rejectUnknownSubcommands installs. Read by
-// the coverage test to tell a help-only group from a command that hosts
-// subcommands AND takes positional args of its own.
-const groupHelpOnlyAnnotation = "iterion.group_help_only"
 
 // loadDotEnvFromCwd walks up from $CWD looking for a `.env` file and
 // applies it. We stop at the first one found OR at the filesystem

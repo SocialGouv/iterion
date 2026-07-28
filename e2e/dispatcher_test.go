@@ -116,17 +116,15 @@ func TestDispatcherE2E_DispatchAndRelease(t *testing.T) {
 	}
 
 	// Wait for the actor to drain the cmdRunFinished + release the claim.
-	deadline := time.Now().Add(10 * time.Second)
-	for time.Now().Before(deadline) {
-		if len(c.Snapshot().Running) == 0 {
-			refreshed, _ := ns.Get(iss.ID)
-			if refreshed.Claim == "" {
-				return
+	waitUntil(t, 10*time.Second, "the dispatcher to free the slot and release the claim",
+		func() bool {
+			if len(c.Snapshot().Running) != 0 {
+				return false
 			}
-		}
-		time.Sleep(20 * time.Millisecond)
-	}
-	t.Fatalf("dispatcher did not release claim. snapshot=%+v", c.Snapshot())
+			refreshed, _ := ns.Get(iss.ID)
+			return refreshed.Claim == ""
+		},
+		func() string { return fmt.Sprintf("snapshot=%+v", c.Snapshot()) })
 }
 
 func TestDispatcherE2E_RetryAfterFailure(t *testing.T) {
@@ -143,14 +141,11 @@ func TestDispatcherE2E_RetryAfterFailure(t *testing.T) {
 		t.Fatalf("Create: %v", err)
 	}
 
-	deadline := time.Now().Add(4 * time.Second)
-	for time.Now().Before(deadline) {
-		if calls.Load() >= 2 {
-			return
-		}
-		time.Sleep(50 * time.Millisecond)
-	}
-	t.Fatalf("expected at least 2 attempts, saw %d (snapshot=%+v)", calls.Load(), c.Snapshot())
+	waitUntil(t, 4*time.Second, "a failed dispatch to be retried at least once",
+		func() bool { return calls.Load() >= 2 },
+		func() string {
+			return fmt.Sprintf("attempts=%d want>=2, snapshot=%+v", calls.Load(), c.Snapshot())
+		})
 }
 
 func TestDispatcherE2E_CancelInFlight(t *testing.T) {
@@ -174,20 +169,15 @@ func TestDispatcherE2E_CancelInFlight(t *testing.T) {
 
 	c.Cancel(iss.ID)
 
-	// Generous deadline: the cancel→handler-return→cmdRunFinished→finishRun
-	// chain completes in ~50ms unloaded, but it crosses the actor's command
-	// channel and a dispatch-worker teardown, so under a loaded CI host (or a
-	// busy dev machine running the full suite + docker) scheduler jitter can
-	// push it past a tight 2s window — a flaky failure, not a real hang. 10s
-	// stays a hard ceiling that still catches a genuine cancel-flush hang.
-	deadline := time.Now().Add(10 * time.Second)
-	for time.Now().Before(deadline) {
-		if len(c.Snapshot().Running) == 0 {
-			return
-		}
-		time.Sleep(20 * time.Millisecond)
-	}
-	t.Fatalf("cancel did not flush running entry")
+	// The cancel→handler-return→cmdRunFinished→finishRun chain completes in
+	// ~30ms unloaded, but it crosses the actor's command channel twice and a
+	// dispatch-worker teardown, so 10s is the hard ceiling that still catches a
+	// genuine cancel-flush hang. waitUntil logs the wait when it eats most of
+	// that budget and dumps goroutines on failure — this assertion has already
+	// been widened once for flakiness, and the passing runs said nothing about
+	// whether the margin was shrinking.
+	waitUntil(t, 10*time.Second, "cancel to flush the running entry",
+		func() bool { return len(c.Snapshot().Running) == 0 })
 }
 
 func TestDispatcherE2E_RespectsTerminalStateChange(t *testing.T) {
@@ -206,31 +196,16 @@ func TestDispatcherE2E_RespectsTerminalStateChange(t *testing.T) {
 
 	iss, _ := ns.Create(native.Issue{Title: "movable", State: "ready"})
 
-	// Wait for dispatch to start.
-	deadline := time.Now().Add(10 * time.Second)
-	for time.Now().Before(deadline) {
-		if len(c.Snapshot().Running) == 1 {
-			break
-		}
-		time.Sleep(20 * time.Millisecond)
-	}
-	if len(c.Snapshot().Running) != 1 {
-		t.Fatal("dispatch never started")
-	}
+	waitUntil(t, 10*time.Second, "the dispatch to start",
+		func() bool { return len(c.Snapshot().Running) == 1 })
 
 	// Externally move issue to a terminal state — dispatcher should cancel.
 	if _, err := ns.SetState(iss.ID, "done"); err != nil {
 		t.Fatalf("SetState: %v", err)
 	}
 
-	deadline = time.Now().Add(10 * time.Second)
-	for time.Now().Before(deadline) {
-		if len(c.Snapshot().Running) == 0 {
-			return
-		}
-		time.Sleep(20 * time.Millisecond)
-	}
-	t.Fatalf("dispatcher did not honor external state change")
+	waitUntil(t, 10*time.Second, "the dispatcher to honor the external state change",
+		func() bool { return len(c.Snapshot().Running) == 0 })
 }
 
 func TestDispatcherE2E_HTTPSurface(t *testing.T) {
@@ -264,15 +239,12 @@ func TestDispatcherE2E_HTTPSurface(t *testing.T) {
 	}
 
 	// Wait for at least one dispatch then release.
-	deadline := time.Now().Add(10 * time.Second)
-	for time.Now().Before(deadline) {
-		l, _ := ns.List(native.ListFilter{})
-		if len(l) == 1 && l[0].Claim == "" {
-			return
-		}
-		time.Sleep(20 * time.Millisecond)
-	}
-	t.Fatalf("HTTP round-trip dispatch+release never completed (snapshot=%+v)", c.Snapshot())
+	waitUntil(t, 10*time.Second, "the HTTP round-trip dispatch+release to complete",
+		func() bool {
+			l, _ := ns.List(native.ListFilter{})
+			return len(l) == 1 && l[0].Claim == ""
+		},
+		func() string { return fmt.Sprintf("snapshot=%+v", c.Snapshot()) })
 }
 
 func statusOrZero(r *http.Response) int {

@@ -11,6 +11,7 @@ package e2e
 
 import (
 	"context"
+	"fmt"
 	"path/filepath"
 	"sync"
 	"testing"
@@ -95,15 +96,11 @@ func TestIssueTriageTrigger_E2E_ConsumeAndLaunch(t *testing.T) {
 	}
 
 	waitPlans := func(want int, msg string) []trigger.LaunchPlan {
-		deadline := time.Now().Add(10 * time.Second)
-		for time.Now().Before(deadline) {
-			if plans := launcher.snapshot(); len(plans) >= want {
-				return plans
-			}
-			time.Sleep(25 * time.Millisecond)
-		}
-		t.Fatalf("%s: launches=%d want %d", msg, len(launcher.snapshot()), want)
-		return nil
+		t.Helper()
+		waitUntil(t, 10*time.Second, msg,
+			func() bool { return len(launcher.snapshot()) >= want },
+			func() string { return fmt.Sprintf("launches=%d want %d", len(launcher.snapshot()), want) })
+		return launcher.snapshot()
 	}
 
 	plans := waitPlans(1, "card.created with triage:auto should direct-launch")

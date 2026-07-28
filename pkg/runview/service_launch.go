@@ -579,6 +579,12 @@ func (s *Service) spawnRun(
 		defer stopBoard()
 
 		bodyErr := body(ctx, eng)
+		// The engine has written its terminal/paused status to the store, so
+		// the run now READS resumable while this handle is still held through
+		// the teardown below (a completion webhook, a supervisor drain). Say
+		// so, and a resume arriving in that window waits the handoff out
+		// instead of failing on "already registered".
+		s.manager.MarkLeaving(runID)
 		paused = errors.Is(bodyErr, runtime.ErrRunPaused) || errors.Is(bodyErr, runtime.ErrRunPausedOperator)
 		s.logRunOutcome(runID, bodyErr)
 		// Hand the terminal error to a blocking caller (ADR-046: the
