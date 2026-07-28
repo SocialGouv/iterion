@@ -122,6 +122,38 @@ information. When a reference moves, exactly one of two things is true:
 
 Both are stop conditions for this bot. Neither is yours to resolve.
 
+## The third place a fix can cheat: the environment the judge looks through
+
+Two forms of cheating are obvious enough that any net guards against them:
+editing the reference, and editing the comparator. There is a third, it is the
+hardest to spot, and a lot found it unprompted.
+
+A runtime upgrade changed one recorded field — an error message that the newer
+runtime now fills in where the older left it blank. A single flag restores the
+old value exactly. It was refused, for two reasons, and the second is the one to
+remember.
+
+The flag is **global**: it suppresses that class of message everywhere, logs
+included, to bring one recorded field back. Restoring an observation by removing
+information the runtime produces everywhere is not restoring behaviour, it is
+changing a different and larger behaviour that nobody measured.
+
+And its only possible home was the **launcher the net invokes to start the
+application**. Behaviour restored there is restored *for the judge alone*. In
+production the flag is absent and the message reappears — so the net would go
+green on a system that behaves differently from the one that ships.
+
+That is the shape to watch for, because the diff does not look like cheating: it
+touches an environment script, not the oracle. The question that catches it:
+
+> **Would this change be present in production?** If the fix lives only where
+> the judge sets up its observation, it has not repaired anything — it has
+> arranged for the measurement to come out right.
+
+The same test the intent already carries — *would this change still be right if
+the reference did not exist?* — reaches the same verdict from the other side.
+Nobody disables useful diagnostics on a fresh deployment.
+
 ## Four ways a lot goes green while being wrong
 
 Each of these passes a naive gate. Each is a way of satisfying the measurement
