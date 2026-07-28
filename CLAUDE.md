@@ -22,7 +22,7 @@ gotcha, a "why is prod doing X"), that discovery MUST land back in the repo so
 the next occurrence is instant. Don't leave it in a chat transcript. Wire it
 across the three surfaces by role:
 
-- **This CLAUDE.md** — the *reflex* itself (above) + a one-line pointer in the
+- **This CLAUDE.md** — the *reflex* itself (this section) + a one-line pointer in the
   **operational runbook index** below. This file is always read first, so it's
   the discovery entry point.
 - **`docs/`** — the *content*: one focused runbook per topic (the how + the
