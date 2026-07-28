@@ -512,8 +512,11 @@ var toolAliases = map[string]string{
 	"multiedit": "edit", "edit_mode": "edit", "str_replace": "edit",
 	// notebook
 	"notebookedit": "notebookedit", "notebook_edit": "notebookedit",
-	// search
-	"glob": "glob", "grep": "grep",
+	// search. pi names its glob tool `find` (it takes a `pattern`, not a
+	// directory to walk), so without the alias a `Glob(**)` rule silently
+	// fails to match it and the gate reaches a different verdict on pi than
+	// on the other backends.
+	"glob": "glob", "find": "glob", "grep": "grep",
 	// web
 	"webfetch": "webfetch", "web_fetch": "webfetch", "web": "webfetch",
 	"websearch": "websearch", "web_search": "websearch",

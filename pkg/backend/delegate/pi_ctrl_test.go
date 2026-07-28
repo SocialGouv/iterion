@@ -8,6 +8,7 @@ import (
 	"github.com/SocialGouv/iterion/pkg/backend/delegate/piext"
 	"github.com/SocialGouv/iterion/pkg/backend/delegate/pisdk"
 	"github.com/SocialGouv/iterion/pkg/backend/permission"
+	"github.com/SocialGouv/iterion/pkg/backend/tooldisplay"
 )
 
 // The UI channel is shared with every extension the operator installed, so
@@ -226,4 +227,57 @@ func TestPiExtensionEnv(t *testing.T) {
 			}
 		}
 	})
+}
+
+// TestPiNativeToolNamesMatchRules is the cross-backend guard the permission
+// gate depends on: a workflow's rules are written in Claude-Code vocabulary
+// (`Edit(**)`, `Glob(**)`), while pi calls its tools `edit`, `find`, `ls`.
+// The gate must reach the SAME verdict either way, or `permission:` means
+// something different depending on which backend ran the node.
+//
+// This caught pi's `find` — its glob tool — having no alias, so `Glob(**)`
+// silently denied it.
+func TestPiNativeToolNamesMatchRules(t *testing.T) {
+	cases := []struct {
+		rule, piTool, piArgs string
+	}{
+		{"Edit(**)", "edit", `{"path":"pkg/x.go"}`}, // pi uses `path`, Claude Code `file_path`
+		{"Write(**)", "write", `{"path":"pkg/x.go"}`},
+		{"Read(**)", "read", `{"path":"pkg/x.go"}`},
+		{"Bash(ls:*)", "bash", `{"command":"ls -la"}`},
+		{"Grep(**)", "grep", `{"pattern":"foo"}`},
+		{"LS(**)", "ls", `{"path":"pkg"}`},
+		{"Glob(**)", "find", `{"pattern":"**/*.go"}`},
+	}
+	for _, tc := range cases {
+		t.Run(tc.rule+"/"+tc.piTool, func(t *testing.T) {
+			pol, err := permission.NewPolicy(permission.ModeDeny, []string{tc.rule}, nil, nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var input map[string]any
+			if err := json.Unmarshal([]byte(tc.piArgs), &input); err != nil {
+				t.Fatal(err)
+			}
+			if d, _ := pol.Evaluate(tc.piTool, input); d != permission.Allow {
+				t.Errorf("rule %q does not match pi's %q(%s): got %s — the gate would "+
+					"reach a different verdict on pi than on claude_code/claw",
+					tc.rule, tc.piTool, tc.piArgs, d)
+			}
+		})
+	}
+}
+
+// TestPiToolsAreDisplayable is the other half of the cross-backend vocabulary
+// problem. The run console and the studio's "Produced elements" panel look up
+// a tool's target by name; pi's built-ins are bare verbs (`edit`, `write`,
+// `find`) that neither the Claude Code nor the claw map contained, so a pi run
+// that edited files rendered with no target and an EMPTY produced-elements
+// panel — it looked like the run changed nothing.
+func TestPiToolsAreDisplayable(t *testing.T) {
+	for _, tool := range []string{"read", "edit", "write", "bash", "grep", "find", "ls"} {
+		if _, ok := tooldisplay.SnakeCaseKeys[tool]; !ok {
+			t.Errorf("pi's %q has no display keys — the run console shows the call with no target", tool)
+		}
+	}
 }

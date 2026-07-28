@@ -48,6 +48,11 @@ var writeToolPathKeys = map[string][]string{
 	"write_file":    {"path", "file_path"},
 	"file_edit":     {"path", "file_path"},
 	"notebook_edit": {"path", "file_path", "notebook_path"},
+	// pi's built-ins: bare verbs taking `path`. Without them the studio's
+	// "Produced elements" panel is EMPTY for every pi run that edits files —
+	// the run looks like it changed nothing.
+	"write": {"path", "file_path"},
+	"edit":  {"path", "file_path"},
 }
 
 // touchedBlobReadCap bounds how much of a sidecar input blob we read when
