@@ -227,6 +227,35 @@ In every row, the metric was a faithful measurement of **the surface
 property** but a poor proxy for **the underlying goal**. The agent satisfied
 the metrics. The goal stayed unmet.
 
+### The empty-input façade (2026-07, dep-update-guard)
+
+A variant worth its own name, because nothing in the workflow was gaming
+anything: the auditor was handed an **empty diff** and dutifully reported
+"safe". Its classifier only recognised package manifests, so a PR moving a
+container digest or a pinned tool matched nothing — and the run did not stop,
+because the flag guarding the exit meant "no files changed", not "no manifest
+recognised". Three of four real Renovate PRs would have been waved through by
+an agent that had read nothing.
+
+**A scope flag and a coverage flag are not the same flag.** Conflating them
+converts "we found nothing to look at" into "we looked and found nothing" —
+and the second is indistinguishable from success. When a node narrows what a
+downstream agent sees, it owes that agent an explicit signal that the
+narrowing found nothing, and the agent owes the reader a verdict that says so.
+
+### A stub that accepts anything certifies nothing
+
+The same change shipped an auto-merge step whose GraphQL was syntactically
+invalid — every request would have been rejected by the real API. It passed
+CI: the test's stub answered success to any body and only substring-matched
+the query. The feature was green in the suite and dead in production.
+
+A test double is a *claim about what a real peer accepts*. When it accepts
+strictly more than the real one, the test measures only that the code ran.
+Assert on what actually goes over the wire, and check the fix by
+reintroducing the bug and watching the test fail — a test that has never
+been seen red is a test whose sensitivity is unmeasured.
+
 ---
 
 ## Practical rules to internalize
