@@ -49,6 +49,17 @@ func timeoutAgentNode(id, timeout string) *ir.AgentNode {
 	return n
 }
 
+// safetyNet bounds the PARENT context so a regression in the per-node bound
+// fails this test instead of hanging it.
+//
+// The node bound is the only deadline on the path (retryDelegateLoop and
+// dispatchWithProviderFallback add none), so against a backend that blocks on
+// its context, dropping the bound means Execute never returns: `go test`
+// panics on the package timeout minutes later and takes every other result in
+// the package with it. 5s is far enough above the 20ms node bound to keep the
+// elapsed assertion a clear discriminator.
+const safetyNet = 5 * time.Second
+
 // TestNodeTimeout_Enforced: a short per-node timeout bounds a backend that
 // would otherwise block forever, and the node fails with a deadline error.
 func TestNodeTimeout_Enforced(t *testing.T) {
@@ -58,8 +69,11 @@ func TestNodeTimeout_Enforced(t *testing.T) {
 	e := timeoutTestExecutor(reg)
 	node := timeoutAgentNode("worker", "20ms")
 
+	ctx, cancel := context.WithTimeout(context.Background(), safetyNet)
+	defer cancel()
+
 	start := time.Now()
-	_, err := e.Execute(context.Background(), node, map[string]interface{}{})
+	_, err := e.Execute(ctx, node, map[string]interface{}{})
 	elapsed := time.Since(start)
 
 	if err == nil {
@@ -68,8 +82,11 @@ func TestNodeTimeout_Enforced(t *testing.T) {
 	if !errors.Is(err, context.DeadlineExceeded) {
 		t.Fatalf("expected context.DeadlineExceeded, got %v", err)
 	}
-	if elapsed > 2*time.Second {
-		t.Fatalf("per-node timeout did not fire promptly: elapsed %v", elapsed)
+	// Both the node bound and the safety net produce DeadlineExceeded, so the
+	// error alone cannot tell them apart — the elapsed time is what proves the
+	// 20ms NODE bound fired and not the 5s parent.
+	if elapsed > time.Second {
+		t.Fatalf("the parent safety net fired, not the per-node timeout: elapsed %v (want ~20ms)", elapsed)
 	}
 }
 
@@ -101,8 +118,51 @@ func TestNodeTimeout_EnvDefaultExpanded(t *testing.T) {
 	e := timeoutTestExecutor(reg)
 	node := timeoutAgentNode("worker", "${ITERION_TEST_NODE_TIMEOUT_UNSET:-20ms}")
 
-	_, err := e.Execute(context.Background(), node, map[string]interface{}{})
+	ctx, cancel := context.WithTimeout(context.Background(), safetyNet)
+	defer cancel()
+
+	start := time.Now()
+	_, err := e.Execute(ctx, node, map[string]interface{}{})
+	elapsed := time.Since(start)
+
 	if !errors.Is(err, context.DeadlineExceeded) {
 		t.Fatalf("expected env-default timeout to fire with DeadlineExceeded, got %v", err)
+	}
+	// Guards the expansion specifically: if ${VAR:-20ms} ever stops resolving,
+	// the parse fails, the bound is skipped by design, and only the elapsed
+	// time distinguishes that from a working expansion.
+	if elapsed > time.Second {
+		t.Fatalf("the env default did not expand to an enforced bound: elapsed %v (want ~20ms)", elapsed)
+	}
+}
+
+// A timeout that does not resolve to a positive duration is a deliberate
+// silent skip, not an error: the compile-time diagnostic already rejects a
+// malformed one, so the runtime guard is defensive. Pinned so a later refactor
+// cannot quietly turn the skip into a failed node.
+func TestNodeTimeout_NonPositiveOrUnparseableIsSkipped(t *testing.T) {
+	for _, tc := range []struct{ name, timeout string }{
+		{"zero", "0s"},
+		{"negative", "-5s"},
+		{"unparseable", "not-a-duration"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			reg := delegate.NewRegistry()
+			reg.Register(delegate.BackendClaudeCode, immediateBackend{})
+
+			e := timeoutTestExecutor(reg)
+			node := timeoutAgentNode("worker", tc.timeout)
+
+			ctx, cancel := context.WithTimeout(context.Background(), safetyNet)
+			defer cancel()
+
+			out, err := e.Execute(ctx, node, map[string]interface{}{})
+			if err != nil {
+				t.Fatalf("timeout %q should be skipped, not applied: %v", tc.timeout, err)
+			}
+			if out["ok"] != true {
+				t.Fatalf("expected ok=true output, got %v", out)
+			}
+		})
 	}
 }
