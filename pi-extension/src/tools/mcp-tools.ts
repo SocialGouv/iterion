@@ -6,10 +6,14 @@
  * what it is called, and what arguments it takes. A new board operation, or a
  * capability the run was not granted, needs no change in this file.
  *
- * The names are kept in iterion's `mcp__<server>__<tool>` shape rather than
- * simplified. That is load-bearing: iterion's permission layer treats that
- * namespace as infrastructure and exempts it, so renaming the tools would make
- * `permission: ask` pause the run on the very tools used to talk to the board.
+ * Tools are registered on pi under iterion's `mcp__<server>__<tool>` FQN, not
+ * under the bare name `tools/list` returns. That is load-bearing: iterion's
+ * permission layer keys its infrastructure exemption on the `mcp__iterion…`
+ * namespace, so registering the board's bare `create_issue` would make
+ * `permission: deny` hard-block every board write and `permission: ask` pause
+ * the run on the very tools used to talk to the board. The prefix is a CLIENT
+ * convention (claude_code's SDK applies it too); the wire call always uses the
+ * server's own bare name.
  */
 
 import { Type } from "typebox";
@@ -20,6 +24,16 @@ import type { McpCallResult, Transport } from "../mcp/protocol.js";
 import { SseTransport } from "../mcp/sse.js";
 import { StdioTransport } from "../mcp/stdio.js";
 import type { McpServerConfig } from "../config.js";
+
+/**
+ * Builds the `mcp__<server>__<tool>` name a tool is registered under.
+ *
+ * A server that already answers `tools/list` with qualified names (some do)
+ * must not be double-prefixed, so an existing `mcp__` prefix is kept as-is.
+ */
+export function qualifyToolName(server: string, tool: string): string {
+	return tool.startsWith("mcp__") ? tool : `mcp__${server}__${tool}`;
+}
 
 /** Renders an MCP tool result as pi tool content. */
 function renderResult(result: McpCallResult): { text: string; isError: boolean } {
@@ -89,9 +103,10 @@ export async function installMcpServer(
 		const tools = await withDeadline(client.listTools(), connectTimeoutMs, `${server.name}: tools/list`);
 
 		for (const tool of tools) {
+			const fqn = qualifyToolName(server.name, tool.name);
 			pi.registerTool({
-				name: tool.name,
-				label: tool.name,
+				name: fqn,
+				label: fqn,
 				description: tool.description ?? `${tool.name} (via ${server.name})`,
 				// The server's JSON Schema is passed through unvalidated on this
 				// side: it is authoritative, and re-deriving a TypeBox schema from
@@ -110,7 +125,7 @@ export async function installMcpServer(
 						// capability was denied can adapt.
 						const msg = err instanceof Error ? err.message : String(err);
 						return {
-							content: [{ type: "text" as const, text: `${tool.name} failed: ${msg}` }],
+							content: [{ type: "text" as const, text: `${fqn} failed: ${msg}` }],
 							details: undefined,
 							isError: true,
 						};

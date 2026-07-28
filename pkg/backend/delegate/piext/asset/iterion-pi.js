@@ -693,6 +693,9 @@ var StdioTransport = class {
 };
 
 // src/tools/mcp-tools.ts
+function qualifyToolName(server, tool) {
+  return tool.startsWith("mcp__") ? tool : `mcp__${server}__${tool}`;
+}
 function renderResult(result) {
   const parts = [];
   for (const c of result.content ?? []) {
@@ -738,9 +741,10 @@ async function installMcpServer(pi, server, log = () => {
     await withDeadline(client.initialize(), connectTimeoutMs, `${server.name}: handshake`);
     const tools = await withDeadline(client.listTools(), connectTimeoutMs, `${server.name}: tools/list`);
     for (const tool of tools) {
+      const fqn = qualifyToolName(server.name, tool.name);
       pi.registerTool({
-        name: tool.name,
-        label: tool.name,
+        name: fqn,
+        label: fqn,
         description: tool.description ?? `${tool.name} (via ${server.name})`,
         // The server's JSON Schema is passed through unvalidated on this
         // side: it is authoritative, and re-deriving a TypeBox schema from
@@ -756,7 +760,7 @@ async function installMcpServer(pi, server, log = () => {
           } catch (err) {
             const msg = err instanceof Error ? err.message : String(err);
             return {
-              content: [{ type: "text", text: `${tool.name} failed: ${msg}` }],
+              content: [{ type: "text", text: `${fqn} failed: ${msg}` }],
               details: void 0,
               isError: true
             };

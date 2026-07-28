@@ -29,7 +29,7 @@ flowchart LR
 |---|---|---|
 | `claw` | Recommended in-process backend for direct provider calls and native Iterion tools. | Automatic or explicit. |
 | `claude_code` | Recommended CLI-agent backend for implementation work and Claude subscription/OAuth use. | Automatic when Claude Code OAuth is detected, or explicit. |
-| `pi` | Supported, with iterion's permission gate. Reaches ~36 providers and reports a provider-computed cost. Runs a long-lived `--mode rpc` session by default — tool events, native steering, authoritative accounting, pre-flight handshake (`ITERION_PI_MODE=print` rolls back). Permission gate, ask_user and board capabilities work via an embedded extension; workflow-declared stdio MCP servers do not yet. | Explicit only. |
+| `pi` | Supported, with iterion's permission gate. Reaches ~36 providers and reports a provider-computed cost. Runs a long-lived `--mode rpc` session by default — tool events, native steering, authoritative accounting, pre-flight handshake (`ITERION_PI_MODE=print` rolls back). Permission gate, ask_user, board capabilities and workflow-declared MCP servers (all three transports — streamable http, legacy sse, stdio) work via an embedded extension, which loads on the **rpc transport only**: a node declaring `permission:` is refused under `ITERION_PI_MODE=print` rather than run ungated. | Explicit only. |
 | `kimi` | Supported through the generic CLI-agent protocol; session resume/fork is not wired. | Explicit only. |
 | `grok` | Supported through the generic CLI-agent protocol; session resume/fork is not wired. | Explicit only. |
 | `codex` | **Deprecated and frozen.** Compatibility/live-test path only; the compiler emits C030. | Per-node/workflow opt-in, or explicit addition to `ITERION_BACKEND_PREFERENCE`. |

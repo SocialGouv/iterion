@@ -210,9 +210,6 @@ func (b *ClawBackend) Execute(ctx context.Context, task delegate.Task) (delegate
 	// built before the run's provisioning resolves, so the closure reads
 	// the value per call.
 	ctx = tool.WithBashExtraEnv(ctx, task.ExtraEnv)
-	if task.Sandbox != nil {
-		return b.executeViaSandboxRunner(ctx, task)
-	}
 
 	// claw is an in-process Anthropic SDK consumer rather than the vendor's
 	// own CLI, which was once read as putting a Claude Pro/Max OAuth
@@ -221,6 +218,12 @@ func (b *ClawBackend) Execute(ctx context.Context, task delegate.Task) (delegate
 	// extra-usage balance instead of the plan's limits. So this warns — the
 	// operator is spending a different pot than they may expect — and only
 	// refuses when ITERION_FORBID_SUBSCRIPTION_OAUTH=1. See ADR-085.
+	//
+	// It runs BEFORE the sandbox dispatch, and must: sandboxing is on by
+	// default, the in-container runner rebuilds its own registry from the
+	// forwarded env, and it is built with no logger — so a guard placed after
+	// the dispatch would neither refuse nor warn on the default path, silently
+	// spending the balance the operator just closed.
 	if providerName, _, perr := ParseModelSpec(task.Model); perr == nil && providerName == "anthropic" {
 		if err := secrets.GuardSubscriptionOAuth(ctx, secrets.ProviderAnthropic, secrets.OAuthKindClaudeCode); err != nil {
 			return delegate.Result{}, fmt.Errorf("claw backend: %w", err)
@@ -229,6 +232,10 @@ func (b *ClawBackend) Execute(ctx context.Context, task delegate.Task) (delegate
 			b.logger.Warn("[%s#%d/claw] %s", task.NodeID, task.Iteration,
 				secrets.SubscriptionOAuthNotice(secrets.ProviderAnthropic))
 		}
+	}
+
+	if task.Sandbox != nil {
+		return b.executeViaSandboxRunner(ctx, task)
 	}
 
 	// Resolve API client. Phase C: in cloud mode the runner stamps
@@ -1024,6 +1031,11 @@ var providerCredentialEnvVars = []string{
 	"AWS_ACCESS_KEY_ID",
 	"AWS_SECRET_ACCESS_KEY",
 	"AWS_SESSION_TOKEN",
+	// The subscription opt-out is a spend policy, so it must hold inside the
+	// container too — the in-container runner rebuilds its own registry and
+	// would otherwise resolve the forwarded subscription token as if the
+	// switch were off.
+	"ITERION_FORBID_SUBSCRIPTION_OAUTH",
 	// Client-identity overrides — must reach the in-container runner too
 	// (docs/backends.md § Client identity).
 	"ITERION_LLM_USER_AGENT",

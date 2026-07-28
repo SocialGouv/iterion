@@ -13,6 +13,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/SocialGouv/iterion/pkg/backend/permission"
 	"github.com/SocialGouv/iterion/pkg/secrets"
 )
 
@@ -236,6 +237,39 @@ func TestPiResolveEnv(t *testing.T) {
 			if _, ok := env[key]; ok {
 				t.Errorf("%s is overridden — an inherited subscription token would not reach pi", key)
 			}
+		}
+	})
+
+	// The opt-out has to reach the variable that actually carries the
+	// subscription. ANTHROPIC_AUTH_TOKEN is the documented Anthropic
+	// subscription bearer AND is forwarded into the sandbox by
+	// piCredentialEnvNames, so omitting it left ITERION_FORBID_SUBSCRIPTION_OAUTH
+	// a no-op on both paths — an incomplete refusal the operator believes in.
+	t.Run("opt-out clears the anthropic subscription bearer", func(t *testing.T) {
+		t.Setenv("ITERION_FORBID_SUBSCRIPTION_OAUTH", "1")
+		t.Setenv("ANTHROPIC_AUTH_TOKEN", "sk-ant-oat-SUBSCRIPTION")
+
+		env := piResolveEnv(context.Background())
+		if got, ok := env["ANTHROPIC_AUTH_TOKEN"]; !ok || got != "" {
+			t.Errorf("ANTHROPIC_AUTH_TOKEN = %q (set=%v), want cleared under the opt-out", got, ok)
+		}
+		for _, key := range []string{"ANTHROPIC_OAUTH_TOKEN", "CLAUDE_CODE_OAUTH_TOKEN", "CLAUDE_CONFIG_DIR"} {
+			if got, ok := env[key]; !ok || got != "" {
+				t.Errorf("%s = %q (set=%v), want cleared under the opt-out", key, got, ok)
+			}
+		}
+	})
+
+	// The same variable carries the z.ai Anthropic-compatible facade key and
+	// gateway bearers. The opt-out is about subscription SPEND, so it must key
+	// on the token's shape — revoking a z.ai key would be an unrelated break.
+	t.Run("opt-out leaves a non-subscription auth token alone", func(t *testing.T) {
+		t.Setenv("ITERION_FORBID_SUBSCRIPTION_OAUTH", "1")
+		t.Setenv("ANTHROPIC_AUTH_TOKEN", "zai-facade-key")
+
+		env := piResolveEnv(context.Background())
+		if _, ok := env["ANTHROPIC_AUTH_TOKEN"]; ok {
+			t.Error("a z.ai/gateway bearer was cleared by the subscription opt-out")
 		}
 	})
 
@@ -714,5 +748,52 @@ printf '%s\n' '{"type":"agent_settled"}'
 	}
 	if _, err := os.Stat(promptPath); !os.IsNotExist(err) {
 		t.Errorf("system-prompt file %q survived the run", promptPath)
+	}
+}
+
+// A permission-gated node must not run ungated. Every iterion capability on pi
+// lives in the embedded extension, which only the RPC transport loads — so the
+// documented ITERION_PI_MODE=print rollback would otherwise turn a node's
+// `permission: ask|deny` block into a silent no-op, dropping the whole
+// anti-prompt-injection boundary on an env-var flip. The RPC path already
+// treats this combination as fatal; print must agree.
+func TestPiPrintModeRefusesAPermissionGatedNode(t *testing.T) {
+	t.Setenv("ITERION_PI_MODE", "print")
+
+	pol, err := permission.NewPolicy(permission.ModeDeny, nil, nil, nil)
+	if err != nil {
+		t.Fatalf("NewPolicy: %v", err)
+	}
+	// A command that cannot exist, so a backend that WRONGLY proceeds fails
+	// with an exec error instead of accidentally passing.
+	b := NewPiBackend(testLogger(), filepath.Join(t.TempDir(), "no-such-pi"))
+
+	_, err = b.Execute(context.Background(), Task{
+		NodeID:     "gated",
+		Model:      "anthropic/claude-sonnet-4-6",
+		Permission: pol,
+	})
+	if err == nil {
+		t.Fatal("print mode ran a permission-gated node — the gate would be INACTIVE")
+	}
+	if !strings.Contains(err.Error(), "permission gate") {
+		t.Errorf("error = %v, want it to name the permission gate as the reason", err)
+	}
+}
+
+// The gate is the only capability that fails rather than degrades: an ungated
+// node still does useful work without ask_user or the board.
+func TestPiPrintModeAllowsAnUngatedNode(t *testing.T) {
+	t.Setenv("ITERION_PI_MODE", "print")
+
+	b := NewPiBackend(testLogger(), filepath.Join(t.TempDir(), "no-such-pi"))
+	_, err := b.Execute(context.Background(), Task{
+		NodeID:             "plain",
+		Model:              "anthropic/claude-sonnet-4-6",
+		InteractionEnabled: true,
+		Capabilities:       []string{"board.create"},
+	})
+	if err != nil && strings.Contains(err.Error(), "permission gate") {
+		t.Errorf("an ungated node was refused by the gate guard: %v", err)
 	}
 }

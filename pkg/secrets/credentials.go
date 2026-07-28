@@ -133,6 +133,24 @@ func ForbidSubscriptionOAuth() bool {
 	return strings.TrimSpace(os.Getenv("ITERION_FORBID_SUBSCRIPTION_OAUTH")) == "1"
 }
 
+// anthropicOAuthTokenPrefix is the shape Anthropic mints subscription OAuth
+// access tokens in, and the only reliable way to tell one apart from the other
+// things ANTHROPIC_AUTH_TOKEN legitimately carries.
+const anthropicOAuthTokenPrefix = "sk-ant-oat"
+
+// IsAnthropicSubscriptionToken reports whether a bearer value is an Anthropic
+// subscription OAuth token.
+//
+// It exists because ANTHROPIC_AUTH_TOKEN is overloaded: it is how a Claude
+// subscription reaches claw/pi, but it is ALSO how the z.ai Anthropic-compatible
+// facade is wired (ANTHROPIC_BASE_URL=z.ai + ANTHROPIC_AUTH_TOKEN=$ZAI_API_KEY)
+// and how a gateway bearer is supplied. So the subscription opt-out must key on
+// the token's shape, not on the variable's name — blanket-clearing the variable
+// would break those setups, which the opt-out has no business touching.
+func IsAnthropicSubscriptionToken(token string) bool {
+	return strings.HasPrefix(strings.TrimSpace(token), anthropicOAuthTokenPrefix)
+}
+
 // GuardSubscriptionOAuth returns ErrSubscriptionOAuthForbidden only when the
 // operator has opted out AND the subscription token is the sole credential.
 // It is the one-call form of the SubscriptionOAuthOnly + ForbidSubscriptionOAuth

@@ -140,13 +140,51 @@ func (b *PiBackend) Execute(ctx context.Context, task Task) (Result, error) {
 	// transport-specific problem in the field.
 	switch strings.TrimSpace(strings.ToLower(os.Getenv("ITERION_PI_MODE"))) {
 	case "print":
-		return b.print.Execute(ctx, task)
+		return b.executePrint(ctx, task)
 	default:
 		if b.rpc == nil {
-			return b.print.Execute(ctx, task)
+			return b.executePrint(ctx, task)
 		}
 		return b.rpc.Execute(ctx, task)
 	}
+}
+
+// executePrint runs the print transport after checking what it cannot carry.
+//
+// Every iterion-specific capability on pi — the permission gate, ask_user, the
+// board and workflow-declared MCP servers — is supplied by the embedded
+// extension, which only the RPC path materialises and loads. Print mode is
+// therefore not merely lower-fidelity: it silently drops those surfaces. The
+// permission gate is the one that must FAIL rather than degrade, mirroring the
+// RPC path's own rule — a gated node running ungated is a false sense of
+// security, and it is exactly the anti-prompt-injection boundary the gate
+// exists to hold. The rest degrade with a warning, because a node can still do
+// useful work without them.
+func (b *PiBackend) executePrint(ctx context.Context, task Task) (Result, error) {
+	if task.Permission.Enabled() {
+		return Result{BackendName: BackendPi, ExitCode: -1}, fmt.Errorf(
+			"pi backend: this node declares a permission gate, which the print transport cannot " +
+				"enforce — the iterion extension that IS the gate loads only on the rpc transport. " +
+				"Unset ITERION_PI_MODE (or set it to rpc) to run this node")
+	}
+	if b.Logger != nil {
+		var dropped []string
+		if task.InteractionEnabled {
+			dropped = append(dropped, "ask_user")
+		}
+		if len(task.Capabilities) > 0 {
+			dropped = append(dropped, "board capabilities")
+		}
+		if len(task.MCPServers) > 0 {
+			dropped = append(dropped, "workflow-declared MCP servers")
+		}
+		if len(dropped) > 0 {
+			b.Logger.Warn("[%s#%d/%s] print transport: %s are INACTIVE for this node "+
+				"(the iterion extension loads only on the rpc transport)",
+				task.NodeID, task.Iteration, BackendPi, strings.Join(dropped, ", "))
+		}
+	}
+	return b.print.Execute(ctx, task)
 }
 
 // noticeSubscriptionOAuth warns when this node is about to spend an Anthropic
@@ -416,6 +454,17 @@ func piResolveEnv(ctx context.Context) map[string]string {
 		env["ANTHROPIC_OAUTH_TOKEN"] = ""
 		env["CLAUDE_CODE_OAUTH_TOKEN"] = ""
 		env["CLAUDE_CONFIG_DIR"] = ""
+		// ANTHROPIC_AUTH_TOKEN is the variable this repo documents as the
+		// Anthropic subscription bearer, and piCredentialEnvNames forwards it
+		// into the sandbox — so omitting it left the opt-out a no-op on both
+		// the host and the sandboxed path, which is worse than no opt-out at
+		// all because the operator believes it holds. It is cleared only when
+		// it actually carries a subscription token: the same variable also
+		// carries the z.ai facade key and gateway bearers, which this switch
+		// has no business revoking.
+		if secrets.IsAnthropicSubscriptionToken(os.Getenv("ANTHROPIC_AUTH_TOKEN")) {
+			env["ANTHROPIC_AUTH_TOKEN"] = ""
+		}
 	}
 
 	if creds, ok := secrets.CredentialsFromContext(ctx); ok {

@@ -18,9 +18,22 @@ import (
 // fakeMCPServer speaks just enough MCP JSON-RPC to stand in for iterion's
 // board endpoint: initialize, tools/list, tools/call.
 type fakeMCPServer struct {
-	mu      sync.Mutex
-	calls   []string
-	gotAuth string
+	mu sync.Mutex
+	// toolName is what tools/list advertises. It defaults to the BARE name a
+	// real server returns (iterion's board answers `create_issue`); the
+	// `mcp__server__tool` prefix is a client-side convention.
+	toolName  string
+	calls     []string
+	calledAs  []string
+	gotAuth   string
+	callCount int
+}
+
+func (f *fakeMCPServer) advertised() string {
+	if f.toolName == "" {
+		return "create_issue"
+	}
+	return f.toolName
 }
 
 func (f *fakeMCPServer) handler() http.HandlerFunc {
@@ -48,7 +61,7 @@ func (f *fakeMCPServer) handler() http.HandlerFunc {
 			}
 		case "tools/list":
 			resp["result"] = map[string]any{"tools": []map[string]any{{
-				"name":        "mcp__iterion_board__create",
+				"name":        f.advertised(),
 				"description": "Create a card",
 				"inputSchema": map[string]any{
 					"type":       "object",
@@ -61,6 +74,10 @@ func (f *fakeMCPServer) handler() http.HandlerFunc {
 				Arguments map[string]any `json:"arguments"`
 			}
 			_ = json.Unmarshal(req.Params, &p)
+			f.mu.Lock()
+			f.calledAs = append(f.calledAs, p.Name)
+			f.callCount++
+			f.mu.Unlock()
 			resp["result"] = map[string]any{
 				"content": []map[string]any{{"type": "text", "text": "created " + argString(p.Arguments, "title")}},
 			}
@@ -91,6 +108,15 @@ func (f *fakeMCPServer) auth() string {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	return f.gotAuth
+}
+
+// toolCallNames returns the tool names the server was actually CALLED with,
+// which must be its own bare names — the `mcp__server__tool` form the agent
+// sees is a client-side registration detail and is never sent on the wire.
+func (f *fakeMCPServer) toolCallNames() []string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([]string(nil), f.calledAs...)
 }
 
 // The board is offered only when the run can actually use it. Registering it
@@ -209,7 +235,11 @@ func TestPiRPCLiveMCPBridge(t *testing.T) {
 	defer srv.Close()
 
 	t.Setenv("ITERION_PI_NO_CONTEXT_FILES", "1")
-	t.Setenv("ITERION_PI_MOCK_TOOL", "mcp__iterion_board__create")
+	// The server advertises the bare `create_issue`; the agent must see it
+	// under iterion's reserved namespace, which is what the permission layer
+	// exempts as infrastructure. Driving the mock with the FQN is therefore
+	// also the assertion that the prefix was applied at registration.
+	t.Setenv("ITERION_PI_MOCK_TOOL", "mcp__iterion_board__create_issue")
 	t.Setenv("ITERION_PI_MOCK_TOOL_ARGS", `{"title":"a new card"}`)
 	t.Setenv("ITERION_PI_MOCK_TEXT", "card created")
 
@@ -243,6 +273,11 @@ func TestPiRPCLiveMCPBridge(t *testing.T) {
 	}
 	if fake.auth() != "run-token-xyz" {
 		t.Errorf("X-Iterion-Run = %q, want the run token — the server would reject this", fake.auth())
+	}
+	// The prefix must not leak onto the wire: the server knows only its own
+	// bare names and would answer -32601 for a qualified one.
+	if got := fake.toolCallNames(); !slices.Contains(got, "create_issue") {
+		t.Errorf("tools/call used %v, want the server's bare name create_issue", got)
 	}
 
 	mu.Lock()
