@@ -184,6 +184,8 @@ type Layer struct {
 const (
 	SourceRunOverride = "run_override"
 	SourceSchedule    = "schedule"
+	SourceWebhook     = "webhook"
+	SourceTrigger     = "trigger"
 	SourceBot         = "bot"
 	SourceEnv         = "env"
 	SourceDefault     = "default"

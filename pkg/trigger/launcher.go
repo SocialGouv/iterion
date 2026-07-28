@@ -4,6 +4,7 @@ import (
 	"context"
 
 	"github.com/SocialGouv/iterion/pkg/bundle"
+	"github.com/SocialGouv/iterion/pkg/retrypolicy"
 	"github.com/SocialGouv/iterion/pkg/store"
 )
 
@@ -33,6 +34,12 @@ type LaunchPlan struct {
 	// overlap gate can count this schedule's live runs; other paths
 	// leave it nil.
 	SourceRef *store.RunSource
+	// Retry is the subscription's own retry policy (pkg/retrypolicy) — the
+	// binding layer of the precedence chain. Zero value means the
+	// subscription pins nothing and the bot's manifest / machine default
+	// decide. Carried on the plan rather than re-read by the launcher
+	// because the evaluator is what holds the subscription.
+	Retry retrypolicy.Policy
 }
 
 // Launcher launches a run directly (ExecutionDirect). The production impl

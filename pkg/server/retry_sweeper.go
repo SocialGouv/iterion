@@ -80,6 +80,12 @@ func (s *Server) sweepDueRetries(ctx context.Context, lister retryDueLister, res
 		s.warnf("retry sweeper: scan: %v", err)
 		return
 	}
+	if s.cfg.Metrics != nil {
+		// Sampled, not authoritative: the batch cap bounds what one pass
+		// sees. A gauge that sits at the cap is itself the signal that
+		// retries are arriving faster than they are being resumed.
+		s.cfg.Metrics.RunsRetryPending.Set(float64(len(refs)))
+	}
 	for _, ref := range refs {
 		s.resumeDueRetry(ctx, retryStore, resumer, ref)
 	}
@@ -135,6 +141,7 @@ func (s *Server) resumeDueRetry(ctx context.Context, retryStore store.RunRetrySt
 		return
 	}
 
+	s.countRetry("enqueued")
 	s.auditRetry(ref, "run.retry.enqueued", map[string]any{
 		"attempt": retryAttempts(ref),
 		"reason":  retryReason(ref),
@@ -148,6 +155,7 @@ func (s *Server) abandonRetry(ctx context.Context, retryStore store.RunRetryStor
 	if err := retryStore.AbandonRunRetry(ctx, runID, reason); err != nil {
 		s.warnf("retry sweeper: abandon %s: %v", runID, err)
 	}
+	s.countRetry("abandoned")
 	s.auditSystem(tenantID, "retry-sweeper", "run.retry.abandoned", "run", runID, map[string]any{"reason": reason})
 	s.warnf("retry sweeper: run %s: %s", runID, reason)
 }
@@ -166,6 +174,7 @@ func (s *Server) reArmRetry(ctx context.Context, retryStore store.RunRetryStore,
 		s.abandonRetry(ctx, retryStore, ref.TenantID, ref.ID, fmt.Sprintf("auto-retry gave up after a failed resume: %v", cause))
 		return
 	}
+	s.countRetry("failed")
 	s.auditRetry(ref, "run.retry.failed", map[string]any{"error": cause.Error()})
 	s.warnf("retry sweeper: run %s: resume failed (%v) — retrying at %s", ref.ID, cause, at.Format(time.RFC3339))
 }
@@ -213,6 +222,14 @@ func retryLaunchCtx(ctx context.Context, ref mongostore.RetryDueRef) context.Con
 // run id, so "what happened to my Monday digest" is one query.
 func (s *Server) auditRetry(ref mongostore.RetryDueRef, action string, meta map[string]any) {
 	s.auditSystem(ref.TenantID, "retry-sweeper", action, "run", ref.ID, meta)
+}
+
+// countRetry records a sweeper outcome. Nil-safe: local mode has no
+// metrics registry.
+func (s *Server) countRetry(result string) {
+	if s.cfg.Metrics != nil {
+		s.cfg.Metrics.RunsRetryResumed.WithLabelValues(result).Inc()
+	}
 }
 
 func (s *Server) warnf(format string, args ...any) {

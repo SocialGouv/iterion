@@ -138,6 +138,7 @@ func (e *Evaluator) buildPlan(sub Subscription, ev Event) LaunchPlan {
 		RepoURL:         ev.Subject.URL,
 		RepoRef:         ev.Subject.Ref,
 		Event:           ev,
+		Retry:           sub.RetryPolicy(),
 	}
 }
 

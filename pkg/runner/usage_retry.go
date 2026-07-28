@@ -161,6 +161,9 @@ func (r *Runner) parkUsageLimitRetry(
 	if !ok {
 		return false, ""
 	}
+	if r.cfg.Metrics != nil {
+		r.cfg.Metrics.RunsUsageWindowBlocked.Inc()
+	}
 
 	scheduled, attempt, err := retryStore.ScheduleRunRetry(ctx, msg.RunID, at, "usage_window", string(runtime.ErrCodeUsageLimitBlocked), pol.MaxAttempts)
 	if err != nil {
@@ -181,6 +184,9 @@ func (r *Runner) parkUsageLimitRetry(
 		return true, "usage_limit_exhausted"
 	}
 
+	if r.cfg.Metrics != nil {
+		r.cfg.Metrics.RunsRetryScheduled.Inc()
+	}
 	if emitErr := r.emitRetryScheduled(ctx, msg.RunID, at, attempt, pol, source); emitErr != nil {
 		// Observational only — the durable intent is already committed.
 		logger.Warn("runner: run %s: could not emit run_retry_scheduled: %v", msg.RunID, emitErr)

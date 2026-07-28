@@ -284,7 +284,7 @@ each one overrides only the fields it actually sets:
 | priority | layer | where |
 |---|---|---|
 | 1 | per-run override | launch API / CLI |
-| 2 | launching surface | a cloud schedule row, a trigger subscription, a webhook config, a `schedules.yaml` entry |
+| 2 | launching surface | a cloud schedule row, a trigger subscription, a webhook config, a `schedules.yaml` entry — each exposes the same four `retry_*` fields |
 | 3 | the bot | `retry:` in the bundle's `manifest.yaml` |
 | 4 | machine default | `ITERION_RETRY_USAGE_WINDOW` / `_MAX_ATTEMPTS` / `_MAX_WAIT` / `_JITTER` |
 

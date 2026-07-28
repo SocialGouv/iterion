@@ -811,10 +811,19 @@ func buildScheduledLaunchSpec(sb cloudsched.ScheduledBot, path, source string, r
 	}
 }
 
-// realWebhookLaunchBot is the production launch path for an inbound
-// webhook: resolve the bot's source and submit it through the run
+// webhookLauncherFor builds the production launch path for one inbound
+// webhook config. It is a closure rather than a plain method because the
+// launch needs the config's retry policy, which the seam's positional
+// signature does not carry.
+func (s *Server) webhookLauncherFor(cfg webhooks.Config) func(context.Context, string, map[string]string, string, string, string, map[string]string, map[string]string) (string, error) {
+	return func(ctx context.Context, botID string, vars map[string]string, repoURL, repoRef, projectPath string, keyOverrides, secretOverrides map[string]string) (string, error) {
+		return s.launchWebhookBot(ctx, cfg, botID, vars, repoURL, repoRef, projectPath, keyOverrides, secretOverrides)
+	}
+}
+
+// launchWebhookBot resolves the bot's source and submits it through the run
 // service (which, in cloud mode, routes to the publisher).
-func (s *Server) realWebhookLaunchBot(ctx context.Context, botID string, vars map[string]string, repoURL, repoRef, projectPath string, keyOverrides, secretOverrides map[string]string) (string, error) {
+func (s *Server) launchWebhookBot(ctx context.Context, cfg webhooks.Config, botID string, vars map[string]string, repoURL, repoRef, projectPath string, keyOverrides, secretOverrides map[string]string) (string, error) {
 	if s.runs == nil {
 		return "", errors.New("run service unavailable")
 	}
@@ -832,6 +841,13 @@ func (s *Server) realWebhookLaunchBot(ctx context.Context, botID string, vars ma
 		BotID:           botID,
 		KeyOverrides:    keyOverrides,
 		SecretOverrides: secretOverrides,
+		// A webhook-launched run is often the one an author is waiting on,
+		// so the config's own horizon usually wants to be shorter than a
+		// nightly's — hence the layer.
+		RetryPolicy: s.resolveRunRetryPolicy(botID, retrypolicy.Layer{
+			Source: retrypolicy.SourceWebhook,
+			Policy: cfg.RetryPolicy(),
+		}),
 	})
 	if err != nil {
 		return "", err
