@@ -163,8 +163,20 @@ prompt security_audit_user:
   Changed dep files:
   {{input.dep_files}}
 
-  Bump diff (manifest/lockfile changes):
+  Bump diff:
   {{input.bump_summary}}
+
+  ### Scope caveats — read before you conclude
+  - `no_manifest = {{input.no_manifest}}`. When true, NO file matched a known
+    manifest signature, so the diff above is the PR's FULL change set rather
+    than an isolated manifest bump. Identify what actually moved (an image
+    digest, a pinned tool, an inline version) from the diff itself, and say in
+    `summary` that the scope was inferred. Never report a package-level read
+    you did not perform.
+  - `degraded = {{input.degraded}}` ({{input.degraded_reason}}). When true the
+    diff is NOT the true base..HEAD bump — the base could not be resolved, so
+    the range is approximate and may miss or over-include changes. Say so in
+    `summary`, and let that uncertainty count against `safe`.
 
   Run the auditors per the skills, then emit `audit_output`.
 
@@ -329,19 +341,32 @@ prompt escalate_instructions:
 ## ─── Schemas ────────────────────────────────────────────────────
 
 schema prepare_output:
-  ## is_empty: no diff vs base (defensive — nothing to do).
+  ## is_empty: no diff vs base AND the base resolved — the only case that
+  ## may end the run early. A degraded scope never reports empty.
   is_empty: bool
   ## dep_files: changed dependency manifests/lockfiles (the audit scope).
   dep_files: string[]
   changed_files: int
-  ## bump_summary: the manifest/lockfile diff text (sized for a prompt).
+  ## bump_summary: the diff text under audit (sized for a prompt). Never
+  ## empty when files changed — see no_manifest.
   bump_summary: string
   ## has_non_dep_changes: the PR also touches non-dependency files.
   has_non_dep_changes: bool
+  ## no_manifest: nothing matched a known manifest signature, so the scope
+  ## widened to the full diff. The audit is broader and less certain about
+  ## WHICH package moved — say so rather than claim a clean read.
+  no_manifest: bool
+  ## degraded: the diff is not the true base..HEAD bump (base unreachable).
+  degraded: bool
+  degraded_reason: string
 
 schema audit_input:
   bump_summary: string
   dep_files: string[]
+  ## Scope caveats the auditor must weigh before claiming a clean read.
+  no_manifest: bool
+  degraded: bool
+  degraded_reason: string
 
 schema audit_output:
   verdict: string [enum: "safe", "suspicious", "malicious"]
@@ -445,34 +470,93 @@ schema feedback_health_output:
 
 ## Deterministic bump detector (no LLM): diff the PR branch against the
 ## merge-base of base_ref + HEAD, list the changed files, and classify
-## which are dependency manifests/lockfiles. Output drives the audit
-## scope. On any ambiguity (base_ref absent) it reports is_empty=false so
-## the audit still runs — never wrongly skips.
+## which are dependency manifests/lockfiles. Output drives the audit scope.
+##
+## Two silent-failure modes this node is built to avoid, because each ends
+## a run that LOOKS successful:
+##  - a bump whose files match no pattern would reach the auditor with an
+##    EMPTY diff, and the verdict would be a façade. `no_manifest` widens
+##    the scope to the full diff instead of handing over nothing.
+##  - an unresolvable base (shallow clone, base ref not fetched) yields no
+##    changed files, which reads as "nothing to do" and ends the run mute.
+##    It degrades LOUDLY: is_empty stays false, `degraded` says why.
 tool prepare:
   command: `WS={{vars.workspace_dir}} BASE={{vars.base_ref}} python3 -c "
 import os, subprocess, json, re
 os.chdir(os.environ['WS'])
 base = os.environ.get('BASE', 'main') or 'main'
-mb = subprocess.run(['git','merge-base',base,'HEAD'], capture_output=True, text=True).stdout.strip()
-ref = mb if mb else base
-names = subprocess.run(['git','diff','--name-only',ref], capture_output=True, text=True).stdout
+
+def git(args):
+    p = subprocess.run(['git'] + args, capture_output=True, text=True)
+    return p.returncode, p.stdout
+
+degraded = ''
+rc, mb = git(['merge-base', base, 'HEAD'])
+mb = mb.strip()
+if rc == 0 and mb:
+    ref = mb
+elif git(['rev-parse', '--verify', '--quiet', base])[0] == 0:
+    ref = base
+elif git(['rev-parse', '--verify', '--quiet', 'HEAD~1'])[0] == 0:
+    # Base unreachable (shallow clone / base ref not fetched): fall back to
+    # the branch tip's own parent so the audit still sees a real diff.
+    ref, degraded = 'HEAD~1', 'base ' + base + ' is unreachable; scoped to HEAD~1..HEAD instead'
+else:
+    ref, degraded = '', 'base ' + base + ' is unreachable and HEAD has no parent; scoped to HEAD itself'
+
+def diff(paths):
+    args = ['diff', ref, '--'] + paths if ref else ['show', '--format=', 'HEAD', '--'] + paths
+    return git(args)[1]
+
+if ref:
+    rc, names = git(['diff', '--name-only', ref])
+    if rc != 0:
+        degraded, names = 'git diff against ' + ref + ' failed', ''
+else:
+    names = git(['show', '--name-only', '--format=', 'HEAD'])[1]
 files = [f for f in names.splitlines() if f.strip()]
-# Dependency manifest / lockfile signatures across ecosystems.
+
+# Dependency manifest / lockfile signatures across ecosystems. Container
+# images, pinned toolchains, task runners and CI action pins are dependencies
+# too: Renovate updates all of them, and a bump there is exactly as able to
+# pull in hostile code as a package bump.
 pats = [r'(^|/)package\.json$', r'(^|/)(package-lock\.json|npm-shrinkwrap\.json|yarn\.lock|pnpm-lock\.yaml)$',
         r'(^|/)go\.(mod|sum)$', r'(^|/)(requirements[^/]*\.txt|Pipfile(\.lock)?|poetry\.lock|pyproject\.toml|uv\.lock)$',
         r'(^|/)(Gemfile(\.lock)?)$', r'(^|/)(composer\.(json|lock))$', r'(^|/)Cargo\.(toml|lock)$',
         r'(^|/)(pom\.xml|build\.gradle(\.kts)?|gradle\.lockfile)$', r'(^|/)mix\.(exs|lock)$',
-        r'(^|/)Chart\.(yaml|lock)$', r'(^|/)(values[^/]*\.ya?ml)$', r'(^|/)\.github/workflows/.+\.ya?ml$']
+        r'(^|/)Chart\.(yaml|lock)$', r'(^|/)(values[^/]*\.ya?ml)$', r'(^|/)\.github/workflows/.+\.ya?ml$',
+        r'(^|/)(Dockerfile|Containerfile)[^/]*$', r'(^|/)devbox\.(json|lock)$',
+        r'(^|/)Taskfile[^/]*\.ya?ml$', r'(^|/)\.tool-versions$', r'(^|/)flake\.(nix|lock)$',
+        r'(^|/)action\.ya?ml$', r'(^|/)\.pre-commit-config\.ya?ml$', r'(^|/)renovate\.json5?$']
 rx = [re.compile(p) for p in pats]
 dep = [f for f in files if any(r.search(f) for r in rx)]
-non = [f for f in files if f not in dep]
-# Bump diff text, capped so it fits a prompt.
+
+if not dep:
+    # Renovate custom managers pin versions inline on ANY filename, opted in
+    # with a '# renovate:' annotation on the preceding line. Catch those by
+    # content so a repo's own convention doesn't fall through unaudited.
+    for f in files:
+        try:
+            if os.path.getsize(f) <= 262144:
+                with open(f, errors='replace') as fh:
+                    if 'renovate:' in fh.read():
+                        dep.append(f)
+        except OSError:
+            pass
+
+no_manifest = not dep
+# Never hand the auditor an empty diff: with nothing recognised, the WHOLE
+# change set is the audit scope.
+scope = dep if dep else files
 summary = ''
-if dep:
-    d = subprocess.run(['git','diff',ref,'--']+dep, capture_output=True, text=True).stdout
+if scope:
+    d = diff(scope)
     summary = d[:18000] + ('\n…(truncated)…' if len(d) > 18000 else '')
-print(json.dumps({'is_empty': len(files)==0, 'dep_files': dep, 'changed_files': len(files),
-                  'bump_summary': summary, 'has_non_dep_changes': len(non)>0}))
+non = [f for f in files if f not in dep]
+print(json.dumps({'is_empty': len(files)==0 and not degraded, 'dep_files': dep,
+                  'changed_files': len(files), 'bump_summary': summary,
+                  'has_non_dep_changes': len(non)>0, 'no_manifest': no_manifest,
+                  'degraded': bool(degraded), 'degraded_reason': degraded}))
 "`
   output: prepare_output
 
@@ -792,7 +876,10 @@ workflow dep_update_guard:
   prepare -> done when is_empty
   prepare -> security_audit when not is_empty with {
     bump_summary: "{{outputs.prepare.bump_summary}}",
-    dep_files: "{{outputs.prepare.dep_files}}"
+    dep_files: "{{outputs.prepare.dep_files}}",
+    no_manifest: "{{outputs.prepare.no_manifest}}",
+    degraded: "{{outputs.prepare.degraded}}",
+    degraded_reason: "{{outputs.prepare.degraded_reason}}"
   }
 
   ## Deterministic verdict gate.
