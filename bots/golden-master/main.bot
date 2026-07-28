@@ -1375,6 +1375,11 @@ tool emit_runner:
         # pour que le runner saute ses tests bloquants SANS RIEN DIRE et sorte
         # vert. Le harnais refuse déjà de démarrer sans rules.py ; ses tests
         # portent la même exigence.
+        # Sans cette ligne, un python3 absent se presente comme « les tests du
+        # normaliseur ECHOUENT » : un symptome qui accuse le filet alors que
+        # c'est l'environnement qui manque. Vu en vrai sur une image de CI dont
+        # personne n'avait verifie qu'elle portait un interpreteur.
+        'if ! command -v python3 >/dev/null 2>&1; then echo "python3 est introuvable. TOUT le filet est en python — harnais, regles de canonicalisation, tests. Le declarer dans la toolchain du depot cible." >&2; exit 1; fi',
         'CANON_TESTS="$GM_WORKSPACE/$GM_DIR/canon/test_rules.py"',
         'if [ ! -f "$CANON_TESTS" ]; then echo "canon: $CANON_TESTS est ABSENT — le filet embarque un normaliseur que rien ne vérifie ; le runner refuse plutôt que de sauter ses propres tests en silence" >&2; exit 1; fi',
         'python3 "$CANON_TESTS" >/dev/null 2>&1 || { echo "canon: les tests du normaliseur ÉCHOUENT — le filet ne peut pas être cru tant qu ils ne passent pas" >&2; python3 "$CANON_TESTS" >&2; exit 1; }',
