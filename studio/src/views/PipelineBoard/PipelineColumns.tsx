@@ -15,7 +15,7 @@ import {
   markPipelineTaskReady,
   resetPipelineTask,
 } from "@/api/pipelineBoards";
-import { cancelRun, pauseRun, resumeRun } from "@/api/runs";
+import { cancelRun, pauseRun } from "@/api/runs";
 import type { UnifiedStatus } from "@/components/Runs/runStatusClasses";
 import {
   Badge,
@@ -65,6 +65,7 @@ import { QueueBanner } from "./QueueBanner";
 import { faceTags } from "./cardTags";
 import { formatChildrenSummary } from "./planGroups";
 import { hasOpenDeps } from "./queueSummary";
+import { resumePipelineRun } from "./resumePipelineRun";
 
 // Re-export capabilities for existing tests.
 export {
@@ -242,7 +243,17 @@ export function PipelineColumns({
   const actions: PipelineCardActions = {
     // Pause / Resume are reversible — no confirm friction.
     onPause: (card) => void runAction(() => pauseRun(card.run_id as string)),
-    onResume: (card) => void runAction(() => resumeRun(card.run_id as string, {})),
+    onResume: (card) =>
+      void runAction(() =>
+        resumePipelineRun(card.run_id as string, () =>
+          confirm({
+            title: "Workflow changed since this run started",
+            message:
+              "Resume from the saved checkpoint using the current workflow source?",
+            confirmLabel: "Resume with updated workflow",
+          }),
+        ),
+      ),
     onStop: async (card) => {
       if (
         !(await confirm({

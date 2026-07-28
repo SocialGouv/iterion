@@ -336,10 +336,8 @@ func (s *Service) launchDetached(parent context.Context, runID string, spec Laun
 
 // resumeDetached is the Resume counterpart to launchDetached.
 func (s *Service) resumeDetached(parent context.Context, spec ResumeSpec) (*LaunchResult, error) {
-	if _, _, err := CompileWorkflowWithHash(spec.FilePath); err != nil {
-		return nil, err
-	}
-
+	// Service.Resume already compiled the workflow and synchronously checked
+	// its hash before dispatching to this asynchronous subprocess path.
 	s.prepareRunLogNoFile(spec.RunID)
 
 	answers, convErr := resumeAnswersToStrings(spec.Answers)

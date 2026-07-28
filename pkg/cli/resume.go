@@ -135,7 +135,7 @@ func RunResumeWithFile(ctx context.Context, iterFile string, opts ResumeOptions,
 	switch r.Status {
 	case store.RunStatusPausedWaitingHuman:
 		// OK — requires answers
-	case store.RunStatusFailedResumable, store.RunStatusCancelled:
+	case store.RunStatusFailedResumable, store.RunStatusCancelled, store.RunStatusPausedOperator:
 		resumingFromFailure = true
 	case store.RunStatusRunning:
 		// Status=running on a run whose engine actually died is the
@@ -259,7 +259,10 @@ func RunResumeWithFile(ctx context.Context, iterFile string, opts ResumeOptions,
 	if err != nil {
 		return fmt.Errorf("cannot reload run: %w", err)
 	}
-	if r.Status != store.RunStatusPausedWaitingHuman && r.Status != store.RunStatusFailedResumable && r.Status != store.RunStatusCancelled {
+	if r.Status != store.RunStatusPausedWaitingHuman &&
+		r.Status != store.RunStatusFailedResumable &&
+		r.Status != store.RunStatusCancelled &&
+		r.Status != store.RunStatusPausedOperator {
 		return fmt.Errorf("run %q can no longer be resumed (status: %s)", opts.RunID, r.Status)
 	}
 
