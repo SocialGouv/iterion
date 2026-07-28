@@ -33,6 +33,37 @@ The dependency order belongs in the contract's `depends_on`. It is a decision,
 not something re-derivable from the tree, and a lot marked `blocked` is stating
 that decision rather than recording a failure.
 
+## Where a lot may end: only where the system is still observable
+
+A lot must be verifiable **at its own exit**. That is a stronger constraint than
+"bounded", and it is the one most easily got wrong, because a boundary can look
+perfectly clean on paper and fall exactly where nothing can be checked.
+
+Observed, on the second lot ever run by this bot. The intent stopped at raising
+the framework line and left the configuration changes that raise *requires* to a
+following lot. Both exit-gate commands exited 0. Not one reference moved. And
+the application did not start — so the behavioural net could say nothing at all,
+because it could not even reach it.
+
+That is not a lot that failed. It is a lot that **cannot be judged**, followed by
+another that would inherit a state nobody can vouch for. Two unverifiable steps
+are worse than one verifiable one, however tidy the split looks.
+
+The rule:
+
+> A change and the changes it **mechanically imposes** are one transition. Split
+> them and you put a boundary where the system is dark.
+
+The test to apply before writing a lot: *if this lot succeeds exactly as
+described, can the net still observe the application?* If the honest answer is
+no, the lot is drawn wrong — widen it to the next point where the system is
+alive, or move the boundary earlier.
+
+Note what this does **not** license. Widening a lot to absorb an unrelated
+failure is still overflow; the criterion is mechanical necessity, not
+convenience. "The upgrade demands this property or it will not boot" belongs
+inside. "While we were there we bumped nine libraries" does not.
+
 ## Staying inside the lot
 
 The commonest way a lot goes wrong is not failing. It is **succeeding at more
