@@ -4,6 +4,78 @@ Carries a repository through a programme of modernisation lots — steps whose
 entry and exit are both deterministic gates — against a behavioural oracle it
 is forbidden to rewrite. See [bots/modernize/](../../bots/modernize/).
 
+## 2026-07-28 — second lot: a perfectly green build that does not run (run 019fa826)
+
+- Status: **the result the whole approach exists to produce.** The lot is
+  blocked, and the finding is worth more than a completed lot would have been.
+- Versions: bot v0.1.0 + the declared-block stop · iterion built from HEAD ·
+  `only_lot=L1b`, `max_passes=4`.
+- Campaign: **27 min, 65 339 tokens, $1.63**. Gate: 9 seconds.
+
+### The verdict
+
+```
+gate_passed     true     both exit_gate commands exited 0
+refs_untouched  true     nothing moved under the oracle's references
+oracle_passed   FALSE    the application no longer starts
+lot_blocked     true     declared, with the cause committed
+stop            true     the run ended instead of looping
+```
+
+The lot reached the programme's target build-tool version. The build is green,
+the packaging task is green, there is not one warning to read. **Reported
+without a behavioural net, this is a milestone**: target tooling reached,
+framework plugin raised, zero regressions detected — because nothing looked.
+
+The application does not start. Two independent causes, both in application
+configuration: a bean-definition override that the older framework line
+tolerated silently and the newer one refuses by default, and a JDBC driver
+class the newer line derives from the connection URL which does not exist in
+the pinned connector version.
+
+Neither is exotic. Both are the ordinary consequence of a framework line moving,
+and both are invisible to every check a build performs. This is the failure mode
+that surfaces at deploy time on a good day, and in production on a bad one.
+
+The gate took **nine seconds** to establish it, because the application died on
+startup and the net could not even begin. The cheapest possible discovery.
+
+### What the campaign did right, and refused to do
+
+It **refused to fix them.** Both corrections require touching application
+configuration, which the lot's intent excludes. It marked the lot blocked with
+the cause written and committed, and the run stopped — the declared-block stop
+added earlier the same day doing its job on its first real occasion.
+
+It **established the minimum by measurement**, not by assumption: a table of
+plugin versions actually run against the new build tool, showing which two
+fail on removed APIs, which is the first that passes, and which later ones also
+pass and were therefore *not* taken. "The lowest line that works" is a claim
+that can be checked, unlike "the recommended version".
+
+It **declared every version that moved** — 105 resolved dependencies, all
+dictated by the platform BOM, none chosen. One artefact needed an explicit
+version because the newer BOM stopped managing it; the report states the
+version is unchanged from what the previous BOM resolved, and that was verified
+independently afterwards.
+
+It caught that regenerating the build wrapper **overwrites a locale block** a
+previous lot had added, and re-applied it. Without that, resource processing
+breaks on two files whose names carry decomposed accents — a trap that cost an
+hour of diagnosis the first time a human hit it.
+
+### Lessons
+
+- **A green build is not a green lot, and this run is the proof.** Every
+  argument for putting a behavioural net underneath a modernisation rests on
+  this being real rather than theoretical. It cost $1.63 to make it real.
+- A blocked lot with a committed cause is a deliverable. The next lot writes
+  itself from it: the two failures are application-configuration changes, which
+  is a different intent and therefore a different lot.
+- Nine-second gates are suspicious and worth reading: here it was honest (the
+  application died immediately), but the same shape would appear if the gate
+  never reached the application at all.
+
 ## 2026-07-28 — first lot on a legacy Java/Spring target: gate green, lot blocked with cause, and a defect found in OUR net (run 019fa7b5)
 
 - Status: **the bot behaved exactly as designed, including by refusing.** The
