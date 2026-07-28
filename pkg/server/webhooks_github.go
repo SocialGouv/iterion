@@ -138,7 +138,10 @@ func (s *Server) handlePRForgeReview(ctx context.Context, w http.ResponseWriter,
 	if !reviewable ||
 		!webhooks.MatchEvent(cfg.EventAllowlist, "pull_request", "pull_request") ||
 		!webhooks.MatchProject(cfg.ProjectAllowlist, p.ProjectPath) ||
-		!webhooks.MatchAuthor(cfg.AuthorAllowlist, p.SenderLogin) {
+		// The PR's AUTHOR, not the pusher: on a synchronize the sender is
+		// whoever pushed, so filtering on it would drop a dependency bot's PR
+		// the moment a human pushed a fix onto it.
+		!webhooks.MatchAuthor(cfg.AuthorAllowlist, p.Author()) {
 		s.recordTerminalWebhookDelivery(ctx, cfg, meta, webhooks.StatusFiltered, payloadHash, srcIP, "")
 		writeJSONStatus(w, http.StatusOK, map[string]string{"status": webhooks.StatusFiltered})
 		return
@@ -148,6 +151,9 @@ func (s *Server) handlePRForgeReview(ctx context.Context, w http.ResponseWriter,
 	// Featurly… through the tenant's forge integration) already converged inside
 	// its own loop — auto-reviewing it wastes budget and adds noise. Filter it
 	// (a human can still run `/revi` on it manually).
+	// Deliberately the SENDER, not the PR author: the point is to skip a PR
+	// our own loop produced and already converged, but once a human pushes
+	// onto it there is human work to review again.
 	if s.isIterionForgeBotAuthor(ctx, cfg, p.SenderLogin) {
 		s.recordTerminalWebhookDelivery(ctx, cfg, meta, webhooks.StatusFiltered, payloadHash, srcIP,
 			"PR authored by iterion's forge bot — auto-review skipped (self-produced; run /revi to force a review)")
@@ -161,7 +167,7 @@ func (s *Server) handlePRForgeReview(ctx context.Context, w http.ResponseWriter,
 	// out to every bot claiming the pull_request event whose OWN author filter
 	// admits this author, so a dependency guard and a reviewer share the repo
 	// and each takes its own PRs.
-	rules := s.resolveForgeEventBots(cfg, bundle.ForgeEventPullRequest, p.SenderLogin)
+	rules := s.resolveForgeEventBots(cfg, bundle.ForgeEventPullRequest, p.Author())
 	if len(rules) == 0 {
 		s.recordTerminalWebhookDelivery(ctx, cfg, meta, webhooks.StatusFiltered, payloadHash, srcIP, "no enabled bot claims this PR (event/author routing)")
 		writeJSONStatus(w, http.StatusOK, map[string]string{"status": webhooks.StatusFiltered})
@@ -174,7 +180,7 @@ func (s *Server) handlePRForgeReview(ctx context.Context, w http.ResponseWriter,
 
 	scopeNotes := strings.TrimSpace(p.Title + "\n\n" + p.Description)
 	targets := forgePREventTargets(cfg, rules, idemBase, p.PRURL, p.TargetBranch, scopeNotes, p.CloneURL, p.SourceBranch,
-		map[string]string{"pr_author": p.SenderLogin, "source_branch": p.SourceBranch})
+		map[string]string{"pr_author": p.Author(), "source_branch": p.SourceBranch})
 
 	s.insertAndLaunchWebhookMulti(ctx, w, r, cfg, meta, targets, payloadHash, srcIP)
 }

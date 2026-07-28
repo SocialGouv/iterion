@@ -25,6 +25,13 @@ type Parsed struct {
 	HeadSHA      string
 	State        string
 	SenderLogin  string
+	// AuthorLogin is who OPENED the pull request. On `opened` it equals
+	// SenderLogin; on a push to an existing PR the sender is whoever pushed,
+	// which is not whose PR it is. Author-based routing (which bot owns this
+	// PR) must read THIS — otherwise a human pushing a fix to a dependency
+	// bot's PR hands the delivery to the wrong bot. Empty when the payload
+	// omits it; callers fall back to SenderLogin.
+	AuthorLogin string
 	// HeadRepoFullName is the "owner/repo" the PR's head branch lives in. It
 	// differs from ProjectPath (the base repo) for a fork PR; empty when the
 	// payload omits head.repo. Read by IsCrossRepo for the fork guard.
@@ -86,10 +93,21 @@ func ParsePullRequest(body []byte) (Parsed, error) {
 		HeadSHA:          pr.Head.SHA,
 		State:            pr.State,
 		SenderLogin:      e.Sender.Login,
+		AuthorLogin:      pr.User.Login,
 		HeadRepoFullName: pr.Head.Repo.FullName,
 		DequeueReason:    e.Reason,
 		Draft:            pr.Draft,
 	}, nil
+}
+
+// Author returns the login author-based routing must use: the PR's own
+// author, falling back to the event sender when a payload omits it (older
+// Forgejo/Gitea versions, hand-crafted redeliveries).
+func (p Parsed) Author() string {
+	if p.AuthorLogin != "" {
+		return p.AuthorLogin
+	}
+	return p.SenderLogin
 }
 
 // IsCrossRepo reports whether the PR's head branch lives in a DIFFERENT repo

@@ -24,8 +24,23 @@ const ghRenovatePR = `{
   "repository": {"id": 42, "full_name": "acme/widgets", "clone_url": "https://github.com/acme/widgets.git"},
   "pull_request": {"number": 8, "title": "chore(deps): bump lib", "body": "renovate",
     "html_url": "https://github.com/acme/widgets/pull/8", "state": "open",
-    "head": {"ref": "renovate/lib-1.x", "sha": "def456"}, "base": {"ref": "main"}},
+    "head": {"ref": "renovate/lib-1.x", "sha": "def456"}, "base": {"ref": "main"},
+    "user": {"login": "socialgouv-renovate[bot]"}},
   "sender": {"login": "socialgouv-renovate[bot]"}
+}`
+
+// A human pushing a fix onto the dependency bot's PR: the SENDER is the human,
+// the PR is still the bot's. Routing on the sender would hand the delivery to
+// the reviewer and let it fill the shared gate context on a dependency PR.
+const ghRenovatePRHumanPush = `{
+  "action": "synchronize",
+  "number": 8,
+  "repository": {"id": 42, "full_name": "acme/widgets", "clone_url": "https://github.com/acme/widgets.git"},
+  "pull_request": {"number": 8, "title": "chore(deps): bump lib", "body": "renovate",
+    "html_url": "https://github.com/acme/widgets/pull/8", "state": "open",
+    "head": {"ref": "renovate/lib-1.x", "sha": "fff999"}, "base": {"ref": "main"},
+    "user": {"login": "socialgouv-renovate[bot]"}},
+  "sender": {"login": "alice"}
 }`
 
 // fanoutConfig is ghConfig plus the two-bot routing table the orchestrator
@@ -91,6 +106,20 @@ func TestFanOut_RenovatePRLaunchesOnlyTheGuard(t *testing.T) {
 	}
 	if bots := botsOf(*got); len(bots) != 1 || bots[0] != "dep-update-guard" {
 		t.Fatalf("renovate PR must launch only the guard, got %v", bots)
+	}
+}
+
+func TestFanOut_APushByAHumanKeepsTheBotsPR(t *testing.T) {
+	s := newWebhookTestServer(t)
+	got := fanoutLauncher(s)
+	cfg, pt := fanoutConfig(t, s)
+	cfg.ReviewOnSync = true // a synchronize only reviews when this is on
+
+	w := httptest.NewRecorder()
+	s.handleGitHubWebhook(w, ghReq(ghCtx(cfg), ghRenovatePRHumanPush, prforge.EventHeaderPullRequest, pt))
+
+	if bots := botsOf(*got); len(bots) != 1 || bots[0] != "dep-update-guard" {
+		t.Fatalf("the PR belongs to the dependency bot whoever pushed to it, got %v", bots)
 	}
 }
 

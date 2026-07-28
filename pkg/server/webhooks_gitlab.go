@@ -110,6 +110,12 @@ func (s *Server) handleGitLabMergeRequestEvent(ctx context.Context, w http.Respo
 
 	// Same per-bot fan-out as the GitHub PR lane — this MR lane is a separate
 	// function, so parity is not free and must be kept explicitly.
+	//
+	// Routes on the event actor rather than the MR's author, unlike GitHub:
+	// GitLab's merge_request payload carries only `author_id`, so resolving
+	// the author's username would need an extra API call on the hot path. The
+	// difference shows only on a re-review triggered by someone other than
+	// the MR author, which needs ReviewOnSync to be on in the first place.
 	rules := s.resolveForgeEventBots(cfg, bundle.ForgeEventPullRequest, p.SenderUsername)
 	if len(rules) == 0 {
 		s.recordTerminalWebhookDelivery(ctx, cfg, meta, webhooks.StatusFiltered, payloadHash, srcIP, "no enabled bot claims this MR (event/author routing)")
