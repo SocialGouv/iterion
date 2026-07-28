@@ -399,4 +399,4 @@ The watcher evaluates on turn boundaries/monitor matches and injects node-scoped
 
 `iterion bench asymptote` accepts primary `--runs`, optional `--variant-runs`, a required `--judge-node`, judge field/threshold, loop selector, labels, title, per-run detail, and output path. See [asymptote bench](asymptote-bench.md).
 
-`iterion completion <bash|zsh|fish|powershell>` emits shell completion. `iterion version` prints build version and commit.
+`iterion completion <bash|zsh|fish|powershell>` emits shell completion. `iterion version` prints build version and commit; `--commit` prints only the SHA, truncated to the same 12 characters the default output embeds, and exits non-zero when the build carries none (no `-ldflags` injection, no VCS build info, or the Dockerfile's `unknown` default) rather than handing a script an empty or bogus value.
