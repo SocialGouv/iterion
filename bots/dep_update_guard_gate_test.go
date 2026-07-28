@@ -48,6 +48,14 @@ func TestDepUpdateGuardGateVerdict(t *testing.T) {
 		var got published
 		var seen bool
 		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			// The server registers exactly ONE path, and it is the only one
+			// exempt from the auth middleware. A stub answering any path let a
+			// bot post to a URL that production rejects with 401.
+			if r.URL.Path != "/api/v1/forge/publish-review" {
+				t.Errorf("published to %q, want the endpoint path — anything else hits the auth middleware", r.URL.Path)
+				w.WriteHeader(404)
+				return
+			}
 			seen = true
 			if tok := r.Header.Get("X-Iterion-Run"); tok != "run-token" {
 				t.Errorf("publish must authenticate with the run grant, got %q", tok)
@@ -78,7 +86,7 @@ func TestDepUpdateGuardGateVerdict(t *testing.T) {
 			"{{input.escalation}}":         `""`,
 			"{{input.commit_summary}}":     `""`,
 			"{{secrets.forge_token.path}}": `""`,
-			"{{vars.forge_publish_url}}":   `"` + srv.URL + `"`,
+			"{{vars.forge_publish_url}}":   `"` + srv.URL + `/api/v1/forge/publish-review"`,
 			"{{vars.forge_publish_token}}": `"run-token"`,
 			"{{vars.gate_enabled}}":        boolLit(gateEnabled),
 			"{{vars.gate_context}}":        `"` + gateContext + `"`,
