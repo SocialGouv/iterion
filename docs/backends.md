@@ -567,8 +567,11 @@ extension supplies the MCP half; the rest stands. Consequences for a
   tool it advertises.
 - **`ask_user` DOES work** (from v3.7.6, RPC transport only): the agent can
   put a question to the operator, which pauses the run and resumes with their
-  answer. Async questions (`ask_user_async` / `await_answers`, ADR-081) do not
-  yet.
+  answer.
+- **Async questions DO work** (`interaction: async`, ADR-081 — from v3.7.6,
+  RPC transport only): `ask_user_async` posts without stopping and
+  `await_answers` is the sync point, with the same semantics as claw and
+  claude_code. Answers are delivered mid-run through pi's native `steer`.
 - **workflow `mcp_server:` blocks DO work** (from v3.7.6, RPC transport
   only), on all three transports: `http` (streamable HTTP), `sse` (the
   legacy binding) and `stdio` (a child process). The extension carries its

@@ -14,6 +14,9 @@ function permissionMode(raw) {
       return "off";
   }
 }
+function interactionMode(raw) {
+  return raw === "async" || raw === "sync" ? raw : "off";
+}
 function positiveInt(raw, fallback) {
   const n = raw === void 0 ? Number.NaN : Number.parseInt(raw, 10);
   return Number.isFinite(n) && n > 0 ? n : fallback;
@@ -49,7 +52,7 @@ function loadConfig() {
     nodeId: env("ITERION_PI_NODE_ID"),
     iteration: Number.isFinite(iteration) ? iteration : void 0,
     permission: permissionMode(env("ITERION_PI_PERMISSION")),
-    interaction: env("ITERION_PI_INTERACTION") === "sync" ? "sync" : "off",
+    interaction: interactionMode(env("ITERION_PI_INTERACTION")),
     mcpServers: parseMcpServers(env("ITERION_PI_MCP_SERVERS")),
     mcpConnectTimeoutMs: positiveInt(env("ITERION_PI_MCP_CONNECT_TIMEOUT_MS"), 1e4),
     ctrlEnabled: env("ITERION_PI_CTRL") !== "off"
@@ -207,6 +210,61 @@ function installAskUser(pi, cfg, ctrl) {
         ],
         details: void 0
       };
+    }
+  });
+  if (cfg.interaction === "async") installAsyncQuestions(pi, ctrl);
+}
+function text(body, isError = false) {
+  return { content: [{ type: "text", text: body }], details: void 0, isError };
+}
+function installAsyncQuestions(pi, ctrl) {
+  pi.registerTool({
+    name: "ask_user_async",
+    label: "Ask the operator (non-blocking)",
+    promptSnippet: "ask_user_async \u2014 post a question to the operator WITHOUT stopping; answers arrive later",
+    description: "Post a question to the human operator and CONTINUE WORKING immediately. The answer arrives later in your conversation, tagged with the question id. Front-load these: ask as early as you can, so the operator has time to reply while you work on everything that does not depend on it. For a decision that must block right now, use ask_user instead.",
+    parameters: ASK_USER_PARAMS,
+    async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
+      const question = typeof params.question === "string" ? params.question : "";
+      if (question.trim() === "") return text("ask_user_async needs a non-empty question.", true);
+      const ack = await ctrl.request(
+        "ask_user_async",
+        { question, options: params.options, allow_free_text: params.allow_free_text },
+        ctx
+      );
+      if (!ack?.interactionId) {
+        return text(
+          "The question could not be posted (iterion did not accept it). Nobody is going to answer it, and await_answers will not produce it. Proceed using your own judgement and say what you assumed.",
+          true
+        );
+      }
+      return text(`[${ack.interactionId}] ${ack.message ?? "Question posted."}`);
+    }
+  });
+  pi.registerTool({
+    name: "await_answers",
+    label: "Wait for the operator's answers",
+    promptSnippet: "await_answers \u2014 the sync point for questions posted with ask_user_async",
+    description: "The sync point for questions posted with ask_user_async. Call it ONLY when you truly cannot proceed without the pending answers. If everything you asked is already answered it returns the answers immediately and costs nothing; otherwise the run PAUSES until the operator replies.",
+    parameters: Type.Object({}),
+    async execute(_toolCallId, _params, _signal, _onUpdate, ctx) {
+      const result = await ctrl.request("await_answers", {}, ctx);
+      if (!result) {
+        return text(
+          "iterion did not answer the sync request, so the state of your posted questions is unknown. Do not call this again \u2014 continue with what you have and say which answers you are missing.",
+          true
+        );
+      }
+      if (result.escalated) {
+        const n = result.pending?.length ?? 0;
+        return text(
+          `The run is now PAUSED waiting on ${n} unanswered question(s). This turn ends here and the conversation resumes with the operator's replies. Do not continue.`
+        );
+      }
+      return text(
+        result.answers && result.answers.trim() !== "" ? `${result.answers}
+(Nothing was pending \u2014 no pause was needed. Use these answers and continue.)` : "Nothing was pending and no question has been answered yet. Continue."
+      );
     }
   });
 }
@@ -418,9 +476,9 @@ var HttpTransport = class {
         await this.consumeStream(res.body);
         return;
       }
-      const text = await res.text();
-      if (text.trim() === "") return;
-      this.dispatch(JSON.parse(text));
+      const text2 = await res.text();
+      if (text2.trim() === "") return;
+      this.dispatch(JSON.parse(text2));
     } finally {
       clearTimeout(timer);
       this.inflight.delete(controller);
@@ -640,8 +698,8 @@ function renderResult(result) {
   for (const c of result.content ?? []) {
     if (typeof c.text === "string") parts.push(c.text);
   }
-  const text = parts.length > 0 ? parts.join("\n") : JSON.stringify(result);
-  return { text, isError: result.isError === true };
+  const text2 = parts.length > 0 ? parts.join("\n") : JSON.stringify(result);
+  return { text: text2, isError: result.isError === true };
 }
 function makeTransport(server, log) {
   switch (server.transport) {
@@ -693,8 +751,8 @@ async function installMcpServer(pi, server, log = () => {
         async execute(_toolCallId, params) {
           try {
             const result = await client.callTool(tool.name, params ?? {});
-            const { text, isError } = renderResult(result);
-            return { content: [{ type: "text", text }], details: void 0, isError };
+            const { text: text2, isError } = renderResult(result);
+            return { content: [{ type: "text", text: text2 }], details: void 0, isError };
           } catch (err) {
             const msg = err instanceof Error ? err.message : String(err);
             return {

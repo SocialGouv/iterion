@@ -107,4 +107,101 @@ export function installAskUser(pi: ExtensionAPI, cfg: IterionConfig, ctrl: Ctrl)
 			};
 		},
 	});
+
+	if (cfg.interaction === "async") installAsyncQuestions(pi, ctrl);
+}
+
+/** Wraps a plain string as a tool result. */
+function text(body: string, isError = false) {
+	return { content: [{ type: "text" as const, text: body }], details: undefined, isError };
+}
+
+/**
+ * The non-blocking question pair (ADR-081).
+ *
+ * `ask_user` costs a full pause: the run stops, the operator answers, the run
+ * resumes. That is the right price for a decision that must block, and far too
+ * high for a question the agent could have asked an hour before it mattered.
+ * The pair separates the two — post early, keep working, sync only when the
+ * answer is genuinely on the critical path.
+ *
+ * Neither tool decides anything: both report to iterion, which owns the
+ * interaction store and is the only side that can suspend a run. The wording
+ * the model reads back also comes from iterion (`AsyncQuestionPostedText`), so
+ * an agent sees the same instructions on pi as on claude_code and claw.
+ */
+function installAsyncQuestions(pi: ExtensionAPI, ctrl: Ctrl): void {
+	pi.registerTool({
+		name: "ask_user_async",
+		label: "Ask the operator (non-blocking)",
+		promptSnippet: "ask_user_async — post a question to the operator WITHOUT stopping; answers arrive later",
+		description:
+			"Post a question to the human operator and CONTINUE WORKING immediately. " +
+			"The answer arrives later in your conversation, tagged with the question id. " +
+			"Front-load these: ask as early as you can, so the operator has time to reply " +
+			"while you work on everything that does not depend on it. " +
+			"For a decision that must block right now, use ask_user instead.",
+		parameters: ASK_USER_PARAMS,
+		async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
+			const question = typeof params.question === "string" ? params.question : "";
+			if (question.trim() === "") return text("ask_user_async needs a non-empty question.", true);
+
+			const ack = await ctrl.request<{ interactionId?: string; message?: string }>(
+				"ask_user_async",
+				{ question, options: params.options, allow_free_text: params.allow_free_text },
+				ctx,
+			);
+			if (!ack?.interactionId) {
+				// Say what actually happened. An agent told only "error" posts
+				// the question again; one told nobody will answer decides.
+				return text(
+					"The question could not be posted (iterion did not accept it). Nobody is going to " +
+						"answer it, and await_answers will not produce it. Proceed using your own " +
+						"judgement and say what you assumed.",
+					true,
+				);
+			}
+			return text(`[${ack.interactionId}] ${ack.message ?? "Question posted."}`);
+		},
+	});
+
+	pi.registerTool({
+		name: "await_answers",
+		label: "Wait for the operator's answers",
+		promptSnippet: "await_answers — the sync point for questions posted with ask_user_async",
+		description:
+			"The sync point for questions posted with ask_user_async. Call it ONLY when you " +
+			"truly cannot proceed without the pending answers. If everything you asked is " +
+			"already answered it returns the answers immediately and costs nothing; " +
+			"otherwise the run PAUSES until the operator replies.",
+		parameters: Type.Object({}),
+		async execute(_toolCallId, _params, _signal, _onUpdate, ctx) {
+			const result = await ctrl.request<{
+				answers?: string;
+				escalated?: boolean;
+				pending?: { interactionId?: string; question?: string }[];
+			}>("await_answers", {}, ctx);
+
+			if (!result) {
+				return text(
+					"iterion did not answer the sync request, so the state of your posted questions " +
+						"is unknown. Do not call this again — continue with what you have and say " +
+						"which answers you are missing.",
+					true,
+				);
+			}
+			if (result.escalated) {
+				const n = result.pending?.length ?? 0;
+				return text(
+					`The run is now PAUSED waiting on ${n} unanswered question(s). This turn ends ` +
+						"here and the conversation resumes with the operator's replies. Do not continue.",
+				);
+			}
+			return text(
+				result.answers && result.answers.trim() !== ""
+					? `${result.answers}\n(Nothing was pending — no pause was needed. Use these answers and continue.)`
+					: "Nothing was pending and no question has been answered yet. Continue.",
+			);
+		},
+	});
 }

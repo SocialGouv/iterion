@@ -29,6 +29,11 @@
  *   ITERION_PI_MOCK_TOOL        name of a tool to call instead of replying
  *                               (exercises the permission gate); the reply
  *                               text is emitted on the SECOND call
+ *   ITERION_PI_MOCK_TOOLS       JSON array of {name, arguments} replayed one
+ *                               per turn before the text reply — for a flow
+ *                               that only exists across several calls, such as
+ *                               ask_user_async followed by await_answers.
+ *                               Takes precedence over ITERION_PI_MOCK_TOOL.
  */
 
 import {
@@ -50,6 +55,41 @@ const num = (key: string, fallback: number): number => {
 };
 
 const state = { calls: 0 };
+
+interface ScriptedCall {
+	name: string;
+	arguments?: Record<string, unknown>;
+}
+
+/**
+ * The tool calls to replay, in order, one per turn.
+ *
+ * A single ITERION_PI_MOCK_TOOL is the one-element case; the array form exists
+ * because some flows only appear across several turns and cannot be observed
+ * from one call.
+ */
+function scriptedCalls(): ScriptedCall[] {
+	const many = process.env.ITERION_PI_MOCK_TOOLS;
+	if (many) {
+		try {
+			const parsed = JSON.parse(many);
+			if (Array.isArray(parsed)) return parsed as ScriptedCall[];
+		} catch {
+			/* fall through to the single-tool form */
+		}
+	}
+	const one = process.env.ITERION_PI_MOCK_TOOL;
+	if (!one) return [];
+	let args: Record<string, unknown> = { command: "ls" };
+	if (process.env.ITERION_PI_MOCK_TOOL_ARGS) {
+		try {
+			args = JSON.parse(process.env.ITERION_PI_MOCK_TOOL_ARGS);
+		} catch {
+			/* keep the default */
+		}
+	}
+	return [{ name: one, arguments: args }];
+}
 
 export default function (pi: ExtensionAPI) {
 	pi.registerProvider("mock", {
@@ -76,27 +116,26 @@ export default function (pi: ExtensionAPI) {
 			const output = num("ITERION_PI_MOCK_OUT", 7);
 			const total = num("ITERION_PI_MOCK_COST", 0);
 
-			// Tool-call mode: the first turn calls a tool, the second replies.
+			// Tool-call mode: each scripted call takes a turn, then the reply.
 			// This is what exercises a permission gate — a text-only reply
 			// never reaches one.
-			const toolName = process.env.ITERION_PI_MOCK_TOOL;
-			if (toolName && state.calls === 0) {
+			const script = scriptedCalls();
+			if (state.calls < script.length) {
+				const scripted = script[state.calls];
+				const toolArgs = scripted.arguments ?? {};
 				state.calls += 1;
-				let toolArgs: Record<string, unknown> = { command: "ls" };
-				if (process.env.ITERION_PI_MOCK_TOOL_ARGS) {
-					try {
-						toolArgs = JSON.parse(process.env.ITERION_PI_MOCK_TOOL_ARGS);
-					} catch {
-						/* keep the default */
-					}
-				}
 				const call: AssistantMessage = {
 					role: "assistant",
-					content: [{ type: "toolCall", id: "mock-call-1", name: toolName, arguments: toolArgs }],
+					content: [
+						{ type: "toolCall", id: `mock-call-${state.calls}`, name: scripted.name, arguments: toolArgs },
+					],
 					api: model.api,
 					provider: model.provider,
 					model: model.id,
-					responseId: "mock-response-tool",
+					// Unique per turn: the Go parser de-dupes usage by
+					// (timestamp, responseId), so reusing one id across a
+					// multi-call script would silently under-count.
+					responseId: `mock-response-tool-${state.calls}`,
 					usage: {
 						input, output, cacheRead: 0, cacheWrite: 0,
 						totalTokens: input + output,

@@ -34,7 +34,11 @@ export interface McpServerConfig {
 	/** Extra environment for `stdio`, overlaid on the inherited one. */
 	env?: Record<string, string>;
 }
-export type InteractionMode = "off" | "sync";
+/**
+ * `sync` gives the node the blocking `ask_user`; `async` adds the
+ * non-blocking pair (`ask_user_async` / `await_answers`, ADR-081).
+ */
+export type InteractionMode = "off" | "sync" | "async";
 
 export interface IterionConfig {
 	/** True when the host and this build agree on the contract version. */
@@ -81,6 +85,13 @@ function permissionMode(raw: string | undefined): PermissionMode {
 		default:
 			return "off";
 	}
+}
+
+function interactionMode(raw: string | undefined): InteractionMode {
+	// Unknown values fall back to `off`: offering a tool that pauses the run
+	// to a node with nobody at the other end strands it on a pause that will
+	// never be answered.
+	return raw === "async" || raw === "sync" ? raw : "off";
 }
 
 function positiveInt(raw: string | undefined, fallback: number): number {
@@ -136,7 +147,7 @@ export function loadConfig(): IterionConfig {
 		nodeId: env("ITERION_PI_NODE_ID"),
 		iteration: Number.isFinite(iteration) ? iteration : undefined,
 		permission: permissionMode(env("ITERION_PI_PERMISSION")),
-		interaction: env("ITERION_PI_INTERACTION") === "sync" ? "sync" : "off",
+		interaction: interactionMode(env("ITERION_PI_INTERACTION")),
 		mcpServers: parseMcpServers(env("ITERION_PI_MCP_SERVERS")),
 		mcpConnectTimeoutMs: positiveInt(env("ITERION_PI_MCP_CONNECT_TIMEOUT_MS"), 10_000),
 		ctrlEnabled: env("ITERION_PI_CTRL") !== "off",

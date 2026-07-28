@@ -48,6 +48,8 @@ type piCtrlReply struct {
 const (
 	piOpPermissionEvaluate = "permission.evaluate"
 	piOpAskUser            = "ask_user"
+	piOpAskUserAsync       = "ask_user_async"
+	piOpAwaitAnswers       = "await_answers"
 )
 
 // piPendingPause is a suspension the extension raised, waiting to be turned
@@ -68,6 +70,11 @@ type piPendingPause struct {
 	// rather than an LLM ask_user call: the studio then renders an approval
 	// card instead of a question.
 	permissionMarker map[string]any
+	// awaitPending is set when the pause is an await_answers escalation
+	// (ADR-081): the agent chose to block on questions it had already
+	// posted. The refs let the pause list them and the resume path fan the
+	// operator's answers back out.
+	awaitPending []PendingAsync
 }
 
 // err renders the pause as the sentinel the executor's pause machinery keys on.
@@ -78,6 +85,7 @@ func (p *piPendingPause) err() error {
 		AllowFreeText:    p.allowFreeText,
 		PendingToolUseID: p.toolUseID,
 		PermissionMarker: p.permissionMarker,
+		AwaitPending:     p.awaitPending,
 	}
 }
 
@@ -105,6 +113,94 @@ func piParseAskUser(data json.RawMessage) (*piPendingPause, error) {
 		allowFreeText: req.AllowFreeText || len(req.Options) == 0,
 		toolUseID:     req.ToolUseID,
 	}, nil
+}
+
+// piAsyncPosted is the answer to an ask_user_async op.
+//
+// Message carries the text the tool must return to the model. It is filled
+// from delegate.AsyncQuestionPostedText rather than written in the extension:
+// identical prompting across backends is an ADR-081 goal, so the wording has
+// exactly one home.
+type piAsyncPosted struct {
+	InteractionID string `json:"interactionId"`
+	Message       string `json:"message"`
+}
+
+// piAwaitResult is the answer to an await_answers op — one of two shapes.
+//
+// Nothing pending: Answers carries the collected replies and the agent simply
+// continues, having paid nothing. Otherwise Escalated is set, the run pauses,
+// and Pending lists what it is waiting on.
+type piAwaitResult struct {
+	Answers   string         `json:"answers,omitempty"`
+	Escalated bool           `json:"escalated,omitempty"`
+	Pending   []piPendingRef `json:"pending,omitempty"`
+}
+
+// piPendingRef is the wire shape of a pending question. PendingAsync carries
+// no JSON tags, so marshalling it directly would put Go field names on a
+// documented contract.
+type piPendingRef struct {
+	InteractionID string `json:"interactionId"`
+	Question      string `json:"question"`
+}
+
+func piPendingRefs(pending []PendingAsync) []piPendingRef {
+	out := make([]piPendingRef, 0, len(pending))
+	for _, p := range pending {
+		// Same fields, different JSON tags — which is the whole point, and
+		// why the conversion is legal.
+		out = append(out, piPendingRef(p))
+	}
+	return out
+}
+
+// piPostAsyncQuestion answers an ask_user_async op: persist the question and
+// let the agent keep working. It never pauses — that is the whole point of the
+// async pair, and the reason a node can front-load its questions.
+func piPostAsyncQuestion(task Task, data json.RawMessage) (piAsyncPosted, error) {
+	if task.PostAsyncQuestion == nil {
+		return piAsyncPosted{}, fmt.Errorf("async questions are not enabled for this node")
+	}
+	req, err := piParseAskUser(data)
+	if err != nil {
+		return piAsyncPosted{}, err
+	}
+	id, err := task.PostAsyncQuestion(AsyncQuestion{
+		Question:      req.question,
+		Options:       req.options,
+		AllowFreeText: req.allowFreeText,
+	})
+	if err != nil {
+		return piAsyncPosted{}, fmt.Errorf("could not post the question: %w", err)
+	}
+	return piAsyncPosted{InteractionID: id, Message: AsyncQuestionPostedText}, nil
+}
+
+// piAwaitAnswers answers an await_answers op.
+//
+// The two outcomes are deliberately asymmetric. Everything answered is the
+// cheap, common case and must not cost a pause — the agent gets the answers
+// inline and continues in the same turn. Something still pending is the real
+// sync point: the run suspends, which only the caller can do.
+func piAwaitAnswers(task Task) (piAwaitResult, *piPendingPause, error) {
+	if task.PendingAsyncQuestions == nil || task.CollectAsyncAnswers == nil {
+		return piAwaitResult{}, nil, fmt.Errorf("async questions are not enabled for this node")
+	}
+	pending, err := task.PendingAsyncQuestions()
+	if err != nil {
+		return piAwaitResult{}, nil, fmt.Errorf("could not read the pending questions: %w", err)
+	}
+	if len(pending) == 0 {
+		answers, err := task.CollectAsyncAnswers()
+		if err != nil {
+			return piAwaitResult{}, nil, fmt.Errorf("could not read the answers: %w", err)
+		}
+		return piAwaitResult{Answers: answers}, nil, nil
+	}
+	return piAwaitResult{Escalated: true, Pending: piPendingRefs(pending)},
+		&piPendingPause{question: AwaitPauseQuestion(pending), awaitPending: pending},
+		nil
 }
 
 // piParseCtrl decodes a UI request as an iterion control envelope. Reports

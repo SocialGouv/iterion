@@ -448,8 +448,17 @@ func piExtensionEnv(task Task, logger *iterlog.Logger) map[string]string {
 	}
 	// Likewise for ask_user: a node that cannot reach a human should not be
 	// offered a tool that pauses the run, or it will call it and stall.
+	//
+	// `async` additionally registers the non-blocking pair (ADR-081). The
+	// system prompt already describes ask_user_async/await_answers for such a
+	// node on EVERY backend, so without this the model would be told to call
+	// tools that do not exist.
 	if task.InteractionEnabled {
-		env["ITERION_PI_INTERACTION"] = "sync"
+		mode := "sync"
+		if task.PostAsyncQuestion != nil {
+			mode = "async"
+		}
+		env["ITERION_PI_INTERACTION"] = mode
 	}
 	if servers := piMCPServers(task, logger); len(servers) > 0 {
 		if raw, err := json.Marshal(servers); err == nil {
@@ -586,6 +595,38 @@ func (b *PiRPCBackend) handleUIRequest(task Task, collector *piCollector, req pi
 				truncate(pause.question, 200))
 		}
 		return piCtrlAnswer(req.ID, map[string]any{"escalated": true})
+
+	case piOpAskUserAsync:
+		posted, err := piPostAsyncQuestion(task, env.Data)
+		if err != nil {
+			if b.Logger != nil {
+				b.Logger.Warn("[%s#%d/%s] ask_user_async: %v", task.NodeID, task.Iteration, BackendPi, err)
+			}
+			return piCtrlFail(req.ID, err.Error())
+		}
+		if b.Logger != nil {
+			b.Logger.Info("[%s#%d/%s] 💬 async question posted (%s)", task.NodeID, task.Iteration, BackendPi,
+				posted.InteractionID)
+		}
+		return piCtrlAnswer(req.ID, posted)
+
+	case piOpAwaitAnswers:
+		result, pause, err := piAwaitAnswers(task)
+		if err != nil {
+			if b.Logger != nil {
+				b.Logger.Warn("[%s#%d/%s] await_answers: %v", task.NodeID, task.Iteration, BackendPi, err)
+			}
+			return piCtrlFail(req.ID, err.Error())
+		}
+		if pause != nil {
+			collector.setPause(pause)
+			if b.Logger != nil {
+				b.Logger.Info("[%s#%d/%s] ⏸ await_answers with %d pending question(s) — escalating to pause",
+					task.NodeID, task.Iteration, BackendPi, len(result.Pending))
+			}
+		}
+		return piCtrlAnswer(req.ID, result)
+
 	default:
 		if b.Logger != nil {
 			b.Logger.Warn("[%s#%d/%s] unknown control op %q from the iterion extension "+

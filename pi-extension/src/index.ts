@@ -14,9 +14,10 @@
  * modes, so an extension shipped that way would never load and never say so.
  * CLI `-e` paths bypass trust resolution entirely.
  *
- * Shipped today: the permission gate, ask_user, and MCP-over-HTTP bridging
- * (which is what makes board capabilities reachable).
- * Next: async questions, stdio/SSE MCP transports, Claude-Code tool aliases.
+ * Shipped today: the permission gate, ask_user (blocking and async), and MCP
+ * bridging on all three transports (which is what makes board capabilities and
+ * workflow-declared servers reachable).
+ * Next: Claude-Code tool aliases.
  * See ADR-085.
  */
 

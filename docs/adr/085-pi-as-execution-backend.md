@@ -198,9 +198,8 @@ those backends.
 - **No MCP client at all** — the single largest gap, and **resolved by the
   extension**, which carries its own client on all three transports (http,
   sse, stdio). Board `capabilities:` and workflow `mcp_server:` blocks reach a
-  pi node; `ask_user` rides the control channel instead. RPC transport only —
-  a print-mode node still has none of this. Async interaction (ADR-081) is
-  still pending.
+  pi node; `ask_user` and the async pair (ADR-081) ride the control channel
+  instead. RPC transport only — a print-mode node still has none of this.
 - **`__ITERION_SECRET_*__` placeholders are not materialised.** File secrets
   work unchanged. A future diagnostic should flag the combination.
 - **Tools are not host-gated** (ADR-065's standing consequence). The one
@@ -427,6 +426,35 @@ Two details that matter more than they look:
 A permission `ask` uses the same suspension path, carrying a
 `permission.Marker` so the studio renders an approval card rather than a
 question.
+
+**Async questions (ADR-081), on the same channel.** `ask_user` costs a full
+pause — the right price for a decision that must block, far too high for a
+question the agent could have asked an hour before it mattered. An
+`interaction: async` node gets `ask_user_async` (post and keep working) and
+`await_answers` (the sync point), with the same semantics as claw and
+claude_code.
+
+Two properties are load-bearing:
+
+- **The decisions stay in Go.** Both tools only report; iterion owns the
+  interaction store and is the only side that can suspend a run. The text the
+  model reads back after posting is `delegate.AsyncQuestionPostedText`,
+  returned over the channel rather than written in the extension — identical
+  prompting across backends is an ADR-081 goal, so the wording has one home.
+- **The two `await_answers` outcomes are asymmetric on purpose.** Everything
+  answered is the common case and must not cost a pause: the answers come back
+  inline and the agent continues in the same turn. Something outstanding is the
+  real sync point, and only then does the run suspend.
+
+Answers arriving mid-run are delivered through pi's native `steer` — the
+existing inbox drain, which pi hands to the agent at its next turn — so the
+delivery half needed nothing new.
+
+Registration is gated on `ITERION_PI_INTERACTION=async`, set only when the
+executor actually bound the async closures. That gate is not cosmetic: the
+system prompt already describes `ask_user_async`/`await_answers` for such a
+node on **every** backend, so before this the model on a pi node was told to
+call tools that did not exist.
 
 **A full MCP client, which is what makes board capabilities and workflow
 `mcp_server:` blocks reachable.** pi has no MCP client, so every MCP surface
