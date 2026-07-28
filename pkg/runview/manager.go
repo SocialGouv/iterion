@@ -51,11 +51,15 @@ type Manager struct {
 	mu      sync.Mutex
 	handles map[string]*runHandle
 	stopped bool
+	// handoffGrace bounds the wait for a previous runner to finish leaving
+	// (see registerHandoffGrace). Overridable so a test that asserts the
+	// REFUSAL path does not have to burn the production grace on every run.
+	handoffGrace time.Duration
 }
 
 // NewManager creates an empty manager.
 func NewManager() *Manager {
-	return &Manager{handles: make(map[string]*runHandle)}
+	return &Manager{handles: make(map[string]*runHandle), handoffGrace: registerHandoffGrace}
 }
 
 // Register installs a new run handle and returns the cancellable ctx
@@ -70,6 +74,8 @@ func NewManager() *Manager {
 // already registered for runID (defensive — Service.Launch generates
 // IDs that should be unique).
 func (m *Manager) Register(parent context.Context, runID string) (context.Context, error) {
+	m.awaitPreviousRunner(runID)
+
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
@@ -143,6 +149,8 @@ func (m *Manager) RequestPause(runID string) error {
 // runners own their own context inside the spawned process, so the
 // server-side handle has no ctx to propagate.
 func (m *Manager) RegisterDetached(runID string, pid int, cancel context.CancelFunc, done chan struct{}) error {
+	m.awaitPreviousRunner(runID)
+
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
@@ -159,6 +167,49 @@ func (m *Manager) RegisterDetached(runID string, pid int, cancel context.CancelF
 		pid:       pid,
 	}
 	return nil
+}
+
+// registerHandoffGrace bounds how long a re-registration waits for the
+// PREVIOUS runner of the same run to finish leaving.
+//
+// The window it closes: a run parking on a human gate writes
+// paused_waiting_human to the STORE, returns ErrRunPaused, and only then does
+// the goroutine carrying it call Deregister on its way out. Between those, the
+// public signal says "resumable" while the handle is still held — and the
+// studio and the pipeline-board sidebar offer Resume on exactly that signal.
+// A resume landing in the window used to fail with "already registered",
+// which reads as a bug to the operator and is one to an automated chain.
+//
+// A few hundred milliseconds normally; seconds under load. Five is generous
+// enough to absorb a loaded host while still surfacing a genuinely stuck
+// previous runner as an error rather than hanging the caller.
+const registerHandoffGrace = 5 * time.Second
+
+// awaitPreviousRunner waits, bounded, for an existing handle for runID to
+// finish. It does NOT reserve anything: the caller's own registration check
+// remains the authority, so a previous runner that never leaves still yields
+// "already registered" — the guard against two concurrent runners for one run
+// is intact. This only stops that guard from firing on a runner that is
+// already on its way out.
+//
+// The wait happens OUTSIDE the mutex on purpose: Deregister needs the same
+// lock to close done, so holding it here would deadlock the very thing we are
+// waiting for.
+func (m *Manager) awaitPreviousRunner(runID string) {
+	m.mu.Lock()
+	h, exists := m.handles[runID]
+	m.mu.Unlock()
+	if !exists {
+		return
+	}
+	grace := m.handoffGrace
+	if grace <= 0 {
+		grace = registerHandoffGrace
+	}
+	select {
+	case <-h.done:
+	case <-time.After(grace):
+	}
 }
 
 // Deregister removes the handle and closes its done channel. Called
