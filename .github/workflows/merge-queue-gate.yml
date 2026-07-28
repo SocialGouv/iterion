@@ -1,0 +1,84 @@
+# Mirrors Revi's `revi/review` verdict from a pull request's head onto the
+# merge-queue branch built from it.
+#
+# Why this exists: `revi/review` is a REQUIRED status check, and it is posted by
+# the iterion server's forge client in response to a `pull_request` event (see
+# pkg/server/forge_publish.go postGateStatus, which resolves the PR head SHA).
+# A merge-queue branch — `gh-readonly-queue/main/pr-<n>-<base>` — is created by
+# a `merge_group` event and is not a pull request, so no review ever runs on it
+# and no status is ever posted. The queue then waits for a context that cannot
+# arrive, times out after `check_response_timeout_minutes` (60), and dequeues
+# the PR. Measured 2026-07-28 on PR #307: all eight Actions checks green on the
+# queue branch, commit status `pending` with zero contexts, 62 minutes in
+# AWAITING_CHECKS. Every PR behind it was stuck too.
+#
+# It MIRRORS the verdict rather than asserting success. A PR can only enter the
+# queue once its head is CLEAN, which already requires `revi/review` to have
+# passed there, so reading the real status is both honest and free — and if that
+# invariant ever changes, this propagates the actual verdict instead of hiding
+# it. A head carrying no `revi/review` at all posts nothing: the context is not
+# part of that repository's gate, and inventing a `failure` would create a block
+# that did not exist.
+name: merge queue gate
+
+on:
+  merge_group:
+
+permissions:
+  contents: read
+  statuses: write
+  pull-requests: read
+
+jobs:
+  mirror-revi-verdict:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Mirror the PR head's revi/review verdict onto the queue branch
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          HEAD_REF: ${{ github.event.merge_group.head_ref }}
+          QUEUE_SHA: ${{ github.event.merge_group.head_sha }}
+        run: |
+          set -euo pipefail
+
+          # refs/heads/gh-readonly-queue/<base>/pr-<number>-<base-sha>
+          pr="$(printf '%s' "$HEAD_REF" | sed -n 's|.*/pr-\([0-9]\+\)-[0-9a-f]\+$|\1|p')"
+          if [ -z "$pr" ]; then
+            echo "::error::could not read a PR number out of head_ref '$HEAD_REF'"
+            exit 1
+          fi
+          echo "queue branch belongs to PR #$pr; queue sha $QUEUE_SHA"
+
+          head_sha="$(gh api "repos/$REPO/pulls/$pr" --jq '.head.sha')"
+          if [ -z "$head_sha" ]; then
+            echo "::error::PR #$pr has no head sha"
+            exit 1
+          fi
+
+          # Newest status first, so this reads the current verdict on the head.
+          verdict="$(gh api "repos/$REPO/commits/$head_sha/status" \
+            --jq '[.statuses[] | select(.context=="revi/review")][0] | (.state // empty)')"
+          target="$(gh api "repos/$REPO/commits/$head_sha/status" \
+            --jq '[.statuses[] | select(.context=="revi/review")][0] | (.target_url // empty)')"
+
+          if [ -z "$verdict" ]; then
+            echo "PR #$pr head ($head_sha) carries no revi/review status — the gate is not" \
+                 "in use for it, so nothing to mirror. Posting nothing on purpose:" \
+                 "a fabricated failure would block what was never gated."
+            exit 0
+          fi
+
+          echo "mirroring revi/review=$verdict from $head_sha onto $QUEUE_SHA"
+          gh api -X POST "repos/$REPO/statuses/$QUEUE_SHA" \
+            -f state="$verdict" \
+            -f context="revi/review" \
+            -f description="mirrored from PR #$pr head ${head_sha:0:9}" \
+            ${target:+-f target_url="$target"} >/dev/null
+
+          if [ "$verdict" != "success" ]; then
+            echo "::error::PR #$pr head carries revi/review=$verdict — mirrored, so the queue" \
+                 "will reject this entry rather than wait for a status that never comes."
+            exit 1
+          fi
