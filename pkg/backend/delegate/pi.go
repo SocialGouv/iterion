@@ -122,7 +122,7 @@ type PiBackend struct {
 
 // Execute runs the task through the selected pi transport.
 func (b *PiBackend) Execute(ctx context.Context, task Task) (Result, error) {
-	if err := piGuardForfait(ctx, task); err != nil {
+	if err := b.noticeSubscriptionOAuth(ctx, task); err != nil {
 		return Result{BackendName: BackendPi, ExitCode: -1}, err
 	}
 	if b.rpc != nil && strings.TrimSpace(os.Getenv("ITERION_PI_MODE")) != "print" {
@@ -131,61 +131,32 @@ func (b *PiBackend) Execute(ctx context.Context, task Task) (Result, error) {
 	return b.print.Execute(ctx, task)
 }
 
-// piGuardForfait refuses, by default, to drive an Anthropic call from pi with
-// the stored Claude Pro/Max OAuth subscription. Lifted by
-// ITERION_PI_ALLOW_ANTHROPIC_OAUTH.
+// noticeSubscriptionOAuth warns when this node is about to spend an Anthropic
+// subscription OAuth token, and refuses only if the operator opted out.
 //
-// The guard was written on the reading that the Consumer Terms scope the
-// subscription to the official Claude Code CLI (which claude_code and codex
-// spawn, and pi does not). **Anthropic's API says otherwise**: it accepts the
-// token from a third-party app and bills it against a separate *extra-usage*
-// balance instead of the plan's limits — see piIsExtraUsageExhausted for the
-// response it returns when that balance runs out. So the line the vendor draws
-// is about billing, not about which client.
+// pi speaks the Messages API directly rather than spawning Anthropic's CLI,
+// which was once read as putting it out of policy. Anthropic's API settled it:
+// the token is ACCEPTED from a third-party app and billed against a separate
+// extra-usage balance instead of the plan's limits (see
+// piIsExtraUsageExhausted for the response when that balance empties). The
+// vendor's line is about billing, not about which client — so this is a
+// notice, not a bar. The operator is nonetheless spending a different pot than
+// they may expect, which is worth one warning line per node.
 //
-// The default nonetheless stays conservative, because flipping it is a
-// decision about every user of a deployment rather than a per-developer one.
-// ADR-085 records the evidence and leaves the flip as an explicit call.
-//
-// A user's own `pi` login in ~/.pi/agent/auth.json is their relationship
-// with the vendor, not iterion's: nothing is read or injected here, and
-// piResolveEnv only strips what iterion would otherwise have supplied.
-func piGuardForfait(ctx context.Context, task Task) error {
-	if piAnthropicOAuthAllowed() {
+// A user's own `pi` login in ~/.pi/agent/auth.json is their relationship with
+// the vendor: nothing is read or injected here.
+func (b *PiBackend) noticeSubscriptionOAuth(ctx context.Context, task Task) error {
+	if provider, _ := piResolveModel(task.Model, task.ProviderHint); provider != "anthropic" {
 		return nil
 	}
-	provider, _ := piResolveModel(task.Model, task.ProviderHint)
-	if provider != "anthropic" {
-		return nil
-	}
-	if err := secrets.GuardThirdPartyOAuth(ctx, secrets.ProviderAnthropic, secrets.OAuthKindClaudeCode); err != nil {
+	if err := secrets.GuardSubscriptionOAuth(ctx, secrets.ProviderAnthropic, secrets.OAuthKindClaudeCode); err != nil {
 		return fmt.Errorf("pi backend: %w", err)
 	}
+	if b.Logger != nil && secrets.SubscriptionOAuthOnly(ctx, secrets.ProviderAnthropic, secrets.OAuthKindClaudeCode) {
+		b.Logger.Warn("[%s#%d/%s] %s", task.NodeID, task.Iteration, BackendPi,
+			secrets.SubscriptionOAuthNotice(secrets.ProviderAnthropic))
+	}
 	return nil
-}
-
-// piAnthropicOAuthAllowed reports whether the operator has explicitly opted
-// into driving Anthropic from pi with a Claude subscription OAuth token.
-//
-// **Local development only, and off by default.** Setting it disables both
-// halves of the protection: the `piGuardForfait` refusal and the environment
-// strip in `piResolveEnv`. It exists because a developer validating this
-// backend against a real Anthropic model on their OWN subscription is a
-// defensible local call, and hacking the guard out of the source to do it is
-// worse than an explicit, named, default-off switch.
-//
-// Anthropic does accept the token from a third-party app — it bills it against
-// a separate extra-usage balance rather than the plan's limits (see
-// piGuardForfait). That makes this a billing choice more than a policy one,
-// but two things still hold:
-//
-//   - never set it in a shared or cloud runner, where it would extend one
-//     developer's local tolerance into a product decision taken on behalf of
-//     every user of that deployment, and spend a balance nobody agreed to;
-//   - a workflow that needs Anthropic in production should use a metered
-//     ANTHROPIC_API_KEY, or run the node on `claude_code`.
-func piAnthropicOAuthAllowed() bool {
-	return strings.TrimSpace(os.Getenv("ITERION_PI_ALLOW_ANTHROPIC_OAUTH")) == "1"
 }
 
 // piProviderPrefixes maps an iterion routing prefix onto pi's provider id.
@@ -359,15 +330,19 @@ var piEnvKeys = map[secrets.Provider]string{
 // piResolveEnv layers per-run credential overrides onto the inherited
 // environment.
 //
-// It also UNSETS the Anthropic OAuth forfait variables unconditionally.
-// piGuardForfait already refuses an Anthropic node backed only by the
-// forfait, but the strip is what makes that guarantee hold for the whole
-// process: pi would otherwise pick the token up from an inherited
-// environment on any provider path. An empty value is an unset on both the
-// host and the sandbox ExecOpts path.
+// A subscription OAuth token inherited from the environment is deliberately
+// left in place: Anthropic accepts it from a third-party app and bills it
+// against extra usage (see noticeSubscriptionOAuth). Stripping it used to be
+// how the refusal was enforced process-wide; with the refusal gone the strip
+// would only break a working credential path.
 func piResolveEnv(ctx context.Context) map[string]string {
 	env := map[string]string{}
-	if !piAnthropicOAuthAllowed() {
+
+	// Under the opt-out the strip comes back, and it has to: locally the
+	// token reaches pi through the inherited environment, so the ctx-based
+	// check in noticeSubscriptionOAuth has no per-run credentials to refuse.
+	// An empty value is an unset on both the host and the sandbox path.
+	if secrets.ForbidSubscriptionOAuth() {
 		env["ANTHROPIC_OAUTH_TOKEN"] = ""
 		env["CLAUDE_CODE_OAUTH_TOKEN"] = ""
 		env["CLAUDE_CONFIG_DIR"] = ""

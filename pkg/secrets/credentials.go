@@ -3,6 +3,9 @@ package secrets
 import (
 	"context"
 	"errors"
+	"fmt"
+	"os"
+	"strings"
 )
 
 // Credentials carries the resolved per-run BYOK plaintext keyed by
@@ -71,37 +74,77 @@ func (c Credentials) OAuthDir(kind string) string {
 	return c.OAuthCredentialFiles[kind]
 }
 
-// ErrOAuthForfaitInThirdParty is the sentinel error guarding the
-// claw backend (and any other in-process LLM SDK consumer) from
-// using a Claude Pro/Max OAuth bearer token. Reusing the forfait
-// outside the official Claude Code CLI surface violates Anthropic's
-// Consumer Terms — see memory feedback_no_anthropic_oauth_in_third_party.
+// SubscriptionOAuthOnly reports whether the only credential available for
+// provider in this ctx is the subscription OAuth token of kind (a Claude
+// Pro/Max or ChatGPT plan bearer) — i.e. there is no metered API key to fall
+// back on.
 //
-// Callers should invoke GuardThirdPartyOAuth right before consuming
-// a credential for an in-process LLM call. The delegate backends
-// (claude_code, codex) which spawn the upstream CLI are exempt: the
-// CLI itself remains the authorised consumer in that path.
-var ErrOAuthForfaitInThirdParty = errors.New("secrets: refusing to use Claude Code OAuth-forfait via third-party SDK (CGU violation)")
-
-// GuardThirdPartyOAuth returns ErrOAuthForfaitInThirdParty when the
-// given ctx has an OAuth-forfait connection for kind but no
-// matching API key for provider — i.e. the only available
-// credential is the forfait, which is forbidden in this code path.
+// This used to gate a refusal, on the reading that consuming a subscription
+// outside the vendor's own CLI was out of policy. Anthropic's API settled it:
+// it ACCEPTS the token from a third-party app and bills it against a separate
+// *extra-usage* balance instead of the plan's limits, answering
 //
-// Returns nil when the ctx has no credentials, when an API key IS
+//	400 invalid_request_error — "Third-party apps now draw from your extra
+//	usage, not your plan limits. Add more at claude.ai/settings/usage"
+//
+// when that balance runs out. The line the vendor draws is about billing, not
+// about which client. So the condition is now a NOTICE, not a bar: it still
+// matters (the operator is spending a different pot than they may expect), so
+// callers log SubscriptionOAuthNotice — but they proceed. See ADR-085.
+//
+// Returns false when the ctx carries no credentials, when an API key is
 // available, or when no OAuth credential of that kind is present.
-func GuardThirdPartyOAuth(ctx context.Context, provider Provider, kind OAuthKind) error {
+func SubscriptionOAuthOnly(ctx context.Context, provider Provider, kind OAuthKind) bool {
 	creds, ok := CredentialsFromContext(ctx)
 	if !ok {
-		return nil
+		return false
 	}
 	if creds.APIKey(provider) != "" {
+		return false
+	}
+	return creds.OAuthDir(string(kind)) != ""
+}
+
+// SubscriptionOAuthNotice is the warning a backend logs when it is about to
+// spend a subscription OAuth token outside the vendor's own CLI. Shared so
+// every backend words it identically.
+func SubscriptionOAuthNotice(provider Provider) string {
+	return fmt.Sprintf(
+		"using the %s subscription OAuth token: third-party apps bill against your "+
+			"EXTRA USAGE balance, not your plan limits (top up at the provider's usage "+
+			"settings). Set ITERION_FORBID_SUBSCRIPTION_OAUTH=1 to refuse this instead, "+
+			"or supply a metered API key.", provider)
+}
+
+// ErrSubscriptionOAuthForbidden is returned when the operator has opted into
+// refusing subscription-OAuth consumption outside the vendor's own CLI.
+var ErrSubscriptionOAuthForbidden = errors.New(
+	"secrets: refusing to spend a subscription OAuth token outside the vendor's own CLI " +
+		"(ITERION_FORBID_SUBSCRIPTION_OAUTH=1); supply a metered API key, or use the " +
+		"backend that spawns the vendor CLI (claude_code)")
+
+// ForbidSubscriptionOAuth reports whether the operator has opted out of
+// spending subscription tokens on third-party surfaces.
+//
+// The opt-out exists for shared and cloud deployments: there, consuming an
+// operator's extra-usage balance is a cost decision taken on behalf of
+// everyone using that instance, and it should be possible to close.
+func ForbidSubscriptionOAuth() bool {
+	return strings.TrimSpace(os.Getenv("ITERION_FORBID_SUBSCRIPTION_OAUTH")) == "1"
+}
+
+// GuardSubscriptionOAuth returns ErrSubscriptionOAuthForbidden only when the
+// operator has opted out AND the subscription token is the sole credential.
+// It is the one-call form of the SubscriptionOAuthOnly + ForbidSubscriptionOAuth
+// pair for callers that have no logger to warn through.
+func GuardSubscriptionOAuth(ctx context.Context, provider Provider, kind OAuthKind) error {
+	if !ForbidSubscriptionOAuth() {
 		return nil
 	}
-	if creds.OAuthDir(string(kind)) == "" {
+	if !SubscriptionOAuthOnly(ctx, provider, kind) {
 		return nil
 	}
-	return ErrOAuthForfaitInThirdParty
+	return ErrSubscriptionOAuthForbidden
 }
 
 type credentialsCtxKey struct{}

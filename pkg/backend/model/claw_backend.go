@@ -20,6 +20,7 @@ import (
 	"github.com/SocialGouv/iterion/pkg/backend/rewrite"
 	"github.com/SocialGouv/iterion/pkg/backend/tool"
 	"github.com/SocialGouv/iterion/pkg/knowledge"
+	iterlog "github.com/SocialGouv/iterion/pkg/log"
 	"github.com/SocialGouv/iterion/pkg/memory"
 	"github.com/SocialGouv/iterion/pkg/sandbox"
 	"github.com/SocialGouv/iterion/pkg/secrets"
@@ -43,6 +44,15 @@ type ClawBackend struct {
 	// Mongo+inline store via WithMemoryStore so memory persists in the
 	// tenant's document store rather than the pod's ephemeral disk.
 	memStore knowledge.MemoryStore
+	// logger carries operator-facing warnings the EventHooks surface has no
+	// channel for (e.g. "this node is about to spend your subscription's
+	// extra-usage balance"). nil silences them. See [WithClawLogger].
+	logger *iterlog.Logger
+}
+
+// WithClawLogger attaches a leveled logger for operator-facing warnings.
+func WithClawLogger(l *iterlog.Logger) ClawBackendOption {
+	return func(b *ClawBackend) { b.logger = l }
 }
 
 // WithMemoryStore injects a non-default workspace-memory backend
@@ -204,16 +214,20 @@ func (b *ClawBackend) Execute(ctx context.Context, task delegate.Task) (delegate
 		return b.executeViaSandboxRunner(ctx, task)
 	}
 
-	// CGU guard: claw is an in-process Anthropic SDK consumer.
-	// Anthropic's Consumer Terms scope the Claude Pro/Max OAuth
-	// forfait to the official Claude Code CLI surface, so iterion
-	// MUST refuse to drive an Anthropic call from claw using a
-	// stored OAuth-forfait credential when no API key is available.
-	// The claude_code delegate backend (which spawns the official
-	// CLI) is exempt and lives in pkg/backend/delegate.
+	// claw is an in-process Anthropic SDK consumer rather than the vendor's
+	// own CLI, which was once read as putting a Claude Pro/Max OAuth
+	// subscription out of policy here. Anthropic's API settled it: the token
+	// is ACCEPTED from a third-party app and billed against a separate
+	// extra-usage balance instead of the plan's limits. So this warns — the
+	// operator is spending a different pot than they may expect — and only
+	// refuses when ITERION_FORBID_SUBSCRIPTION_OAUTH=1. See ADR-085.
 	if providerName, _, perr := ParseModelSpec(task.Model); perr == nil && providerName == "anthropic" {
-		if err := secrets.GuardThirdPartyOAuth(ctx, secrets.ProviderAnthropic, secrets.OAuthKindClaudeCode); err != nil {
+		if err := secrets.GuardSubscriptionOAuth(ctx, secrets.ProviderAnthropic, secrets.OAuthKindClaudeCode); err != nil {
 			return delegate.Result{}, fmt.Errorf("claw backend: %w", err)
+		}
+		if b.logger != nil && secrets.SubscriptionOAuthOnly(ctx, secrets.ProviderAnthropic, secrets.OAuthKindClaudeCode) {
+			b.logger.Warn("[%s#%d/claw] %s", task.NodeID, task.Iteration,
+				secrets.SubscriptionOAuthNotice(secrets.ProviderAnthropic))
 		}
 	}
 

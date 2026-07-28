@@ -121,25 +121,36 @@ subscription outside the official CLI is out of policy") does not hold in the
 strong form it was written in; the vendor has since drawn the line at
 *billing*, not at *which client*.
 
-**Current state of the code, and what is left to decide:**
+**Decision taken on that evidence: permit by default, warn, and let the
+operator refuse.**
 
-- The guard and the environment strip remain, **default-off-able** via
-  `ITERION_PI_ALLOW_ANTHROPIC_OAUTH=1`, because flipping the default is a
-  product decision about every user of a deployment, not one this ADR should
-  take on the strength of one API response.
-- The empty-balance condition is now a **legible** error naming the cause and
-  the three ways out, instead of an opaque 400 that reads like a bad token.
-- **Follow-up for the same evidence:** `claw`'s equivalent guard
-  ([claw_backend.go](../../pkg/backend/model/claw_backend.go), via
-  `secrets.GuardThirdPartyOAuth`) rests on the identical premise and should be
-  revisited alongside it. That is a wider change than this ADR.
+- `secrets.SubscriptionOAuthOnly` detects the condition;
+  `secrets.SubscriptionOAuthNotice` is the shared warning text; both `pi` and
+  `claw` log it per node. The old `GuardThirdPartyOAuth` /
+  `ErrOAuthForfaitInThirdParty` pair is gone.
+- **`ITERION_FORBID_SUBSCRIPTION_OAUTH=1`** restores the refusal, for both
+  backends at once. The opt-out exists because on a shared or cloud instance,
+  spending an operator's extra-usage balance is a cost decision taken on
+  behalf of everyone using it — that should be closable.
+- pi no longer strips `ANTHROPIC_OAUTH_TOKEN` / `CLAUDE_CODE_OAUTH_TOKEN` /
+  `CLAUDE_CONFIG_DIR` from its environment. With the refusal gone the strip
+  would only break a working credential path.
+- The empty-balance condition is a **legible** error naming the cause and the
+  three ways out, instead of an opaque 400 that reads like a bad token.
+- `claw` gained a logger (`model.WithClawLogger`) because its `EventHooks`
+  surface had no channel for an operator-facing warning.
+- `claude_code` and `codex` are untouched: they spawn the vendor's CLI, which
+  draws on the plan normally.
 
 ### Original decision (superseded): refuse the Anthropic subscription forfait
 
-`piGuardForfait` fails a pi node whose only Anthropic credential is the stored
-Claude Pro/Max OAuth forfait, and `piResolveEnv` strips
+*(Historical. The code described here no longer exists — `piGuardForfait` and
+`secrets.GuardThirdPartyOAuth` were removed.)*
+
+A guard failed any pi node whose only Anthropic credential was the stored
+Claude Pro/Max OAuth forfait, and `piResolveEnv` stripped
 `ANTHROPIC_OAUTH_TOKEN` / `CLAUDE_CODE_OAUTH_TOKEN` / `CLAUDE_CONFIG_DIR`
-unconditionally so an inherited value cannot reach pi on any provider path.
+unconditionally so an inherited value could not reach pi on any provider path.
 
 Anthropic's Consumer Terms scope the subscription to the official Claude Code
 CLI surface. `claude_code` and `codex` are exempt because they spawn that CLI,

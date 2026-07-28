@@ -211,19 +211,6 @@ func TestPiProtocolNeverPassesPromptAsArg(t *testing.T) {
 }
 
 func TestPiResolveEnv(t *testing.T) {
-	t.Run("strips the anthropic oauth forfait", func(t *testing.T) {
-		env := piResolveEnv(context.Background())
-		for _, key := range []string{"ANTHROPIC_OAUTH_TOKEN", "CLAUDE_CODE_OAUTH_TOKEN", "CLAUDE_CONFIG_DIR"} {
-			v, ok := env[key]
-			if !ok {
-				t.Errorf("%s absent from the override map — an inherited value would reach pi", key)
-			}
-			if v != "" {
-				t.Errorf("%s = %q, want empty (an unset)", key, v)
-			}
-		}
-	})
-
 	t.Run("injects per-run BYOK keys", func(t *testing.T) {
 		ctx := secrets.WithCredentials(context.Background(), secrets.Credentials{
 			APIKeys: map[secrets.Provider]string{
@@ -240,20 +227,15 @@ func TestPiResolveEnv(t *testing.T) {
 		}
 	})
 
-	t.Run("anthropic oauth opt-in lifts the strip", func(t *testing.T) {
-		t.Setenv("ITERION_PI_ALLOW_ANTHROPIC_OAUTH", "1")
+	// An inherited subscription OAuth token must reach pi: Anthropic accepts
+	// it from a third-party app and bills it against extra usage. Stripping it
+	// would only break a working credential path.
+	t.Run("subscription oauth token is not stripped", func(t *testing.T) {
 		env := piResolveEnv(context.Background())
-		if _, ok := env["ANTHROPIC_OAUTH_TOKEN"]; ok {
-			t.Error("the opt-in must let an inherited subscription token reach pi")
-		}
-		// And the guard must stand down with it, or the opt-in is inert.
-		forfaitOnly := secrets.WithCredentials(context.Background(), secrets.Credentials{
-			OAuthCredentialFiles: map[string]string{
-				string(secrets.OAuthKindClaudeCode): "/tmp/iter-oauth-fake",
-			},
-		})
-		if err := piGuardForfait(forfaitOnly, Task{Model: "anthropic/claude-haiku-4-5"}); err != nil {
-			t.Errorf("guard still refused under the opt-in: %v", err)
+		for _, key := range []string{"ANTHROPIC_OAUTH_TOKEN", "CLAUDE_CODE_OAUTH_TOKEN", "CLAUDE_CONFIG_DIR"} {
+			if _, ok := env[key]; ok {
+				t.Errorf("%s is overridden — an inherited subscription token would not reach pi", key)
+			}
 		}
 	})
 
@@ -268,40 +250,58 @@ func TestPiResolveEnv(t *testing.T) {
 	})
 }
 
-func TestPiGuardForfait(t *testing.T) {
+func TestPiSubscriptionOAuthNotice(t *testing.T) {
 	forfaitOnly := secrets.WithCredentials(context.Background(), secrets.Credentials{
 		OAuthCredentialFiles: map[string]string{
 			string(secrets.OAuthKindClaudeCode): "/tmp/iter-oauth-fake",
 		},
 	})
+	b := NewPiBackend(testLogger(), "")
 
-	t.Run("anthropic on the forfait is refused", func(t *testing.T) {
-		if err := piGuardForfait(forfaitOnly, Task{Model: "anthropic/claude-opus-4-8"}); err == nil {
-			t.Fatal("expected a refusal: the Consumer Terms scope the forfait to the official CLI")
+	// Anthropic accepts a subscription token from a third-party app, billing
+	// it against a separate extra-usage balance. So this proceeds — with a
+	// warning, because the operator is spending a different pot than the plan.
+	t.Run("anthropic on the subscription proceeds", func(t *testing.T) {
+		if err := b.noticeSubscriptionOAuth(forfaitOnly, Task{Model: "anthropic/claude-opus-4-8"}); err != nil {
+			t.Fatalf("unexpected refusal: Anthropic permits third-party apps (billed to extra usage): %v", err)
 		}
 	})
 
-	t.Run("anthropic with an api key is allowed", func(t *testing.T) {
+	// The opt-out exists for shared deployments, where spending an operator's
+	// extra-usage balance is a decision taken on everyone's behalf.
+	t.Run("opt-out refuses", func(t *testing.T) {
+		t.Setenv("ITERION_FORBID_SUBSCRIPTION_OAUTH", "1")
+		if err := b.noticeSubscriptionOAuth(forfaitOnly, Task{Model: "anthropic/claude-opus-4-8"}); err == nil {
+			t.Fatal("expected a refusal under ITERION_FORBID_SUBSCRIPTION_OAUTH=1")
+		}
+	})
+
+	t.Run("opt-out spares a metered key", func(t *testing.T) {
+		t.Setenv("ITERION_FORBID_SUBSCRIPTION_OAUTH", "1")
 		withKey := secrets.WithCredentials(context.Background(), secrets.Credentials{
 			APIKeys: map[secrets.Provider]string{secrets.ProviderAnthropic: "sk-ant-key"},
 			OAuthCredentialFiles: map[string]string{
 				string(secrets.OAuthKindClaudeCode): "/tmp/iter-oauth-fake",
 			},
 		})
-		if err := piGuardForfait(withKey, Task{Model: "anthropic/claude-opus-4-8"}); err != nil {
+		if err := b.noticeSubscriptionOAuth(withKey, Task{Model: "anthropic/claude-opus-4-8"}); err != nil {
 			t.Fatalf("unexpected refusal with a metered key: %v", err)
 		}
 	})
 
-	t.Run("other providers are unaffected", func(t *testing.T) {
-		if err := piGuardForfait(forfaitOnly, Task{Model: "openai/gpt-5.5"}); err != nil {
+	t.Run("non-anthropic providers are untouched", func(t *testing.T) {
+		t.Setenv("ITERION_FORBID_SUBSCRIPTION_OAUTH", "1")
+		if err := b.noticeSubscriptionOAuth(forfaitOnly, Task{Model: "openai/gpt-5.5"}); err != nil {
 			t.Fatalf("unexpected refusal on a non-anthropic model: %v", err)
 		}
 	})
 
-	t.Run("z.ai routed through the anthropic surface is not the forfait", func(t *testing.T) {
-		if err := piGuardForfait(forfaitOnly, Task{Model: "anthropic/glm-5.2", ProviderHint: "zai"}); err != nil {
-			t.Fatalf("z.ai must not be caught by the Anthropic forfait guard: %v", err)
+	// z.ai rides the Anthropic-compatible surface, so its SPEC says anthropic
+	// while the hint says zai. It must not be mistaken for the subscription.
+	t.Run("z.ai on the anthropic surface is not the subscription", func(t *testing.T) {
+		t.Setenv("ITERION_FORBID_SUBSCRIPTION_OAUTH", "1")
+		if err := b.noticeSubscriptionOAuth(forfaitOnly, Task{Model: "anthropic/glm-5.2", ProviderHint: "zai"}); err != nil {
+			t.Fatalf("z.ai must not be caught by the Anthropic subscription check: %v", err)
 		}
 	})
 }

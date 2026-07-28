@@ -122,22 +122,26 @@ Code OAuth file — that path uses the user's "forfait" subscription
 instead of metered API calls. Without OAuth, `claw` is preferred:
 same auth (ANTHROPIC_API_KEY) but in-process and faster.
 
-> ⚠️ **The Claude Code forfait is usable only through the `claude_code`
-> backend, not `claw`.** `claw` can *authenticate* with the forfait OAuth
+> 💳 **On `claw` (and `pi`), the Claude Code subscription bills to *extra
+> usage*, not to your plan.** `claw` authenticates with the subscription OAuth
 > token (set `ANTHROPIC_AUTH_TOKEN` to the `claudeAiOauth.accessToken`
 > from `~/.claude/.credentials.json`, no `ANTHROPIC_API_KEY`; claw then
 > sends `Authorization: Bearer` + the `anthropic-beta: oauth-2025-04-20`
-> header), but it is **effectively unusable**: the forfait rate-limiter
-> throttles non-Claude-Code clients to ~zero, so a `claw` request `429`s
-> immediately (`rate_limit_error`, no `Retry-After`) even with fresh daily
-> quota — while the official `claude` CLI on the same token + model works.
-> Anthropic scopes the forfait to Claude Code (Consumer Terms). What `claw`
-> "lacks" is the Claude Code client identity (User-Agent / client headers);
-> reproducing it would be spoofing, not a fix, so iterion does not. iterion
-> emits a one-time stderr warning if you wire this path anyway. For an
-> `anthropic/*` model on `claw`, use `ANTHROPIC_API_KEY`, z.ai
-> (`ZAI_API_KEY`), or another provider. (The OpenAI/ChatGPT forfait via
-> `claw` *does* work — see below — because there is no equivalent
+> header), and it **works** — verified 2026-07-28 with a real
+> `claude-haiku-4-5` call. It bills against the subscription's separate
+> **extra-usage** balance rather than the plan's limits, which is what
+> Anthropic says when that balance empties ("Third-party apps now draw from
+> your extra usage, not your plan limits"). iterion emits a one-time stderr
+> warning naming the billing, and `ITERION_FORBID_SUBSCRIPTION_OAUTH=1`
+> refuses the path outright.
+>
+> This replaces an earlier note that called the path *effectively unusable*:
+> non-Claude-Code clients used to be throttled to ~zero (immediate `429`,
+> no `Retry-After`) while the official CLI on the same token succeeded.
+> Anthropic has since served third-party clients through extra usage
+> instead. For predictable spend on an `anthropic/*` model, `ANTHROPIC_API_KEY`
+> or z.ai (`ZAI_API_KEY`) remain the metered options. (The OpenAI/ChatGPT
+> forfait via `claw` also works — see below — because there is no equivalent
 > client-identity gate on that path today.)
 
 ### Overriding the order
@@ -486,11 +490,12 @@ file as a side effect of normal use; if your token expires mid-run,
 just `codex --version` (or any other Codex command) to trigger a
 refresh, then re-run iterion.
 
-**ToS posture.** Unlike Anthropic Pro/Max (whose Consumer Terms scope
-the subscription to *Claude Code only* — see the warning under
-[z.ai integration](#using-a-non-anthropic-provider-via-the-anthropic-wire-format-zai--glm)),
-ChatGPT subscriptions don't carve out Codex CLI as the only legitimate
-surface. Reproducing Codex CLI's OAuth flow from a third-party tool is
+**ToS posture.** ChatGPT subscriptions don't carve out Codex CLI as the only
+legitimate surface. (Anthropic Pro/Max was long read as doing exactly that for
+Claude Code; it now serves third-party clients and bills them to extra usage —
+see the note under
+[z.ai integration](#using-a-non-anthropic-provider-via-the-anthropic-wire-format-zai--glm).)
+Reproducing Codex CLI's OAuth flow from a third-party tool is
 gray-area but has no explicit prohibition today. We treat this as
 pragmatic — if OpenAI changes the terms or tightens enforcement, set
 `ITERION_OPENAI_USE_OAUTH=0` and fall back to `OPENAI_API_KEY`.
@@ -609,34 +614,35 @@ workflow that already works.**
   different model. iterion logs a warning when the model pi actually used
   differs from the one requested — watch for it on first use.
 
-#### ⚖️ Subscription credentials
+#### 💳 Subscription credentials bill to *extra usage*
 
-By default iterion **refuses to drive an Anthropic call from pi using the
-stored Claude Pro/Max OAuth subscription**, and strips
-`ANTHROPIC_OAUTH_TOKEN` / `CLAUDE_CODE_OAUTH_TOKEN` / `CLAUDE_CONFIG_DIR`
-from pi's environment. Set `ITERION_PI_ALLOW_ANTHROPIC_OAUTH=1` to opt in.
-
-**What we learned by trying it.** Anthropic does *not* reject a third-party
-app using a subscription token. It answers:
+A Claude Pro/Max OAuth subscription **works** on pi, and on `claw`. Anthropic
+does not reject a third-party app using it — it answers:
 
 > Third-party apps now draw from your extra usage, not your plan limits. Add
 > more at claude.ai/settings/usage and keep going.
 
 So the path is supported, but billed against a **separate extra-usage
-balance** rather than your plan's limits. When that balance is empty you get a
-`400 invalid_request_error` whose text says nothing about credentials —
+balance** rather than your plan's limits. That is the one surprising part, so
+iterion logs a warning naming it on every node that spends a subscription
+token outside the vendor's own CLI. When the balance is empty the API returns
+a `400 invalid_request_error` whose text mentions nothing about credentials;
 iterion translates it into a message naming the cause and the ways out, so it
 does not read like a broken token.
 
-The default stays conservative because flipping it is a decision about every
-user of a deployment, not a per-developer one. For production Anthropic work
-on pi, prefer a metered `ANTHROPIC_API_KEY`, or run the node on
-`claude_code`.
+**To refuse it instead**, set `ITERION_FORBID_SUBSCRIPTION_OAUTH=1`. Worth
+doing on a shared or cloud instance, where spending an operator's extra-usage
+balance is a cost decision taken on behalf of everyone using it. The refusal
+applies to pi and `claw` alike; `claude_code` and `codex` are unaffected —
+they spawn the vendor's own CLI, which draws on the plan normally.
+
+For production Anthropic work, a metered `ANTHROPIC_API_KEY` or a
+`claude_code` node remains the predictable choice.
 
 Your *own* `pi` login in `~/.pi/agent/auth.json` is your relationship with
 the vendor — nothing is read or injected. pi's `openai-codex` (ChatGPT plan)
-and `github-copilot` OAuth providers remain open questions on which iterion
-takes no position and injects nothing.
+and `github-copilot` OAuth providers are untested on this point; iterion
+injects nothing for either.
 
 #### Environment variables
 
@@ -865,10 +871,9 @@ request with an explicit parse error rather than being silently dropped.
 **ToS caveat.** Presenting as another tool is a decision between you
 and the endpoint you target (e.g. your z.ai subscription's supported-
 tools policy) — iterion/claw default to the honest identity and never
-spoof on their own. This does **not** change the Anthropic-forfait
-posture above: the Claude Code subscription remains scoped to Claude
-Code by Anthropic's Consumer Terms, and claw's OAuth path stays
-dev-purpose-only regardless of the UA you configure.
+spoof on their own. It changes nothing about the Anthropic subscription
+path above: that works on its own merits (billed to extra usage), and no
+User-Agent you configure affects how it is billed.
 
 ## Troubleshooting
 

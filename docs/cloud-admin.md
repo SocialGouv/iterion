@@ -167,12 +167,24 @@ storage tracks:
    except to refresh and to materialise it just-in-time in a per-run
    `tmpfs` mount on the runner.
 
-**CGU (terms-of-service) guard.** Anthropic scopes the Claude Pro/
-Max OAuth-forfait to the official Claude Code CLI; iterion's
-in-process LLM client (`claw`) is therefore forbidden from consuming
-it. The code enforces this via `secrets.GuardThirdPartyOAuth(...)`,
-called from `claw_backend.Execute` for every Anthropic model.
-A unit test (`pkg/secrets/claw_guard_test.go`) pins the rule.
+**Subscription-OAuth billing guard.** A Claude Pro/Max OAuth
+subscription *works* on the backends that reach the API directly
+(`claw`, `pi`), but Anthropic bills third-party clients against the
+subscription's separate **extra-usage** balance rather than the plan's
+limits. iterion warns on each such node
+(`secrets.SubscriptionOAuthNotice`) and permits it by default.
+
+**On a shared instance you probably want to refuse it**: spending an
+operator's extra-usage balance is a cost decision taken on behalf of
+everyone using the deployment. Set
+`ITERION_FORBID_SUBSCRIPTION_OAUTH=1` on the runner — it closes both
+the per-run credential path (`secrets.GuardSubscriptionOAuth`, called
+from `claw_backend.Execute` and the pi backend) and the env path (the
+provider constructor in `pkg/backend/model/registry.go`). `claude_code`
+and `codex` are unaffected: they spawn the vendor's own CLI, which
+draws on the plan normally. Pinned by
+`pkg/secrets/subscription_oauth_test.go`; rationale in
+[ADR-085](adr/085-pi-as-execution-backend.md).
 
 If you want to disable OAuth-forfait entirely (e.g. you're operating
 in a jurisdiction where the legal team prefers the strict BYOK path),

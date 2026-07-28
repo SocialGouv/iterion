@@ -255,6 +255,7 @@ func BuildExecutor(spec ExecutorSpec) (*model.ClawExecutor, error) {
 	// a rate-limit / network / idle blip is ridden out before it surfaces as a
 	// run-level failed_resumable.
 	retryPolicy := model.RetryPolicyFromEnv()
+	clawOpts = append(clawOpts, model.WithClawLogger(spec.Logger))
 	clawBackend := model.NewClawBackend(reg, hooks, retryPolicy, clawOpts...)
 	backendReg.Register(delegate.BackendClaw, clawBackend)
 
