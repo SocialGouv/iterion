@@ -6,6 +6,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
@@ -192,6 +193,127 @@ func TestFetcher_FetchesAndCachesPinnedRef(t *testing.T) {
 	if again != path {
 		t.Errorf("cache path changed: %q vs %q", again, path)
 	}
+}
+
+// A cold pod takes several launches at once, and every one of them fetches the
+// same source. Each must be handed a COMPLETE tree: publishing the directory
+// before the checkout lands (what `git init` in place does) hands the losers a
+// bare .git, and the plugin loader then reports the tree as having no
+// plugin.yaml — a launch-blocking 502 whose message names the wrong cause.
+func TestFetcher_ConcurrentFetchesAllSeeCompleteTree(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not available")
+	}
+	origin := gitOrigin(t, "v1.0.0")
+
+	f := &Fetcher{CacheDir: t.TempDir()}
+	s := validSource()
+	s.GitURL, s.Ref = origin, "v1.0.0"
+
+	const n = 12
+	paths := make([]string, n)
+	errs := make([]error, n)
+	start := make(chan struct{})
+	var wg sync.WaitGroup
+	for i := range n {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			<-start
+			paths[i], errs[i] = f.Fetch(context.Background(), s)
+		}()
+	}
+	close(start)
+	wg.Wait()
+
+	for i := range n {
+		if errs[i] != nil {
+			t.Fatalf("fetch %d: %v", i, errs[i])
+		}
+		body, err := os.ReadFile(filepath.Join(paths[i], "skills", "deploy-target.md"))
+		if err != nil || string(body) != "playbook\n" {
+			t.Fatalf("fetch %d was handed an incomplete checkout at %q: %v %q", i, paths[i], err, body)
+		}
+	}
+
+	// No staging or retired leftovers: the cache holds exactly the checkout.
+	entries, err := os.ReadDir(f.CacheDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 1 {
+		names := make([]string, 0, len(entries))
+		for _, e := range entries {
+			names = append(names, e.Name())
+		}
+		t.Errorf("cache dir should hold only the checkout, got %v", names)
+	}
+}
+
+// A moving ref re-fetches, and the new tree must replace the old one wholesale
+// rather than being assembled in place under a concurrent reader's feet.
+func TestFetcher_MovingRefSwapsInTheNewTree(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not available")
+	}
+	origin := gitOrigin(t, "")
+
+	f := &Fetcher{CacheDir: t.TempDir()}
+	s := validSource()
+	s.GitURL, s.Ref = origin, "main"
+
+	first, err := f.Fetch(context.Background(), s)
+	if err != nil {
+		t.Fatalf("fetch: %v", err)
+	}
+
+	if err := os.WriteFile(filepath.Join(origin, "skills", "deploy-target.md"), []byte("revised\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gitRun(t, origin, "add", "-A")
+	gitRun(t, origin, "commit", "-m", "revise")
+
+	second, err := f.Fetch(context.Background(), s)
+	if err != nil {
+		t.Fatalf("refetch: %v", err)
+	}
+	if second != first {
+		t.Errorf("cache path changed across a moving-ref refresh: %q vs %q", second, first)
+	}
+	body, err := os.ReadFile(filepath.Join(second, "skills", "deploy-target.md"))
+	if err != nil || string(body) != "revised\n" {
+		t.Fatalf("moving ref did not pick up the new commit: %v %q", err, body)
+	}
+}
+
+func gitRun(t *testing.T, dir string, args ...string) {
+	t.Helper()
+	cmd := exec.Command("git", args...)
+	cmd.Dir = dir
+	cmd.Env = append(os.Environ(), "GIT_CONFIG_GLOBAL=/dev/null", "GIT_CONFIG_SYSTEM=/dev/null",
+		"GIT_AUTHOR_NAME=t", "GIT_AUTHOR_EMAIL=t@t", "GIT_COMMITTER_NAME=t", "GIT_COMMITTER_EMAIL=t@t")
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("git %v: %v: %s", args, err, out)
+	}
+}
+
+// gitOrigin builds a one-commit plugin repo, tagged when tag is non-empty.
+func gitOrigin(t *testing.T, tag string) string {
+	t.Helper()
+	origin := t.TempDir()
+	gitRun(t, origin, "init", "--quiet", "-b", "main")
+	if err := os.MkdirAll(filepath.Join(origin, "skills"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(origin, "skills", "deploy-target.md"), []byte("playbook\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gitRun(t, origin, "add", "-A")
+	gitRun(t, origin, "commit", "-m", "init")
+	if tag != "" {
+		gitRun(t, origin, "tag", tag)
+	}
+	return origin
 }
 
 func TestFetcher_MissingRefFailsLoudly(t *testing.T) {

@@ -9,6 +9,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -34,20 +35,33 @@ type Fetcher struct {
 	// secret VALUE, which the fetcher passes to git without logging it.
 	// Nil (or a nil return) means "public repository".
 	CredentialFor func(ctx context.Context, s PluginSource) (string, error)
+
+	mu       sync.Mutex
+	keyLocks map[string]*sync.Mutex
 }
 
 // Fetch returns a local path containing the source's repository at its ref.
+//
+// The checkout is built in a temporary sibling and moved into place with a
+// single rename, so `dest` only ever exists fully populated. Building in place
+// would publish the directory at `git init` time — a concurrent launch would
+// then be handed a tree with a .git and nothing else.
 func (f *Fetcher) Fetch(ctx context.Context, s PluginSource) (string, error) {
 	if f.CacheDir == "" {
 		return "", fmt.Errorf("pluginsource: fetcher has no cache dir")
 	}
-	dest := filepath.Join(f.CacheDir, cacheKey(s))
+	key := cacheKey(s)
+	dest := filepath.Join(f.CacheDir, key)
+
+	unlock := f.lockKey(key)
+	defer unlock()
+
 	// A pinned ref makes the checkout immutable, so an existing tree is
 	// authoritative and we skip the network entirely.
 	if _, err := os.Stat(filepath.Join(dest, ".git")); err == nil && s.PinnedRef() {
 		return dest, nil
 	}
-	if err := os.MkdirAll(filepath.Dir(dest), 0o700); err != nil {
+	if err := os.MkdirAll(f.CacheDir, 0o700); err != nil {
 		return "", err
 	}
 
@@ -60,35 +74,68 @@ func (f *Fetcher) Fetch(ctx context.Context, s PluginSource) (string, error) {
 		cred = c
 	}
 
-	if _, err := os.Stat(filepath.Join(dest, ".git")); err == nil {
-		// Moving ref: refresh in place.
-		if err := f.git(ctx, dest, cred, "fetch", "--depth", "1", "origin", s.Ref); err != nil {
-			return "", err
-		}
-		if err := f.git(ctx, dest, cred, "checkout", "--force", "FETCH_HEAD"); err != nil {
-			return "", err
-		}
-		return dest, nil
+	staging, err := os.MkdirTemp(f.CacheDir, "."+key+".staging-")
+	if err != nil {
+		return "", err
 	}
+	defer os.RemoveAll(staging) // no-op once the rename has moved it away
 
-	if err := os.MkdirAll(dest, 0o700); err != nil {
+	if err := f.git(ctx, staging, cred, "init", "--quiet"); err != nil {
 		return "", err
 	}
-	if err := f.git(ctx, dest, cred, "init", "--quiet"); err != nil {
+	if err := f.git(ctx, staging, cred, "remote", "add", "origin", s.GitURL); err != nil {
 		return "", err
 	}
-	if err := f.git(ctx, dest, cred, "remote", "add", "origin", s.GitURL); err != nil {
+	if err := f.git(ctx, staging, cred, "fetch", "--depth", "1", "origin", s.Ref); err != nil {
 		return "", err
 	}
-	if err := f.git(ctx, dest, cred, "fetch", "--depth", "1", "origin", s.Ref); err != nil {
-		_ = os.RemoveAll(dest) // don't leave a half-initialised cache entry behind
+	if err := f.git(ctx, staging, cred, "checkout", "--force", "FETCH_HEAD"); err != nil {
 		return "", err
 	}
-	if err := f.git(ctx, dest, cred, "checkout", "--force", "FETCH_HEAD"); err != nil {
-		_ = os.RemoveAll(dest)
-		return "", err
+	if err := publish(staging, dest); err != nil {
+		return "", fmt.Errorf("pluginsource: publish checkout for %q: %w", s.Name, err)
 	}
 	return dest, nil
+}
+
+// publish moves a finished checkout onto its cache path. A moving ref replaces
+// an older tree, so the previous one is renamed aside first and deleted after
+// the swap — never before, so a failed rename leaves the old tree serving.
+func publish(staging, dest string) error {
+	retired := ""
+	if _, err := os.Stat(dest); err == nil {
+		retired = dest + ".retired-" + filepath.Base(staging)
+		if err := os.Rename(dest, retired); err != nil {
+			return err
+		}
+	}
+	if err := os.Rename(staging, dest); err != nil {
+		if retired != "" {
+			_ = os.Rename(retired, dest)
+		}
+		return err
+	}
+	if retired != "" {
+		_ = os.RemoveAll(retired)
+	}
+	return nil
+}
+
+// lockKey serialises fetches of the same (url, ref) within this process, so N
+// concurrent launches on a cold pod cost one clone instead of N racing ones.
+func (f *Fetcher) lockKey(key string) func() {
+	f.mu.Lock()
+	if f.keyLocks == nil {
+		f.keyLocks = map[string]*sync.Mutex{}
+	}
+	l, ok := f.keyLocks[key]
+	if !ok {
+		l = &sync.Mutex{}
+		f.keyLocks[key] = l
+	}
+	f.mu.Unlock()
+	l.Lock()
+	return l.Unlock
 }
 
 // git runs one git command. The credential is injected via an askpass helper
