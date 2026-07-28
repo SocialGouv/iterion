@@ -11,8 +11,6 @@
   [`pkg/dispatcher/hooks.go`](../../pkg/dispatcher/hooks.go) (`Hooks.BeforeRemove`,
   `Hook.Run`), [`pkg/cli/dispatch_defaults.go`](../../pkg/cli/dispatch_defaults.go)
   (the former destructive default hook is intentionally absent),
-  [`pkg/runtime/worktree.go`](../../pkg/runtime/worktree.go)
-  (ownership/durability proof, atomic quarantine, process-quiescence proof),
   [`pkg/dispatcher/workspace.go`](../../pkg/dispatcher/workspace.go)
   (run-generation paths and external ownership tombstones),
   [`pkg/dispatcher/config.go`](../../pkg/dispatcher/config.go)
@@ -57,27 +55,27 @@ Perform workspace teardown in `runWorker` (the per-dispatch worker goroutine),
 immediately after a clean `Runner.Dispatch` return and **before**
 `postFinished`. `finishRun`'s success branch no longer cleans up.
 
-The current fail-closed sequence is:
+The sequence shipped today (`cleanupWorkspace`, pkg/dispatcher/commands.go) is:
 
-1. Retire the external ownership marker for the exact issue/run generation.
+1. Skip cleanup entirely when `git status --porcelain` reports a dirty
+   working tree — uncommitted work is never destroyed, the workspace is kept
+   and the operator is told where it is.
+2. Retire the external ownership marker for the exact issue/run generation.
    A later logical run has a different path; this generation can never become
-   authoritative again.
-2. Prove persisted run identity, explicit managed/delegated ownership, exact
-   HEAD, durable branch protection, cleanliness, and ignored-output policy.
-3. Run the snapshotted `before_remove` hook. Hook failure preserves the
-   workspace; successful hooks are followed by the complete proof again.
-4. Under Git lockfiles and a temporary guard ref, atomically rename the
-   worktree to a random same-parent `.iterion-recovery-*` path and repair its
-   Git registration. A JSON sidecar records the run, old/new paths, SHA, branch,
-   and timestamp.
-5. Remove that recovery worktree through non-forced Git cleanup only if it
-   remains clean and no same-user process holds a cwd, open descriptor, or
-   writable memory mapping inside it across the quiescence window. Linux
-   performs a `/proc` census (same-user inspection failures are fail-closed for
-   processes created during the worktree lifetime), and macOS uses `lsof`.
-   Windows treats the proof as unsupported because `FILE_SHARE_DELETE` permits
-   writable delete-pending handles. Any late activity or inconclusive proof
-   retains the registered recovery copy and manifest.
+   authoritative again. A failure to retire preserves the workspace.
+3. Run the snapshotted `before_remove` hook. A failing hook is **logged and
+   removal proceeds** — the hook is operator code, not a safety gate.
+4. Remove the owned directory for that generation (`RemoveForRun`).
+5. Deregister that exact linked worktree against the host repository's common
+   gitdir (`git worktree remove --force`), but only once the path is confirmed
+   absent — if a late writer recreated it, the registration is retained
+   fail-closed.
+
+A stronger teardown proof — exact-HEAD/durable-ref ownership verification,
+atomic quarantine to a recovery path with a sidecar manifest, and a
+live-process quiescence census before non-forced Git cleanup — is **not**
+implemented here. It is follow-up work; nothing in this ADR should be read as
+describing behaviour that exists.
 
 The hook receives the same `ITERION_*` environment and the same
 config-snapshotted `Hooks` value the other hooks use, so a mid-flight reload
@@ -124,9 +122,9 @@ drains cleanup via the worker's existing `workersWG` membership.
 ## Consequences
 
 - The default `git worktree` workflow is now correct under `cleanup_on_done` /
-  `cleanup_on_terminal`: clean and quiescent worktrees are deregistered without
-  force. Active or changed recovery copies remain deliberately visible in
-  `git worktree list` and in their manifest until an operator resolves them.
+  `cleanup_on_terminal`: the removed checkout is deregistered from the host
+  repository instead of being left behind as a stale `git worktree list` entry.
+  A workspace with uncommitted changes is kept, not cleaned.
 - Workspace paths include the logical run generation. Re-dispatching a ticket
   cannot collide with an old retired path, even if an old absolute-path writer
   wakes after the new run starts.
@@ -138,11 +136,14 @@ drains cleanup via the worker's existing `workersWG` membership.
   reads `run.json`, not the workspace tree).
 - `cleanupWorkspace`'s signature changed to take the snapshotted `*Hook` and
   env; its only caller is `runWorker`.
-- Follow-up safety hardening (2026-07): a failed or state-changing
-  `before_remove` now preserves the workspace. The shipped destructive
-  `worktree remove --force` hook was removed; dispatcher teardown goes through
-  runtime's exact-HEAD/durable-ref proof, atomic quarantine, live-process
-  census, and non-forced Git cleanup. This closes clean-commit,
-  ignored-output, direct-writer, and inter-run path-reuse loss windows.
+- Follow-up safety hardening (2026-07): the destructive `before_remove` default
+  hook was removed. Teardown now retires an ownership marker, skips cleanup
+  entirely when the tree is dirty, removes the owned generation directory, then
+  deregisters that exact linked worktree against the host repository's common
+  gitdir. A failing `before_remove` hook is still only logged — removal
+  proceeds. The runtime-side exact-HEAD/durable-ref proof, atomic quarantine
+  and live-process census are **not** implemented on this branch; they are
+  tracked as follow-up work, so the direct-writer and clean-commit loss windows
+  remain open.
 - Default `workspace.persist: keep` is unaffected — teardown (and therefore the
   hook) remains a no-op, asserted by `TestCleanupWorkspace_SkippedUnderKeepPolicy`.

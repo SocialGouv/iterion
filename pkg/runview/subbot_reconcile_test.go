@@ -16,7 +16,7 @@ schema result:
   ok: bool
 
 tool slow:
-  command: ` + "`until [ -f \"$ITERION_RECONCILE_CHILD_RELEASE\" ]; do sleep 10ms; done; printf '{\"ok\":true}'`" + `
+  command: ` + "`until [ -f \"$ITERION_RECONCILE_CHILD_RELEASE\" ]; do sleep 0.05; done; printf '{\"ok\":true}'`" + `
   output: result
 
 workflow reconcile_slow_child:
@@ -85,6 +85,8 @@ func TestServicePeriodicReconcileDoesNotFailExecutingSubbot(t *testing.T) {
 	defer func() { _ = releaseChild() }()
 
 	var childID string
+	parentStatus := store.RunStatus("")
+	parentErr := ""
 	deadline := time.Now().Add(30 * time.Second)
 	for childID == "" && time.Now().Before(deadline) {
 		runs, listErr := svc.ListRunRecordsCtx(context.Background(), ListFilter{})
@@ -92,20 +94,37 @@ func TestServicePeriodicReconcileDoesNotFailExecutingSubbot(t *testing.T) {
 			t.Fatalf("ListRunRecordsCtx: %v", listErr)
 		}
 		for _, run := range runs {
-			if run.ParentRunID == res.RunID {
+			switch {
+			case run.ParentRunID == res.RunID:
 				childID = run.ID
 				if run.Status != store.RunStatusRunning {
 					t.Fatalf("child was reconciled during execution: status=%q error=%q", run.Status, run.Error)
 				}
-				break
+			case run.ID == res.RunID:
+				parentStatus, parentErr = run.Status, run.Error
 			}
+		}
+		// A parent that already left `running` will never spawn the child, so
+		// keep waiting only while it can still get there. Without this the
+		// timeout reports "never persisted" for every upstream launch failure
+		// alike, 30s after the cause is already on the parent record.
+		if childID == "" && parentStatus != "" && parentStatus != store.RunStatusRunning {
+			t.Fatalf(
+				"parent reached %q (error %q) without ever persisting its subbot child",
+				parentStatus,
+				parentErr,
+			)
 		}
 		if childID == "" {
 			time.Sleep(50 * time.Millisecond)
 		}
 	}
 	if childID == "" {
-		t.Fatal("subbot child run was never persisted")
+		t.Fatalf(
+			"subbot child run was never persisted within 30s (parent status %q, error %q)",
+			parentStatus,
+			parentErr,
+		)
 	}
 
 	// Drive repeated reconciliation passes explicitly while the gated child
