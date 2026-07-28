@@ -922,7 +922,20 @@ tool post_feedback:
             headers={"Content-Type": "application/json", "X-Iterion-Run": s(pub_token),
                      "User-Agent": "vetty-dep-update-guard"})
         try:
-            with urllib.request.urlopen(req, timeout=120) as resp:
+            # A redirect would turn this POST into a GET (urllib's default),
+            # and the endpoint's route is POST-only — the request would then
+            # miss it and be answered by the auth middleware. Refuse to follow
+            # instead of silently degrading into an unexplainable 401.
+            class _NoRedirect(urllib.request.HTTPRedirectHandler):
+                def redirect_request(self, req, fp, code, msg, headers, newurl):
+                    raise urllib.error.HTTPError(
+                        req.full_url, code,
+                        "publish endpoint redirected to " + str(newurl) +
+                        " (a redirect turns the POST into a GET and misses the route)",
+                        headers, fp)
+
+            opener = urllib.request.build_opener(_NoRedirect)
+            with opener.open(req, timeout=120) as resp:
                 res = json.loads(resp.read().decode("utf-8"))
             out(bool(res.get("published")),
                 comment_url=str(res.get("review_url") or ""),
@@ -935,9 +948,19 @@ tool post_feedback:
             detail = ""
             try: detail = e.read().decode("utf-8")[:300]
             except Exception: pass
+            final = ""
+            try: final = e.geturl()
+            except Exception: pass
+            # Name the URL actually called and the one the server answered
+            # from: a 401 that says nothing else is indistinguishable between
+            # a bad token, a missed route and a redirect, and that ambiguity
+            # already cost two debugging cycles.
+            gate_fallback = "publish endpoint HTTP %s at %s%s: %s" % (
+                e.code, endpoint,
+                (" (answered from " + final + ")") if final and final != endpoint else "",
+                detail or e.reason)
             # Fall through to the direct comment: the verdict still has to
             # reach the PR. The gate cannot follow it there.
-            gate_fallback = "publish endpoint HTTP %s: %s" % (e.code, detail)
         except Exception as e:
             gate_fallback = "publish endpoint error: " + str(e)
     else:

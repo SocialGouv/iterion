@@ -165,6 +165,67 @@ func TestDepUpdateGuardGateVerdict(t *testing.T) {
 		}
 	})
 
+	// A redirect turns urllib's POST into a GET, which misses the POST-only
+	// route and is answered by the auth middleware — a 401 that looks like a
+	// bad token. Refuse to follow, and name the redirect.
+	t.Run("a redirect is reported, not followed into a misleading 401", func(t *testing.T) {
+		var hits int
+		redir := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			hits++
+			if r.Method != "POST" {
+				t.Errorf("the endpoint must never be reached by %s — a redirect degraded the method", r.Method)
+			}
+			http.Redirect(w, r, "/elsewhere", http.StatusFound)
+		}))
+		defer redir.Close()
+
+		body := script
+		for ref, val := range map[string]string{
+			"{{input.pr_url}}":             `"https://github.com/acme/widgets/pull/7"`,
+			"{{input.verdict}}":            `"committed"`,
+			"{{input.audit_summary}}":      `"a"`,
+			"{{input.cves}}":               `""`,
+			"{{input.malware_signals}}":    `""`,
+			"{{input.align_summary}}":      `""`,
+			"{{input.validate_summary}}":   `""`,
+			"{{input.escalation}}":         `""`,
+			"{{input.commit_summary}}":     `""`,
+			"{{secrets.forge_token.path}}": `""`,
+			"{{vars.forge_publish_url}}":   `"` + redir.URL + `/api/v1/forge/publish-review"`,
+			"{{vars.forge_publish_token}}": `"run-token"`,
+			"{{vars.gate_enabled}}":        `True`,
+			"{{vars.gate_context}}":        `"iterion/review"`,
+		} {
+			body = strings.ReplaceAll(body, ref, val)
+		}
+		f, err := os.CreateTemp(t.TempDir(), "feedback-*.py")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := f.WriteString(body); err != nil {
+			t.Fatal(err)
+		}
+		f.Close()
+		out, err := exec.Command("python3", f.Name()).Output()
+		if err != nil {
+			t.Fatalf("post_feedback failed: %v (out %q)", err, out)
+		}
+		var res map[string]any
+		if err := json.Unmarshal(out, &res); err != nil {
+			t.Fatalf("not JSON: %v (%q)", err, out)
+		}
+		reason, _ := res["gate_skipped_reason"].(string)
+		if !strings.Contains(reason, "redirect") {
+			t.Errorf("the reason must name the redirect, got %q", reason)
+		}
+		if !strings.Contains(reason, "/api/v1/forge/publish-review") {
+			t.Errorf("the reason must name the URL actually called, got %q", reason)
+		}
+		if hits != 1 {
+			t.Errorf("the redirect must not be followed, got %d request(s)", hits)
+		}
+	})
+
 	t.Run("gate disabled publishes the review without a status", func(t *testing.T) {
 		pub, res := run(t, "committed", "iterion/review", false)
 		if pub.Gate != nil {
