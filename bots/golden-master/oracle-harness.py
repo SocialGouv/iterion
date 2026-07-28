@@ -310,6 +310,28 @@ def missing_archetypes(corpus, mutants):
     return gaps
 
 
+
+
+def sealed_dir_for(ws):
+    """THE rule for where a held-out set lives once sealed. One implementation.
+
+    An earlier fix made the campaign and the gate derive this path from the same
+    rule instead of one dictating it to the other. The very next commit added a
+    third party -- the node that promotes a spent set to published evidence --
+    with its own hand-written copy of the derivation. It pointed elsewhere,
+    promoted nothing, and reported success saying "nothing was held out, or it
+    was already promoted": a message that makes the failure look like a
+    legitimate state.
+
+    Duplicating a rule is what broke it the first time. Callers import this.
+    """
+    explicit = os.environ.get("GM_SEALED_DIR")
+    if explicit:
+        return explicit
+    root = os.environ.get("GM_SCRATCH", os.path.join(ws, ".."))
+    return os.path.join(root, "gm-holdout-" + (os.path.basename(os.path.abspath(ws)) or "default"))
+
+
 def seal_holdout(gm_dir, sealed_dir):
     """Move the held-out set OUT of the worktree, once, at the first gate.
 
@@ -603,9 +625,7 @@ def main():
     # basename is the run id inside an iterion worktree, and a stable repo name
     # outside one. A selfcheck that seals therefore cannot strand the held-out
     # set somewhere the gate will not look, and two runs cannot share a pile.
-    sealed_dir = os.environ.get("GM_SEALED_DIR") or os.path.join(
-        os.environ.get("GM_SCRATCH", os.path.join(ws, "..")),
-        "gm-holdout-" + (os.path.basename(os.path.abspath(ws)) or "default"))
+    sealed_dir = sealed_dir_for(ws)
     floor = int(os.environ.get("GM_MUTATION_FLOOR", "90"))
     mode = os.environ.get("GM_MODE", "gate")   # gate | record | selfcheck
 

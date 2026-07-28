@@ -519,6 +519,28 @@ tool oracle_run:
         return gaps
 
 
+
+
+    def sealed_dir_for(ws):
+        """THE rule for where a held-out set lives once sealed. One implementation.
+
+        An earlier fix made the campaign and the gate derive this path from the same
+        rule instead of one dictating it to the other. The very next commit added a
+        third party -- the node that promotes a spent set to published evidence --
+        with its own hand-written copy of the derivation. It pointed elsewhere,
+        promoted nothing, and reported success saying "nothing was held out, or it
+        was already promoted": a message that makes the failure look like a
+        legitimate state.
+
+        Duplicating a rule is what broke it the first time. Callers import this.
+        """
+        explicit = os.environ.get("GM_SEALED_DIR")
+        if explicit:
+            return explicit
+        root = os.environ.get("GM_SCRATCH", os.path.join(ws, ".."))
+        return os.path.join(root, "gm-holdout-" + (os.path.basename(os.path.abspath(ws)) or "default"))
+
+
     def seal_holdout(gm_dir, sealed_dir):
         """Move the held-out set OUT of the worktree, once, at the first gate.
 
@@ -813,9 +835,7 @@ tool oracle_run:
         # stable repo name outside one. A selfcheck that seals therefore cannot
         # strand the held-out set where the gate will not look, and two runs
         # cannot share a pile.
-        sealed_dir = os.environ.get("GM_SEALED_DIR") or os.path.join(
-            os.environ.get("GM_SCRATCH", os.path.join(ws, "..")),
-            "gm-holdout-" + (os.path.basename(os.path.abspath(ws)) or "default"))
+        sealed_dir = sealed_dir_for(ws)
         floor = int(os.environ.get("GM_MUTATION_FLOOR", "90"))
         mode = os.environ.get("GM_MODE", "gate")   # gate | record | selfcheck
 
@@ -1116,17 +1136,38 @@ tool promote_audit:
     import os
     import shutil
 
+    import importlib.util
+
     ws = {{vars.workspace_dir}}
     gm_dir = os.path.join(ws, {{vars.oracle_dir}})
-    sealed = os.path.join({{vars.scratch_dir}}, "..", "gm-holdout-" + os.path.basename(os.path.abspath(ws)))
-    sealed = os.path.abspath(sealed)
+
+    # The sealed path is NOT re-derived here. A previous version wrote its own
+    # copy of the rule, pointed somewhere the harness never seals, promoted
+    # nothing, and reported success. Duplicating the rule is exactly what broke
+    # the seal the first time; this asks the harness the harness materialised.
+    spec = importlib.util.spec_from_file_location("gm_harness", os.path.join(gm_dir, "harness.py"))
+    if spec is None or spec.loader is None:
+        print(json.dumps({"promoted": 0, "audit_dir": "", "notice":
+                          "no harness at %s/harness.py, so the sealed path cannot be resolved. "
+                          "Nothing was promoted, and this is a FAILURE rather than an empty "
+                          "state." % gm_dir}))
+        raise SystemExit(0)
+    gm = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(gm)
+    sealed = os.path.abspath(gm.sealed_dir_for(ws))
     cycle = {{run.id}}
     dest = os.path.join(gm_dir, "mutants", "audit", cycle)
 
     out = {"promoted": 0, "audit_dir": "", "notice": ""}
     if not os.path.isdir(sealed) or not os.listdir(sealed):
-        out["notice"] = ("no sealed set to promote at %s — nothing was held out, "
-                         "or it was already promoted." % sealed)
+        # Distinguish the two, because conflating them is what let a silent
+        # no-op read as success: a converged gate SCORED a held-out set, so at
+        # this point an empty sealed directory means the path is wrong, not
+        # that nothing was withheld.
+        out["notice"] = ("nothing to promote at %s. The gate converged, which means it "
+                         "scored a held-out set — so this directory being empty means the "
+                         "path is WRONG, not that none was withheld. The published evidence "
+                         "for this cycle is missing." % sealed)
         print(json.dumps(out)); raise SystemExit(0)
 
     os.makedirs(dest, exist_ok=True)
