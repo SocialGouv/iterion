@@ -93,29 +93,80 @@ Webhook config ([`pkg/webhooks/types.go`](../pkg/webhooks/types.go)):
 
 ## Activating the blocking gate on a repo
 
-The code posts the status unconditionally (advisory). To make it **block**:
+The code posts the status unconditionally (advisory). To make it **block**,
+add the gate's context to the branch-protection ruleset's required status
+checks (for this repo, the "main protected — merge queue" ruleset — see
+[merge-policy.md](merge-policy.md)):
 
-1. Enable `review_on_sync` on the repo's inbound webhook.
-2. Add `revi/review` to the branch-protection ruleset's required status
-   checks (for this repo, the "main protected — merge queue" ruleset — see
-   [merge-policy.md](merge-policy.md)). Example with `gh`:
+```sh
+# inspect the current ruleset, add the context to required_status_checks,
+# then PUT it back:
+gh api repos/OWNER/REPO/rulesets/<id>
+```
 
-   ```sh
-   # inspect the current ruleset, add "revi/review" to required_status_checks,
-   # then PUT it back:
-   gh api repos/OWNER/REPO/rulesets/<id>
-   ```
+Re-review on push is **not** something you have to remember: a status lives
+on one commit, so a gate that did not follow the head would leave the check
+absent — indistinguishable from "never reviewed" and unblockable by another
+review. Provisioning therefore turns `review_on_sync` on by itself for any
+repo where a co-enabled bot declares the `statuses` scope. The field is
+still settable per webhook (`review_on_sync` on the webhook API) for the
+cases the derivation does not cover.
 
 Repo admins keep their merge-queue bypass, so a stuck gate is never a hard
 block for an admin.
 
+## One gate, several bots
+
+A required check applies to **every** pull request. So on a repo where
+different bots review different PRs — a dependency guard (Vetty) on the
+update bot's PRs, the reviewer on the humans' — neither bot's own context
+can be the required one: whichever bot did not run leaves the check
+permanently absent and blocks the PR. Requiring both is worse, since each
+then blocks the other's PRs.
+
+Give them the same context instead. `gate_context` is a var on every bot
+that can gate (`revi/review` on Revi, `vetty/deps` on Vetty by default), so
+the repo declares one shared name and each bot fills it for the PRs it owns:
+
+```sh
+iterion remote forge repo-bots create --data '{
+  "connection_id": "<conn-id>",
+  "repo": "owner/repo",
+  "bot_ids": ["review-pr", "dep-update-guard"],
+  "launch_vars": { "gate_context": "iterion/review" }}'
+```
+
+A review webhook is also where `overlap: supersede` earns its keep: with
+re-review on push, a burst of commits launches a run per push and the earlier
+ones reach a verdict about code that no longer exists. Set it on the same
+call (`"overlap": "supersede"`); it is persisted on the integration like the
+launch vars, so a later `bots enable` does not silently drop it.
+
+Pin it through the **integration's** `launch_vars`, not the webhook's:
+provisioning rewrites the whole webhook config from the bots' manifests, so
+an override PATCHed onto the webhook is dropped at the next enable. The
+integration's launch vars are persisted and re-applied on every provision.
+
+Then require `iterion/review` — one check, whichever bot owns the PR.
+
 ## Overriding a finding
 
-Today: push a fix (re-reviews → status flips green) or, for a disputed
-finding, an **admin** bypasses the merge queue. A trust-gated
-`/revi approve <reason>` PR command that force-greens the status with an
-audit trail is the planned fast-follow (a maintainer, not only an admin,
-resolving a false positive from the PR itself).
+Three ways, in order of preference:
+
+1. **Push a fix** — the status re-reviews on the new head (needs
+   `review_on_sync`) and flips green when the finding is gone.
+2. **`/revi approve [reason]`** — a **maintainer** comments this on the PR to
+   force-green the `revi/review` status on the current head, for a finding
+   they dispute. Authorized through the **same PR-comment command gate as
+   every other `/command`**: the commenter must hold a live repo role at or
+   above `MinReplierRole` (or be in `AuthorizedRepliers`), verified via the
+   forge permission API, and the review bot's own comment can't self-approve
+   (WhoAmI loop-guard) — an arbitrary contributor cannot wave a finding
+   through. The status carries "approved by @user: reason" and links to the
+   comment as the audit trail. It does **not** launch a re-review. *(GitHub +
+   Forgejo today; GitLab `/revi approve` on a note is a follow-on.)*
+3. **Admin merge-queue bypass** — the last resort, always available to repo
+   admins.
 
 ## <a name="questions"></a>Questions vs findings
 

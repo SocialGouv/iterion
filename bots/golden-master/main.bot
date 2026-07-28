@@ -1,0 +1,1377 @@
+## ═══════════════════════════════════════════════════════════════════
+## golden-master (Goldy) — build a behavioural non-regression net for an
+## existing application, and PROVE it is not blind.
+##
+## Shape (ADR-058 minimal framing): ONE campaign agent writes the oracle, then
+## a deterministic counter-test decides whether it is worth anything. The
+## graph does not decompose the writing; it constitutes the oracle-of-the-oracle,
+## which is precisely the real-feedback verify gate ADR-058 says to keep.
+##
+## SEPARATION OF POWERS — the whole design rests on it:
+##   the agent writes WHAT is compared (corpus, canonicalisation, mutants)
+##   this file decides HOW the verdict is reached (oracle_run + oracle_gate)
+## If one party owned both, a comparator returning "identical" for everything
+## would score a perfect run. That is not hypothetical: a public-sector
+## modernisation shipped a PDF comparator that validated, for an entire
+## milestone, pages carrying not one character.
+## ═══════════════════════════════════════════════════════════════════
+
+vars:
+  ## Free-text scope for the corpus. Empty = the campaign picks the surface.
+  ## Deliberately not an enum of frameworks: this bot is repo-agnostic and all
+  ## stack knowledge lives in skills.
+  surface_scope: string = ""
+  workspace_dir: string = "${PROJECT_DIR}"
+  scratch_dir:   string = "${PROJECT_SCRATCH_DIR}/golden-master"
+  ## Neutral dotdir in the TARGET repo (the .sec-audit/ pattern), committed.
+  ## It is both the net and a deliverable a client can read and re-run.
+  oracle_dir:    string = ".golden-master"
+  ## Minimum share of VALID mutants that must be detected. A floor, never a
+  ## ceiling: blind_lanes must be empty regardless of the score.
+  mutation_floor: int = 90
+  ## Width floor for the corpus. Twenty-five well-chosen entries beat two
+  ## hundred variations of one page.
+  min_corpus: int = 25
+  ## Bounded hardening loop. Exhausting it ships what is banked and says so.
+  max_passes: int = 6
+  ## Isolated adversarial lens proposing evasive mutants. Off makes the run
+  ## cheaper and the oracle weaker.
+  adversarial: bool = true
+  source_issue_ref: string = ""
+
+## ─── Prompts ───────────────────────────────────────────────────────
+
+prompt campaign_system:
+  You build behavioural non-regression nets for existing applications, and you
+  are judged on whether the net can SEE — never on how green it looks.
+
+  Read the bundled skills before acting: `golden-master` for the method,
+  `surface-discovery` for the corpus, `deterministic-fixture` for freezing the
+  world, `canonicalization` for the comparison, `oracle-mutation` for the
+  counter-test. They carry the traps that make this work fail in practice.
+
+  You write WHAT is compared. A deterministic harness you cannot edit decides
+  whether it counts. It will reject a mutant that changes nothing, a declared
+  target that does not move, drift on entries a mutant does not target, and a
+  mutant set missing a required archetype. None of that is negotiable by
+  argument — only by fixing the oracle.
+
+  Two rules override any instinct to make the run pass:
+
+  1. A reference recorded against absent data can never fail and proves
+     nothing. Look at what your references actually CONTAIN before recording.
+     A few hundred bytes where you expected a listing is the signal.
+  2. Never narrow the corpus to go green. A documented blind spot is a usable
+     artefact; a green run obtained by deleting what failed is not.
+
+  Work in stride: commit as you go, so an interrupted run leaves landed work.
+
+prompt campaign_user:
+  Build (or repair) the behavioural non-regression net in `{{vars.oracle_dir}}/`
+  of the repository at `{{vars.workspace_dir}}`.
+
+  Surface scope: {{vars.surface_scope}}
+
+  Corpus width floor: {{vars.min_corpus}} entries.
+  Mutation floor: {{vars.mutation_floor}}% of valid mutants detected.
+
+  Produce, per the `golden-master` skill's layout: `config.json`, `corpus.json`,
+  `canon/rules.py`, the recorded `refs/`, and `mutants/` including a SEALED
+  `mutants/holdout/` you write first and then stop consulting.
+
+  Required archetypes are enforced by the harness for every surface class your
+  corpus uses. Read `oracle-mutation` for what each one catches and why an
+  uncovered one makes the whole figure unearned.
+
+  {{input.fail_log}}
+
+  When a previous pass left a failure above, fix the ORACLE, not the
+  measurement. Lowering a floor, deleting a mutant, or removing an entry that
+  refused to move are all ways of passing without seeing.
+
+  Report ONE short line in `work_remaining`: what is left to do, or "nothing".
+  Anything you want to say at length goes in `{{vars.oracle_dir}}/REPORT.md`,
+  which you commit — a report a human can read and diff is worth more than a
+  paragraph in a status field, and this field must parse strictly.
+
+prompt adversary_system:
+  You are an adversarial lens on a non-regression net. Your job is to propose
+  mutations that the existing comparators would MISS.
+
+  You are shown the corpus and the canonicalisation rules. You are deliberately
+  NOT shown the existing mutants, so you cannot converge on them.
+
+  Favour changes a lazy comparator survives: a value differing only in case or
+  accent, a replacement of identical length, a reordering among equal-ranking
+  items, a field set to null rather than removed, the first and last element of
+  a page where an off-by-one hides, a refusal whose status changes meaning
+  while staying a refusal.
+
+prompt adversary_user:
+  Repository: `{{vars.workspace_dir}}`, oracle in `{{vars.oracle_dir}}/`.
+
+  Read `{{vars.oracle_dir}}/corpus.json` and `{{vars.oracle_dir}}/canon/rules.py`.
+  Do NOT read `{{vars.oracle_dir}}/mutants/`.
+
+  Write new mutants under `{{vars.oracle_dir}}/mutants/` following the contract
+  in the `oracle-mutation` skill: `apply.sh`, `revert.sh`, `meta.json`. Each one
+  must be a change you expect these canonicalisation rules to swallow.
+
+  Establish `targets` by observation — apply the mutant, see what actually
+  moves, declare that. A target declared on a guess is reported as a blind lane
+  and the guess is what was wrong.
+
+## ─── Schemas ───────────────────────────────────────────────────────
+
+schema campaign_input:
+  fail_log: string
+
+## One field, deliberately. The graph reads NONE of what a campaign reports —
+## the deterministic gate is the sole authority and the agent's self-assessment
+## is irrelevant by design. Every field beyond this one was either unread
+## (`summary`, `corpus_size`), unauthoritative (`oracle_ready` — the gate
+## decides), or derivable from the artefact itself (`commits_this_pass` is
+## `git log`). Required fields nobody reads can only ever cost: one run burned
+## six LLM round-trips failing to emit them, alternating between two of them,
+## and would have failed the delegation outright a few attempts later.
+## The narrative belongs in the committed REPORT.md, which a human can read,
+## diff and audit — not in a control-plane message that must parse strictly.
+schema campaign_output:
+  work_remaining: string
+
+schema adversary_output:
+  mutants_added: int
+  summary: string
+
+## The deterministic verdict. Not one of these fields is an LLM opinion.
+schema mutation_report:
+  stable: bool
+  noop_silent: bool
+  total: int
+  valid: int
+  detected: int
+  score_pct: int
+  collateral: int
+  uncontrolled: string[]
+  revert_clean: bool
+  blind_lanes: json
+  missing_archetypes: json
+  holdout_detected: int
+  holdout_total: int
+  ## Width, counted on DISTINCT references. Two entries whose canonical
+  ## reference is byte-identical are one observation, so corpus_distinct is
+  ## what the floor is applied to; corpus_total is kept beside it because
+  ## "11 distinct out of 14 declared" is a diagnosis and "too narrow" is not.
+  corpus_total: int
+  corpus_distinct: int
+  duplicate_refs: json
+  ## The emitted net must be runnable from a clean checkout. A gitignored
+  ## harness ships references nobody can replay — the very defect this bot
+  ## exists to expose in other people's deliveries.
+  runner_replayable: bool
+  ## Held-out mutants that repeat an already-scored, already-published one.
+  ## Must be empty: a set the hardening loop can read is not held out.
+  holdout_reused: string[]
+  log_tail: string
+
+schema audit_state:
+  promoted: int
+  audit_dir: string
+  notice: string
+
+schema gate_state:
+  converged: bool
+  fail_log: string
+
+schema emit_input:
+  score_pct: int
+  holdout_detected: int
+  holdout_total: int
+
+schema emit_output:
+  runner_path: string
+  report_path: string
+
+## ─── Nodes ─────────────────────────────────────────────────────────
+
+agent oracle_campaign:
+  backend: "claude_code"
+  model: "${ITERION_VIBE_MODEL_CLAUDE:-claude-opus-5}"
+  reasoning_effort: "${ITERION_VIBE_EFFORT_CLAUDE:-high}"
+  input: campaign_input
+  output: campaign_output
+  system: campaign_system
+  user: campaign_user
+  session: fresh
+  interaction: human
+  skills: ["golden-master", "surface-discovery", "deterministic-fixture", "canonicalization", "oracle-mutation", "binary-lane"]
+
+## adversary_gate lifts vars.adversarial into a bool output field so both
+## outgoing edges test the same name (C012-exhaustive). No LLM, no shell.
+compute adversary_gate:
+  output: adversary_state
+  expr:
+    adversarial: "vars.adversarial"
+
+schema adversary_state:
+  adversarial: bool
+
+## Isolated on purpose, and a judge rather than an agent: a distinct lens is a
+## PROPERTY of the check, not a decomposition of the work. Merging it into the
+## campaign would let the same context that wrote the comparators also decide
+## what could evade them.
+judge mutants_adversary:
+  backend: "claude_code"
+  model: "${ITERION_GOLDEN_MASTER_ADVERSARY_MODEL:-claude-opus-5}"
+  reasoning_effort: "${ITERION_GOLDEN_MASTER_ADVERSARY_EFFORT:-high}"
+  output: adversary_output
+  system: adversary_system
+  user: adversary_user
+  session: fresh
+  skills: ["oracle-mutation"]
+
+## oracle_run — THE deterministic half. Boots the app, proves the capture is
+## reproducible, then injects each mutation and reports what the oracle saw.
+## Bot-owned and not editable by the campaign: that is the entire point.
+## A reviewable standalone copy lives at `oracle-harness.py` in this bundle;
+## keep the two in sync. stdlib only — no venv, no pip, no egress.
+tool oracle_run:
+  output: mutation_report
+  language: py
+  script: |
+    import os
+    null = None; true = True; false = False  # JSON-literal shim for missing refs
+    os.environ['GM_WORKSPACE'] = {{vars.workspace_dir}}
+    os.environ['GM_DIR'] = {{vars.oracle_dir}}
+    os.environ['GM_MUTATION_FLOOR'] = str({{vars.mutation_floor}})
+    # GM_SEALED_DIR n'est PAS impose ici : la campagne scelle aussi (selfcheck),
+    # dans un autre processus et sans cet environnement. Imposer le chemin d'un
+    # seul cote deplace les mutants la ou l'autre ne regarde pas. Les deux cotes
+    # derivent donc le meme chemin de la meme regle, dans le harnais.
+    os.environ['GM_MODE'] = 'gate'  # force: un GM_MODE herite ferait passer la porte en selfcheck
+    import hashlib
+    import http.cookiejar
+    import importlib.util
+    import json
+    import os
+    import shlex
+    import shutil
+    import subprocess
+    import sys
+    import time
+    import urllib.error
+    import urllib.parse
+    import urllib.request
+
+    # ─── Layout of .golden-master/ in the target repo ───────────────────────────
+    #
+    #   config.json      how to bring the app up/down, base_url, personas   (agent)
+    #   corpus.json      the request catalogue                              (agent)
+    #   canon/rules.py   canonicalize(entry, status, headers, body) -> str  (agent)
+    #   refs/<id>.txt    captured references                                (agent)
+    #   mutants/<id>/    apply.sh, revert.sh, meta.json                     (agent)
+    #   mutants/holdout/<id>/                                               (agent)
+    #   REPORT.md, verify-oracle.sh                                    (emitted)
+
+    # Required archetypes per surface class. Deliberately embedded HERE rather than
+    # read from the skill: the skill guides the agent, this constant binds it. An
+    # enforcement rule the author of the mutants can edit is not an enforcement
+    # rule. `skills/oracle-mutation.md` documents each entry and why it exists —
+    # keep the two in sync, but this one decides.
+    REQUIRED_ARCHETYPES = {
+        "http":   ["value_change", "order_flip", "subset", "status_change", "field_drop"],
+        "binary": ["content_empty", "value_change"],
+        "screen": ["style_shift"],
+        "asset":  ["content_change"],
+    }
+
+    CONTROL_SAMPLE = 6          # non-target entries replayed per mutant, for collateral
+    BOOT_TIMEOUT_S = 300
+    CMD_TIMEOUT_S = 1800
+
+
+    def log(msg):
+        print(msg, file=sys.stderr, flush=True)
+
+
+    def run(cmd, cwd, timeout=CMD_TIMEOUT_S):
+        """Run a shell command, returning (exit_code, combined_output)."""
+        try:
+            p = subprocess.run(
+                ["sh", "-c", cmd], cwd=cwd, stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT, text=True, timeout=timeout,
+            )
+            return p.returncode, p.stdout or ""
+        except subprocess.TimeoutExpired as e:
+            return 124, "timeout after %ss: %s" % (timeout, (e.output or "")[-500:])
+        except OSError as e:
+            return 127, "could not execute: %s" % e
+
+
+    # ─── Agent-authored canonicalisation, loaded as a module ────────────────────
+
+    def load_canon(gm_dir):
+        path = os.path.join(gm_dir, "canon", "rules.py")
+        if not os.path.isfile(path):
+            raise SystemExit("canon/rules.py is missing — the campaign must write it")
+        spec = importlib.util.spec_from_file_location("gm_canon", path)
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+        if not hasattr(mod, "canonicalize"):
+            raise SystemExit("canon/rules.py defines no canonicalize(entry, status, headers, body)")
+        return mod
+
+
+    # ─── HTTP capture ───────────────────────────────────────────────────────────
+
+    class Session:
+        """One persona's HTTP session: cookie jar + form login."""
+
+        def __init__(self, base_url):
+            self.base_url = base_url.rstrip("/")
+            self.jar = http.cookiejar.CookieJar()
+            self.opener = urllib.request.build_opener(
+                urllib.request.HTTPCookieProcessor(self.jar)
+            )
+
+            class _NoRedirect(urllib.request.HTTPRedirectHandler):
+                def redirect_request(self, *_a, **_kw):
+                    return None
+
+            self.no_redirect_opener = urllib.request.build_opener(
+                urllib.request.HTTPCookieProcessor(self.jar), _NoRedirect()
+            )
+
+        def fetch(self, method, path, fields=None, timeout=60, follow=True):
+            """follow=False captures the redirect ITSELF.
+
+            An authorisation refusal that answers 302 -> /login records the login
+            page as its reference when redirects are followed: stable, plausible,
+            and blind to the refusal it was meant to cover.
+            """
+            url = self.base_url + path
+            data = None
+            headers = {"Accept": "*/*", "User-Agent": "iterion-golden-master/1"}
+            if fields:
+                data = urllib.parse.urlencode(fields).encode()
+                headers["Content-Type"] = "application/x-www-form-urlencoded"
+            req = urllib.request.Request(url, data=data, headers=headers, method=method)
+            opener = self.opener if follow else self.no_redirect_opener
+            try:
+                with opener.open(req, timeout=timeout) as r:
+                    return r.status, dict(r.headers), r.read()
+            except urllib.error.HTTPError as e:
+                return e.code, dict(e.headers or {}), e.read()
+            except Exception as e:
+                return 0, {}, ("TRANSPORT-ERROR: %s" % e).encode()
+
+        def login(self, spec):
+            """Form login. Re-reads any CSRF token the form exposes first.
+
+            Defensive on a missing token: a baseline may have no CSRF protection at
+            all while its modernised target does. Requiring a token here would make
+            the harness unusable on the very baseline it must capture.
+            """
+            path = spec.get("path", "/login")
+            fields = dict(spec.get("fields", {}))
+            token_field = spec.get("csrf_field")
+            if token_field:
+                _, _, body = self.fetch("GET", path)
+                tok = extract_input_value(body, token_field)
+                if tok:
+                    fields[token_field] = tok
+            status, _, _ = self.fetch(spec.get("method", "POST"), path, fields=fields)
+            return status
+
+
+    def extract_input_value(body, name):
+        """Pull `value` out of <input name="<name>" value="…">. No HTML parser: the
+        harness must not depend on how well-formed the page is."""
+        try:
+            text = body.decode("utf-8", "replace")
+        except Exception:
+            return None
+        needle = 'name="%s"' % name
+        i = text.find(needle)
+        if i < 0:
+            return None
+        seg = text[max(0, i - 300): i + 300]
+        k = seg.find('value="')
+        if k < 0:
+            return None
+        return seg[k + 7: seg.find('"', k + 7)]
+
+
+
+
+    def resolve_base_url(config, ws):
+        """Resolve the application's base URL, preferring a PUBLISHED one.
+
+        A recorded `base_url` is only valid on the machine and path that recorded
+        it. Environments that derive their ports (to avoid two checkouts fighting
+        over one) publish the effective URL to a file, and a net that bakes the
+        literal instead cannot run anywhere else — the same orphaned-artefact
+        failure as a harness that does not travel, one level subtler because the
+        net looks complete and simply never reaches the application.
+
+        `base_url_file` wins when present and readable; `base_url` remains the
+        right answer for a genuinely fixed endpoint.
+        """
+        rel = config.get("base_url_file")
+        if rel:
+            path = rel if os.path.isabs(rel) else os.path.join(ws, rel)
+            try:
+                with open(path, encoding="utf-8") as f:
+                    url = f.read().strip()
+                if url:
+                    return url
+            except OSError as e:
+                raise SystemExit(
+                    "config.base_url_file points at %s, which cannot be read (%s). "
+                    "That file is written when the environment comes up; either the "
+                    "app was never started, or the path is wrong for this checkout."
+                    % (path, e))
+        url = config.get("base_url")
+        if not url:
+            raise SystemExit("config.json declares neither base_url nor base_url_file")
+        return url
+
+
+    def open_sessions(config):
+        sessions = {}
+        for p in config.get("personas", [{"name": "anon"}]):
+            s = Session(resolve_base_url(config, os.environ.get("GM_WORKSPACE", ".")))
+            if p.get("login"):
+                code = s.login(p["login"])
+                if code >= 400:
+                    raise SystemExit(
+                        "persona %r could not log in (HTTP %s) — a capture taken with a "
+                        "broken session records the login page as every reference"
+                        % (p["name"], code)
+                    )
+            sessions[p["name"]] = s
+        return sessions
+
+
+    def capture(config, corpus, canon, ids=None):
+        """Fetch and canonicalise the corpus. Returns {id: canonical_text}."""
+        sessions = open_sessions(config)
+        out = {}
+        for e in corpus["entries"]:
+            if ids is not None and e["id"] not in ids:
+                continue
+            s = sessions.get(e.get("persona", "anon"))
+            if s is None:
+                raise SystemExit("entry %s names unknown persona %r" % (e["id"], e.get("persona")))
+            status, headers, body = s.fetch(
+                e.get("method", "GET"), e["path"], fields=e.get("fields"),
+                follow=not e.get("no_redirect", False),
+            )
+            out[e["id"]] = canon.canonicalize(e, status, headers, body)
+        return out
+
+
+    # ─── Application lifecycle ──────────────────────────────────────────────────
+
+    def app_up(config, ws):
+        code, out = run(config["up"], ws, timeout=BOOT_TIMEOUT_S)
+        if code != 0:
+            raise SystemExit("config.up failed (exit %s):\n%s" % (code, out[-2000:]))
+        base = resolve_base_url(config, ws).rstrip("/")
+        ready = config.get("ready_path", "/")
+        deadline = time.time() + BOOT_TIMEOUT_S
+        while time.time() < deadline:
+            try:
+                with urllib.request.urlopen(base + ready, timeout=5) as r:
+                    if r.status < 500:
+                        return
+            except Exception:
+                time.sleep(1)
+        raise SystemExit("application never answered %s%s within %ss" % (base, ready, BOOT_TIMEOUT_S))
+
+
+    def app_down(config, ws):
+        if config.get("down"):
+            run(config["down"], ws, timeout=BOOT_TIMEOUT_S)
+
+
+    def app_restart(config, ws):
+        app_down(config, ws)
+        app_up(config, ws)
+
+
+    # ─── Mutants ────────────────────────────────────────────────────────────────
+
+    def missing_archetypes(corpus, mutants):
+        """Surface classes in the corpus that no mutant covers for a required archetype.
+
+        Checked BEFORE the application is booted: a mutant set with a hole in it
+        cannot produce a meaningful figure, so there is no point paying for a run.
+        """
+        have = {}
+        for m in mutants:
+            have.setdefault(m.get("surface", "http"), set()).add(m.get("archetype"))
+        gaps = []
+        for surface in sorted({e.get("surface", "http") for e in corpus["entries"]}):
+            for archetype in REQUIRED_ARCHETYPES.get(surface, []):
+                if archetype not in have.get(surface, set()):
+                    gaps.append({"surface": surface, "archetype": archetype})
+        return gaps
+
+
+
+
+    def sealed_dir_for(ws):
+        """THE rule for where a held-out set lives once sealed. One implementation.
+
+        An earlier fix made the campaign and the gate derive this path from the same
+        rule instead of one dictating it to the other. The very next commit added a
+        third party -- the node that promotes a spent set to published evidence --
+        with its own hand-written copy of the derivation. It pointed elsewhere,
+        promoted nothing, and reported success saying "nothing was held out, or it
+        was already promoted": a message that makes the failure look like a
+        legitimate state.
+
+        Duplicating a rule is what broke it the first time. Callers import this.
+        """
+        explicit = os.environ.get("GM_SEALED_DIR")
+        if explicit:
+            return explicit
+        root = os.environ.get("GM_SCRATCH", os.path.join(ws, ".."))
+        return os.path.join(root, "gm-holdout-" + (os.path.basename(os.path.abspath(ws)) or "default"))
+
+
+    def seal_holdout(gm_dir, sealed_dir):
+        """Move the held-out set OUT of the worktree, once, at the first gate.
+
+        The seal was a sentence in a skill and nothing enforced it: on the first
+        real run the campaign simply executed the held-out mutants itself, learned
+        which ones escaped, and could then harden against them — which is exactly
+        the overfitting the set exists to prevent. Relocating them makes the seal
+        mechanical from the second pass onward, which is where hardening actually
+        compounds.
+
+        Returns True when the set now lives outside the workspace.
+        """
+        src = os.path.join(gm_dir, "mutants", "holdout")
+        os.makedirs(sealed_dir, exist_ok=True)
+        if os.path.isdir(src):
+            for name in sorted(os.listdir(src)):
+                target = os.path.join(sealed_dir, name)
+                if not os.path.exists(target):
+                    shutil.move(os.path.join(src, name), target)
+            try:
+                os.rmdir(src)
+            except OSError:
+                pass
+        return bool(os.listdir(sealed_dir))
+
+
+
+
+    def mutant_fingerprint(d):
+        """Identify a mutant by WHAT IT DOES, not by its name.
+
+        A held-out mutant that has already been scored is spent: its secrecy is a
+        property of the moment, not of the artefact, and once the gate has judged
+        it its value flips entirely to evidence. Spent sets are therefore promoted
+        to mutants/audit/ and committed, so a third party can replay the claim
+        "N/N detected" instead of taking it on trust — the exact thing that makes a
+        delivery's own reported figures worthless.
+
+        That only holds if each hardening cycle draws a FRESH set. Renaming a spent
+        mutant would defeat it, so identity is the change itself: the applied
+        script plus the entries it targets.
+        """
+        parts = []
+        for fname in ("apply.sh", "revert.sh"):
+            p = os.path.join(d, fname)
+            if os.path.isfile(p):
+                with open(p, "rb") as f:
+                    parts.append(f.read())
+        meta_path = os.path.join(d, "meta.json")
+        targets = []
+        if os.path.isfile(meta_path):
+            try:
+                with open(meta_path, encoding="utf-8") as f:
+                    targets = sorted(json.load(f).get("targets") or [])
+            except (ValueError, OSError):
+                pass
+        parts.append(("|".join(targets)).encode("utf-8"))
+        return hashlib.sha256(b"\x00".join(parts)).hexdigest()
+
+
+    def spent_fingerprints(gm_dir):
+        """Fingerprints of every held-out set already scored and committed."""
+        root = os.path.join(gm_dir, "mutants", "audit")
+        out = {}
+        if not os.path.isdir(root):
+            return out
+        for cycle in sorted(os.listdir(root)):
+            cdir = os.path.join(root, cycle)
+            if not os.path.isdir(cdir):
+                continue
+            for name in sorted(os.listdir(cdir)):
+                d = os.path.join(cdir, name)
+                if os.path.isdir(d):
+                    out[mutant_fingerprint(d)] = cycle + "/" + name
+        return out
+
+
+    def load_mutants(gm_dir, holdout, sealed_dir=None):
+        if holdout:
+            root = sealed_dir or os.path.join(gm_dir, "mutants", "holdout")
+            if not os.path.isdir(root):
+                return []
+            out = []
+            for name in sorted(os.listdir(root)):
+                d = os.path.join(root, name)
+                meta_path = os.path.join(d, "meta.json")
+                if not os.path.isdir(d) or not os.path.isfile(meta_path):
+                    continue
+                with open(meta_path, encoding="utf-8") as f:
+                    meta = json.load(f)
+                meta["id"], meta["dir"] = name, d
+                out.append(meta)
+            return out
+        root = os.path.join(gm_dir, "mutants", "")
+        if not os.path.isdir(root):
+            return []
+        out = []
+        for name in sorted(os.listdir(root)):
+            d = os.path.join(root, name)
+            if name == "holdout" or not os.path.isdir(d):
+                continue
+            meta_path = os.path.join(d, "meta.json")
+            if not os.path.isfile(meta_path):
+                continue
+            with open(meta_path, encoding="utf-8") as f:
+                meta = json.load(f)
+            meta["id"] = name
+            meta["dir"] = d
+            out.append(meta)
+        return out
+
+
+    def tree_fingerprint(ws):
+        code, out = run("git status --porcelain", ws, timeout=120)
+        return out if code == 0 else None
+
+
+    def data_fingerprint(meta, ws):
+        """Optional probe for mutants that change data rather than files."""
+        probe = meta.get("fingerprint_cmd")
+        if not probe:
+            return None
+        _, out = run(probe, ws, timeout=300)
+        return hashlib.sha256(out.encode()).hexdigest()
+
+
+    def run_script(path, ws, timeout=600):
+        """Run a mutant script HONOURING ITS SHEBANG.
+
+        Forcing `sh` here silently substitutes the interpreter: on most systems
+        /bin/sh is dash, which has no `source`, so a script written for bash fails
+        with a bare `exit 127` and a "command not found" for whatever the sourced
+        file was meant to define. The author sees a broken mutant and no hint that
+        the shell was swapped under them. Observed on the first real run.
+        """
+        if os.access(path, os.X_OK):
+            return run(shlex.quote(path), ws, timeout)
+        return run("sh %s" % shlex.quote(path), ws, timeout)
+
+
+    def apply_mutant(meta, ws):
+        return run_script(os.path.join(meta["dir"], "apply.sh"), ws)
+
+
+    def revert_mutant(meta, ws):
+        return run_script(os.path.join(meta["dir"], "revert.sh"), ws)
+
+
+    # ─── Comparison ─────────────────────────────────────────────────────────────
+
+    def diverged(refs, captured, ids):
+        return sorted(i for i in ids if refs.get(i) != captured.get(i))
+
+
+    def control_ids(corpus, targets, seed):
+        """Deterministic sample of non-target entries, to measure collateral."""
+        pool = [e["id"] for e in corpus["entries"] if e["id"] not in targets]
+        if not pool:
+            return []
+        step = max(1, len(pool) // CONTROL_SAMPLE)
+        return pool[seed % max(1, step)::step][:CONTROL_SAMPLE]
+
+
+    def score_mutant(meta, config, corpus, canon, refs, ws, seed):
+        """Apply → capture → compare → revert. Returns a per-mutant verdict dict."""
+        targets = list(meta.get("targets") or [])
+        if not targets:
+            return {"id": meta["id"], "valid": False, "detected": False,
+                    "reason": "meta.json declares no targets"}
+
+        before_tree, before_data = tree_fingerprint(ws), data_fingerprint(meta, ws)
+
+        code, out = apply_mutant(meta, ws)
+        if code != 0:
+            return {"id": meta["id"], "valid": False, "detected": False,
+                    "reason": "apply.sh exited %s: %s" % (code, out[-300:])}
+
+        after_tree, after_data = tree_fingerprint(ws), data_fingerprint(meta, ws)
+        mutated = (before_tree != after_tree) or (
+            before_data is not None and before_data != after_data
+        )
+
+        verdict = {"id": meta["id"], "class": meta.get("class", "unknown"),
+                   "archetype": meta.get("archetype", "unknown"),
+                   "surface": meta.get("surface", "http"),
+                   "targets_declared": targets, "valid": bool(mutated)}
+
+        if not mutated:
+            # A mutant that changes nothing is a measurement fault, not evidence.
+            verdict.update(detected=False,
+                           reason="apply.sh left the tree and the data probe unchanged")
+            revert_mutant(meta, ws)
+            return verdict
+
+        if meta.get("needs_restart", True):
+            app_restart(config, ws)
+
+        sample = control_ids(corpus, set(targets), seed)
+        captured = capture(config, corpus, canon, ids=set(targets) | set(sample))
+        moved = diverged(refs, captured, targets)
+        verdict["detected"] = bool(moved)
+        # Per-target, not per-mutant. `targets` is a contract: every declared entry
+        # MUST move. A mutant that moves one target and leaves three untouched is
+        # still "detected" in aggregate while three references are provably blind
+        # to that class of change — which is exactly how the consultancy shipped four public
+        # search fixtures that could not see a changed offer.
+        verdict["undetected_targets"] = [t for t in targets if t not in moved]
+        # Collateral is usually not a harness fault but an under-declared blast
+        # radius: the mutant really does move that response. Naming the entries is
+        # what makes the finding actionable instead of a bare count.
+        verdict["collateral"] = diverged(refs, captured, sample)
+        # How many control entries the collateral check actually compared. A mutant
+        # that declares the whole corpus as targets leaves nothing to control
+        # against, and its "collateral: 0" is vacuous rather than earned — so the
+        # coverage is reported and gated, not assumed.
+        verdict["control_covered"] = len(sample)
+
+        code, out = revert_mutant(meta, ws)
+        if code != 0:
+            verdict["revert_clean"] = False
+            verdict["reason"] = "revert.sh exited %s: %s" % (code, out[-300:])
+            return verdict
+
+        if meta.get("needs_restart", True):
+            app_restart(config, ws)
+        back = capture(config, corpus, canon, ids=set(targets))
+        verdict["revert_clean"] = not diverged(refs, back, targets)
+        if not verdict["revert_clean"]:
+            verdict["reason"] = "the tree did not return to the reference after revert.sh"
+        return verdict
+
+
+    def score_noop(config, corpus, canon, refs, ws, seed):
+        """The negative control, built BY THE HARNESS so the agent cannot shape it.
+
+        Nothing is mutated. Every comparator must stay silent. A comparator that
+        reports a difference here is non-deterministic or unconditionally noisy,
+        and its greens on real mutants mean nothing.
+
+        It covers the WHOLE corpus, and that is a correction rather than a
+        refinement. It used to sample the first six entries, which left every later
+        entry never once confronted with its own reference — a reference could be
+        stale, or frozen against a world that has since moved, and nothing would
+        say so unless a mutant happened to target it.
+
+        That is not hypothetical. A modernisation run on a different DAY replayed a
+        net whose entry 013 rendered a seeded creation date: the seed used the
+        database's current_date(), so the reference had frozen on the day the
+        fixture was first applied. The drift was permanent and invisible to both
+        guards — stability compares captures to EACH OTHER, all taken the same day,
+        and the negative control's prefix did not reach entry 013. It surfaced only
+        as collateral noise under unrelated mutants, blamed on a lot that had not
+        caused it.
+
+        Whole-corpus costs one extra pass of plain requests against an application
+        that is already up, which is nothing next to a reference nobody checks.
+        """
+        ids = [e["id"] for e in corpus["entries"]]
+        app_restart(config, ws)
+        captured = capture(config, corpus, canon)
+        noisy = diverged(refs, captured, ids)
+        return {"silent": not noisy, "noisy_entries": noisy}
+
+
+    # ─── Stability ──────────────────────────────────────────────────────────────
+
+    def stability(config, corpus, canon, ws):
+        """A/B on one boot, C after a full restart.
+
+        A vs B catches per-request non-determinism. B vs C catches per-boot
+        non-determinism and anything that leaks wall-clock: real time elapses
+        between them, which is a truer drift probe than a frozen fake clock.
+        """
+        a = capture(config, corpus, canon)
+        b = capture(config, corpus, canon)
+        ab = sorted(i for i in a if a[i] != b.get(i))
+        app_restart(config, ws)
+        c = capture(config, corpus, canon)
+        bc = sorted(i for i in b if b[i] != c.get(i))
+        return {"stable": not ab and not bc, "ab_drift": ab, "bc_drift": bc}, c
+
+
+    # ─── Entry point ────────────────────────────────────────────────────────────
+
+    def main():
+        ws = os.environ.get("GM_WORKSPACE", ".")
+        gm_dir = os.path.join(ws, os.environ.get("GM_DIR", ".golden-master"))
+        # The seal must be run-scoped, and campaign and gate must land on the
+        # SAME directory. They are different processes and only one of them can
+        # be given an environment, so the path is DERIVED rather than passed:
+        # the workspace basename is the run id inside an iterion worktree, and a
+        # stable repo name outside one. A selfcheck that seals therefore cannot
+        # strand the held-out set where the gate will not look, and two runs
+        # cannot share a pile.
+        sealed_dir = sealed_dir_for(ws)
+        floor = int(os.environ.get("GM_MUTATION_FLOOR", "90"))
+        mode = os.environ.get("GM_MODE", "gate")   # gate | record | selfcheck
+
+        report = {"mode": mode, "total": 0, "valid": 0, "detected": 0, "score_pct": 0,
+                  "noop_silent": False, "revert_clean": True, "collateral": 0,
+                  "notice": "", "uncontrolled": [], "blind_lanes": [], "missing_archetypes": [],
+                  "holdout_detected": 0, "holdout_total": 0, "stable": False,
+                  "corpus_total": 0, "corpus_distinct": 0, "duplicate_refs": [],
+                  "runner_replayable": False,
+                  "holdout_reused": [],
+                  "log_tail": ""}
+
+        def bail(msg):
+            report["log_tail"] = msg
+            print(json.dumps(report))
+            raise SystemExit(0)
+
+        for required in ("config.json", "corpus.json"):
+            if not os.path.isfile(os.path.join(gm_dir, required)):
+                bail("%s is missing — the campaign has not produced an oracle yet" % required)
+
+        with open(os.path.join(gm_dir, "config.json"), encoding="utf-8") as f:
+            config = json.load(f)
+        with open(os.path.join(gm_dir, "corpus.json"), encoding="utf-8") as f:
+            corpus = json.load(f)
+
+        try:
+            canon = load_canon(gm_dir)
+        except SystemExit as e:
+            bail(str(e))
+
+        refs_dir = os.path.join(gm_dir, "refs")
+        os.makedirs(refs_dir, exist_ok=True)
+
+        # The harness materialises itself into the target repo. Three things need
+        # it there and none of them can reach the bundle: the emitted
+        # verify-oracle.sh, a CI job, and the campaign on a later pass wanting to
+        # (re)record with the code path that will judge it. Copying from __file__
+        # keeps one source of truth — the inlined node — rather than a second copy
+        # drifting in a sibling node.
+        try:
+            shutil.copyfile(__file__, os.path.join(gm_dir, "harness.py"))
+        except (OSError, NameError):
+            pass
+
+        visible = load_mutants(gm_dir, holdout=False)
+        if mode != "record":
+            seal_holdout(gm_dir, sealed_dir)
+            held_meta = load_mutants(gm_dir, holdout=True, sealed_dir=sealed_dir)
+            # The held-out set lives outside the workspace once sealed. If the
+            # sealed directory moved or was wiped, it is GONE — and the archetype
+            # check below would then blame the campaign for an archetype it did
+            # write, sending it off to duplicate work that already exists. Say what
+            # actually happened instead.
+            # Three ways there is no held-out set to score, and they are NOT the
+            # same event. Conflating them is how a vacuous 0 == 0 slips through the
+            # conjunction wearing a green coat.
+            holdout_spent = bool(spent_fingerprints(gm_dir))
+            if not held_meta and not os.path.isdir(os.path.join(gm_dir, "mutants", "holdout")):
+                if holdout_spent:
+                    # Legitimate: this cycle's set was scored once and published as
+                    # evidence. The blindness proof was MADE and is replayable from
+                    # mutants/audit/ — it is simply not being re-made here, and the
+                    # report must say so rather than let 0 == 0 read as a pass.
+                    report["notice"] = ("the held-out set for this cycle is SPENT and published "
+                                        "under mutants/audit/. This replay re-checks the visible "
+                                        "counter-test only; the held-out figure below is 0/0 and "
+                                        "proves nothing on its own. Draw a fresh set to harden "
+                                        "again — the gate refuses one that repeats a published "
+                                        "fingerprint.")
+                else:
+                    bail("the sealed held-out set is missing from %s and no longer in the "
+                         "workspace. It was relocated by an earlier gate and the sealed "
+                         "directory has since changed or been cleared; GM_SEALED_DIR must be "
+                         "stable across passes. Restore it, or re-create the held-out set "
+                         "knowing the previous seal is broken." % sealed_dir)
+            gaps = missing_archetypes(corpus, visible + held_meta)
+            if gaps:
+                report["missing_archetypes"] = gaps
+                bail("no mutant covers these required (surface, archetype) pairs: %s. Each "
+                     "archetype is blind to a DIFFERENT comparator defect; an uncovered one "
+                     "leaves that defect undetectable, so the run would report a figure it "
+                     "has not earned. See skills/oracle-mutation.md."
+                     % json.dumps(gaps, ensure_ascii=False))
+
+        try:
+            app_up(config, ws)
+        except SystemExit as e:
+            bail(str(e))
+
+        try:
+            if mode == "record":
+                snap = capture(config, corpus, canon)
+                for k, v in snap.items():
+                    with open(os.path.join(refs_dir, k + ".txt"), "w", encoding="utf-8") as f:
+                        f.write(v)
+                # Record mode returns the gate skeleton with its default values, so
+                # `noop_silent: false, score_pct: 0` reads exactly like a failed gate
+                # to anyone glancing at it. The mode field and an unambiguous tail
+                # are what tell the two apart.
+                report["log_tail"] = "MODE=record — %d references written. No gate was run: the " \
+                                     "zeroed fields above are defaults, not a verdict." % len(snap)
+                print(json.dumps(report))
+                return
+
+            refs = {}
+            for e in corpus["entries"]:
+                p = os.path.join(refs_dir, e["id"] + ".txt")
+                if not os.path.isfile(p):
+                    bail("no reference for entry %s — record before gating" % e["id"])
+                with open(p, encoding="utf-8") as f:
+                    refs[e["id"]] = f.read()
+
+            # Width is a property of what the net can SEE, so it is counted on
+            # DISTINCT references, never on entries. Two entries whose canonical
+            # reference is byte-identical are ONE observation: a mutant that
+            # moves one moves the other, so the second buys no coverage while
+            # inflating the count. Duplicates are reported, not banned:
+            # genuinely redundant endpoints are legal, they just stop counting
+            # twice. The FLOOR itself is applied by the gate, not here — the
+            # harness states facts, the graph decides.
+            by_hash = {}
+            for eid, text in refs.items():
+                h = hashlib.sha256(text.encode("utf-8")).hexdigest()
+                by_hash.setdefault(h, []).append(eid)
+            report["corpus_total"] = len(refs)
+            report["corpus_distinct"] = len(by_hash)
+            report["duplicate_refs"] = sorted(
+                sorted(ids) for ids in by_hash.values() if len(ids) > 1)
+
+            stab, _ = stability(config, corpus, canon, ws)
+            report.update(stable=stab["stable"])
+            if not stab["stable"]:
+                bail("capture is not deterministic; A/B drift on %s, B/C drift on %s — "
+                     "canonicalise these before any mutation figure means anything"
+                     % (stab["ab_drift"][:8], stab["bc_drift"][:8]))
+
+            noop = score_noop(config, corpus, canon, refs, ws, 0)
+            report["noop_silent"] = noop["silent"]
+
+            verdicts, blind = [], []
+            for seed, meta in enumerate(visible):
+                v = score_mutant(meta, config, corpus, canon, refs, ws, seed)
+                verdicts.append(v)
+                if not v.get("valid"):
+                    continue
+                if not v.get("detected"):
+                    blind.append({"surface": v.get("surface"), "archetype": v.get("archetype"),
+                                  "mutant_id": v["id"], "entries": v.get("targets_declared", []),
+                                  "why": "no declared target moved"})
+                elif v.get("undetected_targets"):
+                    blind.append({"surface": v.get("surface"), "archetype": v.get("archetype"),
+                                  "mutant_id": v["id"], "entries": v["undetected_targets"],
+                                  "why": "these references did not move for a change they cover"})
+
+            # The seal relocates the held-out set in BOTH modes — the campaign must
+            # lose file access early — but selfcheck neither scores it nor reports
+            # it. Revealing `holdout_detected` to whoever runs the check is enough to
+            # steer hardening: seeing 3/5 says "keep tuning" even with the files out
+            # of reach. The held-out result belongs to the final gate alone.
+            held = [] if mode == "selfcheck" else [
+                score_mutant(m, config, corpus, canon, refs, ws, 1000 + i)
+                for i, m in enumerate(held_meta)]
+
+            valid = [v for v in verdicts if v.get("valid")]
+            detected = [v for v in valid if v.get("detected")]
+            report.update(
+                total=len(verdicts),
+                valid=len(valid),
+                detected=len(detected),
+                score_pct=int(100 * len(detected) / len(valid)) if valid else 0,
+                revert_clean=all(v.get("revert_clean", True) for v in verdicts + held),
+                collateral=sum(len(v.get("collateral") or []) for v in verdicts),
+                uncontrolled=[v["id"] for v in valid if not v.get("control_covered")],
+                blind_lanes=blind,
+                holdout_total=len([v for v in held if v.get("valid")]),
+                holdout_detected=len([v for v in held if v.get("valid") and v.get("detected")]),
+            )
+            if mode == "selfcheck":
+                # Withheld, not zero-because-failed. The two numbers are made
+                # DELIBERATELY UNEQUAL: the gate converges on
+                # `holdout_detected == holdout_total`, so a selfcheck report that
+                # ever reached the gate must fail it rather than sail through on a
+                # -1 == -1 coincidence.
+                report["holdout_total"] = len(held_meta)
+                report["holdout_detected"] = -1
+
+            problems = []
+            if not report["noop_silent"]:
+                problems.append("NEGATIVE CONTROL FAILED: the no-op mutation made %s diverge. "
+                                "A comparator that fires without a change proves nothing when it "
+                                "fires with one." % noop["noisy_entries"][:8])
+            for v in verdicts:
+                if not v.get("valid"):
+                    problems.append("mutant %s is INVALID: %s" % (v["id"], v.get("reason", "")))
+            if blind:
+                problems.append("BLIND LANES — references that do NOT move for a change they "
+                                "cover. Not averaged away, not weighted: this list must be "
+                                "empty. %s" % json.dumps(blind, ensure_ascii=False))
+            if report["collateral"]:
+                detail = "; ".join(
+                    "%s moved %s" % (v["id"], v["collateral"])
+                    for v in verdicts if v.get("collateral")
+                )
+                problems.append("collateral drift on %d control entries — a mutant moves "
+                                "responses it does not declare as targets. Either its "
+                                "`targets` under-state its blast radius, or the capture is "
+                                "not isolated: %s" % (report["collateral"], detail))
+            if report["uncontrolled"]:
+                problems.append("mutants %s declare the whole corpus as targets: nothing was "
+                                "left to control against, so their clean collateral is vacuous. "
+                                "A mutant must be NARROW — a blast radius covering everything "
+                                "tests nothing precise." % report["uncontrolled"])
+            if report["score_pct"] < floor:
+                problems.append("mutation score %d%% is under the %d%% floor"
+                                % (report["score_pct"], floor))
+            if report["duplicate_refs"]:
+                problems.append("%d reference group(s) are byte-identical across DIFFERENT "
+                                "entries, so the corpus is %d observations wide, not %d. This is "
+                                "NOT always a defect: on a refusal lane two entries legitimately "
+                                "capture the same 302, and the second is a control proving a "
+                                "mutant moved only the first. It IS a defect when the endpoints "
+                                "were meant to differ — then either one is redundant, or they "
+                                "differ on a path this fixture does not exercise and the "
+                                "difference is captured NOWHERE. Decide which, per group: %s"
+                                % (len(report["duplicate_refs"]), report["corpus_distinct"],
+                                   report["corpus_total"],
+                                   json.dumps(report["duplicate_refs"], ensure_ascii=False)))
+            if mode == "selfcheck":
+                report["notice"] = ("MODE=selfcheck — the held-out set was sealed but NOT scored; "
+                                    "its result is withheld on purpose. Only the final gate scores "
+                                    "it. An empty log_tail here means the VISIBLE set is clean, "
+                                    "which is not the same as a green gate.")
+            elif report["holdout_total"] and report["holdout_detected"] < report["holdout_total"]:
+                problems.append("HELD-OUT set: %d/%d detected. The oracle was hardened against "
+                                "the mutants it could see, not against divergence in general."
+                                % (report["holdout_detected"], report["holdout_total"]))
+            # Is the emitted net actually REPLAYABLE from a clean checkout? The
+            # runner shells out to harness.py, which this gate materialises into
+            # the worktree — but a campaign that gitignores it ships references
+            # nobody can re-run. That is not a hypothetical: it is the exact
+            # criticism levelled at third-party deliveries whose fixtures outlived
+            # the harness that produced them, and the first emitted net here
+            # reproduced it. A deliverable that cannot be replayed is a claim, not
+            # an artefact.
+            report["runner_replayable"] = True
+            runner = os.path.join(gm_dir, "verify-oracle.sh")
+            for needed in (os.path.join(gm_dir, "harness.py"), runner):
+                rel = os.path.relpath(needed, ws)
+                ignored = subprocess.run(["git", "-C", ws, "check-ignore", "-q", rel],
+                                         capture_output=True)
+                if ignored.returncode == 0:
+                    report["runner_replayable"] = False
+                    problems.append("%s is GITIGNORED, so the committed net cannot be "
+                                    "replayed by CI or by anyone who checks the repo "
+                                    "out. The oracle is a deliverable: un-ignore it and "
+                                    "commit it." % rel)
+            # A held-out set that repeats an already-spent one is not held out at
+            # all: its mutants are committed under mutants/audit/ where anyone,
+            # including the hardening loop, can read them. Reuse is refused by
+            # FINGERPRINT rather than by name, so renaming does not launder it.
+            spent = spent_fingerprints(gm_dir)
+            report["holdout_reused"] = sorted(
+                "%s (already scored as %s)" % (m["id"], spent[mutant_fingerprint(m["dir"])])
+                for m in held_meta if mutant_fingerprint(m["dir"]) in spent)
+            if report["holdout_reused"]:
+                problems.append("the held-out set REPEATS mutants already scored and "
+                                "published: %s. A spent set is evidence, not a test — "
+                                "draw a fresh one, or the held-out figure measures "
+                                "nothing the hardening loop could not already see."
+                                % ", ".join(report["holdout_reused"]))
+            report["log_tail"] = "\n".join(problems)[-6000:]
+        finally:
+            app_down(config, ws)
+
+        print(json.dumps(report))
+
+
+    if __name__ == "__main__":
+        main()
+## promote_audit — turn the SPENT held-out set into committed evidence.
+##
+## Runs only on the converged edge, and that placement is the whole design: at
+## the first gate the set is still protecting the hardening loop, so promoting
+## it early would hand pass 2 the answers. Once the gate has converged the set
+## is spent — its secrecy is worth nothing and its evidentiary value is at a
+## maximum, because a third party can now replay "N/N detected" instead of
+## believing it. Unverifiable self-reported figures are exactly what makes a
+## delivery's own numbers worthless.
+##
+## The next cycle must draw a FRESH set; the gate refuses one that repeats a
+## published fingerprint, so this cannot decay into theatre.
+tool promote_audit:
+  output: audit_state
+  language: py
+  script: |
+    import json
+    import os
+    import shutil
+
+    import importlib.util
+
+    ws = {{vars.workspace_dir}}
+    gm_dir = os.path.join(ws, {{vars.oracle_dir}})
+
+    # The sealed path is NOT re-derived here. A previous version wrote its own
+    # copy of the rule, pointed somewhere the harness never seals, promoted
+    # nothing, and reported success. Duplicating the rule is exactly what broke
+    # the seal the first time; this asks the harness the harness materialised.
+    spec = importlib.util.spec_from_file_location("gm_harness", os.path.join(gm_dir, "harness.py"))
+    if spec is None or spec.loader is None:
+        print(json.dumps({"promoted": 0, "audit_dir": "", "notice":
+                          "no harness at %s/harness.py, so the sealed path cannot be resolved. "
+                          "Nothing was promoted, and this is a FAILURE rather than an empty "
+                          "state." % gm_dir}))
+        raise SystemExit(0)
+    gm = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(gm)
+    sealed = os.path.abspath(gm.sealed_dir_for(ws))
+    cycle = {{run.id}}
+    dest = os.path.join(gm_dir, "mutants", "audit", cycle)
+
+    out = {"promoted": 0, "audit_dir": "", "notice": ""}
+    if not os.path.isdir(sealed) or not os.listdir(sealed):
+        # Distinguish the two, because conflating them is what let a silent
+        # no-op read as success: a converged gate SCORED a held-out set, so at
+        # this point an empty sealed directory means the path is wrong, not
+        # that nothing was withheld.
+        out["notice"] = ("nothing to promote at %s. The gate converged, which means it "
+                         "scored a held-out set — so this directory being empty means the "
+                         "path is WRONG, not that none was withheld. The published evidence "
+                         "for this cycle is missing." % sealed)
+        print(json.dumps(out)); raise SystemExit(0)
+
+    os.makedirs(dest, exist_ok=True)
+    for name in sorted(os.listdir(sealed)):
+        src = os.path.join(sealed, name)
+        if os.path.isdir(src) and not os.path.exists(os.path.join(dest, name)):
+            shutil.move(src, os.path.join(dest, name))
+            out["promoted"] += 1
+
+    with open(os.path.join(dest, "README.md"), "w", encoding="utf-8") as f:
+        f.write("# Spent held-out set -- evidence, not a test\n\n"
+                "These mutants were withheld from the hardening loop and scored\n"
+                "exactly once, by the gate that converged this cycle. They are\n"
+                "published so the reported detection figure can be REPLAYED\n"
+                "rather than believed.\n\n"
+                "They no longer test anything: they are readable, so an oracle\n"
+                "can be tuned to them. The next hardening cycle must draw a\n"
+                "fresh set, and the gate refuses one that repeats a fingerprint\n"
+                "published here.\n\n"
+                "Re-run: `sh " + {{vars.oracle_dir}} + "/verify-oracle.sh`\n")
+
+    try:
+        os.rmdir(sealed)
+    except OSError:
+        pass
+    out["audit_dir"] = os.path.relpath(dest, ws)
+    print(json.dumps(out))
+
+compute oracle_gate:
+  output: gate_state
+  expr:
+    ## A pure CONJUNCTION. Deliberately not a weighted score: an aggregate lets
+    ## a lane at 100% average away a lane at 0%, which is exactly how four
+    ## public-search references shipped that could not see a changed record.
+    ## blind_lanes must be EMPTY, and the held-out set — never shown to the
+    ## hardening loop — must be fully detected, or the oracle was tuned rather
+    ## than fixed.
+    ##
+    ## The width floor is checked HERE, on corpus_distinct, because it was
+    ## previously stated to the agent in a prompt and enforced by nothing — the
+    ## same shape as a seal guaranteed by a sentence in a skill. It counts
+    ## DISTINCT references: two entries with a byte-identical reference are one
+    ## observation, and a corpus padded with duplicates is narrower than it
+    ## looks.
+    converged: "outputs.oracle_run.stable && outputs.oracle_run.noop_silent && outputs.oracle_run.revert_clean && outputs.oracle_run.collateral == 0 && length(outputs.oracle_run.uncontrolled) == 0 && length(outputs.oracle_run.blind_lanes) == 0 && length(outputs.oracle_run.missing_archetypes) == 0 && outputs.oracle_run.corpus_distinct >= vars.min_corpus && outputs.oracle_run.runner_replayable && length(outputs.oracle_run.holdout_reused) == 0 && outputs.oracle_run.score_pct >= vars.mutation_floor && outputs.oracle_run.holdout_detected == outputs.oracle_run.holdout_total"
+    fail_log: "outputs.oracle_run.log_tail"
+
+## emit_runner — one entry point for CI and for humans, plus the report a
+## client reads. Written from the harness the gate actually used, never from a
+## copy the campaign could have edited.
+tool emit_runner:
+  input: emit_input
+  output: emit_output
+  language: py
+  script: |
+    import json, os, stat
+    null = None; true = True; false = False  # JSON-literal shim for missing refs
+    ws = {{vars.workspace_dir}}
+    oracle_dir = {{vars.oracle_dir}}
+    gm = os.path.join(ws, oracle_dir)
+    floor = {{vars.mutation_floor}}
+    score = {{input.score_pct}}
+    hd = {{input.holdout_detected}}
+    ht = {{input.holdout_total}}
+    os.makedirs(gm, exist_ok=True)
+
+    # NO `${...}` ANYWHERE in the emitted shell. The DSL expands environment
+    # expressions -- including the `${VAR:-default}` form -- before the script
+    # runs, and a default clause swallows everything up to the first `}`, which
+    # is the closing brace of the very next template substitution. The
+    # result is a mangled, unparseable script. Plain `$VAR` is safe; braces are
+    # not. Defaults are therefore expressed with `[ -z "$VAR" ] && VAR=...`.
+    # The conjunction, restated for the standalone entry point. Kept as a
+    # single expression so no reader can mistake it for a weighted score: a
+    # lane at 100% must never average away a lane at 0%.
+    RUNNER_VERDICT_PY = (
+        "import json,sys\n"
+        "r=json.load(open(sys.argv[1]))\n"
+        "mode=(r.get(\"mode\") or \"gate\")\n"
+        "if mode!=\"gate\":\n"
+        "    sys.stderr.write(\"MODE=\"+mode+\" -- not a gate; no verdict.\\n\"); sys.exit(0)\n"
+        "ok=(r.get(\"stable\") and r.get(\"noop_silent\") and r.get(\"revert_clean\")\n"
+        "    and r.get(\"collateral\")==0 and not r.get(\"uncontrolled\")\n"
+        "    and not r.get(\"blind_lanes\") and not r.get(\"missing_archetypes\")\n"
+        "    and r.get(\"runner_replayable\")\n"
+        "    and r.get(\"holdout_detected\")==r.get(\"holdout_total\"))\n"
+        # A notice is never fatal, but it must never be silent either: the one
+        # that matters here says the held-out figure is 0/0 because the set was
+        # spent and published, and a CI job reading only an exit code would
+        # otherwise take a vacuous term for a proof.
+        "n=r.get(\"notice\")\n"
+        "if n: sys.stderr.write(\"NOTICE: \"+n+\"\\n\")\n"
+        "if not ok:\n"
+        "    sys.stderr.write(\"GATE RED -- see log_tail above.\\n\"); sys.exit(1)\n"
+    )
+
+    runner = os.path.join(gm, "verify-oracle.sh")
+    lines = [
+        "#!/bin/sh",
+        "# No argument: the full gate — replay, negative control, every mutant,",
+        "# and the sealed held-out set. This is what proves the references can",
+        "# still SEE; a replay on its own never could.",
+        "#   --self-check  same, but the held-out set is scored and reported by",
+        "#                 the gate alone, never here.",
+        "#   --record      re-record the references. That is a RE-BASELINE: it",
+        "#                 needs a written cause per reference and a full",
+        "#                 counter-test afterwards.",
+        # `set -e` only, deliberately: with `-u` an unset GM_DIR or a missing $1
+        # aborts the script, and the usual guard for that is `${VAR-}` -- braces,
+        # which the DSL would eat. The defaults below cover every unset case.
+        "set -e",
+        '[ -n "$GM_DIR" ] || GM_DIR=' + json.dumps(oracle_dir),
+        '[ -n "$GM_WORKSPACE" ] || GM_WORKSPACE=.',
+        '[ -n "$GM_MUTATION_FLOOR" ] || GM_MUTATION_FLOOR=' + str(floor),
+        "export GM_DIR GM_WORKSPACE GM_MUTATION_FLOOR",
+        'if [ "$1" = "--record" ]; then GM_MODE=record; export GM_MODE; fi',
+        'if [ "$1" = "--self-check" ]; then GM_MODE=selfcheck; export GM_MODE; fi',
+        # The harness always exits 0 -- the GRAPH reads its JSON and computes
+        # the verdict itself, so a non-zero exit there would look like a broken
+        # node rather than a red gate. But this script is the entry point for
+        # CI and for humans, and both read EXIT CODES. Emitting the report and
+        # exiting 0 on a red gate makes this runner a blind judge: it is
+        # exactly the failure mode the whole bot exists to prevent, one level
+        # up. So the verdict is translated here, from the same conjunction the
+        # graph applies -- never from a score, and never from a subset.
+        'python3 "$GM_WORKSPACE/$GM_DIR/harness.py" > "$GM_REPORT_TMP" 2>&1 || VERDICT_RC=$?',
+        '[ -n "$VERDICT_RC" ] || VERDICT_RC=0',
+        'cat "$GM_REPORT_TMP"',
+        'if [ "$VERDICT_RC" != "0" ]; then rm -f "$GM_REPORT_TMP"; exit "$VERDICT_RC"; fi',
+        'python3 -c \'' + RUNNER_VERDICT_PY + '\' "$GM_REPORT_TMP" "$GM_MODE"',
+        'GATE_RC=$?',
+        'rm -f "$GM_REPORT_TMP"',
+        'exit $GATE_RC',
+    ]
+    with open(runner, "w") as f:
+        f.write("\n".join(lines) + "\n")
+    os.chmod(runner, os.stat(runner).st_mode | stat.S_IEXEC)
+
+    # REPORT.md is written only when the campaign did not already produce one:
+    # a campaign that documents its own blind spots writes a better report than
+    # this template can, and overwriting it would destroy the honesty clause.
+    report = os.path.join(gm, "REPORT.md")
+    if not os.path.exists(report):
+        with open(report, "w") as f:
+            f.write("# Oracle report\n\n| | |\n|---|---|\n")
+            f.write("| mutation score | %d%% (floor %d%%) |\n" % (score, floor))
+            f.write("| held-out detected | %d/%d |\n\n" % (hd, ht))
+            f.write("The held-out set is sealed: never shown to the hardening loop, scored\n")
+            f.write("once, here. A visible score of 100% with an incomplete held-out result\n")
+            f.write("means the comparator was tuned to its training set, not fixed.\n\n")
+            f.write("Re-run: `sh " + oracle_dir + "/verify-oracle.sh` -- `--record` re-baselines,\n")
+            f.write("which requires a written cause per reference (see the `golden-master` skill).\n")
+
+    print(json.dumps({"runner_path": runner, "report_path": report}))
+
+## ─── Workflow ──────────────────────────────────────────────────────
+
+workflow golden_master:
+  entry: oracle_campaign
+
+  ## No `sandbox:` block (ADR-082): the platform sandboxes by default. The
+  ## target application's toolchain comes from ITS OWN devbox/devcontainer —
+  ## this bundle declares only python3 and jq, so the bot stays repo-agnostic.
+  ## The container runtime forbids mounting a docker socket, so the app under
+  ## test runs natively; `deterministic-fixture` covers what that implies.
+
+  budget:
+    max_parallel_branches: 1
+    max_duration: "4h"
+    max_cost_usd: 90
+
+  compaction:
+    threshold: 0.9
+    preserve_recent: 8
+
+  oracle_campaign -> adversary_gate
+  adversary_gate -> mutants_adversary when adversarial
+  adversary_gate -> oracle_run when not adversarial
+  mutants_adversary -> oracle_run
+  oracle_run -> oracle_gate
+
+  ## Converged → emit the runner and the report.
+  oracle_gate -> promote_audit when converged
+
+  promote_audit -> emit_runner with {
+    score_pct:        "{{outputs.oracle_run.score_pct}}",
+    holdout_detected: "{{outputs.oracle_run.holdout_detected}}",
+    holdout_total:    "{{outputs.oracle_run.holdout_total}}"
+  }
+
+  ## Not converged → another hardening pass, carrying the deterministic
+  ## failure. The loop-back reads outputs.oracle_gate (a body node), never the
+  ## loop-head campaign's own output, which would be loop-entry-frozen.
+  oracle_gate -> oracle_campaign as oracle_loop("{{vars.max_passes}}") with {
+    fail_log: "{{outputs.oracle_gate.fail_log}}"
+  }
+
+  ## Loop exhausted → emit anyway. Everything committed is real work, and
+  ## REPORT.md carries the score and the held-out result, so a partial oracle
+  ## ships as a partial oracle rather than as a silence.
+  oracle_gate -> emit_runner with {
+    score_pct:        "{{outputs.oracle_run.score_pct}}",
+    holdout_detected: "{{outputs.oracle_run.holdout_detected}}",
+    holdout_total:    "{{outputs.oracle_run.holdout_total}}"
+  }
+
+  emit_runner -> done

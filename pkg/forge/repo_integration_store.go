@@ -36,6 +36,23 @@ type RepoIntegration struct {
 	// API (useless without the master key, but no reason to surface it).
 	ManagedSecretID string `bson:"managed_secret_id,omitempty" json:"-"`
 
+	// LaunchVars are the operator's per-repo overrides for every run this
+	// integration launches, layered LAST (after the bots' own manifest vars),
+	// and re-applied on every Provision. Provisioning rewrites the whole
+	// webhook config from the manifests, so an override PATCHed onto the
+	// webhook is silently lost at the next enable/update — persisting it here
+	// is what makes a per-repo choice durable. The canonical case is naming
+	// this repo's merge gate: with several bots able to post it, the repo has
+	// exactly one required check and each bot fills it for the PRs it owns.
+	LaunchVars map[string]string `bson:"launch_vars,omitempty" json:"launch_vars,omitempty"`
+
+	// Overlap is the operator's concurrency policy for this repo's webhook
+	// (pkg/schedgate vocabulary; empty = allow, the historical behaviour).
+	// Persisted here for the same reason as LaunchVars: Provision rebuilds the
+	// webhook config as a whole literal, so anything set only on the config is
+	// wiped by the next enable.
+	Overlap string `bson:"overlap,omitempty" json:"overlap,omitempty"`
+
 	// SyncIssuesEnabled, when true, makes the forge→board sync worker mirror
 	// this repo's forge issues into the team's kanban board (one-way: forge is
 	// the source; a card's column is operator-owned once created). Toggled per

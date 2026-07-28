@@ -443,7 +443,7 @@ schema finalize_mr_output:
 ## the contract).
 agent campaign:
   backend: "claude_code"
-  model: "${ITERION_VIBE_MODEL_CLAUDE:-claude-opus-4-8}"
+  model: "${ITERION_VIBE_MODEL_CLAUDE:-claude-opus-5}"
   reasoning_effort: "${ITERION_VIBE_EFFORT_CLAUDE:-high}"
   input: campaign_input
   output: campaign_output
@@ -494,7 +494,7 @@ print(json.dumps({'fresh': fresh, 'reason': reason}))
 ## session. high, not max: mechanical capture of the repo's build/test.
 agent verify_build:
   backend: "claude_code"
-  model: "${ITERION_VIBE_MODEL_CLAUDE:-claude-opus-4-8}"
+  model: "${ITERION_VIBE_MODEL_CLAUDE:-claude-opus-5}"
   reasoning_effort: "${ITERION_VIBE_EFFORT_VERIFY_BUILD:-medium}"
   output: verify_plan
   system: verify_system
@@ -648,7 +648,7 @@ print(json.dumps({'available': False, 'reason': 'no forge_token secret, no *_TOK
 
 agent finalize_mr:
   backend: "claude_code"
-  model: "${ITERION_WHOLE_IMPROVE_MR_MODEL:-claude-opus-4-8}"
+  model: "${ITERION_WHOLE_IMPROVE_MR_MODEL:-claude-opus-5}"
   reasoning_effort: "${ITERION_WHOLE_IMPROVE_MR_EFFORT:-medium}"
   input: finalize_mr_input
   output: finalize_mr_output

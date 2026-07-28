@@ -122,3 +122,38 @@ func TestApply(t *testing.T) {
 		}
 	})
 }
+
+// supersede lives in the SHARED vocabulary, so Validate accepts it on the
+// host-cron, cloud-schedule and trigger surfaces too — all of which go through
+// Apply. Without a branch here it fell through to Proceed with nothing to
+// cancel, i.e. `allow` semantics on three surfaces while the policy promises
+// at-most-one-live. The reap list is how a policy tells the caller to cancel.
+func TestApplySupersedeReapsTheLiveRuns(t *testing.T) {
+	out := Apply(context.Background(), GateInput{
+		Policy:     Policy{Overlap: OverlapSupersede},
+		ScheduleID: "s1",
+		Lister: &fakeLister{
+			ids: []string{"run-old", "run-older"},
+			runs: map[string]*store.Run{
+				"run-old":   {ID: "run-old", Status: store.RunStatusRunning},
+				"run-older": {ID: "run-older", Status: store.RunStatusRunning},
+			},
+		},
+	})
+	if !out.Proceed {
+		t.Fatal("supersede fires: the new tick is the one that matters")
+	}
+	if len(out.ReapRunIDs) != 2 {
+		t.Fatalf("the live runs must be handed to the caller to cancel, got %v", out.ReapRunIDs)
+	}
+	// skip must keep blocking — the two policies are opposites, not variants.
+	if blocked := Apply(context.Background(), GateInput{
+		Policy: Policy{Overlap: OverlapSkip}, ScheduleID: "s1",
+		Lister: &fakeLister{
+			ids:  []string{"run-old"},
+			runs: map[string]*store.Run{"run-old": {ID: "run-old", Status: store.RunStatusRunning}},
+		},
+	}); blocked.Proceed {
+		t.Fatal("skip must still block while a run is live")
+	}
+}

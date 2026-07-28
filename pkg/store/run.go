@@ -137,6 +137,51 @@ type RunBudgetRaises struct {
 	MaxDuration   string  `json:"max_duration,omitempty" bson:"max_duration,omitempty"`
 }
 
+// RunRetryPolicy is the launch-time snapshot of the effective retry
+// contract (pkg/retrypolicy), plus where each field came from. The
+// provenance map is not decoration: a four-layer chain is undebuggable
+// without it, and "why is this run waiting 8 days" must be answerable
+// without replaying the launch.
+type RunRetryPolicy struct {
+	UsageWindow string `json:"usage_window,omitempty" bson:"usage_window,omitempty"`
+	MaxAttempts int    `json:"max_attempts,omitempty" bson:"max_attempts,omitempty"`
+	MaxWait     string `json:"max_wait,omitempty" bson:"max_wait,omitempty"`
+	Jitter      string `json:"jitter,omitempty" bson:"jitter,omitempty"`
+	// Sources maps each field name to the layer that won it
+	// ("run_override", "schedule", "bot", "env", "default",
+	// "platform_ceiling").
+	Sources map[string]string `json:"sources,omitempty" bson:"sources,omitempty"`
+}
+
+// RunRetryState is the live retry bookkeeping for a run whose failure is
+// waiting on a provider quota window to reopen.
+//
+// Attempts is MONOTONIC over the run's whole lifetime and is never reset:
+// it is the anti-loop bound, so a run that trips the window on three
+// separate resumes has spent three of its attempts. RetryAfter is unset
+// (nil) once a sweeper claims the retry, which is what makes the claim a
+// compare-and-swap: two replicas cannot both win it.
+type RunRetryState struct {
+	// RetryAfter is when the run becomes eligible for an automatic
+	// resume. Nil = nothing armed (never armed, already claimed, or
+	// deliberately abandoned).
+	RetryAfter *time.Time `json:"retry_after,omitempty" bson:"retry_after,omitempty"`
+	// Reason names the failure class that armed this retry
+	// ("usage_window").
+	Reason string `json:"reason,omitempty" bson:"reason,omitempty"`
+	// Code is the RuntimeError code that armed it
+	// ("USAGE_LIMIT_BLOCKED").
+	Code string `json:"code,omitempty" bson:"code,omitempty"`
+	// Attempts counts retries armed for this run, ever.
+	Attempts int `json:"attempts,omitempty" bson:"attempts,omitempty"`
+	// LastError records why the most recent automatic resume did not
+	// happen (admission denied, unresolvable source, a Resume error), so
+	// a run that stops retrying says why instead of going quiet.
+	LastError string `json:"last_error,omitempty" bson:"last_error,omitempty"`
+	// ClaimedAt stamps when a sweeper last took the retry.
+	ClaimedAt *time.Time `json:"claimed_at,omitempty" bson:"claimed_at,omitempty"`
+}
+
 type Run struct {
 	FormatVersion int    `json:"format_version" bson:"format_version"`
 	ID            string `json:"id" bson:"_id"`
@@ -208,6 +253,19 @@ type Run struct {
 	// rebuilt); raise-only vs the workflow's declared budget. Nil for
 	// runs never raised.
 	BudgetRaises *RunBudgetRaises `json:"budget_raises,omitempty" bson:"budget_raises,omitempty"`
+	// RetryPolicy is the retry contract RESOLVED AT LAUNCH from every
+	// layer that can own one (per-run override → launch surface → bot
+	// manifest → machine default, then clamped by the platform ceiling).
+	// It is resolved server-side because only the launch site can see all
+	// the layers, and snapshotted here because the run doc is the one
+	// carrier every consumer already loads — the runner reads it from the
+	// doc it fetches anyway, so no queue-schema bump is needed and it
+	// never has to query schedules. Nil for runs launched before this
+	// existed; treat nil as the package defaults.
+	RetryPolicy *RunRetryPolicy `json:"retry_policy,omitempty" bson:"retry_policy,omitempty"`
+	// RetryState is the live retry bookkeeping for this run (cloud only).
+	// Nil until a retryable failure arms one. See RunRetryState.
+	RetryState *RunRetryState `json:"retry_state,omitempty" bson:"retry_state,omitempty"`
 	// DeletedAt is the Mongo-side durable tombstone (the filesystem
 	// twin is the .deleted marker file): DeleteRun strips the run's
 	// data and leaves a skeleton doc carrying this stamp, so a late

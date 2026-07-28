@@ -652,11 +652,18 @@ func TestGitHubWebhook_BotNotAllowed(t *testing.T) {
 	cfg, pt := ghConfig(t, s)
 	// SelectBot() returns "" when there are multiple non-default bots
 	// → handler falls back to defaultWebhookBotReviewPR. Pin two bots
-	// that exclude review-pr so the AllowsBot gate fires.
+	// that exclude review-pr so the bot-scope gate fires.
 	cfg.BotIDs = []string{"some-other-bot", "and-another"}
 	w := httptest.NewRecorder()
 	s.handleGitHubWebhook(w, ghReq(ghCtx(cfg), ghOpenPR, prforge.EventHeaderPullRequest, pt))
-	if w.Code != http.StatusForbidden {
+	// A delivery no enabled bot claims is FILTERED (200), not rejected: a 4xx
+	// on a forge hook is what makes GitHub disable it after repeated
+	// deliveries, and "nobody wants this PR" is a routing outcome, not a
+	// client error. The launcher assertion above is what proves nothing ran.
+	if w.Code != http.StatusOK {
 		t.Fatalf("bot not allowed: code=%d body=%s", w.Code, w.Body.String())
+	}
+	if got := w.Body.String(); !strings.Contains(got, webhooks.StatusFiltered) {
+		t.Fatalf("bot not allowed: want filtered status, got %s", got)
 	}
 }

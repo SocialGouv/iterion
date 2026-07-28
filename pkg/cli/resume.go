@@ -8,6 +8,7 @@ import (
 	"time"
 
 	iterlog "github.com/SocialGouv/iterion/pkg/log"
+	"github.com/SocialGouv/iterion/pkg/retrypolicy"
 	"github.com/SocialGouv/iterion/pkg/runtime"
 	"github.com/SocialGouv/iterion/pkg/store"
 )
@@ -68,6 +69,10 @@ type ResumeOptions struct {
 	// RunOptions.AutoResume so `iterion resume` can itself keep re-driving a
 	// transient-failing run without a human in the loop. See auto_resume.go.
 	AutoResume int
+	// Retry is the per-run retry override (pkg/retrypolicy), the highest
+	// layer of the chain. Zero value inherits ITERION_RETRY_* then the
+	// package defaults.
+	Retry retrypolicy.Policy
 }
 
 // RunResumeWithFile resumes a paused run using a workflow file and answers.
@@ -130,7 +135,7 @@ func RunResumeWithFile(ctx context.Context, iterFile string, opts ResumeOptions,
 	switch r.Status {
 	case store.RunStatusPausedWaitingHuman:
 		// OK — requires answers
-	case store.RunStatusFailedResumable, store.RunStatusCancelled:
+	case store.RunStatusFailedResumable, store.RunStatusCancelled, store.RunStatusPausedOperator:
 		resumingFromFailure = true
 	case store.RunStatusRunning:
 		// Status=running on a run whose engine actually died is the
@@ -254,7 +259,10 @@ func RunResumeWithFile(ctx context.Context, iterFile string, opts ResumeOptions,
 	if err != nil {
 		return fmt.Errorf("cannot reload run: %w", err)
 	}
-	if r.Status != store.RunStatusPausedWaitingHuman && r.Status != store.RunStatusFailedResumable && r.Status != store.RunStatusCancelled {
+	if r.Status != store.RunStatusPausedWaitingHuman &&
+		r.Status != store.RunStatusFailedResumable &&
+		r.Status != store.RunStatusCancelled &&
+		r.Status != store.RunStatusPausedOperator {
 		return fmt.Errorf("run %q can no longer be resumed (status: %s)", opts.RunID, r.Status)
 	}
 
@@ -278,7 +286,7 @@ func RunResumeWithFile(ctx context.Context, iterFile string, opts ResumeOptions,
 	}
 
 	err = eng.Resume(ctx, opts.RunID, answers)
-	err = autoResumeLoop(ctx, eng, s, opts.RunID, resolveAutoResume(opts.AutoResume, opts.Budget), err, logger)
+	err = autoResumeLoop(ctx, eng, s, opts.RunID, resolveAutoResume(opts.AutoResume, opts.Budget, opts.Retry), err, logger)
 	return reportResumeOutcome(p, s, opts.RunID, err, map[string]any{
 		"run_id":   opts.RunID,
 		"workflow": wf.Name,

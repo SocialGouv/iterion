@@ -561,6 +561,15 @@ func (p *Publisher) SubmitLaunch(ctx context.Context, runID string, spec runview
 		src := *spec.SourceRef // copy: never share the caller's pointer
 		r.Source = &src
 	}
+	// Same "the queued doc is the only carrier" reasoning as Source above:
+	// the RunMessage has no retry field, and the launch site is the only
+	// place that could see every layer of the policy. A value lost here
+	// leaves the runner falling back to defaults for a run whose owner
+	// asked for something else.
+	if spec.RetryPolicy != nil {
+		rp := *spec.RetryPolicy // copy: never share the caller's pointer
+		r.RetryPolicy = &rp
+	}
 	// 1b. Resolve BYOK credentials and seal them under a fresh
 	//     secrets_ref. Empty ref means "no team-scoped credentials
 	//     configured" — the runner falls back to env. This runs BEFORE the
@@ -717,10 +726,10 @@ func (p *Publisher) CancelRun(ctx context.Context, runID string) error {
 // runner picks it up and dispatches to engine.Resume which threads
 // the answers in.
 //
-// On publish failure the run is reverted to failed_resumable so the
-// studio surfaces an actionable error instead of leaving a "queued"
-// row that no runner will ever pick up. Mirrors the rollback pattern
-// in SubmitLaunch.
+// On publish failure the run is reverted to its prior resumable status
+// so the studio surfaces an actionable error instead of leaving a
+// "queued" row that no runner will ever pick up. Mirrors the rollback
+// pattern in SubmitLaunch.
 func (p *Publisher) SubmitResume(ctx context.Context, spec runview.ResumeSpec, wf *ir.Workflow, hash string) error {
 	body, err := marshalIRFromSpec(spec.FilePath, spec.Source)
 	if err != nil {
@@ -728,7 +737,8 @@ func (p *Publisher) SubmitResume(ctx context.Context, spec runview.ResumeSpec, w
 	}
 	// Capture the prior status so we can roll back to the right
 	// resumable state if publish fails — the user could be resuming
-	// from paused_waiting_human, failed_resumable, or cancelled.
+	// from paused_waiting_human, paused_operator, failed_resumable, or
+	// cancelled.
 	prior, loadErr := p.store.LoadRun(ctx, spec.RunID)
 	if loadErr != nil {
 		return fmt.Errorf("cloudpublisher: load prior run %s: %w", spec.RunID, loadErr)
@@ -799,7 +809,7 @@ func (p *Publisher) SubmitResume(ctx context.Context, spec runview.ResumeSpec, w
 		// when the prior status wasn't itself resumable.
 		rollback := priorStatus
 		switch rollback {
-		case store.RunStatusPausedWaitingHuman, store.RunStatusFailedResumable, store.RunStatusCancelled:
+		case store.RunStatusPausedWaitingHuman, store.RunStatusPausedOperator, store.RunStatusFailedResumable, store.RunStatusCancelled:
 			// keep as-is
 		default:
 			rollback = store.RunStatusFailedResumable

@@ -46,8 +46,12 @@ type PullRequest struct {
 	// auto-launch a bot — the author is still iterating; the trigger is the
 	// `ready_for_review` action (or open/reopen while not draft).
 	Draft bool `json:"draft"`
-	Head  Ref  `json:"head"`
-	Base  Ref  `json:"base"`
+	// User is who OPENED the pull request. Distinct from the event sender on
+	// every action but `opened`: on a push to an existing PR the sender is
+	// whoever pushed, which is not who the PR belongs to.
+	User Sender `json:"user"`
+	Head Ref    `json:"head"`
+	Base Ref    `json:"base"`
 }
 
 type Ref struct {

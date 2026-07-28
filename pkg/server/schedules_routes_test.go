@@ -220,7 +220,7 @@ func TestBuildScheduledLaunchSpec(t *testing.T) {
 		RepoURL: "https://example.com/repo.git",
 		RepoRef: "feat/x",
 	}
-	spec := buildScheduledLaunchSpec(sb, "/tmp/feed-watch/main.bot", "workflow: {}")
+	spec := buildScheduledLaunchSpec(sb, "/tmp/feed-watch/main.bot", "workflow: {}", nil)
 	if spec.FilePath != "/tmp/feed-watch/main.bot" || spec.Source != "workflow: {}" {
 		t.Errorf("source pass-through: %+v", spec)
 	}

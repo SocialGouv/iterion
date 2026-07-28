@@ -1,6 +1,10 @@
 package model
 
-import "strings"
+import (
+	"regexp"
+	"strconv"
+	"strings"
+)
 
 // capabilitiesForModel returns capabilities for a given provider and model ID.
 // It resolves dynamically: the curated static heuristics (curatedCapabilities)
@@ -47,18 +51,44 @@ func anthropicCapabilities(modelID string) ModelCapabilities {
 		return glmCapabilities(lower)
 	}
 
-	// Claude 3.5+ and Claude 4+ support reasoning via extended thinking.
-	hasReasoning := strings.Contains(lower, "claude-3-5") ||
-		strings.Contains(lower, "claude-3.5") ||
-		strings.Contains(lower, "claude-sonnet-4") ||
-		strings.Contains(lower, "claude-opus-4") ||
-		strings.Contains(lower, "claude-4")
+	// Every Claude from 3.5 onward supports reasoning via extended thinking.
+	// This reads the GENERATION rather than matching a list of known ids:
+	// a list silently misclassifies the next model as non-reasoning, which
+	// costs full price for a degraded answer and reports nothing. An
+	// unparseable id stays conservative (no reasoning).
+	major, minor, ok := claudeGeneration(lower)
+	hasReasoning := ok && (major >= 4 || (major == 3 && minor >= 5))
 
 	return ModelCapabilities{
 		Reasoning:   hasReasoning,
 		ToolCall:    true,
 		Temperature: true,
 	}
+}
+
+// claudeGenerationRe pulls the generation out of a Claude model id, in either
+// shape Anthropic has used: family-then-number ("claude-opus-5",
+// "claude-sonnet-4-6", "claude-haiku-4-5-20251001") and number-then-family
+// ("claude-3-5-sonnet-20241022", "claude-3.5-sonnet"). A trailing variant
+// suffix such as "claude-opus-5[1m]" does not disturb it.
+var claudeGenerationRe = regexp.MustCompile(`claude-(?:[a-z]+-)?(\d+)(?:[-.](\d+))?`)
+
+// claudeGeneration returns the major and minor generation of a Claude model id.
+// ok is false when the id carries no recognisable generation, which callers
+// must treat as "unknown" rather than as a low generation.
+func claudeGeneration(lower string) (major, minor int, ok bool) {
+	m := claudeGenerationRe.FindStringSubmatch(lower)
+	if m == nil {
+		return 0, 0, false
+	}
+	major, err := strconv.Atoi(m[1])
+	if err != nil {
+		return 0, 0, false
+	}
+	if m[2] != "" {
+		minor, _ = strconv.Atoi(m[2])
+	}
+	return major, minor, true
 }
 
 // glmContextWindow returns the context window for a GLM model served via

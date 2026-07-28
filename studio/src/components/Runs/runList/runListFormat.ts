@@ -86,3 +86,33 @@ export function formatDuration(startISO: string, endISO?: string): string {
   const remMin = minutes % 60;
   return `${hours}h ${remMin}m`;
 }
+
+// retryHint renders the pending automatic retry of a run parked on an
+// exhausted provider quota window ("retrying in 33h"), or "" when none is
+// armed.
+//
+// This is the whole reason the field is surfaced: a failed_resumable row
+// that WILL resume and one that never will are otherwise identical, so a
+// waiting run reads as a dead one and gets resumed by hand — or worse,
+// written off. An instant already in the past renders as "retrying soon"
+// rather than a negative duration: the sweeper polls, so "due" and
+// "running again" are a minute apart.
+export function retryHint(run: RunSummary, now: number = Date.now()): string {
+  if (!run.retry_after) return "";
+  const at = Date.parse(run.retry_after);
+  if (Number.isNaN(at)) return "";
+  const ms = at - now;
+  if (ms <= 0) return "retrying soon";
+  const minutes = Math.round(ms / 60000);
+  if (minutes < 60) return `retrying in ${Math.max(1, minutes)}m`;
+  const hours = Math.round(minutes / 60);
+  if (hours < 48) return `retrying in ${hours}h`;
+  return `retrying in ${Math.round(hours / 24)}d`;
+}
+
+// retryAttemptLabel renders the run's position in its attempt budget, for
+// the tooltip beside retryHint. Empty when nothing has been attempted.
+export function retryAttemptLabel(run: RunSummary): string {
+  if (!run.retry_attempts) return "";
+  return `automatic retry ${run.retry_attempts}`;
+}

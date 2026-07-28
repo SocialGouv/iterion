@@ -174,6 +174,14 @@ type publishReviewResponse struct {
 	GateContext string `json:"gate_context,omitempty"`
 	GateSHA     string `json:"gate_sha,omitempty"`
 	GateError   string `json:"gate_error,omitempty"`
+	// SkippedReason explains a publish that did not land (a forge error).
+	// Present with published=false; the gate may still have been posted.
+	SkippedReason string `json:"skipped_reason,omitempty"`
+	// DroppedComments lists comments the request carried that could not be
+	// anchored (no path, no positive line, or no body). They are dropped
+	// rather than fatal, but reported so the caller's output contract can be
+	// fixed instead of the loss going unnoticed.
+	DroppedComments []string `json:"dropped_comments,omitempty"`
 }
 
 // handleForgePublishReview authenticates the per-run token, validates the
@@ -223,11 +231,34 @@ func (s *Server) handleForgePublishReview(w http.ResponseWriter, r *http.Request
 		httpError(w, http.StatusBadRequest, "nothing to publish: summary and comments are both empty")
 		return
 	}
+	// Unanchorable comments are DROPPED, not fatal. Rejecting the batch on
+	// one bad entry cost a whole review — and, because the merge gate is
+	// posted after a successful publish, the gate status with it. A reviewer
+	// that legitimately produces a finding it cannot anchor to a file+line
+	// (an architectural observation, a cross-file concern) must not be able
+	// to take the anchored findings and the merge signal down with it.
+	//
+	// They are reported back in the response (dropped_comments) rather than
+	// swallowed: the bot's output contract is still wrong, and a silent drop
+	// would hide that.
+	kept := make([]publishReviewComment, 0, len(req.Comments))
+	var droppedComments []string
 	for i, c := range req.Comments {
 		if strings.TrimSpace(c.Path) == "" || c.Line <= 0 || strings.TrimSpace(c.Body) == "" {
-			httpError(w, http.StatusBadRequest, "comment %d: path, positive line and body are required", i)
-			return
+			droppedComments = append(droppedComments,
+				fmt.Sprintf("comment %d: needs a path, a positive line and a body", i))
+			continue
 		}
+		kept = append(kept, c)
+	}
+	req.Comments = kept
+	// Everything unpublishable is only a hard error when NOTHING is left to
+	// say — a review with no summary and no anchorable comment has no
+	// content, which is a different failure from a malformed one.
+	if strings.TrimSpace(req.Summary) == "" && len(req.Comments) == 0 {
+		httpError(w, http.StatusBadRequest, "nothing publishable: summary is empty and every comment was unanchorable (%s)",
+			strings.Join(droppedComments, "; "))
+		return
 	}
 
 	conn, err := s.forgeConnections.Get(r.Context(), grant.ConnectionID)
@@ -263,9 +294,29 @@ func (s *Server) handleForgePublishReview(w http.ResponseWriter, r *http.Request
 		review.Body += "\n\n" + forge.FoldCommentsMarkdown(toForgeComments(req.Comments))
 	}
 
-	res, err := rc.CreatePullReview(r.Context(), grant.Repo, number, review)
-	if err != nil {
-		httpError(w, http.StatusBadGateway, "create pull review: %v", err)
+	res, reviewErr := rc.CreatePullReview(r.Context(), grant.Repo, number, review)
+	if reviewErr != nil {
+		// The gate is a COUNT the bot already computed; it does not depend on
+		// the comments landing. Post it before giving up, then report the
+		// publish failure. Coupling the two meant one forge hiccup left the
+		// PR's required check permanently absent — indistinguishable from
+		// "never reviewed", and unblockable by another review.
+		gate := s.postGateStatus(r.Context(), conn, grant.Repo, number, req.Gate, "")
+		if s.logger != nil {
+			s.logger.Warn("forge publish: %s %s#%d review failed (%v); gate posted=%v state=%q",
+				conn.Provider, grant.Repo, number, reviewErr, gate.posted, gate.state)
+		}
+		writeJSONStatus(w, http.StatusBadGateway, publishReviewResponse{
+			Published:       false,
+			Provider:        string(conn.Provider),
+			SkippedReason:   fmt.Sprintf("create pull review: %v", reviewErr),
+			DroppedComments: droppedComments,
+			GatePosted:      gate.posted,
+			GateState:       gate.state,
+			GateContext:     gate.context,
+			GateSHA:         gate.sha,
+			GateError:       gate.errText,
+		})
 		return
 	}
 	if s.logger != nil {
@@ -293,6 +344,7 @@ func (s *Server) handleForgePublishReview(w http.ResponseWriter, r *http.Request
 		SuggestionsPosted: res.SuggestionsPosted,
 		Verified:          res.Verified,
 		Fallback:          res.Fallback,
+		DroppedComments:   droppedComments,
 		GatePosted:        gate.posted,
 		GateState:         gate.state,
 		GateContext:       gate.context,

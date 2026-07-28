@@ -267,8 +267,10 @@ dispatcher routes on it), never the persona.
 | Featurly | `feature-dev` |
 | Fini | `feature-gap-fill` |
 | Vigie | `feed-watch` |
+| Goldy | `golden-master` |
 | Heartbeat (always-on demo) | `heartbeat` |
 | Triagy | `issue-triage` |
+| Morphy | `modernize` |
 | Nested Subbots Demo | `nested-subbots-demo` |
 | Pipeline Board Demo | `pipeline-board-demo` |
 | Revi (converse) | `revi-converse` |
@@ -448,7 +450,7 @@ audit ran and the build is green before anything is committed.
   alignment onto the PR branch. Not for human PRs (use Revi /
   review-pr), and not for proactively opening update PRs (that is
   Renovacy / secured-renovacy).
-- **Vars**: `base_ref` (string), `max_fix_iterations` (int), `post_to_board` (bool), `pr_author` (string), `pr_url` (string), `scope_notes` (string), `scratch_dir` (string), `workspace_dir` (string)
+- **Vars**: `arm_automerge` (bool), `automerge_method` (string), `base_ref` (string), `forge_publish_token` (string), `forge_publish_url` (string), `gate_context` (string), `gate_enabled` (bool), `max_fix_iterations` (int), `post_to_board` (bool), `pr_author` (string), `pr_url` (string), `scope_notes` (string), `scratch_dir` (string), `workspace_dir` (string)
 - **Path**: `bots/dep-update-guard/main.bot`
 
 ### `devbox-setup` — Devy
@@ -657,6 +659,40 @@ schemes by default (opt into internal feeds with
 - **Vars**: `allow_private_feeds` (bool), `category` (string), `config_path` (string), `dry_run` (bool), `fetch_timeout_secs` (int), `max_digest_items` (int), `max_items_per_feed` (int), `mode` (string), `scratch_dir` (string), `state_commit` (bool), `state_dir` (string), `workspace_dir` (string)
 - **Path**: `bots/feed-watch/main.bot`
 
+### `golden-master` — Goldy
+
+Builds a behavioural non-regression net for an EXISTING application, and
+PROVES it is not blind. Records what the app observably does (HTTP responses
+across a representative catalogue, per persona), canonicalises away what is
+volatile, and commits the references into `.golden-master/` in the target
+repo. The part that makes it worth having: a deterministic mutation
+counter-test. Known divergences are injected one at a time and the oracle
+MUST see every one of them, while a no-op mutation MUST leave it silent —
+the first kills a blind judge, the second kills a hysterical one. A sealed
+held-out set, never shown to the hardening loop, is scored exactly once at
+the final gate so the oracle cannot be tuned to pass its own training set.
+The gate is a pure conjunction computed in shell and expressions, never by
+an LLM: no lane may be blind, no mutant may be invalid, no collateral drift,
+and the held-out set must be fully detected. An aggregate score is not
+allowed to average a blind lane away. Emits `verify-oracle.sh` (one entry
+point for CI and for humans) and `REPORT.md`. Repo-agnostic: it knows
+nothing about any language or framework — the app's toolchain comes from the
+target repo's own devbox/devcontainer.
+
+- **Use when**:
+  Use BEFORE modernising, migrating or refactoring an existing application
+  whose test suite is thin, absent, or untrusted — the net you put underneath
+  the work so a behavioural change cannot pass unnoticed. Typical trigger: a
+  framework/runtime/database migration is planned and nothing today would
+  detect an iso-functionality break. Also use to AUDIT an existing golden
+  master or approval-test suite: point it at one and the mutation counter-test
+  reports which references are provably blind. Do NOT use it to write unit
+  tests for new code (that is a test-coverage bot's job), and do NOT use it to
+  encode intended behaviour — it records the status quo, bugs included, which
+  is exactly what a migration must preserve.
+- **Vars**: `adversarial` (bool), `max_passes` (int), `min_corpus` (int), `mutation_floor` (int), `oracle_dir` (string), `scratch_dir` (string), `source_issue_ref` (string), `surface_scope` (string), `workspace_dir` (string)
+- **Path**: `bots/golden-master/main.bot`
+
 ### `heartbeat` — Heartbeat (always-on demo)
 
 Tool-only demo of an always-on agent. Relaunched continuously by an
@@ -688,6 +724,41 @@ Auto-fires via the trigger spine on cards carrying triage:auto
   pre-routed so launching is a single drag to Ready.
 - **Vars**: `issue_id` (string, required)
 - **Path**: `bots/issue-triage/main.bot`
+
+### `modernize` — Morphy
+
+Carries a repository through a programme of modernisation LOTS — steps whose
+entry and exit are both deterministic gates — one gate-to-gate step at a
+time. The unit of work is the lot, not the package: a dependency pipeline
+whose failure path is "revert this package and continue" cannot express "the
+runtime moved and nine hundred files went with it".
+
+It holds NO knowledge of any build tool or runtime. Every command it runs is
+declared in the target repository's own `.modernize/plan.yaml`, which keeps
+the bot universal and lets a human audit the programme without reading it.
+
+A lot is done if and only if three things hold together, as a conjunction and
+never as a score: its declared exit_gate exits 0 on HEAD, the behavioural
+oracle replays green, and NOT ONE line changed under the oracle's reference
+directory. That third check is the separation of powers, verified in git
+rather than trusted — the party that changes the code must not be able to
+redefine what judges it, because a golden master dies by re-baselining. The
+`status` field an agent writes is read as a bookmark and never as evidence.
+
+- **Use when**:
+  Use to execute a planned modernisation — toolchain, runtime, framework or
+  datastore — on a repository that ALREADY has a behavioural non-regression
+  net. Build the net first (see the golden-master bot): this bot refuses to
+  call a lot done without one, because a green build proves the code compiles
+  and never that it still behaves.
+  
+  Do NOT use it for routine dependency bumps — that is a dependency-upgrade
+  pipeline's job, and its per-package revert semantics are the right ones
+  there. Do NOT use it to decide WHAT to modernise: the programme is a human
+  decision recorded in the contract, and the lot DAG in particular encodes
+  compatibility knowledge that cannot be re-derived from the tree.
+- **Vars**: `max_passes` (int), `only_lot` (string), `plan_path` (string), `source_issue_ref` (string), `workspace_dir` (string)
+- **Path**: `bots/modernize/main.bot`
 
 ### `nested-subbots-demo` — Nested Subbots Demo
 
@@ -766,7 +837,7 @@ or commits code — that is the improve-loops' job (Billy / Willy).
   auto-fixed. Read-only: Revi reports; Billy (branch-improve-loop)
   reviews AND fixes AND commits.
 - **Triggers**: review-pr, pr-review, review
-- **Vars**: `base_ref` (string), `forge_publish_token` (string), `forge_publish_url` (string), `gate_enabled` (bool), `gate_severity` (string), `max_findings` (int), `post_to_board` (bool), `pr_review_mode` (string), `pr_url` (string), `report_path` (string), `scope_notes` (string), `severity_threshold` (string), `workspace_dir` (string)
+- **Vars**: `base_ref` (string), `forge_publish_token` (string), `forge_publish_url` (string), `gate_context` (string), `gate_enabled` (bool), `gate_severity` (string), `max_findings` (int), `post_to_board` (bool), `pr_review_mode` (string), `pr_url` (string), `report_path` (string), `scope_notes` (string), `severity_threshold` (string), `workspace_dir` (string)
 - **Path**: `bots/review-pr/main.bot`
 
 ### `rgaa-audit` — Acci

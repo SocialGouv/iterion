@@ -267,9 +267,9 @@ func (s *Service) startInProcess(parent context.Context, runID string, spec Laun
 		})
 }
 
-// Resume re-enters a paused, failed_resumable, or cancelled run with
-// optional answers. The .bot source must be supplied (and must hash-
-// match the original unless spec.Force).
+// Resume re-enters a human-paused, operator-paused, failed_resumable,
+// or cancelled run with optional answers. The .bot source must be
+// supplied (and must hash-match the original unless spec.Force).
 func (s *Service) Resume(parent context.Context, spec ResumeSpec) (*LaunchResult, error) {
 	if s.draining.Load() {
 		return nil, runtime.ErrServerDraining
@@ -280,6 +280,16 @@ func (s *Service) Resume(parent context.Context, spec ResumeSpec) (*LaunchResult
 	if spec.FilePath == "" {
 		return nil, errors.New("runview: file_path is required")
 	}
+
+	// Wait out a previous runner that is still tearing down, BEFORE anything
+	// takes a resource it holds. This is the top of the resume path on purpose:
+	// the store flock (taken inside spawnRun) is what a resume in the hand-off
+	// window actually collides with — it is released two deferred statements
+	// before the manager handle — so a wait placed at Register would only cover
+	// the sliver between them and the operator would still see a failure, just
+	// with a different message. No-op unless the previous runner has announced
+	// it is leaving (see Manager.AwaitHandoff).
+	s.manager.AwaitHandoff(parent, spec.RunID)
 
 	// Propagate parent so the mongo backend's tenant filter applies:
 	// a cross-tenant Resume must resolve to not-found, not panic on a
@@ -309,7 +319,10 @@ func (s *Service) Resume(parent context.Context, spec ResumeSpec) (*LaunchResult
 	// asynchronous execution mode. Without this preflight, in-process runs
 	// returned from spawnRun before Engine.Resume checked the hash, while
 	// detached/cloud runners only discovered the mismatch after this service
-	// had already reported success to the HTTP caller.
+	// had already reported success (202) to the HTTP caller — the studio then
+	// treats the human answer as accepted and hides the form even though the
+	// run is still paused. A synchronous error lets the existing UI preserve
+	// the answer and offer its explicit force-resume retry.
 	//
 	// Engine.Resume repeats the same check after acquiring the run lock, so a
 	// source/status change between this point and execution still fails closed.
@@ -402,7 +415,7 @@ func validateResumable(r *store.Run, answers map[string]any) error {
 			return fmt.Errorf("no answers provided; resume of paused run requires answers")
 		}
 		return nil
-	case store.RunStatusFailedResumable, store.RunStatusCancelled:
+	case store.RunStatusPausedOperator, store.RunStatusFailedResumable, store.RunStatusCancelled:
 		return nil
 	default:
 		return fmt.Errorf("run %q cannot be resumed (status: %s)", r.ID, r.Status)
@@ -543,6 +556,17 @@ func (s *Service) spawnRun(
 	go func() {
 		var paused bool
 		defer close(done)
+		// Deregister runs LAST of the teardown (defers are LIFO, so the
+		// earliest-registered manager defer executes latest). It closes the
+		// handle's done channel, which is what AwaitHandoff releases on — so it
+		// has to mean "this goroutine is finished", not "it is partway through
+		// its teardown". Registered below dropRunLog / unregisterRunEngine, a
+		// released successor raced them: those two are keyed on runID alone,
+		// and the successor has already installed its own log buffer and engine
+		// by then, so they tore down the NEW run's — a resume that reported
+		// success with a dead log tail and no steering channel. That is worse
+		// than the "already registered" it replaced, because it is silent.
+		defer s.manager.Deregister(runID)
 		defer s.unregisterRunEngine(runID)
 		defer s.dropRunLog(runID)
 		// Keep WS subscribers across a pause: the goroutine exits on
@@ -556,13 +580,12 @@ func (s *Service) spawnRun(
 				s.broker.CloseRun(runID)
 			}
 		}()
-		// Release this root's pipeline-concurrency slot AFTER Deregister
-		// (defers run LIFO, so this line must come BEFORE the Deregister
-		// defer), so the run is fully deregistered before the scheduler
-		// admits the next waiter. A no-op for run IDs that never held a
-		// slot (children, resumes, or when the cap is disabled).
+		// Release this root's pipeline-concurrency slot. A no-op for run IDs
+		// that never held a slot (children, resumes, or when the cap is
+		// disabled). It runs before Deregister now; harmless, because the
+		// waiter it admits is a DIFFERENT run and pipelineQueue keeps its own
+		// accounting — it never consults the Manager.
 		defer s.pipelineQueue.slotFreed(runID)
-		defer s.manager.Deregister(runID)
 		defer func() { _ = lock.Unlock() }()
 		if cancelTimeout != nil {
 			defer cancelTimeout()
@@ -581,6 +604,12 @@ func (s *Service) spawnRun(
 		defer stopBoard()
 
 		bodyErr := body(ctx, eng)
+		// The engine has written its terminal/paused status to the store, so
+		// the run now READS resumable while this handle is still held through
+		// the teardown below (a completion webhook, a supervisor drain). Say
+		// so, and a resume arriving in that window waits the handoff out
+		// instead of failing on "already registered".
+		s.manager.MarkLeaving(runID)
 		paused = errors.Is(bodyErr, runtime.ErrRunPaused) || errors.Is(bodyErr, runtime.ErrRunPausedOperator)
 		s.logRunOutcome(runID, bodyErr)
 		// Hand the terminal error to a blocking caller (ADR-046: the

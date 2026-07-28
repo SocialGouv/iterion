@@ -227,7 +227,7 @@ schema converse_health_output:
 
 agent converse_agent:
   backend: "claude_code"
-  model: "${ITERION_VIBE_MODEL_CLAUDE:-claude-opus-4-8}"
+  model: "${ITERION_VIBE_MODEL_CLAUDE:-claude-opus-5}"
   reasoning_effort: "${ITERION_VIBE_EFFORT_CONVERSE:-medium}"
   output: converse_output
   system: converse_system

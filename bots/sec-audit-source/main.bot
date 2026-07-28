@@ -2089,7 +2089,7 @@ print(json.dumps({
 ## report_card stack and supports write_file via the standard tool surface.
 agent project_context_generate:
   backend: "claude_code"
-  model: "${ITERION_SEC_AUDIT_MODEL_CLAUDE:-claude-opus-4-8}"
+  model: "${ITERION_SEC_AUDIT_MODEL_CLAUDE:-claude-opus-5}"
   reasoning_effort: "${ITERION_SEC_AUDIT_EFFORT_CONTEXT:-low}"
   input: project_context_generate_input
   output: project_context_output
@@ -2986,7 +2986,7 @@ print(json.dumps({
 ##                                       chain. DEFAULT IS EMPTY → the
 ##                                       node runs on the first-class model
 ##                                       above (opus). Set e.g.
-##                                       `zai:glm-5.2,anthropic:claude-opus-4-8`
+##                                       `zai:glm-5.2,anthropic:claude-opus-5`
 ##                                       to put z.ai's 1M-ctx glm first with
 ##                                       opus on fall-through (ADR-043: GLM is
 ##                                       a second-tier opt-in lane; opus is
@@ -2994,7 +2994,7 @@ print(json.dumps({
 ##                                       output). See ADR-004.
 agent triage:
   backend: "${ITERION_SEC_AUDIT_BACKEND:-claude_code}"
-  model: "${ITERION_SEC_AUDIT_MODEL:-claude-opus-4-8}"
+  model: "${ITERION_SEC_AUDIT_MODEL:-claude-opus-5}"
   provider: "${ITERION_SEC_AUDIT_PROVIDER_CHAIN:-}"
   reasoning_effort: "${ITERION_SEC_AUDIT_EFFORT_TRIAGE:-high}"
   input: triage_input
@@ -3135,7 +3135,7 @@ print(json.dumps({
 ## wait_all converge at bots/code-review/main.bot:353-401.
 ##
 ## Cross-family agreement signal: v1/v3 = claw + gpt-5.5; v2 =
-## claude_code + claude-opus-4-8. Differing model families maximise
+## claude_code + claude-opus-5. Differing model families maximise
 ## the value of disagreement (cf. Revi's claude/gpt split). Each
 ## voter is `readonly: true` + `session: fresh` so it cannot bleed
 ## context from other voters and cannot mutate the workspace; the
@@ -3167,7 +3167,7 @@ print(json.dumps({
 ## first attempt without burning extra retry budget on v2.
 judge voter_v1:
   backend: "${ITERION_SEC_AUDIT_BACKEND:-claude_code}"
-  model: "${ITERION_SEC_AUDIT_VOTER_V1_MODEL:-claude-opus-4-8}"
+  model: "${ITERION_SEC_AUDIT_VOTER_V1_MODEL:-claude-opus-5}"
   provider: "${ITERION_SEC_AUDIT_PROVIDER_CHAIN:-}"
   reasoning_effort: "${ITERION_SEC_AUDIT_EFFORT_VOTER:-high}"
   input: voter_input
@@ -3186,7 +3186,7 @@ judge voter_v2:
   ## the explicit tools list code-review's reviewer_claude omits is
   ## omitted here too (cf. bots/code-review/main.bot:356-368).
   backend: "claude_code"
-  model: "${ITERION_SEC_AUDIT_VOTER_V2_MODEL:-claude-opus-4-8}"
+  model: "${ITERION_SEC_AUDIT_VOTER_V2_MODEL:-claude-opus-5}"
   reasoning_effort: "${ITERION_SEC_AUDIT_EFFORT_VOTER:-high}"
   input: voter_input
   output: voter_output
@@ -3198,7 +3198,7 @@ judge voter_v2:
 
 judge voter_v3:
   backend: "${ITERION_SEC_AUDIT_BACKEND:-claude_code}"
-  model: "${ITERION_SEC_AUDIT_VOTER_V3_MODEL:-claude-opus-4-8}"
+  model: "${ITERION_SEC_AUDIT_VOTER_V3_MODEL:-claude-opus-5}"
   provider: "${ITERION_SEC_AUDIT_PROVIDER_CHAIN:-}"
   reasoning_effort: "${ITERION_SEC_AUDIT_EFFORT_VOTER:-high}"
   input: voter_input
@@ -3514,7 +3514,7 @@ agent report_card:
   ## skills/ mirrored to .claude/skills/ and the board MCP server
   ## registered with capability-gated tools.
   backend: "claude_code"
-  model: "${ITERION_SEC_AUDIT_MODEL_CLAUDE:-claude-opus-4-8}"
+  model: "${ITERION_SEC_AUDIT_MODEL_CLAUDE:-claude-opus-5}"
   reasoning_effort: "${ITERION_SEC_AUDIT_EFFORT_REPORT:-medium}"
   input: report_input
   output: report_output
@@ -3873,7 +3873,7 @@ print(json.dumps({
 ## the first time.
 agent patch_author:
   backend: "claude_code"
-  model: "${ITERION_SEC_PATCH_MODEL:-claude-opus-4-8}"
+  model: "${ITERION_SEC_PATCH_MODEL:-claude-opus-5}"
   reasoning_effort: "${ITERION_SEC_PATCH_EFFORT_AUTHOR:-high}"
   input: patch_author_input
   output: patch_author_output
@@ -4067,7 +4067,7 @@ except Exception as e:
 ## the prompt restricts it to read-only flags.
 judge reattack:
   backend: "claude_code"
-  model: "${ITERION_SEC_PATCH_MODEL:-claude-opus-4-8}"
+  model: "${ITERION_SEC_PATCH_MODEL:-claude-opus-5}"
   reasoning_effort: "${ITERION_SEC_PATCH_EFFORT_REATTACK:-high}"
   input: reattack_input
   output: reattack_output
@@ -4104,7 +4104,7 @@ compute project_review_input:
 ## patch_author context bleeds in.
 judge reviewer_isolation:
   backend: "claude_code"
-  model: "${ITERION_SEC_PATCH_MODEL:-claude-opus-4-8}"
+  model: "${ITERION_SEC_PATCH_MODEL:-claude-opus-5}"
   reasoning_effort: "${ITERION_SEC_PATCH_EFFORT_REVIEW:-high}"
   input: review_isolation_input
   output: review_isolation_output
@@ -4487,7 +4487,7 @@ out(result)
 ## warnings on report_card. Acceptable per the D5a contract.
 agent remediation_report:
   backend: "claude_code"
-  model: "${ITERION_SEC_PATCH_MODEL:-claude-opus-4-8}"
+  model: "${ITERION_SEC_PATCH_MODEL:-claude-opus-5}"
   reasoning_effort: "${ITERION_SEC_PATCH_EFFORT_REPORT:-medium}"
   input: remediation_report_input
   output: remediation_report_output

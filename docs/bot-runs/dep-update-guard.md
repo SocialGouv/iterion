@@ -6,6 +6,73 @@ consuming code, prove the tree with the deterministic verify gate,
 commit onto the PR branch, post the verdict comment. Never merges. See
 [bots/dep-update-guard/](../../bots/dep-update-guard/).
 
+## 2026-07-28 — v2.1.0: the classifier was auditing empty diffs, and the gate could never work (no run; defects found by inspection + adversarial review)
+
+- Status: **partial** — code validated locally and by review; no live cloud run
+  yet (the target repo is not in the forge App's installation scope, which
+  needs an Organization Owner).
+- Versions: bot 2.0.0 → 2.1.0 · iterion PR #306 (7 commits)
+- Method: wiring Vetty onto `socialgouv/buildkit-operator`'s Renovate PRs
+  end-to-end (audit → align → verdict → gate → auto-merge). Deterministic
+  nodes exercised against real fixtures; Revi reviewed the branch.
+
+### What the attempt actually found
+
+The bot did not fail loudly on this repo — it would have reported **"safe" on
+three of the four open Renovate PRs without reading anything**. `prepare`
+only recognised package manifests, so a PR moving a Dockerfile digest, a
+`devbox.json` pin or a `Taskfile.yml` tool matched nothing. Crucially it did
+not stop: `is_empty` means "no files changed", not "no manifest matched", so
+the run continued and handed the auditor an empty `bump_summary`. Verified on
+the real `renovate/golang-1.26` branch: 3 Dockerfiles, a 1684-char diff where
+the old classifier produced an empty string.
+
+Lesson worth keeping: **a scope flag and a coverage flag are not the same
+flag.** Conflating them is what turns "we found nothing to look at" into "we
+looked and found nothing".
+
+### Engine defects this surfaced
+
+- `review_on_sync` was **unreachable** — absent from the webhook API request
+  type (a PATCH carrying it returned 200 and changed nothing) and never set by
+  provisioning, so it could only ever be false in production. Since a commit
+  status lives on one SHA, that made every merge gate self-defeating: the
+  status went absent from the head after any push. Observed live on
+  SocialGouv/iterion#300 (20 checks green, PR blocked). Now derived from the
+  declared `statuses` scope.
+- A PR event could only launch **one** bot, via a hardcoded fallback, and the
+  shared author allowlist was nil'd as soon as one co-enabled bot was open —
+  so a dependency guard co-enabled with a reviewer was silently dropped along
+  with its author filter.
+- Author routing read the event **sender**, not the PR author, so a human
+  pushing a fix onto a dependency PR handed it to the wrong bot.
+
+### The adversarial review earned its keep
+
+Revi found four defects on the branch, two of which would have shipped broken:
+
+- `arm_automerge` sent **syntactically invalid GraphQL** (a sigil swap that
+  also rewrote GraphQL's own separators). The feature was dead, and the test
+  certified it green — the stub answered success to any body. The fix now
+  includes a stub that rejects what the API would, verified by reintroducing
+  the bug and watching the test fail.
+- The `ReviewOnSync` derivation ran only on a *fresh* provision, while the
+  already-provisioned repo — the production case — hits the idempotent
+  short-circuit. The fix fixed nothing that was already deployed.
+
+Lesson: **a test whose stub accepts anything certifies nothing.** Both of
+those were green in CI and broken in production; the pattern is a test that
+asserts on what we sent rather than on what a real peer would accept.
+
+### Lessons for next run
+
+- Point it at an npm/pypi PR: live validation is still Go/Docker-only.
+- The gate context must be pinned per repo (`launch_vars.gate_context`), the
+  same value on every bot that can gate — a per-bot required check deadlocks
+  whichever PRs that bot does not review.
+- `arm_automerge` is only safe on a repo that requires at least one check;
+  with none, a forge merges an armed PR immediately.
+
 ## 2026-07-14 — cloud run on a real Dependabot go-minor-patch PR (#182); excellent audit/align/verify, wired via `/vetty` command (run 019f60cf)
 
 - Status: **VALIDATED (cloud, real forge PR)** — Vetty ran end-to-end on a live

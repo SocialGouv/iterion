@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"math"
 	"os"
 	"regexp"
 	"strconv"
@@ -846,6 +847,18 @@ func classifyRateLimit(text string, now time.Time) (kind string, resetAt time.Ti
 	return kind, parseResetHint(lower, now)
 }
 
+// resetAbsRe matches an explicit absolute instant: "reset at
+// 2026-05-13 07:38:08" (the ZAI facade shape). Tried FIRST because the
+// looser clock pattern below would otherwise chew the "20" out of "2026"
+// and report hour 20 of today.
+var resetAbsRe = regexp.MustCompile(`reset[s]?(?: at)?\s+(\d{4})-(\d{2})-(\d{2})[ t](\d{1,2}):(\d{2})(?::(\d{2}))?`)
+
+// resetDateRe matches the DATED shape a weekly cap prints: "resets Jul 28,
+// 9pm (UTC)", "resets december 30, 11pm". The month name is what makes this
+// distinct from resetClockRe — which requires a digit right after "resets"
+// and so matches none of these.
+var resetDateRe = regexp.MustCompile(`reset[s]?(?: at)?\s+([a-z]{3,9})\.?\s+(\d{1,2})\s*,?\s+(\d{1,2})(?::(\d{2}))?\s*(am|pm)?`)
+
 // resetClockRe matches the clock-time reset hints observed in forfait
 // notices: "resets 3pm", "resets 10:30am (UTC)", "reset at 7pm".
 var resetClockRe = regexp.MustCompile(`reset[s]?(?: at)?\s+(\d{1,2})(?::(\d{2}))?\s*(am|pm)?`)
@@ -853,30 +866,73 @@ var resetClockRe = regexp.MustCompile(`reset[s]?(?: at)?\s+(\d{1,2})(?::(\d{2}))
 // resetWindowRe matches the window-duration shape: "reached for 5 hour".
 var resetWindowRe = regexp.MustCompile(`for\s+(\d{1,2})\s*hour`)
 
+// monthNames maps the three-letter prefix of a month name to its number,
+// which covers both the abbreviated ("Jul") and full ("december") forms
+// the CLI has been observed to print.
+var monthNames = map[string]time.Month{
+	"jan": time.January, "feb": time.February, "mar": time.March,
+	"apr": time.April, "may": time.May, "jun": time.June,
+	"jul": time.July, "aug": time.August, "sep": time.September,
+	"oct": time.October, "nov": time.November, "dec": time.December,
+}
+
+// resetDateTrustWindow bounds how far a year-inferred reset instant may
+// sit from now to be believed. Every real window (5h, session, daily,
+// weekly) resets within days, so a candidate months away means the text
+// was not a reset hint after all — better to report "no hint" and let the
+// caller fall back to a bounded wait than to return a confidently wrong
+// instant it would then wait on.
+const resetDateTrustWindow = 45 * 24 * time.Hour
+
+// ParseResetHint extracts the reset instant from a provider usage-window
+// notice, reporting whether anything parsed. Exported so a host that only
+// has the flattened error text (rather than the typed *ErrRateLimited) can
+// still recover the instant instead of re-implementing the patterns.
+func ParseResetHint(text string, now time.Time) (time.Time, bool) {
+	at := parseResetHint(strings.ToLower(text), now)
+	return at, !at.IsZero()
+}
+
 // parseResetHint extracts the next reset instant from a usage-window
 // notice, interpreting bare clock times as the NEXT occurrence (UTC —
 // the forfait notices print UTC). Zero when nothing parses.
 func parseResetHint(lower string, now time.Time) time.Time {
-	if m := resetClockRe.FindStringSubmatch(lower); m != nil {
-		hour, _ := strconv.Atoi(m[1])
-		minute := 0
-		if m[2] != "" {
-			minute, _ = strconv.Atoi(m[2])
+	nowUTC := now.UTC()
+	// An absolute instant is unambiguous: take it verbatim, with no
+	// plausibility window. A value already in the past is a legitimate
+	// answer (the window has reopened) and the caller floors it.
+	if m := resetAbsRe.FindStringSubmatch(lower); m != nil {
+		year, _ := strconv.Atoi(m[1])
+		month, _ := strconv.Atoi(m[2])
+		day, _ := strconv.Atoi(m[3])
+		hour, _ := strconv.Atoi(m[4])
+		minute, _ := strconv.Atoi(m[5])
+		second := 0
+		if m[6] != "" {
+			second, _ = strconv.Atoi(m[6])
 		}
-		switch m[3] {
-		case "pm":
-			if hour < 12 {
-				hour += 12
-			}
-		case "am":
-			if hour == 12 {
-				hour = 0
-			}
+		if month >= 1 && month <= 12 && day >= 1 && day <= 31 && hour <= 23 && minute <= 59 && second <= 59 {
+			return time.Date(year, time.Month(month), day, hour, minute, second, 0, time.UTC)
 		}
-		if hour > 23 || minute > 59 {
+		return time.Time{}
+	}
+	if m := resetDateRe.FindStringSubmatch(lower); m != nil {
+		if month, ok := monthNames[m[1][:3]]; ok {
+			day, _ := strconv.Atoi(m[2])
+			hour, minute, ok := clockTo24h(m[3], m[4], m[5])
+			if ok && day >= 1 && day <= 31 {
+				return inferResetYear(month, day, hour, minute, nowUTC)
+			}
 			return time.Time{}
 		}
-		nowUTC := now.UTC()
+		// A leading word that is not a month means this is not the dated
+		// shape; fall through to the bare-clock pattern below.
+	}
+	if m := resetClockRe.FindStringSubmatch(lower); m != nil {
+		hour, minute, ok := clockTo24h(m[1], m[2], m[3])
+		if !ok {
+			return time.Time{}
+		}
 		at := time.Date(nowUTC.Year(), nowUTC.Month(), nowUTC.Day(), hour, minute, 0, 0, time.UTC)
 		if !at.After(nowUTC) {
 			at = at.Add(24 * time.Hour)
@@ -886,10 +942,62 @@ func parseResetHint(lower string, now time.Time) time.Time {
 	if m := resetWindowRe.FindStringSubmatch(lower); m != nil {
 		hours, _ := strconv.Atoi(m[1])
 		if hours > 0 {
-			return now.UTC().Add(time.Duration(hours) * time.Hour)
+			return nowUTC.Add(time.Duration(hours) * time.Hour)
 		}
 	}
 	return time.Time{}
+}
+
+// clockTo24h converts a matched clock triple (hour, optional minute,
+// optional am/pm marker) to 24-hour values, reporting whether the result
+// is a valid time of day.
+func clockTo24h(rawHour, rawMinute, meridiem string) (hour, minute int, ok bool) {
+	hour, _ = strconv.Atoi(rawHour)
+	if rawMinute != "" {
+		minute, _ = strconv.Atoi(rawMinute)
+	}
+	switch meridiem {
+	case "pm":
+		if hour < 12 {
+			hour += 12
+		}
+	case "am":
+		if hour == 12 {
+			hour = 0
+		}
+	}
+	if hour > 23 || minute > 59 {
+		return 0, 0, false
+	}
+	return hour, minute, true
+}
+
+// inferResetYear resolves a month/day/clock with no year against now,
+// picking the candidate year that lands closest to now (so a late-December
+// notice naming January rolls forward, and an early-January notice naming
+// December rolls back). Returns zero when even the closest candidate falls
+// outside resetDateTrustWindow.
+func inferResetYear(month time.Month, day, hour, minute int, nowUTC time.Time) time.Time {
+	var best time.Time
+	bestDelta := time.Duration(math.MaxInt64)
+	for _, year := range []int{nowUTC.Year() - 1, nowUTC.Year(), nowUTC.Year() + 1} {
+		at := time.Date(year, month, day, hour, minute, 0, 0, time.UTC)
+		// Reject a normalized date (e.g. Feb 31 → Mar 3).
+		if at.Month() != month || at.Day() != day {
+			continue
+		}
+		delta := at.Sub(nowUTC)
+		if delta < 0 {
+			delta = -delta
+		}
+		if delta < bestDelta {
+			best, bestDelta = at, delta
+		}
+	}
+	if bestDelta > resetDateTrustWindow {
+		return time.Time{}
+	}
+	return best
 }
 
 // toolUseDetail extracts a short single-line summary from tool input for

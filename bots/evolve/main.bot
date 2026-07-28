@@ -662,7 +662,7 @@ router review_fanout:
 ## evidence.
 judge review_claude:
   backend: "claude_code"
-  model: "${ITERION_EVOLVE_MODEL_CLAUDE:-claude-opus-4-8}"
+  model: "${ITERION_EVOLVE_MODEL_CLAUDE:-claude-opus-5}"
   reasoning_effort: "${ITERION_EVOLVE_EFFORT_REVIEW:-medium}"
   input: review_input
   output: verdict_output

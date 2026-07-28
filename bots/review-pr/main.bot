@@ -175,6 +175,16 @@ vars:
   ## the reviewer's own bar (see review_system), so high is the sane floor.
   gate_severity: string [enum: "low", "medium", "high", "critical"] = "high"
 
+  ## The commit-status CONTEXT the gate posts under — the name that appears
+  ## in the repo's required checks. A required check applies to EVERY PR, so
+  ## a repo where different bots review different PRs (a dependency guard on
+  ## the bot's PRs, this reviewer on the humans') must give them ONE shared
+  ## context, or whichever bot did not run leaves the check permanently
+  ## absent and blocks the PR. Set it per repo via the integration's
+  ## launch_vars (durable across re-provisioning), the same value on every
+  ## bot that can gate. The default keeps this bot's historical name.
+  gate_context: string = "revi/review"
+
   ## Deterministic forge publish grant — INJECTED BY THE ITERION SERVER
   ## at launch when the run's team has a forge connection covering
   ## pr_url's repo (studio/API launches and inbound webhooks both
@@ -616,7 +626,7 @@ router fan:
 
 judge reviewer_claude:
   backend: "claude_code"
-  model: "${ITERION_VIBE_MODEL_CLAUDE:-claude-opus-4-8}"
+  model: "${ITERION_VIBE_MODEL_CLAUDE:-claude-opus-5}"
   reasoning_effort: "${ITERION_VIBE_EFFORT_CLAUDE:-high}"
   output: review_output
   system: review_system
@@ -634,7 +644,7 @@ judge reviewer_gpt:
   ## Both env-overridable so an instance without a usable OpenAI quota
   ## can run the second reviewer on the Claude forfait instead
   ## (ITERION_VIBE_BACKEND_GPT=claude_code +
-  ## ITERION_VIBE_MODEL_GPT=claude-sonnet-4-6 — cross-model diversity
+  ## ITERION_VIBE_MODEL_GPT=claude-sonnet-5 — cross-model diversity
   ## when cross-vendor isn't available).
   backend: "${ITERION_VIBE_BACKEND_GPT:-claw}"
   model: "${ITERION_VIBE_MODEL_GPT:-openai/gpt-5.5}"
@@ -651,7 +661,7 @@ judge reviewer_gpt:
 
 agent converge:
   backend: "claude_code"
-  model: "${ITERION_VIBE_MODEL_CLAUDE:-claude-opus-4-8}"
+  model: "${ITERION_VIBE_MODEL_CLAUDE:-claude-opus-5}"
   reasoning_effort: "${ITERION_VIBE_EFFORT_EMIT:-medium}"
   output: emit_output
   system: emit_system
@@ -692,7 +702,7 @@ compute pr_gate:
 ## published is true ONLY on a 2xx from the endpoint, whose counts are
 ## forge-re-fetched (anti-façade), never self-estimated.
 tool publish_review:
-  command: `PUB_URL={{vars.forge_publish_url}} PUB_TOKEN={{vars.forge_publish_token}} MODE={{vars.pr_review_mode}} PR_URL={{input.pr_url}} FINDINGS={{input.findings}} QUESTIONS={{input.questions}} CLAUDE_FINDINGS={{input.claude_findings}} GPT_FINDINGS={{input.gpt_findings}} GATE_ENABLED={{vars.gate_enabled}} GATE_SEVERITY={{vars.gate_severity}} python3 -c "
+  command: `PUB_URL={{vars.forge_publish_url}} PUB_TOKEN={{vars.forge_publish_token}} MODE={{vars.pr_review_mode}} PR_URL={{input.pr_url}} FINDINGS={{input.findings}} QUESTIONS={{input.questions}} CLAUDE_FINDINGS={{input.claude_findings}} GPT_FINDINGS={{input.gpt_findings}} GATE_ENABLED={{vars.gate_enabled}} GATE_SEVERITY={{vars.gate_severity}} GATE_CONTEXT={{vars.gate_context}} python3 -c "
 import os, json, urllib.request, urllib.error
 
 def emit(published, forge='unknown', review_url='', posted=0, sugg=0, skipped='', summary=''):
@@ -804,6 +814,10 @@ payload = {'pr_url': pr, 'summary': nl.join(summary), 'mode': mode, 'comments': 
 # Deterministic merge-gate verdict: count findings at/above the blocking
 # severity floor. The server maps 0 blocking -> success, >0 -> failure on the
 # revi/review commit status. Questions never count.
+# Resolved unconditionally: the summary below reads it whenever the server
+# reports a posted gate, and a NameError in this deterministic final step
+# would cost the whole review.
+gate_ctx = str(os.environ.get('GATE_CONTEXT', '')).strip() or 'revi/review'
 gate_enabled = str(os.environ.get('GATE_ENABLED', '')).strip().lower() in ('1', 'true', 'yes', 'on')
 if gate_enabled:
     gate_sev = str(os.environ.get('GATE_SEVERITY', 'high')).strip().lower() or 'high'
@@ -835,7 +849,7 @@ if gate_enabled:
                 rank = 0
             if rank <= floor:
                 blocking += 1
-    payload['gate'] = {'enabled': True, 'context': 'revi/review',
+    payload['gate'] = {'enabled': True, 'context': gate_ctx,
                        'blocking_count': blocking, 'threshold': gate_sev,
                        'total_findings': len(findings)}
     # Never let the status describe an unreadable review as a real blocking
@@ -868,7 +882,7 @@ s = 'posted ' + str(posted) + ' inline comment(s), ' + str(sugg) + ' with one-cl
 if fallback:
     s = s + ' fallback=' + fallback + ': rejected inline anchors were folded into the review summary body, not dropped.'
 if bool(res.get('gate_posted')):
-    s = s + ' merge gate: revi/review=' + str(res.get('gate_state') or '') + ' on ' + str(res.get('gate_sha') or '')[:12] + '.'
+    s = s + ' merge gate: ' + gate_ctx + '=' + str(res.get('gate_state') or '') + ' on ' + str(res.get('gate_sha') or '')[:12] + '.'
 elif str(res.get('gate_error') or ''):
     s = s + ' merge gate NOT posted: ' + str(res.get('gate_error')) + '.'
 emit(bool(res.get('published')), forge=str(res.get('provider') or 'unknown'),

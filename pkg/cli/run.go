@@ -22,6 +22,7 @@ import (
 	"github.com/SocialGouv/iterion/pkg/dsl/workflowfile"
 	"github.com/SocialGouv/iterion/pkg/git"
 	iterlog "github.com/SocialGouv/iterion/pkg/log"
+	"github.com/SocialGouv/iterion/pkg/retrypolicy"
 	"github.com/SocialGouv/iterion/pkg/reviewtopology"
 	"github.com/SocialGouv/iterion/pkg/runtime"
 	"github.com/SocialGouv/iterion/pkg/runtime/recovery"
@@ -123,6 +124,10 @@ type RunOptions struct {
 	// (capped exponential backoff) and re-invokes resume in-process up to N
 	// times, re-using this run's exact overrides. See auto_resume.go.
 	AutoResume int
+	// Retry is the per-run retry override (pkg/retrypolicy), the highest
+	// layer of the chain. Zero value inherits ITERION_RETRY_* then the
+	// package defaults.
+	Retry retrypolicy.Policy
 	// SkipMCPHealth downgrades a failing MCP startup health-check from a
 	// fatal error to a warning: the check still runs (its diagnostics are
 	// logged) but a failure no longer aborts the run. Set by --skip-mcp-health
@@ -370,7 +375,7 @@ func RunRun(ctx context.Context, opts RunOptions, p *Printer) error {
 
 	err = eng.Run(ctx, runID, inputs)
 	err = runInteractiveResumeLoop(ctx, eng, s, runID, opts.NoInteractive, err)
-	err = autoResumeLoop(ctx, eng, s, runID, resolveAutoResume(opts.AutoResume, opts.Budget), err, logger)
+	err = autoResumeLoop(ctx, eng, s, runID, resolveAutoResume(opts.AutoResume, opts.Budget, opts.Retry), err, logger)
 
 	runResult := map[string]any{
 		"run_id":   runID,

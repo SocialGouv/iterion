@@ -21,7 +21,10 @@ import (
 // mirrors, so a library skill shadow-defers to a same-named bundle/plugin or
 // hand-authored workspace file (precedence: bundle > plugin > library >
 // hand-authored — ADR-059). A referenced skill absent from the library is
-// logged (Warn) and skipped, never failing the run — the DSL reference is soft.
+// skipped, never failing the run — the DSL reference is soft. It is only
+// WARNED about when nothing else already satisfied it: a bundle that ships its
+// own skills is the normal case, and warning that each of them is "not in the
+// skill library" is true, useless, and reads as a broken run.
 //
 // The library layers a machine-global store (~/.iterion/skills) with an
 // optional per-project override (<projectStoreDir>/skills). No-op (nil map)
@@ -51,6 +54,18 @@ func mirrorLibrarySkills(workDir, projectStoreDir string, wf *ir.Workflow, inj *
 	for _, name := range refs {
 		srcPath, ok := store.Resolve(name)
 		if !ok {
+			// The reference may already be satisfied: this mirror runs AFTER the
+			// bundle and plugin ones, which take precedence (ADR-059). Warning
+			// that a bundle skill is "not in the skill library" is true and
+			// useless — it reads as a broken run to anyone watching the log, and
+			// every bundle that declares its own skills emits one line per skill
+			// at every start.
+			if alreadyMirrored(dest, name) {
+				if logger != nil {
+					logger.Debug("skill %q resolved from the bundle/plugin mirror, not the library", name)
+				}
+				continue
+			}
 			if logger != nil {
 				logger.Warn("skill %q referenced by the workflow is not in the skill library (~/.iterion/skills or <project>/.iterion/skills) — not mirrored", name)
 			}
@@ -121,4 +136,21 @@ func skillDescription(path string) string {
 	defer f.Close()
 	_, desc := skilllib.ScanFrontmatter(f)
 	return desc
+}
+
+// alreadyMirrored reports whether <dest>/<name> was already produced by the
+// bundle or plugin mirror, which run before this one and outrank the library
+// (ADR-059). Both shapes are accepted: the directory form <name>/SKILL.md that
+// claude_code's Skill tool discovers, and the flat <name>.md that claw also
+// reads.
+func alreadyMirrored(dest, name string) bool {
+	for _, p := range []string{
+		filepath.Join(dest, name, "SKILL.md"),
+		filepath.Join(dest, name+".md"),
+	} {
+		if st, err := os.Stat(p); err == nil && !st.IsDir() {
+			return true
+		}
+	}
+	return false
 }

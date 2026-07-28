@@ -52,6 +52,24 @@ func TestClassifyRateLimit(t *testing.T) {
 			text:     "You've hit your limit",
 			wantKind: RateLimitKindUsageWindow,
 		},
+		{
+			// The shape a WEEKLY cap actually prints: a month name and day
+			// before the clock. Seven scheduled prod runs died on this on
+			// 2026-07-27 with the reset ~35h out.
+			name:      "weekly limit with dated reset",
+			text:      "You've hit your weekly limit · resets Jul 28, 9pm (UTC)",
+			wantKind:  RateLimitKindUsageWindow,
+			wantReset: time.Date(2026, 7, 28, 21, 0, 0, 0, time.UTC),
+		},
+		{
+			// An explicit absolute instant needs no year inference, so it is
+			// taken verbatim. Previously the clock pattern chewed the "20" out
+			// of "2026" and produced hour 20 of TODAY.
+			name:      "zai absolute reset instant",
+			text:      "Usage limit reached for 5 hour. Your limit will reset at 2026-05-13 07:38:08",
+			wantKind:  RateLimitKindUsageWindow,
+			wantReset: time.Date(2026, 5, 13, 7, 38, 8, 0, time.UTC),
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -73,5 +91,80 @@ func TestParseResetHint_ClockRollsToNextDay(t *testing.T) {
 	want := time.Date(2026, 7, 18, 15, 0, 0, 0, time.UTC)
 	if !got.Equal(want) {
 		t.Fatalf("got %v, want %v", got, want)
+	}
+}
+
+// TestParseResetHint_DatedShape covers the month-name shape and its year
+// inference. A reset is always within days, so a candidate that lands
+// implausibly far from now means the text was not really a reset hint —
+// returning zero (caller falls back to a bounded wait) beats returning a
+// confidently wrong instant.
+func TestParseResetHint_DatedShape(t *testing.T) {
+	tests := []struct {
+		name string
+		text string
+		now  time.Time
+		want time.Time
+	}{
+		{
+			name: "same year, days ahead",
+			text: "resets jul 28, 9pm (utc)",
+			now:  time.Date(2026, 7, 27, 6, 0, 0, 0, time.UTC),
+			want: time.Date(2026, 7, 28, 21, 0, 0, 0, time.UTC),
+		},
+		{
+			name: "december to january rolls the year forward",
+			text: "resets jan 2, 10am (utc)",
+			now:  time.Date(2026, 12, 30, 23, 0, 0, 0, time.UTC),
+			want: time.Date(2027, 1, 2, 10, 0, 0, 0, time.UTC),
+		},
+		{
+			name: "january seeing december rolls the year back",
+			text: "resets dec 30, 11pm (utc)",
+			now:  time.Date(2027, 1, 2, 1, 0, 0, 0, time.UTC),
+			want: time.Date(2026, 12, 30, 23, 0, 0, 0, time.UTC),
+		},
+		{
+			name: "full month name",
+			text: "resets december 30, 11pm",
+			now:  time.Date(2026, 12, 29, 1, 0, 0, 0, time.UTC),
+			want: time.Date(2026, 12, 30, 23, 0, 0, 0, time.UTC),
+		},
+		{
+			name: "implausibly distant candidate is not trusted",
+			text: "resets may 12, 9pm (utc)",
+			now:  time.Date(2026, 7, 17, 14, 0, 0, 0, time.UTC),
+			want: time.Time{},
+		},
+		{
+			name: "unknown month falls through to the bare clock",
+			text: "resets 9pm",
+			now:  time.Date(2026, 7, 17, 14, 0, 0, 0, time.UTC),
+			want: time.Date(2026, 7, 17, 21, 0, 0, 0, time.UTC),
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := parseResetHint(tt.text, tt.now); !got.Equal(tt.want) {
+				t.Fatalf("got %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
+// TestParseResetHint_Exported asserts the exported wrapper reports
+// parse success separately, so a caller can distinguish "no hint" from
+// "hint that happens to be the zero time" and log the degraded path.
+func TestParseResetHint_Exported(t *testing.T) {
+	now := time.Date(2026, 7, 27, 6, 0, 0, 0, time.UTC)
+	got, ok := ParseResetHint("You've hit your weekly limit · resets Jul 28, 9pm (UTC)", now)
+	if !ok {
+		t.Fatal("ok = false, want true for a dated weekly notice")
+	}
+	if want := time.Date(2026, 7, 28, 21, 0, 0, 0, time.UTC); !got.Equal(want) {
+		t.Fatalf("got %v, want %v", got, want)
+	}
+	if _, ok := ParseResetHint("node \"synthesize\" execution failed: something else", now); ok {
+		t.Fatal("ok = true for a message with no reset hint, want false")
 	}
 }

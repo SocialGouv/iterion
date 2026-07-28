@@ -17,18 +17,25 @@ func TestEstimateUSD(t *testing.T) {
 		approximate bool
 	}{
 		{"unknown model returns 0", "made-up-model", 1000, 1000, 0, false},
-		{"haiku 1k in / 1k out", "claude-haiku-4-5", 1_000_000, 1_000_000, 1.50, false},
-		{"haiku with provider prefix", "anthropic/claude-haiku-4-5", 1_000_000, 1_000_000, 1.50, false},
-		{"haiku with tenant-prefixed spec", "anthropic/eu/claude-haiku-4-5", 1_000_000, 1_000_000, 1.50, false},
+		{"haiku 1k in / 1k out", "claude-haiku-4-5", 1_000_000, 1_000_000, 6.00, false},
+		{"haiku with provider prefix", "anthropic/claude-haiku-4-5", 1_000_000, 1_000_000, 6.00, false},
+		{"haiku with tenant-prefixed spec", "anthropic/eu/claude-haiku-4-5", 1_000_000, 1_000_000, 6.00, false},
 		{"sonnet 1m+1m", "claude-sonnet-4-6", 1_000_000, 1_000_000, 18.00, false},
-		{"opus 1m+1m", "claude-opus-4-7", 1_000_000, 1_000_000, 90.00, false},
+		{"opus 1m+1m", "claude-opus-4-7", 1_000_000, 1_000_000, 30.00, false},
 		{"gpt-5 1m+1m", "openai/gpt-5", 1_000_000, 1_000_000, 11.25, false},
 		// Newer OpenAI tiers — exercised by claw delegate; previously
 		// missing from the table they silently reported $0 in run
 		// observability (whole_improve_loop run_1777560043656).
-		{"gpt-5.5 1m+1m", "openai/gpt-5.5", 1_000_000, 1_000_000, 17.00, false},
-		{"gpt-5.4-mini 1m+1m", "openai/gpt-5.4-mini", 1_000_000, 1_000_000, 2.70, false},
-		{"opus 4-6 inherits opus rate", "claude-opus-4-6", 1_000_000, 1_000_000, 90.00, false},
+		{"gpt-5.5 1m+1m", "openai/gpt-5.5", 1_000_000, 1_000_000, 35.00, false},
+		{"gpt-5.4-mini 1m+1m", "openai/gpt-5.4-mini", 1_000_000, 1_000_000, 5.25, false},
+		{"opus 4-6 inherits opus rate", "claude-opus-4-6", 1_000_000, 1_000_000, 30.00, false},
+		// Opus 4 predates the 4.5 price drop and legitimately keeps the old
+		// rate. Its agreeing with the aggregator is what made the staleness
+		// of every later release legible.
+		{"opus 4 keeps the pre-drop rate", "claude-opus-4", 1_000_000, 1_000_000, 90.00, false},
+		{"opus 5 inherits the current opus rate", "claude-opus-5", 1_000_000, 1_000_000, 30.00, false},
+		{"sonnet 5 has its own rate", "claude-sonnet-5", 1_000_000, 1_000_000, 12.00, false},
+
 		{"sonnet 4-7 inherits sonnet rate", "claude-sonnet-4-7", 1_000_000, 1_000_000, 18.00, false},
 		{"zero tokens", "claude-haiku-4-5", 0, 0, 0, false},
 	}
@@ -130,5 +137,32 @@ func TestEstimateUSD_FallsBackToStaticTable(t *testing.T) {
 	got := EstimateUSD("gpt-5", 1_000_000, 1_000_000)
 	if got != 11.25 {
 		t.Errorf("static fallback: got %v, want 11.25", got)
+	}
+}
+
+// GLM is absent from the committed table on purpose — 24 providers publish it
+// at rates from 0 to 1.44 per million — yet a run IS charged for it, because
+// the live registry answers before the table is ever consulted. Asserting a
+// zero here was the mistake that exposed an audit judging a source the
+// estimator never reaches first.
+//
+// The assertion is on the PROPERTY, not the number: the live rate is a third
+// party's blended figure and pinning it would break CI on their next revision,
+// while proving nothing about iterion. When the registry is unavailable
+// (offline, CLAW_DISABLE_LIVE_REGISTRY=1) there is legitimately no price and
+// the test says so rather than failing.
+func TestGLMIsPricedByTheLiveRegistryNotTheTable(t *testing.T) {
+	if _, _, ok := StaticRate("glm-5.2"); ok {
+		t.Fatal("glm-5.2 gained a committed entry: pick which provider's rate it is, or drop it again")
+	}
+	in, out, ok := EffectiveRate("anthropic/glm-5.2")
+	if !ok {
+		t.Skip("live registry unavailable — no effective price to check")
+	}
+	if in <= 0 || out <= 0 {
+		t.Errorf("effective rate %v/%v: the registry answered, so both sides must be positive", in, out)
+	}
+	if out <= in {
+		t.Errorf("effective rate %v/%v: output tokens cost more than input on every provider", in, out)
 	}
 }

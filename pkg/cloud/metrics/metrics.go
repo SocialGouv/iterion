@@ -53,6 +53,23 @@ type Registry struct {
 	LaunchDeniedTotal       *prometheus.CounterVec // reason (org_suspended|monthly_run_quota_exceeded|…)
 	RunsOrphanRecovered     prometheus.Counter
 	DLQDepth                prometheus.Gauge
+	// Provider usage-window retries. The pair is what makes the wait
+	// auditable: scheduled counts runs parked for a later reset, resumed
+	// counts the ones a sweeper actually brought back. A growing gap means
+	// runs are being armed and never resumed — the failure mode this whole
+	// path exists to avoid, and one that is otherwise silent because a
+	// parked run just sits there as failed_resumable.
+	RunsUsageWindowBlocked prometheus.Counter
+	RunsRetryScheduled     prometheus.Counter
+	RunsRetryResumed       *prometheus.CounterVec // result (enqueued|abandoned|failed)
+	RunsRetryPending       prometheus.Gauge
+	// RunsRetrySweeps is what makes the three above readable. Every one of
+	// them sits at 0 on a healthy idle deployment — and also on a deployment
+	// where the sweeper never started, because a registered-but-never-Set
+	// gauge reports 0 either way. A rising sweep count is the only thing that
+	// tells those two apart, and it is the difference between "no run is
+	// waiting" and "every waiting run is stranded".
+	RunsRetrySweeps prometheus.Counter
 }
 
 // New registers the metrics on a fresh registry. Each call gives a
@@ -130,6 +147,26 @@ func New() *Registry {
 		Name: "iterion_runs_orphan_recovered_total",
 		Help: "Stranded queued/running runs the sweeper flipped to failed_resumable.",
 	})
+	r.RunsUsageWindowBlocked = prometheus.NewCounter(prometheus.CounterOpts{
+		Name: "iterion_runs_usage_window_blocked_total",
+		Help: "Runs that failed because the LLM provider's quota window was exhausted.",
+	})
+	r.RunsRetryScheduled = prometheus.NewCounter(prometheus.CounterOpts{
+		Name: "iterion_runs_retry_scheduled_total",
+		Help: "Automatic retries armed for a run waiting on a provider quota reset.",
+	})
+	r.RunsRetryResumed = prometheus.NewCounterVec(prometheus.CounterOpts{
+		Name: "iterion_runs_retry_resumed_total",
+		Help: "Outcomes of the retry sweeper acting on a due run, by result.",
+	}, []string{"result"})
+	r.RunsRetryPending = prometheus.NewGauge(prometheus.GaugeOpts{
+		Name: "iterion_runs_retry_pending",
+		Help: "Runs currently armed for an automatic retry (sampled each sweep).",
+	})
+	r.RunsRetrySweeps = prometheus.NewCounter(prometheus.CounterOpts{
+		Name: "iterion_runs_retry_sweeps_total",
+		Help: "Retry-sweeper passes completed. Flat at 0 means the sweeper is not running, which the other retry metrics cannot distinguish from an idle one.",
+	})
 	r.DLQDepth = prometheus.NewGauge(prometheus.GaugeOpts{
 		Name: "iterion_dlq_depth",
 		Help: "Messages currently parked on the runs DLQ stream.",
@@ -143,6 +180,8 @@ func New() *Registry {
 		r.WebhookDeliveriesTotal, r.WebhookThrottledTotal,
 		r.AuthLoginsTotal, r.AuthPasswordResetsTotal,
 		r.LaunchDeniedTotal, r.RunsOrphanRecovered, r.DLQDepth,
+		r.RunsUsageWindowBlocked, r.RunsRetryScheduled,
+		r.RunsRetryResumed, r.RunsRetryPending, r.RunsRetrySweeps,
 	)
 	return r
 }

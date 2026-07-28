@@ -100,14 +100,13 @@ func (s *Server) handleGenericWebhook(w http.ResponseWriter, r *http.Request) {
 	}
 	idemKey := knowledge.ChecksumHex([]byte(fmt.Sprintf("generic|%s|%s|%s", cfg.TenantID, cfg.ID, dedup)))
 
-	// Var merge: body vars first, then config overrides (config wins).
+	// Var merge: body vars first, then the webhook's own layers (config wins,
+	// operator overrides last — see applyWebhookVarLayers).
 	vars := make(map[string]string, len(req.Vars)+len(cfg.LaunchVars))
 	for k, v := range req.Vars {
 		vars[k] = v
 	}
-	for k, v := range cfg.LaunchVars {
-		vars[k] = v
-	}
+	applyWebhookVarLayers(vars, cfg)
 
 	s.insertAndLaunchWebhook(ctx, w, r, cfg, meta, idemKey, botID, vars, req.RepoURL, req.RepoRef, payloadHash, srcIP)
 }

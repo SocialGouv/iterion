@@ -48,6 +48,7 @@ import (
 	"github.com/SocialGouv/iterion/pkg/queue"
 	natsq "github.com/SocialGouv/iterion/pkg/queue/nats"
 	"github.com/SocialGouv/iterion/pkg/runtime"
+	"github.com/SocialGouv/iterion/pkg/runtime/recovery"
 	"github.com/SocialGouv/iterion/pkg/runview"
 	"github.com/SocialGouv/iterion/pkg/sandbox"
 	"github.com/SocialGouv/iterion/pkg/secrets"
@@ -841,6 +842,15 @@ func (r *Runner) processOne(parent context.Context, delivery *natsq.Delivery) {
 	r.fireCompletionNotifier(msg)
 	r.fireOutcomeEvent(msg, err)
 
+	// Checked BEFORE the DLQ park so a usage-window failure on the FINAL
+	// delivery still arms a retry instead of being parked: the window is
+	// exactly the condition that makes every prior delivery useless, so
+	// reaching delivery 8 is evidence for retrying later, not against it.
+	if handled, retryStatus := r.parkUsageLimitRetry(runCtx, err, delivery, msg, logger); handled {
+		finalStatus = retryStatus
+		return
+	}
+
 	if handled, dlqStatus := r.parkOnDLQOnFinalDelivery(err, delivery, msg, logger); handled {
 		finalStatus = dlqStatus
 		return
@@ -1122,6 +1132,14 @@ func (r *Runner) executeRun(ctx context.Context, msg *queue.RunMessage) error {
 		// runner that is itself the isolation boundary beats a bot's inline
 		// sandbox block, so the run executes directly in the runner pod.
 		runtime.WithSandboxOverride(r.cfg.SandboxOverride),
+		// Recovery recipes. Every other host wires these (pkg/cli/run.go,
+		// pkg/runview, pkg/dispatcher); the cloud runner did not, so
+		// recovery.Classify was never called on the one surface that runs
+		// unattended — no transient-network backoff, no compaction retry,
+		// and every terminal failure reported as EXECUTION_FAILED whatever
+		// its cause. Cloud runs got strictly less recovery than a local
+		// `iterion run` of the same bot.
+		runtime.WithRecoveryDispatch(recovery.Dispatch(recovery.DefaultRecipes())),
 	}
 	// Sandbox-run observer: registers the live sandbox Run so the mid-run
 	// credential refreshers can write rotated tokens THROUGH into the

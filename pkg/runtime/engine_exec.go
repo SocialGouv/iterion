@@ -387,14 +387,28 @@ func (e *Engine) execLoopRunNode(ctx context.Context, rs *runState, currentNodeI
 		// failure produces failed_resumable as before. The run-ID-
 		// enriched ctx is passed so Compact() can locate the per-
 		// node session.
-		retry, recoveryErr := e.handleNodeFailure(execCtx, rs, currentNodeID, execErr)
+		retry, code, recoveryErr := e.handleNodeFailure(execCtx, rs, currentNodeID, execErr)
 		if recoveryErr != nil {
 			return nil, false, recoveryErr
 		}
 		if retry {
 			return nil, true, nil
 		}
-		return nil, false, e.failRunWithCheckpoint(rs, currentNodeID, fmt.Sprintf("node %q execution failed: %v", currentNodeID, execErr))
+		// Fail terminally carrying BOTH the classified code and the
+		// original error as Cause: a host deciding how to recover needs
+		// the typed cause (e.g. *delegate.ErrRateLimited and its
+		// ResetAt), and flattening it into the message loses that for
+		// good. The Message text stays byte-identical — the DLQ reason,
+		// the run doc's error field and operator greps all key on it.
+		if code == "" {
+			code = ErrCodeExecutionFailed
+		}
+		return nil, false, e.failRunErrWithCheckpoint(rs, currentNodeID, &RuntimeError{
+			Code:    code,
+			NodeID:  currentNodeID,
+			Cause:   execErr,
+			Message: fmt.Sprintf("node %q execution failed: %v", currentNodeID, execErr),
+		})
 	}
 
 	// Reset per-node retry counters on success so a future failure

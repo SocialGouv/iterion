@@ -7,7 +7,9 @@ import (
 
 	"github.com/SocialGouv/iterion/pkg/botregistry"
 	iterlog "github.com/SocialGouv/iterion/pkg/log"
+	"github.com/SocialGouv/iterion/pkg/retrypolicy"
 	"github.com/SocialGouv/iterion/pkg/runview"
+	"github.com/SocialGouv/iterion/pkg/store"
 	"github.com/SocialGouv/iterion/pkg/trigger"
 )
 
@@ -22,10 +24,15 @@ type serviceLauncher struct {
 	runs   *runview.Service
 	paths  []string
 	logger *iterlog.Logger
+	// resolveRetry folds the plan's binding-level retry policy together
+	// with the bot manifest, the machine default and the platform ceiling.
+	// Injected rather than reached for, because the launcher deliberately
+	// holds no *Server.
+	resolveRetry func(botID string, higher ...retrypolicy.Layer) *store.RunRetryPolicy
 }
 
-func newServiceLauncher(runs *runview.Service, paths []string, logger *iterlog.Logger) *serviceLauncher {
-	return &serviceLauncher{runs: runs, paths: paths, logger: logger}
+func newServiceLauncher(runs *runview.Service, paths []string, logger *iterlog.Logger, resolveRetry func(string, ...retrypolicy.Layer) *store.RunRetryPolicy) *serviceLauncher {
+	return &serviceLauncher{runs: runs, paths: paths, logger: logger, resolveRetry: resolveRetry}
 }
 
 func (l *serviceLauncher) Launch(ctx context.Context, plan trigger.LaunchPlan) (string, error) {
@@ -46,11 +53,25 @@ func (l *serviceLauncher) Launch(ctx context.Context, plan trigger.LaunchPlan) (
 		KeyOverrides:    plan.KeyOverrides,
 		SecretOverrides: plan.SecretOverrides,
 		SourceRef:       plan.SourceRef,
+		RetryPolicy:     l.retryPolicyFor(plan),
 	})
 	if err != nil {
 		return "", err
 	}
 	return res.RunID, nil
+}
+
+// retryPolicyFor resolves the run's retry contract, tolerating a launcher
+// built without a resolver (tests) by leaving the field nil — the consumer
+// then applies the package defaults.
+func (l *serviceLauncher) retryPolicyFor(plan trigger.LaunchPlan) *store.RunRetryPolicy {
+	if l.resolveRetry == nil {
+		return nil
+	}
+	return l.resolveRetry(plan.BotID, retrypolicy.Layer{
+		Source: retrypolicy.SourceTrigger,
+		Policy: plan.Retry,
+	})
 }
 
 var _ trigger.Launcher = (*serviceLauncher)(nil)

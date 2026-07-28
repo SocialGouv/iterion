@@ -1,7 +1,29 @@
 name: dep-update-guard
 display_name: Vetty
 icon: 💂
-version: 2.0.0
+version: 2.1.0
+## 2.1.0 — classify, gate, arm. (a) The bump classifier only knew package
+## manifests, so a PR moving a base-image digest, a devbox pin, a task-runner
+## tool or a composite action matched nothing — and did not stop, because
+## "no file changed" and "no manifest matched" were the same flag. Those runs
+## reached the auditor with an EMPTY diff and came back "safe": a façade on a
+## diff nobody read (3 of 4 open Renovate PRs on the first repo tried). The
+## list now covers them, a content pass catches custom-manager pins on any
+## filename, and when nothing matches `no_manifest` widens the scope to the
+## full diff instead of handing over nothing. An unresolvable base likewise
+## degrades loudly rather than reading as "nothing to do". (b) The verdict
+## becomes a MERGE GATE: a commit status carrying it, via the server's
+## publish endpoint (a run's forge_token can never post one). The state is a
+## table over the verdict the graph already computed and fails closed on
+## anything unexpected. `gate_context` is a var so several bots fill ONE
+## required check, each for the PRs it owns. (c) `arm_automerge` (opt-in,
+## default off): on a green verdict WITH a landed green gate, ask the forge
+## to merge once ITS OWN required checks pass. Vetty still never merges —
+## the immediate-merge endpoint is deliberately unreachable. (d) Skills gain
+## the dependencies that are not packages (container digests, Nix pins, Helm
+## charts, pinned Actions) and the bundle ships a devbox project for crane,
+## since the sandbox image has no registry client.
+##
 ## 2.0.0 — ADR-058 calibrated pass. The v1 `validate` agent (an LLM
 ## re-running the build and SELF-REPORTING stable:true) is replaced by
 ## the deterministic verify_build/verify_run gate shared with the other
@@ -58,11 +80,30 @@ forge:
   token_scopes:
     pull_requests: write     # post the review comment
     repository: write        # push the code alignment onto the PR branch
+    statuses: write          # post the merge-gate commit status carrying the
+                             # verdict (GitHub App perm "Commit statuses: Read
+                             # and write"). Declaring it also tells the
+                             # provisioner this bot can be a REQUIRED check, so
+                             # the repo's webhook re-reviews on every push —
+                             # a gate that does not follow the head SHA blocks
+                             # the PR it guards.
   secret: forge_token
   webhook:
     # React ONLY to the dependency bots, never human PRs. Maps to
     # webhooks.Config.AuthorAllowlist via the orchestrator.
-    author_allowlist: ["dependabot[bot]", "renovate[bot]"]
+    #
+    # The leading "*" is a suffix wildcard. Self-hosting Renovate/Dependabot
+    # under an org GitHub App is the usual way to make their PRs trigger CI
+    # (a GITHUB_TOKEN-authored PR does not), and doing so RENAMES the bot —
+    # "acme-renovate[bot]" instead of "renovate[bot]". Matching the family
+    # keeps those repos covered without naming any one organisation's App.
+    author_allowlist:
+      ["dependabot[bot]", "*dependabot[bot]", "renovate[bot]", "*renovate[bot]"]
+    # These authors are MINE against any bot co-enabled on the same repo: a
+    # general reviewer must not also review the PRs Vetty already guards.
+    # Provisioning materialises this into the other bots' author denylist, so
+    # a reviewer's manifest never has to know Vetty exists.
+    author_scope: exclusive
     launch_vars:
       post_to_board: "false"
   rationale: |

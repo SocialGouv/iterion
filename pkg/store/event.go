@@ -95,6 +95,20 @@ const (
 	//   - delay_ms: backoff waited before this attempt
 	//   - reason: "auto"
 	EventRunAutoResumed EventType = "run_auto_resumed"
+	// EventRunRetryScheduled marks a durable retry armed for a run that
+	// failed on an exhausted provider quota window. It is the "we are
+	// waiting, not dead" marker: without it a failed_resumable row that
+	// will resume in 33h is indistinguishable from one that never will.
+	// The resume itself emits EventRunAutoResumed, so the pair reads the
+	// same on the timeline as the CLI's in-process auto-resume loop. Data:
+	//   - code: the RuntimeError code that armed it (USAGE_LIMIT_BLOCKED)
+	//   - reason: the failure class ("usage_window")
+	//   - retry_after: RFC3339 instant the retry becomes eligible
+	//   - attempt / max_attempts: position in the run's attempt budget
+	//   - reset_source: how the instant was derived ("typed_error",
+	//     "runtime_code+parsed_text", "…+blind_wait") — the degraded
+	//     paths must be visible, not silent
+	EventRunRetryScheduled EventType = "run_retry_scheduled"
 	// Review-&-merge gate events (interaction: review). The gate runs a
 	// companion↔human dialogue and squash-merges during the pause.
 	EventReviewTurn     EventType = "review_turn"    // data: {interaction_id, role, turn}

@@ -14,6 +14,7 @@ import (
 
 	yaml "go.yaml.in/yaml/v2"
 
+	"github.com/SocialGouv/iterion/pkg/retrypolicy"
 	"github.com/SocialGouv/iterion/pkg/schedgate"
 	"github.com/SocialGouv/iterion/pkg/store"
 )
@@ -67,6 +68,21 @@ type ScheduleEntry struct {
 	GuardTimeout  string `yaml:"guard_timeout,omitempty"`
 	GuardVar      string `yaml:"guard_var,omitempty"`
 	StaleAfter    string `yaml:"stale_after,omitempty"`
+
+	// Retry policy (pkg/retrypolicy) for a run this schedule launches that
+	// dies on an exhausted provider usage window. Declared flat like the
+	// schedgate fields above; project with retryPolicy(). Only the fields
+	// set here override the machine default.
+	//
+	// Note the surface difference: locally the wait is held in-process by
+	// the bounded auto-resume loop, so it needs `--auto-resume N` (or
+	// ITERION_AUTO_RESUME) to be on at all — these fields shape that wait
+	// rather than enabling it. In cloud mode the wait is durable and needs
+	// no such opt-in.
+	RetryUsageWindow string `yaml:"retry_usage_window,omitempty"`
+	RetryMaxAttempts int    `yaml:"retry_max_attempts,omitempty"`
+	RetryMaxWait     string `yaml:"retry_max_wait,omitempty"`
+	RetryJitter      string `yaml:"retry_jitter,omitempty"`
 }
 
 // policy projects the entry's schedgate fields into a normalized Policy.
@@ -79,6 +95,18 @@ func (e ScheduleEntry) policy() schedgate.Policy {
 		GuardVar:      e.GuardVar,
 		StaleAfter:    e.StaleAfter,
 	})
+}
+
+// retryPolicy projects the entry's retry fields. Not normalized — this is
+// one layer of a precedence chain, and defaults filled here would
+// masquerade as an explicit per-schedule choice.
+func (e ScheduleEntry) retryPolicy() retrypolicy.Policy {
+	return retrypolicy.Policy{
+		UsageWindow: e.RetryUsageWindow,
+		MaxAttempts: e.RetryMaxAttempts,
+		MaxWait:     e.RetryMaxWait,
+		Jitter:      e.RetryJitter,
+	}
 }
 
 // ---------------------------------------------------------------------------
@@ -183,14 +211,15 @@ func validateScheduleEntry(e ScheduleEntry) error {
 			return fmt.Errorf("invalid timeout %q: %w", e.Timeout, err)
 		}
 	}
-	if err := schedgate.Validate(schedgate.Policy{
+	// canReap=false: the host-cron tick drops GateOutcome.ReapRunIDs.
+	if err := schedgate.ValidateReapable(schedgate.Policy{
 		Overlap:       e.Overlap,
 		MaxConcurrent: e.MaxConcurrent,
 		Guard:         e.Guard,
 		GuardTimeout:  e.GuardTimeout,
 		GuardVar:      e.GuardVar,
 		StaleAfter:    e.StaleAfter,
-	}); err != nil {
+	}, false); err != nil {
 		return err
 	}
 	return nil
@@ -408,6 +437,7 @@ func RunScheduleRun(ctx context.Context, p *Printer, opts ScheduleRunOptions) er
 		StoreDir:      e.StoreDir,
 		Sandbox:       e.Sandbox,
 		NoInteractive: true, // cron has no TTY — never block on a human pause
+		Retry:         e.retryPolicy(),
 	}
 	if e.Timeout != "" {
 		d, err := time.ParseDuration(e.Timeout)

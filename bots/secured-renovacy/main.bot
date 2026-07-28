@@ -35,8 +35,8 @@
 ##     iterations via _session_id passthrough on the loop edge.
 ##   - Opus 4.7 max-effort across the board (claude_code via the
 ##     workflow default_backend). Configurable per-run via env vars
-##     `ITERION_RENOVACY_MODEL_CLAUDE` (defaults to claude-opus-4-8;
-##     swap to claude-sonnet-4-6 for a cheaper / faster pass) and
+##     `ITERION_RENOVACY_MODEL_CLAUDE` (defaults to claude-opus-5;
+##     swap to claude-sonnet-5 for a cheaper / faster pass) and
 ##     `ITERION_RENOVACY_EFFORT_CLAUDE` (defaults to max; drop to
 ##     high / medium during test cycles). Package upgrades reward
 ##     getting it right once, not getting it cheap — bias to the
@@ -2185,7 +2185,7 @@ schema batch_commit_result:
 agent detect_stack:
   backend: "claude_code"
   provider: "${RESCUE_PROVIDER:-zai}"
-  model: "${ITERION_RENOVACY_MODEL_CLAUDE:-claude-opus-4-8}"
+  model: "${ITERION_RENOVACY_MODEL_CLAUDE:-claude-opus-5}"
   ## Effort precedence: per-stage > recipe global > stage-specific default.
   ## detect_stack is exploration-bounded (≤30 tool calls), tractable at
   ## `high`. Operators can force `max` globally via
@@ -2223,7 +2223,7 @@ tool capture_start_sha:
 agent discover_outdated:
   backend: "claude_code"
   provider: "${RESCUE_PROVIDER:-zai}"
-  model: "${ITERION_RENOVACY_MODEL_CLAUDE:-claude-opus-4-8}"
+  model: "${ITERION_RENOVACY_MODEL_CLAUDE:-claude-opus-5}"
   ## Discovery is mostly tool-calls + JSON shape normalisation, not deep
   ## reasoning. `high` is the cost-optimal default; override via
   ## ITERION_RENOVACY_EFFORT_DISCOVER if a project's outdated listing
@@ -2499,7 +2499,7 @@ tool select_candidate:
 agent security_audit:
   backend: "claude_code"
   provider: "${RESCUE_PROVIDER:-zai}"
-  model: "${ITERION_RENOVACY_MODEL_CLAUDE:-claude-opus-4-8}"
+  model: "${ITERION_RENOVACY_MODEL_CLAUDE:-claude-opus-5}"
   ## Per-package; runs in parallel with changelog_review via intel_fanout.
   ## Output drives the safe/unsafe gate, so quality matters — `high` keeps
   ## the verdict reliable without the `max` premium.
@@ -2518,7 +2518,7 @@ agent security_audit:
 agent changelog_review:
   backend: "claude_code"
   provider: "${RESCUE_PROVIDER:-zai}"
-  model: "${ITERION_RENOVACY_MODEL_CLAUDE:-claude-opus-4-8}"
+  model: "${ITERION_RENOVACY_MODEL_CLAUDE:-claude-opus-5}"
   ## Per-package; runs in parallel with security_audit. Inference quality
   ## matters (breaking-change classification feeds align_code), `high` is
   ## the sensible default; bump to max via ITERION_RENOVACY_EFFORT_CHANGELOG
@@ -2548,7 +2548,7 @@ agent changelog_review:
 agent upgrade:
   backend: "claude_code"
   provider: "${RESCUE_PROVIDER:-zai}"
-  model: "${ITERION_RENOVACY_MODEL_CLAUDE:-claude-opus-4-8}"
+  model: "${ITERION_RENOVACY_MODEL_CLAUDE:-claude-opus-5}"
   ## Mechanical: invoke `yarn up <pkg>@<v>` (or equivalent). `medium`
   ## suffices for the success path; the budget caps ensure failures
   ## surface fast regardless.
@@ -2564,7 +2564,7 @@ agent upgrade:
 agent install:
   backend: "claude_code"
   provider: "${RESCUE_PROVIDER:-zai}"
-  model: "${ITERION_RENOVACY_MODEL_CLAUDE:-claude-opus-4-8}"
+  model: "${ITERION_RENOVACY_MODEL_CLAUDE:-claude-opus-5}"
   ## Even more mechanical than upgrade: just `yarn install` (or equivalent).
   ## `medium` works; failures are obvious (non-zero exit code).
   reasoning_effort: "${ITERION_RENOVACY_EFFORT_INSTALL:-${ITERION_RENOVACY_EFFORT_CLAUDE:-medium}}"
@@ -2581,7 +2581,7 @@ agent install:
 agent align_code:
   backend: "claude_code"
   provider: "${RESCUE_PROVIDER:-zai}"
-  model: "${ITERION_RENOVACY_MODEL_CLAUDE:-claude-opus-4-8}"
+  model: "${ITERION_RENOVACY_MODEL_CLAUDE:-claude-opus-5}"
   ## Touches source code. Precision matters more than depth-of-reasoning,
   ## and the per-step focused check (tsc/cargo-check) keeps the LLM
   ## honest. `high` is right for the default; bump per ITERION_RENOVACY_
@@ -2605,7 +2605,7 @@ agent align_code:
 agent validate_upgrade:
   backend: "claude_code"
   provider: "${RESCUE_PROVIDER:-zai}"
-  model: "${ITERION_RENOVACY_MODEL_CLAUDE:-claude-opus-4-8}"
+  model: "${ITERION_RENOVACY_MODEL_CLAUDE:-claude-opus-5}"
   ## The per-pkg verdict gate. `high` matches changelog_review/security_audit
   ## quality bar without paying for `max`. Override per ITERION_RENOVACY_
   ## EFFORT_VALIDATE when validation needs to scrutinise non-trivial
@@ -2629,7 +2629,7 @@ agent validate_upgrade:
 agent fix_after_upgrade:
   backend: "claude_code"
   provider: "${RESCUE_PROVIDER:-zai}"
-  model: "${ITERION_RENOVACY_MODEL_CLAUDE:-claude-opus-4-8}"
+  model: "${ITERION_RENOVACY_MODEL_CLAUDE:-claude-opus-5}"
   ## Recovery path — when validation fails, this agent tries to land the
   ## smallest correct fix in a tight retry budget (fix_loop_max = 3 for
   ## minor, 5 for major). Quality at this stage rescues the package; we
@@ -2957,7 +2957,7 @@ compute mark_failed_and_continue:
 agent p2_campaign:
   backend: "claude_code"
   provider: "${RESCUE_PROVIDER:-zai}"
-  model: "${ITERION_RENOVACY_MODEL_CLAUDE:-claude-opus-4-8}"
+  model: "${ITERION_RENOVACY_MODEL_CLAUDE:-claude-opus-5}"
   reasoning_effort: "${ITERION_RENOVACY_EFFORT_REVIEW:-high}"
   input: p2_campaign_input
   output: p2_campaign_output
@@ -2971,7 +2971,7 @@ agent p2_campaign:
 agent p2_verify_build:
   backend: "claude_code"
   provider: "${RESCUE_PROVIDER:-zai}"
-  model: "${ITERION_RENOVACY_MODEL_CLAUDE:-claude-opus-4-8}"
+  model: "${ITERION_RENOVACY_MODEL_CLAUDE:-claude-opus-5}"
   reasoning_effort: "${ITERION_RENOVACY_EFFORT_VALIDATE:-medium}"
   output: p2_verify_plan
   system: p2_verify_system
@@ -3496,7 +3496,7 @@ tool resolve_pkg_ecosystem:
 agent batch_upgrade_patches:
   backend: "claude_code"
   provider: "${RESCUE_PROVIDER:-zai}"
-  model: "${ITERION_RENOVACY_MODEL_CLAUDE:-claude-opus-4-8}"
+  model: "${ITERION_RENOVACY_MODEL_CLAUDE:-claude-opus-5}"
   reasoning_effort: "${ITERION_RENOVACY_EFFORT_BATCH_UPGRADE:-${ITERION_RENOVACY_EFFORT_CLAUDE:-medium}}"
   input: batch_upgrade_input
   output: batch_upgrade_result
@@ -3973,7 +3973,7 @@ printf '{"success":true,"committed":true,"output":"family %s committed %s","sha"
 agent family_align_code:
   backend: "claude_code"
   provider: "${RESCUE_PROVIDER:-zai}"
-  model: "${ITERION_RENOVACY_MODEL_CLAUDE:-claude-opus-4-8}"
+  model: "${ITERION_RENOVACY_MODEL_CLAUDE:-claude-opus-5}"
   ## Same reasoning as per-package align_code, but for a whole batch of
   ## family members at once. `high` is the right default; bump per
   ## ITERION_RENOVACY_EFFORT_FAMILY_ALIGN for families with intricate

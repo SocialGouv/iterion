@@ -1,0 +1,420 @@
+## ═══════════════════════════════════════════════════════════════════
+## modernize (Morphy) — carry a repository through a programme of
+## modernisation LOTS, one gate-to-gate step at a time.
+##
+## The unit is the LOT, not the package. That is the whole reason this is a
+## separate bot: a dependency-upgrade pipeline whose failure path is
+## "revert this package and continue" cannot express "the runtime moved and
+## nine hundred files went with it".
+##
+## SEPARATION OF POWERS, and it is not negotiable:
+##   this bot changes the code; it NEVER writes the oracle that judges it.
+## A behavioural net dies by re-baselining. If the party that breaks a
+## reference can also rewrite it, green means nothing. refs_immutable_gate
+## enforces that mechanically, in git, not by asking nicely.
+##
+## The bot knows NOTHING about any build tool or runtime. Every command it
+## runs is declared in the target repository's own `.modernize/plan.yaml`,
+## which is what keeps it universal and makes the programme auditable by a
+## human who never opens this file.
+## ═══════════════════════════════════════════════════════════════════
+
+vars:
+  workspace_dir: string = "${PROJECT_DIR}"
+  ## The programme contract, versioned in the TARGET repo.
+  plan_path: string = ".modernize/plan.yaml"
+  ## Restrict the run to one lot id. Empty = take the first ready lot.
+  only_lot: string = ""
+  ## Bounded repair loop for a single lot. Exhausting it ships what is banked
+  ## and says so, rather than grinding.
+  max_passes: int = 4
+  source_issue_ref: string = ""
+
+## ─── Prompts ───────────────────────────────────────────────────────
+
+prompt campaign_system:
+  You carry a repository through ONE lot of a modernisation programme, and you
+  are judged by a deterministic gate you cannot edit or argue with.
+
+  Read the bundled skills before acting: `modernize-lots` for what a lot is and
+  how one goes wrong, `plan-contract` for the contract you are working from.
+
+  Three rules override any instinct to make the gate pass:
+
+  1. Stay inside the lot. The lot's intent says what may change. A change that
+     reaches beyond it is not initiative, it is an unreviewable diff — and the
+     next lot inherits the confusion. When the lot cannot be completed without
+     stepping outside it, say so and stop; a blocked lot with a written reason
+     is worth more than a green one that did something else.
+  2. Never touch the oracle. The behavioural net that judges this work is
+     off-limits: not its references, not its comparators, not its fixtures. A
+     reference that moves is a REGRESSION YOU CAUSED until proven otherwise,
+     and the proof is not yours to write.
+  3. Never weaken the gate. Skipping a check, loosening a version constraint to
+     dodge a conflict, or excluding a failing module are all ways of passing
+     without having done the work.
+
+  Commit as you go, so an interrupted run leaves landed work.
+
+prompt campaign_user:
+  Repository: `{{vars.workspace_dir}}`.
+
+  Lot `{{input.lot_id}}` — {{input.lot_title}}
+
+  {{input.lot_intent}}
+
+  The gate that decides this lot runs these commands, in order, and every one
+  of them must exit 0:
+
+  {{input.exit_gate}}
+
+  It then replays the behavioural oracle, and finally verifies that NOT ONE
+  line changed under the oracle's reference directory. That last check is why
+  rule 2 exists: a reference you edited to make the run green is the one
+  failure this programme cannot recover from.
+
+  {{input.fail_log}}
+
+  When a previous pass left a failure above, fix the CAUSE. The gate is not
+  the thing to be satisfied; it is the thing that tells you whether the work is
+  done.
+
+  Report ONE short line in `work_remaining`: what is left, or "nothing".
+  Anything longer belongs in a file you commit, which a human can read and
+  diff — not in a control-plane message that must parse strictly.
+
+## ─── Schemas ───────────────────────────────────────────────────────
+
+schema campaign_input:
+  lot_id: string
+  lot_title: string
+  lot_intent: string
+  exit_gate: string
+  fail_log: string
+
+## One field. The graph reads nothing an agent says about its own success —
+## the deterministic gate is the sole authority, so a self-assessment field
+## could only ever mislead a reader or cost a round-trip to emit.
+schema campaign_output:
+  work_remaining: string
+
+## What the plan reader extracts. `nothing_to_do` is what makes an already
+## finished programme a no-op instead of an error.
+schema plan_state:
+  nothing_to_do: bool
+  lot_id: string
+  lot_title: string
+  lot_intent: string
+  exit_gate: string
+  base_sha: string
+  refs_dir: string
+  notice: string
+
+## The deterministic verdict. Not one field here is an opinion.
+schema lot_report:
+  gate_passed: bool
+  oracle_passed: bool
+  refs_untouched: bool
+  refs_changed: string[]
+  ## The campaign declared the lot blocked. Believed as a STOP, never as a
+  ## success: a status claiming completion could be self-serving, whereas one
+  ## claiming failure cannot cheat its way to green. A lot that cannot be
+  ## finished inside its intent is a finding, and re-running the loop against a
+  ## wall the agent has already described and proven is pure spend.
+  lot_blocked: bool
+  block_reason: string
+  log_tail: string
+
+schema gate_state:
+  converged: bool
+  ## Converged OR declared blocked — both end the run, for opposite reasons.
+  stop: bool
+  fail_log: string
+
+schema verify_input:
+  lot_id: string
+  plan_path: string
+  base_sha: string
+  refs_dir: string
+  exit_gate: string
+
+## ─── Nodes ─────────────────────────────────────────────────────────
+
+## plan_read — parse the contract, pick the lot, and record the base commit.
+##
+## The base commit is captured HERE, before any agent runs, because
+## refs_immutable_gate compares against it. Reading it later would compare the
+## work against itself and always pass.
+tool plan_read:
+  output: plan_state
+  language: py
+  script: |
+    import json
+    import os
+    import subprocess
+    import sys
+
+    ws = {{vars.workspace_dir}}
+    plan_path = os.path.join(ws, {{vars.plan_path}})
+    only = {{vars.only_lot}}
+
+    out = {"nothing_to_do": True, "lot_id": "", "lot_title": "", "lot_intent": "",
+           "exit_gate": "", "base_sha": "", "refs_dir": "", "notice": ""}
+
+    def emit(notice):
+        out["notice"] = notice
+        print(json.dumps(out))
+        raise SystemExit(0)
+
+    if not os.path.isfile(plan_path):
+        emit("no programme contract at %s — nothing to carry out. Write one "
+             "before running this bot: the plan is the contract, not an "
+             "implementation detail." % plan_path)
+
+    # No YAML parser in the standard library, and adding a dependency to read a
+    # config file is a poor trade. yq ships in the bundle and converts to JSON.
+    try:
+        raw = subprocess.run(["yq", "-o=json", plan_path], capture_output=True,
+                             text=True, timeout=60)
+    except (OSError, subprocess.SubprocessError) as e:
+        emit("cannot run yq to read the contract: %s" % e)
+    if raw.returncode != 0:
+        emit("the contract at %s is not parseable: %s" % (plan_path, raw.stderr[-800:]))
+    plan = json.loads(raw.stdout)
+
+    oracle = plan.get("oracle") or {}
+    out["refs_dir"] = oracle.get("refs_dir") or ""
+
+    rev = subprocess.run(["git", "-C", ws, "rev-parse", "HEAD"],
+                         capture_output=True, text=True, timeout=30)
+    if rev.returncode != 0:
+        emit("cannot read HEAD in %s: %s" % (ws, rev.stderr[-400:]))
+    out["base_sha"] = rev.stdout.strip()
+
+    lots = plan.get("lots") or []
+    done_ids = set(l.get("id") for l in lots if l.get("status") == "done")
+
+    # A lot is eligible when every lot it depends on is done. The dependency
+    # order is a DECISION recorded in the contract, not something re-derivable
+    # from the tree — which is precisely why the programme is a file and not a
+    # git log.
+    chosen = None
+    waiting = []
+    for lot in lots:
+        if lot.get("status") == "done":
+            continue
+        if only and lot.get("id") != only:
+            continue
+        missing = [d for d in (lot.get("depends_on") or []) if d not in done_ids]
+        if missing:
+            waiting.append("%s waits on %s" % (lot.get("id"), ", ".join(missing)))
+            continue
+        chosen = lot
+        break
+
+    if chosen is None:
+        if waiting:
+            emit("no lot is ready: %s. Finish an upstream lot first." % "; ".join(waiting))
+        emit("every lot in the contract is done.")
+
+    gate = chosen.get("exit_gate") or []
+    if not gate:
+        emit("lot %s declares no exit_gate. A lot with no gate cannot be "
+             "verified, and an unverifiable lot is indistinguishable from one "
+             "that was never done." % chosen.get("id"))
+
+    out["nothing_to_do"] = False
+    out["lot_id"] = chosen.get("id") or ""
+    out["lot_title"] = chosen.get("title") or ""
+    out["lot_intent"] = chosen.get("intent") or ""
+    out["exit_gate"] = "\n".join(gate)
+    print(json.dumps(out))
+
+## work_gate lifts the reader's verdict into a routable bool.
+compute work_gate:
+  output: plan_state
+  expr:
+    nothing_to_do: "outputs.plan_read.nothing_to_do"
+    lot_id: "outputs.plan_read.lot_id"
+    lot_title: "outputs.plan_read.lot_title"
+    lot_intent: "outputs.plan_read.lot_intent"
+    exit_gate: "outputs.plan_read.exit_gate"
+    base_sha: "outputs.plan_read.base_sha"
+    refs_dir: "outputs.plan_read.refs_dir"
+    notice: "outputs.plan_read.notice"
+
+agent upgrade_campaign:
+  backend: "claude_code"
+  model: "${ITERION_MODERNIZE_MODEL_CLAUDE:-claude-opus-5}"
+  reasoning_effort: "${ITERION_MODERNIZE_EFFORT:-high}"
+  input: campaign_input
+  output: campaign_output
+  system: campaign_system
+  user: campaign_user
+  session: fresh
+  skills: ["modernize-lots", "plan-contract"]
+
+## lot_verify — the whole verdict, deterministic, in one node.
+##
+## Three questions, in the only order that makes sense: does it build, does it
+## still behave, and did anyone move the yardstick. The third is last because
+## it is the one an agent under pressure is tempted to solve first.
+tool lot_verify:
+  input: verify_input
+  output: lot_report
+  language: py
+  script: |
+    import json
+    import os
+    import subprocess
+
+    ws = {{vars.workspace_dir}}
+    base = {{input.base_sha}}
+    refs_dir = {{input.refs_dir}}
+    gate_cmds = [c for c in {{input.exit_gate}}.split("\n") if c.strip()]
+
+    report = {"gate_passed": False, "oracle_passed": False, "refs_untouched": False,
+              "refs_changed": [], "lot_blocked": False, "block_reason": "", "log_tail": ""}
+    problems = []
+
+    # Did the campaign declare this lot blocked? Read from the contract, which
+    # it had to commit to say so — a claim in a control-plane message would be
+    # cheaper to make and impossible to review.
+    try:
+        raw = subprocess.run(["yq", "-o=json", os.path.join(ws, {{input.plan_path}})],
+                             capture_output=True, text=True, timeout=60)
+        if raw.returncode == 0:
+            for lot in (json.loads(raw.stdout).get("lots") or []):
+                if lot.get("id") == {{input.lot_id}} and lot.get("status") == "blocked":
+                    report["lot_blocked"] = True
+                    report["block_reason"] = (lot.get("title") or "") + " -- see the committed report"
+    except (OSError, ValueError, subprocess.SubprocessError):
+        pass
+
+    def run(cmd, timeout=3600):
+        p = subprocess.run(cmd, shell=True, cwd=ws, capture_output=True,
+                           text=True, timeout=timeout)
+        return p.returncode, (p.stdout + p.stderr)[-4000:]
+
+    # 1. The lot's own gate, every command, in order.
+    report["gate_passed"] = True
+    for cmd in gate_cmds:
+        code, log = run(cmd)
+        if code != 0:
+            report["gate_passed"] = False
+            problems.append("exit_gate command failed (exit %d): %s\n%s" % (code, cmd, log))
+            break
+
+    # 2. The behavioural oracle, replayed. Absent is NOT a pass: a lot verified
+    #    without the net is a lot verified against nothing, and reporting that
+    #    as success is the failure this whole programme exists to prevent.
+    verify = os.path.join(ws, ".golden-master", "verify-oracle.sh")
+    if not os.path.isfile(verify):
+        problems.append("no behavioural oracle at %s. Build the net before "
+                        "modernising against it — a green build proves the code "
+                        "compiles, never that it still behaves." % verify)
+    else:
+        code, log = run(verify)
+        report["oracle_passed"] = code == 0
+        if code != 0:
+            problems.append("the behavioural oracle went RED (exit %d):\n%s" % (code, log))
+
+    # 3. Did the oracle's references move? This is the separation of powers,
+    #    and it is checked in git rather than trusted: the party that changes
+    #    the code must not be able to redefine what judges it. A reference that
+    #    moved is a regression until a human says otherwise, and saying so is a
+    #    different bot's job.
+    if not refs_dir:
+        problems.append("the contract declares no oracle.refs_dir, so nothing "
+                        "protects the references from being rewritten to make "
+                        "this run green.")
+    else:
+        code, log = run("git diff --name-only %s -- %s" % (base, refs_dir))
+        if code != 0:
+            problems.append("cannot diff the references against %s: %s" % (base, log))
+        else:
+            changed = [l.strip() for l in log.splitlines() if l.strip()]
+            report["refs_changed"] = changed
+            report["refs_untouched"] = not changed
+            if changed:
+                problems.append("%d oracle reference(s) were MODIFIED during this "
+                                "lot: %s. Either the lot changed behaviour it was "
+                                "not supposed to change, or the net was edited to "
+                                "hide that it did. Both are stop conditions."
+                                % (len(changed), ", ".join(changed[:20])))
+
+    report["log_tail"] = "\n".join(problems)[-6000:]
+    print(json.dumps(report))
+
+## A pure CONJUNCTION, never an aggregate. Two of three green is not "mostly
+## done" — it is a lot that built and lies, or one that behaves and cheated.
+compute lot_gate:
+  output: gate_state
+  expr:
+    converged: "outputs.lot_verify.gate_passed && outputs.lot_verify.oracle_passed && outputs.lot_verify.refs_untouched"
+    stop: "(outputs.lot_verify.gate_passed && outputs.lot_verify.oracle_passed && outputs.lot_verify.refs_untouched) || outputs.lot_verify.lot_blocked"
+    fail_log: "outputs.lot_verify.log_tail"
+
+workflow modernize:
+  entry: plan_read
+
+  ## No `sandbox:` block (ADR-082): the platform sandboxes by default. The
+  ## target's toolchain comes from ITS OWN devbox/devcontainer — this bundle
+  ## declares only yq and python3, so the bot stays repo-agnostic. Every
+  ## command it runs is declared in the target's own contract.
+
+  budget:
+    max_parallel_branches: 1
+    max_duration: "4h"
+    max_cost_usd: 60
+
+  compaction:
+    threshold: 0.9
+    preserve_recent: 8
+
+  plan_read -> work_gate
+
+  ## Exhaustive pair on one bool (C012): an already-finished programme is a
+  ## clean no-op, not an error — running a done programme must cost nothing and
+  ## say why.
+  work_gate -> done when nothing_to_do
+  work_gate -> upgrade_campaign when not nothing_to_do with {
+    lot_id:     "{{outputs.work_gate.lot_id}}",
+    lot_title:  "{{outputs.work_gate.lot_title}}",
+    lot_intent: "{{outputs.work_gate.lot_intent}}",
+    exit_gate:  "{{outputs.work_gate.exit_gate}}",
+    fail_log:   ""
+  }
+
+  ## base_sha is the commit the RUN started from, captured before any agent
+  ## touched the tree. Comparing the references against anything later would
+  ## compare the work with itself and always pass.
+  upgrade_campaign -> lot_verify with {
+    lot_id:    "{{outputs.work_gate.lot_id}}",
+    plan_path: "{{vars.plan_path}}",
+    base_sha:  "{{outputs.work_gate.base_sha}}",
+    refs_dir:  "{{outputs.work_gate.refs_dir}}",
+    exit_gate: "{{outputs.work_gate.exit_gate}}"
+  }
+
+  lot_verify -> lot_gate
+
+  ## Converged, or declared blocked with a committed reason. Both end the run;
+  ## looping against a wall the agent has already described and proven costs
+  ## money and produces nothing.
+  lot_gate -> done when stop
+
+  ## Not converged → another pass on the SAME lot, carrying the deterministic
+  ## failure back so the agent fixes the cause rather than re-deriving it.
+  lot_gate -> upgrade_campaign as repair_loop("{{vars.max_passes}}") with {
+    lot_id:     "{{outputs.work_gate.lot_id}}",
+    lot_title:  "{{outputs.work_gate.lot_title}}",
+    lot_intent: "{{outputs.work_gate.lot_intent}}",
+    exit_gate:  "{{outputs.work_gate.exit_gate}}",
+    fail_log:   "{{outputs.lot_gate.fail_log}}"
+  }
+
+  ## Loop exhausted → stop and leave the committed work in place. A lot that
+  ## will not converge in max_passes is a finding about the lot, not a reason
+  ## to keep paying for passes.
+  lot_gate -> done

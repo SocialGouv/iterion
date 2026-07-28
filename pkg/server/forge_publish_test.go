@@ -3,6 +3,7 @@ package server
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -140,7 +141,10 @@ func TestForgePublishReview_ValidationFailures(t *testing.T) {
 		{"repo mismatch", `{"pr_url": "https://github.com/other/repo/pull/42", "summary": "x"}`, http.StatusForbidden},
 		{"bad mode", `{"pr_url": "https://github.com/o/r/pull/42", "summary": "x", "mode": "yolo"}`, http.StatusBadRequest},
 		{"empty payload", `{"pr_url": "https://github.com/o/r/pull/42"}`, http.StatusBadRequest},
-		{"bad comment", `{"pr_url": "https://github.com/o/r/pull/42", "summary": "x", "comments": [{"path": "", "line": 0, "body": ""}]}`, http.StatusBadRequest},
+		// A malformed comment is no longer fatal when there is still
+		// something to say — see TestForgePublishReview_DropsUnanchorableComments.
+		// It stays fatal only when nothing publishable remains.
+		{"unanchorable comment and no summary", `{"pr_url": "https://github.com/o/r/pull/42", "comments": [{"path": "", "line": 0, "body": ""}]}`, http.StatusBadRequest},
 	}
 	for _, tc := range cases {
 		w := httptest.NewRecorder()
@@ -282,5 +286,88 @@ func TestForgePublishReview_HostMismatchRejected(t *testing.T) {
 	}
 	if fake.calls != 0 {
 		t.Fatal("forge client must not be reached on host mismatch")
+	}
+}
+
+// A reviewer legitimately produces findings it cannot anchor to a file+line
+// (an architectural observation, a cross-file concern). Rejecting the batch
+// on one of those used to cost the whole review — and, because the merge gate
+// is posted after a successful publish, the required check with it. That is
+// how PR #304 ended up with a permanently absent revi/review status.
+func TestForgePublishReview_DropsUnanchorableComments(t *testing.T) {
+	s, fake := newForgePublishTestServer(t)
+	registerPublishToken(t, s, "tok1", ForgePublishGrant{TeamID: "team1", ConnectionID: "conn1", Repo: "o/r"})
+
+	body := `{
+  "pr_url": "https://github.com/o/r/pull/42",
+  "summary": "review summary",
+  "comments": [
+    {"path": "a.go", "line": 3, "body": "anchored finding"},
+    {"path": "", "line": 0, "body": "architectural observation with nowhere to hang"},
+    {"path": "b.go", "line": 0, "body": "no line"}
+  ]
+}`
+	w := httptest.NewRecorder()
+	s.handleForgePublishReview(w, publishReq("tok1", body))
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200 (body: %s)", w.Code, w.Body.String())
+	}
+	var res publishReviewResponse
+	if err := json.Unmarshal(w.Body.Bytes(), &res); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if !res.Published {
+		t.Error("published = false: the anchored finding and the summary must still land")
+	}
+	if len(res.DroppedComments) != 2 {
+		t.Errorf("dropped_comments = %v, want 2 — a silent drop hides the caller's broken contract", res.DroppedComments)
+	}
+	// Only the anchorable comment reaches the forge.
+	if len(fake.in.Comments) != 1 || fake.in.Comments[0].Path != "a.go" {
+		t.Errorf("forge received %+v, want only the a.go comment", fake.in.Comments)
+	}
+}
+
+// The gate is a COUNT the bot already computed; it does not depend on the
+// comments landing. Coupling them meant one forge hiccup left the PR's
+// required check absent — indistinguishable from "never reviewed", and
+// unblockable by another review.
+func TestForgePublishReview_GatePostedEvenWhenTheReviewFails(t *testing.T) {
+	s, fake := newForgePublishTestServer(t)
+	registerPublishToken(t, s, "tok1", ForgePublishGrant{TeamID: "team1", ConnectionID: "conn1", Repo: "o/r"})
+	fake.err = errors.New("forge exploded")
+
+	gate := &fakeGateClient{headSHA: "deadbeef"}
+	s.forgeGateClientFor = func(_ context.Context, _ forge.Connection) (forgeGateClient, error) {
+		return gate, nil
+	}
+
+	body := `{
+  "pr_url": "https://github.com/o/r/pull/42",
+  "summary": "review summary",
+  "gate": {"enabled": true, "context": "revi/review", "blocking_count": 0, "threshold": "high", "total_findings": 2}
+}`
+	w := httptest.NewRecorder()
+	s.handleForgePublishReview(w, publishReq("tok1", body))
+
+	if w.Code != http.StatusBadGateway {
+		t.Fatalf("status = %d, want 502 — the publish failure must still be reported", w.Code)
+	}
+	var res publishReviewResponse
+	if err := json.Unmarshal(w.Body.Bytes(), &res); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if res.Published {
+		t.Error("published = true despite a forge error")
+	}
+	if res.SkippedReason == "" {
+		t.Error("skipped_reason empty: a failed publish must say why")
+	}
+	if !res.GatePosted {
+		t.Fatal("gate_posted = false — the required check stays absent and the PR can never merge")
+	}
+	if gate.setCalls == 0 {
+		t.Error("the forge never received a commit status")
 	}
 }

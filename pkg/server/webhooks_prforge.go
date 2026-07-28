@@ -54,6 +54,13 @@ func (s *Server) handlePRForgeComment(ctx context.Context, w http.ResponseWriter
 		filtered("no slash-command")
 		return
 	}
+	// `/revi approve [reason]` is an OVERRIDE, not a re-review: a trusted
+	// maintainer force-greens the merge gate. Intercept before the
+	// command→bot routing so it never launches a run.
+	if reason, isApprove := reviewApproveReason(cmd, cmdArgs); isApprove {
+		s.handlePRForgeReviewApprove(ctx, w, cfg, provider, p, reason, payloadHash, srcIP)
+		return
+	}
 	route, ok := webhooks.ResolveCommandRoute(cfg, cmd, cmdArgs, s.cmdDiscovery())
 	if !ok {
 		filtered("no command route for /" + cmd)
@@ -110,7 +117,7 @@ func (s *Server) handlePRForgeComment(ctx context.Context, w http.ResponseWriter
 		pr = &resolved
 		repoRef = resolved.SourceBranch
 	}
-	vars := buildPRForgeCommandVars(p, pr, route, cmdArgs, cfg.LaunchVars)
+	vars := applyWebhookVarLayers(buildPRForgeCommandVars(p, pr, route, cmdArgs, nil), cfg)
 	if pr != nil {
 		stampBranchImprovePushBack(vars, route.BotID, pr.SourceBranch, cfg.BranchImproveAsPR)
 		// `/billy` on a PR picks up where Revi left off: seed the run with the

@@ -127,3 +127,28 @@ func TestEvaluateOverlap(t *testing.T) {
 		})
 	}
 }
+
+// supersede is meaningless on a surface that cannot cancel a live run: it
+// would fire alongside the runs it promised to replace, i.e. `allow` while the
+// policy documents at-most-one-live. Two of the three schedule surfaces drop
+// GateOutcome.ReapRunIDs today, so the vocabulary being shared is exactly why
+// this has to be rejected at write time rather than discovered at tick time.
+func TestValidateReapable(t *testing.T) {
+	sup := Policy{Overlap: OverlapSupersede}
+	if err := ValidateReapable(sup, true); err != nil {
+		t.Fatalf("a surface that reaps accepts supersede: %v", err)
+	}
+	err := ValidateReapable(sup, false)
+	if err == nil {
+		t.Fatal("a surface that cannot cancel must reject supersede, not degrade to allow")
+	}
+	if !strings.Contains(err.Error(), OverlapSkip) || !strings.Contains(err.Error(), OverlapAllow) {
+		t.Errorf("the error must name what to use instead, got %q", err)
+	}
+	// Every other policy is unaffected by the surface's capability.
+	for _, p := range []Policy{{}, {Overlap: OverlapSkip}, {Overlap: OverlapAllow}, {Overlap: OverlapKeepalive}} {
+		if err := ValidateReapable(p, false); err != nil {
+			t.Errorf("%q must stay valid on any surface: %v", p.Overlap, err)
+		}
+	}
+}

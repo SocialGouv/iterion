@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"strings"
 
+	"github.com/SocialGouv/iterion/pkg/bundle"
 	"github.com/SocialGouv/iterion/pkg/knowledge"
 	"github.com/SocialGouv/iterion/pkg/webhooks"
 	"github.com/SocialGouv/iterion/pkg/webhooks/prforge"
@@ -125,7 +126,7 @@ func (s *Server) handlePRForgeReview(ctx context.Context, w http.ResponseWriter,
 				"interleaved merge). Keep the PR's own change intact; only reconcile it with the new base. "+
 				"Push so the PR can re-enter the merge queue.\n\n%s",
 			p.DequeueReason, p.TargetBranch, p.TargetBranch, strings.TrimSpace(p.Title+"\n\n"+p.Description))
-		healVars := branchImproveVars(p.TargetBranch, p.SourceBranch, p.PRURL, mission, false, cfg.LaunchVars)
+		healVars := applyWebhookVarLayers(branchImproveVars(p.TargetBranch, p.SourceBranch, p.PRURL, mission, false, nil), cfg)
 		s.insertAndLaunchWebhook(ctx, w, r, cfg, meta, healIdem, branchImproveBotID, healVars, p.CloneURL, p.SourceBranch, payloadHash, srcIP)
 		return
 	}
@@ -137,7 +138,10 @@ func (s *Server) handlePRForgeReview(ctx context.Context, w http.ResponseWriter,
 	if !reviewable ||
 		!webhooks.MatchEvent(cfg.EventAllowlist, "pull_request", "pull_request") ||
 		!webhooks.MatchProject(cfg.ProjectAllowlist, p.ProjectPath) ||
-		!webhooks.MatchAuthor(cfg.AuthorAllowlist, p.SenderLogin) {
+		// The PR's AUTHOR, not the pusher: on a synchronize the sender is
+		// whoever pushed, so filtering on it would drop a dependency bot's PR
+		// the moment a human pushed a fix onto it.
+		!webhooks.MatchAuthor(cfg.AuthorAllowlist, p.Author()) {
 		s.recordTerminalWebhookDelivery(ctx, cfg, meta, webhooks.StatusFiltered, payloadHash, srcIP, "")
 		writeJSONStatus(w, http.StatusOK, map[string]string{"status": webhooks.StatusFiltered})
 		return
@@ -147,6 +151,9 @@ func (s *Server) handlePRForgeReview(ctx context.Context, w http.ResponseWriter,
 	// Featurly… through the tenant's forge integration) already converged inside
 	// its own loop — auto-reviewing it wastes budget and adds noise. Filter it
 	// (a human can still run `/revi` on it manually).
+	// Deliberately the SENDER, not the PR author: the point is to skip a PR
+	// our own loop produced and already converged, but once a human pushes
+	// onto it there is human work to review again.
 	if s.isIterionForgeBotAuthor(ctx, cfg, p.SenderLogin) {
 		s.recordTerminalWebhookDelivery(ctx, cfg, meta, webhooks.StatusFiltered, payloadHash, srcIP,
 			"PR authored by iterion's forge bot — auto-review skipped (self-produced; run /revi to force a review)")
@@ -154,21 +161,28 @@ func (s *Server) handlePRForgeReview(ctx context.Context, w http.ResponseWriter,
 		return
 	}
 
-	// PR-open auto-lane = REVIEW ONLY (Revi). Billy is NEVER auto-launched on a
+	// PR-open auto-lane = REVIEW ONLY. Billy is NEVER auto-launched on a
 	// PR-open — it runs on a deliberate `/billy` comment (or the narrow
-	// merge-queue auto-heal above). resolveReviewBot gates AllowsBot.
-	botID, ok := s.resolveReviewBot(ctx, w, cfg, meta, payloadHash, srcIP)
-	if !ok {
+	// merge-queue auto-heal above). With a per-bot routing table the lane fans
+	// out to every bot claiming the pull_request event whose OWN author filter
+	// admits this author, so a dependency guard and a reviewer share the repo
+	// and each takes its own PRs.
+	rules := s.resolveForgeEventBots(cfg, bundle.ForgeEventPullRequest, p.Author())
+	if len(rules) == 0 {
+		s.recordTerminalWebhookDelivery(ctx, cfg, meta, webhooks.StatusFiltered, payloadHash, srcIP, "no enabled bot claims this PR (event/author routing)")
+		writeJSONStatus(w, http.StatusOK, map[string]string{"status": webhooks.StatusFiltered})
 		return
 	}
 
-	// Idempotency: one launch per (tenant, webhook, repo, PR#, head sha).
-	idemKey := knowledge.ChecksumHex([]byte(fmt.Sprintf("%s%s|%s|%s|%d|%s", idemPrefix, cfg.TenantID, cfg.ID, p.ProjectPath, p.PRNumber, p.HeadSHA)))
+	// Idempotency base: one launch per (tenant, webhook, repo, PR#, head sha)
+	// — per bot once the delivery fans out (see forgeIdemKey).
+	idemBase := fmt.Sprintf("%s%s|%s|%s|%d|%s", idemPrefix, cfg.TenantID, cfg.ID, p.ProjectPath, p.PRNumber, p.HeadSHA)
 
 	scopeNotes := strings.TrimSpace(p.Title + "\n\n" + p.Description)
-	vars := reviewPRVars(p.PRURL, p.TargetBranch, scopeNotes, cfg.LaunchVars, map[string]string{"pr_author": p.SenderLogin, "source_branch": p.SourceBranch})
+	targets := forgePREventTargets(cfg, rules, idemBase, p.PRURL, p.TargetBranch, scopeNotes, p.CloneURL, p.SourceBranch,
+		map[string]string{"pr_author": p.Author(), "source_branch": p.SourceBranch})
 
-	s.insertAndLaunchWebhook(ctx, w, r, cfg, meta, idemKey, botID, vars, p.CloneURL, p.SourceBranch, payloadHash, srcIP)
+	s.insertAndLaunchWebhookMulti(ctx, w, r, cfg, meta, targets, payloadHash, srcIP)
 }
 
 // handleGitHubIssues handles a verified inbound GitHub `issues` delivery. Two
@@ -239,7 +253,7 @@ func (s *Server) handleGitHubIssues(w http.ResponseWriter, r *http.Request, cfg 
 	// runner clones the repo's default branch; featurly's worktree: auto
 	// branches from there.
 	route := s.boardRouteForLabel(botID)
-	vars := issueLabeledVars(p, cfg.LaunchVars, route.ArgsVar)
+	vars := applyWebhookVarLayers(issueLabeledVars(p, nil, route.ArgsVar), cfg)
 	s.dispatchInvocation(ctx, w, r, cfg, meta, idemKey, route, vars, p.CloneURL, "", payloadHash, srcIP)
 }
 

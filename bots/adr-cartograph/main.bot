@@ -730,7 +730,7 @@ print(json.dumps({
 ## (each run is an independent look).
 agent survey_code:
   backend: "claude_code"
-  model: "${ITERION_ADRY_MODEL_CLAUDE:-claude-opus-4-8}"
+  model: "${ITERION_ADRY_MODEL_CLAUDE:-claude-opus-5}"
   reasoning_effort: "${ITERION_ADRY_EFFORT_CLAUDE:-max}"
   input: scan_output
   output: survey_output
@@ -940,7 +940,7 @@ print(json.dumps({'cache_path': str(out_path), 'entries_written': len(adr_entrie
 ## gap / rechallenge handoffs (v1 filed them in prepare_commit).
 agent campaign:
   backend: "claude_code"
-  model: "${ITERION_ADR_MODEL_CLAUDE:-claude-opus-4-8}"
+  model: "${ITERION_ADR_MODEL_CLAUDE:-claude-opus-5}"
   reasoning_effort: "${ITERION_ADR_EFFORT_CLAUDE:-high}"
   input: campaign_input
   output: campaign_output
@@ -952,7 +952,7 @@ agent campaign:
 
 agent verify_build:
   backend: "claude_code"
-  model: "${ITERION_ADR_MODEL_CLAUDE:-claude-opus-4-8}"
+  model: "${ITERION_ADR_MODEL_CLAUDE:-claude-opus-5}"
   reasoning_effort: "${ITERION_ADR_EFFORT_CLAUDE:-medium}"
   output: verify_plan
   system: verify_system

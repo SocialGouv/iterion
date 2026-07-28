@@ -152,6 +152,10 @@ type Server struct {
 	// webhookLaunchBot overrides the inbound-webhook launch path (test
 	// seam). nil → realWebhookLaunchBot (resolve bot source + s.runs.Launch).
 	webhookLaunchBot func(ctx context.Context, botID string, vars map[string]string, repoURL, repoRef, projectPath string, keyOverrides, secretOverrides map[string]string) (string, error)
+
+	// webhookCancelRun cancels a run superseded by a newer delivery. Same
+	// test-seam shape as webhookLaunchBot; nil → s.runs.Cancel.
+	webhookCancelRun func(runID string) error
 	// scheduleClock overrides the wall clock the schedules CRUD stamps on
 	// CreatedAt / UpdatedAt / NextFireAt (test seam — tests need a
 	// deterministic instant to assert NextFire jumps to the expected slot).

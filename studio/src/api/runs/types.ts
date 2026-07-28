@@ -66,6 +66,12 @@ export interface RunSummary {
   finished_at?: string;
   error?: string;
   active: boolean;
+  // When a failed_resumable run will be resumed automatically, once the
+  // provider quota window that killed it reopens. Absent when no retry is
+  // armed — which is the distinction worth rendering: a run that resumes
+  // in 33h and one that never will are both "failed_resumable" otherwise.
+  retry_after?: string;
+  retry_attempts?: number;
   // Worktree finalization summary; empty for non-worktree runs or
   // runs that never reached a clean exit.
   final_commit?: string;

@@ -1361,6 +1361,49 @@ func TestResume_Success(t *testing.T) {
 	}
 }
 
+func TestResume_OperatorPausedWithoutAnswers(t *testing.T) {
+	dir := t.TempDir()
+	botPath := writeFixture(t, dir, "operator.bot", `
+workflow operator_resume:
+  entry: done
+`)
+	storeDir := filepath.Join(dir, "store")
+	s, _ := store.New(storeDir)
+	r, _ := s.CreateRun(
+		context.Background(),
+		"operator-paused",
+		"operator_resume",
+		nil,
+	)
+	_ = s.SaveCheckpoint(
+		context.Background(),
+		r.ID,
+		&store.Checkpoint{NodeID: "done"},
+	)
+	_ = s.UpdateRunStatus(
+		context.Background(),
+		r.ID,
+		store.RunStatusPausedOperator,
+		"paused by operator",
+	)
+
+	p, _ := newTestPrinter(cli.OutputHuman)
+	err := cli.RunResumeWithFile(
+		context.Background(),
+		botPath,
+		cli.ResumeOptions{RunID: r.ID, StoreDir: storeDir},
+		p,
+	)
+	if err != nil {
+		t.Fatalf("operator resume error: %v", err)
+	}
+
+	r, _ = s.LoadRun(context.Background(), r.ID)
+	if r.Status != store.RunStatusFinished {
+		t.Errorf("expected finished, got %s", r.Status)
+	}
+}
+
 func TestResume_NotPaused(t *testing.T) {
 	dir := t.TempDir()
 	botPath := writeFixture(t, dir, "test.bot", humanWorkflow)

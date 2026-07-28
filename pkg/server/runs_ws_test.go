@@ -40,6 +40,39 @@ func writeJSONMessage(t *testing.T, c *websocket.Conn, env runWSEnvelope) {
 	}
 }
 
+// awaitBrokerSubscriber blocks until the server has actually subscribed to the
+// broker for runID.
+//
+// The snapshot frame is NOT that signal. handleSubscribe sends the snapshot
+// first and calls SubscribeEvents after, so a test that reads the snapshot and
+// publishes immediately is racing the server: when it loses, the event is
+// dropped on the floor and the test hangs on a read that never completes.
+// That is the whole mechanism behind the intermittent
+// TestRunsWS_AlertEventBypassesSnapshotDedup failures on CI.
+//
+// SubscribeEvents registers with the broker before it does anything expensive,
+// and the per-subscriber channel is buffered, so a publish after this returns
+// is delivered. This waits for the state the test depends on rather than
+// hoping a sleep or a wider read deadline covers it.
+//
+// The same ordering is a real (narrow) product gap for UNPERSISTED events: a
+// client is told it is live-tailing before the tail exists, and an alert event
+// (Seq=0, never written to disk) published in that window cannot be replayed
+// to it. Tracked on the board; closing it means separating the cheap broker
+// subscription from the event-source setup, because simply subscribing before
+// the snapshot makes first paint wait for a full replay pass.
+func awaitBrokerSubscriber(t *testing.T, srv *Server, runID string) {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		if srv.runs.Broker().SubscriberCount(runID) > 0 {
+			return
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	t.Fatalf("no broker subscriber for %s after 5s — handleSubscribe never reached SubscribeEvents", runID)
+}
+
 func TestRunsWS_SubscribeReceivesSnapshot(t *testing.T) {
 	srv, hs := newTestServer(t)
 	seedRun(t, srv, "run-1", "wf", store.RunStatusFinished)
@@ -122,6 +155,7 @@ func TestRunsWS_LiveEventReachesSubscriber(t *testing.T) {
 	c := dialRunWS(t, hs, "run-live")
 	writeJSONMessage(t, c, runWSEnvelope{Type: wsTypeSubscribe})
 	_ = readEnvelope(t, c, wsTypeSnapshot)
+	awaitBrokerSubscriber(t, srv, "run-live")
 
 	// Publish an event through the broker — same path the engine uses.
 	srv.runs.Broker().Publish(store.Event{
@@ -182,6 +216,7 @@ func TestRunsWS_AlertEventBypassesSnapshotDedup(t *testing.T) {
 	if snap.LastSeq <= 0 {
 		t.Fatalf("snapshot LastSeq = %d, want > 0 (test needs snapshotSeq past 0 to exercise the guard)", snap.LastSeq)
 	}
+	awaitBrokerSubscriber(t, srv, runID)
 
 	// Publish an in-process alert event the way pkg/alert's browser sink
 	// does: straight to the broker, unpersisted, with Seq=0.

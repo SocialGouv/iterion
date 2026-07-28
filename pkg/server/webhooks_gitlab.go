@@ -13,8 +13,10 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/SocialGouv/iterion/pkg/botregistry"
+	"github.com/SocialGouv/iterion/pkg/bundle"
 	"github.com/SocialGouv/iterion/pkg/cloudsched"
 	"github.com/SocialGouv/iterion/pkg/knowledge"
+	"github.com/SocialGouv/iterion/pkg/retrypolicy"
 	"github.com/SocialGouv/iterion/pkg/runview"
 	"github.com/SocialGouv/iterion/pkg/secrets"
 	"github.com/SocialGouv/iterion/pkg/store"
@@ -106,19 +108,32 @@ func (s *Server) handleGitLabMergeRequestEvent(ctx context.Context, w http.Respo
 		return
 	}
 
-	botID, ok := s.resolveReviewBot(ctx, w, cfg, meta, payloadHash, srcIP)
-	if !ok {
+	// Same per-bot fan-out as the GitHub PR lane — this MR lane is a separate
+	// function, so parity is not free and must be kept explicitly.
+	//
+	// Routes on the event actor rather than the MR's author, unlike GitHub:
+	// GitLab's merge_request payload carries only `author_id`, so resolving
+	// the author's username would need an extra API call on the hot path. The
+	// difference shows only on a re-review triggered by someone other than
+	// the MR author, which needs ReviewOnSync to be on in the first place.
+	rules := s.resolveForgeEventBots(cfg, bundle.ForgeEventPullRequest, p.SenderUsername)
+	if len(rules) == 0 {
+		s.recordTerminalWebhookDelivery(ctx, cfg, meta, webhooks.StatusFiltered, payloadHash, srcIP, "no enabled bot claims this MR (event/author routing)")
+		writeJSONStatus(w, http.StatusOK, map[string]string{"status": webhooks.StatusFiltered})
 		return
 	}
 
-	// Idempotency: one launch per (tenant, webhook, project, MR, head sha).
-	// "mr|" prefix keeps the key space disjoint from the Note hook
-	// ("note|") so a /revi on the same MR can't collide with the open.
-	idemKey := knowledge.ChecksumHex([]byte(fmt.Sprintf("mr|%s|%s|%d|%d|%s", cfg.TenantID, cfg.ID, p.ProjectID, p.MRIID, p.HeadSHA)))
+	// Idempotency: one launch per (tenant, webhook, project, MR, head sha) —
+	// per bot once the delivery fans out. The "mr|" prefix keeps the key space
+	// disjoint from the Note hook ("note|") so a /revi on the same MR can't
+	// collide with the open.
+	idemBase := fmt.Sprintf("mr|%s|%s|%d|%d|%s", cfg.TenantID, cfg.ID, p.ProjectID, p.MRIID, p.HeadSHA)
 
-	vars := reviewPRVars(p.MRURL, p.TargetBranch, strings.TrimSpace(p.Title+"\n\n"+p.Description), cfg.LaunchVars, map[string]string{"pr_author": p.SenderUsername, "source_branch": p.SourceBranch})
+	targets := forgePREventTargets(cfg, rules, idemBase, p.MRURL, p.TargetBranch,
+		strings.TrimSpace(p.Title+"\n\n"+p.Description), p.CloneURL, p.SourceBranch,
+		map[string]string{"pr_author": p.SenderUsername, "source_branch": p.SourceBranch})
 
-	s.insertAndLaunchWebhook(ctx, w, r, cfg, meta, idemKey, botID, vars, p.CloneURL, p.SourceBranch, payloadHash, srcIP)
+	s.insertAndLaunchWebhookMulti(ctx, w, r, cfg, meta, targets, payloadHash, srcIP)
 }
 
 // handleGitLabIssueEvent handles a verified GitLab "Issue Hook". GitLab has no
@@ -155,7 +170,7 @@ func (s *Server) handleGitLabIssueEvent(ctx context.Context, w http.ResponseWrit
 	idemKey := knowledge.ChecksumHex([]byte(fmt.Sprintf("gl|issue|%s|%s|%d|%d|%s", cfg.TenantID, cfg.ID, p.ProjectID, p.IssueIID, label)))
 
 	route := s.boardRouteForLabel(botID)
-	vars := gitlabIssueLabeledVars(p, cfg.LaunchVars, route.ArgsVar)
+	vars := applyWebhookVarLayers(gitlabIssueLabeledVars(p, nil, route.ArgsVar), cfg)
 	// An issue carries no MR source branch — the bot opens its MR from the
 	// project default branch (finalize_mr cuts the branch from there).
 	s.dispatchInvocation(ctx, w, r, cfg, meta, idemKey, route, vars, p.CloneURL, p.DefaultBranch, payloadHash, srcIP)
@@ -302,7 +317,7 @@ func (s *Server) handleGitLabNote(ctx context.Context, w http.ResponseWriter, r 
 	// always reaches revi-converse — replyInThread implies the bot is enabled
 	// (the early gate above). `/revi <question>` with the converse bot absent
 	// falls back to re-review (matching pre-A5 behaviour).
-	vars := s.buildGitLabNoteVars(p, cmd, cmdArgs, cfg.LaunchVars)
+	vars := applyWebhookVarLayers(s.buildGitLabNoteVars(p, cmd, cmdArgs, nil), cfg)
 	question := cmdArgs
 	if replyInThread {
 		question = strings.TrimSpace(p.NoteBody)
@@ -393,9 +408,9 @@ func (s *Server) handleGitLabCommandNote(ctx context.Context, w http.ResponseWri
 	if s.logger != nil {
 		s.logger.Debug("webhooks: gitlab note %s/%s (/%s) by %s → %s (%s)", p.ProjectPath, surface, cmd, p.AuthorUsername, route.BotID, reason)
 	}
-	vars := buildCommandVars(p, route, cmdArgs, cfg.LaunchVars)
+	vars := applyWebhookVarLayers(buildCommandVars(p, route, cmdArgs, nil), cfg)
 	if surface == "issue" {
-		vars = buildGitLabIssueCommandVars(p, route, cmdArgs, cfg.LaunchVars)
+		vars = applyWebhookVarLayers(buildGitLabIssueCommandVars(p, route, cmdArgs, nil), cfg)
 	} else {
 		stampBranchImprovePushBack(vars, route.BotID, p.SourceBranch, cfg.BranchImproveAsPR)
 		// `/billy` on an MR seeds the run with Revi's most recent review of it
@@ -774,7 +789,11 @@ func (s *Server) launchScheduledBot(ctx context.Context, sb cloudsched.Scheduled
 	if err != nil {
 		return err
 	}
-	_, err = s.runs.Launch(ctx, buildScheduledLaunchSpec(sb, path, source))
+	retry := s.resolveRunRetryPolicy(sb.BotID, retrypolicy.Layer{
+		Source: retrypolicy.SourceSchedule,
+		Policy: sb.RetryPolicy(),
+	})
+	_, err = s.runs.Launch(ctx, buildScheduledLaunchSpec(sb, path, source, retry))
 	return err
 }
 
@@ -783,7 +802,7 @@ func (s *Server) launchScheduledBot(ctx context.Context, sb cloudsched.Scheduled
 // the schedule's Vars + repo binding onto the LaunchSpec so the runner clones
 // the pinned repo (mandatory for stateful bots persisting state to git) and
 // stamps the BotID for the publisher's credential-resolution path.
-func buildScheduledLaunchSpec(sb cloudsched.ScheduledBot, path, source string) runview.LaunchSpec {
+func buildScheduledLaunchSpec(sb cloudsched.ScheduledBot, path, source string, retry *store.RunRetryPolicy) runview.LaunchSpec {
 	return runview.LaunchSpec{
 		FilePath: path,
 		Source:   source,
@@ -791,6 +810,11 @@ func buildScheduledLaunchSpec(sb cloudsched.ScheduledBot, path, source string) r
 		Vars:     sb.Vars,
 		RepoURL:  sb.RepoURL,
 		RepoRef:  sb.RepoRef,
+		// Resolved by the caller across the schedule row, the bot manifest
+		// and the machine default — the schedule is the layer an operator
+		// reaches for when one bot's cadence needs different retry limits
+		// from the same bot on another cadence.
+		RetryPolicy: retry,
 		// Typed provenance: the schedgate overlap gate counts this
 		// schedule's live runs through source.schedule_id.
 		SourceRef: &store.RunSource{
@@ -801,10 +825,19 @@ func buildScheduledLaunchSpec(sb cloudsched.ScheduledBot, path, source string) r
 	}
 }
 
-// realWebhookLaunchBot is the production launch path for an inbound
-// webhook: resolve the bot's source and submit it through the run
+// webhookLauncherFor builds the production launch path for one inbound
+// webhook config. It is a closure rather than a plain method because the
+// launch needs the config's retry policy, which the seam's positional
+// signature does not carry.
+func (s *Server) webhookLauncherFor(cfg webhooks.Config) func(context.Context, string, map[string]string, string, string, string, map[string]string, map[string]string) (string, error) {
+	return func(ctx context.Context, botID string, vars map[string]string, repoURL, repoRef, projectPath string, keyOverrides, secretOverrides map[string]string) (string, error) {
+		return s.launchWebhookBot(ctx, cfg, botID, vars, repoURL, repoRef, projectPath, keyOverrides, secretOverrides)
+	}
+}
+
+// launchWebhookBot resolves the bot's source and submits it through the run
 // service (which, in cloud mode, routes to the publisher).
-func (s *Server) realWebhookLaunchBot(ctx context.Context, botID string, vars map[string]string, repoURL, repoRef, projectPath string, keyOverrides, secretOverrides map[string]string) (string, error) {
+func (s *Server) launchWebhookBot(ctx context.Context, cfg webhooks.Config, botID string, vars map[string]string, repoURL, repoRef, projectPath string, keyOverrides, secretOverrides map[string]string) (string, error) {
 	if s.runs == nil {
 		return "", errors.New("run service unavailable")
 	}
@@ -822,6 +855,13 @@ func (s *Server) realWebhookLaunchBot(ctx context.Context, botID string, vars ma
 		BotID:           botID,
 		KeyOverrides:    keyOverrides,
 		SecretOverrides: secretOverrides,
+		// A webhook-launched run is often the one an author is waiting on,
+		// so the config's own horizon usually wants to be shorter than a
+		// nightly's — hence the layer.
+		RetryPolicy: s.resolveRunRetryPolicy(botID, retrypolicy.Layer{
+			Source: retrypolicy.SourceWebhook,
+			Policy: cfg.RetryPolicy(),
+		}),
 	})
 	if err != nil {
 		return "", err
