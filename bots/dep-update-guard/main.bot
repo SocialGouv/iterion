@@ -357,9 +357,13 @@ prompt commit_system:
        code / re-query the remote ref).
     5. Never force-push. Never push to the base branch. Never merge.
 
-  Emit `commit_output`: committed, pushed, sha (empty if nothing
-  committed), message, summary (incl. the push result — branch + whether
-  the remote accepted it).
+  Emit `commit_output`: committed, pushed, sha, message, summary (incl.
+  the push result — branch + whether the remote accepted it).
+
+  `sha` is the FULL 40-hex commit id — read it with
+  `git rev-parse HEAD`, never the abbreviated form `git commit` prints.
+  Downstream it is matched against the sha the forge reports to decide
+  whether the merge may proceed. Empty if nothing was committed.
 
 prompt commit_user:
   Commit + push the alignment in {{vars.workspace_dir}} onto the PR
@@ -1187,6 +1191,23 @@ tool arm_automerge:
     # seen. Nor does the forge hold such a head back — a commit status only
     # blocks a merge once a maintainer has made its context required — so CLEAN
     # is perfectly reachable on unreviewed code.
+    # The shas being compared come from three sources with different widths:
+    # the forge always returns full 40-hex, `git rev-parse HEAD` does too, but
+    # committed_sha is reported by the commit AGENT, and the natural thing to
+    # read off `git commit` is the abbreviated form it prints. An exact compare
+    # therefore refused the merge on the align-and-commit path — Vetty's
+    # primary path — with a message ("something else pushed") that was simply
+    # false. Compare on the common prefix, with git's own 7-hex floor so a
+    # truncation that short cannot make two different commits look equal.
+    def same_commit(a, b):
+        a, b = s(a).lower(), s(b).lower()
+        if not a or not b:
+            return False
+        n = min(len(a), len(b))
+        if n < 7:
+            return False
+        return a[:n] == b[:n]
+
     def merge_now(pr, why):
         head = s(pr.get("headRefOid"))
         gated = s(gate_sha)
@@ -1202,10 +1223,10 @@ tool arm_automerge:
         # this run: a push landing between the alignment and the status read
         # would carry the gate onto a commit no auditor ever saw. It is only
         # trustworthy where it agrees with what this run produced.
-        if gated != mine:
+        if not same_commit(gated, mine):
             out(False, "the gate landed on " + gated[:12] + " but this run audited " +
                        mine[:12] + " - something else pushed while the audit was running")
-        if head and head != gated:
+        if head and not same_commit(head, gated):
             out(False, "the branch moved after the audit (gated " + gated[:12] +
                        ", head is now " + head[:12] + ") - the new head has not been audited")
         graphql(merge_mut, {"id": pr.get("id"), "method": s(method).upper() or "SQUASH",

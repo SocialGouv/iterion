@@ -305,6 +305,43 @@ func TestDepUpdateGuardArmAutomerge(t *testing.T) {
 		}
 	})
 
+	// The commit agent reports whatever `git commit` printed, which is the
+	// ABBREVIATED sha. An exact compare refused the merge here — on the
+	// align-and-commit path, with a message ("something else pushed") that was
+	// simply false. Every other case in this file uses same-width literals, so
+	// equality held by construction and the class went uncovered.
+	t.Run("aligned bump: an abbreviated committed sha still merges", func(t *testing.T) {
+		const full = "a11gned0c0ffee0c0ffee0c0ffee0c0ffee0c0ff"
+		res, calls, _ := runWith(t, map[string]string{
+			"{{input.gate_sha}}":      `"` + full + `"`,
+			"{{input.audited_sha}}":   `"d34db33f"`,
+			"{{input.committed_sha}}": `"a11gned0"`,
+		}, withState(map[string]any{"mergeStateStatus": "CLEAN", "headRefOid": full}), "", nil)
+		if !queried(calls, "mergePullRequest") {
+			t.Fatalf("refused the merge on an abbreviated sha: %v", res)
+		}
+		if res["armed"] != true {
+			t.Fatalf("want armed, got %v", res)
+		}
+	})
+
+	// A prefix shorter than git's own floor must NOT be treated as a match:
+	// two different commits can share six hex digits.
+	t.Run("a too-short sha is refused, not guessed", func(t *testing.T) {
+		const full = "a11gne0c0ffee0c0ffee0c0ffee0c0ffee0c0fff"
+		res, calls, _ := runWith(t, map[string]string{
+			"{{input.gate_sha}}":      `"` + full + `"`,
+			"{{input.audited_sha}}":   `"d34db33f"`,
+			"{{input.committed_sha}}": `"a11gne"`,
+		}, withState(map[string]any{"mergeStateStatus": "CLEAN", "headRefOid": full}), "", nil)
+		if queried(calls, "mergePullRequest") {
+			t.Fatalf("merged on a 6-hex prefix: %v", res)
+		}
+		if res["armed"] != false {
+			t.Fatalf("want a refusal, got %v", res)
+		}
+	})
+
 	// When the bot pushed an alignment, THAT is the commit it vouches for.
 	t.Run("aligned bump: merges the commit it pushed", func(t *testing.T) {
 		res, calls, _ := runWith(t, map[string]string{
