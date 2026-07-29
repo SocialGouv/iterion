@@ -27,9 +27,9 @@ import (
 // request_changes routes the gate to a downstream `when decision ==
 // 'changes_requested'` edge (typically back to an implementer).
 //
-// The dialogue lives on a single Interaction (stable ID, no loop suffix);
-// each turn appends to Interaction.Turns and re-pauses. max_turns bounds it
-// so the gate always converges to an asymptote.
+// The dialogue lives on a single Interaction per logical loop execution;
+// each turn appends to Interaction.Turns and re-pauses with the same stable
+// ID. max_turns bounds it so the gate always converges to an asymptote.
 
 // Reserved answers keys carrying the human's review-gate action on resume.
 const (
@@ -220,7 +220,7 @@ func (e *Engine) gateSelectEdge(ctx context.Context, rs *runState, hn *ir.HumanN
 
 	// Record the verdict on the interaction as the answer + emit events,
 	// mirroring the single-shot human-resume bookkeeping.
-	interactionID := fmt.Sprintf("%s_%s", rs.runID, nodeID)
+	interactionID := e.interactionIDForPause(rs.runID, nodeID, rs.loopCounters)
 	if it, err := e.store.LoadInteraction(ctx, rs.runID, interactionID); err == nil && it != nil {
 		now := time.Now().UTC()
 		it.AnsweredAt = &now

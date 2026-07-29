@@ -2,6 +2,7 @@ package runtime
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -200,6 +201,15 @@ func (e *Engine) resumeFromPause(ctx context.Context, r *store.Run, answers map[
 			return fanErr
 		}
 	}
+
+	// Resolve operator-uploaded files to an openable path. The HTTP layer
+	// promoted the bytes to a run attachment and left a descriptor without
+	// a `path` — deliberately, because only the engine knows whether the
+	// nodes about to read it run on the host or inside a container. Done
+	// BEFORE recordHumanAnswers so the persisted interaction, the
+	// published artifact and rs.outputs all carry the same resolved
+	// descriptor.
+	e.resolveFileAnswers(ctx, runID, answers)
 
 	// Record answers on the interaction (LoadInteraction + WriteInteraction
 	// + emit human_answers_recorded). Fall back to the checkpoint's embedded
@@ -1402,12 +1412,11 @@ func (e *Engine) drainOperatorMessagesForPause(ctx context.Context, runID string
 // doPause is the unified implementation for pausing a run. It writes the
 // interaction record, emits pause events, and saves the checkpoint.
 func (e *Engine) doPause(rs *runState, nodeID string, questions map[string]any, eventExtra map[string]any, info pauseInfo) error {
-	// Create interaction. Include loop iteration in the ID so that
-	// human nodes inside loops produce unique interactions per iteration.
-	interactionID := fmt.Sprintf("%s_%s", rs.runID, nodeID)
-	if loopIter := e.currentLoopIteration(nodeID, rs.loopCounters); loopIter > 0 {
-		interactionID = fmt.Sprintf("%s_%s_%d", rs.runID, nodeID, loopIter)
-	}
+	// Create one stable interaction per logical loop execution. A scalar
+	// max(loop counters) is insufficient when a human node belongs to
+	// multiple loops: {plan=2, kit=1} and {plan=2, kit=2} both collapse to
+	// iteration 2 and the second pause overwrites the first interaction.
+	interactionID := e.interactionIDForPause(rs.runID, nodeID, rs.loopCounters)
 	// Drain operator-queued chatbox messages and stamp them onto the
 	// interaction questions under a reserved key. The resume path
 	// reads the same key and folds the messages into the system
@@ -1469,6 +1478,28 @@ func (e *Engine) doPause(rs *runState, nodeID string, questions map[string]any, 
 // ---------------------------------------------------------------------------
 // Loop helpers
 // ---------------------------------------------------------------------------
+
+// interactionIDForPause returns the durable ID for a human interaction.
+//
+// Nodes outside loops and the first (all-zero) execution keep the historical
+// `<run>_<node>` ID. A node in exactly one active loop keeps the historical
+// `<run>_<node>_<iteration>` form. When several loops contain the node, the
+// complete, lexicographically stable iteration path is encoded as a
+// filesystem-safe suffix. This mirrors execution-ID disambiguation while
+// preserving existing IDs wherever the scalar counter was already unique.
+func (e *Engine) interactionIDForPause(runID, nodeID string, loopCounters map[string]int) string {
+	base := fmt.Sprintf("%s_%s", runID, nodeID)
+	iteration := e.currentLoopIteration(nodeID, loopCounters)
+	iterationPath := e.currentLoopIterationPath(nodeID, loopCounters)
+	if iteration <= 0 || iterationPath == "" {
+		return base
+	}
+	if !strings.Contains(iterationPath, ";") {
+		return fmt.Sprintf("%s_%d", base, iteration)
+	}
+	encodedPath := base64.RawURLEncoding.EncodeToString([]byte(iterationPath))
+	return fmt.Sprintf("%s_loops_%s", base, encodedPath)
+}
 
 // currentLoopIteration returns the current loop iteration for a node.
 // If the node participates in multiple loops, returns the max counter.

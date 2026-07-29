@@ -48,9 +48,20 @@ func buildRequest(opts GenerationOptions, messages []api.Message, extraTools []a
 		ToolChoice:  toolChoice,
 	}
 
-	// SystemBlocks takes precedence over System string for cache_control support.
+	// SystemBlocks takes precedence over the authored System string for
+	// cache_control support. Keep both wire representations populated:
+	// Anthropic/Bedrock/Vertex prefer SystemBlocks, while the OpenAI and
+	// Foundry transports only consume System. Without the mirrored string,
+	// OpenAI Responses silently receives no authored instructions.
 	if len(opts.SystemBlocks) > 0 {
 		req.SystemBlocks = opts.SystemBlocks
+		systemTexts := make([]string, 0, len(opts.SystemBlocks))
+		for _, block := range opts.SystemBlocks {
+			if block.Type == "text" && strings.TrimSpace(block.Text) != "" {
+				systemTexts = append(systemTexts, block.Text)
+			}
+		}
+		req.System = strings.Join(systemTexts, "\n\n")
 	} else {
 		req.System = opts.System
 	}

@@ -1,6 +1,7 @@
 import { useId, useState } from "react";
 
 import { Checkbox, Input, Radio, Select, Textarea } from "@/components/ui";
+import GateFileInput from "@/components/shared/GateFileInput";
 import type {
   FormQuestion,
   QuestionOption,
@@ -60,7 +61,57 @@ export default function QuestionInput({
           disabled={disabled}
         />
       );
+    case "file":
+      return (
+        <FileQuestionInput
+          question={question}
+          value={typeof value === "string" ? value : ""}
+          onChange={onChange}
+          disabled={disabled}
+        />
+      );
   }
+}
+
+// ─── File ──────────────────────────────────────────────────────────
+
+function FileQuestionInput({
+  question,
+  value,
+  onChange,
+  disabled,
+}: {
+  question: Extract<FormQuestion, { kind: "file" }>;
+  value: string;
+  onChange: (next: string) => void;
+  disabled: boolean;
+}) {
+  // The ANSWER is just the staged upload id (FormAnswer values are
+  // strings, which is what lets file questions ride the existing
+  // validation/submit plumbing untouched). Filename and size are
+  // presentation-only, so they live here rather than being smuggled
+  // into the answer string.
+  const [meta, setMeta] = useState<{ filename: string; size: number } | null>(
+    null,
+  );
+
+  return (
+    <GateFileInput
+      label={question.label}
+      accept={question.accept}
+      hint={question.hint}
+      disabled={disabled}
+      value={
+        value
+          ? { uploadId: value, filename: meta?.filename ?? "Attached file", size: meta?.size ?? 0 }
+          : null
+      }
+      onChange={(next) => {
+        setMeta(next ? { filename: next.filename, size: next.size } : null);
+        onChange(next?.uploadId ?? "");
+      }}
+    />
+  );
 }
 
 // ─── Radio ─────────────────────────────────────────────────────────

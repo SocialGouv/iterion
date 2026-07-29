@@ -83,6 +83,26 @@ func checkFieldType(f *ir.SchemaField, val any) error {
 	case ir.FieldTypeJSON:
 		// Any non-nil value is acceptable for JSON fields.
 
+	case ir.FieldTypeFile:
+		// Accept both shapes the field can legitimately carry: the
+		// descriptor map the resume path builds after promoting the
+		// upload, and a bare path string (an LLM-answered gate, or a
+		// CLI --answer naming a file already on disk). Anything else is
+		// a genuine mismatch.
+		switch v := val.(type) {
+		case string:
+			if strings.TrimSpace(v) == "" {
+				return fmt.Errorf("field %q: file path is empty", f.Name)
+			}
+		case map[string]any:
+			p, _ := v["path"].(string)
+			if strings.TrimSpace(p) == "" {
+				return fmt.Errorf("field %q: file descriptor has no path", f.Name)
+			}
+		default:
+			return fmt.Errorf("field %q: expected file descriptor or path, got %T", f.Name, val)
+		}
+
 	case ir.FieldTypeStringArray:
 		arr, ok := val.([]any)
 		if !ok {

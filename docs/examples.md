@@ -58,6 +58,7 @@ The manifests are authoritative for inputs, invocation modes, required capabilit
 | Example | Shows |
 |---|---|
 | [`human-in-the-loop.bot`](../examples/human-in-the-loop.bot) | A `human` entry node and interaction form. |
+| [`human-file-upload.bot`](../examples/human-file-upload.bot) | A `file`-typed gate field: the operator drops a file in the run console (or `--answer track=@./x.mp3`) and a tool node opens the real bytes. No LLM. |
 | [`async-questions/`](../examples/async-questions/) | `interaction: async` — non-blocking `ask_user_async` questions with an `await_answers` sync point (ADR-081). |
 | [`clarify/`](../examples/clarify/) | Conversational read-only facilitation with LLM interaction. |
 | [`composition/`](../examples/composition/) | `group`/`use`, nested bots, and parallel sub-bot execution. |

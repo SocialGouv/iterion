@@ -222,6 +222,36 @@ human ask_priorities:
   during the pause** when approved. Requires `worktree: auto`
   (C100). See below.
 
+### Collecting a file from the operator
+
+A `file`-typed schema field renders a drop zone at the gate; the
+operator's upload becomes a run attachment and the answer is a
+descriptor (`path` / `filename` / `mime` / `size` / `sha256`).
+
+```iter
+schema music_gate:
+  approved: bool
+  music: file
+  notes: string
+
+human pick_soundtrack:
+  output: music_gate
+```
+
+```iter
+prompt mix:
+  Master the track at {{outputs.pick_soundtrack.music.path}}
+```
+
+- Only **human** nodes may declare a `file` field — no LLM can produce
+  bytes, so it is a compile error (**C129**) anywhere else.
+- `file` fields are optional; branch downstream if the workflow cannot
+  proceed without one.
+- Every human gate ALSO has an unconditional "attach a file" button
+  requiring no DSL; those land on `_attachments` as a list of the same
+  descriptors.
+- CLI: `--answer music=@./theme.mp3` (`@@` escapes a literal `@`).
+
 ### Review-&-merge gate (`interaction: review`)
 
 ```iter

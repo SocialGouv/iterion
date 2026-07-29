@@ -1422,7 +1422,7 @@ func (e *Engine) startSandbox(ctx context.Context, runID string, repoRoot string
 		EmitEvent:                emitForSandbox,
 		Logger:                   e.logger,
 		AttachmentsHostDir:       attachHost,
-		AttachmentsContainerPath: "/run/iterion/attachments",
+		AttachmentsContainerPath: attachmentsContainerPath,
 		RunFilesHostDir:          runFilesHost,
 		RunFilesContainerPath:    "/iterion/artifact-files",
 		BundleHostDir:            bundleHost,

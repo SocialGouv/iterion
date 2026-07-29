@@ -473,9 +473,12 @@ func (e *Engine) buildTemplateData(rs *runState) *model.TemplateData {
 // by template references. Called once after CreateRun (and any
 // promote callback) so Run.Attachments is authoritative.
 //
-// Path computation:
+// Path computation is delegated to attachmentPath, which resolves to
+// whatever the executing nodes can actually open:
 //   - Filesystem stores: <root>/runs/<id>/attachments/<name>/<filename>
-//     pre-resolved into the AttachmentRecord.StorageRef.
+//   - Filesystem stores UNDER SANDBOX: the bind-mount path
+//     (/run/iterion/attachments/<name>/<filename>) — the host path does
+//     not exist inside the container.
 //   - Cloud / non-FS stores: Path is left empty; nodes that need bytes
 //     access them via the URL accessor (presigned).
 func (e *Engine) loadAttachmentInfos(ctx context.Context, runID string) map[string]model.AttachmentInfo {
@@ -486,7 +489,6 @@ func (e *Engine) loadAttachmentInfos(ctx context.Context, runID string) map[stri
 	if err != nil || len(list) == 0 {
 		return nil
 	}
-	storeRoot := e.store.Root()
 	out := make(map[string]model.AttachmentInfo, len(list))
 	for _, rec := range list {
 		info := model.AttachmentInfo{
@@ -496,12 +498,12 @@ func (e *Engine) loadAttachmentInfos(ctx context.Context, runID string) map[stri
 			Size:             rec.Size,
 			SHA256:           rec.SHA256,
 		}
-		// FS stores keep StorageRef as a path relative to Root(); join
-		// it back into an absolute host path so prompts/tools can open
-		// the file directly.
-		if storeRoot != "" && rec.StorageRef != "" {
-			info.Path = filepath.Join(storeRoot, filepath.FromSlash(rec.StorageRef))
-		}
+		// Resolve to the path the NODES can open: the host path for an
+		// ordinary run, the bind-mount path when the run is sandboxed
+		// (where the host path simply does not exist). Empty for
+		// cloud/non-FS stores, whose consumers use the presign accessor
+		// below instead.
+		info.Path = e.attachmentPath(rec)
 		// Lazy presign — capture the loop var by value so each closure
 		// targets its own attachment.
 		recCopy := rec

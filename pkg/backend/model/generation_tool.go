@@ -34,9 +34,11 @@ type GenerationOptions struct {
 	// System is the system prompt (plain string form).
 	System string
 
-	// SystemBlocks, when non-empty, takes precedence over System and is sent
-	// as the Anthropic array-form `system` field. This is the only way to
-	// attach `cache_control` markers to system content for prompt caching.
+	// SystemBlocks, when non-empty, takes precedence over System. Providers
+	// supporting block-form system content receive these blocks unchanged;
+	// buildRequest also mirrors their ordered text into System for transports
+	// that only support the plain string form. Blocks remain the only way to
+	// attach `cache_control` markers for prompt caching.
 	SystemBlocks []api.ContentBlock
 
 	// Messages is the initial conversation history.

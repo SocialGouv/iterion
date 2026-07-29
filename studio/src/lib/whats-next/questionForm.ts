@@ -7,7 +7,12 @@
 // path) and add a `form:` block to the .bot DSL (statically-declared
 // path) — both will produce the same FormSpec shape.
 
-export type QuestionKind = "radio" | "checkbox" | "select" | "free_text";
+export type QuestionKind =
+  | "radio"
+  | "checkbox"
+  | "select"
+  | "free_text"
+  | "file";
 
 export interface QuestionOption {
   value: string;
@@ -68,6 +73,15 @@ export type FormQuestion = {
       // Default 3. Set to 1 for an Input rather than a Textarea.
       rows?: number;
     }
+  | {
+      kind: "file";
+      // `accept` attribute for the picker (e.g. "audio/*"). Advisory
+      // only — a browser hint, never a security control. The server
+      // sniffs the real MIME and enforces its own allowlist.
+      accept?: string;
+      // Human-readable hint under the drop zone (e.g. "MP3 or WAV").
+      hint?: string;
+    }
 );
 
 export interface FormSpec {
@@ -88,6 +102,12 @@ export interface FormSpec {
 // questions (checkbox) carry a string array. The "Other" free-text
 // is already merged in by the renderer — no separate `_other` keys
 // in the output.
+//
+// A `file` question also carries a string: the staged upload id the
+// renderer received after uploading the picked file. Keeping it a
+// plain string is what lets file questions ride the existing
+// answer/validation plumbing untouched; the submitting form wraps the
+// id in an upload envelope on its way to the server.
 export type FormAnswer = Record<string, string | string[]>;
 
 // Sentinel value used internally by QuestionInput to flag the "Other"

@@ -1271,7 +1271,7 @@ func TestGenerateTextDirect_UnknownTool(t *testing.T) {
 // Cache control wire format
 // ---------------------------------------------------------------------------
 
-func TestBuildRequest_PropagatesSystemBlocksOverString(t *testing.T) {
+func TestBuildRequest_PropagatesSystemBlocksAndMirrorsTheirText(t *testing.T) {
 	opts := GenerationOptions{
 		Model:  "claude-sonnet-4-6",
 		System: "string-form-system",
@@ -1292,8 +1292,49 @@ func TestBuildRequest_PropagatesSystemBlocksOverString(t *testing.T) {
 	if req.SystemBlocks[0].CacheControl == nil {
 		t.Error("expected ephemeral cache_control on system block")
 	}
-	if req.System != "" {
-		t.Errorf("System should be empty when SystemBlocks is set, got %q", req.System)
+	if req.System != "block-form-system" {
+		t.Errorf("System = %q, want mirrored block text", req.System)
+	}
+}
+
+func TestBuildRequest_MirrorsMultipleSystemBlocksInOrder(t *testing.T) {
+	opts := GenerationOptions{
+		Model:  "openai/gpt-5.5",
+		System: "must-not-override-blocks",
+		SystemBlocks: []api.ContentBlock{
+			{
+				Type:         "text",
+				Text:         "base instructions",
+				CacheControl: api.EphemeralCacheControl(),
+			},
+			{
+				Type: "text",
+				Text: "workspace memory index",
+			},
+			{
+				Type:         "text",
+				Text:         "autoloaded memory",
+				CacheControl: api.EphemeralCacheControl(),
+			},
+			{
+				Type: "text",
+				Text: "   ",
+			},
+		},
+	}
+
+	req, err := buildRequest(opts, []api.Message{{Role: "user"}}, nil, nil)
+	if err != nil {
+		t.Fatalf("buildRequest: %v", err)
+	}
+	if len(req.SystemBlocks) != 4 {
+		t.Fatalf("SystemBlocks len = %d, want 4", len(req.SystemBlocks))
+	}
+	if req.System != "base instructions\n\nworkspace memory index\n\nautoloaded memory" {
+		t.Errorf("System = %q, want ordered non-empty block text", req.System)
+	}
+	if req.SystemBlocks[0].CacheControl == nil || req.SystemBlocks[2].CacheControl == nil {
+		t.Error("expected original cache_control markers to remain intact")
 	}
 }
 

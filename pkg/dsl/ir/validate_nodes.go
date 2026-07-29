@@ -65,6 +65,46 @@ func (c *compiler) validateAwaitAnswers(w *Workflow) {
 	}
 }
 
+// validateFileFields enforces that a `file` schema field is only ever
+// reachable as the output of a HUMAN node (C129, error).
+//
+// A `file` field is filled by an operator uploading bytes through the run
+// console; the runtime promotes those bytes to a run attachment on resume.
+// Nothing else in the engine can produce one — an LLM emits JSON, a tool
+// node emits parsed stdout — so a `file` on an agent/judge/tool/compute
+// output_schema is guaranteed to arrive empty at run time. That is a
+// silent-nothing failure (the downstream node reads a missing path and
+// improvises), which is exactly the failure class worth catching at
+// compile time rather than three minutes into a paid run.
+//
+// Schemas are shared by name, so the check is per USE, not per
+// declaration: the same schema may legitimately be a human node's output
+// and another node's *input* (an input schema is advisory and never
+// produced, so it is not flagged).
+func (c *compiler) validateFileFields(w *Workflow) {
+	for _, n := range w.Nodes {
+		if n.NodeKind() == NodeHuman {
+			continue
+		}
+		schemaName := NodeOutputSchema(n)
+		if schemaName == "" {
+			continue
+		}
+		schema := w.Schemas[schemaName]
+		if schema == nil {
+			continue
+		}
+		for _, f := range schema.Fields {
+			if f.Type != FieldTypeFile {
+				continue
+			}
+			c.errorfAt(DiagFileFieldNotHuman, n.NodeID(), "",
+				"%s %q declares output_schema %q whose field %q has type file — only a human node can produce a file (the operator uploads it at the pause); this field would always be empty",
+				n.NodeKind().String(), n.NodeID(), schemaName, f.Name)
+		}
+	}
+}
+
 // validateArtifactLabels warns (C049) when a node declares artifact_labels:
 // but no publish: — the labels have no artifact to attach to (only a node's
 // *published* output is labelled). Judge nodes never publish, so their

@@ -1,4 +1,5 @@
 import type { WireSchemaField } from "@/api/runs";
+import { UPLOAD_ENVELOPE_KEY } from "@/api/runs/types";
 import { humanizeKey } from "@/lib/humanizeKey";
 import { shortIssueId } from "@/lib/whats-next/issueId";
 import type {
@@ -136,6 +137,22 @@ function buildQuestion(
         kind: "free_text",
         rows: 1,
         placeholder: "comma,separated,values",
+      };
+    case "file":
+      return {
+        ...base,
+        kind: "file",
+        // Optional, like every other free-form field: the DSL has no
+        // per-field `required` marker, and forcing a file would strand
+        // an operator re-answering a gate whose file was already
+        // supplied on an earlier pass. A workflow that truly cannot
+        // proceed without one branches on the field downstream.
+        required: false,
+        // Best-effort picker filter derived from the field name — a
+        // field called `music` or `soundtrack` should not make the
+        // operator wade through every file on disk. Purely advisory:
+        // the server sniffs and enforces the real MIME allowlist.
+        accept: acceptForFieldName(field.name),
       };
     case "string":
     default:
@@ -375,10 +392,36 @@ function coerceOne(
           .filter(Boolean),
         error: null,
       };
+    case "file":
+      // `raw` is the staged upload id the file picker produced. Wrap it
+      // in the envelope the resume endpoint recognises; the server
+      // promotes the bytes to a run attachment and swaps the envelope
+      // for a descriptor before the engine sees the answers.
+      return { value: { [UPLOAD_ENVELOPE_KEY]: raw }, error: null };
     case "string":
     default:
       return { value: raw, error: null };
   }
+}
+
+// acceptForFieldName guesses a picker filter from the schema field's
+// name. The DSL carries no per-field MIME declaration, and an
+// unfiltered picker on a field plainly called `soundtrack` makes the
+// operator hunt through every file on disk — the exact chore gate
+// uploads exist to remove. Advisory only: guessing wrong costs a
+// slightly wider picker, never a rejected file, because the operator
+// can always switch the picker to "all files" and the SERVER decides
+// what is actually allowed.
+export function acceptForFieldName(name: string): string | undefined {
+  const n = name.toLowerCase();
+  if (/(music|audio|sound|track|song|voice|narration|jingle)/.test(n)) {
+    return "audio/*";
+  }
+  if (/(video|clip|footage|movie|recording)/.test(n)) return "video/*";
+  if (/(image|photo|picture|screenshot|logo|thumbnail|cover|diagram|sketch)/.test(n)) {
+    return "image/*";
+  }
+  return undefined;
 }
 
 function stringifyContext(v: unknown): string | undefined {

@@ -417,6 +417,17 @@ func defaultAllowedMIMEs() []string {
 		"application/json", "application/yaml",
 		"application/zip", "application/gzip", "application/x-tar",
 		"text/plain", "text/markdown", "text/csv",
+		// Media. Human gates collect these directly from the operator
+		// (a soundtrack handed to a video-editing workflow, a screen
+		// recording attached to a bug report), which was impossible
+		// while the allowlist stopped at images: the upload was
+		// rejected and the operator had to go find the right folder on
+		// disk by hand — the exact chore the gate upload removes.
+		// Wildcarded because the audio/video container zoo (mpeg, mp4,
+		// ogg, wav, webm, quicktime, x-m4a…) is not worth enumerating,
+		// and MIME here is SNIFFED server-side, never trusted from the
+		// client.
+		"audio/*", "video/*",
 		"application/octet-stream",
 	}
 }

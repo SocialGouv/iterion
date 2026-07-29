@@ -189,6 +189,14 @@ type resumeRunRequest struct {
 	Answers map[string]any `json:"answers,omitempty"`
 	Force   bool           `json:"force,omitempty"`
 	Timeout string         `json:"timeout,omitempty"`
+	// Attachments carries ad-hoc upload IDs (from POST /api/runs/uploads)
+	// the operator attached to this answer without the workflow declaring
+	// a `file` field — the "here is a diagram explaining my feedback"
+	// case. They are promoted to run attachments and surfaced to the
+	// workflow on the reserved `_attachments` answer key. A DECLARED
+	// `file` field instead carries its upload inline in Answers as
+	// `{"upload_id": "..."}`. See runs_answer_uploads.go.
+	Attachments []string `json:"attachments,omitempty"`
 }
 
 func (s *Server) handleLaunchRun(w http.ResponseWriter, r *http.Request) {
@@ -490,11 +498,35 @@ func (s *Server) handleResumeRun(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	ctx = store.WithTenant(ctx, tenantID)
+
+	// Promote any operator upload attached to this answer BEFORE handing
+	// the answers to the engine: a `file` field must already be a
+	// resolvable attachment by the time the resumed workflow renders a
+	// prompt referencing it. Tenant-scoped (the store writes below need
+	// the marker the line above stamps). A failure here is the
+	// operator's problem to fix and retry — 400, run untouched, staging
+	// intact.
+	answers := req.Answers
+	if len(req.Attachments) > 0 || hasUploadEnvelope(answers) {
+		pausedNode := ""
+		if runMeta.Checkpoint != nil {
+			pausedNode = runMeta.Checkpoint.NodeID
+		}
+		promoted, promoteErr := s.promoteAnswerUploads(ctx, id, pausedNode, answers, req.Attachments)
+		if promoteErr != nil {
+			s.httpErrorFor(w, r, http.StatusBadRequest, "attach upload: %v", promoteErr)
+			span.RecordError(promoteErr)
+			span.SetStatus(codes.Error, "attach upload failed")
+			return
+		}
+		answers = promoted
+	}
+
 	res, err := s.runs.Resume(ctx, runview.ResumeSpec{
 		RunID:    id,
 		FilePath: absPath,
 		Source:   req.Source,
-		Answers:  req.Answers,
+		Answers:  answers,
 		Force:    req.Force,
 		Timeout:  timeout,
 	})

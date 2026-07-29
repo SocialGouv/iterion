@@ -18,6 +18,7 @@ var fieldTypeToStr = map[FieldType]string{
 	FieldTypeFloat:       "float",
 	FieldTypeJSON:        "json",
 	FieldTypeStringArray: "string[]",
+	FieldTypeFile:        "file",
 }
 
 var strToFieldType = reverseMap(fieldTypeToStr)

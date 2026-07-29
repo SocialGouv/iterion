@@ -355,3 +355,158 @@ describe("HumanPromptForm force resume", () => {
     });
   });
 });
+
+describe("HumanPromptForm — required side questions", () => {
+  it("validates every required side question before an external action verdict", async () => {
+    getRunWorkflow.mockResolvedValue({
+      nodes: [
+        {
+          id: "recovery_gate",
+          output_schema: [
+            {
+              name: "action",
+              type: "string",
+              enum_values: ["retry", "abort"],
+            },
+            { name: "reviewer_id", type: "string" },
+            {
+              name: "target",
+              type: "string",
+              enum_values: ["pipeline", "data"],
+            },
+          ],
+        },
+      ],
+      stale_hash: false,
+    });
+
+    renderWithClient(
+      <HumanPromptForm
+        runId="run-1"
+        nodeId="recovery_gate"
+        questions={{}}
+        sourceOverride={null}
+      />,
+    );
+
+    const retry = await screen.findByRole("button", { name: "Retry" });
+    expect(screen.getByText("Reviewer ID")).toBeTruthy();
+    fireEvent.click(retry);
+    expect(screen.getByRole("alert").textContent).toMatch(
+      /Complete required fields: Reviewer ID, Target/,
+    );
+    expect(resumeRun).not.toHaveBeenCalled();
+
+    fireEvent.change(screen.getByPlaceholderText("Required"), {
+      target: { value: "operator-42" },
+    });
+    fireEvent.click(screen.getByText("pipeline"));
+    fireEvent.click(retry);
+
+    await waitFor(() =>
+      expect(resumeRun).toHaveBeenCalledWith(
+        "run-1",
+        expect.objectContaining({
+          answers: {
+            action: "retry",
+            reviewer_id: "operator-42",
+            target: "pipeline",
+          },
+        }),
+      ),
+    );
+  });
+});
+
+describe("HumanPromptForm — operator uploads at a gate", () => {
+  // The 📎 affordance is unconditional: it must be there for the gate
+  // whose author never anticipated an attachment, which is most of them.
+  it("offers an attach-a-file button on a schema-driven gate", async () => {
+    getRunWorkflow.mockResolvedValue({
+      nodes: [
+        {
+          id: "review",
+          output_schema: [{ name: "feedback", type: "string" }],
+        },
+      ],
+      stale_hash: false,
+    });
+
+    renderWithClient(
+      <HumanPromptForm
+        runId="run-1"
+        nodeId="review"
+        questions={{}}
+        sourceOverride={null}
+      />,
+    );
+
+    expect(
+      await screen.findByRole("button", { name: /Attach a file/i }),
+    ).toBeTruthy();
+  });
+
+  it("renders a drop zone for a declared `file` field", async () => {
+    getRunWorkflow.mockResolvedValue({
+      nodes: [
+        {
+          id: "gate_music",
+          output_schema: [
+            { name: "music", type: "file" },
+            { name: "notes", type: "string" },
+          ],
+        },
+      ],
+      stale_hash: false,
+    });
+
+    renderWithClient(
+      <HumanPromptForm
+        runId="run-1"
+        nodeId="gate_music"
+        questions={{}}
+        sourceOverride={null}
+      />,
+    );
+
+    // The declared field gets its own picker, distinct from the generic
+    // 📎 button below the form.
+    expect(await screen.findByLabelText(/Upload Music/i)).toBeTruthy();
+    expect(
+      screen.getByRole("button", { name: /Attach a file/i }),
+    ).toBeTruthy();
+  });
+
+  // A gate with no upload must still resume with no `attachments` key at
+  // all — an empty array would send every ordinary answer down the
+  // promotion path for nothing.
+  it("omits attachments from the resume when nothing was attached", async () => {
+    getRunWorkflow.mockResolvedValue({
+      nodes: [
+        {
+          id: "review",
+          output_schema: [{ name: "feedback", type: "string" }],
+        },
+      ],
+      stale_hash: false,
+    });
+
+    renderWithClient(
+      <HumanPromptForm
+        runId="run-1"
+        nodeId="review"
+        questions={{}}
+        sourceOverride={null}
+      />,
+    );
+
+    const submit = await screen.findByRole("button", {
+      name: /Submit & Resume/i,
+    });
+    fireEvent.click(submit);
+
+    await waitFor(() => expect(resumeRun).toHaveBeenCalled());
+    const [, req] = resumeRun.mock.calls[0] as [string, Record<string, unknown>];
+    expect("attachments" in req).toBe(false);
+  });
+});

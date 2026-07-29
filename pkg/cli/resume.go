@@ -175,6 +175,19 @@ func RunResumeWithFile(ctx context.Context, iterFile string, opts ResumeOptions,
 		return err
 	}
 
+	// `--answer field=@./file.mp3` attaches a local file to the gate,
+	// the CLI counterpart of the studio's upload widget. Done here (not
+	// in buildResumeAnswers) because it needs the store handle and the
+	// paused node id to name the attachment the same way the HTTP path
+	// does.
+	pausedNode := ""
+	if r.Checkpoint != nil {
+		pausedNode = r.Checkpoint.NodeID
+	}
+	if err := resolveFileAnswerFlags(ctx, s, opts.RunID, pausedNode, answers); err != nil {
+		return err
+	}
+
 	wf, wfHash, iterFile, bundleHandle, bundleCleanup, err := resumeOpenWorkflow(r, iterFile)
 	// Install cleanup BEFORE the error check: resumeOpenWorkflow returns a
 	// live cleanup (the .botz temp-dir remover) even on a bundle compile

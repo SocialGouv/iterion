@@ -541,6 +541,13 @@ func (p *parser) parseFieldType() ast.FieldType {
 		return ast.FieldTypeJSON
 	case TokenTypeStringArray:
 		return ast.FieldTypeStringArray
+	case TokenTypeFile:
+		// TokenTypeFile already existed for `mode: file` on secrets; it
+		// doubles as the schema field type. Field NAMES go through
+		// tokenAsIdent, which accepts keyword tokens, so the schema field
+		// literally named `file` in bots/sec-audit-source keeps parsing —
+		// as does the degenerate `file: file`.
+		return ast.FieldTypeFile
 	default:
 		p.addError(DiagInvalidType, t, "expected field type, got '"+t.Value+"'")
 		return ast.FieldTypeString

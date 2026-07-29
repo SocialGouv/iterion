@@ -11,6 +11,7 @@ import { formatRelative } from "@/lib/format";
 import { useUIStore } from "@/store/ui";
 
 import AddTaskDialog from "./AddTaskDialog";
+import ExternalActiveRunsNotice from "./ExternalActiveRunsNotice";
 import PipelineCardDetails from "./PipelineCardDetails";
 import {
   PipelineColumns,
@@ -215,6 +216,7 @@ export default function PipelineBoardView() {
             Showing the last successful projection. {errorMessage(query.error)}
           </InlineBanner>
         )}
+        <ExternalActiveRunsNotice cards={board.cards} />
       </div>
 
       <div className="relative min-h-0 flex-1 overflow-hidden">
