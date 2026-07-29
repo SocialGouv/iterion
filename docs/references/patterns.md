@@ -206,9 +206,13 @@ workflow gated:
 
 ---
 
-## 7. Delegation (Claude Code / Codex)
+## 7. Delegation (coding-agent CLIs)
 
-Use `backend` instead of `model` to run the node as an external CLI agent.
+Pin `backend` to run the node through an external coding-agent CLI instead of
+leaving executor selection to credential detection. `claude_code` is the
+recommended delegate; `pi`, `kimi`, and `grok` are explicit opt-ins, while
+`codex` is legacy. A separate `model:` pin is optional and does not select the
+backend.
 
 ```iter
 agent implementer:
