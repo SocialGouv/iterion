@@ -255,6 +255,46 @@ var piProviderPrefixes = map[string]string{
 // correct invocation is `--provider zai --model glm-5.2`; passing
 // `anthropic/glm-5.2` through would fuzzy-match Anthropic's own catalogue
 // and silently run a different model.
+// piSkillDir returns the run's mirrored skill directory when pi should be
+// pointed at it, or "" when this node has no skills to offer.
+//
+// The gate was once `len(task.SkillHints) > 0`, which is the wrong signal:
+// SkillHints carries ONLY the DSL `skills:` field (the skill *library*), while
+// every BUNDLE skill — the six a bot like docs-refresh ships — is mirrored into
+// <workDir>/.claude/skills/ without ever touching it. So `--skill` was never
+// emitted for a bundle bot: pi had no skill awareness at all, and an agent
+// whose own prompt told it to "load your skills under .claude/skills/" was left
+// hunting for the files. Observed live — three ENOENTs against ~/.claude/skills
+// before it recovered by listing the worktree.
+//
+// claude_code discovers that directory natively and claw's `skill` tool reads
+// it, so this was a pi-only hole in a mechanism the other two backends share.
+//
+// SkillHints still short-circuits the check: it proves skills exist without a
+// stat, which is what a sandboxed run needs when WorkDir names a path only the
+// container can see.
+func piSkillDir(task Task) string {
+	if task.WorkDir == "" {
+		return ""
+	}
+	dir := filepath.Join(task.WorkDir, ".claude", "skills")
+	if len(task.SkillHints) > 0 {
+		return dir
+	}
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return ""
+	}
+	for _, e := range entries {
+		// The mirror keeps its bookkeeping in a dot-dir; pointing pi at a
+		// directory holding only that would advertise zero skills.
+		if !strings.HasPrefix(e.Name(), ".") {
+			return dir
+		}
+	}
+	return ""
+}
+
 func piResolveModel(model, hint string) (provider, modelID string) {
 	model = strings.TrimSpace(model)
 	hint = strings.TrimSpace(strings.ToLower(hint))
@@ -328,8 +368,8 @@ func piExtraArgsFor(task Task) []string {
 	// workspace's .claude/skills/, which is not one of pi's own lookup
 	// roots — but --skill takes an explicit path, and CLI-supplied skill
 	// paths bypass the project-trust gate that --no-approve closes.
-	if len(task.SkillHints) > 0 && task.WorkDir != "" {
-		args = append(args, "--skill", filepath.Join(task.WorkDir, ".claude", "skills"))
+	if dir := piSkillDir(task); dir != "" {
+		args = append(args, "--skill", dir)
 	}
 
 	// The one tool gate pi expresses cleanly. iterion's `tools:` names do
