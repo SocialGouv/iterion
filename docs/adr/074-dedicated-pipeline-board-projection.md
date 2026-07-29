@@ -222,13 +222,18 @@ cap simply wait in Todo until a slot frees.
 
 The PR #193 review accepted three V1 limitations; they are now resolved:
 
-- **M3 — atomic child precreate.** `spawnRun`'s precreate stamped
-  `ParentRunID` with a `SaveRun` after `CreateRun`; a failure of that second
-  write left a `running` child doc with no goroutine until the orphan
-  reconciler swept it. The optional `store.ParentedRunCreator.CreateChildRun`
-  now persists `ParentRunID` in the same exclusive-create write (both
-  filesystem and mongo stores implement it); `spawnRun` degrades to the
-  two-write path only for stores without the seam.
+- **M3 — atomic child create on both launch paths.** `Service.spawnRun`'s
+  precreate stamped `ParentRunID` with a `SaveRun` after `CreateRun`; a failure
+  of that second write left a `running` child doc with no goroutine until the
+  orphan reconciler swept it. The optional
+  `store.ParentedRunCreator.CreateChildRun` persists `ParentRunID` in the same
+  exclusive-create write (both filesystem and Mongo stores implement it), and
+  `Service.spawnRun` uses it for precreated child rows. The runtime's direct
+  create path (`Engine.runResolveDoc`), used by every subbot child, now makes
+  the same choice when a parent is known. On both built-in stores, a child can
+  no longer appear as a parentless root between its first write and the metadata
+  save. Custom stores without the seam retain the compatibility two-write
+  fallback.
 - **M4 — atomic unique title.** `uniquePipelineTitle` was list-then-check —
   racy under concurrent create (last writer could duplicate a title, harmless
   but sloppy). `native.Store.CreateUniqueTitle` (optional
