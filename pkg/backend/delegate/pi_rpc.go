@@ -113,13 +113,31 @@ func (b *PiRPCBackend) Execute(ctx context.Context, task Task) (Result, error) {
 		argv = append(argv, "-e", extPath)
 	}
 
+	// Sandboxed runs wrap pi with a pidfile writer so the IN-CONTAINER
+	// process can be signalled. Killing the host-side `docker exec` client
+	// does not reach it — so without this the pi session survives every
+	// non-graceful end (ctx cancel, cold/idle/no-progress abort, Close()'s
+	// wait expiring), holding the model session and its credentials, and the
+	// leaked processes stack across retries. Both other sandboxed delegates
+	// already do this; the mark is computed HERE rather than inside the
+	// spawner closure so Execute can reach it.
+	var sandboxCleanup func()
+	var mark string
+	if task.Sandbox != nil {
+		mark = sandboxDelegateMark(task)
+		sandboxCleanup = killSandboxDelegate(task.Sandbox, mark, b.Logger)
+	}
+	if sandboxCleanup != nil {
+		defer sandboxCleanup()
+	}
+
 	collector := &piCollector{task: task, logger: b.Logger, settled: make(chan struct{})}
 	client := pisdk.NewClient(pisdk.ClientOptions{
 		Binary:  binary,
 		Args:    argv,
 		Dir:     task.WorkDir,
 		Env:     piRPCEnv(ctx, task, b.Logger),
-		Spawn:   b.spawner(task, binary),
+		Spawn:   b.spawner(task, binary, mark),
 		OnEvent: collector.onEvent,
 		OnStderr: func(line string) {
 			if b.Logger != nil {
@@ -269,13 +287,12 @@ func (b *PiRPCBackend) warnOnModelDrift(task Task, effective string) {
 // forever by design (its mode returns a never-resolving promise), so a leaked
 // in-container process would hold a model session indefinitely. Killing the
 // host-side `docker exec` client has no signal path to the exec'd process.
-func (b *PiRPCBackend) spawner(task Task, binary string) pisdk.Spawner {
+func (b *PiRPCBackend) spawner(task Task, binary, mark string) pisdk.Spawner {
 	if task.Sandbox == nil {
 		return nil
 	}
 	return func(ctx context.Context, argv []string) *exec.Cmd {
 		full := append([]string{binary}, argv...)
-		mark := sandboxDelegateMark(task)
 		// The container's environment is ONLY what we pass here — pisdk
 		// ignores ClientOptions.Env entirely whenever a Spawner is set — so
 		// the extension's whole configuration has to ride this map too, not

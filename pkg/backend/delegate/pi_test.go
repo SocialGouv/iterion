@@ -866,7 +866,7 @@ func TestPiSandboxedSpawnCarriesTheExtensionContract(t *testing.T) {
 	}
 
 	b := &PiRPCBackend{Command: "pi", Logger: testLogger()}
-	spawn := b.spawner(task, "pi")
+	spawn := b.spawner(task, "pi", sandboxDelegateMark(task))
 	if spawn == nil {
 		t.Fatal("no spawner for a sandboxed task")
 	}
@@ -883,5 +883,55 @@ func TestPiSandboxedSpawnCarriesTheExtensionContract(t *testing.T) {
 	// The credentials the sandbox env already carried must survive the overlay.
 	if len(env) <= 2 {
 		t.Errorf("the overlay replaced the sandbox environment instead of merging onto it: %v", env)
+	}
+}
+
+// Killing the host-side `docker exec` client does not reach the process it
+// exec'd, so a sandboxed pi session survived every non-graceful end — holding
+// the model session and its credentials, and stacking across retries (the leak
+// already observed live for claude_code). The pidfile wrapper was wired but
+// nothing ever read it back.
+func TestPiRPCSandboxedExecuteReapsTheInContainerProcess(t *testing.T) {
+	rec := &recordingRun{script: "exit 0"}
+	task := Task{
+		NodeID: "leaky", Iteration: 1,
+		WorkDir: t.TempDir(), Sandbox: rec,
+		Model: "mock/scripted",
+	}
+
+	b := &PiRPCBackend{Command: "pi", Logger: testLogger()}
+	// The handshake cannot succeed against `exit 0`; the reaper must still run.
+	_, _ = b.Execute(context.Background(), task)
+
+	// The mark carries a random component, so the assertion cannot recompute
+	// it — which is exactly why Execute has to compute it ONCE and hand the
+	// same value to the spawner. Match the pidfile the spawn actually wrote
+	// against the pidfile the reap actually referenced.
+	var spawned, reaped string
+	for _, argv := range rec.allArgv {
+		joined := strings.Join(argv, " ")
+		i := strings.Index(joined, "/tmp/iterion-delegate-")
+		if i < 0 {
+			continue
+		}
+		ref := strings.Fields(joined[i:])[0]
+		ref = strings.TrimRight(ref, ";\"'")
+		// The spawn wrapper also clears a stale pid, so "kill" alone does not
+		// tell them apart: the spawn ends in `exec "$@"`, the reap sends TERM.
+		switch {
+		case strings.Contains(joined, `exec "$@"`):
+			spawned = ref
+		case strings.Contains(joined, "kill -TERM"):
+			reaped = ref
+		}
+	}
+	if spawned == "" {
+		t.Fatalf("the sandboxed spawn never wrote a pidfile: %v", rec.allArgv)
+	}
+	if reaped == "" {
+		t.Fatalf("no reap command was issued — the in-container pi would survive")
+	}
+	if reaped != spawned {
+		t.Errorf("reaped %q but the spawn wrote %q — the reaper targets a different process", reaped, spawned)
 	}
 }
