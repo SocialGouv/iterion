@@ -144,3 +144,19 @@ func TestMatchAuthorRule(t *testing.T) {
 		})
 	}
 }
+
+func TestHeldByLabel(t *testing.T) {
+	hold := []string{"iterion:hold", "do-not-automate"}
+	if got := HeldByLabel(nil, []string{"anything"}); got != "" {
+		t.Fatalf("empty holdLabels must never hold, got %q", got)
+	}
+	if got := HeldByLabel(hold, []string{"ready", "bug"}); got != "" {
+		t.Fatalf("no hold label present → not held, got %q", got)
+	}
+	if got := HeldByLabel(hold, []string{"ready", "Iterion:Hold"}); got != "Iterion:Hold" {
+		t.Fatalf("case-insensitive match expected, got %q", got)
+	}
+	if got := HeldByLabel(hold, []string{"do-not-automate"}); got != "do-not-automate" {
+		t.Fatalf("second hold label should match, got %q", got)
+	}
+}

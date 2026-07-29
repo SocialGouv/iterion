@@ -85,7 +85,8 @@ func (a *GitLabAdapter) Name() string { return "gitlab" }
 // claimed-skip run locally.
 func (a *GitLabAdapter) ListCandidates(ctx context.Context) ([]Issue, error) {
 	const pageSize = 50
-	out := make([]Issue, 0)
+	var pending []Issue
+	openNums := map[int]bool{} // all open issues seen (by IID) — fail-open set
 	err := paginateUntilShort(pageSize, 100, a.opts.Logger,
 		fmt.Sprintf("gitlab tracker: ListCandidates hit the 100-page cap on repo %s — beyond this point issues are silently dropped from dispatch; consider tightening label filters", a.opts.Repo),
 		func(page int) (int, error) {
@@ -103,6 +104,7 @@ func (a *GitLabAdapter) ListCandidates(ctx context.Context) ([]Issue, error) {
 				return 0, err
 			}
 			for _, r := range raw {
+				openNums[r.IID] = true
 				if anyOfString(r.Labels, a.opts.ExcludeLabels) {
 					continue
 				}
@@ -113,14 +115,16 @@ func (a *GitLabAdapter) ListCandidates(ctx context.Context) ([]Issue, error) {
 				if iss.WorkflowState == "" {
 					continue
 				}
-				out = append(out, iss)
+				pending = append(pending, iss)
 			}
 			return len(raw), nil
 		})
 	if err != nil {
 		return nil, err
 	}
-	return out, nil
+	// Second pass (after every page is in openNums): hold any issue whose
+	// body declares a still-open blocker (`#IID`). Fail-open — see blockers.go.
+	return filterHeldByBlockers(pending, openNums, a.opts.Logger, "gitlab"), nil
 }
 
 // RefreshStates fetches each issue and re-derives its state from current

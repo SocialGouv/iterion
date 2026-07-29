@@ -87,3 +87,17 @@ func TestAddedLabels(t *testing.T) {
 		}
 	}
 }
+
+func TestParseIssue_CurrentLabels(t *testing.T) {
+	body := `{"object_kind":"issue","project":{"path_with_namespace":"g/p"},"object_attributes":{"iid":3,"action":"update","state":"opened"},"labels":[{"title":"bug"},{"title":"iterion:hold"}],"changes":{"labels":{"previous":[{"title":"bug"}],"current":[{"title":"bug"},{"title":"iterion:hold"}]}}}`
+	p, err := ParseIssue([]byte(body))
+	if err != nil {
+		t.Fatalf("ParseIssue: %v", err)
+	}
+	if len(p.Labels) != 2 || p.Labels[0] != "bug" || p.Labels[1] != "iterion:hold" {
+		t.Fatalf("current Labels = %v, want [bug iterion:hold]", p.Labels)
+	}
+	if len(p.AddedLabels) != 1 || p.AddedLabels[0] != "iterion:hold" {
+		t.Fatalf("AddedLabels = %v, want [iterion:hold]", p.AddedLabels)
+	}
+}

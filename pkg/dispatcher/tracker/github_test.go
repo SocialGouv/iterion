@@ -116,8 +116,48 @@ func TestGitHubListCandidates(t *testing.T) {
 	if got[0].Metadata["url"] != "https://github.com/owner/repo/issues/42" {
 		t.Fatalf("url metadata: %s", got[0].Metadata["url"])
 	}
-	if !strings.Contains(strings.Join(fake.calls[0], " "), "-label:iterion-claimed") {
-		t.Fatalf("expected default claim filter in search: %v", fake.calls[0])
+	// The claim filter is deliberately NOT server-side: excluding it from the
+	// search would also hide claimed issues from the open-issue set the
+	// dependency gate resolves blockers against. Filtered client-side instead.
+	if strings.Contains(strings.Join(fake.calls[0], " "), "-label:iterion-claimed") {
+		t.Fatalf("claim filter must not be server-side (it would hide in-flight blockers): %v", fake.calls[0])
+	}
+}
+
+// A claimed issue is being implemented RIGHT NOW, which is the single case a
+// dependency gate exists for. Excluding claimed issues server-side dropped
+// them from openNums, so HeldByOpenBlockers treated the blocker as satisfied
+// and released the dependent issue exactly then.
+func TestGitHubClaimedIssueStillHoldsItsDependents(t *testing.T) {
+	fake := &fakeGH{
+		listOut: mustJSON([]map[string]any{
+			{
+				"number": 7, "title": "the blocker", "state": "OPEN",
+				"labels":    []map[string]string{{"name": "ready"}, {"name": "iterion-claimed"}},
+				"createdAt": "2026-05-01T00:00:00Z", "updatedAt": "2026-05-01T00:00:00Z",
+			},
+			{
+				"number": 42, "title": "the dependent", "body": "Blocked by #7", "state": "OPEN",
+				"labels":    []map[string]string{{"name": "ready"}},
+				"createdAt": "2026-05-01T00:00:00Z", "updatedAt": "2026-05-01T00:00:00Z",
+			},
+		}),
+	}
+	a := newGHAdapter(t, fake, map[string]tracker.LabelSelector{
+		"ready": {LabelsInclude: []string{"ready"}},
+	})
+	got, err := a.ListCandidates(context.Background())
+	if err != nil {
+		t.Fatalf("ListCandidates: %v", err)
+	}
+	// The claimed blocker is not a candidate itself, and it holds #42.
+	for _, iss := range got {
+		if strings.HasSuffix(iss.ID, "#7") {
+			t.Errorf("a claimed issue must not be a candidate: %s", iss.ID)
+		}
+		if strings.HasSuffix(iss.ID, "#42") {
+			t.Errorf("dependent dispatched while its blocker #7 is in flight: %s", iss.ID)
+		}
 	}
 }
 
@@ -237,4 +277,46 @@ func contains(args []string, want string) bool {
 		}
 	}
 	return false
+}
+
+// TestGitHubListCandidatesBlockers proves the body-declared dependency gate:
+// a "Blocked by #N" issue is held while #N is open, and dispatched once #N is
+// gone (fail-open — an unresolvable ref never stalls the issue).
+func TestGitHubListCandidatesBlockers(t *testing.T) {
+	mapping := map[string]tracker.LabelSelector{"ready": {LabelsInclude: []string{"ready"}}}
+	dependent := map[string]any{
+		"number": 42, "title": "needs the schema", "body": "Blocked by #7",
+		"state": "open", "labels": []map[string]string{{"name": "ready"}},
+		"createdAt": "2026-05-01T00:00:00Z", "updatedAt": "2026-05-01T00:00:00Z",
+		"url": "https://github.com/owner/repo/issues/42",
+	}
+
+	t.Run("held while blocker open", func(t *testing.T) {
+		blocker := map[string]any{
+			"number": 7, "title": "create schema", "state": "open",
+			"labels":    []map[string]string{{"name": "wip"}},
+			"createdAt": "2026-05-01T00:00:00Z", "updatedAt": "2026-05-01T00:00:00Z",
+			"url": "https://github.com/owner/repo/issues/7",
+		}
+		fake := &fakeGH{listOut: mustJSON([]map[string]any{dependent, blocker})}
+		got, err := newGHAdapter(t, fake, mapping).ListCandidates(context.Background())
+		if err != nil {
+			t.Fatalf("ListCandidates: %v", err)
+		}
+		if len(got) != 0 {
+			t.Fatalf("want 0 (issue #42 held by open #7), got %d: %+v", len(got), got)
+		}
+	})
+
+	t.Run("dispatched when blocker gone (fail-open)", func(t *testing.T) {
+		// #7 is not in the open set → treated as closed/satisfied.
+		fake := &fakeGH{listOut: mustJSON([]map[string]any{dependent})}
+		got, err := newGHAdapter(t, fake, mapping).ListCandidates(context.Background())
+		if err != nil {
+			t.Fatalf("ListCandidates: %v", err)
+		}
+		if len(got) != 1 || got[0].ID != "github:owner/repo#42" {
+			t.Fatalf("want #42 dispatched, got %+v", got)
+		}
+	})
 }

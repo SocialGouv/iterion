@@ -570,6 +570,11 @@ schema emit_output:
 schema diff_precheck_output:
   is_empty: bool
   changed_files: int
+  ## reviewed_sha: the worktree HEAD the reviewers judge against. Carried to
+  ## publish_review so it can refuse to post a review whose line anchors were
+  ## computed against a tree that has since changed (a resume after the branch
+  ## advanced) — a stale-review guard, not a new gate.
+  reviewed_sha: string
 
 ## ─── Forge PR review (v0.3.0) schemas ───────────────────────────
 
@@ -659,12 +664,13 @@ tool diff_precheck:
 import os, subprocess, json
 os.chdir(os.environ['WS'])
 base = os.environ.get('BASE', 'main')
+head = subprocess.run(['git', 'rev-parse', 'HEAD'], capture_output=True, text=True).stdout.strip()
 mb = subprocess.run(['git', 'merge-base', base, 'HEAD'], capture_output=True, text=True).stdout.strip()
 if not mb:
-    print(json.dumps({'is_empty': False, 'changed_files': -1})); raise SystemExit(0)
+    print(json.dumps({'is_empty': False, 'changed_files': -1, 'reviewed_sha': head})); raise SystemExit(0)
 out = subprocess.run(['git', 'diff', '--name-only', mb], capture_output=True, text=True).stdout.strip()
 files = [f for f in out.splitlines() if f.strip()]
-print(json.dumps({'is_empty': len(files) == 0, 'changed_files': len(files)}))
+print(json.dumps({'is_empty': len(files) == 0, 'changed_files': len(files), 'reviewed_sha': head}))
 "`
   output: diff_precheck_output
 
@@ -774,8 +780,8 @@ compute pr_gate:
 ## published is true ONLY on a 2xx from the endpoint, whose counts are
 ## forge-re-fetched (anti-façade), never self-estimated.
 tool publish_review:
-  command: `PUB_URL={{vars.forge_publish_url}} PUB_TOKEN={{vars.forge_publish_token}} MODE={{vars.pr_review_mode}} PR_URL={{input.pr_url}} FINDINGS={{input.findings}} QUESTIONS={{input.questions}} CLAUDE_FINDINGS={{input.claude_findings}} GPT_FINDINGS={{input.gpt_findings}} GATE_ENABLED={{vars.gate_enabled}} GATE_SEVERITY={{vars.gate_severity}} GATE_CONTEXT={{vars.gate_context}} python3 -c "
-import os, json, urllib.request, urllib.error
+  command: `WS={{vars.workspace_dir}} REVIEWED_SHA={{outputs.diff_precheck.reviewed_sha}} PUB_URL={{vars.forge_publish_url}} PUB_TOKEN={{vars.forge_publish_token}} MODE={{vars.pr_review_mode}} PR_URL={{input.pr_url}} FINDINGS={{input.findings}} QUESTIONS={{input.questions}} CLAUDE_FINDINGS={{input.claude_findings}} GPT_FINDINGS={{input.gpt_findings}} GATE_ENABLED={{vars.gate_enabled}} GATE_SEVERITY={{vars.gate_severity}} GATE_CONTEXT={{vars.gate_context}} python3 -c "
+import os, json, subprocess, urllib.request, urllib.error
 
 def emit(published, forge='unknown', review_url='', posted=0, sugg=0, skipped='', summary=''):
     print(json.dumps({'published': published, 'forge': forge, 'review_url': review_url,
@@ -788,6 +794,24 @@ tok = os.environ.get('PUB_TOKEN', '').strip()
 pr = os.environ.get('PR_URL', '').strip()
 mode = os.environ.get('MODE', '').strip() or 'inline'
 findings_parse_failed = False
+
+# Stale-review guard (#1): the findings' file:line anchors were computed
+# against the tree at REVIEWED_SHA. If the worktree HEAD has since moved (a
+# resume after the branch advanced), those anchors no longer match — refuse to
+# post a misaligned review rather than land comments on the wrong lines. Only
+# fires when we can positively read both SHAs and they differ (fail-open).
+reviewed = os.environ.get('REVIEWED_SHA', '').strip()
+ws = os.environ.get('WS', '').strip()
+if reviewed and ws:
+    try:
+        cur = subprocess.run(['git', '-C', ws, 'rev-parse', 'HEAD'],
+                             capture_output=True, text=True).stdout.strip()
+    except Exception:
+        cur = ''
+    if cur and cur != reviewed:
+        emit(False, skipped='tree changed since review (' + reviewed[:12] + ' -> ' + cur[:12] + '); the findings anchor to the reviewed tree, not HEAD. Re-run with the same pr_url for a fresh review.',
+             summary='publish skipped: the worktree HEAD moved after the reviewers judged it, so the inline anchors are stale. No comments posted.')
+
 try:
     findings = json.loads(os.environ.get('FINDINGS') or '[]')
 except ValueError:

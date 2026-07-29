@@ -100,6 +100,34 @@ Beyond CONTEXT_BRIEF.md, create dated/topic-tagged files when:
 The auto-index will surface all of these on the next iteration —
 no manual bookkeeping needed.
 
+## Updating, superseding, deleting
+
+Memory is long-lived: across many iterations the same fact gets revisited.
+Before you write a fact, **reconcile it against what's already there** — read
+the related file(s) first (the index makes them cheap to find), then classify:
+
+- **New** — nothing covers it. Write a fresh file.
+- **Covered** — an existing file already says this, correctly. Do nothing;
+  don't write a near-duplicate.
+- **Refines** — an existing file is right but incomplete. Edit it in place
+  (`memory_write` the same path with the fuller content). One fact, one home.
+- **Supersedes** — a new fact *contradicts* an old one (a decision reversed, a
+  value changed). Do NOT delete the old file. Instead:
+  - mark the old file `status:superseded` in its tags and add a
+    `superseded_by: <new-path>` line to its frontmatter;
+  - give the new file a `supersedes: <old-path>` line.
+  The trail stays legible (why the change happened), and a future iteration
+  reading the old file sees at a glance that it is stale and where to look.
+  (`status:superseded` shows in the index; the two link lines are ignored by
+  the indexer and read by humans/agents.)
+
+**Delete only a memory that was outright *wrong*** — never one that merely
+aged out. A superseded fact carries history; a wrong fact is noise. When in
+doubt, supersede (reversible) rather than delete (destructive).
+
+This keeps the tree from accreting silent contradictions — the failure mode
+that makes a long-lived memory untrustworthy.
+
 ## The findings/ scope (cross-bot inbox)
 
 `findings/` is a **distinct memory scope** — a sibling of this

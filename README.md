@@ -352,7 +352,7 @@ The full documentation lives under [`docs/`](docs/) — start with the [document
 
 **References**
 - [docs/references/dsl-grammar.md](docs/references/dsl-grammar.md) — readable grammar
-- [docs/references/diagnostics.md](docs/references/diagnostics.md) — authoritative sparse catalogue: DSL C001–C199 and bundle checks C200–C230
+- [docs/references/diagnostics.md](docs/references/diagnostics.md) — authoritative sparse catalogue: DSL C001–C199 and bundle checks C200–C234
 - [docs/references/patterns.md](docs/references/patterns.md) — 10 reusable workflow patterns
 - [docs/grammar/iterion_v1.ebnf](docs/grammar/iterion_v1.ebnf) — formal EBNF grammar
 

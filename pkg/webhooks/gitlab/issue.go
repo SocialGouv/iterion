@@ -49,17 +49,21 @@ type LabelsChange struct {
 // the repo to clone, the issue to implement + back-link, and the labels that
 // were freshly added on this event.
 type ParsedIssue struct {
-	ProjectID      int64
-	ProjectPath    string
-	CloneURL       string
-	DefaultBranch  string // base ref a command's MR is opened against
-	IssueIID       int64
-	Action         string // "open" | "update" | "close" | "reopen"
-	Title          string
-	Description    string
-	URL            string // the issue's own web URL — the back-link target
-	State          string // "opened" | "closed"
-	AddedLabels    []string
+	ProjectID     int64
+	ProjectPath   string
+	CloneURL      string
+	DefaultBranch string // base ref a command's MR is opened against
+	IssueIID      int64
+	Action        string // "open" | "update" | "close" | "reopen"
+	Title         string
+	Description   string
+	URL           string // the issue's own web URL — the back-link target
+	State         string // "opened" | "closed"
+	AddedLabels   []string
+	// Labels is the issue's full current label set (titles) after the change —
+	// what the bot-agnostic hold-label gate reads (distinct from AddedLabels,
+	// which is only the freshly-added trigger).
+	Labels         []string
 	AuthorID       int64
 	AuthorUsername string
 }
@@ -87,9 +91,24 @@ func ParseIssue(body []byte) (ParsedIssue, error) {
 		URL:            oa.URL,
 		State:          oa.State,
 		AddedLabels:    addedLabels(e.Changes.Labels),
+		Labels:         labelTitles(e.Labels),
 		AuthorID:       e.User.ID,
 		AuthorUsername: e.User.Username,
 	}, nil
+}
+
+// labelTitles extracts the non-empty label titles from a GitLab label list.
+func labelTitles(labels []Label) []string {
+	if len(labels) == 0 {
+		return nil
+	}
+	out := make([]string, 0, len(labels))
+	for _, l := range labels {
+		if l.Title != "" {
+			out = append(out, l.Title)
+		}
+	}
+	return out
 }
 
 // addedLabels returns the label titles present in current but not previous.

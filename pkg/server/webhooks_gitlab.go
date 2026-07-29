@@ -98,6 +98,12 @@ func (s *Server) handleGitLabMergeRequestEvent(ctx context.Context, w http.Respo
 		return
 	}
 
+	// Hold-label gate (bot-agnostic, opt-in): a configured hold label on the MR
+	// vetoes the auto-review. Same escape hatch as the GitHub PR path.
+	if s.suppressedByHoldLabel(ctx, w, cfg, meta, p.Labels, payloadHash, srcIP) {
+		return
+	}
+
 	// Iterion-bot guard: an MR opened by iterion's own forge bot already
 	// converged in its own loop — skip the auto-review (a human can still run
 	// `/revi`). Mirror of the GitHub PR-open path.
@@ -157,6 +163,12 @@ func (s *Server) handleGitLabIssueEvent(ctx context.Context, w http.ResponseWrit
 		!webhooks.MatchProject(cfg.ProjectAllowlist, p.ProjectPath) {
 		s.recordTerminalWebhookDelivery(ctx, cfg, meta, webhooks.StatusFiltered, payloadHash, srcIP, "")
 		writeJSONStatus(w, http.StatusOK, map[string]string{"status": webhooks.StatusFiltered})
+		return
+	}
+
+	// Hold-label gate (bot-agnostic, opt-in): a configured hold label on the
+	// issue vetoes the labeled auto-launch. Same escape hatch as GitHub.
+	if s.suppressedByHoldLabel(ctx, w, cfg, meta, p.Labels, payloadHash, srcIP) {
 		return
 	}
 

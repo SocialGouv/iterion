@@ -1,3 +1,9 @@
+---
+name: harness-attribution
+description: Provenance notice for Seki's threat-model, vuln-scan, triage, and patch skills — records that they are adapted from Anthropic's defending-code-reference-harness. Reference documentation, not a runtime skill.
+disable-model-invocation: true
+---
+
 # Harness attribution
 
 Seki's `threat-model`, `vuln-scan`, `triage`, and `patch` skills are

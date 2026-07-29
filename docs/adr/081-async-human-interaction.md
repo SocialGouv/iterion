@@ -87,7 +87,7 @@ claude_code's Stop hook).
 
 **Diagnostics.** C240 (error: `interaction: async` on a human node),
 C241 (error: `await_answers` without `timeout:`), C242 (warning: `from:`
-references a missing/non-async node). C240-band because C200–C230 are
+references a missing/non-async node). C240-band because C200–C234 are
 claimed by pkg/bundlelint.
 
 ## Rejected alternatives

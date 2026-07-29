@@ -50,8 +50,12 @@ type PullRequest struct {
 	// every action but `opened`: on a push to an existing PR the sender is
 	// whoever pushed, which is not who the PR belongs to.
 	User Sender `json:"user"`
-	Head Ref    `json:"head"`
-	Base Ref    `json:"base"`
+	// Labels is the PR's current label set. GitHub/Gitea include it on the
+	// pull_request object; GitLab and minimal payloads omit it (empty → the
+	// hold-label suppression fail-opens). Read by the generic hold-label gate.
+	Labels []Label `json:"labels"`
+	Head   Ref     `json:"head"`
+	Base   Ref     `json:"base"`
 }
 
 type Ref struct {

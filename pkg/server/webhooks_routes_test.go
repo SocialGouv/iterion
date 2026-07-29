@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -407,5 +408,79 @@ func TestWebhookAuth_DisabledAndRateLimitAndQuota(t *testing.T) {
 	}
 	if code, _, _, _ := runWebhookAuth(s, "mq", pt3); code != http.StatusTooManyRequests {
 		t.Fatalf("mq second should be 429 (monthly quota): code=%d", code)
+	}
+}
+
+// TestWebhookHoldLabelsRoundTrip pins the config INGRESS for hold_labels.
+//
+// The suppression matcher, the four wired lanes and the docs were all correct,
+// but the field was declared on webhooks.Config and read by
+// suppressedByHoldLabel while nothing ever WROTE it: not the create builder,
+// not the PATCH applier, not the forge provisioning path. HeldByLabel
+// short-circuits on an empty set, so the operator's documented escape hatch to
+// pause automation on one PR was permanently a no-op, reachable only by a
+// direct Mongo write.
+func TestWebhookHoldLabelsRoundTrip(t *testing.T) {
+	s := newWebhookTestServer(t)
+	ctx := superAdminCtx()
+
+	w := httptest.NewRecorder()
+	body := `{"name":"gl","bot_ids":["review-pr"],"hold_labels":["iterion:hold","do-not-automate"]}`
+	s.handleCreateWebhook(w, whReq(ctx, "POST", "/api/teams/t1/webhooks", body, "t1", ""))
+	if w.Code != http.StatusCreated {
+		t.Fatalf("create: code=%d body=%s", w.Code, w.Body.String())
+	}
+	var created struct {
+		Config webhooks.Config `json:"config"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &created); err != nil {
+		t.Fatalf("decode create: %v", err)
+	}
+	if !slices.Equal(created.Config.HoldLabels, []string{"iterion:hold", "do-not-automate"}) {
+		t.Fatalf("hold_labels dropped on create: %v", created.Config.HoldLabels)
+	}
+
+	// PATCH replaces the set...
+	w = httptest.NewRecorder()
+	s.handleUpdateWebhook(w, whReq(ctx, "PATCH", "/api/teams/t1/webhooks/"+created.Config.ID,
+		`{"hold_labels":["paused"]}`, "t1", created.Config.ID))
+	if w.Code != http.StatusOK {
+		t.Fatalf("patch: code=%d body=%s", w.Code, w.Body.String())
+	}
+	stored, err := s.webhookConfigs.Get(context.Background(), created.Config.ID)
+	if err != nil {
+		t.Fatalf("get: %v", err)
+	}
+	if !slices.Equal(stored.HoldLabels, []string{"paused"}) {
+		t.Fatalf("hold_labels not applied on patch: %v", stored.HoldLabels)
+	}
+
+	// ...an omitted field leaves it untouched (a PATCH of something else must
+	// not silently unpause every held PR)...
+	w = httptest.NewRecorder()
+	s.handleUpdateWebhook(w, whReq(ctx, "PATCH", "/api/teams/t1/webhooks/"+created.Config.ID,
+		`{"name":"renamed"}`, "t1", created.Config.ID))
+	if w.Code != http.StatusOK {
+		t.Fatalf("patch name: code=%d body=%s", w.Code, w.Body.String())
+	}
+	if stored, err = s.webhookConfigs.Get(context.Background(), created.Config.ID); err != nil {
+		t.Fatalf("get: %v", err)
+	}
+	if !slices.Equal(stored.HoldLabels, []string{"paused"}) {
+		t.Fatalf("an unrelated patch cleared hold_labels: %v", stored.HoldLabels)
+	}
+
+	// ...and an explicit empty list is how the hold is turned off.
+	w = httptest.NewRecorder()
+	s.handleUpdateWebhook(w, whReq(ctx, "PATCH", "/api/teams/t1/webhooks/"+created.Config.ID,
+		`{"hold_labels":[]}`, "t1", created.Config.ID))
+	if w.Code != http.StatusOK {
+		t.Fatalf("patch clear: code=%d body=%s", w.Code, w.Body.String())
+	}
+	if stored, err = s.webhookConfigs.Get(context.Background(), created.Config.ID); err != nil {
+		t.Fatalf("get: %v", err)
+	}
+	if len(stored.HoldLabels) != 0 {
+		t.Fatalf("hold_labels not clearable: %v", stored.HoldLabels)
 	}
 }

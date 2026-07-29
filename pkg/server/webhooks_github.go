@@ -101,6 +101,15 @@ func (s *Server) handlePRForgeReview(ctx context.Context, w http.ResponseWriter,
 		return
 	}
 
+	// Hold-label gate (bot-agnostic, opt-in): a configured hold label on the PR
+	// vetoes EVERY auto-launch this handler can do (auto-heal and review alike)
+	// — the operator's escape hatch to pause automation on one PR. Placed before
+	// any launch decision so it covers all of them. A human can still trigger a
+	// bot manually via a `/command`.
+	if s.suppressedByHoldLabel(ctx, w, cfg, meta, p.Labels, payloadHash, srcIP) {
+		return
+	}
+
 	// Merge-queue auto-heal: a PR ejected from the queue for a conflict or a
 	// combined-build failure (`dequeued` with a healable reason) is
 	// dispatched to the branch-improvement bot (Billy) to rebase on the base,
@@ -211,6 +220,13 @@ func (s *Server) handleGitHubIssues(w http.ResponseWriter, r *http.Request, cfg 
 		!webhooks.MatchProject(cfg.ProjectAllowlist, p.ProjectPath) {
 		s.recordTerminalWebhookDelivery(ctx, cfg, meta, webhooks.StatusFiltered, payloadHash, srcIP, "")
 		writeJSONStatus(w, http.StatusOK, map[string]string{"status": webhooks.StatusFiltered})
+		return
+	}
+
+	// Hold-label gate (bot-agnostic, opt-in): a configured hold label on the
+	// issue vetoes the auto-launch (labeled + zero-touch alike). See the PR
+	// handler for the rationale.
+	if s.suppressedByHoldLabel(ctx, w, cfg, meta, p.IssueLabels, payloadHash, srcIP) {
 		return
 	}
 

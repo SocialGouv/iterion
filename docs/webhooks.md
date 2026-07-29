@@ -264,7 +264,7 @@ a key the org-admin has pinned (`handleGenericWebhook` in
 
 ## Matching: project + event + author allowlists, bot scope
 
-Every webhook carries four filters
+Every webhook carries four selection filters plus a bot-agnostic hold gate
 ([pkg/webhooks/types.go:Config](../pkg/webhooks/types.go)):
 
 - **`event_allowlist`** — provider-event names allowed; empty defaults
@@ -275,6 +275,18 @@ Every webhook carries four filters
   freshly-applied label fires (e.g. `["implement"]`). Empty = any label;
   case-insensitive; a bare `*` matches everything. No effect on the
   `pull_request` / `issue_comment` paths.
+- **`hold_labels`** — a **bot-agnostic suppression** set. When the
+  triggering PR or issue carries any of these labels, the auto-launch
+  lanes (PR-open review, merge-queue auto-heal, auto-implement-on-open)
+  suppress the launch — *whatever* bot would have run — and record a
+  filtered delivery. It is the operator's escape hatch to pause
+  automation on one PR/issue without disabling the webhook; a human can
+  still trigger a bot manually via a `/command`. Applies to all four
+  auto-launch lanes (GitHub/Forgejo PR review + auto-heal, GitHub issue,
+  GitLab MR review, GitLab issue). Case-insensitive; empty = off; a `*`
+  entry holds everything. Fail-open: a minimal payload that doesn't carry
+  the label set simply isn't suppressed. Unlike `label_allowlist` (which
+  *selects* a bot), `hold_labels` *vetoes* them.
 - **`project_allowlist`** — `owner/repo` patterns. Empty = every project
   the forge fires for. Supports `*` (any), `owner/*`, or exact paths.
 - **`author_allowlist`** — PR/MR author logins allowed to trigger a

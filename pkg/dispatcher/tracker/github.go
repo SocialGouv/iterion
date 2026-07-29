@@ -122,8 +122,17 @@ func (a *GitHubAdapter) ListCandidates(ctx context.Context) ([]Issue, error) {
 		a.opts.Logger.Warn("github tracker: ListCandidates hit the %d-issue cap on repo %s — beyond this point issues are silently dropped from dispatch; consider tightening label filters",
 			ghCandidateListLimit, a.opts.Repo)
 	}
-	out2 := make([]Issue, 0, len(raw))
+	// Open-issue set for fail-open blocker resolution (all open issues this
+	// list returned, before eligibility filtering).
+	openNums := make(map[int]bool, len(raw))
 	for _, r := range raw {
+		openNums[r.Number] = true
+	}
+	pending := make([]Issue, 0, len(raw))
+	for _, r := range raw {
+		if ghHasLabel(r.Labels, a.opts.ClaimedLabel) {
+			continue // already claimed by a dispatcher — not a candidate
+		}
 		if !a.authorAllowed(r.Author.Login) {
 			continue // author not in the trusted-author allowlist
 		}
@@ -131,9 +140,10 @@ func (a *GitHubAdapter) ListCandidates(ctx context.Context) ([]Issue, error) {
 		if iss.WorkflowState == "" {
 			continue // doesn't match any configured state
 		}
-		out2 = append(out2, iss)
+		pending = append(pending, iss)
 	}
-	return out2, nil
+	// Hold any issue whose body declares a still-open blocker (fail-open).
+	return filterHeldByBlockers(pending, openNums, a.opts.Logger, "github"), nil
 }
 
 // authorAllowed reports whether an issue author passes AuthorAllowlist
@@ -383,6 +393,19 @@ type ghLabel struct {
 	Name string `json:"name"`
 }
 
+// ghHasLabel reports whether the issue carries the named label.
+func ghHasLabel(labels []ghLabel, want string) bool {
+	if want == "" {
+		return false
+	}
+	for _, l := range labels {
+		if l.Name == want {
+			return true
+		}
+	}
+	return false
+}
+
 type ghUser struct {
 	Login string `json:"login"`
 }
@@ -438,7 +461,11 @@ func buildSearch(opts GitHubOptions) string {
 	for _, l := range opts.ExcludeLabels {
 		parts = append(parts, "-label:"+quoteLabel(l))
 	}
-	parts = append(parts, "-label:"+quoteLabel(opts.ClaimedLabel))
+	// The claimed label is filtered CLIENT-side (ListCandidates), not here.
+	// Excluding it server-side would also drop claimed issues from the
+	// open-issue set the dependency gate resolves blockers against — so an
+	// issue "Blocked by #7" would dispatch the moment #7 was claimed, i.e.
+	// exactly while it is being implemented. Matches gitlab.go / forgejo.go.
 	return strings.Join(parts, " ")
 }
 

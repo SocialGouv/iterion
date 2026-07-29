@@ -50,6 +50,7 @@ type webhookConfigReq struct {
 	EventAllowlist      []string          `json:"event_allowlist,omitempty"`
 	AuthorAllowlist     []string          `json:"author_allowlist,omitempty"`
 	LabelAllowlist      []string          `json:"label_allowlist,omitempty"`
+	HoldLabels          []string          `json:"hold_labels,omitempty"`
 	BlockForkPRs        *bool             `json:"block_fork_prs,omitempty"`
 	ReviewOnSync        *bool             `json:"review_on_sync,omitempty"`
 	Overlap             *string           `json:"overlap,omitempty"`
@@ -259,6 +260,7 @@ func (s *Server) handleCreateWebhook(w http.ResponseWriter, r *http.Request) {
 		EventAllowlist:      req.EventAllowlist,
 		AuthorAllowlist:     req.AuthorAllowlist,
 		LabelAllowlist:      req.LabelAllowlist,
+		HoldLabels:          req.HoldLabels,
 		BlockForkPRs:        req.BlockForkPRs != nil && *req.BlockForkPRs,
 		ReviewOnSync:        req.ReviewOnSync != nil && *req.ReviewOnSync,
 		Overlap:             overlapOrEmpty(req.Overlap),
@@ -425,6 +427,11 @@ func (s *Server) handleUpdateWebhook(w http.ResponseWriter, r *http.Request) {
 	}
 	if req.LabelAllowlist != nil {
 		cfg.LabelAllowlist = req.LabelAllowlist
+	}
+	// A non-nil empty slice is how the operator turns the hold off again —
+	// distinct from the field being absent, which leaves it untouched.
+	if req.HoldLabels != nil {
+		cfg.HoldLabels = req.HoldLabels
 	}
 	if req.ReviewOnSync != nil {
 		cfg.ReviewOnSync = *req.ReviewOnSync
