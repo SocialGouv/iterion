@@ -2,6 +2,7 @@ package pisdk
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -307,4 +308,61 @@ func containsString(haystack []string, needle string) bool {
 		}
 	}
 	return false
+}
+
+// TestClientDrainsStreamTailBeforeWait guards the invariant reap() exists to
+// hold: every line a fast producer writes before exiting reaches OnEvent.
+//
+// It is a guard, NOT a reproduction. The hazard is the os/exec contract —
+// cmd.Wait closes the parent-side pipe descriptors as soon as the process
+// exits, so "it is incorrect to call Wait before all reads from the pipe have
+// completed" — and the bytes at risk are the ones that matter: the tail of
+// pi's JSONL stream carries agent_settled, the only completion signal
+// awaitSettle waits on, and losing it costs a full idle timeout plus a
+// spurious "stream idle". Removing the readers.Wait() does not make this test
+// fail on a fast machine (tried up to 60k lines): the reader drains faster
+// than Wait can race it here. The fix stands on the documented contract, not
+// on this test — which still catches a future change that drops lines
+// outright.
+func TestClientDrainsStreamTailBeforeWait(t *testing.T) {
+	const lines = 5000
+
+	var (
+		mu   sync.Mutex
+		seen int
+	)
+	c := NewClient(ClientOptions{
+		Spawn: func(ctx context.Context, _ []string) *exec.Cmd {
+			script := fmt.Sprintf(
+				`i=0; while [ $i -lt %d ]; do printf '{"type":"tick"}\n'; i=$((i+1)); done; exit 0`,
+				lines,
+			)
+			return exec.CommandContext(ctx, "sh", "-c", script)
+		},
+		OnEvent: func(Event) {
+			mu.Lock()
+			seen++
+			mu.Unlock()
+		},
+	})
+	if err := c.Start(context.Background()); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	defer func() { _ = c.Close() }()
+
+	select {
+	case <-c.exited:
+	case <-time.After(30 * time.Second):
+		t.Fatal("process never reaped")
+	}
+	// Close drains the queue the reader feeds; the tail must survive both the
+	// pipe close and the dispatcher shutdown.
+	_ = c.Close()
+
+	mu.Lock()
+	got := seen
+	mu.Unlock()
+	if got != lines {
+		t.Errorf("received %d/%d events — the stream tail was truncated by cmd.Wait", got, lines)
+	}
 }

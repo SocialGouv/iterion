@@ -91,6 +91,12 @@ type Client struct {
 	queue     []queued
 	drained   chan struct{}
 
+	// readers is done only once BOTH pipe readers have returned. cmd.Wait
+	// closes the parent-side descriptors the moment the process exits, so
+	// os/exec forbids calling it before every read has completed — doing so
+	// discards whatever is still buffered in the kernel pipe.
+	readers sync.WaitGroup
+
 	stderrTail *ringBuffer
 	// exited is closed by reap once cmd.Wait has returned. Close waits on it
 	// rather than calling Wait itself: exec.Cmd.Wait must not be called
@@ -157,8 +163,9 @@ func (c *Client) Start(ctx context.Context) error {
 		return fmt.Errorf("pisdk: start %s: %w", c.describe(), err)
 	}
 
-	go c.readStdout(stdout)
-	go c.readStderr(stderr)
+	c.readers.Add(2)
+	go func() { defer c.readers.Done(); c.readStdout(stdout) }()
+	go func() { defer c.readers.Done(); c.readStderr(stderr) }()
 	go c.dispatch()
 	go c.reap()
 
@@ -176,6 +183,14 @@ func (c *Client) describe() string {
 // reap waits for exit and fails every in-flight request, so a caller never
 // waits out a full timeout against a process that is already gone.
 func (c *Client) reap() {
+	// Drain both pipes to EOF FIRST. Waiting before the readers finish closes
+	// the descriptors under them, and the bytes lost are exactly the ones that
+	// matter: the tail of pi's JSONL stream carries agent_settled — the only
+	// completion signal awaitSettle waits on, whose loss costs a full idle
+	// timeout and a spurious "stream idle" — and pi reports startup
+	// diagnostics (bad model, extension load failure) on stderr only.
+	c.readers.Wait()
+
 	err := c.cmd.Wait()
 	c.waitErr = err
 	close(c.exited)
