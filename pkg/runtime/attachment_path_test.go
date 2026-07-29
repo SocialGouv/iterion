@@ -179,3 +179,85 @@ func TestResolveFileAnswersIgnoresUnknownAttachment(t *testing.T) {
 		t.Errorf("path was resolved for an unknown attachment: %v", p)
 	}
 }
+
+// {{attachments.<name>}} must resolve for every node a RESUMED run
+// executes. rs.attachments was populated only by runInitState, on the
+// launch path, so both resume paths left it empty and every
+// `attachments.*` reference silently resolved to nothing. A gate upload
+// exists ONLY after a resume, so that reference form — the one
+// docs/human-in-the-loop.md documents — was dead on arrival, and
+// launch-time attachments silently degraded on any resumed run.
+func TestResumeRebuildStateLoadsAttachments(t *testing.T) {
+	s := tmpStore(t)
+	ctx := context.Background()
+	const runID = "att-resume"
+	if _, err := s.CreateRun(ctx, runID, "wf", nil); err != nil {
+		t.Fatalf("CreateRun: %v", err)
+	}
+	writeTestAttachment(t, s, runID, "gate.music", "track.mp3", "bytes")
+
+	r, err := s.LoadRun(ctx, runID)
+	if err != nil {
+		t.Fatalf("LoadRun: %v", err)
+	}
+	r.WorkDir = t.TempDir()
+	if err := s.SaveRun(ctx, r); err != nil {
+		t.Fatalf("SaveRun: %v", err)
+	}
+
+	e := New(&ir.Workflow{
+		Name:    "wf",
+		Entry:   "n",
+		Nodes:   map[string]ir.Node{"n": &ir.DoneNode{BaseNode: ir.BaseNode{ID: "n"}}},
+		Schemas: map[string]*ir.Schema{},
+		Prompts: map[string]*ir.Prompt{},
+		Vars:    map[string]*ir.Var{},
+		Loops:   map[string]*ir.Loop{},
+	}, s, newStubExecutor())
+
+	cp := &store.Checkpoint{NodeID: "n"}
+	rs, cleanup, rbErr := e.resumeRebuildState(ctx, r, cp, map[string]map[string]any{}, map[string]int{})
+	if rbErr != nil {
+		t.Fatalf("resumeRebuildState: %v", rbErr)
+	}
+	if cleanup != nil {
+		defer cleanup()
+	}
+
+	info, ok := rs.attachments["gate.music"]
+	if !ok {
+		t.Fatalf("rs.attachments is missing the run's attachment; got %v", rs.attachments)
+	}
+	if info.Path == "" {
+		t.Error("attachment info carries no path — nodes cannot open it")
+	}
+}
+
+// The sandbox forecast behind attachmentPath reads e.repoRoot, which
+// restoreRunEnv only sets later (inside resumeRebuildState). Left empty,
+// the default `sandbox: auto` resolves to "not applicable (outside a git
+// repository)" and gate uploads are stamped with a host path — moments
+// before startSandbox, handed r.RepoRoot, containerises the run.
+func TestSeedRepoRootForResume(t *testing.T) {
+	t.Run("prefers the run's recorded repo root", func(t *testing.T) {
+		e := &Engine{}
+		e.seedRepoRootForResume(&store.Run{RepoRoot: "/repos/app", WorkDir: "/repos/app/wt"})
+		if e.repoRoot != "/repos/app" {
+			t.Errorf("repoRoot = %q, want /repos/app", e.repoRoot)
+		}
+	})
+
+	t.Run("never overwrites an already-restored value", func(t *testing.T) {
+		e := &Engine{repoRoot: "/already/set"}
+		e.seedRepoRootForResume(&store.Run{RepoRoot: "/repos/other"})
+		if e.repoRoot != "/already/set" {
+			t.Errorf("repoRoot = %q, want the existing value untouched", e.repoRoot)
+		}
+	})
+
+	t.Run("tolerates a run with neither", func(t *testing.T) {
+		e := &Engine{}
+		e.seedRepoRootForResume(&store.Run{})
+		_ = e.repoRoot // derived from the workspace; only must not panic
+	})
+}

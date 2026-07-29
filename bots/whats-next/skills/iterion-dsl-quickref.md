@@ -246,8 +246,10 @@ prompt mix:
 - Only a node that PAUSES for an operator may declare a `file` field —
   no LLM can produce bytes. Compile error (**C129**) on any non-human
   node, and on a `human` node with `interaction: llm` (auto-answered, so
-  the model would invent the path). `llm_or_human` is fine: it can
-  escalate to a real pause.
+  the model would invent the path) or `interaction: review` (output is
+  the engine-built verdict). `llm_or_human` is fine: it can escalate to
+  a real pause. A gate must not declare `_attachments` either — the
+  engine owns that key (**C130**).
 - `file` fields are optional; branch downstream if the workflow cannot
   proceed without one.
 - Every human gate ALSO has an unconditional "attach a file" button

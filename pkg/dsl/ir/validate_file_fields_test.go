@@ -128,6 +128,41 @@ workflow main:
 	}
 }
 
+// A review gate's output is the verdict map the engine builds from the
+// operator's approve/reject action — there is no form, so a `file` field
+// on it can never be filled either.
+func TestFileFieldOnReviewGateIsC129(t *testing.T) {
+	src := `
+schema gate_out:
+  decision: string
+  evidence: file
+
+human gate:
+  interaction: review
+  model: "anthropic/claude-sonnet-4-6"
+  output: gate_out
+
+workflow main:
+  entry: gate
+  worktree: auto
+  gate -> done
+`
+	res := compileFile(t, src)
+
+	var found bool
+	for _, d := range res.Diagnostics {
+		if d.Code == DiagFileFieldNotHuman {
+			found = true
+			if !strings.Contains(d.Message, "evidence") {
+				t.Errorf("C129 message should name the offending field, got: %s", d.Message)
+			}
+		}
+	}
+	if !found {
+		t.Fatalf("expected C129 for a file field on a review gate; diagnostics = %v", res.Diagnostics)
+	}
+}
+
 // `llm_or_human` keeps a real escalation path — the model can decline
 // and hand the gate to an operator, which is exactly how the bytes
 // arrive. Rejecting it would remove the only shape that lets a bot ask
@@ -191,5 +226,74 @@ workflow main:
 `)
 	if got := w2.Schemas["upload"].Fields[0]; got.Name != "file" || got.Type != FieldTypeFile {
 		t.Errorf("field 0 = %q:%v, want file:file", got.Name, got.Type)
+	}
+}
+
+// `_attachments` is the engine-owned key carrying a gate's ad-hoc
+// uploads. It was documented as collision-proof because authored field
+// names "never start with '_' by convention" — but the lexer accepts a
+// leading underscore, so a bot declaring it would have the operator's
+// answer silently replaced on resume. The convention is now enforced.
+func TestReservedAttachmentsKeyOnHumanGateIsC130(t *testing.T) {
+	src := `
+schema gate_out:
+  approved: bool
+  _attachments: string
+
+human gate:
+  output: gate_out
+
+workflow main:
+  entry: gate
+  gate -> done
+`
+	res := compileFile(t, src)
+
+	var found bool
+	for _, d := range res.Diagnostics {
+		if d.Code == DiagReservedAnswerKey {
+			found = true
+			if d.Severity != SeverityError {
+				t.Errorf("C130 severity = %v, want error", d.Severity)
+			}
+			if !strings.Contains(d.Message, "_attachments") {
+				t.Errorf("C130 message should name the reserved key, got: %s", d.Message)
+			}
+		}
+	}
+	if !found {
+		t.Fatalf("expected C130 for a reserved answer key on a human gate; diagnostics = %v", res.Diagnostics)
+	}
+}
+
+// The key is only reserved where the engine writes it — a human node's
+// answers. Elsewhere it is an ordinary field nothing overwrites, and
+// flagging it would be a false positive.
+func TestReservedAttachmentsKeyElsewhereCompiles(t *testing.T) {
+	src := `
+schema agent_out:
+  _attachments: string
+
+prompt sys:
+  You are an agent.
+
+prompt usr:
+  Do something.
+
+agent work:
+  model: "anthropic/claude-sonnet-4-6"
+  system: sys
+  user: usr
+  output: agent_out
+
+workflow main:
+  entry: work
+  work -> done
+`
+	res := compileFile(t, src)
+	for _, d := range res.Diagnostics {
+		if d.Code == DiagReservedAnswerKey {
+			t.Fatalf("C130 must not fire outside a human gate: %s", d.Message)
+		}
 	}
 }

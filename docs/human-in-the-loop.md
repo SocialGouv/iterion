@@ -162,9 +162,11 @@ ordinary [run attachment](attachments.md), so
 A `file` field only makes sense on a node that actually **pauses for an
 operator** — nothing else in the engine can produce bytes — so the
 compiler rejects it (**C129**) on any non-human node, and on a `human`
-node with `interaction: llm`, whose gate a model auto-answers (it can
-only invent a path). `interaction: llm_or_human` stays allowed: it can
-escalate to a real pause, which is how the file arrives.
+node whose interaction never collects operator bytes: `interaction: llm`
+(a model auto-answers, so it can only invent a path) and `interaction:
+review` (the output is the engine-built verdict map). `llm_or_human`
+stays allowed: it can escalate to a real pause, which is how the file
+arrives.
 
 `file` fields are optional: the DSL has no per-field required marker, and
 forcing one would strand an operator re-answering a gate whose file

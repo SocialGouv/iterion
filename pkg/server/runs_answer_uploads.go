@@ -38,10 +38,10 @@ import (
 // engine.resolveFileAnswers).
 
 // answerUploadsKey is the reserved answer key carrying ad-hoc gate
-// attachments. Underscore-prefixed so it cannot collide with a
-// schema-declared field name (the DSL parses field names as
-// identifiers, which never start with '_' by convention and are always
-// author-chosen — whereas this key is engine-owned).
+// attachments. The underscore prefix marks it engine-owned, but the
+// lexer does accept a leading underscore in a field name, so the
+// convention alone would not prevent a collision — diagnostic C130
+// rejects a human gate that declares this name at compile time.
 const answerUploadsKey = "_attachments"
 
 // uploadEnvelopeKey is the marker field identifying an answer value as
