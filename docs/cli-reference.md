@@ -112,7 +112,7 @@ Launch-time graph overrides:
 | Flag | Meaning |
 |---|---|
 | `--model selector=model` | Override by node id, id glob, or kind (`agent`/`judge`); repeatable. A bare model targets all LLM nodes. |
-| `--backend selector=backend` | Same selector rules for a supported backend; repeatable. `claw`/`claude_code` are recommended, Kimi/Grok are explicit opt-ins, and Codex is legacy. |
+| `--backend selector=backend` | Same selector rules for a supported backend; repeatable. `claw`/`claude_code` are recommended, `pi`/Kimi/Grok are explicit opt-ins, and Codex is legacy. |
 | `--max-cost-usd`, `--max-duration`, `--max-tokens`, `--max-iterations`, `--max-parallel-branches` | Override non-zero workflow budget fields. |
 | `--review-mode mono\|dual\|auto` | Legacy/third-party topology override for workflows that declare a `review_mode` var; current catalogue campaigns do not. |
 
