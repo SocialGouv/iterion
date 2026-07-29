@@ -84,7 +84,7 @@ iterion supervise --run-id <id> \
   --node implement \
   --system @policies/watchdog.md \
   --monitor event_type=tool_error,tool_name=Bash \
-  --model anthropic/claude-opus-4-8
+  --model anthropic/claude-opus-5
 ```
 
 Flags:
