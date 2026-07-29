@@ -2,6 +2,7 @@ package delegate
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"os"
 	"path/filepath"
@@ -10,17 +11,36 @@ import (
 	"time"
 )
 
+// testAccessExpiry is the deadline the fixture's access token carries.
+var testAccessExpiry = time.Date(2026, 8, 8, 12, 0, 0, 0, time.UTC)
+
+// jwtWithExp builds an unsigned JWT carrying an `exp` claim. Only the payload
+// matters: the deadline is read, never trusted for authorization.
+func jwtWithExp(t *testing.T, exp time.Time) string {
+	t.Helper()
+	payload, err := json.Marshal(map[string]any{"exp": exp.Unix()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	enc := base64.RawURLEncoding.EncodeToString
+	return enc([]byte(`{"alg":"none"}`)) + "." + enc(payload) + ".sig"
+}
+
 // writeCodexAuth lays down a Codex CLI auth.json and points CODEX_HOME at it.
 func writeCodexAuth(t *testing.T, mode string) string {
 	t.Helper()
 	dir := t.TempDir()
+	// Shaped like a REAL ~/.codex/auth.json: the Codex CLI writes no
+	// `expires_in`, and nothing in this tree ever adds one. Inventing that
+	// field is what let a bug ship green — the expiry silently collapsed to
+	// 0 on every production credential, which pi reads as "expired".
 	blob := map[string]any{
 		"auth_mode": mode,
 		"tokens": map[string]any{
-			"access_token":  "access-abc",
+			"access_token":  jwtWithExp(t, testAccessExpiry),
 			"refresh_token": "refresh-xyz",
 			"account_id":    "acct-1",
-			"expires_in":    3600,
+			"id_token":      "id-token",
 		},
 		"last_refresh": "2026-07-29T10:00:00Z",
 	}
@@ -66,12 +86,12 @@ func TestPiCodexSeed(t *testing.T) {
 		cred := readSeededAuth(t, env)[piCodexProvider]
 		// The field names are pi's, not Codex's — that translation IS the
 		// feature, since pi has no env-var path for this provider.
-		if cred.Type != "oauth" || cred.Access != "access-abc" || cred.Refresh != "refresh-xyz" {
+		if cred.Type != "oauth" || cred.Access == "" || cred.Refresh != "refresh-xyz" {
 			t.Errorf("credential = %+v, want pi's oauth shape carrying both tokens", cred)
 		}
-		want := time.Date(2026, 7, 29, 11, 0, 0, 0, time.UTC).UnixMilli()
-		if cred.Expires != want {
-			t.Errorf("Expires = %d, want %d (last_refresh + expires_in, in ms)", cred.Expires, want)
+		if cred.Expires != testAccessExpiry.UnixMilli() {
+			t.Errorf("Expires = %d, want %d (the access token's own exp claim, in ms)",
+				cred.Expires, testAccessExpiry.UnixMilli())
 		}
 	})
 
@@ -121,44 +141,55 @@ func TestPiCodexSeed(t *testing.T) {
 		}
 	})
 
-	// A node that ASKED for this provider and cannot get it must fail loudly:
-	// there is no API-key fallback for openai-codex, so degrading would run
-	// the node with no credential and a confusing upstream error.
-	t.Run("explicit failures", func(t *testing.T) {
+	// No usable Codex credential must NOT fail the node. Before this bridge
+	// existed such a node ran off pi's own /login store; erroring here would
+	// take that working path away from an operator who has one.
+	t.Run("steps aside when it has nothing to offer", func(t *testing.T) {
 		task := Task{NodeID: "n", Model: "openai-codex/gpt-5.6-sol", StoreDir: t.TempDir()}
 
 		t.Run("no credential", func(t *testing.T) {
 			t.Setenv("CODEX_HOME", t.TempDir())
-			if _, _, err := piCodexSeed(context.Background(), task, nil); err == nil {
-				t.Fatal("no error although no ChatGPT credential exists")
+			env, cleanup, err := piCodexSeed(context.Background(), task, nil)
+			cleanup()
+			if err != nil {
+				t.Fatalf("err = %v — pi's own login is still a valid way to run this node", err)
+			}
+			if len(env) != 0 {
+				t.Errorf("env = %v, want none so pi resolves its own credential", env)
 			}
 		})
 
 		t.Run("api-key auth mode", func(t *testing.T) {
 			writeCodexAuth(t, "apikey")
-			_, _, err := piCodexSeed(context.Background(), task, nil)
-			if err == nil || !strings.Contains(err.Error(), "not a ChatGPT") {
-				t.Fatalf("err = %v, want a refusal naming the auth mode", err)
-			}
-		})
-
-		t.Run("operator forbids subscription OAuth", func(t *testing.T) {
-			writeCodexAuth(t, "chatgpt")
-			t.Setenv("ITERION_FORBID_SUBSCRIPTION_OAUTH", "1")
-			_, _, err := piCodexSeed(context.Background(), task, nil)
-			if err == nil || !strings.Contains(err.Error(), "ITERION_FORBID_SUBSCRIPTION_OAUTH") {
-				t.Fatalf("err = %v, want the opt-out to be honoured and named", err)
+			env, cleanup, err := piCodexSeed(context.Background(), task, nil)
+			cleanup()
+			if err != nil || len(env) != 0 {
+				t.Fatalf("env=%v err=%v — an api-key Codex login is not usable here, but pi may still have its own", env, err)
 			}
 		})
 	})
 
-	// Guessing a deadline is the dangerous direction: a token believed live
-	// but actually dead goes upstream and fails the node. 0 makes pi refresh.
-	t.Run("an unusable expiry becomes 0 so pi refreshes", func(t *testing.T) {
+	// The policy refusal is the one hard error: an operator who forbids
+	// spending a personal plan must not have it happen behind their back.
+	t.Run("the subscription opt-out is a hard refusal", func(t *testing.T) {
+		writeCodexAuth(t, "chatgpt")
+		t.Setenv("ITERION_FORBID_SUBSCRIPTION_OAUTH", "1")
+		_, _, err := piCodexSeed(context.Background(),
+			Task{NodeID: "n", Model: "openai-codex/gpt-5.6-sol", StoreDir: t.TempDir()}, nil)
+		if err == nil || !strings.Contains(err.Error(), "ITERION_FORBID_SUBSCRIPTION_OAUTH") {
+			t.Fatalf("err = %v, want the opt-out honoured and named", err)
+		}
+	})
+
+	// Only when the deadline is genuinely unknowable does it fall back to 0,
+	// which pi reads as expired and refreshes. Reaching that on a NORMAL
+	// credential is the bug this guards: it costs an auth round-trip per node
+	// and rotates the operator's refresh token every time.
+	t.Run("an unreadable expiry becomes 0 so pi refreshes", func(t *testing.T) {
 		for name, view := range map[string]string{
-			"missing last_refresh": `{"auth_mode":"chatgpt","tokens":{"access_token":"a","refresh_token":"r","account_id":"x","expires_in":3600}}`,
-			"unparseable":          `{"auth_mode":"chatgpt","last_refresh":"not-a-date","tokens":{"access_token":"a","refresh_token":"r","account_id":"x","expires_in":3600}}`,
-			"no expires_in":        `{"auth_mode":"chatgpt","last_refresh":"2026-07-29T10:00:00Z","tokens":{"access_token":"a","refresh_token":"r","account_id":"x"}}`,
+			"opaque access token": `{"auth_mode":"chatgpt","tokens":{"access_token":"not-a-jwt","refresh_token":"r","account_id":"x"}}`,
+			"malformed jwt":       `{"auth_mode":"chatgpt","tokens":{"access_token":"a.!!!.c","refresh_token":"r","account_id":"x"}}`,
+			"no exp claim":        `{"auth_mode":"chatgpt","tokens":{"access_token":"eyJhbGciOiJub25lIn0.e30.sig","refresh_token":"r","account_id":"x"}}`,
 		} {
 			t.Run(name, func(t *testing.T) {
 				dir := t.TempDir()
@@ -235,4 +266,58 @@ func TestPiSkillDir(t *testing.T) {
 			t.Errorf("piSkillDir = %q, want empty", got)
 		}
 	})
+}
+
+// A sandboxed run sees only the workspace: the store dir is not bind-mounted
+// unless it happens to live under the global iterion home, and the repo's own
+// dogfood invocation (--store-dir "$PWD/.iterion") plus every studio launch
+// make it the workspace's — a SIBLING of the mounted worktree. Seeding there
+// makes pi report "No API key found for openai-codex" to an operator who has
+// one, on the DEFAULT path, since sandboxing is on by default.
+func TestPiCodexSeedRootFollowsTheMount(t *testing.T) {
+	work, store := t.TempDir(), t.TempDir()
+
+	host := piCodexSeedRoot(Task{WorkDir: work, StoreDir: store})
+	if host != filepath.Join(store, "pi") {
+		t.Errorf("host root = %q, want it under the store", host)
+	}
+
+	boxed := piCodexSeedRoot(Task{WorkDir: work, StoreDir: store, Sandbox: stubSandboxRun{}})
+	if boxed != filepath.Join(work, ".iterion", "pi") {
+		t.Errorf("sandboxed root = %q, want it inside the workspace — the only mounted tree", boxed)
+	}
+	// It must also agree with where the session dir goes, since both have to
+	// be reachable from inside the same container.
+	if got := piSessionDir(Task{WorkDir: work, StoreDir: store, Sandbox: stubSandboxRun{}}); !strings.HasPrefix(got, work) {
+		t.Errorf("session dir %q is outside the workspace; the two paths disagree", got)
+	}
+}
+
+// A SIGKILL skips the deferred cleanup and strands a live access AND refresh
+// token on disk. The dirs are per-node, so anything present when a new node
+// starts is abandoned by definition.
+func TestPiCodexSeedSweepsAbandonedDirs(t *testing.T) {
+	writeCodexAuth(t, "chatgpt")
+	store := t.TempDir()
+	stale := filepath.Join(store, "pi", piSeedDirPrefix+"orphan")
+	if err := os.MkdirAll(stale, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(stale, "auth.json"), []byte(`{"x":1}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	env, cleanup, err := piCodexSeed(context.Background(),
+		Task{NodeID: "n", Model: "openai-codex/gpt-5.6-sol", StoreDir: store}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer cleanup()
+
+	if _, err := os.Stat(stale); !os.IsNotExist(err) {
+		t.Errorf("abandoned credential dir survived (%v) — nothing else reaps it", err)
+	}
+	if _, err := os.Stat(env["PI_CODING_AGENT_DIR"]); err != nil {
+		t.Errorf("the sweep took this node's own dir: %v", err)
+	}
 }

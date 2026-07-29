@@ -2,6 +2,7 @@ package delegate
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -33,15 +34,32 @@ import (
 //     happens for a node that actually asked for `openai-codex`. A node on any
 //     other provider keeps pi's native credential breadth, which is half the
 //     reason this backend exists.
-//   - pi refreshes an expired token and writes the result to the dir it was
+//   - pi refreshes an EXPIRED token and writes the result to the dir it was
 //     given — here, the throwaway one. That keeps `~/.codex` untouched, but it
 //     also means the refresh is not shared: if OpenAI rotates the refresh
 //     token on use, the copy in `~/.codex/auth.json` can be invalidated and
 //     the Codex CLI itself will need to re-login. There is no way to have both
-//     without writing into the operator's credential file.
+//     without writing into the operator's credential file. Passing the access
+//     token's real deadline (see piCodexExpiry) is what keeps this to the
+//     exception it should be rather than something every node does.
 
 // piCodexProvider is pi's id for the ChatGPT-subscription provider.
 const piCodexProvider = "openai-codex"
+
+// piSeedDirPrefix names the throwaway agent dirs, so a sweep can recognise one
+// an interrupted node left behind.
+const piSeedDirPrefix = "pi-agent-"
+
+// piNoteCodexFallback explains, once per node, why iterion did not supply the
+// credential — silence here would look like the bridge worked.
+func piNoteCodexFallback(task Task, logger *iterlog.Logger, reason string) {
+	if logger == nil {
+		return
+	}
+	logger.Warn("[%s#%d/%s] node targets %s and %s; leaving pi to resolve its own "+
+		"credential (run `pi` then /login, or sign in with `codex login`)",
+		task.NodeID, task.Iteration, BackendPi, piCodexProvider, reason)
+}
 
 // piOAuthCredential is one entry of pi's auth.json. `type: "oauth"` is the
 // discriminator pi's credential store keys on; the field names are pi's, not
@@ -85,21 +103,25 @@ func piCodexSeed(ctx context.Context, task Task, logger *iterlog.Logger) (map[st
 			task.NodeID, piCodexProvider)
 	}
 
+	// No usable Codex credential is NOT an error: before this bridge existed,
+	// such a node ran off pi's own `/login` store, and failing here would take
+	// that working path away — while telling the operator to run `pi` and
+	// /login, which this code path never reads. Warn and step aside so pi
+	// resolves its own credential, exactly as it used to.
 	view, err := piLoadCodexView(ctx)
-	if err != nil {
-		return nil, noop, fmt.Errorf(
-			"pi backend: node %q targets %s but no ChatGPT credential could be read (%w). "+
-				"Sign in with `codex login`, or run `pi` and use /login",
-			task.NodeID, piCodexProvider, err)
-	}
-	if !view.IsChatGPTMode() {
-		return nil, noop, fmt.Errorf(
-			"pi backend: node %q targets %s but the Codex credential is not a ChatGPT "+
-				"subscription (auth_mode=%q). That provider has no API-key path",
-			task.NodeID, piCodexProvider, view.AuthMode)
+	switch {
+	case err != nil:
+		piNoteCodexFallback(task, logger, fmt.Sprintf("no ChatGPT credential could be read (%v)", err))
+		return nil, noop, nil
+	case !view.IsChatGPTMode():
+		piNoteCodexFallback(task, logger, fmt.Sprintf(
+			"the Codex credential is not a ChatGPT subscription (auth_mode=%q)", view.AuthMode))
+		return nil, noop, nil
 	}
 
-	dir, err := os.MkdirTemp(piCodexSeedRoot(task), "pi-agent-")
+	root := piCodexSeedRoot(task)
+	piSweepStaleSeeds(root)
+	dir, err := os.MkdirTemp(root, piSeedDirPrefix)
 	if err != nil {
 		return nil, noop, fmt.Errorf("pi backend: create agent dir: %w", err)
 	}
@@ -142,27 +164,72 @@ func piLoadCodexView(ctx context.Context) (secrets.CodexCredentialsView, error) 
 
 // piCodexSeedRoot picks where the throwaway agent dir lives.
 //
-// The run's store dir is preferred so the file shares the store's lifetime and
-// permissions rather than landing in a world-listable /tmp; os.MkdirTemp's own
-// default is the fallback when a task carries no store.
+// A sandboxed run must place it inside the WORKSPACE, which is the only tree
+// bind-mounted into the container. The store dir is not mounted unless it
+// happens to sit under the global iterion home — and the repo's own dogfood
+// invocation (`--store-dir "$PWD/.iterion"`) plus every studio launch make it
+// the workspace's, whose `pi/` is a SIBLING of the mounted worktree under
+// `worktree: auto`. pi then finds no auth.json, writes `{}`, and reports "No
+// API key found for openai-codex" to an operator who has one. `piSessionDir`
+// already branches this way for the same reason.
+//
+// Off the sandbox the run's store is preferred so the file shares the store's
+// lifetime; os.MkdirTemp's own default is the last resort.
 func piCodexSeedRoot(task Task) string {
-	if task.StoreDir == "" {
+	root := ""
+	switch {
+	case task.Sandbox != nil && task.WorkDir != "":
+		root = filepath.Join(task.WorkDir, ".iterion", "pi")
+	case task.StoreDir != "":
+		root = filepath.Join(task.StoreDir, "pi")
+	default:
 		return ""
 	}
-	root := filepath.Join(task.StoreDir, "pi")
 	if err := os.MkdirAll(root, 0o700); err != nil {
 		return ""
 	}
 	return root
 }
 
-// piCodexExpiry converts Codex's expiry into the epoch-milliseconds pi stores.
+// piSweepStaleSeeds removes agent dirs an earlier node left behind.
 //
-// Codex records a refresh instant plus a lifetime; pi wants the deadline. When
-// either is missing or unparseable the answer is 0, which pi reads as "expired"
-// and refreshes from the refresh token — the safe direction, since guessing a
-// deadline too far out would send a dead token upstream.
+// Every seed is deleted by its own deferred cleanup, but a SIGKILL or an OOM
+// skips that and strands a live access AND refresh token on disk with nothing
+// to reap it. The dirs are per-node and short-lived, so anything already here
+// when a new node starts is by definition abandoned.
+func piSweepStaleSeeds(root string) {
+	if root == "" {
+		return
+	}
+	entries, err := os.ReadDir(root)
+	if err != nil {
+		return
+	}
+	for _, e := range entries {
+		if e.IsDir() && strings.HasPrefix(e.Name(), piSeedDirPrefix) {
+			_ = os.RemoveAll(filepath.Join(root, e.Name()))
+		}
+	}
+}
+
+// piCodexExpiry works out the epoch-milliseconds deadline pi stores.
+//
+// The access token's own `exp` claim is the primary source, because the Codex
+// CLI does not record a lifetime: real `~/.codex/auth.json` blobs carry
+// `access_token`/`refresh_token`/`account_id`/`id_token` and `last_refresh`,
+// and nothing in this tree ever writes `expires_in`. Deriving the deadline
+// from `last_refresh + expires_in` therefore always yielded 0, and 0 is not
+// the harmless default it looks like: pi treats it as expired and refreshes
+// on EVERY node, spending an auth round-trip it did not need and rotating the
+// operator's refresh token — the risk the file header describes as an
+// exception was in fact the unconditional path.
+//
+// Falling back to 0 stays correct for a blob whose token cannot be read: pi
+// then refreshes, which is better than sending a deadline we invented.
 func piCodexExpiry(view secrets.CodexCredentialsView) int64 {
+	if exp := jwtExpiryMillis(view.Tokens.AccessToken); exp > 0 {
+		return exp
+	}
 	if view.LastRefresh == "" || view.Tokens.ExpiresIn <= 0 {
 		return 0
 	}
@@ -171,4 +238,28 @@ func piCodexExpiry(view secrets.CodexCredentialsView) int64 {
 		return 0
 	}
 	return last.Add(time.Duration(view.Tokens.ExpiresIn) * time.Second).UnixMilli()
+}
+
+// jwtExpiryMillis reads the `exp` claim of a JWT access token, in epoch ms.
+//
+// Only the payload is decoded and only one numeric claim is read — the
+// signature is irrelevant here, since the token is not being trusted for
+// authorization, merely asked when it stops working. pi decodes the same
+// token for its account id. Returns 0 for anything unreadable.
+func jwtExpiryMillis(token string) int64 {
+	parts := strings.Split(token, ".")
+	if len(parts) != 3 {
+		return 0
+	}
+	payload, err := base64.RawURLEncoding.DecodeString(parts[1])
+	if err != nil {
+		return 0
+	}
+	var claims struct {
+		Exp int64 `json:"exp"`
+	}
+	if err := json.Unmarshal(payload, &claims); err != nil || claims.Exp <= 0 {
+		return 0
+	}
+	return claims.Exp * 1000
 }

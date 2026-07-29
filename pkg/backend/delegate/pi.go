@@ -2,7 +2,9 @@ package delegate
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"strings"
@@ -283,6 +285,13 @@ func piSkillDir(task Task) string {
 	}
 	entries, err := os.ReadDir(dir)
 	if err != nil {
+		// "Not there" is the ordinary case for a bot shipping no skills.
+		// Anything else — a permission error, a broken mount — means skills
+		// may well exist and we cannot see them, which must not pass for the
+		// same thing: the node would run silently stripped of its guidance.
+		if !errors.Is(err, fs.ErrNotExist) {
+			return dir
+		}
 		return ""
 	}
 	for _, e := range entries {
