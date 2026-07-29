@@ -50,6 +50,8 @@ These bots are shipped in the repository and are discoverable by the CLI and stu
 | 🚨 Vulny | [`supply-shield-cve`](../bots/supply-shield-cve/) | Diff-scoped known-CVE gate for changed dependency versions. |
 | 🧪 Testy | [`test-coverage`](../bots/test-coverage/) | Add meaningful regression-catching tests and verify both the suite and the new test diff. |
 | 📖 Wikky | [`wiki-gen`](../bots/wiki-gen/) | Generate and incrementally maintain a validated Open Knowledge Format wiki. |
+| 🪞 Goldy | [`golden-master`](../bots/golden-master/) | Build a behavioural non-regression net (golden master) for an existing app and prove it is neither blind nor hysterical with a deterministic mutation counter-test; the safety net under a migration or refactor. |
+| 🧱 Morphy | [`modernize`](../bots/modernize/) | Carry a repo through modernisation lots (toolchain/runtime/framework/datastore) one deterministic gate-to-gate step at a time, each proven by a behavioural oracle — refuses to start without a golden-master net. |
 
 The manifests are authoritative for inputs, invocation modes, required capabilities, forge events, and suggested schedules. Nexie’s generated [bot decision catalogue](../bots/whats-next/skills/iterion-bot-catalog.md) is the routing-oriented view.
 
