@@ -62,8 +62,9 @@ survey with zero changes on Nexie's side:
 
 ## Models & credentials
 
-All memory-bearing nodes run on the `claw` backend (claude_code/codex
-silently ignore the `memory:` block). Defaults are forfait-friendly:
+All memory-bearing nodes run on the `claw` backend (every CLI backend —
+`claude_code`, `pi`, Kimi, Grok, and legacy Codex — leaves `memory:` without
+effect and triggers C047). Defaults are forfait-friendly:
 claw nodes use `openai/gpt-5.5` (ChatGPT forfait), the one cross-family
 "claude" reviewer uses `claude_code` (Claude Code OAuth forfait).
 Override per node via `ITERION_EVOLVE_MODEL_GPT`,
