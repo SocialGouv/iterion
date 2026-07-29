@@ -127,6 +127,17 @@ func (b *PiBackend) Execute(ctx context.Context, task Task) (Result, error) {
 	if err := b.noticeSubscriptionOAuth(ctx, task); err != nil {
 		return Result{BackendName: BackendPi, ExitCode: -1}, err
 	}
+	// pi's openai-codex provider has no API-key path, so a ChatGPT plan only
+	// reaches it through a seeded agent dir. Riding task.ExtraEnv puts it on
+	// both transports at once, and on the sandboxed path with them.
+	codexEnv, cleanupCodex, err := piCodexSeed(ctx, task, b.Logger)
+	if err != nil {
+		return Result{BackendName: BackendPi, ExitCode: -1}, err
+	}
+	defer cleanupCodex()
+	for k, v := range codexEnv {
+		task.ExtraEnv = append(task.ExtraEnv, k+"="+v)
+	}
 	piHideWorkspaceSessionDir(task, b.Logger)
 	// Transport selection. RPC is the default because it is strictly higher
 	// fidelity — tool events reach the studio timeline, operator chat rides
