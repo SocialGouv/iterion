@@ -176,8 +176,8 @@ is at `GET /api/orgs/{id}/usage`. Denial semantics when a cap is hit:
 | What you see | What's going on |
 |---|---|
 | "no API key configured for provider X" at run launch | Neither you nor your team has registered a key for that provider, and the operator hasn't set the env-var fallback. Add a key in `/account` → API keys or ask a team admin to add one. |
-| "refusing to spend a subscription OAuth token outside the vendor's own CLI" | The deployment set `ITERION_FORBID_SUBSCRIPTION_OAUTH=1`, but a `claw` or `pi` node would use your Anthropic subscription token. Add an Anthropic API key (BYOK), switch to `backend: claude_code`, or ask the operator to allow the path; when allowed, Anthropic bills it against the subscription's separate **extra-usage** balance. |
-| "Anthropic subscription extra-usage balance is empty" | A `claw` or `pi` call reached Anthropic with your subscription token, but its separate extra-usage balance is exhausted. Enable/replenish extra usage at `claude.ai/settings/usage`, add an API key, or use `backend: claude_code` to spend the plan itself. |
+| "refusing to spend a subscription OAuth token outside the vendor's own CLI" | The deployment set `ITERION_FORBID_SUBSCRIPTION_OAUTH=1` and the run resolved subscription credentials for a `claw` or `pi` node. Add an Anthropic API key (BYOK), switch to `backend: claude_code`, or ask the operator to allow direct use; Anthropic then bills a separate **extra-usage** balance. Note that cloud-uploaded Claude credentials currently authenticate claw/Claude Code, not pi. |
+| "Anthropic subscription extra-usage balance is empty" | A `claw` call (or pi with ambient/local subscription auth) reached Anthropic after that separate balance was exhausted. Enable/replenish extra usage at `claude.ai/settings/usage`, add an API key, or use `backend: claude_code` to spend the plan itself. |
 | "invitation expired" / "invitation already accepted" | Ask the inviter to issue a new one. |
 | Login redirects you back to `/login` after the OIDC bounce | The IdP and iterion disagree on the redirect URI; ping your operator with the URL bar contents at the moment of the bounce. |
 
