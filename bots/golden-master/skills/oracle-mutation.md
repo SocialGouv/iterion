@@ -129,6 +129,24 @@ Either write POSIX `sh` and use `.` instead of `source`, or declare
 - **`revert.sh` must be exact.** After reverting, the harness re-captures the targets and requires
   them back at the reference. A sloppy revert poisons every mutant scored after it.
 
+### Gate on a committed tree, always
+
+`revert.sh` for a file mutation is almost always `git checkout -- <file>`, which restores **HEAD**.
+That has a consequence nobody expects the first time: **any uncommitted change to a file a mutant
+touches is destroyed by the gate**, silently, mid-run.
+
+It gets worse than losing work. The gate captures references from the working tree it starts with,
+then the first mutant revert snaps those files back to HEAD, and every later capture describes a
+DIFFERENT tree. The verdict then belongs to no tree that ever existed: green or red, it does not
+describe what you were testing.
+
+Seen for real. An application change sat uncommitted, the gate ran, mutant 06 reverted the file,
+and the four mutants after it reported collateral drift on two entries — a coherent-looking,
+entirely fictitious finding, produced by the gate mutating the thing it was judging.
+
+So: **commit before gating.** The harness reports a dirty workspace in its notice for exactly this
+reason; treat that notice as a stop, not a remark.
+
 ## The held-out set — the one piece that must survive
 
 `.golden-master/mutants/holdout/` is **sealed**, and the seal is mechanical, not a promise:

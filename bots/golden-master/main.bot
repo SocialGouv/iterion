@@ -881,6 +881,23 @@ tool oracle_run:
         except (OSError, NameError):
             pass
 
+        # Une porte sur un arbre sale juge un arbre qui n'a jamais existé : les
+        # captures partent de ce qui est là, puis le premier revert de mutant —
+        # `git checkout -- <fichier>` — ramène ces fichiers à HEAD, et tout ce qui
+        # est capturé ensuite décrit autre chose. Le travail non committé est
+        # détruit au passage, en silence. Signalé plutôt que refusé : enregistrer et
+        # itérer sur un arbre sale est légitime, GATER dessus ne l'est pas.
+        if mode != "record":
+            dirty = subprocess.run(["git", "-C", ws, "status", "--porcelain"],
+                                   capture_output=True, text=True)
+            if dirty.returncode == 0 and dirty.stdout.strip():
+                paths = [l[3:] for l in dirty.stdout.strip().splitlines()]
+                report["notice"] = ((report["notice"] + " | ") if report["notice"] else "") + (
+                    "WORKSPACE NOT COMMITTED (%d path(s): %s). Mutant reverts restore HEAD, so "
+                    "these changes are destroyed during the run and the verdict below describes "
+                    "a tree that never existed. Commit, then gate."
+                    % (len(paths), ", ".join(sorted(paths)[:12])))
+
         visible = load_mutants(gm_dir, holdout=False)
         if mode != "record":
             seal_holdout(gm_dir, sealed_dir)
