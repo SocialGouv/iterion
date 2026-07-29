@@ -116,7 +116,7 @@ schema review_result:
   metadata: json
 ```
 
-Schemas define structured node inputs/outputs. Field types match variable types; string fields may carry enum constraints.
+Schemas define structured node inputs/outputs. Field types match variable types (`string`, `bool`, `int`, `float`, `json`, `string[]`); string fields may carry enum constraints. A seventh type, `file`, declares an operator-supplied binary and is valid only on a human node's `output_schema` — no model can produce one, so the compiler rejects it elsewhere with [C129](references/diagnostics.md). See [human-in-the-loop](human-in-the-loop.md).
 
 ### Template namespaces
 
