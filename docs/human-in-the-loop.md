@@ -175,10 +175,17 @@ cannot proceed without it.
 
 ### Ad-hoc attachments — no DSL at all
 
-Every human gate carries a **📎 Attach a file** button, whether or not
-its author anticipated one. This is the "here's a diagram explaining what
-I mean" case: feedback is much cheaper to give as a sketch than as three
-paragraphs describing the sketch.
+Every ordinary human gate carries a **📎 Attach a file** button, whether
+or not its author anticipated one. This is the "here's a diagram
+explaining what I mean" case: feedback is much cheaper to give as a
+sketch than as three paragraphs describing the sketch.
+
+**Not review gates.** `interaction: review` renders through a different
+form (approve / request changes / merge) with no attach affordance, and
+its resume builds the verdict itself rather than carrying the operator's
+answers — so `_attachments` never reaches the workflow there, even from
+the API. Use an ordinary gate when you need the operator to hand over
+files.
 
 Those land on the reserved `_attachments` answer key as a list of the
 same descriptors:

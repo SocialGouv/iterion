@@ -267,6 +267,43 @@ func (s *Service) startInProcess(parent context.Context, runID string, spec Laun
 		})
 }
 
+// PreflightResume runs the checks Resume performs before it takes any
+// action, WITHOUT starting anything: the run must exist, be in a
+// resumable status, and (unless spec.Force) still hash-match the
+// workflow source.
+//
+// It exists for callers that must not perform an irreversible side
+// effect on a resume that is going to be rejected anyway. The HTTP layer
+// promotes an operator's staged uploads into run attachments before
+// calling Resume, and promotion CONSUMES the staging — so a resume that
+// then fails on a changed workflow hash would leave the studio's
+// "Resume with updated workflow (force)" retry re-sending upload ids
+// that no longer exist, making the documented recovery impossible.
+//
+// Resume repeats every check after acquiring the run, so this is a
+// courtesy gate, not a guarantee: it narrows the window, it does not
+// remove it.
+func (s *Service) PreflightResume(parent context.Context, spec ResumeSpec) error {
+	if spec.RunID == "" {
+		return errors.New("runview: run_id is required")
+	}
+	if spec.FilePath == "" {
+		return errors.New("runview: file_path is required")
+	}
+	r, err := s.store.LoadRun(parent, spec.RunID)
+	if err != nil {
+		return err
+	}
+	if err := validateResumable(r, spec.Answers); err != nil {
+		return err
+	}
+	_, hash, err := compileForLaunch(spec.FilePath, spec.Source)
+	if err != nil {
+		return err
+	}
+	return runtime.ValidateResumeWorkflowHash(r.ID, r.WorkflowHash, hash, spec.Force)
+}
+
 // Resume re-enters a human-paused, operator-paused, failed_resumable,
 // or cancelled run with optional answers. The .bot source must be
 // supplied (and must hash-match the original unless spec.Force).

@@ -508,6 +508,23 @@ func (s *Server) handleResumeRun(w http.ResponseWriter, r *http.Request) {
 	// intact.
 	answers := req.Answers
 	if len(req.Attachments) > 0 || hasUploadEnvelope(answers) {
+		// Promotion consumes the staging, so a resume that Resume is
+		// going to reject anyway must not get that far: the studio's
+		// force-resume retry re-sends the SAME upload ids, and they
+		// would already be gone. Only paid for on an upload-carrying
+		// resume — it compiles the workflow a second time.
+		if pfErr := s.runs.PreflightResume(ctx, runview.ResumeSpec{
+			RunID:    id,
+			FilePath: absPath,
+			Source:   req.Source,
+			Answers:  answers,
+			Force:    req.Force,
+		}); pfErr != nil {
+			s.writeResumeError(w, r, pfErr)
+			span.RecordError(pfErr)
+			span.SetStatus(codes.Error, "resume preflight failed")
+			return
+		}
 		pausedNode := ""
 		if runMeta.Checkpoint != nil {
 			pausedNode = runMeta.Checkpoint.NodeID

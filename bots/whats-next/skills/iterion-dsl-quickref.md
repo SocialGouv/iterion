@@ -252,9 +252,11 @@ prompt mix:
   engine owns that key (**C130**).
 - `file` fields are optional; branch downstream if the workflow cannot
   proceed without one.
-- Every human gate ALSO has an unconditional "attach a file" button
-  requiring no DSL; those land on `_attachments` as a list of the same
-  descriptors.
+- Every ORDINARY human gate also has an unconditional "attach a file"
+  button requiring no DSL; those land on `_attachments` as a list of the
+  same descriptors. `interaction: review` gates are the exception — no
+  attach button, and their resume builds the verdict instead of carrying
+  answers, so `_attachments` never reaches the workflow there.
 - CLI: `--answer music=@./theme.mp3`. The `@` convention applies only to
   `file`-typed fields — other answers pass through verbatim; inside a
   file field, `@@` escapes a literal `@`.

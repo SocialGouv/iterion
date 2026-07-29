@@ -169,6 +169,22 @@ func (e *Engine) predictAttachmentsDir() string {
 // Returns "" when the store has no filesystem root (cloud/S3-backed
 // stores); those callers fall back to the presigned URL accessor, which
 // is why AttachmentInfo carries both.
+// attachmentHostPath returns where the ITERION PROCESS can read an
+// attachment's bytes. Always a host path — never the container one
+// attachmentPath may hand the nodes — because the readers are in-process
+// (image inlining for a vision content block). Empty for a
+// non-filesystem store, whose consumers use the presigned URL instead.
+func (e *Engine) attachmentHostPath(rec store.AttachmentRecord) string {
+	if e == nil || e.store == nil || rec.StorageRef == "" {
+		return ""
+	}
+	root := e.store.Root()
+	if root == "" {
+		return ""
+	}
+	return filepath.Join(root, filepath.FromSlash(rec.StorageRef))
+}
+
 func (e *Engine) attachmentPath(rec store.AttachmentRecord) string {
 	if e == nil || e.store == nil || rec.StorageRef == "" {
 		return ""

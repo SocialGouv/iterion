@@ -504,6 +504,11 @@ func (e *Engine) loadAttachmentInfos(ctx context.Context, runID string) map[stri
 		// cloud/non-FS stores, whose consumers use the presign accessor
 		// below instead.
 		info.Path = e.attachmentPath(rec)
+		// Where THIS process can read the bytes. Distinct from Path,
+		// which is the node's view and points inside the container on a
+		// sandboxed run — reading that here fails, and image inlining
+		// silently degrades to interpolating the path as text.
+		info.HostPath = e.attachmentHostPath(rec)
 		// Lazy presign — capture the loop var by value so each closure
 		// targets its own attachment.
 		recCopy := rec
