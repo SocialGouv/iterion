@@ -8,16 +8,48 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/SocialGouv/iterion/pkg/dsl/ir"
 	"github.com/SocialGouv/iterion/pkg/store"
 )
 
 // fileAnswerPrefix marks a --answer value as a path to attach rather
 // than a literal string: `--answer music=@./theme.mp3`.
 //
-// The convention is curl's, and it is deliberately opt-in: an ordinary
-// answer that happens to start with '@' stays literal when escaped as
-// '@@' (see resolveFileAnswerFlags).
+// The convention is curl's, and it applies ONLY to answers the paused
+// node declares as `file`-typed (see fileAnswerFields) — every other
+// answer passes through verbatim, '@' or not. Within a file field, a
+// literal leading '@' is escaped as '@@'.
 const fileAnswerPrefix = "@"
+
+// fileAnswerFields returns the names of the paused human node's
+// `file`-typed output fields — the ONLY answers the '@path' convention
+// applies to.
+//
+// Scoping matters: --answer / --answers-file is a machine-fed interface
+// (CI, scripts), and answers legitimately start with '@' — a chat
+// mention, an npm scope, a `@v1.2` ref. Rewriting those into a file open
+// would break callers that never opted into anything, so the schema, not
+// the string's first byte, decides.
+func fileAnswerFields(wf *ir.Workflow, nodeID string) map[string]bool {
+	if wf == nil || nodeID == "" {
+		return nil
+	}
+	node, ok := wf.Nodes[nodeID]
+	if !ok {
+		return nil
+	}
+	schema := wf.Schemas[ir.NodeOutputSchema(node)]
+	if schema == nil {
+		return nil
+	}
+	fields := make(map[string]bool)
+	for _, f := range schema.Fields {
+		if f.Type == ir.FieldTypeFile {
+			fields[f.Name] = true
+		}
+	}
+	return fields
+}
 
 // resolveFileAnswerFlags turns `key=@path` answers into run attachments,
 // giving the CLI the same gate-upload capability the studio has.
@@ -34,28 +66,37 @@ const fileAnswerPrefix = "@"
 // them too. Both routes therefore converge on the same descriptor, and
 // the engine fills in `path` sandbox-aware afterwards.
 //
-// Values not prefixed with '@' are returned untouched. A literal
+// Only fileFields keys are considered; everything else is returned
+// untouched, as is any file-field value not prefixed with '@'. A literal
 // leading '@' is written '@@'.
 func resolveFileAnswerFlags(
 	ctx context.Context,
 	s store.RunStore,
 	runID, nodeID string,
+	fileFields map[string]bool,
 	answers map[string]any,
 ) error {
-	if s == nil || len(answers) == 0 {
+	if s == nil || len(answers) == 0 || len(fileFields) == 0 {
 		return nil
 	}
 
 	// Names already on the run: re-answering a gate must not clobber an
-	// attachment an earlier pass produced.
-	taken := make(map[string]bool)
-	if existing, err := s.ListAttachments(ctx, runID); err == nil {
-		for _, a := range existing {
-			taken[a.Name] = true
-		}
+	// attachment an earlier pass produced. A failed listing is not
+	// evidence of an empty run — treating it as one silently disables the
+	// collision guard.
+	existing, err := s.ListAttachments(ctx, runID)
+	if err != nil {
+		return fmt.Errorf("list existing attachments for run %s: %w", runID, err)
+	}
+	taken := make(map[string]bool, len(existing))
+	for _, a := range existing {
+		taken[a.Name] = true
 	}
 
 	for key, val := range answers {
+		if !fileFields[key] {
+			continue
+		}
 		raw, isString := val.(string)
 		if !isString || !strings.HasPrefix(raw, fileAnswerPrefix) {
 			continue

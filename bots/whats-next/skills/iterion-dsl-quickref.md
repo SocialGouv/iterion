@@ -250,7 +250,9 @@ prompt mix:
 - Every human gate ALSO has an unconditional "attach a file" button
   requiring no DSL; those land on `_attachments` as a list of the same
   descriptors.
-- CLI: `--answer music=@./theme.mp3` (`@@` escapes a literal `@`).
+- CLI: `--answer music=@./theme.mp3`. The `@` convention applies only to
+  `file`-typed fields — other answers pass through verbatim; inside a
+  file field, `@@` escapes a literal `@`.
 
 ### Review-&-merge gate (`interaction: review`)
 

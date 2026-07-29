@@ -7,8 +7,26 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/SocialGouv/iterion/pkg/dsl/ir"
+	"github.com/SocialGouv/iterion/pkg/dsl/parser"
 	"github.com/SocialGouv/iterion/pkg/store"
 )
+
+// compileSourceForTest compiles inline .bot source to an IR workflow.
+func compileSourceForTest(t *testing.T, src string) *ir.Workflow {
+	t.Helper()
+	pr := parser.Parse("test.bot", src)
+	for _, d := range pr.Diagnostics {
+		t.Fatalf("parse: %s", d.Error())
+	}
+	res := ir.Compile(pr.File)
+	for _, d := range res.Diagnostics {
+		if d.Severity == ir.SeverityError {
+			t.Fatalf("compile: %s", d.Message)
+		}
+	}
+	return res.Workflow
+}
 
 func fileAnswerStore(t *testing.T, runID string) store.RunStore {
 	t.Helper()
@@ -35,7 +53,7 @@ func TestResolveFileAnswerFlags_AttachesLocalFile(t *testing.T) {
 		"music":    "@" + src,
 		"approved": "true",
 	}
-	if err := resolveFileAnswerFlags(ctx, s, "cli-run", "gate_music", answers); err != nil {
+	if err := resolveFileAnswerFlags(ctx, s, "cli-run", "gate_music", map[string]bool{"music": true}, answers); err != nil {
 		t.Fatalf("resolveFileAnswerFlags: %v", err)
 	}
 
@@ -75,7 +93,7 @@ func TestResolveFileAnswerFlags_EscapedAtStaysLiteral(t *testing.T) {
 	s := fileAnswerStore(t, "cli-esc")
 
 	answers := map[string]any{"note": "@@channel please review"}
-	if err := resolveFileAnswerFlags(ctx, s, "gate", "cli-esc", answers); err != nil {
+	if err := resolveFileAnswerFlags(ctx, s, "cli-esc", "gate", map[string]bool{"note": true}, answers); err != nil {
 		t.Fatalf("resolveFileAnswerFlags: %v", err)
 	}
 	if answers["note"] != "@channel please review" {
@@ -88,7 +106,7 @@ func TestResolveFileAnswerFlags_MissingFileIsAClearError(t *testing.T) {
 	s := fileAnswerStore(t, "cli-missing")
 
 	answers := map[string]any{"music": "@/nonexistent/nope.mp3"}
-	err := resolveFileAnswerFlags(ctx, s, "cli-missing", "gate", answers)
+	err := resolveFileAnswerFlags(ctx, s, "cli-missing", "gate", map[string]bool{"music": true}, answers)
 	if err == nil {
 		t.Fatal("expected an error for a missing file")
 	}
@@ -103,7 +121,7 @@ func TestResolveFileAnswerFlags_PlainAnswersAreUntouched(t *testing.T) {
 	s := fileAnswerStore(t, "cli-plain")
 
 	answers := map[string]any{"approved": "true", "notes": "looks good"}
-	if err := resolveFileAnswerFlags(ctx, s, "cli-plain", "gate", answers); err != nil {
+	if err := resolveFileAnswerFlags(ctx, s, "cli-plain", "gate", map[string]bool{"music": true}, answers); err != nil {
 		t.Fatalf("resolveFileAnswerFlags: %v", err)
 	}
 	if answers["approved"] != "true" || answers["notes"] != "looks good" {
@@ -112,5 +130,63 @@ func TestResolveFileAnswerFlags_PlainAnswersAreUntouched(t *testing.T) {
 	list, _ := s.ListAttachments(ctx, "cli-plain")
 	if len(list) != 0 {
 		t.Errorf("no attachment should have been created, got %d", len(list))
+	}
+}
+
+// The '@' convention must not leak onto answers the schema never
+// declared as files: --answer / --answers-file is a machine-fed
+// interface, and a chat mention, an npm scope or a `@v1.2` ref
+// legitimately starts with '@'. Rewriting those into a file open breaks
+// callers that never opted into anything.
+func TestResolveFileAnswerFlags_NonFileFieldKeepsLeadingAt(t *testing.T) {
+	ctx := context.Background()
+	s := fileAnswerStore(t, "cli-scope")
+
+	answers := map[string]any{
+		"note":  "@channel please review",
+		"scope": "@acme/toolkit",
+	}
+	// `note` and `scope` are plain strings in the gate's schema.
+	if err := resolveFileAnswerFlags(ctx, s, "cli-scope", "gate", map[string]bool{"music": true}, answers); err != nil {
+		t.Fatalf("resolveFileAnswerFlags: %v", err)
+	}
+	if answers["note"] != "@channel please review" {
+		t.Errorf("note = %v, want the verbatim string", answers["note"])
+	}
+	if answers["scope"] != "@acme/toolkit" {
+		t.Errorf("scope = %v, want the verbatim string", answers["scope"])
+	}
+}
+
+// fileAnswerFields is what scopes the convention, so it must read the
+// paused node's OWN output schema and pick out only `file` fields.
+func TestFileAnswerFields_ReadsPausedNodeSchema(t *testing.T) {
+	src := `prompt ask_track:
+  Upload the track.
+
+schema gate_out:
+  music: file
+  notes: string
+
+human gate_music:
+  instructions: ask_track
+  output: gate_out
+  interaction: human
+
+workflow file_gate:
+  entry: gate_music
+  gate_music -> done
+`
+	wf := compileSourceForTest(t, src)
+
+	got := fileAnswerFields(wf, "gate_music")
+	if !got["music"] {
+		t.Errorf("music should be recognised as a file field, got %v", got)
+	}
+	if got["notes"] {
+		t.Errorf("notes is a string field and must not be file-scoped, got %v", got)
+	}
+	if len(fileAnswerFields(wf, "nope")) != 0 {
+		t.Error("an unknown node id must yield no file scope")
 	}
 }

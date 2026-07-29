@@ -49,9 +49,11 @@ const answerUploadsKey = "_attachments"
 const uploadEnvelopeKey = "upload_id"
 
 // maxAdHocGateUploads bounds the ad-hoc attachments accepted on a single
-// resume. The per-run ceiling (MaxUploadsPerRun) still applies across
-// the whole run; this is the per-answer guard so one submission cannot
-// consume the entire budget in a single shot.
+// resume. promoteAnswerUploads separately enforces MaxUploadsPerRun
+// against the run's EXISTING attachment count plus this batch (promotion
+// runs on every resume, so a per-call check alone would let a looping
+// gate grow the run without bound); this is the per-answer guard so one
+// submission cannot consume the whole budget in a single shot.
 const maxAdHocGateUploads = 10
 
 // asUploadEnvelope reports whether val is an upload envelope and returns
@@ -185,12 +187,27 @@ func (s *Server) promoteAnswerUploads(
 	}
 
 	// Names already used by this run — promoting onto one of them would
-	// overwrite bytes an earlier node may still be referencing.
-	taken := make(map[string]bool)
-	if existing, err := s.runs.ListAttachments(ctx, runID); err == nil {
-		for _, a := range existing {
-			taken[a.Name] = true
-		}
+	// overwrite bytes an earlier node may still be referencing. A failed
+	// listing must NOT be read as "this run has no attachments yet": that
+	// silently turns the collision guard off and clobbers those bytes on
+	// the first name collision. Fail the resume instead; the operator
+	// retries with the staging still intact.
+	existing, err := s.runs.ListAttachments(ctx, runID)
+	if err != nil {
+		return nil, fmt.Errorf("list existing attachments: %w", err)
+	}
+	taken := make(map[string]bool, len(existing))
+	for _, a := range existing {
+		taken[a.Name] = true
+	}
+
+	// promoteStaged enforces MaxUploadsPerRun per CALL, which was a
+	// per-run ceiling back when promotion happened once, at launch. It now
+	// runs on every resume, so a gate inside a loop could be answered N
+	// times and grow the run's attachments without bound. Count what the
+	// run already carries.
+	if total := len(taken) + len(fields) + len(adHoc); total > s.cfg.MaxUploadsPerRun {
+		return nil, fmt.Errorf("too many attachments on this run: %d > %d (--max-uploads-per-run)", total, s.cfg.MaxUploadsPerRun)
 	}
 
 	mapping := make(map[string]string, len(fields)+len(adHoc))

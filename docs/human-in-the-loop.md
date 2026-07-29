@@ -193,17 +193,23 @@ iterion resume --run-id <id> \
   --answer approved=true
 ```
 
-A literal leading `@` is escaped as `@@`. The attachment gets the same
-name it would from the studio, so a bot's `{{attachments.<node>.<field>}}`
-reference does not care which surface answered the gate.
+The `@` convention applies **only** to answers the paused node declares
+as `file`-typed — every other answer reaches the workflow verbatim, so a
+chat mention (`@channel`), an npm scope (`@acme/pkg`) or a `@v1.2` ref
+passes through untouched. Within a `file` field, a literal leading `@` is
+escaped as `@@`. The attachment gets the same name it would from the
+studio, so a bot's `{{attachments.<node>.<field>}}` reference does not
+care which surface answered the gate.
 
 ### Limits
 
 Uploads pass the same gate as launch-time attachments: server-sniffed
 MIME against the allowlist (images, audio, video, pdf, text, json, yaml,
-archives), `--max-upload-size` per file (50 MB web, 1 GB desktop),
-`--max-total-upload-size` per run. See
-[attachments.md](attachments.md#limits).
+archives), `--max-upload-size` per file (50 MB web, 1 GB desktop) and
+`--max-total-upload-size` per submission. `--max-uploads-per-run` is
+counted against the run's existing attachments plus the batch being
+promoted, so a gate answered repeatedly (a loop) cannot grow the run's
+attachments without bound. See [attachments.md](attachments.md#limits).
 
 ## See also
 

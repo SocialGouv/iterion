@@ -97,18 +97,39 @@ func (e *Engine) resolveFileAnswers(ctx context.Context, runID string, answers m
 	}
 }
 
-// sandboxWillBeActive reports whether this run executes inside a
-// container, WITHOUT starting one.
+// attachmentsDir returns the directory the RUNNING NODES open this run's
+// attachments under, or "" when that is the host filesystem.
 //
-// The question has to be answerable before the sandbox boots: a resume
-// resolves the paths it hands to agents while rebuilding state, which
-// happens either side of the bootstrap depending on the path taken.
-// resolveSandboxSpec is pure (it reads the workflow + overrides and
-// touches no daemon), so asking it early is safe and gives the same
-// answer the bootstrap will.
-func (e *Engine) sandboxWillBeActive() bool {
-	if e == nil || e.workflow == nil {
-		return false
+// Once startSandbox has run this is a fact: it reports the mount that
+// actually landed, so a sandbox-by-default run that degraded to
+// unsandboxed (no container runtime on the host) and a driver that drops
+// host bind mounts (kubernetes) both correctly answer "host".
+//
+// Before that point — only the resume path, which resolves operator file
+// answers while rebuilding state, ahead of the bootstrap — the answer is
+// a forecast. It runs the same three checks the bootstrap will, in the
+// same order, so the two agree except when the host changes underneath
+// (a docker daemon dying mid-resume), which the settled value then
+// corrects for every later reader.
+func (e *Engine) attachmentsDir() string {
+	if e == nil {
+		return ""
+	}
+	if e.sandboxSettled {
+		return e.attachmentsContainerDir
+	}
+	return e.predictAttachmentsDir()
+}
+
+// predictAttachmentsDir mirrors resolveAndStartSandbox's own decision
+// chain without touching a daemon or starting anything: the spec must
+// resolve to an active mode, a driver must be selectable for it (this is
+// where a host with no docker/podman drops out — resolveAndStartSandbox
+// degrades to unsandboxed at the very same call), and that driver must
+// support the host bind mount the attachments dir rides on.
+func (e *Engine) predictAttachmentsDir() string {
+	if e.workflow == nil {
+		return ""
 	}
 	spec, _, _, err := resolveSandboxSpec(
 		e.workflow,
@@ -117,7 +138,19 @@ func (e *Engine) sandboxWillBeActive() bool {
 		e.sandboxDefault,
 		resolveDefaultSandboxImage(e.sandboxDefaultImage),
 	)
-	return err == nil && spec != nil && spec.Mode.IsActive()
+	if err != nil || spec == nil || !spec.Mode.IsActive() {
+		return ""
+	}
+	driver, err := selectSandboxDriver(spec, nil)
+	if err != nil || driver == nil {
+		return ""
+	}
+	// noop is "opted into a sandbox that isn't one" — it starts no
+	// container, so nothing is mounted anywhere.
+	if driver.Name() == "noop" || !driver.Capabilities().SupportsHostBindMounts {
+		return ""
+	}
+	return attachmentsContainerPath
 }
 
 // attachmentPath returns the path at which the RUNNING NODES can open an
@@ -146,7 +179,7 @@ func (e *Engine) attachmentPath(rec store.AttachmentRecord) string {
 		// path to hand out. URL accessor only.
 		return ""
 	}
-	if e.sandboxWillBeActive() {
+	if dir := e.attachmentsDir(); dir != "" {
 		// The mount is the attachments DIRECTORY, so the in-container
 		// path mirrors the on-disk layout below it: <name>/<filename>.
 		// Built with path (not filepath) — the container is POSIX even
@@ -156,7 +189,7 @@ func (e *Engine) attachmentPath(rec store.AttachmentRecord) string {
 		if file == "" {
 			file = name
 		}
-		return path.Join(attachmentsContainerPath, name, file)
+		return path.Join(dir, name, file)
 	}
 	return filepath.Join(root, filepath.FromSlash(rec.StorageRef))
 }

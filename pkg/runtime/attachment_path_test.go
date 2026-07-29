@@ -66,16 +66,17 @@ func TestAttachmentPathIsContainerPathUnderSandbox(t *testing.T) {
 	}
 	rec := writeTestAttachment(t, s, "att-sandbox", "gate.music", "track.mp3", "bytes")
 
-	// A workflow that opts into a sandbox by image, which
-	// resolveSandboxSpec resolves as active without touching a daemon.
+	// The sandbox has booted and the attachments bind landed — the state
+	// startSandbox records. Asserted through that recorded state rather
+	// than through a spec, because the spec is exactly what must NOT
+	// decide this (see the degraded-run test below).
 	e := &Engine{
 		store: s,
 		workflow: &ir.Workflow{
 			Sandbox: &ir.SandboxSpec{Mode: "inline", Image: "ghcr.io/example/img:tag"},
 		},
-	}
-	if !e.sandboxWillBeActive() {
-		t.Fatal("test fixture does not resolve to an active sandbox; adjust the spec")
+		sandboxSettled:          true,
+		attachmentsContainerDir: attachmentsContainerPath,
 	}
 
 	got := e.attachmentPath(rec)
@@ -85,6 +86,40 @@ func TestAttachmentPathIsContainerPathUnderSandbox(t *testing.T) {
 	}
 	if strings.HasPrefix(got, s.Root()) {
 		t.Errorf("path = %q leaks the host store root into the container", got)
+	}
+}
+
+// A sandbox-by-default run on a host with no container runtime degrades
+// to unsandboxed (resolveAndStartSandbox emits sandbox_skipped and
+// returns no sandbox), and a driver that drops host bind mounts
+// (kubernetes) leaves the attachments dir unmounted. The workflow spec
+// still says "sandboxed" in both cases, so deciding from the spec hands
+// every agent a container path the run cannot open. What actually
+// happened must win.
+func TestAttachmentPathFallsBackToHostWhenSandboxDegraded(t *testing.T) {
+	s := tmpStore(t)
+	ctx := context.Background()
+	if _, err := s.CreateRun(ctx, "att-degraded", "wf", nil); err != nil {
+		t.Fatalf("CreateRun: %v", err)
+	}
+	rec := writeTestAttachment(t, s, "att-degraded", "gate.music", "track.mp3", "bytes")
+
+	e := &Engine{
+		store: s,
+		workflow: &ir.Workflow{
+			Sandbox: &ir.SandboxSpec{Mode: "inline", Image: "ghcr.io/example/img:tag"},
+		},
+		// startSandbox ran and produced no attachments mount.
+		sandboxSettled:          true,
+		attachmentsContainerDir: "",
+	}
+
+	got := e.attachmentPath(rec)
+	if strings.Contains(got, attachmentsContainerPath) {
+		t.Errorf("path = %q, want the host path: this run is NOT in a container", got)
+	}
+	if !strings.HasPrefix(got, s.Root()) || !strings.HasSuffix(got, "track.mp3") {
+		t.Errorf("path = %q, want a host path under %q ending at the file", got, s.Root())
 	}
 }
 

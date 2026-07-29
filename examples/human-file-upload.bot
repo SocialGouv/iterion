@@ -34,7 +34,7 @@ vars:
 schema upload_decision:
   ## `file` → rendered as a drop zone. Only a HUMAN node may declare
   ## one: no LLM can produce bytes, so the compiler rejects a `file`
-  ## field on an agent/judge/tool output schema (C123).
+  ## field on an agent/judge/tool output schema (C129).
   track: file
   ## bool → checkbox
   confirmed: bool
