@@ -26,6 +26,7 @@ See [cli-reference.md `#iterion-studio`](cli-reference.md#iterion-studio) for th
 - **Node library** — Drag pre-built node types (agent, judge, router, human, tool, compute) onto the canvas
 - **Property editor** — Edit node properties, schemas, prompts, and edge conditions in a side panel
 - **Source view** — Split-pane view showing the raw workflow source (`.bot`) alongside the visual graph
+- **Bundle file drawer (cloud team bots)** — Add, edit, save, or delete `manifest.yaml`, skills, prompts, and other bundle files without leaving the editor (`main.bot` is the required entry and cannot be deleted)
 - **Live diagnostics** — Real-time validation errors and warnings as you edit (sparse DSL range C001–C199; bundle checks C200–C234)
 - **File watching** — Detects external file changes via WebSocket and syncs automatically
 - **Undo/redo** — Full edit history
@@ -52,22 +53,28 @@ single page:
    a suggested cron), then create it. An embedded test-run pane lets you
    iterate without leaving the page. Drafts auto-save to local storage.
 
-Creating writes a real bundle to `<workdir>/bots/<slug>/` — `main.bot`,
-`manifest.yaml`, `README.md`, and the `skills/ prompts/ attachments/
-presets/` layout — and refreshes the generated bot catalogue, so the new
-bot is immediately discoverable, launchable, and dispatchable. The
-generated workflow is parsed **and** compiled and the manifest strictly
-decoded *before* anything lands on disk, so the builder cannot write a
-broken bundle.
+In local mode, creating writes a real bundle to
+`<workdir>/bots/<slug>/` — `main.bot`, `manifest.yaml`, `README.md`, and the
+`skills/ prompts/ attachments/ presets/` layout — and refreshes the generated
+bot catalogue, so the new bot is immediately discoverable, launchable, and
+dispatchable. The CLI equivalent is
+`iterion bots create <slug> --template <id>`.
 
-The CLI equivalent is `iterion bots create <slug> --template <id>`; both
-surfaces render through the same `pkg/botscaffold` engine, so a bot
-created either way is identical. See the
-[CLI reference](cli-reference.md#iterion-bots).
+In cloud mode, the same builder is enabled for a user with the bot-editor
+capability (or a team admin/owner). The server renders the same
+`pkg/botscaffold` spec in a temporary directory and persists the whole file map
+to the team's bot-source store instead of an ephemeral pod filesystem. The new
+bot can be opened directly in the multi-file editor and is visible to every
+team member. Baked catalogue bots remain read-only; **Duplicate & edit** forks the
+whole catalogue bundle into that team store before opening it. See
+[Cloud user guide → Editing and creating bots](cloud-user.md#editing-and-creating-bots).
 
-> Local mode only. In cloud mode the builder is disabled (bots are
-> authored through git) and the view points you at the catalogue and
-> marketplace instead.
+Both creation paths validate the spec and generated bundle before persistence;
+subsequent cloud file saves compile the whole bundle and use a version token to
+reject conflicting teammate edits. See the
+[CLI reference](cli-reference.md#iterion-bots) for local creation and the
+[Cloud REST API](cloud-rest-api.md#team-bot-sources-cloud-bot-editing) for the
+team store.
 
 ## Screenshots
 
