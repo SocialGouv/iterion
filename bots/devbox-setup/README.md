@@ -46,7 +46,7 @@ done
   node + devbox/nix + the claude CLI).
 - **worktree: auto** (it writes a file → isolate + gate before it lands).
 - **vars**: `workspace_dir` (defaults to `${PROJECT_DIR}`). The model is
-  set via the `DEVBOX_SETUP_MODEL` env (default `claude-opus-4-8`), not a
+  set via the `DEVBOX_SETUP_MODEL` env (default `claude-opus-5`), not a
   var.
 - **idempotent**: if `/workspace/devbox.json` exists, propose a diff (add
   missing tools), never clobber existing pins (see skill §6).

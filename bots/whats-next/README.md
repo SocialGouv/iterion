@@ -15,7 +15,7 @@ seed (compute) → nexie (agent) → gate (compute) ── is_close ──▶ do
                     └── conversation_loop(1000) ── chat (human)
 ```
 
-- **nexie** — `claude_code` + `${ITERION_WHATS_NEXT_MODEL_CLAUDE:-claude-opus-4-8}`,
+- **nexie** — `claude_code` + `${ITERION_WHATS_NEXT_MODEL_CLAUDE:-claude-opus-5}`,
   full board capabilities (`board.read/create/move/assign/label/close/comment`),
   bundled skills via the native Skill tool, `interaction: human` so it
   can `ask_user` mid-turn (with clickable options). Each turn returns

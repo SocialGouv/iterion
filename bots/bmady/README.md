@@ -53,8 +53,8 @@ Pick a focus at launch (`presets/`):
 
 | Var | Default | Effect |
 |-----|---------|--------|
-| `BMADY_MODEL_CLAUDE` | `claude-opus-4-8` | model for Analyst/PM/Architect/Dev |
-| `BMADY_MODEL_QA` | `claude-opus-4-8` | model for QA |
+| `BMADY_MODEL_CLAUDE` | `claude-opus-5` | model for Analyst/PM/Architect/Dev |
+| `BMADY_MODEL_QA` | `claude-opus-5` | model for QA |
 | `BMADY_EFFORT_PLAN` | `high` | reasoning effort for the planning personas |
 | `BMADY_EFFORT_DEV` | `high` | reasoning effort for Dev |
 | `BMADY_EFFORT_QA` | `medium` | reasoning effort for QA |
