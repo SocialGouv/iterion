@@ -610,9 +610,9 @@ schema pr_gate_output:
 schema publish_input:
   pr_url: string
   ## reviewed_sha: the worktree HEAD the findings anchor to. Comes in on the
-  ## EDGE: a tool `command:` resolves only {{input.X}} and {{vars.X}}, so an
-  ## {{outputs.…}} ref written there stays literal text and every comparison
-  ## against it is meaningless.
+  ## EDGE: a tool `command:` resolves {{input.X}}, {{vars.X}}, {{secrets.X}}
+  ## and {{run.id}} — an {{outputs.…}} ref written there is NOT one of them and
+  ## stays literal text, so every comparison against it is meaningless.
   reviewed_sha: string
   findings: json
   questions: string
@@ -813,6 +813,7 @@ findings_parse_failed = False
 reviewed = os.environ.get('REVIEWED_SHA', '').strip()
 ws = os.environ.get('WS', '').strip()
 looks_like_sha = len(reviewed) >= 7 and all(c in '0123456789abcdefABCDEF' for c in reviewed)
+stale_anchors = ''
 if reviewed and ws and looks_like_sha:
     try:
         cur = subprocess.run(['git', '-C', ws, 'rev-parse', 'HEAD'],
@@ -820,8 +821,7 @@ if reviewed and ws and looks_like_sha:
     except Exception:
         cur = ''
     if cur and cur != reviewed:
-        emit(False, skipped='tree changed since review (' + reviewed[:12] + ' -> ' + cur[:12] + '); the findings anchor to the reviewed tree, not HEAD. Re-run with the same pr_url for a fresh review.',
-             summary='publish skipped: the worktree HEAD moved after the reviewers judged it, so the inline anchors are stale. No comments posted.')
+        stale_anchors = reviewed[:12] + ' -> ' + cur[:12]
 
 try:
     findings = json.loads(os.environ.get('FINDINGS') or '[]')
@@ -915,6 +915,18 @@ if questions:
 elif not findings:
     summary.append('')
     summary.append('Reviewers verified the change end-to-end and raised no open questions.')
+
+# Stale anchors cost the inline comments, never the publish. The POST below
+# is what carries the merge-gate status, and a required status that never
+# lands blocks the PR for good — a far worse outcome than a review whose
+# file:line markers point at the wrong lines. So the anchors are dropped and
+# the summary says why, rather than the whole review being swallowed.
+if stale_anchors:
+    comments = []
+    summary.append('')
+    summary.append(chr(9888) + ' The worktree HEAD moved after the reviewers judged it (' + stale_anchors +
+                   '), so the inline anchors would land on the wrong lines. The findings are summarised '
+                   'above instead. Push again or comment /revi for a review of the current head.')
 
 payload = {'pr_url': pr, 'summary': nl.join(summary), 'mode': mode, 'comments': comments}
 
