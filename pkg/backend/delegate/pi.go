@@ -98,8 +98,18 @@ var piProtocol = CLIAgentProtocol{
 }
 
 // NewPiBackend constructs the pi backend. command overrides the default `pi`
-// binary (a pinned build or wrapper path); empty uses the binary on PATH.
+// binary (a pinned build or wrapper path); empty falls back to ITERION_PI_BIN
+// and then to the binary on PATH.
+//
+// ITERION_PI_BIN is the documented escape hatch for a host that cannot run the
+// npm CLI — a `bun --compile` single-file build, or an air-gapped machine with
+// no Node. It was documented and never implemented: the variable existed only
+// in the reference, so an operator who set it got the PATH binary anyway, with
+// nothing saying why.
 func NewPiBackend(logger *iterlog.Logger, command string) *PiBackend {
+	if command == "" {
+		command = strings.TrimSpace(os.Getenv("ITERION_PI_BIN"))
+	}
 	return &PiBackend{
 		print: &CLIAgentBackend{
 			Protocol: piProtocol,

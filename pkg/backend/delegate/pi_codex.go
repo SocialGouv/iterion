@@ -153,10 +153,19 @@ func piCodexSeed(ctx context.Context, task Task, logger *iterlog.Logger) (map[st
 
 // piLoadCodexView reads the Codex credential, preferring the per-run copy the
 // cloud runner materialises over the host's ~/.codex (a runner pod has none).
+//
+// A per-run directory that is announced but unreadable falls back to the host
+// rather than ending the search: the two are alternatives, not a chain of
+// custody, and preferring one must not cost the other. Locally the ctx copy is
+// routinely absent or empty while ~/.codex holds the real login, and treating
+// that as "no credential" is indistinguishable, to the operator, from having
+// none at all.
 func piLoadCodexView(ctx context.Context) (secrets.CodexCredentialsView, error) {
 	if creds, ok := secrets.CredentialsFromContext(ctx); ok {
 		if dir := creds.OAuthDir("codex"); dir != "" {
-			return secrets.LoadCodexCredentialsFrom(dir)
+			if view, err := secrets.LoadCodexCredentialsFrom(dir); err == nil && view.IsChatGPTMode() {
+				return view, nil
+			}
 		}
 	}
 	return secrets.LoadCodexCredentialsFromDisk()

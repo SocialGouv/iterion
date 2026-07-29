@@ -321,3 +321,35 @@ func TestPiCodexSeedSweepsAbandonedDirs(t *testing.T) {
 		t.Errorf("the sweep took this node's own dir: %v", err)
 	}
 }
+
+// ITERION_PI_BIN is the documented escape hatch for a host that cannot run the
+// npm CLI. It was documented and never implemented, so an operator who set it
+// silently got the PATH binary instead.
+func TestPiBinaryOverride(t *testing.T) {
+	t.Run("env names the binary", func(t *testing.T) {
+		t.Setenv("ITERION_PI_BIN", "/opt/pi-native")
+		b := NewPiBackend(nil, "")
+		if b.print.Command != "/opt/pi-native" {
+			t.Errorf("print transport command = %q, want the override", b.print.Command)
+		}
+		rpc, ok := b.rpc.(*PiRPCBackend)
+		if !ok || rpc.Command != "/opt/pi-native" {
+			t.Errorf("rpc transport command = %+v, want the override on BOTH transports", b.rpc)
+		}
+	})
+
+	// An explicit per-node `command:` is the more specific statement.
+	t.Run("an explicit command wins", func(t *testing.T) {
+		t.Setenv("ITERION_PI_BIN", "/opt/pi-native")
+		if got := NewPiBackend(nil, "/usr/bin/pi").print.Command; got != "/usr/bin/pi" {
+			t.Errorf("command = %q, want the explicit one", got)
+		}
+	})
+
+	t.Run("unset leaves the protocol default", func(t *testing.T) {
+		t.Setenv("ITERION_PI_BIN", "")
+		if got := NewPiBackend(nil, "").print.Command; got != "" {
+			t.Errorf("command = %q, want empty so the PATH lookup applies", got)
+		}
+	})
+}
