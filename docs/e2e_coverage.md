@@ -37,6 +37,7 @@ historical gaps below instead of pointing at non-existent files.
 | OTLP exporter | `pkg/benchmark/otlp_test.go`; `pkg/cloud/tracing/tracing_test.go` | missing endpoint handling, non-blocking event observer, nil Stop, OTLP env endpoint setup and shutdown |
 | OAuth broker / PKCE wiring | `pkg/backend/mcp/oauth_test.go`; `pkg/auth/oidc/connector.go` (`GenerateStateAndPKCE`) | broker construction/storage paths, auth closure validation, endpoint security, PKCE state/verifier/challenge generation used by OIDC flows |
 | MCP SSE transport/auth wiring | `pkg/dsl/parser/parser_mcp_test.go` (`TestMCPServer_SSETransport`), `pkg/dsl/ir/compile_test.go` (`TestValidateMCPAuth_Unsupported`), `pkg/backend/mcp/oauth_test.go` | SSE transport parses, oauth2 auth blocks validate, auth functions are attached for MCP clients |
+| Pi RPC transport + embedded extension | `pkg/backend/delegate/pi_rpc_test.go`, `pi_async_test.go`, `pi_mcp_test.go` (the `TestPiRPCLive*` cases skip when pi/Node fixtures are unavailable) | RPC/print result parity, tool hooks, cancellation/failure typing, shared permission decisions, blocking + async questions, HTTP/SSE/stdio MCP bridges, bounded startup, and SSE cross-origin refusal |
 
 ## Coverage gaps (deliberate)
 
