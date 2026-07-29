@@ -5,25 +5,27 @@ current branch and *publishes* the findings — it never edits, fixes, or
 commits code. (Fixing is the improve-loops' job: `branch_improve_loop` =
 Billy, `whole_improve_loop` = Willy.)
 
-Two independent reviewers from different model families (Claude + GPT)
-audit the diff in parallel; a single `converge` step merges and
-de-duplicates their findings, raises the confidence of anything **both** families
-flagged ("cross-confirmed"), then writes one issue per finding to the
-iterion native kanban board (labelled `severity:*`, `type:*`,
-`source:revi`) plus a markdown report.
+Revi runs **one reviewer by default** (`review_mode: mono`, Claude unless
+`mono_family` selects GPT). Set `review_mode: dual` to run independent Claude
+and GPT reviewers in parallel when cross-family confirmation is worth the
+extra provider call. A single `converge` step normalises the one or two reviewer
+outputs, merges and de-duplicates findings, and raises the confidence of
+anything both families flagged ("cross-confirmed"). It then writes one issue
+per finding to the iterion native kanban board (labelled `severity:*`,
+`type:*`, `source:revi`) plus a markdown report.
 
 ```
 diff_precheck (tool)   empty diff → done (nothing to review)
-diff_precheck -> fan
-fan (fan_out_all)
-  ├─ reviewer_claude   claude_code, read-only
-  └─ reviewer_gpt      claw + openai/gpt-5.5, read-only tools
-reviewer_* -> converge await: wait_all  (merge + dedupe → board + report)
+diff_precheck -> topology (condition)
+  ├─ mono/claude -> reviewer_claude   claude_code, read-only
+  ├─ mono/gpt    -> reviewer_gpt      claw + openai/gpt-5.5, read-only tools
+  └─ dual        -> fan (fan_out_all) -> both reviewers
+reviewer_* -> merge_reviews (best_effort) -> converge (merge + dedupe → board + report)
 converge -> pr_gate    deterministic: was a pr_url given?
   ├─ no  -> done
   └─ yes -> publish_review   deterministic forge publish via the iterion
-            -> publish_health  server endpoint (inline comments +
-                               one-click suggestions) -> done
+            -> publish_health  server endpoint (inline comments, suggestions,
+                               and optional merge-gate status) -> done
 ```
 
 ## Scope
@@ -48,6 +50,11 @@ All inputs are workflow `vars` (override with `--var name=value`):
 | `report_path` | `.review-pr/findings.md` | Markdown report destination (gitignorable; not under `.iterion/`). |
 | `pr_url` | `""` | When set, ALSO publish the review onto this PR (see below). Empty = board + report only. |
 | `pr_review_mode` | `inline` | How the PR review is posted: `inline` (per-line comments) or `summary` (one comment). |
+| `review_mode` | `mono` | Reviewer topology: `mono` (default), `dual`, or `auto` (launch-time resolver also resolves to mono). |
+| `mono_family` | `claude` | Family used in mono mode: `claude` or `gpt`. |
+| `gate_enabled` | `true` | Ask the server to post a deterministic commit-status gate with the review. |
+| `gate_severity` | `high` | Lowest finding severity that makes the gate fail. |
+| `gate_context` | `revi/review` | Commit-status context; use a shared context when another bot gates different PRs in the same repo. |
 
 ## Run
 
@@ -55,6 +62,11 @@ All inputs are workflow `vars` (override with `--var name=value`):
 iterion run bots/review-pr/main.bot \
   --var workspace_dir=/path/to/repo \
   --var base_ref=main
+
+# Explicitly pay for both reviewer families:
+iterion run bots/review-pr/main.bot \
+  --var base_ref=main \
+  --var review_mode=dual
 ```
 
 Findings land on the native board under the label `source:revi`; the
@@ -111,6 +123,12 @@ iterion run bots/review-pr/main.bot \
   only when both SHAs read cleanly and differ, so a normal publish is
   never blocked, and the board + report already ran, so no findings are
   lost.
+- **Deterministic merge gate.** With `gate_enabled: true`, the publish node
+  counts findings at or above `gate_severity` and asks the server to post
+  `gate_context` on the PR head (`success` for zero, `failure` otherwise).
+  The LLM never chooses the gate result. The status is advisory until the repo
+  requires that context in branch protection; see
+  [Merge gate](../../docs/merge-gate.md).
 
 ## Read-only by construction
 
