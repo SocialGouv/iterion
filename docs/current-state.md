@@ -102,14 +102,15 @@ diagnostic ranges are under [references/](references/dsl-grammar.md).
 |---|---|---|
 | `claw` | Recommended, in process | Direct provider calls and native Iterion tools. Anthropic and OpenAI are the validated first-class lanes; other providers have documented support tiers. |
 | `claude_code` | Recommended CLI agent | Tool-using implementation work and Claude subscription/OAuth use. Iterion appends to, rather than replaces, Claude Code's native operating prompt. |
+| `pi` | Explicit opt-in | Multi-provider pi coding agent. RPC mode provides tool events, steering, provider-computed cost, the shared permission gate, async questions, and Iterion MCP tools through the embedded extension; print mode is the reduced fallback. |
 | `kimi` | Explicit opt-in | Moonshot Kimi Code CLI through the generic CLI-agent protocol. Sessions are observable but resume/fork is not wired. |
 | `grok` | Explicit opt-in | xAI Grok Build CLI through the same seam. This is distinct from `claw` calling the xAI HTTP API. Sessions are observable but resume/fork is not wired. |
 | `codex` | Deprecated/frozen | Compatibility and live-test coverage only. New workflows should use `claude_code`, or `claw` with an OpenAI model. The compiler emits C030. |
 
 Automatic selection considers `claude_code` and `claw` in that order when the
-workflow, node, launch override, and environment do not choose a backend. Kimi,
-Grok, and Codex require explicit selection. OpenAI calls through `claw` can use
-an API key or, when configured, the OAuth token from a Codex CLI ChatGPT login;
+workflow, node, launch override, and environment do not choose a backend. Pi,
+Kimi, Grok, and Codex require explicit selection. OpenAI calls through `claw`
+can use an API key or, when configured, the OAuth token from a Codex CLI ChatGPT login;
 that credential reuse does not make the deprecated Codex delegate the execution
 backend.
 
@@ -141,8 +142,8 @@ The security posture is explicit rather than implied:
 - `sandbox.build` uses local Docker BuildKit. Kubernetes runs require a
   pre-built image and reject inline builds.
 - The tool-permission gate defaults to `off`. `ask` and `deny` add a
-  deterministic boundary shared by `claude_code` and `claw`; rule lists use
-  Claude-Code-style `Tool(pattern)` syntax.
+  deterministic boundary shared by `claude_code`, `claw`, and pi RPC mode;
+  rule lists use Claude-Code-style `Tool(pattern)` syntax.
 - Named and file secrets are resolved at execution sinks and sealed at rest.
   Local stores use the OS keychain or a key file; cloud runs receive a sealed,
   run-bound credential bundle.
