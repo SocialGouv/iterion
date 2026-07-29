@@ -739,11 +739,18 @@ func (e *ClawExecutor) buildTask(ctx context.Context, node ir.Node, f backendFie
 		task.HasTools = true // claw needs the tool loop active for ask_user
 	}
 
-	// CLI backends (claude_code) can't resolve MCP tools in-process, so the
-	// node's active user/plugin MCP servers are forwarded to the agent CLI
-	// verbatim (delegate.wireUserMCP → --mcp-config). Additive only: it never
-	// passes --tools, so native WebSearch/WebFetch stay on by default.
-	if backendName == delegate.BackendClaudeCode && len(f.activeMCPServers) > 0 && e.mcpManager != nil {
+	// CLI backends can't resolve MCP tools in-process, so the node's active
+	// user/plugin MCP servers are forwarded to the agent verbatim
+	// (claude_code: delegate.wireUserMCP → --mcp-config; pi: the embedded
+	// extension's own MCP client). Additive only: it never passes --tools, so
+	// native WebSearch/WebFetch stay on by default.
+	//
+	// The list must be handed to EVERY backend that consumes it. Gating it on
+	// claude_code alone left pi's whole MCP bridge inert in production —
+	// silently, since a node with no tools just does not use them — while
+	// every test that exercised the bridge hand-built a Task and so never
+	// crossed this seam.
+	if mcpForwardingBackends[backendName] && len(f.activeMCPServers) > 0 && e.mcpManager != nil {
 		task.MCPServers = e.resolveTaskMCPServers(f.activeMCPServers)
 	}
 
@@ -751,6 +758,16 @@ func (e *ClawExecutor) buildTask(ctx context.Context, node ir.Node, f backendFie
 	applyResumeContinuity(&task, input)
 
 	return task, nil
+}
+
+// mcpForwardingBackends are the backends that consume Task.MCPServers — the
+// ones that shell out to an agent which needs the servers described to it,
+// rather than resolving them in-process (claw) or running a tool set iterion
+// does not configure (kimi, grok). A backend added here without a consumer is
+// harmless; a consumer missing from here is silently toolless.
+var mcpForwardingBackends = map[string]bool{
+	delegate.BackendClaudeCode: true,
+	delegate.BackendPi:         true,
 }
 
 // resolveSystemPrompt returns the {{vars}}-resolved body of the named
