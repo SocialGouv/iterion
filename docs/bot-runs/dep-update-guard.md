@@ -7,6 +7,52 @@ commit onto the PR branch, post the verdict comment. Never merges past a
 check — and only ever the commit it audited. See
 [bots/dep-update-guard/](../../bots/dep-update-guard/).
 
+## 2026-07-29 — v2.4.0: the loop closed — Renovate → audit → gate → merge, unattended (run 019faef9)
+
+- Status: **VALIDATED** — the first dependency PR to travel the whole chain
+  with no human in it.
+- Versions: bot 2.4.0 · iterion `v3.15.0+3a61d2da4` (runner `:edge`
+  `sha256:8c625432`)
+- Method: a real `renovate.yml` dispatch on `socialgouv/buildkit-operator`,
+  authenticated as the dedicated `socialgouv-renovate` App.
+- Result: PR #15 (`go toolchain 1.26.5 [security]`) created **13:57**, merged
+  **17:58** by the forge App. `armed: true, reason: merged: the forge reported
+  every required check already green`. Gate `iterion/review=success` posted on
+  the head first; merge commit `6d02f3e46747`.
+
+### What each link proved
+
+- **The App switch is what unblocked everything.** Under `GITHUB_TOKEN` the
+  four pre-existing Renovate PRs each had a `ci` run stuck in
+  `action_required` with zero jobs — GitHub's anti-recursion rule. PR #15's
+  `test`/`lint` started on their own. Nothing downstream can work without
+  this, and no amount of bot logic substitutes for it.
+- **The cooldown holds without hiding.** The dry run showed 17 upgrades marked
+  `pendingChecks: true` with their held versions named (`undici` 8.8.0/8.9.0,
+  …), while aged updates proceeded. `internalChecksFilter: strict` means the
+  branch is not created at all rather than a PR opened with a pending check.
+- **The merge targets the audited commit.** `commit` reported
+  `committed: false` (nothing to align), so the pin fell back to `prepare`'s
+  head — and the merge went to exactly that sha.
+
+### The overclaim the run surfaced
+
+The check displayed *"supply-chain audit clean; alignment committed, build
+verified"* on a PR where the alignment was a no-op. The verdict is a graph
+PATH name stamped per-edge, so it reads `committed` whether or not anything
+was committed. Fixed by carrying the commit step's real flag into the
+feedback node; a required check that asserts work nobody did is the same
+false-statement class this bot exists to catch in other people's diffs.
+
+### Lessons for next run
+
+- A PR whose base has moved far enough to conflict can never reach the merge:
+  cancel the audit rather than spend it on a refusal that is already knowable
+  from `mergeable`. Cost saved on this session: one 14-min run.
+- Closing a stale Renovate PR is not a neutral cleanup — Renovate reads it as
+  "this update was rejected" and stops offering it. Leave them; the bot
+  rebases them under the new identity.
+
 ## 2026-07-29 — v2.1.0 live: the whole chain ran, the gate landed, and the merge never happened (run 019faad2)
 
 - Status: **partial** — every step validated end to end except the last one,

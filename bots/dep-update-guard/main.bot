@@ -505,6 +505,12 @@ schema feedback_input:
   align_summary: string
   validate_summary: string
   commit_summary: string
+  ## did_commit: whether the commit step actually pushed something. The
+  ## verdict is stamped per-edge as a graph path name, so on the "committed"
+  ## path it says "committed" even when the alignment turned out to be a
+  ## no-op — and a check description that claims work nobody did is exactly
+  ## the kind of false statement this bot exists to catch elsewhere.
+  did_commit: bool
   escalation: string
 
 schema feedback_output:
@@ -865,6 +871,7 @@ tool post_feedback:
     validate_summary = {{input.validate_summary}}
     escalation = {{input.escalation}}
     commit_summary = {{input.commit_summary}}
+    did_commit = {{input.did_commit}}
     token_ref = {{secrets.forge_token.path}}
     pub_url = {{vars.forge_publish_url}}
     pub_token = {{vars.forge_publish_token}}
@@ -908,7 +915,8 @@ tool post_feedback:
     section("Reliability", validate_summary)
     if s(verdict) == "needs_decision":
         section("Decision needed", escalation)
-    did = {"committed": "Committed the alignment to this branch.",
+    did = {"committed": ("Committed the alignment to this branch." if bool(did_commit)
+                         else "No alignment was needed."),
            "hold_security": "Held — no alignment, no commit.",
            "hold_unstable": "Held — build/tests not green.",
            "needs_decision": "Escalated for a human decision.",
@@ -936,7 +944,9 @@ tool post_feedback:
     # a severity floor, and this gate turns on the audit verdict instead.
     gate_note = {
         "clean": "supply-chain audit clean; no code alignment needed",
-        "committed": "supply-chain audit clean; alignment committed, build verified",
+        "committed": ("supply-chain audit clean; alignment committed, build verified"
+                      if bool(did_commit) else
+                      "supply-chain audit clean; no alignment needed, build verified"),
         "hold_security": "supply-chain risk: the bump was not applied",
         "hold_unstable": "build/tests not green after alignment",
         "needs_decision": "an architectural decision is pending a human",
@@ -1354,7 +1364,8 @@ workflow dep_update_guard:
     audit_summary: "{{outputs.security_audit.summary}}",
     align_summary: "{{outputs.align.breaking_summary}}",
     validate_summary: "deterministic verify green (exit 0); log tail: {{outputs.verify_run.log_tail}}",
-    commit_summary: "{{outputs.commit.summary}}"
+    commit_summary: "{{outputs.commit.summary}}",
+    did_commit: "{{outputs.commit.committed}}"
   }
 
   ## Deterministic anti-façade gate on the comment, then done.
