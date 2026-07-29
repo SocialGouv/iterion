@@ -87,14 +87,12 @@ func TestServicePeriodicReconcileDoesNotFailExecutingSubbot(t *testing.T) {
 	var childID string
 	parentStatus := store.RunStatus("")
 	parentErr := ""
-	// KNOWN INTERMITTENT (~1 run in 3 locally): the child's run row sometimes
-	// never becomes visible to ListRunRecordsCtx while the child is executing.
-	// A goroutine dump taken at the hang shows the child's `slow` tool node
-	// live in runWithSeparateStreams with this loop still polling, so it is
-	// NOT slow startup — the row is simply not there yet, and the child blocks
-	// until the test's own deferred release. Widening this window does not
-	// help (a 9.5-minute wait failed identically); it only makes the failure
-	// slower, so the bound stays short and reports a diagnostic instead.
+	// This wait was intermittently unsatisfiable until the child's parent link
+	// became part of its FIRST write (engine_run.go). The row existed and was
+	// running, but with an empty ParentRunID, so the match below never fired —
+	// which is why widening the window never helped. The bound is generous
+	// enough for a real process start and short enough to fail with a
+	// diagnostic rather than hang.
 	deadline := time.Now().Add(120 * time.Second)
 	for childID == "" && time.Now().Before(deadline) {
 		runs, listErr := svc.ListRunRecordsCtx(context.Background(), ListFilter{})

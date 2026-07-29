@@ -200,7 +200,22 @@ func (e *Engine) runResolveDoc(ctx context.Context, runID string, inputs map[str
 		// (InsertOne) so a parallel pickup would lose this race —
 		// acceptable: the only callers here are the CLI and tests, both
 		// single-writer.
-		created, err := e.store.CreateRun(ctx, runID, e.workflow.Name, inputs)
+		//
+		// A CHILD is created with its parent link in the SAME write. The
+		// stamping SaveRun further down would otherwise leave a window in
+		// which the row exists, is `running`, and has no ParentRunID — and a
+		// row with no parent is indistinguishable from a top-level run, which
+		// is exactly what the orphan reconciler judges. Subbot children go
+		// through here (the runtime spawns them; only Service.Launch
+		// pre-creates its own rows), so the window was reachable on every
+		// `subbot` node. Service.Launch already closed it the same way.
+		var created *store.Run
+		var err error
+		if pc := store.AsParentedRunCreator(e.store); pc != nil && e.parentRunID != "" {
+			created, err = pc.CreateChildRun(ctx, runID, e.workflow.Name, e.parentRunID, inputs)
+		} else {
+			created, err = e.store.CreateRun(ctx, runID, e.workflow.Name, inputs)
+		}
 		if err != nil {
 			return nil, fmt.Errorf("runtime: create run: %w", err)
 		}
