@@ -101,7 +101,7 @@ available as tooltip/suffix).
 
 ```iter
 agent w:
-  backend: "claw"               # or "claude_code"; avoid "codex" (C030)
+  backend: "claw"               # or claude_code / pi / kimi / grok; codex is legacy (C030)
   model:   "openai/gpt-5.5"     # claw with openai/* prefix
   reasoning_effort: high        # low | medium | high | xhigh | max | ultracode
                                 # ultracode = xhigh + multi-agent orchestration prerogative;
