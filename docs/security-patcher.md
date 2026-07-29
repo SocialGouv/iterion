@@ -27,11 +27,11 @@ For one finding, the loop body is:
 
 ```mermaid
 flowchart TD
-  patch_author["patch_author<br/>(claude_code, opus-4-8,<br/>session: fresh, write tools)"]
+  patch_author["patch_author<br/>(claude_code, opus-5,<br/>session: fresh, write tools)"]
   build_rung["build_rung<br/>(deterministic; go build /<br/>npm run build / tsc --noEmit)"]
   reproduce_rung["reproduce_rung<br/>(re-run ORIGINAL scanner+matcher<br/>on patched file via<br/>skills/reattack-oracles.md<br/>iterion:reattack data block;<br/>passes when after_hits == 0)"]
   regress_rung["regress_rung<br/>(go test ./... / npm run test)"]
-  reattack["reattack<br/>(FRESH judge — claude_code, opus-4-8,<br/>session: fresh, readonly. Probes the<br/>vuln CLASS across the package via<br/>skills/reattack-oracles.md prose<br/>recipes — sibling sinks, alternate<br/>entry points, encoding bypasses.<br/>Catches wrong-layer fixes.)"]
+  reattack["reattack<br/>(FRESH judge — claude_code, opus-5,<br/>session: fresh, readonly. Probes the<br/>vuln CLASS across the package via<br/>skills/reattack-oracles.md prose<br/>recipes — sibling sinks, alternate<br/>entry points, encoding bypasses.<br/>Catches wrong-layer fixes.)"]
   project_review_input["project_review_input<br/>(compute — projects the candidate<br/>to EXACTLY {file, line, category,<br/>diff}; statically removes every<br/>scanner-derived field from the<br/>reviewer's input schema)"]
   reviewer_isolation["reviewer_isolation<br/>(FRESH judge, readonly, NO bash —<br/>gates prompt injection. Sees the<br/>4 fields + may open the cited file.<br/>Emits approved + risk_flags[].)"]
   aggregate_verdict["aggregate_verdict<br/>(compute — verified ⇔ all five<br/>rungs clean AND risk_flags empty<br/>AND after_hits != -1)"]
@@ -265,9 +265,9 @@ WIP is never silently dropped.
 
 ```bash
 ITERION_SEC_AUDIT_BACKEND=claude_code \
-ITERION_SEC_AUDIT_MODEL=claude-opus-4-8 \
-ITERION_SEC_AUDIT_VOTER_V1_MODEL=claude-opus-4-8 \
-ITERION_SEC_AUDIT_VOTER_V3_MODEL=claude-opus-4-8 \
+ITERION_SEC_AUDIT_MODEL=claude-opus-5 \
+ITERION_SEC_AUDIT_VOTER_V1_MODEL=claude-opus-5 \
+ITERION_SEC_AUDIT_VOTER_V3_MODEL=claude-opus-5 \
 ITERION_REFERENCES_ROOT=$HOME/lab/ai/references \
   devbox run -- iterion run bots/sec-audit-source/main.bot \
     --var workspace_dir=$(pwd) \
@@ -306,7 +306,7 @@ before deciding to re-run with `apply_gated`.
 | `max_fix_per_run` | `10` | Loop budget — bounds the per-run patch attempts |
 | `patch_attempts` | `1` | Inner per-finding retry budget; future nested-retry hook |
 | `patch_dir` | `"${PROJECT_DIR}/.sec-audit/patches"` | Diff artifacts + `REMEDIATION.md` land here |
-| `ITERION_SEC_PATCH_MODEL` | `claude-opus-4-8` | `patch_author`, `reattack`, `reviewer_isolation`, `remediation_report` model |
+| `ITERION_SEC_PATCH_MODEL` | `claude-opus-5` | `patch_author`, `reattack`, `reviewer_isolation`, `remediation_report` model |
 | `ITERION_SEC_PATCH_EFFORT_*` | (per node) | `_AUTHOR=high` / `_REATTACK=high` / `_REVIEW=high` / `_REPORT=medium` — lower to claw cost |
 
 ## See also
