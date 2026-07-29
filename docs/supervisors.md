@@ -59,7 +59,7 @@ allowed (each watching a different node set).
 ```
 supervisor watchdog:
   watches: [implement, fix]            # agent node(s) to steer (omit = whole run)
-  model: "anthropic/claude-opus-4-8"  # default: auto-detect / ITERION_DEFAULT_SUPERVISOR_MODEL
+  model: "anthropic/claude-opus-5"  # default: auto-detect / ITERION_DEFAULT_SUPERVISOR_MODEL
   system: watchdog_policy              # a prompt: ref — the supervision policy
   cooldown: "45s"                      # min between turn-boundary evals (default 30s)
   max_evals: 12                        # hard eval cap (default 20)
