@@ -6,6 +6,90 @@ consuming code, prove the tree with the deterministic verify gate,
 commit onto the PR branch, post the verdict comment. Never merges. See
 [bots/dep-update-guard/](../../bots/dep-update-guard/).
 
+## 2026-07-29 — v2.1.0 live: the whole chain ran, the gate landed, and the merge never happened (run 019faad2)
+
+- Status: **partial** — every step validated end to end except the last one,
+  which turned out to be structurally impossible as designed.
+- Versions: bot 2.1.0 → 2.2.0 · iterion `9d5efc6c` (runner image `:edge`
+  `sha256:c499ba03`)
+- Method: `/vetty` on
+  [socialgouv/buildkit-operator#5](https://github.com/SocialGouv/buildkit-operator/pull/5)
+  (a `golang:1.26` digest bump), cloud run on `ovh-prod`, sandbox
+  `iterion-sandbox-sec:edge`, `gate_context: iterion/review`,
+  `arm_automerge: true`.
+- Result: finished in **14 min**, 15 nodes, no human intervention. `prepare` →
+  `security_audit` → `align` → `align_gate` → `verify_build` (5 min) →
+  `verify_run` **exit 0** → `validate_gate` → `commit` → `post_feedback` →
+  `feedback_health` → `arm_automerge` → `done`.
+- Value: **the merge gate landed for the first time** —
+  `iterion/review=success` on the head SHA, posted through the server's
+  publish endpoint. That link had never worked before (see the 401 below).
+
+### The gate: a redirect was degrading the POST
+
+`post_feedback` had been failing with `401 authentication required` on a route
+that is deliberately auth-exempt. Everything else had been eliminated with
+evidence — the route answers a bogus token differently, the URL and token were
+correct in the run inputs, the same request reached the handler by hand from
+both a laptop and a runner pod, Revi's own gate still worked. The remaining
+hypothesis was that `urllib` follows redirects, and a redirected POST becomes a
+GET, which misses a method-specific Go route and falls through to the auth
+middleware.
+
+Refusing the redirect fixed it. The value of the fix is not only that it works:
+it **names the URL it called and the one the server redirected to**, so the
+next occurrence needs no investigation.
+
+Lesson: an unexplained `401` on an auth-exempt route is worth suspecting the
+*shape* of the request before its credentials.
+
+### `arm_automerge` armed nothing, and could never have
+
+```
+armed: false
+reason: auto-merge request refused: [{'type': 'UNPROCESSABLE',
+  'message': 'Pull request Pull request is in clean status'}]
+```
+
+`enablePullRequestAutoMerge` only accepts a PR that still has something to wait
+for. The audit takes ~14 min and CI ~3 min, so **by the time the bot decides,
+the PR is always already green** — the arm always fails. The feature was not
+merely buggy on this PR; as shipped it would have merged nothing, ever, on any
+repo whose CI is faster than the audit. Which is every repo.
+
+v2.2.0 merges through `mergePullRequest` pinned with `expectedHeadOid` when the
+forge itself reports the PR `CLEAN` and `MERGEABLE`. The invariant is
+unchanged — the bot never decides that checks passed, it only acts on the
+forge's own answer — but the guarantee is now "never merges past a check"
+rather than "never merges".
+
+Lesson: **a capability that only fires in a state your own latency prevents is
+dead code with a green test.** The unit test passed because it stubbed the arm
+call as succeeding; nothing modelled the state the real API is in when the bot
+actually calls it.
+
+### Other engine defects this run surfaced
+
+- **Plugin-source checkout race** (fixed): `git init` creates `.git` before the
+  fetch lands, and the fetcher treated `.git` as "tree complete". Five launches
+  hitting a freshly rolled pod at once left one of them with an empty
+  directory, and the loader reported it as *"has no plugin.yaml"* — a 502 that
+  names the wrong cause, and a run row left `queued` forever with no error on
+  it. The checkout is now staged and renamed into place.
+- The status description read `no blocking findings (≥verdict)` — the shared
+  phrasing assumes a severity floor, while this gate turns on the audit
+  verdict. Now written per verdict.
+
+### Lessons for next run
+
+- A green CI image build is **not** a deployment: iterion's CI separates the
+  build from the `finalize` job that re-tags `:edge`. Poll until the published
+  digest *changes*, then grep the fix inside the pod, and only then launch. I
+  lost a run to trusting a green workflow.
+- The dogfood cost stayed at ~$0.60 for a digest bump with a real
+  two-image trivy delta. The audit is not where the time goes — `verify_build`
+  is (5 min of the 14).
+
 ## 2026-07-28 — v2.1.0: the classifier was auditing empty diffs, and the gate could never work (no run; defects found by inspection + adversarial review)
 
 - Status: **partial** — code validated locally and by review; no live cloud run
