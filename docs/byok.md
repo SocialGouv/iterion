@@ -104,7 +104,10 @@ for prov, r := range resolved { bundle.APIKeys[prov] = string(r.Plaintext) }
 
 The bundle is sealed under a fresh `secrets_ref`; the runner unseals it
 and stamps `bundle.APIKeys` into ctx ([pkg/secrets/credentials.go](../pkg/secrets/credentials.go)).
-The claude_code / claw delegates read the key from ctx.
+The in-process `claw` backend and the `claude_code`, `pi`, and legacy Codex
+delegates read their applicable keys from that credential context. Kimi and
+Grok instead rely on their CLI's own environment/config and do not consume the
+sealed BYOK map.
 
 > **Env fallback.** When the bundle has *no* key for a provider, the
 > resolved bundle is empty for it and the runner falls back to the pod
