@@ -13,11 +13,15 @@ the run gets no key and claw fails with `401 x-api-key header is required`.
 Three credential kinds exist, and **which backend you use decides which kinds
 are legal**:
 
-| Credential | Stored via | Injected as | `claw` backend | `claude_code` backend |
-|---|---|---|---|---|
-| **BYOK API key** (`sk-ant-api…`, `sk-…`) | `iterion remote api-keys create --provider <p> --from-file/-env` | `ANTHROPIC_API_KEY` / `OPENAI_API_KEY` (x-api-key) | ✅ | ✅ (also works) |
-| **Anthropic OAuth-forfait** (Claude sub, `sk-ant-oat…`) | `POST /api/me/oauth/claude_code/credentials` (paste `credentials.json`) | Bearer + oauth beta | ⚠️ allowed, warns (bills EXTRA USAGE) | ✅ (it *is* Claude Code) |
-| **OpenAI ChatGPT-forfait** (Codex `auth.json`, `auth_mode: chatgpt`) | `POST /api/me/oauth/codex/credentials` (paste `auth.json`) | ChatGPT-backend OAuth | ✅ (allowed) | n/a |
+| Credential | Stored via | Injected as | `claw` backend | `claude_code` backend | `pi` backend |
+|---|---|---|---|---|---|
+| **BYOK API key** (`sk-ant-api…`, `sk-…`) | `iterion remote api-keys create --provider <p> --from-file/-env` | Provider API-key env (`ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, etc.) | ✅ | ✅ (also works) | ✅ for Anthropic, OpenAI, xAI, z.ai, and OpenRouter |
+| **Anthropic OAuth-forfait** (Claude sub, `sk-ant-oat…`) | `POST /api/me/oauth/claude_code/credentials` (paste `credentials.json`) | Bearer + oauth beta | ⚠️ allowed, warns (bills EXTRA USAGE) | ✅ (it *is* Claude Code) | ❌ the uploaded Claude credential directory is not bridged into pi's agent dir/env yet |
+| **OpenAI ChatGPT-forfait** (Codex `auth.json`, `auth_mode: chatgpt`) | `POST /api/me/oauth/codex/credentials` (paste `auth.json`) | ChatGPT-backend OAuth | ✅ (allowed) | n/a | ❌ pi does not consume the Codex upload |
+
+Kimi and Grok are outside this sealed-credential matrix: their delegates rely
+on the CLI's own inherited environment/config. Legacy Codex consumes its own
+uploaded Codex credential.
 
 ## Decision shortcut
 
@@ -26,8 +30,9 @@ are legal**:
   plan — see below), but a **BYOK API key** or the **OpenAI ChatGPT-forfait**
   is the predictable-cost choice.
 - **Only have a Claude subscription (OAuth)** → use the **`claude_code`
-  backend** (native WebSearch/WebFetch + forwarded MCP). Legit: it *is*
-  Claude Code, within Anthropic's Consumer Terms.
+  backend** (native WebSearch/WebFetch + forwarded MCP). The uploaded cloud
+  credential also reaches `claw` (against extra usage), but is not currently
+  bridged into pi. Claude Code itself spends the plan normally.
 - **Have ChatGPT Plus/Pro + Codex signed in** → connect the codex `auth.json`
   and run **claw + an `openai/*` model** — sovereign features work.
 
@@ -42,7 +47,9 @@ plan's limits. So the question is not "may I" but "which pot am I spending".
 `secrets.GuardSubscriptionOAuth` ([pkg/secrets/credentials.go](../pkg/secrets/credentials.go),
 called by `claw` and `pi`) therefore **warns once per node** instead of
 refusing — the operator is spending a balance they may not expect — and
-refuses only under **`ITERION_FORBID_SUBSCRIPTION_OAUTH=1`**.
+refuses only under **`ITERION_FORBID_SUBSCRIPTION_OAUTH=1`**. On pi this guard
+covers a subscription token already available through its ambient/local auth;
+it does not bridge the cloud-uploaded Claude credential into pi.
 
 **Set that flag on a shared or cloud instance.** There, consuming one
 operator's extra-usage balance is a cost decision taken on behalf of everyone
