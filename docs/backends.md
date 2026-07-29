@@ -750,8 +750,8 @@ backend. That is **distinct** from calling the xAI HTTP API via
   resolution.
 - **Tools are not host-gated.** Like `codex`, these CLIs run with their
   *own* built-in toolset; a node's `tools:` list is advisory. For a hard
-  tool-permission boundary use `claude_code` (permission gate) or `claw`
-  (native restriction).
+  tool-permission boundary use `claude_code`, `claw`, or pi in RPC mode; all
+  three enforce the shared permission gate.
 - **Effort:** kimi has no dial (ignored); grok maps `reasoning_effort` to
   `--reasoning-effort` (`ultracode` degrades to `high`).
 - **Sessions** are captured for observability (`sessionId`) but resume/fork
