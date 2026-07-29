@@ -111,11 +111,14 @@ Cost metering is "floor, not invoice":
 
 - **`claw`** (in-process LLM) is priced through `pkg/backend/cost` and
   reports `cost_usd` per call.
-- **`claude_code`** / **`codex`** report tokens but iterion has no price
-  table for the delegate's external billing — the runner posts the
-  token deltas without a USD figure, so `org_usage.cost_usd` understates
-  for delegate-heavy bots. Use it as a trend signal, not a billing
-  ledger.
+- **Every CLI delegate** (`claude_code`, `pi`, Kimi, Grok, and legacy Codex)
+  contributes its aggregate token total when the CLI reports usage. The cloud
+  runner's delegate event has no input/output split, so that total is currently
+  booked to `input_tokens`.
+- Delegate USD is **not** added to `org_usage.cost_usd`: this applies even to pi,
+  whose backend result carries a provider-computed cost for run/benchmark
+  telemetry. Consequently the monthly USD cap understates delegate-heavy bots;
+  use it as a trend signal, not a billing ledger.
 
 ## Reading usage
 
