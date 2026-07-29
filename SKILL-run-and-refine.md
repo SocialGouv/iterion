@@ -84,7 +84,7 @@ specific key.
 | `failed_resumable` | Resume; the checkpoint node is re-executed. |
 | `cancelled` | Resume without answers when the preserved state is still wanted. |
 | `running` | Do not start a second engine. Confirm ownership; use `--force-stale` only after the 60-second freshness guard allows takeover. |
-| `paused_operator` | The runtime can restore it, but current public CLI/runview admission does not accept it as a direct manual target. |
+| `paused_operator` | Resume directly without answers; CLI/runview use the failure-style checkpoint path. A changed workflow still requires explicit `--force` after the pre-dispatch hash check. |
 | `queued` | Leave cloud queue ownership to the publisher/runner path. |
 | `finished` / `failed` | Do not resume; start a new run if more work is required. |
 
