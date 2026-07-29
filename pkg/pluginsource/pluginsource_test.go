@@ -250,6 +250,80 @@ func TestFetcher_ConcurrentFetchesAllSeeCompleteTree(t *testing.T) {
 	}
 }
 
+// The in-process gate cannot help across processes, and the cache dir is
+// shared (/tmp/iterion-plugin-sources): separate Fetchers over one dir are the
+// case where only the staging+rename publish protects the reader. Building in
+// place instead makes the racers collide inside the same .git.
+func TestFetcher_SeparateFetchersSharingACacheDirNeverSeeAPartialTree(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not available")
+	}
+	origin := gitOrigin(t, "v1.0.0")
+	cache := t.TempDir()
+	s := validSource()
+	s.GitURL, s.Ref = origin, "v1.0.0"
+
+	const n = 8
+	paths := make([]string, n)
+	errs := make([]error, n)
+	start := make(chan struct{})
+	var wg sync.WaitGroup
+	for i := range n {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			f := &Fetcher{CacheDir: cache} // a distinct fetcher: no shared gate
+			<-start
+			paths[i], errs[i] = f.Fetch(context.Background(), s)
+		}()
+	}
+	close(start)
+	wg.Wait()
+
+	for i := range n {
+		if errs[i] != nil {
+			t.Fatalf("fetch %d: %v", i, errs[i])
+		}
+		body, err := os.ReadFile(filepath.Join(paths[i], "skills", "deploy-target.md"))
+		if err != nil || string(body) != "playbook\n" {
+			t.Fatalf("fetch %d was handed an incomplete checkout at %q: %v %q", i, paths[i], err, body)
+		}
+	}
+}
+
+// A waiter must be able to give up. Each attempt is bounded by FetchTimeout, so
+// a queue of waiters on a hung remote burns it once per waiter — and the launch
+// that wanted the plugin may be long gone.
+func TestFetcher_WaiterHonoursCancellation(t *testing.T) {
+	f := &Fetcher{CacheDir: t.TempDir()}
+	release, err := f.lockKey(context.Background(), "some-key")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer release()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	// Waited for rather than called inline: the regression is a block, not a
+	// wrong return, and a test that hangs says much less than one that fails.
+	waited := make(chan error, 1)
+	go func() {
+		release, err := f.lockKey(ctx, "some-key")
+		if release != nil {
+			release()
+		}
+		waited <- err
+	}()
+	select {
+	case err := <-waited:
+		if err == nil {
+			t.Fatal("a cancelled waiter took the gate instead of giving up")
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("a cancelled waiter queued behind the in-flight fetch instead of giving up")
+	}
+}
+
 // A moving ref re-fetches, and the new tree must replace the old one wholesale
 // rather than being assembled in place under a concurrent reader's feet.
 func TestFetcher_MovingRefSwapsInTheNewTree(t *testing.T) {

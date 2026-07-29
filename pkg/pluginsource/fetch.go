@@ -37,7 +37,7 @@ type Fetcher struct {
 	CredentialFor func(ctx context.Context, s PluginSource) (string, error)
 
 	mu       sync.Mutex
-	keyLocks map[string]*sync.Mutex
+	keyGates map[string]chan struct{}
 }
 
 // Fetch returns a local path containing the source's repository at its ref.
@@ -53,7 +53,10 @@ func (f *Fetcher) Fetch(ctx context.Context, s PluginSource) (string, error) {
 	key := cacheKey(s)
 	dest := filepath.Join(f.CacheDir, key)
 
-	unlock := f.lockKey(key)
+	unlock, err := f.lockKey(ctx, key)
+	if err != nil {
+		return "", fmt.Errorf("pluginsource: waiting on a concurrent fetch of %q: %w", s.Name, err)
+	}
 	defer unlock()
 
 	// A pinned ref makes the checkout immutable, so an existing tree is
@@ -101,17 +104,27 @@ func (f *Fetcher) Fetch(ctx context.Context, s PluginSource) (string, error) {
 // publish moves a finished checkout onto its cache path. A moving ref replaces
 // an older tree, so the previous one is renamed aside first and deleted after
 // the swap — never before, so a failed rename leaves the old tree serving.
+//
+// The in-process gate does not cover a second process sharing the cache dir, so
+// a publisher that loses the race finds the path already holding an equivalent
+// checkout and keeps it rather than failing the launch.
 func publish(staging, dest string) error {
 	retired := ""
 	if _, err := os.Stat(dest); err == nil {
 		retired = dest + ".retired-" + filepath.Base(staging)
 		if err := os.Rename(dest, retired); err != nil {
-			return err
+			if !os.IsNotExist(err) {
+				return err
+			}
+			retired = "" // someone else retired it first
 		}
 	}
 	if err := os.Rename(staging, dest); err != nil {
 		if retired != "" {
 			_ = os.Rename(retired, dest)
+		}
+		if _, statErr := os.Stat(filepath.Join(dest, ".git")); statErr == nil {
+			return nil
 		}
 		return err
 	}
@@ -123,19 +136,27 @@ func publish(staging, dest string) error {
 
 // lockKey serialises fetches of the same (url, ref) within this process, so N
 // concurrent launches on a cold pod cost one clone instead of N racing ones.
-func (f *Fetcher) lockKey(key string) func() {
+//
+// Waiting honours ctx. Each attempt is bounded by FetchTimeout, so against a
+// hung remote a queue of waiters would otherwise burn that timeout one after
+// another, unable to give up even once the launch that wanted them is gone.
+func (f *Fetcher) lockKey(ctx context.Context, key string) (func(), error) {
 	f.mu.Lock()
-	if f.keyLocks == nil {
-		f.keyLocks = map[string]*sync.Mutex{}
+	if f.keyGates == nil {
+		f.keyGates = map[string]chan struct{}{}
 	}
-	l, ok := f.keyLocks[key]
+	gate, ok := f.keyGates[key]
 	if !ok {
-		l = &sync.Mutex{}
-		f.keyLocks[key] = l
+		gate = make(chan struct{}, 1)
+		f.keyGates[key] = gate
 	}
 	f.mu.Unlock()
-	l.Lock()
-	return l.Unlock
+	select {
+	case gate <- struct{}{}:
+		return func() { <-gate }, nil
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	}
 }
 
 // git runs one git command. The credential is injected via an askpass helper
