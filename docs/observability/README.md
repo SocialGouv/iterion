@@ -80,25 +80,31 @@ metrics on each event:
 
 iterion attributes metrics from each backend on a best-effort basis:
 
-| Metric                          | claw | claude_code | codex |
-|---------------------------------|:----:|:-----------:|:-----:|
-| `iterion_llm_request_total`     | ✅    | ✅           | ✅     |
-| `iterion_llm_retry_total`       | ✅    | ✅           | ✅     |
-| `iterion_node_duration_ms`      | ✅    | ✅           | ✅     |
-| `iterion_tool_call_total`       | ✅    | ✅           | ✅     |
-| `iterion_node_tokens_total`     | ✅    | ✅\*\*       | ✅\*\* |
-| `iterion_node_cost_usd_total`   | ✅\*  | ✅\*         | ✅\*   |
-| `iterion_parallel_branches`     | ✅    | ✅           | ✅     |
+| Metric                          | claw | claude_code | pi | kimi | grok | codex |
+|---------------------------------|:----:|:-----------:|:--:|:----:|:----:|:-----:|
+| `iterion_llm_request_total`     | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
+| `iterion_llm_retry_total`       | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
+| `iterion_node_duration_ms`      | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
+| `iterion_tool_call_total`       | ✅ | ✅ | ✅ | — | — | — |
+| `iterion_node_tokens_total`     | ✅ | ✅ | ✅ | ✅\* | ✅\* | ✅ |
+| `iterion_node_cost_usd_total`   | ✅\*\* | ✅\*\* | ✅† | — | — | ✅\*\* |
+| `iterion_parallel_branches`     | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
 
-\* Cost is computed from a small per-model pricing table embedded in
-`pkg/backend/cost/cost.go`. Models not in the table emit no `_cost_usd` field.
-Add models there if you want them tracked.
+\* Kimi/Grok token counts are present only when the CLI's JSON output includes
+usage. Their legacy protocol adapter exposes a total rather than an
+input/output split.
 
-\*\* Token counts come from the SDK's `ResultMessage.Usage` for
-claude_code (Claude Agent SDK) and codex (Codex Agent SDK). Both
-backends now annotate the node output with `_tokens` / `_model` /
-`_cost_usd` exactly like the in-process claw backend, so all three
-backends feed the same Prometheus counters.
+\*\* Cost is computed from the per-model pricing table in
+`pkg/backend/cost/cost.go`; an unknown model emits no `_cost_usd` field.
+
+† Pi supplies its own provider-computed input/output cost in both RPC and print
+modes, so it does not depend on Iterion's pricing table.
+
+Every backend result is stamped with the common `_tokens` / `_model` /
+`_cost_usd` fields that are available. Tool-call counters are narrower: claw
+emits them from its native loop, Claude Code from SDK stream blocks, and pi
+from RPC events. The Codex SDK and the current Kimi/Grok adapters expose no
+per-tool callback.
 
 If a particular SDK version omits the usage block (e.g. early codex
 betas), the tokens counter simply does not increment for that node — no
