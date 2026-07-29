@@ -84,10 +84,10 @@ secret_property = "value:" STRING
 prompt = "prompt" IDENT ":" INDENT { free_text_line } DEDENT ;
 
 schema = "schema" IDENT ":" INDENT { schema_field } DEDENT ;
-schema_field = IDENT ":" type [ enum ] ;
+schema_field = IDENT ":" ( type | "file" ) [ enum ] ;
 ```
 
-Prompt text may contain runtime `{{...}}` references and compile-time `{{include "relative/file"}}` directives. Schema types are the same six variable types.
+Prompt text may contain runtime `{{...}}` references and compile-time `{{include "relative/file"}}` directives. Schema fields accept the six variable types, plus `file` — an operator-supplied binary valid only on a human node's schema; the compiler rejects it elsewhere ([C129](diagnostics.md)).
 
 ## MCP declarations and activation
 
