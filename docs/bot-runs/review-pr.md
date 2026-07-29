@@ -1,9 +1,11 @@
 # Revi — `review-pr` run bilans
 
-Read-only cross-family code reviewer. Two independent reviewers (Claude + GPT)
-review a branch/PR diff, findings are merged/de-duplicated, and one issue per
-finding is published to the native board (label `source:revi`); with `--var
-pr_url` it also posts an inline forge review. Never edits or commits. See
+Read-only code reviewer. Revi reviews with one selected family by default
+(`review_mode: mono`) or independent Claude + GPT reviewers when dual mode is
+explicitly selected; findings are normalised/de-duplicated, and one issue per
+finding is published to the native board (label `source:revi`). With `--var
+pr_url` it also posts an inline forge review and an optional deterministic
+commit-status gate. Never edits or commits. See
 [bots/review-pr/](../../bots/review-pr/).
 
 ## 2026-07-08 — GitHub PR webhook e2e on iterion cloud prod
