@@ -13,6 +13,66 @@ promises ledgers persist the agent's adjudications; the opt-in
 `open_mr` tail publishes ONE PR. Runs on ANY repo; iterion is the
 reference self-host case.
 
+## 2026-07-29 — first real bot run on the `pi` backend (run 019fae96)
+
+- Status: **partial** — pass 1 delivered 15 doc-alignment commits; pass 2 died
+  ~7 min in on the z.ai 5-hour usage cap. `failed_resumable`, resumable after
+  the 04:54 UTC reset. The purpose was validating the **pi backend** with a
+  real bot, and on that it succeeded.
+- Versions: bot v3.5.x · iterion `dev+3a61d2da4` (main tip, pi merged in
+  v3.15.0) · pi 0.82.1 · model `zai/glm-5.2` over `backend: "pi"`.
+- Method: `mode=incremental`, `diff_since=4ef39f9e3` (J-7 → 245 commits, 645
+  files changed), `bundle_self_path=bots/docs-refresh`, `--merge-into none`,
+  `--sandbox none` (isolating the pi variable), `ITERION_PI_NO_CONTEXT_FILES=1`
+  (the repo's CLAUDE.md costs ~26k input tokens per call), cap `--max-cost-usd 15`.
+- Result: pass 1 = 232,965 tokens, **$0.2968**, ~33 min, 15 commits,
+  `scope_ok: true`, `gate.converged: false` (drift remaining — the bounded
+  continuation loop behaving as designed). **~10x cheaper than the ~$3/pass
+  this bot costs on claude_code.**
+- Value: real alignment of the week's features — the `file` schema field type
+  and `--answer key=@./path` (PR #315), the `iterion models pricing` audit, a
+  dead cross-reference, the model names across the corpus realigned on the
+  Claude 5 fleet, and the pi backend itself added to the backend lists.
+
+### Findings
+
+- **`--skill` was never passed to pi for a bundle bot — engine bug, fixed.**
+  The flag was gated on `task.SkillHints`, which carries only the DSL `skills:`
+  field (the skill *library*); a bundle's skills are mirrored into
+  `<workDir>/.claude/skills/` without ever touching it. So pi had zero skill
+  awareness while Doki's prompt ordered "LOAD YOUR SKILLS FIRST", and the agent
+  burned turns on three ENOENTs against `~/.claude/skills/` before recovering
+  by listing the worktree. A pi-only hole in a mechanism claude_code (native
+  discovery) and claw (its `skill` tool) both cover.
+- **Doki's prompt names its skills by a bare relative path** (``under
+  `.claude/skills/` ``), which an agent can and did resolve against `$HOME`.
+  Anchoring it (`${PROJECT_DIR}/.claude/skills/`) would remove the ambiguity
+  independently of the fix above.
+- **pi cannot reuse `~/.codex/auth.json`** — its `openai-codex` provider is the
+  one provider with no API-key env var, OAuth-only via an interactive `/login`.
+  Asymmetric with claw, which does read that file. Bridged since: iterion
+  seeds a throwaway agent dir per run.
+- **Rate-limit typing is correct**: the z.ai 429 was classified
+  `USAGE_LIMIT_BLOCKED`, retried twice with backoff, and reported with the
+  reset time. The run stayed `failed_resumable`.
+- **The stdio MCP transport ran for real** — `iterion __mcp-board` appeared as
+  a child of pi, exercising code previously validated only against test servers.
+- Not a defect, checked before counting it: the `Tool error … bash` lines are
+  the agent's own `a && b && c` chains failing on a missing directory. pi
+  reports the non-zero exit correctly.
+
+### Lessons for next run
+
+- **A failed run leaves its commits on a detached HEAD with no branch.**
+  `finalizeWorktree` creates the anti-GC branch only on a clean exit, so 15
+  commits were reachable only through the preserved worktree — one
+  `git worktree prune` from being garbage. Branch them by hand
+  (here: `dogfood/doki-pi-019fae96`).
+- Pick a model whose quota fits the work: GLM-5.2 is cheap but its 5-hour cap
+  ended this run mid-pass-2. Resume after the reset, or run a smaller scope.
+- Use ABSOLUTE binary paths. The first launch died on `unknown backend "pi"`
+  because a `cd` made `./iterion` resolve to the main checkout's stale binary.
+
 ## 2026-07-27 — forfait weekly-cap catch-up, and the weekly schedule is throwing its work away (run 019fa533)
 
 - Status: **failed to deliver** — the run finished cleanly and produced
