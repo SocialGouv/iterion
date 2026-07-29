@@ -89,6 +89,72 @@ workflow main:
 	}
 }
 
+// A human node with `interaction: llm` is auto-answered by a model: no
+// operator, no pause, no upload. Because the JSON schema handed to that
+// model marks the descriptor's `path` required, it will invent one and
+// the downstream node reads a file that does not exist — the same
+// silent-nothing failure C129 exists to catch, just one node over.
+func TestFileFieldOnLLMAnsweredHumanIsC129(t *testing.T) {
+	src := `
+schema gate_out:
+  approved: bool
+  music: file
+
+human gate:
+  interaction: llm
+  model: "anthropic/claude-sonnet-4-6"
+  output: gate_out
+
+workflow main:
+  entry: gate
+  gate -> done
+`
+	res := compileFile(t, src)
+
+	var found bool
+	for _, d := range res.Diagnostics {
+		if d.Code == DiagFileFieldNotHuman {
+			found = true
+			if d.Severity != SeverityError {
+				t.Errorf("C129 severity = %v, want error", d.Severity)
+			}
+			if !strings.Contains(d.Message, "music") {
+				t.Errorf("C129 message should name the offending field, got: %s", d.Message)
+			}
+		}
+	}
+	if !found {
+		t.Fatalf("expected C129 for a file field on an interaction: llm human node; diagnostics = %v", res.Diagnostics)
+	}
+}
+
+// `llm_or_human` keeps a real escalation path — the model can decline
+// and hand the gate to an operator, which is exactly how the bytes
+// arrive. Rejecting it would remove the only shape that lets a bot ask
+// for a file ONLY when it cannot proceed without one.
+func TestFileFieldOnLLMOrHumanGateCompiles(t *testing.T) {
+	src := `
+schema gate_out:
+  approved: bool
+  music: file
+
+human gate:
+  interaction: llm_or_human
+  model: "anthropic/claude-sonnet-4-6"
+  output: gate_out
+
+workflow main:
+  entry: gate
+  gate -> done
+`
+	res := compileFile(t, src)
+	for _, d := range res.Diagnostics {
+		if d.Code == DiagFileFieldNotHuman {
+			t.Fatalf("llm_or_human must not be rejected: %s", d.Message)
+		}
+	}
+}
+
 // `file` is recognised as a type only in type position — it is NOT a
 // reserved word. A schema field literally NAMED `file` must keep
 // parsing (bots/sec-audit-source/main.bot declares one), including the

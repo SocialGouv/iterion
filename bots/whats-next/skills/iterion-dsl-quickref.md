@@ -243,8 +243,11 @@ prompt mix:
   Master the track at {{outputs.pick_soundtrack.music.path}}
 ```
 
-- Only **human** nodes may declare a `file` field — no LLM can produce
-  bytes, so it is a compile error (**C129**) anywhere else.
+- Only a node that PAUSES for an operator may declare a `file` field —
+  no LLM can produce bytes. Compile error (**C129**) on any non-human
+  node, and on a `human` node with `interaction: llm` (auto-answered, so
+  the model would invent the path). `llm_or_human` is fine: it can
+  escalate to a real pause.
 - `file` fields are optional; branch downstream if the workflow cannot
   proceed without one.
 - Every human gate ALSO has an unconditional "attach a file" button

@@ -66,7 +66,8 @@ func (c *compiler) validateAwaitAnswers(w *Workflow) {
 }
 
 // validateFileFields enforces that a `file` schema field is only ever
-// reachable as the output of a HUMAN node (C129, error).
+// reachable as the output of a node that can actually PAUSE for an
+// operator upload (C129, error).
 //
 // A `file` field is filled by an operator uploading bytes through the run
 // console; the runtime promotes those bytes to a run attachment on resume.
@@ -83,7 +84,13 @@ func (c *compiler) validateAwaitAnswers(w *Workflow) {
 // produced, so it is not flagged).
 func (c *compiler) validateFileFields(w *Workflow) {
 	for _, n := range w.Nodes {
-		if n.NodeKind() == NodeHuman {
+		// A human node whose gate is auto-answered by an LLM
+		// (interaction: llm) produces its output the same way an agent
+		// does — no operator, no upload, no bytes. It is a human node in
+		// name only for this check. `llm_or_human` is left alone: it can
+		// escalate to a real pause, which is the only way the file
+		// arrives, so the author still has a working path.
+		if n.NodeKind() == NodeHuman && NodeInteraction(n) != InteractionLLM {
 			continue
 		}
 		schemaName := NodeOutputSchema(n)
@@ -96,6 +103,12 @@ func (c *compiler) validateFileFields(w *Workflow) {
 		}
 		for _, f := range schema.Fields {
 			if f.Type != FieldTypeFile {
+				continue
+			}
+			if n.NodeKind() == NodeHuman {
+				c.errorfAt(DiagFileFieldNotHuman, n.NodeID(), "",
+					"human %q declares interaction: llm and an output_schema %q with the file field %q — an auto-answering LLM cannot upload bytes, so the field would arrive with an invented path; use interaction: human (or llm_or_human, which can escalate to a real pause)",
+					n.NodeID(), schemaName, f.Name)
 				continue
 			}
 			c.errorfAt(DiagFileFieldNotHuman, n.NodeID(), "",
