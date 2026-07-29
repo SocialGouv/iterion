@@ -4,6 +4,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -33,6 +34,7 @@ func isolateEnv(t *testing.T) {
 		"AWS_REGION", "AWS_DEFAULT_REGION",
 		"GOOGLE_CLOUD_PROJECT",
 		"CLAUDE_CONFIG_DIR", "CODEX_HOME",
+		"ITERION_PI_BIN", "PI_CODING_AGENT_DIR",
 		"HOME",
 	} {
 		t.Setenv(k, "")
@@ -42,6 +44,9 @@ func isolateEnv(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 	stubBinary(t, &findClaudeBinary, "")
 	stubBinary(t, &findCodexBinary, "")
+	// pi ships on some dev machines and not others; without this the pi
+	// hints differ per host.
+	stubBinary(t, &findPiBinary, "")
 	// The macOS Keychain probe shells out to /usr/bin/security and would
 	// read the dev machine's real Claude Code login on darwin — stub it to
 	// "absent" so detection is deterministic on every host. Tests that
@@ -488,4 +493,125 @@ func findProvider(t *testing.T, r Report, name string) ProviderStatus {
 	}
 	t.Fatalf("provider %q missing from report", name)
 	return ProviderStatus{}
+}
+
+// pi is reported so the studio can show it and ITERION_BACKEND_PREFERENCE=pi
+// can resolve — auto-selection filters on what Detect reports, so without an
+// entry the variable was inert. It must still never be auto-SELECTED.
+func TestDetectPi(t *testing.T) {
+	find := func(r Report, name string) BackendStatus {
+		t.Helper()
+		for _, b := range r.Backends {
+			if b.Name == name {
+				return b
+			}
+		}
+		t.Fatalf("backend %q absent from the report — the studio cannot show it", name)
+		return BackendStatus{}
+	}
+
+	t.Run("absent binary", func(t *testing.T) {
+		isolateEnv(t)
+		st := find(Detect(context.Background()), BackendPi)
+		if st.Available {
+			t.Error("available with no pi binary")
+		}
+	})
+
+	t.Run("binary but no credential", func(t *testing.T) {
+		isolateEnv(t)
+		stubBinary(t, &findPiBinary, "/fake/pi")
+		st := find(Detect(context.Background()), BackendPi)
+		if st.Available {
+			t.Errorf("available with no credential (sources %v) — every call would fail", st.Sources)
+		}
+		if len(st.Hints) == 0 {
+			t.Error("no hint explaining what is missing")
+		}
+	})
+
+	// A fresh pi install writes `{}`. Treating existence as a login would
+	// advertise a backend that fails on its first call.
+	t.Run("empty pi credential store is not a login", func(t *testing.T) {
+		isolateEnv(t)
+		stubBinary(t, &findPiBinary, "/fake/pi")
+		dir := t.TempDir()
+		if err := os.WriteFile(filepath.Join(dir, "auth.json"), []byte("{}"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		t.Setenv("PI_CODING_AGENT_DIR", dir)
+		if find(Detect(context.Background()), BackendPi).Available {
+			t.Error("an empty auth.json was read as a login")
+		}
+	})
+
+	t.Run("pi's own login", func(t *testing.T) {
+		isolateEnv(t)
+		stubBinary(t, &findPiBinary, "/fake/pi")
+		dir := t.TempDir()
+		if err := os.WriteFile(filepath.Join(dir, "auth.json"),
+			[]byte(`{"zai":{"type":"api_key","key":"k"}}`), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		t.Setenv("PI_CODING_AGENT_DIR", dir)
+		st := find(Detect(context.Background()), BackendPi)
+		if !st.Available || st.Auth != AuthOAuth {
+			t.Errorf("status = %+v, want available", st)
+		}
+	})
+
+	// The provider keys pi reads are the ones iterion already probes for claw.
+	t.Run("a provider key is enough", func(t *testing.T) {
+		isolateEnv(t)
+		stubBinary(t, &findPiBinary, "/fake/pi")
+		t.Setenv("OPENAI_API_KEY", "sk-test")
+		if !find(Detect(context.Background()), BackendPi).Available {
+			t.Error("not available despite OPENAI_API_KEY — pi reads that variable")
+		}
+	})
+
+	// iterion bridges this into pi's OAuth-only openai-codex provider, so it
+	// is a genuine credential for pi even though pi cannot read it itself.
+	t.Run("a ChatGPT-Codex login counts", func(t *testing.T) {
+		isolateEnv(t)
+		stubBinary(t, &findPiBinary, "/fake/pi")
+		dir := t.TempDir()
+		if err := os.WriteFile(filepath.Join(dir, "auth.json"),
+			[]byte(`{"auth_mode":"chatgpt","tokens":{"access_token":"a"}}`), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		t.Setenv("CODEX_HOME", dir)
+		st := find(Detect(context.Background()), BackendPi)
+		if !st.Available {
+			t.Errorf("status = %+v, want available — iterion bridges this credential", st)
+		}
+	})
+
+	t.Run("an api-key Codex login does not count", func(t *testing.T) {
+		isolateEnv(t)
+		stubBinary(t, &findPiBinary, "/fake/pi")
+		dir := t.TempDir()
+		if err := os.WriteFile(filepath.Join(dir, "auth.json"),
+			[]byte(`{"auth_mode":"apikey"}`), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		t.Setenv("CODEX_HOME", dir)
+		if find(Detect(context.Background()), BackendPi).Available {
+			t.Error("an api-key Codex login was counted; the bridge requires chatgpt mode")
+		}
+	})
+
+	// Reporting pi must not change which backend an existing workflow gets.
+	t.Run("never auto-selected", func(t *testing.T) {
+		isolateEnv(t)
+		stubBinary(t, &findPiBinary, "/fake/pi")
+		t.Setenv("OPENAI_API_KEY", "sk-test")
+		r := Detect(context.Background())
+		if slices.Contains(r.PreferenceOrder, BackendPi) {
+			t.Errorf("PreferenceOrder = %v, must not contain pi", r.PreferenceOrder)
+		}
+		if r.ResolvedDefault == BackendPi {
+			t.Error("pi was auto-selected — every existing empty-backend workflow would change")
+		}
+	})
 }

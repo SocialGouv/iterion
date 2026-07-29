@@ -31,7 +31,7 @@ flowchart LR
 |---|---|---|
 | `claw` | Recommended in-process backend for direct provider calls and native Iterion tools. | Automatic or explicit. |
 | `claude_code` | Recommended CLI-agent backend for implementation work and Claude subscription/OAuth use. | Automatic when Claude Code OAuth is detected, or explicit. |
-| `pi` | Supported, with iterion's permission gate. Reaches ~36 providers and reports a provider-computed cost. Runs a long-lived `--mode rpc` session by default — tool events, native steering, authoritative accounting, pre-flight handshake (`ITERION_PI_MODE=print` rolls back). Permission gate, ask_user, board capabilities and workflow-declared MCP servers (all three transports — streamable http, legacy sse, stdio) work via an embedded extension, which loads on the **rpc transport only**: a node declaring `permission:` is refused under `ITERION_PI_MODE=print` rather than run ungated. | Explicit only. |
+| `pi` | Supported, with iterion's permission gate. Reaches ~36 providers and reports a provider-computed cost. Runs a long-lived `--mode rpc` session by default — tool events, native steering, authoritative accounting, pre-flight handshake (`ITERION_PI_MODE=print` rolls back). Permission gate, ask_user, board capabilities and workflow-declared MCP servers (all three transports — streamable http, legacy sse, stdio) work via an embedded extension, which loads on the **rpc transport only**: a node declaring `permission:` is refused under `ITERION_PI_MODE=print` rather than run ungated. | Explicit only; detected and shown in Settings → Backends, and eligible for `ITERION_BACKEND_PREFERENCE`. |
 | `kimi` | Supported through the generic CLI-agent protocol; session resume/fork is not wired. | Explicit only. |
 | `grok` | Supported through the generic CLI-agent protocol; session resume/fork is not wired. | Explicit only. |
 | `codex` | **Deprecated and frozen.** Compatibility/live-test path only; the compiler emits C030. | Per-node/workflow opt-in, or explicit addition to `ITERION_BACKEND_PREFERENCE`. |
@@ -562,22 +562,22 @@ no web fetch/search, no notebook, no background bash. The iterion pi
 extension supplies the MCP half; the rest stands. Consequences for a
 `backend: "pi"` node:
 
-- **The permission gate DOES work** (from v3.7.6), supplied by the iterion pi
+- **The permission gate DOES work** (from v3.15.0), supplied by the iterion pi
   extension that the backend loads automatically. `permission: ask|deny` and
   its `allow:`/`ask:`/`deny:` rule lists resolve through the same
   `permission.Policy` as `claude_code` and `claw`, so all three reach identical
   verdicts. RPC transport only — a print-mode node has no channel for it.
-- **board `capabilities:` DO work** (from v3.7.6, RPC transport only): the
+- **board `capabilities:` DO work** (from v3.15.0, RPC transport only): the
   extension bridges iterion's board MCP endpoint onto pi and registers each
   tool it advertises.
-- **`ask_user` DOES work** (from v3.7.6, RPC transport only): the agent can
+- **`ask_user` DOES work** (from v3.15.0, RPC transport only): the agent can
   put a question to the operator, which pauses the run and resumes with their
   answer.
-- **Async questions DO work** (`interaction: async`, ADR-081 — from v3.7.6,
+- **Async questions DO work** (`interaction: async`, ADR-081 — from v3.15.0,
   RPC transport only): `ask_user_async` posts without stopping and
   `await_answers` is the sync point, with the same semantics as claw and
   claude_code. Answers are delivered mid-run through pi's native `steer`.
-- **workflow `mcp_server:` blocks DO work** (from v3.7.6, RPC transport
+- **workflow `mcp_server:` blocks DO work** (from v3.15.0, RPC transport
   only), on all three transports: `http` (streamable HTTP), `sse` (the
   legacy binding) and `stdio` (a child process). The extension carries its
   own MCP client — pi has none — and discovers each server's tools through

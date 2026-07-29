@@ -24,6 +24,7 @@ func TestBackendsDetectRouteShape(t *testing.T) {
 		"GOOGLE_CLOUD_PROJECT",
 		"CLAUDE_CONFIG_DIR", "CODEX_HOME",
 		"ANTHROPIC_BASE_URL", "ZAI_API_KEY",
+		"ITERION_PI_BIN", "PI_CODING_AGENT_DIR",
 	} {
 		t.Setenv(k, "")
 	}
@@ -48,8 +49,17 @@ func TestBackendsDetectRouteShape(t *testing.T) {
 	if len(got.PreferenceOrder) == 0 {
 		t.Fatal("PreferenceOrder is empty")
 	}
-	if len(got.Backends) != 3 {
-		t.Fatalf("got %d backends, want 3 (claude_code, claw, codex)", len(got.Backends))
+	// Assert the names, not a count: the studio keys off these, and a bare
+	// number turns "a backend was added" into a failure that says nothing
+	// about what actually broke.
+	names := make(map[string]bool, len(got.Backends))
+	for _, b := range got.Backends {
+		names[b.Name] = true
+	}
+	for _, want := range []string{detect.BackendClaudeCode, detect.BackendClaw, detect.BackendCodex, detect.BackendPi} {
+		if !names[want] {
+			t.Fatalf("backend %q missing from the report; got %v", want, names)
+		}
 	}
 	if got.ResolvedDefault != "" {
 		t.Fatalf("ResolvedDefault = %q, want empty (no creds)", got.ResolvedDefault)
@@ -88,6 +98,7 @@ func TestBackendsDetectReflectsAnthropic(t *testing.T) {
 		// provider and would leave claw unresolved. Clear them so the
 		// test is isolated from a host running against z.ai/bigmodel.
 		"ANTHROPIC_BASE_URL", "ZAI_API_KEY",
+		"ITERION_PI_BIN", "PI_CODING_AGENT_DIR",
 	} {
 		t.Setenv(k, "")
 	}

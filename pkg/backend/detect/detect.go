@@ -26,6 +26,7 @@ const (
 	BackendClaudeCode = "claude_code"
 	BackendCodex      = "codex"
 	BackendClaw       = "claw"
+	BackendPi         = "pi"
 )
 
 // Auth kinds.
@@ -128,7 +129,105 @@ func detectBackends(ctx context.Context, prov []ProviderStatus) []BackendStatus 
 			"codex CLI",
 			"$CODEX_HOME/auth.json (Codex OAuth)",
 		),
+		detectPi(prov),
 	}
+}
+
+// detectPi probes for the pi backend.
+//
+// pi is reported but never auto-SELECTED: DefaultPreferenceOrder stays
+// {claude_code, claw}, so surfacing it here changes no existing workflow. What
+// it does change is that the studio can show it and that
+// ITERION_BACKEND_PREFERENCE=pi resolves at all — auto-selection filters on
+// what this function reports, so without an entry the variable was inert.
+//
+// Availability is deliberately broad, because pi's whole proposition is "you
+// already hold a credential for one of ~36 providers": its own login store,
+// any provider env key iterion already probes for claw (pi reads the same
+// variables), or a ChatGPT/Codex login, which iterion bridges into pi's
+// OAuth-only openai-codex provider.
+func detectPi(prov []ProviderStatus) BackendStatus {
+	st := BackendStatus{Name: BackendPi, Auth: AuthNone}
+
+	if _, ok := findPiBinary(); !ok {
+		st.Hints = []string{"pi CLI not found on PATH"}
+		return st
+	}
+
+	var sources []string
+	if piHasOwnLogin() {
+		sources = append(sources, "~/.pi/agent/auth.json (pi login)")
+		st.Auth = AuthOAuth
+	}
+	for _, p := range prov {
+		if p.Available {
+			sources = append(sources, p.Source)
+			if st.Auth == AuthNone {
+				st.Auth = AuthAPIKey
+			}
+		}
+	}
+	if codexChatGPTAvailable() {
+		sources = append(sources, "$CODEX_HOME/auth.json (ChatGPT-Codex OAuth)")
+		if st.Auth == AuthNone {
+			st.Auth = AuthOAuth
+		}
+	}
+
+	if len(sources) == 0 {
+		st.Hints = []string{
+			"pi CLI found, but no credential: run `pi` then /login, or set a provider key",
+		}
+		return st
+	}
+	st.Available = true
+	st.Sources = sources
+	return st
+}
+
+// piHasOwnLogin reports whether pi's credential store holds anything.
+//
+// A fresh install writes `{}`, so existence is not enough — reporting pi as
+// available on an empty store would put a backend in the studio that fails on
+// its first call.
+func piHasOwnLogin() bool {
+	dir := os.Getenv("PI_CODING_AGENT_DIR")
+	if dir == "" {
+		home, err := os.UserHomeDir()
+		if err != nil {
+			return false
+		}
+		dir = filepath.Join(home, ".pi", "agent")
+	}
+	data, err := os.ReadFile(filepath.Join(dir, "auth.json")) // #nosec G304 — a fixed filename under the agent dir.
+	if err != nil {
+		return false
+	}
+	var creds map[string]json.RawMessage
+	if err := json.Unmarshal(data, &creds); err != nil {
+		return false
+	}
+	return len(creds) > 0
+}
+
+// codexChatGPTAvailable reports whether a ChatGPT-mode Codex login exists.
+// Only the auth mode is read; the tokens are never inspected here.
+func codexChatGPTAvailable() bool {
+	dir := codexHomeDir()
+	if dir == "" {
+		return false
+	}
+	data, err := os.ReadFile(filepath.Join(dir, "auth.json")) // #nosec G304 — a fixed filename under CODEX_HOME.
+	if err != nil {
+		return false
+	}
+	var view struct {
+		AuthMode string `json:"auth_mode"`
+	}
+	if err := json.Unmarshal(data, &view); err != nil {
+		return false
+	}
+	return view.AuthMode == "chatgpt"
 }
 
 // detectClaudeCode probes for the claude_code backend in three escalating
@@ -521,6 +620,18 @@ var findCodexBinary = func() (string, bool) {
 	return clilocate.Locate("", clilocate.Spec{
 		Name:      "codex",
 		Fallbacks: clilocate.CommonBinaryCandidates("codex"),
+	})
+}
+
+// findPiBinary probes the host for the pi CLI, honouring the same override
+// the backend itself uses so detection and execution agree on one binary.
+var findPiBinary = func() (string, bool) {
+	if bin := os.Getenv("ITERION_PI_BIN"); bin != "" {
+		return bin, true
+	}
+	return clilocate.Locate("", clilocate.Spec{
+		Name:      "pi",
+		Fallbacks: clilocate.CommonBinaryCandidates("pi"),
 	})
 }
 
