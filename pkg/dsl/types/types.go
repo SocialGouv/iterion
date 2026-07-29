@@ -44,6 +44,13 @@ const (
 	FieldTypeFloat
 	FieldTypeJSON
 	FieldTypeStringArray
+	// FieldTypeFile is an operator-supplied binary. It is only
+	// meaningful on a human node's output_schema: the studio renders a
+	// file picker, the answer is uploaded, and the runtime promotes it
+	// to a run attachment before the workflow resumes. No LLM can
+	// produce one, so ir.Validate rejects it on agent/judge schemas
+	// (C129).
+	FieldTypeFile
 )
 
 func (ft FieldType) String() string {
@@ -60,6 +67,8 @@ func (ft FieldType) String() string {
 		return "json"
 	case FieldTypeStringArray:
 		return "string[]"
+	case FieldTypeFile:
+		return "file"
 	default:
 		return "unknown"
 	}

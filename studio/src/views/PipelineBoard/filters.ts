@@ -18,6 +18,22 @@ export type OpenedSubfilter = "all" | "ready" | "not_ready";
 /** Sub-filters within the Closed tab. */
 export type ClosedSubfilter = "all" | "success" | "failed";
 
+/**
+ * Inventory card ordering. Default is priority (matches the admission loop's
+ * launch order: higher P first, ties oldest-first). Closed history often
+ * prefers "updated", which operators can pick in the Sort control.
+ */
+export type InventorySortMode = "priority" | "updated" | "created";
+
+export const INVENTORY_SORT_OPTIONS: {
+  value: InventorySortMode;
+  label: string;
+}[] = [
+  { value: "priority", label: "Priority" },
+  { value: "updated", label: "Recently updated" },
+  { value: "created", label: "Recently created" },
+];
+
 export interface PipelineFilterState {
   query: string;
   bot: string;
@@ -34,6 +50,8 @@ export interface PipelineFilterState {
   openedSubfilter: OpenedSubfilter;
   /** Success / failed chips (Closed tab only). */
   closedSubfilter: ClosedSubfilter;
+  /** How to order inventory cards (Opened + Closed tabs). */
+  sortMode: InventorySortMode;
 }
 
 // Factory (not a shared constant): each call returns a fresh Set so a reset
@@ -49,6 +67,7 @@ export function emptyPipelineFilters(): PipelineFilterState {
     inventoryTab: "opened",
     openedSubfilter: "all",
     closedSubfilter: "all",
+    sortMode: "priority",
   };
 }
 
@@ -198,6 +217,34 @@ export function sortNewestFirst(cards: PipelineBoardCard[]): PipelineBoardCard[]
     const tb = Date.parse(b.updated_at || b.created_at || "") || 0;
     if (tb !== ta) return tb - ta;
     // Stable tie-break: ascending id.
+    return a.id < b.id ? -1 : a.id > b.id ? 1 : 0;
+  });
+}
+
+/**
+ * Inventory ordering. "priority" matches server sortReadyTickets /
+ * queueSummary.sortLaunchOrder (P desc, then oldest-first). Date modes are
+ * newest-first. Does not mutate the input array.
+ */
+export function sortInventoryCards(
+  cards: PipelineBoardCard[],
+  mode: InventorySortMode = "priority",
+): PipelineBoardCard[] {
+  if (mode === "updated") return sortNewestFirst(cards);
+  return [...cards].sort((a, b) => {
+    if (mode === "priority") {
+      const pa = a.priority ?? 0;
+      const pb = b.priority ?? 0;
+      if (pa !== pb) return pb - pa;
+      const ta = Date.parse(a.created_at || "") || 0;
+      const tb = Date.parse(b.created_at || "") || 0;
+      if (ta !== tb) return ta - tb;
+      return a.id < b.id ? -1 : a.id > b.id ? 1 : 0;
+    }
+    // created — newest first
+    const ta = Date.parse(a.created_at || "") || 0;
+    const tb = Date.parse(b.created_at || "") || 0;
+    if (tb !== ta) return tb - ta;
     return a.id < b.id ? -1 : a.id > b.id ? 1 : 0;
   });
 }

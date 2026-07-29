@@ -7,10 +7,17 @@ import {
   resumeRun,
 } from "@/api/runs";
 import { Button } from "@/components/ui/Button";
-import { WizardForm } from "@/components/ui/WizardForm";
+import {
+  isQuestionValid,
+  WizardForm,
+} from "@/components/ui/WizardForm";
 import { useHumanNodeSchema } from "@/hooks/useHumanNodeSchema";
 import { ASK_USER_RESPONSE_KEY } from "@/lib/askUserOptions";
-import type { FormAnswer, FormSpec } from "@/lib/whats-next/questionForm";
+import type {
+  FormAnswer,
+  FormQuestion,
+  FormSpec,
+} from "@/lib/whats-next/questionForm";
 import {
   coerceFormAnswerToSchema,
   formSpecFromSchema,
@@ -19,6 +26,8 @@ import { useDocumentStore } from "@/store/document";
 import { useRunStore } from "@/store/run";
 
 import PauseForm from "../PauseForm";
+import GateAttachments from "./GateAttachments";
+import type { GateFileValue } from "@/components/shared/GateFileInput";
 
 interface Props {
   runId: string;
@@ -105,6 +114,10 @@ export default function HumanPromptForm({
   // current text. WizardForm emits FormAnswer atomically; we also
   // expose an onChange via a controlled draft pattern.
   const [latestAnswer, setLatestAnswer] = useState<FormAnswer>({});
+  // Ad-hoc attachments (the 📎 button), independent of any declared
+  // `file` field. Already uploaded to staging by the time they land
+  // here — only their ids ride the resume.
+  const [adHocFiles, setAdHocFiles] = useState<GateFileValue[]>([]);
 
   // Belt-and-braces post-resume snapshot fetch lives on this timer
   // ref so a panel torn down within the 600ms window doesn't have
@@ -153,10 +166,12 @@ export default function HumanPromptForm({
     // keeps every input (feedback + any per-item selector like
     // whats-next's `selected_titles`) visible alongside the buttons.
     const mode = verdict ? "flat" : undefined;
-    return formSpecFromSchema(visible, questions, {
-      submitLabel: "Submit & Resume",
-      mode,
-    });
+    return makeHumanIdentityRequired(
+      formSpecFromSchema(visible, questions, {
+        submitLabel: "Submit & Resume",
+        mode,
+      }),
+    );
   }, [fields, questions]);
 
   useEffect(() => {
@@ -181,6 +196,9 @@ export default function HumanPromptForm({
       await resumeRun(runId, {
         answers,
         source: resolvedSource,
+        ...(adHocFiles.length > 0
+          ? { attachments: adHocFiles.map((f) => f.uploadId) }
+          : {}),
         ...(force ? { force: true } : {}),
       });
       setSubmitted(true);
@@ -269,6 +287,17 @@ export default function HumanPromptForm({
       ...defaultAnswerForSpec(formSpec),
       ...latestAnswer,
     };
+    const invalidRequired = (formSpec?.questions ?? []).filter(
+      (question) =>
+        !isQuestionValid(question, answerWithDefaults[question.id]),
+    );
+    if (invalidRequired.length > 0) {
+      setError(
+        "Complete required fields: " +
+          invalidRequired.map((question) => question.label).join(", "),
+      );
+      return;
+    }
     const { answers, errors } = coerceFormAnswerToSchema(
       visibleFields,
       answerWithDefaults,
@@ -409,6 +438,11 @@ export default function HumanPromptForm({
               }}
             />
           )}
+          <GateAttachments
+            value={adHocFiles}
+            onChange={setAdHocFiles}
+            disabled={busy}
+          />
           {error && (
             <p className="text-danger-fg text-micro" role="alert">
               {error}
@@ -497,6 +531,27 @@ export default function HumanPromptForm({
       )}
     </div>
   );
+}
+
+function makeHumanIdentityRequired(spec: FormSpec): FormSpec {
+  return {
+    ...spec,
+    questions: spec.questions.map((question): FormQuestion => {
+      if (
+        (question.id === "reviewer" || question.id === "reviewer_id") &&
+        question.kind === "free_text"
+      ) {
+        return {
+          ...question,
+          label: question.id === "reviewer" ? "Your name" : "Reviewer ID",
+          required: true,
+          rows: 1,
+          placeholder: "Required",
+        };
+      }
+      return question;
+    }),
+  };
 }
 
 function defaultAnswerForSpec(spec: FormSpec | null): FormAnswer {

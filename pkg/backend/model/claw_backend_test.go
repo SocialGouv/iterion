@@ -642,8 +642,8 @@ func TestClawBackend_SystemPromptUsesEphemeralCacheControl(t *testing.T) {
 		t.Fatalf("requests = %d, want 1", len(cap.requests))
 	}
 	req := cap.requests[0]
-	if req.System != "" {
-		t.Errorf("req.System = %q, want empty (should use SystemBlocks)", req.System)
+	if req.System != "You are a helpful assistant." {
+		t.Errorf("req.System = %q, want mirrored system prompt", req.System)
 	}
 	if len(req.SystemBlocks) != 1 {
 		t.Fatalf("SystemBlocks len = %d, want 1", len(req.SystemBlocks))

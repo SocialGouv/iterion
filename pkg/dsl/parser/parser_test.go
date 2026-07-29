@@ -1091,13 +1091,14 @@ func TestAllFieldTypes(t *testing.T) {
   d: float
   e: json
   f: string[]
+  g: file
 `
 	res := parser.Parse("test.bot", src)
 	assertNoDiags(t, res)
 
 	fields := res.File.Schemas[0].Fields
-	if len(fields) != 6 {
-		t.Fatalf("expected 6 fields, got %d", len(fields))
+	if len(fields) != 7 {
+		t.Fatalf("expected 7 fields, got %d", len(fields))
 	}
 	assertEq(t, "string", fields[0].Type, ast.FieldTypeString)
 	assertEq(t, "bool", fields[1].Type, ast.FieldTypeBool)
@@ -1105,6 +1106,7 @@ func TestAllFieldTypes(t *testing.T) {
 	assertEq(t, "float", fields[3].Type, ast.FieldTypeFloat)
 	assertEq(t, "json", fields[4].Type, ast.FieldTypeJSON)
 	assertEq(t, "string[]", fields[5].Type, ast.FieldTypeStringArray)
+	assertEq(t, "file", fields[6].Type, ast.FieldTypeFile)
 }
 
 // ---------------------------------------------------------------------------

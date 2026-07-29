@@ -9,6 +9,7 @@ import {
   filterPipelineCards,
   partitionPipelineCards,
   pipelineFiltersActive,
+  sortInventoryCards,
   sortNewestFirst,
 } from "./filters";
 
@@ -213,6 +214,73 @@ describe("partitionPipelineCards + inventory filters", () => {
       card({ id: "a", updated_at: "2026-07-01T00:00:00Z" }),
     ]);
     expect(got.map((c) => c.id)).toEqual(["a", "b"]);
+  });
+
+  it("sortInventoryCards priority matches launch order (P desc, then oldest)", () => {
+    const got = sortInventoryCards(
+      [
+        card({
+          id: "old-low",
+          priority: 1,
+          created_at: "2026-07-01T00:00:00Z",
+        }),
+        card({
+          id: "new-high",
+          priority: 5,
+          created_at: "2026-07-10T00:00:00Z",
+        }),
+        card({
+          id: "old-mid",
+          priority: 3,
+          created_at: "2026-07-02T00:00:00Z",
+        }),
+        card({
+          id: "new-mid",
+          priority: 3,
+          created_at: "2026-07-05T00:00:00Z",
+        }),
+        card({
+          id: "unprioritized",
+          priority: 0,
+          created_at: "2026-06-01T00:00:00Z",
+        }),
+      ],
+      "priority",
+    );
+    expect(got.map((c) => c.id)).toEqual([
+      "new-high",
+      "old-mid",
+      "new-mid",
+      "old-low",
+      "unprioritized",
+    ]);
+  });
+
+  it("sortInventoryCards updated/created are newest-first", () => {
+    const cards = [
+      card({
+        id: "a",
+        created_at: "2026-07-01T00:00:00Z",
+        updated_at: "2026-07-10T00:00:00Z",
+      }),
+      card({
+        id: "b",
+        created_at: "2026-07-05T00:00:00Z",
+        updated_at: "2026-07-02T00:00:00Z",
+      }),
+    ];
+    expect(sortInventoryCards(cards, "updated").map((c) => c.id)).toEqual([
+      "a",
+      "b",
+    ]);
+    expect(sortInventoryCards(cards, "created").map((c) => c.id)).toEqual([
+      "b",
+      "a",
+    ]);
+  });
+
+  it("emptyPipelineFilters defaults sortMode to priority", () => {
+    expect(emptyPipelineFilters().sortMode).toBe("priority");
   });
 });
 

@@ -65,6 +65,110 @@ func (c *compiler) validateAwaitAnswers(w *Workflow) {
 	}
 }
 
+// validateFileFields enforces that a `file` schema field is only ever
+// reachable as the output of a node that can actually PAUSE for an
+// operator upload (C129, error).
+//
+// A `file` field is filled by an operator uploading bytes through the run
+// console; the runtime promotes those bytes to a run attachment on resume.
+// Nothing else in the engine can produce one — an LLM emits JSON, a tool
+// node emits parsed stdout — so a `file` on an agent/judge/tool/compute
+// output_schema is guaranteed to arrive empty at run time. That is a
+// silent-nothing failure (the downstream node reads a missing path and
+// improvises), which is exactly the failure class worth catching at
+// compile time rather than three minutes into a paid run.
+//
+// Schemas are shared by name, so the check is per USE, not per
+// declaration: the same schema may legitimately be a human node's output
+// and another node's *input* (an input schema is advisory and never
+// produced, so it is not flagged).
+func (c *compiler) validateFileFields(w *Workflow) {
+	for _, n := range w.Nodes {
+		// Two human interaction modes never produce operator bytes:
+		// `llm`, auto-answered by a model the same way an agent node is,
+		// and `review`, whose output is the verdict map the ENGINE
+		// builds. Both are human nodes in name only for this check.
+		// `llm_or_human` is left alone: it can escalate to a real pause,
+		// which is the only way the file arrives, so the author still has
+		// a working path.
+		if n.NodeKind() == NodeHuman && !fileImpossibleInteraction(NodeInteraction(n)) {
+			continue
+		}
+		schemaName := NodeOutputSchema(n)
+		if schemaName == "" {
+			continue
+		}
+		schema := w.Schemas[schemaName]
+		if schema == nil {
+			continue
+		}
+		for _, f := range schema.Fields {
+			if f.Type != FieldTypeFile {
+				continue
+			}
+			if n.NodeKind() == NodeHuman {
+				c.errorfAt(DiagFileFieldNotHuman, n.NodeID(), "",
+					"human %q declares interaction: %s and an output_schema %q with the file field %q — that mode never collects operator bytes (an %s gate produces its output without a pause), so the field would arrive empty or with an invented path; use interaction: human (or llm_or_human, which can escalate to a real pause)",
+					n.NodeID(), NodeInteraction(n).String(), schemaName, f.Name, NodeInteraction(n).String())
+				continue
+			}
+			c.errorfAt(DiagFileFieldNotHuman, n.NodeID(), "",
+				"%s %q declares output_schema %q whose field %q has type file — only a human node can produce a file (the operator uploads it at the pause); this field would always be empty",
+				n.NodeKind().String(), n.NodeID(), schemaName, f.Name)
+		}
+	}
+}
+
+// reservedAnswerKeys are answer keys the ENGINE owns on a human node's
+// output. The resume path writes them itself, so a schema declaring one
+// does not get an optional field — it gets a field whose value is
+// silently replaced.
+//
+// `_attachments` carries the gate's ad-hoc uploads (the paperclip
+// button, no DSL involved). It was documented as collision-proof because
+// authored field names "never start with '_' by convention", but the
+// lexer accepts a leading underscore, so the convention was never
+// enforced — hence this check rather than a comment.
+var reservedAnswerKeys = map[string]string{
+	"_attachments": "carries the gate's ad-hoc operator uploads",
+}
+
+// fileImpossibleInteraction reports whether a human node's interaction
+// mode resolves the gate WITHOUT an operator upload: `llm` auto-answers
+// with a model, `review` outputs the engine-built verdict map. Both make
+// a `file` field unfillable by construction.
+func fileImpossibleInteraction(mode InteractionMode) bool {
+	return mode == InteractionLLM || mode == InteractionReview
+}
+
+// validateReservedAnswerKeys rejects (C130) a human node whose output
+// schema declares a key the engine writes on resume. Human nodes only:
+// on any other node these names are ordinary fields nothing overwrites.
+func (c *compiler) validateReservedAnswerKeys(w *Workflow) {
+	for _, n := range w.Nodes {
+		if n.NodeKind() != NodeHuman {
+			continue
+		}
+		schemaName := NodeOutputSchema(n)
+		if schemaName == "" {
+			continue
+		}
+		schema := w.Schemas[schemaName]
+		if schema == nil {
+			continue
+		}
+		for _, f := range schema.Fields {
+			why, reserved := reservedAnswerKeys[f.Name]
+			if !reserved {
+				continue
+			}
+			c.errorfAt(DiagReservedAnswerKey, n.NodeID(), "",
+				"human %q declares output_schema %q with the field %q, which the engine reserves (it %s) — the operator's answer would be silently overwritten on resume; rename the field",
+				n.NodeID(), schemaName, f.Name, why)
+		}
+	}
+}
+
 // validateArtifactLabels warns (C049) when a node declares artifact_labels:
 // but no publish: — the labels have no artifact to attach to (only a node's
 // *published* output is labelled). Judge nodes never publish, so their

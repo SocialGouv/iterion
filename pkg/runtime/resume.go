@@ -2,6 +2,7 @@ package runtime
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -200,6 +201,23 @@ func (e *Engine) resumeFromPause(ctx context.Context, r *store.Run, answers map[
 			return fanErr
 		}
 	}
+
+	// Resolve operator-uploaded files to an openable path. The HTTP layer
+	// promoted the bytes to a run attachment and left a descriptor without
+	// a `path` — deliberately, because only the engine knows whether the
+	// nodes about to read it run on the host or inside a container. Done
+	// BEFORE recordHumanAnswers so the persisted interaction, the
+	// published artifact and rs.outputs all carry the same resolved
+	// descriptor.
+	//
+	// e.repoRoot is normally set by restoreRunEnv, which runs later inside
+	// resumeRebuildState — and the sandbox forecast reads it. Left empty,
+	// the DEFAULT `sandbox: auto` resolves to "not applicable (outside a
+	// git repository)" and every descriptor gets a host path, moments
+	// before startSandbox is handed r.RepoRoot and containerises the run:
+	// the path is then real on the host and absent in the container.
+	e.seedRepoRootForResume(r)
+	e.resolveFileAnswers(ctx, runID, answers)
 
 	// Record answers on the interaction (LoadInteraction + WriteInteraction
 	// + emit human_answers_recorded). Fall back to the checkpoint's embedded
@@ -400,6 +418,27 @@ func (e *Engine) claimForResume(ctx context.Context, runID string, allowed ...st
 	return e.emit(ctx, runID, store.EventRunResumed, "", nil)
 }
 
+// seedRepoRootForResume fills e.repoRoot from the run record when it has
+// not been restored yet, using the same precedence resumeRebuildState
+// applies later (r.RepoRoot, else derived from the workspace). Callers
+// that need a repo-aware answer BEFORE restoreRunEnv runs — the sandbox
+// forecast behind attachmentPath — must call this first; it is a no-op
+// once the value is set.
+func (e *Engine) seedRepoRootForResume(r *store.Run) {
+	if e == nil || e.repoRoot != "" || r == nil {
+		return
+	}
+	if r.RepoRoot != "" {
+		e.repoRoot = r.RepoRoot
+		return
+	}
+	workDir := r.WorkDir
+	if workDir == "" {
+		workDir = e.workDir
+	}
+	e.repoRoot = engineRepoRoot(workDir)
+}
+
 // resumeRebuildState restores the per-run environment, re-mirrors bundle
 // skills, re-bootstraps the sandbox, and rebuilds the in-memory runState
 // from the checkpoint. Shared by resumeFromPause and resumeReviewGate —
@@ -499,6 +538,13 @@ func (e *Engine) resumeRebuildState(ctx context.Context, r *store.Run, cp *store
 
 	rs := e.newRunState(runID, r.Inputs)
 	rs.vars = e.resolveVars(r.Inputs)
+	// Attachments are otherwise loaded only by runInitState, on the LAUNCH
+	// path — leaving {{attachments.<name>}} unresolvable for every node a
+	// resumed run executes. That is fatal for a gate upload, which by
+	// construction exists only after a resume, and silently degrades
+	// launch-time attachments on any resumed run. Loaded here, after
+	// startSandbox, so attachmentPath reads the settled sandbox state.
+	rs.attachments = e.loadAttachmentInfos(ctx, runID)
 	rs.outputs = outputs
 	rs.artifacts = e.rebuildArtifacts(outputs)
 	rs.loopCounters = loopCounters
@@ -595,6 +641,10 @@ func (e *Engine) resumeFromFailure(ctx context.Context, r *store.Run) error {
 
 	rs := e.newRunState(runID, r.Inputs)
 	rs.vars = e.resolveVars(r.Inputs)
+	// Same reason as the paused-resume path above: without this every
+	// {{attachments.<name>}} reference silently resolves to nothing for
+	// the rest of a resumed run.
+	rs.attachments = e.loadAttachmentInfos(ctx, runID)
 	e.restoreCheckpointState(rs, cp)
 	// Re-apply live-steering grants (bump_loop / raise_budget) persisted
 	// on the run record, so a bumped ceiling survives the resume.
@@ -1402,12 +1452,11 @@ func (e *Engine) drainOperatorMessagesForPause(ctx context.Context, runID string
 // doPause is the unified implementation for pausing a run. It writes the
 // interaction record, emits pause events, and saves the checkpoint.
 func (e *Engine) doPause(rs *runState, nodeID string, questions map[string]any, eventExtra map[string]any, info pauseInfo) error {
-	// Create interaction. Include loop iteration in the ID so that
-	// human nodes inside loops produce unique interactions per iteration.
-	interactionID := fmt.Sprintf("%s_%s", rs.runID, nodeID)
-	if loopIter := e.currentLoopIteration(nodeID, rs.loopCounters); loopIter > 0 {
-		interactionID = fmt.Sprintf("%s_%s_%d", rs.runID, nodeID, loopIter)
-	}
+	// Create one stable interaction per logical loop execution. A scalar
+	// max(loop counters) is insufficient when a human node belongs to
+	// multiple loops: {plan=2, kit=1} and {plan=2, kit=2} both collapse to
+	// iteration 2 and the second pause overwrites the first interaction.
+	interactionID := e.interactionIDForPause(rs.runID, nodeID, rs.loopCounters)
 	// Drain operator-queued chatbox messages and stamp them onto the
 	// interaction questions under a reserved key. The resume path
 	// reads the same key and folds the messages into the system
@@ -1469,6 +1518,28 @@ func (e *Engine) doPause(rs *runState, nodeID string, questions map[string]any, 
 // ---------------------------------------------------------------------------
 // Loop helpers
 // ---------------------------------------------------------------------------
+
+// interactionIDForPause returns the durable ID for a human interaction.
+//
+// Nodes outside loops and the first (all-zero) execution keep the historical
+// `<run>_<node>` ID. A node in exactly one active loop keeps the historical
+// `<run>_<node>_<iteration>` form. When several loops contain the node, the
+// complete, lexicographically stable iteration path is encoded as a
+// filesystem-safe suffix. This mirrors execution-ID disambiguation while
+// preserving existing IDs wherever the scalar counter was already unique.
+func (e *Engine) interactionIDForPause(runID, nodeID string, loopCounters map[string]int) string {
+	base := fmt.Sprintf("%s_%s", runID, nodeID)
+	iteration := e.currentLoopIteration(nodeID, loopCounters)
+	iterationPath := e.currentLoopIterationPath(nodeID, loopCounters)
+	if iteration <= 0 || iterationPath == "" {
+		return base
+	}
+	if !strings.Contains(iterationPath, ";") {
+		return fmt.Sprintf("%s_%d", base, iteration)
+	}
+	encodedPath := base64.RawURLEncoding.EncodeToString([]byte(iterationPath))
+	return fmt.Sprintf("%s_loops_%s", base, encodedPath)
+}
 
 // currentLoopIteration returns the current loop iteration for a node.
 // If the node participates in multiple loops, returns the max counter.

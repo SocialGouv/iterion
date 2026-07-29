@@ -27,9 +27,9 @@ import (
 // request_changes routes the gate to a downstream `when decision ==
 // 'changes_requested'` edge (typically back to an implementer).
 //
-// The dialogue lives on a single Interaction (stable ID, no loop suffix);
-// each turn appends to Interaction.Turns and re-pauses. max_turns bounds it
-// so the gate always converges to an asymptote.
+// The dialogue lives on a single Interaction per logical loop execution;
+// each turn appends to Interaction.Turns and re-pauses with the same stable
+// ID. max_turns bounds it so the gate always converges to an asymptote.
 
 // Reserved answers keys carrying the human's review-gate action on resume.
 const (
@@ -73,7 +73,7 @@ func (e *Engine) execReviewGate(ctx context.Context, rs *runState, nodeID string
 
 	// Auto-merge on a favorable verdict when the operator allowed it.
 	if hn.Posture == ir.PostureAgentVerdictOK && companionApproves(companion) {
-		next, err := e.gateMergeAndSelectEdge(ctx, rs, hn, nodeID, approvedVerdict(companion), nil)
+		next, err := e.gateMergeAndSelectEdge(ctx, rs, hn, nodeID, "" /* never paused: no stored interaction */, approvedVerdict(companion), nil)
 		if err != nil {
 			return "", true, err
 		}
@@ -135,12 +135,12 @@ func (e *Engine) resumeReviewGate(ctx context.Context, r *store.Run, cp *store.C
 		// Record the verdict, squash-merge during the pause, advance.
 		verdict := map[string]any{"decision": "approved"}
 		mergeFromPrior(verdict, priorTurns)
-		return e.gateResolveAndRun(ctx, r, rs, hn, nodeID, verdict, answers, true /* merge */)
+		return e.gateResolveAndRun(ctx, r, rs, hn, nodeID, cp.InteractionID, verdict, answers, true /* merge */)
 
 	case reviewActionRequestChanges:
 		verdict := map[string]any{"decision": "changes_requested"}
 		mergeFromPrior(verdict, priorTurns)
-		return e.gateResolveAndRun(ctx, r, rs, hn, nodeID, verdict, answers, false /* no merge */)
+		return e.gateResolveAndRun(ctx, r, rs, hn, nodeID, cp.InteractionID, verdict, answers, false /* no merge */)
 
 	default: // reviewActionReply (and any unknown action → safe re-pause)
 		replyText := stringAnswer(answers, reviewReplyKey)
@@ -166,7 +166,7 @@ func (e *Engine) resumeReviewGate(ctx context.Context, r *store.Run, cp *store.C
 
 		// Auto-conclude when the operator allowed the agent's verdict to stand.
 		if hn.Posture == ir.PostureAgentVerdictOK && companionApproves(companion) {
-			return e.gateResolveAndRun(ctx, r, rs, hn, nodeID, approvedVerdict(companion), answers, true)
+			return e.gateResolveAndRun(ctx, r, rs, hn, nodeID, cp.InteractionID, approvedVerdict(companion), answers, true)
 		}
 
 		// Otherwise keep the dialogue going — re-pause with the full thread.
@@ -178,13 +178,13 @@ func (e *Engine) resumeReviewGate(ctx context.Context, r *store.Run, cp *store.C
 // output + node_finished), optionally squash-merges during the pause, then
 // drives execLoop from the selected edge to the terminal node and finalizes
 // the worktree. Used by the resume path (which owns its own execLoop).
-func (e *Engine) gateResolveAndRun(ctx context.Context, r *store.Run, rs *runState, hn *ir.HumanNode, nodeID string, verdict, answers map[string]any, merge bool) error {
+func (e *Engine) gateResolveAndRun(ctx context.Context, r *store.Run, rs *runState, hn *ir.HumanNode, nodeID, interactionID string, verdict, answers map[string]any, merge bool) error {
 	var next string
 	var err error
 	if merge {
-		next, err = e.gateMergeAndSelectEdge(ctx, rs, hn, nodeID, verdict, answers)
+		next, err = e.gateMergeAndSelectEdge(ctx, rs, hn, nodeID, interactionID, verdict, answers)
 	} else {
-		next, err = e.gateSelectEdge(ctx, rs, hn, nodeID, verdict)
+		next, err = e.gateSelectEdge(ctx, rs, hn, nodeID, interactionID, verdict)
 	}
 	if err != nil {
 		return err
@@ -202,25 +202,36 @@ func (e *Engine) gateResolveAndRun(ctx context.Context, r *store.Run, rs *runSta
 
 // gateMergeAndSelectEdge performs the squash-merge during the pause, records
 // the verdict as the node output + node_finished, and returns the next node.
-func (e *Engine) gateMergeAndSelectEdge(ctx context.Context, rs *runState, hn *ir.HumanNode, nodeID string, verdict, answers map[string]any) (string, error) {
+func (e *Engine) gateMergeAndSelectEdge(ctx context.Context, rs *runState, hn *ir.HumanNode, nodeID, interactionID string, verdict, answers map[string]any) (string, error) {
 	if err := e.performGateMerge(ctx, rs, hn, nodeID, answers); err != nil {
 		// A merge failure is resumable: preserve the checkpoint so the
 		// operator can fix the tree and re-approve / force.
 		return "", e.failRunWithCheckpoint(rs, nodeID,
 			fmt.Sprintf("review gate %q merge failed: %v", nodeID, err))
 	}
-	return e.gateSelectEdge(ctx, rs, hn, nodeID, verdict)
+	return e.gateSelectEdge(ctx, rs, hn, nodeID, interactionID, verdict)
 }
 
 // gateSelectEdge records the verdict as the node output, emits the answered
 // interaction + node_finished, persists the publish artifact, and selects
 // the outgoing edge. Shared by the merge and request-changes paths.
-func (e *Engine) gateSelectEdge(ctx context.Context, rs *runState, hn *ir.HumanNode, nodeID string, verdict map[string]any) (string, error) {
+// interactionID is the ID the pause actually stored (checkpoint
+// InteractionID); it is empty only on the auto-merge path, which resolves
+// the gate without ever pausing. Preferring the stored ID over a fresh
+// computation is what keeps this correct when the two could differ: loop
+// counters that round-tripped through a store (Mongo omitempty drops an
+// empty map), and — the case no recomputation can ever handle — a run
+// paused by an older binary, whose interaction sits under whatever ID
+// that binary derived. A miss here is silent (the load is guarded by
+// `err == nil`), so the verdict would simply never be recorded.
+func (e *Engine) gateSelectEdge(ctx context.Context, rs *runState, hn *ir.HumanNode, nodeID, interactionID string, verdict map[string]any) (string, error) {
 	rs.outputs[nodeID] = verdict
 
 	// Record the verdict on the interaction as the answer + emit events,
 	// mirroring the single-shot human-resume bookkeeping.
-	interactionID := fmt.Sprintf("%s_%s", rs.runID, nodeID)
+	if interactionID == "" {
+		interactionID = e.interactionIDForPause(rs.runID, nodeID, rs.loopCounters)
+	}
 	if it, err := e.store.LoadInteraction(ctx, rs.runID, interactionID); err == nil && it != nil {
 		now := time.Now().UTC()
 		it.AnsweredAt = &now

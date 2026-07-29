@@ -510,7 +510,11 @@ export interface RunRepo {
 export interface GlobalActiveRun {
   id: string;
   name?: string;
+  parent_run_id?: string;
   workflow_name: string;
+  bundle_name?: string;
+  bundle_display_name?: string;
+  input_path?: string;
   status: RunStatus;
   created_at: string;
   updated_at: string;
@@ -786,7 +790,23 @@ export interface ResumeRunRequest {
   answers?: Record<string, unknown>;
   force?: boolean;
   timeout?: string;
+  // Ad-hoc upload IDs (from uploadAttachment) the operator attached to
+  // this answer without the workflow declaring a `file` field — the
+  // "here's a diagram explaining my feedback" case. The server promotes
+  // them to run attachments and hands the workflow descriptors on the
+  // reserved `_attachments` answer key.
+  //
+  // A DECLARED `file` field travels differently: its upload rides
+  // inline in `answers` as `{ upload_id: "..." }` (see
+  // UPLOAD_ENVELOPE_KEY), because it has a schema field name to land on.
+  attachments?: string[];
 }
+
+// UPLOAD_ENVELOPE_KEY marks an answer value as "bytes I already staged"
+// rather than literal JSON data. The server recognises the same shape
+// and swaps it for a descriptor before the engine sees the answers.
+// Keep in sync with pkg/server/runs_answer_uploads.go.
+export const UPLOAD_ENVELOPE_KEY = "upload_id";
 
 // Status code mirrored from pkg/git.FileStatus. "??" is git's untracked
 // marker; we keep it verbatim so the UI can pattern-match without any

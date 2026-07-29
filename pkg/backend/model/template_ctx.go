@@ -53,8 +53,19 @@ type TemplateData struct {
 // store's AttachmentRecord plus a lazy presign hook so prompts that
 // never touch `.url` don't pay the URL signing cost.
 type AttachmentInfo struct {
-	Name             string
-	Path             string // absolute host path; empty in cloud unless prefetched
+	Name string
+	// Path is the path the RUNNING NODES can open: the host path on an
+	// ordinary run, the sandbox bind-mount path when the run is
+	// containerised (where the host path does not exist). This is what
+	// `{{attachments.<name>}}` resolves to. Empty in cloud unless
+	// prefetched.
+	Path string
+	// HostPath is where the ITERION PROCESS can read the bytes — always a
+	// host path, never a container one. Kept separate from Path because
+	// image inlining (imageContentBlock) reads the file here, on the
+	// host, while the prompt hands the node its own view. Empty for
+	// non-filesystem (cloud) stores, whose consumers use URL().
+	HostPath         string
 	OriginalFilename string
 	MIME             string
 	Size             int64

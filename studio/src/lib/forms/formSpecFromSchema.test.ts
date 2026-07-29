@@ -156,3 +156,61 @@ describe("coerceFormAnswerToSchema — checkbox → json passthrough", () => {
     expect(answers.selected_titles).toEqual([]);
   });
 });
+
+describe("formSpecFromSchema — file fields", () => {
+  const fileField = (name: string): WireSchemaField => ({
+    name,
+    type: "file",
+    enum_values: undefined,
+  });
+
+  it("renders a `file` field as a file question", () => {
+    const spec = formSpecFromSchema([fileField("music")], {});
+    expect(spec.questions).toHaveLength(1);
+    expect(spec.questions[0]).toMatchObject({ kind: "file" });
+  });
+
+  it("leaves the file question optional", () => {
+    // The DSL has no per-field `required` marker, and forcing a file
+    // would strand an operator re-answering a gate whose file was
+    // already supplied on an earlier pass.
+    const spec = formSpecFromSchema([fileField("music")], {});
+    expect(spec.questions[0]).toMatchObject({ required: false });
+  });
+
+  it("narrows the picker from the field name, and stays silent when unsure", () => {
+    const audio = formSpecFromSchema([fileField("soundtrack")], {});
+    expect(audio.questions[0]).toMatchObject({ kind: "file", accept: "audio/*" });
+
+    const image = formSpecFromSchema([fileField("screenshot")], {});
+    expect(image.questions[0]).toMatchObject({ kind: "file", accept: "image/*" });
+
+    const unknown = formSpecFromSchema([fileField("payload")], {});
+    expect(unknown.questions[0]).toMatchObject({ kind: "file" });
+    expect(
+      (unknown.questions[0] as { accept?: string }).accept,
+    ).toBeUndefined();
+  });
+
+  it("wraps the staged upload id in an upload envelope on submit", () => {
+    const { answers, errors } = coerceFormAnswerToSchema(
+      [fileField("music"), { name: "notes", type: "string" }],
+      { music: "up_abc123", notes: "use this take" },
+    );
+    expect(errors).toEqual({});
+    expect(answers.music).toEqual({ upload_id: "up_abc123" });
+    expect(answers.notes).toBe("use this take");
+  });
+
+  it("omits the field entirely when no file was picked", () => {
+    // An empty envelope would make the server try to promote "" and
+    // fail the whole resume — an operator who simply skipped an
+    // optional upload must not be blocked.
+    const { answers, errors } = coerceFormAnswerToSchema(
+      [fileField("music")],
+      { music: "" },
+    );
+    expect(errors).toEqual({});
+    expect("music" in answers).toBe(false);
+  });
+});

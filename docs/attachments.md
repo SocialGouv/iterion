@@ -1,4 +1,4 @@
-# Attachments — file & image inputs at launch time
+# Attachments — file & image inputs
 
 The `attachments:` block lets a workflow declare binary inputs (files,
 images) the user provides at launch. Iterion uploads them once,
@@ -10,6 +10,13 @@ filesystem paths plus optional presigned URLs.
 
 This document covers the DSL surface, the runtime semantics across
 local / desktop / cloud, the upload protocol, and the security model.
+
+> **Attachments can also arrive mid-run.** An operator answering a
+> `human` gate can upload a file there — a `file`-typed schema field, or
+> the always-available 📎 button. Those become ordinary run attachments
+> through everything described below (same storage, same limits, same
+> sandbox mount), just bound at answer time instead of launch time. See
+> [human-in-the-loop.md](human-in-the-loop.md#handing-the-workflow-a-file).
 
 ## DSL
 
@@ -189,9 +196,11 @@ through its own vision pipeline.
 
 When a sandbox is active, the engine appends a read-only bind mount
 of the run's `attachments/` directory under
-`/run/iterion/attachments`. Path references resolved inside the
-sandbox point there. The mount is read-only by construction: a
-malicious agent cannot corrupt the run store.
+`/run/iterion/attachments`, and `{{attachments.<name>.path}}` resolves
+to that container path rather than the host one — the host path does
+not exist inside the container, and handing it to an agent produces a
+plausible-looking path that fails to open. The mount is read-only by
+construction: a malicious agent cannot corrupt the run store.
 
 ## Cloud notes
 

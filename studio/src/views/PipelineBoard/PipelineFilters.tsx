@@ -6,8 +6,10 @@ import { Input } from "@/components/ui/Input";
 import { Select } from "@/components/ui/Select";
 
 import {
+  INVENTORY_SORT_OPTIONS,
   pipelineFiltersActive,
   type ClosedSubfilter,
+  type InventorySortMode,
   type InventoryTab,
   type OpenedSubfilter,
   type PipelineFilterState,
@@ -250,6 +252,36 @@ export function PipelineFilters({
           label="Waiting on deps"
           title="Show only tickets with open hard blockers or waiting_deps"
         />
+        <label
+          htmlFor="pipeline-inventory-sort"
+          className="flex items-center gap-1.5 text-fg-muted"
+          title="Order of cards in the inventory grid"
+        >
+          Sort
+          <Select
+            fit
+            id="pipeline-inventory-sort"
+            value={filters.sortMode ?? "priority"}
+            onChange={(e) =>
+              onChange({
+                ...filters,
+                sortMode: e.target.value as InventorySortMode,
+              })
+            }
+            aria-label="Sort inventory cards"
+            title={
+              (filters.sortMode ?? "priority") === "priority"
+                ? "Higher priority first — same order as the launch queue; ties oldest-first"
+                : "Order inventory cards"
+            }
+          >
+            {INVENTORY_SORT_OPTIONS.map((o) => (
+              <option key={o.value} value={o.value}>
+                {o.label}
+              </option>
+            ))}
+          </Select>
+        </label>
         <span className="ml-auto text-fg-muted">
           {active || filtered !== total
             ? `${filtered} / ${total}`

@@ -763,17 +763,20 @@ func TestFanOutCancelAbandonsWedgedBranch(t *testing.T) {
 	if err != nil {
 		t.Fatalf("LoadEvents: %v", err)
 	}
+	// The invariant is that the WEDGED branch was abandoned — not that it
+	// was the only one. Branch a returns ctx.Err() right after cancelling,
+	// and on a loaded machine that result can miss the grace window too,
+	// so a legitimately-abandoned branch_router_a must not fail the test
+	// (it did, flakily, until this was relaxed).
 	found := false
 	for _, evt := range events {
-		if evt.Type == store.EventBranchAbandoned {
-			if evt.NodeID != "branch_router_b" {
-				t.Fatalf("branch_abandoned names %q, want branch_router_b", evt.NodeID)
-			}
-			if evt.Data["router"] != "router" || evt.Data["mode"] != "fan_out" {
-				t.Fatalf("branch_abandoned data = %+v, want router/fan_out", evt.Data)
-			}
-			found = true
+		if evt.Type != store.EventBranchAbandoned || evt.NodeID != "branch_router_b" {
+			continue
 		}
+		if evt.Data["router"] != "router" || evt.Data["mode"] != "fan_out" {
+			t.Fatalf("branch_abandoned data = %+v, want router/fan_out", evt.Data)
+		}
+		found = true
 	}
 	if !found {
 		t.Fatal("no branch_abandoned event persisted for the wedged branch")

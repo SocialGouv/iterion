@@ -295,3 +295,67 @@ func TestResume_RejectsWorkflowHashMismatchSynchronouslyBeforeSpawn(t *testing.T
 		t.Fatalf("status after forced resume = %q (error %q), want finished", finished.Status, finished.Error)
 	}
 }
+
+// PreflightResume must reject a stale-source resume BEFORE the caller
+// performs anything irreversible. The HTTP layer promotes an operator's
+// staged uploads into run attachments ahead of Resume, and promotion
+// CONSUMES the staging — so a resume rejected afterwards leaves the
+// studio's "Resume with updated workflow (force)" retry re-sending
+// upload ids that no longer exist, making the documented recovery
+// impossible.
+func TestPreflightResumeRejectsStaleSourceAndAcceptsForce(t *testing.T) {
+	dir := t.TempDir()
+	botPath := filepath.Join(dir, "preflight.bot")
+	const src = `prompt ask_ok:
+  Is this ok?
+
+human gate:
+  instructions: ask_ok
+
+workflow preflight:
+  entry: gate
+  gate -> done
+`
+	if err := os.WriteFile(botPath, []byte(src), 0o644); err != nil {
+		t.Fatalf("write bot: %v", err)
+	}
+	svc, err := NewService(dir, WithLogger(iterlog.Nop()), WithWorkDir(dir))
+	if err != nil {
+		t.Fatalf("NewService: %v", err)
+	}
+
+	const runID = "run-preflight"
+	ctx := context.Background()
+	if _, err := svc.store.CreateRun(ctx, runID, "preflight", nil); err != nil {
+		t.Fatalf("CreateRun: %v", err)
+	}
+	r, err := svc.store.LoadRun(ctx, runID)
+	if err != nil {
+		t.Fatalf("LoadRun: %v", err)
+	}
+	r.WorkflowHash = "0000000000000000deadbeef" // a source that is not this one
+	if err := svc.store.SaveRun(ctx, r); err != nil {
+		t.Fatalf("SaveRun: %v", err)
+	}
+	if err := svc.store.SaveCheckpoint(ctx, runID, &store.Checkpoint{NodeID: "gate"}); err != nil {
+		t.Fatalf("SaveCheckpoint: %v", err)
+	}
+	if err := svc.store.UpdateRunStatus(ctx, runID, store.RunStatusPausedWaitingHuman, "paused"); err != nil {
+		t.Fatalf("UpdateRunStatus: %v", err)
+	}
+
+	spec := ResumeSpec{RunID: runID, FilePath: botPath, Answers: map[string]any{"ok": true}}
+	err = svc.PreflightResume(ctx, spec)
+	if err == nil {
+		t.Fatal("preflight accepted a resume whose workflow source changed")
+	}
+	if !runtime.IsWorkflowSourceChanged(err) {
+		t.Errorf("error = %v, want the workflow-source-changed error the studio keys its force retry on", err)
+	}
+
+	// The force retry is the documented recovery; preflight must not block it.
+	spec.Force = true
+	if err := svc.PreflightResume(ctx, spec); err != nil {
+		t.Errorf("preflight rejected the force retry: %v", err)
+	}
+}

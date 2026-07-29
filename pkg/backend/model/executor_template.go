@@ -168,7 +168,16 @@ func attachmentRefName(ref string) string {
 const imageInlineByteLimit = 5 * 1024 * 1024 // 5 MiB
 
 func (e *ClawExecutor) imageContentBlock(info AttachmentInfo) (delegate.ContentBlock, error) {
-	if info.Path == "" {
+	// The bytes are read by THIS process, on the host. info.Path is the
+	// path the NODES see — the sandbox bind-mount path on a containerised
+	// run, which does not exist out here — so inlining must go through
+	// HostPath. Falling back to Path keeps unsandboxed runs and callers
+	// that only populate one field working.
+	hostPath := info.HostPath
+	if hostPath == "" {
+		hostPath = info.Path
+	}
+	if hostPath == "" {
 		// No local bytes available — emit a URL block when the
 		// store can presign one, otherwise return an error so the
 		// caller falls back to text.
@@ -198,9 +207,9 @@ func (e *ClawExecutor) imageContentBlock(info AttachmentInfo) (delegate.ContentB
 		// No URL backend — fall through and inline anyway. The
 		// runtime will surface the API's size error to the user.
 	}
-	body, err := os.ReadFile(info.Path)
+	body, err := os.ReadFile(hostPath)
 	if err != nil {
-		return delegate.ContentBlock{}, fmt.Errorf("read image %q: %w", info.Path, err)
+		return delegate.ContentBlock{}, fmt.Errorf("read image %q: %w", hostPath, err)
 	}
 	return delegate.ContentBlock{
 		Type:      "image",

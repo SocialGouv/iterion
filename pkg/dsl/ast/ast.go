@@ -370,6 +370,7 @@ const (
 	FieldTypeFloat       = types.FieldTypeFloat
 	FieldTypeJSON        = types.FieldTypeJSON
 	FieldTypeStringArray = types.FieldTypeStringArray
+	FieldTypeFile        = types.FieldTypeFile
 )
 
 // ---------------------------------------------------------------------------

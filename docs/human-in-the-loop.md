@@ -123,6 +123,106 @@ Every exchange is persisted to `interactions/<id>.json`, so the question,
 the answers, and who answered are all part of the run's auditable record
 ([persisted-formats.md](persisted-formats.md)).
 
+## Handing the workflow a file
+
+A gate can collect **bytes**, not just text. The operator picks a file in
+the run console and the workflow receives a path it can open — no hunting
+for the right folder on disk, no "drop your track in
+`assets/audio/` and then click resume".
+
+Two shapes, matching the two things an operator actually does.
+
+### A declared `file` field — the workflow knows it needs one
+
+```iter
+schema music_gate:
+  approved: bool
+  music: file
+  notes: string
+
+human pick_soundtrack:
+  output: music_gate
+```
+
+The studio renders a drop zone for `music`. Downstream nodes read a
+descriptor:
+
+```iter
+prompt mix:
+  Master the track at {{outputs.pick_soundtrack.music.path}}
+  ({{outputs.pick_soundtrack.music.mime}},
+   {{outputs.pick_soundtrack.music.size}} bytes).
+```
+
+Fields on the descriptor: `path`, `filename`, `mime`, `size`, `sha256`,
+and `attachment` (the run-attachment name). The upload also becomes an
+ordinary [run attachment](attachments.md), so
+`{{attachments.pick_soundtrack.music}}` works too.
+
+A `file` field only makes sense on a node that actually **pauses for an
+operator** — nothing else in the engine can produce bytes — so the
+compiler rejects it (**C129**) on any non-human node, and on a `human`
+node whose interaction never collects operator bytes: `interaction: llm`
+(a model auto-answers, so it can only invent a path) and `interaction:
+review` (the output is the engine-built verdict map). `llm_or_human`
+stays allowed: it can escalate to a real pause, which is how the file
+arrives.
+
+`file` fields are optional: the DSL has no per-field required marker, and
+forcing one would strand an operator re-answering a gate whose file
+arrived on an earlier pass. Branch on the field if the workflow truly
+cannot proceed without it.
+
+### Ad-hoc attachments — no DSL at all
+
+Every ordinary human gate carries a **📎 Attach a file** button, whether
+or not its author anticipated one. This is the "here's a diagram
+explaining what I mean" case: feedback is much cheaper to give as a
+sketch than as three paragraphs describing the sketch.
+
+**Not review gates.** `interaction: review` renders through a different
+form (approve / request changes / merge) with no attach affordance, and
+its resume builds the verdict itself rather than carrying the operator's
+answers — so `_attachments` never reaches the workflow there, even from
+the API. Use an ordinary gate when you need the operator to hand over
+files.
+
+Those land on the reserved `_attachments` answer key as a list of the
+same descriptors:
+
+```iter
+prompt apply_feedback:
+  {{outputs.review._attachments}}
+```
+
+### From the CLI
+
+Prefix the value with `@`:
+
+```sh
+iterion resume --run-id <id> \
+  --answer music=@./theme.mp3 \
+  --answer approved=true
+```
+
+The `@` convention applies **only** to answers the paused node declares
+as `file`-typed — every other answer reaches the workflow verbatim, so a
+chat mention (`@channel`), an npm scope (`@acme/pkg`) or a `@v1.2` ref
+passes through untouched. Within a `file` field, a literal leading `@` is
+escaped as `@@`. The attachment gets the same name it would from the
+studio, so a bot's `{{attachments.<node>.<field>}}` reference does not
+care which surface answered the gate.
+
+### Limits
+
+Uploads pass the same gate as launch-time attachments: server-sniffed
+MIME against the allowlist (images, audio, video, pdf, text, json, yaml,
+archives), `--max-upload-size` per file (50 MB web, 1 GB desktop) and
+`--max-total-upload-size` per submission. `--max-uploads-per-run` is
+counted against the run's existing attachments plus the batch being
+promoted, so a gate answered repeatedly (a loop) cannot grow the run's
+attachments without bound. See [attachments.md](attachments.md#limits).
+
 ## See also
 
 - [dsl.md](dsl.md) — `human` node + `interaction:` syntax reference

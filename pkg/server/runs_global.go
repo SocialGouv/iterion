@@ -25,14 +25,18 @@ import (
 // Inactive runs are filtered out at scan time so the response stays
 // small even with thousands of historical runs on disk.
 type globalActiveRun struct {
-	ID           string          `json:"id"`
-	Name         string          `json:"name,omitempty"`
-	WorkflowName string          `json:"workflow_name"`
-	Status       store.RunStatus `json:"status"`
-	CreatedAt    time.Time       `json:"created_at"`
-	UpdatedAt    time.Time       `json:"updated_at"`
-	StorePath    string          `json:"store_path"`
-	WorkspaceDir string          `json:"workspace_dir,omitempty"`
+	ID                string          `json:"id"`
+	Name              string          `json:"name,omitempty"`
+	ParentRunID       string          `json:"parent_run_id,omitempty"`
+	WorkflowName      string          `json:"workflow_name"`
+	BundleName        string          `json:"bundle_name,omitempty"`
+	BundleDisplayName string          `json:"bundle_display_name,omitempty"`
+	InputPath         string          `json:"input_path,omitempty"`
+	Status            store.RunStatus `json:"status"`
+	CreatedAt         time.Time       `json:"created_at"`
+	UpdatedAt         time.Time       `json:"updated_at"`
+	StorePath         string          `json:"store_path"`
+	WorkspaceDir      string          `json:"workspace_dir,omitempty"`
 }
 
 // handleListGlobalActiveRuns serves GET /api/runs/global-active. It
@@ -88,12 +92,12 @@ func (s *Server) handleListGlobalActiveRuns(w http.ResponseWriter, r *http.Reque
 			if jerr := json.Unmarshal(data, &rec); jerr != nil {
 				continue
 			}
-			if !isActiveStatus(rec.Status) {
+			if !isGlobalDiscoverableStatus(rec.Status) {
 				continue
 			}
-			// Stale-orphan filter: a run.json with status=running (or
-			// paused_waiting_human) whose events.jsonl hasn't been
-			// touched in staleRunCutoff is almost certainly an orphan
+			// Stale-orphan filter: a run.json with status=running whose
+			// events.jsonl hasn't been touched in staleRunCutoff is
+			// almost certainly an orphan
 			// — the owning test/CLI process died without
 			// UpdateRunStatus ever firing, so the status is frozen
 			// even though nothing is driving it. Showing these in the
@@ -109,7 +113,7 @@ func (s *Server) handleListGlobalActiveRuns(w http.ResponseWriter, r *http.Reque
 			// freezes. run.json's updated_at fires only on
 			// UpdateRunStatus (sparse — mostly terminal transitions)
 			// so it's not a reliable liveness signal.
-			if rec.Status == store.RunStatusRunning || rec.Status == store.RunStatusPausedWaitingHuman {
+			if globalRunNeedsHeartbeat(rec.Status) {
 				evPath := runEventsFilenameForStore(root, rec.ID)
 				if st, statErr := os.Stat(evPath); statErr == nil {
 					if time.Since(st.ModTime()) > staleRunCutoff {
@@ -118,14 +122,18 @@ func (s *Server) handleListGlobalActiveRuns(w http.ResponseWriter, r *http.Reque
 				}
 			}
 			out = append(out, globalActiveRun{
-				ID:           rec.ID,
-				Name:         rec.Name,
-				WorkflowName: rec.WorkflowName,
-				Status:       rec.Status,
-				CreatedAt:    rec.CreatedAt,
-				UpdatedAt:    rec.UpdatedAt,
-				StorePath:    root,
-				WorkspaceDir: workspaceDirForStore(root),
+				ID:                rec.ID,
+				Name:              rec.Name,
+				ParentRunID:       rec.ParentRunID,
+				WorkflowName:      rec.WorkflowName,
+				BundleName:        rec.BundleName,
+				BundleDisplayName: rec.BundleDisplayName,
+				InputPath:         runJSONInputString(rec.Inputs, "input_path"),
+				Status:            rec.Status,
+				CreatedAt:         rec.CreatedAt,
+				UpdatedAt:         rec.UpdatedAt,
+				StorePath:         root,
+				WorkspaceDir:      workspaceDirForGlobalRun(root, rec),
 			})
 		}
 	}
@@ -145,22 +153,37 @@ func (s *Server) handleListGlobalActiveRuns(w http.ResponseWriter, r *http.Reque
 // shape evolves, the worst case is a field falling back to its zero
 // value here.
 type runJSONShape struct {
-	ID           string          `json:"id"`
-	Name         string          `json:"name"`
-	WorkflowName string          `json:"workflow_name"`
-	Status       store.RunStatus `json:"status"`
-	CreatedAt    time.Time       `json:"created_at"`
-	UpdatedAt    time.Time       `json:"updated_at"`
+	ID                string          `json:"id"`
+	Name              string          `json:"name"`
+	ParentRunID       string          `json:"parent_run_id"`
+	WorkflowName      string          `json:"workflow_name"`
+	BundleName        string          `json:"bundle_name"`
+	BundleDisplayName string          `json:"bundle_display_name"`
+	Inputs            map[string]any  `json:"inputs"`
+	Status            store.RunStatus `json:"status"`
+	CreatedAt         time.Time       `json:"created_at"`
+	UpdatedAt         time.Time       `json:"updated_at"`
+	WorkDir           string          `json:"work_dir"`
+	RepoRoot          string          `json:"repo_root"`
 }
 
-// isActiveStatus mirrors the studio's runStatusMeta.isActiveStatus —
-// kept in sync intentionally so client and server agree on what
-// counts as "show this in the active-runs widget". Update both when
-// adding a status.
-func isActiveStatus(s store.RunStatus) bool {
+func runJSONInputString(inputs map[string]any, key string) string {
+	if inputs == nil {
+		return ""
+	}
+	value, _ := inputs[key].(string)
+	return strings.TrimSpace(value)
+}
+
+// isGlobalDiscoverableStatus includes both executing work and durable states
+// an operator can resume or answer from another store. Individual surfaces
+// deliberately apply narrower filters (for example, Home only highlights
+// running work and /pipelines excludes resumable failures).
+func isGlobalDiscoverableStatus(s store.RunStatus) bool {
 	switch s {
 	case store.RunStatusRunning,
 		store.RunStatusPausedWaitingHuman,
+		store.RunStatusPausedOperator,
 		store.RunStatusQueued,
 		store.RunStatusFailedResumable:
 		return true
@@ -168,15 +191,32 @@ func isActiveStatus(s store.RunStatus) bool {
 	return false
 }
 
-// staleRunCutoff is the maximum gap between events.jsonl mtime and
-// "now" before a status=running / paused_waiting_human run is treated
-// as an orphan. Live runs flush events at minute-scale during normal
-// work (every tool_started / tool_called / llm_request); a 15-minute
-// silence on an actively-driven workflow is rare, and the cost of
-// occasionally hiding a real long-paused run is much lower than the
-// cost of showing every test-process orphan as "running" forever
-// (operator confusion, 404 clicks).
+// workspaceDirForGlobalRun prefers the workspace identity persisted by the
+// runtime over the lossy reverse of an encoded store key. Keys replace both
+// path separators and literal hyphens with "-", so decoding them cannot
+// faithfully recover paths such as "town-vertical-pipeline". Worktree runs
+// point back to their source repository through RepoRoot; ordinary runs use
+// WorkDir. Legacy records fall back to the historical best-effort decoder.
+func workspaceDirForGlobalRun(storePath string, rec runJSONShape) string {
+	if root := strings.TrimSpace(rec.RepoRoot); root != "" {
+		return filepath.Clean(root)
+	}
+	if dir := strings.TrimSpace(rec.WorkDir); dir != "" {
+		return filepath.Clean(dir)
+	}
+	return workspaceDirForStore(storePath)
+}
+
+// staleRunCutoff is the maximum gap between events.jsonl mtime and "now"
+// before an executing run is treated as an orphan. Live runs flush events at
+// minute-scale during normal work (every tool_started / tool_called /
+// llm_request). Paused and queued runs are intentionally quiet and must remain
+// discoverable regardless of age.
 const staleRunCutoff = 15 * time.Minute
+
+func globalRunNeedsHeartbeat(status store.RunStatus) bool {
+	return status == store.RunStatusRunning
+}
 
 // runEventsFilenameForStore mirrors store.FilesystemRunStore's events
 // path layout WITHOUT importing the store package's internals.

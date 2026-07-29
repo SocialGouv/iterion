@@ -1,0 +1,108 @@
+## ─────────────────────────────────────────────────────────────────
+## human-file-upload.bot — collecting a FILE from the operator at a
+## human gate.
+##
+## The problem this solves: a workflow needs a binary the operator
+## has (a soundtrack, a logo, a spec PDF) but that nothing in the run
+## can produce. Without a gate upload the operator has to be told
+## "put your track in assets/audio/ and then click resume" — they have
+## to know the layout of a tree they may never have opened.
+##
+## Here, `track: file` renders a drop zone in the run console. The
+## upload becomes a run attachment and the answer is a descriptor the
+## next node dereferences with `.path`.
+##
+## Two nodes, no LLM, no network: the gate pauses immediately and a
+## `tool` node then proves the file is really there and readable.
+##
+## Run it:
+##   iterion run examples/human-file-upload.bot
+##   # then drop a file in the studio's gate form, or headless:
+##   iterion resume --run-id <id> \
+##     --answer track=@./some-audio.mp3 \
+##     --answer confirmed=true \
+##     --answer notes="first take"
+##
+## Note `--answer track=@<path>` — the leading '@' is what tells the
+## CLI to attach the file rather than pass the string. ('@@' escapes a
+## literal '@'.)
+## ─────────────────────────────────────────────────────────────────
+
+vars:
+  purpose: string = "background music for the episode"
+
+schema upload_decision:
+  ## `file` → rendered as a drop zone. Only a HUMAN node may declare
+  ## one: no LLM can produce bytes, so the compiler rejects a `file`
+  ## field on an agent/judge/tool output schema (C129).
+  track: file
+  ## bool → checkbox
+  confirmed: bool
+  ## free text → audit trail
+  notes: string
+
+## The tool node's INPUT. Descriptor fields arrive here through the
+## edge's `with {}` mapping below — a tool `command:` reads
+## `{{input.*}}` / `{{vars.*}}`, not `{{outputs.*}}` directly.
+schema track_ref:
+  path: string
+  filename: string
+  mime: string
+  size: string
+  sha256: string
+
+schema inspection:
+  report: string
+
+prompt upload_instructions:
+  # Provide the audio track
+
+  We need {{vars.purpose}}.
+
+  Drop the file below, tick **confirmed**, and add a note if the take
+  needs context. You can also use the 📎 button to attach anything
+  else (a reference mix, a screenshot of the waveform) — that works on
+  EVERY human gate, with no `file` field declared.
+
+human collect_track:
+  instructions: upload_instructions
+  output: upload_decision
+  interaction: human
+
+## Deterministic proof that the upload really landed somewhere the
+## workflow can open. `.path` resolves to a host path on an ordinary
+## run, and to the sandbox bind-mount path when the run is
+## containerised — the node does not have to care which.
+##
+## The descriptor also carries .filename, .mime, .size and .sha256, so
+## a real workflow can validate before doing expensive work (reject a
+## 12-second clip for a 3-minute episode, refuse a video/* where audio
+## was expected) instead of discovering it three nodes later.
+tool inspect_track:
+  input:  track_ref
+  output: inspection
+  publish: track_report
+  command: |
+    set -eu
+    path='{{input.path}}'
+    printf 'file:   %s\n' '{{input.filename}}'
+    printf 'mime:   %s\n' '{{input.mime}}'
+    printf 'bytes:  %s\n' '{{input.size}}'
+    printf 'sha256: %s\n' '{{input.sha256}}'
+    test -r "$path" || { echo "unreadable: $path" >&2; exit 1; }
+    printf 'on-disk size: %s\n' "$(wc -c < "$path")"
+
+workflow human_file_upload:
+  entry: collect_track
+  ## `with {}` threads the descriptor's fields into the tool's input.
+  ## Values must be strings — hence the quotes (and `size: string` in
+  ## track_ref, even though the descriptor carries a number).
+  collect_track -> inspect_track when confirmed with {
+    path:     "{{outputs.collect_track.track.path}}",
+    filename: "{{outputs.collect_track.track.filename}}",
+    mime:     "{{outputs.collect_track.track.mime}}",
+    size:     "{{outputs.collect_track.track.size}}",
+    sha256:   "{{outputs.collect_track.track.sha256}}"
+  }
+  collect_track -> fail when not confirmed
+  inspect_track -> done

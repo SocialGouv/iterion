@@ -45,6 +45,7 @@ type activeSandbox struct {
 	run             sandbox.Run
 	proxy           *netproxy.Proxy
 	workspaceFolder string       // in-container path the host worktree is bind-mounted to (Spec.WorkspaceFolder, e.g. "/workspace"); used by Engine to remap ${PROJECT_DIR}
+	attachmentsDir  string       // in-container path the run's attachments dir ACTUALLY landed at; empty when nothing was mounted (no attachments yet, or a driver that drops host binds) — the authority behind Engine.attachmentPath
 	boardEndpoint   string       // http URL of the per-run gateway-reachable board MCP listener (C082); empty when not started (no handler / not sandboxed)
 	boardListener   *http.Server // the board listener to shut down at teardown; nil when not started
 	askUserEndpoint string       // http URL of the per-run gateway-reachable ask-user MCP listener (ADR-082 Phase 3); empty when not started (no interactive node / bind failure)
@@ -342,7 +343,11 @@ func resolveAndStartSandbox(ctx context.Context, p SandboxParams) (*activeSandbo
 	// Configure all mounts BEFORE the driver prepares resources. Each
 	// helper is a silent no-op when its host source is missing, so
 	// callers don't have to guard.
-	addOptionalBindMount(spec, p.AttachmentsHostDir, p.AttachmentsContainerPath, "/run/iterion/attachments", "attachments", true, logger)
+	// The returned path is the ONE authority on where nodes can open this
+	// run's attachments: empty when nothing was mounted (no attachments
+	// dir on the host), and cleared again below when the driver drops host
+	// binds. attachmentPath keys off it rather than re-predicting.
+	attachmentsDir := addOptionalBindMount(spec, p.AttachmentsHostDir, p.AttachmentsContainerPath, "/run/iterion/attachments", "attachments", true, logger)
 	if runFilesContainerPath := addOptionalBindMount(spec, p.RunFilesHostDir, p.RunFilesContainerPath, "/iterion/artifact-files", "run-files", false, logger); runFilesContainerPath != "" {
 		// Tool scripts find the path via $ITERION_ARTIFACT_FILES_DIR
 		// so recipe authors don't have to hard-code container paths.
@@ -386,6 +391,11 @@ func resolveAndStartSandbox(ctx context.Context, p SandboxParams) (*activeSandbo
 	// docker keeps everything (the capability is true there).
 	if !caps.SupportsHostBindMounts {
 		spec.Mounts = dropHostBindMounts(spec.Mounts, logger)
+		// The attachments bind went with them, so there is no
+		// in-container path to hand out — nodes must be given the host
+		// path (kubernetes: neither exists, but a host path at least
+		// fails loudly instead of resolving to an empty mount point).
+		attachmentsDir = ""
 	}
 
 	// Phase 4 V1: claw nodes are forwarded to the iterion-claw-runner
@@ -473,7 +483,7 @@ func resolveAndStartSandbox(ctx context.Context, p SandboxParams) (*activeSandbo
 	}
 	emitSandboxStarted(prepared, spec, driver.Name(), source, emitEvent)
 
-	active := &activeSandbox{run: run, proxy: proxy, workspaceFolder: spec.WorkspaceFolder}
+	active := &activeSandbox{run: run, proxy: proxy, workspaceFolder: spec.WorkspaceFolder, attachmentsDir: attachmentsDir}
 
 	// Second half of the Claude forfait delivery: copy the read-only mount
 	// into the writable CLAUDE_CONFIG_DIR the claude_code delegate points
@@ -1422,7 +1432,7 @@ func (e *Engine) startSandbox(ctx context.Context, runID string, repoRoot string
 		EmitEvent:                emitForSandbox,
 		Logger:                   e.logger,
 		AttachmentsHostDir:       attachHost,
-		AttachmentsContainerPath: "/run/iterion/attachments",
+		AttachmentsContainerPath: attachmentsContainerPath,
 		RunFilesHostDir:          runFilesHost,
 		RunFilesContainerPath:    "/iterion/artifact-files",
 		BundleHostDir:            bundleHost,
@@ -1443,6 +1453,19 @@ func (e *Engine) startSandbox(ctx context.Context, runID string, repoRoot string
 	hostDevboxCleanup := noopCleanup
 	if active == nil {
 		hostDevboxCleanup = e.provisionHostDevbox(ctx, runID)
+	}
+	// From here on the sandbox question is answered by what actually
+	// happened, not by what the spec predicted: a sandbox-by-default run
+	// on a host with no container runtime degrades to unsandboxed here
+	// (resolveAndStartSandbox returns nil, nil), and a driver without host
+	// bind mounts leaves attachmentsDir empty. attachmentPath must follow
+	// that outcome or it hands agents container paths a host run cannot
+	// open — the ENOENT-and-improvise failure attachment_path.go exists to
+	// prevent, inverted.
+	e.sandboxSettled = true
+	e.attachmentsContainerDir = ""
+	if active != nil {
+		e.attachmentsContainerDir = active.attachmentsDir
 	}
 	if active != nil && active.run != nil {
 		if s, ok := e.executor.(sandboxSetter); ok {

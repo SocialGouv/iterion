@@ -58,6 +58,24 @@ func fieldToJSONSchema(f *ir.SchemaField) map[string]any {
 		// numbers/booleans/nulls — the true "any" contract of FieldTypeJSON.
 		prop["type"] = []string{"object", "array", "string", "number", "boolean", "null"}
 		return prop
+	case ir.FieldTypeFile:
+		// An operator-uploaded binary, resolved to a descriptor by the
+		// resume path. Described as an object so an LLM-answered human
+		// gate (interaction: llm) that inherits this schema produces a
+		// shape the downstream `.path` reference can still read, rather
+		// than a bare string the validator would reject. Only `path` is
+		// required — the rest is server-derived metadata the model has
+		// no way to compute.
+		prop["type"] = "object"
+		prop["properties"] = map[string]any{
+			"path":     map[string]any{"type": "string"},
+			"filename": map[string]any{"type": "string"},
+			"mime":     map[string]any{"type": "string"},
+			"size":     map[string]any{"type": "integer"},
+			"sha256":   map[string]any{"type": "string"},
+		}
+		prop["required"] = []string{"path"}
+		return prop
 	case ir.FieldTypeStringArray:
 		prop["type"] = "array"
 		items := map[string]any{"type": "string"}
