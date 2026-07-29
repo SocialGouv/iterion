@@ -837,13 +837,25 @@ func TestPiHidesWorkspaceSessionDirFromGit(t *testing.T) {
 		}
 	})
 
-	t.Run("no workspace write when sessions live in the store", func(t *testing.T) {
+	// The default NON-sandboxed path puts sessions in the store — but the
+	// extension bundle and the composed system prompt still go to
+	// <WorkDir>/.iterion/pi/, so the guard is needed there too. Keying it on
+	// the session dir left exactly those two files exposed to a `git add -A`.
+	t.Run("guards the workspace even when sessions live in the store", func(t *testing.T) {
 		work, store := t.TempDir(), t.TempDir()
 		piHideWorkspaceSessionDir(Task{WorkDir: work, StoreDir: store}, testLogger())
 
-		if _, err := os.Stat(filepath.Join(work, ".iterion")); !os.IsNotExist(err) {
-			t.Error("wrote .iterion/ into the workspace when sessions live in the store")
+		got, err := os.ReadFile(filepath.Join(work, ".iterion", ".gitignore"))
+		if err != nil {
+			t.Fatalf("no guard for the extension bundle / system prompt: %v", err)
 		}
+		if strings.TrimSpace(string(got)) != "*" {
+			t.Errorf("guard = %q, want `*`", got)
+		}
+	})
+
+	t.Run("no write without a workspace", func(t *testing.T) {
+		piHideWorkspaceSessionDir(Task{StoreDir: t.TempDir()}, testLogger())
 	})
 }
 

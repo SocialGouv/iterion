@@ -384,8 +384,14 @@ func piSessionDir(task Task) string {
 // own `.iterion/` into someone else's tree, which the repo-agnostic rule
 // forbids. A no-op when the path is outside the workspace (the StoreDir case).
 func piHideWorkspaceSessionDir(task Task, logger *iterlog.Logger) {
-	dir := piSessionDir(task)
-	if task.WorkDir == "" || !strings.HasPrefix(dir, filepath.Join(task.WorkDir, ".iterion")) {
+	// Guard whenever there is a workspace at all, not only when the SESSION
+	// dir happens to land under it. piext.Materialise and writeSystemPromptFile
+	// both write into <WorkDir>/.iterion/pi/ unconditionally, and on the
+	// default non-sandboxed path piSessionDir resolves to StoreDir — so keying
+	// on the session dir left the embedded extension bundle and the full
+	// composed system prompt unguarded in the target repo, which is exactly
+	// what this function exists to prevent.
+	if task.WorkDir == "" {
 		return
 	}
 	root := filepath.Join(task.WorkDir, ".iterion")
