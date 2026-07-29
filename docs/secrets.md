@@ -69,13 +69,19 @@ form in every hook/log:
   (`executeToolsDirect`) call `Guard.Materialize` before exec.
 - **claude_code** uses a `PreToolUse` hook returning `UpdatedInput` with
   the materialised tool input (the SDK-supported substitution path).
-- Both via `delegate.Task.MaterializeSecrets` (a closure, set by the
+- Both consume `delegate.Task.MaterializeSecrets` (a closure set by the
   executor), so `pkg/backend/delegate` stays decoupled from secretguard.
 
-Plus a **behavioural backstop**: a "## Secret handling" system-prompt
-clause (both backends) tells the agent not to read/exfiltrate credential
-files and to pass placeholders through verbatim. Never the primary
-control — the structural boundary is the materialization above.
+Generic placeholder materialization is currently limited to `claw` and
+`claude_code`. Pi, Kimi, Grok, and legacy Codex leave
+`__ITERION_SECRET_*__` opaque, so use file secrets for those delegates when the
+agent needs a non-provider credential.
+
+Every backend still receives the **behavioural backstop**: a "## Secret
+handling" system-prompt clause tells the agent not to read/exfiltrate
+credential files and to pass placeholders through verbatim. This is never the
+primary control — where supported, the structural boundary is the
+materialization above.
 
 ### File secrets
 
