@@ -113,13 +113,17 @@ vars:
   ## AUTO-MERGE ARMING (opt-in, OFF by default so the catalog behaviour is
   ## unchanged). When true AND the verdict is green AND the gate landed green,
   ## Vetty asks the forge to merge the PR *once its own required checks pass*.
-  ## It never merges: the only call made is enablePullRequestAutoMerge, which
-  ## hands the decision to the repo's required checks. The immediate-merge REST
-  ## endpoint is deliberately never used — that would bypass CI, which is the
-  ## opposite of the guarantee this bot exists to provide.
+  ## It never merges PAST a check. While checks are pending it only arms
+  ## auto-merge, handing the decision to the repo's required checks. Once the
+  ## forge itself reports the PR clean — the state where it refuses to arm at
+  ## all — Vetty merges the audited commit, and only that one. The
+  ## immediate-merge REST endpoint is deliberately never used: it merges
+  ## whatever the state, which is the opposite of the guarantee this bot exists
+  ## to provide.
   ##
   ## For this to mean anything the repo MUST require at least one check on the
-  ## target branch; with none, a forge merges an armed PR straight away.
+  ## target branch; with none, "clean" says nothing and a forge merges an armed
+  ## PR straight away.
   arm_automerge: bool = false
 
   ## Merge method asked for when arming. Must be one the repo allows.
@@ -509,6 +513,10 @@ schema feedback_output:
   ## gate_skipped_reason: why no status landed. A gate that is required and
   ## absent blocks the PR forever, so the reason has to be visible.
   gate_skipped_reason: string
+  ## gate_sha: the head the status was posted on — the ONE commit this run
+  ## audited. Anything downstream that merges compares against it, because
+  ## the branch can move while the audit runs.
+  gate_sha: string
 
 schema feedback_health_input:
   posted: bool
@@ -528,13 +536,18 @@ schema automerge_input:
   verdict: string
   gate_posted: bool
   gate_state: string
+  ## gate_sha: the head the gate landed on. A merge may only ever target this
+  ## commit — reading the head again returns whatever the branch holds NOW.
+  gate_sha: string
 
 schema automerge_output:
-  ## armed: the forge accepted the auto-merge request (it merges when its own
-  ## required checks pass — Vetty never merges anything itself).
+  ## armed: the PR is on its way in — either the forge accepted the auto-merge
+  ## request (it merges when its own required checks pass), or it reported the
+  ## PR already clean and the audited commit was merged.
   armed: bool
-  ## reason: why it was not armed. Always populated when armed is false, so a
-  ## PR sitting un-merged is never a mystery.
+  ## reason: why it was not armed, or which of the two paths ran. Always
+  ## populated when armed is false, so a PR sitting un-merged is never a
+  ## mystery.
   reason: string
 
 ## ─── Nodes ──────────────────────────────────────────────────────
@@ -842,12 +855,13 @@ tool post_feedback:
         return (x or "").strip() if isinstance(x, str) else ("" if x is None else str(x).strip())
 
     def out(posted, comment_url="", skipped_reason="", summary="",
-            gate_posted=False, gate_state="", gate_skipped_reason=""):
+            gate_posted=False, gate_state="", gate_skipped_reason="", gate_sha=""):
         print(json.dumps({"verdict": s(verdict),
                           "posted": bool(posted), "comment_url": comment_url or "",
                           "skipped_reason": skipped_reason or "", "summary": summary or "",
                           "gate_posted": bool(gate_posted), "gate_state": gate_state or "",
-                          "gate_skipped_reason": gate_skipped_reason or ""}))
+                          "gate_skipped_reason": gate_skipped_reason or "",
+                          "gate_sha": gate_sha or ""}))
         raise SystemExit(0)
 
     if not s(pr_url):
@@ -880,7 +894,8 @@ tool post_feedback:
            "needs_decision": "Escalated for a human decision.",
            "clean": "Nothing to align."}.get(s(verdict), "")
     did = (s(commit_summary) + " " if s(commit_summary) else "") + did + \
-        " **Vetty never merges** — it reports a verdict; the merge stays with the repo's own required checks."
+        " **Vetty never merges past a check** — whether this lands is the repo's own required checks' decision, " \
+        "and only the exact commit reported above can be merged."
     section("What Vetty did", did)
     parts.append("_\U0001F916 Posted by Vetty (dep-update-guard) — deterministic feedback._")
     body = "\n".join(parts)
@@ -948,7 +963,8 @@ tool post_feedback:
                 summary="verdict=" + s(verdict) + "; published via the iterion forge-publish endpoint",
                 gate_posted=bool(res.get("gate_posted")),
                 gate_state=str(res.get("gate_state") or ""),
-                gate_skipped_reason=str(res.get("gate_error") or ""))
+                gate_skipped_reason=str(res.get("gate_error") or ""),
+                gate_sha=str(res.get("gate_sha") or ""))
         except urllib.error.HTTPError as e:
             detail = ""
             try: detail = e.read().decode("utf-8")[:300]
@@ -1065,6 +1081,7 @@ tool arm_automerge:
     verdict = {{input.verdict}}
     gate_posted = {{input.gate_posted}}
     gate_state = {{input.gate_state}}
+    gate_sha = {{input.gate_sha}}
     gate_on = {{vars.gate_enabled}}
     token_ref = {{secrets.forge_token.path}}
 
@@ -1113,7 +1130,12 @@ tool arm_automerge:
         with urllib.request.urlopen(req, timeout=30) as resp:
             payload = json.loads(resp.read().decode("utf-8"))
         if payload.get("errors"):
-            raise RuntimeError(str(payload["errors"])[:300])
+            # Messages first, then the raw structure: a caller distinguishes
+            # "nothing left to wait for" from a real failure by reading the
+            # message, and truncating the whole structure can cut it off.
+            errs = payload["errors"]
+            msgs = "; ".join(str(e.get("message", "")) for e in errs if isinstance(e, dict))
+            raise RuntimeError((msgs or "") + " | " + str(errs)[:300])
         return payload.get("data") or {}
 
     # The variable sigil is written as @ and swapped at runtime: a doubled
@@ -1141,9 +1163,23 @@ tool arm_automerge:
         data = graphql(q, {"owner": owner, "name": repo, "number": num})
         return ((data.get("repository") or {}).get("pullRequest") or {})
 
+    # A merge may only ever target the commit THIS run audited and gated.
+    # Re-reading the head does not give that commit: the audit takes minutes,
+    # and a rebase or force-push in between produces a head no auditor has
+    # seen. Nor does the forge hold such a head back — a commit status only
+    # blocks a merge once a maintainer has made its context required — so CLEAN
+    # is perfectly reachable on unreviewed code.
     def merge_now(pr, why):
+        head = s(pr.get("headRefOid"))
+        gated = s(gate_sha)
+        if not gated:
+            out(False, "no gated sha to merge against - merging the current head would "
+                       "ship a commit this run never audited")
+        if head and head != gated:
+            out(False, "the branch moved after the audit (gated " + gated[:12] +
+                       ", head is now " + head[:12] + ") - the new head has not been audited")
         graphql(merge_mut, {"id": pr.get("id"), "method": s(method).upper() or "SQUASH",
-                            "oid": pr.get("headRefOid")})
+                            "oid": gated})
         out(True, why)
 
     # Ready to merge means every required check the forge knows about is
@@ -1284,6 +1320,7 @@ workflow dep_update_guard:
     pr_url: "{{vars.pr_url}}",
     verdict: "{{outputs.post_feedback.verdict}}",
     gate_posted: "{{outputs.post_feedback.gate_posted}}",
-    gate_state: "{{outputs.post_feedback.gate_state}}"
+    gate_state: "{{outputs.post_feedback.gate_state}}",
+    gate_sha: "{{outputs.post_feedback.gate_sha}}"
   }
   arm_automerge -> done

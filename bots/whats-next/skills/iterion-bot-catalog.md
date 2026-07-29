@@ -434,7 +434,8 @@ breaking change (a JS/TS lib API, Helm chart values, a Go module,
 commit); (4) commits the alignment back onto the PR branch and posts
 a complete review comment with the verdict and evidence; and (5)
 escalates to a human when a structuring architectural decision is
-required. It never merges — the merge stays a human call.
+required. It never merges past a check: unless auto-merge arming is
+explicitly enabled, the merge stays a human call.
 
 Stack-agnostic by construction: the per-ecosystem scanner and
 build/test knowledge lives in the skills (package-managers,

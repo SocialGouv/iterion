@@ -141,6 +141,7 @@ func TestDepUpdateGuardArmAutomerge(t *testing.T) {
 			"{{input.verdict}}":            `"committed"`,
 			"{{input.gate_posted}}":        "True",
 			"{{input.gate_state}}":         `"success"`,
+			"{{input.gate_sha}}":           `"d34db33f"`,
 			"{{vars.gate_enabled}}":        "True",
 			"{{secrets.forge_token.path}}": `"ghs_test"`,
 		}
@@ -248,6 +249,39 @@ func TestDepUpdateGuardArmAutomerge(t *testing.T) {
 		}
 		if res["armed"] != false {
 			t.Errorf("want a refusal with a reason, got %v", res)
+		}
+	})
+
+	// The audit takes minutes. A rebase or force-push in that window produces a
+	// head no auditor has seen, and the forge does NOT hold it back: a commit
+	// status blocks a merge only once a maintainer has made its context
+	// required, so the gate's absence on the new head still reads as CLEAN.
+	// Merging what the head says at merge time would ship exactly the
+	// unreviewed dependency commit this bot exists to catch.
+	t.Run("branch moved after the gate: merges nothing", func(t *testing.T) {
+		res, calls, _ := runWith(t, nil, withState(map[string]any{
+			"mergeStateStatus": "CLEAN", "headRefOid": "0ther5ha"}), "", nil)
+		if queried(calls, "mergePullRequest") {
+			t.Fatal("merged a head that was never audited")
+		}
+		if res["armed"] != false {
+			t.Fatalf("want a refusal, got %v", res)
+		}
+		if reason, _ := res["reason"].(string); !strings.Contains(reason, "moved after the audit") {
+			t.Errorf("reason = %q, want it to name the moved branch", reason)
+		}
+	})
+
+	t.Run("no gated sha: merges nothing", func(t *testing.T) {
+		// Without a gate there is no anchor for "the commit we audited", so the
+		// merge path has nothing safe to target.
+		res, calls, _ := runWith(t, map[string]string{"{{input.gate_sha}}": `""`},
+			withState(map[string]any{"mergeStateStatus": "CLEAN"}), "", nil)
+		if queried(calls, "mergePullRequest") {
+			t.Fatal("merged with no audited sha to pin to")
+		}
+		if res["armed"] != false {
+			t.Fatalf("want a refusal, got %v", res)
 		}
 	})
 

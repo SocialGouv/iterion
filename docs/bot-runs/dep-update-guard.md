@@ -3,7 +3,8 @@
 Reactive security + alignment guard for automated dependency-update PRs
 (Dependabot / Renovate): audit the bump (supply-chain + CVE), align the
 consuming code, prove the tree with the deterministic verify gate,
-commit onto the PR branch, post the verdict comment. Never merges. See
+commit onto the PR branch, post the verdict comment. Never merges past a
+check — and only ever the commit it audited. See
 [bots/dep-update-guard/](../../bots/dep-update-guard/).
 
 ## 2026-07-29 — v2.1.0 live: the whole chain ran, the gate landed, and the merge never happened (run 019faad2)
