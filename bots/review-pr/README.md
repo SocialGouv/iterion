@@ -1,8 +1,8 @@
 # review_pr — Revi
 
-Read-only cross-family **code reviewer**. Revi reviews the changes on the
-current branch and *publishes* the findings — it never edits, fixes, or
-commits code. (Fixing is the improve-loops' job: `branch_improve_loop` =
+Read-only **code reviewer** with an optional cross-family dual mode. Revi
+reviews the changes on the current branch and *publishes* the findings — it
+never edits, fixes, or commits code. (Fixing is the improve-loops' job: `branch_improve_loop` =
 Billy, `whole_improve_loop` = Willy.)
 
 Revi runs **one reviewer by default** (`review_mode: mono`, Claude unless
@@ -43,7 +43,7 @@ All inputs are workflow `vars` (override with `--var name=value`):
 |---|---|---|
 | `workspace_dir` | `${PROJECT_DIR}` | Repo to review (the run's workspace). |
 | `base_ref` | `main` | Ref to diff against (`merge-base(base_ref, HEAD)` vs working tree). `HEAD` = uncommitted only. |
-| `scope_notes` | `""` | Free-text steering passed to both reviewers. |
+| `scope_notes` | `""` | Free-text steering passed to the selected reviewer(s). |
 | `severity_threshold` | `low` | Drop findings below this (low < medium < high < critical). |
 | `max_findings` | `40` | Cap on issues/rows (highest severity first); a capped run says so. |
 | `post_to_board` | `true` | File findings on the native board; `false` = report only. |
