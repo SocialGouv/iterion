@@ -12,7 +12,7 @@ checkpoint, not `events.jsonl`, is the authoritative execution state.
 | `paused_waiting_human` | A human node or mid-agent interaction is waiting for answers. | CLI and `POST /api/runs/{id}/resume`; answers are required. |
 | `failed_resumable` | Execution failed after resumable state was captured. | CLI and HTTP resume; the restart node is re-executed. |
 | `cancelled` | The operator interrupted an active run and the checkpoint was preserved. | CLI and HTTP resume; no answers are required. |
-| `paused_operator` | A local Studio soft pause or daily-spend-cap pause. | The runtime can restore it through the failure-style path. The current CLI and runview HTTP admission checks do not accept it as a direct manual-resume target. |
+| `paused_operator` | A local Studio soft pause or daily-spend-cap pause. | CLI and HTTP resume through the failure-style path; no answers are required. |
 | `running` | Execution should still have an owner. | `--force-stale` can promote a provably stale local run after 60 seconds without an event flush. Server startup also reconciles orphans. |
 | `queued` | Cloud queue state. | Internal publisher/runner resume transport; not a user-selected restart state. |
 | `finished`, `failed` | Successful or non-resumable terminal state. | Cannot resume. |
@@ -26,7 +26,7 @@ that prevents checkpoint persistence may also fall back to `failed`.
 The source path is optional when it was persisted at launch:
 
 ```bash
-# Failed or cancelled run: re-execute the checkpoint node.
+# Failed, cancelled, or operator-paused run: re-execute the checkpoint node.
 iterion resume --run-id RUN_ID
 
 # Human pause: answer fields individually or with typed JSON.
@@ -87,8 +87,11 @@ agents should inspect the durable Git history before repeating an item.
 ## Source integrity and bundles
 
 The launch stores a SHA-256 workflow hash. Resume recompiles the source and
-refuses a mismatch unless `--force` is present. Force is useful after repairing
-the workflow, but it is an operator assertion that stored outputs, node IDs,
+refuses a mismatch unless `--force` is present. The CLI and HTTP service perform
+this check before dispatching the resumed execution, so a rejected Studio
+answer remains on the paused form; the Studio then offers an explicit **Resume
+with updated workflow (force)** retry. Force is useful after repairing the
+workflow, but it is an operator assertion that stored outputs, node IDs,
 schemas, and the new graph are still compatible.
 
 `--file` defaults to the persisted `FilePath`. Bundle runs also persist their
