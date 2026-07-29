@@ -6,8 +6,10 @@ without ever letting an LLM be the yes/no arbiter of a merge.
 
 The split is deliberate:
 
-- **Revi (LLM) proposes** — two independent reviewers (Claude + GPT) find
-  issues, merge + de-duplicate them, and post them as inline PR comments.
+- **Revi (LLM) proposes** — one reviewer by default (`review_mode: mono`),
+  or independent Claude + GPT reviewers when `review_mode: dual` is an
+  intentional extra spend, find issues that are normalised, de-duplicated,
+  and posted as inline PR comments.
 - **Determinism disposes** — the bot computes a **count** of findings at or
   above a severity floor and the server posts a `revi/review` **commit
   status** (`success` when the count is 0, else `failure`). The gate is a
@@ -26,7 +28,7 @@ status.
 ## How it works
 
 ```
-PR opened / pushed ──▶ Revi runs (2 reviewers → merge → publish)
+PR opened / pushed ──▶ Revi runs (selected reviewer topology → merge → publish)
                               │
                               ├─ inline comments  (advisory)
                               └─ revi/review status on the head SHA
@@ -82,9 +84,10 @@ Webhook config ([`pkg/webhooks/types.go`](../pkg/webhooks/types.go)):
 | `review_on_sync` | `false` | Re-review on each push so the required status re-evaluates on the fixed head. **Required for a blocking gate.** |
 | `block_fork_prs` | `false` | Filter fork PRs from any auto-launch. **Recommended ON whenever `review_on_sync` is enabled on a public repo** (see caution). |
 
-> **Caution — budget with `review_on_sync`.** The sync lane re-runs the two
-> LLM reviewers on **every push** (each new head SHA), gated only by the
-> webhook's `AuthorAllowlist` (empty = any author) and per-head idempotency —
+> **Caution — budget with `review_on_sync`.** The sync lane re-runs Revi's
+> selected topology on **every push** (each new head SHA): one LLM reviewer in
+> the default mono mode, two when dual is explicitly selected. It is gated only
+> by the webhook's `AuthorAllowlist` (empty = any author) and per-head idempotency —
 > there is no author-trust gate on this lane. On a public repo a fork
 > contributor pushing repeatedly can drive repeated full reviews, bounded only
 > by the org launch gate + webhook rate limit. Enable **`block_fork_prs`**
