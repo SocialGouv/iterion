@@ -99,7 +99,7 @@ to a UI-driven launch.
 | Counter | When it bumps | Where |
 |---|---|---|
 | `org_usage.runs` | At launch admission (step 5 above) | [pkg/orgusage/orgusage.go:AllowRun](../pkg/orgusage/orgusage.go) |
-| `org_usage.cost_usd` + tokens | After each LLM call on the runner | [pkg/runner/loop.go](../pkg/runner/loop.go) calls `orgusage.AddSpend` |
+| `org_usage.cost_usd` + tokens | At the end of each runner execution attempt, from that attempt's accumulated LLM events | [pkg/runner/loop_spend.go:recordOrgSpend](../pkg/runner/loop_spend.go) calls `orgusage.AddSpend` |
 | `webhook_deliveries.count` | At webhook admission (after auth + rate) | [pkg/webhooks/store.go:Counter](../pkg/webhooks/store.go) |
 
 The run counter includes **every** launch: REST `POST /api/runs`,
