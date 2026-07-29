@@ -335,7 +335,12 @@ func TestRunsWS_ReplayPaginatesPastMaxEventsPerPage(t *testing.T) {
 
 	received := 0
 	var lastSeq int64 = -1
-	deadline := time.Now().Add(20 * time.Second)
+	// A replay-throughput window, not a correctness bound: it only has to be
+	// longer than the slowest machine takes to stream n events. 20s was short
+	// enough to fail under a full `./...` -race run, where this package
+	// competes with every other one — which made the merge queue red at
+	// random on changes that touch nothing here.
+	deadline := time.Now().Add(90 * time.Second)
 	for time.Now().Before(deadline) && received < n {
 		env := readEnvelope(t, c, wsTypeEvent, wsTypeEventBatch, wsTypeTerminated)
 		if env.Type == wsTypeTerminated {

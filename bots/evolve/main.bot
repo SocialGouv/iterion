@@ -731,7 +731,11 @@ compute aggregate_review:
     both_approved:     "if(vars.review_mode == 'dual' || vars.mono_family == 'claude', input.claude_approved, true) && if(vars.review_mode == 'dual' || vars.mono_family == 'gpt', input.gpt_approved, true)"
     combined_concerns: "concat(input.claude_concerns, input.gpt_concerns)"
     combined_missing:  "concat(input.claude_missing, input.gpt_missing)"
-    advisory:          "input.claude_confidence + '/' + input.gpt_confidence"
+    ## Each operand needs its own fallback: in MONO the absent family's edge
+    ## never fires, so its field is nil — and while concat() tolerates nil,
+    ## string concatenation does NOT ("cannot concatenate string with <nil>"),
+    ## which would fail the node outright.
+    advisory:          "if(input.claude_confidence, input.claude_confidence, 'n/a') + '/' + if(input.gpt_confidence, input.gpt_confidence, 'n/a')"
 
 ## carry_vision stamps "latest vision under review" so the post-review
 ## edges reference one stable field whether it came from synthesize_vision

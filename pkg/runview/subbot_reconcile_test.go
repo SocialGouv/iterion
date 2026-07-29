@@ -87,7 +87,13 @@ func TestServicePeriodicReconcileDoesNotFailExecutingSubbot(t *testing.T) {
 	var childID string
 	parentStatus := store.RunStatus("")
 	parentErr := ""
-	deadline := time.Now().Add(30 * time.Second)
+	// A child-startup window, not a correctness bound: the assertions that
+	// matter run AFTER the child appears. Launching a real subbot means a real
+	// process start, and under a full `./...` -race run — every package
+	// competing at once — 30s was not enough, which made the merge queue red
+	// at random on changes that touch nothing here. The test still fails fast
+	// on a real fault: a parent that leaves `running` short-circuits below.
+	deadline := time.Now().Add(120 * time.Second)
 	for childID == "" && time.Now().Before(deadline) {
 		runs, listErr := svc.ListRunRecordsCtx(context.Background(), ListFilter{})
 		if listErr != nil {
@@ -121,7 +127,7 @@ func TestServicePeriodicReconcileDoesNotFailExecutingSubbot(t *testing.T) {
 	}
 	if childID == "" {
 		t.Fatalf(
-			"subbot child run was never persisted within 30s (parent status %q, error %q)",
+			"subbot child run was never persisted within 120s (parent status %q, error %q)",
 			parentStatus,
 			parentErr,
 		)

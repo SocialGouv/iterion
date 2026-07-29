@@ -490,19 +490,24 @@ prompt emit_user:
   Post to board:      {{vars.post_to_board}}
   Report path:        {{vars.report_path}}
 
-  ── Claude-family review ──
-  Summary: {{outputs.reviewer_claude.summary}}
+  ── Claude-family review ── (ran: {{outputs.merge_reviews.claude_ran}})
+  Summary: {{outputs.merge_reviews.claude_summary}}
   Findings (JSON):
-  {{outputs.reviewer_claude.findings}}
-  Areas audited: {{outputs.reviewer_claude.scanned_areas}}
-  Open questions: {{outputs.reviewer_claude.questions}}
+  {{outputs.merge_reviews.claude_findings}}
+  Areas audited: {{outputs.merge_reviews.claude_areas}}
+  Open questions: {{outputs.merge_reviews.claude_questions}}
 
-  ── GPT-family review ──
-  Summary: {{outputs.reviewer_gpt.summary}}
+  ── GPT-family review ── (ran: {{outputs.merge_reviews.gpt_ran}})
+  Summary: {{outputs.merge_reviews.gpt_summary}}
   Findings (JSON):
-  {{outputs.reviewer_gpt.findings}}
-  Areas audited: {{outputs.reviewer_gpt.scanned_areas}}
-  Open questions: {{outputs.reviewer_gpt.questions}}
+  {{outputs.merge_reviews.gpt_findings}}
+  Areas audited: {{outputs.merge_reviews.gpt_areas}}
+  Open questions: {{outputs.merge_reviews.gpt_questions}}
+
+  A family with `ran: false` was not part of this review (mono topology) —
+  merge only what the family that DID run reported, and never invent the
+  other side's agreement: `reviewers` is "both" only when both ran and both
+  flagged it.
 
   Merge, dedupe, threshold, cap, publish, and report per your
   instructions.
@@ -524,6 +529,24 @@ schema review_output:
   ## (never filed to the board, never gates a merge).
   questions: string[]
   summary: string
+
+## Normalised per-family review blocks. In MONO only one reviewer runs, and
+## an {{outputs.<absent node>.<field>}} reference renders as a LITERAL
+## placeholder rather than as nothing — which reads to the merging agent as a
+## broken template, not as "that family did not run" (observed live: a mono
+## review was mistaken for a reviewer failure). Routing both families through
+## a compute makes every field exist with a real value on every path.
+schema family_reviews:
+  claude_ran: bool
+  claude_summary: string
+  claude_findings: json
+  claude_areas: json
+  claude_questions: json
+  gpt_ran: bool
+  gpt_summary: string
+  gpt_findings: json
+  gpt_areas: json
+  gpt_questions: json
 
 schema emit_output:
   report_path: string
@@ -689,6 +712,24 @@ judge reviewer_gpt:
   ## path to edit it.
   tools: [bash, read_file, glob, grep]
   tool_max_steps: 30
+
+## Converges the reviewer branch(es) and fills in whichever family did not
+## run, so the merging agent sees a stated absence instead of a raw template.
+compute merge_reviews:
+  output: family_reviews
+  ## best_effort, not wait_all: in mono only one branch ever arrives.
+  await: best_effort
+  expr:
+    claude_ran:       "outputs.reviewer_claude.family == 'claude'"
+    claude_summary:   "if(outputs.reviewer_claude.summary, outputs.reviewer_claude.summary, '(this family did not run)')"
+    claude_findings:  "if(outputs.reviewer_claude.findings, outputs.reviewer_claude.findings, '[]')"
+    claude_areas:     "if(outputs.reviewer_claude.scanned_areas, outputs.reviewer_claude.scanned_areas, '')"
+    claude_questions: "if(outputs.reviewer_claude.questions, outputs.reviewer_claude.questions, '')"
+    gpt_ran:          "outputs.reviewer_gpt.family == 'gpt'"
+    gpt_summary:      "if(outputs.reviewer_gpt.summary, outputs.reviewer_gpt.summary, '(this family did not run)')"
+    gpt_findings:     "if(outputs.reviewer_gpt.findings, outputs.reviewer_gpt.findings, '[]')"
+    gpt_areas:        "if(outputs.reviewer_gpt.scanned_areas, outputs.reviewer_gpt.scanned_areas, '')"
+    gpt_questions:    "if(outputs.reviewer_gpt.questions, outputs.reviewer_gpt.questions, '')"
 
 agent converge:
   backend: "claude_code"
@@ -974,10 +1015,11 @@ workflow review_pr:
   fan -> reviewer_gpt
 
   ## Converge on emit (await: wait_all). emit reads
-  ## outputs.reviewer_claude / outputs.reviewer_gpt directly, so the
+  ## outputs.merge_reviews (normalised per family) directly, so the
   ## edges carry no data mapping.
-  reviewer_claude -> converge
-  reviewer_gpt -> converge
+  reviewer_claude -> merge_reviews
+  reviewer_gpt -> merge_reviews
+  merge_reviews -> converge
 
   ## emit always runs (board + markdown report). Then pr_gate decides
   ## whether to ALSO publish to a forge PR — only when pr_url is set —
@@ -987,8 +1029,8 @@ workflow review_pr:
     findings: "{{outputs.converge.findings}}",
     questions: "{{outputs.converge.questions}}",
     total_findings: "{{outputs.converge.total_findings}}",
-    claude_findings: "{{outputs.reviewer_claude.findings}}",
-    gpt_findings: "{{outputs.reviewer_gpt.findings}}"
+    claude_findings: "{{outputs.merge_reviews.claude_findings}}",
+    gpt_findings: "{{outputs.merge_reviews.gpt_findings}}"
   }
   ## No PR target → finish after the board + report (the default,
   ## zero extra LLM cost). PR target → deterministic server-mediated
