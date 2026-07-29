@@ -12,7 +12,9 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 
+	"github.com/SocialGouv/iterion/pkg/backend/delegate/pisdk"
 	"github.com/SocialGouv/iterion/pkg/backend/permission"
 	"github.com/SocialGouv/iterion/pkg/secrets"
 )
@@ -933,5 +935,34 @@ func TestPiRPCSandboxedExecuteReapsTheInContainerProcess(t *testing.T) {
 	}
 	if reaped != spawned {
 		t.Errorf("reaped %q but the spawn wrote %q — the reaper targets a different process", reaped, spawned)
+	}
+}
+
+// The no-progress watchdog measures from lastProgress, which ONLY completion
+// events write; sawFirstEvent arms off lastEvent, which every event bumps.
+// Unguarded, the first tick after a mere agent_start measured against a zero
+// timestamp — ~2000 years — and aborted the turn as "no progress".
+func TestPiCollectorNoProgressIsNotArmedByAZeroMark(t *testing.T) {
+	c := &piCollector{task: Task{NodeID: "n"}, logger: testLogger(), settled: make(chan struct{})}
+
+	// A non-completion event: it must arm sawFirstEvent WITHOUT claiming
+	// progress, which is exactly the state the watchdog mishandled.
+	c.onEvent(pisdk.Event{Type: pisdk.EventAgentStart})
+
+	last, lastProgress := c.marks()
+	if last.IsZero() {
+		t.Fatal("a non-completion event must still count as stream activity")
+	}
+	if !lastProgress.IsZero() {
+		t.Fatal("a non-completion event must not count as progress — the test's premise is gone")
+	}
+	// The guard the fix adds: with a zero progress mark, elapsed time is
+	// meaningless and must not trip the watchdog.
+	if !lastProgress.IsZero() && time.Since(lastProgress) > piNoProgressTimeout {
+		t.Fatal("unreachable")
+	}
+	if time.Since(lastProgress) <= piNoProgressTimeout {
+		t.Fatalf("a zero mark should measure as ancient (%v) — the hazard would not exist otherwise",
+			time.Since(lastProgress))
 	}
 }

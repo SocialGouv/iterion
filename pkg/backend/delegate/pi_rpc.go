@@ -133,12 +133,20 @@ func (b *PiRPCBackend) Execute(ctx context.Context, task Task) (Result, error) {
 
 	collector := &piCollector{task: task, logger: b.Logger, settled: make(chan struct{})}
 	client := pisdk.NewClient(pisdk.ClientOptions{
-		Binary:  binary,
-		Args:    argv,
-		Dir:     task.WorkDir,
-		Env:     piRPCEnv(ctx, task, b.Logger),
-		Spawn:   b.spawner(task, binary, mark),
-		OnEvent: collector.onEvent,
+		Binary: binary,
+		Args:   argv,
+		Dir:    task.WorkDir,
+		// Without this pisdk falls back to its own 30s default and arms a timer
+		// that races the caller's context, so the 90s handshake budget built
+		// from ITERION_PI_STREAM_COLD_TIMEOUT below was silently capped at 30s
+		// — and raising the documented env var did nothing. get_state waits on
+		// pi's session_start, which is where MCP bridging runs (10s per server
+		// by default), so container boot plus a few servers genuinely exceeds
+		// 30s.
+		RequestTimeout: piColdTimeout,
+		Env:            piRPCEnv(ctx, task, b.Logger),
+		Spawn:          b.spawner(task, binary, mark),
+		OnEvent:        collector.onEvent,
 		OnStderr: func(line string) {
 			if b.Logger != nil {
 				b.Logger.Info("[%s#%d/%s:err] %s", task.NodeID, task.Iteration, BackendPi, line)
@@ -411,7 +419,14 @@ func (b *PiRPCBackend) awaitSettle(ctx context.Context, client *pisdk.Client, co
 			}
 			// No-progress catches the pathology idle cannot: a model looping
 			// on streaming deltas without ever finishing a message.
-			if sawFirstEvent && time.Since(lastProgress) > piNoProgressTimeout {
+			// lastProgress is written ONLY by completion events (message_end,
+			// tool_execution_end, compaction_end), while sawFirstEvent arms off
+			// lastEvent, which every event bumps — agent_start, turn_start,
+			// message_start, message_update. Unguarded, the first 2s tick after
+			// any of those measured against a zero timestamp, i.e. ~2000 years,
+			// and aborted the turn with a spurious "no progress". The idle check
+			// above is already guarded this way through sawFirstEvent.
+			if sawFirstEvent && !lastProgress.IsZero() && time.Since(lastProgress) > piNoProgressTimeout {
 				abortAndGrace()
 				return &ErrTransient{
 					Provider: BackendPi,
