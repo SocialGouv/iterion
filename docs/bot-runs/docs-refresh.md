@@ -77,7 +77,7 @@ reference self-host case.
 - Engine hardening: this run is one of the seven that exposed the
   usage-window retry defects (dead reset-aware wait, no recovery dispatcher
   in the cloud runner, unparseable dated reset hint). See
-  [feed-watch.md](feed-watch.md#2026-07-27--five-digests-lost-to-the-forfait-weekly-cap-recovered-by-hand)
+  [feed-watch.md](feed-watch.md) (entry for 2026-07-27)
   for the full account; the fix ships as the `retry:` contract.
 - Lessons for next run:
   - **A green run is not a delivered run.** `status: finished` here means
