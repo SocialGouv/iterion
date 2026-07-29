@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -1074,21 +1075,43 @@ func TestInspect_NodeWithLogSlice(t *testing.T) {
 
 // TestInspect_LogSliceNonUTCTimezone is a regression test for the TZ
 // mismatch between events.jsonl (UTC) and run.log (host-local). The
+// tzChildEnv marks the re-exec'd child that carries a non-UTC TZ.
+const tzChildEnv = "ITERION_TEST_TZ_CHILD"
+
 // previous slicer forced UTC on both sides and silently returned
-// log lines from the wrong hour on non-UTC hosts. This test pins
-// time.Local to a non-UTC zone and asserts the slice still matches
-// the log lines the iterion logger would have written for that exec.
+// log lines from the wrong hour on non-UTC hosts. This test runs the
+// slice on a non-UTC host and asserts it still matches the log lines
+// the iterion logger would have written for that exec.
 func TestInspect_LogSliceNonUTCTimezone(t *testing.T) {
-	// Restore time.Local at end so we don't pollute other tests.
-	saved := time.Local
-	t.Cleanup(func() { time.Local = saved })
-	// CET is UTC+1 (no DST in January) — picks an offset distinct
-	// from any UTC-equivalent tz so a UTC-vs-local bug is observable.
+	// The host TZ is set for a CHILD PROCESS rather than by assigning
+	// time.Local here. time.Local is a process-wide global that the runtime
+	// and every library read through time.Now(), so writing it mid-run is a
+	// genuine data race against any goroutine still alive from an earlier
+	// test — observed in CI as `race detected during execution of test`, with
+	// the peer read coming from an idle http2 connection's Close. Re-exec
+	// instead: TZ is read once at init, so the child gets a non-UTC local zone
+	// with nothing to mutate.
+	if os.Getenv(tzChildEnv) == "" {
+		cmd := exec.Command(os.Args[0], "-test.run=^"+t.Name()+"$", "-test.v")
+		cmd.Env = append(os.Environ(), tzChildEnv+"=1", "TZ=Europe/Paris")
+		out, err := cmd.CombinedOutput()
+		if err != nil {
+			t.Fatalf("non-UTC child failed: %v\n%s", err, out)
+		}
+		if bytes.Contains(out, []byte("SKIP")) {
+			t.Skipf("child skipped:\n%s", out)
+		}
+		return
+	}
+	// CET is UTC+1 (no DST in January) — an offset distinct from any
+	// UTC-equivalent tz, so a UTC-vs-local bug is observable.
 	loc, err := time.LoadLocation("Europe/Paris")
 	if err != nil {
 		t.Skipf("Europe/Paris tz unavailable: %v", err)
 	}
-	time.Local = loc
+	if time.Now().In(loc).Format("-0700") == time.Now().UTC().Format("-0700") {
+		t.Skip("host tz did not take effect in the child")
+	}
 
 	dir := t.TempDir()
 	storeDir := filepath.Join(dir, "store")
