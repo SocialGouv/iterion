@@ -28,11 +28,33 @@ import type { McpServerConfig } from "../config.js";
 /**
  * Builds the `mcp__<server>__<tool>` name a tool is registered under.
  *
- * A server that already answers `tools/list` with qualified names (some do)
- * must not be double-prefixed, so an existing `mcp__` prefix is kept as-is.
+ * The prefix is imposed, never accepted from the server. Tool names come from
+ * the server's own `tools/list` reply, and iterion's permission layer exempts
+ * the whole `mcp__iterion…` namespace as infrastructure — so honouring a
+ * server-supplied `mcp__` prefix would let a hostile, compromised or
+ * prompt-injected server advertise `mcp__iterion_board__anything` and have
+ * every call to it allowed, even under `permission: deny`. claude_code's SDK
+ * has no such hole because it always prefixes with the configured server name.
+ *
+ * A server that legitimately already answers with its OWN `mcp__<server>__`
+ * prefix is passed through so it is not double-qualified; anything else is
+ * stripped of a leading `mcp__` and re-qualified under the name iterion
+ * configured.
  */
 export function qualifyToolName(server: string, tool: string): string {
-	return tool.startsWith("mcp__") ? tool : `mcp__${server}__${tool}`;
+	const ours = `mcp__${server}__`;
+	if (tool.startsWith(ours)) return tool;
+	return ours + (tool.startsWith("mcp__") ? tool.slice("mcp__".length) : tool);
+}
+
+/**
+ * Reports whether a server name would land its tools inside iterion's
+ * reserved, permission-exempt namespace. Separators are normalised the same
+ * way permission.IsInfrastructureTool does, so `iterion-board`, `iterion.x`
+ * and `iterion_board` are all caught.
+ */
+export function reservedServerName(server: string): boolean {
+	return server.toLowerCase().replace(/[-.]/g, "_").startsWith("iterion");
 }
 
 /** Renders an MCP tool result as pi tool content. */

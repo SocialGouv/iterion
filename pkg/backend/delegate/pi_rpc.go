@@ -197,9 +197,20 @@ func (b *PiRPCBackend) Execute(ctx context.Context, task Task) (Result, error) {
 	result.Duration = time.Since(start)
 	result.Stderr = truncate(client.Stderr(), 8192)
 
-	// Accounting: get_session_stats is authoritative and supersedes the
-	// per-message accumulation the collector did as a fallback.
+	// Accounting. get_session_stats is authoritative for a FRESH session, and
+	// supersedes the per-message accumulation the collector did as a fallback.
+	//
+	// It is session-cumulative, though — so on a RESUMED session it also
+	// carries the turns the earlier nodes already billed. `session: inherit`
+	// passes --session-id and all of a run's sessions share one directory, so
+	// the resume genuinely reloads those turns: taking the session totals
+	// there would re-bill every upstream node, and a loop that inherits across
+	// iterations would grow the reported cost quadratically, tripping
+	// max_tokens / max_cost_usd early on a bill that never happened. Keep the
+	// collector's per-TURN numbers in that case; the context gauge below is a
+	// high-water mark, not a sum, so it stays session-scoped either way.
 	inTok, outTok, costUSD, peak, thinkTok := collector.usage()
+	resumed := strings.TrimSpace(task.SessionID) != ""
 	statsCtx, cancelStats := context.WithTimeout(ctx, 10*time.Second)
 	if stats, err := client.SessionStats(statsCtx); err == nil {
 		// Cache reads/writes stay OUT of the billed token count, matching
@@ -207,9 +218,11 @@ func (b *PiRPCBackend) Execute(ctx context.Context, task Task) (Result, error) {
 		// input+cache_creation+cache_read to the context gauge instead). Every
 		// backend has to agree here or a workflow's `max_tokens` budget would
 		// mean something different depending on which one ran the node.
-		inTok = stats.Tokens.Input
-		outTok = stats.Tokens.Output
-		costUSD = stats.Cost
+		if !resumed {
+			inTok = stats.Tokens.Input
+			outTok = stats.Tokens.Output
+			costUSD = stats.Cost
+		}
 		// Context load — input plus everything served from or written to the
 		// cache — is the quantity the context-usage gauge tracks.
 		if loaded := stats.Tokens.Input + stats.Tokens.CacheRead + stats.Tokens.CacheWrite; loaded > peak {
@@ -537,6 +550,16 @@ type piMCPServerSpec struct {
 //
 // Sandboxed stdio servers inherit the claude_code caveat: the command is
 // resolved inside the container, so a host-only binary is unreachable there.
+// isReservedMCPServerName reports whether a server name would land its tools
+// inside iterion's permission-exempt namespace. Separators are normalised the
+// same way permission.IsInfrastructureTool does, so iterion-board, iterion.x
+// and iterion_board are all caught.
+func isReservedMCPServerName(name string) bool {
+	n := strings.ToLower(strings.TrimSpace(name))
+	n = strings.NewReplacer("-", "_", ".", "_").Replace(n)
+	return strings.HasPrefix(n, "iterion")
+}
+
 func piMCPServers(task Task, logger *iterlog.Logger) []piMCPServerSpec {
 	var out []piMCPServerSpec
 	warn := func(format string, args ...any) {
@@ -586,6 +609,18 @@ func piMCPServers(task Task, logger *iterlog.Logger) []piMCPServerSpec {
 		}
 	}
 	for _, s := range task.MCPServers {
+		// Tools are registered as mcp__<server>__<tool>, and iterion's
+		// permission layer exempts the whole mcp__iterion… namespace as
+		// infrastructure. A workflow-declared server named into that namespace
+		// would therefore have every one of its calls allowed, even under
+		// `permission: deny`. The board is named by iterion itself and is
+		// added above, outside this loop.
+		if isReservedMCPServerName(s.Name) {
+			warn("[%s#%d/%s] MCP server %q: the iterion* namespace is reserved for iterion's own servers "+
+				"(its tools would be permission-exempt); skipped — rename it",
+				task.NodeID, task.Iteration, BackendPi, s.Name)
+			continue
+		}
 		switch strings.ToLower(strings.TrimSpace(s.Transport)) {
 		case "http", "sse":
 			transport := strings.ToLower(strings.TrimSpace(s.Transport))

@@ -654,3 +654,28 @@ func TestPiRPCLiveMCPSSERefusesCrossOriginEndpoint(t *testing.T) {
 		t.Errorf("the cross-origin endpoint received %d request(s) — the run token was exfiltrated", got)
 	}
 }
+
+// iterion's permission layer exempts the whole mcp__iterion… namespace as
+// infrastructure, and tools are registered as mcp__<server>__<tool>. A
+// workflow-declared server named into that namespace would therefore have
+// every call allowed even under `permission: deny` — the one boundary the gate
+// exists to hold.
+func TestPiMCPServersRejectsTheReservedNamespace(t *testing.T) {
+	for _, name := range []string{"iterion_board", "iterion-board", "Iterion.Anything", "iterionish"} {
+		t.Run(name, func(t *testing.T) {
+			got := piMCPServers(Task{
+				MCPServers: []TaskMCPServer{{Name: name, Transport: "stdio", Command: "x"}},
+			}, nil)
+			if len(got) != 0 {
+				t.Errorf("server %q was accepted: %+v — its tools would be permission-exempt", name, got)
+			}
+		})
+	}
+	// A normal name still comes through.
+	got := piMCPServers(Task{
+		MCPServers: []TaskMCPServer{{Name: "probe", Transport: "stdio", Command: "x"}},
+	}, nil)
+	if len(got) != 1 {
+		t.Errorf("a normally-named server was dropped: %+v", got)
+	}
+}

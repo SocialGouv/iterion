@@ -705,7 +705,9 @@ var StdioTransport = class {
 
 // src/tools/mcp-tools.ts
 function qualifyToolName(server, tool) {
-  return tool.startsWith("mcp__") ? tool : `mcp__${server}__${tool}`;
+  const ours = `mcp__${server}__`;
+  if (tool.startsWith(ours)) return tool;
+  return ours + (tool.startsWith("mcp__") ? tool.slice("mcp__".length) : tool);
 }
 function renderResult(result) {
   const parts = [];
