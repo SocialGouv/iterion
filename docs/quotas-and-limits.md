@@ -203,7 +203,12 @@ accounting lives in the Mongo counters above.
 | `iterion_auth_logins_total` | `result` (`success` / `invalid` / `locked` / `password_change_required` / `error`) | Login attempts |
 | `iterion_auth_password_resets_total` | `step` (`requested` / `confirmed`) | Self-service reset flow |
 | `iterion_dlq_depth` | — | Runs parked on the DLQ (the orphan / max-deliver bridge) |
-| `iterion_runs_orphan_recovered_total` | — | The sweeper's flips to `failed_resumable` |
+| `iterion_runs_orphan_recovered_total` | — | The orphan sweeper's flips to `failed_resumable` |
+| `iterion_runs_usage_window_blocked_total` | — | Runs stopped by an exhausted provider quota window |
+| `iterion_runs_retry_scheduled_total` | — | Durable automatic retries armed for a provider reset |
+| `iterion_runs_retry_resumed_total` | `result` (`enqueued` / `abandoned` / `failed`) | Retry-sweeper outcomes for due runs |
+| `iterion_runs_retry_pending` | — | Due-retry rows observed in the latest bounded sweep (sampled gauge) |
+| `iterion_runs_retry_sweeps_total` | — | Retry-sweeper passes; flat at zero in cloud means the sweeper is not running, not merely idle |
 
 The starter alert pack
 ([charts/iterion/templates/prometheus-rule.yaml](../charts/iterion/templates/prometheus-rule.yaml))
