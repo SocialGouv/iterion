@@ -102,8 +102,9 @@ OpenAI's ChatGPT-forfait has never had an equivalent restriction.
 iterion remote api-keys create --provider anthropic --name mykey --from-file ~/anthropic.key
 iterion remote api-keys create --provider openai   --name mykey --from-file ~/openai.key
 
-# Anthropic OAuth-forfait (claude_code backend only) — send the WHOLE
-# credentials.json. A body carrying only accessToken is accepted but stored
+# Anthropic OAuth-forfait (cloud upload reaches claude_code and claw;
+# pi bridge pending) — send the WHOLE credentials.json. A body carrying only
+# accessToken is accepted but stored
 # NON-refreshable (`sealOAuthRecord` sets NotRefreshable when refreshToken is
 # absent), so the connection dies silently at the next token expiry:
 iterion remote api POST /api/me/oauth/claude_code/credentials \
