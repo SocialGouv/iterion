@@ -1195,7 +1195,7 @@ older installed binary may expose only `api/login/logout/status/openapi/routes`
 missing, refresh the install from a static build (see the binary-freshness note
 under Testing Patterns). Smoke-test claude_code auth on a cloud runner (e.g. a
 Claude-subscription **forfait** via `CLAUDE_CODE_OAUTH_TOKEN`) with a one-node
-`backend: "claude_code"` bot: `system/init … model=claude-opus-4-8` in the run
+`backend: "claude_code"` bot: `system/init … model=claude-opus-5` in the run
 log + `0 tokens` billed confirms the OAuth-forfait path (not a metered API key).
 
 ## Testing Patterns
