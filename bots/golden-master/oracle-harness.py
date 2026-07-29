@@ -45,6 +45,7 @@ import http.cookiejar
 import importlib.util
 import json
 import os
+import re
 import shlex
 import shutil
 import subprocess
@@ -73,7 +74,7 @@ REQUIRED_ARCHETYPES = {
     "http":   ["value_change", "order_flip", "subset", "status_change", "field_drop"],
     "binary": ["content_empty", "value_change"],
     "screen": ["style_shift"],
-    "asset":  ["content_change"],
+    "asset":  ["content_change", "asset_missing"],
 }
 
 CONTROL_SAMPLE = 6          # non-target entries replayed per mutant, for collateral
@@ -244,9 +245,160 @@ def open_sessions(config):
     return sessions
 
 
+def resolve_artifact(config, ws):
+    """Absolute path of the artefact IN FLIGHT, published by the environment.
+
+    Same doctrine as `base_url_file`, for the same reason: a path baked into
+    the net is valid on exactly one machine. The environment that builds and
+    starts the application is the only thing that knows which file it started.
+    """
+    rel = config.get("artifact_file")
+    if not rel:
+        raise SystemExit(
+            "an entry declares surface 'asset' but config.json has no "
+            "artifact_file. That lane inventories what the BUILD packaged; "
+            "without the artefact it would fall back to scanning the worktree, "
+            "which is a different set — build outputs are gitignored, and stale "
+            "ones from an earlier build stay behind.")
+    path = rel if os.path.isabs(rel) else os.path.join(ws, rel)
+    try:
+        with open(path, encoding="utf-8") as f:
+            jar = f.read().strip()
+    except OSError as e:
+        raise SystemExit(
+            "config.artifact_file points at %s, which cannot be read (%s). It "
+            "is written when the application starts." % (path, e))
+    if not jar or not os.path.isfile(jar):
+        raise SystemExit("the published artefact path %r is not a file" % jar)
+    return jar
+
+
+# URLs locales referencees par un gabarit. Deux formes cohabitent dans ce
+# depot : l'attribut Thymeleaf `th:href="@{/chemin}"` et l'attribut HTML brut
+# `href="/chemin"`. Les deux sont captees ; les URLs absolues et les ancres ne
+# le sont pas, elles ne designent pas un fichier servi par cette application.
+#
+# Les espaces sont ADMISES dans la valeur. Les exclure paraissait prudent — un
+# attribut mal ferme aurait absorbe la moitie de la balise — mais quatre
+# documents de ce depot portent une espace dans leur nom de fichier, et le
+# motif les ecartait sans le dire. Les guillemets bornent deja la valeur ; les
+# accolades restent exclues, elles signalent une expression Thymeleaf calculee,
+# dont l'URL n'est pas connue avant le rendu.
+_ASSET_REF_RE = re.compile(
+    r'(?:th:)?(?:href|src)\s*=\s*"(?:@\{)?(/[^"{}]+?)\}?"', re.I)
+
+_ASSET_EXT = (".css", ".js", ".png", ".jpg", ".jpeg", ".gif", ".svg",
+              ".ico", ".woff", ".woff2", ".ttf", ".eot", ".map", ".pdf")
+
+# Le balisage commente n'est pas une reference : rien ne le sert au client. Sans
+# ce retrait, quatre liens mis en commentaire remontaient comme des ressources
+# attendues, dont une sous une forme de normalisation Unicode differente de
+# celle empaquetee — un doublon fantome que la reference aurait fige.
+_HTML_COMMENT_RE = re.compile(r"<!--.*?-->", re.S)
+
+
+def _artefact_members(path):
+    """(name, read()) for every file in the artefact — archive or directory.
+
+    Both shapes are ordinary build outputs, and neither is more legitimate than
+    the other. Accepting only one would push whoever has the other towards
+    scanning the worktree instead, which is the single thing this lane must not
+    do.
+    """
+    import zipfile
+    if os.path.isdir(path):
+        for root, _dirs, files in os.walk(path):
+            for f in files:
+                full = os.path.join(root, f)
+                yield os.path.relpath(full, path).replace(os.sep, "/"), \
+                    (lambda p=full: open(p, "rb").read())
+        return
+    with zipfile.ZipFile(path) as z:
+        for name in z.namelist():
+            if not name.endswith("/"):
+                yield name, (lambda n=name: z.read(n))
+
+
+def collect_assets(session, artefact_path, entry):
+    """Inventory the assets the build PACKAGED, then ask the application for each.
+
+    Two facts, deliberately kept apart:
+
+      * what the artefact contains — read from the build output, the product;
+      * what the application answers — read over HTTP, which is the truth.
+
+    They are not the same claim, and a lane that reports only the first would
+    describe a set of files without establishing that any of them is reachable.
+    The comparison of the two is the whole point: a resource present in the
+    package and answering 404 is a routing defect, and one answering 200 with
+    other bytes is a filter or a cache rewriting the product on its way out.
+
+    Referenced URLs come from the packaged TEMPLATES, for the same reason the
+    inventory comes from the packaged static tree: a scan of the worktree would
+    read sources the artefact may not contain.
+
+    The two prefixes are DECLARED by the entry, never guessed. A default would
+    have to encode one framework's layout, and the day it is wrong it does not
+    fail — it inventories nothing and reports a clean, empty manifest.
+    """
+    static_prefix = entry.get("static_prefix")
+    tpl_prefix = entry.get("template_prefix")
+    if static_prefix is None or tpl_prefix is None:
+        raise SystemExit(
+            "entry %s declares surface 'asset' but not both `static_prefix` and "
+            "`template_prefix` — the paths, inside the artefact, of the served "
+            "tree and of the templates that reference it. They are not guessed: "
+            "a wrong prefix inventories nothing and reads as a clean manifest."
+            % entry.get("id"))
+
+    packaged = {}
+    referenced = set()
+    for name, read in _artefact_members(artefact_path):
+        if name.startswith(static_prefix):
+            url = "/" + name[len(static_prefix):]
+            packaged[url] = hashlib.sha256(read()).hexdigest()
+        elif name.startswith(tpl_prefix):
+            text = read().decode("utf-8", "replace")
+            for url in _ASSET_REF_RE.findall(_HTML_COMMENT_RE.sub("", text)):
+                if url.lower().endswith(_ASSET_EXT):
+                    referenced.add(url)
+
+    if not packaged:
+        raise SystemExit(
+            "entry %s inventoried ZERO asset under %r in %s. An empty inventory "
+            "canonicalises to a manifest that is stable, green and blind, so it "
+            "is refused: either the prefix is wrong, or the build packaged "
+            "nothing." % (entry.get("id"), static_prefix, artefact_path))
+
+    records = []
+    for url in sorted(set(packaged) | referenced):
+        # Le chemin est encodé pour la requête, jamais pour la référence. Un nom
+        # de fichier portant une espace ou un accent, envoyé brut, fait une
+        # requête malformée et une erreur de transport, que le manifeste aurait
+        # consignée comme « ressource absente ». Un défaut du filet aurait été
+        # rapporté comme un défaut du produit. Vu sur quatre documents.
+        #
+        # `follow=False` : une redirection n'est PAS une livraison. Suivie, un
+        # refus d'autorisation rend 200 et le corps de la page de connexion, que
+        # le manifeste consigne alors comme « la ressource est servie, avec
+        # d'autres octets que ceux empaquetés » — un défaut de routage
+        # imaginaire, là où le fait réel est que la ressource n'est pas
+        # publique. Même quatre documents, deuxième déguisement.
+        status, _headers, body = session.fetch(
+            "GET", urllib.parse.quote(url, safe="/"), follow=False)
+        records.append({
+            "url": url,
+            "status": status,
+            "served_sha": hashlib.sha256(body or b"").hexdigest(),
+            "served_len": len(body or b""),
+            "packaged_sha": packaged.get(url),
+            "referenced": url in referenced,
+        })
+    return json.dumps({"assets": records}, sort_keys=True).encode()
 def capture(config, corpus, canon, ids=None):
     """Fetch and canonicalise the corpus. Returns {id: canonical_text}."""
     sessions = open_sessions(config)
+    jar_path = None
     out = {}
     for e in corpus["entries"]:
         if ids is not None and e["id"] not in ids:
@@ -254,10 +406,15 @@ def capture(config, corpus, canon, ids=None):
         s = sessions.get(e.get("persona", "anon"))
         if s is None:
             raise SystemExit("entry %s names unknown persona %r" % (e["id"], e.get("persona")))
-        status, headers, body = s.fetch(
-            e.get("method", "GET"), e["path"], fields=e.get("fields"),
-            follow=not e.get("no_redirect", False),
-        )
+        if e.get("surface") == "asset":
+            if jar_path is None:
+                jar_path = resolve_artifact(config, os.environ.get("GM_WORKSPACE", "."))
+            status, headers, body = 200, {}, collect_assets(s, jar_path, e)
+        else:
+            status, headers, body = s.fetch(
+                e.get("method", "GET"), e["path"], fields=e.get("fields"),
+                follow=not e.get("no_redirect", False),
+            )
         out[e["id"]] = canon.canonicalize(e, status, headers, body)
     return out
 

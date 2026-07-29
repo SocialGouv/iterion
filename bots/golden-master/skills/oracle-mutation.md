@@ -75,9 +75,30 @@ must exist and be detected.
    "recipe":"shift one element by a few pixels, or change one colour by a small delta"},
   {"surface":"asset","archetype":"content_change","required":true,
    "catches":"a manifest built by scanning the repository instead of the build output",
-   "recipe":"change one byte of a served asset without renaming it"}
+   "recipe":"change one byte of a served asset without renaming it"},
+  {"surface":"asset","archetype":"asset_missing","required":true,
+   "catches":"a manifest that fingerprints the files it finds without ever stating how many it expected — every file present still matches, and the one that stopped being produced is simply absent from the comparison",
+   "recipe":"stop the build from producing one asset, by editing the build's own configuration rather than deleting the output"}
 ]
 -->
+
+**A note on the `asset` surface.** Inventory from the BUILD OUTPUT — the archive or directory
+the build produced — and never from the worktree. Assets are commonly gitignored, so a repository
+scan reads a different set: it misses what only exists after a build, and it counts leftovers from
+an earlier one. Then ask the running application for each entry: what is packaged and what is
+served are two claims, and a lane that establishes only the first has not shown that any of those
+files is reachable.
+
+Three traps, each of which turns a defect of the net into a reported defect of the product, or
+the reverse. Do not follow redirects — an authorisation refusal answers 200 with the body of the
+login page, which reads as *served, with different bytes*. Percent-encode the request path but
+record the raw one — a filename with a space makes a malformed request, whose transport error
+reads as *absent*. And strip commented-out markup before extracting referenced URLs — a link
+nobody serves is not a reference.
+
+Emit ONE LINE PER ASSET, never a digest of the set. A digest says *something moved* and nothing
+else, and the reason this lane exists — reading a build-chain upgrade — is to know which files
+moved and how many.
 
 **A note on `style_shift`.** Pixel tolerance is not a comfort setting, it is *the* blinding
 vector. Do not choose a threshold and then check the mutant. Tighten the threshold until
