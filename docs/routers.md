@@ -40,7 +40,13 @@ router fix_router:
   reasoning_effort: high                  # optional
 ```
 
-Using `model` makes a direct API call (via the in-process `claw` backend — supports `anthropic/...`, `openai/...`, etc.). Using `backend` routes through an external CLI agent — `claude_code` is the recommended CLI backend. (`codex` is also supported but discouraged; see [Delegation](delegation.md) for the rationale.) If neither is set, the engine falls back to a built-in default model.
+`model` pins the wire model; it does not itself pin the executor. With no
+`backend`, normal backend credential detection applies (falling back to the
+in-process `claw` backend); set `backend: "claw"` when a direct provider API call
+is required. `claude_code` is the recommended delegated CLI, while `pi`, Kimi,
+and Grok are explicit opt-ins and `codex` is legacy. See
+[Delegation](delegation.md) for their trade-offs. If `model` is also absent, the
+router uses its built-in fallback model.
 
 ---
 
@@ -227,9 +233,12 @@ agent verify_fixes:
 When using `model`, the engine resolves the model identifier through this chain:
 1. The `model` field value (with environment variable expansion)
 2. The `ITERION_DEFAULT_SUPERVISOR_MODEL` environment variable
-3. Built-in default: `anthropic/claude-sonnet-4-6`
+3. Built-in default: `anthropic/claude-sonnet-5`
 
-When using `backend`, the named backend (e.g. `claude_code`) handles the LLM call entirely — no API key or model configuration needed on the Iterion side. (`codex` is also accepted but discouraged.)
+When using `backend`, the named backend (for example `claude_code`, `pi`,
+`kimi`, `grok`, or `claw`) handles the call. Delegated CLIs normally use their
+own login; the in-process `claw` backend uses Iterion's configured provider
+credentials. `codex` remains accepted for compatibility but is discouraged.
 
 ---
 
