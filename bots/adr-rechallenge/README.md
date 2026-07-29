@@ -75,7 +75,7 @@ ways:
 
 | Var | Default | Effect |
 |-----|---------|--------|
-| `REARCHI_MODEL_CLAUDE` | `claude-opus-4-8` | model for the survey + framing + branch agents |
+| `REARCHI_MODEL_CLAUDE` | `claude-opus-5` | model for the survey + framing + branch agents |
 | `REARCHI_EFFORT` | `high` | reasoning effort across the run |
 
 For a cheaper / faster pass (e.g. a quick "any signal at all?"

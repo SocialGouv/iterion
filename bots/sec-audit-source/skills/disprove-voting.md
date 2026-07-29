@@ -23,7 +23,7 @@ declarations, not flipping a var (the iterion DSL cannot cleanly
 gate fan-out edges by a numeric var). Default mix:
 
 - `voter_v1` — claw + `openai/gpt-5.5`
-- `voter_v2` — claude_code + `claude-opus-4-8` (cross-family signal)
+- `voter_v2` — claude_code + `claude-opus-5` (cross-family signal)
 - `voter_v3` — claw + `openai/gpt-5.5`
 
 Each judge is `readonly: true` + `session: fresh` — no context bleed

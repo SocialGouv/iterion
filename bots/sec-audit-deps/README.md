@@ -79,7 +79,7 @@ enumerate_deps (agent: claw + openai/gpt-5.5, readonly)
   └─→ heuristic_join (compute, await: best_effort — merge {eco, generic} signals)
   └─→ load_cache (tool: read the package cache at cache_path → raw JSONL)
   └─→ filter_cached (tool: split enumerated deps into already_scanned[] vs pending[])
-  └─→ llm_review (agent: claude_code + opus-4-8, readonly, capabilities board.read/create/label —
+  └─→ llm_review (agent: claude_code + opus-5, readonly, capabilities board.read/create/label —
         validates signals, scores + buckets LOW/MEDIUM/HIGH, creates kanban issues for MEDIUM+,
         writes deps-findings.md)
   └─→ update_cache (tool: append one JSONL line per analysed package to packages.jsonl)

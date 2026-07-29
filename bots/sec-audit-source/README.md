@@ -43,7 +43,7 @@ edit — see the *Adding a language* section at the bottom of this README.
 # 1. Run on the current repo. Only detect_tech defaults to
 #    claw + openai/gpt-5.5 (cheap tech survey); triage, the three
 #    revalidation voters, and report_card default to
-#    claude_code + claude-opus-4-8.
+#    claude_code + claude-opus-5.
 devbox run -- iterion run bots/sec-audit-source/main.bot \
   --var workspace_dir=$(pwd) \
   --var severity_threshold=medium
@@ -126,13 +126,13 @@ inventory (tool)                    ← deterministic bounded file/manifest list
   └─→ scan_join (compute, await: best_effort) ← converges scanner outputs
   └─→ scan_health (tool) ← anti-façade gate: hard-fail if the generic floor is missing
   └─→ cap_findings (tool) ← overflow guard (top N findings/file)
-  └─→ triage (agent: claude_code + opus-4-8) ← reads scanner JSONs + fp-known.yaml
+  └─→ triage (agent: claude_code + opus-5) ← reads scanner JSONs + fp-known.yaml
   └─→ filter_cached_files (tool) ← skip revalidation on unchanged files
-  └─→ voter_v1 → voter_v2 → voter_v3 (3 judges: claude_code + opus-4-8, adversarial "disprove")
+  └─→ voter_v1 → voter_v2 → voter_v3 (3 judges: claude_code + opus-5, adversarial "disprove")
   └─→ majority_verdict (tool) ← tally confirm/dismiss/uncertain; ≥confirm_threshold (default 2/3) confirms
   └─→ fp_append (tool, only when majority emits fp_appends[]) → merge_with_cache
   └─→ merge_with_cache (compute) ← fresh + cached verdicts unified
-  └─→ report_card (agent: claude_code + opus-4-8, board.read/create/label) → kanban + findings.md
+  └─→ report_card (agent: claude_code + opus-5, board.read/create/label) → kanban + findings.md
   └─→ update_file_records (tool) ← append one history entry per analysed file
   └─→ remediate_gate (compute) ← when remediate=false (DEFAULT): done
                                   when remediate=true: opt-in remediation phase (below)
