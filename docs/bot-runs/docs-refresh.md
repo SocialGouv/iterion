@@ -34,6 +34,48 @@ reference self-host case.
   dead cross-reference, the model names across the corpus realigned on the
   Claude 5 fleet, and the pi backend itself added to the backend lists.
 
+### Pass 2 — resumed on a ChatGPT/Codex credential (same run, 19:37→20:23)
+
+- Status: **partial, and over budget** — 48 further commits, then
+  `BUDGET_EXCEEDED`. Still `failed_resumable`.
+- Method: `iterion resume --backend pi --model openai-codex/gpt-5.6-sol`,
+  `--max-cost-usd 15`, `ITERION_SANDBOX_DEFAULT=none`.
+- Result: **63 commits total** (15 from pass 1), 53 files, +467/−261, in 46
+  minutes. **$47 against a $15 cap.**
+
+**The cost cap does not bound a v2 campaign.** `max_cost_usd` is evaluated at
+NODE boundaries, and the v2 shape (ADR-058) puts an entire pass inside ONE
+agent node that ran 46 minutes uninterrupted. Nothing checks the budget in
+flight, so the overshoot is only observed when the node finally reports — here
+at 3x the cap. This is not specific to pi or to this bot: it applies to every
+bot in the v2 fleet. Either the budget must be evaluated against streaming
+usage events, or the documentation must say plainly that it bounds nodes
+crossed, not dollars spent.
+
+**Three defects the RESUME path exposed, none visible from `iterion run`:**
+
+- **The codex bridge gave up instead of falling back.** `piLoadCodexView`
+  preferred the credential directory the run context announces (the cloud
+  path) and abandoned the search when it was unreadable. On `run` the context
+  announces nothing, so it worked; on `resume` it announces an empty
+  directory, so it failed with "No API key found for openai-codex". The two
+  sources are alternatives, not a chain — preferring one must not cost the
+  other. Fixed.
+- **`resume` does not replay the launch's sandbox decision.** The run was
+  launched `--sandbox none`; the resume started IN a container, where pi is
+  not installed (`exec: pi: not found`). There is no `--sandbox` flag on
+  resume, while `--model`, `--backend` and the budgets are all re-appliable —
+  so a run silently changes execution environment on resume. Worked around
+  with `ITERION_SANDBOX_DEFAULT=none`; the engine gap stands.
+- **`ITERION_PI_BIN` was documented and never implemented.** The escape hatch
+  for a host that cannot run the npm CLI existed only in the reference.
+  Implemented on both transports.
+
+Diagnosis note: the first two fixes from the adversarial review made the
+credential failure WARN instead of erroring, which is right — but it also made
+this defect silent. It took capturing pi's real argv through a fake binary on
+PATH to find it, after too long spent theorising.
+
 ### Findings
 
 - **`--skill` was never passed to pi for a bundle bot — engine bug, fixed.**
@@ -63,6 +105,8 @@ reference self-host case.
 
 ### Lessons for next run
 
+- **A cost cap does not stop a v2 campaign** — see pass 2. Watch the running
+  cost, do not trust `--max-cost-usd` to bound a single-node pass.
 - **A failed run leaves its commits on a detached HEAD with no branch.**
   `finalizeWorktree` creates the anti-GC branch only on a clean exit, so 15
   commits were reachable only through the preserved worktree — one
