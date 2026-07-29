@@ -7,6 +7,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"os/exec"
+	"regexp"
 	"strings"
 	"testing"
 )
@@ -37,12 +38,11 @@ func TestDepUpdateGuardArmAutomerge(t *testing.T) {
 			t.Fatalf("arm_automerge must not reference a direct merge endpoint (%q)", forbidden)
 		}
 	}
-	// The GraphQL merge is allowed only in its pinned form: without
-	// expectedHeadOid it would merge whatever the branch holds by the time the
-	// call lands, which is the same unreviewed-code hazard by another route.
-	if strings.Contains(script, "mergePullRequest") && !strings.Contains(script, "expectedHeadOid") {
-		t.Fatal("mergePullRequest must always be pinned with expectedHeadOid")
-	}
+	// The GraphQL merge is allowed only in its pinned form. Asserting that on
+	// the SOURCE is worthless: the word expectedHeadOid also appears in a
+	// comment, so deleting it from the mutation keeps a source-level check
+	// green. The real assertion is on the query that goes over the wire, in
+	// the stub below.
 
 	type call struct {
 		query string
@@ -120,6 +120,17 @@ func TestDepUpdateGuardArmAutomerge(t *testing.T) {
 					"data": map[string]any{"enablePullRequestAutoMerge": map[string]any{"clientMutationId": nil}},
 				})
 			case strings.Contains(body.Query, "mergePullRequest"):
+				// The mutation ITSELF must carry the pin. Sending oid in the
+				// variables proves nothing — merge_now populates it whether or
+				// not the query references it, so an unpinned merge (the single
+				// most dangerous regression this node can have) would sail
+				// through a variables-only check.
+				if !strings.Contains(body.Query, "expectedHeadOid") {
+					t.Errorf("merge mutation is not pinned to a head: %s", body.Query)
+				}
+				if !regexp.MustCompile(`expectedHeadOid:\s*\$oid`).MatchString(body.Query) {
+					t.Errorf("expectedHeadOid is not bound to the oid variable: %s", body.Query)
+				}
 				if body.Variables["oid"] != state["headRefOid"] {
 					t.Errorf("merge pinned to %v, want the reviewed head %v", body.Variables["oid"], state["headRefOid"])
 				}
@@ -142,6 +153,8 @@ func TestDepUpdateGuardArmAutomerge(t *testing.T) {
 			"{{input.gate_posted}}":        "True",
 			"{{input.gate_state}}":         `"success"`,
 			"{{input.gate_sha}}":           `"d34db33f"`,
+			"{{input.audited_sha}}":        `"d34db33f"`,
+			"{{input.committed_sha}}":      `""`,
 			"{{vars.gate_enabled}}":        "True",
 			"{{secrets.forge_token.path}}": `"ghs_test"`,
 		}
@@ -269,6 +282,41 @@ func TestDepUpdateGuardArmAutomerge(t *testing.T) {
 		}
 		if reason, _ := res["reason"].(string); !strings.Contains(reason, "moved after the audit") {
 			t.Errorf("reason = %q, want it to name the moved branch", reason)
+		}
+	})
+
+	// gate_sha is the head the FORGE reported when the server posted the
+	// status, not something this run vouched for. A push landing between the
+	// alignment and that read carries the gate onto a commit no auditor saw —
+	// and then head == gate_sha holds, so every other guard is satisfied.
+	t.Run("gate landed on a foreign commit: merges nothing", func(t *testing.T) {
+		res, calls, _ := runWith(t, map[string]string{
+			"{{input.gate_sha}}":    `"f0re1gn5"`,
+			"{{input.audited_sha}}": `"d34db33f"`,
+		}, withState(map[string]any{"mergeStateStatus": "CLEAN", "headRefOid": "f0re1gn5"}), "", nil)
+		if queried(calls, "mergePullRequest") {
+			t.Fatal("merged a commit the gate covered but this run never audited")
+		}
+		if res["armed"] != false {
+			t.Fatalf("want a refusal, got %v", res)
+		}
+		if reason, _ := res["reason"].(string); !strings.Contains(reason, "this run audited") {
+			t.Errorf("reason = %q, want it to name the disagreement", reason)
+		}
+	})
+
+	// When the bot pushed an alignment, THAT is the commit it vouches for.
+	t.Run("aligned bump: merges the commit it pushed", func(t *testing.T) {
+		res, calls, _ := runWith(t, map[string]string{
+			"{{input.gate_sha}}":      `"a11gned0"`,
+			"{{input.audited_sha}}":   `"d34db33f"`,
+			"{{input.committed_sha}}": `"a11gned0"`,
+		}, withState(map[string]any{"mergeStateStatus": "CLEAN", "headRefOid": "a11gned0"}), "", nil)
+		if !queried(calls, "mergePullRequest") {
+			t.Fatal("the commit Vetty pushed and gated must be mergeable")
+		}
+		if res["armed"] != true {
+			t.Fatalf("want merged, got %v", res)
 		}
 	})
 

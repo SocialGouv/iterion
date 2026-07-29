@@ -1,7 +1,7 @@
 name: dep-update-guard
 display_name: Vetty
 icon: 💂
-version: 2.3.0
+version: 2.4.0
 ## 2.1.0 — classify, gate, arm. (a) The bump classifier only knew package
 ## manifests, so a PR moving a base-image digest, a devbox pin, a task-runner
 ## tool or a composite action matched nothing — and did not stop, because

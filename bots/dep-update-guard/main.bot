@@ -31,7 +31,8 @@
 ##                             question, pauses for a real architectural
 ##                             decision.
 ##
-## Vetty NEVER merges — the merge stays a human call. The deterministic
+## Vetty NEVER merges past a check, and only ever the commit it audited
+## (opt-in `arm_automerge`; off by default). The deterministic
 ## gates (audit_gate / validate_gate) are the truth oracles: code is
 ## committed ONLY when the audit verdict is `safe` AND the deterministic
 ## verify gate is green (v2 — the v1 `validate` agent's self-reported
@@ -408,6 +409,9 @@ schema prepare_output:
   ## degraded: the diff is not the true base..HEAD bump (base unreachable).
   degraded: bool
   degraded_reason: string
+  ## head_sha: the commit this run read. The audit, the alignment and the
+  ## verdict are all statements ABOUT this commit and no other.
+  head_sha: string
 
 schema audit_input:
   bump_summary: string
@@ -513,9 +517,10 @@ schema feedback_output:
   ## gate_skipped_reason: why no status landed. A gate that is required and
   ## absent blocks the PR forever, so the reason has to be visible.
   gate_skipped_reason: string
-  ## gate_sha: the head the status was posted on — the ONE commit this run
-  ## audited. Anything downstream that merges compares against it, because
-  ## the branch can move while the audit runs.
+  ## gate_sha: the head the status was posted on, as the FORGE reported it at
+  ## publish time. Not by itself proof of what was audited — a push landing in
+  ## between would carry the status onto a foreign commit — so a merge must
+  ## also check it against the sha this run read or pushed.
   gate_sha: string
 
 schema feedback_health_input:
@@ -539,6 +544,12 @@ schema automerge_input:
   ## gate_sha: the head the gate landed on. A merge may only ever target this
   ## commit — reading the head again returns whatever the branch holds NOW.
   gate_sha: string
+  ## audited_sha / committed_sha: the commit this run actually read, and the
+  ## one it pushed if it aligned anything. gate_sha comes from the FORGE (the
+  ## head at publish time), so it is only trustworthy where it agrees with
+  ## what this run produced.
+  audited_sha: string
+  committed_sha: string
 
 schema automerge_output:
   ## armed: the PR is on its way in — either the forge accepted the auto-merge
@@ -637,10 +648,15 @@ if scope:
     d = diff(scope)
     summary = d[:18000] + ('\n…(truncated)…' if len(d) > 18000 else '')
 non = [f for f in files if f not in dep]
+# The commit the audit is about to run against. Carried downstream so a merge
+# can prove it targets what was audited, rather than whatever the branch holds
+# by the time anyone looks again.
+head_sha = git(['rev-parse', 'HEAD'])[1].strip()
 print(json.dumps({'is_empty': len(files)==0 and not degraded, 'dep_files': dep,
                   'changed_files': len(files), 'bump_summary': summary,
                   'has_non_dep_changes': len(non)>0, 'no_manifest': no_manifest,
-                  'degraded': bool(degraded), 'degraded_reason': degraded}))
+                  'degraded': bool(degraded), 'degraded_reason': degraded,
+                  'head_sha': head_sha}))
 "`
   output: prepare_output
 
@@ -1082,6 +1098,8 @@ tool arm_automerge:
     gate_posted = {{input.gate_posted}}
     gate_state = {{input.gate_state}}
     gate_sha = {{input.gate_sha}}
+    audited_sha = {{input.audited_sha}}
+    committed_sha = {{input.committed_sha}}
     gate_on = {{vars.gate_enabled}}
     token_ref = {{secrets.forge_token.path}}
 
@@ -1172,9 +1190,21 @@ tool arm_automerge:
     def merge_now(pr, why):
         head = s(pr.get("headRefOid"))
         gated = s(gate_sha)
+        # What THIS run read, and what it pushed if it aligned anything.
+        mine = s(committed_sha) or s(audited_sha)
         if not gated:
             out(False, "no gated sha to merge against - merging the current head would "
                        "ship a commit this run never audited")
+        if not mine:
+            out(False, "this run cannot name the commit it audited - refusing to merge "
+                       "on a sha it cannot vouch for")
+        # gate_sha comes from the FORGE (the head at publish time), not from
+        # this run: a push landing between the alignment and the status read
+        # would carry the gate onto a commit no auditor ever saw. It is only
+        # trustworthy where it agrees with what this run produced.
+        if gated != mine:
+            out(False, "the gate landed on " + gated[:12] + " but this run audited " +
+                       mine[:12] + " - something else pushed while the audit was running")
         if head and head != gated:
             out(False, "the branch moved after the audit (gated " + gated[:12] +
                        ", head is now " + head[:12] + ") - the new head has not been audited")
@@ -1321,6 +1351,8 @@ workflow dep_update_guard:
     verdict: "{{outputs.post_feedback.verdict}}",
     gate_posted: "{{outputs.post_feedback.gate_posted}}",
     gate_state: "{{outputs.post_feedback.gate_state}}",
-    gate_sha: "{{outputs.post_feedback.gate_sha}}"
+    gate_sha: "{{outputs.post_feedback.gate_sha}}",
+    audited_sha: "{{outputs.prepare.head_sha}}",
+    committed_sha: "{{outputs.commit.sha}}"
   }
   arm_automerge -> done
