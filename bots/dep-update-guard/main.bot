@@ -486,6 +486,10 @@ schema commit_input:
   files_changed: string[]
   breaking_summary: string
 
+schema commit_check_output:
+  ## did_commit: the branch head moved, and this run is what moved it.
+  did_commit: bool
+
 schema commit_output:
   committed: bool
   pushed: bool
@@ -505,12 +509,6 @@ schema feedback_input:
   align_summary: string
   validate_summary: string
   commit_summary: string
-  ## did_commit: whether the commit step actually pushed something. The
-  ## verdict is stamped per-edge as a graph path name, so on the "committed"
-  ## path it says "committed" even when the alignment turned out to be a
-  ## no-op — and a check description that claims work nobody did is exactly
-  ## the kind of false statement this bot exists to catch elsewhere.
-  did_commit: bool
   escalation: string
 
 schema feedback_output:
@@ -833,6 +831,16 @@ compute validate_gate:
   expr:
     stable: "outputs.verify_run.passed"
 
+## Did the commit step actually land anything? Answered from the shas, not
+## from the agent's own account of its work: an agent that reports
+## `committed: true` having pushed nothing would otherwise make every
+## user-facing string — the comment badge, the "what Vetty did" line, the
+## required check's description — assert work that never happened.
+compute commit_check:
+  output: commit_check_output
+  expr:
+    did_commit: "outputs.commit.sha != '' && outputs.commit.sha != outputs.prepare.head_sha"
+
 ## Commit the alignment onto the PR branch + push it back (token auth).
 agent commit:
   backend: "claude_code"
@@ -871,7 +879,6 @@ tool post_feedback:
     validate_summary = {{input.validate_summary}}
     escalation = {{input.escalation}}
     commit_summary = {{input.commit_summary}}
-    did_commit = {{input.did_commit}}
     token_ref = {{secrets.forge_token.path}}
     pub_url = {{vars.forge_publish_url}}
     pub_token = {{vars.forge_publish_token}}
@@ -915,8 +922,7 @@ tool post_feedback:
     section("Reliability", validate_summary)
     if s(verdict) == "needs_decision":
         section("Decision needed", escalation)
-    did = {"committed": ("Committed the alignment to this branch." if bool(did_commit)
-                         else "No alignment was needed."),
+    did = {"committed": "Committed the alignment to this branch.",
            "hold_security": "Held — no alignment, no commit.",
            "hold_unstable": "Held — build/tests not green.",
            "needs_decision": "Escalated for a human decision.",
@@ -943,10 +949,8 @@ tool post_feedback:
     # because the generic "no blocking findings (≥threshold)" phrasing assumes
     # a severity floor, and this gate turns on the audit verdict instead.
     gate_note = {
-        "clean": "supply-chain audit clean; no code alignment needed",
-        "committed": ("supply-chain audit clean; alignment committed, build verified"
-                      if bool(did_commit) else
-                      "supply-chain audit clean; no alignment needed, build verified"),
+        "clean": "supply-chain audit clean; no alignment needed, build verified",
+        "committed": "supply-chain audit clean; alignment committed, build verified",
         "hold_security": "supply-chain risk: the bump was not applied",
         "hold_unstable": "build/tests not green after alignment",
         "needs_decision": "an architectural decision is pending a human",
@@ -1235,7 +1239,7 @@ tool arm_automerge:
         # trustworthy where it agrees with what this run produced.
         if not same_commit(gated, mine):
             out(False, "the gate landed on " + gated[:12] + " but this run audited " +
-                       mine[:12] + " - something else pushed while the audit was running")
+                       mine[:12] + " - the branch head and the audited commit disagree")
         if head and not same_commit(head, gated):
             out(False, "the branch moved after the audit (gated " + gated[:12] +
                        ", head is now " + head[:12] + ") - the new head has not been audited")
@@ -1357,15 +1361,27 @@ workflow dep_update_guard:
     validate_summary: "{{outputs.verify_run.log_tail}}"
   }
 
-  ## Committed → final comment with the full verdict.
-  commit -> post_feedback with {
+  commit -> commit_check
+
+  ## The verdict is what the comment, the badge and the required check all
+  ## read, so it must name what happened: `committed` only when the branch
+  ## head actually moved, `clean` when the bump needed no alignment. Both are
+  ## green; they differ in what they claim was done.
+  commit_check -> post_feedback when did_commit with {
     pr_url: "{{vars.pr_url}}",
     verdict: "committed",
     audit_summary: "{{outputs.security_audit.summary}}",
     align_summary: "{{outputs.align.breaking_summary}}",
     validate_summary: "deterministic verify green (exit 0); log tail: {{outputs.verify_run.log_tail}}",
-    commit_summary: "{{outputs.commit.summary}}",
-    did_commit: "{{outputs.commit.committed}}"
+    commit_summary: "{{outputs.commit.summary}}"
+  }
+  commit_check -> post_feedback when not did_commit with {
+    pr_url: "{{vars.pr_url}}",
+    verdict: "clean",
+    audit_summary: "{{outputs.security_audit.summary}}",
+    align_summary: "{{outputs.align.breaking_summary}}",
+    validate_summary: "deterministic verify green (exit 0); log tail: {{outputs.verify_run.log_tail}}",
+    commit_summary: "{{outputs.commit.summary}}"
   }
 
   ## Deterministic anti-façade gate on the comment, then done.

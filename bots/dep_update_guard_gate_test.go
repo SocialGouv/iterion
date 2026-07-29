@@ -43,7 +43,7 @@ func TestDepUpdateGuardGateVerdict(t *testing.T) {
 		Gate    *gate  `json:"gate"`
 	}
 
-	runCommitted := func(t *testing.T, verdict, gateContext string, gateEnabled, didCommit bool) (published, map[string]any) {
+	run := func(t *testing.T, verdict, gateContext string, gateEnabled bool) (published, map[string]any) {
 		t.Helper()
 		var got published
 		var seen bool
@@ -85,7 +85,6 @@ func TestDepUpdateGuardGateVerdict(t *testing.T) {
 			"{{input.validate_summary}}":   `""`,
 			"{{input.escalation}}":         `""`,
 			"{{input.commit_summary}}":     `""`,
-			"{{input.did_commit}}":         boolLit(didCommit),
 			"{{secrets.forge_token.path}}": `""`,
 			"{{vars.forge_publish_url}}":   `"` + srv.URL + `/api/v1/forge/publish-review"`,
 			"{{vars.forge_publish_token}}": `"run-token"`,
@@ -119,37 +118,36 @@ func TestDepUpdateGuardGateVerdict(t *testing.T) {
 		}
 		return got, res
 	}
-	run := func(t *testing.T, verdict, gateContext string, gateEnabled bool) (published, map[string]any) {
-		t.Helper()
-		return runCommitted(t, verdict, gateContext, gateEnabled, true)
-	}
-
 	// Observed live on socialgouv/buildkit-operator#15: the alignment was a
 	// no-op, yet the check displayed "alignment committed, build verified".
-	// The verdict is a graph PATH name stamped per-edge, so it reads
-	// "committed" whether or not anything was. A required check that asserts
-	// work nobody did is the same false-statement class this bot exists to
-	// catch in other people's diffs.
-	t.Run("nothing to align: the check must not claim a commit", func(t *testing.T) {
-		got, _ := runCommitted(t, "committed", "iterion/review", true, false)
+	// The two verdicts are both green and differ ONLY in what they claim was
+	// done, so each must state its own case and neither may borrow the
+	// other's. A required check that asserts work nobody did is the same
+	// false-statement class this bot exists to catch in other people's diffs.
+	t.Run("clean: claims no alignment, never a commit", func(t *testing.T) {
+		got, _ := run(t, "clean", "iterion/review", true)
 		if got.Gate == nil {
 			t.Fatal("no gate payload")
 		}
 		if strings.Contains(got.Gate.Note, "alignment committed") {
-			t.Errorf("check claims a commit that never happened: %q", got.Gate.Note)
+			t.Errorf("check claims a commit on the no-alignment verdict: %q", got.Gate.Note)
 		}
 		if !strings.Contains(got.Gate.Note, "no alignment needed") {
 			t.Errorf("note should say what actually happened, got %q", got.Gate.Note)
 		}
-		if strings.Contains(got.Summary, "Committed the alignment") {
-			t.Errorf("PR comment claims a commit that never happened")
+		if strings.Contains(got.Summary, "Committed the alignment") ||
+			strings.Contains(got.Summary, "code updated on this branch") {
+			t.Errorf("PR comment claims a commit that never happened:\n%s", got.Summary)
 		}
 	})
 
-	t.Run("aligned: the check says so", func(t *testing.T) {
-		got, _ := runCommitted(t, "committed", "iterion/review", true, true)
+	t.Run("committed: says so, in the badge and the check", func(t *testing.T) {
+		got, _ := run(t, "committed", "iterion/review", true)
 		if got.Gate == nil || !strings.Contains(got.Gate.Note, "alignment committed") {
-			t.Errorf("a real alignment must be stated, got %+v", got.Gate)
+			t.Errorf("a real alignment must be stated in the check, got %+v", got.Gate)
+		}
+		if !strings.Contains(got.Summary, "Committed the alignment") {
+			t.Errorf("a real alignment must be stated in the comment:\n%s", got.Summary)
 		}
 	})
 
@@ -224,7 +222,6 @@ func TestDepUpdateGuardGateVerdict(t *testing.T) {
 			"{{input.validate_summary}}":   `""`,
 			"{{input.escalation}}":         `""`,
 			"{{input.commit_summary}}":     `""`,
-			"{{input.did_commit}}":         "True",
 			"{{secrets.forge_token.path}}": `""`,
 			"{{vars.forge_publish_url}}":   `"` + redir.URL + `/api/v1/forge/publish-review"`,
 			"{{vars.forge_publish_token}}": `"run-token"`,
@@ -286,7 +283,6 @@ func TestDepUpdateGuardGateVerdict(t *testing.T) {
 			"{{input.validate_summary}}":   `""`,
 			"{{input.escalation}}":         `""`,
 			"{{input.commit_summary}}":     `""`,
-			"{{input.did_commit}}":         "True",
 			"{{secrets.forge_token.path}}": `""`,
 			"{{vars.forge_publish_url}}":   `""`,
 			"{{vars.forge_publish_token}}": `""`,

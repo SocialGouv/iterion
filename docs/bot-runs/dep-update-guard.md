@@ -15,10 +15,12 @@ check — and only ever the commit it audited. See
   `sha256:8c625432`)
 - Method: a real `renovate.yml` dispatch on `socialgouv/buildkit-operator`,
   authenticated as the dedicated `socialgouv-renovate` App.
-- Result: PR #15 (`go toolchain 1.26.5 [security]`) created **13:57**, merged
-  **17:58** by the forge App. `armed: true, reason: merged: the forge reported
-  every required check already green`. Gate `iterion/review=success` posted on
-  the head first; merge commit `6d02f3e46747`.
+- Result: PR #15 (`go toolchain 1.26.5 [security]`) created **17:43:03Z**,
+  merged **17:58:04Z** by the forge App — **15 minutes** from Renovate opening
+  it to the merge, with no human in between. `armed: true, reason: merged: the
+  forge reported every required check already green`. Gate
+  `iterion/review=success` posted on the head at 17:57:58Z; merge commit
+  `6d02f3e46747`.
 
 ### What each link proved
 
@@ -38,11 +40,19 @@ check — and only ever the commit it audited. See
 ### The overclaim the run surfaced
 
 The check displayed *"supply-chain audit clean; alignment committed, build
-verified"* on a PR where the alignment was a no-op. The verdict is a graph
-PATH name stamped per-edge, so it reads `committed` whether or not anything
-was committed. Fixed by carrying the commit step's real flag into the
-feedback node; a required check that asserts work nobody did is the same
-false-statement class this bot exists to catch in other people's diffs.
+verified"* on a PR where the alignment was a no-op (1 commit, 1 changed file,
+all Renovate's). The verdict is a graph PATH name stamped per-edge, so it read
+`committed` whether or not anything was.
+
+The first fix carried the commit agent's own `committed` flag down to the
+message — which only moved the claim from one unreliable source to another,
+since that flag is the agent grading its own work. The shipped version derives
+it from two shas the run owns (`commit.sha` vs `prepare.head_sha`) and routes
+to the `clean` verdict, which existed in every string table and was
+unreachable. All the "committed" strings are now unconditionally true.
+
+A required check that asserts work nobody did is the same false-statement
+class this bot exists to catch in other people's diffs.
 
 ### Lessons for next run
 
