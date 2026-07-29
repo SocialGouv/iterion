@@ -34,8 +34,8 @@ The shortest path to a sandboxed run:
    ```
 
 3. Run the workflow as usual. iterion will pull the image, start the
-   container, route claude_code, claw, and tool nodes through it, and
-   tear the container down on exit.
+   container, route `claw`, `claude_code`, pi, Kimi, Grok, and direct tool nodes
+   through it, and tear the container down on exit.
 
 To enable sandboxing without touching the workflow source, pass
 `--sandbox=auto` to `iterion run`:
@@ -69,8 +69,9 @@ flowchart TD
 ```
 
 A **single container** hosts the entire run. Multiple `docker exec`
-calls amortise the create+start cost over every claude_code, claw,
-codex, or tool node invocation. The container's PID 1 is `sleep infinity` —
+calls amortise the create+start cost over every `claw`, `claude_code`, pi,
+Kimi, Grok, or direct tool-node invocation. The container's PID 1 is
+`sleep infinity` —
 iterion deliberately ignores the image's CMD/ENTRYPOINT in favour of
 treating the container as a long-lived "ssh-like" target.
 
@@ -508,10 +509,12 @@ your repo root and `sandbox: auto` will pick them up.
 | Backend       | Sandbox status                                        |
 | ------------- | ----------------------------------------------------- |
 | `claude_code` | **fully sandboxed** (CLI runs inside the container)   |
-| `codex`       | partially sandboxed (host CLI; codex has its own internal sandbox) |
+| `pi`          | **fully sandboxed** in both RPC and print transports |
+| `kimi` / `grok` | **fully sandboxed** (CLI runs inside the container) |
+| `codex`       | **unsupported by the outer sandbox** — the pinned SDK cannot use Iterion's command builder, so the node fails explicitly |
 | `claw`        | **sandboxed via runner sub-process** (Phase 4 V1) — see below |
 | Tool nodes    | **fully sandboxed** (`sh -c` runs inside the container) |
-| MCP servers   | iterion's built-in board + ask-user MCP reach a sandboxed `claude_code` over a per-run HTTP transport (see [MCP tools in a sandbox](#mcp-tools-in-a-sandbox)); arbitrary user-declared stdio MCP servers stay host-side |
+| MCP servers   | Built-in board tools reach sandboxed `claude_code` and pi RPC over per-run HTTP; ask-user uses HTTP for Claude Code and pi's embedded control channel. Declared stdio servers remain host-side for Claude Code, but pi RPC starts them beside pi (inside the sandbox). See [MCP tools in a sandbox](#mcp-tools-in-a-sandbox). |
 
 ### Claw backend in sandbox
 
@@ -590,8 +593,16 @@ Each request is authenticated by an ephemeral `X-Iterion-Run` token the
 runtime mints and registers for the run, so a sandboxed agent can call
 these tools but nothing else can. Outside a sandbox the same capabilities
 are wired as host-side stdio MCP servers (`iterion __mcp-board` /
-`iterion __mcp-ask-user`). Arbitrary user-declared stdio MCP servers still
-run host-side; running them container-side is a future item.
+`iterion __mcp-ask-user`). Arbitrary user-declared stdio MCP servers on
+`claude_code` still run host-side; running them container-side is a future
+item.
+
+Pi's RPC extension owns a separate MCP client. In a sandbox it uses the same
+per-run HTTP board endpoint, while `ask_user` and async questions ride its
+embedded control channel rather than MCP. Workflow-declared HTTP/SSE servers
+are contacted from the pi process, and declared stdio servers are spawned next
+to that process — therefore container-side when pi itself is sandboxed. Pi
+print mode loads no extension and gets none of these bridges.
 
 ## Drivers
 
