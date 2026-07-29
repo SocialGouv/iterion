@@ -30,7 +30,7 @@ features:
     linkText: Learn the DSL
   - icon: 🤝
     title: Multi-agent, multi-model
-    details: Mix providers and backends per node — a plan from one model reviewed by another. Claude Code, in-process claw, Kimi, and Grok, with credential auto-detection.
+    details: Mix providers and backends per node — a plan from one model reviewed by another. Claude Code, in-process claw, `pi`, Kimi, and Grok, with credential auto-detection.
     link: /backends
     linkText: Backends & routing
   - icon: 🛡️

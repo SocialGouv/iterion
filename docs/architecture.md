@@ -37,7 +37,7 @@ flowchart TB
     RUNNER["runner"]
     ENGINE["runtime.Engine"]
     EXEC["NodeExecutor"]
-    BACKENDS["claw / claude_code / kimi / grok\n(codex legacy)"]
+    BACKENDS["claw / claude_code / pi / kimi / grok\n(codex legacy)"]
     TOOLS["tools / MCP / sub-bots"]
     SANDBOX["host or sandbox driver"]
   end
