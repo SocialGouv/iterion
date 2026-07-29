@@ -1,7 +1,7 @@
 name: dep-update-guard
 display_name: Vetty
 icon: 💂
-version: 2.1.0
+version: 2.4.0
 ## 2.1.0 — classify, gate, arm. (a) The bump classifier only knew package
 ## manifests, so a PR moving a base-image digest, a devbox pin, a task-runner
 ## tool or a composite action matched nothing — and did not stop, because
@@ -18,8 +18,11 @@ version: 2.1.0
 ## anything unexpected. `gate_context` is a var so several bots fill ONE
 ## required check, each for the PRs it owns. (c) `arm_automerge` (opt-in,
 ## default off): on a green verdict WITH a landed green gate, ask the forge
-## to merge once ITS OWN required checks pass. Vetty still never merges —
-## the immediate-merge endpoint is deliberately unreachable. (d) Skills gain
+## to merge once ITS OWN required checks pass, or — when the forge already
+## reports the PR clean, the state where it refuses to arm — merge the exact
+## audited commit. Vetty never merges PAST a check: the immediate-merge
+## endpoint is deliberately unreachable and the merge is pinned to the sha
+## the gate landed on. (d) Skills gain
 ## the dependencies that are not packages (container digests, Nix pins, Helm
 ## charts, pinned Actions) and the bundle ships a devbox project for crane,
 ## since the sandbox image has no registry client.
@@ -47,7 +50,8 @@ description: |
   commit); (4) commits the alignment back onto the PR branch and posts
   a complete review comment with the verdict and evidence; and (5)
   escalates to a human when a structuring architectural decision is
-  required. It never merges — the merge stays a human call.
+  required. It never merges past a check: unless auto-merge arming is
+  explicitly enabled, the merge stays a human call.
 
   Stack-agnostic by construction: the per-ecosystem scanner and
   build/test knowledge lives in the skills (package-managers,
