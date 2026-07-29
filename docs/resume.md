@@ -36,13 +36,21 @@ iterion resume --run-id RUN_ID \
 
 iterion resume --run-id RUN_ID --answers-file answers.json
 
+# Human pause: upload a file for a `file`-typed output field (curl-style @).
+iterion resume --run-id RUN_ID --answer music=@./theme.mp3
+
 # Resume after deliberately changing the workflow source.
 iterion resume --run-id RUN_ID --file workflow.bot --force
 ```
 
 `--answer` is repeatable and carries strings; the runtime coerces them to the
 paused node's output schema. `--answers-file` preserves JSON types. Explicit
-flags override keys loaded from the file.
+flags override keys loaded from the file. A `file`-typed field is answered
+with `key=@./path` — the path is staged as a run attachment before the node
+resumes (the same upload the studio gate performs); the `@` convention is
+honoured only for fields the schema declares as `file`, so a string value
+that legitimately starts with `@` passes through untouched, and a literal
+leading `@` inside a file field is written `@@`.
 
 Use `iterion inspect --run-id RUN_ID` before taking over a suspicious
 `running` run. `--force-stale` refuses when `events.jsonl` was flushed less

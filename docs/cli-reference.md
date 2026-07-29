@@ -164,6 +164,7 @@ The report reconstructs summary, artifacts, timeline, routing, branch lifecycle,
 ```bash
 iterion resume --run-id RUN --answer approved=true
 iterion resume --run-id RUN --answers-file answers.json
+iterion resume --run-id RUN --answer music=@./theme.mp3   # file field → staged as an attachment
 ```
 
 `--file` defaults to the persisted source path. `--force` ignores source drift; `--force-stale` takes over a `running` run whose event stream has been silent for at least 60 seconds. Resume also accepts `--auto-resume`, model/backend overrides, all `--max-*` budget overrides, and permission mode/rules. Model/backend launch overrides are not persisted, so repeat them when continuity matters. See [resume](resume.md).
