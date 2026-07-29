@@ -164,6 +164,7 @@ GitHub App credential, and provision a set of bots onto a repo (webhook + hook
 checked in-handler — read routes need team **membership** (`canViewTeam`),
 mutations need team **admin/owner** (`canManageTeam`). Sources:
 [pkg/server/forge_routes.go](../pkg/server/forge_routes.go),
+[forge_refresh_route.go](../pkg/server/forge_refresh_route.go),
 [forge_connect_routes.go](../pkg/server/forge_connect_routes.go),
 [forge_oauth_app_routes.go](../pkg/server/forge_oauth_app_routes.go),
 [forge_github_manifest_routes.go](../pkg/server/forge_github_manifest_routes.go),
@@ -176,6 +177,7 @@ mutations need team **admin/owner** (`canManageTeam`). Sources:
 | `POST` | `/api/teams/{id}/forge/connections` | team admin | Connect a forge (PAT / OAuth / GitHub-App install) |
 | `DELETE` | `/api/teams/{id}/forge/connections/{conn_id}` | team admin | Remove a connection |
 | `GET` | `/api/teams/{id}/forge/connections/{conn_id}/health` | team member | Connection health / token probe |
+| `POST` | `/api/teams/{id}/forge/connections/{conn_id}/refresh` | team member | GitHub App only: re-probe live installation grants, persist them, and force a fresh token mint |
 | `GET` | `/api/teams/{id}/forge/connections/{conn_id}/repos` | team member | Repos visible to the connection |
 | `GET` | `/api/teams/{id}/forge/repos` | team member | Team's forge-linked repos |
 | `POST` | `/api/teams/{id}/forge/repos` | team admin | Create a repo (opt-in `RepoCreator` capability) |
