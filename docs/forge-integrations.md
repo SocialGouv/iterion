@@ -127,15 +127,18 @@ from it).
 
 ## API
 
-All under `/api/teams/{id}/forge/` (admin/owner), except the OAuth callback
-which is a public IdP redirect target authenticated by signed state + an
-agent-binding cookie:
+All under `/api/teams/{id}/forge/`. Connection/repo mutations require a team
+admin or owner; connection health and GitHub-App grant refresh are available to
+a team member. The OAuth callback is a public IdP redirect target authenticated
+by signed state + an agent-binding cookie:
 
 | Method | Path | Purpose |
 |---|---|---|
 | GET | `/connections` | list connections |
 | POST | `/connections` | connect (`mode: pat` \| `oauth` \| `app`) → `{connection}`, `{authorize_url}`, or `{install_url}` (GitHub-only `app`) |
 | DELETE | `/connections/{conn_id}` | disconnect (deprovisions every repo first) |
+| GET | `/connections/{conn_id}/health` | stored + live connection and token health |
+| POST | `/connections/{conn_id}/refresh` | GitHub App only: re-probe installation grants, persist them, and mint a fresh token |
 | GET | `/connections/{conn_id}/repos?search=&page=` | repo picker (admin-capable only) |
 | GET | `/api/forge/oauth/callback` | **public** OAuth redirect target |
 | GET | `/repo-bots` | list active integrations |
@@ -172,6 +175,12 @@ ITERION_FORGE_GITHUB_APP_ID
 ITERION_FORGE_GITHUB_APP_PRIVATE_KEY_FILE   (PEM; or _PRIVATE_KEY inline)
 ITERION_FORGE_GITHUB_APP_SLUG
 ```
+
+After changing a GitHub App installation's permissions, run
+`iterion remote forge refresh <connection-id>` (or call the refresh endpoint)
+to pick them up immediately. The response separates the installation's live
+grants from the permissions carried by the newly minted token; those can differ,
+and the token is what acts.
 
 Adding a provider = implement the `forge.Admin` interface (+ an
 `OAuthExchanger`/`TokenRefresher` for OAuth) and register it in the server's
