@@ -1,7 +1,7 @@
 name: review-pr
 display_name: Revi
 icon: 🔎
-version: 0.5.5
+version: 0.5.6
 ## 0.5.5 — never LOSE findings when the merge step degrades, and never LIE
 ## about why the gate is red. Observed live on PR #300 (run 019fa02b): converge
 ## returned `findings` as the prose "See structured findings array." while
