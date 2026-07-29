@@ -398,8 +398,11 @@ claw-only).
 | `vertex` | `GOOGLE_CLOUD_PROJECT` |
 
 When `model:` on the agent is also empty, the runtime substitutes a
-sensible default for the first available provider — currently
-`anthropic/claude-opus-4-8` for Anthropic,
+sensible default for the first available provider (the detector's
+`SuggestedModel` for the first available provider, in this priority
+order) — currently
+`anthropic/claude-opus-5` for Anthropic,
+`anthropic/glm-5.2` for z.ai,
 `openai/gpt-5.4-mini` for OpenAI, and
 `xai/grok-3` for xAI.
 
