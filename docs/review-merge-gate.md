@@ -39,7 +39,9 @@ Reference workflow: [examples/review-merge-gate.bot](../examples/review-merge-ga
 
 1. **First turn.** When the run reaches the gate, the **companion** (an LLM
    judge-style call, no tools) is shown a bounded diff of the run's commits
-   and produces *precise, numbered* test instructions. The run **pauses**.
+   and produces a short human-facing instruction: the action first, at most
+   three checks, no more than 120 words (with an 800-character schema cap).
+   The run **pauses**.
 2. **Dialogue.** The studio renders the companion's message, the dialogue
    thread, an optional "open review environment" link, a reply box, and the
    merge controls. The operator can:
@@ -105,13 +107,17 @@ verdict), the same requirement as `llm` / `llm_or_human` modes.
 
 ## Persistence
 
-The dialogue lives on a single `Interaction` (stable id, no loop suffix) as
-an ordered `turns` array; each round appends a turn and re-pauses, so the
-whole thread re-renders verbatim on resume. Events: `review_turn`,
-`review_verdict`, `review_merged` (see
-[docs/persisted-formats.md](persisted-formats.md)). The merge outcome is the
-standard `final_*` / `merge_status` fields on `run.json` — the same ones the
-studio RunHeader and CommitsPanel already surface.
+The dialogue lives on one `Interaction` per logical execution of the review
+node, as an ordered `turns` array; each round appends a turn and re-pauses with
+the same ID, so the whole thread re-renders verbatim on resume. Outside a loop
+(and on the first execution) the historical `<run>_<node>` ID is retained. A
+later loop execution gains its iteration suffix; nested loops encode the full
+iteration path so two logical reviews cannot share a thread. Resume uses the
+interaction ID stored in the checkpoint rather than recomputing it, preserving
+runs paused by older binaries. Events: `review_turn`, `review_verdict`,
+`review_merged` (see [docs/persisted-formats.md](persisted-formats.md)). The
+merge outcome is the standard `final_*` / `merge_status` fields on `run.json`
+— the same ones the studio RunHeader and CommitsPanel already surface.
 
 ## Resume protocol (CLI / API)
 
