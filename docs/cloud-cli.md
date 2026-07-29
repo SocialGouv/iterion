@@ -105,7 +105,7 @@ the staging step alone and prints the upload id.
 | `secrets` / `api-keys` | `list · set/create · rotate/update · delete` (`--scope team\|me`) |
 | `bindings` | per-bot secret bindings (`list · create · delete`) |
 | `webhooks` | `list · get · create · update · delete · rotate · deliveries` |
-| `forge` | `connections · repo-bots · oauth-apps · integrations` |
+| `forge` | `connections · refresh · repo-bots · oauth-apps · integrations` |
 | `audit` / `usage` / `limits` | `audit team\|org\|admin` · org usage · cost limits |
 | `memory` | `usage · docs · doc get\|put\|delete · export · import` (`--name` space) |
 | `admin` | `orgs · users · dlq` (super-admin) |
@@ -116,6 +116,23 @@ the staging step alone and prints the upload id.
 Structured mutation payloads follow the `--data '<json>'` /
 `--data @file.json` / `--data @-` (stdin) convention shared with
 `remote api`.
+
+### Refresh GitHub App grants
+
+After changing a GitHub App installation's permissions on GitHub, refresh the
+connection immediately instead of waiting for a periodic worker or restarting
+the server:
+
+```sh
+iterion remote forge refresh <connection-id>
+```
+
+This command applies only to GitHub-App connections. It re-probes the live
+installation, replaces the connection's stored grant map, and forces a fresh
+installation-token mint. The table deliberately shows **GRANTED** (what the
+installation allows) beside **TOKEN** (what the newly minted token actually
+carries); `--json` returns both maps plus missing-permission lists. The active
+team is resolved by the normal remote-team precedence.
 
 ## Secrets hygiene
 
