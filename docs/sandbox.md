@@ -679,8 +679,10 @@ Architecture:
 - For each iterion run, the driver renders a Pod manifest from
   the resolved `sandbox.Spec` (image, env, user, workspaceFolder,
   postCreate) and applies it via `kubectl apply -f -`.
-- The pod's PID 1 is `sleep infinity`; subsequent delegate calls
-  (claude_code / claw / tool nodes) reach in via `kubectl exec`.
+- The pod's PID 1 is `sleep infinity`; subsequent `claw`, `claude_code`, pi,
+  Kimi, Grok, and direct tool-node commands reach in via `kubectl exec`.
+  Legacy Codex is the exception: its pinned SDK cannot use Iterion's outer
+  sandbox and the node fails explicitly.
 - Workspace is provided by an `emptyDir` volume mounted at
   `/workspace`, populated at pod start (V2) by tar-streaming the run's
   workspace (`RunInfo.WorkspacePath`) in via `kubectl exec` — the driver
