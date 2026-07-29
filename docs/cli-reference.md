@@ -279,6 +279,14 @@ iterion openapi --output openapi.json
 
 Model data reports the online-cache or curated-fallback source. `openapi` is offline and code-generated; use `iterion remote openapi` for a server's live spec.
 
+`iterion models pricing` audits the committed cost table in `pkg/backend/cost/cost.go` against the prices published by the spec aggregator (models.dev) and reports every disagreement — it never rewrites the table (prices feed budget decisions, so a change is a human judgement call). Three verdicts: **DISAGREES** (committed vs published rate differ), **IGNORED** (a price is published but the estimator still reports none), and **table only** (the aggregator has no price — expected for brand-new models, which is why the committed table exists). `--refresh` refetches published prices first; `--check` exits non-zero on drift, for CI:
+
+```bash
+iterion models pricing                  # audit against the cached specs
+iterion models pricing --refresh        # refetch first, then audit
+iterion models pricing --check          # non-zero exit on drift, for CI
+```
+
 ## Local services and automation
 
 ### `iterion studio`
