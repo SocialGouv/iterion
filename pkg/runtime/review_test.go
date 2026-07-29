@@ -305,6 +305,77 @@ workflow wf:
 	}
 }
 
+// The verdict must be recorded on the interaction the PAUSE created, not
+// on one re-derived at resume time. The two can differ: a checkpoint that
+// round-tripped through a store may come back with its loop counters
+// dropped (Mongo omitempty on an empty map), and a run paused by an older
+// binary carries whatever ID that binary derived. The load is guarded by
+// `err == nil`, so a miss is silent — the operator's verdict simply never
+// lands on the interaction.
+func TestReviewGate_VerdictLandsOnThePausedInteraction(t *testing.T) {
+	ctx := context.Background()
+	const src = `
+schema v:
+  decision: string
+
+agent impl:
+  model: "test-model"
+  output: v
+
+human gate:
+  interaction: review
+  model: "test-model"
+  output: v
+
+workflow wf:
+  entry: impl
+  impl -> gate
+  gate -> done when "decision == 'approved'"
+  gate -> impl when "decision == 'changes_requested'" as fix_loop(3)
+  gate -> fail
+`
+	cr := ir.Compile(parser.Parse("t.bot", src).File)
+	if cr.Workflow == nil {
+		t.Fatalf("compile failed: %+v", cr.Diagnostics)
+	}
+
+	s := tmpStore(t)
+	if _, err := s.CreateRun(ctx, "run-iid", "wf", nil); err != nil {
+		t.Fatalf("CreateRun: %v", err)
+	}
+
+	// An ID the resume path cannot recompute — exactly the legacy /
+	// counters-dropped shape.
+	const pausedID = "run-iid_gate_legacy_3"
+	if err := s.WriteInteraction(ctx, &store.Interaction{
+		ID: pausedID, RunID: "run-iid", NodeID: "gate",
+	}); err != nil {
+		t.Fatalf("WriteInteraction: %v", err)
+	}
+	if err := s.PauseRun(ctx, "run-iid", &store.Checkpoint{
+		NodeID:        "gate",
+		InteractionID: pausedID,
+		Outputs:       map[string]map[string]any{},
+		LoopCounters:  map[string]int{"fix_loop": 3},
+	}); err != nil {
+		t.Fatalf("PauseRun: %v", err)
+	}
+
+	eng := New(cr.Workflow, s, newStubExecutor(), WithRunName("iid-run"))
+	_ = eng.Resume(ctx, "run-iid", map[string]any{reviewActionKey: "request_changes"})
+
+	it, err := s.LoadInteraction(ctx, "run-iid", pausedID)
+	if err != nil {
+		t.Fatalf("LoadInteraction(%s): %v", pausedID, err)
+	}
+	if it.AnsweredAt == nil {
+		t.Fatal("the paused interaction was never marked answered — the verdict was recorded against a re-derived ID (or nowhere)")
+	}
+	if it.Answers == nil {
+		t.Error("the paused interaction carries no answers")
+	}
+}
+
 // TestReviewGate_MessageOverride — the studio form's squash-message override
 // (in answers) is used as the squash commit message.
 func TestReviewGate_PerformGateMerge_MessageOverride(t *testing.T) {
