@@ -161,8 +161,10 @@ The team-scoped, **outbound** forge layer behind the studio's repo-first shell
 ([docs/repo-scope.md](repo-scope.md)): connect a forge, hold an OAuth app /
 GitHub App credential, and provision a set of bots onto a repo (webhook + hook
 + managed secret + bindings). All routes are `requireAuth`; the team role is
-checked in-handler — read routes need team **membership** (`canViewTeam`),
-mutations need team **admin/owner** (`canManageTeam`). Sources:
+checked in-handler — read routes need team **membership** (`canViewTeam`) and
+most mutations need team **admin/owner** (`canManageTeam`). The GitHub-App
+connection refresh is the deliberate exception: like connection health, it
+requires membership. Sources:
 [pkg/server/forge_routes.go](../pkg/server/forge_routes.go),
 [forge_refresh_route.go](../pkg/server/forge_refresh_route.go),
 [forge_connect_routes.go](../pkg/server/forge_connect_routes.go),
