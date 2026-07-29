@@ -1,8 +1,10 @@
 # 🤝 Backends and credential auto-detection
 
-A backend is the engine iterion routes a node to — a direct in-process LLM
-call for *thinking*, or a full agent CLI for *acting* — and one workflow can
-mix them per node. Iterion ships six: `claw` (in-process LLM SDK),
+A backend is the executor iterion routes a node to — either the in-process
+provider client and Iterion-native tool loop, or a coding-agent CLI with its
+own tool loop — and one workflow can mix them per node. `model:` is an
+independent wire-model pin, not a request for a particular backend. Iterion
+ships six: `claw` (in-process LLM SDK),
 `claude_code` (Claude Code CLI), `pi` (pi coding agent), `kimi` (Kimi Code
 CLI), `grok` (Grok Build CLI), and the deprecated `codex` compatibility
 delegate. It auto-detects whatever credentials you already have signed in: the
@@ -12,10 +14,10 @@ support boundaries, and overrides.
 
 ```mermaid
 flowchart LR
-  NODE{"🧠 Workflow node"} -->|"model:"| DIRECT(["⚡ Direct in-process<br/>LLM call · claw"])
-  NODE -->|"backend:"| CLI[["🛠️ Delegated CLI agent<br/>claude_code · pi · kimi · grok"]]
-  DIRECT --> THINK["💭 Think<br/>plan · judge · route"]
-  CLI --> ACT["✋ Act<br/>edit files · run shell · drive git"]
+  MODEL["model: (optional wire-model pin)"] -.-> NODE{"🧠 Workflow node"}
+  NODE --> RESOLVE{"backend: pin / workflow / env / credential detection"}
+  RESOLVE -->|"claw"| DIRECT(["⚡ In-process provider client<br/>+ Iterion-native tools"])
+  RESOLVE -->|"claude_code · pi · kimi · grok"| CLI[["🛠️ Delegated coding-agent CLI<br/>+ its own tool loop"]]
 ```
 
 > **Cloud BYOK.** The auto-detection below is the *host/env* path. In
