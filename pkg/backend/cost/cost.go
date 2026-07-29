@@ -189,3 +189,25 @@ func EffectiveRate(model string) (inputPerM, outputPerM float64, ok bool) {
 	outputPerM = EstimateUSD(model, 0, 1_000_000)
 	return inputPerM, outputPerM, inputPerM > 0 || outputPerM > 0
 }
+
+// AnnotateWithUSD is Annotate for backends whose CLI reports a cost computed
+// by the provider itself (e.g. pi's AssistantMessage.usage.cost.total).
+//
+// When costUSD is positive it wins over EstimateUSD: an authoritative
+// number from the provider beats our static price table plus OpenRouter
+// cache — it accounts for the real cache-read/cache-write split, per-tenant
+// pricing, and models the table has never heard of. When costUSD is zero
+// (the CLI reports none) the call degrades exactly to Annotate.
+func AnnotateWithUSD(output map[string]any, model string, inputTokens, outputTokens int, costUSD float64) (totalTokens int) {
+	if costUSD <= 0 {
+		return Annotate(output, model, inputTokens, outputTokens)
+	}
+	totalTokens = inputTokens + outputTokens
+	if output == nil {
+		return totalTokens
+	}
+	output["_tokens"] = totalTokens
+	output["_model"] = model
+	output["_cost_usd"] = costUSD
+	return totalTokens
+}

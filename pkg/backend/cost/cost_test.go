@@ -86,6 +86,49 @@ func TestAnnotate(t *testing.T) {
 	})
 }
 
+func TestAnnotateWithUSD(t *testing.T) {
+	t.Run("provider-computed cost wins over the estimate", func(t *testing.T) {
+		out := map[string]any{}
+		total := AnnotateWithUSD(out, "claude-haiku-4-5", 1000, 500, 0.42)
+		if total != 1500 {
+			t.Fatalf("total = %d, want 1500", total)
+		}
+		if got := out["_cost_usd"].(float64); got != 0.42 {
+			t.Fatalf("_cost_usd = %v, want 0.42 — an authoritative provider figure must beat the table", got)
+		}
+	})
+
+	t.Run("cost for a model the table never heard of", func(t *testing.T) {
+		out := map[string]any{}
+		AnnotateWithUSD(out, "some-vendor/brand-new-model", 10, 20, 0.001)
+		if got := out["_cost_usd"].(float64); got != 0.001 {
+			t.Fatalf("_cost_usd = %v, want 0.001", got)
+		}
+	})
+
+	t.Run("zero cost degrades to Annotate", func(t *testing.T) {
+		withUSD := map[string]any{}
+		AnnotateWithUSD(withUSD, "claude-haiku-4-5", 1000, 500, 0)
+		plain := map[string]any{}
+		Annotate(plain, "claude-haiku-4-5", 1000, 500)
+		if withUSD["_cost_usd"] != plain["_cost_usd"] {
+			t.Fatalf("_cost_usd = %v, want the estimate %v", withUSD["_cost_usd"], plain["_cost_usd"])
+		}
+
+		unknown := map[string]any{}
+		AnnotateWithUSD(unknown, "made-up-model", 1000, 500, 0)
+		if _, ok := unknown["_cost_usd"]; ok {
+			t.Fatal("_cost_usd should stay absent when neither the CLI nor the table knows the price")
+		}
+	})
+
+	t.Run("nil output map is no-op", func(t *testing.T) {
+		if total := AnnotateWithUSD(nil, "m", 100, 100, 1.5); total != 200 {
+			t.Fatalf("total = %d, want 200", total)
+		}
+	})
+}
+
 // TestEstimateUSD_PrefersLiveRegistry covers the resolution chain: when
 // claw's live cache contains the model, EstimateUSD uses those rates
 // rather than the static table. This is the path that eliminates the

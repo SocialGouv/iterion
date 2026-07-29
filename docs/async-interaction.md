@@ -34,7 +34,7 @@ non-async node warns C242 (the await could only ever time out).
 
 Runnable demo: [examples/async-questions/main.bot](../examples/async-questions/main.bot).
 
-## The tools (identical on claw and claude_code)
+## The tools (identical on claw, claude_code and pi)
 
 - **`ask_user_async(question, options?, allow_free_text?)`** — persists
   a pending interaction (`Kind: "async"`, `interactions/<id>.json`),
@@ -68,8 +68,18 @@ While the run is **running or paused**:
 Delivery rides the existing operator-message queue, **node-scoped** to
 the asking node: claw injects between tool iterations (plus a final
 end-of-turn drain so a late answer forces one more turn instead of
-being lost), claude_code via its PostToolUse/Stop hooks. The message
-shape is `[Answer to question <id>] Q: "…" — A: …`.
+being lost), claude_code via its PostToolUse/Stop hooks, pi via native
+`steer` on the RPC transport (drained on a 2s tick; pi delivers a
+steered message at the agent's next turn). The message shape is
+`[Answer to question <id>] Q: "…" — A: …`.
+
+On **pi** the three tools are registered by the embedded iterion
+extension rather than over MCP — pi ships no MCP client — and the
+decisions stay in Go: the extension reports to iterion, which owns the
+interaction store and is the only side that can suspend a run. The text
+the model reads back after posting comes from iterion too, so the
+prompting is identical to the other two backends. RPC transport only: a
+print-mode pi node has no control channel and gets none of this.
 
 ## Semantics & guarantees
 

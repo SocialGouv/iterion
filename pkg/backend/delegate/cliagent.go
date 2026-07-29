@@ -8,6 +8,7 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -51,6 +52,19 @@ type CLIAgentProtocol struct {
 	// task still reaches the agent.
 	SystemPromptFlag string
 
+	// SystemPromptViaFile passes SystemPromptFlag a *path* instead of the
+	// prompt text: the composed prompt is written under
+	// <WorkDir>/.iterion/<name>/ and deleted when the invocation returns.
+	// Required for CLIs whose system-prompt flag accepts `<text|file>` —
+	// a composed prompt (posture + cursors + skills + preset) can exceed
+	// MAX_ARG_STRLEN (128 KiB), and passing a real path also removes the
+	// text/path ambiguity such CLIs resolve with an existence check.
+	//
+	// The file is workspace-relative on purpose: a sandboxed run bind-mounts
+	// WorkDir, so os.TempDir() would be invisible inside the container.
+	// Ignored when SystemPromptFlag is empty.
+	SystemPromptViaFile bool
+
 	// ModelFlag maps Task.Model onto the CLI's own model selector, emitted as
 	// `<ModelFlag> <MapModel(model)>` when both ModelFlag and the mapped model
 	// are non-empty. MapModel translates iterion's `provider/model` spec into
@@ -74,6 +88,12 @@ type CLIAgentProtocol struct {
 	// switches the protocol always wants, e.g. a non-interactive flag).
 	ExtraArgs []string
 
+	// ExtraArgsFor returns per-task argv appended after ExtraArgs. Unlike the
+	// static ExtraArgs it sees the Task, so a protocol can emit session ids,
+	// skill paths, extension paths and sandbox-dependent switches without
+	// needing its own Backend implementation. nil emits nothing.
+	ExtraArgsFor func(task Task) []string
+
 	// ParseOutput extracts the assistant's final text (plus optional session
 	// id and token count) from the CLI's raw stdout. For a stream-json
 	// protocol it walks the NDJSON events; for a text protocol it returns
@@ -83,6 +103,21 @@ type CLIAgentProtocol struct {
 	// treating stdout as plain text.
 	ParseOutput func(stdout string) (text, sessionID string, tokens int)
 
+	// ParseOutputRich supersedes ParseOutput when non-nil. It returns the
+	// full per-invocation accounting a modern agent CLI reports — a real
+	// input/output token split, a provider-computed USD cost, the effective
+	// model, the context window — plus a typed Err for CLIs that render a
+	// FAILED run on a *zero* exit code (a machine-readable output mode that
+	// only encodes failure in the stream). See CLIAgentParse.
+	ParseOutputRich func(stdout string) CLIAgentParse
+
+	// SandboxEnv, when set, replaces ResolveEnv on the SANDBOXED path. A
+	// container inherits nothing from the host, so a CLI that resolves its own
+	// credentials from the ambient environment needs them forwarded by name —
+	// which ResolveEnv, built for per-run overrides, does not do. nil falls
+	// back to ResolveEnv.
+	SandboxEnv func(ctx context.Context, task Task) map[string]string
+
 	// ResolveEnv returns credential/endpoint environment overrides sourced
 	// from the target CLI's own config/env conventions (and any per-run
 	// injected credentials on the context). The returned map is layered on
@@ -90,6 +125,53 @@ type CLIAgentProtocol struct {
 	// environment unchanged" — the CLI resolves its own credentials, which is
 	// the correct default for a CLI that reads e.g. $MOONSHOT_API_KEY itself.
 	ResolveEnv func(ctx context.Context) map[string]string
+}
+
+// CLIAgentParse is the rich parse result of a CLI-agent invocation (see
+// CLIAgentProtocol.ParseOutputRich). Every field is optional: a zero value
+// degrades to exactly what the legacy ParseOutput contract produced.
+type CLIAgentParse struct {
+	// Text is the assistant's final message, fed to the shared schema-aware
+	// parseSDKOutput fallback like ParseOutput's first return value.
+	Text string
+	// SessionID is the CLI's own session identifier, when it reports one.
+	SessionID string
+
+	// InputTokens / OutputTokens are the real split. The legacy ParseOutput
+	// contract only reported a total, which cost.Annotate then booked
+	// entirely at the (more expensive) output rate.
+	InputTokens  int
+	OutputTokens int
+	// ThinkingTokens are reasoning tokens. They are a SUBSET of OutputTokens
+	// for every provider we track — never add them to the total.
+	ThinkingTokens int
+
+	// CostUSD is the CLI's own cost figure, computed against its per-provider
+	// pricing catalogue. When > 0 it wins over iterion's estimate table.
+	CostUSD float64
+
+	// EffectiveModel is the model the CLI actually resolved. CLIs that accept
+	// a fuzzy model pattern can silently resolve to a different model than
+	// requested; surfacing it lets the caller warn.
+	EffectiveModel string
+	// ContextWindow and PeakInputTokens feed the studio's context gauge.
+	ContextWindow   int
+	PeakInputTokens int
+
+	// Notices are human-readable observations the backend logs at WARN.
+	// They exist for facts a CLI reports about its own behaviour that the
+	// Result cannot express — most importantly upstream retries the CLI
+	// performed internally, which are invisible in its final transcript and
+	// therefore silently absent from the reported token count and cost.
+	Notices []string
+
+	// Err is a failure the CLI reported *in its output stream* while exiting
+	// zero. The typed value (*ErrTransient, *ErrRateLimited, or a plain
+	// error) is returned verbatim from Execute so the executor's retry
+	// classifier keys on it — which is also why the CLIAgentBackend's own
+	// retry loop deliberately never re-runs on it: retry policy for a
+	// well-classified upstream failure belongs to the executor, not here.
+	Err error
 }
 
 // CLIAgentBackend is a delegate.Backend that drives a third-party agent CLI
@@ -153,7 +235,19 @@ func (b *CLIAgentBackend) Execute(ctx context.Context, task Task) (Result, error
 		}
 	}
 
-	args, stdinPrompt := b.buildArgs(proto, task, promptArg, systemPrompt)
+	// SystemPromptViaFile swaps the prompt text for a path under the
+	// workspace (visible inside the sandbox, unlike os.TempDir()).
+	systemArg := systemPrompt
+	if proto.SystemPromptFlag != "" && proto.SystemPromptViaFile && systemPrompt != "" {
+		path, cleanup, err := writeSystemPromptFile(task, backendName, systemPrompt)
+		if err != nil {
+			return Result{BackendName: backendName, ExitCode: -1}, err
+		}
+		defer cleanup()
+		systemArg = path
+	}
+
+	args, stdinPrompt := b.buildArgs(proto, task, promptArg, systemArg)
 
 	env := os.Environ()
 	if proto.ResolveEnv != nil {
@@ -186,21 +280,126 @@ func (b *CLIAgentBackend) Execute(ctx context.Context, task Task) (Result, error
 
 	// Parse the CLI's stdout into the assistant's final text, then apply the
 	// shared schema-aware fallback so `output:` schemas behave uniformly.
-	parse := proto.ParseOutput
-	if parse == nil {
-		parse = func(s string) (string, string, int) { return s, "", 0 }
-	}
-	text, sessionID, tokens := parse(stdout)
-	result.SessionID = sessionID
-	result.Tokens = tokens
+	parsed := b.parseStdout(proto, stdout)
 
+	if b.Logger != nil {
+		for _, notice := range parsed.Notices {
+			b.Logger.Warn("[%s#%d/%s] %s", task.NodeID, task.Iteration, backendName, notice)
+		}
+	}
+
+	result.SessionID = parsed.SessionID
+	result.Tokens = parsed.InputTokens + parsed.OutputTokens
+	result.ThinkingTokens = parsed.ThinkingTokens
+	result.EffectiveModel = parsed.EffectiveModel
+	result.ContextWindow = parsed.ContextWindow
+	result.PeakInputTokens = parsed.PeakInputTokens
+
+	text := parsed.Text
 	output, rawLen, fallback := parseSDKOutput(&text, nil, task.OutputSchema)
 	result.Output = output
 	result.RawOutputLen = rawLen
 	result.ParseFallback = fallback
 
-	cost.Annotate(result.Output, task.Model, 0, tokens)
+	cost.AnnotateWithUSD(result.Output, task.Model, parsed.InputTokens, parsed.OutputTokens, parsed.CostUSD)
+
+	// A failure the CLI encoded in its stream while exiting zero. Reported
+	// after the Result is filled in so the partial transcript, tokens and
+	// cost are still observable on the failing node.
+	if parsed.Err != nil {
+		return result, parsed.Err
+	}
+
+	if parsed.EffectiveModel != "" && task.Model != "" && !sameModelID(parsed.EffectiveModel, task.Model) && b.Logger != nil {
+		b.Logger.Warn("[%s#%d/%s] requested model %q resolved to %q",
+			task.NodeID, task.Iteration, backendName, task.Model, parsed.EffectiveModel)
+	}
 	return result, nil
+}
+
+// parseStdout applies the protocol's parser, preferring the rich contract.
+// A protocol with neither parser treats stdout as the assistant's text.
+func (b *CLIAgentBackend) parseStdout(proto CLIAgentProtocol, stdout string) CLIAgentParse {
+	if proto.ParseOutputRich != nil {
+		return proto.ParseOutputRich(stdout)
+	}
+	if proto.ParseOutput != nil {
+		// The legacy contract reports a token total with no split. Book it
+		// as output, preserving the historical cost.Annotate(…, 0, tokens).
+		text, sessionID, tokens := proto.ParseOutput(stdout)
+		return CLIAgentParse{Text: text, SessionID: sessionID, OutputTokens: tokens}
+	}
+	return CLIAgentParse{Text: stdout}
+}
+
+// sameModelID reports whether two model specs name the same model, ignoring
+// any `provider/` routing prefix on either side.
+func sameModelID(a, b string) bool {
+	return bareModelID(a) == bareModelID(b)
+}
+
+func bareModelID(spec string) string {
+	if i := strings.LastIndex(spec, "/"); i >= 0 {
+		return spec[i+1:]
+	}
+	return spec
+}
+
+// writeSystemPromptFile materialises the composed system prompt under
+// <WorkDir>/.iterion/<backend>/ and returns its path plus a cleanup closure.
+// See CLIAgentProtocol.SystemPromptViaFile for why it is workspace-relative.
+//
+// Each call owns a UNIQUE file. (NodeID, Iteration) is not unique: Iteration
+// is a LOOP counter, and under a fan_out_each router the same node id runs
+// concurrently across branches at the same iteration, so every branch would
+// compute the same path and one branch's deferred cleanup would delete the
+// file another branch's CLI is still starting on. The loss is silent rather
+// than loud, which is what makes it dangerous: the flag accepts <text|file>
+// and disambiguates by existence, so the losing branch runs with the literal
+// path string as its system prompt — discarding the composed posture, cursors
+// and skills without an error. piext.Materialise avoids the same hazard the
+// same way.
+func writeSystemPromptFile(task Task, backendName, systemPrompt string) (path string, cleanup func(), err error) {
+	if task.WorkDir == "" {
+		return "", nil, fmt.Errorf("delegate: %s: SystemPromptViaFile requires a WorkDir", backendName)
+	}
+	dir := filepath.Join(task.WorkDir, ".iterion", backendName)
+	if err := os.MkdirAll(dir, 0o750); err != nil {
+		return "", nil, fmt.Errorf("delegate: %s: create system-prompt dir: %w", backendName, err)
+	}
+	node := task.NodeID
+	if node == "" {
+		node = "node"
+	}
+	f, err := os.CreateTemp(dir, fmt.Sprintf("%s-%d-*.sysprompt.md", sanitizeFileSegment(node), task.Iteration))
+	if err != nil {
+		return "", nil, fmt.Errorf("delegate: %s: create system prompt: %w", backendName, err)
+	}
+	path = f.Name()
+	_, werr := f.WriteString(systemPrompt)
+	if cerr := f.Close(); werr == nil {
+		werr = cerr
+	}
+	if werr == nil {
+		werr = os.Chmod(path, 0o600)
+	}
+	if werr != nil {
+		_ = os.Remove(path)
+		return "", nil, fmt.Errorf("delegate: %s: write system prompt: %w", backendName, werr)
+	}
+	return path, func() { _ = os.Remove(path) }, nil
+}
+
+// sanitizeFileSegment reduces a node id to a safe single path segment.
+func sanitizeFileSegment(s string) string {
+	return strings.Map(func(r rune) rune {
+		switch {
+		case r >= 'a' && r <= 'z', r >= 'A' && r <= 'Z', r >= '0' && r <= '9', r == '-', r == '_':
+			return r
+		default:
+			return '-'
+		}
+	}, s)
 }
 
 // buildArgs assembles the target CLI's argv from the protocol + task. It
@@ -239,6 +438,9 @@ func (b *CLIAgentBackend) buildArgs(proto CLIAgentProtocol, task Task, promptArg
 	}
 
 	args = append(args, proto.ExtraArgs...)
+	if proto.ExtraArgsFor != nil {
+		args = append(args, proto.ExtraArgsFor(task)...)
+	}
 	return args, stdinPrompt
 }
 
@@ -331,7 +533,7 @@ func (b *CLIAgentBackend) runOnce(ctx context.Context, task Task, binary string,
 		cleanup := killSandboxDelegate(task.Sandbox, mark, b.Logger)
 		defer cleanup()
 		cmd = task.Sandbox.Command(runCtx, wrapSandboxDelegateArgv(mark, argv), sandbox.ExecOpts{
-			Env:     envSliceToMap(b.Protocol.ResolveEnv, ctx),
+			Env:     b.sandboxEnv(ctx, task),
 			WorkDir: task.WorkDir,
 			Stdin:   stdin,
 		})
@@ -365,14 +567,38 @@ func (b *CLIAgentBackend) runOnce(ctx context.Context, task Task, binary string,
 	return stdout, stderr, exitCode, nil
 }
 
-// envSliceToMap re-derives the ResolveEnv override map for the sandbox ExecOpts
-// path (the container already inherits its own base env; we only layer the
-// protocol's credential/endpoint overrides on top).
-func envSliceToMap(resolve func(context.Context) map[string]string, ctx context.Context) map[string]string {
-	if resolve == nil {
-		return nil
+// sandboxEnv builds the environment a sandboxed CLI receives.
+//
+// A container inherits NOTHING from the host, so this map is the whole
+// environment the agent gets. Besides the protocol's credential overrides it
+// must therefore carry the run's own provisioning (task.ExtraEnv — the devbox
+// profile PATH), which the earlier version dropped: a sandboxed agent could
+// not see tools the run had just installed for it.
+//
+// SandboxEnv lets a protocol forward host credentials by name, which
+// ResolveEnv (built for per-run overrides) does not do — the failure being a
+// sandboxed pi node reporting "No API key found for <provider>" while the host
+// had the key all along.
+func (b *CLIAgentBackend) sandboxEnv(ctx context.Context, task Task) map[string]string {
+	env := map[string]string{}
+	switch {
+	case b.Protocol.SandboxEnv != nil:
+		for k, v := range b.Protocol.SandboxEnv(ctx, task) {
+			env[k] = v
+		}
+	case b.Protocol.ResolveEnv != nil:
+		for k, v := range b.Protocol.ResolveEnv(ctx) {
+			env[k] = v
+		}
 	}
-	return resolve(ctx)
+	// Run-level provisioning last so it wins on a duplicate key, matching the
+	// host path's ordering.
+	for _, kv := range task.ExtraEnv {
+		if k, v, ok := strings.Cut(kv, "="); ok {
+			env[k] = v
+		}
+	}
+	return env
 }
 
 // parseStreamJSONText walks both the legacy claude-code-style NDJSON stream

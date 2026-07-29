@@ -170,13 +170,21 @@ type IRRef struct {
 }
 
 // Backend is the LLM execution backend a runner picks for the run.
-// "claw" is in-process; "claude_code" and "codex" fork external CLIs.
+// "claw" is in-process; every other value forks an external agent CLI.
+//
+// The set must stay in sync with delegate's registration names: a backend
+// missing here cannot be expressed as a queued run's default, so a cloud
+// run silently falls back to claw. That is how kimi and grok were
+// unreachable in cloud mode until pi's arrival surfaced the gap.
 type Backend string
 
 const (
 	BackendClaw       Backend = "claw"
 	BackendClaudeCode Backend = "claude_code"
 	BackendCodex      Backend = "codex"
+	BackendKimi       Backend = "kimi"
+	BackendGrok       Backend = "grok"
+	BackendPi         Backend = "pi"
 )
 
 // BackendConfig carries the LLM backend selection per run.

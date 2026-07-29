@@ -16,31 +16,43 @@ are legal**:
 | Credential | Stored via | Injected as | `claw` backend | `claude_code` backend |
 |---|---|---|---|---|
 | **BYOK API key** (`sk-ant-api…`, `sk-…`) | `iterion remote api-keys create --provider <p> --from-file/-env` | `ANTHROPIC_API_KEY` / `OPENAI_API_KEY` (x-api-key) | ✅ | ✅ (also works) |
-| **Anthropic OAuth-forfait** (Claude sub, `sk-ant-oat…`) | `POST /api/me/oauth/claude_code/credentials` (paste `credentials.json`) | Bearer + oauth beta | ❌ **guarded** (CGU) | ✅ (it *is* Claude Code) |
+| **Anthropic OAuth-forfait** (Claude sub, `sk-ant-oat…`) | `POST /api/me/oauth/claude_code/credentials` (paste `credentials.json`) | Bearer + oauth beta | ⚠️ allowed, warns (bills EXTRA USAGE) | ✅ (it *is* Claude Code) |
 | **OpenAI ChatGPT-forfait** (Codex `auth.json`, `auth_mode: chatgpt`) | `POST /api/me/oauth/codex/credentials` (paste `auth.json`) | ChatGPT-backend OAuth | ✅ (allowed) | n/a |
 
 ## Decision shortcut
 
-- **Sovereign `web_search` / any claw feature** → needs claw → **NOT** an
-  Anthropic OAuth token (guarded). Use a **BYOK API key** or the **OpenAI
-  ChatGPT-forfait**.
+- **Sovereign `web_search` / any claw feature** → needs claw. An Anthropic
+  OAuth-forfait now works there (it bills your EXTRA USAGE balance, not your
+  plan — see below), but a **BYOK API key** or the **OpenAI ChatGPT-forfait**
+  is the predictable-cost choice.
 - **Only have a Claude subscription (OAuth)** → use the **`claude_code`
   backend** (native WebSearch/WebFetch + forwarded MCP). Legit: it *is*
   Claude Code, within Anthropic's Consumer Terms.
 - **Have ChatGPT Plus/Pro + Codex signed in** → connect the codex `auth.json`
   and run **claw + an `openai/*` model** — sovereign features work.
 
-## Why the guard exists (do not bypass)
+## Subscription OAuth on a third-party backend: a spend question, not a ToS one
 
-`secrets.GuardThirdPartyOAuth` ([pkg/secrets/credentials.go](../pkg/secrets/credentials.go),
-called at [pkg/backend/model/claw_backend.go](../pkg/backend/model/claw_backend.go))
-returns `ErrOAuthForfaitInThirdParty` when a run would drive **Anthropic**
-with a **Claude Code OAuth-forfait** through **claw** (a third-party SDK).
-Anthropic's Consumer Terms scope the subscription OAuth to Claude Code only —
-so this is a **ToS boundary, not a bug**. It guards the *SDK*, not the user:
-even the sole operator on a dev instance must not route the Claude
-subscription through claw. OpenAI's ChatGPT-forfait has no such restriction,
-so claw + ChatGPT-forfait is fine.
+This used to be a hard refusal (`GuardThirdPartyOAuth` →
+`ErrOAuthForfaitInThirdParty`), read as a Consumer-Terms boundary. Anthropic's
+API settled it: the token IS accepted from a third-party app and billed
+against the subscription's separate **extra-usage** balance rather than the
+plan's limits. So the question is not "may I" but "which pot am I spending".
+
+`secrets.GuardSubscriptionOAuth` ([pkg/secrets/credentials.go](../pkg/secrets/credentials.go),
+called by `claw` and `pi`) therefore **warns once per node** instead of
+refusing — the operator is spending a balance they may not expect — and
+refuses only under **`ITERION_FORBID_SUBSCRIPTION_OAUTH=1`**.
+
+**Set that flag on a shared or cloud instance.** There, consuming one
+operator's extra-usage balance is a cost decision taken on behalf of everyone
+using the instance. The flag closes the per-run credential path AND the env
+path (it clears `ANTHROPIC_AUTH_TOKEN` when the value is a subscription token
+— `sk-ant-oat…` — leaving a z.ai facade key or gateway bearer in that same
+variable untouched), and it is forwarded into the sandbox so the refusal holds
+inside the container too.
+
+OpenAI's ChatGPT-forfait has never had an equivalent restriction.
 
 ## Gotchas that cost real time
 

@@ -23,15 +23,17 @@ import (
 type recordingRun struct {
 	gotOpts sandbox.ExecOpts // opts of the FIRST call — the agent invocation
 	allOpts []sandbox.ExecOpts
-	script  string // sh -c body the fake "container" runs
+	allArgv [][]string // argv of every call, so lifecycle commands are assertable
+	script  string     // sh -c body the fake "container" runs
 }
 
 func (r *recordingRun) Driver() string { return "recording" }
-func (r *recordingRun) Command(ctx context.Context, _ []string, opts sandbox.ExecOpts) *exec.Cmd {
+func (r *recordingRun) Command(ctx context.Context, argv []string, opts sandbox.ExecOpts) *exec.Cmd {
 	if len(r.allOpts) == 0 {
 		r.gotOpts = opts
 	}
 	r.allOpts = append(r.allOpts, opts)
+	r.allArgv = append(r.allArgv, append([]string(nil), argv...))
 	return exec.CommandContext(ctx, "sh", "-c", r.script) // #nosec G204 — test fixture
 }
 func (r *recordingRun) Exec(context.Context, []string, sandbox.ExecOpts) (sandbox.ExecResult, error) {

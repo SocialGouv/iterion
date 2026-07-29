@@ -465,12 +465,51 @@ tasks:
       - ./{{.BINARY}} diagram {{.CLI_ARGS}}
 
   check:
-    desc: Run all checks (lint + test + golden replay + studio)
+    desc: Run all checks (lint + test + golden replay + studio + pi extension)
     cmds:
       - task: lint
       - task: test
       - task: test:goldens
       - task: studio:check
+      - task: pi-ext:check
+
+  pi-ext:typecheck:
+    desc: Typecheck the iterion pi extension
+    dir: pi-extension
+    cmds:
+      - corepack pnpm install --prefer-offline
+      - ./node_modules/.bin/tsc --noEmit
+
+  pi-ext:build:
+    desc: Bundle the iterion pi extension into the embedded Go asset
+    dir: pi-extension
+    cmds:
+      - corepack pnpm install --prefer-offline
+      - ./node_modules/.bin/esbuild src/index.ts --bundle --format=esm --platform=node --target=node22 --external:@earendil-works/* --external:typebox --outfile=../pkg/backend/delegate/piext/asset/iterion-pi.js
+
+  pi-ext:check:
+    desc: Typecheck the pi extension and verify the embedded asset matches its source
+    dir: pi-extension
+    cmds:
+      - task: pi-ext:typecheck
+      # The asset is committed and compiled into the binary, so a stale one
+      # means every pi run silently loads yesterday's extension.
+      #
+      # Rebuild to a TEMP file and compare, rather than rebuilding in place and
+      # running `git diff`: the latter also fails on a legitimately uncommitted
+      # edit, which makes the guard fire during ordinary development and trains
+      # people to ignore it.
+      - |
+        set -e
+        tmp="$(mktemp -t iterion-pi-XXXXXX.js)"
+        trap 'rm -f "$tmp"' EXIT
+        ./node_modules/.bin/esbuild src/index.ts --bundle --format=esm --platform=node --target=node22 \
+          --external:@earendil-works/* --external:typebox --outfile="$tmp" >/dev/null
+        if ! cmp -s "$tmp" ../pkg/backend/delegate/piext/asset/iterion-pi.js; then
+          echo "pi extension asset is stale: pi-extension/src does not match the embedded bundle."
+          echo "Run 'task pi-ext:build' and commit pkg/backend/delegate/piext/asset/iterion-pi.js."
+          exit 1
+        fi
 
   studio:build:
     desc: Build the studio frontend

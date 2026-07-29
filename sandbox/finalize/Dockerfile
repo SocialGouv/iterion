@@ -37,7 +37,8 @@ COPY --from=iterion-bin /usr/local/bin/iterion /usr/local/bin/iterion
 # node 24. With `claude` present, post_create's `claude --version` check passes
 # and the sudo branch is skipped (docker + k8s alike).
 COPY --from=iterion-bin /opt/iterion/llm-clis/node_modules /opt/iterion/llm-clis/node_modules
-RUN ln -sf /opt/iterion/llm-clis/node_modules/.bin/claude /usr/local/bin/claude
+RUN ln -sf /opt/iterion/llm-clis/node_modules/.bin/claude /usr/local/bin/claude \
+ && ln -sf /opt/iterion/llm-clis/node_modules/.bin/pi /usr/local/bin/pi
 
 # Same non-root contract as the bases (uid 1000 == devbox); ENTRYPOINT/CMD and
 # env inherit from the base image.

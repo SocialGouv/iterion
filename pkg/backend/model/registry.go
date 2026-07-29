@@ -109,25 +109,33 @@ func (r *Registry) registerDefaults() {
 		// claw sends `Authorization: Bearer` + the `anthropic-beta: oauth-2025-04-20`
 		// header the API requires (see claw client.go).
 		//
-		// KNOWN LIMITATION — effectively unusable, dev-purpose only. The token
-		// authenticates, but the forfait's rate limiter throttles non-Claude-Code
-		// clients to ~zero: a claw request 429s immediately (rate_limit_error, no
-		// Retry-After), even with fresh daily quota, while the official `claude`
-		// CLI on the same token+model works fine. Anthropic scopes the forfait to
-		// Claude Code (Consumer Terms). What claw "lacks" is the Claude Code client
-		// identity (User-Agent / client headers) — reproducing it would be spoofing,
-		// not a fix, so we don't. Use ANTHROPIC_API_KEY, z.ai (ZAI_API_KEY), or
-		// another provider for real runs. A one-time stderr warning fires below.
+		// BILLING NOTE. This path works. It used to be documented here as
+		// "effectively unusable" because a claw request 429'd immediately while
+		// the official `claude` CLI on the same token succeeded — Anthropic
+		// throttled non-Claude-Code clients to ~zero. That has changed: third-party
+		// clients are now served and billed against the subscription's separate
+		// EXTRA-USAGE balance rather than the plan's limits, which Anthropic states
+		// outright when the balance empties ("Third-party apps now draw from your
+		// extra usage, not your plan limits"). Verified 2026-07-28 with a real
+		// claude-haiku-4-5 call through claw on a subscription token.
+		//
+		// So the warning below is about COST, not viability: the operator is
+		// spending a different pot than the plan they may think they are using.
+		// ITERION_FORBID_SUBSCRIPTION_OAUTH=1 refuses this path outright.
 		lowBase := strings.ToLower(baseURL)
 		isZAI := strings.Contains(lowBase, "z.ai") || strings.Contains(lowBase, "bigmodel")
 		if apiKey == "" && authToken != "" && !isZAI {
+			// The opt-out has to be enforced HERE, not only in the backend's
+			// ctx-credentials check: locally the token arrives through the
+			// environment, so there are no per-run credentials to inspect and
+			// secrets.GuardSubscriptionOAuth would see nothing to refuse.
+			if secrets.ForbidSubscriptionOAuth() {
+				return nil, fmt.Errorf("claw: %w", secrets.ErrSubscriptionOAuthForbidden)
+			}
 			cfg.OAuthToken = authToken
 			claudeForfaitWarnOnce.Do(func() {
-				fmt.Fprintln(os.Stderr, "⚠️  claw: using the Claude Code subscription forfait "+
-					"(ANTHROPIC_AUTH_TOKEN, no ANTHROPIC_API_KEY) for an anthropic/* model. This is "+
-					"DEV-PURPOSE ONLY and effectively unusable: the forfait throttles non-Claude-Code "+
-					"clients, so requests 429 immediately (Consumer Terms scope it to Claude Code). "+
-					"Use ANTHROPIC_API_KEY, z.ai (ZAI_API_KEY), or another provider for real runs.")
+				fmt.Fprintln(os.Stderr, "⚠️  claw: "+
+					secrets.SubscriptionOAuthNotice(secrets.ProviderAnthropic))
 			})
 		}
 		return p.NewClient(withClientIdentity(cfg))

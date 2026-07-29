@@ -168,6 +168,16 @@ func (s *Server) handleEffortCapabilities(w http.ResponseWriter, r *http.Request
 			Default:   def,
 			Source:    "claw-registry",
 		})
+	case "pi":
+		// pi's own dial is off|minimal|low|medium|high|xhigh|max — a strict
+		// superset of iterion's, minus the two levels iterion has no way to
+		// express. It is model-independent: pi maps the level onto each
+		// provider's own thinking budget, so there is nothing to look up.
+		writeJSON(w, effortCapabilitiesResponse{
+			Supported: []string{"low", "medium", "high", "xhigh", "max"},
+			Default:   "medium",
+			Source:    "pi-thinking",
+		})
 	case "codex":
 		resp, err := codexCapabilities(r.Context(), model)
 		if err != nil {

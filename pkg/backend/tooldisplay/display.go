@@ -90,9 +90,16 @@ var CamelCaseKeys = map[string][]string{
 // and the legacy iterion built-ins (mcp-style tool names already strip
 // their `mcp__server__` prefix elsewhere).
 var SnakeCaseKeys = map[string][]string{
-	"read_file":     {"path", "file_path"},
-	"file_edit":     {"path", "file_path"},
-	"write_file":    {"path", "file_path"},
+	"read_file":  {"path", "file_path"},
+	"file_edit":  {"path", "file_path"},
+	"write_file": {"path", "file_path"},
+	// pi's built-ins are bare verbs with a `path` argument. Without these the
+	// run console renders a pi node's file operations with no target at all.
+	"read":          {"path", "file_path"},
+	"edit":          {"path", "file_path"},
+	"write":         {"path", "file_path"},
+	"find":          {"pattern"},
+	"ls":            {"path"},
 	"notebook_edit": {"path", "file_path", "notebook_path"},
 	"bash":          {"command"},
 	"grep":          {"pattern"},

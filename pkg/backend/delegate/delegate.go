@@ -220,6 +220,14 @@ func SystemPromptModeForBackend(backend string) SystemPromptMode {
 		// the CLI's native agentic baseline). Override would strip that
 		// baseline — same trap as claude_code --system-prompt.
 		return SystemPromptAppendToNative
+	case BackendPi:
+		// pi assembles its native agentic prompt from the ACTIVE tool set,
+		// and reads AGENTS.md/CLAUDE.md and skills on its own. The node's
+		// system: is delivered via --append-system-prompt so that baseline
+		// survives. Prepending iterion's agenticOperatingPosture on top
+		// would duplicate read-before-edit / plan-then-act / converge-and-
+		// stop against pi's own wording — see ADR-061 and ADR-085.
+		return SystemPromptAppendToNative
 	case BackendClaw:
 		return SystemPromptAuthoredBase
 	default:
