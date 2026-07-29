@@ -227,7 +227,7 @@ agent implementer:
 ```
 
 **Key points:**
-- `backend: "claude_code"` (recommended) — bypasses LLM API, uses CLI subprocess. `backend: "codex"` is also accepted but discouraged (compiler emits a `C030` warning); prefer `claude_code` for tool-using agents or `claw` + OpenAI (`model: "openai/gpt-5.4-mini"`) for read-only judges/reviewers
+- `backend: "claude_code"` is the recommended coding-agent CLI. `pi`, `kimi`, and `grok` are supported explicit alternatives. `backend: "codex"` is accepted but discouraged (C030). For an in-process review, set both `backend: "claw"` and a model such as `model: "openai/gpt-5.4-mini"`.
 - Delegation supports `interaction` (forwarding human input to the subprocess)
 - `readonly: true` marks the node as non-mutating for workspace safety
 - Multiple mutating delegates cannot run in parallel (workspace safety constraint)
