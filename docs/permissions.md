@@ -1,13 +1,13 @@
 # Tool-permission gate (anti-prompt-injection)
 
 iterion's permission gate restores Claude Code's default **"ask before
-acting"** posture to iterion workflows — and brings it to the **claw**
-backend too, so claude_code and claw reach **identical** decisions.
+acting"** posture to iterion workflows. One deterministic policy now drives
+`claude_code`, the in-process `claw` loop, and pi's embedded RPC extension.
 
 ## Why
 
-By default every `claude_code` and `claw` node runs effectively in
-**bypassPermissions**: any tool the model decides to call executes
+By default `claude_code`, `claw`, and pi nodes run effectively ungated
+(`bypassPermissions` on the CLIs): any tool the model decides to call executes
 unconditionally. That is convenient but it is also the posture a
 prompt-injection or "hypnosis" attack relies on — a poisoned web page,
 a malicious file, or a confused chain of reasoning can get the agent to
@@ -72,10 +72,11 @@ Matching semantics (`pkg/backend/permission`):
 - **WebFetch** patterns match `domain:<host>`, `<host>`, or the full URL.
 - **Tool-name globs**: `*` (any tool) and `mcp__<server>__*`.
 
-**Cross-backend parity.** The same rule gates the matching tool on both
-backends: a single `Bash(...)` rule covers claude_code's `Bash` and
-claw's `bash`/`shell`; `Edit(...)` covers `Edit`/`edit_file`/`file_edit`;
-`Read(...)` covers `Read`/`read_file`; etc. (see `canonicalToolName`).
+**Cross-backend parity.** The same rule gates the matching tool on all three
+supported backends: a single `Bash(...)` rule covers claude_code's `Bash`,
+claw's `bash`/`shell`, and pi's `bash`; `Edit(...)` covers
+`Edit`/`edit_file`/`file_edit`; `Read(...)` covers `Read`/`read_file`; etc.
+(see `canonicalToolName`).
 
 **Infrastructure exemption.** iterion's own interaction/capability
 plumbing — `ask_user`, the board / control / watch MCP families — is
@@ -114,7 +115,7 @@ Environment: `ITERION_PERMISSION=ask|deny|off`.
 ## How it works
 
 The resolved `permission.Policy` is carried on `delegate.Task.Permission`
-and evaluated by **both** backends before every tool runs:
+and evaluated by each gated backend before every tool runs:
 
 - **claw** — `executeToolsDirect` (pkg/backend/model/generation.go)
   evaluates the policy before `gt.Execute`. Allow → execute; Deny → a
@@ -126,9 +127,14 @@ and evaluated by **both** backends before every tool runs:
   still blocks the tool (Agent SDK order: hooks run first), so no
   `--permission-mode` change is needed. Ask reuses the `ask_user`
   capture-and-pause path.
+- **pi (RPC mode)** — the embedded iterion extension intercepts tool calls and
+  asks Go to evaluate `permission.evaluate` over the control channel. Ask
+  unwinds the turn as the same `delegate.ErrAskUser` pause. Pi print mode has
+  no control channel and refuses a permission-gated node rather than running
+  it unguarded.
 
-Both honour the **same** `permission.Policy`, so a bot behaves
-identically whichever backend executes it.
+All three honour the **same** `permission.Policy`, so a bot gets the same
+allow/ask/deny decision whichever gated backend executes it.
 
 ## Status / limitations
 
@@ -138,18 +144,20 @@ identically whichever backend executes it.
 - **`ask` mode** pauses the run (`paused_waiting_human`) and surfaces the
   off-policy call to the operator, so nothing off-policy ever executes
   silently. To resolve the pause, the operator just **answers the
-  approval question** with `allow`, `allow always`, or `deny` — on
-  **both backends**. The pause carries a structured marker (tool + input
+  approval question** with `allow`, `allow always`, or `deny` — on any of the
+  three gated backends. The pause carries a structured marker (tool + input
   + rule); the runtime maps the answer to a grant rule
   (`allow` = argument-scoped, `allow always` = whole-tool) and feeds it
   back into the resolved policy, so the agent's re-issued call passes the
-  gate and executes (claw rehydrates its tool loop; claude_code re-issues
-  in the resumed CLI session via a `[PERMISSION GRANTED]` instruction).
+  gate and executes after the generic `[PERMISSION GRANTED]` resume reminder.
   `deny` refuses the call and the agent adapts. The `--permission-allow`
   flags on `resume` remain available for scripted/headless approval.
 - The marker also lets a `permission: ask` node pause **without** needing
   `interaction:` set — the gate is its own reason to pause.
-- **Scope:** the gate evaluates the **tool calls an agent/judge LLM
+- **Backend scope:** enforcement is implemented for `claw`, `claude_code`, and
+  pi RPC mode. Kimi, Grok, and legacy Codex do not consume the policy; do not
+  use them when `permission:` is the safety boundary.
+- **Node scope:** the gate evaluates the **tool calls an agent/judge LLM
   makes**. A `tool` node (a direct, deterministic shell command, no LLM)
   is the action itself and is governed by the **Verified Action** quad
   (`goal`/`postcondition`/`policy`/`recovery`), not this gate — so a
