@@ -167,12 +167,13 @@ storage tracks:
    except to refresh and to materialise it just-in-time in a per-run
    `tmpfs` mount on the runner.
 
-**Subscription-OAuth billing guard.** A Claude Pro/Max OAuth
-subscription *works* on the backends that reach the API directly
-(`claw`, `pi`), but Anthropic bills third-party clients against the
-subscription's separate **extra-usage** balance rather than the plan's
-limits. iterion warns on each such node
-(`secrets.SubscriptionOAuthNotice`) and permits it by default.
+**Subscription-OAuth billing guard.** A Claude Pro/Max OAuth subscription
+*works* on API-direct backends when the token reaches them, but Anthropic bills
+third-party clients against the subscription's separate **extra-usage** balance
+rather than the plan's limits. The cloud-uploaded Claude credential is bridged
+to `claw` and `claude_code`; it is **not yet** mapped into pi's agent dir/env
+(pi can use an ambient/local subscription token). iterion warns on each direct
+use (`secrets.SubscriptionOAuthNotice`) and permits it by default.
 
 **On a shared instance you probably want to refuse it**: spending an
 operator's extra-usage balance is a cost decision taken on behalf of
