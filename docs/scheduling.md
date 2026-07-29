@@ -305,8 +305,11 @@ days on their own schedule.
 **Choosing a value.** The question a bot author is answering is *is this
 output still worth having late?* A weekly digest is (`resume`); a "what
 changed in the last hour" report is not (`usage_window: off` — let the next
-tick produce a fresh one). `max_wait` is the honest expression of that:
-`36h` says "if it cannot run by tomorrow, do not bother".
+tick produce a fresh one). `max_wait` bounds one scheduled sleep, not the
+run's total lateness: if the parsed reset is farther away, iterion schedules
+the retry at that horizon and re-evaluates when it wakes. For example, `36h`
+means "wake no later than 36 hours from now and check again";
+`max_attempts` is the separate whole-lifetime bound on repeated waits.
 
 **What you see.** The run stays `failed_resumable` while it waits, with a
 `run_retry_scheduled` event naming the instant, the attempt number and how
