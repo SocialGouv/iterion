@@ -87,12 +87,14 @@ func TestServicePeriodicReconcileDoesNotFailExecutingSubbot(t *testing.T) {
 	var childID string
 	parentStatus := store.RunStatus("")
 	parentErr := ""
-	// A child-startup window, not a correctness bound: the assertions that
-	// matter run AFTER the child appears. Launching a real subbot means a real
-	// process start, and under a full `./...` -race run — every package
-	// competing at once — 30s was not enough, which made the merge queue red
-	// at random on changes that touch nothing here. The test still fails fast
-	// on a real fault: a parent that leaves `running` short-circuits below.
+	// KNOWN INTERMITTENT (~1 run in 3 locally): the child's run row sometimes
+	// never becomes visible to ListRunRecordsCtx while the child is executing.
+	// A goroutine dump taken at the hang shows the child's `slow` tool node
+	// live in runWithSeparateStreams with this loop still polling, so it is
+	// NOT slow startup — the row is simply not there yet, and the child blocks
+	// until the test's own deferred release. Widening this window does not
+	// help (a 9.5-minute wait failed identically); it only makes the failure
+	// slower, so the bound stays short and reports a diagnostic instead.
 	deadline := time.Now().Add(120 * time.Second)
 	for childID == "" && time.Now().Before(deadline) {
 		runs, listErr := svc.ListRunRecordsCtx(context.Background(), ListFilter{})
