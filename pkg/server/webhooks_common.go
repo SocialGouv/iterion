@@ -172,6 +172,11 @@ func reviewPRVars(prURL, baseRef, scopeNotes string, launchVars map[string]strin
 		// so the historical "summary for a lower failure surface" default
 		// no longer applies.
 		"pr_review_mode": "inline",
+		// head_sha is the revision the run is about to review. It is what
+		// lets anything downstream prove it is speaking about the commit it
+		// read rather than whatever the branch holds later — the gate
+		// reconciler refuses to post without it.
+		"head_sha": "",
 	}
 	mergeVarsInto(vars, extra)
 	mergeVarsInto(vars, launchVars)
@@ -879,7 +884,7 @@ func (s *Server) launchWebhookTarget(
 	// carries a pr_url var — mint a per-run publish grant scoped to the
 	// webhook's tenant so the bot's deterministic publish node posts
 	// through the server's live forge client (never a workspace token).
-	vars = s.injectForgePublishVars(ctx, cfg.TenantID, "", vars, r)
+	vars = s.injectForgePublishVars(ctx, cfg.TenantID, "", botID, vars, r)
 	// meta.ProjectPath is the forge slug already parsed by the provider
 	// handler — thread it onto the launch so the run is filterable by
 	// repository in the studio.

@@ -180,3 +180,55 @@ Revi separates two channels:
   0-finding review **falsifiable** (they show what was checked and where the
   residual risk hides) and are surfaced in the report + the PR review summary
   body. They **never** become findings, reach the board, or gate a merge.
+
+## <a name="interrupted"></a>A review that dies still leaves a verdict
+
+A required check that is **absent** is indistinguishable from one still
+running: the pull request waits for a context that will never arrive, and no
+error appears on the run, the PR or the check. That is worse than a red check,
+because nothing points at the cause.
+
+It happened twice in one day in production. A rolling deploy drained a review
+mid-flight (the lame-duck drain is not deployed, so a rollout cancels in-flight
+runs). Separately, a bot bug made the publish step skip on every run, so
+`revi/review` stopped landing repo-wide and every pull request became
+unmergeable — with every other check green.
+
+So the server reconciles. When a run that held a publish grant reaches a
+terminal state without a verdict on the PR head, it posts a `failure` carrying
+the reason and the way out, pointed at the run that owed it. Three rules keep
+that from doing harm of its own:
+
+- **It reads before it writes.** The forge is the authority on whether the
+  verdict landed — not any bookkeeping of ours, which a second replica would
+  not share and a restart would lose. A provider iterion cannot read statuses
+  back from is left alone: overwriting a real success with a synthetic failure
+  is worse than the problem being fixed.
+- **It acts only where the operator pinned the gate context.** Holding a
+  publish grant is not owing a verdict: the server mints one for ANY bot
+  launched with a `pr_url` — the brancher, the docs amender, the implementer —
+  and a repo's gate context is deliberately SHARED between the bots that gate
+  it. The anchor is therefore `launch_vars.gate_context` on the integration,
+  which is already what a repo must set to make one required check span several
+  bots. **A repo that does not pin it gets no repair.** (Inferring it from
+  contexts the server had posted before was tried and dropped: that memory is
+  empty in exactly the two situations this exists for — a bot whose publish
+  step never succeeds, and a rollout that restarts every replica.)
+- **It only speaks for the revision that run reviewed.** The head moves while a
+  run is alive — the author pushes a fix, a brancher commits, `review_on_sync`
+  starts a fresh review. A newer head is a newer review's responsibility, so
+  the run must name the revision it read (`head_sha`, stamped at launch) and
+  the reconciler abstains when it does not.
+- **It leaves resumable and paused runs alone.** The cloud runner republishes
+  a run outcome on every delivery attempt, before deciding to retry, so a
+  transient rate limit is not a dead run.
+- **It stays inside the grant's scope.** `pr_url` is a launch var, and the
+  server honours a caller-pinned publish token, so the repo and forge host are
+  re-checked against the grant exactly as the publish endpoint checks them. A
+  red status is not a merge, but posting one on any repo a team connection
+  reaches is precisely the blast radius the grant exists to bound.
+- **`failure`, not `success`.** A review that did not happen has approved
+  nothing.
+
+A paused run is not reconciled: it is expected to resume and post its own
+verdict.

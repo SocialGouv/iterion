@@ -38,10 +38,15 @@ const forgePublishMaxTokens = 1024
 // ForgePublishGrant scopes one run's publish token: reviews may only be
 // posted through this team's connection, on this repo.
 type ForgePublishGrant struct {
-	TeamID       string    `json:"team_id"`
-	ConnectionID string    `json:"connection_id"`
-	Repo         string    `json:"repo"`
-	ExpiresAt    time.Time `json:"-"`
+	TeamID       string `json:"team_id"`
+	ConnectionID string `json:"connection_id"`
+	Repo         string `json:"repo"`
+	// Bot identifies WHICH workflow this grant was minted for. The server
+	// mints a grant for any bot launched with a pr_url, so the bot id is what
+	// separates "this run owed a merge-gate verdict" from "this run merely
+	// carried a token it never used" — see forge_gate_reconcile.go.
+	Bot       string    `json:"bot,omitempty"`
+	ExpiresAt time.Time `json:"-"`
 }
 
 // ForgePublishTokenStore is the per-run forge-publish token registry. The
@@ -513,7 +518,7 @@ const (
 //
 // preferredConnID pins the connection (repo-targeted launches); empty falls
 // back to the team's repo integrations, then to a connection host match.
-func (s *Server) injectForgePublishVars(ctx context.Context, teamID, preferredConnID string, vars map[string]string, r *http.Request) map[string]string {
+func (s *Server) injectForgePublishVars(ctx context.Context, teamID, preferredConnID, botID string, vars map[string]string, r *http.Request) map[string]string {
 	if s == nil || s.forgePublishTokens == nil || s.forgeConnections == nil {
 		return vars
 	}
@@ -550,7 +555,7 @@ func (s *Server) injectForgePublishVars(ctx context.Context, teamID, preferredCo
 	if token == "" {
 		return vars
 	}
-	if err := s.forgePublishTokens.Register(token, ForgePublishGrant{TeamID: teamID, ConnectionID: conn.ID, Repo: repo}); err != nil {
+	if err := s.forgePublishTokens.Register(token, ForgePublishGrant{TeamID: teamID, Bot: strings.TrimSpace(botID), ConnectionID: conn.ID, Repo: repo}); err != nil {
 		if s.logger != nil {
 			s.logger.Error("forge publish: %v; deterministic review publishing disabled for this launch", err)
 		}

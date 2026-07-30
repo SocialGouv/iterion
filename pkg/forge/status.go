@@ -62,3 +62,11 @@ type CommitStatus struct {
 type CommitStatusClient interface {
 	SetCommitStatus(ctx context.Context, repo, sha string, st CommitStatus) error
 }
+
+// CommitStatusLister reads the statuses already on a commit. Optional: a
+// provider without it can still gate, it just cannot be repaired after the
+// fact — a reconciler that cannot read must not write, or it would overwrite
+// a real verdict with a synthetic one.
+type CommitStatusLister interface {
+	ListCommitStatuses(ctx context.Context, repo, sha string) ([]CommitStatus, error)
+}

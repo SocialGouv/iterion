@@ -244,6 +244,9 @@ type Server struct {
 	// iff forgeConnections is wired.
 	forgePublishTokens ForgePublishTokenStore
 
+	// gateReconcileCancel unsubscribes the merge-gate reconciler at shutdown.
+	gateReconcileCancel func()
+
 	// forgeReviewClientFor is a test seam overriding how the publish-review
 	// handler resolves a connection's forge.ReviewClient. Nil → real admin
 	// client via forgeAdminFor.
