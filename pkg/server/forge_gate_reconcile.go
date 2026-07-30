@@ -92,6 +92,14 @@ func (s *Server) reconcileGateForRun(ctx context.Context, ev trigger.Event) erro
 	if err != nil || run == nil {
 		return nil
 	}
+	// A resumable failure is not a dead run: the cloud runner republishes the
+	// outcome on every delivery attempt, before it decides to retry, and
+	// `iterion resume` picks one up locally. Such a run is still expected to
+	// post its own verdict — the same reason paused is not reconciled.
+	if run.Status == store.RunStatusFailedResumable || run.Status == store.RunStatusPausedWaitingHuman || run.Status == store.RunStatusPausedOperator {
+		return nil
+	}
+
 	token := runInputString(run, forgePublishVarToken)
 	prURL := runInputString(run, "pr_url")
 	if token == "" || prURL == "" {
@@ -102,20 +110,23 @@ func (s *Server) reconcileGateForRun(ctx context.Context, ev trigger.Event) erro
 		return nil // grant already expired or revoked; nothing to speak for
 	}
 
-	gateCtx := runInputString(run, "gate_context")
+	// Holding a grant is NOT owing a verdict. The server mints one for any bot
+	// launched with a pr_url — the brancher, the docs amender, the implementer
+	// — and a repo's gate context is deliberately SHARED between the bots that
+	// gate it. Reconciling on "has a token" would let a bot that owes nothing
+	// paint another bot's required check red.
+	//
+	// What identifies an owing run is that this workflow has already gated
+	// this repo: the server saw it post that context itself. Learned from
+	// data — the engine never knows a bot by name.
+	gateCtx := s.lastGateContextFor(grant.Repo, grant.Bot)
 	if gateCtx == "" {
-		// The bot's own default never reaches the server — it lives in the
-		// .bot, not in the launch vars. What the server DOES know is the
-		// context it last posted for this repo, which is the same one this
-		// bot would have used. Learned from data, never from a bot id.
-		gateCtx = s.lastGateContextFor(grant.Repo)
-	}
-	if gateCtx == "" {
-		if s.logger != nil {
-			s.logger.Warn("forge gate: run %s ended without publishing, and no gate context is known for %s — if a required check is missing on %s, re-run the bot",
-				runID, grant.Repo, prURL)
-		}
 		return nil
+	}
+	if pinned := runInputString(run, "gate_context"); pinned != "" {
+		// An operator pin overrides what we learned: it is the context the
+		// repo actually gates on today.
+		gateCtx = pinned
 	}
 
 	host, repo, number, err := forge.ParsePullURL(prURL)
@@ -137,6 +148,14 @@ func (s *Server) reconcileGateForRun(ctx context.Context, ev trigger.Event) erro
 
 	pr, err := gc.GetPullRequest(ctx, repo, number)
 	if err != nil || strings.TrimSpace(pr.HeadSHA) == "" {
+		return nil
+	}
+	// Only the revision this run was reviewing. Between its start and its
+	// death the head routinely moves — the author pushes a fix, a brancher
+	// commits, review_on_sync already has a fresh review in flight. Painting
+	// the CURRENT head red would report on a commit this run never read, and
+	// a newer head is a newer review's responsibility.
+	if reviewed := runInputString(run, "head_sha"); reviewed != "" && !strings.EqualFold(reviewed, pr.HeadSHA) {
 		return nil
 	}
 	// The forge is the authority on whether the verdict landed — not any
@@ -206,40 +225,43 @@ func gateAlreadyPosted(ctx context.Context, gc forgeGateClient, repo, sha, ctxNa
 // reconciler abstain, never post the wrong context.
 type gateContextMemory struct {
 	mu sync.RWMutex
-	by map[string]string
+	by map[string]string // "<repo>\x00<workflow>" -> context
 }
 
-func (m *gateContextMemory) remember(repo, ctxName string) {
-	repo, ctxName = strings.TrimSpace(repo), strings.TrimSpace(ctxName)
-	if repo == "" || ctxName == "" {
+func gateMemoryKey(repo, workflow string) string {
+	return strings.TrimSpace(repo) + "\x00" + strings.TrimSpace(workflow)
+}
+
+func (m *gateContextMemory) remember(repo, workflow, ctxName string) {
+	if strings.TrimSpace(repo) == "" || strings.TrimSpace(workflow) == "" || strings.TrimSpace(ctxName) == "" {
 		return
 	}
 	m.mu.Lock()
 	if m.by == nil {
 		m.by = map[string]string{}
 	}
-	m.by[repo] = ctxName
+	m.by[gateMemoryKey(repo, workflow)] = strings.TrimSpace(ctxName)
 	m.mu.Unlock()
 }
 
-func (m *gateContextMemory) get(repo string) string {
+func (m *gateContextMemory) get(repo, workflow string) string {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
-	return m.by[strings.TrimSpace(repo)]
+	return m.by[gateMemoryKey(repo, workflow)]
 }
 
-func (s *Server) rememberGateContext(repo, ctxName string) {
+func (s *Server) rememberGateContext(repo, workflow, ctxName string) {
 	if s == nil {
 		return
 	}
-	s.gateContexts.remember(repo, ctxName)
+	s.gateContexts.remember(repo, workflow, ctxName)
 }
 
-func (s *Server) lastGateContextFor(repo string) string {
+func (s *Server) lastGateContextFor(repo, workflow string) string {
 	if s == nil {
 		return ""
 	}
-	return s.gateContexts.get(repo)
+	return s.gateContexts.get(repo, workflow)
 }
 
 // gateRunURL points the check at the run that owed it, so the operator lands

@@ -879,7 +879,7 @@ func (s *Server) launchWebhookTarget(
 	// carries a pr_url var — mint a per-run publish grant scoped to the
 	// webhook's tenant so the bot's deterministic publish node posts
 	// through the server's live forge client (never a workspace token).
-	vars = s.injectForgePublishVars(ctx, cfg.TenantID, "", vars, r)
+	vars = s.injectForgePublishVars(ctx, cfg.TenantID, "", botID, vars, r)
 	// meta.ProjectPath is the forge slug already parsed by the provider
 	// handler — thread it onto the launch so the run is filterable by
 	// repository in the studio.

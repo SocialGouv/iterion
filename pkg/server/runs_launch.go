@@ -338,7 +338,7 @@ func (s *Server) handleLaunchRun(w http.ResponseWriter, r *http.Request) {
 	// node then posts through the server's live forge client instead of a
 	// workspace-mounted token.
 	if launchID, _ := auth.FromContext(r.Context()); launchID.TeamID != "" {
-		req.Vars = s.injectForgePublishVars(r.Context(), launchID.TeamID, req.ConnectionID, req.Vars, r)
+		req.Vars = s.injectForgePublishVars(r.Context(), launchID.TeamID, req.ConnectionID, req.BotID, req.Vars, r)
 	}
 
 	// Detach lifecycle from the HTTP request context so a client

@@ -38,8 +38,11 @@ func gateReconcileFixture(t *testing.T, inputs map[string]any, gc forgeGateClien
 		t.Fatalf("CreateRun: %v", err)
 	}
 	registerPublishToken(t, s, "tok-gate", ForgePublishGrant{
-		TeamID: "team1", ConnectionID: "conn1", Repo: "o/r",
+		TeamID: "team1", ConnectionID: "conn1", Repo: "o/r", Bot: "review-pr",
 	})
+	// This bot has gated this repo before — that is what makes it owe a
+	// verdict. The tests below that need the opposite clear it.
+	s.rememberGateContext("o/r", "review-pr", "iterion/review")
 	s.forgeGateClientFor = func(context.Context, forge.Connection) (forgeGateClient, error) {
 		return gc, nil
 	}
@@ -167,27 +170,88 @@ func TestGateReconcile_IgnoresRunsThatOweNothing(t *testing.T) {
 	}
 }
 
-// The context lives in the .bot and never reaches the server on the launch
-// path. What the server does know is the one it last posted for this repo —
-// learned from data, never from a bot id.
-func TestGateReconcile_FallsBackToTheContextThisRepoGatesOn(t *testing.T) {
+// Holding a publish grant is not owing a verdict. The server mints one for
+// ANY bot launched with a pr_url — the brancher, the docs amender, the
+// implementer — and a repo's gate context is deliberately SHARED between the
+// bots that gate it. Reconciling on "has a token" would let a bot that owes
+// nothing paint another bot's required check red, which is a worse outage
+// than the one being repaired.
+func TestGateReconcile_OnlyABotThatHasGatedThisRepoOwesAVerdict(t *testing.T) {
 	inputs := gatingInputs()
 	delete(inputs, "gate_context")
 
 	gc := &listingGateClient{fakeGateClient: fakeGateClient{headSHA: "deadbeef"}}
 	s, runID := gateReconcileFixture(t, inputs, gc)
 
-	// Nothing learned yet: naming a context we cannot know would be a guess.
+	// A bot that never gated this repo: the brancher finishing its work on a
+	// PR whose review belongs to someone else.
+	s.gateContexts = gateContextMemory{}
 	_ = s.reconcileGateForRun(context.Background(), terminalEvent(runID))
 	if gc.setCalls != 0 {
-		t.Fatalf("invented a context for a repo it has never gated (%d writes)", gc.setCalls)
+		t.Fatalf("a bot that never gated this repo painted its check red (%d writes)", gc.setCalls)
 	}
 
-	s.rememberGateContext("o/r", "revi/review")
+	// Same repo, a DIFFERENT bot has gated it. Still not this one's check.
+	s.rememberGateContext("o/r", "some-other-bot", "revi/review")
+	_ = s.reconcileGateForRun(context.Background(), terminalEvent(runID))
+	if gc.setCalls != 0 {
+		t.Fatalf("borrowed another bot's gate context (%d writes)", gc.setCalls)
+	}
+
+	// Once THIS bot has gated the repo, the context it used is the one it owes.
+	s.rememberGateContext("o/r", "review-pr", "revi/review")
 	if err := s.reconcileGateForRun(context.Background(), terminalEvent(runID)); err != nil {
 		t.Fatalf("reconcile: %v", err)
 	}
 	if gc.setCalls != 1 || gc.last.Context != "revi/review" {
 		t.Fatalf("posted %d status(es) with context %q, want 1 on revi/review", gc.setCalls, gc.last.Context)
+	}
+}
+
+// A resumable failure is not a dead run: the cloud runner republishes the
+// outcome on every delivery attempt, BEFORE it decides to retry. Painting the
+// check red there contradicts a review that is about to run again.
+func TestGateReconcile_LeavesResumableAndPausedRunsAlone(t *testing.T) {
+	for _, st := range []store.RunStatus{
+		store.RunStatusFailedResumable,
+		store.RunStatusPausedWaitingHuman,
+		store.RunStatusPausedOperator,
+	} {
+		t.Run(string(st), func(t *testing.T) {
+			gc := &listingGateClient{fakeGateClient: fakeGateClient{headSHA: "deadbeef"}}
+			s, runID := gateReconcileFixture(t, gatingInputs(), gc)
+			if err := s.cfg.Store.UpdateRunStatus(context.Background(), runID, st, ""); err != nil {
+				t.Fatal(err)
+			}
+			_ = s.reconcileGateForRun(context.Background(), terminalEvent(runID))
+			if gc.setCalls != 0 {
+				t.Fatalf("%s: wrote a verdict over a run that is expected to post its own (%d writes)", st, gc.setCalls)
+			}
+		})
+	}
+}
+
+// The head moves while a run is alive — the author pushes a fix, a brancher
+// commits, review_on_sync starts a fresh review. Reporting on the CURRENT head
+// would red-flag a commit the dead run never read, and a newer head is a newer
+// review's responsibility.
+func TestGateReconcile_DoesNotSpeakForAHeadItNeverReviewed(t *testing.T) {
+	inputs := gatingInputs()
+	inputs["head_sha"] = "0ldc0mmit"
+
+	gc := &listingGateClient{fakeGateClient: fakeGateClient{headSHA: "deadbeef"}}
+	s, runID := gateReconcileFixture(t, inputs, gc)
+	_ = s.reconcileGateForRun(context.Background(), terminalEvent(runID))
+	if gc.setCalls != 0 {
+		t.Fatalf("posted on a head this run never reviewed (%d writes)", gc.setCalls)
+	}
+
+	inputs["head_sha"] = "deadbeef"
+	s2, runID2 := gateReconcileFixture(t, inputs, gc)
+	if err := s2.reconcileGateForRun(context.Background(), terminalEvent(runID2)); err != nil {
+		t.Fatalf("reconcile: %v", err)
+	}
+	if gc.setCalls != 1 {
+		t.Fatalf("the head it DID review must still get its verdict (%d writes)", gc.setCalls)
 	}
 }

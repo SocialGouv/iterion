@@ -38,10 +38,15 @@ const forgePublishMaxTokens = 1024
 // ForgePublishGrant scopes one run's publish token: reviews may only be
 // posted through this team's connection, on this repo.
 type ForgePublishGrant struct {
-	TeamID       string    `json:"team_id"`
-	ConnectionID string    `json:"connection_id"`
-	Repo         string    `json:"repo"`
-	ExpiresAt    time.Time `json:"-"`
+	TeamID       string `json:"team_id"`
+	ConnectionID string `json:"connection_id"`
+	Repo         string `json:"repo"`
+	// Bot identifies WHICH workflow this grant was minted for. The server
+	// mints a grant for any bot launched with a pr_url, so the bot id is what
+	// separates "this run owed a merge-gate verdict" from "this run merely
+	// carried a token it never used" — see forge_gate_reconcile.go.
+	Bot       string    `json:"bot,omitempty"`
+	ExpiresAt time.Time `json:"-"`
 }
 
 // ForgePublishTokenStore is the per-run forge-publish token registry. The
@@ -301,7 +306,7 @@ func (s *Server) handleForgePublishReview(w http.ResponseWriter, r *http.Request
 		// publish failure. Coupling the two meant one forge hiccup left the
 		// PR's required check permanently absent — indistinguishable from
 		// "never reviewed", and unblockable by another review.
-		gate := s.postGateStatus(r.Context(), conn, grant.Repo, number, req.Gate, "")
+		gate := s.postGateStatus(r.Context(), conn, grant.Repo, number, req.Gate, "", grant.Bot)
 		if s.logger != nil {
 			s.logger.Warn("forge publish: %s %s#%d review failed (%v); gate posted=%v state=%q",
 				conn.Provider, grant.Repo, number, reviewErr, gate.posted, gate.state)
@@ -327,7 +332,7 @@ func (s *Server) handleForgePublishReview(w http.ResponseWriter, r *http.Request
 	// Merge gate: post the deterministic revi/review commit status on the PR
 	// head SHA. Additive — a failure here never fails the publish (the review
 	// already landed), it is reported in the response + logged.
-	gate := s.postGateStatus(r.Context(), conn, grant.Repo, number, req.Gate, res.URL)
+	gate := s.postGateStatus(r.Context(), conn, grant.Repo, number, req.Gate, res.URL, grant.Bot)
 	if s.logger != nil && gate.requested {
 		if gate.posted {
 			s.logger.Info("forge gate: %s %s#%d @%s → %s (%q)", conn.Provider, grant.Repo, number, gate.sha, gate.state, gate.context)
@@ -401,7 +406,7 @@ type gateOutcome struct {
 // maps the bot's blocking-count verdict to success/failure, and writes the
 // commit status through the connection's live admin client. Every failure is
 // reported (never silently swallowed) but non-fatal to the publish.
-func (s *Server) postGateStatus(ctx context.Context, conn forge.Connection, repo string, number int, gate *publishReviewGate, reviewURL string) gateOutcome {
+func (s *Server) postGateStatus(ctx context.Context, conn forge.Connection, repo string, number int, gate *publishReviewGate, reviewURL, gateBot string) gateOutcome {
 	if gate == nil || !gate.Enabled {
 		return gateOutcome{}
 	}
@@ -457,7 +462,7 @@ func (s *Server) postGateStatus(ctx context.Context, conn forge.Connection, repo
 	out.posted = true
 	// Remember the context this repo gates on, so a later run that dies
 	// without publishing can still name the check it owed.
-	s.rememberGateContext(repo, out.context)
+	s.rememberGateContext(repo, gateBot, out.context)
 	return out
 }
 
@@ -516,7 +521,7 @@ const (
 //
 // preferredConnID pins the connection (repo-targeted launches); empty falls
 // back to the team's repo integrations, then to a connection host match.
-func (s *Server) injectForgePublishVars(ctx context.Context, teamID, preferredConnID string, vars map[string]string, r *http.Request) map[string]string {
+func (s *Server) injectForgePublishVars(ctx context.Context, teamID, preferredConnID, botID string, vars map[string]string, r *http.Request) map[string]string {
 	if s == nil || s.forgePublishTokens == nil || s.forgeConnections == nil {
 		return vars
 	}
@@ -553,7 +558,7 @@ func (s *Server) injectForgePublishVars(ctx context.Context, teamID, preferredCo
 	if token == "" {
 		return vars
 	}
-	if err := s.forgePublishTokens.Register(token, ForgePublishGrant{TeamID: teamID, ConnectionID: conn.ID, Repo: repo}); err != nil {
+	if err := s.forgePublishTokens.Register(token, ForgePublishGrant{TeamID: teamID, Bot: strings.TrimSpace(botID), ConnectionID: conn.ID, Repo: repo}); err != nil {
 		if s.logger != nil {
 			s.logger.Error("forge publish: %v; deterministic review publishing disabled for this launch", err)
 		}
