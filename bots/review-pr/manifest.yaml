@@ -1,7 +1,13 @@
 name: review-pr
 display_name: Revi
 icon: 🔎
-version: 0.5.6
+version: 0.5.7
+## 0.5.7 — the review comment stops reporting a comparison that never happened.
+## Mono is the default topology (one family reviews), yet every comment ended
+## with "0 finding(s) cross-confirmed by both model families" — which reads as
+## two families having looked and agreed on nothing. It now names the topology
+## it actually ran under, and reports cross-confirmation only when two families
+## really reviewed.
 ## 0.5.6 — a review must never leave its required check absent. The stale-anchor
 ## guard added in 0.5.5 read REVIEWED_SHA from an {{outputs.…}} ref written
 ## inside a tool `command:`, which the engine does not substitute there: the
