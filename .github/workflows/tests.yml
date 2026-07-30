@@ -1,8 +1,22 @@
 name: 🧪 Tests
 
+# One run per commit, not two. An unfiltered `push:` alongside `pull_request:`
+# ran the whole suite twice for every PR commit — same sha, two runs, escaping
+# each other's concurrency group because their refs differ
+# (refs/heads/<branch> vs refs/pull/N/merge). That doubled the runner cost and,
+# worse, doubled the exposure to a timing-sensitive test: one run green, the
+# other red on the same commit is enough to redden the PR and disarm auto-merge.
+#
+# `merge_group` is load-bearing: test/race/vendor-check/mongo-conformance/
+# golangci are REQUIRED checks, and the queue branch
+# (gh-readonly-queue/main/...) used to get them from that unfiltered push. A
+# queue build with no checks waits for a context that never arrives and
+# dequeues the PR after the 60-minute timeout.
 on:
   push:
+    branches: [main]
   pull_request:
+  merge_group:
 
 permissions:
   contents: read
