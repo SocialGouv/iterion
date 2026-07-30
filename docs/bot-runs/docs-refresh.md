@@ -76,6 +76,38 @@ credential failure WARN instead of erroring, which is right — but it also made
 this defect silent. It took capturing pi's real argv through a fake binary on
 PATH to find it, after too long spent theorising.
 
+### Pass 3 — resumed on z.ai after the cap reset (15 min, 5 commits)
+
+- Status: **partial** — 5 more commits, then the z.ai 5-hour cap again (reset
+  pushed to 20:48). **68 commits total.** Still `failed_resumable`; the gate
+  never declared `converged`.
+- The 04:54 reset gave only a partial window: 15 minutes of campaign consumed
+  it. One Doki pass simply exceeds a z.ai 5-hour allowance.
+- **The `--skill` fix is confirmed live.** Zero ENOENT against
+  `~/.claude/skills` this pass, against three in pass 1 before the agent
+  recovered by listing the worktree. The skills reached pi and no turns were
+  spent hunting for them.
+
+**Where a run's spend actually lives, and where it does not.** Three facts,
+each of which cost a wrong assumption to establish:
+
+- The accumulated spend IS persisted — `checkpoint.budget_cost_usd`
+  ($46.67 here), plus the per-node figure under
+  `checkpoint.outputs.<node>._cost_usd` ($46.37 for the codex campaign alone).
+- It is NOT derivable from the event stream the way a monitor naturally reaches
+  for it: `_cost_usd` rides `node_finished`, so summing those events reports
+  **$0.30** for this run — pass 1, the only pass whose node ever finished.
+- And the ledger only books on node COMPLETION. Pass 3 did 15 minutes of
+  billed work and produced 5 commits; `budget_cost_usd` did not move. A node
+  killed mid-flight — by the budget, a 429, a cancel — contributes nothing to
+  the run's recorded cost.
+
+Together with the cap's node-boundary evaluation, that is why $46 was spent
+under a $15 cap inside a single node, and why the resume then refused
+immediately with `cost_usd (47/25)`: the ledger is consulted at node ENTRY,
+cumulatively over the run's whole life, so any cap below the sunk cost blocks
+before doing work. Raising it to 60 was the mechanical requirement to continue.
+
 ### Findings
 
 - **`--skill` was never passed to pi for a bundle bot — engine bug, fixed.**
@@ -106,7 +138,12 @@ PATH to find it, after too long spent theorising.
 ### Lessons for next run
 
 - **A cost cap does not stop a v2 campaign** — see pass 2. Watch the running
-  cost, do not trust `--max-cost-usd` to bound a single-node pass.
+  cost, do not trust `--max-cost-usd` to bound a single-node pass. Read it from
+  `checkpoint.budget_cost_usd`, not by summing `node_finished` events, and know
+  that a node killed mid-flight books nothing.
+- **Pick a model whose quota survives a pass.** GLM is ~10x cheaper than
+  gpt-5.6-sol but its 5-hour cap ends a campaign mid-flight; the expensive
+  model finishes the pass and blows the budget instead. Neither converged.
 - **A failed run leaves its commits on a detached HEAD with no branch.**
   `finalizeWorktree` creates the anti-GC branch only on a clean exit, so 15
   commits were reachable only through the preserved worktree — one
