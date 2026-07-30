@@ -620,9 +620,18 @@ workflow that already works.**
   repository turns prompt injection into code execution. iterion passes
   `--no-approve`. Opt in per node with `ITERION_PI_TRUST_PROJECT=1`, and
   only for a repository you control.
-- **Skills are passed explicitly.** iterion mirrors bundle/plugin/library
-  skills into `<workspace>/.claude/skills/`, which is not one of pi's own
-  lookup roots, so it hands pi that path via `--skill`.
+- **Skills are passed explicitly, one `--skill` per skill.** iterion mirrors
+  bundle/plugin/library skills into `<workspace>/.claude/skills/`, which is
+  not one of pi's own lookup roots. It names each mirrored skill individually
+  rather than handing over the directory, because under `worktree: auto` that
+  directory is a checkout of the *target* repository and CLI `--skill` paths
+  bypass the project-trust gate `--no-approve` exists to close — so a repo
+  that ships its own `.claude/skills/` would get attacker-authored prompt text
+  loaded as trusted. The list comes from the engine, which is the only party
+  that knows what it wrote: provenance recovered from the workspace would sit
+  inside the very checkout it is meant to vouch against. Under
+  `ITERION_PI_TRUST_PROJECT=1` the whole directory is passed, repo skills
+  included — that is the opt-in.
 - **Sessions live with the run**, under the store dir (or the workspace when
   sandboxed) — never `~/.pi/agent/sessions`, so concurrent nodes cannot
   collide and a pruned run takes its sessions with it.

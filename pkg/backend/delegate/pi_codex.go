@@ -254,17 +254,38 @@ func piCodexSeedRoot(task Task, logger *iterlog.Logger) (string, error) {
 }
 
 // piWriteIgnoreGuard makes everything under dir unstageable.
+//
+// It APPENDS. The seed root is `<StoreDir>/pi` off the sandbox, and --store-dir
+// is operator-supplied and unconstrained — the dogfood recipe in this repo's own
+// docs points it inside the checkout — so the directory is not guaranteed to be
+// iterion's to rewrite. Appending buys the same unstageability without
+// discarding a file someone else wrote, matching piHideWorkspaceSessionDir's
+// rule for the same reason.
 func piWriteIgnoreGuard(dir string) error {
 	guard := filepath.Join(dir, ".gitignore")
-	if data, err := os.ReadFile(guard); err == nil { // #nosec G304 — fixed name under a dir we just created.
-		for _, line := range strings.Split(string(data), "\n") {
-			if strings.TrimSpace(line) == "*" {
-				return nil
-			}
+	existing, err := os.ReadFile(guard) // #nosec G304 — fixed name under a dir we just created.
+	if err != nil && !os.IsNotExist(err) {
+		return fmt.Errorf("read ignore guard %s: %w", guard, err)
+	}
+	for _, line := range strings.Split(string(existing), "\n") {
+		if strings.TrimSpace(line) == "*" {
+			return nil
 		}
 	}
 	// `*` ignores this file too, so nothing under dir is ever staged.
-	if err := os.WriteFile(guard, []byte("*\n"), 0o644); err != nil {
+	next := "*\n"
+	if len(existing) > 0 && !strings.HasSuffix(string(existing), "\n") {
+		next = "\n" + next
+	}
+	f, err := os.OpenFile(guard, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644) // #nosec G304 — fixed name.
+	if err != nil {
+		return fmt.Errorf("write ignore guard %s: %w", guard, err)
+	}
+	if _, err := f.WriteString(next); err != nil {
+		_ = f.Close()
+		return fmt.Errorf("write ignore guard %s: %w", guard, err)
+	}
+	if err := f.Close(); err != nil {
 		return fmt.Errorf("write ignore guard %s: %w", guard, err)
 	}
 	return nil
@@ -340,6 +361,12 @@ func piCodexExpiry(view secrets.CodexCredentialsView) int64 {
 }
 
 // jwtExpiryMillis reads the `exp` claim of a JWT access token, in epoch ms.
+//
+// Epoch MILLISECONDS is pi's unit, not a guess: its own codex login writes
+// `expires: Date.now() + expires_in * 1000`
+// (packages/ai/src/auth/oauth/openai-codex.ts). Seconds here would put the
+// deadline ~50 000 years out, and an already-dead access token would be sent
+// verbatim with no refresh and no diagnostic.
 //
 // Only the payload is decoded and only one numeric claim is read — the
 // signature is irrelevant here, since the token is not being trusted for

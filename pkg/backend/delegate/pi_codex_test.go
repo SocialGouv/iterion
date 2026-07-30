@@ -1,14 +1,18 @@
 package delegate
 
 import (
+	"bytes"
 	"context"
 	"encoding/base64"
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
+
+	iterlog "github.com/SocialGouv/iterion/pkg/log"
 )
 
 // testAccessExpiry is the deadline the fixture's access token carries.
@@ -344,6 +348,65 @@ func TestPiSkillArgs(t *testing.T) {
 			t.Errorf("args = %v, want none", got)
 		}
 	})
+
+	// The failure worth a line in the run log: the engine says it wrote skills,
+	// none of them are there, and pi runs with none while the bot's own prompt
+	// orders the agent to load them. Silence here is the bug.
+	t.Run("skills named but none resolved is reported", func(t *testing.T) {
+		var buf bytes.Buffer
+		logger := iterlog.New(iterlog.LevelWarn, &buf)
+		work := workspace(t)
+		args := piSkillArgs(Task{
+			WorkDir:        work,
+			MirroredSkills: skills(work, "vanished"),
+		}, logger)
+		if len(args) != 0 {
+			t.Fatalf("args = %v, want none — the path does not exist", args)
+		}
+		if !strings.Contains(buf.String(), "no skills offered to pi") {
+			t.Errorf("log = %q — the operator gets no explanation", buf.String())
+		}
+	})
+
+	// ...and the ordinary path stays quiet.
+	t.Run("resolved skills log nothing", func(t *testing.T) {
+		var buf bytes.Buffer
+		logger := iterlog.New(iterlog.LevelWarn, &buf)
+		work := workspace(t, "doc-enrichment")
+		piSkillArgs(Task{WorkDir: work, MirroredSkills: skills(work, "doc-enrichment")}, logger)
+		if buf.Len() != 0 {
+			t.Errorf("log = %q, want silence", buf.String())
+		}
+	})
+}
+
+// The argv builder is the only place that can see a node ended up with zero
+// skills, so it is the only place that can say so — which means it needs the
+// logger both transports have.
+func TestPiExtraArgsForCarriesLogger(t *testing.T) {
+	var buf bytes.Buffer
+	logger := iterlog.New(iterlog.LevelWarn, &buf)
+	work := t.TempDir()
+	task := Task{
+		NodeID:         "n",
+		WorkDir:        work,
+		MirroredSkills: []string{filepath.Join(work, ".claude", "skills", "vanished")},
+	}
+
+	backend := NewPiBackend(logger, "pi")
+	if backend.print.Protocol.ExtraArgsFor == nil {
+		t.Fatal("print transport has no per-task argv builder")
+	}
+	backend.print.Protocol.ExtraArgsFor(task)
+	if !strings.Contains(buf.String(), "no skills offered to pi") {
+		t.Errorf("print transport log = %q — the warning is unreachable", buf.String())
+	}
+
+	buf.Reset()
+	piRPCArgs(task, "", logger)
+	if !strings.Contains(buf.String(), "no skills offered to pi") {
+		t.Errorf("rpc transport log = %q — the warning is unreachable", buf.String())
+	}
 }
 
 // ITERION_PI_BIN is the documented escape hatch for a host that cannot run the
@@ -440,6 +503,31 @@ func TestPiCodexSeedMakesTheTokenUnstageable(t *testing.T) {
 		data, _ := os.ReadFile(filepath.Join(root, ".gitignore"))
 		if !strings.Contains(string(data), "# mine") {
 			t.Error("overwrote an operator's own ignore file")
+		}
+	})
+
+	// --store-dir is operator-supplied and unconstrained, so the seed root can
+	// land on a directory iterion did not create and does not own.
+	t.Run("an unrelated ignore file is appended to, not replaced", func(t *testing.T) {
+		work := t.TempDir()
+		store := filepath.Join(work, ".iterion")
+		root := filepath.Join(store, "pi")
+		if err := os.MkdirAll(root, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(root, ".gitignore"), []byte("build/\n*.tmp"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := piCodexSeedRoot(Task{NodeID: "n", WorkDir: work, StoreDir: store}, nil); err != nil {
+			t.Fatal(err)
+		}
+		data, _ := os.ReadFile(filepath.Join(root, ".gitignore"))
+		if !strings.Contains(string(data), "build/") || !strings.Contains(string(data), "*.tmp") {
+			t.Errorf("guard = %q — destroyed rules iterion did not author", data)
+		}
+		// The unterminated last line must not be swallowed into `*.tmp*`.
+		if !slices.Contains(strings.Split(string(data), "\n"), "*") {
+			t.Errorf("guard = %q — the catch-all never became its own line", data)
 		}
 	})
 

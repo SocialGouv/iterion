@@ -75,8 +75,11 @@ var piProtocol = CLIAgentProtocol{
 	ModelFlag: "",
 	MapModel:  nil,
 
-	MapEffort:       piMapEffort,
-	ExtraArgsFor:    piExtraArgsFor,
+	MapEffort: piMapEffort,
+	// Rebound by NewPiBackend to carry that backend's logger. The default has
+	// to stay non-nil: this value is copied by anything building a pi
+	// CLIAgentBackend by hand, and a nil field there is argv silently lost.
+	ExtraArgsFor:    func(task Task) []string { return piExtraArgsFor(task, nil) },
 	ParseOutputRich: parsePiOutput,
 	ResolveEnv:      piResolveEnv,
 	SandboxEnv:      piSandboxEnv,
@@ -108,9 +111,11 @@ func NewPiBackend(logger *iterlog.Logger, command string) *PiBackend {
 	if command == "" {
 		command = strings.TrimSpace(os.Getenv("ITERION_PI_BIN"))
 	}
+	proto := piProtocol
+	proto.ExtraArgsFor = func(task Task) []string { return piExtraArgsFor(task, logger) }
 	return &PiBackend{
 		print: &CLIAgentBackend{
-			Protocol: piProtocol,
+			Protocol: proto,
 			Command:  command,
 			Logger:   logger,
 		},
@@ -309,6 +314,12 @@ func piResolveModel(model, hint string) (provider, modelID string) {
 // `ITERION_PI_TRUST_PROJECT=1` is the documented opt-in that accepts the repo's
 // own skills, and remains the only way to get them.
 //
+// Every path emitted here is one pi resolves: `--skill` is stat'd and dispatched
+// to a directory scan or a single-file load (core/skills.ts), so both mirror
+// shapes work — a `<name>/` directory holding SKILL.md (library skills and
+// directory-form bundle skills) and a flat `<stem>.md` (plugin and flat bundle
+// skills).
+//
 // Historical note on the other direction: the gate was once
 // `len(task.SkillHints) > 0`, which carries only the DSL `skills:` field (the
 // skill *library*) — so `--skill` was never emitted for a BUNDLE bot, pi had no
@@ -337,6 +348,7 @@ func piSkillArgs(task Task, logger *iterlog.Logger) []string {
 		}
 	}
 
+	named := len(paths)
 	seen := map[string]bool{}
 	var args []string
 	for _, p := range paths {
@@ -354,10 +366,13 @@ func piSkillArgs(task Task, logger *iterlog.Logger) []string {
 		seen[p] = true
 		args = append(args, "--skill", p)
 	}
-	if len(args) == 0 && logger != nil && len(task.MirroredSkills) == 0 && len(task.SkillHints) > 0 {
-		logger.Warn("[%s#%d/%s] no skills offered to pi: the engine reported none for this run "+
-			"(set ITERION_PI_TRUST_PROJECT=1 to load the workspace's own)",
-			task.NodeID, task.Iteration, BackendPi)
+	// The silent-zero-skill failure this whole function exists to end: the
+	// engine named skills, none of them resolved, and pi runs with none while
+	// the bot's prompt tells the agent to load them. Nothing else reports it.
+	if len(args) == 0 && named > 0 && logger != nil {
+		logger.Warn("[%s#%d/%s] no skills offered to pi: the engine named %d for this run "+
+			"but none resolved under %s (set ITERION_PI_TRUST_PROJECT=1 to load the workspace's own)",
+			task.NodeID, task.Iteration, BackendPi, named, dir)
 	}
 	return args
 }
@@ -388,7 +403,12 @@ func piMapEffort(effort string) []string {
 }
 
 // piExtraArgsFor emits the per-task half of pi's argv.
-func piExtraArgsFor(task Task) []string {
+//
+// The logger is the reason this is not a plain `func(Task) []string`: the argv
+// builder is the only place that knows a node ended up with zero skills, and a
+// nil logger there turns that into exactly the silent degradation this backend
+// keeps re-learning. Both transports bind it in their constructor.
+func piExtraArgsFor(task Task, logger *iterlog.Logger) []string {
 	var args []string
 
 	if provider, modelID := piResolveModel(task.Model, task.ProviderHint); modelID != "" {
@@ -416,7 +436,7 @@ func piExtraArgsFor(task Task) []string {
 	// workspace's .claude/skills/, which is not one of pi's own lookup
 	// roots — but --skill takes an explicit path, and CLI-supplied skill
 	// paths bypass the project-trust gate that --no-approve closes.
-	args = append(args, piSkillArgs(task, nil)...)
+	args = append(args, piSkillArgs(task, logger)...)
 
 	// The one tool gate pi expresses cleanly. iterion's `tools:` names do
 	// not map onto pi's built-ins, and a partial mapping would silently
