@@ -396,13 +396,17 @@ func (e *Engine) runPersistWorkspace(ctx context.Context, runID string, run *sto
 		e.markFailedBestEffort(ctx, runID, "bundle skills", err)
 		return fmt.Errorf("runtime: bundle skills: %w", err)
 	}
-	e.applyMirroredSkills(ownedSkills)
 	// Mirror markdown contributions (skills / commands / agents) from enabled plugins
 	// after the bundle skills so a same-named bundle/workspace file
 	// wins on collision. Best-effort: a plugin must not fail the run.
-	if err := mirrorPluginContributions(e.workDir, e.contributions, e.logger); err != nil && e.logger != nil {
+	ownedPluginSkills, err := mirrorPluginContributions(e.workDir, e.contributions, e.logger)
+	if err != nil && e.logger != nil {
 		e.logger.Warn("runtime: plugin contributions: %v", err)
 	}
+	// Plugin skills are iterion-authored too, so they belong on the same
+	// channel — applied after both mirrors have run, since the executor holds
+	// one list.
+	e.applyMirroredSkills(append(ownedSkills, ownedPluginSkills...))
 	if err := mergePluginHooks(e.workDir, e.logger); err != nil && e.logger != nil {
 		e.logger.Warn("runtime: plugin hooks: %v", err)
 	}
@@ -444,10 +448,10 @@ func (e *Engine) applyLibrarySkills() {
 // The workspace is an untrusted checkout, so this cannot be rediscovered by
 // reading it back — a repo can write any file, including one that looks like
 // iterion's own bookkeeping. Only the mirror knows, and this is how it says so.
+// An empty list is pushed too, rather than skipped: the setter is authoritative
+// for the run, and returning early would leave a reused executor advertising the
+// previous run's skills — paths in another workspace entirely.
 func (e *Engine) applyMirroredSkills(owned []string) {
-	if len(owned) == 0 {
-		return
-	}
 	type mirroredSkillSetter interface{ SetMirroredSkills([]string) }
 	if s, ok := e.executor.(mirroredSkillSetter); ok {
 		s.SetMirroredSkills(owned)

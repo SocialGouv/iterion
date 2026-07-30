@@ -3,6 +3,7 @@ package runtime
 import (
 	"os"
 	"path/filepath"
+	"slices"
 	"testing"
 
 	"github.com/SocialGouv/iterion/pkg/bundle"
@@ -268,5 +269,54 @@ func TestMirrorBundleSkillsReportsOwnership(t *testing.T) {
 	}
 	if has("contested") {
 		t.Errorf("owned = %v claims a skill the workspace shadowed — that content is the repo's", owned)
+	}
+
+	// The mirror runs again on every resume, against the SAME worktree. A
+	// directory-form skill it wrote on the first pass is then "already there",
+	// and treating that as the workspace's own would drop it from the list on
+	// every resume — the skill silently disappearing partway through a run.
+	second, err := mirrorBundleSkills(workDir, &bundle.Bundle{SkillsDir: skillsSrc}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Equal(owned, second) {
+		t.Errorf("re-mirror changed ownership:\n first = %v\nsecond = %v", owned, second)
+	}
+
+	// ...and a workspace that overwrites our directory-form skill after the
+	// fact takes it back off the list: content is what decides, so the only way
+	// a repo is reported as ours is by shipping a byte-identical copy.
+	if err := os.WriteFile(filepath.Join(dest, "dirform", "SKILL.md"), []byte("the repo's own"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	third, err := mirrorBundleSkills(workDir, &bundle.Bundle{SkillsDir: skillsSrc}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, p := range third {
+		if filepath.Base(p) == "dirform" {
+			t.Errorf("owned = %v still claims a directory the workspace overwrote", third)
+		}
+	}
+}
+
+// Plugin skills are iterion-authored, mirrored by a different function into the
+// same directory. They belong on the same channel: a backend that only trusts
+// what the engine reports would otherwise be handed none of them.
+func TestMirrorPluginContributionsReportsOwnedSkills(t *testing.T) {
+	workDir := t.TempDir()
+	owned, err := mirrorInjectedPluginFiles(workDir, []ContributionFile{
+		{Kind: "skills", Name: "graphify.md", Content: []byte("---\nname: graphify\n---\nbody\n")},
+		{Kind: "commands", Name: "deploy.md", Content: []byte("a command, not a skill")},
+		{Kind: "agents", Name: "scout.md", Content: []byte("an agent, not a skill")},
+	}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(owned) != 1 || filepath.Base(owned[0]) != "graphify.md" {
+		t.Fatalf("owned = %v, want just the skill — commands and agents are not skills", owned)
+	}
+	if _, err := os.Stat(owned[0]); err != nil {
+		t.Errorf("reported %q but it is not on disk: %v", owned[0], err)
 	}
 }

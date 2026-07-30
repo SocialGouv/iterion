@@ -690,9 +690,28 @@ For production Anthropic work, a metered `ANTHROPIC_API_KEY` or a
 `claude_code` node remains the predictable choice.
 
 Your *own* `pi` login in `~/.pi/agent/auth.json` is your relationship with
-the vendor — nothing is read or injected. pi's `openai-codex` (ChatGPT plan)
-and `github-copilot` OAuth providers are untested on this point; iterion
-injects nothing for either.
+the vendor — nothing is read or injected. `github-copilot` is the same: iterion
+injects nothing for it.
+
+`openai-codex` is the exception, because it is the one provider iterion does
+bridge. It is OAuth-only — pi reads it from an agent directory and there is no
+environment variable to pass it by, unlike the ~30 API-key providers — so
+iterion seeds a throwaway agent dir from your Codex credential for the node's
+lifetime and deletes it afterwards.
+
+**That means a live access *and refresh* token is on a filesystem the agent
+process can read**, for as long as the node runs. It is structural, not a choice
+of directory: driving pi's `openai-codex` provider at all requires the file, and
+an agent under prompt injection has shell access. Two mitigations, both
+deliberate choices you make per node:
+
+- point the node at an `OPENAI_API_KEY` model instead of `openai-codex/…` when
+  it runs against a repository you do not control;
+- set `ITERION_FORBID_SUBSCRIPTION_OAUTH=1` to refuse the bridge outright.
+
+iterion writes the seed `0600` inside a `0700` directory and keeps it
+unstageable by git, so it is not committed or diffed by accident — but those
+guard against mistakes, not against an agent that goes looking.
 
 #### Environment variables
 

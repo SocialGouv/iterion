@@ -1,12 +1,14 @@
 package runtime
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"maps"
 	"net/http"
 	"os"
@@ -252,11 +254,23 @@ func mirrorBundleSkills(workDir string, b *bundle.Bundle, logger *iterlog.Logger
 		destPath := filepath.Join(dest, name)
 		srcPath := filepath.Join(b.SkillsDir, name)
 		if entry.IsDir() {
-			// Directory skills bypass the marker logic — we keep the
-			// original "copy missing, skip existing" behaviour. The
-			// per-file marker would need to walk every nested file
-			// and that's more complex than current use justifies.
+			// Directory skills carry no marker, so ownership is decided by
+			// CONTENT: an existing destination identical to the source is ours
+			// (we wrote it on an earlier pass — this runs again on every
+			// resume against the same worktree), anything else is the
+			// workspace's own and shadows.
+			//
+			// Content is the right oracle rather than a marker precisely
+			// because the workspace is untrusted: the only way a repo can be
+			// reported as owned is by shipping a byte-identical copy of
+			// iterion's own skill, which is not an attack.
 			if _, err := os.Stat(destPath); err == nil {
+				same, cmpErr := sameTree(srcPath, destPath)
+				if cmpErr == nil && same {
+					owned = append(owned, destPath)
+					uptodate++
+					continue
+				}
 				shadowed++
 				if logger != nil {
 					logger.Warn("bundle skill %q shadowed by existing workspace entry at %s", name, destPath)
@@ -496,6 +510,70 @@ func promoteBundleAttachmentDefaults(
 		}
 	}
 	return nil
+}
+
+// sameTree reports whether dst holds exactly the files of src, with identical
+// contents. It is how a directory-form skill's ownership is decided on a
+// re-mirror, since those carry no marker: dst is allowed to be a superset in
+// no direction — an extra file on either side means the workspace has its own
+// version of this skill.
+//
+// Files only, and no symlink following: the mirror writes plain files (symlinks
+// break under the sandbox bind-mount), so anything else here is not ours.
+func sameTree(src, dst string) (bool, error) {
+	srcFiles, err := treeFiles(src)
+	if err != nil {
+		return false, err
+	}
+	dstFiles, err := treeFiles(dst)
+	if err != nil {
+		return false, err
+	}
+	if len(srcFiles) != len(dstFiles) {
+		return false, nil
+	}
+	for rel, srcPath := range srcFiles {
+		dstPath, ok := dstFiles[rel]
+		if !ok {
+			return false, nil
+		}
+		a, err := os.ReadFile(srcPath) // #nosec G304 — walked from the bundle's own skills dir.
+		if err != nil {
+			return false, err
+		}
+		b, err := os.ReadFile(dstPath) // #nosec G304 — walked from the mirror destination.
+		if err != nil {
+			return false, err
+		}
+		if !bytes.Equal(a, b) {
+			return false, nil
+		}
+	}
+	return true, nil
+}
+
+// treeFiles maps each regular file under root to its full path, keyed by the
+// path relative to root.
+func treeFiles(root string) (map[string]string, error) {
+	out := map[string]string{}
+	err := filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if d.IsDir() || !d.Type().IsRegular() {
+			return nil
+		}
+		rel, err := filepath.Rel(root, path)
+		if err != nil {
+			return err
+		}
+		out[rel] = path
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
 }
 
 func copyDir(src, dst string) error {

@@ -18,7 +18,7 @@ func TestMirrorInjectedPluginFiles_WritesEachKind(t *testing.T) {
 		{Kind: "commands", Name: "ship.md", Content: []byte("ship it\n")},
 		{Kind: "agents", Name: "auditor.md", Content: []byte("audit\n")},
 	}
-	if err := mirrorInjectedPluginFiles(workDir, files, nil); err != nil {
+	if _, err := mirrorInjectedPluginFiles(workDir, files, nil); err != nil {
 		t.Fatalf("mirror: %v", err)
 	}
 	for _, f := range files {
@@ -34,7 +34,7 @@ func TestMirrorInjectedPluginFiles_WritesEachKind(t *testing.T) {
 
 func TestMirrorInjectedPluginFiles_NoopOnEmpty(t *testing.T) {
 	workDir := t.TempDir()
-	if err := mirrorInjectedPluginFiles(workDir, nil, nil); err != nil {
+	if _, err := mirrorInjectedPluginFiles(workDir, nil, nil); err != nil {
 		t.Fatalf("mirror: %v", err)
 	}
 	if _, err := os.Stat(filepath.Join(workDir, ".claude")); !os.IsNotExist(err) {
@@ -54,7 +54,7 @@ func TestMirrorInjectedPluginFiles_ShadowedByWorkspaceFile(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(dest, "deploy-target.md"), mine, 0o644); err != nil {
 		t.Fatal(err)
 	}
-	err := mirrorInjectedPluginFiles(workDir, []ContributionFile{
+	_, err := mirrorInjectedPluginFiles(workDir, []ContributionFile{
 		{Kind: "skills", Name: "deploy-target.md", Content: []byte("plugin version\n")},
 	}, nil)
 	if err != nil {
@@ -93,7 +93,7 @@ func TestMirrorInjectedLibrarySkills_DirectoryFormAndHints(t *testing.T) {
 // on the host running the test.
 func TestMirrorPluginContributions_InjectedSuppressesLocalResolution(t *testing.T) {
 	workDir := t.TempDir()
-	if err := mirrorPluginContributions(workDir, &Contributions{}, nil); err != nil {
+	if _, err := mirrorPluginContributions(workDir, &Contributions{}, nil); err != nil {
 		t.Fatalf("mirror: %v", err)
 	}
 	if _, err := os.Stat(filepath.Join(workDir, ".claude")); !os.IsNotExist(err) {

@@ -201,6 +201,18 @@ func piLoadCodexView(ctx context.Context) (secrets.CodexCredentialsView, error) 
 // API key found for openai-codex" to an operator who has one. `piSessionDir`
 // already branches this way for the same reason.
 //
+// KNOWN EXPOSURE, and it is structural rather than a choice of directory. pi's
+// `openai-codex` provider is OAuth-only and reads its credential from an agent
+// dir — there is no env var to pass it by, unlike the ~30 API-key providers. So
+// driving that provider at all means a live access AND refresh token sits on a
+// filesystem the agent process can read, and an agent under prompt injection
+// has bash. Under a sandbox that path is inside the run's worktree, which makes
+// it easy to reach; moving it elsewhere in the container would not change what
+// the agent is able to read, so the honest mitigations are the ones that apply:
+// use an OPENAI_API_KEY model instead of `openai-codex/…` for a node pointed at
+// an untrusted repository, or set ITERION_FORBID_SUBSCRIPTION_OAUTH=1 to refuse
+// the bridge outright. Documented in docs/backends.md.
+//
 // Off the sandbox the run's store is preferred so the file shares the store's
 // lifetime; os.MkdirTemp's own default is the last resort.
 // The error paths deliberately do NOT fall through to os.MkdirTemp's default.
@@ -312,6 +324,14 @@ const piSeedMaxAge = 12 * time.Hour
 // the credential out from under a live pi process (whose own refresh then
 // writes to a deleted path), surfacing as an intermittent "No API key found for
 // openai-codex" for an operator who does have one.
+//
+// It only ever reaches the non-sandboxed `<StoreDir>/pi` root in practice. The
+// sandboxed root is per-RUN: a later node of the same run always finds the seed
+// younger than the age bound, and once the run ends no node passes that root
+// again — so a seed stranded by SIGKILL survives exactly as long as the
+// worktree does. On success that is moments (finalizeWorktree removes it); on
+// failure the worktree is deliberately preserved for inspection, and the token
+// stays with it until the operator clears it.
 func piSweepStaleSeeds(root string) {
 	if root == "" {
 		return

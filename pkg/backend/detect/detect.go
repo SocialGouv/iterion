@@ -284,7 +284,15 @@ func piOwnLoginKind() string {
 // openai-codex". That is the same false-positive class piReadsProvider argues
 // against just above; a probe must not be more optimistic than what will
 // actually use the credential.
+//
+// ITERION_FORBID_SUBSCRIPTION_OAUTH is honoured here for the same reason: under
+// it the bridge does not step aside, it hard-errors the node. Reporting a
+// credential the run will refuse is the definition of a probe more optimistic
+// than reality.
 func codexChatGPTAvailable() bool {
+	if secrets.ForbidSubscriptionOAuth() {
+		return false
+	}
 	dir := codexHomeDir()
 	if dir == "" {
 		return false
