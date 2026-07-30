@@ -217,6 +217,11 @@ that from doing harm of its own:
 - **It leaves resumable and paused runs alone.** The cloud runner republishes
   a run outcome on every delivery attempt, before deciding to retry, so a
   transient rate limit is not a dead run.
+- **It stays inside the grant's scope.** `pr_url` is a launch var, and the
+  server honours a caller-pinned publish token, so the repo and forge host are
+  re-checked against the grant exactly as the publish endpoint checks them. A
+  red status is not a merge, but posting one on any repo a team connection
+  reaches is precisely the blast radius the grant exists to bound.
 - **`failure`, not `success`.** A review that did not happen has approved
   nothing.
 

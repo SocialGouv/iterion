@@ -133,9 +133,25 @@ func (s *Server) reconcileGateForRun(ctx context.Context, ev trigger.Event) erro
 	if err != nil {
 		return nil
 	}
-	_ = host
+	// pr_url is a LAUNCH VAR — whoever launched the run chose it, and
+	// injectForgePublishVars deliberately honours a caller-pinned token. So
+	// the grant's scope has to be re-enforced here exactly as the publish
+	// endpoint enforces it, or a run could aim a status at any repo the
+	// team's connection reaches (for a GitHub App installation, typically the
+	// whole org). A red check is not a merge, but it is precisely the blast
+	// radius the grant exists to bound.
+	if !strings.EqualFold(strings.TrimSpace(repo), strings.TrimSpace(grant.Repo)) {
+		if s.logger != nil {
+			s.logger.Warn("forge gate: run %s carries a grant for %s but a pr_url on %s — refusing to post outside the grant's repo",
+				runID, grant.Repo, repo)
+		}
+		return nil
+	}
 	conn, err := s.forgeConnections.Get(store.WithoutTenantFilter(ctx), grant.ConnectionID)
-	if err != nil {
+	if err != nil || conn.TenantID != grant.TeamID {
+		return nil
+	}
+	if connHost := hostOfURL(conn.BaseURL()); connHost == "" || !strings.EqualFold(connHost, host) {
 		return nil
 	}
 	gc, err := s.gateClientFor(ctx, conn)

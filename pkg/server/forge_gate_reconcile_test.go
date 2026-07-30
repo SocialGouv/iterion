@@ -208,6 +208,39 @@ func TestGateReconcile_OnlyABotThatHasGatedThisRepoOwesAVerdict(t *testing.T) {
 	}
 }
 
+// pr_url is a launch var: whoever launched the run chose it, and the server
+// honours a caller-pinned publish token. Without re-enforcing the grant's
+// scope, a run could aim a red status at any repo the team's connection
+// reaches — for a GitHub App installation, typically the whole org.
+func TestGateReconcile_StaysInsideTheGrantsScope(t *testing.T) {
+	t.Run("pr on another repo", func(t *testing.T) {
+		inputs := gatingInputs()
+		inputs["pr_url"] = "https://github.com/o/other-repo/pull/1"
+
+		gc := &listingGateClient{fakeGateClient: fakeGateClient{headSHA: "deadbeef"}}
+		s, runID := gateReconcileFixture(t, inputs, gc)
+		s.rememberGateContext("o/other-repo", "review-pr", "iterion/review")
+
+		_ = s.reconcileGateForRun(context.Background(), terminalEvent(runID))
+		if gc.setCalls != 0 {
+			t.Fatalf("posted outside the grant's repo (%d writes) — the grant scope exists to bound exactly this", gc.setCalls)
+		}
+	})
+
+	t.Run("pr on another forge host", func(t *testing.T) {
+		inputs := gatingInputs()
+		inputs["pr_url"] = "https://gitlab.com/o/r/-/merge_requests/42"
+
+		gc := &listingGateClient{fakeGateClient: fakeGateClient{headSHA: "deadbeef"}}
+		s, runID := gateReconcileFixture(t, inputs, gc)
+
+		_ = s.reconcileGateForRun(context.Background(), terminalEvent(runID))
+		if gc.setCalls != 0 {
+			t.Fatalf("posted through a connection that does not serve that host (%d writes)", gc.setCalls)
+		}
+	})
+}
+
 // A resumable failure is not a dead run: the cloud runner republishes the
 // outcome on every delivery attempt, BEFORE it decides to retry. Painting the
 // check red there contradicts a review that is about to run again.
