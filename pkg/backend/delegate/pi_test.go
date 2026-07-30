@@ -132,15 +132,29 @@ func TestPiExtraArgsFor(t *testing.T) {
 		}
 	})
 
-	t.Run("skills mirrored dir passed when the node has skills", func(t *testing.T) {
-		none := piExtraArgsFor(Task{WorkDir: "/w"})
-		if slices.Contains(none, "--skill") {
-			t.Errorf("unexpected --skill with no skill hints: %v", none)
+	// Only skills iterion can PROVE it mirrored are offered — see
+	// TestPiSkillArgs. The mirror records provenance for bundle, plugin and
+	// library skills alike, so the marker is the signal here, not SkillHints.
+	t.Run("only mirrored skills are passed", func(t *testing.T) {
+		if none := piExtraArgsFor(Task{WorkDir: "/w"}); slices.Contains(none, "--skill") {
+			t.Errorf("unexpected --skill for a workspace with no mirror: %v", none)
 		}
-		some := piExtraArgsFor(Task{WorkDir: "/w", SkillHints: []SkillHint{{Name: "s"}}})
+
+		work := t.TempDir()
+		markers := filepath.Join(work, ".claude", "skills", piSkillMarkerDir)
+		if err := os.MkdirAll(markers, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(work, ".claude", "skills", "s.md"), []byte("x"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(markers, "s.md.sha256"), []byte("h"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		some := piExtraArgsFor(Task{WorkDir: work, SkillHints: []SkillHint{{Name: "s"}}})
 		i := slices.Index(some, "--skill")
-		if i < 0 || some[i+1] != filepath.Join("/w", ".claude", "skills") {
-			t.Errorf("args = %v, want --skill pointing at the mirrored skills dir", some)
+		if i < 0 || some[i+1] != filepath.Join(work, ".claude", "skills", "s.md") {
+			t.Errorf("args = %v, want --skill pointing at the mirrored skill file", some)
 		}
 	})
 

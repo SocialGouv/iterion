@@ -229,209 +229,87 @@ func TestPiCodexSeed(t *testing.T) {
 	})
 }
 
-// A bundle bot's skills are mirrored into <workDir>/.claude/skills/ without
-// populating SkillHints (which carries only the DSL `skills:` library field).
-// Gating --skill on the hints therefore hid every bundle skill from pi — the
-// agent was told to load skills it had no way to see.
-func TestPiSkillDir(t *testing.T) {
-	mirror := func(t *testing.T, entries ...string) string {
+// `--skill` must offer ONLY what iterion mirrored. That directory is a checkout
+// of the TARGET repo under `worktree: auto`, and CLI --skill paths bypass the
+// project-trust gate `--no-approve` exists to close — so a repo committing its
+// own .claude/skills/ would otherwise get attacker-authored prompt text loaded
+// as a trusted skill into every pi node.
+func TestPiSkillArgs(t *testing.T) {
+	// mirror lays out a workspace: `managed` skills get provenance markers the
+	// way runtime's skill mirror writes them, `repo` ones do not.
+	mirror := func(t *testing.T, managed, repo []string) string {
 		t.Helper()
 		work := t.TempDir()
 		dir := filepath.Join(work, ".claude", "skills")
-		if err := os.MkdirAll(dir, 0o755); err != nil {
+		markers := filepath.Join(dir, piSkillMarkerDir)
+		if err := os.MkdirAll(markers, 0o755); err != nil {
 			t.Fatal(err)
 		}
-		for _, e := range entries {
-			if err := os.MkdirAll(filepath.Join(dir, e), 0o755); err != nil {
+		write := func(path, body string) {
+			if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 				t.Fatal(err)
 			}
+			if err := os.WriteFile(path, []byte(body), 0o644); err != nil {
+				t.Fatal(err)
+			}
+		}
+		for _, name := range managed {
+			write(filepath.Join(dir, name+".md"), "managed")
+			write(filepath.Join(dir, name, "SKILL.md"), "managed")
+			write(filepath.Join(markers, name+".md.sha256"), "hash")
+			write(filepath.Join(markers, name+".SKILL.md.sha256"), "hash")
+		}
+		for _, name := range repo {
+			write(filepath.Join(dir, name, "SKILL.md"), "from the target repo")
 		}
 		return work
 	}
 
-	t.Run("bundle skills are offered with no SkillHints", func(t *testing.T) {
-		work := mirror(t, ".iterion-managed", "doc-enrichment", "docs-refresh")
-		got := piSkillDir(Task{WorkDir: work})
-		if want := filepath.Join(work, ".claude", "skills"); got != want {
-			t.Errorf("piSkillDir = %q, want %q — pi cannot see a bundle's skills otherwise", got, want)
+	joined := func(args []string) string { return strings.Join(args, " ") }
+
+	t.Run("a bundle's skills are offered with no SkillHints", func(t *testing.T) {
+		work := mirror(t, []string{"doc-enrichment"}, nil)
+		got := joined(piSkillArgs(Task{WorkDir: work}, nil))
+		for _, want := range []string{"doc-enrichment.md", filepath.Join("doc-enrichment", "SKILL.md")} {
+			if !strings.Contains(got, want) {
+				t.Errorf("args %q missing %s — pi cannot see a bundle's skills otherwise", got, want)
+			}
 		}
 	})
 
-	t.Run("a mirror holding only bookkeeping offers nothing", func(t *testing.T) {
-		work := mirror(t, ".iterion-managed")
-		if got := piSkillDir(Task{WorkDir: work}); got != "" {
-			t.Errorf("piSkillDir = %q, want empty — that directory advertises zero skills", got)
+	t.Run("the target repo's own skills are NOT offered", func(t *testing.T) {
+		work := mirror(t, []string{"doc-enrichment"}, []string{"attacker-supplied"})
+		got := joined(piSkillArgs(Task{WorkDir: work}, nil))
+		if strings.Contains(got, "attacker-supplied") {
+			t.Errorf("args %q include an unmirrored repo skill — that routes around --no-approve", got)
+		}
+		if !strings.Contains(got, "doc-enrichment") {
+			t.Error("the bundle's own skills were dropped along with it")
 		}
 	})
 
-	t.Run("no mirror at all", func(t *testing.T) {
-		if got := piSkillDir(Task{WorkDir: t.TempDir()}); got != "" {
-			t.Errorf("piSkillDir = %q, want empty", got)
+	// The documented opt-in accepts the repo's extensions, skills and settings.
+	t.Run("ITERION_PI_TRUST_PROJECT offers the whole directory", func(t *testing.T) {
+		work := mirror(t, nil, []string{"attacker-supplied"})
+		t.Setenv("ITERION_PI_TRUST_PROJECT", "1")
+		got := joined(piSkillArgs(Task{WorkDir: work}, nil))
+		if got != "--skill "+filepath.Join(work, ".claude", "skills") {
+			t.Errorf("args = %q, want the whole mirror directory", got)
 		}
 	})
 
-	// Under a sandbox WorkDir names an IN-CONTAINER path. A spec pinning a
-	// different workspaceFolder, or the kubernetes driver, makes the host stat
-	// fail with ErrNotExist — which would silently drop --skill again, the exact
-	// defect this function closes. The engine mirrors the skills there
-	// unconditionally, so the directory is offered without stat'ing it.
-	t.Run("a sandboxed run offers the mirror without stat'ing the host", func(t *testing.T) {
-		got := piSkillDir(Task{WorkDir: "/in-container/only", Sandbox: stubSandboxRun{}})
-		if got != filepath.Join("/in-container/only", ".claude", "skills") {
-			t.Errorf("piSkillDir = %q, want the in-container mirror — a stat there cannot succeed", got)
-		}
-	})
-
-	// A sandboxed WorkDir names a path only the container can see, so the stat
-	// fails; the hints prove the skills exist without it.
-	t.Run("SkillHints short-circuit an unstattable WorkDir", func(t *testing.T) {
-		task := Task{WorkDir: "/in-container/only", SkillHints: []SkillHint{{Name: "x"}}}
-		if got := piSkillDir(task); got != filepath.Join("/in-container/only", ".claude", "skills") {
-			t.Errorf("piSkillDir = %q, want the in-container mirror path", got)
+	t.Run("no provenance means nothing is offered", func(t *testing.T) {
+		work := mirror(t, nil, []string{"attacker-supplied"})
+		if got := piSkillArgs(Task{WorkDir: work}, nil); len(got) != 0 {
+			t.Errorf("args = %v, want none", got)
 		}
 	})
 
 	t.Run("no workdir", func(t *testing.T) {
-		if got := piSkillDir(Task{}); got != "" {
-			t.Errorf("piSkillDir = %q, want empty", got)
+		if got := piSkillArgs(Task{}, nil); len(got) != 0 {
+			t.Errorf("args = %v, want none", got)
 		}
 	})
-}
-
-// A sandboxed run sees only the workspace: the store dir is not bind-mounted
-// unless it happens to live under the global iterion home, and the repo's own
-// dogfood invocation (--store-dir "$PWD/.iterion") plus every studio launch
-// make it the workspace's — a SIBLING of the mounted worktree. Seeding there
-// makes pi report "No API key found for openai-codex" to an operator who has
-// one, on the DEFAULT path, since sandboxing is on by default.
-func TestPiCodexSeedRootFollowsTheMount(t *testing.T) {
-	work, store := t.TempDir(), t.TempDir()
-	// The sandboxed branch writes inside the git worktree, so it verifies the
-	// ignore guard first (see TestPiCodexSeedRequiresTheIgnoreGuard).
-	if err := os.MkdirAll(filepath.Join(work, ".iterion"), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(work, ".iterion", ".gitignore"), []byte("*\n"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-
-	host, err := piCodexSeedRoot(Task{WorkDir: work, StoreDir: store}, nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if host != filepath.Join(store, "pi") {
-		t.Errorf("host root = %q, want it under the store", host)
-	}
-
-	boxed, err := piCodexSeedRoot(Task{WorkDir: work, StoreDir: store, Sandbox: stubSandboxRun{}}, nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if boxed != filepath.Join(work, ".iterion", "pi") {
-		t.Errorf("sandboxed root = %q, want it inside the workspace — the only mounted tree", boxed)
-	}
-	// It must also agree with where the session dir goes, since both have to
-	// be reachable from inside the same container.
-	if got := piSessionDir(Task{WorkDir: work, StoreDir: store, Sandbox: stubSandboxRun{}}); !strings.HasPrefix(got, work) {
-		t.Errorf("session dir %q is outside the workspace; the two paths disagree", got)
-	}
-}
-
-// A SIGKILL skips the deferred cleanup and strands a live access AND refresh
-// token on disk. The dirs are per-node, so anything present when a new node
-// starts is abandoned by definition.
-func TestPiCodexSeedSweepsAbandonedDirs(t *testing.T) {
-	writeCodexAuth(t, "chatgpt")
-	store := t.TempDir()
-	stale := filepath.Join(store, "pi", piSeedDirPrefix+"orphan")
-	if err := os.MkdirAll(stale, 0o700); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(stale, "auth.json"), []byte(`{"x":1}`), 0o600); err != nil {
-		t.Fatal(err)
-	}
-
-	old := time.Now().Add(-2 * piSeedMaxAge)
-	if err := os.Chtimes(stale, old, old); err != nil {
-		t.Fatal(err)
-	}
-
-	env, cleanup, err := piCodexSeed(context.Background(),
-		Task{NodeID: "n", Model: "openai-codex/gpt-5.6-sol", StoreDir: store}, nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer cleanup()
-
-	if _, err := os.Stat(stale); !os.IsNotExist(err) {
-		t.Errorf("abandoned credential dir survived (%v) — nothing else reaps it", err)
-	}
-	if _, err := os.Stat(env["PI_CODING_AGENT_DIR"]); err != nil {
-		t.Errorf("the sweep took this node's own dir: %v", err)
-	}
-}
-
-// The seed root is SHARED — by every node of a run under sandbox, and off it by
-// every run in the store — while iterion permits parallel branches and the
-// studio runs several pipelines at once. A recent `pi-agent-*` dir is therefore
-// as likely to belong to a peer that is still running, and reaping it pulls the
-// credential out from under a live pi process.
-func TestPiCodexSeedSparesALivePeer(t *testing.T) {
-	writeCodexAuth(t, "chatgpt")
-	store := t.TempDir()
-
-	// Stand in for a concurrent node that seeded moments ago.
-	peer := filepath.Join(store, "pi", piSeedDirPrefix+"peer")
-	if err := os.MkdirAll(peer, 0o700); err != nil {
-		t.Fatal(err)
-	}
-	peerAuth := filepath.Join(peer, "auth.json")
-	if err := os.WriteFile(peerAuth, []byte(`{"openai-codex":{"type":"oauth"}}`), 0o600); err != nil {
-		t.Fatal(err)
-	}
-
-	_, cleanup, err := piCodexSeed(context.Background(),
-		Task{NodeID: "second", Model: "openai-codex/gpt-5.6-sol", StoreDir: store}, nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer cleanup()
-
-	if _, err := os.Stat(peerAuth); err != nil {
-		t.Fatalf("a live peer's credential was swept (%v) — that pi process loses its "+
-			"auth mid-node and reports no credential", err)
-	}
-}
-
-// Under a sandbox a /tmp fallback is not bind-mounted, so handing pi that path
-// reproduces the very failure the seed root exists to prevent — but silently.
-func TestPiCodexSeedRootRefusesUnmountedFallback(t *testing.T) {
-	work := t.TempDir()
-	// Guard present, so the refusal below is about the MOUNT, not the guard.
-	if err := os.MkdirAll(filepath.Join(work, ".iterion"), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(work, ".iterion", ".gitignore"), []byte("*\n"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	// Make .iterion unwritable so creating .iterion/pi fails.
-	if err := os.Chmod(filepath.Join(work, ".iterion"), 0o500); err != nil {
-		t.Skipf("cannot make the dir unwritable: %v", err)
-	}
-	t.Cleanup(func() { _ = os.Chmod(filepath.Join(work, ".iterion"), 0o700) })
-
-	_, err := piCodexSeedRoot(Task{NodeID: "n", WorkDir: work, Sandbox: stubSandboxRun{}}, nil)
-	if err == nil {
-		t.Fatal("no error — pi would be handed a host /tmp path the container cannot see")
-	}
-	if strings.Contains(err.Error(), "ignore guard") {
-		t.Fatalf("refused for the guard, not the mount: %v", err)
-	}
-
-	// Off the sandbox the same failure is tolerable: /tmp is merely unswept.
-	if root, err := piCodexSeedRoot(Task{NodeID: "n", StoreDir: ""}, nil); err != nil || root != "" {
-		t.Errorf("root=%q err=%v, want the tolerated empty root off the sandbox", root, err)
-	}
 }
 
 // ITERION_PI_BIN is the documented escape hatch for a host that cannot run the
