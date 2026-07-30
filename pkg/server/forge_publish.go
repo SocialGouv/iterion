@@ -455,6 +455,9 @@ func (s *Server) postGateStatus(ctx context.Context, conn forge.Connection, repo
 		return out
 	}
 	out.posted = true
+	// Remember the context this repo gates on, so a later run that dies
+	// without publishing can still name the check it owed.
+	s.rememberGateContext(repo, out.context)
 	return out
 }
 

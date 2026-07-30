@@ -180,3 +180,36 @@ Revi separates two channels:
   0-finding review **falsifiable** (they show what was checked and where the
   residual risk hides) and are surfaced in the report + the PR review summary
   body. They **never** become findings, reach the board, or gate a merge.
+
+## <a name="interrupted"></a>A review that dies still leaves a verdict
+
+A required check that is **absent** is indistinguishable from one still
+running: the pull request waits for a context that will never arrive, and no
+error appears on the run, the PR or the check. That is worse than a red check,
+because nothing points at the cause.
+
+It happened twice in one day in production. A rolling deploy drained a review
+mid-flight (the lame-duck drain is not deployed, so a rollout cancels in-flight
+runs). Separately, a bot bug made the publish step skip on every run, so
+`revi/review` stopped landing repo-wide and every pull request became
+unmergeable — with every other check green.
+
+So the server reconciles. When a run that held a publish grant reaches a
+terminal state without a verdict on the PR head, it posts a `failure` carrying
+the reason and the way out, pointed at the run that owed it. Three rules keep
+that from doing harm of its own:
+
+- **It reads before it writes.** The forge is the authority on whether the
+  verdict landed — not any bookkeeping of ours, which a second replica would
+  not share and a restart would lose. A provider iterion cannot read statuses
+  back from is left alone: overwriting a real success with a synthetic failure
+  is worse than the problem being fixed.
+- **It never invents a context.** The gate context is declared in the `.bot`
+  and does not reach the server on the launch path. The reconciler uses the one
+  pinned in the integration's `launch_vars`, or else the one the server last
+  posted for that repo. Knowing neither, it abstains and says so in the log.
+- **`failure`, not `success`.** A review that did not happen has approved
+  nothing.
+
+A paused run is not reconciled: it is expected to resume and post its own
+verdict.
