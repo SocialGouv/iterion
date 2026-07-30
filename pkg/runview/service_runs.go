@@ -356,10 +356,15 @@ func (s *Service) SnapshotCtx(ctx context.Context, runID string) (*RunSnapshot, 
 // Callers paginate by passing the next page's `from` as
 // previous_last.Seq+1; len(out) == cap means "more available".
 //
-// The canonical constant lives in runstream (the streaming seam batches
+// The canonical value lives in runstream (the streaming seam batches
 // replay pages at the same size); this alias keeps the historical
 // runview.MaxEventsPerPage name working for the HTTP/WS layer.
-const MaxEventsPerPage = runstream.MaxEventsPerPage
+func MaxEventsPerPage() int { return runstream.MaxEventsPerPage() }
+
+// SetMaxEventsPerPageForTest lowers the page cap for the duration of a test
+// and returns a restore func. One knob, read through one accessor, so a test
+// cannot read one value while the streaming seam paginates on another.
+func SetMaxEventsPerPageForTest(n int) func() { return runstream.SetMaxEventsPerPageForTest(n) }
 
 // LoadEvents returns events in [from, to] (inclusive on from, exclusive
 // on to), capped at MaxEventsPerPage. Pass to=0 for "no upper bound".
@@ -371,10 +376,10 @@ const MaxEventsPerPage = runstream.MaxEventsPerPage
 // Uses context.Background — does NOT carry caller identity. Use
 // LoadEventsCtx from cloud HTTP/WS handlers.
 func (s *Service) LoadEvents(runID string, from, to int64) ([]*store.Event, error) {
-	return s.store.LoadEventsRange(context.Background(), runID, from, to, MaxEventsPerPage)
+	return s.store.LoadEventsRange(context.Background(), runID, from, to, MaxEventsPerPage())
 }
 
 // LoadEventsCtx is the tenant-aware variant of LoadEvents.
 func (s *Service) LoadEventsCtx(ctx context.Context, runID string, from, to int64) ([]*store.Event, error) {
-	return s.store.LoadEventsRange(ctx, runID, from, to, MaxEventsPerPage)
+	return s.store.LoadEventsRange(ctx, runID, from, to, MaxEventsPerPage())
 }

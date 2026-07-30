@@ -301,6 +301,15 @@ func decodeEventEnvelope(t *testing.T, env runWSEnvelope) []store.Event {
 }
 
 func TestRunsWS_ReplayPaginatesPastMaxEventsPerPage(t *testing.T) {
+	// Shrink the page rather than pay for it. What is under test is the
+	// BOUNDARY — that replay keeps going past one page — and at the
+	// production cap of 25000 the only way to reach it was to seed 25050
+	// events one at a time: 33 seconds, most of it store I/O, after which the
+	// replay window had to be widened until the test was really measuring
+	// throughput on a loaded runner. It went red on PRs that touch nothing
+	// here.
+	t.Cleanup(runview.SetMaxEventsPerPageForTest(60))
+
 	srv, hs := newTestServer(t)
 	st, err := store.New(srv.cfg.StoreDir)
 	if err != nil {
@@ -315,7 +324,7 @@ func TestRunsWS_ReplayPaginatesPastMaxEventsPerPage(t *testing.T) {
 	// silently dropped the tail past the cap, including any terminal
 	// run_failed/run_finished — leaving the studio's pill stuck on
 	// whatever pre-terminal status the last replayed event implied.
-	n := runview.MaxEventsPerPage + 50
+	n := runview.MaxEventsPerPage() + 50
 	for i := 0; i < n; i++ {
 		evt := store.Event{Type: store.EventNodeStarted, RunID: runID, NodeID: "x"}
 		if _, err := st.AppendEvent(context.Background(), runID, evt); err != nil {
@@ -340,7 +349,7 @@ func TestRunsWS_ReplayPaginatesPastMaxEventsPerPage(t *testing.T) {
 	// enough to fail under a full `./...` -race run, where this package
 	// competes with every other one — which made the merge queue red at
 	// random on changes that touch nothing here.
-	deadline := time.Now().Add(90 * time.Second)
+	deadline := time.Now().Add(90 * time.Second) // safety net, not a measurement
 	for time.Now().Before(deadline) && received < n {
 		env := readEnvelope(t, c, wsTypeEvent, wsTypeEventBatch, wsTypeTerminated)
 		if env.Type == wsTypeTerminated {
@@ -353,7 +362,7 @@ func TestRunsWS_ReplayPaginatesPastMaxEventsPerPage(t *testing.T) {
 	}
 	if received != n {
 		t.Errorf("received = %d events, want %d (replay must paginate past MaxEventsPerPage=%d)",
-			received, n, runview.MaxEventsPerPage)
+			received, n, runview.MaxEventsPerPage())
 	}
 	if want := int64(n - 1); lastSeq != want {
 		t.Errorf("lastSeq = %d, want %d (terminal event must reach the client)", lastSeq, want)

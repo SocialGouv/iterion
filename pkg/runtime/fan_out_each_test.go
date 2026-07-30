@@ -361,6 +361,20 @@ func TestResourceLease_DistinctInstances(t *testing.T) {
 	maxConcurrent := 0
 	var violations []string
 
+	// Saturation is FORCED, not hoped for. Asserting that three leases were
+	// once held at the same instant, while letting each handler release on a
+	// sleep, tests the scheduler's timing rather than the pool: on a loaded
+	// runner a holder can release before the third acquires, and the run is
+	// perfectly correct with a high-water mark of two. Every holder now waits
+	// until the pool is full before releasing, so a pool that CANNOT saturate
+	// is the only way to miss it.
+	//
+	// The later items cannot deadlock on this: the channel is closed for good
+	// by the first full batch, and the bound is a safety valve for the case
+	// where saturation never happens — which the assertion below reports.
+	saturated := make(chan struct{})
+	var saturate sync.Once
+
 	exec := newStubExecutor()
 	exec.on("entry", func(_ map[string]any) (map[string]any, error) {
 		return map[string]any{"items": items}, nil
@@ -381,10 +395,17 @@ func TestResourceLease_DistinctInstances(t *testing.T) {
 			if len(held) > maxConcurrent {
 				maxConcurrent = len(held)
 			}
+			if len(held) == len(pool) {
+				saturate.Do(func() { close(saturated) })
+			}
 		}
 		mu.Unlock()
 
-		time.Sleep(15 * time.Millisecond) // hold the lease so contention is observable
+		// Hold the lease until the pool is provably full (or we give up).
+		select {
+		case <-saturated:
+		case <-time.After(10 * time.Second):
+		}
 
 		mu.Lock()
 		delete(held, id)
