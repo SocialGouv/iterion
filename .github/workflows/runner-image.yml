@@ -28,9 +28,22 @@ on:
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
-  # Only the latest binary matters for the rolling :edge, and there is no base
-  # build to protect here — cancel a superseded refold instead of queueing it.
-  cancel-in-progress: ${{ github.event_name != 'workflow_dispatch' }}
+  # NEVER cancel: this workflow builds the artifact prod actually deploys, and
+  # a cancelled build leaves `:edge` silently pointing at an older commit while
+  # both runs report "completed".
+  #
+  # Cancelling looked safe — only the latest binary matters for a rolling tag —
+  # but GitHub evaluates `concurrency:` BEFORE a job's `if:`, so a run that is
+  # about to skip still takes the slot and kills the one that was building.
+  # That is not a corner case: release-it pushes its `[skip ci]` brew-tap commit
+  # straight after the release commit, GitHub reports the skipped image.yml as
+  # `completed`, and the resulting workflow_run cancelled the real build on
+  # every release. Measured 2026-07-30: b74d06bf cancelled by 44189ef1, which
+  # then skipped — no runner image at all for the commit being shipped.
+  #
+  # Queueing instead costs one build's wait and keeps the ordering, so the
+  # newest commit still ends up as `:edge`.
+  cancel-in-progress: false
 
 permissions:
   contents: read
