@@ -83,7 +83,11 @@ type pipelineProjectionBuilder struct {
 	issueOwnedRuns map[string]struct{}
 	nodeCountCache map[string]int
 	queuePositions map[string]int
-	cards          []PipelineBoardCard
+	// eventScans memoizes the single per-run event walk (node-progress
+	// count + paused gates' instructions) for the lifetime of one
+	// projection build, so the two consumers share ONE pass.
+	eventScans map[string]*runEventScan
+	cards      []PipelineBoardCard
 
 	// finalOutputMemo caches finished runs' resolved output across polls so a
 	// DONE card's output isn't re-probed from artifacts every tick (PR #193
@@ -696,19 +700,18 @@ func (b *pipelineProjectionBuilder) pendingReviewUpdatedAt(run *store.Run) time.
 // pendingReviewInstructions returns the resolved `instructions:` text the
 // engine stamped on this pause's human_input_requested event.
 //
-// Why a scan: the resolved text rides ONLY on that event (doPause folds
-// humanInstructionsExtra into the event data). Neither the checkpoint nor
-// the interaction record carries it, so a card built from the checkpoint
-// alone has nothing to show — and for a bot whose whole operator-facing
-// question lives in `instructions:` that means an answer box with no
-// question above it. Reading it back from the event log also makes
+// Why the event log: the resolved text rides ONLY on that event (doPause
+// folds humanInstructionsExtra into the event data). Neither the checkpoint
+// nor the interaction record carries it, so a card built from the
+// checkpoint alone has nothing to show — and for a bot whose whole
+// operator-facing question lives in `instructions:` that means an answer
+// box with no question above it. Reading it back from the log also makes
 // already-paused runs render correctly, without waiting for a new pause.
 //
-// The last matching event wins: a review gate that resumes and re-pauses
-// on the same interaction ID emits a fresh event per turn, and the operator
-// must see the current turn. Matching prefers the checkpoint's interaction
-// id and falls back to the node id for pauses written before interaction
-// ids were stamped on the event.
+// The checkpoint's interaction id is the precise key: a human node inside
+// a loop gets one interaction per iteration, and only the turn the
+// checkpoint points at may be shown. The node id is the fallback for
+// pauses written before interaction ids were stamped on the event.
 func (b *pipelineProjectionBuilder) pendingReviewInstructions(run *store.Run) string {
 	if b == nil || b.rs == nil || run == nil || run.Checkpoint == nil {
 		return ""
@@ -717,21 +720,14 @@ func (b *pipelineProjectionBuilder) pendingReviewInstructions(run *store.Run) st
 	if node == "" {
 		return ""
 	}
-	wantInteraction := run.Checkpoint.InteractionID
-	found := ""
-	_ = b.rs.ScanEvents(b.ctx, run.ID, func(e *store.Event) bool {
-		if e == nil || e.Type != store.EventHumanInputRequested || e.NodeID != node {
-			return true
+	scan := b.scanRunEvents(run.ID)
+	if id := run.Checkpoint.InteractionID; id != "" {
+		// Present-but-empty is a real answer here (the current turn
+		// carried no instructions), so honour it instead of falling
+		// through to a staler node-level entry.
+		if text, ok := scan.instructions[instructionScanKey("interaction", id)]; ok {
+			return text
 		}
-		if wantInteraction != "" {
-			if id, ok := e.Data["interaction_id"].(string); ok && id != wantInteraction {
-				return true
-			}
-		}
-		if text, ok := e.Data["instructions"].(string); ok {
-			found = text
-		}
-		return true
-	})
-	return found
+	}
+	return scan.instructions[instructionScanKey("node", node)]
 }
