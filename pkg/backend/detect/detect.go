@@ -230,23 +230,23 @@ func piHasOwnLogin() bool {
 }
 
 // codexChatGPTAvailable reports whether a ChatGPT-mode Codex login exists.
-// Only the auth mode is read; the tokens are never inspected here.
+//
+// It defers to the SAME authority the pi bridge consumes —
+// CodexCredentialsView.IsChatGPTMode, which requires an access token and an
+// account id, not merely `auth_mode: "chatgpt"`. A hand-rolled check on the
+// mode alone was weaker than the consumer's gate, so a partially-written or
+// logged-out Codex state made detect report pi available while the bridge
+// stepped aside, and the node then died with "No API key found for
+// openai-codex". That is the same false-positive class piReadsProvider argues
+// against just above; a probe must not be more optimistic than what will
+// actually use the credential.
 func codexChatGPTAvailable() bool {
 	dir := codexHomeDir()
 	if dir == "" {
 		return false
 	}
-	data, err := os.ReadFile(filepath.Join(dir, "auth.json")) // #nosec G304 — a fixed filename under CODEX_HOME.
-	if err != nil {
-		return false
-	}
-	var view struct {
-		AuthMode string `json:"auth_mode"`
-	}
-	if err := json.Unmarshal(data, &view); err != nil {
-		return false
-	}
-	return view.AuthMode == "chatgpt"
+	view, err := secrets.LoadCodexCredentialsFrom(dir)
+	return err == nil && view.IsChatGPTMode()
 }
 
 // detectClaudeCode probes for the claude_code backend in three escalating

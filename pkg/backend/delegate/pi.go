@@ -267,6 +267,25 @@ var piProviderPrefixes = map[string]string{
 // correct invocation is `--provider zai --model glm-5.2`; passing
 // `anthropic/glm-5.2` through would fuzzy-match Anthropic's own catalogue
 // and silently run a different model.
+func piResolveModel(model, hint string) (provider, modelID string) {
+	model = strings.TrimSpace(model)
+	hint = strings.TrimSpace(strings.ToLower(hint))
+
+	modelID = model
+	if idx := strings.Index(model, "/"); idx > 0 {
+		prefix := strings.ToLower(model[:idx])
+		rest := strings.TrimSpace(model[idx+1:])
+		if rest != "" {
+			provider = piMapProvider(prefix)
+			modelID = rest
+		}
+	}
+	if hint != "" {
+		provider = piMapProvider(hint)
+	}
+	return provider, modelID
+}
+
 // piSkillDir returns the run's mirrored skill directory when pi should be
 // pointed at it, or "" when this node has no skills to offer.
 //
@@ -323,26 +342,6 @@ func piSkillDir(task Task) string {
 	}
 	return ""
 }
-
-func piResolveModel(model, hint string) (provider, modelID string) {
-	model = strings.TrimSpace(model)
-	hint = strings.TrimSpace(strings.ToLower(hint))
-
-	modelID = model
-	if idx := strings.Index(model, "/"); idx > 0 {
-		prefix := strings.ToLower(model[:idx])
-		rest := strings.TrimSpace(model[idx+1:])
-		if rest != "" {
-			provider = piMapProvider(prefix)
-			modelID = rest
-		}
-	}
-	if hint != "" {
-		provider = piMapProvider(hint)
-	}
-	return provider, modelID
-}
-
 func piMapProvider(name string) string {
 	if mapped, ok := piProviderPrefixes[name]; ok {
 		return mapped

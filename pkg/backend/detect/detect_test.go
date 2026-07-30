@@ -577,13 +577,31 @@ func TestDetectPi(t *testing.T) {
 		stubBinary(t, &findPiBinary, "/fake/pi")
 		dir := t.TempDir()
 		if err := os.WriteFile(filepath.Join(dir, "auth.json"),
-			[]byte(`{"auth_mode":"chatgpt","tokens":{"access_token":"a"}}`), 0o600); err != nil {
+			[]byte(`{"auth_mode":"chatgpt","tokens":{"access_token":"a","account_id":"acct-1"}}`), 0o600); err != nil {
 			t.Fatal(err)
 		}
 		t.Setenv("CODEX_HOME", dir)
 		st := find(Detect(context.Background()), BackendPi)
 		if !st.Available {
 			t.Errorf("status = %+v, want available — iterion bridges this credential", st)
+		}
+	})
+
+	// detect must not be more optimistic than the bridge that consumes the
+	// credential: a chatgpt-mode blob without the tokens the bridge requires
+	// made detect report available while piCodexSeed stepped aside, and the
+	// node died with "No API key found for openai-codex".
+	t.Run("a chatgpt blob the bridge would refuse does not count", func(t *testing.T) {
+		isolateEnv(t)
+		stubBinary(t, &findPiBinary, "/fake/pi")
+		dir := t.TempDir()
+		if err := os.WriteFile(filepath.Join(dir, "auth.json"),
+			[]byte(`{"auth_mode":"chatgpt","tokens":{"access_token":"a"}}`), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		t.Setenv("CODEX_HOME", dir)
+		if find(Detect(context.Background()), BackendPi).Available {
+			t.Error("available on a blob with no account_id — the bridge refuses it, so the node fails")
 		}
 	})
 
