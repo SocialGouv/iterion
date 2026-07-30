@@ -124,7 +124,7 @@ func (s *Server) handleGetRunEvents(w http.ResponseWriter, r *http.Request) {
 		s.httpErrorFor(w, r, http.StatusBadRequest, "%v", err)
 		return
 	} else if xs != nil {
-		events, err := xs.LoadEventsRange(r.Context(), id, from, to, runview.MaxEventsPerPage)
+		events, err := xs.LoadEventsRange(r.Context(), id, from, to, runview.MaxEventsPerPage())
 		if err != nil {
 			s.httpErrorFor(w, r, http.StatusInternalServerError, "load events from cross-store: %v", err)
 			return
