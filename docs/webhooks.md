@@ -298,7 +298,9 @@ Every webhook carries four selection filters plus a bot-agnostic hold gate
   the PR/MR *open* path; comment/`/revi` triggers use `min_replier_role`
   / `authorized_repliers` instead.) When auto-provisioning, a bot sets
   this from its manifest `forge.webhook.author_allowlist`; co-enabling a
-  bot that reviews all authors re-opens the shared webhook.
+  bot that reviews all authors re-opens the shared webhook. With a
+  per-bot routing table (next section) this flat filter is superseded by
+  each bot's own `author_allowlist`, kept per rule.
 - **`bot_ids` + `wildcard_bots`** — the only bots a delivery may
   launch. A wildcard (`["*"]` with `wildcard_bots=true`) must be
   declared **explicitly** so the studio + audit can flag it; the create
@@ -313,6 +315,51 @@ default that ships with the Revi catalog
 The generic webhook deliberately does **not** apply this default — a
 bot-agnostic endpoint must pick deterministically, so missing-bot is a
 400.
+
+### Per-bot routing — co-enabling several bots on one repo
+
+The filters above describe a **single-bot** webhook. A repo usually wants
+**several** bots on the same delivery — a reviewer *and* a dependency
+guard — and a flattened config cannot express that: `SelectBot()` returns
+`""` as soon as two bots are in scope, so the lane fell back to the
+hardcoded reviewer and the guard was lost entirely.
+
+A webhook that an auto-provisioned integration has migrated therefore
+carries a **per-bot routing table** (`BotRules`, one entry per
+co-enabled bot). An inbound delivery then **fans out to every bot whose
+own rule claims the event and admits the author** — each with its own
+author filter, label filter, and launch vars, its own idempotency key,
+and a FRESH vars map (so two bots never share one publish grant)
+([pkg/webhooks/types.go:BotRule](../pkg/webhooks/types.go),
+[pkg/server/webhooks_common.go:resolveForgeEventBots](../pkg/server/webhooks_common.go)).
+
+A bot's rule is materialised by the forge orchestrator from its manifest
+`forge.webhook` block:
+
+- **`events`** — the normalized event kinds this bot claims (e.g.
+  `pull_request`, `pull_request_comment`). A command-only bot claims none
+  and is routed only by its `CommandMap`.
+- **`author_allowlist`** — restricts THIS bot to PRs/MRs from these
+  logins (empty = any author). Entries support a **suffix wildcard**:
+  `*renovate[bot]` matches `acme-renovate[bot]` too, because
+  self-hosting Renovate/Dependabot under an org GitHub App (the usual way
+  to make their PRs trigger CI) **renames** the bot.
+- **`author_scope: exclusive`** — the authors in `author_allowlist` are
+  MINE: provisioning adds them to every OTHER co-enabled bot's
+  `author_denylist`, so a general reviewer stops double-reviewing the
+  dependency PRs this guard owns — without the reviewer's manifest
+  naming the guard. The default `shared` leaves the authors open to all.
+  (Meaningful only with a non-empty `author_allowlist`.)
+- **`launch_vars`** — THIS bot's default run vars, kept per bot so two
+  bots' vars cannot collide in one flat map.
+
+A config written before this field existed carries no `BotRules`, and
+the legacy single-bot path — `SelectBot`/`default_bot_id` and its
+idempotency keys — is kept **byte-identical**; re-provisioning an
+unchanged bot set backfills the table without minting a token or calling
+the forge. One contract change follows from the fan-out: a delivery no
+enabled bot claims is now **filtered (200)** rather than 403 — a 4xx on
+a forge hook is what makes GitHub disable it.
 
 ## Idempotency
 
