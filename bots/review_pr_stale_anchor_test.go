@@ -95,6 +95,7 @@ func TestReviewPRStaleAnchorStillPublishes(t *testing.T) {
 			"{{vars.forge_publish_url}}":   srv.URL + "/api/v1/forge/publish-review",
 			"{{vars.forge_publish_token}}": "run-token",
 			"{{vars.pr_review_mode}}":      "comment",
+			"{{vars.review_mode}}":         "mono",
 			"{{input.pr_url}}":             "https://github.com/acme/widgets/pull/7",
 			"{{input.findings}}":           findings,
 			"{{input.questions}}":          "",
@@ -138,6 +139,20 @@ func TestReviewPRStaleAnchorStillPublishes(t *testing.T) {
 		}
 		if res["published"] != true {
 			t.Errorf("published = %v, want true", res["published"])
+		}
+	})
+
+	// A mono review has one family, so "0 cross-confirmed" would describe a
+	// comparison that never took place. Observed on
+	// socialgouv/buildkit-operator#6, whose comment reported it under the
+	// default topology.
+	t.Run("mono topology: claims no cross-confirmation", func(t *testing.T) {
+		got, _, _ := run(t, head)
+		if strings.Contains(got.Summary, "cross-confirmed by both model families") {
+			t.Errorf("a single-family review reports a cross-family comparison:\n%s", got.Summary)
+		}
+		if !strings.Contains(got.Summary, "single model family") {
+			t.Errorf("the summary should name the topology it ran under:\n%s", got.Summary)
 		}
 	})
 

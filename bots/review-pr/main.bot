@@ -785,7 +785,7 @@ compute pr_gate:
 ## published is true ONLY on a 2xx from the endpoint, whose counts are
 ## forge-re-fetched (anti-façade), never self-estimated.
 tool publish_review:
-  command: `WS={{vars.workspace_dir}} REVIEWED_SHA={{input.reviewed_sha}} PUB_URL={{vars.forge_publish_url}} PUB_TOKEN={{vars.forge_publish_token}} MODE={{vars.pr_review_mode}} PR_URL={{input.pr_url}} FINDINGS={{input.findings}} QUESTIONS={{input.questions}} CLAUDE_FINDINGS={{input.claude_findings}} GPT_FINDINGS={{input.gpt_findings}} GATE_ENABLED={{vars.gate_enabled}} GATE_SEVERITY={{vars.gate_severity}} GATE_CONTEXT={{vars.gate_context}} python3 -c "
+  command: `WS={{vars.workspace_dir}} REVIEWED_SHA={{input.reviewed_sha}} PUB_URL={{vars.forge_publish_url}} PUB_TOKEN={{vars.forge_publish_token}} MODE={{vars.pr_review_mode}} REVIEW_MODE={{vars.review_mode}} PR_URL={{input.pr_url}} FINDINGS={{input.findings}} QUESTIONS={{input.questions}} CLAUDE_FINDINGS={{input.claude_findings}} GPT_FINDINGS={{input.gpt_findings}} GATE_ENABLED={{vars.gate_enabled}} GATE_SEVERITY={{vars.gate_severity}} GATE_CONTEXT={{vars.gate_context}} python3 -c "
 import os, json, subprocess, urllib.request, urllib.error
 
 def emit(published, forge='unknown', review_url='', posted=0, sugg=0, skipped='', summary=''):
@@ -904,9 +904,20 @@ elif findings_parse_failed:
     summary.append(chr(9888) + ' DEGRADED: the review produced findings but their machine-readable form was unreadable, and no reviewer fallback was available. Nothing could be anchored inline; the merge gate fails closed.')
 for sev in sorted(counts, key=lambda s: sev_rank.get(s, 9)):
     summary.append('- ' + sev + ': ' + str(counts[sev]))
+# Cross-confirmation only exists when two families actually reviewed. The
+# topology predicate is the same one the graph routes on (anything not 'dual'
+# runs a single reviewer), so mono cannot report it. Saying '0 cross-confirmed'
+# there reads as 'two families looked and agreed on nothing' — a claim about a
+# review that never happened.
+dual = str(os.environ.get('REVIEW_MODE', '')).strip().lower() == 'dual'
 cross_n = len([f for f in findings if isinstance(f, dict) and str(f.get('reviewers') or '') == 'both'])
 summary.append('')
-summary.append(str(cross_n) + ' finding(s) cross-confirmed by both model families.' if findings else 'No blocking findings.')
+if not findings:
+    summary.append('No blocking findings.')
+elif dual:
+    summary.append(str(cross_n) + ' finding(s) cross-confirmed by both model families.')
+else:
+    summary.append('Reviewed by a single model family (mono topology): no finding is cross-confirmed, and none is meant to be.')
 if questions:
     summary.append('')
     summary.append('### Open questions (non-blocking — reviewer assumptions to confirm)')
