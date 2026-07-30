@@ -42,6 +42,14 @@ type PipelineBoardPendingReview struct {
 	NodeID        string         `json:"node_id,omitempty"`
 	InteractionID string         `json:"interaction_id,omitempty"`
 	Questions     map[string]any `json:"questions,omitempty"`
+	// Instructions is the resolved `instructions:` prompt of the paused
+	// human node — the author's operator-facing question. Questions above
+	// carries the node's INBOUND data, which the schema-driven form does
+	// not render (it renders the node's output fields), so for any bot
+	// that puts its whole question in `instructions:` this string is the
+	// only readable content on the card. Empty when the node declares no
+	// instructions prompt.
+	Instructions string `json:"instructions,omitempty"`
 	// UpdatedAt is when this exact pending turn joined the operator queue.
 	// Review gates reuse their interaction ID across dialogue turns, so the
 	// timestamp also versions the form on the Studio side.

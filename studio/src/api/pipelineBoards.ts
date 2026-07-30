@@ -26,6 +26,14 @@ export interface PipelineBoardPendingReview {
   node_id?: string;
   interaction_id?: string;
   questions?: Record<string, unknown>;
+  /**
+   * Resolved `instructions:` prompt of the paused human node — the author's
+   * operator-facing question. `questions` above is the node's INBOUND data,
+   * which the schema-driven form does not render (it renders the node's
+   * OUTPUT fields), so for a bot that puts its whole question in
+   * `instructions:` this is the only readable content on the card.
+   */
+  instructions?: string;
   /** When this exact pending turn joined the FIFO review queue. */
   updated_at: string;
   depth: number;
@@ -342,6 +350,9 @@ function normalizePendingReviews(
         ? { interaction_id: text(source.interaction_id) }
         : {}),
       ...(questions ? { questions } : {}),
+      ...(text(source.instructions)
+        ? { instructions: text(source.instructions) }
+        : {}),
       updated_at: text(source.updated_at) ?? "",
       depth: Math.max(0, intValue(source.depth, 0)),
     };

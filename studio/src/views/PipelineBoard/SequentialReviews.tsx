@@ -123,6 +123,7 @@ export function SequentialReviews({ card, onResolved }: Props) {
           runId={review.run_id}
           nodeId={review.node_id}
           questions={review.questions ?? {}}
+          instructions={review.instructions}
           sourceOverride={null}
           onResumed={handleResolved}
         />

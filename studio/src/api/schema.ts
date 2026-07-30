@@ -4680,6 +4680,7 @@ export interface components {
         PipelineBoardPendingReview: {
             bot_id?: string;
             depth: number;
+            instructions?: string;
             interaction_id?: string;
             node_id?: string;
             questions?: {

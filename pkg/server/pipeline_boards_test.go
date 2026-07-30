@@ -1420,3 +1420,135 @@ func TestPipelineBoardParentClosesIndependentlyOfChildren(t *testing.T) {
 		t.Fatalf("child lost its parent link: %q / %q", cCard.ParentIssueID, cCard.ParentTitle)
 	}
 }
+
+// The card must carry the paused node's resolved `instructions:` text.
+// It is the author's operator-facing question and rides ONLY on the
+// human_input_requested event — the checkpoint and the interaction record
+// don't keep it. Without it the card renders an answer box with nothing
+// above it, because the schema-driven form shows the node's OUTPUT fields
+// while `questions` holds its INBOUND data (regression: an app-concept
+// interview gate whose whole prompt is `instructions: {{input.reply}}`
+// showed a blank form on the board while the run console rendered it).
+func TestPipelineBoardPendingReviewCarriesResolvedInstructions(t *testing.T) {
+	env := newPipelineBoardTestEnv(t)
+	env.seedRun(t, "run-gate", "interview", store.RunStatusPausedWaitingHuman, func(run *store.Run) {
+		run.FilePath = env.botPath
+		run.Checkpoint = &store.Checkpoint{
+			NodeID:        "chat",
+			InteractionID: "int-chat",
+			// Inbound data only: the answer form never renders these.
+			InteractionQuestions: map[string]any{"reply": "Which scope do you want?"},
+		}
+	})
+	rs := env.runStore(t)
+	// An earlier turn of the SAME gate, then the current one, then a pause
+	// on the same node belonging to ANOTHER interaction (what a human node
+	// inside a loop produces): the operator must see the turn the
+	// checkpoint points at — not the stale one, and not a sibling's. The
+	// last entry is what makes the interaction-id key load-bearing: drop
+	// it and this test still passes on node id alone.
+	for _, turn := range []struct{ id, text string }{
+		{"int-chat", "STALE first turn"},
+		{"int-chat", "Which scope do you want? **A** or **B**?"},
+		{"int-later-loop", "WRONG INTERACTION"},
+	} {
+		if _, err := rs.AppendEvent(context.Background(), "run-gate", store.Event{
+			Type:      store.EventHumanInputRequested,
+			RunID:     "run-gate",
+			NodeID:    "chat",
+			Timestamp: time.Now().UTC(),
+			Data: map[string]any{
+				"interaction_id": turn.id,
+				"instructions":   turn.text,
+			},
+		}); err != nil {
+			t.Fatalf("AppendEvent: %v", err)
+		}
+	}
+	// A pause of a DIFFERENT node must not leak into this review.
+	if _, err := rs.AppendEvent(context.Background(), "run-gate", store.Event{
+		Type:      store.EventHumanInputRequested,
+		RunID:     "run-gate",
+		NodeID:    "other_gate",
+		Timestamp: time.Now().UTC(),
+		Data:      map[string]any{"interaction_id": "int-other", "instructions": "WRONG NODE"},
+	}); err != nil {
+		t.Fatalf("AppendEvent: %v", err)
+	}
+
+	card := findPipelineCard(t, env.projection(t).Cards, "run:run-gate")
+	if len(card.PendingReviews) != 1 {
+		t.Fatalf("pending_reviews = %+v, want the paused gate", card.PendingReviews)
+	}
+	got := card.PendingReviews[0].Instructions
+	if got != "Which scope do you want? **A** or **B**?" {
+		t.Fatalf("instructions = %q, want the current turn's resolved prompt", got)
+	}
+}
+
+// A node with no `instructions:` prompt emits no such field; the review
+// must then carry an empty string rather than borrowing another node's.
+func TestPipelineBoardPendingReviewWithoutInstructionsStaysEmpty(t *testing.T) {
+	env := newPipelineBoardTestEnv(t)
+	env.seedRun(t, "run-bare", "bare", store.RunStatusPausedWaitingHuman, func(run *store.Run) {
+		run.FilePath = env.botPath
+		run.Checkpoint = &store.Checkpoint{NodeID: "gate", InteractionID: "int-bare"}
+	})
+	if _, err := env.runStore(t).AppendEvent(context.Background(), "run-bare", store.Event{
+		Type:      store.EventHumanInputRequested,
+		RunID:     "run-bare",
+		NodeID:    "gate",
+		Timestamp: time.Now().UTC(),
+		Data:      map[string]any{"interaction_id": "int-bare"},
+	}); err != nil {
+		t.Fatalf("AppendEvent: %v", err)
+	}
+
+	card := findPipelineCard(t, env.projection(t).Cards, "run:run-bare")
+	if len(card.PendingReviews) != 1 {
+		t.Fatalf("pending_reviews = %+v", card.PendingReviews)
+	}
+	if got := card.PendingReviews[0].Instructions; got != "" {
+		t.Fatalf("instructions = %q, want empty", got)
+	}
+}
+
+// A later turn on the SAME interaction that carries no instructions must
+// BLANK the card, not leave the previous turn's question standing. Two
+// pause paths legitimately emit no text — pauseForRecovery, and
+// humanInstructionsExtra returning nil when the template renders empty —
+// and interactionIDForPause hands every pause of a non-loop node the same
+// `<runID>_<nodeID>` id, so the stale text would otherwise sit as markdown
+// directly above a form asking something else: this PR's own failure mode,
+// in reverse.
+func TestPipelineBoardPendingReviewLaterTurnWithoutInstructionsBlanks(t *testing.T) {
+	env := newPipelineBoardTestEnv(t)
+	env.seedRun(t, "run-recovery", "interview", store.RunStatusPausedWaitingHuman, func(run *store.Run) {
+		run.FilePath = env.botPath
+		run.Checkpoint = &store.Checkpoint{NodeID: "chat", InteractionID: "int-chat"}
+	})
+	rs := env.runStore(t)
+	for _, turn := range []map[string]any{
+		{"interaction_id": "int-chat", "instructions": "The gate question"},
+		// A recovery pause on the same node/interaction: no instructions key.
+		{"interaction_id": "int-chat", "recovery_code": "E_TOOL", "recovery_reason": "boom"},
+	} {
+		if _, err := rs.AppendEvent(context.Background(), "run-recovery", store.Event{
+			Type:      store.EventHumanInputRequested,
+			RunID:     "run-recovery",
+			NodeID:    "chat",
+			Timestamp: time.Now().UTC(),
+			Data:      turn,
+		}); err != nil {
+			t.Fatalf("AppendEvent: %v", err)
+		}
+	}
+
+	card := findPipelineCard(t, env.projection(t).Cards, "run:run-recovery")
+	if len(card.PendingReviews) != 1 {
+		t.Fatalf("pending_reviews = %+v", card.PendingReviews)
+	}
+	if got := card.PendingReviews[0].Instructions; got != "" {
+		t.Fatalf("instructions = %q, want empty: the current turn carries none", got)
+	}
+}
