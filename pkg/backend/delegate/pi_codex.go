@@ -86,10 +86,15 @@ func piCodexSeed(ctx context.Context, task Task, logger *iterlog.Logger) (map[st
 	}
 
 	// An operator who pinned an agent dir has their own pi configuration,
-	// possibly including a real `/login`. Overriding it would silently
-	// discard that.
-	if dir := strings.TrimSpace(os.Getenv("ITERION_PI_AGENT_DIR")); dir != "" {
-		return nil, noop, nil
+	// possibly including a real `/login`. Overriding it would silently discard
+	// that — including when they pinned pi's OWN variable rather than iterion's,
+	// which is the more natural thing to reach for and which the seed would
+	// otherwise overwrite through task.ExtraEnv.
+	for _, v := range []string{"ITERION_PI_AGENT_DIR", "PI_CODING_AGENT_DIR"} {
+		if dir := strings.TrimSpace(os.Getenv(v)); dir != "" {
+			piNoteCodexFallback(task, logger, fmt.Sprintf("%s pins its own agent dir", v))
+			return nil, noop, nil
+		}
 	}
 
 	// No usable Codex credential is NOT an error: before this bridge existed,
@@ -126,9 +131,13 @@ func piCodexSeed(ctx context.Context, task Task, logger *iterlog.Logger) (map[st
 			task.NodeID, piCodexProvider)
 	}
 
+	// A root we cannot make safe is not a reason to kill the node: pi's own
+	// /login may well work, and that is the path this bridge was added ON TOP
+	// of, not in place of. Same rule as a missing credential above.
 	root, err := piCodexSeedRoot(task, logger)
 	if err != nil {
-		return nil, noop, fmt.Errorf("pi backend: %w", err)
+		piNoteCodexFallback(task, logger, fmt.Sprintf("no safe place to write it (%v)", err))
+		return nil, noop, nil
 	}
 	piSweepStaleSeeds(root)
 	dir, err := os.MkdirTemp(root, piSeedDirPrefix)
@@ -214,18 +223,6 @@ func piCodexSeedRoot(task Task, logger *iterlog.Logger) (string, error) {
 		}
 		return "", nil
 	}
-	// Wherever the root landed, if it is inside the git worktree the ignore
-	// guard must be VERIFIED rather than assumed — piHideWorkspaceSessionDir is
-	// best-effort and never overwrites a `.iterion/.gitignore` the target repo
-	// already tracks, and a campaign agent's `git add -A` would stage the token
-	// pair. The sandboxed root is inside by construction; the store root is too
-	// whenever the operator points --store-dir at the workspace, which is
-	// exactly what this repo's own dogfood instructions prescribe.
-	if inWorktree(task.WorkDir, root) {
-		if err := piWorkspaceIgnoreCovers(task.WorkDir); err != nil {
-			return "", err
-		}
-	}
 	if err := os.MkdirAll(root, 0o700); err != nil {
 		if sandboxed {
 			return "", fmt.Errorf("create agent dir %s: %w (a /tmp fallback is not mounted in the sandbox, "+
@@ -237,7 +234,40 @@ func piCodexSeedRoot(task Task, logger *iterlog.Logger) (string, error) {
 		}
 		return "", nil
 	}
+	// Wherever the root landed, if it is inside the git worktree the credential
+	// must be unstageable: a v2 campaign agent runs `git add -A` before each
+	// in-stride commit, and finalizeWorktree fast-forwards the result onto the
+	// operator's branch.
+	//
+	// iterion writes its OWN guard here rather than trusting one it did not
+	// author. Verifying `<workDir>/.iterion/.gitignore` was wrong twice over: it
+	// is best-effort and never overwrites a file the repo already tracks, and it
+	// says nothing about a root that landed somewhere else under the worktree —
+	// which `--store-dir` can put anywhere. A `*` in the seed root's own
+	// directory covers everything beneath it, including itself, wherever it is.
+	if inWorktree(task.WorkDir, root) {
+		if err := piWriteIgnoreGuard(root); err != nil {
+			return "", err
+		}
+	}
 	return root, nil
+}
+
+// piWriteIgnoreGuard makes everything under dir unstageable.
+func piWriteIgnoreGuard(dir string) error {
+	guard := filepath.Join(dir, ".gitignore")
+	if data, err := os.ReadFile(guard); err == nil { // #nosec G304 — fixed name under a dir we just created.
+		for _, line := range strings.Split(string(data), "\n") {
+			if strings.TrimSpace(line) == "*" {
+				return nil
+			}
+		}
+	}
+	// `*` ignores this file too, so nothing under dir is ever staged.
+	if err := os.WriteFile(guard, []byte("*\n"), 0o644); err != nil {
+		return fmt.Errorf("write ignore guard %s: %w", guard, err)
+	}
+	return nil
 }
 
 // piSeedMaxAge is how old a seed must be before the sweep will touch it.
@@ -331,33 +361,6 @@ func jwtExpiryMillis(token string) int64 {
 		return 0
 	}
 	return claims.Exp * 1000
-}
-
-// piWorkspaceIgnoreCovers verifies that <workDir>/.iterion/ is ignored wholesale
-// before a credential is written under it.
-//
-// Only the catch-all `*` counts. A repo that tracks its own `.iterion/.gitignore`
-// with narrower rules is left alone by piHideWorkspaceSessionDir — correctly,
-// it is the operator's file — but then nothing guarantees the seed directory is
-// excluded, and the consequence of guessing wrong is an OAuth refresh token
-// committed onto a branch that finalizeWorktree fast-forwards into the
-// operator's checkout. Refusing to seed is the recoverable failure; committing
-// a credential is not.
-func piWorkspaceIgnoreCovers(workDir string) error {
-	guard := filepath.Join(workDir, ".iterion", ".gitignore")
-	data, err := os.ReadFile(guard) // #nosec G304 — a fixed filename under the run's workspace.
-	if err != nil {
-		return fmt.Errorf("refusing to write a ChatGPT credential under %s: no ignore guard at %s (%w)",
-			filepath.Join(workDir, ".iterion"), guard, err)
-	}
-	for _, line := range strings.Split(string(data), "\n") {
-		if strings.TrimSpace(line) == "*" {
-			return nil
-		}
-	}
-	return fmt.Errorf("refusing to write a ChatGPT credential under %s: %s does not ignore everything "+
-		"(no `*` line), so a campaign agent's `git add -A` could commit the token",
-		filepath.Join(workDir, ".iterion"), guard)
 }
 
 // inWorktree reports whether path sits inside the run's git worktree, so a

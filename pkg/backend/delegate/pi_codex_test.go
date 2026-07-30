@@ -466,76 +466,98 @@ func TestPiBinaryOverride(t *testing.T) {
 	})
 }
 
-// On the sandboxed path the credential lands inside the git worktree, where a
-// v2 campaign agent's `git add -A` would stage it — and finalizeWorktree then
-// fast-forwards that branch into the operator's checkout. The ignore guard is
-// best-effort and never overwrites a `.iterion/.gitignore` the repo already
-// tracks, so it must be VERIFIED, not assumed.
-func TestPiCodexSeedRequiresTheIgnoreGuard(t *testing.T) {
-	seedRoot := func(t *testing.T, guard string) error {
+// A credential written inside the git worktree must be unstageable: a v2
+// campaign agent runs `git add -A` before each in-stride commit, and
+// finalizeWorktree fast-forwards the result onto the operator's branch.
+//
+// iterion writes its OWN guard at the seed root rather than trusting
+// <workDir>/.iterion/.gitignore — that file is best-effort, is never
+// overwritten when the repo already tracks one, and says nothing about a root
+// that --store-dir put elsewhere under the worktree.
+func TestPiCodexSeedMakesTheTokenUnstageable(t *testing.T) {
+	guarded := func(t *testing.T, root string) {
 		t.Helper()
-		work := t.TempDir()
-		if err := os.MkdirAll(filepath.Join(work, ".iterion"), 0o755); err != nil {
-			t.Fatal(err)
+		data, err := os.ReadFile(filepath.Join(root, ".gitignore"))
+		if err != nil {
+			t.Fatalf("no ignore guard at the seed root (%v) — `git add -A` would stage the token", err)
 		}
-		if guard != "" {
-			if err := os.WriteFile(filepath.Join(work, ".iterion", ".gitignore"),
-				[]byte(guard), 0o644); err != nil {
-				t.Fatal(err)
-			}
+		if !strings.Contains(string(data), "*") {
+			t.Errorf("guard = %q, want the catch-all", data)
 		}
-		_, err := piCodexSeedRoot(Task{NodeID: "n", WorkDir: work, Sandbox: stubSandboxRun{}}, nil)
-		return err
 	}
 
-	t.Run("no guard at all is refused", func(t *testing.T) {
-		if err := seedRoot(t, ""); err == nil {
-			t.Fatal("seeded a credential into an unguarded git worktree")
+	t.Run("sandboxed: inside the workspace", func(t *testing.T) {
+		work := t.TempDir()
+		root, err := piCodexSeedRoot(Task{NodeID: "n", WorkDir: work, Sandbox: stubSandboxRun{}}, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		guarded(t, root)
+	})
+
+	// The dogfood invocation this repo prescribes — --store-dir "$PWD/.iterion" —
+	// puts the store INSIDE the repo, so the non-sandboxed path carries the same
+	// exposure.
+	t.Run("a store dir inside the worktree", func(t *testing.T) {
+		work := t.TempDir()
+		store := filepath.Join(work, ".iterion")
+		if err := os.MkdirAll(store, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		root, err := piCodexSeedRoot(Task{NodeID: "n", WorkDir: work, StoreDir: store}, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		guarded(t, root)
+	})
+
+	// A root the repo already ignores wholesale needs nothing added.
+	t.Run("an existing catch-all is left alone", func(t *testing.T) {
+		work := t.TempDir()
+		store := filepath.Join(work, ".iterion")
+		root := filepath.Join(store, "pi")
+		if err := os.MkdirAll(root, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(root, ".gitignore"), []byte("# mine\n*\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := piCodexSeedRoot(Task{NodeID: "n", WorkDir: work, StoreDir: store}, nil); err != nil {
+			t.Fatal(err)
+		}
+		data, _ := os.ReadFile(filepath.Join(root, ".gitignore"))
+		if !strings.Contains(string(data), "# mine") {
+			t.Error("overwrote an operator's own ignore file")
 		}
 	})
 
-	// A repo tracking its own narrower rules is left alone by the guard writer,
-	// so nothing proves the seed dir is excluded.
-	t.Run("a guard that does not ignore everything is refused", func(t *testing.T) {
-		if err := seedRoot(t, "runs/\nworktrees/\n"); err == nil {
-			t.Fatal("seeded despite an ignore file that may not cover the seed dir")
+	// Outside the worktree nothing is stageable, so no guard is written.
+	t.Run("a store outside the worktree needs no guard", func(t *testing.T) {
+		work, outside := t.TempDir(), t.TempDir()
+		root, err := piCodexSeedRoot(Task{NodeID: "n", WorkDir: work, StoreDir: outside}, nil)
+		if err != nil {
+			t.Fatal(err)
 		}
-	})
-
-	t.Run("the catch-all guard is accepted", func(t *testing.T) {
-		if err := seedRoot(t, "*\n"); err != nil {
-			t.Fatalf("refused despite a catch-all guard: %v", err)
+		if _, err := os.Stat(filepath.Join(root, ".gitignore")); err == nil {
+			t.Error("wrote a guard outside the worktree — nothing there can be staged")
 		}
 	})
 }
 
-// The containment check must apply wherever the seed lands inside the git
-// worktree — not only on the sandboxed branch. This repo's own dogfood
-// instructions prescribe `--store-dir "$PWD/.iterion"`, which puts the store
-// INSIDE the repo, so the non-sandboxed path carries the same `git add -A`
-// exposure the sandboxed one was hardened against.
-func TestPiCodexSeedGuardsAStoreInsideTheWorktree(t *testing.T) {
-	work := t.TempDir()
-	store := filepath.Join(work, ".iterion")
-	if err := os.MkdirAll(store, 0o755); err != nil {
-		t.Fatal(err)
-	}
-
-	// No guard: a credential here would be stageable.
-	if _, err := piCodexSeedRoot(Task{NodeID: "n", WorkDir: work, StoreDir: store}, nil); err == nil {
-		t.Fatal("seeded into an unguarded store inside the git worktree")
-	}
-
-	if err := os.WriteFile(filepath.Join(store, ".gitignore"), []byte("*\n"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := piCodexSeedRoot(Task{NodeID: "n", WorkDir: work, StoreDir: store}, nil); err != nil {
-		t.Fatalf("refused despite a catch-all guard: %v", err)
-	}
-
-	// A store OUTSIDE the worktree needs no guard — nothing there is stageable.
-	outside := t.TempDir()
-	if _, err := piCodexSeedRoot(Task{NodeID: "n", WorkDir: work, StoreDir: outside}, nil); err != nil {
-		t.Errorf("refused a store outside the worktree: %v", err)
+// An operator who pinned pi's own PI_CODING_AGENT_DIR gets left alone: it is
+// the more natural variable to reach for, and the seed would otherwise
+// overwrite it through task.ExtraEnv.
+func TestPiCodexSeedRespectsPisOwnAgentDir(t *testing.T) {
+	for _, v := range []string{"ITERION_PI_AGENT_DIR", "PI_CODING_AGENT_DIR"} {
+		t.Run(v, func(t *testing.T) {
+			writeCodexAuth(t, "chatgpt")
+			t.Setenv(v, "/operator/pinned")
+			env, cleanup, err := piCodexSeed(context.Background(),
+				Task{NodeID: "n", Model: "openai-codex/gpt-5.6-sol", StoreDir: t.TempDir()}, nil)
+			cleanup()
+			if err != nil || len(env) != 0 {
+				t.Errorf("env=%v err=%v — the operator's own agent dir must win", env, err)
+			}
+		})
 	}
 }
