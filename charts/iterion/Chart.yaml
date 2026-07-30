@@ -10,8 +10,8 @@ type: application
 # the OCI artifact published by .github/workflows/release.yml carries the
 # same semver as the iterion binary it deploys. Consumers pin via
 # `helm install ... --version <semver>`.
-version: 3.16.0
-appVersion: "3.16.0"
+version: 3.16.1
+appVersion: "3.16.1"
 home: https://github.com/SocialGouv/iterion
 sources:
   - https://github.com/SocialGouv/iterion
