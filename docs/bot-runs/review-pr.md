@@ -6,6 +6,82 @@ finding is published to the native board (label `source:revi`); with `--var
 pr_url` it also posts an inline forge review. Never edits or commits. See
 [bots/review-pr/](../../bots/review-pr/).
 
+## 2026-07-30 — Revi had stopped publishing on every repo, and finished green doing it
+
+- Status: **defect found and fixed** — the runs were fine, the publishing step
+  was dead. Found while wiring `iterion/review` as a required check, which is
+  the only reason it surfaced at all.
+- Versions: bot review-pr 0.5.6 · iterion `main` @ `7b87b5f37` + `34bd00879`
+- Method: `/revi` on buildkit-operator #4 (run `019fb403-530a`, 2m42s) and #7
+  (`019fb403-5f28`, 3m39s), plus the iterion PRs of the day (#323 →
+  `019fb408`, ~12min). Cloud prod, mono topology.
+- Result: after the fix, all three posted their review **and** their commit
+  status. Before it, every one of them finished `finished` having posted
+  nothing. Verbatim from #323 — both fixes visible in one line:
+
+  > ## Code review by Revi (iterion)
+  > 4 finding(s) kept after threshold/cap. — medium: 2, low: 2
+  > Reviewed by a single model family (mono topology): no finding is
+  > cross-confirmed, and none is meant to be.
+
+  with `revi/review=SUCCESS` on the head.
+
+### The defect: a template that never resolved
+
+`publish_review` built its guard input as `REVIEWED_SHA={{outputs.…}}` inside a
+tool node's `command:`. That body is resolved by
+[resolveCommandTemplate](../../pkg/backend/model/executor_tool.go), which
+substitutes `{{input.X}}`, `{{vars.X}}`, `{{secrets.X}}` and `{{run.id}}` —
+**`{{outputs.…}}` resolves only in edge mappings**. Written in a body it
+survives as literal text.
+
+So the stale-anchor guard compared the literal string `{{outputs.…}}` to the
+PR's head sha, concluded the anchors were stale, and skipped the whole publish:
+review, inline comments, and gate status. No error anywhere — the node
+succeeded, the run finished, and the PR simply never heard from Revi. This had
+been true **repo-wide**, on every review, for as long as the guard existed.
+
+Had the required check been switched on before this was found, it would have
+blocked every pull request on the repo — an outage caused by a check that was
+never posted, on runs reporting success.
+
+### Second defect on the same path: the guard took the gate down with it
+
+Even a *genuinely* stale anchor set skipped the entire publish. But a stale
+inline anchor only means the line numbers moved — it says nothing about the
+verdict. Dropping the gate along with the comments turns a cosmetic problem
+into a permanently absent required check. `stale_anchors` now drops the inline
+comments and **keeps publishing** the summary and the status.
+
+### Third: mono claimed a cross-family confirmation that never happened
+
+The summary printed `N finding(s) cross-confirmed by both model families` even
+in mono topology, where one family ran. Spotted by jo on the real comment on
+buildkit-operator #6 — the reviewer was describing a corroboration it had no
+way to perform. Mono now says so in as many words.
+
+### Guards added
+
+- `bots/catalog_command_refs_test.go` — catalog-wide: **no** `{{outputs.…}}` in
+  any tool `command:`/`script:`/`postcondition:`, walking every `.bot`. The
+  class, not the instance: the same silent no-op was available to every bot in
+  the catalog.
+- `bots/review_pr_stale_anchor_test.go` — drives the real publish body against
+  a stub, shell-quoting substitutions the way the engine does, so the guard is
+  exercised on the code that ships rather than on a paraphrase of it.
+
+### Lessons for next run
+
+1. **`{{outputs.…}}` in a command body is a silent no-op**, not an error. Any
+   comparison against one is a comparison against a constant string — it will
+   take whichever branch that constant happens to select, forever.
+2. **A guard that suppresses output must never suppress the verdict.** Degrade
+   the part that is unsafe (the anchors), keep the part a required check
+   depends on.
+3. A bot that publishes nothing looks exactly like a bot with nothing to say.
+   Neither the run status, nor the logs, nor a green test suite distinguished
+   them here — making the check *required* is what finally did.
+
 ## 2026-07-08 — GitHub PR webhook e2e on iterion cloud prod
 
 - Status: **validated — full end-to-end via the inbound webhook.**
