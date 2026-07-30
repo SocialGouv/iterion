@@ -47,6 +47,16 @@ func (b *CodexBackend) Execute(ctx context.Context, task Task) (Result, error) {
 		}
 	}
 
+	// OpenAI Structured Outputs cannot represent the DSL's shape-free `json`
+	// field directly: its object variant would need a closed, enumerated
+	// property set. Adapt only this local Task copy to a string transport and
+	// decode it again before returning to the model executor.
+	transportSchema, jsonTransportFields, err := codexTransportSchema(task.OutputSchema)
+	if err != nil {
+		return Result{ExitCode: -1, BackendName: BackendCodex}, fmt.Errorf("delegate: codex output schema transport: %w", err)
+	}
+	task.OutputSchema = transportSchema
+
 	var opts []codexsdk.Option
 
 	// Preamble teaches frugal tool usage; task prompt follows and may override.
@@ -197,6 +207,13 @@ func (b *CodexBackend) Execute(ctx context.Context, task Task) (Result, error) {
 			if fallback {
 				return result, fmt.Errorf("delegate: codex formatting pass did not return schema-conforming JSON")
 			}
+			if decodeErr := decodeCodexJSONTransport(output, jsonTransportFields); decodeErr != nil {
+				if attempt < maxFmtAttempts {
+					b.Logger.Warn("codex [formatting pass %d/%d] returned invalid encoded JSON, retrying: %v", attempt, maxFmtAttempts, decodeErr)
+					continue
+				}
+				return result, fmt.Errorf("delegate: codex formatting pass returned invalid encoded JSON: %w", decodeErr)
+			}
 			result.Output = output
 			result.RawOutputLen = rawLen
 			result.ParseFallback = fallback
@@ -213,6 +230,9 @@ func (b *CodexBackend) Execute(ctx context.Context, task Task) (Result, error) {
 
 	if len(result.Output) == 0 {
 		return result, fmt.Errorf("delegate: codex returned empty output")
+	}
+	if decodeErr := decodeCodexJSONTransport(result.Output, jsonTransportFields); decodeErr != nil {
+		return result, fmt.Errorf("delegate: codex returned invalid encoded JSON: %w", decodeErr)
 	}
 
 	cost.Annotate(result.Output, task.Model, totalIn, totalOut)
@@ -360,7 +380,10 @@ func (b *CodexBackend) formatOutput(ctx context.Context, task Task, sessionID st
 		opts = append(opts, codexsdk.WithEnv(envOverride))
 	}
 
-	prompt := "Format your complete findings as JSON matching the required output schema. Do not call any tools; just return the JSON."
+	prompt := "Format your complete findings as JSON matching the required output schema. " +
+		"For every field described as JSON-encoded, return an outer JSON string whose contents are exactly one complete JSON value; " +
+		"quote JSON string scalars inside that transport string and use the literal text null for JSON null. " +
+		"Do not call any tools; just return the JSON."
 
 	rm, duration, _, err := b.runQueryWithRetry(ctx, task, prompt, nil, opts)
 	if err != nil {
