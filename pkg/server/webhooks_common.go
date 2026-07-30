@@ -172,6 +172,11 @@ func reviewPRVars(prURL, baseRef, scopeNotes string, launchVars map[string]strin
 		// so the historical "summary for a lower failure surface" default
 		// no longer applies.
 		"pr_review_mode": "inline",
+		// head_sha is the revision the run is about to review. It is what
+		// lets anything downstream prove it is speaking about the commit it
+		// read rather than whatever the branch holds later — the gate
+		// reconciler refuses to post without it.
+		"head_sha": "",
 	}
 	mergeVarsInto(vars, extra)
 	mergeVarsInto(vars, launchVars)

@@ -244,12 +244,6 @@ type Server struct {
 	// iff forgeConnections is wired.
 	forgePublishTokens ForgePublishTokenStore
 
-	// gateContexts remembers the last merge-gate context posted per repo, so
-	// the reconciler can name the check a dead run owed. The context is
-	// declared in the .bot and never reaches the server on the launch path,
-	// and a run that died may never have spoken to the server at all.
-	gateContexts gateContextMemory
-
 	// gateReconcileCancel unsubscribes the merge-gate reconciler at shutdown.
 	gateReconcileCancel func()
 

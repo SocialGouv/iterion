@@ -137,7 +137,7 @@ func (s *Server) handleGitLabMergeRequestEvent(ctx context.Context, w http.Respo
 
 	targets := forgePREventTargets(cfg, rules, idemBase, p.MRURL, p.TargetBranch,
 		strings.TrimSpace(p.Title+"\n\n"+p.Description), p.CloneURL, p.SourceBranch,
-		map[string]string{"pr_author": p.SenderUsername, "source_branch": p.SourceBranch})
+		map[string]string{"pr_author": p.SenderUsername, "source_branch": p.SourceBranch, "head_sha": p.HeadSHA})
 
 	s.insertAndLaunchWebhookMulti(ctx, w, r, cfg, meta, targets, payloadHash, srcIP)
 }

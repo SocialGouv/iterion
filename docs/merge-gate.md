@@ -204,16 +204,21 @@ that from doing harm of its own:
   not share and a restart would lose. A provider iterion cannot read statuses
   back from is left alone: overwriting a real success with a synthetic failure
   is worse than the problem being fixed.
-- **It only speaks for a bot that has gated this repo.** Holding a publish
-  grant is not owing a verdict: the server mints one for ANY bot launched with
-  a `pr_url` — the brancher, the docs amender, the implementer — and a repo's
-  gate context is deliberately SHARED between the bots that gate it. What
-  identifies an owing run is that the server saw *this* bot post *that* context
-  on *this* repo before. Learned from data; the engine never knows a bot by
-  name. An operator pin in `launch_vars` overrides what was learned.
+- **It acts only where the operator pinned the gate context.** Holding a
+  publish grant is not owing a verdict: the server mints one for ANY bot
+  launched with a `pr_url` — the brancher, the docs amender, the implementer —
+  and a repo's gate context is deliberately SHARED between the bots that gate
+  it. The anchor is therefore `launch_vars.gate_context` on the integration,
+  which is already what a repo must set to make one required check span several
+  bots. **A repo that does not pin it gets no repair.** (Inferring it from
+  contexts the server had posted before was tried and dropped: that memory is
+  empty in exactly the two situations this exists for — a bot whose publish
+  step never succeeds, and a rollout that restarts every replica.)
 - **It only speaks for the revision that run reviewed.** The head moves while a
   run is alive — the author pushes a fix, a brancher commits, `review_on_sync`
-  starts a fresh review. A newer head is a newer review's responsibility.
+  starts a fresh review. A newer head is a newer review's responsibility, so
+  the run must name the revision it read (`head_sha`, stamped at launch) and
+  the reconciler abstains when it does not.
 - **It leaves resumable and paused runs alone.** The cloud runner republishes
   a run outcome on every delivery attempt, before deciding to retry, so a
   transient rate limit is not a dead run.

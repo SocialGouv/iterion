@@ -3,7 +3,6 @@ package server
 import (
 	"context"
 	"strings"
-	"sync"
 
 	"github.com/SocialGouv/iterion/pkg/eventbus"
 	"github.com/SocialGouv/iterion/pkg/forge"
@@ -116,17 +115,16 @@ func (s *Server) reconcileGateForRun(ctx context.Context, ev trigger.Event) erro
 	// gate it. Reconciling on "has a token" would let a bot that owes nothing
 	// paint another bot's required check red.
 	//
-	// What identifies an owing run is that this workflow has already gated
-	// this repo: the server saw it post that context itself. Learned from
-	// data — the engine never knows a bot by name.
-	gateCtx := s.lastGateContextFor(grant.Repo, grant.Bot)
+	// The anchor is therefore the context the OPERATOR pinned for this repo
+	// (`launch_vars.gate_context` on the integration), which is also what a
+	// repo must do to make a check required across several bots. Nothing
+	// learned, nothing remembered: a first attempt inferred it from contexts
+	// the server had posted before, which is empty in exactly the two
+	// situations this repair exists for — a bot whose publish step never
+	// succeeds, and a rollout that restarts every replica.
+	gateCtx := runInputString(run, "gate_context")
 	if gateCtx == "" {
 		return nil
-	}
-	if pinned := runInputString(run, "gate_context"); pinned != "" {
-		// An operator pin overrides what we learned: it is the context the
-		// repo actually gates on today.
-		gateCtx = pinned
 	}
 
 	host, repo, number, err := forge.ParsePullURL(prURL)
@@ -171,7 +169,13 @@ func (s *Server) reconcileGateForRun(ctx context.Context, ev trigger.Event) erro
 	// commits, review_on_sync already has a fresh review in flight. Painting
 	// the CURRENT head red would report on a commit this run never read, and
 	// a newer head is a newer review's responsibility.
-	if reviewed := runInputString(run, "head_sha"); reviewed != "" && !strings.EqualFold(reviewed, pr.HeadSHA) {
+	//
+	// REQUIRED, not best-effort: a run that cannot name the revision it
+	// reviewed cannot speak for any of them. (An earlier version treated an
+	// absent value as "no constraint", which made the guard vacuous — nothing
+	// set the var at the time, so it never once fired outside its own test.)
+	reviewed := runInputString(run, "head_sha")
+	if reviewed == "" || !strings.EqualFold(reviewed, pr.HeadSHA) {
 		return nil
 	}
 	// The forge is the authority on whether the verdict landed — not any
@@ -226,58 +230,6 @@ func gateAlreadyPosted(ctx context.Context, gc forgeGateClient, repo, sha, ctxNa
 		}
 	}
 	return false, nil
-}
-
-// ---------------------------------------------------------------------------
-// Learned gate contexts
-// ---------------------------------------------------------------------------
-
-// gateContextMemory remembers, per repo, the last context a gate was posted
-// under. It is the only way the server can name the check a dead run owed:
-// the context is declared in the .bot, and a run that died may never have
-// spoken to the server at all.
-//
-// Per-replica and lossy on restart, deliberately: it only ever makes the
-// reconciler abstain, never post the wrong context.
-type gateContextMemory struct {
-	mu sync.RWMutex
-	by map[string]string // "<repo>\x00<workflow>" -> context
-}
-
-func gateMemoryKey(repo, workflow string) string {
-	return strings.TrimSpace(repo) + "\x00" + strings.TrimSpace(workflow)
-}
-
-func (m *gateContextMemory) remember(repo, workflow, ctxName string) {
-	if strings.TrimSpace(repo) == "" || strings.TrimSpace(workflow) == "" || strings.TrimSpace(ctxName) == "" {
-		return
-	}
-	m.mu.Lock()
-	if m.by == nil {
-		m.by = map[string]string{}
-	}
-	m.by[gateMemoryKey(repo, workflow)] = strings.TrimSpace(ctxName)
-	m.mu.Unlock()
-}
-
-func (m *gateContextMemory) get(repo, workflow string) string {
-	m.mu.RLock()
-	defer m.mu.RUnlock()
-	return m.by[gateMemoryKey(repo, workflow)]
-}
-
-func (s *Server) rememberGateContext(repo, workflow, ctxName string) {
-	if s == nil {
-		return
-	}
-	s.gateContexts.remember(repo, workflow, ctxName)
-}
-
-func (s *Server) lastGateContextFor(repo, workflow string) string {
-	if s == nil {
-		return ""
-	}
-	return s.gateContexts.get(repo, workflow)
 }
 
 // gateRunURL points the check at the run that owed it, so the operator lands
