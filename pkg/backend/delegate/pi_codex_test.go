@@ -269,11 +269,24 @@ func TestPiSkillArgs(t *testing.T) {
 
 	t.Run("a bundle's skills are offered with no SkillHints", func(t *testing.T) {
 		work := mirror(t, []string{"doc-enrichment"}, nil)
-		got := joined(piSkillArgs(Task{WorkDir: work}, nil))
-		for _, want := range []string{"doc-enrichment.md", filepath.Join("doc-enrichment", "SKILL.md")} {
-			if !strings.Contains(got, want) {
-				t.Errorf("args %q missing %s — pi cannot see a bundle's skills otherwise", got, want)
-			}
+		args := piSkillArgs(Task{WorkDir: work}, nil)
+		if !strings.Contains(joined(args), filepath.Join("doc-enrichment", "SKILL.md")) {
+			t.Errorf("args %q missing the skill — pi cannot see a bundle's skills otherwise", joined(args))
+		}
+	})
+
+	// The mirror writes a flat alias AND a directory form per flat source skill,
+	// each with its own marker. Emitting per marker handed pi every skill twice:
+	// ten skills became twenty flags naming ten pairs of identical files.
+	t.Run("one flag per skill, not per marker", func(t *testing.T) {
+		work := mirror(t, []string{"doc-enrichment", "doc-mismatch-taxonomy"}, nil)
+		args := piSkillArgs(Task{WorkDir: work}, nil)
+		if n := strings.Count(joined(args), "--skill"); n != 2 {
+			t.Errorf("%d --skill flags for 2 skills (%q) — the payload is duplicated", n, joined(args))
+		}
+		// The directory form is what native skill discovery expects.
+		if strings.Contains(joined(args), "doc-enrichment.md") {
+			t.Errorf("args %q pass the flat alias; the directory form is preferred", joined(args))
 		}
 	})
 

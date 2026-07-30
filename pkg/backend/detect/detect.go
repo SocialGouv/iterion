@@ -160,7 +160,7 @@ func detectPi(prov []ProviderStatus) BackendStatus {
 		st.Auth = kind
 	}
 	for _, p := range prov {
-		if !p.Available || !piReadsProvider(p.Name) {
+		if !p.Available || !piReadsProvider(p.Name) || !piEnvVarSource(p.Source) {
 			continue
 		}
 		sources = append(sources, p.Source)
@@ -184,6 +184,26 @@ func detectPi(prov []ProviderStatus) BackendStatus {
 	st.Available = true
 	st.Sources = sources
 	return st
+}
+
+// piEnvVarSource reports whether a provider's winning credential is an
+// environment variable — the only shape pi resolves a provider from.
+//
+// The openai provider is also marked available on the Codex ChatGPT OAuth
+// alone, labelled with a file path rather than a variable name. Counting that
+// listed the same credential twice (codexChatGPTAvailable reports it properly,
+// as oauth) and left the row reading `api_key`, while implying pi could resolve
+// its `openai` provider from a file only the openai-codex bridge can use.
+func piEnvVarSource(source string) bool {
+	if source == "" {
+		return false
+	}
+	for _, r := range source {
+		if (r < 'A' || r > 'Z') && (r < '0' || r > '9') && r != '_' {
+			return false
+		}
+	}
+	return true
 }
 
 // piReadsProvider reports whether an available provider is one pi can actually
@@ -214,7 +234,16 @@ func piReadsProvider(name string) bool {
 // studio's auth badge for the one backend whose selling point is credential
 // breadth.
 func piOwnLoginKind() string {
-	dir := os.Getenv("PI_CODING_AGENT_DIR")
+	// Match execution's precedence: piResolveEnv pins PI_CODING_AGENT_DIR from
+	// ITERION_PI_AGENT_DIR, and piCodexSeed treats the latter as an operator
+	// pin — so probing only the former reads a store the node will never open,
+	// and would report pi available on a credential it cannot reach. Same
+	// reasoning as findPiBinary and codexChatGPTAvailable: a probe must not be
+	// more optimistic than what will actually use the credential.
+	dir := strings.TrimSpace(os.Getenv("ITERION_PI_AGENT_DIR"))
+	if dir == "" {
+		dir = strings.TrimSpace(os.Getenv("PI_CODING_AGENT_DIR"))
+	}
 	if dir == "" {
 		home, err := os.UserHomeDir()
 		if err != nil {

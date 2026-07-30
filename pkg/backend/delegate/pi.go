@@ -336,15 +336,24 @@ func piSkillArgs(task Task, logger *iterlog.Logger) []string {
 		return nil
 	}
 
+	// One flag per SKILL, not per marker: the mirror writes a flat alias AND a
+	// directory form for each flat source skill, with a marker for both, so
+	// emitting per marker handed pi every skill twice — ten skills became
+	// twenty flags naming ten pairs of byte-identical files, doubling the
+	// injected payload on a backend whose documented cost gotcha is already
+	// context bloat, and inviting a name collision. The directory form is
+	// preferred: it is what native skill discovery expects.
+	seen := map[string]bool{}
 	var args []string
 	for _, m := range markers {
-		path := piSkillPathForMarker(dir, m.Name())
-		if path == "" {
+		stem, path := piSkillForMarker(dir, m.Name())
+		if path == "" || seen[stem] {
 			continue
 		}
 		if _, err := os.Stat(path); err != nil {
 			continue
 		}
+		seen[stem] = true
 		args = append(args, "--skill", path)
 	}
 	return args
@@ -354,20 +363,24 @@ func piSkillArgs(task Task, logger *iterlog.Logger) []string {
 // one `<dest-relative-name>.sha256` per file the skill mirror wrote.
 const piSkillMarkerDir = ".iterion-managed"
 
-// piSkillPathForMarker maps a provenance marker back to the skill it vouches
-// for. The mirror writes both forms of a flat source skill:
+// piSkillForMarker maps a provenance marker back to the skill it vouches for,
+// returning the skill's stem (for de-duplication) and its path. The mirror
+// writes both forms of a flat source skill:
 //
 //	<stem>.md.sha256        → <dir>/<stem>.md         (flat alias)
 //	<stem>.SKILL.md.sha256  → <dir>/<stem>/SKILL.md   (directory form)
-func piSkillPathForMarker(dir, marker string) string {
+//
+// ReadDir is sorted and ".SKILL.md" precedes ".md", so the caller's first-seen
+// rule keeps the directory form.
+func piSkillForMarker(dir, marker string) (stem, path string) {
 	name := strings.TrimSuffix(marker, ".sha256")
 	if name == marker || name == "" {
-		return ""
+		return "", ""
 	}
-	if stem := strings.TrimSuffix(name, ".SKILL.md"); stem != name && stem != "" {
-		return filepath.Join(dir, stem, "SKILL.md")
+	if s := strings.TrimSuffix(name, ".SKILL.md"); s != name && s != "" {
+		return s, filepath.Join(dir, s, "SKILL.md")
 	}
-	return filepath.Join(dir, name)
+	return strings.TrimSuffix(name, ".md"), filepath.Join(dir, name)
 }
 
 func piMapProvider(name string) string {

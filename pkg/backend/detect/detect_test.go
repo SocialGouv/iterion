@@ -716,3 +716,72 @@ func TestFindPiBinaryValidatesTheOverride(t *testing.T) {
 		}
 	})
 }
+
+// A probe must not be more optimistic than what will actually use the
+// credential. Two ways detectPi was:
+func TestDetectPiMatchesWhatTheRunWillRead(t *testing.T) {
+	find := func(r Report) BackendStatus {
+		t.Helper()
+		for _, b := range r.Backends {
+			if b.Name == BackendPi {
+				return b
+			}
+		}
+		t.Fatal("pi absent from the report")
+		return BackendStatus{}
+	}
+
+	// piResolveEnv pins PI_CODING_AGENT_DIR from ITERION_PI_AGENT_DIR, so
+	// probing only the former read a store the node never opens.
+	t.Run("ITERION_PI_AGENT_DIR is the dir the run will use", func(t *testing.T) {
+		isolateEnv(t)
+		stubBinary(t, &findPiBinary, "/fake/pi")
+		pinned := t.TempDir()
+		if err := os.WriteFile(filepath.Join(pinned, "auth.json"),
+			[]byte(`{"anthropic":{"type":"oauth"}}`), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		t.Setenv("ITERION_PI_AGENT_DIR", pinned)
+		if st := find(Detect(context.Background())); !st.Available || st.Auth != AuthOAuth {
+			t.Errorf("status = %+v, want the pinned store to count", st)
+		}
+
+		// And an empty pinned store must NOT be rescued by ~/.pi/agent.
+		isolateEnv(t)
+		stubBinary(t, &findPiBinary, "/fake/pi")
+		empty := t.TempDir()
+		if err := os.WriteFile(filepath.Join(empty, "auth.json"), []byte("{}"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		t.Setenv("ITERION_PI_AGENT_DIR", empty)
+		if find(Detect(context.Background())).Available {
+			t.Error("available from a store the node will not read")
+		}
+	})
+
+	// On a ChatGPT-only host the openai provider is available with a FILE label,
+	// not a variable name. Counting it listed the same credential twice and left
+	// the row reading api_key, while implying pi's `openai` provider could use a
+	// file only the openai-codex bridge can.
+	t.Run("a ChatGPT-only host reports one oauth source", func(t *testing.T) {
+		isolateEnv(t)
+		stubBinary(t, &findPiBinary, "/fake/pi")
+		dir := t.TempDir()
+		if err := os.WriteFile(filepath.Join(dir, "auth.json"),
+			[]byte(`{"auth_mode":"chatgpt","tokens":{"access_token":"a","account_id":"acct"}}`), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		t.Setenv("CODEX_HOME", dir)
+
+		st := find(Detect(context.Background()))
+		if !st.Available {
+			t.Fatalf("status = %+v, want available", st)
+		}
+		if st.Auth != AuthOAuth {
+			t.Errorf("auth = %q, want oauth — the only credential is a ChatGPT plan", st.Auth)
+		}
+		if len(st.Sources) != 1 {
+			t.Errorf("sources = %v, want one — the same credential was listed twice", st.Sources)
+		}
+	})
+}
