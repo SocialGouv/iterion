@@ -589,6 +589,13 @@ type Task struct {
 	// ADR-059 and docs/skills-library.md.
 	SkillHints []SkillHint
 
+	// MirroredSkills are the skill directories iterion itself wrote into this
+	// run's workspace. The workspace is a checkout of the TARGET repository,
+	// which may ship its own .claude/skills/ — a backend handing skills to an
+	// agent must tell the two apart, and no amount of reading the workspace
+	// back can do it. The engine populates this; nothing in the repo can.
+	MirroredSkills []string
+
 	// PresetFragment is the resolved launch-time preset bias appended to the
 	// system prompt under a "## Focus" section. It carries the selected
 	// file-based preset's prompt body (template-expanded) plus an optional

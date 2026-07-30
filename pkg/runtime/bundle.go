@@ -220,22 +220,29 @@ func mirrorFileSkill(dest, markerDir, srcPath, name string, logger *iterlog.Logg
 // symlink target outside that mount returns ENOENT.
 //
 // No-op when bundle is nil or carries no skills directory.
-func mirrorBundleSkills(workDir string, b *bundle.Bundle, logger *iterlog.Logger) error {
+// It returns the directories under <workDir>/.claude/skills/ that iterion
+// OWNS — the ones it wrote or refreshed this run. A shadowed entry (the
+// workspace's own file won) is deliberately absent: that is the target repo's
+// content, and a backend deciding what it may hand an agent needs to tell the
+// two apart. The workspace is a checkout of an untrusted repository, so nothing
+// read back from it can establish that distinction; only the mirror knows.
+func mirrorBundleSkills(workDir string, b *bundle.Bundle, logger *iterlog.Logger) ([]string, error) {
 	if b == nil || b.SkillsDir == "" || workDir == "" {
-		return nil
+		return nil, nil
 	}
 	dest := filepath.Join(workDir, ".claude", "skills")
 	if err := os.MkdirAll(dest, 0o755); err != nil {
-		return fmt.Errorf("runtime/bundle: mkdir %s: %w", dest, err)
+		return nil, fmt.Errorf("runtime/bundle: mkdir %s: %w", dest, err)
 	}
 	markerDir := filepath.Join(dest, bundleMirrorMarkerDir)
 	if err := os.MkdirAll(markerDir, 0o755); err != nil {
-		return fmt.Errorf("runtime/bundle: mkdir markers %s: %w", markerDir, err)
+		return nil, fmt.Errorf("runtime/bundle: mkdir markers %s: %w", markerDir, err)
 	}
 	entries, err := os.ReadDir(b.SkillsDir)
 	if err != nil {
-		return fmt.Errorf("runtime/bundle: read skills dir %s: %w", b.SkillsDir, err)
+		return nil, fmt.Errorf("runtime/bundle: read skills dir %s: %w", b.SkillsDir, err)
 	}
+	var owned []string
 	mirrored, refreshed, shadowed, uptodate := 0, 0, 0, 0
 	for _, entry := range entries {
 		name := entry.Name()
@@ -257,8 +264,9 @@ func mirrorBundleSkills(workDir string, b *bundle.Bundle, logger *iterlog.Logger
 				continue
 			}
 			if err := copyDir(srcPath, destPath); err != nil {
-				return err
+				return nil, err
 			}
+			owned = append(owned, destPath)
 			mirrored++
 			continue
 		}
@@ -275,7 +283,7 @@ func mirrorBundleSkills(workDir string, b *bundle.Bundle, logger *iterlog.Logger
 		// MirrorSingleSkill via mirrorFileSkill.
 		outcome, err := mirrorFileSkill(dest, markerDir, srcPath, name, logger)
 		if err != nil {
-			return err
+			return nil, err
 		}
 		switch outcome {
 		case skillOutcomeMirrored:
@@ -287,11 +295,16 @@ func mirrorBundleSkills(workDir string, b *bundle.Bundle, logger *iterlog.Logger
 		case skillOutcomeShadowed:
 			shadowed++
 		}
+		if outcome != skillOutcomeShadowed {
+			// The directory form is the canonical one for skill discovery; the
+			// flat alias beside it is the same content under another name.
+			owned = append(owned, filepath.Join(dest, strings.TrimSuffix(name, ".md")))
+		}
 	}
 	if logger != nil && (mirrored > 0 || refreshed > 0 || uptodate > 0) {
 		logger.Info("bundle: skills mirrored=%d refreshed=%d up-to-date=%d shadowed=%d at %s", mirrored, refreshed, uptodate, shadowed, dest)
 	}
-	return nil
+	return owned, nil
 }
 
 // MergeBundlePresets folds a bundle's file-based presets

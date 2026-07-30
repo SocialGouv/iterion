@@ -229,81 +229,102 @@ func TestPiCodexSeed(t *testing.T) {
 	})
 }
 
-// `--skill` must offer ONLY what iterion mirrored. That directory is a checkout
-// of the TARGET repo under `worktree: auto`, and CLI --skill paths bypass the
-// project-trust gate `--no-approve` exists to close — so a repo committing its
-// own .claude/skills/ would otherwise get attacker-authored prompt text loaded
-// as a trusted skill into every pi node.
+// `--skill` must offer ONLY what ITERION wrote. The mirror directory is a
+// checkout of the TARGET repo under `worktree: auto`, and CLI --skill paths
+// bypass the project-trust gate `--no-approve` exists to close — so a repo
+// shipping its own .claude/skills/ would otherwise get attacker-authored prompt
+// text loaded as a trusted skill into every pi node.
+//
+// The list comes from the engine (Task.MirroredSkills). It cannot be recovered
+// from the workspace: an earlier attempt read provenance markers the mirror
+// leaves there, which a repo can forge because they sit inside the very
+// checkout they were meant to vouch against.
 func TestPiSkillArgs(t *testing.T) {
-	// mirror lays out a workspace: `managed` skills get provenance markers the
-	// way runtime's skill mirror writes them, `repo` ones do not.
-	mirror := func(t *testing.T, managed, repo []string) string {
+	// workspace lays out a mirror holding both iterion's skills and the repo's.
+	workspace := func(t *testing.T, names ...string) string {
 		t.Helper()
 		work := t.TempDir()
-		dir := filepath.Join(work, ".claude", "skills")
-		markers := filepath.Join(dir, piSkillMarkerDir)
-		if err := os.MkdirAll(markers, 0o755); err != nil {
-			t.Fatal(err)
-		}
-		write := func(path, body string) {
-			if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		for _, n := range names {
+			dir := filepath.Join(work, ".claude", "skills", n)
+			if err := os.MkdirAll(dir, 0o755); err != nil {
 				t.Fatal(err)
 			}
-			if err := os.WriteFile(path, []byte(body), 0o644); err != nil {
+			if err := os.WriteFile(filepath.Join(dir, "SKILL.md"), []byte("x"), 0o644); err != nil {
 				t.Fatal(err)
 			}
-		}
-		for _, name := range managed {
-			write(filepath.Join(dir, name+".md"), "managed")
-			write(filepath.Join(dir, name, "SKILL.md"), "managed")
-			write(filepath.Join(markers, name+".md.sha256"), "hash")
-			write(filepath.Join(markers, name+".SKILL.md.sha256"), "hash")
-		}
-		for _, name := range repo {
-			write(filepath.Join(dir, name, "SKILL.md"), "from the target repo")
 		}
 		return work
 	}
-
+	skills := func(work string, names ...string) []string {
+		out := make([]string, 0, len(names))
+		for _, n := range names {
+			out = append(out, filepath.Join(work, ".claude", "skills", n))
+		}
+		return out
+	}
 	joined := func(args []string) string { return strings.Join(args, " ") }
 
-	t.Run("a bundle's skills are offered with no SkillHints", func(t *testing.T) {
-		work := mirror(t, []string{"doc-enrichment"}, nil)
-		args := piSkillArgs(Task{WorkDir: work}, nil)
-		if !strings.Contains(joined(args), filepath.Join("doc-enrichment", "SKILL.md")) {
-			t.Errorf("args %q missing the skill — pi cannot see a bundle's skills otherwise", joined(args))
+	t.Run("what the engine wrote is offered", func(t *testing.T) {
+		work := workspace(t, "doc-enrichment")
+		got := joined(piSkillArgs(Task{WorkDir: work, MirroredSkills: skills(work, "doc-enrichment")}, nil))
+		if !strings.Contains(got, "doc-enrichment") {
+			t.Errorf("args %q missing the bundle's skill — pi cannot see it otherwise", got)
 		}
 	})
 
-	// The mirror writes a flat alias AND a directory form per flat source skill,
-	// each with its own marker. Emitting per marker handed pi every skill twice:
-	// ten skills became twenty flags naming ten pairs of identical files.
-	t.Run("one flag per skill, not per marker", func(t *testing.T) {
-		work := mirror(t, []string{"doc-enrichment", "doc-mismatch-taxonomy"}, nil)
-		args := piSkillArgs(Task{WorkDir: work}, nil)
-		if n := strings.Count(joined(args), "--skill"); n != 2 {
-			t.Errorf("%d --skill flags for 2 skills (%q) — the payload is duplicated", n, joined(args))
-		}
-		// The directory form is what native skill discovery expects.
-		if strings.Contains(joined(args), "doc-enrichment.md") {
-			t.Errorf("args %q pass the flat alias; the directory form is preferred", joined(args))
-		}
-	})
-
-	t.Run("the target repo's own skills are NOT offered", func(t *testing.T) {
-		work := mirror(t, []string{"doc-enrichment"}, []string{"attacker-supplied"})
-		got := joined(piSkillArgs(Task{WorkDir: work}, nil))
+	// The heart of it: the repo ships a skill the engine never wrote.
+	t.Run("what the target repo ships is NOT offered", func(t *testing.T) {
+		work := workspace(t, "doc-enrichment", "attacker-supplied")
+		got := joined(piSkillArgs(Task{WorkDir: work, MirroredSkills: skills(work, "doc-enrichment")}, nil))
 		if strings.Contains(got, "attacker-supplied") {
-			t.Errorf("args %q include an unmirrored repo skill — that routes around --no-approve", got)
+			t.Errorf("args %q include a repo-shipped skill — that routes around --no-approve", got)
 		}
 		if !strings.Contains(got, "doc-enrichment") {
-			t.Error("the bundle's own skills were dropped along with it")
+			t.Error("iterion's own skill was dropped along with it")
 		}
 	})
 
-	// The documented opt-in accepts the repo's extensions, skills and settings.
+	// A forged marker directory must change nothing: provenance is not read
+	// back from the workspace at all any more.
+	t.Run("forged provenance in the workspace is ignored", func(t *testing.T) {
+		work := workspace(t, "attacker-supplied")
+		markers := filepath.Join(work, ".claude", "skills", ".iterion-managed")
+		if err := os.MkdirAll(markers, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(markers, "attacker-supplied.SKILL.md.sha256"),
+			[]byte("forged"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		if got := piSkillArgs(Task{WorkDir: work}, nil); len(got) != 0 {
+			t.Errorf("args = %v — a repo forged its way past the gate", got)
+		}
+	})
+
+	// Library skills are named by the engine too, so they are as trustworthy.
+	t.Run("library skills count", func(t *testing.T) {
+		work := workspace(t, "changelog-writer")
+		got := joined(piSkillArgs(Task{WorkDir: work, SkillHints: []SkillHint{{Name: "changelog-writer"}}}, nil))
+		if !strings.Contains(got, "changelog-writer") {
+			t.Errorf("args %q missing the library skill", got)
+		}
+	})
+
+	t.Run("one flag per skill", func(t *testing.T) {
+		work := workspace(t, "a", "b")
+		args := piSkillArgs(Task{
+			WorkDir:        work,
+			MirroredSkills: skills(work, "a", "b", "a"),
+			SkillHints:     []SkillHint{{Name: "b"}},
+		}, nil)
+		if n := strings.Count(joined(args), "--skill"); n != 2 {
+			t.Errorf("%d flags for 2 skills (%q) — the payload is duplicated", n, joined(args))
+		}
+	})
+
+	// The documented opt-in accepts the repo's own.
 	t.Run("ITERION_PI_TRUST_PROJECT offers the whole directory", func(t *testing.T) {
-		work := mirror(t, nil, []string{"attacker-supplied"})
+		work := workspace(t, "attacker-supplied")
 		t.Setenv("ITERION_PI_TRUST_PROJECT", "1")
 		got := joined(piSkillArgs(Task{WorkDir: work}, nil))
 		if got != "--skill "+filepath.Join(work, ".claude", "skills") {
@@ -311,8 +332,8 @@ func TestPiSkillArgs(t *testing.T) {
 		}
 	})
 
-	t.Run("no provenance means nothing is offered", func(t *testing.T) {
-		work := mirror(t, nil, []string{"attacker-supplied"})
+	t.Run("nothing reported means nothing offered", func(t *testing.T) {
+		work := workspace(t, "attacker-supplied")
 		if got := piSkillArgs(Task{WorkDir: work}, nil); len(got) != 0 {
 			t.Errorf("args = %v, want none", got)
 		}

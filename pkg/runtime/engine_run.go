@@ -391,10 +391,12 @@ func (e *Engine) runPersistWorkspace(ctx context.Context, runID string, run *sto
 	// claude_code's native skill lookup and the claw `skill` tool
 	// discover them transparently. Workspace files always win on
 	// collision (see runtime/bundle.go for the rule).
-	if err := mirrorBundleSkills(e.workDir, e.bundle, e.logger); err != nil {
+	ownedSkills, err := mirrorBundleSkills(e.workDir, e.bundle, e.logger)
+	if err != nil {
 		e.markFailedBestEffort(ctx, runID, "bundle skills", err)
 		return fmt.Errorf("runtime: bundle skills: %w", err)
 	}
+	e.applyMirroredSkills(ownedSkills)
 	// Mirror markdown contributions (skills / commands / agents) from enabled plugins
 	// after the bundle skills so a same-named bundle/workspace file
 	// wins on collision. Best-effort: a plugin must not fail the run.
@@ -432,6 +434,23 @@ func (e *Engine) applyLibrarySkills() {
 	type skillHintSetter interface{ SetSkillHints(map[string]string) }
 	if s, ok := e.executor.(skillHintSetter); ok {
 		s.SetSkillHints(hints)
+	}
+}
+
+// applyMirroredSkills hands the executor the skill directories iterion OWNS in
+// this workspace, so a backend can tell them from whatever the target
+// repository ships under the same .claude/skills/ path.
+//
+// The workspace is an untrusted checkout, so this cannot be rediscovered by
+// reading it back — a repo can write any file, including one that looks like
+// iterion's own bookkeeping. Only the mirror knows, and this is how it says so.
+func (e *Engine) applyMirroredSkills(owned []string) {
+	if len(owned) == 0 {
+		return
+	}
+	type mirroredSkillSetter interface{ SetMirroredSkills([]string) }
+	if s, ok := e.executor.(mirroredSkillSetter); ok {
+		s.SetMirroredSkills(owned)
 	}
 }
 

@@ -480,9 +480,11 @@ func (e *Engine) resumeRebuildState(ctx context.Context, r *store.Run, cp *store
 	// a resumed paused run reads the v0.1.0 skill content even though
 	// the host has v0.2.0 — the marker file logic preserves any user
 	// customisation. See F-RT-7.
-	if err := mirrorBundleSkills(e.workDir, e.bundle, e.logger); err != nil {
+	ownedSkills, err := mirrorBundleSkills(e.workDir, e.bundle, e.logger)
+	if err != nil {
 		return nil, nil, fmt.Errorf("runtime: bundle skills (resume): %w", err)
 	}
+	e.applyMirroredSkills(ownedSkills)
 	if err := mirrorPluginContributions(e.workDir, e.contributions, e.logger); err != nil && e.logger != nil {
 		e.logger.Warn("runtime: plugin contributions (resume): %v", err)
 	}
@@ -706,9 +708,11 @@ func (e *Engine) claimForFailureResume(ctx context.Context, runID string, cp *st
 // selected sous-bot.
 func (e *Engine) restoreResumeWorkspace(r *store.Run) error {
 	e.restoreRunEnv(r)
-	if err := mirrorBundleSkills(e.workDir, e.bundle, e.logger); err != nil {
+	ownedSkills, err := mirrorBundleSkills(e.workDir, e.bundle, e.logger)
+	if err != nil {
 		return fmt.Errorf("runtime: bundle skills (resume): %w", err)
 	}
+	e.applyMirroredSkills(ownedSkills)
 	if err := mirrorPluginContributions(e.workDir, e.contributions, e.logger); err != nil && e.logger != nil {
 		e.logger.Warn("runtime: plugin contributions (resume): %v", err)
 	}

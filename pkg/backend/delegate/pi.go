@@ -2,9 +2,7 @@ package delegate
 
 import (
 	"context"
-	"errors"
 	"fmt"
-	"io/fs"
 	"os"
 	"path/filepath"
 	"strings"
@@ -294,93 +292,74 @@ func piResolveModel(model, hint string) (provider, modelID string) {
 
 // piSkillArgs builds the `--skill` flags for this node.
 //
-// It offers pi ONLY the skills iterion can prove it mirrored, identified by the
-// provenance markers the mirror writes under `.claude/skills/.iterion-managed/`.
-// That directory is a checkout of the TARGET repository under `worktree: auto`,
-// so handing pi the whole of it would load any `.claude/skills/` the repo itself
-// commits — and CLI `--skill` paths bypass the project-trust gate that
-// `--no-approve` exists to close. For a webhook-launched review or triage bot
-// running against an untrusted repo, that is attacker-authored prompt text
-// loaded as a trusted skill. `ITERION_PI_TRUST_PROJECT=1` is the documented
-// opt-in that accepts the repo's own skills, and it is the only way to get them.
+// It offers pi only the skills ITERION wrote into this workspace, as reported
+// by the engine on Task.MirroredSkills. `<workDir>/.claude/skills` is a
+// checkout of the TARGET repository under `worktree: auto`, so a repo can ship
+// its own skills there — and CLI `--skill` paths bypass the project-trust gate
+// that `--no-approve` exists to close. For a webhook-launched review or triage
+// bot against an untrusted repo, handing those over is attacker-authored prompt
+// text loaded as trusted.
 //
-// The gate was once `len(task.SkillHints) > 0`, which was the wrong signal in
-// the other direction: SkillHints carries only the DSL `skills:` field (the
-// skill *library*), while every BUNDLE skill is mirrored here without touching
-// it — so `--skill` was never emitted for a bundle bot, pi had no skill
-// awareness at all, and an agent whose own prompt ordered "LOAD YOUR SKILLS
-// FIRST" was left hunting for files. claude_code discovers this directory
-// natively and claw's `skill` tool reads it, so that was a pi-only hole.
+// The list has to come from the engine. An earlier attempt read provenance
+// markers the mirror leaves in the workspace, which is not a trust boundary at
+// all: the markers live inside the very checkout they were meant to vouch
+// against, so a repo can forge them. Nothing recovered from the workspace can
+// establish this; only the side that did the writing knows.
+//
+// `ITERION_PI_TRUST_PROJECT=1` is the documented opt-in that accepts the repo's
+// own skills, and remains the only way to get them.
+//
+// Historical note on the other direction: the gate was once
+// `len(task.SkillHints) > 0`, which carries only the DSL `skills:` field (the
+// skill *library*) — so `--skill` was never emitted for a BUNDLE bot, pi had no
+// skill awareness at all, and an agent whose own prompt ordered "LOAD YOUR
+// SKILLS FIRST" was left hunting for files. claude_code discovers this
+// directory natively and claw's `skill` tool reads it; this was a pi-only hole.
 func piSkillArgs(task Task, logger *iterlog.Logger) []string {
 	if task.WorkDir == "" {
 		return nil
 	}
 	dir := filepath.Join(task.WorkDir, ".claude", "skills")
 
-	// The documented opt-in: trust the repo's own extensions, skills and
-	// settings. Then the whole directory is fair game.
+	// The documented opt-in: trust the repo's extensions, skills and settings.
 	if strings.TrimSpace(os.Getenv("ITERION_PI_TRUST_PROJECT")) == "1" {
 		return []string{"--skill", dir}
 	}
 
-	markers, err := os.ReadDir(filepath.Join(dir, piSkillMarkerDir))
-	if err != nil {
-		// No provenance to read. Under a sandbox WorkDir may name a path only
-		// the container can see, so this is not necessarily "no skills" — but
-		// guessing would mean handing over the repo's own, so say what is lost.
-		if !errors.Is(err, fs.ErrNotExist) && logger != nil {
-			logger.Warn("[%s#%d/%s] cannot read the skill provenance markers under %s (%v); "+
-				"no skills offered to pi (set ITERION_PI_TRUST_PROJECT=1 to load the "+
-				"workspace's own)", task.NodeID, task.Iteration, BackendPi, dir, err)
+	// Library skills are named by the engine too, and the mirror puts each at a
+	// path derived from that name — so they are as trustworthy as the list
+	// above, and are included whether or not the bundle mirror ran.
+	paths := make([]string, 0, len(task.MirroredSkills)+len(task.SkillHints))
+	paths = append(paths, task.MirroredSkills...)
+	for _, h := range task.SkillHints {
+		if h.Name != "" {
+			paths = append(paths, filepath.Join(dir, h.Name))
 		}
-		return nil
 	}
 
-	// One flag per SKILL, not per marker: the mirror writes a flat alias AND a
-	// directory form for each flat source skill, with a marker for both, so
-	// emitting per marker handed pi every skill twice — ten skills became
-	// twenty flags naming ten pairs of byte-identical files, doubling the
-	// injected payload on a backend whose documented cost gotcha is already
-	// context bloat, and inviting a name collision. The directory form is
-	// preferred: it is what native skill discovery expects.
 	seen := map[string]bool{}
 	var args []string
-	for _, m := range markers {
-		stem, path := piSkillForMarker(dir, m.Name())
-		if path == "" || seen[stem] {
+	for _, p := range paths {
+		if p == "" || seen[p] {
 			continue
 		}
-		if _, err := os.Stat(path); err != nil {
-			continue
+		if _, err := os.Stat(p); err != nil {
+			// Under a sandbox WorkDir names an in-container path the host
+			// cannot stat; offer it anyway — the engine says it wrote it, and
+			// a path pi cannot resolve costs a skill, not the run.
+			if task.Sandbox == nil {
+				continue
+			}
 		}
-		seen[stem] = true
-		args = append(args, "--skill", path)
+		seen[p] = true
+		args = append(args, "--skill", p)
+	}
+	if len(args) == 0 && logger != nil && len(task.MirroredSkills) == 0 && len(task.SkillHints) > 0 {
+		logger.Warn("[%s#%d/%s] no skills offered to pi: the engine reported none for this run "+
+			"(set ITERION_PI_TRUST_PROJECT=1 to load the workspace's own)",
+			task.NodeID, task.Iteration, BackendPi)
 	}
 	return args
-}
-
-// piSkillMarkerDir mirrors runtime's bundleMirrorMarkerDir: the sidecar holding
-// one `<dest-relative-name>.sha256` per file the skill mirror wrote.
-const piSkillMarkerDir = ".iterion-managed"
-
-// piSkillForMarker maps a provenance marker back to the skill it vouches for,
-// returning the skill's stem (for de-duplication) and its path. The mirror
-// writes both forms of a flat source skill:
-//
-//	<stem>.md.sha256        → <dir>/<stem>.md         (flat alias)
-//	<stem>.SKILL.md.sha256  → <dir>/<stem>/SKILL.md   (directory form)
-//
-// ReadDir is sorted and ".SKILL.md" precedes ".md", so the caller's first-seen
-// rule keeps the directory form.
-func piSkillForMarker(dir, marker string) (stem, path string) {
-	name := strings.TrimSuffix(marker, ".sha256")
-	if name == marker || name == "" {
-		return "", ""
-	}
-	if s := strings.TrimSuffix(name, ".SKILL.md"); s != name && s != "" {
-		return s, filepath.Join(dir, s, "SKILL.md")
-	}
-	return strings.TrimSuffix(name, ".md"), filepath.Join(dir, name)
 }
 
 func piMapProvider(name string) string {

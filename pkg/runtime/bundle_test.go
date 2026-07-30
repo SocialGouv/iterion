@@ -25,7 +25,7 @@ func TestMirrorBundleSkills_CopiesIntoClaudeSkills(t *testing.T) {
 	}
 
 	b := &bundle.Bundle{SkillsDir: skillsSrc}
-	if err := mirrorBundleSkills(workDir, b, nil); err != nil {
+	if _, err := mirrorBundleSkills(workDir, b, nil); err != nil {
 		t.Fatalf("mirror: %v", err)
 	}
 
@@ -66,7 +66,7 @@ func TestMirrorBundleSkills_SkipsNonMarkdownFiles(t *testing.T) {
 	}
 
 	b := &bundle.Bundle{SkillsDir: skillsSrc}
-	if err := mirrorBundleSkills(workDir, b, nil); err != nil {
+	if _, err := mirrorBundleSkills(workDir, b, nil); err != nil {
 		t.Fatalf("mirror with a non-md placeholder must succeed: %v", err)
 	}
 
@@ -99,7 +99,7 @@ func TestMirrorBundleSkills_WorkspaceWinsOnCollision(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if err := mirrorBundleSkills(workDir, &bundle.Bundle{SkillsDir: skillsSrc}, nil); err != nil {
+	if _, err := mirrorBundleSkills(workDir, &bundle.Bundle{SkillsDir: skillsSrc}, nil); err != nil {
 		t.Fatalf("mirror: %v", err)
 	}
 
@@ -114,7 +114,7 @@ func TestMirrorBundleSkills_WorkspaceWinsOnCollision(t *testing.T) {
 
 func TestMirrorBundleSkills_NilBundleIsNoop(t *testing.T) {
 	workDir := t.TempDir()
-	if err := mirrorBundleSkills(workDir, nil, nil); err != nil {
+	if _, err := mirrorBundleSkills(workDir, nil, nil); err != nil {
 		t.Errorf("nil bundle should be a no-op, got %v", err)
 	}
 	if _, err := os.Stat(filepath.Join(workDir, ".claude")); err == nil {
@@ -124,7 +124,7 @@ func TestMirrorBundleSkills_NilBundleIsNoop(t *testing.T) {
 
 func TestMirrorBundleSkills_EmptySkillsDirIsNoop(t *testing.T) {
 	workDir := t.TempDir()
-	if err := mirrorBundleSkills(workDir, &bundle.Bundle{}, nil); err != nil {
+	if _, err := mirrorBundleSkills(workDir, &bundle.Bundle{}, nil); err != nil {
 		t.Errorf("empty SkillsDir should be a no-op, got %v", err)
 	}
 }
@@ -147,7 +147,7 @@ func TestMirrorBundleSkills_RefreshesPreviouslyMirroredFile(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(skillsSrc, "alpha.md"), []byte("v1 content"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if err := mirrorBundleSkills(workDir, &bundle.Bundle{SkillsDir: skillsSrc}, nil); err != nil {
+	if _, err := mirrorBundleSkills(workDir, &bundle.Bundle{SkillsDir: skillsSrc}, nil); err != nil {
 		t.Fatalf("first mirror: %v", err)
 	}
 	alphaDest := filepath.Join(workDir, ".claude", "skills", "alpha", "SKILL.md")
@@ -163,7 +163,7 @@ func TestMirrorBundleSkills_RefreshesPreviouslyMirroredFile(t *testing.T) {
 
 	// Second mirror: workspace file still matches the v1 marker so it
 	// must be refreshed to v2.
-	if err := mirrorBundleSkills(workDir, &bundle.Bundle{SkillsDir: skillsSrc}, nil); err != nil {
+	if _, err := mirrorBundleSkills(workDir, &bundle.Bundle{SkillsDir: skillsSrc}, nil); err != nil {
 		t.Fatalf("second mirror: %v", err)
 	}
 	refreshed, _ := os.ReadFile(alphaDest)
@@ -188,7 +188,7 @@ func TestMirrorBundleSkills_PreservesUserCustomizationOnUpgrade(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(skillsSrc, "beta.md"), []byte("v1 content"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if err := mirrorBundleSkills(workDir, &bundle.Bundle{SkillsDir: skillsSrc}, nil); err != nil {
+	if _, err := mirrorBundleSkills(workDir, &bundle.Bundle{SkillsDir: skillsSrc}, nil); err != nil {
 		t.Fatalf("first mirror: %v", err)
 	}
 
@@ -203,11 +203,70 @@ func TestMirrorBundleSkills_PreservesUserCustomizationOnUpgrade(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if err := mirrorBundleSkills(workDir, &bundle.Bundle{SkillsDir: skillsSrc}, nil); err != nil {
+	if _, err := mirrorBundleSkills(workDir, &bundle.Bundle{SkillsDir: skillsSrc}, nil); err != nil {
 		t.Fatalf("second mirror: %v", err)
 	}
 	got, _ := os.ReadFile(destPath)
 	if string(got) != "user-edited" {
 		t.Errorf("user customisation overwritten: got %q, want %q", string(got), "user-edited")
+	}
+}
+
+// mirrorBundleSkills reports which skill directories iterion OWNS, so a backend
+// can tell them from whatever the target repository ships at the same path.
+// A shadowed entry — where the workspace's own file won — is the repo's, and
+// must not be reported: the workspace is an untrusted checkout, and this is the
+// only place the distinction exists.
+func TestMirrorBundleSkillsReportsOwnership(t *testing.T) {
+	skillsSrc := t.TempDir()
+	for _, n := range []string{"mine.md", "contested.md"} {
+		if err := os.WriteFile(filepath.Join(skillsSrc, n), []byte("---\nname: x\n---\nbody\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.MkdirAll(filepath.Join(skillsSrc, "dirform"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(skillsSrc, "dirform", "SKILL.md"), []byte("body"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	workDir := t.TempDir()
+	// The workspace already carries its own "contested" skill with different
+	// content — the collision policy leaves it alone, so it is not ours.
+	dest := filepath.Join(workDir, ".claude", "skills")
+	if err := os.MkdirAll(filepath.Join(dest, "contested"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dest, "contested", "SKILL.md"), []byte("the repo's own"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dest, "contested.md"), []byte("the repo's own"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	owned, err := mirrorBundleSkills(workDir, &bundle.Bundle{SkillsDir: skillsSrc}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	has := func(name string) bool {
+		for _, p := range owned {
+			if filepath.Base(p) == name {
+				return true
+			}
+		}
+		return false
+	}
+	if !has("mine") {
+		t.Errorf("owned = %v, missing the skill we wrote", owned)
+	}
+	// Directory-form skills were invisible to the previous marker-based scheme,
+	// which wrote no marker for them.
+	if !has("dirform") {
+		t.Errorf("owned = %v, missing the directory-form skill", owned)
+	}
+	if has("contested") {
+		t.Errorf("owned = %v claims a skill the workspace shadowed — that content is the repo's", owned)
 	}
 }
