@@ -403,10 +403,7 @@ func (e *Engine) runPersistWorkspace(ctx context.Context, runID string, run *sto
 	if err != nil && e.logger != nil {
 		e.logger.Warn("runtime: plugin contributions: %v", err)
 	}
-	// Plugin skills are iterion-authored too, so they belong on the same
-	// channel — applied after both mirrors have run, since the executor holds
-	// one list.
-	e.applyMirroredSkills(append(ownedSkills, ownedPluginSkills...))
+	ownedSkills = append(ownedSkills, ownedPluginSkills...)
 	if err := mergePluginHooks(e.workDir, e.logger); err != nil && e.logger != nil {
 		e.logger.Warn("runtime: plugin hooks: %v", err)
 	}
@@ -414,7 +411,9 @@ func (e *Engine) runPersistWorkspace(ctx context.Context, runID string, run *sto
 	// LAST so a same-named bundle/plugin/workspace file wins on collision
 	// (precedence: bundle > plugin > library > hand-authored — ADR-059). The
 	// returned name→description map feeds every LLM node's "## Skills" hint.
-	e.applyLibrarySkills()
+	// All three mirrors write into the same directory, so ownership is reported
+	// once, after the last of them has run.
+	e.applyMirroredSkills(append(ownedSkills, e.applyLibrarySkills()...))
 	e.applyPresetFocus()
 	return nil
 }
@@ -424,21 +423,27 @@ func (e *Engine) runPersistWorkspace(ctx context.Context, runID string, run *sto
 // so each LLM node renders its "## Skills" section. Best-effort: a mirror
 // failure is logged but never fails the run (the DSL reference is soft). Only
 // ClawExecutor implements SetSkillHints.
-func (e *Engine) applyLibrarySkills() {
-	hints, err := mirrorLibrarySkills(e.workDir, e.store.Root(), e.workflow, e.contributions, e.logger)
+// It returns the library skill directories iterion owns, for applyMirroredSkills.
+// A hint is recorded for every referenced skill including a shadowed one —
+// claude_code and claw read the directory natively, so the agent sees whatever
+// is there — but a shadowed entry is NOT owned: that content is the target
+// repository's, and a backend passing skills explicitly must not hand it over.
+func (e *Engine) applyLibrarySkills() []string {
+	hints, owned, err := mirrorLibrarySkills(e.workDir, e.store.Root(), e.workflow, e.contributions, e.logger)
 	if err != nil {
 		if e.logger != nil {
 			e.logger.Warn("runtime: library skills: %v", err)
 		}
-		return
+		return nil
 	}
 	if len(hints) == 0 {
-		return
+		return owned
 	}
 	type skillHintSetter interface{ SetSkillHints(map[string]string) }
 	if s, ok := e.executor.(skillHintSetter); ok {
 		s.SetSkillHints(hints)
 	}
+	return owned
 }
 
 // applyMirroredSkills hands the executor the skill directories iterion OWNS in

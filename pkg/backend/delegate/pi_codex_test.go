@@ -305,12 +305,32 @@ func TestPiSkillArgs(t *testing.T) {
 		}
 	})
 
-	// Library skills are named by the engine too, so they are as trustworthy.
-	t.Run("library skills count", func(t *testing.T) {
+	// Library skills reach pi the same way everything else does — reported by
+	// the engine, which excludes the ones the workspace shadowed.
+	t.Run("library skills count when the engine reports them", func(t *testing.T) {
 		work := workspace(t, "changelog-writer")
-		got := joined(piSkillArgs(Task{WorkDir: work, SkillHints: []SkillHint{{Name: "changelog-writer"}}}, nil))
+		got := joined(piSkillArgs(Task{
+			WorkDir:        work,
+			MirroredSkills: skills(work, "changelog-writer"),
+			SkillHints:     []SkillHint{{Name: "changelog-writer"}},
+		}, nil))
 		if !strings.Contains(got, "changelog-writer") {
 			t.Errorf("args %q missing the library skill", got)
+		}
+	})
+
+	// A hint is NOT provenance. One is recorded for every skill the workflow
+	// references, including one the target repo pre-empted — it describes what
+	// the agent will see, not who wrote it. Deriving `<dir>/<name>` from it
+	// would hand the repo's own file over as a trusted skill.
+	t.Run("a hint alone does not get the repo's file passed", func(t *testing.T) {
+		work := workspace(t, "changelog-writer")
+		got := piSkillArgs(Task{
+			WorkDir:    work,
+			SkillHints: []SkillHint{{Name: "changelog-writer"}},
+		}, nil)
+		if len(got) != 0 {
+			t.Errorf("args = %v — a hint routed around the gate", got)
 		}
 	})
 
@@ -528,6 +548,27 @@ func TestPiCodexSeedMakesTheTokenUnstageable(t *testing.T) {
 		// The unterminated last line must not be swallowed into `*.tmp*`.
 		if !slices.Contains(strings.Split(string(data), "\n"), "*") {
 			t.Errorf("guard = %q — the catch-all never became its own line", data)
+		}
+	})
+
+	// The workspace is a checkout of the target repository, which can commit
+	// `.iterion` as a symlink — .gitignore does not stop a tracked symlink from
+	// being checked out, and MkdirAll would follow it, writing the OAuth blob at
+	// a repo-chosen host path.
+	t.Run("a symlinked .iterion is refused, not followed", func(t *testing.T) {
+		work, elsewhere := t.TempDir(), t.TempDir()
+		if err := os.Symlink(elsewhere, filepath.Join(work, ".iterion")); err != nil {
+			t.Skipf("symlinks unavailable: %v", err)
+		}
+		_, err := piCodexSeedRoot(Task{NodeID: "n", WorkDir: work, Sandbox: stubSandboxRun{}}, nil)
+		if err == nil {
+			t.Fatal("seeded through a repo-controlled symlink")
+		}
+		if !strings.Contains(err.Error(), "symlink") {
+			t.Errorf("err = %v, want it to name the cause", err)
+		}
+		if _, err := os.Stat(filepath.Join(elsewhere, "pi")); err == nil {
+			t.Error("created a directory at the symlink's target")
 		}
 	})
 

@@ -488,13 +488,13 @@ func (e *Engine) resumeRebuildState(ctx context.Context, r *store.Run, cp *store
 	if err != nil && e.logger != nil {
 		e.logger.Warn("runtime: plugin contributions (resume): %v", err)
 	}
-	e.applyMirroredSkills(append(ownedSkills, ownedPluginSkills...))
+	ownedSkills = append(ownedSkills, ownedPluginSkills...)
 	if err := mergePluginHooks(e.workDir, e.logger); err != nil && e.logger != nil {
 		e.logger.Warn("runtime: plugin hooks (resume): %v", err)
 	}
 	// Re-apply the preset's "## Focus" bias + skill hints on resume so a
 	// paused run that resumes keeps running as the selected sous-bot.
-	e.applyLibrarySkills()
+	e.applyMirroredSkills(append(ownedSkills, e.applyLibrarySkills()...))
 	e.applyPresetFocus()
 
 	// Re-bootstrap the sandbox container (see resumeFromFailure for the
@@ -717,11 +717,11 @@ func (e *Engine) restoreResumeWorkspace(r *store.Run) error {
 	if err != nil && e.logger != nil {
 		e.logger.Warn("runtime: plugin contributions (resume): %v", err)
 	}
-	e.applyMirroredSkills(append(ownedSkills, ownedPluginSkills...))
+	ownedSkills = append(ownedSkills, ownedPluginSkills...)
 	if err := mergePluginHooks(e.workDir, e.logger); err != nil && e.logger != nil {
 		e.logger.Warn("runtime: plugin hooks (resume): %v", err)
 	}
-	e.applyLibrarySkills()
+	e.applyMirroredSkills(append(ownedSkills, e.applyLibrarySkills()...))
 	e.applyPresetFocus()
 	return nil
 }

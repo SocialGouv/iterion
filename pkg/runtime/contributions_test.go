@@ -70,7 +70,7 @@ func TestMirrorInjectedPluginFiles_ShadowedByWorkspaceFile(t *testing.T) {
 // shape claude_code's Skill tool discovers), and carry their description hint.
 func TestMirrorInjectedLibrarySkills_DirectoryFormAndHints(t *testing.T) {
 	workDir := t.TempDir()
-	hints, err := mirrorInjectedLibrarySkills(workDir, []LibrarySkillFile{
+	hints, _, err := mirrorInjectedLibrarySkills(workDir, []LibrarySkillFile{
 		{Name: "deploy-target", Description: "Deploy an app and return a URL", Content: []byte("---\nname: deploy-target\n---\nbody\n")},
 	}, nil)
 	if err != nil {

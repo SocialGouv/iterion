@@ -337,17 +337,14 @@ func piSkillArgs(task Task, logger *iterlog.Logger) []string {
 		return []string{"--skill", dir}
 	}
 
-	// Library skills are named by the engine too, and the mirror puts each at a
-	// path derived from that name — so they are as trustworthy as the list
-	// above, and are included whether or not the bundle mirror ran.
-	paths := make([]string, 0, len(task.MirroredSkills)+len(task.SkillHints))
-	paths = append(paths, task.MirroredSkills...)
-	for _, h := range task.SkillHints {
-		if h.Name != "" {
-			paths = append(paths, filepath.Join(dir, h.Name))
-		}
-	}
-
+	// MirroredSkills is the ONLY source. Deriving a path from a SkillHint name
+	// instead would route straight around this gate: a hint is recorded for
+	// every skill the workflow references, INCLUDING one the target repo
+	// shadowed — the hint describes what the agent will see, not who wrote it.
+	// Synthesising `<dir>/<name>` from it therefore handed the repo's own file
+	// to pi for any DSL `skills:` reference it chose to pre-empt. The engine
+	// reports library skills on this same list, minus the shadowed ones.
+	paths := task.MirroredSkills
 	named := len(paths)
 	seen := map[string]bool{}
 	var args []string

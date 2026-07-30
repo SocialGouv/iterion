@@ -235,6 +235,17 @@ func piCodexSeedRoot(task Task, logger *iterlog.Logger) (string, error) {
 		}
 		return "", nil
 	}
+	// Under a sandbox `root` sits inside a checkout of the TARGET repository, and
+	// a repo can commit `.iterion` (or `.iterion/pi`) as a SYMLINK — .gitignore
+	// does not stop a tracked symlink from being checked out. os.MkdirAll follows
+	// it, which would write the OAuth blob at a repo-chosen host path outside the
+	// worktree, creating directories on the way. Refuse instead: this is the
+	// first credential to ride the `<WorkDir>/.iterion` write pattern.
+	if sandboxed {
+		if err := refuseSymlinkedPath(task.WorkDir, root); err != nil {
+			return "", err
+		}
+	}
 	if err := os.MkdirAll(root, 0o700); err != nil {
 		if sandboxed {
 			return "", fmt.Errorf("create agent dir %s: %w (a /tmp fallback is not mounted in the sandbox, "+
@@ -263,6 +274,41 @@ func piCodexSeedRoot(task Task, logger *iterlog.Logger) (string, error) {
 		}
 	}
 	return root, nil
+}
+
+// refuseSymlinkedPath rejects target when any component below base is a
+// symlink, checked with Lstat so nothing is followed. Components that do not
+// exist yet are fine — they are what MkdirAll is about to create.
+//
+// base itself is not inspected: it is iterion's own worktree path, and a
+// symlink there is the engine's business, not the repo's.
+func refuseSymlinkedPath(base, target string) error {
+	rel, err := filepath.Rel(base, target)
+	if err != nil {
+		return fmt.Errorf("agent dir %s is not under the workspace: %w", target, err)
+	}
+	cur := base
+	for _, part := range strings.Split(rel, string(filepath.Separator)) {
+		if part == "" || part == "." {
+			continue
+		}
+		if part == ".." {
+			return fmt.Errorf("agent dir %s escapes the workspace", target)
+		}
+		cur = filepath.Join(cur, part)
+		info, err := os.Lstat(cur)
+		if os.IsNotExist(err) {
+			return nil // nothing below it exists either
+		}
+		if err != nil {
+			return fmt.Errorf("inspect %s: %w", cur, err)
+		}
+		if info.Mode()&os.ModeSymlink != 0 {
+			return fmt.Errorf("refusing to seed the pi credential through %s: it is a symlink, "+
+				"and the workspace is a checkout of the target repository", cur)
+		}
+	}
+	return nil
 }
 
 // piWriteIgnoreGuard makes everything under dir unstageable.
