@@ -1,6 +1,16 @@
 # Security bots — `sec-audit-source` (Seki) + `sec-audit-deps` (Depsy)
 
-Iterion ships two complementary security audit bundles. They share a
+This page covers the two **manual audit** bundles — CLI-launched,
+whole-tree or `diff_base`-scoped, reporting to the kanban board. For
+the **push-driven** supply-chain shields that gate every PR/push —
+[`supply-shield`](../bots/supply-shield/) (Shieldy, malware axis) and
+[`supply-shield-cve`](../bots/supply-shield-cve/) (Vulny, CVE axis),
+diff-scoped by default and reporting back onto the forge (sticky
+comment + inline reviews + SARIF) — see their run bilans
+([supply-shield.md](bot-runs/supply-shield.md),
+[supply-shield-cve.md](bot-runs/supply-shield-cve.md)).
+
+Iterion ships two complementary manual audit bundles. They share a
 threat-model vocabulary, kanban label conventions, and FP-memory
 discipline, but address different layers of the application.
 
@@ -219,6 +229,7 @@ ever landing on disk; the audit-bundle catches what slipped through
   override, Node 22 requirement, on-demand harness invocation
 - [`bots/sec-audit-source/README.md`](../bots/sec-audit-source/README.md)
 - [`bots/sec-audit-deps/README.md`](../bots/sec-audit-deps/README.md)
+- [`bots/supply-shield/README.md`](../bots/supply-shield/README.md) · [`bots/supply-shield-cve/README.md`](../bots/supply-shield-cve/README.md) — the push-driven diff-scoped supply-chain shields
 - [`docs/bundles.md`](bundles.md) — bundle layout + runtime resolution
 - [`docs/native-tracker.md`](native-tracker.md) — the kanban board
   where findings land
