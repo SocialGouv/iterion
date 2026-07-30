@@ -155,9 +155,9 @@ func detectPi(prov []ProviderStatus) BackendStatus {
 	}
 
 	var sources []string
-	if piHasOwnLogin() {
+	if kind := piOwnLoginKind(); kind != AuthNone {
 		sources = append(sources, "~/.pi/agent/auth.json (pi login)")
-		st.Auth = AuthOAuth
+		st.Auth = kind
 	}
 	for _, p := range prov {
 		if !p.Available || !piReadsProvider(p.Name) {
@@ -204,29 +204,44 @@ func piReadsProvider(name string) bool {
 	}
 }
 
-// piHasOwnLogin reports whether pi's credential store holds anything.
+// piOwnLoginKind reports what pi's own credential store holds: AuthOAuth,
+// AuthAPIKey, or AuthNone when there is nothing usable.
 //
 // A fresh install writes `{}`, so existence is not enough — reporting pi as
 // available on an empty store would put a backend in the studio that fails on
-// its first call.
-func piHasOwnLogin() bool {
+// its first call. The entry's own `type` decides the kind: pi's store holds
+// both shapes, and labelling an api_key credential "oauth" mislabels the
+// studio's auth badge for the one backend whose selling point is credential
+// breadth.
+func piOwnLoginKind() string {
 	dir := os.Getenv("PI_CODING_AGENT_DIR")
 	if dir == "" {
 		home, err := os.UserHomeDir()
 		if err != nil {
-			return false
+			return AuthNone
 		}
 		dir = filepath.Join(home, ".pi", "agent")
 	}
 	data, err := os.ReadFile(filepath.Join(dir, "auth.json")) // #nosec G304 — a fixed filename under the agent dir.
 	if err != nil {
-		return false
+		return AuthNone
 	}
-	var creds map[string]json.RawMessage
+	var creds map[string]struct {
+		Type string `json:"type"`
+	}
 	if err := json.Unmarshal(data, &creds); err != nil {
-		return false
+		return AuthNone
 	}
-	return len(creds) > 0
+	kind := AuthNone
+	for _, c := range creds {
+		if c.Type == "oauth" {
+			// An OAuth login is the more notable of the two; report it as soon
+			// as one is present.
+			return AuthOAuth
+		}
+		kind = AuthAPIKey
+	}
+	return kind
 }
 
 // codexChatGPTAvailable reports whether a ChatGPT-mode Codex login exists.

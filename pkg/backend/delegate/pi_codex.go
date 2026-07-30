@@ -204,13 +204,6 @@ func piCodexSeedRoot(task Task, logger *iterlog.Logger) (string, error) {
 	root := ""
 	switch {
 	case sandboxed:
-		// Inside the git worktree, so the ignore guard must be verified rather
-		// than assumed: piHideWorkspaceSessionDir is best-effort and never
-		// overwrites a `.iterion/.gitignore` the target repo already tracks. A
-		// campaign agent's `git add -A` would otherwise stage the token pair.
-		if err := piWorkspaceIgnoreCovers(task.WorkDir); err != nil {
-			return "", err
-		}
 		root = filepath.Join(task.WorkDir, ".iterion", "pi")
 	case task.StoreDir != "":
 		root = filepath.Join(task.StoreDir, "pi")
@@ -220,6 +213,18 @@ func piCodexSeedRoot(task Task, logger *iterlog.Logger) (string, error) {
 				"where an interrupted node leaves it unswept", task.NodeID, task.Iteration, BackendPi)
 		}
 		return "", nil
+	}
+	// Wherever the root landed, if it is inside the git worktree the ignore
+	// guard must be VERIFIED rather than assumed — piHideWorkspaceSessionDir is
+	// best-effort and never overwrites a `.iterion/.gitignore` the target repo
+	// already tracks, and a campaign agent's `git add -A` would stage the token
+	// pair. The sandboxed root is inside by construction; the store root is too
+	// whenever the operator points --store-dir at the workspace, which is
+	// exactly what this repo's own dogfood instructions prescribe.
+	if inWorktree(task.WorkDir, root) {
+		if err := piWorkspaceIgnoreCovers(task.WorkDir); err != nil {
+			return "", err
+		}
 	}
 	if err := os.MkdirAll(root, 0o700); err != nil {
 		if sandboxed {
@@ -353,4 +358,39 @@ func piWorkspaceIgnoreCovers(workDir string) error {
 	return fmt.Errorf("refusing to write a ChatGPT credential under %s: %s does not ignore everything "+
 		"(no `*` line), so a campaign agent's `git add -A` could commit the token",
 		filepath.Join(workDir, ".iterion"), guard)
+}
+
+// inWorktree reports whether path sits inside the run's git worktree, so a
+// credential written there would be visible to `git add -A`.
+//
+// Both sides are resolved before comparing: a relative --store-dir, a symlinked
+// workspace, or a `..` segment would otherwise let a path that IS inside the
+// worktree look like it is not, which is the direction that loses a token.
+func inWorktree(workDir, path string) bool {
+	if workDir == "" || path == "" {
+		return false
+	}
+	work, err := filepath.EvalSymlinks(workDir)
+	if err != nil {
+		work = filepath.Clean(workDir)
+	}
+	abs, err := filepath.Abs(path)
+	if err != nil {
+		return false
+	}
+	// EvalSymlinks fails on a path that does not exist yet, which the seed root
+	// usually is; resolving its nearest existing ancestor is enough.
+	for dir := abs; ; {
+		if resolved, err := filepath.EvalSymlinks(dir); err == nil {
+			abs = filepath.Join(resolved, strings.TrimPrefix(abs, dir))
+			break
+		}
+		parent := filepath.Dir(dir)
+		if parent == dir {
+			break
+		}
+		dir = parent
+	}
+	rel, err := filepath.Rel(work, abs)
+	return err == nil && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator))
 }

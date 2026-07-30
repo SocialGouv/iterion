@@ -545,20 +545,30 @@ func TestDetectPi(t *testing.T) {
 		}
 	})
 
-	t.Run("pi's own login", func(t *testing.T) {
-		isolateEnv(t)
-		stubBinary(t, &findPiBinary, "/fake/pi")
-		dir := t.TempDir()
-		if err := os.WriteFile(filepath.Join(dir, "auth.json"),
-			[]byte(`{"zai":{"type":"api_key","key":"k"}}`), 0o600); err != nil {
-			t.Fatal(err)
-		}
-		t.Setenv("PI_CODING_AGENT_DIR", dir)
-		st := find(Detect(context.Background()), BackendPi)
-		if !st.Available || st.Auth != AuthOAuth {
-			t.Errorf("status = %+v, want available", st)
-		}
-	})
+	// The entry's own `type` decides the reported kind: pi's store holds both
+	// shapes, and the studio renders this as an auth badge.
+	for name, tc := range map[string]struct {
+		store string
+		want  string
+	}{
+		"an api-key login is reported as api_key": {`{"zai":{"type":"api_key","key":"k"}}`, AuthAPIKey},
+		"an oauth login is reported as oauth":     {`{"anthropic":{"type":"oauth","access":"a"}}`, AuthOAuth},
+		"oauth wins when both are present":        {`{"zai":{"type":"api_key"},"anthropic":{"type":"oauth"}}`, AuthOAuth},
+	} {
+		t.Run("pi's own login: "+name, func(t *testing.T) {
+			isolateEnv(t)
+			stubBinary(t, &findPiBinary, "/fake/pi")
+			dir := t.TempDir()
+			if err := os.WriteFile(filepath.Join(dir, "auth.json"), []byte(tc.store), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			t.Setenv("PI_CODING_AGENT_DIR", dir)
+			st := find(Detect(context.Background()), BackendPi)
+			if !st.Available || st.Auth != tc.want {
+				t.Errorf("status = %+v, want available with auth=%s", st, tc.want)
+			}
+		})
+	}
 
 	// The provider keys pi reads are the ones iterion already probes for claw.
 	t.Run("a provider key is enough", func(t *testing.T) {

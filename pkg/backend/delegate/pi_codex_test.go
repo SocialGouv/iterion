@@ -508,3 +508,34 @@ func TestPiCodexSeedRequiresTheIgnoreGuard(t *testing.T) {
 		}
 	})
 }
+
+// The containment check must apply wherever the seed lands inside the git
+// worktree — not only on the sandboxed branch. This repo's own dogfood
+// instructions prescribe `--store-dir "$PWD/.iterion"`, which puts the store
+// INSIDE the repo, so the non-sandboxed path carries the same `git add -A`
+// exposure the sandboxed one was hardened against.
+func TestPiCodexSeedGuardsAStoreInsideTheWorktree(t *testing.T) {
+	work := t.TempDir()
+	store := filepath.Join(work, ".iterion")
+	if err := os.MkdirAll(store, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	// No guard: a credential here would be stageable.
+	if _, err := piCodexSeedRoot(Task{NodeID: "n", WorkDir: work, StoreDir: store}, nil); err == nil {
+		t.Fatal("seeded into an unguarded store inside the git worktree")
+	}
+
+	if err := os.WriteFile(filepath.Join(store, ".gitignore"), []byte("*\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := piCodexSeedRoot(Task{NodeID: "n", WorkDir: work, StoreDir: store}, nil); err != nil {
+		t.Fatalf("refused despite a catch-all guard: %v", err)
+	}
+
+	// A store OUTSIDE the worktree needs no guard — nothing there is stageable.
+	outside := t.TempDir()
+	if _, err := piCodexSeedRoot(Task{NodeID: "n", WorkDir: work, StoreDir: outside}, nil); err != nil {
+		t.Errorf("refused a store outside the worktree: %v", err)
+	}
+}
