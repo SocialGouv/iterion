@@ -67,6 +67,8 @@ first bilan for a bot lands.
 | Revi (converse) | `revi-converse` | conversational PR follow-up | _not yet_ |
 | Seki | `sec-audit-source` | source SAST audit | [sec-audit-source.md](sec-audit-source.md) |
 | Depsy | `sec-audit-deps` | supply-chain SCA audit (real Trivy CVE floor; other malware/ecosystem signals remain partial) | [sec-audit-deps.md](sec-audit-deps.md) |
+| Shieldy | `supply-shield` | global supply-chain MALWARE shield (diff-scoped, PR/push-driven) | [supply-shield.md](supply-shield.md) |
+| Vulny | `supply-shield-cve` | global supply-chain CVE shield (diff-scoped, PR/push-driven) | [supply-shield-cve.md](supply-shield-cve.md) |
 | Renovacy | `secured-renovacy` | dependency upgrade pipeline | [secured-renovacy.md](secured-renovacy.md) |
 | Bmady | `bmady` | BMAD multi-persona human-gated delivery | [bmady.md](bmady.md) |
 | Devy | `devbox-setup` | devbox.json bootstrap | [devbox-setup.md](devbox-setup.md) |
