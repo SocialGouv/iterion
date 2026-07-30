@@ -929,6 +929,9 @@
           "depth": {
             "type": "integer"
           },
+          "instructions": {
+            "type": "string"
+          },
           "interaction_id": {
             "type": "string"
           },

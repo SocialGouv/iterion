@@ -644,6 +644,7 @@ func (b *pipelineProjectionBuilder) aggregateTree(root *store.Run) (treeExec, tr
 				NodeID:        run.Checkpoint.NodeID,
 				InteractionID: run.Checkpoint.InteractionID,
 				Questions:     cloneAnyMap(run.Checkpoint.InteractionQuestions),
+				Instructions:  b.pendingReviewInstructions(run),
 				UpdatedAt:     b.pendingReviewUpdatedAt(run),
 				Depth:         depth,
 			})
@@ -690,4 +691,47 @@ func (b *pipelineProjectionBuilder) pendingReviewUpdatedAt(run *store.Run) time.
 		return run.UpdatedAt
 	}
 	return run.CreatedAt
+}
+
+// pendingReviewInstructions returns the resolved `instructions:` text the
+// engine stamped on this pause's human_input_requested event.
+//
+// Why a scan: the resolved text rides ONLY on that event (doPause folds
+// humanInstructionsExtra into the event data). Neither the checkpoint nor
+// the interaction record carries it, so a card built from the checkpoint
+// alone has nothing to show — and for a bot whose whole operator-facing
+// question lives in `instructions:` that means an answer box with no
+// question above it. Reading it back from the event log also makes
+// already-paused runs render correctly, without waiting for a new pause.
+//
+// The last matching event wins: a review gate that resumes and re-pauses
+// on the same interaction ID emits a fresh event per turn, and the operator
+// must see the current turn. Matching prefers the checkpoint's interaction
+// id and falls back to the node id for pauses written before interaction
+// ids were stamped on the event.
+func (b *pipelineProjectionBuilder) pendingReviewInstructions(run *store.Run) string {
+	if b == nil || b.rs == nil || run == nil || run.Checkpoint == nil {
+		return ""
+	}
+	node := run.Checkpoint.NodeID
+	if node == "" {
+		return ""
+	}
+	wantInteraction := run.Checkpoint.InteractionID
+	found := ""
+	_ = b.rs.ScanEvents(b.ctx, run.ID, func(e *store.Event) bool {
+		if e == nil || e.Type != store.EventHumanInputRequested || e.NodeID != node {
+			return true
+		}
+		if wantInteraction != "" {
+			if id, ok := e.Data["interaction_id"].(string); ok && id != wantInteraction {
+				return true
+			}
+		}
+		if text, ok := e.Data["instructions"].(string); ok {
+			found = text
+		}
+		return true
+	})
+	return found
 }

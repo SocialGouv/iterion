@@ -509,4 +509,52 @@ describe("HumanPromptForm — operator uploads at a gate", () => {
     const [, req] = resumeRun.mock.calls[0] as [string, Record<string, unknown>];
     expect("attachments" in req).toBe(false);
   });
+  // A board surface has no conversation around the form, so the paused
+  // node's `instructions:` text is the ONLY place the operator's question
+  // can appear: `questions` holds the node's INBOUND data and the
+  // schema-driven form renders its OUTPUT fields. Regression: an
+  // app-concept interview gate showed a bare "Message" box on the card
+  // while the run console rendered the full question.
+  it("renders the resolved instructions above the form", async () => {
+    getRunWorkflow.mockResolvedValue({
+      nodes: [{ id: "chat", output_schema: [{ name: "message", type: "string" }] }],
+      stale_hash: false,
+    });
+
+    renderWithClient(
+      <HumanPromptForm
+        runId="run-1"
+        nodeId="chat"
+        questions={{ reply: "inbound data the form never renders" }}
+        instructions={"Which scope do you want?\n\n- **A** narrow\n- **B** broad"}
+        sourceOverride={null}
+      />,
+    );
+
+    // findByText throws when absent, so reaching the assertion is the
+    // proof; the tag check pins that markdown rendered (a list item),
+    // not a raw string dumped into a paragraph.
+    const heading = await screen.findByText(/Which scope do you want\?/);
+    expect(heading).toBeTruthy();
+    expect(screen.getByText("narrow").closest("li")).toBeTruthy();
+  });
+
+  it("renders no instructions block when the node declares none", async () => {
+    getRunWorkflow.mockResolvedValue({
+      nodes: [{ id: "chat", output_schema: [{ name: "message", type: "string" }] }],
+      stale_hash: false,
+    });
+
+    const { container } = renderWithClient(
+      <HumanPromptForm
+        runId="run-1"
+        nodeId="chat"
+        questions={{ reply: "inbound only" }}
+        sourceOverride={null}
+      />,
+    );
+
+    await screen.findByRole("textbox");
+    expect(container.textContent).not.toContain("inbound only");
+  });
 });
