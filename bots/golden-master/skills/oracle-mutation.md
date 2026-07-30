@@ -125,6 +125,25 @@ Emit ONE LINE PER FAULTY ELEMENT. A count of violations is not a measurement whi
 which ones: the number gets re-read, the list gets checked, and a fix reads as three lines
 disappearing rather than a counter dropping for a reason someone has to go and find.
 
+**Putting the existing test suite through the same trials.** `suite-vs-net.py` in this bundle
+applies every mutant in turn and runs the target's own test suite, so the two instruments that both
+claim to protect against regression are measured against one set of trials instead of being
+compared by assertion. It reads `test_cmd` and `test_results_dir` from `config.json` and refuses to
+run without them: guessing a build tool would make it a program that sometimes measures something
+other than what it reports.
+
+The command must FORCE re-execution. A build tool that considers its test task up to date when its
+inputs have not moved will skip it — and a data mutation touches none of them. The measurement then
+records "the suite did not see it" where the suite did not run, exits 0, and reads exactly like a
+real result. The guard against that is not the flag but the COUNT: how many cases each run actually
+executed, read out of the produced reports rather than inferred from an exit code, because a
+skipped task exits 0 exactly like a green one. A run with fewer cases than the baseline is reported
+as an empty measurement, never as a miss.
+
+The figure is not a quality score for those tests. A unit suite localises a fault, runs in seconds
+and documents an intention; none of that is measured. What is measured is behavioural coverage of
+what the application actually serves — which is the one thing a migration puts at risk.
+
 **A note on `style_shift`.** Pixel tolerance is not a comfort setting, it is *the* blinding
 vector. Do not choose a threshold and then check the mutant. Tighten the threshold until
 `style_shift` is detected: the tolerance is **derived from the gate**, never picked.
