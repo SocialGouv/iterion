@@ -139,6 +139,13 @@ func (b *PiBackend) Execute(ctx context.Context, task Task) (Result, error) {
 	if err := b.noticeSubscriptionOAuth(ctx, task); err != nil {
 		return Result{BackendName: BackendPi, ExitCode: -1}, err
 	}
+	// The ignore guard goes FIRST. On the sandboxed path the credential below
+	// lands in <WorkDir>/.iterion/pi/, inside the git worktree, and a v2
+	// campaign agent runs `git add -A` before each in-stride commit — so a live
+	// ChatGPT access AND refresh token could be staged into the target repo and
+	// then fast-forwarded onto the operator's branch by finalizeWorktree.
+	// Ordering it before the seed closes that window unconditionally.
+	piHideWorkspaceSessionDir(task, b.Logger)
 	// pi's openai-codex provider has no API-key path, so a ChatGPT plan only
 	// reaches it through a seeded agent dir. Riding task.ExtraEnv puts it on
 	// both transports at once, and on the sandboxed path with them.
@@ -150,7 +157,6 @@ func (b *PiBackend) Execute(ctx context.Context, task Task) (Result, error) {
 	for k, v := range codexEnv {
 		task.ExtraEnv = append(task.ExtraEnv, k+"="+v)
 	}
-	piHideWorkspaceSessionDir(task, b.Logger)
 	// Transport selection. RPC is the default because it is strictly higher
 	// fidelity — tool events reach the studio timeline, operator chat rides
 	// pi's native steering, accounting comes from get_session_stats, and a

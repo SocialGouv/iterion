@@ -92,17 +92,6 @@ func piCodexSeed(ctx context.Context, task Task, logger *iterlog.Logger) (map[st
 		return nil, noop, nil
 	}
 
-	// This IS a subscription, so it answers to the same switch as the
-	// Anthropic one: an operator who forbids spending a personal plan through
-	// a third-party harness must not have it happen behind their back.
-	if secrets.ForbidSubscriptionOAuth() {
-		return nil, noop, fmt.Errorf(
-			"pi backend: node %q targets the %s provider, which can only be driven by a ChatGPT "+
-				"subscription token, but ITERION_FORBID_SUBSCRIPTION_OAUTH is set. Use an "+
-				"OPENAI_API_KEY model (openai/…) instead, or unset the switch",
-			task.NodeID, piCodexProvider)
-	}
-
 	// No usable Codex credential is NOT an error: before this bridge existed,
 	// such a node ran off pi's own `/login` store, and failing here would take
 	// that working path away — while telling the operator to run `pi` and
@@ -117,6 +106,24 @@ func piCodexSeed(ctx context.Context, task Task, logger *iterlog.Logger) (map[st
 		piNoteCodexFallback(task, logger, fmt.Sprintf(
 			"the Codex credential is not a ChatGPT subscription (auth_mode=%q)", view.AuthMode))
 		return nil, noop, nil
+	}
+
+	// This IS a subscription, so it answers to the same switch as the Anthropic
+	// one: an operator who forbids spending a personal plan through a
+	// third-party harness must not have it happen behind their back.
+	//
+	// Checked only now that a credential is KNOWN to exist, mirroring
+	// GuardSubscriptionOAuth. Evaluated earlier it refused on the mere fact that
+	// the node targets openai-codex — killing a node running off the operator's
+	// own `pi` /login, which this code path never reads and which is their
+	// relationship with the vendor, on a statement ("iterion is about to spend
+	// your subscription") that was false in that configuration.
+	if secrets.ForbidSubscriptionOAuth() {
+		return nil, noop, fmt.Errorf(
+			"pi backend: node %q targets the %s provider and iterion holds a ChatGPT subscription "+
+				"credential for it, but ITERION_FORBID_SUBSCRIPTION_OAUTH is set. Use an "+
+				"OPENAI_API_KEY model (openai/…) instead, or unset the switch",
+			task.NodeID, piCodexProvider)
 	}
 
 	root, err := piCodexSeedRoot(task, logger)
@@ -197,6 +204,13 @@ func piCodexSeedRoot(task Task, logger *iterlog.Logger) (string, error) {
 	root := ""
 	switch {
 	case sandboxed:
+		// Inside the git worktree, so the ignore guard must be verified rather
+		// than assumed: piHideWorkspaceSessionDir is best-effort and never
+		// overwrites a `.iterion/.gitignore` the target repo already tracks. A
+		// campaign agent's `git add -A` would otherwise stage the token pair.
+		if err := piWorkspaceIgnoreCovers(task.WorkDir); err != nil {
+			return "", err
+		}
 		root = filepath.Join(task.WorkDir, ".iterion", "pi")
 	case task.StoreDir != "":
 		root = filepath.Join(task.StoreDir, "pi")
@@ -312,4 +326,31 @@ func jwtExpiryMillis(token string) int64 {
 		return 0
 	}
 	return claims.Exp * 1000
+}
+
+// piWorkspaceIgnoreCovers verifies that <workDir>/.iterion/ is ignored wholesale
+// before a credential is written under it.
+//
+// Only the catch-all `*` counts. A repo that tracks its own `.iterion/.gitignore`
+// with narrower rules is left alone by piHideWorkspaceSessionDir — correctly,
+// it is the operator's file — but then nothing guarantees the seed directory is
+// excluded, and the consequence of guessing wrong is an OAuth refresh token
+// committed onto a branch that finalizeWorktree fast-forwards into the
+// operator's checkout. Refusing to seed is the recoverable failure; committing
+// a credential is not.
+func piWorkspaceIgnoreCovers(workDir string) error {
+	guard := filepath.Join(workDir, ".iterion", ".gitignore")
+	data, err := os.ReadFile(guard) // #nosec G304 — a fixed filename under the run's workspace.
+	if err != nil {
+		return fmt.Errorf("refusing to write a ChatGPT credential under %s: no ignore guard at %s (%w)",
+			filepath.Join(workDir, ".iterion"), guard, err)
+	}
+	for _, line := range strings.Split(string(data), "\n") {
+		if strings.TrimSpace(line) == "*" {
+			return nil
+		}
+	}
+	return fmt.Errorf("refusing to write a ChatGPT credential under %s: %s does not ignore everything "+
+		"(no `*` line), so a campaign agent's `git add -A` could commit the token",
+		filepath.Join(workDir, ".iterion"), guard)
 }

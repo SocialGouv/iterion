@@ -169,6 +169,24 @@ func TestPiCodexSeed(t *testing.T) {
 		})
 	})
 
+	// The opt-out governs what ITERION would spend. With no credential to
+	// inject there is nothing to refuse, and a node running off the operator's
+	// own `pi` /login — which this code path never reads — must still run.
+	t.Run("the opt-out does not refuse when there is nothing to inject", func(t *testing.T) {
+		t.Setenv("CODEX_HOME", t.TempDir())
+		t.Setenv("ITERION_FORBID_SUBSCRIPTION_OAUTH", "1")
+		env, cleanup, err := piCodexSeed(context.Background(),
+			Task{NodeID: "n", Model: "openai-codex/gpt-5.6-sol", StoreDir: t.TempDir()}, nil)
+		cleanup()
+		if err != nil {
+			t.Fatalf("err = %v — iterion holds no subscription credential here, so there is "+
+				"nothing for the switch to refuse, and pi's own login must still work", err)
+		}
+		if len(env) != 0 {
+			t.Errorf("env = %v, want none", env)
+		}
+	})
+
 	// The policy refusal is the one hard error: an operator who forbids
 	// spending a personal plan must not have it happen behind their back.
 	t.Run("the subscription opt-out is a hard refusal", func(t *testing.T) {
@@ -288,6 +306,14 @@ func TestPiSkillDir(t *testing.T) {
 // one, on the DEFAULT path, since sandboxing is on by default.
 func TestPiCodexSeedRootFollowsTheMount(t *testing.T) {
 	work, store := t.TempDir(), t.TempDir()
+	// The sandboxed branch writes inside the git worktree, so it verifies the
+	// ignore guard first (see TestPiCodexSeedRequiresTheIgnoreGuard).
+	if err := os.MkdirAll(filepath.Join(work, ".iterion"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(work, ".iterion", ".gitignore"), []byte("*\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
 
 	host, err := piCodexSeedRoot(Task{WorkDir: work, StoreDir: store}, nil)
 	if err != nil {
@@ -381,15 +407,25 @@ func TestPiCodexSeedSparesALivePeer(t *testing.T) {
 // reproduces the very failure the seed root exists to prevent — but silently.
 func TestPiCodexSeedRootRefusesUnmountedFallback(t *testing.T) {
 	work := t.TempDir()
-	// Make the workspace unwritable so MkdirAll fails.
-	if err := os.Chmod(work, 0o500); err != nil {
+	// Guard present, so the refusal below is about the MOUNT, not the guard.
+	if err := os.MkdirAll(filepath.Join(work, ".iterion"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(work, ".iterion", ".gitignore"), []byte("*\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	// Make .iterion unwritable so creating .iterion/pi fails.
+	if err := os.Chmod(filepath.Join(work, ".iterion"), 0o500); err != nil {
 		t.Skipf("cannot make the dir unwritable: %v", err)
 	}
-	t.Cleanup(func() { _ = os.Chmod(work, 0o700) })
+	t.Cleanup(func() { _ = os.Chmod(filepath.Join(work, ".iterion"), 0o700) })
 
 	_, err := piCodexSeedRoot(Task{NodeID: "n", WorkDir: work, Sandbox: stubSandboxRun{}}, nil)
 	if err == nil {
 		t.Fatal("no error — pi would be handed a host /tmp path the container cannot see")
+	}
+	if strings.Contains(err.Error(), "ignore guard") {
+		t.Fatalf("refused for the guard, not the mount: %v", err)
 	}
 
 	// Off the sandbox the same failure is tolerable: /tmp is merely unswept.
@@ -426,6 +462,49 @@ func TestPiBinaryOverride(t *testing.T) {
 		t.Setenv("ITERION_PI_BIN", "")
 		if got := NewPiBackend(nil, "").print.Command; got != "" {
 			t.Errorf("command = %q, want empty so the PATH lookup applies", got)
+		}
+	})
+}
+
+// On the sandboxed path the credential lands inside the git worktree, where a
+// v2 campaign agent's `git add -A` would stage it — and finalizeWorktree then
+// fast-forwards that branch into the operator's checkout. The ignore guard is
+// best-effort and never overwrites a `.iterion/.gitignore` the repo already
+// tracks, so it must be VERIFIED, not assumed.
+func TestPiCodexSeedRequiresTheIgnoreGuard(t *testing.T) {
+	seedRoot := func(t *testing.T, guard string) error {
+		t.Helper()
+		work := t.TempDir()
+		if err := os.MkdirAll(filepath.Join(work, ".iterion"), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if guard != "" {
+			if err := os.WriteFile(filepath.Join(work, ".iterion", ".gitignore"),
+				[]byte(guard), 0o644); err != nil {
+				t.Fatal(err)
+			}
+		}
+		_, err := piCodexSeedRoot(Task{NodeID: "n", WorkDir: work, Sandbox: stubSandboxRun{}}, nil)
+		return err
+	}
+
+	t.Run("no guard at all is refused", func(t *testing.T) {
+		if err := seedRoot(t, ""); err == nil {
+			t.Fatal("seeded a credential into an unguarded git worktree")
+		}
+	})
+
+	// A repo tracking its own narrower rules is left alone by the guard writer,
+	// so nothing proves the seed dir is excluded.
+	t.Run("a guard that does not ignore everything is refused", func(t *testing.T) {
+		if err := seedRoot(t, "runs/\nworktrees/\n"); err == nil {
+			t.Fatal("seeded despite an ignore file that may not cover the seed dir")
+		}
+	})
+
+	t.Run("the catch-all guard is accepted", func(t *testing.T) {
+		if err := seedRoot(t, "*\n"); err != nil {
+			t.Fatalf("refused despite a catch-all guard: %v", err)
 		}
 	})
 }
