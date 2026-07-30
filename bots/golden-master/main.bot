@@ -259,6 +259,7 @@ tool oracle_run:
     import shutil
     import subprocess
     import sys
+    import tempfile
     import time
     import urllib.error
     import urllib.parse
@@ -284,6 +285,7 @@ tool oracle_run:
         "binary": ["content_empty", "value_change"],
         "screen": ["style_shift"],
         "asset":  ["content_change", "asset_missing"],
+        "a11y":   ["violation_added"],
     }
 
     CONTROL_SAMPLE = 6          # non-target entries replayed per mutant, for collateral
@@ -604,27 +606,128 @@ tool oracle_run:
                 "referenced": url in referenced,
             })
         return json.dumps({"assets": records}, sort_keys=True).encode()
+    class Browser:
+        """A headless browser, started once per capture and stopped after it.
+
+        One per capture rather than one per entry: a browser costs about a second
+        to start, and paying that per entry pushes whoever writes the corpus to
+        audit fewer pages — a coverage decision taken for a performance reason,
+        which is how audit surfaces quietly shrink.
+        """
+
+        def __init__(self, config, gm_dir):
+            self.binary = config.get("browser_binary", "chromium")
+            self.gm_dir = gm_dir
+            self.proc = None
+            self.port = None
+
+        def start(self):
+            if self.proc is not None:
+                return
+            if not shutil.which(self.binary):
+                raise SystemExit(
+                    "an entry declares surface 'a11y' but %r is not on PATH. The lane "
+                    "renders pages in a real browser — an audit run against raw HTML "
+                    "measures the markup, not what a user is served." % self.binary)
+            import socket
+            s = socket.socket()
+            s.bind(("127.0.0.1", 0))
+            self.port = s.getsockname()[1]
+            s.close()
+            profile = os.path.join(tempfile.mkdtemp(prefix="gm-browser-"), "profile")
+            self.proc = subprocess.Popen(
+                [self.binary, "--headless", "--disable-gpu", "--no-sandbox",
+                 "--hide-scrollbars", "--force-device-scale-factor=1",
+                 "--remote-debugging-port=%d" % self.port,
+                 "--user-data-dir=" + profile, "about:blank"],
+                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            deadline = time.time() + 60
+            while time.time() < deadline:
+                try:
+                    with urllib.request.urlopen(
+                            "http://127.0.0.1:%d/json/version" % self.port, timeout=2):
+                        return
+                except Exception:
+                    if self.proc.poll() is not None:
+                        raise SystemExit("%s exited before opening its debug port" % self.binary)
+                    time.sleep(0.5)
+            raise SystemExit("%s never opened its debug port within 60s" % self.binary)
+
+        def stop(self):
+            if self.proc is not None:
+                self.proc.terminate()
+                try:
+                    self.proc.wait(timeout=20)
+                except subprocess.TimeoutExpired:
+                    self.proc.kill()
+                self.proc = None
+
+
+    def collect_a11y(session, entry, browser):
+        """Run the audit engine against the rendered page, as this persona sees it.
+
+        The session's cookies are handed to the browser, so a page behind a login is
+        audited as that role rather than as the login form. Without them the lane
+        would report an audit of `/login` under every dashboard entry's name:
+        stable, plausible, and about the wrong page.
+        """
+        browser.start()
+        cookies = []
+        for c in session.jar:
+            cookies.append({"name": c.name, "value": c.value,
+                            "domain": c.domain or "127.0.0.1",
+                            "path": c.path or "/"})
+        tmp = tempfile.mkdtemp(prefix="gm-a11y-")
+        try:
+            cookie_file = os.path.join(tmp, "cookies.json")
+            with open(cookie_file, "w", encoding="utf-8") as f:
+                json.dump(cookies, f)
+            script = os.path.join(browser.gm_dir, "a11y", "run-axe.mjs")
+            engine = os.path.join(browser.gm_dir, "a11y", "axe.min.js")
+            for path in (script, engine):
+                if not os.path.isfile(path):
+                    raise SystemExit(
+                        "the a11y lane needs %s, which is missing. The audit engine is "
+                        "vendored on purpose — see a11y/PROVENANCE.md — so the figures "
+                        "can be recomputed rather than believed." % path)
+            url = session.base_url + urllib.parse.quote(entry["path"], safe="/?&=%")
+            p = subprocess.run(
+                ["node", script, str(browser.port), url, engine, cookie_file],
+                stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, timeout=180)
+            if p.returncode != 0:
+                raise SystemExit("a11y audit of %s failed: %s"
+                                 % (entry["id"], (p.stderr or "").strip()[-800:]))
+            return p.stdout.encode()
+        finally:
+            shutil.rmtree(tmp, ignore_errors=True)
     def capture(config, corpus, canon, ids=None):
         """Fetch and canonicalise the corpus. Returns {id: canonical_text}."""
         sessions = open_sessions(config)
         jar_path = None
+        browser = Browser(config, os.environ.get("GM_DIR", ".golden-master"))
         out = {}
-        for e in corpus["entries"]:
-            if ids is not None and e["id"] not in ids:
-                continue
-            s = sessions.get(e.get("persona", "anon"))
-            if s is None:
-                raise SystemExit("entry %s names unknown persona %r" % (e["id"], e.get("persona")))
-            if e.get("surface") == "asset":
-                if jar_path is None:
-                    jar_path = resolve_artifact(config, os.environ.get("GM_WORKSPACE", "."))
-                status, headers, body = 200, {}, collect_assets(s, jar_path, e)
-            else:
-                status, headers, body = s.fetch(
-                    e.get("method", "GET"), e["path"], fields=e.get("fields"),
-                    follow=not e.get("no_redirect", False),
-                )
-            out[e["id"]] = canon.canonicalize(e, status, headers, body)
+        try:
+            for e in corpus["entries"]:
+                if ids is not None and e["id"] not in ids:
+                    continue
+                s = sessions.get(e.get("persona", "anon"))
+                if s is None:
+                    raise SystemExit("entry %s names unknown persona %r" % (e["id"], e.get("persona")))
+                surface = e.get("surface")
+                if surface == "asset":
+                    if jar_path is None:
+                        jar_path = resolve_artifact(config, os.environ.get("GM_WORKSPACE", "."))
+                    status, headers, body = 200, {}, collect_assets(s, jar_path, e)
+                elif surface == "a11y":
+                    status, headers, body = 200, {}, collect_a11y(s, e, browser)
+                else:
+                    status, headers, body = s.fetch(
+                        e.get("method", "GET"), e["path"], fields=e.get("fields"),
+                        follow=not e.get("no_redirect", False),
+                    )
+                out[e["id"]] = canon.canonicalize(e, status, headers, body)
+        finally:
+            browser.stop()
         return out
 
 

@@ -78,7 +78,10 @@ must exist and be detected.
    "recipe":"change one byte of a served asset without renaming it"},
   {"surface":"asset","archetype":"asset_missing","required":true,
    "catches":"a manifest that fingerprints the files it finds without ever stating how many it expected — every file present still matches, and the one that stopped being produced is simply absent from the comparison",
-   "recipe":"stop the build from producing one asset, by editing the build's own configuration rather than deleting the output"}
+   "recipe":"stop the build from producing one asset, by editing the build's own configuration rather than deleting the output"},
+  {"surface":"a11y","archetype":"violation_added","required":true,
+   "catches":"an audit that ran against something other than the page under test — a browser error page, a login redirect, or a half-built DOM — which produces a well-formed, stable, page-independent result",
+   "recipe":"remove one accessible name: detach a label from its control, or drop an image's alternative text"}
 ]
 -->
 
@@ -99,6 +102,28 @@ nobody serves is not a reference.
 Emit ONE LINE PER ASSET, never a digest of the set. A digest says *something moved* and nothing
 else, and the reason this lane exists — reading a build-chain upgrade — is to know which files
 moved and how many.
+
+**A note on the `a11y` surface.** Audit the RENDERED page, in a real browser, with the persona's
+session cookies. An audit of raw markup measures the markup; an audit run without cookies measures
+the login page under every dashboard entry's name. Ship the audit engine vendored, pinned by
+version and hash, with its provenance written down: publishing results asks a reader to believe
+whoever produced them, publishing the engine lets them recompute. And keep the engine version
+inside the reference — bumping it can move the count without a line of the product changing, and
+without that line the move reads as a regression of the application.
+
+`a11y/run-axe.mjs` in this bundle is the runner to write into the target repo. It uses node's
+built-in `fetch` and `WebSocket` and nothing else, so the lane inherits the same property as the
+rest of the net: it runs in a sandbox with no egress. Three guards in it are not optional, and each
+one was written after the failure it prevents. Refuse a navigation the browser reports as failed —
+otherwise a dead port yields an audit of the browser's own error page, identical for every entry,
+well-formed, and recorded as the reference. Check the loaded origin separately — a redirect to a
+login page is not a navigation error and passes the first guard. And let the process flush its
+output before exiting — a large audit truncates at the pipe buffer, and the canonicaliser then
+blames the audit for what the runner did.
+
+Emit ONE LINE PER FAULTY ELEMENT. A count of violations is not a measurement while nobody can say
+which ones: the number gets re-read, the list gets checked, and a fix reads as three lines
+disappearing rather than a counter dropping for a reason someone has to go and find.
 
 **A note on `style_shift`.** Pixel tolerance is not a comfort setting, it is *the* blinding
 vector. Do not choose a threshold and then check the mutant. Tighten the threshold until
