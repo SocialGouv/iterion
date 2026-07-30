@@ -13,11 +13,18 @@
 //           juge pas.
 import { readFileSync } from "node:fs";
 
-const [port, url, axePath, cookiePath] = process.argv.slice(2);
+const [port, url, axePath, cookiePath, loadTimeoutArg] = process.argv.slice(2);
 if (!port || !url || !axePath) {
-  console.error("usage: run-axe.mjs <port-cdp> <url> <axe.min.js> [cookies.json]");
+  console.error("usage: run-axe.mjs <port-cdp> <url> <axe.min.js> [cookies.json] [timeout-s]");
   process.exit(2);
 }
+// Plafond de chargement, passé par l'appelant. Il était figé à 60 s : un pari
+// sur la machine la plus rapide qui exécuterait ce filet, perdu au premier
+// passage de CI à froid — application qui vient de démarrer, JVM sans code
+// compilé, navigateur qui s'initialise. Un plafond de chargement est un filet
+// de sécurité contre un blocage, pas une assertion de performance ; le régler
+// serré ne mesure rien de plus et rend rouge pour la vitesse de l'hôte.
+const LOAD_TIMEOUT_MS = (Number(loadTimeoutArg) || 240) * 1000;
 
 const fail = (msg) => { console.error("run-axe: " + msg); process.exit(1); };
 
@@ -38,21 +45,42 @@ const ws = new WebSocket(created.webSocketDebuggerUrl);
 let seq = 0;
 const pending = new Map();
 const events = [];
+// Un onglet dont le processus de rendu MEURT ne répond plus à rien : ni
+// `Page.loadEventFired`, ni la moindre évaluation. Le script attendait alors
+// pour toujours, node signalait « unsettled top-level await », et le seul
+// message visible parlait d'un chargement trop long. Trois hypothèses ont été
+// dépensées à chercher une lenteur là où il y avait un mort.
+let crashed = null;
 ws.addEventListener("message", (e) => {
   const m = JSON.parse(e.data);
   if (m.id && pending.has(m.id)) { pending.get(m.id)(m); pending.delete(m.id); }
-  else if (m.method) events.push(m.method);
+  else if (m.method) {
+    events.push(m.method);
+    if (m.method === "Inspector.targetCrashed") crashed = "le processus de rendu a plante";
+    if (m.method === "Inspector.detached") crashed = "session CDP detachee : " + JSON.stringify(m.params || {});
+  }
 });
+ws.addEventListener("close", () => { if (!crashed) crashed = "socket CDP fermee par le navigateur"; });
 await new Promise((res, rej) => {
   ws.addEventListener("open", res);
   ws.addEventListener("error", () => rej(new Error("socket CDP inutilisable")));
 }).catch((e) => fail(String(e)));
 
+// AUCUNE commande n'attend indéfiniment. Sans ce plafond, une commande sans
+// réponse suspend le script entier, et l'échec se présente comme un `await` non
+// résolu — un symptôme qui ne désigne ni la commande, ni la cause.
+const CMD_TIMEOUT_MS = 60000;
 async function cmd(method, params = {}) {
-  const r = await new Promise((res) => {
-    pending.set(++seq, res);
-    ws.send(JSON.stringify({ id: seq, method, params }));
-  });
+  const id = ++seq;
+  const r = await Promise.race([
+    new Promise((res) => { pending.set(id, res); ws.send(JSON.stringify({ id, method, params })); }),
+    new Promise((res) => setTimeout(() => res({ __timeout: true }), CMD_TIMEOUT_MS)),
+  ]);
+  if (r.__timeout) {
+    pending.delete(id);
+    fail(method + " est reste sans reponse pendant " + (CMD_TIMEOUT_MS / 1000)
+         + " s" + (crashed ? " — " + crashed : " et le navigateur n'a rien signale"));
+  }
   if (r.error) fail(method + " a échoué : " + JSON.stringify(r.error));
   return r.result;
 }
@@ -85,8 +113,35 @@ const loaded = new Promise((res) => {
 const nav = await cmd("Page.navigate", { url });
 if (nav.errorText) fail("navigation vers " + url + " refusée : " + nav.errorText);
 
-const timeout = new Promise((_, rej) => setTimeout(() => rej(new Error("chargement > 60 s")), 60000));
-await Promise.race([loaded, timeout]).catch((e) => fail(String(e.message || e)));
+// Le plafond ne se contente pas d'échouer : il DIT ce qui pendait. Un message
+// qui rapporte « chargement > N s » accuse la lenteur de l'hôte et envoie
+// chercher au mauvais endroit — deux hypothèses ont été dépensées ainsi. Ce que
+// le lecteur a besoin de savoir tient en deux faits que le navigateur connaît :
+// où en est le document, et quelles requêtes ne sont pas terminées.
+const timeout = new Promise((res) => setTimeout(() => res("TIMEOUT"), LOAD_TIMEOUT_MS));
+const outcome = await Promise.race([loaded.then(() => "LOADED"), timeout]);
+if (outcome === "TIMEOUT" && crashed) {
+  fail("le navigateur n'a jamais fini de charger " + url + " — " + crashed);
+}
+if (outcome === "TIMEOUT") {
+  let diag = "(diagnostic indisponible)";
+  try {
+    const d = await cmd("Runtime.evaluate", {
+      expression: `JSON.stringify({
+        ready: document.readyState,
+        href: location.href,
+        pending: performance.getEntriesByType("resource")
+                    .filter(function (r) { return r.responseEnd === 0; })
+                    .map(function (r) { return r.name; }).slice(0, 12),
+        total: performance.getEntriesByType("resource").length
+      })`,
+      returnByValue: true,
+    });
+    diag = d?.result?.value || diag;
+  } catch (e) { diag = "(diagnostic impossible : " + e + ")"; }
+  fail("l'evenement `load` n'est pas venu en " + (LOAD_TIMEOUT_MS / 1000)
+       + " s sur " + url + " — etat de la page : " + diag);
+}
 
 // Deuxième vérrou, indépendant du premier : l'origine réellement chargée. Une
 // redirection vers la page de connexion ne serait pas une erreur de navigation
@@ -102,18 +157,35 @@ if (!here.href || !here.href.startsWith(new URL(url).origin)) {
        + " — le navigateur n'a pas atteint l'application");
 }
 
-// Le réseau se tait avant l'audit : les pages remplies côté client ne portent
-// leur contenu qu'après leurs appels d'API, et auditer avant ne mesurerait que
-// le squelette. Fenêtre de silence courte, plafond dur.
+// Le réseau se tait ET le DOM cesse de bouger avant l'audit.
+//
+// Le réseau seul ne suffit pas : une page remplie côté client construit encore
+// son arbre après sa dernière réponse — graphiques, listes, composants montés
+// sur les données reçues. Auditer à ce moment mesure un état transitoire, et le
+// résultat dépend alors de la vitesse de la machine.
+//
+// Mesuré : l'audit du tableau de bord était stable en local sur trois captures
+// et DIVERGEAIT en intégration continue sous une mutation NULLE. Un filet qui
+// bouge sans que rien n'ait bougé ne prouve rien quand il bouge pour une vraie
+// raison — c'est le juge hystérique, l'exacte symétrie du juge aveugle.
+//
+// Deux observateurs, un seul verdict : la page est prête quand ni requête ni
+// mutation n'est survenue depuis la fenêtre de silence. Plafond dur pour qu'une
+// page à animation perpétuelle n'immobilise pas le filet.
 await cmd("Runtime.evaluate", {
   expression: `new Promise((res) => {
     let last = performance.now();
-    const seen = new PerformanceObserver(() => { last = performance.now(); });
-    seen.observe({ entryTypes: ["resource"] });
-    const deadline = performance.now() + 10000;
+    const touch = () => { last = performance.now(); };
+    const net = new PerformanceObserver(touch);
+    net.observe({ entryTypes: ["resource"] });
+    const dom = new MutationObserver(touch);
+    dom.observe(document.documentElement,
+                {childList: true, subtree: true, attributes: true, characterData: true});
+    const deadline = performance.now() + 15000;
     (function poll() {
-      if (performance.now() - last > 800 || performance.now() > deadline) { seen.disconnect(); res(true); }
-      else setTimeout(poll, 100);
+      if (performance.now() - last > 1200 || performance.now() > deadline) {
+        net.disconnect(); dom.disconnect(); res(true);
+      } else setTimeout(poll, 100);
     })();
   })`,
   awaitPromise: true,

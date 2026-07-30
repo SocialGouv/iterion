@@ -634,8 +634,16 @@ tool oracle_run:
             s.bind(("127.0.0.1", 0))
             self.port = s.getsockname()[1]
             s.close()
-            profile = os.path.join(tempfile.mkdtemp(prefix="gm-browser-"), "profile")
-                    # `--disable-dev-shm-usage` : dans un conteneur, `/dev/shm` fait 64 Mo par
+            workdir = tempfile.mkdtemp(prefix="gm-browser-")
+            profile = os.path.join(workdir, "profile")
+            env = self._font_env(workdir)
+            # La sortie du navigateur est CONSERVEE, pas jetee. Elle partait dans
+            # /dev/null : quand le processus mourait, la seule chose qui savait
+            # pourquoi etait precisement ce qu'on effacait, et l'echec se presentait
+            # comme une page lente. Trois hypotheses ont ete depensees sur ce silence.
+            self.log = os.path.join(workdir, "browser.log")
+            self._logf = open(self.log, "wb")
+            # `--disable-dev-shm-usage` : dans un conteneur, `/dev/shm` fait 64 Mo par
             # défaut, et le moteur de rendu s'y bloque au lieu d'échouer. Le symptôme
             # n'est pas un plantage mais une page qui ne finit jamais de charger —
             # l'événement `load` ne vient pas, et le plafond de chargement tombe en
@@ -648,10 +656,18 @@ tool oracle_run:
             self.proc = subprocess.Popen(
                 [self.binary, "--headless", "--disable-gpu", "--no-sandbox",
                  "--disable-dev-shm-usage", "--disable-software-rasterizer",
+                 # Chrome émet au démarrage des appels de service — variations,
+                 # mise à jour de composants, détection de changement de réseau. Sur
+                 # un réseau qui laisse pendre au lieu de refuser, ces appels ne
+                 # rendent jamais la main. Ils n'ont aucune utilité pour un audit.
+                 "--disable-background-networking", "--disable-component-update",
+                 "--disable-sync", "--disable-default-apps", "--disable-extensions",
+                 "--disable-client-side-phishing-detection", "--metrics-recording-only",
+                 "--no-first-run", "--no-default-browser-check", "--mute-audio",
                  "--hide-scrollbars", "--force-device-scale-factor=1",
                  "--remote-debugging-port=%d" % self.port,
                  "--user-data-dir=" + profile, "about:blank"],
-                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                stdout=self._logf, stderr=subprocess.STDOUT, env=env)
             deadline = time.time() + 60
             while time.time() < deadline:
                 try:
@@ -664,7 +680,87 @@ tool oracle_run:
                     time.sleep(0.5)
             raise SystemExit("%s never opened its debug port within 60s" % self.binary)
 
+        def _font_env(self, workdir):
+            """Un navigateur SANS POLICE ne rend pas mal : il meurt.
+
+            Mesure, et le navigateur le dit lui-meme :
+            `FATAL SkFontMgr_FontConfigInterface.cpp: Not implemented.` puis
+            SIGABRT, precede de `glyph_count: 0` — fontconfig ne trouve aucune
+            police, la voie de repli de Skia n'existe pas, et le processus avorte.
+            En local ce sont les polices du systeme hote qui sauvent la mise ; dans
+            un conteneur il n'y en a pas, et l'echec se presente comme une page qui
+            ne charge jamais.
+
+            C'est la meme famille de defaut que sur la lane binaire : un rendu qui
+            depend des polices de la machine, invisible dans le diff. La reponse est
+            la meme — declarer les polices au lieu d'esperer celles de l'hote.
+
+            REFUS BRUYANT si aucun repertoire de polices n'existe. Un navigateur
+            sans police produirait, au mieux, un audit d'une page sans texte :
+            stable, plausible, et aveugle sur tout ce qui se lit.
+            """
+            # UNIQUEMENT les polices DECLAREES. Les repertoires du systeme hote sont
+            # exclus exprès, et ce n'est pas un durcissement gratuit : avec eux, la
+            # machine qui enregistre les references dispose de polices que la CI n'a
+            # pas, le texte se rend autrement, et une violation de CONTRASTE
+            # apparait ici et pas la-bas. Mesure : 11 noeuds `color-contrast` en
+            # local contre 10 en integration continue, de facon reproductible des
+            # deux cotes — une reference qui encode une propriete de son producteur,
+            # exactement le defaut deja rencontre sur les polices des PDF.
+            #
+            # Le prix est une reference qui ne vaut que sous le jeu de polices
+            # declare. C'est le but : ce jeu-la, lui, voyage.
+            candidates = [
+                os.path.join(os.environ.get("DEVBOX_PROFILE", ""), "share", "fonts"),
+                os.path.join(os.getcwd(), ".devbox", "nix", "profile", "default", "share", "fonts"),
+            ]
+            dirs = [d for d in candidates if d and os.path.isdir(d)]
+            if not dirs:
+                raise SystemExit(
+                    "aucun repertoire de polices trouve pour le navigateur. Il n'en "
+                    "rendra pas moins bien : il AVORTE (SkFontMgr 'Not implemented'). "
+                    "`noto-fonts` et `fontconfig` sont declares dans devbox.json ; "
+                    "cherches ici : %s. Les polices du systeme hote ne sont "
+                    "DELIBEREMENT pas utilisees : une reference enregistree avec "
+                    "elles ne vaut que sur la machine qui les porte."
+                    % ", ".join(candidates))
+            conf = os.path.join(workdir, "fonts.conf")
+            with open(conf, "w", encoding="utf-8") as f:
+                f.write("<?xml version='1.0'?>\n<fontconfig>\n")
+                for d in dirs:
+                    f.write("  <dir>%s</dir>\n" % d)
+                f.write("  <cachedir>%s</cachedir>\n" % os.path.join(workdir, "fc-cache"))
+                f.write("</fontconfig>\n")
+            env = dict(os.environ)
+            env["FONTCONFIG_FILE"] = conf
+            env["FONTCONFIG_PATH"] = workdir
+            return env
+
+        def why_it_died(self):
+            """Ce que le navigateur a dit avant de partir, et son code de sortie.
+
+            Sans ces deux faits, « socket fermee » est un constat sans cause : on
+            sait que le processus est parti, pas ce qui l'a fait partir.
+            """
+            bits = []
+            if self.proc is not None and self.proc.poll() is not None:
+                bits.append("le navigateur s'est arrete (code %s)" % self.proc.returncode)
+            try:
+                with open(self.log, "rb") as f:
+                    tail = f.read()[-1200:].decode("utf-8", "replace").strip()
+                if tail:
+                    bits.append("dernieres lignes du navigateur :\n" + tail)
+            except (OSError, AttributeError):
+                pass
+            return " | ".join(bits) if bits else "le navigateur n'a rien ecrit"
+
         def stop(self):
+            if getattr(self, "_logf", None) is not None:
+                try:
+                    self._logf.close()
+                except OSError:
+                    pass
+                self._logf = None
             if self.proc is not None:
                 self.proc.terminate()
                 try:
@@ -672,7 +768,6 @@ tool oracle_run:
                 except subprocess.TimeoutExpired:
                     self.proc.kill()
                 self.proc = None
-
 
     def collect_a11y(session, entry, browser):
         """Run the audit engine against the rendered page, as this persona sees it.
@@ -706,8 +801,9 @@ tool oracle_run:
                 ["node", script, str(browser.port), url, engine, cookie_file],
                 stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, timeout=180)
             if p.returncode != 0:
-                raise SystemExit("a11y audit of %s failed: %s"
-                                 % (entry["id"], (p.stderr or "").strip()[-800:]))
+                raise SystemExit("a11y audit of %s failed: %s\n%s"
+                                 % (entry["id"], (p.stderr or "").strip()[-800:],
+                                    browser.why_it_died()))
             return p.stdout.encode()
         finally:
             shutil.rmtree(tmp, ignore_errors=True)
@@ -924,9 +1020,54 @@ tool oracle_run:
         return out
 
 
+    _FP_SKIP = {".git", "node_modules", "build", ".gradle", ".gradle-ci", ".devbox",
+                ".venv", "__pycache__", ".state"}
+
+
     def tree_fingerprint(ws):
+        """Empreinte de l'arbre, et JAMAIS `None` en cas d'echec.
+
+        La version precedente rendait `None` quand git ne repondait pas — et
+        `None != None` est faux, donc « l'arbre n'a pas bouge », donc « ce mutant ne
+        change rien », donc INVALIDE. Un outil absent se presentait ainsi comme une
+        propriete du mutant.
+
+        Mesure de ce que ca coute : sur un runner ou git refusait de repondre
+        (propriete du depot jugee douteuse par git, cas classique en conteneur),
+        DIX mutants sur dix-neuf sont devenus invalides d'un coup. Et le score, qui
+        se calcule sur les mutants VALIDES, est reste a 100 % — un contre-test
+        reduit de moitie sous une note parfaite. C'est exactement le defaut que ce
+        filet existe pour attraper, un cran au-dessus de lui.
+
+        Le repli n'est pas un adoucissement : parcourir l'arbre donne une empreinte
+        au moins aussi discriminante que `git status` pour ce qu'on lui demande —
+        savoir si un fichier a bouge. Si les DEUX echouent, on s'arrete.
+        """
         code, out = run("git status --porcelain", ws, timeout=120)
-        return out if code == 0 else None
+        if code == 0:
+            return "git:" + out
+        h = hashlib.sha256()
+        seen = 0
+        for root, dirs, files in os.walk(ws):
+            dirs[:] = sorted(d for d in dirs if d not in _FP_SKIP)
+            for name in sorted(files):
+                full = os.path.join(root, name)
+                try:
+                    st = os.stat(full)
+                except OSError:
+                    continue
+                h.update(("%s|%d|%d\n" % (os.path.relpath(full, ws), st.st_size,
+                                          int(st.st_mtime))).encode())
+                seen += 1
+        if seen == 0:
+            raise SystemExit(
+                "impossible de prendre une empreinte de l'arbre dans %s : git n'a pas "
+                "repondu et le parcours n'a vu aucun fichier. Sans elle, la validite "
+                "d'un mutant n'est pas mesurable, et la faire passer pour « ce mutant "
+                "ne change rien » accuserait le mutant a la place de l'outil." % ws)
+        return "walk:" + h.hexdigest()
+
+
 
 
     def data_fingerprint(meta, ws):
