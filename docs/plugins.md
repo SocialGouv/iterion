@@ -111,7 +111,11 @@ team a private plugin.
 
 A **plugin source** fixes both: a team-scoped record naming the git repository
 that holds the plugin, persisted in Mongo (the durable cloud substrate). The
-checkout is only a re-derivable cache, so a restart rebuilds it.
+checkout is only a re-derivable cache, so a restart rebuilds it. The fetch is
+built in a staging directory and moved into place with a single rename, so a
+launch is never handed a half-populated tree; and concurrent cold launches on
+the same source share one clone (a per-key lock serialises them) rather than
+racing N fetches against the same ref.
 
 ```sh
 # team admin/owner
