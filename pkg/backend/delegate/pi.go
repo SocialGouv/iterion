@@ -293,6 +293,16 @@ func piSkillDir(task Task) string {
 	if len(task.SkillHints) > 0 {
 		return dir
 	}
+	// Under a sandbox WorkDir names an IN-CONTAINER path. The default docker
+	// mount happens to place the worktree at its host path, so a stat would
+	// usually work — but a spec pinning a different workspaceFolder, or the
+	// kubernetes driver, breaks that, and the stat would then fail with
+	// ErrNotExist and silently drop --skill: the exact defect this function was
+	// written to close. The engine mirrors the bundle's skills into that
+	// directory unconditionally, so offer it and let pi find what is there.
+	if task.Sandbox != nil {
+		return dir
+	}
 	entries, err := os.ReadDir(dir)
 	if err != nil {
 		// "Not there" is the ordinary case for a bot shipping no skills.

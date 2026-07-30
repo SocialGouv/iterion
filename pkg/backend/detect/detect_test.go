@@ -615,3 +615,76 @@ func TestDetectPi(t *testing.T) {
 		}
 	})
 }
+
+// bedrock and vertex are marked available on AWS_REGION / GOOGLE_CLOUD_PROJECT
+// alone — variables an AWS host or CI runner sets by default — and pi reads
+// neither AWS nor GCP application-default credentials. Counting them reported
+// pi available where every call fails, and since auto-selection filters on this
+// report, ITERION_BACKEND_PREFERENCE=pi would then resolve there.
+func TestDetectPiIgnoresProvidersItCannotRead(t *testing.T) {
+	find := func(r Report) BackendStatus {
+		t.Helper()
+		for _, b := range r.Backends {
+			if b.Name == BackendPi {
+				return b
+			}
+		}
+		t.Fatal("pi absent from the report")
+		return BackendStatus{}
+	}
+
+	for name, env := range map[string]string{
+		"bedrock via AWS_REGION":          "AWS_REGION",
+		"vertex via GOOGLE_CLOUD_PROJECT": "GOOGLE_CLOUD_PROJECT",
+	} {
+		t.Run(name, func(t *testing.T) {
+			isolateEnv(t)
+			stubBinary(t, &findPiBinary, "/fake/pi")
+			t.Setenv(env, "somewhere")
+			st := find(Detect(context.Background()))
+			if st.Available {
+				t.Errorf("pi available on %s (sources %v) — it cannot read that credential, "+
+					"so every call fails and the preference variable resolves here", env, st.Sources)
+			}
+		})
+	}
+
+	// A key pi DOES read still counts.
+	t.Run("a readable provider still counts", func(t *testing.T) {
+		isolateEnv(t)
+		stubBinary(t, &findPiBinary, "/fake/pi")
+		t.Setenv("AWS_REGION", "eu-west-1")
+		t.Setenv("OPENAI_API_KEY", "sk-test")
+		if !find(Detect(context.Background())).Available {
+			t.Error("not available despite OPENAI_API_KEY")
+		}
+	})
+}
+
+// A typo'd or stale ITERION_PI_BIN must not make detection report pi as
+// present: availability feeds auto-selection, so the run would resolve to a
+// backend that dies at exec.
+//
+// Deliberately does NOT call isolateEnv — that stubs findPiBinary, and this
+// test is about the real probe's own behaviour.
+func TestFindPiBinaryValidatesTheOverride(t *testing.T) {
+	t.Run("a nonexistent override is not reported as found", func(t *testing.T) {
+		missing := filepath.Join(t.TempDir(), "does-not-exist")
+		t.Setenv("ITERION_PI_BIN", missing)
+		if path, ok := findPiBinary(); ok && path == missing {
+			t.Error("a nonexistent ITERION_PI_BIN was reported as found; the run would die at exec")
+		}
+	})
+
+	t.Run("a real override is found, trimmed", func(t *testing.T) {
+		bin := filepath.Join(t.TempDir(), "pi")
+		if err := os.WriteFile(bin, []byte("#!/bin/sh\n"), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		t.Setenv("ITERION_PI_BIN", "  "+bin+"  ")
+		path, ok := findPiBinary()
+		if !ok || path != bin {
+			t.Errorf("path=%q ok=%v, want the trimmed override — execution trims the same variable", path, ok)
+		}
+	})
+}

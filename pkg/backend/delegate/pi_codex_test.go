@@ -252,6 +252,18 @@ func TestPiSkillDir(t *testing.T) {
 		}
 	})
 
+	// Under a sandbox WorkDir names an IN-CONTAINER path. A spec pinning a
+	// different workspaceFolder, or the kubernetes driver, makes the host stat
+	// fail with ErrNotExist — which would silently drop --skill again, the exact
+	// defect this function closes. The engine mirrors the skills there
+	// unconditionally, so the directory is offered without stat'ing it.
+	t.Run("a sandboxed run offers the mirror without stat'ing the host", func(t *testing.T) {
+		got := piSkillDir(Task{WorkDir: "/in-container/only", Sandbox: stubSandboxRun{}})
+		if got != filepath.Join("/in-container/only", ".claude", "skills") {
+			t.Errorf("piSkillDir = %q, want the in-container mirror — a stat there cannot succeed", got)
+		}
+	})
+
 	// A sandboxed WorkDir names a path only the container can see, so the stat
 	// fails; the hints prove the skills exist without it.
 	t.Run("SkillHints short-circuit an unstattable WorkDir", func(t *testing.T) {
@@ -277,12 +289,18 @@ func TestPiSkillDir(t *testing.T) {
 func TestPiCodexSeedRootFollowsTheMount(t *testing.T) {
 	work, store := t.TempDir(), t.TempDir()
 
-	host := piCodexSeedRoot(Task{WorkDir: work, StoreDir: store})
+	host, err := piCodexSeedRoot(Task{WorkDir: work, StoreDir: store}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
 	if host != filepath.Join(store, "pi") {
 		t.Errorf("host root = %q, want it under the store", host)
 	}
 
-	boxed := piCodexSeedRoot(Task{WorkDir: work, StoreDir: store, Sandbox: stubSandboxRun{}})
+	boxed, err := piCodexSeedRoot(Task{WorkDir: work, StoreDir: store, Sandbox: stubSandboxRun{}}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
 	if boxed != filepath.Join(work, ".iterion", "pi") {
 		t.Errorf("sandboxed root = %q, want it inside the workspace — the only mounted tree", boxed)
 	}
@@ -307,6 +325,11 @@ func TestPiCodexSeedSweepsAbandonedDirs(t *testing.T) {
 		t.Fatal(err)
 	}
 
+	old := time.Now().Add(-2 * piSeedMaxAge)
+	if err := os.Chtimes(stale, old, old); err != nil {
+		t.Fatal(err)
+	}
+
 	env, cleanup, err := piCodexSeed(context.Background(),
 		Task{NodeID: "n", Model: "openai-codex/gpt-5.6-sol", StoreDir: store}, nil)
 	if err != nil {
@@ -319,6 +342,59 @@ func TestPiCodexSeedSweepsAbandonedDirs(t *testing.T) {
 	}
 	if _, err := os.Stat(env["PI_CODING_AGENT_DIR"]); err != nil {
 		t.Errorf("the sweep took this node's own dir: %v", err)
+	}
+}
+
+// The seed root is SHARED — by every node of a run under sandbox, and off it by
+// every run in the store — while iterion permits parallel branches and the
+// studio runs several pipelines at once. A recent `pi-agent-*` dir is therefore
+// as likely to belong to a peer that is still running, and reaping it pulls the
+// credential out from under a live pi process.
+func TestPiCodexSeedSparesALivePeer(t *testing.T) {
+	writeCodexAuth(t, "chatgpt")
+	store := t.TempDir()
+
+	// Stand in for a concurrent node that seeded moments ago.
+	peer := filepath.Join(store, "pi", piSeedDirPrefix+"peer")
+	if err := os.MkdirAll(peer, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	peerAuth := filepath.Join(peer, "auth.json")
+	if err := os.WriteFile(peerAuth, []byte(`{"openai-codex":{"type":"oauth"}}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	_, cleanup, err := piCodexSeed(context.Background(),
+		Task{NodeID: "second", Model: "openai-codex/gpt-5.6-sol", StoreDir: store}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer cleanup()
+
+	if _, err := os.Stat(peerAuth); err != nil {
+		t.Fatalf("a live peer's credential was swept (%v) — that pi process loses its "+
+			"auth mid-node and reports no credential", err)
+	}
+}
+
+// Under a sandbox a /tmp fallback is not bind-mounted, so handing pi that path
+// reproduces the very failure the seed root exists to prevent — but silently.
+func TestPiCodexSeedRootRefusesUnmountedFallback(t *testing.T) {
+	work := t.TempDir()
+	// Make the workspace unwritable so MkdirAll fails.
+	if err := os.Chmod(work, 0o500); err != nil {
+		t.Skipf("cannot make the dir unwritable: %v", err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(work, 0o700) })
+
+	_, err := piCodexSeedRoot(Task{NodeID: "n", WorkDir: work, Sandbox: stubSandboxRun{}}, nil)
+	if err == nil {
+		t.Fatal("no error — pi would be handed a host /tmp path the container cannot see")
+	}
+
+	// Off the sandbox the same failure is tolerable: /tmp is merely unswept.
+	if root, err := piCodexSeedRoot(Task{NodeID: "n", StoreDir: ""}, nil); err != nil || root != "" {
+		t.Errorf("root=%q err=%v, want the tolerated empty root off the sandbox", root, err)
 	}
 }
 

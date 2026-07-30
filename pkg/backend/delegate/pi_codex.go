@@ -119,7 +119,10 @@ func piCodexSeed(ctx context.Context, task Task, logger *iterlog.Logger) (map[st
 		return nil, noop, nil
 	}
 
-	root := piCodexSeedRoot(task)
+	root, err := piCodexSeedRoot(task, logger)
+	if err != nil {
+		return nil, noop, fmt.Errorf("pi backend: %w", err)
+	}
 	piSweepStaleSeeds(root)
 	dir, err := os.MkdirTemp(root, piSeedDirPrefix)
 	if err != nil {
@@ -184,28 +187,61 @@ func piLoadCodexView(ctx context.Context) (secrets.CodexCredentialsView, error) 
 //
 // Off the sandbox the run's store is preferred so the file shares the store's
 // lifetime; os.MkdirTemp's own default is the last resort.
-func piCodexSeedRoot(task Task) string {
+// The error paths deliberately do NOT fall through to os.MkdirTemp's default.
+// Under a sandbox that would name a host /tmp path nothing bind-mounts, so pi
+// would find no auth.json and report "No API key found for openai-codex" —
+// exactly the failure this function exists to prevent, silently. Off the
+// sandbox /tmp is merely unswept, so it is allowed, but said out loud.
+func piCodexSeedRoot(task Task, logger *iterlog.Logger) (string, error) {
+	sandboxed := task.Sandbox != nil && task.WorkDir != ""
 	root := ""
 	switch {
-	case task.Sandbox != nil && task.WorkDir != "":
+	case sandboxed:
 		root = filepath.Join(task.WorkDir, ".iterion", "pi")
 	case task.StoreDir != "":
 		root = filepath.Join(task.StoreDir, "pi")
 	default:
-		return ""
+		if logger != nil {
+			logger.Warn("[%s#%d/%s] no store dir for the pi agent dir; the credential goes to $TMPDIR, "+
+				"where an interrupted node leaves it unswept", task.NodeID, task.Iteration, BackendPi)
+		}
+		return "", nil
 	}
 	if err := os.MkdirAll(root, 0o700); err != nil {
-		return ""
+		if sandboxed {
+			return "", fmt.Errorf("create agent dir %s: %w (a /tmp fallback is not mounted in the sandbox, "+
+				"so pi would report no credential)", root, err)
+		}
+		if logger != nil {
+			logger.Warn("[%s#%d/%s] could not create %s (%v); the credential goes to $TMPDIR unswept",
+				task.NodeID, task.Iteration, BackendPi, root, err)
+		}
+		return "", nil
 	}
-	return root
+	return root, nil
 }
 
-// piSweepStaleSeeds removes agent dirs an earlier node left behind.
+// piSeedMaxAge is how old a seed must be before the sweep will touch it.
+//
+// Generous on purpose: a single campaign node has been measured running 46
+// minutes, and deleting a LIVE peer's credential is far worse than leaving an
+// abandoned one a few hours longer.
+const piSeedMaxAge = 12 * time.Hour
+
+// piSweepStaleSeeds removes agent dirs an interrupted node left behind.
 //
 // Every seed is deleted by its own deferred cleanup, but a SIGKILL or an OOM
 // skips that and strands a live access AND refresh token on disk with nothing
-// to reap it. The dirs are per-node and short-lived, so anything already here
-// when a new node starts is by definition abandoned.
+// to reap it.
+//
+// The age guard is the whole correctness of this function. The root is SHARED —
+// by every node of the run under a sandbox, and off it by every run in the
+// store — while iterion explicitly permits parallel branches and the studio
+// runs several pipelines at once. So a `pi-agent-*` dir found here is just as
+// likely to belong to a peer that is still running, and reaping it would pull
+// the credential out from under a live pi process (whose own refresh then
+// writes to a deleted path), surfacing as an intermittent "No API key found for
+// openai-codex" for an operator who does have one.
 func piSweepStaleSeeds(root string) {
 	if root == "" {
 		return
@@ -215,9 +251,14 @@ func piSweepStaleSeeds(root string) {
 		return
 	}
 	for _, e := range entries {
-		if e.IsDir() && strings.HasPrefix(e.Name(), piSeedDirPrefix) {
-			_ = os.RemoveAll(filepath.Join(root, e.Name()))
+		if !e.IsDir() || !strings.HasPrefix(e.Name(), piSeedDirPrefix) {
+			continue
 		}
+		info, err := e.Info()
+		if err != nil || time.Since(info.ModTime()) < piSeedMaxAge {
+			continue
+		}
+		_ = os.RemoveAll(filepath.Join(root, e.Name()))
 	}
 }
 

@@ -160,11 +160,12 @@ func detectPi(prov []ProviderStatus) BackendStatus {
 		st.Auth = AuthOAuth
 	}
 	for _, p := range prov {
-		if p.Available {
-			sources = append(sources, p.Source)
-			if st.Auth == AuthNone {
-				st.Auth = AuthAPIKey
-			}
+		if !p.Available || !piReadsProvider(p.Name) {
+			continue
+		}
+		sources = append(sources, p.Source)
+		if st.Auth == AuthNone {
+			st.Auth = AuthAPIKey
 		}
 	}
 	if codexChatGPTAvailable() {
@@ -183,6 +184,24 @@ func detectPi(prov []ProviderStatus) BackendStatus {
 	st.Available = true
 	st.Sources = sources
 	return st
+}
+
+// piReadsProvider reports whether an available provider is one pi can actually
+// resolve a credential for.
+//
+// bedrock and vertex are marked available on `AWS_REGION` / `GOOGLE_CLOUD_PROJECT`
+// alone — variables an AWS host or CI runner sets by default — and pi reads
+// neither AWS nor GCP application-default credentials; they are absent from the
+// env-key set the pi backend forwards. Counting them would report pi available
+// on a host where every call fails, and because auto-selection filters on this
+// report, `ITERION_BACKEND_PREFERENCE=pi` would then resolve there.
+func piReadsProvider(name string) bool {
+	switch name {
+	case "bedrock", "vertex":
+		return false
+	default:
+		return true
+	}
 }
 
 // piHasOwnLogin reports whether pi's credential store holds anything.
@@ -623,13 +642,16 @@ var findCodexBinary = func() (string, bool) {
 	})
 }
 
-// findPiBinary probes the host for the pi CLI, honouring the same override
-// the backend itself uses so detection and execution agree on one binary.
+// findPiBinary probes the host for the pi CLI, honouring the same override the
+// backend itself uses so detection and execution agree on one binary.
+//
+// The override goes through Locate as its EXPLICIT path rather than being
+// returned directly: Locate rejects a path that does not exist, so a typo'd or
+// stale ITERION_PI_BIN no longer makes detection report pi as present — which,
+// since availability now feeds auto-selection, would resolve to a backend that
+// dies at exec. Trimming matches what NewPiBackend does with the same variable.
 var findPiBinary = func() (string, bool) {
-	if bin := os.Getenv("ITERION_PI_BIN"); bin != "" {
-		return bin, true
-	}
-	return clilocate.Locate("", clilocate.Spec{
+	return clilocate.Locate(strings.TrimSpace(os.Getenv("ITERION_PI_BIN")), clilocate.Spec{
 		Name:      "pi",
 		Fallbacks: clilocate.CommonBinaryCandidates("pi"),
 	})
