@@ -51,6 +51,8 @@ forge:
   webhook:
     launch_vars: { pr_review_mode: summary }
     min_replier_role: developer
+    author_allowlist: [dependabot[bot], "*dependabot[bot]"]  # react only to these authors
+    author_scope: exclusive   # ...and keep them off every other co-enabled bot
   rationale: |
     Shown in the enable dialog so the operator sees why each scope is asked.
 ```
@@ -69,6 +71,17 @@ time — to the boolean request-body fields `merge_requests_events` /
 
 Unknown events / scope keys / levels fail manifest parsing
 ([pkg/bundle/manifest.go:validateForgeRequirements](../pkg/bundle/manifest.go)).
+
+Enabling **several** bots on one repo (a reviewer + a dependency guard)
+is the common case: the orchestrator writes one `BotRule` per
+co-enabled bot, and an inbound delivery fans out to every rule that
+claims the event and admits the author. A bot that sets
+`author_scope: exclusive` claims its `author_allowlist` as MINE —
+provisioning adds those logins to every other co-enabled bot's denylist,
+so a general reviewer stops double-reviewing the dependency PRs the
+guard owns. See [Inbound webhooks § Per-bot routing](webhooks.md#per-bot-routing-—-co-enabling-several-bots-on-one-repo)
+for the runtime fan-out, idempotency, and the suffix-wildcard author
+match (`*renovate[bot]`).
 
 ## The managed-token design (why the downstream is unchanged)
 
