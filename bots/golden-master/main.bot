@@ -635,8 +635,19 @@ tool oracle_run:
             self.port = s.getsockname()[1]
             s.close()
             profile = os.path.join(tempfile.mkdtemp(prefix="gm-browser-"), "profile")
+                    # `--disable-dev-shm-usage` : dans un conteneur, `/dev/shm` fait 64 Mo par
+            # défaut, et le moteur de rendu s'y bloque au lieu d'échouer. Le symptôme
+            # n'est pas un plantage mais une page qui ne finit jamais de charger —
+            # l'événement `load` ne vient pas, et le plafond de chargement tombe en
+            # accusant la lenteur de l'hôte. Mesuré : 240 s sur la première page en
+            # CI, instantané sur la même page en local.
+            #
+            # Hypothèse dirigée par le symptôme, pas certitude : ce mode d'échec de
+            # Chrome en conteneur est connu et correspond, mais il ne se reproduit
+            # pas ici. Un passage vert le confirmera ou l'infirmera.
             self.proc = subprocess.Popen(
                 [self.binary, "--headless", "--disable-gpu", "--no-sandbox",
+                 "--disable-dev-shm-usage", "--disable-software-rasterizer",
                  "--hide-scrollbars", "--force-device-scale-factor=1",
                  "--remote-debugging-port=%d" % self.port,
                  "--user-data-dir=" + profile, "about:blank"],
