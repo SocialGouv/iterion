@@ -530,3 +530,49 @@ func shortID(id string) string {
 	}
 	return s
 }
+
+// IssueLinkRunOptions points an issue at the run that is actually processing
+// it.
+type IssueLinkRunOptions struct {
+	IssueCommonOptions
+	IDOrPrefix string
+	RunID      string
+	Workdir    string
+}
+
+// RunIssueLinkRun stamps runID as the issue's most recent run.
+//
+// The board joins a card to its live run through the issue's last_run_id, and
+// only the server stamps it — when it launches the run itself. A run started
+// any other way (an operator relaunching a card from the CLI with a corrected
+// input, a run resumed into a new id) leaves the card pointing at the previous
+// attempt: the pipeline drawer then shows a stale run and no pending review,
+// while the real one waits unnoticed. This exposes the existing SetLastRun
+// seam so the link can be repaired without touching the run or hand-editing
+// the store.
+func RunIssueLinkRun(p *Printer, opts IssueLinkRunOptions) error {
+	if opts.RunID == "" {
+		return errors.New("issue link-run: --run-id is required")
+	}
+	s, _, err := openNativeStore(opts.IssueCommonOptions)
+	if err != nil {
+		return err
+	}
+	id, err := s.Resolve(opts.IDOrPrefix)
+	if err != nil {
+		return err
+	}
+	if err := s.SetLastRun(id, opts.RunID, opts.Workdir); err != nil {
+		return err
+	}
+	iss, err := s.Get(id)
+	if err != nil {
+		return err
+	}
+	if p.Format == OutputJSON {
+		p.JSON(iss)
+		return nil
+	}
+	p.Line("Linked %s → run %s", shortID(iss.ID), opts.RunID)
+	return nil
+}

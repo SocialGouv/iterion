@@ -221,6 +221,32 @@ var issueBoardInitCmd = &cobra.Command{
 	},
 }
 
+// ---------------------------------------------------------------------------
+// link-run
+// ---------------------------------------------------------------------------
+
+var (
+	issueLinkRunID      string
+	issueLinkRunWorkdir string
+)
+var issueLinkRunCmd = &cobra.Command{
+	Use:   "link-run <id-or-prefix>",
+	Short: "Point an issue at the run currently processing it",
+	Long: "Stamps last_run_id so the board's card links to that run.\n\n" +
+		"The server does this automatically for runs it launches from the board.\n" +
+		"Use this when a run was started another way (a CLI relaunch with a\n" +
+		"corrected input) and the card still points at the previous attempt.",
+	Args: cobra.ExactArgs(1),
+	RunE: func(cmd *cobra.Command, args []string) error {
+		return cli.RunIssueLinkRun(newPrinter(), cli.IssueLinkRunOptions{
+			IssueCommonOptions: cli.IssueCommonOptions{StoreDir: issueStoreDir},
+			IDOrPrefix:         args[0],
+			RunID:              issueLinkRunID,
+			Workdir:            issueLinkRunWorkdir,
+		})
+	},
+}
+
 func init() {
 	issueCmd.PersistentFlags().StringVar(&issueStoreDir, "store-dir", "", "Override the iterion store directory")
 
@@ -245,6 +271,8 @@ func init() {
 
 	// move
 	issueMoveCmd.Flags().StringVar(&issueMoveTo, "to", "", "Target state (required)")
+	issueLinkRunCmd.Flags().StringVar(&issueLinkRunID, "run-id", "", "Run that is processing the issue (required)")
+	issueLinkRunCmd.Flags().StringVar(&issueLinkRunWorkdir, "workdir", "", "Workdir the run executes in (optional)")
 
 	// update
 	issueUpdateCmd.Flags().StringVar(&issueUpdateTitle, "title", "", "New title")
@@ -271,6 +299,6 @@ func init() {
 	issueBoardCmd.AddCommand(issueBoardShowCmd)
 	issueBoardCmd.AddCommand(issueBoardInitCmd)
 
-	issueCmd.AddCommand(issueCreateCmd, issueListCmd, issueShowCmd, issueMoveCmd, issueUpdateCmd, issueCloseCmd, issueBoardCmd, issueImportCmd)
+	issueCmd.AddCommand(issueCreateCmd, issueListCmd, issueShowCmd, issueMoveCmd, issueUpdateCmd, issueCloseCmd, issueBoardCmd, issueImportCmd, issueLinkRunCmd)
 	rootCmd.AddCommand(issueCmd)
 }
