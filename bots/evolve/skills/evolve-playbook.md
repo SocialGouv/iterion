@@ -36,8 +36,9 @@ implement — implementation is handed to feature-dev / bmady via Nexie.
    plus guardrails (what you explicitly will NOT pursue). Direction, not
    tactics.
 
-4. **Review & converge**. Two independent reviewers (cross-family)
-   cross-check coherence + evidence and surface concerns; then the
+4. **Review & converge**. One independent reviewer cross-checks coherence
+   and evidence by default; `review_mode=dual` runs both model families when
+   cross-family confirmation is worth the extra reviewer call. Then the
    **operator is the gate**. The operator approves or requests revisions;
    revise and re-present until approved (bounded backstop). Converge —
    never re-litigate an axis the operator already approved.
