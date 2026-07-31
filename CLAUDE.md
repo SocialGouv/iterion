@@ -703,11 +703,13 @@ default mental model won't surface:
 Claude Code-style skills ship inside the `.botz` bundle they
 support, not at a repo-global location. Iterion's runtime mirrors
 `<bundle>/skills/*.md` into `<workspace>/.claude/skills/` at run
-start (and on each resume), regardless of backend — both
-`claude_code`'s native skill lookup and the `claw` `skill` tool
-(registered by [pkg/backend/tool/claw_builtins.go:RegisterClawSkill](pkg/backend/tool/claw_builtins.go))
-read the same directory. Each bundle therefore gets exactly the
-skills it ships, with no implicit dependency on the host
+start (and on each resume), regardless of backend. Three backends
+consume the same directory: `claude_code` through its native lookup,
+`claw` through the `skill` tool (registered by
+[pkg/backend/tool/claw_builtins.go:RegisterClawSkill](pkg/backend/tool/claw_builtins.go)),
+and pi through the explicit `--skill <workspace>/.claude/skills`
+argument. Each bundle therefore gets exactly the skills it ships,
+with no implicit dependency on the host
 filesystem. The collision policy (workspace wins, with marker-aware
 refresh for upgrade cases) is documented in
 [docs/bundles.md](docs/bundles.md#resource-resolution-at-run-time).
@@ -715,8 +717,8 @@ refresh for upgrade cases) is documented in
 Current bundles and their skills:
 - [bots/whats-next/skills/](bots/whats-next/skills/) —
   10 skills: `whats-next` (operating playbook), `iterion-bot-catalog`,
-  `iterion-dsl-quickref`, `iterion-board` (board capabilities
-  reference for the claude_code / claw `board.*` tools),
+  `iterion-dsl-quickref`, `iterion-board` (reference for the
+  capability-gated board MCP tools on claude_code, claw, and pi RPC),
   `iterion-label-vocabulary`, `repo-survey`, `roadmap-synthesis`,
   `priority-elicitation`, `session-continuity` (iterion workspace
   memory — `memory_read` / `memory_write` / `memory_list` for the
