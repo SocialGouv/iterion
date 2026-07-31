@@ -108,9 +108,11 @@ is usually borderline. Apply the three checks:
 - If the new API is the obvious shape given the constraints → mechanic.
 - If the new API picked one of several plausible shapes → ADR-worthy.
 
-When genuinely uncertain, lean toward `is_mechanic: true` and let the
-operator catch it via the `prepare_commit` review. Goodhart's law
-favours over-permissive ADR filters; this skill biases the dam shut.
+When genuinely uncertain, lean toward `is_mechanic: true`. `build_manifest`
+drops those entries before the campaign; for every surviving candidate, the
+campaign independently re-reads the code and re-applies all three checks.
+Goodhart's law favours over-permissive ADR filters, so this skill biases the
+dam shut.
 
 ## Output shape (reminder for survey_code)
 
@@ -123,7 +125,7 @@ decision:     ≤500 chars — what the code does, active voice
 code_paths:   string[] of repo-relative paths embodying the decision
 alternative:  ≤300 chars — one specific alternative + the reason it was rejected
 rechallenge:  ≤200 chars — when would this be worth reconsidering?
-is_mechanic:  bool — true ⇒ this entry will be dropped by the reviewer
+is_mechanic:  bool — true ⇒ build_manifest drops the entry before campaign
 ```
 
 If `is_mechanic: false` requires you to LIE about any of the four
