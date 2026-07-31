@@ -60,15 +60,19 @@ ticket body can point at it.
 Create one kanban issue per evolution (see `iterion-board.md` for the
 tools):
 
-1. `create_issue` — title = the evolution title; **state = `backlog`**
-   (the default; do NOT promote to `ready` — that's the operator's or
-   Nexie's call); body = a **self-contained spec**.
-2. `set_bot` — when a catalog bot clearly fits (e.g. `feature-dev` for a
-   self-contained feature), set it. This is the canonical dispatcher
-   selector. When no bot clearly fits, leave it unset and add a
-   `needs-manual-triage` label.
-3. `set_labels` — `source:evolve`, `kind:evolution`,
-   `horizon:<now|next|later>`, `axis:<x>`.
+Call `create_issue` once per proposal with:
+
+- title = the evolution title; **state = `backlog`** (do NOT promote to
+  `ready` — that's the operator's or Nexie's call); body = a
+  **self-contained spec**;
+- labels = `source:evolve`, `kind:evolution`, `horizon:<now|next|later>`,
+  `axis:<x>`;
+- `bot` and typed `bot_args` when a catalog bot clearly fits (for example,
+  `feature-dev` plus its `feature_prompt`). When no bot clearly fits, omit
+  both and add `needs-manual-triage`.
+
+`set_bot` / `set_labels` remain available for correcting a ticket after
+creation, but the create call accepts those typed fields directly.
 
 ### The body IS the dispatch prompt
 
@@ -79,11 +83,10 @@ its own — a feature-dev ticket's body must be a complete feature spec,
 not "see the finding". Include a one-line pointer to `finding_file` for
 the deep context, but make the body self-sufficient.
 
-The board MCP cannot set the **typed** `bot_args` map. `set_bot` + a
-self-contained body are what make a drag-to-`ready` dispatch correctly.
-You may additionally put per-ticket `--var` overrides into
-`create_issue` `fields.bot_args` (the board's registered text field) as a
-best-effort refinement, but never rely on it as the only channel.
+`create_issue.bot_args` is the typed per-ticket `--var` map the dispatcher
+applies at launch; it is distinct from freeform `fields`. Keep the body
+self-contained even when args are present, so the ticket remains useful to a
+human and to bots whose `dispatch_vars` consume title + body.
 
 ## What Evoly does NOT do at handoff
 
