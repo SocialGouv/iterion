@@ -163,7 +163,7 @@ vars:
   ## today's behaviour (commits stay on the local storage branch).
   push_branch: string = ""
   ## The PR Billy is hardening, as a forge URL
-  ## (https://github.com/<owner>/<repo>/pull/<n>). When set, post_pr_feedback
+  ## (https://github.com/<owner>/<repo>/pull/<n>). When set, publish_verdict
   ## posts Billy's review verdict as a comment ON that PR so the author sees
   ## the conclusion (what was corrected, or "reviewed clean") in the forge, not
   ## only in the iterion run. The PR-webhook trigger sets it. Empty = skip.
@@ -178,6 +178,25 @@ vars:
   ## read-only; you fix + commit). Empty (default) = no prior review, review
   ## the diff from scratch.
   prior_review: string = ""
+
+  ## MERGE GATE. When a pull request is in play, the deterministic
+  ## publish_verdict step posts a commit status on the PR head so a required
+  ## check tracks the revision THIS run produced — a push moves the head, and a
+  ## status posted on the old one leaves the required check absent, which blocks
+  ## the PR for good with nothing pointing at why.
+  ##
+  ## gate_context is the check NAME. A required check applies to every pull
+  ## request, so a repo where several bots gate different PRs gives them ONE
+  ## shared context, pinned per repo on the integration launch_vars — the same
+  ## value on every bot that can gate. See docs/merge-gate.md.
+  gate_enabled: bool = true
+  gate_context: string = "revi/review"
+
+  ## Deterministic forge publish grant — INJECTED BY THE ITERION SERVER at
+  ## launch when the run's team has a forge connection covering pr_url's repo.
+  ## The run itself never holds a posting credential.
+  forge_publish_url: string = ""
+  forge_publish_token: string = ""
 
 secrets:
   ## Forge access for push + PR creation + the issue back-link. Mounted as a
@@ -624,13 +643,16 @@ schema push_state:
   pushed: bool
   reason: string
 
-## post_pr_feedback I/O — Billy's review verdict comment on the PR.
+## publish_verdict I/O — the deterministic verdict + merge-gate status.
 schema post_feedback_input:
   pr_url: string
   review_summary: string
   branch_clean: bool
   commits_pushed: bool
   push_reason: string
+  ## Did the DETERMINISTIC build/test gate end green? Part of the merge-gate
+  ## count: a tree that does not build is not mergeable, whatever the findings.
+  verify_ok: bool
   ## The prior review's findings and what became of each — rendered verbatim as
   ## a table so the author sees, per finding they were shown, whether it was
   ## fixed, refused (with the argument) or deferred.
@@ -1034,21 +1056,136 @@ if u:
     print('[iterion] preview_url=' + u + ' kind=pr scope=external')
 "`
 
-## post_pr_feedback — Billy leaves his review verdict as a COMMENT on the PR he
-## just hardened, so the author sees the conclusion in the forge. claude_code
-## for gh + the mounted forge_token; low effort (it only distils a summary +
-## posts one comment). Reached on the PR-context path after push_back_tool.
-agent post_pr_feedback:
-  backend: "claude_code"
-  model: "${ITERION_BRANCH_IMPROVE_FEEDBACK_MODEL:-claude-opus-5}"
-  reasoning_effort: "${ITERION_BRANCH_IMPROVE_FEEDBACK_EFFORT:-low}"
-  input: post_feedback_input
+## publish_verdict — DETERMINISTIC verdict on the PR: the finding ledger as a
+## table, plus the merge-gate commit status. No LLM: the table is rendered from
+## the ledger verbatim and the gate is a COUNT, so neither the wording of a
+## refusal nor the merge signal depends on a model turn (same move Vetty made).
+##
+## Posted through the iterion server's forge-publish endpoint with the per-run
+## grant it injects, so the run never holds a posting credential.
+##
+## THE GATE IS NEVER GREEN ON A HEAD WITH UNRESOLVED FINDINGS. A refusal is an
+## argument for a human, not a way past the check: if it were, a fixer could
+## clear any review by contesting every finding. Success requires all three —
+## every finding fixed, a fresh re-review clean, and the deterministic build
+## gate green — and says in its description that the re-review was the fixer own,
+## so nobody reads it as an independent one.
+##
+## Keep this python body free of the double-quote character: the whole body is
+## wrapped by the shell in a double-quoted argument.
+tool publish_verdict:
+  command: `PUB_URL={{vars.forge_publish_url}} PUB_TOKEN={{vars.forge_publish_token}} PR_URL={{input.pr_url}} LEDGER={{input.finding_ledger}} SUMMARY={{input.review_summary}} CLEAN={{input.branch_clean}} PUSHED={{input.commits_pushed}} PUSH_REASON={{input.push_reason}} VERIFY_OK={{input.verify_ok}} GATE_ENABLED={{vars.gate_enabled}} GATE_CONTEXT={{vars.gate_context}} python3 -c "
+import os, json, urllib.request, urllib.error
+
+def emit(posted, note):
+    print(json.dumps({'posted': posted, 'note': note}))
+    raise SystemExit(0)
+
+def flag(name):
+    return str(os.environ.get(name, '')).strip().lower() in ('1', 'true', 'yes', 'on')
+
+nl = chr(10)
+pr = os.environ.get('PR_URL', '').strip()
+url = os.environ.get('PUB_URL', '').strip()
+tok = os.environ.get('PUB_TOKEN', '').strip()
+if not pr:
+    emit(False, 'no pr_url')
+if not url or not tok:
+    emit(False, 'no forge publish grant on this run: launch through an iterion server whose team connection covers this repo')
+
+try:
+    ledger = json.loads(os.environ.get('LEDGER') or '[]')
+except ValueError:
+    ledger = []
+if not isinstance(ledger, list):
+    ledger = []
+ledger = [e for e in ledger if isinstance(e, dict) and str(e.get('id') or '').strip()]
+
+pushed = flag('PUSHED')
+clean = flag('CLEAN')
+verify_ok = flag('VERIFY_OK')
+
+# Nothing was pushed and no review was answered: this run has nothing to say
+# about this head, and whatever verdict already sits on it is still the truth.
+# Overwriting it would be speaking for a revision this run did not change.
+if not pushed and not ledger:
+    emit(False, 'nothing pushed and no prior review answered - left the existing verdict alone')
+
+unresolved = [e for e in ledger if str(e.get('status') or '').strip().lower() != 'fixed']
+
+body = ['## Branch review by the improvement loop (iterion)', '']
+if pushed:
+    body.append('Pushed fixes onto this branch. ' + str(os.environ.get('PUSH_REASON') or '').strip())
+else:
+    body.append('No commits pushed. ' + str(os.environ.get('PUSH_REASON') or '').strip())
+summary = str(os.environ.get('SUMMARY') or '').strip()
+if summary:
+    body.append('')
+    body.append(summary)
+
+if ledger:
+    body.append('')
+    body.append('### What became of the previous review')
+    body.append('')
+    body.append('| finding | outcome | note |')
+    body.append('| --- | --- | --- |')
+    for e in ledger:
+        note = str(e.get('note') or '').replace(chr(124), '/').replace(nl, ' ')
+        outcome = str(e.get('status') or '').strip().lower() or 'unknown'
+        commit = str(e.get('commit') or '').strip()
+        if commit:
+            outcome = outcome + ' (' + commit[:12] + ')'
+        body.append('| ' + str(e.get('id')) + ' | ' + outcome + ' | ' + note[:300] + ' |')
+    if unresolved:
+        body.append('')
+        body.append('A finding that was not fixed keeps the merge gate red, whether it was contested or deferred. A maintainer arbitrates it - by pushing a fix, or by approving the finding away.')
+
+gate_enabled = flag('GATE_ENABLED')
+gate_ctx = str(os.environ.get('GATE_CONTEXT') or '').strip()
+payload = {'pr_url': pr, 'summary': nl.join(body), 'mode': 'summary', 'comments': []}
+if gate_enabled and gate_ctx:
+    blocking = len(unresolved)
+    if not clean:
+        blocking += 1
+    if not verify_ok:
+        blocking += 1
+    if blocking == 0 and not ledger:
+        # Nothing reviewed this head, so there is no review to report as clean.
+        blocking = 1
+        note = 'code pushed but no review of this revision - awaiting one'
+    elif blocking == 0:
+        note = str(len(ledger)) + ' finding(s) fixed, re-review by the fixer clean, build green'
+    else:
+        bits = []
+        if unresolved:
+            bits.append(str(len(unresolved)) + ' finding(s) unresolved')
+        if not clean:
+            bits.append('issues remain in the diff')
+        if not verify_ok:
+            bits.append('build/tests red')
+        note = ', '.join(bits) + ' - not mergeable yet'
+    payload['gate'] = {'enabled': True, 'context': gate_ctx, 'blocking_count': blocking,
+                       'threshold': 'ledger', 'total_findings': len(ledger), 'note': note}
+
+req = urllib.request.Request(url, data=json.dumps(payload).encode(),
+                             headers={'Content-Type': 'application/json', 'X-Iterion-Run': tok},
+                             method='POST')
+try:
+    with urllib.request.urlopen(req, timeout=120) as resp:
+        res = json.loads(resp.read().decode())
+except urllib.error.HTTPError as e:
+    emit(False, 'forge publish endpoint HTTP ' + str(e.code))
+except Exception as e:
+    emit(False, 'forge publish endpoint unreachable: ' + str(e)[:200])
+
+note = 'verdict posted'
+if res.get('gate_posted'):
+    note = note + '; ' + str(res.get('gate_context') or '') + '=' + str(res.get('gate_state') or '') + ' on ' + str(res.get('gate_sha') or '')[:12]
+elif res.get('gate_error'):
+    note = note + '; gate NOT posted: ' + str(res.get('gate_error'))[:200]
+emit(True, note)
+"`
   output: post_feedback_output
-  system: post_feedback_system
-  user: post_feedback_user
-  tools: [bash, read_file]
-  ## ~3-5 commands nominal (write body file + gh pr comment); 8 is headroom.
-  tool_max_steps: 8
 
 ## ─── Workflow ───────────────────────────────────────────────────
 
@@ -1136,15 +1273,16 @@ workflow branch_improve_loop:
   ## After the deterministic push (pushed or clean no-op), Billy posts his
   ## review verdict as a comment ON the PR so the author reads the conclusion
   ## in the forge, carrying the campaign summary + the push result.
-  push_back_tool -> post_pr_feedback with {
+  push_back_tool -> publish_verdict with {
     pr_url:         "{{vars.pr_url}}",
     review_summary: "{{outputs.campaign.summary}}",
     branch_clean:   "{{outputs.campaign.branch_clean}}",
     commits_pushed: "{{outputs.push_back_tool.pushed}}",
     push_reason:    "{{outputs.push_back_tool.reason}}",
-    finding_ledger: "{{outputs.campaign.finding_ledger}}"
+    finding_ledger: "{{outputs.campaign.finding_ledger}}",
+    verify_ok:      "{{outputs.gate.converged}}"
   }
-  post_pr_feedback -> done
+  publish_verdict -> done
 
   ## Push credential present → finalize_mr pushes the run's HEAD (the series of
   ## per-pass commits) + opens the PR and (when source_issue_ref is set)
