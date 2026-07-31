@@ -251,3 +251,69 @@ func mustRunID(t *testing.T) string {
 	}
 	return id
 }
+
+// TestRenderReviewLedger pins the REPLY half of the hand-off — the half that
+// makes the pair converge.
+//
+// Without it a reviewer re-raises, every pass, a finding the fixer already
+// contested: the oscillating relay ADR-058 removed from the catalog. So a
+// refusal must cross WITH its argument and with an explicit bar for re-raising
+// — and must not read as permission to drop the finding, which would let a
+// fixer clear any review by refusing everything.
+func TestRenderReviewLedger(t *testing.T) {
+	rs, err := store.New(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+	spec := bundle.ProducedArtifact{Kind: bundle.HandoffKindReviewLedger, Node: "campaign"}
+
+	run, err := rs.CreateRun(ctx, mustRunID(t), "some-fixer", map[string]any{"pr_url": "https://f/o/r/pull/1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := rs.WriteArtifact(ctx, &store.Artifact{RunID: run.ID, NodeID: "campaign", Data: map[string]any{
+		"finding_ledger": []any{
+			map[string]any{"id": "R1111", "status": "fixed", "commit": "abcdef1234567890"},
+			map[string]any{"id": "R2222", "status": "refused", "note": "--skill on a directory loads only SKILL.md and returns"},
+			map[string]any{"id": "R3333", "status": "deferred", "note": "needs a schema migration"},
+		},
+	}}); err != nil {
+		t.Fatal(err)
+	}
+
+	got := renderReviewLedger(ctx, rs, run.ID, spec)
+	for name, want := range map[string]string{
+		"the refused id":            "R2222",
+		"the refusal's ARGUMENT":    "loads only SKILL.md",
+		"the bar for re-raising":    "NEW evidence",
+		"the fixed id":              "R1111",
+		"the commit that fixed it":  "abcdef123456",
+		"the instruction to verify": "verify against the current diff",
+		"the deferred id":           "R3333",
+	} {
+		if !strings.Contains(got, want) {
+			t.Errorf("ledger drops %s (%q):\n%s", name, want, got)
+		}
+	}
+	// A refusal is an argument to answer, never a licence to drop the finding:
+	// a fixer could otherwise clear any review by contesting every finding.
+	if !strings.Contains(got, "still disagree") {
+		t.Errorf("the ledger must leave the reviewer free to re-raise against a wrong argument:\n%s", got)
+	}
+
+	t.Run("a ledger with no entries renders nothing", func(t *testing.T) {
+		empty, err := rs.CreateRun(ctx, mustRunID(t), "some-fixer", map[string]any{"pr_url": "https://f/o/r/pull/2"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := rs.WriteArtifact(ctx, &store.Artifact{RunID: empty.ID, NodeID: "campaign", Data: map[string]any{
+			"finding_ledger": []any{}, "summary": "nothing to answer",
+		}}); err != nil {
+			t.Fatal(err)
+		}
+		if got := renderReviewLedger(ctx, rs, empty.ID, spec); got != "" {
+			t.Errorf("an empty ledger must render nothing rather than an empty preamble, got %q", got)
+		}
+	})
+}

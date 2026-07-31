@@ -115,6 +115,17 @@ vars:
   ## = review the whole diff against the full production-ready grid.
   scope_notes: string = ""
 
+  ## What a fixer already did with an EARLIER review of this same PR, per
+  ## finding id: fixed (with the commit), contested (with its argument), or
+  ## deferred. Stamped at launch by the engine when such a run exists; empty
+  ## otherwise, and empty is the normal case.
+  ##
+  ## This is what keeps a review↔fix pair converging instead of oscillating: a
+  ## finding the fixer argued against comes back only against NEW evidence. It
+  ## is NOT an instruction to drop it — a wrong argument must be answered, and
+  ## a finding that is still real still counts against the gate.
+  prior_pushback: string = ""
+
   ## Drop findings below this severity (order: low < medium < high <
   ## critical). Default "low" surfaces everything.
   severity_threshold: string [enum: "low", "medium", "high", "critical"] = "low"
@@ -349,6 +360,9 @@ prompt review_user_claude:
   Base ref:  {{vars.base_ref}}
   Operator steering (may be empty): {{vars.scope_notes}}
 
+  ALREADY ANSWERED (may be empty — then this PR has had no fixer pass):
+  {{vars.prior_pushback}}
+
   Run the git scope commands above yourself, read the diff, and produce
   your `review_output`.
 
@@ -359,6 +373,9 @@ prompt review_user_gpt:
   Workspace: {{vars.workspace_dir}}
   Base ref:  {{vars.base_ref}}
   Operator steering (may be empty): {{vars.scope_notes}}
+
+  ALREADY ANSWERED (may be empty — then this PR has had no fixer pass):
+  {{vars.prior_pushback}}
 
   Use your `bash`, `read_file`, `glob` and `grep` tools to run the git
   scope commands, read the diff and surrounding code, then produce your

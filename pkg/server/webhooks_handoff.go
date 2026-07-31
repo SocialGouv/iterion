@@ -44,44 +44,44 @@ type priorReviewQuery struct {
 	HeadSHA string
 }
 
-// findPriorReview resolves the most recent run producing a review of this PR
-// and renders it as the seed text the consumer starts from. Best-effort: any
-// miss (no run service, no producer, no matching run, unreadable artifact)
-// returns "" and the consumer reviews the PR from scratch. Routed through the
-// webhookPriorReview seam so handler tests need no run store.
-func (s *Server) findPriorReview(ctx context.Context, cfg webhooks.Config, q priorReviewQuery) string {
+// findHandoff resolves the most recent run PRODUCING the given kind for this PR
+// and renders it as the text the consumer starts from. Best-effort: any miss
+// (no run service, no producer, no matching run, unreadable artifact) returns ""
+// and the consumer proceeds without it. Routed through the webhookPriorReview
+// seam so handler tests need no run store.
+func (s *Server) findHandoff(ctx context.Context, cfg webhooks.Config, kind bundle.HandoffKind, q priorReviewQuery) string {
 	fn := s.webhookPriorReview
 	if fn == nil {
-		fn = s.realWebhookPriorReview
+		fn = s.realWebhookHandoff
 	}
-	return fn(ctx, cfg, q)
+	return fn(ctx, cfg, kind, q)
 }
 
-// stampPriorReview seeds a launch with the newest prior review of the PR, so
-// the launched bot starts from it instead of re-deriving it.
+// stampPriorReview seeds a launch with what earlier runs on the same PR left
+// behind, so the launched bot starts from it instead of re-deriving it.
 //
-// Which bot receives it, into which var, and from whose artifact are all
-// DECLARED, not hardcoded: the launched bot's manifest asks for it
-// (`consumes: kind: review`), and any bot whose manifest offers one
-// (`produces: kind: review`) can supply it. That is what keeps a reviewer and a
-// fixer cooperating without the engine — or either manifest — naming the other
-// bot. An operator-pinned var always wins; a miss is silent by design.
+// Which bot receives what, into which var, and from whose artifact are all
+// DECLARED, not hardcoded: the launched bot's manifest asks (`consumes:`) and
+// any bot whose manifest offers the same kind (`produces:`) supplies it. That is
+// what lets a reviewer and a fixer cooperate — in BOTH directions, the review
+// forward and the ledger back — without the engine, or either manifest, naming
+// the other bot. An operator-pinned var always wins; a miss is silent by design.
 func (s *Server) stampPriorReview(ctx context.Context, cfg webhooks.Config, botID string, vars map[string]string, q priorReviewQuery) {
 	if vars == nil {
 		return
 	}
-	for _, want := range s.reviewConsumersFor(botID) {
+	for _, want := range s.handoffConsumersFor(botID) {
 		if _, pinned := vars[want.Var]; pinned {
 			continue
 		}
-		if pr := s.findPriorReview(ctx, cfg, q); pr != "" {
-			vars[want.Var] = truncate(pr, priorReviewLimit(want))
+		if text := s.findHandoff(ctx, cfg, want.Kind, q); text != "" {
+			vars[want.Var] = truncate(text, priorReviewLimit(want))
 		}
 	}
 }
 
-// reviewConsumersFor returns the bot's declared review-consuming entries.
-func (s *Server) reviewConsumersFor(botID string) []bundle.ConsumedArtifact {
+// handoffConsumersFor returns the bot's declared PR-scoped consumption entries.
+func (s *Server) handoffConsumersFor(botID string) []bundle.ConsumedArtifact {
 	if strings.TrimSpace(botID) == "" {
 		return nil
 	}
@@ -91,7 +91,7 @@ func (s *Server) reviewConsumersFor(botID string) []bundle.ConsumedArtifact {
 	}
 	var out []bundle.ConsumedArtifact
 	for _, c := range entry.Consumes {
-		if c.Kind == bundle.HandoffKindReview && c.EffectiveScope() == bundle.HandoffScopePR {
+		if c.EffectiveScope() == bundle.HandoffScopePR {
 			out = append(out, c)
 		}
 	}
@@ -105,15 +105,15 @@ func priorReviewLimit(c bundle.ConsumedArtifact) int {
 	return maxPriorReviewChars
 }
 
-// realWebhookPriorReview is the production findPriorReview: scan the run store
-// (newest first) for the latest run of a review-PRODUCING bot whose pr_url
-// input matches this PR and whose finding set is readable, then render it
-// through that producer's own declared node names.
-func (s *Server) realWebhookPriorReview(ctx context.Context, cfg webhooks.Config, q priorReviewQuery) string {
+// realWebhookHandoff is the production findHandoff: scan the run store (newest
+// first) for the latest run of a bot PRODUCING this kind whose pr_url input
+// matches this PR and whose payload is readable, then render it through that
+// producer's own declared node names.
+func (s *Server) realWebhookHandoff(ctx context.Context, cfg webhooks.Config, kind bundle.HandoffKind, q priorReviewQuery) string {
 	if s.runs == nil || strings.TrimSpace(q.PRURL) == "" {
 		return ""
 	}
-	producers := s.reviewProducers()
+	producers := s.handoffProducers(kind)
 	if len(producers) == 0 {
 		return ""
 	}
@@ -127,7 +127,7 @@ func (s *Server) realWebhookPriorReview(ctx context.Context, cfg webhooks.Config
 		return ""
 	}
 	// ListRuns is created-at ascending on both backends; walk from the newest
-	// end and stop at the first review run for this PR that RENDERS.
+	// end and stop at the first matching run for this PR that RENDERS.
 	//
 	// "Renders" is the usability test, deliberately in place of a run-status
 	// filter: the artifact is the truth. A review still in flight has not
@@ -148,16 +148,16 @@ func (s *Server) realWebhookPriorReview(ctx context.Context, cfg webhooks.Config
 		if !runTargetsPR(run, q.PRURL) {
 			continue
 		}
-		if rendered := renderPriorReview(ctx, rs, run.ID, spec, q); rendered != "" {
+		if rendered := renderHandoff(ctx, rs, run.ID, kind, spec, q); rendered != "" {
 			return rendered
 		}
 	}
 	return ""
 }
 
-// reviewProducers maps each discovered bot that declares it produces a review
+// handoffProducers maps each discovered bot that declares it produces this kind
 // to the node layout to read it from.
-func (s *Server) reviewProducers() map[string]bundle.ProducedArtifact {
+func (s *Server) handoffProducers(kind bundle.HandoffKind) map[string]bundle.ProducedArtifact {
 	entries, err := botregistry.List(s.botListOptions())
 	if err != nil {
 		return nil
@@ -165,13 +165,26 @@ func (s *Server) reviewProducers() map[string]bundle.ProducedArtifact {
 	out := make(map[string]bundle.ProducedArtifact, 2)
 	for _, e := range entries {
 		for _, p := range e.Produces {
-			if p.Kind == bundle.HandoffKindReview {
+			if p.Kind == kind {
 				out[e.Name] = p
 				break
 			}
 		}
 	}
 	return out
+}
+
+// renderHandoff dispatches to the renderer for the kind. The engine knows the
+// SHAPE of each role's payload; the producing bot's declaration says where in
+// its own graph to find it.
+func renderHandoff(ctx context.Context, rs store.RunStore, runID string, kind bundle.HandoffKind, spec bundle.ProducedArtifact, q priorReviewQuery) string {
+	switch kind {
+	case bundle.HandoffKindReview:
+		return renderPriorReview(ctx, rs, runID, spec, q)
+	case bundle.HandoffKindReviewLedger:
+		return renderReviewLedger(ctx, rs, runID, spec)
+	}
+	return ""
 }
 
 // botEntry resolves one discovered bot by name.
@@ -491,4 +504,67 @@ func asInt(v any) int {
 		return int(n)
 	}
 	return 0
+}
+
+// ledgerStatus is one entry's outcome in a review ledger.
+const (
+	ledgerFixed    = "fixed"
+	ledgerRefused  = "refused"
+	ledgerDeferred = "deferred"
+)
+
+// renderReviewLedger renders the REPLY half of the hand-off: what an earlier
+// fixer did with each finding of a review on this PR.
+//
+// Its job is anti-oscillation. Without it a reviewer re-raises, on every pass,
+// a finding the fixer already contested — the relay ADR-058 removed from the
+// catalog precisely because it never settles. The refusals are therefore
+// rendered WITH their argument and with an explicit instruction: re-raise only
+// against new evidence that answers it. Deliberately NOT a licence to drop a
+// finding — a reviewer that still disagrees says what the argument misses, and
+// the merge gate stays red on an unfixed finding regardless.
+func renderReviewLedger(ctx context.Context, rs store.RunStore, runID string, spec bundle.ProducedArtifact) string {
+	art, err := rs.LoadLatestArtifact(ctx, runID, spec.Node)
+	if err != nil || art == nil {
+		return ""
+	}
+	entries := decodeFindings(art.Data["finding_ledger"])
+	byStatus := map[string][]map[string]any{}
+	for _, e := range entries {
+		if id := strField(e, "id"); id != "" {
+			byStatus[strings.ToLower(strField(e, "status"))] = append(byStatus[strings.ToLower(strField(e, "status"))], e)
+		}
+	}
+	if len(byStatus) == 0 {
+		return ""
+	}
+
+	var b strings.Builder
+	fmt.Fprintf(&b, "A fixer already answered an earlier review of this PR (run %s), finding by finding.\n", runID)
+	if refused := byStatus[ledgerRefused]; len(refused) > 0 {
+		b.WriteString("\nCONTESTED — it judged these not to be real problems, with its argument. Do NOT re-raise one unless you have NEW evidence that answers the argument; if you still disagree, raise it and say precisely what the argument misses:\n")
+		for _, e := range refused {
+			fmt.Fprintf(&b, "- %s: %s\n", strField(e, "id"), truncate(strField(e, "note"), 400))
+		}
+	}
+	if fixed := byStatus[ledgerFixed]; len(fixed) > 0 {
+		b.WriteString("\nREPORTED FIXED — verify against the current diff; re-raise only if the fix is wrong, incomplete, or broke something else:\n")
+		for _, e := range fixed {
+			line := "- " + strField(e, "id")
+			if c := strField(e, "commit"); c != "" {
+				line += " (" + shortSHA(c) + ")"
+			}
+			if n := strField(e, "note"); n != "" {
+				line += ": " + truncate(n, 200)
+			}
+			b.WriteString(line + "\n")
+		}
+	}
+	if deferred := byStatus[ledgerDeferred]; len(deferred) > 0 {
+		b.WriteString("\nDEFERRED — still open, raise them again:\n")
+		for _, e := range deferred {
+			fmt.Fprintf(&b, "- %s: %s\n", strField(e, "id"), truncate(strField(e, "note"), 300))
+		}
+	}
+	return b.String()
 }

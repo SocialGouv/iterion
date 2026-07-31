@@ -20,6 +20,7 @@ import (
 	"github.com/SocialGouv/iterion/pkg/backend/detect"
 	"github.com/SocialGouv/iterion/pkg/backend/mcp"
 	"github.com/SocialGouv/iterion/pkg/botsource"
+	"github.com/SocialGouv/iterion/pkg/bundle"
 	"github.com/SocialGouv/iterion/pkg/configshare"
 	"github.com/SocialGouv/iterion/pkg/forge"
 	"github.com/SocialGouv/iterion/pkg/knowledge"
@@ -189,10 +190,11 @@ type Server struct {
 	// Revi on another iterion bot's PR (test seam — the real impl resolves the
 	// provisioned forge Connection). nil → realIterionBotAuthor.
 	webhookIterionBotAuthor func(ctx context.Context, cfg webhooks.Config, login string) bool
-	// webhookPriorReview overrides the lookup of the most recent review-pr (Revi)
-	// run for a PR, whose findings seed a `/billy` invocation (test seam). nil →
-	// realWebhookPriorReview. Returns "" when no prior review is found (best-effort).
-	webhookPriorReview func(ctx context.Context, cfg webhooks.Config, q priorReviewQuery) string
+	// webhookPriorReview overrides the lookup of what an earlier run on the same
+	// PR produced (a review, or a fixer's reply to one), which seeds a launch var
+	// the launched bot declared it consumes (test seam). nil → realWebhookHandoff.
+	// Returns "" when nothing is found (best-effort).
+	webhookPriorReview func(ctx context.Context, cfg webhooks.Config, kind bundle.HandoffKind, q priorReviewQuery) string
 	httpClient         *http.Client
 
 	// forgeHTTP is the SSRF-guarded client for outbound forge calls, built

@@ -142,6 +142,13 @@ produces:
     # the findings instead of acting on stale line anchors.
     anchor_node: diff_precheck
 
+# The reply to an earlier review of the same PR, when a fixer already answered
+# one: which findings it fixed, and which it contested and why.
+consumes:
+  - kind: review_ledger
+    var: prior_pushback
+    scope: pr
+
 # Invocations: how Revi can be triggered (typed routing contract).
 invocations:
   - kind: forge

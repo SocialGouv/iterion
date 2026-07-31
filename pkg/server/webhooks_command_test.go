@@ -10,6 +10,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/SocialGouv/iterion/pkg/bundle"
 	"github.com/SocialGouv/iterion/pkg/dispatcher/native"
 	"github.com/SocialGouv/iterion/pkg/forge"
 	"github.com/SocialGouv/iterion/pkg/webhooks"
@@ -578,7 +579,7 @@ func TestGitHubIssueComment_SeedsDeclaredReviewConsumer(t *testing.T) {
 		return forge.PullRef{Number: 7, State: "open", SourceBranch: "feat/x", TargetBranch: "main", HeadSHA: "cafe1234cafe1234"}, nil
 	}
 	var gotPRURL string
-	s.webhookPriorReview = func(_ context.Context, _ webhooks.Config, q priorReviewQuery) string {
+	s.webhookPriorReview = func(_ context.Context, _ webhooks.Config, _ bundle.HandoffKind, q priorReviewQuery) string {
 		gotPRURL = q.PRURL
 		// The PR's live head must reach the lookup: a review of an older head is
 		// still worth handing over, but only labelled as such.
@@ -613,7 +614,7 @@ func TestPriorReviewSkipsABotThatDidNotAskForIt(t *testing.T) {
 	s := newWebhookTestServer(t)
 	s.cfg.WorkDir = t.TempDir() // no bundles at all
 	called := false
-	s.webhookPriorReview = func(context.Context, webhooks.Config, priorReviewQuery) string {
+	s.webhookPriorReview = func(context.Context, webhooks.Config, bundle.HandoffKind, priorReviewQuery) string {
 		called = true
 		return "a review"
 	}

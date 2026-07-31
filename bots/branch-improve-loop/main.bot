@@ -274,6 +274,20 @@ prompt campaign_system:
     - needs_human / human_note: set if you paused or need an operator decision.
     - summary: what you reviewed and what you improved, and how it relates to
       the branch's changes.
+    - finding_ledger: ONE entry per finding of the PRIOR REVIEW (empty array
+      when none was handed to you), keyed by the id it was shown under:
+        {"id": "R7a3f", "status": "fixed", "commit": "<sha>", "note": ""}
+        {"id": "R1b2c", "status": "refused", "note": "<why it is not a real
+          problem — the evidence you checked>"}
+        {"id": "R9e40", "status": "deferred", "note": "<what it needs>"}
+      Account for EVERY id you were given: the author was shown those findings
+      and is owed an answer on each. Silence on one reads as "ignored".
+      A `refused` note is an ARGUMENT, checked by a human and fed to the next
+      review — "not a real issue" alone is not one. State what you read and why
+      it does not hold. Refusing is legitimate and sometimes correct; refusing
+      without evidence is not, and it does NOT unblock anything: an unfixed
+      finding keeps the merge gate red either way, so a refusal costs you
+      nothing to argue honestly.
 
   Be honest. A DETERMINISTIC build/test gate re-checks the tree after you and
   the run loops you back for another pass until you report branch_clean AND the
@@ -296,10 +310,15 @@ prompt campaign_user:
   Extra context / notes (empty = the diff speaks for itself):
   {{vars.scope_notes}}
 
-  PRIOR REVIEW to start from (empty = none; when present, another reviewer
-  (Revi) already reviewed this PR — treat each finding as a high-signal head
-  start: verify it against the CURRENT diff, FIX the real ones and commit,
-  then keep reviewing for anything it missed — do NOT just trust it):
+  PRIOR REVIEW to start from (empty = none; when present, a reviewer already
+  read this PR — treat each finding as a high-signal head start: verify it
+  against the CURRENT diff, FIX the real ones and commit, then keep reviewing
+  for anything it missed — do NOT just trust it). Each finding opens with a
+  STABLE id: report on every one of them in `finding_ledger`, and honour any
+  instruction about a specific id in the notes above (the author may have
+  already arbitrated one, e.g. "skip R7a3f, false positive"). A finding that
+  ships a `replacement` comes with the reviewer's own patch — check it still
+  fits the current code, then use it rather than re-deriving one:
   {{vars.prior_review}}
 
   BASELINE — pre-existing failures / known-flaky tests to SKIP (empty =
@@ -488,6 +507,12 @@ prompt post_feedback_system:
     was clean and you pushed nothing; else "Hardened this PR — pushed N fix(es)."
   - 2–5 bullets of what you actually found / changed, grounded in the review
     summary. Do NOT invent issues; if the summary says clean, say clean.
+  - When a finding ledger is given, render it as a table AS-IS — one row per
+    entry, columns: finding | outcome | note. Do not re-word a `refused` note
+    and do not drop a row: those findings were shown to the author on this PR,
+    and the table is how they learn which were answered and which were
+    contested. Say plainly that a refused finding still holds the merge gate
+    red until a maintainer arbitrates it.
   - If you pushed commits, note they are on this branch for the author to review.
   - Sign off with YOUR persona name so the author knows who reviewed and that
     it is a bot — e.g. "— Billy · automated iterion review". Use the persona
@@ -503,6 +528,10 @@ prompt post_feedback_user:
 
   Your review summary to distil into the comment:
   {{input.review_summary}}
+
+  Prior-review ledger to render as a table (empty = the PR carried no prior
+  review; then say nothing about findings you were never given):
+  {{input.finding_ledger}}
 
 ## ─── Schemas ────────────────────────────────────────────────────
 
@@ -521,6 +550,23 @@ schema campaign_output:
   needs_human: bool
   human_note: string
   summary: string
+  ## finding_ledger: what happened to each finding of the PRIOR REVIEW, keyed by
+  ## the stable id it was shown under (on the PR comment and in prior_review).
+  ## Empty when no prior review was handed over.
+  ##
+  ## A JSON array of {id, status, note, commit} where status is one of:
+  ##   fixed    — addressed; commit carries the sha
+  ##   refused  — judged not a real problem; note MUST argue why, it is read by
+  ##              a human and by the next review
+  ##   deferred — real but out of scope for this run; note says what it needs
+  ##
+  ## This is the reply half of the hand-off. Without it the review flows one
+  ## way: the author is shown N findings and then told only "hardened this PR",
+  ## with no way to see which of the N were answered and which were dismissed.
+  ## A refusal in particular must be ARGUABLE, never silent — under mono
+  ## topology nothing cross-confirms a finding, so the refusal channel is the
+  ## only place a wrong finding can be contested in the open.
+  finding_ledger: json
 
 ## verify_plan is verify_build's contract: it has WRITTEN <scratch_dir>/verify.sh.
 schema verify_plan:
@@ -585,6 +631,10 @@ schema post_feedback_input:
   branch_clean: bool
   commits_pushed: bool
   push_reason: string
+  ## The prior review's findings and what became of each — rendered verbatim as
+  ## a table so the author sees, per finding they were shown, whether it was
+  ## fixed, refused (with the argument) or deferred.
+  finding_ledger: json
 
 schema post_feedback_output:
   posted: bool
@@ -1091,7 +1141,8 @@ workflow branch_improve_loop:
     review_summary: "{{outputs.campaign.summary}}",
     branch_clean:   "{{outputs.campaign.branch_clean}}",
     commits_pushed: "{{outputs.push_back_tool.pushed}}",
-    push_reason:    "{{outputs.push_back_tool.reason}}"
+    push_reason:    "{{outputs.push_back_tool.reason}}",
+    finding_ledger: "{{outputs.campaign.finding_ledger}}"
   }
   post_pr_feedback -> done
 

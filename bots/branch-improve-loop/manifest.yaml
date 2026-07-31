@@ -78,12 +78,19 @@ consumes:
     var: prior_review
     scope: pr
 
+# The reply half: what became of each finding it was handed. A later review of
+# the same PR is given this, so a finding it already contested (with an
+# argument) is not re-raised for free — that relay is what fails to converge.
+produces:
+  - kind: review_ledger
+    node: campaign
+
 invocations:
   # Billy runs on a PR ONLY on this deliberate `/billy` (alias `/improve`)
   # slash-command, gated on the commenter's repo rights (min_replier_role).
-  # There is NO PR-open auto-launch: opening a PR only ever auto-REVIEWS it
-  # (Revi). `/billy` picks up where Revi left off — the handler seeds
-  # `prior_review` from Revi's most recent review of the PR.
+  # There is NO PR-open auto-launch: opening a PR only ever auto-REVIEWS it.
+  # `/billy` picks up where the review left off — the `consumes:` block above
+  # is what seeds `prior_review` from it.
   - kind: command
     mode: board
     args_var: scope_notes

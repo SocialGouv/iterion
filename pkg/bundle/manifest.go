@@ -320,6 +320,18 @@ type HandoffKind string
 // reviewers' non-blocking open questions.
 const HandoffKindReview HandoffKind = "review"
 
+// HandoffKindReviewLedger is the REPLY to a review: per finding id, what became
+// of it — fixed (with the commit), refused (with the argument), or deferred.
+// It closes the loop in the other direction, so a later review is told which of
+// its findings were contested and why, instead of re-raising them for free.
+const HandoffKindReviewLedger HandoffKind = "review_ledger"
+
+// knownHandoffKinds is the closed vocabulary produces:/consumes: match on.
+var knownHandoffKinds = map[HandoffKind]bool{
+	HandoffKindReview:       true,
+	HandoffKindReviewLedger: true,
+}
+
 // HandoffScope says what makes an upstream run "the same work" as this launch.
 type HandoffScope string
 
@@ -970,16 +982,16 @@ func decodeManifest(body []byte, srcLabel string) (*Manifest, error) {
 // best-effort by design, so nothing downstream would ever report the mistake.
 func validateHandoff(produces []ProducedArtifact, consumes []ConsumedArtifact) error {
 	for _, p := range produces {
-		if p.Kind != HandoffKindReview {
-			return fmt.Errorf("produces: unknown kind %q (known: %s)", p.Kind, HandoffKindReview)
+		if !knownHandoffKinds[p.Kind] {
+			return fmt.Errorf("produces: unknown kind %q (known: %s, %s)", p.Kind, HandoffKindReview, HandoffKindReviewLedger)
 		}
 		if strings.TrimSpace(p.Node) == "" {
 			return fmt.Errorf("produces: kind %q declares no node to read the artifact from", p.Kind)
 		}
 	}
 	for _, c := range consumes {
-		if c.Kind != HandoffKindReview {
-			return fmt.Errorf("consumes: unknown kind %q (known: %s)", c.Kind, HandoffKindReview)
+		if !knownHandoffKinds[c.Kind] {
+			return fmt.Errorf("consumes: unknown kind %q (known: %s, %s)", c.Kind, HandoffKindReview, HandoffKindReviewLedger)
 		}
 		if strings.TrimSpace(c.Var) == "" {
 			return fmt.Errorf("consumes: kind %q declares no var to stamp the result into", c.Kind)
