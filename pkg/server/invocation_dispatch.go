@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"strings"
+	"unicode/utf8"
 
 	"github.com/SocialGouv/iterion/pkg/botregistry"
 	"github.com/SocialGouv/iterion/pkg/bundle"
@@ -322,9 +323,19 @@ func firstLine(s string) string {
 	return strings.TrimSpace(s)
 }
 
+// truncate caps s at n bytes, ending on a rune boundary. Slicing bytes blindly
+// splits a multi-byte rune, and the result — a card title, a prompt var — is
+// then invalid UTF-8 wherever it lands.
 func truncate(s string, n int) string {
 	if len(s) <= n {
 		return s
 	}
-	return s[:n-1] + "…"
+	cut := n - len("…")
+	if cut < 0 {
+		cut = 0
+	}
+	for cut > 0 && !utf8.RuneStart(s[cut]) {
+		cut--
+	}
+	return s[:cut] + "…"
 }

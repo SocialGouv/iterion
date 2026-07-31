@@ -786,7 +786,19 @@ compute pr_gate:
 ## forge-re-fetched (anti-façade), never self-estimated.
 tool publish_review:
   command: `WS={{vars.workspace_dir}} REVIEWED_SHA={{input.reviewed_sha}} PUB_URL={{vars.forge_publish_url}} PUB_TOKEN={{vars.forge_publish_token}} MODE={{vars.pr_review_mode}} REVIEW_MODE={{vars.review_mode}} PR_URL={{input.pr_url}} FINDINGS={{input.findings}} QUESTIONS={{input.questions}} CLAUDE_FINDINGS={{input.claude_findings}} GPT_FINDINGS={{input.gpt_findings}} GATE_ENABLED={{vars.gate_enabled}} GATE_SEVERITY={{vars.gate_severity}} GATE_CONTEXT={{vars.gate_context}} python3 -c "
-import os, json, subprocess, urllib.request, urllib.error
+import os, json, subprocess, urllib.request, urllib.error, hashlib
+
+# Stable handle for one finding, shared with iterion's prior-review digest
+# (pkg/server/webhooks_prior_review.go findingID) and with the fixer's ledger:
+# the operator arbitrates by it (/billy skip R7a3f) and the fixer reports by it.
+# Keyed on (file, normalized title) and NOT on the line, because the line moves
+# as soon as code above it changes -- which is exactly what a fix does, so a
+# line-keyed id would break over the single round-trip it exists for.
+# bots/review_pr_finding_id_test.go pins this against the Go derivation.
+def finding_id(f):
+    t = ' '.join(str(f.get('title') or '').split()).lower()[:80]
+    key = str(f.get('file') or '').strip() + chr(10) + t
+    return 'R' + hashlib.sha256(key.encode()).hexdigest()[:4]
 
 def emit(published, forge='unknown', review_url='', posted=0, sugg=0, skipped='', summary=''):
     print(json.dumps({'published': published, 'forge': forge, 'review_url': review_url,
@@ -872,13 +884,16 @@ nl = chr(10)
 sev_rank = {'critical': 0, 'high': 1, 'medium': 2, 'low': 3}
 counts = {}
 comments = []
+finding_ids = []
 for f in findings:
     if not isinstance(f, dict):
         continue
     sev = str(f.get('severity') or 'low').lower()
     counts[sev] = counts.get(sev, 0) + 1
     cross = str(f.get('reviewers') or '') == 'both'
-    header = '[' + sev + ' / ' + str(f.get('category') or '') + (' / cross-confirmed by both reviewers' if cross else '') + '] ' + str(f.get('title') or '')
+    fid = finding_id(f)
+    finding_ids.append(fid)
+    header = fid + ' [' + sev + ' / ' + str(f.get('category') or '') + (' / cross-confirmed by both reviewers' if cross else '') + '] ' + str(f.get('title') or '')
     body = header + nl + nl + str(f.get('detail') or '')
     sketch = str(f.get('suggestion') or '').strip()
     if sketch:
@@ -918,6 +933,9 @@ elif dual:
     summary.append(str(cross_n) + ' finding(s) cross-confirmed by both model families.')
 else:
     summary.append('Reviewed by a single model family (mono topology): no finding is cross-confirmed, and none is meant to be.')
+if finding_ids:
+    summary.append('')
+    summary.append('Each finding opens with a stable id (here: ' + finding_ids[0] + '). Fix them yourself, or comment /billy to have them fixed -- adding e.g. skip ' + finding_ids[0] + ' and your reason leaves that one alone.')
 if questions:
     summary.append('')
     summary.append('### Open questions (non-blocking — reviewer assumptions to confirm)')

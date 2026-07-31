@@ -427,7 +427,9 @@ func (s *Server) handleGitLabCommandNote(ctx context.Context, w http.ResponseWri
 		stampBranchImprovePushBack(vars, route.BotID, p.SourceBranch, cfg.BranchImproveAsPR)
 		// `/billy` on an MR seeds the run with Revi's most recent review of it
 		// (best-effort — see stampPriorReview). Symmetric with the GitHub path.
-		s.stampPriorReview(ctx, cfg, route.BotID, vars, p.MRURL, p.ProjectPath, int(p.MRIID))
+		s.stampPriorReview(ctx, cfg, route.BotID, vars, priorReviewQuery{
+			PRURL: p.MRURL, ProjectPath: p.ProjectPath, PRNumber: int(p.MRIID), HeadSHA: p.HeadSHA,
+		})
 	}
 	// "cmd|" prefix keeps the key space disjoint from the mr|/note| paths.
 	idemKey := knowledge.ChecksumHex([]byte(fmt.Sprintf("cmd|%s|%s|%d|%s", cfg.TenantID, cfg.ID, p.ProjectID, p.SubjectID())))

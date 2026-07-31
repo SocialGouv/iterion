@@ -567,13 +567,18 @@ func TestGitHubIssueComment_BillySeedsPriorReview(t *testing.T) {
 		return true, "authorized", nil
 	}
 	s.webhookPRForgePRResolver = func(context.Context, webhooks.Config, webhooks.Provider, prforge.ParsedNote, webhooks.CommandRoute) (forge.PullRef, error) {
-		return forge.PullRef{Number: 7, State: "open", SourceBranch: "feat/x", TargetBranch: "main"}, nil
+		return forge.PullRef{Number: 7, State: "open", SourceBranch: "feat/x", TargetBranch: "main", HeadSHA: "cafe1234cafe1234"}, nil
 	}
 	var gotPRURL string
-	s.webhookPriorReview = func(_ context.Context, _ webhooks.Config, prURL, _ string, prNumber int) string {
-		gotPRURL = prURL
-		if prNumber != 7 {
-			t.Errorf("prior-review lookup pr number = %d, want 7", prNumber)
+	s.webhookPriorReview = func(_ context.Context, _ webhooks.Config, q priorReviewQuery) string {
+		gotPRURL = q.PRURL
+		if q.PRNumber != 7 {
+			t.Errorf("prior-review lookup pr number = %d, want 7", q.PRNumber)
+		}
+		// The PR's live head must reach the lookup: a review of an older head is
+		// still worth handing over, but only labelled as such.
+		if q.HeadSHA != "cafe1234cafe1234" {
+			t.Errorf("prior-review lookup head sha = %q, want the resolved PR head", q.HeadSHA)
 		}
 		return "Prior review of this PR by Revi: 1 finding\n- [high/security] SQLi (db.go:42)"
 	}

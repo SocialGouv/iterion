@@ -192,7 +192,7 @@ type Server struct {
 	// webhookPriorReview overrides the lookup of the most recent review-pr (Revi)
 	// run for a PR, whose findings seed a `/billy` invocation (test seam). nil →
 	// realWebhookPriorReview. Returns "" when no prior review is found (best-effort).
-	webhookPriorReview func(ctx context.Context, cfg webhooks.Config, prURL, projectPath string, prNumber int) string
+	webhookPriorReview func(ctx context.Context, cfg webhooks.Config, q priorReviewQuery) string
 	httpClient         *http.Client
 
 	// forgeHTTP is the SSRF-guarded client for outbound forge calls, built
