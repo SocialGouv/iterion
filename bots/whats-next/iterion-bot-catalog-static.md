@@ -46,8 +46,7 @@ startup, not by switching workflows inside a running `EngineRunner`:
 1. **`assignee_workflows:` map** — when the issue's `assignee`
    has an entry in the dispatcher YAML's `assignee_workflows:`
    map, `RoutingRunner` selects the precompiled runner for that
-   workflow. See
-   [docs/dispatcher.md §Routing by issue assignee](../../../docs/dispatcher.md).
+   workflow. See `docs/dispatcher.md` §Routing by issue assignee.
 2. **registry fallback** — when the assignee has no
    `assignee_workflows:` entry, the dispatcher resolves it against
    the discovered bot catalog (any enabled bot is routable by its
@@ -264,7 +263,7 @@ issue. The data model on the wire is:
 | `args` (object)      | `bot_args` (`map[string]string`) | `--bot-arg key=value` (on `create`) |
 
 `bot` and `bot_args` are dedicated typed fields on
-[`native.Issue`](../../../pkg/dispatcher/native/issue.go) (JSON
+`native.Issue` (`pkg/dispatcher/native/issue.go`; JSON
 keys `bot`, `bot_args`); they are NOT stored under the freeform
 `Fields` map. Set them via `iterion issue create --bot <name>
 --bot-arg key=value` (repeatable; values are kept verbatim, so
@@ -272,8 +271,7 @@ comma-containing glob lists survive intact), the REST API (POST/PATCH
 `/api/v1/native/issues` with `{ "bot": "...", "bot_args": { ... } }`),
 or direct `store.Create/Update` calls. `bot_args` is usable today: the
 dispatcher merges it on top of the rendered `dispatch.vars`
-key-by-key, with `bot_args` winning on shared keys (see
-[pkg/dispatcher/loop.go](../../../pkg/dispatcher/loop.go) `buildSpec`).
+key-by-key, with `bot_args` winning on shared keys (see `pkg/dispatcher/loop.go`, `buildSpec`).
 
 Concrete `bot_args` example — for an issue assigned to
 `feature-dev` with `args = {"feature_prompt": "Add CSV export"}`:
@@ -300,7 +298,7 @@ Operators driving routing only through the CLI today should set
 `--assignee <bot_name>` and rely on `assignee_workflows:` /
 `assignee_dispatch:` in the dispatcher YAML (or the registry
 fallback) to map that assignee to a workflow + var template — see
-[docs/dispatcher.md §Routing by issue assignee](../../../docs/dispatcher.md).
+`docs/dispatcher.md` §Routing by issue assignee.
 
 ## Verification ritual (emit_action)
 
@@ -336,7 +334,7 @@ node picks where its LLM call runs:
   nodes (judges, reviewers, planners) and for any non-Anthropic model
   (`openai/*` models MUST use `backend: "claw"`).
 - Omit `backend:` to let the runtime auto-detect from host credentials
-  (see [docs/backends.md](../../../docs/backends.md)).
+  (see `docs/backends.md`).
 
 ### Per-node `provider:` and the fallback chain
 
