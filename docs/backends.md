@@ -686,9 +686,28 @@ For production Anthropic work, a metered `ANTHROPIC_API_KEY` or a
 `claude_code` node remains the predictable choice.
 
 Your *own* `pi` login in `~/.pi/agent/auth.json` is your relationship with
-the vendor — nothing is read or injected. pi's `openai-codex` (ChatGPT plan)
-and `github-copilot` OAuth providers are untested on this point; iterion
-injects nothing for either.
+the vendor — nothing is read or injected. `github-copilot` is untested on this
+point and iterion injects nothing for it.
+
+**`openai-codex` is the exception, and it is wired.** When iterion holds a
+Codex ChatGPT credential (host `~/.codex/auth.json`, or the per-run copy a
+cloud runner materialises), a pi node targeting that provider gets it seeded
+into a throwaway `PI_CODING_AGENT_DIR` — subject to the same
+`ITERION_FORBID_SUBSCRIPTION_OAUTH` refusal as the Anthropic path, with a
+per-node warning when it is used. Verified end to end on a cloud run
+(2026-07-31): forfait honoured, bash tool call executed in-sandbox, structured
+output returned.
+
+The gotcha that costs a run: **the provider is chosen by the model prefix.**
+`model: "openai/gpt-5.4-mini"` selects the *metered* `openai` provider and
+spends `OPENAI_API_KEY`; the forfait path requires
+`model: "openai-codex/gpt-5.4-mini"`. The bridge silently does nothing for
+`openai/…` nodes because they never ask for it — so an exhausted API key
+reports `You have no credits remaining` even on an instance whose ChatGPT
+forfait is connected and working. (`ITERION_OPENAI_USE_OAUTH` is the *claw*
+equivalent of this switch and has no effect on pi.) `pi --list-models` shows
+only providers already authenticated on the host, so it will not list
+`openai-codex` before a run seeds it.
 
 #### Environment variables
 
