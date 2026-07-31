@@ -169,6 +169,11 @@ type SandboxParams struct {
 	FriendlyName  string
 	RepoRoot      string
 	WorkspacePath string
+	// RootRunID is the run at the top of this run's sub-bot tree (its own
+	// id for a root run). It scopes the scratch bind so a parent and its
+	// children share one directory while unrelated concurrent runs of the
+	// same repo do not.
+	RootRunID     string
 	SecretVars    map[string]any
 	CLIOverride   string // "" means no override
 	GlobalDefault string // "" means no global default
@@ -358,13 +363,13 @@ func resolveAndStartSandbox(ctx context.Context, p SandboxParams) (*activeSandbo
 		spec.Env["ITERION_ARTIFACT_FILES_DIR"] = runFilesContainerPath
 	}
 	bundleContainerPath := addOptionalBindMount(spec, p.BundleHostDir, p.BundleContainerPath, "/run/iterion/bundle", "bundle", true, logger)
-	// Back ${PROJECT_SCRATCH_DIR} with the per-project host dir before the
-	// driver starts, so the bind exists for the very first tool node. Keyed
-	// off RepoRoot (not the per-run worktree) so a parent and its sub-bot
-	// children — separate runs in separate containers — resolve the same
-	// directory and can hand work to each other.
-	applyScratchMount(spec, p.RepoRoot, p.WorkspacePath, caps.SupportsHostBindMounts, logger)
 	sharedStateDir := applyHostStateMounts(spec, p.Workflow, p, emitEvent, logger)
+	// Back ${PROJECT_SCRATCH_DIR} with a host dir so a parent and its
+	// sub-bot children — separate runs in separate containers — can hand
+	// work to each other through it. AFTER applyHostStateMounts because it
+	// is the call that resolves spec.HostState, and `host_state: none` must
+	// suppress this bind like every other ~/.iterion one.
+	applyScratchMount(spec, p.RepoRoot, p.WorkspacePath, p.RootRunID, caps.SupportsHostBindMounts, emitEvent, logger)
 	if !caps.SupportsHostBindMounts {
 		// Same rule as attachmentsDir below: a path that was never bind-mounted
 		// names a host location the container cannot read, and a backend that
@@ -1449,6 +1454,7 @@ func (e *Engine) startSandbox(ctx context.Context, runID string, repoRoot string
 	active, sbErr := resolveAndStartSandbox(ctx, SandboxParams{
 		Workflow:                 e.workflow,
 		RunID:                    runID,
+		RootRunID:                e.rootRunID(ctx, runID),
 		FriendlyName:             e.runName,
 		RepoRoot:                 repoRoot,
 		WorkspacePath:            e.workDir,
