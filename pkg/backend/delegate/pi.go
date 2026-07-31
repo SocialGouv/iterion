@@ -157,31 +157,11 @@ func (b *PiBackend) Execute(ctx context.Context, task Task) (Result, error) {
 	// and the premise they were written for holds again. Gating them on
 	// containment rather than running them unconditionally is what makes the
 	// default path actually stop touching the target tree.
-	stateRoot, inCheckout := task.StateDir(BackendPi)
-	// Guard the leaf where someone OTHER than the operator could have planted
-	// it: inside the target repository's checkout, and on the shared mount,
-	// which is bind-mounted read-write at a predictable path and shared by every
-	// run on the host — a previous run's agent can symlink it exactly as a repo
-	// can. NOT on `<StoreDir>/pi` or `~/.iterion/pi`: those are the operator's,
-	// and pointing them at another volume is a documented, sensible response to
-	// transcript growth. Refusing there aborted every pi node with a message
-	// asserting a checkout that does not exist.
-	if inCheckout || strings.TrimSpace(task.SharedStateDir) != "" {
-		if err := piGuardWriteRoot(stateRoot); err != nil {
-			return Result{BackendName: BackendPi, ExitCode: -1}, err
-		}
-	}
-	// Reap what an interrupted node stranded, for EVERY pi node — not just the
-	// codex ones that seed a credential. Session transcripts are written by all
-	// of them, and on a root shared across runs nothing else reaps them.
-	piSweepStaleSeeds(stateRoot)
-	if inCheckout {
-		// The ignore guard goes FIRST: a v2 campaign agent runs `git add -A`
-		// before each in-stride commit, and finalizeWorktree fast-forwards the
-		// result onto the operator's branch, so a live credential could be
-		// staged into the target repo. Ordering it before the seed closes that
-		// window.
-		piHideWorkspaceSessionDir(task, b.Logger)
+	// The whole pre-flight lives in one testable function. Three review rounds
+	// running, the defect was in wiring that no test could reach because the
+	// decision was inlined here and only its helpers had tests.
+	if err := piPrepareStateRoot(task, b.Logger); err != nil {
+		return Result{BackendName: BackendPi, ExitCode: -1}, err
 	}
 	// pi's openai-codex provider has no API-key path, so a ChatGPT plan only
 	// reaches it through a seeded agent dir. Riding task.ExtraEnv puts it on
@@ -373,7 +353,7 @@ func piSkillArgs(task Task, logger *iterlog.Logger) []string {
 	// branch below drops unresolvable paths for the same reason; these two must
 	// not disagree.
 	if strings.TrimSpace(os.Getenv("ITERION_PI_TRUST_PROJECT")) == "1" {
-		if _, err := os.Stat(dir); err != nil && task.Sandbox == nil {
+		if _, err := os.Stat(dir); err != nil && task.Hostless() {
 			return nil
 		}
 		return []string{"--skill", dir}
@@ -397,8 +377,9 @@ func piSkillArgs(task Task, logger *iterlog.Logger) []string {
 		if _, err := os.Stat(p); err != nil {
 			// Under a sandbox WorkDir names an in-container path the host
 			// cannot stat; offer it anyway — the engine says it wrote it, and
-			// a path pi cannot resolve costs a skill, not the run.
-			if task.Sandbox == nil {
+			// a path pi cannot resolve costs a skill, not the run. A noop
+			// sandbox executes on the host, so it is not that case.
+			if task.Hostless() {
 				continue
 			}
 		}
@@ -519,6 +500,58 @@ func piExtraArgsFor(task Task, logger *iterlog.Logger) []string {
 func piSessionDir(task Task) string {
 	root, _ := task.StateDir(BackendPi)
 	return filepath.Join(root, "sessions")
+}
+
+// piPrepareStateRoot runs everything that must happen before pi writes anything
+// for this node: refuse a leaf someone else could have planted, reap what an
+// interrupted node stranded, and make an in-checkout root unstageable.
+//
+// It exists as a function rather than inline in Execute so the WIRING is
+// testable — which root is guarded, and under which condition — not merely the
+// helpers it calls.
+func piPrepareStateRoot(task Task, logger *iterlog.Logger) error {
+	root, inCheckout := task.StateDir(BackendPi)
+
+	// Guard the leaf where someone OTHER than the operator could have planted
+	// it: inside the target repository's checkout, and on the shared mount,
+	// which is bind-mounted read-write at a predictable path and shared by every
+	// run on the host. NOT on `<StoreDir>/pi` or `~/.iterion/pi`: those are the
+	// operator's, and pointing them at another volume is a sensible answer to
+	// transcript growth — refusing there aborted every pi node with a message
+	// asserting a checkout that does not exist.
+	//
+	// Tested against the CHOSEN root, not against SharedStateDir as a proxy:
+	// StateDir only takes the shared branch when the task is sandboxed, so a
+	// hostless task carrying a stale SharedStateDir would otherwise guard the
+	// operator's own store root.
+	if shared := strings.TrimSpace(task.SharedStateDir); inCheckout || (shared != "" && lexicallyWithin(shared, root)) {
+		if err := piGuardWriteRoot(root); err != nil {
+			return err
+		}
+	}
+	// The leaf Lstat above is not enough inside a checkout: a symlink at ANY
+	// component redirects the whole root, and everything pi writes goes through
+	// it — the extension bundle (which is the permission gate), the composed
+	// system prompt, the transcripts, the credential. Only the credential path
+	// walked the components until now; the other three rode the leaf check
+	// alone, which follows a symlinked ancestor and finds a plain leaf inside
+	// the attacker's directory.
+	if inCheckout {
+		if err := refuseSymlinkedPath(task.WorkDir, root); err != nil {
+			return err
+		}
+	}
+	// Reap what an interrupted node stranded, for EVERY pi node — not just the
+	// codex ones that seed a credential. Session transcripts are written by all
+	// of them, and on a root shared across runs nothing else reaps them.
+	piSweepStaleSeeds(root)
+	if inCheckout {
+		// A v2 campaign agent runs `git add -A` before each in-stride commit and
+		// finalizeWorktree fast-forwards the result onto the operator's branch,
+		// so anything here could be staged into the target repo.
+		piHideWorkspaceSessionDir(task, logger)
+	}
+	return nil
 }
 
 // piGuardWriteRoot refuses to write pi's workspace state through a symlink the

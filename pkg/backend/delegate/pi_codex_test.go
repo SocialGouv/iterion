@@ -1116,3 +1116,129 @@ func TestHostlessIsOneDefinition(t *testing.T) {
 		t.Error("a real sandbox is not hostless")
 	}
 }
+
+// Round 3 showed 8 of 9 behaviour changes survived deletion, including both
+// the commit claimed were covered: the tests stopped at helper boundaries. These
+// drive the WIRING (piPrepareStateRoot), which is the decision itself.
+func TestPiPrepareStateRoot(t *testing.T) {
+	plant := func(t *testing.T, dir, name, target string) {
+		t.Helper()
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Symlink(target, filepath.Join(dir, name)); err != nil {
+			t.Skipf("symlinks unavailable: %v", err)
+		}
+	}
+
+	// THE round-3 HIGH. A relative WorkDir made relBelow's every Rel fail, so
+	// the component walk was skipped in exactly the case containment says
+	// "guard" — and a repo-planted `.iterion` symlink redirected the credential
+	// out of the checkout, silently.
+	t.Run("a relative workdir still refuses a planted symlink", func(t *testing.T) {
+		base := t.TempDir()
+		repo := filepath.Join(base, "repo")
+		plant(t, repo, ".iterion", filepath.Join(base, "attacker"))
+		t.Chdir(base)
+
+		err := piPrepareStateRoot(Task{NodeID: "n", WorkDir: "repo", Sandbox: stubSandboxRun{}}, nil)
+		if err == nil {
+			t.Fatal("a relative workdir walked past the symlink guard")
+		}
+		if _, serr := os.Stat(filepath.Join(base, "attacker")); serr == nil {
+			t.Error("created the attacker's directory")
+		}
+	})
+
+	// The absolute spelling of the same tree must behave identically.
+	t.Run("an absolute workdir refuses it too", func(t *testing.T) {
+		base := t.TempDir()
+		repo := filepath.Join(base, "repo")
+		plant(t, repo, ".iterion", filepath.Join(base, "attacker"))
+		if err := piPrepareStateRoot(Task{NodeID: "n", WorkDir: repo, Sandbox: stubSandboxRun{}}, nil); err == nil {
+			t.Fatal("an absolute workdir walked past the symlink guard")
+		}
+	})
+
+	// The gate: the operator's own store root is theirs, symlink or not.
+	t.Run("the operator's own store root is not guarded", func(t *testing.T) {
+		store, volume := t.TempDir(), t.TempDir()
+		plant(t, store, "pi", volume)
+		if err := piPrepareStateRoot(Task{NodeID: "n", StoreDir: store}, nil); err != nil {
+			t.Errorf("refused the operator's own store root: %v", err)
+		}
+	})
+
+	// ...while the shared mount is guarded, because every run on the host can
+	// write to it.
+	t.Run("a planted shared mount is refused", func(t *testing.T) {
+		shared, elsewhere := t.TempDir(), t.TempDir()
+		plant(t, shared, "pi", elsewhere)
+		task := Task{NodeID: "n", WorkDir: t.TempDir(), SharedStateDir: shared, Sandbox: stubSandboxRun{}}
+		if err := piPrepareStateRoot(task, nil); err == nil {
+			t.Error("a planted shared root was accepted")
+		}
+	})
+
+	// A stale SharedStateDir on a hostless task must not make the gate guard the
+	// operator's store root — StateDir only takes the shared branch when
+	// sandboxed, so the two would disagree.
+	t.Run("a stale shared dir does not guard the store root", func(t *testing.T) {
+		store, volume := t.TempDir(), t.TempDir()
+		plant(t, store, "pi", volume)
+		task := Task{NodeID: "n", StoreDir: store, SharedStateDir: t.TempDir()}
+		if err := piPrepareStateRoot(task, nil); err != nil {
+			t.Errorf("guarded the operator's root against a root it did not choose: %v", err)
+		}
+	})
+}
+
+// relBelow's retry is what lets the walk happen for a workspace spelled through
+// a symlink; without it the helper always reports "not below" and the guard
+// becomes a permanent no-op — invisible from the outside, which is why round 3
+// could delete it with a green suite.
+func TestRelBelowResolvesTheBase(t *testing.T) {
+	base := t.TempDir()
+	real := filepath.Join(base, "realrepo")
+	if err := os.MkdirAll(filepath.Join(real, ".iterion"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	link := filepath.Join(base, "link")
+	if err := os.Symlink(real, link); err != nil {
+		t.Skipf("symlinks unavailable: %v", err)
+	}
+
+	walkBase, rel := relBelow(link, filepath.Join(real, ".iterion", "pi"))
+	if rel != filepath.Join(".iterion", "pi") || walkBase != real {
+		t.Errorf("relBelow = (%q, %q), want the resolved base and a walkable rel", walkBase, rel)
+	}
+	// A genuinely unrelated target is "not below" — a no-op, never an error.
+	if _, r := relBelow(t.TempDir(), t.TempDir()); r != "" {
+		t.Errorf("rel = %q for an unrelated target, want none", r)
+	}
+	// A first component merely STARTING with ".." is below, not an escape.
+	if _, r := relBelow(base, filepath.Join(base, "..cache", "pi")); r == "" {
+		t.Error(`"..cache" was treated as an escape`)
+	}
+}
+
+// An unreadable workspace is an uncertainty, and uncertainties guard.
+func TestPathInsideCheckoutFailsClosedOnUnreadable(t *testing.T) {
+	if os.Getuid() == 0 {
+		t.Skip("root ignores the permission bits this asserts")
+	}
+	base := t.TempDir()
+	locked := filepath.Join(base, "locked")
+	work := filepath.Join(locked, "repo")
+	if err := os.MkdirAll(work, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(locked, 0o000); err != nil {
+		t.Skipf("cannot drop permissions: %v", err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(locked, 0o755) })
+
+	if !pathInsideCheckout(work, filepath.Join(base, "elsewhere", "pi")) {
+		t.Error("an unreadable workspace answered `outside`; uncertainties must guard")
+	}
+}

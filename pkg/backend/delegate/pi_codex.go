@@ -255,14 +255,30 @@ func lexicallyWithin(base, target string) bool {
 	if err != nil {
 		return false
 	}
-	return rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator))
+	return !escapes(rel)
+}
+
+// escapes reports whether a filepath.Rel result leaves the base. Shared with
+// lexicallyWithin, which had the correct form: a bare HasPrefix("..") also
+// matches a legitimate first component like "..cache".
+func escapes(rel string) bool {
+	return rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator))
 }
 
 // relBelow expresses target under base, retrying against the resolved base so a
 // workspace spelled through a symlink still yields a walkable path. Returns ""
 // when target is not below base at all.
 func relBelow(base, target string) (walkBase, rel string) {
-	if r, err := filepath.Rel(base, target); err == nil && !strings.HasPrefix(r, "..") {
+	// Absolutise FIRST. filepath.Rel refuses a relative base against an absolute
+	// target, and EvalSymlinks on a relative path returns it still relative — so
+	// without this a relative WorkDir made every retry fail and turned the whole
+	// component walk into a no-op, in exactly the configuration where
+	// pathInsideCheckout (which does absolutise) says "guard". A repo-planted
+	// `.iterion` symlink then redirected the credential out of the checkout.
+	if abs, err := filepath.Abs(base); err == nil {
+		base = abs
+	}
+	if r, err := filepath.Rel(base, target); err == nil && !escapes(r) {
 		return base, r
 	}
 	realBase, err := filepath.EvalSymlinks(base)
@@ -270,7 +286,7 @@ func relBelow(base, target string) (walkBase, rel string) {
 		return "", ""
 	}
 	r, err := filepath.Rel(realBase, target)
-	if err != nil || strings.HasPrefix(r, "..") {
+	if err != nil || escapes(r) {
 		return "", ""
 	}
 	// Walk from the RESOLVED base, since that is what `r` is relative to.
