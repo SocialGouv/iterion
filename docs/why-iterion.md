@@ -40,7 +40,8 @@ seriously.
 That shape motivated the engine, but it is not the fleet's only or even default
 topology. Productive-session evidence showed that capable agents often do better
 with *less* relay framing: the maintained improvement bots now wrap one adaptive
-campaign agent in deterministic manifest, build, scope, and termination gates.
+campaign agent in the deterministic verification, scope, and termination gates
+that fit each bot (with scans or manifests only where the domain needs them).
 Specialized multi-node graphs still earn their place when a real boundary — human
 authority, parallel evidence, provider diversity, or a deterministic action —
 deserves its own node. Iterion supports both, and lets you move between them
