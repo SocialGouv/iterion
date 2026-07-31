@@ -217,13 +217,13 @@ func piLoadCodexView(ctx context.Context) (secrets.CodexCredentialsView, error) 
 // pointed at an untrusted repository, or ITERION_FORBID_SUBSCRIPTION_OAUTH=1 to
 // refuse the bridge outright. Documented in docs/backends.md.
 func piCodexSeedRoot(task Task) (string, error) {
-	root, inside := task.StateDir(BackendPi)
+	root, loc := task.StateDir(BackendPi)
 
 	// The defences exist because a path inside the target repository's checkout
 	// is a path that repo can pre-populate. Outside it — the ordinary sandboxed
 	// case now that the shared mount is preferred, plus every store/global case
 	// — there is nothing to defend and nothing runs.
-	if inside {
+	if loc == StateInCheckout {
 		if err := refuseSymlinkedPath(task.WorkDir, root); err != nil {
 			return "", err
 		}
@@ -231,7 +231,7 @@ func piCodexSeedRoot(task Task) (string, error) {
 	if err := os.MkdirAll(root, 0o700); err != nil {
 		return "", fmt.Errorf("create agent dir %s: %w", root, err)
 	}
-	if inside {
+	if loc == StateInCheckout {
 		// The credential must be unstageable: a v2 campaign agent runs `git add
 		// -A` before each in-stride commit, and finalizeWorktree fast-forwards
 		// the result onto the operator's branch. iterion writes its OWN guard in

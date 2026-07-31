@@ -764,6 +764,33 @@ func (t Task) Hostless() bool {
 	return t.Sandbox == nil || t.Sandbox.Driver() == "noop"
 }
 
+// StateLocation says WHO could have put something at the state root, which is
+// the only question the guards actually ask.
+//
+// It is returned rather than re-derived by callers. Every round of review so
+// far found a defect in a caller recomputing this — most recently a gate
+// spelling `lexicallyWithin(SharedStateDir, root)`, which silently answered
+// "not shared" for a relative SharedStateDir and skipped the guard on the very
+// root the design argues hardest must be guarded.
+type StateLocation int
+
+const (
+	// StateOperator: the operator's own store or iterion home. Theirs to
+	// symlink wherever they like; guarding it aborts working setups.
+	StateOperator StateLocation = iota
+	// StateInCheckout: inside the target repository's working tree, so the
+	// repo can pre-populate or symlink it.
+	StateInCheckout
+	// StateShared: the host_state mount — outside the checkout, but
+	// bind-mounted read-write at a predictable path and shared by every run on
+	// the host, so another run's agent can plant there.
+	StateShared
+)
+
+// Plantable reports whether someone OTHER than the operator can put something
+// at this root — the condition the leaf and component guards exist for.
+func (l StateLocation) Plantable() bool { return l == StateInCheckout || l == StateShared }
+
 // StateDir is where this node's backend-owned state lives — a materialised
 // extension, a composed system-prompt file, a session transcript, a seeded
 // credential — and whether that place is inside the TARGET repository's
@@ -800,24 +827,30 @@ func (t Task) Hostless() bool {
 // modelled on Spec.SecretFiles (which Kubernetes already satisfies with a
 // per-run Secret) would be available under every driver, and case 2 — with its
 // guard family — could then be deleted rather than maintained.
-func (t Task) StateDir(backendName string) (root string, inCheckout bool) {
+func (t Task) StateDir(backendName string) (root string, loc StateLocation) {
 	sandboxed := !t.Hostless()
 	switch shared := strings.TrimSpace(t.SharedStateDir); {
 	case sandboxed && shared != "":
-		root = filepath.Join(shared, backendName)
+		root, loc = filepath.Join(shared, backendName), StateShared
 	case sandboxed && t.WorkDir != "":
-		root = filepath.Join(t.WorkDir, ".iterion", backendName)
+		root, loc = filepath.Join(t.WorkDir, ".iterion", backendName), StateInCheckout
 	case t.StoreDir != "":
-		root = filepath.Join(t.StoreDir, backendName)
+		root, loc = filepath.Join(t.StoreDir, backendName), StateOperator
 	case t.WorkDir != "":
-		root = filepath.Join(t.WorkDir, ".iterion", backendName)
+		root, loc = filepath.Join(t.WorkDir, ".iterion", backendName), StateOperator
 	default:
-		root = filepath.Join(store.GlobalIterionDataDir(), backendName)
+		root, loc = filepath.Join(store.GlobalIterionDataDir(), backendName), StateOperator
 	}
 	if abs, err := filepath.Abs(root); err == nil {
 		root = abs
 	}
-	return root, pathInsideCheckout(t.WorkDir, root)
+	// An operator-chosen root can still land inside the checkout — `--store-dir
+	// "$PWD/.iterion"` is what this repo's own dogfood instructions prescribe.
+	// Containment decides, not the branch.
+	if loc == StateOperator && pathInsideCheckout(t.WorkDir, root) {
+		loc = StateInCheckout
+	}
+	return root, loc
 }
 
 // pathInsideCheckout reports whether root is inside the workspace, and is

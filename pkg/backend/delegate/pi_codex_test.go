@@ -933,9 +933,9 @@ func TestPiExecuteLeavesTheCheckoutAloneWithASharedMount(t *testing.T) {
 	work, shared := t.TempDir(), t.TempDir()
 	task := Task{NodeID: "n", WorkDir: work, SharedStateDir: shared, Sandbox: stubSandboxRun{}}
 
-	root, inCheckout := task.StateDir(BackendPi)
-	if inCheckout {
-		t.Fatalf("state root %q is inside the checkout", root)
+	root, loc := task.StateDir(BackendPi)
+	if loc != StateShared {
+		t.Fatalf("state root %q: loc=%v, want the shared mount", root, loc)
 	}
 
 	// 1. session transcripts
@@ -1003,7 +1003,7 @@ func TestStateDirContainmentFailsClosed(t *testing.T) {
 		t.Chdir(base)
 		// filepath.Rel refuses to relate a relative base to an absolute target,
 		// which used to answer "outside" and skip every guard.
-		if _, inCheckout := (Task{WorkDir: "repo", Sandbox: stubSandboxRun{}}).StateDir(BackendPi); !inCheckout {
+		if _, loc := (Task{WorkDir: "repo", Sandbox: stubSandboxRun{}}).StateDir(BackendPi); loc != StateInCheckout {
 			t.Error("a relative WorkDir escaped the guards")
 		}
 	})
@@ -1021,16 +1021,16 @@ func TestStateDirContainmentFailsClosed(t *testing.T) {
 		// Spelled through the link the store resolves into the same tree; the
 		// lexical test alone says "outside", the direction that loses a
 		// credential to `git add -A`.
-		_, inCheckout := (Task{WorkDir: link, StoreDir: filepath.Join(real, ".iterion")}).StateDir(BackendPi)
-		if !inCheckout {
+		_, loc := (Task{WorkDir: link, StoreDir: filepath.Join(real, ".iterion")}).StateDir(BackendPi)
+		if loc != StateInCheckout {
 			t.Error("a symlinked workspace escaped the ignore guard")
 		}
 	})
 
 	t.Run("a genuinely outside root stays outside", func(t *testing.T) {
 		work, shared := t.TempDir(), t.TempDir()
-		if _, inCheckout := (Task{WorkDir: work, SharedStateDir: shared, Sandbox: stubSandboxRun{}}).StateDir(BackendPi); inCheckout {
-			t.Error("guards would run on a root outside the checkout")
+		if _, loc := (Task{WorkDir: work, SharedStateDir: shared, Sandbox: stubSandboxRun{}}).StateDir(BackendPi); loc == StateInCheckout {
+			t.Error("the shared mount was classified as in-checkout")
 		}
 	})
 }
@@ -1074,9 +1074,9 @@ func TestPiStateRootGuardWiring(t *testing.T) {
 			t.Skipf("symlinks unavailable: %v", err)
 		}
 		task := Task{NodeID: "n", StoreDir: store}
-		root, inCheckout := task.StateDir(BackendPi)
-		if inCheckout || strings.TrimSpace(task.SharedStateDir) != "" {
-			t.Fatalf("root %q classified as guarded; this is the operator's own", root)
+		root, loc := task.StateDir(BackendPi)
+		if loc.Plantable() {
+			t.Fatalf("root %q classified as plantable; this is the operator's own", root)
 		}
 	})
 
@@ -1241,4 +1241,98 @@ func TestPathInsideCheckoutFailsClosedOnUnreadable(t *testing.T) {
 	if !pathInsideCheckout(work, filepath.Join(base, "elsewhere", "pi")) {
 		t.Error("an unreadable workspace answered `outside`; uncertainties must guard")
 	}
+}
+
+// Round 4: every one of these survived reversion. They were correct and
+// untested, which is the state that lets the next edit break them silently.
+func TestPiPreFlightSideEffects(t *testing.T) {
+	t.Run("the sweep runs", func(t *testing.T) {
+		work := t.TempDir()
+		root := filepath.Join(work, ".iterion", "pi")
+		if err := os.MkdirAll(filepath.Join(root, "pi-agent-old"), 0o700); err != nil {
+			t.Fatal(err)
+		}
+		old := time.Now().Add(-piSeedMaxAge - time.Hour)
+		if err := os.Chtimes(filepath.Join(root, "pi-agent-old"), old, old); err != nil {
+			t.Fatal(err)
+		}
+		if err := piPrepareStateRoot(Task{NodeID: "n", WorkDir: work, Sandbox: stubSandboxRun{}}, nil); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := os.Stat(filepath.Join(root, "pi-agent-old")); !os.IsNotExist(err) {
+			t.Error("a stranded seed survived the pre-flight")
+		}
+	})
+
+	// The anti-`git add -A` guard for the extension bundle and system prompt.
+	t.Run("an in-checkout root is made unstageable", func(t *testing.T) {
+		work := t.TempDir()
+		if err := piPrepareStateRoot(Task{NodeID: "n", WorkDir: work, Sandbox: stubSandboxRun{}}, nil); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := os.Stat(filepath.Join(work, ".iterion", ".gitignore")); err != nil {
+			t.Errorf("no ignore guard in the checkout: %v", err)
+		}
+	})
+
+	// ...and an operator root is left completely alone.
+	t.Run("an operator root is untouched", func(t *testing.T) {
+		work, store := t.TempDir(), t.TempDir()
+		if err := piPrepareStateRoot(Task{NodeID: "n", WorkDir: work, StoreDir: store}, nil); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := os.Stat(filepath.Join(work, ".iterion")); err == nil {
+			t.Error("wrote into the workspace for an operator-rooted run")
+		}
+	})
+}
+
+// A component we cannot inspect is an uncertainty, and uncertainties refuse.
+func TestRefuseSymlinkedPathFailsClosedOnUnreadable(t *testing.T) {
+	if os.Getuid() == 0 {
+		t.Skip("root ignores the permission bits this asserts")
+	}
+	base := t.TempDir()
+	locked := filepath.Join(base, "locked")
+	if err := os.MkdirAll(filepath.Join(locked, "inner"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(locked, 0o000); err != nil {
+		t.Skipf("cannot drop permissions: %v", err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(locked, 0o755) })
+
+	if err := refuseSymlinkedPath(base, filepath.Join(locked, "inner", "pi")); err == nil {
+		t.Error("an uninspectable component was accepted")
+	}
+}
+
+// A noop sandbox is a host passthrough, so host paths ARE statable and the
+// stdio board transport IS reachable. All three sites must agree with
+// Hostless(), and none of them was covered.
+func TestHostlessConversionsAreLive(t *testing.T) {
+	work := t.TempDir()
+	dir := filepath.Join(work, ".claude", "skills", "mine")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "SKILL.md"), []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	noop := Task{WorkDir: work, Sandbox: stubNoopSandbox{}}
+
+	// Present on the host → offered.
+	if got := piSkillArgs(Task{WorkDir: work, MirroredSkills: []string{dir}, Sandbox: stubNoopSandbox{}}, nil); len(got) == 0 {
+		t.Error("a noop run was denied a skill that exists on its own host")
+	}
+	// Absent on the host → dropped, exactly as with no sandbox at all. A real
+	// sandbox would offer it anyway (the host cannot stat an in-container path).
+	gone := filepath.Join(work, ".claude", "skills", "gone")
+	if got := piSkillArgs(Task{WorkDir: work, MirroredSkills: []string{gone}, Sandbox: stubNoopSandbox{}}, nil); len(got) != 0 {
+		t.Errorf("args = %v — a noop run kept a path that does not exist on its host", got)
+	}
+	if got := piSkillArgs(Task{WorkDir: work, MirroredSkills: []string{gone}, Sandbox: stubSandboxRun{}}, nil); len(got) == 0 {
+		t.Error("a real sandbox must still offer an unstattable in-container path")
+	}
+	_ = noop
 }

@@ -510,7 +510,7 @@ func piSessionDir(task Task) string {
 // testable — which root is guarded, and under which condition — not merely the
 // helpers it calls.
 func piPrepareStateRoot(task Task, logger *iterlog.Logger) error {
-	root, inCheckout := task.StateDir(BackendPi)
+	root, loc := task.StateDir(BackendPi)
 
 	// Guard the leaf where someone OTHER than the operator could have planted
 	// it: inside the target repository's checkout, and on the shared mount,
@@ -520,11 +520,10 @@ func piPrepareStateRoot(task Task, logger *iterlog.Logger) error {
 	// transcript growth — refusing there aborted every pi node with a message
 	// asserting a checkout that does not exist.
 	//
-	// Tested against the CHOSEN root, not against SharedStateDir as a proxy:
-	// StateDir only takes the shared branch when the task is sandboxed, so a
-	// hostless task carrying a stale SharedStateDir would otherwise guard the
-	// operator's own store root.
-	if shared := strings.TrimSpace(task.SharedStateDir); inCheckout || (shared != "" && lexicallyWithin(shared, root)) {
+	// StateDir already answered this; re-deriving it is what put the last three
+	// defects here, most recently a `lexicallyWithin(SharedStateDir, root)` that
+	// answered "not shared" for a relative SharedStateDir and skipped the guard.
+	if loc.Plantable() {
 		if err := piGuardWriteRoot(root); err != nil {
 			return err
 		}
@@ -536,7 +535,7 @@ func piPrepareStateRoot(task Task, logger *iterlog.Logger) error {
 	// walked the components until now; the other three rode the leaf check
 	// alone, which follows a symlinked ancestor and finds a plain leaf inside
 	// the attacker's directory.
-	if inCheckout {
+	if loc == StateInCheckout {
 		if err := refuseSymlinkedPath(task.WorkDir, root); err != nil {
 			return err
 		}
@@ -545,7 +544,7 @@ func piPrepareStateRoot(task Task, logger *iterlog.Logger) error {
 	// codex ones that seed a credential. Session transcripts are written by all
 	// of them, and on a root shared across runs nothing else reaps them.
 	piSweepStaleSeeds(root)
-	if inCheckout {
+	if loc == StateInCheckout {
 		// A v2 campaign agent runs `git add -A` before each in-stride commit and
 		// finalizeWorktree fast-forwards the result onto the operator's branch,
 		// so anything here could be staged into the target repo.

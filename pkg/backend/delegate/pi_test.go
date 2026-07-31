@@ -1035,3 +1035,38 @@ func TestPiHideWorkspaceSessionDirRefusesASymlinkedGuard(t *testing.T) {
 		}
 	})
 }
+
+// The pre-flight is only worth having if PiBackend.Execute actually CALLS it.
+// Round 3 extracted the decision into piPrepareStateRoot and tested the
+// function; round 4 showed that deleting the call from Execute still left the
+// suite green — the untested boundary had moved up a level, not closed. This
+// test crosses it: no fake CLI is even needed, because the refusal must happen
+// before anything is spawned.
+func TestPiExecuteRefusesAPlantedStateRootBeforeSpawning(t *testing.T) {
+	base := t.TempDir()
+	workDir := filepath.Join(base, "repo")
+	if err := os.MkdirAll(workDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	attacker := filepath.Join(base, "attacker")
+	if err := os.Symlink(attacker, filepath.Join(workDir, ".iterion")); err != nil {
+		t.Skipf("symlinks unavailable: %v", err)
+	}
+	t.Setenv("ITERION_PI_MODE", "print")
+
+	// A binary that does not exist: if the pre-flight is wired, we never reach
+	// the spawn, so the error must name the symlink and not the missing CLI.
+	b := NewPiBackend(testLogger(), filepath.Join(base, "no-such-pi"))
+	_, err := b.Execute(context.Background(), Task{
+		NodeID: "n", WorkDir: workDir, BaseDir: workDir, UserPrompt: "hi",
+	})
+	if err == nil {
+		t.Fatal("Execute ran with a repo-planted state root")
+	}
+	if !strings.Contains(err.Error(), "symlink") {
+		t.Errorf("err = %v, want the symlink refusal (the pre-flight is not wired)", err)
+	}
+	if _, serr := os.Stat(attacker); serr == nil {
+		t.Error("created the attacker's directory")
+	}
+}
