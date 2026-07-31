@@ -56,6 +56,7 @@ flowchart LR
   ENGINE --> EXEC["node executor"]
   EXEC --> CLAW["claw"]
   EXEC --> CC["claude_code"]
+  EXEC --> PI["pi · RPC / print fallback"]
   EXEC --> CLIAGENT["kimi / grok"]
   EXEC -. legacy .-> CODEX["codex"]
   ENGINE --> STATE["checkpoint + events + artifacts"]
