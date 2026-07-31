@@ -509,6 +509,16 @@ func piHideWorkspaceSessionDir(task Task, logger *iterlog.Logger) {
 		return
 	}
 	root := filepath.Join(task.WorkDir, ".iterion")
+	// A repo can commit `.iterion` as a symlink; MkdirAll would follow it and
+	// the guard below would be written at a path the repo chose. Bailing is in
+	// contract here — this function is best-effort — and the writers that
+	// matter refuse the same redirect for themselves.
+	if err := refuseSymlinkedPath(task.WorkDir, root); err != nil {
+		if logger != nil {
+			logger.Warn("pi: %v", err)
+		}
+		return
+	}
 	if err := os.MkdirAll(root, 0o755); err != nil {
 		if logger != nil {
 			logger.Warn("pi: cannot create %s: %v — session files may ride a `git add -A`", root, err)

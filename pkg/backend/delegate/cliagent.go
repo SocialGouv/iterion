@@ -364,6 +364,14 @@ func writeSystemPromptFile(task Task, backendName, systemPrompt string) (path st
 		return "", nil, fmt.Errorf("delegate: %s: SystemPromptViaFile requires a WorkDir", backendName)
 	}
 	dir := filepath.Join(task.WorkDir, ".iterion", backendName)
+	// WorkDir is a checkout of the TARGET repository, which can commit
+	// `.iterion` as a symlink — .gitignore does not stop a tracked symlink from
+	// being checked out, and MkdirAll follows it. Writing through it would let
+	// the repo choose where a file lands on the host, creating directories on
+	// the way: an arbitrary-write primitive out of a path iterion picked.
+	if err := refuseSymlinkedPath(task.WorkDir, dir); err != nil {
+		return "", nil, fmt.Errorf("delegate: %s: %w", backendName, err)
+	}
 	if err := os.MkdirAll(dir, 0o750); err != nil {
 		return "", nil, fmt.Errorf("delegate: %s: create system-prompt dir: %w", backendName, err)
 	}
