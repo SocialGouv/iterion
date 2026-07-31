@@ -16,10 +16,73 @@ import (
 	"github.com/SocialGouv/iterion/pkg/backend/rewrite"
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
 	iterlog "github.com/SocialGouv/iterion/pkg/log"
+	"github.com/SocialGouv/iterion/pkg/memory"
 	"github.com/SocialGouv/iterion/pkg/plugin"
 	"github.com/SocialGouv/iterion/pkg/sandbox"
 	"github.com/SocialGouv/iterion/pkg/store"
 )
+
+// sandboxScratchContainerPath is where ${PROJECT_SCRATCH_DIR} resolves
+// inside a sandbox. Fixed rather than the host path because an image
+// pinning a non-host User cannot write a host-owned bind;
+// applyScratchMount backs it with the per-project host dir so contents
+// outlive the container and are shared with the run's sub-bot children.
+const sandboxScratchContainerPath = "/tmp/iterion-scratch"
+
+// applyScratchMount binds the per-project host scratch dir onto
+// sandboxScratchContainerPath and returns the host path it bound (""
+// when it did not bind).
+//
+// Without it every container gets its own empty /tmp/iterion-scratch,
+// which silently breaks every fan-in that travels through scratch: a
+// sub-bot child runs in its OWN container, so the file it writes there
+// is invisible to the parent reading the same path afterwards. The child
+// reports success and the parent reads an empty directory, so the defect
+// surfaces far from its cause. It also tied scratch to the container's
+// lifetime, so a crashed run lost the working state it was meant to
+// resume from.
+//
+// Keyed off repoRoot, never the per-run worktree: a parent and its
+// children have different worktrees but must resolve the SAME directory.
+//
+// The host dir is created 0777 deliberately — it is ephemeral working
+// state under ~/.iterion, and the permissive mode is what lets an image
+// with a non-host User write it, which is the exact case the
+// container-local path was introduced to serve. Skipped when the driver
+// has no host bind mounts (kubernetes), where container-local remains
+// the only option.
+func applyScratchMount(
+	spec *sandbox.Spec,
+	repoRoot, workDir string,
+	supportsHostBindMounts bool,
+	logger *iterlog.Logger,
+) string {
+	if spec == nil || !supportsHostBindMounts {
+		return ""
+	}
+	base := repoRoot
+	if base == "" {
+		base = workDir
+	}
+	hostScratch := memory.WorkspaceScratchDir(base)
+	if hostScratch == "" {
+		return ""
+	}
+	if err := os.MkdirAll(hostScratch, 0o777); err != nil {
+		if logger != nil {
+			logger.Warn("sandbox: scratch mount skipped (mkdir %s: %v) — scratch stays container-local", hostScratch, err)
+		}
+		return ""
+	}
+	// MkdirAll honours umask, so set the mode explicitly: a 0755 dir owned
+	// by the host user is exactly what blocks a non-host container User.
+	if err := os.Chmod(hostScratch, 0o777); err != nil && logger != nil {
+		logger.Warn("sandbox: scratch dir %s kept its current mode (%v) — a non-host container User may fail to write it", hostScratch, err)
+	}
+	spec.Mounts = append(spec.Mounts, fmt.Sprintf(
+		"source=%s,target=%s,type=bind", hostScratch, sandboxScratchContainerPath))
+	return hostScratch
+}
 
 // addOptionalBindMount stats hostDir; if it exists and is readable it
 // appends a bind-mount entry to spec.Mounts and returns the resolved

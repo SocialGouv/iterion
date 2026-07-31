@@ -358,6 +358,12 @@ func resolveAndStartSandbox(ctx context.Context, p SandboxParams) (*activeSandbo
 		spec.Env["ITERION_ARTIFACT_FILES_DIR"] = runFilesContainerPath
 	}
 	bundleContainerPath := addOptionalBindMount(spec, p.BundleHostDir, p.BundleContainerPath, "/run/iterion/bundle", "bundle", true, logger)
+	// Back ${PROJECT_SCRATCH_DIR} with the per-project host dir before the
+	// driver starts, so the bind exists for the very first tool node. Keyed
+	// off RepoRoot (not the per-run worktree) so a parent and its sub-bot
+	// children — separate runs in separate containers — resolve the same
+	// directory and can hand work to each other.
+	applyScratchMount(spec, p.RepoRoot, p.WorkspacePath, caps.SupportsHostBindMounts, logger)
 	sharedStateDir := applyHostStateMounts(spec, p.Workflow, p, emitEvent, logger)
 	if !caps.SupportsHostBindMounts {
 		// Same rule as attachmentsDir below: a path that was never bind-mounted

@@ -290,3 +290,84 @@ func TestApplyHostStateMounts_ReportsTheSharedStateDir(t *testing.T) {
 		}
 	})
 }
+
+// scratchMountTarget returns the host source bound onto the sandbox
+// scratch path, and whether such a mount exists at all.
+func scratchMountTarget(mounts []string) (string, bool) {
+	for _, m := range mounts {
+		if !strings.Contains(m, "target="+sandboxScratchContainerPath) {
+			continue
+		}
+		for _, field := range strings.Split(m, ",") {
+			if src, ok := strings.CutPrefix(field, "source="); ok {
+				return src, true
+			}
+		}
+	}
+	return "", false
+}
+
+// A parent and its sub-bot child are separate runs in separate
+// containers, each with its own worktree. They must still resolve the
+// SAME scratch directory: that is the channel a fan-in travels through
+// (app-concept writes one topic synthesis per child and the parent reads
+// them all back). Keying the mount off the per-run worktree instead of
+// the repo root silently breaks it — every child writes into its own
+// container, reports success, and the parent reads an empty directory.
+func TestApplyScratchMount_ParentAndChildShareOneHostDir(t *testing.T) {
+	repoRoot := t.TempDir()
+	parentSpec := &sandbox.Spec{}
+	childSpec := &sandbox.Spec{}
+
+	parentHost := applyScratchMount(parentSpec, repoRoot, filepath.Join(repoRoot, "worktrees", "parent"), true, nil)
+	childHost := applyScratchMount(childSpec, repoRoot, filepath.Join(repoRoot, "worktrees", "child"), true, nil)
+
+	if parentHost == "" || childHost == "" {
+		t.Fatalf("scratch mount not applied: parent=%q child=%q", parentHost, childHost)
+	}
+	if parentHost != childHost {
+		t.Fatalf("parent and child resolved different scratch dirs:\n  parent=%s\n  child=%s", parentHost, childHost)
+	}
+	for label, spec := range map[string]*sandbox.Spec{"parent": parentSpec, "child": childSpec} {
+		src, ok := scratchMountTarget(spec.Mounts)
+		if !ok {
+			t.Fatalf("%s spec has no mount onto %s: %v", label, sandboxScratchContainerPath, spec.Mounts)
+		}
+		if src != parentHost {
+			t.Errorf("%s scratch bound from %q, want %q", label, src, parentHost)
+		}
+	}
+}
+
+// The host dir must be world-writable: an image pinning a non-host User
+// is exactly the case the container-local path was introduced to serve
+// (EACCES on a 0755 host-owned bind), so the backing mount must not
+// reintroduce it.
+func TestApplyScratchMount_HostDirIsWorldWritable(t *testing.T) {
+	if goruntime.GOOS != "linux" {
+		t.Skip("mode bits are checked on Linux only")
+	}
+	hostScratch := applyScratchMount(&sandbox.Spec{}, t.TempDir(), "", true, nil)
+	if hostScratch == "" {
+		t.Fatal("scratch mount not applied")
+	}
+	info, err := os.Stat(hostScratch)
+	if err != nil {
+		t.Fatalf("stat %s: %v", hostScratch, err)
+	}
+	if perm := info.Mode().Perm(); perm != 0o777 {
+		t.Fatalf("scratch dir mode = %#o, want 0777 (a non-host container User must be able to write it)", perm)
+	}
+}
+
+// A driver without host bind mounts (kubernetes) cannot take the mount;
+// the container-local path stays the fallback rather than the run dying.
+func TestApplyScratchMount_SkippedWithoutHostBindMounts(t *testing.T) {
+	spec := &sandbox.Spec{}
+	if host := applyScratchMount(spec, t.TempDir(), "", false, nil); host != "" {
+		t.Fatalf("scratch mount applied without host bind support: %q", host)
+	}
+	if _, ok := scratchMountTarget(spec.Mounts); ok {
+		t.Fatalf("mount leaked into spec: %v", spec.Mounts)
+	}
+}
