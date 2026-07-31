@@ -791,6 +791,18 @@ const (
 // at this root — the condition the leaf and component guards exist for.
 func (l StateLocation) Plantable() bool { return l == StateInCheckout || l == StateShared }
 
+// String makes a failed assertion readable; without it a test prints "loc=2".
+func (l StateLocation) String() string {
+	switch l {
+	case StateInCheckout:
+		return "in-checkout"
+	case StateShared:
+		return "shared"
+	default:
+		return "operator"
+	}
+}
+
 // StateDir is where this node's backend-owned state lives — a materialised
 // extension, a composed system-prompt file, a session transcript, a seeded
 // credential — and whether that place is inside the TARGET repository's
@@ -844,10 +856,15 @@ func (t Task) StateDir(backendName string) (root string, loc StateLocation) {
 	if abs, err := filepath.Abs(root); err == nil {
 		root = abs
 	}
-	// An operator-chosen root can still land inside the checkout — `--store-dir
-	// "$PWD/.iterion"` is what this repo's own dogfood instructions prescribe.
-	// Containment decides, not the branch.
-	if loc == StateOperator && pathInsideCheckout(t.WorkDir, root) {
+	// Containment decides, for EVERY branch. Restricting this to StateOperator
+	// made StateInCheckout a label rather than the fact it summarises, and the
+	// two then disagreed: a shared root that genuinely sits inside the checkout
+	// stayed StateShared, so the component walk, the ignore guard and the
+	// credential's own guards — all gated on `== StateInCheckout` — silently
+	// stopped running on it. A label is lossier than the fact; this makes
+	// StateInCheckout mean exactly "contained", so the two questions have one
+	// answer.
+	if pathInsideCheckout(t.WorkDir, root) {
 		loc = StateInCheckout
 	}
 	return root, loc

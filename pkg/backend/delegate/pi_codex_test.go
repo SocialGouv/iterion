@@ -1319,8 +1319,6 @@ func TestHostlessConversionsAreLive(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(dir, "SKILL.md"), []byte("x"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	noop := Task{WorkDir: work, Sandbox: stubNoopSandbox{}}
-
 	// Present on the host → offered.
 	if got := piSkillArgs(Task{WorkDir: work, MirroredSkills: []string{dir}, Sandbox: stubNoopSandbox{}}, nil); len(got) == 0 {
 		t.Error("a noop run was denied a skill that exists on its own host")
@@ -1334,5 +1332,59 @@ func TestHostlessConversionsAreLive(t *testing.T) {
 	if got := piSkillArgs(Task{WorkDir: work, MirroredSkills: []string{gone}, Sandbox: stubSandboxRun{}}, nil); len(got) == 0 {
 		t.Error("a real sandbox must still offer an unstattable in-container path")
 	}
-	_ = noop
+}
+
+// Round 5: StateInCheckout must mean exactly "contained", for every branch.
+// Restricting the reclassification to StateOperator let a shared root that
+// genuinely sits inside the checkout stay StateShared, and the four guards
+// gated on `== StateInCheckout` stopped running on it — the round-3 exploit
+// restored through a different classification path.
+func TestStateDirContainmentBeatsTheBranch(t *testing.T) {
+	work := t.TempDir()
+
+	cases := []struct {
+		name string
+		task Task
+	}{
+		{"shared mount that lands inside the checkout", Task{
+			WorkDir: work, SharedStateDir: filepath.Join(work, ".iterion"), Sandbox: stubSandboxRun{},
+		}},
+		{"operator store that lands inside the checkout", Task{
+			WorkDir: work, StoreDir: filepath.Join(work, ".iterion"),
+		}},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			root, loc := c.task.StateDir(BackendPi)
+			if loc != StateInCheckout {
+				t.Fatalf("root %q: loc=%v, want in-checkout — the guards gate on it", root, loc)
+			}
+		})
+	}
+
+	// ...and a root genuinely outside keeps its branch.
+	outside := Task{WorkDir: work, SharedStateDir: t.TempDir(), Sandbox: stubSandboxRun{}}
+	if _, loc := outside.StateDir(BackendPi); loc != StateShared {
+		t.Errorf("loc=%v for a shared root outside the checkout, want shared", loc)
+	}
+}
+
+// The consequence, end to end: a shared root inside the checkout must still get
+// the component walk and the ignore guard.
+func TestPreFlightGuardsASharedRootInsideTheCheckout(t *testing.T) {
+	base := t.TempDir()
+	work := filepath.Join(base, "repo")
+	if err := os.MkdirAll(work, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(filepath.Join(base, "attacker"), filepath.Join(work, ".iterion")); err != nil {
+		t.Skipf("symlinks unavailable: %v", err)
+	}
+	task := Task{
+		NodeID: "n", WorkDir: work,
+		SharedStateDir: filepath.Join(work, ".iterion"), Sandbox: stubSandboxRun{},
+	}
+	if err := piPrepareStateRoot(task, nil); err == nil {
+		t.Fatal("a planted component was accepted on a shared root inside the checkout")
+	}
 }
