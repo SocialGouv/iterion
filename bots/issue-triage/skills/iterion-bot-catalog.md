@@ -651,10 +651,11 @@ instead.
 
 ### `review-pr` — Revi
 
-Read-only cross-family code reviewer. Reviews the working-tree diff
-of the current branch against its base with two independent reviewers
-(Claude + GPT), merges and de-duplicates their findings (cross-family
-agreement raises confidence), then publishes one issue per finding to
+Read-only code reviewer. Reviews the working-tree diff of the current
+branch against its base with one independent reviewer by default
+(Claude or GPT); dual mode runs both families and cross-family agreement
+raises confidence. It merges and de-duplicates findings, then publishes
+one issue per finding to
 the iterion native kanban board (labelled severity + type +
 source:revi) and writes a markdown report. Given a pull-request URL
 (PR; merge request on GitLab; --var pr_url), it ALSO posts the findings onto that PR as a real
