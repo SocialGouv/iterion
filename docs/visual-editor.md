@@ -27,7 +27,7 @@ See [cli-reference.md `#iterion-studio`](cli-reference.md#iterion-studio) for th
 - **Property editor** — Edit node properties, schemas, prompts, and edge conditions in a side panel
 - **Source view** — Split-pane view showing the raw workflow source (`.bot`) alongside the visual graph
 - **Bundle file drawer (cloud team bots)** — Add, edit, save, or delete `manifest.yaml`, skills, prompts, and other bundle files without leaving the editor (`main.bot` is the required entry and cannot be deleted)
-- **Live diagnostics** — Real-time validation errors and warnings as you edit (sparse DSL range C001–C199; bundle checks C200–C234)
+- **Live diagnostics** — Real-time validation errors and warnings as you edit (sparse DSL ranges C001–C199 and async C240–C242; bundle checks C200–C234)
 - **File watching** — Detects external file changes via WebSocket and syncs automatically
 - **Undo/redo** — Full edit history
 - **Launch modal** — Fills `vars` and attachments at launch time, with bot/argument discovery driven by `--bots-path` (the modal's bot picker and argument form consume the same catalogue `iterion bots list` emits)
