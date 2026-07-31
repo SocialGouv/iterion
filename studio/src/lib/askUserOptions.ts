@@ -42,10 +42,17 @@ export function askUserAllowsFreeText(questions: Record<string, unknown> | null 
 }
 
 /**
+ * Question-map key holding the run artifact files a human node attached to its
+ * turn, as `[{path, caption?}]`. Rendered as evidence next to the verdict (see
+ * PipelineBoard/ReviewMedia), never as something to fill in.
+ */
+export const REVIEW_MEDIA_QUESTION_KEY = "media_refs";
+
+/**
  * Question-map keys that are runtime plumbing, not operator-facing
  * fields (options payload, permission marker, queued-messages stash…).
  * Forms must not render them as answerable inputs.
  */
 export function isReservedQuestionKey(key: string): boolean {
-  return key.startsWith("_");
+  return key.startsWith("_") || key === REVIEW_MEDIA_QUESTION_KEY;
 }

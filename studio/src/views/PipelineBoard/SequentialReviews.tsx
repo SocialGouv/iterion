@@ -5,6 +5,7 @@ import type { PipelineBoardCard } from "@/api/pipelineBoards";
 import HumanPromptForm from "@/components/Runs/conversation/HumanPromptForm";
 import { Badge, Button, InlineBanner } from "@/components/ui";
 
+import ReviewMedia from "./ReviewMedia";
 import {
   clampReviewIndex,
   pendingReviewVersionKey,
@@ -115,6 +116,10 @@ export function SequentialReviews({ card, onResolved }: Props) {
             </code>
           )}
         </div>
+      )}
+
+      {review.run_id && (
+        <ReviewMedia runId={review.run_id} questions={review.questions ?? {}} />
       )}
 
       {review.run_id && review.node_id ? (
