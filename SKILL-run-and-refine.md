@@ -98,6 +98,8 @@ iterion resume --run-id RUN --store-dir .iterion
 # explicit nested/array types.
 iterion resume --run-id RUN --answer approved=true --answer note="ship it"
 iterion resume --run-id RUN --answers-file answers.json
+# A file-typed field: stage bytes as a run attachment and pass its descriptor.
+iterion resume --run-id RUN --answer track=@./theme.mp3
 
 # Deliberately repaired workflow source.
 iterion resume --run-id RUN --file bots/example/main.bot --force
@@ -105,6 +107,10 @@ iterion resume --run-id RUN --file bots/example/main.bot --force
 # Provably orphaned running process only.
 iterion resume --run-id RUN --force-stale
 ```
+
+The `@path` form is interpreted only for a paused node's `file`-typed fields;
+other values beginning with `@` stay literal, and `@@` escapes a leading `@`
+inside a file field.
 
 Use `--force` only to acknowledge a workflow-source hash mismatch. It asserts
 that node ids, schemas, stored outputs, loops, and the new graph remain
