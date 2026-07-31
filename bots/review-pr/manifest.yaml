@@ -128,6 +128,20 @@ forge:
     itself holds no posting credential). /revi in a note triggers a
     re-review on the same PR.
 
+# What this bot leaves behind for a later run to start from. Matched to a
+# consumer BY KIND, so a fixer can pick this review up without either manifest
+# naming the other bot — and a second reviewer joins by declaring the same kind.
+produces:
+  - kind: review
+    # The merged, de-duplicated finding set + the merged open questions.
+    node: converge
+    # Consulted when converge's array degrades to prose (it is an LLM step, and
+    # it has): the two families' RAW arrays, unioned and de-duped by anchor.
+    fallback_nodes: [merge_reviews]
+    # Carries reviewed_sha, so a consumer is told when the branch moved under
+    # the findings instead of acting on stale line anchors.
+    anchor_node: diff_precheck
+
 # Invocations: how Revi can be triggered (typed routing contract).
 invocations:
   - kind: forge

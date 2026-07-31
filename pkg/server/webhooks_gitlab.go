@@ -425,11 +425,9 @@ func (s *Server) handleGitLabCommandNote(ctx context.Context, w http.ResponseWri
 		vars = applyWebhookVarLayers(buildGitLabIssueCommandVars(p, route, cmdArgs, nil), cfg)
 	} else {
 		stampBranchImprovePushBack(vars, route.BotID, p.SourceBranch, cfg.BranchImproveAsPR)
-		// `/billy` on an MR seeds the run with Revi's most recent review of it
-		// (best-effort — see stampPriorReview). Symmetric with the GitHub path.
-		s.stampPriorReview(ctx, cfg, route.BotID, vars, priorReviewQuery{
-			PRURL: p.MRURL, ProjectPath: p.ProjectPath, PRNumber: int(p.MRIID), HeadSHA: p.HeadSHA,
-		})
+		// The revision the command is about, so the shared launch tail can tell a
+		// consumer whether the review it is handed still matches the MR head.
+		vars["head_sha"] = p.HeadSHA
 	}
 	// "cmd|" prefix keeps the key space disjoint from the mr|/note| paths.
 	idemKey := knowledge.ChecksumHex([]byte(fmt.Sprintf("cmd|%s|%s|%d|%s", cfg.TenantID, cfg.ID, p.ProjectID, p.SubjectID())))

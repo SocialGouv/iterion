@@ -880,6 +880,16 @@ func (s *Server) launchWebhookTarget(
 		// this seam for one field.
 		launch = s.webhookLauncherFor(cfg)
 	}
+	// Hand the run any prior review of the same PR, if it asked for one. Done
+	// HERE, in the tail every lane funnels through, rather than per provider
+	// handler: the two comment lanes had it and nothing else did, so the
+	// merge-queue auto-heal — which launches a fixer on a PR a reviewer has
+	// almost always already read — started from nothing. The PR context comes
+	// from the vars the lane already built, so a lane with no pr_url no-ops.
+	s.stampPriorReview(ctx, cfg, botID, vars, priorReviewQuery{
+		PRURL:   vars["pr_url"],
+		HeadSHA: vars["head_sha"],
+	})
 	// Deterministic forge review publishing: a review-shaped delivery
 	// carries a pr_url var — mint a per-run publish grant scoped to the
 	// webhook's tenant so the bot's deterministic publish node posts

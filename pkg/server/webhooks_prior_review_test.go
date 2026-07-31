@@ -5,6 +5,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/SocialGouv/iterion/pkg/bundle"
 	"github.com/SocialGouv/iterion/pkg/forge"
 	"github.com/SocialGouv/iterion/pkg/store"
 	"github.com/SocialGouv/iterion/pkg/webhooks"
@@ -58,6 +59,17 @@ func TestRealIterionBotAuthor(t *testing.T) {
 	}
 }
 
+// reviewSpec is a FIXTURE producer declaration — deliberately not a copy of any
+// shipped bot's. The renderer is handed the node layout by whichever bot
+// declared `produces: kind: review`; naming the nodes here proves it reads them
+// from the declaration rather than knowing a particular bot's graph.
+var reviewSpec = bundle.ProducedArtifact{
+	Kind:          bundle.HandoffKindReview,
+	Node:          "merged_findings",
+	FallbackNodes: []string{"per_family_findings"},
+	AnchorNode:    "precheck",
+}
+
 // TestRenderPriorReview pins what the hand-off actually carries.
 //
 // The point of seeding a fixer with a review is to save it a round. A digest
@@ -90,7 +102,7 @@ func TestRenderPriorReview(t *testing.T) {
 
 	t.Run("carries every field the fixer needs to skip a round", func(t *testing.T) {
 		run := newRun(t, prURL)
-		write(t, run.ID, reviewConvergeNode, map[string]any{
+		write(t, run.ID, reviewSpec.Node, map[string]any{
 			"total_findings": 2,
 			"questions":      "Does EditorTabHost still open the file?\n",
 			"findings": []any{
@@ -105,7 +117,7 @@ func TestRenderPriorReview(t *testing.T) {
 			},
 		})
 
-		got := renderPriorReview(ctx, rs, run.ID, priorReviewQuery{PRURL: prURL})
+		got := renderPriorReview(ctx, rs, run.ID, reviewSpec, priorReviewQuery{PRURL: prURL})
 		for name, want := range map[string]string{
 			"the anchor span":       "db.go:42-44",
 			"the severity/category": "high/security",
@@ -129,8 +141,8 @@ func TestRenderPriorReview(t *testing.T) {
 
 	t.Run("empty findings still seed a verdict", func(t *testing.T) {
 		run := newRun(t, prURL)
-		write(t, run.ID, reviewConvergeNode, map[string]any{"findings": []any{}, "total_findings": 0})
-		if e := renderPriorReview(ctx, rs, run.ID, priorReviewQuery{PRURL: prURL}); !strings.Contains(e, "no findings") {
+		write(t, run.ID, reviewSpec.Node, map[string]any{"findings": []any{}, "total_findings": 0})
+		if e := renderPriorReview(ctx, rs, run.ID, reviewSpec, priorReviewQuery{PRURL: prURL}); !strings.Contains(e, "no findings") {
 			t.Errorf("empty-findings render should note no findings, got %q", e)
 		}
 	})
@@ -140,14 +152,14 @@ func TestRenderPriorReview(t *testing.T) {
 	// posted N findings onto the PR hands the fixer an empty seed.
 	t.Run("recovers the reviewers' raw arrays when the merge degraded", func(t *testing.T) {
 		run := newRun(t, prURL)
-		write(t, run.ID, reviewConvergeNode, map[string]any{
+		write(t, run.ID, reviewSpec.Node, map[string]any{
 			"findings": "See structured findings array.", "total_findings": 2,
 		})
-		write(t, run.ID, reviewMergeNode, map[string]any{
+		write(t, run.ID, reviewSpec.FallbackNodes[0], map[string]any{
 			"claude_findings": []any{map[string]any{"title": "race on cache", "file": "c.go", "line": float64(9), "severity": "high"}},
 			"gpt_findings":    []any{map[string]any{"title": "race on cache", "file": "c.go", "line": float64(9), "severity": "high"}},
 		})
-		got := renderPriorReview(ctx, rs, run.ID, priorReviewQuery{PRURL: prURL})
+		got := renderPriorReview(ctx, rs, run.ID, reviewSpec, priorReviewQuery{PRURL: prURL})
 		if !strings.Contains(got, "race on cache") {
 			t.Errorf("degraded merge lost every finding:\n%s", got)
 		}
@@ -163,20 +175,20 @@ func TestRenderPriorReview(t *testing.T) {
 	// fixer "fix" what is already fixed.
 	t.Run("labels a review whose head has moved", func(t *testing.T) {
 		run := newRun(t, prURL)
-		write(t, run.ID, reviewConvergeNode, map[string]any{
+		write(t, run.ID, reviewSpec.Node, map[string]any{
 			"total_findings": 1,
 			"findings":       []any{map[string]any{"title": "t", "file": "a.go", "line": float64(1), "severity": "low"}},
 		})
-		write(t, run.ID, reviewPrecheckNode, map[string]any{"reviewed_sha": "aaaaaaaaaaaa1111"})
+		write(t, run.ID, reviewSpec.AnchorNode, map[string]any{"reviewed_sha": "aaaaaaaaaaaa1111"})
 
-		moved := renderPriorReview(ctx, rs, run.ID, priorReviewQuery{PRURL: prURL, HeadSHA: "bbbbbbbbbbbb2222"})
+		moved := renderPriorReview(ctx, rs, run.ID, reviewSpec, priorReviewQuery{PRURL: prURL, HeadSHA: "bbbbbbbbbbbb2222"})
 		if !strings.Contains(moved, "the branch moved after this review") {
 			t.Errorf("a stale review must be labelled stale:\n%s", moved)
 		}
 		if !strings.Contains(moved, "aaaaaaaaaaaa") || !strings.Contains(moved, "bbbbbbbbbbbb") {
 			t.Errorf("the digest must name both revisions so the fixer can diff them:\n%s", moved)
 		}
-		same := renderPriorReview(ctx, rs, run.ID, priorReviewQuery{PRURL: prURL, HeadSHA: "aaaaaaaaaaaa1111"})
+		same := renderPriorReview(ctx, rs, run.ID, reviewSpec, priorReviewQuery{PRURL: prURL, HeadSHA: "aaaaaaaaaaaa1111"})
 		if strings.Contains(same, "branch moved") {
 			t.Errorf("an up-to-date review must not be labelled stale:\n%s", same)
 		}
@@ -187,7 +199,7 @@ func TestRenderPriorReview(t *testing.T) {
 	// older review one step down the list.
 	t.Run("a review with nothing readable renders empty", func(t *testing.T) {
 		run := newRun(t, prURL)
-		if got := renderPriorReview(ctx, rs, run.ID, priorReviewQuery{PRURL: prURL}); got != "" {
+		if got := renderPriorReview(ctx, rs, run.ID, reviewSpec, priorReviewQuery{PRURL: prURL}); got != "" {
 			t.Errorf("a run with no artifacts must render empty so the scan continues, got %q", got)
 		}
 	})

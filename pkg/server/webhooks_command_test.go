@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -553,15 +555,21 @@ func TestGitHubIssueComment_BillyUnauthorizedRejected(t *testing.T) {
 	}
 }
 
-// TestGitHubIssueComment_BillySeedsPriorReview: an authorized `/billy` on a PR
-// Revi already reviewed carries that review into the run as `prior_review`
-// (req 4), so Billy starts from Revi's findings instead of re-deriving them.
-func TestGitHubIssueComment_BillySeedsPriorReview(t *testing.T) {
+// TestGitHubIssueComment_SeedsDeclaredReviewConsumer: an authorized command on
+// a PR that was already reviewed carries that review into the run.
+//
+// Which bot receives it, and into which var, comes from the LAUNCHED BOT'S OWN
+// MANIFEST (`consumes: kind: review`) — so the fixture bot here is deliberately
+// not any shipped bot: nothing in the engine may know that a particular bot is
+// the one that fixes reviews. The counterpart assertion, that the shipped
+// reviewer/fixer pair really declares the two halves, lives in bots/.
+func TestGitHubIssueComment_SeedsDeclaredReviewConsumer(t *testing.T) {
 	s := newWebhookTestServer(t)
+	s.cfg.WorkDir = writeConsumerBotFixture(t, "fixer-bot", "prior_review")
 	cfg, pt := ghConfig(t, s)
-	cfg.BotIDs = []string{"branch-improve-loop"}
+	cfg.BotIDs = []string{"fixer-bot"}
 	cfg.CommandMap = map[string][]webhooks.CommandRoute{
-		"billy": {{BotID: "branch-improve-loop", ArgsVar: "scope_notes", Scope: "any"}},
+		"fixit": {{BotID: "fixer-bot", ArgsVar: "scope_notes", Scope: "any"}},
 	}
 	s.webhookPRForgeCommandGate = func(context.Context, webhooks.Config, webhooks.Provider, prforge.ParsedNote, webhooks.CommandRoute) (bool, string, error) {
 		return true, "authorized", nil
@@ -572,22 +580,19 @@ func TestGitHubIssueComment_BillySeedsPriorReview(t *testing.T) {
 	var gotPRURL string
 	s.webhookPriorReview = func(_ context.Context, _ webhooks.Config, q priorReviewQuery) string {
 		gotPRURL = q.PRURL
-		if q.PRNumber != 7 {
-			t.Errorf("prior-review lookup pr number = %d, want 7", q.PRNumber)
-		}
 		// The PR's live head must reach the lookup: a review of an older head is
 		// still worth handing over, but only labelled as such.
 		if q.HeadSHA != "cafe1234cafe1234" {
 			t.Errorf("prior-review lookup head sha = %q, want the resolved PR head", q.HeadSHA)
 		}
-		return "Prior review of this PR by Revi: 1 finding\n- [high/security] SQLi (db.go:42)"
+		return "Prior review of this PR: 1 finding\n- [high/security] SQLi (db.go:42)"
 	}
 	var gotVars map[string]string
 	s.webhookLaunchBot = func(_ context.Context, _ string, vars map[string]string, _, _, _ string, _, _ map[string]string) (string, error) {
 		gotVars = vars
-		return "run-billy-seed", nil
+		return "run-seeded", nil
 	}
-	body := `{"action":"created","repository":{"full_name":"acme/widgets","clone_url":"https://github.com/acme/widgets.git"},"issue":{"number":7,"title":"t","body":"","state":"open","pull_request":{"html_url":"https://github.com/acme/widgets/pull/7"}},"comment":{"id":562,"body":"/billy"},"sender":{"login":"alice"}}`
+	body := `{"action":"created","repository":{"full_name":"acme/widgets","clone_url":"https://github.com/acme/widgets.git"},"issue":{"number":7,"title":"t","body":"","state":"open","pull_request":{"html_url":"https://github.com/acme/widgets/pull/7"}},"comment":{"id":562,"body":"/fixit"},"sender":{"login":"alice"}}`
 	w := httptest.NewRecorder()
 	s.handleGitHubWebhook(w, ghReq(ghCtx(cfg), body, prforge.EventHeaderIssueComment, pt))
 	if w.Code != http.StatusAccepted {
@@ -597,6 +602,47 @@ func TestGitHubIssueComment_BillySeedsPriorReview(t *testing.T) {
 		t.Fatalf("prior-review lookup used pr_url=%q", gotPRURL)
 	}
 	if !strings.Contains(gotVars["prior_review"], "SQLi") {
-		t.Fatalf("prior_review var must carry Revi's findings, got %q", gotVars["prior_review"])
+		t.Fatalf("the declared var must carry the review, got %q", gotVars["prior_review"])
 	}
+}
+
+// TestPriorReviewSkipsABotThatDidNotAskForIt: a bot with no `consumes` block is
+// launched untouched. The seed is a declared appetite, never something the
+// engine decides a bot ought to want.
+func TestPriorReviewSkipsABotThatDidNotAskForIt(t *testing.T) {
+	s := newWebhookTestServer(t)
+	s.cfg.WorkDir = t.TempDir() // no bundles at all
+	called := false
+	s.webhookPriorReview = func(context.Context, webhooks.Config, priorReviewQuery) string {
+		called = true
+		return "a review"
+	}
+	vars := map[string]string{}
+	s.stampPriorReview(context.Background(), webhooks.Config{}, "some-bot", vars, priorReviewQuery{PRURL: "https://f/o/r/pull/1"})
+	if called {
+		t.Error("looked up a review for a bot that never declared it consumes one")
+	}
+	if len(vars) != 0 {
+		t.Errorf("stamped %v onto a bot that asked for nothing", vars)
+	}
+}
+
+// writeConsumerBotFixture creates a minimal bundle declaring that it consumes a
+// review into varName, and returns the workdir holding it.
+func writeConsumerBotFixture(t *testing.T, name, varName string) string {
+	t.Helper()
+	workDir := t.TempDir()
+	dir := filepath.Join(workDir, "bots", name)
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	manifest := "name: " + name + "\nschema_version: 1\nconsumes:\n  - kind: review\n    var: " + varName + "\n    scope: pr\n"
+	if err := os.WriteFile(filepath.Join(dir, "manifest.yaml"), []byte(manifest), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	bot := "vars:\n  " + varName + ": string = \"\"\n\nagent noop:\n  system: \"noop\"\n\nworkflow w:\n  entry: noop\n"
+	if err := os.WriteFile(filepath.Join(dir, "main.bot"), []byte(bot), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	return workDir
 }

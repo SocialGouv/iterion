@@ -177,6 +177,16 @@ type Manifest struct {
 	// authoring mistake for the studio to surface, never a load error.
 	Launch *LaunchHints `yaml:"launch,omitempty"`
 
+	// Produces / Consumes declare the RUN-TO-RUN hand-off: what a bot leaves
+	// behind that a later run can start from, and what a bot wants handed to it
+	// at launch. They are matched BY KIND — a shared vocabulary, never a bot id
+	// — so a reviewer and a fixer cooperate without either manifest naming the
+	// other, and a second reviewer or a second fixer joins by declaring the same
+	// kind. Same shape as the merge gate's `gate_context`: one agreed name,
+	// filled by whoever plays the role.
+	Produces []ProducedArtifact `yaml:"produces,omitempty"`
+	Consumes []ConsumedArtifact `yaml:"consumes,omitempty"`
+
 	// Retry is the bot author's opinion on what should happen when one of
 	// this bot's runs dies because the provider's quota window is exhausted
 	// (pkg/retrypolicy). It is the BOT layer of the retry precedence chain,
@@ -295,6 +305,65 @@ type RepoRequirement struct {
 	// Visibility seeds a created repo's visibility: "private" (the
 	// default) or "public".
 	Visibility string `yaml:"visibility,omitempty" json:"visibility,omitempty"`
+}
+
+// HandoffKind is the shared vocabulary a consumer matches a producer BY. It
+// names a ROLE in a hand-off, never a bot: any bot that reviews declares it
+// produces a review, any bot that acts on one declares it consumes a review.
+// Closed set — a new kind means new render semantics in the engine.
+type HandoffKind string
+
+// HandoffKindReview is a code review: a set of findings, each carrying an
+// anchor (file + line span), a severity, a category, a confidence, a
+// cross-family confirmation flag, a prose detail and — when the fix is local
+// and high-confidence — a literal replacement ready to apply; plus the
+// reviewers' non-blocking open questions.
+const HandoffKindReview HandoffKind = "review"
+
+// HandoffScope says what makes an upstream run "the same work" as this launch.
+type HandoffScope string
+
+// HandoffScopePR matches an upstream run by the pull request it was launched
+// against (its pr_url input). The only scope today.
+const HandoffScopePR HandoffScope = "pr"
+
+// ProducedArtifact declares an artifact this bot leaves behind for a later run
+// of another bot to start from. The node names are the bot's own graph shape,
+// so the engine never has to know it.
+type ProducedArtifact struct {
+	Kind HandoffKind `yaml:"kind" json:"kind"`
+	// Node is the node whose output artifact carries the payload (for a review:
+	// the merged, de-duplicated finding set + the merged questions).
+	Node string `yaml:"node" json:"node"`
+	// FallbackNodes are consulted in order when Node's payload is unreadable —
+	// an LLM node can emit prose where an array was asked for, and an
+	// un-merged set beats no set at all. Optional.
+	FallbackNodes []string `yaml:"fallback_nodes,omitempty" json:"fallback_nodes,omitempty"`
+	// AnchorNode carries `reviewed_sha`: the revision the payload's line anchors
+	// were computed against, so a consumer can be told the branch has moved
+	// under it instead of acting on stale anchors. Optional.
+	AnchorNode string `yaml:"anchor_node,omitempty" json:"anchor_node,omitempty"`
+}
+
+// ConsumedArtifact declares that this bot wants a prior run's produced artifact
+// rendered into one of its launch vars. An operator-pinned value always wins.
+type ConsumedArtifact struct {
+	Kind HandoffKind `yaml:"kind" json:"kind"`
+	// Var is the workflow var the rendered digest is stamped into. The bot must
+	// declare it in its `vars:` block, or the IR drops it.
+	Var string `yaml:"var" json:"var"`
+	// Scope selects the upstream run. Defaults to HandoffScopePR.
+	Scope HandoffScope `yaml:"scope,omitempty" json:"scope,omitempty"`
+	// MaxChars caps the rendered digest (0 = the engine default).
+	MaxChars int `yaml:"max_chars,omitempty" json:"max_chars,omitempty"`
+}
+
+// EffectiveScope returns the declared scope or the default.
+func (c ConsumedArtifact) EffectiveScope() HandoffScope {
+	if c.Scope == "" {
+		return HandoffScopePR
+	}
+	return c.Scope
 }
 
 // ConfigShareSpec is a bot's declared scoped config-share surface — the
@@ -882,6 +951,9 @@ func decodeManifest(body []byte, srcLabel string) (*Manifest, error) {
 	if err := validateRepoRequirement(m.Repo); err != nil {
 		return nil, fmt.Errorf("bundle: manifest %s: %w", srcLabel, err)
 	}
+	if err := validateHandoff(m.Produces, m.Consumes); err != nil {
+		return nil, fmt.Errorf("bundle: manifest %s: %w", srcLabel, err)
+	}
 	// A typo in retry: must fail at parse time, next to its source. Left
 	// unvalidated it would surface days later as a silently-defaulted
 	// policy on a run nobody is watching.
@@ -889,6 +961,37 @@ func decodeManifest(body []byte, srcLabel string) (*Manifest, error) {
 		return nil, fmt.Errorf("bundle: manifest %s: %w", srcLabel, err)
 	}
 	return &m, nil
+}
+
+// validateHandoff rejects an unusable produces:/consumes: declaration at parse
+// time. Left unchecked, every one of these degrades to silence: an unknown kind
+// matches no counterpart, a producer with no node has nothing to load, and a
+// consumer with no var has nowhere to put the result — and the hand-off is
+// best-effort by design, so nothing downstream would ever report the mistake.
+func validateHandoff(produces []ProducedArtifact, consumes []ConsumedArtifact) error {
+	for _, p := range produces {
+		if p.Kind != HandoffKindReview {
+			return fmt.Errorf("produces: unknown kind %q (known: %s)", p.Kind, HandoffKindReview)
+		}
+		if strings.TrimSpace(p.Node) == "" {
+			return fmt.Errorf("produces: kind %q declares no node to read the artifact from", p.Kind)
+		}
+	}
+	for _, c := range consumes {
+		if c.Kind != HandoffKindReview {
+			return fmt.Errorf("consumes: unknown kind %q (known: %s)", c.Kind, HandoffKindReview)
+		}
+		if strings.TrimSpace(c.Var) == "" {
+			return fmt.Errorf("consumes: kind %q declares no var to stamp the result into", c.Kind)
+		}
+		if c.EffectiveScope() != HandoffScopePR {
+			return fmt.Errorf("consumes: unknown scope %q (known: %s)", c.Scope, HandoffScopePR)
+		}
+		if c.MaxChars < 0 {
+			return fmt.Errorf("consumes: max_chars must not be negative (got %d)", c.MaxChars)
+		}
+	}
+	return nil
 }
 
 // validateRepoRequirement rejects unknown mode/visibility values at parse

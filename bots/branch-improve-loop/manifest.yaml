@@ -69,6 +69,15 @@ forge:
     issues: write             # post the PR URL back onto the source issue
   secret: forge_token
 
+# Start from a review of the same PR when one exists, instead of re-deriving
+# it. Matched BY KIND, so whichever bot reviewed supplies it — Billy's manifest
+# names no reviewer, and Billy still runs perfectly well with no prior review
+# (the var defaults to empty and the campaign reviews from scratch).
+consumes:
+  - kind: review
+    var: prior_review
+    scope: pr
+
 invocations:
   # Billy runs on a PR ONLY on this deliberate `/billy` (alias `/improve`)
   # slash-command, gated on the commenter's repo rights (min_replier_role).

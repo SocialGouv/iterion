@@ -8,19 +8,13 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/SocialGouv/iterion/pkg/botregistry"
+	"github.com/SocialGouv/iterion/pkg/bundle"
 	"github.com/SocialGouv/iterion/pkg/store"
 	"github.com/SocialGouv/iterion/pkg/webhooks"
 )
 
-// reviewBotID is the read-only cross-family reviewer (Revi) whose findings a
-// `/billy` invocation on the same PR picks up as its starting point.
-const reviewBotID = defaultWebhookBotReviewPR
-
-// priorReviewVar is the launch var Billy (branch-improve-loop) reads to start
-// from Revi's review instead of re-deriving it. Declared on the bot's main.bot.
-const priorReviewVar = "prior_review"
-
-// maxPriorReviewRunsScanned bounds the reverse scan for the most recent Revi run
+// maxPriorReviewRunsScanned bounds the reverse scan for the most recent review run
 // on a PR. Run ids are UUIDv7 and ListRuns returns them created-at ascending on
 // both backends, so scanning from the newest end and stopping at the first match
 // finds the latest review after loading only a few runs in the common case; the
@@ -46,16 +40,14 @@ const (
 // a review anchors to the tree it read, so a review of an older head must be
 // handed over LABELLED as such, never presented as current.
 type priorReviewQuery struct {
-	PRURL       string
-	ProjectPath string
-	PRNumber    int
-	HeadSHA     string
+	PRURL   string
+	HeadSHA string
 }
 
-// findPriorReview resolves the most recent Revi (review-pr) run for the PR and
-// renders its findings as the `prior_review` seed text for a `/billy` launch.
-// Best-effort: any miss (no run service, no matching run, unreadable artifact)
-// returns "" and Billy simply reviews the PR from scratch. Routed through the
+// findPriorReview resolves the most recent run producing a review of this PR
+// and renders it as the seed text the consumer starts from. Best-effort: any
+// miss (no run service, no producer, no matching run, unreadable artifact)
+// returns "" and the consumer reviews the PR from scratch. Routed through the
 // webhookPriorReview seam so handler tests need no run store.
 func (s *Server) findPriorReview(ctx context.Context, cfg webhooks.Config, q priorReviewQuery) string {
 	fn := s.webhookPriorReview
@@ -65,28 +57,64 @@ func (s *Server) findPriorReview(ctx context.Context, cfg webhooks.Config, q pri
 	return fn(ctx, cfg, q)
 }
 
-// stampPriorReview seeds a `/billy` (branch-improve-loop) launch with Revi's
-// most recent review of the PR under the `prior_review` var, so Billy starts
-// from that review instead of re-deriving it. No-op for any other bot, when the
-// var is already pinned (operator LaunchVars / ContextVars win), or when no
-// prior review exists. Best-effort: never blocks or fails the launch.
+// stampPriorReview seeds a launch with the newest prior review of the PR, so
+// the launched bot starts from it instead of re-deriving it.
+//
+// Which bot receives it, into which var, and from whose artifact are all
+// DECLARED, not hardcoded: the launched bot's manifest asks for it
+// (`consumes: kind: review`), and any bot whose manifest offers one
+// (`produces: kind: review`) can supply it. That is what keeps a reviewer and a
+// fixer cooperating without the engine — or either manifest — naming the other
+// bot. An operator-pinned var always wins; a miss is silent by design.
 func (s *Server) stampPriorReview(ctx context.Context, cfg webhooks.Config, botID string, vars map[string]string, q priorReviewQuery) {
-	if botID != branchImproveBotID || vars == nil {
+	if vars == nil {
 		return
 	}
-	if _, pinned := vars[priorReviewVar]; pinned {
-		return
-	}
-	if pr := s.findPriorReview(ctx, cfg, q); pr != "" {
-		vars[priorReviewVar] = pr
+	for _, want := range s.reviewConsumersFor(botID) {
+		if _, pinned := vars[want.Var]; pinned {
+			continue
+		}
+		if pr := s.findPriorReview(ctx, cfg, q); pr != "" {
+			vars[want.Var] = truncate(pr, priorReviewLimit(want))
+		}
 	}
 }
 
+// reviewConsumersFor returns the bot's declared review-consuming entries.
+func (s *Server) reviewConsumersFor(botID string) []bundle.ConsumedArtifact {
+	if strings.TrimSpace(botID) == "" {
+		return nil
+	}
+	entry, ok, err := s.botEntry(botID)
+	if err != nil || !ok {
+		return nil
+	}
+	var out []bundle.ConsumedArtifact
+	for _, c := range entry.Consumes {
+		if c.Kind == bundle.HandoffKindReview && c.EffectiveScope() == bundle.HandoffScopePR {
+			out = append(out, c)
+		}
+	}
+	return out
+}
+
+func priorReviewLimit(c bundle.ConsumedArtifact) int {
+	if c.MaxChars > 0 && c.MaxChars < maxPriorReviewChars {
+		return c.MaxChars
+	}
+	return maxPriorReviewChars
+}
+
 // realWebhookPriorReview is the production findPriorReview: scan the run store
-// (newest first) for the latest review-pr run whose pr_url input matches this
-// PR and whose finding set is readable, then render it.
+// (newest first) for the latest run of a review-PRODUCING bot whose pr_url
+// input matches this PR and whose finding set is readable, then render it
+// through that producer's own declared node names.
 func (s *Server) realWebhookPriorReview(ctx context.Context, cfg webhooks.Config, q priorReviewQuery) string {
 	if s.runs == nil || strings.TrimSpace(q.PRURL) == "" {
+		return ""
+	}
+	producers := s.reviewProducers()
+	if len(producers) == 0 {
 		return ""
 	}
 	rs := s.runs.RunStore()
@@ -99,13 +127,13 @@ func (s *Server) realWebhookPriorReview(ctx context.Context, cfg webhooks.Config
 		return ""
 	}
 	// ListRuns is created-at ascending on both backends; walk from the newest
-	// end and stop at the first review-pr run for this PR that RENDERS.
+	// end and stop at the first review run for this PR that RENDERS.
 	//
 	// "Renders" is the usability test, deliberately in place of a run-status
 	// filter: the artifact is the truth. A review still in flight has not
-	// written `converge` yet, and returning on the mere id match would hand the
-	// consumer an empty seed while a complete older review sat one step further
-	// down the list — the freshest COMPLETE review is what saves a round.
+	// written its merged set yet, and returning on the mere id match would hand
+	// the consumer an empty seed while a complete older review sat one step
+	// further down the list — the freshest COMPLETE review is what saves a round.
 	scanned := 0
 	for i := len(ids) - 1; i >= 0 && scanned < maxPriorReviewRunsScanned; i-- {
 		scanned++
@@ -113,17 +141,51 @@ func (s *Server) realWebhookPriorReview(ctx context.Context, cfg webhooks.Config
 		if lerr != nil {
 			continue
 		}
-		if run.BotID != reviewBotID {
+		spec, produces := producers[run.BotID]
+		if !produces {
 			continue
 		}
 		if !runTargetsPR(run, q.PRURL) {
 			continue
 		}
-		if rendered := renderPriorReview(ctx, rs, run.ID, q); rendered != "" {
+		if rendered := renderPriorReview(ctx, rs, run.ID, spec, q); rendered != "" {
 			return rendered
 		}
 	}
 	return ""
+}
+
+// reviewProducers maps each discovered bot that declares it produces a review
+// to the node layout to read it from.
+func (s *Server) reviewProducers() map[string]bundle.ProducedArtifact {
+	entries, err := botregistry.List(s.botListOptions())
+	if err != nil {
+		return nil
+	}
+	out := make(map[string]bundle.ProducedArtifact, 2)
+	for _, e := range entries {
+		for _, p := range e.Produces {
+			if p.Kind == bundle.HandoffKindReview {
+				out[e.Name] = p
+				break
+			}
+		}
+	}
+	return out
+}
+
+// botEntry resolves one discovered bot by name.
+func (s *Server) botEntry(name string) (botregistry.Entry, bool, error) {
+	entries, err := botregistry.List(s.botListOptions())
+	if err != nil {
+		return botregistry.Entry{}, false, err
+	}
+	for _, e := range entries {
+		if e.Name == name {
+			return e, true, nil
+		}
+	}
+	return botregistry.Entry{}, false, nil
 }
 
 // runTargetsPR reports whether the run's launch inputs pin the given PR url.
@@ -139,37 +201,29 @@ func runTargetsPR(run *store.Run, prURL string) bool {
 	return ok && strings.EqualFold(strings.TrimSpace(got), strings.TrimSpace(prURL))
 }
 
-const (
-	// reviewConvergeNode is the review-pr node whose output artifact carries the
-	// merged, de-duplicated finding set (schema emit_output: findings +
-	// questions).
-	reviewConvergeNode = "converge"
-	// reviewMergeNode carries the two families' RAW finding arrays, untouched
-	// past converge — the deterministic fallback when the merged set is prose.
-	reviewMergeNode = "merge_reviews"
-	// reviewPrecheckNode carries `reviewed_sha`: the tree the findings anchor to.
-	reviewPrecheckNode = "diff_precheck"
-)
-
 // renderPriorReview loads the review run's findings and renders the digest the
 // downstream fixer starts from. Returns "" when nothing readable was found, so
 // the caller keeps scanning for an older, complete review.
 //
-// What it renders is the whole value of the hand-off. Revi produces a stable
+// What it renders is the whole value of the hand-off. A review carries a stable
 // id, a severity, a confidence, a cross-family confirmation flag, an anchor
 // span, a prose detail, a remediation sketch AND — when the fix is local and
 // high-confidence — a literal `replacement` ready to apply. A digest that drops
 // those last ones asks the fixer to re-derive a patch that already exists,
 // which is exactly the round this hand-off is supposed to save.
-func renderPriorReview(ctx context.Context, rs store.RunStore, runID string, q priorReviewQuery) string {
-	findings, questions, degraded, ok := loadReviewFindings(ctx, rs, runID)
+//
+// `spec` is the producing bot's own declaration of where those live in its
+// graph, so this function knows the SHAPE of a review and nothing about the bot
+// that produced it.
+func renderPriorReview(ctx context.Context, rs store.RunStore, runID string, spec bundle.ProducedArtifact, q priorReviewQuery) string {
+	findings, questions, degraded, ok := loadReviewFindings(ctx, rs, runID, spec)
 	if !ok {
 		return ""
 	}
 
 	var b strings.Builder
-	fmt.Fprintf(&b, "Prior review of this PR by Revi (review-pr, run %s).\n", runID)
-	if note := reviewAnchorNote(ctx, rs, runID, q.HeadSHA); note != "" {
+	fmt.Fprintf(&b, "Prior review of this PR (run %s).\n", runID)
+	if note := reviewAnchorNote(ctx, rs, runID, spec.AnchorNode, q.HeadSHA); note != "" {
 		b.WriteString(note + "\n")
 	}
 	if degraded {
@@ -203,7 +257,7 @@ func renderPriorReview(ctx context.Context, rs store.RunStore, runID string, q p
 }
 
 // loadReviewFindings resolves the run's finding set, mirroring the recovery the
-// bot's own publish step applies: prefer converge's merged array, fall back to
+// producing bot's own publish step applies: prefer the merged array, fall back to
 // the two reviewers' raw arrays de-duplicated by anchor when it is unreadable.
 // Without the fallback, a review that degraded but still published N findings
 // onto the PR hands the fixer an empty seed.
@@ -212,25 +266,36 @@ func renderPriorReview(ctx context.Context, rs store.RunStore, runID string, q p
 // "0 findings" is a verdict worth handing over ("the diff was read and is
 // clean"), an absent artifact is a review still in flight and the caller must
 // keep looking for an older, complete one.
-func loadReviewFindings(ctx context.Context, rs store.RunStore, runID string) (findings []map[string]any, questions string, degraded, ok bool) {
-	if art, err := rs.LoadLatestArtifact(ctx, runID, reviewConvergeNode); err == nil && art != nil {
+func loadReviewFindings(ctx context.Context, rs store.RunStore, runID string, spec bundle.ProducedArtifact) (findings []map[string]any, questions string, degraded, ok bool) {
+	if art, err := rs.LoadLatestArtifact(ctx, runID, spec.Node); err == nil && art != nil {
 		findings = decodeFindings(art.Data["findings"])
 		questions, _ = art.Data["questions"].(string)
-		// A readable array — including a genuinely empty one, which converge
+		// A readable array — including a genuinely empty one, which the producer
 		// confirms via total_findings — is the verdict. total_findings > 0 with
 		// no readable array is the prose degradation the fallback exists for.
 		if len(findings) > 0 || asInt(art.Data["total_findings"]) == 0 {
 			return findings, questions, false, true
 		}
 	}
-	art, err := rs.LoadLatestArtifact(ctx, runID, reviewMergeNode)
-	if err != nil || art == nil {
-		return nil, questions, false, false
+	// The fallback nodes carry finding arrays under their own field names, which
+	// the producer alone knows — so every json-array field is taken, unioned and
+	// de-duplicated by anchor. An un-merged set beats no set at all.
+	var union []map[string]any
+	for _, node := range spec.FallbackNodes {
+		art, err := rs.LoadLatestArtifact(ctx, runID, node)
+		if err != nil || art == nil {
+			continue
+		}
+		for _, raw := range art.Data {
+			union = append(union, decodeFindings(raw)...)
+		}
 	}
-	union := append(decodeFindings(art.Data["claude_findings"]), decodeFindings(art.Data["gpt_findings"])...)
 	seen := make(map[string]bool, len(union))
 	deduped := make([]map[string]any, 0, len(union))
 	for _, f := range union {
+		if strField(f, "title") == "" {
+			continue // not a finding: some other json field on the same node
+		}
 		key := strField(f, "file") + "|" + strField(f, "line") + "|" + normalizeFindingTitle(strField(f, "title"))
 		if seen[key] {
 			continue
@@ -248,8 +313,11 @@ func loadReviewFindings(ctx context.Context, rs store.RunStore, runID string) (f
 // loudly when the PR head has moved since. A stale review presented as current
 // makes the fixer "fix" what is already fixed — the exact opposite of the round
 // this hand-off saves.
-func reviewAnchorNote(ctx context.Context, rs store.RunStore, runID, headSHA string) string {
-	art, err := rs.LoadLatestArtifact(ctx, runID, reviewPrecheckNode)
+func reviewAnchorNote(ctx context.Context, rs store.RunStore, runID, anchorNode, headSHA string) string {
+	if strings.TrimSpace(anchorNode) == "" {
+		return ""
+	}
+	art, err := rs.LoadLatestArtifact(ctx, runID, anchorNode)
 	if err != nil || art == nil {
 		return ""
 	}
@@ -375,8 +443,9 @@ func findingAnchor(f map[string]any) string {
 // Keyed on (file, normalized title) and deliberately NOT on the line: the line
 // moves whenever code above it changes, which is exactly what happens between a
 // review and the fix — an id that changed there could not survive the one
-// round-trip it exists for. The same derivation runs in review-pr's publish
-// step; bots/review_pr_finding_id_test.go pins the two against each other.
+// round-trip it exists for. A producing bot derives the same id in its own
+// publish step; bots/review_pr_finding_id_test.go pins the two against each
+// other, since a drift between the two would be silent.
 func findingID(file, title string) string {
 	sum := sha256.Sum256([]byte(strings.TrimSpace(file) + "\n" + normalizeFindingTitle(title)))
 	return "R" + hex.EncodeToString(sum[:])[:4]
