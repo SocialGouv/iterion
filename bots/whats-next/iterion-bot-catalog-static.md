@@ -150,9 +150,10 @@ before you walk the table on a new roadmap item.
   the operator wants a security baseline / list of issues / a
   triage pass — NOT when they want fixes applied.
 - `whole-improve-loop` with `improvement_prompt: "security focus"`
-  is FIX-mode: alternating review/fix loop until cross-family
-  approval. Edits land in the working tree. Use when the operator
-  wants security holes closed in place.
+  is FIX-mode: one adaptive campaign closes issues site by site and commits
+  each verified change; its deterministic build/test gate plus the campaign's
+  `axis_complete` signal control convergence. Use when the operator wants
+  security holes closed in place.
 - `secured-renovacy` is MUTATION on dependency manifests
   (package.json / go.mod / Cargo.toml / requirements.txt /
   lockfiles). Use when the operator wants CVE patches landed by
