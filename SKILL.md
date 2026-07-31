@@ -40,7 +40,7 @@ Top-level declarations may appear in any order:
 ```text
 vars, presets, attachments, secrets, mcp_server,
 prompt, schema, cursor, supervisor,
-agent, judge, router, human, tool, compute, emit, wait, subbot,
+agent, judge, router, human, tool, compute, emit, wait, await_answers, subbot,
 group, use, workflow
 ```
 
@@ -58,6 +58,7 @@ quoted, backtick-delimited raw strings, or block scalars where accepted.
 | `tool` | Deterministic shell command or `js`/`py`/`sh`/`bash` script. |
 | `compute` | Bounded, side-effect-free expressions. |
 | `emit` / `wait` | Run-scoped event coordination; every `wait` needs a timeout. |
+| `await_answers` | Deterministic sync point for async operator questions; requires a timeout. |
 | `subbot` | A real nested run from another `.bot`. |
 | `done` / `fail` | Reserved success and intentional-failure terminals. |
 
