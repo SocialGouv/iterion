@@ -193,9 +193,9 @@ two flags yet — to change routing on an EXISTING card use one of:
 
 - the REST API (`PATCH /api/v1/native/issues/{id}` with
   `{ "bot": "feature_dev", "bot_args": { "feature_prompt": "…" } }`),
-- the board MCP / claw tools (`create_issue` and `set_bot` both accept
-  `bot` / `bot_args`, so a bot with the `board.create` / `board.assign`
-  capability can pin routing at create time),
+- the capability-gated board tools (`create_issue` and `set_bot` both accept
+  `bot` / `bot_args`), exposed over MCP to Claude Code and pi RPC and
+  in-process to claw,
 - the studio issue modal,
 - or rely on the dispatcher-side `assignee_workflows:` /
   `assignee_dispatch:` mappings keyed on `--assignee` (see
@@ -331,8 +331,9 @@ generic inputs list.
 `(bot, input_path)` (title / blockers / bot_args). Does **not** reset state
 when the ticket is already `in_progress` / `done` / `awaiting_input`.
 
-**Multi-engine access.** Board mutations do not require Claude MCP tools.
-Canonical surfaces for every backend (Claude / Codex / Kimi / scripts):
+**Multi-engine access.** Board mutations do not require Claude-specific MCP
+tools. The canonical fallbacks work across Claude Code, claw, pi, Kimi, Grok,
+legacy Codex, and scripts:
 
 1. **REST** — `/api/v1/pipeline-board/*` and `/api/v1/native/issues/*` (this page);
 2. **CLI** — `iterion issue create|list|show|update|move … --blocker … --bot … --bot-arg key=value`;
@@ -399,7 +400,8 @@ an operator clicking "add") uses the **same** contract:
   ([store.go](../pkg/dispatcher/native/store.go) — `in.State = States[0].Name`),
   so an ingester never needs to know the column's name. The body may carry
   `bot` / `bot_args` to pin the pipeline that will run the card (parity across
-  REST, the MCP `create_issue` boardop, and claw's `mcp.iterion_board.create`).
+  REST, the MCP `create_issue` boardop, and claw's
+  `mcp.iterion_board.create_issue` exposure).
   Authenticate a machine caller with a `iap_` PAT (see *Programmatic access*).
 - **CI / external API (6a).** A CI job POSTs a finding straight onto the
   first column — no dispatcher required.
