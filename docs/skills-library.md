@@ -11,9 +11,11 @@ the two pre-existing, artifact-coupled skill sources:
 | **plugin** skills | `~/.iterion/plugins/<name>/skills/` | a shared, enable/disable-able pack |
 | **library** skills (this doc) | `~/.iterion/skills/` (+ per-project) | any workflow, referenced by name |
 
-All three mirror into a run's `<workspace>/.claude/skills/` at launch, where
-both `claude_code` (native `--setting-sources project` lookup) and the `claw`
-`skill` tool discover them. See [ADR-059](adr/059-skill-library.md).
+All three mirror into a run's `<workspace>/.claude/skills/` at launch. Claude
+Code discovers that directory through its native `--setting-sources project`
+lookup, claw through the `skill` tool, and pi through the explicit
+`--skill <workspace>/.claude/skills` argument in both RPC and print modes. See
+[ADR-059](adr/059-skill-library.md).
 
 ## Storage
 
