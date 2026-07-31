@@ -43,7 +43,8 @@ commit-status gate. Never edits or commits. See
 
 The first read of the evidence — `GET /api/runs/<id>/artifacts` returning `[]`
 for every run checked, and 89 events with **zero `artifact_written`** — looked
-like a cloud-storage gap. It is not, and the correction matters: the engine
+like a cloud-storage gap. It is not (see the caveat below), and the correction
+matters: the engine
 persists an artifact **only for a node that declares `publish:`**
 (`runtime.persistArtifactIfPublished` returns early otherwise, [engine_exec.go](../../pkg/runtime/engine_exec.go)).
 Neither bot declared it on any node — `grep -c "publish:"` was **0** for both.
@@ -59,7 +60,15 @@ the one thing that had to be true in production was the one thing never asserted
 **Fixed**: the four nodes the manifests name as hand-off sources now declare
 `publish:`, and two guards make the omission impossible to repeat — a catalog
 test requiring `publish:` on any node a manifest declares as a source, and an
-e2e running the REAL engine over a two-node fixture, one published and one not.
+e2e running the REAL engine over one node per source kind (agent, compute,
+tool) plus an unpublished twin.
+
+**Caveat, stated because the evidence does not cover it.** That the cause is the
+missing `publish:` and *not* a cloud-storage gap is an inference from the engine
+code plus a local run, not a measurement on prod: no cloud run has been observed
+writing an artifact since. The mongo store implements `LoadLatestArtifact` and
+the conformance suite pins multi-version latest-wins, so it is very likely — but
+the honest status is unverified until a redeployed instance is re-dogfooded.
 
 ### Lessons for next run
 

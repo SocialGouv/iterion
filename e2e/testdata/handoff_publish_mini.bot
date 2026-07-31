@@ -1,7 +1,13 @@
-## Minimal producer pair for the hand-off contract: two identical agent nodes,
-## one declaring `publish:` and one not. The engine persists an artifact only
-## for the first — which is the whole reason a hand-off can silently yield
-## nothing while every node ran and the workflow finished.
+## The hand-off contract, one fixture per node kind the catalog declares as a
+## source: an agent (the merged set), a compute (the declared fallback) and a
+## tool (the anchor). Plus one node identical to the first but WITHOUT
+## `publish:` — the engine persists an artifact only for the published ones,
+## which is the whole reason a hand-off can silently yield nothing while every
+## node ran and the workflow finished.
+##
+## compute and tool go through their own completion paths (execCompute has its
+## own publish hook), so covering only the agent would leave the two kinds this
+## contract actually depends on unasserted.
 
 prompt emit_findings:
   Emit a finding set.
@@ -10,16 +16,35 @@ schema finding_set:
   findings: json
   total_findings: int
 
-agent produces_artifact:
+schema anchor_out:
+  reviewed_sha: string
+
+schema family_out:
+  family_summary: string
+
+agent published_agent:
   system: emit_findings
   output: finding_set
   publish: review_findings
 
-agent produces_nothing:
+agent unpublished_agent:
   system: emit_findings
   output: finding_set
 
+compute published_compute:
+  output: family_out
+  publish: family_findings
+  expr:
+    family_summary: "'raw per-family output'"
+
+tool published_tool:
+  command: `printf '{"reviewed_sha":"cafe1234"}'`
+  output: anchor_out
+  publish: reviewed_revision
+
 workflow handoff_publish_mini:
-  entry: produces_artifact
-  produces_artifact -> produces_nothing
-  produces_nothing -> done
+  entry: published_agent
+  published_agent -> unpublished_agent
+  unpublished_agent -> published_compute
+  published_compute -> published_tool
+  published_tool -> done
