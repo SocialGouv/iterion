@@ -70,7 +70,15 @@ export interface ExpandableValueProps {
   value: unknown;
   /** Names the value in the copy/expand accessible labels (e.g. an input key). */
   label?: string;
-  /** Extra classes on the text block (font size, colours). */
+  /**
+   * Chrome around the text. "boxed" (default) draws the bordered surface box
+   * the drawer uses; "bare" draws none, for callers that already provide their
+   * own container (a <details> body, a card). Use this rather than fighting
+   * the base classes from `className` — same-specificity Tailwind utilities
+   * resolve by stylesheet order, not by class-attribute order.
+   */
+  variant?: "boxed" | "bare";
+  /** Extra classes on the text block — padding and colour, not chrome. */
   className?: string;
   /** Collapsed preview height, any CSS length. */
   collapsedMaxHeight?: string;
@@ -83,6 +91,7 @@ export interface ExpandableValueProps {
 export function ExpandableValue({
   value,
   label,
+  variant = "boxed",
   className = "",
   collapsedMaxHeight = "12rem",
   as: Wrapper = "div",
@@ -104,9 +113,11 @@ export function ExpandableValue({
         <pre
           id={bodyId}
           style={collapsed ? { maxHeight: collapsedMaxHeight } : undefined}
-          className={`m-0 whitespace-pre-wrap break-words rounded-md border border-border-subtle bg-surface-2/40 px-2 py-1 font-mono text-xs text-fg-default ${
-            raw !== null ? "pr-14" : "pr-7"
-          } ${
+          className={`m-0 whitespace-pre-wrap break-words font-mono text-xs text-fg-default ${
+            variant === "boxed"
+              ? "rounded-md border border-border-subtle bg-surface-2/40 px-2 py-1"
+              : ""
+          } ${raw !== null ? "pr-14" : "pr-7"} ${
             // The accent underline is the "content continues below" cue — a
             // gradient fade would have to guess the caller's surface colour.
             collapsed ? "overflow-hidden border-b-2 border-b-accent/40" : ""
