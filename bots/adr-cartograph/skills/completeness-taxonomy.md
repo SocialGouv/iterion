@@ -74,8 +74,9 @@ evidence:     ≤300 chars — the exact code excerpt or grep result
                 proving the gap (the tool invocation that confirmed it)
 ```
 
-Without `evidence` the gap is a façade. The reviewer drops gaps whose
-`evidence` does not show the agent actually looked at the code.
+Without `evidence` the gap is a façade. The campaign verifies cited gaps
+before handing them off and dismisses anything the survey did not ground in
+code.
 
 ## Output sizing
 
@@ -84,20 +85,17 @@ prioritise: `high` severity first, then `medium`, sort by feature
 name. The remaining tail surfaces on subsequent runs as earlier gaps
 are closed.
 
-This cap mirrors docs-refresh's `max_drift_candidates` discipline:
-bounded LLM context, bounded board churn, asymptotic convergence
-across multiple Adry runs.
+The cap keeps the survey context and potential board churn bounded; the tail
+surfaces on later Adry runs after higher-priority gaps are closed.
 
 ## How gaps become handoff issues
 
-The `prepare_commit` node files one `type:feature-gap` board issue
-per gap with `severity in {medium, high}`. The issue body is the
-`implemented` + `missing` + `evidence` triple, encoded so
-`feature-gap-fill` can pick it up via `--var gap_spec=<encoded>`.
-Routing is `set_bot: feature-gap-fill`. Labels include
-`source:adr-cartograph` so the operator can grep the inbox for
-Adry-originated work.
+`build_manifest` passes only `medium` / `high` gaps to the campaign. After
+its last ADR commit, the campaign lists existing `inbox` issues to avoid
+duplicates, then creates one inbox finding per new gap. The body carries the
+`implemented` + `missing` + `evidence` triple; labels are `findings`,
+`type:feature-gap`, `source:adr_cartograph`, and `severity:<level>`.
 
-No-op re-runs (no new gaps, nothing to commit) skip
-`prepare_commit` entirely, so duplicate gap issues do not accrue
-on the board.
+The campaign does not route the issue directly. A later triage can assign
+`feature-gap-fill` when appropriate. A no-op run creates no handoff, and the
+inbox preflight prevents repeated Adry passes from duplicating one.
