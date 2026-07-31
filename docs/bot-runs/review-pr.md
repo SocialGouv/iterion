@@ -8,6 +8,63 @@ pr_url` it also posts an inline forge review and an optional deterministic
 commit-status gate. Never edits or commits. See
 [bots/review-pr/](../../bots/review-pr/).
 
+## 2026-07-31 — the Revi→Billy hand-off is dead on the cloud path (runs 019fb9bc / 019fb9c6)
+
+- Status: **partial — Revi validated end to end, the hand-off to the fixer proved
+  non-functional in cloud.** The defect predates the declarative rework: the
+  shipped `stampPriorReview` read the same artifact.
+- Versions: review-pr 0.5.7 · branch-improve-loop 1.1.0 · iterion cloud prod
+  v3.17.7 @ `af787562c` (verified to contain the hand-off work)
+- Method: `SocialGouv/iterion-test-appy-e2e` PR #2, seeded with a real module and
+  three planted defects (unsynchronised map written from a `Warm` fan-out;
+  a failed fetch cached for the whole TTL; a loop-variable capture that is NOT a
+  bug under the declared `go 1.22`). Revi auto-launched on PR open; `/billy` by
+  comment afterwards. Repo provisioned with both bots, `gate_context` pinned.
+
+### What worked, verified on the forge
+
+- **Revi found the real bugs and refused the planted false positive.** critical:
+  the concurrent map access, *"reproduced empirically … crashed in 4 of 5 runs"*;
+  high: the cached failure, *"call 1 returns connection refused, call 2 returns
+  body=\"\" err=<nil>"*. The loop-capture did **not** become a finding — it went
+  to `questions` with the reason (`go.mod` declares 1.22, per-iteration
+  semantics, verified empirically). The falsifiability channel did its job.
+- **Stable finding ids are live**: `Ra34eca`, `R1dce3f`, plus the arbitration
+  line the review now carries — *"Fix them yourself, or comment /billy … adding
+  e.g. skip Ra34eca and your reason leaves that one alone."*
+- A `replacement` was produced and rendered ("Proposed replacement:").
+- The gate landed: `revi/review = FAILURE` on the head.
+- Mono topology reported honestly, no cross-confirmation claimed.
+
+### The defect: cloud runs persist no node artifacts, so nothing can be handed over
+
+`/billy` launched with the right PR context (`pr_url`, `head_sha`,
+`push_branch`) and **`prior_review` empty**.
+
+Root cause, from prod: `GET /api/runs/<id>/artifacts` returns `[]` for **every**
+run checked (Revi, Billy, an unrelated pi smoke), and the event log — 89 events,
+`node_finished` ×9 — contains **zero `artifact_written`**. The hand-off resolves
+through `LoadLatestArtifact(runID, <producing node>)`, so it has nothing to read.
+
+This is not a regression of the declarative rework. The version it replaced read
+`LoadLatestArtifact(runID, "converge")` the same way, so the `/billy` seed has
+never worked on a cloud run — it was documented as shipped and, as far as this
+run shows, never exercised live. It works in-process (the filesystem store the
+unit tests use returns the artifact), which is why every test is green.
+
+### Lessons for next run
+
+- **A hand-off that reads artifacts needs the artifacts to survive the runner.**
+  Before any further work on the review→fix chain, settle where a cloud run's
+  node outputs live and make the producer read that. The checkpoint carries node
+  outputs and IS synced; it is the obvious candidate.
+- The forge identity matters: the first `/billy` was refused *"self comment
+  (loop-guard)"* because the repo was provisioned on a **PAT connection whose
+  account is the operator's own**. Re-provisioning onto the GitHub App
+  connection fixed it. The guard was right; the provisioning was the mistake.
+- A freshly provisioned repo shows `auto_fix_on_gate_failure` absent — the
+  zero-touch lane is off unless asked for, confirmed on real config.
+
 ## 2026-07-30 — Revi had stopped publishing on every repo, and finished green doing it
 
 - Status: **defect found and fixed** — the runs were fine, the publishing step
