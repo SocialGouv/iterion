@@ -43,7 +43,8 @@ cost/tokens as the run goes.
 Iterion **auto-detects** whatever you already have signed in — Claude Code
 OAuth (the subscription "forfait"), `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, and
 more (see [backends](/backends)). With one available, point a catalogue bot at a
-repo. For example, a read-only cross-family review of your current branch:
+repo. For example, a read-only review of your current branch (one model family
+by default; add `--var review_mode=dual` for cross-family confirmation):
 
 ```bash
 cd /path/to/your/repo
