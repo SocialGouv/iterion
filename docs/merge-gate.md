@@ -118,6 +118,22 @@ cases the derivation does not cover.
 Repo admins keep their merge-queue bypass, so a stuck gate is never a hard
 block for an admin.
 
+### GitHub merge queues
+
+A merge queue tests a synthetic `merge_group` SHA, not the PR head that Revi
+reviewed. A required status posted only on the PR therefore never appears on
+the queue branch. This repository handles that with
+[`.github/workflows/merge-queue-gate.yml`](../.github/workflows/merge-queue-gate.yml):
+it extracts the PR from the queue ref, reads the latest `revi/review` status on
+the PR head, and mirrors that exact state and target URL onto the queue SHA. It
+never invents success: no source status means no mirrored status, and a
+non-success verdict makes the workflow fail after publishing it.
+
+The workflow currently names `revi/review` explicitly. If a repository pins a
+different shared `gate_context`, its merge-group workflow must mirror that same
+context (or otherwise run the gate on the merge-group SHA), or the required
+check will remain expected forever.
+
 ## One gate, several bots
 
 A required check applies to **every** pull request. So on a repo where
