@@ -20,7 +20,7 @@ The release binary embeds these nine general-purpose bots for zero-config dispat
 | 🛠️ Featurly | [`feature-dev`](../bots/feature-dev/) | Deliver one feature through an adaptive implementation campaign and deterministic verification gates. |
 | 🌿 Billy | [`branch-improve-loop`](../bots/branch-improve-loop/) | Review and improve the branch diff, committing verified fixes in stride until convergence. |
 | 🌍 Willy | [`whole-improve-loop`](../bots/whole-improve-loop/) | Apply one cross-cutting improvement axis across an existing codebase, site by site. |
-| 📚 Doki | [`docs-refresh`](../bots/docs-refresh/) | Align existing documentation with code using one adaptive campaign over a deterministic drift manifest; never edits code. |
+| 📚 Doki | [`docs-refresh`](../bots/docs-refresh/) | Align documentation with code using one adaptive campaign, advisory drift hints, and a deterministic Markdown-only scope gate; never edits code. |
 | 🔎 Revi | [`review-pr`](../bots/review-pr/) | Read-only pull/merge-request review with grounded findings and forge/board publication. |
 | 🛡️ Seki | [`sec-audit-source`](../bots/sec-audit-source/) | Read-only source security audit using SAST, secret scanning, triage, and false-positive memory. |
 | 📦 Depsy | [`sec-audit-deps`](../bots/sec-audit-deps/) | Read-only dependency malware/CVE audit with a cross-run package cache. |
