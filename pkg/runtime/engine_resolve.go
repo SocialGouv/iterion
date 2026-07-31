@@ -672,16 +672,25 @@ func (e *Engine) varExpandFn() func(string) string {
 			// in the target repo (e.g. a chunked review's per-chunk diffs)
 			// so they never pollute the worktree or the run diff.
 			//
-			// Sandboxed: the host ~/.iterion scratch is bind-mounted, but it
-			// is owned by the host user — container images that pin a
-			// non-host User (iterion-sandbox-sec/-full) cannot write it
-			// (observed EACCES: branch-improve-loop's plan_chunks and
-			// sec-audit-deps' update_cache). Resolve instead to the
-			// container-writable, out-of-tree /tmp (world-writable 1777,
-			// isolated per container = per run). Scratch is ephemeral working
-			// state, so not persisting it to the host path is correct.
+			// Sandboxed: resolve to a fixed container path rather than the
+			// host path, because an image pinning a non-host User cannot
+			// write a host-owned bind (observed EACCES:
+			// branch-improve-loop's plan_chunks, sec-audit-deps'
+			// update_cache).
+			//
+			// That path is BACKED by the per-project host dir, bound on by
+			// applyScratchMount. The backing is load-bearing for any fan-in
+			// through scratch: a sub-bot child runs in its OWN container, so
+			// a purely container-local scratch means the child writes a file
+			// the parent can never read — the child reports success, the
+			// parent reads an empty directory, and the run only fails much
+			// later as "not enough results" (observed on app-concept: four
+			// topic syntheses written to
+			// /tmp/iterion-scratch/<parent>/topics, none visible at fan-in).
+			// It also makes scratch survive the container, so a crashed run
+			// resumes from its own working state.
 			if e.containerWorkspace != "" {
-				return "/tmp/iterion-scratch"
+				return sandboxScratchContainerPath
 			}
 			// Non-sandboxed: host path keyed off repo_root, a sibling of
 			// PROJECT_MEMORY_DIR at ~/.iterion/projects/<key>/scratch/.

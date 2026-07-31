@@ -359,6 +359,12 @@ func resolveAndStartSandbox(ctx context.Context, p SandboxParams) (*activeSandbo
 	}
 	bundleContainerPath := addOptionalBindMount(spec, p.BundleHostDir, p.BundleContainerPath, "/run/iterion/bundle", "bundle", true, logger)
 	sharedStateDir := applyHostStateMounts(spec, p.Workflow, p, emitEvent, logger)
+	// Back ${PROJECT_SCRATCH_DIR} with a host dir so a parent and its
+	// sub-bot children — separate runs in separate containers — can hand
+	// work to each other through it. AFTER applyHostStateMounts because it
+	// is the call that resolves spec.HostState, and `host_state: none` must
+	// suppress this bind like every other ~/.iterion one.
+	applyScratchMount(spec, p.RepoRoot, p.WorkspacePath, caps.SupportsHostBindMounts, emitEvent, logger)
 	if !caps.SupportsHostBindMounts {
 		// Same rule as attachmentsDir below: a path that was never bind-mounted
 		// names a host location the container cannot read, and a backend that

@@ -16,10 +16,108 @@ import (
 	"github.com/SocialGouv/iterion/pkg/backend/rewrite"
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
 	iterlog "github.com/SocialGouv/iterion/pkg/log"
+	"github.com/SocialGouv/iterion/pkg/memory"
 	"github.com/SocialGouv/iterion/pkg/plugin"
 	"github.com/SocialGouv/iterion/pkg/sandbox"
 	"github.com/SocialGouv/iterion/pkg/store"
 )
+
+// sandboxScratchContainerPath is where ${PROJECT_SCRATCH_DIR} resolves
+// inside a sandbox. Fixed rather than the host path so a prompt or tool
+// node sees one stable location; applyScratchMount backs it with the
+// project's host scratch dir.
+const sandboxScratchContainerPath = "/tmp/iterion-scratch"
+
+// applyScratchMount binds the project's host scratch dir onto
+// sandboxScratchContainerPath and returns the host path it bound (""
+// when it did not bind).
+//
+// Why back it at all: a sub-bot child runs in its OWN container, so a
+// purely container-local scratch means the file a child writes there is
+// invisible to the parent reading the same path afterwards. The child
+// reports success and the parent reads an empty directory, so the defect
+// surfaces far from its cause (observed on app-concept: four topic
+// syntheses written, none readable at fan-in). Backing it also lets a
+// crashed run resume from its own working state, and it makes the
+// sandboxed layout identical to the un-sandboxed one — which several
+// bots depend on, treating scratch as CROSS-RUN memory (docs-refresh's
+// promises ledger, sec-audit-deps' package cache, wiki-gen's cache).
+// Scoping the bind per run would silently empty those caches under the
+// default sandbox-on posture while leaving them intact without it.
+//
+// No chmod, deliberately: the mount is writable because
+// applyHostUIDRemap has already aligned the container process with the
+// host UID/GID, which is exactly what makes the sibling ~/.iterion bind
+// work. Widening the mode instead would be a real weakening — this
+// directory holds `verify.sh`, which a deterministic tool node later
+// EXECUTES, and `packages.jsonl`, which triage reads back as trusted.
+//
+// Skipped, with an event, when the bind could not be made writable or
+// useful: no host bind mounts on the driver (kubernetes), host_state
+// off (the posture that keeps every ~/.iterion bind out of the
+// container), or an image pinning a UID that is not the host's — the
+// EACCES case the container-local path exists to serve.
+func applyScratchMount(
+	spec *sandbox.Spec,
+	repoRoot, workDir string,
+	supportsHostBindMounts bool,
+	emitEvent func(store.EventType, map[string]any) error,
+	logger *iterlog.Logger,
+) string {
+	if spec == nil {
+		return ""
+	}
+	// Never degrade silently: falling back to the container-local path
+	// reinstates the cross-container blindness this function exists to
+	// fix, and an operator hitting it must find the reason in the run
+	// record rather than infer it from an empty directory.
+	skip := func(reason string) string {
+		if emitEvent != nil {
+			_ = emitEvent(store.EventSandboxHostStateMounted, map[string]any{
+				"enabled": false,
+				"source":  "scratch",
+				"reason":  reason,
+			})
+		}
+		if logger != nil {
+			logger.Warn("runtime: sandbox scratch stays container-local (%s) — a sub-bot fan-in through ${PROJECT_SCRATCH_DIR} will not see its children's files", reason)
+		}
+		return ""
+	}
+	if !supportsHostBindMounts {
+		return skip("driver has no host bind mounts")
+	}
+	if !spec.HostState.Active() {
+		// host_state=none already emitted its own disabled event, and
+		// suppressing every ~/.iterion bind is the point of that posture.
+		return ""
+	}
+	if uid, ok := parseUserUID(spec.User); ok && uid != os.Getuid() {
+		return skip(fmt.Sprintf("container pins UID %d, host is %d", uid, os.Getuid()))
+	}
+	base := repoRoot
+	if base == "" {
+		base = workDir
+	}
+	hostScratch := memory.WorkspaceScratchDir(base)
+	if hostScratch == "" {
+		return skip("no project scratch dir could be resolved")
+	}
+	if err := os.MkdirAll(hostScratch, 0o700); err != nil {
+		return skip(fmt.Sprintf("mkdir %s: %v", hostScratch, err))
+	}
+	spec.Mounts = append(spec.Mounts, fmt.Sprintf(
+		"source=%s,target=%s,type=bind", hostScratch, sandboxScratchContainerPath))
+	// `docker inspect` must never show a mount events.jsonl cannot explain.
+	if emitEvent != nil {
+		_ = emitEvent(store.EventSandboxHostStateMounted, map[string]any{
+			"enabled": true,
+			"source":  "scratch",
+			"mounts":  []string{fmt.Sprintf("%s -> %s", hostScratch, sandboxScratchContainerPath)},
+		})
+	}
+	return hostScratch
+}
 
 // addOptionalBindMount stats hostDir; if it exists and is readable it
 // appends a bind-mount entry to spec.Mounts and returns the resolved
