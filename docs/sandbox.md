@@ -92,6 +92,41 @@ on `host_state` (see below):
 Override via `workspaceFolder` in `.devcontainer/devcontainer.json`
 or `workspace_folder:` in the inline `sandbox:` block.
 
+#### Copy-based drivers: a host write does NOT reach the agent
+
+"Bind-mount" is true of the **docker** driver and the **noop**
+passthrough — the container and the host share the inode, so a host
+write is visible inside immediately. The **kubernetes** driver cannot
+bind anything (a pod has no host filesystem): it streams the workspace
+in as a **tar at pod start** and exports it back at teardown. The
+mount target is still the host's absolute path — that part is
+deliberate — but the *contents* are a copy frozen at start.
+
+**Consequence for anything that hands an agent a file PATH** (a system
+prompt written to a file, an extension loaded with `-e`, a credential
+directory): writing it host-side after the pod booted produces a path
+that exists on the host and nowhere else. Sometimes that crashes
+loudly (`pi -e …` → `Extension path does not exist`); more often the
+agent simply starts without the thing, and nothing says so.
+
+Write through [`sandbox.WorkspaceFileRefresher`](../pkg/sandbox/iface.go)
+instead — `RefreshWorkspaceFile(ctx, relPath, value)` writes the file
+inside the sandbox, addressed relative to the workspace root. Drivers
+that share the host inode deliberately do NOT implement the interface,
+so the type assertion is how you learn which world you are in:
+
+```go
+if refresher, copyBased := task.Sandbox.(sandbox.WorkspaceFileRefresher); copyBased {
+    _ = refresher.RefreshWorkspaceFile(ctx, ".iterion/pi/agent.js", body)
+}
+```
+
+Callers today: the runner's mid-run git-credential rotation, the claw
+executor, and `delegate.mirrorStateFileIntoSandbox` (pi's extension,
+system prompt and codex credential). A unit test whose fake
+`sandbox.Run` omits this interface tests the shared-filesystem half of
+the world only.
+
 ### Host state mounts (`~/.iterion`, `~/.claude`)
 
 When `host_state: auto` (the default), iterion also bind-mounts:
