@@ -107,7 +107,7 @@ The labels `schedule-related`, `cloud-related`, and `extensions/state` above are
 
 ## Key contracts
 
-- DSL syntax lives in `pkg/dsl/parser`; compilation/semantic validation lives in the split files under `pkg/dsl/ir`. Diagnostics use sparse DSL range C001–C199; bundle checks use C200–C234.
+- DSL syntax lives in `pkg/dsl/parser`; compilation/semantic validation lives in the split files under `pkg/dsl/ir`. Diagnostics use sparse DSL ranges C001–C199 and async C240–C242; bundle checks use C200–C234.
 - `pkg/server` registers the HTTP route table that generates `openapi.json`; `task openapi:check` guards the committed spec and studio types.
 - `bots/` is the editable full catalogue. `pkg/cli/templates/dispatch_bots/` is generated for the embedded zero-config subset; do not hand-maintain the copies.
 - Studio's production build is copied into `pkg/server/static` and embedded into the Go binary.
