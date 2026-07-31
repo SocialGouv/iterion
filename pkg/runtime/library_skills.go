@@ -99,8 +99,11 @@ func mirrorLibrarySkills(workDir, projectStoreDir string, wf *ir.Workflow, inj *
 		// directory natively, so the agent sees the skill whoever wrote it. The
 		// OWNED list is what a backend passes explicitly, so a shadowed entry
 		// stays out of it: that content is the target repository's.
+		// The FILE, not skillDir: MkdirAll succeeds on a directory the checkout
+		// already shipped, so claiming the directory would hand over whatever
+		// else the target repo planted in it.
 		if outcome != skillOutcomeShadowed {
-			owned = append(owned, skillDir)
+			owned = append(owned, destPath)
 		}
 		hints[name] = skillDescription(srcPath)
 	}

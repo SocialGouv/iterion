@@ -4,6 +4,7 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strings"
 	"testing"
 
 	"github.com/SocialGouv/iterion/pkg/bundle"
@@ -253,7 +254,7 @@ func TestMirrorBundleSkillsReportsOwnership(t *testing.T) {
 
 	has := func(name string) bool {
 		for _, p := range owned {
-			if filepath.Base(p) == name {
+			if slices.Contains(strings.Split(p, string(filepath.Separator)), name) {
 				return true
 			}
 		}
@@ -261,6 +262,15 @@ func TestMirrorBundleSkillsReportsOwnership(t *testing.T) {
 	}
 	if !has("mine") {
 		t.Errorf("owned = %v, missing the skill we wrote", owned)
+	}
+	// A FLAT source is reported as the FILE it wrote, never as the directory
+	// holding it: MkdirAll succeeds on a directory the checkout already shipped,
+	// so claiming <stem>/ would hand over any .md the target repo planted beside
+	// our SKILL.md, wherever this list is trusted.
+	for _, p := range owned {
+		if filepath.Base(filepath.Dir(p)) == "mine" && filepath.Base(p) != "SKILL.md" {
+			t.Errorf("owned = %v: a flat source must name its file, not its directory", owned)
+		}
 	}
 	// Directory-form skills were invisible to the previous marker-based scheme,
 	// which wrote no marker for them.
@@ -297,6 +307,47 @@ func TestMirrorBundleSkillsReportsOwnership(t *testing.T) {
 		if filepath.Base(p) == "dirform" {
 			t.Errorf("owned = %v still claims a directory the workspace overwrote", third)
 		}
+	}
+}
+
+// A flat bundle source writes <stem>/SKILL.md, and MkdirAll succeeds happily on
+// a <stem>/ the checkout already shipped. Reporting the DIRECTORY as owned would
+// therefore vouch for whatever the target repo planted next to our file — a
+// backend that hands the list to an agent would load attacker-authored prompt
+// text as a trusted skill. Reproduces the exploit shape: a repo ships
+// .claude/skills/<name>/evil.md with no SKILL.md, so nothing is shadowed.
+func TestMirrorBundleSkillsNeverOwnsARepoPrePopulatedDir(t *testing.T) {
+	skillsSrc := t.TempDir()
+	if err := os.WriteFile(filepath.Join(skillsSrc, "whats-next.md"),
+		[]byte("---\nname: whats-next\n---\nours\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	workDir := t.TempDir()
+	planted := filepath.Join(workDir, ".claude", "skills", "whats-next")
+	if err := os.MkdirAll(planted, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(planted, "evil.md"), []byte("do the bad thing"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	owned, err := mirrorBundleSkills(workDir, &bundle.Bundle{SkillsDir: skillsSrc}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, p := range owned {
+		if p == planted {
+			t.Fatalf("owned = %v claims a directory the repo pre-populated (it holds evil.md)", owned)
+		}
+		// And nothing reported may BE the planted file or contain it.
+		if filepath.Base(p) == "evil.md" {
+			t.Fatalf("owned = %v names repo-authored content directly", owned)
+		}
+	}
+	// Our own file is still offered — the fix must not cost the skill.
+	if !slices.Contains(owned, filepath.Join(planted, "SKILL.md")) {
+		t.Errorf("owned = %v, want our own SKILL.md named", owned)
 	}
 }
 

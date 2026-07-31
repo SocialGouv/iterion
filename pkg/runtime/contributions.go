@@ -155,8 +155,9 @@ func mirrorInjectedLibrarySkills(workDir string, skills []LibrarySkillFile, logg
 		if err != nil {
 			return nil, nil, fmt.Errorf("runtime/contrib: mirror library skill %q: %w", s.Name, err)
 		}
+		// The FILE, not skillDir — see mirrorLibrarySkills for why.
 		if outcome != skillOutcomeShadowed {
-			owned = append(owned, skillDir)
+			owned = append(owned, destPath)
 		}
 		hints[s.Name] = s.Description
 	}

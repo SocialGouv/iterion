@@ -572,6 +572,37 @@ func TestPiCodexSeedMakesTheTokenUnstageable(t *testing.T) {
 		}
 	})
 
+	// The same in-checkout write is reachable WITHOUT a sandbox: `--store-dir
+	// "$PWD/.iterion"` is the invocation this repo's own dogfood instructions
+	// prescribe, and the studio's workspace store has the same shape. Gating the
+	// refusal on `sandboxed` left that path open.
+	t.Run("a symlinked store dir inside the checkout is refused too", func(t *testing.T) {
+		work, elsewhere := t.TempDir(), t.TempDir()
+		if err := os.Symlink(elsewhere, filepath.Join(work, ".iterion")); err != nil {
+			t.Skipf("symlinks unavailable: %v", err)
+		}
+		store := filepath.Join(work, ".iterion")
+		_, err := piCodexSeedRoot(Task{NodeID: "n", WorkDir: work, StoreDir: store}, nil)
+		if err == nil {
+			t.Fatal("seeded through a repo-controlled symlink off the sandbox")
+		}
+		if _, err := os.Stat(filepath.Join(elsewhere, "pi")); err == nil {
+			t.Error("created a directory at the symlink's target")
+		}
+	})
+
+	// ...while a store genuinely outside the checkout is nobody's business but
+	// the operator's, symlink or not.
+	t.Run("a symlinked store outside the checkout is left alone", func(t *testing.T) {
+		work, real, link := t.TempDir(), t.TempDir(), filepath.Join(t.TempDir(), "store")
+		if err := os.Symlink(real, link); err != nil {
+			t.Skipf("symlinks unavailable: %v", err)
+		}
+		if _, err := piCodexSeedRoot(Task{NodeID: "n", WorkDir: work, StoreDir: link}, nil); err != nil {
+			t.Errorf("refused an operator's own symlinked store: %v", err)
+		}
+	})
+
 	// Outside the worktree nothing is stageable, so no guard is written.
 	t.Run("a store outside the worktree needs no guard", func(t *testing.T) {
 		work, outside := t.TempDir(), t.TempDir()

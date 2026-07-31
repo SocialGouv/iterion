@@ -310,9 +310,13 @@ func mirrorBundleSkills(workDir string, b *bundle.Bundle, logger *iterlog.Logger
 			shadowed++
 		}
 		if outcome != skillOutcomeShadowed {
-			// The directory form is the canonical one for skill discovery; the
-			// flat alias beside it is the same content under another name.
-			owned = append(owned, filepath.Join(dest, strings.TrimSuffix(name, ".md")))
+			// The FILE, not its directory. A flat source writes exactly
+			// <stem>/SKILL.md, and MkdirAll happily succeeds on a directory the
+			// checkout already shipped — so claiming <stem>/ would report a
+			// directory the target repo pre-populated, and any .md it planted
+			// there would ride along wherever this list is trusted. Naming the
+			// one file we wrote cannot carry a sibling.
+			owned = append(owned, filepath.Join(dest, strings.TrimSuffix(name, ".md"), "SKILL.md"))
 		}
 	}
 	if logger != nil && (mirrored > 0 || refreshed > 0 || uptodate > 0) {

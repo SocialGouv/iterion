@@ -235,13 +235,22 @@ func piCodexSeedRoot(task Task, logger *iterlog.Logger) (string, error) {
 		}
 		return "", nil
 	}
-	// Under a sandbox `root` sits inside a checkout of the TARGET repository, and
-	// a repo can commit `.iterion` (or `.iterion/pi`) as a SYMLINK — .gitignore
-	// does not stop a tracked symlink from being checked out. os.MkdirAll follows
-	// it, which would write the OAuth blob at a repo-chosen host path outside the
+	// Whenever `root` lands inside a checkout of the TARGET repository, a repo
+	// can commit `.iterion` (or `.iterion/pi`) as a SYMLINK — .gitignore does not
+	// stop a tracked symlink from being checked out. os.MkdirAll follows it,
+	// which would write the OAuth blob at a repo-chosen host path outside the
 	// worktree, creating directories on the way. Refuse instead: this is the
 	// first credential to ride the `<WorkDir>/.iterion` write pattern.
-	if sandboxed {
+	//
+	// Gated on containment, not on `sandboxed`: `<StoreDir>/pi` lands in the
+	// checkout just as easily — `--store-dir "$PWD/.iterion"` is the invocation
+	// this repo's own dogfood instructions prescribe, and it is what the studio
+	// uses for a workspace store.
+	//
+	// The test must be LEXICAL. inWorktree resolves symlinks, so on exactly the
+	// escaping input it reports the redirected root as outside the worktree and
+	// would wave it through.
+	if lexicallyWithin(task.WorkDir, root) {
 		if err := refuseSymlinkedPath(task.WorkDir, root); err != nil {
 			return "", err
 		}
@@ -274,6 +283,21 @@ func piCodexSeedRoot(task Task, logger *iterlog.Logger) (string, error) {
 		}
 	}
 	return root, nil
+}
+
+// lexicallyWithin reports whether target sits under base by PATH ALONE, with no
+// filesystem access and no symlink resolution. That is the point: a resolving
+// test answers "where does this end up", and the question here is "was this
+// written to look like it stays inside the checkout".
+func lexicallyWithin(base, target string) bool {
+	if base == "" || target == "" {
+		return false
+	}
+	rel, err := filepath.Rel(filepath.Clean(base), filepath.Clean(target))
+	if err != nil {
+		return false
+	}
+	return rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator))
 }
 
 // refuseSymlinkedPath rejects target when any component below base is a
