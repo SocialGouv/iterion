@@ -5,7 +5,7 @@ import {
   Cross2Icon,
   ExternalLinkIcon,
 } from "@radix-ui/react-icons";
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { createPortal } from "react-dom";
 import { Link } from "wouter";
 
@@ -20,6 +20,18 @@ import {
   StatusBadge,
 } from "@/components/ui";
 
+import {
+  DRAWER_WIDTH_DEFAULT,
+  DRAWER_WIDTH_MAX,
+  DRAWER_WIDTH_MIN,
+  DRAWER_WIDTH_STEP,
+  DRAWER_WIDTH_STEP_LARGE,
+  clampDrawerWidth,
+  drawerWidthBounds,
+  readDrawerWidth,
+  viewportWidth,
+  writeDrawerWidth,
+} from "./cardDrawerWidth";
 import { cardRoutePath } from "./cardRoute";
 import { ImagePreviewDialog } from "./ImagePreview";
 import { ProducedElements } from "./ProducedElements";
@@ -591,6 +603,77 @@ export default function PipelineCardDetails({
   // Scrim ignores the first tick so the same click that opened the drawer
   // cannot immediately close it (portal mounts under the cursor).
   const [scrimArmed, setScrimArmed] = useState(false);
+  // Operator-chosen drawer width, restored from localStorage. 28rem — the old
+  // hardcoded width — is only the default now: reading a multi-line prompt or
+  // a JSON blob in a 28rem column meant leaving the board.
+  const [width, setWidth] = useState(() => readDrawerWidth());
+  const bounds = drawerWidthBounds(viewportWidth());
+
+  const commitWidth = useCallback((next: number) => {
+    const clamped = clampDrawerWidth(next, viewportWidth());
+    setWidth(clamped);
+    writeDrawerWidth(clamped);
+    return clamped;
+  }, []);
+
+  // Drag the left edge. The pointer is tracked on window (not the 6px handle)
+  // so a fast drag that outruns the cursor keeps resizing. The drawer is
+  // right-anchored, so moving LEFT widens it.
+  const startResize = useCallback(
+    (e: React.PointerEvent) => {
+      e.preventDefault();
+      const startX = e.clientX;
+      const startW = width;
+      let latest = startW;
+      const onMove = (ev: PointerEvent) => {
+        latest = clampDrawerWidth(startW - (ev.clientX - startX), viewportWidth());
+        setWidth(latest);
+      };
+      const onUp = () => {
+        window.removeEventListener("pointermove", onMove);
+        window.removeEventListener("pointerup", onUp);
+        document.body.style.cursor = "";
+        document.body.style.userSelect = "";
+        // Persist once, at the end — a drag emits hundreds of moves.
+        writeDrawerWidth(latest);
+      };
+      document.body.style.cursor = "col-resize";
+      document.body.style.userSelect = "none";
+      window.addEventListener("pointermove", onMove);
+      window.addEventListener("pointerup", onUp);
+    },
+    [width],
+  );
+
+  const onHandleKey = useCallback(
+    (e: React.KeyboardEvent) => {
+      const step = e.shiftKey ? DRAWER_WIDTH_STEP_LARGE : DRAWER_WIDTH_STEP;
+      let next: number;
+      // Right-anchored: ArrowLeft moves the handle left, i.e. widens.
+      if (e.key === "ArrowLeft") next = width + step;
+      else if (e.key === "ArrowRight") next = width - step;
+      else if (e.key === "Home") next = DRAWER_WIDTH_MIN;
+      else if (e.key === "End") next = DRAWER_WIDTH_MAX;
+      else return;
+      e.preventDefault();
+      // Escape-to-close listens on window; don't let resize keys travel to
+      // the board's own shortcut handlers either.
+      e.stopPropagation();
+      commitWidth(next);
+    },
+    [width, commitWidth],
+  );
+
+  // A viewport that shrinks below the persisted width (window resize, sidebar
+  // opening, rotation) must not strand the drawer's handle off-screen.
+  useEffect(() => {
+    if (presentation !== "overlay") return;
+    const onResize = () => {
+      setWidth((w) => clampDrawerWidth(w, viewportWidth()));
+    };
+    window.addEventListener("resize", onResize);
+    return () => window.removeEventListener("resize", onResize);
+  }, [presentation]);
 
   useEffect(() => {
     if (presentation !== "overlay") return;
@@ -721,12 +804,30 @@ export default function PipelineCardDetails({
         onClick={scrimArmed ? onClose : undefined}
       />
       <aside
-        className="fixed inset-y-0 right-0 flex w-[min(28rem,100vw)] flex-col border-l border-border-default bg-surface-1 shadow-[var(--shadow-lg)] animate-slide-in-right"
-        style={{ zIndex: "var(--z-modal)" }}
+        className="fixed inset-y-0 right-0 flex max-w-full flex-col border-l border-border-default bg-surface-1 shadow-[var(--shadow-lg)] animate-slide-in-right"
+        style={{ zIndex: "var(--z-modal)", width }}
         aria-label={`Details for ${card.title}`}
         role="dialog"
         aria-modal="true"
       >
+        {/* Resize grip on the inner edge. Focusable window-splitter: drag it,
+            or tab to it and use ←/→ (Shift for a big step, Home/End for the
+            bounds, double-click to reset). */}
+        <div
+          role="separator"
+          aria-orientation="vertical"
+          aria-label="Resize details drawer"
+          aria-valuenow={width}
+          aria-valuemin={bounds.min}
+          aria-valuemax={bounds.max}
+          aria-valuetext={`${width} pixels`}
+          tabIndex={0}
+          title="Drag to resize — ←/→ to adjust, double-click to reset"
+          onPointerDown={startResize}
+          onKeyDown={onHandleKey}
+          onDoubleClick={() => commitWidth(DRAWER_WIDTH_DEFAULT)}
+          className="absolute inset-y-0 left-0 z-10 w-1.5 cursor-col-resize transition-colors hover:bg-accent/60 focus-visible:bg-accent focus-visible:outline-none active:bg-accent"
+        />
         {header}
         {body}
       </aside>
