@@ -5,7 +5,7 @@ import {
   Cross2Icon,
   ExternalLinkIcon,
 } from "@radix-ui/react-icons";
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { Link } from "wouter";
 
@@ -19,6 +19,7 @@ import {
   InlineBanner,
   StatusBadge,
 } from "@/components/ui";
+import { trapTabKey } from "@/lib/a11y";
 
 import {
   DRAWER_WIDTH_DEFAULT,
@@ -608,6 +609,7 @@ export default function PipelineCardDetails({
   // a JSON blob in a 28rem column meant leaving the board.
   const [width, setWidth] = useState(() => readDrawerWidth());
   const bounds = drawerWidthBounds(viewportWidth());
+  const panelRef = useRef<HTMLElement | null>(null);
 
   const commitWidth = useCallback((next: number) => {
     const clamped = clampDrawerWidth(next, viewportWidth());
@@ -707,6 +709,18 @@ export default function PipelineCardDetails({
     return () => window.removeEventListener("keydown", onKey);
   }, [presentation, onClose]);
 
+  // The other half of aria-modal="true": focus moves INTO the drawer on open
+  // and back to whatever opened it on close. Without this, Tab kept walking
+  // the board behind the scrim — which the resize grip and the per-value
+  // copy/expand controls only made more confusing.
+  useEffect(() => {
+    if (presentation !== "overlay") return;
+    const opener =
+      document.activeElement instanceof HTMLElement ? document.activeElement : null;
+    panelRef.current?.focus({ preventScroll: true });
+    return () => opener?.focus({ preventScroll: true });
+  }, [presentation]);
+
   // Lock body scroll while the overlay is up (board can still reflow underneath).
   useEffect(() => {
     if (presentation !== "overlay") return;
@@ -804,7 +818,14 @@ export default function PipelineCardDetails({
         onClick={scrimArmed ? onClose : undefined}
       />
       <aside
-        className="fixed inset-y-0 right-0 flex max-w-full flex-col border-l border-border-default bg-surface-1 shadow-[var(--shadow-lg)] animate-slide-in-right"
+        ref={panelRef}
+        // tabIndex -1 so focus can rest on the panel itself before the first
+        // Tab — the announcement point for the dialog's label.
+        tabIndex={-1}
+        onKeyDown={(e) => {
+          trapTabKey(e, panelRef.current);
+        }}
+        className="fixed inset-y-0 right-0 flex max-w-full flex-col border-l border-border-default bg-surface-1 shadow-[var(--shadow-lg)] outline-none animate-slide-in-right"
         style={{ zIndex: "var(--z-modal)", width }}
         aria-label={`Details for ${card.title}`}
         role="dialog"

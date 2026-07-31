@@ -3,7 +3,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
 
 import type { PipelineBoardCard } from "@/api/pipelineBoards";
-import { setupMatchMedia } from "@/__tests__/a11y/axeHelpers";
+import { expectNoViolations, setupMatchMedia } from "@/__tests__/a11y/axeHelpers";
+import { focusableWithin } from "@/lib/a11y";
 
 // Same stubs as PipelineCardDetails.test: ProducedElements pulls react-query
 // and SequentialReviews reaches into the run store.
@@ -182,6 +183,50 @@ describe("pipeline card drawer — portal chrome", () => {
     expect(document.body.contains(drawer())).toBe(true);
     expect(drawer().getAttribute("aria-modal")).toBe("true");
     expect(document.body.style.overflow).toBe("hidden");
+  });
+
+  it("moves focus into the panel on open and back to the opener on close", () => {
+    const opener = document.createElement("button");
+    document.body.appendChild(opener);
+    opener.focus();
+    expect(document.activeElement).toBe(opener);
+
+    const { unmount } = mount();
+    expect(document.activeElement).toBe(drawer());
+
+    unmount();
+    expect(document.activeElement).toBe(opener);
+    opener.remove();
+  });
+
+  it("traps Tab inside the drawer — the board behind the scrim stays unreachable", () => {
+    const outside = document.createElement("button");
+    document.body.appendChild(outside);
+    mount();
+
+    const ring = focusableWithin(drawer());
+    // The resize grip is part of the ring; so is every value's copy button.
+    expect(ring).toContain(handle());
+    expect(ring.length).toBeGreaterThan(2);
+    expect(ring).not.toContain(outside);
+
+    const first = ring[0];
+    const last = ring[ring.length - 1];
+    if (!first || !last) throw new Error("drawer has no focusable controls");
+
+    last.focus();
+    fireEvent.keyDown(last, { key: "Tab" });
+    expect(document.activeElement).toBe(first);
+
+    fireEvent.keyDown(first, { key: "Tab", shiftKey: true });
+    expect(document.activeElement).toBe(last);
+
+    outside.remove();
+  });
+
+  it("has no axe violations through the portal", async () => {
+    mount();
+    await expectNoViolations(document.body, "pipeline card drawer");
   });
 
   it("the scrim ignores the click that opened it, then closes on the next one", () => {
