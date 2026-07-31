@@ -5,9 +5,10 @@ The **Session board** is a per-run view in the studio run console — the
 session, distinct from the technical run view (event log, raw logs,
 execution graph, cost meters, artifacts). It has two layers:
 
-1. **Task-list board (Phase 1, always on, deterministic).** The agent's
-   evolving task list (Claude Code's `TodoWrite` / claw's `todo_write`),
-   shown in plain language and kept after the run finishes.
+1. **Task-list board (Phase 1, deterministic).** The Tasks tab is always
+   present; when an agent emits Claude Code's `TodoWrite` or claw's
+   `todo_write`, its evolving list is shown in plain language and kept after
+   the run finishes.
 2. **Curated widgets (Phase 2, opt-in, LLM).** A cheap supervisor-style
    agent watches the run and adds a few session-specific widgets
    (narrative note, milestones, a small chart) that the run view does not
@@ -15,14 +16,17 @@ execution graph, cost meters, artifacts). It has two layers:
 
 ## Layer 1 — the task-list board (deterministic)
 
-Every run gets this; it costs nothing and needs no configuration.
+The tab costs nothing and needs no configuration, but its task-list data is
+backend-dependent.
 
-- **Source.** Both backends already emit the task list on `tool_started`
-  events (`data.input.todos[] = {content, status, activeForm}`):
-  claude_code via its native `TodoWrite`; claw via `todo_write`. For claw,
-  iterion auto-includes `todo_write` for tool-restricted agent nodes and
-  the `agenticOperatingPosture` base prompt nudges the agent to maintain a
-  task list — so the board is populated regardless of backend.
+- **Source.** The studio reducer recognises task lists on `tool_started`
+  events (`data.input.todos[] = {content, status, activeForm}`) from exactly
+  `TodoWrite` (Claude Code) and `todo_write` (claw). For claw, iterion
+  auto-includes `todo_write` for tool-restricted agent nodes and the
+  `agenticOperatingPosture` nudges the agent to maintain a list. Pi deliberately
+  has no todo tool, and Kimi, Grok, and legacy Codex do not emit either
+  recognised tool name; those runs keep the Tasks tab but may have no task-list
+  snapshots.
 - **History.** The studio run store keeps an ordered, de-duplicated
   **history** of task-list snapshots per execution (`todoHistoryByExec`),
   never cleared on `node_finished` / run termination (unlike the live Logs
