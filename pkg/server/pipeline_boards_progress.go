@@ -69,17 +69,71 @@ func (b *pipelineProjectionBuilder) runProgress(run *store.Run) (executed, total
 // executedNodes counts distinct nodes that started for a run (node_started
 // fires once per loop iteration, so dedup on node id).
 func (b *pipelineProjectionBuilder) executedNodes(runID string) int {
-	if b.rs == nil {
-		return 0
+	return b.scanRunEvents(runID).executedNodes
+}
+
+// runEventScan is the result of ONE walk over a run's event log.
+//
+// The projection is rebuilt from scratch on every poll (the studio polls
+// the board every 3s) and a paused run's log is among the longest the
+// store holds — FilesystemRunStore json.Unmarshals every line. Both
+// consumers, the node-progress count and a paused gate's instructions,
+// therefore share a single pass instead of walking the file twice.
+type runEventScan struct {
+	executedNodes int
+	// instructions holds the LAST human_input_requested text per key
+	// (see instructionScanKey). Last-wins is OUTRIGHT: a turn that
+	// carries no instructions stores "", so a stale question can never
+	// remain displayed above a live form asking something else. Two
+	// pause paths legitimately emit no text — a recovery pause
+	// (pauseForRecovery) and a turn whose instructions template renders
+	// empty (humanInstructionsExtra returns nil).
+	instructions map[string]string
+}
+
+// instructionScanKey namespaces interaction ids apart from node ids so the
+// two key spaces can share one map without colliding.
+func instructionScanKey(kind, id string) string {
+	return kind + "\x00" + id
+}
+
+// scanRunEvents walks a run's events once and memoizes the result for this
+// projection build.
+func (b *pipelineProjectionBuilder) scanRunEvents(runID string) *runEventScan {
+	if scan, ok := b.eventScans[runID]; ok {
+		return scan
 	}
-	seen := map[string]struct{}{}
-	_ = b.rs.ScanEvents(b.ctx, runID, func(e *store.Event) bool {
-		if e.Type == store.EventNodeStarted && e.NodeID != "" {
-			seen[e.NodeID] = struct{}{}
-		}
-		return true
-	})
-	return len(seen)
+	scan := &runEventScan{instructions: map[string]string{}}
+	if b.rs != nil {
+		seen := map[string]struct{}{}
+		_ = b.rs.ScanEvents(b.ctx, runID, func(e *store.Event) bool {
+			if e == nil {
+				return true
+			}
+			switch e.Type {
+			case store.EventNodeStarted:
+				if e.NodeID != "" {
+					seen[e.NodeID] = struct{}{}
+				}
+			case store.EventHumanInputRequested:
+				if e.NodeID == "" {
+					return true
+				}
+				text, _ := e.Data["instructions"].(string)
+				scan.instructions[instructionScanKey("node", e.NodeID)] = text
+				if id, ok := e.Data["interaction_id"].(string); ok && id != "" {
+					scan.instructions[instructionScanKey("interaction", id)] = text
+				}
+			}
+			return true
+		})
+		scan.executedNodes = len(seen)
+	}
+	if b.eventScans == nil {
+		b.eventScans = map[string]*runEventScan{}
+	}
+	b.eventScans[runID] = scan
+	return scan
 }
 
 // totalNodes compiles the run's workflow (memoized by file path) and

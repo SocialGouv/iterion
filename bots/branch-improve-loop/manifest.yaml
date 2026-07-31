@@ -1,7 +1,18 @@
 name: branch-improve-loop
 display_name: Billy
 icon: 🌿
-version: 1.0.1
+version: 1.1.0
+## 1.1.0 — the operator picks where they sit in the loop (`pilot`: end reviews
+## the result, middle arbitrates the plan before any edit), and the bot
+## answers the review, and speaks for the head it pushes. Returns a
+## `finding_ledger` (per finding id: fixed / refused-with-argument / deferred),
+## rendered as a table on the PR and handed to the next review as pushback so a
+## contested finding is not re-raised for free. The verdict comment becomes a
+## DETERMINISTIC node (no LLM turn, server-side posting credential) that also
+## carries the merge-gate status — a push moves the head, and a status left on
+## the old one leaves the required check absent, which blocks the PR silently.
+## The gate is a COUNT and is never green on an unresolved finding: a refusal
+## is an argument for a human, never a way past the check.
 ## 1.0.1 — ADR-082 Phase 2 (sandbox-by-default): removed the `sandbox:`
 ## block — isolation is the platform's job; gh/glab move to the bot's
 ## pinned devbox.json.
@@ -67,14 +78,34 @@ forge:
     pull_requests: write     # open the PR
     repository: write         # push the branch
     issues: write             # post the PR URL back onto the source issue
+    statuses: write          # post the merge-gate commit status on the head it
+                             # pushed. Declaring this also makes provisioning
+                             # derive review_on_sync ON for the repo, which is
+                             # what gets the head this run created re-reviewed.
   secret: forge_token
+
+# Start from a review of the same PR when one exists, instead of re-deriving
+# it. Matched BY KIND, so whichever bot reviewed supplies it — Billy's manifest
+# names no reviewer, and Billy still runs perfectly well with no prior review
+# (the var defaults to empty and the campaign reviews from scratch).
+consumes:
+  - kind: review
+    var: prior_review
+    scope: pr
+
+# The reply half: what became of each finding it was handed. A later review of
+# the same PR is given this, so a finding it already contested (with an
+# argument) is not re-raised for free — that relay is what fails to converge.
+produces:
+  - kind: review_ledger
+    node: campaign
 
 invocations:
   # Billy runs on a PR ONLY on this deliberate `/billy` (alias `/improve`)
   # slash-command, gated on the commenter's repo rights (min_replier_role).
-  # There is NO PR-open auto-launch: opening a PR only ever auto-REVIEWS it
-  # (Revi). `/billy` picks up where Revi left off — the handler seeds
-  # `prior_review` from Revi's most recent review of the PR.
+  # There is NO PR-open auto-launch: opening a PR only ever auto-REVIEWS it.
+  # `/billy` picks up where the review left off — the `consumes:` block above
+  # is what seeds `prior_review` from it.
   - kind: command
     mode: board
     args_var: scope_notes
@@ -85,5 +116,5 @@ invocations:
 ## the declared order; `hidden` vars are dispatch/webhook plumbing kept
 ## out of the form (still settable via --var / bot_args).
 launch:
-  primary: [base_ref]
+  primary: [base_ref, pilot]
   hidden: [source_issue_ref]

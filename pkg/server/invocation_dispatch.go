@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"strings"
+	"unicode/utf8"
 
 	"github.com/SocialGouv/iterion/pkg/botregistry"
 	"github.com/SocialGouv/iterion/pkg/bundle"
@@ -122,6 +123,21 @@ func (s *Server) dispatchInvocation(
 	route webhooks.CommandRoute, vars map[string]string,
 	repoURL, repoRef, payloadHash, srcIP string,
 ) {
+	// Seeding the declared hand-off vars has to happen HERE rather than only in
+	// the launch tail: a board-mode command with a dispatcher never reaches the
+	// tail — the card IS the launch — so the seed would be dropped on exactly
+	// the path most commands take. The tail keeps its own call for the lanes
+	// that skip this function (the PR-event fan-out, the auto-heal).
+	//
+	// Placed after each early return below, never before: resolving a hand-off
+	// reads the bot catalog and walks the run store, and a redelivery or a
+	// quota denial launches nothing.
+	seed := func() {
+		s.stampHandoffs(ctx, cfg, route.BotID, vars, handoffQuery{
+			PRURL:   vars["pr_url"],
+			HeadSHA: vars["head_sha"],
+		})
+	}
 	if route.Mode == string(bundle.ExecutionBoard) && s.cfg.CloudBoardFor != nil {
 		if s.cfg.CloudBoardCoordinator != nil {
 			// Dispatcher active: gate (per-org quota), create the card in the
@@ -143,12 +159,14 @@ func (s *Server) dispatchInvocation(
 				s.writeLaunchDenial(w, r, d)
 				return
 			}
+			seed()
 			s.ensureBoardCard(ctx, cfg, route, vars, meta, native.StateReady, repoURL, repoRef)
 			s.markWebhookOutcome(cfg.Provider, webhooks.StatusAccepted)
 			writeJSONStatus(w, http.StatusAccepted, map[string]string{"status": "carded", "bot": route.BotID})
 			return
 		}
 		// No dispatcher: a tracking card (default inbox state) + direct launch.
+		seed()
 		s.ensureBoardCard(ctx, cfg, route, vars, meta, "", repoURL, repoRef)
 	}
 	s.insertAndLaunchWebhook(ctx, w, r, cfg, meta, idemKey, route.BotID, vars, repoURL, repoRef, payloadHash, srcIP)
@@ -205,7 +223,15 @@ func (s *Server) ensureBoardCard(ctx context.Context, cfg webhooks.Config, route
 	// webhook launch vars never reaches a board-mode run — the bot then works
 	// off its DSL defaults (e.g. mr_gate.push_back=false strands the campaign
 	// commits on the runner's storage branch instead of the PR).
-	for _, k := range []string{"pr_url", "base_ref", "target_branch", "source_branch", "pr_author", "push_branch", "open_mr", "mr_base", "prior_review"} {
+	carry := []string{"pr_url", "base_ref", "target_branch", "source_branch", "pr_author", "push_branch", "open_mr", "mr_base", "head_sha"}
+	// Plus whatever THIS bot declared it consumes from an earlier run on the
+	// same PR. Derived rather than listed: a fixed list would mean a bot that
+	// declares a new hand-off gets it on the direct lane and silently loses it
+	// on the board lane — the failure this whole carry-list exists to prevent.
+	for _, c := range s.handoffConsumersFor(route.BotID) {
+		carry = append(carry, c.Var)
+	}
+	for _, k := range carry {
 		if v, ok := vars[k]; ok && v != "" {
 			botArgs[k] = v
 		}
@@ -322,9 +348,19 @@ func firstLine(s string) string {
 	return strings.TrimSpace(s)
 }
 
+// truncate caps s at n bytes, ending on a rune boundary. Slicing bytes blindly
+// splits a multi-byte rune, and the result — a card title, a prompt var — is
+// then invalid UTF-8 wherever it lands.
 func truncate(s string, n int) string {
 	if len(s) <= n {
 		return s
 	}
-	return s[:n-1] + "…"
+	cut := n - len("…")
+	if cut < 0 {
+		cut = 0
+	}
+	for cut > 0 && !utf8.RuneStart(s[cut]) {
+		cut--
+	}
+	return s[:cut] + "…"
 }

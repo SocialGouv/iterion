@@ -483,7 +483,12 @@ func RunScheduleRun(ctx context.Context, p *Printer, opts ScheduleRunOptions) er
 	policy := e.policy()
 	auditPath := tickAuditPath(path)
 
-	storeDir := store.ResolveStoreDir(filepath.Dir(e.Bot), e.StoreDir)
+	// Must resolve exactly like the launch below (RunRun -> storeAnchorDir), or
+	// the gate lists runs from one store while the tick writes to another:
+	// LiveRunsForSchedule comes back empty, EvaluateOverlap always fires, and
+	// every entry without an explicit --store-dir silently loses its
+	// at-most-one-live guarantee.
+	storeDir := runStoreDir(e.Bot, e.StoreDir)
 	s, err := store.New(storeDir)
 	if err != nil {
 		return fmt.Errorf("schedule %q: open store %s for overlap check: %w", e.Name, storeDir, err)

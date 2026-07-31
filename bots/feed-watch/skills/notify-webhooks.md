@@ -35,7 +35,10 @@ never appear in the repo, in prompts, or in logs.
 - **partial failure** (some sinks 2xx, some not) — the run SUCCEEDS
   and the failures are listed in the notify output summary. Rationale:
   failing the run would re-post to the sinks that already delivered on
-  resume (duplicates are worse than a visible partial).
+  resume (duplicates are worse than a visible partial). The queue is
+  consumed all the same, so a sink that is broken rather than flaky
+  loses one digest per run, quietly, until someone reads a summary.
+  Re-post from `<state_dir>/<category>/digests/*.md` once it is fixed.
 - **total failure** (every POST failed) — the run FAILS
   (failed_resumable). Nothing was delivered, so `iterion resume` is
   safe and will re-attempt delivery.
@@ -49,5 +52,10 @@ never appear in the repo, in prompts, or in logs.
 3. Webhook 4xx: URL revoked/wrong (`iterion secret set webhooks …`
    again), or the channel override is not permitted by the Mattermost
    integration settings.
-4. The digest itself is always recoverable from the run artifacts
+4. Webhook 404 on ONE sink while its siblings deliver: the channel is
+   gone under that name. `channel` matches a Mattermost channel's URL
+   handle, not its display name — renaming the handle silently breaks
+   every sink pointing at the old one, and renaming only the display
+   name changes nothing. Retarget the sinks in the config.
+5. The digest itself is always recoverable from the run artifacts
    (`synthesize` output) and `<state_dir>/<category>/digests/*.md`.

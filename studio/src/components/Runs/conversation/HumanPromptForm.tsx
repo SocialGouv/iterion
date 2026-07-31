@@ -27,12 +27,20 @@ import { useRunStore } from "@/store/run";
 
 import PauseForm from "../PauseForm";
 import GateAttachments from "./GateAttachments";
+import MarkdownText from "./MarkdownText";
 import type { GateFileValue } from "@/components/shared/GateFileInput";
 
 interface Props {
   runId: string;
   nodeId: string;
   questions: Record<string, unknown>;
+  // Resolved `instructions:` text of the paused node — the author's
+  // operator-facing question, rendered as markdown above the form.
+  // The run console omits it because HumanQuestionCard already renders
+  // the same text as the turn's prompt; board surfaces, which have no
+  // conversation around the form, pass it so the operator sees what
+  // they are answering instead of a bare input.
+  instructions?: string;
   // Quick-action chips (skip / idk) the operator can pick instead of
   // typing a reply. Only meaningful on free-text-only turns. Default
   // = ["skip", "idk"]; pass empty to suppress.
@@ -77,6 +85,7 @@ export default function HumanPromptForm({
   runId,
   nodeId,
   questions,
+  instructions,
   quickActions = ["skip", "idk"],
   sourceOverride,
   onResumed,
@@ -386,6 +395,11 @@ export default function HumanPromptForm({
 
   return (
     <div className="space-y-2">
+      {instructions && (
+        <div className="text-body text-fg-default">
+          <MarkdownText value={instructions} size="sm" />
+        </div>
+      )}
       {staleHash && (
         <div className="text-caption text-warning-fg" role="status">
           The workflow source changed since this run started. Submit will still

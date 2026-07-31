@@ -22,6 +22,7 @@ package runstream
 import (
 	"context"
 	"errors"
+	"sync/atomic"
 
 	"github.com/SocialGouv/iterion/pkg/store"
 )
@@ -29,7 +30,27 @@ import (
 // MaxEventsPerPage caps the number of events a single replay batch (and
 // a single store LoadEventsRange page) carries. One WS envelope ships at
 // most this many events. Aliased by pkg/runview.MaxEventsPerPage.
-const MaxEventsPerPage = 25000
+//
+// Adjustable, so a test can prove the pagination BOUNDARY without paying for
+// the page size: covering it honestly means seeding more events than fit in
+// one page, and at 25000 that was a 33-second test whose replay window then
+// had to be widened until it was really measuring throughput on a loaded
+// runner. Shrink it with SetMaxEventsPerPageForTest.
+//
+// Atomic because replay goroutines read it while a test's cleanup restores it.
+var maxEventsPerPage atomic.Int64
+
+func init() { maxEventsPerPage.Store(25000) }
+
+// MaxEventsPerPage returns the current page cap.
+func MaxEventsPerPage() int { return int(maxEventsPerPage.Load()) }
+
+// SetMaxEventsPerPageForTest lowers the page cap for the duration of a test
+// and returns a restore func. Test-only: production has no reason to move it.
+func SetMaxEventsPerPageForTest(n int) func() {
+	prev := maxEventsPerPage.Swap(int64(n))
+	return func() { maxEventsPerPage.Store(prev) }
+}
 
 // ErrLogsUnsupported is returned by SubscribeLogs on a source that was
 // constructed without a log backend (a MongoSource with no run_logs

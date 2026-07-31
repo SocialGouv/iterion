@@ -980,6 +980,14 @@ the BOT, keyed on generic context the engine already provides:**
 - Manifest `invocations:` (the capability "what can fire me"), `capabilities:`
   (board tools), `contributes:` (plugins), skills. The `Subscription` binds
   (event) → (a bot) generically.
+- Manifest **`produces:` / `consumes:`** — the run-to-run hand-off, matched by
+  KIND (`review`, `review_ledger`), never by bot id. A bot declares what it
+  leaves behind for a later run (naming nodes in its OWN graph) and what it
+  wants stamped into a launch var; the engine knows the shape of each role and
+  nothing about who fills it. This is how a reviewer seeds a fixer, and how the
+  fixer's per-finding answer reaches the next review, with neither manifest
+  naming the other bot. Adding a second reviewer or a second fixer is a bundle,
+  not an engine PR. See [pkg/server/webhooks_handoff.go](pkg/server/webhooks_handoff.go).
 
 **Known debt (extract when touched, don't extend):** the webhook layer still
 hardcodes distinguished-role bot ids — `defaultWebhookBotReviewPR`
@@ -1210,13 +1218,16 @@ log + `0 tokens` billed confirms the OAuth-forfait path (not a metered API key).
 ### Live dogfood runs MUST be visible in the operator's studio
 
 When you test or dogfood a catalog bot with a real run, launch it into the
-store the operator's running `iterion studio` reads — **pass `--store-dir
-"$PWD/.iterion"` explicitly** (the workspace store). Do **not** rely on omitting
-`--store-dir`: `iterion run` with no `--store-dir` does **not** default to the
-workspace `.iterion` — it persists to a per-bot project store under
-`~/.iterion/projects/<bot-path-key>/`, which the operator's studio (bound to
+store the operator's running `iterion studio` reads. `iterion run` anchors its
+store on the **working directory**, so from a workspace whose `.iterion` is
+already a managed store (it has `runs/`, `dispatcher/` or `.iterion-store`) the
+run lands in `<workspace>/.iterion` and the studio sees it.
+
+The caveat is a workspace with no managed `.iterion` yet: the run then goes to
+`~/.iterion/projects/<workdir-key>/`, which the operator's studio (bound to
 `<workspace>/.iterion`) cannot see, producing a `run not found … run.json: no
-such file or directory` 404 in the studio's run/diffs panel. And **never** use a
+such file or directory` 404 in the studio's run/diffs panel. When in doubt
+**pass `--store-dir "$PWD/.iterion"` explicitly**. And **never** use a
 throwaway `--store-dir /tmp/...`. A run the operator can't watch in the UI does
 not count as validated.
 
@@ -1355,7 +1366,10 @@ head) and Revi's falsifiability `questions` channel (non-blocking assumptions,
 never gate). The forge-agnostic write path is `forge.CommitStatusClient`
 ([pkg/forge/status.go](pkg/forge/status.go)); the endpoint posts it after the
 review ([pkg/server/forge_publish.go](pkg/server/forge_publish.go)). See
-[docs/merge-gate.md](docs/merge-gate.md).
+[docs/merge-gate.md](docs/merge-gate.md) — which also covers the two bots
+sharing one context on the same PR, and the per-repo **opt-in** zero-touch lane
+(`auto_fix_on_gate_failure`) where a red gate launches the repo's fixer once per
+head sha, off by default so the developer keeps the choice.
 
 ## Conventions
 

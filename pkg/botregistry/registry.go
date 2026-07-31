@@ -81,6 +81,14 @@ type Entry struct {
 	// opinion — the form renders every var as before.
 	Launch *bundle.LaunchHints `json:"launch,omitempty" yaml:"launch,omitempty"`
 
+	// Produces / Consumes mirror the manifest's run-to-run hand-off blocks:
+	// what this bot leaves behind for a later run, and what it wants handed to
+	// it at launch. Carried by discovery because the hand-off is resolved AT
+	// LAUNCH, when the only thing known is the bot's name — matching a consumer
+	// to a producer by KIND is what keeps the engine from naming either bot.
+	Produces []bundle.ProducedArtifact `json:"produces,omitempty" yaml:"produces,omitempty"`
+	Consumes []bundle.ConsumedArtifact `json:"consumes,omitempty" yaml:"consumes,omitempty"`
+
 	// Invocations is the typed routing contract from the manifest
 	// (manifest.yaml invocations:) — how this bot can be triggered (forge
 	// event, /slash-command, schedule, board) and the execution mode each
@@ -443,6 +451,8 @@ func parseBundle(dir string) (*Entry, error) {
 		Repo:            m.Repo,
 		ConfigShare:     m.ConfigShare,
 		Launch:          m.Launch,
+		Produces:        m.Produces,
+		Consumes:        m.Consumes,
 		Invocations:     bundle.EffectiveInvocations(m),
 		WhenToUse:       strings.TrimSpace(m.WhenToUse),
 		Author:          m.Author,

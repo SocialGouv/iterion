@@ -115,6 +115,17 @@ vars:
   ## = review the whole diff against the full production-ready grid.
   scope_notes: string = ""
 
+  ## What a fixer already did with an EARLIER review of this same PR, per
+  ## finding id: fixed (with the commit), contested (with its argument), or
+  ## deferred. Stamped at launch by the engine when such a run exists; empty
+  ## otherwise, and empty is the normal case.
+  ##
+  ## This is what keeps a review↔fix pair converging instead of oscillating: a
+  ## finding the fixer argued against comes back only against NEW evidence. It
+  ## is NOT an instruction to drop it — a wrong argument must be answered, and
+  ## a finding that is still real still counts against the gate.
+  prior_pushback: string = ""
+
   ## Drop findings below this severity (order: low < medium < high <
   ## critical). Default "low" surfaces everything.
   severity_threshold: string [enum: "low", "medium", "high", "critical"] = "low"
@@ -349,6 +360,9 @@ prompt review_user_claude:
   Base ref:  {{vars.base_ref}}
   Operator steering (may be empty): {{vars.scope_notes}}
 
+  ALREADY ANSWERED (may be empty — then this PR has had no fixer pass):
+  {{vars.prior_pushback}}
+
   Run the git scope commands above yourself, read the diff, and produce
   your `review_output`.
 
@@ -359,6 +373,9 @@ prompt review_user_gpt:
   Workspace: {{vars.workspace_dir}}
   Base ref:  {{vars.base_ref}}
   Operator steering (may be empty): {{vars.scope_notes}}
+
+  ALREADY ANSWERED (may be empty — then this PR has had no fixer pass):
+  {{vars.prior_pushback}}
 
   Use your `bash`, `read_file`, `glob` and `grep` tools to run the git
   scope commands, read the diff and surrounding code, then produce your
@@ -785,8 +802,20 @@ compute pr_gate:
 ## published is true ONLY on a 2xx from the endpoint, whose counts are
 ## forge-re-fetched (anti-façade), never self-estimated.
 tool publish_review:
-  command: `WS={{vars.workspace_dir}} REVIEWED_SHA={{input.reviewed_sha}} PUB_URL={{vars.forge_publish_url}} PUB_TOKEN={{vars.forge_publish_token}} MODE={{vars.pr_review_mode}} PR_URL={{input.pr_url}} FINDINGS={{input.findings}} QUESTIONS={{input.questions}} CLAUDE_FINDINGS={{input.claude_findings}} GPT_FINDINGS={{input.gpt_findings}} GATE_ENABLED={{vars.gate_enabled}} GATE_SEVERITY={{vars.gate_severity}} GATE_CONTEXT={{vars.gate_context}} python3 -c "
-import os, json, subprocess, urllib.request, urllib.error
+  command: `WS={{vars.workspace_dir}} REVIEWED_SHA={{input.reviewed_sha}} PUB_URL={{vars.forge_publish_url}} PUB_TOKEN={{vars.forge_publish_token}} MODE={{vars.pr_review_mode}} REVIEW_MODE={{vars.review_mode}} PR_URL={{input.pr_url}} FINDINGS={{input.findings}} QUESTIONS={{input.questions}} CLAUDE_FINDINGS={{input.claude_findings}} GPT_FINDINGS={{input.gpt_findings}} GATE_ENABLED={{vars.gate_enabled}} GATE_SEVERITY={{vars.gate_severity}} GATE_CONTEXT={{vars.gate_context}} python3 -c "
+import os, json, subprocess, urllib.request, urllib.error, hashlib
+
+# Stable handle for one finding, shared with iterion's prior-review digest
+# (pkg/server/webhooks_handoff.go findingID) and with the fixer's ledger:
+# the operator arbitrates by it (/billy skip R7a3f) and the fixer reports by it.
+# Keyed on (file, normalized title) and NOT on the line, because the line moves
+# as soon as code above it changes -- which is exactly what a fix does, so a
+# line-keyed id would break over the single round-trip it exists for.
+# bots/review_pr_finding_id_test.go pins this against the Go derivation.
+def finding_id(f):
+    t = ' '.join(str(f.get('title') or '').split()).lower()[:80]
+    key = str(f.get('file') or '').strip() + chr(10) + t
+    return 'R' + hashlib.sha256(key.encode()).hexdigest()[:6]
 
 def emit(published, forge='unknown', review_url='', posted=0, sugg=0, skipped='', summary=''):
     print(json.dumps({'published': published, 'forge': forge, 'review_url': review_url,
@@ -872,13 +901,16 @@ nl = chr(10)
 sev_rank = {'critical': 0, 'high': 1, 'medium': 2, 'low': 3}
 counts = {}
 comments = []
+finding_ids = []
 for f in findings:
     if not isinstance(f, dict):
         continue
     sev = str(f.get('severity') or 'low').lower()
     counts[sev] = counts.get(sev, 0) + 1
     cross = str(f.get('reviewers') or '') == 'both'
-    header = '[' + sev + ' / ' + str(f.get('category') or '') + (' / cross-confirmed by both reviewers' if cross else '') + '] ' + str(f.get('title') or '')
+    fid = finding_id(f)
+    finding_ids.append(fid)
+    header = fid + ' [' + sev + ' / ' + str(f.get('category') or '') + (' / cross-confirmed by both reviewers' if cross else '') + '] ' + str(f.get('title') or '')
     body = header + nl + nl + str(f.get('detail') or '')
     sketch = str(f.get('suggestion') or '').strip()
     if sketch:
@@ -904,9 +936,23 @@ elif findings_parse_failed:
     summary.append(chr(9888) + ' DEGRADED: the review produced findings but their machine-readable form was unreadable, and no reviewer fallback was available. Nothing could be anchored inline; the merge gate fails closed.')
 for sev in sorted(counts, key=lambda s: sev_rank.get(s, 9)):
     summary.append('- ' + sev + ': ' + str(counts[sev]))
+# Cross-confirmation only exists when two families actually reviewed. The
+# topology predicate is the same one the graph routes on (anything not 'dual'
+# runs a single reviewer), so mono cannot report it. Saying '0 cross-confirmed'
+# there reads as 'two families looked and agreed on nothing' — a claim about a
+# review that never happened.
+dual = str(os.environ.get('REVIEW_MODE', '')).strip().lower() == 'dual'
 cross_n = len([f for f in findings if isinstance(f, dict) and str(f.get('reviewers') or '') == 'both'])
 summary.append('')
-summary.append(str(cross_n) + ' finding(s) cross-confirmed by both model families.' if findings else 'No blocking findings.')
+if not findings:
+    summary.append('No blocking findings.')
+elif dual:
+    summary.append(str(cross_n) + ' finding(s) cross-confirmed by both model families.')
+else:
+    summary.append('Reviewed by a single model family (mono topology): no finding is cross-confirmed, and none is meant to be.')
+if finding_ids:
+    summary.append('')
+    summary.append('Each finding opens with a stable id (here: ' + finding_ids[0] + '). Fix them yourself, or comment /billy to have them fixed -- adding e.g. skip ' + finding_ids[0] + ' and your reason leaves that one alone.')
 if questions:
     summary.append('')
     summary.append('### Open questions (non-blocking — reviewer assumptions to confirm)')

@@ -231,7 +231,7 @@ func RunRun(ctx context.Context, opts RunOptions, p *Printer) error {
 	}
 
 	runName := store.GenerateRunName(iterFile + ":" + runID)
-	storeDir := store.ResolveStoreDir(filepath.Dir(iterFile), opts.StoreDir)
+	storeDir := runStoreDir(iterFile, opts.StoreDir)
 
 	logger, logCloser := teeRunLog(logger, level, storeDir, runID)
 	if logCloser != nil {

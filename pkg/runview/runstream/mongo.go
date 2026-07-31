@@ -249,7 +249,7 @@ func (m *MongoSource) backfillEvents(ctx context.Context, runID string, fromSeq 
 		if e.Seq > maxSeq {
 			maxSeq = e.Seq
 		}
-		if len(batch) >= MaxEventsPerPage {
+		if len(batch) >= MaxEventsPerPage() {
 			if err := flush(); err != nil {
 				return maxSeq, err
 			}
