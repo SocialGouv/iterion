@@ -693,6 +693,7 @@ func (e *ClawExecutor) buildTask(ctx context.Context, node ir.Node, f backendFie
 	task.CursorFragments = resolveCursorFragments(f.cursors, e.cursors)
 	task.SkillHints = e.resolveSkillHints(f.skills)
 	task.MirroredSkills = e.mirroredSkills
+	task.SharedStateDir = e.sharedStateDir
 	e.applyPresetFragment(&task, input, td)
 
 	effectiveTools := e.assembleEffectiveTools(f, backendName, effectiveCaps, ultracode)

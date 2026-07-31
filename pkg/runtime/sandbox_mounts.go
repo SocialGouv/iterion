@@ -146,6 +146,13 @@ func applyHostStateMounts(
 		}
 		spec.Mounts = append(spec.Mounts, entry)
 		mountPairs = append(mountPairs, m.HostPath+":"+m.ContainerPath)
+		// Record the iterion home only if it SURVIVED the filter —
+		// collectHostStateMounts drops a candidate that overlaps the workspace
+		// bind, and a backend that assumed the mount from `host_state: auto`
+		// alone would write where the container cannot read.
+		if m.HostPath == iterionHomeDir {
+			spec.HostStateSharedDir = m.ContainerPath
+		}
 	}
 
 	// Warm the Go build + module caches across runs. Each fresh worktree

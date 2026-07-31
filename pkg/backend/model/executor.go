@@ -69,6 +69,10 @@ type ClawExecutor struct {
 	// workspace this run (SetMirroredSkills), as opposed to whatever the
 	// target repo ships at the same path.
 	mirroredSkills []string
+	// sharedStateDir is a directory reachable at the same absolute path from
+	// the host and the sandbox that is NOT in the target repo's checkout
+	// (SetSharedStateDir); empty when there is none.
+	sharedStateDir string
 	botID          string // stable bot/workflow id used for bot-scoped memory
 	storeDir       string // dispatcher store root (empty = backend default)
 	// artifactFilesDir is the run's tool-output scratch area
@@ -218,6 +222,23 @@ func (e *ClawExecutor) SetRunExtraEnv(env []string) {
 // Passing nil clears the previous handle (used between runs).
 func (e *ClawExecutor) SetSandbox(run sandbox.Run) {
 	e.sandbox = run
+}
+
+// SetSharedStateDir records a directory reachable at the SAME absolute path
+// from the host and from inside the sandbox, which is not part of the target
+// repository's checkout — in practice the host `~/.iterion` that host_state
+// bind-mounted. Empty when there is none (host_state=none, the kubernetes
+// driver, or a mount the auto-binder skipped).
+//
+// It exists so a backend can keep per-run state — a seeded credential, session
+// transcripts — OUT of the worktree. Writing that state into
+// `<WorkDir>/.iterion` instead means defending a directory the target repo can
+// pre-populate, which is a far worse position than simply not writing there.
+//
+// Reported from what was actually mounted, never inferred from the setting.
+// Must be called before Execute; not safe to call concurrently.
+func (e *ClawExecutor) SetSharedStateDir(dir string) {
+	e.sharedStateDir = dir
 }
 
 // SetBoardEndpoint installs the per-run gateway-reachable board MCP URL

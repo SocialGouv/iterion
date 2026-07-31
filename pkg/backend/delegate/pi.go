@@ -11,6 +11,7 @@ import (
 	"github.com/SocialGouv/iterion/pkg/backend/delegate/pisdk"
 	iterlog "github.com/SocialGouv/iterion/pkg/log"
 	"github.com/SocialGouv/iterion/pkg/secrets"
+	"github.com/SocialGouv/iterion/pkg/store"
 )
 
 // BackendPi is the registration name for the pi coding-agent backend
@@ -491,16 +492,48 @@ func piExtraArgsFor(task Task, logger *iterlog.Logger) []string {
 // GC-able, and concurrent nodes must not collide. Sandboxed runs need a
 // path visible inside the container, which means workspace-relative.
 func piSessionDir(task Task) string {
-	if task.Sandbox != nil && task.WorkDir != "" {
-		return filepath.Join(task.WorkDir, ".iterion", "pi", "sessions")
+	return filepath.Join(piStateRoot(task), "sessions")
+}
+
+// piStateRoot picks the directory holding this node's pi state — the seeded
+// agent dir, the session transcripts.
+//
+// The change that matters is the FIRST case. A sandboxed run used to be forced
+// into `<WorkDir>/.iterion/pi`, inside a checkout the target repository
+// controls, because the workspace bind was assumed to be the only thing the
+// container could read. It is not: host_state already bind-mounts the host's
+// `~/.iterion` at its own absolute path, so it resolves identically in and out
+// of the container while sitting nowhere near the repo.
+//
+// That distinction is the whole security argument. Anything written inside the
+// checkout has to be defended — against a symlink the repo committed at any
+// component or leaf, against a `.gitignore` it pre-seeded whose last effective
+// rule re-includes our files, against an agent's `git add -A` staging a live
+// credential onto the operator's branch. Each of those is a patch on the same
+// premise. Writing outside the checkout removes the premise.
+//
+// The rest is unchanged on purpose: off the sandbox the run's store still wins,
+// so session transcripts keep sharing the store's lifetime and `iterion runs
+// prune` still reaches them. The global home is only the last resort, and the
+// in-workspace path only the fallback for a run with no shared-state mount
+// (host_state=none, or the kubernetes driver) — where the guards still apply,
+// because there the premise holds again.
+func piStateRoot(task Task) string {
+	if task.Sandbox != nil {
+		if dir := strings.TrimSpace(task.SharedStateDir); dir != "" {
+			return filepath.Join(dir, "pi")
+		}
+		if task.WorkDir != "" {
+			return filepath.Join(task.WorkDir, ".iterion", "pi")
+		}
 	}
 	if task.StoreDir != "" {
-		return filepath.Join(task.StoreDir, "pi", "sessions")
+		return filepath.Join(task.StoreDir, "pi")
 	}
-	if task.WorkDir != "" {
-		return filepath.Join(task.WorkDir, ".iterion", "pi", "sessions")
+	if home := store.GlobalIterionDataDir(); home != "" {
+		return filepath.Join(home, "pi")
 	}
-	return filepath.Join(os.TempDir(), "iterion-pi-sessions")
+	return filepath.Join(os.TempDir(), "iterion-pi")
 }
 
 // piGuardWriteRoot refuses to write pi's workspace state through a symlink the

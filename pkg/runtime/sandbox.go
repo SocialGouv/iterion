@@ -46,6 +46,7 @@ type activeSandbox struct {
 	proxy           *netproxy.Proxy
 	workspaceFolder string       // in-container path the host worktree is bind-mounted to (Spec.WorkspaceFolder, e.g. "/workspace"); used by Engine to remap ${PROJECT_DIR}
 	attachmentsDir  string       // in-container path the run's attachments dir ACTUALLY landed at; empty when nothing was mounted (no attachments yet, or a driver that drops host binds) — the authority behind Engine.attachmentPath
+	sharedStateDir  string       // host ~/.iterion path host_state actually bind-mounted, at the same absolute path in-container; empty when not mounted — lets a backend keep per-run state OUT of the target repo's checkout
 	boardEndpoint   string       // http URL of the per-run gateway-reachable board MCP listener (C082); empty when not started (no handler / not sandboxed)
 	boardListener   *http.Server // the board listener to shut down at teardown; nil when not started
 	askUserEndpoint string       // http URL of the per-run gateway-reachable ask-user MCP listener (ADR-082 Phase 3); empty when not started (no interactive node / bind failure)
@@ -483,7 +484,13 @@ func resolveAndStartSandbox(ctx context.Context, p SandboxParams) (*activeSandbo
 	}
 	emitSandboxStarted(prepared, spec, driver.Name(), source, emitEvent)
 
-	active := &activeSandbox{run: run, proxy: proxy, workspaceFolder: spec.WorkspaceFolder, attachmentsDir: attachmentsDir}
+	active := &activeSandbox{
+		run:             run,
+		proxy:           proxy,
+		workspaceFolder: spec.WorkspaceFolder,
+		attachmentsDir:  attachmentsDir,
+		sharedStateDir:  spec.HostStateSharedDir,
+	}
 
 	// Second half of the Claude forfait delivery: copy the read-only mount
 	// into the writable CLAUDE_CONFIG_DIR the claude_code delegate points
@@ -1470,6 +1477,13 @@ func (e *Engine) startSandbox(ctx context.Context, runID string, repoRoot string
 	if active != nil && active.run != nil {
 		if s, ok := e.executor.(sandboxSetter); ok {
 			s.SetSandbox(active.run)
+		}
+		// A directory both host and container can reach that is NOT inside the
+		// target repository's checkout. Reported from what was actually
+		// mounted, never inferred from the host_state setting.
+		type sharedStateSetter interface{ SetSharedStateDir(string) }
+		if s, ok := e.executor.(sharedStateSetter); ok {
+			s.SetSharedStateDir(active.sharedStateDir)
 		}
 		// Hand the live Run to the host observer (cloud runner) so it can
 		// start mid-run file-secret refresh against the driver's

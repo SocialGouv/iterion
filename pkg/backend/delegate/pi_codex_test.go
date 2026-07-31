@@ -847,3 +847,68 @@ func TestPiGuardWriteRoot(t *testing.T) {
 		}
 	})
 }
+
+// The structural change: a sandboxed run no longer writes its state inside the
+// target repository's checkout when host_state gave it a shared mount. That is
+// what retires the guard family for the default path — there is no repo-owned
+// directory left to defend.
+func TestPiStateRootPrefersTheSharedMount(t *testing.T) {
+	work, shared := t.TempDir(), t.TempDir()
+
+	t.Run("sandboxed with a shared mount stays out of the checkout", func(t *testing.T) {
+		root := piStateRoot(Task{WorkDir: work, SharedStateDir: shared, Sandbox: stubSandboxRun{}})
+		if want := filepath.Join(shared, "pi"); root != want {
+			t.Fatalf("root = %q, want %q", root, want)
+		}
+		if lexicallyWithin(work, root) {
+			t.Error("root is inside the target repository's checkout")
+		}
+	})
+
+	// No mount (host_state=none, or the kubernetes driver): the workspace bind
+	// is the only thing the container can read, so there is no choice.
+	t.Run("sandboxed without one falls back into the workspace", func(t *testing.T) {
+		root := piStateRoot(Task{WorkDir: work, Sandbox: stubSandboxRun{}})
+		if want := filepath.Join(work, ".iterion", "pi"); root != want {
+			t.Fatalf("root = %q, want the in-workspace fallback %q", root, want)
+		}
+	})
+
+	// Unchanged off the sandbox: the store still wins, so transcripts keep
+	// sharing the store's lifetime and `iterion runs prune` still reaches them.
+	t.Run("off the sandbox the store still wins", func(t *testing.T) {
+		store := t.TempDir()
+		if root := piStateRoot(Task{WorkDir: work, StoreDir: store}); root != filepath.Join(store, "pi") {
+			t.Errorf("root = %q, want the store's pi dir", root)
+		}
+	})
+
+	// A shared mount is only meaningful inside a sandbox; on the host the store
+	// is still the right home.
+	t.Run("the shared mount does not override the store off the sandbox", func(t *testing.T) {
+		store := t.TempDir()
+		root := piStateRoot(Task{WorkDir: work, StoreDir: store, SharedStateDir: shared})
+		if root != filepath.Join(store, "pi") {
+			t.Errorf("root = %q, want the store's pi dir", root)
+		}
+	})
+}
+
+// The seeded credential is what the whole guard family was protecting. With a
+// shared mount it simply is not in the checkout any more, so nothing needs
+// guarding — no ignore file is written into the repo, and none is needed.
+func TestPiCodexSeedRootOutsideTheCheckoutNeedsNoGuard(t *testing.T) {
+	work, shared := t.TempDir(), t.TempDir()
+	root, err := piCodexSeedRoot(Task{
+		NodeID: "n", WorkDir: work, SharedStateDir: shared, Sandbox: stubSandboxRun{},
+	}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(filepath.Join(root, ".gitignore")); err == nil {
+		t.Error("wrote an ignore guard outside the checkout — nothing there can be staged")
+	}
+	if _, err := os.Stat(filepath.Join(work, ".iterion")); err == nil {
+		t.Error("touched the target repository's tree at all")
+	}
+}

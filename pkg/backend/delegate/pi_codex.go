@@ -192,114 +192,77 @@ func piLoadCodexView(ctx context.Context) (secrets.CodexCredentialsView, error) 
 
 // piCodexSeedRoot picks where the throwaway agent dir lives.
 //
-// A sandboxed run must place it inside the WORKSPACE, which is the only tree
-// bind-mounted into the container. The store dir is not mounted unless it
-// happens to sit under the global iterion home — and the repo's own dogfood
-// invocation (`--store-dir "$PWD/.iterion"`) plus every studio launch make it
-// the workspace's, whose `pi/` is a SIBLING of the mounted worktree under
-// `worktree: auto`. pi then finds no auth.json, writes `{}`, and reports "No
-// API key found for openai-codex" to an operator who has one. `piSessionDir`
-// already branches this way for the same reason.
+// It delegates the choice to piStateRoot, whose second return value is what
+// matters here: whether the root is inside the TARGET repository's checkout.
 //
-// KNOWN EXPOSURE, and it is structural rather than a choice of directory. pi's
+// Outside it — the ordinary case, on the host or under a sandbox whose
+// host_state mount is active — nothing further is needed. The repo cannot
+// pre-populate the directory, so there is no symlink to refuse at any
+// component or leaf, no pre-seeded `.gitignore` whose last effective rule might
+// re-include our files, and nothing for an agent's `git add -A` to stage. That
+// is the point of preferring it: a class of defect removed rather than
+// defended.
+//
+// Inside it — host_state=none, or the kubernetes driver, where the workspace
+// bind is the only thing the container can read — every guard below applies,
+// because the premise they were written for holds again.
+//
+// KNOWN EXPOSURE, unchanged by any of this and worth restating. pi's
 // `openai-codex` provider is OAuth-only and reads its credential from an agent
-// dir — there is no env var to pass it by, unlike the ~30 API-key providers. So
+// dir; there is no env var to pass it by, unlike the ~30 API-key providers. So
 // driving that provider at all means a live access AND refresh token sits on a
 // filesystem the agent process can read, and an agent under prompt injection
-// has bash. Under a sandbox that path is inside the run's worktree, which makes
-// it easy to reach; moving it elsewhere in the container would not change what
-// the agent is able to read, so the honest mitigations are the ones that apply:
-// use an OPENAI_API_KEY model instead of `openai-codex/…` for a node pointed at
-// an untrusted repository, or set ITERION_FORBID_SUBSCRIPTION_OAUTH=1 to refuse
-// the bridge outright. Documented in docs/backends.md.
-//
-// Off the sandbox the run's store is preferred so the file shares the store's
-// lifetime; os.MkdirTemp's own default is the last resort.
-// The error paths deliberately do NOT fall through to os.MkdirTemp's default.
-// Under a sandbox that would name a host /tmp path nothing bind-mounts, so pi
-// would find no auth.json and report "No API key found for openai-codex" —
-// exactly the failure this function exists to prevent, silently. Off the
-// sandbox /tmp is merely unswept, so it is allowed, but said out loud.
+// has bash. Moving the file out of the worktree stops the repo from REDIRECTING
+// or COMMITTING it; it does not stop an agent from reading it. The mitigations
+// remain: an OPENAI_API_KEY model rather than `openai-codex/…` for a node
+// pointed at an untrusted repository, or ITERION_FORBID_SUBSCRIPTION_OAUTH=1 to
+// refuse the bridge outright. Documented in docs/backends.md.
 func piCodexSeedRoot(task Task, logger *iterlog.Logger) (string, error) {
-	sandboxed := task.Sandbox != nil && task.WorkDir != ""
-	root := ""
-	switch {
-	case sandboxed:
-		root = filepath.Join(task.WorkDir, ".iterion", "pi")
-	case task.StoreDir != "":
-		root = filepath.Join(task.StoreDir, "pi")
-	default:
-		if logger != nil {
-			logger.Warn("[%s#%d/%s] no store dir for the pi agent dir; the credential goes to $TMPDIR, "+
-				"where an interrupted node leaves it unswept", task.NodeID, task.Iteration, BackendPi)
-		}
+	root := piStateRoot(task)
+	if root == "" {
 		return "", nil
 	}
-	// `--store-dir` is taken VERBATIM (store.ResolveStoreDir returns the override
-	// unchanged), so `root` can be RELATIVE — `iterion schedule` renders exactly
-	// that into its cron lines. A relative root breaks all three things below,
-	// and the first one fails OPEN:
-	//   - filepath.Rel refuses to relate an absolute WorkDir to a relative root,
-	//     so lexicallyWithin returns false and the symlink refusal never runs;
-	//   - inWorktree resolves against ITERION's cwd, so the ignore guard is
-	//     skipped too;
-	//   - os.MkdirTemp returns a relative path, and PI_CODING_AGENT_DIR is then
-	//     resolved against PI's cwd (task.WorkDir), where nothing was written —
-	//     pi reports "No API key found for openai-codex", the exact silent
-	//     failure this file exists to prevent.
-	// Absolutise once, here, before anything reads it.
+	// Absolutise before ANY guard reads it. `--store-dir` used to feed this and
+	// is taken verbatim, so a relative root reached here and broke every check
+	// silently — filepath.Rel refuses to relate an absolute WorkDir to a
+	// relative path, so containment answered "outside" and the refusal never
+	// ran. piStateRoot no longer consults StoreDir, but the invariant is cheap
+	// to keep and the failure mode it prevents was a fail-OPEN.
 	abs, err := filepath.Abs(root)
 	if err != nil {
 		return "", fmt.Errorf("resolve agent dir %s: %w", root, err)
 	}
 	root = abs
 
-	// Whenever `root` lands inside a checkout of the TARGET repository, a repo
-	// can commit `.iterion` (or `.iterion/pi`) as a SYMLINK — .gitignore does not
-	// stop a tracked symlink from being checked out. os.MkdirAll follows it,
-	// which would write the OAuth blob at a repo-chosen host path outside the
-	// worktree, creating directories on the way. Refuse instead: this is the
-	// first credential to ride the `<WorkDir>/.iterion` write pattern.
+	// Guarding is decided by CONTAINMENT, not by how the root was chosen: the
+	// defences exist because a path inside the target repository's checkout is
+	// a path that repo can pre-populate. Outside it — the ordinary sandboxed
+	// case now that host_state's shared mount is preferred, and every
+	// store/global case — there is nothing to defend and nothing runs.
 	//
-	// Gated on containment, not on `sandboxed`: `<StoreDir>/pi` lands in the
-	// checkout just as easily — `--store-dir "$PWD/.iterion"` is the invocation
-	// this repo's own dogfood instructions prescribe, and it is what the studio
-	// uses for a workspace store.
-	//
-	// The test must be LEXICAL. inWorktree resolves symlinks, so on exactly the
-	// escaping input it reports the redirected root as outside the worktree and
-	// would wave it through.
-	if lexicallyWithin(task.WorkDir, root) {
+	// Lexical on purpose. A symlink-RESOLVING containment test answers "where
+	// does this end up", and the question here is "was this written to look like
+	// it stays inside the checkout" — on exactly the input that escapes, the
+	// resolving variant says "outside" and waves the guards away. That variant
+	// used to live here and is gone with this change.
+	inside := lexicallyWithin(task.WorkDir, root)
+	if inside {
 		if err := refuseSymlinkedPath(task.WorkDir, root); err != nil {
 			return "", err
 		}
 	}
 	if err := os.MkdirAll(root, 0o700); err != nil {
-		if sandboxed {
-			return "", fmt.Errorf("create agent dir %s: %w (a /tmp fallback is not mounted in the sandbox, "+
-				"so pi would report no credential)", root, err)
-		}
-		if logger != nil {
-			logger.Warn("[%s#%d/%s] could not create %s (%v); the credential goes to $TMPDIR unswept",
-				task.NodeID, task.Iteration, BackendPi, root, err)
-		}
-		return "", nil
+		return "", fmt.Errorf("create agent dir %s: %w", root, err)
 	}
-	// Wherever the root landed, if it is inside the git worktree the credential
-	// must be unstageable: a v2 campaign agent runs `git add -A` before each
-	// in-stride commit, and finalizeWorktree fast-forwards the result onto the
-	// operator's branch.
-	//
-	// iterion writes its OWN guard here rather than trusting one it did not
-	// author. Verifying `<workDir>/.iterion/.gitignore` was wrong twice over: it
-	// is best-effort and never overwrites a file the repo already tracks, and it
-	// says nothing about a root that landed somewhere else under the worktree —
-	// which `--store-dir` can put anywhere. A `*` in the seed root's own
-	// directory covers everything beneath it, including itself, wherever it is.
-	if inWorktree(task.WorkDir, root) {
-		if err := piWriteIgnoreGuard(root); err != nil {
-			return "", err
-		}
+	if !inside {
+		return root, nil
+	}
+	// Inside the checkout the credential must be unstageable: a v2 campaign
+	// agent runs `git add -A` before each in-stride commit, and finalizeWorktree
+	// fast-forwards the result onto the operator's branch. iterion writes its
+	// OWN guard in the seed root rather than trusting one it did not author.
+	if err := piWriteIgnoreGuard(root); err != nil {
+		return "", err
 	}
 	return root, nil
 }
@@ -547,39 +510,4 @@ func jwtExpiryMillis(token string) int64 {
 		return 0
 	}
 	return claims.Exp * 1000
-}
-
-// inWorktree reports whether path sits inside the run's git worktree, so a
-// credential written there would be visible to `git add -A`.
-//
-// Both sides are resolved before comparing: a relative --store-dir, a symlinked
-// workspace, or a `..` segment would otherwise let a path that IS inside the
-// worktree look like it is not, which is the direction that loses a token.
-func inWorktree(workDir, path string) bool {
-	if workDir == "" || path == "" {
-		return false
-	}
-	work, err := filepath.EvalSymlinks(workDir)
-	if err != nil {
-		work = filepath.Clean(workDir)
-	}
-	abs, err := filepath.Abs(path)
-	if err != nil {
-		return false
-	}
-	// EvalSymlinks fails on a path that does not exist yet, which the seed root
-	// usually is; resolving its nearest existing ancestor is enough.
-	for dir := abs; ; {
-		if resolved, err := filepath.EvalSymlinks(dir); err == nil {
-			abs = filepath.Join(resolved, strings.TrimPrefix(abs, dir))
-			break
-		}
-		parent := filepath.Dir(dir)
-		if parent == dir {
-			break
-		}
-		dir = parent
-	}
-	rel, err := filepath.Rel(work, abs)
-	return err == nil && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator))
 }

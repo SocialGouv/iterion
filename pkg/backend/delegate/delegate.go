@@ -665,6 +665,24 @@ type Task struct {
 	// ask_user call, sent back to the LLM as the tool_result content.
 	ResumeAnswer string
 
+	// SharedStateDir is a directory reachable at the SAME absolute path from
+	// the host and from inside the sandbox, and which is NOT part of the target
+	// repository's checkout — the host `~/.iterion` that host_state
+	// bind-mounted. Empty when there is none: host_state=none, the kubernetes
+	// driver, or a mount the auto-binder skipped because it overlapped the
+	// workspace.
+	//
+	// A backend needing to write per-run state (a seeded credential, session
+	// transcripts) writes it HERE rather than under `<WorkDir>/.iterion`.
+	// The difference is not cosmetic: a path inside the checkout is a path the
+	// target repository can pre-populate, so everything written there has to be
+	// defended against symlinks, pre-existing `.gitignore` rules and staging by
+	// an agent's `git add -A`. Outside the checkout, none of that applies.
+	//
+	// The engine reports what was actually mounted; it is never inferred from
+	// the host_state setting.
+	SharedStateDir string
+
 	// Sandbox is the live sandbox handle for the run, or nil when the
 	// workflow runs without isolation. Supported backends route their CLI
 	// subprocess calls through it (via the SDK's CommandBuilder hook for
