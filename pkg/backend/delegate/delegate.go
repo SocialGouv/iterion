@@ -10,6 +10,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"os"
 	"path/filepath"
 	"strings"
 	"time"
@@ -751,6 +752,18 @@ type Task struct {
 	CollectAsyncAnswers func() (string, error)
 }
 
+// Hostless reports whether this task's commands execute directly on the host —
+// no sandbox at all, or the noop driver, which is a passthrough.
+//
+// One definition, because two of them disagreed: StateDir treated a noop run as
+// hostless while resolveBinary still gated on `Sandbox == nil`, so an operator
+// on the noop driver got the in-workspace state root AND lost their
+// ITERION_PI_BIN override — on exactly the host that flag documents ("a host
+// with no Node").
+func (t Task) Hostless() bool {
+	return t.Sandbox == nil || t.Sandbox.Driver() == "noop"
+}
+
 // StateDir is where this node's backend-owned state lives — a materialised
 // extension, a composed system-prompt file, a session transcript, a seeded
 // credential — and whether that place is inside the TARGET repository's
@@ -788,9 +801,7 @@ type Task struct {
 // per-run Secret) would be available under every driver, and case 2 — with its
 // guard family — could then be deleted rather than maintained.
 func (t Task) StateDir(backendName string) (root string, inCheckout bool) {
-	// A noop sandbox runs every command on the HOST, so there is no bind mount
-	// to respect and no reason to fall back into the checkout.
-	sandboxed := t.Sandbox != nil && t.Sandbox.Driver() != "noop"
+	sandboxed := !t.Hostless()
 	switch shared := strings.TrimSpace(t.SharedStateDir); {
 	case sandboxed && shared != "":
 		root = filepath.Join(shared, backendName)
@@ -837,7 +848,10 @@ func pathInsideCheckout(workDir, root string) bool {
 	}
 	realWork, err := filepath.EvalSymlinks(absWork)
 	if err != nil {
-		return false // the workspace does not exist yet; the lexical answer stands
+		// Absent is a real answer: the lexical test already spoke. Anything
+		// else (EACCES on an ancestor, an I/O error) is an uncertainty, and the
+		// rule above is that uncertainties answer "inside".
+		return !os.IsNotExist(err)
 	}
 	realRoot, err := filepath.EvalSymlinks(root)
 	if err != nil {

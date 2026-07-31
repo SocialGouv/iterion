@@ -258,6 +258,25 @@ func lexicallyWithin(base, target string) bool {
 	return rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator))
 }
 
+// relBelow expresses target under base, retrying against the resolved base so a
+// workspace spelled through a symlink still yields a walkable path. Returns ""
+// when target is not below base at all.
+func relBelow(base, target string) (walkBase, rel string) {
+	if r, err := filepath.Rel(base, target); err == nil && !strings.HasPrefix(r, "..") {
+		return base, r
+	}
+	realBase, err := filepath.EvalSymlinks(base)
+	if err != nil {
+		return "", ""
+	}
+	r, err := filepath.Rel(realBase, target)
+	if err != nil || strings.HasPrefix(r, "..") {
+		return "", ""
+	}
+	// Walk from the RESOLVED base, since that is what `r` is relative to.
+	return realBase, r
+}
+
 // refuseSymlinkedPath rejects target when any component below base is a
 // symlink, checked with Lstat so nothing is followed. Components that do not
 // exist yet are fine — they are what MkdirAll is about to create.
@@ -265,17 +284,22 @@ func lexicallyWithin(base, target string) bool {
 // base itself is not inspected: it is iterion's own worktree path, and a
 // symlink there is the engine's business, not the repo's.
 func refuseSymlinkedPath(base, target string) error {
-	rel, err := filepath.Rel(base, target)
-	if err != nil {
-		return fmt.Errorf("agent dir %s is not under the workspace: %w", target, err)
+	// Containment is the CALLER's decision (Task.StateDir), and it answers on
+	// resolved paths — so a target that is genuinely in the tree can still be
+	// spelled outside the base lexically, e.g. a workspace reached through a
+	// symlink. When that happens there is nothing below `base` for this guard to
+	// walk, which is a no-op, NOT a refusal: erroring here silently killed the
+	// credential seed (piCodexSeed swallows the error) and the node then died on
+	// "No API key found for openai-codex". The leaf symlink is covered
+	// separately by piGuardWriteRoot.
+	walkBase, rel := relBelow(base, target)
+	if rel == "" {
+		return nil
 	}
-	cur := base
+	cur := walkBase
 	for _, part := range strings.Split(rel, string(filepath.Separator)) {
 		if part == "" || part == "." {
 			continue
-		}
-		if part == ".." {
-			return fmt.Errorf("agent dir %s escapes the workspace", target)
 		}
 		cur = filepath.Join(cur, part)
 		info, err := os.Lstat(cur)

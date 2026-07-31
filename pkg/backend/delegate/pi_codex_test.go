@@ -1034,3 +1034,85 @@ func TestStateDirContainmentFailsClosed(t *testing.T) {
 		}
 	})
 }
+
+// Round 2 found that six of the previous round's eight behaviour changes could
+// be deleted with a green suite. These cover the ones that were invisible, plus
+// the regression the containment fix itself introduced.
+func TestPiStateRootGuardWiring(t *testing.T) {
+	// The credential seed must SUCCEED for a workspace spelled through a
+	// symlink. Containment answers on resolved paths, so the root is "inside"
+	// while being lexically outside — and the component walk used to hard-error
+	// on the resulting `..`, which piCodexSeed swallows: the token was silently
+	// never seeded and the node died on "No API key found for openai-codex".
+	t.Run("a symlinked workspace still seeds the credential", func(t *testing.T) {
+		base := t.TempDir()
+		real := filepath.Join(base, "realrepo")
+		if err := os.MkdirAll(filepath.Join(real, ".iterion"), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		link := filepath.Join(base, "link")
+		if err := os.Symlink(real, link); err != nil {
+			t.Skipf("symlinks unavailable: %v", err)
+		}
+		root, err := piCodexSeedRoot(Task{
+			NodeID: "n", WorkDir: link, StoreDir: filepath.Join(real, ".iterion"),
+		})
+		if err != nil {
+			t.Fatalf("seed refused a legitimate symlinked workspace: %v", err)
+		}
+		if _, serr := os.Stat(root); serr != nil {
+			t.Errorf("seed root %q was not created: %v", root, serr)
+		}
+	})
+
+	// The leaf guard is for symlinks someone OTHER than the operator planted.
+	// Applying it to the operator's own store root aborted every pi node with a
+	// message asserting a checkout that does not exist.
+	t.Run("the operator's own symlinked store root is not refused", func(t *testing.T) {
+		store, volume := t.TempDir(), t.TempDir()
+		if err := os.Symlink(volume, filepath.Join(store, "pi")); err != nil {
+			t.Skipf("symlinks unavailable: %v", err)
+		}
+		task := Task{NodeID: "n", StoreDir: store}
+		root, inCheckout := task.StateDir(BackendPi)
+		if inCheckout || strings.TrimSpace(task.SharedStateDir) != "" {
+			t.Fatalf("root %q classified as guarded; this is the operator's own", root)
+		}
+	})
+
+	// ...while the shared mount IS guarded: it is bind-mounted read-write at a
+	// predictable path and shared by every run on the host.
+	t.Run("a symlinked shared mount is refused", func(t *testing.T) {
+		shared, elsewhere := t.TempDir(), t.TempDir()
+		if err := os.Symlink(elsewhere, filepath.Join(shared, "pi")); err != nil {
+			t.Skipf("symlinks unavailable: %v", err)
+		}
+		task := Task{NodeID: "n", WorkDir: t.TempDir(), SharedStateDir: shared, Sandbox: stubSandboxRun{}}
+		root, _ := task.StateDir(BackendPi)
+		if err := piGuardWriteRoot(root); err == nil {
+			t.Error("a symlinked shared root was accepted")
+		}
+	})
+}
+
+// One definition of "runs on the host", because two of them disagreed: an
+// operator on the noop driver got the in-workspace state root AND lost their
+// ITERION_PI_BIN override — on exactly the host that flag exists for.
+type stubNoopSandbox struct{ stubSandboxRun }
+
+func (stubNoopSandbox) Driver() string { return "noop" }
+
+func TestHostlessIsOneDefinition(t *testing.T) {
+	t.Setenv("ITERION_PI_BIN", "/opt/host-only/pi")
+	noop := Task{WorkDir: t.TempDir(), Sandbox: stubNoopSandbox{}}
+
+	if !noop.Hostless() {
+		t.Fatal("a noop sandbox is a passthrough; it runs on the host")
+	}
+	if got := NewPiBackend(nil, "").print.resolveBinary(noop); got != "/opt/host-only/pi" {
+		t.Errorf("resolveBinary = %q on a noop run, want the host override", got)
+	}
+	if (Task{Sandbox: stubSandboxRun{}}).Hostless() {
+		t.Error("a real sandbox is not hostless")
+	}
+}

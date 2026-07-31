@@ -140,7 +140,7 @@ func (b *CLIAgentBackend) resolveBinary(task Task) string {
 	if b.Command != "" {
 		return b.Command
 	}
-	if b.Protocol.HostBinaryEnv != "" && task.Sandbox == nil {
+	if b.Protocol.HostBinaryEnv != "" && task.Hostless() {
 		return strings.TrimSpace(os.Getenv(b.Protocol.HostBinaryEnv))
 	}
 	return ""
