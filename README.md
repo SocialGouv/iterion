@@ -164,7 +164,7 @@ Iterion ships a catalog of named, first-class agent workflows. Each is packaged 
 | 🌿 **Billy** | Branch reviewer-fixer — one adaptive campaign over the branch diff, with deterministic checks and convergence gates | [`branch_improve_loop`](bots/branch-improve-loop/) |
 | 🌍 **Willy** | Whole-repo reviewer-fixer — the same unit-convergent campaign across the full codebase | [`whole_improve_loop`](bots/whole-improve-loop/) |
 | 📚 **Doki** | Doc aligner — detects & fixes doc/code drift (the docs, never the code) | [`docs-refresh`](bots/docs-refresh/) |
-| 🔎 **Revi** | Code reviewer — read-only cross-family review, publishes findings to the board | [`review_pr`](bots/review-pr/) |
+| 🔎 **Revi** | Read-only code reviewer — one model family by default, optional cross-family dual mode, findings published to the board | [`review_pr`](bots/review-pr/) |
 | 🛡️ **Seki** | Source security auditor — SAST + secret scan + LLM triage | [`sec-audit-source`](bots/sec-audit-source/) |
 | 📦 **Depsy** | Supply-chain auditor — dependency malware / CVE scan | [`sec-audit-deps`](bots/sec-audit-deps/) |
 | ⬆️ **Renovacy** | Security-aware dependency upgrader | [`secured-renovacy`](bots/secured-renovacy/) |
