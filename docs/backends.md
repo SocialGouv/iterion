@@ -102,8 +102,10 @@ bot at launch, these win over the node's own DSL `backend:`/`model:`.
 
 This composes with the mono/dual `--review-mode` topology (ADR-052): the
 review mode chooses *which family* runs (one or two), the override chooses
-*which model/backend* each running node uses. Overrides are not yet
-re-applied on `iterion resume` (same limitation as `--backend`/`--compress`).
+*which model/backend* each running node uses. Launch-time model/backend rules
+are not re-applied automatically on resume; repeat the same `--model` and
+`--backend` flags on `iterion resume` when continuity matters. `--compress`
+remains launch-only.
 
 ## Default preference order
 
