@@ -190,7 +190,8 @@ iterion diagram workflow.bot --view full
 iterion run workflow.bot --var key=value
 ```
 
-Validation emits sparse DSL codes in C001–C199 and bundle codes in C200–C230.
-Do not assume the numeric range is contiguous. For bundles, also check
+Validation emits sparse DSL codes in C001–C199 plus the async-interaction band
+C240–C242, and bundle codes in C200–C234. Do not assume the numeric ranges are
+contiguous. For bundles, also check
 [`docs/bundles.md`](docs/bundles.md). For current CLI flags, use
 `iterion <command> --help` and [`docs/cli-reference.md`](docs/cli-reference.md).
