@@ -562,12 +562,7 @@ export function PipelineCardDetailsBody({
           <SectionHeading>Result</SectionHeading>
           {/* The final answer is what the operator opened the card for, so it
               gets a taller preview than an input before it needs expanding. */}
-          <ExpandableValue
-            value={card.output}
-            label="result"
-            collapsedMaxHeight="24rem"
-            className="text-fg-muted"
-          />
+          <ExpandableValue value={card.output} label="result" collapsedMaxHeight="24rem" />
         </section>
       )}
 

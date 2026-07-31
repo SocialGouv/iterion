@@ -78,7 +78,12 @@ export interface ExpandableValueProps {
    * resolve by stylesheet order, not by class-attribute order.
    */
   variant?: "boxed" | "bare";
-  /** Extra classes on the text block — padding and colour, not chrome. */
+  /**
+   * Extra classes on the text block. Keep to properties the base does not set
+   * (spacing, width) — an override of a property it DOES set (colour, font
+   * size, border) resolves by stylesheet order, not by class-attribute order,
+   * so it silently may not win.
+   */
   className?: string;
   /** Collapsed preview height, any CSS length. */
   collapsedMaxHeight?: string;

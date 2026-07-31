@@ -178,7 +178,6 @@ function LLMStepCard({
                         value={c.input}
                         label={`${c.name} input`}
                         variant="bare"
-                        className="text-fg-subtle"
                       />
                     )}
                   </li>
