@@ -388,6 +388,11 @@ func piWriteIgnoreGuard(dir string) error {
 // abandoned one a few hours longer.
 const piSeedMaxAge = 12 * time.Hour
 
+// piSessionMaxAge bounds transcript retention. Generous because a paused or
+// failed-resumable run keeps its session id and resumes against it, and because
+// a transcript is the run's own record rather than a credential left on disk.
+const piSessionMaxAge = 30 * 24 * time.Hour
+
 // piSweepStaleSeeds removes pi state an interrupted node left behind.
 //
 // Every seed is deleted by its own deferred cleanup, but a SIGKILL or an OOM
@@ -428,13 +433,19 @@ func piSweepStaleSeeds(root string) {
 		}
 		_ = os.RemoveAll(filepath.Join(root, e.Name()))
 	}
-	piSweepStaleSessions(filepath.Join(root, "sessions"))
+	piSweepStaleFiles(root, piSeedMaxAge, ".js", ".sysprompt.md")
+	// Transcripts get a FAR longer bound than stranded credentials. They used to
+	// live in the per-run worktree, which is deliberately preserved for a paused
+	// or failed-resumable run — so reaping them on the credential's 12h bound
+	// would make `--session-id` resume fail for a run paused over a weekend, on
+	// a root now shared with every other run.
+	piSweepStaleFiles(filepath.Join(root, "sessions"), piSessionMaxAge)
 }
 
-// piSweepStaleSessions age-reaps pi's own transcript files. pi names them
-// `<timestamp>_<uuid>.jsonl` directly in the sessions dir, so there is nothing
-// to recurse into.
-func piSweepStaleSessions(dir string) {
+// piSweepStaleFiles age-reaps regular files directly in dir. With no suffixes
+// every file is a candidate; with suffixes only those match, so a root shared
+// with anything else is left alone.
+func piSweepStaleFiles(dir string, maxAge time.Duration, suffixes ...string) {
 	entries, err := os.ReadDir(dir)
 	if err != nil {
 		return
@@ -443,12 +454,24 @@ func piSweepStaleSessions(dir string) {
 		if e.IsDir() {
 			continue
 		}
+		if len(suffixes) > 0 && !hasAnySuffix(e.Name(), suffixes) {
+			continue
+		}
 		info, err := e.Info()
-		if err != nil || time.Since(info.ModTime()) < piSeedMaxAge {
+		if err != nil || time.Since(info.ModTime()) < maxAge {
 			continue
 		}
 		_ = os.Remove(filepath.Join(dir, e.Name()))
 	}
+}
+
+func hasAnySuffix(name string, suffixes []string) bool {
+	for _, sfx := range suffixes {
+		if strings.HasSuffix(name, sfx) {
+			return true
+		}
+	}
+	return false
 }
 
 // piCodexExpiry works out the epoch-milliseconds deadline pi stores.

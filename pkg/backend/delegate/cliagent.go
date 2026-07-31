@@ -379,8 +379,14 @@ func bareModelID(spec string) string {
 // and skills without an error. piext.Materialise avoids the same hazard the
 // same way.
 func writeSystemPromptFile(task Task, backendName, systemPrompt string) (path string, cleanup func(), err error) {
-	if task.WorkDir == "" {
-		return "", nil, fmt.Errorf("delegate: %s: SystemPromptViaFile requires a WorkDir", backendName)
+	// A task with neither a workspace nor a store has nowhere of its own to put
+	// this, and StateDir's last resort is the OPERATOR's iterion home — which is
+	// not somewhere a per-invocation scratch file belongs. The old precondition
+	// named WorkDir only, which was stale after StateDir landed, but deleting it
+	// outright made a degenerate task create `~/.iterion/<backend>` on the
+	// operator's machine (caught by a unit test doing exactly that).
+	if task.WorkDir == "" && task.StoreDir == "" {
+		return "", nil, fmt.Errorf("delegate: %s: SystemPromptViaFile requires a WorkDir or StoreDir", backendName)
 	}
 	// Task.StateDir keeps this out of the target repository's checkout whenever
 	// the run has somewhere better, so the composed prompt — which carries the

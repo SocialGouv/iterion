@@ -7,10 +7,12 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/SocialGouv/iterion/pkg/backend/delegate/piext"
 	iterlog "github.com/SocialGouv/iterion/pkg/log"
 )
 
@@ -448,8 +450,6 @@ func TestPiBinaryOverride(t *testing.T) {
 		if got := b.print.resolveBinary(Task{}); got != "/opt/pi-native" {
 			t.Errorf("print transport resolved %q, want the override", got)
 		}
-		// The RPC transport applies the same rule at exec time; both are
-		// covered for the sandbox case by TestPiBinaryOverrideIsHostOnly.
 		if _, ok := b.rpc.(*PiRPCBackend); !ok {
 			t.Errorf("rpc transport = %+v, want a PiRPCBackend", b.rpc)
 		}
@@ -471,6 +471,505 @@ func TestPiBinaryOverride(t *testing.T) {
 	})
 }
 
+// A credential written inside the git worktree must be unstageable: a v2
+// campaign agent runs `git add -A` before each in-stride commit, and
+// finalizeWorktree fast-forwards the result onto the operator's branch.
+//
+// iterion writes its OWN guard at the seed root rather than trusting
+// <workDir>/.iterion/.gitignore — that file is best-effort, is never
+// overwritten when the repo already tracks one, and says nothing about a root
+// that --store-dir put elsewhere under the worktree.
+func TestPiCodexSeedMakesTheTokenUnstageable(t *testing.T) {
+	guarded := func(t *testing.T, root string) {
+		t.Helper()
+		data, err := os.ReadFile(filepath.Join(root, ".gitignore"))
+		if err != nil {
+			t.Fatalf("no ignore guard at the seed root (%v) — `git add -A` would stage the token", err)
+		}
+		if !strings.Contains(string(data), "*") {
+			t.Errorf("guard = %q, want the catch-all", data)
+		}
+	}
+
+	t.Run("sandboxed: inside the workspace", func(t *testing.T) {
+		work := t.TempDir()
+		root, err := piCodexSeedRoot(Task{NodeID: "n", WorkDir: work, Sandbox: stubSandboxRun{}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		guarded(t, root)
+	})
+
+	// The dogfood invocation this repo prescribes — --store-dir "$PWD/.iterion" —
+	// puts the store INSIDE the repo, so the non-sandboxed path carries the same
+	// exposure.
+	t.Run("a store dir inside the worktree", func(t *testing.T) {
+		work := t.TempDir()
+		store := filepath.Join(work, ".iterion")
+		if err := os.MkdirAll(store, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		root, err := piCodexSeedRoot(Task{NodeID: "n", WorkDir: work, StoreDir: store})
+		if err != nil {
+			t.Fatal(err)
+		}
+		guarded(t, root)
+	})
+
+	// A root the repo already ignores wholesale needs nothing added.
+	t.Run("an existing catch-all is left alone", func(t *testing.T) {
+		work := t.TempDir()
+		store := filepath.Join(work, ".iterion")
+		root := filepath.Join(store, "pi")
+		if err := os.MkdirAll(root, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(root, ".gitignore"), []byte("# mine\n*\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := piCodexSeedRoot(Task{NodeID: "n", WorkDir: work, StoreDir: store}); err != nil {
+			t.Fatal(err)
+		}
+		data, _ := os.ReadFile(filepath.Join(root, ".gitignore"))
+		// Byte-identical: appending a second `*` would also keep "# mine", so
+		// asserting survival alone does not pin the short-circuit.
+		if string(data) != "# mine\n*\n" {
+			t.Errorf("guard = %q, want it untouched", data)
+		}
+	})
+
+	// --store-dir is operator-supplied and unconstrained, so the seed root can
+	// land on a directory iterion did not create and does not own.
+	t.Run("an unrelated ignore file is appended to, not replaced", func(t *testing.T) {
+		work := t.TempDir()
+		store := filepath.Join(work, ".iterion")
+		root := filepath.Join(store, "pi")
+		if err := os.MkdirAll(root, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(root, ".gitignore"), []byte("build/\n*.tmp"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := piCodexSeedRoot(Task{NodeID: "n", WorkDir: work, StoreDir: store}); err != nil {
+			t.Fatal(err)
+		}
+		data, _ := os.ReadFile(filepath.Join(root, ".gitignore"))
+		if !strings.Contains(string(data), "build/") || !strings.Contains(string(data), "*.tmp") {
+			t.Errorf("guard = %q — destroyed rules iterion did not author", data)
+		}
+		// The unterminated last line must not be swallowed into `*.tmp*`.
+		if !slices.Contains(strings.Split(string(data), "\n"), "*") {
+			t.Errorf("guard = %q — the catch-all never became its own line", data)
+		}
+	})
+
+	// The workspace is a checkout of the target repository, which can commit
+	// `.iterion` as a symlink — .gitignore does not stop a tracked symlink from
+	// being checked out, and MkdirAll would follow it, writing the OAuth blob at
+	// a repo-chosen host path.
+	t.Run("a symlinked .iterion is refused, not followed", func(t *testing.T) {
+		work, elsewhere := t.TempDir(), t.TempDir()
+		if err := os.Symlink(elsewhere, filepath.Join(work, ".iterion")); err != nil {
+			t.Skipf("symlinks unavailable: %v", err)
+		}
+		_, err := piCodexSeedRoot(Task{NodeID: "n", WorkDir: work, Sandbox: stubSandboxRun{}})
+		if err == nil {
+			t.Fatal("seeded through a repo-controlled symlink")
+		}
+		if !strings.Contains(err.Error(), "symlink") {
+			t.Errorf("err = %v, want it to name the cause", err)
+		}
+		if _, err := os.Stat(filepath.Join(elsewhere, "pi")); err == nil {
+			t.Error("created a directory at the symlink's target")
+		}
+	})
+
+	// The same in-checkout write is reachable WITHOUT a sandbox: `--store-dir
+	// "$PWD/.iterion"` is the invocation this repo's own dogfood instructions
+	// prescribe, and the studio's workspace store has the same shape. Gating the
+	// refusal on `sandboxed` left that path open.
+	t.Run("a symlinked store dir inside the checkout is refused too", func(t *testing.T) {
+		work, elsewhere := t.TempDir(), t.TempDir()
+		if err := os.Symlink(elsewhere, filepath.Join(work, ".iterion")); err != nil {
+			t.Skipf("symlinks unavailable: %v", err)
+		}
+		store := filepath.Join(work, ".iterion")
+		_, err := piCodexSeedRoot(Task{NodeID: "n", WorkDir: work, StoreDir: store})
+		if err == nil {
+			t.Fatal("seeded through a repo-controlled symlink off the sandbox")
+		}
+		if _, err := os.Stat(filepath.Join(elsewhere, "pi")); err == nil {
+			t.Error("created a directory at the symlink's target")
+		}
+	})
+
+	// ...while a store genuinely outside the checkout is nobody's business but
+	// the operator's, symlink or not.
+	t.Run("a symlinked store outside the checkout is left alone", func(t *testing.T) {
+		work, real, link := t.TempDir(), t.TempDir(), filepath.Join(t.TempDir(), "store")
+		if err := os.Symlink(real, link); err != nil {
+			t.Skipf("symlinks unavailable: %v", err)
+		}
+		if _, err := piCodexSeedRoot(Task{NodeID: "n", WorkDir: work, StoreDir: link}); err != nil {
+			t.Errorf("refused an operator's own symlinked store: %v", err)
+		}
+	})
+
+	// --store-dir is taken VERBATIM, and `iterion schedule` renders it into cron
+	// lines as given — so the root can be RELATIVE. That broke every guard here,
+	// and the symlink refusal broke OPEN: filepath.Rel cannot relate an absolute
+	// WorkDir to a relative root, so the containment test answered "no" and the
+	// refusal never ran.
+	t.Run("a relative store dir is absolutised before any guard reads it", func(t *testing.T) {
+		work, elsewhere := t.TempDir(), t.TempDir()
+		if err := os.Symlink(elsewhere, filepath.Join(work, ".iterion")); err != nil {
+			t.Skipf("symlinks unavailable: %v", err)
+		}
+		t.Chdir(work)
+
+		_, err := piCodexSeedRoot(Task{NodeID: "n", WorkDir: work, StoreDir: ".iterion"})
+		if err == nil {
+			t.Fatal("a relative --store-dir walked straight past the symlink refusal")
+		}
+		if _, err := os.Stat(filepath.Join(elsewhere, "pi")); err == nil {
+			t.Error("created a directory at the symlink's target")
+		}
+	})
+
+	// And the root pi is told about must be absolute: pi's cwd is task.WorkDir
+	// while iterion's is its own, so a relative PI_CODING_AGENT_DIR points at a
+	// path where nothing was written — "No API key found for openai-codex".
+	t.Run("the seed root handed to pi is absolute", func(t *testing.T) {
+		work := t.TempDir()
+		t.Chdir(work)
+		root, err := piCodexSeedRoot(Task{NodeID: "n", WorkDir: work, StoreDir: "store"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !filepath.IsAbs(root) {
+			t.Errorf("root = %q, want an absolute path", root)
+		}
+	})
+
+	// MkdirAll is a NO-OP on a `.iterion/pi` the checkout pre-populated, and the
+	// path guards only walk TO the seed root, never inside it. A repo can
+	// therefore ship `.iterion/pi/.gitignore` as a tracked symlink: following it
+	// appends into a host file of the repo's choosing, and git refuses to read a
+	// symlinked .gitignore at all — so the credential would stay stageable.
+	t.Run("a symlinked ignore guard inside the seed root is refused", func(t *testing.T) {
+		work := t.TempDir()
+		victim := filepath.Join(t.TempDir(), "victim")
+		if err := os.WriteFile(victim, []byte("original\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		root := filepath.Join(work, ".iterion", "pi")
+		if err := os.MkdirAll(root, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Symlink(victim, filepath.Join(root, ".gitignore")); err != nil {
+			t.Skipf("symlinks unavailable: %v", err)
+		}
+
+		_, err := piCodexSeedRoot(Task{NodeID: "n", WorkDir: work, Sandbox: stubSandboxRun{}})
+		if err == nil {
+			t.Fatal("wrote the ignore guard through a repo-controlled symlink")
+		}
+		got, _ := os.ReadFile(victim)
+		if string(got) != "original\n" {
+			t.Errorf("victim file = %q — appended through the symlink", got)
+		}
+	})
+
+	// gitignore is LAST-MATCH-WINS, so a `*` anywhere is not proof. The seed root
+	// lives in the target repository's worktree, which can commit a `.gitignore`
+	// that opens a hole below its own catch-all.
+	t.Run("a catch-all negated below it does not count as guarded", func(t *testing.T) {
+		for _, body := range []string{"*\n!auth.json\n", "*\n!*\n", "*\n!pi-agent-*\n"} {
+			work := t.TempDir()
+			store := filepath.Join(work, ".iterion")
+			root := filepath.Join(store, "pi")
+			if err := os.MkdirAll(root, 0o755); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(filepath.Join(root, ".gitignore"), []byte(body), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := piCodexSeedRoot(Task{NodeID: "n", WorkDir: work, StoreDir: store}); err != nil {
+				t.Fatal(err)
+			}
+			data, _ := os.ReadFile(filepath.Join(root, ".gitignore"))
+			lines := strings.Split(strings.TrimRight(string(data), "\n"), "\n")
+			if last := strings.TrimSpace(lines[len(lines)-1]); last != "*" {
+				t.Errorf("%q -> %q: last effective rule is %q, so the credential stays stageable",
+					body, data, last)
+			}
+		}
+	})
+
+	// ...and a genuine trailing catch-all is still left alone.
+	t.Run("a trailing catch-all short-circuits", func(t *testing.T) {
+		work := t.TempDir()
+		store := filepath.Join(work, ".iterion")
+		root := filepath.Join(store, "pi")
+		if err := os.MkdirAll(root, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		body := "# mine\n!keep\n*\n\n# trailing comment\n"
+		if err := os.WriteFile(filepath.Join(root, ".gitignore"), []byte(body), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := piCodexSeedRoot(Task{NodeID: "n", WorkDir: work, StoreDir: store}); err != nil {
+			t.Fatal(err)
+		}
+		if data, _ := os.ReadFile(filepath.Join(root, ".gitignore")); string(data) != body {
+			t.Errorf("guard = %q, want it untouched", data)
+		}
+	})
+
+	// Outside the worktree nothing is stageable, so no guard is written.
+	t.Run("a store outside the worktree needs no guard", func(t *testing.T) {
+		work, outside := t.TempDir(), t.TempDir()
+		root, err := piCodexSeedRoot(Task{NodeID: "n", WorkDir: work, StoreDir: outside})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := os.Stat(filepath.Join(root, ".gitignore")); err == nil {
+			t.Error("wrote a guard outside the worktree — nothing there can be staged")
+		}
+	})
+}
+
+// The sweep is the ONLY thing that removes a seed stranded by SIGKILL/OOM, i.e.
+// the only thing between an interrupted node and a live access + refresh token
+// left on disk. Both directions matter: reaping a LIVE peer's dir is the worse
+// failure, and is why the age bound is generous rather than tight.
+func TestPiSweepStaleSeeds(t *testing.T) {
+	root := t.TempDir()
+	mk := func(name string, age time.Duration) string {
+		t.Helper()
+		dir := filepath.Join(root, name)
+		if err := os.MkdirAll(dir, 0o700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(dir, "auth.json"), []byte("{}"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		when := time.Now().Add(-age)
+		if err := os.Chtimes(dir, when, when); err != nil {
+			t.Fatal(err)
+		}
+		return dir
+	}
+
+	stale := mk("pi-agent-stale", piSeedMaxAge+time.Hour)
+	fresh := mk("pi-agent-fresh", time.Minute)
+	// Not ours: the sweep must not treat the root as its own scratch space.
+	foreign := mk("something-else", piSeedMaxAge+time.Hour)
+
+	piSweepStaleSeeds(root)
+
+	if _, err := os.Stat(stale); !os.IsNotExist(err) {
+		t.Errorf("a stranded seed survived (%v) — a live credential is left on disk with nothing to reap it", err)
+	}
+	if _, err := os.Stat(fresh); err != nil {
+		t.Errorf("reaped a fresh peer's seed (%v) — its pi would refresh into a deleted path", err)
+	}
+	if _, err := os.Stat(foreign); err != nil {
+		t.Errorf("deleted an unrelated directory (%v)", err)
+	}
+}
+
+// An operator who pinned pi's own PI_CODING_AGENT_DIR gets left alone: it is
+// the more natural variable to reach for, and the seed would otherwise
+// overwrite it through task.ExtraEnv.
+func TestPiCodexSeedRespectsPisOwnAgentDir(t *testing.T) {
+	for _, v := range []string{"ITERION_PI_AGENT_DIR", "PI_CODING_AGENT_DIR"} {
+		t.Run(v, func(t *testing.T) {
+			writeCodexAuth(t, "chatgpt")
+			t.Setenv(v, "/operator/pinned")
+			env, cleanup, err := piCodexSeed(context.Background(),
+				Task{NodeID: "n", Model: "openai-codex/gpt-5.6-sol", StoreDir: t.TempDir()}, nil)
+			cleanup()
+			if err != nil || len(env) != 0 {
+				t.Errorf("env=%v err=%v — the operator's own agent dir must win", env, err)
+			}
+		})
+	}
+}
+
+// pi writes its extension bundle, composed system prompt, session transcripts
+// and (sandboxed) seeded credential under <WorkDir>/.iterion/pi. A TRACKED
+// symlink there survives a checkout, and both MkdirAll and pi follow it.
+func TestPiGuardWriteRoot(t *testing.T) {
+	t.Run("a symlinked .iterion/pi is refused", func(t *testing.T) {
+		work, elsewhere := t.TempDir(), t.TempDir()
+		if err := os.MkdirAll(filepath.Join(work, ".iterion"), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Symlink(elsewhere, filepath.Join(work, ".iterion", "pi")); err != nil {
+			t.Skipf("symlinks unavailable: %v", err)
+		}
+		root, _ := Task{WorkDir: work, Sandbox: stubSandboxRun{}}.StateDir(BackendPi)
+		if err := piGuardWriteRoot(root); err == nil {
+			t.Fatal("ran with pi's write root redirected by the repo")
+		}
+	})
+
+	// The operator's own `.iterion` may legitimately point at another volume:
+	// without `worktree: auto` WorkDir is their repo root and `.iterion` is the
+	// conventional store dir. Refusing that would fail every pi node on a
+	// working setup.
+	t.Run("a symlinked .iterion is allowed", func(t *testing.T) {
+		work, volume := t.TempDir(), t.TempDir()
+		if err := os.MkdirAll(filepath.Join(volume, "pi"), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Symlink(volume, filepath.Join(work, ".iterion")); err != nil {
+			t.Skipf("symlinks unavailable: %v", err)
+		}
+		root, _ := Task{WorkDir: work, Sandbox: stubSandboxRun{}}.StateDir(BackendPi)
+		if err := piGuardWriteRoot(root); err != nil {
+			t.Errorf("refused an operator's own store symlink: %v", err)
+		}
+	})
+
+	t.Run("a real directory and an absent one both pass", func(t *testing.T) {
+		work := t.TempDir()
+		root, _ := Task{WorkDir: work, Sandbox: stubSandboxRun{}}.StateDir(BackendPi)
+		if err := piGuardWriteRoot(root); err != nil {
+			t.Errorf("absent root refused: %v", err)
+		}
+		if err := os.MkdirAll(filepath.Join(work, ".iterion", "pi"), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := piGuardWriteRoot(work); err != nil {
+			t.Errorf("real directory refused: %v", err)
+		}
+		if err := piGuardWriteRoot(""); err != nil {
+			t.Errorf("no workdir refused: %v", err)
+		}
+	})
+}
+
+// mustStateRoot drops StateDir's containment flag for the location assertions.
+func mustStateRoot(t Task) string {
+	root, _ := t.StateDir(BackendPi)
+	return root
+}
+
+// The structural change: a sandboxed run no longer writes its state inside the
+// target repository's checkout when host_state gave it a shared mount. That is
+// what retires the guard family for the default path — there is no repo-owned
+// directory left to defend.
+func TestPiStateRootPrefersTheSharedMount(t *testing.T) {
+	work, shared := t.TempDir(), t.TempDir()
+
+	t.Run("sandboxed with a shared mount stays out of the checkout", func(t *testing.T) {
+		root := mustStateRoot(Task{WorkDir: work, SharedStateDir: shared, Sandbox: stubSandboxRun{}})
+		if want := filepath.Join(shared, "pi"); root != want {
+			t.Fatalf("root = %q, want %q", root, want)
+		}
+		if lexicallyWithin(work, root) {
+			t.Error("root is inside the target repository's checkout")
+		}
+	})
+
+	// No mount (host_state=none, or the kubernetes driver): the workspace bind
+	// is the only thing the container can read, so there is no choice.
+	t.Run("sandboxed without one falls back into the workspace", func(t *testing.T) {
+		root := mustStateRoot(Task{WorkDir: work, Sandbox: stubSandboxRun{}})
+		if want := filepath.Join(work, ".iterion", "pi"); root != want {
+			t.Fatalf("root = %q, want the in-workspace fallback %q", root, want)
+		}
+	})
+
+	// Unchanged off the sandbox: the store still wins, so transcripts keep
+	// sharing the store's lifetime and `iterion runs prune` still reaches them.
+	t.Run("off the sandbox the store still wins", func(t *testing.T) {
+		store := t.TempDir()
+		if root := mustStateRoot(Task{WorkDir: work, StoreDir: store}); root != filepath.Join(store, "pi") {
+			t.Errorf("root = %q, want the store's pi dir", root)
+		}
+	})
+
+	// A shared mount is only meaningful inside a sandbox; on the host the store
+	// is still the right home.
+	t.Run("the shared mount does not override the store off the sandbox", func(t *testing.T) {
+		store := t.TempDir()
+		root := mustStateRoot(Task{WorkDir: work, StoreDir: store, SharedStateDir: shared})
+		if root != filepath.Join(store, "pi") {
+			t.Errorf("root = %q, want the store's pi dir", root)
+		}
+	})
+}
+
+// The seeded credential is what the whole guard family was protecting. With a
+// shared mount it simply is not in the checkout any more, so nothing needs
+// guarding — no ignore file is written into the repo, and none is needed.
+func TestPiCodexSeedRootOutsideTheCheckoutNeedsNoGuard(t *testing.T) {
+	work, shared := t.TempDir(), t.TempDir()
+	root, err := piCodexSeedRoot(Task{
+		NodeID: "n", WorkDir: work, SharedStateDir: shared, Sandbox: stubSandboxRun{},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(filepath.Join(root, ".gitignore")); err == nil {
+		t.Error("wrote an ignore guard outside the checkout — nothing there can be staged")
+	}
+	// piCodexSeedRoot alone; PiBackend.Execute's other writers are covered by
+	// TestPiExecuteLeavesTheCheckoutAloneWithASharedMount.
+	if _, err := os.Stat(filepath.Join(work, ".iterion")); err == nil {
+		t.Error("the seed touched the target repository's tree")
+	}
+}
+
+// The claim the change actually makes: with a shared mount, a pi run writes
+// NOTHING into the target repository's checkout — not the credential, not the
+// extension bundle, not the composed system prompt, not the session dir, and no
+// .gitignore either. Asserting it on the seed alone overstated it, because
+// piHideWorkspaceSessionDir used to create <WorkDir>/.iterion unconditionally.
+func TestPiExecuteLeavesTheCheckoutAloneWithASharedMount(t *testing.T) {
+	work, shared := t.TempDir(), t.TempDir()
+	task := Task{NodeID: "n", WorkDir: work, SharedStateDir: shared, Sandbox: stubSandboxRun{}}
+
+	root, inCheckout := task.StateDir(BackendPi)
+	if inCheckout {
+		t.Fatalf("state root %q is inside the checkout", root)
+	}
+
+	// 1. session transcripts
+	if got := piSessionDir(task); !strings.HasPrefix(got, shared) {
+		t.Errorf("session dir = %q, want it under the shared mount", got)
+	}
+	// 2. the seeded credential
+	if _, err := piCodexSeedRoot(task); err != nil {
+		t.Fatal(err)
+	}
+	// 3. the composed system prompt
+	promptPath, cleanupPrompt, err := writeSystemPromptFile(task, BackendPi, "posture")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer cleanupPrompt()
+	if !strings.HasPrefix(promptPath, shared) {
+		t.Errorf("system prompt at %q, want it under the shared mount", promptPath)
+	}
+	// 4. the extension bundle — which IS the permission gate
+	extPath, cleanupExt, err := piext.Materialise(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer cleanupExt()
+	if !strings.HasPrefix(extPath, shared) {
+		t.Errorf("extension at %q, want it under the shared mount", extPath)
+	}
+
+	if _, err := os.Stat(filepath.Join(work, ".iterion")); err == nil {
+		t.Error("a pi run created .iterion inside the target repository")
+	}
+}
+
 // ITERION_PI_BIN names a binary on the HOST — the documented case is "a host
 // with no Node". Resolving it once at construction put that path in argv[0] for
 // SANDBOXED runs too, where nothing mounts it and the image already ships pi on
@@ -486,9 +985,52 @@ func TestPiBinaryOverrideIsHostOnly(t *testing.T) {
 		t.Errorf("sandboxed run resolved %q — a host path is not a container path", got)
 	}
 
-	// An explicit command still wins everywhere: it is the node's `command:`.
 	explicit := NewPiBackend(nil, "/pinned/pi")
 	if got := explicit.print.resolveBinary(Task{Sandbox: stubSandboxRun{}}); got != "/pinned/pi" {
 		t.Errorf("explicit command resolved %q, want it honoured", got)
 	}
+}
+
+// The containment flag drives every guard, so it must never answer "outside"
+// for a path that is in the tree. Both operands are absolutised and symlinks are
+// resolved as a second opinion; anything unresolvable answers "inside".
+func TestStateDirContainmentFailsClosed(t *testing.T) {
+	t.Run("a relative WorkDir is still recognised", func(t *testing.T) {
+		base := t.TempDir()
+		if err := os.MkdirAll(filepath.Join(base, "repo"), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		t.Chdir(base)
+		// filepath.Rel refuses to relate a relative base to an absolute target,
+		// which used to answer "outside" and skip every guard.
+		if _, inCheckout := (Task{WorkDir: "repo", Sandbox: stubSandboxRun{}}).StateDir(BackendPi); !inCheckout {
+			t.Error("a relative WorkDir escaped the guards")
+		}
+	})
+
+	t.Run("a symlinked workspace is still recognised", func(t *testing.T) {
+		base := t.TempDir()
+		real := filepath.Join(base, "realrepo")
+		if err := os.MkdirAll(filepath.Join(real, ".iterion"), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		link := filepath.Join(base, "link")
+		if err := os.Symlink(real, link); err != nil {
+			t.Skipf("symlinks unavailable: %v", err)
+		}
+		// Spelled through the link the store resolves into the same tree; the
+		// lexical test alone says "outside", the direction that loses a
+		// credential to `git add -A`.
+		_, inCheckout := (Task{WorkDir: link, StoreDir: filepath.Join(real, ".iterion")}).StateDir(BackendPi)
+		if !inCheckout {
+			t.Error("a symlinked workspace escaped the ignore guard")
+		}
+	})
+
+	t.Run("a genuinely outside root stays outside", func(t *testing.T) {
+		work, shared := t.TempDir(), t.TempDir()
+		if _, inCheckout := (Task{WorkDir: work, SharedStateDir: shared, Sandbox: stubSandboxRun{}}).StateDir(BackendPi); inCheckout {
+			t.Error("guards would run on a root outside the checkout")
+		}
+	})
 }

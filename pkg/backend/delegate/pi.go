@@ -158,14 +158,19 @@ func (b *PiBackend) Execute(ctx context.Context, task Task) (Result, error) {
 	// containment rather than running them unconditionally is what makes the
 	// default path actually stop touching the target tree.
 	stateRoot, inCheckout := task.StateDir(BackendPi)
+	// UNCONDITIONAL. The shared root is bind-mounted read-write at a predictable
+	// path and is shared by every run on the host, so a previous run's agent can
+	// replace it with a symlink just as a checked-out repo can — and skipping
+	// the check outside the checkout removed the only symlink refusal on the
+	// path this change newly prefers. One Lstat on the leaf costs nothing.
+	if err := piGuardWriteRoot(stateRoot); err != nil {
+		return Result{BackendName: BackendPi, ExitCode: -1}, err
+	}
 	// Reap what an interrupted node stranded, for EVERY pi node — not just the
 	// codex ones that seed a credential. Session transcripts are written by all
 	// of them, and on a root shared across runs nothing else reaps them.
 	piSweepStaleSeeds(stateRoot)
 	if inCheckout {
-		if err := piGuardWriteRoot(stateRoot); err != nil {
-			return Result{BackendName: BackendPi, ExitCode: -1}, err
-		}
 		// The ignore guard goes FIRST: a v2 campaign agent runs `git add -A`
 		// before each in-stride commit, and finalizeWorktree fast-forwards the
 		// result onto the operator's branch, so a live credential could be

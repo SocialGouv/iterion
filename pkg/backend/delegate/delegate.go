@@ -788,10 +788,13 @@ type Task struct {
 // per-run Secret) would be available under every driver, and case 2 — with its
 // guard family — could then be deleted rather than maintained.
 func (t Task) StateDir(backendName string) (root string, inCheckout bool) {
+	// A noop sandbox runs every command on the HOST, so there is no bind mount
+	// to respect and no reason to fall back into the checkout.
+	sandboxed := t.Sandbox != nil && t.Sandbox.Driver() != "noop"
 	switch shared := strings.TrimSpace(t.SharedStateDir); {
-	case t.Sandbox != nil && shared != "":
+	case sandboxed && shared != "":
 		root = filepath.Join(shared, backendName)
-	case t.Sandbox != nil && t.WorkDir != "":
+	case sandboxed && t.WorkDir != "":
 		root = filepath.Join(t.WorkDir, ".iterion", backendName)
 	case t.StoreDir != "":
 		root = filepath.Join(t.StoreDir, backendName)
@@ -803,7 +806,63 @@ func (t Task) StateDir(backendName string) (root string, inCheckout bool) {
 	if abs, err := filepath.Abs(root); err == nil {
 		root = abs
 	}
-	return root, lexicallyWithin(t.WorkDir, root)
+	return root, pathInsideCheckout(t.WorkDir, root)
+}
+
+// pathInsideCheckout reports whether root is inside the workspace, and is
+// deliberately PESSIMISTIC: every uncertainty answers "inside", because the
+// caller uses this to decide whether to run its guards, and the cheap mistake
+// is guarding a path that did not need it.
+//
+// Two independent tests, OR'd, because they fail in opposite directions:
+//
+//   - lexical, on absolutised operands. Absolutising BOTH matters:
+//     filepath.Rel refuses to relate a relative base to an absolute target, and
+//     `iterion studio --dir <relative>` reaches here with exactly that — which
+//     silently answered "outside" and skipped every guard.
+//   - symlink-RESOLVING. A workspace reached through a symlink makes the
+//     lexical test say "outside" for a path that really is in the tree, which
+//     is the direction that loses a credential to `git add -A`. The deleted
+//     inWorktree existed for this case; keeping only the lexical half dropped it.
+func pathInsideCheckout(workDir, root string) bool {
+	if workDir == "" || root == "" {
+		return false // no workspace: nothing to be inside of
+	}
+	absWork, err := filepath.Abs(workDir)
+	if err != nil {
+		return true // cannot tell → guard
+	}
+	if lexicallyWithin(absWork, root) {
+		return true
+	}
+	realWork, err := filepath.EvalSymlinks(absWork)
+	if err != nil {
+		return false // the workspace does not exist yet; the lexical answer stands
+	}
+	realRoot, err := filepath.EvalSymlinks(root)
+	if err != nil {
+		// The root is usually about to be created; resolve its nearest
+		// existing ancestor so a symlinked parent still counts.
+		realRoot = nearestExistingReal(root)
+	}
+	return realRoot != "" && lexicallyWithin(realWork, realRoot)
+}
+
+// nearestExistingReal resolves the deepest existing ancestor of path, keeping
+// the unresolved remainder appended so containment is judged on the real tree.
+func nearestExistingReal(path string) string {
+	rest := ""
+	for dir := path; ; {
+		if real, err := filepath.EvalSymlinks(dir); err == nil {
+			return filepath.Join(real, rest)
+		}
+		parent := filepath.Dir(dir)
+		if parent == dir {
+			return ""
+		}
+		rest = filepath.Join(filepath.Base(dir), rest)
+		dir = parent
+	}
 }
 
 // AsyncQuestion is the input of a non-blocking ask_user_async call

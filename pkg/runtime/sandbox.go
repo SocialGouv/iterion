@@ -359,6 +359,13 @@ func resolveAndStartSandbox(ctx context.Context, p SandboxParams) (*activeSandbo
 	}
 	bundleContainerPath := addOptionalBindMount(spec, p.BundleHostDir, p.BundleContainerPath, "/run/iterion/bundle", "bundle", true, logger)
 	sharedStateDir := applyHostStateMounts(spec, p.Workflow, p, emitEvent, logger)
+	if !caps.SupportsHostBindMounts {
+		// Same rule as attachmentsDir below: a path that was never bind-mounted
+		// names a host location the container cannot read, and a backend that
+		// trusted it would write its state — including a permission-gate
+		// extension — somewhere the run cannot see.
+		sharedStateDir = ""
+	}
 	// Devbox provisioning (bot's bundle devbox.json + target repo's) runs
 	// after both: it needs the bundle mount's resolved container path, and
 	// it reads spec.WorkspaceFolder, which applyHostStateMounts may have
