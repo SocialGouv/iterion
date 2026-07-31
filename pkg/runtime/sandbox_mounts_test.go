@@ -4,11 +4,13 @@ import (
 	"os"
 	"path/filepath"
 	goruntime "runtime"
+	"strconv"
 	"strings"
 	"testing"
 
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
 	iterlog "github.com/SocialGouv/iterion/pkg/log"
+	"github.com/SocialGouv/iterion/pkg/memory"
 	"github.com/SocialGouv/iterion/pkg/sandbox"
 	"github.com/SocialGouv/iterion/pkg/store"
 )
@@ -307,27 +309,26 @@ func scratchMountTarget(mounts []string) (string, bool) {
 	return "", false
 }
 
-// activeScratchSpec is a spec with host_state resolved to on, the state
-// applyScratchMount requires. Mirrors what applyHostStateMounts leaves
-// behind on a default run.
+// activeScratchSpec mirrors what applyHostStateMounts leaves behind on a
+// default run: host_state on, and no pinned User because the UID remap
+// aligned the container with the host.
 func activeScratchSpec() *sandbox.Spec {
 	return &sandbox.Spec{HostState: sandbox.HostStateAuto}
 }
 
 // A parent and its sub-bot child are separate runs in separate
-// containers with different worktrees. They must still resolve the SAME
+// containers with different worktrees. They must resolve the SAME
 // scratch directory: that is the channel a fan-in travels through
 // (app-concept writes one topic synthesis per child and the parent reads
-// them all back). Key it off anything per-run and every child writes
-// into its own container, reports success, and the parent reads an empty
-// directory.
+// them all back). Anything per-run here and every child writes into its
+// own container, reports success, and the parent reads an empty dir.
 func TestApplyScratchMount_ParentAndChildShareOneHostDir(t *testing.T) {
 	t.Setenv("ITERION_HOME", t.TempDir())
 	repoRoot := t.TempDir()
 	parentSpec, childSpec := activeScratchSpec(), activeScratchSpec()
 
-	parentHost := applyScratchMount(parentSpec, repoRoot, filepath.Join(repoRoot, "wt", "parent"), "run-root", true, nil, nil)
-	childHost := applyScratchMount(childSpec, repoRoot, filepath.Join(repoRoot, "wt", "child"), "run-root", true, nil, nil)
+	parentHost := applyScratchMount(parentSpec, repoRoot, filepath.Join(repoRoot, "wt", "parent"), true, nil, nil)
+	childHost := applyScratchMount(childSpec, repoRoot, filepath.Join(repoRoot, "wt", "child"), true, nil, nil)
 
 	if parentHost == "" || childHost == "" {
 		t.Fatalf("scratch mount not applied: parent=%q child=%q", parentHost, childHost)
@@ -346,60 +347,64 @@ func TestApplyScratchMount_ParentAndChildShareOneHostDir(t *testing.T) {
 	}
 }
 
-// Two unrelated runs of the SAME repo must NOT share. Bots write
-// `<scratch>/<bot>/verify.sh` and `verify.log` at fixed paths with no run
-// dimension, so a shared directory lets concurrent runs overwrite each
-// other's script mid-flight and read each other's log — a deterministic
-// verify gate then reports an exit code for a tree that is not its own.
-func TestApplyScratchMount_UnrelatedRunsDoNotShare(t *testing.T) {
+// The bind must land on the SAME directory the un-sandboxed resolution
+// uses. Several bots treat scratch as cross-run memory (docs-refresh's
+// promises ledger, sec-audit-deps' package cache): a sandbox-only
+// sub-path would silently empty those caches under the default
+// sandbox-on posture while leaving them intact without it.
+func TestApplyScratchMount_MatchesUnsandboxedProjectPath(t *testing.T) {
 	t.Setenv("ITERION_HOME", t.TempDir())
 	repoRoot := t.TempDir()
-
-	first := applyScratchMount(activeScratchSpec(), repoRoot, "", "run-a", true, nil, nil)
-	second := applyScratchMount(activeScratchSpec(), repoRoot, "", "run-b", true, nil, nil)
-
-	if first == "" || second == "" {
-		t.Fatalf("scratch mount not applied: first=%q second=%q", first, second)
-	}
-	if first == second {
-		t.Fatalf("two unrelated runs share %s — concurrent verify.sh writers collide", first)
+	host := applyScratchMount(activeScratchSpec(), repoRoot, "", true, nil, nil)
+	if want := memory.WorkspaceScratchDir(repoRoot); host != want {
+		t.Fatalf("scratch bound from %q, want the un-sandboxed project path %q", host, want)
 	}
 }
 
-// The mode is load-bearing in both directions: world-writable so an
-// image pinning a non-host User can write the bind (the case the
-// container-local path existed to serve), sticky so no local user can
-// swap `verify.sh` between the tool that writes it and the tool that
-// executes it.
-func TestApplyScratchMount_HostDirIsWorldWritableAndSticky(t *testing.T) {
+// The directory holds `verify.sh`, which a deterministic tool node later
+// EXECUTES, and `packages.jsonl`, which triage reads back as trusted.
+// It must stay owner-only: the bind is writable because the container
+// runs as the host UID, not because the mode was widened.
+func TestApplyScratchMount_HostDirIsNotWorldWritable(t *testing.T) {
 	if goruntime.GOOS != "linux" {
 		t.Skip("mode bits are checked on Linux only")
 	}
 	t.Setenv("ITERION_HOME", t.TempDir())
-	hostScratch := applyScratchMount(activeScratchSpec(), t.TempDir(), "", "run-1", true, nil, nil)
-	if hostScratch == "" {
+	host := applyScratchMount(activeScratchSpec(), t.TempDir(), "", true, nil, nil)
+	if host == "" {
 		t.Fatal("scratch mount not applied")
 	}
-	info, err := os.Stat(hostScratch)
+	info, err := os.Stat(host)
 	if err != nil {
-		t.Fatalf("stat %s: %v", hostScratch, err)
+		t.Fatalf("stat %s: %v", host, err)
 	}
-	if perm := info.Mode().Perm(); perm != 0o777 {
-		t.Errorf("scratch dir mode = %#o, want 0777 (a non-host container User must be able to write it)", perm)
-	}
-	if info.Mode()&os.ModeSticky == 0 {
-		t.Errorf("scratch dir %s is world-writable WITHOUT the sticky bit — verify.sh could be swapped before it is executed", hostScratch)
+	if perm := info.Mode().Perm(); perm&0o022 != 0 {
+		t.Fatalf("scratch dir mode = %#o — group/other write on a directory whose verify.sh is executed", perm)
 	}
 }
 
-// `host_state: none` is the documented isolation posture for shared
-// infrastructure: it suppresses every ~/.iterion bind. Scratch is one of
-// them, and it would otherwise persist to the host and be reachable by
-// any run keyed on the same tree.
+// An image pinning a UID that is not the host's cannot write a
+// host-owned bind — the EACCES case the container-local path exists to
+// serve. Binding anyway would break those runs outright.
+func TestApplyScratchMount_SkippedWhenContainerPinsForeignUID(t *testing.T) {
+	if goruntime.GOOS != "linux" {
+		t.Skip("UID comparison is meaningful on Linux only")
+	}
+	t.Setenv("ITERION_HOME", t.TempDir())
+	spec := activeScratchSpec()
+	spec.User = strconv.Itoa(os.Getuid()+1) + ":" + strconv.Itoa(os.Getgid())
+	if host := applyScratchMount(spec, t.TempDir(), "", true, nil, nil); host != "" {
+		t.Fatalf("bound a host dir the container cannot write: %q", host)
+	}
+}
+
+// `host_state: none` is the documented posture for shared
+// infrastructure: it suppresses every ~/.iterion bind, and scratch is
+// one of them.
 func TestApplyScratchMount_SkippedWhenHostStateOff(t *testing.T) {
 	t.Setenv("ITERION_HOME", t.TempDir())
 	spec := &sandbox.Spec{HostState: sandbox.HostStateNone}
-	if host := applyScratchMount(spec, t.TempDir(), "", "run-1", true, nil, nil); host != "" {
+	if host := applyScratchMount(spec, t.TempDir(), "", true, nil, nil); host != "" {
 		t.Fatalf("scratch bound despite host_state=none: %q", host)
 	}
 	if _, ok := scratchMountTarget(spec.Mounts); ok {
@@ -407,37 +412,40 @@ func TestApplyScratchMount_SkippedWhenHostStateOff(t *testing.T) {
 	}
 }
 
-// A driver without host bind mounts (kubernetes) cannot take the mount;
-// the container-local path stays the fallback rather than the run dying.
-func TestApplyScratchMount_SkippedWithoutHostBindMounts(t *testing.T) {
+// Every fallback to the container-local path reinstates the bug this
+// function fixes, so it must be announced — an operator must find the
+// reason in the run record, not infer it from an empty directory.
+func TestApplyScratchMount_AnnouncesBothOutcomes(t *testing.T) {
 	t.Setenv("ITERION_HOME", t.TempDir())
-	spec := activeScratchSpec()
-	if host := applyScratchMount(spec, t.TempDir(), "", "run-1", false, nil, nil); host != "" {
-		t.Fatalf("scratch mount applied without host bind support: %q", host)
+	collect := func() (func(store.EventType, map[string]any) error, *[]map[string]any) {
+		var seen []map[string]any
+		return func(_ store.EventType, data map[string]any) error {
+			seen = append(seen, data)
+			return nil
+		}, &seen
 	}
-	if _, ok := scratchMountTarget(spec.Mounts); ok {
-		t.Fatalf("mount leaked into spec: %v", spec.Mounts)
-	}
-}
 
-// The bind must be announced: `docker inspect` showing a mount that
-// events.jsonl cannot explain is exactly what the host-state event
-// exists to prevent.
-func TestApplyScratchMount_EmitsMountEvent(t *testing.T) {
-	t.Setenv("ITERION_HOME", t.TempDir())
-	var events []map[string]any
-	emit := func(_ store.EventType, data map[string]any) error {
-		events = append(events, data)
-		return nil
-	}
-	host := applyScratchMount(activeScratchSpec(), t.TempDir(), "", "run-1", true, emit, nil)
-	if host == "" {
-		t.Fatal("scratch mount not applied")
-	}
-	for _, e := range events {
+	emit, seen := collect()
+	host := applyScratchMount(activeScratchSpec(), t.TempDir(), "", true, emit, nil)
+	found := false
+	for _, e := range *seen {
 		if mounts, ok := e["mounts"].([]string); ok && len(mounts) == 1 && strings.Contains(mounts[0], host) {
-			return
+			found = true
 		}
 	}
-	t.Fatalf("no event announced the scratch bind of %s: %v", host, events)
+	if !found {
+		t.Errorf("the bind of %s was not announced: %v", host, *seen)
+	}
+
+	emit, seen = collect()
+	applyScratchMount(activeScratchSpec(), t.TempDir(), "", false, emit, nil)
+	found = false
+	for _, e := range *seen {
+		if e["enabled"] == false && e["reason"] != nil {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("the fallback to container-local scratch was not announced: %v", *seen)
+	}
 }

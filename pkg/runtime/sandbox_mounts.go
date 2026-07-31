@@ -3,7 +3,6 @@
 package runtime
 
 import (
-	"context"
 	"errors"
 	"fmt"
 	"io/fs"
@@ -24,84 +23,96 @@ import (
 )
 
 // sandboxScratchContainerPath is where ${PROJECT_SCRATCH_DIR} resolves
-// inside a sandbox. Fixed rather than the host path because an image
-// pinning a non-host User cannot write a host-owned bind;
-// applyScratchMount backs it with a host directory so contents outlive
-// the container and are shared with the run's sub-bot children.
+// inside a sandbox. Fixed rather than the host path so a prompt or tool
+// node sees one stable location; applyScratchMount backs it with the
+// project's host scratch dir.
 const sandboxScratchContainerPath = "/tmp/iterion-scratch"
 
-// applyScratchMount binds this run TREE's host scratch dir onto
+// applyScratchMount binds the project's host scratch dir onto
 // sandboxScratchContainerPath and returns the host path it bound (""
 // when it did not bind).
 //
 // Why back it at all: a sub-bot child runs in its OWN container, so a
 // purely container-local scratch means the file a child writes there is
-// invisible to the parent that reads the same path afterwards. The child
+// invisible to the parent reading the same path afterwards. The child
 // reports success and the parent reads an empty directory, so the defect
 // surfaces far from its cause (observed on app-concept: four topic
 // syntheses written, none readable at fan-in). Backing it also lets a
-// crashed run resume from its own working state.
+// crashed run resume from its own working state, and it makes the
+// sandboxed layout identical to the un-sandboxed one — which several
+// bots depend on, treating scratch as CROSS-RUN memory (docs-refresh's
+// promises ledger, sec-audit-deps' package cache, wiki-gen's cache).
+// Scoping the bind per run would silently empty those caches under the
+// default sandbox-on posture while leaving them intact without it.
 //
-// Why the ROOT run id and not the repo root: the scratch holds
-// per-run working state that bots do NOT namespace — several write
-// `<scratch>/<bot>/verify.sh` and `verify.log` at fixed paths. Keying on
-// the repo alone would let two concurrent runs of the same repo
-// overwrite each other's script mid-flight and read each other's log,
-// so a deterministic verify gate could report an exit code for a tree
-// that is not its own. A parent and its children share a root id, so
-// they still meet; unrelated runs no longer do.
-//
-// Why 0777+sticky: the permissive mode is what lets an image with a
-// non-host User write the bind — the exact case the container-local
-// path was introduced to serve. The sticky bit is not optional: this
+// No chmod, deliberately: the mount is writable because
+// applyHostUIDRemap has already aligned the container process with the
+// host UID/GID, which is exactly what makes the sibling ~/.iterion bind
+// work. Widening the mode instead would be a real weakening — this
 // directory holds `verify.sh`, which a deterministic tool node later
-// EXECUTES, so without it any local user could replace the script
-// between the write and the run. Sticky is what makes /tmp safe to
-// share (1777) and it applies here for the same reason. Only this
-// run-tree leaf is opened up; its parents keep the default mode.
+// EXECUTES, and `packages.jsonl`, which triage reads back as trusted.
 //
-// Skipped when the driver has no host bind mounts (kubernetes), where
-// container-local remains the only option, and when host_state is off —
-// that posture exists to keep every ~/.iterion bind out of the
-// container, and scratch is one of them.
+// Skipped, with an event, when the bind could not be made writable or
+// useful: no host bind mounts on the driver (kubernetes), host_state
+// off (the posture that keeps every ~/.iterion bind out of the
+// container), or an image pinning a UID that is not the host's — the
+// EACCES case the container-local path exists to serve.
 func applyScratchMount(
 	spec *sandbox.Spec,
-	repoRoot, workDir, rootRunID string,
+	repoRoot, workDir string,
 	supportsHostBindMounts bool,
 	emitEvent func(store.EventType, map[string]any) error,
 	logger *iterlog.Logger,
 ) string {
-	if spec == nil || !supportsHostBindMounts || !spec.HostState.Active() {
+	if spec == nil {
 		return ""
+	}
+	// Never degrade silently: falling back to the container-local path
+	// reinstates the cross-container blindness this function exists to
+	// fix, and an operator hitting it must find the reason in the run
+	// record rather than infer it from an empty directory.
+	skip := func(reason string) string {
+		if emitEvent != nil {
+			_ = emitEvent(store.EventSandboxHostStateMounted, map[string]any{
+				"enabled": false,
+				"source":  "scratch",
+				"reason":  reason,
+			})
+		}
+		if logger != nil {
+			logger.Warn("runtime: sandbox scratch stays container-local (%s) — a sub-bot fan-in through ${PROJECT_SCRATCH_DIR} will not see its children's files", reason)
+		}
+		return ""
+	}
+	if !supportsHostBindMounts {
+		return skip("driver has no host bind mounts")
+	}
+	if !spec.HostState.Active() {
+		// host_state=none already emitted its own disabled event, and
+		// suppressing every ~/.iterion bind is the point of that posture.
+		return ""
+	}
+	if uid, ok := parseUserUID(spec.User); ok && uid != os.Getuid() {
+		return skip(fmt.Sprintf("container pins UID %d, host is %d", uid, os.Getuid()))
 	}
 	base := repoRoot
 	if base == "" {
 		base = workDir
 	}
-	projectScratch := memory.WorkspaceScratchDir(base)
-	if projectScratch == "" || rootRunID == "" {
-		return ""
+	hostScratch := memory.WorkspaceScratchDir(base)
+	if hostScratch == "" {
+		return skip("no project scratch dir could be resolved")
 	}
-	hostScratch := filepath.Join(projectScratch, "runs", rootRunID)
-	if err := os.MkdirAll(hostScratch, 0o755); err != nil {
-		if logger != nil {
-			logger.Warn("sandbox: scratch mount skipped (mkdir %s: %v) — scratch stays container-local", hostScratch, err)
-		}
-		return ""
-	}
-	// MkdirAll honours umask, so set the mode explicitly.
-	if err := os.Chmod(hostScratch, 0o777|os.ModeSticky); err != nil && logger != nil {
-		logger.Warn("sandbox: scratch dir %s kept its current mode (%v) — a non-host container User may fail to write it", hostScratch, err)
+	if err := os.MkdirAll(hostScratch, 0o700); err != nil {
+		return skip(fmt.Sprintf("mkdir %s: %v", hostScratch, err))
 	}
 	spec.Mounts = append(spec.Mounts, fmt.Sprintf(
 		"source=%s,target=%s,type=bind", hostScratch, sandboxScratchContainerPath))
-	// The bind is invisible in the host-state event, so announce it:
-	// `docker inspect` must never show a mount that events.jsonl cannot
-	// explain.
+	// `docker inspect` must never show a mount events.jsonl cannot explain.
 	if emitEvent != nil {
 		_ = emitEvent(store.EventSandboxHostStateMounted, map[string]any{
 			"enabled": true,
-			"source":  "scratch (run tree)",
+			"source":  "scratch",
 			"mounts":  []string{fmt.Sprintf("%s -> %s", hostScratch, sandboxScratchContainerPath)},
 		})
 	}
@@ -637,31 +648,4 @@ func addWorktreeGitMount(spec *sandbox.Spec, gitDir string, logger *iterlog.Logg
 	spec.Mounts = append(spec.Mounts,
 		fmt.Sprintf("source=%s,target=%s,type=bind", dotGit, dotGit),
 	)
-}
-
-// rootRunID walks ParentRunID up from runID and returns the id at the
-// top of the sub-bot tree (runID itself for a root run, or whenever the
-// chain cannot be read). It is what lets a parent and its children share
-// one scratch directory while unrelated concurrent runs stay apart.
-//
-// Bounded: a corrupted store that made the chain cyclic must not spin
-// here, and real trees are shallow (a parent, its children, at most a
-// grandchild), so a small cap costs nothing and removes the failure mode.
-func (e *Engine) rootRunID(ctx context.Context, runID string) string {
-	if e == nil || e.store == nil || runID == "" {
-		return runID
-	}
-	const maxDepth = 16
-	current := runID
-	for i := 0; i < maxDepth; i++ {
-		run, err := e.store.LoadRun(ctx, current)
-		if err != nil || run == nil || run.ParentRunID == "" {
-			return current
-		}
-		current = run.ParentRunID
-	}
-	if e.logger != nil {
-		e.logger.Warn("runtime: run %s has a parent chain deeper than %d — scoping scratch at %s", runID, maxDepth, current)
-	}
-	return current
 }
