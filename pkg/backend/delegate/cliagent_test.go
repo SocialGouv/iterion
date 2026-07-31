@@ -258,21 +258,3 @@ func TestCLIAgentExecuteNoBinary(t *testing.T) {
 		t.Fatal("expected error when no binary configured")
 	}
 }
-
-// The workspace is a checkout of the TARGET repository, and a tracked symlink at
-// `.iterion` survives a checkout. MkdirAll follows it, so writing the composed
-// system prompt through it would let the repo choose where a host file lands —
-// an arbitrary-write primitive out of a path iterion picked.
-func TestWriteSystemPromptFileRefusesASymlinkedIterionDir(t *testing.T) {
-	work, elsewhere := t.TempDir(), t.TempDir()
-	if err := os.Symlink(elsewhere, filepath.Join(work, ".iterion")); err != nil {
-		t.Skipf("symlinks unavailable: %v", err)
-	}
-	_, _, err := writeSystemPromptFile(Task{NodeID: "n", WorkDir: work}, "pi", "posture")
-	if err == nil {
-		t.Fatal("wrote the system prompt through a repo-controlled symlink")
-	}
-	if _, err := os.Stat(filepath.Join(elsewhere, "pi")); err == nil {
-		t.Error("created a directory at the symlink's target")
-	}
-}

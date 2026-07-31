@@ -142,6 +142,14 @@ func (b *PiBackend) Execute(ctx context.Context, task Task) (Result, error) {
 	if err := b.noticeSubscriptionOAuth(ctx, task); err != nil {
 		return Result{BackendName: BackendPi, ExitCode: -1}, err
 	}
+	// Everything pi writes into the workspace lands under <WorkDir>/.iterion/pi:
+	// the embedded extension bundle, the composed system prompt, the session
+	// transcripts (which carry the node's full conversation and tool output),
+	// and on the sandboxed path the seeded credential. One guard here covers
+	// all four, before any of them runs.
+	if err := piGuardWriteRoot(task.WorkDir); err != nil {
+		return Result{BackendName: BackendPi, ExitCode: -1}, err
+	}
 	// The ignore guard goes FIRST. On the sandboxed path the credential below
 	// lands in <WorkDir>/.iterion/pi/, inside the git worktree, and a v2
 	// campaign agent runs `git add -A` before each in-stride commit — so a live
@@ -487,6 +495,44 @@ func piSessionDir(task Task) string {
 	return filepath.Join(os.TempDir(), "iterion-pi-sessions")
 }
 
+// piGuardWriteRoot refuses to write pi's workspace state through a symlink the
+// TARGET repository supplied at `<WorkDir>/.iterion/pi`.
+//
+// .gitignore does not stop a TRACKED symlink from being checked out, and both
+// os.MkdirAll and pi itself follow one — so a repo could redirect the extension
+// bundle, the composed system prompt and its own session transcripts to a host
+// path of its choosing, creating directories along the way. Off the sandbox
+// that path is outside the workspace entirely.
+//
+// Only the LEAF is refused, not a symlinked `.iterion` above it. That asymmetry
+// is deliberate: `pi/` is a directory iterion creates and names, so a symlink
+// there is never the operator's doing — whereas `.iterion` IS theirs. Without
+// `worktree: auto`, WorkDir is the operator's own repo root and `.iterion` is
+// the conventional store dir, which they may legitimately have pointed at
+// another volume; refusing that would fail every pi node on a working setup to
+// close a narrower hole.
+//
+// The residue is stated rather than hidden: a repo that commits `.iterion`
+// ITSELF as a symlink is not caught here, because at that point it is
+// impersonating the operator's own store convention and the two are
+// indistinguishable from this side.
+func piGuardWriteRoot(workDir string) error {
+	if workDir == "" {
+		return nil
+	}
+	leaf := filepath.Join(workDir, ".iterion", "pi")
+	info, err := os.Lstat(leaf)
+	if err != nil {
+		return nil // absent, or unreadable for a reason MkdirAll will report
+	}
+	if info.Mode()&os.ModeSymlink != 0 {
+		return fmt.Errorf("pi backend: refusing to run: %s is a symlink, and the workspace is a "+
+			"checkout of the target repository — pi's extension, system prompt and session "+
+			"transcripts would be written wherever it points", leaf)
+	}
+	return nil
+}
+
 // piHideWorkspaceSessionDir makes a workspace-relative session dir invisible
 // to the target repo's git, by dropping a self-ignoring .gitignore the way
 // devbox does for its generated profile.
@@ -509,16 +555,6 @@ func piHideWorkspaceSessionDir(task Task, logger *iterlog.Logger) {
 		return
 	}
 	root := filepath.Join(task.WorkDir, ".iterion")
-	// A repo can commit `.iterion` as a symlink; MkdirAll would follow it and
-	// the guard below would be written at a path the repo chose. Bailing is in
-	// contract here — this function is best-effort — and the writers that
-	// matter refuse the same redirect for themselves.
-	if err := refuseSymlinkedPath(task.WorkDir, root); err != nil {
-		if logger != nil {
-			logger.Warn("pi: %v", err)
-		}
-		return
-	}
 	if err := os.MkdirAll(root, 0o755); err != nil {
 		if logger != nil {
 			logger.Warn("pi: cannot create %s: %v — session files may ride a `git add -A`", root, err)

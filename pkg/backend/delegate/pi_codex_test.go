@@ -711,3 +711,54 @@ func TestPiCodexSeedRespectsPisOwnAgentDir(t *testing.T) {
 		})
 	}
 }
+
+// pi writes its extension bundle, composed system prompt, session transcripts
+// and (sandboxed) seeded credential under <WorkDir>/.iterion/pi. A TRACKED
+// symlink there survives a checkout, and both MkdirAll and pi follow it.
+func TestPiGuardWriteRoot(t *testing.T) {
+	t.Run("a symlinked .iterion/pi is refused", func(t *testing.T) {
+		work, elsewhere := t.TempDir(), t.TempDir()
+		if err := os.MkdirAll(filepath.Join(work, ".iterion"), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Symlink(elsewhere, filepath.Join(work, ".iterion", "pi")); err != nil {
+			t.Skipf("symlinks unavailable: %v", err)
+		}
+		if err := piGuardWriteRoot(work); err == nil {
+			t.Fatal("ran with pi's write root redirected by the repo")
+		}
+	})
+
+	// The operator's own `.iterion` may legitimately point at another volume:
+	// without `worktree: auto` WorkDir is their repo root and `.iterion` is the
+	// conventional store dir. Refusing that would fail every pi node on a
+	// working setup.
+	t.Run("a symlinked .iterion is allowed", func(t *testing.T) {
+		work, volume := t.TempDir(), t.TempDir()
+		if err := os.MkdirAll(filepath.Join(volume, "pi"), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Symlink(volume, filepath.Join(work, ".iterion")); err != nil {
+			t.Skipf("symlinks unavailable: %v", err)
+		}
+		if err := piGuardWriteRoot(work); err != nil {
+			t.Errorf("refused an operator's own store symlink: %v", err)
+		}
+	})
+
+	t.Run("a real directory and an absent one both pass", func(t *testing.T) {
+		work := t.TempDir()
+		if err := piGuardWriteRoot(work); err != nil {
+			t.Errorf("absent root refused: %v", err)
+		}
+		if err := os.MkdirAll(filepath.Join(work, ".iterion", "pi"), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := piGuardWriteRoot(work); err != nil {
+			t.Errorf("real directory refused: %v", err)
+		}
+		if err := piGuardWriteRoot(""); err != nil {
+			t.Errorf("no workdir refused: %v", err)
+		}
+	})
+}
