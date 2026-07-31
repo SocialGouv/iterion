@@ -1210,13 +1210,16 @@ log + `0 tokens` billed confirms the OAuth-forfait path (not a metered API key).
 ### Live dogfood runs MUST be visible in the operator's studio
 
 When you test or dogfood a catalog bot with a real run, launch it into the
-store the operator's running `iterion studio` reads — **pass `--store-dir
-"$PWD/.iterion"` explicitly** (the workspace store). Do **not** rely on omitting
-`--store-dir`: `iterion run` with no `--store-dir` does **not** default to the
-workspace `.iterion` — it persists to a per-bot project store under
-`~/.iterion/projects/<bot-path-key>/`, which the operator's studio (bound to
+store the operator's running `iterion studio` reads. `iterion run` anchors its
+store on the **working directory**, so from a workspace whose `.iterion` is
+already a managed store (it has `runs/`, `dispatcher/` or `.iterion-store`) the
+run lands in `<workspace>/.iterion` and the studio sees it.
+
+The caveat is a workspace with no managed `.iterion` yet: the run then goes to
+`~/.iterion/projects/<workdir-key>/`, which the operator's studio (bound to
 `<workspace>/.iterion`) cannot see, producing a `run not found … run.json: no
-such file or directory` 404 in the studio's run/diffs panel. And **never** use a
+such file or directory` 404 in the studio's run/diffs panel. When in doubt
+**pass `--store-dir "$PWD/.iterion"` explicitly**. And **never** use a
 throwaway `--store-dir /tmp/...`. A run the operator can't watch in the UI does
 not count as validated.
 
