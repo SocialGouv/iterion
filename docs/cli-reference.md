@@ -52,7 +52,7 @@ iterion validate workflow.bot
 iterion validate bundle.botz --json
 ```
 
-Accepted inputs are `.bot`, `.botz`, and bundle directories. Validation reports sparse DSL diagnostics in C001–C199 and bundle checks in C200–C234; the [diagnostic catalogue](references/diagnostics.md) is authoritative.
+Accepted inputs are `.bot`, `.botz`, and bundle directories. Validation reports sparse DSL diagnostics in C001–C199 plus the async-interaction band C240–C242, and bundle checks in C200–C234; the [diagnostic catalogue](references/diagnostics.md) is authoritative.
 
 ### `iterion diagram`
 
