@@ -169,6 +169,7 @@ while remaining universal: the agent writes the repo's own build/test into
 | `workspace_dir` | `${PROJECT_DIR}` | Repo to review (the run's worktree). |
 | `base_ref` | `main` | Branch/ref to diff against; scope is `git diff $(git merge-base base_ref HEAD)` (merge-base vs working tree). |
 | `scope_notes` | `""` | Free-form extra context for the campaign agent. |
+| `prior_review` | `""` | Findings to verify and fix before continuing the campaign's own review. The webhook path seeds this automatically when `/billy` is invoked on a PR that Revi already reviewed; Billy rechecks every finding against the current diff rather than trusting a stale verdict. |
 | `baseline` | `""` | **G5** — known pre-existing failures / flaky tests the campaign must SKIP (empty = it establishes the baseline once cheaply against `base_ref`). |
 | `max_passes` | `8` | Hard cap on continuation passes — the convergence backstop; sizes the declared loop. |
 | `open_mr` / `mr_branch` / `mr_base` / `source_issue_ref` | off | Opt-in PR path shipping the series of per-pass commits (`mr_base` empty = `base_ref`). |
