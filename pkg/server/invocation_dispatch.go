@@ -123,6 +123,16 @@ func (s *Server) dispatchInvocation(
 	route webhooks.CommandRoute, vars map[string]string,
 	repoURL, repoRef, payloadHash, srcIP string,
 ) {
+	// Seed the declared hand-off vars BEFORE the mode switch. A board-mode
+	// command with a dispatcher never reaches the launch tail — the card IS the
+	// launch — so stamping only there would silently drop the seed on exactly
+	// the path most commands take. The launch tail keeps its own call for the
+	// lanes that skip this function (the PR-event fan-out, the auto-heal); it
+	// no-ops when the var is already set here.
+	s.stampPriorReview(ctx, cfg, route.BotID, vars, priorReviewQuery{
+		PRURL:   vars["pr_url"],
+		HeadSHA: vars["head_sha"],
+	})
 	if route.Mode == string(bundle.ExecutionBoard) && s.cfg.CloudBoardFor != nil {
 		if s.cfg.CloudBoardCoordinator != nil {
 			// Dispatcher active: gate (per-org quota), create the card in the
@@ -206,7 +216,15 @@ func (s *Server) ensureBoardCard(ctx context.Context, cfg webhooks.Config, route
 	// webhook launch vars never reaches a board-mode run — the bot then works
 	// off its DSL defaults (e.g. mr_gate.push_back=false strands the campaign
 	// commits on the runner's storage branch instead of the PR).
-	for _, k := range []string{"pr_url", "base_ref", "target_branch", "source_branch", "pr_author", "push_branch", "open_mr", "mr_base", "prior_review"} {
+	carry := []string{"pr_url", "base_ref", "target_branch", "source_branch", "pr_author", "push_branch", "open_mr", "mr_base", "head_sha"}
+	// Plus whatever THIS bot declared it consumes from an earlier run on the
+	// same PR. Derived rather than listed: a fixed list would mean a bot that
+	// declares a new hand-off gets it on the direct lane and silently loses it
+	// on the board lane — the failure this whole carry-list exists to prevent.
+	for _, c := range s.handoffConsumersFor(route.BotID) {
+		carry = append(carry, c.Var)
+	}
+	for _, k := range carry {
 		if v, ok := vars[k]; ok && v != "" {
 			botArgs[k] = v
 		}

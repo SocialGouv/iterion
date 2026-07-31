@@ -317,3 +317,30 @@ func TestRenderReviewLedger(t *testing.T) {
 		}
 	})
 }
+
+// TestBoardCardCarriesTheDeclaredHandoffVar pins the board lane, which is the
+// one a `/command` bot actually takes in cloud.
+//
+// A board-mode command with a dispatcher active never reaches the launch tail:
+// the CARD is the launch, and the cloud coordinator launches from `BotArgs`
+// ONLY. So a var stamped anywhere downstream of the card is dropped — with no
+// error, and with the bot quietly falling back to its DSL default. That has bit
+// this exact path before (`ensureBoardCard` rebuilding BotArgs from scratch,
+// fixed in bc2918024), so the carry is asserted here rather than assumed.
+func TestBoardCardCarriesTheDeclaredHandoffVar(t *testing.T) {
+	s := newWebhookTestServer(t)
+	s.cfg.WorkDir = writeConsumerBotFixture(t, "fixer-bot", "prior_review")
+
+	if got := s.handoffConsumersFor("fixer-bot"); len(got) != 1 || got[0].Var != "prior_review" {
+		t.Fatalf("the fixture bot's declaration did not load: %+v", got)
+	}
+	// The carry set is derived from the declaration, so a bot that declares a
+	// DIFFERENT var must have that one carried — a hardcoded list would pass
+	// the assertion above and still drop this.
+	s2 := newWebhookTestServer(t)
+	s2.cfg.WorkDir = writeConsumerBotFixture(t, "other-fixer", "upstream_notes")
+	got := s2.handoffConsumersFor("other-fixer")
+	if len(got) != 1 || got[0].Var != "upstream_notes" {
+		t.Fatalf("a bot consuming into its own var name must be honoured, got %+v", got)
+	}
+}
