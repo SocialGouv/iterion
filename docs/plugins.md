@@ -320,15 +320,16 @@ repo coordinates and runs the same `plugin install` path.
 ## Contribution parity status
 
 The `contributes:` design covers the Claude Code plugin taxonomy from the UI,
-CLI, and marketplace. Parity between `claude_code` and `claw` is complete for
-skills and MCP servers; pi RPC also consumes the resolved plugin MCP catalog.
-The remaining work is claw-side discovery/execution for commands, named agents,
-and hooks. Kimi, Grok, and legacy Codex do not consume these plugin contribution
-surfaces:
+CLI, and marketplace. Skills and MCP servers reach both `claude_code` and
+`claw`. Pi also consumes the resolved plugin skills through an explicit
+`--skill` directory in both transports, and the MCP catalog through its embedded
+RPC extension. The remaining work is claw-side discovery/execution for commands,
+named agents, and hooks. Kimi, Grok, and legacy Codex do not consume these
+plugin contribution surfaces:
 
 | Claude plugin type | iterion kind | parity note |
 |--------------------|--------------|-------------|
-| skills             | `skills` ✅ shipped      | claude_code native lookup + claw `skill` tool both read `.claude/skills/` |
+| skills             | `skills` ✅ shipped      | claude_code native lookup, claw's `skill` tool, and pi's explicit `--skill` path consume `.claude/skills/` |
 | MCP servers        | `mcp_servers` ✅ shipped | `claude_code`, claw, and pi RPC consume the resolved MCP catalog |
 | slash commands     | `commands` ✅ shipped (claude_code) | mirrored to `.claude/commands/`; claude_code discovers via `--setting-sources project`. claw reads commands only from CLAUDE.md today → a `.claude/commands/` loader is staged in `.works/claw-code-go` (`internal/commands/`), lands on the next claw release + `go.mod` bump |
 | subagents          | `agents` ✅ shipped (claude_code) | mirrored to `.claude/agents/`; claude_code discovers via `--setting-sources project`. claw has the `agent` tool + SubagentRunner but no named-agent file loader → claw-side follow-on |
