@@ -641,6 +641,35 @@ func TestPiCodexSeedMakesTheTokenUnstageable(t *testing.T) {
 		}
 	})
 
+	// MkdirAll is a NO-OP on a `.iterion/pi` the checkout pre-populated, and the
+	// path guards only walk TO the seed root, never inside it. A repo can
+	// therefore ship `.iterion/pi/.gitignore` as a tracked symlink: following it
+	// appends into a host file of the repo's choosing, and git refuses to read a
+	// symlinked .gitignore at all — so the credential would stay stageable.
+	t.Run("a symlinked ignore guard inside the seed root is refused", func(t *testing.T) {
+		work := t.TempDir()
+		victim := filepath.Join(t.TempDir(), "victim")
+		if err := os.WriteFile(victim, []byte("original\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		root := filepath.Join(work, ".iterion", "pi")
+		if err := os.MkdirAll(root, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Symlink(victim, filepath.Join(root, ".gitignore")); err != nil {
+			t.Skipf("symlinks unavailable: %v", err)
+		}
+
+		_, err := piCodexSeedRoot(Task{NodeID: "n", WorkDir: work, Sandbox: stubSandboxRun{}}, nil)
+		if err == nil {
+			t.Fatal("wrote the ignore guard through a repo-controlled symlink")
+		}
+		got, _ := os.ReadFile(victim)
+		if string(got) != "original\n" {
+			t.Errorf("victim file = %q — appended through the symlink", got)
+		}
+	})
+
 	// Outside the worktree nothing is stageable, so no guard is written.
 	t.Run("a store outside the worktree needs no guard", func(t *testing.T) {
 		work, outside := t.TempDir(), t.TempDir()
