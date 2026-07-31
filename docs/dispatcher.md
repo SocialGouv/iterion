@@ -49,8 +49,8 @@ Built-in assignees ([source bots](../bots/)):
 | 🌍 Willy | `whole-improve-loop` | `bots/whole-improve-loop/` | Whole-codebase campaign applying one improvement axis site by site |
 | 🌿 Billy | `branch-improve-loop` | `bots/branch-improve-loop/` | Branch-diff review/improvement campaign with verified in-stride commits |
 | 🧭 Nexie | `whats-next` | `bots/whats-next/` | Conversational co-CTO for recommendation, board curation, roadmap study, and dispatch |
-| 📚 Doki | `docs-refresh` | `bots/docs-refresh/` | One doc-only campaign over a deterministic code/document drift manifest |
-| 🔎 Revi | `review-pr` | `bots/review-pr/` | Read-only cross-family code review; publishes findings to the board |
+| 📚 Doki | `docs-refresh` | `bots/docs-refresh/` | Doc-only alignment campaign over a deterministic footprint and advisory drift hints |
+| 🔎 Revi | `review-pr` | `bots/review-pr/` | Read-only review with one model family by default and optional cross-family dual mode; publishes findings to the board |
 | 🛡️ Seki | `sec-audit-source` | `bots/sec-audit-source/` | Source-code security audit (gitleaks/trivy/semgrep/gosec) |
 | 📦 Depsy | `sec-audit-deps` | `bots/sec-audit-deps/` | Supply-chain dep audit + LLM review |
 | ⬆️ Renovacy | `secured-renovacy` | `bots/secured-renovacy/` | Security-aware dependency upgrades with cumulative review |
