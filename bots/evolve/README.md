@@ -16,8 +16,9 @@ where the project should be in a year, and feeds Nexie the work.
    sessions** in its own private memory.
 3. **Synthesises** a long-horizon `VISION.md`: a few evidence-backed axes
    (current → target) plus guardrails.
-4. **Reviews** it (two independent perspectives) and converges with you
-   as the final approver.
+4. **Reviews** it with one independent family by default and converges with
+   you as the final approver. Set `review_mode=dual` when a second,
+   cross-family perspective is worth the extra reviewer call.
 5. **Proposes** 3-10 natural evolutions as **dispatch-ready backlog
    tickets** (pre-bound to a bot, self-contained body) plus deep
    plan/decision artifacts in the shared `findings/` inbox. Nexie picks
