@@ -91,16 +91,16 @@ func RunResumeWithFile(ctx context.Context, iterFile string, opts ResumeOptions,
 	}
 	logger := iterlog.New(level, os.Stderr)
 
-	// When --file is omitted, the store dir cannot be discovered from its
-	// parent; the caller must pass --store-dir or be in a directory whose
-	// ancestor contains a .iterion.
-	storeAnchor := filepath.Dir(iterFile)
-	if iterFile == "" {
-		if cwd, cwdErr := os.Getwd(); cwdErr == nil {
-			storeAnchor = cwd
+	// Same anchor as run: a run must be resumable from the directory it was
+	// launched in, whether or not --file names the bot.
+	storeDir := runStoreDir(iterFile, opts.StoreDir)
+	if !runStoreHas(storeDir, opts.RunID) {
+		if legacy := legacyRunStoreDir(iterFile, opts.StoreDir, storeDir, opts.RunID); legacy != "" {
+			p.Line("run %s lives in the pre-upgrade per-bot store %s — resuming there; "+
+				"pass --store-dir to pin it explicitly", opts.RunID, legacy)
+			storeDir = legacy
 		}
 	}
-	storeDir := store.ResolveStoreDir(storeAnchor, opts.StoreDir)
 
 	// Tee log output to run.log so the studio's Logs panel sees
 	// output for resumed runs. Resume re-uses the same file via
