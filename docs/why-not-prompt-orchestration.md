@@ -112,8 +112,9 @@ Any **yes** → write a `.bot`. All **no** → a Claude Code session with sub-ag
 The choice isn't binary. Iterion *welcomes* dynamic sub-agent orchestration **inside** a node — `backend: claude_code` lets the executing agent decide internally which sub-agents to spawn, which files to read, and which commands to run. The structural envelope (graph, budget, schemas, checkpoint, worktree, permissions, and optional sandbox) wraps a freely-orchestrating interior.
 
 The maintained improvement fleet now leans especially hard into that hybrid: a
-small graph places deterministic manifest, verification, scope, and termination
-gates around one capable adaptive campaign agent. Other bots still use several
+small graph places the domain's deterministic verification, scope, and termination
+gates around one capable adaptive campaign agent; scans and manifests remain
+optional inputs rather than universal machinery. Other bots still use several
 specialized nodes when their boundaries add value. In both shapes, Iterion owns
 the durable outer contract while the agent keeps creative freedom inside the
 node. The tradeoff on this page only bites when the *whole* operation — including
