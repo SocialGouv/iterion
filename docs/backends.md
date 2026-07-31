@@ -599,9 +599,10 @@ extension supplies the MCP half; the rest stands. Consequences for a
   one exception iterion enforces is a `readonly:` node, which pins pi to
   `--tools read,grep,find,ls`.
 
-A node needing any of the above should stay on `claude_code` or `claw`.
-**pi's value is the models those cannot reach, not replacing them on a
-workflow that already works.**
+A node that needs the remaining native gaps — subagents, todo, web
+fetch/search, notebooks, or background shell — should stay on `claude_code` or
+`claw`. **pi's value is the models those cannot reach, not replacing them on a
+workflow that depends on those tools.**
 
 #### Behaviour worth knowing
 
