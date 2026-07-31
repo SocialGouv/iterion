@@ -741,7 +741,7 @@ login / `~/.grok` config) — iterion does not inject `XAI_API_KEY` for this
 backend. That is **distinct** from calling the xAI HTTP API via
 `backend: claw` + `model: "xai/…"`.
 
-### Behavioural notes (all CLI-agent backends)
+### Behavioural notes (generic Kimi/Grok delegates)
 
 - **Explicit opt-in.** `kimi` / `grok` are never auto-detected; set
   `backend: "kimi"` or `backend: "grok"`. No host credential silently
