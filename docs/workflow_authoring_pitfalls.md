@@ -541,7 +541,7 @@ DECISIONS={{input.decisions}} python3 -c "import os,json; d=json.loads(os.enviro
 
 Reserve `{{!ref}}` for values you control that are *meant* to be
 re-interpreted as shell. A tool node that only ever saw path tokens (e.g.
-docs-refresh's `build_manifest`) can carry the `'{{!input.x}}'` pattern
+adr-cartograph's `build_manifest`) can carry the `'{{!input.x}}'` pattern
 latently for a long time — it breaks the day an apostrophe-bearing value
 flows through, so fix the pattern, not just the one value that tripped it.
 
