@@ -27,45 +27,39 @@ specialist bot (`feature-gap-fill`) can close them.
 1. **Code observes, docs/adr/ records.** You correct or author
    documentation under `docs/adr/` to match what the code actually does.
    You **never** modify code logic to make an ADR "true".
-2. **The fixer's writeable set is narrow.** Allowed:
-   - `.md` files under `{{vars.adr_dir}}/` (default `docs/adr/`)
-   That is the entire set. Any file outside `{{vars.adr_dir}}/`
-   appearing in your `modified_adr_files` output triggers a mechanical
-   revert (`enforce_fix_scope`) and a high-confidence blocker on the
-   next review iteration.
-3. **The ADR scan and the code survey are deterministic.** The
-   `scan_adrs` tool node emits `adrs[]` + `next_adr_number` once at the
-   start; the `survey_code` agent enumerates decisions[] and gaps[]
-   under bounded `code_scope_globs` + `excluded_dirs`. Treat both as
-   the authoritative working set; do not silently expand or contract
-   them.
+2. **The campaign's writeable set is narrow.** It may commit only `.md`
+   files under `{{vars.adr_dir}}/` (default `docs/adr/`). The audit-cache path
+   is the sole non-Markdown exception, written by the terminal cache node.
+   `scope_check` diffs the full run against its base and rejects everything
+   else.
+3. **Inventory and differ are deterministic; the survey is evidence.**
+   `scan_adrs` emits `adrs[]` + `next_adr_number` once. The read-only,
+   adaptive `survey_code` agent enumerates `decisions[]` and `gaps[]` under
+   `code_scope_globs` + `excluded_dirs`. `build_manifest` then re-globs the
+   live ADR directory on every pass and derives drift, orphans, handoffs, and
+   coverage. The campaign re-reads cited code before acting; survey output is
+   a bounded working set, not gospel.
 4. **One escape valve: ambiguity.** When you cannot tell from the code
    alone whether the existing ADR is wrong or the code is wrong, call
    `ask_user` with the specific question. Do not guess.
 
 ## Idempotency — what a no-op pass looks like
 
-Adry is designed to be **reasonably idempotent**. On a tree where every
-ADR already matches the code and no decision is undocumented, the
-expected behaviour is:
+On a tree where every ADR matches the code and no decision is undocumented:
 
-1. `scan_adrs` reads `.adr-cartograph-cache.json` and reports most ADRs
-   as `pre_verified_adrs`.
-2. `survey_code` finds zero new ADR-worthy decisions and zero new gaps
-   above the severity floor.
-3. `build_manifest` reports `decision_drift = []`, `adr_orphans = []`,
-   `coverage_pct >= coverage_target_pct`.
-4. `reviewer_claude` and `reviewer_gpt` both vote `approved=true`,
-   `blocker_count=0`.
-5. `streak_check` fires `stop=true`.
-6. `detect_changes` reports `has_changes=false` (no markdown was
-   written).
-7. The workflow skips `prepare_commit` + `commit_changes` (so no
-   handoff issues are filed) and goes straight to `update_cache` →
-   `done`.
+1. `scan_adrs` reads `.adr-cartograph-cache.json` and reports unchanged
+   entries as `pre_verified_adrs`.
+2. `survey_code` finds no new ADR-worthy decision or medium/high gap.
+3. `build_manifest` reports empty `decision_drift` / `adr_orphans` and
+   coverage at or above the target.
+4. `campaign` verifies that empty working set, creates no ADR commit or board
+   issue, and reports `adrs_aligned=true`.
+5. `scope_check`, `verify_build`, and deterministic `verify_run` pass; `gate`
+   converges, the optional dispatcher ticket moves to review, and
+   `update_cache` refreshes the inter-run cache.
 
-Total LLM cost on a no-op pass: two cheap review turns + one survey
-turn. No board churn. No git churn.
+No board churn and no ADR commit are the expected result; never author a
+low-value record merely to look productive.
 
 When you are tempted to author "just one more" ADR to look productive,
 **don't**. Spamming `docs/adr/` with low-value entries defeats the
@@ -104,9 +98,8 @@ directories deep under repo root).
 
 See `completeness-taxonomy.md`. Each gap you raise must be tagged with
 one of the enum-locked `gap_kind` values. Severity is independent of
-kind. Only `medium` and `high` gaps are routed to handoff issues; `low`
-gaps are mentioned in the ADR's "Consequences / Known gaps" section
-and not filed.
+kind. Only `medium` and `high` gaps survive `build_manifest` into campaign handoffs.
+`low` gaps remain survey observations and are not filed automatically.
 
 ## How to escalate
 
@@ -119,23 +112,22 @@ Use `ask_user` when:
 - A blocker has `is_code_bug=true` — the bot does not edit code, so
   the operator must decide.
 
-Do NOT use `ask_user` for ordinary judgment calls (severity, ADR
-wording, etc.). Decide yourself and lower `confidence` if you are
-unsure. Low-confidence rejections are treated as soft-approvals by
-`streak_check` — alternation continues without invoking the fixer, the
-cross-family reviewer gets a fresh look.
+Do NOT use `ask_user` for ordinary judgment calls (severity, ADR wording,
+or whether a candidate is merely mechanical). Decide those in the campaign;
+dismiss mechanics explicitly in the summary rather than inventing an ADR.
 
 ## Handoff issues — when and how
 
-After convergence, `prepare_commit` (the only board-capable node) can
-file backlog issues routed to two sibling bots. The full ritual lives
-in the `prepare_commit_system` prompt; the rules in one paragraph:
-**`list_labels` first, `set_bot` (not `assign_issue`) for routing,
-encode the spec on `fields.bot_args`, always include the
-`source:adr-cartograph` label so a future operator can trace the issue
-back to its origin.**
+After its last ADR commit, the `campaign` node checks existing `inbox` issues
+before filing any new handoff. It creates findings in `inbox` rather than
+routing them directly:
 
-The handoff issues are filed INSIDE `prepare_commit`. A no-op re-run
-(everything pre_verified, nothing to commit) bypasses this node
-entirely — so the board never accumulates duplicate issues from
-repeated Adry passes.
+- feature gaps: `findings`, `type:feature-gap`,
+  `source:adr_cartograph`, and the finding's `severity:*`; the body carries
+  the code evidence a later Fini run needs;
+- aged-out decisions: `findings`, `type:adr-rechallenge`, and
+  `source:adr_cartograph`; the body names the ADR and its age.
+
+Do not create duplicates, and do not invent a handoff when the audit surfaced
+none. If board tools are unavailable, keep the same details in the campaign
+summary.
