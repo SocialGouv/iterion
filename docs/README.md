@@ -26,7 +26,7 @@ For the architectural trade-off against prompt-only orchestration, read [why-not
 | [references/dsl-grammar.md](references/dsl-grammar.md) | Readable grammar derived from the parser surface. |
 | [grammar/iterion_v1.ebnf](grammar/iterion_v1.ebnf) | Formal EBNF counterpart. |
 | [grammar/V1_SCOPE.md](grammar/V1_SCOPE.md) | Living boundary of the additively evolved V1 grammar and AST. |
-| [references/diagnostics.md](references/diagnostics.md) | Authoritative sparse catalogue: DSL C001–C199 and bundle checks C200–C234. |
+| [references/diagnostics.md](references/diagnostics.md) | Authoritative sparse catalogue: DSL C001–C199 plus async C240–C242, and bundle checks C200–C234. |
 | [routers.md](routers.md) | Five routing modes, per-item fan-out, and convergence. |
 | [groups-iteration-subbots.md](groups-iteration-subbots.md) | `group`/`use`, edge `foreach`, `fan_out_each`, resources, and nested bots. |
 | [human-in-the-loop.md](human-in-the-loop.md) | Human nodes and all six interaction values, including the node-specific `none` and `async` behavior. |
