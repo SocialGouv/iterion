@@ -203,7 +203,15 @@ func piEnvVarSource(source string) bool {
 			return false
 		}
 	}
-	return true
+	// Looking like a variable name is not evidence the variable is SET.
+	// detectOpenAIProvider labels its source `OPENAI_API_KEY` even when the key
+	// is absent (a ChatGPT-mode ~/.codex login makes the row available), so
+	// without this pi is reported available, `auth: api_key`, on a host where
+	// that variable is empty — and under ITERION_FORBID_SUBSCRIPTION_OAUTH=1,
+	// where the codex bridge is refused, with no usable credential at all.
+	// Availability feeds ITERION_BACKEND_PREFERENCE, so the node then dies on
+	// "No API key found".
+	return strings.TrimSpace(os.Getenv(source)) != ""
 }
 
 // piReadsProvider reports whether an available provider is one pi can actually

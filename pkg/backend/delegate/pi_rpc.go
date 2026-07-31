@@ -77,9 +77,14 @@ func (b *PiRPCBackend) Execute(ctx context.Context, task Task) (Result, error) {
 		}
 	}
 
+	// Same rule as the print transport: ITERION_PI_BIN is a HOST path, so it
+	// must not become argv[0] inside a container.
 	binary := b.Command
+	if binary == "" && task.Sandbox == nil {
+		binary = strings.TrimSpace(os.Getenv(piProtocol.HostBinaryEnv))
+	}
 	if binary == "" {
-		binary = "pi"
+		binary = piProtocol.DefaultBinary
 	}
 
 	systemPrompt := task.BuildSystemPrompt()

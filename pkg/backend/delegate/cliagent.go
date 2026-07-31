@@ -117,6 +117,12 @@ type CLIAgentProtocol struct {
 	// back to ResolveEnv.
 	SandboxEnv func(ctx context.Context, task Task) map[string]string
 
+	// HostBinaryEnv names an environment variable holding an absolute path to
+	// the CLI on the HOST. It is consulted only when the backend has no explicit
+	// Command AND the task is not sandboxed: a host path is meaningless as
+	// argv[0] inside a container, where the image supplies the CLI itself.
+	HostBinaryEnv string
+
 	// ResolveEnv returns credential/endpoint environment overrides sourced
 	// from the target CLI's own config/env conventions (and any per-run
 	// injected credentials on the context). The returned map is layered on
@@ -124,6 +130,20 @@ type CLIAgentProtocol struct {
 	// environment unchanged" — the CLI resolves its own credentials, which is
 	// the correct default for a CLI that reads e.g. $MOONSHOT_API_KEY itself.
 	ResolveEnv func(ctx context.Context) map[string]string
+}
+
+// resolveBinary picks argv[0] for this task: the explicit Command wins, then
+// the protocol's host-only env override (never inside a sandbox — a host path
+// is not a container path, and nothing mounts it there), then DefaultBinary,
+// which is what the published images ship on PATH.
+func (b *CLIAgentBackend) resolveBinary(task Task) string {
+	if b.Command != "" {
+		return b.Command
+	}
+	if b.Protocol.HostBinaryEnv != "" && task.Sandbox == nil {
+		return strings.TrimSpace(os.Getenv(b.Protocol.HostBinaryEnv))
+	}
+	return ""
 }
 
 // CLIAgentParse is the rich parse result of a CLI-agent invocation (see
@@ -211,7 +231,7 @@ func (b *CLIAgentBackend) Execute(ctx context.Context, task Task) (Result, error
 		backendName = "cli_agent"
 	}
 
-	binary := b.Command
+	binary := b.resolveBinary(task)
 	if binary == "" {
 		binary = proto.DefaultBinary
 	}

@@ -75,6 +75,13 @@ var piProtocol = CLIAgentProtocol{
 	ModelFlag: "",
 	MapModel:  nil,
 
+	// ITERION_PI_BIN names a binary on the HOST. Resolving it here, once, would
+	// put that path in argv[0] for sandboxed runs too — and nothing bind-mounts
+	// it into the container, while the published images already ship pi on PATH.
+	// The documented use case ("a host with no Node") is a host concern, so the
+	// lookup happens per task and only when there is no sandbox.
+	HostBinaryEnv: "ITERION_PI_BIN",
+
 	MapEffort: piMapEffort,
 	// Rebound by NewPiBackend to carry that backend's logger. The default has
 	// to stay non-nil: this value is copied by anything building a pi
@@ -108,9 +115,6 @@ var piProtocol = CLIAgentProtocol{
 // in the reference, so an operator who set it got the PATH binary anyway, with
 // nothing saying why.
 func NewPiBackend(logger *iterlog.Logger, command string) *PiBackend {
-	if command == "" {
-		command = strings.TrimSpace(os.Getenv("ITERION_PI_BIN"))
-	}
 	proto := piProtocol
 	proto.ExtraArgsFor = func(task Task) []string { return piExtraArgsFor(task, logger) }
 	return &PiBackend{
