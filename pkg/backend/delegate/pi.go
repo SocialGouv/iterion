@@ -562,10 +562,26 @@ func piHideWorkspaceSessionDir(task Task, logger *iterlog.Logger) {
 		return
 	}
 	// `*` also ignores this file, so nothing under .iterion/ is ever staged.
-	// Never overwrite: the workspace may already carry an operator's own.
 	guard := filepath.Join(root, ".gitignore")
-	if _, err := os.Stat(guard); err == nil {
+	// Lstat, never a FOLLOWING Stat. A repo can ship `.iterion/.gitignore` as a
+	// tracked symlink, and following it fails both ways: a DANGLING link makes
+	// os.WriteFile create an attacker-chosen host file, and a link to any
+	// existing path makes the Stat below succeed so this returns as if the
+	// workspace were guarded — silently leaving pi's transcripts and composed
+	// system prompt stageable by a campaign agent's `git add -A`.
+	//
+	// The write policy deliberately differs from piWriteIgnoreGuard's: this path
+	// can be the OPERATOR's own store dir, where appending `*` would re-ignore
+	// everything their rules had negated (last match wins). Their file is left
+	// exactly as it is.
+	if err := refuseNonRegular(guard); err != nil {
+		if logger != nil {
+			logger.Warn("pi: %v — session files may ride a `git add -A`", err)
+		}
 		return
+	}
+	if _, err := os.Lstat(guard); err == nil {
+		return // an operator's own guard: never overwrite
 	}
 	if err := os.WriteFile(guard, []byte("*\n"), 0o644); err != nil && logger != nil {
 		logger.Warn("pi: cannot write %s: %v — session files may ride a `git add -A`", guard, err)

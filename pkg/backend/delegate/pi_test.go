@@ -1,6 +1,7 @@
 package delegate
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -13,6 +14,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	iterlog "github.com/SocialGouv/iterion/pkg/log"
 
 	"github.com/SocialGouv/iterion/pkg/backend/delegate/pisdk"
 	"github.com/SocialGouv/iterion/pkg/backend/permission"
@@ -987,4 +990,48 @@ func TestPiCollectorNoProgressIsNotArmedByAZeroMark(t *testing.T) {
 		t.Fatalf("a zero mark should measure as ancient (%v) — the hazard would not exist otherwise",
 			time.Since(lastProgress))
 	}
+}
+
+// A repo can ship `<WorkDir>/.iterion/.gitignore` as a tracked symlink, and a
+// FOLLOWING os.Stat failed both ways: a DANGLING link made os.WriteFile create
+// an attacker-chosen host file, and a link to an existing path made the stat
+// succeed so the guard was silently never written — leaving pi's transcripts
+// and composed system prompt stageable.
+func TestPiHideWorkspaceSessionDirRefusesASymlinkedGuard(t *testing.T) {
+	t.Run("dangling: nothing is written through it", func(t *testing.T) {
+		work := t.TempDir()
+		target := filepath.Join(t.TempDir(), "absent")
+		if err := os.MkdirAll(filepath.Join(work, ".iterion"), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Symlink(target, filepath.Join(work, ".iterion", ".gitignore")); err != nil {
+			t.Skipf("symlinks unavailable: %v", err)
+		}
+		piHideWorkspaceSessionDir(Task{NodeID: "n", WorkDir: work}, nil)
+		if _, err := os.Stat(target); err == nil {
+			t.Error("created a host file at the symlink's target")
+		}
+	})
+
+	t.Run("pointing at an existing file: the miss is not silent", func(t *testing.T) {
+		work := t.TempDir()
+		other := filepath.Join(t.TempDir(), "other")
+		if err := os.WriteFile(other, []byte("unrelated\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.MkdirAll(filepath.Join(work, ".iterion"), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Symlink(other, filepath.Join(work, ".iterion", ".gitignore")); err != nil {
+			t.Skipf("symlinks unavailable: %v", err)
+		}
+		var buf bytes.Buffer
+		piHideWorkspaceSessionDir(Task{NodeID: "n", WorkDir: work}, iterlog.New(iterlog.LevelWarn, &buf))
+		if !strings.Contains(buf.String(), "not a regular file") {
+			t.Errorf("log = %q — the workspace is unguarded and nothing says so", buf.String())
+		}
+		if got, _ := os.ReadFile(other); string(got) != "unrelated\n" {
+			t.Errorf("wrote through the symlink: %q", got)
+		}
+	})
 }

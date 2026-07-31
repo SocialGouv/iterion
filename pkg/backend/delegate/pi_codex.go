@@ -354,6 +354,27 @@ func refuseSymlinkedPath(base, target string) error {
 	return nil
 }
 
+// refuseNonRegular rejects a path that exists but is not a plain file, checked
+// with Lstat so nothing is followed. An absent path is fine — it is what the
+// caller is about to create.
+//
+// Both ignore guards go through this. They write DIFFERENTLY on purpose (the
+// seed root is iterion's, so appending is right; `<WorkDir>/.iterion` can be
+// the operator's own store, so their file is left untouched) — but the check is
+// the same, and hand-rolling it twice is exactly how the same symlink hole came
+// to exist at two levels.
+func refuseNonRegular(path string) error {
+	info, err := os.Lstat(path)
+	if err != nil {
+		return nil
+	}
+	if !info.Mode().IsRegular() {
+		return fmt.Errorf("refusing to use %s: it is not a regular file, and the workspace "+
+			"is a checkout of the target repository", path)
+	}
+	return nil
+}
+
 // piWriteIgnoreGuard makes everything under dir unstageable.
 //
 // It APPENDS. The seed root is `<StoreDir>/pi` off the sandbox, and --store-dir
@@ -377,9 +398,8 @@ func piWriteIgnoreGuard(dir string) error {
 	// Lstat rather than O_NOFOLLOW: the latter is not portable through `os`,
 	// and the residual TOCTOU needs a writer racing us inside the workspace,
 	// which is a strictly larger capability than committing a symlink.
-	if info, lerr := os.Lstat(guard); lerr == nil && !info.Mode().IsRegular() {
-		return fmt.Errorf("refusing to use ignore guard %s: it is not a regular file, "+
-			"and the workspace is a checkout of the target repository", guard)
+	if err := refuseNonRegular(guard); err != nil {
+		return err
 	}
 	existing, err := os.ReadFile(guard) // #nosec G304 — fixed name, verified a regular file just above.
 	if err != nil && !os.IsNotExist(err) {
