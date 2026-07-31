@@ -70,9 +70,13 @@ the `finalize_mr` agent when a push can actually happen.)
   engine: it reads `git log`, builds a living todo list from a brief
   exploration, and applies the axis one site at a time — locate → smallest
   change → build → test → **commit** (`git add -A` incl. untracked, semantic
-  message) — until the pass has applied the axis everywhere it can. It emits a
-  **termination contract** (`axis_complete`, `commits_this_pass`,
-  `sites_remaining`, …). It may pause for the operator on a genuine mid-flight
+  message) — until the pass has applied the axis everywhere it can. Before
+  reporting it performs two advisory quality checks: **fit** (the change solves
+  the axis's real intent, not only its wording) and **rot** (no needless
+  duplicate helper, one-caller abstraction, or parallel mechanism was left
+  behind). The deterministic gate still decides completion. The campaign emits
+  a **termination contract** (`axis_complete`, `commits_this_pass`,
+  `sites_remaining`, …) and may pause for the operator on a genuine mid-flight
   decision (kept rare).
 - **`verify_build` → `verify_run`** is the **deterministic, stack-agnostic**
   build/test gate: an adaptive agent reads the `verify-build` skill and writes
