@@ -536,8 +536,9 @@ agent review:
 ```
 
 **Install:** `npm install -g @earendil-works/pi-coding-agent` (Node ≥ 22.19)
-or `curl -fsSL https://pi.dev/install.sh | sh`. Pin a specific binary with
-`ITERION_PI_BIN`, or per node with `command:`.
+or `curl -fsSL https://pi.dev/install.sh | sh`. Pin a specific host binary with
+`ITERION_PI_BIN`. The DSL's per-node `command:` override is consumed only by
+`claude_code`; `pi` ignores it.
 
 #### What it brings
 
