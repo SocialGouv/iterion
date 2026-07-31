@@ -11,7 +11,14 @@ import { Link } from "wouter";
 
 import { pipelineBoardImageURL, type PipelineBoardCard } from "@/api/pipelineBoards";
 import type { UnifiedStatus } from "@/components/Runs/runStatusClasses";
-import { Badge, Button, IconButton, InlineBanner, StatusBadge } from "@/components/ui";
+import {
+  Badge,
+  Button,
+  ExpandableValue,
+  IconButton,
+  InlineBanner,
+  StatusBadge,
+} from "@/components/ui";
 
 import { cardRoutePath } from "./cardRoute";
 import { ImagePreviewDialog } from "./ImagePreview";
@@ -196,9 +203,12 @@ const CONTRACT_KEYS = [
 const CONTRACT_KEY_SET = new Set<string>(CONTRACT_KEYS);
 // InputsList renders the pipeline's full entry input (launch vars / task
 // bot-args) as an untruncated key → value list. The sidebar has the room the
-// compact card body does not, so values wrap instead of clipping. Values that
-// are image paths (reference-image lists…) render as an inline carousel
-// instead of bare paths. Contract keys are shown separately above.
+// compact card body does not, so values wrap instead of clipping. Every value
+// goes through ExpandableValue, so a multi-line prompt or a JSON blob can be
+// opened in place (with copy + raw/pretty) instead of being read ten lines at
+// a time through a scroll box. Values that are image paths (reference-image
+// lists…) render as an inline carousel instead of bare paths. Contract keys
+// are shown separately above.
 function InputsList({ input }: { input?: Record<string, unknown> }) {
   const entries = input
     ? Object.entries(input).filter(([k]) => !CONTRACT_KEY_SET.has(k))
@@ -217,18 +227,8 @@ function InputsList({ input }: { input?: Record<string, unknown> }) {
             </dt>
             {imagePaths.length > 0 ? (
               <InputImageCarousel paths={imagePaths} rawText={stringifyValue(value)} />
-            ) : typeof value === "object" && value !== null ? (
-              // Structured values get a scrollable pretty-printed JSON block;
-              // scalars keep the plain wrapped rendering below.
-              <dd className="m-0">
-                <pre className="m-0 max-h-48 overflow-auto whitespace-pre-wrap break-words rounded-md border border-border-subtle bg-surface-2/40 px-2 py-1 font-mono text-micro text-fg-default">
-                  {stringifyValue(value)}
-                </pre>
-              </dd>
             ) : (
-              <dd className="whitespace-pre-wrap break-words rounded-md border border-border-subtle bg-surface-2/40 px-2 py-1 font-mono text-xs text-fg-default">
-                {stringifyValue(value)}
-              </dd>
+              <ExpandableValue as="dd" value={value} label={key} />
             )}
           </div>
         );
@@ -273,13 +273,12 @@ function SectionHeading({ children }: { children: React.ReactNode }) {
 // the free-form Inputs dump so operators don't hunt opaque key blobs.
 function ContractSection({ card }: { card: PipelineBoardCard }) {
   const input = card.entry_input ?? {};
-  const rows: { key: string; value: string }[] = [];
+  const rows: { key: string; value: unknown }[] = [];
   for (const key of CONTRACT_KEYS) {
     const raw = input[key];
     if (raw === undefined || raw === null || raw === "") continue;
-    const value = stringifyValue(raw).trim();
-    if (!value) continue;
-    rows.push({ key, value });
+    if (!stringifyValue(raw).trim()) continue;
+    rows.push({ key, value: raw });
   }
   if (rows.length === 0) return null;
   return (
@@ -291,9 +290,7 @@ function ContractSection({ card }: { card: PipelineBoardCard }) {
             <dt className="text-micro font-medium uppercase tracking-wide text-fg-muted">
               {key}
             </dt>
-            <dd className="break-all rounded-md border border-border-subtle bg-surface-2/40 px-2 py-1 font-mono text-xs text-fg-default">
-              {value}
-            </dd>
+            <ExpandableValue as="dd" value={value} label={key} />
           </div>
         ))}
       </dl>
@@ -550,9 +547,14 @@ export function PipelineCardDetailsBody({
       {closedSuccess && card.output && (
         <section aria-label="Result" className="space-y-2">
           <SectionHeading>Result</SectionHeading>
-          <pre className="max-h-64 overflow-auto whitespace-pre-wrap break-words rounded-md border border-border-default bg-surface-0 p-2 font-mono text-xs text-fg-muted">
-            {card.output}
-          </pre>
+          {/* The final answer is what the operator opened the card for, so it
+              gets a taller preview than an input before it needs expanding. */}
+          <ExpandableValue
+            value={card.output}
+            label="result"
+            collapsedMaxHeight="24rem"
+            className="text-fg-muted"
+          />
         </section>
       )}
 
