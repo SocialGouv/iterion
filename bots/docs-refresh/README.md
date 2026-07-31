@@ -38,9 +38,9 @@ one by one, the real work buried behind scanner noise for 4 passes,
 
 v3 applies the proven Billy/Willy shape: **one capable agent + a
 mission + truth-oracle gates**. The scan survives as an **advisory
-hints producer**; the gate keeps only what is *true by construction*
-(the tree builds; nothing outside the writeable set changed; the
-agent's honest termination contract).
+hints producer**; the gate keeps only what it can prove or explicitly
+contract for: nothing outside the writeable set changed, and the agent
+reported the corpus aligned.
 
 ## Shape (v3)
 
