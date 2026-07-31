@@ -8,7 +8,6 @@ import (
 	"io"
 	"os"
 	"os/exec"
-	"path/filepath"
 	"strings"
 	"time"
 
@@ -363,14 +362,12 @@ func writeSystemPromptFile(task Task, backendName, systemPrompt string) (path st
 	if task.WorkDir == "" {
 		return "", nil, fmt.Errorf("delegate: %s: SystemPromptViaFile requires a WorkDir", backendName)
 	}
-	dir := filepath.Join(task.WorkDir, ".iterion", backendName)
-	// The symlink refusal deliberately does NOT live here. This function is
-	// shared machinery and is SKIPPED for a node with an empty system prompt,
-	// so it could never be the boundary; and refusing a symlinked `.iterion`
-	// outright breaks a legitimate setup — without `worktree: auto`, WorkDir is
-	// the operator's own repo root and `.iterion` is the conventional store
-	// dir, which they may well have pointed at another volume. The guard is at
-	// the per-backend chokepoint instead (piGuardWriteRoot).
+	// Task.StateDir keeps this out of the target repository's checkout whenever
+	// the run has somewhere better, so the composed prompt — which carries the
+	// node's whole operating posture — is not written into a tree the repo
+	// controls. The symlink refusal is NOT here: this function is skipped for a
+	// node with an empty system prompt, so it could never be the boundary.
+	dir, _ := task.StateDir(backendName)
 	if err := os.MkdirAll(dir, 0o750); err != nil {
 		return "", nil, fmt.Errorf("delegate: %s: create system-prompt dir: %w", backendName, err)
 	}

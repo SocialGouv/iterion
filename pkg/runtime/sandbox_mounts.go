@@ -68,13 +68,19 @@ func addOptionalBindMount(
 //
 // Pre-conditions: spec is the resolved active spec; the caller has
 // already decided that mounts/env mutations are safe.
+// It RETURNS the host `~/.iterion` path it actually bind-mounted, at that same
+// absolute path in the container, or "" when nothing was mounted — host_state
+// off, or the auto-binder skipped it because the path is missing or overlaps
+// the workspace bind. That is a fact about this run's mount plan, not a driver
+// input, so it travels as a return value like addOptionalBindMount's, rather
+// than as a field on the Spec every driver has to read past.
 func applyHostStateMounts(
 	spec *sandbox.Spec,
 	wf *ir.Workflow,
 	p SandboxParams,
 	emitEvent func(store.EventType, map[string]any) error,
 	logger *iterlog.Logger,
-) {
+) (sharedStateDir string) {
 	resolvedHostState, hsSource := pickHostState(workflowHostState(wf), p.HostStateOverride, p.HostStateDefault)
 	spec.HostState = sandbox.HostState(resolvedHostState)
 	if !spec.HostState.Active() {
@@ -82,7 +88,7 @@ func applyHostStateMounts(
 			"enabled": false,
 			"source":  hsSource,
 		})
-		return
+		return ""
 	}
 
 	absWorkspace, absErr := filepath.Abs(p.WorkspacePath)
@@ -148,10 +154,10 @@ func applyHostStateMounts(
 		mountPairs = append(mountPairs, m.HostPath+":"+m.ContainerPath)
 		// Record the iterion home only if it SURVIVED the filter —
 		// collectHostStateMounts drops a candidate that overlaps the workspace
-		// bind, and a backend that assumed the mount from `host_state: auto`
-		// alone would write where the container cannot read.
+		// bind, and a consumer that assumed the mount from `host_state: auto`
+		// alone would name a path the container cannot read.
 		if m.HostPath == iterionHomeDir {
-			spec.HostStateSharedDir = m.ContainerPath
+			sharedStateDir = m.ContainerPath
 		}
 	}
 
@@ -264,6 +270,7 @@ func applyHostStateMounts(
 		"workspace_folder": spec.WorkspaceFolder,
 		"mounts":           mountPairs,
 	})
+	return sharedStateDir
 }
 
 // homeNestedBindParents returns, for every bind mount in mounts whose

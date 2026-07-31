@@ -358,7 +358,7 @@ func resolveAndStartSandbox(ctx context.Context, p SandboxParams) (*activeSandbo
 		spec.Env["ITERION_ARTIFACT_FILES_DIR"] = runFilesContainerPath
 	}
 	bundleContainerPath := addOptionalBindMount(spec, p.BundleHostDir, p.BundleContainerPath, "/run/iterion/bundle", "bundle", true, logger)
-	applyHostStateMounts(spec, p.Workflow, p, emitEvent, logger)
+	sharedStateDir := applyHostStateMounts(spec, p.Workflow, p, emitEvent, logger)
 	// Devbox provisioning (bot's bundle devbox.json + target repo's) runs
 	// after both: it needs the bundle mount's resolved container path, and
 	// it reads spec.WorkspaceFolder, which applyHostStateMounts may have
@@ -489,7 +489,7 @@ func resolveAndStartSandbox(ctx context.Context, p SandboxParams) (*activeSandbo
 		proxy:           proxy,
 		workspaceFolder: spec.WorkspaceFolder,
 		attachmentsDir:  attachmentsDir,
-		sharedStateDir:  spec.HostStateSharedDir,
+		sharedStateDir:  sharedStateDir,
 	}
 
 	// Second half of the Claude forfait delivery: copy the read-only mount
@@ -1342,6 +1342,15 @@ type sandboxSetter interface {
 	SetSandbox(run sandbox.Run)
 }
 
+// sharedStateSetter is the optional interface ClawExecutor implements so the
+// engine can push the directory both host and container can reach that is NOT
+// inside the target repository's checkout — reported from what was actually
+// mounted, never inferred from the host_state setting. Type-asserted at call
+// time so test stubs need not implement it.
+type sharedStateSetter interface {
+	SetSharedStateDir(dir string)
+}
+
 // boardMCPSetter is the optional interface ClawExecutor implements so the
 // engine can push the per-run board MCP HTTP endpoint (started with the
 // sandbox) into the executor after the run starts. The executor sets
@@ -1478,10 +1487,6 @@ func (e *Engine) startSandbox(ctx context.Context, runID string, repoRoot string
 		if s, ok := e.executor.(sandboxSetter); ok {
 			s.SetSandbox(active.run)
 		}
-		// A directory both host and container can reach that is NOT inside the
-		// target repository's checkout. Reported from what was actually
-		// mounted, never inferred from the host_state setting.
-		type sharedStateSetter interface{ SetSharedStateDir(string) }
 		if s, ok := e.executor.(sharedStateSetter); ok {
 			s.SetSharedStateDir(active.sharedStateDir)
 		}

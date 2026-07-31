@@ -95,7 +95,8 @@ func (b *PiRPCBackend) Execute(ctx context.Context, task Task) (Result, error) {
 	// the permission gate. Loaded via `-e`, which bypasses pi's project-trust
 	// gate (a `.pi/extensions/` drop would silently never load in a headless
 	// run, and never say so).
-	if extPath, cleanupExt, extErr := piext.Materialise(task.WorkDir); extErr != nil {
+	stateRoot, _ := task.StateDir(BackendPi)
+	if extPath, cleanupExt, extErr := piext.Materialise(stateRoot); extErr != nil {
 		// A permission-gated node without its gate is a false sense of
 		// security, so that specific combination fails rather than degrades.
 		if task.Permission.Enabled() {

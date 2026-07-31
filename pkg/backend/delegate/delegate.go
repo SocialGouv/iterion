@@ -10,12 +10,14 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"path/filepath"
 	"strings"
 	"time"
 
 	"github.com/SocialGouv/iterion/pkg/backend/permission"
 	"github.com/SocialGouv/iterion/pkg/plugin"
 	"github.com/SocialGouv/iterion/pkg/sandbox"
+	"github.com/SocialGouv/iterion/pkg/store"
 )
 
 // Backend name constants used for registration and dispatch.
@@ -747,6 +749,61 @@ type Task struct {
 	// node into a single human-readable block (the await_answers tool
 	// result when nothing is pending).
 	CollectAsyncAnswers func() (string, error)
+}
+
+// StateDir is where this node's backend-owned state lives — a materialised
+// extension, a composed system-prompt file, a session transcript, a seeded
+// credential — and whether that place is inside the TARGET repository's
+// checkout.
+//
+// The second return value is the one that matters. A path inside the checkout
+// is a path the repo controls: it can commit a symlink at any component or at
+// the leaf, pre-seed a `.gitignore` whose last effective rule re-includes our
+// files, and have an agent's `git add -A` stage whatever we wrote onto the
+// operator's branch. Every defence against that is a patch on the same premise.
+// Writing outside the checkout removes the premise, so callers gate their
+// guards on this flag rather than running them unconditionally.
+//
+// Preference order:
+//  1. sandboxed with a shared-state mount — the engine reports a host directory
+//     bind-mounted at its own absolute path, so it resolves identically in and
+//     out of the container while sitting nowhere near the repo;
+//  2. sandboxed without one (host_state=none, the kubernetes driver) — the
+//     workspace bind is the only thing the container can read, so there is no
+//     choice and the guards apply;
+//  3. the run's store, so state shares the store's lifetime;
+//  4. the workspace, unsandboxed — the historical home, and the property
+//     writeSystemPromptFile depends on (a container reads the file across the
+//     workspace bind);
+//  5. the host's iterion home, when there is no workspace either.
+//
+// The result is always ABSOLUTE. `--store-dir` is taken verbatim and can be
+// relative, and a relative root made containment fail OPEN — filepath.Rel
+// refuses to relate an absolute WorkDir to a relative path, so the guards were
+// skipped exactly where they were needed. Absolutising here, once, is what
+// makes the flag trustworthy for every caller.
+//
+// Longer term the fallback should stop existing: a writable per-run state mount
+// modelled on Spec.SecretFiles (which Kubernetes already satisfies with a
+// per-run Secret) would be available under every driver, and case 2 — with its
+// guard family — could then be deleted rather than maintained.
+func (t Task) StateDir(backendName string) (root string, inCheckout bool) {
+	switch shared := strings.TrimSpace(t.SharedStateDir); {
+	case t.Sandbox != nil && shared != "":
+		root = filepath.Join(shared, backendName)
+	case t.Sandbox != nil && t.WorkDir != "":
+		root = filepath.Join(t.WorkDir, ".iterion", backendName)
+	case t.StoreDir != "":
+		root = filepath.Join(t.StoreDir, backendName)
+	case t.WorkDir != "":
+		root = filepath.Join(t.WorkDir, ".iterion", backendName)
+	default:
+		root = filepath.Join(store.GlobalIterionDataDir(), backendName)
+	}
+	if abs, err := filepath.Abs(root); err == nil {
+		root = abs
+	}
+	return root, lexicallyWithin(t.WorkDir, root)
 }
 
 // AsyncQuestion is the input of a non-blocking ask_user_async call

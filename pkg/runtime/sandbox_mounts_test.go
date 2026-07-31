@@ -50,7 +50,7 @@ func TestApplyHostStateMounts_HomeTmpfsIsExec(t *testing.T) {
 	p := SandboxParams{WorkspacePath: t.TempDir()}
 	noopEmit := func(store.EventType, map[string]any) error { return nil }
 
-	applyHostStateMounts(spec, wf, p, noopEmit, iterlog.Nop())
+	_ = applyHostStateMounts(spec, wf, p, noopEmit, iterlog.Nop())
 
 	var homeEntry string
 	for _, tm := range spec.Tmpfs {
@@ -259,21 +259,19 @@ func TestApplyHostStateMounts_ReportsTheSharedStateDir(t *testing.T) {
 	t.Run("reported when the iterion home is mounted", func(t *testing.T) {
 		home := t.TempDir()
 		t.Setenv("ITERION_HOME", home)
-		spec := &sandbox.Spec{}
-		applyHostStateMounts(spec, &ir.Workflow{}, SandboxParams{WorkspacePath: t.TempDir()}, noopEmit, iterlog.Nop())
-		if spec.HostStateSharedDir != home {
-			t.Errorf("HostStateSharedDir = %q, want %q", spec.HostStateSharedDir, home)
+		got := applyHostStateMounts(&sandbox.Spec{}, &ir.Workflow{},
+			SandboxParams{WorkspacePath: t.TempDir()}, noopEmit, iterlog.Nop())
+		if got != home {
+			t.Errorf("shared state dir = %q, want %q", got, home)
 		}
 	})
 
 	// host_state=none mounts nothing, so there is no shared path to report.
 	t.Run("empty when host_state is off", func(t *testing.T) {
 		t.Setenv("ITERION_HOME", t.TempDir())
-		spec := &sandbox.Spec{}
 		p := SandboxParams{WorkspacePath: t.TempDir(), HostStateOverride: "none"}
-		applyHostStateMounts(spec, &ir.Workflow{}, p, noopEmit, iterlog.Nop())
-		if spec.HostStateSharedDir != "" {
-			t.Errorf("HostStateSharedDir = %q, want none", spec.HostStateSharedDir)
+		if got := applyHostStateMounts(&sandbox.Spec{}, &ir.Workflow{}, p, noopEmit, iterlog.Nop()); got != "" {
+			t.Errorf("shared state dir = %q, want none", got)
 		}
 	})
 
@@ -285,11 +283,10 @@ func TestApplyHostStateMounts_ReportsTheSharedStateDir(t *testing.T) {
 		if err := os.MkdirAll(filepath.Join(workspace, ".iterion"), 0o755); err != nil {
 			t.Fatal(err)
 		}
-		spec := &sandbox.Spec{}
-		applyHostStateMounts(spec, &ir.Workflow{}, SandboxParams{WorkspacePath: workspace}, noopEmit, iterlog.Nop())
-		if spec.HostStateSharedDir != "" {
-			t.Errorf("HostStateSharedDir = %q, want none — the workspace bind already covers it",
-				spec.HostStateSharedDir)
+		got := applyHostStateMounts(&sandbox.Spec{}, &ir.Workflow{},
+			SandboxParams{WorkspacePath: workspace}, noopEmit, iterlog.Nop())
+		if got != "" {
+			t.Errorf("shared state dir = %q, want none — the workspace bind already covers it", got)
 		}
 	})
 }

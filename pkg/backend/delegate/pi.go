@@ -11,7 +11,6 @@ import (
 	"github.com/SocialGouv/iterion/pkg/backend/delegate/pisdk"
 	iterlog "github.com/SocialGouv/iterion/pkg/log"
 	"github.com/SocialGouv/iterion/pkg/secrets"
-	"github.com/SocialGouv/iterion/pkg/store"
 )
 
 // BackendPi is the registration name for the pi coding-agent backend
@@ -143,21 +142,33 @@ func (b *PiBackend) Execute(ctx context.Context, task Task) (Result, error) {
 	if err := b.noticeSubscriptionOAuth(ctx, task); err != nil {
 		return Result{BackendName: BackendPi, ExitCode: -1}, err
 	}
-	// Everything pi writes into the workspace lands under <WorkDir>/.iterion/pi:
-	// the embedded extension bundle, the composed system prompt, the session
-	// transcripts (which carry the node's full conversation and tool output),
-	// and on the sandboxed path the seeded credential. One guard here covers
-	// all four, before any of them runs.
-	if err := piGuardWriteRoot(task.WorkDir); err != nil {
-		return Result{BackendName: BackendPi, ExitCode: -1}, err
+	// Everything pi writes for this node — the extension bundle, the composed
+	// system prompt, the session transcripts, the seeded credential — lands in
+	// one state root. When the run has somewhere better than the target
+	// repository's checkout, that is where it goes and there is nothing here to
+	// defend: the repo cannot pre-populate a directory it has no part in.
+	//
+	// The guards below exist for the fallback (host_state=none, the kubernetes
+	// driver), where the workspace bind is the only thing the container can read
+	// and the premise they were written for holds again. Gating them on
+	// containment rather than running them unconditionally is what makes the
+	// default path actually stop touching the target tree.
+	stateRoot, inCheckout := task.StateDir(BackendPi)
+	// Reap what an interrupted node stranded, for EVERY pi node — not just the
+	// codex ones that seed a credential. Session transcripts are written by all
+	// of them, and on a root shared across runs nothing else reaps them.
+	piSweepStaleSeeds(stateRoot)
+	if inCheckout {
+		if err := piGuardWriteRoot(stateRoot); err != nil {
+			return Result{BackendName: BackendPi, ExitCode: -1}, err
+		}
+		// The ignore guard goes FIRST: a v2 campaign agent runs `git add -A`
+		// before each in-stride commit, and finalizeWorktree fast-forwards the
+		// result onto the operator's branch, so a live credential could be
+		// staged into the target repo. Ordering it before the seed closes that
+		// window.
+		piHideWorkspaceSessionDir(task, b.Logger)
 	}
-	// The ignore guard goes FIRST. On the sandboxed path the credential below
-	// lands in <WorkDir>/.iterion/pi/, inside the git worktree, and a v2
-	// campaign agent runs `git add -A` before each in-stride commit — so a live
-	// ChatGPT access AND refresh token could be staged into the target repo and
-	// then fast-forwarded onto the operator's branch by finalizeWorktree.
-	// Ordering it before the seed closes that window unconditionally.
-	piHideWorkspaceSessionDir(task, b.Logger)
 	// pi's openai-codex provider has no API-key path, so a ChatGPT plan only
 	// reaches it through a seeded agent dir. Riding task.ExtraEnv puts it on
 	// both transports at once, and on the sandboxed path with them.
@@ -492,48 +503,8 @@ func piExtraArgsFor(task Task, logger *iterlog.Logger) []string {
 // GC-able, and concurrent nodes must not collide. Sandboxed runs need a
 // path visible inside the container, which means workspace-relative.
 func piSessionDir(task Task) string {
-	return filepath.Join(piStateRoot(task), "sessions")
-}
-
-// piStateRoot picks the directory holding this node's pi state — the seeded
-// agent dir, the session transcripts.
-//
-// The change that matters is the FIRST case. A sandboxed run used to be forced
-// into `<WorkDir>/.iterion/pi`, inside a checkout the target repository
-// controls, because the workspace bind was assumed to be the only thing the
-// container could read. It is not: host_state already bind-mounts the host's
-// `~/.iterion` at its own absolute path, so it resolves identically in and out
-// of the container while sitting nowhere near the repo.
-//
-// That distinction is the whole security argument. Anything written inside the
-// checkout has to be defended — against a symlink the repo committed at any
-// component or leaf, against a `.gitignore` it pre-seeded whose last effective
-// rule re-includes our files, against an agent's `git add -A` staging a live
-// credential onto the operator's branch. Each of those is a patch on the same
-// premise. Writing outside the checkout removes the premise.
-//
-// The rest is unchanged on purpose: off the sandbox the run's store still wins,
-// so session transcripts keep sharing the store's lifetime and `iterion runs
-// prune` still reaches them. The global home is only the last resort, and the
-// in-workspace path only the fallback for a run with no shared-state mount
-// (host_state=none, or the kubernetes driver) — where the guards still apply,
-// because there the premise holds again.
-func piStateRoot(task Task) string {
-	if task.Sandbox != nil {
-		if dir := strings.TrimSpace(task.SharedStateDir); dir != "" {
-			return filepath.Join(dir, "pi")
-		}
-		if task.WorkDir != "" {
-			return filepath.Join(task.WorkDir, ".iterion", "pi")
-		}
-	}
-	if task.StoreDir != "" {
-		return filepath.Join(task.StoreDir, "pi")
-	}
-	if home := store.GlobalIterionDataDir(); home != "" {
-		return filepath.Join(home, "pi")
-	}
-	return filepath.Join(os.TempDir(), "iterion-pi")
+	root, _ := task.StateDir(BackendPi)
+	return filepath.Join(root, "sessions")
 }
 
 // piGuardWriteRoot refuses to write pi's workspace state through a symlink the
@@ -557,11 +528,11 @@ func piStateRoot(task Task) string {
 // ITSELF as a symlink is not caught here, because at that point it is
 // impersonating the operator's own store convention and the two are
 // indistinguishable from this side.
-func piGuardWriteRoot(workDir string) error {
-	if workDir == "" {
+func piGuardWriteRoot(root string) error {
+	if root == "" {
 		return nil
 	}
-	leaf := filepath.Join(workDir, ".iterion", "pi")
+	leaf := root
 	info, err := os.Lstat(leaf)
 	if err != nil {
 		return nil // absent, or unreadable for a reason MkdirAll will report

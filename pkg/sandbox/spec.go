@@ -102,20 +102,6 @@ type Spec struct {
 	// active; HostStateNone disables the auto-mount entirely.
 	HostState HostState
 
-	// HostStateSharedDir is the host `~/.iterion` path that host_state
-	// ACTUALLY bind-mounted, at that same absolute path in the container.
-	// Empty when nothing was mounted — host_state=none, a driver without
-	// host bind mounts (kubernetes), or the auto-mount skipped because the
-	// path overlaps the workspace bind.
-	//
-	// It is the engine's answer to "is there a directory both the host and
-	// the container can reach that is NOT inside the target repository's
-	// checkout". A backend needing to write per-run state (a credential, a
-	// session transcript) uses it to stay out of the worktree entirely,
-	// instead of writing into `<WorkDir>/.iterion` and defending that
-	// against a repo which can pre-populate it.
-	HostStateSharedDir string
-
 	// Network, when non-nil, controls egress filtering. Phase 3.
 	Network *Network
 

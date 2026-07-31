@@ -134,12 +134,11 @@ func piCodexSeed(ctx context.Context, task Task, logger *iterlog.Logger) (map[st
 	// A root we cannot make safe is not a reason to kill the node: pi's own
 	// /login may well work, and that is the path this bridge was added ON TOP
 	// of, not in place of. Same rule as a missing credential above.
-	root, err := piCodexSeedRoot(task, logger)
+	root, err := piCodexSeedRoot(task)
 	if err != nil {
 		piNoteCodexFallback(task, logger, fmt.Sprintf("no safe place to write it (%v)", err))
 		return nil, noop, nil
 	}
-	piSweepStaleSeeds(root)
 	dir, err := os.MkdirTemp(root, piSeedDirPrefix)
 	if err != nil {
 		return nil, noop, fmt.Errorf("pi backend: create agent dir: %w", err)
@@ -192,7 +191,7 @@ func piLoadCodexView(ctx context.Context) (secrets.CodexCredentialsView, error) 
 
 // piCodexSeedRoot picks where the throwaway agent dir lives.
 //
-// It delegates the choice to piStateRoot, whose second return value is what
+// It delegates the choice to Task.StateDir, whose second return value is what
 // matters here: whether the root is inside the TARGET repository's checkout.
 //
 // Outside it — the ordinary case, on the host or under a sandbox whose
@@ -217,35 +216,13 @@ func piLoadCodexView(ctx context.Context) (secrets.CodexCredentialsView, error) 
 // remain: an OPENAI_API_KEY model rather than `openai-codex/…` for a node
 // pointed at an untrusted repository, or ITERION_FORBID_SUBSCRIPTION_OAUTH=1 to
 // refuse the bridge outright. Documented in docs/backends.md.
-func piCodexSeedRoot(task Task, logger *iterlog.Logger) (string, error) {
-	root := piStateRoot(task)
-	if root == "" {
-		return "", nil
-	}
-	// Absolutise before ANY guard reads it. `--store-dir` used to feed this and
-	// is taken verbatim, so a relative root reached here and broke every check
-	// silently — filepath.Rel refuses to relate an absolute WorkDir to a
-	// relative path, so containment answered "outside" and the refusal never
-	// ran. piStateRoot no longer consults StoreDir, but the invariant is cheap
-	// to keep and the failure mode it prevents was a fail-OPEN.
-	abs, err := filepath.Abs(root)
-	if err != nil {
-		return "", fmt.Errorf("resolve agent dir %s: %w", root, err)
-	}
-	root = abs
+func piCodexSeedRoot(task Task) (string, error) {
+	root, inside := task.StateDir(BackendPi)
 
-	// Guarding is decided by CONTAINMENT, not by how the root was chosen: the
-	// defences exist because a path inside the target repository's checkout is
-	// a path that repo can pre-populate. Outside it — the ordinary sandboxed
-	// case now that host_state's shared mount is preferred, and every
-	// store/global case — there is nothing to defend and nothing runs.
-	//
-	// Lexical on purpose. A symlink-RESOLVING containment test answers "where
-	// does this end up", and the question here is "was this written to look like
-	// it stays inside the checkout" — on exactly the input that escapes, the
-	// resolving variant says "outside" and waves the guards away. That variant
-	// used to live here and is gone with this change.
-	inside := lexicallyWithin(task.WorkDir, root)
+	// The defences exist because a path inside the target repository's checkout
+	// is a path that repo can pre-populate. Outside it — the ordinary sandboxed
+	// case now that the shared mount is preferred, plus every store/global case
+	// — there is nothing to defend and nothing runs.
 	if inside {
 		if err := refuseSymlinkedPath(task.WorkDir, root); err != nil {
 			return "", err
@@ -254,15 +231,14 @@ func piCodexSeedRoot(task Task, logger *iterlog.Logger) (string, error) {
 	if err := os.MkdirAll(root, 0o700); err != nil {
 		return "", fmt.Errorf("create agent dir %s: %w", root, err)
 	}
-	if !inside {
-		return root, nil
-	}
-	// Inside the checkout the credential must be unstageable: a v2 campaign
-	// agent runs `git add -A` before each in-stride commit, and finalizeWorktree
-	// fast-forwards the result onto the operator's branch. iterion writes its
-	// OWN guard in the seed root rather than trusting one it did not author.
-	if err := piWriteIgnoreGuard(root); err != nil {
-		return "", err
+	if inside {
+		// The credential must be unstageable: a v2 campaign agent runs `git add
+		// -A` before each in-stride commit, and finalizeWorktree fast-forwards
+		// the result onto the operator's branch. iterion writes its OWN guard in
+		// the seed root rather than trusting one it did not author.
+		if err := piWriteIgnoreGuard(root); err != nil {
+			return "", err
+		}
 	}
 	return root, nil
 }
@@ -412,7 +388,7 @@ func piWriteIgnoreGuard(dir string) error {
 // abandoned one a few hours longer.
 const piSeedMaxAge = 12 * time.Hour
 
-// piSweepStaleSeeds removes agent dirs an interrupted node left behind.
+// piSweepStaleSeeds removes pi state an interrupted node left behind.
 //
 // Every seed is deleted by its own deferred cleanup, but a SIGKILL or an OOM
 // skips that and strands a live access AND refresh token on disk with nothing
@@ -427,13 +403,13 @@ const piSeedMaxAge = 12 * time.Hour
 // writes to a deleted path), surfacing as an intermittent "No API key found for
 // openai-codex" for an operator who does have one.
 //
-// It only ever reaches the non-sandboxed `<StoreDir>/pi` root in practice. The
-// sandboxed root is per-RUN: a later node of the same run always finds the seed
-// younger than the age bound, and once the run ends no node passes that root
-// again — so a seed stranded by SIGKILL survives exactly as long as the
-// worktree does. On success that is moments (finalizeWorktree removes it); on
-// failure the worktree is deliberately preserved for inspection, and the token
-// stays with it until the operator clears it.
+// It also reaps stale SESSION transcripts under the same root. Those used to
+// live inside the per-run worktree and vanish with it; on a shared root they
+// outlive the run, are written by every pi node (not just codex ones), carry
+// the node's whole conversation plus tool output, and no other cleanup reaches
+// them — `iterion runs prune` walks `<store>/runs` only. Without this they grow
+// without bound. Same age guard, for the same reason: pi writes into a live
+// session as the node runs, and `--session-id` resume reads it back.
 func piSweepStaleSeeds(root string) {
 	if root == "" {
 		return
@@ -451,6 +427,27 @@ func piSweepStaleSeeds(root string) {
 			continue
 		}
 		_ = os.RemoveAll(filepath.Join(root, e.Name()))
+	}
+	piSweepStaleSessions(filepath.Join(root, "sessions"))
+}
+
+// piSweepStaleSessions age-reaps pi's own transcript files. pi names them
+// `<timestamp>_<uuid>.jsonl` directly in the sessions dir, so there is nothing
+// to recurse into.
+func piSweepStaleSessions(dir string) {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return
+	}
+	for _, e := range entries {
+		if e.IsDir() {
+			continue
+		}
+		info, err := e.Info()
+		if err != nil || time.Since(info.ModTime()) < piSeedMaxAge {
+			continue
+		}
+		_ = os.Remove(filepath.Join(dir, e.Name()))
 	}
 }
 
