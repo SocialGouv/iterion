@@ -149,6 +149,43 @@ integration's launch vars are persisted and re-applied on every provision.
 
 Then require `iterion/review` — one check, whichever bot owns the PR.
 
+### Two bots on the SAME pull request
+
+Revi and Vetty share the context by owning **disjoint PRs** (`author_scope:
+exclusive` routes the update bot's PRs to one and the humans' to the other), so
+they never write the same status.
+
+A fixer is different: it acts on the pull requests a reviewer already reviewed.
+They share the context **sequentially**, and the ordering is what keeps them
+from fighting:
+
+1. the reviewer reviews head A and posts its count on A;
+2. the fixer runs, pushes, and head B appears — the required check is now
+   **absent** on B, which blocks the PR with nothing explaining why;
+3. the fixer posts its own verdict on B, immediately after its push;
+4. that push is a `synchronize`, so with `review_on_sync` on (derived ON for
+   any repo where a bot declares the `statuses` scope) the reviewer re-reviews
+   B and its verdict — the authoritative one, from a reviewer that did not
+   write the code — lands minutes later and supersedes.
+
+Step 3 is the one that needs care, because the fixer wrote the code it is
+grading. Three rules keep it honest, and a fixer that gates must implement all
+three:
+
+- **The verdict is a count, never a judgement.** Findings not fixed, plus the
+  deterministic build gate, plus its own re-review of the diff.
+- **A contested finding still blocks.** A fixer may argue a finding is wrong —
+  in the open, with its reasoning, on the PR — but the argument goes to a
+  human, never to the gate. If a refusal could green the check, a fixer would
+  clear any review by contesting every finding.
+- **It speaks only for the revision it produced.** Pushed nothing → post
+  nothing, or it overwrites a verdict it has no standing to replace. Pushed
+  code that no review has read → not green, since there is no review of that
+  revision to report.
+
+A green from a fixer says so in its description, so it is never mistaken for an
+independent review.
+
 ## Overriding a finding
 
 Three ways, in order of preference:

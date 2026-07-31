@@ -2,7 +2,9 @@ name: branch-improve-loop
 display_name: Billy
 icon: 🌿
 version: 1.1.0
-## 1.1.0 — answers the review, and speaks for the head it pushes. Returns a
+## 1.1.0 — the operator picks where they sit in the loop (`pilot`: end reviews
+## the result, middle arbitrates the plan before any edit), and the bot
+## answers the review, and speaks for the head it pushes. Returns a
 ## `finding_ledger` (per finding id: fixed / refused-with-argument / deferred),
 ## rendered as a table on the PR and handed to the next review as pushback so a
 ## contested finding is not re-raised for free. The verdict comment becomes a
@@ -114,5 +116,5 @@ invocations:
 ## the declared order; `hidden` vars are dispatch/webhook plumbing kept
 ## out of the form (still settable via --var / bot_args).
 launch:
-  primary: [base_ref]
+  primary: [base_ref, pilot]
   hidden: [source_issue_ref]

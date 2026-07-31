@@ -179,6 +179,19 @@ vars:
   ## the diff from scratch.
   prior_review: string = ""
 
+  ## WHERE THE HUMAN SITS IN THE LOOP.
+  ##   "end"    (default) — run to completion, the human reviews the result.
+  ##   "middle" — after reading the diff and the prior review, and BEFORE any
+  ##              invasive edit, present the plan (which findings you intend to
+  ##              fix, which you intend to contest and why, what else you found)
+  ##              and WAIT for the operator to arbitrate.
+  ##
+  ## Both are first-class. A reviewer alone already puts the human in the middle
+  ## — findings land, the human decides — and this bot is the more invasive
+  ## option, so it must not be the only shape on offer: "middle" is how someone
+  ## keeps the arbitration while still delegating the work.
+  pilot: string [enum: "end", "middle"] = "end"
+
   ## MERGE GATE. When a pull request is in play, the deterministic
   ## publish_verdict step posts a commit status on the PR head so a required
   ## check tracks the revision THIS run produced — a push moves the head, and a
@@ -277,6 +290,16 @@ prompt campaign_system:
      behaviour intentional, a destructive trade-off, a backward-compat policy
      call. Keep it RARE: most of the time you decide and keep moving.
 
+  6. PILOTING — read the `pilot` value in your task below.
+     - "end": the operator reviews your RESULT. Work through, as above.
+     - "middle": the operator arbitrates the PLAN. Read the diff and the prior
+       review, decide what you WOULD do, then — BEFORE editing anything — ask
+       the operator once, with: each prior finding and the outcome you propose
+       for it (fix / contest, with your reason), anything else you found worth
+       fixing, and anything you are unsure about. Then follow their answer:
+       it overrides your own judgement on any point it covers, and you decide
+       the rest yourself. Ask ONCE — this is an arbitration, not a dialogue.
+
   KEEP GOING, one issue at a time, until this pass has resolved every real
   issue you can find in the branch diff within your budget. Then STOP and
   report.
@@ -325,6 +348,10 @@ prompt campaign_user:
   `{{vars.base_ref}}...HEAD` would hide them). Enumerate the footprint with
   `git diff $(git merge-base {{vars.base_ref}} HEAD) --name-only`. That diff
   is your scope — do NOT flag pre-existing code the branch didn't touch.
+
+  Piloting for this run: {{vars.pilot}}
+  (end = the operator reviews your result · middle = ask them to arbitrate your
+  plan BEFORE you edit anything — see PILOTING in your operating contract.)
 
   Extra context / notes (empty = the diff speaks for itself):
   {{vars.scope_notes}}
