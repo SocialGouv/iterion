@@ -235,6 +235,25 @@ func piCodexSeedRoot(task Task, logger *iterlog.Logger) (string, error) {
 		}
 		return "", nil
 	}
+	// `--store-dir` is taken VERBATIM (store.ResolveStoreDir returns the override
+	// unchanged), so `root` can be RELATIVE — `iterion schedule` renders exactly
+	// that into its cron lines. A relative root breaks all three things below,
+	// and the first one fails OPEN:
+	//   - filepath.Rel refuses to relate an absolute WorkDir to a relative root,
+	//     so lexicallyWithin returns false and the symlink refusal never runs;
+	//   - inWorktree resolves against ITERION's cwd, so the ignore guard is
+	//     skipped too;
+	//   - os.MkdirTemp returns a relative path, and PI_CODING_AGENT_DIR is then
+	//     resolved against PI's cwd (task.WorkDir), where nothing was written —
+	//     pi reports "No API key found for openai-codex", the exact silent
+	//     failure this file exists to prevent.
+	// Absolutise once, here, before anything reads it.
+	abs, err := filepath.Abs(root)
+	if err != nil {
+		return "", fmt.Errorf("resolve agent dir %s: %w", root, err)
+	}
+	root = abs
+
 	// Whenever `root` lands inside a checkout of the TARGET repository, a repo
 	// can commit `.iterion` (or `.iterion/pi`) as a SYMLINK — .gitignore does not
 	// stop a tracked symlink from being checked out. os.MkdirAll follows it,

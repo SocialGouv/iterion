@@ -67,7 +67,7 @@ to the team's bot-source store instead of an ephemeral pod filesystem. The new
 bot can be opened directly in the multi-file editor and is visible to every
 team member. Baked catalogue bots remain read-only; **Duplicate & edit** forks the
 whole catalogue bundle into that team store before opening it. See
-[Cloud user guide → Editing and creating bots](cloud-user.md#editing-and-creating-bots).
+[Cloud user guide → Editing and creating bots](cloud-user.md#11-editing-and-creating-bots).
 
 Both creation paths validate the spec and generated bundle before persistence;
 subsequent cloud file saves compile the whole bundle and use a version token to

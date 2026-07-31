@@ -541,6 +541,11 @@ func sameTree(src, dst string) (bool, error) {
 		if !ok {
 			return false, nil
 		}
+		// An empty path marks an irregular entry (see treeFiles): not something
+		// the mirror writes, so the tree is not ours.
+		if srcPath == "" || dstPath == "" {
+			return false, nil
+		}
 		a, err := os.ReadFile(srcPath) // #nosec G304 — walked from the bundle's own skills dir.
 		if err != nil {
 			return false, err
@@ -556,20 +561,32 @@ func sameTree(src, dst string) (bool, error) {
 	return true, nil
 }
 
-// treeFiles maps each regular file under root to its full path, keyed by the
-// path relative to root.
+// treeFiles maps each file under root to its full path, keyed by the path
+// relative to root. An IRREGULAR entry is recorded with an empty path so it
+// still COUNTS toward the comparison.
+//
+// That distinction is the point. The mirror only ever writes plain files
+// (copyDir dereferences), so a symlink here means the tree is not ours — and
+// simply skipping irregular entries made the invariant falsifiable by exactly
+// the untrusted input it guards against: WalkDir does not descend into a
+// symlinked directory, so a checkout could add symlinks beside a byte-identical
+// SKILL.md and still be reported as iterion-owned.
 func treeFiles(root string) (map[string]string, error) {
 	out := map[string]string{}
 	err := filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
 		if err != nil {
 			return err
 		}
-		if d.IsDir() || !d.Type().IsRegular() {
+		if d.IsDir() {
 			return nil
 		}
 		rel, err := filepath.Rel(root, path)
 		if err != nil {
 			return err
+		}
+		if !d.Type().IsRegular() {
+			out[rel] = ""
+			return nil
 		}
 		out[rel] = path
 		return nil

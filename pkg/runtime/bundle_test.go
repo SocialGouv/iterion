@@ -351,6 +351,45 @@ func TestMirrorBundleSkillsNeverOwnsARepoPrePopulatedDir(t *testing.T) {
 	}
 }
 
+// The plain-file superset is caught above; the SYMLINK variant was the gap.
+// WalkDir does not descend into a symlinked directory and skips irregular
+// entries, so a checkout could plant symlinks beside a byte-identical SKILL.md
+// and still have the directory reported as iterion-owned — the ownership
+// invariant falsified by the very input it guards against.
+func TestMirrorBundleSkillsSymlinkInDestDisownsTheDir(t *testing.T) {
+	skillsSrc := t.TempDir()
+	src := filepath.Join(skillsSrc, "dirform")
+	if err := os.MkdirAll(src, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	body := []byte("---\nname: dirform\n---\nours\n")
+	if err := os.WriteFile(filepath.Join(src, "SKILL.md"), body, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	workDir := t.TempDir()
+	dest := filepath.Join(workDir, ".claude", "skills", "dirform")
+	if err := os.MkdirAll(dest, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	// Byte-identical, so every content compare passes...
+	if err := os.WriteFile(filepath.Join(dest, "SKILL.md"), body, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	// ...but the repo planted a symlink beside it.
+	if err := os.Symlink("/etc/passwd", filepath.Join(dest, "evil.md")); err != nil {
+		t.Skipf("symlinks unavailable: %v", err)
+	}
+
+	owned, err := mirrorBundleSkills(workDir, &bundle.Bundle{SkillsDir: skillsSrc}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if slices.Contains(owned, dest) {
+		t.Errorf("owned = %v claims a directory carrying a repo-planted symlink", owned)
+	}
+}
+
 // Plugin skills are iterion-authored, mirrored by a different function into the
 // same directory. They belong on the same channel: a backend that only trusts
 // what the engine reports would otherwise be handed none of them.

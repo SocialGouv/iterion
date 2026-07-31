@@ -521,8 +521,10 @@ func TestPiCodexSeedMakesTheTokenUnstageable(t *testing.T) {
 			t.Fatal(err)
 		}
 		data, _ := os.ReadFile(filepath.Join(root, ".gitignore"))
-		if !strings.Contains(string(data), "# mine") {
-			t.Error("overwrote an operator's own ignore file")
+		// Byte-identical: appending a second `*` would also keep "# mine", so
+		// asserting survival alone does not pin the short-circuit.
+		if string(data) != "# mine\n*\n" {
+			t.Errorf("guard = %q, want it untouched", data)
 		}
 	})
 
@@ -603,6 +605,42 @@ func TestPiCodexSeedMakesTheTokenUnstageable(t *testing.T) {
 		}
 	})
 
+	// --store-dir is taken VERBATIM, and `iterion schedule` renders it into cron
+	// lines as given — so the root can be RELATIVE. That broke every guard here,
+	// and the symlink refusal broke OPEN: filepath.Rel cannot relate an absolute
+	// WorkDir to a relative root, so the containment test answered "no" and the
+	// refusal never ran.
+	t.Run("a relative store dir is absolutised before any guard reads it", func(t *testing.T) {
+		work, elsewhere := t.TempDir(), t.TempDir()
+		if err := os.Symlink(elsewhere, filepath.Join(work, ".iterion")); err != nil {
+			t.Skipf("symlinks unavailable: %v", err)
+		}
+		t.Chdir(work)
+
+		_, err := piCodexSeedRoot(Task{NodeID: "n", WorkDir: work, StoreDir: ".iterion"}, nil)
+		if err == nil {
+			t.Fatal("a relative --store-dir walked straight past the symlink refusal")
+		}
+		if _, err := os.Stat(filepath.Join(elsewhere, "pi")); err == nil {
+			t.Error("created a directory at the symlink's target")
+		}
+	})
+
+	// And the root pi is told about must be absolute: pi's cwd is task.WorkDir
+	// while iterion's is its own, so a relative PI_CODING_AGENT_DIR points at a
+	// path where nothing was written — "No API key found for openai-codex".
+	t.Run("the seed root handed to pi is absolute", func(t *testing.T) {
+		work := t.TempDir()
+		t.Chdir(work)
+		root, err := piCodexSeedRoot(Task{NodeID: "n", WorkDir: work, StoreDir: "store"}, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !filepath.IsAbs(root) {
+			t.Errorf("root = %q, want an absolute path", root)
+		}
+	})
+
 	// Outside the worktree nothing is stageable, so no guard is written.
 	t.Run("a store outside the worktree needs no guard", func(t *testing.T) {
 		work, outside := t.TempDir(), t.TempDir()
@@ -614,6 +652,46 @@ func TestPiCodexSeedMakesTheTokenUnstageable(t *testing.T) {
 			t.Error("wrote a guard outside the worktree — nothing there can be staged")
 		}
 	})
+}
+
+// The sweep is the ONLY thing that removes a seed stranded by SIGKILL/OOM, i.e.
+// the only thing between an interrupted node and a live access + refresh token
+// left on disk. Both directions matter: reaping a LIVE peer's dir is the worse
+// failure, and is why the age bound is generous rather than tight.
+func TestPiSweepStaleSeeds(t *testing.T) {
+	root := t.TempDir()
+	mk := func(name string, age time.Duration) string {
+		t.Helper()
+		dir := filepath.Join(root, name)
+		if err := os.MkdirAll(dir, 0o700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(dir, "auth.json"), []byte("{}"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		when := time.Now().Add(-age)
+		if err := os.Chtimes(dir, when, when); err != nil {
+			t.Fatal(err)
+		}
+		return dir
+	}
+
+	stale := mk("pi-agent-stale", piSeedMaxAge+time.Hour)
+	fresh := mk("pi-agent-fresh", time.Minute)
+	// Not ours: the sweep must not treat the root as its own scratch space.
+	foreign := mk("something-else", piSeedMaxAge+time.Hour)
+
+	piSweepStaleSeeds(root)
+
+	if _, err := os.Stat(stale); !os.IsNotExist(err) {
+		t.Errorf("a stranded seed survived (%v) — a live credential is left on disk with nothing to reap it", err)
+	}
+	if _, err := os.Stat(fresh); err != nil {
+		t.Errorf("reaped a fresh peer's seed (%v) — its pi would refresh into a deleted path", err)
+	}
+	if _, err := os.Stat(foreign); err != nil {
+		t.Errorf("deleted an unrelated directory (%v)", err)
+	}
 }
 
 // An operator who pinned pi's own PI_CODING_AGENT_DIR gets left alone: it is
