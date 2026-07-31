@@ -80,10 +80,54 @@ func TestProducedNodesExist(t *testing.T) {
 			for _, node := range nodes {
 				if !declaresNode(body, node) {
 					t.Errorf("%s: manifest produces from node %q, which main.bot does not declare — the artifact is never found and the hand-off silently yields nothing", name, node)
+					continue
+				}
+				// Declaring the node is not enough. The engine writes an
+				// artifact ONLY for a node carrying `publish:`
+				// (runtime.persistArtifactIfPublished is a no-op without it), and
+				// the hand-off resolves through LoadLatestArtifact. A producer
+				// that names a node which publishes nothing therefore hands over
+				// NOTHING — silently, since an absent seed is indistinguishable
+				// from "no earlier run had anything to say".
+				//
+				// This is not hypothetical: it is how the hand-off shipped, and
+				// it took a live dogfood to notice, because every unit test wrote
+				// the artifact by hand.
+				if !nodePublishes(body, node) {
+					t.Errorf("%s: node %q is declared as a hand-off source but has no `publish:` — it writes no artifact, so the hand-off silently yields nothing", name, node)
 				}
 			}
 		}
 	}
+}
+
+// nodePublishes reports whether the .bot source's `node` block carries a
+// `publish:` field, i.e. whether the engine will persist its output.
+func nodePublishes(src, node string) bool {
+	lines := strings.Split(src, "\n")
+	for i, line := range lines {
+		if strings.HasPrefix(line, " ") || strings.HasPrefix(line, "\t") {
+			continue
+		}
+		fields := strings.Fields(line)
+		if len(fields) != 2 || fields[1] != node+":" {
+			continue
+		}
+		// Scan the node's indented body up to the next top-level declaration.
+		for _, body := range lines[i+1:] {
+			if strings.TrimSpace(body) == "" {
+				continue
+			}
+			if !strings.HasPrefix(body, " ") && !strings.HasPrefix(body, "\t") {
+				break
+			}
+			if strings.HasPrefix(strings.TrimSpace(body), "publish:") {
+				return true
+			}
+		}
+		return false
+	}
+	return false
 }
 
 func botsDir(t *testing.T) string {

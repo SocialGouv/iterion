@@ -1,0 +1,25 @@
+## Minimal producer pair for the hand-off contract: two identical agent nodes,
+## one declaring `publish:` and one not. The engine persists an artifact only
+## for the first — which is the whole reason a hand-off can silently yield
+## nothing while every node ran and the workflow finished.
+
+prompt emit_findings:
+  Emit a finding set.
+
+schema finding_set:
+  findings: json
+  total_findings: int
+
+agent produces_artifact:
+  system: emit_findings
+  output: finding_set
+  publish: review_findings
+
+agent produces_nothing:
+  system: emit_findings
+  output: finding_set
+
+workflow handoff_publish_mini:
+  entry: produces_artifact
+  produces_artifact -> produces_nothing
+  produces_nothing -> done

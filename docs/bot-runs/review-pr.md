@@ -8,7 +8,7 @@ pr_url` it also posts an inline forge review and an optional deterministic
 commit-status gate. Never edits or commits. See
 [bots/review-pr/](../../bots/review-pr/).
 
-## 2026-07-31 — the Revi→Billy hand-off is dead on the cloud path (runs 019fb9bc / 019fb9c6)
+## 2026-07-31 — the Revi→Billy hand-off read an artifact no node ever wrote (runs 019fb9bc / 019fb9c6)
 
 - Status: **partial — Revi validated end to end, the hand-off to the fixer proved
   non-functional in cloud.** The defect predates the declarative rework: the
@@ -36,28 +36,40 @@ commit-status gate. Never edits or commits. See
 - The gate landed: `revi/review = FAILURE` on the head.
 - Mono topology reported honestly, no cross-confirmation claimed.
 
-### The defect: cloud runs persist no node artifacts, so nothing can be handed over
+### The defect: the producing node never wrote an artifact, anywhere
 
 `/billy` launched with the right PR context (`pr_url`, `head_sha`,
 `push_branch`) and **`prior_review` empty**.
 
-Root cause, from prod: `GET /api/runs/<id>/artifacts` returns `[]` for **every**
-run checked (Revi, Billy, an unrelated pi smoke), and the event log — 89 events,
-`node_finished` ×9 — contains **zero `artifact_written`**. The hand-off resolves
-through `LoadLatestArtifact(runID, <producing node>)`, so it has nothing to read.
+The first read of the evidence — `GET /api/runs/<id>/artifacts` returning `[]`
+for every run checked, and 89 events with **zero `artifact_written`** — looked
+like a cloud-storage gap. It is not, and the correction matters: the engine
+persists an artifact **only for a node that declares `publish:`**
+(`runtime.persistArtifactIfPublished` returns early otherwise, [engine_exec.go](../../pkg/runtime/engine_exec.go)).
+Neither bot declared it on any node — `grep -c "publish:"` was **0** for both.
 
-This is not a regression of the declarative rework. The version it replaced read
-`LoadLatestArtifact(runID, "converge")` the same way, so the `/billy` seed has
-never worked on a cloud run — it was documented as shipped and, as far as this
-run shows, never exercised live. It works in-process (the filesystem store the
-unit tests use returns the artifact), which is why every test is green.
+So the hand-off resolved `LoadLatestArtifact(runID, "converge")` against an
+artifact that had never existed, on any run, local or cloud. Not a regression of
+the declarative rework either: the version it replaced read the same node the
+same way. It was recorded as shipped and never once exercised end to end.
+
+Every test stayed green because every test **wrote the artifact by hand** —
+the one thing that had to be true in production was the one thing never asserted.
+
+**Fixed**: the four nodes the manifests name as hand-off sources now declare
+`publish:`, and two guards make the omission impossible to repeat — a catalog
+test requiring `publish:` on any node a manifest declares as a source, and an
+e2e running the REAL engine over a two-node fixture, one published and one not.
 
 ### Lessons for next run
 
-- **A hand-off that reads artifacts needs the artifacts to survive the runner.**
-  Before any further work on the review→fix chain, settle where a cloud run's
-  node outputs live and make the producer read that. The checkpoint carries node
-  outputs and IS synced; it is the obvious candidate.
+- **A declaration is not a mechanism.** `produces: node: converge` reads as if
+  naming the node makes its output available; it does not — the node must also
+  publish. Any future hand-off kind needs the same pairing, and the catalog
+  guard now enforces it.
+- **A test that writes the fixture by hand cannot prove the producer writes it.**
+  That is what hid this for the whole build. Where a contract spans producer and
+  consumer, at least one test has to run the producer for real.
 - The forge identity matters: the first `/billy` was refused *"self comment
   (loop-guard)"* because the repo was provisioned on a **PAT connection whose
   account is the operator's own**. Re-provisioning onto the GitHub App
