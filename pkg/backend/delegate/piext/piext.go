@@ -53,11 +53,16 @@ const assetPath = "asset/iterion-pi.js"
 // fails rather than run without it. A gate whose implementation sits in a
 // directory the sandboxed agent has bash access to undermines itself.
 //
-// When the run has nowhere better the root is workspace-relative, which still
-// works everywhere: a sandboxed run bind-mounts the workspace, so a file under
-// os.TempDir() would be invisible inside the container, and this needs no extra
-// mount and works identically on the kubernetes driver, which rejects host
-// binds.
+// When the run has nowhere better the root is workspace-relative: a sandboxed
+// run reaches the workspace, so a file under os.TempDir() would be invisible
+// inside the container, and this needs no extra mount — which matters on the
+// kubernetes driver, where host binds are rejected outright.
+//
+// This writes the HOST copy only. A driver whose workspace is a COPY of the
+// host's (kubernetes tar-streams it at pod start) never sees a later host
+// write, so the caller must also mirror the file into the sandbox — see
+// delegate.mirrorStateFileIntoSandbox. Getting that wrong is not subtle: pi
+// exits 1 with `Extension path does not exist`.
 //
 // Each call owns a UNIQUE file. Parallel branches share one WorkDir, so a
 // fixed name let one node's deferred cleanup delete the file another node's pi

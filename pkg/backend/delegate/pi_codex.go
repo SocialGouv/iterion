@@ -157,9 +157,20 @@ func piCodexSeed(ctx context.Context, task Task, logger *iterlog.Logger) (map[st
 		cleanup()
 		return nil, noop, fmt.Errorf("pi backend: encode agent credential: %w", err)
 	}
-	if err := os.WriteFile(filepath.Join(dir, "auth.json"), payload, 0o600); err != nil {
+	authPath := filepath.Join(dir, "auth.json")
+	if err := os.WriteFile(authPath, payload, 0o600); err != nil {
 		cleanup()
 		return nil, noop, fmt.Errorf("pi backend: write agent credential: %w", err)
+	}
+	// PI_CODING_AGENT_DIR points pi at this directory from INSIDE the sandbox,
+	// so on a copy-based driver the host write alone leaves pi with an agent dir
+	// that exists and holds no credential — the bridge silently does nothing.
+	// Same fallback rule as the rest of this function: pi's own /login may still
+	// work, so this degrades with a note rather than killing the node.
+	if merr := mirrorStateFileIntoSandbox(ctx, task, authPath, payload); merr != nil {
+		cleanup()
+		piNoteCodexFallback(task, logger, fmt.Sprintf("it could not be made visible inside the sandbox (%v)", merr))
+		return nil, noop, nil
 	}
 
 	if logger != nil {

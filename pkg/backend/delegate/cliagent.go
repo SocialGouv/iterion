@@ -258,7 +258,7 @@ func (b *CLIAgentBackend) Execute(ctx context.Context, task Task) (Result, error
 	// workspace (visible inside the sandbox, unlike os.TempDir()).
 	systemArg := systemPrompt
 	if proto.SystemPromptFlag != "" && proto.SystemPromptViaFile && systemPrompt != "" {
-		path, cleanup, err := writeSystemPromptFile(task, backendName, systemPrompt)
+		path, cleanup, err := writeSystemPromptFile(ctx, task, backendName, systemPrompt)
 		if err != nil {
 			return Result{BackendName: backendName, ExitCode: -1}, err
 		}
@@ -378,7 +378,7 @@ func bareModelID(spec string) string {
 // path string as its system prompt — discarding the composed posture, cursors
 // and skills without an error. piext.Materialise avoids the same hazard the
 // same way.
-func writeSystemPromptFile(task Task, backendName, systemPrompt string) (path string, cleanup func(), err error) {
+func writeSystemPromptFile(ctx context.Context, task Task, backendName, systemPrompt string) (path string, cleanup func(), err error) {
 	// A task with neither a workspace nor a store has nowhere of its own to put
 	// this, and StateDir's last resort is the OPERATOR's iterion home — which is
 	// not somewhere a per-invocation scratch file belongs. The old precondition
@@ -416,6 +416,13 @@ func writeSystemPromptFile(task Task, backendName, systemPrompt string) (path st
 	if werr != nil {
 		_ = os.Remove(path)
 		return "", nil, fmt.Errorf("delegate: %s: write system prompt: %w", backendName, werr)
+	}
+	// A copy-based sandbox never sees the host write, and the CLI is about to be
+	// handed this PATH. Failing here beats spawning an agent whose whole
+	// operating posture silently went missing.
+	if merr := mirrorStateFileIntoSandbox(ctx, task, path, []byte(systemPrompt)); merr != nil {
+		_ = os.Remove(path)
+		return "", nil, fmt.Errorf("delegate: %s: %w", backendName, merr)
 	}
 	return path, func() { _ = os.Remove(path) }, nil
 }

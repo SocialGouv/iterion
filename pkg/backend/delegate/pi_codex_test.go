@@ -947,7 +947,7 @@ func TestPiExecuteLeavesTheCheckoutAloneWithASharedMount(t *testing.T) {
 		t.Fatal(err)
 	}
 	// 3. the composed system prompt
-	promptPath, cleanupPrompt, err := writeSystemPromptFile(task, BackendPi, "posture")
+	promptPath, cleanupPrompt, err := writeSystemPromptFile(context.Background(), task, BackendPi, "posture")
 	if err != nil {
 		t.Fatal(err)
 	}

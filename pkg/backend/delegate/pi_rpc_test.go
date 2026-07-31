@@ -248,7 +248,7 @@ func TestPiWriteSystemPrompt(t *testing.T) {
 	dir := t.TempDir()
 	task := Task{NodeID: "node/with:odd chars", Iteration: 2, WorkDir: dir}
 
-	path, cleanup, err := piWriteSystemPrompt(task, "be terse")
+	path, cleanup, err := piWriteSystemPrompt(context.Background(), task, "be terse")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -270,7 +270,7 @@ func TestPiWriteSystemPrompt(t *testing.T) {
 	}
 
 	t.Run("empty prompt writes nothing", func(t *testing.T) {
-		p, c, err := piWriteSystemPrompt(Task{WorkDir: dir}, "")
+		p, c, err := piWriteSystemPrompt(context.Background(), Task{WorkDir: dir}, "")
 		if err != nil || p != "" {
 			t.Fatalf("got (%q, %v), want no file", p, err)
 		}

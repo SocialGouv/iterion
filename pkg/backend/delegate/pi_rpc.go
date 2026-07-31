@@ -88,7 +88,7 @@ func (b *PiRPCBackend) Execute(ctx context.Context, task Task) (Result, error) {
 	}
 
 	systemPrompt := task.BuildSystemPrompt()
-	promptFile, cleanupPrompt, err := piWriteSystemPrompt(task, systemPrompt)
+	promptFile, cleanupPrompt, err := piWriteSystemPrompt(ctx, task, systemPrompt)
 	if err != nil {
 		return Result{BackendName: BackendPi, ExitCode: -1}, err
 	}
@@ -101,7 +101,7 @@ func (b *PiRPCBackend) Execute(ctx context.Context, task Task) (Result, error) {
 	// gate (a `.pi/extensions/` drop would silently never load in a headless
 	// run, and never say so).
 	stateRoot, _ := task.StateDir(BackendPi)
-	if extPath, cleanupExt, extErr := piext.Materialise(stateRoot); extErr != nil {
+	if extPath, cleanupExt, extErr := piMaterialiseExtension(ctx, task, stateRoot); extErr != nil {
 		// A permission-gated node without its gate is a false sense of
 		// security, so that specific combination fails rather than degrades.
 		if task.Permission.Enabled() {
@@ -764,13 +764,37 @@ func (b *PiRPCBackend) handleUIRequest(task Task, collector *piCollector, req pi
 	}
 }
 
+// piMaterialiseExtension writes the iterion extension where the pi process will
+// actually resolve it: on the host, and — when the sandbox workspace is a copy
+// rather than a shared inode — inside the sandbox too.
+//
+// A mirror failure kills the materialisation instead of degrading to the host
+// copy alone. The host path is what lands in `pi -e`, so a half-written
+// extension is indistinguishable from a missing one to pi, and the caller's
+// permission-gate policy must see a plain error to make its own call.
+func piMaterialiseExtension(ctx context.Context, task Task, stateRoot string) (string, func(), error) {
+	path, cleanup, err := piext.Materialise(stateRoot)
+	if err != nil {
+		return "", func() {}, err
+	}
+	body, rerr := piext.Asset()
+	if rerr == nil {
+		rerr = mirrorStateFileIntoSandbox(ctx, task, path, body)
+	}
+	if rerr != nil {
+		cleanup()
+		return "", func() {}, rerr
+	}
+	return path, cleanup, nil
+}
+
 // piWriteSystemPrompt materialises the composed prompt, reusing the print-mode
 // helper so both transports place it identically.
-func piWriteSystemPrompt(task Task, systemPrompt string) (string, func(), error) {
+func piWriteSystemPrompt(ctx context.Context, task Task, systemPrompt string) (string, func(), error) {
 	if systemPrompt == "" {
 		return "", func() {}, nil
 	}
-	return writeSystemPromptFile(task, BackendPi, systemPrompt)
+	return writeSystemPromptFile(ctx, task, BackendPi, systemPrompt)
 }
 
 // ---------------------------------------------------------------------------
