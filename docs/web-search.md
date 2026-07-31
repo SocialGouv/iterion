@@ -108,24 +108,23 @@ iterion just connects to Firecrawl; Firecrawl uses SearXNG internally. So a
 single SearXNG instance can serve both claw's `web_search` (tier 2) and
 Firecrawl's `search` (tier 3).
 
-## Backend note: claude_code vs claw
+## Backend note: claude_code, claw, and pi
 
 - **claude_code** has its own native `WebSearch` / `WebFetch` (Claude Code
   CLI). A `claude_code` node that leaves `tools:` unset inherits them for
   free. If it restricts `tools:`, list `WebSearch` / `WebFetch` explicitly.
-- **External MCP servers (Firecrawl, custom SearXNG MCP) are forwarded to
-  BOTH backends.** The `claw` backend resolves them into tools in-process;
-  the `claude_code` backend forwards the node's active `mcp_server` / plugin
-  MCP configs to the agent CLI via `--mcp-config`
-  ([wireUserMCP](../pkg/backend/delegate/claude_code_hooks.go)). This is
-  purely additive — iterion never passes `--tools`, so claude_code keeps its
-  full native toolset (**WebSearch/WebFetch stay on by default**) and simply
-  gains the Firecrawl tools on top. codex is unchanged (no MCP wiring).
-- One caveat for claude_code stdio MCP servers: a `command:` that is a host
-  path won't resolve inside a sandboxed container (same limitation as the
-  internal ask_user/board stdio servers). Prefer an `http`/`sse` server for
-  sandboxed runs; a self-hosted Firecrawl MCP over HTTP is reachable from
-  inside the container.
+  Pi has no native web-search tool; use an MCP server there.
+- **External MCP servers (Firecrawl, custom SearXNG MCP) reach all three
+  MCP-capable backends.** `claw` resolves them into tools in-process;
+  `claude_code` forwards the active `mcp_server` / plugin configs via
+  `--mcp-config` ([wireUserMCP](../pkg/backend/delegate/claude_code_hooks.go));
+  pi RPC hands the same resolved configs to its embedded extension, whose MCP
+  client supports streamable HTTP, legacy SSE, and stdio. Pi print mode, Kimi,
+  Grok, and legacy Codex do not consume this catalog.
+- For a sandboxed stdio server, `command:` resolves inside the container for
+  Claude Code and pi, so a host-only path fails there. Prefer an `http`/`sse`
+  server for sandboxed runs; a self-hosted Firecrawl MCP over HTTP is reachable
+  from inside the container.
 
 `web_fetch` (claw) and the tier resolution above are unrelated to Anthropic's
 server-side `web_search_*` / `web_fetch_*` tool types — claw does not pass
