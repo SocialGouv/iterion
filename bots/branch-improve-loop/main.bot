@@ -632,9 +632,11 @@ schema post_feedback_input:
   branch_clean: bool
   commits_pushed: bool
   push_reason: string
-  ## Did the DETERMINISTIC build/test gate end green? Part of the merge-gate
-  ## count: a tree that does not build is not mergeable, whatever the findings.
+  ## Did the DETERMINISTIC build/test gate end green, and did it actually RUN?
+  ## Part of the merge-gate count: a tree that does not build is not mergeable
+  ## whatever the findings, and a build that was skipped proves nothing at all.
   verify_ok: bool
+  verify_skipped: bool
   ## The prior review's findings and what became of each — rendered verbatim as
   ## a table so the author sees, per finding they were shown, whether it was
   ## fixed, refused (with the argument) or deferred.
@@ -1056,7 +1058,7 @@ if u:
 ## Keep this python body free of the double-quote character: the whole body is
 ## wrapped by the shell in a double-quoted argument.
 tool publish_verdict:
-  command: `PUB_URL={{vars.forge_publish_url}} PUB_TOKEN={{vars.forge_publish_token}} PR_URL={{input.pr_url}} LEDGER={{input.finding_ledger}} SUMMARY={{input.review_summary}} CLEAN={{input.branch_clean}} PUSHED={{input.commits_pushed}} PUSH_REASON={{input.push_reason}} VERIFY_OK={{input.verify_ok}} GATE_ENABLED={{vars.gate_enabled}} GATE_CONTEXT={{vars.gate_context}} python3 -c "
+  command: `PUB_URL={{vars.forge_publish_url}} PUB_TOKEN={{vars.forge_publish_token}} PR_URL={{input.pr_url}} LEDGER={{input.finding_ledger}} SUMMARY={{input.review_summary}} CLEAN={{input.branch_clean}} PUSHED={{input.commits_pushed}} PUSH_REASON={{input.push_reason}} VERIFY_OK={{input.verify_ok}} VERIFY_SKIPPED={{input.verify_skipped}} GATE_ENABLED={{vars.gate_enabled}} GATE_CONTEXT={{vars.gate_context}} python3 -c "
 import os, json, urllib.request, urllib.error
 
 def emit(posted, note):
@@ -1081,11 +1083,18 @@ except ValueError:
     ledger = []
 if not isinstance(ledger, list):
     ledger = []
-ledger = [e for e in ledger if isinstance(e, dict) and str(e.get('id') or '').strip()]
+# Keep every dict entry, id or not. Filtering on the id first made a malformed
+# refusal disappear from BOTH the count and the table - a fixer that emitted an
+# id-less refusal got a green gate, which is failing open on bad output.
+ledger = [e for e in ledger if isinstance(e, dict)]
 
 pushed = flag('PUSHED')
 clean = flag('CLEAN')
 verify_ok = flag('VERIFY_OK')
+# verify_run reports passed=true when it SKIPPED (no verify.sh was produced).
+# Tolerable as a loop signal; on a required check, claiming a green build that
+# never ran is a false statement, so a skip blocks like a red one.
+verify_skipped = flag('VERIFY_SKIPPED')
 
 # Nothing was pushed and no review was answered: this run has nothing to say
 # about this head, and whatever verdict already sits on it is still the truth.
@@ -1094,6 +1103,11 @@ if not pushed and not ledger:
     emit(False, 'nothing pushed and no prior review answered - left the existing verdict alone')
 
 unresolved = [e for e in ledger if str(e.get('status') or '').strip().lower() != 'fixed']
+fixed = [e for e in ledger if str(e.get('status') or '').strip().lower() == 'fixed']
+# A fix that did not land is not a fix. push_back_tool reports pushed=false for a
+# protected branch, a non-fast-forward, a rebase conflict, a dead token - and the
+# head then still carries every finding the ledger calls fixed.
+fixes_stranded = bool(fixed) and not pushed
 
 body = ['## Branch review by the improvement loop (iterion)', '']
 if pushed:
@@ -1127,9 +1141,11 @@ gate_ctx = str(os.environ.get('GATE_CONTEXT') or '').strip()
 payload = {'pr_url': pr, 'summary': nl.join(body), 'mode': 'summary', 'comments': []}
 if gate_enabled and gate_ctx:
     blocking = len(unresolved)
+    if fixes_stranded:
+        blocking += len(fixed)
     if not clean:
         blocking += 1
-    if not verify_ok:
+    if not verify_ok or verify_skipped:
         blocking += 1
     if blocking == 0 and not ledger:
         # Nothing reviewed this head, so there is no review to report as clean.
@@ -1141,10 +1157,14 @@ if gate_enabled and gate_ctx:
         bits = []
         if unresolved:
             bits.append(str(len(unresolved)) + ' finding(s) unresolved')
+        if fixes_stranded:
+            bits.append(str(len(fixed)) + ' fix(es) never reached this head')
         if not clean:
             bits.append('issues remain in the diff')
         if not verify_ok:
             bits.append('build/tests red')
+        elif verify_skipped:
+            bits.append('build/tests never ran')
         note = ', '.join(bits) + ' - not mergeable yet'
     payload['gate'] = {'enabled': True, 'context': gate_ctx, 'blocking_count': blocking,
                        'threshold': 'ledger', 'total_findings': len(ledger), 'note': note}
@@ -1266,7 +1286,8 @@ workflow branch_improve_loop:
     commits_pushed: "{{outputs.push_back_tool.pushed}}",
     push_reason:    "{{outputs.push_back_tool.reason}}",
     finding_ledger: "{{outputs.campaign.finding_ledger}}",
-    verify_ok:      "{{outputs.gate.converged}}"
+    verify_ok:      "{{outputs.gate.converged}}",
+    verify_skipped: "{{outputs.verify_run.skipped}}"
   }
   publish_verdict -> done
 

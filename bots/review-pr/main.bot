@@ -815,7 +815,7 @@ import os, json, subprocess, urllib.request, urllib.error, hashlib
 def finding_id(f):
     t = ' '.join(str(f.get('title') or '').split()).lower()[:80]
     key = str(f.get('file') or '').strip() + chr(10) + t
-    return 'R' + hashlib.sha256(key.encode()).hexdigest()[:4]
+    return 'R' + hashlib.sha256(key.encode()).hexdigest()[:6]
 
 def emit(published, forge='unknown', review_url='', posted=0, sugg=0, skipped='', summary=''):
     print(json.dumps({'published': published, 'forge': forge, 'review_url': review_url,

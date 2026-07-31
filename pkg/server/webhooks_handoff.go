@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"sort"
 	"strings"
 
 	"github.com/SocialGouv/iterion/pkg/botregistry"
@@ -91,7 +92,11 @@ func (s *Server) handoffConsumersFor(botID string) []bundle.ConsumedArtifact {
 		return nil
 	}
 	entry, ok, err := botregistry.FindByName(s.botListOptions(), botID)
-	if err != nil || !ok {
+	if err != nil {
+		s.logWarn("handoff: cannot read the bot catalog, %s will be launched without its declared seeds: %v", botID, err)
+		return nil
+	}
+	if !ok {
 		return nil
 	}
 	var out []bundle.ConsumedArtifact
@@ -164,6 +169,10 @@ func (s *Server) realWebhookHandoff(ctx context.Context, cfg webhooks.Config, ki
 func (s *Server) handoffProducers(kind bundle.HandoffKind) map[string]bundle.ProducedArtifact {
 	entries, err := botregistry.List(s.botListOptions())
 	if err != nil {
+		// Swallowing this disables every hand-off, and a missing seed is
+		// indistinguishable by design from "nothing reviewed this PR" — so the
+		// only way an operator ever learns is if we say it here.
+		s.logWarn("handoff: cannot read the bot catalog, no %s producer will be found: %v", kind, err)
 		return nil
 	}
 	out := make(map[string]bundle.ProducedArtifact, 2)
@@ -282,8 +291,13 @@ func loadReviewFindings(ctx context.Context, rs store.RunStore, runID string, sp
 		if err != nil || art == nil {
 			continue
 		}
-		for _, raw := range art.Data {
-			union = append(union, decodeFindings(raw)...)
+		keys := make([]string, 0, len(art.Data))
+		for k := range art.Data {
+			keys = append(keys, k)
+		}
+		sort.Strings(keys) // map order would vary the order, and the budget the SUBSET
+		for _, k := range keys {
+			union = append(union, decodeFindings(art.Data[k])...)
 		}
 	}
 	seen := make(map[string]bool, len(union))
@@ -322,7 +336,14 @@ func reviewAnchorNote(ctx context.Context, rs store.RunStore, runID, anchorNode,
 		return ""
 	}
 	head := strings.TrimSpace(headSHA)
-	if head == "" || strings.EqualFold(head, reviewed) {
+	if head == "" {
+		// The caller could not tell us the PR's head — the merge-queue auto-heal
+		// lane is one, and it fires precisely when the base moved. Asserting
+		// currency here is the stale-as-current framing this function exists to
+		// prevent, so say what is known and let the consumer check.
+		return "Anchored to " + shortSHA(reviewed) + " — verify it is still the PR head before trusting a line anchor."
+	}
+	if strings.EqualFold(head, reviewed) {
 		return "Anchored to " + shortSHA(reviewed) + " (the current head)."
 	}
 	return "Anchored to " + shortSHA(reviewed) + ", but the PR head is now " + shortSHA(head) +
@@ -442,17 +463,24 @@ func findingAnchor(f map[string]any) string {
 // round-trip it exists for. A producing bot derives the same id in its own
 // publish step; bots/review_pr_finding_id_test.go pins the two against each
 // other, since a drift between the two would be silent.
+// findingIDHexLen: 24 bits. At 4 the birthday odds reached ~2% over a 50-finding
+// review, and a collision makes one ledger entry silently resolve two findings.
+const findingIDHexLen = 6
+
 func findingID(file, title string) string {
 	sum := sha256.Sum256([]byte(strings.TrimSpace(file) + "\n" + normalizeFindingTitle(title)))
-	return "R" + hex.EncodeToString(sum[:])[:4]
+	return "R" + hex.EncodeToString(sum[:])[:findingIDHexLen]
 }
 
 // normalizeFindingTitle collapses a title to the form both id derivations hash:
 // trimmed, lower-cased, inner whitespace collapsed, capped at 80 chars.
 func normalizeFindingTitle(title string) string {
 	t := strings.ToLower(strings.Join(strings.Fields(title), " "))
-	if len(t) > 80 {
-		t = t[:80]
+	// RUNES, not bytes: the producing bot slices a python str, which counts
+	// characters. Cutting at 80 bytes made every accented or CJK title hash
+	// differently on the two sides — and split a rune, hashing invalid UTF-8.
+	if r := []rune(t); len(r) > 80 {
+		t = string(r[:80])
 	}
 	return t
 }
@@ -567,4 +595,11 @@ func renderReviewLedger(ctx context.Context, rs store.RunStore, runID string, sp
 		}
 	}
 	return b.String()
+}
+
+// logWarn is nil-safe: several of these paths run with no logger in tests.
+func (s *Server) logWarn(format string, args ...any) {
+	if s.logger != nil {
+		s.logger.Warn(format, args...)
+	}
 }

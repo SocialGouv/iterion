@@ -31,7 +31,7 @@ func TestBranchImproveGateNeverGreenOnAnUnresolvedFinding(t *testing.T) {
 		Summary string         `json:"summary"`
 		Gate    map[string]any `json:"gate"`
 	}
-	run := func(t *testing.T, ledger, clean, pushed, verifyOK string) (published, bool) {
+	runWith := func(t *testing.T, ledger, clean, pushed, verifyOK, verifySkipped string) (published, bool) {
 		t.Helper()
 		var got published
 		var posted bool
@@ -56,6 +56,7 @@ func TestBranchImproveGateNeverGreenOnAnUnresolvedFinding(t *testing.T) {
 			"{{input.commits_pushed}}":     pushed,
 			"{{input.push_reason}}":        "pushed 2 commits",
 			"{{input.verify_ok}}":          verifyOK,
+			"{{input.verify_skipped}}":     verifySkipped,
 			"{{vars.gate_enabled}}":        "true",
 			"{{vars.gate_context}}":        "iterion/review",
 		} {
@@ -73,6 +74,10 @@ func TestBranchImproveGateNeverGreenOnAnUnresolvedFinding(t *testing.T) {
 			t.Fatalf("output is not post_feedback_output JSON: %v (%q)", err, out)
 		}
 		return got, posted
+	}
+
+	run := func(t *testing.T, ledger, clean, pushed, verifyOK string) (published, bool) {
+		return runWith(t, ledger, clean, pushed, verifyOK, "false")
 	}
 
 	blocking := func(t *testing.T, g map[string]any) float64 {
@@ -131,6 +136,36 @@ func TestBranchImproveGateNeverGreenOnAnUnresolvedFinding(t *testing.T) {
 		got, _ := run(t, `[]`, "true", "true", "true")
 		if n := blocking(t, got.Gate); n < 1 {
 			t.Errorf("blocking_count = %v on a head nothing reviewed", n)
+		}
+	})
+
+	// Found by an adversarial pass. `pushed=false` is routine — a protected
+	// branch, a non-fast-forward, a rebase conflict, a dead token — and the head
+	// then still carries every finding the ledger calls fixed.
+	t.Run("a fix that never reached the head is not a fix", func(t *testing.T) {
+		got, _ := run(t, allFixed, "true", "false", "true")
+		if n := blocking(t, got.Gate); n < 1 {
+			t.Errorf("blocking_count = %v while the claimed fixes never landed on this head — the PR would merge unfixed", n)
+		}
+	})
+
+	// Same pass: filtering entries on a non-empty id ran BEFORE the unresolved
+	// count, so a malformed refusal vanished from the count and the table both.
+	// Bad agent output must fail closed.
+	t.Run("a refused entry with no id still blocks", func(t *testing.T) {
+		got, _ := run(t, `[{"id":"R1111","status":"fixed"},{"status":"refused","note":"not reachable"}]`,
+			"true", "true", "true")
+		if n := blocking(t, got.Gate); n < 1 {
+			t.Errorf("blocking_count = %v — an id-less refusal cleared the gate", n)
+		}
+	})
+
+	// verify_run reports passed=true when it SKIPPED. Tolerable as a loop
+	// signal; on a required check it claims a build that never ran.
+	t.Run("a skipped build is not a green build", func(t *testing.T) {
+		got, _ := runWith(t, allFixed, "true", "true", "true", "true")
+		if n := blocking(t, got.Gate); n < 1 {
+			t.Errorf("blocking_count = %v with a build that never ran", n)
 		}
 	})
 

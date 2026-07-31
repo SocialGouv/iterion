@@ -366,8 +366,6 @@ type ConsumedArtifact struct {
 	Var string `yaml:"var" json:"var"`
 	// Scope selects the upstream run. Defaults to HandoffScopePR.
 	Scope HandoffScope `yaml:"scope,omitempty" json:"scope,omitempty"`
-	// MaxChars caps the rendered digest (0 = the engine default).
-	MaxChars int `yaml:"max_chars,omitempty" json:"max_chars,omitempty"`
 }
 
 // EffectiveScope returns the declared scope or the default.
@@ -998,9 +996,6 @@ func validateHandoff(produces []ProducedArtifact, consumes []ConsumedArtifact) e
 		}
 		if c.EffectiveScope() != HandoffScopePR {
 			return fmt.Errorf("consumes: unknown scope %q (known: %s)", c.Scope, HandoffScopePR)
-		}
-		if c.MaxChars < 0 {
-			return fmt.Errorf("consumes: max_chars must not be negative (got %d)", c.MaxChars)
 		}
 	}
 	return nil

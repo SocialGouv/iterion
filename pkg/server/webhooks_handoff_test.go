@@ -192,6 +192,14 @@ func TestRenderPriorReview(t *testing.T) {
 		if strings.Contains(same, "branch moved") {
 			t.Errorf("an up-to-date review must not be labelled stale:\n%s", same)
 		}
+
+		// Found by an adversarial pass: with no head to compare against, the
+		// digest asserted "(the current head)" anyway — on the merge-queue
+		// auto-heal lane, which fires precisely because the base moved.
+		unknown := renderReviewDigest(ctx, rs, run.ID, reviewSpec, handoffQuery{PRURL: prURL})
+		if strings.Contains(unknown, "the current head") {
+			t.Errorf("claimed currency for a head it was never told:\n%s", unknown)
+		}
 	})
 
 	// The artifact is the truth, not the run status: a review still in flight has

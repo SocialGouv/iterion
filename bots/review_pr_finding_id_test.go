@@ -43,6 +43,13 @@ func TestFindingIDMatchesTheEngineDerivation(t *testing.T) {
 			"title": "  Missing Coverage For The Error Path  ", "detail": "d"},
 		{"file": "cmd/main.go", "line": 3, "severity": "medium", "category": "correctness",
 			"title": strings.Repeat("very long title ", 12), "detail": "d"},
+		// Non-ASCII past the cap: python slices CHARACTERS, so a byte-slicing Go
+		// side both cut somewhere else AND hashed a split rune. Every id on a
+		// French or CJK finding disagreed, silently.
+		{"file": "pkg/db.go", "line": 7, "severity": "high", "category": "correctness",
+			"title": "Injection SQL dans la récupération de l'utilisateur authentifié — vérifier les paramètres échappés", "detail": "d"},
+		{"file": "pkg/db.go", "line": 8, "severity": "low", "category": "tests",
+			"title": "ユーザー認証のカバレッジが不足している、エラーパスの検証が行われていない", "detail": "d"},
 	}
 
 	ws := t.TempDir()
@@ -126,7 +133,7 @@ func TestFindingIDMatchesTheEngineDerivation(t *testing.T) {
 
 	// A frozen vector: catches a change made identically on BOTH sides, which
 	// would keep them agreeing while silently renaming every existing finding.
-	if id := goFindingID("pkg/db.go", "SQL injection in the user lookup"); id != "R5ee5" {
+	if id := goFindingID("pkg/db.go", "SQL injection in the user lookup"); id != "R5ee591" {
 		t.Errorf("the finding-id derivation changed (%s): every id already posted on an open PR, and every ledger entry keyed on one, is now orphaned. Change it only deliberately.", id)
 	}
 }
@@ -134,9 +141,9 @@ func TestFindingIDMatchesTheEngineDerivation(t *testing.T) {
 // goFindingID mirrors pkg/server/webhooks_handoff.go findingID.
 func goFindingID(file, title string) string {
 	t := strings.ToLower(strings.Join(strings.Fields(title), " "))
-	if len(t) > 80 {
-		t = t[:80]
+	if r := []rune(t); len(r) > 80 {
+		t = string(r[:80])
 	}
 	sum := sha256.Sum256([]byte(strings.TrimSpace(file) + "\n" + t))
-	return "R" + hex.EncodeToString(sum[:])[:4]
+	return "R" + hex.EncodeToString(sum[:])[:6]
 }
