@@ -7,6 +7,90 @@ commit onto the PR branch, post the verdict comment. Never merges past a
 check — and only ever the commit it audited. See
 [bots/dep-update-guard/](../../bots/dep-update-guard/).
 
+## 2026-07-31 — v2.5.0 on three heritage PRs, and the rebase that would have stalled every one of them
+
+- Status: **validated, with one real gap found and closed.** Two of three PRs
+  audited and merged by the bot; the third armed and is waiting on a rebase.
+- Versions: bot 2.5.0 (first live runs of this version) · iterion
+  `v3.17.1+d337007d1`, runner `sha256:9c7203cc`
+- Method: `/vetty` on the three heritage PRs of `SocialGouv/buildkit-operator`
+  — those opened under the OLD `github-actions[bot]` identity, before the
+  dedicated Renovate App. #6 alone first (run `019fb413`), then #4 and #7
+  together (`019fb6a0-7d9e` / `019fb6a0-77d9`).
+- Result: #6 audited in 16m20s and **merged by the forge App at 17:46:27Z**,
+  two seconds before the run ended, on the sha it audited (`ef333c66`). #4
+  merged at 05:38:35Z. #7 posted `SAFE`, armed auto-merge (SQUASH, 05:37:59Z)
+  and is not merged — see below.
+- Cost: **~$1 per PR audited** ($1.31 for #6, $1.93 for the pair). Cheap enough
+  that auditing on every dependency PR is not a budget question.
+
+### Why they needed Vetty at all, having already been reviewed
+
+All four heritage PRs carried `iterion/review=SUCCESS` — from **Revi**, a code
+reviewer, reached by a maintainer's `/revi`. That is not the same question.
+Revi reads a diff; Vetty asks whether the artifact on the other end of a
+version bump is what it claims to be. Merging on Revi's verdict would have
+skipped the supply-chain control this whole chain exists for, while looking
+fully green.
+
+### The audit is real, not a shape
+
+For jq 1.8.1 → 1.8.2, Vetty established that the upstream release exists
+(`jqlang/jq` tag `jq-1.8.2`, non-draft), that it was cut by the **same**
+automation as 1.8.0 and 1.8.1 — no unexpected-author or compromised-maintainer
+signal — that the locked nixpkgs commit exists, that its commit date matches
+the lock's `last_modified` byte for byte, and that its `package.nix` declares
+`version = "1.8.2"`. For helm 4.2.1 → 4.2.3: the derivation at commit
+`7525d999` declares `4.2.3`, builds `helm/helm` at tag `v4.2.3` with a pinned
+source hash, and the upstream delta is exactly 2 commits / 3 files matching the
+release notes verbatim.
+
+It also answered, with evidence, the open question Revi had left that morning
+on #6 about whether `devbox.lock` came from a real nix resolution.
+
+### The gap: a rebase silently ends the loop
+
+`review_on_sync` was **off** on the integration, and Vetty's invocation is
+`actions: [opened, reopened]`. So:
+
+1. Renovate rebases a PR — routine, it happens whenever the base moves;
+2. new head sha, and no bot relaunches ([webhooks_github.go](../../pkg/server/webhooks_github.go)
+   filters a `synchronize` when `ReviewOnSync` is false);
+3. `iterion/review` is **required** and is posted on the old sha;
+4. the armed auto-merge can therefore never fire, and nothing says so.
+
+Every Renovate PR that needs a rebase before it merges lands in this. The one
+proven run (#15, 2026-07-29) merged before its base moved, which is why it was
+never hit. #5 and #7 are sitting in it right now.
+
+Fixed by enabling `review_on_sync` on the integration — the pairing
+[CLAUDE.md](../../CLAUDE.md) already prescribes for a required gate. Worth
+knowing: `BotRule.Actions` is deliberately *recorded but not enforced*, with
+`"synchronize" for the merge gate` named in its doc comment as the reason, so
+the handler's reviewability gate stays authoritative and this wiring works.
+
+### Second observation: a batch of PRs touching one lock file serializes badly
+
+The three PRs all bumped `devbox.json` + `devbox.lock`. #6 and #4 merged; #7
+was audited and armed, then turned `CONFLICTING` because the two merges landed
+under it. Vetty was right — it armed rather than forcing a merge — but the
+outcome is a PR that now needs a Renovate rebase to move, and (before the fix
+above) would have waited forever for it.
+
+### Lessons for next run
+
+1. **Reviewed is not audited.** A dependency PR carrying a green review from a
+   code reviewer has answered a different question. Do not let a shared gate
+   context blur the two.
+2. **Arming auto-merge is a weaker guarantee than merging.** The `merge_now`
+   path pins `expectedHeadOid` to the audited sha; `enablePullRequestAutoMerge`
+   pins nothing, so GitHub would merge whatever the head becomes. What restores
+   the guarantee is the *required* gate — provided it re-lands on each new
+   head, which is precisely what `review_on_sync` buys. The two settings are
+   one mechanism, not two options.
+3. A batch of dependency PRs touching the same lock file will conflict with
+   each other. Expect the tail of a batch to need a rebase round.
+
 ## 2026-07-29 — v2.4.0: the loop closed — Renovate → audit → gate → merge, unattended (run 019faef9)
 
 - Status: **VALIDATED** — the first dependency PR to travel the whole chain
