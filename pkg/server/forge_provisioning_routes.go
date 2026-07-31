@@ -57,6 +57,14 @@ type forgeEnableReq struct {
 	// vocabulary: allow | skip | supersede). Empty leaves the stored one
 	// untouched; on a review webhook `supersede` is the one worth setting.
 	Overlap string `json:"overlap,omitempty"`
+
+	// AutoFixOnGateFailure opts this repo into the ZERO-TOUCH lane: a review
+	// that leaves the merge gate red launches the repo's fixer on that head, no
+	// command typed. Off unless asked for — a reviewer alone already leaves the
+	// developer to decide what to act on, and turning the hand-over automatic
+	// takes that choice from everyone on the repo. A POINTER so omitting it
+	// leaves the repo's current choice alone.
+	AutoFixOnGateFailure *bool `json:"auto_fix_on_gate_failure,omitempty"`
 }
 
 func (s *Server) handleEnableForgeRepoBots(w http.ResponseWriter, r *http.Request) {
@@ -87,6 +95,7 @@ func (s *Server) handleEnableForgeRepoBots(w http.ResponseWriter, r *http.Reques
 		ScheduleCrons: req.ScheduleCrons,
 		LaunchVars:    req.LaunchVars,
 		Overlap:       req.Overlap,
+		AutoFix:       req.AutoFixOnGateFailure,
 		ActorID:       id.UserID,
 	})
 	if err != nil {
@@ -117,6 +126,14 @@ type forgeUpdateReq struct {
 	// vocabulary: allow | skip | supersede). Empty leaves the stored one
 	// untouched; on a review webhook `supersede` is the one worth setting.
 	Overlap string `json:"overlap,omitempty"`
+
+	// AutoFixOnGateFailure opts this repo into the ZERO-TOUCH lane: a review
+	// that leaves the merge gate red launches the repo's fixer on that head, no
+	// command typed. Off unless asked for — a reviewer alone already leaves the
+	// developer to decide what to act on, and turning the hand-over automatic
+	// takes that choice from everyone on the repo. A POINTER so omitting it
+	// leaves the repo's current choice alone.
+	AutoFixOnGateFailure *bool `json:"auto_fix_on_gate_failure,omitempty"`
 }
 
 func (s *Server) handleUpdateForgeRepoBots(w http.ResponseWriter, r *http.Request) {
@@ -149,6 +166,7 @@ func (s *Server) handleUpdateForgeRepoBots(w http.ResponseWriter, r *http.Reques
 		ScheduleCrons: req.ScheduleCrons,
 		LaunchVars:    req.LaunchVars,
 		Overlap:       req.Overlap,
+		AutoFix:       req.AutoFixOnGateFailure,
 		ActorID:       id.UserID,
 		Replace:       true,
 	})

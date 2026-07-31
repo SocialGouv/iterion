@@ -50,7 +50,7 @@ func TestSelectIssueLabeledBot(t *testing.T) {
 // Operator LaunchVars win last.
 func TestBranchImproveVars(t *testing.T) {
 	// Default (asPR=false): push directly onto the PR's source branch.
-	v := branchImproveVars("main", "feat/subtract", "https://github.com/acme/api/pull/12", "Add subtract\n\nFixes #12", false, map[string]string{"max_passes": "3"})
+	v := fixerPRVars("main", "feat/subtract", "https://github.com/acme/api/pull/12", "Add subtract\n\nFixes #12", false, map[string]string{"max_passes": "3"})
 	if v["base_ref"] != "main" {
 		t.Errorf("base_ref = %q, want main", v["base_ref"])
 	}
@@ -75,7 +75,7 @@ func TestBranchImproveVars(t *testing.T) {
 // PR targeting the contributor's source branch (open_mr=true, mr_base=source)
 // instead of pushing in-place — the author reviews the bot's diff in isolation.
 func TestBranchImproveVars_AsPR(t *testing.T) {
-	v := branchImproveVars("main", "feat/subtract", "https://github.com/acme/api/pull/9", "notes", true, nil)
+	v := fixerPRVars("main", "feat/subtract", "https://github.com/acme/api/pull/9", "notes", true, nil)
 	if v["open_mr"] != "true" {
 		t.Errorf("open_mr = %q, want true (opens a PR)", v["open_mr"])
 	}

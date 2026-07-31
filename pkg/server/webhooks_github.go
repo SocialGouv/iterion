@@ -135,7 +135,7 @@ func (s *Server) handlePRForgeReview(ctx context.Context, w http.ResponseWriter,
 				"interleaved merge). Keep the PR's own change intact; only reconcile it with the new base. "+
 				"Push so the PR can re-enter the merge queue.\n\n%s",
 			p.DequeueReason, p.TargetBranch, p.TargetBranch, strings.TrimSpace(p.Title+"\n\n"+p.Description))
-		healVars := applyWebhookVarLayers(branchImproveVars(p.TargetBranch, p.SourceBranch, p.PRURL, mission, false, nil), cfg)
+		healVars := applyWebhookVarLayers(fixerPRVars(p.TargetBranch, p.SourceBranch, p.PRURL, mission, false, nil), cfg)
 		s.insertAndLaunchWebhook(ctx, w, r, cfg, meta, healIdem, branchImproveBotID, healVars, p.CloneURL, p.SourceBranch, payloadHash, srcIP)
 		return
 	}

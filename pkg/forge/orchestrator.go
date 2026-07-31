@@ -145,6 +145,12 @@ type ProvisionRequest struct {
 	// integration and re-applied on every Provision (see
 	// RepoIntegration.LaunchVars). Nil leaves the stored ones untouched.
 	LaunchVars map[string]string
+	// AutoFix opts the repo into the zero-touch lane (a red merge gate launches
+	// the repo's fixer). A nil pointer means "leave the repo's current choice
+	// alone" — enabling one more bot must not silently switch automation on or
+	// off, which a bare bool could not express.
+	AutoFix *bool
+
 	// Overlap is the operator's concurrency policy for this repo's webhook
 	// (pkg/schedgate vocabulary). Empty leaves the stored one untouched.
 	Overlap string
@@ -212,6 +218,10 @@ func (o *Orchestrator) Provision(ctx context.Context, req ProvisionRequest) (Pro
 	if operatorOverlap == "" && hasExisting {
 		operatorOverlap = existing.Overlap
 	}
+	operatorAutoFix := hasExisting && existing.AutoFixOnGateFailure
+	if req.AutoFix != nil {
+		operatorAutoFix = *req.AutoFix
+	}
 
 	// Resolve every bot's forge requirements (its optional forge: block for
 	// credentials/scopes) AND its invocations (the typed routing contract).
@@ -257,9 +267,11 @@ func (o *Orchestrator) Provision(ctx context.Context, req ProvisionRequest) (Pro
 		}
 		// A changed operator override is a real mutation even when the bot set
 		// is not — without this the short-circuit would silently ignore it.
-		if !maps.Equal(operatorVars, existing.LaunchVars) || operatorOverlap != existing.Overlap {
+		if !maps.Equal(operatorVars, existing.LaunchVars) || operatorOverlap != existing.Overlap ||
+			operatorAutoFix != existing.AutoFixOnGateFailure {
 			existing.LaunchVars = operatorVars
 			existing.Overlap = operatorOverlap
+			existing.AutoFixOnGateFailure = operatorAutoFix
 			existing.UpdatedAt = o.clock()
 			if uerr := o.Integrations.Update(ctx, existing); uerr != nil {
 				return ProvisionResult{}, fmt.Errorf("forge: update integration launch vars: %w", uerr)
@@ -468,21 +480,22 @@ func (o *Orchestrator) Provision(ctx context.Context, req ProvisionRequest) (Pro
 	}
 
 	ri := RepoIntegration{
-		TenantID:         req.TenantID,
-		ConnectionID:     conn.ID,
-		Provider:         conn.Provider,
-		RepoFullName:     req.RepoFullName,
-		BotIDs:           desiredBots,
-		EventsNormalized: eventsNormalized,
-		WebhookID:        webhookID,
-		HookID:           hookID,
-		HookURL:          hookURL,
-		ManagedSecretID:  managedSecretID,
-		LaunchVars:       nilIfEmpty(maps.Clone(operatorVars)),
-		Overlap:          operatorOverlap,
-		CreatedBy:        req.ActorID,
-		CreatedAt:        now,
-		UpdatedAt:        now,
+		TenantID:             req.TenantID,
+		ConnectionID:         conn.ID,
+		Provider:             conn.Provider,
+		RepoFullName:         req.RepoFullName,
+		BotIDs:               desiredBots,
+		EventsNormalized:     eventsNormalized,
+		WebhookID:            webhookID,
+		HookID:               hookID,
+		HookURL:              hookURL,
+		ManagedSecretID:      managedSecretID,
+		LaunchVars:           nilIfEmpty(maps.Clone(operatorVars)),
+		Overlap:              operatorOverlap,
+		AutoFixOnGateFailure: operatorAutoFix,
+		CreatedBy:            req.ActorID,
+		CreatedAt:            now,
+		UpdatedAt:            now,
 	}
 	if hasExisting {
 		ri.ID = existing.ID

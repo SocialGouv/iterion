@@ -1366,7 +1366,10 @@ head) and Revi's falsifiability `questions` channel (non-blocking assumptions,
 never gate). The forge-agnostic write path is `forge.CommitStatusClient`
 ([pkg/forge/status.go](pkg/forge/status.go)); the endpoint posts it after the
 review ([pkg/server/forge_publish.go](pkg/server/forge_publish.go)). See
-[docs/merge-gate.md](docs/merge-gate.md).
+[docs/merge-gate.md](docs/merge-gate.md) — which also covers the two bots
+sharing one context on the same PR, and the per-repo **opt-in** zero-touch lane
+(`auto_fix_on_gate_failure`) where a red gate launches the repo's fixer once per
+head sha, off by default so the developer keeps the choice.
 
 ## Conventions
 

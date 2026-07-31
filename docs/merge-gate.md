@@ -186,6 +186,45 @@ three:
 A green from a fixer says so in its description, so it is never mistaken for an
 independent review.
 
+### Zero-touch: letting a red gate launch the fixer itself (opt-in)
+
+By default nothing happens when the gate goes red: the findings are on the pull
+request and the developer decides — fix them, argue one, or hand the work over
+with a `/command`. That is deliberate. A reviewer already leaves the human in
+the middle, and making the hand-over automatic everywhere removes that choice
+from every developer on the repo to save one comment.
+
+A repo that wants the loop closed anyway turns it on per repo:
+
+```sh
+iterion remote forge repo-bots create --data '{
+  "connection_id": "<conn-id>",
+  "repo": "owner/repo",
+  "bot_ids": ["review-pr", "branch-improve-loop"],
+  "launch_vars": { "gate_context": "iterion/review" },
+  "auto_fix_on_gate_failure": true }'
+```
+
+Then a review that leaves `iterion/review` red launches the repo's fixer on that
+head, with no command typed. The fixer is not named anywhere: it is whichever
+enabled bot declares `consumes: kind: review`, since that declaration already
+means "I start from a review and act on it".
+
+**What bounds it.** The loop terminates on progress, not on a countdown: at most
+one attempt per head sha. The fixer pushes → the head moves → a re-review
+produces a fresh verdict → a new attempt becomes available. A fixer that pushes
+nothing leaves the head where it is, and the claim on that head is already
+spent. On top of that it obeys the ordinary launch gate (org quota, cost cap,
+concurrency) and the hold label, which pauses this lane like every other.
+
+**What it refuses.** It reads the verdict back from the forge rather than
+trusting our own bookkeeping, and abstains when the provider cannot list
+statuses. It acts only on the revision the finished run actually judged, only
+inside the repo the run's publish grant covers, only for a bot the webhook
+permits, and never on a fixer's own red verdict. Omitting
+`auto_fix_on_gate_failure` on a later call leaves the repo's current choice
+alone — enabling one more bot never switches automation on or off by itself.
+
 ## Overriding a finding
 
 Three ways, in order of preference:

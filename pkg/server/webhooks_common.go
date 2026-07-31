@@ -183,8 +183,8 @@ func reviewPRVars(prURL, baseRef, scopeNotes string, launchVars map[string]strin
 	return vars
 }
 
-// branchImproveVars builds the launch vars for the branch-improvement bot
-// (Billy) reacting to a PR-open: it reviews + hardens the PR's branch diff over
+// fixerPRVars builds the launch vars for a bot asked to FIX a pull request
+// rather than review it: it reviews + hardens the PR's branch diff over
 // its base. baseRef is the PR's target branch; scopeNotes carries the PR
 // title+body (which includes the "Fixes #N" ticket link). open_mr=false — the
 // PR already exists, so Billy commits onto the checked-out PR branch rather
@@ -193,7 +193,7 @@ func reviewPRVars(prURL, baseRef, scopeNotes string, launchVars map[string]strin
 // instead of stranding in the cloud runner's ephemeral worktree. The webhook's
 // LaunchVars win last so an operator can override per repo (e.g. pin
 // max_passes or a scratch path).
-func branchImproveVars(baseRef, sourceBranch, prURL, scopeNotes string, asPR bool, launchVars map[string]string) map[string]string {
+func fixerPRVars(baseRef, sourceBranch, prURL, scopeNotes string, asPR bool, launchVars map[string]string) map[string]string {
 	vars := map[string]string{
 		"base_ref":    baseRef,
 		"scope_notes": scopeNotes,
