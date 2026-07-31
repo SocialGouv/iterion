@@ -117,7 +117,7 @@ func TestRenderPriorReview(t *testing.T) {
 			},
 		})
 
-		got := renderPriorReview(ctx, rs, run.ID, reviewSpec, priorReviewQuery{PRURL: prURL})
+		got := renderReviewDigest(ctx, rs, run.ID, reviewSpec, handoffQuery{PRURL: prURL})
 		for name, want := range map[string]string{
 			"the anchor span":       "db.go:42-44",
 			"the severity/category": "high/security",
@@ -142,7 +142,7 @@ func TestRenderPriorReview(t *testing.T) {
 	t.Run("empty findings still seed a verdict", func(t *testing.T) {
 		run := newRun(t, prURL)
 		write(t, run.ID, reviewSpec.Node, map[string]any{"findings": []any{}, "total_findings": 0})
-		if e := renderPriorReview(ctx, rs, run.ID, reviewSpec, priorReviewQuery{PRURL: prURL}); !strings.Contains(e, "no findings") {
+		if e := renderReviewDigest(ctx, rs, run.ID, reviewSpec, handoffQuery{PRURL: prURL}); !strings.Contains(e, "no findings") {
 			t.Errorf("empty-findings render should note no findings, got %q", e)
 		}
 	})
@@ -159,7 +159,7 @@ func TestRenderPriorReview(t *testing.T) {
 			"claude_findings": []any{map[string]any{"title": "race on cache", "file": "c.go", "line": float64(9), "severity": "high"}},
 			"gpt_findings":    []any{map[string]any{"title": "race on cache", "file": "c.go", "line": float64(9), "severity": "high"}},
 		})
-		got := renderPriorReview(ctx, rs, run.ID, reviewSpec, priorReviewQuery{PRURL: prURL})
+		got := renderReviewDigest(ctx, rs, run.ID, reviewSpec, handoffQuery{PRURL: prURL})
 		if !strings.Contains(got, "race on cache") {
 			t.Errorf("degraded merge lost every finding:\n%s", got)
 		}
@@ -181,14 +181,14 @@ func TestRenderPriorReview(t *testing.T) {
 		})
 		write(t, run.ID, reviewSpec.AnchorNode, map[string]any{"reviewed_sha": "aaaaaaaaaaaa1111"})
 
-		moved := renderPriorReview(ctx, rs, run.ID, reviewSpec, priorReviewQuery{PRURL: prURL, HeadSHA: "bbbbbbbbbbbb2222"})
+		moved := renderReviewDigest(ctx, rs, run.ID, reviewSpec, handoffQuery{PRURL: prURL, HeadSHA: "bbbbbbbbbbbb2222"})
 		if !strings.Contains(moved, "the branch moved after this review") {
 			t.Errorf("a stale review must be labelled stale:\n%s", moved)
 		}
 		if !strings.Contains(moved, "aaaaaaaaaaaa") || !strings.Contains(moved, "bbbbbbbbbbbb") {
 			t.Errorf("the digest must name both revisions so the fixer can diff them:\n%s", moved)
 		}
-		same := renderPriorReview(ctx, rs, run.ID, reviewSpec, priorReviewQuery{PRURL: prURL, HeadSHA: "aaaaaaaaaaaa1111"})
+		same := renderReviewDigest(ctx, rs, run.ID, reviewSpec, handoffQuery{PRURL: prURL, HeadSHA: "aaaaaaaaaaaa1111"})
 		if strings.Contains(same, "branch moved") {
 			t.Errorf("an up-to-date review must not be labelled stale:\n%s", same)
 		}
@@ -199,7 +199,7 @@ func TestRenderPriorReview(t *testing.T) {
 	// older review one step down the list.
 	t.Run("a review with nothing readable renders empty", func(t *testing.T) {
 		run := newRun(t, prURL)
-		if got := renderPriorReview(ctx, rs, run.ID, reviewSpec, priorReviewQuery{PRURL: prURL}); got != "" {
+		if got := renderReviewDigest(ctx, rs, run.ID, reviewSpec, handoffQuery{PRURL: prURL}); got != "" {
 			t.Errorf("a run with no artifacts must render empty so the scan continues, got %q", got)
 		}
 	})
@@ -318,25 +318,21 @@ func TestRenderReviewLedger(t *testing.T) {
 	})
 }
 
-// TestBoardCardCarriesTheDeclaredHandoffVar pins the board lane, which is the
-// one a `/command` bot actually takes in cloud.
+// TestHandoffConsumersComeFromTheManifest pins that the carry set is DERIVED.
 //
-// A board-mode command with a dispatcher active never reaches the launch tail:
-// the CARD is the launch, and the cloud coordinator launches from `BotArgs`
-// ONLY. So a var stamped anywhere downstream of the card is dropped — with no
-// error, and with the bot quietly falling back to its DSL default. That has bit
-// this exact path before (`ensureBoardCard` rebuilding BotArgs from scratch,
-// fixed in bc2918024), so the carry is asserted here rather than assumed.
-func TestBoardCardCarriesTheDeclaredHandoffVar(t *testing.T) {
+// The board lane is where a `/command` bot actually launches in cloud, and the
+// coordinator launches from `BotArgs` only — so `ensureBoardCard` has to
+// enumerate the vars it copies across. A hardcoded enumeration is what drops a
+// var silently (it happened once already, bc2918024), so the hand-off half of
+// that list is read from the launched bot's own declaration. Asserting a
+// SECOND bot with a DIFFERENT var name is the part a hardcoded list would fail.
+func TestHandoffConsumersComeFromTheManifest(t *testing.T) {
 	s := newWebhookTestServer(t)
 	s.cfg.WorkDir = writeConsumerBotFixture(t, "fixer-bot", "prior_review")
-
 	if got := s.handoffConsumersFor("fixer-bot"); len(got) != 1 || got[0].Var != "prior_review" {
 		t.Fatalf("the fixture bot's declaration did not load: %+v", got)
 	}
-	// The carry set is derived from the declaration, so a bot that declares a
-	// DIFFERENT var must have that one carried — a hardcoded list would pass
-	// the assertion above and still drop this.
+
 	s2 := newWebhookTestServer(t)
 	s2.cfg.WorkDir = writeConsumerBotFixture(t, "other-fixer", "upstream_notes")
 	got := s2.handoffConsumersFor("other-fixer")

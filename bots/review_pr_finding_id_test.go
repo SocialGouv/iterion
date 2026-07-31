@@ -18,7 +18,7 @@ import (
 //
 // The same id has to appear in three places written by two languages: Revi's
 // inline PR comment (python, in publish_review), the prior-review digest the
-// fixer is seeded with (Go, pkg/server/webhooks_prior_review.go findingID), and
+// fixer is seeded with (Go, pkg/server/webhooks_handoff.go findingID), and
 // the fixer's report of what it did with each finding. If the two derivations
 // drift, nothing errors — the operator's `skip R7a3f` silently matches nothing
 // and every ledger entry dangles. So the python is executed for real and its
@@ -131,7 +131,7 @@ func TestFindingIDMatchesTheEngineDerivation(t *testing.T) {
 	}
 }
 
-// goFindingID mirrors pkg/server/webhooks_prior_review.go findingID.
+// goFindingID mirrors pkg/server/webhooks_handoff.go findingID.
 func goFindingID(file, title string) string {
 	t := strings.ToLower(strings.Join(strings.Fields(title), " "))
 	if len(t) > 80 {

@@ -190,12 +190,12 @@ type Server struct {
 	// Revi on another iterion bot's PR (test seam — the real impl resolves the
 	// provisioned forge Connection). nil → realIterionBotAuthor.
 	webhookIterionBotAuthor func(ctx context.Context, cfg webhooks.Config, login string) bool
-	// webhookPriorReview overrides the lookup of what an earlier run on the same
+	// webhookHandoff overrides the lookup of what an earlier run on the same
 	// PR produced (a review, or a fixer's reply to one), which seeds a launch var
 	// the launched bot declared it consumes (test seam). nil → realWebhookHandoff.
 	// Returns "" when nothing is found (best-effort).
-	webhookPriorReview func(ctx context.Context, cfg webhooks.Config, kind bundle.HandoffKind, q priorReviewQuery) string
-	httpClient         *http.Client
+	webhookHandoff func(ctx context.Context, cfg webhooks.Config, kind bundle.HandoffKind, q handoffQuery) string
+	httpClient     *http.Client
 
 	// forgeHTTP is the SSRF-guarded client for outbound forge calls, built
 	// once (its strict flag is startup-fixed) so connection pooling is

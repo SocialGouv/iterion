@@ -579,7 +579,7 @@ func TestGitHubIssueComment_SeedsDeclaredReviewConsumer(t *testing.T) {
 		return forge.PullRef{Number: 7, State: "open", SourceBranch: "feat/x", TargetBranch: "main", HeadSHA: "cafe1234cafe1234"}, nil
 	}
 	var gotPRURL string
-	s.webhookPriorReview = func(_ context.Context, _ webhooks.Config, _ bundle.HandoffKind, q priorReviewQuery) string {
+	s.webhookHandoff = func(_ context.Context, _ webhooks.Config, _ bundle.HandoffKind, q handoffQuery) string {
 		gotPRURL = q.PRURL
 		// The PR's live head must reach the lookup: a review of an older head is
 		// still worth handing over, but only labelled as such.
@@ -614,12 +614,12 @@ func TestPriorReviewSkipsABotThatDidNotAskForIt(t *testing.T) {
 	s := newWebhookTestServer(t)
 	s.cfg.WorkDir = t.TempDir() // no bundles at all
 	called := false
-	s.webhookPriorReview = func(context.Context, webhooks.Config, bundle.HandoffKind, priorReviewQuery) string {
+	s.webhookHandoff = func(context.Context, webhooks.Config, bundle.HandoffKind, handoffQuery) string {
 		called = true
 		return "a review"
 	}
 	vars := map[string]string{}
-	s.stampPriorReview(context.Background(), webhooks.Config{}, "some-bot", vars, priorReviewQuery{PRURL: "https://f/o/r/pull/1"})
+	s.stampHandoffs(context.Background(), webhooks.Config{}, "some-bot", vars, handoffQuery{PRURL: "https://f/o/r/pull/1"})
 	if called {
 		t.Error("looked up a review for a bot that never declared it consumes one")
 	}

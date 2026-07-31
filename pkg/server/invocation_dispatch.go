@@ -123,16 +123,21 @@ func (s *Server) dispatchInvocation(
 	route webhooks.CommandRoute, vars map[string]string,
 	repoURL, repoRef, payloadHash, srcIP string,
 ) {
-	// Seed the declared hand-off vars BEFORE the mode switch. A board-mode
-	// command with a dispatcher never reaches the launch tail — the card IS the
-	// launch — so stamping only there would silently drop the seed on exactly
-	// the path most commands take. The launch tail keeps its own call for the
-	// lanes that skip this function (the PR-event fan-out, the auto-heal); it
-	// no-ops when the var is already set here.
-	s.stampPriorReview(ctx, cfg, route.BotID, vars, priorReviewQuery{
-		PRURL:   vars["pr_url"],
-		HeadSHA: vars["head_sha"],
-	})
+	// Seeding the declared hand-off vars has to happen HERE rather than only in
+	// the launch tail: a board-mode command with a dispatcher never reaches the
+	// tail — the card IS the launch — so the seed would be dropped on exactly
+	// the path most commands take. The tail keeps its own call for the lanes
+	// that skip this function (the PR-event fan-out, the auto-heal).
+	//
+	// Placed after each early return below, never before: resolving a hand-off
+	// reads the bot catalog and walks the run store, and a redelivery or a
+	// quota denial launches nothing.
+	seed := func() {
+		s.stampHandoffs(ctx, cfg, route.BotID, vars, handoffQuery{
+			PRURL:   vars["pr_url"],
+			HeadSHA: vars["head_sha"],
+		})
+	}
 	if route.Mode == string(bundle.ExecutionBoard) && s.cfg.CloudBoardFor != nil {
 		if s.cfg.CloudBoardCoordinator != nil {
 			// Dispatcher active: gate (per-org quota), create the card in the
@@ -154,12 +159,14 @@ func (s *Server) dispatchInvocation(
 				s.writeLaunchDenial(w, r, d)
 				return
 			}
+			seed()
 			s.ensureBoardCard(ctx, cfg, route, vars, meta, native.StateReady, repoURL, repoRef)
 			s.markWebhookOutcome(cfg.Provider, webhooks.StatusAccepted)
 			writeJSONStatus(w, http.StatusAccepted, map[string]string{"status": "carded", "bot": route.BotID})
 			return
 		}
 		// No dispatcher: a tracking card (default inbox state) + direct launch.
+		seed()
 		s.ensureBoardCard(ctx, cfg, route, vars, meta, "", repoURL, repoRef)
 	}
 	s.insertAndLaunchWebhook(ctx, w, r, cfg, meta, idemKey, route.BotID, vars, repoURL, repoRef, payloadHash, srcIP)

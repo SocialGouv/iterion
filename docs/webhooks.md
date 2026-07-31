@@ -219,7 +219,7 @@ already reviewed that PR, the handler seeds Billy's run with Revi's most
 recent findings under the **`prior_review`** var — so Billy starts from
 that review instead of re-deriving it (best-effort: with no prior review,
 Billy reviews the diff from scratch;
-[pkg/server/webhooks_prior_review.go](../pkg/server/webhooks_prior_review.go)).
+[pkg/server/webhooks_handoff.go](../pkg/server/webhooks_handoff.go)).
 
 ### Generic (`POST /api/webhooks/generic/{id}`)
 

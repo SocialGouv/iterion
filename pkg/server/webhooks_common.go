@@ -886,7 +886,7 @@ func (s *Server) launchWebhookTarget(
 	// merge-queue auto-heal — which launches a fixer on a PR a reviewer has
 	// almost always already read — started from nothing. The PR context comes
 	// from the vars the lane already built, so a lane with no pr_url no-ops.
-	s.stampPriorReview(ctx, cfg, botID, vars, priorReviewQuery{
+	s.stampHandoffs(ctx, cfg, botID, vars, handoffQuery{
 		PRURL:   vars["pr_url"],
 		HeadSHA: vars["head_sha"],
 	})

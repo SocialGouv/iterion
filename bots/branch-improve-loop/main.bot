@@ -350,8 +350,6 @@ prompt campaign_user:
   is your scope — do NOT flag pre-existing code the branch didn't touch.
 
   Piloting for this run: {{vars.pilot}}
-  (end = the operator reviews your result · middle = ask them to arbitrate your
-  plan BEFORE you edit anything — see PILOTING in your operating contract.)
 
   Extra context / notes (empty = the diff speaks for itself):
   {{vars.scope_notes}}
@@ -535,49 +533,6 @@ prompt finalize_mr_user:
 
   Push the branch, open the PR, post the back-link when a source issue is
   given, and return the structured result.
-
-prompt post_feedback_system:
-  You are Billy leaving your review verdict AS A COMMENT on the pull request you
-  just hardened, so the author reads your conclusion in the forge — not only in
-  an iterion run they never see. Post ONE concise, respectful comment and stop.
-
-  ## How to post
-  Authenticate gh from the mounted forge token, then comment on the PR:
-    tok=$(cat /run/iterion/secrets/forge_token 2>/dev/null) || tok="$GH_TOKEN"
-    GH_TOKEN="$tok" gh pr comment <pr_url> --body-file <file>
-  Write the body to a scratch file (never inline a multi-paragraph --body). If
-  pr_url is empty, do nothing and return posted=false, note="no pr_url".
-
-  ## What to write (Markdown, no decorative bold, honest)
-  - A one-line verdict: "Reviewed clean — nothing to change." when the branch
-    was clean and you pushed nothing; else "Hardened this PR — pushed N fix(es)."
-  - 2–5 bullets of what you actually found / changed, grounded in the review
-    summary. Do NOT invent issues; if the summary says clean, say clean.
-  - When a finding ledger is given, render it as a table AS-IS — one row per
-    entry, columns: finding | outcome | note. Do not re-word a `refused` note
-    and do not drop a row: those findings were shown to the author on this PR,
-    and the table is how they learn which were answered and which were
-    contested. Say plainly that a refused finding still holds the merge gate
-    red until a maintainer arbitrates it.
-  - If you pushed commits, note they are on this branch for the author to review.
-  - Sign off with YOUR persona name so the author knows who reviewed and that
-    it is a bot — e.g. "— Billy · automated iterion review". Use the persona
-    you were given above, not a generic label.
-
-  Do NOT re-review, re-run tests, or push code here — that already happened. This
-  node ONLY posts the comment. Return {posted, note}.
-
-prompt post_feedback_user:
-  PR to comment on (empty → skip): {{input.pr_url}}
-  Branch was clean (no real issues found): {{input.branch_clean}}
-  Commits pushed to the PR branch this run: {{input.commits_pushed}} ({{input.push_reason}})
-
-  Your review summary to distil into the comment:
-  {{input.review_summary}}
-
-  Prior-review ledger to render as a table (empty = the PR carried no prior
-  review; then say nothing about findings you were never given):
-  {{input.finding_ledger}}
 
 ## ─── Schemas ────────────────────────────────────────────────────
 
@@ -1201,7 +1156,11 @@ try:
     with urllib.request.urlopen(req, timeout=120) as resp:
         res = json.loads(resp.read().decode())
 except urllib.error.HTTPError as e:
-    emit(False, 'forge publish endpoint HTTP ' + str(e.code))
+    try:
+        detail = e.read().decode()[:500].strip()
+    except Exception:
+        detail = ''
+    emit(False, 'forge publish endpoint HTTP ' + str(e.code) + ': ' + detail)
 except Exception as e:
     emit(False, 'forge publish endpoint unreachable: ' + str(e)[:200])
 

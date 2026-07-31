@@ -14,32 +14,32 @@ import (
 	"github.com/SocialGouv/iterion/pkg/webhooks"
 )
 
-// maxPriorReviewRunsScanned bounds the reverse scan for the most recent review run
+// maxHandoffRunsScanned bounds the reverse scan for the most recent review run
 // on a PR. Run ids are UUIDv7 and ListRuns returns them created-at ascending on
 // both backends, so scanning from the newest end and stopping at the first match
 // finds the latest review after loading only a few runs in the common case; the
 // cap keeps a pathological store (a PR never reviewed) from a full-table scan on
 // this manual, best-effort path.
-const maxPriorReviewRunsScanned = 400
+const maxHandoffRunsScanned = 400
 
-// maxPriorReviewChars caps the rendered prior-review text injected into the
+// maxHandoffChars caps the rendered prior-review text injected into the
 // consumer's prompt: enough for a full finding set INCLUDING each finding's
 // ready-made replacement (the whole point of the hand-off — see
-// renderPriorReview), bounded so a huge review can't blow the launch var.
-const maxPriorReviewChars = 16000
+// renderReviewDigest), bounded so a huge review can't blow the launch var.
+const maxHandoffChars = 16000
 
-// maxPriorReviewDetail / maxPriorReviewReplacement bound one finding's share, so
+// maxFindingDetail / maxFindingReplacement bound one finding's share, so
 // a single verbose finding cannot crowd out every other one.
 const (
-	maxPriorReviewDetail      = 900
-	maxPriorReviewReplacement = 900
+	maxFindingDetail      = 900
+	maxFindingReplacement = 900
 )
 
-// priorReviewQuery identifies the pull request a prior review is sought for.
+// handoffQuery identifies the pull request a prior review is sought for.
 // HeadSHA is the PR's CURRENT head when the caller knows it (empty otherwise):
 // a review anchors to the tree it read, so a review of an older head must be
 // handed over LABELLED as such, never presented as current.
-type priorReviewQuery struct {
+type handoffQuery struct {
 	PRURL   string
 	HeadSHA string
 }
@@ -49,15 +49,15 @@ type priorReviewQuery struct {
 // (no run service, no producer, no matching run, unreadable artifact) returns ""
 // and the consumer proceeds without it. Routed through the webhookPriorReview
 // seam so handler tests need no run store.
-func (s *Server) findHandoff(ctx context.Context, cfg webhooks.Config, kind bundle.HandoffKind, q priorReviewQuery) string {
-	fn := s.webhookPriorReview
+func (s *Server) findHandoff(ctx context.Context, cfg webhooks.Config, kind bundle.HandoffKind, q handoffQuery) string {
+	fn := s.webhookHandoff
 	if fn == nil {
 		fn = s.realWebhookHandoff
 	}
 	return fn(ctx, cfg, kind, q)
 }
 
-// stampPriorReview seeds a launch with what earlier runs on the same PR left
+// stampHandoffs seeds a launch with what earlier runs on the same PR left
 // behind, so the launched bot starts from it instead of re-deriving it.
 //
 // Which bot receives what, into which var, and from whose artifact are all
@@ -66,17 +66,22 @@ func (s *Server) findHandoff(ctx context.Context, cfg webhooks.Config, kind bund
 // what lets a reviewer and a fixer cooperate — in BOTH directions, the review
 // forward and the ledger back — without the engine, or either manifest, naming
 // the other bot. An operator-pinned var always wins; a miss is silent by design.
-func (s *Server) stampPriorReview(ctx context.Context, cfg webhooks.Config, botID string, vars map[string]string, q priorReviewQuery) {
-	if vars == nil {
+func (s *Server) stampHandoffs(ctx context.Context, cfg webhooks.Config, botID string, vars map[string]string, q handoffQuery) {
+	// Every hand-off is PR-scoped, so a lane without one has nothing to resolve —
+	// checked before the catalog is read, or every push event and every bot that
+	// consumes nothing would pay a full bundle scan to learn it has no work.
+	if vars == nil || strings.TrimSpace(q.PRURL) == "" {
 		return
 	}
 	for _, want := range s.handoffConsumersFor(botID) {
 		if _, pinned := vars[want.Var]; pinned {
 			continue
 		}
-		if text := s.findHandoff(ctx, cfg, want.Kind, q); text != "" {
-			vars[want.Var] = truncate(text, priorReviewLimit(want))
-		}
+		// Always claim the key, even on a miss. Two lanes call this (the command
+		// dispatch and the launch tail, since neither covers every path), and a
+		// miss leaves a full reverse scan of the run store to be repeated by the
+		// second. An empty value is what the bot would have defaulted to anyway.
+		vars[want.Var] = s.findHandoff(ctx, cfg, want.Kind, q)
 	}
 }
 
@@ -85,7 +90,7 @@ func (s *Server) handoffConsumersFor(botID string) []bundle.ConsumedArtifact {
 	if strings.TrimSpace(botID) == "" {
 		return nil
 	}
-	entry, ok, err := s.botEntry(botID)
+	entry, ok, err := botregistry.FindByName(s.botListOptions(), botID)
 	if err != nil || !ok {
 		return nil
 	}
@@ -98,18 +103,11 @@ func (s *Server) handoffConsumersFor(botID string) []bundle.ConsumedArtifact {
 	return out
 }
 
-func priorReviewLimit(c bundle.ConsumedArtifact) int {
-	if c.MaxChars > 0 && c.MaxChars < maxPriorReviewChars {
-		return c.MaxChars
-	}
-	return maxPriorReviewChars
-}
-
 // realWebhookHandoff is the production findHandoff: scan the run store (newest
 // first) for the latest run of a bot PRODUCING this kind whose pr_url input
 // matches this PR and whose payload is readable, then render it through that
 // producer's own declared node names.
-func (s *Server) realWebhookHandoff(ctx context.Context, cfg webhooks.Config, kind bundle.HandoffKind, q priorReviewQuery) string {
+func (s *Server) realWebhookHandoff(ctx context.Context, cfg webhooks.Config, kind bundle.HandoffKind, q handoffQuery) string {
 	if s.runs == nil || strings.TrimSpace(q.PRURL) == "" {
 		return ""
 	}
@@ -135,7 +133,7 @@ func (s *Server) realWebhookHandoff(ctx context.Context, cfg webhooks.Config, ki
 	// the consumer an empty seed while a complete older review sat one step
 	// further down the list — the freshest COMPLETE review is what saves a round.
 	scanned := 0
-	for i := len(ids) - 1; i >= 0 && scanned < maxPriorReviewRunsScanned; i-- {
+	for i := len(ids) - 1; i >= 0 && scanned < maxHandoffRunsScanned; i-- {
 		scanned++
 		run, lerr := rs.LoadRun(ctx, ids[i])
 		if lerr != nil {
@@ -157,6 +155,12 @@ func (s *Server) realWebhookHandoff(ctx context.Context, cfg webhooks.Config, ki
 
 // handoffProducers maps each discovered bot that declares it produces this kind
 // to the node layout to read it from.
+//
+// Resolved against the BAKED CATALOG only, not the tenant-merged set: a webhook
+// delivery carries no active-team context to read team-authored bundles with.
+// A team that forks a reviewer in the cloud editor therefore does not
+// participate in the hand-off — a real boundary, stated here because a miss is
+// silent and would otherwise read as "nothing reviewed this PR".
 func (s *Server) handoffProducers(kind bundle.HandoffKind) map[string]bundle.ProducedArtifact {
 	entries, err := botregistry.List(s.botListOptions())
 	if err != nil {
@@ -177,44 +181,23 @@ func (s *Server) handoffProducers(kind bundle.HandoffKind) map[string]bundle.Pro
 // renderHandoff dispatches to the renderer for the kind. The engine knows the
 // SHAPE of each role's payload; the producing bot's declaration says where in
 // its own graph to find it.
-func renderHandoff(ctx context.Context, rs store.RunStore, runID string, kind bundle.HandoffKind, spec bundle.ProducedArtifact, q priorReviewQuery) string {
+func renderHandoff(ctx context.Context, rs store.RunStore, runID string, kind bundle.HandoffKind, spec bundle.ProducedArtifact, q handoffQuery) string {
 	switch kind {
 	case bundle.HandoffKindReview:
-		return renderPriorReview(ctx, rs, runID, spec, q)
+		return renderReviewDigest(ctx, rs, runID, spec, q)
 	case bundle.HandoffKindReviewLedger:
 		return renderReviewLedger(ctx, rs, runID, spec)
 	}
 	return ""
 }
 
-// botEntry resolves one discovered bot by name.
-func (s *Server) botEntry(name string) (botregistry.Entry, bool, error) {
-	entries, err := botregistry.List(s.botListOptions())
-	if err != nil {
-		return botregistry.Entry{}, false, err
-	}
-	for _, e := range entries {
-		if e.Name == name {
-			return e, true, nil
-		}
-	}
-	return botregistry.Entry{}, false, nil
-}
-
 // runTargetsPR reports whether the run's launch inputs pin the given PR url.
 func runTargetsPR(run *store.Run, prURL string) bool {
-	if run == nil {
-		return false
-	}
-	v, ok := run.Inputs["pr_url"]
-	if !ok {
-		return false
-	}
-	got, ok := v.(string)
-	return ok && strings.EqualFold(strings.TrimSpace(got), strings.TrimSpace(prURL))
+	got := runInputString(run, "pr_url")
+	return got != "" && strings.EqualFold(got, strings.TrimSpace(prURL))
 }
 
-// renderPriorReview loads the review run's findings and renders the digest the
+// renderReviewDigest loads the review run's findings and renders the digest the
 // downstream fixer starts from. Returns "" when nothing readable was found, so
 // the caller keeps scanning for an older, complete review.
 //
@@ -228,7 +211,7 @@ func runTargetsPR(run *store.Run, prURL string) bool {
 // `spec` is the producing bot's own declaration of where those live in its
 // graph, so this function knows the SHAPE of a review and nothing about the bot
 // that produced it.
-func renderPriorReview(ctx context.Context, rs store.RunStore, runID string, spec bundle.ProducedArtifact, q priorReviewQuery) string {
+func renderReviewDigest(ctx context.Context, rs store.RunStore, runID string, spec bundle.ProducedArtifact, q handoffQuery) string {
 	findings, questions, degraded, ok := loadReviewFindings(ctx, rs, runID, spec)
 	if !ok {
 		return ""
@@ -245,13 +228,13 @@ func renderPriorReview(ctx context.Context, rs store.RunStore, runID string, spe
 
 	tail := renderReviewQuestions(questions)
 	if len(findings) == 0 {
-		b.WriteString("\nRevi reported no findings. Confirm the diff is clean and improve anything it missed.\n")
-		return truncate(b.String()+tail, maxPriorReviewChars)
+		b.WriteString("\nThe review reported no findings. Confirm the diff is clean and improve anything it missed.\n")
+		return truncate(b.String()+tail, maxHandoffChars)
 	}
 
-	fmt.Fprintf(&b, "\n%d finding(s), each with a STABLE id. Verify every one against the current diff — Revi can be wrong, and the branch may have moved. Report per id what you did with it.\n\n", len(findings))
+	fmt.Fprintf(&b, "\n%d finding(s), each with a STABLE id. Verify every one against the current diff — the reviewer can be wrong, and the branch may have moved. Report per id what you did with it.\n\n", len(findings))
 
-	budget := maxPriorReviewChars - b.Len() - len(tail)
+	budget := maxHandoffChars - b.Len() - len(tail)
 	written := 0
 	for _, f := range findings {
 		entry := renderFinding(f)
@@ -266,7 +249,7 @@ func renderPriorReview(ctx context.Context, rs store.RunStore, runID string, spe
 	if written < len(findings) {
 		fmt.Fprintf(&b, "(%d further finding(s) omitted for size — read the full review on the PR.)\n", len(findings)-written)
 	}
-	return truncate(b.String()+tail, maxPriorReviewChars)
+	return truncate(b.String()+tail, maxHandoffChars)
 }
 
 // loadReviewFindings resolves the run's finding set, mirroring the recovery the
@@ -419,14 +402,14 @@ func renderFinding(f map[string]any) string {
 		b.WriteString(strings.Join(tags, " · ") + "\n")
 	}
 	if detail := strField(f, "detail"); detail != "" {
-		b.WriteString(truncate(detail, maxPriorReviewDetail) + "\n")
+		b.WriteString(truncate(detail, maxFindingDetail) + "\n")
 	}
 	if sketch := strField(f, "suggestion"); sketch != "" {
 		b.WriteString("Fix sketch: " + truncate(sketch, 400) + "\n")
 	}
 	if repl := strField(f, "replacement"); repl != "" {
-		b.WriteString("Replacement Revi already wrote for that anchor span (apply it only after checking it still fits the current code):\n```\n" +
-			truncate(repl, maxPriorReviewReplacement) + "\n```\n")
+		b.WriteString("Replacement the reviewer already wrote for that anchor span (apply it only after checking it still fits the current code):\n```\n" +
+			truncate(repl, maxFindingReplacement) + "\n```\n")
 	}
 	b.WriteString("\n")
 	return b.String()
@@ -484,14 +467,19 @@ func shortSHA(s string) string {
 // strField reads a map field as a trimmed string, whatever JSON type it decoded
 // to (a line number arrives as float64 through encoding/json).
 func strField(m map[string]any, key string) string {
-	v, ok := m[key]
-	if !ok || v == nil {
+	switch v := m[key].(type) {
+	case nil:
 		return ""
+	case string:
+		return strings.TrimSpace(v)
+	case float64:
+		if v == float64(int64(v)) {
+			return fmt.Sprint(int64(v))
+		}
+		return fmt.Sprint(v)
+	default:
+		return strings.TrimSpace(fmt.Sprint(v))
 	}
-	if n, ok := v.(float64); ok && n == float64(int64(n)) {
-		return fmt.Sprint(int64(n))
-	}
-	return strings.TrimSpace(fmt.Sprint(v))
 }
 
 func asInt(v any) int {
@@ -506,7 +494,11 @@ func asInt(v any) int {
 	return 0
 }
 
-// ledgerStatus is one entry's outcome in a review ledger.
+// maxLedgerNote bounds one ledger entry's note — a refusal argues its case, and
+// the argument is the point, but it must not crowd out the other entries.
+const maxLedgerNote = 400
+
+// The outcomes a ledger entry can carry. The producing bot writes these strings.
 const (
 	ledgerFixed    = "fixed"
 	ledgerRefused  = "refused"
@@ -528,42 +520,50 @@ func renderReviewLedger(ctx context.Context, rs store.RunStore, runID string, sp
 	if err != nil || art == nil {
 		return ""
 	}
-	entries := decodeFindings(art.Data["finding_ledger"])
-	byStatus := map[string][]map[string]any{}
-	for _, e := range entries {
-		if id := strField(e, "id"); id != "" {
-			byStatus[strings.ToLower(strField(e, "status"))] = append(byStatus[strings.ToLower(strField(e, "status"))], e)
+	// Bucket on the KNOWN statuses only. Keying on whatever the producer wrote
+	// would let an unrecognised one ("wontfix") count as content and emit the
+	// preamble with no section under it.
+	sections := []struct {
+		status, header string
+		entries        []map[string]any
+	}{
+		{ledgerRefused, "\nCONTESTED — it judged these not to be real problems, with its argument. Do NOT re-raise one unless you have NEW evidence that answers the argument; if you still disagree, raise it and say precisely what the argument misses:\n", nil},
+		{ledgerFixed, "\nREPORTED FIXED — verify against the current diff; re-raise only if the fix is wrong, incomplete, or broke something else:\n", nil},
+		{ledgerDeferred, "\nDEFERRED — still open, raise them again:\n", nil},
+	}
+	total := 0
+	for _, e := range decodeFindings(art.Data["finding_ledger"]) {
+		if strField(e, "id") == "" {
+			continue
+		}
+		status := strings.ToLower(strField(e, "status"))
+		for i := range sections {
+			if sections[i].status == status {
+				sections[i].entries = append(sections[i].entries, e)
+				total++
+			}
 		}
 	}
-	if len(byStatus) == 0 {
+	if total == 0 {
 		return ""
 	}
 
 	var b strings.Builder
 	fmt.Fprintf(&b, "A fixer already answered an earlier review of this PR (run %s), finding by finding.\n", runID)
-	if refused := byStatus[ledgerRefused]; len(refused) > 0 {
-		b.WriteString("\nCONTESTED — it judged these not to be real problems, with its argument. Do NOT re-raise one unless you have NEW evidence that answers the argument; if you still disagree, raise it and say precisely what the argument misses:\n")
-		for _, e := range refused {
-			fmt.Fprintf(&b, "- %s: %s\n", strField(e, "id"), truncate(strField(e, "note"), 400))
+	for _, sec := range sections {
+		if len(sec.entries) == 0 {
+			continue
 		}
-	}
-	if fixed := byStatus[ledgerFixed]; len(fixed) > 0 {
-		b.WriteString("\nREPORTED FIXED — verify against the current diff; re-raise only if the fix is wrong, incomplete, or broke something else:\n")
-		for _, e := range fixed {
-			line := "- " + strField(e, "id")
+		b.WriteString(sec.header)
+		for _, e := range sec.entries {
+			b.WriteString("- " + strField(e, "id"))
 			if c := strField(e, "commit"); c != "" {
-				line += " (" + shortSHA(c) + ")"
+				b.WriteString(" (" + shortSHA(c) + ")")
 			}
 			if n := strField(e, "note"); n != "" {
-				line += ": " + truncate(n, 200)
+				b.WriteString(": " + truncate(n, maxLedgerNote))
 			}
-			b.WriteString(line + "\n")
-		}
-	}
-	if deferred := byStatus[ledgerDeferred]; len(deferred) > 0 {
-		b.WriteString("\nDEFERRED — still open, raise them again:\n")
-		for _, e := range deferred {
-			fmt.Fprintf(&b, "- %s: %s\n", strField(e, "id"), truncate(strField(e, "note"), 300))
+			b.WriteString("\n")
 		}
 	}
 	return b.String()

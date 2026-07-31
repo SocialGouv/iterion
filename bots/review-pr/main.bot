@@ -806,7 +806,7 @@ tool publish_review:
 import os, json, subprocess, urllib.request, urllib.error, hashlib
 
 # Stable handle for one finding, shared with iterion's prior-review digest
-# (pkg/server/webhooks_prior_review.go findingID) and with the fixer's ledger:
+# (pkg/server/webhooks_handoff.go findingID) and with the fixer's ledger:
 # the operator arbitrates by it (/billy skip R7a3f) and the fixer reports by it.
 # Keyed on (file, normalized title) and NOT on the line, because the line moves
 # as soon as code above it changes -- which is exactly what a fix does, so a
