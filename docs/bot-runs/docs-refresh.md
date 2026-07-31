@@ -13,6 +13,90 @@ promises ledgers persist the agent's adjudications; the opt-in
 `open_mr` tail publishes ONE PR. Runs on ANY repo; iterion is the
 reference self-host case.
 
+## 2026-07-31 — closing run 019fae96: where the yield curve turns (run 019fae96, cont.)
+
+- Status: **partial, deliberately stopped**. Never reached `converged`. The run
+  was resumed twice today and then abandoned on a judgment call, not a crash —
+  the marginal value of a pass had clearly fallen below its cost.
+- Versions: bot v3.5.x · iterion `dev+00060908f` (the pi state-root work) ·
+  pi 0.82.1 · `backend: "pi"`, two different models.
+- Method: `iterion resume --run-id 019fae96 --store-dir "$PWD/.iterion"
+  --backend pi`, `ITERION_SANDBOX_DEFAULT=none` (resume does not replay the
+  launch's sandbox decision), `ITERION_PI_NO_CONTEXT_FILES=1`.
+
+### What each model actually did
+
+| Pass | Model | Wall | Commits | Cost | Outcome |
+|---|---|---|---|---|---|
+| resume A | `zai/glm-5.2` | 14 min | 1 | ~$0 | **failed the termination contract** |
+| resume B | `openai-codex/gpt-5.6-sol` | 56 min | 50 | ~$63 | stopped on the DURATION ceiling |
+
+**GLM cannot hold the v2 termination contract.** Two attempts, both ending in
+`structured output parsing fell back to text wrapper` then seven missing
+required fields — the model returned prose where the contract wants an object.
+This is not a backend fault: the parse tried and degraded honestly. It is the
+v2 shape (a whole-session agent that must close with a machine-checkable
+object) meeting a model that will not close it. Worth knowing before choosing a
+cheap model for a campaign bot.
+
+### The finding that matters: yield falls off a cliff
+
+Codex produced 50 commits in 56 minutes — the same VOLUME as the $47 pass of
+2026-07-29 (48 commits). The density is not the same:
+
+- **2026-07-29**: substantive blocks. One commit added 13 lines documenting
+  `author_scope: exclusive` — what it is, that provisioning adds those logins
+  to every OTHER co-enabled bot's denylist, and a cross-link to the runtime
+  fan-out. Verified against `pkg/bundle/manifest.go`: the surface is real.
+- **2026-07-31**: **8 lines added per commit on average** (427 across 50). The
+  `async diagnostic band` commits are ONE-LINE edits — inserting `plus async
+  C240–C242` into a table sentence — repeated verbatim across `README.md`,
+  `docs/README.md`, `docs/visual-editor.md`, `cli-reference.md` and more. True,
+  and genuinely missing; but a commit per file for a mechanical propagation.
+
+So: **~15¢ per line of documentation**, much of it one sentence fanned across a
+tree. The bot is not padding — every claim I sampled checks out against the
+code — it is simply working through a long tail of correct, low-value edits
+with no signal that says "this is worth less than the last one".
+
+### Budget mechanics worth knowing
+
+- Total for the run's life: **$109.63** across all passes.
+- The stop was **`budget hard limit reached: duration at 98%`**, not cost
+  ($130 cap, $109 spent). `--max-duration` is CUMULATIVE over the run's whole
+  life, exactly like cost — a 3h ceiling on a resume means "3h total", not "3h
+  more". Size it accordingly when resuming.
+- The known engine gap still stands: `max_cost_usd` is evaluated at node
+  boundaries, and a v2 campaign puts a whole pass in ONE node, so the cap
+  cannot bite mid-pass.
+
+### Lessons for next run
+
+1. **Do not run a campaign bot on a model that cannot emit the contract.**
+   Cheapness is irrelevant if the pass cannot close. Test the contract first
+   with a one-node probe.
+2. **Add a value floor to the campaign contract.** The bot has no way to say
+   "the remaining drift is not worth a commit". A minimum-substance rule (or
+   grouping a mechanical propagation into ONE commit across files) would have
+   turned this pass's 50 commits into perhaps 10 with the same information.
+3. **`drift_remaining` is not a value signal.** It counts what is left, not
+   what it is worth — which is why the loop would happily keep going. That is
+   the asymptote question ADR-058 answers for correctness loops but not for
+   docs volume.
+4. Resume ceilings are cumulative. Say `--max-duration 6h` on a resume if you
+   want 3 more hours.
+
+### Where the work landed
+
+All 124 commits merged to `main` (`27bb98655..1dbf3a64e`) via
+`dogfood/doki-pi-019fae96`. Seven doc conflicts against a `main` that had moved
+37 commits meanwhile, each resolved on the facts rather than by preferring a
+side — notably keeping `main`'s "pi IS bridged to the ChatGPT forfait" over
+Doki's stale "does not consume", and `main`'s `v3.15.0` over Doki's `v3.7.6`.
+The generated bot catalog needed `iterion bots regen-catalog` afterwards, with
+a binary rebuilt AFTER the merge — the older one could not parse the new
+manifests' `consumes`/`produces` fields.
+
 ## 2026-07-29 — first real bot run on the `pi` backend (run 019fae96)
 
 - Status: **partial** — pass 1 delivered 15 doc-alignment commits; pass 2 died
