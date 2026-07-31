@@ -131,7 +131,7 @@ examples of what an operated agent workflow looks like. A few of the jobs they d
 | | Use case | Bots that run it |
 |---|---|---|
 | 🚀 | **Ship software from a prompt** — greenfield apps and end-to-end features | Appy · Featurly · Fini · Bmady |
-| 🔁 | **Continuously review & improve a codebase** — whole-repo and per-branch campaigns, cross-family PR review, test coverage | Willy · Billy · Revi · Testy |
+| 🔁 | **Continuously review & improve a codebase** — whole-repo and per-branch campaigns, mono-default PR review with optional cross-family confirmation, test coverage | Willy · Billy · Revi · Testy |
 | 🛡️ | **Automated security & supply chain** — SAST, dependency/SCA, diff-scoped CVE & malware shields on every PR | Seki · Depsy · Vulny · Shieldy |
 | ⬆️ | **Upgrade dependencies safely** — multi-stack agentic upgrades with a review gate | Renovacy · Vetty |
 | 📚 | **Keep docs & knowledge aligned** — docs alignment, wiki generation, ADR cartography | Doki · Wikky · Adry |
