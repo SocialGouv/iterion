@@ -210,18 +210,29 @@ head, with no command typed. The fixer is not named anywhere: it is whichever
 enabled bot declares `consumes: kind: review`, since that declaration already
 means "I start from a review and act on it".
 
-**What bounds it.** The loop terminates on progress, not on a countdown: at most
-one attempt per head sha. The fixer pushes → the head moves → a re-review
-produces a fresh verdict → a new attempt becomes available. A fixer that pushes
-nothing leaves the head where it is, and the claim on that head is already
-spent. On top of that it obeys the ordinary launch gate (org quota, cost cap,
-concurrency) and the hold label, which pauses this lane like every other.
+**What bounds it.** Two limits, because one is not enough:
+
+- **One attempt per head sha.** The fixer pushes → the head moves → a re-review
+  produces a fresh verdict → a new attempt becomes available. A fixer that
+  pushes *nothing* leaves the head where it is, and the claim on that head is
+  already spent, so the loop ends there.
+- **Five passes per pull request.** That first bound only stops a fixer that
+  stops pushing; one that keeps pushing without converging frees a fresh claim
+  every cycle. After five unattended passes the lane stops and leaves the PR to
+  a human — the `/command` road is still open.
+
+It also obeys the ordinary launch gate (org quota, cost cap, concurrency) and
+the hold label, which pauses this lane like every other. Note the org cost cap
+defaults to *unlimited*, so it is a backstop only where you configured one.
 
 **What it refuses.** It reads the verdict back from the forge rather than
 trusting our own bookkeeping, and abstains when the provider cannot list
-statuses. It acts only on the revision the finished run actually judged, only
-inside the repo the run's publish grant covers, only for a bot the webhook
-permits, and never on a fixer's own red verdict. Omitting
+statuses. It acts only on the check the repo itself pinned as its gate — a run
+naming some other context does not qualify — only on the revision the finished
+run actually judged, only inside the repo the run's publish grant covers, only
+for a bot the webhook permits, and never on a fixer's own red verdict. Where a
+brake cannot be *evaluated* (the hold label unreadable, the attempt audit
+unreadable) it does not launch: an unevaluable bound is not a cleared one. Omitting
 `auto_fix_on_gate_failure` on a later call leaves the repo's current choice
 alone — enabling one more bot never switches automation on or off by itself.
 

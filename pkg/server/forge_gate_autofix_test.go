@@ -4,7 +4,6 @@ import (
 	"context"
 	"testing"
 
-	"github.com/SocialGouv/iterion/pkg/bundle"
 	"github.com/SocialGouv/iterion/pkg/forge"
 	"github.com/SocialGouv/iterion/pkg/knowledge"
 	"github.com/SocialGouv/iterion/pkg/store"
@@ -57,6 +56,7 @@ func TestAutofixRefusesWhatItMust(t *testing.T) {
 		integ := forge.RepoIntegration{
 			ID: "i1", TenantID: team, ConnectionID: "c1", RepoFullName: repo,
 			BotIDs: []string{"fixer-bot"}, WebhookID: "w1", AutoFixOnGateFailure: true,
+			LaunchVars: map[string]string{gateContextVar: gateNm},
 		}
 		cfg := webhooks.Config{ID: "w1", TenantID: team, BotIDs: []string{"fixer-bot"}}
 		if tune != nil {
@@ -156,6 +156,24 @@ func TestAutofixRefusesWhatItMust(t *testing.T) {
 			name: "the finished run IS the fixer", inputs: gatingInputs, botID: "fixer-bot",
 			because: "a bot re-triggering itself on its own red verdict is a loop, refused on its face",
 		},
+		{
+			// Found adversarially: gate_context comes from the RUN's inputs,
+			// which whoever launched it chose. Unchecked, any red status on the
+			// head whose name some run had used — a failing CI build, a
+			// coverage bot — would launch a code-pushing agent.
+			name: "the red status is not the check the repo pinned",
+			inputs: map[string]any{
+				"pr_url": prURL, "gate_context": "ci/build", "head_sha": head,
+				forgePublishVarToken: "run-token",
+			},
+			botID:   "reviewer-bot",
+			because: "only the repo's own required check may drive an unattended push",
+		},
+		{
+			name: "the repo pinned no gate context at all", inputs: gatingInputs, botID: "reviewer-bot",
+			tune:    func(_ *Server, i *forge.RepoIntegration, _ *webhooks.Config) { i.LaunchVars = nil },
+			because: "a repo that pinned none has made no check required, so there is no gate to react to",
+		},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -194,6 +212,31 @@ func TestAutofixRefusesWhatItMust(t *testing.T) {
 		})
 		if *w.launched != 0 {
 			t.Error("acted on a run that is expected to resume and post its own verdict")
+		}
+	})
+
+	// The per-head claim bounds a fixer that STOPS pushing. One that keeps
+	// pushing without converging moves the head every pass, which frees a fresh
+	// claim each time — so a ceiling per PR is the only thing that ends it, and
+	// the org cost cap (the other backstop) defaults to unlimited.
+	t.Run("a PR that never converges stops being auto-fixed", func(t *testing.T) {
+		w := build(t, nil)
+		for i := 0; i < maxAutofixAttemptsPerPR; i++ {
+			if err := w.s.webhookDeliveries.Insert(context.Background(), webhooks.Delivery{
+				ID: "spent-" + string(rune('a'+i)), TenantID: team, WebhookID: "w1",
+				IdempotencyKey: "k" + string(rune('a'+i)), Status: webhooks.StatusLaunched,
+				EventKind: autofixEventKind, ProjectPath: repo, SubjectID: "pr:7", RunID: "r",
+			}); err != nil {
+				t.Fatal(err)
+			}
+		}
+		runID := seedRun(t, w.s, "reviewer-bot", gatingInputs)
+		_ = w.s.autofixForRun(context.Background(), trigger.Event{
+			Source: trigger.SourceRun, Kind: trigger.KindRunFinished,
+			Subject: trigger.Subject{ID: runID},
+		})
+		if *w.launched != 0 {
+			t.Errorf("a %dth unattended pass fired on a PR that has not converged", maxAutofixAttemptsPerPR+1)
 		}
 	})
 
@@ -251,6 +294,7 @@ func TestAutofixLaunchesTheFixerOnARedGate(t *testing.T) {
 	if err := ints.Create(context.Background(), forge.RepoIntegration{
 		ID: "i1", TenantID: team, ConnectionID: "c1", RepoFullName: repo,
 		BotIDs: []string{"fixer-bot"}, WebhookID: "w1", AutoFixOnGateFailure: true,
+		LaunchVars: map[string]string{gateContextVar: "iterion/review"},
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -345,16 +389,34 @@ func TestReviewFixerIsDerivedNotNamed(t *testing.T) {
 	}
 }
 
-// TestGateStateOnAbstainsWhenItCannotRead: a provider whose client cannot list
-// statuses gives us no verdict to act on, and guessing would launch a mutating
-// bot on a gate we never saw.
-func TestGateStateOnAbstainsWhenItCannotRead(t *testing.T) {
-	_, known, err := gateStateOn(context.Background(), noListGateClient{}, "acme/widgets", "abc", "iterion/review")
+// TestGateStatusOnSeparatesUnreadableFromAbsent pins the distinction the two
+// callers assume opposite things from: a provider that cannot list statuses at
+// all makes the reconciler abstain from overwriting, and makes this lane
+// abstain from launching. Collapsing it into "absent" would flip both.
+func TestGateStatusOnSeparatesUnreadableFromAbsent(t *testing.T) {
+	ctx := context.Background()
+
+	_, readable, err := gateStatusOn(ctx, noListGateClient{}, "acme/widgets", "abc", "iterion/review")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if known {
-		t.Error("reported a known state from a client that cannot read statuses")
+	if readable {
+		t.Error("a client that cannot list statuses must not report a readable gate")
+	}
+	// Unreadable must read as "already posted" for the reconciler, or it would
+	// paint a synthetic failure over a verdict it never saw.
+	if posted, err := gateAlreadyPosted(ctx, noListGateClient{}, "acme/widgets", "abc", "iterion/review"); err != nil || !posted {
+		t.Errorf("gateAlreadyPosted = %v (%v), want true on an unreadable provider", posted, err)
+	}
+
+	// Readable but absent is a different fact: nothing has posted yet.
+	empty := stubGateClient{head: "abc", ctxName: "other/check", state: forge.CommitStateSuccess}
+	state, readable, err := gateStatusOn(ctx, empty, "acme/widgets", "abc", "iterion/review")
+	if err != nil || !readable || state != "" {
+		t.Errorf("gateStatusOn = (%q, %v, %v), want the zero state, readable, no error", state, readable, err)
+	}
+	if posted, err := gateAlreadyPosted(ctx, empty, "acme/widgets", "abc", "iterion/review"); err != nil || posted {
+		t.Errorf("gateAlreadyPosted = %v (%v), want false when the context is absent", posted, err)
 	}
 }
 
@@ -366,5 +428,3 @@ func (noListGateClient) GetPullRequest(context.Context, string, int) (forge.Pull
 func (noListGateClient) SetCommitStatus(context.Context, string, string, forge.CommitStatus) error {
 	return nil
 }
-
-var _ = bundle.HandoffKindReview

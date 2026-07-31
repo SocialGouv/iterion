@@ -11,6 +11,7 @@ import (
 
 	"github.com/SocialGouv/iterion/pkg/botregistry"
 	"github.com/SocialGouv/iterion/pkg/bundle"
+	"github.com/SocialGouv/iterion/pkg/eventbus"
 	"github.com/SocialGouv/iterion/pkg/store"
 	"github.com/SocialGouv/iterion/pkg/webhooks"
 )
@@ -602,4 +603,20 @@ func (s *Server) logWarn(format string, args ...any) {
 	if s.logger != nil {
 		s.logger.Warn(format, args...)
 	}
+}
+
+// eventsBus resolves the event spine this server publishes on: the configured
+// bus, else the trigger coordinator's. Four call sites had their own copy of
+// this precedence, which is three too many for a rule that will change.
+func (s *Server) eventsBus() eventbus.Bus {
+	if s == nil {
+		return nil
+	}
+	if s.cfg.EventsBus != nil {
+		return s.cfg.EventsBus
+	}
+	if s.triggerCoord != nil {
+		return s.triggerCoord.Bus()
+	}
+	return nil
 }

@@ -43,10 +43,7 @@ func (s *Server) startGateReconciler() {
 	if s == nil || s.forgePublishTokens == nil || s.forgeConnections == nil {
 		return
 	}
-	bus := s.cfg.EventsBus
-	if bus == nil && s.triggerCoord != nil {
-		bus = s.triggerCoord.Bus()
-	}
+	bus := s.eventsBus()
 	if bus == nil {
 		return
 	}
@@ -211,25 +208,15 @@ func (s *Server) reconcileGateForRun(ctx context.Context, ev trigger.Event) erro
 	return nil
 }
 
-// gateAlreadyPosted reports whether ctxName is already present on sha.
+// gateAlreadyPosted reports whether ctxName is already present on sha. Without
+// a read capability it says "posted": overwriting a real success with a
+// synthetic failure is a worse outcome than leaving a stuck PR stuck.
 func gateAlreadyPosted(ctx context.Context, gc forgeGateClient, repo, sha, ctxName string) (bool, error) {
-	lister, ok := gc.(forge.CommitStatusLister)
-	if !ok {
-		// Without a read capability we cannot tell an absent verdict from a
-		// posted one. Say "posted": overwriting a real success with a
-		// failure is a worse outcome than leaving a stuck PR stuck.
-		return true, nil
-	}
-	sts, err := lister.ListCommitStatuses(ctx, repo, sha)
+	state, readable, err := gateStatusOn(ctx, gc, repo, sha, ctxName)
 	if err != nil {
 		return false, err
 	}
-	for _, st := range sts {
-		if strings.EqualFold(strings.TrimSpace(st.Context), ctxName) {
-			return true, nil
-		}
-	}
-	return false, nil
+	return !readable || state != "", nil
 }
 
 // gateRunURL points the check at the run that owed it, so the operator lands

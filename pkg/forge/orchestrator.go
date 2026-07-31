@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"maps"
 	"reflect"
+	"slices"
 	"sort"
 	"strings"
 	"time"
@@ -145,6 +146,10 @@ type ProvisionRequest struct {
 	// integration and re-applied on every Provision (see
 	// RepoIntegration.LaunchVars). Nil leaves the stored ones untouched.
 	LaunchVars map[string]string
+	// HoldLabels is the operator's per-repo automation pause. Nil means "keep
+	// what the repo already has" — the same rule as LaunchVars.
+	HoldLabels []string
+
 	// AutoFix opts the repo into the zero-touch lane (a red merge gate launches
 	// the repo's fixer). A nil pointer means "leave the repo's current choice
 	// alone" — enabling one more bot must not silently switch automation on or
@@ -218,6 +223,19 @@ func (o *Orchestrator) Provision(ctx context.Context, req ProvisionRequest) (Pro
 	if operatorOverlap == "" && hasExisting {
 		operatorOverlap = existing.Overlap
 	}
+	operatorHold := req.HoldLabels
+	if operatorHold == nil && hasExisting {
+		operatorHold = existing.HoldLabels
+		// Backfill: hold labels were settable only on the webhook config before
+		// they lived here, and that is still what the webhook API PATCHes. A
+		// provision that read only the integration would wipe a pause an
+		// operator had set the documented way — so adopt it instead.
+		if len(operatorHold) == 0 {
+			if prev, gerr := o.Webhooks.Get(ctx, existing.WebhookID); gerr == nil {
+				operatorHold = prev.HoldLabels
+			}
+		}
+	}
 	operatorAutoFix := hasExisting && existing.AutoFixOnGateFailure
 	if req.AutoFix != nil {
 		operatorAutoFix = *req.AutoFix
@@ -268,9 +286,10 @@ func (o *Orchestrator) Provision(ctx context.Context, req ProvisionRequest) (Pro
 		// A changed operator override is a real mutation even when the bot set
 		// is not — without this the short-circuit would silently ignore it.
 		if !maps.Equal(operatorVars, existing.LaunchVars) || operatorOverlap != existing.Overlap ||
-			operatorAutoFix != existing.AutoFixOnGateFailure {
+			operatorAutoFix != existing.AutoFixOnGateFailure || !slices.Equal(operatorHold, existing.HoldLabels) {
 			existing.LaunchVars = operatorVars
 			existing.Overlap = operatorOverlap
+			existing.HoldLabels = operatorHold
 			existing.AutoFixOnGateFailure = operatorAutoFix
 			existing.UpdatedAt = o.clock()
 			if uerr := o.Integrations.Update(ctx, existing); uerr != nil {
@@ -280,6 +299,7 @@ func (o *Orchestrator) Provision(ctx context.Context, req ProvisionRequest) (Pro
 				cfg.LaunchVars = nilIfEmpty(manifestLaunchVars(desiredBots, frByBot))
 				cfg.OperatorLaunchVars = nilIfEmpty(maps.Clone(operatorVars))
 				cfg.Overlap = operatorOverlap
+				cfg.HoldLabels = operatorHold
 				cfg.UpdatedAt = o.clock()
 				if uerr := o.Webhooks.Update(ctx, cfg); uerr != nil {
 					return ProvisionResult{}, fmt.Errorf("forge: update webhook launch vars: %w", uerr)
@@ -427,6 +447,7 @@ func (o *Orchestrator) Provision(ctx context.Context, req ProvisionRequest) (Pro
 		LaunchVars:         nilIfEmpty(launchVars),
 		OperatorLaunchVars: nilIfEmpty(maps.Clone(operatorVars)),
 		Overlap:            operatorOverlap,
+		HoldLabels:         operatorHold,
 		SecretOverrides:    secretOverrides,
 		MinReplierRole:     minRole,
 		CommandMap:         commandMap,
@@ -492,6 +513,7 @@ func (o *Orchestrator) Provision(ctx context.Context, req ProvisionRequest) (Pro
 		ManagedSecretID:      managedSecretID,
 		LaunchVars:           nilIfEmpty(maps.Clone(operatorVars)),
 		Overlap:              operatorOverlap,
+		HoldLabels:           operatorHold,
 		AutoFixOnGateFailure: operatorAutoFix,
 		CreatedBy:            req.ActorID,
 		CreatedAt:            now,

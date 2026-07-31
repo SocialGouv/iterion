@@ -5,10 +5,7 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/google/uuid"
-
 	"github.com/SocialGouv/iterion/pkg/auth"
-	"github.com/SocialGouv/iterion/pkg/botregistry"
 	"github.com/SocialGouv/iterion/pkg/bundle"
 	"github.com/SocialGouv/iterion/pkg/eventbus"
 	"github.com/SocialGouv/iterion/pkg/forge"
@@ -30,11 +27,26 @@ import (
 // So it is a per-repo opt-in for teams that want the zero-touch lane, and the
 // command stays the default road.
 //
-// The loop terminates on PROGRESS, not on a countdown: at most one attempt per
-// head sha. The fixer pushes, the head moves, a re-review produces a fresh
-// verdict, and only then can another attempt fire. A fixer that stops pushing
-// stops the loop, because the head stops moving and the claim is already taken.
+// What bounds the loop is at the claim below.
 const gateAutofixName = "forge-gate-autofix"
+
+// autofixEventKind marks this lane's rows in the delivery audit, so an operator
+// can see every unattended launch it made and the per-PR ceiling can count them.
+const autofixEventKind = "gate_autofix"
+
+// maxAutofixAttemptsPerPR is the ceiling the per-head claim cannot provide.
+//
+// One attempt per head sha bounds a fixer that STOPS pushing. It does not bound
+// one that keeps pushing without converging: each push moves the head, a
+// re-review produces a fresh verdict, and a fresh claim becomes available — a
+// loop that is making progress by its own measure and none by anyone else's, at
+// roughly two runs a cycle. The org cost cap is the other backstop, and it
+// defaults to unlimited, so a deployment that never configured one would have
+// no bound at all.
+const maxAutofixAttemptsPerPR = 5
+
+// autofixAuditScan bounds the delivery scan behind that ceiling.
+const autofixAuditScan = 200
 
 // startGateAutofix attaches the lane to the event spine, alongside the gate
 // reconciler and on the same bus — queue-group delivery in cloud, so exactly one
@@ -43,10 +55,7 @@ func (s *Server) startGateAutofix() {
 	if s == nil || s.forgePublishTokens == nil || s.forgeConnections == nil || s.forgeIntegrations == nil {
 		return
 	}
-	bus := s.cfg.EventsBus
-	if bus == nil && s.triggerCoord != nil {
-		bus = s.triggerCoord.Bus()
-	}
+	bus := s.eventsBus()
 	if bus == nil {
 		return
 	}
@@ -75,7 +84,10 @@ func (s *Server) attachGateAutofix(bus eventbus.Bus) (func(), error) {
 // design: the overwhelming majority of runs are not gating runs at all.
 func (s *Server) autofixForRun(ctx context.Context, ev trigger.Event) error {
 	runID := strings.TrimSpace(ev.Subject.ID)
-	if runID == "" || s.cfg.Store == nil || s.forgePublishTokens == nil || s.forgeIntegrations == nil {
+	if runID == "" || s.cfg.Store == nil || s.forgePublishTokens == nil || s.forgeIntegrations == nil ||
+		s.webhookConfigs == nil || s.webhookDeliveries == nil {
+		// The last two are dereferenced below, and this runs in a bus goroutine
+		// whose panic has no recover above it.
 		return nil
 	}
 	run, err := s.cfg.Store.LoadRun(store.WithoutTenantFilter(ctx), runID)
@@ -120,6 +132,15 @@ func (s *Server) autofixForRun(ctx context.Context, ev trigger.Event) error {
 	if err != nil || !integration.AutoFixOnGateFailure {
 		return nil
 	}
+	// The gate context arrives from the RUN's inputs, which whoever launched it
+	// chose. Unchecked, ANY red status on that head whose name some run had used
+	// — a failing CI build, a coverage bot — would launch a code-pushing agent.
+	// The repo's pinned context is the authority; a repo that pinned none has
+	// not made a check required, so there is no gate for this lane to react to.
+	pinned := strings.TrimSpace(integration.LaunchVars[gateContextVar])
+	if pinned == "" || !strings.EqualFold(pinned, gateCtx) {
+		return nil
+	}
 
 	conn, err := s.forgeConnections.Get(store.WithoutTenantFilter(ctx), grant.ConnectionID)
 	if err != nil || conn.TenantID != grant.TeamID {
@@ -149,8 +170,8 @@ func (s *Server) autofixForRun(ctx context.Context, ev trigger.Event) error {
 	// which a second replica would not share and a restart would lose. No read
 	// capability means abstain: launching a fixer on a gate we cannot see would
 	// be acting on a guess.
-	state, known, err := gateStateOn(ctx, gc, repo, pr.HeadSHA, gateCtx)
-	if err != nil || !known || state != forge.CommitStateFailure {
+	state, readable, err := gateStatusOn(ctx, gc, repo, pr.HeadSHA, gateCtx)
+	if err != nil || !readable || state != forge.CommitStateFailure {
 		return nil
 	}
 
@@ -173,65 +194,73 @@ func (s *Server) autofixForRun(ctx context.Context, ev trigger.Event) error {
 	if !cfg.AllowsBot(fixer) {
 		return nil
 	}
-	// The hold label is the operator's per-PR pause on ALL automation, and a
-	// lane that ignored it would be the one the escape hatch does not reach.
-	// Read live: the run that triggered us may predate the label being applied.
+	// The hold label is the operator's per-PR pause on ALL automation, and it is
+	// the only brake on this lane — every other automatic launch also has a
+	// human trigger. Read LIVE: the run that triggered us may predate the label.
+	//
+	// Fails CLOSED. Elsewhere the veto is best-effort because a missed pause
+	// costs a review; here it costs an unattended push. A launch skipped
+	// because the forge was briefly unreachable is recovered by the next
+	// re-review; a push past a pause the operator set is not recoverable at all.
 	if len(cfg.HoldLabels) > 0 {
-		if held := s.pullRequestHoldLabel(ctx, conn, repo, number, cfg.HoldLabels); held != "" {
+		held, readErr := s.pullRequestHoldLabel(ctx, conn, repo, number, cfg.HoldLabels)
+		if readErr != nil {
+			s.logWarn("gate auto-fix: cannot read labels on %s#%d (%v) — not launching, since the hold label could not be ruled out", repo, number, readErr)
+			return nil
+		}
+		if held != "" {
 			return nil
 		}
 	}
 
-	// One attempt per head sha. The fixer pushes → the head moves → a re-review
-	// produces a new verdict → a new claim becomes available. A fixer that
-	// pushes nothing leaves the head where it is and the loop ends here.
-	idem := knowledge.ChecksumHex([]byte(fmt.Sprintf("autofix|%s|%s|%d|%s", grant.TeamID, repo, number, pr.HeadSHA)))
-	if _, err := s.webhookDeliveries.GetByIdempotencyKey(store.WithoutTenantFilter(ctx), idem); err == nil {
-		return nil // this head already had its attempt
-	}
-
 	// Metered like any other launch. The bus handler carries no request
-	// identity, so the team is taken from the grant — the same shape the retry
-	// sweeper uses to gate a launch it makes on a tenant's behalf.
-	gateCtxWithID := auth.WithIdentity(ctx, auth.Identity{TeamID: grant.TeamID})
-	if _, denial := s.gateLaunch(gateCtxWithID); denial != nil {
-		s.logWarn("gate auto-fix: %s#%d not launched: %s", repo, number, denial.reason)
-		return nil
-	}
+	// identity, so the team comes from the grant — the shape the retry sweeper
+	// already uses to gate a launch it makes on a tenant's behalf.
+	launchCtx := auth.WithIdentity(ctx, auth.Identity{TeamID: grant.TeamID})
 
 	vars := applyWebhookVarLayers(fixerPRVars(
 		pr.TargetBranch, pr.SourceBranch, prURL,
 		fmt.Sprintf("The merge gate %q is red on this pull request. Address the findings of the review that set it, then push.", gateCtx),
 		cfg.BranchImproveAsPR, nil), cfg)
 	vars["head_sha"] = pr.HeadSHA
-	s.stampHandoffs(ctx, cfg, fixer, vars, handoffQuery{PRURL: prURL, HeadSHA: pr.HeadSHA})
 
-	delivery := webhooks.Delivery{
-		ID: uuid.NewString(), TenantID: grant.TeamID, WebhookID: cfg.ID,
-		IdempotencyKey: idem, Status: webhooks.StatusLaunched,
-		EventKind: "gate_autofix", ProjectPath: repo, BotID: fixer,
-	}
-	if err := s.webhookDeliveries.Insert(store.WithoutTenantFilter(ctx), delivery); err != nil {
-		return nil // lost the claim to a concurrent replica
-	}
-
-	launch := s.webhookLaunchBot
-	if launch == nil {
-		launch = s.webhookLauncherFor(cfg)
-	}
-	runIDNew, lerr := launch(gateCtxWithID, fixer, vars, forgeCloneURL(conn, repo), pr.SourceBranch, repo, cfg.KeyOverrides, cfg.SecretOverrides)
-	if lerr != nil {
-		delivery.Status = webhooks.StatusLaunchError
-		delivery.Error = lerr.Error()
-		_ = s.webhookDeliveries.Update(store.WithoutTenantFilter(ctx), delivery)
-		s.logWarn("gate auto-fix: launching %s on %s#%d failed: %v", fixer, repo, number, lerr)
+	// The shared launch tail, not a copy of it. It owns the claim (atomically,
+	// so two replicas reacting to the same outcome cannot both launch), the
+	// quota metering AND its rollback when the claim is lost, the per-run forge
+	// publish grant — without which the fixer could not post the verdict this
+	// lane exists to produce — the metrics, and the trigger-spine emit.
+	//
+	// The claim key is the bound: one attempt per (PR, head sha). The fixer
+	// pushes → the head moves → a re-review produces a fresh verdict → a new
+	// key becomes available. A fixer that pushes nothing leaves the head where
+	// it is, and that key is already spent.
+	subject := fmt.Sprintf("pr:%d", number)
+	if spent, capped := s.autofixAttemptsSpent(ctx, cfg, repo, subject); capped {
+		s.logWarn("gate auto-fix: %s#%d has had %d unattended fix passes without converging — stopping; a human decides from here", repo, number, spent)
 		return nil
 	}
-	delivery.RunID = runIDNew
-	_ = s.webhookDeliveries.Update(store.WithoutTenantFilter(ctx), delivery)
+	meta := webhookEventMeta{
+		Kind:        autofixEventKind,
+		Action:      "gate_failure",
+		ProjectPath: repo,
+		SubjectID:   subject,
+		SubjectURL:  prURL,
+		SubjectSHA:  pr.HeadSHA,
+	}
+	idem := knowledge.ChecksumHex([]byte(fmt.Sprintf("autofix|%s|%s|%d|%s", grant.TeamID, repo, number, pr.HeadSHA)))
+	res := s.launchWebhookTarget(launchCtx, nil, cfg, meta, forgeLaunchTarget{
+		BotID:   fixer,
+		IdemKey: idem,
+		Vars:    vars,
+		RepoURL: forge.CloneURLFor(conn.BaseURL(), repo),
+		RepoRef: pr.SourceBranch,
+	}, "", "")
+	if res.RunID == "" {
+		return nil // replayed, denied, or failed — the tail recorded why
+	}
 	if s.logger != nil {
 		s.logger.Info("gate auto-fix: %s red on %s#%d@%s → launched %s (run %s)",
-			gateCtx, repo, number, pr.HeadSHA[:7], fixer, runIDNew)
+			gateCtx, repo, number, pr.HeadSHA[:7], fixer, res.RunID)
 	}
 	return nil
 }
@@ -241,30 +270,23 @@ func (s *Server) autofixForRun(ctx context.Context, ev trigger.Event) error {
 // which is exactly the bot a red gate needs — so the lane names no bot, and a
 // repo that enables a different fixer gets that one.
 func (s *Server) reviewFixerFor(integration forge.RepoIntegration) string {
-	entries, err := botregistry.List(s.botListOptions())
-	if err != nil {
-		s.logWarn("gate auto-fix: cannot read the bot catalog: %v", err)
-		return ""
-	}
 	for _, want := range integration.BotIDs {
-		for _, e := range entries {
-			if e.Name != want {
-				continue
-			}
-			for _, c := range e.Consumes {
-				if c.Kind == bundle.HandoffKindReview {
-					return e.Name
-				}
+		for _, c := range s.handoffConsumersFor(want) {
+			if c.Kind == bundle.HandoffKindReview {
+				return want
 			}
 		}
 	}
 	return ""
 }
 
-// gateStateOn reads back the state of one commit status. known is false when the
-// provider cannot list statuses or the context is absent — the caller must then
-// abstain rather than assume.
-func gateStateOn(ctx context.Context, gc forgeGateClient, repo, sha, ctxName string) (forge.CommitState, bool, error) {
+// gateStatusOn reports the state of ctxName on sha; an ABSENT context is the
+// zero state. readable=false means the provider cannot list statuses at ALL —
+// deliberately distinct from "absent", because the two callers assume opposite
+// things from it: the reconciler treats unreadable as "already posted" (never
+// overwrite a verdict it cannot see), this lane treats it as "abstain" (never
+// launch on a gate it cannot see).
+func gateStatusOn(ctx context.Context, gc forgeGateClient, repo, sha, ctxName string) (state forge.CommitState, readable bool, err error) {
 	lister, ok := gc.(forge.CommitStatusLister)
 	if !ok {
 		return "", false, nil
@@ -278,34 +300,47 @@ func gateStateOn(ctx context.Context, gc forgeGateClient, repo, sha, ctxName str
 			return st.State, true, nil
 		}
 	}
-	return "", false, nil
+	return "", true, nil
 }
 
-// pullRequestHoldLabel reports the hold label present on the PR, if any. Best
-// effort: a provider with no issue-read capability, or a failed call, returns
-// "" — the veto is opt-in and must not become a reason a launch silently stops.
-func (s *Server) pullRequestHoldLabel(ctx context.Context, conn forge.Connection, repo string, number int, holds []string) string {
+// pullRequestHoldLabel reports the hold label present on the PR, if any. An
+// error means the labels could not be READ — distinct from "none present", and
+// the caller must not collapse the two: this is a veto, and a veto that cannot
+// be evaluated has not been cleared.
+func (s *Server) pullRequestHoldLabel(ctx context.Context, conn forge.Connection, repo string, number int, holds []string) (string, error) {
 	admin, err := s.forgeAdminFor(ctx, conn)
-	if err != nil || admin == nil {
-		return ""
+	if err != nil {
+		return "", err
 	}
 	ic, ok := admin.(forge.IssueClient)
 	if !ok {
-		return ""
+		return "", fmt.Errorf("provider %s cannot read issue labels", conn.Provider)
 	}
 	iss, err := ic.GetIssue(ctx, repo, number)
 	if err != nil {
-		return ""
+		return "", err
 	}
-	return webhooks.HeldByLabel(holds, iss.Labels)
+	return webhooks.HeldByLabel(holds, iss.Labels), nil
 }
 
-// forgeCloneURL derives the repo's clone URL from the connection's own host, so
-// the lane never takes a URL from run input.
-func forgeCloneURL(conn forge.Connection, repo string) string {
-	base := strings.TrimRight(strings.TrimSpace(conn.BaseURL()), "/")
-	if base == "" || repo == "" {
-		return ""
+// autofixAttemptsSpent counts the unattended passes this lane has already made
+// on one pull request, from the delivery audit it writes them to. The audit is
+// the only place they are recorded, and it is what an operator reads to see
+// them, so counting there keeps one source of truth rather than a second ledger.
+func (s *Server) autofixAttemptsSpent(ctx context.Context, cfg webhooks.Config, repo, subject string) (int, bool) {
+	rows, err := s.webhookDeliveries.ListByWebhook(store.WithoutTenantFilter(ctx), cfg.TenantID, cfg.ID, autofixAuditScan)
+	if err != nil {
+		// Unreadable audit means the ceiling cannot be evaluated. This lane
+		// pushes code with nobody watching, so an unevaluable bound is not a
+		// cleared one — the same rule the hold label follows.
+		s.logWarn("gate auto-fix: cannot read the delivery audit for %s (%v) — not launching, since the per-PR ceiling could not be checked", repo, err)
+		return 0, true
 	}
-	return base + "/" + repo + ".git"
+	spent := 0
+	for _, d := range rows {
+		if d.EventKind == autofixEventKind && d.ProjectPath == repo && d.SubjectID == subject && d.RunID != "" {
+			spent++
+		}
+	}
+	return spent, spent >= maxAutofixAttemptsPerPR
 }
