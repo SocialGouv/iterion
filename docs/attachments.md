@@ -190,8 +190,12 @@ executor:
 - Auto-enables the `read_image` tool on the node so the agent can
   fetch the bytes itself.
 
-The agent is expected to call `read_image(path)` to load the image
-through its own vision pipeline.
+This allowlist entry does not install a tool into a delegated CLI. The target
+agent must actually expose `read_image` (or use its own native image/file reader)
+and its selected model must support vision. In particular, pi has a `read` tool
+rather than `read_image`, while the generic Kimi and Grok adapters do not add any
+iterion image tool. Treat path delivery as the portable contract and verify the
+target CLI's image support.
 
 ### Sandbox
 
