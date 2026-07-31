@@ -61,13 +61,70 @@ on #6 about whether `devbox.lock` came from a real nix resolution.
 
 Every Renovate PR that needs a rebase before it merges lands in this. The one
 proven run (#15, 2026-07-29) merged before its base moved, which is why it was
-never hit. #5 and #7 are sitting in it right now.
+never hit.
+
+Established by reading the shipping code path and the integration config —
+**not** yet observed live, because the two PRs that looked like they were stuck
+in it turned out to be stuck on something else entirely (below).
 
 Fixed by enabling `review_on_sync` on the integration — the pairing
 [CLAUDE.md](../../CLAUDE.md) already prescribes for a required gate. Worth
 knowing: `BotRule.Actions` is deliberately *recorded but not enforced*, with
 `"synchronize" for the merge gate` named in its doc comment as the reason, so
 the handler's reviewability gate stays authoritative and this wiring works.
+
+### The real reason #5 and #7 were stuck: switching Renovate's identity orphans its open PRs
+
+Chasing the rebase that never came produced a separate, more consequential
+finding. Renovate at `logLevel=debug`, on both branches:
+
+```
+branch.isModified() = true
+Branch has been edited but found no PR - skipping
+```
+
+The four heritage PRs were opened by the old `github-actions[bot]` identity,
+before the dedicated `socialgouv-renovate` App. Renovate compares a branch's
+tip author against its own git identity; the old one no longer matches, so it
+reads the branch as edited by a third party. Worse, the second line: it does
+not associate the open PR with the branch **at all**. Both branches are
+invisible to it — never rebased, never updated, permanently stuck once they
+conflict.
+
+**Switching the identity a bot commits under orphans every PR it already has
+open.** Nothing warns you: the PRs stay open, look normal, and simply stop
+being maintained. Half of this batch (#4, #6) hid it by merging anyway — Vetty
+merges through the forge, not through Renovate.
+
+Remedy applied: close the orphans and delete their branches so Renovate
+re-proposes the updates under the current identity. The condition is a one-time
+migration artifact — PRs opened by the new App are recognised normally — but it
+is worth planning for whenever a bot's credentials change.
+
+Closing carried a real risk, since Renovate normally reads a closed PR as a
+rejection. It did not fire here: the next debug run lists `kubernetes-helm`
+among its `33 flattened updates` and processes the branch again. The update was
+never suppressed — it is held as `"pendingVersions": ["4.2.3"]` by the repo's
+own 14-day cooldown. Which reframes #7 entirely: it existed only because it was
+opened *before* the cooldown landed (2026-07-28). Closing it aligned the repo
+with the policy it had since declared, rather than contradicting it.
+
+### A correction on how this was measured
+
+An earlier reading of the Renovate dry-run log claimed a real run would open
+eight new pull requests. It opened **zero** — three consecutive real runs did.
+`DRY-RUN: Would commit files to branch X` is not a PR: with
+`internalChecksFilter: strict`, Renovate creates the branch and holds the PR
+until `minimumReleaseAge` matures. Even `Would create PR` in a dry run is not a
+prediction — the dry run evaluates from a clean slate, while a real run
+re-checks the pending state against an existing branch. The cooldown was
+working exactly as designed throughout, and the log lines were read as
+something they do not say.
+
+The practical consequence: **the loop cannot be exercised on demand.** Forcing
+a PR would mean defeating the cooldown, which is the one control here worth
+least defeating. End-to-end validation waits for an update to mature; the
+audit-and-merge half is provable any time with `/vetty` on an open PR.
 
 ### Second observation: a batch of PRs touching one lock file serializes badly
 
