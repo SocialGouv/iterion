@@ -27,7 +27,6 @@ import (
 	"embed"
 	"fmt"
 	"os"
-	"path/filepath"
 )
 
 // ContractVersion is the Go↔extension wire version. It must match
@@ -44,13 +43,21 @@ var assetFS embed.FS
 
 const assetPath = "asset/iterion-pi.js"
 
-// Materialise writes the extension into the run's workspace and returns its
-// path plus a cleanup closure.
+// Materialise writes the extension into root and returns its path plus a
+// cleanup closure. Callers pass delegate.Task.StateDir's result, which is
+// readable from inside the sandbox and, wherever the run allows it, outside the
+// target repository's checkout.
 //
-// The location is workspace-relative on purpose: a sandboxed run bind-mounts
-// the workspace, so a file under os.TempDir() would be invisible inside the
-// container — and this needs no extra mount and works identically on the
-// kubernetes driver, which rejects host binds.
+// That the file leaves the checkout matters more here than for any other
+// artifact iterion writes: this extension IS the permission gate — a gated node
+// fails rather than run without it. A gate whose implementation sits in a
+// directory the sandboxed agent has bash access to undermines itself.
+//
+// When the run has nowhere better the root is workspace-relative, which still
+// works everywhere: a sandboxed run bind-mounts the workspace, so a file under
+// os.TempDir() would be invisible inside the container, and this needs no extra
+// mount and works identically on the kubernetes driver, which rejects host
+// binds.
 //
 // Each call owns a UNIQUE file. Parallel branches share one WorkDir, so a
 // fixed name let one node's deferred cleanup delete the file another node's pi
@@ -58,21 +65,20 @@ const assetPath = "asset/iterion-pi.js"
 // torn read while the same path was being rewritten. The window is widest
 // under the sandbox, where the host writes the file and a container that still
 // has to boot reads it across the bind mount.
-func Materialise(workDir string) (path string, cleanup func(), err error) {
-	if workDir == "" {
-		return "", func() {}, fmt.Errorf("piext: a WorkDir is required to materialise the extension")
+func Materialise(root string) (path string, cleanup func(), err error) {
+	if root == "" {
+		return "", func() {}, fmt.Errorf("piext: a state dir is required to materialise the extension")
 	}
 	body, err := assetFS.ReadFile(assetPath)
 	if err != nil {
 		return "", func() {}, fmt.Errorf("piext: read embedded asset: %w", err)
 	}
 
-	dir := filepath.Join(workDir, ".iterion", "pi")
-	if err := os.MkdirAll(dir, 0o750); err != nil {
+	if err := os.MkdirAll(root, 0o750); err != nil {
 		return "", func() {}, fmt.Errorf("piext: create extension dir: %w", err)
 	}
 	// The name must keep the .js suffix: pi loads it as an ES module.
-	f, err := os.CreateTemp(dir, "iterion-pi-*.js")
+	f, err := os.CreateTemp(root, "iterion-pi-*.js")
 	if err != nil {
 		return "", func() {}, fmt.Errorf("piext: create extension file: %w", err)
 	}

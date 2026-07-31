@@ -75,9 +75,74 @@ must exist and be detected.
    "recipe":"shift one element by a few pixels, or change one colour by a small delta"},
   {"surface":"asset","archetype":"content_change","required":true,
    "catches":"a manifest built by scanning the repository instead of the build output",
-   "recipe":"change one byte of a served asset without renaming it"}
+   "recipe":"change one byte of a served asset without renaming it"},
+  {"surface":"asset","archetype":"asset_missing","required":true,
+   "catches":"a manifest that fingerprints the files it finds without ever stating how many it expected — every file present still matches, and the one that stopped being produced is simply absent from the comparison",
+   "recipe":"stop the build from producing one asset, by editing the build's own configuration rather than deleting the output"},
+  {"surface":"a11y","archetype":"violation_added","required":true,
+   "catches":"an audit that ran against something other than the page under test — a browser error page, a login redirect, or a half-built DOM — which produces a well-formed, stable, page-independent result",
+   "recipe":"remove one accessible name: detach a label from its control, or drop an image's alternative text"}
 ]
 -->
+
+**A note on the `asset` surface.** Inventory from the BUILD OUTPUT — the archive or directory
+the build produced — and never from the worktree. Assets are commonly gitignored, so a repository
+scan reads a different set: it misses what only exists after a build, and it counts leftovers from
+an earlier one. Then ask the running application for each entry: what is packaged and what is
+served are two claims, and a lane that establishes only the first has not shown that any of those
+files is reachable.
+
+Three traps, each of which turns a defect of the net into a reported defect of the product, or
+the reverse. Do not follow redirects — an authorisation refusal answers 200 with the body of the
+login page, which reads as *served, with different bytes*. Percent-encode the request path but
+record the raw one — a filename with a space makes a malformed request, whose transport error
+reads as *absent*. And strip commented-out markup before extracting referenced URLs — a link
+nobody serves is not a reference.
+
+Emit ONE LINE PER ASSET, never a digest of the set. A digest says *something moved* and nothing
+else, and the reason this lane exists — reading a build-chain upgrade — is to know which files
+moved and how many.
+
+**A note on the `a11y` surface.** Audit the RENDERED page, in a real browser, with the persona's
+session cookies. An audit of raw markup measures the markup; an audit run without cookies measures
+the login page under every dashboard entry's name. Ship the audit engine vendored, pinned by
+version and hash, with its provenance written down: publishing results asks a reader to believe
+whoever produced them, publishing the engine lets them recompute. And keep the engine version
+inside the reference — bumping it can move the count without a line of the product changing, and
+without that line the move reads as a regression of the application.
+
+`a11y/run-axe.mjs` in this bundle is the runner to write into the target repo. It uses node's
+built-in `fetch` and `WebSocket` and nothing else, so the lane inherits the same property as the
+rest of the net: it runs in a sandbox with no egress. Three guards in it are not optional, and each
+one was written after the failure it prevents. Refuse a navigation the browser reports as failed —
+otherwise a dead port yields an audit of the browser's own error page, identical for every entry,
+well-formed, and recorded as the reference. Check the loaded origin separately — a redirect to a
+login page is not a navigation error and passes the first guard. And let the process flush its
+output before exiting — a large audit truncates at the pipe buffer, and the canonicaliser then
+blames the audit for what the runner did.
+
+Emit ONE LINE PER FAULTY ELEMENT. A count of violations is not a measurement while nobody can say
+which ones: the number gets re-read, the list gets checked, and a fix reads as three lines
+disappearing rather than a counter dropping for a reason someone has to go and find.
+
+**Putting the existing test suite through the same trials.** `suite-vs-net.py` in this bundle
+applies every mutant in turn and runs the target's own test suite, so the two instruments that both
+claim to protect against regression are measured against one set of trials instead of being
+compared by assertion. It reads `test_cmd` and `test_results_dir` from `config.json` and refuses to
+run without them: guessing a build tool would make it a program that sometimes measures something
+other than what it reports.
+
+The command must FORCE re-execution. A build tool that considers its test task up to date when its
+inputs have not moved will skip it — and a data mutation touches none of them. The measurement then
+records "the suite did not see it" where the suite did not run, exits 0, and reads exactly like a
+real result. The guard against that is not the flag but the COUNT: how many cases each run actually
+executed, read out of the produced reports rather than inferred from an exit code, because a
+skipped task exits 0 exactly like a green one. A run with fewer cases than the baseline is reported
+as an empty measurement, never as a miss.
+
+The figure is not a quality score for those tests. A unit suite localises a fault, runs in seconds
+and documents an intention; none of that is measured. What is measured is behavioural coverage of
+what the application actually serves — which is the one thing a migration puts at risk.
 
 **A note on `style_shift`.** Pixel tolerance is not a comfort setting, it is *the* blinding
 vector. Do not choose a threshold and then check the mutant. Tighten the threshold until

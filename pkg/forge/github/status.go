@@ -74,3 +74,46 @@ func githubCommitState(s forge.CommitState) string {
 		return "error" // unknown fails closed
 	}
 }
+
+// ListCommitStatuses returns the statuses already present on sha
+// (GET /repos/{repo}/commits/{sha}/status). Reading before writing is what
+// lets a reconciler tell "no verdict was ever posted" from "a verdict is
+// already there" — without it, repairing a missing check could overwrite a
+// real one.
+func (c *AdminClient) ListCommitStatuses(ctx context.Context, repo, sha string) ([]forge.CommitStatus, error) {
+	var out struct {
+		Statuses []struct {
+			State       string `json:"state"`
+			Context     string `json:"context"`
+			Description string `json:"description"`
+			TargetURL   string `json:"target_url"`
+		} `json:"statuses"`
+	}
+	code, err := c.do(ctx, http.MethodGet, "/repos/"+repo+"/commits/"+url.PathEscape(sha)+"/status", nil, &out)
+	if err != nil {
+		return nil, err
+	}
+	if code/100 != 2 {
+		return nil, statusErr("list commit statuses", code)
+	}
+	sts := make([]forge.CommitStatus, 0, len(out.Statuses))
+	for _, s := range out.Statuses {
+		sts = append(sts, forge.CommitStatus{
+			State:       forge.CommitState(s.State),
+			Context:     s.Context,
+			Description: s.Description,
+			TargetURL:   s.TargetURL,
+		})
+	}
+	return sts, nil
+}
+
+// ListCommitStatuses on an App connection delegates to a management-token
+// AdminClient, like SetCommitStatus.
+func (a *AppClient) ListCommitStatuses(ctx context.Context, repo, sha string) ([]forge.CommitStatus, error) {
+	rest, err := a.rest(ctx)
+	if err != nil {
+		return nil, err
+	}
+	return rest.ListCommitStatuses(ctx, repo, sha)
+}

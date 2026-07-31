@@ -26,9 +26,14 @@ import (
 // mirrored and the local plugin registry is never consulted. That is the cloud
 // path — a runner pod's iterion home is empty, so the launching instance
 // resolved the enabled plugins' files for it (see Contributions).
-func mirrorPluginContributions(workDir string, inj *Contributions, logger *iterlog.Logger) error {
+// It returns the SKILL files iterion owns after the mirror — the same contract
+// as mirrorBundleSkills, and for the same reason: a backend that must decide
+// what it may hand an agent cannot recover that from the workspace, which is a
+// checkout of an untrusted repository. Commands and agents are excluded; they
+// are not skills.
+func mirrorPluginContributions(workDir string, inj *Contributions, logger *iterlog.Logger) ([]string, error) {
 	if workDir == "" {
-		return nil
+		return nil, nil
 	}
 	if inj != nil {
 		return mirrorInjectedPluginFiles(workDir, inj.Plugin, logger)
@@ -38,12 +43,13 @@ func mirrorPluginContributions(workDir string, inj *Contributions, logger *iterl
 		if logger != nil {
 			logger.Warn("runtime: load plugins for contribution mirror: %v — skipping", err)
 		}
-		return nil
+		return nil, nil
 	}
 	enabled := reg.Enabled()
 	if len(enabled) == 0 {
-		return nil
+		return nil, nil
 	}
+	var owned []string
 
 	// One temp dir for all kinds: content is written there then run through
 	// reconcileSkillFile so plugin files reuse the exact bundle collision
@@ -73,7 +79,7 @@ func mirrorPluginContributions(workDir string, inj *Contributions, logger *iterl
 				if !dirsReady {
 					for _, d := range []string{destDir, markerDir} {
 						if err := os.MkdirAll(d, 0o755); err != nil {
-							return fmt.Errorf("runtime/plugin: mkdir %s: %w", d, err)
+							return nil, fmt.Errorf("runtime/plugin: mkdir %s: %w", d, err)
 						}
 					}
 					dirsReady = true
@@ -81,21 +87,25 @@ func mirrorPluginContributions(workDir string, inj *Contributions, logger *iterl
 				if tmpDir == "" {
 					t, terr := os.MkdirTemp("", "iterion-plugin-contrib-*")
 					if terr != nil {
-						return terr
+						return nil, terr
 					}
 					tmpDir = t
 				}
 				tmpPath := filepath.Join(tmpDir, f.Name)
 				if werr := os.WriteFile(tmpPath, f.Content, 0o644); werr != nil {
-					return werr
+					return nil, werr
 				}
 				destPath := filepath.Join(destDir, f.Name)
 				markerPath := filepath.Join(markerDir, f.Name+".sha256")
-				if _, rerr := reconcileSkillFile(tmpPath, destPath, markerPath, logger); rerr != nil {
-					return fmt.Errorf("runtime/plugin: mirror %s %q from %q: %w", kind.Name, f.Name, p.Name(), rerr)
+				outcome, rerr := reconcileSkillFile(tmpPath, destPath, markerPath, logger)
+				if rerr != nil {
+					return nil, fmt.Errorf("runtime/plugin: mirror %s %q from %q: %w", kind.Name, f.Name, p.Name(), rerr)
+				}
+				if kind.Name == "skill" && outcome != skillOutcomeShadowed {
+					owned = append(owned, destPath)
 				}
 			}
 		}
 	}
-	return nil
+	return owned, nil
 }

@@ -26,6 +26,7 @@ const (
 	BackendClaudeCode = "claude_code"
 	BackendCodex      = "codex"
 	BackendClaw       = "claw"
+	BackendPi         = "pi"
 )
 
 // Auth kinds.
@@ -128,7 +129,184 @@ func detectBackends(ctx context.Context, prov []ProviderStatus) []BackendStatus 
 			"codex CLI",
 			"$CODEX_HOME/auth.json (Codex OAuth)",
 		),
+		detectPi(prov),
 	}
+}
+
+// detectPi probes for the pi backend.
+//
+// pi is reported but never auto-SELECTED: DefaultPreferenceOrder stays
+// {claude_code, claw}, so surfacing it here changes no existing workflow. What
+// it does change is that the studio can show it and that
+// ITERION_BACKEND_PREFERENCE=pi resolves at all — auto-selection filters on
+// what this function reports, so without an entry the variable was inert.
+//
+// Availability is deliberately broad, because pi's whole proposition is "you
+// already hold a credential for one of ~36 providers": its own login store,
+// any provider env key iterion already probes for claw (pi reads the same
+// variables), or a ChatGPT/Codex login, which iterion bridges into pi's
+// OAuth-only openai-codex provider.
+func detectPi(prov []ProviderStatus) BackendStatus {
+	st := BackendStatus{Name: BackendPi, Auth: AuthNone}
+
+	if _, ok := findPiBinary(); !ok {
+		st.Hints = []string{"pi CLI not found on PATH"}
+		return st
+	}
+
+	var sources []string
+	if kind := piOwnLoginKind(); kind != AuthNone {
+		sources = append(sources, "~/.pi/agent/auth.json (pi login)")
+		st.Auth = kind
+	}
+	for _, p := range prov {
+		if !p.Available || !piReadsProvider(p.Name) || !piEnvVarSource(p.Source) {
+			continue
+		}
+		sources = append(sources, p.Source)
+		if st.Auth == AuthNone {
+			st.Auth = AuthAPIKey
+		}
+	}
+	if codexChatGPTAvailable() {
+		sources = append(sources, "$CODEX_HOME/auth.json (ChatGPT-Codex OAuth)")
+		if st.Auth == AuthNone {
+			st.Auth = AuthOAuth
+		}
+	}
+
+	if len(sources) == 0 {
+		st.Hints = []string{
+			"pi CLI found, but no credential: run `pi` then /login, or set a provider key",
+		}
+		return st
+	}
+	st.Available = true
+	st.Sources = sources
+	return st
+}
+
+// piEnvVarSource reports whether a provider's winning credential is an
+// environment variable — the only shape pi resolves a provider from.
+//
+// The openai provider is also marked available on the Codex ChatGPT OAuth
+// alone, labelled with a file path rather than a variable name. Counting that
+// listed the same credential twice (codexChatGPTAvailable reports it properly,
+// as oauth) and left the row reading `api_key`, while implying pi could resolve
+// its `openai` provider from a file only the openai-codex bridge can use.
+func piEnvVarSource(source string) bool {
+	if source == "" {
+		return false
+	}
+	for _, r := range source {
+		if (r < 'A' || r > 'Z') && (r < '0' || r > '9') && r != '_' {
+			return false
+		}
+	}
+	// Looking like a variable name is not evidence the variable is SET.
+	// detectOpenAIProvider labels its source `OPENAI_API_KEY` even when the key
+	// is absent (a ChatGPT-mode ~/.codex login makes the row available), so
+	// without this pi is reported available, `auth: api_key`, on a host where
+	// that variable is empty — and under ITERION_FORBID_SUBSCRIPTION_OAUTH=1,
+	// where the codex bridge is refused, with no usable credential at all.
+	// Availability feeds ITERION_BACKEND_PREFERENCE, so the node then dies on
+	// "No API key found".
+	return strings.TrimSpace(os.Getenv(source)) != ""
+}
+
+// piReadsProvider reports whether an available provider is one pi can actually
+// resolve a credential for.
+//
+// bedrock and vertex are marked available on `AWS_REGION` / `GOOGLE_CLOUD_PROJECT`
+// alone — variables an AWS host or CI runner sets by default — and pi reads
+// neither AWS nor GCP application-default credentials; they are absent from the
+// env-key set the pi backend forwards. Counting them would report pi available
+// on a host where every call fails, and because auto-selection filters on this
+// report, `ITERION_BACKEND_PREFERENCE=pi` would then resolve there.
+func piReadsProvider(name string) bool {
+	switch name {
+	case "bedrock", "vertex":
+		return false
+	default:
+		return true
+	}
+}
+
+// piOwnLoginKind reports what pi's own credential store holds: AuthOAuth,
+// AuthAPIKey, or AuthNone when there is nothing usable.
+//
+// A fresh install writes `{}`, so existence is not enough — reporting pi as
+// available on an empty store would put a backend in the studio that fails on
+// its first call. The entry's own `type` decides the kind: pi's store holds
+// both shapes, and labelling an api_key credential "oauth" mislabels the
+// studio's auth badge for the one backend whose selling point is credential
+// breadth.
+func piOwnLoginKind() string {
+	// Match execution's precedence: piResolveEnv pins PI_CODING_AGENT_DIR from
+	// ITERION_PI_AGENT_DIR, and piCodexSeed treats the latter as an operator
+	// pin — so probing only the former reads a store the node will never open,
+	// and would report pi available on a credential it cannot reach. Same
+	// reasoning as findPiBinary and codexChatGPTAvailable: a probe must not be
+	// more optimistic than what will actually use the credential.
+	dir := strings.TrimSpace(os.Getenv("ITERION_PI_AGENT_DIR"))
+	if dir == "" {
+		dir = strings.TrimSpace(os.Getenv("PI_CODING_AGENT_DIR"))
+	}
+	if dir == "" {
+		home, err := os.UserHomeDir()
+		if err != nil {
+			return AuthNone
+		}
+		dir = filepath.Join(home, ".pi", "agent")
+	}
+	data, err := os.ReadFile(filepath.Join(dir, "auth.json")) // #nosec G304 — a fixed filename under the agent dir.
+	if err != nil {
+		return AuthNone
+	}
+	var creds map[string]struct {
+		Type string `json:"type"`
+	}
+	if err := json.Unmarshal(data, &creds); err != nil {
+		return AuthNone
+	}
+	kind := AuthNone
+	for _, c := range creds {
+		if c.Type == "oauth" {
+			// An OAuth login is the more notable of the two; report it as soon
+			// as one is present.
+			return AuthOAuth
+		}
+		kind = AuthAPIKey
+	}
+	return kind
+}
+
+// codexChatGPTAvailable reports whether a ChatGPT-mode Codex login exists.
+//
+// It defers to the SAME authority the pi bridge consumes —
+// CodexCredentialsView.IsChatGPTMode, which requires an access token and an
+// account id, not merely `auth_mode: "chatgpt"`. A hand-rolled check on the
+// mode alone was weaker than the consumer's gate, so a partially-written or
+// logged-out Codex state made detect report pi available while the bridge
+// stepped aside, and the node then died with "No API key found for
+// openai-codex". That is the same false-positive class piReadsProvider argues
+// against just above; a probe must not be more optimistic than what will
+// actually use the credential.
+//
+// ITERION_FORBID_SUBSCRIPTION_OAUTH is honoured here for the same reason: under
+// it the bridge does not step aside, it hard-errors the node. Reporting a
+// credential the run will refuse is the definition of a probe more optimistic
+// than reality.
+func codexChatGPTAvailable() bool {
+	if secrets.ForbidSubscriptionOAuth() {
+		return false
+	}
+	dir := codexHomeDir()
+	if dir == "" {
+		return false
+	}
+	view, err := secrets.LoadCodexCredentialsFrom(dir)
+	return err == nil && view.IsChatGPTMode()
 }
 
 // detectClaudeCode probes for the claude_code backend in three escalating
@@ -521,6 +699,21 @@ var findCodexBinary = func() (string, bool) {
 	return clilocate.Locate("", clilocate.Spec{
 		Name:      "codex",
 		Fallbacks: clilocate.CommonBinaryCandidates("codex"),
+	})
+}
+
+// findPiBinary probes the host for the pi CLI, honouring the same override the
+// backend itself uses so detection and execution agree on one binary.
+//
+// The override goes through Locate as its EXPLICIT path rather than being
+// returned directly: Locate rejects a path that does not exist, so a typo'd or
+// stale ITERION_PI_BIN no longer makes detection report pi as present — which,
+// since availability now feeds auto-selection, would resolve to a backend that
+// dies at exec. Trimming matches what NewPiBackend does with the same variable.
+var findPiBinary = func() (string, bool) {
+	return clilocate.Locate(strings.TrimSpace(os.Getenv("ITERION_PI_BIN")), clilocate.Spec{
+		Name:      "pi",
+		Fallbacks: clilocate.CommonBinaryCandidates("pi"),
 	})
 }
 

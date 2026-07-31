@@ -10,12 +10,14 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"path/filepath"
 	"strings"
 	"time"
 
 	"github.com/SocialGouv/iterion/pkg/backend/permission"
 	"github.com/SocialGouv/iterion/pkg/plugin"
 	"github.com/SocialGouv/iterion/pkg/sandbox"
+	"github.com/SocialGouv/iterion/pkg/store"
 )
 
 // Backend name constants used for registration and dispatch.
@@ -589,6 +591,13 @@ type Task struct {
 	// ADR-059 and docs/skills-library.md.
 	SkillHints []SkillHint
 
+	// MirroredSkills are the skill directories iterion itself wrote into this
+	// run's workspace. The workspace is a checkout of the TARGET repository,
+	// which may ship its own .claude/skills/ — a backend handing skills to an
+	// agent must tell the two apart, and no amount of reading the workspace
+	// back can do it. The engine populates this; nothing in the repo can.
+	MirroredSkills []string
+
 	// PresetFragment is the resolved launch-time preset bias appended to the
 	// system prompt under a "## Focus" section. It carries the selected
 	// file-based preset's prompt body (template-expanded) plus an optional
@@ -658,6 +667,24 @@ type Task struct {
 	// ask_user call, sent back to the LLM as the tool_result content.
 	ResumeAnswer string
 
+	// SharedStateDir is a directory reachable at the SAME absolute path from
+	// the host and from inside the sandbox, and which is NOT part of the target
+	// repository's checkout — the host `~/.iterion` that host_state
+	// bind-mounted. Empty when there is none: host_state=none, the kubernetes
+	// driver, or a mount the auto-binder skipped because it overlapped the
+	// workspace.
+	//
+	// A backend needing to write per-run state (a seeded credential, session
+	// transcripts) writes it HERE rather than under `<WorkDir>/.iterion`.
+	// The difference is not cosmetic: a path inside the checkout is a path the
+	// target repository can pre-populate, so everything written there has to be
+	// defended against symlinks, pre-existing `.gitignore` rules and staging by
+	// an agent's `git add -A`. Outside the checkout, none of that applies.
+	//
+	// The engine reports what was actually mounted; it is never inferred from
+	// the host_state setting.
+	SharedStateDir string
+
 	// Sandbox is the live sandbox handle for the run, or nil when the
 	// workflow runs without isolation. Supported backends route their CLI
 	// subprocess calls through it (via the SDK's CommandBuilder hook for
@@ -722,6 +749,120 @@ type Task struct {
 	// node into a single human-readable block (the await_answers tool
 	// result when nothing is pending).
 	CollectAsyncAnswers func() (string, error)
+}
+
+// StateDir is where this node's backend-owned state lives — a materialised
+// extension, a composed system-prompt file, a session transcript, a seeded
+// credential — and whether that place is inside the TARGET repository's
+// checkout.
+//
+// The second return value is the one that matters. A path inside the checkout
+// is a path the repo controls: it can commit a symlink at any component or at
+// the leaf, pre-seed a `.gitignore` whose last effective rule re-includes our
+// files, and have an agent's `git add -A` stage whatever we wrote onto the
+// operator's branch. Every defence against that is a patch on the same premise.
+// Writing outside the checkout removes the premise, so callers gate their
+// guards on this flag rather than running them unconditionally.
+//
+// Preference order:
+//  1. sandboxed with a shared-state mount — the engine reports a host directory
+//     bind-mounted at its own absolute path, so it resolves identically in and
+//     out of the container while sitting nowhere near the repo;
+//  2. sandboxed without one (host_state=none, the kubernetes driver) — the
+//     workspace bind is the only thing the container can read, so there is no
+//     choice and the guards apply;
+//  3. the run's store, so state shares the store's lifetime;
+//  4. the workspace, unsandboxed — the historical home, and the property
+//     writeSystemPromptFile depends on (a container reads the file across the
+//     workspace bind);
+//  5. the host's iterion home, when there is no workspace either.
+//
+// The result is always ABSOLUTE. `--store-dir` is taken verbatim and can be
+// relative, and a relative root made containment fail OPEN — filepath.Rel
+// refuses to relate an absolute WorkDir to a relative path, so the guards were
+// skipped exactly where they were needed. Absolutising here, once, is what
+// makes the flag trustworthy for every caller.
+//
+// Longer term the fallback should stop existing: a writable per-run state mount
+// modelled on Spec.SecretFiles (which Kubernetes already satisfies with a
+// per-run Secret) would be available under every driver, and case 2 — with its
+// guard family — could then be deleted rather than maintained.
+func (t Task) StateDir(backendName string) (root string, inCheckout bool) {
+	// A noop sandbox runs every command on the HOST, so there is no bind mount
+	// to respect and no reason to fall back into the checkout.
+	sandboxed := t.Sandbox != nil && t.Sandbox.Driver() != "noop"
+	switch shared := strings.TrimSpace(t.SharedStateDir); {
+	case sandboxed && shared != "":
+		root = filepath.Join(shared, backendName)
+	case sandboxed && t.WorkDir != "":
+		root = filepath.Join(t.WorkDir, ".iterion", backendName)
+	case t.StoreDir != "":
+		root = filepath.Join(t.StoreDir, backendName)
+	case t.WorkDir != "":
+		root = filepath.Join(t.WorkDir, ".iterion", backendName)
+	default:
+		root = filepath.Join(store.GlobalIterionDataDir(), backendName)
+	}
+	if abs, err := filepath.Abs(root); err == nil {
+		root = abs
+	}
+	return root, pathInsideCheckout(t.WorkDir, root)
+}
+
+// pathInsideCheckout reports whether root is inside the workspace, and is
+// deliberately PESSIMISTIC: every uncertainty answers "inside", because the
+// caller uses this to decide whether to run its guards, and the cheap mistake
+// is guarding a path that did not need it.
+//
+// Two independent tests, OR'd, because they fail in opposite directions:
+//
+//   - lexical, on absolutised operands. Absolutising BOTH matters:
+//     filepath.Rel refuses to relate a relative base to an absolute target, and
+//     `iterion studio --dir <relative>` reaches here with exactly that — which
+//     silently answered "outside" and skipped every guard.
+//   - symlink-RESOLVING. A workspace reached through a symlink makes the
+//     lexical test say "outside" for a path that really is in the tree, which
+//     is the direction that loses a credential to `git add -A`. The deleted
+//     inWorktree existed for this case; keeping only the lexical half dropped it.
+func pathInsideCheckout(workDir, root string) bool {
+	if workDir == "" || root == "" {
+		return false // no workspace: nothing to be inside of
+	}
+	absWork, err := filepath.Abs(workDir)
+	if err != nil {
+		return true // cannot tell → guard
+	}
+	if lexicallyWithin(absWork, root) {
+		return true
+	}
+	realWork, err := filepath.EvalSymlinks(absWork)
+	if err != nil {
+		return false // the workspace does not exist yet; the lexical answer stands
+	}
+	realRoot, err := filepath.EvalSymlinks(root)
+	if err != nil {
+		// The root is usually about to be created; resolve its nearest
+		// existing ancestor so a symlinked parent still counts.
+		realRoot = nearestExistingReal(root)
+	}
+	return realRoot != "" && lexicallyWithin(realWork, realRoot)
+}
+
+// nearestExistingReal resolves the deepest existing ancestor of path, keeping
+// the unresolved remainder appended so containment is judged on the real tree.
+func nearestExistingReal(path string) string {
+	rest := ""
+	for dir := path; ; {
+		if real, err := filepath.EvalSymlinks(dir); err == nil {
+			return filepath.Join(real, rest)
+		}
+		parent := filepath.Dir(dir)
+		if parent == dir {
+			return ""
+		}
+		rest = filepath.Join(filepath.Base(dir), rest)
+		dir = parent
+	}
 }
 
 // AsyncQuestion is the input of a non-blocking ask_user_async call

@@ -1,12 +1,14 @@
 package runtime
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"maps"
 	"net/http"
 	"os"
@@ -220,22 +222,29 @@ func mirrorFileSkill(dest, markerDir, srcPath, name string, logger *iterlog.Logg
 // symlink target outside that mount returns ENOENT.
 //
 // No-op when bundle is nil or carries no skills directory.
-func mirrorBundleSkills(workDir string, b *bundle.Bundle, logger *iterlog.Logger) error {
+// It returns the directories under <workDir>/.claude/skills/ that iterion
+// OWNS — the ones it wrote or refreshed this run. A shadowed entry (the
+// workspace's own file won) is deliberately absent: that is the target repo's
+// content, and a backend deciding what it may hand an agent needs to tell the
+// two apart. The workspace is a checkout of an untrusted repository, so nothing
+// read back from it can establish that distinction; only the mirror knows.
+func mirrorBundleSkills(workDir string, b *bundle.Bundle, logger *iterlog.Logger) ([]string, error) {
 	if b == nil || b.SkillsDir == "" || workDir == "" {
-		return nil
+		return nil, nil
 	}
 	dest := filepath.Join(workDir, ".claude", "skills")
 	if err := os.MkdirAll(dest, 0o755); err != nil {
-		return fmt.Errorf("runtime/bundle: mkdir %s: %w", dest, err)
+		return nil, fmt.Errorf("runtime/bundle: mkdir %s: %w", dest, err)
 	}
 	markerDir := filepath.Join(dest, bundleMirrorMarkerDir)
 	if err := os.MkdirAll(markerDir, 0o755); err != nil {
-		return fmt.Errorf("runtime/bundle: mkdir markers %s: %w", markerDir, err)
+		return nil, fmt.Errorf("runtime/bundle: mkdir markers %s: %w", markerDir, err)
 	}
 	entries, err := os.ReadDir(b.SkillsDir)
 	if err != nil {
-		return fmt.Errorf("runtime/bundle: read skills dir %s: %w", b.SkillsDir, err)
+		return nil, fmt.Errorf("runtime/bundle: read skills dir %s: %w", b.SkillsDir, err)
 	}
+	var owned []string
 	mirrored, refreshed, shadowed, uptodate := 0, 0, 0, 0
 	for _, entry := range entries {
 		name := entry.Name()
@@ -245,11 +254,23 @@ func mirrorBundleSkills(workDir string, b *bundle.Bundle, logger *iterlog.Logger
 		destPath := filepath.Join(dest, name)
 		srcPath := filepath.Join(b.SkillsDir, name)
 		if entry.IsDir() {
-			// Directory skills bypass the marker logic — we keep the
-			// original "copy missing, skip existing" behaviour. The
-			// per-file marker would need to walk every nested file
-			// and that's more complex than current use justifies.
+			// Directory skills carry no marker, so ownership is decided by
+			// CONTENT: an existing destination identical to the source is ours
+			// (we wrote it on an earlier pass — this runs again on every
+			// resume against the same worktree), anything else is the
+			// workspace's own and shadows.
+			//
+			// Content is the right oracle rather than a marker precisely
+			// because the workspace is untrusted: the only way a repo can be
+			// reported as owned is by shipping a byte-identical copy of
+			// iterion's own skill, which is not an attack.
 			if _, err := os.Stat(destPath); err == nil {
+				same, cmpErr := sameTree(srcPath, destPath)
+				if cmpErr == nil && same {
+					owned = append(owned, destPath)
+					uptodate++
+					continue
+				}
 				shadowed++
 				if logger != nil {
 					logger.Warn("bundle skill %q shadowed by existing workspace entry at %s", name, destPath)
@@ -257,8 +278,9 @@ func mirrorBundleSkills(workDir string, b *bundle.Bundle, logger *iterlog.Logger
 				continue
 			}
 			if err := copyDir(srcPath, destPath); err != nil {
-				return err
+				return nil, err
 			}
+			owned = append(owned, destPath)
 			mirrored++
 			continue
 		}
@@ -275,7 +297,7 @@ func mirrorBundleSkills(workDir string, b *bundle.Bundle, logger *iterlog.Logger
 		// MirrorSingleSkill via mirrorFileSkill.
 		outcome, err := mirrorFileSkill(dest, markerDir, srcPath, name, logger)
 		if err != nil {
-			return err
+			return nil, err
 		}
 		switch outcome {
 		case skillOutcomeMirrored:
@@ -287,11 +309,20 @@ func mirrorBundleSkills(workDir string, b *bundle.Bundle, logger *iterlog.Logger
 		case skillOutcomeShadowed:
 			shadowed++
 		}
+		if outcome != skillOutcomeShadowed {
+			// The FILE, not its directory. A flat source writes exactly
+			// <stem>/SKILL.md, and MkdirAll happily succeeds on a directory the
+			// checkout already shipped — so claiming <stem>/ would report a
+			// directory the target repo pre-populated, and any .md it planted
+			// there would ride along wherever this list is trusted. Naming the
+			// one file we wrote cannot carry a sibling.
+			owned = append(owned, filepath.Join(dest, strings.TrimSuffix(name, ".md"), "SKILL.md"))
+		}
 	}
 	if logger != nil && (mirrored > 0 || refreshed > 0 || uptodate > 0) {
 		logger.Info("bundle: skills mirrored=%d refreshed=%d up-to-date=%d shadowed=%d at %s", mirrored, refreshed, uptodate, shadowed, dest)
 	}
-	return nil
+	return owned, nil
 }
 
 // MergeBundlePresets folds a bundle's file-based presets
@@ -483,6 +514,87 @@ func promoteBundleAttachmentDefaults(
 		}
 	}
 	return nil
+}
+
+// sameTree reports whether dst holds exactly the files of src, with identical
+// contents. It is how a directory-form skill's ownership is decided on a
+// re-mirror, since those carry no marker: dst is allowed to be a superset in
+// no direction — an extra file on either side means the workspace has its own
+// version of this skill.
+//
+// Files only, and no symlink following: the mirror writes plain files (symlinks
+// break under the sandbox bind-mount), so anything else here is not ours.
+func sameTree(src, dst string) (bool, error) {
+	srcFiles, err := treeFiles(src)
+	if err != nil {
+		return false, err
+	}
+	dstFiles, err := treeFiles(dst)
+	if err != nil {
+		return false, err
+	}
+	if len(srcFiles) != len(dstFiles) {
+		return false, nil
+	}
+	for rel, srcPath := range srcFiles {
+		dstPath, ok := dstFiles[rel]
+		if !ok {
+			return false, nil
+		}
+		// An empty path marks an irregular entry (see treeFiles): not something
+		// the mirror writes, so the tree is not ours.
+		if srcPath == "" || dstPath == "" {
+			return false, nil
+		}
+		a, err := os.ReadFile(srcPath) // #nosec G304 — walked from the bundle's own skills dir.
+		if err != nil {
+			return false, err
+		}
+		b, err := os.ReadFile(dstPath) // #nosec G304 — walked from the mirror destination.
+		if err != nil {
+			return false, err
+		}
+		if !bytes.Equal(a, b) {
+			return false, nil
+		}
+	}
+	return true, nil
+}
+
+// treeFiles maps each file under root to its full path, keyed by the path
+// relative to root. An IRREGULAR entry is recorded with an empty path so it
+// still COUNTS toward the comparison.
+//
+// That distinction is the point. The mirror only ever writes plain files
+// (copyDir dereferences), so a symlink here means the tree is not ours — and
+// simply skipping irregular entries made the invariant falsifiable by exactly
+// the untrusted input it guards against: WalkDir does not descend into a
+// symlinked directory, so a checkout could add symlinks beside a byte-identical
+// SKILL.md and still be reported as iterion-owned.
+func treeFiles(root string) (map[string]string, error) {
+	out := map[string]string{}
+	err := filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if d.IsDir() {
+			return nil
+		}
+		rel, err := filepath.Rel(root, path)
+		if err != nil {
+			return err
+		}
+		if !d.Type().IsRegular() {
+			out[rel] = ""
+			return nil
+		}
+		out[rel] = path
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
 }
 
 func copyDir(src, dst string) error {

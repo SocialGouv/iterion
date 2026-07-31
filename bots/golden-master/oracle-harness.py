@@ -45,10 +45,12 @@ import http.cookiejar
 import importlib.util
 import json
 import os
+import re
 import shlex
 import shutil
 import subprocess
 import sys
+import tempfile
 import time
 import urllib.error
 import urllib.parse
@@ -73,7 +75,8 @@ REQUIRED_ARCHETYPES = {
     "http":   ["value_change", "order_flip", "subset", "status_change", "field_drop"],
     "binary": ["content_empty", "value_change"],
     "screen": ["style_shift"],
-    "asset":  ["content_change"],
+    "asset":  ["content_change", "asset_missing"],
+    "a11y":   ["violation_added"],
 }
 
 CONTROL_SAMPLE = 6          # non-target entries replayed per mutant, for collateral
@@ -244,21 +247,385 @@ def open_sessions(config):
     return sessions
 
 
+def resolve_artifact(config, ws):
+    """Absolute path of the artefact IN FLIGHT, published by the environment.
+
+    Same doctrine as `base_url_file`, for the same reason: a path baked into
+    the net is valid on exactly one machine. The environment that builds and
+    starts the application is the only thing that knows which file it started.
+    """
+    rel = config.get("artifact_file")
+    if not rel:
+        raise SystemExit(
+            "an entry declares surface 'asset' but config.json has no "
+            "artifact_file. That lane inventories what the BUILD packaged; "
+            "without the artefact it would fall back to scanning the worktree, "
+            "which is a different set — build outputs are gitignored, and stale "
+            "ones from an earlier build stay behind.")
+    path = rel if os.path.isabs(rel) else os.path.join(ws, rel)
+    try:
+        with open(path, encoding="utf-8") as f:
+            jar = f.read().strip()
+    except OSError as e:
+        raise SystemExit(
+            "config.artifact_file points at %s, which cannot be read (%s). It "
+            "is written when the application starts." % (path, e))
+    if not jar or not os.path.isfile(jar):
+        raise SystemExit("the published artefact path %r is not a file" % jar)
+    return jar
+
+
+# URLs locales referencees par un gabarit. Deux formes cohabitent dans ce
+# depot : l'attribut Thymeleaf `th:href="@{/chemin}"` et l'attribut HTML brut
+# `href="/chemin"`. Les deux sont captees ; les URLs absolues et les ancres ne
+# le sont pas, elles ne designent pas un fichier servi par cette application.
+#
+# Les espaces sont ADMISES dans la valeur. Les exclure paraissait prudent — un
+# attribut mal ferme aurait absorbe la moitie de la balise — mais quatre
+# documents de ce depot portent une espace dans leur nom de fichier, et le
+# motif les ecartait sans le dire. Les guillemets bornent deja la valeur ; les
+# accolades restent exclues, elles signalent une expression Thymeleaf calculee,
+# dont l'URL n'est pas connue avant le rendu.
+_ASSET_REF_RE = re.compile(
+    r'(?:th:)?(?:href|src)\s*=\s*"(?:@\{)?(/[^"{}]+?)\}?"', re.I)
+
+_ASSET_EXT = (".css", ".js", ".png", ".jpg", ".jpeg", ".gif", ".svg",
+              ".ico", ".woff", ".woff2", ".ttf", ".eot", ".map", ".pdf")
+
+# Le balisage commente n'est pas une reference : rien ne le sert au client. Sans
+# ce retrait, quatre liens mis en commentaire remontaient comme des ressources
+# attendues, dont une sous une forme de normalisation Unicode differente de
+# celle empaquetee — un doublon fantome que la reference aurait fige.
+_HTML_COMMENT_RE = re.compile(r"<!--.*?-->", re.S)
+
+
+def _artefact_members(path):
+    """(name, read()) for every file in the artefact — archive or directory.
+
+    Both shapes are ordinary build outputs, and neither is more legitimate than
+    the other. Accepting only one would push whoever has the other towards
+    scanning the worktree instead, which is the single thing this lane must not
+    do.
+    """
+    import zipfile
+    if os.path.isdir(path):
+        for root, _dirs, files in os.walk(path):
+            for f in files:
+                full = os.path.join(root, f)
+                yield os.path.relpath(full, path).replace(os.sep, "/"), \
+                    (lambda p=full: open(p, "rb").read())
+        return
+    with zipfile.ZipFile(path) as z:
+        for name in z.namelist():
+            if not name.endswith("/"):
+                yield name, (lambda n=name: z.read(n))
+
+
+def collect_assets(session, artefact_path, entry):
+    """Inventory the assets the build PACKAGED, then ask the application for each.
+
+    Two facts, deliberately kept apart:
+
+      * what the artefact contains — read from the build output, the product;
+      * what the application answers — read over HTTP, which is the truth.
+
+    They are not the same claim, and a lane that reports only the first would
+    describe a set of files without establishing that any of them is reachable.
+    The comparison of the two is the whole point: a resource present in the
+    package and answering 404 is a routing defect, and one answering 200 with
+    other bytes is a filter or a cache rewriting the product on its way out.
+
+    Referenced URLs come from the packaged TEMPLATES, for the same reason the
+    inventory comes from the packaged static tree: a scan of the worktree would
+    read sources the artefact may not contain.
+
+    The two prefixes are DECLARED by the entry, never guessed. A default would
+    have to encode one framework's layout, and the day it is wrong it does not
+    fail — it inventories nothing and reports a clean, empty manifest.
+    """
+    static_prefix = entry.get("static_prefix")
+    tpl_prefix = entry.get("template_prefix")
+    if static_prefix is None or tpl_prefix is None:
+        raise SystemExit(
+            "entry %s declares surface 'asset' but not both `static_prefix` and "
+            "`template_prefix` — the paths, inside the artefact, of the served "
+            "tree and of the templates that reference it. They are not guessed: "
+            "a wrong prefix inventories nothing and reads as a clean manifest."
+            % entry.get("id"))
+
+    packaged = {}
+    referenced = set()
+    for name, read in _artefact_members(artefact_path):
+        if name.startswith(static_prefix):
+            url = "/" + name[len(static_prefix):]
+            packaged[url] = hashlib.sha256(read()).hexdigest()
+        elif name.startswith(tpl_prefix):
+            text = read().decode("utf-8", "replace")
+            for url in _ASSET_REF_RE.findall(_HTML_COMMENT_RE.sub("", text)):
+                if url.lower().endswith(_ASSET_EXT):
+                    referenced.add(url)
+
+    if not packaged:
+        raise SystemExit(
+            "entry %s inventoried ZERO asset under %r in %s. An empty inventory "
+            "canonicalises to a manifest that is stable, green and blind, so it "
+            "is refused: either the prefix is wrong, or the build packaged "
+            "nothing." % (entry.get("id"), static_prefix, artefact_path))
+
+    records = []
+    for url in sorted(set(packaged) | referenced):
+        # Le chemin est encodé pour la requête, jamais pour la référence. Un nom
+        # de fichier portant une espace ou un accent, envoyé brut, fait une
+        # requête malformée et une erreur de transport, que le manifeste aurait
+        # consignée comme « ressource absente ». Un défaut du filet aurait été
+        # rapporté comme un défaut du produit. Vu sur quatre documents.
+        #
+        # `follow=False` : une redirection n'est PAS une livraison. Suivie, un
+        # refus d'autorisation rend 200 et le corps de la page de connexion, que
+        # le manifeste consigne alors comme « la ressource est servie, avec
+        # d'autres octets que ceux empaquetés » — un défaut de routage
+        # imaginaire, là où le fait réel est que la ressource n'est pas
+        # publique. Même quatre documents, deuxième déguisement.
+        status, _headers, body = session.fetch(
+            "GET", urllib.parse.quote(url, safe="/"), follow=False)
+        records.append({
+            "url": url,
+            "status": status,
+            "served_sha": hashlib.sha256(body or b"").hexdigest(),
+            "served_len": len(body or b""),
+            "packaged_sha": packaged.get(url),
+            "referenced": url in referenced,
+        })
+    return json.dumps({"assets": records}, sort_keys=True).encode()
+class Browser:
+    """A headless browser, started once per capture and stopped after it.
+
+    One per capture rather than one per entry: a browser costs about a second
+    to start, and paying that per entry pushes whoever writes the corpus to
+    audit fewer pages — a coverage decision taken for a performance reason,
+    which is how audit surfaces quietly shrink.
+    """
+
+    def __init__(self, config, gm_dir):
+        self.binary = config.get("browser_binary", "chromium")
+        self.gm_dir = gm_dir
+        self.proc = None
+        self.port = None
+
+    def start(self):
+        if self.proc is not None:
+            return
+        if not shutil.which(self.binary):
+            raise SystemExit(
+                "an entry declares surface 'a11y' but %r is not on PATH. The lane "
+                "renders pages in a real browser — an audit run against raw HTML "
+                "measures the markup, not what a user is served." % self.binary)
+        import socket
+        s = socket.socket()
+        s.bind(("127.0.0.1", 0))
+        self.port = s.getsockname()[1]
+        s.close()
+        workdir = tempfile.mkdtemp(prefix="gm-browser-")
+        profile = os.path.join(workdir, "profile")
+        env = self._font_env(workdir)
+        # La sortie du navigateur est CONSERVEE, pas jetee. Elle partait dans
+        # /dev/null : quand le processus mourait, la seule chose qui savait
+        # pourquoi etait precisement ce qu'on effacait, et l'echec se presentait
+        # comme une page lente. Trois hypotheses ont ete depensees sur ce silence.
+        self.log = os.path.join(workdir, "browser.log")
+        self._logf = open(self.log, "wb")
+        # `--disable-dev-shm-usage` : dans un conteneur, `/dev/shm` fait 64 Mo par
+        # défaut, et le moteur de rendu s'y bloque au lieu d'échouer. Le symptôme
+        # n'est pas un plantage mais une page qui ne finit jamais de charger —
+        # l'événement `load` ne vient pas, et le plafond de chargement tombe en
+        # accusant la lenteur de l'hôte. Mesuré : 240 s sur la première page en
+        # CI, instantané sur la même page en local.
+        #
+        # Hypothèse dirigée par le symptôme, pas certitude : ce mode d'échec de
+        # Chrome en conteneur est connu et correspond, mais il ne se reproduit
+        # pas ici. Un passage vert le confirmera ou l'infirmera.
+        self.proc = subprocess.Popen(
+            [self.binary, "--headless", "--disable-gpu", "--no-sandbox",
+             "--disable-dev-shm-usage", "--disable-software-rasterizer",
+             # Chrome émet au démarrage des appels de service — variations,
+             # mise à jour de composants, détection de changement de réseau. Sur
+             # un réseau qui laisse pendre au lieu de refuser, ces appels ne
+             # rendent jamais la main. Ils n'ont aucune utilité pour un audit.
+             "--disable-background-networking", "--disable-component-update",
+             "--disable-sync", "--disable-default-apps", "--disable-extensions",
+             "--disable-client-side-phishing-detection", "--metrics-recording-only",
+             "--no-first-run", "--no-default-browser-check", "--mute-audio",
+             "--hide-scrollbars", "--force-device-scale-factor=1",
+             "--remote-debugging-port=%d" % self.port,
+             "--user-data-dir=" + profile, "about:blank"],
+            stdout=self._logf, stderr=subprocess.STDOUT, env=env)
+        deadline = time.time() + 60
+        while time.time() < deadline:
+            try:
+                with urllib.request.urlopen(
+                        "http://127.0.0.1:%d/json/version" % self.port, timeout=2):
+                    return
+            except Exception:
+                if self.proc.poll() is not None:
+                    raise SystemExit("%s exited before opening its debug port" % self.binary)
+                time.sleep(0.5)
+        raise SystemExit("%s never opened its debug port within 60s" % self.binary)
+
+    def _font_env(self, workdir):
+        """Un navigateur SANS POLICE ne rend pas mal : il meurt.
+
+        Mesure, et le navigateur le dit lui-meme :
+        `FATAL SkFontMgr_FontConfigInterface.cpp: Not implemented.` puis
+        SIGABRT, precede de `glyph_count: 0` — fontconfig ne trouve aucune
+        police, la voie de repli de Skia n'existe pas, et le processus avorte.
+        En local ce sont les polices du systeme hote qui sauvent la mise ; dans
+        un conteneur il n'y en a pas, et l'echec se presente comme une page qui
+        ne charge jamais.
+
+        C'est la meme famille de defaut que sur la lane binaire : un rendu qui
+        depend des polices de la machine, invisible dans le diff. La reponse est
+        la meme — declarer les polices au lieu d'esperer celles de l'hote.
+
+        REFUS BRUYANT si aucun repertoire de polices n'existe. Un navigateur
+        sans police produirait, au mieux, un audit d'une page sans texte :
+        stable, plausible, et aveugle sur tout ce qui se lit.
+        """
+        # UNIQUEMENT les polices DECLAREES. Les repertoires du systeme hote sont
+        # exclus exprès, et ce n'est pas un durcissement gratuit : avec eux, la
+        # machine qui enregistre les references dispose de polices que la CI n'a
+        # pas, le texte se rend autrement, et une violation de CONTRASTE
+        # apparait ici et pas la-bas. Mesure : 11 noeuds `color-contrast` en
+        # local contre 10 en integration continue, de facon reproductible des
+        # deux cotes — une reference qui encode une propriete de son producteur,
+        # exactement le defaut deja rencontre sur les polices des PDF.
+        #
+        # Le prix est une reference qui ne vaut que sous le jeu de polices
+        # declare. C'est le but : ce jeu-la, lui, voyage.
+        candidates = [
+            os.path.join(os.environ.get("DEVBOX_PROFILE", ""), "share", "fonts"),
+            os.path.join(os.getcwd(), ".devbox", "nix", "profile", "default", "share", "fonts"),
+        ]
+        dirs = [d for d in candidates if d and os.path.isdir(d)]
+        if not dirs:
+            raise SystemExit(
+                "aucun repertoire de polices trouve pour le navigateur. Il n'en "
+                "rendra pas moins bien : il AVORTE (SkFontMgr 'Not implemented'). "
+                "`noto-fonts` et `fontconfig` sont declares dans devbox.json ; "
+                "cherches ici : %s. Les polices du systeme hote ne sont "
+                "DELIBEREMENT pas utilisees : une reference enregistree avec "
+                "elles ne vaut que sur la machine qui les porte."
+                % ", ".join(candidates))
+        conf = os.path.join(workdir, "fonts.conf")
+        with open(conf, "w", encoding="utf-8") as f:
+            f.write("<?xml version='1.0'?>\n<fontconfig>\n")
+            for d in dirs:
+                f.write("  <dir>%s</dir>\n" % d)
+            f.write("  <cachedir>%s</cachedir>\n" % os.path.join(workdir, "fc-cache"))
+            f.write("</fontconfig>\n")
+        env = dict(os.environ)
+        env["FONTCONFIG_FILE"] = conf
+        env["FONTCONFIG_PATH"] = workdir
+        return env
+
+    def why_it_died(self):
+        """Ce que le navigateur a dit avant de partir, et son code de sortie.
+
+        Sans ces deux faits, « socket fermee » est un constat sans cause : on
+        sait que le processus est parti, pas ce qui l'a fait partir.
+        """
+        bits = []
+        if self.proc is not None and self.proc.poll() is not None:
+            bits.append("le navigateur s'est arrete (code %s)" % self.proc.returncode)
+        try:
+            with open(self.log, "rb") as f:
+                tail = f.read()[-1200:].decode("utf-8", "replace").strip()
+            if tail:
+                bits.append("dernieres lignes du navigateur :\n" + tail)
+        except (OSError, AttributeError):
+            pass
+        return " | ".join(bits) if bits else "le navigateur n'a rien ecrit"
+
+    def stop(self):
+        if getattr(self, "_logf", None) is not None:
+            try:
+                self._logf.close()
+            except OSError:
+                pass
+            self._logf = None
+        if self.proc is not None:
+            self.proc.terminate()
+            try:
+                self.proc.wait(timeout=20)
+            except subprocess.TimeoutExpired:
+                self.proc.kill()
+            self.proc = None
+
+def collect_a11y(session, entry, browser):
+    """Run the audit engine against the rendered page, as this persona sees it.
+
+    The session's cookies are handed to the browser, so a page behind a login is
+    audited as that role rather than as the login form. Without them the lane
+    would report an audit of `/login` under every dashboard entry's name:
+    stable, plausible, and about the wrong page.
+    """
+    browser.start()
+    cookies = []
+    for c in session.jar:
+        cookies.append({"name": c.name, "value": c.value,
+                        "domain": c.domain or "127.0.0.1",
+                        "path": c.path or "/"})
+    tmp = tempfile.mkdtemp(prefix="gm-a11y-")
+    try:
+        cookie_file = os.path.join(tmp, "cookies.json")
+        with open(cookie_file, "w", encoding="utf-8") as f:
+            json.dump(cookies, f)
+        script = os.path.join(browser.gm_dir, "a11y", "run-axe.mjs")
+        engine = os.path.join(browser.gm_dir, "a11y", "axe.min.js")
+        for path in (script, engine):
+            if not os.path.isfile(path):
+                raise SystemExit(
+                    "the a11y lane needs %s, which is missing. The audit engine is "
+                    "vendored on purpose — see a11y/PROVENANCE.md — so the figures "
+                    "can be recomputed rather than believed." % path)
+        url = session.base_url + urllib.parse.quote(entry["path"], safe="/?&=%")
+        p = subprocess.run(
+            ["node", script, str(browser.port), url, engine, cookie_file],
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, timeout=180)
+        if p.returncode != 0:
+            raise SystemExit("a11y audit of %s failed: %s\n%s"
+                             % (entry["id"], (p.stderr or "").strip()[-800:],
+                                browser.why_it_died()))
+        return p.stdout.encode()
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
 def capture(config, corpus, canon, ids=None):
     """Fetch and canonicalise the corpus. Returns {id: canonical_text}."""
     sessions = open_sessions(config)
+    jar_path = None
+    browser = Browser(config, os.environ.get("GM_DIR", ".golden-master"))
     out = {}
-    for e in corpus["entries"]:
-        if ids is not None and e["id"] not in ids:
-            continue
-        s = sessions.get(e.get("persona", "anon"))
-        if s is None:
-            raise SystemExit("entry %s names unknown persona %r" % (e["id"], e.get("persona")))
-        status, headers, body = s.fetch(
-            e.get("method", "GET"), e["path"], fields=e.get("fields"),
-            follow=not e.get("no_redirect", False),
-        )
-        out[e["id"]] = canon.canonicalize(e, status, headers, body)
+    try:
+        for e in corpus["entries"]:
+            if ids is not None and e["id"] not in ids:
+                continue
+            s = sessions.get(e.get("persona", "anon"))
+            if s is None:
+                raise SystemExit("entry %s names unknown persona %r" % (e["id"], e.get("persona")))
+            surface = e.get("surface")
+            if surface == "asset":
+                if jar_path is None:
+                    jar_path = resolve_artifact(config, os.environ.get("GM_WORKSPACE", "."))
+                status, headers, body = 200, {}, collect_assets(s, jar_path, e)
+            elif surface == "a11y":
+                status, headers, body = 200, {}, collect_a11y(s, e, browser)
+            else:
+                status, headers, body = s.fetch(
+                    e.get("method", "GET"), e["path"], fields=e.get("fields"),
+                    follow=not e.get("no_redirect", False),
+                )
+            out[e["id"]] = canon.canonicalize(e, status, headers, body)
+    finally:
+        browser.stop()
     return out
 
 
@@ -444,9 +811,54 @@ def load_mutants(gm_dir, holdout, sealed_dir=None):
     return out
 
 
+_FP_SKIP = {".git", "node_modules", "build", ".gradle", ".gradle-ci", ".devbox",
+            ".venv", "__pycache__", ".state"}
+
+
 def tree_fingerprint(ws):
+    """Empreinte de l'arbre, et JAMAIS `None` en cas d'echec.
+
+    La version precedente rendait `None` quand git ne repondait pas — et
+    `None != None` est faux, donc « l'arbre n'a pas bouge », donc « ce mutant ne
+    change rien », donc INVALIDE. Un outil absent se presentait ainsi comme une
+    propriete du mutant.
+
+    Mesure de ce que ca coute : sur un runner ou git refusait de repondre
+    (propriete du depot jugee douteuse par git, cas classique en conteneur),
+    DIX mutants sur dix-neuf sont devenus invalides d'un coup. Et le score, qui
+    se calcule sur les mutants VALIDES, est reste a 100 % — un contre-test
+    reduit de moitie sous une note parfaite. C'est exactement le defaut que ce
+    filet existe pour attraper, un cran au-dessus de lui.
+
+    Le repli n'est pas un adoucissement : parcourir l'arbre donne une empreinte
+    au moins aussi discriminante que `git status` pour ce qu'on lui demande —
+    savoir si un fichier a bouge. Si les DEUX echouent, on s'arrete.
+    """
     code, out = run("git status --porcelain", ws, timeout=120)
-    return out if code == 0 else None
+    if code == 0:
+        return "git:" + out
+    h = hashlib.sha256()
+    seen = 0
+    for root, dirs, files in os.walk(ws):
+        dirs[:] = sorted(d for d in dirs if d not in _FP_SKIP)
+        for name in sorted(files):
+            full = os.path.join(root, name)
+            try:
+                st = os.stat(full)
+            except OSError:
+                continue
+            h.update(("%s|%d|%d\n" % (os.path.relpath(full, ws), st.st_size,
+                                      int(st.st_mtime))).encode())
+            seen += 1
+    if seen == 0:
+        raise SystemExit(
+            "impossible de prendre une empreinte de l'arbre dans %s : git n'a pas "
+            "repondu et le parcours n'a vu aucun fichier. Sans elle, la validite "
+            "d'un mutant n'est pas mesurable, et la faire passer pour « ce mutant "
+            "ne change rien » accuserait le mutant a la place de l'outil." % ws)
+    return "walk:" + h.hexdigest()
+
+
 
 
 def data_fingerprint(meta, ws):

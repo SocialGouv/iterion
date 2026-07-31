@@ -480,18 +480,21 @@ func (e *Engine) resumeRebuildState(ctx context.Context, r *store.Run, cp *store
 	// a resumed paused run reads the v0.1.0 skill content even though
 	// the host has v0.2.0 — the marker file logic preserves any user
 	// customisation. See F-RT-7.
-	if err := mirrorBundleSkills(e.workDir, e.bundle, e.logger); err != nil {
+	ownedSkills, err := mirrorBundleSkills(e.workDir, e.bundle, e.logger)
+	if err != nil {
 		return nil, nil, fmt.Errorf("runtime: bundle skills (resume): %w", err)
 	}
-	if err := mirrorPluginContributions(e.workDir, e.contributions, e.logger); err != nil && e.logger != nil {
+	ownedPluginSkills, err := mirrorPluginContributions(e.workDir, e.contributions, e.logger)
+	if err != nil && e.logger != nil {
 		e.logger.Warn("runtime: plugin contributions (resume): %v", err)
 	}
+	ownedSkills = append(ownedSkills, ownedPluginSkills...)
 	if err := mergePluginHooks(e.workDir, e.logger); err != nil && e.logger != nil {
 		e.logger.Warn("runtime: plugin hooks (resume): %v", err)
 	}
 	// Re-apply the preset's "## Focus" bias + skill hints on resume so a
 	// paused run that resumes keeps running as the selected sous-bot.
-	e.applyLibrarySkills()
+	e.applyMirroredSkills(append(ownedSkills, e.applyLibrarySkills()...))
 	e.applyPresetFocus()
 
 	// Re-bootstrap the sandbox container (see resumeFromFailure for the
@@ -706,16 +709,19 @@ func (e *Engine) claimForFailureResume(ctx context.Context, runID string, cp *st
 // selected sous-bot.
 func (e *Engine) restoreResumeWorkspace(r *store.Run) error {
 	e.restoreRunEnv(r)
-	if err := mirrorBundleSkills(e.workDir, e.bundle, e.logger); err != nil {
+	ownedSkills, err := mirrorBundleSkills(e.workDir, e.bundle, e.logger)
+	if err != nil {
 		return fmt.Errorf("runtime: bundle skills (resume): %w", err)
 	}
-	if err := mirrorPluginContributions(e.workDir, e.contributions, e.logger); err != nil && e.logger != nil {
+	ownedPluginSkills, err := mirrorPluginContributions(e.workDir, e.contributions, e.logger)
+	if err != nil && e.logger != nil {
 		e.logger.Warn("runtime: plugin contributions (resume): %v", err)
 	}
+	ownedSkills = append(ownedSkills, ownedPluginSkills...)
 	if err := mergePluginHooks(e.workDir, e.logger); err != nil && e.logger != nil {
 		e.logger.Warn("runtime: plugin hooks (resume): %v", err)
 	}
-	e.applyLibrarySkills()
+	e.applyMirroredSkills(append(ownedSkills, e.applyLibrarySkills()...))
 	e.applyPresetFocus()
 	return nil
 }

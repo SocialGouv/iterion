@@ -20,6 +20,7 @@ import (
 	"github.com/SocialGouv/iterion/pkg/backend/detect"
 	"github.com/SocialGouv/iterion/pkg/backend/mcp"
 	"github.com/SocialGouv/iterion/pkg/botsource"
+	"github.com/SocialGouv/iterion/pkg/bundle"
 	"github.com/SocialGouv/iterion/pkg/configshare"
 	"github.com/SocialGouv/iterion/pkg/forge"
 	"github.com/SocialGouv/iterion/pkg/knowledge"
@@ -189,11 +190,12 @@ type Server struct {
 	// Revi on another iterion bot's PR (test seam — the real impl resolves the
 	// provisioned forge Connection). nil → realIterionBotAuthor.
 	webhookIterionBotAuthor func(ctx context.Context, cfg webhooks.Config, login string) bool
-	// webhookPriorReview overrides the lookup of the most recent review-pr (Revi)
-	// run for a PR, whose findings seed a `/billy` invocation (test seam). nil →
-	// realWebhookPriorReview. Returns "" when no prior review is found (best-effort).
-	webhookPriorReview func(ctx context.Context, cfg webhooks.Config, prURL, projectPath string, prNumber int) string
-	httpClient         *http.Client
+	// webhookHandoff overrides the lookup of what an earlier run on the same
+	// PR produced (a review, or a fixer's reply to one), which seeds a launch var
+	// the launched bot declared it consumes (test seam). nil → realWebhookHandoff.
+	// Returns "" when nothing is found (best-effort).
+	webhookHandoff func(ctx context.Context, cfg webhooks.Config, kind bundle.HandoffKind, q handoffQuery) string
+	httpClient     *http.Client
 
 	// forgeHTTP is the SSRF-guarded client for outbound forge calls, built
 	// once (its strict flag is startup-fixed) so connection pooling is
@@ -243,6 +245,11 @@ type Server struct {
 	// injectForgePublishVars; grants pin (team, connection, repo). Non-nil
 	// iff forgeConnections is wired.
 	forgePublishTokens ForgePublishTokenStore
+
+	// gateReconcileCancel unsubscribes the merge-gate reconciler at shutdown.
+	gateReconcileCancel func()
+	// gateAutofixCancel unsubscribes the opt-in gate auto-fix lane at shutdown.
+	gateAutofixCancel func()
 
 	// forgeReviewClientFor is a test seam overriding how the publish-review
 	// handler resolves a connection's forge.ReviewClient. Nil → real admin

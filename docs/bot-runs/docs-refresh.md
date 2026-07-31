@@ -13,6 +13,147 @@ promises ledgers persist the agent's adjudications; the opt-in
 `open_mr` tail publishes ONE PR. Runs on ANY repo; iterion is the
 reference self-host case.
 
+## 2026-07-29 — first real bot run on the `pi` backend (run 019fae96)
+
+- Status: **partial** — pass 1 delivered 15 doc-alignment commits; pass 2 died
+  ~7 min in on the z.ai 5-hour usage cap. `failed_resumable`, resumable after
+  the 04:54 UTC reset. The purpose was validating the **pi backend** with a
+  real bot, and on that it succeeded.
+- Versions: bot v3.5.x · iterion `dev+3a61d2da4` (main tip, pi merged in
+  v3.15.0) · pi 0.82.1 · model `zai/glm-5.2` over `backend: "pi"`.
+- Method: `mode=incremental`, `diff_since=4ef39f9e3` (J-7 → 245 commits, 645
+  files changed), `bundle_self_path=bots/docs-refresh`, `--merge-into none`,
+  `--sandbox none` (isolating the pi variable), `ITERION_PI_NO_CONTEXT_FILES=1`
+  (the repo's CLAUDE.md costs ~26k input tokens per call), cap `--max-cost-usd 15`.
+- Result: pass 1 = 232,965 tokens, **$0.2968**, ~33 min, 15 commits,
+  `scope_ok: true`, `gate.converged: false` (drift remaining — the bounded
+  continuation loop behaving as designed). **~10x cheaper than the ~$3/pass
+  this bot costs on claude_code.**
+- Value: real alignment of the week's features — the `file` schema field type
+  and `--answer key=@./path` (PR #315), the `iterion models pricing` audit, a
+  dead cross-reference, the model names across the corpus realigned on the
+  Claude 5 fleet, and the pi backend itself added to the backend lists.
+
+### Pass 2 — resumed on a ChatGPT/Codex credential (same run, 19:37→20:23)
+
+- Status: **partial, and over budget** — 48 further commits, then
+  `BUDGET_EXCEEDED`. Still `failed_resumable`.
+- Method: `iterion resume --backend pi --model openai-codex/gpt-5.6-sol`,
+  `--max-cost-usd 15`, `ITERION_SANDBOX_DEFAULT=none`.
+- Result: **63 commits total** (15 from pass 1), 53 files, +467/−261, in 46
+  minutes. **$47 against a $15 cap.**
+
+**The cost cap does not bound a v2 campaign.** `max_cost_usd` is evaluated at
+NODE boundaries, and the v2 shape (ADR-058) puts an entire pass inside ONE
+agent node that ran 46 minutes uninterrupted. Nothing checks the budget in
+flight, so the overshoot is only observed when the node finally reports — here
+at 3x the cap. This is not specific to pi or to this bot: it applies to every
+bot in the v2 fleet. Either the budget must be evaluated against streaming
+usage events, or the documentation must say plainly that it bounds nodes
+crossed, not dollars spent.
+
+**Three defects the RESUME path exposed, none visible from `iterion run`:**
+
+- **The codex bridge gave up instead of falling back.** `piLoadCodexView`
+  preferred the credential directory the run context announces (the cloud
+  path) and abandoned the search when it was unreadable. On `run` the context
+  announces nothing, so it worked; on `resume` it announces an empty
+  directory, so it failed with "No API key found for openai-codex". The two
+  sources are alternatives, not a chain — preferring one must not cost the
+  other. Fixed.
+- **`resume` does not replay the launch's sandbox decision.** The run was
+  launched `--sandbox none`; the resume started IN a container, where pi is
+  not installed (`exec: pi: not found`). There is no `--sandbox` flag on
+  resume, while `--model`, `--backend` and the budgets are all re-appliable —
+  so a run silently changes execution environment on resume. Worked around
+  with `ITERION_SANDBOX_DEFAULT=none`; the engine gap stands.
+- **`ITERION_PI_BIN` was documented and never implemented.** The escape hatch
+  for a host that cannot run the npm CLI existed only in the reference.
+  Implemented on both transports.
+
+Diagnosis note: the first two fixes from the adversarial review made the
+credential failure WARN instead of erroring, which is right — but it also made
+this defect silent. It took capturing pi's real argv through a fake binary on
+PATH to find it, after too long spent theorising.
+
+### Pass 3 — resumed on z.ai after the cap reset (15 min, 5 commits)
+
+- Status: **partial** — 5 more commits, then the z.ai 5-hour cap again (reset
+  pushed to 20:48). **68 commits total.** Still `failed_resumable`; the gate
+  never declared `converged`.
+- The 04:54 reset gave only a partial window: 15 minutes of campaign consumed
+  it. One Doki pass simply exceeds a z.ai 5-hour allowance.
+- **The `--skill` fix is confirmed live.** Zero ENOENT against
+  `~/.claude/skills` this pass, against three in pass 1 before the agent
+  recovered by listing the worktree. The skills reached pi and no turns were
+  spent hunting for them.
+
+**Where a run's spend actually lives, and where it does not.** Three facts,
+each of which cost a wrong assumption to establish:
+
+- The accumulated spend IS persisted — `checkpoint.budget_cost_usd`
+  ($46.67 here), plus the per-node figure under
+  `checkpoint.outputs.<node>._cost_usd` ($46.37 for the codex campaign alone).
+- It is NOT derivable from the event stream the way a monitor naturally reaches
+  for it: `_cost_usd` rides `node_finished`, so summing those events reports
+  **$0.30** for this run — pass 1, the only pass whose node ever finished.
+- And the ledger only books on node COMPLETION. Pass 3 did 15 minutes of
+  billed work and produced 5 commits; `budget_cost_usd` did not move. A node
+  killed mid-flight — by the budget, a 429, a cancel — contributes nothing to
+  the run's recorded cost.
+
+Together with the cap's node-boundary evaluation, that is why $46 was spent
+under a $15 cap inside a single node, and why the resume then refused
+immediately with `cost_usd (47/25)`: the ledger is consulted at node ENTRY,
+cumulatively over the run's whole life, so any cap below the sunk cost blocks
+before doing work. Raising it to 60 was the mechanical requirement to continue.
+
+### Findings
+
+- **`--skill` was never passed to pi for a bundle bot — engine bug, fixed.**
+  The flag was gated on `task.SkillHints`, which carries only the DSL `skills:`
+  field (the skill *library*); a bundle's skills are mirrored into
+  `<workDir>/.claude/skills/` without ever touching it. So pi had zero skill
+  awareness while Doki's prompt ordered "LOAD YOUR SKILLS FIRST", and the agent
+  burned turns on three ENOENTs against `~/.claude/skills/` before recovering
+  by listing the worktree. A pi-only hole in a mechanism claude_code (native
+  discovery) and claw (its `skill` tool) both cover.
+- **Doki's prompt names its skills by a bare relative path** (``under
+  `.claude/skills/` ``), which an agent can and did resolve against `$HOME`.
+  Anchoring it (`${PROJECT_DIR}/.claude/skills/`) would remove the ambiguity
+  independently of the fix above.
+- **pi cannot reuse `~/.codex/auth.json`** — its `openai-codex` provider is the
+  one provider with no API-key env var, OAuth-only via an interactive `/login`.
+  Asymmetric with claw, which does read that file. Bridged since: iterion
+  seeds a throwaway agent dir per run.
+- **Rate-limit typing is correct**: the z.ai 429 was classified
+  `USAGE_LIMIT_BLOCKED`, retried twice with backoff, and reported with the
+  reset time. The run stayed `failed_resumable`.
+- **The stdio MCP transport ran for real** — `iterion __mcp-board` appeared as
+  a child of pi, exercising code previously validated only against test servers.
+- Not a defect, checked before counting it: the `Tool error … bash` lines are
+  the agent's own `a && b && c` chains failing on a missing directory. pi
+  reports the non-zero exit correctly.
+
+### Lessons for next run
+
+- **A cost cap does not stop a v2 campaign** — see pass 2. Watch the running
+  cost, do not trust `--max-cost-usd` to bound a single-node pass. Read it from
+  `checkpoint.budget_cost_usd`, not by summing `node_finished` events, and know
+  that a node killed mid-flight books nothing.
+- **Pick a model whose quota survives a pass.** GLM is ~10x cheaper than
+  gpt-5.6-sol but its 5-hour cap ends a campaign mid-flight; the expensive
+  model finishes the pass and blows the budget instead. Neither converged.
+- **A failed run leaves its commits on a detached HEAD with no branch.**
+  `finalizeWorktree` creates the anti-GC branch only on a clean exit, so 15
+  commits were reachable only through the preserved worktree — one
+  `git worktree prune` from being garbage. Branch them by hand
+  (here: `dogfood/doki-pi-019fae96`).
+- Pick a model whose quota fits the work: GLM-5.2 is cheap but its 5-hour cap
+  ended this run mid-pass-2. Resume after the reset, or run a smaller scope.
+- Use ABSOLUTE binary paths. The first launch died on `unknown backend "pi"`
+  because a `cd` made `./iterion` resolve to the main checkout's stale binary.
+
 ## 2026-07-27 — forfait weekly-cap catch-up, and the weekly schedule is throwing its work away (run 019fa533)
 
 - Status: **failed to deliver** — the run finished cleanly and produced

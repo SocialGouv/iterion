@@ -22,7 +22,7 @@ func ReplayEvents(ctx context.Context, st store.RunStore, runID string, fromSeq 
 	maxReplayed := fromSeq - 1
 	next := fromSeq
 	for {
-		page, err := st.LoadEventsRange(ctx, runID, next, 0, MaxEventsPerPage)
+		page, err := st.LoadEventsRange(ctx, runID, next, 0, MaxEventsPerPage())
 		if len(page) > 0 {
 			if !pipe.Ship(ctx, page) {
 				return maxReplayed, ctx.Err()
@@ -34,7 +34,7 @@ func ReplayEvents(ctx context.Context, st store.RunStore, runID string, fromSeq 
 		if err != nil {
 			return maxReplayed, err
 		}
-		if len(page) < MaxEventsPerPage {
+		if len(page) < MaxEventsPerPage() {
 			return maxReplayed, nil
 		}
 		next = maxReplayed + 1

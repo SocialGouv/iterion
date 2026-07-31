@@ -137,7 +137,7 @@ func (s *Server) handleGitLabMergeRequestEvent(ctx context.Context, w http.Respo
 
 	targets := forgePREventTargets(cfg, rules, idemBase, p.MRURL, p.TargetBranch,
 		strings.TrimSpace(p.Title+"\n\n"+p.Description), p.CloneURL, p.SourceBranch,
-		map[string]string{"pr_author": p.SenderUsername, "source_branch": p.SourceBranch})
+		map[string]string{"pr_author": p.SenderUsername, "source_branch": p.SourceBranch, "head_sha": p.HeadSHA})
 
 	s.insertAndLaunchWebhookMulti(ctx, w, r, cfg, meta, targets, payloadHash, srcIP)
 }
@@ -425,9 +425,9 @@ func (s *Server) handleGitLabCommandNote(ctx context.Context, w http.ResponseWri
 		vars = applyWebhookVarLayers(buildGitLabIssueCommandVars(p, route, cmdArgs, nil), cfg)
 	} else {
 		stampBranchImprovePushBack(vars, route.BotID, p.SourceBranch, cfg.BranchImproveAsPR)
-		// `/billy` on an MR seeds the run with Revi's most recent review of it
-		// (best-effort — see stampPriorReview). Symmetric with the GitHub path.
-		s.stampPriorReview(ctx, cfg, route.BotID, vars, p.MRURL, p.ProjectPath, int(p.MRIID))
+		// The revision the command is about, so the shared launch tail can tell a
+		// consumer whether the review it is handed still matches the MR head.
+		vars["head_sha"] = p.HeadSHA
 	}
 	// "cmd|" prefix keeps the key space disjoint from the mr|/note| paths.
 	idemKey := knowledge.ChecksumHex([]byte(fmt.Sprintf("cmd|%s|%s|%d|%s", cfg.TenantID, cfg.ID, p.ProjectID, p.SubjectID())))

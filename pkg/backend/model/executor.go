@@ -65,8 +65,16 @@ type ClawExecutor struct {
 	// (set by SetSkillHints from the runtime mirror). Per-node, the executor
 	// renders the "## Skills" section for the subset this node references.
 	skillHints map[string]string
-	botID      string // stable bot/workflow id used for bot-scoped memory
-	storeDir   string // dispatcher store root (empty = backend default)
+	// mirroredSkills are the skill directories iterion wrote into the
+	// workspace this run (SetMirroredSkills), as opposed to whatever the
+	// target repo ships at the same path.
+	mirroredSkills []string
+	// sharedStateDir is a directory reachable at the same absolute path from
+	// the host and the sandbox that is NOT in the target repo's checkout
+	// (SetSharedStateDir); empty when there is none.
+	sharedStateDir string
+	botID          string // stable bot/workflow id used for bot-scoped memory
+	storeDir       string // dispatcher store root (empty = backend default)
 	// artifactFilesDir is the run's tool-output scratch area
 	// (runs/<id>/artifact_files), exported to HOST tool-node subprocesses as
 	// ITERION_ARTIFACT_FILES_DIR. Sandboxed runs already get the variable from
@@ -214,6 +222,23 @@ func (e *ClawExecutor) SetRunExtraEnv(env []string) {
 // Passing nil clears the previous handle (used between runs).
 func (e *ClawExecutor) SetSandbox(run sandbox.Run) {
 	e.sandbox = run
+}
+
+// SetSharedStateDir records a directory reachable at the SAME absolute path
+// from the host and from inside the sandbox, which is not part of the target
+// repository's checkout — in practice the host `~/.iterion` that host_state
+// bind-mounted. Empty when there is none (host_state=none, the kubernetes
+// driver, or a mount the auto-binder skipped).
+//
+// It exists so a backend can keep per-run state — a seeded credential, session
+// transcripts — OUT of the worktree. Writing that state into
+// `<WorkDir>/.iterion` instead means defending a directory the target repo can
+// pre-populate, which is a far worse position than simply not writing there.
+//
+// Reported from what was actually mounted, never inferred from the setting.
+// Must be called before Execute; not safe to call concurrently.
+func (e *ClawExecutor) SetSharedStateDir(dir string) {
+	e.sharedStateDir = dir
 }
 
 // SetBoardEndpoint installs the per-run gateway-reachable board MCP URL
@@ -722,6 +747,20 @@ func (e *ClawExecutor) SetPresetFocus(prompt string, skills []string) {
 // called before Execute; not safe to call concurrently.
 func (e *ClawExecutor) SetSkillHints(hints map[string]string) {
 	e.skillHints = hints
+}
+
+// SetMirroredSkills records the skill directories iterion OWNS in this
+// workspace — what the mirror wrote or refreshed, excluding anything the
+// workspace shadowed.
+//
+// A backend that hands skills to an agent needs to tell iterion's own from
+// whatever the TARGET repository ships under the same .claude/skills/ path, and
+// the workspace is an untrusted checkout: reading it back cannot establish that,
+// because a repo can write any file, including one shaped like iterion's own
+// bookkeeping. This is the engine saying what it wrote. Must be called before
+// Execute; not safe to call concurrently.
+func (e *ClawExecutor) SetMirroredSkills(paths []string) {
+	e.mirroredSkills = paths
 }
 
 // SetWorkDir updates the working directory for backend subprocesses

@@ -19,7 +19,7 @@ func TestPiRPCArgs(t *testing.T) {
 	// pisdk emits `--mode rpc` itself; leaking print mode's `--mode json`
 	// would put pi in the wrong mode and hang the handshake.
 	t.Run("print mode selection is stripped", func(t *testing.T) {
-		args := piRPCArgs(Task{Model: "openai/gpt-5.5"}, "")
+		args := piRPCArgs(Task{Model: "openai/gpt-5.5"}, "", nil)
 		if slices.Contains(args, "json") {
 			t.Errorf("argv still carries print mode's output selection: %v", args)
 		}
@@ -32,7 +32,7 @@ func TestPiRPCArgs(t *testing.T) {
 	// would diverge observably and could not share a backend name.
 	t.Run("shares the per-task flags with print mode", func(t *testing.T) {
 		task := Task{Model: "anthropic/glm-5.2", ProviderHint: "zai", ReasoningEffort: "high", Readonly: true}
-		args := piRPCArgs(task, "/tmp/sys.md")
+		args := piRPCArgs(task, "/tmp/sys.md", nil)
 		for _, want := range [][2]string{
 			{"--provider", "zai"},
 			{"--model", "glm-5.2"},
@@ -53,7 +53,7 @@ func TestPiRPCArgs(t *testing.T) {
 	})
 
 	t.Run("no system prompt flag when there is no prompt", func(t *testing.T) {
-		if slices.Contains(piRPCArgs(Task{}, ""), "--append-system-prompt") {
+		if slices.Contains(piRPCArgs(Task{}, "", nil), "--append-system-prompt") {
 			t.Error("emitted --append-system-prompt with no value")
 		}
 	})

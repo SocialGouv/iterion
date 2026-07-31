@@ -34,7 +34,7 @@ func TestMirrorLibrarySkills_MirrorsAndHints(t *testing.T) {
 	}
 
 	workDir := t.TempDir()
-	hints, err := mirrorLibrarySkills(workDir, "", wfWithSkills([]string{"changelog-writer"}, nil), nil, nil)
+	hints, _, err := mirrorLibrarySkills(workDir, "", wfWithSkills([]string{"changelog-writer"}, nil), nil, nil)
 	if err != nil {
 		t.Fatalf("mirror: %v", err)
 	}
@@ -50,10 +50,55 @@ func TestMirrorLibrarySkills_MirrorsAndHints(t *testing.T) {
 	}
 }
 
+// A skill the target repository pre-empted is still HINTED — claude_code and
+// claw read the directory natively, so the agent sees whatever is there — but it
+// must not be reported as owned. A backend that passes skills explicitly would
+// otherwise hand attacker-authored prompt text over as a trusted skill, which is
+// exactly what the explicit-path gate exists to prevent.
+func TestMirrorLibrarySkills_ShadowedIsHintedButNotOwned(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("ITERION_HOME", home)
+	src := filepath.Join(home, "skills", "changelog-writer")
+	if err := os.MkdirAll(src, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	body := "---\nname: changelog-writer\ndescription: Writes changelogs\n---\n# ours\n"
+	if err := os.WriteFile(filepath.Join(src, "SKILL.md"), []byte(body), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	// The checkout already ships a same-named skill with different content, so
+	// the workspace-wins policy keeps it.
+	workDir := t.TempDir()
+	repoSkill := filepath.Join(workDir, ".claude", "skills", "changelog-writer")
+	if err := os.MkdirAll(repoSkill, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(repoSkill, "SKILL.md"), []byte("the repo's own"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	hints, owned, err := mirrorLibrarySkills(workDir, "", wfWithSkills([]string{"changelog-writer"}, nil), nil, nil)
+	if err != nil {
+		t.Fatalf("mirror: %v", err)
+	}
+	if _, ok := hints["changelog-writer"]; !ok {
+		t.Error("no hint — the agent still sees the skill, so it should be described")
+	}
+	if len(owned) != 0 {
+		t.Errorf("owned = %v — that content is the repo's, and a backend must not pass it", owned)
+	}
+	// And the repo's file was genuinely left in place.
+	got, _ := os.ReadFile(filepath.Join(repoSkill, "SKILL.md"))
+	if string(got) != "the repo's own" {
+		t.Errorf("workspace file = %q, want it untouched", got)
+	}
+}
+
 func TestMirrorLibrarySkills_UnknownRefSkipped(t *testing.T) {
 	t.Setenv("ITERION_HOME", t.TempDir())
 	workDir := t.TempDir()
-	hints, err := mirrorLibrarySkills(workDir, "", wfWithSkills([]string{"nope"}, nil), nil, nil)
+	hints, _, err := mirrorLibrarySkills(workDir, "", wfWithSkills([]string{"nope"}, nil), nil, nil)
 	if err != nil {
 		t.Fatalf("mirror: %v", err)
 	}
@@ -67,7 +112,7 @@ func TestMirrorLibrarySkills_UnknownRefSkipped(t *testing.T) {
 }
 
 func TestMirrorLibrarySkills_NoRefsNoOp(t *testing.T) {
-	hints, err := mirrorLibrarySkills(t.TempDir(), "", wfWithSkills(nil, nil), nil, nil)
+	hints, _, err := mirrorLibrarySkills(t.TempDir(), "", wfWithSkills(nil, nil), nil, nil)
 	if err != nil {
 		t.Fatalf("mirror: %v", err)
 	}

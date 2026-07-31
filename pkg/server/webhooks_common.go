@@ -172,14 +172,19 @@ func reviewPRVars(prURL, baseRef, scopeNotes string, launchVars map[string]strin
 		// so the historical "summary for a lower failure surface" default
 		// no longer applies.
 		"pr_review_mode": "inline",
+		// head_sha is the revision the run is about to review. It is what
+		// lets anything downstream prove it is speaking about the commit it
+		// read rather than whatever the branch holds later — the gate
+		// reconciler refuses to post without it.
+		"head_sha": "",
 	}
 	mergeVarsInto(vars, extra)
 	mergeVarsInto(vars, launchVars)
 	return vars
 }
 
-// branchImproveVars builds the launch vars for the branch-improvement bot
-// (Billy) reacting to a PR-open: it reviews + hardens the PR's branch diff over
+// fixerPRVars builds the launch vars for a bot asked to FIX a pull request
+// rather than review it: it reviews + hardens the PR's branch diff over
 // its base. baseRef is the PR's target branch; scopeNotes carries the PR
 // title+body (which includes the "Fixes #N" ticket link). open_mr=false — the
 // PR already exists, so Billy commits onto the checked-out PR branch rather
@@ -188,7 +193,7 @@ func reviewPRVars(prURL, baseRef, scopeNotes string, launchVars map[string]strin
 // instead of stranding in the cloud runner's ephemeral worktree. The webhook's
 // LaunchVars win last so an operator can override per repo (e.g. pin
 // max_passes or a scratch path).
-func branchImproveVars(baseRef, sourceBranch, prURL, scopeNotes string, asPR bool, launchVars map[string]string) map[string]string {
+func fixerPRVars(baseRef, sourceBranch, prURL, scopeNotes string, asPR bool, launchVars map[string]string) map[string]string {
 	vars := map[string]string{
 		"base_ref":    baseRef,
 		"scope_notes": scopeNotes,
@@ -875,11 +880,21 @@ func (s *Server) launchWebhookTarget(
 		// this seam for one field.
 		launch = s.webhookLauncherFor(cfg)
 	}
+	// Hand the run any prior review of the same PR, if it asked for one. Done
+	// HERE, in the tail every lane funnels through, rather than per provider
+	// handler: the two comment lanes had it and nothing else did, so the
+	// merge-queue auto-heal — which launches a fixer on a PR a reviewer has
+	// almost always already read — started from nothing. The PR context comes
+	// from the vars the lane already built, so a lane with no pr_url no-ops.
+	s.stampHandoffs(ctx, cfg, botID, vars, handoffQuery{
+		PRURL:   vars["pr_url"],
+		HeadSHA: vars["head_sha"],
+	})
 	// Deterministic forge review publishing: a review-shaped delivery
 	// carries a pr_url var — mint a per-run publish grant scoped to the
 	// webhook's tenant so the bot's deterministic publish node posts
 	// through the server's live forge client (never a workspace token).
-	vars = s.injectForgePublishVars(ctx, cfg.TenantID, "", vars, r)
+	vars = s.injectForgePublishVars(ctx, cfg.TenantID, "", botID, vars, r)
 	// meta.ProjectPath is the forge slug already parsed by the provider
 	// handler — thread it onto the launch so the run is filterable by
 	// repository in the studio.

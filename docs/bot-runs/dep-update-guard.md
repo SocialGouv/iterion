@@ -7,6 +7,203 @@ commit onto the PR branch, post the verdict comment. Never merges past a
 check — and only ever the commit it audited. See
 [bots/dep-update-guard/](../../bots/dep-update-guard/).
 
+## 2026-07-31 — v2.5.0 on three heritage PRs, and the rebase that would have stalled every one of them
+
+- Status: **validated, with one real gap found and closed.** Two of three PRs
+  audited and merged by the bot; the third armed and is waiting on a rebase.
+- Versions: bot 2.5.0 (first live runs of this version) · iterion
+  `v3.17.1+d337007d1`, runner `sha256:9c7203cc`
+- Method: `/vetty` on the three heritage PRs of `SocialGouv/buildkit-operator`
+  — those opened under the OLD `github-actions[bot]` identity, before the
+  dedicated Renovate App. #6 alone first (run `019fb413`), then #4 and #7
+  together (`019fb6a0-7d9e` / `019fb6a0-77d9`).
+- Result: #6 audited in 16m20s and **merged by the forge App at 17:46:27Z**,
+  two seconds before the run ended, on the sha it audited (`ef333c66`). #4
+  merged at 05:38:35Z. #7 posted `SAFE`, armed auto-merge (SQUASH, 05:37:59Z)
+  and is not merged — see below.
+- Cost: **~$1 per PR audited** ($1.31 for #6, $1.93 for the pair). Cheap enough
+  that auditing on every dependency PR is not a budget question.
+
+### Why they needed Vetty at all, having already been reviewed
+
+All four heritage PRs carried `iterion/review=SUCCESS` — from **Revi**, a code
+reviewer, reached by a maintainer's `/revi`. That is not the same question.
+Revi reads a diff; Vetty asks whether the artifact on the other end of a
+version bump is what it claims to be. Merging on Revi's verdict would have
+skipped the supply-chain control this whole chain exists for, while looking
+fully green.
+
+### The audit is real, not a shape
+
+For jq 1.8.1 → 1.8.2, Vetty established that the upstream release exists
+(`jqlang/jq` tag `jq-1.8.2`, non-draft), that it was cut by the **same**
+automation as 1.8.0 and 1.8.1 — no unexpected-author or compromised-maintainer
+signal — that the locked nixpkgs commit exists, that its commit date matches
+the lock's `last_modified` byte for byte, and that its `package.nix` declares
+`version = "1.8.2"`. For helm 4.2.1 → 4.2.3: the derivation at commit
+`7525d999` declares `4.2.3`, builds `helm/helm` at tag `v4.2.3` with a pinned
+source hash, and the upstream delta is exactly 2 commits / 3 files matching the
+release notes verbatim.
+
+It also answered, with evidence, the open question Revi had left that morning
+on #6 about whether `devbox.lock` came from a real nix resolution.
+
+### The gap: a rebase silently ends the loop
+
+`review_on_sync` was **off** on the integration, and Vetty's invocation is
+`actions: [opened, reopened]`. So:
+
+1. Renovate rebases a PR — routine, it happens whenever the base moves;
+2. new head sha, and no bot relaunches ([webhooks_github.go](../../pkg/server/webhooks_github.go)
+   filters a `synchronize` when `ReviewOnSync` is false);
+3. `iterion/review` is **required** and is posted on the old sha;
+4. the armed auto-merge can therefore never fire, and nothing says so.
+
+Every Renovate PR that needs a rebase before it merges lands in this. The one
+proven run (#15, 2026-07-29) merged before its base moved, which is why it was
+never hit.
+
+Established by reading the shipping code path and the integration config —
+**not** yet observed live, because the two PRs that looked like they were stuck
+in it turned out to be stuck on something else entirely (below).
+
+Fixed by enabling `review_on_sync` on the integration — the pairing
+[CLAUDE.md](../../CLAUDE.md) already prescribes for a required gate. Worth
+knowing: `BotRule.Actions` is deliberately *recorded but not enforced*, with
+`"synchronize" for the merge gate` named in its doc comment as the reason, so
+the handler's reviewability gate stays authoritative and this wiring works.
+
+### The real reason #5 and #7 were stuck: switching Renovate's identity orphans its open PRs
+
+Chasing the rebase that never came produced a separate, more consequential
+finding. Renovate at `logLevel=debug`, on both branches:
+
+```
+branch.isModified() = true
+Branch has been edited but found no PR - skipping
+```
+
+The four heritage PRs were opened by the old `github-actions[bot]` identity,
+before the dedicated `socialgouv-renovate` App. Renovate compares a branch's
+tip author against its own git identity; the old one no longer matches, so it
+reads the branch as edited by a third party. Worse, the second line: it does
+not associate the open PR with the branch **at all**. Both branches are
+invisible to it — never rebased, never updated, permanently stuck once they
+conflict.
+
+**Switching the identity a bot commits under orphans every PR it already has
+open.** Nothing warns you: the PRs stay open, look normal, and simply stop
+being maintained. Half of this batch (#4, #6) hid it by merging anyway — Vetty
+merges through the forge, not through Renovate.
+
+Remedy applied: close the orphans and delete their branches so Renovate
+re-proposes the updates under the current identity. The condition is a one-time
+migration artifact — PRs opened by the new App are recognised normally — but it
+is worth planning for whenever a bot's credentials change.
+
+Closing carried a real risk, since Renovate normally reads a closed PR as a
+rejection. It did not fire here: the next debug run lists `kubernetes-helm`
+among its `33 flattened updates` and processes the branch again. The update was
+never suppressed — it is held as `"pendingVersions": ["4.2.3"]` by the repo's
+own 14-day cooldown. Which reframes #7 entirely: it existed only because it was
+opened *before* the cooldown landed (2026-07-28). Closing it aligned the repo
+with the policy it had since declared, rather than contradicting it.
+
+### A correction on how this was measured
+
+An earlier reading of the Renovate dry-run log claimed a real run would open
+eight new pull requests. It opened **zero** — three consecutive real runs did.
+`DRY-RUN: Would commit files to branch X` is not a PR: with
+`internalChecksFilter: strict`, Renovate creates the branch and holds the PR
+until `minimumReleaseAge` matures. Even `Would create PR` in a dry run is not a
+prediction — the dry run evaluates from a clean slate, while a real run
+re-checks the pending state against an existing branch. The cooldown was
+working exactly as designed throughout, and the log lines were read as
+something they do not say.
+
+The practical consequence: **the loop cannot be exercised on demand.** Forcing
+a PR would mean defeating the cooldown, which is the one control here worth
+least defeating. End-to-end validation waits for an update to mature; the
+audit-and-merge half is provable any time with `/vetty` on an open PR.
+
+### Second observation: a batch of PRs touching one lock file serializes badly
+
+The three PRs all bumped `devbox.json` + `devbox.lock`. #6 and #4 merged; #7
+was audited and armed, then turned `CONFLICTING` because the two merges landed
+under it. Vetty was right — it armed rather than forcing a merge — but the
+outcome is a PR that now needs a Renovate rebase to move, and (before the fix
+above) would have waited forever for it.
+
+### Lessons for next run
+
+1. **Reviewed is not audited.** A dependency PR carrying a green review from a
+   code reviewer has answered a different question. Do not let a shared gate
+   context blur the two.
+2. **Arming auto-merge is a weaker guarantee than merging.** The `merge_now`
+   path pins `expectedHeadOid` to the audited sha; `enablePullRequestAutoMerge`
+   pins nothing, so GitHub would merge whatever the head becomes. What restores
+   the guarantee is the *required* gate — provided it re-lands on each new
+   head, which is precisely what `review_on_sync` buys. The two settings are
+   one mechanism, not two options.
+3. A batch of dependency PRs touching the same lock file will conflict with
+   each other. Expect the tail of a batch to need a rebase round.
+
+## 2026-07-29 — v2.4.0: the loop closed — Renovate → audit → gate → merge, unattended (run 019faef9)
+
+- Status: **VALIDATED** — the first dependency PR to travel the whole chain
+  with no human in it.
+- Versions: bot 2.4.0 · iterion `v3.15.0+3a61d2da4` (runner `:edge`
+  `sha256:8c625432`)
+- Method: a real `renovate.yml` dispatch on `socialgouv/buildkit-operator`,
+  authenticated as the dedicated `socialgouv-renovate` App.
+- Result: PR #15 (`go toolchain 1.26.5 [security]`) created **17:43:03Z**,
+  merged **17:58:04Z** by the forge App — **15 minutes** from Renovate opening
+  it to the merge, with no human in between. `armed: true, reason: merged: the
+  forge reported every required check already green`. Gate
+  `iterion/review=success` posted on the head at 17:57:58Z; merge commit
+  `6d02f3e46747`.
+
+### What each link proved
+
+- **The App switch is what unblocked everything.** Under `GITHUB_TOKEN` the
+  four pre-existing Renovate PRs each had a `ci` run stuck in
+  `action_required` with zero jobs — GitHub's anti-recursion rule. PR #15's
+  `test`/`lint` started on their own. Nothing downstream can work without
+  this, and no amount of bot logic substitutes for it.
+- **The cooldown holds without hiding.** The dry run showed 17 upgrades marked
+  `pendingChecks: true` with their held versions named (`undici` 8.8.0/8.9.0,
+  …), while aged updates proceeded. `internalChecksFilter: strict` means the
+  branch is not created at all rather than a PR opened with a pending check.
+- **The merge targets the audited commit.** `commit` reported
+  `committed: false` (nothing to align), so the pin fell back to `prepare`'s
+  head — and the merge went to exactly that sha.
+
+### The overclaim the run surfaced
+
+The check displayed *"supply-chain audit clean; alignment committed, build
+verified"* on a PR where the alignment was a no-op (1 commit, 1 changed file,
+all Renovate's). The verdict is a graph PATH name stamped per-edge, so it read
+`committed` whether or not anything was.
+
+The first fix carried the commit agent's own `committed` flag down to the
+message — which only moved the claim from one unreliable source to another,
+since that flag is the agent grading its own work. The shipped version derives
+it from two shas the run owns (`commit.sha` vs `prepare.head_sha`) and routes
+to the `clean` verdict, which existed in every string table and was
+unreachable. All the "committed" strings are now unconditionally true.
+
+A required check that asserts work nobody did is the same false-statement
+class this bot exists to catch in other people's diffs.
+
+### Lessons for next run
+
+- A PR whose base has moved far enough to conflict can never reach the merge:
+  cancel the audit rather than spend it on a refusal that is already knowable
+  from `mergeable`. Cost saved on this session: one 14-min run.
+- Closing a stale Renovate PR is not a neutral cleanup — Renovate reads it as
+  "this update was rejected" and stops offering it. Leave them; the bot
+  rebases them under the new identity.
+
 ## 2026-07-29 — v2.1.0 live: the whole chain ran, the gate landed, and the merge never happened (run 019faad2)
 
 - Status: **partial** — every step validated end to end except the last one,

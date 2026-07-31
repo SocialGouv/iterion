@@ -173,7 +173,9 @@ continuation loop. See [bots/whole-improve-loop/](../../bots/whole-improve-loop/
   persists to a per-bot store `~/.iterion/projects/<bot-key>`, NOT the workspace
   `.iterion` — pass `--store-dir` explicitly for studio observability (the
   CLAUDE.md "omit --store-dir" note is misleading; a 404 in the studio diffs
-  panel is the symptom).
+  panel is the symptom). *(Superseded: `iterion run` now anchors its store on
+  the working directory, so a workspace with a managed `.iterion` is picked up
+  without the flag. The NB describes the behaviour at the time of this run.)*
 - **Run 019f2750** (scope `pkg/reviewtopology`, default grid): converged in **2
   cross-family reviews (~2 min)**, both approved, `done`. **0 commits** — the
   package was already clean, so the empty-commit guard correctly committed

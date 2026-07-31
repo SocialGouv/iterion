@@ -163,7 +163,7 @@ vars:
   ## today's behaviour (commits stay on the local storage branch).
   push_branch: string = ""
   ## The PR Billy is hardening, as a forge URL
-  ## (https://github.com/<owner>/<repo>/pull/<n>). When set, post_pr_feedback
+  ## (https://github.com/<owner>/<repo>/pull/<n>). When set, publish_verdict
   ## posts Billy's review verdict as a comment ON that PR so the author sees
   ## the conclusion (what was corrected, or "reviewed clean") in the forge, not
   ## only in the iterion run. The PR-webhook trigger sets it. Empty = skip.
@@ -178,6 +178,38 @@ vars:
   ## read-only; you fix + commit). Empty (default) = no prior review, review
   ## the diff from scratch.
   prior_review: string = ""
+
+  ## WHERE THE HUMAN SITS IN THE LOOP.
+  ##   "end"    (default) — run to completion, the human reviews the result.
+  ##   "middle" — after reading the diff and the prior review, and BEFORE any
+  ##              invasive edit, present the plan (which findings you intend to
+  ##              fix, which you intend to contest and why, what else you found)
+  ##              and WAIT for the operator to arbitrate.
+  ##
+  ## Both are first-class. A reviewer alone already puts the human in the middle
+  ## — findings land, the human decides — and this bot is the more invasive
+  ## option, so it must not be the only shape on offer: "middle" is how someone
+  ## keeps the arbitration while still delegating the work.
+  pilot: string [enum: "end", "middle"] = "end"
+
+  ## MERGE GATE. When a pull request is in play, the deterministic
+  ## publish_verdict step posts a commit status on the PR head so a required
+  ## check tracks the revision THIS run produced — a push moves the head, and a
+  ## status posted on the old one leaves the required check absent, which blocks
+  ## the PR for good with nothing pointing at why.
+  ##
+  ## gate_context is the check NAME. A required check applies to every pull
+  ## request, so a repo where several bots gate different PRs gives them ONE
+  ## shared context, pinned per repo on the integration launch_vars — the same
+  ## value on every bot that can gate. See docs/merge-gate.md.
+  gate_enabled: bool = true
+  gate_context: string = "revi/review"
+
+  ## Deterministic forge publish grant — INJECTED BY THE ITERION SERVER at
+  ## launch when the run's team has a forge connection covering pr_url's repo.
+  ## The run itself never holds a posting credential.
+  forge_publish_url: string = ""
+  forge_publish_token: string = ""
 
 secrets:
   ## Forge access for push + PR creation + the issue back-link. Mounted as a
@@ -258,6 +290,16 @@ prompt campaign_system:
      behaviour intentional, a destructive trade-off, a backward-compat policy
      call. Keep it RARE: most of the time you decide and keep moving.
 
+  6. PILOTING — read the `pilot` value in your task below.
+     - "end": the operator reviews your RESULT. Work through, as above.
+     - "middle": the operator arbitrates the PLAN. Read the diff and the prior
+       review, decide what you WOULD do, then — BEFORE editing anything — ask
+       the operator once, with: each prior finding and the outcome you propose
+       for it (fix / contest, with your reason), anything else you found worth
+       fixing, and anything you are unsure about. Then follow their answer:
+       it overrides your own judgement on any point it covers, and you decide
+       the rest yourself. Ask ONCE — this is an arbitration, not a dialogue.
+
   KEEP GOING, one issue at a time, until this pass has resolved every real
   issue you can find in the branch diff within your budget. Then STOP and
   report.
@@ -274,6 +316,20 @@ prompt campaign_system:
     - needs_human / human_note: set if you paused or need an operator decision.
     - summary: what you reviewed and what you improved, and how it relates to
       the branch's changes.
+    - finding_ledger: ONE entry per finding of the PRIOR REVIEW (empty array
+      when none was handed to you), keyed by the id it was shown under:
+        {"id": "R7a3f", "status": "fixed", "commit": "<sha>", "note": ""}
+        {"id": "R1b2c", "status": "refused", "note": "<why it is not a real
+          problem — the evidence you checked>"}
+        {"id": "R9e40", "status": "deferred", "note": "<what it needs>"}
+      Account for EVERY id you were given: the author was shown those findings
+      and is owed an answer on each. Silence on one reads as "ignored".
+      A `refused` note is an ARGUMENT, checked by a human and fed to the next
+      review — "not a real issue" alone is not one. State what you read and why
+      it does not hold. Refusing is legitimate and sometimes correct; refusing
+      without evidence is not, and it does NOT unblock anything: an unfixed
+      finding keeps the merge gate red either way, so a refusal costs you
+      nothing to argue honestly.
 
   Be honest. A DETERMINISTIC build/test gate re-checks the tree after you and
   the run loops you back for another pass until you report branch_clean AND the
@@ -293,13 +349,20 @@ prompt campaign_user:
   `git diff $(git merge-base {{vars.base_ref}} HEAD) --name-only`. That diff
   is your scope — do NOT flag pre-existing code the branch didn't touch.
 
+  Piloting for this run: {{vars.pilot}}
+
   Extra context / notes (empty = the diff speaks for itself):
   {{vars.scope_notes}}
 
-  PRIOR REVIEW to start from (empty = none; when present, another reviewer
-  (Revi) already reviewed this PR — treat each finding as a high-signal head
-  start: verify it against the CURRENT diff, FIX the real ones and commit,
-  then keep reviewing for anything it missed — do NOT just trust it):
+  PRIOR REVIEW to start from (empty = none; when present, a reviewer already
+  read this PR — treat each finding as a high-signal head start: verify it
+  against the CURRENT diff, FIX the real ones and commit, then keep reviewing
+  for anything it missed — do NOT just trust it). Each finding opens with a
+  STABLE id: report on every one of them in `finding_ledger`, and honour any
+  instruction about a specific id in the notes above (the author may have
+  already arbitrated one, e.g. "skip R7a3f, false positive"). A finding that
+  ships a `replacement` comes with the reviewer's own patch — check it still
+  fits the current code, then use it rather than re-deriving one:
   {{vars.prior_review}}
 
   BASELINE — pre-existing failures / known-flaky tests to SKIP (empty =
@@ -471,39 +534,6 @@ prompt finalize_mr_user:
   Push the branch, open the PR, post the back-link when a source issue is
   given, and return the structured result.
 
-prompt post_feedback_system:
-  You are Billy leaving your review verdict AS A COMMENT on the pull request you
-  just hardened, so the author reads your conclusion in the forge — not only in
-  an iterion run they never see. Post ONE concise, respectful comment and stop.
-
-  ## How to post
-  Authenticate gh from the mounted forge token, then comment on the PR:
-    tok=$(cat /run/iterion/secrets/forge_token 2>/dev/null) || tok="$GH_TOKEN"
-    GH_TOKEN="$tok" gh pr comment <pr_url> --body-file <file>
-  Write the body to a scratch file (never inline a multi-paragraph --body). If
-  pr_url is empty, do nothing and return posted=false, note="no pr_url".
-
-  ## What to write (Markdown, no decorative bold, honest)
-  - A one-line verdict: "Reviewed clean — nothing to change." when the branch
-    was clean and you pushed nothing; else "Hardened this PR — pushed N fix(es)."
-  - 2–5 bullets of what you actually found / changed, grounded in the review
-    summary. Do NOT invent issues; if the summary says clean, say clean.
-  - If you pushed commits, note they are on this branch for the author to review.
-  - Sign off with YOUR persona name so the author knows who reviewed and that
-    it is a bot — e.g. "— Billy · automated iterion review". Use the persona
-    you were given above, not a generic label.
-
-  Do NOT re-review, re-run tests, or push code here — that already happened. This
-  node ONLY posts the comment. Return {posted, note}.
-
-prompt post_feedback_user:
-  PR to comment on (empty → skip): {{input.pr_url}}
-  Branch was clean (no real issues found): {{input.branch_clean}}
-  Commits pushed to the PR branch this run: {{input.commits_pushed}} ({{input.push_reason}})
-
-  Your review summary to distil into the comment:
-  {{input.review_summary}}
-
 ## ─── Schemas ────────────────────────────────────────────────────
 
 ## campaign's input: the deterministic gate's failure log from the PREVIOUS
@@ -521,6 +551,23 @@ schema campaign_output:
   needs_human: bool
   human_note: string
   summary: string
+  ## finding_ledger: what happened to each finding of the PRIOR REVIEW, keyed by
+  ## the stable id it was shown under (on the PR comment and in prior_review).
+  ## Empty when no prior review was handed over.
+  ##
+  ## A JSON array of {id, status, note, commit} where status is one of:
+  ##   fixed    — addressed; commit carries the sha
+  ##   refused  — judged not a real problem; note MUST argue why, it is read by
+  ##              a human and by the next review
+  ##   deferred — real but out of scope for this run; note says what it needs
+  ##
+  ## This is the reply half of the hand-off. Without it the review flows one
+  ## way: the author is shown N findings and then told only "hardened this PR",
+  ## with no way to see which of the N were answered and which were dismissed.
+  ## A refusal in particular must be ARGUABLE, never silent — under mono
+  ## topology nothing cross-confirms a finding, so the refusal channel is the
+  ## only place a wrong finding can be contested in the open.
+  finding_ledger: json
 
 ## verify_plan is verify_build's contract: it has WRITTEN <scratch_dir>/verify.sh.
 schema verify_plan:
@@ -578,13 +625,22 @@ schema push_state:
   pushed: bool
   reason: string
 
-## post_pr_feedback I/O — Billy's review verdict comment on the PR.
+## publish_verdict I/O — the deterministic verdict + merge-gate status.
 schema post_feedback_input:
   pr_url: string
   review_summary: string
   branch_clean: bool
   commits_pushed: bool
   push_reason: string
+  ## Did the DETERMINISTIC build/test gate end green, and did it actually RUN?
+  ## Part of the merge-gate count: a tree that does not build is not mergeable
+  ## whatever the findings, and a build that was skipped proves nothing at all.
+  verify_ok: bool
+  verify_skipped: bool
+  ## The prior review's findings and what became of each — rendered verbatim as
+  ## a table so the author sees, per finding they were shown, whether it was
+  ## fixed, refused (with the argument) or deferred.
+  finding_ledger: json
 
 schema post_feedback_output:
   posted: bool
@@ -984,21 +1040,158 @@ if u:
     print('[iterion] preview_url=' + u + ' kind=pr scope=external')
 "`
 
-## post_pr_feedback — Billy leaves his review verdict as a COMMENT on the PR he
-## just hardened, so the author sees the conclusion in the forge. claude_code
-## for gh + the mounted forge_token; low effort (it only distils a summary +
-## posts one comment). Reached on the PR-context path after push_back_tool.
-agent post_pr_feedback:
-  backend: "claude_code"
-  model: "${ITERION_BRANCH_IMPROVE_FEEDBACK_MODEL:-claude-opus-5}"
-  reasoning_effort: "${ITERION_BRANCH_IMPROVE_FEEDBACK_EFFORT:-low}"
-  input: post_feedback_input
+## publish_verdict — DETERMINISTIC verdict on the PR: the finding ledger as a
+## table, plus the merge-gate commit status. No LLM: the table is rendered from
+## the ledger verbatim and the gate is a COUNT, so neither the wording of a
+## refusal nor the merge signal depends on a model turn (same move Vetty made).
+##
+## Posted through the iterion server's forge-publish endpoint with the per-run
+## grant it injects, so the run never holds a posting credential.
+##
+## THE GATE IS NEVER GREEN ON A HEAD WITH UNRESOLVED FINDINGS. A refusal is an
+## argument for a human, not a way past the check: if it were, a fixer could
+## clear any review by contesting every finding. Success requires all three —
+## every finding fixed, a fresh re-review clean, and the deterministic build
+## gate green — and says in its description that the re-review was the fixer own,
+## so nobody reads it as an independent one.
+##
+## Keep this python body free of the double-quote character: the whole body is
+## wrapped by the shell in a double-quoted argument.
+tool publish_verdict:
+  command: `PUB_URL={{vars.forge_publish_url}} PUB_TOKEN={{vars.forge_publish_token}} PR_URL={{input.pr_url}} LEDGER={{input.finding_ledger}} SUMMARY={{input.review_summary}} CLEAN={{input.branch_clean}} PUSHED={{input.commits_pushed}} PUSH_REASON={{input.push_reason}} VERIFY_OK={{input.verify_ok}} VERIFY_SKIPPED={{input.verify_skipped}} GATE_ENABLED={{vars.gate_enabled}} GATE_CONTEXT={{vars.gate_context}} python3 -c "
+import os, json, urllib.request, urllib.error
+
+def emit(posted, note):
+    print(json.dumps({'posted': posted, 'note': note}))
+    raise SystemExit(0)
+
+def flag(name):
+    return str(os.environ.get(name, '')).strip().lower() in ('1', 'true', 'yes', 'on')
+
+nl = chr(10)
+pr = os.environ.get('PR_URL', '').strip()
+url = os.environ.get('PUB_URL', '').strip()
+tok = os.environ.get('PUB_TOKEN', '').strip()
+if not pr:
+    emit(False, 'no pr_url')
+if not url or not tok:
+    emit(False, 'no forge publish grant on this run: launch through an iterion server whose team connection covers this repo')
+
+try:
+    ledger = json.loads(os.environ.get('LEDGER') or '[]')
+except ValueError:
+    ledger = []
+if not isinstance(ledger, list):
+    ledger = []
+# Keep every dict entry, id or not. Filtering on the id first made a malformed
+# refusal disappear from BOTH the count and the table - a fixer that emitted an
+# id-less refusal got a green gate, which is failing open on bad output.
+ledger = [e for e in ledger if isinstance(e, dict)]
+
+pushed = flag('PUSHED')
+clean = flag('CLEAN')
+verify_ok = flag('VERIFY_OK')
+# verify_run reports passed=true when it SKIPPED (no verify.sh was produced).
+# Tolerable as a loop signal; on a required check, claiming a green build that
+# never ran is a false statement, so a skip blocks like a red one.
+verify_skipped = flag('VERIFY_SKIPPED')
+
+# Nothing was pushed and no review was answered: this run has nothing to say
+# about this head, and whatever verdict already sits on it is still the truth.
+# Overwriting it would be speaking for a revision this run did not change.
+if not pushed and not ledger:
+    emit(False, 'nothing pushed and no prior review answered - left the existing verdict alone')
+
+unresolved = [e for e in ledger if str(e.get('status') or '').strip().lower() != 'fixed']
+fixed = [e for e in ledger if str(e.get('status') or '').strip().lower() == 'fixed']
+# A fix that did not land is not a fix. push_back_tool reports pushed=false for a
+# protected branch, a non-fast-forward, a rebase conflict, a dead token - and the
+# head then still carries every finding the ledger calls fixed.
+fixes_stranded = bool(fixed) and not pushed
+
+body = ['## Branch review by the improvement loop (iterion)', '']
+if pushed:
+    body.append('Pushed fixes onto this branch. ' + str(os.environ.get('PUSH_REASON') or '').strip())
+else:
+    body.append('No commits pushed. ' + str(os.environ.get('PUSH_REASON') or '').strip())
+summary = str(os.environ.get('SUMMARY') or '').strip()
+if summary:
+    body.append('')
+    body.append(summary)
+
+if ledger:
+    body.append('')
+    body.append('### What became of the previous review')
+    body.append('')
+    body.append('| finding | outcome | note |')
+    body.append('| --- | --- | --- |')
+    for e in ledger:
+        note = str(e.get('note') or '').replace(chr(124), '/').replace(nl, ' ')
+        outcome = str(e.get('status') or '').strip().lower() or 'unknown'
+        commit = str(e.get('commit') or '').strip()
+        if commit:
+            outcome = outcome + ' (' + commit[:12] + ')'
+        body.append('| ' + str(e.get('id')) + ' | ' + outcome + ' | ' + note[:300] + ' |')
+    if unresolved:
+        body.append('')
+        body.append('A finding that was not fixed keeps the merge gate red, whether it was contested or deferred. A maintainer arbitrates it - by pushing a fix, or by approving the finding away.')
+
+gate_enabled = flag('GATE_ENABLED')
+gate_ctx = str(os.environ.get('GATE_CONTEXT') or '').strip()
+payload = {'pr_url': pr, 'summary': nl.join(body), 'mode': 'summary', 'comments': []}
+if gate_enabled and gate_ctx:
+    blocking = len(unresolved)
+    if fixes_stranded:
+        blocking += len(fixed)
+    if not clean:
+        blocking += 1
+    if not verify_ok or verify_skipped:
+        blocking += 1
+    if blocking == 0 and not ledger:
+        # Nothing reviewed this head, so there is no review to report as clean.
+        blocking = 1
+        note = 'code pushed but no review of this revision - awaiting one'
+    elif blocking == 0:
+        note = str(len(ledger)) + ' finding(s) fixed, re-review by the fixer clean, build green'
+    else:
+        bits = []
+        if unresolved:
+            bits.append(str(len(unresolved)) + ' finding(s) unresolved')
+        if fixes_stranded:
+            bits.append(str(len(fixed)) + ' fix(es) never reached this head')
+        if not clean:
+            bits.append('issues remain in the diff')
+        if not verify_ok:
+            bits.append('build/tests red')
+        elif verify_skipped:
+            bits.append('build/tests never ran')
+        note = ', '.join(bits) + ' - not mergeable yet'
+    payload['gate'] = {'enabled': True, 'context': gate_ctx, 'blocking_count': blocking,
+                       'threshold': 'ledger', 'total_findings': len(ledger), 'note': note}
+
+req = urllib.request.Request(url, data=json.dumps(payload).encode(),
+                             headers={'Content-Type': 'application/json', 'X-Iterion-Run': tok},
+                             method='POST')
+try:
+    with urllib.request.urlopen(req, timeout=120) as resp:
+        res = json.loads(resp.read().decode())
+except urllib.error.HTTPError as e:
+    try:
+        detail = e.read().decode()[:500].strip()
+    except Exception:
+        detail = ''
+    emit(False, 'forge publish endpoint HTTP ' + str(e.code) + ': ' + detail)
+except Exception as e:
+    emit(False, 'forge publish endpoint unreachable: ' + str(e)[:200])
+
+note = 'verdict posted'
+if res.get('gate_posted'):
+    note = note + '; ' + str(res.get('gate_context') or '') + '=' + str(res.get('gate_state') or '') + ' on ' + str(res.get('gate_sha') or '')[:12]
+elif res.get('gate_error'):
+    note = note + '; gate NOT posted: ' + str(res.get('gate_error'))[:200]
+emit(True, note)
+"`
   output: post_feedback_output
-  system: post_feedback_system
-  user: post_feedback_user
-  tools: [bash, read_file]
-  ## ~3-5 commands nominal (write body file + gh pr comment); 8 is headroom.
-  tool_max_steps: 8
 
 ## ─── Workflow ───────────────────────────────────────────────────
 
@@ -1086,14 +1279,17 @@ workflow branch_improve_loop:
   ## After the deterministic push (pushed or clean no-op), Billy posts his
   ## review verdict as a comment ON the PR so the author reads the conclusion
   ## in the forge, carrying the campaign summary + the push result.
-  push_back_tool -> post_pr_feedback with {
+  push_back_tool -> publish_verdict with {
     pr_url:         "{{vars.pr_url}}",
     review_summary: "{{outputs.campaign.summary}}",
     branch_clean:   "{{outputs.campaign.branch_clean}}",
     commits_pushed: "{{outputs.push_back_tool.pushed}}",
-    push_reason:    "{{outputs.push_back_tool.reason}}"
+    push_reason:    "{{outputs.push_back_tool.reason}}",
+    finding_ledger: "{{outputs.campaign.finding_ledger}}",
+    verify_ok:      "{{outputs.gate.converged}}",
+    verify_skipped: "{{outputs.verify_run.skipped}}"
   }
-  post_pr_feedback -> done
+  publish_verdict -> done
 
   ## Push credential present → finalize_mr pushes the run's HEAD (the series of
   ## per-pass commits) + opens the PR and (when source_issue_ref is set)

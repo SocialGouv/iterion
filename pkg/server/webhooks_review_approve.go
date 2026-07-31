@@ -5,17 +5,55 @@ import (
 	"net/http"
 	"strings"
 
+	"github.com/SocialGouv/iterion/pkg/botregistry"
 	"github.com/SocialGouv/iterion/pkg/forge"
 	"github.com/SocialGouv/iterion/pkg/webhooks"
 	"github.com/SocialGouv/iterion/pkg/webhooks/prforge"
 )
 
-// reviewGateContext is the commit-status check the /revi approve override
-// force-greens. It matches the context Revi posts (the bot pins "revi/review").
-// Living in the /revi command handler, this is intrinsically Revi-scoped —
-// consistent with the existing distinguished-bot coupling in this webhook layer
-// (defaultWebhookBotReviewPR et al., see CLAUDE.md known-debt).
-const reviewGateContext = "revi/review"
+// gateContextVar is the var every gating bot exposes to name the commit-status
+// context it posts under, and that a repo pins — to ONE shared value — so a
+// single required check can span several bots (docs/merge-gate.md).
+const gateContextVar = "gate_context"
+
+// resolveGateContext resolves the commit-status context an override must
+// force-green, in the same precedence the launch lanes apply to the var itself:
+// the repo's pin first, then the manifest union, then the gating bot's own
+// declared default.
+//
+// Reading it — rather than assuming a literal — is what makes the override
+// green the check the repo actually requires. A repo pinning `iterion/review`
+// (the documented setup, and the only one where a required check can span two
+// bots) was getting a green `revi/review` instead: a status nothing required,
+// leaving the real gate untouched while reporting success.
+func (s *Server) resolveGateContext(cfg webhooks.Config, botID string) string {
+	if v := strings.TrimSpace(cfg.OperatorLaunchVars[gateContextVar]); v != "" {
+		return v
+	}
+	if v := strings.TrimSpace(cfg.LaunchVars[gateContextVar]); v != "" {
+		return v
+	}
+	return strings.TrimSpace(s.botVarDefault(botID, gateContextVar))
+}
+
+// botVarDefault reads a bot's declared default for one workflow var.
+func (s *Server) botVarDefault(botID, name string) string {
+	entries, err := botregistry.ListWithSchema(s.botListOptions())
+	if err != nil {
+		return ""
+	}
+	for _, e := range entries {
+		if e.Name != botID || e.Vars == nil {
+			continue
+		}
+		for _, f := range e.Vars.Fields {
+			if f.Name == name && f.Default != nil {
+				return f.Default.StrVal
+			}
+		}
+	}
+	return ""
+}
 
 // reviewApproveReason detects a `/revi approve [reason]` command and returns
 // the trailing reason. ok=false for any other command (so the normal /revi
@@ -106,13 +144,18 @@ func (s *Server) handlePRForgeReviewApprove(ctx context.Context, w http.Response
 		filtered("forge returned no head sha for the PR")
 		return
 	}
+	gateCtx := s.resolveGateContext(cfg, defaultWebhookBotReviewPR)
+	if gateCtx == "" {
+		filtered("no merge-gate context is pinned on this repo, so there is nothing to approve (pin gate_context on the integration — see docs/merge-gate.md)")
+		return
+	}
 	desc := "approved by @" + p.AuthorLogin
 	if reason != "" {
 		desc += ": " + reason
 	}
 	if err := gc.SetCommitStatus(ctx, p.ProjectPath, pr.HeadSHA, forge.CommitStatus{
 		State:       forge.CommitStateSuccess,
-		Context:     reviewGateContext,
+		Context:     gateCtx,
 		Description: desc,
 		TargetURL:   p.CommentURL,
 	}); err != nil {
@@ -121,8 +164,8 @@ func (s *Server) handlePRForgeReviewApprove(ctx context.Context, w http.Response
 		return
 	}
 	if s.logger != nil {
-		s.logger.Info("webhooks: %s %s#%d revi/review force-greened by @%s (%q)", provider, p.ProjectPath, p.IssueNumber, p.AuthorLogin, reason)
+		s.logger.Info("webhooks: %s %s#%d %s force-greened by @%s (%q)", provider, p.ProjectPath, p.IssueNumber, gateCtx, p.AuthorLogin, reason)
 	}
-	s.recordTerminalWebhookDelivery(ctx, cfg, meta, webhooks.StatusLaunched, payloadHash, srcIP, "revi/review approved by @"+p.AuthorLogin)
+	s.recordTerminalWebhookDelivery(ctx, cfg, meta, webhooks.StatusLaunched, payloadHash, srcIP, gateCtx+" approved by @"+p.AuthorLogin)
 	writeJSONStatus(w, http.StatusOK, map[string]string{"status": "revi-approved"})
 }

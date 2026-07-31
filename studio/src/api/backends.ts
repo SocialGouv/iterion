@@ -4,7 +4,7 @@
 import { request } from "./client";
 
 export interface BackendStatus {
-  name: "claude_code" | "codex" | "claw";
+  name: "claude_code" | "codex" | "claw" | "pi" | "kimi" | "grok";
   available: boolean;
   auth: "oauth" | "api_key" | "none";
   // Go serialises nil slices as `null`, so the field may be missing or null.

@@ -46,6 +46,30 @@ type RepoIntegration struct {
 	// exactly one required check and each bot fills it for the PRs it owns.
 	LaunchVars map[string]string `bson:"launch_vars,omitempty" json:"launch_vars,omitempty"`
 
+	// HoldLabels is the operator's bot-agnostic pause: a pull request or issue
+	// carrying one of these labels vetoes EVERY auto-launch on this repo. It
+	// lives here for the same reason as LaunchVars — Provision rebuilds the
+	// webhook config from the manifests, so a pause set only on the config was
+	// silently disarmed by the next `bots enable`. That mattered little while
+	// every automatic lane also had a human trigger; it is the only brake on the
+	// zero-touch lane below.
+	HoldLabels []string `bson:"hold_labels,omitempty" json:"hold_labels,omitempty"`
+
+	// AutoFixOnGateFailure opts this repo into the ZERO-TOUCH lane: when a review
+	// leaves the merge gate red, the enabled bot that consumes reviews is
+	// launched on that head to answer the findings, with no human command.
+	//
+	// Off by default, and that is a decision rather than caution. A reviewer
+	// alone leaves the developer in the middle — findings land, they choose what
+	// to act on, and they can hand the work over with a comment whenever they
+	// want. Turning the hand-over on for everyone removes that arbitration from
+	// every developer on the repo to save one comment, so it is the repo's call.
+	//
+	// Persisted here, like LaunchVars and Overlap: Provision rebuilds the webhook
+	// config from the manifests, so a choice living only on the config is wiped
+	// by the next enable.
+	AutoFixOnGateFailure bool `bson:"auto_fix_on_gate_failure,omitempty" json:"auto_fix_on_gate_failure,omitempty"`
+
 	// Overlap is the operator's concurrency policy for this repo's webhook
 	// (pkg/schedgate vocabulary; empty = allow, the historical behaviour).
 	// Persisted here for the same reason as LaunchVars: Provision rebuilds the

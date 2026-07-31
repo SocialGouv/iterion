@@ -108,12 +108,20 @@ func SubscriptionOAuthOnly(ctx context.Context, provider Provider, kind OAuthKin
 // SubscriptionOAuthNotice is the warning a backend logs when it is about to
 // spend a subscription OAuth token outside the vendor's own CLI. Shared so
 // every backend words it identically.
+//
+// Only Anthropic's arrangement is stated as fact, because only it was measured
+// (a third-party call billed to the extra-usage balance rather than the plan).
+// Asserting the same of another vendor would be inventing a billing model: the
+// operator would read a confident sentence nobody verified, and act on it.
 func SubscriptionOAuthNotice(provider Provider) string {
+	detail := "consumption follows that vendor's policy for third-party clients"
+	if provider == ProviderAnthropic {
+		detail = "third-party apps bill against your EXTRA USAGE balance, not your plan " +
+			"limits (top up at the provider's usage settings)"
+	}
 	return fmt.Sprintf(
-		"using the %s subscription OAuth token: third-party apps bill against your "+
-			"EXTRA USAGE balance, not your plan limits (top up at the provider's usage "+
-			"settings). Set ITERION_FORBID_SUBSCRIPTION_OAUTH=1 to refuse this instead, "+
-			"or supply a metered API key.", provider)
+		"using the %s subscription OAuth token: %s. Set ITERION_FORBID_SUBSCRIPTION_OAUTH=1 "+
+			"to refuse this instead, or supply a metered API key.", provider, detail)
 }
 
 // ErrSubscriptionOAuthForbidden is returned when the operator has opted into

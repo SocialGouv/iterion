@@ -75,8 +75,18 @@ var piProtocol = CLIAgentProtocol{
 	ModelFlag: "",
 	MapModel:  nil,
 
-	MapEffort:       piMapEffort,
-	ExtraArgsFor:    piExtraArgsFor,
+	// ITERION_PI_BIN names a binary on the HOST. Resolving it here, once, would
+	// put that path in argv[0] for sandboxed runs too — and nothing bind-mounts
+	// it into the container, while the published images already ship pi on PATH.
+	// The documented use case ("a host with no Node") is a host concern, so the
+	// lookup happens per task and only when there is no sandbox.
+	HostBinaryEnv: "ITERION_PI_BIN",
+
+	MapEffort: piMapEffort,
+	// Rebound by NewPiBackend to carry that backend's logger. The default has
+	// to stay non-nil: this value is copied by anything building a pi
+	// CLIAgentBackend by hand, and a nil field there is argv silently lost.
+	ExtraArgsFor:    func(task Task) []string { return piExtraArgsFor(task, nil) },
 	ParseOutputRich: parsePiOutput,
 	ResolveEnv:      piResolveEnv,
 	SandboxEnv:      piSandboxEnv,
@@ -96,11 +106,20 @@ var piProtocol = CLIAgentProtocol{
 }
 
 // NewPiBackend constructs the pi backend. command overrides the default `pi`
-// binary (a pinned build or wrapper path); empty uses the binary on PATH.
+// binary (a pinned build or wrapper path); empty falls back to ITERION_PI_BIN
+// and then to the binary on PATH.
+//
+// ITERION_PI_BIN is the documented escape hatch for a host that cannot run the
+// npm CLI — a `bun --compile` single-file build, or an air-gapped machine with
+// no Node. It was documented and never implemented: the variable existed only
+// in the reference, so an operator who set it got the PATH binary anyway, with
+// nothing saying why.
 func NewPiBackend(logger *iterlog.Logger, command string) *PiBackend {
+	proto := piProtocol
+	proto.ExtraArgsFor = func(task Task) []string { return piExtraArgsFor(task, logger) }
 	return &PiBackend{
 		print: &CLIAgentBackend{
-			Protocol: piProtocol,
+			Protocol: proto,
 			Command:  command,
 			Logger:   logger,
 		},
@@ -127,7 +146,49 @@ func (b *PiBackend) Execute(ctx context.Context, task Task) (Result, error) {
 	if err := b.noticeSubscriptionOAuth(ctx, task); err != nil {
 		return Result{BackendName: BackendPi, ExitCode: -1}, err
 	}
-	piHideWorkspaceSessionDir(task, b.Logger)
+	// Everything pi writes for this node — the extension bundle, the composed
+	// system prompt, the session transcripts, the seeded credential — lands in
+	// one state root. When the run has somewhere better than the target
+	// repository's checkout, that is where it goes and there is nothing here to
+	// defend: the repo cannot pre-populate a directory it has no part in.
+	//
+	// The guards below exist for the fallback (host_state=none, the kubernetes
+	// driver), where the workspace bind is the only thing the container can read
+	// and the premise they were written for holds again. Gating them on
+	// containment rather than running them unconditionally is what makes the
+	// default path actually stop touching the target tree.
+	stateRoot, inCheckout := task.StateDir(BackendPi)
+	// UNCONDITIONAL. The shared root is bind-mounted read-write at a predictable
+	// path and is shared by every run on the host, so a previous run's agent can
+	// replace it with a symlink just as a checked-out repo can — and skipping
+	// the check outside the checkout removed the only symlink refusal on the
+	// path this change newly prefers. One Lstat on the leaf costs nothing.
+	if err := piGuardWriteRoot(stateRoot); err != nil {
+		return Result{BackendName: BackendPi, ExitCode: -1}, err
+	}
+	// Reap what an interrupted node stranded, for EVERY pi node — not just the
+	// codex ones that seed a credential. Session transcripts are written by all
+	// of them, and on a root shared across runs nothing else reaps them.
+	piSweepStaleSeeds(stateRoot)
+	if inCheckout {
+		// The ignore guard goes FIRST: a v2 campaign agent runs `git add -A`
+		// before each in-stride commit, and finalizeWorktree fast-forwards the
+		// result onto the operator's branch, so a live credential could be
+		// staged into the target repo. Ordering it before the seed closes that
+		// window.
+		piHideWorkspaceSessionDir(task, b.Logger)
+	}
+	// pi's openai-codex provider has no API-key path, so a ChatGPT plan only
+	// reaches it through a seeded agent dir. Riding task.ExtraEnv puts it on
+	// both transports at once, and on the sandboxed path with them.
+	codexEnv, cleanupCodex, err := piCodexSeed(ctx, task, b.Logger)
+	if err != nil {
+		return Result{BackendName: BackendPi, ExitCode: -1}, err
+	}
+	defer cleanupCodex()
+	for k, v := range codexEnv {
+		task.ExtraEnv = append(task.ExtraEnv, k+"="+v)
+	}
 	// Transport selection. RPC is the default because it is strictly higher
 	// fidelity — tool events reach the studio timeline, operator chat rides
 	// pi's native steering, accounting comes from get_session_stats, and a
@@ -263,6 +324,93 @@ func piResolveModel(model, hint string) (provider, modelID string) {
 	return provider, modelID
 }
 
+// piSkillArgs builds the `--skill` flags for this node.
+//
+// It offers pi only the skills ITERION wrote into this workspace, as reported
+// by the engine on Task.MirroredSkills. `<workDir>/.claude/skills` is a
+// checkout of the TARGET repository under `worktree: auto`, so a repo can ship
+// its own skills there — and CLI `--skill` paths bypass the project-trust gate
+// that `--no-approve` exists to close. For a webhook-launched review or triage
+// bot against an untrusted repo, handing those over is attacker-authored prompt
+// text loaded as trusted.
+//
+// The list has to come from the engine. An earlier attempt read provenance
+// markers the mirror leaves in the workspace, which is not a trust boundary at
+// all: the markers live inside the very checkout they were meant to vouch
+// against, so a repo can forge them. Nothing recovered from the workspace can
+// establish this; only the side that did the writing knows.
+//
+// `ITERION_PI_TRUST_PROJECT=1` is the documented opt-in that accepts the repo's
+// own skills, and remains the only way to get them.
+//
+// Every path emitted here is one pi resolves: `--skill` is stat'd and dispatched
+// to a directory scan or a single-file load (core/skills.ts), so both mirror
+// shapes work — a `<name>/` directory holding SKILL.md (library skills and
+// directory-form bundle skills) and a flat `<stem>.md` (plugin and flat bundle
+// skills).
+//
+// Historical note on the other direction: the gate was once
+// `len(task.SkillHints) > 0`, which carries only the DSL `skills:` field (the
+// skill *library*) — so `--skill` was never emitted for a BUNDLE bot, pi had no
+// skill awareness at all, and an agent whose own prompt ordered "LOAD YOUR
+// SKILLS FIRST" was left hunting for files. claude_code discovers this
+// directory natively and claw's `skill` tool reads it; this was a pi-only hole.
+func piSkillArgs(task Task, logger *iterlog.Logger) []string {
+	if task.WorkDir == "" {
+		return nil
+	}
+	dir := filepath.Join(task.WorkDir, ".claude", "skills")
+
+	// The documented opt-in: trust the repo's extensions, skills and settings.
+	// The directory is created lazily — the mirrors only MkdirAll it when they
+	// have something to write — so a bundle-less bot against a repo with no
+	// .claude/skills/ would otherwise be handed a path that does not exist. The
+	// branch below drops unresolvable paths for the same reason; these two must
+	// not disagree.
+	if strings.TrimSpace(os.Getenv("ITERION_PI_TRUST_PROJECT")) == "1" {
+		if _, err := os.Stat(dir); err != nil && task.Sandbox == nil {
+			return nil
+		}
+		return []string{"--skill", dir}
+	}
+
+	// MirroredSkills is the ONLY source. Deriving a path from a SkillHint name
+	// instead would route straight around this gate: a hint is recorded for
+	// every skill the workflow references, INCLUDING one the target repo
+	// shadowed — the hint describes what the agent will see, not who wrote it.
+	// Synthesising `<dir>/<name>` from it therefore handed the repo's own file
+	// to pi for any DSL `skills:` reference it chose to pre-empt. The engine
+	// reports library skills on this same list, minus the shadowed ones.
+	paths := task.MirroredSkills
+	named := len(paths)
+	seen := map[string]bool{}
+	var args []string
+	for _, p := range paths {
+		if p == "" || seen[p] {
+			continue
+		}
+		if _, err := os.Stat(p); err != nil {
+			// Under a sandbox WorkDir names an in-container path the host
+			// cannot stat; offer it anyway — the engine says it wrote it, and
+			// a path pi cannot resolve costs a skill, not the run.
+			if task.Sandbox == nil {
+				continue
+			}
+		}
+		seen[p] = true
+		args = append(args, "--skill", p)
+	}
+	// The silent-zero-skill failure this whole function exists to end: the
+	// engine named skills, none of them resolved, and pi runs with none while
+	// the bot's prompt tells the agent to load them. Nothing else reports it.
+	if len(args) == 0 && named > 0 && logger != nil {
+		logger.Warn("[%s#%d/%s] no skills offered to pi: the engine named %d for this run "+
+			"but none resolved under %s (set ITERION_PI_TRUST_PROJECT=1 to load the workspace's own)",
+			task.NodeID, task.Iteration, BackendPi, named, dir)
+	}
+	return args
+}
+
 func piMapProvider(name string) string {
 	if mapped, ok := piProviderPrefixes[name]; ok {
 		return mapped
@@ -289,7 +437,12 @@ func piMapEffort(effort string) []string {
 }
 
 // piExtraArgsFor emits the per-task half of pi's argv.
-func piExtraArgsFor(task Task) []string {
+//
+// The logger is the reason this is not a plain `func(Task) []string`: the argv
+// builder is the only place that knows a node ended up with zero skills, and a
+// nil logger there turns that into exactly the silent degradation this backend
+// keeps re-learning. Both transports bind it in their constructor.
+func piExtraArgsFor(task Task, logger *iterlog.Logger) []string {
 	var args []string
 
 	if provider, modelID := piResolveModel(task.Model, task.ProviderHint); modelID != "" {
@@ -317,9 +470,7 @@ func piExtraArgsFor(task Task) []string {
 	// workspace's .claude/skills/, which is not one of pi's own lookup
 	// roots — but --skill takes an explicit path, and CLI-supplied skill
 	// paths bypass the project-trust gate that --no-approve closes.
-	if len(task.SkillHints) > 0 && task.WorkDir != "" {
-		args = append(args, "--skill", filepath.Join(task.WorkDir, ".claude", "skills"))
-	}
+	args = append(args, piSkillArgs(task, logger)...)
 
 	// The one tool gate pi expresses cleanly. iterion's `tools:` names do
 	// not map onto pi's built-ins, and a partial mapping would silently
@@ -361,16 +512,46 @@ func piExtraArgsFor(task Task) []string {
 // GC-able, and concurrent nodes must not collide. Sandboxed runs need a
 // path visible inside the container, which means workspace-relative.
 func piSessionDir(task Task) string {
-	if task.Sandbox != nil && task.WorkDir != "" {
-		return filepath.Join(task.WorkDir, ".iterion", "pi", "sessions")
+	root, _ := task.StateDir(BackendPi)
+	return filepath.Join(root, "sessions")
+}
+
+// piGuardWriteRoot refuses to write pi's workspace state through a symlink the
+// TARGET repository supplied at `<WorkDir>/.iterion/pi`.
+//
+// .gitignore does not stop a TRACKED symlink from being checked out, and both
+// os.MkdirAll and pi itself follow one — so a repo could redirect the extension
+// bundle, the composed system prompt and its own session transcripts to a host
+// path of its choosing, creating directories along the way. Off the sandbox
+// that path is outside the workspace entirely.
+//
+// Only the LEAF is refused, not a symlinked `.iterion` above it. That asymmetry
+// is deliberate: `pi/` is a directory iterion creates and names, so a symlink
+// there is never the operator's doing — whereas `.iterion` IS theirs. Without
+// `worktree: auto`, WorkDir is the operator's own repo root and `.iterion` is
+// the conventional store dir, which they may legitimately have pointed at
+// another volume; refusing that would fail every pi node on a working setup to
+// close a narrower hole.
+//
+// The residue is stated rather than hidden: a repo that commits `.iterion`
+// ITSELF as a symlink is not caught here, because at that point it is
+// impersonating the operator's own store convention and the two are
+// indistinguishable from this side.
+func piGuardWriteRoot(root string) error {
+	if root == "" {
+		return nil
 	}
-	if task.StoreDir != "" {
-		return filepath.Join(task.StoreDir, "pi", "sessions")
+	leaf := root
+	info, err := os.Lstat(leaf)
+	if err != nil {
+		return nil // absent, or unreadable for a reason MkdirAll will report
 	}
-	if task.WorkDir != "" {
-		return filepath.Join(task.WorkDir, ".iterion", "pi", "sessions")
+	if info.Mode()&os.ModeSymlink != 0 {
+		return fmt.Errorf("pi backend: refusing to run: %s is a symlink, and the workspace is a "+
+			"checkout of the target repository — pi's extension, system prompt and session "+
+			"transcripts would be written wherever it points", leaf)
 	}
-	return filepath.Join(os.TempDir(), "iterion-pi-sessions")
+	return nil
 }
 
 // piHideWorkspaceSessionDir makes a workspace-relative session dir invisible
@@ -402,10 +583,26 @@ func piHideWorkspaceSessionDir(task Task, logger *iterlog.Logger) {
 		return
 	}
 	// `*` also ignores this file, so nothing under .iterion/ is ever staged.
-	// Never overwrite: the workspace may already carry an operator's own.
 	guard := filepath.Join(root, ".gitignore")
-	if _, err := os.Stat(guard); err == nil {
+	// Lstat, never a FOLLOWING Stat. A repo can ship `.iterion/.gitignore` as a
+	// tracked symlink, and following it fails both ways: a DANGLING link makes
+	// os.WriteFile create an attacker-chosen host file, and a link to any
+	// existing path makes the Stat below succeed so this returns as if the
+	// workspace were guarded — silently leaving pi's transcripts and composed
+	// system prompt stageable by a campaign agent's `git add -A`.
+	//
+	// The write policy deliberately differs from piWriteIgnoreGuard's: this path
+	// can be the OPERATOR's own store dir, where appending `*` would re-ignore
+	// everything their rules had negated (last match wins). Their file is left
+	// exactly as it is.
+	if err := refuseNonRegular(guard); err != nil {
+		if logger != nil {
+			logger.Warn("pi: %v — session files may ride a `git add -A`", err)
+		}
 		return
+	}
+	if _, err := os.Lstat(guard); err == nil {
+		return // an operator's own guard: never overwrite
 	}
 	if err := os.WriteFile(guard, []byte("*\n"), 0o644); err != nil && logger != nil {
 		logger.Warn("pi: cannot write %s: %v — session files may ride a `git add -A`", guard, err)

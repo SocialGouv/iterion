@@ -77,9 +77,14 @@ func (b *PiRPCBackend) Execute(ctx context.Context, task Task) (Result, error) {
 		}
 	}
 
+	// Same rule as the print transport: ITERION_PI_BIN is a HOST path, so it
+	// must not become argv[0] inside a container.
 	binary := b.Command
+	if binary == "" && task.Sandbox == nil {
+		binary = strings.TrimSpace(os.Getenv(piProtocol.HostBinaryEnv))
+	}
 	if binary == "" {
-		binary = "pi"
+		binary = piProtocol.DefaultBinary
 	}
 
 	systemPrompt := task.BuildSystemPrompt()
@@ -89,13 +94,14 @@ func (b *PiRPCBackend) Execute(ctx context.Context, task Task) (Result, error) {
 	}
 	defer cleanupPrompt()
 
-	argv := append(piRPCArgs(task, promptFile), b.ExtraArgs...)
+	argv := append(piRPCArgs(task, promptFile, b.Logger), b.ExtraArgs...)
 
 	// The iterion extension supplies what pi has no native surface for — today
 	// the permission gate. Loaded via `-e`, which bypasses pi's project-trust
 	// gate (a `.pi/extensions/` drop would silently never load in a headless
 	// run, and never say so).
-	if extPath, cleanupExt, extErr := piext.Materialise(task.WorkDir); extErr != nil {
+	stateRoot, _ := task.StateDir(BackendPi)
+	if extPath, cleanupExt, extErr := piext.Materialise(stateRoot); extErr != nil {
 		// A permission-gated node without its gate is a false sense of
 		// security, so that specific combination fails rather than degrades.
 		if task.Permission.Enabled() {
@@ -462,7 +468,7 @@ func (b *PiRPCBackend) drainInbox(ctx context.Context, client *pisdk.Client, tas
 
 // piRPCArgs builds the argv for RPC mode: the shared per-task flags, minus the
 // print-mode output selection that pisdk supplies itself.
-func piRPCArgs(task Task, promptFile string) []string {
+func piRPCArgs(task Task, promptFile string, logger *iterlog.Logger) []string {
 	var args []string
 	for i := 0; i < len(piProtocol.ExtraArgs); i++ {
 		if piProtocol.ExtraArgs[i] == "--mode" {
@@ -477,7 +483,7 @@ func piRPCArgs(task Task, promptFile string) []string {
 	if task.ReasoningEffort != "" {
 		args = append(args, piMapEffort(task.ReasoningEffort)...)
 	}
-	return append(args, piExtraArgsFor(task)...)
+	return append(args, piExtraArgsFor(task, logger)...)
 }
 
 // piRPCEnv assembles the child environment: the host's, plus the shared

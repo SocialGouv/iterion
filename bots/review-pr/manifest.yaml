@@ -1,7 +1,22 @@
 name: review-pr
 display_name: Revi
 icon: 🔎
-version: 0.5.5
+version: 0.5.7
+## 0.5.7 — the review comment stops reporting a comparison that never happened.
+## Mono is the default topology (one family reviews), yet every comment ended
+## with "0 finding(s) cross-confirmed by both model families" — which reads as
+## two families having looked and agreed on nothing. It now names the topology
+## it actually ran under, and reports cross-confirmation only when two families
+## really reviewed.
+## 0.5.6 — a review must never leave its required check absent. The stale-anchor
+## guard added in 0.5.5 read REVIEWED_SHA from an {{outputs.…}} ref written
+## inside a tool `command:`, which the engine does not substitute there: the
+## literal reached the shell, never equalled a sha, and every review skipped
+## publishing — so the revi/review status stopped landing and no PR on the repo
+## could merge, with no error anywhere. The sha now arrives on the edge as
+## {{input.reviewed_sha}}. And when the guard legitimately fires, it costs the
+## inline anchors only: the publish still happens, carrying the gate, because a
+## required status that never lands blocks a PR for good.
 ## 0.5.5 — never LOSE findings when the merge step degrades, and never LIE
 ## about why the gate is red. Observed live on PR #300 (run 019fa02b): converge
 ## returned `findings` as the prose "See structured findings array." while
@@ -112,6 +127,27 @@ forge:
     connection's live client (deterministic publish endpoint — the run
     itself holds no posting credential). /revi in a note triggers a
     re-review on the same PR.
+
+# What this bot leaves behind for a later run to start from. Matched to a
+# consumer BY KIND, so a fixer can pick this review up without either manifest
+# naming the other bot — and a second reviewer joins by declaring the same kind.
+produces:
+  - kind: review
+    # The merged, de-duplicated finding set + the merged open questions.
+    node: converge
+    # Consulted when converge's array degrades to prose (it is an LLM step, and
+    # it has): the two families' RAW arrays, unioned and de-duped by anchor.
+    fallback_nodes: [merge_reviews]
+    # Carries reviewed_sha, so a consumer is told when the branch moved under
+    # the findings instead of acting on stale line anchors.
+    anchor_node: diff_precheck
+
+# The reply to an earlier review of the same PR, when a fixer already answered
+# one: which findings it fixed, and which it contested and why.
+consumes:
+  - kind: review_ledger
+    var: prior_pushback
+    scope: pr
 
 # Invocations: how Revi can be triggered (typed routing contract).
 invocations:

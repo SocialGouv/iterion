@@ -17,7 +17,7 @@ are legal**:
 |---|---|---|---|---|---|
 | **BYOK API key** (`sk-ant-api…`, `sk-…`) | `iterion remote api-keys create --provider <p> --from-file/-env` | Provider API-key env (`ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, etc.) | ✅ | ✅ (also works) | ✅ for Anthropic, OpenAI, xAI, z.ai, and OpenRouter |
 | **Anthropic OAuth-forfait** (Claude sub, `sk-ant-oat…`) | `POST /api/me/oauth/claude_code/credentials` (paste `credentials.json`) | Bearer + oauth beta | ⚠️ allowed, warns (bills EXTRA USAGE) | ✅ (it *is* Claude Code) | ❌ the uploaded Claude credential directory is not bridged into pi's agent dir/env yet |
-| **OpenAI ChatGPT-forfait** (Codex `auth.json`, `auth_mode: chatgpt`) | `POST /api/me/oauth/codex/credentials` (paste `auth.json`) | ChatGPT-backend OAuth | ✅ (allowed) | n/a | ❌ pi does not consume the Codex upload |
+| **OpenAI ChatGPT-forfait** (Codex `auth.json`, `auth_mode: chatgpt`) | `POST /api/me/oauth/codex/credentials` (paste `auth.json`) | ChatGPT-backend OAuth | ✅ (allowed) | n/a | ✅ bridged — iterion seeds a throwaway pi agent dir from the credential, since pi's `openai-codex` provider is OAuth-only and reads no env var (host `~/.codex` works the same way) |
 
 Kimi and Grok are outside this sealed-credential matrix: their delegates rely
 on the CLI's own inherited environment/config. Legacy Codex consumes its own
@@ -34,7 +34,10 @@ uploaded Codex credential.
   credential also reaches `claw` (against extra usage), but is not currently
   bridged into pi. Claude Code itself spends the plan normally.
 - **Have ChatGPT Plus/Pro + Codex signed in** → connect the codex `auth.json`
-  and run **claw + an `openai/*` model** — sovereign features work.
+  and run **claw + an `openai/*` model** — sovereign features work. **pi** also
+  reaches it, on an `openai-codex/*` model: that provider is OAuth-only, so
+  iterion seeds a per-run agent dir from the same credential rather than
+  passing an env var.
 
 ## Subscription OAuth on a third-party backend: a spend question, not a ToS one
 

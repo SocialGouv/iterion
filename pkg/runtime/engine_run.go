@@ -391,16 +391,19 @@ func (e *Engine) runPersistWorkspace(ctx context.Context, runID string, run *sto
 	// claude_code's native skill lookup and the claw `skill` tool
 	// discover them transparently. Workspace files always win on
 	// collision (see runtime/bundle.go for the rule).
-	if err := mirrorBundleSkills(e.workDir, e.bundle, e.logger); err != nil {
+	ownedSkills, err := mirrorBundleSkills(e.workDir, e.bundle, e.logger)
+	if err != nil {
 		e.markFailedBestEffort(ctx, runID, "bundle skills", err)
 		return fmt.Errorf("runtime: bundle skills: %w", err)
 	}
 	// Mirror markdown contributions (skills / commands / agents) from enabled plugins
 	// after the bundle skills so a same-named bundle/workspace file
 	// wins on collision. Best-effort: a plugin must not fail the run.
-	if err := mirrorPluginContributions(e.workDir, e.contributions, e.logger); err != nil && e.logger != nil {
+	ownedPluginSkills, err := mirrorPluginContributions(e.workDir, e.contributions, e.logger)
+	if err != nil && e.logger != nil {
 		e.logger.Warn("runtime: plugin contributions: %v", err)
 	}
+	ownedSkills = append(ownedSkills, ownedPluginSkills...)
 	if err := mergePluginHooks(e.workDir, e.logger); err != nil && e.logger != nil {
 		e.logger.Warn("runtime: plugin hooks: %v", err)
 	}
@@ -408,7 +411,9 @@ func (e *Engine) runPersistWorkspace(ctx context.Context, runID string, run *sto
 	// LAST so a same-named bundle/plugin/workspace file wins on collision
 	// (precedence: bundle > plugin > library > hand-authored — ADR-059). The
 	// returned name→description map feeds every LLM node's "## Skills" hint.
-	e.applyLibrarySkills()
+	// All three mirrors write into the same directory, so ownership is reported
+	// once, after the last of them has run.
+	e.applyMirroredSkills(append(ownedSkills, e.applyLibrarySkills()...))
 	e.applyPresetFocus()
 	return nil
 }
@@ -418,20 +423,43 @@ func (e *Engine) runPersistWorkspace(ctx context.Context, runID string, run *sto
 // so each LLM node renders its "## Skills" section. Best-effort: a mirror
 // failure is logged but never fails the run (the DSL reference is soft). Only
 // ClawExecutor implements SetSkillHints.
-func (e *Engine) applyLibrarySkills() {
-	hints, err := mirrorLibrarySkills(e.workDir, e.store.Root(), e.workflow, e.contributions, e.logger)
+// It returns the library skill directories iterion owns, for applyMirroredSkills.
+// A hint is recorded for every referenced skill including a shadowed one —
+// claude_code and claw read the directory natively, so the agent sees whatever
+// is there — but a shadowed entry is NOT owned: that content is the target
+// repository's, and a backend passing skills explicitly must not hand it over.
+func (e *Engine) applyLibrarySkills() []string {
+	hints, owned, err := mirrorLibrarySkills(e.workDir, e.store.Root(), e.workflow, e.contributions, e.logger)
 	if err != nil {
 		if e.logger != nil {
 			e.logger.Warn("runtime: library skills: %v", err)
 		}
-		return
+		return nil
 	}
 	if len(hints) == 0 {
-		return
+		return owned
 	}
 	type skillHintSetter interface{ SetSkillHints(map[string]string) }
 	if s, ok := e.executor.(skillHintSetter); ok {
 		s.SetSkillHints(hints)
+	}
+	return owned
+}
+
+// applyMirroredSkills hands the executor the skill directories iterion OWNS in
+// this workspace, so a backend can tell them from whatever the target
+// repository ships under the same .claude/skills/ path.
+//
+// The workspace is an untrusted checkout, so this cannot be rediscovered by
+// reading it back — a repo can write any file, including one that looks like
+// iterion's own bookkeeping. Only the mirror knows, and this is how it says so.
+// An empty list is pushed too, rather than skipped: the setter is authoritative
+// for the run, and returning early would leave a reused executor advertising the
+// previous run's skills — paths in another workspace entirely.
+func (e *Engine) applyMirroredSkills(owned []string) {
+	type mirroredSkillSetter interface{ SetMirroredSkills([]string) }
+	if s, ok := e.executor.(mirroredSkillSetter); ok {
+		s.SetMirroredSkills(owned)
 	}
 }
 

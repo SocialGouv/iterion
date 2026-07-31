@@ -94,3 +94,46 @@ func TestGitHubComment_ReviewApprove_UsesCommandGate(t *testing.T) {
 		t.Fatalf("denied approve must not launch anything (launched=%d)", launched)
 	}
 }
+
+// TestResolveGateContextFollowsTheRepoPin pins the override onto the check the
+// repo actually requires.
+//
+// A repo where two bots gate different PRs cannot require either bot's own
+// context — whichever bot did not run leaves it permanently absent — so it pins
+// ONE shared name on the integration (docs/merge-gate.md). Approving under a
+// literal `revi/review` there greens a status nothing requires, reports
+// success, and leaves the real gate red: a fix that looks like it worked.
+func TestResolveGateContextFollowsTheRepoPin(t *testing.T) {
+	s := newWebhookTestServer(t)
+	cases := []struct {
+		name string
+		cfg  webhooks.Config
+		want string
+	}{
+		{
+			name: "the repo's pin wins",
+			cfg: webhooks.Config{
+				LaunchVars:         map[string]string{gateContextVar: "from/manifest"},
+				OperatorLaunchVars: map[string]string{gateContextVar: "iterion/review"},
+			},
+			want: "iterion/review",
+		},
+		{
+			name: "the manifest union fills in when the repo pinned nothing",
+			cfg:  webhooks.Config{LaunchVars: map[string]string{gateContextVar: "from/manifest"}},
+			want: "from/manifest",
+		},
+		{
+			name: "nothing pinned anywhere and no bot on disk: refuse rather than guess",
+			cfg:  webhooks.Config{},
+			want: "",
+		},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			if got := s.resolveGateContext(c.cfg, "any-review-bot"); got != c.want {
+				t.Errorf("resolveGateContext = %q, want %q", got, c.want)
+			}
+		})
+	}
+}

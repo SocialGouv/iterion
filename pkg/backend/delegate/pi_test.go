@@ -1,6 +1,7 @@
 package delegate
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -13,6 +14,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	iterlog "github.com/SocialGouv/iterion/pkg/log"
 
 	"github.com/SocialGouv/iterion/pkg/backend/delegate/pisdk"
 	"github.com/SocialGouv/iterion/pkg/backend/permission"
@@ -77,7 +80,7 @@ func TestPiMapEffort(t *testing.T) {
 
 func TestPiExtraArgsFor(t *testing.T) {
 	t.Run("provider and model emitted together", func(t *testing.T) {
-		args := piExtraArgsFor(Task{Model: "anthropic/claude-opus-4-8"})
+		args := piExtraArgsFor(Task{Model: "anthropic/claude-opus-4-8"}, nil)
 		if i := slices.Index(args, "--provider"); i < 0 || args[i+1] != "anthropic" {
 			t.Fatalf("missing --provider anthropic in %v", args)
 		}
@@ -87,7 +90,7 @@ func TestPiExtraArgsFor(t *testing.T) {
 	})
 
 	t.Run("bare model omits provider", func(t *testing.T) {
-		args := piExtraArgsFor(Task{Model: "gpt-5.5"})
+		args := piExtraArgsFor(Task{Model: "gpt-5.5"}, nil)
 		if slices.Contains(args, "--provider") {
 			t.Fatalf("unexpected --provider for a bare model: %v", args)
 		}
@@ -97,7 +100,7 @@ func TestPiExtraArgsFor(t *testing.T) {
 	// header. Pinning --session-id for a session that does not exist yet
 	// works but makes pi warn on EVERY first run — observed live.
 	t.Run("fresh session is left to pi", func(t *testing.T) {
-		args := piExtraArgsFor(Task{Model: "gpt-5.5"})
+		args := piExtraArgsFor(Task{Model: "gpt-5.5"}, nil)
 		if slices.Contains(args, "--session-id") {
 			t.Errorf("args = %v, want no --session-id for a fresh session "+
 				"(pi warns that the id does not exist yet)", args)
@@ -108,11 +111,11 @@ func TestPiExtraArgsFor(t *testing.T) {
 	})
 
 	t.Run("resume uses session-id, fork uses fork", func(t *testing.T) {
-		resume := piExtraArgsFor(Task{SessionID: "s1"})
+		resume := piExtraArgsFor(Task{SessionID: "s1"}, nil)
 		if i := slices.Index(resume, "--session-id"); i < 0 || resume[i+1] != "s1" {
 			t.Errorf("resume args = %v, want --session-id s1", resume)
 		}
-		fork := piExtraArgsFor(Task{SessionID: "s1", ForkSession: true})
+		fork := piExtraArgsFor(Task{SessionID: "s1", ForkSession: true}, nil)
 		if i := slices.Index(fork, "--fork"); i < 0 || fork[i+1] != "s1" {
 			t.Errorf("fork args = %v, want --fork s1", fork)
 		}
@@ -122,7 +125,7 @@ func TestPiExtraArgsFor(t *testing.T) {
 	})
 
 	t.Run("session dir never the operator's pi home", func(t *testing.T) {
-		args := piExtraArgsFor(Task{StoreDir: "/store"})
+		args := piExtraArgsFor(Task{StoreDir: "/store"}, nil)
 		i := slices.Index(args, "--session-dir")
 		if i < 0 {
 			t.Fatalf("missing --session-dir in %v", args)
@@ -132,24 +135,34 @@ func TestPiExtraArgsFor(t *testing.T) {
 		}
 	})
 
-	t.Run("skills mirrored dir passed when the node has skills", func(t *testing.T) {
-		none := piExtraArgsFor(Task{WorkDir: "/w"})
-		if slices.Contains(none, "--skill") {
-			t.Errorf("unexpected --skill with no skill hints: %v", none)
+	// Only what the ENGINE reports is offered — see TestPiSkillArgs. The
+	// workspace is an untrusted checkout, so its contents prove nothing.
+	t.Run("only engine-reported skills are passed", func(t *testing.T) {
+		if none := piExtraArgsFor(Task{WorkDir: "/w"}, nil); slices.Contains(none, "--skill") {
+			t.Errorf("unexpected --skill with nothing reported: %v", none)
 		}
-		some := piExtraArgsFor(Task{WorkDir: "/w", SkillHints: []SkillHint{{Name: "s"}}})
+
+		work := t.TempDir()
+		skill := filepath.Join(work, ".claude", "skills", "s")
+		if err := os.MkdirAll(skill, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(skill, "SKILL.md"), []byte("x"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		some := piExtraArgsFor(Task{WorkDir: work, MirroredSkills: []string{skill}}, nil)
 		i := slices.Index(some, "--skill")
-		if i < 0 || some[i+1] != filepath.Join("/w", ".claude", "skills") {
-			t.Errorf("args = %v, want --skill pointing at the mirrored skills dir", some)
+		if i < 0 || some[i+1] != skill {
+			t.Errorf("args = %v, want --skill pointing at the mirrored skill", some)
 		}
 	})
 
 	t.Run("readonly is the only enforced tool gate", func(t *testing.T) {
-		rw := piExtraArgsFor(Task{Model: "m"})
+		rw := piExtraArgsFor(Task{Model: "m"}, nil)
 		if slices.Contains(rw, "--tools") {
 			t.Errorf("unexpected --tools on a writable node: %v", rw)
 		}
-		ro := piExtraArgsFor(Task{Model: "m", Readonly: true})
+		ro := piExtraArgsFor(Task{Model: "m", Readonly: true}, nil)
 		i := slices.Index(ro, "--tools")
 		if i < 0 || strings.Contains(ro[i+1], "bash") || strings.Contains(ro[i+1], "write") {
 			t.Errorf("args = %v, want a read-only tool set", ro)
@@ -157,15 +170,15 @@ func TestPiExtraArgsFor(t *testing.T) {
 	})
 
 	t.Run("offline only under sandbox, with an escape hatch", func(t *testing.T) {
-		if slices.Contains(piExtraArgsFor(Task{Model: "m"}), "--offline") {
+		if slices.Contains(piExtraArgsFor(Task{Model: "m"}, nil), "--offline") {
 			t.Error("--offline must not be forced on a host run")
 		}
 		sandboxed := Task{Model: "m", Sandbox: &recordingRun{}}
-		if !slices.Contains(piExtraArgsFor(sandboxed), "--offline") {
+		if !slices.Contains(piExtraArgsFor(sandboxed, nil), "--offline") {
 			t.Error("--offline expected under sandbox (catalogue refresh would stall on an egress policy)")
 		}
 		t.Setenv("ITERION_PI_OFFLINE", "0")
-		if slices.Contains(piExtraArgsFor(sandboxed), "--offline") {
+		if slices.Contains(piExtraArgsFor(sandboxed, nil), "--offline") {
 			t.Error("ITERION_PI_OFFLINE=0 must disable --offline")
 		}
 	})
@@ -175,21 +188,21 @@ func TestPiExtraArgsFor(t *testing.T) {
 	// 26,933 input tokens vs 448 on iterion's own tree), so the off switch
 	// must exist and must be off by default.
 	t.Run("context files on by default, with an off switch", func(t *testing.T) {
-		if slices.Contains(piExtraArgsFor(Task{}), "--no-context-files") {
+		if slices.Contains(piExtraArgsFor(Task{}, nil), "--no-context-files") {
 			t.Error("context files must stay on by default (claude_code parity)")
 		}
 		t.Setenv("ITERION_PI_NO_CONTEXT_FILES", "1")
-		if !slices.Contains(piExtraArgsFor(Task{}), "--no-context-files") {
+		if !slices.Contains(piExtraArgsFor(Task{}, nil), "--no-context-files") {
 			t.Error("ITERION_PI_NO_CONTEXT_FILES=1 must suppress AGENTS.md/CLAUDE.md injection")
 		}
 	})
 
 	t.Run("project trust is opt-in", func(t *testing.T) {
-		if slices.Contains(piExtraArgsFor(Task{}), "--approve") {
+		if slices.Contains(piExtraArgsFor(Task{}, nil), "--approve") {
 			t.Error("target-repo .pi/ resources must not be trusted by default")
 		}
 		t.Setenv("ITERION_PI_TRUST_PROJECT", "1")
-		if !slices.Contains(piExtraArgsFor(Task{}), "--approve") {
+		if !slices.Contains(piExtraArgsFor(Task{}, nil), "--approve") {
 			t.Error("ITERION_PI_TRUST_PROJECT=1 must opt into project trust")
 		}
 	})
@@ -977,4 +990,48 @@ func TestPiCollectorNoProgressIsNotArmedByAZeroMark(t *testing.T) {
 		t.Fatalf("a zero mark should measure as ancient (%v) — the hazard would not exist otherwise",
 			time.Since(lastProgress))
 	}
+}
+
+// A repo can ship `<WorkDir>/.iterion/.gitignore` as a tracked symlink, and a
+// FOLLOWING os.Stat failed both ways: a DANGLING link made os.WriteFile create
+// an attacker-chosen host file, and a link to an existing path made the stat
+// succeed so the guard was silently never written — leaving pi's transcripts
+// and composed system prompt stageable.
+func TestPiHideWorkspaceSessionDirRefusesASymlinkedGuard(t *testing.T) {
+	t.Run("dangling: nothing is written through it", func(t *testing.T) {
+		work := t.TempDir()
+		target := filepath.Join(t.TempDir(), "absent")
+		if err := os.MkdirAll(filepath.Join(work, ".iterion"), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Symlink(target, filepath.Join(work, ".iterion", ".gitignore")); err != nil {
+			t.Skipf("symlinks unavailable: %v", err)
+		}
+		piHideWorkspaceSessionDir(Task{NodeID: "n", WorkDir: work}, nil)
+		if _, err := os.Stat(target); err == nil {
+			t.Error("created a host file at the symlink's target")
+		}
+	})
+
+	t.Run("pointing at an existing file: the miss is not silent", func(t *testing.T) {
+		work := t.TempDir()
+		other := filepath.Join(t.TempDir(), "other")
+		if err := os.WriteFile(other, []byte("unrelated\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.MkdirAll(filepath.Join(work, ".iterion"), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Symlink(other, filepath.Join(work, ".iterion", ".gitignore")); err != nil {
+			t.Skipf("symlinks unavailable: %v", err)
+		}
+		var buf bytes.Buffer
+		piHideWorkspaceSessionDir(Task{NodeID: "n", WorkDir: work}, iterlog.New(iterlog.LevelWarn, &buf))
+		if !strings.Contains(buf.String(), "not a regular file") {
+			t.Errorf("log = %q — the workspace is unguarded and nothing says so", buf.String())
+		}
+		if got, _ := os.ReadFile(other); string(got) != "unrelated\n" {
+			t.Errorf("wrote through the symlink: %q", got)
+		}
+	})
 }

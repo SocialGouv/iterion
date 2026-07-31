@@ -1,5 +1,5 @@
 {
-  "_note": "Hand-authored seed fixture — record mode is impractical for a claude_code campaign node (whole-session agent, real repo side-effects, forfait cost). Shape frozen against the bot's campaign_output termination contract (ADR-058 v2). Regenerate by hand ONLY if the campaign_output schema changes.",
+  "_note": "Hand-authored seed fixture \u2014 record mode is impractical for a claude_code campaign node (whole-session agent, real repo side-effects, forfait cost). Shape frozen against the bot's campaign_output termination contract (ADR-058 v2), including the finding_ledger reply half: one entry per finding of the prior review, a `refused` entry carrying the argument that contests it. Regenerate by hand ONLY if campaign_output changes.",
   "bot": "branch-improve-loop",
   "scenario": "campaign_branch_clean",
   "node": "campaign",
@@ -16,6 +16,19 @@
     "issues_remaining": "",
     "needs_human": false,
     "human_note": "",
-    "summary": "Branch diff reviewed against main: fixed the unchecked error return in the new uploader (fix(upload): propagate close error) and added the missing test for the empty-payload path (test(upload): cover empty payload); verify.sh green after each commit."
+    "summary": "Branch diff reviewed against main: fixed the unchecked error return in the new uploader (fix(upload): propagate close error) and added the missing test for the empty-payload path (test(upload): cover empty payload); verify.sh green after each commit.",
+    "finding_ledger": [
+      {
+        "id": "R5ee5",
+        "status": "fixed",
+        "commit": "9f2c1ab4d7e0",
+        "note": ""
+      },
+      {
+        "id": "R1b2c",
+        "status": "refused",
+        "note": "the anchor reads the pooled client, which is created per request in this package \u2014 the shared-state race it describes cannot occur here"
+      }
+    ]
   }
 }

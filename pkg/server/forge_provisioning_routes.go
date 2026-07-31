@@ -57,6 +57,14 @@ type forgeEnableReq struct {
 	// vocabulary: allow | skip | supersede). Empty leaves the stored one
 	// untouched; on a review webhook `supersede` is the one worth setting.
 	Overlap string `json:"overlap,omitempty"`
+
+	// AutoFixOnGateFailure opts the repo into the zero-touch lane; a nil pointer
+	// leaves its current choice alone (forge.RepoIntegration.AutoFixOnGateFailure).
+	AutoFixOnGateFailure *bool `json:"auto_fix_on_gate_failure,omitempty"`
+
+	// HoldLabels is the repo's automation pause; nil keeps the current set
+	// (forge.RepoIntegration.HoldLabels).
+	HoldLabels []string `json:"hold_labels,omitempty"`
 }
 
 func (s *Server) handleEnableForgeRepoBots(w http.ResponseWriter, r *http.Request) {
@@ -87,6 +95,8 @@ func (s *Server) handleEnableForgeRepoBots(w http.ResponseWriter, r *http.Reques
 		ScheduleCrons: req.ScheduleCrons,
 		LaunchVars:    req.LaunchVars,
 		Overlap:       req.Overlap,
+		AutoFix:       req.AutoFixOnGateFailure,
+		HoldLabels:    req.HoldLabels,
 		ActorID:       id.UserID,
 	})
 	if err != nil {
@@ -117,6 +127,14 @@ type forgeUpdateReq struct {
 	// vocabulary: allow | skip | supersede). Empty leaves the stored one
 	// untouched; on a review webhook `supersede` is the one worth setting.
 	Overlap string `json:"overlap,omitempty"`
+
+	// AutoFixOnGateFailure opts the repo into the zero-touch lane; a nil pointer
+	// leaves its current choice alone (forge.RepoIntegration.AutoFixOnGateFailure).
+	AutoFixOnGateFailure *bool `json:"auto_fix_on_gate_failure,omitempty"`
+
+	// HoldLabels is the repo's automation pause; nil keeps the current set
+	// (forge.RepoIntegration.HoldLabels).
+	HoldLabels []string `json:"hold_labels,omitempty"`
 }
 
 func (s *Server) handleUpdateForgeRepoBots(w http.ResponseWriter, r *http.Request) {
@@ -149,6 +167,8 @@ func (s *Server) handleUpdateForgeRepoBots(w http.ResponseWriter, r *http.Reques
 		ScheduleCrons: req.ScheduleCrons,
 		LaunchVars:    req.LaunchVars,
 		Overlap:       req.Overlap,
+		AutoFix:       req.AutoFixOnGateFailure,
+		HoldLabels:    req.HoldLabels,
 		ActorID:       id.UserID,
 		Replace:       true,
 	})

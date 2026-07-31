@@ -46,6 +46,7 @@ type activeSandbox struct {
 	proxy           *netproxy.Proxy
 	workspaceFolder string       // in-container path the host worktree is bind-mounted to (Spec.WorkspaceFolder, e.g. "/workspace"); used by Engine to remap ${PROJECT_DIR}
 	attachmentsDir  string       // in-container path the run's attachments dir ACTUALLY landed at; empty when nothing was mounted (no attachments yet, or a driver that drops host binds) — the authority behind Engine.attachmentPath
+	sharedStateDir  string       // host ~/.iterion path host_state actually bind-mounted, at the same absolute path in-container; empty when not mounted — lets a backend keep per-run state OUT of the target repo's checkout
 	boardEndpoint   string       // http URL of the per-run gateway-reachable board MCP listener (C082); empty when not started (no handler / not sandboxed)
 	boardListener   *http.Server // the board listener to shut down at teardown; nil when not started
 	askUserEndpoint string       // http URL of the per-run gateway-reachable ask-user MCP listener (ADR-082 Phase 3); empty when not started (no interactive node / bind failure)
@@ -357,7 +358,14 @@ func resolveAndStartSandbox(ctx context.Context, p SandboxParams) (*activeSandbo
 		spec.Env["ITERION_ARTIFACT_FILES_DIR"] = runFilesContainerPath
 	}
 	bundleContainerPath := addOptionalBindMount(spec, p.BundleHostDir, p.BundleContainerPath, "/run/iterion/bundle", "bundle", true, logger)
-	applyHostStateMounts(spec, p.Workflow, p, emitEvent, logger)
+	sharedStateDir := applyHostStateMounts(spec, p.Workflow, p, emitEvent, logger)
+	if !caps.SupportsHostBindMounts {
+		// Same rule as attachmentsDir below: a path that was never bind-mounted
+		// names a host location the container cannot read, and a backend that
+		// trusted it would write its state — including a permission-gate
+		// extension — somewhere the run cannot see.
+		sharedStateDir = ""
+	}
 	// Devbox provisioning (bot's bundle devbox.json + target repo's) runs
 	// after both: it needs the bundle mount's resolved container path, and
 	// it reads spec.WorkspaceFolder, which applyHostStateMounts may have
@@ -483,7 +491,13 @@ func resolveAndStartSandbox(ctx context.Context, p SandboxParams) (*activeSandbo
 	}
 	emitSandboxStarted(prepared, spec, driver.Name(), source, emitEvent)
 
-	active := &activeSandbox{run: run, proxy: proxy, workspaceFolder: spec.WorkspaceFolder, attachmentsDir: attachmentsDir}
+	active := &activeSandbox{
+		run:             run,
+		proxy:           proxy,
+		workspaceFolder: spec.WorkspaceFolder,
+		attachmentsDir:  attachmentsDir,
+		sharedStateDir:  sharedStateDir,
+	}
 
 	// Second half of the Claude forfait delivery: copy the read-only mount
 	// into the writable CLAUDE_CONFIG_DIR the claude_code delegate points
@@ -1335,6 +1349,15 @@ type sandboxSetter interface {
 	SetSandbox(run sandbox.Run)
 }
 
+// sharedStateSetter is the optional interface ClawExecutor implements so the
+// engine can push the directory both host and container can reach that is NOT
+// inside the target repository's checkout — reported from what was actually
+// mounted, never inferred from the host_state setting. Type-asserted at call
+// time so test stubs need not implement it.
+type sharedStateSetter interface {
+	SetSharedStateDir(dir string)
+}
+
 // boardMCPSetter is the optional interface ClawExecutor implements so the
 // engine can push the per-run board MCP HTTP endpoint (started with the
 // sandbox) into the executor after the run starts. The executor sets
@@ -1470,6 +1493,9 @@ func (e *Engine) startSandbox(ctx context.Context, runID string, repoRoot string
 	if active != nil && active.run != nil {
 		if s, ok := e.executor.(sandboxSetter); ok {
 			s.SetSandbox(active.run)
+		}
+		if s, ok := e.executor.(sharedStateSetter); ok {
+			s.SetSharedStateDir(active.sharedStateDir)
 		}
 		// Hand the live Run to the host observer (cloud runner) so it can
 		// start mid-run file-secret refresh against the driver's

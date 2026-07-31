@@ -65,16 +65,17 @@ func (c *Contributions) IsEmpty() bool {
 // local path (reconcileSkillFile) so precedence stays identical whichever way
 // the files arrived. Content is staged through a temp file because
 // reconcileSkillFile compares on-disk sources.
-func mirrorInjectedPluginFiles(workDir string, files []ContributionFile, logger *iterlog.Logger) error {
+func mirrorInjectedPluginFiles(workDir string, files []ContributionFile, logger *iterlog.Logger) ([]string, error) {
 	if workDir == "" || len(files) == 0 {
-		return nil
+		return nil, nil
 	}
 	tmpDir, err := os.MkdirTemp("", "iterion-injected-contrib-*")
 	if err != nil {
-		return err
+		return nil, err
 	}
 	defer func() { _ = os.RemoveAll(tmpDir) }()
 
+	var owned []string
 	ready := map[string]bool{}
 	for _, f := range files {
 		if f.Kind == "" || f.Name == "" {
@@ -85,38 +86,44 @@ func mirrorInjectedPluginFiles(workDir string, files []ContributionFile, logger 
 		if !ready[f.Kind] {
 			for _, d := range []string{destDir, markerDir} {
 				if err := os.MkdirAll(d, 0o755); err != nil {
-					return fmt.Errorf("runtime/contrib: mkdir %s: %w", d, err)
+					return nil, fmt.Errorf("runtime/contrib: mkdir %s: %w", d, err)
 				}
 			}
 			ready[f.Kind] = true
 		}
 		tmpPath := filepath.Join(tmpDir, f.Kind+"__"+f.Name)
 		if err := os.WriteFile(tmpPath, f.Content, 0o644); err != nil {
-			return err
+			return nil, err
 		}
 		destPath := filepath.Join(destDir, f.Name)
 		markerPath := filepath.Join(markerDir, f.Name+".sha256")
-		if _, err := reconcileSkillFile(tmpPath, destPath, markerPath, logger); err != nil {
-			return fmt.Errorf("runtime/contrib: mirror %s %q: %w", f.Kind, f.Name, err)
+		outcome, err := reconcileSkillFile(tmpPath, destPath, markerPath, logger)
+		if err != nil {
+			return nil, fmt.Errorf("runtime/contrib: mirror %s %q: %w", f.Kind, f.Name, err)
+		}
+		// Skills only — commands and agents are mirrored for claude_code's
+		// discovery, and are not skills a backend may pass as one.
+		if f.Kind == "skills" && outcome != skillOutcomeShadowed {
+			owned = append(owned, destPath)
 		}
 	}
 	if logger != nil {
 		logger.Info("contributions: %d injected plugin file(s) mirrored into %s", len(files), filepath.Join(workDir, ".claude"))
 	}
-	return nil
+	return owned, nil
 }
 
 // mirrorInjectedLibrarySkills mirrors pre-resolved library skills as
 // <workDir>/.claude/skills/<name>/SKILL.md (the directory form — the only shape
 // claude_code's Skill tool discovers) and returns the name→description hints,
 // matching mirrorLibrarySkills' contract exactly.
-func mirrorInjectedLibrarySkills(workDir string, skills []LibrarySkillFile, logger *iterlog.Logger) (map[string]string, error) {
+func mirrorInjectedLibrarySkills(workDir string, skills []LibrarySkillFile, logger *iterlog.Logger) (map[string]string, []string, error) {
 	if workDir == "" || len(skills) == 0 {
-		return nil, nil
+		return nil, nil, nil
 	}
 	tmpDir, err := os.MkdirTemp("", "iterion-injected-libskill-*")
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	defer func() { _ = os.RemoveAll(tmpDir) }()
 
@@ -124,10 +131,11 @@ func mirrorInjectedLibrarySkills(workDir string, skills []LibrarySkillFile, logg
 	markerDir := filepath.Join(dest, bundleMirrorMarkerDir)
 	for _, d := range []string{dest, markerDir} {
 		if err := os.MkdirAll(d, 0o755); err != nil {
-			return nil, fmt.Errorf("runtime/contrib: mkdir %s: %w", d, err)
+			return nil, nil, fmt.Errorf("runtime/contrib: mkdir %s: %w", d, err)
 		}
 	}
 
+	var owned []string
 	hints := make(map[string]string, len(skills))
 	for _, s := range skills {
 		if s.Name == "" {
@@ -135,21 +143,26 @@ func mirrorInjectedLibrarySkills(workDir string, skills []LibrarySkillFile, logg
 		}
 		tmpPath := filepath.Join(tmpDir, s.Name+".SKILL.md")
 		if err := os.WriteFile(tmpPath, s.Content, 0o644); err != nil {
-			return nil, err
+			return nil, nil, err
 		}
 		skillDir := filepath.Join(dest, s.Name)
 		if err := os.MkdirAll(skillDir, 0o755); err != nil {
-			return nil, fmt.Errorf("runtime/contrib: mkdir %s: %w", skillDir, err)
+			return nil, nil, fmt.Errorf("runtime/contrib: mkdir %s: %w", skillDir, err)
 		}
 		destPath := filepath.Join(skillDir, "SKILL.md")
 		markerPath := filepath.Join(markerDir, s.Name+".SKILL.md.sha256")
-		if _, err := reconcileSkillFile(tmpPath, destPath, markerPath, logger); err != nil {
-			return nil, fmt.Errorf("runtime/contrib: mirror library skill %q: %w", s.Name, err)
+		outcome, err := reconcileSkillFile(tmpPath, destPath, markerPath, logger)
+		if err != nil {
+			return nil, nil, fmt.Errorf("runtime/contrib: mirror library skill %q: %w", s.Name, err)
+		}
+		// The FILE, not skillDir — see mirrorLibrarySkills for why.
+		if outcome != skillOutcomeShadowed {
+			owned = append(owned, destPath)
 		}
 		hints[s.Name] = s.Description
 	}
 	if logger != nil && len(hints) > 0 {
 		logger.Info("contributions: %d injected library skill(s) mirrored into %s", len(hints), dest)
 	}
-	return hints, nil
+	return hints, owned, nil
 }

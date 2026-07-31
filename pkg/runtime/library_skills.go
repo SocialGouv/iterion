@@ -33,16 +33,16 @@ import (
 // the local library store is never consulted (the cloud path — a runner pod has
 // no library on disk, so the launching instance resolved the workflow's refs
 // for it; see Contributions).
-func mirrorLibrarySkills(workDir, projectStoreDir string, wf *ir.Workflow, inj *Contributions, logger *iterlog.Logger) (map[string]string, error) {
+func mirrorLibrarySkills(workDir, projectStoreDir string, wf *ir.Workflow, inj *Contributions, logger *iterlog.Logger) (map[string]string, []string, error) {
 	if workDir == "" || wf == nil {
-		return nil, nil
+		return nil, nil, nil
 	}
 	if inj != nil {
 		return mirrorInjectedLibrarySkills(workDir, inj.Library, logger)
 	}
 	refs := collectSkillRefs(wf)
 	if len(refs) == 0 {
-		return nil, nil
+		return nil, nil, nil
 	}
 	store := skilllib.LocalStoreForProject(projectStoreDir)
 
@@ -50,6 +50,7 @@ func mirrorLibrarySkills(workDir, projectStoreDir string, wf *ir.Workflow, inj *
 	markerDir := filepath.Join(dest, bundleMirrorMarkerDir)
 
 	hints := make(map[string]string)
+	var owned []string
 	dirsReady := false
 	for _, name := range refs {
 		srcPath, ok := store.Resolve(name)
@@ -74,7 +75,7 @@ func mirrorLibrarySkills(workDir, projectStoreDir string, wf *ir.Workflow, inj *
 		if !dirsReady {
 			for _, d := range []string{dest, markerDir} {
 				if err := os.MkdirAll(d, 0o755); err != nil {
-					return nil, fmt.Errorf("runtime/library: mkdir %s: %w", d, err)
+					return nil, nil, fmt.Errorf("runtime/library: mkdir %s: %w", d, err)
 				}
 			}
 			dirsReady = true
@@ -86,19 +87,30 @@ func mirrorLibrarySkills(workDir, projectStoreDir string, wf *ir.Workflow, inj *
 		// A source that is already <name>/SKILL.md maps to the same dest.
 		skillDir := filepath.Join(dest, name)
 		if err := os.MkdirAll(skillDir, 0o755); err != nil {
-			return nil, fmt.Errorf("runtime/library: mkdir %s: %w", skillDir, err)
+			return nil, nil, fmt.Errorf("runtime/library: mkdir %s: %w", skillDir, err)
 		}
 		destPath := filepath.Join(skillDir, "SKILL.md")
 		markerPath := filepath.Join(markerDir, name+".SKILL.md.sha256")
-		if _, err := reconcileSkillFile(srcPath, destPath, markerPath, logger); err != nil {
-			return nil, fmt.Errorf("runtime/library: mirror skill %q: %w", name, err)
+		outcome, err := reconcileSkillFile(srcPath, destPath, markerPath, logger)
+		if err != nil {
+			return nil, nil, fmt.Errorf("runtime/library: mirror skill %q: %w", name, err)
+		}
+		// The hint is recorded either way — claude_code and claw read the
+		// directory natively, so the agent sees the skill whoever wrote it. The
+		// OWNED list is what a backend passes explicitly, so a shadowed entry
+		// stays out of it: that content is the target repository's.
+		// The FILE, not skillDir: MkdirAll succeeds on a directory the checkout
+		// already shipped, so claiming the directory would hand over whatever
+		// else the target repo planted in it.
+		if outcome != skillOutcomeShadowed {
+			owned = append(owned, destPath)
 		}
 		hints[name] = skillDescription(srcPath)
 	}
 	if logger != nil && len(hints) > 0 {
 		logger.Info("library: %d skill(s) mirrored into %s", len(hints), dest)
 	}
-	return hints, nil
+	return hints, owned, nil
 }
 
 // collectSkillRefs returns the deduplicated union of the workflow-level
