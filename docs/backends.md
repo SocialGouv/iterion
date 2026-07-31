@@ -384,8 +384,9 @@ agent keyframe:
 Use it to seed a generation from a prior image (e.g. reusing the previous
 keyframe for visual continuity, or a character-identity anchor). Non-codex
 backends ignore `images:` (all CLI delegates instead receive launch-time
-`attachments:` by path plus the `read_image` tool; native multimodal forwarding
-is claw-only).
+`attachments:` by path, and the executor requests `read_image`; the delegated
+CLI must provide that tool or use its own file/image reader). Native multimodal
+forwarding is claw-only.
 
 ### `claw`
 
