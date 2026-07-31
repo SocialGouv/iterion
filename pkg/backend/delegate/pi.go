@@ -341,7 +341,15 @@ func piSkillArgs(task Task, logger *iterlog.Logger) []string {
 	dir := filepath.Join(task.WorkDir, ".claude", "skills")
 
 	// The documented opt-in: trust the repo's extensions, skills and settings.
+	// The directory is created lazily — the mirrors only MkdirAll it when they
+	// have something to write — so a bundle-less bot against a repo with no
+	// .claude/skills/ would otherwise be handed a path that does not exist. The
+	// branch below drops unresolvable paths for the same reason; these two must
+	// not disagree.
 	if strings.TrimSpace(os.Getenv("ITERION_PI_TRUST_PROJECT")) == "1" {
+		if _, err := os.Stat(dir); err != nil && task.Sandbox == nil {
+			return nil
+		}
 		return []string{"--skill", dir}
 	}
 

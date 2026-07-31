@@ -405,10 +405,23 @@ func piWriteIgnoreGuard(dir string) error {
 	if err != nil && !os.IsNotExist(err) {
 		return fmt.Errorf("read ignore guard %s: %w", guard, err)
 	}
-	for _, line := range strings.Split(string(existing), "\n") {
-		if strings.TrimSpace(line) == "*" {
+	// Last match WINS in gitignore, so a `*` anywhere is not proof the tree is
+	// ignored — any later `!…` re-includes what it matched. On the sandboxed
+	// path this file lives inside the target repository's worktree, which can
+	// commit `*\n!auth.json` (or plainly `*\n!*`) and make a naive scan return
+	// "already guarded" while the seeded credential stays stageable. Only a `*`
+	// that is the LAST effective pattern settles it; otherwise fall through and
+	// append one, which then wins over anything above it.
+	lines := strings.Split(string(existing), "\n")
+	for i := len(lines) - 1; i >= 0; i-- {
+		trimmed := strings.TrimSpace(lines[i])
+		if trimmed == "" || strings.HasPrefix(trimmed, "#") {
+			continue
+		}
+		if trimmed == "*" {
 			return nil
 		}
+		break
 	}
 	// `*` ignores this file too, so nothing under dir is ever staged.
 	next := "*\n"

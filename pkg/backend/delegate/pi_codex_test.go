@@ -356,6 +356,16 @@ func TestPiSkillArgs(t *testing.T) {
 		}
 	})
 
+	// The mirrors create .claude/skills lazily, so under the opt-in a bot with no
+	// skills against a repo that ships none would otherwise get a --skill naming
+	// a path that does not exist.
+	t.Run("ITERION_PI_TRUST_PROJECT skips a directory that is not there", func(t *testing.T) {
+		t.Setenv("ITERION_PI_TRUST_PROJECT", "1")
+		if got := piSkillArgs(Task{WorkDir: t.TempDir()}, nil); len(got) != 0 {
+			t.Errorf("args = %v, want none — that path does not exist", got)
+		}
+	})
+
 	t.Run("nothing reported means nothing offered", func(t *testing.T) {
 		work := workspace(t, "attacker-supplied")
 		if got := piSkillArgs(Task{WorkDir: work}, nil); len(got) != 0 {
@@ -667,6 +677,52 @@ func TestPiCodexSeedMakesTheTokenUnstageable(t *testing.T) {
 		got, _ := os.ReadFile(victim)
 		if string(got) != "original\n" {
 			t.Errorf("victim file = %q — appended through the symlink", got)
+		}
+	})
+
+	// gitignore is LAST-MATCH-WINS, so a `*` anywhere is not proof. The seed root
+	// lives in the target repository's worktree, which can commit a `.gitignore`
+	// that opens a hole below its own catch-all.
+	t.Run("a catch-all negated below it does not count as guarded", func(t *testing.T) {
+		for _, body := range []string{"*\n!auth.json\n", "*\n!*\n", "*\n!pi-agent-*\n"} {
+			work := t.TempDir()
+			store := filepath.Join(work, ".iterion")
+			root := filepath.Join(store, "pi")
+			if err := os.MkdirAll(root, 0o755); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(filepath.Join(root, ".gitignore"), []byte(body), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := piCodexSeedRoot(Task{NodeID: "n", WorkDir: work, StoreDir: store}, nil); err != nil {
+				t.Fatal(err)
+			}
+			data, _ := os.ReadFile(filepath.Join(root, ".gitignore"))
+			lines := strings.Split(strings.TrimRight(string(data), "\n"), "\n")
+			if last := strings.TrimSpace(lines[len(lines)-1]); last != "*" {
+				t.Errorf("%q -> %q: last effective rule is %q, so the credential stays stageable",
+					body, data, last)
+			}
+		}
+	})
+
+	// ...and a genuine trailing catch-all is still left alone.
+	t.Run("a trailing catch-all short-circuits", func(t *testing.T) {
+		work := t.TempDir()
+		store := filepath.Join(work, ".iterion")
+		root := filepath.Join(store, "pi")
+		if err := os.MkdirAll(root, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		body := "# mine\n!keep\n*\n\n# trailing comment\n"
+		if err := os.WriteFile(filepath.Join(root, ".gitignore"), []byte(body), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := piCodexSeedRoot(Task{NodeID: "n", WorkDir: work, StoreDir: store}, nil); err != nil {
+			t.Fatal(err)
+		}
+		if data, _ := os.ReadFile(filepath.Join(root, ".gitignore")); string(data) != body {
+			t.Errorf("guard = %q, want it untouched", data)
 		}
 	})
 
