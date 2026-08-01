@@ -41,8 +41,53 @@ export interface TypedReference {
   label: string;
 }
 
+// A reference reaches the assistant inside ONE delimited line — see
+// contextMessage.withPageContext. Route params come from the URL, so
+// they are attacker-supplied: the operator only has to open a link
+// someone sent them. "%0A" survives in window.location.pathname, and
+// safeDecode below turns it into a real newline; a "]" closes the
+// bracket early. Either one puts the rest of the segment OUTSIDE the
+// delimiter, as ordinary free text at the top of the operator's own
+// message — indistinguishable from something they typed, and aimed at a
+// claude_code agent holding a shell and board writes. The chip does not
+// expose it either: it shows `label`, which for a run is truncated to 8
+// characters.
+//
+// So strip the structure-breaking characters HERE, at the mint, rather
+// than at each use — that way an explicit drop chip (#333) minting a
+// reference through the same helper inherits the guarantee instead of
+// having to remember it.
+//
+// Deliberately narrow: only the characters that can break the line or
+// the bracket, so a legitimate id keeps every character it had. (A
+// blanket "printable ASCII" range would eat digits and uppercase, which
+// is most of a run id.)
+//   \u0000-\u001f  C0 controls, incl. LF/CR — the line breakers
+//   \u007f        DEL
+//   \u2028\u2029  Unicode line/paragraph separators
+//   [ ]           the bracket delimiter itself
+// eslint-disable-next-line no-control-regex
+const REF_UNSAFE = /[\u0000-\u001f\u007f\u2028\u2029[\]]/g;
+
+// `?file=` and `/repos/:key` carry operator- or URL-supplied values of
+// unbounded length; the context line is a pointer, not a payload.
+const REF_MAX_LENGTH = 200;
+
+/**
+ * sanitizeReferenceText strips what would break the single-line,
+ * bracket-delimited context protocol, and bounds the length. Exported so
+ * the delimiter's owner (contextMessage) can re-apply it defensively.
+ */
+export function sanitizeReferenceText(value: string): string {
+  return value.replace(REF_UNSAFE, "").slice(0, REF_MAX_LENGTH);
+}
+
 function ref(kind: ReferenceKind, id: string, label: string): TypedReference {
-  return { kind, ref: `${kind}/${id}`, label };
+  return {
+    kind,
+    ref: `${kind}/${sanitizeReferenceText(id)}`,
+    label: sanitizeReferenceText(label),
+  };
 }
 
 // Run ids are long; the chip shows a recognisable head.

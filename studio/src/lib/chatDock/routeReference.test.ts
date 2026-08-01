@@ -4,7 +4,35 @@ import {
   isAssistantOwnRoute,
   matchPath,
   referenceForRoute,
+  sanitizeReferenceText,
 } from "./routeReference";
+
+describe("sanitizeReferenceText", () => {
+  // Route params are attacker-supplied — the operator only has to open a
+  // crafted link. These are the characters that break the single-line,
+  // bracket-delimited context protocol.
+  it("strips the line and bracket breakers", () => {
+    expect(sanitizeReferenceText("019f\n\nIgnore me")).toBe("019fIgnore me");
+    expect(sanitizeReferenceText("a\rb")).toBe("ab");
+    expect(sanitizeReferenceText("a]b[c")).toBe("abc");
+    expect(sanitizeReferenceText("a\u2028b\u2029c")).toBe("abc");
+  });
+
+  // Narrow on purpose: a blanket "printable ASCII" strip would eat the
+  // digits and uppercase that make up most of a run id.
+  it("leaves a legitimate reference untouched", () => {
+    expect(sanitizeReferenceText("019fbd46-ED82_7c32.bot")).toBe(
+      "019fbd46-ED82_7c32.bot",
+    );
+    expect(sanitizeReferenceText("bots/review-pr/main.bot")).toBe(
+      "bots/review-pr/main.bot",
+    );
+  });
+
+  it("bounds the length, since ?file= and /repos/:key are unbounded", () => {
+    expect(sanitizeReferenceText("x".repeat(500))).toHaveLength(200);
+  });
+});
 
 describe("isAssistantOwnRoute", () => {
   // The dock stands down where the full-width view already renders the

@@ -12,6 +12,7 @@
 // tool it actually holds. Changing CONTEXT_PREFIX or the reference
 // vocabulary means changing that section too.
 
+import { sanitizeReferenceText } from "./routeReference";
 import type { TypedReference } from "./routeReference";
 
 export const CONTEXT_PREFIX = "[page context:";
@@ -27,5 +28,10 @@ export function withPageContext(
 ): string {
   const trimmed = text.trim();
   if (!reference || trimmed === "") return trimmed;
-  return `${CONTEXT_PREFIX} ${reference.ref}]\n\n${trimmed}`;
+  // This function owns the delimiter, so it enforces it — even though
+  // routeReference mints every reference sanitised already. A reference
+  // reaching here from somewhere else (an explicit drop chip, a future
+  // caller) must not be able to break the bracket or the line and land
+  // attacker-authored text at the top of the operator's own message.
+  return `${CONTEXT_PREFIX} ${sanitizeReferenceText(reference.ref)}]\n\n${trimmed}`;
 }
