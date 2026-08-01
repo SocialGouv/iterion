@@ -340,6 +340,9 @@ func (s *Server) processBoardCard(ctx context.Context, tenant string, iss native
 	if err != nil {
 		return fmt.Errorf("card %s: %w", iss.ID, err)
 	}
+	// A card that targets a pull request also needs the repo's launch policy
+	// and a publish grant, neither of which can ride the card itself.
+	lc.Vars = s.applyPRLaunchContext(ctx, tenant, "", iss.Bot, lc.Vars, nil)
 	res, err := s.runs.Launch(ctx, runview.LaunchSpec{
 		FilePath:        path,
 		Source:          source,

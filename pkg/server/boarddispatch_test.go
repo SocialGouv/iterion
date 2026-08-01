@@ -4,13 +4,19 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/SocialGouv/iterion/pkg/dispatcher/boardmongo"
 	"github.com/SocialGouv/iterion/pkg/dispatcher/native"
+	"github.com/SocialGouv/iterion/pkg/forge"
+	"github.com/SocialGouv/iterion/pkg/runview"
 	"github.com/SocialGouv/iterion/pkg/store"
+	"github.com/SocialGouv/iterion/pkg/webhooks"
 )
 
 type fakeBoardCoord struct {
@@ -312,5 +318,174 @@ func TestLiftBoardLaunchContext(t *testing.T) {
 		t.Errorf("malformed secret-override blob should error")
 	} else if !strings.Contains(err.Error(), boardSecretOverridesKey) {
 		t.Errorf("error should name the offending bot-arg key, got: %v", err)
+	}
+}
+
+// TestProcessBoardCardCarriesPRLaunchContext: a card that targets a pull
+// request must reach its run with the repo's launch policy AND a forge-publish
+// grant. Neither can ride the card — ensureBoardCard copies a curated subset of
+// vars, and a grant expires — so the cloud coordinator resolves both at claim
+// time. Without them a board-mode fixer pushes its commits and then has no
+// endpoint to post its verdict or its merge-gate status to, leaving the repo's
+// required check stale on the head it just created.
+//
+// Drives the real processBoardCard rather than applyPRLaunchContext alone: a
+// correct composition is worthless if the launch path never calls it.
+func TestProcessBoardCardCarriesPRLaunchContext(t *testing.T) {
+	s, _ := newForgePublishTestServer(t)
+	s.cfg.PublicURL = "https://iterion.example"
+	s.forgeIntegrations = forge.NewMemoryRepoIntegrationStore()
+	s.webhookConfigs = webhooks.NewMemoryConfigStore()
+	// The gate context arrives from the co-enabled bots' manifest union, not
+	// from an operator pin — the layer a policy built from the integration
+	// alone would drop, resolving the var on every webhook lane and nowhere
+	// else.
+	if err := s.webhookConfigs.Create(context.Background(), webhooks.Config{
+		ID: "wh1", TenantID: "team1",
+		LaunchVars:         map[string]string{"gate_context": "iterion/review", "post_to_board": "false"},
+		OperatorLaunchVars: map[string]string{"gate_severity": "high"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.forgeIntegrations.Create(context.Background(), forge.RepoIntegration{
+		ID: "ri1", TenantID: "team1", ConnectionID: "conn1", RepoFullName: "o/r",
+		WebhookID:  "wh1",
+		LaunchVars: map[string]string{"gate_severity": "high"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	botsDir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(botsDir, "fixer.bot"), []byte(
+		// worktree: none — isolation is the IR default, and here it would fork
+		// a worktree off the live checkout and provision its devbox for a
+		// fixture that only asserts on launch vars.
+		"schema probe_out:\n  ok: string\n\ntool noop:\n  command: `printf '{\"ok\":\"yes\"}'`\n  output: probe_out\n\nworkflow board_probe:\n  worktree: none\n  entry: noop\n  noop -> done\n",
+	), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	s.cfg.Bots.Paths = []string{botsDir}
+
+	rs, err := store.New(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	svc, err := runview.NewService("", runview.WithStore(rs))
+	if err != nil {
+		t.Fatal(err)
+	}
+	s.runs = svc
+
+	// processBoardCard blocks polling the run on a 3s ticker; cancelling
+	// releases it (the loop selects on ctx.Done) so the goroutine is joined
+	// before the temp store is torn down.
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		_ = s.processBoardCard(ctx, "team1", native.Issue{
+			ID: "card1", Bot: "fixer", State: native.StateReady,
+			BotArgs: map[string]string{"pr_url": "https://github.com/o/r/pull/7"},
+		})
+	}()
+	t.Cleanup(func() { cancel(); <-done })
+
+	// Wait for the run to SETTLE, not merely to exist: reading run.json the
+	// moment it appears leaves the engine's goroutines writing into the temp
+	// store while cleanup removes it.
+	var inputs map[string]any
+	for deadline := time.Now().Add(30 * time.Second); time.Now().Before(deadline); {
+		if ids, lerr := rs.ListRuns(ctx); lerr == nil && len(ids) > 0 {
+			if run, rerr := rs.LoadRun(ctx, ids[0]); rerr == nil && run.Status.IsTerminal() {
+				inputs = run.Inputs
+				break
+			}
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	if inputs == nil {
+		t.Fatal("no run settled from the card")
+	}
+
+	if got, _ := inputs["gate_context"].(string); got != "iterion/review" {
+		t.Errorf("the repo's gate_context did not reach the run: %q", got)
+	}
+	if got, _ := inputs["gate_severity"].(string); got != "high" {
+		t.Errorf("the operator layer did not reach the run: %q", got)
+	}
+	if got, _ := inputs[forgePublishVarURL].(string); got != "https://iterion.example/api/v1/forge/publish-review" {
+		t.Errorf("publish endpoint not injected: %q", got)
+	}
+	tok, _ := inputs[forgePublishVarToken].(string)
+	if tok == "" {
+		t.Fatal("no publish grant minted for the board launch")
+	}
+	g, ok := s.forgePublishTokens.lookup(tok)
+	if !ok || g.TeamID != "team1" || g.ConnectionID != "conn1" || g.Repo != "o/r" {
+		t.Fatalf("grant scoped wrong: ok=%v g=%+v", ok, g)
+	}
+}
+
+// TestApplyPRLaunchContextPrecedence: the repo's policy fills gaps only — a
+// value already on the launch is a deliberate per-run pin — and within that
+// policy the operator's override beats the manifest union. A launch with no
+// pull request gets nothing: neither the grant nor the gate has any meaning.
+func TestApplyPRLaunchContextPrecedence(t *testing.T) {
+	s, _ := newForgePublishTestServer(t)
+	s.cfg.PublicURL = "https://iterion.example"
+	s.forgeIntegrations = forge.NewMemoryRepoIntegrationStore()
+	s.webhookConfigs = webhooks.NewMemoryConfigStore()
+	if err := s.webhookConfigs.Create(context.Background(), webhooks.Config{
+		ID: "wh1", TenantID: "team1",
+		// The union carries a co-enabled bot's value for post_to_board; the
+		// per-bot rule is what keeps it from reaching the other bot.
+		LaunchVars:         map[string]string{"gate_context": "revi/review", "gate_severity": "low", "post_to_board": "false"},
+		OperatorLaunchVars: map[string]string{"gate_context": "iterion/review"},
+		BotRules: []webhooks.BotRule{
+			{BotID: "fixer", LaunchVars: map[string]string{"post_to_board": "true"}},
+		},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.forgeIntegrations.Create(context.Background(), forge.RepoIntegration{
+		ID: "ri1", TenantID: "team1", ConnectionID: "conn1", RepoFullName: "o/r",
+		WebhookID:  "wh1",
+		LaunchVars: map[string]string{"gate_context": "iterion/review"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	vars := map[string]string{
+		"pr_url":        "https://github.com/o/r/pull/7",
+		"gate_severity": "medium", // pinned on the launch — must survive
+		"gate_context":  "",       // cleared field: absent, not a decision
+	}
+	out := s.applyPRLaunchContext(context.Background(), "team1", "", "fixer", vars, nil)
+	if out["gate_severity"] != "medium" {
+		t.Errorf("repo policy overwrote a launch pin: %q", out["gate_severity"])
+	}
+	if out["gate_context"] != "iterion/review" {
+		t.Errorf("a blank value must not suppress the repo's pin: %q", out["gate_context"])
+	}
+	if out["post_to_board"] != "true" {
+		t.Errorf("the bot's own rule must beat the co-enabled union: %q", out["post_to_board"])
+	}
+
+	// Same slug on another forge is a different repo: no policy, no grant.
+	out = s.applyPRLaunchContext(context.Background(), "team1", "", "fixer",
+		map[string]string{"pr_url": "https://gitlab.example/o/r/-/merge_requests/7"}, nil)
+	if _, ok := out["gate_context"]; ok {
+		t.Errorf("policy applied across forge hosts: %v", out)
+	}
+	if _, ok := out[forgePublishVarToken]; ok {
+		t.Error("grant minted for a repo on a host no connection covers")
+	}
+
+	out = s.applyPRLaunchContext(context.Background(), "team1", "", "fixer", map[string]string{"base_ref": "main"}, nil)
+	if _, ok := out[forgePublishVarToken]; ok {
+		t.Error("no pr_url: nothing to grant")
+	}
+	if _, ok := out["gate_context"]; ok {
+		t.Error("no pr_url: no repo policy to apply")
 	}
 }
