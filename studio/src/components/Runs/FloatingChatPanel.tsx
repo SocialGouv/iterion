@@ -11,6 +11,7 @@ import { useEffect, useRef, useState } from "react";
 import { PaperPlaneIcon } from "@radix-ui/react-icons";
 
 import AgentChatboxInline from "@/components/shared/AgentChatboxInline";
+import { useAssistantReservedWidthPx } from "@/components/ChatDock/AssistantProvider";
 import {
   ChatDockBubble,
   ChatDockChrome,
@@ -52,6 +53,10 @@ export default function FloatingChatPanel({
 }: Props) {
   const status = useRunStore((s) => s.snapshot?.run.status);
   useAutoExpandOnPause(status, dock, onDockChange);
+  // The assistant is on this route too, and when docked it owns a fixed
+  // column at the right edge. Lane 1 alone does not clear it — the
+  // steering bubble would sit under it and take no clicks.
+  const rightInset = useAssistantReservedWidthPx();
 
   if (dock === "docked-right") {
     // RunView mounts ChatPanelContent inline; nothing to render here.
@@ -62,6 +67,7 @@ export default function FloatingChatPanel({
       <SteeringBubble
         runId={runId}
         status={status}
+        rightInset={rightInset}
         onOpen={() => onDockChange(openedDock())}
       />
     );
@@ -70,6 +76,7 @@ export default function FloatingChatPanel({
     <ChatDockFloating
       label={STEERING_TITLE}
       lane={STEERING_LANE}
+      rightInset={rightInset}
       onClose={() => onDockChange("closed")}
     >
       <ChatDockChrome
@@ -90,10 +97,12 @@ export default function FloatingChatPanel({
 function SteeringBubble({
   runId,
   status,
+  rightInset,
   onOpen,
 }: {
   runId: string;
   status: RunStatus | undefined;
+  rightInset: number;
   onOpen: () => void;
 }) {
   const messages = useRunChatMessages(runId);
@@ -113,6 +122,7 @@ function SteeringBubble({
       unread={unread}
       attention={needsAttention}
       lane={STEERING_LANE}
+      rightInset={rightInset}
       onOpen={onOpen}
     />
   );

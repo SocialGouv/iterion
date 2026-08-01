@@ -63,6 +63,35 @@ describe("ChatDockShell dock states", () => {
   });
 });
 
+// A `fixed` corner surface gets nothing from AppShell's padding
+// reservation, so it has to step out of a reserved right edge itself —
+// otherwise the run console's steering bubble sits under the assistant's
+// docked column and takes no clicks.
+describe("ChatDockShell right-edge reservation", () => {
+  const rightOf = (el: Element) => (el as HTMLElement).style.right;
+
+  it("leaves lanes alone when nothing is reserved", () => {
+    renderShell({ dock: "closed", lane: 1 });
+    expect(rightOf(screen.getByRole("button", { name: /open assistant/i }))).toBe(
+      "80px",
+    );
+  });
+
+  it("pushes a bubble out of a reserved band", () => {
+    renderShell({ dock: "closed", lane: 1, rightInset: 380 });
+    expect(rightOf(screen.getByRole("button", { name: /open assistant/i }))).toBe(
+      "396px",
+    );
+  });
+
+  // 448px already clears a 380px column — a reservation must not shove a
+  // surface that never overlapped it.
+  it("does not move a lane that already clears", () => {
+    renderShell({ dock: "floating", lane: 1, rightInset: 380 });
+    expect(rightOf(screen.getByRole("dialog", { name: "Assistant" }))).toBe("448px");
+  });
+});
+
 describe("ChatDockShell chrome", () => {
   it("offers dock-right while floating and undock while docked", () => {
     const { onDockChange } = renderShell({ dock: "floating" });

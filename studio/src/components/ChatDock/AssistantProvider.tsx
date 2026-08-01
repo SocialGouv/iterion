@@ -36,7 +36,10 @@ import {
   useState,
   type ReactNode,
 } from "react";
+import { useLocation } from "wouter";
 
+import { DOCKED_WIDTH_PX } from "@/components/ChatDock/ChatDockShell";
+import { isAssistantOwnRoute } from "@/lib/chatDock/routeReference";
 import {
   ASSISTANT_DOCK_KEY,
   readDockState,
@@ -162,4 +165,24 @@ export function useAssistantDock(): AssistantDockContextValue | null {
 
 export function useAssistantSession(): AssistantSessionContextValue | null {
   return useContext(AssistantSessionContext);
+}
+
+// How much of the right edge the assistant currently occupies, in px
+// (0 unless it is docked on a route where it actually renders).
+//
+// Two kinds of consumer, and they need it for opposite reasons:
+//   - AppShell reserves it as padding, so the page is pushed aside
+//     rather than covered;
+//   - any OTHER fixed bottom-right surface — the run console's steering
+//     bubble — offsets by it, because padding does nothing for a
+//     `fixed` element and the bubble would otherwise sit UNDER the
+//     assistant's column, unclickable.
+// Reads the DOCK context only: the session context changes on every
+// websocket event and would re-render every consumer with it.
+export function useAssistantReservedWidthPx(): number {
+  const ctx = useContext(AssistantDockContext);
+  const [location] = useLocation();
+  return ctx?.dock === "docked-right" && !isAssistantOwnRoute(location)
+    ? DOCKED_WIDTH_PX
+    : 0;
 }

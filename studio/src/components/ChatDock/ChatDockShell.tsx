@@ -28,19 +28,28 @@ import { openedDock, type DockState } from "@/lib/chatDock/dockState";
 // EVERY route, so its position never moves under the operator.
 export type DockLane = 0 | 1;
 
-// Tailwind needs literal class names, so the lanes are a lookup rather
-// than an interpolated offset.
-const BUBBLE_LANE: Record<DockLane, string> = {
-  0: "right-4",
-  1: "right-20",
-};
-const FLOATING_LANE: Record<DockLane, string> = {
-  0: "right-4",
-  1: "right-[28rem]",
-};
+// Lanes are px offsets from the right edge, not Tailwind classes: they
+// have to compose with `rightInset` below, and an interpolated class
+// name is not something Tailwind can see.
+const BUBBLE_LANE_PX: Record<DockLane, number> = { 0: 16, 1: 80 };
+const FLOATING_LANE_PX: Record<DockLane, number> = { 0: 16, 1: 448 };
+
+// Breathing room between a fixed corner surface and whatever it is
+// clearing.
+const EDGE_GUTTER_PX = 16;
 
 const FLOATING_WIDTH_PX = 420;
 const FLOATING_HEIGHT_PX = 520;
+
+// A lane offset is a floor, not an absolute: when another surface has
+// reserved the right edge (the assistant's docked column), a lane that
+// falls inside that band must step out of it. `padding` on the layout
+// root does nothing here — these are `fixed`, so they'd sit UNDER the
+// column and take no clicks. A lane that already clears is left alone,
+// so nothing moves for a reservation it never overlapped.
+function laneRightPx(base: number, rightInset: number): number {
+  return rightInset > 0 ? Math.max(base, rightInset + EDGE_GUTTER_PX) : base;
+}
 
 // Width of the self-rendered docked column. Exported because the shell
 // (AppShell) reserves exactly this much so the dock pushes the page
@@ -57,6 +66,8 @@ export interface ChatDockShellProps {
   // tooltip. Optional but strongly encouraged when two docks coexist.
   titleHint?: string;
   lane?: DockLane;
+  // Right-edge width another surface has reserved (see laneRightPx).
+  rightInset?: number;
   // Closed-bubble presentation.
   bubbleIcon?: ReactNode;
   bubbleLabel?: string;
@@ -83,6 +94,7 @@ export function ChatDockShell({
   title,
   titleHint,
   lane = 0,
+  rightInset = 0,
   bubbleIcon,
   bubbleLabel,
   bubbleTitle,
@@ -102,6 +114,7 @@ export function ChatDockShell({
         attention={attention}
         attentionTitle={attentionTitle}
         lane={lane}
+        rightInset={rightInset}
         onOpen={() => onDockChange(openedDock())}
       />
     );
@@ -133,6 +146,7 @@ export function ChatDockShell({
     <ChatDockFloating
       label={title}
       lane={lane}
+      rightInset={rightInset}
       onClose={() => onDockChange("closed")}
     >
       <ChatDockChrome
@@ -155,11 +169,13 @@ export function ChatDockShell({
 export function ChatDockFloating({
   label,
   lane = 0,
+  rightInset = 0,
   onClose,
   children,
 }: {
   label: string;
   lane?: DockLane;
+  rightInset?: number;
   onClose: () => void;
   children: ReactNode;
 }) {
@@ -181,8 +197,9 @@ export function ChatDockFloating({
     <div
       ref={ref}
       tabIndex={-1}
-      className={`fixed bottom-4 ${FLOATING_LANE[lane]} z-[var(--z-toast)] flex flex-col rounded-md border border-border-default bg-surface-1 shadow-[var(--shadow-popover)] resize overflow-hidden focus:outline-none`}
+      className="fixed bottom-4 z-[var(--z-toast)] flex flex-col rounded-md border border-border-default bg-surface-1 shadow-[var(--shadow-popover)] resize overflow-hidden focus:outline-none"
       style={{
+        right: laneRightPx(FLOATING_LANE_PX[lane], rightInset),
         width: FLOATING_WIDTH_PX,
         height: FLOATING_HEIGHT_PX,
         minWidth: 320,
@@ -212,6 +229,7 @@ export function ChatDockBubble({
   attention = false,
   attentionTitle,
   lane = 0,
+  rightInset = 0,
   onOpen,
 }: {
   label: string;
@@ -221,13 +239,15 @@ export function ChatDockBubble({
   attention?: boolean;
   attentionTitle?: string;
   lane?: DockLane;
+  rightInset?: number;
   onOpen: () => void;
 }) {
   return (
     <button
       type="button"
       onClick={onOpen}
-      className={`fixed bottom-4 ${BUBBLE_LANE[lane]} z-[var(--z-toast)] h-12 w-12 rounded-full border shadow-[var(--shadow-lg)] flex items-center justify-center transition-transform hover:scale-105 focus:outline-none focus-visible:ring-2 focus-visible:ring-accent ${attention ? "border-warning bg-warning-soft animate-pulse" : "border-border-default bg-surface-2 text-fg-default"}`}
+      style={{ right: laneRightPx(BUBBLE_LANE_PX[lane], rightInset) }}
+      className={`fixed bottom-4 z-[var(--z-toast)] h-12 w-12 rounded-full border shadow-[var(--shadow-lg)] flex items-center justify-center transition-transform hover:scale-105 focus:outline-none focus-visible:ring-2 focus-visible:ring-accent ${attention ? "border-warning bg-warning-soft animate-pulse" : "border-border-default bg-surface-2 text-fg-default"}`}
       aria-label={`${label}${unread > 0 ? ` (${unread} new)` : ""}`}
       title={attention ? attentionTitle ?? title : title}
     >

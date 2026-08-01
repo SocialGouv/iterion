@@ -5,9 +5,7 @@ import { useLocation } from "wouter";
 import Sidebar from "./Sidebar";
 import ContextualHeaderBar from "./ContextualHeaderBar";
 import MainSpinner from "./MainSpinner";
-import { useAssistantDock } from "@/components/ChatDock/AssistantProvider";
-import { DOCKED_WIDTH_PX } from "@/components/ChatDock/ChatDockShell";
-import { isAssistantOwnRoute } from "@/lib/chatDock/routeReference";
+import { useAssistantReservedWidthPx } from "@/components/ChatDock/AssistantProvider";
 import { useUIStore } from "@/store/ui";
 
 interface AppShellProps {
@@ -31,16 +29,7 @@ export default function AppShell({ children }: AppShellProps) {
   // outside this layout tree, next to the command palette). Reserve its
   // width — box-sizing is border-box, so the padding eats into the
   // h-screen box — so it pushes the page aside instead of covering it.
-  //
-  // Reads the DOCK context only: the session context changes on every
-  // websocket event and would re-render the whole route subtree. And it
-  // applies the dock's own-route suppression, or the reservation would
-  // leave an empty gap on /whats-next.
-  const assistantDock = useAssistantDock();
-  const dockedWidth =
-    assistantDock?.dock === "docked-right" && !isAssistantOwnRoute(location)
-      ? DOCKED_WIDTH_PX
-      : 0;
+  const dockedWidth = useAssistantReservedWidthPx();
   // Key the content wrapper by the top-level view segment (not the full
   // path) so switching views (/runs → /board) plays a gentle opacity
   // fade, while intra-view URL churn (run id, selected node, ?file=)
