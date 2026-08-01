@@ -571,7 +571,7 @@ func (e *ClawExecutor) buildTask(ctx context.Context, node ir.Node, f backendFie
 
 	outputSchema := e.resolveOutputSchema(f.outputSchema)
 
-	effort := resolveReasoningEffort(f.reasoningEffort, input)
+	effort := e.effortForNode(node, f.reasoningEffort, input)
 	// "ultracode" is a mode (xhigh + workflow-orchestration prerogative),
 	// not a wire effort value. Remap to xhigh for the provider and carry the
 	// mode separately so the task can enable the orchestration prompt + tool.

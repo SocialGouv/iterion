@@ -118,6 +118,10 @@ type RunOptions struct {
 	// in buildRunExecutor. See model_override.go.
 	ModelFor   []string
 	BackendFor []string
+	// EffortFor is the same shape for reasoning_effort (repeatable
+	// --effort-for). Model, backend and effort are one decision, so the
+	// selector machinery is shared; an invalid level is a flag error.
+	EffortFor []string
 	// AutoResume is the bounded run-level auto-resume budget N
 	// (`--auto-resume`, env ITERION_AUTO_RESUME; default 0 = off). When the
 	// run exits failed_resumable with a retryable cause, the CLI waits
@@ -444,7 +448,7 @@ func buildRunExecutor(
 	if opts.Executor != nil {
 		return opts.Executor, nil
 	}
-	modelOverrides, err := model.ParseModelOverrides(opts.ModelFor, opts.BackendFor)
+	modelOverrides, err := model.ParseModelOverrides(opts.ModelFor, opts.BackendFor, opts.EffortFor)
 	if err != nil {
 		return nil, err
 	}

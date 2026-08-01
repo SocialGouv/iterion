@@ -216,6 +216,9 @@ type ModelOverrideEntry struct {
 	Backend  string `json:"backend,omitempty"`
 	Model    string `json:"model,omitempty"`
 	Provider string `json:"provider,omitempty"`
+	// Effort re-targets reasoning_effort for the matched nodes. Validated by
+	// the HTTP handler against ir.ValidReasoningEfforts before it gets here.
+	Effort string `json:"effort,omitempty"`
 }
 
 // toModelOverrides folds the launch entries into the engine's ModelOverrides.
@@ -230,6 +233,9 @@ func toModelOverrides(entries []ModelOverrideEntry) model.ModelOverrides {
 		}
 		if e.Provider != "" {
 			o.SetProvider(e.Selector, e.Provider)
+		}
+		if e.Effort != "" {
+			o.SetEffort(e.Selector, e.Effort)
 		}
 	}
 	return o
@@ -251,6 +257,7 @@ func toRunModelOverrides(entries []ModelOverrideEntry) []store.RunModelOverride 
 			Backend:  e.Backend,
 			Model:    e.Model,
 			Provider: e.Provider,
+			Effort:   e.Effort,
 		})
 	}
 	return out

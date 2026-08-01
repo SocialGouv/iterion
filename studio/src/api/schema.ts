@@ -4849,6 +4849,7 @@ export interface components {
         };
         RunModelOverride: {
             backend?: string;
+            effort?: string;
             model?: string;
             provider?: string;
             selector: string;

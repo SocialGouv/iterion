@@ -9,17 +9,23 @@ import (
 )
 
 // NodeModelOverride is the resolved launch-time override for a single node:
-// which backend / model / provider to use instead of the node's DSL values.
-// Empty fields mean "leave the node's resolved value unchanged".
+// which backend / model / provider / reasoning effort to use instead of the
+// node's DSL values. Empty fields mean "leave the node's resolved value
+// unchanged".
 type NodeModelOverride struct {
 	Backend  string
 	Model    string
 	Provider string
+	// Effort re-targets reasoning_effort. It travels with model and backend
+	// because the three are one decision: a model, the backend that drives it
+	// and how hard it is asked to think. Splitting them left the studio able
+	// to retarget a node's model but not the effort that model is worth.
+	Effort string
 }
 
 // Empty reports whether the override carries no directive (all fields blank).
 func (o NodeModelOverride) Empty() bool {
-	return o.Backend == "" && o.Model == "" && o.Provider == ""
+	return o.Backend == "" && o.Model == "" && o.Provider == "" && o.Effort == ""
 }
 
 // modelOverrideRule is one selector→override directive, in insertion order.
@@ -68,6 +74,13 @@ func (o *ModelOverrides) SetProvider(selector, provider string) {
 	o.add(selector, NodeModelOverride{Provider: provider})
 }
 
+// SetEffort adds a reasoning-effort directive for the selector. The value is
+// validated by the caller (HTTP handler / CLI flag parser) against
+// ir.ValidReasoningEfforts — an unknown level here would reach the provider.
+func (o *ModelOverrides) SetEffort(selector, effort string) {
+	o.add(selector, NodeModelOverride{Effort: effort})
+}
+
 func (o *ModelOverrides) add(selector string, ov NodeModelOverride) {
 	selector = strings.TrimSpace(selector)
 	if selector == "" || ov.Empty() {
@@ -82,7 +95,7 @@ func (o *ModelOverrides) add(selector string, ov NodeModelOverride) {
 // non-empty value for that field wins.
 func (o ModelOverrides) ForNode(id string, kind ir.NodeKind) NodeModelOverride {
 	var out NodeModelOverride
-	var bs, ms, ps int // best score seen per field
+	var bs, ms, ps, es int // best score seen per field
 	for _, r := range o.rules {
 		score, ok := selectorScore(r.selector, id, kind)
 		if !ok {
@@ -96,6 +109,9 @@ func (o ModelOverrides) ForNode(id string, kind ir.NodeKind) NodeModelOverride {
 		}
 		if r.Provider != "" && score >= ps {
 			out.Provider, ps = r.Provider, score
+		}
+		if r.Effort != "" && score >= es {
+			out.Effort, es = r.Effort, score
 		}
 	}
 	return out
@@ -163,24 +179,39 @@ func splitSelectorValue(arg string) (selector, value string, err error) {
 }
 
 // ParseModelOverrides builds a ModelOverrides from repeatable CLI flag values.
-// Each element of modelFlags/backendFlags is a "selector=value" (or a bare
-// "value" targeting every node). Returns a descriptive error on a malformed
-// element so the run fails fast instead of silently ignoring a typo.
-func ParseModelOverrides(modelFlags, backendFlags []string) (ModelOverrides, error) {
+// Each element of modelFlags/backendFlags/effortFlags is a "selector=value" (or
+// a bare "value" targeting every node). Returns a descriptive error on a
+// malformed element so the run fails fast instead of silently ignoring a typo.
+//
+// An effort value is checked against ir.ValidReasoningEfforts here: unlike a
+// model or backend name (host state this process cannot enumerate), the effort
+// levels are a closed set that reaches the provider verbatim, so a typo has to
+// die at the flag rather than on the run's first node.
+func ParseModelOverrides(modelFlags, backendFlags, effortFlags []string) (ModelOverrides, error) {
 	var o ModelOverrides
 	for _, m := range modelFlags {
 		sel, val, err := splitSelectorValue(m)
 		if err != nil {
-			return o, fmt.Errorf("--model: %w", err)
+			return o, fmt.Errorf("--model-for: %w", err)
 		}
 		o.SetModel(sel, val)
 	}
 	for _, b := range backendFlags {
 		sel, val, err := splitSelectorValue(b)
 		if err != nil {
-			return o, fmt.Errorf("--backend: %w", err)
+			return o, fmt.Errorf("--backend-for: %w", err)
 		}
 		o.SetBackend(sel, val)
+	}
+	for _, ef := range effortFlags {
+		sel, val, err := splitSelectorValue(ef)
+		if err != nil {
+			return o, fmt.Errorf("--effort-for: %w", err)
+		}
+		if !ir.ValidReasoningEfforts[val] {
+			return o, fmt.Errorf("--effort-for: %q is not a reasoning effort", val)
+		}
+		o.SetEffort(sel, val)
 	}
 	return o, nil
 }

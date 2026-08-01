@@ -22,6 +22,7 @@ var resumeOpts struct {
 	permissionDeny  []string
 	modelFor        []string
 	backendFor      []string
+	effortFor       []string
 
 	maxCostUSD          float64
 	maxTokens           int
@@ -51,6 +52,7 @@ var resumeCmd = &cobra.Command{
 			PermissionDeny:  resumeOpts.permissionDeny,
 			ModelFor:        resumeOpts.modelFor,
 			BackendFor:      resumeOpts.backendFor,
+			EffortFor:       resumeOpts.effortFor,
 			AutoResume:      resumeOpts.autoResume,
 			Budget: cli.BudgetOverrides{
 				MaxCostUSD:          resumeOpts.maxCostUSD,
@@ -89,6 +91,7 @@ func init() {
 	f.StringArrayVar(&resumeOpts.permissionDeny, "permission-deny", nil, "permission deny rule (repeatable): matching calls are always blocked.")
 	f.StringArrayVar(&resumeOpts.modelFor, "model", nil, "Re-apply a per-node/-group model override on resume (repeatable): \"selector=model\" or a bare \"model\". Resume does NOT persist the launch overrides, so pass the same --model flags used at run to keep e.g. reviewers on their chosen model. Selector = node id, id glob (reviewer_*), or kind (agent|judge).")
 	f.StringArrayVar(&resumeOpts.backendFor, "backend", nil, "Re-apply a per-node/-group backend override on resume (repeatable): \"selector=backend\" or a bare \"backend\" (claw|claude_code|pi|kimi|grok; codex is legacy). Same selector syntax as --model.")
+	f.StringArrayVar(&resumeOpts.effortFor, "effort-for", nil, "Re-apply a per-node/-group reasoning_effort override on resume (repeatable): \"selector=effort\" or a bare \"effort\" (low|medium|high|xhigh|max|ultracode). Same selector syntax as --model.")
 	registerBudgetFlags(f, &resumeOpts.maxCostUSD, &resumeOpts.maxTokens, &resumeOpts.maxDuration, &resumeOpts.maxIterations, &resumeOpts.maxParallelBranches)
 	registerAutoResumeFlag(f, &resumeOpts.autoResume)
 	mustMarkRequired(resumeCmd, "run-id")

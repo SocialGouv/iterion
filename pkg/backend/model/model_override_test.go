@@ -11,6 +11,7 @@ func TestModelOverrides_ForNode_Precedence(t *testing.T) {
 	o, err := ParseModelOverrides(
 		[]string{"reviewer_*=anthropic/claude-fable-5", "reviewer_claude=anthropic/claude-opus-4-8"},
 		[]string{"claw"}, // bare value → selector "*"
+		nil,
 	)
 	if err != nil {
 		t.Fatalf("parse: %v", err)
@@ -69,18 +70,55 @@ func TestModelOverrides_EmptyIsNoop(t *testing.T) {
 }
 
 func TestParseModelOverrides_Errors(t *testing.T) {
-	if _, err := ParseModelOverrides([]string{"reviewer_*="}, nil); err == nil {
+	if _, err := ParseModelOverrides([]string{"reviewer_*="}, nil, nil); err == nil {
 		t.Error("expected error for empty value")
 	}
-	if _, err := ParseModelOverrides(nil, []string{"  "}); err == nil {
+	if _, err := ParseModelOverrides(nil, []string{"  "}, nil); err == nil {
 		t.Error("expected error for blank arg")
 	}
 	// bare value is valid (selector "*").
-	o, err := ParseModelOverrides([]string{"anthropic/claude-opus-4-8"}, nil)
+	o, err := ParseModelOverrides([]string{"anthropic/claude-opus-4-8"}, nil, nil)
 	if err != nil {
 		t.Fatalf("bare value should parse: %v", err)
 	}
 	if got := o.ForNode("whatever", ir.NodeAgent); got.Model != "anthropic/claude-opus-4-8" {
 		t.Errorf("bare value should target all nodes, got %q", got.Model)
+	}
+}
+
+// Effort rides the same selector machinery as model and backend, because the
+// three are one decision — a model, the backend driving it, and how hard it is
+// asked to think.
+func TestModelOverrides_Effort(t *testing.T) {
+	o, err := ParseModelOverrides(
+		nil, nil,
+		[]string{"high", "reviewer_*=max"}, // bare value → selector "*"
+	)
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	if got := o.ForNode("fix_code", ir.NodeAgent).Effort; got != "high" {
+		t.Errorf("run-wide effort = %q, want high", got)
+	}
+	if got := o.ForNode("reviewer_claude", ir.NodeJudge).Effort; got != "max" {
+		t.Errorf("glob effort = %q, want max (more specific than the run-wide rule)", got)
+	}
+}
+
+// The levels are a closed set that reaches the provider verbatim, so a typo
+// has to die at the flag rather than on the run's first node.
+func TestParseModelOverrides_RejectsUnknownEffort(t *testing.T) {
+	if _, err := ParseModelOverrides(nil, nil, []string{"turbo"}); err == nil {
+		t.Fatal("expected an error for an effort level that is not in the enum")
+	}
+	// ultracode is a mode, not a wire value, but it IS an accepted level.
+	if _, err := ParseModelOverrides(nil, nil, []string{"ultracode"}); err != nil {
+		t.Errorf("ultracode must parse: %v", err)
+	}
+}
+
+func TestNodeModelOverride_EmptyCountsEffort(t *testing.T) {
+	if (NodeModelOverride{Effort: "high"}).Empty() {
+		t.Error("an effort-only override is not empty")
 	}
 }

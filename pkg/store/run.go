@@ -103,6 +103,7 @@ type RunModelOverride struct {
 	Backend  string `json:"backend,omitempty" bson:"backend,omitempty"`
 	Model    string `json:"model,omitempty" bson:"model,omitempty"`
 	Provider string `json:"provider,omitempty" bson:"provider,omitempty"`
+	Effort   string `json:"effort,omitempty" bson:"effort,omitempty"`
 }
 
 // RunBudget is the EFFECTIVE budget cap set captured at launch — the

@@ -1456,6 +1456,9 @@
           "backend": {
             "type": "string"
           },
+          "effort": {
+            "type": "string"
+          },
           "model": {
             "type": "string"
           },

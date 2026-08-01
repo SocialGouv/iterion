@@ -64,6 +64,8 @@ type ResumeOptions struct {
 	// Parsed via model.ParseModelOverrides in buildResumeExecutor.
 	ModelFor   []string
 	BackendFor []string
+	// EffortFor re-applies the launch-time reasoning_effort overrides.
+	EffortFor []string
 	// AutoResume is the bounded run-level auto-resume budget N
 	// (`--auto-resume`, env ITERION_AUTO_RESUME; default 0 = off). Mirrors
 	// RunOptions.AutoResume so `iterion resume` can itself keep re-driving a
@@ -248,6 +250,7 @@ func RunResumeWithFile(ctx context.Context, iterFile string, opts ResumeOptions,
 			PermissionDeny:  opts.PermissionDeny,
 			ModelFor:        opts.ModelFor,
 			BackendFor:      opts.BackendFor,
+			EffortFor:       opts.EffortFor,
 		})),
 	)
 
