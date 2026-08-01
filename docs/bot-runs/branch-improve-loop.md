@@ -1,5 +1,59 @@
 # Billy — branch-improvement validation
 
+## 2026-08-01 (fin de journée) — the zero-touch lane, and the crash it took to prove it (run 019fbd98)
+
+- Status: **validated after a crash-level fix.** The opt-in lane had never fired once since it was written; its first real firing panicked a server pod.
+- Method: `auto_fix_on_gate_failure` enabled on the e2e integration, a concurrency defect planted by hand (`Snapshot` handing the internal map out past the lock, `RecordHit` mutating it without one), pushed as a human. **No `/billy` comment at any point.**
+
+### First attempt: the lane crashed the server
+
+The gate went red at 12:51:30 and no fixer launched. The reason was in the pod's
+pre-restart log:
+
+```
+panic: store/mongo: tenant-scoped query without tenant in ctx
+  ← cloudpublisher.SubmitLaunch ← runview.Launch ← launchWebhookTarget
+  ← autofixForRun ← eventbus NATSBus subscriber
+```
+
+The lane stamped the **auth** identity the admission gate reads and not the
+**store** identity every tenant-scoped query asserts on. The inbound-webhook
+middleware stamps both; the retry sweeper stamps both; this lane had copied half
+the precedent. Missing, the launch does not fail — it trips the tenancy guard
+deep inside `SaveRun` and takes the process down.
+
+Its own tests could not see it: they stub `webhookLaunchBot`, which is the seam
+directly **above** where the launch reaches the store. Fixed in `b68f8a39f`,
+with the positive control now asserting on the context handed across that seam.
+
+A second, wider fix rode along: the bus fans one event out to independent
+consumers that share nothing but the dispatch, so a panic there is the widest
+blast radius for the narrowest bug. It is now recovered per delivery, logged
+with its stack, and dropped exactly as a returned error already is.
+
+### Second attempt: it works, untouched
+
+```
+gate auto-fix: iterion/review red on SocialGouv/iterion-test-appy-e2e#2@de9df24
+               → launched branch-improve-loop (run 019fbd98)
+```
+
+`restarts=0` on all three replicas. The launched run carried everything needed
+to close the loop back: `head_sha` exactly the head the gate was red on,
+`gate_context: iterion/review` (the repo's pin, not the bot's default), the
+publish grant, 7141 characters of prior review, and a `scope_notes` saying why
+it was launched.
+
+### Lessons for the next run
+
+- An opt-in feature that has never fired is not shipped, it is written. This one
+  passed a `/simplify`, an adversarial review and a refusal table, and still had
+  a process-killing bug on line one of its only untested path.
+- When a lane runs off the event bus rather than an HTTP request, it inherits
+  none of the request's context. Copy the middleware's stamping in full, or copy
+  the retry sweeper, which already had it right.
+
+
 ## 2026-08-01 (soir) — the loop closes: red gate → fix → push → independent supersede (run 019fbd1b)
 
 - Status: **validated** — the four links of the Revi↔Billy loop exercised live, two of them for the first time ever.
