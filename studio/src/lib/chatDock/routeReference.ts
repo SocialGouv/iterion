@@ -48,7 +48,7 @@ function shortId(id: string): string {
 
 function basename(path: string): string {
   const parts = path.split("/").filter(Boolean);
-  return parts.length > 0 ? parts[parts.length - 1] : path;
+  return parts[parts.length - 1] ?? path;
 }
 
 type RouteBuilder = (
@@ -155,9 +155,12 @@ export function matchPath(
   const params: Record<string, string> = {};
   for (let i = 0; i < want.length; i++) {
     const seg = want[i];
+    // Bounded by want.length, so this is unreachable — but the index
+    // signature is `string | undefined` under noUncheckedIndexedAccess.
+    if (seg === undefined) break;
     if (seg === "*") break;
     if (seg.startsWith(":")) {
-      params[seg.slice(1)] = safeDecode(got[i]);
+      params[seg.slice(1)] = safeDecode(got[i] ?? "");
       continue;
     }
     if (seg !== got[i]) return null;
