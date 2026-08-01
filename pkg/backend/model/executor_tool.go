@@ -337,7 +337,7 @@ func (e *ClawExecutor) shellRecipe(ctx context.Context, node *ir.ToolNode, input
 			// input/vars/secrets namespaces, so a direct run ref would survive
 			// into the command verbatim.
 			expandedCommand = resolveRunRefs(expandedCommand, RunIDFromContext(ctx), node.CommandRefs, shellEscapeValue)
-			resolved := resolveCommandTemplate(expandedCommand, node.CommandRefs, input, e.vars, e.secretGuard)
+			resolved := resolveCommandTemplate(expandedCommand, node.CommandRefs, e.jsonFieldsAsText(node, input), e.vars, e.secretGuard)
 			// Compression (tool nodes): node-level opt-in ONLY — compresses
 			// command output only when the node's own `compress:` is on/ultra (a
 			// run override can force-off as a kill switch, never force-on), so a
@@ -1001,6 +1001,74 @@ func resolveBracedEnvBody(body string) string {
 		return defaultVal
 	}
 	return ""
+}
+
+// jsonFieldsAsText pre-encodes every input value whose schema field is
+// declared `json` into its compact JSON text, so shell substitution
+// renders it as ONE token.
+//
+// Without it, a `json` field holding an all-string list reaches
+// shellEscapeValue's scalar-slice arm and space-joins:
+//
+//	QUICK={{input.quick_replies}} python3 -c "json.loads(os.environ['QUICK'])"
+//
+// resolves to `QUICK='Go' 'TypeScript' python3 …`, so sh reads only the
+// first word as the assignment and runs `TypeScript` as the command —
+// exit 127, with a fragment of model-authored prose as the error. The
+// author declared `json` and parses JSON; the space-join silently
+// contradicts both.
+//
+// Scoped to `json`-declared fields on purpose. The scalar-slice
+// space-join is load-bearing for `string[]` fields — `git add --
+// {{input.files}}` and friends need one shell word per element — and an
+// agent's structured output arrives as []any either way, so the declared
+// type is the only thing that distinguishes the two intents. Values
+// already textual (string, nil) and fields the schema does not declare
+// are returned untouched, and the input map is only copied when a field
+// actually changes.
+//
+// Shell command bodies only: `script:` contexts JSON-encode values
+// themselves, and pre-encoding here would double-encode them.
+func (e *ClawExecutor) jsonFieldsAsText(node *ir.ToolNode, input map[string]any) map[string]any {
+	if node == nil || node.InputSchema == "" || len(input) == 0 {
+		return input
+	}
+	schema := e.schemas[node.InputSchema]
+	if schema == nil {
+		return input
+	}
+	out := input
+	copied := false
+	for _, f := range schema.Fields {
+		if f == nil || f.Type != ir.FieldTypeJSON {
+			continue
+		}
+		v, ok := out[f.Name]
+		if !ok {
+			continue
+		}
+		switch v.(type) {
+		case nil, string:
+			// Already a single token; re-encoding would add quotes the
+			// author never wrote.
+			continue
+		}
+		b, err := json.Marshal(v)
+		if err != nil {
+			// Unmarshalable value — leave the existing behaviour rather
+			// than dropping the field.
+			continue
+		}
+		if !copied {
+			cloned := make(map[string]any, len(input))
+			for k, val := range input {
+				cloned[k] = val
+			}
+			out, copied = cloned, true
+		}
+		out[f.Name] = string(b)
+	}
+	return out
 }
 
 // shellEscapeValue formats val for safe interpolation into a sh -c command.
