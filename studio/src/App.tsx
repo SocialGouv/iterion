@@ -53,6 +53,7 @@ const ResetPassword = lazy(() => import("@/views/auth/ResetPassword"));
 const AcceptInvitation = lazy(() => import("@/views/auth/AcceptInvitation"));
 const Login = lazy(() => import("@/views/Login"));
 
+import { AssistantProvider } from "@/components/ChatDock/AssistantProvider";
 import { ErrorBoundary } from "@/components/shared/ErrorBoundary";
 import FeatureUnavailable from "@/components/shared/FeatureUnavailable";
 import GlobalCommandPalette from "@/components/shared/GlobalCommandPalette";
@@ -383,7 +384,12 @@ function AuthedApp() {
   }
 
   return (
-    <>
+    // AssistantProvider sits ABOVE the route tree: the assistant's
+    // session is mounted once for the whole authenticated app, so
+    // navigating between routes can neither restart it nor drop the
+    // transcript. It also isolates that session in its own run store —
+    // see the file header there.
+    <AssistantProvider>
       {isDesktop && <MissingCLIBanner />}
       <AppShell>
         <Switch>
@@ -644,6 +650,6 @@ function AuthedApp() {
           onClose={() => setCloudReloginConnId(null)}
         />
       </Suspense>
-    </>
+    </AssistantProvider>
   );
 }
