@@ -51,8 +51,14 @@ function basename(path: string): string {
   return parts[parts.length - 1] ?? path;
 }
 
+// Builders read a captured segment through a total accessor rather than
+// indexing the params object: a ":name" that matched is always present,
+// but under noUncheckedIndexedAccess an index signature still reads as
+// `string | undefined`, which would litter every rule with `?? ""`.
+type ParamReader = (name: string) => string;
+
 type RouteBuilder = (
-  params: Record<string, string>,
+  param: ParamReader,
   search: URLSearchParams,
 ) => TypedReference | null;
 
@@ -74,16 +80,16 @@ const ROUTE_RULES: readonly RouteRule[] = [
   { path: "/runs/new", build: ref("view", "launch", "Launch") },
   {
     path: "/runs/:id",
-    build: (p) => ref("run", p.id, `Run ${shortId(p.id)}`),
+    build: (p) => ref("run", p("id"), `Run ${shortId(p("id"))}`),
   },
   { path: "/runs", build: ref("view", "runs", "Runs") },
 
   {
     path: "/pipelines/cards/:kind/:id",
     build: (p) =>
-      p.kind === "run"
-        ? ref("run", p.id, `Run ${shortId(p.id)}`)
-        : ref("card", p.id, `Card ${shortId(p.id)}`),
+      p("kind") === "run"
+        ? ref("run", p("id"), `Run ${shortId(p("id"))}`)
+        : ref("card", p("id"), `Card ${shortId(p("id"))}`),
   },
   { path: "/pipelines", build: ref("view", "pipelines", "Pipelines") },
 
@@ -92,7 +98,7 @@ const ROUTE_RULES: readonly RouteRule[] = [
   { path: "/board", build: ref("view", "board", "Board") },
 
   { path: "/bots/new", build: ref("view", "bot-builder", "Bot builder") },
-  { path: "/bots/:name", build: (p) => ref("bot", p.name, p.name) },
+  { path: "/bots/:name", build: (p) => ref("bot", p("name"), p("name")) },
   { path: "/bots", build: ref("view", "bots", "Bots") },
 
   // The editor addresses a workspace file via ?file=; bare /editor is
@@ -106,7 +112,7 @@ const ROUTE_RULES: readonly RouteRule[] = [
     },
   },
 
-  { path: "/repos/:key", build: (p) => ref("repo", p.key, p.key) },
+  { path: "/repos/:key", build: (p) => ref("repo", p("key"), p("key")) },
 
   { path: "/skills", build: ref("view", "skills", "Skills") },
   { path: "/integrations/connect", build: ref("view", "integrations", "Connect repository") },
@@ -197,7 +203,9 @@ export function referenceForRoute(
     const captured = matchPath(rule.path, path);
     if (!captured) continue;
     if (rule.build === null) return null;
-    if (typeof rule.build === "function") return rule.build(captured, params);
+    if (typeof rule.build === "function") {
+      return rule.build((name) => captured[name] ?? "", params);
+    }
     return rule.build;
   }
   return null;
