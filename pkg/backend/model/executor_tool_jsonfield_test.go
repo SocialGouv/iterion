@@ -1,6 +1,8 @@
 package model
 
 import (
+	"context"
+	"strings"
 	"testing"
 
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
@@ -105,5 +107,94 @@ func TestJSONFieldsAsText_NoSchemaPassesThrough(t *testing.T) {
 	}
 	if out := e.jsonFieldsAsText(&ir.ToolNode{}, in); len(out) != 1 {
 		t.Errorf("schemaless node changed the input map: %#v", out)
+	}
+}
+
+// The wiring, not just the helper: deleting the jsonFieldsAsText call in
+// shellRecipe reverts the whole fix, and every test above stays green
+// because the helper remains correct in isolation. These resolve a real
+// command template through the real recipe closures.
+func jsonFieldRecipeNode(command, script string) *ir.ToolNode {
+	return &ir.ToolNode{
+		BaseNode:     ir.BaseNode{ID: "gate"},
+		SchemaFields: ir.SchemaFields{InputSchema: "gate_in"},
+		Command:      command,
+		CommandRefs:  mustRefs(command),
+		Script:       script,
+		ScriptRefs:   mustRefs(script),
+	}
+}
+
+func mustRefs(s string) []*ir.Ref {
+	if s == "" {
+		return nil
+	}
+	refs, err := ir.ParseRefs(s)
+	if err != nil {
+		panic(err)
+	}
+	return refs
+}
+
+func TestShellRecipe_PreEncodesJSONFields(t *testing.T) {
+	e := jsonFieldExecutor(
+		&ir.SchemaField{Name: "quick_replies", Type: ir.FieldTypeJSON},
+		&ir.SchemaField{Name: "files", Type: ir.FieldTypeStringArray},
+	)
+	node := jsonFieldRecipeNode(`QUICK={{input.quick_replies}} FILES={{input.files}} run`, "")
+	input := map[string]any{
+		"quick_replies": []any{"Go", "Fail-open partout"},
+		"files":         []any{"a.go", "b.go"},
+	}
+
+	resolve, _ := e.shellRecipe(context.Background(), node, input)
+	got := resolve()
+
+	wantJSON := `QUICK='["Go","Fail-open partout"]'`
+	if !strings.Contains(got, wantJSON) {
+		t.Errorf("shellRecipe resolved to %q, want it to contain %q", got, wantJSON)
+	}
+	// The string[] field must still space-join: `git add -- {{input.files}}`
+	// depends on one shell word per element.
+	if wantJoin := `FILES='a.go' 'b.go'`; !strings.Contains(got, wantJoin) {
+		t.Errorf("shellRecipe resolved to %q, want it to contain %q", got, wantJoin)
+	}
+}
+
+func TestPostconditionRecipe_PreEncodesJSONFields(t *testing.T) {
+	e := jsonFieldExecutor(&ir.SchemaField{Name: "ids", Type: ir.FieldTypeJSON})
+	node := &ir.ToolNode{
+		BaseNode:      ir.BaseNode{ID: "gate"},
+		SchemaFields:  ir.SchemaFields{InputSchema: "gate_in"},
+		Postcondition: `IDS={{input.ids}} check`,
+	}
+	node.PostcondRefs = mustRefs(node.Postcondition)
+
+	expanded := expandBracedEnv(node.Postcondition)
+	got := resolveCommandTemplate(expanded, node.PostcondRefs,
+		e.jsonFieldsAsText(node, map[string]any{"ids": []any{"T-1", "T-2"}}), nil)
+
+	if want := `IDS='["T-1","T-2"]'`; !strings.Contains(got, want) {
+		t.Errorf("postcondition resolved to %q, want it to contain %q", got, want)
+	}
+}
+
+// script: bodies JSON-encode values themselves, so pre-encoding there
+// would double-encode. This pins the scoping claim the doc comment makes.
+func TestScriptRecipe_DoesNotPreEncodeJSONFields(t *testing.T) {
+	e := jsonFieldExecutor(&ir.SchemaField{Name: "ids", Type: ir.FieldTypeJSON})
+	node := jsonFieldRecipeNode("", `const ids = {{input.ids}};`)
+	node.Language = "js"
+
+	resolve, _ := e.scriptRecipe(context.Background(), node, map[string]any{
+		"ids": []any{"T-1", "T-2"},
+	})
+	got := resolve()
+
+	if want := `const ids = ["T-1","T-2"];`; !strings.Contains(got, want) {
+		t.Errorf("scriptRecipe resolved to %q, want it to contain %q (no double encoding)", got, want)
+	}
+	if strings.Contains(got, `"[\"T-1\"`) || strings.Contains(got, `'["T-1"`) {
+		t.Errorf("scriptRecipe double-encoded the json field: %q", got)
 	}
 }
