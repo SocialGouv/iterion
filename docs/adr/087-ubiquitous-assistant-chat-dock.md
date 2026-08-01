@@ -141,10 +141,18 @@ Two properties are load-bearing:
   **allowlist** (the vocabulary already carries `/`, `:` and file paths,
   and would silently drop legitimate references as it grows), and
   **escaping** instead of stripping (nothing downstream unescapes — the
-  bot reads the raw line). The strip is deliberately narrow — C0
-  controls, `U+2028`/`U+2029`, `[`, `]` — because a blanket
-  printable-ASCII range would eat the digits and uppercase that make up
-  most of a run id.
+  bot reads the raw line). The strip is narrow — it takes only what can
+  break the line or the bracket, because a blanket printable-ASCII range
+  would eat the digits and uppercase that make up most of a run id.
+
+  Its line terminators are **Unicode's set, not JS's**: the first cut
+  stripped `U+2028`/`U+2029` but left `U+0085` NEL, which splitting on
+  `\n` and `/\s/` both miss while UAX #14 puts it in the same class — a
+  set inconsistent with its own rationale. C0 *and* C1 now go. Bidi
+  controls go too, for the chip rather than the prompt: they reorder
+  rendered text, so a crafted reference could make the chip display
+  something other than what the message carries, and the chip exists
+  precisely so context is never invisible.
 
 The reference is shown as a pinned, dismissible chip. Context is never
 silent. Dismissal is keyed on the reference itself rather than a boolean,

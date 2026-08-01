@@ -18,6 +18,23 @@ describe("sanitizeReferenceText", () => {
     expect(sanitizeReferenceText("a\u2028b\u2029c")).toBe("abc");
   });
 
+  // U+0085 NEL is a line terminator in Unicode's book even though JS's
+  // "\n" split and /\s/ both miss it — the same class as U+2028/U+2029,
+  // which are stripped, so leaving it in would be inconsistent with the
+  // set's own rationale. The C1 block it sits in goes with it.
+  it("strips the line terminators JS does not see", () => {
+    expect(sanitizeReferenceText("019f\u0085\u0085SYSTEM")).toBe("019fSYSTEM");
+    expect(sanitizeReferenceText("a\u0090b")).toBe("ab");
+  });
+
+  // Bidi overrides reorder rendered text, so a crafted reference could
+  // make the chip DISPLAY something other than what the prompt carries.
+  // The chip exists so context is never invisible; that has to hold.
+  it("strips the bidi controls that would misrepresent the chip", () => {
+    expect(sanitizeReferenceText("a\u202eb\u202cc")).toBe("abc");
+    expect(sanitizeReferenceText("a\u200eb\u2066c\u2069d")).toBe("abcd");
+  });
+
   // Narrow on purpose: a blanket "printable ASCII" strip would eat the
   // digits and uppercase that make up most of a run id.
   it("leaves a legitimate reference untouched", () => {

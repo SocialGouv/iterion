@@ -44,11 +44,13 @@ export interface TypedReference {
 // A reference reaches the assistant inside ONE delimited line — see
 // contextMessage.withPageContext. Route params come from the URL, so
 // they are attacker-supplied: the operator only has to open a link
-// someone sent them. "%0A" survives in window.location.pathname, and
-// safeDecode below turns it into a real newline; a "]" closes the
-// bracket early. Either one puts the rest of the segment OUTSIDE the
-// delimiter, as ordinary free text at the top of the operator's own
-// message — indistinguishable from something they typed, and aimed at a
+// someone sent them. A "%0A" reaches us decoded into a real newline —
+// and note the path is decoded TWICE before this runs, by wouter
+// (decodeURI, in its paths.js) and again by safeDecode below, so a
+// "%250A" arrives as one too; a "]" closes the bracket early. Either
+// one puts the rest of the segment OUTSIDE the delimiter, as ordinary
+// free text at the top of the operator's own message —
+// indistinguishable from something they typed, and aimed at a
 // claude_code agent holding a shell and board writes. The chip does not
 // expose it either: it shows `label`, which for a run is truncated to 8
 // characters.
@@ -58,16 +60,22 @@ export interface TypedReference {
 // reference through the same helper inherits the guarantee instead of
 // having to remember it.
 //
-// Deliberately narrow: only the characters that can break the line or
-// the bracket, so a legitimate id keeps every character it had. (A
-// blanket "printable ASCII" range would eat digits and uppercase, which
-// is most of a run id.)
-//   \u0000-\u001f  C0 controls, incl. LF/CR — the line breakers
-//   \u007f        DEL
-//   \u2028\u2029  Unicode line/paragraph separators
-//   [ ]           the bracket delimiter itself
-// eslint-disable-next-line no-control-regex
-const REF_UNSAFE = /[\u0000-\u001f\u007f\u2028\u2029[\]]/g;
+// Every character class that can break the LINE or the BRACKET, and
+// nothing else — a legitimate id keeps every character it had, because a
+// blanket "printable ASCII" range would eat the digits and uppercase
+// that are most of a run id. The line terminators are Unicode's set, not
+// JS's: something downstream (or the model) may honour NEL and the
+// separators even though splitting on "\n" here does not.
+//   \u0000-\u001f  C0 controls, incl. LF/CR
+//   \u007f-\u009f  DEL + the C1 block, incl. \u0085 NEL
+//   \u2028\u2029  line/paragraph separators
+//   bidi controls  they reorder rendered text, so the chip could show
+//                  something other than what the prompt carries — and
+//                  "never invisible context" is the point of the chip
+//   [ ]            the bracket delimiter itself
+const REF_UNSAFE =
+  // eslint-disable-next-line no-control-regex
+  /[\u0000-\u001f\u007f-\u009f\u200e\u200f\u202a-\u202e\u2066-\u2069\u2028\u2029[\]]/g;
 
 // `?file=` and `/repos/:key` carry operator- or URL-supplied values of
 // unbounded length; the context line is a pointer, not a payload.
