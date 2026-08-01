@@ -65,9 +65,35 @@ export default function SessionModelControl({
   });
 
   const selected = models.find((m) => m.spec === draft.model);
+
+  // Pair the chosen spec with a backend that can drive it — derived from the
+  // RESOLVED registry entry, in an effect, not at selection time.
+  //
+  // Doing it in the picker's onChange looked equivalent and was not: a
+  // "Custom…" spec is typed by the operator and is therefore absent from
+  // `models` at that instant, so the derivation produced "" and the node kept
+  // its pinned `backend: "claude_code"` — re-opening the first-node failure
+  // this pairing exists to prevent. The spec is fed back as an extraSpec, so
+  // the entry lands on the next fetch and the effect picks it up then.
+  const derivedBackend = backendForModel(selected, resolvedDefaultBackend);
+  useEffect(() => {
+    if (!open) return;
+    if (!draft.model) {
+      if (draft.backend) setDraft((d) => ({ ...d, backend: "" }));
+      return;
+    }
+    if (derivedBackend && derivedBackend !== draft.backend) {
+      setDraft((d) => ({ ...d, backend: derivedBackend }));
+    }
+  }, [open, draft.model, draft.backend, derivedBackend]);
+
   const warning = modelCapabilityWarning(selected, {
     wantsUltracode: draft.effort === "ultracode",
   });
+  // A spec the registry does not know resolves to no entry, so the capability
+  // guard above is silent about it AND no backend can be derived for it. Say
+  // so rather than letting the next session discover it.
+  const unresolved = !!draft.model && !selected && !catalogError;
   const dirty =
     (draft.model ?? "") !== (pref.choice.model ?? "") ||
     (draft.backend ?? "") !== (pref.choice.backend ?? "") ||
@@ -102,29 +128,21 @@ export default function SessionModelControl({
 
           <ModelPicker
             value={draft.model ?? ""}
-            onChange={(spec) =>
-              setDraft((d) => ({
-                ...d,
-                model: spec,
-                // Carry the backend that can DRIVE the chosen spec. This
-                // surface has no backend control on purpose — the operator is
-                // choosing a model, not an execution stack — but the bot pins
-                // `backend: "claude_code"`, so selecting an OpenAI spec
-                // without this produced a session that died at its first node
-                // with a message about the backend, not about the choice.
-                backend: spec
-                  ? backendForModel(
-                      models.find((m) => m.spec === spec),
-                      resolvedDefaultBackend,
-                    )
-                  : "",
-              }))
-            }
+            onChange={(spec) => setDraft((d) => ({ ...d, model: spec }))}
             models={models}
             recommended={recommended}
             inheritLabel="bot default"
             wantsUltracode={draft.effort === "ultracode"}
           />
+
+          {unresolved && (
+            <p className="text-caption text-warning">
+              <code>{draft.model}</code> is not in the registry, so its
+              capabilities and its backend cannot be checked — the session will
+              run on the bot&apos;s own backend, which may not be able to drive
+              this model.
+            </p>
+          )}
 
           <div className="flex items-center gap-2">
             <label className="text-caption text-fg-muted" htmlFor="session-effort">

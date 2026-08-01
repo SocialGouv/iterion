@@ -150,9 +150,20 @@ stamped on the queued doc *and* published on the wire, and
 the runner pod both go through. What the Overview shows and what the pod calls
 cannot drift, because they are the same values through the same function.
 
-Still out of scope: **resume** does not replay launch overrides in either mode
-(see the `--model` note below) — a resumed run returns to its DSL defaults
-unless the flags are passed again.
+**Resume replays them** (added after the first cut shipped without it). A
+resume receives no launch spec, so every launch-time decision has to be read
+back off the run document — and this one was not, on any of the three paths.
+The consequence was invisible rather than loud: the executor fell back to the
+`.bot`'s own `model:` while the studio header went on displaying the choice.
+
+It matters most where it shows least. A conversational run pauses on its chat
+node, so **every operator reply is a resume**: the chosen model applied to
+exactly the first turn, and the spend landed on a provider the operator had
+deliberately steered away from.
+
+Still out of scope: `iterion run` does not stamp its own `--model-for` /
+`--backend-for` / `--effort-for` on the run document, so a CLI-launched run
+needs them passed again on resume.
 
 ### 4. The preference is keyed on an opaque scope string
 
@@ -191,8 +202,9 @@ absurd.
 - `GET /api/models` reveals capability values and credential SOURCE names
   (`ANTHROPIC_API_KEY`), never credential values — pinned by a test at the HTTP
   boundary.
-- `--effort-for` exists on `run` and `resume`; like `--model`, resume does
-  not persist launch overrides, so it has to be passed again.
+- `--effort-for` exists on `run` and `resume`. On resume it layers over the
+  run's persisted rows per field (`ModelOverrides.MergeOver`), so re-targeting
+  the effort alone does not discard the launch's model.
 - `RunModelOverride` gained an `effort` field, so a run's Overview shows the
   effort it launched with.
 - The assistant's `ITERION_WHATS_NEXT_MODEL_CLAUDE` /
@@ -203,5 +215,6 @@ absurd.
   executing it with the overrides missing. Deployments must upgrade both halves
   together (see §4bis).
 - `queue.RunMessage` now carries model/backend/provider/effort, so a cloud run's
-  launch-time choice is applied by the pod and not merely displayed. Resume
-  still does not replay it in either mode.
+  launch-time choice is applied by the pod and not merely displayed —
+  `SubmitResume` republishes it too, so it survives every turn of a
+  conversational run and not only the first.

@@ -210,9 +210,15 @@ a pod quietly running the bot's default model while the studio displayed the
 one you picked. If you see that error, the fleet is version-skewed, not
 misconfigured.
 
-Launch-time overrides are **not** replayed on `iterion resume` in either mode;
-a resumed run returns to the bot's DSL defaults unless the flags are passed
-again.
+Launch-time overrides **are** replayed on resume for runs launched through the
+studio / HTTP API, in both modes: the rows stamped on the run document are
+re-folded by `runview.Service.Resume` in-process and republished by
+`cloudpublisher.SubmitResume` in cloud. `iterion resume` merges them beneath any
+`--model-for` / `--backend-for` / `--effort-for` typed for that attempt — the
+flag wins per field, so re-targeting only the effort keeps the launch's model.
+
+`iterion run` is the exception: it does not stamp its own override flags on the
+run document, so a CLI-launched run still needs them passed again on resume.
 
 ---
 
