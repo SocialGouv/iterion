@@ -1,5 +1,39 @@
 # Billy — branch-improvement validation
 
+## 2026-08-01 (soir) — the loop closes: red gate → fix → push → independent supersede (run 019fbd1b)
+
+- Status: **validated** — the four links of the Revi↔Billy loop exercised live, two of them for the first time ever.
+- Versions: bot 1.1.0 · iterion `a9f32534b` (v3.19.0, carrying `db2676c5b`).
+- Method: a real defect planted by hand on `feat/cache-layer` (a `Purge` ranging over the entry map and a `Len` reading it, both without the mutex, on a type documented "safe for concurrent use"), pushed as a human. Revi reviewed it, the gate went red, `/billy`.
+- Result: Revi found 4 findings (1 critical, 1 high, 2 medium) and the gate went `failure — 2 blocking finding(s) ≥high`. Billy fixed all four, pushed, and posted `iterion/review=success on a3a734324f33`. The independent re-review landed 14 minutes later and superseded it with `success — no blocking findings (≥high); 2 total`.
+
+### The measurement that mattered
+
+The same actor, the same event, the same repo — before and after `db2676c5b`:
+
+| heure (UTC) | `synchronize` pushed by | delivery | sha |
+|---|---|---|---|
+| 10:29:33 | the fixer, before the fix | **filtered** | `6dd691c1b` |
+| 11:28:28 | a human | launched | `e8ca8c0be` |
+| 11:56:49 | the fixer, after the fix | **launched** | `a3a734324` |
+
+And the two verdicts that then sat on that one head, in order:
+
+| heure | `iterion/review` on `a3a73432` | by |
+|---|---|---|
+| 11:56:50 | `success — 4 finding(s) fixed, re-review by the fixer clean, build green` | the fixer, about its own code |
+| 12:10:57 | `success — no blocking findings (≥high); 2 total` | the reviewer, independent |
+
+### The return ledger, exercised for the first time
+
+`prior_pushback` reached the re-review at 1920 characters, finding by finding with the commit that fixed each. The reviewer re-raised **none** of the four and instead found two new low ones — plus a question worth more than the findings: *does CI run `go test -race`? I could not here, and I confirmed by mutation that removing Len's mutex leaves the whole suite green.* A locking discipline with no automated guard, surfaced by the reviewer's own falsifiability channel.
+
+### Lessons for the next run
+
+- A guard keyed on the sender treats "our bot pushed" and "our bot opened this PR" as the same thing. They are opposites: the second converged in its own loop, the first is exactly the moment an independent judgement is needed.
+- Plant a defect and drive the whole loop rather than asserting each link separately. Both defects fixed today were compositions, not units.
+
+
 ## 2026-08-01 — the board lane could not publish, and the fixer's push was invisible to the gate (run 019fbcbb)
 
 - Status: **validated** — first end-to-end run where Billy answers a review, pushes, posts its verdict AND closes the merge gate. Two engine defects found live, both fixed and deployed in-session.

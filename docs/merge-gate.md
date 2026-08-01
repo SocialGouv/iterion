@@ -187,6 +187,11 @@ from fighting:
    B and its verdict — the authoritative one, from a reviewer that did not
    write the code — lands minutes later and supersedes.
 
+Step 4 is deliberately exempt from the iterion-bot guard, which otherwise skips
+a delivery our own forge bot sent. Here the sender *is* the bot by
+construction — it is the fixer that pushed — and this is the one delivery the
+gate cannot lose.
+
 Step 3 is the one that needs care, because the fixer wrote the code it is
 grading. Three rules keep it honest, and a fixer that gates must implement all
 three:
