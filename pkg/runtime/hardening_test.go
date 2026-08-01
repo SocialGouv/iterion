@@ -194,6 +194,50 @@ func TestInterruptedMidNodeProducesResumableStatus(t *testing.T) {
 	}
 }
 
+// TestOperatorCancelMidNodeStaysTerminal is the mirror of the test above, and
+// the half whose regression actually costs something: an operator who stops a
+// run WHILE a node is executing must get a terminal `cancelled`. Written
+// failed_resumable instead, the runner naks it and the redelivery brings a
+// deliberately-stopped run back to life on another pod.
+func TestOperatorCancelMidNodeStaysTerminal(t *testing.T) {
+	wf := &ir.Workflow{
+		Name:  "operator_cancel_midnode_test",
+		Entry: "step",
+		Nodes: map[string]ir.Node{
+			"step": &ir.AgentNode{BaseNode: ir.BaseNode{ID: "step"}},
+			"done": &ir.DoneNode{BaseNode: ir.BaseNode{ID: "done"}},
+		},
+		Edges:   []*ir.Edge{{From: "step", To: "done"}},
+		Schemas: map[string]*ir.Schema{},
+		Prompts: map[string]*ir.Prompt{},
+		Vars:    map[string]*ir.Var{},
+		Loops:   map[string]*ir.Loop{},
+	}
+
+	ctx, cancel := context.WithCancelCause(context.Background())
+	exec := newStubExecutor()
+	exec.on("step", func(_ map[string]any) (map[string]any, error) {
+		cancel(ErrRunCancelled)
+		return nil, fmt.Errorf("llm call aborted: %w", context.Canceled)
+	})
+
+	s := tmpStore(t)
+	eng := New(wf, s, exec)
+
+	err := eng.Run(ctx, "run-opcancel-midnode", nil)
+	if !errors.Is(err, ErrRunCancelled) {
+		t.Fatalf("expected ErrRunCancelled from a mid-node operator cancel, got: %v", err)
+	}
+	if errors.Is(err, ErrRunInterrupted) {
+		t.Fatal("an operator cancel must not carry ErrRunInterrupted — the runner would nak it and resume")
+	}
+
+	r, _ := s.LoadRun(context.Background(), "run-opcancel-midnode")
+	if r.Status != store.RunStatusCancelled {
+		t.Errorf("status = %s, want cancelled — a stopped run would be redelivered and resumed", r.Status)
+	}
+}
+
 // ---------------------------------------------------------------------------
 // Test: context cancellation mid-execution cancels cleanly
 // ---------------------------------------------------------------------------

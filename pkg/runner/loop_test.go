@@ -401,6 +401,13 @@ func TestClassifyExecResult(t *testing.T) {
 		// the one interruption-shaped outcome that must NOT come back.
 		{"budget exceeded acks (no auto-resume)", runtime.ErrBudgetExceeded, "budget_exceeded", actionAck},
 		{"wrapped budget exceeded acks", fmt.Errorf("%w: duration (7201/7200)", runtime.ErrBudgetExceeded), "budget_exceeded", actionAck},
+		// Precedence, pinned rather than left to the order of the ifs: if an
+		// error ever carries BOTH, budget must win. Interrupted Naks for
+		// auto-resume, and auto-resuming a spent budget re-fails instantly on
+		// the restored accounting while a fresh pod's git snapshot overwrites
+		// the first attempt's. errors.Is short-circuits, so this is one
+		// reordering away from silently regressing.
+		{"budget beats interrupted", errors.Join(runtime.ErrRunInterrupted, runtime.ErrBudgetExceeded), "budget_exceeded", actionAck},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {

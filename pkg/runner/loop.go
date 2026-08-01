@@ -300,6 +300,31 @@ func classifyExecResult(execErr error, runID string) execOutcome {
 			logArgs:     []any{runID, execErr},
 		}
 	}
+	// Budget FIRST: an interruption that also carries a spent budget must
+	// not be auto-resumed. errors.Is short-circuits, so the order of these
+	// two is the precedence — pinned by a table case.
+	// Budget exceeded is a RESUMABLE checkpoint, not a transient blip:
+	// the engine saved a failed_resumable checkpoint (failBudgetExceeded).
+	// Ack it — do NOT Nak for auto-redelivery. Auto-resuming a
+	// budget-exceeded run is worse than useless: the same message carries
+	// the same (already-spent) budget, so a duration cap re-fails
+	// instantly, and each redelivery re-provisions a FRESH pod whose
+	// recordRunGitMeta overwrites the first attempt's good git metadata
+	// with base==head — silently destroying the run's exported commits
+	// (observed live: run 019f8e08 lost 40 in-pod doc commits this way).
+	// The operator resumes MANUALLY with a raised cap
+	// (`iterion resume --max-duration/--max-cost-usd`), the documented
+	// "budget exceeded → raise the cap + resume" recovery.
+	if errors.Is(execErr, runtime.ErrBudgetExceeded) {
+		return execOutcome{
+			finalStatus: "budget_exceeded",
+			op:          "ack-budget-exceeded",
+			action:      actionAck,
+			level:       logWarn,
+			logFmt:      "runner: run %s hit a budget cap — failed_resumable, NOT auto-resuming (resume manually with a raised cap): %v",
+			logArgs:     []any{runID, execErr},
+		}
+	}
 	// Infrastructure interruption (runner drain / lost heartbeat): the
 	// engine already wrote failed_resumable (via the ErrRunInterrupted
 	// cancel cause). Nak so JetStream redelivers and the reconciliation
@@ -322,28 +347,6 @@ func classifyExecResult(execErr error, runID string) execOutcome {
 			action:      actionAck,
 			level:       logInfo,
 			logFmt:      "runner: run %s checkpointed (%v)",
-			logArgs:     []any{runID, execErr},
-		}
-	}
-	// Budget exceeded is a RESUMABLE checkpoint, not a transient blip:
-	// the engine saved a failed_resumable checkpoint (failBudgetExceeded).
-	// Ack it — do NOT Nak for auto-redelivery. Auto-resuming a
-	// budget-exceeded run is worse than useless: the same message carries
-	// the same (already-spent) budget, so a duration cap re-fails
-	// instantly, and each redelivery re-provisions a FRESH pod whose
-	// recordRunGitMeta overwrites the first attempt's good git metadata
-	// with base==head — silently destroying the run's exported commits
-	// (observed live: run 019f8e08 lost 40 in-pod doc commits this way).
-	// The operator resumes MANUALLY with a raised cap
-	// (`iterion resume --max-duration/--max-cost-usd`), the documented
-	// "budget exceeded → raise the cap + resume" recovery.
-	if errors.Is(execErr, runtime.ErrBudgetExceeded) {
-		return execOutcome{
-			finalStatus: "budget_exceeded",
-			op:          "ack-budget-exceeded",
-			action:      actionAck,
-			level:       logWarn,
-			logFmt:      "runner: run %s hit a budget cap — failed_resumable, NOT auto-resuming (resume manually with a raised cap): %v",
 			logArgs:     []any{runID, execErr},
 		}
 	}
@@ -740,10 +743,17 @@ func (r *Runner) Shutdown(ctx context.Context) error {
 	}
 
 	if r.cfg.DrainMode == DrainModeInterrupt {
-		// Cancel the in-flight run now and wait (up to the drain ceiling)
-		// for processOne to checkpoint + promote + nak. Auto-resumes on a
-		// healthy pod from the redelivery.
-		r.cancelAndAwaitCheckpoint(cur, ctx)
+		// Cancel the in-flight run now and wait only long enough for
+		// processOne to checkpoint + nak; it auto-resumes on a healthy pod
+		// from the redelivery. The wait is the SHORT checkpoint grace, not
+		// the caller's drain ceiling: this mode exists to leave quickly, and
+		// an engine that does not unwind promptly (a delegate ignoring its
+		// ctx, a stuck subprocess) would otherwise hold the pod for the full
+		// ceiling — the opposite of what the operator asked for. A checkpoint
+		// that misses the window is recovered by the orphan sweeper.
+		capCtx, capCancel := context.WithTimeout(context.Background(), interruptCheckpointGrace)
+		defer capCancel()
+		r.cancelAndAwaitCheckpoint(cur, capCtx)
 		return nil
 	}
 

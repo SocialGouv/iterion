@@ -19,12 +19,12 @@ spec:
      replicas>1, or KEDA (which scales past the static count). */ -}}
 {{- if and (eq .Values.mode "cloud") .Values.runner.enabled (or (gt (int .Values.runner.replicas) 1) .Values.runner.keda.enabled) }}
 ---
-# Same guard for the runner pool. On a voluntary disruption a runner
-# drains gracefully (lame-duck: finishes its in-flight run, or in
-# interrupt mode checkpoints it → failed_resumable → auto-resume). This
-# PDB still matters for the INVOLUNTARY case: an all-at-once eviction
-# would cap/interrupt every run simultaneously (a thundering-herd resume
-# the lame-duck avoids); minAvailable:1 keeps at least one runner serving.
+# Same guard for the runner pool. A PDB gates the Eviction API only, so it
+# covers a node drain or a cluster upgrade — keeping at least one runner
+# serving rather than every run draining at once — and it does NOT cover the
+# frequent case: a KEDA scale-down deletes pods directly and never consults
+# it. Protecting an in-flight run from THAT is the lame-duck drain's job
+# (config.runner.drainMode), not this budget's.
 apiVersion: policy/v1
 kind: PodDisruptionBudget
 metadata:

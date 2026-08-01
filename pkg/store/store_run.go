@@ -388,6 +388,13 @@ func (s *FilesystemRunStore) FailRunResumable(ctx context.Context, id string, cp
 	if err != nil {
 		return err
 	}
+	// An operator cancel is terminal and outranks a resumable failure. The
+	// two race whenever an interruption and a cancel arrive together, and
+	// resumable would win simply by writing last — auto-resuming a run
+	// somebody deliberately stopped. Cancelled stands.
+	if r.Status == RunStatusCancelled {
+		return nil
+	}
 	r.Checkpoint = cp
 	r.Status = RunStatusFailedResumable
 	r.Error = runErr
