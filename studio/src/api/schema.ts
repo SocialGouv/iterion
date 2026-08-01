@@ -1208,6 +1208,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/models": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** GET /api/models */
+        get: operations["getModels"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/openapi.json": {
         parameters: {
             query?: never;
@@ -4391,6 +4408,13 @@ export interface paths {
 export type webhooks = Record<string, never>;
 export interface components {
     schemas: {
+        BackendStatus: {
+            auth: string;
+            available: boolean;
+            hints?: string[];
+            name: string;
+            sources: string[];
+        };
         BackendUsage: {
             backend: string;
             model?: string;
@@ -4408,6 +4432,14 @@ export interface components {
         BlockingInfo: {
             id: string;
             title?: string;
+        };
+        Catalog: {
+            backends?: components["schemas"]["BackendStatus"][];
+            models: components["schemas"]["Entry"][];
+            recommended_spec?: string;
+            refresh_error?: string;
+            refreshed?: boolean;
+            resolved_default_backend?: string;
         };
         Checkpoint: {
             artifact_versions: {
@@ -4530,6 +4562,26 @@ export interface components {
             node_id?: string;
             pushed: boolean;
             verifiable: boolean;
+        };
+        Entry: {
+            backends?: string[];
+            context_window: number;
+            credential_provider: string;
+            credential_source?: string;
+            input_cost_per_m?: number;
+            model: string;
+            output_cost_per_m?: number;
+            price_known: boolean;
+            provider: string;
+            reasoning: boolean;
+            recommended?: boolean;
+            source: string;
+            spec: string;
+            temperature: boolean;
+            tool_call: boolean;
+            ultracode_capable: boolean;
+            unusable_reason?: string;
+            usable: boolean;
         };
         ExecutionState: {
             branch_id: string;
@@ -4708,6 +4760,13 @@ export interface components {
             max: number;
             waiting: number;
         };
+        ProviderStatus: {
+            available: boolean;
+            name: string;
+            overridden_sources?: string[];
+            source: string;
+            suggested_model?: string;
+        };
         RepoSummary: {
             can_admin: boolean;
             default_branch?: string;
@@ -4715,6 +4774,12 @@ export interface components {
             full_name: string;
             private: boolean;
             web_url?: string;
+        };
+        Report: {
+            backends: components["schemas"]["BackendStatus"][];
+            preference_order: string[];
+            providers: components["schemas"]["ProviderStatus"][];
+            resolved_default: string;
         };
         RunBudget: {
             max_cost_usd?: number;
@@ -5735,12 +5800,14 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
-            /** @description Response */
-            default: {
+            /** @description OK */
+            200: {
                 headers: {
                     [name: string]: unknown;
                 };
-                content?: never;
+                content: {
+                    "application/json": components["schemas"]["Report"];
+                };
             };
         };
     };
@@ -6675,6 +6742,26 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content?: never;
+            };
+        };
+    };
+    getModels: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Catalog"];
+                };
             };
         };
     };

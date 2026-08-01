@@ -1,6 +1,38 @@
 {
   "components": {
     "schemas": {
+      "BackendStatus": {
+        "properties": {
+          "auth": {
+            "type": "string"
+          },
+          "available": {
+            "type": "boolean"
+          },
+          "hints": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "name": {
+            "type": "string"
+          },
+          "sources": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "name",
+          "available",
+          "auth",
+          "sources"
+        ],
+        "type": "object"
+      },
       "BackendUsage": {
         "properties": {
           "backend": {
@@ -66,6 +98,38 @@
         },
         "required": [
           "id"
+        ],
+        "type": "object"
+      },
+      "Catalog": {
+        "properties": {
+          "backends": {
+            "items": {
+              "$ref": "#/components/schemas/BackendStatus"
+            },
+            "type": "array"
+          },
+          "models": {
+            "items": {
+              "$ref": "#/components/schemas/Entry"
+            },
+            "type": "array"
+          },
+          "recommended_spec": {
+            "type": "string"
+          },
+          "refresh_error": {
+            "type": "string"
+          },
+          "refreshed": {
+            "type": "boolean"
+          },
+          "resolved_default_backend": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "models"
         ],
         "type": "object"
       },
@@ -420,6 +484,82 @@
           "pushed",
           "image_from_repo",
           "built_from_head"
+        ],
+        "type": "object"
+      },
+      "Entry": {
+        "properties": {
+          "backends": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "context_window": {
+            "type": "integer"
+          },
+          "credential_provider": {
+            "type": "string"
+          },
+          "credential_source": {
+            "type": "string"
+          },
+          "input_cost_per_m": {
+            "type": "number"
+          },
+          "model": {
+            "type": "string"
+          },
+          "output_cost_per_m": {
+            "type": "number"
+          },
+          "price_known": {
+            "type": "boolean"
+          },
+          "provider": {
+            "type": "string"
+          },
+          "reasoning": {
+            "type": "boolean"
+          },
+          "recommended": {
+            "type": "boolean"
+          },
+          "source": {
+            "type": "string"
+          },
+          "spec": {
+            "type": "string"
+          },
+          "temperature": {
+            "type": "boolean"
+          },
+          "tool_call": {
+            "type": "boolean"
+          },
+          "ultracode_capable": {
+            "type": "boolean"
+          },
+          "unusable_reason": {
+            "type": "string"
+          },
+          "usable": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "spec",
+          "provider",
+          "model",
+          "credential_provider",
+          "source",
+          "context_window",
+          "reasoning",
+          "tool_call",
+          "temperature",
+          "ultracode_capable",
+          "price_known",
+          "usable"
         ],
         "type": "object"
       },
@@ -1023,6 +1163,34 @@
         ],
         "type": "object"
       },
+      "ProviderStatus": {
+        "properties": {
+          "available": {
+            "type": "boolean"
+          },
+          "name": {
+            "type": "string"
+          },
+          "overridden_sources": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "source": {
+            "type": "string"
+          },
+          "suggested_model": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "name",
+          "available",
+          "source"
+        ],
+        "type": "object"
+      },
       "RepoSummary": {
         "properties": {
           "can_admin": {
@@ -1048,6 +1216,38 @@
           "full_name",
           "private",
           "can_admin"
+        ],
+        "type": "object"
+      },
+      "Report": {
+        "properties": {
+          "backends": {
+            "items": {
+              "$ref": "#/components/schemas/BackendStatus"
+            },
+            "type": "array"
+          },
+          "preference_order": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "providers": {
+            "items": {
+              "$ref": "#/components/schemas/ProviderStatus"
+            },
+            "type": "array"
+          },
+          "resolved_default": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "preference_order",
+          "resolved_default",
+          "backends",
+          "providers"
         ],
         "type": "object"
       },
@@ -2993,8 +3193,15 @@
       "get": {
         "operationId": "getBackendsDetect",
         "responses": {
-          "default": {
-            "description": "Response"
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Report"
+                }
+              }
+            },
+            "description": "OK"
           }
         },
         "summary": "GET /api/backends/detect",
@@ -3859,6 +4066,27 @@
         "summary": "GET /api/memory/usage",
         "tags": [
           "memory"
+        ]
+      }
+    },
+    "/api/models": {
+      "get": {
+        "operationId": "getModels",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Catalog"
+                }
+              }
+            },
+            "description": "OK"
+          }
+        },
+        "summary": "GET /api/models",
+        "tags": [
+          "models"
         ]
       }
     },
