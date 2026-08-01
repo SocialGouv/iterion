@@ -204,11 +204,14 @@ config:
     concurrency: 1
     heartbeat: 20s
     lockTtl: 60s
-    # Graceful drain on deploy/node-drain. "complete" (default, lame-duck):
-    # stop claiming new runs but let the in-flight one FINISH before exiting
-    # — a deploy interrupts nothing. "interrupt": cancel + checkpoint for
-    # auto-resume on a healthy pod. drainTimeout is the lame-duck ceiling;
-    # keep runner.terminationGracePeriodSeconds >= it + checkpoint margin.
+    # Graceful drain on ANY SIGTERM — a KEDA scale-down (the frequent one:
+    # the pool shrinks whenever the queue drains, and the ReplicaSet picks a
+    # victim without knowing which pods are busy), a node drain, or a deploy.
+    # "complete" (default, lame-duck): stop claiming new runs but let the
+    # in-flight one FINISH before exiting, so none of the three interrupts
+    # anything. "interrupt": cancel + checkpoint for auto-resume on a healthy
+    # pod. drainTimeout is the lame-duck ceiling; keep
+    # runner.terminationGracePeriodSeconds >= it + checkpoint margin.
     drainMode: complete
     drainTimeout: 8h
   # --- Valkey/Redis (distributed ephemeral state) ------------------

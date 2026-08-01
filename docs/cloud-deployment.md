@@ -274,10 +274,25 @@ When `OTEL_EXPORTER_OTLP_ENDPOINT` is unset, spans are dropped and the
 W3C propagator-only path is installed (inbound trace context still
 respected, but no export).
 
-## Rolling deploys & in-flight runs
+## Pod turnover & in-flight runs
 
-A new-version deploy rolling-restarts the runner pods. What happens to a
-run a runner is executing is governed by **`config.runner.drainMode`**:
+A runner pod goes away for three reasons, and a deploy is the *rarest* of
+them:
+
+- **autoscaling** — with KEDA enabled the pool scales down whenever the
+  queue drains. That is continuous, it happens under normal operation, and
+  the ReplicaSet picks a victim without knowing which pods are busy.
+  Measured in production on 2026-08-01: `SuccessfulRescale … reason: All
+  metrics below target` killed a pod 21 minutes into a campaign, with idle
+  pods available. **A PodDisruptionBudget does not cover this** — a
+  scale-down deletes pods directly rather than evicting them, so it never
+  consults the PDB. The drain below is what does.
+- **node turnover** — a drain, an upgrade, a spot reclaim.
+- **a deploy** — a rolling restart of the runner Deployment.
+
+All three arrive as the same signal, SIGTERM, so one mechanism covers them
+all. What happens to a run a runner is executing is governed by
+**`config.runner.drainMode`**:
 
 - **`complete`** (default — *lame-duck*): on SIGTERM the runner stops
   claiming new runs but **lets its in-flight run finish** before exiting.
