@@ -143,7 +143,8 @@ func (s *Server) handlePRForgeReview(ctx context.Context, w http.ResponseWriter,
 	// The merge gate opts synchronize (a push to the head) back into review so
 	// the revi/review status re-evaluates on the new head SHA; otherwise only
 	// opened/reopened/ready_for_review review (on-demand re-review on push).
-	reviewable := p.IsReviewable() || (cfg.ReviewOnSync && p.IsSynchronize())
+	gateResync := cfg.ReviewOnSync && p.IsSynchronize()
+	reviewable := p.IsReviewable() || gateResync
 	if !reviewable ||
 		!webhooks.MatchEvent(cfg.EventAllowlist, "pull_request", "pull_request") ||
 		!webhooks.MatchProject(cfg.ProjectAllowlist, p.ProjectPath) ||
@@ -163,7 +164,16 @@ func (s *Server) handlePRForgeReview(ctx context.Context, w http.ResponseWriter,
 	// Deliberately the SENDER, not the PR author: the point is to skip a PR
 	// our own loop produced and already converged, but once a human pushes
 	// onto it there is human work to review again.
-	if s.isIterionForgeBotAuthor(ctx, cfg, p.SenderLogin) {
+	//
+	// It does NOT apply to a merge-gate resync. There the pusher is by
+	// construction our own forge bot — a fixer that just pushed onto someone
+	// else's PR — and the re-review is the whole mechanism: it is what puts
+	// the required check back on the new head, and it is the independent
+	// verdict that supersedes the fixer's own (docs/merge-gate.md, "Two bots
+	// on the SAME pull request"). Filtering here left the fixer's self-verdict
+	// as the last word on a head no reviewer had read, and on a head where a
+	// bot pushed without gating at all, it left the required check absent.
+	if !gateResync && s.isIterionForgeBotAuthor(ctx, cfg, p.SenderLogin) {
 		s.recordTerminalWebhookDelivery(ctx, cfg, meta, webhooks.StatusFiltered, payloadHash, srcIP,
 			"PR authored by iterion's forge bot — auto-review skipped (self-produced; run /revi to force a review)")
 		writeJSONStatus(w, http.StatusOK, map[string]string{"status": webhooks.StatusFiltered})

@@ -205,6 +205,17 @@ three:
 A green from a fixer says so in its description, so it is never mistaken for an
 independent review.
 
+Step 3 needs two things the bot cannot mint for itself: a **forge-publish
+grant** and the repo's **pinned `gate_context`**. The server resolves both from
+the repo's integration on every lane that targets a pull request — the webhook
+tail, the studio/API launch, and the cloud board coordinator, which claims a
+card long after the webhook that created it is gone. Without them the run
+pushes and reports `no forge publish grant on this run`: no verdict, no gate,
+and the required check left on the pre-push revision, which blocks the PR on a
+check that is *absent* rather than red. If a fixer posts nothing, look at the
+run's inputs for `forge_publish_url` and `gate_context` before looking at the
+bot.
+
 ### Zero-touch: letting a red gate launch the fixer itself (opt-in)
 
 By default nothing happens when the gate goes red: the findings are on the pull

@@ -88,7 +88,8 @@ func (s *Server) handleGitLabMergeRequestEvent(ctx context.Context, w http.Respo
 	// the webhook after repeated metadata-only edits).
 	// ReviewOnSync opts a push-to-MR ("update" with a new head) back into
 	// review so the merge-gate status re-evaluates on the new head SHA.
-	reviewable := p.IsReviewable() || (cfg.ReviewOnSync && p.IsSynchronize())
+	gateResync := cfg.ReviewOnSync && p.IsSynchronize()
+	reviewable := p.IsReviewable() || gateResync
 	if !reviewable ||
 		!webhooks.MatchEvent(cfg.EventAllowlist, "merge_request", "merge_request", "note") ||
 		!webhooks.MatchProject(cfg.ProjectAllowlist, p.ProjectPath) ||
@@ -106,8 +107,11 @@ func (s *Server) handleGitLabMergeRequestEvent(ctx context.Context, w http.Respo
 
 	// Iterion-bot guard: an MR opened by iterion's own forge bot already
 	// converged in its own loop — skip the auto-review (a human can still run
-	// `/revi`). Mirror of the GitHub PR-open path.
-	if s.isIterionForgeBotAuthor(ctx, cfg, p.SenderUsername) {
+	// `/revi`). Mirror of the GitHub PR-open path, including its merge-gate
+	// resync exception: a fixer's push is by construction sent by our own bot,
+	// and the re-review it triggers is what re-posts the required check and
+	// supersedes the fixer's self-verdict.
+	if !gateResync && s.isIterionForgeBotAuthor(ctx, cfg, p.SenderUsername) {
 		s.recordTerminalWebhookDelivery(ctx, cfg, meta, webhooks.StatusFiltered, payloadHash, srcIP,
 			"MR authored by iterion's forge bot — auto-review skipped (self-produced; run /revi to force a review)")
 		writeJSONStatus(w, http.StatusOK, map[string]string{"status": webhooks.StatusFiltered})
