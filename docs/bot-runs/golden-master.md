@@ -2,6 +2,100 @@
 
 Index + template: [README.md](README.md). Newest first.
 
+## 2026-07-27 → 08-01 — two lanes added, and each was added because a real defect walked under the others
+
+- Status: **hardening period, not a single run.** Written because the engine changed a lot and the
+  record stopped: `bots/golden-master` gained two surfaces and about a dozen fixes while this file
+  said nothing. Sustained dogfooding on a legacy Java/Spring application.
+- What it is worth: every figure below was measured on that target and is replayable there. None
+  of it comes from reasoning about what a net ought to catch.
+
+### The `asset` lane, and what it found the moment it opened
+
+The net watched HTTP responses and two binary formats. It did not watch the files a page loads —
+and those are produced by the front chain and git-ignored, so nothing else watched them either.
+
+Measured on opening the lane: **the entire client layer was absent from the baseline environment**
+and answered 404 — style sheets, vendor scripts, the view framework itself. **No reference moved.**
+A total absence of the client layer was indistinguishable from its presence.
+
+That is our own instrument finding our own defect, and it is the exact family this bot exists to
+refuse: a net that establishes something NEAR what it claims. "Behaviour is preserved" silently
+meant "server-rendered behaviour is preserved".
+
+The lane inventories what the BUILD packaged — from the artefact, never from the working copy —
+then asks the running application for each entry. One line per resource, never a digest of the
+set: reading a toolchain upgrade requires knowing *which* ones moved.
+
+### The `a11y` lane, and the third instance of one defect family
+
+It audits the page rendered by a real browser, not the markup. Its first finding was in a
+reference of its own: an audit that reported eleven faulty nodes where the CI reported ten,
+reproducible, `stable: true` on both sides. The reference had encoded **the fonts of the machine
+that recorded it**.
+
+Third time the same family appears in this project:
+
+| where | what the reference encoded |
+|---|---|
+| spreadsheet | the account name of the recording machine, in a header record |
+| PDF | the fonts installed on the recording host |
+| accessibility audit | the same fonts, through the rendering engine |
+
+*The reference encodes a property of the producer, not of the product.* Worth naming as a family,
+because each instance looked like a different bug and the fix is the same one: declare the
+environment the judge observes through, and let nothing ambient reach it.
+
+### Confronting the target's own test suite with the same mutations
+
+New: the same mutants are applied with the target's suite as judge instead of the net. Both claim
+to protect against regression; only one of them had ever been asked to prove it.
+
+| | detected |
+|---|---|
+| the net | **19 / 19** |
+| the inherited suite, at discovery | **1 / 19** |
+| after security and characterisation tests were added | **9 / 19** |
+
+The measurement taught more than the ratio. **Several of the mutations are a single UPDATE with
+not one character of source changed** — a title, a creation date, a counter set to null. No mocked
+slice can ever see them: the double returns what the test told it to return. What was missing was
+not tests, it was tests that READ THE DATABASE. And five further tests later moved the case count
+without moving the ratio at all — volume and efficacy are different quantities.
+
+### The defect in the harness, which is the one worth remembering
+
+`tree_fingerprint` returned `None` on a tree the version-control probe could not read. Ten of
+nineteen mutants were invalidated by it — and the report said **100 %**. A check that scored a
+counter-test reduced by half and called it complete.
+
+It now walks the tree when the probe fails and REFUSES to run rather than return nothing. The rule
+generalises: a fingerprint function may not have a "cannot tell" value that callers read as "no
+change".
+
+Same shape, smaller, found the same week: the suite-vs-net case counter watched one of the two
+locations the test command writes to. Harmless while the second held two cases; not harmless once
+the second was the only one able to see a data mutation. Counts are now kept and compared per
+location — a total that holds can hide one task falling to zero while another grows.
+
+### Browser lane, five fixes that only a real runner could produce
+
+A container browser does not render badly when it has no font — it **aborts**. It also stalls
+rather than fails, phones home, and dies in ways whose only witness is a log the harness was
+discarding. Each fix made the failure NAME its cause; before, a dead renderer read as a slow page
+for three rounds.
+
+### Held-out
+
+**Six cycles published** — 7/7, 7/7, 8/8, 3/3, 2/2, 8/8. The sixth was drawn deliberately where
+nothing had been tried: twenty corpus entries had never been targeted, and three successive cycles
+had reused the same five archetypes on overlapping targets. Freshness is enforced by fingerprint —
+the applied script plus its targets — so renaming a spent mutant cannot pass.
+
+Its targets were **measured**, not intended: each candidate applied against the whole corpus and
+its blast radius read off the result. That is what makes `collateral: 0` earned rather than
+declared.
+
 ## 2026-07-27 — FULL GATE GREEN, http + binary, 7/7 sealed held-out (run 019fa4fb)
 
 - Status: **VALIDATED** — every conjunct satisfied, `emit_runner` reached, run `finished`. This
