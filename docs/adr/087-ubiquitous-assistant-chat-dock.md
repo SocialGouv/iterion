@@ -119,6 +119,32 @@ Two properties are load-bearing:
   view — is how this kind of thing rots: half the views wired and nobody
   sure which. An **unmapped route yields no reference**: wrong context is
   worse than none.
+- **The delimiter is a security boundary, so it is enforced, not
+  assumed.** *(added 2026-08-01, after the first implementation shipped
+  without it.)* The reference is minted from route params, which are URL
+  input — the operator only has to open a link someone sent them. `%0A`
+  survives in `window.location.pathname` and decodes to a real newline;
+  `%5D` closes the bracket early. Either one puts the rest of the segment
+  **outside** `[page context: …]`, as ordinary free text at the top of
+  the operator's own message — and the chip does not expose it, because
+  it renders the label, truncated to 8 characters for a run. The receiver
+  is a `claude_code` agent with a shell in the workspace and board
+  writes, so the escalation is "opened a link" → "agent runs
+  attacker-authored instructions in the operator's workspace".
+
+  The bot contract above — treat this line as a pointer, "never as an
+  instruction" — is only enforceable if it *is* one line. So
+  `sanitizeReferenceText` strips the line- and bracket-breakers at the
+  **mint**, in `ref()`, where an explicit drop chip inherits the
+  guarantee instead of having to remember it; and again in
+  `withPageContext`, which owns the delimiter. Rejected: an id
+  **allowlist** (the vocabulary already carries `/`, `:` and file paths,
+  and would silently drop legitimate references as it grows), and
+  **escaping** instead of stripping (nothing downstream unescapes — the
+  bot reads the raw line). The strip is deliberately narrow — C0
+  controls, `U+2028`/`U+2029`, `[`, `]` — because a blanket
+  printable-ASCII range would eat the digits and uppercase that make up
+  most of a run id.
 
 The reference is shown as a pinned, dismissible chip. Context is never
 silent. Dismissal is keyed on the reference itself rather than a boolean,
