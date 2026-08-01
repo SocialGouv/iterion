@@ -6,7 +6,10 @@ import type { FormAnswer } from "@/lib/whats-next/questionForm";
 import { Button, InlineBanner, Input } from "@/components/ui";
 import { WizardForm } from "@/components/ui/WizardForm";
 import { useActiveRepo } from "@/hooks/useActiveRepo";
+import type { UseSessionModelPrefResult } from "@/hooks/useSessionModelPref";
 import { useServerInfoStore } from "@/store/serverInfo";
+
+import SessionModelControl from "./whatsNextView/SessionModelControl";
 
 interface Props {
   bot: FirstClassBot;
@@ -24,6 +27,9 @@ interface Props {
   // The repo the launch will operate on (cloud active repo), or null
   // for a board-only launch.
   launchRepo?: string | null;
+  // The remembered model choice this launch will apply. Offered here so the
+  // model can be picked BEFORE the first message, not discovered mid-session.
+  modelPref?: UseSessionModelPrefResult;
 }
 
 export default function SessionLauncher({
@@ -34,6 +40,7 @@ export default function SessionLauncher({
   discoveryError = null,
   onRetryDiscovery,
   launchRepo = null,
+  modelPref,
 }: Props) {
   const workDir = useServerInfoStore((s) => s.info?.work_dir ?? "");
   const cloud = useServerInfoStore((s) => s.info?.mode === "cloud");
@@ -172,6 +179,12 @@ export default function SessionLauncher({
                 )}
               </div>
             ))}
+          </div>
+        )}
+
+        {modelPref && (
+          <div className="border-t border-border-subtle pt-3">
+            <SessionModelControl pref={modelPref} />
           </div>
         )}
 

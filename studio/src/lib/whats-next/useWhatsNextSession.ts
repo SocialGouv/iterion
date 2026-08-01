@@ -22,6 +22,10 @@ import { useEffect, useRef, useState } from "react";
 
 import { type RunStatus } from "@/api/runs";
 import { useRunWebSocket } from "@/hooks/useRunWebSocket";
+import {
+  useSessionModelPref,
+  type UseSessionModelPrefResult,
+} from "@/hooks/useSessionModelPref";
 import type { FirstClassBot } from "@/lib/whats-next/firstClassBots";
 import type { WhatsNextMessage } from "@/lib/whats-next/messages";
 import { useRunStore } from "@/store/run";
@@ -69,6 +73,10 @@ export interface UseWhatsNextSession {
   // The repo the NEXT launch will operate on (cloud: the sidebar's
   // active repo). Null = board-only launch (no repo connected / overview).
   launchRepo: string | null;
+  // The operator's remembered model/backend/effort for this bot, and the
+  // actions to change it. Applied to the NEXT launch as model_overrides — a
+  // live run keeps the model it started on.
+  modelPref: UseSessionModelPrefResult;
   // Imperative actions.
   launch: (vars: Record<string, string>) => Promise<void>;
   submitHumanAnswer: (
@@ -211,12 +219,19 @@ export function useWhatsNextSession(bot: FirstClassBot): UseWhatsNextSession {
     pendingHuman,
   });
 
+  // The operator's remembered model/backend/effort for this bot. Keyed by bot
+  // id, NOT by session: the whole point is that it outlives the session. The
+  // engine treats the key as opaque, so a second conversational bot needs no
+  // engine change.
+  const modelPref = useSessionModelPref(bot.id);
+
   const { launch, newSession, lastVarsRef } = useSessionLifecycle({
     bot,
     scopeKey,
     repoScopeEnabled,
     activeRepo,
     lifetimeAbortRef,
+    modelChoice: modelPref.current,
     setRunId,
     setStatus,
     setBusyMessageId,
@@ -242,6 +257,7 @@ export function useWhatsNextSession(bot: FirstClassBot): UseWhatsNextSession {
     retryDiscovery,
     sessionRepo: snapshot?.run.project_path ?? null,
     launchRepo,
+    modelPref,
     launch,
     submitHumanAnswer,
     newSession,

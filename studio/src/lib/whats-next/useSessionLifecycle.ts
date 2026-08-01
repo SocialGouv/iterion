@@ -9,6 +9,8 @@ import { errorMessage as toMessage } from "@/lib/errorHints";
 
 import { createRun, getRunWithRetry } from "@/api/runs";
 import type { ForgeTeamRepo } from "@/api/forgeConnections";
+import { modelPrefOverrides } from "@/api/modelPrefs";
+import type { SessionModelChoice } from "@/hooks/useSessionModelPref";
 import type { FirstClassBot } from "@/lib/whats-next/firstClassBots";
 import { runStore, useRunStore } from "@/store/run";
 
@@ -31,6 +33,12 @@ export function useSessionLifecycle(opts: {
   // Hook-lifetime abort handle owned by the orchestrating hook (stops
   // the launch path's getRunWithRetry 404-backoff on unmount).
   lifetimeAbortRef: { current: AbortController | null };
+  // modelChoice reads the operator's remembered model/backend/effort at the
+  // MOMENT of launch. It is a getter, not a value, so a choice made a keystroke
+  // before pressing send is the one that ships — and so this callback does not
+  // have to be re-created (dropping its identity into every consumer) each
+  // time the picker moves.
+  modelChoice?: () => SessionModelChoice;
   setRunId: (runId: string | null) => void;
   setStatus: (status: WhatsNextStatus) => void;
   setBusyMessageId: (id: string | null) => void;
@@ -42,6 +50,7 @@ export function useSessionLifecycle(opts: {
     repoScopeEnabled,
     activeRepo,
     lifetimeAbortRef,
+    modelChoice,
     setRunId,
     setStatus,
     setBusyMessageId,
@@ -85,6 +94,14 @@ export function useSessionLifecycle(opts: {
                 connection_id: activeRepo.connection_id,
               }
             : {}),
+          // The chat session was the one launch surface that could not
+          // retarget its model — the per-run override mechanism already
+          // existed and was generic, it just was not wired here. Selector "*"
+          // (every LLM node): a conversational session is one agent from the
+          // operator's point of view, whatever the bot's graph looks like.
+          // Undefined when nothing is chosen, so the bot's DSL defaults apply
+          // untouched.
+          model_overrides: modelPrefOverrides(modelChoice?.()),
         });
         rememberSessionRunId(bot.id, scopeKey, res.run_id);
         // Pin the store's runId early so loadEventHistoryIfMissing's
@@ -126,6 +143,7 @@ export function useSessionLifecycle(opts: {
       scopeKey,
       repoScopeEnabled,
       activeRepo,
+      modelChoice,
       reset,
       applySnapshot,
       loadEventHistoryIfMissing,

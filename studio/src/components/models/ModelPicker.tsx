@@ -65,15 +65,17 @@ export default function ModelPicker({
   disabled = false,
   id,
 }: ModelPickerProps) {
-  const known = models.some((m) => m.spec === value);
-  // A value the registry does not carry is a legitimate custom spec, so the
-  // control opens straight into its text form instead of silently dropping it.
-  const [custom, setCustom] = useState(() => value !== "" && !known);
+  const [custom, setCustom] = useState(false);
 
   const selected = models.find((m) => m.spec === value);
   const warning = modelCapabilityWarning(selected, { wantsUltracode });
   const usable = models.filter((m) => m.usable);
   const unreachable = models.filter((m) => !m.usable);
+  // A value the list does not carry still needs an option of its own, or the
+  // <select> silently falls back to its first entry and the operator reads
+  // "bot default" while a model IS set. Two ways to get here, both real: a
+  // spec outside the curated set, and the window before the registry loads.
+  const orphan = value !== "" && !selected;
 
   return (
     <div className="space-y-1">
@@ -116,6 +118,7 @@ export default function ModelPicker({
           }}
         >
           <option value="">{inheritLabel}</option>
+          {orphan && <option value={value}>{value}</option>}
           {usable.length > 0 && (
             <optgroup label="Available on this host">
               {usable.map((m) => (
