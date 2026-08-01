@@ -43,6 +43,12 @@ the same conversation full-width.
 If no session exists yet, the composer is still live: your first message
 starts one.
 
+If the dock could not *check* whether one exists — the startup lookup
+failed — it says so and offers a Retry instead of the usual invitation.
+The two states look different on purpose: a live session may exist that
+the dock cannot see, and here the next keystroke is what would launch a
+second one over it.
+
 ## The context chip
 
 The dock reports the page you are on as a **typed reference**:
@@ -107,3 +113,11 @@ console's right-hand dock, the steering panel is the tab labelled
 
 Both can be docked right at once — the assistant's column pins to the
 window edge and the run console's dock sits inside the page beside it.
+
+A lane is a floor, not a fixed offset. When the assistant is docked it
+owns a `fixed` column at the right edge, and `AppShell`'s padding
+reservation does nothing for another `fixed` element — so steering's
+bubble would sit *under* that column and take no clicks. Both read the
+reserved width from one hook (`useAssistantReservedWidthPx`): the shell
+reserves it as padding, corner surfaces step out of it, and a lane that
+already clears the column does not move.
