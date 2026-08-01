@@ -340,6 +340,12 @@ Two consequences worth knowing before relying on this:
   degraded while the new pods already serve. ArgoCD users: the sync will
   likewise show Progressing until the drain completes.
 
+**Verified in production, 2026-08-01.** The same signal, before and after:
+a KEDA scale-down killed run `019fbd98` 21 minutes into a campaign and it
+came back `cancelled`; a `kubectl delete pod` on the runner holding run
+`019fbdec` left the pod `Running` with a `deletionTimestamp` 2h05 out — it
+finished its run (240.8s, status `finished`) and only then exited.
+
 **What a long window costs.** A terminating pod keeps its node slot and its
 resource requests for the whole drain, so:
 
