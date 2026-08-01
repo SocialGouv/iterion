@@ -119,6 +119,41 @@ the effort levels are a closed set that reaches the provider verbatim, so an
 unknown one is rejected at admission rather than surfacing as an API error on
 the run's first node.
 
+### 4bis. The choice rides the queue, at the cost of a schema bump (2026-08-01)
+
+Everything above is built on `ModelOverrides`, which the **cloud** launch path
+dropped: `runview.Service.Launch` hands off to `SubmitLaunch` before the
+in-process fold, and `queue.RunMessage` had no field for it. The result was the
+exact façade this repo's invariants exist to catch — the operator picked a
+model, `model_prefs` persisted it, the session header rendered it, and the
+runner pod executed the bot's DSL default. No error, no warning; the tests
+passed because they all exercised the in-process path.
+
+The alternative considered was to scope the claim instead of the code: document
+that overrides are in-process only and have the picker say so in cloud. It was
+rejected — the preference is *most* useful exactly where runs are remote, and a
+feature that is documented as "not on this deployment" is a feature nobody
+reaches for.
+
+So `ModelOverrides []ModelOverride` joins `Budget` and `Contributions` on
+`RunMessage`, and **SchemaVersion goes 5 → 6**. That bump is the real trade-off:
+`Validate` rejects on strict equality, so a version-skewed fleet fails *every*
+launch, not just the minority carrying overrides. We accept it for the same
+reason v=4 and v=5 did — a stale runner must fail loudly rather than run
+something other than what was asked for — and it keeps the deploy contract
+(publisher and runners upgrade together) honest instead of letting skew express
+itself as a quality regression nobody can trace.
+
+One conversion serves both halves: `runview.RunModelOverrides` produces the rows
+stamped on the queued doc *and* published on the wire, and
+`runview.ModelOverridesFromRun` is the single fold the in-process launcher and
+the runner pod both go through. What the Overview shows and what the pod calls
+cannot drift, because they are the same values through the same function.
+
+Still out of scope: **resume** does not replay launch overrides in either mode
+(see the `--model` note below) — a resumed run returns to its DSL defaults
+unless the flags are passed again.
+
 ### 4. The preference is keyed on an opaque scope string
 
 `pkg/modelprefs` stores `(model, backend, effort)` per `(tenant, user, key)`.
@@ -163,3 +198,10 @@ absurd.
 - The assistant's `ITERION_WHATS_NEXT_MODEL_CLAUDE` /
   `ITERION_WHATS_NEXT_EFFORT_CLAUDE` env vars still work and still set the
   floor; the preference overrides them per user.
+- **The queue schema is v=6.** A publisher and a runner at different versions no
+  longer interoperate at all: the runner rejects the message rather than
+  executing it with the overrides missing. Deployments must upgrade both halves
+  together (see §4bis).
+- `queue.RunMessage` now carries model/backend/provider/effort, so a cloud run's
+  launch-time choice is applied by the pod and not merely displayed. Resume
+  still does not replay it in either mode.

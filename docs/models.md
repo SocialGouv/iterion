@@ -159,8 +159,28 @@ bundle, not an engine change.
 
 A server with neither wired 404s the endpoints; the studio then still offers
 the picker and says the choice applies to that browser tab only. A corrupt
-prefs file degrades to "no preference" and is repaired by the next write — the
-worst honest outcome is re-picking a model.
+prefs file degrades to "no preference" (with a warning in the server log) and
+is repaired by the next write — the worst honest outcome is re-picking a model.
+
+### Cloud: the choice travels with the run
+
+A remembered preference only matters if the machine that executes the run
+honours it. In cloud mode the launch is published to the runner pool, so the
+model/backend/effort selection rides `queue.RunMessage.ModelOverrides` and the
+pod folds it back through the same conversion the in-process path uses — what
+the run Overview shows and what the pod calls are the same values.
+
+That field arrived with **queue schema v=6**, and a runner rejects a message
+whose version it does not recognise. **Upgrade the server and the runner pods
+together**: a runner left on v=5 fails every launch with
+`queue: schema version 6 unsupported`. That is deliberate — the alternative was
+a pod quietly running the bot's default model while the studio displayed the
+one you picked. If you see that error, the fleet is version-skewed, not
+misconfigured.
+
+Launch-time overrides are **not** replayed on `iterion resume` in either mode;
+a resumed run returns to the bot's DSL defaults unless the flags are passed
+again.
 
 ---
 
