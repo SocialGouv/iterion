@@ -34,6 +34,105 @@ workflow parent:
   produce_episode -> done
 `
 
+// A human gate's declared `input:` schema must reach the wire alongside
+// its `output:` schema. The studio types the gate's INBOUND payload
+// (Interaction.Questions) with it — a `json` field renders as structured
+// data, a `file` field as a preview — so the operator sees what they are
+// validating instead of the author stringifying it into `instructions:`.
+const humanGateSchemaExportSrc = `
+schema draft_out:
+  plan: json
+  summary: string
+
+schema gate_in:
+  plan: json
+  summary: string
+  mockup: file
+
+schema gate_out:
+  approved: bool
+  notes: string
+
+prompt draft_system:
+  Draft the plan.
+
+agent draft:
+  system: draft_system
+  input: gate_in
+  output: draft_out
+
+human gate:
+  input: gate_in
+  output: gate_out
+  interaction: human
+
+workflow gated:
+  entry: draft
+  draft -> gate with {
+    plan: "{{outputs.draft.plan}}",
+    summary: "{{outputs.draft.summary}}",
+  }
+  gate -> done when approved
+  gate -> fail when not approved
+`
+
+func TestBuildWireWorkflow_HumanNodeInputSchemaProjection(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "gated.bot")
+	if err := os.WriteFile(path, []byte(humanGateSchemaExportSrc), 0o644); err != nil {
+		t.Fatalf("write gated bot: %v", err)
+	}
+
+	wire, err := buildWireWorkflowFromRun(&store.Run{ID: "r1", FilePath: path}, nil)
+	if err != nil {
+		t.Fatalf("buildWireWorkflowFromRun: %v", err)
+	}
+
+	var gate, draft *WireNode
+	for i := range wire.Nodes {
+		switch wire.Nodes[i].ID {
+		case "gate":
+			gate = &wire.Nodes[i]
+		case "draft":
+			draft = &wire.Nodes[i]
+		}
+	}
+	if gate == nil {
+		t.Fatalf("human node missing from projection: %+v", wire.Nodes)
+	}
+
+	wantIn := map[string]string{"plan": "json", "summary": "string", "mockup": "file"}
+	if len(gate.InputFields) != len(wantIn) {
+		t.Fatalf("input_schema = %+v, want %d fields", gate.InputFields, len(wantIn))
+	}
+	for _, f := range gate.InputFields {
+		want, ok := wantIn[f.Name]
+		if !ok {
+			t.Errorf("unexpected input field %q", f.Name)
+			continue
+		}
+		if f.Type != want {
+			t.Errorf("input field %q type = %q, want %q", f.Name, f.Type, want)
+		}
+	}
+
+	// The output schema still projects — the answer form depends on it.
+	if len(gate.OutputFields) != 2 {
+		t.Errorf("output_schema = %+v, want 2 fields", gate.OutputFields)
+	}
+
+	// input_schema stays a human-node projection: an agent node declaring
+	// the very same schema as its INPUT must not gain the field (nothing
+	// renders a payload for a node that never pauses, and the wire stays
+	// as small as the canvas needs it).
+	if draft == nil {
+		t.Fatalf("agent node missing from projection: %+v", wire.Nodes)
+	}
+	if len(draft.InputFields) != 0 {
+		t.Errorf("agent node carries input_schema: %+v", draft.InputFields)
+	}
+}
+
 func TestBuildWireWorkflow_SubbotNodeProjection(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "parent.bot")

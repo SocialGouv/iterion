@@ -1532,6 +1532,12 @@
           "id": {
             "type": "string"
           },
+          "input_schema": {
+            "items": {
+              "$ref": "#/components/schemas/WireSchemaField"
+            },
+            "type": "array"
+          },
           "isolated": {
             "type": "boolean"
           },

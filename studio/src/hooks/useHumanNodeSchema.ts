@@ -5,6 +5,11 @@ import { getRunWorkflow, type WireSchemaField, type WireWorkflow } from "@/api/r
 
 interface State {
   fields: WireSchemaField[] | null;
+  // inputFields types the gate's INBOUND payload (the pause's questions
+  // map) so it can be rendered above the answer form. Independent of
+  // `fields`: a gate commonly declares an output schema and no input
+  // schema, in which case the renderer infers from each value's shape.
+  inputFields: WireSchemaField[] | null;
   loading: boolean;
   staleHash: boolean;
   error: string | null;
@@ -17,11 +22,17 @@ export interface HumanNodeSchema extends State {
   reload: () => void;
 }
 
-const initial: State = { fields: null, loading: false, staleHash: false, error: null };
+const initial: State = {
+  fields: null,
+  inputFields: null,
+  loading: false,
+  staleHash: false,
+  error: null,
+};
 
 // useHumanNodeSchema returns the output_schema fields for the paused
-// human node. Callers MUST distinguish three outcomes, never conflate
-// them:
+// human node (plus its input_schema, which types the inbound payload).
+// Callers MUST distinguish three outcomes, never conflate them:
 //   - loading=true                      → don't render the form yet
 //   - loading=false && error!=null      → the fetch FAILED; surface it
 //     and offer reload() — do NOT silently fall back (a fallback form
@@ -53,21 +64,16 @@ export function useHumanNodeSchema(
   // isPending (not isLoading): whenever we have neither data nor a
   // settled error, report loading — never the "no schema" fallback.
   if (query.isPending && !query.error) {
-    return { fields: null, loading: true, staleHash: false, error: null, reload };
+    return { ...initial, loading: true, reload };
   }
   if (query.error) {
-    return {
-      fields: null,
-      loading: false,
-      staleHash: false,
-      error: errorMessage(query.error),
-      reload,
-    };
+    return { ...initial, error: errorMessage(query.error), reload };
   }
   const wf = query.data;
   const node = wf?.nodes.find((n) => n.id === nodeId);
   return {
     fields: node?.output_schema ?? null,
+    inputFields: node?.input_schema ?? null,
     loading: false,
     staleHash: !!wf?.stale_hash,
     error: null,

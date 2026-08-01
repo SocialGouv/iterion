@@ -34,15 +34,24 @@ type WireWorkflow struct {
 // are populated for subbot nodes — the child .bot path relative to the
 // parent file, and whether the child is workspace-isolated (parallel-safe).
 type WireNode struct {
-	ID              string            `json:"id"`
-	Kind            string            `json:"kind"`
-	Description     string            `json:"description,omitempty"`
-	Model           string            `json:"model,omitempty"`
-	Backend         string            `json:"backend,omitempty"`
-	ReasoningEffort string            `json:"reasoning_effort,omitempty"`
-	OutputFields    []WireSchemaField `json:"output_schema,omitempty"`
-	Source          string            `json:"source,omitempty"`
-	Isolated        bool              `json:"isolated,omitempty"`
+	ID              string `json:"id"`
+	Kind            string `json:"kind"`
+	Description     string `json:"description,omitempty"`
+	Model           string `json:"model,omitempty"`
+	Backend         string `json:"backend,omitempty"`
+	ReasoningEffort string `json:"reasoning_effort,omitempty"`
+	// InputFields is the HumanNode's declared `input_schema`, the TYPE
+	// of the payload the gate receives (Interaction.Questions carries
+	// the resolved values). The studio renders that payload above the
+	// answer form so the operator sees what they are validating —
+	// `json` fields as structured data, `file` fields as previews —
+	// instead of the author having to stringify it into `instructions:`.
+	// Absent when the node declares no input schema; the studio then
+	// falls back to inferring a renderer from each value's shape.
+	InputFields  []WireSchemaField `json:"input_schema,omitempty"`
+	OutputFields []WireSchemaField `json:"output_schema,omitempty"`
+	Source       string            `json:"source,omitempty"`
+	Isolated     bool              `json:"isolated,omitempty"`
 }
 
 // WireSchemaField projects an ir.SchemaField as JSON. Type uses the
@@ -234,8 +243,8 @@ const IRWorkflowEndpointPath = "/api/runs/{id}/workflow"
 // expansions become "" — the run console treats that as "fall back to
 // the registry default" via its capability prefetch.
 //
-// wf is needed to resolve HumanNode output_schema names against
-// wf.Schemas; pass nil when only LLM nodes are projected.
+// wf is needed to resolve HumanNode input_schema/output_schema names
+// against wf.Schemas; pass nil when only LLM nodes are projected.
 func projectNode(id string, n ir.Node, wf *ir.Workflow) WireNode {
 	out := WireNode{ID: id, Kind: n.NodeKind().String()}
 	// Every ir node embeds BaseNode, which promotes NodeDescription; the
@@ -259,6 +268,7 @@ func projectNode(id string, n ir.Node, wf *ir.Workflow) WireNode {
 			out.ReasoningEffort = ir.ResolveEffortLiteral(v.ReasoningEffort)
 		}
 	case *ir.HumanNode:
+		out.InputFields = projectSchemaFields(v.InputSchema, wf)
 		out.OutputFields = projectSchemaFields(v.OutputSchema, wf)
 	case *ir.SubbotNode:
 		out.Source = v.Source

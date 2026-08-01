@@ -510,11 +510,11 @@ describe("HumanPromptForm — operator uploads at a gate", () => {
     expect("attachments" in req).toBe(false);
   });
   // A board surface has no conversation around the form, so the paused
-  // node's `instructions:` text is the ONLY place the operator's question
-  // can appear: `questions` holds the node's INBOUND data and the
-  // schema-driven form renders its OUTPUT fields. Regression: an
-  // app-concept interview gate showed a bare "Message" box on the card
-  // while the run console rendered the full question.
+  // node's `instructions:` text carries the operator's question: the
+  // schema-driven form renders the node's OUTPUT fields, and `questions`
+  // (its INBOUND data) is rendered as review context, not as the ask.
+  // Regression: an app-concept interview gate showed a bare "Message"
+  // box on the card while the run console rendered the full question.
   it("renders the resolved instructions above the form", async () => {
     getRunWorkflow.mockResolvedValue({
       nodes: [{ id: "chat", output_schema: [{ name: "message", type: "string" }] }],
@@ -549,12 +549,119 @@ describe("HumanPromptForm — operator uploads at a gate", () => {
       <HumanPromptForm
         runId="run-1"
         nodeId="chat"
-        questions={{ reply: "inbound only" }}
+        questions={{}}
+        instructions={undefined}
         sourceOverride={null}
       />,
     );
 
     await screen.findByRole("textbox");
-    expect(container.textContent).not.toContain("inbound only");
+    // The instructions slot is the only prose above the form; with none
+    // declared and an empty payload, nothing precedes the fields.
+    expect(container.querySelector("section[aria-label='Review context']")).toBeNull();
+    expect(container.textContent).not.toContain("Which scope");
+  });
+});
+
+// iterion#332 — the pause already carries the node's resolved INBOUND
+// data; until now the schema-driven form dropped it and the operator
+// answered blind unless the author had stringified it into
+// `instructions:`.
+describe("HumanPromptForm — the gate's inbound payload", () => {
+  it("renders the inbound payload above the answer form", async () => {
+    getRunWorkflow.mockResolvedValue({
+      nodes: [
+        {
+          id: "gate",
+          input_schema: [
+            { name: "plan", type: "string" },
+            { name: "findings", type: "json" },
+          ],
+          output_schema: [
+            { name: "approved", type: "bool" },
+            { name: "notes", type: "string" },
+          ],
+        },
+      ],
+      stale_hash: false,
+    });
+
+    renderWithClient(
+      <HumanPromptForm
+        runId="run-1"
+        nodeId="gate"
+        questions={{
+          plan: "Migrate the webhook signature check",
+          findings: { high: 2 },
+          _queued_operator_messages: ["plumbing, never shown"],
+        }}
+        sourceOverride={null}
+      />,
+    );
+
+    // The verdict controls still render — the context is added above the
+    // form, never in place of it.
+    expect(await screen.findByRole("button", { name: "Approve" })).toBeTruthy();
+    expect(screen.getByText(/Migrate the webhook signature check/)).toBeTruthy();
+    expect(screen.getByText(/"high": 2/)).toBeTruthy();
+    expect(screen.queryByText(/plumbing, never shown/)).toBeNull();
+  });
+
+  it("works with no declared input_schema — the payload is typed by shape", async () => {
+    getRunWorkflow.mockResolvedValue({
+      nodes: [{ id: "gate", output_schema: [{ name: "notes", type: "string" }] }],
+      stale_hash: false,
+    });
+
+    renderWithClient(
+      <HumanPromptForm
+        runId="run-1"
+        nodeId="gate"
+        questions={{ diff: "diff --git a/x b/x\n+added" }}
+        sourceOverride={null}
+      />,
+    );
+
+    expect(await screen.findByText(/diff --git/)).toBeTruthy();
+  });
+
+  it("stays out of the way of an ask_user pause (PauseForm renders the question)", async () => {
+    getRunWorkflow.mockResolvedValue({
+      nodes: [{ id: "agent_node", output_schema: [{ name: "result", type: "string" }] }],
+      stale_hash: false,
+    });
+
+    const { container } = renderWithClient(
+      <HumanPromptForm
+        runId="run-1"
+        nodeId="agent_node"
+        questions={{ ask_user_response: "Which DB should I target?" }}
+        sourceOverride={null}
+      />,
+    );
+
+    await screen.findByRole("textbox");
+    expect(container.querySelector("section[aria-label='Review context']")).toBeNull();
+    // The question itself is still shown once, by PauseForm.
+    expect(screen.getAllByText(/Which DB should I target\?/)).toHaveLength(1);
+  });
+
+  it("stays out of the way of the schema-less fallback (PauseForm renders the same map)", async () => {
+    getRunWorkflow.mockResolvedValue({
+      nodes: [{ id: "gate", output_schema: [] }],
+      stale_hash: false,
+    });
+
+    const { container } = renderWithClient(
+      <HumanPromptForm
+        runId="run-1"
+        nodeId="gate"
+        questions={{ plan: "Ship it" }}
+        sourceOverride={null}
+      />,
+    );
+
+    await screen.findByRole("textbox");
+    expect(container.querySelector("section[aria-label='Review context']")).toBeNull();
   });
 });

@@ -47,6 +47,56 @@ a `string` as a free-text area:
 
 ![Human form — a string field rendered as a text area](images/studio/hitl-form-text.png)
 
+## What the operator is validating — the gate's inbound payload
+
+The output schema is the *answer*. What the gate **receives** is a
+separate thing: the engine resolves the node's incoming edges at pause
+time (`with { plan: "{{outputs.plan.body}}" }`) and persists the resolved
+map on the interaction. The studio renders it read-only above the form,
+under **"What you're reviewing"** — on the run console, the pipeline
+board, and the kanban card alike.
+
+```
+agent draft_plan:
+  output: plan_out
+
+human approve_plan:
+  instructions: approve_instructions
+  output: approval_decision
+
+workflow ship:
+  entry: draft_plan
+  draft_plan -> approve_plan with {
+    plan: "{{outputs.draft_plan.body}}",       ## → shown as markdown
+    findings: "{{outputs.draft_plan.report}}", ## → shown as folded JSON
+  }
+```
+
+This needs **no authoring change**: any gate that already maps data in
+gets it. Rendering follows the value's shape — prose as markdown,
+objects/arrays as collapsible pretty JSON, an operator upload as a real
+preview (image, audio, video) rather than a path.
+
+Declaring an `input:` schema on the gate is optional and only sharpens
+two things: the reading order (the author's field order wins over
+alphabetical), and the type when the shape is ambiguous — `json` for a
+payload that arrived as a JSON string, `file` for a bare path.
+
+```
+schema review_context:
+  plan: string
+  findings: json
+  mockup: file
+
+human approve_plan:
+  input: review_context        ## types the payload; never collected from the operator
+  output: approval_decision
+```
+
+Engine-owned keys (queued operator messages, the permission marker,
+ad-hoc attachments, the `ask_user` question itself) are plumbing and are
+never displayed as review context.
+
 ## Try it — a minimal example
 
 [`examples/human-in-the-loop.bot`](../examples/human-in-the-loop.bot) is

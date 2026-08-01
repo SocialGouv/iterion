@@ -27,6 +27,7 @@ import { useRunStore } from "@/store/run";
 
 import PauseForm from "../PauseForm";
 import GateAttachments from "./GateAttachments";
+import GateInboundPayload from "./GateInboundPayload";
 import MarkdownText from "./MarkdownText";
 import type { GateFileValue } from "@/components/shared/GateFileInput";
 
@@ -104,6 +105,7 @@ export default function HumanPromptForm({
 
   const {
     fields,
+    inputFields,
     loading,
     staleHash,
     error: schemaError,
@@ -399,6 +401,20 @@ export default function HumanPromptForm({
         <div className="text-body text-fg-default">
           <MarkdownText value={instructions} size="sm" />
         </div>
+      )}
+      {/*
+        The gate's INBOUND payload — the plan / diff / mockup the operator
+        is validating (iterion#332). Suppressed on the PauseForm branches:
+        an ask_user pause carries the agent's question here, and a
+        schema-less gate has PauseForm render the very same map as its
+        answerable fields, so showing it twice would be noise.
+      */}
+      {!isAskUserPause && !useFallback && (
+        <GateInboundPayload
+          runId={runId}
+          questions={questions}
+          inputFields={inputFields}
+        />
       )}
       {staleHash && (
         <div className="text-caption text-warning-fg" role="status">
