@@ -180,6 +180,21 @@ func Build(ctx context.Context, opts Options) (Catalog, error) {
 		}{s, true})
 	}
 	recommended := recommendedSpec(*report)
+	// The host's own recommendation is not necessarily inside
+	// KnownModelSpecs — detect advertises `xai/grok-3` for the xai provider
+	// and the curated list has no xai row — so computing it and then
+	// dropping it left a fully credentialed host looking at a catalog where
+	// every model reads "unusable" and nothing is one click away. Add it as
+	// an optional entry: unresolvable becomes a reported skip, never fatal.
+	//
+	// Skipped when the caller named its own Specs: `iterion models <spec>`
+	// asks about exactly one model and must not grow a second row.
+	if recommended != "" && len(opts.Specs) == 0 {
+		specs = append(specs, struct {
+			spec     string
+			optional bool
+		}{recommended, true})
+	}
 
 	seen := make(map[string]bool, len(specs))
 	for _, entry := range specs {

@@ -15,6 +15,7 @@ import { useEffect, useState } from "react";
 import { backendForModel, modelCapabilityWarning } from "@/api/models";
 import ModelPicker from "@/components/models/ModelPicker";
 import { Select } from "@/components/ui/Select";
+import { useDebounce } from "@/hooks/useDebounce";
 import { useModelCatalog } from "@/hooks/useModelCatalog";
 import type {
   SessionModelChoice,
@@ -51,6 +52,14 @@ export default function SessionModelControl({
   // Re-sync when the stored preference loads or is reset elsewhere.
   useEffect(() => setDraft(pref.choice), [pref.choice]);
 
+  // The extra spec goes into react-query's KEY, so a value that changes on
+  // every keystroke is a cache miss on every keystroke — ModelPicker's
+  // "Custom…" branch fires onChange per character, so typing one spec meant
+  // ~23 authenticated round-trips, each re-running modelcatalog.Build and,
+  // past the detect TTL, shelling out to `claude auth status`. Settle first,
+  // and only ask about something that could actually be a spec.
+  const settledModel = useDebounce(draft.model ?? "", 400);
+  const askSpec = /^[^/\s]+\/[^/\s]+/.test(settledModel) ? settledModel : "";
   // The registry is only needed once the operator goes looking.
   const {
     models,
@@ -60,7 +69,7 @@ export default function SessionModelControl({
   } = useModelCatalog({
     // The stored choice may be a spec outside the curated set; ask for it so
     // it resolves to a real row rather than an orphan option.
-    extraSpecs: draft.model ? [draft.model] : undefined,
+    extraSpecs: askSpec ? [askSpec] : undefined,
     enabled: open,
   });
 
@@ -93,7 +102,10 @@ export default function SessionModelControl({
   // A spec the registry does not know resolves to no entry, so the capability
   // guard above is silent about it AND no backend can be derived for it. Say
   // so rather than letting the next session discover it.
-  const unresolved = !!draft.model && !selected && !catalogError;
+  // Keyed on the SETTLED value, so a half-typed spec does not flash the
+  // warning on its way to being valid.
+  const unresolved =
+    !!draft.model && draft.model === settledModel && !selected && !catalogError;
   const dirty =
     (draft.model ?? "") !== (pref.choice.model ?? "") ||
     (draft.backend ?? "") !== (pref.choice.backend ?? "") ||

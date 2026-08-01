@@ -298,3 +298,55 @@ func TestSpecsReplaceButExtraSpecsAdd(t *testing.T) {
 		t.Errorf("a duplicate ExtraSpec added a row: %v", dup.SortedSpecs())
 	}
 }
+
+// A host whose only credential is one the curated list does not cover was
+// told it could reach nothing: detect suggests `xai/grok-3`, KnownModelSpecs
+// has no xai row, so no entry ever matched the recommendation and it was
+// dropped — 11 rows all unusable, an empty "Available on this host" group,
+// and no "use recommended" affordance. The host's own suggestion is now
+// always a row the picker can render.
+func TestRecommendedSpecOutsideTheCuratedSetStillGetsARow(t *testing.T) {
+	report := hostReport(
+		[]detect.ProviderStatus{
+			{Name: "anthropic", Available: false, Source: "ANTHROPIC_API_KEY", SuggestedModel: "anthropic/claude-opus-5"},
+			{Name: "xai", Available: true, Source: "XAI_API_KEY", SuggestedModel: "xai/grok-3"},
+		},
+		[]detect.BackendStatus{
+			{Name: detect.BackendClaudeCode, Available: false},
+			{Name: detect.BackendClaw, Available: true},
+		},
+	)
+	cat := build(t, Options{Report: report})
+
+	if cat.RecommendedSpec != "xai/grok-3" {
+		t.Fatalf("RecommendedSpec = %q, want xai/grok-3 (specs: %v)", cat.RecommendedSpec, cat.SortedSpecs())
+	}
+	var row *Entry
+	for i := range cat.Models {
+		if cat.Models[i].Spec == "xai/grok-3" {
+			row = &cat.Models[i]
+		}
+	}
+	if row == nil {
+		t.Fatal("the host's recommended model has no row — the picker would render an empty list")
+	}
+	if !row.Recommended {
+		t.Error("the recommended row must be flagged, or the 'use recommended' affordance has nothing to point at")
+	}
+}
+
+// `iterion models <spec>` asks about exactly one model; the recommendation
+// must not smuggle in a second row.
+func TestExplicitSpecsDoNotGainTheRecommendedRow(t *testing.T) {
+	report := hostReport(
+		[]detect.ProviderStatus{
+			{Name: "xai", Available: true, Source: "XAI_API_KEY", SuggestedModel: "xai/grok-3"},
+		},
+		[]detect.BackendStatus{{Name: detect.BackendClaw, Available: true}},
+	)
+	cat := build(t, Options{Specs: []string{"anthropic/claude-opus-5"}, Report: report})
+
+	if len(cat.Models) != 1 {
+		t.Fatalf("models = %v, want exactly the requested spec", cat.SortedSpecs())
+	}
+}
