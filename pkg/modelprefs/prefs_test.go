@@ -1,10 +1,14 @@
 package modelprefs
 
 import (
+	"bytes"
 	"context"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
+
+	iterlog "github.com/SocialGouv/iterion/pkg/log"
 )
 
 // Both stores answer the same questions, so both run the same contract. The
@@ -136,6 +140,44 @@ func TestFileStoreSurvivesACorruptFile(t *testing.T) {
 	got, _ = s.Get(context.Background(), "", "", "whats-next")
 	if got == nil || got.Model != "openai/gpt-5.5" {
 		t.Errorf("after repair = %+v", got)
+	}
+}
+
+// The degrade is deliberate, but it must not be silent: the repairing Set
+// rewrites the file from what loaded, so an unreadable file costs whatever it
+// held. Without a warn that loss has no signal anywhere.
+func TestFileStoreWarnsBeforeDiscardingACorruptFile(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "model-prefs.json"), []byte("{not json"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	var logs bytes.Buffer
+	s := NewFileStore(dir)
+	s.SetLogger(iterlog.New(iterlog.LevelWarn, &logs))
+	if _, err := s.Get(context.Background(), "", "", "whats-next"); err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if !strings.Contains(logs.String(), "model-prefs.json") {
+		t.Errorf("corrupt file degraded with no warning; logs = %q", logs.String())
+	}
+}
+
+// A healthy file must stay quiet — a warn on every read would train the
+// operator to ignore the one that matters.
+func TestFileStoreDoesNotWarnOnAHealthyFile(t *testing.T) {
+	dir := t.TempDir()
+	ctx := context.Background()
+	var logs bytes.Buffer
+	s := NewFileStore(dir)
+	s.SetLogger(iterlog.New(iterlog.LevelWarn, &logs))
+	if err := s.Set(ctx, &Pref{Key: "whats-next", Model: "anthropic/claude-opus-5"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Get(ctx, "", "", "whats-next"); err != nil {
+		t.Fatal(err)
+	}
+	if logs.Len() != 0 {
+		t.Errorf("healthy file logged %q", logs.String())
 	}
 }
 

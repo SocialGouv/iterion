@@ -9,6 +9,7 @@ import (
 	"sort"
 	"sync"
 
+	iterlog "github.com/SocialGouv/iterion/pkg/log"
 	"github.com/SocialGouv/iterion/pkg/store"
 )
 
@@ -24,6 +25,19 @@ import (
 type FileStore struct {
 	path string
 	mu   sync.Mutex
+	// logger, when set, reports a file that could not be parsed. The degrade
+	// itself is deliberate, but it is not free: the next Set rewrites the file
+	// from the rows it managed to read, so an unparseable file quietly loses
+	// whatever it held. A warn is the difference between that and a mystery.
+	logger *iterlog.Logger
+}
+
+// SetLogger attaches a logger used to report a corrupt preferences file before
+// degrading to "no preference recorded". Optional — mirrors native.Store.
+func (f *FileStore) SetLogger(l *iterlog.Logger) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.logger = l
 }
 
 // fileRow is the on-disk shape. The composite key is flattened into the row so
@@ -59,7 +73,12 @@ func (f *FileStore) load() (map[string]Pref, error) {
 	var doc fileDoc
 	if err := json.Unmarshal(data, &doc); err != nil {
 		// A hand-edited or truncated file must not brick the assistant: the
-		// worst honest outcome is that the operator re-picks their model.
+		// worst honest outcome is that the operator re-picks their model. Say
+		// so, though — the next Set rewrites the file from what loaded, so
+		// silence here turns a corrupt file into vanished preferences.
+		if f.logger != nil {
+			f.logger.Warn("modelprefs: %s is unreadable (%v); ignoring the recorded preferences — the next save will overwrite the file", f.path, err)
+		}
 		return map[string]Pref{}, nil
 	}
 	out := make(map[string]Pref, len(doc.Prefs))

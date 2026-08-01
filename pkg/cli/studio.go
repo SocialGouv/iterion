@@ -280,7 +280,9 @@ func RunStudio(ctx context.Context, opts StudioOptions, p *Printer) error {
 	// The operator's remembered model choice, one small JSON file next to the
 	// run store. Nothing else in the config gates it: a model preference is
 	// operator convenience, so it is available whenever the studio is.
-	cfg.ModelPrefs = modelprefs.NewFileStore(resolvedStoreDir)
+	modelPrefs := modelprefs.NewFileStore(resolvedStoreDir)
+	modelPrefs.SetLogger(logger)
+	cfg.ModelPrefs = modelPrefs
 
 	ns, nsErr := native.NewStore(filepath.Join(resolvedStoreDir, "dispatcher"))
 	if nsErr == nil {
