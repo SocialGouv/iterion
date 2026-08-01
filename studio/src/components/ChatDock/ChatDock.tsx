@@ -24,6 +24,7 @@ import ContextChip from "@/components/ChatDock/ContextChip";
 import { ChatDockShell } from "@/components/ChatDock/ChatDockShell";
 import AgentChatboxInline from "@/components/shared/AgentChatboxInline";
 import { Button } from "@/components/ui/Button";
+import { InlineBanner } from "@/components/ui/InlineBanner";
 import ChatTranscript from "@/components/WhatsNext/ChatTranscript";
 import ResumeFooter from "@/components/WhatsNext/whatsNextView/ResumeFooter";
 import { composerPlaceholder } from "@/components/WhatsNext/whatsNextView/composerPlaceholder";
@@ -212,7 +213,31 @@ function AssistantDock({
 // No session yet: the dock's composer IS the launcher — the first
 // message seeds a fresh run (useAssistantComposer's "closed" branch), so
 // there is nothing to configure here, only to say so.
+//
+// Except when discovery FAILED: "no session found" and "couldn't look"
+// are different states, and here they are one keystroke from a blind
+// double-launch. Say so with the same words as SessionLauncher, the
+// sibling that renders this session full-width.
 function EmptyState({ session }: { session: UseWhatsNextSession }) {
+  if (session.discoveryError) {
+    return (
+      <div className="flex-1 min-h-0 overflow-y-auto p-3">
+        <InlineBanner
+          tone="warning"
+          layout="inline"
+          title="Couldn't check for a running session"
+          action={
+            <Button variant="secondary" size="sm" onClick={session.retryDiscovery}>
+              Retry
+            </Button>
+          }
+        >
+          {session.discoveryError} — starting one now may run two sessions in
+          parallel.
+        </InlineBanner>
+      </div>
+    );
+  }
   return (
     <div className="flex-1 min-h-0 grid place-items-center px-4 text-center">
       <p className="text-caption text-fg-muted">
