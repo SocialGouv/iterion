@@ -74,6 +74,14 @@ interface AssistantDockContextValue {
   // route tree only borrows.
   dismissedRef: string | null;
   setDismissedRef: (ref: string | null) => void;
+  // Whether the dock has a bot to render at all. Duplicated out of the
+  // session context on purpose: useAssistantReservedWidthPx must not
+  // read that context (it changes on every websocket event, and would
+  // re-render the whole AppShell with it), but it must agree with
+  // ChatDock about whether anything occupies the right edge — otherwise
+  // the shell reserves 380px for a dock that rendered nothing. Cheap to
+  // keep here because the lookup is a stable registry hit.
+  hasSession: boolean;
 }
 
 interface AssistantSessionContextValue {
@@ -135,8 +143,15 @@ function AssistantSessionHost({
   const [dismissedRef, setDismissedRef] = useState<string | null>(null);
 
   const dockValue = useMemo<AssistantDockContextValue>(
-    () => ({ store, dock, setDock, dismissedRef, setDismissedRef }),
-    [store, dock, setDock, dismissedRef],
+    () => ({
+      store,
+      dock,
+      setDock,
+      dismissedRef,
+      setDismissedRef,
+      hasSession: bot !== null,
+    }),
+    [store, dock, setDock, dismissedRef, bot],
   );
   const sessionValue = useMemo<AssistantSessionContextValue>(
     () => ({ bot, session }),
@@ -188,11 +203,15 @@ export function useAssistantSession(): AssistantSessionContextValue | null {
 //     `fixed` element and the bubble would otherwise sit UNDER the
 //     assistant's column, unclickable.
 // Reads the DOCK context only: the session context changes on every
-// websocket event and would re-render every consumer with it.
+// websocket event and would re-render every consumer with it. That is
+// why `hasSession` is mirrored onto the dock context — the condition
+// below has to match ChatDock's own render guard exactly, or the shell
+// reserves a column nothing fills.
 export function useAssistantReservedWidthPx(): number {
   const ctx = useContext(AssistantDockContext);
   const [location] = useLocation();
-  return ctx?.dock === "docked-right" && !isAssistantOwnRoute(location)
+  if (!ctx?.hasSession) return 0;
+  return ctx.dock === "docked-right" && !isAssistantOwnRoute(location)
     ? DOCKED_WIDTH_PX
     : 0;
 }
