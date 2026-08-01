@@ -1,5 +1,38 @@
 # Billy — branch-improvement validation
 
+## 2026-08-01 — the board lane could not publish, and the fixer's push was invisible to the gate (run 019fbcbb)
+
+- Status: **validated** — first end-to-end run where Billy answers a review, pushes, posts its verdict AND closes the merge gate. Two engine defects found live, both fixed and deployed in-session.
+- Versions: bot 1.1.0 · iterion `cdfedc124` (server), the run itself on `claude_code` / `claude-opus-5`.
+- Method: `/billy` comment on [iterion-test-appy-e2e#2](https://github.com/SocialGouv/iterion-test-appy-e2e/pull/2) (`feat/cache-layer`, a real Go module with planted defects), cloud, board lane, GitHub App connection, `gate_context: iterion/review` pinned on the integration.
+- Result: converged in **one pass** — 38m12s active, 390 events, 152 tool calls, 11 nodes, `continuation_loop` never re-entered. Pushed 6 commits onto the PR branch; `publish_verdict` returned `verdict posted; iterion/review=success on 6dd691c1be95`.
+- Value: the hand-off paid for itself. Billy received 3388 characters of prior review carrying the stable id `Rcae144`, **reproduced the finding before fixing it** (a 503 origin was memoized and served with a nil error, and a recovered origin was never re-contacted), fixed it in `57c7a00`, then found four more real issues the review had not — among them a `Warm` semaphore allocated per call instead of per cache, so the fan-out cap was not a cap.
+
+### The two defects the run surfaced
+
+**1. A bot launched off the board could not publish anything** (fixed, `515714482` + `cdfedc124`).
+The cloud coordinator launches a card from its BotArgs alone, so the forge-publish grant and the repo's launch policy — both composed inline by the webhook tail — never reached it. Measured side by side with the reviewer on the same PR:
+
+| | `forge_publish_url` | `forge_publish_token` | `gate_context` |
+|---|---|---|---|
+| Revi (`mode: direct`) | oui | oui | `iterion/review` |
+| Billy (`mode: board`), avant | — | — | absent |
+| Billy (`mode: board`), après | oui | oui (64 car.) | `iterion/review` |
+
+Both are now resolved at claim time, never carried on the card: a grant expires, so a card claimed hours later would hold a dead token, and a board document is the wrong place for a credential at rest.
+
+A second defect rode along, found while preparing the fixture: the repo carried **two integrations** (a stale personal-token one from 2026-07-17 and the GitHub App it was re-provisioned onto), two live webhooks, and a double delivery on every comment. Resolving them by lowest id — deterministic but arbitrary — elected the stale one, which would have posted the verdict under the operator's own account, the identity the loop guard refuses. The latest provisioning now wins.
+
+**2. The fixer's push was the one delivery the gate never saw** (fixed, `db2676c5b`).
+The iterion-bot guard skips a PR our own loop produced, keyed on the SENDER. On a merge-gate resync the sender is by construction the forge bot — the fixer that just pushed — so the resync on `6dd691c1` was recorded `filtered — PR authored by iterion's forge bot`. Two consequences, both the failures the merge gate exists to remove: the required check stayed on the pre-push revision (absent on the head that needs judging), and the fixer's own verdict about code it wrote was never superseded by the independent re-review [docs/merge-gate.md](../merge-gate.md) promises. A PR the bot *opens* is still skipped — that one did converge in its own loop.
+
+### Lessons for the next run
+
+- A `mode: board` bot gets none of the launch context the webhook lane composes. When a board-mode bot behaves as if a var were unset, read the RUN's inputs before reading the bot.
+- Both defects were invisible to every test because each test supplied by hand the thing production had to produce. The same shape as the `publish:` defect in [review-pr.md](review-pr.md): when a contract crosses two components, at least one test must run the producer for real.
+- Deprovision a stale integration when re-provisioning a repo onto another connection. Two live webhooks on one repo double every delivery, and the extra one refuses everything with a misleading reason.
+
+
 ## 2026-07-10 — /billy command on a Dependabot PR: 4 engine gaps peeled live, then a clean push-back under the App identity (runs 019f4bd4 / 019f4c46 / 019f4c86 / 019f4ccb)
 
 - Status: **validated (cloud E2E, command path) — 5 engine fixes found live, all landed in-session.**
