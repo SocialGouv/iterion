@@ -3889,6 +3889,25 @@ export interface paths {
         patch: operations["patchV1PipelineBoardTasksById"];
         trace?: never;
     };
+    "/api/v1/pipeline-board/tasks/{id}/close": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** POST /api/v1/pipeline-board/tasks/{id}/close */
+        post: operations["postV1PipelineBoardTasksByIdClose"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/pipeline-board/tasks/{id}/dependency-graph": {
         parameters: {
             query?: never;
@@ -4645,6 +4664,7 @@ export interface components {
             priority?: number;
             queue_position?: number;
             ready?: boolean;
+            reserves_slot?: boolean;
             role?: string;
             run_id?: string;
             status?: string;
@@ -4706,6 +4726,7 @@ export interface components {
             active: number;
             enabled: boolean;
             max: number;
+            reserved: number;
             waiting: number;
         };
         RepoSummary: {
@@ -10339,6 +10360,26 @@ export interface operations {
                 content: {
                     "application/json": components["schemas"]["Issue"];
                 };
+            };
+        };
+    };
+    postV1PipelineBoardTasksByIdClose: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Response */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
             };
         };
     };

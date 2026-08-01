@@ -243,37 +243,121 @@ func (b *pipelineProjectionBuilder) latestArtifactSummary(run *store.Run) string
 	return string(encoded)
 }
 
-// pipelineColumnForRoot maps a root run to a lane. A tree blocked on a
-// human review is IN_PROGRESS (the operator's turn) regardless of the
-// root's own transient status.
-func pipelineColumnForRoot(root *store.Run, reviews []PipelineBoardPendingReview) string {
+// pipelineLaneForRoot is the SOLE arbiter of a root card's lane AND of
+// whether that card holds a concurrency slot open for its own restart.
+//
+// Returning both facts from one evaluation is deliberate. A card that
+// reserves a slot without rendering in the needs-attention lane is an
+// invisible held slot — the operator sees "2/3 running" and no reason why
+// nothing starts. That is the worst failure this feature can have, so the
+// two answers are not allowed to be computed in two places.
+//
+// A tree blocked on a human review is IN_PROGRESS (the operator's turn)
+// regardless of the root's own transient status, and reserves nothing: the
+// run is alive and already holds a real slot.
+//
+// issue is nil for standalone (non-ticket) roots; terminalStates is the
+// board's set of terminal ticket states.
+func pipelineLaneForRoot(root *store.Run, issue *native.Issue, terminalStates map[string]struct{}, reviews []PipelineBoardPendingReview) (column string, reserves bool) {
 	if len(reviews) > 0 {
-		return pipelineColumnInProgress
+		return pipelineColumnInProgress, false
 	}
 	switch root.Status {
 	case store.RunStatusQueued:
 		// Waiting for a local concurrency slot — not yet executing, so it
 		// stays in Opened (the studio badges it Ready — it is cleared to run).
-		return pipelineColumnOpened
+		return pipelineColumnOpened, false
 	case store.RunStatusFinished:
-		return pipelineColumnClosed
+		return pipelineColumnClosed, false
 	case store.RunStatusRunning, store.RunStatusPausedWaitingHuman, store.RunStatusPausedOperator:
 		// An operator soft-pause is a RESUMABLE mid-flight state (the run
 		// console offers Resume), not a failure — it stays In progress with
 		// its "paused" status chip rather than landing in Closed with a
 		// Retry-from-zero affordance.
-		return pipelineColumnInProgress
-	case store.RunStatusFailed, store.RunStatusFailedResumable, store.RunStatusCancelled:
-		// A failed/cancelled run lands in the CLOSED lane (with its error as
-		// the reason, flagged failed) until the operator retries it to Opened.
-		return pipelineColumnClosed
+		return pipelineColumnInProgress, false
+	case store.RunStatusCancelled:
+		// Cancelling is a DECISION, not an anomaly. It goes to Closed and
+		// reserves nothing — a cancelled run that held a slot would make the
+		// Stop button punish the operator who pressed it, and would make
+		// Close (which cancels) retain the very slot it exists to release.
+		return pipelineColumnClosed, false
+	case store.RunStatusFailed, store.RunStatusFailedResumable:
+		if issue == nil {
+			// A STANDALONE failure (manual / API / scheduled run, no ticket)
+			// has no retry, resume-to-ready or close affordance on this board
+			// and reserves nothing. Putting it in the lane would only collect
+			// cards nobody can act on — the junkyard that killed the previous
+			// Failed lane. It belongs in Closed, badged Failed.
+			return pipelineColumnClosed, false
+		}
+		if _, terminal := terminalStates[issue.State]; terminal {
+			// The operator already filed this ticket (typically via Close).
+			// The failure is acknowledged history, not open work.
+			return pipelineColumnClosed, false
+		}
+		return pipelineColumnNeedsAttention, pipelineTicketHoldsSlot(issue, root, terminalStates)
 	default:
-		return pipelineColumnInProgress
+		return pipelineColumnInProgress, false
 	}
 }
 
+// pipelineTicketHoldsSlot is the ONE definition of "this ticket is holding a
+// concurrency slot", shared by the card projection and the admission gate so
+// the badge the operator sees and the arithmetic that refuses launches can
+// never disagree.
+//
+// The restaged case is the subtle one. Retry does not launch: it restages the
+// ticket to Ready and the next admission tick starts it, up to two seconds
+// later. Releasing the reservation at restage time would open exactly the
+// window the feature exists to close — another ready ticket, or a FIFO
+// waiter, takes the slot the operator just freed their fix into. So a
+// restaged ticket KEEPS its slot, and its relaunch spends it through
+// LaunchSpec.PipelineTicketID.
+//
+// Only while STAGED, though: a Retry that parks in waiting_deps (a blocker
+// reopened) is not going to launch soon, and holding capacity for it would
+// be a leak with no bound.
+func pipelineTicketHoldsSlot(issue *native.Issue, root *store.Run, terminalStates map[string]struct{}) bool {
+	if issue == nil || root == nil || strings.TrimSpace(issue.Bot) == "" {
+		return false
+	}
+	if _, terminal := terminalStates[issue.State]; terminal {
+		return false
+	}
+	if root.Status != store.RunStatusFailed && root.Status != store.RunStatusFailedResumable {
+		return false
+	}
+	// Failures iterion caused itself (drain / boot orphan sweep) are not
+	// anomalies the operator can fix; reserving for them would wedge the
+	// board on every restart.
+	if pipelineRunInterrupted(root) {
+		return false
+	}
+	if pipelineIssueRestagedForRelaunch(issue, root) {
+		return issue.State == native.StateReady
+	}
+	return true
+}
+
+// pipelineRunInterrupted reports that a run's failure was caused by the
+// iterion process itself (a graceful drain or the boot orphan sweep)
+// rather than by the workflow. Such a run still shows in the
+// needs-attention lane — the operator must know it was cut — but it does
+// not reserve a slot. Exact equality against the exported sentinels, so a
+// reworded reason breaks the runview test loudly instead of silently
+// re-arming the restart wedge.
+func pipelineRunInterrupted(run *store.Run) bool {
+	if run == nil {
+		return false
+	}
+	return run.Error == runview.ReasonServerDrained || run.Error == runview.ReasonProcessOrphaned
+}
+
 // pipelineRunFailed reports whether a run status marks a card failed (as
-// opposed to a successfully-finished one — both share the Closed lane).
+// opposed to a successfully-finished one). It deliberately still spans
+// cancelled: `Failed` is the card's OUTCOME flag, read by the Closed
+// lane's success/failed filter and by the studio's retry affordances, and
+// it is not the lane test. Lane membership is pipelineLaneForRoot's job.
 func pipelineRunFailed(status store.RunStatus) bool {
 	switch status {
 	case store.RunStatusFailed, store.RunStatusFailedResumable, store.RunStatusCancelled:

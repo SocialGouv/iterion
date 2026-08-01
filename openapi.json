@@ -799,6 +799,9 @@
           "ready": {
             "type": "boolean"
           },
+          "reserves_slot": {
+            "type": "boolean"
+          },
           "role": {
             "type": "string"
           },
@@ -1011,6 +1014,9 @@
           "max": {
             "type": "integer"
           },
+          "reserved": {
+            "type": "integer"
+          },
           "waiting": {
             "type": "integer"
           }
@@ -1019,7 +1025,8 @@
           "enabled",
           "max",
           "active",
-          "waiting"
+          "waiting",
+          "reserved"
         ],
         "type": "object"
       },
@@ -8043,6 +8050,30 @@
           }
         },
         "summary": "PATCH /api/v1/pipeline-board/tasks/{id}",
+        "tags": [
+          "pipeline-board"
+        ]
+      }
+    },
+    "/api/v1/pipeline-board/tasks/{id}/close": {
+      "parameters": [
+        {
+          "in": "path",
+          "name": "id",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        }
+      ],
+      "post": {
+        "operationId": "postV1PipelineBoardTasksByIdClose",
+        "responses": {
+          "default": {
+            "description": "Response"
+          }
+        },
+        "summary": "POST /api/v1/pipeline-board/tasks/{id}/close",
         "tags": [
           "pipeline-board"
         ]

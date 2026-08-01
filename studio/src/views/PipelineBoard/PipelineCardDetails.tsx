@@ -490,10 +490,18 @@ export function PipelineCardDetailsBody({
   const reviews = card.pending_reviews ?? [];
   const showProduced =
     !!card.run_id &&
-    (card.column_id === "in_progress" || card.column_id === "closed");
-  // A Closed card is a failure when the run failed/was cancelled; otherwise it
-  // finished successfully (drives the Failure vs Result sections below).
-  const closedFailed = card.column_id === "closed" && card.failed === true;
+    (card.column_id === "in_progress" ||
+      // A pipeline that died mid-flight usually produced something before it
+      // did, and those partial artefacts are exactly what the operator reads
+      // to choose between Resume (pick it back up) and Retry (start over).
+      card.column_id === "needs_attention" ||
+      card.column_id === "closed");
+  // Show the Failure section for anything that ended badly: a card in the
+  // needs-attention lane (died mid-flight) or a Closed card the operator
+  // stopped. Otherwise the card finished successfully (Result section).
+  const closedFailed =
+    card.column_id === "needs_attention" ||
+    (card.column_id === "closed" && card.failed === true);
   const closedSuccess = card.column_id === "closed" && card.failed !== true;
   // The whole pipeline tree — root + sub-bots — so a sub-bot's produced
   // elements surface here too. Falls back to the root run for older

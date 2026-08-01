@@ -83,6 +83,9 @@ type pipelineProjectionBuilder struct {
 	issueOwnedRuns map[string]struct{}
 	nodeCountCache map[string]int
 	queuePositions map[string]int
+	// blocking is the reverse blocker index (blocked-by → blockers), built
+	// once per projection by blockingIndex().
+	blocking map[string][]native.BlockingInfo
 	// eventScans memoizes the single per-run event walk (node-progress
 	// count + paused gates' instructions) for the lifetime of one
 	// projection build, so the two consumers share ONE pass.
@@ -166,10 +169,7 @@ func (s *Server) buildPipelineBoard(ctx context.Context, boardStore native.Board
 
 	// Issue-backed roots first (stable: priority desc, then created asc).
 	sort.SliceStable(issues, func(i, j int) bool {
-		if issues[i].Priority != issues[j].Priority {
-			return issues[i].Priority > issues[j].Priority
-		}
-		return issues[i].CreatedAt.Before(issues[j].CreatedAt)
+		return lessIssueByPriorityThenAge(issues[i], issues[j])
 	})
 	for _, issue := range issues {
 		root := builder.currentRunForIssue(issue)
@@ -508,23 +508,28 @@ func (b *pipelineProjectionBuilder) addTaskCard(issue *native.Issue, prior *stor
 		entry = cloneAnyMap(prior.Inputs)
 	}
 	card := PipelineBoardCard{
-		ID:         "task:" + issue.ID,
-		Kind:       "task",
-		ColumnID:   column,
-		Title:      pipelineDisplayTitle(issue, prior),
-		Body:       issue.Body,
-		IssueID:    issue.ID,
-		IssueState: issue.State,
-		Ready:      ready,
-		Labels:     append([]string(nil), issue.Labels...),
-		Priority:   issue.Priority,
-		External:   issue.External,
-		BotID:      issue.Bot,
-		Role:       pipelineIssueRole(issue),
-		EntryInput: entry,
-		CreatedAt:  issue.CreatedAt,
-		UpdatedAt:  issue.UpdatedAt,
-		Attempts:   b.attemptsForIssue(issue, prior),
+		ID:   "task:" + issue.ID,
+		Kind: "task",
+		// A ticket restaged by Retry keeps its slot until the admission tick
+		// actually relaunches it, so the badge has to follow it out of the
+		// needs-attention lane and into Opened. A held slot with no visible
+		// holder is the worst failure this feature can have.
+		ReservesSlot: pipelineTicketHoldsSlot(issue, prior, b.terminalStates),
+		ColumnID:     column,
+		Title:        pipelineDisplayTitle(issue, prior),
+		Body:         issue.Body,
+		IssueID:      issue.ID,
+		IssueState:   issue.State,
+		Ready:        ready,
+		Labels:       append([]string(nil), issue.Labels...),
+		Priority:     issue.Priority,
+		External:     issue.External,
+		BotID:        issue.Bot,
+		Role:         pipelineIssueRole(issue),
+		EntryInput:   entry,
+		CreatedAt:    issue.CreatedAt,
+		UpdatedAt:    issue.UpdatedAt,
+		Attempts:     b.attemptsForIssue(issue, prior),
 	}
 	b.attachDeps(&card, issue)
 	b.cards = append(b.cards, card)
@@ -545,14 +550,33 @@ func (b *pipelineProjectionBuilder) addRootCard(root *store.Run, issue *native.I
 	rootExec, rootTotal := b.runProgress(root)
 	treeExec, treeTotal, descCount, reviews, treeRunIDs := b.aggregateTree(root)
 
-	column := pipelineColumnForRoot(root, reviews)
-	// `?since=` prunes a CLOSED root (finished/failed/cancelled with no
-	// pending descendant review) that last changed before the cutoff, BEFORE
-	// it consumes a truncation slot — the whole point of the filter is to keep
+	column, reserves := pipelineLaneForRoot(root, issue, b.terminalStates, reviews)
+	// `?since=` prunes a CLOSED root (finished/cancelled with no pending
+	// descendant review) that last changed before the cutoff, BEFORE it
+	// consumes a truncation slot — the whole point of the filter is to keep
 	// old completed pipelines from crowding out live ones under the card cap.
-	if column == pipelineColumnClosed && b.hiddenByCutoff(root.UpdatedAt) {
+	//
+	// A stale NEEDS-ATTENTION card prunes the same way, but only when it
+	// reserves nothing. A card holding a slot is never pruned and never
+	// truncated: hiding it would leave the operator staring at a board that
+	// refuses to launch with no visible cause. Reserving cards are bounded
+	// (the gate clamps the count) so letting them past the cap is safe.
+	if !reserves && (column == pipelineColumnClosed || column == pipelineColumnNeedsAttention) &&
+		b.hiddenByCutoff(root.UpdatedAt) {
+		// A stale card that holds nothing prunes exactly like a Closed one.
+		// A RESERVING card is never age-pruned: hiding it would leave the
+		// operator staring at a board that refuses to launch with no visible
+		// cause.
 		return
 	}
+	// The card cap applies to reserving cards too. An earlier version exempted
+	// them on the theory that "the gate clamps the count" — it does not:
+	// clampedReserved bounds the integer used in the admission arithmetic, not
+	// how many tickets satisfy the reserving predicate. On a board where
+	// failures accumulate faster than they are retried or closed, that
+	// population is unbounded, and every such card also drives an aggregateTree
+	// event scan on a 3s poll. Truncating is at least VISIBLE (cardLimitReached
+	// raises the banner); an unbounded payload is not.
 	if len(b.cards) >= pipelineTreeMaxCards {
 		b.cardLimitReached = true
 		return
@@ -569,6 +593,7 @@ func (b *pipelineProjectionBuilder) addRootCard(root *store.Run, issue *native.I
 		Status:            root.Status,
 		Error:             root.Error,
 		Failed:            pipelineRunFailed(root.Status),
+		ReservesSlot:      reserves,
 		ExecutedNodes:     rootExec,
 		TotalNodes:        rootTotal,
 		TreeExecutedNodes: treeExec,
@@ -606,6 +631,14 @@ func (b *pipelineProjectionBuilder) addRootCard(root *store.Run, issue *native.I
 	if card.External == nil && root.ProjectPath != "" {
 		card.External = &native.ExternalRef{Repo: root.ProjectPath}
 	}
+	// Dependency projection for RUN-backed cards too, not just task ones.
+	// card.Blocking is what the Close dialog names before an operator abandons
+	// a pipeline others depend on — and Close lives on the needs_attention /
+	// in_progress lanes, which are emitted HERE. Without this the dialog
+	// rendered an empty dependent list on exactly the two lanes it was built
+	// to protect, while reading as though the guard had fired. Cheap now that
+	// the reverse index is memoized per projection (blockingIndex).
+	b.attachDeps(&card, issue)
 	b.cards = append(b.cards, card)
 }
 

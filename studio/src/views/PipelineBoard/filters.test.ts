@@ -98,9 +98,22 @@ describe("filterPipelineCards", () => {
     expect(
       filterPipelineCards(kindCards, { ...base, familyId: "fort" }).map((c) => c.id),
     ).toEqual(["m", "f"]);
-    expect(
-      filterPipelineCards(kindCards, { ...base, waitingDepsOnly: true }).map((c) => c.id),
-    ).toEqual(["f"]);
+  });
+
+  it("does not apply the dependency filter board-wide", () => {
+    // Regression: the deps filter used to live here, so switching it on
+    // emptied the In-progress section as a side effect — running cards carry
+    // no dependency fields at all (attachDeps only runs for ticket cards).
+    // It belongs to the Opened tab; see filterInventoryCards.
+    const mixed = [
+      card({ id: "running", column_id: "in_progress", status: "running" }),
+      card({ id: "blocked", column_id: "opened", open_blocker_count: 1 }),
+    ];
+    const f = { ...emptyPipelineFilters(), depsFilter: "blocked" as const };
+    expect(filterPipelineCards(mixed, f).map((c) => c.id)).toEqual([
+      "running",
+      "blocked",
+    ]);
   });
 
   it("bot filter matches the workflow_name fallback for bot-less runs", () => {
@@ -302,5 +315,89 @@ describe("pipelineFiltersActive", () => {
     const b = emptyPipelineFilters();
     a.labels.add("x");
     expect(b.labels.size).toBe(0);
+  });
+});
+
+describe("needs-attention lane + dependency filter", () => {
+  it("partitions needs_attention into its own bucket, out of the inventory", () => {
+    const cards = [
+      card({ id: "live", column_id: "in_progress" }),
+      card({ id: "broken", column_id: "needs_attention", failed: true }),
+      card({ id: "todo", column_id: "opened" }),
+      card({ id: "done", column_id: "closed" }),
+    ];
+    const { inProgress, needsAttention, inventory } = partitionPipelineCards(cards);
+    expect(inProgress.map((c) => c.id)).toEqual(["live"]);
+    expect(needsAttention.map((c) => c.id)).toEqual(["broken"]);
+    // Critically NOT in the inventory: a failed pipeline must not reappear
+    // in the Opened queue, where it would look launchable.
+    expect(inventory.map((c) => c.id).sort()).toEqual(["done", "todo"]);
+  });
+
+  it("routes a lane this build does not know into the Closed tab", () => {
+    // Forward compatibility: a newer server can add a lane, and an SPA
+    // bundle already loaded in a browser tab cannot be retro-fixed. Falling
+    // into Closed is recoverable; vanishing from both tabs is not.
+    const cards = [card({ id: "future", column_id: "some_future_lane" })];
+    const base = emptyPipelineFilters();
+    expect(
+      filterInventoryCards(cards, { ...base, inventoryTab: "closed" }).map((c) => c.id),
+    ).toEqual(["future"]);
+    expect(filterInventoryCards(cards, base)).toEqual([]);
+  });
+
+  it("depsFilter narrows the Opened tab three ways", () => {
+    const cards = [
+      card({ id: "free", column_id: "opened", ready: true }),
+      card({ id: "blocked", column_id: "opened", ready: true, open_blocker_count: 1 }),
+      card({ id: "labelled", column_id: "opened", launch_blocked_reason: "blocker_labels" }),
+    ];
+    const base = emptyPipelineFilters();
+    expect(filterInventoryCards(cards, base).map((c) => c.id)).toEqual([
+      "free",
+      "blocked",
+      "labelled",
+    ]);
+    expect(
+      filterInventoryCards(cards, { ...base, depsFilter: "unblocked" }).map((c) => c.id),
+    ).toEqual(["free"]);
+    expect(
+      filterInventoryCards(cards, { ...base, depsFilter: "blocked" }).map((c) => c.id),
+    ).toEqual(["blocked", "labelled"]);
+  });
+
+  it("defaults to no dependency filter and reports it as active once set", () => {
+    expect(emptyPipelineFilters().depsFilter).toBe("all");
+    expect(pipelineFiltersActive(emptyPipelineFilters())).toBe(false);
+    expect(
+      pipelineFiltersActive({ ...emptyPipelineFilters(), depsFilter: "unblocked" }),
+    ).toBe(true);
+  });
+
+  it("sorts blocked tickets below launchable ones before applying priority", () => {
+    const cards = [
+      card({ id: "blockedP9", column_id: "opened", priority: 9, open_blocker_count: 1 }),
+      card({ id: "freeP1", column_id: "opened", priority: 1 }),
+      card({ id: "freeP5", column_id: "opened", priority: 5 }),
+    ];
+    // Opened + priority: the top of the list is always something startable.
+    expect(sortInventoryCards(cards, "priority", "opened").map((c) => c.id)).toEqual([
+      "freeP5",
+      "freeP1",
+      "blockedP9",
+    ]);
+    // Closed history is pure ranking — a terminal ticket keeps whatever
+    // blockers it had, and reshuffling history for them is noise.
+    expect(sortInventoryCards(cards, "priority", "closed").map((c) => c.id)).toEqual([
+      "blockedP9",
+      "freeP5",
+      "freeP1",
+    ]);
+    // Date modes are chronology; the operator asked for it explicitly.
+    expect(sortInventoryCards(cards, "created", "opened").map((c) => c.id)).toEqual([
+      "blockedP9",
+      "freeP1",
+      "freeP5",
+    ]);
   });
 });

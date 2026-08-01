@@ -101,6 +101,14 @@ func (s *Service) stopPipelineScheduler() {
 // the reserved slot is released and the doc is failed so it leaves the
 // board's TODO lane.
 func (s *Service) startQueuedRun(it queuedItem) {
+	// A run cancelled while it waited must not be started by the drain that
+	// happened to pop it. dropQueued normally removes it first; this is the
+	// belt-and-braces for the dequeue-then-cancel interleaving.
+	if r, err := s.store.LoadRun(store.WithoutTenantFilter(context.Background()), it.runID); err == nil &&
+		r.Status != store.RunStatusQueued {
+		s.pipelineQueue.slotFreed(it.runID)
+		return
+	}
 	if _, err := s.startInProcess(context.Background(), it.runID, it.spec, false); err != nil {
 		s.logger.Warn("runview: start queued pipeline %s: %v", it.runID, err)
 		s.pipelineQueue.slotFreed(it.runID)
@@ -151,6 +159,12 @@ func (s *Service) rebuildPipelineQueue() {
 				FilePath: r.FilePath,
 				BotID:    r.BotID,
 				Vars:     inputsToVars(r.Inputs),
+				// Carry the ticket through the restart so a recovered launch
+				// can still spend its own needs-attention reservation in
+				// dequeueReady. The board stamps Source.IssueID at launch, so
+				// it is available here; leaving it empty made every recovered
+				// pipeline anonymous to the reservation gate.
+				PipelineTicketID: pipelineTicketIDOf(r),
 			},
 		})
 	}

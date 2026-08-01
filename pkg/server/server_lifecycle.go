@@ -58,6 +58,11 @@ func (s *Server) ListenAndServe() error {
 	if s.pipelineAdmissionEnabled() {
 		go s.runPipelineAdmissionLoop()
 	}
+	// Teach the run service's concurrency gate about slots held open by
+	// pipelines that died and need a human. Wired regardless of the admission
+	// loop: the FIFO drain and every non-board launch path go through the same
+	// gate, and they run even when an external dispatcher owns the board.
+	s.wirePipelineReservations(s.runs)
 	// MVP3b: fan native-board issue-state transitions out to runs that
 	// subscribed (Run.WatchedIssueIDs). No-op when no native tracker is
 	// wired or the events tail can't start.

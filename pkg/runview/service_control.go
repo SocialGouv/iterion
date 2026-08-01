@@ -78,15 +78,44 @@ func (s *Service) CancelInactiveCtx(ctx context.Context, runID string) (bool, er
 	if err != nil {
 		return false, fmt.Errorf("load run: %w", err)
 	}
+	if r.Status == store.RunStatusQueued {
+		// A queued root has no engine to signal — Cancel and the dispatcher
+		// both miss it — so dropping it out of the FIFO is what actually
+		// stops it. Do that BEFORE the status write so the scheduler cannot
+		// dequeue it in between; startQueuedRun re-checks the status anyway.
+		s.pipelineQueue.dropQueued(runID)
+	}
 	switch r.Status {
+	case store.RunStatusQueued:
+		// Never started, so there is no checkpoint to lose and no partial
+		// work to strand — `cancelled` is exactly what happened.
 	case store.RunStatusPausedWaitingHuman, store.RunStatusFailedResumable, store.RunStatusPausedOperator:
 		// flippable — paused_operator included so an orphaned operator-paused
 		// run can still be cancelled after a daemon restart
-
+	// `failed` is deliberately NOT flippable. It looks like a harmless
+	// dismissal — the run is dead either way — but `cancelled` is a RESUMABLE
+	// status everywhere in the engine (runtime/resume.go, cli/resume.go, the
+	// studio's Resume affordance) while applyStatusTransition clears the
+	// checkpoint on `failed`. The flip would therefore advertise Resume on a
+	// checkpoint-less run, and Engine.Resume routes that to resumeFromFailure,
+	// which restarts from the WORKFLOW ENTRY — re-burning the whole budget on
+	// a run whose failure may have been an intentional FailNode termination.
+	// Standalone failed runs need no dismissal anyway: they reserve nothing
+	// (only ticket-backed cards reserve) and the board files them in Closed.
 	default:
 		return false, nil // already terminal — no-op
 	}
-	if err := s.store.UpdateRunStatus(ctx, runID, store.RunStatusCancelled, "cancelled by operator (was "+string(r.Status)+")"); err != nil {
+	// UpdateRunStatus REPLACES run.Error (applyStatusTransition does a bare
+	// r.Error = runErr), so the original failure text has to be carried
+	// forward explicitly. It is the only record in run.json of WHY the run
+	// died — the board card and the REST payload both read it from there —
+	// and dismissing a failure must not erase its cause. events.jsonl still
+	// has it, but nothing in the UI reads that.
+	reason := "cancelled by operator (was " + string(r.Status) + ")"
+	if r.Error != "" {
+		reason += ": " + r.Error
+	}
+	if err := s.store.UpdateRunStatus(ctx, runID, store.RunStatusCancelled, reason); err != nil {
 		return false, fmt.Errorf("update status: %w", err)
 	}
 	// Re-load post-flip so RecoverFinalize sees the new status.
