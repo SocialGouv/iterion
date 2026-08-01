@@ -555,6 +555,18 @@ export interface WireNode {
   model?: string;
   backend?: string;
   reasoning_effort?: string;
+  // Human-node only: the gate's declared `input_schema`, i.e. the TYPE
+  // of the payload it receives (the values themselves ride the pause's
+  // `questions` map). Drives how the inbound payload is rendered above
+  // the answer form — `json` as structured data, `file` as a preview.
+  // Absent when the node declares no input schema; the renderer then
+  // infers from each value's shape.
+  input_schema?: WireSchemaField[];
+  // Human-node only: the inbound keys the node's `instructions:` prompt
+  // already interpolates (`{{input.<key>}}`). Skipped when rendering the
+  // inbound payload so a gate that embeds its input in its instructions
+  // — the historical workaround — shows it once, not twice.
+  instruction_inputs?: string[];
   output_schema?: WireSchemaField[];
   // Subbot-only (contract C2): the child .bot file this node runs, and
   // whether the child executes in an isolated workspace. Both absent

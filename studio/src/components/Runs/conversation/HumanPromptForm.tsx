@@ -27,6 +27,7 @@ import { useRunStore } from "@/store/run";
 
 import PauseForm from "../PauseForm";
 import GateAttachments from "./GateAttachments";
+import GateInboundPayload from "./GateInboundPayload";
 import MarkdownText from "./MarkdownText";
 import type { GateFileValue } from "@/components/shared/GateFileInput";
 
@@ -41,6 +42,15 @@ interface Props {
   // conversation around the form, pass it so the operator sees what
   // they are answering instead of a bare input.
   instructions?: string;
+  // The operator-facing prompt the CALLER already rendered above this
+  // form, when it renders one itself instead of passing `instructions`.
+  // The run console does exactly that (HumanQuestionCard renders
+  // `message.prompt`), and the two together are the only reliable answer
+  // to "is the gate's instructions text on screen?" — which decides
+  // whether an inbound value it interpolates may be skipped as already
+  // shown. The kanban card passes neither and cannot: it rebuilds the
+  // pause from the checkpoint, which never carries the resolved text.
+  shownPrompt?: string;
   // Quick-action chips (skip / idk) the operator can pick instead of
   // typing a reply. Only meaningful on free-text-only turns. Default
   // = ["skip", "idk"]; pass empty to suppress.
@@ -86,6 +96,7 @@ export default function HumanPromptForm({
   nodeId,
   questions,
   instructions,
+  shownPrompt,
   quickActions = ["skip", "idk"],
   sourceOverride,
   onResumed,
@@ -104,6 +115,8 @@ export default function HumanPromptForm({
 
   const {
     fields,
+    inputFields,
+    instructionInputs,
     loading,
     staleHash,
     error: schemaError,
@@ -399,6 +412,28 @@ export default function HumanPromptForm({
         <div className="text-body text-fg-default">
           <MarkdownText value={instructions} size="sm" />
         </div>
+      )}
+      {/*
+        The gate's INBOUND payload — the plan / diff / mockup the operator
+        is validating (iterion#332). Suppressed on the PauseForm branches:
+        an ask_user pause carries the agent's question here, and a
+        schema-less gate has PauseForm render the very same map as its
+        answerable fields, so showing it twice would be noise.
+
+        `loading` is part of that guard, not an optimisation: until the
+        schema lands we cannot know which branch we are on, and rendering
+        early would flash the payload as read-only context on a
+        schema-less gate a moment before PauseForm claims the same map as
+        its answer fields.
+      */}
+      {!isAskUserPause && !loading && !useFallback && (
+        <GateInboundPayload
+          runId={runId}
+          questions={questions}
+          inputFields={inputFields}
+          instructionInputs={instructionInputs}
+          instructionsText={instructions ?? shownPrompt}
+        />
       )}
       {staleHash && (
         <div className="text-caption text-warning-fg" role="status">

@@ -1532,6 +1532,18 @@
           "id": {
             "type": "string"
           },
+          "input_schema": {
+            "items": {
+              "$ref": "#/components/schemas/WireSchemaField"
+            },
+            "type": "array"
+          },
+          "instruction_inputs": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
           "isolated": {
             "type": "boolean"
           },
