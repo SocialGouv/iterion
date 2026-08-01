@@ -105,8 +105,16 @@ type Catalog struct {
 
 // Options configures Build.
 type Options struct {
-	// Specs overrides the model set. Empty means model.KnownModelSpecs().
+	// Specs REPLACES the model set: the catalog carries exactly these and
+	// nothing else. Empty means model.KnownModelSpecs(). This is
+	// `iterion models <spec>` — "tell me about this one".
 	Specs []string
+	// ExtraSpecs ADDS to the set, deduped and order-preserved. This is what a
+	// picker wants: the curated set PLUS whatever the bot's own nodes pin,
+	// which may sit outside it. Passing them as Specs instead would narrow the
+	// picker to the models already in use — the one list from which no new
+	// choice can be made.
+	ExtraSpecs []string
 	// Refresh force-refetches the model-spec aggregator cache first.
 	Refresh bool
 	// Report is the host credential snapshot. When nil, Build calls
@@ -139,13 +147,16 @@ func Build(ctx context.Context, opts Options) (Catalog, error) {
 	if len(specs) == 0 {
 		specs = model.KnownModelSpecs()
 	}
+	specs = append(append([]string{}, specs...), opts.ExtraSpecs...)
 	recommended := recommendedSpec(*report)
 
+	seen := make(map[string]bool, len(specs))
 	for _, spec := range specs {
 		spec = strings.TrimSpace(spec)
-		if spec == "" {
+		if spec == "" || seen[spec] {
 			continue
 		}
+		seen[spec] = true
 		rc, err := model.ResolveSpec(spec)
 		if err != nil {
 			return Catalog{}, err

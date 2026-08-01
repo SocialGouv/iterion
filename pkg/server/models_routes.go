@@ -20,9 +20,11 @@ import (
 //
 // Query params:
 //
-//	spec=provider/model  repeatable; overrides the known-spec set (so a caller
-//	                     can ask about a model the curated list omits, e.g. a
-//	                     node's own DSL default)
+//	spec=provider/model  repeatable; ADDS to the known set (so a caller can ask
+//	                     about a model the curated list omits — e.g. a node's
+//	                     own DSL default — without narrowing the picker to the
+//	                     models already in use, which is the one list from
+//	                     which no new choice can be made)
 //	refresh=1            re-probe host credentials AND re-fetch the model-spec
 //	                     aggregator before answering
 //
@@ -45,9 +47,9 @@ func (s *Server) handleModels(w http.ResponseWriter, r *http.Request) {
 	report := s.detector.Get(r.Context())
 
 	cat, err := modelcatalog.Build(r.Context(), modelcatalog.Options{
-		Specs:   dedupeSpecs(r.URL.Query()["spec"]),
-		Refresh: refresh,
-		Report:  &report,
+		ExtraSpecs: dedupeSpecs(r.URL.Query()["spec"]),
+		Refresh:    refresh,
+		Report:     &report,
 	})
 	if err != nil {
 		// The only error Build raises is a malformed caller-supplied spec.

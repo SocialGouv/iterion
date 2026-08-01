@@ -248,3 +248,30 @@ func TestUnknownProviderGetsItsOwnReason(t *testing.T) {
 		t.Errorf("UnusableReason = %q, want it to mention %q", e.UnusableReason, want)
 	}
 }
+
+// Specs REPLACES (the `iterion models <spec>` case) and ExtraSpecs ADDS (the
+// picker case). Conflating the two narrows a picker to the models already in
+// use — the one list from which no new choice can be made.
+func TestSpecsReplaceButExtraSpecsAdd(t *testing.T) {
+	report := bareHost()
+	base := build(t, Options{Report: report})
+
+	only := build(t, Options{Specs: []string{"openai/gpt-5.5"}, Report: report})
+	if len(only.Models) != 1 {
+		t.Errorf("Specs must replace the set, got %v", only.SortedSpecs())
+	}
+
+	plus := build(t, Options{ExtraSpecs: []string{"somevendor/some-model-9"}, Report: report})
+	if len(plus.Models) != len(base.Models)+1 {
+		t.Fatalf("ExtraSpecs must add: got %d, want %d", len(plus.Models), len(base.Models)+1)
+	}
+	if _, ok := plus.Find("anthropic/claude-opus-5"); !ok {
+		t.Error("ExtraSpecs must not hide the known set")
+	}
+
+	// An extra spec that is already known must not appear twice.
+	dup := build(t, Options{ExtraSpecs: []string{"anthropic/claude-opus-5"}, Report: report})
+	if len(dup.Models) != len(base.Models) {
+		t.Errorf("a duplicate ExtraSpec added a row: %v", dup.SortedSpecs())
+	}
+}

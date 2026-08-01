@@ -1,9 +1,9 @@
 // SessionModelControl is the assistant's model picker.
 //
 // Until it existed, nobody could say which model the assistant ran on and
-// nobody could change it: the bot pinned `model: ""` and the only lever was an
-// environment variable read at server start. Every other launch surface in the
-// product already had per-run model overrides.
+// nobody could change it: the bot pins its model and effort behind env vars
+// read at SERVER START — not per user, not per session, invisible in the UI.
+// Every other launch surface in the product already had per-run overrides.
 //
 // It renders in two places for one reason each: on the launcher, so the choice
 // can be made before the first message; in the session header, so it is
@@ -53,7 +53,9 @@ export default function SessionModelControl({
 
   // The registry is only needed once the operator goes looking.
   const { models, recommended, error: catalogError } = useModelCatalog({
-    specs: draft.model ? [draft.model] : undefined,
+    // The stored choice may be a spec outside the curated set; ask for it so
+    // it resolves to a real row rather than an orphan option.
+    extraSpecs: draft.model ? [draft.model] : undefined,
     enabled: open,
   });
 

@@ -115,7 +115,7 @@ export default function ModelOverridesSection({
   // Only fetch once the section is opened: the launch page mounts on every
   // navigation, and nobody needs the registry until they go looking for it.
   const { models, recommended, error } = useModelCatalog({
-    specs,
+    extraSpecs: specs,
     enabled: open && nodes.length > 0,
   });
 

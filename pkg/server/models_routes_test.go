@@ -47,27 +47,39 @@ func TestGetModels_ReturnsTheKnownSet(t *testing.T) {
 }
 
 // LaunchView asks about the specs its nodes actually pin, which may sit outside
-// the curated set — the endpoint has to answer for those too.
-func TestGetModels_HonoursExplicitSpecs(t *testing.T) {
+// the curated set. Those must be ADDED to the known set, never replace it —
+// narrowing the picker to the models already in use is the one list from which
+// no new choice can be made.
+func TestGetModels_ExtraSpecsAddToTheKnownSet(t *testing.T) {
 	srv, _ := newTestServer(t)
 
-	_, cat := getModels(t, srv, "?spec=openai/gpt-5.5&spec=anthropic/claude-haiku-4-5")
-	if got := cat.SortedSpecs(); len(got) != 2 {
-		t.Fatalf("specs = %v, want exactly the 2 requested", got)
+	_, base := getModels(t, srv, "")
+	_, cat := getModels(t, srv, "?spec=somevendor/some-model-9")
+
+	if len(cat.Models) != len(base.Models)+1 {
+		t.Fatalf("got %d models, want the %d known ones plus the requested one: %v",
+			len(cat.Models), len(base.Models), cat.SortedSpecs())
 	}
-	if _, ok := cat.Find("openai/gpt-5.5"); !ok {
-		t.Error("openai/gpt-5.5 missing")
+	if _, ok := cat.Find("somevendor/some-model-9"); !ok {
+		t.Error("the requested spec is missing")
+	}
+	if _, ok := cat.Find("anthropic/claude-opus-5"); !ok {
+		t.Error("asking about one model must not hide the rest")
 	}
 }
 
-// A bot with twenty nodes on one model must not produce twenty rows, and a
-// caller writing one comma-separated param must not get a 400.
+// A bot with twenty nodes on one model must not produce twenty rows, a spec
+// already in the known set must not be duplicated, and a caller writing one
+// comma-separated param must not get a 400.
 func TestGetModels_DedupesAndSplitsSpecs(t *testing.T) {
 	srv, _ := newTestServer(t)
 
-	_, cat := getModels(t, srv, "?spec=openai/gpt-5.5,anthropic/claude-opus-5&spec=openai/gpt-5.5")
-	if got := cat.SortedSpecs(); len(got) != 2 {
-		t.Fatalf("specs = %v, want 2 deduped entries", got)
+	_, base := getModels(t, srv, "")
+	_, cat := getModels(t, srv,
+		"?spec=somevendor/one,anthropic/claude-opus-5&spec=somevendor/one")
+	// +1: "somevendor/one" once, and claude-opus-5 is already known.
+	if len(cat.Models) != len(base.Models)+1 {
+		t.Fatalf("got %d models, want %d: %v", len(cat.Models), len(base.Models)+1, cat.SortedSpecs())
 	}
 }
 

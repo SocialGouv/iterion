@@ -68,9 +68,11 @@ export interface ModelCatalog {
 }
 
 export interface FetchModelsOptions {
-  // Extra specs to resolve beyond the curated set — typically the DSL
-  // defaults of the bot's own nodes, which may sit outside it.
-  specs?: string[];
+  // Extra specs to resolve IN ADDITION to the curated set — typically the DSL
+  // defaults of the bot's own nodes, which may sit outside it. They never
+  // narrow the result: a picker restricted to the models already in use is the
+  // one list from which no new choice can be made.
+  extraSpecs?: string[];
   // Re-probe host credentials AND re-fetch the model-spec aggregator.
   refresh?: boolean;
   signal?: AbortSignal;
@@ -80,7 +82,7 @@ export async function fetchModels(
   opts: FetchModelsOptions = {},
 ): Promise<ModelCatalog> {
   const params = new URLSearchParams();
-  for (const spec of opts.specs ?? []) {
+  for (const spec of opts.extraSpecs ?? []) {
     const s = spec.trim();
     // ${VAR} literals are DSL placeholders, not model ids — the server would
     // 400 on the ones without a "/" and resolve nonsense for the rest.

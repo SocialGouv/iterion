@@ -14,9 +14,10 @@ const EMPTY_MODELS: ModelEntry[] = [];
 const STALE_MS = 5 * 60 * 1000;
 
 export interface UseModelCatalogOptions {
-  // Extra specs to resolve beyond the curated set — the DSL defaults of the
-  // bot's own nodes, which may sit outside it.
-  specs?: string[];
+  // Extra specs to resolve IN ADDITION to the curated set — the DSL defaults
+  // of the bot's own nodes, which may sit outside it. They widen the catalog,
+  // never narrow it.
+  extraSpecs?: string[];
   enabled?: boolean;
 }
 
@@ -39,14 +40,14 @@ export function useModelCatalog(
   const enabled = opts.enabled !== false;
   // Sort + dedupe so two callers asking for the same specs in a different
   // order share one cache entry instead of thrashing it.
-  const specs = useMemo(
-    () => [...new Set((opts.specs ?? []).filter(Boolean))].sort(),
-    [opts.specs],
+  const extraSpecs = useMemo(
+    () => [...new Set((opts.extraSpecs ?? []).filter(Boolean))].sort(),
+    [opts.extraSpecs],
   );
 
   const query = useQuery({
-    queryKey: ["models", specs],
-    queryFn: ({ signal }) => fetchModels({ specs, signal }),
+    queryKey: ["models", extraSpecs],
+    queryFn: ({ signal }) => fetchModels({ extraSpecs, signal }),
     enabled,
     staleTime: STALE_MS,
   });
