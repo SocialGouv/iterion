@@ -143,6 +143,12 @@ is what made steering unreachable:
 | `useAssistantReservedWidthPx` | how much LAYOUT to reserve (`AppShell` padding) | 380px | 0 — floating overlays on purpose |
 | `useAssistantFixedInsetPx` | how much another FIXED surface must clear | 380px | 436px |
 
+The dock sits on its own `--z-dock` rung (35), **below** the modal scrim
+(`--z-overlay`, 40). A dialog therefore dims and covers it. The in-between
+value is the one to avoid: above the scrim but below the dialog, the dock
+paints undimmed beside a dimmed page while Radix has already made it inert —
+it looks interactive and is not.
+
 A floating assistant spans right 16 → 436 while steering's closed bubble
 sits at right 80, so answering the second question with the first left
 the bubble underneath it — in the persisted default configuration, which

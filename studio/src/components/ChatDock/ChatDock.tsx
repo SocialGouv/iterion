@@ -12,7 +12,7 @@
 // for the page the operator is on, pinned visibly above the composer and
 // carried as a one-line pointer on every message.
 
-import { useCallback } from "react";
+import { useCallback, useEffect } from "react";
 import { useLocation } from "wouter";
 
 import {
@@ -258,4 +258,25 @@ function EmptyState({ session }: { session: UseWhatsNextSession }) {
       </p>
     </div>
   );
+}
+
+// AssistantDockCrashed is the dock's error-boundary fallback: it renders
+// nothing, and on the way in it puts the dock back to `closed`.
+//
+// The rendering half is the easy half — a corner surface that crashed
+// should disappear, not paint an error card over the page. The state half
+// is the one that bites: AppShell reserves the 380px column from the dock
+// STATE held in AssistantDockContext, which a crash inside ChatDock does
+// not touch. So a dock that died while `docked-right` left a permanent
+// dead band down the right of every authenticated route, and the control
+// that would have cleared it (the minimise button) was inside the thing
+// that crashed.
+export function AssistantDockCrashed() {
+  const ctx = useAssistantDock();
+  const setDock = ctx?.setDock;
+  const docked = ctx?.dock === "docked-right";
+  useEffect(() => {
+    if (docked && setDock) setDock("closed");
+  }, [docked, setDock]);
+  return null;
 }

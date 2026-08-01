@@ -54,7 +54,9 @@ const AcceptInvitation = lazy(() => import("@/views/auth/AcceptInvitation"));
 const Login = lazy(() => import("@/views/Login"));
 
 import { AssistantProvider } from "@/components/ChatDock/AssistantProvider";
-import ChatDock from "@/components/ChatDock/ChatDock";
+import ChatDock, {
+  AssistantDockCrashed,
+} from "@/components/ChatDock/ChatDock";
 import { ErrorBoundary } from "@/components/shared/ErrorBoundary";
 import FeatureUnavailable from "@/components/shared/FeatureUnavailable";
 import GlobalCommandPalette from "@/components/shared/GlobalCommandPalette";
@@ -246,6 +248,7 @@ function AuthGate() {
 }
 
 function AuthedApp() {
+  const [location] = useLocation();
   const { isDesktop, ready, firstRunPending, refresh, pickAndAddProject } =
     useDesktop();
   const serverInfo = useServerInfoStore((s) => s.info);
@@ -393,7 +396,16 @@ function AuthedApp() {
     <AssistantProvider>
       {isDesktop && <MissingCLIBanner />}
       <AppShell>
-        <Switch>
+        {/* Catch-all under every per-route boundary. Routes mounted with
+            `component={…}` (/account, /orgs/:id, /teams/:id, /integrations*,
+            /admin/*) have none of their own, and without this their throw
+            would travel up to AssistantProvider's boundary — whose fallback
+            re-renders these same children, so a deterministic throw would
+            re-throw inside the fallback and escape past the root, where
+            nothing catches it. Contain it here and that boundary only ever
+            sees the assistant's own failures. */}
+        <ErrorBoundary area="Page" resetKey={location}>
+          <Switch>
           <Route path="/runs/new">
             <ErrorBoundary area="Launch view">
               <LaunchView />
@@ -625,7 +637,8 @@ function AuthedApp() {
           </Route>
           <Route path="/" component={HomeView} />
           <Route component={HomeView} />
-        </Switch>
+          </Switch>
+        </ErrorBoundary>
       </AppShell>
       <ToastContainer />
       <GlobalCommandPalette />
@@ -640,7 +653,21 @@ function AuthedApp() {
           /runs because the assistant choked on a transcript. The
           fallback is nothing at all — a corner surface that crashed
           should disappear, not paint an error card over the page. */}
-      <ErrorBoundary area="Assistant dock" fallback={null}>
+      <ErrorBoundary
+        area="Assistant dock"
+        // Navigating retries the dock. Without a reset key the custom
+        // fallback replaces the default card — "Try again" included — so a
+        // single bad transcript would have cost the operator the assistant
+        // for the rest of the browser session.
+        resetKey={location}
+        // Releases the 380px column on the way out. AppShell reserves it
+        // from the dock STATE, which lives in a context the boundary does
+        // not touch: a dock that crashed while `docked-right` left a
+        // permanent dead band down every page, with no control to clear it
+        // (the minimise button was inside the crashed dock). Same failure
+        // as 505f2aeb, reached through the error path.
+        fallback={<AssistantDockCrashed />}
+      >
         <ChatDock />
       </ErrorBoundary>
       {/* Settings + ProjectSwitcher are also lazy and need their own
