@@ -87,13 +87,22 @@ func (s *Service) CancelInactiveCtx(ctx context.Context, runID string) (bool, er
 		// lets an operator DISMISS it: the pipeline board's needs-attention
 		// lane is derived from run status, so a standalone failed run with no
 		// ticket to file had no way out of that lane at all. Flipping it to
-		// cancelled is the run-only equivalent of filing a ticket. The reason
-		// string preserves the prior status, so nothing is lost.
+		// cancelled is the run-only equivalent of filing a ticket.
 
 	default:
 		return false, nil // already terminal — no-op
 	}
-	if err := s.store.UpdateRunStatus(ctx, runID, store.RunStatusCancelled, "cancelled by operator (was "+string(r.Status)+")"); err != nil {
+	// UpdateRunStatus REPLACES run.Error (applyStatusTransition does a bare
+	// r.Error = runErr), so the original failure text has to be carried
+	// forward explicitly. It is the only record in run.json of WHY the run
+	// died — the board card and the REST payload both read it from there —
+	// and dismissing a failure must not erase its cause. events.jsonl still
+	// has it, but nothing in the UI reads that.
+	reason := "cancelled by operator (was " + string(r.Status) + ")"
+	if r.Error != "" {
+		reason += ": " + r.Error
+	}
+	if err := s.store.UpdateRunStatus(ctx, runID, store.RunStatusCancelled, reason); err != nil {
 		return false, fmt.Errorf("update status: %w", err)
 	}
 	// Re-load post-flip so RecoverFinalize sees the new status.

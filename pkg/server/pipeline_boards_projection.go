@@ -561,14 +561,25 @@ func (b *pipelineProjectionBuilder) addRootCard(root *store.Run, issue *native.I
 	// (the gate clamps the count) so letting them past the cap is safe.
 	if reserves {
 		b.reservedCards++
-	} else {
-		if (column == pipelineColumnClosed || column == pipelineColumnNeedsAttention) && b.hiddenByCutoff(root.UpdatedAt) {
-			return
-		}
-		if len(b.cards) >= pipelineTreeMaxCards {
-			b.cardLimitReached = true
-			return
-		}
+	} else if (column == pipelineColumnClosed || column == pipelineColumnNeedsAttention) &&
+		b.hiddenByCutoff(root.UpdatedAt) {
+		// A stale card that holds nothing prunes exactly like a Closed one.
+		// A RESERVING card is never age-pruned: hiding it would leave the
+		// operator staring at a board that refuses to launch with no visible
+		// cause.
+		return
+	}
+	// The card cap applies to reserving cards too. An earlier version exempted
+	// them on the theory that "the gate clamps the count" — it does not:
+	// clampedReserved bounds the integer used in the admission arithmetic, not
+	// how many tickets satisfy the reserving predicate. On a board where
+	// failures accumulate faster than they are retried or closed, that
+	// population is unbounded, and every such card also drives an aggregateTree
+	// event scan on a 3s poll. Truncating is at least VISIBLE (cardLimitReached
+	// raises the banner); an unbounded payload is not.
+	if len(b.cards) >= pipelineTreeMaxCards {
+		b.cardLimitReached = true
+		return
 	}
 
 	card := PipelineBoardCard{

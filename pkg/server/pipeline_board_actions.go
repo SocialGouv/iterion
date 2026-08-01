@@ -283,7 +283,16 @@ func pipelineCloseTargetState(board *native.Board) (string, bool) {
 		return st.Name, true
 	}
 	for _, st := range board.States {
-		if st.Terminal {
+		// NEVER `done`, including in the fallback. native.DefaultBoard lists
+		// done (index 7) BEFORE blocked (index 8), so a plain "first terminal
+		// state" scan resolves to done the moment a board lacks `blocked` —
+		// and UpgradeBoardSchema backfills inbox/waiting_deps/awaiting_input
+		// but never blocked, while preserving operator-customised boards. That
+		// would auto-promote every ticket parked behind a pipeline that never
+		// delivered, which is precisely what this function claims to prevent
+		// and the opposite of what the confirm dialog just promised.
+		// Falling through to the 409 is the safe outcome.
+		if st.Terminal && st.Name != native.StateDone {
 			return st.Name, true
 		}
 	}
@@ -346,23 +355,62 @@ func (s *Server) handlePipelineBoardTaskClose(w http.ResponseWriter, r *http.Req
 	// the admission loop can have started a run for this very ticket during
 	// the cancel sweep above. Closing without this leaves that run alive and
 	// orphaned under a card that now reads Closed.
+	//
+	// Its failures are REPORTED, not raised: the ticket is already filed and
+	// the card already reads Closed, so a 409 here would tell the operator the
+	// operation failed when it half-succeeded — and would discard the first
+	// sweep's result. The unreachable runs travel in the 200 body instead, so
+	// the reported outcome matches what was persisted.
+	unreachable := make([]string, 0)
 	if refreshed, getErr := boardStore.Get(id); getErr == nil {
-		if extra, ok := s.cancelIssueTree(w, r, runs, refreshed, "close"); ok {
-			cancelled = append(cancelled, extra...)
-		} else {
-			return
-		}
+		extra, stuck := s.cancelIssueTreeBestEffort(r, runs, refreshed)
+		cancelled = append(cancelled, extra...)
+		unreachable = append(unreachable, stuck...)
 	}
 	if s.logger != nil {
-		s.logger.Info("pipeline board: closed ticket %s → %s (cancelled %d run(s))", id, target, len(cancelled))
+		s.logger.Info("pipeline board: closed ticket %s → %s (cancelled %d run(s), %d unreachable)",
+			id, target, len(cancelled), len(unreachable))
 	}
 	w.Header().Set("Content-Type", "application/json")
 	s.reflectAllowedOrigin(w, r)
 	_ = json.NewEncoder(w).Encode(map[string]any{
-		"task":           updated,
-		"state":          target,
-		"cancelled_runs": cancelled,
+		"task":             updated,
+		"state":            target,
+		"cancelled_runs":   cancelled,
+		"unreachable_runs": unreachable,
 	})
+}
+
+// cancelIssueTreeBestEffort is the post-commit counterpart of
+// cancelIssueTree: it never writes an HTTP error, returning the runs it
+// stopped and the ones it could not reach so the caller can report both
+// alongside a state change that has already landed.
+func (s *Server) cancelIssueTreeBestEffort(
+	r *http.Request,
+	runs *runview.Service,
+	issue *native.Issue,
+) (cancelled, unreachable []string) {
+	runIndex, err := loadRunIndex(r.Context(), runs)
+	if err != nil {
+		if s.logger != nil {
+			s.logger.Warn("pipeline board close: re-sweep list runs: %v", err)
+		}
+		return nil, nil
+	}
+	for _, run := range issueTreeRuns(issue, runIndex) {
+		if pipelineRunRetired(run.Status) {
+			continue
+		}
+		if s.cancelPipelineRun(r.Context(), runs, run.ID) {
+			cancelled = append(cancelled, run.ID)
+			continue
+		}
+		unreachable = append(unreachable, run.ID)
+		if s.logger != nil {
+			s.logger.Warn("pipeline board close: run %s survived the close of ticket %s — cancel it from its run console", run.ID, issue.ID)
+		}
+	}
+	return cancelled, unreachable
 }
 
 // handlePipelineBoardRunClose is the run-only counterpart: a standalone
@@ -371,6 +419,9 @@ func (s *Server) handlePipelineBoardTaskClose(w http.ResponseWriter, r *http.Req
 // it was holding.
 func (s *Server) handlePipelineBoardRunClose(w http.ResponseWriter, r *http.Request) {
 	if !s.requireSafeOrigin(w, r) {
+		return
+	}
+	if s.rejectCrossStoreWrite(w, r) {
 		return
 	}
 	runID := strings.TrimSpace(r.PathValue("id"))
@@ -383,6 +434,18 @@ func (s *Server) handlePipelineBoardRunClose(w http.ResponseWriter, r *http.Requ
 	s.stateMu.RUnlock()
 	if runs == nil {
 		s.httpErrorFor(w, r, http.StatusNotFound, "pipeline board close: run service is not available")
+		return
+	}
+	// Tenant scoping BEFORE any cancel mutation — the same gate handleCancelRun
+	// carries, and for the same reason: cancelPipelineRun's first move is
+	// runs.Cancel(runID), which descends into the publisher with a
+	// non-request context, so the store's tenant filter never runs and a
+	// cross-tenant run could be cancelled by id alone. The ticket-scoped
+	// sibling gets this implicitly from boardStore.Get; this one takes the id
+	// straight off the path and must ask explicitly. (Also rejects a
+	// malformed id via the store's path-component check.)
+	if _, err := runs.LoadRunCtx(r.Context(), runID); err != nil {
+		s.httpErrorFor(w, r, http.StatusNotFound, "pipeline board close: run not found: %v", err)
 		return
 	}
 	if !s.cancelPipelineRun(r.Context(), runs, runID) {
@@ -525,10 +588,8 @@ func (s *Server) handlePipelineBoardTaskLaunch(w http.ResponseWriter, r *http.Re
 	// precondition it is a legal target for exactly that card: the deadlock
 	// is reachable straight from the API.
 	if st := runs.PipelineConcurrency(); st.Enabled {
-		reserved := st.Reserved
-		if _, holdsOwn := s.pipelineReservedSet(boardStore, runs)[id]; holdsOwn && reserved > 0 {
-			reserved--
-		}
+		_, holdsOwn := s.pipelineReservedSet(boardStore, runs)[id]
+		reserved := pipelineReservedForGate(st.Reserved, st.Max, holdsOwn)
 		if st.Active+reserved >= st.Max {
 			s.httpErrorFor(w, r, http.StatusConflict,
 				"pipeline board launch: all %d pipeline slots are taken (%d running, %d held by pipelines needing attention) — retry, close or stop one first (launching anyway would only park this one as queued)",

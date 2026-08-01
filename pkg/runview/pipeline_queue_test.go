@@ -202,8 +202,12 @@ func TestPipelineQueueFullyReservedBoardStillLetsHoldersRestart(t *testing.T) {
 	q := newPipelineQueue(3)
 	q.setReservedProvider(reservedProvider("t1", "t2", "t3", "t4", "t5"))
 
-	if st := q.status(); st.Reserved != 3 {
-		t.Fatalf("status().Reserved = %d, want 3 (clamped to max, not max-1)", st.Reserved)
+	// The wire field carries the RAW count — 5 pipelines genuinely need
+	// attention, and that is the number on the lane the operator has to act
+	// on. Clamping is an admission-arithmetic concern (clampedReserved), not
+	// something to hide from the chip.
+	if st := q.status(); st.Reserved != 5 {
+		t.Fatalf("status().Reserved = %d, want the raw 5 (clamping belongs to the gate, not the wire)", st.Reserved)
 	}
 	// Unrelated work waits — nothing may take a held slot.
 	if admitted, _ := q.admitOrEnqueue("run-fresh", LaunchSpec{}); admitted {

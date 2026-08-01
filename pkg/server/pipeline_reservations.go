@@ -61,13 +61,44 @@ func (m *pipelineReservedMemo) invalidate() {
 //     would wedge the board on every restart, i.e. on every .go save under
 //     `task studio:dev`.
 func (s *Server) pipelineReservedSet(boardStore native.BoardStore, runs *runview.Service) map[string]struct{} {
-	if boardStore == nil || runs == nil {
+	return s.pipelineReservedSetMemo(s.currentPipelineReservedMemo(), boardStore, runs)
+}
+
+// currentPipelineReservedMemo returns the memo bound to the CURRENT wiring.
+// wirePipelineReservations allocates a fresh one per wiring so a project
+// switch — which builds a new runview.Service while deliberately leaving the
+// old one running — cannot have the two share a cache and serve each other's
+// reservation set for the length of the TTL.
+func (s *Server) currentPipelineReservedMemo() *pipelineReservedMemo {
+	s.pipelineReservedMu.RLock()
+	memo := s.pipelineReserved
+	s.pipelineReservedMu.RUnlock()
+	if memo == nil {
+		return &pipelineReservedMemo{} // uncached; correct, just not memoized
+	}
+	return memo
+}
+
+func (s *Server) pipelineReservedSetMemo(
+	memo *pipelineReservedMemo,
+	boardStore native.BoardStore,
+	runs *runview.Service,
+) map[string]struct{} {
+	if boardStore == nil || runs == nil || memo == nil {
 		return nil
 	}
-	s.pipelineReserved.mu.Lock()
-	defer s.pipelineReserved.mu.Unlock()
-	if s.pipelineReserved.computed && time.Since(s.pipelineReserved.at) < pipelineReservedTTL {
-		return s.pipelineReserved.set
+	// Cloud resolves a board per request from the authenticated team, and its
+	// Service is built with a publisher so there is no local queue to gate.
+	// Bail explicitly rather than relying on that invariant holding at every
+	// call site: a process-wide memo keyed on nothing would otherwise let one
+	// team's request read another team's set.
+	if strings.EqualFold(s.cfg.Mode, "cloud") {
+		return nil
+	}
+	memo.mu.Lock()
+	defer memo.mu.Unlock()
+	if memo.computed && time.Since(memo.at) < pipelineReservedTTL {
+		return memo.set
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -132,9 +163,9 @@ func (s *Server) pipelineReservedSet(boardStore native.BoardStore, runs *runview
 		set[issue.ID] = struct{}{}
 	}
 
-	s.pipelineReserved.set = set
-	s.pipelineReserved.at = time.Now()
-	s.pipelineReserved.computed = true
+	memo.set = set
+	memo.at = time.Now()
+	memo.computed = true
 	return set
 }
 
@@ -174,9 +205,33 @@ func (s *Server) wirePipelineReservations(runs *runview.Service) {
 	if boardStore == nil {
 		return
 	}
-	s.pipelineReserved.invalidate()
+	// A FRESH memo per wiring, captured by the closure. The previous Service
+	// is deliberately not drained on a project switch, so its queue keeps
+	// calling its own provider; giving each wiring its own cache is what stops
+	// the two from serving each other's set within the TTL.
+	memo := &pipelineReservedMemo{}
+	s.pipelineReservedMu.Lock()
+	s.pipelineReserved = memo
+	s.pipelineReservedMu.Unlock()
 	runs.SetPipelineReservedProvider(
-		func() map[string]struct{} { return s.pipelineReservedSet(boardStore, runs) },
-		s.pipelineReserved.invalidate,
+		func() map[string]struct{} { return s.pipelineReservedSetMemo(memo, boardStore, runs) },
+		memo.invalidate,
 	)
+}
+
+// pipelineReservedForGate clamps a raw reserved count for an admission
+// decision and drops the candidate's own reservation, which it is spending
+// rather than competing with. PipelineConcurrencyStatus.Reserved carries the
+// RAW count (what the operator reads), so every gate has to clamp for itself.
+func pipelineReservedForGate(reserved, max int, holdsOwn bool) int {
+	if reserved > max {
+		reserved = max
+	}
+	if holdsOwn && reserved > 0 {
+		reserved--
+	}
+	if reserved < 0 {
+		return 0
+	}
+	return reserved
 }

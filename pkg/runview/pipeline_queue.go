@@ -3,6 +3,8 @@ package runview
 import (
 	"sync"
 	"time"
+
+	"github.com/SocialGouv/iterion/pkg/store"
 )
 
 // pipelineQueue is the local admission gate + FIFO waiting line for ROOT
@@ -237,9 +239,24 @@ func (q *pipelineQueue) enqueueRebuilt(runID string, spec LaunchSpec) {
 		return
 	}
 	q.mu.Lock()
-	q.fifo = append(q.fifo, queuedItem{runID: runID, spec: spec, at: time.Now().UTC()})
+	q.fifo = append(q.fifo, queuedItem{
+		runID:    runID,
+		spec:     spec,
+		ticketID: spec.PipelineTicketID,
+		at:       time.Now().UTC(),
+	})
 	q.mu.Unlock()
 	q.signal()
+}
+
+// pipelineTicketIDOf recovers the native ticket a persisted run belongs to.
+// The board stamps it as Source.IssueID at launch; anything else (manual,
+// scheduled, webhook) has no ticket and therefore no reservation to spend.
+func pipelineTicketIDOf(r *store.Run) string {
+	if r == nil || r.Source == nil {
+		return ""
+	}
+	return r.Source.IssueID
 }
 
 // positions returns a 1-based queue position per waiting run id, for the
@@ -281,7 +298,12 @@ func (q *pipelineQueue) status() PipelineConcurrencyStatus {
 	if q == nil {
 		return PipelineConcurrencyStatus{}
 	}
-	reserved := clampedReserved(q.reservedSet(), "", q.max) // outside mu
+	// The RAW count, not the admission-clamped one: this is what the operator
+	// reads. With more broken pipelines than slots, reporting the clamped
+	// value would say "3 need attention" next to a lane rendering 7, and the
+	// lane is the thing they have to act on. Consumers clamp their own
+	// arithmetic (the studio's slotsFree already floors at 0).
+	reserved := len(q.reservedSet()) // outside mu
 	q.mu.Lock()
 	defer q.mu.Unlock()
 	return PipelineConcurrencyStatus{

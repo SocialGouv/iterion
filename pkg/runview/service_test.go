@@ -248,9 +248,17 @@ func TestCancelInactive_DismissesPlainFailed(t *testing.T) {
 	if r.Status != store.RunStatusCancelled {
 		t.Errorf("status = %q, want cancelled", r.Status)
 	}
-	// The prior status must survive in the reason so nothing is lost.
+	// The prior status must survive in the reason...
 	if !strings.Contains(r.Error, string(store.RunStatusFailed)) {
 		t.Errorf("reason %q does not record the prior status", r.Error)
+	}
+	// ...and so must the ORIGINAL failure text. UpdateRunStatus replaces
+	// run.Error outright (applyStatusTransition does a bare r.Error = runErr),
+	// so dismissing a failure would otherwise erase the only record in
+	// run.json of why it died — which is exactly what the board card and the
+	// REST payload read.
+	if !strings.Contains(r.Error, "boom") {
+		t.Errorf("reason %q lost the original failure text", r.Error)
 	}
 }
 

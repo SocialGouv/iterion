@@ -438,3 +438,71 @@ func TestPipelineBoardInterruptedRunDoesNotReserveASlot(t *testing.T) {
 		t.Error("an interruption-caused failure reserved a slot — every restart would wedge the board")
 	}
 }
+
+// Close must NEVER file a ticket as `done`, including through its fallback.
+//
+// native.DefaultBoard lists done (index 7) before blocked (index 8), so a
+// plain "first terminal state" scan resolves to done the moment a board
+// lacks `blocked` — and UpgradeBoardSchema backfills inbox/waiting_deps/
+// awaiting_input but never blocked, while preserving customised boards.
+// Landing on done fires PromoteUnblockedDependents, releasing every ticket
+// parked behind a pipeline that never delivered — the precise outcome the
+// confirm dialog promises will not happen.
+func TestPipelineCloseTargetStateNeverResolvesToDone(t *testing.T) {
+	cases := []struct {
+		name   string
+		states []native.State
+		want   string
+		wantOK bool
+	}{
+		{
+			name:   "default board prefers blocked",
+			states: native.DefaultBoard().States,
+			want:   native.StateBlocked,
+			wantOK: true,
+		},
+		{
+			name: "board without blocked falls through done to the next terminal",
+			states: []native.State{
+				{Name: native.StateReady, Eligible: true},
+				{Name: native.StateDone, Terminal: true},
+				{Name: "archived", Terminal: true},
+			},
+			want:   "archived",
+			wantOK: true,
+		},
+		{
+			name: "board whose only terminal state is done refuses",
+			states: []native.State{
+				{Name: native.StateReady, Eligible: true},
+				{Name: native.StateDone, Terminal: true},
+			},
+			wantOK: false,
+		},
+		{
+			name: "a non-terminal blocked is not a close target",
+			states: []native.State{
+				{Name: native.StateBlocked},
+				{Name: native.StateDone, Terminal: true},
+			},
+			wantOK: false,
+		},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			got, ok := pipelineCloseTargetState(&native.Board{States: c.states})
+			if ok != c.wantOK {
+				t.Fatalf("ok = %v, want %v (got state %q)", ok, c.wantOK, got)
+			}
+			if ok && got != c.want {
+				t.Errorf("state = %q, want %q", got, c.want)
+			}
+			if got == native.StateDone {
+				t.Errorf("Close resolved to `done` — dependents would be auto-promoted")
+			}
+		})
+	}
+	if _, ok := pipelineCloseTargetState(nil); ok {
+		t.Error("a nil board must not yield a close target")
+	}
+}

@@ -151,6 +151,12 @@ func (s *Service) rebuildPipelineQueue() {
 				FilePath: r.FilePath,
 				BotID:    r.BotID,
 				Vars:     inputsToVars(r.Inputs),
+				// Carry the ticket through the restart so a recovered launch
+				// can still spend its own needs-attention reservation in
+				// dequeueReady. The board stamps Source.IssueID at launch, so
+				// it is available here; leaving it empty made every recovered
+				// pipeline anonymous to the reservation gate.
+				PipelineTicketID: pipelineTicketIDOf(r),
 			},
 		})
 	}

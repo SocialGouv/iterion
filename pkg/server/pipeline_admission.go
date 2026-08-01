@@ -101,6 +101,14 @@ func (s *Server) admitReadyPipelines() {
 	}
 	sortReadyTickets(ready)
 
+	if len(ready) == 0 {
+		// Nothing to admit — bail BEFORE the reservation set, which lists the
+		// whole board and the whole run store. Its 1s memo is shorter than the
+		// admission interval, so it is always cold at the tick: computing it
+		// unconditionally would make an idle studio with a large store pay a
+		// full run-store scan every interval, forever, for no decision.
+		return
+	}
 	// Slots held open for pipelines that died and need a human. Computed once
 	// per tick (the provider memoizes anyway); runview.Service.Launch remains
 	// the real authority — this gate exists to preserve launch ORDER and to
@@ -108,13 +116,11 @@ func (s *Server) admitReadyPipelines() {
 	reservedSet := s.pipelineReservedSet(board, runs)
 	for _, iss := range ready {
 		st := runs.PipelineConcurrency()
-		reserved := st.Reserved
 		// A ticket that holds a reservation is spending its OWN slot here, so
 		// its entry must not count against it — otherwise the needs-attention
 		// card is refused by the very slot it is holding for its restart.
-		if _, holdsOwn := reservedSet[iss.ID]; holdsOwn && reserved > 0 {
-			reserved--
-		}
+		_, holdsOwn := reservedSet[iss.ID]
+		reserved := pipelineReservedForGate(st.Reserved, st.Max, holdsOwn)
 		if st.Enabled && st.Active+reserved >= st.Max {
 			// `continue`, not `return`: reservations are KEYED, so a
 			// lower-priority ticket further down this list may own the very
