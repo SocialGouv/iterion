@@ -4132,6 +4132,25 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/preferences/model": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** GET /api/v1/preferences/model */
+        get: operations["getV1PreferencesModel"];
+        /** PUT /api/v1/preferences/model */
+        put: operations["putV1PreferencesModel"];
+        post?: never;
+        /** DELETE /api/v1/preferences/model */
+        delete: operations["deleteV1PreferencesModel"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/runs/repos": {
         parameters: {
             query?: never;
@@ -5059,6 +5078,19 @@ export interface components {
             team_id: string;
             team_name: string;
             team_slug: string;
+        };
+        modelPrefRequest: {
+            backend?: string;
+            effort?: string;
+            key: string;
+            model?: string;
+        };
+        modelPrefResponse: {
+            backend?: string;
+            effort?: string;
+            key: string;
+            model?: string;
+            set: boolean;
         };
         orgTreeView: {
             org_id: string;
@@ -10692,6 +10724,70 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content?: never;
+            };
+        };
+    };
+    getV1PreferencesModel: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["modelPrefResponse"];
+                };
+            };
+        };
+    };
+    putV1PreferencesModel: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["modelPrefRequest"];
+            };
+        };
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["modelPrefResponse"];
+                };
+            };
+        };
+    };
+    deleteV1PreferencesModel: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["modelPrefResponse"];
+                };
             };
         };
     };

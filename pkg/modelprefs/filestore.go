@@ -1,0 +1,149 @@
+package modelprefs
+
+import (
+	"context"
+	"encoding/json"
+	"fmt"
+	"os"
+	"path/filepath"
+	"sort"
+	"sync"
+
+	"github.com/SocialGouv/iterion/pkg/store"
+)
+
+// FileStore is the local/desktop Store: one small JSON file under the run
+// store directory. A model choice is operator convenience, not run state, so
+// it lives next to the store rather than inside a run — and a corrupt or
+// unreadable file degrades to "no preference recorded" instead of failing the
+// surface that asked.
+//
+// Local mode has a single operator, so tenant and user IDs are usually empty;
+// they are still part of the row key so the file format does not have to
+// change if a local server ever grows a second identity.
+type FileStore struct {
+	path string
+	mu   sync.Mutex
+}
+
+// fileRow is the on-disk shape. The composite key is flattened into the row so
+// the file reads as a plain list.
+type fileRow struct {
+	TenantID string `json:"tenant_id,omitempty"`
+	UserID   string `json:"user_id,omitempty"`
+	Pref
+}
+
+type fileDoc struct {
+	Version int       `json:"version"`
+	Prefs   []fileRow `json:"prefs"`
+}
+
+const fileVersion = 1
+
+// NewFileStore returns a Store backed by <dir>/model-prefs.json. The directory
+// is created on first write, not here, so constructing one is free on a
+// read-only path.
+func NewFileStore(dir string) *FileStore {
+	return &FileStore{path: filepath.Join(dir, "model-prefs.json")}
+}
+
+func (f *FileStore) load() (map[string]Pref, error) {
+	data, err := os.ReadFile(f.path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return map[string]Pref{}, nil
+		}
+		return nil, fmt.Errorf("modelprefs: read %s: %w", f.path, err)
+	}
+	var doc fileDoc
+	if err := json.Unmarshal(data, &doc); err != nil {
+		// A hand-edited or truncated file must not brick the assistant: the
+		// worst honest outcome is that the operator re-picks their model.
+		return map[string]Pref{}, nil
+	}
+	out := make(map[string]Pref, len(doc.Prefs))
+	for _, r := range doc.Prefs {
+		p := r.Pref
+		p.TenantID, p.UserID = r.TenantID, r.UserID
+		out[rowKey(r.TenantID, r.UserID, p.Key)] = p
+	}
+	return out, nil
+}
+
+func (f *FileStore) save(rows map[string]Pref) error {
+	doc := fileDoc{Version: fileVersion, Prefs: make([]fileRow, 0, len(rows))}
+	for _, p := range rows {
+		doc.Prefs = append(doc.Prefs, fileRow{TenantID: p.TenantID, UserID: p.UserID, Pref: p})
+	}
+	// Stable order so the file does not churn in a diff / backup.
+	sort.Slice(doc.Prefs, func(i, j int) bool {
+		a, b := doc.Prefs[i], doc.Prefs[j]
+		if a.TenantID != b.TenantID {
+			return a.TenantID < b.TenantID
+		}
+		if a.UserID != b.UserID {
+			return a.UserID < b.UserID
+		}
+		return a.Key < b.Key
+	})
+	data, err := json.MarshalIndent(doc, "", "  ")
+	if err != nil {
+		return fmt.Errorf("modelprefs: encode: %w", err)
+	}
+	if err := os.MkdirAll(filepath.Dir(f.path), 0o755); err != nil {
+		return fmt.Errorf("modelprefs: create store dir: %w", err)
+	}
+	return store.WriteFileAtomic(f.path, data, 0o644)
+}
+
+func (f *FileStore) Get(_ context.Context, tenantID, userID, key string) (*Pref, error) {
+	k, err := NormalizeKey(key)
+	if err != nil {
+		return nil, err
+	}
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	rows, err := f.load()
+	if err != nil {
+		return nil, err
+	}
+	if p, ok := rows[rowKey(tenantID, userID, k)]; ok {
+		cp := p
+		return &cp, nil
+	}
+	return nil, nil
+}
+
+func (f *FileStore) Set(_ context.Context, p *Pref) error {
+	k, err := NormalizeKey(p.Key)
+	if err != nil {
+		return err
+	}
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	rows, err := f.load()
+	if err != nil {
+		return err
+	}
+	row := *p
+	row.Key = k
+	row.UpdatedAt = nowUTC()
+	rows[rowKey(p.TenantID, p.UserID, k)] = row
+	return f.save(rows)
+}
+
+func (f *FileStore) Delete(_ context.Context, tenantID, userID, key string) error {
+	k, err := NormalizeKey(key)
+	if err != nil {
+		return err
+	}
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	rows, err := f.load()
+	if err != nil {
+		return err
+	}
+	delete(rows, rowKey(tenantID, userID, k))
+	return f.save(rows)
+}

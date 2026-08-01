@@ -20,6 +20,7 @@ import (
 	"github.com/SocialGouv/iterion/pkg/dispatcher/native"
 	iterlog "github.com/SocialGouv/iterion/pkg/log"
 	"github.com/SocialGouv/iterion/pkg/marketplace"
+	"github.com/SocialGouv/iterion/pkg/modelprefs"
 	"github.com/SocialGouv/iterion/pkg/runview"
 	"github.com/SocialGouv/iterion/pkg/secrets"
 	"github.com/SocialGouv/iterion/pkg/server"
@@ -276,6 +277,11 @@ func RunStudio(ctx context.Context, opts StudioOptions, p *Printer) error {
 			cfg.Sealer = secrets.NewLazyLocalSealer(store.GlobalIterionDataDir(), logger.Warn)
 		}
 	}
+	// The operator's remembered model choice, one small JSON file next to the
+	// run store. Nothing else in the config gates it: a model preference is
+	// operator convenience, so it is available whenever the studio is.
+	cfg.ModelPrefs = modelprefs.NewFileStore(resolvedStoreDir)
+
 	ns, nsErr := native.NewStore(filepath.Join(resolvedStoreDir, "dispatcher"))
 	if nsErr == nil {
 		ns.SetLogger(logger)

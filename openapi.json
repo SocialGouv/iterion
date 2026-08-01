@@ -2171,6 +2171,50 @@
         ],
         "type": "object"
       },
+      "modelPrefRequest": {
+        "properties": {
+          "backend": {
+            "type": "string"
+          },
+          "effort": {
+            "type": "string"
+          },
+          "key": {
+            "type": "string"
+          },
+          "model": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "key"
+        ],
+        "type": "object"
+      },
+      "modelPrefResponse": {
+        "properties": {
+          "backend": {
+            "type": "string"
+          },
+          "effort": {
+            "type": "string"
+          },
+          "key": {
+            "type": "string"
+          },
+          "model": {
+            "type": "string"
+          },
+          "set": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "key",
+          "set"
+        ],
+        "type": "object"
+      },
       "orgTreeView": {
         "properties": {
           "org_id": {
@@ -8588,6 +8632,75 @@
         "summary": "POST /api/v1/plugins/{name}/lifecycle/{phase}",
         "tags": [
           "plugins"
+        ]
+      }
+    },
+    "/api/v1/preferences/model": {
+      "delete": {
+        "operationId": "deleteV1PreferencesModel",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/modelPrefResponse"
+                }
+              }
+            },
+            "description": "OK"
+          }
+        },
+        "summary": "DELETE /api/v1/preferences/model",
+        "tags": [
+          "preferences"
+        ]
+      },
+      "get": {
+        "operationId": "getV1PreferencesModel",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/modelPrefResponse"
+                }
+              }
+            },
+            "description": "OK"
+          }
+        },
+        "summary": "GET /api/v1/preferences/model",
+        "tags": [
+          "preferences"
+        ]
+      },
+      "put": {
+        "operationId": "putV1PreferencesModel",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/modelPrefRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/modelPrefResponse"
+                }
+              }
+            },
+            "description": "OK"
+          }
+        },
+        "summary": "PUT /api/v1/preferences/model",
+        "tags": [
+          "preferences"
         ]
       }
     },

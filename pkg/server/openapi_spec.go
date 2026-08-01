@@ -10,6 +10,7 @@ import (
 	"github.com/SocialGouv/iterion/pkg/auth"
 	"github.com/SocialGouv/iterion/pkg/auth/orgsso"
 	"github.com/SocialGouv/iterion/pkg/forge"
+	"github.com/SocialGouv/iterion/pkg/modelprefs"
 	"github.com/SocialGouv/iterion/pkg/orgusage"
 	"github.com/SocialGouv/iterion/pkg/pat"
 	"github.com/SocialGouv/iterion/pkg/secrets"
@@ -54,6 +55,7 @@ func BuildOpenAPISpec() (map[string]any, error) {
 		BotBindings:       secrets.NewMemoryBotSecretBindingStore(),
 		OAuthForfait:      secrets.NewMemoryOAuthStore(),
 		OAuthPending:      secrets.NewMemoryOAuthPendingStore(),
+		ModelPrefs:        modelprefs.NewMemStore(),
 		WebhookConfigs:    webhooks.NewMemoryConfigStore(),
 		WebhookDeliveries: webhooks.NewMemoryDeliveryStore(),
 		WebhookCounter:    webhooks.NewMemoryCounter(),

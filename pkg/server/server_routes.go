@@ -249,6 +249,11 @@ func (s *Server) routes() {
 		s.registerNotificationRoutes()
 	}
 
+	// The operator's remembered model choice for a long-lived surface.
+	if s.cfg.ModelPrefs != nil {
+		s.registerModelPrefRoutes()
+	}
+
 	// Super-admin DLQ inspection/replay (cloud only — needs the queue).
 	if s.authSvc != nil {
 		s.registerQueueAdminRoutes()

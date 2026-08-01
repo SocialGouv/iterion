@@ -99,8 +99,11 @@ func routeSchemas() map[string]routeOp {
 		// Model registry — known x usable x capabilities x pricing. Typed so
 		// the studio's picker (and every LaunchView node row) reads the same
 		// shape the CLI prints.
-		"GET /api/models":          {response: modelcatalog.Catalog{}},
-		"GET /api/backends/detect": {response: detect.Report{}},
+		"GET /api/models":                  {response: modelcatalog.Catalog{}},
+		"GET /api/v1/preferences/model":    {response: modelPrefResponse{}},
+		"PUT /api/v1/preferences/model":    {request: modelPrefRequest{}, response: modelPrefResponse{}},
+		"DELETE /api/v1/preferences/model": {response: modelPrefResponse{}},
+		"GET /api/backends/detect":         {response: detect.Report{}},
 
 		// Global pipeline board — a single execution projection of every
 		// root pipeline (ADR-074). Additive to the native backlog (/board).
