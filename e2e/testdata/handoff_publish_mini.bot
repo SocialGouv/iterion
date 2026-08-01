@@ -23,11 +23,16 @@ schema family_out:
   family_summary: string
 
 agent published_agent:
+  ## Pinned so the fixture compiles with NO host credential: C018 otherwise
+  ## fails an agent node that names neither, and CI has none — which is how a
+  ## test that passed locally went red on main.
+  model: "anthropic/claude-haiku-4-5-20251001"
   system: emit_findings
   output: finding_set
   publish: review_findings
 
 agent unpublished_agent:
+  model: "anthropic/claude-haiku-4-5-20251001"
   system: emit_findings
   output: finding_set
 
