@@ -12,7 +12,7 @@
 // for the page the operator is on, pinned visibly above the composer and
 // carried as a one-line pointer on every message.
 
-import { useCallback, useEffect, useRef } from "react";
+import { useCallback } from "react";
 import { useLocation } from "wouter";
 
 import {
@@ -32,6 +32,7 @@ import type { DockState } from "@/lib/chatDock/dockState";
 import { ASSISTANT_HINT, ASSISTANT_LANE, ASSISTANT_TITLE } from "@/lib/chatDock/labels";
 import { isAssistantOwnRoute } from "@/lib/chatDock/routeReference";
 import { useRouteReference } from "@/lib/chatDock/useRouteReference";
+import { useUnreadWhileClosed } from "@/lib/chatDock/useUnreadWhileClosed";
 import { ASK_USER_RESPONSE_KEY } from "@/lib/askUserOptions";
 import type { FirstClassBot } from "@/lib/whats-next/firstClassBots";
 import { useAssistantComposer } from "@/lib/whats-next/useAssistantComposer";
@@ -221,21 +222,4 @@ function EmptyState({ session }: { session: UseWhatsNextSession }) {
       </p>
     </div>
   );
-}
-
-// Unread badge for the closed bubble. The baseline is the message count
-// at the moment the dock closed, so messages that arrive while the
-// operator is elsewhere are counted, and opening clears it. Kept here
-// rather than in the shell because only this caller knows what a
-// "message" is.
-function useUnreadWhileClosed(dock: DockState, messageCount: number): number {
-  const closed = dock === "closed";
-  // While open, everything on screen is read, so the baseline tracks the
-  // count. It therefore holds the count as of the moment the dock closed
-  // — which is exactly what the badge must measure against.
-  const baselineRef = useRef(messageCount);
-  useEffect(() => {
-    if (!closed) baselineRef.current = messageCount;
-  }, [closed, messageCount]);
-  return closed ? Math.max(0, messageCount - baselineRef.current) : 0;
 }
