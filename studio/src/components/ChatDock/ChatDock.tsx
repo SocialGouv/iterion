@@ -25,6 +25,7 @@ import { ChatDockShell } from "@/components/ChatDock/ChatDockShell";
 import AgentChatboxInline from "@/components/shared/AgentChatboxInline";
 import { Button } from "@/components/ui/Button";
 import ChatTranscript from "@/components/WhatsNext/ChatTranscript";
+import ResumeFooter from "@/components/WhatsNext/whatsNextView/ResumeFooter";
 import { composerPlaceholder } from "@/components/WhatsNext/whatsNextView/composerPlaceholder";
 import { withPageContext } from "@/lib/chatDock/contextMessage";
 import type { DockState } from "@/lib/chatDock/dockState";
@@ -139,55 +140,70 @@ function AssistantDock({
           {session.errorMessage}
         </div>
       )}
-      <div className="shrink-0 border-t border-border-default bg-surface-0">
-        {(composer.options.length > 0 || composer.quickReplies.length > 0) && (
-          <div className="flex flex-wrap gap-1.5 px-3 pt-2">
-            {/* Chip failures already surface via the session's
-                errorMessage banner — swallow the rethrow that exists for
-                the composer's draft preservation. */}
-            {composer.options.map((o) => (
-              <Button
-                key={o.id}
-                variant="secondary"
-                size="sm"
-                disabled={composer.busyPending}
-                onClick={() => void composer.submitPending(o.id).catch(() => {})}
-              >
-                {o.label}
-              </Button>
-            ))}
-            {composer.quickReplies.map((q) => (
-              <Button
-                key={q}
-                variant="secondary"
-                size="sm"
-                disabled={composer.busyPending}
-                onClick={() => void composer.submitPending(q).catch(() => {})}
-              >
-                {q}
-              </Button>
-            ))}
-          </div>
-        )}
-        {/* ask_user with options may disallow free text — the chips above
-            are then the only input. */}
-        {(!composer.pendingIsAskUser ||
-          composer.allowFreeText ||
-          composer.options.length === 0) && (
-          <div className="px-3 py-2">
-            <AgentChatboxInline
-              runId={session.runId ?? ""}
-              compact={dock === "floating"}
-              embedded
-              placeholder={composerPlaceholder(
-                session.runStatus,
-                !!composer.pendingHumanQuestion,
-              )}
-              onSend={composer.onComposerSend}
-            />
-          </div>
-        )}
-      </div>
+      {session.runId &&
+      (session.runStatus === "failed_resumable" ||
+        session.runStatus === "cancelled") ? (
+        // Terminal-but-resumable wins over the composer, same rule as the
+        // route view: queueing into a dead run only produces an error,
+        // and a `failed_resumable` run is NOT one the composer re-seeds.
+        <div className="shrink-0">
+          <ResumeFooter
+            runStatus={session.runStatus}
+            busy={session.status === "submitting"}
+            onResume={() => void session.resume()}
+          />
+        </div>
+      ) : (
+        <div className="shrink-0 border-t border-border-default bg-surface-0">
+          {(composer.options.length > 0 || composer.quickReplies.length > 0) && (
+            <div className="flex flex-wrap gap-1.5 px-3 pt-2">
+              {/* Chip failures already surface via the session's
+                  errorMessage banner — swallow the rethrow that exists for
+                  the composer's draft preservation. */}
+              {composer.options.map((o) => (
+                <Button
+                  key={o.id}
+                  variant="secondary"
+                  size="sm"
+                  disabled={composer.busyPending}
+                  onClick={() => void composer.submitPending(o.id).catch(() => {})}
+                >
+                  {o.label}
+                </Button>
+              ))}
+              {composer.quickReplies.map((q) => (
+                <Button
+                  key={q}
+                  variant="secondary"
+                  size="sm"
+                  disabled={composer.busyPending}
+                  onClick={() => void composer.submitPending(q).catch(() => {})}
+                >
+                  {q}
+                </Button>
+              ))}
+            </div>
+          )}
+          {/* ask_user with options may disallow free text — the chips above
+              are then the only input. */}
+          {(!composer.pendingIsAskUser ||
+            composer.allowFreeText ||
+            composer.options.length === 0) && (
+            <div className="px-3 py-2">
+              <AgentChatboxInline
+                runId={session.runId ?? ""}
+                compact={dock === "floating"}
+                embedded
+                placeholder={composerPlaceholder(
+                  session.runStatus,
+                  !!composer.pendingHumanQuestion,
+                )}
+                onSend={composer.onComposerSend}
+              />
+            </div>
+          )}
+        </div>
+      )}
     </ChatDockShell>
   );
 }

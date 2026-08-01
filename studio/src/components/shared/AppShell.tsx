@@ -29,11 +29,13 @@ export default function AppShell({ children }: AppShellProps) {
   const [location] = useLocation();
   // The assistant dock pins its own column at the right edge (it lives
   // outside this layout tree, next to the command palette). Reserve its
-  // width so it pushes the page aside instead of covering it. Reads the
-  // DOCK context only — the session context changes on every websocket
-  // event and would re-render the whole route subtree.
-  // The same suppression rule the dock applies on its own route, or the
-  // reservation would leave an empty gap there.
+  // width — box-sizing is border-box, so the padding eats into the
+  // h-screen box — so it pushes the page aside instead of covering it.
+  //
+  // Reads the DOCK context only: the session context changes on every
+  // websocket event and would re-render the whole route subtree. And it
+  // applies the dock's own-route suppression, or the reservation would
+  // leave an empty gap on /whats-next.
   const assistantDock = useAssistantDock();
   const dockedWidth =
     assistantDock?.dock === "docked-right" && !isAssistantOwnRoute(location)
