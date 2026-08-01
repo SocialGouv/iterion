@@ -15,6 +15,11 @@ export function QueueBanner({
   if (s.readyCount === 0 && s.waitingDepsCount === 0 && s.draftCount === 0) {
     return null;
   }
+  // Admission is stopped AND the reason is held slots, not live work. Say it
+  // outright: the operator is looking at a queue that will not move until
+  // they retry or close something, and nothing else on screen explains why.
+  const stalledByReservations =
+    s.slotsFree === 0 && (s.slotsReserved ?? 0) > 0 && s.readyCount > 0;
 
   return (
     <div
@@ -53,6 +58,13 @@ export function QueueBanner({
             free
           </span>
         </>
+      )}
+      {stalledByReservations && (
+        <span className="basis-full text-danger-fg">
+          Admission paused — {s.slotsReserved} slot
+          {(s.slotsReserved ?? 0) > 1 ? "s are" : " is"} held by pipelines that
+          need attention. Retry, resume or close one to let the queue move.
+        </span>
       )}
       {s.nextUp && (
         <>

@@ -57,6 +57,27 @@ the view is a projection of persisted run state, cards are **not** drag targets.
 
 ### D2 — Four fixed lanes; children fold into the root card
 
+> **Amended 2026-08-01:** a **Needs attention** lane exists again — but
+> narrower and load-bearing, which is why the collapse recorded below does
+> not apply to it. Membership is `failed` / `failed_resumable` only:
+> **cancelled stays in Closed**, because cancelling is a decision and a
+> cancelled run that held capacity would make the operator's own Stop button
+> — and Close, which cancels — punish them. The lane is not cosmetic
+> triage: a card in it **reserves one concurrency slot** so the operator's
+> fix restarts into it rather than queueing behind whatever grabbed it (no
+> process runs against a held slot). That is what makes it worth a lane
+> rather than a badge in Closed, where "failed" read as "finished" and the
+> slot was silently handed on.
+>
+> Three properties keep it from becoming the junkyard that killed v1:
+> `?since=` prunes stale NON-reserving cards exactly as it prunes Closed
+> ones; a reserving card is never pruned and never truncated by the card cap
+> (an invisible held slot is the worst way this can fail); and **Close**
+> gives every card a one-click exit that also releases the slot. Failures
+> iterion caused itself (drain / boot orphan sweep) render in the lane but
+> never reserve, or every restart would hold every slot. See
+> docs/native-tracker.md for the full contract.
+
 > **Amended 2026-07-15:** a fifth **Failed** lane was added — failed/cancelled
 > runs now land there (error shown as the reason, Retry button back to Todo)
 > instead of returning to Draft with a `failed` flag (and the Draft lane was

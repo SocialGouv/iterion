@@ -3852,6 +3852,25 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/pipeline-board/runs/{id}/close": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** POST /api/v1/pipeline-board/runs/{id}/close */
+        post: operations["postV1PipelineBoardRunsByIdClose"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/pipeline-board/tasks": {
         parameters: {
             query?: never;
@@ -3887,6 +3906,25 @@ export interface paths {
         head?: never;
         /** PATCH /api/v1/pipeline-board/tasks/{id} */
         patch: operations["patchV1PipelineBoardTasksById"];
+        trace?: never;
+    };
+    "/api/v1/pipeline-board/tasks/{id}/close": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** POST /api/v1/pipeline-board/tasks/{id}/close */
+        post: operations["postV1PipelineBoardTasksByIdClose"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
         trace?: never;
     };
     "/api/v1/pipeline-board/tasks/{id}/dependency-graph": {
@@ -4645,6 +4683,7 @@ export interface components {
             priority?: number;
             queue_position?: number;
             ready?: boolean;
+            reserves_slot?: boolean;
             role?: string;
             run_id?: string;
             status?: string;
@@ -4706,6 +4745,7 @@ export interface components {
             active: number;
             enabled: boolean;
             max: number;
+            reserved: number;
             waiting: number;
         };
         RepoSummary: {
@@ -10270,6 +10310,26 @@ export interface operations {
             };
         };
     };
+    postV1PipelineBoardRunsByIdClose: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Response */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
     postV1PipelineBoardTasks: {
         parameters: {
             query?: never;
@@ -10337,6 +10397,26 @@ export interface operations {
                 content: {
                     "application/json": components["schemas"]["Issue"];
                 };
+            };
+        };
+    };
+    postV1PipelineBoardTasksByIdClose: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Response */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
             };
         };
     };

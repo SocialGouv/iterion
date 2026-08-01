@@ -88,6 +88,10 @@ type Server struct {
 	admissionSkipMu     sync.Mutex
 	admissionSkipWarned map[string]string
 
+	// pipelineReserved memoizes which tickets hold a concurrency slot open
+	// for a pipeline that needs a human (see pipeline_reservations.go).
+	pipelineReserved pipelineReservedMemo
+
 	// finalOutputMemo caches finished runs' resolved board output. A finished
 	// run is terminal, so its final_answer/latest-artifact output never
 	// changes — computing it once per run (instead of on every 3s poll, each

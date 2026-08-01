@@ -25,6 +25,11 @@ describe("normalizePipelineBoard", () => {
       columns: [
         { id: "opened", title: "Opened", kind: "opened" },
         { id: "in_progress", title: "In progress", kind: "in_progress" },
+        {
+          id: "needs_attention",
+          title: "Needs attention",
+          kind: "needs_attention",
+        },
         { id: "closed", title: "Closed", kind: "closed" },
       ],
       cards: [
@@ -73,11 +78,12 @@ describe("normalizePipelineBoard", () => {
         {
           id: "task:iss-2",
           kind: "run",
-          column_id: "closed",
+          column_id: "needs_attention",
           title: "Broke last time",
           issue_id: "iss-2",
           run_id: "run-old",
           failed: true,
+          reserves_slot: true,
           error: "boom",
           executed_nodes: 0,
           total_nodes: 0,
@@ -94,6 +100,7 @@ describe("normalizePipelineBoard", () => {
     expect(board.columns.map((c) => c.id)).toEqual([
       "opened",
       "in_progress",
+      "needs_attention",
       "closed",
     ]);
     expect(board.concurrency).toEqual({
@@ -101,6 +108,9 @@ describe("normalizePipelineBoard", () => {
       max: 3,
       active: 2,
       waiting: 1,
+      // Absent from this fixture (an older server) → 0, so the chip's
+      // arithmetic degrades to exactly today's behaviour.
+      reserved: 0,
     });
     expect(board.cards[0]).toMatchObject({
       run_id: "run-root",
@@ -108,6 +118,12 @@ describe("normalizePipelineBoard", () => {
       tree_total_nodes: 40,
       descendant_count: 2,
     });
+    // The normalizer is a WHITELIST — a field it does not list never reaches
+    // the views however faithfully the server emits it. reserves_slot drives
+    // the "Holds a slot" badge, so losing it here would silently strip the
+    // only on-card explanation for why the board stopped launching.
+    const attention = board.cards.find((c) => c.column_id === "needs_attention");
+    expect(attention?.reserves_slot).toBe(true);
     expect(board.cards[0]?.pending_reviews).toHaveLength(1);
     expect(board.cards[0]?.pending_reviews?.[0]).toMatchObject({
       run_id: "run-child",
@@ -124,7 +140,7 @@ describe("normalizePipelineBoard", () => {
       queue_position: 2,
     });
     expect(board.cards[2]).toMatchObject({
-      column_id: "closed",
+      column_id: "needs_attention",
       failed: true,
       error: "boom",
     });
@@ -140,6 +156,7 @@ describe("normalizePipelineBoard", () => {
       max: 0,
       active: 0,
       waiting: 0,
+      reserved: 0,
     });
     expect(board.cards[0]).toMatchObject({
       kind: "task",

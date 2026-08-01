@@ -30,6 +30,18 @@ type pipelineQueue struct {
 	// freed or an item was enqueued. Non-blocking sends coalesce, so the
 	// scheduler never misses the fact that there is work, only its count.
 	wake chan struct{}
+	// reserved reports the native ticket ids currently HOLDING a slot for a
+	// pipeline that died and needs a human. Those runs are gone — no
+	// goroutine, no budget — but their slot must not be taken by another
+	// card, or the operator's fix would queue behind whatever grabbed it.
+	//
+	// Injected by the server, which owns the board; nil means "no
+	// reservations", i.e. byte-for-byte today's behaviour. Guarded by
+	// reservedMu rather than mu because it is called from OUTSIDE mu: it
+	// reads the board + run store, and holding mu across that would invert
+	// the lock order against launchTicketNow's SetState-then-Launch.
+	reservedMu sync.RWMutex
+	reserved   func() map[string]struct{}
 }
 
 // queuedItem is one waiting root launch: the pre-minted run id plus the
@@ -39,7 +51,80 @@ type pipelineQueue struct {
 type queuedItem struct {
 	runID string
 	spec  LaunchSpec
-	at    time.Time
+	// ticketID is spec.PipelineTicketID, lifted out so the FIFO drain can
+	// test a waiter against its OWN reservation without unpacking the spec.
+	ticketID string
+	at       time.Time
+}
+
+// setReservedProvider wires (or clears) the board-derived reservation
+// source. Safe on a nil queue and callable after construction, so a Service
+// built before its board exists — and a studio project switch, which
+// rebuilds the Service — can both point it at the right board.
+func (q *pipelineQueue) setReservedProvider(fn func() map[string]struct{}) {
+	if q == nil {
+		return
+	}
+	q.reservedMu.Lock()
+	q.reserved = fn
+	q.reservedMu.Unlock()
+	q.signal()
+}
+
+// reservedSet snapshots the held-slot ticket ids. MUST be called outside
+// mu (see the field comment). Never nil.
+func (q *pipelineQueue) reservedSet() map[string]struct{} {
+	if q == nil {
+		return nil
+	}
+	q.reservedMu.RLock()
+	fn := q.reserved
+	q.reservedMu.RUnlock()
+	if fn == nil {
+		return nil
+	}
+	return fn()
+}
+
+// clampedReserved counts held slots for an admission decision.
+//
+// Two adjustments, each closing a way the board could wedge:
+//
+//   - EXCLUSION. A launch for `exclude` is that ticket spending its own
+//     reservation, so its entry must not count against it. Without this the
+//     needs-attention card is refused by the very slot it is holding for
+//     itself — a permanent deadlock, reachable from POST .../tasks/{id}/launch
+//     which has no ready-state precondition at all.
+//
+//   - CLAMP to max. More broken pipelines than slots is entirely possible;
+//     the count must not exceed the cap or the arithmetic goes negative-free
+//     but meaningless.
+//
+// Note what is deliberately NOT here: a max-1 ceiling reserving "one slot
+// that can never be held". It looks like prudent liveness insurance and is
+// actually a hole. It would silently disable the whole feature on a
+// single-slot board — exactly the configuration where losing your slot to
+// another card hurts most — and it weakens the guarantee at every other
+// max for no real gain, because reservations CANNOT deadlock the board:
+// every holder can always relaunch itself (the exclusion above), Close
+// always releases, and failures iterion caused itself never reserve at all
+// (see pipelineLaneForRoot). A fully-reserved board is not a wedge, it is
+// the feature doing its job — loudly, via the concurrency chip and the
+// queue banner.
+func clampedReserved(set map[string]struct{}, exclude string, max int) int {
+	if len(set) == 0 || max <= 0 {
+		return 0
+	}
+	n := len(set)
+	if n > max {
+		n = max
+	}
+	if exclude != "" {
+		if _, held := set[exclude]; held && n > 0 {
+			n--
+		}
+	}
+	return n
 }
 
 // newPipelineQueue returns a guard capping concurrent root pipelines at
@@ -65,31 +150,55 @@ func (q *pipelineQueue) admitOrEnqueue(runID string, spec LaunchSpec) (admitted 
 	if q == nil {
 		return true, 0
 	}
+	// Outside mu on purpose — the provider reads the board + run store.
+	reserved := clampedReserved(q.reservedSet(), spec.PipelineTicketID, q.max)
 	q.mu.Lock()
 	defer q.mu.Unlock()
-	if len(q.running) < q.max {
+	if len(q.running)+reserved < q.max {
 		q.running[runID] = struct{}{}
 		return true, 0
 	}
-	q.fifo = append(q.fifo, queuedItem{runID: runID, spec: spec, at: time.Now().UTC()})
+	q.fifo = append(q.fifo, queuedItem{
+		runID:    runID,
+		spec:     spec,
+		ticketID: spec.PipelineTicketID,
+		at:       time.Now().UTC(),
+	})
 	return false, len(q.fifo)
 }
 
 // dequeueReady pops as many waiting roots as there are free slots,
 // marking each running before returning it. The caller starts each item
 // OUTSIDE any lock. A nil queue returns nothing.
+//
+// The reservation test lives HERE, not only in the server's admission
+// loop, and that is the whole reason enforcement was pulled down into the
+// queue. slotFreed is called from the dying run's own goroutine and
+// immediately signals the scheduler, so the FIFO drain hands the
+// just-freed slot to a waiter microseconds after the failure — long
+// before any 2s admission tick could notice a reservation was created.
+// A gate that only sat upstream would be bypassed every single time.
+// (It would also miss the five other Launch call sites — the studio
+// Launch modal, triggers, two webhook paths, boarddispatch — none of
+// which know anything about a board.)
 func (q *pipelineQueue) dequeueReady() []queuedItem {
 	if q == nil {
 		return nil
 	}
+	set := q.reservedSet() // outside mu (see reservedSet)
 	q.mu.Lock()
 	defer q.mu.Unlock()
 	var out []queuedItem
-	for len(q.running) < q.max && len(q.fifo) > 0 {
-		it := q.fifo[0]
+	for len(q.fifo) > 0 {
+		head := q.fifo[0]
+		// Per-head exclusion: a queued relaunch of the very ticket holding
+		// the slot is allowed to spend it.
+		if len(q.running)+clampedReserved(set, head.ticketID, q.max) >= q.max {
+			break
+		}
 		q.fifo = q.fifo[1:]
-		q.running[it.runID] = struct{}{}
-		out = append(out, it)
+		q.running[head.runID] = struct{}{}
+		out = append(out, head)
 	}
 	return out
 }
@@ -159,18 +268,27 @@ type PipelineConcurrencyStatus struct {
 	Max     int  `json:"max"`
 	Active  int  `json:"active"`
 	Waiting int  `json:"waiting"`
+	// Reserved is how many slots are held open for pipelines that died and
+	// need a human — no process is running against them. Reported from the
+	// SAME provider the admission decisions use, so the studio's chip can
+	// never disagree with why the board is refusing to launch. Without this
+	// field a fully-reserved board reads as "1 active / 3 max" next to a
+	// queue that never moves, i.e. as a hang.
+	Reserved int `json:"reserved"`
 }
 
 func (q *pipelineQueue) status() PipelineConcurrencyStatus {
 	if q == nil {
 		return PipelineConcurrencyStatus{}
 	}
+	reserved := clampedReserved(q.reservedSet(), "", q.max) // outside mu
 	q.mu.Lock()
 	defer q.mu.Unlock()
 	return PipelineConcurrencyStatus{
-		Enabled: true,
-		Max:     q.max,
-		Active:  len(q.running),
-		Waiting: len(q.fifo),
+		Enabled:  true,
+		Max:      q.max,
+		Active:   len(q.running),
+		Waiting:  len(q.fifo),
+		Reserved: reserved,
 	}
 }

@@ -2,6 +2,7 @@ package runview
 
 import (
 	"context"
+	"strings"
 	"testing"
 	"time"
 
@@ -163,15 +164,17 @@ func TestCancelInactive_FlipsResumableStatuses(t *testing.T) {
 }
 
 // TestCancelInactive_NoOpOnTerminal verifies that calling CancelInactive
-// on a run that's ALREADY terminal (finished / failed / cancelled) is a
+// on a run that has ALREADY reached its end (finished / cancelled) is a
 // no-op — returns (false, nil) and leaves the persisted status alone.
 // Important because the HTTP handler dispatches here optimistically when
 // manager.Cancel returns ErrRunNotActive, regardless of the run's
 // terminal state.
+//
+// `failed` is deliberately NOT in this list — see
+// TestCancelInactive_DismissesPlainFailed.
 func TestCancelInactive_NoOpOnTerminal(t *testing.T) {
 	for _, terminal := range []store.RunStatus{
 		store.RunStatusFinished,
-		store.RunStatusFailed,
 		store.RunStatusCancelled,
 	} {
 		t.Run(string(terminal), func(t *testing.T) {
@@ -204,6 +207,50 @@ func TestCancelInactive_NoOpOnTerminal(t *testing.T) {
 				t.Errorf("status mutated from %q to %q — expected no-op", terminal, r.Status)
 			}
 		})
+	}
+}
+
+// TestCancelInactive_DismissesPlainFailed pins the one terminal status
+// CancelInactive is allowed to rewrite.
+//
+// A plainly-failed run has nothing left to stop, so this looks like a no-op
+// case — and it was one until the pipeline board grew a needs-attention
+// lane derived from run status. A STANDALONE failed run has no ticket to
+// file, so without this flip there was no way to dismiss it: it sat in the
+// lane forever, and the lane became the junkyard it exists to prevent.
+// Flipping to cancelled is the run-only equivalent of closing a ticket.
+func TestCancelInactive_DismissesPlainFailed(t *testing.T) {
+	dir := t.TempDir()
+	logger := iterlog.Nop()
+	seed, err := store.New(dir, store.WithLogger(logger))
+	if err != nil {
+		t.Fatalf("seed store: %v", err)
+	}
+	const runID = "run-plain-failed"
+	if _, err := seed.CreateRun(context.Background(), runID, "wf", nil); err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	if err := seed.UpdateRunStatus(context.Background(), runID, store.RunStatusFailed, "boom"); err != nil {
+		t.Fatalf("update status: %v", err)
+	}
+	svc, err := NewService(dir, WithLogger(logger))
+	if err != nil {
+		t.Fatalf("NewService: %v", err)
+	}
+	cancelled, err := svc.CancelInactive(runID)
+	if err != nil {
+		t.Fatalf("CancelInactive: %v", err)
+	}
+	if !cancelled {
+		t.Fatal("CancelInactive returned false for a plain failed run — the card would be undismissable")
+	}
+	r, _ := seed.LoadRun(context.Background(), runID)
+	if r.Status != store.RunStatusCancelled {
+		t.Errorf("status = %q, want cancelled", r.Status)
+	}
+	// The prior status must survive in the reason so nothing is lost.
+	if !strings.Contains(r.Error, string(store.RunStatusFailed)) {
+		t.Errorf("reason %q does not record the prior status", r.Error)
 	}
 }
 

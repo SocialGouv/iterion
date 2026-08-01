@@ -100,6 +100,12 @@ type pipelineProjectionBuilder struct {
 	since         time.Time
 	hiddenBySince int
 
+	// reservedCards counts the needs-attention cards holding a concurrency
+	// slot for their own restart. Observational here — the admission gate
+	// derives its own count from the same predicate (pipeline_reservations.go)
+	// because it must not depend on a full board projection running first.
+	reservedCards int
+
 	cardLimitReached  bool
 	depthLimitReached bool
 	cycleDetected     bool
@@ -166,10 +172,7 @@ func (s *Server) buildPipelineBoard(ctx context.Context, boardStore native.Board
 
 	// Issue-backed roots first (stable: priority desc, then created asc).
 	sort.SliceStable(issues, func(i, j int) bool {
-		if issues[i].Priority != issues[j].Priority {
-			return issues[i].Priority > issues[j].Priority
-		}
-		return issues[i].CreatedAt.Before(issues[j].CreatedAt)
+		return lessIssueByPriorityThenAge(issues[i], issues[j])
 	})
 	for _, issue := range issues {
 		root := builder.currentRunForIssue(issue)
@@ -545,17 +548,27 @@ func (b *pipelineProjectionBuilder) addRootCard(root *store.Run, issue *native.I
 	rootExec, rootTotal := b.runProgress(root)
 	treeExec, treeTotal, descCount, reviews, treeRunIDs := b.aggregateTree(root)
 
-	column := pipelineColumnForRoot(root, reviews)
-	// `?since=` prunes a CLOSED root (finished/failed/cancelled with no
-	// pending descendant review) that last changed before the cutoff, BEFORE
-	// it consumes a truncation slot — the whole point of the filter is to keep
+	column, reserves := pipelineLaneForRoot(root, issue, b.terminalStates, reviews)
+	// `?since=` prunes a CLOSED root (finished/cancelled with no pending
+	// descendant review) that last changed before the cutoff, BEFORE it
+	// consumes a truncation slot — the whole point of the filter is to keep
 	// old completed pipelines from crowding out live ones under the card cap.
-	if column == pipelineColumnClosed && b.hiddenByCutoff(root.UpdatedAt) {
-		return
-	}
-	if len(b.cards) >= pipelineTreeMaxCards {
-		b.cardLimitReached = true
-		return
+	//
+	// A stale NEEDS-ATTENTION card prunes the same way, but only when it
+	// reserves nothing. A card holding a slot is never pruned and never
+	// truncated: hiding it would leave the operator staring at a board that
+	// refuses to launch with no visible cause. Reserving cards are bounded
+	// (the gate clamps the count) so letting them past the cap is safe.
+	if reserves {
+		b.reservedCards++
+	} else {
+		if (column == pipelineColumnClosed || column == pipelineColumnNeedsAttention) && b.hiddenByCutoff(root.UpdatedAt) {
+			return
+		}
+		if len(b.cards) >= pipelineTreeMaxCards {
+			b.cardLimitReached = true
+			return
+		}
 	}
 
 	card := PipelineBoardCard{
@@ -569,6 +582,7 @@ func (b *pipelineProjectionBuilder) addRootCard(root *store.Run, issue *native.I
 		Status:            root.Status,
 		Error:             root.Error,
 		Failed:            pipelineRunFailed(root.Status),
+		ReservesSlot:      reserves,
 		ExecutedNodes:     rootExec,
 		TotalNodes:        rootTotal,
 		TreeExecutedNodes: treeExec,

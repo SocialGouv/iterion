@@ -623,6 +623,13 @@ func (s *Service) spawnRun(
 		// waiter it admits is a DIFFERENT run and pipelineQueue keeps its own
 		// accounting — it never consults the Manager.
 		defer s.pipelineQueue.slotFreed(runID)
+		// Defers run LIFO, so this fires BEFORE slotFreed above — deliberately.
+		// slotFreed wakes the FIFO drain, and if that drain still saw a cached
+		// reservation set computed before this run died, it would hand the slot
+		// this very failure just reserved to the next waiter. Dropping the cache
+		// first makes the drain recompute against a store that already carries
+		// the terminal status (the engine wrote it before body() returned).
+		defer s.invalidatePipelineReserved()
 		defer func() { _ = lock.Unlock() }()
 		if cancelTimeout != nil {
 			defer cancelTimeout()

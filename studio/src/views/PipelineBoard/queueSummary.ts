@@ -1,6 +1,6 @@
 import type { PipelineBoardCard, PipelineConcurrency } from "@/api/pipelineBoards";
 
-import { cardReady } from "./columnFilters";
+import { cardBlocked, cardReady, compareLaunchOrder } from "./cardPredicates";
 
 export interface QueueSummary {
   readyCount: number;
@@ -10,30 +10,19 @@ export interface QueueSummary {
   slotsFree: number | null;
   slotsMax: number | null;
   slotsActive: number | null;
+  /**
+   * Slots held open by needs-attention pipelines so they can restart into
+   * their own budget. No process is running against them. Null when the cap
+   * is disabled.
+   */
+  slotsReserved: number | null;
   /** Next ticket the admission loop would pick (among ready opened cards). */
   nextUp: PipelineBoardCard | null;
 }
 
-function hasOpenDeps(card: PipelineBoardCard): boolean {
-  if ((card.open_blocker_count ?? 0) > 0) return true;
-  if (card.issue_state === "waiting_deps") return true;
-  const reason = card.launch_blocked_reason;
-  return (
-    reason === "open_blockers" ||
-    reason === "waiting_deps" ||
-    reason === "blocker_labels"
-  );
-}
-
-/** Same order as server sortReadyTickets: priority desc, then created_at asc. */
+/** Same order as the server's launch order: priority desc, then created asc. */
 export function sortLaunchOrder(cards: PipelineBoardCard[]): PipelineBoardCard[] {
-  return [...cards].sort((a, b) => {
-    if (a.priority !== b.priority) return (b.priority ?? 0) - (a.priority ?? 0);
-    const ta = Date.parse(a.created_at || "") || 0;
-    const tb = Date.parse(b.created_at || "") || 0;
-    if (ta !== tb) return ta - tb;
-    return a.id < b.id ? -1 : a.id > b.id ? 1 : 0;
-  });
+  return [...cards].sort(compareLaunchOrder);
 }
 
 export function computeQueueSummary(
@@ -52,7 +41,7 @@ export function computeQueueSummary(
       ready.push(card);
       continue;
     }
-    if (hasOpenDeps(card)) {
+    if (cardBlocked(card)) {
       waitingDepsCount++;
       continue;
     }
@@ -64,10 +53,15 @@ export function computeQueueSummary(
   let slotsFree: number | null = null;
   let slotsMax: number | null = null;
   let slotsActive: number | null = null;
+  let slotsReserved: number | null = null;
   if (concurrency?.enabled && concurrency.max > 0) {
     slotsMax = concurrency.max;
     slotsActive = concurrency.active;
-    slotsFree = Math.max(0, concurrency.max - concurrency.active);
+    slotsReserved = concurrency.reserved ?? 0;
+    // Reserved slots are unavailable even though nothing is running in them.
+    // Leaving them out of this subtraction is what makes a fully-reserved
+    // board read as a hang: "1 free slot" next to a queue that never moves.
+    slotsFree = Math.max(0, concurrency.max - concurrency.active - slotsReserved);
   }
 
   return {
@@ -77,8 +71,7 @@ export function computeQueueSummary(
     slotsFree,
     slotsMax,
     slotsActive,
+    slotsReserved,
     nextUp,
   };
 }
-
-export { hasOpenDeps };

@@ -132,6 +132,12 @@ func (b *pipelineProjectionBuilder) enrichParentChildLinks() {
 				switch {
 				case child.ColumnID == pipelineColumnInProgress:
 					summary.InProgress++
+				case child.ColumnID == pipelineColumnNeedsAttention:
+					// A child that died mid-flight counts as failed on the
+					// parent's face. Without this arm it falls through to
+					// `default: Open++` and a planner parent silently
+					// under-reports its broken children.
+					summary.Failed++
 				case child.ColumnID == pipelineColumnClosed && child.Failed:
 					summary.Failed++
 				case child.ColumnID == pipelineColumnClosed:

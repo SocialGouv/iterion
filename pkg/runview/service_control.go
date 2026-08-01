@@ -82,6 +82,13 @@ func (s *Service) CancelInactiveCtx(ctx context.Context, runID string) (bool, er
 	case store.RunStatusPausedWaitingHuman, store.RunStatusFailedResumable, store.RunStatusPausedOperator:
 		// flippable — paused_operator included so an orphaned operator-paused
 		// run can still be cancelled after a daemon restart
+	case store.RunStatusFailed:
+		// A plainly-failed run has nothing left to stop, but the flip is what
+		// lets an operator DISMISS it: the pipeline board's needs-attention
+		// lane is derived from run status, so a standalone failed run with no
+		// ticket to file had no way out of that lane at all. Flipping it to
+		// cancelled is the run-only equivalent of filing a ticket. The reason
+		// string preserves the prior status, so nothing is lost.
 
 	default:
 		return false, nil // already terminal — no-op

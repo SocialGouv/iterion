@@ -247,8 +247,10 @@ many pipelines at once — not a saved filter and not a replacement for `/board`
 - `/board` remains the editable, shared dispatcher backlog;
 - `/pipelines` is one global projection of every **root** pipeline, across all
   bots;
-- it has three fixed lanes — `Opened`, `In progress`, `Closed` (IDs `opened`,
-  `in_progress`, `closed`; the IDs are the wire contract);
+- it has four fixed lanes — `Opened`, `In progress`, `Needs attention`,
+  `Closed` (IDs `opened`, `in_progress`, `needs_attention`, `closed`; the IDs
+  are the wire contract). `Needs attention` renders as its own card board to
+  the RIGHT of `In progress`, and is hidden entirely when empty;
 - each card is one root pipeline; its descendant runs are **folded into the
   root card** (aggregate node progress + a list of pending human reviews), not
   shown as separate cards;
@@ -277,11 +279,50 @@ Lane semantics — the board is **task-centric**:
   ticket-backed card offers **Reset** (cancels the run tree, then restages the
   ticket to Ready for a fresh start); a ticket-less card offers **Stop** (plain
   cancel → the run lands in Closed as failed);
-- `Closed` = every finished pipeline, success or failure. A per-card
-  **Success** / **Failed** badge distinguishes the outcome; a successful card's
-  output shows in the details sidebar, a failed one shows the **error as the
-  reason** and (ticket-backed) offers **Retry** (restages to Ready) + Edit. A
-  header control filters the lane by **All / Success / Failed**.
+- `Needs attention` = pipelines that **died mid-flight** (`failed` /
+  `failed_resumable`) and want a human. Deliberately NOT Closed: closed means
+  "this reached its end", and a crash did not. A card here shows the error,
+  and — crucially — **holds one concurrency slot open** so the operator's fix
+  restarts into it instead of queueing behind whatever grabbed it. Nothing
+  runs against a held slot: no goroutine, no LLM budget. The card offers
+  **Retry** (primary — restages to Ready), **Resume from checkpoint** (menu,
+  only for `failed_resumable`), **Reset**, and **Close**. A run the operator
+  **cancelled** is a decision rather than an anomaly and goes to Closed
+  without reserving — otherwise Stop would punish the operator who pressed
+  it, and Close would retain the very slot it exists to release. Failures
+  iterion caused *itself* (a drain at shutdown, the boot orphan sweep) show
+  here but do not reserve, or every restart would hold every slot;
+- `Closed` = every pipeline that reached an end: finished, or stopped by the
+  operator. A per-card **Success** / **Stopped** badge distinguishes the
+  outcome; a successful card's output shows in the details sidebar, a stopped
+  one shows the **reason** and (ticket-backed) offers **Retry** (restages to
+  Ready) + Edit. A header control filters the lane by **All / Success /
+  Stopped**.
+
+**Closing a pipeline.** `Close` (⋯ menu, every non-terminal lane) cancels
+everything still alive under the card and files the ticket as **abandoned**
+(`blocked`), never `done`. That is a correctness choice, not wording:
+`native.BlockerSatisfied` counts only `done`, so closing a broken pipeline as
+done would release every ticket parked behind it into work whose input was
+never produced. The confirm dialog names the dependents that will stay
+waiting. Close is also the **release valve** for a held slot — without it a
+failure the operator does not intend to fix would hold capacity forever.
+Run-only cards (no ticket) close through `POST
+/api/v1/pipeline-board/runs/{id}/close`, which just cancels the run.
+
+**Slot reservation.** The reserved count is *derived* from (ticket state ×
+run status) on demand — no persisted field, nothing to rebuild after a
+restart — and is enforced inside the run service's concurrency queue rather
+than in the studio's admission loop. That placement matters: `slotFreed`
+runs in the dying run's own goroutine and immediately wakes the FIFO drain,
+so a gate sitting only upstream would hand the freed slot to a waiter
+microseconds before any 2s admission tick could notice the reservation, and
+it would miss the five other launch paths (Launch modal, triggers, two
+webhook paths, board dispatch) that know nothing about a board. A relaunch
+of the holding ticket **consumes** its own reservation instead of being
+refused by it. The studio's concurrency chip reads
+`N running · M needs attention · max K`, and the queue banner says so
+explicitly when held slots are what stopped admission.
 
 **Hard dependencies (blockers).** Ticket-to-ticket DAG (roots only — not
 sub-bot runs). Satisfied only when the blocker issue is in state `done`

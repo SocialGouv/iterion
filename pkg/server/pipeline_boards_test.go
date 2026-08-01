@@ -166,13 +166,15 @@ func (e *pipelineBoardTestEnv) projectionQuery(t *testing.T, query string) Pipel
 	return projection
 }
 
-// The five fixed lanes, in order.
-func TestPipelineBoardHasThreeFixedColumns(t *testing.T) {
+// The four fixed lanes, in order. Order is part of the wire contract: the
+// studio renders needs_attention to the RIGHT of in_progress.
+func TestPipelineBoardHasFourFixedColumns(t *testing.T) {
 	env := newPipelineBoardTestEnv(t)
 	projection := env.projection(t)
 	want := []struct{ id, title string }{
 		{pipelineColumnOpened, "Opened"},
 		{pipelineColumnInProgress, "In progress"},
+		{pipelineColumnNeedsAttention, "Needs attention"},
 		{pipelineColumnClosed, "Closed"},
 	}
 	if len(projection.Columns) != len(want) {
@@ -352,11 +354,15 @@ func TestPipelineBoardColumnBucketing(t *testing.T) {
 	}{
 		{"r-running", store.RunStatusRunning, pipelineColumnInProgress, false},
 		{"r-paused", store.RunStatusPausedWaitingHuman, pipelineColumnInProgress, false},
-		// Finished (success) and failed/cancelled all fold into CLOSED; the
-		// Failed flag distinguishes the outcome for the lane's filter + badge.
 		{"r-finished", store.RunStatusFinished, pipelineColumnClosed, false},
-		{"r-failed", store.RunStatusFailed, pipelineColumnClosed, true},
-		{"r-resumable", store.RunStatusFailedResumable, pipelineColumnClosed, true},
+		// Died mid-flight → the needs-attention lane, not Closed. Closed
+		// means "this reached its end"; a crash did not.
+		{"r-failed", store.RunStatusFailed, pipelineColumnNeedsAttention, true},
+		{"r-resumable", store.RunStatusFailedResumable, pipelineColumnNeedsAttention, true},
+		// CANCELLED stays in Closed. Pin this deliberately: a refactor that
+		// sweeps cancelled back in with the failures would make the operator's
+		// own Stop button hold a concurrency slot, and would make Close retain
+		// the slot it exists to release.
 		{"r-cancelled", store.RunStatusCancelled, pipelineColumnClosed, true},
 		// An operator soft-pause is resumable mid-flight state, NOT a
 		// failure — it must never offer Retry-from-zero (L1, PR review).
@@ -390,6 +396,12 @@ func TestPipelineBoardColumnBucketing(t *testing.T) {
 		// successful finish must not.
 		if card.Failed != c.wantFailed {
 			t.Errorf("%s Failed = %v, want %v", c.id, card.Failed, c.wantFailed)
+		}
+		// None of these roots is ticket-backed, so none may reserve a slot:
+		// a standalone run has no retry path on the board, and a reservation
+		// with no way to release it is a permanent capacity leak.
+		if card.ReservesSlot {
+			t.Errorf("%s ReservesSlot = true for a standalone run — nothing could ever release it", c.id)
 		}
 	}
 	queued := findPipelineCard(t, projection.Cards, "run:r-queued")

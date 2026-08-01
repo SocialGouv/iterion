@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/SocialGouv/iterion/pkg/dispatcher/native"
+	"github.com/SocialGouv/iterion/pkg/runview"
 	"github.com/SocialGouv/iterion/pkg/store"
 )
 
@@ -306,5 +307,134 @@ func TestPipelineBoardTaskLaunchUnknownTicket(t *testing.T) {
 	resp.Body.Close()
 	if resp.StatusCode != http.StatusNotFound {
 		t.Fatalf("launch status = %d, want 404", resp.StatusCode)
+	}
+}
+
+func closeTask(t *testing.T, env *pipelineBoardTestEnv, id string) *http.Response {
+	t.Helper()
+	req, err := http.NewRequest(http.MethodPost,
+		env.http.URL+"/api/v1/pipeline-board/tasks/"+id+"/close", bytes.NewReader([]byte(`{}`)))
+	if err != nil {
+		t.Fatalf("build POST close: %v", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("POST close: %v", err)
+	}
+	return resp
+}
+
+// Close is the release valve for the needs-attention lane: it cancels what
+// is still alive, files the ticket as ABANDONED, and — because the lane and
+// the reservation are both derived from that state — hands the concurrency
+// slot back in the same move.
+func TestPipelineBoardTaskCloseFilesTicketAndReleasesSlot(t *testing.T) {
+	env := newPipelineBoardTestEnv(t)
+	issue, err := env.board.Create(native.Issue{Title: "Broken pipeline", State: native.StateInProgress, Bot: "review"})
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	env.seedRun(t, "close-root", "review", store.RunStatusFailedResumable, func(run *store.Run) {
+		run.FilePath = env.botPath
+		run.Error = "kaboom"
+		run.Checkpoint = &store.Checkpoint{NodeID: "implement"}
+	})
+	if err := env.board.SetLastRun(issue.ID, "close-root", ""); err != nil {
+		t.Fatalf("SetLastRun: %v", err)
+	}
+
+	// Precondition: the card sits in the lane and holds a slot.
+	before := findPipelineCard(t, env.projection(t).Cards, "run:close-root")
+	if before.ColumnID != pipelineColumnNeedsAttention || !before.ReservesSlot {
+		t.Fatalf("before close: column=%q reserves=%v, want needs_attention + reserved",
+			before.ColumnID, before.ReservesSlot)
+	}
+
+	resp := closeTask(t, env, issue.ID)
+	if resp.StatusCode != http.StatusOK {
+		resp.Body.Close()
+		t.Fatalf("close status = %d, want 200", resp.StatusCode)
+	}
+	resp.Body.Close()
+
+	// ABANDONED, never done: native.BlockerSatisfied counts only `done`, so
+	// closing as done would release every ticket waiting on this one into
+	// work whose input was never produced.
+	updated, err := env.board.Get(issue.ID)
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if updated.State != native.StateBlocked {
+		t.Fatalf("closed state = %q, want %q (abandoned)", updated.State, native.StateBlocked)
+	}
+	// failed_resumable is terminal but NOT retired — Close must still flip it,
+	// or a resumable run would keep shadowing a closed ticket.
+	run, err := env.runStore(t).LoadRun(context.Background(), "close-root")
+	if err != nil {
+		t.Fatalf("LoadRun: %v", err)
+	}
+	if run.Status != store.RunStatusCancelled {
+		t.Errorf("run status = %q, want cancelled", run.Status)
+	}
+	// A terminal ticket state evicts the card from the lane, which is what
+	// releases the slot.
+	after := findPipelineCard(t, env.projection(t).Cards, "run:close-root")
+	if after.ColumnID != pipelineColumnClosed {
+		t.Errorf("after close: column = %q, want closed", after.ColumnID)
+	}
+	if after.ReservesSlot {
+		t.Error("after close: card still reserves a slot — the valve does not release")
+	}
+}
+
+// Closing twice must not double-apply anything (the studio polls every 3s,
+// so a double-click is ordinary).
+func TestPipelineBoardTaskCloseIsIdempotent(t *testing.T) {
+	env := newPipelineBoardTestEnv(t)
+	issue, err := env.board.Create(native.Issue{Title: "Twice", State: native.StateInProgress, Bot: "review"})
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	for i := 0; i < 2; i++ {
+		resp := closeTask(t, env, issue.ID)
+		code := resp.StatusCode
+		resp.Body.Close()
+		if code != http.StatusOK {
+			t.Fatalf("close #%d status = %d, want 200", i+1, code)
+		}
+	}
+	updated, err := env.board.Get(issue.ID)
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if updated.State != native.StateBlocked {
+		t.Errorf("state = %q, want %q", updated.State, native.StateBlocked)
+	}
+}
+
+// A failure iterion caused itself (drain / boot orphan sweep) still shows in
+// the lane — the operator must know the run was cut — but must NOT reserve.
+// Without this, every studio restart with N pipelines in flight would hold N
+// slots, and under `task studio:dev` a restart is every .go save.
+func TestPipelineBoardInterruptedRunDoesNotReserveASlot(t *testing.T) {
+	env := newPipelineBoardTestEnv(t)
+	issue, err := env.board.Create(native.Issue{Title: "Cut by a restart", State: native.StateInProgress, Bot: "review"})
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	env.seedRun(t, "drained-root", "review", store.RunStatusFailedResumable, func(run *store.Run) {
+		run.FilePath = env.botPath
+		run.Error = runview.ReasonServerDrained
+	})
+	if err := env.board.SetLastRun(issue.ID, "drained-root", ""); err != nil {
+		t.Fatalf("SetLastRun: %v", err)
+	}
+	card := findPipelineCard(t, env.projection(t).Cards, "run:drained-root")
+	if card.ColumnID != pipelineColumnNeedsAttention {
+		t.Errorf("column = %q, want needs_attention (the operator must see it was cut)", card.ColumnID)
+	}
+	if card.ReservesSlot {
+		t.Error("an interruption-caused failure reserved a slot — every restart would wedge the board")
 	}
 }
