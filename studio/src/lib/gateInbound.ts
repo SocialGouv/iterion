@@ -145,19 +145,25 @@ function basename(p: string): string {
  * valid mapping the engine deliberately keeps, but an empty row is
  * noise, not context.
  */
+export interface GateInboundOptions {
+  /**
+   * Keys the node's `instructions:` prompt interpolates (`{{input.<key>}}`,
+   * projected as `WireNode.instruction_inputs`).
+   */
+  instructionInputs?: readonly string[] | null;
+  /**
+   * The operator-facing instructions text ACTUALLY on screen above the
+   * form — the resolved prompt, not the template.
+   */
+  instructionsText?: string | null;
+}
+
 export function gateInboundItems(
   questions: Record<string, unknown> | null | undefined,
   inputFields: WireSchemaField[] | null | undefined,
-  // Keys the node's `instructions:` prompt already interpolates
-  // (`{{input.<key>}}`, projected as WireNode.instruction_inputs). The
-  // engine substitutes them into the operator-facing instructions
-  // rendered right above this block, so repeating them here would show
-  // the same plan/reply/PRD twice — the exact duplication this feature
-  // exists to REMOVE.
-  alreadyShown?: readonly string[] | null,
+  options?: GateInboundOptions,
 ): GateInboundItem[] {
   if (!questions) return [];
-  const consumed = new Set(alreadyShown ?? []);
   const typeByName = new Map<string, string>();
   for (const f of inputFields ?? []) typeByName.set(f.name, f.type);
 
@@ -169,13 +175,64 @@ export function gateInboundItems(
 
   const items: GateInboundItem[] = [];
   for (const key of keys) {
-    if (isGatePlumbingKey(key) || consumed.has(key)) continue;
+    if (isGatePlumbingKey(key)) continue;
     const value = questions[key];
     if (isEmptyValue(value)) continue;
+    if (alreadyOnScreen(key, value, options)) continue;
     const declared = typeByName.get(key);
     items.push(classify(key, value, declared));
   }
   return items;
+}
+
+/**
+ * Whether this key's value is ALREADY visible above the form, because the
+ * engine substituted it into the gate's `instructions:` prompt.
+ *
+ * Two conditions, both required, and the pair matters:
+ *
+ *  - the key is in `instruction_inputs` — the wire's statement that the
+ *    prompt references `{{input.<key>}}` at all. Containment alone would
+ *    false-positive on a short value ("true", "2") that happens to occur
+ *    in unrelated prose;
+ *  - one of the value's rendered forms actually occurs in the text on
+ *    screen. The reference existing is NOT proof the text is displayed:
+ *    the kanban card renders no instructions at all (it rebuilds the
+ *    pause from the checkpoint, which never carries the resolved text),
+ *    and a bot resolver's `humanRenderHints.prompt` replaces them in the
+ *    run console. Suppressing there would hide the payload on every
+ *    surface — the blind-answering this feature exists to remove.
+ *
+ * So the failure mode is deliberately one-sided: when in doubt, show it.
+ * A value rendered twice is redundant; a value rendered nowhere is the bug.
+ */
+function alreadyOnScreen(
+  key: string,
+  value: unknown,
+  options: GateInboundOptions | undefined,
+): boolean {
+  const text = options?.instructionsText;
+  if (!text || !options?.instructionInputs?.includes(key)) return false;
+  return renderedInstructionForms(value).some((form) => form !== "" && text.includes(form));
+}
+
+/**
+ * The shapes `Engine.renderInstructionValue` (pkg/runtime/resume.go) can
+ * substitute into the instructions markdown, so containment is checked
+ * against what the operator actually reads. Kept as a list rather than a
+ * single string because a scalar array renders as a bullet list while any
+ * nested structure renders as a fenced JSON block.
+ */
+function renderedInstructionForms(value: unknown): string[] {
+  if (value === null || value === undefined) return [];
+  if (typeof value === "string") return [value];
+  if (typeof value === "boolean" || typeof value === "number") return [String(value)];
+  if (Array.isArray(value)) {
+    const nested = value.some((v) => v !== null && typeof v === "object");
+    if (nested) return [formatJSONValue(value)];
+    return [value.map((v) => `- ${String(v)}`).join("\n")];
+  }
+  return [formatJSONValue(value)];
 }
 
 function isEmptyValue(value: unknown): boolean {
@@ -188,7 +245,11 @@ function isEmptyValue(value: unknown): boolean {
 
 function classify(key: string, value: unknown, declared: string | undefined): GateInboundItem {
   const typed = declared !== undefined;
-  const file = asFileRef(value, declared === "file");
+  // An explicit non-file declaration wins outright: if the author says
+  // this field is `json`, a descriptor-shaped value inside it is data,
+  // and swapping it for a file fetch would hide it behind a 404.
+  const declaredNonFile = typed && declared !== "file";
+  const file = declaredNonFile ? null : asFileRef(value, declared === "file");
   if (file) return { key, kind: "file", value, file, typed };
 
   if (typeof value === "string") {

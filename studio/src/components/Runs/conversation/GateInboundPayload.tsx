@@ -19,12 +19,14 @@ interface Props {
   /** The node's declared `input_schema`, when it has one. */
   inputFields?: WireSchemaField[] | null;
   /**
-   * Keys the node's `instructions:` prompt already interpolates. Skipped
-   * here so a gate that embeds its input in its instructions (13 gates
-   * across 8 shipped catalog bots — Nexie's `chat_instructions` is
-   * literally `{{input.reply}}`) shows the value once, not twice.
+   * Keys the node's `instructions:` prompt interpolates. Paired with
+   * `instructionsText` to skip a value that is already on screen — 13
+   * gates across 8 shipped catalog bots inline their input this way
+   * (Nexie's `chat_instructions` is literally `{{input.reply}}`).
    */
   instructionInputs?: string[] | null;
+  /** The instructions text actually rendered above the form, if any. */
+  instructionsText?: string | null;
 }
 
 /**
@@ -47,10 +49,11 @@ export default function GateInboundPayload({
   questions,
   inputFields,
   instructionInputs,
+  instructionsText,
 }: Props) {
   const items = useMemo(
-    () => gateInboundItems(questions, inputFields, instructionInputs),
-    [questions, inputFields, instructionInputs],
+    () => gateInboundItems(questions, inputFields, { instructionInputs, instructionsText }),
+    [questions, inputFields, instructionInputs, instructionsText],
   );
   if (items.length === 0) return null;
 
@@ -109,11 +112,19 @@ const COLLAPSE_AFTER_LINES = 12;
 // fold is a CSS clamp, so it is deliberately approximate.
 const COLLAPSED_MAX_HEIGHT = "16rem";
 
+// Past this many characters the folded preview skips markdown entirely.
+// A gate can be mapped a whole `git diff` — one of this feature's own
+// motivating cases — and parsing hundreds of KB through react-markdown +
+// rehype-highlight to then clamp it to ~16rem is work thrown away. The
+// operator opts into that cost by expanding.
+const MARKDOWN_PARSE_BUDGET = 20_000;
+
 function CollapsibleText({ text }: { text: string }) {
   const lines = text.split("\n");
   const long = lines.length > COLLAPSE_AFTER_LINES;
   const [open, setOpen] = useState(!long);
   const folded = long && !open;
+  const heavy = text.length > MARKDOWN_PARSE_BUDGET;
   return (
     <div className="min-w-0">
       {/*
@@ -126,7 +137,13 @@ function CollapsibleText({ text }: { text: string }) {
         className={folded ? "relative overflow-hidden" : undefined}
         style={folded ? { maxHeight: COLLAPSED_MAX_HEIGHT } : undefined}
       >
-        <MarkdownText value={text} size="sm" />
+        {folded && heavy ? (
+          <pre className="whitespace-pre-wrap break-words font-mono text-micro leading-relaxed">
+            {text.slice(0, MARKDOWN_PARSE_BUDGET)}
+          </pre>
+        ) : (
+          <MarkdownText value={text} size="sm" />
+        )}
         {folded && (
           <div
             aria-hidden="true"

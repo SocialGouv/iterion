@@ -42,6 +42,15 @@ interface Props {
   // conversation around the form, pass it so the operator sees what
   // they are answering instead of a bare input.
   instructions?: string;
+  // The operator-facing prompt the CALLER already rendered above this
+  // form, when it renders one itself instead of passing `instructions`.
+  // The run console does exactly that (HumanQuestionCard renders
+  // `message.prompt`), and the two together are the only reliable answer
+  // to "is the gate's instructions text on screen?" — which decides
+  // whether an inbound value it interpolates may be skipped as already
+  // shown. The kanban card passes neither and cannot: it rebuilds the
+  // pause from the checkpoint, which never carries the resolved text.
+  shownPrompt?: string;
   // Quick-action chips (skip / idk) the operator can pick instead of
   // typing a reply. Only meaningful on free-text-only turns. Default
   // = ["skip", "idk"]; pass empty to suppress.
@@ -87,6 +96,7 @@ export default function HumanPromptForm({
   nodeId,
   questions,
   instructions,
+  shownPrompt,
   quickActions = ["skip", "idk"],
   sourceOverride,
   onResumed,
@@ -422,6 +432,7 @@ export default function HumanPromptForm({
           questions={questions}
           inputFields={inputFields}
           instructionInputs={instructionInputs}
+          instructionsText={instructions ?? shownPrompt}
         />
       )}
       {staleHash && (

@@ -75,18 +75,64 @@ describe("gateInboundItems — plumbing is never shown", () => {
   // same way. Those values are already on screen as the instructions
   // markdown; repeating them below is the duplication this feature is
   // supposed to REMOVE.
-  it("drops keys the instructions prompt already interpolates", () => {
+  it("drops a key whose value the rendered instructions already show", () => {
     const items = gateInboundItems(
       { reply: "Nexie's whole answer", findings: { high: 2 } },
       null,
-      ["reply"],
+      { instructionInputs: ["reply"], instructionsText: "Nexie's whole answer" },
     );
     expect(items.map((i) => i.key)).toEqual(["findings"]);
   });
 
+  // The premise of the suppression is that the value is visible above the
+  // form. Where no instructions are rendered — the kanban card rebuilds
+  // the pause from the checkpoint, which never carries the resolved text
+  // — suppressing would hide it on EVERY surface. That is the
+  // blind-answering this feature exists to remove.
+  it("keeps the key when no instructions text is on screen", () => {
+    for (const instructionsText of [undefined, null, ""]) {
+      const items = gateInboundItems({ reply: "the answer" }, null, {
+        instructionInputs: ["reply"],
+        instructionsText,
+      });
+      expect(items.map((i) => i.key)).toEqual(["reply"]);
+    }
+  });
+
+  // A bot resolver's humanRenderHints.prompt replaces the resolved
+  // instructions in the run console: the reference exists, the text does
+  // not contain the value, so it must still be shown.
+  it("keeps the key when the displayed prompt does not contain the value", () => {
+    const items = gateInboundItems({ reply: "the answer" }, null, {
+      instructionInputs: ["reply"],
+      instructionsText: "What would you like to do next?",
+    });
+    expect(items.map((i) => i.key)).toEqual(["reply"]);
+  });
+
+  it("matches the engine's rendered forms for arrays and objects", () => {
+    // Scalar array → bullet list (renderInstructionValue).
+    expect(
+      gateInboundItems({ epics: ["one", "two"] }, null, {
+        instructionInputs: ["epics"],
+        instructionsText: "Epics:\n- one\n- two\n\nApprove?",
+      }),
+    ).toEqual([]);
+    // Object → fenced JSON block.
+    expect(
+      gateInboundItems({ counts: { high: 2 } }, null, {
+        instructionInputs: ["counts"],
+        instructionsText: '```json\n{\n  "high": 2\n}\n```',
+      }),
+    ).toEqual([]);
+  });
+
   it("keeps everything when the instructions interpolate nothing", () => {
-    for (const consumed of [undefined, null, []]) {
-      const items = gateInboundItems({ reply: "a", plan: "b" }, null, consumed);
+    for (const instructionInputs of [undefined, null, []]) {
+      const items = gateInboundItems({ reply: "a", plan: "b" }, null, {
+        instructionInputs,
+        instructionsText: "a and b are inlined here",
+      });
       expect(items.map((i) => i.key)).toEqual(["plan", "reply"]);
     }
   });

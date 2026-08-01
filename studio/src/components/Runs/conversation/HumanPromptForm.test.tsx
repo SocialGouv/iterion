@@ -641,6 +641,82 @@ describe("HumanPromptForm — the gate's inbound payload", () => {
     expect(context?.textContent).not.toContain("Nexie's whole answer");
   });
 
+  // The kanban card (LastRunSection) rebuilds the pause from the
+  // checkpoint, which never carries the resolved instructions — it passes
+  // neither `instructions` nor `shownPrompt`. Suppressing there would
+  // hide the value on every surface, which is exactly the blind-answering
+  // this feature removes.
+  it("still shows an interpolated value where no instructions are rendered", async () => {
+    getRunWorkflow.mockResolvedValue({
+      nodes: [
+        {
+          id: "chat",
+          instruction_inputs: ["reply"],
+          output_schema: [{ name: "message", type: "string" }],
+        },
+      ],
+      stale_hash: false,
+    });
+
+    const { container } = renderWithClient(
+      <HumanPromptForm
+        runId="run-1"
+        nodeId="chat"
+        questions={{ reply: "Nexie's whole answer" }}
+        sourceOverride={null}
+      />,
+    );
+
+    await screen.findByRole("textbox");
+    const context = container.querySelector("section[aria-label='Review context']");
+    expect(context?.textContent).toContain("Nexie's whole answer");
+  });
+
+  // The run console renders the prompt itself and hands it down. When a
+  // bot resolver's humanRenderHints replaced the instructions, that text
+  // does NOT contain the value — so nothing may be suppressed.
+  it("suppresses against the caller-rendered prompt, and only when it matches", async () => {
+    getRunWorkflow.mockResolvedValue({
+      nodes: [
+        {
+          id: "chat",
+          instruction_inputs: ["reply"],
+          output_schema: [{ name: "message", type: "string" }],
+        },
+      ],
+      stale_hash: false,
+    });
+
+    const { container, rerender } = renderWithClient(
+      <HumanPromptForm
+        runId="run-1"
+        nodeId="chat"
+        questions={{ reply: "Nexie's whole answer" }}
+        shownPrompt="Nexie's whole answer"
+        sourceOverride={null}
+      />,
+    );
+    await screen.findByRole("textbox");
+    expect(container.querySelector("section[aria-label='Review context']")).toBeNull();
+
+    rerender(
+      <QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}>
+        <HumanPromptForm
+          runId="run-1"
+          nodeId="chat"
+          questions={{ reply: "Nexie's whole answer" }}
+          shownPrompt="What would you like to do next?"
+          sourceOverride={null}
+        />
+      </QueryClientProvider>,
+    );
+    await waitFor(() =>
+      expect(
+        container.querySelector("section[aria-label='Review context']")?.textContent,
+      ).toContain("Nexie's whole answer"),
+    );
+  });
+
   it("works with no declared input_schema — the payload is typed by shape", async () => {
     getRunWorkflow.mockResolvedValue({
       nodes: [{ id: "gate", output_schema: [{ name: "notes", type: "string" }] }],

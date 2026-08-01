@@ -81,16 +81,28 @@ describe("GateInboundPayload", () => {
     expect(screen.getByText(/"id": 19/)).toBeTruthy();
   });
 
-  it("skips keys the instructions prompt already interpolates", () => {
+  it("skips a key whose value the rendered instructions already show", () => {
     render(
       <GateInboundPayload
         runId="run-1"
         questions={{ reply: "the whole answer, already on screen", plan: "the plan" }}
         instructionInputs={["reply"]}
+        instructionsText="the whole answer, already on screen"
       />,
     );
     expect(screen.getByText("the plan")).toBeTruthy();
     expect(screen.queryByText(/already on screen/)).toBeNull();
+  });
+
+  it("keeps that key on a surface that renders no instructions", () => {
+    render(
+      <GateInboundPayload
+        runId="run-1"
+        questions={{ reply: "the whole answer" }}
+        instructionInputs={["reply"]}
+      />,
+    );
+    expect(screen.getByText("the whole answer")).toBeTruthy();
   });
 
   // Folding prose is a height clamp, never a slice of the source: cutting
