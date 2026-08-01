@@ -10,6 +10,9 @@ interface State {
   // `fields`: a gate commonly declares an output schema and no input
   // schema, in which case the renderer infers from each value's shape.
   inputFields: WireSchemaField[] | null;
+  // Inbound keys the node's `instructions:` prompt already interpolates.
+  // The payload renderer skips them so the value is not shown twice.
+  instructionInputs: string[] | null;
   loading: boolean;
   staleHash: boolean;
   error: string | null;
@@ -25,6 +28,7 @@ export interface HumanNodeSchema extends State {
 const initial: State = {
   fields: null,
   inputFields: null,
+  instructionInputs: null,
   loading: false,
   staleHash: false,
   error: null,
@@ -74,6 +78,7 @@ export function useHumanNodeSchema(
   return {
     fields: node?.output_schema ?? null,
     inputFields: node?.input_schema ?? null,
+    instructionInputs: node?.instruction_inputs ?? null,
     loading: false,
     staleHash: !!wf?.stale_hash,
     error: null,

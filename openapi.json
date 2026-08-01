@@ -1538,6 +1538,12 @@
             },
             "type": "array"
           },
+          "instruction_inputs": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
           "isolated": {
             "type": "boolean"
           },

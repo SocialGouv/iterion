@@ -4874,6 +4874,7 @@ export interface components {
             description?: string;
             id: string;
             input_schema?: components["schemas"]["WireSchemaField"][];
+            instruction_inputs?: string[];
             isolated?: boolean;
             kind: string;
             model?: string;

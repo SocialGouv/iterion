@@ -81,6 +81,43 @@ describe("GateInboundPayload", () => {
     expect(screen.getByText(/"id": 19/)).toBeTruthy();
   });
 
+  it("skips keys the instructions prompt already interpolates", () => {
+    render(
+      <GateInboundPayload
+        runId="run-1"
+        questions={{ reply: "the whole answer, already on screen", plan: "the plan" }}
+        instructionInputs={["reply"]}
+      />,
+    );
+    expect(screen.getByText("the plan")).toBeTruthy();
+    expect(screen.queryByText(/already on screen/)).toBeNull();
+  });
+
+  // Folding prose is a height clamp, never a slice of the source: cutting
+  // markdown at line 12 inside a fenced block renders an unterminated
+  // fence that swallows the rest of the payload.
+  it("folds long prose without truncating the markdown source", () => {
+    const text = [
+      "Here is the migration:",
+      "```go",
+      ...Array.from({ length: 15 }, (_, i) => `line${i} := true`),
+      "```",
+      "Ends with a closed fence.",
+    ].join("\n");
+
+    const { container } = render(
+      <GateInboundPayload runId="run-1" questions={{ plan: text }} />,
+    );
+
+    // Folded (a toggle is offered)…
+    expect(screen.getByRole("button", { name: /show all \d+ lines/i })).toBeTruthy();
+    // …yet the whole source is rendered: the fence closed, so the trailing
+    // paragraph is a paragraph and not code.
+    const tail = screen.getByText("Ends with a closed fence.");
+    expect(tail.closest("code")).toBeNull();
+    expect(container.querySelector("code")?.textContent).toContain("line14 := true");
+  });
+
   it("shows a short payload expanded — no click needed to read it", () => {
     render(<GateInboundPayload runId="run-1" questions={{ counts: { high: 2 } }} />);
     expect(screen.getByText(/"high": 2/)).toBeTruthy();

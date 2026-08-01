@@ -607,6 +607,40 @@ describe("HumanPromptForm — the gate's inbound payload", () => {
     expect(screen.queryByText(/plumbing, never shown/)).toBeNull();
   });
 
+  // Nexie's `chat_instructions` is literally `{{input.reply}}`: the
+  // engine substitutes the reply into the instructions the operator
+  // already reads, so rendering it again below would double it.
+  it("does not repeat a value the node's instructions already interpolate", async () => {
+    getRunWorkflow.mockResolvedValue({
+      nodes: [
+        {
+          id: "chat",
+          instruction_inputs: ["reply"],
+          output_schema: [{ name: "message", type: "string" }],
+        },
+      ],
+      stale_hash: false,
+    });
+
+    const { container } = renderWithClient(
+      <HumanPromptForm
+        runId="run-1"
+        nodeId="chat"
+        questions={{ reply: "Nexie's whole answer", plan: "and a plan" }}
+        instructions={"Nexie's whole answer"}
+        sourceOverride={null}
+      />,
+    );
+
+    await screen.findByRole("textbox");
+    // Shown exactly once — as the instructions, not again as context.
+    expect(screen.getAllByText(/Nexie's whole answer/)).toHaveLength(1);
+    // The rest of the payload is still surfaced.
+    const context = container.querySelector("section[aria-label='Review context']");
+    expect(context?.textContent).toContain("and a plan");
+    expect(context?.textContent).not.toContain("Nexie's whole answer");
+  });
+
   it("works with no declared input_schema — the payload is typed by shape", async () => {
     getRunWorkflow.mockResolvedValue({
       nodes: [{ id: "gate", output_schema: [{ name: "notes", type: "string" }] }],

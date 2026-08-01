@@ -53,15 +53,21 @@ schema gate_out:
   approved: bool
   notes: string
 
-prompt draft_system:
-  Draft the plan.
-
-agent draft:
-  system: draft_system
+## A tool node, not an agent: CI has no LLM credential, and an agent
+## without model/backend is a C018 compile error there.
+tool draft:
+  command: ` + "`printf '{\"plan\":{},\"summary\":\"s\"}'`" + `
   input: gate_in
   output: draft_out
 
+## Interpolates ONE of the three inbound keys — the historical
+## stringify-it-into-instructions workaround. That key must project as
+## already-shown so the studio does not render it a second time.
+prompt gate_instructions:
+  Approve the plan for {{input.summary}}?
+
 human gate:
+  instructions: gate_instructions
   input: gate_in
   output: gate_out
   interaction: human
@@ -119,6 +125,14 @@ func TestBuildWireWorkflow_HumanNodeInputSchemaProjection(t *testing.T) {
 	// The output schema still projects — the answer form depends on it.
 	if len(gate.OutputFields) != 2 {
 		t.Errorf("output_schema = %+v, want 2 fields", gate.OutputFields)
+	}
+
+	// The instructions prompt interpolates `summary` and nothing else, so
+	// exactly that key is reported as already-shown. Getting this wrong in
+	// either direction is a real defect: too few duplicates the value on
+	// screen, too many hides payload the operator must see.
+	if len(gate.InstructionInputs) != 1 || gate.InstructionInputs[0] != "summary" {
+		t.Errorf("instruction_inputs = %v, want [summary]", gate.InstructionInputs)
 	}
 
 	// input_schema stays a human-node projection: an agent node declaring

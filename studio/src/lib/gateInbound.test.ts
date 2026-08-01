@@ -70,6 +70,27 @@ describe("gateInboundItems — plumbing is never shown", () => {
     expect(items.map((i) => i.key)).toEqual(["notes"]);
   });
 
+  // The historical workaround — Nexie's `chat_instructions` is literally
+  // `{{input.reply}}`, and 12 other catalog gates inline their input the
+  // same way. Those values are already on screen as the instructions
+  // markdown; repeating them below is the duplication this feature is
+  // supposed to REMOVE.
+  it("drops keys the instructions prompt already interpolates", () => {
+    const items = gateInboundItems(
+      { reply: "Nexie's whole answer", findings: { high: 2 } },
+      null,
+      ["reply"],
+    );
+    expect(items.map((i) => i.key)).toEqual(["findings"]);
+  });
+
+  it("keeps everything when the instructions interpolate nothing", () => {
+    for (const consumed of [undefined, null, []]) {
+      const items = gateInboundItems({ reply: "a", plan: "b" }, null, consumed);
+      expect(items.map((i) => i.key)).toEqual(["plan", "reply"]);
+    }
+  });
+
   it("returns nothing for an absent or fully-reserved payload", () => {
     expect(gateInboundItems(undefined, null)).toEqual([]);
     expect(gateInboundItems({}, null)).toEqual([]);
@@ -189,6 +210,30 @@ describe("asFileRef", () => {
     expect(asFileRef([1, 2, 3], false)).toBeNull();
     expect(asFileRef(null, true)).toBeNull();
     expect(asFileRef("   ", true)).toBeNull();
+  });
+
+  // A bare `attachment` key is not proof of a descriptor: misreading a
+  // structured payload as a file swaps the data the gate exists to show
+  // for a 404 banner. Real descriptors always carry corroboration
+  // (filename+mime+size+sha256 from the promotion path, path from the
+  // engine), so requiring it costs nothing.
+  it("requires corroboration before reading an object as a file descriptor", () => {
+    expect(
+      asFileRef({ attachment: "screenshot.png", note: "the triage item" }, false),
+    ).toBeNull();
+    // …and such a payload stays visible, as JSON.
+    const [item] = gateInboundItems(
+      { finding: { attachment: "screenshot.png", note: "the triage item" } },
+      null,
+    );
+    expect(item?.kind).toBe("json");
+
+    // Corroborated by a descriptor field…
+    expect(
+      asFileRef({ attachment: "gate.shot", mime: "image/png" }, false)?.attachment,
+    ).toBe("gate.shot");
+    // …or by the declared schema type.
+    expect(asFileRef({ attachment: "gate.shot" }, true)?.attachment).toBe("gate.shot");
   });
 
   it("classifies an upload descriptor as a file item end to end", () => {

@@ -106,6 +106,7 @@ export default function HumanPromptForm({
   const {
     fields,
     inputFields,
+    instructionInputs,
     loading,
     staleHash,
     error: schemaError,
@@ -408,12 +409,19 @@ export default function HumanPromptForm({
         an ask_user pause carries the agent's question here, and a
         schema-less gate has PauseForm render the very same map as its
         answerable fields, so showing it twice would be noise.
+
+        `loading` is part of that guard, not an optimisation: until the
+        schema lands we cannot know which branch we are on, and rendering
+        early would flash the payload as read-only context on a
+        schema-less gate a moment before PauseForm claims the same map as
+        its answer fields.
       */}
-      {!isAskUserPause && !useFallback && (
+      {!isAskUserPause && !loading && !useFallback && (
         <GateInboundPayload
           runId={runId}
           questions={questions}
           inputFields={inputFields}
+          instructionInputs={instructionInputs}
         />
       )}
       {staleHash && (

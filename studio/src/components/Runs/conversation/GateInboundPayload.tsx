@@ -18,6 +18,13 @@ interface Props {
   questions: Record<string, unknown> | null | undefined;
   /** The node's declared `input_schema`, when it has one. */
   inputFields?: WireSchemaField[] | null;
+  /**
+   * Keys the node's `instructions:` prompt already interpolates. Skipped
+   * here so a gate that embeds its input in its instructions (13 gates
+   * across 8 shipped catalog bots — Nexie's `chat_instructions` is
+   * literally `{{input.reply}}`) shows the value once, not twice.
+   */
+  instructionInputs?: string[] | null;
 }
 
 /**
@@ -35,10 +42,15 @@ interface Props {
  * `instructions:` must not be pushed off-screen by a diff it also
  * happens to receive.
  */
-export default function GateInboundPayload({ runId, questions, inputFields }: Props) {
+export default function GateInboundPayload({
+  runId,
+  questions,
+  inputFields,
+  instructionInputs,
+}: Props) {
   const items = useMemo(
-    () => gateInboundItems(questions, inputFields),
-    [questions, inputFields],
+    () => gateInboundItems(questions, inputFields, instructionInputs),
+    [questions, inputFields, instructionInputs],
   );
   if (items.length === 0) return null;
 
@@ -93,14 +105,35 @@ function GateInboundValue({ runId, item }: { runId: string; item: GateInboundIte
 // answer form on screen.
 const COLLAPSE_AFTER_LINES = 12;
 
+// Roughly COLLAPSE_AFTER_LINES of prose at the `sm` line-height. The
+// fold is a CSS clamp, so it is deliberately approximate.
+const COLLAPSED_MAX_HEIGHT = "16rem";
+
 function CollapsibleText({ text }: { text: string }) {
   const lines = text.split("\n");
   const long = lines.length > COLLAPSE_AFTER_LINES;
   const [open, setOpen] = useState(!long);
-  const shown = open ? text : lines.slice(0, COLLAPSE_AFTER_LINES).join("\n");
+  const folded = long && !open;
   return (
     <div className="min-w-0">
-      <MarkdownText value={shown} size="sm" />
+      {/*
+        Folded with a height clamp, NOT by slicing the source: markdown
+        has multi-line constructs, and cutting at line 12 inside a fenced
+        code block would render an unterminated fence — swallowing the
+        rest of the payload into a code block that never closes.
+      */}
+      <div
+        className={folded ? "relative overflow-hidden" : undefined}
+        style={folded ? { maxHeight: COLLAPSED_MAX_HEIGHT } : undefined}
+      >
+        <MarkdownText value={text} size="sm" />
+        {folded && (
+          <div
+            aria-hidden="true"
+            className="pointer-events-none absolute inset-x-0 bottom-0 h-8 bg-gradient-to-b from-transparent to-surface-1"
+          />
+        )}
+      </div>
       {long && (
         <Toggle
           open={open}

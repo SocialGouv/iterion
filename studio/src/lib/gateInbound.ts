@@ -101,10 +101,17 @@ export function asFileRef(value: unknown, declaredFile: boolean): GateInboundFil
   const desc = value as Record<string, unknown>;
   const attachment = typeof desc.attachment === "string" ? desc.attachment : undefined;
   const path = typeof desc.path === "string" ? desc.path : undefined;
-  // A descriptor is identified by carrying at least one of the two
-  // locators; a plain `json` payload that happens to be an object is not
-  // a file just because the schema is silent.
-  if (!attachment && !(declaredFile && path)) return null;
+  // An attachment name alone is not enough: a legitimate structured
+  // payload can carry an `attachment` key of its own (a triage item
+  // naming a screenshot), and misreading it as a descriptor would
+  // replace the data the gate exists to show with a 404 banner. Real
+  // descriptors always carry corroboration — filename/mime/size from the
+  // HTTP promotion path, path from the engine — so requiring it costs
+  // nothing.
+  const corroborated =
+    !!attachment &&
+    (declaredFile || "path" in desc || "mime" in desc || "size" in desc || "sha256" in desc);
+  if (!corroborated && !(declaredFile && path)) return null;
   const filename =
     typeof desc.filename === "string" && desc.filename
       ? desc.filename
@@ -141,8 +148,16 @@ function basename(p: string): string {
 export function gateInboundItems(
   questions: Record<string, unknown> | null | undefined,
   inputFields: WireSchemaField[] | null | undefined,
+  // Keys the node's `instructions:` prompt already interpolates
+  // (`{{input.<key>}}`, projected as WireNode.instruction_inputs). The
+  // engine substitutes them into the operator-facing instructions
+  // rendered right above this block, so repeating them here would show
+  // the same plan/reply/PRD twice — the exact duplication this feature
+  // exists to REMOVE.
+  alreadyShown?: readonly string[] | null,
 ): GateInboundItem[] {
   if (!questions) return [];
+  const consumed = new Set(alreadyShown ?? []);
   const typeByName = new Map<string, string>();
   for (const f of inputFields ?? []) typeByName.set(f.name, f.type);
 
@@ -154,7 +169,7 @@ export function gateInboundItems(
 
   const items: GateInboundItem[] = [];
   for (const key of keys) {
-    if (isGatePlumbingKey(key)) continue;
+    if (isGatePlumbingKey(key) || consumed.has(key)) continue;
     const value = questions[key];
     if (isEmptyValue(value)) continue;
     const declared = typeByName.get(key);

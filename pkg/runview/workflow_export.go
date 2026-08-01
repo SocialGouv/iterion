@@ -3,6 +3,7 @@ package runview
 import (
 	"context"
 	"fmt"
+	"sort"
 	"sync"
 
 	"github.com/SocialGouv/iterion/pkg/bundle"
@@ -48,10 +49,22 @@ type WireNode struct {
 	// instead of the author having to stringify it into `instructions:`.
 	// Absent when the node declares no input schema; the studio then
 	// falls back to inferring a renderer from each value's shape.
-	InputFields  []WireSchemaField `json:"input_schema,omitempty"`
-	OutputFields []WireSchemaField `json:"output_schema,omitempty"`
-	Source       string            `json:"source,omitempty"`
-	Isolated     bool              `json:"isolated,omitempty"`
+	InputFields []WireSchemaField `json:"input_schema,omitempty"`
+	// InstructionInputs names the inbound keys the HumanNode's
+	// `instructions:` prompt already interpolates (`{{input.<key>}}`,
+	// substituted by Engine.renderHumanInstructions against the very same
+	// resolved map). The studio skips them when rendering the inbound
+	// payload, so a gate whose instructions embed its input — the
+	// historical workaround, and still 13 gates across 8 shipped catalog
+	// bots — shows that value once, not twice.
+	//
+	// Wire-side rather than a text-containment check in the browser
+	// because the run console never receives the resolved instructions
+	// string, only the board does.
+	InstructionInputs []string          `json:"instruction_inputs,omitempty"`
+	OutputFields      []WireSchemaField `json:"output_schema,omitempty"`
+	Source            string            `json:"source,omitempty"`
+	Isolated          bool              `json:"isolated,omitempty"`
 }
 
 // WireSchemaField projects an ir.SchemaField as JSON. Type uses the
@@ -269,11 +282,49 @@ func projectNode(id string, n ir.Node, wf *ir.Workflow) WireNode {
 		}
 	case *ir.HumanNode:
 		out.InputFields = projectSchemaFields(v.InputSchema, wf)
+		out.InstructionInputs = projectInstructionInputs(v.Instructions, wf)
 		out.OutputFields = projectSchemaFields(v.OutputSchema, wf)
 	case *ir.SubbotNode:
 		out.Source = v.Source
 		out.Isolated = v.Isolated
 	}
+	return out
+}
+
+// projectInstructionInputs returns the sorted, de-duplicated top-level
+// `input.*` keys a human node's instructions prompt interpolates.
+//
+// Only the FIRST path segment matters: `{{input.plan.title}}` consumes
+// the `plan` item as far as the operator is concerned — the payload
+// renderer works per top-level key, not per leaf.
+//
+// Returns nil for an unset or unknown prompt name, which the studio
+// reads as "nothing already shown".
+func projectInstructionInputs(promptName string, wf *ir.Workflow) []string {
+	if promptName == "" || wf == nil {
+		return nil
+	}
+	p, ok := wf.Prompts[promptName]
+	if !ok || p == nil {
+		return nil
+	}
+	seen := make(map[string]bool)
+	out := make([]string, 0, len(p.TemplateRefs))
+	for _, ref := range p.TemplateRefs {
+		if ref == nil || ref.Kind != ir.RefInput || len(ref.Path) == 0 {
+			continue
+		}
+		key := ref.Path[0]
+		if key == "" || seen[key] {
+			continue
+		}
+		seen[key] = true
+		out = append(out, key)
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	sort.Strings(out)
 	return out
 }
 

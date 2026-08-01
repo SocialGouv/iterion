@@ -93,9 +93,16 @@ human approve_plan:
   output: approval_decision
 ```
 
-Engine-owned keys (queued operator messages, the permission marker,
-ad-hoc attachments, the `ask_user` question itself) are plumbing and are
-never displayed as review context.
+Two kinds of key are never repeated as review context:
+
+- **engine-owned plumbing** — queued operator messages, the permission
+  marker, ad-hoc attachments, the `ask_user` question, the recovery
+  acknowledgement;
+- **anything the gate's `instructions:` prompt already interpolates.**
+  The engine substitutes `{{input.<key>}}` into the instructions markdown
+  shown right above, so a gate written the old way (Nexie's
+  `chat_instructions` is literally `{{input.reply}}`) shows that value
+  once, not twice.
 
 ## Try it — a minimal example
 
