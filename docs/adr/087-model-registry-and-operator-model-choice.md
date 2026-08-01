@@ -16,7 +16,7 @@ Two distinct gaps sat behind that.
 
 **The chat session was the one launch surface without model selection.** The
 per-run override mechanism (`model.ModelOverrides`, `model_overrides` on
-`createRun`, `--model-for`/`--backend-for`, LaunchView's dropdowns) already
+`createRun`, `--model`/`--backend`, LaunchView's dropdowns) already
 existed and was already generic. `useSessionLifecycle` simply never passed it.
 The only conversational surface in the product was the only launch path that
 could not retarget its model.
@@ -156,7 +156,7 @@ absurd.
 - `GET /api/models` reveals capability values and credential SOURCE names
   (`ANTHROPIC_API_KEY`), never credential values — pinned by a test at the HTTP
   boundary.
-- `--effort-for` exists on `run` and `resume`; like `--model-for`, resume does
+- `--effort-for` exists on `run` and `resume`; like `--model`, resume does
   not persist launch overrides, so it has to be passed again.
 - `RunModelOverride` gained an `effort` field, so a run's Overview shows the
   effort it launched with.

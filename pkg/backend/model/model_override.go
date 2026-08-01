@@ -192,14 +192,14 @@ func ParseModelOverrides(modelFlags, backendFlags, effortFlags []string) (ModelO
 	for _, m := range modelFlags {
 		sel, val, err := splitSelectorValue(m)
 		if err != nil {
-			return o, fmt.Errorf("--model-for: %w", err)
+			return o, fmt.Errorf("--model: %w", err)
 		}
 		o.SetModel(sel, val)
 	}
 	for _, b := range backendFlags {
 		sel, val, err := splitSelectorValue(b)
 		if err != nil {
-			return o, fmt.Errorf("--backend-for: %w", err)
+			return o, fmt.Errorf("--backend: %w", err)
 		}
 		o.SetBackend(sel, val)
 	}
