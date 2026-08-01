@@ -103,12 +103,6 @@ type pipelineProjectionBuilder struct {
 	since         time.Time
 	hiddenBySince int
 
-	// reservedCards counts the needs-attention cards holding a concurrency
-	// slot for their own restart. Observational here — the admission gate
-	// derives its own count from the same predicate (pipeline_reservations.go)
-	// because it must not depend on a full board projection running first.
-	reservedCards int
-
 	cardLimitReached  bool
 	depthLimitReached bool
 	cycleDetected     bool
@@ -562,9 +556,7 @@ func (b *pipelineProjectionBuilder) addRootCard(root *store.Run, issue *native.I
 	// truncated: hiding it would leave the operator staring at a board that
 	// refuses to launch with no visible cause. Reserving cards are bounded
 	// (the gate clamps the count) so letting them past the cap is safe.
-	if reserves {
-		b.reservedCards++
-	} else if (column == pipelineColumnClosed || column == pipelineColumnNeedsAttention) &&
+	if !reserves && (column == pipelineColumnClosed || column == pipelineColumnNeedsAttention) &&
 		b.hiddenByCutoff(root.UpdatedAt) {
 		// A stale card that holds nothing prunes exactly like a Closed one.
 		// A RESERVING card is never age-pruned: hiding it would leave the

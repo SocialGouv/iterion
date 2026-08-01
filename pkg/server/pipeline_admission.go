@@ -278,10 +278,14 @@ func (s *Server) launchTicketNow(runs *runview.Service, board native.BoardStore,
 		// BuildExecutor and worktree creation, i.e. seconds during which a
 		// live run is invisible to close, reset AND delete. issueRunRoots
 		// already looks for Source.IssueID; nothing was ever setting it here.
-		SourceRef: &store.RunSource{
-			Kind:    store.RunSourceKindDispatcher,
-			IssueID: iss.ID,
-		},
+		//
+		// Kind is deliberately LEFT EMPTY. deriveSourceKind
+		// (pkg/runview/service_runs.go) returns Source.Kind verbatim when set,
+		// so stamping RunSourceKindDispatcher here would relabel every
+		// studio-launched ticket run as "dispatcher" in the run list's
+		// grouping and filtering. It is a studio launch; only the issue link
+		// is new information.
+		SourceRef: &store.RunSource{IssueID: iss.ID},
 		// Consumed by the concurrency gate: a needs-attention ticket holds a
 		// reserved slot, and this is what lets its own relaunch spend that
 		// reservation instead of being refused by it.

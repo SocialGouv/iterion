@@ -201,6 +201,13 @@ func (s *Server) wirePipelineReservations(runs *runview.Service) {
 		// authenticated team, so there is no single board to bind here.
 		return
 	}
+	// NOTE: cfg.NativeTrackerStore is boot-scoped — swapWorkDir rebuilds the
+	// run service but never re-resolves the board. That predates this feature
+	// (the whole /pipelines projection already reads the boot board after a
+	// project switch), and what matters here is that the gate and the
+	// projection use the SAME (board, runs) pair, which they do: both take
+	// this store and the current service. Fixing the underlying scoping is a
+	// separate change to the studio's project model.
 	boardStore := s.cfg.NativeTrackerStore
 	if boardStore == nil {
 		return
