@@ -171,6 +171,18 @@ export default function SessionModelControl({
                 orchestration prerogative — Opus 4.8 only
               </span>
             )}
+            {/* The guard above keys on the DRAFT effort, so leaving this on
+                "bot default" silenced it — and a bot whose own
+                reasoning_effort is ultracode then degrades with no signal at
+                all, which is the single most common configuration. The studio
+                cannot read the bot's DSL default from here, so say what is
+                actually known rather than implying the default is safe. */}
+            {!draft.effort && selected && !selected.ultracode_capable && (
+              <span className="text-caption text-fg-subtle">
+                the bot&apos;s own effort applies — if it is{" "}
+                <code>ultracode</code>, it degrades to <code>xhigh</code> here
+              </span>
+            )}
           </div>
 
           {warning && (

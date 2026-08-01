@@ -1,5 +1,5 @@
 import { errorMessage } from "@/lib/errorHints";
-import { useMemo } from "react";
+import { useCallback, useMemo, useRef } from "react";
 import { useQuery } from "@tanstack/react-query";
 
 import { fetchModels, type ModelCatalog, type ModelEntry } from "@/api/models";
@@ -50,12 +50,28 @@ export function useModelCatalog(
     [opts.extraSpecs],
   );
 
+  // `refresh()` has to re-probe, not just re-read. react-query's refetch
+  // re-runs the SAME queryFn, so threading the flag through a ref is what
+  // makes the button mean "ask the host again" rather than "return the
+  // cached detect.Report you already had". Not a distinct query key on
+  // purpose: a forced refresh must replace the cached answer, not sit
+  // beside it.
+  const forceRef = useRef(false);
   const query = useQuery({
     queryKey: ["models", extraSpecs],
-    queryFn: ({ signal }) => fetchModels({ extraSpecs, signal }),
+    queryFn: ({ signal }) => {
+      const refresh = forceRef.current;
+      forceRef.current = false;
+      return fetchModels({ extraSpecs, refresh, signal });
+    },
     enabled,
     staleTime: STALE_MS,
   });
+  const refetch = query.refetch;
+  const refresh = useCallback(() => {
+    forceRef.current = true;
+    void refetch();
+  }, [refetch]);
 
   const catalog = query.data ?? null;
   const models = catalog?.models ?? EMPTY_MODELS;
@@ -81,6 +97,6 @@ export function useModelCatalog(
     catalog,
     loading: query.isLoading,
     error: query.isError ? errorMessage(query.error) : null,
-    refresh: () => void query.refetch(),
+    refresh,
   };
 }
