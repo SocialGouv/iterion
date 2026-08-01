@@ -282,23 +282,26 @@ func pipelineLaneForRoot(root *store.Run, issue *native.Issue, terminalStates ma
 		// Close (which cancels) retain the very slot it exists to release.
 		return pipelineColumnClosed, false
 	case store.RunStatusFailed, store.RunStatusFailedResumable:
-		if issue != nil {
-			if _, terminal := terminalStates[issue.State]; terminal {
-				// The operator already filed this ticket (typically via
-				// Close). The failure is acknowledged history, not open work.
-				return pipelineColumnClosed, false
-			}
+		if issue == nil {
+			// A STANDALONE failure (manual / API / scheduled run, no ticket)
+			// has no retry, resume-to-ready or close affordance on this board
+			// and reserves nothing. Putting it in the lane would only collect
+			// cards nobody can act on — the junkyard that killed the previous
+			// Failed lane. It belongs in Closed, badged Failed.
+			return pipelineColumnClosed, false
+		}
+		if _, terminal := terminalStates[issue.State]; terminal {
+			// The operator already filed this ticket (typically via Close).
+			// The failure is acknowledged history, not open work.
+			return pipelineColumnClosed, false
 		}
 		// Ticket-backed failures reserve their slot so nothing takes the
-		// place they need to restart into. Two exclusions:
-		//   - standalone runs (no ticket) have no retry path on the board,
-		//     so reserving for them would leak a slot with no way to release
-		//     it short of the run store being pruned;
-		//   - failures WE caused (drain / orphan sweep) are not anomalies the
-		//     operator can fix. Without this, every restart with N pipelines
-		//     in flight reserves N slots — and under `task studio:dev` a
-		//     restart is every .go save.
-		return pipelineColumnNeedsAttention, issue != nil && !pipelineRunInterrupted(root)
+		// place they need to restart into — except failures WE caused (drain
+		// / orphan sweep), which are not anomalies the operator can fix.
+		// Without that exclusion every restart with N pipelines in flight
+		// reserves N slots, and under `task studio:dev` a restart is every
+		// .go save.
+		return pipelineColumnNeedsAttention, !pipelineRunInterrupted(root)
 	default:
 		return pipelineColumnInProgress, false
 	}

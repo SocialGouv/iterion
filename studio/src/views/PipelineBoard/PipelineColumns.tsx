@@ -10,7 +10,6 @@ import { DotsHorizontalIcon } from "@radix-ui/react-icons";
 import {
   bulkDeletePipelineTasks,
   bulkReadyPipelineTasks,
-  closePipelineRun,
   closePipelineTask,
   deletePipelineTask,
   launchPipelineTask,
@@ -340,11 +339,7 @@ export function PipelineColumns({
         }))
       )
         return;
-      await runAction(() =>
-        card.issue_id
-          ? closePipelineTask(card.issue_id)
-          : closePipelineRun(card.run_id as string),
-      );
+      await runAction(() => closePipelineTask(card.issue_id as string));
     },
   };
 
@@ -1263,13 +1258,20 @@ function ClosedStatus({ card }: { card: PipelineBoardCardDTO }) {
     <div className="min-w-0 space-y-1.5">
       <div className="flex flex-wrap items-center gap-1">
         <PriorityBadge priority={card.priority} />
-        {/* Mid-flight failures live in Needs attention now, so a "failed"
-            card that reached Closed got there deliberately: cancelled by the
-            operator, or filed via Close. "Stopped" says that; "Failed" read
-            as a crash the operator never caused. */}
-        <Badge variant="danger" title="Stopped by the operator, or closed without finishing">
-          Stopped
-        </Badge>
+        {/* Distinguish the two ways a card reaches Closed badged failed: an
+            operator STOPPED it (cancelled, or filed via Close), or a
+            standalone run — which has no lane to be nursed in — simply
+            FAILED. Labelling both "Stopped" told the operator they had done
+            something they had not. */}
+        {card.status === "cancelled" ? (
+          <Badge variant="danger" title="Stopped by the operator, or closed without finishing">
+            Stopped
+          </Badge>
+        ) : (
+          <Badge variant="danger" title="This run failed">
+            Failed
+          </Badge>
+        )}
         <StatusChip status={card.status} />
       </div>
       {card.error && (

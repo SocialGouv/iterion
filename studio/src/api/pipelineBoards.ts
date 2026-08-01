@@ -614,16 +614,6 @@ export async function closePipelineTask(taskId: string): Promise<void> {
   );
 }
 
-// closePipelineRun is the run-only counterpart: a standalone pipeline with
-// no ticket has no state to file, so closing it just cancels the run (which
-// moves the card to Closed and releases anything it held).
-export async function closePipelineRun(runId: string): Promise<void> {
-  await apiRequest<unknown>(`${BASE}/runs/${encodeURIComponent(runId)}/close`, {
-    method: "POST",
-    body: JSON.stringify({}),
-  });
-}
-
 // launchPipelineTask starts a ticket immediately, jumping the admission
 // loop's priority order (the Opened → In progress drag). The server still
 // refuses (409) on an active run, an unfinished hard dependency, or a full

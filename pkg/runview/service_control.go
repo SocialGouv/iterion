@@ -82,13 +82,16 @@ func (s *Service) CancelInactiveCtx(ctx context.Context, runID string) (bool, er
 	case store.RunStatusPausedWaitingHuman, store.RunStatusFailedResumable, store.RunStatusPausedOperator:
 		// flippable — paused_operator included so an orphaned operator-paused
 		// run can still be cancelled after a daemon restart
-	case store.RunStatusFailed:
-		// A plainly-failed run has nothing left to stop, but the flip is what
-		// lets an operator DISMISS it: the pipeline board's needs-attention
-		// lane is derived from run status, so a standalone failed run with no
-		// ticket to file had no way out of that lane at all. Flipping it to
-		// cancelled is the run-only equivalent of filing a ticket.
-
+	// `failed` is deliberately NOT flippable. It looks like a harmless
+	// dismissal — the run is dead either way — but `cancelled` is a RESUMABLE
+	// status everywhere in the engine (runtime/resume.go, cli/resume.go, the
+	// studio's Resume affordance) while applyStatusTransition clears the
+	// checkpoint on `failed`. The flip would therefore advertise Resume on a
+	// checkpoint-less run, and Engine.Resume routes that to resumeFromFailure,
+	// which restarts from the WORKFLOW ENTRY — re-burning the whole budget on
+	// a run whose failure may have been an intentional FailNode termination.
+	// Standalone failed runs need no dismissal anyway: they reserve nothing
+	// (only ticket-backed cards reserve) and the board files them in Closed.
 	default:
 		return false, nil // already terminal — no-op
 	}

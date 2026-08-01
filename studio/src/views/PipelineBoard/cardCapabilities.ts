@@ -77,15 +77,15 @@ export function canStopRun(card: PipelineBoardCard): boolean {
 
 // canCloseCard: file this pipeline for good — cancel whatever is still
 // alive under it and move it to Closed. It is the release valve for the
-// needs-attention lane (a card there holds a concurrency slot until it is
-// retried or closed), which is why it must also reach RUN-ONLY cards: a
-// standalone failed run has no ticket to restage, so without Close the lane
-// would slowly fill with undismissable corpses.
+// needs-attention lane, where a card holds a concurrency slot until it is
+// retried or closed.
 //
+// TICKET-BACKED only: closing writes a terminal ticket state, and a
+// standalone run has none. Such a run also reserves nothing and the
+// projection files it straight into Closed, so there is nothing to release.
 // Not offered in Closed, where the card has already reached its end.
 export function canCloseCard(card: PipelineBoardCard): boolean {
-  if (card.column_id === "closed") return false;
-  return !!card.issue_id || !!card.run_id;
+  return !!card.issue_id && card.column_id !== "closed";
 }
 
 export function isTicketEditable(card: PipelineBoardCard): boolean {

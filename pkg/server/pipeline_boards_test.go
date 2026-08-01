@@ -355,10 +355,13 @@ func TestPipelineBoardColumnBucketing(t *testing.T) {
 		{"r-running", store.RunStatusRunning, pipelineColumnInProgress, false},
 		{"r-paused", store.RunStatusPausedWaitingHuman, pipelineColumnInProgress, false},
 		{"r-finished", store.RunStatusFinished, pipelineColumnClosed, false},
-		// Died mid-flight → the needs-attention lane, not Closed. Closed
-		// means "this reached its end"; a crash did not.
-		{"r-failed", store.RunStatusFailed, pipelineColumnNeedsAttention, true},
-		{"r-resumable", store.RunStatusFailedResumable, pipelineColumnNeedsAttention, true},
+		// These roots are STANDALONE (no ticket). A standalone failure has no
+		// retry / resume-to-ready / close affordance on this board and
+		// reserves nothing, so it is filed in Closed rather than collecting in
+		// a lane nobody can act on. Ticket-backed failures go to
+		// needs_attention — see TestPipelineBoardTicketFailureEntersLane.
+		{"r-failed", store.RunStatusFailed, pipelineColumnClosed, true},
+		{"r-resumable", store.RunStatusFailedResumable, pipelineColumnClosed, true},
 		// CANCELLED stays in Closed. Pin this deliberately: a refactor that
 		// sweeps cancelled back in with the failures would make the operator's
 		// own Stop button hold a concurrency slot, and would make Close retain

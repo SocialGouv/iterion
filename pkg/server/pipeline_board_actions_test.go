@@ -506,3 +506,80 @@ func TestPipelineCloseTargetStateNeverResolvesToDone(t *testing.T) {
 		t.Error("a nil board must not yield a close target")
 	}
 }
+
+// A TICKET-backed failure enters the lane and reserves; a standalone one
+// does not. The split is the whole membership rule, and each half protects
+// something different: the lane must not fill with cards nobody can act on,
+// and a reservation must always have a way to be released.
+func TestPipelineBoardTicketFailureEntersLaneStandaloneDoesNot(t *testing.T) {
+	env := newPipelineBoardTestEnv(t)
+	issue, err := env.board.Create(native.Issue{Title: "Owned", State: native.StateInProgress, Bot: "review"})
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	env.seedRun(t, "owned-run", "review", store.RunStatusFailed, func(run *store.Run) {
+		run.FilePath = env.botPath
+		run.Error = "kaboom"
+	})
+	if err := env.board.SetLastRun(issue.ID, "owned-run", ""); err != nil {
+		t.Fatalf("SetLastRun: %v", err)
+	}
+	env.seedRun(t, "loose-run", "review", store.RunStatusFailed, func(run *store.Run) {
+		run.FilePath = env.botPath
+		run.Error = "kaboom"
+	})
+
+	cards := env.projection(t).Cards
+	owned := findPipelineCard(t, cards, "run:owned-run")
+	if owned.ColumnID != pipelineColumnNeedsAttention || !owned.ReservesSlot {
+		t.Errorf("ticket-backed: column=%q reserves=%v, want needs_attention + reserved",
+			owned.ColumnID, owned.ReservesSlot)
+	}
+	loose := findPipelineCard(t, cards, "run:loose-run")
+	if loose.ColumnID != pipelineColumnClosed {
+		t.Errorf("standalone: column = %q, want closed (nothing on the board can act on it)", loose.ColumnID)
+	}
+	if loose.ReservesSlot {
+		t.Error("standalone: reserved a slot with no affordance that could ever release it")
+	}
+}
+
+// The Close dialog names the tickets that will stay parked. That guard is
+// only as real as card.Blocking, which attachDeps fills — and attachDeps
+// used to run for task cards only, so it was empty on exactly the lanes
+// Close serves.
+func TestPipelineBoardRunCardCarriesItsDependents(t *testing.T) {
+	env := newPipelineBoardTestEnv(t)
+	blocker, err := env.board.Create(native.Issue{Title: "Migrate the store", State: native.StateInProgress, Bot: "review"})
+	if err != nil {
+		t.Fatalf("Create blocker: %v", err)
+	}
+	dependent, err := env.board.Create(native.Issue{
+		Title:    "Index the runs",
+		State:    native.StateWaitingDeps,
+		Bot:      "review",
+		Blockers: []string{blocker.ID},
+	})
+	if err != nil {
+		t.Fatalf("Create dependent: %v", err)
+	}
+	env.seedRun(t, "blocker-run", "review", store.RunStatusFailed, func(run *store.Run) {
+		run.FilePath = env.botPath
+		run.Error = "kaboom"
+	})
+	if err := env.board.SetLastRun(blocker.ID, "blocker-run", ""); err != nil {
+		t.Fatalf("SetLastRun: %v", err)
+	}
+
+	card := findPipelineCard(t, env.projection(t).Cards, "run:blocker-run")
+	if card.ColumnID != pipelineColumnNeedsAttention {
+		t.Fatalf("column = %q, want needs_attention", card.ColumnID)
+	}
+	if len(card.Blocking) != 1 || card.Blocking[0].ID != dependent.ID {
+		t.Fatalf("Blocking = %+v, want the one dependent %s — the Close dialog would confirm blind",
+			card.Blocking, dependent.ID)
+	}
+	if card.Blocking[0].Title != "Index the runs" {
+		t.Errorf("Blocking title = %q, want the dependent's title", card.Blocking[0].Title)
+	}
+}

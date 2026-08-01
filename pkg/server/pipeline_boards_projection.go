@@ -83,6 +83,9 @@ type pipelineProjectionBuilder struct {
 	issueOwnedRuns map[string]struct{}
 	nodeCountCache map[string]int
 	queuePositions map[string]int
+	// blocking is the reverse blocker index (blocked-by → blockers), built
+	// once per projection by blockingIndex().
+	blocking map[string][]native.BlockingInfo
 	// eventScans memoizes the single per-run event walk (node-progress
 	// count + paused gates' instructions) for the lifetime of one
 	// projection build, so the two consumers share ONE pass.
@@ -631,6 +634,14 @@ func (b *pipelineProjectionBuilder) addRootCard(root *store.Run, issue *native.I
 	if card.External == nil && root.ProjectPath != "" {
 		card.External = &native.ExternalRef{Repo: root.ProjectPath}
 	}
+	// Dependency projection for RUN-backed cards too, not just task ones.
+	// card.Blocking is what the Close dialog names before an operator abandons
+	// a pipeline others depend on — and Close lives on the needs_attention /
+	// in_progress lanes, which are emitted HERE. Without this the dialog
+	// rendered an empty dependent list on exactly the two lanes it was built
+	// to protect, while reading as though the guard had fired. Cheap now that
+	// the reverse index is memoized per projection (blockingIndex).
+	b.attachDeps(&card, issue)
 	b.cards = append(b.cards, card)
 }
 

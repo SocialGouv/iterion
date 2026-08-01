@@ -62,10 +62,10 @@ func (s *Server) registerPipelineBoardRoutes() {
 	// Ticket lifecycle beyond the ready toggle.
 	s.mux.Handle("DELETE /api/v1/pipeline-board/tasks/{id}", s.requireAuth(http.HandlerFunc(s.handlePipelineBoardTaskDelete)))
 	s.mux.Handle("POST /api/v1/pipeline-board/tasks/{id}/reset", s.requireAuth(http.HandlerFunc(s.handlePipelineBoardTaskReset)))
-	// Close: end a pipeline for good (cancel the tree, file the ticket). The
-	// run-scoped variant serves standalone cards that have no ticket.
+	// Close: end a pipeline for good (cancel the tree, file the ticket).
+	// Ticket-scoped only — a standalone run has no state to file, reserves
+	// nothing, and is already filed in Closed by the projection.
 	s.mux.Handle("POST /api/v1/pipeline-board/tasks/{id}/close", s.requireAuth(http.HandlerFunc(s.handlePipelineBoardTaskClose)))
-	s.mux.Handle("POST /api/v1/pipeline-board/runs/{id}/close", s.requireAuth(http.HandlerFunc(s.handlePipelineBoardRunClose)))
 	s.mux.Handle("POST /api/v1/pipeline-board/tasks/{id}/launch", s.requireAuth(http.HandlerFunc(s.handlePipelineBoardTaskLaunch)))
 	// Bulk + graph (multi-pipeline production ops).
 	s.mux.Handle("POST /api/v1/pipeline-board/bulk/ready", s.requireAuth(http.HandlerFunc(s.handlePipelineBoardBulkReady)))

@@ -413,51 +413,6 @@ func (s *Server) cancelIssueTreeBestEffort(
 	return cancelled, unreachable
 }
 
-// handlePipelineBoardRunClose is the run-only counterpart: a standalone
-// pipeline has no ticket to file, so closing it is exactly "cancel it". The
-// cancelled status moves the card to Closed, which is what releases anything
-// it was holding.
-func (s *Server) handlePipelineBoardRunClose(w http.ResponseWriter, r *http.Request) {
-	if !s.requireSafeOrigin(w, r) {
-		return
-	}
-	if s.rejectCrossStoreWrite(w, r) {
-		return
-	}
-	runID := strings.TrimSpace(r.PathValue("id"))
-	if runID == "" {
-		s.httpErrorFor(w, r, http.StatusBadRequest, "pipeline board close: missing run id")
-		return
-	}
-	s.stateMu.RLock()
-	runs := s.runs
-	s.stateMu.RUnlock()
-	if runs == nil {
-		s.httpErrorFor(w, r, http.StatusNotFound, "pipeline board close: run service is not available")
-		return
-	}
-	// Tenant scoping BEFORE any cancel mutation — the same gate handleCancelRun
-	// carries, and for the same reason: cancelPipelineRun's first move is
-	// runs.Cancel(runID), which descends into the publisher with a
-	// non-request context, so the store's tenant filter never runs and a
-	// cross-tenant run could be cancelled by id alone. The ticket-scoped
-	// sibling gets this implicitly from boardStore.Get; this one takes the id
-	// straight off the path and must ask explicitly. (Also rejects a
-	// malformed id via the store's path-component check.)
-	if _, err := runs.LoadRunCtx(r.Context(), runID); err != nil {
-		s.httpErrorFor(w, r, http.StatusNotFound, "pipeline board close: run not found: %v", err)
-		return
-	}
-	if !s.cancelPipelineRun(r.Context(), runs, runID) {
-		s.httpErrorFor(w, r, http.StatusConflict,
-			"pipeline board close: run %s could not be cancelled from this process — cancel it from its run console first", runID)
-		return
-	}
-	w.Header().Set("Content-Type", "application/json")
-	s.reflectAllowedOrigin(w, r)
-	_ = json.NewEncoder(w).Encode(map[string]any{"run_id": runID, "cancelled": true})
-}
-
 // cancelIssueTree cancels every non-retired run in a ticket's tree, writing
 // a 409 and returning ok=false on the first run this process cannot reach.
 // Shared by Close (and shaped like Reset's sweep, which keeps its own copy

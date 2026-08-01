@@ -7959,30 +7959,6 @@
         ]
       }
     },
-    "/api/v1/pipeline-board/runs/{id}/close": {
-      "parameters": [
-        {
-          "in": "path",
-          "name": "id",
-          "required": true,
-          "schema": {
-            "type": "string"
-          }
-        }
-      ],
-      "post": {
-        "operationId": "postV1PipelineBoardRunsByIdClose",
-        "responses": {
-          "default": {
-            "description": "Response"
-          }
-        },
-        "summary": "POST /api/v1/pipeline-board/runs/{id}/close",
-        "tags": [
-          "pipeline-board"
-        ]
-      }
-    },
     "/api/v1/pipeline-board/tasks": {
       "post": {
         "operationId": "postV1PipelineBoardTasks",
