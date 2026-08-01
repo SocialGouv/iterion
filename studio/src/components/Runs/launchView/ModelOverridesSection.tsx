@@ -1,4 +1,4 @@
-// ModelOverridesSection renders per-node model + backend dropdowns for the
+// ModelOverridesSection renders per-node model + backend pickers for the
 // Launch form. It lets an operator re-target which provider/model/backend
 // each LLM node (agent/judge) uses for THIS run, without editing the .bot —
 // the studio surface of pkg/backend/model.ModelOverrides. LaunchView owns the
@@ -8,13 +8,23 @@
 // (reviewer_claude vs reviewer_gpt). Nodes are grouped by kind (Judges,
 // Agents) for scannability; a node left on "inherit" sends nothing, so the
 // bot's DSL defaults apply unchanged.
+//
+// The model control reads the model registry (GET /api/models) rather than a
+// datalist of the detected providers' suggested models: that older hint list
+// could not say whether a spec was reachable, what it cost, or whether it
+// could call tools at all. The nodes' own DSL defaults are passed to the
+// registry as extra specs so a bot pinned outside the curated set still
+// resolves — and so re-selecting the default stays one click.
 
-import { useState } from "react";
+import { useMemo, useState } from "react";
 
 import type { BackendDetectReport } from "@/api/backends";
+import type { ModelEntry } from "@/api/models";
 
-import { Input } from "@/components/ui/Input";
+import ModelPicker from "@/components/models/ModelPicker";
 import { Select } from "@/components/ui/Select";
+import { useModelCatalog } from "@/hooks/useModelCatalog";
+import { nodeModelSpecs } from "@/lib/nodeModelSpecs";
 
 // One LLM node the operator can retarget.
 export interface LLMNode {
@@ -37,35 +47,19 @@ export interface ModelOverridesSectionProps {
   onChange: (nodeName: string, patch: NodeOverride) => void;
 }
 
-// modelSuggestions collects distinct model specs to offer in the datalist:
-// every detected provider's suggested model, plus the nodes' own DSL defaults
-// (so re-selecting the default is one keystroke). Literal ${VAR} defaults are
-// skipped — they aren't real model ids.
-function modelSuggestions(
-  nodes: LLMNode[],
-  report: BackendDetectReport | null,
-): string[] {
-  const set = new Set<string>();
-  for (const p of report?.providers ?? []) {
-    if (p.available && p.suggested_model) set.add(p.suggested_model);
-  }
-  for (const n of nodes) {
-    if (n.model && !n.model.includes("${")) set.add(n.model);
-  }
-  return [...set].sort();
-}
-
 function NodeRow({
   node,
   override,
   backendReport,
-  suggestionsId,
+  models,
+  recommended,
   onChange,
 }: {
   node: LLMNode;
   override: NodeOverride;
   backendReport: BackendDetectReport | null;
-  suggestionsId: string;
+  models: ModelEntry[];
+  recommended: ModelEntry | null;
   onChange: (patch: NodeOverride) => void;
 }) {
   const inheritModel = node.model && !node.model.includes("${") ? node.model : "";
@@ -79,14 +73,15 @@ function NodeRow({
         <div className="text-caption text-fg-subtle">{node.kind}</div>
       </div>
       <div>
-        <Input
-          size="sm"
-          type="text"
-          list={suggestionsId}
-          className="font-mono"
-          placeholder={inheritModel ? `inherit — ${inheritModel}` : "inherit (bot default)"}
+        <ModelPicker
           value={override.model ?? ""}
-          onChange={(e) => onChange({ model: e.currentTarget.value })}
+          onChange={(spec) => onChange({ model: spec })}
+          models={models}
+          recommended={recommended}
+          compact
+          inheritLabel={
+            inheritModel ? `inherit — ${inheritModel}` : "inherit (bot default)"
+          }
         />
       </div>
       <div>
@@ -116,10 +111,16 @@ export default function ModelOverridesSection({
   onChange,
 }: ModelOverridesSectionProps) {
   const [open, setOpen] = useState(false);
+  const specs = useMemo(() => nodeModelSpecs(nodes), [nodes]);
+  // Only fetch once the section is opened: the launch page mounts on every
+  // navigation, and nobody needs the registry until they go looking for it.
+  const { models, recommended, error } = useModelCatalog({
+    specs,
+    enabled: open && nodes.length > 0,
+  });
+
   if (nodes.length === 0) return null;
 
-  const suggestionsId = "iterion-model-suggestions";
-  const suggestions = modelSuggestions(nodes, backendReport);
   const setCount = Object.values(overrides).filter(
     (o) => o.model || o.backend,
   ).length;
@@ -152,11 +153,12 @@ export default function ModelOverridesSection({
             These win over the node&apos;s <code>model:</code>/<code>backend:</code>{" "}
             and compose with the review-mode (mono/dual) topology.
           </p>
-          <datalist id={suggestionsId}>
-            {suggestions.map((m) => (
-              <option key={m} value={m} />
-            ))}
-          </datalist>
+          {error && (
+            <p className="text-caption text-warning">
+              Could not load the model registry ({error}) — pick a model by
+              typing its <code>provider/model-id</code>.
+            </p>
+          )}
 
           {judges.length > 0 && (
             <div className="space-y-2">
@@ -169,7 +171,8 @@ export default function ModelOverridesSection({
                   node={n}
                   override={overrides[n.name] ?? {}}
                   backendReport={backendReport}
-                  suggestionsId={suggestionsId}
+                  models={models}
+                  recommended={recommended}
                   onChange={(patch) => onChange(n.name, patch)}
                 />
               ))}
@@ -187,7 +190,8 @@ export default function ModelOverridesSection({
                   node={n}
                   override={overrides[n.name] ?? {}}
                   backendReport={backendReport}
-                  suggestionsId={suggestionsId}
+                  models={models}
+                  recommended={recommended}
                   onChange={(patch) => onChange(n.name, patch)}
                 />
               ))}
