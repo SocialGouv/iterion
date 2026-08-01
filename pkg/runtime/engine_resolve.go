@@ -166,13 +166,89 @@ func (e *Engine) buildNodeInputRS(nodeID string, sc resolveScope) map[string]any
 }
 
 // resolveMapping resolves a DataMapping's references to concrete values.
-// For simplicity in the minimal runtime, if there is exactly one ref we
-// return the resolved value directly; otherwise we return the raw template.
+//
+// A template that is nothing but a single reference — "{{outputs.n.field}}"
+// — passes the referenced value through with its type intact, because a
+// mapping must be able to carry an object, an array, a bool or a number
+// into a typed field, not just text.
+//
+// Every other template is interpolated: each reference is rendered into
+// the surrounding literal text. Returning the reference alone would drop
+// that text ("app-concept/{{outputs.seed.token}}/resolved" collapsing to
+// the bare token), and returning the raw template would leave a
+// multi-reference path like "{{vars.scratch_dir}}/{{run.id}}/topics"
+// unresolved — both silently, as a plausible-looking value.
 func (e *Engine) resolveMapping(dm *ir.DataMapping, sc resolveScope) any {
-	if len(dm.Refs) == 1 {
+	if len(dm.Refs) == 0 {
+		return dm.Raw
+	}
+	// Spans come from Raw rather than from each Ref's own Raw field:
+	// hand-built IR (tests, generators) routinely fills DataMapping.Raw
+	// and leaves Ref.Raw empty, and an empty needle would splice the
+	// value in front of every character.
+	spans := templateSpans(dm.Raw)
+	if len(spans) != len(dm.Refs) {
+		if len(dm.Refs) == 1 {
+			return e.resolveRef(dm.Refs[0], sc)
+		}
+		return dm.Raw
+	}
+	if len(spans) == 1 && spans[0].start == 0 && spans[0].end == len(dm.Raw) {
 		return e.resolveRef(dm.Refs[0], sc)
 	}
-	return dm.Raw
+	var b strings.Builder
+	prev := 0
+	for i, sp := range spans {
+		b.WriteString(dm.Raw[prev:sp.start])
+		b.WriteString(renderMappingValue(e.resolveRef(dm.Refs[i], sc)))
+		prev = sp.end
+	}
+	b.WriteString(dm.Raw[prev:])
+	return b.String()
+}
+
+// templateSpan marks one `{{…}}` block in a template, end-exclusive.
+type templateSpan struct{ start, end int }
+
+// templateSpans locates every `{{…}}` block, using the same left-to-right
+// fence scan as ir.ParseRefs so the spans line up one-for-one with the
+// refs that call produced.
+func templateSpans(s string) []templateSpan {
+	var spans []templateSpan
+	for i := 0; ; {
+		start := strings.Index(s[i:], "{{")
+		if start == -1 {
+			return spans
+		}
+		start += i
+		end := strings.Index(s[start:], "}}")
+		if end == -1 {
+			return spans
+		}
+		end += start + 2
+		spans = append(spans, templateSpan{start: start, end: end})
+		i = end
+	}
+}
+
+// renderMappingValue converts a resolved reference to the text spliced
+// into an interpolated mapping template. It mirrors the substitution
+// rules the prompt renderer applies (model.formatValue): strings verbatim,
+// nil as empty, everything else as compact JSON so a structured value
+// stays machine-readable instead of degrading to Go's %v syntax.
+func renderMappingValue(v any) string {
+	switch val := v.(type) {
+	case string:
+		return val
+	case nil:
+		return ""
+	default:
+		b, err := json.Marshal(val)
+		if err != nil {
+			return fmt.Sprintf("%v", val)
+		}
+		return string(b)
+	}
 }
 
 // resolveRef resolves a single Ref to a concrete value. The runState
