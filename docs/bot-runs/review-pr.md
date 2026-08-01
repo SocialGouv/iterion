@@ -8,6 +8,58 @@ pr_url` it also posts an inline forge review and an optional deterministic
 commit-status gate. Never edits or commits. See
 [bots/review-pr/](../../bots/review-pr/).
 
+## 2026-08-01 — the hand-off measured working in production, and a second hole under it (runs 019fbc1d / 019fbc26)
+
+- Status: **the hand-off is validated live.** A separate, pre-existing defect
+  keeps the fixer from posting its verdict on the board lane.
+- Versions: iterion cloud prod v3.18.1 @ `4bd82c830` (the `publish:` fix)
+- Method: same PR, redeployed instance, `/revi` then `/billy`.
+
+### Measured
+
+`prior_review` reached the fixer at **5829 characters** — it was **0** before the
+fix. It carried the stable id (`R727eac`), the anchor note pinned to the current
+head, `confidence: medium`, the reviewer's ready-made replacement block, and the
+open-questions channel. The engine emitted **6 `artifact_written` events** for
+`diff_precheck`, `merge_reviews` and `converge`, under the exact publish names
+declared; there were **zero** before.
+
+That also settles the caveat left on the previous entry: the cause was the
+missing `publish:`, not cloud storage. `GET /api/runs/<id>/artifacts` still
+returns `[]` — that endpoint has no mongo listing behind it and is a red herring;
+the targeted read the hand-off actually performs works.
+
+The loop is real, not just wired: this review reads the commits the fixer pushed
+in the earlier run and raises a second-order defect **in the fixer's own fix**
+(`Warm` re-introducing an unrecoverable crash through the panic-recovery the
+same branch had just added).
+
+### The remaining hole: a board-launched bot cannot post anything
+
+The fixer pushed, then `publish_verdict` returned *"no forge publish grant on
+this run"*. Measured side by side on the same PR:
+
+| | forge_publish_url | forge_publish_token | gate_context |
+|---|---|---|---|
+| reviewer (`mode: direct`) | yes | yes | `iterion/review` |
+| fixer (`mode: board`) | — | — | absent |
+
+So the fixer posts no verdict table, no finding ledger and no merge-gate status,
+and the required check stays on the revision before its push. The grant is minted
+in the webhook launch tail (`injectForgePublishVars`) and the operator's
+`gate_context` is layered there too; a board-mode command materialises a card and
+the cloud coordinator launches from `BotArgs` ONLY, so both are dropped. The
+declared hand-off vars survive because `ensureBoardCard` copies them explicitly —
+nothing else does.
+
+Not caused by this work, and it is the exact pre-flight the plan for the gate
+phase demanded ("verify `gate_context` and the publish grant actually reach a
+board-launched fixer before designing on top"). The measured answer is no.
+
+Fix direction: mint the grant at board-launch time rather than carrying it (a
+grant has a TTL and a card can be claimed much later), and layer the
+integration's operator launch vars there too.
+
 ## 2026-07-31 — the Revi→Billy hand-off read an artifact no node ever wrote (runs 019fb9bc / 019fb9c6)
 
 - Status: **partial — Revi validated end to end, the hand-off to the fixer proved
