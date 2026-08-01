@@ -81,6 +81,32 @@ func (o *ModelOverrides) SetEffort(selector, effort string) {
 	o.add(selector, NodeModelOverride{Effort: effort})
 }
 
+// Row is one selector→override directive as parsed, in insertion order.
+// It is the shape a launch surface persists on the run document so a later
+// resume can read the choice back.
+type Row struct {
+	Selector string
+	NodeModelOverride
+}
+
+// Rows returns the directives in insertion order.
+//
+// Exported so a launch path can PERSIST what it parsed. Folding to
+// ModelOverrides is lossy for that purpose — resolution is per-field and
+// per-selector, so there is no way back to "what the operator typed" from
+// the folded set, and a launch that cannot record its choice cannot have it
+// replayed on resume.
+func (o ModelOverrides) Rows() []Row {
+	if len(o.rules) == 0 {
+		return nil
+	}
+	out := make([]Row, 0, len(o.rules))
+	for _, r := range o.rules {
+		out = append(out, Row{Selector: r.selector, NodeModelOverride: r.NodeModelOverride})
+	}
+	return out
+}
+
 // MergeOver layers o's rules ON TOP of base and returns the result, so a
 // directive in o wins any tie with an equally-specific rule in base while
 // still inheriting the fields base sets and o leaves blank.

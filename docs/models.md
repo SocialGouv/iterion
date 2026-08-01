@@ -152,7 +152,7 @@ paths: in-process ([`Service.resumeExecutorSpec`](../pkg/runview/service_launch.
 the CLI (`iterion resume`, which the detached studio path shells out to), and
 cloud (`SubmitResume` republishes them on the queue for the runner pod).
 
-On the CLI, `--model-for` / `--backend-for` / `--effort-for` given to `resume`
+On the CLI, `--model` / `--backend` / `--effort-for` given to `resume`
 layer **on top** of what the run was launched with, per field — so
 `--effort-for '*=high'` re-targets the effort without discarding the model.
 
@@ -214,11 +214,13 @@ Launch-time overrides **are** replayed on resume for runs launched through the
 studio / HTTP API, in both modes: the rows stamped on the run document are
 re-folded by `runview.Service.Resume` in-process and republished by
 `cloudpublisher.SubmitResume` in cloud. `iterion resume` merges them beneath any
-`--model-for` / `--backend-for` / `--effort-for` typed for that attempt — the
+`--model` / `--backend` / `--effort-for` typed for that attempt — the
 flag wins per field, so re-targeting only the effort keeps the launch's model.
 
-`iterion run` is the exception: it does not stamp its own override flags on the
-run document, so a CLI-launched run still needs them passed again on resume.
+This holds on every launch surface, `iterion run` included: the CLI stamps the
+rows it parsed onto the run document, so a run launched from the terminal
+inherits its own choice on resume and shows it in the studio Overview like any
+other.
 
 ---
 

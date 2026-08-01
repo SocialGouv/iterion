@@ -118,8 +118,8 @@ This composes with the mono/dual `--review-mode` topology (ADR-052): the
 review mode chooses *which family* runs (one or two), the override chooses
 *which model/backend* each running node uses. A run launched through the studio / HTTP
 API re-applies its launch-time model/backend rules on resume (they are read
-back off the run document); `iterion run` does not persist its own flags, so
-repeat them on `iterion resume` for a CLI-launched run. `--compress` remains
+back off the run document) — on every launch surface, `iterion run` included,
+so the flags do not have to be repeated on `iterion resume`. `--compress` remains
 launch-only. See [docs/models.md](models.md#the-assistants-model).
 
 ## Default preference order

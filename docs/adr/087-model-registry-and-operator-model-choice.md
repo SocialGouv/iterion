@@ -161,9 +161,10 @@ node, so **every operator reply is a resume**: the chosen model applied to
 exactly the first turn, and the spend landed on a provider the operator had
 deliberately steered away from.
 
-Still out of scope: `iterion run` does not stamp its own `--model-for` /
-`--backend-for` / `--effort-for` on the run document, so a CLI-launched run
-needs them passed again on resume.
+All three launch surfaces stamp the rows they parsed, `iterion run`
+included — otherwise the inheritance would have been inert on the one path
+with no other surface to fall back on, and the flag help would have had to
+say two different things depending on where the run came from.
 
 ### 4. The preference is keyed on an opaque scope string
 
