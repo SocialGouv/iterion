@@ -190,3 +190,30 @@ session full-width, and since both composers write the same store's
   chat-shaped: one answers, the other pushes into a running agent and
   never replies. A mode switch makes "which one am I typing into" a
   question the operator has to keep answering.
+
+## 2026-08-01 — what "above the route tree" turned out to include
+
+Decision (A) says the session lives above the route tree because
+navigation must not restart it. Two follow-ups showed the rule is wider
+than the session, and both were bugs before they were principles:
+
+- **Anything the OPERATOR set about the dock belongs there too.** The
+  dismissed context chip was `useState` inside `useRouteReference`, which
+  the dock owns — and the dock unmounts on `/whats-next` (per A, that
+  route renders the session itself). A `/board → /whats-next → /board`
+  round trip therefore resurrected a chip the operator had dismissed. It
+  now sits in `AssistantProvider`, still keyed on the reference so other
+  routes keep contributing their own. The test for it unmounts through
+  the same `isAssistantOwnRoute` predicate the dock uses, so the two
+  cannot drift apart silently.
+- **A docked column's cost is not paid by padding alone.** (B) notes
+  `AppShell` reserving `DOCKED_WIDTH_PX`. That reservation is invisible
+  to a `fixed` element, so the run console's steering bubble sat *under*
+  the assistant's column, unclickable — docking the assistant removed
+  steering. Both now read one `useAssistantReservedWidthPx`: the shell
+  reserves it as padding, fixed corner surfaces step out of it. The
+  coupling the "costs, accepted" list calls real is real in a second
+  direction, and worth naming: a surface pinned to the viewport must
+  ask what else has claimed the edge.
+
+Neither changes the decision; they are what it costs to hold it.
