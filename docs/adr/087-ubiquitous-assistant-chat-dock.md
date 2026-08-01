@@ -99,9 +99,21 @@ Two properties are load-bearing:
 
 - **A pointer, never content.** The reference rides on the message as one
   line (`[page context: run/019f…]`); the assistant resolves it with the
-  tools it already has (`__mcp-control`, `__mcp-board`). A huge run
-  therefore costs the prompt one line, and the assistant reads only what
-  it decides it needs.
+  tools it already has. A huge run therefore costs the prompt one line,
+  and the assistant reads only what it decides it needs.
+
+  **Resolution is the receiving bot's contract, not the engine's.** The
+  studio emits the pointer; what a given kind costs to resolve depends on
+  what that bot holds. For Nexie: `card/` is a board tool call (it
+  declares `board.read`), `run/` and `node/` are a shell read of the run
+  store — **no run-inspection MCP surface is wired** (`__mcp-control`
+  exists as a hidden stdio server for an external `claude` session
+  driving iterion-desktop; no run, on any backend, is given it), so the
+  store files are the ground truth. The mapping lives in the bot, in the
+  "Page context from the studio" section of `prompt nexie_system:`. A
+  studio that emits a wire format its only consumer was never taught is
+  a chip that looks like context and is not; teaching the bot is part of
+  shipping the protocol, not a follow-up.
 - **A table, not per-view handlers.** Opting a view in is a row in
   `ROUTE_RULES`. The alternative — a `useChatContext()` call inside each
   view — is how this kind of thing rots: half the views wired and nobody
@@ -150,8 +162,11 @@ session full-width, and since both composers write the same store's
   lazy `/whats-next` chunk. Ubiquity is the feature; a lazy dock would
   reintroduce the "not there when you need it" failure.
 - **Startup discovery runs on every page load,** not only on
-  `/whats-next` — one `listRuns` call. It only ever *attaches*; it never
-  launches, so a cold boot cannot start a run.
+  `/whats-next` — up to two `listRuns` calls, one per candidate workflow
+  spelling (`findLiveRunForBot` probes both the hyphen- and
+  underscore-spelled name, deduped, so a bot id without a hyphen costs
+  one). It only ever *attaches*; it never launches, so a cold boot
+  cannot start a run.
 - **`AppShell` reads the dock context.** A layout component now depends on
   the assistant's existence. It is a single scalar off the stable context
   and degrades to `0` when the provider is absent, but the coupling is

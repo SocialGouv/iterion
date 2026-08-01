@@ -60,9 +60,18 @@ Two things about it matter:
 
 - **It is a pointer, never the page's content.** The reference travels as
   one line on your message (`[page context: run/019fbd46…]`); the
-  assistant then resolves it with the tools it already has — the control
-  and board MCP servers. A run with thousands of events costs your prompt
-  one line, and the assistant reads only what it decides it needs.
+  assistant then resolves it with the tools it already has. A run with
+  thousands of events costs your prompt one line, and the assistant reads
+  only what it decides it needs.
+
+  What resolving costs depends on the kind. Nexie reads a `card/…`
+  through the board tools it already declares; `run/…` and `node/…` it
+  reads from the run store with its shell (`run.json`, `events.jsonl`) —
+  **there is no run-inspection MCP surface yet**, so those are a
+  well-formed hint rather than a one-call lookup. `repo/…` and `view/…`
+  are scope only: they tell the assistant what you are looking at, with
+  nothing to fetch. A reference that does not resolve on this host is
+  reported as such rather than guessed at.
 - **It is always visible.** The chip above the composer names what the
   assistant is assumed to be looking at. Dismiss it with the ✕ and that
   reference stops being sent — including if you navigate away and back —

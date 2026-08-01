@@ -6,9 +6,13 @@
 //   implicit — you are looking at it right now (this file)
 //
 // A reference is a POINTER, never inlined content: `run/019f…`, not the
-// run's events. The assistant resolves it through the tools it already
-// has (__mcp-control for runs, __mcp-board for cards), so a big page
-// costs the prompt nothing and the assistant reads only what it needs.
+// run's events — so a big page costs the prompt one line and the
+// assistant reads only what it decides it needs. What "resolving" means
+// is per-bot and per-kind: Nexie reads a `card/` through its board
+// capabilities and a `run/` by reading the run store from its shell
+// (there is no run-inspection MCP surface). A bot that receives these
+// references owns that mapping; see the "Page context from the studio"
+// section of `prompt nexie_system:` in bots/whats-next/main.bot.
 //
 // The map below is declarative on purpose. Adding a route means adding a
 // row here — not a `useChatContext()` call inside another view, which is
