@@ -114,7 +114,7 @@ export default function ModelOverridesSection({
   const specs = useMemo(() => nodeModelSpecs(nodes), [nodes]);
   // Only fetch once the section is opened: the launch page mounts on every
   // navigation, and nobody needs the registry until they go looking for it.
-  const { models, recommended, error } = useModelCatalog({
+  const { models, recommended, invalidSpecs, error } = useModelCatalog({
     extraSpecs: specs,
     enabled: open && nodes.length > 0,
   });
@@ -157,6 +157,19 @@ export default function ModelOverridesSection({
             <p className="text-caption text-warning">
               Could not load the model registry ({error}) — pick a model by
               typing its <code>provider/model-id</code>.
+            </p>
+          )}
+          {invalidSpecs.length > 0 && (
+            // A node's own `model:` that the registry cannot resolve is
+            // skipped so it cannot blank the list — but skipping it in
+            // silence turns "this bot pins a malformed spec" into "the
+            // picker is missing my model".
+            <p className="text-caption text-warning">
+              {invalidSpecs.length === 1
+                ? "One model pinned in this bot could not be resolved:"
+                : `${invalidSpecs.length} models pinned in this bot could not be resolved:`}{" "}
+              {invalidSpecs.map((s) => s.spec).join(", ")}. Fix the node&apos;s{" "}
+              <code>model:</code> or override it here.
             </p>
           )}
 

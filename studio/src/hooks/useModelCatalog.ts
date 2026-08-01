@@ -7,6 +7,7 @@ import { fetchModels, type ModelCatalog, type ModelEntry } from "@/api/models";
 // Stable empty fallback so the undefined→loaded transition doesn't hand every
 // downstream useMemo a fresh [] reference each render.
 const EMPTY_MODELS: ModelEntry[] = [];
+const EMPTY_INVALID: { spec: string; reason: string }[] = [];
 
 // The catalog is host state (credentials + a 24h-cached spec aggregator), not
 // live data. Cache it for the session and let the explicit refresh path be the
@@ -28,6 +29,10 @@ export interface UseModelCatalogResult {
   bySpec: Map<string, ModelEntry>;
   recommended: ModelEntry | null;
   resolvedDefaultBackend: string;
+  // Specs the registry could not resolve. Surfaced rather than swallowed:
+  // a node whose DSL default is malformed silently vanishes from the list
+  // otherwise, and "it isn't in the picker" reads as "I can't use it".
+  invalidSpecs: { spec: string; reason: string }[];
   catalog: ModelCatalog | null;
   loading: boolean;
   error: string | null;
@@ -72,6 +77,7 @@ export function useModelCatalog(
     bySpec,
     recommended,
     resolvedDefaultBackend: catalog?.resolved_default_backend ?? "",
+    invalidSpecs: catalog?.invalid_specs ?? EMPTY_INVALID,
     catalog,
     loading: query.isLoading,
     error: query.isError ? errorMessage(query.error) : null,

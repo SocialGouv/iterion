@@ -4454,6 +4454,7 @@ export interface components {
         };
         Catalog: {
             backends?: components["schemas"]["BackendStatus"][];
+            invalid_specs?: components["schemas"]["InvalidSpec"][];
             models: components["schemas"]["Entry"][];
             recommended_spec?: string;
             refresh_error?: string;
@@ -4647,6 +4648,10 @@ export interface components {
             tenant_id: string;
             /** Format: date-time */
             updated_at: string;
+        };
+        InvalidSpec: {
+            reason: string;
+            spec: string;
         };
         Issue: {
             assignee?: string;

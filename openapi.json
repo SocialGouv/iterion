@@ -109,6 +109,12 @@
             },
             "type": "array"
           },
+          "invalid_specs": {
+            "items": {
+              "$ref": "#/components/schemas/InvalidSpec"
+            },
+            "type": "array"
+          },
           "models": {
             "items": {
               "$ref": "#/components/schemas/Entry"
@@ -716,6 +722,21 @@
           "created_by",
           "created_at",
           "updated_at"
+        ],
+        "type": "object"
+      },
+      "InvalidSpec": {
+        "properties": {
+          "reason": {
+            "type": "string"
+          },
+          "spec": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "spec",
+          "reason"
         ],
         "type": "object"
       },

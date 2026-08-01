@@ -65,6 +65,11 @@ export interface ModelCatalog {
     | null;
   refreshed?: boolean;
   refresh_error?: string;
+  // Specs the caller asked about that could not be resolved. They are
+  // SKIPPED rather than fatal — one bot pinning a malformed `model:` must
+  // not blank out the picker for every model the host can actually reach —
+  // so the reason is reported here instead of as an error.
+  invalid_specs?: { spec: string; reason: string }[] | null;
 }
 
 export interface FetchModelsOptions {
