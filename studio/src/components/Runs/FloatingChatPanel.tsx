@@ -7,7 +7,7 @@
 // ChatDockShell's. This file is a caller of it: it owns the run-specific
 // pieces only — the transcript, the queue composer, the unread count and
 // the auto-expand-on-pause rule.
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { PaperPlaneIcon } from "@radix-ui/react-icons";
 
 import AgentChatboxInline from "@/components/shared/AgentChatboxInline";
@@ -53,6 +53,23 @@ export default function FloatingChatPanel({
 }: Props) {
   const status = useRunStore((s) => s.snapshot?.run.status);
   useAutoExpandOnPause(status, dock, onDockChange);
+
+  // Same opened-by-operator tracking the assistant's shell does. The
+  // extracted ChatDockFloating defaults focusOnMount to false, and this
+  // call site not passing it silently cost keyboard users the
+  // focus-on-open the panel had before the extraction — they landed back
+  // on the page background and had to tab in. Passing it unconditionally
+  // is not the fix either: this dock's state is persisted too
+  // (CHAT_DOCK_KEY) and remounts on every navigation to /runs/:id, so it
+  // would steal focus on restore exactly like the assistant did.
+  const openedByOperator = useRef(false);
+  const changeDock = useCallback(
+    (next: ChatDock) => {
+      openedByOperator.current = true;
+      onDockChange(next);
+    },
+    [onDockChange],
+  );
   // The assistant is on this route too, and when docked it owns a fixed
   // column at the right edge. Lane 1 alone does not clear it — the
   // steering bubble would sit under it and take no clicks.
@@ -72,7 +89,7 @@ export default function FloatingChatPanel({
         runId={runId}
         status={status}
         rightInset={rightInset}
-        onOpen={() => onDockChange(openedDock())}
+        onOpen={() => changeDock(openedDock())}
       />
     );
   }
@@ -81,13 +98,14 @@ export default function FloatingChatPanel({
       label={STEERING_TITLE}
       lane={STEERING_LANE}
       rightInset={rightInset}
-      onClose={() => onDockChange("closed")}
+      focusOnMount={openedByOperator.current}
+      onClose={() => changeDock("closed")}
     >
       <ChatDockChrome
         title={STEERING_TITLE}
         titleHint={STEERING_HINT}
-        onDockRight={() => onDockChange("docked-right")}
-        onClose={() => onDockChange("closed")}
+        onDockRight={() => changeDock("docked-right")}
+        onClose={() => changeDock("closed")}
       />
       <ChatPanelBody runId={runId} inputDisabled={inputDisabled} compact />
     </ChatDockFloating>

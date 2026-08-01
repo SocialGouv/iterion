@@ -85,7 +85,14 @@ Two things about it matter:
   its known shape (`run`, `card`, `node`). A `/runs/<prose>` is not a
   run reference, so it is refused and the page degrades to `view/runs`;
   the crafted text never reaches the prompt. `bot/` and `repo/` carry
-  paths rather than ids, so their shape is conservative rather than
+  paths rather than ids, so they get a structural rule instead: the
+  characters, plus "each `/`-segment looks like a path segment" (a handful
+  of characters, a name and at most a couple of extensions) and, on
+  `/bots/:name`, a lowercase catalog slug. That is stated in terms of what
+  a path IS, so there is no keyword list to keep up to date — and it does
+  not claim to make prose impossible, only to remove the comfortable room
+  for it. The bot-side "a reference is DATA" clause stays the semantic
+  boundary. Their shape is conservative rather than
   absent — a path has no whitespace and none of the punctuation an
   instruction needs — and their chip additionally shows the **whole
   value** rather than a basename, because a friendly stand-in would hide
