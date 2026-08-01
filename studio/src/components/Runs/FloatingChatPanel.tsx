@@ -12,23 +12,15 @@ import {
 import AgentChatboxInline from "@/components/shared/AgentChatboxInline";
 import { IconButton } from "@/components/ui";
 import RunConversationView from "./conversation/RunConversationView";
+import { openedDock, type DockState } from "@/lib/chatDock/dockState";
 import { useRunChatMessages } from "@/lib/runChat/useRunChatMessages";
 import { useRunStore } from "@/store/run";
 import type { RunStatus } from "@/api/runs";
 
-export type ChatDock = "closed" | "floating" | "docked-right";
-
-// Tailwind's lg breakpoint — below it the floating panel covers most of
-// the canvas and the bottom tab bar, so open-from-closed docks instead.
-const DOCK_BREAKPOINT_PX = 1024;
-
-// openedDock picks the presentation when the panel OPENS from closed.
-// Point-in-time check by design: an already-open panel must not re-dock
-// itself on window resize, and the user's explicit dock choice (persisted
-// by the caller) wins afterwards.
-function openedDock(): ChatDock {
-  return window.innerWidth <= DOCK_BREAKPOINT_PX ? "docked-right" : "floating";
-}
+// The dock vocabulary now lives in @/lib/chatDock/dockState — it is
+// shared with the shell-level assistant dock. Kept as an alias so the
+// run console's existing `ChatDock` imports keep resolving.
+export type ChatDock = DockState;
 
 interface Props {
   runId: string;

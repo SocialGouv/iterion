@@ -1,3 +1,4 @@
+import { DOCK_STATES } from "@/lib/chatDock/dockState";
 import { readEnumFlag, writeStringFlag } from "@/lib/localStorageFlag";
 
 import { type BrowserDock } from "../BrowserPane";
@@ -19,8 +20,11 @@ export const BOTTOM_TABS = [
   "plans",
 ] as const;
 export type BottomTab = (typeof BOTTOM_TABS)[number];
+// The run console's own (steering) dock keeps its historical key: it is
+// independent of the shell-level assistant dock, which persists under
+// ASSISTANT_DOCK_KEY. Both share one state vocabulary.
 export const CHAT_DOCK_KEY = "run-console-v2.chat-dock";
-export const CHAT_DOCKS = ["closed", "floating", "docked-right"] as const;
+export const CHAT_DOCKS = DOCK_STATES;
 export const BOTTOM_TAB_LABELS: Record<BottomTab, string> = {
   tasks: "Tasks",
   events: "Events",
