@@ -223,8 +223,21 @@ type ModelOverrideEntry struct {
 
 // toModelOverrides folds the launch entries into the engine's ModelOverrides.
 func toModelOverrides(entries []ModelOverrideEntry) model.ModelOverrides {
+	return ModelOverridesFromRun(RunModelOverrides(entries))
+}
+
+// ModelOverridesFromRun folds the persisted override rows into the engine's
+// live ModelOverrides. It is the SINGLE fold both launch paths go through: the
+// in-process one via toModelOverrides, and the cloud one in the runner pod,
+// which receives the same rows over the queue. Keeping one implementation is
+// what makes "the model the run record shows" and "the model the pod runs"
+// the same statement.
+//
+// An empty field inherits — a row carrying only Model leaves the matched
+// nodes' backend alone.
+func ModelOverridesFromRun(rows []store.RunModelOverride) model.ModelOverrides {
 	var o model.ModelOverrides
-	for _, e := range entries {
+	for _, e := range rows {
 		if e.Backend != "" {
 			o.SetBackend(e.Selector, e.Backend)
 		}
@@ -241,12 +254,12 @@ func toModelOverrides(entries []ModelOverrideEntry) model.ModelOverrides {
 	return o
 }
 
-// toRunModelOverrides converts the launch entries into the persisted,
-// display-only representation stamped on the run record (so the studio
-// Overview can show what a run was launched with). Distinct from
-// toModelOverrides, which builds the engine's live override set applied
-// to the executor.
-func toRunModelOverrides(entries []ModelOverrideEntry) []store.RunModelOverride {
+// RunModelOverrides converts the launch entries into the persisted
+// representation stamped on the run record (so the studio Overview can show
+// what a run was launched with) and, in cloud mode, published on the queue for
+// the runner pod. Distinct from ModelOverridesFromRun, which builds the
+// engine's live override set applied to the executor.
+func RunModelOverrides(entries []ModelOverrideEntry) []store.RunModelOverride {
 	if len(entries) == 0 {
 		return nil
 	}

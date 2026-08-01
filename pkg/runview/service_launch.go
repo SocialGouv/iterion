@@ -257,7 +257,7 @@ func (s *Service) startInProcess(parent context.Context, runID string, spec Laun
 		precreateInputs = nil
 	}
 	return s.spawnRun(parent, runID, wf, hash, spec.FilePath, runName, fin, cb, executor, runLogger, spec.Timeout, false,
-		spec.AttachmentPromote, spec.Preset, toRunModelOverrides(spec.ModelOverrides),
+		spec.AttachmentPromote, spec.Preset, RunModelOverrides(spec.ModelOverrides),
 		spec.ParentRunID,
 		precreateInputs,
 		launchExtras{workDir: spec.WorkDir, dailyCap: spec.DailyCap, source: spec.SourceRef, onOutcome: spec.OnOutcome, observers: spec.ExtraObservers},
