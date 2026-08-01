@@ -14,7 +14,7 @@ import {
 } from "@/api/runs";
 import type { FirstClassBot } from "@/lib/whats-next/firstClassBots";
 import type { WhatsNextMessage } from "@/lib/whats-next/messages";
-import { runStore, type PendingHumanInput } from "@/store/run";
+import { useRunStoreInstance, type PendingHumanInput } from "@/store/run";
 
 import {
   messagesFromEventsCached,
@@ -30,6 +30,12 @@ export function useSessionMessages(opts: {
   pendingHuman: PendingHumanInput | null;
 }): WhatsNextMessage[] {
   const { bot, runId, runStatus, events, snapshot, pendingHuman } = opts;
+  // The store this session lives in — the assistant's isolated one when
+  // mounted under AssistantProvider, the module default otherwise.
+  // Imperative reads MUST go through it: reaching for the module-default
+  // `runStore` façade here would split the session's state (reads via
+  // the provider, writes to another store).
+  const store = useRunStoreInstance();
 
   // Derive the transcript with an incremental fold. The cached folder
   // resumes from the last processed seq instead of replaying the whole
@@ -110,13 +116,13 @@ export function useSessionMessages(opts: {
     );
     if (hasPendingQuestion) return;
     pauseRefetchedForRef.current = runId;
-    const stored = runStore.getState().events;
+    const stored = store.getState().events;
     const tail = stored[stored.length - 1];
     const fromSeq = tail ? tail.seq + 1 : 0;
     loadEvents(runId, fromSeq)
       .then((evts) => {
-        if (runStore.getState().runId !== runId) return;
-        if (evts.length > 0) runStore.getState().applyEventsBatch(evts);
+        if (store.getState().runId !== runId) return;
+        if (evts.length > 0) store.getState().applyEventsBatch(evts);
       })
       .catch((err) => {
         // One shot per pause by design (loop guard); on failure the

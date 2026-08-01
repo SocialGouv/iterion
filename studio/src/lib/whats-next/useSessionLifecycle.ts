@@ -10,7 +10,7 @@ import { errorMessage as toMessage } from "@/lib/errorHints";
 import { createRun, getRunWithRetry } from "@/api/runs";
 import type { ForgeTeamRepo } from "@/api/forgeConnections";
 import type { FirstClassBot } from "@/lib/whats-next/firstClassBots";
-import { runStore, useRunStore } from "@/store/run";
+import { useRunStore, useRunStoreInstance } from "@/store/run";
 
 import type { WhatsNextStatus } from "./sessionStatus";
 import { forgetSessionRunId, rememberSessionRunId } from "./sessionStorage";
@@ -52,6 +52,12 @@ export function useSessionLifecycle(opts: {
   // into the composer after the run closed) reuses the same scope.
   const lastVarsRef = useRef<Record<string, string> | null>(null);
 
+  // The store this session lives in — the assistant's isolated one
+  // when mounted under AssistantProvider, the module default
+  // otherwise. Imperative reads MUST go through it: reaching for the
+  // module-default `runStore` façade here would split the session's
+  // state (reads via the provider, writes to another store).
+  const store = useRunStoreInstance();
   const applySnapshot = useRunStore((s) => s.applySnapshot);
   const reset = useRunStore((s) => s.reset);
   const loadEventHistoryIfMissing = useRunStore(
@@ -90,7 +96,7 @@ export function useSessionLifecycle(opts: {
         // Pin the store's runId early so loadEventHistoryIfMissing's
         // `state.runId !== runId` guard doesn't drop the fetched batch
         // after its await — same trick the auto-attach branch uses.
-        runStore.getState().setRunId(res.run_id);
+        store.getState().setRunId(res.run_id);
         setRunId(res.run_id);
         // Seed the store with the freshly-created run's snapshot AND
         // any events the runtime persisted between createRun and now.
@@ -139,7 +145,7 @@ export function useSessionLifecycle(opts: {
   // app restarts).
   const newSession = useCallback(() => {
     forgetSessionRunId(bot.id, scopeKey);
-    runStore.getState().reset();
+    store.getState().reset();
     setRunId(null);
     setBusyMessageId(null);
     setErrorMessage(null);
