@@ -583,3 +583,48 @@ func TestPipelineBoardRunCardCarriesItsDependents(t *testing.T) {
 		t.Errorf("Blocking title = %q, want the dependent's title", card.Blocking[0].Title)
 	}
 }
+
+// Retry must not lose the slot it was holding.
+//
+// Retry does not launch — it restages the ticket to Ready and the admission
+// tick starts it up to 2s later. Releasing the reservation at restage time
+// would open exactly the window the feature exists to close: another ready
+// ticket, or a FIFO waiter, takes the slot the operator just freed their fix
+// into. So a restaged ticket keeps holding, and its relaunch spends its own
+// reservation via LaunchSpec.PipelineTicketID.
+func TestPipelineBoardRestagedTicketKeepsItsSlot(t *testing.T) {
+	env := newPipelineBoardTestEnv(t)
+	issue, err := env.board.Create(native.Issue{Title: "Retried", State: native.StateInProgress, Bot: "review"})
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	env.seedRun(t, "retried-run", "review", store.RunStatusFailed, func(run *store.Run) {
+		run.FilePath = env.botPath
+		run.Error = "kaboom"
+	})
+	if err := env.board.SetLastRun(issue.ID, "retried-run", ""); err != nil {
+		t.Fatalf("SetLastRun: %v", err)
+	}
+
+	// Operator hits Retry → the ticket is restaged, the card moves to Opened.
+	if _, err := env.board.SetState(issue.ID, native.StateReady); err != nil {
+		t.Fatalf("SetState(ready): %v", err)
+	}
+	card := findPipelineCard(t, env.projection(t).Cards, "task:"+issue.ID)
+	if card.ColumnID != pipelineColumnOpened {
+		t.Fatalf("column = %q, want opened (restaged for relaunch)", card.ColumnID)
+	}
+	if !card.ReservesSlot {
+		t.Error("the restaged ticket dropped its slot before relaunching — another card can take it during the admission window")
+	}
+
+	// Parked on a dependency instead: it is not going to launch soon, so
+	// holding capacity for it would be an unbounded leak.
+	if _, err := env.board.SetState(issue.ID, native.StateWaitingDeps); err != nil {
+		t.Fatalf("SetState(waiting_deps): %v", err)
+	}
+	parked := findPipelineCard(t, env.projection(t).Cards, "task:"+issue.ID)
+	if parked.ReservesSlot {
+		t.Error("a ticket parked on deps held a slot it cannot use")
+	}
+}

@@ -19,7 +19,14 @@ export function QueueBanner({
   // outright: the operator is looking at a queue that will not move until
   // they retry or close something, and nothing else on screen explains why.
   const stalledByReservations =
-    s.slotsFree === 0 && (s.slotsReserved ?? 0) > 0 && s.readyCount > 0;
+    s.slotsFree === 0 &&
+    (s.slotsReserved ?? 0) > 0 &&
+    s.readyCount > 0 &&
+    // Only blame reservations when releasing one would actually expose a
+    // slot. A board saturated by LIVE runs also has slotsFree === 0, and
+    // telling the operator to close a needs-attention card there sends them
+    // to kill work for no gain.
+    (s.slotsMax ?? 0) - (s.slotsActive ?? 0) > 0;
 
   return (
     <div

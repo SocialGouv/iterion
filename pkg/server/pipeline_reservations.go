@@ -136,25 +136,8 @@ func (s *Server) pipelineReservedSetMemo(
 
 	set := map[string]struct{}{}
 	for _, issue := range issues {
-		if issue == nil || strings.TrimSpace(issue.Bot) == "" {
-			continue
-		}
-		if _, isTerminal := terminal[issue.State]; isTerminal {
-			continue
-		}
 		root := resolver.currentRunForIssue(issue)
-		if root == nil {
-			continue
-		}
-		if root.Status != store.RunStatusFailed && root.Status != store.RunStatusFailedResumable {
-			continue
-		}
-		// A ticket restaged for relaunch has already left the lane; its
-		// reservation is spent the moment the operator hits Retry.
-		if pipelineIssueRestagedForRelaunch(issue, root) {
-			continue
-		}
-		if pipelineRunInterrupted(root) {
+		if !pipelineTicketHoldsSlot(issue, root, terminal) {
 			continue
 		}
 		if pipelineTreeAwaitingHuman(issue, runIndex) {

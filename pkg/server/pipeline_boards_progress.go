@@ -295,16 +295,48 @@ func pipelineLaneForRoot(root *store.Run, issue *native.Issue, terminalStates ma
 			// The failure is acknowledged history, not open work.
 			return pipelineColumnClosed, false
 		}
-		// Ticket-backed failures reserve their slot so nothing takes the
-		// place they need to restart into — except failures WE caused (drain
-		// / orphan sweep), which are not anomalies the operator can fix.
-		// Without that exclusion every restart with N pipelines in flight
-		// reserves N slots, and under `task studio:dev` a restart is every
-		// .go save.
-		return pipelineColumnNeedsAttention, !pipelineRunInterrupted(root)
+		return pipelineColumnNeedsAttention, pipelineTicketHoldsSlot(issue, root, terminalStates)
 	default:
 		return pipelineColumnInProgress, false
 	}
+}
+
+// pipelineTicketHoldsSlot is the ONE definition of "this ticket is holding a
+// concurrency slot", shared by the card projection and the admission gate so
+// the badge the operator sees and the arithmetic that refuses launches can
+// never disagree.
+//
+// The restaged case is the subtle one. Retry does not launch: it restages the
+// ticket to Ready and the next admission tick starts it, up to two seconds
+// later. Releasing the reservation at restage time would open exactly the
+// window the feature exists to close — another ready ticket, or a FIFO
+// waiter, takes the slot the operator just freed their fix into. So a
+// restaged ticket KEEPS its slot, and its relaunch spends it through
+// LaunchSpec.PipelineTicketID.
+//
+// Only while STAGED, though: a Retry that parks in waiting_deps (a blocker
+// reopened) is not going to launch soon, and holding capacity for it would
+// be a leak with no bound.
+func pipelineTicketHoldsSlot(issue *native.Issue, root *store.Run, terminalStates map[string]struct{}) bool {
+	if issue == nil || root == nil || strings.TrimSpace(issue.Bot) == "" {
+		return false
+	}
+	if _, terminal := terminalStates[issue.State]; terminal {
+		return false
+	}
+	if root.Status != store.RunStatusFailed && root.Status != store.RunStatusFailedResumable {
+		return false
+	}
+	// Failures iterion caused itself (drain / boot orphan sweep) are not
+	// anomalies the operator can fix; reserving for them would wedge the
+	// board on every restart.
+	if pipelineRunInterrupted(root) {
+		return false
+	}
+	if pipelineIssueRestagedForRelaunch(issue, root) {
+		return issue.State == native.StateReady
+	}
+	return true
 }
 
 // pipelineRunInterrupted reports that a run's failure was caused by the

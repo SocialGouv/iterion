@@ -508,23 +508,28 @@ func (b *pipelineProjectionBuilder) addTaskCard(issue *native.Issue, prior *stor
 		entry = cloneAnyMap(prior.Inputs)
 	}
 	card := PipelineBoardCard{
-		ID:         "task:" + issue.ID,
-		Kind:       "task",
-		ColumnID:   column,
-		Title:      pipelineDisplayTitle(issue, prior),
-		Body:       issue.Body,
-		IssueID:    issue.ID,
-		IssueState: issue.State,
-		Ready:      ready,
-		Labels:     append([]string(nil), issue.Labels...),
-		Priority:   issue.Priority,
-		External:   issue.External,
-		BotID:      issue.Bot,
-		Role:       pipelineIssueRole(issue),
-		EntryInput: entry,
-		CreatedAt:  issue.CreatedAt,
-		UpdatedAt:  issue.UpdatedAt,
-		Attempts:   b.attemptsForIssue(issue, prior),
+		ID:   "task:" + issue.ID,
+		Kind: "task",
+		// A ticket restaged by Retry keeps its slot until the admission tick
+		// actually relaunches it, so the badge has to follow it out of the
+		// needs-attention lane and into Opened. A held slot with no visible
+		// holder is the worst failure this feature can have.
+		ReservesSlot: pipelineTicketHoldsSlot(issue, prior, b.terminalStates),
+		ColumnID:     column,
+		Title:        pipelineDisplayTitle(issue, prior),
+		Body:         issue.Body,
+		IssueID:      issue.ID,
+		IssueState:   issue.State,
+		Ready:        ready,
+		Labels:       append([]string(nil), issue.Labels...),
+		Priority:     issue.Priority,
+		External:     issue.External,
+		BotID:        issue.Bot,
+		Role:         pipelineIssueRole(issue),
+		EntryInput:   entry,
+		CreatedAt:    issue.CreatedAt,
+		UpdatedAt:    issue.UpdatedAt,
+		Attempts:     b.attemptsForIssue(issue, prior),
 	}
 	b.attachDeps(&card, issue)
 	b.cards = append(b.cards, card)

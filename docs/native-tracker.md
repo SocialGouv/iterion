@@ -307,8 +307,8 @@ done would release every ticket parked behind it into work whose input was
 never produced. The confirm dialog names the dependents that will stay
 waiting. Close is also the **release valve** for a held slot — without it a
 failure the operator does not intend to fix would hold capacity forever.
-Run-only cards (no ticket) close through `POST
-/api/v1/pipeline-board/runs/{id}/close`, which just cancels the run.
+Close is ticket-scoped only: a run-only card has no state to file, reserves
+nothing, and is already projected into Closed — use **Stop** for those.
 
 **Slot reservation.** The reserved count is *derived* from (ticket state ×
 run status) on demand — no persisted field, nothing to rebuild after a

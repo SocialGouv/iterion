@@ -78,7 +78,17 @@ func (s *Service) CancelInactiveCtx(ctx context.Context, runID string) (bool, er
 	if err != nil {
 		return false, fmt.Errorf("load run: %w", err)
 	}
+	if r.Status == store.RunStatusQueued {
+		// A queued root has no engine to signal — Cancel and the dispatcher
+		// both miss it — so dropping it out of the FIFO is what actually
+		// stops it. Do that BEFORE the status write so the scheduler cannot
+		// dequeue it in between; startQueuedRun re-checks the status anyway.
+		s.pipelineQueue.dropQueued(runID)
+	}
 	switch r.Status {
+	case store.RunStatusQueued:
+		// Never started, so there is no checkpoint to lose and no partial
+		// work to strand — `cancelled` is exactly what happened.
 	case store.RunStatusPausedWaitingHuman, store.RunStatusFailedResumable, store.RunStatusPausedOperator:
 		// flippable — paused_operator included so an orphaned operator-paused
 		// run can still be cancelled after a daemon restart

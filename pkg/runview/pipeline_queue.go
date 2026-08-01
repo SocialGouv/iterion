@@ -187,6 +187,18 @@ func (q *pipelineQueue) dequeueReady() []queuedItem {
 	if q == nil {
 		return nil
 	}
+	// Cheap empty check FIRST. The provider lists the board and reads every
+	// run doc, its memo TTL is shorter than the scheduler's 5s backstop tick
+	// (so it is always cold), and this fires on every slotFreed as well —
+	// computing it with an empty queue meant an idle studio re-read its whole
+	// run store every 5 seconds forever. Same guard, same reason, as the one
+	// in admitReadyPipelines.
+	q.mu.Lock()
+	empty := len(q.fifo) == 0
+	q.mu.Unlock()
+	if empty {
+		return nil
+	}
 	set := q.reservedSet() // outside mu (see reservedSet)
 	q.mu.Lock()
 	defer q.mu.Unlock()
@@ -203,6 +215,25 @@ func (q *pipelineQueue) dequeueReady() []queuedItem {
 		out = append(out, head)
 	}
 	return out
+}
+
+// dropQueued removes a still-waiting root from the FIFO, reporting whether
+// it was there. A queued run has no engine to signal, so this is the only
+// way to stop one: without it, Close (and Delete) on a ticket parked in the
+// queue 409s forever and the card has no exit at all.
+func (q *pipelineQueue) dropQueued(runID string) bool {
+	if q == nil {
+		return false
+	}
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	for i, it := range q.fifo {
+		if it.runID == runID {
+			q.fifo = append(q.fifo[:i], q.fifo[i+1:]...)
+			return true
+		}
+	}
+	return false
 }
 
 // slotFreed releases a root's slot (called when its run goroutine exits)
