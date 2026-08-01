@@ -12,7 +12,7 @@
 
 import { useEffect, useState } from "react";
 
-import { modelCapabilityWarning } from "@/api/models";
+import { backendForModel, modelCapabilityWarning } from "@/api/models";
 import ModelPicker from "@/components/models/ModelPicker";
 import { Select } from "@/components/ui/Select";
 import { useModelCatalog } from "@/hooks/useModelCatalog";
@@ -52,7 +52,12 @@ export default function SessionModelControl({
   useEffect(() => setDraft(pref.choice), [pref.choice]);
 
   // The registry is only needed once the operator goes looking.
-  const { models, recommended, error: catalogError } = useModelCatalog({
+  const {
+    models,
+    recommended,
+    resolvedDefaultBackend,
+    error: catalogError,
+  } = useModelCatalog({
     // The stored choice may be a spec outside the curated set; ask for it so
     // it resolves to a real row rather than an orphan option.
     extraSpecs: draft.model ? [draft.model] : undefined,
@@ -97,7 +102,24 @@ export default function SessionModelControl({
 
           <ModelPicker
             value={draft.model ?? ""}
-            onChange={(spec) => setDraft((d) => ({ ...d, model: spec }))}
+            onChange={(spec) =>
+              setDraft((d) => ({
+                ...d,
+                model: spec,
+                // Carry the backend that can DRIVE the chosen spec. This
+                // surface has no backend control on purpose — the operator is
+                // choosing a model, not an execution stack — but the bot pins
+                // `backend: "claude_code"`, so selecting an OpenAI spec
+                // without this produced a session that died at its first node
+                // with a message about the backend, not about the choice.
+                backend: spec
+                  ? backendForModel(
+                      models.find((m) => m.spec === spec),
+                      resolvedDefaultBackend,
+                    )
+                  : "",
+              }))
+            }
             models={models}
             recommended={recommended}
             inheritLabel="bot default"

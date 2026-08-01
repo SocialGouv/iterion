@@ -122,3 +122,62 @@ func TestNodeModelOverride_EmptyCountsEffort(t *testing.T) {
 		t.Error("an effort-only override is not empty")
 	}
 }
+
+// MergeOver is what lets a resume keep the model the run was LAUNCHED with
+// while still honouring a flag typed for this attempt. The failure it guards
+// against is wholesale replacement: `--effort-for '*=high'` on a resume must
+// not silently discard the launch's model, and inheriting must not lock the
+// operator out of re-targeting.
+func TestMergeOver_FlagsWinPerFieldAndInheritTheRest(t *testing.T) {
+	// What the run was launched with (persisted rows).
+	var launched ModelOverrides
+	launched.SetModel("*", "openai/gpt-5.5")
+	launched.SetBackend("*", "claw")
+	launched.SetEffort("*", "low")
+
+	// What the operator typed for THIS resume: effort only.
+	var flags ModelOverrides
+	flags.SetEffort("*", "high")
+
+	got := flags.MergeOver(launched).ForNode("chat", ir.NodeAgent)
+	if got.Effort != "high" {
+		t.Errorf("Effort = %q, want the flag to win", got.Effort)
+	}
+	if got.Model != "openai/gpt-5.5" || got.Backend != "claw" {
+		t.Errorf("model/backend = %q/%q, want the launch's values inherited", got.Model, got.Backend)
+	}
+}
+
+func TestMergeOver_EmptySidesAreIdentity(t *testing.T) {
+	var launched ModelOverrides
+	launched.SetModel("*", "anthropic/claude-opus-5")
+
+	if got := (ModelOverrides{}).MergeOver(launched).ForNode("n", ir.NodeAgent); got.Model != "anthropic/claude-opus-5" {
+		t.Errorf("no flags: Model = %q, want the launch's value", got.Model)
+	}
+	if got := launched.MergeOver(ModelOverrides{}).ForNode("n", ir.NodeAgent); got.Model != "anthropic/claude-opus-5" {
+		t.Errorf("no base: Model = %q, want the flag's value", got.Model)
+	}
+	if !(ModelOverrides{}).MergeOver(ModelOverrides{}).Empty() {
+		t.Error("merging two empty sets must stay empty")
+	}
+}
+
+// A more specific flag must still beat a broader inherited rule, and a
+// broader flag must NOT beat a more specific inherited one — merging changes
+// insertion order, never the specificity ranking ForNode resolves on.
+func TestMergeOver_PreservesSelectorSpecificity(t *testing.T) {
+	var launched ModelOverrides
+	launched.SetModel("chat", "anthropic/claude-opus-5")
+
+	var flags ModelOverrides
+	flags.SetModel("*", "openai/gpt-5.5")
+
+	merged := flags.MergeOver(launched)
+	if got := merged.ForNode("chat", ir.NodeAgent); got.Model != "anthropic/claude-opus-5" {
+		t.Errorf("chat Model = %q, want the more specific inherited rule to hold", got.Model)
+	}
+	if got := merged.ForNode("other", ir.NodeAgent); got.Model != "openai/gpt-5.5" {
+		t.Errorf("other Model = %q, want the broad flag", got.Model)
+	}
+}

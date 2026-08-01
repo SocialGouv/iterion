@@ -121,6 +121,27 @@ export function formatModelPrice(m: ModelEntry): string {
   return `$${n(m.input_cost_per_m)} / $${n(m.output_cost_per_m)} per Mtok`;
 }
 
+// backendForModel names the backend that can actually DRIVE a spec, or "" when
+// the caller should leave the node's own `backend:` alone.
+//
+// Choosing a model is not a free choice of one field: a node pinned to
+// `backend: "claude_code"` cannot run an OpenAI spec, and re-targeting only
+// the model leaves a run that dies at its first node. The registry already
+// says which backends reach a spec on this host, so a surface that offers a
+// model must send the backend with it.
+//
+// `preferred` (typically the host's resolved default) wins when it is one of
+// them, so the answer stays the least surprising of the valid ones.
+export function backendForModel(
+  m: ModelEntry | undefined,
+  preferred?: string,
+): string {
+  const list = (m?.backends ?? []).filter(Boolean);
+  if (list.length === 0) return "";
+  if (preferred && list.includes(preferred)) return preferred;
+  return list[0] ?? "";
+}
+
 // modelCapabilityWarning names the reason a model is a bad fit for an agent
 // node, or null when there is none. Ordered by severity: unreachable and
 // tool-less are hard breakages, ultracode is a silent downgrade.

@@ -83,12 +83,28 @@ func TestGetModels_DedupesAndSplitsSpecs(t *testing.T) {
 	}
 }
 
-func TestGetModels_MalformedSpecIsA400(t *testing.T) {
+// One malformed hint must not blank out the picker. LaunchView asks about
+// every LLM node's DSL default in a single call, and a bot in this very repo
+// pins a bare `model: "claude-opus-5"` — under a fail-whole contract that one
+// bot made the registry unusable for every OTHER model the host can reach.
+// The bad spec is skipped and REPORTED; the catalog still answers.
+func TestGetModels_MalformedSpecDegradesInsteadOfBlankingTheCatalog(t *testing.T) {
 	srv, _ := newTestServer(t)
 
-	rec, _ := getModels(t, srv, "?spec=no-provider-prefix")
-	if rec.Code != http.StatusBadRequest {
-		t.Fatalf("status = %d, want 400: %s", rec.Code, rec.Body.String())
+	_, base := getModels(t, srv, "")
+	rec, cat := getModels(t, srv, "?spec=no-provider-prefix&spec=somevendor/one")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200: %s", rec.Code, rec.Body.String())
+	}
+	// The valid hint still lands; the malformed one costs only itself.
+	if len(cat.Models) != len(base.Models)+1 {
+		t.Fatalf("got %d models, want %d: %v", len(cat.Models), len(base.Models)+1, cat.SortedSpecs())
+	}
+	if len(cat.InvalidSpecs) != 1 || cat.InvalidSpecs[0].Spec != "no-provider-prefix" {
+		t.Fatalf("invalid_specs = %+v, want exactly the malformed hint", cat.InvalidSpecs)
+	}
+	if cat.InvalidSpecs[0].Reason == "" {
+		t.Fatal("a skipped spec must say why, or the caller cannot fix it")
 	}
 }
 

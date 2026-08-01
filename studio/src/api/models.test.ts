@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import {
+  backendForModel,
   formatContextWindow,
   formatModelPrice,
   modelCapabilityWarning,
@@ -111,5 +112,34 @@ describe("modelCapabilityWarning", () => {
 
   it("has nothing to say about a model it has no entry for", () => {
     expect(modelCapabilityWarning(undefined)).toBeNull();
+  });
+});
+
+// Choosing a model is not a free choice of one field. The assistant's bot pins
+// `backend: "claude_code"`, so a surface that offers an OpenAI spec without
+// also naming a backend that can drive it hands the operator a session that
+// dies at its first node — reported as a backend error, never as "the model
+// you picked cannot run here".
+describe("backendForModel", () => {
+  it("names a backend that can drive the spec", () => {
+    expect(backendForModel(entry({ backends: ["claw"] }))).toBe("claw");
+  });
+
+  it("prefers the host default when it is one of the valid ones", () => {
+    expect(
+      backendForModel(entry({ backends: ["claude_code", "claw"] }), "claw"),
+    ).toBe("claw");
+  });
+
+  it("ignores a preferred backend that cannot drive the spec", () => {
+    expect(backendForModel(entry({ backends: ["claw"] }), "claude_code")).toBe(
+      "claw",
+    );
+  });
+
+  it("stays empty when nothing can drive it, so the node keeps its own backend", () => {
+    expect(backendForModel(entry({ backends: [] }))).toBe("");
+    expect(backendForModel(entry({ backends: null }))).toBe("");
+    expect(backendForModel(undefined)).toBe("");
   });
 });

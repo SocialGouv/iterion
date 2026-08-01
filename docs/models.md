@@ -17,10 +17,22 @@ A model entry crosses four sources that already existed separately:
 
 | source | answers |
 |---|---|
-| `model.KnownModelSpecs` + the models.dev aggregator | what iterion knows about |
+| `model.KnownModelSpecs` | which specs the catalog ENUMERATES (curated list) |
+| the models.dev aggregator | fresher capabilities/prices for those specs |
 | [`pkg/backend/detect`](../pkg/backend/detect/detect.go) | what THIS host holds credentials for |
 | `llmtypes.ModelCapabilities` | context window, tool-calling, reasoning, temperature |
 | [`pkg/backend/cost`](../pkg/backend/cost/cost.go) `EffectiveRate` | what a run is actually charged |
+
+**The enumerated set is the curated one.** The aggregator enriches specs the
+catalog already names; it does not widen the list. `detect` probes more
+providers than `KnownModelSpecs` covers (xai, foundry, bedrock, vertex have no
+curated rows), so on a host holding only one of those the registry answers
+"nothing usable" while the CLI would happily run the provider's models. Ask
+about one explicitly — `?spec=xai/grok-4` on the endpoint, `iterion models
+xai/grok-4`, or the picker's **Custom…** entry — and it resolves normally.
+Widening `KnownModelSpecs` (or enumerating the aggregator) is the fix; until
+then this is the registry's known blind spot, not a claim that the model is
+unreachable.
 
 [`pkg/modelcatalog`](../pkg/modelcatalog/catalog.go) is the crossing, and is
 the single code path behind both the CLI and the HTTP endpoint — the two
@@ -130,6 +142,26 @@ It now carries a model picker in two places:
 
 The choice is remembered per user (and per team in cloud) and re-applied to
 every later session, so it survives the session rather than being re-made.
+
+**A run keeps its model for its whole life, not just its first node.** This is
+worth stating because it is the part that is easy to get wrong and impossible
+to notice: a conversational run pauses on its chat node, so **every operator
+reply is a resume** — and a resume carries no launch spec. The overrides are
+read back off the run document (`run.model_overrides`) on all three resume
+paths: in-process ([`Service.resumeExecutorSpec`](../pkg/runview/service_launch.go)),
+the CLI (`iterion resume`, which the detached studio path shells out to), and
+cloud (`SubmitResume` republishes them on the queue for the runner pod).
+
+On the CLI, `--model-for` / `--backend-for` / `--effort-for` given to `resume`
+layer **on top** of what the run was launched with, per field — so
+`--effort-for '*=high'` re-targets the effort without discarding the model.
+
+The picker also sends the **backend that can drive the chosen model**. The
+assistant surface deliberately has no backend control (you are choosing a
+model, not an execution stack), but the bot pins `backend: "claude_code"`, so
+selecting an OpenAI spec without a matching backend produced a session that
+died at its first node with an error about the backend rather than about the
+choice.
 
 ```
 GET    /api/v1/preferences/model?key=<scope>

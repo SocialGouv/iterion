@@ -790,6 +790,13 @@ func (p *Publisher) SubmitResume(ctx context.Context, spec runview.ResumeSpec, w
 			Answers: spec.Answers,
 			Force:   spec.Force,
 		},
+		// Republish the model choice the run was launched with. The rows
+		// live on the prior doc; a resume that omits them hands the pod a
+		// message with no overrides, and pkg/runner/loop.go then builds an
+		// executor off the .bot's own model — so in cloud the operator's
+		// choice would expire on the first resume (i.e. the second turn of
+		// any conversational run), invisibly.
+		ModelOverrides: modelOverridesForWire(prior.ModelOverrides),
 		SecretsRef:     secretsRef,
 		BackendConfig:  queue.BackendConfig{Default: queue.BackendClaw},
 		PublishedAtRFC: time.Now().UTC().Format(time.RFC3339Nano),

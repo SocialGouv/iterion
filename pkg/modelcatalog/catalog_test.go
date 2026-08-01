@@ -59,12 +59,35 @@ func TestBuildListsKnownSpecsByDefault(t *testing.T) {
 	}
 }
 
-func TestBuildRejectsMalformedSpec(t *testing.T) {
+// A REQUESTED spec is the caller's own question — `iterion models not-a-spec`
+// should say so rather than silently answer about something else.
+func TestBuildRejectsMalformedRequestedSpec(t *testing.T) {
 	if _, err := Build(context.Background(), Options{
 		Specs:  []string{"not-a-spec"},
 		Report: bareHost(),
 	}); err == nil {
 		t.Fatal("expected an error on a spec with no provider prefix")
+	}
+}
+
+// An EXTRA spec is a hint harvested from elsewhere (a bot's DSL default). The
+// caller did not type it and cannot be blamed for it, and the picker collects
+// them across every node — so one bad hint must cost only itself, not the
+// entire answer. The skip is reported, never silent.
+func TestBuildSkipsMalformedExtraSpecAndKeepsAnswering(t *testing.T) {
+	cat := build(t, Options{
+		Specs:      []string{"anthropic/claude-opus-5"},
+		ExtraSpecs: []string{"not-a-spec", "somevendor/one"},
+		Report:     bareHost(),
+	})
+	if len(cat.Models) != 2 {
+		t.Fatalf("models = %v, want the requested spec plus the valid hint", cat.SortedSpecs())
+	}
+	if len(cat.InvalidSpecs) != 1 || cat.InvalidSpecs[0].Spec != "not-a-spec" {
+		t.Fatalf("invalid_specs = %+v, want exactly the malformed hint", cat.InvalidSpecs)
+	}
+	if !strings.Contains(cat.InvalidSpecs[0].Reason, "not-a-spec") {
+		t.Fatalf("reason %q must name the spec it rejected", cat.InvalidSpecs[0].Reason)
 	}
 }
 

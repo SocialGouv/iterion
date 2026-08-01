@@ -101,6 +101,17 @@ type Catalog struct {
 	// refresh is never fatal: the cached/curated values still answer.
 	Refreshed    bool   `json:"refreshed,omitempty"`
 	RefreshError string `json:"refresh_error,omitempty"`
+	// InvalidSpecs lists ExtraSpecs that could not be resolved, with the
+	// reason. They are SKIPPED rather than fatal: a picker asks about every
+	// node's DSL default at once, and one bot pinning a malformed `model:`
+	// must not blank out the whole catalog for every other model on the host.
+	InvalidSpecs []InvalidSpec `json:"invalid_specs,omitempty"`
+}
+
+// InvalidSpec is one caller-supplied hint the catalog could not resolve.
+type InvalidSpec struct {
+	Spec   string `json:"spec"`
+	Reason string `json:"reason"`
 }
 
 // Options configures Build.
@@ -143,22 +154,46 @@ func Build(ctx context.Context, opts Options) (Catalog, error) {
 	cat.ResolvedDefaultBackend = report.ResolvedDefault
 	cat.Backends = report.Backends
 
-	specs := opts.Specs
-	if len(specs) == 0 {
-		specs = model.KnownModelSpecs()
+	// A requested spec is the caller's own question ("tell me about THIS
+	// one") and a malformed one is a user error worth raising. An extra spec
+	// is a HINT harvested from elsewhere — a bot's DSL default, which the
+	// picker collects across every node — so one bad hint degrades to a
+	// reported skip instead of erasing the answer for every valid model.
+	requested := opts.Specs
+	if len(requested) == 0 {
+		requested = model.KnownModelSpecs()
 	}
-	specs = append(append([]string{}, specs...), opts.ExtraSpecs...)
+	specs := make([]struct {
+		spec     string
+		optional bool
+	}, 0, len(requested)+len(opts.ExtraSpecs))
+	for _, s := range requested {
+		specs = append(specs, struct {
+			spec     string
+			optional bool
+		}{s, false})
+	}
+	for _, s := range opts.ExtraSpecs {
+		specs = append(specs, struct {
+			spec     string
+			optional bool
+		}{s, true})
+	}
 	recommended := recommendedSpec(*report)
 
 	seen := make(map[string]bool, len(specs))
-	for _, spec := range specs {
-		spec = strings.TrimSpace(spec)
+	for _, entry := range specs {
+		spec := strings.TrimSpace(entry.spec)
 		if spec == "" || seen[spec] {
 			continue
 		}
 		seen[spec] = true
 		rc, err := model.ResolveSpec(spec)
 		if err != nil {
+			if entry.optional {
+				cat.InvalidSpecs = append(cat.InvalidSpecs, InvalidSpec{Spec: spec, Reason: err.Error()})
+				continue
+			}
 			return Catalog{}, err
 		}
 		e := Entry{

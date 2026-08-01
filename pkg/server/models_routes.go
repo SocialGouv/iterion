@@ -52,7 +52,12 @@ func (s *Server) handleModels(w http.ResponseWriter, r *http.Request) {
 		Report:     &report,
 	})
 	if err != nil {
-		// The only error Build raises is a malformed caller-supplied spec.
+		// Defensive: the handler only ever passes ExtraSpecs, which Build
+		// degrades into cat.InvalidSpecs rather than raising. A malformed
+		// ?spec= must not 400 the whole registry — LaunchView asks about
+		// every node's DSL default at once, so one bot pinning a bad
+		// `model:` would otherwise render an empty picker for every model
+		// on the host.
 		s.httpErrorFor(w, r, http.StatusBadRequest, "%v", err)
 		return
 	}

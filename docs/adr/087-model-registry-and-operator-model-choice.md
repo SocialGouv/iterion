@@ -43,7 +43,7 @@ A model entry is the crossing of four sources that already existed separately:
 
 | source | answers |
 |---|---|
-| `model.KnownModelSpecs` / the spec aggregator | what iterion knows about |
+| `model.KnownModelSpecs` | which specs are ENUMERATED (curated; the aggregator enriches them, it does not widen the set — see `docs/models.md`) |
 | `detect.Report` | what THIS host holds credentials for |
 | `llmtypes.ModelCapabilities` | context window, tool-calling, reasoning |
 | `cost.EffectiveRate` | what a run is actually charged |

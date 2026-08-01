@@ -81,6 +81,28 @@ func (o *ModelOverrides) SetEffort(selector, effort string) {
 	o.add(selector, NodeModelOverride{Effort: effort})
 }
 
+// MergeOver layers o's rules ON TOP of base and returns the result, so a
+// directive in o wins any tie with an equally-specific rule in base while
+// still inheriting the fields base sets and o leaves blank.
+//
+// This is what lets a resume keep the model the run was launched with while
+// still honouring a flag the operator typed for this attempt: pass the run's
+// persisted rows as base and the freshly parsed flags as o. Resolution is
+// per-field (see ForNode), so `--effort-for '*=high'` alone re-targets the
+// effort without discarding the launch's model.
+func (o ModelOverrides) MergeOver(base ModelOverrides) ModelOverrides {
+	if len(o.rules) == 0 {
+		return base
+	}
+	if len(base.rules) == 0 {
+		return o
+	}
+	merged := ModelOverrides{rules: make([]modelOverrideRule, 0, len(base.rules)+len(o.rules))}
+	merged.rules = append(merged.rules, base.rules...)
+	merged.rules = append(merged.rules, o.rules...)
+	return merged
+}
+
 func (o *ModelOverrides) add(selector string, ov NodeModelOverride) {
 	selector = strings.TrimSpace(selector)
 	if selector == "" || ov.Empty() {

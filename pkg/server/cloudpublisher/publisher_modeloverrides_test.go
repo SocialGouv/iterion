@@ -107,3 +107,102 @@ func TestSubmitLaunchWithoutModelOverridesStaysNil(t *testing.T) {
 		t.Errorf("msg.ModelOverrides = %+v, want nil", published.ModelOverrides)
 	}
 }
+
+// TestSubmitResumeReplaysTheLaunchedModelOverrides pins the half the launch
+// fix left open. In cloud a resume republishes a fresh RunMessage, and the
+// runner builds its executor from THAT message — so a resume that omits the
+// overrides hands the pod nothing and it silently falls back to the .bot's
+// own model:.
+//
+// That is the common path, not a corner: a conversational run pauses on its
+// chat node and every operator reply is a resume. Without this the chosen
+// model held for exactly one turn while the studio header kept displaying it.
+func TestSubmitResumeReplaysTheLaunchedModelOverrides(t *testing.T) {
+	st, err := store.New(t.TempDir())
+	if err != nil {
+		t.Fatalf("store.New: %v", err)
+	}
+	ctx := store.WithIdentity(context.Background(), "team-a", "u1")
+	var published *queue.RunMessage
+	p := &Publisher{
+		store: st,
+		publishRun: func(_ context.Context, m *queue.RunMessage) error {
+			published = m
+			return nil
+		},
+	}
+	wf := &ir.Workflow{Name: "wf"}
+	src := "workflow wf:\n  start -> done\n"
+
+	// Launch with a choice, then resume the way a chat turn does.
+	launch := runview.LaunchSpec{
+		FilePath: "wf.bot",
+		Source:   src,
+		ModelOverrides: []runview.ModelOverrideEntry{
+			{Selector: "*", Model: "openai/gpt-5.5", Backend: "claw", Effort: "high"},
+		},
+	}
+	if _, err := p.SubmitLaunch(ctx, "run-1", launch, wf, "hash"); err != nil {
+		t.Fatalf("SubmitLaunch: %v", err)
+	}
+	if err := st.UpdateRunStatus(ctx, "run-1", store.RunStatusPausedWaitingHuman, ""); err != nil {
+		t.Fatalf("pause: %v", err)
+	}
+	published = nil
+
+	if err := p.SubmitResume(ctx, runview.ResumeSpec{
+		RunID:    "run-1",
+		FilePath: "wf.bot",
+		Source:   src,
+		Answers:  map[string]any{"chat": "and then?"},
+	}, wf, "hash"); err != nil {
+		t.Fatalf("SubmitResume: %v", err)
+	}
+
+	if published == nil {
+		t.Fatal("no RunMessage published on resume")
+	}
+	if len(published.ModelOverrides) != 1 {
+		t.Fatalf("resume msg.ModelOverrides len = %d, want 1 — the pod would silently run the DSL default", len(published.ModelOverrides))
+	}
+	got := published.ModelOverrides[0]
+	if got.Selector != "*" || got.Model != "openai/gpt-5.5" || got.Backend != "claw" || got.Effort != "high" {
+		t.Errorf("resume msg.ModelOverrides[0] = %+v, want the launch's choice replayed verbatim", got)
+	}
+}
+
+// A run launched without a choice must resume without one, so the runner's
+// "nil means inherit the DSL" path keeps its meaning across a resume too.
+func TestSubmitResumeWithoutModelOverridesStaysNil(t *testing.T) {
+	st, err := store.New(t.TempDir())
+	if err != nil {
+		t.Fatalf("store.New: %v", err)
+	}
+	ctx := store.WithIdentity(context.Background(), "team-a", "u1")
+	var published *queue.RunMessage
+	p := &Publisher{
+		store: st,
+		publishRun: func(_ context.Context, m *queue.RunMessage) error {
+			published = m
+			return nil
+		},
+	}
+	wf := &ir.Workflow{Name: "wf"}
+	src := "workflow wf:\n  start -> done\n"
+	if _, err := p.SubmitLaunch(ctx, "run-2", runview.LaunchSpec{FilePath: "wf.bot", Source: src}, wf, "hash"); err != nil {
+		t.Fatalf("SubmitLaunch: %v", err)
+	}
+	if err := st.UpdateRunStatus(ctx, "run-2", store.RunStatusFailedResumable, "boom"); err != nil {
+		t.Fatalf("fail: %v", err)
+	}
+	published = nil
+	if err := p.SubmitResume(ctx, runview.ResumeSpec{RunID: "run-2", FilePath: "wf.bot", Source: src}, wf, "hash"); err != nil {
+		t.Fatalf("SubmitResume: %v", err)
+	}
+	if published == nil {
+		t.Fatal("no RunMessage published on resume")
+	}
+	if published.ModelOverrides != nil {
+		t.Errorf("resume msg.ModelOverrides = %+v, want nil", published.ModelOverrides)
+	}
+}
