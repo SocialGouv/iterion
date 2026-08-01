@@ -7,6 +7,7 @@ import ContextualHeaderBar from "./ContextualHeaderBar";
 import MainSpinner from "./MainSpinner";
 import { useAssistantDock } from "@/components/ChatDock/AssistantProvider";
 import { DOCKED_WIDTH_PX } from "@/components/ChatDock/ChatDockShell";
+import { isAssistantOwnRoute } from "@/lib/chatDock/routeReference";
 import { useUIStore } from "@/store/ui";
 
 interface AppShellProps {
@@ -31,9 +32,13 @@ export default function AppShell({ children }: AppShellProps) {
   // width so it pushes the page aside instead of covering it. Reads the
   // DOCK context only — the session context changes on every websocket
   // event and would re-render the whole route subtree.
+  // The same suppression rule the dock applies on its own route, or the
+  // reservation would leave an empty gap there.
   const assistantDock = useAssistantDock();
   const dockedWidth =
-    assistantDock?.dock === "docked-right" ? DOCKED_WIDTH_PX : 0;
+    assistantDock?.dock === "docked-right" && !isAssistantOwnRoute(location)
+      ? DOCKED_WIDTH_PX
+      : 0;
   // Key the content wrapper by the top-level view segment (not the full
   // path) so switching views (/runs → /board) plays a gentle opacity
   // fade, while intra-view URL churn (run id, selected node, ?file=)

@@ -127,6 +127,17 @@ const ROUTE_RULES: readonly RouteRule[] = [
   { path: "/admin/*", build: ref("view", "admin", "Admin") },
 ];
 
+// The route that renders the assistant full-width. The dock stands down
+// there: two composers over one session on the same screen is the exact
+// ambiguity this feature is supposed to remove, and the draft is shared
+// (both write the same run store's chatDraft), so the second one would
+// also be an echo.
+export const ASSISTANT_ROUTE = "/whats-next";
+
+export function isAssistantOwnRoute(path: string): boolean {
+  return path === ASSISTANT_ROUTE;
+}
+
 // matchPath returns the captured params, or null when the pattern
 // doesn't apply. Segment-wise so "/board" never matches "/board/labels".
 export function matchPath(

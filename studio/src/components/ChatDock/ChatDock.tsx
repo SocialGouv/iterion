@@ -13,6 +13,7 @@
 // carried as a one-line pointer on every message.
 
 import { useCallback, useEffect, useRef } from "react";
+import { useLocation } from "wouter";
 
 import {
   AssistantStoreScope,
@@ -28,6 +29,7 @@ import { composerPlaceholder } from "@/components/WhatsNext/whatsNextView/compos
 import { withPageContext } from "@/lib/chatDock/contextMessage";
 import type { DockState } from "@/lib/chatDock/dockState";
 import { ASSISTANT_HINT, ASSISTANT_LANE, ASSISTANT_TITLE } from "@/lib/chatDock/labels";
+import { isAssistantOwnRoute } from "@/lib/chatDock/routeReference";
 import { useRouteReference } from "@/lib/chatDock/useRouteReference";
 import { ASK_USER_RESPONSE_KEY } from "@/lib/askUserOptions";
 import type { FirstClassBot } from "@/lib/whats-next/firstClassBots";
@@ -37,7 +39,11 @@ import type { UseWhatsNextSession } from "@/lib/whats-next/useWhatsNextSession";
 export default function ChatDock() {
   const dockCtx = useAssistantDock();
   const sessionCtx = useAssistantSession();
+  const [location] = useLocation();
   if (!dockCtx || !sessionCtx?.bot) return null;
+  // /whats-next renders this same session full-width — the dock would be
+  // a second composer over one conversation.
+  if (isAssistantOwnRoute(location)) return null;
   return (
     // The transcript and composer read the run store; re-enter the
     // assistant's isolated one (the app around us sees the default).

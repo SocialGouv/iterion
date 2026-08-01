@@ -1,6 +1,21 @@
 import { describe, expect, it } from "vitest";
 
-import { matchPath, referenceForRoute } from "./routeReference";
+import {
+  isAssistantOwnRoute,
+  matchPath,
+  referenceForRoute,
+} from "./routeReference";
+
+describe("isAssistantOwnRoute", () => {
+  // The dock stands down where the full-width view already renders the
+  // same session — two composers over one conversation is the ambiguity
+  // this feature removes, not one it should add.
+  it("is true only for the assistant's full-width route", () => {
+    expect(isAssistantOwnRoute("/whats-next")).toBe(true);
+    expect(isAssistantOwnRoute("/board")).toBe(false);
+    expect(isAssistantOwnRoute("/whats-next/extra")).toBe(false);
+  });
+});
 
 describe("matchPath", () => {
   it("matches segment-wise, not by prefix", () => {
