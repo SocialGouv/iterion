@@ -79,4 +79,30 @@ describe("useUnreadWhileClosed", () => {
     rerender({ count: 40 });
     expect(result.current).toBe(0);
   });
+
+  // Switching project/repo scope makes useWhatsNextSession drop the run
+  // and reset the store, so the transcript goes N → 0. Measuring the new
+  // conversation against the old one's length would hold the badge at 0
+  // until it grew past it.
+  it("re-baselines when the session is replaced under it", () => {
+    const { result, rerender } = renderHook(
+      ({ count }) => useUnreadWhileClosed("closed", count),
+      { initialProps: { count: 0 } },
+    );
+    rerender({ count: 12 });
+    expect(result.current).toBe(0);
+
+    // Scope switch: the store resets.
+    rerender({ count: 0 });
+    expect(result.current).toBe(0);
+
+    // The new scope's own restore is a restore, not arrival — same rule
+    // as a cold mount.
+    rerender({ count: 3 });
+    expect(result.current).toBe(0);
+
+    // And what arrives after it counts from one, not from thirteen.
+    rerender({ count: 4 });
+    expect(result.current).toBe(1);
+  });
 });

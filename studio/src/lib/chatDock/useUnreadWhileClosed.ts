@@ -45,6 +45,20 @@ export function useUnreadWhileClosed(
     // follows the count until the count is first non-zero.
     baselineRef.current = messageCount;
     hydratedRef.current = messageCount > 0;
+  } else if (messageCount < baselineRef.current) {
+    // The transcript SHRANK. A conversation only grows, so this is not
+    // arrival — it is the session being replaced: useWhatsNextSession
+    // drops the run and resets the store when the project or repo scope
+    // changes. Keeping the old baseline would measure the new
+    // conversation against the length of a transcript that no longer
+    // exists, holding the badge at 0 until the new one grew past it.
+    //
+    // Re-baselining onto the new (usually empty) transcript also clears
+    // `hydrated`, which puts the fresh session back through the startup
+    // branch above — so its own 0 → N restore is treated as a restore
+    // rather than as N new messages, same as on a cold mount.
+    baselineRef.current = messageCount;
+    hydratedRef.current = messageCount > 0;
   } else if (!closed) {
     // While open, everything on screen is read, so the baseline tracks
     // the count. It therefore holds the count as of the moment the dock
