@@ -66,6 +66,14 @@ interface AssistantDockContextValue {
   store: RunStore;
   dock: DockState;
   setDock: (next: DockState) => void;
+  // The page reference the operator dismissed, if any. Lives here rather
+  // than in the dock because the dock UNMOUNTS on /whats-next (the route
+  // renders the session itself), and a dismissal that came back on the
+  // round trip would be a promise broken exactly where the operator
+  // stops watching for it. Like the session, it is per-user state the
+  // route tree only borrows.
+  dismissedRef: string | null;
+  setDismissedRef: (ref: string | null) => void;
 }
 
 interface AssistantSessionContextValue {
@@ -124,9 +132,11 @@ function AssistantSessionHost({
     writeDockState(ASSISTANT_DOCK_KEY, next);
   }, []);
 
+  const [dismissedRef, setDismissedRef] = useState<string | null>(null);
+
   const dockValue = useMemo<AssistantDockContextValue>(
-    () => ({ store, dock, setDock }),
-    [store, dock, setDock],
+    () => ({ store, dock, setDock, dismissedRef, setDismissedRef }),
+    [store, dock, setDock, dismissedRef],
   );
   const sessionValue = useMemo<AssistantSessionContextValue>(
     () => ({ bot, session }),

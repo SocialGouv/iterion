@@ -5,9 +5,16 @@
 // `run/019f…` and the chip stays gone for that run while you navigate
 // away and back, but /board still contributes its own. In-memory by
 // design — a dismissal is "not this conversation", not a preference.
+//
+// It is held by AssistantProvider, not by this hook's own state: the
+// dock unmounts on /whats-next, which would otherwise resurrect a
+// dismissed chip on the round trip. Local state is the fallback for a
+// caller outside the provider.
 
 import { useCallback, useMemo, useState } from "react";
 import { useLocation, useSearch } from "wouter";
+
+import { useAssistantDock } from "@/components/ChatDock/AssistantProvider";
 
 import { referenceForRoute, type TypedReference } from "./routeReference";
 
@@ -36,7 +43,12 @@ export function activeReference(
 export function useRouteReference(): RouteReferenceState {
   const [location] = useLocation();
   const search = useSearch();
-  const [dismissedRef, setDismissedRef] = useState<string | null>(null);
+  const dockCtx = useAssistantDock();
+  // Both hooks run unconditionally (hook order); the provider's state
+  // wins whenever there is one.
+  const [localRef, setLocalRef] = useState<string | null>(null);
+  const dismissedRef = dockCtx ? dockCtx.dismissedRef : localRef;
+  const setDismissedRef = dockCtx ? dockCtx.setDismissedRef : setLocalRef;
 
   const reference = useMemo(
     () => referenceForRoute(location, search),
@@ -46,8 +58,8 @@ export function useRouteReference(): RouteReferenceState {
 
   const dismiss = useCallback(() => {
     setDismissedRef(reference?.ref ?? null);
-  }, [reference]);
-  const restore = useCallback(() => setDismissedRef(null), []);
+  }, [reference, setDismissedRef]);
+  const restore = useCallback(() => setDismissedRef(null), [setDismissedRef]);
 
   return {
     reference,
