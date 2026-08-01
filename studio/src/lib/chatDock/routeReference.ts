@@ -90,12 +90,57 @@ export function sanitizeReferenceText(value: string): string {
   return value.replace(REF_UNSAFE, "").slice(0, REF_MAX_LENGTH);
 }
 
-function ref(kind: ReferenceKind, id: string, label: string): TypedReference {
+// Per-kind id SHAPES — the allowlist half, which stripping alone cannot
+// give you. No forbidden character is needed to inject: the payload just
+// has to be prose that survives the strip, and it then rides inside the
+// delimiter as an apparently-legitimate pointer while the chip shows a
+// friendly label the attacker chose (a run id is displayed truncated to
+// 8 characters, a ?file= as its basename).
+//
+// The entity kinds have narrow, known shapes — a run id is a ULID/uuid,
+// a card id is that or "native:<hex>" — so anything else is not a
+// reference at all and is refused rather than sanitised. `bot` and
+// `repo` carry workspace paths and repo keys, which are legitimately
+// free-form; they get the visibility rule below instead.
+const REF_SHAPE: Partial<Record<ReferenceKind, RegExp>> = {
+  run: /^[A-Za-z0-9_-]{1,64}$/,
+  card: /^[A-Za-z0-9_:-]{1,64}$/,
+  // node/<run>/<node> — two ids joined by a slash.
+  node: /^[A-Za-z0-9_/-]{1,128}$/,
+};
+
+// Kinds whose value cannot be shape-checked. Their chip shows the VALUE,
+// not a prettier stand-in: "context is never invisible" has to mean the
+// operator can see what is actually being sent, and a basename hides
+// exactly the part an attacker controls. CSS truncates it, so a long
+// legitimate path still reads fine and the full value is in the title.
+const SELF_LABELLING: ReadonlySet<ReferenceKind> = new Set(["bot", "repo"]);
+
+// ref mints a reference, or null when the id does not have the shape its
+// kind requires — the caller then falls back to the route's plain view
+// reference, so a crafted URL costs the operator nothing more than a
+// less specific chip.
+function ref(
+  kind: ReferenceKind,
+  id: string,
+  label: string,
+): TypedReference | null {
+  const clean = sanitizeReferenceText(id);
+  if (clean === "") return null;
+  const shape = REF_SHAPE[kind];
+  if (shape && !shape.test(clean)) return null;
   return {
     kind,
-    ref: `${kind}/${sanitizeReferenceText(id)}`,
-    label: sanitizeReferenceText(label),
+    ref: `${kind}/${clean}`,
+    label: SELF_LABELLING.has(kind) ? clean : sanitizeReferenceText(label),
   };
+}
+
+// viewRef mints the "you are on this screen" reference. Its ids are
+// literals from the table below — never URL-derived — so it is total
+// where ref() is partial, which keeps the static rows non-null.
+function viewRef(id: string, label: string): TypedReference {
+  return { kind: "view", ref: `view/${id}`, label };
 }
 
 // Run ids are long; the chip shows a recognisable head.
@@ -134,29 +179,35 @@ const ROUTE_RULES: readonly RouteRule[] = [
   { path: "/whats-next", build: null },
   { path: "/", build: null },
 
-  { path: "/runs/new", build: ref("view", "launch", "Launch") },
+  { path: "/runs/new", build: viewRef("launch", "Launch") },
   {
     path: "/runs/:id",
-    build: (p) => ref("run", p("id"), `Run ${shortId(p("id"))}`),
+    build: (p) =>
+      ref("run", p("id"), `Run ${shortId(p("id"))}`) ??
+      viewRef("runs", "Runs"),
   },
-  { path: "/runs", build: ref("view", "runs", "Runs") },
+  { path: "/runs", build: viewRef("runs", "Runs") },
 
   {
     path: "/pipelines/cards/:kind/:id",
     build: (p) =>
-      p("kind") === "run"
+      (p("kind") === "run"
         ? ref("run", p("id"), `Run ${shortId(p("id"))}`)
-        : ref("card", p("id"), `Card ${shortId(p("id"))}`),
+        : ref("card", p("id"), `Card ${shortId(p("id"))}`)) ??
+      viewRef("pipelines", "Pipelines"),
   },
-  { path: "/pipelines", build: ref("view", "pipelines", "Pipelines") },
+  { path: "/pipelines", build: viewRef("pipelines", "Pipelines") },
 
-  { path: "/board/labels", build: ref("view", "board-labels", "Board labels") },
-  { path: "/board/fields", build: ref("view", "board-fields", "Board fields") },
-  { path: "/board", build: ref("view", "board", "Board") },
+  { path: "/board/labels", build: viewRef("board-labels", "Board labels") },
+  { path: "/board/fields", build: viewRef("board-fields", "Board fields") },
+  { path: "/board", build: viewRef("board", "Board") },
 
-  { path: "/bots/new", build: ref("view", "bot-builder", "Bot builder") },
-  { path: "/bots/:name", build: (p) => ref("bot", p("name"), p("name")) },
-  { path: "/bots", build: ref("view", "bots", "Bots") },
+  { path: "/bots/new", build: viewRef("bot-builder", "Bot builder") },
+  {
+    path: "/bots/:name",
+    build: (p) => ref("bot", p("name"), p("name")) ?? viewRef("bots", "Bots"),
+  },
+  { path: "/bots", build: viewRef("bots", "Bots") },
 
   // The editor addresses a workspace file via ?file=; bare /editor is
   // the picker, which points at nothing in particular.
@@ -164,30 +215,33 @@ const ROUTE_RULES: readonly RouteRule[] = [
     path: "/editor",
     build: (_p, search) => {
       const file = search.get("file");
-      if (!file) return ref("view", "editor", "Editor");
-      return ref("bot", file, basename(file));
+      if (!file) return viewRef("editor", "Editor");
+      return ref("bot", file, basename(file)) ?? viewRef("editor", "Editor");
     },
   },
 
-  { path: "/repos/:key", build: (p) => ref("repo", p("key"), p("key")) },
+  {
+    path: "/repos/:key",
+    build: (p) => ref("repo", p("key"), p("key")) ?? viewRef("repos", "Repository"),
+  },
 
-  { path: "/skills", build: ref("view", "skills", "Skills") },
-  { path: "/integrations/connect", build: ref("view", "integrations", "Connect repository") },
-  { path: "/integrations/bind", build: ref("view", "integrations", "Bind bot") },
-  { path: "/integrations", build: ref("view", "integrations", "Integrations") },
-  { path: "/insights", build: ref("view", "insights", "Insights") },
-  { path: "/dispatcher", build: ref("view", "dispatcher", "Dispatcher") },
-  { path: "/triggers", build: ref("view", "automations", "Automations") },
-  { path: "/marketplace", build: ref("view", "marketplace", "Marketplace") },
-  { path: "/plugins", build: ref("view", "plugins", "Plugins") },
-  { path: "/secrets", build: ref("view", "secrets", "Secrets") },
-  { path: "/config-editor", build: ref("view", "config-editor", "Config editor") },
-  { path: "/account", build: ref("view", "account", "Account") },
-  { path: "/teams/:id", build: ref("view", "teams", "Team") },
-  { path: "/orgs/:id", build: ref("view", "orgs", "Organisation") },
+  { path: "/skills", build: viewRef("skills", "Skills") },
+  { path: "/integrations/connect", build: viewRef("integrations", "Connect repository") },
+  { path: "/integrations/bind", build: viewRef("integrations", "Bind bot") },
+  { path: "/integrations", build: viewRef("integrations", "Integrations") },
+  { path: "/insights", build: viewRef("insights", "Insights") },
+  { path: "/dispatcher", build: viewRef("dispatcher", "Dispatcher") },
+  { path: "/triggers", build: viewRef("automations", "Automations") },
+  { path: "/marketplace", build: viewRef("marketplace", "Marketplace") },
+  { path: "/plugins", build: viewRef("plugins", "Plugins") },
+  { path: "/secrets", build: viewRef("secrets", "Secrets") },
+  { path: "/config-editor", build: viewRef("config-editor", "Config editor") },
+  { path: "/account", build: viewRef("account", "Account") },
+  { path: "/teams/:id", build: viewRef("teams", "Team") },
+  { path: "/orgs/:id", build: viewRef("orgs", "Organisation") },
   // The wildcard also matches bare /admin (nothing left to consume), so
   // the family needs one row, not two.
-  { path: "/admin/*", build: ref("view", "admin", "Admin") },
+  { path: "/admin/*", build: viewRef("admin", "Admin") },
 ];
 
 // The route that renders the assistant full-width. The dock stands down

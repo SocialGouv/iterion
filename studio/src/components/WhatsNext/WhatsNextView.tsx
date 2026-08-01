@@ -69,6 +69,7 @@ function WhatsNextConversation({
     quickReplies,
     allowFreeText,
     busyPending,
+    launchPending,
     submitPending,
     onComposerSend,
   } = useAssistantComposer({ bot, session });
@@ -178,10 +179,17 @@ function WhatsNextConversation({
                     <AgentChatbox
                       runId={session.runId}
                       embedded
-                      placeholder={composerPlaceholder(
-                        session.runStatus,
-                        !!pendingHumanQuestion,
-                      )}
+                      // Same rule as the dock: a send while a session is
+                      // still starting would seed a second one beside it.
+                      disabled={launchPending}
+                      placeholder={
+                        launchPending
+                          ? "Starting a session…"
+                          : composerPlaceholder(
+                              session.runStatus,
+                              !!pendingHumanQuestion,
+                            )
+                      }
                       onSend={onComposerSend}
                     />
                   )}

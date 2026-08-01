@@ -38,6 +38,10 @@ export interface AssistantComposer {
   // then the only input.
   allowFreeText: boolean;
   busyPending: boolean;
+  // True while a launch/discovery is in flight and there is no run to
+  // talk to yet. Surfaces disable the composer on it: sending in that
+  // window would seed a SECOND session beside the one about to attach.
+  launchPending: boolean;
   // Answer the pending pause with a literal value (a chip click).
   submitPending: (value: string) => Promise<void>;
   // The unified composer submit. `decorate` runs on the trimmed text
@@ -112,6 +116,21 @@ export function useAssistantComposer({
         status === "failed" ||
         status === "cancelled";
       if (closed) {
+        // Startup discovery is still resolving whether a live session
+        // exists, or a launch we already started has not returned its
+        // runId yet. Seeding now creates a SECOND run beside the one
+        // about to attach — two Nexies on one workspace, one of which
+        // the operator never sees again.
+        //
+        // Throwing rather than dropping the text is deliberate:
+        // useAsyncAction surfaces it in the composer's error slot and
+        // leaves the draft intact, so the operator loses nothing but a
+        // moment.
+        if (session.status === "launching") {
+          throw new Error(
+            "A session is still starting — give it a second, then send again.",
+          );
+        }
         const seedVar = bot.seedVar ?? "initial_message";
         await session.launch({
           ...(session.lastVars ?? {}),
@@ -135,6 +154,7 @@ export function useAssistantComposer({
     busyPending:
       !!pendingHumanQuestion &&
       session.busyMessageId === pendingHumanQuestion.id,
+    launchPending: session.status === "launching" && !session.runId,
     submitPending,
     onComposerSend,
   };

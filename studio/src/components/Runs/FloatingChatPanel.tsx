@@ -11,7 +11,7 @@ import { useEffect, useRef, useState } from "react";
 import { PaperPlaneIcon } from "@radix-ui/react-icons";
 
 import AgentChatboxInline from "@/components/shared/AgentChatboxInline";
-import { useAssistantReservedWidthPx } from "@/components/ChatDock/AssistantProvider";
+import { useAssistantFixedInsetPx } from "@/components/ChatDock/AssistantProvider";
 import {
   ChatDockBubble,
   ChatDockChrome,
@@ -56,7 +56,11 @@ export default function FloatingChatPanel({
   // The assistant is on this route too, and when docked it owns a fixed
   // column at the right edge. Lane 1 alone does not clear it — the
   // steering bubble would sit under it and take no clicks.
-  const rightInset = useAssistantReservedWidthPx();
+  // The steering panel is a PEER fixed surface, so it must clear the
+  // assistant's band in every state it occupies one — floating included.
+  // Using the layout reservation here left the bubble under a floating
+  // assistant, unclickable, in the default closed configuration.
+  const rightInset = useAssistantFixedInsetPx();
 
   if (dock === "docked-right") {
     // RunView mounts ChatPanelContent inline; nothing to render here.

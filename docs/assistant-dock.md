@@ -5,7 +5,7 @@ not just `/whats-next`. It rides in a dock mounted at shell level, and it
 already knows which page you are on.
 
 Design rationale and rejected alternatives:
-[ADR-087](adr/087-ubiquitous-assistant-chat-dock.md).
+[ADR-088](adr/088-ubiquitous-assistant-chat-dock.md).
 
 ## The three states
 
@@ -78,6 +78,16 @@ Two things about it matter:
   are scope only: they tell the assistant what you are looking at, with
   nothing to fetch. A reference that does not resolve on this host is
   reported as such rather than guessed at.
+- **It is a reference the URL cannot forge.** Route params are
+  attacker-supplied — an operator only has to open a link someone sent
+  them — so the mint both strips what would break the one-line,
+  bracket-delimited protocol AND requires each entity kind's id to have
+  its known shape (`run`, `card`, `node`). A `/runs/<prose>` is not a
+  run reference, so it is refused and the page degrades to `view/runs`;
+  the crafted text never reaches the prompt. `bot/` and `repo/` carry
+  genuinely free-form paths and cannot be shape-checked, so their chip
+  shows the **whole value** rather than a basename — a friendly
+  stand-in would hide exactly the part an attacker controls.
 - **It is always visible.** The chip above the composer names what the
   assistant is assumed to be looking at. Dismiss it with the ✕ and that
   reference stops being sent — including if you navigate away and back —
@@ -114,10 +124,20 @@ console's right-hand dock, the steering panel is the tab labelled
 Both can be docked right at once — the assistant's column pins to the
 window edge and the run console's dock sits inside the page beside it.
 
-A lane is a floor, not a fixed offset. When the assistant is docked it
-owns a `fixed` column at the right edge, and `AppShell`'s padding
-reservation does nothing for another `fixed` element — so steering's
-bubble would sit *under* that column and take no clicks. Both read the
-reserved width from one hook (`useAssistantReservedWidthPx`): the shell
-reserves it as padding, corner surfaces step out of it, and a lane that
-already clears the column does not move.
+A lane is a floor, not a fixed offset. The assistant occupies a `fixed`
+band at the right edge whenever it is open, and padding does nothing for
+another `fixed` element — so steering's bubble would sit *under* it and
+take no clicks.
+
+Two hooks, because these are two different questions and conflating them
+is what made steering unreachable:
+
+| Hook | Answers | Docked | Floating |
+| --- | --- | --- | --- |
+| `useAssistantReservedWidthPx` | how much LAYOUT to reserve (`AppShell` padding) | 380px | 0 — floating overlays on purpose |
+| `useAssistantFixedInsetPx` | how much another FIXED surface must clear | 380px | 436px |
+
+A floating assistant spans right 16 → 436 while steering's closed bubble
+sits at right 80, so answering the second question with the first left
+the bubble underneath it — in the persisted default configuration, which
+is where most operators are.

@@ -8,10 +8,11 @@ import { getDefaultRunStore, useRunStoreInstance } from "@/store/run";
 import {
   AssistantProvider,
   AssistantStoreScope,
+  useAssistantFixedInsetPx,
   useAssistantReservedWidthPx,
   useAssistantSession,
 } from "./AssistantProvider";
-import { DOCKED_WIDTH_PX } from "./ChatDockShell";
+import { DOCKED_WIDTH_PX, FLOATING_FOOTPRINT_PX } from "./ChatDockShell";
 
 const { botLookup } = vi.hoisted(() => ({ botLookup: vi.fn() }));
 
@@ -170,5 +171,64 @@ describe("useAssistantReservedWidthPx", () => {
       </AssistantProvider>,
     );
     expect(screen.getByTestId("width").textContent).toBe("0");
+  });
+});
+
+// The layout reservation and what a PEER fixed surface must clear are two
+// different questions, and answering the second with the first is what made
+// the run console's steering bubble unclickable: `fixed` elements ignore
+// padding, so the bubble at right:80 sat UNDER a floating assistant spanning
+// right 16 -> 436, with the same z-index and the assistant mounted later.
+// `closed` is the persisted default for the steering panel, so this was the
+// ordinary configuration on /runs/:id, not an exotic one.
+function InsetProbe() {
+  return <span data-testid="inset">{useAssistantFixedInsetPx()}</span>;
+}
+
+describe("useAssistantFixedInsetPx", () => {
+  it("clears the docked column", () => {
+    localStorage.setItem(ASSISTANT_DOCK_KEY, "docked-right");
+    render(
+      <AssistantProvider>
+        <InsetProbe />
+      </AssistantProvider>,
+    );
+    expect(screen.getByTestId("inset").textContent).toBe(
+      String(DOCKED_WIDTH_PX),
+    );
+  });
+
+  it("clears the FLOATING panel too, which the layout reservation does not", () => {
+    localStorage.setItem(ASSISTANT_DOCK_KEY, "floating");
+    render(
+      <AssistantProvider>
+        <InsetProbe />
+      </AssistantProvider>,
+    );
+    expect(screen.getByTestId("inset").textContent).toBe(
+      String(FLOATING_FOOTPRINT_PX),
+    );
+    expect(FLOATING_FOOTPRINT_PX).toBeGreaterThan(80); // the lane-1 bubble
+  });
+
+  it("clears nothing when the assistant is closed", () => {
+    localStorage.setItem(ASSISTANT_DOCK_KEY, "closed");
+    render(
+      <AssistantProvider>
+        <InsetProbe />
+      </AssistantProvider>,
+    );
+    expect(screen.getByTestId("inset").textContent).toBe("0");
+  });
+
+  it("clears nothing when the bot lookup misses", () => {
+    botLookup.mockReturnValue(null);
+    localStorage.setItem(ASSISTANT_DOCK_KEY, "floating");
+    render(
+      <AssistantProvider>
+        <InsetProbe />
+      </AssistantProvider>,
+    );
+    expect(screen.getByTestId("inset").textContent).toBe("0");
   });
 });

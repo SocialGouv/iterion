@@ -196,10 +196,21 @@ function AssistantDock({
                 runId={session.runId ?? ""}
                 compact={dock === "floating"}
                 embedded
-                placeholder={composerPlaceholder(
-                  session.runStatus,
-                  !!composer.pendingHumanQuestion,
-                )}
+                // The dock's composer is live before a session exists (the
+                // first message launches one) — but NOT while one is
+                // already on its way. Startup discovery runs on every page
+                // load and takes seconds on a cold cloud load; a send in
+                // that window seeded a second Nexie beside the one about
+                // to attach.
+                disabled={composer.launchPending}
+                placeholder={
+                  composer.launchPending
+                    ? "Starting a session…"
+                    : composerPlaceholder(
+                        session.runStatus,
+                        !!composer.pendingHumanQuestion,
+                      )
+                }
                 onSend={composer.onComposerSend}
               />
             </div>

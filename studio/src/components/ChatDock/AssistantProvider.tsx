@@ -38,7 +38,10 @@ import {
 } from "react";
 import { useLocation } from "wouter";
 
-import { DOCKED_WIDTH_PX } from "@/components/ChatDock/ChatDockShell";
+import {
+  DOCKED_WIDTH_PX,
+  FLOATING_FOOTPRINT_PX,
+} from "@/components/ChatDock/ChatDockShell";
 import { isAssistantOwnRoute } from "@/lib/chatDock/routeReference";
 import {
   ASSISTANT_DOCK_KEY,
@@ -192,16 +195,13 @@ export function useAssistantSession(): AssistantSessionContextValue | null {
   return useContext(AssistantSessionContext);
 }
 
-// How much of the right edge the assistant currently occupies, in px
+// How much of the right edge the assistant reserves in the LAYOUT, in px
 // (0 unless it is docked on a route where it actually renders).
 //
-// Two kinds of consumer, and they need it for opposite reasons:
-//   - AppShell reserves it as padding, so the page is pushed aside
-//     rather than covered;
-//   - any OTHER fixed bottom-right surface — the run console's steering
-//     bubble — offsets by it, because padding does nothing for a
-//     `fixed` element and the bubble would otherwise sit UNDER the
-//     assistant's column, unclickable.
+// AppShell reserves it as padding so the page is pushed aside rather than
+// covered. Only the docked column earns that: a FLOATING panel is explicitly
+// the mode that overlays without disturbing the page.
+//
 // Reads the DOCK context only: the session context changes on every
 // websocket event and would re-render every consumer with it. That is
 // why `hasSession` is mirrored onto the dock context — the condition
@@ -214,4 +214,28 @@ export function useAssistantReservedWidthPx(): number {
   return ctx.dock === "docked-right" && !isAssistantOwnRoute(location)
     ? DOCKED_WIDTH_PX
     : 0;
+}
+
+// How much of the right edge another FIXED bottom-right surface must clear.
+//
+// This is a different question from the layout reservation above, and
+// conflating the two is what made the run console's steering bubble
+// unclickable. Padding does nothing for a `fixed` element, so a peer surface
+// has to step out of the assistant's band explicitly — and the assistant
+// occupies a band in BOTH of its open states, not just the docked one.
+//
+// The floating case is the one that bit: the steering bubble sits at
+// right:80 (lane 1) and the floating assistant spans right 16 → 436, so the
+// bubble landed underneath it with the same z-index and the assistant, being
+// mounted later, ate every click. The default dock state is `closed`, which
+// is exactly the configuration an operator on /runs/:id is in — so "steering
+// vs assistant is unambiguous" held in principle while steering was
+// unreachable in practice.
+export function useAssistantFixedInsetPx(): number {
+  const ctx = useContext(AssistantDockContext);
+  const [location] = useLocation();
+  if (!ctx?.hasSession || isAssistantOwnRoute(location)) return 0;
+  if (ctx.dock === "docked-right") return DOCKED_WIDTH_PX;
+  if (ctx.dock === "floating") return FLOATING_FOOTPRINT_PX;
+  return 0;
 }

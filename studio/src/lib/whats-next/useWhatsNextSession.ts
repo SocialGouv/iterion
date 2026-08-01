@@ -6,7 +6,8 @@
 // State is local to the hook rather than a Zustand store, and the hook
 // is mounted ONCE above the route tree (AssistantProvider) rather than
 // by a view. Navigation therefore neither restarts the session nor
-// drops the transcript — see ADR-087. What used to bound a stale
+// drops the transcript — see docs/adr/088-ubiquitous-assistant-chat-dock.md.
+// What used to bound a stale
 // session (the view unmounting) is now explicit: the scope-change
 // effect below drops a session that belongs to another project/repo.
 //

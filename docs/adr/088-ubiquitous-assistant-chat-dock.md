@@ -1,4 +1,4 @@
-# ADR-087 — The assistant is a shell-level dock with implicit route context, not a route
+# ADR-088 — The assistant is a shell-level dock with implicit route context, not a route
 
 - Status: accepted
 - Date: 2026-08-01
@@ -137,13 +137,28 @@ Two properties are load-bearing:
   `sanitizeReferenceText` strips the line- and bracket-breakers at the
   **mint**, in `ref()`, where an explicit drop chip inherits the
   guarantee instead of having to remember it; and again in
-  `withPageContext`, which owns the delimiter. Rejected: an id
-  **allowlist** (the vocabulary already carries `/`, `:` and file paths,
-  and would silently drop legitimate references as it grows), and
-  **escaping** instead of stripping (nothing downstream unescapes — the
-  bot reads the raw line). The strip is narrow — it takes only what can
-  break the line or the bracket, because a blanket printable-ASCII range
-  would eat the digits and uppercase that make up most of a run id.
+  `withPageContext`, which owns the delimiter. **Escaping** instead of
+  stripping was rejected: nothing downstream unescapes — the bot reads
+  the raw line. The strip is narrow — it takes only what can break the
+  line or the bracket, because a blanket printable-ASCII range would eat
+  the digits and uppercase that make up most of a run id.
+
+  **Stripping alone is not enough, and a per-kind allowlist supplements
+  it.** A blanket id allowlist was rightly rejected (the vocabulary
+  carries `/`, `:` and file paths, and one rule over all kinds would
+  silently drop legitimate references as it grows) — but that rejection
+  left a real hole: no forbidden character is needed to inject. Prose
+  that survives the strip rides *inside* the delimiter as a
+  plausible-looking pointer, and the chip shows a label the attacker
+  chose — a run id truncated to 8 characters, a `?file=` reduced to its
+  basename. So the allowlist is applied **per kind**, only where a shape
+  is actually known: `run`, `card` and `node` ids have narrow formats, so
+  a value that is not one is not a reference and the route degrades to
+  its plain `view/` fallback. `bot` and `repo` are genuinely free-form
+  and keep strip-only — with the visibility rule as their compensating
+  control: their chip shows the whole value, never a prettier stand-in,
+  because "context is never invisible" has to mean the operator can see
+  the part an attacker controls.
 
   Its line terminators are **Unicode's set, not JS's**: the first cut
   stripped `U+2028`/`U+2029` but left `U+0085` NEL, which splitting on

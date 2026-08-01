@@ -41,6 +41,12 @@ const EDGE_GUTTER_PX = 16;
 const FLOATING_WIDTH_PX = 420;
 const FLOATING_HEIGHT_PX = 520;
 
+// Right edge a lane-0 floating panel occupies (its offset plus its width).
+// Exported because a PEER fixed surface has to clear the band, not just the
+// docked column: `rightInset` is about what another `fixed` element must step
+// out of, and a floating panel is every bit as click-blocking as a docked one.
+export const FLOATING_FOOTPRINT_PX = FLOATING_LANE_PX[0] + FLOATING_WIDTH_PX;
+
 // A lane offset is a floor, not an absolute: when another surface has
 // reserved the right edge (the assistant's docked column), a lane that
 // falls inside that band must step out of it. `padding` on the layout
