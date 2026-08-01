@@ -660,10 +660,14 @@ func (s *Server) repoIntegrationFor(ctx context.Context, teamID, host, repo stri
 		if cerr != nil || conn.TenantID != teamID || !strings.EqualFold(hostOfURL(conn.BaseURL()), host) {
 			continue
 		}
-		// One repo provisioned twice on the same host: the store's order is
-		// not stable, and this choice decides both the policy and the grant's
-		// connection, so pick by id rather than by whichever came back first.
-		if !found || ri.ID < best.ID {
+		// One repo provisioned twice on the same host — through two connections,
+		// which happens when a repo is re-provisioned onto another one and the
+		// first is left behind. The store's order is not stable and this choice
+		// decides both the policy and the connection the verdict is posted
+		// under, so take the LATEST provisioning: it is the operator's current
+		// intent, and the older row is the stale one. Id breaks an exact tie.
+		if !found || ri.CreatedAt.After(best.CreatedAt) ||
+			(ri.CreatedAt.Equal(best.CreatedAt) && ri.ID < best.ID) {
 			best, found = ri, true
 		}
 	}

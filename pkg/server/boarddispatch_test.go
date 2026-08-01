@@ -451,6 +451,7 @@ func TestApplyPRLaunchContextPrecedence(t *testing.T) {
 		ID: "ri1", TenantID: "team1", ConnectionID: "conn1", RepoFullName: "o/r",
 		WebhookID:  "wh1",
 		LaunchVars: map[string]string{"gate_context": "iterion/review"},
+		CreatedAt:  time.Now(),
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -469,6 +470,32 @@ func TestApplyPRLaunchContextPrecedence(t *testing.T) {
 	}
 	if out["post_to_board"] != "true" {
 		t.Errorf("the bot's own rule must beat the co-enabled union: %q", out["post_to_board"])
+	}
+
+	// A repo re-provisioned onto another connection leaves the first row
+	// behind — the live shape on the e2e repo, where the stale row is a
+	// personal-token connection and the current one a GitHub App. The newer
+	// provisioning is the operator's intent, and it decides which identity the
+	// verdict is posted under, so it must win regardless of store order.
+	if err := s.forgeConnections.Create(context.Background(), forge.Connection{
+		ID: "conn2", TenantID: "team1", Provider: forge.ProviderGitHub,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.forgeIntegrations.Create(context.Background(), forge.RepoIntegration{
+		// Sorts BEFORE ri1 lexicographically, and is older.
+		ID: "aa-stale", TenantID: "team1", ConnectionID: "conn2", RepoFullName: "o/r",
+		CreatedAt: time.Now().Add(-48 * time.Hour),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	out = s.applyPRLaunchContext(context.Background(), "team1", "", "fixer",
+		map[string]string{"pr_url": "https://github.com/o/r/pull/7"}, nil)
+	if g, ok := s.forgePublishTokens.lookup(out[forgePublishVarToken]); !ok || g.ConnectionID != "conn1" {
+		t.Errorf("the stale provisioning won the grant: ok=%v g=%+v", ok, g)
+	}
+	if out["gate_context"] != "iterion/review" {
+		t.Errorf("the stale provisioning won the policy: %q", out["gate_context"])
 	}
 
 	// Same slug on another forge is a different repo: no policy, no grant.
