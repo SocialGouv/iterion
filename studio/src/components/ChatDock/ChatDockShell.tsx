@@ -42,6 +42,11 @@ const FLOATING_LANE: Record<DockLane, string> = {
 const FLOATING_WIDTH_PX = 420;
 const FLOATING_HEIGHT_PX = 520;
 
+// Width of the self-rendered docked column. Exported because the shell
+// (AppShell) reserves exactly this much so the dock pushes the page
+// aside instead of covering it.
+export const DOCKED_WIDTH_PX = 380;
+
 export interface ChatDockShellProps {
   dock: DockState;
   onDockChange: (next: DockState) => void;
@@ -103,15 +108,25 @@ export function ChatDockShell({
   }
   if (dock === "docked-right") {
     if (dockedRightMode === "host") return null;
+    // "self": the dock is mounted outside the layout tree, so it pins
+    // its own full-height column at the right edge. AppShell reserves
+    // DOCKED_WIDTH_PX of padding so this pushes the page aside rather
+    // than covering it — a dock that hides what you're asking about
+    // would defeat the point.
     return (
-      <ChatDockPanel
-        title={title}
-        titleHint={titleHint}
-        onUndock={() => onDockChange("floating")}
-        onClose={() => onDockChange("closed")}
+      <div
+        className="fixed top-0 right-0 bottom-0 z-[var(--z-toast)]"
+        style={{ width: DOCKED_WIDTH_PX }}
       >
-        {children}
-      </ChatDockPanel>
+        <ChatDockPanel
+          title={title}
+          titleHint={titleHint}
+          onUndock={() => onDockChange("floating")}
+          onClose={() => onDockChange("closed")}
+        >
+          {children}
+        </ChatDockPanel>
+      </div>
     );
   }
   return (

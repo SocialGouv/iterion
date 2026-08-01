@@ -1,6 +1,6 @@
 import {
   AssistantStoreScope,
-  useAssistant,
+  useAssistantSession,
 } from "@/components/ChatDock/AssistantProvider";
 import { ASK_USER_RESPONSE_KEY } from "@/lib/askUserOptions";
 import type { FirstClassBot } from "@/lib/whats-next/firstClassBots";
@@ -35,7 +35,7 @@ import { composerPlaceholder } from "./whatsNextView/composerPlaceholder";
 // chat pause, the structured options on an ask_user pause.
 
 export default function WhatsNextView() {
-  const assistant = useAssistant();
+  const assistant = useAssistantSession();
   if (!assistant?.bot) {
     return (
       <div className="h-full grid place-items-center text-fg-muted">

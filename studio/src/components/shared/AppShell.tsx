@@ -5,6 +5,8 @@ import { useLocation } from "wouter";
 import Sidebar from "./Sidebar";
 import ContextualHeaderBar from "./ContextualHeaderBar";
 import MainSpinner from "./MainSpinner";
+import { useAssistantDock } from "@/components/ChatDock/AssistantProvider";
+import { DOCKED_WIDTH_PX } from "@/components/ChatDock/ChatDockShell";
 import { useUIStore } from "@/store/ui";
 
 interface AppShellProps {
@@ -24,6 +26,14 @@ interface AppShellProps {
 export default function AppShell({ children }: AppShellProps) {
   const expanded = useUIStore((s) => s.expanded);
   const [location] = useLocation();
+  // The assistant dock pins its own column at the right edge (it lives
+  // outside this layout tree, next to the command palette). Reserve its
+  // width so it pushes the page aside instead of covering it. Reads the
+  // DOCK context only — the session context changes on every websocket
+  // event and would re-render the whole route subtree.
+  const assistantDock = useAssistantDock();
+  const dockedWidth =
+    assistantDock?.dock === "docked-right" ? DOCKED_WIDTH_PX : 0;
   // Key the content wrapper by the top-level view segment (not the full
   // path) so switching views (/runs → /board) plays a gentle opacity
   // fade, while intra-view URL churn (run id, selected node, ?file=)
@@ -32,15 +42,24 @@ export default function AppShell({ children }: AppShellProps) {
   const viewKey = location === "/" ? "home" : location.split("/")[1] || "home";
 
   if (expanded) {
+    // Focus mode drops the chrome, but the dock is not chrome — it is
+    // mounted outside this tree and stays reachable, so the reservation
+    // applies here too.
     return (
-      <div className="h-screen w-screen bg-surface-0 text-fg-default">
+      <div
+        className="h-screen w-screen bg-surface-0 text-fg-default"
+        style={dockedWidth ? { paddingRight: dockedWidth } : undefined}
+      >
         <Suspense fallback={<MainSpinner />}>{children}</Suspense>
       </div>
     );
   }
 
   return (
-    <div className="h-screen w-screen flex bg-surface-0 text-fg-default overflow-hidden">
+    <div
+      className="h-screen w-screen flex bg-surface-0 text-fg-default overflow-hidden"
+      style={dockedWidth ? { paddingRight: dockedWidth } : undefined}
+    >
       <a
         href="#main-content"
         className="sr-only focus:not-sr-only focus:fixed focus:top-2 focus:left-2 focus:z-[var(--z-toast)] focus:bg-accent focus:text-fg-onAccent focus:px-3 focus:py-1.5 focus:rounded focus:shadow-[var(--shadow-md)]"

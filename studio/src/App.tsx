@@ -54,6 +54,7 @@ const AcceptInvitation = lazy(() => import("@/views/auth/AcceptInvitation"));
 const Login = lazy(() => import("@/views/Login"));
 
 import { AssistantProvider } from "@/components/ChatDock/AssistantProvider";
+import ChatDock from "@/components/ChatDock/ChatDock";
 import { ErrorBoundary } from "@/components/shared/ErrorBoundary";
 import FeatureUnavailable from "@/components/shared/FeatureUnavailable";
 import GlobalCommandPalette from "@/components/shared/GlobalCommandPalette";
@@ -628,6 +629,10 @@ function AuthedApp() {
       </AppShell>
       <ToastContainer />
       <GlobalCommandPalette />
+      {/* Mounted here, outside the <Route> tree, for the same reason as
+          the command palette: it must survive navigation by
+          construction. Reachable from every authenticated route. */}
+      <ChatDock />
       {/* Settings + ProjectSwitcher are also lazy and need their own
           Suspense boundary because they unmount/remount on open/close. */}
       <Suspense fallback={null}>

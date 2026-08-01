@@ -19,8 +19,14 @@
 //    below it. Surfaces that render the assistant's transcript re-enter
 //    the assistant store through <AssistantStoreScope>.
 //
-// Dock state lives here too, and is persisted per USER rather than per
-// route: docking the assistant on /board must leave it docked on /runs.
+// TWO contexts, deliberately. The session object changes on every
+// websocket event; the dock state changes when the operator clicks. A
+// single context would re-render every consumer — including AppShell,
+// which reads the dock state to reserve the docked column — on each
+// event, dragging the whole route subtree with it.
+//
+// Dock state is persisted per USER rather than per route: docking the
+// assistant on /board must leave it docked on /runs.
 
 import {
   createContext,
@@ -53,22 +59,27 @@ import {
   type RunStore,
 } from "@/store/run";
 
-interface AssistantContextValue {
-  // Null only if the bot registry lookup misses (it can't today —
-  // DEFAULT_WHATS_NEXT_BOT_ID is a const key — but the surfaces below
-  // must degrade rather than crash if the registry becomes dynamic,
-  // which is exactly what the manifest-driven registry work will do).
-  bot: FirstClassBot | null;
-  session: UseWhatsNextSession;
+interface AssistantDockContextValue {
   store: RunStore;
   dock: DockState;
   setDock: (next: DockState) => void;
 }
 
-const AssistantContext = createContext<AssistantContextValue | null>(null);
+interface AssistantSessionContextValue {
+  // Null only if the bot registry lookup misses. It can't today —
+  // DEFAULT_WHATS_NEXT_BOT_ID is a const key — but the surfaces below
+  // must degrade rather than crash once that registry becomes
+  // manifest-driven and therefore dynamic.
+  bot: FirstClassBot | null;
+  session: UseWhatsNextSession;
+}
 
-// The registry lookup happens once at module scope: the fallback bot
-// keeps hook order valid on a miss (hooks must run unconditionally).
+const AssistantDockContext = createContext<AssistantDockContextValue | null>(null);
+const AssistantSessionContext =
+  createContext<AssistantSessionContextValue | null>(null);
+
+// Keeps hook order valid on a registry miss (hooks must run
+// unconditionally, so the session hook always gets a bot).
 const FALLBACK_BOT: FirstClassBot = {
   id: "",
   label: "",
@@ -110,17 +121,25 @@ function AssistantSessionHost({
     writeDockState(ASSISTANT_DOCK_KEY, next);
   }, []);
 
-  const value = useMemo<AssistantContextValue>(
-    () => ({ bot, session, store, dock, setDock }),
-    [bot, session, store, dock, setDock],
+  const dockValue = useMemo<AssistantDockContextValue>(
+    () => ({ store, dock, setDock }),
+    [store, dock, setDock],
+  );
+  const sessionValue = useMemo<AssistantSessionContextValue>(
+    () => ({ bot, session }),
+    [bot, session],
   );
 
   return (
-    <AssistantContext.Provider value={value}>
-      {/* Hand the default store back: everything below is the ordinary
-          app, and must not read the assistant's run. */}
-      <RunStoreProvider store={getDefaultRunStore()}>{children}</RunStoreProvider>
-    </AssistantContext.Provider>
+    <AssistantDockContext.Provider value={dockValue}>
+      <AssistantSessionContext.Provider value={sessionValue}>
+        {/* Hand the default store back: everything below is the ordinary
+            app, and must not read the assistant's run. */}
+        <RunStoreProvider store={getDefaultRunStore()}>
+          {children}
+        </RunStoreProvider>
+      </AssistantSessionContext.Provider>
+    </AssistantDockContext.Provider>
   );
 }
 
@@ -129,14 +148,18 @@ function AssistantSessionHost({
 // those components (AgentChatboxInline, PreFlightPanel, …) read the run
 // store from context and would otherwise see the default one.
 export function AssistantStoreScope({ children }: { children: ReactNode }) {
-  const ctx = useContext(AssistantContext);
+  const ctx = useContext(AssistantDockContext);
   if (!ctx) return <>{children}</>;
   return <RunStoreProvider store={ctx.store}>{children}</RunStoreProvider>;
 }
 
-// useAssistant returns null outside the provider so a surface can degrade
+// Both hooks return null outside the provider so a surface can degrade
 // (render nothing) instead of throwing — the provider is only mounted on
 // the authenticated shell.
-export function useAssistant(): AssistantContextValue | null {
-  return useContext(AssistantContext);
+export function useAssistantDock(): AssistantDockContextValue | null {
+  return useContext(AssistantDockContext);
+}
+
+export function useAssistantSession(): AssistantSessionContextValue | null {
+  return useContext(AssistantSessionContext);
 }

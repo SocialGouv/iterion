@@ -78,6 +78,14 @@ export default function AgentChatboxInline({
 
   useEffect(() => {
     let cancelled = false;
+    // No run yet (the assistant dock's composer is live before its first
+    // session exists — the first message launches one). There is no
+    // inbox to fetch, and asking for /runs//messages only produces a
+    // spurious error banner.
+    if (!runId) {
+      setQueuedMessages([]);
+      return;
+    }
     listQueuedMessages(runId)
       .then((msgs) => {
         if (cancelled) return;
@@ -102,6 +110,7 @@ export default function AgentChatboxInline({
 
   useEffect(() => {
     let cancelled = false;
+    if (!runId) return;
     const cached = skillCatalogCache.get(runId);
     if (cached) {
       setSkillCatalog(cached);
