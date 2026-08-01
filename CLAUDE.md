@@ -42,6 +42,11 @@ the hours this one spent.
   `/api/me/oauth/*` endpoints; fixes `401`/`429` on cloud runs).
 - [docs/web-search.md](docs/web-search.md) — sovereign web search tiers
   (SearXNG → Firecrawl) + the `ITERION_WEB_SEARCH` resolver.
+- [docs/models.md](docs/models.md) — the model registry (`iterion models`,
+  `GET /api/models`: known × usable × capabilities × pricing), the launch-time
+  model/backend/effort overrides, and how to change the studio assistant's
+  model (persisted per user; fixes "which model is this running on" and
+  "the assistant feels dumber").
 
 ## Development setup
 
@@ -1143,7 +1148,7 @@ above is the standing baseline, not an open-work list).
 ```
 iterion validate <file.bot>            # Parse and validate workflow
 iterion import <workflow.js> [--out] [--name] [--dry-run]  # Lossy Claude-Code workflow-script → draft .bot (goja AST, zero execution; see docs/import.md)
-iterion run <file.bot> [flags]         # Execute workflow (--var, --recipe, --timeout, --store-dir, --merge-into, --branch-name, --compress, --max-cost-usd, --max-tokens, --max-duration, --max-iterations, --max-parallel-branches)
+iterion run <file.bot> [flags]         # Execute workflow (--var, --recipe, --timeout, --store-dir, --merge-into, --branch-name, --compress, --model, --backend, --effort-for, --max-cost-usd, --max-tokens, --max-duration, --max-iterations, --max-parallel-branches)
 iterion inspect [--run-id] [--events]   # View run state and events
 iterion runs prune [--store-dir] [--older-than 720h] [--keep-last N] [--status finished,failed,cancelled] [--dry-run]  # Delete old runs (pair with `iterion schedule` for retention; docs/scheduling.md)
 iterion runs questions <run-id> [--store-dir]   # List a run's pending async (ask_user_async) questions
@@ -1162,7 +1167,7 @@ iterion bots list [--paths <dir>] [--format json|markdown|skill]  # Discover .bo
 iterion skill list|show|add|rm|import|export  # Local skill library (~/.iterion/skills + per-project); referenced by the DSL `skills:` field (see docs/skills-library.md)
 iterion marketplace list|submit|install|uninstall  # Hosted registry CLI — bot AND plugin entries (kind auto-detected at submit; list --kind filters; same <store-dir>/marketplace the studio reads)
 iterion memory export|import|du         # Manage local shared-knowledge memory spaces (.tar.gz export/import, usage vs quota; see docs/memory-and-knowledge.md)
-iterion models [provider/model-id]      # Inspect resolved model capabilities and their source
+iterion models [provider/model-id]      # The model registry: capabilities + source + price + whether THIS host can reach it (shared with GET /api/models; see docs/models.md)
 iterion openapi                         # Generate this build's OpenAPI 3.1 spec offline (stdout)
 iterion bench asymptote [flags]         # Asymptote benchmark (see docs/asymptote-bench.md)
 iterion bundle pack                     # Pack a .botz bundle (create it with `bots create`; see docs/bundles.md)

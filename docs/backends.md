@@ -79,26 +79,40 @@ which model and/or backend specific nodes use for a single run, **without
 editing the `.bot`**. Because the operator is deliberately re-pointing the
 bot at launch, these win over the node's own DSL `backend:`/`model:`.
 
+Three dimensions are overridable — **model**, **backend** and
+**`reasoning_effort`** — because they are one decision: a model, the backend
+that drives it, and how hard it is asked to think.
+
 - **Studio** — the Launch form's "Model & backend per node" section lists
-  the bot's LLM nodes (agents + judges) with a model input (suggesting
-  detected providers' models) and a backend select; leave a field on
-  *inherit* to keep the DSL default.
-- **CLI** — repeatable `--model` / `--backend`, each a `selector=value` (or
-  a bare `value` for every LLM node). A selector matches by exact node id
-  (`reviewer_claude`), id glob (`reviewer_*`, `fix_*`), or node kind
-  (`agent`|`judge`). Most specific match wins; resolution is per-field so
-  `--model` and `--backend` compose:
+  the bot's LLM nodes (agents + judges) with a **model picker** (fed by the
+  model registry, so each option carries its reachability, context window and
+  price — see [docs/models.md](models.md)) and a backend select; leave a field
+  on *inherit* to keep the DSL default.
+- **CLI** — repeatable `--model` / `--backend` / `--effort-for`, each a
+  `selector=value` (or a bare `value` for every LLM node). A selector matches
+  by exact node id (`reviewer_claude`), id glob (`reviewer_*`, `fix_*`), or
+  node kind (`agent`|`judge`). Most specific match wins; resolution is
+  per-field so the three compose:
 
   ```bash
   # cheap model for reviewers, stronger for fixers, all on claw
   iterion run bots/whole-improve-loop/main.bot \
     --model 'reviewer_*=anthropic/claude-fable-5' \
     --model 'fix_*=anthropic/claude-sonnet-5' \
-    --backend '*=claw'
+    --backend '*=claw' \
+    --effort-for 'fix_*=max'
   ```
 
 - **HTTP** — `POST /api/runs` accepts `model_overrides: [{selector, model,
-  backend}]`.
+  backend, effort}]`. An `effort` outside
+  `low|medium|high|xhigh|max|ultracode` is a 400 at admission, since the value
+  reaches the provider verbatim.
+
+The **effort** override outranks both the node's static `reasoning_effort:`
+and a dynamic `_reasoning_effort` edge mapping, matching how model and backend
+already sit at the top of the chain. A bot that escalates effort per branch is
+therefore flattened by a run-wide `*` override — which is what asking for one
+means. See [ADR-087](adr/087-model-registry-and-operator-model-choice.md).
 
 This composes with the mono/dual `--review-mode` topology (ADR-052): the
 review mode chooses *which family* runs (one or two), the override chooses
