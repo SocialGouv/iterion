@@ -102,11 +102,24 @@ export function sanitizeReferenceText(value: string): string {
 // reference at all and is refused rather than sanitised. `bot` and
 // `repo` carry workspace paths and repo keys, which are legitimately
 // free-form; they get the visibility rule below instead.
-const REF_SHAPE: Partial<Record<ReferenceKind, RegExp>> = {
+const REF_SHAPE: Record<ReferenceKind, RegExp | null> = {
   run: /^[A-Za-z0-9_-]{1,64}$/,
   card: /^[A-Za-z0-9_:-]{1,64}$/,
   // node/<run>/<node> — two ids joined by a slash.
   node: /^[A-Za-z0-9_/-]{1,128}$/,
+  // Workspace paths and repo keys are free-form, but "free-form" is not
+  // "prose": a path has no whitespace and none of the punctuation an
+  // instruction needs. Exempting them entirely left the original vector
+  // wide open on `/bots/:name`, `/editor?file=` and `/repos/:key` — the
+  // visibility rule below is a weak compensating control on its own,
+  // since the chip truncates inside a 380px column and the full value is
+  // only recoverable from the title tooltip.
+  //
+  // Trade-off, deliberately taken: a filename containing a space loses
+  // its chip and degrades to the plain view reference.
+  bot: /^[A-Za-z0-9._:/-]{1,200}$/,
+  repo: /^[A-Za-z0-9._:/-]{1,200}$/,
+  view: null,
 };
 
 // Kinds whose value cannot be shape-checked. Their chip shows the VALUE,

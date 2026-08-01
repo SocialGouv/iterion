@@ -42,6 +42,7 @@ import {
   DOCKED_WIDTH_PX,
   FLOATING_FOOTPRINT_PX,
 } from "@/components/ChatDock/ChatDockShell";
+import { ErrorBoundary } from "@/components/shared/ErrorBoundary";
 import { isAssistantOwnRoute } from "@/lib/chatDock/routeReference";
 import {
   ASSISTANT_DOCK_KEY,
@@ -118,7 +119,29 @@ export function AssistantProvider({ children }: { children: ReactNode }) {
   const store = useMemo(() => createRunStore(), []);
   return (
     <RunStoreProvider store={store}>
-      <AssistantSessionHost store={store}>{children}</AssistantSessionHost>
+      {/* The assistant must not be able to take the app down with it.
+          Its host sits ABOVE the route tree — that is the whole point of
+          the design — so it is also above every per-route
+          <ErrorBoundary>, and a throw in the session hook or the
+          transcript fold would unmount every route at once. Before the
+          lift, the same fold ran inside "What's Next view"'s boundary
+          and degraded exactly one page.
+
+          The fallback is therefore the app WITHOUT an assistant, not an
+          error card: every consumer already handles a null context
+          (useAssistantDock returns null, the reserved width is 0, the
+          dock renders nothing), so the operator keeps /board, /runs and
+          the run console and merely loses the dock. */}
+      <ErrorBoundary
+        area="Assistant session"
+        fallback={
+          <RunStoreProvider store={getDefaultRunStore()}>
+            {children}
+          </RunStoreProvider>
+        }
+      >
+        <AssistantSessionHost store={store}>{children}</AssistantSessionHost>
+      </ErrorBoundary>
     </RunStoreProvider>
   );
 }

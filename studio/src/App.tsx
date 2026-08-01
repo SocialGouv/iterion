@@ -631,8 +631,18 @@ function AuthedApp() {
       <GlobalCommandPalette />
       {/* Mounted here, outside the <Route> tree, for the same reason as
           the command palette: it must survive navigation by
-          construction. Reachable from every authenticated route. */}
-      <ChatDock />
+          construction. Reachable from every authenticated route.
+
+          Its own boundary, because that mount point is also outside
+          every per-route <ErrorBoundary>: a throw in the dock would
+          otherwise propagate past AppShell and unmount the entire
+          authenticated app, so the operator would lose /board and
+          /runs because the assistant choked on a transcript. The
+          fallback is nothing at all — a corner surface that crashed
+          should disappear, not paint an error card over the page. */}
+      <ErrorBoundary area="Assistant dock" fallback={null}>
+        <ChatDock />
+      </ErrorBoundary>
       {/* Settings + ProjectSwitcher are also lazy and need their own
           Suspense boundary because they unmount/remount on open/close. */}
       <Suspense fallback={null}>

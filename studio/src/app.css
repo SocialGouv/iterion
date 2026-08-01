@@ -198,6 +198,7 @@
    * `--z-canvas` rung so it doesn't compete with global modals. */
   --z-canvas: 40;        /* floating chrome inside a canvas/panel */
   --z-overlay: 40;       /* modal backdrops */
+  --z-dock: 45;          /* persistent corner docks (assistant, steering) */
   --z-modal: 50;         /* dialogs, full-screen drawers */
   --z-confirm: 60;       /* confirm-on-top-of-modal, command palette */
   --z-popover: 70;       /* floating popovers (above modals if nested) */

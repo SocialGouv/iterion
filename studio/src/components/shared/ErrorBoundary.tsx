@@ -9,6 +9,12 @@ interface Props {
    *  changes. Used to recover automatically when the user navigates to
    *  a different run id without forcing a full page reload. */
   resetKey?: string | number | null;
+  /** Replaces the default inline card. Use it where the built-in
+   *  fallback is the wrong shape — a crashed corner dock should vanish
+   *  (`null`), and a crashed shell-level PROVIDER should re-render its
+   *  subtree without itself rather than show an error where the whole
+   *  app used to be. */
+  fallback?: ReactNode;
 }
 
 interface State {
@@ -44,6 +50,7 @@ export class ErrorBoundary extends Component<Props, State> {
 
   render(): ReactNode {
     if (!this.state.error) return this.props.children;
+    if (this.props.fallback !== undefined) return this.props.fallback;
     return (
       <div className="h-full flex items-center justify-center p-6 bg-surface-0">
         <div className="max-w-md w-full rounded border border-danger/40 bg-danger-soft p-4 text-danger-fg">

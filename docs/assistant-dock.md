@@ -85,9 +85,15 @@ Two things about it matter:
   its known shape (`run`, `card`, `node`). A `/runs/<prose>` is not a
   run reference, so it is refused and the page degrades to `view/runs`;
   the crafted text never reaches the prompt. `bot/` and `repo/` carry
-  genuinely free-form paths and cannot be shape-checked, so their chip
-  shows the **whole value** rather than a basename — a friendly
-  stand-in would hide exactly the part an attacker controls.
+  paths rather than ids, so their shape is conservative rather than
+  absent — a path has no whitespace and none of the punctuation an
+  instruction needs — and their chip additionally shows the **whole
+  value** rather than a basename, because a friendly stand-in would hide
+  exactly the part an attacker controls. Visibility alone was too weak
+  to stand on its own: the chip truncates inside a 380px column, so a
+  crafted 200-character value was only recoverable from the tooltip.
+  (Trade-off taken knowingly: a filename containing a space loses its
+  chip and degrades to the plain view reference.)
 - **It is always visible.** The chip above the composer names what the
   assistant is assumed to be looking at. Dismiss it with the ✕ and that
   reference stops being sent — including if you navigate away and back —

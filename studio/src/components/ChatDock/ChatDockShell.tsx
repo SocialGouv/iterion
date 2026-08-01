@@ -10,7 +10,7 @@
 // steering panel. Everything session-specific (transcript, composer,
 // unread count, attention state) is injected by the caller.
 
-import { useEffect, useRef } from "react";
+import { useCallback, useEffect, useRef } from "react";
 import type { ReactNode } from "react";
 import {
   ChatBubbleIcon,
@@ -110,6 +110,23 @@ export function ChatDockShell({
   dockedRightMode = "host",
   children,
 }: ChatDockShellProps) {
+  // Did the operator just open this, or is it restoring a persisted
+  // state? The floating panel moves focus into itself on mount, which
+  // was right for a panel you had just clicked open on ONE route. Now
+  // the dock is shell-level and its state is persisted per user, so an
+  // unguarded mount steals focus on every cold page load whose stored
+  // state is `floating`, and again on every navigation back from
+  // /whats-next (where it unmounts and remounts) — landing on an
+  // autofocused search field and yanking the caret out of it.
+  const openedByOperator = useRef(false);
+  const changeDock = useCallback(
+    (next: DockState) => {
+      openedByOperator.current = true;
+      onDockChange(next);
+    },
+    [onDockChange],
+  );
+
   if (dock === "closed") {
     return (
       <ChatDockBubble
@@ -121,7 +138,7 @@ export function ChatDockShell({
         attentionTitle={attentionTitle}
         lane={lane}
         rightInset={rightInset}
-        onOpen={() => onDockChange(openedDock())}
+        onOpen={() => changeDock(openedDock())}
       />
     );
   }
@@ -134,14 +151,14 @@ export function ChatDockShell({
     // would defeat the point.
     return (
       <div
-        className="fixed top-0 right-0 bottom-0 z-[var(--z-toast)]"
+        className="fixed top-0 right-0 bottom-0 z-[var(--z-dock)]"
         style={{ width: DOCKED_WIDTH_PX }}
       >
         <ChatDockPanel
           title={title}
           titleHint={titleHint}
-          onUndock={() => onDockChange("floating")}
-          onClose={() => onDockChange("closed")}
+          onUndock={() => changeDock("floating")}
+          onClose={() => changeDock("closed")}
         >
           {children}
         </ChatDockPanel>
@@ -153,13 +170,14 @@ export function ChatDockShell({
       label={title}
       lane={lane}
       rightInset={rightInset}
-      onClose={() => onDockChange("closed")}
+      focusOnMount={openedByOperator.current}
+      onClose={() => changeDock("closed")}
     >
       <ChatDockChrome
         title={title}
         titleHint={titleHint}
-        onDockRight={() => onDockChange("docked-right")}
-        onClose={() => onDockChange("closed")}
+        onDockRight={() => changeDock("docked-right")}
+        onClose={() => changeDock("closed")}
       />
       {children}
     </ChatDockFloating>
@@ -176,17 +194,23 @@ export function ChatDockFloating({
   label,
   lane = 0,
   rightInset = 0,
+  focusOnMount = false,
   onClose,
   children,
 }: {
   label: string;
   lane?: DockLane;
   rightInset?: number;
+  // Move focus into the panel on mount. Only true when the operator
+  // just opened it — a restore-from-localStorage mount must leave the
+  // page's own focus alone.
+  focusOnMount?: boolean;
   onClose: () => void;
   children: ReactNode;
 }) {
   const ref = useRef<HTMLDivElement>(null);
   useEffect(() => {
+    if (!focusOnMount) return;
     // Defer focus so any layout / autofocus inside children settles first.
     const t = window.setTimeout(() => {
       const root = ref.current;
@@ -198,12 +222,12 @@ export function ChatDockFloating({
       (focusable ?? root).focus();
     }, 0);
     return () => window.clearTimeout(t);
-  }, []);
+  }, [focusOnMount]);
   return (
     <div
       ref={ref}
       tabIndex={-1}
-      className="fixed bottom-4 z-[var(--z-toast)] flex flex-col rounded-md border border-border-default bg-surface-1 shadow-[var(--shadow-popover)] resize overflow-hidden focus:outline-none"
+      className="fixed bottom-4 z-[var(--z-dock)] flex flex-col rounded-md border border-border-default bg-surface-1 shadow-[var(--shadow-popover)] resize overflow-hidden focus:outline-none"
       style={{
         right: laneRightPx(FLOATING_LANE_PX[lane], rightInset),
         width: FLOATING_WIDTH_PX,
@@ -253,7 +277,7 @@ export function ChatDockBubble({
       type="button"
       onClick={onOpen}
       style={{ right: laneRightPx(BUBBLE_LANE_PX[lane], rightInset) }}
-      className={`fixed bottom-4 z-[var(--z-toast)] h-12 w-12 rounded-full border shadow-[var(--shadow-lg)] flex items-center justify-center transition-transform hover:scale-105 focus:outline-none focus-visible:ring-2 focus-visible:ring-accent ${attention ? "border-warning bg-warning-soft animate-pulse" : "border-border-default bg-surface-2 text-fg-default"}`}
+      className={`fixed bottom-4 z-[var(--z-dock)] h-12 w-12 rounded-full border shadow-[var(--shadow-lg)] flex items-center justify-center transition-transform hover:scale-105 focus:outline-none focus-visible:ring-2 focus-visible:ring-accent ${attention ? "border-warning bg-warning-soft animate-pulse" : "border-border-default bg-surface-2 text-fg-default"}`}
       aria-label={`${label}${unread > 0 ? ` (${unread} new)` : ""}`}
       title={attention ? attentionTitle ?? title : title}
     >

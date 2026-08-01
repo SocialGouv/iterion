@@ -216,10 +216,16 @@ export default function AgentChatboxInline({
           value={draft}
           onChange={(e) => setDraft(e.target.value)}
           onKeyDown={onKeyDown}
+          // An explicit placeholder wins even when disabled: the caller
+          // that disables the composer is usually the one with something
+          // to say about WHY. The assistant dock disables during startup
+          // discovery and wants "Starting a session…", which the old
+          // order made unreachable — the operator saw "Run is not
+          // active" while a run was being looked for, i.e. the opposite
+          // of what was happening, on the surface added to explain it.
           placeholder={
-            disabled
-              ? "Run is not active"
-              : (placeholder ?? "Queue a message to the running agent…")
+            placeholder ??
+            (disabled ? "Run is not active" : "Queue a message to the running agent…")
           }
           rows={Math.max(2, Math.min(maxRows, Math.ceil(draft.length / 60) + 1))}
           disabled={disabled || busy}

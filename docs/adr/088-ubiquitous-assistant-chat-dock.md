@@ -154,11 +154,15 @@ Two properties are load-bearing:
   basename. So the allowlist is applied **per kind**, only where a shape
   is actually known: `run`, `card` and `node` ids have narrow formats, so
   a value that is not one is not a reference and the route degrades to
-  its plain `view/` fallback. `bot` and `repo` are genuinely free-form
-  and keep strip-only — with the visibility rule as their compensating
-  control: their chip shows the whole value, never a prettier stand-in,
-  because "context is never invisible" has to mean the operator can see
-  the part an attacker controls.
+  its plain `view/` fallback. `bot` and `repo` carry paths rather
+  than ids, so they get a deliberately loose shape (no whitespace, no
+  prose punctuation) PLUS the visibility rule: their chip shows the whole
+  value, never a prettier stand-in, because "context is never invisible"
+  has to mean the operator can see the part an attacker controls.
+  Visibility was first shipped as their only control and that was too
+  weak — the chip truncates inside a 380px column, so a crafted
+  200-character value only surfaced on hover. The cost of the shape is
+  that a filename containing a space degrades to `view/editor`.
 
   Its line terminators are **Unicode's set, not JS's**: the first cut
   stripped `U+2028`/`U+2029` but left `U+0085` NEL, which splitting on
