@@ -276,6 +276,21 @@ const (
 	//   - tool_call_id: optional, used by PR 3 to correlate with the
 	//     Playwright tool call that produced the frame
 	EventBrowserScreenshot EventType = "browser_screenshot"
+	// EventRunAttachmentPublished fires when a tool node hands a file
+	// it produced to the run via `[iterion] attachment=<path>`. The
+	// bytes are persisted as a regular attachment; this event carries
+	// only the pointer, so a downstream gate can show the deliverable.
+	//
+	// Deliberately NOT EventBrowserScreenshot: that one means "an image
+	// of a preview URL", and the studio appends it to the Browser
+	// pane's screenshot filmstrip. An mp4 or a pdf announced there
+	// would render as a broken <img>, open the Browser pane on a run
+	// that never opened a browser, and evict real captures from the
+	// scrubber. Data:
+	//   - attachment_name: store.AttachmentRecord.Name of the file
+	//   - mime: the stored (already neutralised) media type
+	//   - source: "tool-stdout"
+	EventRunAttachmentPublished EventType = "run_attachment_published"
 	// EventBrowserSessionStarted fires when the runtime attaches a
 	// Chromium instance to a node and registers it in the
 	// BrowserRegistry. The studio uses this signal to flip the

@@ -135,3 +135,130 @@ func TestPublishToolAttachmentDerivesTheNameAndSurvivesFailures(t *testing.T) {
 		AttachmentDirective{Path: filepath.Join(dir, "absent.mp4")}, logger,
 	)
 }
+
+func TestSplitAttachmentTailKeepsSpacesInThePath(t *testing.T) {
+	// Exported media routinely carries spaces. Before this, the shared
+	// whitespace scanner truncated the path and the file was skipped with
+	// a warning — the exact empty gate this verb removes.
+	got := scanToolAttachments(
+		"[iterion] attachment=/exports/final cut.mp4 name=final_video mime=video/mp4",
+	)
+	if len(got) != 1 {
+		t.Fatalf("scanToolAttachments = %#v, want 1 directive", got)
+	}
+	want := AttachmentDirective{
+		Path: "/exports/final cut.mp4", Name: "final_video", MIME: "video/mp4",
+	}
+	if got[0] != want {
+		t.Errorf("directive = %#v, want %#v", got[0], want)
+	}
+
+	// …and with no options at all, the whole tail is the path.
+	bare := scanToolAttachments("[iterion] attachment=/exports/final cut.mp4")
+	if len(bare) != 1 || bare[0].Path != "/exports/final cut.mp4" {
+		t.Errorf("bare spaced path = %#v", bare)
+	}
+}
+
+func TestActiveMIMEIsNeutralisedBeforeStorage(t *testing.T) {
+	// The serve route replies `Content-Disposition: inline` with no
+	// nosniff and no CSP, so an executable type would run in the
+	// studio's own origin. Tool stdout is not a trusted channel.
+	for _, declared := range []string{
+		"text/html", "image/svg+xml", "application/xhtml+xml",
+		"text/javascript", "application/javascript", "TEXT/HTML",
+	} {
+		got := attachmentMIME(AttachmentDirective{Path: "/tmp/x.bin", MIME: declared})
+		if got != "application/octet-stream" {
+			t.Errorf("attachmentMIME(%q) = %q, want application/octet-stream", declared, got)
+		}
+	}
+	// A .html path must not smuggle it back in through the extension.
+	if got := attachmentMIME(AttachmentDirective{Path: "/tmp/report.html"}); got != "application/octet-stream" {
+		t.Errorf("sniffed html = %q, want application/octet-stream", got)
+	}
+	// Media the gate is meant to preview is untouched.
+	for path, want := range map[string]string{
+		"/tmp/a.mp4": "video/mp4", "/tmp/a.mp3": "audio/mpeg", "/tmp/a.png": "image/png",
+	} {
+		if got := attachmentMIME(AttachmentDirective{Path: path}); got != want {
+			t.Errorf("attachmentMIME(%q) = %q, want %q", path, got, want)
+		}
+	}
+}
+
+// listingSink adds the optional read half so the collision guard engages.
+type listingSink struct {
+	recordingSink
+	existing []store.AttachmentRecord
+}
+
+func (s *listingSink) ListAttachments(
+	context.Context, string,
+) ([]store.AttachmentRecord, error) {
+	return s.existing, nil
+}
+
+func TestPublishToolAttachmentRefusesToClobberAnExistingName(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "final.mp4")
+	if err := os.WriteFile(path, []byte("new bytes"), 0o600); err != nil {
+		t.Fatalf("write fixture: %v", err)
+	}
+	logger := iterlog.New(iterlog.LevelError, os.Stderr)
+
+	// An operator's own upload already holds the name: it must survive.
+	taken := &listingSink{existing: []store.AttachmentRecord{{Name: "final"}}}
+	publishToolAttachment(
+		context.Background(), taken, nopEmitter{}, "run-1", "publish",
+		AttachmentDirective{Path: path}, logger,
+	)
+	if taken.rec.Name != "" || taken.body != nil {
+		t.Errorf("existing attachment was clobbered: %#v", taken.rec)
+	}
+
+	// A free name goes through.
+	free := &listingSink{existing: []store.AttachmentRecord{{Name: "something_else"}}}
+	publishToolAttachment(
+		context.Background(), free, nopEmitter{}, "run-1", "publish",
+		AttachmentDirective{Path: path}, logger,
+	)
+	if free.rec.Name != "final" {
+		t.Errorf("free name did not publish: %#v", free.rec)
+	}
+}
+
+func TestPublishToolAttachmentSkipsWhatIsTooLargeOrNotAFile(t *testing.T) {
+	dir := t.TempDir()
+	logger := iterlog.New(iterlog.LevelError, os.Stderr)
+
+	// A directory is not a deliverable.
+	sink := &recordingSink{}
+	publishToolAttachment(
+		context.Background(), sink, nopEmitter{}, "run-1", "publish",
+		AttachmentDirective{Path: dir}, logger,
+	)
+	if sink.rec.Name != "" {
+		t.Errorf("a directory was published: %#v", sink.rec)
+	}
+
+	// Over the cap: skipped rather than copied into the store. The file
+	// is sparse so the test costs no real bytes.
+	big := filepath.Join(dir, "huge.mp4")
+	f, err := os.Create(big)
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	if err := f.Truncate(maxToolAttachmentBytes + 1); err != nil {
+		t.Fatalf("truncate: %v", err)
+	}
+	f.Close()
+	over := &recordingSink{}
+	publishToolAttachment(
+		context.Background(), over, nopEmitter{}, "run-1", "publish",
+		AttachmentDirective{Path: big}, logger,
+	)
+	if over.rec.Name != "" {
+		t.Errorf("an oversized file was published: %#v", over.rec)
+	}
+}

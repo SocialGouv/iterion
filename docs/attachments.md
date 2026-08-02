@@ -84,9 +84,9 @@ echo "[iterion] attachment=$PWD/exports/final.mp4 name=final_video mime=video/mp
 
 | Token   | Required | Notes                                                                    |
 | ------- | -------- | ------------------------------------------------------------------------ |
-| `<path>` | yes     | First token after `attachment=`. Host-absolute path to a readable file.  |
-| `name`  | optional | The handle `/api/runs/{id}/attachments/{name}` serves. Defaults to the file's base name without its extension, sanitised to `[A-Za-z0-9_-]`. |
-| `mime`  | optional | Stored as-is when well formed; otherwise sniffed from the extension, falling back to `application/octet-stream`. |
+| `<path>` | yes     | Everything up to the first `name=` / `mime=` token, so a path may contain spaces. Host-absolute, readable, and at most 50 MB. |
+| `name`  | optional | The handle `/api/runs/{id}/attachments/{name}` serves. Defaults to the file's base name without its extension, sanitised to `[A-Za-z0-9_-]`. A name the run already carries is **never overwritten** — the directive is skipped with a warning, so a tool cannot clobber an operator's upload or an earlier iteration's deliverable. |
+| `mime`  | optional | Stored as-is when well formed; otherwise sniffed from the extension, falling back to `application/octet-stream`. Types the browser would EXECUTE (html, xhtml, svg, xml, javascript) are downgraded to `application/octet-stream`: the serve route replies `Content-Disposition: inline` with no nosniff, and tool stdout is not a trusted channel. |
 
 The runtime reads the bytes and persists them through the same
 `WriteAttachment` path as an upload, so the result is an ordinary run
