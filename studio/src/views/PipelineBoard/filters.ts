@@ -35,13 +35,18 @@ export type ClosedSubfilter = "all" | "success" | "failed";
 export type DepsFilter = "all" | "unblocked" | "blocked";
 
 /**
- * Inventory card ordering. Default is priority (matches the admission loop's
- * launch order: higher P first, ties oldest-first). Closed history often
- * prefers "updated", which operators can pick in the Sort control.
+ * Inventory card ordering. On Opened the default is priority (matches the
+ * admission loop's launch order: higher P first, ties oldest-first). On
+ * Closed, priority resolves to "updated" — chronology is the rule there, not
+ * something the operator picks; see effectiveSortMode.
  */
 export type InventorySortMode = "priority" | "updated" | "created";
 
-export const INVENTORY_SORT_OPTIONS: {
+// Deliberately module-private: the raw list is only correct once funnelled
+// through inventorySortOptions(tab). Exporting it would let a future
+// component offer "Priority" on Closed again and re-open the gap between
+// what the Sort control advertises and how the grid is actually ordered.
+const INVENTORY_SORT_OPTIONS: {
   value: InventorySortMode;
   label: string;
 }[] = [
