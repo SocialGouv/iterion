@@ -62,3 +62,40 @@ func GrantFromAnswer(answer, tool string, input map[string]any) (rule string, ap
 	}
 	return GrantRuleFor(tool, input, always), true
 }
+
+// GrantsFrom normalizes whatever the runtime put under GrantInputKey
+// into the list of allow rules it stands for.
+//
+// Three shapes reach here. A []string is the current form: every grant
+// the run has earned, so an `allow always` answered at one pause still
+// holds at the next. A bare string is the older single-grant form, kept
+// so a checkpoint written by a previous build resumes with its grant
+// intact. A []any is the same slice after a JSON round-trip through the
+// checkpoint. Anything else, including a nil entry, yields no rules.
+func GrantsFrom(v any) []string {
+	switch grant := v.(type) {
+	case string:
+		if grant == "" {
+			return nil
+		}
+		return []string{grant}
+	case []string:
+		out := make([]string, 0, len(grant))
+		for _, rule := range grant {
+			if rule != "" {
+				out = append(out, rule)
+			}
+		}
+		return out
+	case []any:
+		out := make([]string, 0, len(grant))
+		for _, raw := range grant {
+			if rule, ok := raw.(string); ok && rule != "" {
+				out = append(out, rule)
+			}
+		}
+		return out
+	default:
+		return nil
+	}
+}

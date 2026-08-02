@@ -578,6 +578,24 @@ func (s *Store) PatchRunSteering(ctx context.Context, id string, loopOverrides m
 	return nil
 }
 
+// PatchRunPermissionGrants persists the permission-gate allow rules the
+// operator earned, tenant-scoped. Replaces the stored slice wholesale;
+// a nil slice is a no-op patch.
+func (s *Store) PatchRunPermissionGrants(ctx context.Context, id string, grants []string) error {
+	if grants == nil {
+		return nil
+	}
+	set := bson.M{"updated_at": time.Now().UTC(), "permission_grants": grants}
+	res, err := s.runs.UpdateOne(ctx, notDeleted(withTenantFilter(ctx, bson.M{"_id": id})), bson.M{"$set": set})
+	if err != nil {
+		return fmt.Errorf("store/mongo: patch run permission grants: %w", err)
+	}
+	if res.MatchedCount == 0 {
+		return store.ErrRunNotFound
+	}
+	return nil
+}
+
 func (s *Store) UpdateRunStatus(ctx context.Context, id string, status store.RunStatus, runErr string) error {
 	now := time.Now().UTC()
 	set := bson.M{

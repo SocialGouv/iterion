@@ -1275,9 +1275,17 @@ func (e *Engine) reInvokeBackend(ctx context.Context, rs *runState, nodeID strin
 		if tool, input, _, ok := permission.ParseMarker(marker); ok {
 			answer, _ := answers[delegate.AskUserQuestionKey].(string)
 			if rule, approved := permission.GrantFromAnswer(answer, tool, input); approved {
-				nodeInput[permission.GrantInputKey] = rule
+				e.recordPermissionGrant(rs, rule)
 			}
 		}
+	}
+	// Carry EVERY grant earned so far, not just this pause's. A node that
+	// pauses once per mutation (a writer committing one document at a
+	// time) otherwise re-asks for the same tool on every single pause,
+	// because each resume rebuilds the node input from the edges and the
+	// previous grant is not in it.
+	if len(rs.permissionGrants) > 0 {
+		nodeInput[permission.GrantInputKey] = append([]string(nil), rs.permissionGrants...)
 	}
 
 	// When the backend captured the LLM's conversation at the pause point
