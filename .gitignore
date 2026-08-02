@@ -1,5 +1,9 @@
 # Build output
 /iterion
+# Local staging dir for a freshly built binary (the static CGO_ENABLED=0
+# iterion that studio/dev and sandbox mounts hand to subprocesses). It is a
+# ~150MB artefact that git status otherwise offers up on every commit.
+/.bin/
 # contrib helper binaries (built with `go build -o <name> ./contrib/<name>`).
 # Source lives under contrib/<name>/; the compiled binary is a build
 # artefact, not source — anchored at repo root so it can't shadow the dir.
