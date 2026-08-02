@@ -1,8 +1,10 @@
 # Build output
 /iterion
-# Local staging dir for a freshly built binary (the static CGO_ENABLED=0
-# iterion that studio/dev and sandbox mounts hand to subprocesses). It is a
-# ~150MB artefact that git status otherwise offers up on every commit.
+# Not a project convention: nothing in the Taskfile or the workflows writes
+# here (studio:dev:backend builds the repo-root ./iterion and pins ITERION_BIN
+# to it). It is a scratch dir contributors use to stage a locally built
+# binary, and at ~150MB git status was offering the artefact up on every
+# commit. Ignored so that stays a private habit.
 /.bin/
 # contrib helper binaries (built with `go build -o <name> ./contrib/<name>`).
 # Source lives under contrib/<name>/; the compiled binary is a build
