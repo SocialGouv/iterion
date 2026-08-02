@@ -53,6 +53,7 @@ import {
   inventoryTabCounts,
   partitionPipelineCards,
   sortInventoryCards,
+  sortModeForTab,
   type PipelineFilterState,
 } from "./filters";
 import { PipelineFilters } from "./PipelineFilters";
@@ -354,12 +355,12 @@ export function PipelineColumns({
   const inventoryFiltered = filters
     ? filterInventoryCards(inventory, filters)
     : inventory;
-  // Opened defaults to priority order (same as the admission queue) with
-  // dependency-blocked tickets sunk to the bottom; Closed history and
-  // operators who prefer recency can switch via Sort.
+  // Each tab remembers its own order: Opened the priority queue (same as the
+  // admission loop, dependency-blocked tickets sunk to the bottom), Closed
+  // newest-first. Either can be changed via Sort without touching the other.
   const inventoryVisible = sortInventoryCards(
     inventoryFiltered,
-    filters?.sortMode ?? "priority",
+    filters ? sortModeForTab(filters, tab) : "priority",
     tab,
   );
   const tabTotal = tab === "opened" ? tabCounts.opened : tabCounts.closed;
@@ -562,8 +563,9 @@ export function PipelineColumns({
                 </h2>
               </div>
               <p className="mt-0.5 text-micro text-fg-muted">
-                Opened queue and closed history as tabs — default sort is
-                priority (higher first, ties oldest).
+                Opened queue and closed history as tabs. Each remembers its own
+                Sort — Opened starts on priority (higher first, ties oldest),
+                Closed on newest first.
               </p>
             </div>
           </div>

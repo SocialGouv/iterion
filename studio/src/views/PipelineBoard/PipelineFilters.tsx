@@ -7,6 +7,8 @@ import { Select } from "@/components/ui/Select";
 
 import {
   INVENTORY_SORT_OPTIONS,
+  sortModeForTab,
+  withSortModeForTab,
   pipelineFiltersActive,
   type ClosedSubfilter,
   type DepsFilter,
@@ -56,6 +58,9 @@ export function PipelineFilters({
 }) {
   const active = pipelineFiltersActive(filters);
   const tab: InventoryTab = filters.inventoryTab ?? "opened";
+  // Each tab carries its own sort, so what the control shows is what the grid
+  // does — and changing it here cannot re-order the other tab.
+  const sortValue = sortModeForTab(filters, tab);
 
   const toggleLabel = (label: string) => {
     const labels = new Set(filters.labels);
@@ -291,18 +296,26 @@ export function PipelineFilters({
           <Select
             fit
             id="pipeline-inventory-sort"
-            value={filters.sortMode ?? "priority"}
+            value={sortValue}
             onChange={(e) =>
-              onChange({
-                ...filters,
-                sortMode: e.target.value as InventorySortMode,
-              })
+              onChange(
+                withSortModeForTab(
+                  filters,
+                  tab,
+                  e.target.value as InventorySortMode,
+                ),
+              )
             }
-            aria-label="Sort inventory cards"
+            aria-label={`Sort ${tab} inventory cards`}
             title={
-              (filters.sortMode ?? "priority") === "priority"
-                ? "Higher priority first — same order as the launch queue; ties oldest-first"
-                : "Order inventory cards"
+              sortValue !== "priority"
+                ? "Order inventory cards — this tab remembers its own choice"
+                : tab === "closed"
+                  ? // Priority stays selectable here (which high-P pipelines
+                    // completed?), but nothing in Closed is queued for launch,
+                    // so promising "the launch queue's order" would be a lie.
+                    "Higher priority first; ties oldest-first"
+                  : "Higher priority first — same order as the launch queue; ties oldest-first"
             }
           >
             {INVENTORY_SORT_OPTIONS.map((o) => (
