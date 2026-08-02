@@ -123,8 +123,15 @@ export function useWhatsNextSession(bot: FirstClassBot): UseWhatsNextSession {
 
   // Repo-first scope: (team, active repo) in cloud, project dir
   // locally. The key participates in session storage + discovery.
-  const { scopeKey, repoScopeEnabled, overview, activeRepo, projectId, launchRepo } =
-    useSessionScope();
+  const {
+    scopeKey,
+    ready: scopeReady,
+    repoScopeEnabled,
+    overview,
+    activeRepo,
+    projectId,
+    launchRepo,
+  } = useSessionScope();
 
   // A scope change (project switch, or the cloud sidebar's active repo)
   // means the attached session belongs to somewhere the operator no
@@ -138,16 +145,28 @@ export function useWhatsNextSession(bot: FirstClassBot): UseWhatsNextSession {
   //
   // The old scope's remembered runId is deliberately left in place, so
   // switching back re-attaches instead of starting over.
+  // Only a settled key can be compared. `scopeKey` is not stable at mount:
+  // a cloud cold load walks `null → "team:all" → "team:<repo>"` as
+  // server-info, auth, the active team and the team-repos query land in
+  // turn. Skipping only the FIRST run classified those as two switches, so
+  // every page load dropped the session twice and re-armed discovery
+  // mid-flight — up to two wasted round-trips, a blank-then-repopulate
+  // flash in an open dock, and a remembered runId written under a scope key
+  // nothing reads again. Cheap on one route; paid on every route now.
+  //
+  // prevScopeRef is written only while ready, so it pins the last SETTLED
+  // key and a real switch is still caught the moment it happens.
   const prevScopeRef = useRef<string | null | undefined>(undefined);
   useEffect(() => {
+    if (!scopeReady) return;
     const prev = prevScopeRef.current;
     prevScopeRef.current = scopeKey;
-    // First resolution (undefined → the real key) is not a switch.
+    // First settled resolution (undefined → the real key) is not a switch.
     if (prev === undefined || prev === scopeKey) return;
     setRunId(null);
     setStatus("idle");
     store.getState().reset();
-  }, [scopeKey, store]);
+  }, [scopeReady, scopeKey, store]);
 
   // Startup auto-attach: live run first, remembered run second, idle
   // launcher last. Owns discoveryError + retry.

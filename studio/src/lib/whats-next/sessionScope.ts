@@ -25,6 +25,17 @@ export interface SessionScope {
   // The repo the NEXT launch will operate on (cloud: the sidebar's
   // active repo). Null = board-only launch.
   launchRepo: string | null;
+  // True once the key has SETTLED, i.e. every input it is derived from has
+  // resolved. It is false during a cold load, when the key is still walking
+  // its way to the real value.
+  //
+  // A consumer that treats every key change as a scope SWITCH needs this:
+  // the key is not stable at mount. Locally it is `projectId`, null until
+  // server-info lands. In cloud it also waits on auth, the active team, and
+  // the team-repos query, so it walks `null -> "team:all" -> "team:<repo>"`
+  // — two changes that are resolution, not a switch, and are indistinguishable
+  // from one by comparing keys alone.
+  ready: boolean;
 }
 
 export function useSessionScope(): SessionScope {
@@ -39,14 +50,21 @@ export function useSessionScope(): SessionScope {
     activeRepo,
     overview,
     enabled: repoScopeEnabled,
+    loading: reposLoading,
     teamID,
   } = useActiveRepo();
+  const serverInfoLoaded = useServerInfoStore((s) => s.info !== null);
+  const isCloud = useServerInfoStore((s) => s.info?.mode === "cloud");
   const scopeKey = repoScopeEnabled
     ? `${teamID ?? "_team"}:${activeRepo ? forgeTeamRepoKey(activeRepo) : "all"}`
     : projectId;
 
   return {
     scopeKey,
+    // In cloud the key is only settled once repo scoping is actually on
+    // (auth + team resolved) AND the repos query has landed, because both
+    // move the key. Locally, server-info alone decides it.
+    ready: serverInfoLoaded && (!isCloud || (repoScopeEnabled && !reposLoading)),
     repoScopeEnabled,
     overview,
     activeRepo,
