@@ -132,6 +132,26 @@ export function emptyPipelineFilters(): PipelineFilterState {
   };
 }
 
+/**
+ * What the "reset" chip clears: the filters, and only those.
+ *
+ * Which lane you are reading and how you have ordered it are VIEW state, not
+ * criteria — pipelineFiltersActive excludes both sorts for exactly that
+ * reason, so neither can raise the chip in the first place. Wiping them as
+ * collateral of clearing a text query would undo a choice the operator never
+ * asked about, on a tab they may not even be looking at.
+ */
+export function resetPipelineFilters(
+  current: PipelineFilterState,
+): PipelineFilterState {
+  return {
+    ...emptyPipelineFilters(),
+    inventoryTab: current.inventoryTab ?? "opened",
+    sortMode: current.sortMode ?? "priority",
+    closedSortMode: current.closedSortMode ?? "updated",
+  };
+}
+
 export function pipelineFiltersActive(f: PipelineFilterState): boolean {
   return (
     (f.query ?? "").trim() !== "" ||
@@ -267,11 +287,15 @@ export function filterPipelineCards(
  *
  * "updated" means LAST TOUCHED, not finished: a closed card's `updated_at` is
  * its issue's or run's mtime, so relabelling a months-old pipeline lifts it
- * back to the top of the archive. That is the honest reading of the field the
- * projection ships — there is no completion timestamp on the card DTO — and
- * "Recently created" is the stable escape hatch when an operator wants an
- * order nothing can perturb. Sorting Closed by true completion time needs a
- * `finished_at` on the projection first.
+ * back to the top of the archive. On a repo-connected board this can happen
+ * with no action inside iterion at all — syncForgeIssuesToBoard patches an
+ * existing card unconditionally (pkg/server/board_forge.go:313), so a
+ * forge-side edit to a long-closed issue re-floats it here.
+ *
+ * That is the honest reading of the field the projection ships — the card DTO
+ * carries no completion timestamp — and "Recently created" is the stable
+ * escape hatch when an operator wants an order nothing can perturb. Ordering
+ * by true completion time needs a `finished_at` on the projection first.
  */
 export function sortNewestFirst(cards: PipelineBoardCard[]): PipelineBoardCard[] {
   return [...cards].sort((a, b) => {

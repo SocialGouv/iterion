@@ -21,6 +21,7 @@ import {
   collectFilterOptions,
   emptyPipelineFilters,
   filterPipelineCards,
+  resetPipelineFilters,
 } from "./filters";
 import { findFollowCard } from "./selection";
 
@@ -252,7 +253,7 @@ export default function PipelineBoardView() {
               onOpenCard={openCard}
               filters={filters}
               onFiltersChange={setFilters}
-              onFiltersReset={() => setFilters(emptyPipelineFilters())}
+              onFiltersReset={() => setFilters(resetPipelineFilters)}
               filterOptions={filterOptions}
               repoScope={repoScope}
               includeUnscoped={includeUnscoped}

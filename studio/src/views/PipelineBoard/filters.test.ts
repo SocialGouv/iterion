@@ -2,6 +2,8 @@ import { describe, expect, it } from "vitest";
 
 import type { PipelineBoardCard } from "@/api/pipelineBoards";
 
+import type { PipelineFilterState } from "./filters";
+
 import {
   collectFilterOptions,
   emptyPipelineFilters,
@@ -9,6 +11,7 @@ import {
   filterPipelineCards,
   partitionPipelineCards,
   pipelineFiltersActive,
+  resetPipelineFilters,
   sortInventoryCards,
   sortModeForTab,
   sortNewestFirst,
@@ -322,6 +325,25 @@ describe("per-tab sort state", () => {
     const f = emptyPipelineFilters();
     withSortModeForTab(f, "closed", "created");
     expect(f.closedSortMode).toBe("updated");
+  });
+
+  it("survives a filter reset", () => {
+    // Reset clears CRITERIA. The lane being read and its ordering are view
+    // state — pipelineFiltersActive excludes both sorts, so neither can even
+    // raise the reset chip; wiping them as collateral would undo a choice the
+    // operator never asked about.
+    const picked: PipelineFilterState = {
+      ...withSortModeForTab(emptyPipelineFilters(), "closed", "created"),
+      inventoryTab: "closed",
+      query: "audio",
+      labels: new Set(["urgent"]),
+    };
+    const reset = resetPipelineFilters(picked);
+    expect(reset.query).toBe("");
+    expect(reset.labels.size).toBe(0);
+    expect(reset.inventoryTab).toBe("closed");
+    expect(sortModeForTab(reset, "closed")).toBe("created");
+    expect(sortModeForTab(reset, "opened")).toBe("priority");
   });
 
   it("resolves every mode on either tab", () => {
