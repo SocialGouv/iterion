@@ -238,6 +238,18 @@ forcing one would strand an operator re-answering a gate whose file
 arrived on an earlier pass. Branch on the field if the workflow truly
 cannot proceed without it.
 
+### Showing the operator a file the workflow produced
+
+The sections above collect bytes **from** the operator. The reverse —
+putting a generated deliverable in front of them — goes through the same
+attachment store: a tool node prints
+`[iterion] attachment=<path> name=<n>` on stdout, the runtime persists
+the file, and the gate's inbound payload previews it as audio, video or
+image. See [attachments.md](attachments.md#a-tool-node-hands-over-a-file-it-produced).
+
+A path alone is never enough: it points at the host or the sandbox
+bind-mount, and no browser can fetch either.
+
 ### Ad-hoc attachments — no DSL at all
 
 Every ordinary human gate carries a **📎 Attach a file** button, whether

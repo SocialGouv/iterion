@@ -858,6 +858,15 @@ func (h *storeHooks) onToolNodeResult(nodeID string, toolName string, input []by
 					h.runID, nodeID, dir, h.logger,
 				)
 			}
+			// A tool that GENERATED a deliverable hands it over the same
+			// way, so a downstream human gate can show it rather than
+			// print a path the browser cannot reach.
+			for _, dir := range scanToolAttachments(output) {
+				publishToolAttachment(
+					h.ctx, h.attachmentSink, h.emitter,
+					h.runID, nodeID, dir, h.logger,
+				)
+			}
 		}
 	}
 }
