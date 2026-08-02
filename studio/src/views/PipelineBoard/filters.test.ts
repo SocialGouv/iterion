@@ -4,9 +4,11 @@ import type { PipelineBoardCard } from "@/api/pipelineBoards";
 
 import {
   collectFilterOptions,
+  effectiveSortMode,
   emptyPipelineFilters,
   filterInventoryCards,
   filterPipelineCards,
+  inventorySortOptions,
   partitionPipelineCards,
   pipelineFiltersActive,
   sortInventoryCards,
@@ -297,6 +299,29 @@ describe("partitionPipelineCards + inventory filters", () => {
   });
 });
 
+describe("effectiveSortMode / inventorySortOptions", () => {
+  it("resolves the Opened default to priority and the Closed default to recency", () => {
+    expect(effectiveSortMode("priority", "opened")).toBe("priority");
+    expect(effectiveSortMode("priority", "closed")).toBe("updated");
+  });
+
+  it("never rewrites an explicit date choice", () => {
+    for (const tab of ["opened", "closed"] as const) {
+      expect(effectiveSortMode("updated", tab)).toBe("updated");
+      expect(effectiveSortMode("created", tab)).toBe("created");
+    }
+  });
+
+  it("offers priority only where it means something, and always offers the resolved value", () => {
+    // The Sort select renders these options with effectiveSortMode as its
+    // value — a resolved value missing from the list would render as blank.
+    expect(inventorySortOptions("opened").map((o) => o.value)).toContain("priority");
+    const closed = inventorySortOptions("closed").map((o) => o.value);
+    expect(closed).not.toContain("priority");
+    expect(closed).toContain(effectiveSortMode("priority", "closed"));
+  });
+});
+
 describe("pipelineFiltersActive", () => {
   it("detects any active filter", () => {
     expect(pipelineFiltersActive(emptyPipelineFilters())).toBe(false);
@@ -386,13 +411,22 @@ describe("needs-attention lane + dependency filter", () => {
       "freeP1",
       "blockedP9",
     ]);
-    // Closed history is pure ranking — a terminal ticket keeps whatever
-    // blockers it had, and reshuffling history for them is noise.
-    expect(sortInventoryCards(cards, "priority", "closed").map((c) => c.id)).toEqual([
-      "blockedP9",
-      "freeP5",
-      "freeP1",
+    // Closed is history, not a queue: priority resolves to chronology there,
+    // so the archive reads most-recent-first regardless of P.
+    const archive = [
+      card({ id: "oldP9", column_id: "closed", priority: 9, updated_at: "2026-06-01T00:00:00Z" }),
+      card({ id: "newP1", column_id: "closed", priority: 1, updated_at: "2026-07-20T00:00:00Z" }),
+      card({ id: "midP5", column_id: "closed", priority: 5, updated_at: "2026-07-10T00:00:00Z" }),
+    ];
+    expect(sortInventoryCards(archive, "priority", "closed").map((c) => c.id)).toEqual([
+      "newP1",
+      "midP5",
+      "oldP9",
     ]);
+    // An explicit date choice is still honoured verbatim on Closed.
+    expect(sortInventoryCards(archive, "created", "closed").map((c) => c.id)).toEqual(
+      sortInventoryCards(archive, "created", "opened").map((c) => c.id),
+    );
     // Date modes are chronology; the operator asked for it explicitly.
     expect(sortInventoryCards(cards, "created", "opened").map((c) => c.id)).toEqual([
       "blockedP9",

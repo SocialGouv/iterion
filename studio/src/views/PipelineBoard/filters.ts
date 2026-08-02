@@ -50,6 +50,34 @@ export const INVENTORY_SORT_OPTIONS: {
   { value: "created", label: "Recently created" },
 ];
 
+/**
+ * Closed is HISTORY, not a queue. Priority is a launch-order key, and a
+ * pipeline that already ran will never be launched by it again — ranking the
+ * archive by P buries this morning's run under a months-old P9. So the Closed
+ * tab reads chronologically, most recent first.
+ *
+ * effectiveSortMode is the ONE place that decision lives: the grid
+ * (sortInventoryCards) and the Sort control (inventorySortOptions) both go
+ * through it, so the select can never advertise an order the list is not in.
+ * An explicit date choice is honoured as-is on both tabs.
+ */
+export function effectiveSortMode(
+  mode: InventorySortMode = "priority",
+  tab: InventoryTab = "opened",
+): InventorySortMode {
+  if (tab === "closed" && mode === "priority") return "updated";
+  return mode;
+}
+
+/** Sort choices offered for a tab — Closed drops the meaningless ranking. */
+export function inventorySortOptions(
+  tab: InventoryTab = "opened",
+): { value: InventorySortMode; label: string }[] {
+  return tab === "closed"
+    ? INVENTORY_SORT_OPTIONS.filter((o) => o.value !== "priority")
+    : INVENTORY_SORT_OPTIONS;
+}
+
 export interface PipelineFilterState {
   query: string;
   bot: string;
@@ -230,30 +258,28 @@ export function sortNewestFirst(cards: PipelineBoardCard[]): PipelineBoardCard[]
 
 /**
  * Inventory ordering. "priority" matches the server's launch order (P desc,
- * then oldest-first) — and, on the Opened tab, sinks dependency-blocked
- * cards below launchable ones first, so the top of the list is always
- * something the operator can actually start. Date modes are newest-first.
- * Does not mutate the input array.
+ * then oldest-first) and sinks dependency-blocked cards below launchable
+ * ones first, so the top of the list is always something the operator can
+ * actually start. Date modes are newest-first. Does not mutate the input
+ * array.
  *
- * The blocked-last partition is scoped to priority+opened on purpose. In the
- * date modes the operator asked for chronology, and in Closed the ordering
- * would be meaningless: a done ticket still carries whatever blockers it had
- * (attachDeps runs for terminal task cards too), so history would be
- * reshuffled for no reason.
+ * Priority applies to the Opened queue only — on Closed it resolves to
+ * chronology (see effectiveSortMode), which also makes the blocked-last
+ * partition moot there: a done ticket still carries whatever blockers it had
+ * (attachDeps runs for terminal task cards too), and reshuffling history for
+ * them would be noise.
  */
 export function sortInventoryCards(
   cards: PipelineBoardCard[],
   mode: InventorySortMode = "priority",
   tab: InventoryTab = "opened",
 ): PipelineBoardCard[] {
-  if (mode === "updated") return sortNewestFirst(cards);
-  if (mode === "priority") {
-    const blockedLast = tab === "opened";
+  const effective = effectiveSortMode(mode, tab);
+  if (effective === "updated") return sortNewestFirst(cards);
+  if (effective === "priority") {
     return [...cards].sort((a, b) => {
-      if (blockedLast) {
-        const byBlocked = compareBlockedLast(a, b);
-        if (byBlocked !== 0) return byBlocked;
-      }
+      const byBlocked = compareBlockedLast(a, b);
+      if (byBlocked !== 0) return byBlocked;
       return compareLaunchOrder(a, b);
     });
   }

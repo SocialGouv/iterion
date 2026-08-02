@@ -6,7 +6,8 @@ import { Input } from "@/components/ui/Input";
 import { Select } from "@/components/ui/Select";
 
 import {
-  INVENTORY_SORT_OPTIONS,
+  effectiveSortMode,
+  inventorySortOptions,
   pipelineFiltersActive,
   type ClosedSubfilter,
   type DepsFilter,
@@ -56,6 +57,10 @@ export function PipelineFilters({
 }) {
   const active = pipelineFiltersActive(filters);
   const tab: InventoryTab = filters.inventoryTab ?? "opened";
+  // The Closed archive is chronological (see effectiveSortMode) — resolve the
+  // displayed value through the same function the grid sorts with, so the
+  // select never shows "Priority" over a list ordered by date.
+  const sortValue = effectiveSortMode(filters.sortMode, tab);
 
   const toggleLabel = (label: string) => {
     const labels = new Set(filters.labels);
@@ -291,7 +296,7 @@ export function PipelineFilters({
           <Select
             fit
             id="pipeline-inventory-sort"
-            value={filters.sortMode ?? "priority"}
+            value={sortValue}
             onChange={(e) =>
               onChange({
                 ...filters,
@@ -300,12 +305,12 @@ export function PipelineFilters({
             }
             aria-label="Sort inventory cards"
             title={
-              (filters.sortMode ?? "priority") === "priority"
+              sortValue === "priority"
                 ? "Higher priority first — same order as the launch queue; ties oldest-first"
                 : "Order inventory cards"
             }
           >
-            {INVENTORY_SORT_OPTIONS.map((o) => (
+            {inventorySortOptions(tab).map((o) => (
               <option key={o.value} value={o.value}>
                 {o.label}
               </option>
