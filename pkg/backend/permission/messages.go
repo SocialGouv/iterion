@@ -60,6 +60,15 @@ func ParseAnswer(s string) (allow bool, always bool) {
 	switch {
 	case t == "deny" || t == "no" || t == "reject" || t == "n":
 		return false, false
+	// A refusal anywhere in the reply wins over the `always` scope word.
+	// "deny always" and "never" read as the STRONGEST refusal to anyone
+	// typing them; matching `always` first turned them into the
+	// strongest grant instead. Free text really does reach here — the
+	// prompt invites it, and --answers-file / the API accept anything;
+	// only the studio offers fixed buttons.
+	case strings.Contains(t, "deny") || strings.Contains(t, "never") ||
+		strings.Contains(t, "reject") || strings.Contains(t, "refus"):
+		return false, false
 	case strings.Contains(t, "always"):
 		return true, true
 	case t == "allow" || t == "yes" || t == "y" || t == "approve" || t == "ok" || t == "once":

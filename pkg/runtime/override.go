@@ -309,7 +309,10 @@ func (e *Engine) applySteeringState(rs *runState, r *store.Run) {
 		}
 	}
 	if len(r.PermissionGrants) > 0 {
-		rs.permissionGrants = append([]string(nil), r.PermissionGrants...)
+		rs.permissionGrants = make(map[string][]string, len(r.PermissionGrants))
+		for node, rules := range r.PermissionGrants {
+			rs.permissionGrants[node] = append([]string(nil), rules...)
+		}
 	}
 	if r.BudgetRaises != nil && rs.budget != nil {
 		rs.budget.RaiseCaps(ir.BudgetOverrides{
@@ -345,14 +348,17 @@ func appliedBudgetFields(o ir.BudgetOverrides) map[string]any {
 // grow the stored slice. A persistence failure is logged, never fatal:
 // the grant still holds for the current re-invocation, and the worst
 // case is the operator being asked once more.
-func (e *Engine) recordPermissionGrant(rs *runState, rule string) {
-	if rs == nil || rule == "" {
+func (e *Engine) recordPermissionGrant(rs *runState, nodeID, rule string) {
+	if rs == nil || nodeID == "" || rule == "" {
 		return
 	}
-	if slices.Contains(rs.permissionGrants, rule) {
+	if slices.Contains(rs.permissionGrants[nodeID], rule) {
 		return
 	}
-	rs.permissionGrants = append(rs.permissionGrants, rule)
+	if rs.permissionGrants == nil {
+		rs.permissionGrants = make(map[string][]string, 1)
+	}
+	rs.permissionGrants[nodeID] = append(rs.permissionGrants[nodeID], rule)
 	if e.store == nil {
 		return
 	}

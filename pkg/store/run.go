@@ -253,15 +253,19 @@ type Run struct {
 	// rebuilt); raise-only vs the workflow's declared budget. Nil for
 	// runs never raised.
 	BudgetRaises *RunBudgetRaises `json:"budget_raises,omitempty" bson:"budget_raises,omitempty"`
-	// PermissionGrants accumulates the allow rules the operator earned by
-	// answering `allow` / `allow always` at a permission-gate pause. The
-	// message shown at that pause promises the grant holds "for the rest
-	// of this run", and each pause is resumed by a fresh engine with a
-	// fresh runState — so the promise can only be kept if the rules
-	// outlive the run record they were earned under. AUTHORITATIVE across
-	// resume (the engine re-seeds from it). Order-preserving and
-	// deduplicated. Empty for runs that never hit an approved gate.
-	PermissionGrants []string `json:"permission_grants,omitempty" bson:"permission_grants,omitempty"`
+	// PermissionGrants accumulates the `allow always` rules the operator
+	// earned at permission-gate pauses, KEYED BY THE NODE that earned
+	// them. Each pause is resumed by a fresh engine with a fresh
+	// runState, so a grant can only outlive the pause it was answered on
+	// if it outlives the run record too. AUTHORITATIVE across resume (the
+	// engine re-seeds from it). Order-preserving and deduplicated per
+	// node. Empty for runs that never hit an approved gate.
+	//
+	// Keyed per node, not run-wide, because Evaluate ranks allow rules
+	// above the mode default: a run-wide rule would beat a node whose own
+	// `permission: deny` made the gate a hard block, so an approval given
+	// on a permissive node would silently unlock a strict one.
+	PermissionGrants map[string][]string `json:"permission_grants,omitempty" bson:"permission_grants,omitempty"`
 	// RetryPolicy is the retry contract RESOLVED AT LAUNCH from every
 	// layer that can own one (per-run override → launch surface → bot
 	// manifest → machine default, then clamped by the platform ceiling).

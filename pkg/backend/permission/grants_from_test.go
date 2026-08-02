@@ -70,3 +70,34 @@ func TestAccumulatedGrantsSurviveAPolicyRebuild(t *testing.T) {
 		t.Errorf("Edit = %v, want ask — accumulating grants must not grant what was never asked", d)
 	}
 }
+
+// "deny always" and "never" are the strongest refusals anyone typing
+// them means. Matching the `always` scope word before exhausting the
+// refusal tokens turned them into the strongest GRANT — and once grants
+// became durable, into a standing run-wide authorization for the tool.
+func TestParseAnswer_RefusalBeatsAlways(t *testing.T) {
+	for _, tc := range []struct {
+		answer string
+		allow  bool
+		always bool
+	}{
+		{"allow always", true, true},
+		{"ALWAYS", true, true},
+		{"deny always", false, false},
+		{"never", false, false},
+		{"never always", false, false},
+		{"reject always", false, false},
+		{"refuse always", false, false},
+		{"deny", false, false},
+		{"allow", true, false},
+		{"once", true, false},
+		{"oui", false, false},
+	} {
+		t.Run(tc.answer, func(t *testing.T) {
+			allow, always := ParseAnswer(tc.answer)
+			if allow != tc.allow || always != tc.always {
+				t.Errorf("ParseAnswer(%q) = (%v, %v), want (%v, %v)", tc.answer, allow, always, tc.allow, tc.always)
+			}
+		})
+	}
+}

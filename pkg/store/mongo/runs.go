@@ -581,7 +581,7 @@ func (s *Store) PatchRunSteering(ctx context.Context, id string, loopOverrides m
 // PatchRunPermissionGrants persists the permission-gate allow rules the
 // operator earned, tenant-scoped. Replaces the stored slice wholesale;
 // a nil slice is a no-op patch.
-func (s *Store) PatchRunPermissionGrants(ctx context.Context, id string, grants []string) error {
+func (s *Store) PatchRunPermissionGrants(ctx context.Context, id string, grants map[string][]string) error {
 	if grants == nil {
 		return nil
 	}

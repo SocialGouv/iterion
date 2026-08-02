@@ -255,14 +255,18 @@ type runState struct {
 	// Written only by the execution-loop goroutine (applyOverride) and
 	// re-seeded at resume from Run.LoopOverrides. nil until first bump.
 	loopOverrides map[string]int
-	// permissionGrants accumulates the allow rules earned by answering a
-	// permission-gate pause, in the order they were granted. Every pause
-	// is resumed by a fresh engine with a fresh runState, so a grant that
-	// lived only in the node input reached exactly ONE re-invocation and
-	// then vanished — the operator re-authorized the same tool at every
-	// pause while the runtime told them it had been added "for the rest
-	// of this run". Re-seeded at resume from Run.PermissionGrants.
-	permissionGrants []string
+	// permissionGrants accumulates the `allow always` rules earned at a
+	// permission-gate pause, keyed by the node that earned them and
+	// ordered by grant. Every pause is resumed by a fresh engine with a
+	// fresh runState, so a grant that lived only in the node input
+	// reached exactly ONE re-invocation and then vanished — the operator
+	// re-authorized the same tool at every pause while the runtime told
+	// them it had been added "for the rest of this run". Re-seeded at
+	// resume from Run.PermissionGrants. Per node, never run-wide: an
+	// allow rule outranks the mode default, so a shared set would let an
+	// approval on a permissive node unlock one that declared
+	// `permission: deny`.
+	permissionGrants map[string][]string
 	// loopPreviousOutput holds the snapshot of the source node output from
 	// the PREVIOUS traversal of a given loop's edge — i.e., one iteration
 	// behind the current one. Workflows reference it as

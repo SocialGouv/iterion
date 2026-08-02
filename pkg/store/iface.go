@@ -74,14 +74,14 @@ type RunStore interface {
 	// right after applying an override in memory.
 	PatchRunSteering(ctx context.Context, runID string, loopOverrides map[string]int, budgetRaises *RunBudgetRaises) error
 
-	// PatchRunPermissionGrants persists the allow rules earned at
-	// permission-gate pauses so a later resume — which builds a fresh
-	// engine and a fresh runState — still carries them. Replaces the
-	// stored slice wholesale with the caller's accumulated set; a nil
-	// slice leaves it untouched. Kept separate from PatchRunSteering
-	// because a grant is an authorization the operator granted, not a
-	// steering knob an operator turned.
-	PatchRunPermissionGrants(ctx context.Context, runID string, grants []string) error
+	// PatchRunPermissionGrants persists the `allow always` rules earned
+	// at permission-gate pauses, keyed by the node that earned them, so a
+	// later resume — which builds a fresh engine and a fresh runState —
+	// still carries them. Replaces the stored map wholesale with the
+	// caller's accumulated set; a nil map leaves it untouched. Kept
+	// separate from PatchRunSteering because a grant is an authorization
+	// the operator gave, not a steering knob an operator turned.
+	PatchRunPermissionGrants(ctx context.Context, runID string, grants map[string][]string) error
 
 	// PruneDeletionMarkers reaps the durable tombstones DeleteRun
 	// leaves behind (the resurrection guard) once they are older than

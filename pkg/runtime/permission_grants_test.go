@@ -23,12 +23,13 @@ func TestPermissionGrants_AccumulatePersistAndReseed(t *testing.T) {
 	rs := eng.newRunState("r-grants", nil)
 	rs.ctx = ctx
 
-	eng.recordPermissionGrant(rs, "Write")
-	eng.recordPermissionGrant(rs, "Bash(git add:*)")
-	eng.recordPermissionGrant(rs, "Write") // same answer twice: no growth
-	eng.recordPermissionGrant(rs, "")      // nothing to record
+	eng.recordPermissionGrant(rs, "writer", "Write")
+	eng.recordPermissionGrant(rs, "writer", "Bash(git add:*)")
+	eng.recordPermissionGrant(rs, "writer", "Write") // same answer twice: no growth
+	eng.recordPermissionGrant(rs, "writer", "")      // nothing to record
+	eng.recordPermissionGrant(rs, "", "Write")       // no node, no record
 
-	want := []string{"Write", "Bash(git add:*)"}
+	want := map[string][]string{"writer": {"Write", "Bash(git add:*)"}}
 	if !reflect.DeepEqual(rs.permissionGrants, want) {
 		t.Fatalf("in-memory grants = %#v, want %#v", rs.permissionGrants, want)
 	}
@@ -51,8 +52,8 @@ func TestPermissionGrants_AccumulatePersistAndReseed(t *testing.T) {
 		t.Errorf("re-seeded grants = %#v, want %#v", fresh.permissionGrants, want)
 	}
 	// Re-seeding must copy, not alias the store's slice.
-	fresh.permissionGrants[0] = "mutated"
-	if r.PermissionGrants[0] != "Write" {
+	fresh.permissionGrants["writer"][0] = "mutated"
+	if r.PermissionGrants["writer"][0] != "Write" {
 		t.Error("applySteeringState aliased the run record's slice")
 	}
 }
@@ -96,5 +97,56 @@ func TestPermissionGrants_BothInputKeysDecode(t *testing.T) {
 	}
 	if got := permission.GrantsFrom(nil); len(got) != 0 {
 		t.Errorf("an absent key decoded to %#v, want nothing", got)
+	}
+}
+
+// A grant belongs to the node that earned it. Evaluate ranks allow rules
+// above the mode default, so lending one node's grant to another would
+// beat a `permission: deny` that other node declared for itself — an
+// approval given on a permissive implementer silently unlocking a strict
+// reviewer.
+func TestPermissionGrants_DoNotLeakToAnotherNode(t *testing.T) {
+	ctx := context.Background()
+	wf := loopWorkflow(2)
+	s := tmpStore(t)
+	if _, err := s.CreateRun(ctx, "r-scope", "wf", nil); err != nil {
+		t.Fatalf("CreateRun: %v", err)
+	}
+	eng := New(wf, s, newStubExecutor())
+	rs := eng.newRunState("r-scope", nil)
+	rs.ctx = ctx
+	eng.recordPermissionGrant(rs, "writer", "Bash")
+
+	granted := eng.buildNodeInputRS("writer", rs.scope())
+	if got := permission.GrantsFrom(granted[permission.RunGrantsInputKey]); len(got) != 1 {
+		t.Errorf("the granting node carries %#v, want its own grant", got)
+	}
+	strict := eng.buildNodeInputRS("reviewer", rs.scope())
+	if got := permission.GrantsFrom(strict[permission.RunGrantsInputKey]); len(got) != 0 {
+		t.Errorf("a different node carries %#v, want nothing", got)
+	}
+}
+
+// Run inputs are caller-supplied and land wholesale on the entry node, so
+// a launch payload naming the reserved keys would otherwise seed policy
+// allow rules straight into the gate meant to bound that caller.
+func TestPermissionGrants_LaunchInputsCannotSeedRules(t *testing.T) {
+	wf := loopWorkflow(2)
+	eng := New(wf, tmpStore(t), newStubExecutor())
+	rs := eng.newRunState("r-inject", map[string]any{
+		permission.GrantInputKey:     "Bash",
+		permission.RunGrantsInputKey: []string{"Bash", "Write"},
+		"legit":                      "kept",
+	})
+
+	in := eng.buildNodeInputRS(wf.Entry, rs.scope())
+	if _, present := in[permission.GrantInputKey]; present {
+		t.Error("a launch input seeded this-pause grant onto the entry node")
+	}
+	if _, present := in[permission.RunGrantsInputKey]; present {
+		t.Error("a launch input seeded run grants onto the entry node")
+	}
+	if in["legit"] != "kept" {
+		t.Errorf("ordinary launch inputs were dropped: %#v", in)
 	}
 }

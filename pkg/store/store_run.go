@@ -293,7 +293,7 @@ func (s *FilesystemRunStore) PatchRunSteering(_ context.Context, id string, loop
 // PatchRunPermissionGrants persists the permission-gate allow rules
 // earned by the operator. Replaces the stored slice wholesale (the
 // caller owns the accumulated set); a nil slice is a no-op patch.
-func (s *FilesystemRunStore) PatchRunPermissionGrants(_ context.Context, id string, grants []string) error {
+func (s *FilesystemRunStore) PatchRunPermissionGrants(_ context.Context, id string, grants map[string][]string) error {
 	if grants == nil {
 		return nil
 	}

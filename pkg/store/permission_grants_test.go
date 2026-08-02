@@ -23,7 +23,7 @@ func TestPatchRunPermissionGrantsRoundTrips(t *testing.T) {
 		t.Fatalf("a fresh run already holds grants: %#v", got.PermissionGrants)
 	}
 
-	want := []string{"Write", "Bash(git add:*)"}
+	want := map[string][]string{"writer": {"Write", "Bash(git add:*)"}}
 	if err := s.PatchRunPermissionGrants(ctx, "run-grants", want); err != nil {
 		t.Fatalf("PatchRunPermissionGrants: %v", err)
 	}

@@ -1283,7 +1283,7 @@ func (e *Engine) reInvokeBackend(ctx context.Context, rs *runState, nodeID strin
 			answer, _ := answers[delegate.AskUserQuestionKey].(string)
 			if rule, approved := permission.GrantFromAnswer(answer, tool, input); approved {
 				if _, always := permission.ParseAnswer(answer); always {
-					e.recordPermissionGrant(rs, rule)
+					e.recordPermissionGrant(rs, nodeID, rule)
 				}
 				// GrantInputKey keeps its original meaning: THIS pause was
 				// approved. The resume framing reads it to tell the model
@@ -1293,14 +1293,9 @@ func (e *Engine) reInvokeBackend(ctx context.Context, rs *runState, nodeID strin
 			}
 		}
 	}
-	// The accumulated `always` set travels separately, on every
-	// re-invocation. A node that pauses once per mutation (a writer
-	// committing one document at a time) otherwise re-asks for the same
-	// tool at every pause, because each resume rebuilds the node input
-	// from the edges and the previous grant is not in it.
-	if len(rs.permissionGrants) > 0 {
-		nodeInput[permission.RunGrantsInputKey] = append([]string(nil), rs.permissionGrants...)
-	}
+	// The node's accumulated `always` set is attached by
+	// buildNodeInputRS above, so it also reaches an ordinary execution
+	// and a loop re-entry — not just this re-invocation.
 
 	// When the backend captured the LLM's conversation at the pause point
 	// (claw), relay it through the executor so the Task carries
