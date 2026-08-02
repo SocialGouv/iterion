@@ -35,18 +35,14 @@ export type ClosedSubfilter = "all" | "success" | "failed";
 export type DepsFilter = "all" | "unblocked" | "blocked";
 
 /**
- * Inventory card ordering. On Opened the default is priority (matches the
- * admission loop's launch order: higher P first, ties oldest-first). On
- * Closed, priority resolves to "updated" — chronology is the rule there, not
- * something the operator picks; see effectiveSortMode.
+ * Inventory card ordering. Each tab remembers its own: Opened defaults to
+ * priority (the admission loop's launch order — higher P first, ties
+ * oldest-first), Closed to recency, because an archive of things that already
+ * ran has no launch order left to show. See sortModeForTab.
  */
 export type InventorySortMode = "priority" | "updated" | "created";
 
-// Deliberately module-private: the raw list is only correct once funnelled
-// through inventorySortOptions(tab). Exporting it would let a future
-// component offer "Priority" on Closed again and re-open the gap between
-// what the Sort control advertises and how the grid is actually ordered.
-const INVENTORY_SORT_OPTIONS: {
+export const INVENTORY_SORT_OPTIONS: {
   value: InventorySortMode;
   label: string;
 }[] = [
@@ -56,31 +52,39 @@ const INVENTORY_SORT_OPTIONS: {
 ];
 
 /**
- * Closed is HISTORY, not a queue. Priority is a launch-order key, and a
- * pipeline that already ran will never be launched by it again — ranking the
- * archive by P buries this morning's run under a months-old P9. So the Closed
- * tab reads chronologically, most recent first.
+ * The sort a tab is currently using. Sort state is stored PER TAB, so the
+ * value the Sort control displays is always the value the grid sorts by, and
+ * a pick made while reading the archive cannot silently re-order the launch
+ * queue behind the operator's back.
  *
- * effectiveSortMode is the ONE place that decision lives: the grid
- * (sortInventoryCards) and the Sort control (inventorySortOptions) both go
- * through it, so the select can never advertise an order the list is not in.
- * An explicit date choice is honoured as-is on both tabs.
+ * The alternative — one shared mode whose default is resolved per tab — was
+ * tried first and is a trap. Display then diverges from state (a controlled
+ * <select> fires no change event when the shown option is re-picked, so the
+ * archive's order cannot be pinned at all), and normalising the shared value
+ * on tab switch is worse still: merely visiting Closed would write "updated"
+ * into the shared field and cost Opened its priority ordering for good.
  */
-export function effectiveSortMode(
-  mode: InventorySortMode = "priority",
-  tab: InventoryTab = "opened",
+export function sortModeForTab(
+  // Partial on purpose: the rest of this module reads filter fields
+  // defensively (`?? "all"`), because a filter object can predate a field —
+  // and a Sort control rendered blank would be worse than a default.
+  f: Partial<Pick<PipelineFilterState, "sortMode" | "closedSortMode">>,
+  tab: InventoryTab,
 ): InventorySortMode {
-  if (tab === "closed" && mode === "priority") return "updated";
-  return mode;
+  return tab === "closed"
+    ? (f.closedSortMode ?? "updated")
+    : (f.sortMode ?? "priority");
 }
 
-/** Sort choices offered for a tab — Closed drops the meaningless ranking. */
-export function inventorySortOptions(
-  tab: InventoryTab = "opened",
-): { value: InventorySortMode; label: string }[] {
+/** Immutably set the sort of the tab currently being read. */
+export function withSortModeForTab(
+  f: PipelineFilterState,
+  tab: InventoryTab,
+  mode: InventorySortMode,
+): PipelineFilterState {
   return tab === "closed"
-    ? INVENTORY_SORT_OPTIONS.filter((o) => o.value !== "priority")
-    : INVENTORY_SORT_OPTIONS;
+    ? { ...f, closedSortMode: mode }
+    : { ...f, sortMode: mode };
 }
 
 export interface PipelineFilterState {
@@ -99,8 +103,10 @@ export interface PipelineFilterState {
   openedSubfilter: OpenedSubfilter;
   /** Success / failed chips (Closed tab only). */
   closedSubfilter: ClosedSubfilter;
-  /** How to order inventory cards (Opened + Closed tabs). */
+  /** How to order the Opened queue. */
   sortMode: InventorySortMode;
+  /** How to order the Closed archive — independent of the Opened queue. */
+  closedSortMode: InventorySortMode;
 }
 
 // Factory (not a shared constant): each call returns a fresh Set so a reset
@@ -117,6 +123,7 @@ export function emptyPipelineFilters(): PipelineFilterState {
     openedSubfilter: "all",
     closedSubfilter: "all",
     sortMode: "priority",
+    closedSortMode: "updated",
   };
 }
 
@@ -263,28 +270,31 @@ export function sortNewestFirst(cards: PipelineBoardCard[]): PipelineBoardCard[]
 
 /**
  * Inventory ordering. "priority" matches the server's launch order (P desc,
- * then oldest-first) and sinks dependency-blocked cards below launchable
- * ones first, so the top of the list is always something the operator can
- * actually start. Date modes are newest-first. Does not mutate the input
+ * then oldest-first). Date modes are newest-first. Does not mutate the input
  * array.
  *
- * Priority applies to the Opened queue only — on Closed it resolves to
- * chronology (see effectiveSortMode), which also makes the blocked-last
- * partition moot there: a done ticket still carries whatever blockers it had
- * (attachDeps runs for terminal task cards too), and reshuffling history for
- * them would be noise.
+ * The blocked-last partition is scoped to priority+opened. There it makes the
+ * UI agree with reality — the admission loop filters blocked tickets out
+ * before sorting the rest, so a blocked P9 above an unblocked P1 would be the
+ * list lying about which pipeline goes next. Ranking the Closed archive by P
+ * stays available (an operator may want to see which high-priority pipelines
+ * actually completed), but there the partition would be noise: a terminal
+ * ticket still carries whatever blockers it had, and nothing is waiting to
+ * launch.
  */
 export function sortInventoryCards(
   cards: PipelineBoardCard[],
   mode: InventorySortMode = "priority",
   tab: InventoryTab = "opened",
 ): PipelineBoardCard[] {
-  const effective = effectiveSortMode(mode, tab);
-  if (effective === "updated") return sortNewestFirst(cards);
-  if (effective === "priority") {
+  if (mode === "updated") return sortNewestFirst(cards);
+  if (mode === "priority") {
+    const blockedLast = tab === "opened";
     return [...cards].sort((a, b) => {
-      const byBlocked = compareBlockedLast(a, b);
-      if (byBlocked !== 0) return byBlocked;
+      if (blockedLast) {
+        const byBlocked = compareBlockedLast(a, b);
+        if (byBlocked !== 0) return byBlocked;
+      }
       return compareLaunchOrder(a, b);
     });
   }

@@ -6,8 +6,9 @@ import { Input } from "@/components/ui/Input";
 import { Select } from "@/components/ui/Select";
 
 import {
-  effectiveSortMode,
-  inventorySortOptions,
+  INVENTORY_SORT_OPTIONS,
+  sortModeForTab,
+  withSortModeForTab,
   pipelineFiltersActive,
   type ClosedSubfilter,
   type DepsFilter,
@@ -57,10 +58,9 @@ export function PipelineFilters({
 }) {
   const active = pipelineFiltersActive(filters);
   const tab: InventoryTab = filters.inventoryTab ?? "opened";
-  // The Closed archive is chronological (see effectiveSortMode) — resolve the
-  // displayed value through the same function the grid sorts with, so the
-  // select never shows "Priority" over a list ordered by date.
-  const sortValue = effectiveSortMode(filters.sortMode, tab);
+  // Each tab carries its own sort, so what the control shows is what the grid
+  // does — and changing it here cannot re-order the other tab.
+  const sortValue = sortModeForTab(filters, tab);
 
   const toggleLabel = (label: string) => {
     const labels = new Set(filters.labels);
@@ -298,19 +298,22 @@ export function PipelineFilters({
             id="pipeline-inventory-sort"
             value={sortValue}
             onChange={(e) =>
-              onChange({
-                ...filters,
-                sortMode: e.target.value as InventorySortMode,
-              })
+              onChange(
+                withSortModeForTab(
+                  filters,
+                  tab,
+                  e.target.value as InventorySortMode,
+                ),
+              )
             }
-            aria-label="Sort inventory cards"
+            aria-label={`Sort ${tab} inventory cards`}
             title={
               sortValue === "priority"
                 ? "Higher priority first — same order as the launch queue; ties oldest-first"
                 : "Order inventory cards"
             }
           >
-            {inventorySortOptions(tab).map((o) => (
+            {INVENTORY_SORT_OPTIONS.map((o) => (
               <option key={o.value} value={o.value}>
                 {o.label}
               </option>
