@@ -21,6 +21,15 @@ const (
 	// resume with the computed grant rule; the executor reads it and adds
 	// it to the resolved policy.
 	GrantInputKey = "_permission_grant"
+	// RunGrantsInputKey is the reserved node-input key carrying every
+	// `allow always` rule the run has accumulated. Kept distinct from
+	// GrantInputKey because the two answer forms differ in LIFETIME, not
+	// only in scope: `allow` authorizes the one call the operator was
+	// shown, `allow always` holds for the rest of the run. Distinct also
+	// because GrantInputKey's presence is what tells the resume framing
+	// that THIS pause was approved — a run-wide set under that key would
+	// announce "[PERMISSION GRANTED]" on a pause the operator just denied.
+	RunGrantsInputKey = "_permission_run_grants"
 )
 
 // Marker builds the structured permission-request payload stored in the

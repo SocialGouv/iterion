@@ -689,7 +689,13 @@ func (e *ClawExecutor) buildTask(ctx context.Context, node ir.Node, f backendFie
 		// only the one it was answered on; the bare-string form is the
 		// older single-grant shape, still accepted so a checkpoint
 		// written by a previous build resumes without losing its grant.
+		// Two sources, two lifetimes: this pause's grant (whichever form
+		// the operator answered) and the run's accumulated `allow always`
+		// set. Both are additive to the freshly built policy.
 		for _, rule := range permission.GrantsFrom(input[permission.GrantInputKey]) {
+			pol.AddAllowRule(rule)
+		}
+		for _, rule := range permission.GrantsFrom(input[permission.RunGrantsInputKey]) {
 			pol.AddAllowRule(rule)
 		}
 		task.Permission = pol

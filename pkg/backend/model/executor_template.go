@@ -557,7 +557,7 @@ func prependPriorAskUser(userText string, input map[string]any) string {
 	// The harness context is wrapped in <system-reminder> so the model reads
 	// it as injected state, cleanly separated from the user text it precedes;
 	// the bracket labels stay as stable transcript markers.
-	if len(permission.GrantsFrom(input[permission.GrantInputKey])) > 0 {
+	if grant, ok := input[permission.GrantInputKey].(string); ok && grant != "" {
 		return systemReminder(fmt.Sprintf("[PERMISSION GRANTED]\nThe operator approved your previous tool call (%s). It is now authorized — re-issue the exact same tool call now to perform it.", q)) + "\n\n" + userText
 	}
 	if isPermissionPrompt(q) {

