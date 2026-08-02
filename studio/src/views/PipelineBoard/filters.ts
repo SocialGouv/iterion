@@ -42,14 +42,21 @@ export type DepsFilter = "all" | "unblocked" | "blocked";
  */
 export type InventorySortMode = "priority" | "updated" | "created";
 
+// Keyed by mode, not a hand-kept array: the Sort control renders whatever a
+// tab can resolve to, so a mode without an entry here would render the select
+// blank. A Record makes that a typecheck error instead of a runtime hole.
+const INVENTORY_SORT_LABELS: Record<InventorySortMode, string> = {
+  priority: "Priority",
+  updated: "Recently updated",
+  created: "Recently created",
+};
+
 export const INVENTORY_SORT_OPTIONS: {
   value: InventorySortMode;
   label: string;
-}[] = [
-  { value: "priority", label: "Priority" },
-  { value: "updated", label: "Recently updated" },
-  { value: "created", label: "Recently created" },
-];
+}[] = (Object.keys(INVENTORY_SORT_LABELS) as InventorySortMode[]).map(
+  (value) => ({ value, label: INVENTORY_SORT_LABELS[value] }),
+);
 
 /**
  * The sort a tab is currently using. Sort state is stored PER TAB, so the
@@ -255,7 +262,17 @@ export function filterPipelineCards(
   });
 }
 
-/** Newest first by updated_at (fallback created_at). */
+/**
+ * Newest first by updated_at (fallback created_at).
+ *
+ * "updated" means LAST TOUCHED, not finished: a closed card's `updated_at` is
+ * its issue's or run's mtime, so relabelling a months-old pipeline lifts it
+ * back to the top of the archive. That is the honest reading of the field the
+ * projection ships — there is no completion timestamp on the card DTO — and
+ * "Recently created" is the stable escape hatch when an operator wants an
+ * order nothing can perturb. Sorting Closed by true completion time needs a
+ * `finished_at` on the projection first.
+ */
 export function sortNewestFirst(cards: PipelineBoardCard[]): PipelineBoardCard[] {
   return [...cards].sort((a, b) => {
     const ta = Date.parse(a.updated_at || a.created_at || "") || 0;
