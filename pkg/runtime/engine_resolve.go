@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/SocialGouv/iterion/pkg/backend/model"
+	"github.com/SocialGouv/iterion/pkg/backend/permission"
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
 	"github.com/SocialGouv/iterion/pkg/memory"
 	"github.com/SocialGouv/iterion/pkg/store"
@@ -141,17 +142,13 @@ func (e *Engine) buildNodeInputRS(nodeID string, sc resolveScope) map[string]any
 		}
 	}
 
-	if len(result) > 0 {
-		return result
-	}
-
 	// Fallback: for the entry node merge workflow var defaults with run-level
 	// inputs so that {{input.X}} references resolve to the var default when
 	// --var X=... was not provided on the CLI. Without this, vars declared
 	// with a default like `scope_notes: string = ""` are missing from the
 	// entry node's input map and the placeholder is left literal in prompts.
 	// CLI inputs override defaults.
-	if nodeID == e.workflow.Entry {
+	if len(result) == 0 && nodeID == e.workflow.Entry {
 		for name, v := range e.workflow.Vars {
 			if v.HasDefault {
 				result[name] = v.Default
@@ -160,6 +157,24 @@ func (e *Engine) buildNodeInputRS(nodeID string, sc resolveScope) map[string]any
 		for k, v := range sc.runInputs {
 			result[k] = v
 		}
+	}
+
+	// The reserved permission keys are engine-owned. Run inputs are
+	// caller-supplied and land wholesale on the entry node above, so a
+	// launch payload naming them would otherwise seed policy allow rules
+	// straight into the gate that exists to bound the caller.
+	delete(result, permission.GrantInputKey)
+	delete(result, permission.RunGrantsInputKey)
+	// Attach the grants this node has earned. Done here rather than only
+	// on the resume path so an ordinary execution and a bounded-loop
+	// re-entry carry them too — a re-entry is a fresh Execute, not a
+	// re-invocation, and without this the operator re-authorizes the same
+	// tool every time a repair loop re-enters the node. Per node on
+	// purpose: Evaluate ranks allow rules above the mode default, so
+	// lending one node's grant to another would beat a `permission: deny`
+	// the other node declared for itself.
+	if sc.rs != nil && len(sc.rs.permissionGrants[nodeID]) > 0 {
+		result[permission.RunGrantsInputKey] = append([]string(nil), sc.rs.permissionGrants[nodeID]...)
 	}
 
 	return result
