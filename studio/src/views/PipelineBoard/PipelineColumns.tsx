@@ -355,8 +355,8 @@ export function PipelineColumns({
     ? filterInventoryCards(inventory, filters)
     : inventory;
   // Opened defaults to priority order (same as the admission queue) with
-  // dependency-blocked tickets sunk to the bottom; Closed history and
-  // operators who prefer recency can switch via Sort.
+  // dependency-blocked tickets sunk to the bottom; Closed is history, so it
+  // reads newest-first. Either tab can switch via Sort.
   const inventoryVisible = sortInventoryCards(
     inventoryFiltered,
     filters?.sortMode ?? "priority",
@@ -562,8 +562,8 @@ export function PipelineColumns({
                 </h2>
               </div>
               <p className="mt-0.5 text-micro text-fg-muted">
-                Opened queue and closed history as tabs — default sort is
-                priority (higher first, ties oldest).
+                Opened queue and closed history as tabs — Opened sorts by
+                priority (higher first, ties oldest), Closed newest first.
               </p>
             </div>
           </div>
