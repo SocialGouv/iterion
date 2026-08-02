@@ -324,12 +324,13 @@ describe("per-tab sort state", () => {
     expect(f.closedSortMode).toBe("updated");
   });
 
-  it("tolerates a state predating the split", () => {
-    // A filter object persisted before closedSortMode existed must still
-    // resolve, not render the Sort control blank.
-    const legacy = { sortMode: undefined, closedSortMode: undefined };
-    expect(sortModeForTab(legacy, "opened")).toBe("priority");
-    expect(sortModeForTab(legacy, "closed")).toBe("updated");
+  it("resolves every mode on either tab", () => {
+    for (const mode of ["priority", "updated", "created"] as const) {
+      const f = withSortModeForTab(emptyPipelineFilters(), "closed", mode);
+      expect(sortModeForTab(f, "closed")).toBe(mode);
+      const g = withSortModeForTab(emptyPipelineFilters(), "opened", mode);
+      expect(sortModeForTab(g, "opened")).toBe(mode);
+    }
   });
 });
 

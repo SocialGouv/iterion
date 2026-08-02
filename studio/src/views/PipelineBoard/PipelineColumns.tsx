@@ -563,8 +563,9 @@ export function PipelineColumns({
                 </h2>
               </div>
               <p className="mt-0.5 text-micro text-fg-muted">
-                Opened queue and closed history as tabs — Opened sorts by
-                priority (higher first, ties oldest), Closed newest first.
+                Opened queue and closed history as tabs. Each remembers its own
+                Sort — Opened starts on priority (higher first, ties oldest),
+                Closed on newest first.
               </p>
             </div>
           </div>

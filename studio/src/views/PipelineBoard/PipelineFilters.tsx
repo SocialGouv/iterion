@@ -308,9 +308,14 @@ export function PipelineFilters({
             }
             aria-label={`Sort ${tab} inventory cards`}
             title={
-              sortValue === "priority"
-                ? "Higher priority first — same order as the launch queue; ties oldest-first"
-                : "Order inventory cards"
+              sortValue !== "priority"
+                ? "Order inventory cards — this tab remembers its own choice"
+                : tab === "closed"
+                  ? // Priority stays selectable here (which high-P pipelines
+                    // completed?), but nothing in Closed is queued for launch,
+                    // so promising "the launch queue's order" would be a lie.
+                    "Higher priority first; ties oldest-first"
+                  : "Higher priority first — same order as the launch queue; ties oldest-first"
             }
           >
             {INVENTORY_SORT_OPTIONS.map((o) => (

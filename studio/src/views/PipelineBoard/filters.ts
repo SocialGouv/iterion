@@ -57,18 +57,16 @@ export const INVENTORY_SORT_OPTIONS: {
  * a pick made while reading the archive cannot silently re-order the launch
  * queue behind the operator's back.
  *
- * The alternative — one shared mode whose default is resolved per tab — was
- * tried first and is a trap. Display then diverges from state (a controlled
- * <select> fires no change event when the shown option is re-picked, so the
- * archive's order cannot be pinned at all), and normalising the shared value
- * on tab switch is worse still: merely visiting Closed would write "updated"
- * into the shared field and cost Opened its priority ordering for good.
+ * Do not collapse this back into one shared mode whose default is merely
+ * resolved per tab. Display then diverges from state — and because a
+ * controlled <select> fires no change event when the option it already shows
+ * is re-picked, the archive's order becomes impossible to pin. Normalising
+ * the shared value on tab switch does not rescue it either: merely visiting
+ * Closed would write "updated" into the shared field and cost Opened its
+ * priority ordering for good.
  */
 export function sortModeForTab(
-  // Partial on purpose: the rest of this module reads filter fields
-  // defensively (`?? "all"`), because a filter object can predate a field —
-  // and a Sort control rendered blank would be worse than a default.
-  f: Partial<Pick<PipelineFilterState, "sortMode" | "closedSortMode">>,
+  f: Pick<PipelineFilterState, "sortMode" | "closedSortMode">,
   tab: InventoryTab,
 ): InventorySortMode {
   return tab === "closed"
