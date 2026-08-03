@@ -7,9 +7,11 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/SocialGouv/iterion/pkg/auth"
+	"github.com/SocialGouv/iterion/pkg/credpool"
 	"github.com/SocialGouv/iterion/pkg/secrets"
 )
 
@@ -357,6 +359,22 @@ func (s *Server) deleteOAuthForOwner(w http.ResponseWriter, r *http.Request, own
 	if !kind.Valid() {
 		httpError(w, http.StatusBadRequest, "unknown oauth kind")
 		return
+	}
+	// Consent is given for a SPECIFIC connected subscription. Disconnecting
+	// it withdraws that consent, so the pledge goes with it — otherwise the
+	// terms would sit there waiting to be rebound to whatever credential is
+	// connected next under the same key, which could be a different account
+	// entirely.
+	//
+	// Best-effort: disconnecting is the user's actual request, and a
+	// degraded pool store must not trap them into keeping a credential
+	// connected. A pledge left behind is caught at acquisition, which parks
+	// it the first time its credential turns up missing. Only personal
+	// scopes can hold a pledge — an org owner key never does.
+	if s.credPoolPledges != nil && !strings.HasPrefix(ownerKey, secrets.OrgOwnerPrefix) {
+		if err := s.credPoolPledges.Delete(r.Context(), credpool.PledgeID(ownerKey, string(kind))); err != nil && !errors.Is(err, credpool.ErrNotFound) {
+			s.logger.Warn("credential pool: could not withdraw %s's %s contribution on disconnect: %v (it is parked at the next acquisition)", ownerKey, kind, err)
+		}
 	}
 	if err := s.oauthStore.Delete(r.Context(), ownerKey, kind); err != nil {
 		if errors.Is(err, secrets.ErrOAuthNotFound) {

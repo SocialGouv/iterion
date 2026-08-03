@@ -151,6 +151,32 @@ func Annotate(output map[string]any, model string, inputTokens, outputTokens int
 	return totalTokens
 }
 
+// USDFromOutput reads back the `_cost_usd` key Annotate / AnnotateWithUSD
+// wrote onto a generation output. Returns 0 when the key is absent — which
+// this package deliberately uses to mean "no cost data" (unknown model)
+// rather than "$0", so callers must treat a zero as unknown and not as a
+// measured free call.
+func USDFromOutput(output map[string]any) float64 {
+	if output == nil {
+		return 0
+	}
+	switch v := output["_cost_usd"].(type) {
+	case float64:
+		if v > 0 {
+			return v
+		}
+	case int:
+		if v > 0 {
+			return float64(v)
+		}
+	case int64:
+		if v > 0 {
+			return float64(v)
+		}
+	}
+	return 0
+}
+
 // StaticRate returns the committed fallback rate for a model, and whether the
 // table carries one at all. Exported so the pricing audit can compare what is
 // committed against what the spec aggregator publishes: the two silently

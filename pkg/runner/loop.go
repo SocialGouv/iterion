@@ -36,6 +36,7 @@ import (
 	"github.com/SocialGouv/iterion/pkg/botregistry"
 	"github.com/SocialGouv/iterion/pkg/bundle"
 	"github.com/SocialGouv/iterion/pkg/cloud/metrics"
+	"github.com/SocialGouv/iterion/pkg/credpool"
 	"github.com/SocialGouv/iterion/pkg/dsl/ast"
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
 	"github.com/SocialGouv/iterion/pkg/eventbus"
@@ -446,6 +447,12 @@ type Config struct {
 	// execution attempt (the billing source of truth — Prometheus
 	// counters above stay tenant-unlabelled). nil → no org metering.
 	OrgUsage orgusage.Counter
+
+	// CredPool, when non-nil, receives the spend of a run served by a
+	// lending contributor's pooled subscription, closing its lease and
+	// freeing the donor's concurrency slot. nil → runs never draw on a
+	// pool, or the deployment has none.
+	CredPool *credpool.Broker
 
 	// Events, when non-nil, receives a run-outcome trigger.Event
 	// (run.finished/failed/cancelled/paused) after every execution
@@ -1067,7 +1074,12 @@ func (r *Runner) fireOutcomeEvent(msg *queue.RunMessage, execErr error) {
 // executeRun hydrates the IR from the message, builds the runtime
 // engine + Claw executor, then dispatches to Run or Resume based on
 // the message shape.
-func (r *Runner) executeRun(ctx context.Context, msg *queue.RunMessage) error {
+//
+// The return is named so the deferred spend accounting can see how the
+// attempt ended: a credential pool must know whether it was a provider
+// quota window or a rejected credential that stopped the run, not merely
+// how much it cost.
+func (r *Runner) executeRun(ctx context.Context, msg *queue.RunMessage) (execErr error) {
 	// Honour the publisher's per-run wall-clock budget. Without this,
 	// queue.RunMessage.TimeoutSec — wired from `iterion run --timeout`
 	// and the studio Launch modal — has no effect in cloud mode: the
@@ -1251,9 +1263,14 @@ func (r *Runner) executeRun(ctx context.Context, msg *queue.RunMessage) error {
 	if err != nil {
 		return err
 	}
-	// Charge the org's monthly usage whatever the outcome — paused,
-	// cancelled and failed attempts incurred real LLM spend.
-	defer r.recordOrgSpend(msg, usage)
+	// Charge the run's spend whatever the outcome — paused, cancelled and
+	// failed attempts incurred real LLM spend. The org's monthly bucket
+	// always; a lending contributor's ledger too when this run drew on the
+	// credential pool.
+	defer func() {
+		r.recordOrgSpend(msg, usage)
+		r.recordPoolSpend(msg, usage, execErr)
+	}()
 
 	engineOpts := []runtime.EngineOption{
 		runtime.WithLogger(runLogger),

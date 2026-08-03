@@ -845,10 +845,18 @@ func piClassifyFailure(m pisdk.Message) error {
 		return piRateLimited(msg)
 	case status == 408, status == 409, status >= 500:
 		return &ErrTransient{Provider: BackendPi, Reason: fmt.Sprintf("upstream %d", status), Detail: msg}
-	case status == 401, status == 403, status == 402:
-		// Deterministic: a credential or billing problem. Retrying burns
-		// attempts against a failure that cannot resolve itself.
-		return fmt.Errorf("pi: auth/billing rejected (%d): %s", status, msg)
+	case status == 401, status == 403:
+		// Deterministic: the credential was rejected. Retrying burns
+		// attempts against a failure that cannot resolve itself. Typed so
+		// callers can ACT on it — the credential pool holds a donor whose
+		// subscription keeps being rejected out of rotation, which no
+		// message-substring match should be deciding.
+		return &ErrAuthFailed{Provider: BackendPi, Detail: fmt.Sprintf("upstream %d: %s", status, msg)}
+	case status == 402:
+		// Payment required: the credential is fine, the balance is not.
+		// Deliberately NOT ErrAuthFailed — that would tell a lending donor
+		// to "reconnect", which does not refill an account.
+		return fmt.Errorf("pi: payment required (%d): %s", status, msg)
 	case status >= 400:
 		return fmt.Errorf("pi: upstream %d: %s", status, msg)
 	}

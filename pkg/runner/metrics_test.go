@@ -10,6 +10,7 @@ import (
 
 	"github.com/SocialGouv/iterion/pkg/backend/model"
 	"github.com/SocialGouv/iterion/pkg/cloud/metrics"
+	iterlog "github.com/SocialGouv/iterion/pkg/log"
 	"github.com/SocialGouv/iterion/pkg/store"
 )
 
@@ -245,5 +246,111 @@ func TestMetricsEmitter_lookupModel_emptyNodeID(t *testing.T) {
 	m := newMetricsEmitter(&recordingEmitter{}, metrics.New())
 	if got := m.lookupModel(""); got != "" {
 		t.Errorf("lookupModel(\"\") = %q, want empty", got)
+	}
+}
+
+// A delegate backend's spend must reach RunTotals — that number is what
+// charges the org's monthly cost cap and what decrements a credential-pool
+// donor's quota. It used to stop at the tokens: the whole attempt of a
+// claude_code run reported $0, so no cap could ever trip.
+//
+// The event here is produced by the PRODUCTION hook (model.NewStoreEventHooks
+// → OnDelegateFinished), not hand-assembled, so the test fails if either side
+// of the join drifts — the emitter dropping the field, or the consumer
+// reading a different key.
+func TestMetricsEmitter_delegateFinished_costReachesRunTotals(t *testing.T) {
+	inner := &recordingEmitter{}
+	usage := newMetricsEmitter(inner, metrics.New())
+
+	hooks := model.NewStoreEventHooks(
+		context.Background(), usage, "run-4", iterlog.New(iterlog.LevelError, nil), nil,
+	)
+	hooks.OnDelegateFinished("n1", model.DelegateInfo{
+		BackendName: "claude_code",
+		Tokens:      1200,
+		CostUSD:     0.4242,
+	})
+
+	if len(inner.events) != 1 {
+		t.Fatalf("inner emitter received %d events, want 1", len(inner.events))
+	}
+	if got := inner.events[0].Data["cost_usd"]; got != 0.4242 {
+		t.Errorf("emitted cost_usd = %v, want 0.4242 — the hook is dropping the delegation's cost", got)
+	}
+
+	costUSD, in, _ := usage.RunTotals()
+	if costUSD != 0.4242 {
+		t.Errorf("RunTotals cost = %v, want 0.4242 — delegate spend is not charged to the run", costUSD)
+	}
+	if in != 1200 {
+		t.Errorf("RunTotals input tokens = %d, want 1200", in)
+	}
+}
+
+// The counterpart: an unpriced model omits `_cost_usd`, so the hook omits
+// `cost_usd`, so the run's cost stays at zero rather than recording a
+// fabricated free call.
+func TestMetricsEmitter_delegateFinished_unpricedStaysZero(t *testing.T) {
+	inner := &recordingEmitter{}
+	usage := newMetricsEmitter(inner, metrics.New())
+
+	hooks := model.NewStoreEventHooks(
+		context.Background(), usage, "run-5", iterlog.New(iterlog.LevelError, nil), nil,
+	)
+	hooks.OnDelegateFinished("n1", model.DelegateInfo{BackendName: "claude_code", Tokens: 900})
+
+	if _, present := inner.events[0].Data["cost_usd"]; present {
+		t.Error("cost_usd present for an unpriced delegation — 'no data' must stay distinguishable from $0")
+	}
+	if costUSD, _, _ := usage.RunTotals(); costUSD != 0 {
+		t.Errorf("RunTotals cost = %v, want 0", costUSD)
+	}
+}
+
+// claw is in-process but still dispatches through the delegate hook, so it
+// emits BOTH a per-step llm_step_finished and a delegation total. Counting
+// both charged every claw run twice: an org's monthly cap would trip at
+// half its budget, and a lending donor would be drained at twice the rate
+// they agreed to.
+func TestMetricsEmitter_clawCostIsNotCountedTwice(t *testing.T) {
+	inner := &recordingEmitter{}
+	usage := newMetricsEmitter(inner, metrics.New())
+	ctx := context.Background()
+
+	// A claw node: a priced step, then the delegation total for the same work.
+	_, _ = usage.AppendEvent(ctx, "run-1", store.Event{
+		Type: store.EventLLMRequest, RunID: "run-1", NodeID: "n1",
+		Data: map[string]any{"model": "claude-sonnet-4-6"},
+	})
+	_, _ = usage.AppendEvent(ctx, "run-1", store.Event{
+		Type: store.EventLLMStepFinished, RunID: "run-1", NodeID: "n1",
+		Data: map[string]any{"input_tokens": float64(1000), "output_tokens": float64(500)},
+	})
+	perStep, _, _ := usage.RunTotals()
+	if perStep <= 0 {
+		t.Fatalf("the step itself priced to %v — the test cannot show a double count", perStep)
+	}
+
+	_, _ = usage.AppendEvent(ctx, "run-1", store.Event{
+		Type: store.EventDelegateFinished, RunID: "run-1", NodeID: "n1",
+		Data: map[string]any{"backend": "claw", "tokens": float64(1500), "cost_usd": perStep},
+	})
+
+	total, _, _ := usage.RunTotals()
+	if total != perStep {
+		t.Errorf("cost = %v after the delegation total, want %v — claw was charged twice", total, perStep)
+	}
+}
+
+// A CLI delegate has no per-step events, so its delegation total is the
+// only cost signal and must still be counted.
+func TestMetricsEmitter_cliDelegateCostIsStillCounted(t *testing.T) {
+	usage := newMetricsEmitter(&recordingEmitter{}, metrics.New())
+	_, _ = usage.AppendEvent(context.Background(), "run-2", store.Event{
+		Type: store.EventDelegateFinished, RunID: "run-2", NodeID: "n1",
+		Data: map[string]any{"backend": "claude_code", "tokens": float64(900), "cost_usd": 0.42},
+	})
+	if cost, _, _ := usage.RunTotals(); cost != 0.42 {
+		t.Errorf("cost = %v, want 0.42", cost)
 	}
 }

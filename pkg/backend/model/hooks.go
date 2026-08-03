@@ -748,6 +748,11 @@ func (h *storeHooks) onDelegateFinished(nodeID string, info DelegateInfo) {
 		"parse_fallback":       info.ParseFallback,
 		"formatting_pass_used": info.FormattingPassUsed,
 	}
+	// Omitted when the price table did not know the model, so an observer
+	// can tell "no cost data" from a measured $0 by the key's absence.
+	if info.CostUSD > 0 {
+		data["cost_usd"] = info.CostUSD
+	}
 	if h.logger.IsEnabled(iterlog.LevelTrace) && info.Stderr != "" {
 		data["stderr"] = iterlog.Truncate(info.Stderr, maxFieldSize)
 	}

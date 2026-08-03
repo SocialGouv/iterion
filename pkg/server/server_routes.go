@@ -263,6 +263,12 @@ func (s *Server) routes() {
 		if s.authStore() != nil {
 			s.registerOAuthTeamRoutes()
 		}
+		// Mutualised credential pool. Rides the same gating: lending a
+		// subscription starts by connecting one, so a deployment without
+		// the OAuth surface has nothing to pool.
+		if s.credPoolPools != nil && s.credPoolPledges != nil && s.credPoolLeases != nil && s.credPoolLedger != nil {
+			s.registerCredPoolRoutes()
+		}
 	}
 
 	// Dispatcher + native tracker — both optional. Each handler is

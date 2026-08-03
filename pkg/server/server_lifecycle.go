@@ -224,6 +224,19 @@ func (s *Server) ListenAndServe() error {
 			s.runQueueSweeper(ctx, lister, s.queue)
 		}()
 	}
+	// Abandoned-lease sweeper: gives a lending contributor back the
+	// concurrency slot of a run whose pod died without reporting.
+	if s.credPool != nil {
+		go func() {
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			go func() {
+				<-s.shutdown
+				cancel()
+			}()
+			s.runCredPoolSweeper(ctx)
+		}()
+	}
 	// Retry sweeper (cloud only): resumes runs whose provider quota window
 	// has reopened. Needs only the store — unlike the orphan sweeper it
 	// asks no question of the queue, because the retry instant was decided

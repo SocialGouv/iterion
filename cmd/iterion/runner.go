@@ -14,6 +14,7 @@ import (
 	"github.com/SocialGouv/iterion/pkg/cloud/metrics"
 	"github.com/SocialGouv/iterion/pkg/cloud/tracing"
 	iterconfig "github.com/SocialGouv/iterion/pkg/config"
+	"github.com/SocialGouv/iterion/pkg/credpool"
 	"github.com/SocialGouv/iterion/pkg/eventbus"
 	iterlog "github.com/SocialGouv/iterion/pkg/log"
 	"github.com/SocialGouv/iterion/pkg/orgusage"
@@ -205,6 +206,19 @@ func runRunner(cmd *cobra.Command, _ []string) error {
 		return fmt.Errorf("runner: ensure org_usage schema: %w", err)
 	}
 
+	// Credential pool: a run served by a contributor's lent subscription
+	// must report what it spent, or the donor's ledger never moves and
+	// their concurrency slot only frees on lease expiry.
+	credBroker := credpool.NewBroker(credpool.BrokerConfig{
+		Pools:   credpool.NewMongoPoolStore(st.DB()),
+		Pledges: credpool.NewMongoPledgeStore(st.DB()),
+		Leases:  credpool.NewMongoLeaseStore(st.DB()),
+		Ledger:  credpool.NewMongoLedger(st.DB()).WithLogger(logger),
+		OAuth:   secrets.NewMongoOAuthStore(st.DB()),
+		Sealer:  sealer,
+		Logger:  logger,
+	})
+
 	// Bots: where bot-qualified runs resolve their bundle so skills/
 	// mirror into the workspace — same env contract as the server
 	// (the official image sets ITERION_BOTS_PATH=/opt/iterion/bots).
@@ -239,6 +253,7 @@ func runRunner(cmd *cobra.Command, _ []string) error {
 		GenericSecrets:    secrets.NewMongoGenericSecretStore(st.DB()),
 		MemoryStore:       memStore,
 		OrgUsage:          orgUsageCounter,
+		CredPool:          credBroker,
 		BotsPaths:         botsPaths,
 		// Sandbox-by-default: the runner is a product entry point like
 		// `iterion run` — an unset ITERION_SANDBOX_DEFAULT resolves to

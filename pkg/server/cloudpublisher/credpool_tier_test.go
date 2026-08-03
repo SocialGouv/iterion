@@ -1,0 +1,241 @@
+package cloudpublisher
+
+import (
+	"context"
+	"encoding/json"
+	"testing"
+	"time"
+
+	"github.com/SocialGouv/iterion/pkg/credpool"
+	"github.com/SocialGouv/iterion/pkg/dsl/ir"
+	iterlog "github.com/SocialGouv/iterion/pkg/log"
+	"github.com/SocialGouv/iterion/pkg/secrets"
+	"github.com/SocialGouv/iterion/pkg/store"
+)
+
+// poolFixture wires a REAL broker over in-memory stores and a real sealer,
+// with one donor whose credential is genuinely sealed in the OAuth store.
+// Nothing here hands the publisher a credential directly: if the tier is
+// not wired end to end, the bundle comes back empty.
+type poolFixture struct {
+	pub     *Publisher
+	rs      *secrets.MemoryRunSecretsStore
+	sealer  secrets.Sealer
+	pledges *credpool.MemoryPledgeStore
+	ledger  *credpool.MemoryLedger
+}
+
+const (
+	poolOrg  = "org-1"
+	poolTeam = "team-1"
+)
+
+func newPoolFixture(t *testing.T, limits credpool.Limits) *poolFixture {
+	t.Helper()
+	sealer, err := secrets.NewAESGCMSealer(make([]byte, 32))
+	if err != nil {
+		t.Fatalf("sealer: %v", err)
+	}
+	ctx := context.Background()
+
+	oauth := secrets.NewMemoryOAuthStore()
+	seedOAuth(t, oauth, sealer, "donor", "sk-ant-donated")
+
+	pools := credpool.NewMemoryPoolStore()
+	if err := pools.Upsert(ctx, credpool.Pool{ID: "pool-1", OrgID: poolOrg, Enabled: true}); err != nil {
+		t.Fatalf("seed pool: %v", err)
+	}
+	pledges := credpool.NewMemoryPledgeStore()
+	if err := pledges.Upsert(ctx, credpool.Pledge{
+		ID: credpool.PledgeID("donor", "claude_code"), PoolID: "pool-1",
+		UserID: "donor", Kind: "claude_code",
+		Enabled: true, Health: credpool.HealthOK, Limits: limits,
+	}); err != nil {
+		t.Fatalf("seed pledge: %v", err)
+	}
+	ledger := credpool.NewMemoryLedger()
+
+	broker := credpool.NewBroker(credpool.BrokerConfig{
+		Pools: pools, Pledges: pledges, Leases: credpool.NewMemoryLeaseStore(), Ledger: ledger,
+		OAuth: oauth, Sealer: sealer, Logger: testLogger(),
+	})
+	if broker == nil {
+		t.Fatal("broker is nil with every dependency wired")
+	}
+	rs := secrets.NewMemoryRunSecretsStore()
+	return &poolFixture{
+		pub: &Publisher{
+			// Deliberately NO oauthForfait / apiKeys: this fixture is a
+			// tenant with no credential of its own, which is the only
+			// condition under which the pool is meant to step in.
+			runSecrets: rs,
+			sealer:     sealer,
+			credPool:   broker,
+			logger:     iterlog.New(iterlog.LevelError, nil),
+		},
+		rs: rs, sealer: sealer, pledges: pledges, ledger: ledger,
+	}
+}
+
+// resolve runs the real credential-resolution path and opens the sealed
+// bundle the runner would receive.
+func (f *poolFixture) resolve(t *testing.T, runID string, wf *ir.Workflow) (secrets.RunBundle, credResolution) {
+	t.Helper()
+	ctx := store.WithTenant(context.Background(), poolTeam)
+	creds, err := f.pub.resolveAndSealCredentials(ctx, runID, poolOrg, poolTeam, "requester", "docs-refresh", wf, nil, nil)
+	if err != nil {
+		t.Fatalf("resolveAndSealCredentials: %v", err)
+	}
+	if creds.secretsRef == "" {
+		return secrets.RunBundle{}, creds
+	}
+	rec, err := f.rs.Get(ctx, creds.secretsRef)
+	if err != nil {
+		t.Fatalf("RunSecrets.Get: %v", err)
+	}
+	bundle, err := secrets.OpenRunBundle(f.sealer, runID, rec.SealedBundle)
+	if err != nil {
+		t.Fatalf("OpenRunBundle: %v", err)
+	}
+	return bundle, creds
+}
+
+// The whole point of the tier: a tenant with no credential of its own ends
+// up with a donor's, sealed into the bundle the runner will materialise.
+func TestPoolTier_credentiallessRunGetsADonorsSubscription(t *testing.T) {
+	f := newPoolFixture(t, credpool.Limits{MaxUSDPerDay: 5})
+
+	bundle, creds := f.resolve(t, "run-1", nil)
+
+	blob := bundle.OAuthCredentials["claude_code"]
+	if len(blob) == 0 {
+		t.Fatal("no pooled credential in the sealed bundle — the tier is not wired")
+	}
+	var got map[string]map[string]string
+	if err := json.Unmarshal(blob, &got); err != nil {
+		t.Fatalf("bundle credential is not the donor's stored blob: %v", err)
+	}
+	if got["claudeAiOauth"]["accessToken"] != "sk-ant-donated" {
+		t.Errorf("token = %q, want the donor's", got["claudeAiOauth"]["accessToken"])
+	}
+	if creds.grant == nil || creds.grant.DonorID != "donor" {
+		t.Fatalf("grant = %+v, want the donor's", creds.grant)
+	}
+}
+
+// The enforcement half: the run's cost budget must be capped at what
+// remains of the donor's allowance, or a single run could spend the whole
+// pledge and the overspend would only be discovered afterwards.
+func TestPoolTier_runBudgetIsCappedAtTheDonorsAllowance(t *testing.T) {
+	f := newPoolFixture(t, credpool.Limits{MaxUSDPerDay: 5})
+	// The donor has already given $3 today.
+	if err := f.ledger.AddSpend(context.Background(), credpool.PledgeID("donor", "claude_code"), time.Now().UTC(), 3, 0, 0); err != nil {
+		t.Fatalf("seed spend: %v", err)
+	}
+
+	_, creds := f.resolve(t, "run-1", nil)
+	if creds.grant == nil {
+		t.Fatal("no grant")
+	}
+	budget := clampBudgetToGrant(nil, nil, creds.grant, testLogger(), "run-1")
+	if budget == nil || budget.MaxCostUSD != 2 {
+		t.Fatalf("wire budget = %+v, want MaxCostUSD 2 (the $5 pledge minus the $3 already given)", budget)
+	}
+}
+
+// The clamp must only ever LOWER. A bot that declares a small budget under
+// a generous allowance must keep its own figure, not be raised to it.
+func TestClampBudgetToGrant_neverRaises(t *testing.T) {
+	grant := &credpool.Grant{RemainingUSD: 50}
+	cases := []struct {
+		name     string
+		override *ir.BudgetOverrides
+		wf       *ir.Workflow
+		want     float64
+	}{
+		{"no budget anywhere takes the allowance", nil, nil, 50},
+		{
+			"the workflow's own declared budget wins when tighter",
+			nil, &ir.Workflow{Budget: &ir.Budget{MaxCostUSD: 2}}, 2,
+		},
+		{
+			"a launch override wins when tighter",
+			&ir.BudgetOverrides{MaxCostUSD: 1}, &ir.Workflow{Budget: &ir.Budget{MaxCostUSD: 8}}, 1,
+		},
+		{
+			"the allowance wins when it is the tightest",
+			&ir.BudgetOverrides{MaxCostUSD: 900}, &ir.Workflow{Budget: &ir.Budget{MaxCostUSD: 800}}, 50,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := clampBudgetToGrant(tc.override, tc.wf, grant, testLogger(), "run-1")
+			if got == nil || got.MaxCostUSD != tc.want {
+				t.Errorf("MaxCostUSD = %+v, want %v", got, tc.want)
+			}
+		})
+	}
+}
+
+// A donor who set no spend cap grants an allowance of 0 — which means "no
+// ceiling", not "nothing left". Reading it as a ceiling would publish a run
+// budget of zero and stop the run before its first node.
+func TestClampBudgetToGrant_uncappedDonorImposesNoCeiling(t *testing.T) {
+	wf := &ir.Workflow{Budget: &ir.Budget{MaxCostUSD: 7}}
+	got := clampBudgetToGrant(nil, wf, &credpool.Grant{RemainingUSD: 0}, testLogger(), "run-1")
+	if got != nil && got.MaxCostUSD != 0 {
+		t.Errorf("budget = %+v, want no cost override imposed", got)
+	}
+}
+
+// No grant at all (no pool, or nobody available) must leave the caller's
+// budget exactly as it was.
+func TestClampBudgetToGrant_noGrantPassesThrough(t *testing.T) {
+	in := &ir.BudgetOverrides{MaxCostUSD: 12, MaxTokens: 999}
+	got := clampBudgetToGrant(in, nil, nil, testLogger(), "run-1")
+	if got == nil || got.MaxCostUSD != 12 || got.MaxTokens != 999 {
+		t.Errorf("budget = %+v, want the caller's own overrides untouched", got)
+	}
+}
+
+// The pool is a LAST resort: spending a contributor's lent subscription
+// while the tenant holds a usable key of its own would take a donation
+// nobody needed.
+func TestPoolTier_skippedWhenTheTenantHasItsOwnCredential(t *testing.T) {
+	f := newPoolFixture(t, credpool.Limits{MaxUSDPerDay: 5})
+	// Give the tenant its own personal forfait.
+	own := secrets.NewMemoryOAuthStore()
+	seedOAuth(t, own, f.sealer, "requester", "sk-ant-own")
+	f.pub.oauthForfait = own
+
+	bundle, creds := f.resolve(t, "run-1", nil)
+	if creds.grant != nil {
+		t.Error("the pool was drawn on although the tenant had its own credential")
+	}
+	if got := string(bundle.OAuthCredentials["claude_code"]); !contains(got, "sk-ant-own") {
+		t.Errorf("bundle carries %q, want the tenant's own credential", got)
+	}
+}
+
+// A paused donor must not be served, and the run must proceed exactly as
+// it would with no pool at all — never fail.
+func TestPoolTier_pausedDonorLeavesTheRunCredentialless(t *testing.T) {
+	f := newPoolFixture(t, credpool.Limits{})
+	ctx := context.Background()
+	p, err := f.pledges.Get(ctx, credpool.PledgeID("donor", "claude_code"))
+	if err != nil {
+		t.Fatalf("get pledge: %v", err)
+	}
+	p.Enabled = false
+	if err := f.pledges.Upsert(ctx, p); err != nil {
+		t.Fatalf("pause pledge: %v", err)
+	}
+
+	bundle, creds := f.resolve(t, "run-1", nil)
+	if creds.grant != nil {
+		t.Error("a paused donor was served")
+	}
+	if len(bundle.OAuthCredentials) != 0 {
+		t.Errorf("bundle = %+v, want no credentials", bundle.OAuthCredentials)
+	}
+}

@@ -32,14 +32,14 @@ func seedOAuth(t *testing.T, st secrets.OAuthStore, sealer secrets.Sealer, owner
 func resolveBundle(t *testing.T, p *Publisher, runSecrets *secrets.MemoryRunSecretsStore, sealer secrets.Sealer, runID, tenant, owner string) secrets.RunBundle {
 	t.Helper()
 	ctx := store.WithTenant(context.Background(), tenant)
-	ref, err := p.resolveAndSealCredentials(ctx, runID, tenant, owner, "", nil, nil, nil)
+	creds, err := p.resolveAndSealCredentials(ctx, runID, "", tenant, owner, "", nil, nil, nil)
 	if err != nil {
 		t.Fatalf("resolveAndSealCredentials: %v", err)
 	}
-	if ref == "" {
+	if creds.secretsRef == "" {
 		return secrets.RunBundle{}
 	}
-	rec, err := runSecrets.Get(ctx, ref)
+	rec, err := runSecrets.Get(ctx, creds.secretsRef)
 	if err != nil {
 		t.Fatalf("RunSecrets.Get: %v", err)
 	}

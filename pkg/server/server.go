@@ -22,6 +22,7 @@ import (
 	"github.com/SocialGouv/iterion/pkg/botsource"
 	"github.com/SocialGouv/iterion/pkg/bundle"
 	"github.com/SocialGouv/iterion/pkg/configshare"
+	"github.com/SocialGouv/iterion/pkg/credpool"
 	"github.com/SocialGouv/iterion/pkg/forge"
 	"github.com/SocialGouv/iterion/pkg/knowledge"
 	iterlog "github.com/SocialGouv/iterion/pkg/log"
@@ -126,6 +127,11 @@ type Server struct {
 	webhookCounter    webhooks.Counter
 	orgUsage          orgusage.Counter
 	orgDefaults       OrgLimitDefaults
+	credPool          *credpool.Broker
+	credPoolPools     credpool.PoolStore
+	credPoolPledges   credpool.PledgeStore
+	credPoolLeases    credpool.LeaseStore
+	credPoolLedger    credpool.Ledger
 	auditStore        audit.Store
 	pats              pat.Store
 	queue             *natsq.Conn
@@ -378,6 +384,11 @@ func New(cfg Config, logger *iterlog.Logger) *Server {
 		webhookCounter:    cfg.WebhookCounter,
 		orgUsage:          cfg.OrgUsage,
 		orgDefaults:       cfg.OrgDefaults,
+		credPool:          cfg.CredPoolBroker,
+		credPoolPools:     cfg.CredPoolPools,
+		credPoolPledges:   cfg.CredPoolPledges,
+		credPoolLeases:    cfg.CredPoolLeases,
+		credPoolLedger:    cfg.CredPoolLedger,
 		auditStore:        cfg.Audit,
 		pats:              cfg.PATs,
 		queue:             cfg.Queue,
