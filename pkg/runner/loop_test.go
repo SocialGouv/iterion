@@ -422,6 +422,40 @@ func TestClassifyExecResult(t *testing.T) {
 	}
 }
 
+// TestOutcomeSideEffectsFire pins which engine outcomes fire the run-outcome
+// side effects (completion webhook + run.<outcome> event) on the plain
+// dispatch path. The action is derived through classifyExecResult, so this
+// also catches an Ack/Nak flip that would silently change fire behaviour:
+// finals (finished / paused / cancelled / budget) fire once; a Nak with
+// redeliveries remaining (generic failure, infra interruption) fires
+// NOTHING — firing there pushed one "run failed" notification episode per
+// redelivery, up to MaxDeliver for a single deterministic failure.
+func TestOutcomeSideEffectsFire(t *testing.T) {
+	cases := []struct {
+		name      string
+		err       error
+		wantFires bool
+	}{
+		{"finished fires", nil, true},
+		{"paused fires", runtime.ErrRunPaused, true},
+		{"operator pause fires", runtime.ErrRunPausedOperator, true},
+		{"operator cancel fires", runtime.ErrRunCancelled, true},
+		{"budget exceeded fires (acked, no auto-resume)", runtime.ErrBudgetExceeded, true},
+		{"generic failure naks — no fire before the final disposition", errors.New("boom"), false},
+		{"wrapped generic failure naks — no fire", fmt.Errorf("engine: %w", errors.New("boom")), false},
+		{"interrupted naks — no fire", runtime.ErrRunInterrupted, false},
+		{"wrapped interrupted naks — no fire", fmt.Errorf("%w: at node n1", runtime.ErrRunInterrupted), false},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			out := classifyExecResult(c.err, "run-1")
+			if got := outcomeSideEffectsFire(c.err, out.action); got != c.wantFires {
+				t.Errorf("outcomeSideEffectsFire(%v, %v) = %v, want %v", c.err, out.action, got, c.wantFires)
+			}
+		})
+	}
+}
+
 // ---------------------------------------------------------------------------
 // resolveDeliveryPreconditions
 // ---------------------------------------------------------------------------

@@ -959,6 +959,11 @@ func (r *Runner) processOne(parent context.Context, delivery *natsq.Delivery) {
 		}
 	}
 
+	// The park branches below (usage-window / DLQ) are final by
+	// construction and fire through the closure's interruption guard
+	// alone; the plain dispatch path at the bottom consults
+	// outcomeSideEffectsFire.
+
 	// Checked BEFORE the DLQ park so a usage-window failure on the FINAL
 	// delivery still arms a retry instead of being parked: the window is
 	// exactly the condition that makes every prior delivery useless, so
@@ -975,12 +980,24 @@ func (r *Runner) processOne(parent context.Context, delivery *natsq.Delivery) {
 		return
 	}
 
-	if outcome.action != actionNak {
+	if outcomeSideEffectsFire(err, outcome.action) {
 		fireOutcome()
 	}
 	logAt(logger, outcome.level, outcome.logFmt, outcome.logArgs...)
 	finalStatus = outcome.finalStatus
 	dispatchTerminal(logger, delivery, outcome.action, outcome.op, msg.RunID)
+}
+
+// outcomeSideEffectsFire reports whether a delivery ending on the plain
+// dispatch path (no park) is a FINAL disposition that must fire the
+// run-outcome side effects (completion webhook + run.<outcome> event). A
+// Nak is not final — JetStream redelivers and the run auto-resumes, so
+// user-facing "run failed" episodes must wait for a disposition that
+// actually settles the run. Named (rather than inlined) so the
+// err → fires mapping is pinned by a table test next to
+// TestClassifyExecResult.
+func outcomeSideEffectsFire(execErr error, action deliveryAction) bool {
+	return !errors.Is(execErr, runtime.ErrRunInterrupted) && action != actionNak
 }
 
 // startProcessSpan builds the runner-side OTel root span for this
