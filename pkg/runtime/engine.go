@@ -22,6 +22,7 @@ import (
 	iterlog "github.com/SocialGouv/iterion/pkg/log"
 	"github.com/SocialGouv/iterion/pkg/sandbox"
 	"github.com/SocialGouv/iterion/pkg/store"
+	"github.com/SocialGouv/iterion/pkg/workspacetrack"
 )
 
 // tracerName is the OTel instrumentation name for runtime spans. The
@@ -85,6 +86,7 @@ type Engine struct {
 	recoveryDispatch         RecoveryDispatch         // optional; consulted on node execution failure
 	workflowHash             string                   // SHA-256 of the .bot source, set via WithWorkflowHash
 	workflowSource           string                   // .bot text at launch, set via WithWorkflowSource (else read from filePath)
+	workspaceTracker         workspacetrack.Tracker   // iterion-owned workspace versioning; nil = disabled (see WithWorkspaceTracker)
 	filePath                 string                   // absolute .bot source path, set via WithFilePath
 	parentRunID              string                   // immediate parent run, set via WithParentRunID for nested executions
 	parentNodeID             string                   // IR node id of the parent's subbot node that spawned this run, set via WithParentNodeID
@@ -266,6 +268,10 @@ type runState struct {
 	// still observes it. Distinct from the lossy cross-run pkg/eventbus.
 	events           *runEvents
 	artifactVersions map[string]int
+	// lastWorkspaceSnapshot is the workspacetrack snapshot id capturing
+	// the workspace as the previous node boundary left it. Same role as
+	// lastSnapshotCommit, for the tracker-backed path.
+	lastWorkspaceSnapshot string
 	// lastSnapshotCommit is the commit capturing the workspace as the
 	// previous node boundary left it, or "" meaning "identical to HEAD".
 	// The next node's pre-boundary marker aliases it, so recording

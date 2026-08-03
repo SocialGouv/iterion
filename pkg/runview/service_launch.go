@@ -808,6 +808,13 @@ func (s *Service) engineOptions(runLogger *iterlog.Logger, hash, filePath, runNa
 	if hash != "" {
 		opts = append(opts, runtime.WithWorkflowHash(hash))
 	}
+	// Workspace versioning: the engine captures the files at each node
+	// boundary so a rewind can restore what a node produced, not merely
+	// what it declared. Only engaged for runs with no isolated worktree —
+	// those keep the per-node git snapshots.
+	if s.workspaceTracker != nil {
+		opts = append(opts, runtime.WithWorkspaceTracker(s.workspaceTracker))
+	}
 	if filePath != "" {
 		opts = append(opts, runtime.WithFilePath(filePath))
 		// F-NEW-4: studio + cloud launches bypass pkg/cli/run.go's

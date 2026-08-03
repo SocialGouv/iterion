@@ -10,6 +10,7 @@ import (
 	iterlog "github.com/SocialGouv/iterion/pkg/log"
 	"github.com/SocialGouv/iterion/pkg/retrypolicy"
 	"github.com/SocialGouv/iterion/pkg/runtime"
+	"github.com/SocialGouv/iterion/pkg/runview"
 	"github.com/SocialGouv/iterion/pkg/store"
 )
 
@@ -220,7 +221,13 @@ func RunResumeWithFile(ctx context.Context, iterFile string, opts ResumeOptions,
 		return err
 	}
 
-	eng := runtime.New(wf, s, executor,
+	resumeOpts := []runtime.EngineOption{}
+	// Keep capturing across a resume: stopping here would leave a hole in
+	// the workspace history exactly where the operator is iterating.
+	if tracker := runview.WorkspaceTrackerFor(storeDir); tracker != nil {
+		resumeOpts = append(resumeOpts, runtime.WithWorkspaceTracker(tracker))
+	}
+	eng := runtime.New(wf, s, executor, append(resumeOpts,
 		runtime.WithLogger(logger),
 		runtime.WithWorkflowHash(wfHash),
 		runtime.WithFilePath(iterFile),
@@ -249,7 +256,7 @@ func RunResumeWithFile(ctx context.Context, iterFile string, opts ResumeOptions,
 			ModelFor:        opts.ModelFor,
 			BackendFor:      opts.BackendFor,
 		})),
-	)
+	)...)
 
 	// Acquire exclusive run lock to prevent concurrent processes.
 	// Use the SIGINT-aware ctx so a contended lock can still be

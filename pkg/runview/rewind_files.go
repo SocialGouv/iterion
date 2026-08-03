@@ -8,6 +8,7 @@ import (
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
 	"github.com/SocialGouv/iterion/pkg/runtime"
 	"github.com/SocialGouv/iterion/pkg/store"
+	"github.com/SocialGouv/iterion/pkg/workspacetrack"
 )
 
 // fileRevertResult reports what the workspace half of a rewind did.
@@ -17,6 +18,10 @@ type fileRevertResult struct {
 	RevertCommit string `json:"revert_commit,omitempty"`
 	BackupRef    string `json:"backup_ref,omitempty"`
 	SkipReason   string `json:"skip_reason,omitempty"`
+	// Restored carries the tracker's per-file accounting (written /
+	// deleted / unchanged / skipped) when the restore went through
+	// iterion's own versioning rather than git.
+	Restored *workspacetrack.RestoreReport `json:"restored,omitempty"`
 }
 
 // revertWorkspace restores the files a run's workspace held just BEFORE
@@ -38,12 +43,23 @@ type fileRevertResult struct {
 // rewind is still worth having, and the caller surfaces SkipReason so the
 // gap is loud rather than silent. A git command that FAILS is fatal —
 // "cannot" and "broke" are different answers.
-func revertWorkspace(run *store.Run, wf *ir.Workflow, cp *store.Checkpoint, pivot string) (*fileRevertResult, error) {
-	if !run.Worktree || run.WorkDir == "" {
-		return &fileRevertResult{SkipReason: "run has no isolated worktree — its workspace is the live tree, which iterion does not snapshot"}, nil
+func (s *Service) revertWorkspace(run *store.Run, wf *ir.Workflow, cp *store.Checkpoint, pivot, sourcePath string) (*fileRevertResult, error) {
+	if run.WorkDir == "" {
+		return &fileRevertResult{SkipReason: "run has no recorded workspace"}, nil
+	}
+	if !run.Worktree {
+		// No isolated worktree: iterion's own versioning is the only
+		// mechanism that applies (git would stage the operator's work).
+		return s.revertViaTracker(run, wf, cp, pivot, sourcePath)
 	}
 	ref, ok := findPreNodeRef(run, wf, cp, pivot)
 	if !ok {
+		// Fall back to iterion's own versioning: a worktree run may still
+		// have been captured by the tracker (e.g. the git ref was never
+		// written because the boundary predates the marker).
+		if res, terr := s.revertViaTracker(run, wf, cp, pivot, sourcePath); terr == nil && res.Reverted {
+			return res, nil
+		}
 		return &fileRevertResult{SkipReason: fmt.Sprintf(
 			"no pre-execution snapshot recorded for %q (run predates the pre-boundary marker, or the node ran outside the worktree)", pivot)}, nil
 	}
@@ -155,4 +171,63 @@ func gitOut(workDir string, args ...string) (string, error) {
 		return "", fmt.Errorf("git %s: %w\noutput: %s", strings.Join(args, " "), err, out)
 	}
 	return strings.TrimSpace(out), nil
+}
+
+// revertViaTracker restores the workspace through iterion's own
+// versioning — the path that covers a run with no isolated worktree,
+// which is the default shape and the majority of the catalog.
+func (s *Service) revertViaTracker(run *store.Run, wf *ir.Workflow, cp *store.Checkpoint, pivot, sourcePath string) (*fileRevertResult, error) {
+	if s.workspaceTracker == nil {
+		return &fileRevertResult{SkipReason: "workspace versioning is not enabled on this store"}, nil
+	}
+	snapshotID, ok := findPreNodeSnapshot(s.workspaceTracker, run, wf, cp, pivot)
+	if !ok {
+		// Distinguish the three real causes: the operator can act on the
+		// first two, and conflating them sent people hunting for a
+		// non-existent "old run" problem.
+		if s.workspaceTracker.Head(run.ID) == "" {
+			return &fileRevertResult{SkipReason: fmt.Sprintf(
+				"this run captured no workspace snapshots at all — it was launched on a path that does not enable workspace versioning, or versioning was off")}, nil
+		}
+		return &fileRevertResult{SkipReason: fmt.Sprintf(
+			"the run has workspace snapshots but none recorded before %q — that node kind does not mark a pre-execution boundary", pivot)}, nil
+	}
+	// Bank the current state first, so the restore destroys nothing: the
+	// pre-rewind workspace stays a resolvable snapshot.
+	backup, err := s.workspaceTracker.Capture(run.ID, run.WorkDir, "rewind-backup:"+pivot)
+	if err != nil {
+		return nil, fmt.Errorf("bank the current workspace before reverting: %w", err)
+	}
+	// The workflow source is protected: a rewind exists to test an edit to
+	// it, so restoring the workspace must not revert that edit — the
+	// following `resume --force` would then recompile the OLD workflow and
+	// silently test nothing. Bites only when the .bot lives inside the
+	// workspace, which is the self-hosted dogfood shape.
+	report, err := s.workspaceTracker.Restore(run.ID, run.WorkDir, snapshotID, sourcePath, run.FilePath)
+	if err != nil {
+		return nil, fmt.Errorf("restore workspace to %s: %w", snapshotID, err)
+	}
+	res := &fileRevertResult{
+		Reverted:  true,
+		Ref:       snapshotID,
+		BackupRef: backup.ID,
+		Restored:  report,
+	}
+	if len(report.Skipped) > 0 {
+		res.SkipReason = fmt.Sprintf("%d path(s) were too large to version and were left as-is", len(report.Skipped))
+	}
+	return res, nil
+}
+
+// findPreNodeSnapshot resolves the pivot's pre-execution capture,
+// probing downwards from the checkpoint's loop iteration: the counters
+// record where the run STOPPED, which can be past the last iteration the
+// pivot actually ran.
+func findPreNodeSnapshot(tr workspacetrack.Tracker, run *store.Run, wf *ir.Workflow, cp *store.Checkpoint, pivot string) (string, bool) {
+	for iter := loopIterationOf(wf, pivot, cp.LoopCounters); iter >= 0; iter-- {
+		if id, ok := tr.Resolve(run.ID, fmt.Sprintf("pre:%s:%d", pivot, iter)); ok {
+			return id, true
+		}
+	}
+	return "", false
 }

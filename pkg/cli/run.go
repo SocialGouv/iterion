@@ -232,6 +232,12 @@ func RunRun(ctx context.Context, opts RunOptions, p *Printer) error {
 
 	runName := store.GenerateRunName(iterFile + ":" + runID)
 	storeDir := runStoreDir(iterFile, opts.StoreDir)
+	// Workspace versioning, on the same terms as a studio launch: a run
+	// started from the terminal must capture too, or `iterion rewind`
+	// cannot restore what its nodes produced.
+	if tracker := runview.WorkspaceTrackerFor(storeDir); tracker != nil {
+		engineOpts = append(engineOpts, runtime.WithWorkspaceTracker(tracker))
+	}
 
 	logger, logCloser := teeRunLog(logger, level, storeDir, runID)
 	if logCloser != nil {

@@ -256,7 +256,7 @@ func (s *Service) Rewind(ctx context.Context, spec RewindSpec) (*RewindResult, e
 	// at un-rewound files.
 	files := &fileRevertResult{SkipReason: "keep_files requested"}
 	if !spec.KeepFiles {
-		files, err = revertWorkspace(run, wf, cp, pivot)
+		files, err = s.revertWorkspace(run, wf, cp, pivot, sourcePath)
 		if err != nil {
 			return nil, err
 		}

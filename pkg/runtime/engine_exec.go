@@ -65,6 +65,16 @@ func (e *Engine) execLoop(ctx context.Context, rs *runState, startNodeID string)
 			if terminate {
 				return err
 			}
+			// A specially-dispatched node (fan-out, round-robin, LLM
+			// router, compute, review gate, subbot) never reaches
+			// execLoopAfterExec, so no post-boundary capture ran — yet its
+			// branches may have written to the workspace. Invalidating the
+			// remembered boundary forces the NEXT node's pre-marker to
+			// take a real capture instead of aliasing a state that predates
+			// that work. A wrong anchor is worse than an extra walk: it
+			// makes a later rewind delete files whose outputs it keeps.
+			rs.lastSnapshotCommit = ""
+			rs.lastWorkspaceSnapshot = ""
 			currentNodeID = next
 			continue
 		}
@@ -551,7 +561,15 @@ func (e *Engine) execLoopAfterExec(ctx context.Context, rs *runState, currentNod
 // (runID, nodeID, loopIter) so the Fork API can locate it later
 // without consulting the engine.
 func (e *Engine) snapshotAtNodeBoundary(rs *runState, nodeID string) {
-	if e.workDir == "" || !rs.isWorktree {
+	if e.workDir == "" {
+		return
+	}
+	if !rs.isWorktree {
+		// No isolated worktree: git is not merely unavailable here, it is
+		// the wrong tool — the workspace is the operator's live checkout
+		// and `git add -A` would stage their own work. iterion's own
+		// versioning covers this shape.
+		e.captureWorkspace(rs, nodeID, "post")
 		return
 	}
 	loopIter := e.currentLoopIteration(nodeID, rs.loopCounters)
@@ -582,7 +600,11 @@ func (e *Engine) snapshotAtNodeBoundary(rs *runState, nodeID string) {
 // this call, so the state is already captured by rs.lastSnapshotCommit:
 // this is one `update-ref`, not a second O(filecount) index walk per node.
 func (e *Engine) markPreNodeBoundary(rs *runState, nodeID string) {
-	if e.workDir == "" || !rs.isWorktree {
+	if e.workDir == "" {
+		return
+	}
+	if !rs.isWorktree {
+		e.aliasWorkspacePre(rs, nodeID)
 		return
 	}
 	target := rs.lastSnapshotCommit
@@ -741,4 +763,55 @@ func (e *Engine) selectEdgeRS(rs *runState, fromNodeID string, output map[string
 	}
 
 	return selected.To, nil
+}
+
+// workspaceLabel names a capture: "<phase>:<node>:<iter>". The rewind
+// resolves "pre:<pivot>:<iter>" to find the state a node started from.
+func workspaceLabel(phase, nodeID string, loopIter int) string {
+	return fmt.Sprintf("%s:%s:%d", phase, nodeID, loopIter)
+}
+
+// captureWorkspace records the workspace through iterion's own tracker.
+// Best-effort, like its git twin: a capture failure costs the ability to
+// rewind that boundary's files, never the run.
+func (e *Engine) captureWorkspace(rs *runState, nodeID, phase string) {
+	if e.workspaceTracker == nil {
+		return
+	}
+	loopIter := e.currentLoopIteration(nodeID, rs.loopCounters)
+	snap, err := e.workspaceTracker.Capture(rs.runID, e.workDir, workspaceLabel(phase, nodeID, loopIter))
+	if err != nil {
+		if e.logger != nil {
+			e.logger.Warn("workspace capture: node %q iter %d: %v", nodeID, loopIter, err)
+		}
+		return
+	}
+	rs.lastWorkspaceSnapshot = snap.ID
+	if len(snap.Skipped) > 0 && e.logger != nil {
+		e.logger.Warn("workspace capture at %q: %d path(s) too large to version — a rewind cannot restore them",
+			nodeID, len(snap.Skipped))
+	}
+}
+
+// aliasWorkspacePre labels the state a node is about to execute against.
+// Nothing touches the workspace between the previous node's capture and
+// this call, so it is a label write rather than a second walk — the same
+// trick the git path uses, and what keeps versioning affordable enough to
+// leave on by default.
+func (e *Engine) aliasWorkspacePre(rs *runState, nodeID string) {
+	if e.workspaceTracker == nil {
+		return
+	}
+	loopIter := e.currentLoopIteration(nodeID, rs.loopCounters)
+	label := workspaceLabel("pre", nodeID, loopIter)
+	head := rs.lastWorkspaceSnapshot
+	if head == "" {
+		// First node of the run: capture, since there is no earlier
+		// boundary to point at.
+		e.captureWorkspace(rs, nodeID, "pre")
+		return
+	}
+	if err := e.workspaceTracker.Alias(rs.runID, label, head); err != nil && e.logger != nil {
+		e.logger.Warn("workspace pre-marker: node %q iter %d: %v", nodeID, loopIter, err)
+	}
 }

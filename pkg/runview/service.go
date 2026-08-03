@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"os"
 	"strconv"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -23,6 +24,7 @@ import (
 	"github.com/SocialGouv/iterion/pkg/sessionboard"
 	"github.com/SocialGouv/iterion/pkg/store"
 	"github.com/SocialGouv/iterion/pkg/trigger"
+	"github.com/SocialGouv/iterion/pkg/workspacetrack"
 )
 
 // LaunchSpec describes a workflow invocation. Mirrors the inputs of
@@ -388,6 +390,14 @@ type ArtifactSummary struct {
 type Service struct {
 	store    store.RunStore
 	storeDir string
+	// workspaceTracker versions the files a run produces, so a rewind can
+	// undo a node's real work — the output map is only a summary for a
+	// bot whose product is documentation or code. Filesystem-backed, so
+	// nil in cloud mode (no local store dir) and for injected stores.
+	workspaceTracker workspacetrack.Tracker
+	// workspaceTrackDisabled is the per-service opt-out (see
+	// WithoutWorkspaceTracking), checked alongside the env default.
+	workspaceTrackDisabled bool
 	// boardMCPHandler serves the board MCP routes for the per-run
 	// gateway-reachable listener (C082); boardRegister mints per-node
 	// board tokens. Both nil unless the server wires them via
@@ -683,6 +693,40 @@ func WithStreamSource(src runstream.Source) ServiceOption {
 // NewService constructs a Service rooted at storeDir. When the
 // caller wires WithStore, storeDir may be "" — the service uses the
 // injected store directly without resolving a filesystem path.
+// workspaceTrackingEnabled reports whether runs should version their
+// workspace. ITERION_WORKSPACE_TRACK=off|0|false disables it globally.
+//
+// Default ON: without it a rewind cannot undo what a node actually
+// produced for the majority of bots, which is most of the point. The
+// escape hatch exists because the cost scales with the workspace, not
+// with the run.
+func workspaceTrackingEnabled() bool {
+	switch strings.ToLower(strings.TrimSpace(os.Getenv("ITERION_WORKSPACE_TRACK"))) {
+	case "off", "0", "false", "no":
+		return false
+	}
+	return true
+}
+
+// WorkspaceTrackerFor builds the workspace tracker for a store dir, or
+// nil when versioning is disabled. Exported so the CLI's own engine
+// assembly (`iterion run` / `iterion resume`, which do not go through
+// Service) enables the same thing on the same terms — without it, a run
+// launched from the terminal captures nothing and a later rewind reports
+// "no snapshots" for a run created seconds earlier.
+func WorkspaceTrackerFor(storeDir string) workspacetrack.Tracker {
+	if storeDir == "" || !workspaceTrackingEnabled() {
+		return nil
+	}
+	return workspacetrack.NewNative(storeDir)
+}
+
+// WithoutWorkspaceTracking disables workspace versioning for this
+// service, whatever the environment says.
+func WithoutWorkspaceTracking() ServiceOption {
+	return func(s *Service) { s.workspaceTrackDisabled = true }
+}
+
 func NewService(storeDir string, opts ...ServiceOption) (*Service, error) {
 	logger := iterlog.New(iterlog.LevelInfo, os.Stderr)
 
@@ -732,6 +776,18 @@ func NewService(storeDir string, opts ...ServiceOption) (*Service, error) {
 		// Same seam: stamp Event.ActiveMs from the run's monotonic
 		// SharedBudget so the studio active timer excludes OS-suspend.
 		fs.SetActiveDurationFn(s.activeDurationForRun)
+	}
+
+	// Workspace versioning needs the same on-disk store dir. It is what
+	// lets a rewind restore files for a run with NO isolated worktree —
+	// the default shape, where git cannot serve because the workspace is
+	// the operator's live checkout.
+	// Off switch: this walks and hashes the workspace at every node
+	// boundary of every non-worktree run, so an operator whose workspace is
+	// large (or who simply does not use rewind) needs a way out that is not
+	// "declare worktree: auto".
+	if s.storeDir != "" && s.workspaceTracker == nil && !s.workspaceTrackDisabled && workspaceTrackingEnabled() {
+		s.workspaceTracker = workspacetrack.NewNative(s.storeDir)
 	}
 
 	// Session-board curation needs an on-disk dir to persist specs

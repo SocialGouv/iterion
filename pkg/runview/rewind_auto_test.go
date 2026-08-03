@@ -329,7 +329,7 @@ func TestRewindAuto_TwoEditsOnOneLoop(t *testing.T) {
 	if err := st.SaveRun(context.Background(), run); err != nil {
 		t.Fatalf("save: %v", err)
 	}
-	svc, err := NewService(storeDir)
+	svc, err := NewService(storeDir, WithoutWorkspaceTracking())
 	if err != nil {
 		t.Fatalf("NewService: %v", err)
 	}
@@ -379,7 +379,7 @@ func TestRewindAuto_LoopEditIsNotMaskedByAnIndependentOne(t *testing.T) {
 	if err := st.SaveRun(context.Background(), run); err != nil {
 		t.Fatalf("save: %v", err)
 	}
-	svc, err := NewService(storeDir)
+	svc, err := NewService(storeDir, WithoutWorkspaceTracking())
 	if err != nil {
 		t.Fatalf("NewService: %v", err)
 	}

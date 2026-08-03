@@ -105,6 +105,11 @@ func (s *Service) registerRunEngine(runID string, eng *runtime.Engine, steer cha
 func (s *Service) unregisterRunEngine(runID string) {
 	s.runLogsMu.Lock()
 	delete(s.runEngines, runID)
+	// The workspace tracker's stat cache is per-run and the tracker
+	// outlives every run in this process; evict it here with its peers.
+	if s.workspaceTracker != nil {
+		s.workspaceTracker.Forget(runID)
+	}
 	delete(s.runSteer, runID)
 	s.runLogsMu.Unlock()
 }
