@@ -14,13 +14,15 @@ interface Props {
 // ReportTab renders three cost breakdowns (provider / model / node) in
 // a scrollable panel meant for the bottom tab area. The data source is
 // the same node_finished events the rest of the run console reads, so
-// the report updates live as the run progresses.
+// the report updates live as the run progresses. A run whose model
+// could not be priced (tokens recorded, no cost) still gets its token
+// breakdowns — with cost shown as unavailable, never as a fake $0.
 export default function ReportTab({ onSelectNode }: Props) {
   const report = useRunReport();
-  if (!report.hasCost) {
+  if (!report.hasUsage) {
     return (
       <div className="h-full flex items-center justify-center px-4 text-fg-subtle text-xs">
-        No LLM cost recorded for this run yet — the report fills in as
+        No LLM usage recorded for this run yet — the report fills in as
         nodes finish.
       </div>
     );
@@ -33,18 +35,21 @@ export default function ReportTab({ onSelectNode }: Props) {
         hint="Grouped by API-key billing surface (anthropic, openai, …)"
         buckets={report.byProvider}
         total={report.totalCostUsd}
+        hasCost={report.hasCost}
       />
       <BreakdownSection
         title="By model"
         hint="Each node is attributed to its dominant model (cost is per-node, not per-step)"
         buckets={report.byModel}
         total={report.totalCostUsd}
+        hasCost={report.hasCost}
       />
       <BreakdownSection
         title="By node"
         hint="Click a row to jump to the node in the canvas"
         buckets={report.byNode}
         total={report.totalCostUsd}
+        hasCost={report.hasCost}
         onSelect={onSelectNode}
         collapsibleAfter={10}
       />
@@ -61,8 +66,12 @@ function SummaryStrip({
     <div className="flex flex-wrap items-baseline gap-x-6 gap-y-1 pb-2 border-b border-border-default">
       <Stat
         label="total cost"
-        value={formatCost(report.totalCostUsd)}
-        title={`$${report.totalCostUsd.toFixed(6)}`}
+        value={report.hasCost ? formatCost(report.totalCostUsd) : "—"}
+        title={
+          report.hasCost
+            ? `$${report.totalCostUsd.toFixed(6)}`
+            : "No cost data — the model used by this run is not in the pricing tables"
+        }
         emphasis
       />
       <Stat
@@ -107,6 +116,9 @@ interface BreakdownProps {
   hint?: string;
   buckets: CostBucket[];
   total: number;
+  // False when the run recorded tokens but no priceable cost — rows then
+  // scale their bars/percentages by tokens and show cost as unavailable.
+  hasCost: boolean;
   onSelect?: (key: string) => void;
   // When set, only the first N rows render initially; a "show all" toggle
   // expands the rest. Useful for the by-node breakdown which can have
@@ -119,13 +131,15 @@ function BreakdownSection({
   hint,
   buckets,
   total,
+  hasCost,
   onSelect,
   collapsibleAfter,
 }: BreakdownProps) {
   const [expanded, setExpanded] = useState(false);
   const max = useMemo(
-    () => buckets.reduce((m, b) => Math.max(m, b.costUsd), 0),
-    [buckets],
+    () =>
+      buckets.reduce((m, b) => Math.max(m, hasCost ? b.costUsd : b.tokens), 0),
+    [buckets, hasCost],
   );
   const collapsedCount =
     collapsibleAfter && buckets.length > collapsibleAfter
@@ -151,6 +165,7 @@ function BreakdownSection({
             bucket={b}
             total={total}
             scaleMax={max}
+            hasCost={hasCost}
             onSelect={onSelect}
           />
         ))}
@@ -181,19 +196,23 @@ function BucketRow({
   bucket,
   total,
   scaleMax,
+  hasCost,
   onSelect,
 }: {
   bucket: CostBucket;
   total: number;
-  // The largest cost in this section — used to scale the bar to its
-  // section, not to a global max. Otherwise small sections (e.g. just
-  // 2 providers) would render two near-full-width bars that read as
-  // identical even when one is 10× the other.
+  // The largest cost (or tokens, for a tokens-only report) in this
+  // section — used to scale the bar to its section, not to a global max.
+  // Otherwise small sections (e.g. just 2 providers) would render two
+  // near-full-width bars that read as identical even when one is 10×
+  // the other.
   scaleMax: number;
+  hasCost: boolean;
   onSelect?: (key: string) => void;
 }) {
+  const weight = hasCost ? bucket.costUsd : bucket.tokens;
   const pct = total > 0 ? (bucket.costUsd / total) * 100 : 0;
-  const barPct = scaleMax > 0 ? (bucket.costUsd / scaleMax) * 100 : 0;
+  const barPct = scaleMax > 0 ? (weight / scaleMax) * 100 : 0;
   const clickable = !!onSelect;
   const Component = clickable ? "button" : "div";
 
@@ -220,12 +239,14 @@ function BucketRow({
         </div>
         <span
           className="font-mono text-fg-default text-right basis-20"
-          title={`$${bucket.costUsd.toFixed(6)}`}
+          title={
+            hasCost ? `$${bucket.costUsd.toFixed(6)}` : "No cost data recorded"
+          }
         >
-          {formatCost(bucket.costUsd)}
+          {hasCost ? formatCost(bucket.costUsd) : "—"}
         </span>
         <span className="text-fg-subtle text-right text-caption basis-12">
-          {pct.toFixed(0)}%
+          {hasCost ? `${pct.toFixed(0)}%` : ""}
         </span>
         <span
           className="text-fg-subtle text-right text-caption hidden sm:inline-block basis-20"

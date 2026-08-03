@@ -23,15 +23,21 @@ export interface CostBucket {
 export interface RunReport {
   totalCostUsd: number;
   totalTokens: number;
-  // Aggregations sorted by costUsd descending. Empty when no
+  // Aggregations sorted by costUsd descending (tokens as tiebreak, so a
+  // tokens-only report still ranks meaningfully). Empty when no
   // node_finished events have arrived yet.
   byProvider: CostBucket[];
   byModel: CostBucket[];
   byNode: CostBucket[];
-  // True when at least one node_finished event surfaced a cost. Lets
-  // the UI render a clear empty-state instead of an all-zero report
-  // for runs that never used an LLM (pure tool workflows).
+  // True when at least one node_finished event surfaced a cost. When
+  // false but hasUsage is true, the run's model could not be priced
+  // (e.g. unknown model id) — the report renders token breakdowns with
+  // cost shown as unavailable rather than $0.
   hasCost: boolean;
+  // True when at least one node_finished carried cost OR tokens. Drives
+  // the empty-state: only a run with genuinely no LLM usage (pure tool
+  // workflows, or nothing finished yet) shows the placeholder.
+  hasUsage: boolean;
 }
 
 // providerOf derives the API-key-level grouping from the (model, backend)
@@ -80,6 +86,7 @@ export function buildRunReport(events: RunEvent[]): RunReport {
   let totalCostUsd = 0;
   let totalTokens = 0;
   let hasCost = false;
+  let hasUsage = false;
 
   for (const e of events) {
     if (e.type !== "node_finished" || !e.data) continue;
@@ -87,6 +94,7 @@ export function buildRunReport(events: RunEvent[]): RunReport {
     const tokens = numberOr(e.data["_tokens"], 0);
     if (cost === 0 && tokens === 0) continue;
     if (cost > 0) hasCost = true;
+    hasUsage = true;
     totalCostUsd += cost;
     totalTokens += tokens;
 
@@ -109,6 +117,7 @@ export function buildRunReport(events: RunEvent[]): RunReport {
     totalCostUsd,
     totalTokens,
     hasCost,
+    hasUsage,
     byProvider: sortByCost(byProvider),
     byModel: sortByCost(byModel),
     byNode: sortByCost(byNode),
@@ -133,7 +142,9 @@ function bumpBucket(
 }
 
 function sortByCost(m: Map<string, CostBucket>): CostBucket[] {
-  return Array.from(m.values()).sort((a, b) => b.costUsd - a.costUsd);
+  return Array.from(m.values()).sort(
+    (a, b) => b.costUsd - a.costUsd || b.tokens - a.tokens,
+  );
 }
 
 function numberOr(v: unknown, fallback: number): number {
