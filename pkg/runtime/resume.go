@@ -260,6 +260,12 @@ func (e *Engine) resumeFromPause(ctx context.Context, r *store.Run, answers map[
 	// Init maps when the checkpoint deserialised with omitted fields
 	// (Mongo bson omitempty, legacy stores) — a nil map here would
 	// crash selectEdgeRS the first time it tries `rs.loopCounters[X]++`.
+	// Restamp here as well as on the failure path: a run resumed from a
+	// human pause with `--file X --force` executes the NEW source, and
+	// leaving Run.WorkflowSource at the launch text makes the next
+	// `rewind --auto` re-report edits that already ran — the same
+	// monotonically-growing pivot the failure path restamps to avoid.
+	e.restampWorkflowSource(ctx, r)
 	rs, sandboxCleanup, rbErr := e.resumeRebuildState(ctx, r, cp, outputs, artifactVersions)
 	if rbErr != nil {
 		return rbErr

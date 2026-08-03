@@ -9,6 +9,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -590,5 +591,56 @@ func TestArtifactFile_DispositionToggle(t *testing.T) {
 				t.Errorf("body = %q, want to contain %q", b, tc.wantBodyHas)
 			}
 		})
+	}
+}
+
+// TestRewindHandler_RefusesEscapingSourcePath is Revi's Rc48b6f.
+//
+// The handler forwarded a client-supplied source_path straight into
+// CompileWorkflow + os.ReadFile, bypassing the containment boundary every
+// other workflow-path surface goes through. That is an arbitrary-file
+// primitive for any authenticated caller, and the parse diagnostic
+// returned on failure echoes file content back.
+func TestRewindHandler_RefusesEscapingSourcePath(t *testing.T) {
+	srv, hs := newTestServer(t)
+	// A real, rewindable run with a checkpoint — otherwise Rewind fails at
+	// LoadRun and never reaches the path, and the test passes with or
+	// without the containment check (verified by mutation).
+	seedRun(t, srv, "rewindable", "wf", store.RunStatusFailedResumable)
+	st, err := store.New(srv.cfg.StoreDir)
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	run, err := st.LoadRun(context.Background(), "rewindable")
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	run.Checkpoint = &store.Checkpoint{
+		NodeID:  "implement",
+		Outputs: map[string]map[string]any{"implement": {"v": 1}},
+	}
+	if err := st.SaveRun(context.Background(), run); err != nil {
+		t.Fatalf("save: %v", err)
+	}
+
+	for _, escaping := range []string{"/etc/passwd", "../../../../etc/hostname"} {
+		body := strings.NewReader(`{"node_id":"implement","source_path":"` + escaping + `"}`)
+		resp, err := http.Post(hs.URL+"/api/runs/rewindable/rewind", "application/json", body)
+		if err != nil {
+			t.Fatalf("post: %v", err)
+		}
+		payload, _ := io.ReadAll(resp.Body)
+		_ = resp.Body.Close()
+
+		if resp.StatusCode == http.StatusOK {
+			t.Errorf("source_path %q was accepted", escaping)
+		}
+		// The give-away of the old behaviour: the parser diagnostic quotes
+		// the offending token from the file it managed to read.
+		for _, leak := range []string{"root:", "unexpected token"} {
+			if strings.Contains(string(payload), leak) {
+				t.Errorf("response for %q leaked file content (%q): %s", escaping, leak, payload)
+			}
+		}
 	}
 }

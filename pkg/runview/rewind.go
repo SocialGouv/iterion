@@ -250,30 +250,28 @@ func (s *Service) Rewind(ctx context.Context, spec RewindSpec) (*RewindResult, e
 	dropped, invalidated := downstreamOf(wf, pivot, cp.Outputs)
 	fromNode := cp.NodeID
 
-	// Workspace first: a git failure then leaves the run's engine state
-	// untouched, so the operator can fix the tree and retry the whole
-	// rewind. The reverse order could leave a rewound checkpoint pointing
-	// at un-rewound files.
-	files := &fileRevertResult{SkipReason: "keep_files requested"}
-	if !spec.KeepFiles {
-		files, err = revertWorkspace(run, wf, cp, pivot)
-		if err != nil {
-			return nil, err
-		}
-	}
-
-	// Claim the run before mutating. UpdateRunStatusIf is a CAS against
-	// the expected statuses, so a concurrent resume that already flipped
-	// this run to `running` loses the race instead of being rewound out
-	// from under itself. `cancelled` preserves the checkpoint through
-	// applyStatusTransition (unlike running/finished/failed, which nil
-	// it) — so this must run BEFORE the checkpoint write.
+	// Claim the run BEFORE touching anything, the worktree included. The
+	// CAS exists to make a concurrent resume safe; reverting first defeats
+	// it, because `git read-tree --reset` + `clean -fd` would already have
+	// run inside a worktree an engine is actively writing to before we
+	// discovered we lost the race. The original justification for going
+	// second — "a git failure leaves engine state untouched" — holds here
+	// too: `cancelled` preserves the checkpoint, so a revert failure after
+	// the claim leaves a resumable run carrying its pre-rewind state.
 	claimed, err := s.store.UpdateRunStatusIf(ctx, run.ID, store.RunStatusCancelled, "", rewindableStatuses)
 	if err != nil {
 		return nil, fmt.Errorf("claim run for rewind: %w", err)
 	}
 	if !claimed {
 		return nil, fmt.Errorf("%w: status changed under us — reload and retry", ErrRewindNotRewindable)
+	}
+
+	files := &fileRevertResult{SkipReason: "keep_files requested"}
+	if !spec.KeepFiles {
+		files, err = revertWorkspace(run, wf, cp, pivot)
+		if err != nil {
+			return nil, err
+		}
 	}
 
 	// Reserve the tombstone versions BEFORE persisting the checkpoint,

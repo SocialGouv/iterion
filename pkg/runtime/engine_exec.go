@@ -60,11 +60,26 @@ func (e *Engine) execLoop(ctx context.Context, rs *runState, startNodeID string)
 				fmt.Sprintf("node %q not found", currentNodeID))
 		}
 
+		// A specially-dispatched node (fan-out, round-robin, LLM router,
+		// compute, review gate, subbot) is bracketed here rather than in
+		// execLoopAfterExec, which it never reaches. Two distinct needs:
+		// the node gets its OWN pre-marker so a rewind promoted to a
+		// router has an anchor at all, and the remembered anchor is
+		// invalidated afterwards because these paths DO mutate the tree —
+		// fan-out branches write, a non-isolated subbot child writes into
+		// the parent worktree, and the review gate squash-merges — while
+		// none of them refreshes lastSnapshotCommit. Aliasing across one
+		// makes a later rewind revert past that work while its outputs
+		// stay in the checkpoint.
+		if isSpecialDispatch(node) {
+			e.markPreNodeBoundary(rs, currentNodeID)
+		}
 		handled, terminate, next, err := e.execLoopDispatchSpecial(ctx, rs, currentNodeID, node)
 		if handled {
 			if terminate {
 				return err
 			}
+			rs.lastSnapshotCommit = ""
 			currentNodeID = next
 			continue
 		}
@@ -741,4 +756,24 @@ func (e *Engine) selectEdgeRS(rs *runState, fromNodeID string, output map[string
 	}
 
 	return selected.To, nil
+}
+
+// isSpecialDispatch reports whether a node is handled by
+// execLoopDispatchSpecial rather than the standard executor path.
+//
+// Those nodes never reach execLoopAfterExec, so nothing else brackets
+// them. Routers matter most: a rewind promotes any pivot inside a fan-out
+// body to its router, so without a marker here the single case where the
+// most files were written by the most nodes is the one that can never
+// restore them.
+func isSpecialDispatch(node ir.Node) bool {
+	switch n := node.(type) {
+	case *ir.RouterNode:
+		return n.RouterMode != ir.RouterCondition
+	case *ir.HumanNode:
+		return true
+	case *ir.ComputeNode, *ir.SubbotNode, *ir.EmitNode, *ir.WaitNode, *ir.AwaitAnswersNode:
+		return true
+	}
+	return false
 }
