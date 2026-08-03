@@ -939,16 +939,24 @@ func (r *Runner) processOne(parent context.Context, delivery *natsq.Delivery) {
 	runCancel(nil)
 	<-hbDone
 
-	// A non-operator interruption (runner drain / lost heartbeat) returns
-	// ErrRunInterrupted — the engine already wrote failed_resumable and the
-	// run is about to auto-resume on redelivery, so firing a terminal
-	// outcome + completion webhook here would push a spurious "run
-	// cancelled/failed" notification on every deploy. Skip both run-facing
-	// fires; the resumed run emits its own real terminal outcome later.
+	// Run-outcome side effects (completion webhook + run.<outcome> event →
+	// push notifications, chained triggers) fire ONLY when this delivery
+	// reaches a FINAL disposition: an ack, or a park (usage-window retry /
+	// DLQ). A plain Nak with redeliveries remaining means the platform
+	// itself is about to auto-resume the run — firing there pushed one
+	// "run failed" episode per redelivery (the episode key deliberately
+	// folds updated_at so a LATER real re-failure notifies again), i.e. up
+	// to MaxDeliver notifications for a single deterministic failure
+	// within a minute. A non-operator interruption (runner drain / lost
+	// heartbeat, ErrRunInterrupted) is excluded for the same reason on its
+	// own path: the engine wrote failed_resumable and the redelivery
+	// auto-resumes, so a fire here would ping on every deploy.
 	outcome := classifyExecResult(err, msg.RunID)
-	if !errors.Is(err, runtime.ErrRunInterrupted) {
-		r.fireCompletionNotifier(msg)
-		r.fireOutcomeEvent(msg, err)
+	fireOutcome := func() {
+		if !errors.Is(err, runtime.ErrRunInterrupted) {
+			r.fireCompletionNotifier(msg)
+			r.fireOutcomeEvent(msg, err)
+		}
 	}
 
 	// Checked BEFORE the DLQ park so a usage-window failure on the FINAL
@@ -956,15 +964,20 @@ func (r *Runner) processOne(parent context.Context, delivery *natsq.Delivery) {
 	// exactly the condition that makes every prior delivery useless, so
 	// reaching delivery 8 is evidence for retrying later, not against it.
 	if handled, retryStatus := r.parkUsageLimitRetry(runCtx, err, delivery, msg, logger); handled {
+		fireOutcome()
 		finalStatus = retryStatus
 		return
 	}
 
 	if handled, dlqStatus := r.parkOnDLQOnFinalDelivery(err, delivery, msg, logger); handled {
+		fireOutcome()
 		finalStatus = dlqStatus
 		return
 	}
 
+	if outcome.action != actionNak {
+		fireOutcome()
+	}
 	logAt(logger, outcome.level, outcome.logFmt, outcome.logArgs...)
 	finalStatus = outcome.finalStatus
 	dispatchTerminal(logger, delivery, outcome.action, outcome.op, msg.RunID)
