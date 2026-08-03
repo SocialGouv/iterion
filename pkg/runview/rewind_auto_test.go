@@ -399,3 +399,159 @@ func TestRewindAuto_LoopEditIsNotMaskedByAnIndependentOne(t *testing.T) {
 		t.Error("implement was not invalidated; the loop edit would go untested")
 	}
 }
+
+// supervisedBot exercises the three declaration kinds ast.MarshalFile
+// does not mirror. Editing any of them used to be invisible to --auto.
+const supervisedBot = `schema note:
+  value: string
+
+prompt watch_policy:
+  """
+  Intervene when the agent stalls.
+  """
+
+supervisor watchdog:
+  watches: [implement]
+  model: "claude-opus-4-7"
+  system: watch_policy
+  cooldown: "30s"
+
+agent survey:
+  model: "claude-opus-4-7"
+  output: note
+
+agent implement:
+  model: "claude-opus-4-7"
+  output: note
+
+workflow supervised:
+  entry: survey
+  survey -> implement
+  implement -> done
+`
+
+func seedSupervisedRun(t *testing.T, src string) (*Service, string, string) {
+	t.Helper()
+	dir := t.TempDir()
+	botPath := filepath.Join(dir, "main.bot")
+	if err := os.WriteFile(botPath, []byte(src), 0o644); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	storeDir := filepath.Join(dir, "store")
+	st, err := store.New(storeDir)
+	if err != nil {
+		t.Fatalf("store: %v", err)
+	}
+	const runID = "run-sup"
+	if _, err := st.CreateRun(context.Background(), runID, "supervised", nil); err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	run, err := st.LoadRun(context.Background(), runID)
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	run.FilePath = botPath
+	run.WorkflowSource = src
+	run.Status = store.RunStatusFailedResumable
+	run.Checkpoint = &store.Checkpoint{
+		NodeID:  "implement",
+		Outputs: outputsOf("survey", "implement", "split", "worker_a", "worker_b", "merge"),
+	}
+	if err := st.SaveRun(context.Background(), run); err != nil {
+		t.Fatalf("save: %v", err)
+	}
+	svc, err := NewService(storeDir)
+	if err != nil {
+		t.Fatalf("NewService: %v", err)
+	}
+	return svc, botPath, runID
+}
+
+// TestRewindAuto_SupervisorEditTargetsWatchedNode: a supervisor's
+// reference runs OUTWARDS (`watches: [implement]`), so the name-search
+// used for shared declarations would never find it.
+func TestRewindAuto_SupervisorEditTargetsWatchedNode(t *testing.T) {
+	svc, botPath, runID := seedSupervisedRun(t, supervisedBot)
+	editBot(t, botPath, `cooldown: "30s"`, `cooldown: "5s"`)
+
+	result, err := svc.Rewind(context.Background(), RewindSpec{RunID: runID, Auto: true})
+	if err != nil {
+		t.Fatalf("Rewind --auto: %v", err)
+	}
+	if result.NodeID != "implement" {
+		t.Errorf("pivot = %q, want implement (the watched node)", result.NodeID)
+	}
+	var sawSupervisor bool
+	for _, c := range result.Changes {
+		if c.Kind == "supervisor" && c.Name == "watchdog" {
+			sawSupervisor = true
+		}
+	}
+	if !sawSupervisor {
+		t.Errorf("changes = %v, want the supervisor edit detected", result.Changes)
+	}
+}
+
+// TestRewindAuto_UnchangedSupervisorIsNotAChange guards the other
+// direction: the fallback encoder must be stable, or every rewind on a
+// supervised bot would report a phantom edit.
+func TestRewindAuto_UnchangedSupervisorIsNotAChange(t *testing.T) {
+	svc, _, runID := seedSupervisedRun(t, supervisedBot)
+
+	_, err := svc.Rewind(context.Background(), RewindSpec{RunID: runID, Auto: true})
+	if !errors.Is(err, ErrRewindNoChange) {
+		t.Fatalf("err = %v, want ErrRewindNoChange — an untouched supervisor must not read as edited", err)
+	}
+}
+
+// TestRewindAuto_EdgeDataMappingIsPartOfIdentity: two sibling edges can
+// differ only in their `with` mapping. Without it in the key they collide
+// and editing the first is invisible.
+func TestRewindAuto_EdgeDataMappingIsPartOfIdentity(t *testing.T) {
+	const forkBot = `schema note:
+  value: string
+
+agent survey:
+  model: "claude-opus-4-7"
+  output: note
+
+router split:
+  mode: fan_out_all
+
+agent worker_a:
+  model: "claude-opus-4-7"
+  input: note
+  output: note
+
+agent worker_b:
+  model: "claude-opus-4-7"
+  input: note
+  output: note
+
+agent merge:
+  model: "claude-opus-4-7"
+  output: note
+  await: wait_all
+
+workflow forked:
+  entry: survey
+  survey -> split
+  split -> worker_a with {value: "ALPHA"}
+  split -> worker_b with {value: "BETA"}
+  worker_a -> merge
+  worker_b -> merge
+  merge -> done
+`
+	svc, botPath, runID := seedSupervisedRun(t, forkBot)
+	editBot(t, botPath, `split -> worker_a with {value: "ALPHA"}`, `split -> worker_a with {value: "GAMMA"}`)
+
+	result, err := svc.Rewind(context.Background(), RewindSpec{RunID: runID, Auto: true})
+	if err != nil {
+		t.Fatalf("Rewind --auto: %v", err)
+	}
+	// The edge leaves `split`, and split is a fan-out router, so the
+	// pivot is the router itself.
+	if result.NodeID != "split" {
+		t.Errorf("pivot = %q, want split", result.NodeID)
+	}
+}

@@ -656,6 +656,7 @@ func (e *Engine) resumeFromFailure(ctx context.Context, r *store.Run) error {
 
 	e.pushExecutorVars(rs.vars)
 
+	e.restampWorkflowSource(ctx, r)
 	loopErr := e.execLoop(ctx, rs, restartNodeID)
 	e.evictRunSessions(runID, loopErr)
 	// Mirrors resumeFromPause: a worktree run that fails resumably and
@@ -1645,4 +1646,29 @@ func (e *Engine) currentLoopIterationPath(nodeID string, loopCounters map[string
 // tag their log output as [NodeID#iter/...].
 func (e *Engine) ctxWithIteration(ctx context.Context, nodeID string, loopCounters map[string]int) context.Context {
 	return model.WithLoopIteration(ctx, e.currentLoopIteration(nodeID, loopCounters))
+}
+
+// restampWorkflowSource refreshes Run.WorkflowSource to the text this
+// resume is about to execute.
+//
+// Without it, `rewind --auto` compares against the source as it was at
+// the ORIGINAL launch, so every iteration re-reports the edits of the
+// previous ones: the second rewind of a session drops three nodes where
+// one was needed, the third more, and the cost grows monotonically —
+// precisely the loop the feature exists to cheapen.
+//
+// Only refreshed when the engine holds a source AND it actually differs,
+// so a plain resume touches nothing.
+func (e *Engine) restampWorkflowSource(ctx context.Context, r *store.Run) {
+	src := e.resolveWorkflowSource()
+	if src == "" || r == nil || src == r.WorkflowSource {
+		return
+	}
+	r.WorkflowSource = src
+	if e.workflowHash != "" {
+		r.WorkflowHash = e.workflowHash
+	}
+	if err := e.store.SaveRun(ctx, r); err != nil && e.logger != nil {
+		e.logger.Warn("resume: re-stamp workflow source for %s: %v", r.ID, err)
+	}
 }
