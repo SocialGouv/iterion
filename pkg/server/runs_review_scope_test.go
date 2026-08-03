@@ -97,7 +97,7 @@ func TestReviewScope_GroupsByNodeAndKeepsUnattributedWork(t *testing.T) {
 	// --- gate 1: the reviewer is paused here.
 	snapshotAs(t, wt, store.ReviewGateRef(runID, 1))
 
-	run := &store.Run{ID: runID, WorkDir: wt, BaseCommit: base}
+	run := &store.Run{ID: runID, WorkDir: wt, BaseCommit: base, Worktree: true}
 	scope := buildReviewScope(run, -1)
 
 	if !scope.Available {
@@ -164,7 +164,7 @@ func TestReviewScope_RangeStartsAtPreviousGate(t *testing.T) {
 	writeIn(t, wt, "phase_two.md", "the second reviewer's business\n")
 	snapshotAs(t, wt, store.ReviewGateRef(runID, 2))
 
-	run := &store.Run{ID: runID, WorkDir: wt, BaseCommit: base}
+	run := &store.Run{ID: runID, WorkDir: wt, BaseCommit: base, Worktree: true}
 	scope := buildReviewScope(run, -1)
 	if !scope.Available {
 		t.Fatalf("unavailable: %s", scope.Reason)
@@ -202,7 +202,15 @@ func TestReviewScope_ReportsWhyItIsEmpty(t *testing.T) {
 	gitIn(t, wt, "add", "-A")
 	gitIn(t, wt, "commit", "-q", "-m", "base")
 
-	scope = buildReviewScope(&store.Run{ID: "no-gates", WorkDir: wt}, -1)
+	scope = buildReviewScope(&store.Run{ID: "in-place", WorkDir: wt}, -1)
+	if scope.Available {
+		t.Fatal("expected unavailable for an in-place run")
+	}
+	if !strings.Contains(scope.Reason, "executes in place") {
+		t.Errorf("Reason = %q — an in-place run records no gates AT ALL; saying \"yet\" sends the operator waiting for something that cannot arrive", scope.Reason)
+	}
+
+	scope = buildReviewScope(&store.Run{ID: "no-gates", WorkDir: wt, Worktree: true}, -1)
 	if scope.Available {
 		t.Fatal("expected unavailable when no gate was reached")
 	}

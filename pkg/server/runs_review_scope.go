@@ -123,6 +123,15 @@ func buildReviewScope(run *store.Run, gate int) *reviewScopeResponse {
 		out.Reason = "this run has no workspace on this host — review ranges are recorded in the run's own git worktree"
 		return out
 	}
+	if !run.Worktree {
+		// Not "not yet": an in-place run never records a gate. The anchors
+		// live in the run's own git worktree, and an in-place run's
+		// workspace is the operator's live checkout, which iterion
+		// deliberately does not snapshot with git. Saying "yet" would send
+		// the operator waiting for something that cannot arrive.
+		out.Reason = "this run executes in place, so it records no review ranges — they need an isolated worktree (worktree: auto)"
+		return out
+	}
 	gates := listReviewGates(run.WorkDir, run.ID)
 	if len(gates) == 0 {
 		out.Reason = "no review gate has been reached in this run yet"
