@@ -12,12 +12,13 @@ import { TBody, THead, Table, Td, Th, Tr } from "@/components/ui/Table";
 import PanelLoading from "@/components/shared/PanelLoading";
 import { useConfirm } from "@/hooks/useConfirm";
 import { useUIStore } from "@/store/ui";
-import type { OAuthKind } from "@/api/byok";
+import { listMyApiKeys, type ApiKeyView, type OAuthKind } from "@/api/byok";
 import {
   listMyPledges,
   listMyPoolHistory,
   savePledge,
   withdrawPledge,
+  type CredentialSource,
   type PledgeInput,
   type PledgeLease,
   type PledgeStatus,
@@ -25,10 +26,20 @@ import {
   type PoolLimits,
 } from "@/api/credpool";
 
-const KIND_LABEL: Record<OAuthKind, string> = {
+const SUBSCRIPTION_LABEL: Record<OAuthKind, string> = {
   claude_code: "Claude Pro / Max",
   codex: "ChatGPT (Codex)",
 };
+
+/** One credential the signed-in user could lend. */
+interface Lendable {
+  source: CredentialSource;
+  ref: string;
+  keyID?: string;
+  label: string;
+  /** Real money per token, rather than a slice of a plan already paid for. */
+  metered: boolean;
+}
 
 // The same caveat the org-shared forfait already carries. Lending a
 // personal subscription to other people goes a step further than sharing
@@ -36,6 +47,9 @@ const KIND_LABEL: Record<OAuthKind, string> = {
 // than buried in docs.
 const TOS_NOTICE =
   "A Claude or ChatGPT subscription is an individual licence. Sharing yours is a convenience for developing and testing bots — not a production-automation credential. You stay in control: the ceilings below are yours, and pausing takes effect on the next run.";
+
+const METERED_NOTICE =
+  "An API key is billed per token. What you lend here is real money on your own invoice, not a slice of a plan you already pay for — so a spend ceiling is required, and the figures below are actual charges, not estimates.";
 
 const STATUS_COPY: Record<PledgeStatus, { label: string; tone: "success" | "warning" | "neutral" | "danger" }> = {
   active: { label: "Sharing", tone: "success" },
@@ -65,8 +79,31 @@ export default function SharedQuota() {
   const { confirm, dialog } = useConfirm();
   const addToast = useUIStore((s) => s.addToast);
 
+  const keys = useQuery<ApiKeyView[]>({ queryKey: ["my-api-keys"], queryFn: listMyApiKeys });
+
   const pledges = query.data?.pledges ?? [];
   const poolAvailable = Boolean(query.data?.pool_id);
+
+  // Everything the signed-in user holds and could therefore lend: the two
+  // subscription kinds, plus each of their PERSONAL keys (a team key is the
+  // team's to spend, and the server refuses to pool one).
+  const lendables: Lendable[] = [
+    ...(["claude_code", "codex"] as OAuthKind[]).map((kind) => ({
+      source: "oauth" as CredentialSource,
+      ref: kind,
+      label: SUBSCRIPTION_LABEL[kind],
+      metered: false,
+    })),
+    ...(keys.data ?? [])
+      .filter((k) => k.scope_user_id)
+      .map((k) => ({
+        source: "api_key" as CredentialSource,
+        ref: k.provider,
+        keyID: k.id,
+        label: `${k.provider} key — ${k.name}${k.last4 ? ` (…${k.last4})` : ""}`,
+        metered: true,
+      })),
+  ];
 
   const reload = () => {
     setErr(null);
@@ -112,17 +149,23 @@ export default function SharedQuota() {
         <PanelLoading />
       ) : (
         <div className="space-y-4">
-          {(["claude_code", "codex"] as OAuthKind[]).map((kind) => (
+          {lendables.map((c) => (
             <PledgeCard
-              key={kind}
-              kind={kind}
-              pledge={pledges.find((p) => p.kind === kind)}
+              key={`${c.source}/${c.ref}`}
+              lendable={c}
+              pledge={pledges.find((p) => p.source === c.source && p.ref === c.ref)}
               disabled={!poolAvailable}
               onError={setErr}
               onSaved={onSaved}
               confirm={confirm}
             />
           ))}
+          {lendables.length === 0 && (
+            <InlineBanner tone="info" layout="inline">
+              Nothing to lend yet — connect a subscription under “OAuth subscriptions”, or add a
+              personal key under “API keys (BYOK)”.
+            </InlineBanner>
+          )}
         </div>
       )}
 
@@ -132,14 +175,14 @@ export default function SharedQuota() {
 }
 
 function PledgeCard({
-  kind,
+  lendable,
   pledge,
   disabled,
   onError,
   onSaved,
   confirm,
 }: {
-  kind: OAuthKind;
+  lendable: Lendable;
   pledge?: PledgeView;
   disabled: boolean;
   onError: (msg: string | null) => void;
@@ -180,6 +223,7 @@ function PledgeCard({
               timezone: Intl.DateTimeFormat().resolvedOptions().timeZone,
             },
       bots: pledge?.bots,
+      key_id: lendable.keyID,
     };
   };
 
@@ -187,8 +231,8 @@ function PledgeCard({
     setBusy(true);
     onError(null);
     try {
-      await savePledge(kind, buildInput(enabled));
-      onSaved(enabled ? `Sharing your ${KIND_LABEL[kind]} quota.` : "Sharing paused.");
+      await savePledge(lendable.source, lendable.ref, buildInput(enabled));
+      onSaved(enabled ? `Sharing your ${lendable.label}.` : "Sharing paused.");
     } catch (e) {
       onError(errorMessage(e));
     } finally {
@@ -207,7 +251,7 @@ function PledgeCard({
     if (!ok) return;
     onError(null);
     try {
-      await withdrawPledge(kind);
+      await withdrawPledge(lendable.source, lendable.ref);
       onSaved("Contribution withdrawn.");
     } catch (e) {
       onError(errorMessage(e));
@@ -218,15 +262,23 @@ function PledgeCard({
     <div className="bg-surface-1 border border-border-subtle rounded p-4 space-y-3">
       <div className="flex items-center justify-between gap-2">
         <div>
-          <h3 className="font-medium">{KIND_LABEL[kind]}</h3>
+          <h3 className="font-medium">{lendable.label}</h3>
           {pledge && !pledge.connected && (
             <div className="text-xs text-fg-muted">
-              Subscription no longer connected — reconnect it under “OAuth subscriptions”.
+              {lendable.metered
+                ? "That key is gone — add it again to resume sharing."
+                : "Subscription no longer connected — reconnect it under “OAuth subscriptions”."}
             </div>
           )}
         </div>
         {copy ? <Badge variant={copy.tone}>{copy.label}</Badge> : <Badge variant="neutral">Not shared</Badge>}
       </div>
+
+      {lendable.metered && (
+        <InlineBanner tone="warning" layout="inline">
+          {METERED_NOTICE}
+        </InlineBanner>
+      )}
 
       {pledge?.health_detail && (
         <InlineBanner tone="warning" layout="inline">
@@ -243,7 +295,11 @@ function PledgeCard({
             formatValue={formatCost}
             formatMax={formatCost}
             size="sm"
-            hint="Estimated: a subscription bills nothing per call, so this is derived from token counts."
+            hint={
+              lendable.metered
+                ? "Actual charges on your invoice — an API key is billed per token."
+                : "Estimated: a subscription bills nothing per call, so this is derived from token counts."
+            }
           />
           <Meter
             label="Given this week"
@@ -252,7 +308,7 @@ function PledgeCard({
             formatValue={formatCost}
             formatMax={formatCost}
             size="sm"
-            hint="Estimated, same caveat as the daily figure."
+            hint={lendable.metered ? "Actual charges." : "Estimated, same caveat as the daily figure."}
           />
           <div className="text-xs text-fg-muted">
             {pledge.today.runs} run(s) served today
@@ -268,7 +324,15 @@ function PledgeCard({
 
       <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
         <div>
-          <FieldLabel help="Blank = no daily ceiling.">Max $ / day</FieldLabel>
+          <FieldLabel
+            help={
+              lendable.metered
+                ? "Required for a key: without a ceiling you are lending an open invoice."
+                : "Blank = no daily ceiling."
+            }
+          >
+            Max $ / day
+          </FieldLabel>
           <Input
             inputMode="decimal"
             placeholder="no limit"

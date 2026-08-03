@@ -372,7 +372,7 @@ func (s *Server) deleteOAuthForOwner(w http.ResponseWriter, r *http.Request, own
 	// it the first time its credential turns up missing. Only personal
 	// scopes can hold a pledge — an org owner key never does.
 	if s.credPoolPledges != nil && !strings.HasPrefix(ownerKey, secrets.OrgOwnerPrefix) {
-		if err := s.credPoolPledges.Delete(r.Context(), credpool.PledgeID(ownerKey, string(kind))); err != nil && !errors.Is(err, credpool.ErrNotFound) {
+		if err := s.credPoolPledges.Delete(r.Context(), credpool.PledgeID(ownerKey, credpool.SourceOAuth, string(kind))); err != nil && !errors.Is(err, credpool.ErrNotFound) {
 			s.logger.Warn("credential pool: could not withdraw %s's %s contribution on disconnect: %v (it is parked at the next acquisition)", ownerKey, kind, err)
 		}
 	}

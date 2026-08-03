@@ -3,6 +3,7 @@ package server
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"strings"
@@ -26,8 +27,8 @@ import (
 // sealed in pkg/secrets and is only ever unsealed into a run bundle.
 func (s *Server) registerCredPoolRoutes() {
 	s.mux.Handle("GET /api/me/pool", s.requireAuth(http.HandlerFunc(s.handleGetMyPledges)))
-	s.mux.Handle("PUT /api/me/pool/{kind}", s.requireAuth(http.HandlerFunc(s.handlePutMyPledge)))
-	s.mux.Handle("DELETE /api/me/pool/{kind}", s.requireAuth(http.HandlerFunc(s.handleDeleteMyPledge)))
+	s.mux.Handle("PUT /api/me/pool/{source}/{ref}", s.requireAuth(http.HandlerFunc(s.handlePutMyPledge)))
+	s.mux.Handle("DELETE /api/me/pool/{source}/{ref}", s.requireAuth(http.HandlerFunc(s.handleDeleteMyPledge)))
 	s.mux.Handle("GET /api/me/pool/history", s.requireAuth(http.HandlerFunc(s.handleMyPoolHistory)))
 
 	s.mux.Handle("GET /api/teams/{id}/pool", s.requireAuth(http.HandlerFunc(s.handleGetTeamPool)))
@@ -41,7 +42,13 @@ func (s *Server) registerCredPoolRoutes() {
 // pledgeView is what a donor sees about their own contribution: the terms
 // they set, the live state, and what has been drawn today and this week.
 type pledgeView struct {
-	Kind string `json:"kind"`
+	Source string `json:"source"`
+	Ref    string `json:"ref"`
+	KeyID  string `json:"key_id,omitempty"`
+	// Metered is true when spending this credential costs the lender real
+	// money per token, rather than drawing on a plan they already pay for.
+	// The UI must stop calling the figures estimates when it is set.
+	Metered bool `json:"metered"`
 	// Connected reports whether the donor still has a credential of this
 	// kind connected. A pledge without one is inert — say so rather than
 	// showing an "active" contribution that can never be served.
@@ -99,7 +106,9 @@ type poolView struct {
 
 type donorView struct {
 	UserID        string  `json:"user_id"`
-	Kind          string  `json:"kind"`
+	Source        string  `json:"source"`
+	Ref           string  `json:"ref"`
+	Metered       bool    `json:"metered"`
 	Status        string  `json:"status"`
 	Health        string  `json:"health"`
 	CooldownUntil *string `json:"cooldown_until,omitempty"`
@@ -123,7 +132,7 @@ func (s *Server) handleGetMyPledges(w http.ResponseWriter, r *http.Request) {
 	connected := s.connectedKinds(r, id.UserID)
 	views := make([]pledgeView, 0, len(pledges))
 	for _, p := range pledges {
-		views = append(views, s.toPledgeView(r, p, now, connected[p.Kind]))
+		views = append(views, s.toPledgeView(r, p, now, s.stillHolds(r, p, connected)))
 	}
 	writeJSON(w, struct {
 		Pledges []pledgeView `json:"pledges"`
@@ -141,13 +150,20 @@ type pledgeRequest struct {
 	Limits  credpool.Limits  `json:"limits"`
 	Window  *credpool.Window `json:"window"`
 	Bots    []string         `json:"bots"`
+	// KeyID names WHICH of the donor's API keys is lent. Required for an
+	// api_key pledge: a donor may hold several per provider and chooses
+	// deliberately rather than letting a resolver pick.
+	KeyID string `json:"key_id"`
 }
 
 func (s *Server) handlePutMyPledge(w http.ResponseWriter, r *http.Request) {
 	id, _ := auth.FromContext(r.Context())
-	kind := secrets.OAuthKind(r.PathValue("kind"))
-	if !kind.Valid() {
-		httpError(w, http.StatusBadRequest, "unknown credential kind %q", kind)
+	cred := credpool.Credential{
+		Source: credpool.CredentialSource(r.PathValue("source")),
+		Ref:    r.PathValue("ref"),
+	}
+	if !cred.Source.Valid() {
+		httpError(w, http.StatusBadRequest, "unknown credential source %q (want oauth|api_key)", cred.Source)
 		return
 	}
 	var req pledgeRequest
@@ -155,16 +171,14 @@ func (s *Server) handlePutMyPledge(w http.ResponseWriter, r *http.Request) {
 		httpError(w, http.StatusBadRequest, "bad json: %v", err)
 		return
 	}
-	// Lending requires actually having connected the subscription. Refusing
-	// here — rather than storing an inert pledge — is what stops a donor
-	// believing they are contributing when they are not.
-	rec, err := s.oauthStore.Get(r.Context(), id.UserID, kind)
-	if err != nil {
-		if errors.Is(err, secrets.ErrOAuthNotFound) {
-			httpError(w, http.StatusConflict, "connect your %s subscription before sharing it", kind)
-			return
-		}
-		httpError(w, http.StatusInternalServerError, "%s", err.Error())
+	cred.KeyID = strings.TrimSpace(req.KeyID)
+
+	// Lending requires actually holding the credential. Refusing here —
+	// rather than storing an inert pledge — is what stops a donor believing
+	// they are contributing when they are not.
+	rec, cerr := s.verifyLendable(r, id.UserID, cred)
+	if cerr != nil {
+		httpError(w, cerr.status, "%s", cerr.msg)
 		return
 	}
 	poolID := s.poolIDForUser(r)
@@ -173,13 +187,13 @@ func (s *Server) handlePutMyPledge(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	pledgeID := credpool.PledgeID(id.UserID, string(kind))
+	pledgeID := credpool.PledgeID(id.UserID, cred.Source, cred.Ref)
 	p, err := s.credPoolPledges.Get(r.Context(), pledgeID)
 	if err != nil && !errors.Is(err, credpool.ErrNotFound) {
 		httpError(w, http.StatusInternalServerError, "%s", err.Error())
 		return
 	}
-	p.ID, p.PoolID, p.UserID, p.Kind = pledgeID, poolID, id.UserID, string(kind)
+	p.ID, p.PoolID, p.UserID, p.Credential = pledgeID, poolID, id.UserID, cred
 	p.Limits, p.Window, p.Bots = req.Limits, req.Window, req.Bots
 	if req.Enabled != nil {
 		p.Enabled = *req.Enabled
@@ -187,19 +201,86 @@ func (s *Server) handlePutMyPledge(w http.ResponseWriter, r *http.Request) {
 	if reconnected(p, rec) {
 		p.Health, p.HealthDetail, p.ConsecutiveAuthFailures = credpool.HealthOK, "", 0
 	} else {
-		s.logger.Info("credential pool: %s updated terms but their %s credential is still parked (%s)", id.UserID, kind, p.Health)
+		s.logger.Info("credential pool: %s updated terms but their %s credential is still parked (%s)", id.UserID, cred, p.Health)
 	}
 	if err := p.Validate(); err != nil {
 		httpError(w, http.StatusBadRequest, "%s", err.Error())
+		return
+	}
+	// Lending a metered key with no spend ceiling is an open invoice on the
+	// donor's own account. A subscription may be lent uncapped — the plan is
+	// paid for either way — but real money may not.
+	if cred.Source.Metered() && p.Limits.MaxUSDPerDay <= 0 && p.Limits.MaxUSDPerWeek <= 0 {
+		httpError(w, http.StatusBadRequest,
+			"set a daily or weekly spend ceiling: this key is billed per token, so sharing it without one is an open invoice on your account")
 		return
 	}
 	if err := s.credPoolPledges.Upsert(r.Context(), p); err != nil {
 		httpError(w, http.StatusInternalServerError, "%s", err.Error())
 		return
 	}
-	s.logger.Info("credential pool: %s %s their %s subscription", id.UserID, enabledVerb(p.Enabled), kind)
-	// The connection was just verified above; don't re-read it.
+	s.logger.Info("credential pool: %s %s their %s credential", id.UserID, enabledVerb(p.Enabled), cred)
+	// The credential was just verified above; don't re-read it.
 	writeJSON(w, s.toPledgeView(r, p, time.Now().UTC(), true))
+}
+
+// httpErr is a status + message a handler surfaces verbatim.
+type httpErr struct {
+	status int
+	msg    string
+}
+
+// verifyLendable checks the caller actually holds what they are offering,
+// and returns the stored OAuth record when the offer is a subscription (the
+// caller needs its timestamps for the re-park decision).
+//
+// The api_key branch is the load-bearing one: a pledge must never become a
+// way to expose a key that is not the donor's own, so the key is required
+// to be user-scoped TO THEM. A team-wide key is the team's to spend, and
+// lending it would let one member hand the whole team's credential to the
+// pool.
+func (s *Server) verifyLendable(r *http.Request, userID string, cred credpool.Credential) (secrets.OAuthRecord, *httpErr) {
+	switch cred.Source {
+	case credpool.SourceOAuth:
+		kind := secrets.OAuthKind(cred.Ref)
+		if !kind.Valid() {
+			return secrets.OAuthRecord{}, &httpErr{http.StatusBadRequest, fmt.Sprintf("unknown subscription %q", cred.Ref)}
+		}
+		rec, err := s.oauthStore.Get(r.Context(), userID, kind)
+		if err != nil {
+			if errors.Is(err, secrets.ErrOAuthNotFound) {
+				return secrets.OAuthRecord{}, &httpErr{http.StatusConflict, fmt.Sprintf("connect your %s subscription before sharing it", kind)}
+			}
+			return secrets.OAuthRecord{}, &httpErr{http.StatusInternalServerError, err.Error()}
+		}
+		return rec, nil
+
+	case credpool.SourceAPIKey:
+		if s.apiKeys == nil {
+			return secrets.OAuthRecord{}, &httpErr{http.StatusServiceUnavailable, "API keys are not enabled on this instance"}
+		}
+		if cred.KeyID == "" {
+			return secrets.OAuthRecord{}, &httpErr{http.StatusBadRequest, "name the key you are lending (key_id)"}
+		}
+		k, err := s.apiKeys.Get(r.Context(), cred.KeyID)
+		if err != nil {
+			if errors.Is(err, secrets.ErrApiKeyNotFound) {
+				return secrets.OAuthRecord{}, &httpErr{http.StatusNotFound, "no such API key"}
+			}
+			return secrets.OAuthRecord{}, &httpErr{http.StatusInternalServerError, err.Error()}
+		}
+		if k.ScopeUserID == "" || k.ScopeUserID != userID {
+			return secrets.OAuthRecord{}, &httpErr{http.StatusForbidden, "that key is not yours to lend — only a personal key can be pooled"}
+		}
+		if string(k.Provider) != cred.Ref {
+			return secrets.OAuthRecord{}, &httpErr{http.StatusBadRequest, fmt.Sprintf("that key is a %s key, not %s", k.Provider, cred.Ref)}
+		}
+		// A metered key spends real money per token, so an unbounded pledge
+		// is an open invoice. Subscriptions may be lent uncapped (the plan
+		// is already paid for); a key may not.
+		return secrets.OAuthRecord{}, nil
+	}
+	return secrets.OAuthRecord{}, &httpErr{http.StatusBadRequest, fmt.Sprintf("unknown credential source %q", cred.Source)}
 }
 
 // reconnected reports whether a pledge's parked state may be cleared: the
@@ -230,8 +311,9 @@ func enabledVerb(enabled bool) string {
 
 func (s *Server) handleDeleteMyPledge(w http.ResponseWriter, r *http.Request) {
 	id, _ := auth.FromContext(r.Context())
-	kind := r.PathValue("kind")
-	if err := s.credPoolPledges.Delete(r.Context(), credpool.PledgeID(id.UserID, kind)); err != nil {
+	src := credpool.CredentialSource(r.PathValue("source"))
+	ref := r.PathValue("ref")
+	if err := s.credPoolPledges.Delete(r.Context(), credpool.PledgeID(id.UserID, src, ref)); err != nil {
 		if errors.Is(err, credpool.ErrNotFound) {
 			w.WriteHeader(http.StatusNoContent)
 			return
@@ -239,7 +321,7 @@ func (s *Server) handleDeleteMyPledge(w http.ResponseWriter, r *http.Request) {
 		httpError(w, http.StatusInternalServerError, "%s", err.Error())
 		return
 	}
-	s.logger.Info("credential pool: %s withdrew their %s contribution", id.UserID, kind)
+	s.logger.Info("credential pool: %s withdrew their %s/%s contribution", id.UserID, src, ref)
 	w.WriteHeader(http.StatusNoContent)
 }
 
@@ -311,9 +393,29 @@ func (s *Server) connectedKinds(r *http.Request, userID string) map[string]bool 
 	return out
 }
 
+// stillHolds reports whether the donor still has the credential a pledge
+// offers. A pledge whose credential is gone is inert — say so rather than
+// showing an "active" contribution that can never be served.
+func (s *Server) stillHolds(r *http.Request, p credpool.Pledge, connectedOAuth map[string]bool) bool {
+	switch p.Source {
+	case credpool.SourceOAuth:
+		return connectedOAuth[p.Ref]
+	case credpool.SourceAPIKey:
+		if s.apiKeys == nil || p.KeyID == "" {
+			return false
+		}
+		k, err := s.apiKeys.Get(r.Context(), p.KeyID)
+		return err == nil && k.ScopeUserID == p.UserID
+	}
+	return false
+}
+
 func (s *Server) toPledgeView(r *http.Request, p credpool.Pledge, now time.Time, connected bool) pledgeView {
 	v := pledgeView{
-		Kind:          p.Kind,
+		Source:        string(p.Source),
+		Ref:           p.Ref,
+		KeyID:         p.KeyID,
+		Metered:       p.Source.Metered(),
 		Enabled:       p.Enabled,
 		Limits:        p.Limits,
 		Window:        p.Window,
@@ -496,7 +598,9 @@ func (s *Server) toPoolView(r *http.Request, pool credpool.Pool, withDonors bool
 		u := usage[p.ID]
 		v.Donors = append(v.Donors, donorView{
 			UserID:        p.UserID,
-			Kind:          p.Kind,
+			Source:        string(p.Source),
+			Ref:           p.Ref,
+			Metered:       p.Source.Metered(),
 			Status:        string(status),
 			Health:        string(p.Health),
 			CooldownUntil: optRFC3339(p.CooldownUntil),

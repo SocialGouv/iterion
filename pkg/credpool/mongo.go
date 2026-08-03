@@ -136,7 +136,7 @@ func (s *MongoPledgeStore) ListByUser(ctx context.Context, userID string) ([]Ple
 
 func (s *MongoPledgeStore) Upsert(ctx context.Context, p Pledge) error {
 	if p.ID == "" {
-		p.ID = PledgeID(p.UserID, p.Kind)
+		p.ID = PledgeID(p.UserID, p.Source, p.Ref)
 	}
 	now := time.Now().UTC()
 	p.UpdatedAt = now

@@ -98,9 +98,11 @@ export default function CredPoolTab({
       <div>
         <h2 className="text-lg font-semibold">Credential pool</h2>
         <p className="text-sm text-fg-muted mt-1">
-          Contributors can lend their Claude or ChatGPT subscription to this org. A run with no
-          credential of its own then draws on the least-used available contribution, capped by the
-          ceilings that contributor set. Each donor keeps their own kill switch.
+          Contributors can lend a Claude or ChatGPT subscription — or a personal API key of any
+          provider — to this org. A run with no credential of its own then draws on the least-used
+          available contribution, capped by the ceilings that contributor set. Each donor keeps
+          their own kill switch. A key marked <em>metered</em> costs its lender real money per
+          token, so it is drawn on only after every subscription has been tried.
         </p>
       </div>
 
@@ -190,7 +192,7 @@ export default function CredPoolTab({
             <Table caption="Contributors lending to this pool" density="sm">
               <THead className="bg-surface-1">
                 <Th>Contributor</Th>
-                <Th>Subscription</Th>
+                <Th>Credential</Th>
                 <Th>State</Th>
                 <Th align="right">Runs today</Th>
                 <Th align="right">Given today (est.)</Th>
@@ -198,9 +200,16 @@ export default function CredPoolTab({
               </THead>
               <TBody>
                 {donors.map((d) => (
-                  <Tr key={`${d.user_id}-${d.kind}`}>
+                  <Tr key={`${d.user_id}-${d.source}-${d.ref}`}>
                     <Td>{d.user_id}</Td>
-                    <Td>{d.kind}</Td>
+                    <Td>
+                      {d.ref}
+                      {d.metered && (
+                        <Badge variant="warning" className="ml-2">
+                          metered
+                        </Badge>
+                      )}
+                    </Td>
                     <Td>
                       <Badge variant={STATUS_TONE[d.status] ?? "neutral"}>{d.status}</Badge>
                       {d.cooldown_until && (

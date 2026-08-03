@@ -22,13 +22,17 @@ type PoolPledgeInput struct {
 	Limits  credpool.Limits  `json:"limits"`
 	Window  *credpool.Window `json:"window,omitempty"`
 	Bots    []string         `json:"bots,omitempty"`
+	// KeyID names WHICH of the donor's keys is lent (api_key only).
+	KeyID string `json:"key_id,omitempty"`
 }
 
 // poolPledgeView is the slice of the response the CLI reads back when it
 // needs the CURRENT terms (pause must not silently reset the ceilings a
 // donor set).
 type poolPledgeView struct {
-	Kind    string           `json:"kind"`
+	Source  string           `json:"source"`
+	Ref     string           `json:"ref"`
+	KeyID   string           `json:"key_id,omitempty"`
 	Enabled bool             `json:"enabled"`
 	Limits  credpool.Limits  `json:"limits"`
 	Window  *credpool.Window `json:"window,omitempty"`
@@ -47,11 +51,11 @@ func RemotePoolHistory(ctx context.Context, c *RemoteClient, p *Printer) error {
 }
 
 // RemotePoolShare creates or updates a contribution.
-func RemotePoolShare(ctx context.Context, c *RemoteClient, p *Printer, kind string, in PoolPledgeInput) error {
-	if kind == "" {
-		return fmt.Errorf("--kind is required (claude_code|codex)")
+func RemotePoolShare(ctx context.Context, c *RemoteClient, p *Printer, src, ref string, in PoolPledgeInput) error {
+	if err := validPoolCredential(src, ref); err != nil {
+		return err
 	}
-	raw, err := c.Call(ctx, "PUT", "/api/me/pool/"+kind, in, nil)
+	raw, err := c.Call(ctx, "PUT", "/api/me/pool/"+src+"/"+ref, in, nil)
 	if err != nil {
 		return err
 	}
@@ -62,9 +66,9 @@ func RemotePoolShare(ctx context.Context, c *RemoteClient, p *Printer, kind stri
 // RemotePoolPause flips a contribution off WITHOUT discarding its terms:
 // it reads the stored pledge back and re-sends it with enabled=false, so
 // resuming later does not require the donor to retype their ceilings.
-func RemotePoolPause(ctx context.Context, c *RemoteClient, p *Printer, kind string, enabled bool) error {
-	if kind == "" {
-		return fmt.Errorf("--kind is required (claude_code|codex)")
+func RemotePoolPause(ctx context.Context, c *RemoteClient, p *Printer, src, ref string, enabled bool) error {
+	if err := validPoolCredential(src, ref); err != nil {
+		return err
 	}
 	raw, err := c.Call(ctx, "GET", "/api/me/pool", nil, nil)
 	if err != nil {
@@ -78,28 +82,41 @@ func RemotePoolPause(ctx context.Context, c *RemoteClient, p *Printer, kind stri
 	}
 	var current *poolPledgeView
 	for i := range body.Pledges {
-		if body.Pledges[i].Kind == kind {
+		if body.Pledges[i].Source == src && body.Pledges[i].Ref == ref {
 			current = &body.Pledges[i]
 			break
 		}
 	}
 	if current == nil {
-		return fmt.Errorf("you have no %s contribution to change", kind)
+		return fmt.Errorf("you have no %s/%s contribution to change", src, ref)
 	}
-	return RemotePoolShare(ctx, c, p, kind, PoolPledgeInput{
+	return RemotePoolShare(ctx, c, p, src, ref, PoolPledgeInput{
 		Enabled: enabled,
 		Limits:  current.Limits,
 		Window:  current.Window,
 		Bots:    current.Bots,
+		KeyID:   current.KeyID,
 	})
 }
 
 // RemotePoolWithdraw removes a contribution entirely.
-func RemotePoolWithdraw(ctx context.Context, c *RemoteClient, p *Printer, kind string) error {
-	if kind == "" {
-		return fmt.Errorf("--kind is required (claude_code|codex)")
+func RemotePoolWithdraw(ctx context.Context, c *RemoteClient, p *Printer, src, ref string) error {
+	if err := validPoolCredential(src, ref); err != nil {
+		return err
 	}
-	return RemoteSendPrint(ctx, c, p, "DELETE", "/api/me/pool/"+kind, nil)
+	return RemoteSendPrint(ctx, c, p, "DELETE", "/api/me/pool/"+src+"/"+ref, nil)
+}
+
+// validPoolCredential rejects a malformed (source, ref) before it becomes a
+// confusing 404 from the server.
+func validPoolCredential(src, ref string) error {
+	if !credpool.CredentialSource(src).Valid() {
+		return fmt.Errorf("--source must be oauth or api_key (got %q)", src)
+	}
+	if ref == "" {
+		return fmt.Errorf("--ref is required (a subscription like claude_code, or a provider like anthropic)")
+	}
+	return nil
 }
 
 // RemotePoolDonors prints the operator view: the pool's policy and who is

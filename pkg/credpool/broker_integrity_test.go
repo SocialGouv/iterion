@@ -29,7 +29,7 @@ func TestReport_secondReportDoesNotChargeAgain(t *testing.T) {
 			t.Fatalf("Report %d: %v", i, err)
 		}
 	}
-	day, _, _ := h.ledger.Usage(ctx, PledgeID("alice", "claude_code"), h.now)
+	day, _, _ := h.ledger.Usage(ctx, PledgeID("alice", SourceOAuth, "claude_code"), h.now)
 	if day.CostUSD != 2 {
 		t.Errorf("donor charged %v, want 2 — a second report double-charged them", day.CostUSD)
 	}
@@ -48,7 +48,7 @@ func TestAcquire_resumeDoesNotConsumeASecondRunUnit(t *testing.T) {
 			t.Fatalf("acquire attempt %d: %v", i, err)
 		}
 	}
-	day, _, _ := h.ledger.Usage(ctx, PledgeID("alice", "claude_code"), h.now)
+	day, _, _ := h.ledger.Usage(ctx, PledgeID("alice", SourceOAuth, "claude_code"), h.now)
 	if day.Runs != 1 {
 		t.Errorf("day runs = %d, want 1 — resuming re-consumed the donor's run quota", day.Runs)
 	}
@@ -98,7 +98,7 @@ func TestAcquire_exhaustedDonorIsRefusedNotGrantedZero(t *testing.T) {
 	h := newHarness(t)
 	ctx := context.Background()
 	h.donor(t, "alice", Limits{MaxUSDPerDay: 5})
-	if err := h.ledger.AddSpend(ctx, PledgeID("alice", "claude_code"), h.now, 5, 0, 0); err != nil {
+	if err := h.ledger.AddSpend(ctx, PledgeID("alice", SourceOAuth, "claude_code"), h.now, 5, 0, 0); err != nil {
 		t.Fatalf("seed spend: %v", err)
 	}
 	grant, err := h.broker.Acquire(ctx, h.request("run-1"))
@@ -120,7 +120,7 @@ func TestRelease_returnsAnAdmissionWhoseRunNeverStarted(t *testing.T) {
 	}
 	h.broker.Release(ctx, "run-1")
 
-	day, _, _ := h.ledger.Usage(ctx, PledgeID("alice", "claude_code"), h.now)
+	day, _, _ := h.ledger.Usage(ctx, PledgeID("alice", SourceOAuth, "claude_code"), h.now)
 	if day.Runs != 0 {
 		t.Errorf("day runs = %d, want 0 — the donor paid for a run that never launched", day.Runs)
 	}
@@ -148,7 +148,7 @@ func TestRelease_isSafeOnAnythingElse(t *testing.T) {
 		t.Fatalf("Report: %v", err)
 	}
 	h.broker.Release(ctx, "run-1") // already closed — must not refund
-	day, _, _ := h.ledger.Usage(ctx, PledgeID("alice", "claude_code"), h.now)
+	day, _, _ := h.ledger.Usage(ctx, PledgeID("alice", SourceOAuth, "claude_code"), h.now)
 	if day.Runs != 1 {
 		t.Errorf("day runs = %d, want 1 — a released-after-report run gave back a unit it had used", day.Runs)
 	}
@@ -193,7 +193,7 @@ func TestAcquire_resumeOnAnotherDonorKeepsTheFirstOnesRecord(t *testing.T) {
 	if history[0].CostUSD != 2 || history[0].RunID != "run-1" {
 		t.Errorf("record = (run %q, $%v), want (run-1, $2)", history[0].RunID, history[0].CostUSD)
 	}
-	day, _, _ := h.ledger.Usage(ctx, PledgeID(first.DonorID, "claude_code"), h.now)
+	day, _, _ := h.ledger.Usage(ctx, PledgeID(first.DonorID, SourceOAuth, "claude_code"), h.now)
 	if day.CostUSD != 2 {
 		t.Errorf("first donor's ledger = %v, want 2 (and it must match their history)", day.CostUSD)
 	}
@@ -219,8 +219,8 @@ func TestReport_chargesTheDonorServingTheCurrentAttempt(t *testing.T) {
 		t.Fatalf("second Report: %v", err)
 	}
 
-	firstDay, _, _ := h.ledger.Usage(ctx, PledgeID(first.DonorID, "claude_code"), h.now)
-	secondDay, _, _ := h.ledger.Usage(ctx, PledgeID(second.DonorID, "claude_code"), h.now)
+	firstDay, _, _ := h.ledger.Usage(ctx, PledgeID(first.DonorID, SourceOAuth, "claude_code"), h.now)
+	secondDay, _, _ := h.ledger.Usage(ctx, PledgeID(second.DonorID, SourceOAuth, "claude_code"), h.now)
 	if firstDay.CostUSD != 1 {
 		t.Errorf("%s charged %v, want 1 (only their own attempt)", first.DonorID, firstDay.CostUSD)
 	}
@@ -242,7 +242,7 @@ func TestReleaseExpired_keepsTheRunUnitOfAServedRun(t *testing.T) {
 	if _, err := h.broker.ReleaseExpired(ctx, 10); err != nil {
 		t.Fatalf("ReleaseExpired: %v", err)
 	}
-	day, _, _ := h.ledger.Usage(ctx, PledgeID("alice", "claude_code"), h.now.Add(-DefaultLeaseTTL-time.Minute))
+	day, _, _ := h.ledger.Usage(ctx, PledgeID("alice", SourceOAuth, "claude_code"), h.now.Add(-DefaultLeaseTTL-time.Minute))
 	if day.Runs != 1 {
 		t.Errorf("day runs = %d, want 1 — a served run's quota was refunded", day.Runs)
 	}
@@ -298,7 +298,7 @@ func TestAcquire_supersedesAnOrphanedOpenLease(t *testing.T) {
 	}
 	// No Report — the pod died. Park the first donor so the resume must
 	// pick the other one.
-	p, _ := h.pledges.Get(ctx, PledgeID(first.DonorID, "claude_code"))
+	p, _ := h.pledges.Get(ctx, PledgeID(first.DonorID, SourceOAuth, "claude_code"))
 	p.Health = HealthAuthFailed
 	if err := h.pledges.Upsert(ctx, p); err != nil {
 		t.Fatalf("park: %v", err)
@@ -326,8 +326,8 @@ func TestAcquire_supersedesAnOrphanedOpenLease(t *testing.T) {
 	if err := h.broker.Report(ctx, "run-1", Outcome{CostUSD: 3}); err != nil {
 		t.Fatalf("Report: %v", err)
 	}
-	orphan, _, _ := h.ledger.Usage(ctx, PledgeID(first.DonorID, "claude_code"), h.now)
-	serving, _, _ := h.ledger.Usage(ctx, PledgeID(second.DonorID, "claude_code"), h.now)
+	orphan, _, _ := h.ledger.Usage(ctx, PledgeID(first.DonorID, SourceOAuth, "claude_code"), h.now)
+	serving, _, _ := h.ledger.Usage(ctx, PledgeID(second.DonorID, SourceOAuth, "claude_code"), h.now)
 	if orphan.CostUSD != 0 {
 		t.Errorf("%s was charged %v for work they did not serve", first.DonorID, orphan.CostUSD)
 	}
@@ -373,7 +373,7 @@ func TestAcquire_readmissionKeepsTheFinishedAttemptsRecord(t *testing.T) {
 	if err := h.broker.Report(ctx, "run-1", Outcome{CostUSD: 2}); err != nil {
 		t.Fatalf("second Report: %v", err)
 	}
-	day, _, _ := h.ledger.Usage(ctx, PledgeID("alice", "claude_code"), h.now)
+	day, _, _ := h.ledger.Usage(ctx, PledgeID("alice", SourceOAuth, "claude_code"), h.now)
 	if day.CostUSD != 4 {
 		// 2 (attempt 1) + 2 (attempt 2, legitimately reported) = 4.
 		t.Errorf("charged %v, want 4", day.CostUSD)
@@ -396,7 +396,7 @@ func TestRelease_doesNotRefundARenewedAdmission(t *testing.T) {
 	}
 	h.broker.Release(ctx, "run-1") // the resume's launch failed
 
-	day, _, _ := h.ledger.Usage(ctx, PledgeID("alice", "claude_code"), h.now)
+	day, _, _ := h.ledger.Usage(ctx, PledgeID("alice", SourceOAuth, "claude_code"), h.now)
 	if day.Runs != 1 {
 		t.Errorf("day runs = %d, want 1 — releasing a resume refunded a unit it never took", day.Runs)
 	}
@@ -425,11 +425,11 @@ func TestAcquire_abandonedAttemptDoesNotEarnAFreeReadmission(t *testing.T) {
 	if _, err := h.broker.Acquire(ctx, h.request("run-1")); err != nil {
 		t.Fatalf("second Acquire: %v", err)
 	}
-	day, _, _ := h.ledger.Usage(ctx, PledgeID("alice", "claude_code"), h.now)
+	day, _, _ := h.ledger.Usage(ctx, PledgeID("alice", SourceOAuth, "claude_code"), h.now)
 	if day.Runs != 1 {
 		t.Fatalf("day runs = %d on the new day, want 1", day.Runs)
 	}
-	prior, _, _ := h.ledger.Usage(ctx, PledgeID("alice", "claude_code"), h.now.Add(-DefaultLeaseTTL-time.Minute))
+	prior, _, _ := h.ledger.Usage(ctx, PledgeID("alice", SourceOAuth, "claude_code"), h.now.Add(-DefaultLeaseTTL-time.Minute))
 	if prior.Runs != 1 {
 		t.Errorf("the abandoned attempt's unit = %d, want 1 (it was served)", prior.Runs)
 	}
@@ -444,7 +444,7 @@ func TestLiveCommitment_emptyExcludeCountsEverything(t *testing.T) {
 	if _, err := h.broker.Acquire(ctx, h.request("run-1")); err != nil {
 		t.Fatalf("Acquire: %v", err)
 	}
-	runs, committed, err := h.leases.LiveCommitment(ctx, PledgeID("alice", "claude_code"), "", h.now)
+	runs, committed, err := h.leases.LiveCommitment(ctx, PledgeID("alice", SourceOAuth, "claude_code"), "", h.now)
 	if err != nil {
 		t.Fatalf("LiveCommitment: %v", err)
 	}

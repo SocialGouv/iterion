@@ -497,7 +497,14 @@ func (p *Publisher) resolveAndSealCredentials(ctx context.Context, runID, orgID,
 	res := credResolution{}
 	if len(bundle.APIKeys) == 0 && len(bundle.OAuthCredentials) == 0 {
 		if grant := p.acquireFromPool(ctx, runID, orgID, tenantID, ownerID, botID); grant != nil {
-			bundle.OAuthCredentials[grant.Kind] = grant.Payload
+			// The lent credential goes in the slot its KIND belongs to, so
+			// the runner cannot tell a donation from the tenant's own.
+			switch grant.Source {
+			case credpool.SourceOAuth:
+				bundle.OAuthCredentials[grant.Ref] = grant.Payload
+			case credpool.SourceAPIKey:
+				bundle.APIKeys[secrets.Provider(grant.Ref)] = string(grant.Payload)
+			}
 			res.grant = grant
 		}
 	}
@@ -537,11 +544,24 @@ type credResolution struct {
 	grant      *credpool.Grant
 }
 
-// poolKindPreference is the order the pool is asked for a credential when a
-// run has none. claude_code first: it is the native path for a Claude
-// subscription (the CLI IS Claude Code), so a lent Claude forfait works
-// there without spending anyone's extra-usage balance.
-var poolKindPreference = []secrets.OAuthKind{secrets.OAuthKindClaudeCode, secrets.OAuthKindCodex}
+// poolWantOrder is the order the pool is asked for a credential when a run
+// has none.
+//
+// Subscriptions first, and claude_code before codex: a lent Claude forfait
+// runs natively on the Claude Code CLI, drawing on a plan its lender has
+// already paid for. Metered keys come last on purpose — spending one costs
+// its lender real money per token, so it is the option of last resort even
+// among donations.
+var poolWantOrder = func() []credpool.Credential {
+	out := []credpool.Credential{
+		{Source: credpool.SourceOAuth, Ref: string(secrets.OAuthKindClaudeCode)},
+		{Source: credpool.SourceOAuth, Ref: string(secrets.OAuthKindCodex)},
+	}
+	for _, prov := range allKnownProviders {
+		out = append(out, credpool.Credential{Source: credpool.SourceAPIKey, Ref: string(prov)})
+	}
+	return out
+}()
 
 // acquireFromPool asks the credential pool for a donor. Returns nil when no
 // pool is wired, none serves this requester, or every donor is currently
@@ -557,7 +577,7 @@ func (p *Publisher) acquireFromPool(ctx context.Context, runID, orgID, tenantID,
 		TenantID: tenantID,
 		UserID:   ownerID,
 		BotID:    botID,
-		Kinds:    poolKindPreference,
+		Wants:    poolWantOrder,
 	})
 	if err != nil {
 		if !errors.Is(err, credpool.ErrNoDonor) {
@@ -568,8 +588,8 @@ func (p *Publisher) acquireFromPool(ctx context.Context, runID, orgID, tenantID,
 		}
 		return nil
 	}
-	p.logger.Info("cloudpublisher: run %s runs on a pooled contributor credential (donor=%s kind=%s allowance=$%.2f)",
-		runID, grant.DonorID, grant.Kind, grant.RemainingUSD)
+	p.logger.Info("cloudpublisher: run %s runs on a pooled contributor credential (donor=%s %s allowance=$%.2f)",
+		runID, grant.DonorID, grant.Credential, grant.RemainingUSD)
 	return grant
 }
 

@@ -1007,21 +1007,22 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/api/me/pool/{kind}": {
+    "/api/me/pool/{source}/{ref}": {
         parameters: {
             query?: never;
             header?: never;
             path: {
-                kind: string;
+                source: string;
+                ref: string;
             };
             cookie?: never;
         };
         get?: never;
-        /** PUT /api/me/pool/{kind} */
-        put: operations["putMePoolByKind"];
+        /** PUT /api/me/pool/{source}/{ref} */
+        put: operations["putMePoolBySourceByRef"];
         post?: never;
-        /** DELETE /api/me/pool/{kind} */
-        delete: operations["deleteMePoolByKind"];
+        /** DELETE /api/me/pool/{source}/{ref} */
+        delete: operations["deleteMePoolBySourceByRef"];
         options?: never;
         head?: never;
         patch?: never;
@@ -6461,12 +6462,13 @@ export interface operations {
             };
         };
     };
-    putMePoolByKind: {
+    putMePoolBySourceByRef: {
         parameters: {
             query?: never;
             header?: never;
             path: {
-                kind: string;
+                source: string;
+                ref: string;
             };
             cookie?: never;
         };
@@ -6481,12 +6483,13 @@ export interface operations {
             };
         };
     };
-    deleteMePoolByKind: {
+    deleteMePoolBySourceByRef: {
         parameters: {
             query?: never;
             header?: never;
             path: {
-                kind: string;
+                source: string;
+                ref: string;
             };
             cookie?: never;
         };

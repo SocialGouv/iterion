@@ -259,18 +259,58 @@ func (w *Window) Open(now time.Time) bool {
 	return h >= w.StartHour || h < w.EndHour
 }
 
-// Pledge is one donor's standing offer of one connected subscription.
-// Keyed by (UserID, Kind) — the same partition the credential itself uses
-// in pkg/secrets, so a pledge can never point at a credential that is not
-// the donor's own.
+// CredentialSource selects which store holds a lent credential — and, more
+// importantly, what the money means.
+type CredentialSource string
+
+const (
+	// SourceOAuth is a subscription connected through the OAuth flow. The
+	// provider bills nothing per call, so the pool's dollar figures are
+	// ESTIMATES derived from tokens, and the real ceiling is the provider's
+	// own usage window.
+	SourceOAuth CredentialSource = "oauth"
+	// SourceAPIKey is a metered provider key. Every token is real money on
+	// the lender's invoice: the figures stop being estimates and the
+	// ceilings stop being a proxy — they are the financial control.
+	SourceAPIKey CredentialSource = "api_key"
+)
+
+func (s CredentialSource) Valid() bool {
+	return s == SourceOAuth || s == SourceAPIKey
+}
+
+// Metered reports whether spending this credential costs its lender real
+// money per token, rather than drawing on a subscription they already pay
+// for. Callers use it to decide whether to present a figure as exact.
+func (s CredentialSource) Metered() bool { return s == SourceAPIKey }
+
+// Credential names one lendable credential.
+type Credential struct {
+	Source CredentialSource `bson:"source" json:"source"`
+	// Ref is the OAuth kind ("claude_code", "codex") for a subscription, or
+	// the provider ("anthropic", "openai", …) for a key. Held as a string
+	// so this package stays independent of the secrets enums; the broker
+	// converts at the boundary.
+	Ref string `bson:"ref" json:"ref"`
+	// KeyID selects WHICH of the donor's keys, for api_key only. A donor
+	// may hold several per provider, and lends one deliberately rather than
+	// whichever the resolver would have picked.
+	KeyID string `bson:"key_id,omitempty" json:"key_id,omitempty"`
+}
+
+func (c Credential) String() string {
+	return string(c.Source) + "/" + c.Ref
+}
+
+// Pledge is one donor's standing offer of one credential they hold.
+// Keyed by (UserID, Source, Ref), so a pledge can never point at a
+// credential that is not the donor's own.
 type Pledge struct {
 	ID     string `bson:"_id" json:"id"`
 	PoolID string `bson:"pool_id" json:"pool_id"`
 	UserID string `bson:"user_id" json:"user_id"`
-	// Kind mirrors secrets.OAuthKind ("claude_code" / "codex"). Held as a
-	// string so this package does not depend on pkg/secrets — the broker
-	// converts at the boundary.
-	Kind string `bson:"kind" json:"kind"`
+	// Credential is what is lent — a subscription or a metered key.
+	Credential `bson:",inline" json:",inline"`
 	// Enabled is the donor's kill switch. Effective at the next
 	// acquisition; runs already in flight finish on the credential they
 	// were granted (killing them mid-way would waste the spend already
@@ -296,17 +336,27 @@ type Pledge struct {
 	UpdatedAt               time.Time  `bson:"updated_at" json:"updated_at"`
 }
 
-// PledgeID is the deterministic id for a (user, kind) pledge, matching how
-// pkg/secrets keys the credential it lends.
-func PledgeID(userID, kind string) string { return userID + "|" + kind }
+// PledgeID is the deterministic id for one donor's offer of one
+// credential.
+func PledgeID(userID string, src CredentialSource, ref string) string {
+	return userID + "|" + string(src) + "|" + ref
+}
 
 // Validate checks a donor-supplied pledge before it is stored.
 func (p Pledge) Validate() error {
 	if strings.TrimSpace(p.UserID) == "" {
 		return fmt.Errorf("credpool: pledge has no user")
 	}
-	if strings.TrimSpace(p.Kind) == "" {
-		return fmt.Errorf("credpool: pledge has no credential kind")
+	if !p.Source.Valid() {
+		return fmt.Errorf("credpool: pledge has an unknown credential source %q", p.Source)
+	}
+	if strings.TrimSpace(p.Ref) == "" {
+		return fmt.Errorf("credpool: pledge names no credential")
+	}
+	// A metered key is lent by identity, not by "whichever anthropic key the
+	// resolver picks" — the donor chooses which of their keys is exposed.
+	if p.Source == SourceAPIKey && strings.TrimSpace(p.KeyID) == "" {
+		return fmt.Errorf("credpool: an api_key pledge must name the key it lends")
 	}
 	if err := p.Limits.Validate(); err != nil {
 		return err
@@ -395,8 +445,8 @@ type Lease struct {
 	PoolID   string `bson:"pool_id" json:"pool_id"`
 	// DonorID is the lending user; denormalised so the donor's "what did
 	// my quota run" view is a single indexed query.
-	DonorID string `bson:"donor_id" json:"donor_id"`
-	Kind    string `bson:"kind" json:"kind"`
+	DonorID    string `bson:"donor_id" json:"donor_id"`
+	Credential `bson:",inline" json:",inline"`
 	// TenantID / RequesterID / BotID are the accountability triple: which
 	// team, which person, which bot consumed the donation.
 	TenantID    string `bson:"tenant_id,omitempty" json:"tenant_id,omitempty"`

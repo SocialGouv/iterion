@@ -6,7 +6,6 @@
 // donor's TERMS and what has been drawn against them.
 
 import { request as send } from "./client";
-import type { OAuthKind } from "./byok";
 
 /** Every ceiling is optional; 0 means "no limit on this axis". */
 export interface PoolLimits {
@@ -42,9 +41,20 @@ export type PledgeStatus =
   | "unhealthy"
   | "bot_filtered";
 
+/** Which store holds a lent credential — and what the money means. */
+export type CredentialSource = "oauth" | "api_key";
+
 export interface PledgeView {
-  kind: OAuthKind;
-  /** False when the subscription behind this pledge is no longer connected. */
+  source: CredentialSource;
+  /** OAuth kind ("claude_code") for a subscription, provider for a key. */
+  ref: string;
+  key_id?: string;
+  /**
+   * True when spending this credential costs the lender real money per
+   * token. The UI must stop hedging the figures as estimates when it is set.
+   */
+  metered: boolean;
+  /** False when the credential behind this pledge is no longer held. */
   connected: boolean;
   enabled: boolean;
   status: PledgeStatus;
@@ -77,6 +87,8 @@ export interface PledgeInput {
   limits: PoolLimits;
   window?: PoolWindow | null;
   bots?: string[];
+  /** Which of the donor's keys is lent. Required for an api_key pledge. */
+  key_id?: string;
 }
 
 export async function listMyPledges(): Promise<{ pledges: PledgeView[]; pool_id?: string }> {
@@ -84,15 +96,21 @@ export async function listMyPledges(): Promise<{ pledges: PledgeView[]; pool_id?
   return { pledges: res.pledges ?? [], pool_id: res.pool_id };
 }
 
-export async function savePledge(kind: OAuthKind, input: PledgeInput): Promise<PledgeView> {
-  return send(`/me/pool/${encodeURIComponent(kind)}`, {
+export async function savePledge(
+  source: CredentialSource,
+  ref: string,
+  input: PledgeInput,
+): Promise<PledgeView> {
+  return send(`/me/pool/${encodeURIComponent(source)}/${encodeURIComponent(ref)}`, {
     method: "PUT",
     body: JSON.stringify(input),
   });
 }
 
-export async function withdrawPledge(kind: OAuthKind): Promise<void> {
-  await send(`/me/pool/${encodeURIComponent(kind)}`, { method: "DELETE" });
+export async function withdrawPledge(source: CredentialSource, ref: string): Promise<void> {
+  await send(`/me/pool/${encodeURIComponent(source)}/${encodeURIComponent(ref)}`, {
+    method: "DELETE",
+  });
 }
 
 export async function listMyPoolHistory(): Promise<PledgeLease[]> {
@@ -113,7 +131,9 @@ export interface PoolAudience {
 
 export interface PoolDonor {
   user_id: string;
-  kind: OAuthKind;
+  source: CredentialSource;
+  ref: string;
+  metered: boolean;
   status: PledgeStatus;
   health: string;
   cooldown_until?: string;
