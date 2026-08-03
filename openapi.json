@@ -5675,6 +5675,54 @@
         ]
       }
     },
+    "/api/runs/{id}/review/diff": {
+      "get": {
+        "operationId": "getRunsByIdReviewDiff",
+        "responses": {
+          "default": {
+            "description": "Response"
+          }
+        },
+        "summary": "GET /api/runs/{id}/review/diff",
+        "tags": [
+          "runs"
+        ]
+      },
+      "parameters": [
+        {
+          "in": "path",
+          "name": "id",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        }
+      ]
+    },
+    "/api/runs/{id}/review/scope": {
+      "get": {
+        "operationId": "getRunsByIdReviewScope",
+        "responses": {
+          "default": {
+            "description": "Response"
+          }
+        },
+        "summary": "GET /api/runs/{id}/review/scope",
+        "tags": [
+          "runs"
+        ]
+      },
+      "parameters": [
+        {
+          "in": "path",
+          "name": "id",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        }
+      ]
+    },
     "/api/runs/{id}/rewind": {
       "parameters": [
         {

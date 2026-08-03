@@ -962,7 +962,92 @@ func (e *Engine) persistPause(rs *runState, nodeID string) error {
 		artifacts: rs.artifacts,
 		rs:        rs,
 	})
-	return e.doPause(rs, nodeID, questions, e.humanInstructionsExtra(nodeID, questions, rs), pauseInfo{})
+	return e.doPause(rs, nodeID, questions, e.humanPauseExtra(nodeID, questions, rs), pauseInfo{})
+}
+
+// humanPauseExtra assembles everything the studio needs on the pause
+// payload: the author's instructions, plus the review range this gate
+// covers.
+func (e *Engine) humanPauseExtra(nodeID string, questions map[string]any, rs *runState) map[string]any {
+	extra := e.humanInstructionsExtra(nodeID, questions, rs)
+	scope := e.markReviewGate(rs, nodeID)
+	if len(scope) == 0 {
+		return extra
+	}
+	if extra == nil {
+		extra = map[string]any{}
+	}
+	for k, v := range scope {
+		extra[k] = v
+	}
+	return extra
+}
+
+// markReviewGate anchors the workspace at a human gate and returns the
+// range the reviewer is being asked to approve: everything since the
+// previous gate.
+//
+// Deriving the range from gates rather than from a declared node list is
+// what makes it complete. A per-node range can only cover nodes that have
+// boundary refs, which excludes subbots, fan-out branches and every
+// specially-dispatched kind — precisely where pipelines put their
+// implementation work. A gate-to-gate range is a workspace before/after,
+// so nothing a run did can fall outside it; attributing files to
+// individual nodes is then presentation, and what cannot be attributed is
+// shown as such rather than lost.
+//
+// Unlike a node boundary this takes a REAL capture instead of aliasing
+// the last one: a gate is rare, and the node before it may have been
+// specially dispatched, in which case the remembered anchor was
+// deliberately invalidated and aliasing would silently miss that node's
+// work.
+func (e *Engine) markReviewGate(rs *runState, nodeID string) map[string]any {
+	if e.workDir == "" || !rs.isWorktree {
+		return nil
+	}
+	seq := nextReviewGateSeq(e.workDir, rs.runID)
+	ref := store.ReviewGateRef(rs.runID, seq)
+	commit, err := snapshotWorktree(e.workDir, ref)
+	if err != nil {
+		if e.logger != nil {
+			e.logger.Warn("review gate: anchor %q: %v", nodeID, err)
+		}
+		return nil
+	}
+	if commit == "" {
+		if out, uerr := runGit(e.workDir, "update-ref", ref, "HEAD"); uerr != nil {
+			if e.logger != nil {
+				e.logger.Warn("review gate: anchor %q at HEAD: %v\noutput: %s", nodeID, uerr, out)
+			}
+			return nil
+		}
+	}
+	scope := map[string]any{"review_gate_seq": seq, "review_head_ref": ref}
+	if seq > 0 {
+		scope["review_base_ref"] = store.ReviewGateRef(rs.runID, seq-1)
+	}
+	return scope
+}
+
+// nextReviewGateSeq returns the next free gate number, read from git so a
+// resumed run continues the sequence instead of restarting it.
+func nextReviewGateSeq(workDir, runID string) int {
+	prefix := strings.TrimSuffix(store.ReviewGateRef(runID, 0), "0")
+	out, err := runGit(workDir, "for-each-ref", "--format=%(refname)", prefix)
+	if err != nil {
+		return 0
+	}
+	max := -1
+	for _, line := range strings.Split(strings.TrimSpace(out), "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		if n, cerr := strconv.Atoi(line[strings.LastIndex(line, "/")+1:]); cerr == nil && n > max {
+			max = n
+		}
+	}
+	return max + 1
 }
 
 // humanInstructionsExtra resolves a human node's `instructions:` prompt

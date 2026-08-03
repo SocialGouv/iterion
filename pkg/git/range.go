@@ -124,6 +124,20 @@ func DiffBetween(repoRoot, baseRef, finalRef, relPath string) (DiffPayload, erro
 // worktrees/<name>`), this returns the WORKTREE path — not the main repo.
 // Callers that need the main checkout's path (e.g. project-rooted memory
 // keying) should use [FindMainRepoRoot] instead.
+// ForEachRef lists refs under a prefix with a caller-chosen format. The
+// prefix is a literal ref namespace built by the caller, never user
+// input — it becomes a git argument.
+func ForEachRef(repoRoot, format, prefix string) (string, error) {
+	if !isGitDir(repoRoot) {
+		return "", ErrNotGitRepo
+	}
+	out, err := run(repoRoot, "for-each-ref", "--format="+format, prefix)
+	if err != nil {
+		return "", err
+	}
+	return string(out), nil
+}
+
 func FindRepoRoot(startDir string) string {
 	if startDir == "" {
 		return ""
