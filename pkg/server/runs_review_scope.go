@@ -3,6 +3,8 @@ package server
 import (
 	"fmt"
 	"net/http"
+	"os"
+	"path/filepath"
 	"sort"
 	"strconv"
 	"strings"
@@ -129,6 +131,136 @@ func (s *Server) handleGetRunReviewDiff(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 	s.writeJSONFor(w, r, payload)
+}
+
+// handleGetRunWorkspaceFile streams one path from the run's live workspace
+// so the review panel can play audio/video and show images without going
+// through the text-only /files/content or the 5 MiB review/diff cap.
+//
+// When the live path is missing (deleted file, finalized worktree), it
+// falls back to the workspacetrack object for the HEAD of the current
+// review gate so a paused review still has a player for versioned media.
+func (s *Server) handleGetRunWorkspaceFile(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	relPath := r.PathValue("path")
+	if id == "" || relPath == "" {
+		s.httpErrorFor(w, r, http.StatusBadRequest, "missing run id or file path")
+		return
+	}
+	if err := gitlib.ValidateRelPath(relPath); err != nil {
+		s.httpErrorFor(w, r, http.StatusBadRequest, "invalid path: %v", err)
+		return
+	}
+	run, err := s.runs.LoadRunCtx(r.Context(), id)
+	if err != nil {
+		s.httpErrorFor(w, r, http.StatusNotFound, "run not found: %v", err)
+		return
+	}
+
+	// Prefer the live workspace — the operator is reviewing the state
+	// they can still open on disk.
+	if run.WorkDir != "" {
+		abs, joinErr := safeJoinUnder(run.WorkDir, relPath)
+		if joinErr == nil {
+			f, openErr := os.Open(abs)
+			if openErr == nil {
+				defer f.Close()
+				info, statErr := f.Stat()
+				if statErr == nil && !info.IsDir() {
+					serveWorkspaceFile(w, r, relPath, info, f)
+					return
+				}
+				_ = f.Close()
+			}
+		}
+	}
+
+	// Fallback: content-addressed object from the latest (or requested)
+	// review gate's head snapshot.
+	tracker := s.workspaceTracker()
+	if tracker == nil {
+		s.httpErrorFor(w, r, http.StatusNotFound, "file not found")
+		return
+	}
+	gate := -1
+	if raw := r.URL.Query().Get("gate"); raw != "" {
+		n, cerr := strconv.Atoi(raw)
+		if cerr != nil || n < 0 {
+			s.httpErrorFor(w, r, http.StatusBadRequest, "invalid gate: %q", raw)
+			return
+		}
+		gate = n
+	}
+	scope := buildReviewScope(run, gate, tracker)
+	if !scope.Available || scope.HeadRef == "" {
+		s.httpErrorFor(w, r, http.StatusNotFound, "file not found")
+		return
+	}
+	headSnap, loadErr := tracker.Load(run.ID, scope.HeadRef)
+	if loadErr != nil {
+		s.httpErrorFor(w, r, http.StatusNotFound, "file not found")
+		return
+	}
+	var hash string
+	var size int64
+	for _, e := range headSnap.Entries {
+		if e.Path == relPath {
+			hash, size = e.Hash, e.Size
+			break
+		}
+	}
+	if hash == "" {
+		s.httpErrorFor(w, r, http.StatusNotFound, "file not found")
+		return
+	}
+	body, objErr := tracker.Object(hash)
+	if objErr != nil {
+		s.httpErrorFor(w, r, http.StatusNotFound, "file not found")
+		return
+	}
+	w.Header().Set("Content-Type", artifactFileContentType(relPath))
+	w.Header().Set("Content-Length", strconv.FormatInt(int64(len(body)), 10))
+	disposition := "inline"
+	if r.URL.Query().Get("download") == "1" {
+		disposition = "attachment"
+	}
+	w.Header().Set("Content-Disposition", fmt.Sprintf(`%s; filename=%q`, disposition, filepath.Base(relPath)))
+	// size recorded in the snapshot may differ if the object was truncated;
+	// prefer the actual body length for the header.
+	_ = size
+	_, _ = w.Write(body)
+}
+
+func serveWorkspaceFile(w http.ResponseWriter, r *http.Request, relPath string, info os.FileInfo, f *os.File) {
+	w.Header().Set("Content-Type", artifactFileContentType(relPath))
+	disposition := "inline"
+	if r.URL.Query().Get("download") == "1" {
+		disposition = "attachment"
+	}
+	w.Header().Set("Content-Disposition", fmt.Sprintf(`%s; filename=%q`, disposition, filepath.Base(relPath)))
+	// ServeContent handles Range requests so large media can seek.
+	http.ServeContent(w, r, filepath.Base(relPath), info.ModTime(), f)
+}
+
+// safeJoinUnder resolves rel under root and rejects any escape.
+func safeJoinUnder(root, rel string) (string, error) {
+	if err := gitlib.ValidateRelPath(rel); err != nil {
+		return "", err
+	}
+	absRoot, err := filepath.Abs(root)
+	if err != nil {
+		return "", err
+	}
+	joined := filepath.Join(absRoot, filepath.FromSlash(rel))
+	abs, err := filepath.Abs(joined)
+	if err != nil {
+		return "", err
+	}
+	sep := string(filepath.Separator)
+	if abs != absRoot && !strings.HasPrefix(abs, absRoot+sep) {
+		return "", fmt.Errorf("path escapes workspace")
+	}
+	return abs, nil
 }
 
 // workspaceTracker returns the runview service's workspace tracker, or a

@@ -2,7 +2,7 @@
 // Modified-files panel — git status + diff for the run's working dir,
 // plus the live-worktree file editor read/write endpoints.
 
-import { request } from "./client";
+import { apiURL, request } from "./client";
 import type {
   RunFile,
   RunFileContent,
@@ -144,5 +144,24 @@ export async function getReviewFileDiff(
   if (opts.gate !== undefined) qs.set("gate", String(opts.gate));
   return request(
     `/runs/${encodeURIComponent(runId)}/review/diff?${qs.toString()}`,
+  );
+}
+
+// workspaceFileURL streams a path from the run's live workspace (or the
+// review-gate head snapshot as fallback). Used by the review panel's
+// audio / video / image players — /review/diff is text-oriented and
+// refuses multi-MiB binaries.
+export function workspaceFileURL(
+  runId: string,
+  relPath: string,
+  opts: { gate?: number; download?: boolean } = {},
+): string {
+  const segments = relPath.split("/").map(encodeURIComponent).join("/");
+  const qs = new URLSearchParams();
+  if (opts.gate !== undefined) qs.set("gate", String(opts.gate));
+  if (opts.download) qs.set("download", "1");
+  const suffix = qs.toString();
+  return apiURL(
+    `/runs/${encodeURIComponent(runId)}/workspace-files/${segments}${suffix ? `?${suffix}` : ""}`,
   );
 }
