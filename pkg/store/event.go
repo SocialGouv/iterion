@@ -109,6 +109,24 @@ const (
 	//     "runtime_code+parsed_text", "…+blind_wait") — the degraded
 	//     paths must be visible, not silent
 	EventRunRetryScheduled EventType = "run_retry_scheduled"
+	// EventRunRewound marks an in-place rewind: the operator re-anchored
+	// THIS run's checkpoint on an already-executed node and invalidated
+	// the outputs downstream of it, so the next resume re-executes from
+	// there (see runview.Service.Rewind). Distinct from a fork, which
+	// mints a NEW run id and leaves this one untouched.
+	//
+	// The event is the audit trail: events.jsonl stays append-only, so
+	// the superseded node_started / node_finished records of the dropped
+	// nodes remain in the timeline with this marker explaining why they
+	// are about to repeat. Data:
+	//   - from_node: the checkpoint node the run was anchored on before
+	//   - to_node: the new anchor (== NodeID on the event)
+	//   - dropped_nodes: node ids whose outputs were invalidated,
+	//     sorted; always includes to_node
+	//   - code_rewound: whether the worktree was git-reset to the node's
+	//     snapshot
+	//   - code_ref: the snapshot ref used when code_rewound is true
+	EventRunRewound EventType = "run_rewound"
 	// Review-&-merge gate events (interaction: review). The gate runs a
 	// companion↔human dialogue and squash-merges during the pause.
 	EventReviewTurn     EventType = "review_turn"    // data: {interaction_id, role, turn}

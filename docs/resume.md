@@ -126,6 +126,190 @@ The resume command accepts the same recovery-relevant controls as launch:
 When raising a budget, choose a cap above the amount already consumed. Merely
 repeating the old cap causes the re-executed node to hit the same guard.
 
+## Rewind: resume from an *earlier* node
+
+Resume always restarts at the checkpoint node. `iterion rewind` moves that
+checkpoint **backwards** onto a node the run already executed, so the next
+resume replays from there instead of from where the run stopped. It is the
+loop for iterating on a bot's configuration: run it, watch a node misbehave,
+fix the prompt/schema/edges, replay just the affected part.
+
+```bash
+# edit main.bot, then let iterion locate the edit:
+iterion rewind --run-id RUN_ID --auto
+iterion resume --run-id RUN_ID --force
+
+# or name the pivot yourself:
+iterion rewind --run-id RUN_ID --node implement
+```
+
+### `--auto`: rewind to the node you edited
+
+`--auto` diffs the workflow source the run executed against the source on disk
+now, and rewinds to the earliest node the edit affects — so the loop is *edit,
+rewind, resume*, with nothing to translate by hand. It prints what it detected,
+so you can confirm it understood the change before resuming.
+
+Detection is declaration-granular and resolves indirection:
+
+| You edited | `--auto` rewinds to |
+|---|---|
+| A node's prompt, model, schema ref, tools, command… | that node |
+| A shared `prompt` / `schema` / `cursor` body | every node referencing it, earliest first |
+| An edge (condition, `with` mapping, loop bound) | the node the edge leaves, which re-selects it |
+| `vars:`, `budget:`, `sandbox:`, `permission:`, `entry:` | the entry node — workflow scope reaches everything |
+| Several nodes on one chain | the upstream-most one, so a single pass tests them all |
+
+It errs toward reporting *more* nodes than strictly necessary: a false positive
+costs re-executing a node that did not need it, while a false negative would
+test the new configuration against stale downstream state — the failure the
+feature exists to prevent. Nodes the run never executed are ignored, and edits
+on independent fan-out branches are refused with the candidates named, since no
+single pivot covers them.
+
+`--auto` needs `Run.WorkflowSource`, the `.bot` text captured at launch
+(`WorkflowHash` only answers *whether* the source changed, never *which node*).
+Runs started before that capture existed refuse `--auto` and still accept
+`--node`. Comments and line shifts are not changes: the comparison runs on the
+AST encoder, which omits source spans.
+
+The run keeps its id, name, inputs, lineage, and budget accounting. Choose
+between the two operations by intent:
+
+| | `iterion fork` | `iterion rewind` |
+|---|---|---|
+| Run id | New child run | **Same run**, mutated |
+| Original | Untouched | Outputs downstream of the pivot invalidated |
+| Intent | An alternative future worth keeping side by side | "I misconfigured this — back up and replay" |
+| Anchor | Requires a **turn** checkpoint, so LLM nodes only | Any node with a recorded output, including `tool` and `compute` |
+| Audit | Two runs | One run plus a `run_rewound` event |
+
+### What gets invalidated
+
+The pivot's output is dropped, plus every node **forward-reachable from the
+pivot that cannot reach it back**. Subtracting the ancestors is what makes
+loops behave: in `implement -> verify -> implement as fix(3)`, `verify` is
+both downstream and upstream of `implement`, and its output is exactly what
+`implement` re-reads through `{{loop.fix.previous_output}}` on re-entry — so
+it survives. Over-dropping is as harmful as under-dropping, because a node
+whose output is deleted without re-executing before something reads it
+resolves to `nil` rather than to a re-run.
+
+Deliberately **not** reset:
+
+- **Budget accounting and loop counters.** Refunding them would make
+  rewind-then-resume an unbounded way around `max_cost_usd` and
+  `max_iterations`. Raise the caps on the resume instead
+  (`--max-cost-usd`, `--max-iterations`).
+- **Artifact versions.** Re-execution appends a new version, so the
+  superseded artifacts stay on disk and remain readable for comparison —
+  invalidation here is logical, not a delete.
+- **`events.jsonl`.** Append-only, never truncated. The dropped nodes' original
+  records stay in the timeline, and the `run_rewound` event
+  (`{from_node, to_node, dropped_nodes, code_rewound, code_ref}`) explains why
+  they are about to repeat.
+
+Reset, because carrying them into the replay would be wrong: any pending
+interaction (the rewound run never asked that question) and the backend
+session/conversation rehydration (the pivot must replay against the *edited*
+prompt, not the conversation the operator is trying to change).
+
+### Preconditions and limits
+
+The run must be `failed_resumable`, `cancelled`, `paused_operator`,
+`paused_waiting_human`, or `queued` — never `running`, whose engine owns the
+checkpoint and would overwrite the rewind at its next node boundary. Cancel or
+pause it first. The claim is a CAS, so a concurrent resume loses the race
+rather than being rewound out from under itself.
+
+The run is parked in `cancelled`. That is the one resumable status a cloud
+runner treats as "explicit resume required"; `failed_resumable` and
+`paused_operator` are auto-resumed on queue redelivery, which would race the
+operator's edit and execute the stale workflow.
+
+Rewind resolves "downstream" against the workflow source **as it is now**,
+which is why it performs no hash check — you rewind precisely because you
+edited the `.bot`. The resume that follows still needs `--force`. Pass
+`--file` when the source is not where the run recorded it.
+
+### Subbots and parallel branches
+
+A `subbot` node is an ordinary graph node, so the topology rules above apply to
+it unchanged. But the child run is tracked outside the checkpoint, in
+`Run.SubbotChildren` (**ADR-084**), and `ReattachSubbotChild` consults *only*
+that map and the child's status — never the parent's checkpoint, and before the
+child `.bot` is even compiled. Dropping the node's output is therefore not
+enough on its own: rewind also **releases the child pointers** of every dropped
+node, so the replay launches a fresh child against the edited child workflow
+instead of adopting the previous one. The released child run ids are reported
+(`orphaned_child_runs`); the runs themselves are left alone, so cancel one that
+is still burning budget.
+
+`--auto` does **not** see edits to a child `.bot`: it diffs the parent's source,
+and `SubbotNode.Source` points at a different file. After editing a child
+workflow, target the subbot node explicitly with `--node`.
+
+The checkpoint is granular to the **node**, never to the execution: at
+convergence the engine writes one entry per node id (last write wins), so N
+parallel executions of the same node collapse to one output. A rewind naming a
+node inside a fan-out body is therefore **promoted to the router** that
+orchestrates it, and the whole fan-out replays. Anchoring on the body node
+would replay it once, linearly, with no `each` context — silently testing one
+iteration instead of all of them. The promotion is reported as `promoted_from`;
+nested fan-outs promote to the outermost router, since an inner one re-run
+alone would itself lack the outer iteration's context.
+
+Sequential `loop` and `foreach` bodies need no promotion — they execute one at a
+time. Rewinding into one resumes at the **current** iteration, because loop
+counters are preserved; restarting the loop from zero would also refund the
+`max_iterations` budget.
+
+Two further limits worth planning around:
+
+- **Only engine state is rolled back.** Board cards, forge comments, pushed
+  commits, and already-launched subbot child runs are not. A rewound subbot
+  node re-runs and launches a *new* child; the old one stays, orphaned but
+  traceable.
+- **A rewind cannot target one branch of a fan-out.** The pivot is promoted to
+  the router and every branch replays (see above) — there is no per-branch
+  state to rewind to.
+
+### Files the dropped nodes produced
+
+A node's real product is often **not** its output map: a docs or code bot
+writes dozens of files and returns a summary. Rewinding the checkpoint alone
+would leave that half-written tree in place, and the replayed node would build
+on top of its own previous production instead of meeting its prior conditions.
+
+So a rewind also restores the workspace to the state the pivot started from.
+The anchor is `refs/iterion/runs/<run>/pre/<node>/<iter>`, written by
+`markPreNodeBoundary` when the node *starts* — distinct from
+`refs/…/nodes/<node>/<iter>`, written when it *finishes* and therefore holding
+that node's own output. The two bracket each node's effect. The pre-boundary
+marker is an alias of the previous boundary's snapshot commit (nothing touches
+the tree in between), so it costs one `update-ref` and no extra index walk.
+
+It is a **revert, not a reset**: the prior tree is committed on top of HEAD, so
+the run's own commits stay in `git log`, and the state at the instant of the
+rewind — uncommitted and untracked work included — is banked first under
+`refs/iterion/runs/<run>/rewind/<node>/<seq>`. Nothing the run ever had becomes
+unreachable. `--keep-files` opts out.
+
+Coverage is honest rather than silent, and it is narrower than it looks:
+
+| Run shape | Files restored? |
+|---|---|
+| `worktree: auto` (docs-refresh, feature-dev, wiki-gen, app-dev…) | yes |
+| in-place (the default — whole-improve-loop, modernize, review-pr…) | **no**, reported in `files.skip_reason` |
+| Gitignored paths (`dist/`, `.venv/`) | never — `git add -A` honours `.gitignore` |
+| Paths outside the workspace | never |
+
+An in-place run's workspace *is* the operator's live tree, which iterion
+deliberately does not snapshot — `git add -A` there would stage the operator's
+own work. Restoring files for those runs needs an iterion-owned workspace
+tracker (content-addressed, outside the repo, no git dependency), which does
+not exist yet; until then the rewind says so instead of pretending.
+
 ## Human and agent interaction resume
 
 For an ordinary `human` node, answers become that node's typed output and edge
@@ -167,5 +351,7 @@ failure; resume never reconstructs execution state by replaying events.
 | `pkg/runtime/resume.go` | Status dispatch, state/environment restoration, answer handling, and restart execution. |
 | `pkg/runtime/pause.go` | Operator and daily-cap checkpointed pauses. |
 | `pkg/cli/resume.go` | CLI admission, source reopening, overrides, locking, and stale-run takeover. |
+| `pkg/runview/rewind.go` | In-place rewind: pivot validation, downstream computation, checkpoint mutation, artifact tombstones. |
+| `pkg/runview/rewind_auto.go` | `--auto` targeting: declaration-granular source diff → impacted nodes → earliest pivot. |
 
 See also [persisted formats](persisted-formats.md), [human interaction](human-in-the-loop.md), [permissions](permissions.md), and [merge policy](merge-policy.md).

@@ -153,6 +153,17 @@ func WithWorkflowHash(hash string) EngineOption {
 	return func(e *Engine) { e.workflowHash = hash }
 }
 
+// WithWorkflowSource records the .bot text as it is at launch, so a
+// later `iterion rewind --auto` can diff the edited workflow against
+// what this run actually executed and target the changed node.
+//
+// Callers that already hold the source (cloud launches, which receive it
+// uploaded rather than on disk) should pass it here; otherwise the
+// engine reads it from the path given to WithFilePath.
+func WithWorkflowSource(src string) EngineOption {
+	return func(e *Engine) { e.workflowSource = src }
+}
+
 // WithFilePath records the absolute .bot source path on the run
 // metadata so that resume (and the run console) can re-locate the
 // workflow without the caller having to thread it back through the

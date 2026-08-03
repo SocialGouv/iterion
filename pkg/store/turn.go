@@ -20,6 +20,39 @@ func NodeSnapshotRef(runID, nodeID string, loopIter int) string {
 	return fmt.Sprintf("refs/iterion/runs/%s/nodes/%s/%d", runID, nodeID, loopIter)
 }
 
+// NodePreSnapshotRef names the worktree state as it was JUST BEFORE a
+// node executed.
+//
+//	refs/iterion/runs/<runID>/pre/<nodeID>/<loopIter>
+//
+// NodeSnapshotRef is written AFTER a node finishes, so the ref named for
+// a node holds that node's OWN production. Anything replaying a node from
+// its prior conditions — the in-place rewind — needs the state the node
+// started from, which is what this records. The two bracket each node's
+// effect on the workspace.
+//
+// The engine writes it as a cheap alias of the previous node boundary's
+// snapshot commit (nothing touches the tree between one node finishing
+// and the next starting), so marking it costs one `update-ref` and no
+// index walk.
+func NodePreSnapshotRef(runID, nodeID string, loopIter int) string {
+	return fmt.Sprintf("refs/iterion/runs/%s/pre/%s/%d", runID, nodeID, loopIter)
+}
+
+// RewindBackupRef names the commit banking a worktree's state at the
+// instant an in-place rewind reverted it.
+//
+//	refs/iterion/runs/<runID>/rewind/<nodeID>/<seq>
+//
+// The revert itself preserves committed history (it commits the prior
+// tree on top of HEAD), but the UNCOMMITTED work in the tree at that
+// instant would still be lost. This banks it first, so a rewind destroys
+// nothing: every state the run ever had stays reachable under
+// refs/iterion/runs/<run>/ and is swept by the same namespace GC.
+func RewindBackupRef(runID, nodeID string, seq int) string {
+	return fmt.Sprintf("refs/iterion/runs/%s/rewind/%s/%d", runID, nodeID, seq)
+}
+
 // TurnSnapshotRef is the per-turn counterpart of NodeSnapshotRef. Not
 // yet wired (Phase 5 stretch); reserved here so the namespace is
 // documented in one place.

@@ -91,6 +91,23 @@ func snapshotWorktree(wtPath, ref string) (string, error) {
 	return commit, nil
 }
 
+// SnapshotWorktree is the exported form of snapshotWorktree for callers
+// outside the engine needing the exact same capture semantics. The
+// in-place rewind uses it to bank a worktree's uncommitted state before
+// reverting, so the revert loses nothing. Exported rather than
+// reimplemented because the plumbing is subtle (index restoration, the
+// two distinct no-op cases) and a divergent copy would rot.
+func SnapshotWorktree(wtPath, ref string) (string, error) {
+	return snapshotWorktree(wtPath, ref)
+}
+
+// RunGitIn runs a git command in a worktree on behalf of an out-of-engine
+// caller (the rewind's revert), reusing gitCmd's LC_ALL=C + process-group
+// detach so a `watchexec -r` SIGTERM cannot interrupt a ref update.
+func RunGitIn(wtPath string, args ...string) (string, error) {
+	return runGit(wtPath, args...)
+}
+
 // worktreeStateClean reports whether the worktree at wtPath has no
 // tracked changes from HEAD and no untracked files. Used as the fast
 // path in snapshotWorktree to skip the `git add -A` index walk when

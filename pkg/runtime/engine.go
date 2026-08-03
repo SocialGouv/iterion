@@ -84,6 +84,7 @@ type Engine struct {
 	onEvent                  func(evt store.Event)    // optional observer fired after every successful append
 	recoveryDispatch         RecoveryDispatch         // optional; consulted on node execution failure
 	workflowHash             string                   // SHA-256 of the .bot source, set via WithWorkflowHash
+	workflowSource           string                   // .bot text at launch, set via WithWorkflowSource (else read from filePath)
 	filePath                 string                   // absolute .bot source path, set via WithFilePath
 	parentRunID              string                   // immediate parent run, set via WithParentRunID for nested executions
 	parentNodeID             string                   // IR node id of the parent's subbot node that spawned this run, set via WithParentNodeID
@@ -265,7 +266,15 @@ type runState struct {
 	// still observes it. Distinct from the lossy cross-run pkg/eventbus.
 	events           *runEvents
 	artifactVersions map[string]int
-	budget           *SharedBudget // shared across branches, nil if no budget
+	// lastSnapshotCommit is the commit capturing the workspace as the
+	// previous node boundary left it, or "" meaning "identical to HEAD".
+	// The next node's pre-boundary marker aliases it, so recording
+	// "state before node N" costs one update-ref instead of a second
+	// index walk. Written and read only on the main execution path
+	// (fan-out branches never snapshot — workspace safety admits a
+	// single mutating branch), so it needs no lock.
+	lastSnapshotCommit string
+	budget             *SharedBudget // shared across branches, nil if no budget
 
 	// resourceSemaphores holds one buffered channel per declared workflow
 	// resource, pre-seeded with its tokens and shared by reference across all

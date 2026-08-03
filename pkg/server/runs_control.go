@@ -238,6 +238,76 @@ func (s *Server) handleForkRun(w http.ResponseWriter, r *http.Request) {
 	s.writeJSONFor(w, r, result)
 }
 
+// rewindRunRequest is the body of POST /api/runs/{id}/rewind. Mirrors
+// runview.RewindSpec, kept separate for the same reason as
+// forkRunRequest: the wire shape must be free to diverge from the
+// service struct.
+type rewindRunRequest struct {
+	NodeID     string `json:"node_id"`
+	Auto       bool   `json:"auto,omitempty"`
+	KeepFiles  bool   `json:"keep_files,omitempty"`
+	SourcePath string `json:"source_path,omitempty"`
+}
+
+// handleRewindRun re-anchors a run in place. Unlike fork it MUTATES the
+// addressed run, so it takes the handlePauseRun shape: a tenant-scoping
+// probe before the mutation, not just the one inside the service.
+func (s *Server) handleRewindRun(w http.ResponseWriter, r *http.Request) {
+	if !s.requireSafeOrigin(w, r) {
+		return
+	}
+	if s.rejectCrossStoreWrite(w, r) {
+		return
+	}
+	id := r.PathValue("id")
+	if id == "" {
+		s.httpErrorFor(w, r, http.StatusBadRequest, "missing run id")
+		return
+	}
+	if _, err := s.runs.LoadRunCtx(r.Context(), id); err != nil {
+		s.httpErrorFor(w, r, http.StatusNotFound, "run not found: %v", err)
+		return
+	}
+	var req rewindRunRequest
+	if err := readJSON(r, &req); err != nil {
+		s.httpErrorFor(w, r, http.StatusBadRequest, "decode rewind request: %v", err)
+		return
+	}
+	if req.NodeID == "" && !req.Auto {
+		s.httpErrorFor(w, r, http.StatusBadRequest, "node_id is required (or auto:true)")
+		return
+	}
+	if s.logger != nil {
+		s.logger.Info("server: rewind run %q to node %q (auto=%v) from %s", id, req.NodeID, req.Auto, r.RemoteAddr)
+	}
+	result, err := s.runs.Rewind(r.Context(), runview.RewindSpec{
+		RunID:      id,
+		NodeID:     req.NodeID,
+		Auto:       req.Auto,
+		KeepFiles:  req.KeepFiles,
+		SourcePath: req.SourcePath,
+	})
+	if err != nil {
+		switch {
+		case errors.Is(err, runview.ErrRewindNotRewindable):
+			// 409: the run is running or terminal — a state conflict the
+			// caller resolves by cancelling/pausing first, not a bad request.
+			s.httpErrorFor(w, r, http.StatusConflict, "rewind: %v", err)
+		case errors.Is(err, runview.ErrRewindNodeNotReached),
+			errors.Is(err, runview.ErrRewindNoSourceRecorded),
+			errors.Is(err, runview.ErrRewindNoChange),
+			errors.Is(err, runview.ErrRewindAmbiguous):
+			s.httpErrorFor(w, r, http.StatusBadRequest, "rewind: %v", err)
+		default:
+			s.httpErrorFor(w, r, http.StatusInternalServerError, "rewind: %v", err)
+		}
+		return
+	}
+	// 200, not 201: no new resource was created — that is the whole
+	// point of rewind versus fork.
+	s.writeJSONFor(w, r, result)
+}
+
 func (s *Server) handleListQueuedMessages(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 	if id == "" {

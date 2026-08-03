@@ -12,6 +12,40 @@ import (
 	"github.com/SocialGouv/iterion/pkg/store"
 )
 
+// maxPersistedWorkflowSource caps the .bot text stamped onto a run.
+// A `.bot` is a few KB in practice; the cap only exists so a pathological
+// generated workflow cannot bloat every run document. Exceeding it
+// disables `rewind --auto` for that run, nothing else.
+const maxPersistedWorkflowSource = 1 << 20 // 1 MiB
+
+// resolveWorkflowSource returns the .bot text to persist on the run:
+// the explicitly supplied source when the caller had it in hand (cloud
+// launches receive it uploaded), else a best-effort read of filePath.
+//
+// Best-effort by design — this only powers `rewind --auto`'s ability to
+// name the changed node. A source we cannot read or that busts the cap
+// leaves the run auto-targetable=false and `--node` unaffected.
+func (e *Engine) resolveWorkflowSource() string {
+	if e.workflowSource != "" {
+		if len(e.workflowSource) > maxPersistedWorkflowSource {
+			return ""
+		}
+		return e.workflowSource
+	}
+	if e.filePath == "" {
+		return ""
+	}
+	info, err := os.Stat(e.filePath)
+	if err != nil || info.Size() > maxPersistedWorkflowSource {
+		return ""
+	}
+	b, err := os.ReadFile(e.filePath)
+	if err != nil {
+		return ""
+	}
+	return string(b)
+}
+
 // Run executes the workflow. It creates a run, walks the graph from the
 // entry node, and returns when a terminal node is reached, a human pause
 // is hit (ErrRunPaused), or an error occurs.
@@ -227,6 +261,9 @@ func (e *Engine) runResolveDoc(ctx context.Context, runID string, inputs map[str
 		}
 		if e.filePath != "" {
 			run.FilePath = e.filePath
+		}
+		if src := e.resolveWorkflowSource(); src != "" {
+			run.WorkflowSource = src
 		}
 		if e.parentRunID != "" {
 			run.ParentRunID = e.parentRunID

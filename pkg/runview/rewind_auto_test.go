@@ -1,0 +1,267 @@
+package runview
+
+import (
+	"context"
+	"errors"
+	"os"
+	"path/filepath"
+	"strings"
+	"testing"
+
+	"github.com/SocialGouv/iterion/pkg/store"
+)
+
+// autoBot is the fixture every --auto test edits: a straight chain with
+// a shared prompt and a conditional edge, so each detection path has
+// something to bite on.
+const autoBot = `prompt shared_review:
+  """
+  Review the work carefully.
+  """
+
+schema note:
+  value: string
+
+schema check:
+  value: string
+  ok: bool
+
+agent survey:
+  model: "claude-opus-4-7"
+  output: note
+
+agent plan:
+  model: "claude-opus-4-7"
+  output: note
+
+agent implement:
+  model: "claude-opus-4-7"
+  input: note
+  output: note
+
+judge verify:
+  model: "claude-opus-4-7"
+  system: shared_review
+  output: check
+
+workflow autobot:
+  entry: survey
+  survey -> plan
+  plan -> implement
+  implement -> verify
+  verify -> done when ok
+  verify -> fail
+`
+
+// seedAutoRun writes the fixture, parks a run that executed every node,
+// and returns the service, the bot path, and the run id.
+func seedAutoRun(t *testing.T, checkpointNode string, executedOutputs ...string) (*Service, string, string) {
+	t.Helper()
+	dir := t.TempDir()
+	botPath := filepath.Join(dir, "main.bot")
+	if err := os.WriteFile(botPath, []byte(autoBot), 0o644); err != nil {
+		t.Fatalf("write fixture: %v", err)
+	}
+	storeDir := filepath.Join(dir, "store")
+	st, err := store.New(storeDir)
+	if err != nil {
+		t.Fatalf("store: %v", err)
+	}
+	runID := "run-auto"
+	if _, err := st.CreateRun(context.Background(), runID, "autobot", nil); err != nil {
+		t.Fatalf("create run: %v", err)
+	}
+	run, err := st.LoadRun(context.Background(), runID)
+	if err != nil {
+		t.Fatalf("load run: %v", err)
+	}
+	run.FilePath = botPath
+	// The source AS LAUNCHED — the whole point of Run.WorkflowSource.
+	run.WorkflowSource = autoBot
+	run.Status = store.RunStatusFailedResumable
+	run.Checkpoint = &store.Checkpoint{
+		NodeID:  checkpointNode,
+		Outputs: outputsOf(executedOutputs...),
+	}
+	if err := st.SaveRun(context.Background(), run); err != nil {
+		t.Fatalf("save run: %v", err)
+	}
+	svc, err := NewService(storeDir)
+	if err != nil {
+		t.Fatalf("NewService: %v", err)
+	}
+	return svc, botPath, runID
+}
+
+func editBot(t *testing.T, path, old, new string) {
+	t.Helper()
+	b, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read bot: %v", err)
+	}
+	s := string(b)
+	if !strings.Contains(s, old) {
+		t.Fatalf("fixture does not contain %q", old)
+	}
+	if err := os.WriteFile(path, []byte(strings.Replace(s, old, new, 1)), 0o644); err != nil {
+		t.Fatalf("write bot: %v", err)
+	}
+}
+
+// TestRewindAuto_TargetsEditedNode is the headline case: change one
+// node's model, and --auto rewinds to exactly that node.
+func TestRewindAuto_TargetsEditedNode(t *testing.T) {
+	svc, botPath, runID := seedAutoRun(t, "verify", "survey", "plan", "implement", "verify")
+	editBot(t, botPath, "agent implement:\n  model: \"claude-opus-4-7\"", "agent implement:\n  model: \"claude-opus-5\"")
+
+	result, err := svc.Rewind(context.Background(), RewindSpec{RunID: runID, Auto: true})
+	if err != nil {
+		t.Fatalf("Rewind --auto: %v", err)
+	}
+	if result.NodeID != "implement" {
+		t.Errorf("auto pivot = %q, want implement", result.NodeID)
+	}
+	if !result.AutoTargeted {
+		t.Error("expected AutoTargeted=true")
+	}
+	if len(result.Changes) == 0 {
+		t.Fatal("expected the detected changes to be reported back")
+	}
+	found := false
+	for _, c := range result.Changes {
+		if c.Kind == "agent" && c.Name == "implement" && c.Change == "modified" {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("changes = %v, want agent implement (modified)", result.Changes)
+	}
+}
+
+// TestRewindAuto_SharedPromptTargetsReferencingNode: editing a prompt
+// body must blame the node that references it, not the prompt.
+func TestRewindAuto_SharedPromptTargetsReferencingNode(t *testing.T) {
+	svc, botPath, runID := seedAutoRun(t, "verify", "survey", "plan", "implement", "verify")
+	editBot(t, botPath, "Review the work carefully.", "Review the work with extreme suspicion.")
+
+	result, err := svc.Rewind(context.Background(), RewindSpec{RunID: runID, Auto: true})
+	if err != nil {
+		t.Fatalf("Rewind --auto: %v", err)
+	}
+	if result.NodeID != "verify" {
+		t.Errorf("auto pivot = %q, want verify (the only node referencing shared_review)", result.NodeID)
+	}
+}
+
+// TestRewindAuto_PicksEarliestOfSeveralEdits: two nodes edited on the
+// same chain must rewind to the upstream one, so a single pass tests
+// both.
+func TestRewindAuto_PicksEarliestOfSeveralEdits(t *testing.T) {
+	svc, botPath, runID := seedAutoRun(t, "verify", "survey", "plan", "implement", "verify")
+	editBot(t, botPath, "agent plan:\n  model: \"claude-opus-4-7\"", "agent plan:\n  model: \"claude-opus-5\"")
+	editBot(t, botPath, "agent implement:\n  model: \"claude-opus-4-7\"", "agent implement:\n  model: \"claude-opus-5\"")
+
+	result, err := svc.Rewind(context.Background(), RewindSpec{RunID: runID, Auto: true})
+	if err != nil {
+		t.Fatalf("Rewind --auto: %v", err)
+	}
+	if result.NodeID != "plan" {
+		t.Errorf("auto pivot = %q, want plan (upstream-most edit)", result.NodeID)
+	}
+}
+
+// TestRewindAuto_EditedEdgeBlamesSourceNode: an edge is re-selected by
+// the node it leaves, so that node is the pivot.
+func TestRewindAuto_EditedEdgeBlamesSourceNode(t *testing.T) {
+	svc, botPath, runID := seedAutoRun(t, "verify", "survey", "plan", "implement", "verify")
+	editBot(t, botPath, "  plan -> implement", `  plan -> implement with {value: "{{outputs.plan.value}}"}`)
+
+	result, err := svc.Rewind(context.Background(), RewindSpec{RunID: runID, Auto: true})
+	if err != nil {
+		t.Fatalf("Rewind --auto: %v", err)
+	}
+	if result.NodeID != "plan" {
+		t.Errorf("auto pivot = %q, want plan (the edge's source node re-selects it)", result.NodeID)
+	}
+}
+
+// TestRewindAuto_IgnoresUnexecutedNodes: an edit to a node the run never
+// reached is not a reason to rewind.
+func TestRewindAuto_IgnoresUnexecutedNodes(t *testing.T) {
+	// Only survey and plan ran — and the run is parked on plan, so
+	// `verify` is genuinely unreached (cp.NodeID counts as executed too).
+	svc, botPath, runID := seedAutoRun(t, "plan", "survey", "plan")
+	editBot(t, botPath, "judge verify:\n  model: \"claude-opus-4-7\"", "judge verify:\n  model: \"claude-opus-5\"")
+
+	_, err := svc.Rewind(context.Background(), RewindSpec{RunID: runID, Auto: true})
+	if !errors.Is(err, ErrRewindNoChange) {
+		t.Fatalf("err = %v, want ErrRewindNoChange (verify never executed)", err)
+	}
+}
+
+// TestRewindAuto_NoEditIsNotAnError_ButRefuses: rewinding with nothing
+// changed must say so rather than silently picking a node.
+func TestRewindAuto_NoEditRefuses(t *testing.T) {
+	svc, _, runID := seedAutoRun(t, "verify", "survey", "plan", "implement", "verify")
+
+	_, err := svc.Rewind(context.Background(), RewindSpec{RunID: runID, Auto: true})
+	if !errors.Is(err, ErrRewindNoChange) {
+		t.Fatalf("err = %v, want ErrRewindNoChange", err)
+	}
+}
+
+// TestRewindAuto_WithoutRecordedSource: a run launched before the source
+// was persisted must fail with a message that points at --node.
+func TestRewindAuto_WithoutRecordedSource(t *testing.T) {
+	svc, _, runID := seedAutoRun(t, "verify", "survey", "plan", "implement", "verify")
+	st := svc.RunStore()
+	run, err := st.LoadRun(context.Background(), runID)
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	run.WorkflowSource = ""
+	if err := st.SaveRun(context.Background(), run); err != nil {
+		t.Fatalf("save: %v", err)
+	}
+
+	_, err = svc.Rewind(context.Background(), RewindSpec{RunID: runID, Auto: true})
+	if !errors.Is(err, ErrRewindNoSourceRecorded) {
+		t.Fatalf("err = %v, want ErrRewindNoSourceRecorded", err)
+	}
+}
+
+// TestRewindAuto_ExplicitNodeWins: --node overrides the diff entirely.
+func TestRewindAuto_ExplicitNodeWins(t *testing.T) {
+	svc, botPath, runID := seedAutoRun(t, "verify", "survey", "plan", "implement", "verify")
+	editBot(t, botPath, "agent implement:\n  model: \"claude-opus-4-7\"", "agent implement:\n  model: \"claude-opus-5\"")
+
+	result, err := svc.Rewind(context.Background(), RewindSpec{RunID: runID, NodeID: "plan", Auto: true})
+	if err != nil {
+		t.Fatalf("Rewind: %v", err)
+	}
+	if result.NodeID != "plan" {
+		t.Errorf("pivot = %q, want plan (explicit --node wins over --auto)", result.NodeID)
+	}
+	if result.AutoTargeted {
+		t.Error("AutoTargeted must be false when the caller supplied the node")
+	}
+}
+
+// TestRewindAuto_LineShiftIsNotAChange guards the span-sensitivity trap:
+// inserting a comment at the top moves every declaration's position, and
+// must not read as "everything changed".
+func TestRewindAuto_LineShiftIsNotAChange(t *testing.T) {
+	svc, botPath, runID := seedAutoRun(t, "verify", "survey", "plan", "implement", "verify")
+	b, err := os.ReadFile(botPath)
+	if err != nil {
+		t.Fatalf("read: %v", err)
+	}
+	if err := os.WriteFile(botPath, append([]byte("## a new comment line\n\n"), b...), 0o644); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+
+	_, err = svc.Rewind(context.Background(), RewindSpec{RunID: runID, Auto: true})
+	if !errors.Is(err, ErrRewindNoChange) {
+		t.Fatalf("err = %v, want ErrRewindNoChange — a line shift is not a semantic edit", err)
+	}
+}

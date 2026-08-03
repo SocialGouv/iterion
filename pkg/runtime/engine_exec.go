@@ -262,6 +262,10 @@ func (e *Engine) execLoopRunNode(ctx context.Context, rs *runState, currentNodeI
 	if iterPath != "" {
 		payload["iteration_path"] = iterPath
 	}
+	// Bracket the node: record the workspace it starts from, so a rewind
+	// can restore its prior conditions (files included), not just its
+	// declared output.
+	e.markPreNodeBoundary(rs, currentNodeID)
 	if err := e.emit(rs.ctx, rs.runID, store.EventNodeStarted, currentNodeID, payload); err != nil {
 		return nil, false, err
 	}
@@ -552,8 +556,43 @@ func (e *Engine) snapshotAtNodeBoundary(rs *runState, nodeID string) {
 	}
 	loopIter := e.currentLoopIteration(nodeID, rs.loopCounters)
 	ref := nodeSnapshotRef(rs.runID, nodeID, loopIter)
-	if _, err := snapshotWorktree(e.workDir, ref); err != nil && e.logger != nil {
-		e.logger.Warn("snapshot: node %q iter %d: %v", nodeID, loopIter, err)
+	commit, err := snapshotWorktree(e.workDir, ref)
+	if err != nil {
+		if e.logger != nil {
+			e.logger.Warn("snapshot: node %q iter %d: %v", nodeID, loopIter, err)
+		}
+		return
+	}
+	// Remember the workspace as it stands now so the NEXT node's
+	// pre-boundary marker is a free alias of this commit. An empty SHA
+	// means the tree matched HEAD, so "" is the correct sentinel for
+	// "current state is HEAD" — HEAD may itself have moved if this node
+	// committed.
+	rs.lastSnapshotCommit = commit
+}
+
+// markPreNodeBoundary records the workspace a node is ABOUT to execute
+// against, under NodePreSnapshotRef. This is the anchor an in-place
+// rewind reverts to: NodeSnapshotRef is written after the node ran and
+// therefore holds that node's own production — a bot that writes docs or
+// code would be "rewound" onto the very files the rewind means to
+// discard.
+//
+// Nothing modifies the tree between the previous node's post-snapshot and
+// this call, so the state is already captured by rs.lastSnapshotCommit:
+// this is one `update-ref`, not a second O(filecount) index walk per node.
+func (e *Engine) markPreNodeBoundary(rs *runState, nodeID string) {
+	if e.workDir == "" || !rs.isWorktree {
+		return
+	}
+	target := rs.lastSnapshotCommit
+	if target == "" {
+		target = "HEAD"
+	}
+	loopIter := e.currentLoopIteration(nodeID, rs.loopCounters)
+	ref := store.NodePreSnapshotRef(rs.runID, nodeID, loopIter)
+	if out, err := runGit(e.workDir, "update-ref", ref, target); err != nil && e.logger != nil {
+		e.logger.Warn("pre-snapshot: node %q iter %d: %v\noutput: %s", nodeID, loopIter, err, out)
 	}
 }
 

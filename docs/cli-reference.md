@@ -178,6 +178,26 @@ iterion fork --run-id PARENT --node implement --turn 0 --new-inputs inputs.json
 
 The new run is created in `cancelled` state at the selected conversation turn; resume it to execute. `--rewind-code` additionally requests the captured code snapshot where available. `--name` controls the friendly name.
 
+### `iterion rewind`
+
+```bash
+iterion rewind --run-id RUN --auto           # locate the edit itself
+iterion rewind --run-id RUN --node implement # or name the pivot
+iterion resume --run-id RUN --force          # after editing the .bot
+```
+
+Moves an existing run's checkpoint back onto an already-executed node and
+invalidates the outputs downstream of it, so the next resume replays from
+there. Same run id — use `fork` when you want the original left intact.
+`--auto` diffs your edited `.bot` against the source the run executed and
+rewinds to the earliest affected node — the bot-development loop in one step.
+`--node` accepts any node with a recorded output (including `tool` and
+`compute`, unlike fork's turn anchor); `--file` overrides the source the graph
+is read from. Budget accounting, loop counters, and `events.jsonl` are
+preserved; artifacts the dropped nodes published get a superseding `rewound`
+marker version. Files written into the workspace are NOT undone — see
+[resume](resume.md#rewind-resume-from-an-earlier-node).
+
 ### `iterion runs prune`
 
 ```bash
