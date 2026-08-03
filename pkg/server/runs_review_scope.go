@@ -9,6 +9,7 @@ import (
 
 	gitlib "github.com/SocialGouv/iterion/pkg/git"
 	"github.com/SocialGouv/iterion/pkg/store"
+	"github.com/SocialGouv/iterion/pkg/workspacetrack"
 )
 
 // reviewScopeResponse is what a human gate shows the operator: every file
@@ -23,10 +24,14 @@ import (
 type reviewScopeResponse struct {
 	RunID   string `json:"run_id"`
 	GateSeq int    `json:"gate_seq"`
-	// BaseRef/HeadRef bracket the range. Base is the previous gate, or the
-	// run's base commit for the first one.
+	// BaseRef/HeadRef bracket the range. For a worktree run they are git
+	// refs; for an in-place run they are workspacetrack snapshot ids
+	// (resolved server-side — never taken from the client).
 	BaseRef string `json:"base_ref"`
 	HeadRef string `json:"head_ref"`
+	// Backend is "git" or "workspace" so the UI/diff path know which
+	// loader to use. Omitted on unavailable responses.
+	Backend string `json:"backend,omitempty"`
 	// Available is false when no range could be resolved; Reason then says
 	// why, in the operator's terms.
 	Available bool               `json:"available"`
@@ -70,14 +75,14 @@ func (s *Server) handleGetRunReviewScope(w http.ResponseWriter, r *http.Request)
 		}
 		gate = n
 	}
-	s.writeJSONFor(w, r, buildReviewScope(run, gate))
+	s.writeJSONFor(w, r, buildReviewScope(run, gate, s.workspaceTracker()))
 }
 
 // handleGetRunReviewDiff serves GET /api/runs/{id}/review/diff.
 //
 // The refs are resolved server-side from the gate number, never taken
-// from the caller: they end up as arguments to git, and a client-supplied
-// ref is an injection surface for no benefit.
+// from the caller: they end up as arguments to git (or as snapshot ids),
+// and a client-supplied ref is an injection surface for no benefit.
 func (s *Server) handleGetRunReviewDiff(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 	if id == "" {
@@ -103,9 +108,19 @@ func (s *Server) handleGetRunReviewDiff(w http.ResponseWriter, r *http.Request) 
 		}
 		gate = n
 	}
-	scope := buildReviewScope(run, gate)
+	tracker := s.workspaceTracker()
+	scope := buildReviewScope(run, gate, tracker)
 	if !scope.Available {
 		s.httpErrorFor(w, r, http.StatusConflict, "no review range: %s", scope.Reason)
+		return
+	}
+	if scope.Backend == "workspace" {
+		payload, derr := diffReviewScopeWorkspace(tracker, run.ID, scope.BaseRef, scope.HeadRef, path)
+		if derr != nil {
+			s.httpErrorFor(w, r, http.StatusInternalServerError, "workspace diff: %v", derr)
+			return
+		}
+		s.writeJSONFor(w, r, payload)
 		return
 	}
 	payload, derr := gitlib.DiffBetween(run.WorkDir, scope.BaseRef, scope.HeadRef, path)
@@ -116,22 +131,47 @@ func (s *Server) handleGetRunReviewDiff(w http.ResponseWriter, r *http.Request) 
 	s.writeJSONFor(w, r, payload)
 }
 
+// workspaceTracker returns the runview service's workspace tracker, or a
+// freshly constructed one from the store dir when the service has none
+// (tests, CLI). nil when versioning is disabled.
+func (s *Server) workspaceTracker() workspacetrack.Tracker {
+	if s == nil || s.runs == nil {
+		return nil
+	}
+	if tr := s.runs.WorkspaceTracker(); tr != nil {
+		return tr
+	}
+	return runviewWorkspaceTracker(s.runs.StoreDir())
+}
+
+// runviewWorkspaceTracker is a thin alias so tests can inject without
+// importing runview's package-level helper through a cycle. The real
+// construction lives in runview.WorkspaceTrackerFor.
+var runviewWorkspaceTracker = func(storeDir string) workspacetrack.Tracker {
+	if storeDir == "" {
+		return nil
+	}
+	return workspacetrack.NewNative(storeDir)
+}
+
 // buildReviewScope resolves the gate range and partitions it by node.
-func buildReviewScope(run *store.Run, gate int) *reviewScopeResponse {
+//
+// tracker is required for in-place runs (and is ignored for worktree
+// runs, which use git refs). Passing nil for an in-place run yields an
+// unavailable scope with a reason.
+func buildReviewScope(run *store.Run, gate int, tracker workspacetrack.Tracker) *reviewScopeResponse {
 	out := &reviewScopeResponse{RunID: run.ID, Groups: []reviewScopeGroup{}}
 	if run.WorkDir == "" || !dirExists(run.WorkDir) {
-		out.Reason = "this run has no workspace on this host — review ranges are recorded in the run's own git worktree"
+		out.Reason = "this run has no workspace on this host — review ranges are recorded next to the run"
 		return out
 	}
-	if !run.Worktree {
-		// Not "not yet": an in-place run never records a gate. The anchors
-		// live in the run's own git worktree, and an in-place run's
-		// workspace is the operator's live checkout, which iterion
-		// deliberately does not snapshot with git. Saying "yet" would send
-		// the operator waiting for something that cannot arrive.
-		out.Reason = "this run executes in place, so it records no review ranges — they need an isolated worktree (worktree: auto)"
-		return out
+	if run.Worktree {
+		return buildReviewScopeGit(run, gate, out)
 	}
+	return buildReviewScopeWorkspace(run, gate, tracker, out)
+}
+
+func buildReviewScopeGit(run *store.Run, gate int, out *reviewScopeResponse) *reviewScopeResponse {
 	gates := listReviewGates(run.WorkDir, run.ID)
 	if len(gates) == 0 {
 		out.Reason = "no review gate has been reached in this run yet"
@@ -145,6 +185,7 @@ func buildReviewScope(run *store.Run, gate int) *reviewScopeResponse {
 		return out
 	}
 	out.GateSeq = gate
+	out.Backend = "git"
 	out.HeadRef = store.ReviewGateRef(run.ID, gate)
 	if gate > 0 {
 		out.BaseRef = store.ReviewGateRef(run.ID, gate-1)
@@ -164,23 +205,147 @@ func buildReviewScope(run *store.Run, gate int) *reviewScopeResponse {
 	}
 	out.Available = true
 	out.TotalFiles = len(files)
-	out.Groups = groupByNode(run, files)
+	out.Groups = groupByNodeGit(run, files)
 	return out
 }
 
-// groupByNode attributes each file in the range to the node that last
-// changed it, using per-node boundary refs.
-//
-// Attribution is best-effort by construction and that is deliberate: the
-// authoritative answer is the range itself, computed by git over the whole
-// workspace. Grouping only decides which heading a file appears under.
-func groupByNode(run *store.Run, files []gitlib.FileStatus) []reviewScopeGroup {
-	type nodeRange struct {
-		node     string
-		loopIter int
-		when     int64
-		set      map[string]bool
+func buildReviewScopeWorkspace(run *store.Run, gate int, tracker workspacetrack.Tracker, out *reviewScopeResponse) *reviewScopeResponse {
+	if tracker == nil {
+		out.Reason = "workspace versioning is disabled on this host, so in-place review ranges cannot be recorded"
+		return out
 	}
+	gates := workspacetrack.ListGates(tracker, run.ID)
+	var baseID, headID string
+	switch {
+	case len(gates) > 0:
+		if gate < 0 {
+			gate = gates[len(gates)-1]
+		}
+		if !containsInt(gates, gate) {
+			out.Reason = fmt.Sprintf("gate %d was never reached (recorded: %v)", gate, gates)
+			return out
+		}
+		out.GateSeq = gate
+		headLabel := workspacetrack.GateLabel(gate)
+		var ok bool
+		headID, ok = tracker.Resolve(run.ID, headLabel)
+		if !ok {
+			out.Reason = fmt.Sprintf("gate %d is labelled but its snapshot is missing", gate)
+			return out
+		}
+		if gate > 0 {
+			baseID, ok = tracker.Resolve(run.ID, workspacetrack.GateLabel(gate-1))
+			if !ok {
+				out.Reason = fmt.Sprintf("previous gate %d has no snapshot", gate-1)
+				return out
+			}
+		} else {
+			baseID, ok = workspacetrack.Root(tracker, run.ID)
+			if !ok {
+				out.Reason = "the run has no initial workspace snapshot to compare the first gate against"
+				return out
+			}
+		}
+	default:
+		// No explicit gate labels yet. For a run that is currently paused
+		// waiting on a human — the only caller of this panel — fall back
+		// to "everything since the run's first capture". That covers runs
+		// that reached a human gate before markReviewGate started writing
+		// gate:N labels, without inventing a range for a still-running
+		// or finished run that never paused.
+		if !run.Status.IsPaused() {
+			out.Reason = "no review gate has been reached in this run yet"
+			return out
+		}
+		headID = tracker.Head(run.ID)
+		if headID == "" {
+			out.Reason = "this run captured no workspace snapshots at all"
+			return out
+		}
+		var ok bool
+		baseID, ok = workspacetrack.Root(tracker, run.ID)
+		if !ok {
+			out.Reason = "this run captured no workspace snapshots at all"
+			return out
+		}
+		out.GateSeq = 0
+	}
+	out.Backend = "workspace"
+	out.BaseRef = baseID
+	out.HeadRef = headID
+
+	baseSnap, err := tracker.Load(run.ID, baseID)
+	if err != nil {
+		out.Reason = fmt.Sprintf("could not load base snapshot: %v", err)
+		return out
+	}
+	headSnap, err := tracker.Load(run.ID, headID)
+	if err != nil {
+		out.Reason = fmt.Sprintf("could not load head snapshot: %v", err)
+		return out
+	}
+	// When base and head are the same snapshot (first gate taken before
+	// any node ran, or fallback with a single capture), the range is empty
+	// rather than "every file in the workspace as an addition".
+	var changes []workspacetrack.FileChange
+	if baseID == headID {
+		changes = nil
+	} else {
+		changes = workspacetrack.StatusBetween(baseSnap, headSnap)
+	}
+	files := workspaceChangesToFileStatus(changes)
+	out.Available = true
+	out.TotalFiles = len(files)
+	out.Groups = groupByNodeWorkspace(tracker, run.ID, files)
+	return out
+}
+
+func workspaceChangesToFileStatus(changes []workspacetrack.FileChange) []gitlib.FileStatus {
+	out := make([]gitlib.FileStatus, 0, len(changes))
+	for _, c := range changes {
+		fs := gitlib.FileStatus{Path: c.Path, Status: c.Status, Binary: c.Binary}
+		if c.Binary {
+			fs.Added, fs.Deleted = -1, -1
+		}
+		out = append(out, fs)
+	}
+	return out
+}
+
+func diffReviewScopeWorkspace(tracker workspacetrack.Tracker, runID, baseID, headID, path string) (gitlib.DiffPayload, error) {
+	if tracker == nil {
+		return gitlib.DiffPayload{}, fmt.Errorf("no workspace tracker")
+	}
+	var baseSnap, headSnap *workspacetrack.Snapshot
+	var err error
+	if baseID != "" {
+		baseSnap, err = tracker.Load(runID, baseID)
+		if err != nil {
+			return gitlib.DiffPayload{}, err
+		}
+	}
+	if headID != "" {
+		headSnap, err = tracker.Load(runID, headID)
+		if err != nil {
+			return gitlib.DiffPayload{}, err
+		}
+	}
+	d, err := workspacetrack.DiffBetween(tracker, baseSnap, headSnap, path)
+	if err != nil {
+		return gitlib.DiffPayload{}, err
+	}
+	return gitlib.DiffPayload{
+		Path:      d.Path,
+		Before:    d.Before,
+		After:     d.After,
+		Binary:    d.Binary,
+		Oversized: d.Oversized,
+	}, nil
+}
+
+// groupByNodeGit attributes each file in the range to the node that last
+// changed it, using per-node git boundary refs.
+func groupByNodeGit(run *store.Run, files []gitlib.FileStatus) []reviewScopeGroup {
 	var ranges []nodeRange
 	for _, b := range listNodeBoundaries(run.WorkDir, run.ID) {
 		changed, err := gitlib.StatusBetween(run.WorkDir, b.preRef, b.postRef)
@@ -196,7 +361,75 @@ func groupByNode(run *store.Run, files []gitlib.FileStatus) []reviewScopeGroup {
 	// Latest boundary wins: when two nodes touched the same file, the
 	// reviewer cares about who left it in the state under review.
 	sort.Slice(ranges, func(i, j int) bool { return ranges[i].when < ranges[j].when })
+	return partitionFilesByRanges(files, ranges)
+}
 
+// groupByNodeWorkspace attributes files using workspacetrack pre:/post:
+// labels. Same partition contract as the git path.
+func groupByNodeWorkspace(tracker workspacetrack.Tracker, runID string, files []gitlib.FileStatus) []reviewScopeGroup {
+	labels := tracker.Labels(runID)
+	// Collect nodes that have BOTH pre and post labels.
+	type bound struct {
+		node     string
+		loopIter int
+		preID    string
+		postID   string
+	}
+	var bounds []bound
+	for label, postID := range labels {
+		// post:<node>:<iter>
+		if !strings.HasPrefix(label, workspacetrack.PhasePost+":") {
+			continue
+		}
+		rest := strings.TrimPrefix(label, workspacetrack.PhasePost+":")
+		slash := strings.LastIndex(rest, ":")
+		if slash < 0 {
+			continue
+		}
+		node := rest[:slash]
+		loopIter, err := strconv.Atoi(rest[slash+1:])
+		if err != nil {
+			continue
+		}
+		preID, ok := labels[workspacetrack.Label(workspacetrack.PhasePre, node, loopIter)]
+		if !ok {
+			continue
+		}
+		bounds = append(bounds, bound{node: node, loopIter: loopIter, preID: preID, postID: postID})
+	}
+	var ranges []nodeRange
+	for _, b := range bounds {
+		preSnap, err := tracker.Load(runID, b.preID)
+		if err != nil {
+			continue
+		}
+		postSnap, err := tracker.Load(runID, b.postID)
+		if err != nil {
+			continue
+		}
+		changed := workspacetrack.StatusBetween(preSnap, postSnap)
+		set := make(map[string]bool, len(changed))
+		for _, f := range changed {
+			set[f.Path] = true
+		}
+		when := int64(0)
+		if !postSnap.CreatedAt.IsZero() {
+			when = postSnap.CreatedAt.Unix()
+		}
+		ranges = append(ranges, nodeRange{node: b.node, loopIter: b.loopIter, when: when, set: set})
+	}
+	sort.Slice(ranges, func(i, j int) bool { return ranges[i].when < ranges[j].when })
+	return partitionFilesByRanges(files, ranges)
+}
+
+type nodeRange struct {
+	node     string
+	loopIter int
+	when     int64
+	set      map[string]bool
+}
+
+func partitionFilesByRanges(files []gitlib.FileStatus, ranges []nodeRange) []reviewScopeGroup {
 	byNode := map[string]*reviewScopeGroup{}
 	order := []string{}
 	var unattributed []gitlib.FileStatus

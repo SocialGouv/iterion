@@ -1021,6 +1021,16 @@ func (s *Service) asyncAskBinder() model.AsyncAskBinder {
 // buffer is gone.
 func (s *Service) StoreDir() string { return s.storeDir }
 
+// WorkspaceTracker returns the service's workspace versioning tracker,
+// or nil when versioning is disabled. Used by the review-scope panel to
+// build gate-to-gate ranges for in-place runs.
+func (s *Service) WorkspaceTracker() workspacetrack.Tracker {
+	if s == nil {
+		return nil
+	}
+	return s.workspaceTracker
+}
+
 // StoreRoot returns the filesystem root the underlying RunStore
 // operates on, or empty when the store has no filesystem (cloud
 // stores). Used by the upload handlers to materialise a staging

@@ -344,6 +344,33 @@ func (n *Native) Forget(runID string) {
 	delete(n.stats, runID)
 }
 
+// Labels returns a copy of the run's label map.
+func (n *Native) Labels(runID string) map[string]string {
+	c := n.cache(runID)
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	out := make(map[string]string, len(c.Labels))
+	for k, v := range c.Labels {
+		out[k] = v
+	}
+	return out
+}
+
+// Object reads a content-addressed blob from the shared object pool.
+func (n *Native) Object(hash string) ([]byte, error) {
+	if len(hash) < 3 {
+		return nil, fmt.Errorf("%w: object %q", ErrSnapshotNotFound, hash)
+	}
+	b, err := os.ReadFile(n.objectPath(hash))
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil, fmt.Errorf("%w: object %s", ErrSnapshotNotFound, hash)
+		}
+		return nil, err
+	}
+	return b, nil
+}
+
 // Load reads a snapshot manifest.
 func (n *Native) Load(runID, snapshotID string) (*Snapshot, error) {
 	b, err := os.ReadFile(n.snapshotPath(runID, snapshotID))

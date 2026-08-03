@@ -17,6 +17,7 @@ import (
 	"github.com/SocialGouv/iterion/pkg/backend/permission"
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
 	"github.com/SocialGouv/iterion/pkg/store"
+	"github.com/SocialGouv/iterion/pkg/workspacetrack"
 )
 
 // Reserved input keys live in the delegate package (delegate.PriorAskUser*Key
@@ -1001,8 +1002,15 @@ func (e *Engine) humanPauseExtra(nodeID string, questions map[string]any, rs *ru
 // specially dispatched, in which case the remembered anchor was
 // deliberately invalidated and aliasing would silently miss that node's
 // work.
+//
+// Two backends, same contract:
+//
+//   - worktree: auto → git refs (refs/iterion/runs/<id>/gate/<seq>)
+//   - in-place (default) → workspacetrack labels (gate:<seq>), which is
+//     the only safe capture of the operator's live checkout and which
+//     honours .iterionignore rather than .gitignore
 func (e *Engine) markReviewGate(rs *runState, nodeID string) map[string]any {
-	if e.workDir == "" || !rs.isWorktree {
+	if e.workDir == "" {
 		return nil
 	}
 	// Idempotent per (node, iteration): a review gate anchors when it
@@ -1014,8 +1022,15 @@ func (e *Engine) markReviewGate(rs *runState, nodeID string) map[string]any {
 		rs.gateAnchors = map[string]int{}
 	}
 	if seq, ok := rs.gateAnchors[key]; ok {
-		return reviewGateScope(rs.runID, seq)
+		return reviewGateScope(rs.runID, seq, rs.isWorktree)
 	}
+	if rs.isWorktree {
+		return e.markReviewGateGit(rs, nodeID, key)
+	}
+	return e.markReviewGateWorkspace(rs, nodeID, key)
+}
+
+func (e *Engine) markReviewGateGit(rs *runState, nodeID, key string) map[string]any {
 	seq := nextReviewGateSeq(e.workDir, rs.runID)
 	ref := store.ReviewGateRef(rs.runID, seq)
 	commit, err := snapshotWorktree(e.workDir, ref)
@@ -1034,17 +1049,42 @@ func (e *Engine) markReviewGate(rs *runState, nodeID string) map[string]any {
 		}
 	}
 	rs.gateAnchors[key] = seq
-	return reviewGateScope(rs.runID, seq)
+	return reviewGateScope(rs.runID, seq, true)
+}
+
+func (e *Engine) markReviewGateWorkspace(rs *runState, nodeID, key string) map[string]any {
+	if e.workspaceTracker == nil {
+		return nil
+	}
+	seq := workspacetrack.NextGateSeq(e.workspaceTracker, rs.runID)
+	label := workspacetrack.GateLabel(seq)
+	snap, err := e.workspaceTracker.Capture(rs.runID, e.workDir, label)
+	if err != nil {
+		if e.logger != nil {
+			e.logger.Warn("review gate: workspace anchor %q: %v", nodeID, err)
+		}
+		return nil
+	}
+	rs.lastWorkspaceSnapshot = snap.ID
+	rs.gateAnchors[key] = seq
+	return reviewGateScope(rs.runID, seq, false)
 }
 
 // reviewGateScope is the pause-payload shape describing a gate's range.
-func reviewGateScope(runID string, seq int) map[string]any {
+func reviewGateScope(runID string, seq int, worktree bool) map[string]any {
 	scope := map[string]any{
 		"review_gate_seq": seq,
-		"review_head_ref": store.ReviewGateRef(runID, seq),
 	}
+	if worktree {
+		scope["review_head_ref"] = store.ReviewGateRef(runID, seq)
+		if seq > 0 {
+			scope["review_base_ref"] = store.ReviewGateRef(runID, seq-1)
+		}
+		return scope
+	}
+	scope["review_head_ref"] = workspacetrack.GateLabel(seq)
 	if seq > 0 {
-		scope["review_base_ref"] = store.ReviewGateRef(runID, seq-1)
+		scope["review_base_ref"] = workspacetrack.GateLabel(seq - 1)
 	}
 	return scope
 }
