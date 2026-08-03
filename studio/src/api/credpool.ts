@@ -38,6 +38,7 @@ export type PledgeStatus =
   | "cooling"
   | "out_of_hours"
   | "exhausted"
+  | "serving"
   | "unhealthy"
   | "bot_filtered";
 

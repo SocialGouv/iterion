@@ -26,6 +26,7 @@ const STATUS_TONE: Record<PledgeStatus, "success" | "warning" | "neutral" | "dan
   cooling: "warning",
   out_of_hours: "neutral",
   exhausted: "warning",
+  serving: "success",
   unhealthy: "danger",
   bot_filtered: "neutral",
 };

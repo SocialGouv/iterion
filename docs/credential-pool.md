@@ -104,11 +104,22 @@ Two states are set from a run's outcome:
 ## What a donor's admission costs them, and when it comes back
 
 An acquisition consumes three things at once: a unit of the daily run
-quota, a concurrency slot, and — until the run reports — the whole
-allowance it was granted. That last one is what stops ten runs launched
-together from each being handed the same "remaining" and spending it ten
-times over: a live lease's `granted_cost_usd` counts against the next
-admission.
+quota, a concurrency slot, and — until the run reports — the allowance it
+was granted. That last one is what stops ten runs launched together from
+each being handed the same "remaining" and spending it ten times over: a
+live lease's `granted_cost_usd` counts against the next admission.
+
+Which is why a spend cap is **shared across the slots still free** rather
+than handed whole to the first run: promising it all away would deny every
+sibling on cost, and the `max_concurrent_runs` a donor set could never
+bind. A `$9/day` + `3 runs at a time` pledge grants `$3` per slot, summing
+to exactly what was offered. A donor who allowed a single run at a time
+has nothing to share, so that run still receives the whole allowance.
+
+While every allowed slot is busy the donor reads **`serving`**, not
+`exhausted` — the launches are refused, but nothing was given yet beyond
+what those runs spend, and the state clears as they end. `exhausted` is
+reserved for what the ledger really recorded.
 
 They come back on three paths, and the distinction matters:
 
@@ -119,10 +130,13 @@ They come back on three paths, and the distinction matters:
 | sweeper — the pod died without reporting | freed | **kept** (it ran) |
 
 `Report` closes the lease with a compare-and-set and charges the donor only
-if it wins, so a redelivered report cannot debit twice. A resumed run
-*renews* its admission instead of taking a second one: it is the same run,
-and charging it again would let one flaky run that resumes a few times
-consume a contributor's whole day.
+if it wins, so a redelivered report cannot debit twice. A resumed run that
+**reported** *renews* its admission instead of taking a second one: it is
+the same run, and charging it again would let one flaky run that resumes a
+few times consume a contributor's whole day. Reporting is what earns the
+renewal — the runner's spend hand-off is deferred and fires on every
+outcome, `paused_waiting_human` included, so an ordinary pause/resume
+always qualifies.
 
 **One lease document per attempt**, never reused. A run that resumes —
 onto the same donor or another — leaves every finished attempt's record
@@ -130,14 +144,18 @@ intact, because that record is the donor's only evidence for a charge
 already on their ledger. Acquiring *supersedes* whatever was still marked
 as serving that run (a pod that died without reporting leaves its lease
 open), so a run never holds two open leases and "who is serving this run",
-hence who gets charged, is never ambiguous.
+hence who gets charged, is never ambiguous. That supersede happens **before**
+the admission is judged, so an attempt killed mid-flight is seen for what it
+is — an attempt that never said what it spent — rather than as a prior
+admission to renew against for free.
 
 An attempt records whether it consumed a run unit, so releasing a **resume**
 gives nothing back: it renewed rather than consumed, and refunding it would
-mint quota out of a failed launch. An **abandoned** attempt does not count
-as a prior admission either — nothing ever learned what it spent, so the
-next attempt is admitted as new rather than renewing indefinitely against a
-record that means nothing.
+mint quota out of a failed launch. An **abandoned** or **superseded**
+attempt does not count as a prior admission either — nothing ever learned
+what it spent, so the next attempt is admitted as new rather than renewing
+indefinitely against a record that means nothing. When accounting is lost,
+the daily run ceiling is the only guard left standing, and it must hold.
 
 Concurrency and committed spend are **derived** from live leases, never
 accumulated in a counter, so an abandoned run cannot permanently consume
@@ -173,8 +191,10 @@ predicates**, each separately togglable, with the strictest default:
 | `all_teams: true` | Every team on the instance. |
 
 Selection scans the enabled pools and applies each audience, so a pool that
-opens itself to another org is genuinely reachable from there; the
-requester's own org pool wins when several would serve.
+opens itself to another org is genuinely reachable from there. Every pool
+that admits the requester is tried, own-org first: running a pool of your
+own must not exclude you from a community one when your own donors are all
+cooling, exhausted or out-of-hours.
 
 ## Operator cookbook
 

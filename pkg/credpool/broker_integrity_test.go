@@ -5,6 +5,8 @@ import (
 	"errors"
 	"testing"
 	"time"
+
+	"github.com/SocialGouv/iterion/pkg/secrets"
 )
 
 // Regressions for defects an adversarial review found in the accounting.
@@ -42,10 +44,16 @@ func TestAcquire_resumeDoesNotConsumeASecondRunUnit(t *testing.T) {
 	ctx := context.Background()
 	h.donor(t, "alice", Limits{MaxRunsPerDay: 2})
 
-	// One run, admitted then resumed three times.
+	// One run, admitted then resumed three times. Each attempt reports as
+	// it ends, which is what the runner's deferred recordPoolSpend does on
+	// every outcome including paused_waiting_human — skipping it here would
+	// test a resume shape production never produces.
 	for i := 0; i < 4; i++ {
 		if _, err := h.broker.Acquire(ctx, h.request("run-1")); err != nil {
 			t.Fatalf("acquire attempt %d: %v", i, err)
+		}
+		if err := h.broker.Report(ctx, "run-1", Outcome{CostUSD: 0.1}); err != nil {
+			t.Fatalf("report attempt %d: %v", i, err)
 		}
 	}
 	day, _, _ := h.ledger.Usage(ctx, PledgeID("alice", SourceOAuth, "claude_code"), h.now)
@@ -391,6 +399,9 @@ func TestRelease_doesNotRefundARenewedAdmission(t *testing.T) {
 	if _, err := h.broker.Acquire(ctx, h.request("run-1")); err != nil {
 		t.Fatalf("Acquire: %v", err)
 	}
+	if err := h.broker.Report(ctx, "run-1", Outcome{CostUSD: 0.1}); err != nil { // the attempt paused
+		t.Fatalf("Report: %v", err)
+	}
 	if _, err := h.broker.Acquire(ctx, h.request("run-1")); err != nil { // resume
 		t.Fatalf("resume Acquire: %v", err)
 	}
@@ -503,3 +514,127 @@ func TestAvailable_emptyBotIDStillMeansIgnoreTheFilterForDisplay(t *testing.T) {
 		t.Error("AvailableForLaunch must fail closed on an empty bot id")
 	}
 }
+
+// A donor who allows 3 runs at a time AND caps their spend must actually
+// serve 3 at a time. Handing the first run the whole remaining allowance
+// promised it away, and the committed half of the admission rule then
+// refused every sibling on cost — so the concurrency dial they set could
+// never bind, and their dashboard read "exhausted" with $0 spent.
+func TestAcquire_concurrencyDialBindsUnderASpendCap(t *testing.T) {
+	h := newHarness(t)
+	ctx := context.Background()
+	h.donor(t, "alice", Limits{MaxUSDPerDay: 9, MaxConcurrentRuns: 3})
+
+	var granted []float64
+	for i := 1; i <= 3; i++ {
+		g, err := h.broker.Acquire(ctx, h.request(runIDf(i)))
+		if err != nil {
+			t.Fatalf("concurrent run %d refused: %v", i, err)
+		}
+		granted = append(granted, g.RemainingUSD)
+	}
+
+	// Each slot holds an equal share, and the shares exhaust the cap
+	// exactly — no slot may promise more than the donor offered.
+	var total float64
+	for i, g := range granted {
+		if g <= 0 {
+			t.Errorf("run %d granted %v, want a positive share", i+1, g)
+		}
+		total += g
+	}
+	if total > 9.0001 {
+		t.Errorf("three concurrent runs were promised $%.2f of a $9 cap", total)
+	}
+
+	// The fourth is refused on the dial the donor actually set.
+	if _, err := h.broker.Acquire(ctx, h.request("run-4")); !errors.Is(err, ErrNoDonor) {
+		t.Errorf("a 4th concurrent run was admitted past max_concurrent_runs=3: %v", err)
+	}
+}
+
+// A single-slot donor is unchanged: nothing to share, so the run still
+// receives the whole allowance rather than an arbitrary fraction of it.
+func TestAcquire_singleSlotDonorStillGrantsTheWholeAllowance(t *testing.T) {
+	h := newHarness(t)
+	h.donor(t, "alice", Limits{MaxUSDPerDay: 9, MaxConcurrentRuns: 1})
+
+	g, err := h.broker.Acquire(context.Background(), h.request("run-1"))
+	if err != nil {
+		t.Fatalf("Acquire: %v", err)
+	}
+	if g.RemainingUSD != 9 {
+		t.Errorf("granted $%.2f, want the full $9 — a lone run has no sibling to share with", g.RemainingUSD)
+	}
+}
+
+// An attempt whose pod was hard-killed never reported what it spent. Its
+// lease is still open, and reading that as "already admitted" renewed the
+// retry for free: no unit of the donor's daily runs, and their whole
+// remaining allowance re-granted against a ledger that learned nothing.
+func TestAcquire_attemptKilledWithoutReportingIsAdmittedAsNew(t *testing.T) {
+	h := newHarness(t)
+	ctx := context.Background()
+	h.donor(t, "alice", Limits{MaxRunsPerDay: 1})
+
+	if _, err := h.broker.Acquire(ctx, h.request("run-1")); err != nil {
+		t.Fatalf("Acquire: %v", err)
+	}
+	// No Report: the pod died before its deferred recordPoolSpend.
+
+	if _, err := h.broker.Acquire(ctx, h.request("run-1")); !errors.Is(err, ErrNoDonor) {
+		t.Errorf("an unreported attempt renewed for free past MaxRunsPerDay=1: %v", err)
+	}
+}
+
+// Disconnecting a credential deletes the pledge with it. An acquisition
+// already holding the pre-delete copy discovers the missing OAuth record
+// and parks the pledge — through an Upsert, which INSERTS when absent. A
+// blind write there put the donor's withdrawn terms back on the roster.
+func TestMarkUnhealthy_doesNotResurrectAWithdrawnPledge(t *testing.T) {
+	h := newHarness(t)
+	ctx := context.Background()
+	p := h.donor(t, "alice", Limits{MaxUSDPerDay: 5})
+
+	// The donor withdraws: pledge and credential both gone.
+	if err := h.pledges.Delete(ctx, p.ID); err != nil {
+		t.Fatalf("withdraw: %v", err)
+	}
+	if err := h.oauth.Delete(ctx, "alice", secrets.OAuthKindClaudeCode); err != nil {
+		t.Fatalf("disconnect: %v", err)
+	}
+
+	// An acquisition holding the stale copy runs the park path.
+	h.broker.markUnhealthy(ctx, p.ID, HealthTokenExpired, "disconnected")
+
+	if _, err := h.pledges.Get(ctx, p.ID); err == nil {
+		t.Error("a withdrawn pledge was recreated by the health writeback — the withdrawal must be final")
+	}
+}
+
+// An org running its own pool must still reach a community pool that opened
+// itself to it. Committing to the first audience-allowing pool meant having
+// a pool of your own silently excluded you from everyone else's.
+func TestAcquire_fallsThroughToACommunityPoolWhenTheOwnPoolCannotServe(t *testing.T) {
+	h := newHarness(t)
+	ctx := context.Background()
+
+	// The own-org pool exists (seeded by the harness) but has no donor.
+	if err := h.pools.Upsert(ctx, Pool{
+		ID: "pool-community", OrgID: "org-elsewhere", Enabled: true,
+		Audience: Audience{AllTeams: true},
+	}); err != nil {
+		t.Fatalf("seed community pool: %v", err)
+	}
+	h.donor(t, "carol", Limits{MaxUSDPerDay: 5}, func(p *Pledge) { p.PoolID = "pool-community" })
+
+	g, err := h.broker.Acquire(ctx, h.request("run-1"))
+	if err != nil {
+		t.Fatalf("the community pool was never reached: %v", err)
+	}
+	if g.DonorID != "carol" {
+		t.Errorf("served by %q, want carol from the community pool", g.DonorID)
+	}
+}
+
+func runIDf(i int) string { return "run-" + string(rune('0'+i)) }

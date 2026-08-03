@@ -142,18 +142,33 @@ func (b *Broker) Acquire(ctx context.Context, req Request) (*Grant, error) {
 	}
 	now := b.now()
 
-	pool, candidates, err := b.resolvePool(ctx, req)
+	// Close whatever was still marked as serving this run BEFORE judging the
+	// admission. A pod killed without reporting leaves its lease open, and an
+	// open lease with no outcome reads as "this pledge already admitted this
+	// run" — which would renew the attempt for free, consuming no unit of the
+	// donor's daily runs and re-granting their whole remaining allowance,
+	// against a ledger that learned nothing about what the killed attempt
+	// spent. Closing first turns it into the superseded non-admission it is,
+	// so the retry is admitted as new.
+	b.supersedeOpenLeases(ctx, req.RunID, now)
+
+	allowed, err := b.resolvePools(ctx, req)
 	if err != nil {
 		return nil, err
 	}
 
+	// Want-major: the preference between credentials is the caller's
+	// (subscriptions before metered keys), and outranks which pool holds
+	// them. Within a want, the requester's own org pool was sorted first.
 	for _, want := range req.Wants {
-		grant, err := b.acquireKind(ctx, pool, candidates, req, want, now)
-		if err != nil {
-			return nil, err
-		}
-		if grant != nil {
-			return grant, nil
+		for _, pc := range allowed {
+			grant, err := b.acquireKind(ctx, pc.pool, pc.candidates, req, want, now)
+			if err != nil {
+				return nil, err
+			}
+			if grant != nil {
+				return grant, nil
+			}
 		}
 	}
 	return nil, ErrNoDonor
@@ -202,7 +217,19 @@ func (b *Broker) acquireKind(ctx context.Context, pool Pool, candidates []Pledge
 	return nil, nil
 }
 
-// resolvePool finds the pool serving this request, with its pledges.
+// poolCandidates is one pool this requester may draw on, with its pledges.
+type poolCandidates struct {
+	pool       Pool
+	candidates []Pledge
+}
+
+// resolvePools finds EVERY pool whose audience admits this request, own-org
+// first, each with its pledges.
+//
+// Every one, not the first match: an org that runs its own pool must still
+// reach a community pool that opened itself to it once its own donors are
+// all cooling, exhausted or out-of-hours — otherwise having a pool of your
+// own silently excludes you from everyone else's.
 //
 // Selection scans the ENABLED pools and applies each one's audience,
 // rather than looking up the requester's own org: a pool that opens itself
@@ -211,13 +238,13 @@ func (b *Broker) acquireKind(ctx context.Context, pool Pool, candidates []Pledge
 // owning org is unreachable configuration. A deployment runs a handful of
 // pools, so this is a small list, and the requester's own org pool wins
 // when several would serve.
-func (b *Broker) resolvePool(ctx context.Context, req Request) (Pool, []Pledge, error) {
+func (b *Broker) resolvePools(ctx context.Context, req Request) ([]poolCandidates, error) {
 	pools, err := b.pools.ListEnabled(ctx)
 	if err != nil {
-		return Pool{}, nil, err
+		return nil, err
 	}
 	if len(pools) == 0 {
-		return Pool{}, nil, ErrNoDonor
+		return nil, ErrNoDonor
 	}
 	// Own-org pool first: a team drawing on its own pool must not be
 	// diverted to a community one that happens to sort earlier.
@@ -229,10 +256,11 @@ func (b *Broker) resolvePool(ctx context.Context, req Request) (Pool, []Pledge, 
 		return pools[i].ID < pools[j].ID
 	})
 	now := b.now()
+	allowed := make([]poolCandidates, 0, len(pools))
 	for _, pool := range pools {
 		candidates, err := b.pledges.ListByPool(ctx, pool.ID)
 		if err != nil {
-			return Pool{}, nil, err
+			return nil, err
 		}
 		hasActivePledge := false
 		if pool.Audience.NeedsPledgeLookup() && req.UserID != "" {
@@ -249,10 +277,13 @@ func (b *Broker) resolvePool(ctx context.Context, req Request) (Pool, []Pledge, 
 			}
 		}
 		if pool.Audience.Allows(pool.OrgID, req.OrgID, req.TenantID, req.UserID, hasActivePledge) {
-			return pool, candidates, nil
+			allowed = append(allowed, poolCandidates{pool: pool, candidates: candidates})
 		}
 	}
-	return Pool{}, nil, ErrNoDonor
+	if len(allowed) == 0 {
+		return nil, ErrNoDonor
+	}
+	return allowed, nil
 }
 
 // rank orders eligible pledges by fairness: least consumed today first
@@ -363,15 +394,9 @@ func (b *Broker) tryPledge(ctx context.Context, pool Pool, p Pledge, req Request
 		release()
 		// The donor pledged a credential that is no longer usable. Park the
 		// pledge rather than re-discovering this on every launch.
-		b.markUnhealthy(ctx, p, HealthTokenExpired, gone)
+		b.markUnhealthy(ctx, p.ID, HealthTokenExpired, gone)
 		return nil, nil
 	}
-
-	// Supersede whatever was still serving this run. A pod that died
-	// without reporting leaves its lease open; leaving it so would give the
-	// run two open leases, and then "who is serving this run" — hence who
-	// gets charged — is decided by whichever the store happens to return.
-	b.supersedeOpenLeases(ctx, req.RunID, now)
 
 	lease := Lease{
 		ID:              uuid.NewString(),
@@ -745,10 +770,22 @@ func (b *Broker) clearAuthFailures(ctx context.Context, pledgeID string) {
 	}
 }
 
-func (b *Broker) markUnhealthy(ctx context.Context, p Pledge, h Health, detail string) {
+// markUnhealthy parks a pledge whose credential no longer authenticates.
+//
+// It re-reads first, like its siblings above: the copy an acquisition holds
+// was listed several round trips earlier, and Upsert INSERTS when absent —
+// a blind write would resurrect a pledge the donor withdrew (or whose
+// credential they disconnected) in between, which is precisely the sequence
+// that lands here, since disconnecting deletes the pledge AND the OAuth
+// record the caller just failed to read.
+func (b *Broker) markUnhealthy(ctx context.Context, pledgeID string, h Health, detail string) {
+	p, err := b.pledges.Get(ctx, pledgeID)
+	if err != nil {
+		return
+	}
 	p.Health = h
 	p.HealthDetail = detail
 	if err := b.pledges.Upsert(ctx, p); err != nil {
-		b.logger.Warn("credpool: cannot mark pledge %s as %s: %v", p.ID, h, err)
+		b.logger.Warn("credpool: cannot mark pledge %s as %s: %v", pledgeID, h, err)
 	}
 }

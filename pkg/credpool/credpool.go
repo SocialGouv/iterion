@@ -148,7 +148,11 @@ const (
 	StatusCooling    Status = "cooling" // provider quota window exhausted
 	StatusOutOfHours Status = "out_of_hours"
 	StatusExhausted  Status = "exhausted" // limits reached for the period
-	StatusUnhealthy  Status = "unhealthy" // token expired / auth failing
+	// StatusServing — every slot the donor allowed is busy right now. Not
+	// exhausted: they have given nothing yet beyond what those runs spend,
+	// and the state clears as they finish.
+	StatusServing   Status = "serving"
+	StatusUnhealthy Status = "unhealthy" // token expired / auth failing
 	// StatusBotFiltered — the donor is sharing, but not with the bot that
 	// asked. Distinct from paused so the UI never tells a willing
 	// contributor their contribution is off.
@@ -500,7 +504,10 @@ const (
 //   - not_launched: Release already gave its run unit back, so treating it
 //     as an admission would let the next attempt renew against a unit that
 //     no longer exists — and slip past the donor's daily ceiling.
-var nonAdmissionOutcomes = []string{OutcomeAbandoned, OutcomeNotLaunched}
+//   - superseded: the attempt it belonged to was still open when the next
+//     one asked, i.e. it died without reporting. Same reasoning as
+//     abandoned, minus the wait for the sweeper.
+var nonAdmissionOutcomes = []string{OutcomeAbandoned, OutcomeNotLaunched, OutcomeSuperseded}
 
 func isNonAdmission(outcome string) bool {
 	for _, o := range nonAdmissionOutcomes {

@@ -57,6 +57,7 @@ const STATUS_COPY: Record<PledgeStatus, { label: string; tone: "success" | "warn
   cooling: { label: "Resting until your quota window reopens", tone: "warning" },
   out_of_hours: { label: "Outside your sharing hours", tone: "neutral" },
   exhausted: { label: "Ceiling reached for now", tone: "warning" },
+  serving: { label: "Every slot you allowed is busy", tone: "success" },
   unhealthy: { label: "Needs reconnecting", tone: "danger" },
   bot_filtered: { label: "Sharing, but not with this bot", tone: "neutral" },
 };

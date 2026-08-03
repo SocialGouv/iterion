@@ -434,21 +434,31 @@ func (s *Server) toPledgeView(r *http.Request, p credpool.Pledge, now time.Time,
 	if day, week, err := s.credPoolLedger.Usage(r.Context(), p.ID, now); err == nil {
 		v.Today = toUsageView(day)
 		v.ThisWeek = toUsageView(week)
-		// A donor at their ceiling reads "exhausted", not "active" — the
-		// ledger, not the pledge, holds that truth. Asked through the SAME
-		// inputs the ledger admits with, INCLUDING the allowance already
-		// promised to in-flight runs: without that term a donor whose
-		// remaining budget is fully committed would read "Sharing" while
-		// every new launch is refused.
-		committed := 0.0
+		// A donor who can no longer be drawn on must not read "active" — the
+		// ledger, not the pledge, holds that truth, and it is asked here
+		// through the SAME rule it admits with.
+		//
+		// Why the two branches: a launch is also refused while the donor's
+		// remaining allowance is fully promised to runs in flight, or while
+		// every slot they allowed is busy. Calling that "exhausted" would
+		// tell a contributor they gave their whole day when they have spent
+		// nothing yet, so it reads "serving" and clears as the runs end.
+		// Exhausted is reserved for what they REALLY gave.
+		liveRuns, committed := 0, 0.0
 		if s.credPoolLeases != nil {
-			if _, c, cerr := s.credPoolLeases.LiveCommitment(r.Context(), p.ID, "", now); cerr == nil {
-				committed = c
+			if n, c, cerr := s.credPoolLeases.LiveCommitment(r.Context(), p.ID, "", now); cerr == nil {
+				liveRuns, committed = n, c
 			}
 		}
-		if status == credpool.StatusActive &&
-			p.Limits.Deny(day.Runs+1, day.CostUSD+committed, week.CostUSD+committed) != credpool.DenyNone {
+		atSlotCap := p.Limits.MaxConcurrentRuns > 0 && liveRuns >= p.Limits.MaxConcurrentRuns
+		switch {
+		case status != credpool.StatusActive:
+			// Health/window/pause already decided; the ledger adds nothing.
+		case p.Limits.Deny(day.Runs+1, day.CostUSD, week.CostUSD) != credpool.DenyNone:
 			v.Status = string(credpool.StatusExhausted)
+		case liveRuns > 0 && (atSlotCap ||
+			p.Limits.Deny(day.Runs+1, day.CostUSD+committed, week.CostUSD+committed) != credpool.DenyNone):
+			v.Status = string(credpool.StatusServing)
 		}
 	}
 	return v
