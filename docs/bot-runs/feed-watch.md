@@ -50,6 +50,20 @@ Newest first. One section per dogfooded run.
   digest (or let next Monday's schedule pick the queue up), consistent with
   the standing lesson below that relaunch beats resume after a
   synthesize-stage failure.
+- Validation: two local probe runs (`019fc6e3` / `019fc6e6`, digest dry-run
+  on a fixture queue seeded with the exact failing FeedBlitz URLs) —
+  `load_pending` canonicalized both items (`feeds.feedblitz.com/~/…` →
+  `www.baeldung.com/java-weekly-657` / `java-ahead-of-time-cache`,
+  `orig_url` kept), the digest cited the canonical URLs, `verify_message`
+  passed ("verified 3 link(s), all item-derived"), run FINISHED; the second
+  run (rebuilt binary — the first used a stale one, the standing
+  binary-freshness trap) also proved the cost fix live (`_cost_usd: 0.84`,
+  `_model: claude-opus-5` on node_finished). An adversarial review
+  (opus, max effort) verdicted SHIP on all five commits, refuted the
+  DLQ-double-fire and SSRF-regression hypotheses, and surfaced two LOW
+  findings fixed in follow-ups: the recovery-formatter pass's CLI cost was
+  dropped from annotation, and mixed-priced reports showed a fake $0.00 on
+  unpriced buckets.
 - Lessons for next run: a feed whose items live behind a redirect/tracking
   host is a standing trap for any allowed-set derived from raw item URLs —
   derive allow-lists from the URL the READER lands on, and keep the raw one

@@ -788,6 +788,9 @@ tool load_pending:
     # in the gate's allowed set either way). Redirect hops are
     # SSRF-guarded like fetch_feeds: http/https only, public addresses
     # only — a hop to a private address simply leaves the url unresolved.
+    # Deliberately STRICTER than fetch_feeds: no allow_private_feeds
+    # bypass here, because resolution is optional (a private/on-prem item
+    # url stays valid unresolved) while fetching the feed itself is not.
     import concurrent.futures, ipaddress, socket, sys, urllib.request
     from urllib.parse import urlsplit
     _real_getaddrinfo = socket.getaddrinfo
