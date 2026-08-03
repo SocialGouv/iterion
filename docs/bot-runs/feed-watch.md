@@ -4,6 +4,57 @@
 
 Newest first. One section per dogfooded run.
 
+## 2026-08-03 — Java digest rejected by its own link firewall: redirect-serving feeds (run 019fc65e)
+
+- Status: **failed (diagnosed + fixed)** — the Monday java digest died on
+  `verify_message`; root cause fixed in bot 1.1.2 + two engine defects fixed.
+- Versions: bot 1.1.1 · iterion prod `:edge`.
+- What happened: the java queue's Baeldung items arrive through **FeedBlitz**,
+  so their stored `url` is `feeds.feedblitz.com/~/…` (a tracking redirect).
+  The synthesize agent web_fetched two of them, landed on the real articles,
+  and (editorially correctly) cited the canonical `www.baeldung.com/…` URLs.
+  The deterministic gate only knows the pre-redirect hosts → `digest
+  REJECTED — 2 link(s) to host(s) not among the collected items`. Not a
+  hallucination: the model linked the right articles; the gate's allowed-set
+  was built from the wrong side of the redirect.
+- Amplifications (engine): (1) the generic-failure nak path auto-resumed the
+  run **7 times in 70 s**, each re-running `verify_message` on the SAME
+  checkpointed digest — a deterministic re-failure per redelivery, one
+  sandbox boot each, until MaxDeliver parked it on the DLQ; (2) every failed
+  delivery fired the completion webhook + `run.failed` outcome event (episode
+  key folds `updated_at`), i.e. up to 8 failure notifications for one run.
+- Fixes:
+  - **Bot 1.1.2**: `load_pending` canonicalizes item URLs through their
+    redirects before synthesis (parallel HEAD→GET, SSRF-guarded like
+    `fetch_feeds`, best-effort — an unresolvable url stays valid);
+    `verify_message` allows both the canonical and the pre-redirect
+    (`orig_url`) hosts; the prompt now requires citing item urls verbatim.
+    Validated against the exact failing URLs: `feeds.feedblitz.com/~/…` →
+    `www.baeldung.com/java-weekly-657` resolves, `localhost` is refused by
+    the guard, injected off-item links still reject. Side benefit: digests
+    now link final article URLs, not tracking hops.
+  - **Engine**: run-outcome side effects (webhook + `run.<outcome>` event)
+    now fire only on a delivery's FINAL disposition (ack / usage-park / DLQ
+    park), never on a nak with redeliveries remaining.
+  - **Cost accounting** (found while diagnosing): claude_code annotated cost
+    with the node-declared model — empty under backend auto-detection, so
+    every feed-watch run recorded tokens but no `_cost_usd` and the studio
+    Report tab showed its "no cost recorded" placeholder forever. The
+    delegate now prices with the CLI-resolved effective model
+    (`system/init`, here `claude-opus-5`) and prefers the CLI-computed
+    `total_cost_usd` when reported; the Report tab renders token-only
+    reports with cost as "—" instead of hiding everything.
+- Recovery: nothing was delivered and `commit_state` never ran, so the java
+  queue is intact. The parked run cannot succeed by resume (the rejected
+  digest is checkpointed) — after the fix deploys, **relaunch** the java
+  digest (or let next Monday's schedule pick the queue up), consistent with
+  the standing lesson below that relaunch beats resume after a
+  synthesize-stage failure.
+- Lessons for next run: a feed whose items live behind a redirect/tracking
+  host is a standing trap for any allowed-set derived from raw item URLs —
+  derive allow-lists from the URL the READER lands on, and keep the raw one
+  as a fallback.
+
 ## 2026-07-27 — Five digests lost to the forfait weekly cap, recovered by hand (runs 019fa511 / 019fa523 / 019fa528 / 019fa52e / 019fa538)
 
 - Status: **validated (recovery)** — all five digests delivered; the engine
