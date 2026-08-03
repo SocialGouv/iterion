@@ -508,7 +508,10 @@ func (b *ClaudeCodeBackend) Execute(ctx context.Context, task Task) (result Resu
 		detail := strings.TrimSpace(*rm.Result)
 		b.Logger.Error("[%s#%d/claude-code] authentication failed — failing fast: %.160s",
 			task.NodeID, task.Iteration, detail)
-		return result, fmt.Errorf("claude-code: authentication failed (check the forfait CLAUDE_CODE_OAUTH_TOKEN or the Anthropic API key): %s", detail)
+		return result, &ErrAuthFailed{
+			Provider: BackendClaudeCode,
+			Detail:   fmt.Sprintf("check the forfait CLAUDE_CODE_OAUTH_TOKEN or the Anthropic API key: %s", detail),
+		}
 	}
 
 	// Quota / usage-window guard on the RESULT. The forfait's weekly / session /

@@ -9,6 +9,7 @@ import (
 	"github.com/SocialGouv/iterion/pkg/audit"
 	"github.com/SocialGouv/iterion/pkg/auth"
 	"github.com/SocialGouv/iterion/pkg/auth/orgsso"
+	"github.com/SocialGouv/iterion/pkg/credpool"
 	"github.com/SocialGouv/iterion/pkg/forge"
 	"github.com/SocialGouv/iterion/pkg/orgusage"
 	"github.com/SocialGouv/iterion/pkg/pat"
@@ -65,6 +66,10 @@ func BuildOpenAPISpec() (map[string]any, error) {
 		PATs:              pat.NewMemoryStore(),
 		TriggerStore:      trigger.NewMemorySubscriptionStore(),
 		OrgUsage:          orgusage.NewMemoryCounter(),
+		CredPoolPools:     credpool.NewMemoryPoolStore(),
+		CredPoolPledges:   credpool.NewMemoryPledgeStore(),
+		CredPoolLeases:    credpool.NewMemoryLeaseStore(),
+		CredPoolLedger:    credpool.NewMemoryLedger(),
 		Audit:             audit.NewMemoryStore(),
 		Store:             runStore,
 	}

@@ -30,6 +30,7 @@ import (
 	"github.com/SocialGouv/iterion/pkg/cloudsched"
 	iterconfig "github.com/SocialGouv/iterion/pkg/config"
 	"github.com/SocialGouv/iterion/pkg/configshare"
+	"github.com/SocialGouv/iterion/pkg/credpool"
 	"github.com/SocialGouv/iterion/pkg/dispatcher/boardmongo"
 	"github.com/SocialGouv/iterion/pkg/dispatcher/native"
 	"github.com/SocialGouv/iterion/pkg/eventbus"
@@ -299,6 +300,20 @@ func runServer(cmd *cobra.Command, _ []string) error {
 		return err
 	}
 
+	// The mutualised credential pool: contributor-lent subscriptions a run
+	// with no credential of its own can draw on. One broker shared by the
+	// publisher (selection at launch) and the server (abandoned-lease
+	// sweeper), so both see the same stores.
+	credBroker := credpool.NewBroker(credpool.BrokerConfig{
+		Pools:   stores.credPools,
+		Pledges: stores.credPledges,
+		Leases:  stores.credLeases,
+		Ledger:  stores.credLedger,
+		OAuth:   stores.oauth,
+		Sealer:  sealer,
+		Logger:  logger,
+	})
+
 	pub, err := cloudpublisher.New(cloudpublisher.Config{
 		NATS:             natsConn,
 		Store:            st,
@@ -315,6 +330,7 @@ func runServer(cmd *cobra.Command, _ []string) error {
 		Identity:         authStack.identityStore,
 		PluginSources:    newPluginSourceResolver(stores, sealer, logger),
 		BotSources:       stores.botSources,
+		CredPool:         credBroker,
 	})
 	if err != nil {
 		return fmt.Errorf("server: build cloud publisher: %w", err)
@@ -486,6 +502,11 @@ func runServer(cmd *cobra.Command, _ []string) error {
 		ConfigShares:           stores.configShares,
 		OrgUsage:               stores.orgUsage,
 		OrgDefaults:            orgLimitDefaultsFromEnv(),
+		CredPoolBroker:         credBroker,
+		CredPoolPools:          stores.credPools,
+		CredPoolPledges:        stores.credPledges,
+		CredPoolLeases:         stores.credLeases,
+		CredPoolLedger:         stores.credLedger,
 		Audit:                  stores.audit,
 		Marketplace:            stores.marketplace,
 		Redis:                  redisClient,
@@ -559,6 +580,10 @@ type cloudStores struct {
 	desktopTickets   *desktopsso.MongoStore
 	wsTickets        *wsticket.MongoStore
 	orgUsage         *orgusage.MongoCounter
+	credPools        *credpool.MongoPoolStore
+	credPledges      *credpool.MongoPledgeStore
+	credLeases       *credpool.MongoLeaseStore
+	credLedger       *credpool.MongoLedger
 	audit            *audit.MongoStore
 	marketplace      marketplace.Store
 	pat              *pat.MongoStore
@@ -596,6 +621,10 @@ func buildCloudStores(ctx context.Context, st *mongostore.Store, logger *iterlog
 		desktopTickets: desktopsso.NewMongoStore(st.DB(), 2*time.Minute),
 		wsTickets:      wsticket.NewMongoStore(st.DB(), time.Minute),
 		orgUsage:       orgusage.NewMongoCounter(st.DB()),
+		credPools:      credpool.NewMongoPoolStore(st.DB()),
+		credPledges:    credpool.NewMongoPledgeStore(st.DB()),
+		credLeases:     credpool.NewMongoLeaseStore(st.DB()),
+		credLedger:     credpool.NewMongoLedger(st.DB()),
 		audit:          audit.NewMongoStore(st.DB()),
 		pat:            pat.NewMongoStore(st.DB()),
 		memory:         mongostore.NewMongoMemoryStore(st.DB()).WithLogger(logger),
@@ -628,6 +657,7 @@ func buildCloudStores(ctx context.Context, st *mongostore.Store, logger *iterlog
 		{"desktop_sso_tickets", s.desktopTickets.EnsureSchema},
 		{"ws_tickets", s.wsTickets.EnsureSchema},
 		{"org_usage", func(c context.Context) error { return orgusage.EnsureSchema(c, st.DB()) }},
+		{"cred_pool", func(c context.Context) error { return credpool.EnsureSchema(c, st.DB()) }},
 		{"audit", func(c context.Context) error { return audit.EnsureSchema(c, st.DB()) }},
 		{"board", func(c context.Context) error { return boardmongo.EnsureSchema(c, st.DB()) }},
 		{"trigger_subscriptions", func(c context.Context) error { return trigger.NewMongoSubscriptionStore(st.DB()).EnsureSchema(c) }},

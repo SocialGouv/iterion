@@ -39,9 +39,9 @@ type metricsEmitter struct {
 	modelByNode  map[string]string
 	priceByModel map[string]modelRate
 
-	// Per-run accumulation for org metering. Cost covers claw steps
-	// only (delegate backends report tokens without a price table) —
-	// a floor, not an exact invoice; documented on orgusage.
+	// Per-run accumulation for org metering. Covers both claw steps and
+	// delegate calls; a node whose model the price table cannot price
+	// contributes nothing, so this is a floor, not an exact invoice.
 	runCostUSD      float64
 	runInputTokens  int64
 	runOutputTokens int64
@@ -193,6 +193,14 @@ func (m *metricsEmitter) observe(evt store.Event) {
 			backend = "delegate"
 		}
 		tokensF := toFloat(evt.Data["tokens"])
+		// The delegate already priced this call (its own CLI figure, or the
+		// token estimate a subscription session falls back to) and carries
+		// the result on the event. Accumulating it here is what keeps a
+		// claude_code run from reporting $0 spend for the whole attempt —
+		// which is what every downstream consumer of RunTotals (org monthly
+		// cost cap, credential-pool quota) is metering on. Absent key = the
+		// price table didn't know the model, so nothing is recorded.
+		costDelta := toFloat(evt.Data["cost_usd"])
 
 		// Single critical section: resolve the per-node model name and
 		// accumulate the aggregated token count. Prometheus write
@@ -200,11 +208,15 @@ func (m *metricsEmitter) observe(evt store.Event) {
 		m.mu.Lock()
 		modelName := m.modelByNode[evt.NodeID]
 		m.runInputTokens += int64(tokensF)
+		m.runCostUSD += costDelta
 		m.mu.Unlock()
 
 		// Delegate events report a single aggregated token count;
 		// label as input so a sum across directions stays meaningful.
 		m.addTokens(backend, modelName, "input", evt.Data["tokens"])
+		if costDelta > 0 && m.reg != nil {
+			m.reg.LLMCostUSDTotal.WithLabelValues(backend, normalizeModelLabel(modelName)).Add(costDelta)
+		}
 	}
 }
 

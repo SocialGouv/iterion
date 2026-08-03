@@ -1271,6 +1271,27 @@ func (e *ErrRateLimited) Error() string {
 	return "rate_limited: " + e.Detail
 }
 
+// ErrAuthFailed marks a credential the provider rejected — a dead or
+// expired OAuth token, a revoked API key. Distinct from ErrTransient
+// (retrying cannot revive a dead credential) and from ErrRateLimited
+// (waiting cannot either): the only cure is a new credential.
+//
+// Typed because callers must be able to ACT on it rather than parse prose:
+// the credential pool holds a donor whose subscription keeps being rejected
+// out of rotation, which is not something a message-substring match should
+// decide.
+type ErrAuthFailed struct {
+	Provider string // "claude_code", "codex", …
+	Detail   string // the upstream message, for diagnostics
+}
+
+func (e *ErrAuthFailed) Error() string {
+	if e.Provider != "" {
+		return "authentication failed (" + e.Provider + "): " + e.Detail
+	}
+	return "authentication failed: " + e.Detail
+}
+
 // ErrTransient marks a backend failure the dispatcher should retry
 // (subprocess killed by OOM, peer reset, network blip, …). CLI
 // backends wrap stderr-matched indicators in this type so the executor's

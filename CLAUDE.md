@@ -42,6 +42,11 @@ the hours this one spent.
   `/api/me/oauth/*` endpoints; fixes `401`/`429` on cloud runs).
 - [docs/web-search.md](docs/web-search.md) — sovereign web search tiers
   (SearXNG → Firecrawl) + the `ITERION_WEB_SEARCH` resolver.
+- [docs/credential-pool.md](docs/credential-pool.md) — mutualising
+  contributors' unused Claude/ChatGPT quota: the pledge (ceilings, sharing
+  window, kill switch), the audience policy deciding who may draw, the
+  fourth credential tier in `cloudpublisher`, and why the run's own
+  `max_cost_usd` is the enforcement.
 
 ## Development setup
 
@@ -147,6 +152,7 @@ Other top-level directories: `studio/` (React/Vite frontend), `examples/` (.bot 
 - `pkg/auth/` — Operator authentication primitives (SSO, session cookies, password reset) for cloud-mode endpoints. Mints the JWT carrying `(OrgID, OrgRole, TeamID, Role)`; `SwitchOrg`/`SwitchTeam` re-issue it (org-then-team validation).
 - `pkg/audit/` — Tenant + platform audit log (control-plane mutations; Mongo TTL store, `/api/teams/{id}/audit` + `/api/admin/audit`)
 - `pkg/orgusage/` — Per-org monthly run/cost counters (Mongo CAS) feeding the launch gate + usage views (see [docs/quotas-and-limits.md](docs/quotas-and-limits.md))
+- `pkg/credpool/` — **Mutualised credential pool**: LLM subscriptions individual contributors *lend* to a deployment. A `Pledge` is one donor's standing offer of a credential they already connected (`pkg/secrets` OAuth), bounded by ceilings THEY set (spend/day + /week, runs/day, concurrency, sharing window, bot allow-list) and revocable instantly. The `Broker` is the **fourth and last** credential tier in `cloudpublisher.resolveAndSealCredentials` — consulted only when a run resolved NO key of its own — and picks the least-consumed eligible pledge by *fraction of what each offered*, records a `Lease` (the concurrency unit AND the donor's audit trail), and hands back the blob for the ordinary sealing path. `Audience` decides who may draw: a union of independent predicates (`teams` / `orgs` / `contributors` reciprocity / `all_teams`) whose zero value is "the owning org only". Enforcement is the run's own `max_cost_usd`, clamped to the donor's remaining allowance — the post-hoc ledger charge is the final truth but arrives too late to protect anyone. Dollar figures are ESTIMATES (a subscription bills nothing per call); the hard guard is the provider's usage window, which puts a donor to rest until its reset. **Depends on the delegate cost signal reaching `metricsEmitter.RunTotals` — without it every donor reads $0 forever.** See [docs/credential-pool.md](docs/credential-pool.md)
 - `pkg/pat/` — Personal access tokens (`iap_` bearers for programmatic API access)
 - `pkg/mail/` — Stdlib SMTP mailer (invitations + password reset) with a log fallback when unconfigured
 - `pkg/usernotify/` — User-addressed notifications for run lifecycle moments (run paused on a human form, finished/failed/cancelled): `Dispatcher` consumes run-outcome `trigger.Event`s from the eventbus spine (queue group `usernotify` on NATS ⇒ one replica per event), resolves recipients (run owner + per-user team-wide opt-in prefs), dedups per episode via the `sent_notifications` first-writer-wins claim, and fans out to `Sink`s — `webpush/` (VAPID Web Push to per-browser subscriptions, cloud) ships; desktop (Wails OS notification) and email are future sinks on the same interface. A 2-min reconciliation sweep replays episodes the lossy bus dropped. Shared event authority: `trigger.BuildRunOutcome` (used by both `runview.emitRunOutcome` and the runner's `fireOutcomeEvent`). Enabled iff `ITERION_WEBPUSH_VAPID_{PUBLIC,PRIVATE}_KEY` are set (`iterion server webpush-keys` mints a pair). See [docs/notifications.md](docs/notifications.md)
@@ -1196,7 +1202,9 @@ Then pilot: `iterion remote runs launch <file.bot> --follow` (uploads inline,
 or `--bot <catalog id>`), plus `runs`, `bots`, `board`, `issues`, `labels`,
 `dispatcher`, `schedules`, `triggers`, `secrets`, `api-keys`, `bindings`,
 `teams`, `orgs`, `webhooks`, `forge`, `audit`, `usage`, `memory`, `admin`,
-`sso`, `plugins`. `iterion remote api <METHOD> <path>` is the raw escape hatch
+`sso`, `plugins`, `pool` (lend/pause/withdraw your LLM subscription to the
+shared credential pool — [docs/credential-pool.md](docs/credential-pool.md)).
+`iterion remote api <METHOD> <path>` is the raw escape hatch
 for any endpoint. Headless auth (CI): `--token <iap_…>` (a PAT) or
 `--email/--password` (mints a CLI token).
 

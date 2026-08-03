@@ -3532,6 +3532,70 @@
         ]
       }
     },
+    "/api/me/pool": {
+      "get": {
+        "operationId": "getMePool",
+        "responses": {
+          "default": {
+            "description": "Response"
+          }
+        },
+        "summary": "GET /api/me/pool",
+        "tags": [
+          "me"
+        ]
+      }
+    },
+    "/api/me/pool/history": {
+      "get": {
+        "operationId": "getMePoolHistory",
+        "responses": {
+          "default": {
+            "description": "Response"
+          }
+        },
+        "summary": "GET /api/me/pool/history",
+        "tags": [
+          "me"
+        ]
+      }
+    },
+    "/api/me/pool/{kind}": {
+      "delete": {
+        "operationId": "deleteMePoolByKind",
+        "responses": {
+          "default": {
+            "description": "Response"
+          }
+        },
+        "summary": "DELETE /api/me/pool/{kind}",
+        "tags": [
+          "me"
+        ]
+      },
+      "parameters": [
+        {
+          "in": "path",
+          "name": "kind",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        }
+      ],
+      "put": {
+        "operationId": "putMePoolByKind",
+        "responses": {
+          "default": {
+            "description": "Response"
+          }
+        },
+        "summary": "PUT /api/me/pool/{kind}",
+        "tags": [
+          "me"
+        ]
+      }
+    },
     "/api/me/secrets": {
       "get": {
         "operationId": "getMeSecrets",
@@ -7189,6 +7253,42 @@
           }
         },
         "summary": "PATCH /api/teams/{id}/plugin-sources/{source_id}",
+        "tags": [
+          "teams"
+        ]
+      }
+    },
+    "/api/teams/{id}/pool": {
+      "get": {
+        "operationId": "getTeamsByIdPool",
+        "responses": {
+          "default": {
+            "description": "Response"
+          }
+        },
+        "summary": "GET /api/teams/{id}/pool",
+        "tags": [
+          "teams"
+        ]
+      },
+      "parameters": [
+        {
+          "in": "path",
+          "name": "id",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        }
+      ],
+      "put": {
+        "operationId": "putTeamsByIdPool",
+        "responses": {
+          "default": {
+            "description": "Response"
+          }
+        },
+        "summary": "PUT /api/teams/{id}/pool",
         "tags": [
           "teams"
         ]

@@ -326,18 +326,12 @@ func (s *MongoOAuthStore) Upsert(ctx context.Context, rec OAuthRecord) error {
 	if rec.CreatedAt.IsZero() {
 		rec.CreatedAt = rec.UpdatedAt
 	}
-	// Marshal rec, then strip _id from the $set body so we don't
-	// fight Mongo's "Mod on _id not allowed" guard on subsequent
-	// updates. _id only lives in $setOnInsert.
-	raw, err := bson.Marshal(rec)
+	// _id lives only in $setOnInsert: Mongo rejects an update that touches
+	// it on a subsequent upsert.
+	setBody, err := mongoutil.SetBodyWithoutID(rec, "secrets: oauth")
 	if err != nil {
-		return fmt.Errorf("secrets: marshal oauth: %w", err)
+		return err
 	}
-	var setBody bson.M
-	if err := bson.Unmarshal(raw, &setBody); err != nil {
-		return fmt.Errorf("secrets: re-decode oauth: %w", err)
-	}
-	delete(setBody, "_id")
 
 	_, err = s.coll.UpdateOne(
 		ctx,

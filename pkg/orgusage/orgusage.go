@@ -25,9 +25,10 @@ type MonthlyUsage struct {
 	Runs int `json:"runs"`
 	// CostUSD is the metered LLM spend accumulated by runners. Claw
 	// (in-process) nodes are metered precisely; delegate backends
-	// (claude_code) report tokens without a price table, so their
-	// cost contribution is zero — treat this as a floor, not an
-	// exact invoice.
+	// contribute the figure their CLI reported, or a token estimate
+	// when it reports none (a subscription session bills nothing per
+	// call). A node whose model the price table cannot price adds
+	// nothing — treat this as a floor, not an exact invoice.
 	CostUSD      float64 `json:"cost_usd"`
 	InputTokens  int64   `json:"input_tokens"`
 	OutputTokens int64   `json:"output_tokens"`

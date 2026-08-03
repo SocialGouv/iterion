@@ -145,15 +145,10 @@ func (s *MongoOAuthPendingStore) Put(ctx context.Context, rec OAuthPending) erro
 	if rec.CreatedAt.IsZero() {
 		rec.CreatedAt = time.Now().UTC()
 	}
-	raw, err := bson.Marshal(rec)
+	setBody, err := mongoutil.SetBodyWithoutID(rec, "secrets: oauth pending")
 	if err != nil {
-		return fmt.Errorf("secrets: marshal oauth pending: %w", err)
+		return err
 	}
-	var setBody bson.M
-	if err := bson.Unmarshal(raw, &setBody); err != nil {
-		return fmt.Errorf("secrets: re-decode oauth pending: %w", err)
-	}
-	delete(setBody, "_id")
 	_, err = s.coll.UpdateOne(
 		ctx,
 		bson.M{"owner_key": rec.OwnerKey, "kind": rec.Kind},

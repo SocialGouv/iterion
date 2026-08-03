@@ -10,6 +10,7 @@ import (
 
 	"github.com/SocialGouv/iterion/pkg/backend/model"
 	"github.com/SocialGouv/iterion/pkg/cloud/metrics"
+	iterlog "github.com/SocialGouv/iterion/pkg/log"
 	"github.com/SocialGouv/iterion/pkg/store"
 )
 
@@ -245,5 +246,63 @@ func TestMetricsEmitter_lookupModel_emptyNodeID(t *testing.T) {
 	m := newMetricsEmitter(&recordingEmitter{}, metrics.New())
 	if got := m.lookupModel(""); got != "" {
 		t.Errorf("lookupModel(\"\") = %q, want empty", got)
+	}
+}
+
+// A delegate backend's spend must reach RunTotals — that number is what
+// charges the org's monthly cost cap and what decrements a credential-pool
+// donor's quota. It used to stop at the tokens: the whole attempt of a
+// claude_code run reported $0, so no cap could ever trip.
+//
+// The event here is produced by the PRODUCTION hook (model.NewStoreEventHooks
+// → OnDelegateFinished), not hand-assembled, so the test fails if either side
+// of the join drifts — the emitter dropping the field, or the consumer
+// reading a different key.
+func TestMetricsEmitter_delegateFinished_costReachesRunTotals(t *testing.T) {
+	inner := &recordingEmitter{}
+	usage := newMetricsEmitter(inner, metrics.New())
+
+	hooks := model.NewStoreEventHooks(
+		context.Background(), usage, "run-4", iterlog.New(iterlog.LevelError, nil), nil,
+	)
+	hooks.OnDelegateFinished("n1", model.DelegateInfo{
+		BackendName: "claude_code",
+		Tokens:      1200,
+		CostUSD:     0.4242,
+	})
+
+	if len(inner.events) != 1 {
+		t.Fatalf("inner emitter received %d events, want 1", len(inner.events))
+	}
+	if got := inner.events[0].Data["cost_usd"]; got != 0.4242 {
+		t.Errorf("emitted cost_usd = %v, want 0.4242 — the hook is dropping the delegation's cost", got)
+	}
+
+	costUSD, in, _ := usage.RunTotals()
+	if costUSD != 0.4242 {
+		t.Errorf("RunTotals cost = %v, want 0.4242 — delegate spend is not charged to the run", costUSD)
+	}
+	if in != 1200 {
+		t.Errorf("RunTotals input tokens = %d, want 1200", in)
+	}
+}
+
+// The counterpart: an unpriced model omits `_cost_usd`, so the hook omits
+// `cost_usd`, so the run's cost stays at zero rather than recording a
+// fabricated free call.
+func TestMetricsEmitter_delegateFinished_unpricedStaysZero(t *testing.T) {
+	inner := &recordingEmitter{}
+	usage := newMetricsEmitter(inner, metrics.New())
+
+	hooks := model.NewStoreEventHooks(
+		context.Background(), usage, "run-5", iterlog.New(iterlog.LevelError, nil), nil,
+	)
+	hooks.OnDelegateFinished("n1", model.DelegateInfo{BackendName: "claude_code", Tokens: 900})
+
+	if _, present := inner.events[0].Data["cost_usd"]; present {
+		t.Error("cost_usd present for an unpriced delegation — 'no data' must stay distinguishable from $0")
+	}
+	if costUSD, _, _ := usage.RunTotals(); costUSD != 0 {
+		t.Errorf("RunTotals cost = %v, want 0", costUSD)
 	}
 }
