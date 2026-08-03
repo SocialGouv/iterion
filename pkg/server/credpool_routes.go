@@ -1,6 +1,7 @@
 package server
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -183,7 +184,11 @@ func (s *Server) handlePutMyPledge(w http.ResponseWriter, r *http.Request) {
 	}
 	poolID := s.poolIDForUser(r)
 	if poolID == "" {
-		httpError(w, http.StatusNotFound, "no credential pool accepts contributions on this instance")
+		// Name the org: the pool is per-org, so "this instance" would blame
+		// the wrong thing for a contributor whose active org simply runs no
+		// pool while another one does.
+		httpError(w, http.StatusNotFound,
+			"your active organisation runs no credential pool, so there is nothing to contribute to — an owner enables one under the team's Credential pool settings")
 		return
 	}
 
@@ -362,19 +367,44 @@ func (s *Server) handleMyPoolHistory(w http.ResponseWriter, r *http.Request) {
 // pool — a donation made to someone they never chose, which no amount of
 // later configuration can retroactively consent to. "" means the UI says so
 // plainly instead.
+// The active org comes from the JWT on the browser path; an `iap_` bearer
+// carries a team but no org, so the team's own org is read instead — the
+// same two-step the launch gate does (server/launch_gate.go orgForTeam).
+// Without it every CLI caller resolves to no pool at all, and `iterion
+// remote pool lend` can never work.
 func (s *Server) poolIDForUser(r *http.Request) string {
 	id, _ := auth.FromContext(r.Context())
-	if id.OrgID == "" {
+	orgID := id.OrgID
+	if orgID == "" {
+		orgID = s.orgIDOfTeam(r.Context(), id.TeamID)
+	}
+	if orgID == "" {
 		return ""
 	}
-	p, err := s.credPoolPools.GetByOrg(r.Context(), id.OrgID)
+	p, err := s.credPoolPools.GetByOrg(r.Context(), orgID)
 	if err != nil {
 		if !errors.Is(err, credpool.ErrNotFound) {
-			s.logger.Warn("credential pool: resolve pool of org %s: %v", id.OrgID, err)
+			s.logger.Warn("credential pool: resolve pool of org %s: %v", orgID, err)
 		}
 		return ""
 	}
 	return p.ID
+}
+
+// orgIDOfTeam reads a team's parent org, "" on any miss.
+func (s *Server) orgIDOfTeam(ctx context.Context, teamID string) string {
+	if teamID == "" {
+		return ""
+	}
+	st := s.authStore()
+	if st == nil {
+		return ""
+	}
+	t, err := st.GetTeam(ctx, teamID)
+	if err != nil {
+		return ""
+	}
+	return t.OrgID
 }
 
 // connectedKinds reports which credential kinds a user still has

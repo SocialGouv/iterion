@@ -165,12 +165,19 @@ func (s *Server) identityFromPAT(ctx context.Context, presented string) (auth.Id
 		teamID = u.DefaultTeamID
 	}
 	var role identity.Role
+	var orgID string
 	if teamID != "" {
 		mb, err := st.GetMembership(ctx, u.ID, teamID)
 		if err != nil {
 			return auth.Identity{}, fmt.Errorf("token team unavailable")
 		}
 		role = mb.Role
+		// The parent org, which the browser path carries on the JWT. A PAT
+		// identity without it silently fails every org-scoped lookup that
+		// has no team fallback of its own.
+		if t, err := st.GetTeam(ctx, teamID); err == nil {
+			orgID = t.OrgID
+		}
 	}
 	// last_used_at is observability — detached write off the hot path.
 	tokenID := t.ID
@@ -180,9 +187,12 @@ func (s *Server) identityFromPAT(ctx context.Context, presented string) (auth.Id
 		_ = s.pats.MarkUsed(bg, tokenID, now)
 	})
 	return auth.Identity{
-		UserID:       u.ID,
-		Email:        u.Email,
-		TeamID:       teamID,
+		UserID: u.ID,
+		Email:  u.Email,
+		TeamID: teamID,
+		// OrgID without OrgRole: the token grants what its TEAM membership
+		// grants, never an org-level role the user did not put on it.
+		OrgID:        orgID,
 		Role:         role,
 		IsSuperAdmin: u.IsSuperAdmin,
 	}, nil
