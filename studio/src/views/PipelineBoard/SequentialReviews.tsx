@@ -3,6 +3,7 @@ import { Link } from "wouter";
 
 import type { PipelineBoardCard } from "@/api/pipelineBoards";
 import HumanPromptForm from "@/components/Runs/conversation/HumanPromptForm";
+import { ReviewScopePanel } from "./ReviewScopePanel";
 import { Badge, Button, InlineBanner } from "@/components/ui";
 
 import {
@@ -115,6 +116,10 @@ export function SequentialReviews({ card, onResolved }: Props) {
             </code>
           )}
         </div>
+      )}
+
+      {review.run_id && (
+        <ReviewScopePanel runId={review.run_id} live />
       )}
 
       {review.run_id && review.node_id ? (

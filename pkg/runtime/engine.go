@@ -268,6 +268,11 @@ type runState struct {
 	// still observes it. Distinct from the lossy cross-run pkg/eventbus.
 	events           *runEvents
 	artifactVersions map[string]int
+	// gateAnchors memoises the review-gate anchor of each (node, iter), so
+	// the companion and the human are handed the SAME range: the companion
+	// runs before the pause, and re-capturing at pause time would move the
+	// head under it.
+	gateAnchors map[string]int
 	// lastWorkspaceSnapshot is the workspacetrack snapshot id capturing
 	// the workspace as the previous node boundary left it. Same role as
 	// lastSnapshotCommit, for the tracker-backed path.

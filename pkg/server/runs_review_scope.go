@@ -167,10 +167,10 @@ func buildReviewScope(run *store.Run, gate int) *reviewScopeResponse {
 // workspace. Grouping only decides which heading a file appears under.
 func groupByNode(run *store.Run, files []gitlib.FileStatus) []reviewScopeGroup {
 	type nodeRange struct {
-		node string
-		iter int
-		when int64
-		set  map[string]bool
+		node     string
+		loopIter int
+		when     int64
+		set      map[string]bool
 	}
 	var ranges []nodeRange
 	for _, b := range listNodeBoundaries(run.WorkDir, run.ID) {
@@ -182,7 +182,7 @@ func groupByNode(run *store.Run, files []gitlib.FileStatus) []reviewScopeGroup {
 		for _, f := range changed {
 			set[f.Path] = true
 		}
-		ranges = append(ranges, nodeRange{node: b.node, iter: b.iter, when: b.when, set: set})
+		ranges = append(ranges, nodeRange{node: b.node, loopIter: b.loopIter, when: b.when, set: set})
 	}
 	// Latest boundary wins: when two nodes touched the same file, the
 	// reviewer cares about who left it in the state under review.
@@ -192,20 +192,20 @@ func groupByNode(run *store.Run, files []gitlib.FileStatus) []reviewScopeGroup {
 	order := []string{}
 	var unattributed []gitlib.FileStatus
 	for _, f := range files {
-		owner, iter := "", 0
+		owner, loopIter := "", 0
 		for _, rg := range ranges {
 			if rg.set[f.Path] {
-				owner, iter = rg.node, rg.iter
+				owner, loopIter = rg.node, rg.loopIter
 			}
 		}
 		if owner == "" {
 			unattributed = append(unattributed, f)
 			continue
 		}
-		key := fmt.Sprintf("%s@%d", owner, iter)
+		key := fmt.Sprintf("%s@%d", owner, loopIter)
 		g, ok := byNode[key]
 		if !ok {
-			g = &reviewScopeGroup{NodeID: owner, Label: owner, Iteration: iter}
+			g = &reviewScopeGroup{NodeID: owner, Label: owner, Iteration: loopIter}
 			byNode[key] = g
 			order = append(order, key)
 		}
@@ -229,11 +229,11 @@ func groupByNode(run *store.Run, files []gitlib.FileStatus) []reviewScopeGroup {
 }
 
 type nodeBoundary struct {
-	node    string
-	iter    int
-	preRef  string
-	postRef string
-	when    int64
+	node     string
+	loopIter int
+	preRef   string
+	postRef  string
+	when     int64
 }
 
 // listNodeBoundaries enumerates the nodes that recorded BOTH boundaries,
@@ -256,17 +256,17 @@ func listNodeBoundaries(workDir, runID string) []nodeBoundary {
 			continue
 		}
 		node := rest[:slash]
-		iter, cerr := strconv.Atoi(rest[slash+1:])
+		loopIter, cerr := strconv.Atoi(rest[slash+1:])
 		if cerr != nil {
 			continue
 		}
 		when, _ := strconv.ParseInt(fields[1], 10, 64)
 		boundaries = append(boundaries, nodeBoundary{
-			node:    node,
-			iter:    iter,
-			preRef:  store.NodePreSnapshotRef(runID, node, iter),
-			postRef: store.NodeSnapshotRef(runID, node, iter),
-			when:    when,
+			node:     node,
+			loopIter: loopIter,
+			preRef:   store.NodePreSnapshotRef(runID, node, loopIter),
+			postRef:  store.NodeSnapshotRef(runID, node, loopIter),
+			when:     when,
 		})
 	}
 	return boundaries

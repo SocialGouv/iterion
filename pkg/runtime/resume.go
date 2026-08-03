@@ -1005,6 +1005,17 @@ func (e *Engine) markReviewGate(rs *runState, nodeID string) map[string]any {
 	if e.workDir == "" || !rs.isWorktree {
 		return nil
 	}
+	// Idempotent per (node, iteration): a review gate anchors when it
+	// STARTS, so its companion judges the same range the human will see.
+	// The pause then asks for the same anchor and must get the one already
+	// taken, not a fresh capture with a moved head.
+	key := fmt.Sprintf("%s@%d", nodeID, e.currentLoopIteration(nodeID, rs.loopCounters))
+	if rs.gateAnchors == nil {
+		rs.gateAnchors = map[string]int{}
+	}
+	if seq, ok := rs.gateAnchors[key]; ok {
+		return reviewGateScope(rs.runID, seq)
+	}
 	seq := nextReviewGateSeq(e.workDir, rs.runID)
 	ref := store.ReviewGateRef(rs.runID, seq)
 	commit, err := snapshotWorktree(e.workDir, ref)
@@ -1022,9 +1033,18 @@ func (e *Engine) markReviewGate(rs *runState, nodeID string) map[string]any {
 			return nil
 		}
 	}
-	scope := map[string]any{"review_gate_seq": seq, "review_head_ref": ref}
+	rs.gateAnchors[key] = seq
+	return reviewGateScope(rs.runID, seq)
+}
+
+// reviewGateScope is the pause-payload shape describing a gate's range.
+func reviewGateScope(runID string, seq int) map[string]any {
+	scope := map[string]any{
+		"review_gate_seq": seq,
+		"review_head_ref": store.ReviewGateRef(runID, seq),
+	}
 	if seq > 0 {
-		scope["review_base_ref"] = store.ReviewGateRef(rs.runID, seq-1)
+		scope["review_base_ref"] = store.ReviewGateRef(runID, seq-1)
 	}
 	return scope
 }

@@ -3,6 +3,7 @@ import { DiffEditor } from "@monaco-editor/react";
 
 import { Button, Dialog } from "@/components/ui";
 import {
+  getReviewFileDiff,
   getRunFileDiff,
   type RunFile,
   type RunFilesMode,
@@ -17,6 +18,10 @@ interface FileDiffDialogProps {
   // Forwarded to /files/diff so the backend picks the same range used
   // by the listing (uncommitted vs branch). Omitted → backend default.
   mode?: RunFilesMode;
+  // When set, the diff is taken over that review gate's range instead of
+  // the run's. A reviewer must see the file as they are being asked to
+  // approve it — not as it stands after later nodes touched it.
+  gate?: number;
   onClose: () => void;
   // When provided, renders an "Edit" affordance that switches from this
   // read-only diff to the editable FileEditDialog for the same path. The
@@ -31,6 +36,7 @@ export default function FileDiffDialog({
   runId,
   file,
   mode,
+  gate,
   onClose,
   onEdit,
 }: FileDiffDialogProps) {
@@ -38,8 +44,11 @@ export default function FileDiffDialog({
   const path = file?.path ?? null;
 
   const diffQuery = useQuery({
-    queryKey: ["run-file-diff", runId, path, mode ?? ""],
-    queryFn: () => getRunFileDiff(runId, path!, { mode }),
+    queryKey: ["run-file-diff", runId, path, mode ?? "", gate ?? -1],
+    queryFn: () =>
+      gate === undefined
+        ? getRunFileDiff(runId, path!, { mode })
+        : getReviewFileDiff(runId, path!, { gate }),
     enabled: !!path,
   });
   const diff = path ? diffQuery.data ?? null : null;
