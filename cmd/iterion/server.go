@@ -624,7 +624,7 @@ func buildCloudStores(ctx context.Context, st *mongostore.Store, logger *iterlog
 		credPools:      credpool.NewMongoPoolStore(st.DB()),
 		credPledges:    credpool.NewMongoPledgeStore(st.DB()),
 		credLeases:     credpool.NewMongoLeaseStore(st.DB()),
-		credLedger:     credpool.NewMongoLedger(st.DB()),
+		credLedger:     credpool.NewMongoLedger(st.DB()).WithLogger(logger),
 		audit:          audit.NewMongoStore(st.DB()),
 		pat:            pat.NewMongoStore(st.DB()),
 		memory:         mongostore.NewMongoMemoryStore(st.DB()).WithLogger(logger),

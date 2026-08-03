@@ -646,18 +646,13 @@ func (p *Publisher) SubmitLaunch(ctx context.Context, runID string, spec runview
 	//     that could not resolve its mandatory credentials).
 	orgID := p.orgIDForTeam(ctx, tenantID)
 	creds, err := p.resolveAndSealCredentials(ctx, runID, orgID, tenantID, ownerID, spec.BotID, wf, spec.KeyOverrides, spec.SecretOverrides)
-	if err != nil {
-		return 0, err
-	}
-	// A run served by the pool may not spend more than what remains of its
-	// donor's allowance. This is the enforcement: the engine stops the run
-	// on its own cost budget, instead of the overspend being discovered
-	// after the fact when the donor is already out of pocket.
-	budget := clampBudgetToGrant(spec.Budget, wf, creds.grant, p.logger, runID)
-	// A donor's admission is consumed the moment it is granted. Every exit
-	// below this point is a launch that will never happen, so it must be
-	// returned — otherwise a Mongo blip during a burst can silently spend a
-	// contributor's whole daily quota on runs that never ran.
+	// A donor's admission is consumed the moment it is granted. Armed BEFORE
+	// the error check: resolveAndSealCredentials can fail AFTER acquiring —
+	// sealing the bundle, persisting it — and still returns the grant. Every
+	// exit below is a launch that will never happen, so it must be returned,
+	// or one Mongo write blip spends a contributor's daily quota and holds
+	// their concurrency slot for the lease's whole 12h life, on a run that
+	// never ran.
 	launched := false
 	if creds.grant != nil {
 		defer func() {
@@ -666,6 +661,14 @@ func (p *Publisher) SubmitLaunch(ctx context.Context, runID string, spec runview
 			}
 		}()
 	}
+	if err != nil {
+		return 0, err
+	}
+	// A run served by the pool may not spend more than what remains of its
+	// donor's allowance. This is the enforcement: the engine stops the run
+	// on its own cost budget, instead of the overspend being discovered
+	// after the fact when the donor is already out of pocket.
+	budget := clampBudgetToGrant(spec.Budget, wf, creds.grant, p.logger, runID)
 
 	if err := p.store.SaveRun(ctx, r); err != nil {
 		return 0, fmt.Errorf("cloudpublisher: save run: %w", err)

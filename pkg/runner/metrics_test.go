@@ -306,3 +306,51 @@ func TestMetricsEmitter_delegateFinished_unpricedStaysZero(t *testing.T) {
 		t.Errorf("RunTotals cost = %v, want 0", costUSD)
 	}
 }
+
+// claw is in-process but still dispatches through the delegate hook, so it
+// emits BOTH a per-step llm_step_finished and a delegation total. Counting
+// both charged every claw run twice: an org's monthly cap would trip at
+// half its budget, and a lending donor would be drained at twice the rate
+// they agreed to.
+func TestMetricsEmitter_clawCostIsNotCountedTwice(t *testing.T) {
+	inner := &recordingEmitter{}
+	usage := newMetricsEmitter(inner, metrics.New())
+	ctx := context.Background()
+
+	// A claw node: a priced step, then the delegation total for the same work.
+	_, _ = usage.AppendEvent(ctx, "run-1", store.Event{
+		Type: store.EventLLMRequest, RunID: "run-1", NodeID: "n1",
+		Data: map[string]any{"model": "claude-sonnet-4-6"},
+	})
+	_, _ = usage.AppendEvent(ctx, "run-1", store.Event{
+		Type: store.EventLLMStepFinished, RunID: "run-1", NodeID: "n1",
+		Data: map[string]any{"input_tokens": float64(1000), "output_tokens": float64(500)},
+	})
+	perStep, _, _ := usage.RunTotals()
+	if perStep <= 0 {
+		t.Fatalf("the step itself priced to %v — the test cannot show a double count", perStep)
+	}
+
+	_, _ = usage.AppendEvent(ctx, "run-1", store.Event{
+		Type: store.EventDelegateFinished, RunID: "run-1", NodeID: "n1",
+		Data: map[string]any{"backend": "claw", "tokens": float64(1500), "cost_usd": perStep},
+	})
+
+	total, _, _ := usage.RunTotals()
+	if total != perStep {
+		t.Errorf("cost = %v after the delegation total, want %v — claw was charged twice", total, perStep)
+	}
+}
+
+// A CLI delegate has no per-step events, so its delegation total is the
+// only cost signal and must still be counted.
+func TestMetricsEmitter_cliDelegateCostIsStillCounted(t *testing.T) {
+	usage := newMetricsEmitter(&recordingEmitter{}, metrics.New())
+	_, _ = usage.AppendEvent(context.Background(), "run-2", store.Event{
+		Type: store.EventDelegateFinished, RunID: "run-2", NodeID: "n1",
+		Data: map[string]any{"backend": "claude_code", "tokens": float64(900), "cost_usd": 0.42},
+	})
+	if cost, _, _ := usage.RunTotals(); cost != 0.42 {
+		t.Errorf("cost = %v, want 0.42", cost)
+	}
+}

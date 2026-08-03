@@ -239,7 +239,7 @@ func (s *MongoLeaseStore) HasServedAttempt(ctx context.Context, runID, pledgeID 
 	n, err := s.col.CountDocuments(ctx, bson.M{
 		"run_id":    runID,
 		"pledge_id": pledgeID,
-		"outcome":   bson.M{"$ne": OutcomeAbandoned},
+		"outcome":   bson.M{"$nin": nonAdmissionOutcomes},
 	})
 	if err != nil {
 		return false, fmt.Errorf("credpool: prior attempt lookup: %w", err)

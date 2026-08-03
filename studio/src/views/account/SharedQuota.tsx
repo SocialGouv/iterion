@@ -371,7 +371,7 @@ function HistoryTable({ leases }: { leases: PledgeLease[] }) {
           </THead>
           <TBody>
             {leases.map((l) => (
-              <Tr key={l.run_id}>
+              <Tr key={`${l.run_id}-${l.acquired_at}`}>
                 <Td className="whitespace-nowrap">{formatDateTime(l.acquired_at)}</Td>
                 <Td>{l.bot_id || "—"}</Td>
                 <Td>{l.requester_id || "—"}</Td>

@@ -334,11 +334,18 @@ func (s *Server) toPledgeView(r *http.Request, p credpool.Pledge, now time.Time,
 		v.ThisWeek = toUsageView(week)
 		// A donor at their ceiling reads "exhausted", not "active" — the
 		// ledger, not the pledge, holds that truth. Asked through the SAME
-		// rule the ledger admits with (would the next run be refused?), so
-		// the display can never claim "sharing" while every launch is
-		// turned away.
+		// inputs the ledger admits with, INCLUDING the allowance already
+		// promised to in-flight runs: without that term a donor whose
+		// remaining budget is fully committed would read "Sharing" while
+		// every new launch is refused.
+		committed := 0.0
+		if s.credPoolLeases != nil {
+			if _, c, cerr := s.credPoolLeases.LiveCommitment(r.Context(), p.ID, "", now); cerr == nil {
+				committed = c
+			}
+		}
 		if status == credpool.StatusActive &&
-			p.Limits.Deny(day.Runs+1, day.CostUSD, week.CostUSD) != credpool.DenyNone {
+			p.Limits.Deny(day.Runs+1, day.CostUSD+committed, week.CostUSD+committed) != credpool.DenyNone {
 			v.Status = string(credpool.StatusExhausted)
 		}
 	}

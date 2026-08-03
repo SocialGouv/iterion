@@ -209,7 +209,7 @@ func (s *MemoryLeaseStore) HasServedAttempt(_ context.Context, runID, pledgeID s
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	for _, l := range s.m {
-		if l.RunID == runID && l.PledgeID == pledgeID && l.Outcome != OutcomeAbandoned {
+		if l.RunID == runID && l.PledgeID == pledgeID && !isNonAdmission(l.Outcome) {
 			return true, nil
 		}
 	}

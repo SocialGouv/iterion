@@ -200,7 +200,17 @@ func (m *metricsEmitter) observe(evt store.Event) {
 		// which is what every downstream consumer of RunTotals (org monthly
 		// cost cap, credential-pool quota) is metering on. Absent key = the
 		// price table didn't know the model, so nothing is recorded.
-		costDelta := toFloat(evt.Data["cost_usd"])
+		//
+		// claw is excluded. It is an in-process backend but still dispatches
+		// through the same observability hook, so it emits BOTH a
+		// llm_step_finished per step (priced above, off the same table) and
+		// this delegation total — counting both would charge every claw run
+		// twice, tripping an org's monthly cap at half its budget and
+		// draining a lending donor at twice the rate they agreed to.
+		var costDelta float64
+		if backend != "claw" {
+			costDelta = toFloat(evt.Data["cost_usd"])
+		}
 
 		// Single critical section: resolve the per-node model name and
 		// accumulate the aggregated token count. Prometheus write

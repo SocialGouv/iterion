@@ -423,6 +423,25 @@ const (
 	OutcomeNotLaunched = "not_launched"
 )
 
+// nonAdmissionOutcomes are the closes that must NOT count as "this pledge
+// already admitted this run".
+//
+//   - abandoned: nothing ever learned what it spent, so renewing against it
+//     forever would let a crash-looping run draw unmetered.
+//   - not_launched: Release already gave its run unit back, so treating it
+//     as an admission would let the next attempt renew against a unit that
+//     no longer exists — and slip past the donor's daily ceiling.
+var nonAdmissionOutcomes = []string{OutcomeAbandoned, OutcomeNotLaunched}
+
+func isNonAdmission(outcome string) bool {
+	for _, o := range nonAdmissionOutcomes {
+		if outcome == o {
+			return true
+		}
+	}
+	return false
+}
+
 // DefaultLeaseTTL bounds how long an unreported lease keeps consuming a
 // donor's concurrency slot. Generous enough for a long agent run, short
 // enough that a lost pod frees the slot the same day.

@@ -213,7 +213,7 @@ func runRunner(cmd *cobra.Command, _ []string) error {
 		Pools:   credpool.NewMongoPoolStore(st.DB()),
 		Pledges: credpool.NewMongoPledgeStore(st.DB()),
 		Leases:  credpool.NewMongoLeaseStore(st.DB()),
-		Ledger:  credpool.NewMongoLedger(st.DB()),
+		Ledger:  credpool.NewMongoLedger(st.DB()).WithLogger(logger),
 		OAuth:   secrets.NewMongoOAuthStore(st.DB()),
 		Sealer:  sealer,
 		Logger:  logger,
