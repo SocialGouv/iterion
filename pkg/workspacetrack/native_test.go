@@ -472,3 +472,138 @@ func TestNative_RestoreRefusesEscapingPaths(t *testing.T) {
 		t.Errorf("report.Skipped = %v, want the rejected path reported", report.Skipped)
 	}
 }
+
+// TestIgnorer_AllowlistInsideAnExcludedTree is the shape a media pipeline
+// needs and gitignore cannot express: "none of runs/, except the
+// delivered media". git refuses to re-include a file whose parent is
+// excluded; .iterionignore is iterion's own file and does not.
+func TestIgnorer_AllowlistInsideAnExcludedTree(t *testing.T) {
+	ws := t.TempDir()
+	write(t, ws, ".iterionignore", strings.Join([]string{
+		"runs/**",
+		"!runs/**/export/*.mp4",
+		"!runs/**/audio/*.mp3",
+		"!runs/**/audio/*.txt",
+		"!runs/**/music/*.wav",
+	}, "\n"))
+	ig := NewIgnorer(ws)
+
+	kept := []string{
+		"runs/ep1/export/final.mp4",
+		"runs/ep1/audio/voice.mp3",
+		"runs/ep1/audio/script.txt",
+		"runs/ep1/music/theme.wav",
+		"runs/2026-ep3/export/cut.mp4",
+	}
+	for _, p := range kept {
+		if ig.Match(p, false) {
+			t.Errorf("%q was excluded; the allowlist must re-include it", p)
+		}
+	}
+	dropped := []string{
+		"runs/ep1/frames/0001.png",
+		"runs/ep1/export/preview.png",
+		"runs/ep1/audio/raw.wav",
+		"runs/ep1/state.json",
+		"runs/_archived/old/export/x.mp4-backup",
+	}
+	for _, p := range dropped {
+		if !ig.Match(p, false) {
+			t.Errorf("%q was captured; only the named media is wanted", p)
+		}
+	}
+	// An excluded directory can no longer be pruned, or the walk would
+	// never reach the re-included files inside it.
+	if ig.CanPrune() {
+		t.Error("CanPrune must be false once a negation exists")
+	}
+}
+
+// TestIgnorer_DoubleStarPatterns: `**` was silently unsupported, so a
+// pattern like assets/music/archive/** matched nothing and its tree was
+// captured against the project's stated intent.
+func TestIgnorer_DoubleStarPatterns(t *testing.T) {
+	ws := t.TempDir()
+	write(t, ws, ".gitignore", "assets/music/archive/**\nbuild/**/tmp\n")
+	ig := NewIgnorer(ws)
+
+	for _, p := range []string{"assets/music/archive/a.wav", "assets/music/archive/deep/b.wav", "build/x/y/tmp"} {
+		if !ig.Match(p, false) {
+			t.Errorf("%q should be excluded by a ** pattern", p)
+		}
+	}
+	if ig.Match("assets/music/live.wav", false) {
+		t.Error("assets/music/live.wav is outside the archive and must be captured")
+	}
+	// No negation here, so the walk may still prune.
+	if !ig.CanPrune() {
+		t.Error("CanPrune must stay true without negations")
+	}
+}
+
+// TestIgnorer_IterionignoreReplacesGitignore: the precedence is the whole
+// point — a project takes control of what iterion versions without
+// touching how it packages itself for git.
+func TestIgnorer_IterionignoreReplacesGitignore(t *testing.T) {
+	ws := t.TempDir()
+	write(t, ws, ".gitignore", "runs/\n")
+	write(t, ws, ".iterionignore", "state/\n")
+	ig := NewIgnorer(ws)
+
+	if ig.Match("runs/ep1/out.mp4", false) {
+		t.Error("runs/ is excluded by .gitignore only — .iterionignore must replace it entirely")
+	}
+	if !ig.Match("state/db.json", false) {
+		t.Error("state/ is named by .iterionignore and must be excluded")
+	}
+}
+
+// TestNative_PruneObjectsReclaimsUnreferencedContent: the pool is shared
+// across runs, so deleting a run cannot blind-delete its objects — this
+// sweep is what stops them accumulating forever.
+func TestNative_PruneObjectsReclaimsUnreferencedContent(t *testing.T) {
+	store, ws := t.TempDir(), t.TempDir()
+	write(t, ws, "keep.txt", "still referenced")
+	write(t, ws, "gone.txt", "will be orphaned")
+	tr := NewNative(store)
+	if _, err := tr.Capture("run1", ws, "post:n1:0"); err != nil {
+		t.Fatalf("capture: %v", err)
+	}
+	countObjects := func() int {
+		n := 0
+		_ = filepath.Walk(filepath.Join(store, "workspace-objects"), func(_ string, info os.FileInfo, err error) error {
+			if err == nil && !info.IsDir() {
+				n++
+			}
+			return nil
+		})
+		return n
+	}
+	if countObjects() != 2 {
+		t.Fatalf("expected 2 objects, got %d", countObjects())
+	}
+
+	// A live manifest still references both — nothing to reclaim.
+	objs, _, err := tr.PruneObjects()
+	if err != nil {
+		t.Fatalf("prune: %v", err)
+	}
+	if objs != 0 || countObjects() != 2 {
+		t.Errorf("prune removed %d objects while a manifest still referenced them", objs)
+	}
+
+	// Drop the run's manifests, as `iterion runs prune` would.
+	if err := os.RemoveAll(filepath.Join(store, "runs", "run1")); err != nil {
+		t.Fatalf("remove run: %v", err)
+	}
+	objs, bytes, err := tr.PruneObjects()
+	if err != nil {
+		t.Fatalf("prune: %v", err)
+	}
+	if objs != 2 || bytes == 0 {
+		t.Errorf("prune reclaimed %d objects / %d bytes, want both non-zero", objs, bytes)
+	}
+	if countObjects() != 0 {
+		t.Errorf("%d orphaned objects survived the sweep", countObjects())
+	}
+}
