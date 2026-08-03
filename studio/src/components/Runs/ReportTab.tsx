@@ -237,16 +237,21 @@ function BucketRow({
             style={{ width: `${barPct}%` }}
           />
         </div>
+        {/* Per-bucket, not per-report: in a mixed run (some nodes priced,
+            some not) an unpriced bucket must read as "no cost data", never
+            as a fake $0.00 / 0% next to its real token count. */}
         <span
           className="font-mono text-fg-default text-right basis-20"
           title={
-            hasCost ? `$${bucket.costUsd.toFixed(6)}` : "No cost data recorded"
+            bucket.costUsd > 0
+              ? `$${bucket.costUsd.toFixed(6)}`
+              : "No cost data recorded"
           }
         >
-          {hasCost ? formatCost(bucket.costUsd) : "—"}
+          {bucket.costUsd > 0 ? formatCost(bucket.costUsd) : "—"}
         </span>
         <span className="text-fg-subtle text-right text-caption basis-12">
-          {hasCost ? `${pct.toFixed(0)}%` : ""}
+          {bucket.costUsd > 0 ? `${pct.toFixed(0)}%` : ""}
         </span>
         <span
           className="text-fg-subtle text-right text-caption hidden sm:inline-block basis-20"
