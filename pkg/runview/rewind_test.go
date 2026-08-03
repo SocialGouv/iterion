@@ -8,6 +8,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"testing"
+	"time"
 
 	iterlog "github.com/SocialGouv/iterion/pkg/log"
 	"github.com/SocialGouv/iterion/pkg/store"
@@ -715,5 +716,66 @@ func TestRewind_NoBackupRefWhenNothingWasBanked(t *testing.T) {
 	if result.Files.BackupRef != "" {
 		t.Errorf("BackupRef = %q for a clean tree — that ref was never written and does not resolve",
 			result.Files.BackupRef)
+	}
+}
+
+// TestRewind_RetiresAbandonedAsyncQuestions is Revi's R0fee41.
+//
+// ADR-081's async pair is level-triggered against the STORE, not the
+// checkpoint: await_answers parks until the pending list is empty and
+// returns every answered record. Clearing only the checkpoint pointer
+// left the dropped nodes' questions live, so the replayed node would park
+// on the union of old and new — or fold pre-rewind answers into its
+// output.
+func TestRewind_RetiresAbandonedAsyncQuestions(t *testing.T) {
+	cp := &store.Checkpoint{
+		NodeID:  "verify",
+		Outputs: outputsOf("survey", "plan", "implement", "verify"),
+	}
+	svc, st, runID := seedRun(t, linearBot, cp, store.RunStatusFailedResumable)
+	ctx := context.Background()
+
+	// One pending and one answered question from a node about to be
+	// dropped, plus one from an upstream node that survives.
+	answered := time.Now().UTC()
+	for _, in := range []*store.Interaction{
+		{ID: "q-pending", RunID: runID, NodeID: "implement", Kind: store.InteractionKindAsync,
+			Questions: map[string]any{"which": "approach?"}, RequestedAt: answered},
+		{ID: "q-answered", RunID: runID, NodeID: "implement", Kind: store.InteractionKindAsync,
+			Questions: map[string]any{"ok": "?"}, Answers: map[string]any{"ok": true},
+			RequestedAt: answered, AnsweredAt: &answered},
+		{ID: "q-upstream", RunID: runID, NodeID: "plan", Kind: store.InteractionKindAsync,
+			Questions: map[string]any{"scope": "?"}, RequestedAt: answered},
+	} {
+		if err := st.WriteInteraction(ctx, in); err != nil {
+			t.Fatalf("seed interaction %s: %v", in.ID, err)
+		}
+	}
+
+	if _, err := svc.Rewind(ctx, RewindSpec{RunID: runID, NodeID: "implement"}); err != nil {
+		t.Fatalf("Rewind: %v", err)
+	}
+
+	pending, err := store.ListPendingAsyncInteractions(ctx, st, runID, "implement")
+	if err != nil {
+		t.Fatalf("list pending: %v", err)
+	}
+	if len(pending) != 0 {
+		t.Errorf("%d pending question(s) survived for the replayed node — await_answers would park on them", len(pending))
+	}
+	done, err := store.ListAnsweredAsyncInteractions(ctx, st, runID, "implement")
+	if err != nil {
+		t.Fatalf("list answered: %v", err)
+	}
+	if len(done) != 0 {
+		t.Errorf("%d pre-rewind answer(s) survived — the replayed node's output would mix them in", len(done))
+	}
+	// An upstream node's question is not the rewind's business.
+	up, err := store.ListPendingAsyncInteractions(ctx, st, runID, "plan")
+	if err != nil {
+		t.Fatalf("list upstream: %v", err)
+	}
+	if len(up) != 1 {
+		t.Errorf("upstream questions = %d, want 1 kept", len(up))
 	}
 }

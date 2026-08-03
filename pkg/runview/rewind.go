@@ -319,6 +319,23 @@ func (s *Service) Rewind(ctx context.Context, spec RewindSpec) (*RewindResult, e
 
 	tombstoned := s.writeArtifactTombstones(ctx, run.ID, pivot, tombstones)
 
+	// Retire the async questions the dropped nodes posted. ADR-081's pair
+	// is level-triggered against the STORE, so clearing the checkpoint
+	// pointer alone leaves them live: the replayed await_answers would
+	// park on the union of its new questions and these abandoned ones, or
+	// fold pre-rewind answers into its output.
+	retireNodes := map[string]bool{}
+	for _, id := range dropped {
+		retireNodes[id] = true
+	}
+	if n, rerr := store.RetireAsyncInteractions(ctx, s.store, run.ID, retireNodes); rerr != nil {
+		if s.logger != nil {
+			s.logger.Warn("rewind: retire async interactions for %s: %v", run.ID, rerr)
+		}
+	} else if n > 0 && s.logger != nil {
+		s.logger.Info("rewind: retired %d abandoned async question(s)", n)
+	}
+
 	// Append-only audit. events.jsonl is never truncated — the dropped
 	// nodes' original records stay, and this marker explains why they
 	// are about to appear a second time.

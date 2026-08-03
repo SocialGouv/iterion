@@ -600,12 +600,36 @@ func (e *Engine) markPreNodeBoundary(rs *runState, nodeID string) {
 	if e.workDir == "" || !rs.isWorktree {
 		return
 	}
-	target := rs.lastSnapshotCommit
-	if target == "" {
-		target = "HEAD"
-	}
 	loopIter := e.currentLoopIteration(nodeID, rs.loopCounters)
 	ref := store.NodePreSnapshotRef(rs.runID, nodeID, loopIter)
+	target := rs.lastSnapshotCommit
+	if target == "" {
+		// "" means UNKNOWN, not "the tree equals HEAD" — the run just
+		// started, just resumed, or just came out of a special dispatch
+		// that mutated the tree. Only the first of those implies HEAD; in
+		// the other two the worktree carries uncommitted work HEAD does
+		// not, because the engine never commits the tree (snapshotWorktree
+		// only writes a ref). Aliasing HEAD there makes a later rewind
+		// `read-tree --reset` + `clean -fd` back to HEAD, deleting
+		// everything every fan-out branch and every earlier node produced
+		// — strictly worse than the stale alias this replaced, which would
+		// at least have restored the pre-fan-out tree.
+		//
+		// So capture the real state. snapshotWorktree returns "" and
+		// writes no ref only when the tree genuinely matches HEAD, which
+		// is the one case where aliasing is right.
+		commit, err := snapshotWorktree(e.workDir, ref)
+		if err != nil {
+			if e.logger != nil {
+				e.logger.Warn("pre-snapshot: node %q iter %d: %v", nodeID, loopIter, err)
+			}
+			return
+		}
+		if commit != "" {
+			return // snapshotWorktree already pointed the ref at it
+		}
+		target = "HEAD"
+	}
 	if out, err := runGit(e.workDir, "update-ref", ref, target); err != nil && e.logger != nil {
 		e.logger.Warn("pre-snapshot: node %q iter %d: %v\noutput: %s", nodeID, loopIter, err, out)
 	}
