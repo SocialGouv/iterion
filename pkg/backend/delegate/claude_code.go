@@ -540,11 +540,12 @@ func (b *ClaudeCodeBackend) Execute(ctx context.Context, task Task) (result Resu
 
 	// Safety net: schema declared but Pass 1 gave empty/fallback output —
 	// try one recovery formatting pass via session resume (see helper).
+	var recoveryRM *claudesdk.ResultMessage
 	if (len(output) == 0 || fallback) && len(task.OutputSchema) > 0 && rm.SessionID != "" {
-		b.runRecoveryFormatterPass(ctx, task, rm.SessionID, &result, &totalIn, &totalOut)
+		recoveryRM = b.runRecoveryFormatterPass(ctx, task, rm.SessionID, &result, &totalIn, &totalOut)
 	}
 
-	annotateCost(&result, task, totalIn, totalOut, rm)
+	annotateCost(&result, task, totalIn, totalOut, rm, recoveryRM)
 	return result, nil
 }
 
@@ -785,13 +786,15 @@ func (b *ClaudeCodeBackend) setupCredsAndSession(ctx context.Context, task Task,
 // output. Catches agents that did real work (tools, code changes) but whose
 // structured output the SDK didn't capture (e.g. backends where tools are
 // implicit). Mutates result and the running token totals in place; failures
-// are logged and left non-fatal (the caller keeps Pass 1's output).
-func (b *ClaudeCodeBackend) runRecoveryFormatterPass(ctx context.Context, task Task, sessionID string, result *Result, totalIn, totalOut *int) {
+// are logged and left non-fatal (the caller keeps Pass 1's output). Returns
+// the pass's own ResultMessage (nil on failure) so the caller's cost
+// annotation sees its CLI-reported cost, not just Pass 1's.
+func (b *ClaudeCodeBackend) runRecoveryFormatterPass(ctx context.Context, task Task, sessionID string, result *Result, totalIn, totalOut *int) *claudesdk.ResultMessage {
 	b.Logger.Debug("claude-code: empty output with schema — attempting recovery formatting pass (session=%s)", sessionID)
 	fmtRM, fmtErr := b.formatOutput(ctx, task, sessionID)
 	if fmtErr != nil {
 		b.Logger.Warn("claude-code: recovery formatting pass failed: %v", fmtErr)
-		return
+		return nil
 	}
 	if fmtRM.Usage != nil {
 		*totalIn += fmtRM.Usage.InputTokens
@@ -807,6 +810,7 @@ func (b *ClaudeCodeBackend) runRecoveryFormatterPass(ctx context.Context, task T
 	} else {
 		b.Logger.Warn("claude-code: recovery formatting pass also produced empty output")
 	}
+	return fmtRM
 }
 
 // hostSpawnEnv returns the process environment with the per-task env entries
