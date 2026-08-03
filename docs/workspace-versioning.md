@@ -68,7 +68,26 @@ back to `.gitignore` when absent. The fallback is pragmatic; the precedence is
 the point. A project can control what iterion versions without changing how it
 packages itself for git.
 
-Files above 32 MiB are recorded in `Snapshot.Skipped` rather than captured, and
+Rules apply in file order and the **last match wins**, `**` spans any number of
+path segments, and a `!` negation re-includes **even when a parent directory is
+excluded** — which git refuses to do, and which is what makes an allowlist
+expressible. That shape is what a media pipeline needs: none of `runs/`, except
+the delivered files.
+
+```
+runs/**
+!runs/**/exports/*.mp4
+!runs/**/audio/*.mp3
+!runs/**/music/*.wav
+runs/_archived/**
+```
+
+The cost of allowing this is that an excluded directory can no longer be pruned
+from the walk once any negation exists — the walk descends and tests each entry.
+Stat-only, no hashing: measured at 409 ms over a 13 GB / 14k-file tree.
+
+Files above 32 MiB — raise it with **`ITERION_WORKSPACE_MAX_FILE_MB`** — are
+recorded in `Snapshot.Skipped` rather than captured, and
 a restore **never deletes a skipped path** — it was there and we chose not to
 store it, so removing it as "absent from the snapshot" would destroy data the
 tracker has no copy of. Coverage gaps are always reported, never silent.
@@ -87,6 +106,14 @@ This matters most for an in-place run, where the workspace is your live
 checkout: the deletion pass cannot tell a file a node created from one you
 wrote in your editor while the run was paused. If a restore swept up your own
 work, the bank is where it went.
+
+## Reclaiming disk
+
+The object pool is shared across runs, so deleting a run cannot blind-delete
+its content — `PruneObjects` marks every hash still named by a surviving
+manifest and sweeps the rest. It refuses to delete anything if a manifest is
+unreadable: a partial mark set is exactly how content that is still referenced
+gets removed.
 
 ## Limits
 

@@ -10,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -45,9 +46,28 @@ func NewNative(storeRoot string) *Native {
 	return &Native{
 		root:         storeRoot,
 		stats:        map[string]*statCache{},
-		MaxFileBytes: DefaultMaxFileBytes,
+		MaxFileBytes: resolveMaxFileBytes(),
 		MaxFiles:     DefaultMaxFiles,
 	}
+}
+
+// resolveMaxFileBytes reads ITERION_WORKSPACE_MAX_FILE_MB.
+//
+// 32 MiB is a sane default for a source tree, and a bad one for a media
+// pipeline: measured on a real video project, the delivered final.mp4 of
+// each episode is 48-55 MiB — the artefact the whole run exists to
+// produce, and the one a rewind most needs to restore. A skipped file is
+// reported rather than silently lost, but reporting is not restoring.
+func resolveMaxFileBytes() int64 {
+	raw := strings.TrimSpace(os.Getenv("ITERION_WORKSPACE_MAX_FILE_MB"))
+	if raw == "" {
+		return DefaultMaxFileBytes
+	}
+	mb, err := strconv.ParseInt(raw, 10, 64)
+	if err != nil || mb <= 0 {
+		return DefaultMaxFileBytes
+	}
+	return mb << 20
 }
 
 func (n *Native) runDir(runID string) string {
@@ -177,7 +197,7 @@ func (n *Native) Capture(runID, workspaceDir, label string) (*Snapshot, error) {
 			return nil
 		}
 		if ig.Match(rel, d.IsDir()) {
-			if d.IsDir() {
+			if d.IsDir() && ig.CanPrune() {
 				return fs.SkipDir
 			}
 			return nil
@@ -387,7 +407,7 @@ func (n *Native) Restore(runID, workspaceDir, snapshotID string, protected ...st
 			return nil
 		}
 		if ig.Match(rel, d.IsDir()) {
-			if d.IsDir() {
+			if d.IsDir() && ig.CanPrune() {
 				return fs.SkipDir
 			}
 			return nil
@@ -522,7 +542,10 @@ func pruneEmptyDirs(root string, ig *Ignorer) {
 			return nil
 		}
 		if ig.Match(filepath.ToSlash(rel), true) {
-			return fs.SkipDir
+			if ig.CanPrune() {
+				return fs.SkipDir
+			}
+			return nil
 		}
 		dirs = append(dirs, path)
 		return nil
@@ -560,4 +583,92 @@ func newSnapshotID() string {
 	c := snapshotCounter.n
 	snapshotCounter.Unlock()
 	return fmt.Sprintf("%d-%04d", time.Now().UTC().UnixNano(), c)
+}
+
+// PruneObjects deletes content in the store-global pool that no surviving
+// snapshot manifest references, and reports how many objects and bytes it
+// reclaimed.
+//
+// The pool is shared across runs so a second run of the same bot on the
+// same tree costs almost nothing — but that is exactly why deleting a run
+// can no longer blind-delete its objects, and why `iterion runs prune`
+// would otherwise leave them behind forever. This is the sweep that
+// closes it: mark every hash still named by a manifest under
+// <root>/runs/*/workspace/snapshots/, delete the rest.
+//
+// Safe to run while nothing is capturing. A concurrent capture could
+// write an object between the mark and the sweep, so callers should run
+// this when the store is idle — the same contract `runs prune` already
+// has.
+func (n *Native) PruneObjects() (objects int, bytes int64, err error) {
+	live := map[string]bool{}
+	runsDir := filepath.Join(n.root, "runs")
+	entries, err := os.ReadDir(runsDir)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return 0, 0, nil
+		}
+		return 0, 0, err
+	}
+	for _, e := range entries {
+		if !e.IsDir() {
+			continue
+		}
+		snapDir := filepath.Join(runsDir, e.Name(), "workspace", "snapshots")
+		snaps, rerr := os.ReadDir(snapDir)
+		if rerr != nil {
+			continue
+		}
+		for _, s := range snaps {
+			if s.IsDir() || !strings.HasSuffix(s.Name(), ".json") {
+				continue
+			}
+			b, rerr := os.ReadFile(filepath.Join(snapDir, s.Name()))
+			if rerr != nil {
+				// An unreadable manifest is treated as LIVE by refusing to
+				// prune at all: deleting content a snapshot might still
+				// name is unrecoverable, and a partial mark set is exactly
+				// how that happens.
+				return 0, 0, fmt.Errorf("workspacetrack: prune: read %s: %w", s.Name(), rerr)
+			}
+			var snap Snapshot
+			if uerr := json.Unmarshal(b, &snap); uerr != nil {
+				return 0, 0, fmt.Errorf("workspacetrack: prune: decode %s: %w", s.Name(), uerr)
+			}
+			for _, ent := range snap.Entries {
+				live[ent.Hash] = true
+			}
+		}
+	}
+
+	pool := filepath.Join(n.root, "workspace-objects")
+	werr := filepath.WalkDir(pool, func(path string, d fs.DirEntry, walkErr error) error {
+		if walkErr != nil || d.IsDir() {
+			return nil
+		}
+		// <pool>/<aa>/<rest> → hash
+		rel, rerr := filepath.Rel(pool, path)
+		if rerr != nil {
+			return nil
+		}
+		parts := strings.Split(filepath.ToSlash(rel), "/")
+		if len(parts) != 2 {
+			return nil
+		}
+		if live[parts[0]+parts[1]] {
+			return nil
+		}
+		info, ierr := d.Info()
+		if ierr == nil {
+			bytes += info.Size()
+		}
+		if rmErr := os.Remove(path); rmErr == nil {
+			objects++
+		}
+		return nil
+	})
+	if werr != nil && !os.IsNotExist(werr) {
+		return objects, bytes, werr
+	}
+	return objects, bytes, nil
 }
