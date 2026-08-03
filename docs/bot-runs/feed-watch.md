@@ -68,6 +68,23 @@ Newest first. One section per dogfooded run.
   host is a standing trap for any allowed-set derived from raw item URLs —
   derive allow-lists from the URL the READER lands on, and keep the raw one
   as a fallback.
+- Prod relaunch (same day, after deploying the fixes): the java digest was
+  relaunched via the repo-targeted launch API, which surfaced a THIRD
+  defect — `EnsureManagedSecret` pinned the connection's stored managed
+  token verbatim, but that plaintext is a one-hour GitHub App installation
+  token minted at provision time, so the clone died with "Invalid username
+  or token" (runs 019fc71f / 019fc721; `forge refresh` re-probes
+  permissions but never rewrites the managed secret). The daily schedules
+  never noticed because they resolve the team's `forge_token` binding
+  instead. Fixed by re-minting at the point of use (`EnsureManagedSecret`
+  → `narrowGitHubAppSecret`, commit 0c146741e) — the relaunch then cloned
+  fine and ran `plan → load_pending → synthesize`, where it hit the
+  Anthropic forfait **weekly** cap. This time (vs the 2026-07-27 manual
+  recovery) the usage-window machinery armed everything itself:
+  `run_retry_scheduled {reason: usage_window, retry_after:
+  2026-08-03T19:08:01Z, attempt 1/5, reset_source: typed_error}` — and the
+  new fire-gating held (ONE outcome episode per park, no
+  notification spam on the clone-failure DLQ parks either).
 
 ## 2026-07-27 — Five digests lost to the forfait weekly cap, recovered by hand (runs 019fa511 / 019fa523 / 019fa528 / 019fa52e / 019fa538)
 
