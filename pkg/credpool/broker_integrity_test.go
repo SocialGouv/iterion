@@ -452,3 +452,54 @@ func TestLiveCommitment_emptyExcludeCountsEverything(t *testing.T) {
 		t.Errorf("LiveCommitment = (%d, %v), want (1, 5)", runs, committed)
 	}
 }
+
+// A donor who restricted their contribution to certain bots must not have
+// it handed to an inline workflow. `LaunchSpec.BotID` is empty for every
+// plain `.bot` run — a file the requester uploaded — so treating empty as
+// "no filter" on the launch path failed OPEN on the one input the
+// requester fully controls.
+func TestAcquire_botAllowListFailsClosedForAnInlineWorkflow(t *testing.T) {
+	h := newHarness(t)
+	ctx := context.Background()
+	h.donor(t, "alice", Limits{}, func(p *Pledge) { p.Bots = []string{"review-pr"} })
+
+	inline := h.request("run-1")
+	inline.BotID = "" // an uploaded .bot: no catalog id
+	if _, err := h.broker.Acquire(ctx, inline); !errors.Is(err, ErrNoDonor) {
+		t.Errorf("Acquire = %v, want ErrNoDonor — an inline workflow got a bot-restricted contribution", err)
+	}
+
+	// A bot outside the list is refused too, and the allowed one is served.
+	other := h.request("run-2")
+	other.BotID = "feature-dev"
+	if _, err := h.broker.Acquire(ctx, other); !errors.Is(err, ErrNoDonor) {
+		t.Errorf("Acquire = %v, want ErrNoDonor for a bot outside the list", err)
+	}
+	allowed := h.request("run-3")
+	allowed.BotID = "review-pr"
+	if _, err := h.broker.Acquire(ctx, allowed); err != nil {
+		t.Errorf("the allow-listed bot was refused: %v", err)
+	}
+
+	// A pledge with NO allow-list still serves an inline workflow.
+	h2 := newHarness(t)
+	h2.donor(t, "bob", Limits{})
+	open := h2.request("run-1")
+	open.BotID = ""
+	if _, err := h2.broker.Acquire(ctx, open); err != nil {
+		t.Errorf("an unrestricted pledge refused an inline workflow: %v", err)
+	}
+}
+
+// The display form keeps its meaning: asking "is this pledge available at
+// all" must not report a bot-restricted contribution as filtered.
+func TestAvailable_emptyBotIDStillMeansIgnoreTheFilterForDisplay(t *testing.T) {
+	p := Pledge{Enabled: true, Health: HealthOK, Bots: []string{"review-pr"}}
+	now := time.Date(2026, 8, 3, 12, 0, 0, 0, time.UTC)
+	if ok, status := p.Available(now, ""); !ok {
+		t.Errorf("Available = (%v, %s), want available — the status view asks with no bot", ok, status)
+	}
+	if ok, _ := p.AvailableForLaunch(now, ""); ok {
+		t.Error("AvailableForLaunch must fail closed on an empty bot id")
+	}
+}

@@ -336,19 +336,38 @@ func (p Pledge) Available(now time.Time, botID string) (bool, Status) {
 	if !p.Window.Open(now) {
 		return false, StatusOutOfHours
 	}
-	if len(p.Bots) > 0 && botID != "" {
-		allowed := false
-		for _, b := range p.Bots {
-			if b == botID {
-				allowed = true
-				break
-			}
-		}
-		if !allowed {
-			return false, StatusBotFiltered
-		}
+	if len(p.Bots) > 0 && botID != "" && !p.servesBot(botID) {
+		return false, StatusBotFiltered
 	}
 	return true, StatusActive
+}
+
+// AvailableForLaunch is Available as the ACQUISITION path must ask it.
+//
+// The difference is the empty bot id. Available treats it as "ignore the
+// allow-list", which is what the donor-facing status views want. On a
+// launch it means the opposite: `LaunchSpec.BotID` is empty for every
+// plain `.bot` run — an inline workflow the requester uploaded, i.e. the
+// arbitrary-code case — so skipping the filter there would hand a donor
+// who pledged `bots: [review-pr]` to any file a requester cares to submit.
+// The one input the requester fully controls must fail CLOSED.
+func (p Pledge) AvailableForLaunch(now time.Time, botID string) (bool, Status) {
+	if ok, status := p.Available(now, botID); !ok {
+		return false, status
+	}
+	if len(p.Bots) > 0 && !p.servesBot(botID) {
+		return false, StatusBotFiltered
+	}
+	return true, StatusActive
+}
+
+func (p Pledge) servesBot(botID string) bool {
+	for _, b := range p.Bots {
+		if b == botID {
+			return true
+		}
+	}
+	return false
 }
 
 // ---------------------------------------------------------------------------

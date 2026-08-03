@@ -165,7 +165,7 @@ func (b *Broker) acquireKind(ctx context.Context, pool Pool, candidates []Pledge
 		if p.UserID == req.UserID {
 			continue
 		}
-		if ok, _ := p.Available(now, req.BotID); ok {
+		if ok, _ := p.AvailableForLaunch(now, req.BotID); ok {
 			eligible = append(eligible, p)
 		}
 	}
