@@ -265,3 +265,137 @@ func TestRewindAuto_LineShiftIsNotAChange(t *testing.T) {
 		t.Fatalf("err = %v, want ErrRewindNoChange — a line shift is not a semantic edit", err)
 	}
 }
+
+// loopedAutoBot puts two nodes on a cycle, the shape that made --auto
+// panic: each is the other's ancestor, so a dominance rule that ignores
+// cycles eliminates both and leaves nothing to elect.
+const loopedAutoBot = `schema note:
+  value: string
+
+schema check:
+  value: string
+  ok: bool
+
+agent survey:
+  model: "claude-opus-4-7"
+  output: note
+
+agent implement:
+  model: "claude-opus-4-7"
+  output: note
+
+judge verify:
+  model: "claude-opus-4-7"
+  output: check
+
+workflow loopauto:
+  entry: survey
+  survey -> implement
+  implement -> verify
+  verify -> done when ok
+  verify -> implement as fix(3)
+`
+
+// TestRewindAuto_TwoEditsOnOneLoop is the regression guard for the panic:
+// editing two nodes that sit on the same cycle must elect one, not crash
+// and not silently give up.
+func TestRewindAuto_TwoEditsOnOneLoop(t *testing.T) {
+	dir := t.TempDir()
+	botPath := filepath.Join(dir, "main.bot")
+	if err := os.WriteFile(botPath, []byte(loopedAutoBot), 0o644); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	storeDir := filepath.Join(dir, "store")
+	st, err := store.New(storeDir)
+	if err != nil {
+		t.Fatalf("store: %v", err)
+	}
+	const runID = "run-loop-auto"
+	if _, err := st.CreateRun(context.Background(), runID, "loopauto", nil); err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	run, err := st.LoadRun(context.Background(), runID)
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	run.FilePath = botPath
+	run.WorkflowSource = loopedAutoBot
+	run.Status = store.RunStatusFailedResumable
+	run.Checkpoint = &store.Checkpoint{
+		NodeID:       "verify",
+		Outputs:      outputsOf("survey", "implement", "verify"),
+		LoopCounters: map[string]int{"fix": 1},
+	}
+	if err := st.SaveRun(context.Background(), run); err != nil {
+		t.Fatalf("save: %v", err)
+	}
+	svc, err := NewService(storeDir)
+	if err != nil {
+		t.Fatalf("NewService: %v", err)
+	}
+	editBot(t, botPath, "agent implement:\n  model: \"claude-opus-4-7\"", "agent implement:\n  model: \"claude-opus-5\"")
+	editBot(t, botPath, "judge verify:\n  model: \"claude-opus-4-7\"", "judge verify:\n  model: \"claude-opus-5\"")
+
+	result, err := svc.Rewind(context.Background(), RewindSpec{RunID: runID, Auto: true})
+	if err != nil {
+		t.Fatalf("Rewind --auto on a loop: %v", err)
+	}
+	// Both edits are on the cycle; replaying either replays the loop, so
+	// the one execution reaches first is elected.
+	if result.NodeID != "implement" {
+		t.Errorf("pivot = %q, want implement (nearest the entry on the cycle)", result.NodeID)
+	}
+}
+
+// TestRewindAuto_LoopEditIsNotMaskedByAnIndependentOne guards the silent
+// half of the same bug: with cycle-mates eliminating each other, an
+// unrelated third candidate would win and the loop edit would vanish.
+func TestRewindAuto_LoopEditIsNotMaskedByAnIndependentOne(t *testing.T) {
+	dir := t.TempDir()
+	botPath := filepath.Join(dir, "main.bot")
+	if err := os.WriteFile(botPath, []byte(loopedAutoBot), 0o644); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	storeDir := filepath.Join(dir, "store")
+	st, err := store.New(storeDir)
+	if err != nil {
+		t.Fatalf("store: %v", err)
+	}
+	const runID = "run-loop-mask"
+	if _, err := st.CreateRun(context.Background(), runID, "loopauto", nil); err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	run, err := st.LoadRun(context.Background(), runID)
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	run.FilePath = botPath
+	run.WorkflowSource = loopedAutoBot
+	run.Status = store.RunStatusFailedResumable
+	run.Checkpoint = &store.Checkpoint{
+		NodeID:  "verify",
+		Outputs: outputsOf("survey", "implement", "verify"),
+	}
+	if err := st.SaveRun(context.Background(), run); err != nil {
+		t.Fatalf("save: %v", err)
+	}
+	svc, err := NewService(storeDir)
+	if err != nil {
+		t.Fatalf("NewService: %v", err)
+	}
+	// survey is strictly upstream of the loop; implement is on it.
+	editBot(t, botPath, "agent survey:\n  model: \"claude-opus-4-7\"", "agent survey:\n  model: \"claude-opus-5\"")
+	editBot(t, botPath, "agent implement:\n  model: \"claude-opus-4-7\"", "agent implement:\n  model: \"claude-opus-5\"")
+
+	result, err := svc.Rewind(context.Background(), RewindSpec{RunID: runID, Auto: true})
+	if err != nil {
+		t.Fatalf("Rewind --auto: %v", err)
+	}
+	if result.NodeID != "survey" {
+		t.Fatalf("pivot = %q, want survey — the strictly-upstream edit must win", result.NodeID)
+	}
+	// And the loop edit is covered, because implement is downstream.
+	if !contains(result.DroppedNodes, "implement") {
+		t.Error("implement was not invalidated; the loop edit would go untested")
+	}
+}

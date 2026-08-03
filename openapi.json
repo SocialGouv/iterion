@@ -5675,6 +5675,30 @@
         ]
       }
     },
+    "/api/runs/{id}/rewind": {
+      "parameters": [
+        {
+          "in": "path",
+          "name": "id",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        }
+      ],
+      "post": {
+        "operationId": "postRunsByIdRewind",
+        "responses": {
+          "default": {
+            "description": "Response"
+          }
+        },
+        "summary": "POST /api/runs/{id}/rewind",
+        "tags": [
+          "runs"
+        ]
+      }
+    },
     "/api/runs/{id}/session-board": {
       "get": {
         "operationId": "getRunsByIdSessionBoard",

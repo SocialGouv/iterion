@@ -549,3 +549,50 @@ func contains(ss []string, want string) bool {
 	}
 	return false
 }
+
+// TestRewind_ReleasesSubbotPointerOfUncompletedNode is the case the first
+// version of this feature got wrong, and that its own test masked.
+//
+// A surviving SubbotChildren entry means the subbot did NOT complete
+// (ClearSubbotChild fires on every successful consumption), so that node
+// has no output. Keying the cleanup on the output-filtered `dropped` list
+// therefore skipped exactly the entries that needed releasing — the
+// original test happened to seed the one configuration where pivot ==
+// subbot node, which is the only overlap between the two sets.
+func TestRewind_ReleasesSubbotPointerOfUncompletedNode(t *testing.T) {
+	cp := &store.Checkpoint{
+		NodeID: "verify",
+		// `implement` is downstream of the pivot but never completed: no
+		// output, yet a parked child.
+		Outputs:      outputsOf("survey", "plan"),
+		NodeAttempts: map[string]map[string]int{"implement": {"EXECUTION_FAILED": 3}},
+	}
+	svc, st, runID := seedRun(t, linearBot, cp, store.RunStatusPausedWaitingHuman)
+	run, err := st.LoadRun(context.Background(), runID)
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	run.SubbotChildren = map[string]string{"implement": "child-parked"}
+	if err := st.SaveRun(context.Background(), run); err != nil {
+		t.Fatalf("save: %v", err)
+	}
+
+	result, err := svc.Rewind(context.Background(), RewindSpec{RunID: runID, NodeID: "plan"})
+	if err != nil {
+		t.Fatalf("Rewind: %v", err)
+	}
+	got, err := st.LoadRun(context.Background(), runID)
+	if err != nil {
+		t.Fatalf("reload: %v", err)
+	}
+	if _, still := got.SubbotChildren["implement"]; still {
+		t.Error("the parked child's pointer survived; the replay would re-attach to it and never run the edited child workflow")
+	}
+	if !contains(result.OrphanedChildRuns, "child-parked") {
+		t.Errorf("OrphanedChildRuns = %v, want the released child reported", result.OrphanedChildRuns)
+	}
+	// Same filter bug affected the recovery budget of the node that failed.
+	if _, still := got.Checkpoint.NodeAttempts["implement"]; still {
+		t.Error("NodeAttempts survived for the node that actually failed — its budget must reset on replay")
+	}
+}

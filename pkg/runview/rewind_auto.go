@@ -92,6 +92,13 @@ func resolveAutoPivot(oldSrc, newSrc string, wf *ir.Workflow, executed map[strin
 		return "", changes, fmt.Errorf("%w: %s are on independent branches — pick one with --node",
 			ErrRewindAmbiguous, strings.Join(earliest, ", "))
 	}
+	if len(earliest) == 0 {
+		// Unreachable: earliestCandidates collapses cycles rather than
+		// eliminating them, so a non-empty candidate set always yields at
+		// least one survivor. Guarded anyway — indexing [0] here is what
+		// turned a graph-shape edge case into a panic once already.
+		return "", changes, fmt.Errorf("%w: could not order %s", ErrRewindAmbiguous, strings.Join(candidates, ", "))
+	}
 	return earliest[0], changes, nil
 }
 
@@ -349,13 +356,29 @@ func impactedNodes(changes []DeclChange, newFile *ast.File, wf *ir.Workflow) map
 // More than one survivor means the edits sit on branches that cannot
 // reach each other (a fan-out), where no single pivot covers them all.
 func earliestCandidates(wf *ir.Workflow, candidates []string) []string {
-	rev := adjacency(wf, true)
+	if len(candidates) == 0 {
+		return nil
+	}
+	fwdAdj, revAdj := adjacency(wf, false), adjacency(wf, true)
+	ancestors := make(map[string]map[string]bool, len(candidates))
+	descendants := make(map[string]map[string]bool, len(candidates))
+	for _, c := range candidates {
+		ancestors[c] = reachable(c, revAdj)
+		descendants[c] = reachable(c, fwdAdj)
+	}
+
 	var out []string
 	for _, c := range candidates {
-		ancestors := reachable(c, rev)
 		dominated := false
 		for _, other := range candidates {
-			if other != c && ancestors[other] {
+			// STRICTLY upstream: `other` reaches c, and c cannot reach
+			// back. The second half is what makes loops work. Without it,
+			// two edited nodes on a cycle are each other's ancestor, so
+			// both get eliminated — which used to leave the survivor set
+			// empty (a panic) and, worse, could silently elect an
+			// unrelated third candidate while dropping the loop edit
+			// entirely.
+			if other != c && ancestors[c][other] && !descendants[c][other] {
 				dominated = true
 				break
 			}
@@ -365,7 +388,59 @@ func earliestCandidates(wf *ir.Workflow, candidates []string) []string {
 		}
 	}
 	sort.Strings(out)
+	if len(out) <= 1 {
+		return out
+	}
+	// Survivors that can all reach each other are one cycle, not
+	// independent branches: replaying any of them replays the loop. Elect
+	// the one execution reaches first so the replay covers every edit.
+	if mutuallyReachable(out, descendants) {
+		return []string{nearestToEntry(wf, out, fwdAdj)}
+	}
 	return out
+}
+
+// mutuallyReachable reports whether every node can reach every other —
+// i.e. they belong to one strongly-connected component.
+func mutuallyReachable(nodes []string, descendants map[string]map[string]bool) bool {
+	for _, a := range nodes {
+		for _, b := range nodes {
+			if a != b && !descendants[a][b] {
+				return false
+			}
+		}
+	}
+	return true
+}
+
+// nearestToEntry picks the candidate the workflow reaches in the fewest
+// hops from its entry, breaking ties by name so the choice is stable
+// across runs.
+func nearestToEntry(wf *ir.Workflow, candidates []string, fwdAdj map[string][]string) string {
+	dist := map[string]int{wf.Entry: 0}
+	queue := []string{wf.Entry}
+	for len(queue) > 0 {
+		id := queue[0]
+		queue = queue[1:]
+		for _, next := range fwdAdj[id] {
+			if _, seen := dist[next]; seen {
+				continue
+			}
+			dist[next] = dist[id] + 1
+			queue = append(queue, next)
+		}
+	}
+	best, bestDist := candidates[0], 1<<30
+	for _, c := range candidates {
+		d, ok := dist[c]
+		if !ok {
+			continue // unreachable from entry; never preferred
+		}
+		if d < bestDist || (d == bestDist && c < best) {
+			best, bestDist = c, d
+		}
+	}
+	return best
 }
 
 // summarizeChanges renders a change list for an error message.

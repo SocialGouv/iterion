@@ -247,7 +247,7 @@ func (s *Service) Rewind(ctx context.Context, spec RewindSpec) (*RewindResult, e
 		}
 	}
 
-	dropped := downstreamOf(wf, pivot, cp.Outputs)
+	dropped, invalidated := downstreamOf(wf, pivot, cp.Outputs)
 	fromNode := cp.NodeID
 
 	// Workspace first: a git failure then leaves the run's engine state
@@ -294,9 +294,9 @@ func (s *Service) Rewind(ctx context.Context, spec RewindSpec) (*RewindResult, e
 	// The happy path already cleared the pointer when the child finished;
 	// what survives is exactly the interesting case — a child still
 	// parked on a human gate, or in flight.
-	orphaned := detachSubbotChildren(run, dropped)
+	orphaned := detachSubbotChildren(run, invalidated)
 
-	applyRewind(cp, pivot, dropped)
+	applyRewind(cp, pivot, dropped, invalidated)
 	for _, ts := range tombstones {
 		// The engine writes a node's next artifact at
 		// ArtifactVersions[node] and then increments
@@ -379,13 +379,18 @@ func (s *Service) Rewind(ctx context.Context, spec RewindSpec) (*RewindResult, e
 //     stays exhausted; grant more with resume's --max-iterations.
 //   - LoopPreviousOutput / LoopCurrentOutput: the pivot may legitimately
 //     read {{loop.<name>.previous_output}} on its first re-execution.
-func applyRewind(cp *store.Checkpoint, nodeID string, dropped []string) {
+func applyRewind(cp *store.Checkpoint, nodeID string, dropped, invalidated []string) {
 	cp.NodeID = nodeID
 	if cp.ArtifactVersions == nil {
 		cp.ArtifactVersions = map[string]int{}
 	}
 	for _, id := range dropped {
 		delete(cp.Outputs, id)
+	}
+	// Recovery budgets clear over the UNFILTERED set: a node that failed
+	// has attempts recorded and no output, so keying this on `dropped`
+	// would leave the budget of the very node that failed untouched.
+	for _, id := range invalidated {
 		// A re-executed node gets a fresh recovery budget: it is being
 		// replayed because the WORKFLOW changed, so attempts spent
 		// against the old definition should not count against it.
@@ -564,7 +569,7 @@ func isRewoundArtifact(a *store.Artifact) bool {
 // Over-dropping is as harmful as under-dropping here: a node whose
 // output is deleted but which does not re-execute before something
 // reads it resolves to nil, not to a re-run.
-func downstreamOf(wf *ir.Workflow, pivot string, outputs map[string]map[string]any) []string {
+func downstreamOf(wf *ir.Workflow, pivot string, outputs map[string]map[string]any) (dropped, invalidated []string) {
 	fwd := reachable(pivot, adjacency(wf, false))
 	bwd := reachable(pivot, adjacency(wf, true))
 
@@ -574,17 +579,24 @@ func downstreamOf(wf *ir.Workflow, pivot string, outputs map[string]map[string]a
 			drop[id] = true
 		}
 	}
-	out := make([]string, 0, len(drop))
 	for id := range drop {
-		// Only report what was actually invalidated: a downstream node
-		// the run never reached has nothing to drop, and listing it
-		// would misrepresent the blast radius in the audit event.
+		invalidated = append(invalidated, id)
+		// `dropped` is the REPORTING set: a downstream node the run never
+		// reached has no output to drop, and listing it would
+		// misrepresent the blast radius in the audit event.
+		//
+		// It is deliberately NOT the set used for cleanup. State that
+		// outlives a node's output — a parked subbot child, a recovery
+		// attempt counter — belongs precisely to nodes that did NOT
+		// complete, so filtering on "has an output" would skip exactly
+		// the ones that need clearing.
 		if _, ok := outputs[id]; ok || id == pivot {
-			out = append(out, id)
+			dropped = append(dropped, id)
 		}
 	}
-	sort.Strings(out)
-	return out
+	sort.Strings(dropped)
+	sort.Strings(invalidated)
+	return dropped, invalidated
 }
 
 // adjacency builds the successor (or, reversed, predecessor) map of the
