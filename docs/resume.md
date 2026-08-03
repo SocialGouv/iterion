@@ -167,6 +167,10 @@ feature exists to prevent. Nodes the run never executed are ignored, and edits
 on independent fan-out branches are refused with the candidates named, since no
 single pivot covers them.
 
+Iterating repeatedly is safe: the source is re-stamped on each resume that
+executes a changed workflow, so the second rewind of a session diffs against
+what the first one actually ran rather than re-reporting its edits.
+
 `--auto` needs `Run.WorkflowSource`, the `.bot` text captured at launch
 (`WorkflowHash` only answers *whether* the source changed, never *which node*).
 Runs started before that capture existed refuse `--auto` and still accept

@@ -1,6 +1,7 @@
 package runview
 
 import (
+	"context"
 	"fmt"
 	"strconv"
 	"strings"
@@ -225,9 +226,52 @@ func (s *Service) revertViaTracker(run *store.Run, wf *ir.Workflow, cp *store.Ch
 // pivot actually ran.
 func findPreNodeSnapshot(tr workspacetrack.Tracker, run *store.Run, wf *ir.Workflow, cp *store.Checkpoint, pivot string) (string, bool) {
 	for iter := loopIterationOf(wf, pivot, cp.LoopCounters); iter >= 0; iter-- {
-		if id, ok := tr.Resolve(run.ID, fmt.Sprintf("pre:%s:%d", pivot, iter)); ok {
+		if id, ok := tr.Resolve(run.ID, workspacetrack.Label(workspacetrack.PhasePre, pivot, iter)); ok {
 			return id, true
 		}
 	}
 	return "", false
+}
+
+// RestoreWorkspaceSnapshot puts a run's workspace back to a snapshot the
+// tracker holds — the consuming half of the backup a rewind banks before
+// it restores.
+//
+// Without it the safety net was theoretical: `revertViaTracker` captured
+// the pre-rewind workspace and printed the id, but nothing could act on
+// it, so an operator whose own edits were swept up by a restore had the
+// bytes on disk and no way to reach them.
+func (s *Service) RestoreWorkspaceSnapshot(ctx context.Context, runID, snapshotID string) (*workspacetrack.RestoreReport, error) {
+	if s.workspaceTracker == nil {
+		return nil, fmt.Errorf("runview: workspace versioning is not enabled on this store")
+	}
+	run, err := s.store.LoadRun(ctx, runID)
+	if err != nil {
+		return nil, fmt.Errorf("load run: %w", err)
+	}
+	if run.WorkDir == "" {
+		return nil, fmt.Errorf("runview: run %s has no recorded workspace", runID)
+	}
+	if isRewindableStatus(run.Status) || run.Status == store.RunStatusFinished || run.Status == store.RunStatusFailed {
+		return s.workspaceTracker.Restore(run.ID, run.WorkDir, snapshotID)
+	}
+	return nil, fmt.Errorf("%w: %s — stop the run before restoring its workspace", ErrRewindNotRewindable, run.Status)
+}
+
+// ListWorkspaceSnapshots walks a run's capture chain, newest first, so an
+// operator can see what states are recoverable.
+func (s *Service) ListWorkspaceSnapshots(runID string) ([]*workspacetrack.Snapshot, error) {
+	if s.workspaceTracker == nil {
+		return nil, fmt.Errorf("runview: workspace versioning is not enabled on this store")
+	}
+	var out []*workspacetrack.Snapshot
+	for id := s.workspaceTracker.Head(runID); id != ""; {
+		snap, err := s.workspaceTracker.Load(runID, id)
+		if err != nil {
+			break
+		}
+		out = append(out, snap)
+		id = snap.Parent
+	}
+	return out, nil
 }

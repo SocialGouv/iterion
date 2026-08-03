@@ -41,8 +41,31 @@ package workspacetrack
 
 import (
 	"errors"
+	"fmt"
 	"time"
 )
+
+// Boundary phases. A node is bracketed by the state it started from and
+// the state it left behind.
+const (
+	// PhasePre labels the workspace as a node is about to execute. This
+	// is what a rewind restores.
+	PhasePre = "pre"
+	// PhasePost labels the workspace a node left behind.
+	PhasePost = "post"
+)
+
+// Label builds the boundary label for a node execution.
+//
+// It lives here, not at either call site, because the engine WRITES these
+// labels and the rewind READS them from another package. When the format
+// was duplicated, appending a suffix on the producing side left every
+// test in runtime, runview, workspacetrack and e2e green — the drift
+// surfaced only as a "no snapshot recorded" skip at rewind time, which
+// reads like a missing feature rather than a bug.
+func Label(phase, nodeID string, loopIter int) string {
+	return fmt.Sprintf("%s:%s:%d", phase, nodeID, loopIter)
+}
 
 // ErrSnapshotNotFound is returned when a snapshot id or label is unknown.
 var ErrSnapshotNotFound = errors.New("workspacetrack: snapshot not found")

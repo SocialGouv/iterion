@@ -73,6 +73,21 @@ a restore **never deletes a skipped path** — it was there and we chose not to
 store it, so removing it as "absent from the snapshot" would destroy data the
 tracker has no copy of. Coverage gaps are always reported, never silent.
 
+## Recovering from a restore
+
+A rewind banks the workspace before it restores, so the state you had at that
+instant stays reachable:
+
+```bash
+iterion rewind --run-id RUN --list-snapshots      # newest first, with labels
+iterion rewind --run-id RUN --restore-snapshot <id>
+```
+
+This matters most for an in-place run, where the workspace is your live
+checkout: the deletion pass cannot tell a file a node created from one you
+wrote in your editor while the run was paused. If a restore swept up your own
+work, the bank is where it went.
+
 ## Limits
 
 Symlinks are not captured (following them can escape the workspace, and

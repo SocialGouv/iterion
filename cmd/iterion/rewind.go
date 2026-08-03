@@ -16,6 +16,8 @@ var rewindOpts struct {
 	nodeID    string
 	auto      bool
 	keepFiles bool
+	listSnaps bool
+	restoreID string
 	file      string
 	storeDir  string
 }
@@ -60,6 +62,9 @@ subbot runs) are never undone.`,
 	RunE: func(cmd *cobra.Command, _ []string) error {
 		if rewindOpts.runID == "" {
 			return fmt.Errorf("--run-id is required")
+		}
+		if rewindOpts.listSnaps || rewindOpts.restoreID != "" {
+			return runWorkspaceSnapshotCmd(cmd, rewindOpts.runID)
 		}
 		if rewindOpts.nodeID == "" && !rewindOpts.auto {
 			return fmt.Errorf("--node is required (or --auto to derive it from your edit)")
@@ -136,8 +141,61 @@ func init() {
 	f.StringVar(&rewindOpts.nodeID, "node", "", "Pivot node id (the node the run re-executes from)")
 	f.BoolVar(&rewindOpts.auto, "auto", false, "Derive the pivot by diffing your edited .bot against the source this run executed")
 	f.BoolVar(&rewindOpts.keepFiles, "keep-files", false, "Do not restore the workspace to the state the pivot started from")
+	f.BoolVar(&rewindOpts.listSnaps, "list-snapshots", false, "List the recoverable workspace states of this run, newest first")
+	f.StringVar(&rewindOpts.restoreID, "restore-snapshot", "", "Put the workspace back to a snapshot id (undoes a rewind's file restore)")
 	f.StringVar(&rewindOpts.file, "file", "", "Workflow source to read the graph from (default: the run's persisted source)")
 	f.StringVar(&rewindOpts.storeDir, "store-dir", "", "Store directory override (default: managed store for the working directory)")
 	mustMarkRequired(rewindCmd, "run-id")
 	rootCmd.AddCommand(rewindCmd)
+}
+
+// runWorkspaceSnapshotCmd serves --list-snapshots / --restore-snapshot.
+//
+// A rewind banks the workspace before restoring it, but until now nothing
+// could consume the id it printed: the bytes were on disk and out of
+// reach. These are the way back for an operator whose own edits were
+// swept up by a restore.
+func runWorkspaceSnapshotCmd(cmd *cobra.Command, runID string) error {
+	storeRoot := rewindOpts.storeDir
+	if storeRoot == "" {
+		cwd, err := os.Getwd()
+		if err != nil {
+			return fmt.Errorf("resolve cwd: %w", err)
+		}
+		storeRoot = store.ResolveStoreDir(cwd, "")
+	}
+	absStore, err := filepath.Abs(storeRoot)
+	if err != nil {
+		return fmt.Errorf("resolve store dir: %w", err)
+	}
+	svc, err := runview.NewService(absStore)
+	if err != nil {
+		return fmt.Errorf("open service: %w", err)
+	}
+	p := newPrinter()
+
+	if rewindOpts.restoreID != "" {
+		report, err := svc.RestoreWorkspaceSnapshot(cmd.Context(), runID, rewindOpts.restoreID)
+		if err != nil {
+			return fmt.Errorf("restore snapshot: %w", err)
+		}
+		p.JSON(report)
+		fmt.Fprintf(os.Stderr, "workspace restored to %s: %d written, %d deleted, %d unchanged\n",
+			rewindOpts.restoreID, report.Written, report.Deleted, report.Unchanged)
+		return nil
+	}
+
+	snaps, err := svc.ListWorkspaceSnapshots(runID)
+	if err != nil {
+		return fmt.Errorf("list snapshots: %w", err)
+	}
+	p.JSON(snaps)
+	for _, s := range snaps {
+		fmt.Fprintf(os.Stderr, "%s  %-28s  %d files  %s\n",
+			s.ID, s.Label, len(s.Entries), s.CreatedAt.Format("15:04:05"))
+	}
+	if len(snaps) == 0 {
+		fmt.Fprintf(os.Stderr, "no workspace snapshots for %s\n", runID)
+	}
+	return nil
 }

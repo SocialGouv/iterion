@@ -426,6 +426,15 @@ func (n *Native) Restore(runID, workspaceDir, snapshotID string, protected ...st
 
 	// Write back what differs.
 	for _, e := range snap.Entries {
+		if !safeRelPath(e.Path) {
+			// A manifest entry is data; treat it as untrusted. Capture
+			// cannot emit an escaping path today, but Load is a bare
+			// unmarshal and filepath.Join Cleans, so "../.." would write
+			// outside the workspace. The repo standardised on containment
+			// checks after its own audit; this is the same posture.
+			report.Skipped = append(report.Skipped, e.Path)
+			continue
+		}
 		// A protected path is not restored either. Skipping it only in
 		// the deletion pass would leave the workflow source reverted —
 		// the exact failure this exists to prevent, since a rewind is
@@ -467,6 +476,20 @@ func (n *Native) Restore(runID, workspaceDir, snapshotID string, protected ...st
 	}
 	n.mu.Unlock()
 	return report, nil
+}
+
+// safeRelPath rejects anything that could resolve outside the workspace:
+// absolute paths, and any component that walks upwards.
+func safeRelPath(p string) bool {
+	if p == "" || filepath.IsAbs(p) || strings.HasPrefix(p, "/") {
+		return false
+	}
+	for _, seg := range strings.Split(p, "/") {
+		if seg == ".." {
+			return false
+		}
+	}
+	return true
 }
 
 func sameContent(path string, e Entry) bool {

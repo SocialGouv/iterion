@@ -9,6 +9,7 @@ import (
 	"github.com/SocialGouv/iterion/pkg/dsl/ast"
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
 	"github.com/SocialGouv/iterion/pkg/dsl/parser"
+	"github.com/SocialGouv/iterion/pkg/dsl/unparse"
 )
 
 // ErrRewindNoSourceRecorded is returned when --auto is asked of a run
@@ -132,10 +133,20 @@ func declFingerprints(f *ast.File) map[string]string {
 	out := map[string]string{}
 	put := func(kind, name string, file *ast.File) {
 		b, err := ast.MarshalFile(file)
-		if err != nil {
-			// An unencodable declaration is treated as "always changed"
-			// rather than "never changed": erring toward re-execution is
-			// the safe direction.
+		// ast.MarshalFile is the faithful, Span-free encoder for most
+		// declarations — but its internal jsonFile is not a complete
+		// mirror of ast.File, so a kind it does not know about silently
+		// encodes to "{}" and every instance of it looks identical. That
+		// is a false NEGATIVE, the dangerous direction: an edit vanishes.
+		// Fall back to the unparser, which round-trips through .bot text
+		// and is therefore also Span-free.
+		if err != nil || string(b) == "{}" {
+			if text := unparse.Unparse(file); strings.TrimSpace(text) != "" {
+				out[kind+":"+name] = text
+				return
+			}
+			// Neither encoder can express it: treat as always-changed
+			// rather than never-changed.
 			out[kind+":"+name] = fmt.Sprintf("<unencodable %d>", len(out))
 			return
 		}
@@ -186,6 +197,17 @@ func declFingerprints(f *ast.File) map[string]string {
 	}
 	for _, d := range f.MCPServers {
 		put("mcp_server", d.Name, &ast.File{MCPServers: []*ast.MCPServerDecl{d}})
+	}
+	// Groups are compile-time macros: `use <group> as <prefix>` clones
+	// their nodes with dotted ids inside ir.Compile, long after this diff
+	// runs on the raw parse. So the group body and its instantiations are
+	// fingerprinted here, and impactedNodes expands them to the real node
+	// ids — otherwise editing a group node is invisible.
+	for _, d := range f.Groups {
+		put("group", d.Name, &ast.File{Groups: []*ast.GroupDecl{d}})
+	}
+	for _, d := range f.Uses {
+		put("use", d.Group+" as "+d.Prefix, &ast.File{Uses: []*ast.UseDecl{d}})
 	}
 	if f.Vars != nil {
 		put("vars", "", &ast.File{Vars: f.Vars})
@@ -248,6 +270,15 @@ func edgeKey(workflow string, e *ast.Edge) string {
 	}
 	if e.Foreach != nil {
 		key += " foreach " + e.Foreach.Name
+	}
+	// Two sibling edges can share (from, to, guard) and differ only in
+	// their data mapping — `split -> worker with {task:"A"}` next to
+	// `{task:"B"}`. Without the mapping in the key they collide in the
+	// fingerprint map, last one wins, and editing the first is invisible.
+	for _, w := range e.With {
+		if w != nil {
+			key += " with " + w.Key + "=" + w.Value
+		}
 	}
 	return key
 }
@@ -318,9 +349,28 @@ func impactedNodes(changes []DeclChange, newFile *ast.File, wf *ir.Workflow) map
 				impacted[wf.Entry] = true
 			}
 
+		case c.Kind == "supervisor":
+			// A supervisor names the nodes it watches; the reference runs
+			// from the supervisor OUTWARDS, so the name-search below would
+			// never find it. An unwatched supervisor covers the whole run.
+			watched := supervisorWatches(newFile, c.Name)
+			if len(watched) == 0 && wf.Entry != "" {
+				impacted[wf.Entry] = true
+			}
+			for _, id := range watched {
+				impacted[id] = true
+			}
+
+		case c.Kind == "group" || c.Kind == "use":
+			// Expand to the instantiated node ids ("<prefix>.<node>"),
+			// which is what the compiled graph actually contains.
+			for _, id := range groupInstanceNodes(newFile, c.Kind, c.Name) {
+				impacted[id] = true
+			}
+
 		default:
-			// A shared declaration (prompt, schema, cursor, supervisor,
-			// mcp_server): every node referencing it by name is affected.
+			// A shared declaration (prompt, schema, cursor, mcp_server):
+			// every node referencing it by name is affected.
 			// The reference shows up as a quoted JSON string in that
 			// node's canonical form, which covers system/user/input/output
 			// and any future field carrying a name — no per-field
@@ -508,6 +558,12 @@ func fanOutRouterFor(wf *ir.Workflow, nodeID string) string {
 // the body, since it runs once rather than per-branch.
 func fanOutBody(wf *ir.Workflow, routerID string) map[string]bool {
 	adj := adjacency(wf, false)
+	inDegree := map[string]int{}
+	for _, e := range wf.Edges {
+		if e != nil {
+			inDegree[e.To]++
+		}
+	}
 	body := map[string]bool{}
 	queue := append([]string(nil), adj[routerID]...)
 	for len(queue) > 0 {
@@ -520,13 +576,98 @@ func fanOutBody(wf *ir.Workflow, routerID string) map[string]bool {
 		if !ok {
 			continue
 		}
-		if ir.NodeAwaitMode(node) != ir.AwaitNone {
-			// Convergence: the boundary, excluded from the body and not
-			// expanded past.
+		if isFanOutBoundary(wf, node, id, inDegree) {
+			// The boundary: excluded from the body, and not expanded
+			// past. Without the walk stopping here it would swallow the
+			// whole post-fan-out graph, and a rewind onto a node far
+			// downstream would be promoted back to the router.
 			continue
 		}
 		body[id] = true
 		queue = append(queue, adj[id]...)
 	}
 	return body
+}
+
+// isFanOutBoundary reports whether a node ends a fan-out region.
+//
+// A declared `await:` is the explicit form, but the engine also treats
+// more than one distinct incoming source as a convergence point
+// (pkg/runtime/convergence.go), and nothing in the DSL requires the
+// annotation. Relying on `await:` alone happens to work for every bot
+// shipped today and silently over-promotes for any graph that converges
+// implicitly. Terminals end the region too — nothing runs per-branch
+// after them.
+func isFanOutBoundary(wf *ir.Workflow, node ir.Node, id string, inDegree map[string]int) bool {
+	if ir.NodeAwaitMode(node) != ir.AwaitNone {
+		return true
+	}
+	switch node.(type) {
+	case *ir.DoneNode, *ir.FailNode:
+		return true
+	}
+	return inDegree[id] > 1
+}
+
+// supervisorWatches returns the node ids a supervisor declaration
+// watches. Empty means "the whole run" (see pkg/supervise).
+func supervisorWatches(f *ast.File, name string) []string {
+	for _, s := range f.Supervisors {
+		if s != nil && s.Name == name {
+			return s.Watches
+		}
+	}
+	return nil
+}
+
+// groupInstanceNodes maps a changed group (or a changed instantiation of
+// one) to the node ids the compiler will produce: `<prefix>.<node>` for
+// every `use` of that group. See pkg/dsl/ir/expand_groups.go.
+func groupInstanceNodes(f *ast.File, kind, name string) []string {
+	groupName := name
+	if kind == "use" {
+		// name is "<group> as <prefix>".
+		groupName, _, _ = strings.Cut(name, " as ")
+		groupName = strings.TrimSpace(groupName)
+	}
+	var out []string
+	for _, u := range f.Uses {
+		if u == nil || u.Group != groupName {
+			continue
+		}
+		for _, g := range f.Groups {
+			if g == nil || g.Name != groupName {
+				continue
+			}
+			for _, n := range groupNodeNames(g) {
+				out = append(out, u.Prefix+"."+n)
+			}
+		}
+	}
+	sort.Strings(out)
+	return out
+}
+
+// groupNodeNames lists the node declarations inside a group body.
+func groupNodeNames(g *ast.GroupDecl) []string {
+	var out []string
+	for _, d := range g.Agents {
+		out = append(out, d.Name)
+	}
+	for _, d := range g.Judges {
+		out = append(out, d.Name)
+	}
+	for _, d := range g.Routers {
+		out = append(out, d.Name)
+	}
+	for _, d := range g.Humans {
+		out = append(out, d.Name)
+	}
+	for _, d := range g.Tools {
+		out = append(out, d.Name)
+	}
+	for _, d := range g.Computes {
+		out = append(out, d.Name)
+	}
+	return out
 }

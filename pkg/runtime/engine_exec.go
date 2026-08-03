@@ -16,6 +16,7 @@ import (
 	"github.com/SocialGouv/iterion/pkg/backend/model"
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
 	"github.com/SocialGouv/iterion/pkg/store"
+	"github.com/SocialGouv/iterion/pkg/workspacetrack"
 )
 
 // execLoop is the shared execution loop used by both Run and Resume.
@@ -569,7 +570,7 @@ func (e *Engine) snapshotAtNodeBoundary(rs *runState, nodeID string) {
 		// the wrong tool — the workspace is the operator's live checkout
 		// and `git add -A` would stage their own work. iterion's own
 		// versioning covers this shape.
-		e.captureWorkspace(rs, nodeID, "post")
+		e.captureWorkspace(rs, nodeID, workspacetrack.PhasePost)
 		return
 	}
 	loopIter := e.currentLoopIteration(nodeID, rs.loopCounters)
@@ -765,12 +766,6 @@ func (e *Engine) selectEdgeRS(rs *runState, fromNodeID string, output map[string
 	return selected.To, nil
 }
 
-// workspaceLabel names a capture: "<phase>:<node>:<iter>". The rewind
-// resolves "pre:<pivot>:<iter>" to find the state a node started from.
-func workspaceLabel(phase, nodeID string, loopIter int) string {
-	return fmt.Sprintf("%s:%s:%d", phase, nodeID, loopIter)
-}
-
 // captureWorkspace records the workspace through iterion's own tracker.
 // Best-effort, like its git twin: a capture failure costs the ability to
 // rewind that boundary's files, never the run.
@@ -779,7 +774,7 @@ func (e *Engine) captureWorkspace(rs *runState, nodeID, phase string) {
 		return
 	}
 	loopIter := e.currentLoopIteration(nodeID, rs.loopCounters)
-	snap, err := e.workspaceTracker.Capture(rs.runID, e.workDir, workspaceLabel(phase, nodeID, loopIter))
+	snap, err := e.workspaceTracker.Capture(rs.runID, e.workDir, workspacetrack.Label(phase, nodeID, loopIter))
 	if err != nil {
 		if e.logger != nil {
 			e.logger.Warn("workspace capture: node %q iter %d: %v", nodeID, loopIter, err)
@@ -803,12 +798,12 @@ func (e *Engine) aliasWorkspacePre(rs *runState, nodeID string) {
 		return
 	}
 	loopIter := e.currentLoopIteration(nodeID, rs.loopCounters)
-	label := workspaceLabel("pre", nodeID, loopIter)
+	label := workspacetrack.Label(workspacetrack.PhasePre, nodeID, loopIter)
 	head := rs.lastWorkspaceSnapshot
 	if head == "" {
 		// First node of the run: capture, since there is no earlier
 		// boundary to point at.
-		e.captureWorkspace(rs, nodeID, "pre")
+		e.captureWorkspace(rs, nodeID, workspacetrack.PhasePre)
 		return
 	}
 	if err := e.workspaceTracker.Alias(rs.runID, label, head); err != nil && e.logger != nil {

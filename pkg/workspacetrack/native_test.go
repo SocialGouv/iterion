@@ -422,3 +422,53 @@ func TestNative_ForgetReleasesCache(t *testing.T) {
 		t.Fatalf("capture after Forget: %v", err)
 	}
 }
+
+// TestNative_RestoreRefusesEscapingPaths: a manifest is data, and Load is
+// a bare unmarshal. filepath.Join Cleans, so "../.." would resolve
+// outside the workspace — the repo standardised on containment checks
+// after its own security audit.
+func TestNative_RestoreRefusesEscapingPaths(t *testing.T) {
+	store, ws := t.TempDir(), t.TempDir()
+	write(t, ws, "keep.txt", "safe")
+	tr := NewNative(store)
+	snap, err := tr.Capture("run1", ws, "pre:n1:0")
+	if err != nil {
+		t.Fatalf("capture: %v", err)
+	}
+	// Forge an escaping entry, as a tampered or corrupt manifest would.
+	loaded, err := tr.Load("run1", snap.ID)
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	outside := filepath.Join(t.TempDir(), "victim.txt")
+	if err := os.WriteFile(outside, []byte("original"), 0o644); err != nil {
+		t.Fatalf("seed victim: %v", err)
+	}
+	rel, err := filepath.Rel(ws, outside)
+	if err != nil {
+		t.Fatalf("rel: %v", err)
+	}
+	loaded.Entries = append(loaded.Entries, Entry{
+		Path: filepath.ToSlash(rel), Hash: loaded.Entries[0].Hash, Mode: 0o644, Size: 4,
+	})
+	if err := tr.writeSnapshot("run1", loaded); err != nil {
+		t.Fatalf("rewrite manifest: %v", err)
+	}
+
+	report, err := tr.Restore("run1", ws, loaded.ID)
+	if err != nil {
+		t.Fatalf("Restore: %v", err)
+	}
+	if got, _ := os.ReadFile(outside); string(got) != "original" {
+		t.Fatalf("a manifest entry wrote OUTSIDE the workspace: %q", got)
+	}
+	var reported bool
+	for _, p := range report.Skipped {
+		if strings.Contains(p, "..") {
+			reported = true
+		}
+	}
+	if !reported {
+		t.Errorf("report.Skipped = %v, want the rejected path reported", report.Skipped)
+	}
+}
