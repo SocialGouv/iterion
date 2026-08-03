@@ -544,8 +544,35 @@ func (b *ClaudeCodeBackend) Execute(ctx context.Context, task Task) (result Resu
 		b.runRecoveryFormatterPass(ctx, task, rm.SessionID, &result, &totalIn, &totalOut)
 	}
 
-	cost.Annotate(result.Output, task.Model, totalIn, totalOut)
+	annotateCost(&result, task, totalIn, totalOut, rm)
 	return result, nil
+}
+
+// annotateCost stamps `_tokens` / `_model` / `_cost_usd` on the delegation
+// output. The pricing model is the workflow-declared task.Model when set,
+// else the CLI-resolved effective model captured from system/init — a node
+// that omits `model:` (backend auto-detection) otherwise annotates with an
+// empty model id, prices to zero, and the whole run reports tokens but no
+// cost (the studio report then claims "no LLM cost recorded" forever). A
+// cost the CLI itself computed (ResultMessage.TotalCostUSD, metered API
+// runs) wins over the static estimate; sessions that report none (OAuth
+// forfait) fall back to the token estimate. Across multiple result
+// messages (Pass 1 + a formatting pass) the MAX is used, never the sum:
+// per the CLI's session-cumulative accounting the later message subsumes
+// the earlier, and max degrades to a small under-count rather than a
+// double-count if that accounting is ever per-invocation.
+func annotateCost(result *Result, task Task, totalIn, totalOut int, rms ...*claudesdk.ResultMessage) {
+	model := task.Model
+	if model == "" {
+		model = result.EffectiveModel
+	}
+	var cliCost float64
+	for _, rm := range rms {
+		if rm != nil && rm.TotalCostUSD != nil && *rm.TotalCostUSD > cliCost {
+			cliCost = *rm.TotalCostUSD
+		}
+	}
+	cost.AnnotateWithUSD(result.Output, model, totalIn, totalOut, cliCost)
 }
 
 // buildAskUserPendingResult packages the Result returned when the native
@@ -666,7 +693,7 @@ func (b *ClaudeCodeBackend) runTwoPassFormatting(ctx context.Context, task Task,
 		result.Output = output
 		result.RawOutputLen = rawLen
 		result.ParseFallback = false
-		cost.Annotate(result.Output, task.Model, *totalIn, *totalOut)
+		annotateCost(&result, task, *totalIn, *totalOut, rm)
 		return true, result, nil
 	}
 	const maxFmtAttempts = 2
@@ -695,7 +722,7 @@ func (b *ClaudeCodeBackend) runTwoPassFormatting(ctx context.Context, task Task,
 				result.Output = output
 				result.RawOutputLen = rawLen
 				result.ParseFallback = false
-				cost.Annotate(result.Output, task.Model, *totalIn, *totalOut)
+				annotateCost(&result, task, *totalIn, *totalOut, rm)
 				return true, result, nil
 			}
 			return true, result, fmt.Errorf("delegate: claude-code formatting pass failed: %w", fmtErr)
@@ -715,7 +742,7 @@ func (b *ClaudeCodeBackend) runTwoPassFormatting(ctx context.Context, task Task,
 		result.Output = output
 		result.RawOutputLen = rawLen
 		result.ParseFallback = fallback
-		cost.Annotate(result.Output, task.Model, *totalIn, *totalOut)
+		annotateCost(&result, task, *totalIn, *totalOut, rm, fmtRM)
 		return true, result, nil
 	}
 	// Defensive: loop fell through without returning. Shouldn't happen
