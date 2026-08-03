@@ -146,3 +146,65 @@ export async function getReviewFileDiff(
     `/runs/${encodeURIComponent(runId)}/review/diff?${qs.toString()}`,
   );
 }
+
+
+// ---------------------------------------------------------------------------
+// Node changes — "an iterion node is like a commit"
+// ---------------------------------------------------------------------------
+
+export interface NodeFileChange {
+  path: string;
+  status: string;
+  added?: number;
+  deleted?: number;
+  binary?: boolean;
+}
+
+export interface NodeChangeSet {
+  run_id: string;
+  node_id: string;
+  iteration: number;
+  // Which backend answered: "git" for a worktree run, "workspace" for an
+  // in-place one.
+  source?: string;
+  // available:false and an empty file list mean DIFFERENT things — the
+  // first is "we cannot tell", the second is "this node changed nothing".
+  // reason is always populated for the first.
+  available: boolean;
+  reason?: string;
+  files: NodeFileChange[];
+  // Paths a boundary deliberately did not store (oversized). Their content
+  // is unavailable; showing them is what stops the panel implying coverage
+  // it does not have.
+  uncaptured?: string[];
+}
+
+// getNodeChanges returns what one node execution did to the workspace.
+// `iteration` is the node's loop_iteration — NOT the 0-based index of the
+// iteration pills, which is a different number on any looped node.
+export async function getNodeChanges(
+  runId: string,
+  nodeId: string,
+  opts: { iteration?: number } = {},
+): Promise<NodeChangeSet> {
+  const qs = new URLSearchParams();
+  if (opts.iteration !== undefined) qs.set("iteration", String(opts.iteration));
+  const suffix = qs.toString();
+  return request(
+    `/runs/${encodeURIComponent(runId)}/nodes/${encodeURIComponent(nodeId)}/changes${suffix ? `?${suffix}` : ""}`,
+  );
+}
+
+// getNodeFileDiff returns one file's before/after within a node's boundary.
+export async function getNodeFileDiff(
+  runId: string,
+  nodeId: string,
+  path: string,
+  opts: { iteration?: number } = {},
+): Promise<RunFileDiff> {
+  const qs = new URLSearchParams({ path });
+  if (opts.iteration !== undefined) qs.set("iteration", String(opts.iteration));
+  return request(
+    `/runs/${encodeURIComponent(runId)}/nodes/${encodeURIComponent(nodeId)}/diff?${qs.toString()}`,
+  );
+}

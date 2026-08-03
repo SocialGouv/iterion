@@ -6,6 +6,7 @@ import { listArtifacts } from "@/api/runs";
 import { Tabs } from "@/components/ui";
 
 import { ArtifactTab } from "./detail/ArtifactTab";
+import { ChangesTab } from "./detail/ChangesTab";
 import { CollapseButton } from "./detail/CollapseButton";
 import { DetailHeader } from "./detail/DetailHeader";
 import { EventsTab } from "./detail/EventsTab";
@@ -205,6 +206,10 @@ export default function NodeDetailPanel({
           : "Artifact",
       disabled: !hasArtifact,
     },
+    // Deliberately NOT `disabled`-gated: the file count is only known
+    // after the request, and gating on it would force the eager
+    // parent-level fetch that the lazy in-tab query exists to avoid.
+    { value: "changes", label: "Files" } as const,
     { value: "events", label: `Events (${matching.length})` },
     { value: "logs", label: "Logs" },
   ];
@@ -253,6 +258,17 @@ export default function NodeDetailPanel({
               ) : (
                 <ToolCallList calls={toolCalls} runId={runId} />
               )}
+            </div>
+          ),
+          changes: (
+            <div className="overflow-auto px-4 py-3 h-full">
+              <ChangesTab
+                runId={runId}
+                nodeId={exec.ir_node_id}
+                // exec.loop_iteration, NOT selectedIteration — the latter is
+                // the 0-based pill index and names a different ref.
+                iteration={exec.loop_iteration}
+              />
             </div>
           ),
           artifact: (

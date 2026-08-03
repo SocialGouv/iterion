@@ -607,3 +607,123 @@ func TestNative_PruneObjectsReclaimsUnreferencedContent(t *testing.T) {
 		t.Errorf("%d orphaned objects survived the sweep", countObjects())
 	}
 }
+
+// TestNative_ChangesBetweenSnapshots is the comparison the tracker was
+// missing: it could restore a node's work but not show it.
+func TestNative_ChangesBetweenSnapshots(t *testing.T) {
+	store, ws := t.TempDir(), t.TempDir()
+	write(t, ws, "keep.txt", "unchanged")
+	write(t, ws, "edit.txt", "before")
+	write(t, ws, "gone.txt", "will be deleted")
+	tr := NewNative(store)
+	before, err := tr.Capture("run1", ws, "pre:implement:0")
+	if err != nil {
+		t.Fatalf("capture: %v", err)
+	}
+
+	write(t, ws, "edit.txt", "after")
+	write(t, ws, "new.txt", "created by the node")
+	if err := os.Remove(filepath.Join(ws, "gone.txt")); err != nil {
+		t.Fatalf("remove: %v", err)
+	}
+	after, err := tr.Capture("run1", ws, "post:implement:0")
+	if err != nil {
+		t.Fatalf("capture: %v", err)
+	}
+
+	changes, err := tr.Changes("run1", before.ID, after.ID)
+	if err != nil {
+		t.Fatalf("Changes: %v", err)
+	}
+	got := map[string]ChangeStatus{}
+	for _, c := range changes {
+		got[c.Path] = c.Status
+	}
+	want := map[string]ChangeStatus{"edit.txt": ChangeModified, "new.txt": ChangeAdded, "gone.txt": ChangeDeleted}
+	if len(got) != len(want) {
+		t.Fatalf("changes = %v, want exactly %v — an unchanged file must not appear", got, want)
+	}
+	for p, st := range want {
+		if got[p] != st {
+			t.Errorf("%s = %q, want %q", p, got[p], st)
+		}
+	}
+
+	// Both sides are readable by hash, which is what a diff needs.
+	for _, c := range changes {
+		if c.Status == ChangeModified {
+			oldB, err := tr.ReadObject(c.OldHash)
+			if err != nil || string(oldB) != "before" {
+				t.Errorf("ReadObject(old) = %q, %v; want \"before\"", oldB, err)
+			}
+			newB, err := tr.ReadObject(c.NewHash)
+			if err != nil || string(newB) != "after" {
+				t.Errorf("ReadObject(new) = %q, %v; want \"after\"", newB, err)
+			}
+		}
+	}
+}
+
+// TestNative_ChangesFlagsBinaryAndUncaptured: the panel must be able to
+// say "cannot show this", and for two different reasons.
+func TestNative_ChangesFlagsBinaryAndUncaptured(t *testing.T) {
+	store, ws := t.TempDir(), t.TempDir()
+	write(t, ws, "text.txt", "readable")
+	tr := NewNative(store)
+	tr.MaxFileBytes = 1024
+	before, err := tr.Capture("run1", ws, "pre:n:0")
+	if err != nil {
+		t.Fatalf("capture: %v", err)
+	}
+
+	// A binary file (NUL byte) and one too large to store.
+	if err := os.WriteFile(filepath.Join(ws, "image.bin"), []byte{0x89, 0x50, 0x00, 0x01, 0x02}, 0o644); err != nil {
+		t.Fatalf("write binary: %v", err)
+	}
+	write(t, ws, "huge.bin", strings.Repeat("x", 4096))
+	after, err := tr.Capture("run1", ws, "post:n:0")
+	if err != nil {
+		t.Fatalf("capture: %v", err)
+	}
+
+	changes, err := tr.Changes("run1", before.ID, after.ID)
+	if err != nil {
+		t.Fatalf("Changes: %v", err)
+	}
+	byPath := map[string]Change{}
+	for _, c := range changes {
+		byPath[c.Path] = c
+	}
+	if !byPath["image.bin"].Binary {
+		t.Error("image.bin must be flagged binary — rendering NUL bytes as text is not a diff")
+	}
+	if byPath["image.bin"].Uncaptured {
+		t.Error("image.bin WAS captured; only oversized paths are uncaptured")
+	}
+	if c, ok := byPath["huge.bin"]; !ok || !c.Uncaptured {
+		t.Errorf("huge.bin = %+v; an oversized path must be reported, or its absence reads as \"unchanged\"", c)
+	}
+	if !byPath["text.txt"].Binary && byPath["text.txt"].Path != "" {
+		t.Error("text.txt should not appear at all — it did not change")
+	}
+}
+
+// TestNative_RefusesMalformedHash: a manifest is untrusted data. A short
+// hash used to panic on objectPath's slicing, and one with separators
+// resolved out of the pool once filepath.Join cleaned it.
+func TestNative_RefusesMalformedHash(t *testing.T) {
+	tr := NewNative(t.TempDir())
+	for _, bad := range []string{"", "a", "ab", "../../etc/passwd", strings.Repeat("z", 64), strings.Repeat("a", 63)} {
+		if _, err := tr.ReadObject(bad); err == nil {
+			t.Errorf("ReadObject(%q) succeeded; a malformed hash must be refused", bad)
+		}
+		// Must not panic either.
+		if tr.isBinary(bad) {
+			t.Errorf("isBinary(%q) = true for a hash that cannot be read", bad)
+		}
+	}
+	valid := strings.Repeat("ab", 32)
+	if _, err := tr.ReadObject(valid); err == nil {
+		t.Error("a well-formed but absent hash should still error")
+	}
+}

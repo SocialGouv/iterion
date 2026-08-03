@@ -87,6 +87,26 @@ func (n *Native) objectPath(hash string) string {
 	return filepath.Join(n.root, "workspace-objects", hash[:2], hash[2:])
 }
 
+// validHash guards every use of a manifest-supplied hash.
+//
+// A manifest is untrusted data — Load is a bare unmarshal, and this
+// package already applies that reasoning to Entry.Path. A hash shorter
+// than three characters makes objectPath's slicing panic, and one
+// containing separators or dots resolves out of the pool once
+// filepath.Join cleans it. Hex-only, full length, no exceptions.
+func validHash(hash string) bool {
+	if len(hash) != 64 {
+		return false
+	}
+	for i := 0; i < len(hash); i++ {
+		c := hash[i]
+		if (c < '0' || c > '9') && (c < 'a' || c > 'f') {
+			return false
+		}
+	}
+	return true
+}
+
 func (n *Native) snapshotPath(runID, id string) string {
 	return filepath.Join(n.runDir(runID), "snapshots", id+".json")
 }
@@ -465,6 +485,10 @@ func (n *Native) Restore(runID, workspaceDir, snapshotID string, protected ...st
 		dest := filepath.Join(workspaceDir, filepath.FromSlash(e.Path))
 		if sameContent(dest, e) {
 			report.Unchanged++
+			continue
+		}
+		if !validHash(e.Hash) {
+			report.Skipped = append(report.Skipped, e.Path)
 			continue
 		}
 		blob, rerr := os.ReadFile(n.objectPath(e.Hash))
