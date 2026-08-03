@@ -187,8 +187,7 @@ func (s *Service) revertViaTracker(run *store.Run, wf *ir.Workflow, cp *store.Ch
 		// first two, and conflating them sent people hunting for a
 		// non-existent "old run" problem.
 		if s.workspaceTracker.Head(run.ID) == "" {
-			return &fileRevertResult{SkipReason: fmt.Sprintf(
-				"this run captured no workspace snapshots at all — it was launched on a path that does not enable workspace versioning, or versioning was off")}, nil
+			return &fileRevertResult{SkipReason: "this run captured no workspace snapshots at all — it was launched on a path that does not enable workspace versioning, or versioning was off"}, nil
 		}
 		return &fileRevertResult{SkipReason: fmt.Sprintf(
 			"the run has workspace snapshots but none recorded before %q — that node kind does not mark a pre-execution boundary", pivot)}, nil
