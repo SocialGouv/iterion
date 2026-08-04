@@ -76,9 +76,17 @@ func TestMarkReviewGate_WritesTheRefAndIsIdempotent(t *testing.T) {
 	// The companion anchors when the gate STARTS and the pause asks again:
 	// both must get the SAME seq, or the two judge different ranges.
 	second := e.markReviewGate(rs, "review")
-	if first["gate_seq"] != second["gate_seq"] {
-		t.Errorf("gate_seq moved between the companion's anchor and the pause: %v → %v",
-			first["gate_seq"], second["gate_seq"])
+	// reviewGateScope emits "review_gate_seq" — an earlier draft of this
+	// test read "gate_seq", so both sides were nil and the comparison
+	// could never fail, including if the memoisation was removed
+	// outright. Assert the key is present before comparing, so a rename
+	// breaks the test instead of silently neutering it.
+	if _, ok := first["review_gate_seq"]; !ok {
+		t.Fatalf("no review_gate_seq in the anchor scope %v — the assertion below would be vacuous", first)
+	}
+	if first["review_gate_seq"] != second["review_gate_seq"] {
+		t.Errorf("gate seq moved between the companion's anchor and the pause: %v → %v",
+			first["review_gate_seq"], second["review_gate_seq"])
 	}
 	if refExists(t, dir, store.ReviewGateRef(rs.runID, 1)) {
 		t.Error("a second anchor was taken for the same gate — the range would restart mid-review")

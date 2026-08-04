@@ -18,6 +18,12 @@ type FileChange struct {
 	Binary bool `json:"binary,omitempty"`
 	// Size is the head-side size for A/M, base-side size for D.
 	Size int64 `json:"size,omitempty"`
+	// Uncaptured marks a path the tracker deliberately did not store
+	// (over MaxFileBytes). Its content is unavailable on that side, so no
+	// diff can be rendered — but it MUST still be listed: this is the
+	// review surface, and the file most likely to exceed the cap is the
+	// media export the run exists to produce.
+	Uncaptured bool `json:"uncaptured,omitempty"`
 }
 
 // DiffFile is the before/after payload for one path between two snapshots.
@@ -33,6 +39,18 @@ type DiffFile struct {
 // diffPayloadCap bounds the bytes loaded for either side of a per-file
 // diff (matches pkg/git's untrackedReadCap so both backends behave alike).
 const diffPayloadCap int64 = 5 << 20 // 5 MiB
+
+// pathSet indexes a snapshot's Skipped list.
+func pathSet(s *Snapshot) map[string]bool {
+	out := map[string]bool{}
+	if s == nil {
+		return out
+	}
+	for _, p := range s.Skipped {
+		out[p] = true
+	}
+	return out
+}
 
 // StatusBetween returns every path whose content hash differs between
 // base and head. base may be nil (first capture of a run = all files
@@ -66,10 +84,46 @@ func StatusBetween(base, head *Snapshot) []FileChange {
 			})
 		}
 	}
+	// Skipped is not decoration: Capture records an oversized file there
+	// and writes NO Entry for it, so a range derived from Entries alone
+	// both loses it and mis-reports it.
+	baseSkipped, headSkipped := pathSet(base), pathSet(head)
+
 	for path, b := range baseMap {
-		if _, ok := headMap[path]; !ok {
+		if _, ok := headMap[path]; ok {
+			continue
+		}
+		if headSkipped[path] {
+			// It EXISTS at head — it just crossed the size cap, so nothing
+			// was stored for it. Reporting "D" here told the reviewer a
+			// file was deleted when it had merely grown; it is emitted as
+			// an uncaptured modification below instead.
+			continue
+		}
+		out = append(out, FileChange{
+			Path: path, Status: "D", Binary: looksBinary(path), Size: b.Size,
+		})
+	}
+
+	// Head-side skipped paths. Only the ones that actually moved: a path
+	// uncaptured on BOTH sides shows no evidence of change, and listing it
+	// every gate would be noise. The two that matter are a NEW oversized
+	// file (invisible otherwise — the reviewer approves without ever
+	// seeing the run's largest product) and one that was captured before
+	// and is not now.
+	for path := range headSkipped {
+		if _, inHead := headMap[path]; inHead {
+			continue // captured after all
+		}
+		_, inBase := baseMap[path]
+		switch {
+		case inBase:
 			out = append(out, FileChange{
-				Path: path, Status: "D", Binary: looksBinary(path), Size: b.Size,
+				Path: path, Status: "M", Binary: looksBinary(path), Uncaptured: true,
+			})
+		case !baseSkipped[path]:
+			out = append(out, FileChange{
+				Path: path, Status: "A", Binary: looksBinary(path), Uncaptured: true,
 			})
 		}
 	}

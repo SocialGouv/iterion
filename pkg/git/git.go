@@ -80,6 +80,11 @@ type FileStatus struct {
 	// had changed, on a surface that invites the reviewer to skip files.
 	// Set it and the UI omits the counts instead of asserting zeros.
 	CountsUnknown bool `json:"counts_unknown,omitempty"`
+	// Uncaptured marks a path present in the range whose CONTENT was never
+	// stored (over the workspace-versioning size cap), so no diff can be
+	// rendered for it. Distinct from Binary, where content exists but is
+	// not text. Set only by the workspace backend.
+	Uncaptured bool `json:"uncaptured,omitempty"`
 }
 
 // DiffPayload carries the two sides of a file diff for the Monaco
