@@ -738,6 +738,15 @@ func TestReport_interimAttemptChargesButKeepsTheLeaseOpen(t *testing.T) {
 	if len(open) != 0 {
 		t.Errorf("%d lease(s) still open after the settling report", len(open))
 	}
+	// The lease is the donor's audit trail; it must agree with the ledger.
+	hist, err := h.leases.ListByDonor(ctx, "alice", 10)
+	if err != nil || len(hist) != 1 {
+		t.Fatalf("donor history = (%d, %v), want 1 lease", len(hist), err)
+	}
+	if hist[0].CostUSD != 5 {
+		t.Errorf("the donor's record of the run reads $%v, want $5 — it under-reports what their ledger was charged",
+			hist[0].CostUSD)
+	}
 }
 
 // An interim report must not free the donor's slot either: the run is

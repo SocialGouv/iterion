@@ -11,9 +11,11 @@ import (
 	"github.com/SocialGouv/iterion/pkg/backend/model"
 	"github.com/SocialGouv/iterion/pkg/cloud/metrics"
 	"github.com/SocialGouv/iterion/pkg/credpool"
+	"github.com/SocialGouv/iterion/pkg/dsl/ir"
 	iterlog "github.com/SocialGouv/iterion/pkg/log"
 	"github.com/SocialGouv/iterion/pkg/queue"
 	"github.com/SocialGouv/iterion/pkg/runtime"
+	"github.com/SocialGouv/iterion/pkg/runtime/recovery"
 	"github.com/SocialGouv/iterion/pkg/secrets"
 	"github.com/SocialGouv/iterion/pkg/store"
 )
@@ -103,7 +105,7 @@ func TestRecordPoolSpend_chargesTheDonorAndClosesTheLease(t *testing.T) {
 	h := newPoolHarness(t, credpool.Limits{MaxUSDPerDay: 10, MaxConcurrentRuns: 1})
 	ctx := context.Background()
 
-	h.runner.recordPoolSpend(&queue.RunMessage{RunID: "run-1", TenantID: "team-1"}, usageWith(1.5, 900), nil)
+	h.runner.recordPoolSpend(&queue.RunMessage{RunID: "run-1", TenantID: "team-1"}, usageWith(1.5, 900), nil, false)
 
 	day, _, err := h.ledger.Usage(ctx, credpool.PledgeID("donor", credpool.SourceOAuth, "claude_code"), time.Now().UTC())
 	if err != nil {
@@ -126,7 +128,7 @@ func TestRecordPoolSpend_chargesTheDonorAndClosesTheLease(t *testing.T) {
 // vast majority of them.
 func TestRecordPoolSpend_unleasedRunIsANoOp(t *testing.T) {
 	h := newPoolHarness(t, credpool.Limits{})
-	h.runner.recordPoolSpend(&queue.RunMessage{RunID: "run-elsewhere"}, usageWith(2, 100), nil)
+	h.runner.recordPoolSpend(&queue.RunMessage{RunID: "run-elsewhere"}, usageWith(2, 100), nil, false)
 	day, _, _ := h.ledger.Usage(context.Background(), credpool.PledgeID("donor", credpool.SourceOAuth, "claude_code"), time.Now().UTC())
 	if day.CostUSD != 0 {
 		t.Errorf("charged %v for a run that holds no lease", day.CostUSD)
@@ -136,7 +138,7 @@ func TestRecordPoolSpend_unleasedRunIsANoOp(t *testing.T) {
 // No pool wired at all — the common deployment. Must not panic or block.
 func TestRecordPoolSpend_noPoolIsANoOp(t *testing.T) {
 	r := &Runner{cfg: Config{Logger: iterlog.New(iterlog.LevelError, nil)}}
-	r.recordPoolSpend(&queue.RunMessage{RunID: "run-1"}, usageWith(1, 10), nil)
+	r.recordPoolSpend(&queue.RunMessage{RunID: "run-1"}, usageWith(1, 10), nil, false)
 }
 
 // The condition mapping decides whether a donor keeps their place. Getting
@@ -209,7 +211,7 @@ func TestRecordPoolSpend_usageWindowRestsTheDonor(t *testing.T) {
 		&queue.RunMessage{RunID: "run-1", TenantID: "team-1"},
 		usageWith(0.2, 50),
 		&delegate.ErrRateLimited{Kind: delegate.RateLimitKindUsageWindow, ResetAt: reset},
-	)
+		false)
 
 	p, err := h.pledges.Get(ctx, credpool.PledgeID("donor", credpool.SourceOAuth, "claude_code"))
 	if err != nil {
@@ -230,27 +232,46 @@ func TestRecordPoolSpend_usageWindowRestsTheDonor(t *testing.T) {
 // pause must still park the donor.
 //
 // Measured on prod: a lent credential whose token had expired stayed
-// `active` and first in the pool's rotation after two runs, because by
-// the time the runner reports, execErr says only "paused" — the rejection
-// is nowhere in it. Each subsequent run would take another unit of the
-// donor's daily quota and pause on the same dead credential.
+// `active` and first in the pool's rotation after two runs, because by the
+// time the runner reports, execErr says only "paused" — the rejection is
+// nowhere in it.
 //
-// Driven through the production event path (the engine's own
-// node_recovery event, carrying the code recovery.Classify assigned), not
-// a hand-set flag: the flag is exactly what the test must prove gets set.
+// Driven by a REAL engine writing through the store the runner hands it.
+// The signal is an ENGINE event (node_recovery), and the first version of
+// this fix wired the tap onto the executor's emitter only, leaving the
+// engine writing to the raw store — the capability was dead in production
+// while a test that called observe() by hand stayed green.
 func TestRecordPoolSpend_authFailureAbsorbedByRecoveryStillParksTheDonor(t *testing.T) {
 	h := newPoolHarness(t, credpool.Limits{MaxUSDPerDay: 10})
 	ctx := context.Background()
 
 	usage := newMetricsEmitter(&recordingEmitter{}, metrics.New())
-	usage.observe(store.Event{
-		Type:   store.EventNodeRecovery,
-		NodeID: "n1",
-		Data:   map[string]any{"code": string(runtime.ErrCodeAuthFailed), "attempt": 1},
-	})
+	st, err := store.New(t.TempDir())
+	if err != nil {
+		t.Fatalf("store: %v", err)
+	}
+	wf := &ir.Workflow{
+		Name:  "auth_probe",
+		Entry: "agent",
+		Nodes: map[string]ir.Node{
+			"agent": &ir.AgentNode{BaseNode: ir.BaseNode{ID: "agent"}},
+			"done":  &ir.DoneNode{BaseNode: ir.BaseNode{ID: "done"}},
+		},
+		Edges: []*ir.Edge{{From: "agent", To: "done"}},
+	}
+	// The engine gets the SAME wrapper the runner builds. If that wiring
+	// regresses, this test goes red.
+	eng := runtime.New(wf, observingStore{RunStore: st, observe: usage.observe},
+		authRejectingExecutor{},
+		runtime.WithRecoveryDispatch(recovery.Dispatch(recovery.DefaultRecipes())))
+	_ = eng.Run(ctx, "run-1", map[string]any{})
 
-	// The attempt ends PAUSED, not on the auth error.
-	h.runner.recordPoolSpend(&queue.RunMessage{RunID: "run-1", TenantID: "team-1"}, usage, runtime.ErrRunPaused)
+	if !usage.SawAuthFailure() {
+		t.Fatal("the engine's own auth classification never reached the runner's observer")
+	}
+
+	// The attempt ends PAUSED, not on the auth error — the prod shape.
+	h.runner.recordPoolSpend(&queue.RunMessage{RunID: "run-1", TenantID: "team-1"}, usage, runtime.ErrRunPaused, false)
 
 	p, err := h.pledges.Get(ctx, credpool.PledgeID("donor", credpool.SourceOAuth, "claude_code"))
 	if err != nil {
@@ -261,12 +282,20 @@ func TestRecordPoolSpend_authFailureAbsorbedByRecoveryStillParksTheDonor(t *test
 	}
 }
 
+// authRejectingExecutor fails every node the way a provider rejecting a
+// credential does.
+type authRejectingExecutor struct{}
+
+func (authRejectingExecutor) Execute(context.Context, ir.Node, map[string]any) (map[string]any, error) {
+	return nil, &delegate.ErrAuthFailed{Provider: "claw", Detail: "401 token expired"}
+}
+
 // The mirror: an ordinary workflow failure says nothing about the
 // credential and must not cost the donor their place.
 func TestRecordPoolSpend_ordinaryFailureLeavesTheDonorAlone(t *testing.T) {
 	h := newPoolHarness(t, credpool.Limits{MaxUSDPerDay: 10})
 	h.runner.recordPoolSpend(&queue.RunMessage{RunID: "run-1", TenantID: "team-1"},
-		usageWith(1, 10), errors.New("the bot's own logic failed"))
+		usageWith(1, 10), errors.New("the bot's own logic failed"), false)
 
 	p, err := h.pledges.Get(context.Background(), credpool.PledgeID("donor", credpool.SourceOAuth, "claude_code"))
 	if err != nil {

@@ -229,12 +229,24 @@ func (s *MemoryLeaseStore) Close(_ context.Context, leaseID string, costUSD floa
 		return false, nil
 	}
 	l.Closed = true
-	l.CostUSD = costUSD
+	l.CostUSD += costUSD
 	l.Outcome = outcome
 	t := when.UTC()
 	l.ClosedAt = &t
 	s.m[leaseID] = l
 	return true, nil
+}
+
+func (s *MemoryLeaseStore) AddCost(_ context.Context, leaseID string, costUSD float64) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	l, ok := s.m[leaseID]
+	if !ok {
+		return ErrNotFound
+	}
+	l.CostUSD += costUSD
+	s.m[leaseID] = l
+	return nil
 }
 
 func (s *MemoryLeaseStore) LiveCommitment(_ context.Context, pledgeID, excludeRunID string, now time.Time) (int, float64, error) {

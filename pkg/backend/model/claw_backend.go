@@ -1019,6 +1019,10 @@ var providerCredentialEnvVars = []string{
 	// from ZAI_API_KEY when no other anthropic auth is present;
 	// ANTHROPIC_AUTH_TOKEN/ANTHROPIC_BASE_URL cover the explicit BYOK path.
 	"ZAI_API_KEY",
+	// xai's provider reads XAI_API_KEY from env, so this is the only
+	// channel into the container — and the pool can grant a donated xai
+	// key, which is METERED and billed to its lender.
+	"XAI_API_KEY",
 	"ANTHROPIC_AUTH_TOKEN",
 	"ANTHROPIC_BASE_URL",
 	"GEMINI_API_KEY",
@@ -1051,6 +1055,7 @@ var byokEnvVar = map[secrets.Provider]string{
 	secrets.ProviderAnthropic: "ANTHROPIC_API_KEY",
 	secrets.ProviderAzure:     "AZURE_OPENAI_API_KEY",
 	secrets.ProviderZAI:       "ZAI_API_KEY",
+	secrets.ProviderXAI:       "XAI_API_KEY",
 }
 
 // forwardableProviderEnv builds the env map ClawBackend hands to
@@ -1095,7 +1100,15 @@ func forwardableProviderEnv(ctx context.Context) map[string]string {
 	// THIS RUN.
 	if creds.OAuthDir(string(secrets.OAuthKindCodex)) != "" {
 		env["CODEX_HOME"] = secrets.CodexSandboxConfigDir
-		env["ITERION_OPENAI_USE_OAUTH"] = "1"
+		// Forced ONLY when the run resolved no OpenAI key of its own. A
+		// tenant can hold both a BYOK key and a connected forfait, and the
+		// host resolver spends the KEY in that case — forcing here would
+		// make the same run spend the opposite instrument depending on
+		// whether it happened to be sandboxed, quietly draining a
+		// subscription the tenant did not choose to use.
+		if creds.APIKeys[secrets.ProviderOpenAI] == "" {
+			env["ITERION_OPENAI_USE_OAUTH"] = "1"
+		}
 	}
 	return env
 }

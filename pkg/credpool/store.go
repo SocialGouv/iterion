@@ -67,8 +67,12 @@ type LeaseStore interface {
 	HasServedAttempt(ctx context.Context, runID, pledgeID string) (bool, error)
 	// Close marks a lease reported and frees its slot. It is a CAS on
 	// "still open": the caller may only charge the donor when it wins,
-	// which is what stops a redelivered report double-charging.
+	// which is what stops a redelivered report double-charging. costUSD is
+	// ADDED to whatever interim charges the lease already carries.
 	Close(ctx context.Context, leaseID string, costUSD float64, outcome string, when time.Time) (won bool, err error)
+	// AddCost accumulates an interim attempt's spend on a still-open lease,
+	// so a redelivered run's audit trail matches the donor's ledger.
+	AddCost(ctx context.Context, leaseID string, costUSD float64) error
 	// LiveCommitment reports what a pledge currently has at stake: how many
 	// live (unclosed, unexpired) leases it holds, and the total allowance
 	// already handed to them. Derived from the leases rather than

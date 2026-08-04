@@ -51,7 +51,12 @@ func (r *Runner) recordOrgSpend(msg *queue.RunMessage, usage *metricsEmitter) {
 // ctx and best-effort for the same reason as recordOrgSpend: accounting
 // must never turn a finished run into a failed one. The lease's own TTL
 // plus the server-side sweeper are the backstop if this write is lost.
-func (r *Runner) recordPoolSpend(msg *queue.RunMessage, usage *metricsEmitter, execErr error) {
+// interim says this attempt does NOT settle the run: the queue will
+// redeliver the same sealed bundle, so the next pod runs on this very
+// lease. Decided by the caller, which is the only place the delivery's
+// real disposition is known — a run on its last permitted delivery is
+// parked, not redelivered.
+func (r *Runner) recordPoolSpend(msg *queue.RunMessage, usage *metricsEmitter, execErr error, interim bool) {
 	if r.cfg.CredPool == nil || usage == nil {
 		return
 	}
@@ -64,10 +69,6 @@ func (r *Runner) recordPoolSpend(msg *queue.RunMessage, usage *metricsEmitter, e
 	if condition == credpool.ConditionOK && usage.SawAuthFailure() {
 		condition = credpool.ConditionAuthFailed
 	}
-	// An attempt that Naks is redelivered on the SAME sealed bundle, so the
-	// next pod runs on this very lease. Closing it here would leave every
-	// redelivered attempt with nothing to report against.
-	interim := classifyExecResult(execErr, msg.RunID).action == actionNak
 	bg, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	if err := r.cfg.CredPool.Report(bg, msg.RunID, credpool.Outcome{

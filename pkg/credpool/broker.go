@@ -517,7 +517,9 @@ func (b *Broker) supersedeOpenLeases(ctx context.Context, runID string, now time
 		return
 	}
 	for _, l := range open {
-		if _, cerr := b.leases.Close(ctx, l.ID, l.CostUSD, OutcomeSuperseded, now); cerr != nil {
+		// Zero, not l.CostUSD: Close ADDS, and whatever this lease already
+		// carries was recorded when it was charged.
+		if _, cerr := b.leases.Close(ctx, l.ID, 0, OutcomeSuperseded, now); cerr != nil {
 			b.logger.Warn("credpool: could not supersede lease %s of run %s: %v", l.ID, runID, cerr)
 		}
 	}
@@ -644,6 +646,12 @@ func (b *Broker) Report(ctx context.Context, runID string, out Outcome) error {
 	// while their ledger recorded a single attempt. Charge now; the
 	// attempt that finally settles the run closes.
 	if out.Interim {
+		// Onto the lease as well as the ledger: the lease IS the donor's
+		// audit trail, and a redelivered run whose trail showed only the
+		// last attempt would contradict the ceilings it was charged against.
+		if err := b.leases.AddCost(ctx, lease.ID, out.CostUSD); err != nil {
+			b.logger.Warn("credpool: could not record the interim spend of run %s on lease %s: %v", runID, lease.ID, err)
+		}
 		return b.chargeAndReact(ctx, lease, out, now, runID)
 	}
 

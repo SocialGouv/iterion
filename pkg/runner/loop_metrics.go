@@ -77,6 +77,25 @@ func newMetricsEmitter(inner model.EventEmitter, reg *metrics.Registry) *metrics
 	}
 }
 
+// observingStore is the run's event store with the metrics emitter tapped
+// into AppendEvent.
+//
+// The executor writes through the emitter, but the ENGINE writes straight
+// to its own store — and node_recovery, the only place a recovery-absorbed
+// auth failure is still named, is an ENGINE event. Handing the engine the
+// raw store left that classification unobserved on the cloud path (the
+// local path already wraps), so the donor of a rejected credential was
+// never parked no matter what the emitter did with it.
+type observingStore struct {
+	store.RunStore
+	observe func(store.Event)
+}
+
+func (s observingStore) AppendEvent(ctx context.Context, runID string, evt store.Event) (*store.Event, error) {
+	s.observe(evt)
+	return s.RunStore.AppendEvent(ctx, runID, evt)
+}
+
 // rateForLocked returns the cached per-token rates for the given model,
 // resolving once via cost.EstimateUSD. Called under m.mu.
 func (m *metricsEmitter) rateForLocked(modelName string) modelRate {
