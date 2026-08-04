@@ -201,7 +201,14 @@ export function ReviewScopePanel({ runId, live, pauseKey }: Props) {
                           </span>
                         ) : null}
                         <span className="truncate font-mono text-fg">{f.path}</span>
-                        {f.binary || media ? (
+                        {f.uncaptured ? (
+                          <span
+                            className="shrink-0 text-fg-subtle"
+                            title="Too large to version — listed so the range stays complete, but no diff can be shown"
+                          >
+                            (not versioned)
+                          </span>
+                        ) : f.binary || media ? (
                           <span className="shrink-0 text-fg-subtle">
                             {media ? "play" : "(binary)"}
                           </span>

@@ -488,6 +488,13 @@ func workspaceChangesToFileStatus(changes []workspacetrack.FileChange) []gitlib.
 	for _, c := range changes {
 		fs := gitlib.FileStatus{Path: c.Path, Status: c.Status, Binary: c.Binary}
 		switch {
+		case c.Uncaptured:
+			// Nothing was stored for this path, so there is no diff to
+			// render and no counts to give. Listing it is the point: the
+			// file most likely to exceed the capture cap is the media
+			// export the run exists to produce.
+			fs.CountsUnknown = true
+			fs.Uncaptured = true
 		case c.Binary:
 			fs.Added, fs.Deleted = -1, -1
 		default:
@@ -626,6 +633,14 @@ func groupByNodeWorkspace(tracker workspacetrack.Tracker, runID string, files []
 	}
 	var ranges []nodeRange
 	for _, b := range bounds {
+		// Filter BEFORE the two manifest loads and the diff, as the git
+		// twin already does: bounds holds every pre:/post: pair the run
+		// ever recorded, each manifest lists the whole versioned workspace
+		// (up to MaxFiles), and on a multi-gate run most pairs are outside
+		// the range being shown. The predicate needs only the ids.
+		if !snapshotWithinGate(b.postID, baseID, headSnapID) {
+			continue
+		}
 		preSnap, err := tracker.Load(runID, b.preID)
 		if err != nil {
 			continue
@@ -642,9 +657,6 @@ func groupByNodeWorkspace(tracker workspacetrack.Tracker, runID string, files []
 		when := int64(0)
 		if !postSnap.CreatedAt.IsZero() {
 			when = postSnap.CreatedAt.Unix()
-		}
-		if !snapshotWithinGate(b.postID, baseID, headSnapID) {
-			continue
 		}
 		ranges = append(ranges, nodeRange{node: b.node, loopIter: b.loopIter, when: when, set: set})
 	}
