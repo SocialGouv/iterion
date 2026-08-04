@@ -2,6 +2,13 @@
 
 Iterion ships as an **Agent Skill** compatible with Claude Code, Codex, Cursor, Windsurf, GitHub Copilot, Cline, Aider, and other AI coding agents. Once installed, your agent knows the full `.bot` DSL and can write correct workflows for you.
 
+The skill teaches an agent to *author* workflows; its operating
+counterpart is the [MCP server](mcp-server.md) (`iterion mcp`), which
+gives the same agent typed tools to *run* Iterion — launch and follow
+runs, answer questions, groom the board, and drive a cloud instance.
+Install both for the full loop: write a bot, then operate it without
+leaving the agent.
+
 ## Install the skill
 
 ```bash

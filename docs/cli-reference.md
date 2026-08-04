@@ -17,6 +17,7 @@ This page maps every public top-level command in the current binary and document
 | `inspect` | Inspect local runs, executions, events, traces, tools, artifacts, and logs. |
 | `issue` | Manage the native kanban tracker and import forge issues. |
 | `marketplace` | Browse, submit, install, and uninstall local-registry bots/plugins. |
+| `mcp` | Serve the operator MCP server on stdio (local + remote tool families). |
 | `memory` | Export, import, and size local shared-knowledge spaces. |
 | `models` | Inspect resolved model capabilities and their source. |
 | `openapi` | Generate this build's OpenAPI 3.1 document offline. |
@@ -412,6 +413,24 @@ iterion memory export --visibility project --name shared --out shared.tar.gz
 ```
 
 See [memory and knowledge](memory-and-knowledge.md).
+
+### `iterion mcp`
+
+```bash
+iterion mcp                        # stdio MCP server: local_* + remote_* tools
+iterion mcp --read-only            # read tools only; remote_api limited to GET
+iterion mcp --only remote          # no local-store access at all
+claude mcp add iterion -- iterion mcp   # register in Claude Code
+```
+
+Serves the operator-facing MCP server on stdio so any MCP client
+(Claude Code, Claude desktop, Cursor) can drive iterion: `local_*`
+tools operate this machine's store/engine (validate, launch detached
+runs that survive the session, follow events/logs/reports, answer
+questions, native board), `remote_*` tools drive the `iterion remote`
+instance (typed core + the `remote_api` escape hatch + routes/OpenAPI
+discovery). Flags: `--store-dir`, `--read-only`, `--only local|remote`.
+See [MCP server](mcp-server.md).
 
 ### `iterion supervise`
 
