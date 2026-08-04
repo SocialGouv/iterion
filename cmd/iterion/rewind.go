@@ -49,12 +49,15 @@ reach it back, so a loop's earlier stages survive for {{loop.*.previous_output}}
 Budget accounting and loop counters are NOT refunded (raise them on resume with
 --max-cost-usd / --max-iterations).
 
-For a run with an isolated worktree (worktree: auto) the workspace is also
-restored to the state the pivot started from — a docs or code bot's real
-product is its files, not its output map. The restore is a revert: the prior
-tree is committed on top of HEAD and the current state is banked under a
-backup ref first, so nothing becomes unreachable. --keep-files opts out, and a
-run without a worktree says so rather than silently leaving the files.
+The workspace is also restored to the state the pivot started from — a docs or
+code bot's real product is its files, not its output map. A run with an
+isolated worktree (worktree: auto) is reverted through git; an in-place run is
+reverted through iterion's own workspace versioning. Either way the state you
+had is banked first, so nothing becomes unreachable: recover it with
+--list-snapshots / --restore-snapshot in place, or with the printed backup ref
+in a worktree. --keep-files opts out, and when neither mechanism recorded a
+boundary for the pivot the rewind says so rather than silently leaving the
+files.
 
 External effects (board cards, forge comments, pushed commits, already-launched
 subbot runs) are never undone.`,

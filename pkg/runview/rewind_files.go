@@ -367,13 +367,30 @@ func (s *Service) RestoreWorkspaceSnapshot(ctx context.Context, runID, snapshotI
 		if !claimed {
 			return nil, fmt.Errorf("%w: status changed under us — reload and retry", ErrRewindNotRewindable)
 		}
-		return s.workspaceTracker.Restore(run.ID, run.WorkDir, snapshotID)
+		return s.restoreBanked(run, snapshotID)
 	case run.Status == store.RunStatusFinished || run.Status == store.RunStatusFailed:
 		// Terminal and non-resumable: no engine can claim it, so there is
 		// nothing to race with.
-		return s.workspaceTracker.Restore(run.ID, run.WorkDir, snapshotID)
+		return s.restoreBanked(run, snapshotID)
 	}
 	return nil, fmt.Errorf("%w: %s — stop the run before restoring its workspace", ErrRewindNotRewindable, run.Status)
+}
+
+// restoreBanked banks the CURRENT workspace before restoring, so this
+// operation is as recoverable as the rewind it undoes.
+//
+// Rewind captures before it reverts — that bank is the whole premise of
+// the --list-snapshots / --restore-snapshot pair. The consuming half went
+// straight to Restore, so the documented scenario ("I rewound, kept
+// editing, then wanted my pre-rewind work back") destroyed those
+// post-rewind edits irreversibly: the deletion pass removes every file
+// absent from the target snapshot, and on an in-place run those include
+// the operator's own writes. One capture makes the pair symmetric.
+func (s *Service) restoreBanked(run *store.Run, snapshotID string) (*workspacetrack.RestoreReport, error) {
+	if _, berr := s.workspaceTracker.Capture(run.ID, run.WorkDir, "pre-restore:"+snapshotID); berr != nil {
+		return nil, fmt.Errorf("bank the current workspace before restoring: %w", berr)
+	}
+	return s.workspaceTracker.Restore(run.ID, run.WorkDir, snapshotID)
 }
 
 // ListWorkspaceSnapshots walks a run's capture chain, newest first, so an

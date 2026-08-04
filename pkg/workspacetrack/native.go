@@ -162,7 +162,7 @@ func (n *Native) cache(runID string) *statCache {
 
 func (n *Native) saveCache(runID string, c *statCache) error {
 	dir := n.runDir(runID)
-	if err := os.MkdirAll(dir, 0o755); err != nil {
+	if err := os.MkdirAll(dir, storeDirPerm); err != nil {
 		return err
 	}
 	b, err := json.Marshal(c)
@@ -185,6 +185,13 @@ func (n *Native) Capture(runID, workspaceDir, label string) (*Snapshot, error) {
 		return nil, fmt.Errorf("%w (over %d files)", ErrWorkspaceTooLarge, n.MaxFiles)
 	}
 	ig := NewIgnorer(workspaceDir)
+	// The store excludes itself STRUCTURALLY, not by name: an explicit
+	// --store-dir is returned verbatim by store.ResolveStoreDir, so a
+	// store inside the workspace under any name other than `.iterion` is
+	// invisible to the name-based rule — and then the tracker captures its
+	// own pool (compounding per boundary) and a restore deletes objects
+	// other snapshots still reference.
+	ig.ExcludeRoot(workspaceDir, n.root)
 
 	snap := &Snapshot{
 		ID:        newSnapshotID(),
@@ -312,7 +319,7 @@ func (n *Native) storeObject(path string) (string, error) {
 	}
 	defer func() { _ = f.Close() }()
 	pool := filepath.Join(n.root, objectsDir)
-	if err := os.MkdirAll(pool, 0o755); err != nil {
+	if err := os.MkdirAll(pool, storeDirPerm); err != nil {
 		return "", err
 	}
 	// A UNIQUE temp name, and streamed rather than buffered whole.
@@ -349,10 +356,10 @@ func (n *Native) storeObject(path string) (string, error) {
 	if _, err := os.Stat(dest); err == nil {
 		return hash, nil // already stored
 	}
-	if err := os.MkdirAll(filepath.Dir(dest), 0o755); err != nil {
+	if err := os.MkdirAll(filepath.Dir(dest), storeDirPerm); err != nil {
 		return "", err
 	}
-	if err := os.Chmod(tmpName, 0o644); err != nil {
+	if err := os.Chmod(tmpName, storeFilePerm); err != nil {
 		return "", err
 	}
 	// Rename onto the final name. Content-addressed, so a concurrent
@@ -366,7 +373,7 @@ func (n *Native) storeObject(path string) (string, error) {
 
 func (n *Native) writeSnapshot(runID string, snap *Snapshot) error {
 	p := n.snapshotPath(runID, snap.ID)
-	if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+	if err := os.MkdirAll(filepath.Dir(p), storeDirPerm); err != nil {
 		return err
 	}
 	// Compact: a manifest of a real repo is ~2 MB indented and is written
@@ -472,6 +479,13 @@ func (n *Native) Restore(runID, workspaceDir, snapshotID string, protected ...st
 		return nil, err
 	}
 	ig := NewIgnorer(workspaceDir)
+	// The store excludes itself STRUCTURALLY, not by name: an explicit
+	// --store-dir is returned verbatim by store.ResolveStoreDir, so a
+	// store inside the workspace under any name other than `.iterion` is
+	// invisible to the name-based rule — and then the tracker captures its
+	// own pool (compounding per boundary) and a restore deletes objects
+	// other snapshots still reference.
+	ig.ExcludeRoot(workspaceDir, n.root)
 	ig.Protect(workspaceDir, protected...)
 	want := make(map[string]Entry, len(snap.Entries))
 	for _, e := range snap.Entries {
@@ -579,6 +593,18 @@ func (n *Native) Restore(runID, workspaceDir, snapshotID string, protected ...st
 		}
 		dest := filepath.Join(workspaceDir, filepath.FromSlash(e.Path))
 		if sameContent(dest, e) {
+			// Content matches, but the MODE may not: sameContent compares
+			// size and sha256 only, so a node that ran `chmod +x deploy.sh`
+			// (or `chmod 600` on a config) without touching the bytes would
+			// otherwise leave that mode in place across a rewind — the
+			// replayed node meeting its own previous production, which is
+			// the failure this feature exists to prevent. Executable-bit
+			// flips are a routine product of build and scaffold nodes.
+			if mode := fs.FileMode(e.Mode).Perm(); mode != 0 {
+				if err := os.Chmod(dest, mode); err != nil {
+					return nil, fmt.Errorf("restore %s: chmod: %w", e.Path, err)
+				}
+			}
 			report.Unchanged++
 			continue
 		}
@@ -586,6 +612,10 @@ func (n *Native) Restore(runID, workspaceDir, snapshotID string, protected ...st
 		if rerr != nil {
 			return nil, fmt.Errorf("restore %s: read object %s: %w", e.Path, e.Hash, rerr)
 		}
+		// 0755, NOT the store's 0700: this directory is created inside the
+		// operator's WORKSPACE, and a restore must not silently narrow the
+		// permissions of their own checkout. The store-side tightening
+		// applies only to what iterion writes under its own root.
 		if err := os.MkdirAll(filepath.Dir(dest), 0o755); err != nil {
 			return nil, err
 		}
@@ -601,7 +631,7 @@ func (n *Native) Restore(runID, workspaceDir, snapshotID string, protected ...st
 
 	// Prune directories the deletions emptied, so an "undo" of a node that
 	// created docs/generated/ leaves no hollow tree behind.
-	pruneEmptyDirs(workspaceDir, ig)
+	pruneEmptyDirs(workspaceDir, ig, toDelete)
 
 	// The workspace no longer matches the cache: drop it so the next
 	// capture re-stats rather than trusting stale (size, mtime) pairs.
@@ -646,44 +676,90 @@ func sameContent(path string, e Entry) bool {
 	return hex.EncodeToString(h.Sum(nil)) == e.Hash
 }
 
-// pruneEmptyDirs removes directories left empty by a restore, deepest
-// first. Ignored directories are never touched.
-func pruneEmptyDirs(root string, ig *Ignorer) {
-	var dirs []string
-	_ = filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
-		if err != nil || !d.IsDir() || path == root {
-			return nil
-		}
-		rel, rerr := filepath.Rel(root, path)
-		if rerr != nil {
-			return nil
-		}
-		if ig.Match(filepath.ToSlash(rel), true) {
-			if ig.CanPruneDir(filepath.ToSlash(rel)) {
-				return fs.SkipDir
+// pruneEmptyDirs removes the directories THIS restore emptied, deepest
+// first, walking upward from each deleted file while its parent is empty.
+//
+// Scoped to `deleted` rather than re-walking the workspace, because
+// neither git nor this tracker records empty directories: a blanket sweep
+// removed any directory that happened to be empty at that moment, whether
+// or not the restore touched it. On an in-place run — the workspace being
+// the operator's live checkout — that quietly deleted their scratch dirs,
+// mount points and pre-created output dirs. A restore must not destroy
+// something it never had a copy of and never created.
+func pruneEmptyDirs(root string, ig *Ignorer, deleted []string) {
+	seen := map[string]bool{}
+	for _, p := range deleted {
+		dir := filepath.Dir(p)
+		for dir != root && strings.HasPrefix(dir, root+string(filepath.Separator)) {
+			if seen[dir] {
+				break
 			}
-			return nil
-		}
-		dirs = append(dirs, path)
-		return nil
-	})
-	sort.Slice(dirs, func(i, j int) bool { return len(dirs[i]) > len(dirs[j]) })
-	for _, d := range dirs {
-		entries, err := os.ReadDir(d)
-		if err == nil && len(entries) == 0 {
-			_ = os.Remove(d)
+			seen[dir] = true
+			rel, rerr := filepath.Rel(root, dir)
+			if rerr != nil {
+				break
+			}
+			if ig.Match(filepath.ToSlash(rel), true) {
+				break // never touch an ignored directory
+			}
+			entries, err := os.ReadDir(dir)
+			if err != nil || len(entries) != 0 {
+				break
+			}
+			if err := os.Remove(dir); err != nil {
+				break
+			}
+			dir = filepath.Dir(dir)
 		}
 	}
 }
 
-func writeAtomic(path string, b []byte) error { return writeAtomicMode(path, b, 0o644) }
+// storeDirPerm / storeFilePerm mirror pkg/store's 0700/0600.
+//
+// Everything this package writes lands in the SAME store root, and its
+// content is strictly more sensitive than the artifacts the store already
+// protects: the full bytes of every non-ignored file in the operator's
+// checkout, plus manifests listing every path. Writing that 0755/0644 let
+// every local user on a shared host, dev box or CI runner read the
+// workspace of every run.
+//
+// Files written INTO the workspace by a restore are unaffected — those
+// carry the snapshot's recorded Entry.Mode.
+const (
+	storeDirPerm  fs.FileMode = 0o700
+	storeFilePerm fs.FileMode = 0o600
+)
 
+func writeAtomic(path string, b []byte) error { return writeAtomicMode(path, b, storeFilePerm) }
+
+// writeAtomicMode stages through a UNIQUE temp name in the destination
+// directory.
+//
+// The fixed "<path>.tmp" it replaces was destructive during a restore:
+// restoring `build` truncated a real sibling `build.tmp`. When that file
+// is itself in the snapshot the damage is transient (entries are sorted,
+// so "build" < "build.tmp" and it is rewritten after), but when it is
+// IGNORED or PROTECTED it is never restored and its content is gone —
+// contradicting the documented contract that an ignored path is never
+// rewritten and a protected one never touched.
 func writeAtomicMode(path string, b []byte, mode fs.FileMode) error {
-	tmp := path + ".tmp"
-	if err := os.WriteFile(tmp, b, mode); err != nil {
+	tmp, err := os.CreateTemp(filepath.Dir(path), ".iterion-tmp-*")
+	if err != nil {
 		return err
 	}
-	return os.Rename(tmp, path)
+	tmpName := tmp.Name()
+	defer func() { _ = os.Remove(tmpName) }()
+	if _, err := tmp.Write(b); err != nil {
+		_ = tmp.Close()
+		return err
+	}
+	if err := tmp.Close(); err != nil {
+		return err
+	}
+	if err := os.Chmod(tmpName, mode); err != nil {
+		return err
+	}
+	return os.Rename(tmpName, path)
 }
 
 var snapshotCounter struct {

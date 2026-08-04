@@ -12,6 +12,11 @@ import (
 // would be both enormous and meaningless), `.iterion` is the run store
 // itself — capturing it from inside a run would have the tracker record
 // its own objects, growing without bound.
+//
+// Matching the store BY NAME is not sufficient on its own: store.
+// ResolveStoreDir returns an explicit --store-dir verbatim, so a store
+// living in the workspace under any other name is invisible here. That is
+// what ExcludeRoot covers — see its doc.
 var alwaysIgnored = map[string]bool{
 	".git":     true,
 	".iterion": true,
@@ -74,6 +79,11 @@ type Ignorer struct {
 	rules     []rule
 	protected map[string]bool // workspace-relative, exact match
 	hasNegate bool
+	// alwaysPrefixes are workspace-relative roots excluded STRUCTURALLY —
+	// the same class as alwaysIgnored, but discovered at runtime rather
+	// than by name (the store dir, wherever the operator put it). No rule
+	// re-includes anything beneath them and they stay prunable.
+	alwaysPrefixes []string
 }
 
 // Protect marks absolute paths as untouchable for this Ignorer. Used by a
@@ -125,6 +135,75 @@ func NewIgnorer(workspaceDir string) *Ignorer {
 		}
 	}
 	return ig
+}
+
+// ExcludeRoot marks an absolute path as always-ignored when it resolves
+// INSIDE the workspace, in the same class as `.git`/`.iterion`: no rule,
+// negated or not, can re-include anything beneath it, and it stays
+// prunable.
+//
+// Excluding the store by NAME alone was a hole with teeth. `--store-dir
+// "$PWD/mystore"` (or any studio/dogfood invocation not using the exact
+// name `.iterion`) puts the object pool inside the workspace, and then
+// two things go wrong: every boundary captures the PREVIOUS boundary's
+// objects and manifests as new content, so the pool compounds per node
+// instead of holding flat; and Restore, which deletes whatever the target
+// snapshot lacks, deletes pool objects and manifests written later —
+// content that other snapshots, and other runs (the pool is store-global)
+// still reference. The damage surfaces much later, as an unrelated
+// restore failing with "object … is unavailable".
+//
+// A no-op when the path is outside the workspace, which is the normal
+// arrangement.
+func (ig *Ignorer) ExcludeRoot(workspaceDir, root string) {
+	rel, ok := relativeInside(workspaceDir, root)
+	if !ok {
+		return
+	}
+	ig.alwaysPrefixes = append(ig.alwaysPrefixes, rel)
+}
+
+// relativeInside returns the slash-separated path of `target` relative to
+// `base` when it sits inside it. Symlinks are resolved on both sides so a
+// store reached through a link is still recognised.
+func relativeInside(base, target string) (string, bool) {
+	if base == "" || target == "" {
+		return "", false
+	}
+	resolve := func(p string) string {
+		abs, err := filepath.Abs(p)
+		if err != nil {
+			return ""
+		}
+		if real, err := filepath.EvalSymlinks(abs); err == nil {
+			return real
+		}
+		return abs // not created yet — the lexical form is the best we have
+	}
+	b, t := resolve(base), resolve(target)
+	if b == "" || t == "" || b == t {
+		return "", false
+	}
+	rel, err := filepath.Rel(b, t)
+	if err != nil {
+		return "", false
+	}
+	rel = filepath.ToSlash(rel)
+	if rel == "." || strings.HasPrefix(rel, "../") {
+		return "", false
+	}
+	return rel, true
+}
+
+// underAlwaysPrefix reports whether rel is one of the structurally
+// excluded roots, or lives beneath one.
+func (ig *Ignorer) underAlwaysPrefix(rel string) bool {
+	for _, p := range ig.alwaysPrefixes {
+		if rel == p || strings.HasPrefix(rel, p+"/") {
+			return true
+		}
+	}
+	return false
 }
 
 func parseRule(line string) rule {
@@ -181,6 +260,9 @@ func (ig *Ignorer) Match(rel string, isDir bool) bool {
 			return true
 		}
 	}
+	if ig.underAlwaysPrefix(rel) {
+		return true
+	}
 	excluded := false
 	for _, r := range ig.rules {
 		if r.matches(rel, isDir) {
@@ -225,7 +307,56 @@ func (ig *Ignorer) CanPruneDir(rel string) bool {
 			return true
 		}
 	}
-	return false
+	// Structurally excluded roots (the store dir) are as safe to prune as
+	// .git: Match short-circuits on them before the rule loop, so nothing
+	// under them can be re-included.
+	if ig.underAlwaysPrefix(rel) {
+		return true
+	}
+	// Otherwise: prunable when no negated rule COULD re-include anything
+	// beneath this directory.
+	//
+	// The blanket "any negation anywhere ⇒ descend everywhere" rule made
+	// the trip condition the norm rather than the corner — this repo's own
+	// .gitignore carries five negations — and the cost lands on exactly
+	// the directories the default ignore list exists to skip. On a JS
+	// target repo node_modules is routinely 100k-300k entries, each one
+	// running Match over the whole rule set, on every capture AND on the
+	// restore's deletion walk. The published 105 ms/boundary was measured
+	// on this Go repo, which has no node_modules.
+	for _, r := range ig.rules {
+		if r.negated && r.couldMatchUnder(rel) {
+			return false
+		}
+	}
+	return true
+}
+
+// couldMatchUnder reports whether this rule might match some path beneath
+// dir. Conservative: it answers true whenever it cannot prove otherwise,
+// so a wrong answer costs a walk, never a dropped file.
+func (r rule) couldMatchUnder(dir string) bool {
+	if !r.anchored {
+		// A bare name matches at any depth, so it can always re-include
+		// something deeper.
+		return true
+	}
+	dirSegs := strings.Split(dir, "/")
+	for i, seg := range dirSegs {
+		if i >= len(r.segments) {
+			// The rule is fully consumed and matched every segment so far,
+			// so dir is inside the rule's own subtree.
+			return true
+		}
+		rs := r.segments[i]
+		if rs == "**" || strings.ContainsAny(rs, "*?[") {
+			return true // wildcard: cannot rule it out
+		}
+		if rs != seg {
+			return false // literal divergence: this rule lives elsewhere
+		}
+	}
+	return true
 }
 
 // matches reports whether the rule applies to a path, either directly or

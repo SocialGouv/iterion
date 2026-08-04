@@ -20,11 +20,15 @@
 // So the capture is iterion-owned and lives beside the run's other
 // durable state, under the store rather than inside the repository:
 //
+//	<store>/workspace-objects/<aa>/<rest>   file contents, deduped by hash
 //	<store>/runs/<run>/workspace/
-//	  objects/<aa>/<sha256 remainder>   file contents, deduped by hash
-//	  snapshots/<id>.json               manifest: parent + path→hash entries
-//	  labels.json                       label → snapshot id
-//	  index.json                        stat cache (path,size,mtime) → hash
+//	  snapshots/<id>.json                  manifest: parent + path→hash entries
+//	  index.json                           stat cache + labels + head
+//
+// The object pool is store-GLOBAL (content is content; a per-run pool
+// re-stores the whole workspace for every run), which is why pruning a
+// run sweeps against the manifests that remain rather than deleting its
+// objects outright.
 //
 // Snapshots carry a Parent, so a run's captures form a chain — the
 // node-by-node history of the workspace, readable without git.
