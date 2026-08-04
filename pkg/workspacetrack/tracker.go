@@ -192,10 +192,6 @@ type Tracker interface {
 	// comparison half, without which the tracker can restore a node's
 	// work but not show it.
 	Changes(runID, fromID, toID string) ([]Change, error)
-	// ReadObject returns stored content by hash, so a caller can build a
-	// diff from both sides of a Change. The pool is store-global, so the
-	// run id is not part of the lookup.
-	ReadObject(hash string) ([]byte, error)
 	// Labels returns a copy of the run's label → snapshot-id map (gate:N,
 	// pre:/post: node boundaries, …). Used by the review-scope panel to
 	// list gate anchors and attribute files to nodes without re-walking

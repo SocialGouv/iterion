@@ -106,7 +106,12 @@ func (n *Native) Changes(runID, fromID, toID string) ([]Change, error) {
 			out[k].Uncaptured = true
 			continue
 		}
-		out[k].Binary = n.isBinary(out[k].NewHash) || n.isBinary(out[k].OldHash)
+		// Path heuristic when building the LIST, byte-level detection only
+		// on the per-file diff — the convention StatusBetween already
+		// follows. Sniffing here opened every changed object and read 8 KB
+		// of each just to render a list the operator has not asked a diff
+		// from yet: O(N) opens for a node that ran `go mod vendor`.
+		out[k].Binary = looksBinary(out[k].Path)
 	}
 
 	// An oversized path is in NEITHER Entries list, so the merge join
@@ -120,6 +125,18 @@ func (n *Native) Changes(runID, fromID, toID string) ([]Change, error) {
 	}
 	for _, p := range union(fromSkipped, toSkipped) {
 		if seen[p] {
+			continue
+		}
+		// Skipped on BOTH sides is a property of the FILE, not of this
+		// node: an oversized asset or a permission-denied path is skipped
+		// identically in every snapshot of the run. Emitting a change for
+		// it made every node's Files tab claim "1 file was too large to
+		// version", and — because the panel gates its "this node changed
+		// no files" message on the uncaptured list being empty too — a
+		// node that genuinely touched nothing never got the honest answer.
+		// StatusBetween made the same call deliberately; the two
+		// comparison functions must not disagree.
+		if fromSkipped[p] && toSkipped[p] {
 			continue
 		}
 		st := ChangeModified // present both sides, content unknown
@@ -149,20 +166,6 @@ func union(a, b map[string]bool) []string {
 	}
 	sort.Strings(out)
 	return out
-}
-
-// ReadObject returns stored content by hash. Exported so a diff builder
-// can fetch both sides of a change; the pool is store-global, so the run
-// id is not part of the lookup.
-func (n *Native) ReadObject(hash string) ([]byte, error) {
-	if !validHash(hash) {
-		return nil, fmt.Errorf("workspacetrack: read object: refusing malformed hash %q", hash)
-	}
-	b, err := os.ReadFile(n.objectPath(hash))
-	if err != nil {
-		return nil, fmt.Errorf("workspacetrack: read object %s: %w", hash, err)
-	}
-	return b, nil
 }
 
 // binarySniffBytes is how much of a file is examined for a NUL byte.

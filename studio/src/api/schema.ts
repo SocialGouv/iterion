@@ -2368,6 +2368,46 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/runs/{id}/nodes/{node}/changes": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+                node: string;
+            };
+            cookie?: never;
+        };
+        /** GET /api/runs/{id}/nodes/{node}/changes */
+        get: operations["getRunsByIdNodesByNodeChanges"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/runs/{id}/nodes/{node}/diff": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+                node: string;
+            };
+            cookie?: never;
+        };
+        /** GET /api/runs/{id}/nodes/{node}/diff */
+        get: operations["getRunsByIdNodesByNodeDiff"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/runs/{id}/notes": {
         parameters: {
             query?: never;
@@ -8276,6 +8316,48 @@ export interface operations {
             header?: never;
             path: {
                 id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Response */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    getRunsByIdNodesByNodeChanges: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+                node: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Response */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    getRunsByIdNodesByNodeDiff: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+                node: string;
             };
             cookie?: never;
         };

@@ -270,6 +270,10 @@ func (s *Service) NodeFileDiff(ctx context.Context, runID, nodeID string, iterat
 	return s.trackerFileDiff(runID, nodeID, set.Iteration, path)
 }
 
+// nodeDiffPayloadCap mirrors pkg/git's diffPayloadCap and
+// workspacetrack's: one bound for every per-file diff surface.
+const nodeDiffPayloadCap int64 = 5 << 20 // 5 MiB
+
 // trackerFileDiff builds a diff payload from stored content.
 func (s *Service) trackerFileDiff(runID, nodeID string, iteration int, path string) (*gitlib.DiffPayload, error) {
 	// Same reason as NodeChanges: a read-only resolve on a run this
@@ -298,8 +302,21 @@ func (s *Service) trackerFileDiff(runID, nodeID string, iteration int, path stri
 		if c.Binary {
 			return payload, nil
 		}
+		// Bound both sides at the same 5 MiB the other two diff paths use
+		// (pkg/git.DiffBetween and workspacetrack.DiffBetween). The tracker
+		// captures anything up to MaxFileBytes — 32 MiB by default, more
+		// with ITERION_WORKSPACE_MAX_FILE_MB — so an edit to a large
+		// generated artefact otherwise allocated both sides plus their
+		// JSON encoding in the server and shipped ~64 MiB to a browser
+		// that then asked Monaco to render it. The same file opened
+		// through the review-scope panel is refused; the two must agree.
+		// Change already carries the sizes, so the guard costs nothing.
+		if c.OldSize > nodeDiffPayloadCap || c.NewSize > nodeDiffPayloadCap {
+			payload.Oversized = true
+			return payload, nil
+		}
 		if c.OldHash != "" {
-			b, rerr := s.workspaceTracker.ReadObject(c.OldHash)
+			b, rerr := s.workspaceTracker.Object(c.OldHash)
 			if rerr != nil {
 				return nil, rerr
 			}
@@ -307,7 +324,7 @@ func (s *Service) trackerFileDiff(runID, nodeID string, iteration int, path stri
 			payload.Before = &before
 		}
 		if c.NewHash != "" {
-			b, rerr := s.workspaceTracker.ReadObject(c.NewHash)
+			b, rerr := s.workspaceTracker.Object(c.NewHash)
 			if rerr != nil {
 				return nil, rerr
 			}

@@ -1419,13 +1419,13 @@ func TestNative_ChangesBetweenSnapshots(t *testing.T) {
 	// Both sides are readable by hash, which is what a diff needs.
 	for _, c := range changes {
 		if c.Status == ChangeModified {
-			oldB, err := tr.ReadObject(c.OldHash)
+			oldB, err := tr.Object(c.OldHash)
 			if err != nil || string(oldB) != "before" {
-				t.Errorf("ReadObject(old) = %q, %v; want \"before\"", oldB, err)
+				t.Errorf("Object(old) = %q, %v; want \"before\"", oldB, err)
 			}
-			newB, err := tr.ReadObject(c.NewHash)
+			newB, err := tr.Object(c.NewHash)
 			if err != nil || string(newB) != "after" {
-				t.Errorf("ReadObject(new) = %q, %v; want \"after\"", newB, err)
+				t.Errorf("Object(new) = %q, %v; want \"after\"", newB, err)
 			}
 		}
 	}
@@ -1481,7 +1481,7 @@ func TestNative_ChangesFlagsBinaryAndUncaptured(t *testing.T) {
 func TestNative_RefusesMalformedHash(t *testing.T) {
 	tr := NewNative(t.TempDir())
 	for _, bad := range []string{"", "a", "ab", "../../etc/passwd", strings.Repeat("z", 64), strings.Repeat("a", 63)} {
-		if _, err := tr.ReadObject(bad); err == nil {
+		if _, err := tr.Object(bad); err == nil {
 			t.Errorf("ReadObject(%q) succeeded; a malformed hash must be refused", bad)
 		}
 		// Must not panic either.
@@ -1490,7 +1490,7 @@ func TestNative_RefusesMalformedHash(t *testing.T) {
 		}
 	}
 	valid := strings.Repeat("ab", 32)
-	if _, err := tr.ReadObject(valid); err == nil {
+	if _, err := tr.Object(valid); err == nil {
 		t.Error("a well-formed but absent hash should still error")
 	}
 }
