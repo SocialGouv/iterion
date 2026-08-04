@@ -336,21 +336,23 @@ func (o *Orchestrator) Provision(ctx context.Context, req ProvisionRequest) (Pro
 		}
 		// A changed operator override is a real mutation even when the bot set
 		// is not — without this the short-circuit would silently ignore it.
-		// The label sets are also compared against the CONFIG, because the two
-		// stores legitimately diverge there: an explicit request that already
-		// matches the (empty) integration while the config still enforces the
-		// old value would otherwise return 200 having changed nothing — the
-		// operator reads the widening back from the API while the lane stays
-		// narrowed. Only these two qualify: comparing a field that has no
-		// adoption backfill (overlap, launch vars) would read the config's
-		// value as a difference to erase, turning a benign no-op into a write
-		// that drops a policy set the documented way.
+		// Compared against BOTH stores, which is only sound because every field
+		// resolved above ends at the config when the integration says nothing:
+		// a silent request therefore already equals the config value and
+		// signals no difference to erase. What the config half catches is the
+		// EXPLICIT request that happens to match an empty integration while the
+		// config still enforces the old value — `label_allowlist: []` sent to
+		// widen a lane narrowed the documented way. Without it the call returns
+		// 200 having written nothing, and the operator reads an open lane back
+		// from an API whose enforcement surface still filters.
 		changed := !maps.Equal(operatorVars, existing.LaunchVars) || operatorOverlap != existing.Overlap ||
 			operatorAutoFix != existing.AutoFixOnGateFailure || !slices.Equal(operatorHold, existing.HoldLabels) ||
 			!slices.Equal(operatorLabels, existing.LabelAllowlist)
 		if hasPrevCfg {
 			changed = changed || !slices.Equal(operatorLabels, prevCfg.LabelAllowlist) ||
-				!slices.Equal(operatorHold, prevCfg.HoldLabels)
+				!slices.Equal(operatorHold, prevCfg.HoldLabels) ||
+				operatorOverlap != prevCfg.Overlap ||
+				!maps.Equal(operatorVars, prevCfg.OperatorLaunchVars)
 		}
 		if changed {
 			// The config is the enforcement half, so it cannot be skipped:

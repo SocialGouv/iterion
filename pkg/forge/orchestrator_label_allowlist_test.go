@@ -164,6 +164,7 @@ func TestProvisionKeepsAConfigOnlyOverlapWhileAdoptingAnAllowlist(t *testing.T) 
 		t.Fatal(err)
 	}
 	cfg.Overlap = "supersede"
+	cfg.OperatorLaunchVars = map[string]string{"gate_context": "revi/review"}
 	cfg.LabelAllowlist = []string{"implement"}
 	if err := o.Webhooks.Update(ctx, cfg); err != nil {
 		t.Fatal(err)
@@ -184,8 +185,22 @@ func TestProvisionKeepsAConfigOnlyOverlapWhileAdoptingAnAllowlist(t *testing.T) 
 		t.Errorf("overlap dropped to %q — an empty policy launches every delivery, "+
 			"so a re-review webhook now runs a bot per push in a burst", after.Overlap)
 	}
+	if after.OperatorLaunchVars["gate_context"] != "revi/review" {
+		t.Errorf("operator launch vars dropped (%v) — the repo's merge gate is named "+
+			"there, so every later run posts its status under the wrong context",
+			after.OperatorLaunchVars)
+	}
 	if !slices.Equal(after.LabelAllowlist, []string{"implement"}) {
 		t.Errorf("allowlist lost while keeping overlap: %v", after.LabelAllowlist)
+	}
+	// Both must also have landed on the integration — the config half only
+	// carries them until the first adoption.
+	integ, err := o.Integrations.Get(ctx, res.IntegrationID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if integ.Overlap != "supersede" || integ.LaunchVars["gate_context"] != "revi/review" {
+		t.Errorf("adoption did not persist overlap/launch vars: overlap=%q vars=%v", integ.Overlap, integ.LaunchVars)
 	}
 }
 
