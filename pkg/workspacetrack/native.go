@@ -589,6 +589,39 @@ func (n *Native) Resolve(runID, label string) (string, bool) {
 	return id, ok
 }
 
+// Object reads a content-addressed blob from the shared object pool.
+//
+// Buffers the whole file — fine for a diff of a source file. A caller
+// serving media should reach for OpenObject instead.
+func (n *Native) Object(hash string) ([]byte, error) {
+	p := n.objectPath(hash)
+	if p == "" {
+		return nil, fmt.Errorf("%w: object %q", ErrSnapshotNotFound, hash)
+	}
+	b, err := os.ReadFile(p)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil, fmt.Errorf("%w: object %s", ErrSnapshotNotFound, hash)
+		}
+		return nil, err
+	}
+	return b, nil
+}
+
+// Labels returns a copy of the run's label → snapshot-id map. Used by
+// the review-scope panel to list gate anchors and attribute files to
+// nodes without re-walking the snapshot chain.
+func (n *Native) Labels(runID string) map[string]string {
+	c := n.cache(runID)
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	out := make(map[string]string, len(c.Labels))
+	for k, v := range c.Labels {
+		out[k] = v
+	}
+	return out
+}
+
 // Head returns the run's latest snapshot id.
 func (n *Native) Head(runID string) string {
 	c := n.cache(runID)
