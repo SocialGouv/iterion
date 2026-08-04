@@ -274,7 +274,13 @@ Every webhook carries four selection filters plus a bot-agnostic hold gate
 - **`label_allowlist`** — for the `issues` (labeled) path only: which
   freshly-applied label fires (e.g. `["implement"]`). Empty = any label;
   case-insensitive; a bare `*` matches everything. No effect on the
-  `pull_request` / `issue_comment` paths.
+  `pull_request` / `issue_comment` paths. On a **provisioned** webhook, set
+  it through the integration (`label_allowlist` on
+  `POST/PATCH /api/teams/{id}/forge/repo-bots`) rather than the webhook
+  config: provisioning rebuilds that config from the manifests, so a
+  narrowing living only there is dropped by the next bot-set change — and
+  that regression is fail-*open*. An allowlist already PATCHed onto the
+  config is adopted onto the integration by the next provision.
 - **`hold_labels`** — a **bot-agnostic suppression** set. When the
   triggering PR or issue carries any of these labels, the auto-launch
   lanes (PR-open review, merge-queue auto-heal, auto-implement-on-open)

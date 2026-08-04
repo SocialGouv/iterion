@@ -65,6 +65,11 @@ type forgeEnableReq struct {
 	// HoldLabels is the repo's automation pause; nil keeps the current set
 	// (forge.RepoIntegration.HoldLabels).
 	HoldLabels []string `json:"hold_labels,omitempty"`
+
+	// LabelAllowlist narrows which freshly-applied issue label dispatches the
+	// implementer (e.g. ["implement"]); nil keeps the current set
+	// (forge.RepoIntegration.LabelAllowlist).
+	LabelAllowlist []string `json:"label_allowlist,omitempty"`
 }
 
 func (s *Server) handleEnableForgeRepoBots(w http.ResponseWriter, r *http.Request) {
@@ -88,16 +93,17 @@ func (s *Server) handleEnableForgeRepoBots(w http.ResponseWriter, r *http.Reques
 	}
 	ctx := store.WithTenant(r.Context(), teamID)
 	res, err := s.forgeOrchestrator.Provision(ctx, forge.ProvisionRequest{
-		TenantID:      teamID,
-		ConnectionID:  req.ConnectionID,
-		RepoFullName:  strings.TrimSpace(req.Repo),
-		BotIDs:        req.BotIDs,
-		ScheduleCrons: req.ScheduleCrons,
-		LaunchVars:    req.LaunchVars,
-		Overlap:       req.Overlap,
-		AutoFix:       req.AutoFixOnGateFailure,
-		HoldLabels:    req.HoldLabels,
-		ActorID:       id.UserID,
+		TenantID:       teamID,
+		ConnectionID:   req.ConnectionID,
+		RepoFullName:   strings.TrimSpace(req.Repo),
+		BotIDs:         req.BotIDs,
+		ScheduleCrons:  req.ScheduleCrons,
+		LaunchVars:     req.LaunchVars,
+		Overlap:        req.Overlap,
+		AutoFix:        req.AutoFixOnGateFailure,
+		HoldLabels:     req.HoldLabels,
+		LabelAllowlist: req.LabelAllowlist,
+		ActorID:        id.UserID,
 	})
 	if err != nil {
 		s.writeForgeProvisionError(w, err)
@@ -135,6 +141,11 @@ type forgeUpdateReq struct {
 	// HoldLabels is the repo's automation pause; nil keeps the current set
 	// (forge.RepoIntegration.HoldLabels).
 	HoldLabels []string `json:"hold_labels,omitempty"`
+
+	// LabelAllowlist narrows which freshly-applied issue label dispatches the
+	// implementer (e.g. ["implement"]); nil keeps the current set
+	// (forge.RepoIntegration.LabelAllowlist).
+	LabelAllowlist []string `json:"label_allowlist,omitempty"`
 }
 
 func (s *Server) handleUpdateForgeRepoBots(w http.ResponseWriter, r *http.Request) {
@@ -160,17 +171,18 @@ func (s *Server) handleUpdateForgeRepoBots(w http.ResponseWriter, r *http.Reques
 	}
 	ctx := store.WithTenant(r.Context(), teamID)
 	res, err := s.forgeOrchestrator.Provision(ctx, forge.ProvisionRequest{
-		TenantID:      teamID,
-		ConnectionID:  ri.ConnectionID,
-		RepoFullName:  ri.RepoFullName,
-		BotIDs:        req.BotIDs,
-		ScheduleCrons: req.ScheduleCrons,
-		LaunchVars:    req.LaunchVars,
-		Overlap:       req.Overlap,
-		AutoFix:       req.AutoFixOnGateFailure,
-		HoldLabels:    req.HoldLabels,
-		ActorID:       id.UserID,
-		Replace:       true,
+		TenantID:       teamID,
+		ConnectionID:   ri.ConnectionID,
+		RepoFullName:   ri.RepoFullName,
+		BotIDs:         req.BotIDs,
+		ScheduleCrons:  req.ScheduleCrons,
+		LaunchVars:     req.LaunchVars,
+		Overlap:        req.Overlap,
+		AutoFix:        req.AutoFixOnGateFailure,
+		HoldLabels:     req.HoldLabels,
+		LabelAllowlist: req.LabelAllowlist,
+		ActorID:        id.UserID,
+		Replace:        true,
 	})
 	if err != nil {
 		s.writeForgeProvisionError(w, err)
