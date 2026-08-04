@@ -39,6 +39,19 @@ func NodePreSnapshotRef(runID, nodeID string, loopIter int) string {
 	return fmt.Sprintf("refs/iterion/runs/%s/pre/%s/%d", runID, nodeID, loopIter)
 }
 
+// ReviewGateRef names the workspace state at a human gate.
+//
+//	refs/iterion/runs/<runID>/gate/<seq>
+//
+// Gates are the natural review boundary: what a reviewer approves is the
+// work done SINCE the previous gate. Numbering them makes "the previous
+// one" a lookup rather than event archaeology, and puts the range in git
+// where it survives the process — `gate/2..gate/3` is the changeset the
+// third reviewer is looking at.
+func ReviewGateRef(runID string, seq int) string {
+	return fmt.Sprintf("refs/iterion/runs/%s/gate/%d", runID, seq)
+}
+
 // RewindBackupRef names the commit banking a worktree's state at the
 // instant an in-place rewind reverted it.
 //

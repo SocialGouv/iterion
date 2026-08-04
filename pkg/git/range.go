@@ -110,6 +110,20 @@ func DiffBetween(repoRoot, baseRef, finalRef, relPath string) (DiffPayload, erro
 	return payload, nil
 }
 
+// ForEachRef lists refs under a prefix with a caller-chosen format. The
+// prefix is a literal ref namespace built by the caller, never user
+// input — it becomes a git argument.
+func ForEachRef(repoRoot, format, prefix string) (string, error) {
+	if !isGitDir(repoRoot) {
+		return "", ErrNotGitRepo
+	}
+	out, err := run(repoRoot, "for-each-ref", "--format="+format, prefix)
+	if err != nil {
+		return "", err
+	}
+	return string(out), nil
+}
+
 // FindRepoRoot walks parent directories from startDir until it finds a valid
 // Git worktree root (regular .git directory or a worktree's gitfile pointer),
 // returning "" when no parent in the chain qualifies.

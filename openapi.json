@@ -5766,6 +5766,54 @@
         ]
       }
     },
+    "/api/runs/{id}/review/diff": {
+      "get": {
+        "operationId": "getRunsByIdReviewDiff",
+        "responses": {
+          "default": {
+            "description": "Response"
+          }
+        },
+        "summary": "GET /api/runs/{id}/review/diff",
+        "tags": [
+          "runs"
+        ]
+      },
+      "parameters": [
+        {
+          "in": "path",
+          "name": "id",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        }
+      ]
+    },
+    "/api/runs/{id}/review/scope": {
+      "get": {
+        "operationId": "getRunsByIdReviewScope",
+        "responses": {
+          "default": {
+            "description": "Response"
+          }
+        },
+        "summary": "GET /api/runs/{id}/review/scope",
+        "tags": [
+          "runs"
+        ]
+      },
+      "parameters": [
+        {
+          "in": "path",
+          "name": "id",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        }
+      ]
+    },
     "/api/runs/{id}/rewind": {
       "parameters": [
         {
@@ -5982,6 +6030,38 @@
         {
           "in": "path",
           "name": "id",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        }
+      ]
+    },
+    "/api/runs/{id}/workspace-files/{path}": {
+      "get": {
+        "operationId": "getRunsByIdWorkspaceFilesByPath",
+        "responses": {
+          "default": {
+            "description": "Response"
+          }
+        },
+        "summary": "GET /api/runs/{id}/workspace-files/{path...}",
+        "tags": [
+          "runs"
+        ]
+      },
+      "parameters": [
+        {
+          "in": "path",
+          "name": "id",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        },
+        {
+          "in": "path",
+          "name": "path",
           "required": true,
           "schema": {
             "type": "string"

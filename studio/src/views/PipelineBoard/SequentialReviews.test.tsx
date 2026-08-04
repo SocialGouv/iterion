@@ -1,5 +1,6 @@
 // @vitest-environment jsdom
 
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -10,6 +11,13 @@ import type {
 } from "@/api/pipelineBoards";
 
 afterEach(cleanup);
+
+// The review panel fetches its change range, so this tree needs a query
+// client. retry:false settles the error path on the first rejection.
+function withClient(ui: React.ReactElement) {
+  const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  return <QueryClientProvider client={qc}>{ui}</QueryClientProvider>;
+}
 
 vi.mock("wouter", () => ({
   Link: ({
@@ -112,7 +120,9 @@ describe("review queue helpers", () => {
 describe("SequentialReviews", () => {
   it("mounts the first review one at a time, resuming with no source override", () => {
     const html = renderToStaticMarkup(
+      withClient(
       <SequentialReviews card={cardWithReviews(2)} onResolved={() => {}} />,
+      ),
     );
 
     expect(html).toContain("Review 1 of 2");
@@ -130,7 +140,9 @@ describe("SequentialReviews", () => {
   it("wires a successful answer to onResolved (the board refetch)", () => {
     const onResolved = vi.fn();
     render(
-      <SequentialReviews card={cardWithReviews(2)} onResolved={onResolved} />,
+      withClient(
+        <SequentialReviews card={cardWithReviews(2)} onResolved={onResolved} />,
+      ),
     );
     fireEvent.click(screen.getByRole("button", { name: "Resolve" }));
     expect(onResolved).toHaveBeenCalledTimes(1);
@@ -148,10 +160,12 @@ describe("SequentialReviews", () => {
       questions: { q: "A2?" },
     };
     const view = render(
-      <SequentialReviews
-        card={{ ...cardWithReviews(3), pending_reviews: [c, a, b] }}
-        onResolved={() => {}}
-      />,
+      withClient(
+        <SequentialReviews
+          card={{ ...cardWithReviews(3), pending_reviews: [c, a, b] }}
+          onResolved={() => {}}
+        />,
+      ),
     );
 
     // FIFO sorting starts on A; resolving it immediately pins the next turn B
@@ -165,12 +179,12 @@ describe("SequentialReviews", () => {
 
     // A's next turn has the same run/node/interaction identity but a newer
     // update. It joins the back; polling must not replace B with C or A2.
-    view.rerender(
+    view.rerender(withClient(
       <SequentialReviews
         card={{ ...cardWithReviews(3), pending_reviews: [b, c, a2] }}
         onResolved={() => {}}
       />,
-    );
+    ));
     expect(screen.getByTestId("human-prompt").getAttribute("data-run-id")).toBe(b.run_id);
     expect(
       (screen.getByRole("textbox", { name: "Review draft" }) as HTMLInputElement).value,
@@ -179,12 +193,12 @@ describe("SequentialReviews", () => {
 
     // Once B is resolved/removed, the next oldest turn C gets the screen.
     // A2 appears only when the operator explicitly advances to its turn.
-    view.rerender(
+    view.rerender(withClient(
       <SequentialReviews
         card={{ ...cardWithReviews(3), pending_reviews: [c, a2] }}
         onResolved={() => {}}
       />,
-    );
+    ));
     expect(screen.getByTestId("human-prompt").getAttribute("data-run-id")).toBe(c.run_id);
     fireEvent.click(screen.getByRole("button", { name: "Next review" }));
     expect(screen.getByTestId("human-prompt").getAttribute("data-question")).toBe("A2?");
@@ -193,7 +207,9 @@ describe("SequentialReviews", () => {
   it("renders nothing when there are no pending reviews", () => {
     const card = { ...cardWithReviews(0), pending_reviews: [] };
     const html = renderToStaticMarkup(
+      withClient(
       <SequentialReviews card={card} onResolved={() => {}} />,
+      ),
     );
     expect(html).toBe("");
   });

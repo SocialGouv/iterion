@@ -843,6 +843,19 @@ export interface RunFile {
   // other mode. Drives the FilesPanel's subtle per-file tint and the
   // per-row diff mode (committed → branch range, uncommitted → worktree).
   lifecycle?: "committed" | "uncommitted";
+  // True when the producer could not compute line counts at all, so
+  // added/deleted are UNPOPULATED rather than a genuine +0/-0. iterion's
+  // own workspace versioning is such a producer — it stores content, not
+  // diffs, and has no git to ask — so every modified text file on an
+  // in-place run would otherwise render "+0 −0", reading as "nothing
+  // changed in this file". Render nothing instead.
+  counts_unknown?: boolean;
+  // True when the path is in the range but its CONTENT was never stored
+  // (over the workspace-versioning size cap), so no diff can be rendered.
+  // Distinct from `binary`, where content exists but is not text. Listing
+  // it is the point: the file most likely to exceed the cap is the media
+  // export the run exists to produce, and this is an approval surface.
+  uncaptured?: boolean;
 }
 
 // File listing source-of-truth selector. Mirrors the server's fileMode:

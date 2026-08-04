@@ -2,8 +2,9 @@
 // Modified-files panel — git status + diff for the run's working dir,
 // plus the live-worktree file editor read/write endpoints.
 
-import { request } from "./client";
+import { apiURL, request } from "./client";
 import type {
+  RunFile,
   RunFileContent,
   RunFileDiff,
   RunFiles,
@@ -85,4 +86,82 @@ export function mergeActionReady(
   if (!run) return false;
   const terminal = run.status === "finished" || run.status === "cancelled";
   return terminal && Boolean(run.final_branch);
+}
+
+
+// ---------------------------------------------------------------------------
+// Review scope — what a human gate is asking the operator to approve
+// ---------------------------------------------------------------------------
+
+// A gate's range is everything the run changed since the PREVIOUS gate, and
+// the groups partition it rather than filtering it: work by node kinds that
+// record no boundary (subbots, fan-out branches, computes) lands in the
+// trailing group with an empty node_id. A reviewer must never be shown less
+// than what changed.
+export interface ReviewScopeGroup {
+  node_id: string;
+  label: string;
+  iteration?: number;
+  files: RunFile[];
+}
+
+export interface ReviewScope {
+  run_id: string;
+  gate_seq: number;
+  base_ref: string;
+  head_ref: string;
+  available: boolean;
+  // Populated whenever available is false, in the operator's terms — a panel
+  // that shows nothing without saying why is worse than no panel.
+  reason?: string;
+  groups: ReviewScopeGroup[];
+  total_files: number;
+}
+
+// getReviewScope returns the change range of a run's latest human gate, or of
+// a specific one when `gate` is given.
+export async function getReviewScope(
+  runId: string,
+  opts: { gate?: number } = {},
+): Promise<ReviewScope> {
+  const qs = new URLSearchParams();
+  if (opts.gate !== undefined) qs.set("gate", String(opts.gate));
+  const suffix = qs.toString();
+  return request(
+    `/runs/${encodeURIComponent(runId)}/review/scope${suffix ? `?${suffix}` : ""}`,
+  );
+}
+
+// getReviewFileDiff returns one file's before/after within a gate's range.
+// The refs are resolved server-side from the gate number; they are never sent
+// by the client.
+export async function getReviewFileDiff(
+  runId: string,
+  path: string,
+  opts: { gate?: number } = {},
+): Promise<RunFileDiff> {
+  const qs = new URLSearchParams({ path });
+  if (opts.gate !== undefined) qs.set("gate", String(opts.gate));
+  return request(
+    `/runs/${encodeURIComponent(runId)}/review/diff?${qs.toString()}`,
+  );
+}
+
+// workspaceFileURL streams a path from the run's live workspace (or the
+// review-gate head snapshot as fallback). Used by the review panel's
+// audio / video / image players — /review/diff is text-oriented and
+// refuses multi-MiB binaries.
+export function workspaceFileURL(
+  runId: string,
+  relPath: string,
+  opts: { gate?: number; download?: boolean } = {},
+): string {
+  const segments = relPath.split("/").map(encodeURIComponent).join("/");
+  const qs = new URLSearchParams();
+  if (opts.gate !== undefined) qs.set("gate", String(opts.gate));
+  if (opts.download) qs.set("download", "1");
+  const suffix = qs.toString();
+  return apiURL(
+    `/runs/${encodeURIComponent(runId)}/workspace-files/${segments}${suffix ? `?${suffix}` : ""}`,
+  );
 }

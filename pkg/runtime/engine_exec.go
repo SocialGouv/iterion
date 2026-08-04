@@ -613,6 +613,19 @@ func (e *Engine) snapshotAtNodeBoundary(rs *runState, nodeID string) {
 		}
 		return
 	}
+	if commit == "" {
+		// The node left the tree clean — which is what a well-behaved bot
+		// that commits in stride does. snapshotWorktree writes no ref in
+		// that case, so without this the node would have a `pre` boundary
+		// and no `post`, and `pre..post` — the range a reviewer sees —
+		// would not resolve for exactly the nodes that behaved best. The
+		// review panel enumerates only this namespace, so every file such
+		// a node wrote would land in the *Other changes* catch-all and the
+		// per-node grouping would collapse to one anonymous bucket.
+		if out, uerr := runGit(e.workDir, "update-ref", ref, "HEAD"); uerr != nil && e.logger != nil {
+			e.logger.Warn("snapshot: node %q iter %d: anchor clean tree at HEAD: %v\noutput: %s", nodeID, loopIter, uerr, out)
+		}
+	}
 	// Remember the workspace as it stands now so the NEXT node's
 	// pre-boundary marker is a free alias of this commit. An empty SHA
 	// means the tree matched HEAD, so "" is the correct sentinel for

@@ -1,3 +1,4 @@
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it, vi } from "vitest";
 
@@ -54,8 +55,13 @@ function makeCard(partial: Partial<PipelineBoardCard>): PipelineBoardCard {
 }
 
 function render(card: PipelineBoardCard, stale = false): string {
+  // The review panel fetches its change range, so the tree needs a query
+  // client. retry:false settles the error path on the first rejection.
+  const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   return renderToStaticMarkup(
-    <PipelineCardDetailsBody card={card} stale={stale} onRefetch={() => {}} />,
+    <QueryClientProvider client={qc}>
+      <PipelineCardDetailsBody card={card} stale={stale} onRefetch={() => {}} />
+    </QueryClientProvider>,
   );
 }
 

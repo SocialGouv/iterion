@@ -2560,6 +2560,44 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/runs/{id}/review/diff": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        /** GET /api/runs/{id}/review/diff */
+        get: operations["getRunsByIdReviewDiff"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/runs/{id}/review/scope": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        /** GET /api/runs/{id}/review/scope */
+        get: operations["getRunsByIdReviewScope"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/runs/{id}/rewind": {
         parameters: {
             query?: never;
@@ -2690,6 +2728,26 @@ export interface paths {
         };
         /** GET /api/runs/{id}/workflow */
         get: operations["getRunsByIdWorkflow"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/runs/{id}/workspace-files/{path}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+                path: string;
+            };
+            cookie?: never;
+        };
+        /** GET /api/runs/{id}/workspace-files/{path...} */
+        get: operations["getRunsByIdWorkspaceFilesByPath"];
         put?: never;
         post?: never;
         delete?: never;
@@ -8453,6 +8511,46 @@ export interface operations {
             };
         };
     };
+    getRunsByIdReviewDiff: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Response */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    getRunsByIdReviewScope: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Response */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
     postRunsByIdRewind: {
         parameters: {
             query?: never;
@@ -8636,6 +8734,27 @@ export interface operations {
                 content: {
                     "application/json": components["schemas"]["WireWorkflow"];
                 };
+            };
+        };
+    };
+    getRunsByIdWorkspaceFilesByPath: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+                path: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Response */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
             };
         };
     };

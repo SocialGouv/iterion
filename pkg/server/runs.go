@@ -45,6 +45,11 @@ func (s *Server) registerRunRoutes() {
 	s.mux.HandleFunc("GET /api/runs/{id}/files", s.handleListRunFiles)
 	s.mux.HandleFunc("GET /api/runs/{id}/files/touched", s.handleListRunTouchedFiles)
 	s.mux.HandleFunc("GET /api/runs/{id}/files/diff", s.handleGetRunFileDiff)
+	s.mux.HandleFunc("GET /api/runs/{id}/review/scope", s.handleGetRunReviewScope)
+	s.mux.HandleFunc("GET /api/runs/{id}/review/diff", s.handleGetRunReviewDiff)
+	// Workspace-relative file stream for the review panel's media players
+	// (audio / video / image). Path-validated; never trusts raw query paths.
+	s.mux.HandleFunc("GET /api/runs/{id}/workspace-files/{path...}", s.handleGetRunWorkspaceFile)
 	s.mux.HandleFunc("GET /api/runs/{id}/files/content", s.handleGetRunFileContent)
 	s.mux.HandleFunc("PUT /api/runs/{id}/files/content", s.handleSaveRunFileContent)
 	s.mux.HandleFunc("GET /api/runs/{id}/commits", s.handleListRunCommits)

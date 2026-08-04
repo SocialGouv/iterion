@@ -67,6 +67,11 @@ func (e *Engine) execReviewGate(ctx context.Context, rs *runState, nodeID string
 		return "", false, err
 	}
 
+	// Anchor the range BEFORE the companion reads it, so both reviewers
+	// judge the same change. The pause below re-requests this anchor and
+	// gets the same one.
+	e.markReviewGate(rs, nodeID)
+
 	companion := e.runReviewCompanion(ctx, rs, hn, nodeID, nil)
 	turns := []store.InteractionTurn{companionTurn(companion)}
 	e.emitReviewTurn(ctx, rs.runID, nodeID, "companion", len(turns), companion)
@@ -449,7 +454,8 @@ func (e *Engine) buildCompanionMessage(rs *runState, hn *ir.HumanNode, turns []s
 	var b strings.Builder
 	if r, err := e.store.LoadRun(rs.ctx, rs.runID); err == nil {
 		if wtCtx := e.reconstructWorktreeContext(r); wtCtx != nil && wtCtx.originalTip != "" {
-			if diff := reviewDiffContext(wtCtx); diff != "" {
+			base, head := e.reviewGateRange(rs, wtCtx)
+			if diff := reviewDiffContext(wtCtx.wtPath, base, head); diff != "" {
 				b.WriteString("# Change under review (git diff)\n\n")
 				b.WriteString(diff)
 				b.WriteString("\n\n")
@@ -475,17 +481,56 @@ func (e *Engine) buildCompanionMessage(rs *runState, hn *ir.HumanNode, turns []s
 	return b.String()
 }
 
-// reviewDiffContext returns a bounded diff of the run's commits for the
+// reviewGateRange returns the refs the companion should judge: the same
+// range the human is shown.
+//
+// Two things were wrong with the old `originalTip..HEAD`. It restarted at
+// the run's base for EVERY gate, so a second reviewer re-read work the
+// first had already approved. And `HEAD` only sees committed work, while
+// the gate anchor captures the tree as it stands — so a bot that had not
+// committed yet showed its companion nothing at all.
+func (e *Engine) reviewGateRange(rs *runState, wtCtx *worktreeContext) (base, head string) {
+	base, head = wtCtx.originalTip, "HEAD"
+	seq := -1
+	for _, s := range rs.gateAnchors {
+		if s > seq {
+			seq = s
+		}
+	}
+	if seq < 0 {
+		// rs.gateAnchors is in-memory only — never persisted to or
+		// rehydrated from the checkpoint — so a resumed review turn
+		// rebuilds runState with it empty. Falling straight back to
+		// originalTip..HEAD there restores exactly the two defects this
+		// function exists to fix, and does it silently: from turn 2 of any
+		// multi-turn review the companion would judge the whole run while
+		// the human panel keeps reading gate/N-1..gate/N from git.
+		//
+		// The sequence is recoverable from git itself, so no checkpoint
+		// change is needed.
+		seq = nextReviewGateSeq(e.workDir, rs.runID) - 1
+	}
+	if seq < 0 {
+		return base, head
+	}
+	head = store.ReviewGateRef(rs.runID, seq)
+	if seq > 0 {
+		base = store.ReviewGateRef(rs.runID, seq-1)
+	}
+	return base, head
+}
+
+// reviewDiffContext returns a bounded diff of a ref range for the
 // companion. Best-effort: returns "" on any git error.
-func reviewDiffContext(wtCtx *worktreeContext) string {
-	statCmd, statCancel := gitCmd("-C", wtCtx.wtPath, "diff", "--stat", wtCtx.originalTip+"..HEAD")
+func reviewDiffContext(wtPath, baseRef, headRef string) string {
+	statCmd, statCancel := gitCmd("-C", wtPath, "diff", "--stat", baseRef+".."+headRef)
 	out, err := statCmd.Output()
 	statCancel()
 	stat := ""
 	if err == nil {
 		stat = strings.TrimSpace(string(out))
 	}
-	fullCmd, fullCancel := gitCmd("-C", wtCtx.wtPath, "diff", wtCtx.originalTip+"..HEAD")
+	fullCmd, fullCancel := gitCmd("-C", wtPath, "diff", baseRef+".."+headRef)
 	full, ferr := fullCmd.Output()
 	fullCancel()
 	body := ""
