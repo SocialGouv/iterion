@@ -8,7 +8,48 @@ import (
 	"time"
 )
 
+// liveCacheDir returns a cache root for a test that needs claw's live
+// registry ENABLED, so $XDG_CACHE_HOME has to point at a real directory.
+//
+// It deliberately does NOT use t.TempDir(). EstimateUSD reaches
+// clawapi.LookupModelPricing, which calls MaybeRefreshLive — a DETACHED
+// goroutine that resolves $XDG_CACHE_HOME only when it runs and re-creates
+// <root>/claw-code-go through MkdirAll on its way to the cache file. That
+// write can land while t.TempDir()'s RemoveAll is walking the tree, failing
+// an otherwise-green test with "TempDir RemoveAll cleanup: ... directory not
+// empty" (observed on the merge queue, 2026-08-04, run 30944201638).
+// Retrying absorbs the race; a directory we still cannot remove is a few
+// bytes left in os.TempDir(), never a red test.
+func liveCacheDir(t *testing.T) string {
+	t.Helper()
+	root, err := os.MkdirTemp("", "cost-live-cache-")
+	if err != nil {
+		t.Fatalf("mkdtemp: %v", err)
+	}
+	t.Cleanup(func() {
+		for attempt := 0; ; attempt++ {
+			err := os.RemoveAll(root)
+			if err == nil {
+				return
+			}
+			if attempt == 4 {
+				t.Logf("leaving %s behind (claw's async refresh re-created it): %v", root, err)
+				return
+			}
+			time.Sleep(50 * time.Millisecond)
+		}
+	})
+	return root
+}
+
 func TestEstimateUSD(t *testing.T) {
+	// Pin the static table as the only price source. Without this the
+	// assertions below are machine-dependent: on a host whose claw live
+	// cache already holds claude-haiku-4-5 & co, EstimateUSD answers from
+	// the live registry (it is consulted FIRST) and every exact figure
+	// here becomes a third party's number. Disabling also keeps the async
+	// refresh goroutine from ever starting — see liveCacheDir.
+	t.Setenv("CLAW_DISABLE_LIVE_REGISTRY", "1")
 	cases := []struct {
 		name        string
 		model       string
@@ -50,6 +91,7 @@ func TestEstimateUSD(t *testing.T) {
 }
 
 func TestAnnotate(t *testing.T) {
+	t.Setenv("CLAW_DISABLE_LIVE_REGISTRY", "1") // static table only — see TestEstimateUSD
 	t.Run("known model writes _cost_usd", func(t *testing.T) {
 		out := map[string]any{}
 		total := Annotate(out, "claude-haiku-4-5", 1000, 500)
@@ -87,6 +129,7 @@ func TestAnnotate(t *testing.T) {
 }
 
 func TestAnnotateWithUSD(t *testing.T) {
+	t.Setenv("CLAW_DISABLE_LIVE_REGISTRY", "1") // static table only — see TestEstimateUSD
 	t.Run("provider-computed cost wins over the estimate", func(t *testing.T) {
 		out := map[string]any{}
 		total := AnnotateWithUSD(out, "claude-haiku-4-5", 1000, 500, 0.42)
@@ -137,7 +180,7 @@ func TestEstimateUSD_PrefersLiveRegistry(t *testing.T) {
 	// Seed claw's live cache with rates that intentionally differ from
 	// the static gpt-5 entry so we can verify which source EstimateUSD
 	// trusted.
-	dir := t.TempDir()
+	dir := liveCacheDir(t)
 	t.Setenv("XDG_CACHE_HOME", dir)
 	clawDir := filepath.Join(dir, "claw-code-go")
 	if err := os.MkdirAll(clawDir, 0o755); err != nil {
@@ -176,7 +219,13 @@ func TestEstimateUSD_PrefersLiveRegistry(t *testing.T) {
 // when the live cache has no entry for the model, EstimateUSD falls
 // back to the static table seeded in this package.
 func TestEstimateUSD_FallsBackToStaticTable(t *testing.T) {
-	t.Setenv("XDG_CACHE_HOME", t.TempDir()) // empty cache dir
+	// "No live source" is expressed with claw's own switch rather than an
+	// empty XDG_CACHE_HOME: an empty cache dir left the registry ENABLED,
+	// so the lookup fired a real network refresh whose detached goroutine
+	// then wrote the fetched cache back into this test's temp dir — racing
+	// its removal and, worse, sometimes populating the very cache the test
+	// asserts is absent.
+	t.Setenv("CLAW_DISABLE_LIVE_REGISTRY", "1")
 	got := EstimateUSD("gpt-5", 1_000_000, 1_000_000)
 	if got != 11.25 {
 		t.Errorf("static fallback: got %v, want 11.25", got)
