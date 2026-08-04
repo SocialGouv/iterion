@@ -727,22 +727,35 @@ func TestRewind_NoBackupRefWhenNothingWasBanked(t *testing.T) {
 // left the dropped nodes' questions live, so the replayed node would park
 // on the union of old and new — or fold pre-rewind answers into its
 // output.
+// Revi's Rf3cea6 sharpened it: the fixture must seed the questions on a
+// node that did NOT complete. Keying the retirement on the output-filtered
+// `dropped` set passes when the questions sit on the pivot (always in
+// `dropped`) yet skips exactly the canonical case — a node that posted
+// questions and then failed, which is the state a rewind is invoked on.
+// So `verify` here started, asked, and died without an output: it is in
+// `invalidated` only.
 func TestRewind_RetiresAbandonedAsyncQuestions(t *testing.T) {
 	cp := &store.Checkpoint{
 		NodeID:  "verify",
-		Outputs: outputsOf("survey", "plan", "implement", "verify"),
+		Outputs: outputsOf("survey", "plan", "implement"),
 	}
 	svc, st, runID := seedRun(t, linearBot, cp, store.RunStatusFailedResumable)
 	ctx := context.Background()
 
-	// One pending and one answered question from a node about to be
-	// dropped, plus one from an upstream node that survives.
+	// One pending and one answered question on the pivot, two on the
+	// uncompleted downstream node, plus one from an upstream node that
+	// survives.
 	answered := time.Now().UTC()
 	for _, in := range []*store.Interaction{
 		{ID: "q-pending", RunID: runID, NodeID: "implement", Kind: store.InteractionKindAsync,
 			Questions: map[string]any{"which": "approach?"}, RequestedAt: answered},
 		{ID: "q-answered", RunID: runID, NodeID: "implement", Kind: store.InteractionKindAsync,
 			Questions: map[string]any{"ok": "?"}, Answers: map[string]any{"ok": true},
+			RequestedAt: answered, AnsweredAt: &answered},
+		{ID: "q-nooutput", RunID: runID, NodeID: "verify", Kind: store.InteractionKindAsync,
+			Questions: map[string]any{"looks": "right?"}, RequestedAt: answered},
+		{ID: "q-nooutput-answered", RunID: runID, NodeID: "verify", Kind: store.InteractionKindAsync,
+			Questions: map[string]any{"ship": "?"}, Answers: map[string]any{"ship": true},
 			RequestedAt: answered, AnsweredAt: &answered},
 		{ID: "q-upstream", RunID: runID, NodeID: "plan", Kind: store.InteractionKindAsync,
 			Questions: map[string]any{"scope": "?"}, RequestedAt: answered},
@@ -769,6 +782,24 @@ func TestRewind_RetiresAbandonedAsyncQuestions(t *testing.T) {
 	}
 	if len(done) != 0 {
 		t.Errorf("%d pre-rewind answer(s) survived — the replayed node's output would mix them in", len(done))
+	}
+	// The load-bearing case: `verify` has no output, so it is in
+	// `invalidated` but not in `dropped`. Keying the retirement on the
+	// output-filtered set leaves these live.
+	orphanPending, err := store.ListPendingAsyncInteractions(ctx, st, runID, "verify")
+	if err != nil {
+		t.Fatalf("list pending (uncompleted node): %v", err)
+	}
+	if len(orphanPending) != 0 {
+		t.Errorf("%d pending question(s) survived on a node that never completed — "+
+			"retirement is keyed on the output-filtered set, which skips exactly this case", len(orphanPending))
+	}
+	orphanDone, err := store.ListAnsweredAsyncInteractions(ctx, st, runID, "verify")
+	if err != nil {
+		t.Fatalf("list answered (uncompleted node): %v", err)
+	}
+	if len(orphanDone) != 0 {
+		t.Errorf("%d pre-rewind answer(s) survived on a node that never completed", len(orphanDone))
 	}
 	// An upstream node's question is not the rewind's business.
 	up, err := store.ListPendingAsyncInteractions(ctx, st, runID, "plan")

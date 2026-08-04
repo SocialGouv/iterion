@@ -5,6 +5,7 @@ import (
 	"errors"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
 	"github.com/SocialGouv/iterion/pkg/store"
@@ -324,5 +325,68 @@ func TestCurrentLoopIterationPath_FallbackToEdgeMembership(t *testing.T) {
 	// And currentLoopIteration mirrors that.
 	if it := e.currentLoopIteration("y", map[string]int{"L": 4}); it != 4 {
 		t.Errorf("currentLoopIteration fallback: got %d, want 4", it)
+	}
+}
+
+// ---- restampWorkflowSource ----
+
+// TestRestampWorkflowSource_PreservesTheResumeClaim is Revi's Rafe0da.
+//
+// Both call sites run AFTER the resume compare-and-set has flipped the run
+// to `running`, and the claim helpers mutate their OWN copy of the record
+// (UpdateRunStatusIf → loadRunRaw), never the caller's. Saving that stale
+// in-memory snapshot verbatim silently undid the claim: the run persisted
+// as cancelled/paused_* for its whole execution, the Checkpoint and
+// FinishedAt the `running` transition deliberately clears came back, and
+// the duplicate-resume guard fell — a second concurrent resume would find
+// a resumable status, win its CAS, and spawn a second engine on one run id.
+func TestRestampWorkflowSource_PreservesTheResumeClaim(t *testing.T) {
+	ctx := context.Background()
+	st := tmpStore(t)
+
+	finished := time.Now().UTC()
+	r := &store.Run{
+		ID:             "run-restamp",
+		Status:         store.RunStatusCancelled,
+		WorkflowSource: "old source",
+		Checkpoint:     &store.Checkpoint{NodeID: "implement"},
+		FinishedAt:     &finished,
+	}
+	if err := st.SaveRun(ctx, r); err != nil {
+		t.Fatalf("seed run: %v", err)
+	}
+
+	// The claim, exactly as claimForResume performs it.
+	claimed, err := st.UpdateRunStatusIf(ctx, r.ID, store.RunStatusRunning, "",
+		[]store.RunStatus{store.RunStatusCancelled})
+	if err != nil || !claimed {
+		t.Fatalf("claim: claimed=%v err=%v", claimed, err)
+	}
+	// `r` is deliberately NOT refreshed — that is the caller's real state.
+
+	e := &Engine{store: st, workflowSource: "new source", workflowHash: "hash-new"}
+	e.restampWorkflowSource(ctx, r)
+
+	got, err := st.LoadRun(ctx, r.ID)
+	if err != nil {
+		t.Fatalf("reload: %v", err)
+	}
+	if got.Status != store.RunStatusRunning {
+		t.Errorf("status = %q, want %q — the restamp reverted the resume claim, "+
+			"letting a second concurrent resume claim the same run",
+			got.Status, store.RunStatusRunning)
+	}
+	if got.Checkpoint != nil {
+		t.Errorf("checkpoint resurrected (%+v) — the running transition clears it", got.Checkpoint)
+	}
+	if got.FinishedAt != nil {
+		t.Errorf("finished_at resurrected (%v) — the studio duration ticker freezes on it", got.FinishedAt)
+	}
+	// The restamp must still have done its job.
+	if got.WorkflowSource != "new source" {
+		t.Errorf("workflow_source = %q, want %q", got.WorkflowSource, "new source")
+	}
+	if got.WorkflowHash != "hash-new" {
+		t.Errorf("workflow_hash = %q, want %q", got.WorkflowHash, "hash-new")
 	}
 }

@@ -601,6 +601,21 @@ func (e *Engine) markPreNodeBoundary(rs *runState, nodeID string) {
 		return
 	}
 	loopIter := e.currentLoopIteration(nodeID, rs.loopCounters)
+	// Several dispatch paths bracket the same node: execLoop brackets every
+	// isSpecialDispatch kind, then execSpecialNode brackets the compute /
+	// subbot / emit / wait / await_answers kinds again, and the human path
+	// does the same. The repeat lands on the same tree, so it is pure
+	// duplicated work — but with lastSnapshotCommit UNKNOWN (its state
+	// after every special dispatch) each call pays a full `git add -A`
+	// index walk and leaves an orphan commit.
+	if rs.preMarked == nil {
+		rs.preMarked = make(map[string]bool)
+	}
+	key := fmt.Sprintf("%s\x00%d", nodeID, loopIter)
+	if rs.preMarked[key] {
+		return
+	}
+	rs.preMarked[key] = true
 	ref := store.NodePreSnapshotRef(rs.runID, nodeID, loopIter)
 	target := rs.lastSnapshotCommit
 	if target == "" {
