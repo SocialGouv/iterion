@@ -316,7 +316,16 @@ func classifyExecResult(execErr error, runID string) execOutcome {
 	// The operator resumes MANUALLY with a raised cap
 	// (`iterion resume --max-duration/--max-cost-usd`), the documented
 	// "budget exceeded → raise the cap + resume" recovery.
-	if errors.Is(execErr, runtime.ErrBudgetExceeded) {
+	//
+	// Matched by sentinel AND by RuntimeError code: the engine has two budget
+	// exits (the branch scheduler wraps the sentinel, the per-node pre-check
+	// historically did not), and a budget death that misses this carve-out is
+	// naked into exactly the redelivery loop described above — observed live
+	// on 2026-08-04 (run 019fcc30-b9be: six ~40s resume/refail turns at a 96%
+	// duration hard limit, each re-provisioning a sandbox). The code match
+	// also covers a mixed-version deploy where an older engine produced the
+	// unwrapped shape.
+	if errors.Is(execErr, runtime.ErrBudgetExceeded) || runtimeCodeOf(execErr) == runtime.ErrCodeBudgetExceeded {
 		return execOutcome{
 			finalStatus: "budget_exceeded",
 			op:          "ack-budget-exceeded",

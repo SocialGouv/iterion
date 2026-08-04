@@ -394,11 +394,19 @@ func (e *Engine) checkBudgetBeforeExec(rs *runState, nodeID string) error {
 			"limit":      hl.limit,
 			"hard_limit": true,
 		})
+		// Cause carries the sentinel: the cloud runner's terminal-ack carve-out
+		// matches errors.Is(err, ErrBudgetExceeded), and without it a budget
+		// death here was naked back to JetStream — observed in production as a
+		// resume/refail loop at ~40s a turn, each turn re-provisioning a
+		// sandbox to instantly re-hit the same spent budget. The branch
+		// scheduler's twin checks already wrap the sentinel; these two were
+		// the only budget exits that did not.
 		return e.failRunErrWithCheckpoint(rs, nodeID, &RuntimeError{
 			Code:    ErrCodeBudgetExceeded,
 			Message: fmt.Sprintf("budget hard limit reached: %s at %.0f%% (%.0f/%.0f)", hl.dimension, (hl.used/hl.limit)*100, hl.used, hl.limit),
 			NodeID:  nodeID,
 			Hint:    fmt.Sprintf("increase the %s budget or optimize the workflow; new executions are blocked at 90%% to prevent concurrent overage", hl.dimension),
+			Cause:   ErrBudgetExceeded,
 		})
 	}
 
@@ -463,5 +471,6 @@ func (e *Engine) failBudgetExceeded(rs *runState, nodeID string, exc *budgetChec
 		Message: fmt.Sprintf("budget exceeded: %s (%.0f/%.0f)", exc.dimension, exc.used, exc.limit),
 		NodeID:  nodeID,
 		Hint:    fmt.Sprintf("increase the %s budget or optimize the workflow", exc.dimension),
+		Cause:   ErrBudgetExceeded,
 	})
 }

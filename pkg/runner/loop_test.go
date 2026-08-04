@@ -401,6 +401,15 @@ func TestClassifyExecResult(t *testing.T) {
 		// the one interruption-shaped outcome that must NOT come back.
 		{"budget exceeded acks (no auto-resume)", runtime.ErrBudgetExceeded, "budget_exceeded", actionAck},
 		{"wrapped budget exceeded acks", fmt.Errorf("%w: duration (7201/7200)", runtime.ErrBudgetExceeded), "budget_exceeded", actionAck},
+		// The engine's per-node budget pre-check historically produced a bare
+		// RuntimeError (code only, no sentinel Cause) — and that shape naked
+		// into the exact redelivery loop this carve-out forbids (run
+		// 019fcc30-b9be: six ~40s resume/refail turns at a 96% duration hard
+		// limit). The code match is what catches it, including from an older
+		// engine in a mixed-version deploy.
+		{"bare runtime-error budget code acks", &runtime.RuntimeError{
+			Code: runtime.ErrCodeBudgetExceeded, Message: "budget hard limit reached: duration at 96%",
+		}, "budget_exceeded", actionAck},
 		// Precedence, pinned rather than left to the order of the ifs: if an
 		// error ever carries BOTH, budget must win. Interrupted Naks for
 		// auto-resume, and auto-resuming a spent budget re-fails instantly on

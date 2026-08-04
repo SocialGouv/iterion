@@ -1351,9 +1351,14 @@ workflow dep_update_guard:
   ## The clean re-audit of an npm group already runs ~30m; 40m killed a
   ## 15-module go run mid-audit in production (2026-08-03, run 019fc8e5),
   ## which with a required gate context left the PR silently unmergeable.
+  ## 75m then killed the SAME workload at its very last node (2026-08-04,
+  ## run 019fcc30-b9be: audit 5m + align 25m + verify_build 30m + verify_run
+  ## 13m = 73m, dead at the commit with everything green behind it — the
+  ## worst possible point to run dry). The duration cap is a runaway guard,
+  ## not a performance target; the cost cap is the real spend bound.
   budget:
     max_parallel_branches: 1
-    max_duration: "75m"
+    max_duration: "2h"
     max_cost_usd: 20
 
   ## Scanners + build toolchain live in the sec sandbox image. One
