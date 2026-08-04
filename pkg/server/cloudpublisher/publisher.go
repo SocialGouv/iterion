@@ -244,6 +244,7 @@ var allKnownProviders = []secrets.Provider{
 	secrets.ProviderAzure,
 	secrets.ProviderOpenRouter,
 	secrets.ProviderXAI,
+	secrets.ProviderZAI,
 }
 
 func genericSecretNamesForWorkflow(wf *ir.Workflow) []string {

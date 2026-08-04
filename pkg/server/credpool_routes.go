@@ -280,10 +280,13 @@ func (s *Server) verifyLendable(r *http.Request, userID string, cred credpool.Cr
 		if string(k.Provider) != cred.Ref {
 			return secrets.OAuthRecord{}, &httpErr{http.StatusBadRequest, fmt.Sprintf("that key is a %s key, not %s", k.Provider, cred.Ref)}
 		}
-		// A metered key spends real money per token, so an unbounded pledge
-		// is an open invoice. Subscriptions may be lent uncapped (the plan
-		// is already paid for); a key may not.
-		return secrets.OAuthRecord{}, nil
+		// CreatedAt carries the reconnection signal, exactly as the OAuth
+		// branch does: a key added AFTER the pledge was parked is what
+		// clears the parked state. A zero record would read as "never
+		// reconnected", leaving a donor who lends a fresh key stuck with a
+		// pledge that can never serve again and no repair path short of
+		// withdrawing it.
+		return secrets.OAuthRecord{CreatedAt: k.CreatedAt}, nil
 	}
 	return secrets.OAuthRecord{}, &httpErr{http.StatusBadRequest, fmt.Sprintf("unknown credential source %q", cred.Source)}
 }

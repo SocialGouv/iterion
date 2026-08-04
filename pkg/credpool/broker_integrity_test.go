@@ -638,3 +638,36 @@ func TestAcquire_fallsThroughToACommunityPoolWhenTheOwnPoolCannotServe(t *testin
 }
 
 func runIDf(i int) string { return "run-" + string(rune('0'+i)) }
+
+// The share must survive a RESUME. decideRenew synthesises the Limits it
+// judges with, and dropping MaxConcurrentRuns there made shareAcrossSlots
+// a no-op on that path: a resumed run re-took the donor's whole remaining
+// allowance and refused the very siblings they had allowed — the same
+// defect, through the pause/resume door every human-in-the-loop bot uses.
+func TestAcquire_resumeKeepsItsShareInsteadOfTakingTheWholeAllowance(t *testing.T) {
+	h := newHarness(t)
+	ctx := context.Background()
+	h.donor(t, "alice", Limits{MaxUSDPerDay: 9, MaxConcurrentRuns: 3})
+
+	if _, err := h.broker.Acquire(ctx, h.request("run-1")); err != nil {
+		t.Fatalf("first Acquire: %v", err)
+	}
+	if err := h.broker.Report(ctx, "run-1", Outcome{CostUSD: 0}); err != nil {
+		t.Fatalf("Report: %v", err)
+	}
+	resumed, err := h.broker.Acquire(ctx, h.request("run-1")) // the resume
+	if err != nil {
+		t.Fatalf("resume Acquire: %v", err)
+	}
+	if resumed.RemainingUSD > 3.0001 {
+		t.Errorf("the resume was granted $%.2f of a $9/3-slot pledge — it swallowed the other slots",
+			resumed.RemainingUSD)
+	}
+
+	// The two slots the donor allowed are still there for other runs.
+	for _, id := range []string{"run-2", "run-3"} {
+		if _, err := h.broker.Acquire(ctx, h.request(id)); err != nil {
+			t.Errorf("%s refused while a resumed run held a slot: %v", id, err)
+		}
+	}
+}

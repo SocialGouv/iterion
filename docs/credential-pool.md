@@ -196,6 +196,21 @@ that admits the requester is tried, own-org first: running a pool of your
 own must not exclude you from a community one when your own donors are all
 cooling, exhausted or out-of-hours.
 
+## Upgrading from the first release of the pool
+
+The first shipped version identified a pledge by OAuth **kind**
+(`user|claude_code`); a pledge now names a **credential**
+(`user|oauth|claude_code`, `user|api_key|anthropic`) so keys of any
+provider can be lent. There is no backfill: a pledge document written by
+the first version decodes with an empty source and is silently never
+selected, while still showing as enabled on its donor's dashboard —
+the one failure mode this feature must not have.
+
+**If contributors already pledged on that version, drop
+`credpool_pledges` and `credpool_leases` before deploying** and ask them
+to lend again. If nobody pledged yet (the pool ships disabled, so this is
+the common case), there is nothing to do.
+
 ## Operator cookbook
 
 Admission is handled by the **existing GitHub team-gating**, not by anything

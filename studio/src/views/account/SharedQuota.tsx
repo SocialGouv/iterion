@@ -8,6 +8,7 @@ import { FieldLabel } from "@/components/ui/FieldLabel";
 import { InlineBanner } from "@/components/ui/InlineBanner";
 import { Input } from "@/components/ui/Input";
 import { Meter } from "@/components/ui/Meter";
+import { Select } from "@/components/ui/Select";
 import { TBody, THead, Table, Td, Th, Tr } from "@/components/ui/Table";
 import PanelLoading from "@/components/shared/PanelLoading";
 import { useConfirm } from "@/hooks/useConfirm";
@@ -35,10 +36,17 @@ const SUBSCRIPTION_LABEL: Record<OAuthKind, string> = {
 interface Lendable {
   source: CredentialSource;
   ref: string;
-  keyID?: string;
   label: string;
   /** Real money per token, rather than a slice of a plan already paid for. */
   metered: boolean;
+  /**
+   * For a metered provider, the personal keys that could back it. A pledge
+   * is identified by (source, ref), so there is exactly ONE per provider —
+   * the donor picks which of their keys it spends rather than getting a
+   * card per key, which would render duplicates all editing the same
+   * contribution.
+   */
+  keys?: { id: string; label: string }[];
 }
 
 // The same caveat the org-shared forfait already carries. Lending a
@@ -61,6 +69,28 @@ const STATUS_COPY: Record<PledgeStatus, { label: string; tone: "success" | "warn
   unhealthy: { label: "Needs reconnecting", tone: "danger" },
   bot_filtered: { label: "Sharing, but not with this bot", tone: "neutral" },
 };
+
+/**
+ * One lendable per PROVIDER, carrying that provider's personal keys as the
+ * choices behind it. A team key is the team's to spend, and the server
+ * refuses to pool one, so only user-scoped keys are offered.
+ */
+function groupKeysByProvider(keys: ApiKeyView[]): Lendable[] {
+  const byProvider = new Map<string, { id: string; label: string }[]>();
+  for (const k of keys) {
+    if (!k.scope_user_id) continue;
+    const choices = byProvider.get(k.provider) ?? [];
+    choices.push({ id: k.id, label: `${k.name}${k.last4 ? ` (…${k.last4})` : ""}` });
+    byProvider.set(k.provider, choices);
+  }
+  return [...byProvider.entries()].map(([provider, choices]) => ({
+    source: "api_key" as CredentialSource,
+    ref: provider,
+    label: `${provider} key`,
+    metered: true,
+    keys: choices,
+  }));
+}
 
 /** Blank input = "no limit on this axis", which the API encodes as 0. */
 function numOrZero(s: string): number {
@@ -95,15 +125,7 @@ export default function SharedQuota() {
       label: SUBSCRIPTION_LABEL[kind],
       metered: false,
     })),
-    ...(keys.data ?? [])
-      .filter((k) => k.scope_user_id)
-      .map((k) => ({
-        source: "api_key" as CredentialSource,
-        ref: k.provider,
-        keyID: k.id,
-        label: `${k.provider} key — ${k.name}${k.last4 ? ` (…${k.last4})` : ""}`,
-        metered: true,
-      })),
+    ...groupKeysByProvider(keys.data ?? []),
   ];
 
   const reload = () => {
@@ -192,6 +214,7 @@ function PledgeCard({
 }) {
   const [limits, setLimits] = useState<PoolLimits>({});
   const [hours, setHours] = useState<{ start: string; end: string }>({ start: "", end: "" });
+  const [keyID, setKeyID] = useState<string>("");
   const [busy, setBusy] = useState(false);
 
   // Re-seed the form whenever the server's view changes, so a save or a
@@ -202,7 +225,8 @@ function PledgeCard({
       start: pledge?.window ? String(pledge.window.start_hour) : "",
       end: pledge?.window ? String(pledge.window.end_hour) : "",
     });
-  }, [pledge]);
+    setKeyID(pledge?.key_id ?? lendable.keys?.[0]?.id ?? "");
+  }, [pledge, lendable]);
 
   const status = pledge?.status;
   const copy = status ? STATUS_COPY[status] : null;
@@ -224,7 +248,7 @@ function PledgeCard({
               timezone: Intl.DateTimeFormat().resolvedOptions().timeZone,
             },
       bots: pledge?.bots,
-      key_id: lendable.keyID,
+      key_id: keyID,
     };
   };
 
@@ -320,6 +344,21 @@ function PledgeCard({
               Resting until {formatDateTime(pledge.cooldown_until)}
             </div>
           )}
+        </div>
+      )}
+
+      {(lendable.keys?.length ?? 0) > 1 && (
+        <div className="max-w-sm">
+          <FieldLabel help="You hold several keys for this provider. One contribution exists per provider — this is the key it spends.">
+            Key to lend
+          </FieldLabel>
+          <Select value={keyID} onChange={(e) => setKeyID(e.target.value)}>
+            {lendable.keys?.map((k) => (
+              <option key={k.id} value={k.id}>
+                {k.label}
+              </option>
+            ))}
+          </Select>
         </div>
       )}
 
