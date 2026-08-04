@@ -135,10 +135,15 @@ func (s *Server) relaunchDeadGateRun(ctx context.Context, d deadGateRun) {
 		SubjectURL:  d.prURL,
 		SubjectSHA:  d.pr.HeadSHA,
 	}
-	// One relaunch per (team, repo, PR, head) — EVER. A second death on the
-	// same head replays as a duplicate of this key, which is the signal that
-	// automation is out of moves for this revision.
-	idem := knowledge.ChecksumHex([]byte(fmt.Sprintf("gaterelaunch|%s|%s|%d|%s", d.grant.TeamID, d.repo, d.number, d.pr.HeadSHA)))
+	// One relaunch per (team, repo, PR, head, BOT) — EVER. A second death of
+	// the same bot on the same head replays as a duplicate of this key, which
+	// is the signal that automation is out of moves for this revision. The
+	// bot id is part of the key because a repo's gate context is shared and
+	// the publish grant is minted for ANY bot launched with a pr_url: two
+	// different gating bots dying on one head are two independent recoveries,
+	// and folding them onto one key would deny the second its relaunch while
+	// filing a board card that names the wrong run.
+	idem := knowledge.ChecksumHex([]byte(fmt.Sprintf("gaterelaunch|%s|%s|%d|%s|%s", d.grant.TeamID, d.repo, d.number, d.pr.HeadSHA, botID)))
 	res := s.launchWebhookTarget(launchCtx, nil, cfg, meta, forgeLaunchTarget{
 		BotID:   botID,
 		IdemKey: idem,

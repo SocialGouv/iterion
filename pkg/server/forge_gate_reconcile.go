@@ -3,6 +3,7 @@ package server
 import (
 	"context"
 	"strings"
+	"unicode/utf8"
 
 	"github.com/SocialGouv/iterion/pkg/eventbus"
 	"github.com/SocialGouv/iterion/pkg/forge"
@@ -49,9 +50,17 @@ func gateInterruptedDescriptionFor(run *store.Run) string {
 	if reason == "" {
 		return gateInterruptedDescription
 	}
+	// Truncate on a rune boundary: run.Error routinely carries provider prose
+	// (accents, ellipses), and a raw byte slice can split a multi-byte rune
+	// into invalid UTF-8 that some forges reject with a 422 — turning a long
+	// reason into no synthetic status at all.
 	const maxReason = 60
 	if len(reason) > maxReason {
-		reason = reason[:maxReason-1] + "…"
+		cut := maxReason - 1
+		for cut > 0 && !utf8.RuneStart(reason[cut]) {
+			cut--
+		}
+		reason = reason[:cut] + "…"
 	}
 	return gateDiedDescriptionPrefix + reason + ") — push again or comment the bot's command to re-run"
 }

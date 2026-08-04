@@ -121,7 +121,9 @@ func TestGateRelaunch(t *testing.T) {
 		}
 		return run.ID
 	}
-	relaunchIdem := knowledge.ChecksumHex([]byte("gaterelaunch|" + team + "|" + repo + "|7|" + head))
+	// The bot id is part of the claim key: two gating bots on one head are two
+	// independent recoveries.
+	relaunchIdem := knowledge.ChecksumHex([]byte("gaterelaunch|" + team + "|" + repo + "|7|" + head + "|" + botID))
 
 	t.Run("a dead gating run posts its failure and is relaunched once", func(t *testing.T) {
 		w := build(t, nil)
