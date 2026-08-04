@@ -190,14 +190,43 @@ func (ig *Ignorer) Match(rel string, isDir bool) bool {
 	return excluded
 }
 
-// CanPrune reports whether an excluded directory can be skipped whole.
+// CanPrune reports whether ANY excluded directory can be skipped whole.
 //
 // With no negations, an excluded directory holds nothing we want and the
 // walk can stop there. As soon as one negation exists, something inside
 // may be re-included, so the walk has to descend — the cost of making an
 // allowlist expressible. Stat-only descent, no hashing, so it is cheap
 // next to what it enables.
+//
+// Prefer CanPruneDir, which answers the same question for one directory
+// and can say yes where this has to say no.
 func (ig *Ignorer) CanPrune() bool { return !ig.hasNegate }
+
+// CanPruneDir reports whether THIS excluded directory can be skipped
+// whole — the per-directory refinement of CanPrune.
+//
+// alwaysIgnored directories are the case CanPrune gets wrong: Match
+// short-circuits on those segments BEFORE the rule loop, so no negation
+// can ever re-include anything beneath them, and descending is pure
+// waste. Waste that grows, at that: in a managed store the object pool
+// lives at <workspace>/.iterion/workspace-objects/, so every boundary
+// walk would stat everything the run has ever captured, and the
+// per-boundary cost climbs with each capture instead of holding flat.
+//
+// This is not a corner case — one negation anywhere is enough to trip it,
+// and this repo's own .gitignore carries five, so iterion self-hosting
+// was squarely in it.
+func (ig *Ignorer) CanPruneDir(rel string) bool {
+	if !ig.hasNegate {
+		return true
+	}
+	for _, seg := range strings.Split(rel, "/") {
+		if alwaysIgnored[seg] {
+			return true
+		}
+	}
+	return false
+}
 
 // matches reports whether the rule applies to a path, either directly or
 // through one of its ancestor directories (a directory rule covers its

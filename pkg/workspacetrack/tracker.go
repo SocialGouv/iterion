@@ -70,6 +70,17 @@ func Label(phase, nodeID string, loopIter int) string {
 // ErrSnapshotNotFound is returned when a snapshot id or label is unknown.
 var ErrSnapshotNotFound = errors.New("workspacetrack: snapshot not found")
 
+// ErrWorkspaceTooLarge is returned when a workspace exceeds MaxFiles.
+//
+// It latches for the run: the first overflow records the verdict in the
+// run's index and every later Capture returns this immediately instead of
+// re-walking. Without the latch the abort happened from inside the walk,
+// BEFORE the stat cache was saved, so the next boundary started from an
+// empty cache and re-read and re-hashed up to MaxFiles files again — a
+// full-content read of 50,000 files per node boundary, producing zero
+// snapshots, surfaced only as a warn.
+var ErrWorkspaceTooLarge = errors.New("workspacetrack: workspace is too large to version")
+
 // Entry is one file in a snapshot.
 type Entry struct {
 	Path string `json:"path"` // workspace-relative, slash-separated

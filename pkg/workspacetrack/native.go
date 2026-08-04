@@ -4,6 +4,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"io/fs"
@@ -74,6 +75,11 @@ func (n *Native) runDir(runID string) string {
 	return filepath.Join(n.root, "runs", runID, "workspace")
 }
 
+// objectsDir is the store-global content-addressed pool, relative to the
+// store root. Named once so objectPath, storeObject's temp-file staging
+// and PruneObjects cannot drift apart.
+const objectsDir = "workspace-objects"
+
 // objectPath is deliberately NOT keyed by run: content is content, and a
 // per-run pool means every run of the same bot on the same repo rewrites
 // the entire workspace from scratch (measured: 318 MiB per run on this
@@ -84,7 +90,7 @@ func (n *Native) runDir(runID string) string {
 // objects — see PruneObjects, which sweeps against the manifests that
 // remain.
 func (n *Native) objectPath(hash string) string {
-	return filepath.Join(n.root, "workspace-objects", hash[:2], hash[2:])
+	return filepath.Join(n.root, objectsDir, hash[:2], hash[2:])
 }
 
 func (n *Native) snapshotPath(runID, id string) string {
@@ -99,6 +105,10 @@ type statCache struct {
 	Entries map[string]statEntry `json:"entries"`
 	Head    string               `json:"head,omitempty"`
 	Labels  map[string]string    `json:"labels,omitempty"`
+	// Overflowed latches once the workspace was found to exceed MaxFiles,
+	// so later boundaries short-circuit instead of re-walking a workspace
+	// that will fail identically. Persisted, so it survives a resume.
+	Overflowed bool `json:"overflowed,omitempty"`
 }
 
 type statEntry struct {
@@ -169,6 +179,11 @@ func (n *Native) Capture(runID, workspaceDir, label string) (*Snapshot, error) {
 		return nil, fmt.Errorf("workspacetrack: capture needs a run id and a workspace dir")
 	}
 	c := n.cache(runID)
+	if c.Overflowed {
+		// Latched by an earlier boundary: re-walking would re-read and
+		// re-hash up to MaxFiles files to reach the same verdict.
+		return nil, fmt.Errorf("%w (over %d files)", ErrWorkspaceTooLarge, n.MaxFiles)
+	}
 	ig := NewIgnorer(workspaceDir)
 
 	snap := &Snapshot{
@@ -197,7 +212,7 @@ func (n *Native) Capture(runID, workspaceDir, label string) (*Snapshot, error) {
 			return nil
 		}
 		if ig.Match(rel, d.IsDir()) {
-			if d.IsDir() && ig.CanPrune() {
+			if d.IsDir() && ig.CanPruneDir(rel) {
 				return fs.SkipDir
 			}
 			return nil
@@ -216,7 +231,7 @@ func (n *Native) Capture(runID, workspaceDir, label string) (*Snapshot, error) {
 			return nil
 		}
 		if len(snap.Entries) >= n.MaxFiles {
-			return fmt.Errorf("workspacetrack: workspace exceeds %d files — refusing to version it", n.MaxFiles)
+			return fmt.Errorf("%w (over %d files)", ErrWorkspaceTooLarge, n.MaxFiles)
 		}
 		if info.Size() > n.MaxFileBytes {
 			snap.Skipped = append(snap.Skipped, rel)
@@ -240,6 +255,18 @@ func (n *Native) Capture(runID, workspaceDir, label string) (*Snapshot, error) {
 		return nil
 	})
 	if err != nil {
+		// Latch an overflow so the next boundary short-circuits. The abort
+		// happens from inside the walk, BEFORE saveCache, so without this
+		// the run re-reads and re-hashes up to MaxFiles files at every
+		// single node boundary, forever, producing no snapshots at all.
+		if errors.Is(err, ErrWorkspaceTooLarge) {
+			n.mu.Lock()
+			c.Overflowed = true
+			n.mu.Unlock()
+			if serr := n.saveCache(runID, c); serr != nil {
+				return nil, fmt.Errorf("%w (and the overflow latch could not be persisted: %v)", err, serr)
+			}
+		}
 		return nil, err
 	}
 	sort.Slice(snap.Entries, func(i, j int) bool { return snap.Entries[i].Path < snap.Entries[j].Path })
@@ -270,10 +297,37 @@ func (n *Native) storeObject(path string) (string, error) {
 		return "", err
 	}
 	defer func() { _ = f.Close() }()
+	pool := filepath.Join(n.root, objectsDir)
+	if err := os.MkdirAll(pool, 0o755); err != nil {
+		return "", err
+	}
+	// A UNIQUE temp name, and streamed rather than buffered whole.
+	//
+	// The pool is store-global by design, so two runs capturing the same
+	// new content at the same moment would otherwise collide on one
+	// "<dest>.tmp": the loser's Rename fails with ENOENT, storeObject
+	// errors, and the error propagates out of the WalkDir callback —
+	// aborting the ENTIRE boundary capture before saveCache runs. The
+	// engine only logs a warn, so the boundary silently has no snapshot
+	// and a later rewind reports "no snapshot recorded". The studio runs
+	// several runs against one store, which is exactly that shape.
+	//
+	// Streaming also matters on its own: buffering into a strings.Builder
+	// and copying again cost 2x file size on the heap, which the media
+	// workspaces this feature targets (mp4s, with
+	// ITERION_WORKSPACE_MAX_FILE_MB raised) make material.
+	tmp, err := os.CreateTemp(pool, ".obj-*")
+	if err != nil {
+		return "", err
+	}
+	tmpName := tmp.Name()
+	defer func() { _ = os.Remove(tmpName) }()
 	h := sha256.New()
-	// Hash and buffer in one pass so an unchanged file costs one read.
-	var buf strings.Builder
-	if _, err := io.Copy(io.MultiWriter(h, &buf), f); err != nil {
+	if _, err := io.Copy(io.MultiWriter(h, tmp), f); err != nil {
+		_ = tmp.Close()
+		return "", err
+	}
+	if err := tmp.Close(); err != nil {
 		return "", err
 	}
 	hash := hex.EncodeToString(h.Sum(nil))
@@ -284,7 +338,13 @@ func (n *Native) storeObject(path string) (string, error) {
 	if err := os.MkdirAll(filepath.Dir(dest), 0o755); err != nil {
 		return "", err
 	}
-	if err := writeAtomic(dest, []byte(buf.String())); err != nil {
+	if err := os.Chmod(tmpName, 0o644); err != nil {
+		return "", err
+	}
+	// Rename onto the final name. Content-addressed, so a concurrent
+	// writer racing us here lands byte-identical content — last writer
+	// wins harmlessly.
+	if err := os.Rename(tmpName, dest); err != nil {
 		return "", err
 	}
 	return hash, nil
@@ -334,6 +394,21 @@ func (n *Native) Head(runID string) string {
 	return c.Head
 }
 
+// Overflowed reports whether this run's workspace was found to exceed
+// MaxFiles, which latches versioning off for it.
+//
+// It exists so a rewind can tell the two "no snapshots" causes apart:
+// versioning genuinely off, versus a workspace too large to version.
+// They have different fixes, and reporting the second as the first sends
+// the operator hunting for the wrong problem. Consumed through an
+// optional interface assertion, so the Tracker contract stays minimal.
+func (n *Native) Overflowed(runID string) bool {
+	c := n.cache(runID)
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	return c.Overflowed
+}
+
 // Forget drops a run's in-memory stat cache. Measured at ~2 MiB per run
 // id on this repository; without it a studio process accumulates that for
 // every run it has ever executed. index.json on disk keeps the cache
@@ -346,6 +421,15 @@ func (n *Native) Forget(runID string) {
 
 // Load reads a snapshot manifest.
 func (n *Native) Load(runID, snapshotID string) (*Snapshot, error) {
+	// The id reaches here straight from `iterion rewind --restore-snapshot`,
+	// and snapshotPath joins it onto the run's snapshots dir — so without
+	// this an id like "../../../elsewhere/manifest" reads an arbitrary
+	// .json and, if it decodes as a Snapshot, drives a delete+write pass
+	// over the workspace. Same containment posture the manifest entries
+	// already get through safeRelPath.
+	if !validSnapshotID(snapshotID) {
+		return nil, fmt.Errorf("%w: %q is not a snapshot id", ErrSnapshotNotFound, snapshotID)
+	}
 	b, err := os.ReadFile(n.snapshotPath(runID, snapshotID))
 	if err != nil {
 		if os.IsNotExist(err) {
@@ -407,7 +491,7 @@ func (n *Native) Restore(runID, workspaceDir, snapshotID string, protected ...st
 			return nil
 		}
 		if ig.Match(rel, d.IsDir()) {
-			if d.IsDir() && ig.CanPrune() {
+			if d.IsDir() && ig.CanPruneDir(rel) {
 				return fs.SkipDir
 			}
 			return nil
@@ -432,6 +516,23 @@ func (n *Native) Restore(runID, workspaceDir, snapshotID string, protected ...st
 	})
 	if err != nil {
 		return nil, err
+	}
+	// Verify every object the write-back will need is present BEFORE
+	// deleting anything. The deletion pass is irreversible, and the
+	// write-back below bails on the first unreadable object — so an
+	// incomplete pool (a store copied without workspace-objects/, a
+	// partial disk, a manual cleanup, a prune racing a live capture) left
+	// the operator with a workspace holding NEITHER the node's work nor
+	// the state it was being reverted to. Failing before the first
+	// os.Remove keeps the workspace exactly as it was.
+	for _, e := range snap.Entries {
+		if !safeRelPath(e.Path) || ig.Match(e.Path, false) {
+			continue // not restored anyway — see the write-back loop
+		}
+		if _, serr := os.Stat(n.objectPath(e.Hash)); serr != nil {
+			return nil, fmt.Errorf("restore: object %s for %s is unavailable, refusing to delete anything: %w",
+				e.Hash, e.Path, serr)
+		}
 	}
 	for _, p := range toDelete {
 		if err := os.Remove(p); err != nil && !os.IsNotExist(err) {
@@ -498,18 +599,20 @@ func (n *Native) Restore(runID, workspaceDir, snapshotID string, protected ...st
 	return report, nil
 }
 
-// safeRelPath rejects anything that could resolve outside the workspace:
-// absolute paths, and any component that walks upwards.
+// safeRelPath rejects anything that could resolve outside the workspace.
+//
+// filepath.IsLocal covers absolute paths, every ".." component, and — on
+// Windows — backslash separators, drive-relative paths and reserved
+// names. The hand-rolled "/"-only segment scan this replaces let
+// `..\..\evil.txt` through on Windows, where the entry has no "/" at all:
+// filepath.FromSlash then leaves the backslashes intact and filepath.Join
+// resolves outside the workspace. A manifest is untrusted data and
+// iterion ships windows/amd64 builds, so the guard has to hold there too.
 func safeRelPath(p string) bool {
-	if p == "" || filepath.IsAbs(p) || strings.HasPrefix(p, "/") {
+	if p == "" {
 		return false
 	}
-	for _, seg := range strings.Split(p, "/") {
-		if seg == ".." {
-			return false
-		}
-	}
-	return true
+	return filepath.IsLocal(filepath.FromSlash(p))
 }
 
 func sameContent(path string, e Entry) bool {
@@ -542,7 +645,7 @@ func pruneEmptyDirs(root string, ig *Ignorer) {
 			return nil
 		}
 		if ig.Match(filepath.ToSlash(rel), true) {
-			if ig.CanPrune() {
+			if ig.CanPruneDir(filepath.ToSlash(rel)) {
 				return fs.SkipDir
 			}
 			return nil
@@ -583,6 +686,25 @@ func newSnapshotID() string {
 	c := snapshotCounter.n
 	snapshotCounter.Unlock()
 	return fmt.Sprintf("%d-%04d", time.Now().UTC().UnixNano(), c)
+}
+
+// validSnapshotID pins an id to the form newSnapshotID generates
+// (`<unixnano>-<counter>`), which contains no separator and no dot, so it
+// cannot traverse out of the run's snapshots directory.
+func validSnapshotID(id string) bool {
+	dash := strings.IndexByte(id, '-')
+	if dash <= 0 || dash == len(id)-1 {
+		return false
+	}
+	for i := 0; i < len(id); i++ {
+		if i == dash {
+			continue
+		}
+		if id[i] < '0' || id[i] > '9' {
+			return false
+		}
+	}
+	return true
 }
 
 // PruneObjects deletes content in the store-global pool that no surviving
@@ -641,7 +763,7 @@ func (n *Native) PruneObjects() (objects int, bytes int64, err error) {
 		}
 	}
 
-	pool := filepath.Join(n.root, "workspace-objects")
+	pool := filepath.Join(n.root, objectsDir)
 	werr := filepath.WalkDir(pool, func(path string, d fs.DirEntry, walkErr error) error {
 		if walkErr != nil || d.IsDir() {
 			return nil
