@@ -1,8 +1,12 @@
 package operatormcp
 
 import (
+	"context"
+	"os/exec"
 	"strings"
 	"testing"
+
+	"github.com/SocialGouv/iterion/pkg/store"
 )
 
 func TestBuildRunnerArgsRun(t *testing.T) {
@@ -57,5 +61,50 @@ func TestBuildRunnerArgsResume(t *testing.T) {
 func TestBuildRunnerArgsUnknownCommand(t *testing.T) {
 	if _, err := buildRunnerArgs(runnerSpec{Command: "nope"}); err == nil {
 		t.Fatal("unknown command should error")
+	}
+}
+
+// TestReapRunnerComparesPid pins the compare-and-delete contract: a
+// reaped child may only remove the .pid that still records ITS OWN
+// pid — a sibling that overwrote the file (spawn race) keeps its
+// liveness record when the loser exits.
+func TestReapRunnerComparesPid(t *testing.T) {
+	st, err := store.New(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	pidS := store.AsPIDStore(st)
+	if pidS == nil {
+		t.Fatal("filesystem store must implement PIDStore")
+	}
+	if _, err := st.CreateRun(context.Background(), "run-reap", "wf", nil); err != nil {
+		t.Fatal(err)
+	}
+
+	child := exec.Command("true")
+	if err := child.Start(); err != nil {
+		t.Fatal(err)
+	}
+
+	// .pid holds ANOTHER runner's pid → the reap must leave it alone.
+	if err := pidS.WritePIDFile("run-reap", child.Process.Pid+1); err != nil {
+		t.Fatal(err)
+	}
+	reapRunner(child, pidS, "run-reap")
+	if pid, err := pidS.ReadPIDFile("run-reap"); err != nil || pid != child.Process.Pid+1 {
+		t.Fatalf(".pid of a surviving sibling was touched: pid=%d err=%v", pid, err)
+	}
+
+	// .pid holds THIS child's pid → the reap removes it.
+	child2 := exec.Command("true")
+	if err := child2.Start(); err != nil {
+		t.Fatal(err)
+	}
+	if err := pidS.WritePIDFile("run-reap", child2.Process.Pid); err != nil {
+		t.Fatal(err)
+	}
+	reapRunner(child2, pidS, "run-reap")
+	if pid, err := pidS.ReadPIDFile("run-reap"); err != nil || pid != 0 {
+		t.Fatalf("own .pid should be removed after reap: pid=%d err=%v", pid, err)
 	}
 }

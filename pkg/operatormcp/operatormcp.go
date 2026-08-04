@@ -21,6 +21,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"os"
 	"sort"
 	"strings"
 	"sync"
@@ -60,10 +61,14 @@ type Tool struct {
 	Name        string
 	Description string
 	InputSchema json.RawMessage
-	// ReadOnly marks tools that never mutate state. In read-only mode
-	// only these are listed/callable (remote_api stays listed but its
-	// handler enforces GET-only — see tools_remote.go).
+	// ReadOnly marks tools that never mutate state — it feeds the MCP
+	// readOnlyHint annotation, so it must be TRUTHFUL about the tool's
+	// capability, not about a mode gate.
 	ReadOnly bool
+	// ListedInReadOnly keeps a mutating tool exposed in read-only mode
+	// because its handler enforces its own read-only restriction
+	// (remote_api goes GET-only). Meaningless on ReadOnly tools.
+	ListedInReadOnly bool
 	// handler returns the text content block for the tools/call result.
 	// isErr flags a tool-level failure the LLM should route on (e.g. an
 	// HTTP error body); a non-nil error is reported the same way with
@@ -84,15 +89,18 @@ type Server struct {
 	// Only restricts the exposed families (FamilyAll = both).
 	Only Family
 
-	// openStoreOnce lazily opens the run store so remote-only usage
-	// never creates a local store directory.
-	openStoreOnce sync.Once
-	runStore      *store.FilesystemRunStore
-	runStoreErr   error
+	// storeMu guards the lazily-opened stores. Laziness keeps
+	// remote-only usage from ever touching the local disk; a failed
+	// open is NOT latched, so a store created later in the session
+	// (e.g. by a first mutating call) becomes visible to reads.
+	storeMu    sync.Mutex
+	runStore   *store.FilesystemRunStore
+	boardStore *native.Store
 
-	openBoardOnce sync.Once
-	boardStore    *native.Store
-	boardStoreErr error
+	// spawnGate serializes the check-then-spawn sections of
+	// local_run/local_resume so two concurrent calls cannot both pass
+	// the live-runner check and clobber each other's .pid.
+	spawnGate sync.Mutex
 
 	tools     []Tool
 	toolIndex map[string]*Tool
@@ -112,7 +120,7 @@ func (s *Server) build() {
 		}
 		filtered := all[:0]
 		for _, t := range all {
-			if s.ReadOnly && !t.ReadOnly {
+			if s.ReadOnly && !t.ReadOnly && !t.ListedInReadOnly {
 				continue
 			}
 			filtered = append(filtered, t)
@@ -174,28 +182,52 @@ func textResult(text string, isErr bool) CallResult {
 	}
 }
 
-// store returns the lazily-opened local run store.
+// store returns the lazily-opened local run store. In read-only mode
+// an ABSENT store is an explicit error instead of an implicit mkdir:
+// store.New creates runs/ + .gitignore, and "read-only" must not
+// write anything to disk.
 func (s *Server) store() (*store.FilesystemRunStore, error) {
-	s.openStoreOnce.Do(func() {
-		s.runStore, s.runStoreErr = store.New(s.StoreDir)
-	})
-	if s.runStoreErr != nil {
-		return nil, fmt.Errorf("open run store %s: %w", s.StoreDir, s.runStoreErr)
+	s.storeMu.Lock()
+	defer s.storeMu.Unlock()
+	if s.runStore != nil {
+		return s.runStore, nil
 	}
-	return s.runStore, nil
+	if s.ReadOnly {
+		if fi, err := os.Stat(s.StoreDir); err != nil || !fi.IsDir() {
+			return nil, fmt.Errorf("read-only mode: no run store at %s (opening one would create it)", s.StoreDir)
+		}
+	}
+	st, err := store.New(s.StoreDir)
+	if err != nil {
+		return nil, fmt.Errorf("open run store %s: %w", s.StoreDir, err)
+	}
+	s.runStore = st
+	return st, nil
 }
 
 // board returns the lazily-opened native board store at
 // <store-dir>/dispatcher — the same resolution as `iterion issue` and
-// the __mcp-board server.
+// the __mcp-board server. Same read-only rule as store(): an absent
+// board is reported, never initialised (native.NewStore writes
+// board.json).
 func (s *Server) board() (*native.Store, error) {
-	s.openBoardOnce.Do(func() {
-		s.boardStore, s.boardStoreErr = native.NewStore(boardRoot(s.StoreDir))
-	})
-	if s.boardStoreErr != nil {
-		return nil, fmt.Errorf("open board store %s: %w", boardRoot(s.StoreDir), s.boardStoreErr)
+	s.storeMu.Lock()
+	defer s.storeMu.Unlock()
+	if s.boardStore != nil {
+		return s.boardStore, nil
 	}
-	return s.boardStore, nil
+	root := boardRoot(s.StoreDir)
+	if s.ReadOnly {
+		if fi, err := os.Stat(root); err != nil || !fi.IsDir() {
+			return nil, fmt.Errorf("read-only mode: no board at %s (opening one would initialise it)", root)
+		}
+	}
+	b, err := native.NewStore(root)
+	if err != nil {
+		return nil, fmt.Errorf("open board store %s: %w", root, err)
+	}
+	s.boardStore = b
+	return b, nil
 }
 
 // unmarshalArgs decodes a tools/call arguments blob into dest, treating

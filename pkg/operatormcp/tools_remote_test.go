@@ -185,6 +185,36 @@ func TestRemoteAPIReadOnlyAllowsOnlyGET(t *testing.T) {
 	}
 }
 
+func TestRemoteRunArtifactsFileEscaping(t *testing.T) {
+	var gotURI string
+	mux := http.NewServeMux()
+	mux.HandleFunc("/api/runs/r1/artifact-files/", func(w http.ResponseWriter, r *http.Request) {
+		gotURI = r.RequestURI
+		_, _ = w.Write([]byte(`{"ok":true}`))
+	})
+	newRemoteStub(t, mux)
+
+	s := newTestServer(t)
+	text, isErr := call(t, s, "remote_run_artifacts", `{"run_id":"r1","file":"sub dir/report.md?download=1#frag"}`)
+	if isErr {
+		t.Fatalf("artifacts errored: %s", text)
+	}
+	// `?` and `#` must be escaped into the PATH — nothing may leak into
+	// the query string or be stripped as a fragment.
+	if !strings.Contains(gotURI, "report.md%3Fdownload=1%23frag") && !strings.Contains(gotURI, "report.md%3Fdownload%3D1%23frag") {
+		t.Fatalf("file segment not escaped: %s", gotURI)
+	}
+	if strings.Contains(gotURI, "?download") {
+		t.Fatalf("query smuggled through: %s", gotURI)
+	}
+
+	// node and file are mutually exclusive — explicit refusal.
+	text, isErr = call(t, s, "remote_run_artifacts", `{"run_id":"r1","node":"n1","file":"x.md"}`)
+	if !isErr || !strings.Contains(text, "mutually exclusive") {
+		t.Fatalf("node+file should be refused: %s", text)
+	}
+}
+
 func TestRemoteRoutesFilter(t *testing.T) {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /api/routes", func(w http.ResponseWriter, r *http.Request) {

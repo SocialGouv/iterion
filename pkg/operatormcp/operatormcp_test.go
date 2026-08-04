@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -66,7 +68,7 @@ func TestToolsReadOnlyFiltering(t *testing.T) {
 	s := &Server{StoreDir: t.TempDir(), WorkDir: t.TempDir(), ReadOnly: true}
 	names := map[string]bool{}
 	for _, tool := range s.Tools() {
-		if !tool.ReadOnly {
+		if !tool.ReadOnly && !tool.ListedInReadOnly {
 			t.Fatalf("mutating tool %s exposed in read-only mode", tool.Name)
 		}
 		names[tool.Name] = true
@@ -127,6 +129,44 @@ func TestCallUnknownTool(t *testing.T) {
 	ro := &Server{StoreDir: t.TempDir(), WorkDir: t.TempDir(), ReadOnly: true}
 	if _, err := ro.Call(context.Background(), "local_run", nil); !errors.As(err, &unknown) {
 		t.Fatalf("read-only Call(local_run) should be unknown, got %v", err)
+	}
+}
+
+func TestReadOnlyAnnotationIsTruthful(t *testing.T) {
+	s := newTestServer(t)
+	for _, tool := range s.Tools() {
+		if tool.Name == "remote_api" {
+			if tool.ReadOnly {
+				t.Fatal("remote_api can mutate — its ReadOnly flag (the readOnlyHint source) must be false")
+			}
+			if !tool.ListedInReadOnly {
+				t.Fatal("remote_api must stay listed in read-only mode (handler enforces GET-only)")
+			}
+			return
+		}
+	}
+	t.Fatal("remote_api not found")
+}
+
+func TestReadOnlyModeCreatesNothingOnDisk(t *testing.T) {
+	dir := t.TempDir()
+	storeDir := filepath.Join(dir, "absent-store")
+	s := &Server{StoreDir: storeDir, WorkDir: dir, ReadOnly: true}
+
+	for _, name := range []string{"local_runs_list", "local_board_list_issues"} {
+		res, err := s.Call(context.Background(), name, json.RawMessage(`{}`))
+		if err != nil {
+			t.Fatalf("Call(%s): %v", name, err)
+		}
+		if !res.IsError {
+			t.Fatalf("%s on an absent store should error in read-only mode: %+v", name, res)
+		}
+		if !strings.Contains(res.Content[0].Text, "read-only mode") {
+			t.Fatalf("%s should explain the read-only refusal: %s", name, res.Content[0].Text)
+		}
+	}
+	if _, err := os.Stat(storeDir); !os.IsNotExist(err) {
+		t.Fatalf("read-only mode created the store directory (stat err: %v)", err)
 	}
 }
 

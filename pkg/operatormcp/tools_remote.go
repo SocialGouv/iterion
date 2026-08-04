@@ -274,8 +274,12 @@ func remoteTools() []Tool {
 		},
 		{
 			Name:        "remote_api",
-			Description: "Escape hatch: any authenticated request to the remote instance's HTTP API (the MCP twin of `iterion remote api`). Discover endpoints with remote_routes / remote_openapi. In read-only mode only GET is allowed. Returns the HTTP status + raw response body.",
-			ReadOnly:    true, // listed in read-only mode; the handler enforces GET-only there
+			Description: "Escape hatch: any authenticated request to the remote instance's HTTP API (the MCP twin of `iterion remote api`). Discover endpoints with remote_routes / remote_openapi. CAN MUTATE (POST/PUT/PATCH/DELETE); in read-only mode only GET is allowed. Returns the HTTP status + raw response body.",
+			// Not ReadOnly — the readOnlyHint annotation must be truthful
+			// about capability (clients gate auto-approval on it). It
+			// stays LISTED in read-only mode because its handler
+			// enforces GET-only there.
+			ListedInReadOnly: true,
 			InputSchema: json.RawMessage(`{
   "type": "object",
   "properties": {
@@ -437,13 +441,22 @@ func handleRemoteRunArtifacts(ctx context.Context, _ *Server, raw json.RawMessag
 	if args.RunID == "" {
 		return "", false, fmt.Errorf("run_id is required")
 	}
+	if args.Node != "" && args.File != "" {
+		return "", false, fmt.Errorf("node and file are mutually exclusive: node reads a node's artifact, file reads a produced artifact-file")
+	}
 	id := url.PathEscape(args.RunID)
 	path := "/api/runs/" + id + "/artifacts"
 	if args.Node != "" {
 		path += "/" + url.PathEscape(args.Node)
 	}
 	if args.File != "" {
-		path = "/api/runs/" + id + "/artifact-files/" + strings.TrimPrefix(args.File, "/")
+		// Escape each segment so `?`/`#`/spaces in a file path cannot
+		// smuggle a query string or fragment into the request URL.
+		segments := strings.Split(strings.TrimPrefix(args.File, "/"), "/")
+		for i, seg := range segments {
+			segments[i] = url.PathEscape(seg)
+		}
+		path = "/api/runs/" + id + "/artifact-files/" + strings.Join(segments, "/")
 	}
 	return remoteHTTP(ctx, "GET", path, nil)
 }

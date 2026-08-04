@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -246,7 +247,7 @@ func TestLocalResumeGuards(t *testing.T) {
 	}
 }
 
-func TestLocalRunCancelWithoutPid(t *testing.T) {
+func TestLocalRunCancelGuards(t *testing.T) {
 	s := newTestServer(t)
 	st, err := s.store()
 	if err != nil {
@@ -256,9 +257,23 @@ func TestLocalRunCancelWithoutPid(t *testing.T) {
 	if _, err := st.CreateRun(ctx, "run-x", "wf", nil); err != nil {
 		t.Fatal(err)
 	}
+
+	// No .pid, no live lock holder → explicit refusal, no mutation.
 	text, isErr := call(t, s, "local_run_cancel", `{"run_id":"run-x"}`)
-	if !isErr || !strings.Contains(text, "owning surface") {
+	if !isErr || !strings.Contains(text, "no live process and no .pid") {
 		t.Fatalf("cancel without .pid must error explicitly: isErr=%v text=%s", isErr, text)
+	}
+	if r, _ := st.LoadRun(ctx, "run-x"); r.Status != store.RunStatusRunning {
+		t.Fatalf("refused cancel must not mutate the run (status=%s)", r.Status)
+	}
+
+	// Paused runs are answered/resumed, not cancelled.
+	if err := st.UpdateRunStatus(ctx, "run-x", store.RunStatusPausedWaitingHuman, ""); err != nil {
+		t.Fatal(err)
+	}
+	text, isErr = call(t, s, "local_run_cancel", `{"run_id":"run-x"}`)
+	if !isErr || !strings.Contains(text, "paused") {
+		t.Fatalf("paused cancel should point at resume/answer: %s", text)
 	}
 
 	// Terminal runs refuse the cancel outright.
@@ -268,6 +283,94 @@ func TestLocalRunCancelWithoutPid(t *testing.T) {
 	text, isErr = call(t, s, "local_run_cancel", `{"run_id":"run-x"}`)
 	if !isErr || !strings.Contains(text, "already finished") {
 		t.Fatalf("terminal cancel should error: %s", text)
+	}
+}
+
+// TestLocalRunCancelStalePid pins the PID-recycling guard: a dead
+// recorded runner with a free run lock is an explicit repair
+// (failed_resumable + .pid removed), NEVER a signal.
+func TestLocalRunCancelStalePid(t *testing.T) {
+	s := newTestServer(t)
+	st, err := s.store()
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+	if _, err := st.CreateRun(ctx, "run-stale", "wf", nil); err != nil {
+		t.Fatal(err)
+	}
+
+	// A child that already exited gives us a genuinely dead PID.
+	dead := exec.Command("true")
+	if err := dead.Start(); err != nil {
+		t.Fatal(err)
+	}
+	_ = dead.Wait()
+	pidS := store.AsPIDStore(st)
+	if err := pidS.WritePIDFile("run-stale", dead.Process.Pid); err != nil {
+		t.Fatal(err)
+	}
+
+	text, isErr := call(t, s, "local_run_cancel", `{"run_id":"run-stale"}`)
+	if isErr {
+		t.Fatalf("stale-pid cancel should repair, not error: %s", text)
+	}
+	if !strings.Contains(text, "failed_resumable") {
+		t.Fatalf("repair should be reported: %s", text)
+	}
+	r, err := st.LoadRun(ctx, "run-stale")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if r.Status != store.RunStatusFailedResumable {
+		t.Fatalf("status = %s, want failed_resumable", r.Status)
+	}
+	if pid, err := pidS.ReadPIDFile("run-stale"); err != nil || pid != 0 {
+		t.Fatalf("stale .pid should be removed: pid=%d err=%v", pid, err)
+	}
+}
+
+// TestLocalRunCancelRefusesWhenLockFreeButPidAlive pins the ambiguous
+// window (runner booting, or recycled pid): never signal.
+func TestLocalRunCancelRefusesWhenLockFreeButPidAlive(t *testing.T) {
+	s := newTestServer(t)
+	st, err := s.store()
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+	if _, err := st.CreateRun(ctx, "run-amb", "wf", nil); err != nil {
+		t.Fatal(err)
+	}
+	// A live process (this test's own) that does NOT hold the run lock
+	// models the recycled-pid / startup window.
+	pidS := store.AsPIDStore(st)
+	if err := pidS.WritePIDFile("run-amb", os.Getpid()); err != nil {
+		t.Fatal(err)
+	}
+	text, isErr := call(t, s, "local_run_cancel", `{"run_id":"run-amb"}`)
+	if !isErr || !strings.Contains(text, "refusing to signal") {
+		t.Fatalf("ambiguous state must refuse to signal: isErr=%v text=%s", isErr, text)
+	}
+	if r, _ := st.LoadRun(ctx, "run-amb"); r.Status != store.RunStatusRunning {
+		t.Fatalf("ambiguous cancel must not mutate the run (status=%s)", r.Status)
+	}
+}
+
+func TestLocalAnswerAcceptsEmptyAnswer(t *testing.T) {
+	s := newTestServer(t)
+	st, err := s.store()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.CreateRun(context.Background(), "run-q", "wf", nil); err != nil {
+		t.Fatal(err)
+	}
+	// The empty answer must pass the argument gate; the resulting error
+	// (if any) must come from the interaction layer, not the gate.
+	text, _ := call(t, s, "local_answer", `{"run_id":"run-q","interaction_id":"i-1","answer":""}`)
+	if strings.Contains(text, "are required") {
+		t.Fatalf("empty answer must not be rejected by the argument gate: %s", text)
 	}
 }
 

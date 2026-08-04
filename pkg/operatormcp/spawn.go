@@ -112,15 +112,18 @@ func runnerBinary() (string, error) {
 
 // spawnDetachedRunner starts the runner subprocess in its own session
 // (so it survives this MCP server's exit), writes the run's .pid file,
-// and reaps the child in the background. Returns the runner PID.
-func spawnDetachedRunner(st *store.FilesystemRunStore, spec runnerSpec) (int, error) {
+// and reaps the child in the background. Returns the runner PID, plus
+// a non-empty warning when the runner started but .pid bookkeeping
+// failed — the run is healthy in that case, only cancel/liveness
+// tracking is degraded, so it must NOT be reported as a failed start.
+func spawnDetachedRunner(st *store.FilesystemRunStore, spec runnerSpec) (pid int, warn string, err error) {
 	bin, err := runnerBinary()
 	if err != nil {
-		return 0, fmt.Errorf("locate iterion binary: %w", err)
+		return 0, "", fmt.Errorf("locate iterion binary: %w", err)
 	}
 	args, err := buildRunnerArgs(spec)
 	if err != nil {
-		return 0, err
+		return 0, "", err
 	}
 	cmd := exec.Command(bin, args...)
 	// Observability is events.jsonl + run.log, not the runner's stdio —
@@ -131,34 +134,38 @@ func spawnDetachedRunner(st *store.FilesystemRunStore, spec runnerSpec) (int, er
 	cmd.Stderr = nil
 	cmd.SysProcAttr = detachedSysProcAttr()
 	if err := cmd.Start(); err != nil {
-		return 0, err
+		return 0, "", err
 	}
-	pid := cmd.Process.Pid
+	pid = cmd.Process.Pid
 
 	// Spawner-side .pid write, mirroring the studio server: the
 	// --background runner only removes the file on exit, it never
 	// writes it.
 	if pidS := store.AsPIDStore(st); pidS != nil {
-		if err := pidS.WritePIDFile(spec.RunID, pid); err != nil {
-			// The run is already started; a missing .pid only degrades
-			// cancel/liveness, so report it in-band rather than killing
-			// the run.
+		if werr := pidS.WritePIDFile(spec.RunID, pid); werr != nil {
 			go reapRunner(cmd, nil, spec.RunID)
-			return pid, fmt.Errorf("run %s started (pid %d) but writing its .pid failed: %w", spec.RunID, pid, err)
+			return pid, fmt.Sprintf("runner started (pid %d) but writing its .pid failed: %v — cancel/liveness tracking is degraded for this run", pid, werr), nil
 		}
 		go reapRunner(cmd, pidS, spec.RunID)
-		return pid, nil
+		return pid, "", nil
 	}
 	go reapRunner(cmd, nil, spec.RunID)
-	return pid, nil
+	return pid, "", nil
 }
 
 // reapRunner waits on the child so it never lingers as a zombie while
 // this MCP server lives, and tidies the .pid file in case the runner
-// was killed before its own deferred cleanup ran.
+// was killed before its own deferred cleanup ran. The removal is
+// compare-and-delete: only the .pid that still records THIS child may
+// be removed, so a runner that lost a spawn race (its sibling
+// overwrote .pid and is still executing) cannot strip the survivor's
+// liveness record on its way out.
 func reapRunner(cmd *exec.Cmd, pidS store.PIDStore, runID string) {
 	_ = cmd.Wait()
-	if pidS != nil {
+	if pidS == nil {
+		return
+	}
+	if recorded, err := pidS.ReadPIDFile(runID); err == nil && recorded == cmd.Process.Pid {
 		_ = pidS.RemovePIDFile(runID)
 	}
 }

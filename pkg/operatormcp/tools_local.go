@@ -399,17 +399,18 @@ func handleLocalRunGet(ctx context.Context, s *Server, raw json.RawMessage) (str
 	}
 	view["resumable"] = r.Status == store.RunStatusFailedResumable || r.Status == store.RunStatusCancelled || r.Status.IsPaused()
 
-	// Detached-runner liveness: a "running" doc whose recorded runner
-	// process is gone means the run died without reaching a terminal
-	// status (SIGKILL, reboot). Reported, never silently repaired —
-	// resume it or cancel it explicitly.
+	// Liveness of a "running" doc: the run flock is the oracle (held ⇔
+	// some live process is executing the run; the OS drops it on any
+	// death, unlike a .pid whose number can be recycled). Reported,
+	// never silently repaired — resume or cancel explicitly.
 	if r.Status == store.RunStatusRunning {
-		if pid, alive, err := detachedRunnerState(st, r.ID); err == nil && pid > 0 {
+		held := runHeldByLiveProcess(ctx, st, r.ID)
+		view["executing"] = held
+		if pid, _, err := detachedRunnerState(st, r.ID); err == nil && pid > 0 {
 			view["runner_pid"] = pid
-			view["runner_alive"] = alive
-			if !alive {
-				view["warning"] = "run doc says running but the recorded runner process is gone — the run likely died; resume it (local_resume) or inspect events"
-			}
+		}
+		if !held {
+			view["warning"] = "run doc says running but no live process holds its lock — the runner likely died; resume it (local_resume) or cancel it (local_run_cancel) to mark it failed_resumable"
 		}
 	}
 	out, err := marshalText(view)
@@ -570,8 +571,10 @@ func handleLocalAnswer(_ context.Context, s *Server, raw json.RawMessage) (strin
 	if err := unmarshalArgs(raw, &args); err != nil {
 		return "", false, err
 	}
-	if args.RunID == "" || args.InteractionID == "" || args.Answer == "" {
-		return "", false, fmt.Errorf("run_id, interaction_id and answer are required")
+	// An empty answer is legitimate ("press enter to skip") — the CLI
+	// accepts `--answer key=`, so this surface must too.
+	if args.RunID == "" || args.InteractionID == "" {
+		return "", false, fmt.Errorf("run_id and interaction_id are required")
 	}
 	out, err := captureJSON(func(p *cli.Printer) error {
 		return cli.RunAnswer(cli.AnswerOptions{
@@ -661,17 +664,21 @@ func handleLocalRun(ctx context.Context, s *Server, raw json.RawMessage) (string
 		MaxIterations:       args.MaxIterations,
 		MaxParallelBranches: args.MaxParallelBranches,
 	}
-	pid, err := spawnDetachedRunner(st, spec)
+	s.spawnGate.Lock()
+	pid, warn, err := spawnDetachedRunner(st, spec)
+	s.spawnGate.Unlock()
 	if err != nil {
 		// Without a runner the pre-created doc would sit as a phantom
-		// "running" run forever — mark it failed, visibly.
+		// "running" run forever — mark it failed, visibly. Only real
+		// start failures land here: a degraded .pid write is a warning
+		// on a HEALTHY run, never a failure (the runner is executing).
 		if uerr := st.UpdateRunStatus(ctx, runID, store.RunStatusFailed, "runner failed to start: "+err.Error()); uerr != nil {
 			return "", false, fmt.Errorf("start runner: %w (and marking the run failed also failed: %v)", err, uerr)
 		}
 		return "", false, fmt.Errorf("start runner: %w", err)
 	}
 
-	out, err := marshalText(map[string]any{
+	result := map[string]any{
 		"run_id":     runID,
 		"workflow":   vres.WorkflowName,
 		"status":     "running",
@@ -679,7 +686,11 @@ func handleLocalRun(ctx context.Context, s *Server, raw json.RawMessage) (string
 		"store_dir":  s.StoreDir,
 		"detached":   true,
 		"follow":     "poll local_run_get / local_run_events (since=<last seq>); the run survives this MCP session",
-	})
+	}
+	if warn != "" {
+		result["warning"] = warn
+	}
+	out, err := marshalText(result)
 	if err != nil {
 		return "", false, err
 	}
@@ -717,8 +728,17 @@ func handleLocalResume(ctx context.Context, s *Server, raw json.RawMessage) (str
 	if filePath == "" {
 		return "", false, fmt.Errorf("run %s recorded no workflow file path — pass file_path explicitly", r.ID)
 	}
+
+	// The live-runner check and the spawn must be one atomic section:
+	// two concurrent resumes would otherwise both pass the check, and
+	// the loser's .pid write would clobber the winner's.
+	s.spawnGate.Lock()
+	defer s.spawnGate.Unlock()
 	if pid, alive, err := detachedRunnerState(st, r.ID); err == nil && pid > 0 && alive {
 		return "", false, fmt.Errorf("run %s already has a live runner process (pid %d)", r.ID, pid)
+	}
+	if runHeldByLiveProcess(ctx, st, r.ID) {
+		return "", false, fmt.Errorf("run %s is held by a live process (its run lock is taken) — it is already executing", r.ID)
 	}
 
 	spec := runnerSpec{
@@ -729,17 +749,21 @@ func handleLocalResume(ctx context.Context, s *Server, raw json.RawMessage) (str
 		Answers:  args.Answers,
 		Force:    args.Force,
 	}
-	pid, err := spawnDetachedRunner(st, spec)
+	pid, warn, err := spawnDetachedRunner(st, spec)
 	if err != nil {
 		return "", false, fmt.Errorf("start runner: %w", err)
 	}
-	out, err := marshalText(map[string]any{
+	result := map[string]any{
 		"run_id":     args.RunID,
 		"status":     "resuming",
 		"runner_pid": pid,
 		"detached":   true,
 		"follow":     "poll local_run_get / local_run_events",
-	})
+	}
+	if warn != "" {
+		result["warning"] = warn
+	}
+	out, err := marshalText(result)
 	if err != nil {
 		return "", false, err
 	}
@@ -767,26 +791,76 @@ func handleLocalRunCancel(ctx context.Context, s *Server, raw json.RawMessage) (
 	if r.Status.IsTerminal() {
 		return "", false, fmt.Errorf("run %s is already %s", r.ID, r.Status)
 	}
-	pid, alive, err := detachedRunnerState(st, r.ID)
-	if err != nil || pid <= 0 {
-		return "", false, fmt.Errorf("run %s has no .pid file in this store — it is not a detached run owned here; cancel it from its owning surface (studio, or the terminal running it)", r.ID)
+	if r.Status.IsPaused() {
+		return "", false, fmt.Errorf("run %s is paused (%s) — no runner process is executing it; answer/resume it (local_resume) instead of cancelling", r.ID, r.Status)
 	}
-	if !alive {
-		return "", false, fmt.Errorf("run %s's recorded runner process (pid %d) is already gone; the run doc still says %s — resume it or inspect events", r.ID, pid, r.Status)
+	pid, alive, pidErr := detachedRunnerState(st, r.ID)
+	if pidErr != nil {
+		return "", false, fmt.Errorf("read run %s's .pid: %w", r.ID, pidErr)
 	}
-	if err := terminateProcessGroup(pid); err != nil {
-		return "", false, fmt.Errorf("signal runner process group %d: %w", pid, err)
+
+	// The run flock is the ownership/liveness oracle: it is held for
+	// exactly as long as SOME live process executes the run, and a
+	// recycled PID can never hold it. Signalling is allowed only when
+	// both agree (lock held AND the recorded pid is alive) — a bare
+	// pidAlive check could SIGTERM an innocent process group that
+	// inherited a stale .pid's recycled number.
+	held := runHeldByLiveProcess(ctx, st, r.ID)
+	switch {
+	case held && pid > 0 && alive:
+		if err := terminateProcessGroup(pid); err != nil {
+			return "", false, fmt.Errorf("signal runner process group %d: %w", pid, err)
+		}
+		out, err := marshalText(map[string]any{
+			"run_id":     r.ID,
+			"runner_pid": pid,
+			"signalled":  "SIGTERM (process group)",
+			"follow":     "poll local_run_get until status becomes cancelled",
+		})
+		if err != nil {
+			return "", false, err
+		}
+		return out, false, nil
+
+	case held:
+		return "", false, fmt.Errorf("run %s is executing (its run lock is held) but not via a runner this store recorded — cancel it from its owning surface (studio, or the terminal running it)", r.ID)
+
+	case pid > 0 && !alive:
+		// Stale .pid: the runner died without reaching a terminal
+		// status (SIGKILL, reboot). Explicit repair, reported in full:
+		// the cancel intent is "make it not-running", and leaving a
+		// dead run marked running forever would be the silent lie.
+		if pidS := store.AsPIDStore(st); pidS != nil {
+			if rmErr := pidS.RemovePIDFile(r.ID); rmErr != nil {
+				return "", false, fmt.Errorf("remove stale .pid of run %s: %w", r.ID, rmErr)
+			}
+		}
+		msg := fmt.Sprintf("runner process (pid %d) died without reaching a terminal status; marked failed_resumable by local_run_cancel", pid)
+		if uerr := st.UpdateRunStatus(ctx, r.ID, store.RunStatusFailedResumable, msg); uerr != nil {
+			return "", false, fmt.Errorf("mark run %s failed_resumable: %w", r.ID, uerr)
+		}
+		out, err := marshalText(map[string]any{
+			"run_id":    r.ID,
+			"status":    string(store.RunStatusFailedResumable),
+			"repaired":  msg,
+			"stale_pid": pid,
+			"follow":    "resume it with local_resume if the work should continue",
+		})
+		if err != nil {
+			return "", false, err
+		}
+		return out, false, nil
+
+	case pid > 0:
+		// .pid process alive but nothing holds the run lock: either the
+		// runner is still booting (pre-lock window) or the pid number
+		// was recycled by an unrelated process. Signalling would risk
+		// killing a stranger — refuse, explicitly.
+		return "", false, fmt.Errorf("run %s is in an ambiguous state: recorded pid %d is alive but no process holds the run lock (runner starting up, or recycled pid) — retry in a moment; refusing to signal", r.ID, pid)
+
+	default:
+		return "", false, fmt.Errorf("run %s has no live process and no .pid recorded in this store — if the doc is stale, resume it (local_resume) or inspect events", r.ID)
 	}
-	out, err := marshalText(map[string]any{
-		"run_id":     r.ID,
-		"runner_pid": pid,
-		"signalled":  "SIGTERM (process group)",
-		"follow":     "poll local_run_get until status becomes cancelled",
-	})
-	if err != nil {
-		return "", false, err
-	}
-	return out, false, nil
 }
 
 // detachedRunnerState reads a run's .pid file and probes liveness.
@@ -803,4 +877,18 @@ func detachedRunnerState(st *store.FilesystemRunStore, runID string) (pid int, a
 		return 0, false, err
 	}
 	return pid, pidAlive(pid) == nil, nil
+}
+
+// runHeldByLiveProcess reports whether some live process currently
+// holds the run's flock — the engine takes it for the whole execution,
+// and the OS releases it on any process death, so unlike a .pid number
+// it cannot go stale or be recycled. Probing = try to acquire
+// non-blocking; on success release immediately.
+func runHeldByLiveProcess(ctx context.Context, st *store.FilesystemRunStore, runID string) bool {
+	lock, err := st.LockRun(ctx, runID)
+	if err != nil {
+		return true
+	}
+	_ = lock.Unlock()
+	return false
 }

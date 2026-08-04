@@ -78,6 +78,15 @@ func TestMCPOperator_ToolsListCarriesAnnotations(t *testing.T) {
 	if listTool["annotations"].(map[string]any)["readOnlyHint"] != true {
 		t.Fatalf("local_runs_list should carry readOnlyHint=true: %v", listTool["annotations"])
 	}
+	// remote_api can mutate — its hint must be truthful even though it
+	// stays listed in read-only mode (clients gate auto-approval on it).
+	apiTool, ok := byName["remote_api"]
+	if !ok {
+		t.Fatal("remote_api missing")
+	}
+	if apiTool["annotations"].(map[string]any)["readOnlyHint"] != false {
+		t.Fatalf("remote_api must carry readOnlyHint=false: %v", apiTool["annotations"])
+	}
 }
 
 func TestMCPOperator_ToolsCallRoundTrip(t *testing.T) {
