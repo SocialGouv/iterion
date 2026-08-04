@@ -221,15 +221,24 @@ func (s *Server) reconcileGateForRun(ctx context.Context, ev trigger.Event) erro
 	}
 	// The forge is the authority on whether the verdict landed — not any
 	// bookkeeping of ours, which a second replica would not share and a
-	// restart would lose.
-	posted, err := gateAlreadyPosted(ctx, gc, repo, pr.HeadSHA, gateCtx)
+	// restart would lose. Only a REAL verdict stands the reconciler down: its
+	// own synthetic failure does not, or the second death on a head — the
+	// relaunched run dying too, exactly the case that must escalate to the
+	// board — would find the marker from the first death, read it as "already
+	// posted", and go silent right where the recovery runs out.
+	gate, readable, err := gateStatusOn(ctx, gc, repo, pr.HeadSHA, gateCtx)
 	if err != nil {
 		if s.logger != nil {
 			s.logger.Warn("forge gate: cannot read statuses on %s@%s: %v", repo, pr.HeadSHA[:7], err)
 		}
 		return nil
 	}
-	if posted {
+	if !readable {
+		// Cannot tell absent from posted: overwriting a real success with a
+		// synthetic failure is a worse outcome than leaving a stuck PR stuck.
+		return nil
+	}
+	if gate.State != "" && !isSyntheticGateInterruption(gate.Description) {
 		return nil
 	}
 
@@ -258,17 +267,6 @@ func (s *Server) reconcileGateForRun(ctx context.Context, ev trigger.Event) erro
 		repo: repo, number: number, pr: pr, gateCtx: gateCtx, prURL: prURL,
 	})
 	return nil
-}
-
-// gateAlreadyPosted reports whether ctxName is already present on sha. Without
-// a read capability it says "posted": overwriting a real success with a
-// synthetic failure is a worse outcome than leaving a stuck PR stuck.
-func gateAlreadyPosted(ctx context.Context, gc forgeGateClient, repo, sha, ctxName string) (bool, error) {
-	st, readable, err := gateStatusOn(ctx, gc, repo, sha, ctxName)
-	if err != nil {
-		return false, err
-	}
-	return !readable || st.State != "", nil
 }
 
 // gateRunURL points the check at the run that owed it, so the operator lands

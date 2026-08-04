@@ -443,20 +443,11 @@ func TestGateStatusOnSeparatesUnreadableFromAbsent(t *testing.T) {
 	if readable {
 		t.Error("a client that cannot list statuses must not report a readable gate")
 	}
-	// Unreadable must read as "already posted" for the reconciler, or it would
-	// paint a synthetic failure over a verdict it never saw.
-	if posted, err := gateAlreadyPosted(ctx, noListGateClient{}, "acme/widgets", "abc", "iterion/review"); err != nil || !posted {
-		t.Errorf("gateAlreadyPosted = %v (%v), want true on an unreadable provider", posted, err)
-	}
-
 	// Readable but absent is a different fact: nothing has posted yet.
 	empty := stubGateClient{head: "abc", ctxName: "other/check", state: forge.CommitStateSuccess}
 	st, readable, err := gateStatusOn(ctx, empty, "acme/widgets", "abc", "iterion/review")
 	if err != nil || !readable || st.State != "" {
 		t.Errorf("gateStatusOn = (%q, %v, %v), want the zero state, readable, no error", st.State, readable, err)
-	}
-	if posted, err := gateAlreadyPosted(ctx, empty, "acme/widgets", "abc", "iterion/review"); err != nil || posted {
-		t.Errorf("gateAlreadyPosted = %v (%v), want false when the context is absent", posted, err)
 	}
 }
 

@@ -189,7 +189,12 @@ func retryDenialIsTransient(reason string) bool {
 // abandonRetry records a permanent stop and audits it.
 func (s *Server) abandonRetry(ctx context.Context, retryStore store.RunRetryStore, tenantID, runID, reason string) {
 	if err := retryStore.AbandonRunRetry(ctx, runID, reason); err != nil {
+		// The abandon did not land: the retry stays claimable, the next sweep
+		// tick walks this path again, and republishing NOW would repeat on
+		// every tick until the write finally sticks. The single republish
+		// belongs to the tick that actually makes the stop permanent.
 		s.warnf("retry sweeper: abandon %s: %v", runID, err)
+		return
 	}
 	s.countRetry("abandoned")
 	s.auditSystem(tenantID, "retry-sweeper", "run.retry.abandoned", "run", runID, map[string]any{"reason": reason})

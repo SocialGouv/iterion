@@ -149,19 +149,33 @@ func TestGateRelaunch(t *testing.T) {
 		}
 	})
 
+	// The natural second-death sequence: the first death posted the synthetic
+	// failure and spent the head's one relaunch; now the RELAUNCHED run dies
+	// too. The gate carries the reconciler's own marker — which must not read
+	// as "already posted", or this exact case would go silent right where the
+	// recovery runs out (found adversarially: an earlier version stood down on
+	// its own synthetic status and the board escalation was unreachable).
 	t.Run("the second death on the same head escalates to the board instead", func(t *testing.T) {
 		w := build(t, nil)
-		// The head's one attempt is already spent.
+		// The head's one attempt is already spent…
 		if err := w.s.webhookDeliveries.Insert(context.Background(), webhooks.Delivery{
 			ID: "d-spent", TenantID: team, WebhookID: "w1", IdempotencyKey: relaunchIdem,
 			Status: webhooks.StatusLaunched, RunID: "run-prior-relaunch",
 		}); err != nil {
 			t.Fatal(err)
 		}
+		// …and the gate still shows the first death's synthetic failure.
+		w.gc.statuses = []forge.CommitStatus{{
+			Context: gateNm, State: forge.CommitStateFailure,
+			Description: gateInterruptedDescription,
+		}}
 		runID := seedDeadRun(t, w.s)
 		_ = w.s.reconcileGateForRun(context.Background(), terminalEvent(runID))
 		if *w.launched != 0 {
 			t.Fatalf("launched %d runs, want 0 — one relaunch per head, ever", *w.launched)
+		}
+		if w.gc.setCalls != 1 {
+			t.Fatalf("posted %d statuses, want 1 — the synthetic failure is refreshed with the newest death's reason", w.gc.setCalls)
 		}
 		cards, err := w.board.List(native.ListFilter{Labels: []string{gateRelaunchLabel}})
 		if err != nil || len(cards) != 1 {
@@ -172,12 +186,29 @@ func TestGateRelaunch(t *testing.T) {
 		}
 
 		// A third death on the same head adds no second card.
-		w.gc.statuses = nil // the synthetic failure was "lost" so the reconciler acts again
 		runID2 := seedDeadRun(t, w.s)
 		_ = w.s.reconcileGateForRun(context.Background(), terminalEvent(runID2))
 		cards, err = w.board.List(native.ListFilter{Labels: []string{gateRelaunchLabel}})
 		if err != nil || len(cards) != 1 {
 			t.Fatalf("board cards after a third death = %d (%v), want still 1", len(cards), err)
+		}
+	})
+
+	t.Run("a real red verdict is left alone entirely", func(t *testing.T) {
+		w := build(t, nil)
+		// Vetty's own red verdict — the review HAPPENED. Nothing to reconcile,
+		// nothing to relaunch, nothing for the board.
+		w.gc.statuses = []forge.CommitStatus{{
+			Context: gateNm, State: forge.CommitStateFailure,
+			Description: "1 blocking finding (≥high)",
+		}}
+		runID := seedDeadRun(t, w.s)
+		_ = w.s.reconcileGateForRun(context.Background(), terminalEvent(runID))
+		if w.gc.setCalls != 0 || *w.launched != 0 {
+			t.Fatalf("touched a PR whose gate carries a real verdict (posts=%d launches=%d)", w.gc.setCalls, *w.launched)
+		}
+		if cards, _ := w.board.List(native.ListFilter{Labels: []string{gateRelaunchLabel}}); len(cards) != 0 {
+			t.Fatalf("filed %d cards over a real verdict", len(cards))
 		}
 	})
 
