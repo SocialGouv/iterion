@@ -719,7 +719,10 @@ human escalate:
   interaction: llm_or_human
   ## The LLM half (auto-answers a routine question); a genuine
   ## architectural choice still pauses for a human.
-  model: "${VETTY_MODEL_ESCALATE:-claude-opus-5}"
+  ## provider/model-id, NOT a bare model name: a human node's llm half runs
+  ## through the direct claw generation path, which has no backend to infer
+  ## the provider from (an agent node's claude_code backend does).
+  model: "${VETTY_MODEL_ESCALATE:-anthropic/claude-opus-5}"
 
 ## verify_build — adaptive capture of the repo's build+tests into the
 ## out-of-tree verify.sh (it does NOT judge; the tool's exit code does).
