@@ -42,6 +42,8 @@ package workspacetrack
 import (
 	"errors"
 	"fmt"
+	"strconv"
+	"strings"
 	"time"
 )
 
@@ -67,8 +69,44 @@ func Label(phase, nodeID string, loopIter int) string {
 	return fmt.Sprintf("%s:%s:%d", phase, nodeID, loopIter)
 }
 
+// GateLabel names the workspace state at a human gate. Parallel to
+// store.ReviewGateRef for the git/worktree path: what a reviewer
+// approves is everything changed since the previous gate, and numbering
+// makes "the previous one" a lookup rather than event archaeology.
+//
+//	gate:0 ─── work ─── gate:1
+//	  ▲ base of the first range     ▲ second reviewer's range base
+func GateLabel(seq int) string {
+	return fmt.Sprintf("gate:%d", seq)
+}
+
+// ParseGateLabel extracts the sequence number from a GateLabel. ok is
+// false when the string is not a gate label.
+func ParseGateLabel(label string) (seq int, ok bool) {
+	const prefix = "gate:"
+	if !strings.HasPrefix(label, prefix) {
+		return 0, false
+	}
+	n, err := strconv.Atoi(label[len(prefix):])
+	if err != nil || n < 0 {
+		return 0, false
+	}
+	return n, true
+}
+
 // ErrSnapshotNotFound is returned when a snapshot id or label is unknown.
 var ErrSnapshotNotFound = errors.New("workspacetrack: snapshot not found")
+
+// ErrWorkspaceTooLarge is returned when a workspace exceeds MaxFiles.
+//
+// It latches for the run: the first overflow records the verdict in the
+// run's index and every later Capture returns this immediately instead of
+// re-walking. Without the latch the abort happened from inside the walk,
+// BEFORE the stat cache was saved, so the next boundary started from an
+// empty cache and re-read and re-hashed up to MaxFiles files again — a
+// full-content read of 50,000 files per node boundary, producing zero
+// snapshots, surfaced only as a warn.
+var ErrWorkspaceTooLarge = errors.New("workspacetrack: workspace is too large to version")
 
 // Entry is one file in a snapshot.
 type Entry struct {
@@ -154,4 +192,12 @@ type Tracker interface {
 	// run in a studio process, so a long-lived one must be told when a run
 	// is over. Everything it held is re-derivable from index.json.
 	Forget(runID string)
+	// Labels returns a copy of the run's label → snapshot-id map (gate:N,
+	// pre:/post: node boundaries, …). Used by the review-scope panel to
+	// list gate anchors and attribute files to nodes without re-walking
+	// the snapshot chain.
+	Labels(runID string) map[string]string
+	// Object returns the stored contents of a content-addressed hash.
+	// Missing content returns an error wrapping ErrSnapshotNotFound.
+	Object(hash string) ([]byte, error)
 }

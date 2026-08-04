@@ -1,6 +1,8 @@
 package workspacetrack
 
 import (
+	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -725,5 +727,152 @@ func TestNative_RefusesMalformedHash(t *testing.T) {
 	valid := strings.Repeat("ab", 32)
 	if _, err := tr.ReadObject(valid); err == nil {
 		t.Error("a well-formed but absent hash should still error")
+	}
+}
+
+// TestIgnorer_AlwaysIgnoredDirsPruneDespiteNegations is Revi's R964d8e.
+//
+// CanPrune is a single global flag, so ONE negation anywhere disabled
+// fs.SkipDir for EVERY excluded directory — `.git` and `.iterion`
+// included. In a managed store the object pool lives at
+// <workspace>/.iterion/workspace-objects/, so every node boundary walked
+// everything the run had ever captured, and the per-boundary cost grew
+// with each capture instead of holding flat. Measured on a 20k-object
+// pool: 0.18 ms without a negation vs 12.3 ms with one — 68x, and rising.
+// This repo's own .gitignore carries five negations.
+//
+// Match short-circuits on alwaysIgnored segments BEFORE the rule loop, so
+// no negation can ever re-include anything under them: they are always
+// safe to prune, and must be.
+func TestIgnorer_AlwaysIgnoredDirsPruneDespiteNegations(t *testing.T) {
+	ws := t.TempDir()
+	write(t, ws, ".gitignore", "*.log\n!keep.log\n")
+	ig := NewIgnorer(ws)
+
+	// The negation is real, so a generic excluded directory must still be
+	// descended into — something inside may be re-included.
+	if ig.CanPrune() {
+		t.Fatal("fixture is wrong: the negation should make the global flag false")
+	}
+	for _, dir := range []string{".git", ".iterion", "vendor/.git", "sub/.iterion"} {
+		if !ig.Match(dir, true) {
+			t.Errorf("%q should be excluded", dir)
+		}
+		if !ig.CanPruneDir(dir) {
+			t.Errorf("%q must be prunable despite the negation — no rule can re-include "+
+				"anything under it, and descending makes every boundary walk grow "+
+				"with the object pool", dir)
+		}
+	}
+	// A directory excluded by an ordinary rule is NOT prunable here: the
+	// negation could re-include something inside it.
+	if ig.CanPruneDir("logs") {
+		t.Error("an ordinarily-excluded directory must still be descended into once a negation exists")
+	}
+}
+
+// TestCapture_DoesNotDescendIntoStorePoolWithNegations is the walk-level
+// half of R964d8e: the unit above pins the predicate, this pins that
+// Capture actually honours it for the pool that lives inside the
+// workspace.
+func TestCapture_DoesNotDescendIntoStorePoolWithNegations(t *testing.T) {
+	ws := t.TempDir()
+	write(t, ws, ".gitignore", "*.log\n!keep.log\n")
+	write(t, ws, "main.go", "package main\n")
+	// A file the walk must never look at, mimicking the in-workspace store.
+	write(t, ws, ".iterion/workspace-objects/ab/cdef", "blob")
+	write(t, ws, ".git/objects/ab/cdef", "blob")
+
+	n := NewNative(t.TempDir())
+	snap, err := n.Capture("r1", ws, "pre:x:0")
+	if err != nil {
+		t.Fatalf("capture: %v", err)
+	}
+	for _, e := range snap.Entries {
+		if strings.HasPrefix(e.Path, ".iterion/") || strings.HasPrefix(e.Path, ".git/") {
+			t.Errorf("captured %q — the store's own pool and the git database must never be versioned", e.Path)
+		}
+	}
+	// The negation is still honoured for ordinary paths.
+	if !NewIgnorer(ws).Match("app.log", false) {
+		t.Error("fixture: *.log should still be excluded")
+	}
+}
+
+// TestCapture_OverflowLatchesInsteadOfRewalking is Revi's Re3abf5.
+//
+// The cap is enforced from inside the WalkDir callback, so Capture
+// aborted BEFORE saveCache — the stat cache was never persisted and the
+// next boundary started from an empty one, re-reading and re-hashing up
+// to MaxFiles files again. On a workspace over the cap that is a full
+// content read of 50,000 files per node boundary, forever, producing zero
+// snapshots and surfaced only as a warn.
+func TestCapture_OverflowLatchesInsteadOfRewalking(t *testing.T) {
+	ws := t.TempDir()
+	for i := 0; i < 12; i++ {
+		write(t, ws, fmt.Sprintf("f%d.txt", i), "x")
+	}
+	n := NewNative(t.TempDir())
+	n.MaxFiles = 5
+
+	_, err := n.Capture("r1", ws, "pre:a:0")
+	if !errors.Is(err, ErrWorkspaceTooLarge) {
+		t.Fatalf("first capture error = %v, want ErrWorkspaceTooLarge", err)
+	}
+	if !n.Overflowed("r1") {
+		t.Error("the overflow must latch, or every later boundary re-walks to the same verdict")
+	}
+
+	// The latch must survive the process: it is persisted in index.json,
+	// so a fresh tracker over the same store still short-circuits.
+	fresh := NewNative(n.root)
+	fresh.MaxFiles = 5
+	if !fresh.Overflowed("r1") {
+		t.Error("the latch must be persisted — a resume would otherwise start re-walking again")
+	}
+	_, err = fresh.Capture("r1", ws, "pre:b:0")
+	if !errors.Is(err, ErrWorkspaceTooLarge) {
+		t.Fatalf("second capture error = %v, want ErrWorkspaceTooLarge", err)
+	}
+
+	// An unrelated run in the same store is unaffected.
+	if fresh.Overflowed("r2") {
+		t.Error("the latch is per-run, not per-store")
+	}
+}
+
+// TestRestore_VerifiesObjectsBeforeDeleting is Revi's Ra8eacb: the
+// deletion pass ran to completion before any object was read, so an
+// incomplete pool left the workspace with neither the new state nor the
+// old one.
+func TestRestore_VerifiesObjectsBeforeDeleting(t *testing.T) {
+	ws := t.TempDir()
+	write(t, ws, "keep.txt", "original")
+	n := NewNative(t.TempDir())
+	snap, err := n.Capture("r1", ws, "pre:a:0")
+	if err != nil {
+		t.Fatalf("capture: %v", err)
+	}
+	// The node's work: modify one file, add another.
+	write(t, ws, "keep.txt", "modified by the node")
+	write(t, ws, "produced.txt", "the node's output")
+
+	// Corrupt the pool, as a copied store or a racing prune would.
+	for _, e := range snap.Entries {
+		if err := os.Remove(n.objectPath(e.Hash)); err != nil {
+			t.Fatalf("remove object: %v", err)
+		}
+	}
+
+	if _, err := n.Restore("r1", ws, snap.ID, ""); err == nil {
+		t.Fatal("restore must fail when the pool is incomplete")
+	}
+	// The point: it must fail having deleted NOTHING.
+	if _, err := os.Stat(filepath.Join(ws, "produced.txt")); err != nil {
+		t.Errorf("produced.txt was deleted before the restore discovered it could not write anything back: %v", err)
+	}
+	b, err := os.ReadFile(filepath.Join(ws, "keep.txt"))
+	if err != nil || string(b) != "modified by the node" {
+		t.Errorf("keep.txt = %q (err %v), want it untouched", b, err)
 	}
 }

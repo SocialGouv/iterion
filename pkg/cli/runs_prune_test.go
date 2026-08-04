@@ -3,6 +3,7 @@ package cli
 import (
 	"bytes"
 	"context"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"sort"
@@ -11,6 +12,7 @@ import (
 	"time"
 
 	"github.com/SocialGouv/iterion/pkg/store"
+	"github.com/SocialGouv/iterion/pkg/workspacetrack"
 )
 
 // pruneTestFixture seeds a fresh filesystem store with a set of runs
@@ -412,4 +414,63 @@ func TestRunPrune_UnreadableRunDirSurfacedNotFatal(t *testing.T) {
 	if !strings.Contains(buf.String(), "unreadable run dir") {
 		t.Fatalf("unreadable dirs must be surfaced in the output, got %q", buf.String())
 	}
+}
+
+// TestRunPrune_ReclaimsOrphanedWorkspaceObjects is Revi's R1eeed3.
+//
+// PruneObjects had no production caller, so the store-global pool grew
+// for the life of the store — and `runs prune` made it strictly worse:
+// deleting a run removed the manifests that referenced its content
+// without reclaiming a byte, orphaning them permanently.
+func TestRunPrune_ReclaimsOrphanedWorkspaceObjects(t *testing.T) {
+	storeDir := t.TempDir()
+	st, err := store.New(storeDir)
+	if err != nil {
+		t.Fatalf("store: %v", err)
+	}
+	ctx := context.Background()
+
+	ws := t.TempDir()
+	if err := os.WriteFile(filepath.Join(ws, "produced.txt"), []byte("a node's output"), 0o644); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	tr := workspacetrack.NewNative(storeDir)
+
+	old := time.Now().Add(-48 * time.Hour)
+	r := &store.Run{ID: "old-run", Status: store.RunStatusFinished, CreatedAt: old, UpdatedAt: old}
+	if err := st.SaveRun(ctx, r); err != nil {
+		t.Fatalf("save run: %v", err)
+	}
+	if _, err := tr.Capture(r.ID, ws, "post:implement:0"); err != nil {
+		t.Fatalf("capture: %v", err)
+	}
+
+	pool := filepath.Join(storeDir, "workspace-objects")
+	before := countFiles(t, pool)
+	if before == 0 {
+		t.Fatal("fixture: the capture stored no objects")
+	}
+
+	p := &Printer{W: &bytes.Buffer{}, Format: OutputHuman}
+	if err := RunPrune(PruneOptions{StoreDir: storeDir, OlderThan: time.Hour}, p); err != nil {
+		t.Fatalf("prune: %v", err)
+	}
+
+	if after := countFiles(t, pool); after != 0 {
+		t.Errorf("%d object(s) survived a prune of the only run referencing them — "+
+			"the pool is unreachable and never reclaimed", after)
+	}
+}
+
+func countFiles(t *testing.T, root string) int {
+	t.Helper()
+	n := 0
+	_ = filepath.WalkDir(root, func(_ string, d fs.DirEntry, err error) error {
+		if err != nil || d.IsDir() {
+			return nil //nolint:nilerr // a missing pool counts as zero
+		}
+		n++
+		return nil
+	})
+	return n
 }

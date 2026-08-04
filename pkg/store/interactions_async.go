@@ -49,6 +49,11 @@ func listAsyncInteractions(ctx context.Context, rs RunStore, runID, nodeID strin
 		if in.Kind != InteractionKindAsync || (in.AnsweredAt != nil) != answered {
 			continue
 		}
+		// A retired question is one the run no longer asks: it must park
+		// nothing and appear in no answer set.
+		if in.RetiredAt != nil {
+			continue
+		}
 		if nodeID != "" && in.NodeID != nodeID {
 			continue
 		}
@@ -105,4 +110,38 @@ func sortInteractionsByRequestedAt(ins []*Interaction) {
 	sort.SliceStable(ins, func(i, j int) bool {
 		return ins[i].RequestedAt.Before(ins[j].RequestedAt)
 	})
+}
+
+// RetireAsyncInteractions marks every async interaction of the given
+// nodes as no longer asked, and returns how many it retired.
+//
+// Used by an in-place rewind: the questions those nodes posted belong to
+// an execution that is being replayed, so leaving them live would make
+// the replayed await_answers park on the union of old and new, or fold
+// pre-rewind answers into its output.
+func RetireAsyncInteractions(ctx context.Context, rs RunStore, runID string, nodeIDs map[string]bool) (int, error) {
+	if len(nodeIDs) == 0 {
+		return 0, nil
+	}
+	ids, err := rs.ListInteractions(ctx, runID)
+	if err != nil {
+		return 0, fmt.Errorf("list interactions for run %s: %w", runID, err)
+	}
+	now := time.Now().UTC()
+	retired := 0
+	for _, id := range ids {
+		in, err := rs.LoadInteraction(ctx, runID, id)
+		if err != nil {
+			return retired, fmt.Errorf("load interaction %s/%s: %w", runID, id, err)
+		}
+		if in.Kind != InteractionKindAsync || in.RetiredAt != nil || !nodeIDs[in.NodeID] {
+			continue
+		}
+		in.RetiredAt = &now
+		if err := rs.WriteInteraction(ctx, in); err != nil {
+			return retired, fmt.Errorf("retire interaction %s/%s: %w", runID, id, err)
+		}
+		retired++
+	}
+	return retired, nil
 }

@@ -185,7 +185,7 @@ func runWorkspaceSnapshotCmd(cmd *cobra.Command, runID string) error {
 		return nil
 	}
 
-	snaps, err := svc.ListWorkspaceSnapshots(runID)
+	snaps, err := svc.ListWorkspaceSnapshots(cmd.Context(), runID)
 	if err != nil {
 		return fmt.Errorf("list snapshots: %w", err)
 	}

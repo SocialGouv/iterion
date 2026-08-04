@@ -17,6 +17,7 @@ import (
 	"github.com/SocialGouv/iterion/pkg/backend/permission"
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
 	"github.com/SocialGouv/iterion/pkg/store"
+	"github.com/SocialGouv/iterion/pkg/workspacetrack"
 )
 
 // Reserved input keys live in the delegate package (delegate.PriorAskUser*Key
@@ -260,6 +261,12 @@ func (e *Engine) resumeFromPause(ctx context.Context, r *store.Run, answers map[
 	// Init maps when the checkpoint deserialised with omitted fields
 	// (Mongo bson omitempty, legacy stores) — a nil map here would
 	// crash selectEdgeRS the first time it tries `rs.loopCounters[X]++`.
+	// Restamp here as well as on the failure path: a run resumed from a
+	// human pause with `--file X --force` executes the NEW source, and
+	// leaving Run.WorkflowSource at the launch text makes the next
+	// `rewind --auto` re-report edits that already ran — the same
+	// monotonically-growing pivot the failure path restamps to avoid.
+	e.restampWorkflowSource(ctx, r)
 	rs, sandboxCleanup, rbErr := e.resumeRebuildState(ctx, r, cp, outputs, artifactVersions)
 	if rbErr != nil {
 		return rbErr
@@ -1001,8 +1008,15 @@ func (e *Engine) humanPauseExtra(nodeID string, questions map[string]any, rs *ru
 // specially dispatched, in which case the remembered anchor was
 // deliberately invalidated and aliasing would silently miss that node's
 // work.
+//
+// Two backends, same contract:
+//
+//   - worktree: auto → git refs (refs/iterion/runs/<id>/gate/<seq>)
+//   - in-place (default) → workspacetrack labels (gate:<seq>), which is
+//     the only safe capture of the operator's live checkout and which
+//     honours .iterionignore rather than .gitignore
 func (e *Engine) markReviewGate(rs *runState, nodeID string) map[string]any {
-	if e.workDir == "" || !rs.isWorktree {
+	if e.workDir == "" {
 		return nil
 	}
 	// Idempotent per (node, iteration): a review gate anchors when it
@@ -1014,8 +1028,15 @@ func (e *Engine) markReviewGate(rs *runState, nodeID string) map[string]any {
 		rs.gateAnchors = map[string]int{}
 	}
 	if seq, ok := rs.gateAnchors[key]; ok {
-		return reviewGateScope(rs.runID, seq)
+		return reviewGateScope(rs.runID, seq, rs.isWorktree)
 	}
+	if rs.isWorktree {
+		return e.markReviewGateGit(rs, nodeID, key)
+	}
+	return e.markReviewGateWorkspace(rs, nodeID, key)
+}
+
+func (e *Engine) markReviewGateGit(rs *runState, nodeID, key string) map[string]any {
 	seq := nextReviewGateSeq(e.workDir, rs.runID)
 	ref := store.ReviewGateRef(rs.runID, seq)
 	commit, err := snapshotWorktree(e.workDir, ref)
@@ -1034,17 +1055,42 @@ func (e *Engine) markReviewGate(rs *runState, nodeID string) map[string]any {
 		}
 	}
 	rs.gateAnchors[key] = seq
-	return reviewGateScope(rs.runID, seq)
+	return reviewGateScope(rs.runID, seq, true)
+}
+
+func (e *Engine) markReviewGateWorkspace(rs *runState, nodeID, key string) map[string]any {
+	if e.workspaceTracker == nil {
+		return nil
+	}
+	seq := workspacetrack.NextGateSeq(e.workspaceTracker, rs.runID)
+	label := workspacetrack.GateLabel(seq)
+	snap, err := e.workspaceTracker.Capture(rs.runID, e.workDir, label)
+	if err != nil {
+		if e.logger != nil {
+			e.logger.Warn("review gate: workspace anchor %q: %v", nodeID, err)
+		}
+		return nil
+	}
+	rs.lastWorkspaceSnapshot = snap.ID
+	rs.gateAnchors[key] = seq
+	return reviewGateScope(rs.runID, seq, false)
 }
 
 // reviewGateScope is the pause-payload shape describing a gate's range.
-func reviewGateScope(runID string, seq int) map[string]any {
+func reviewGateScope(runID string, seq int, worktree bool) map[string]any {
 	scope := map[string]any{
 		"review_gate_seq": seq,
-		"review_head_ref": store.ReviewGateRef(runID, seq),
 	}
+	if worktree {
+		scope["review_head_ref"] = store.ReviewGateRef(runID, seq)
+		if seq > 0 {
+			scope["review_base_ref"] = store.ReviewGateRef(runID, seq-1)
+		}
+		return scope
+	}
+	scope["review_head_ref"] = workspacetrack.GateLabel(seq)
 	if seq > 0 {
-		scope["review_base_ref"] = store.ReviewGateRef(runID, seq-1)
+		scope["review_base_ref"] = workspacetrack.GateLabel(seq - 1)
 	}
 	return scope
 }
@@ -1773,7 +1819,26 @@ func (e *Engine) restampWorkflowSource(ctx context.Context, r *store.Run) {
 	if e.workflowHash != "" {
 		r.WorkflowHash = e.workflowHash
 	}
-	if err := e.store.SaveRun(ctx, r); err != nil && e.logger != nil {
+	// Re-read before writing. BOTH call sites run AFTER the resume CAS
+	// flipped the run to `running` — and the claim helpers mutate their
+	// OWN copy (UpdateRunStatusIf → loadRunRaw), never the caller's `r`,
+	// which therefore still carries the pre-claim status. SaveRun writes
+	// the whole document, so saving `r` verbatim would silently undo the
+	// claim: the run persists as cancelled/paused_* for its entire
+	// execution, the Checkpoint and FinishedAt that the `running`
+	// transition deliberately cleared come back, and — worst — the
+	// duplicate-resume guard falls, letting a second concurrent resume
+	// claim the same run id and spawn a second engine on it.
+	fresh, lerr := e.store.LoadRun(ctx, r.ID)
+	if lerr != nil {
+		if e.logger != nil {
+			e.logger.Warn("resume: re-stamp workflow source for %s: reload: %v", r.ID, lerr)
+		}
+		return
+	}
+	fresh.WorkflowSource = r.WorkflowSource
+	fresh.WorkflowHash = r.WorkflowHash
+	if err := e.store.SaveRun(ctx, fresh); err != nil && e.logger != nil {
 		e.logger.Warn("resume: re-stamp workflow source for %s: %v", r.ID, err)
 	}
 }
