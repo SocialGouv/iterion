@@ -739,40 +739,6 @@ func WithoutWorkspaceTracking() ServiceOption {
 // NewService constructs a Service rooted at storeDir. When the
 // caller wires WithStore, storeDir may be "" — the service uses the
 // injected store directly without resolving a filesystem path.
-// workspaceTrackingEnabled reports whether runs should version their
-// workspace. ITERION_WORKSPACE_TRACK=off|0|false disables it globally.
-//
-// Default ON: without it a rewind cannot undo what a node actually
-// produced for the majority of bots, which is most of the point. The
-// escape hatch exists because the cost scales with the workspace, not
-// with the run.
-func workspaceTrackingEnabled() bool {
-	switch strings.ToLower(strings.TrimSpace(os.Getenv("ITERION_WORKSPACE_TRACK"))) {
-	case "off", "0", "false", "no":
-		return false
-	}
-	return true
-}
-
-// WorkspaceTrackerFor builds the workspace tracker for a store dir, or
-// nil when versioning is disabled. Exported so the CLI's own engine
-// assembly (`iterion run` / `iterion resume`, which do not go through
-// Service) enables the same thing on the same terms — without it, a run
-// launched from the terminal captures nothing and a later rewind reports
-// "no snapshots" for a run created seconds earlier.
-func WorkspaceTrackerFor(storeDir string) workspacetrack.Tracker {
-	if storeDir == "" || !workspaceTrackingEnabled() {
-		return nil
-	}
-	return workspacetrack.NewNative(storeDir)
-}
-
-// WithoutWorkspaceTracking disables workspace versioning for this
-// service, whatever the environment says.
-func WithoutWorkspaceTracking() ServiceOption {
-	return func(s *Service) { s.workspaceTrackDisabled = true }
-}
-
 func NewService(storeDir string, opts ...ServiceOption) (*Service, error) {
 	logger := iterlog.New(iterlog.LevelInfo, os.Stderr)
 
