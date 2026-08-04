@@ -90,7 +90,33 @@ const objectsDir = "workspace-objects"
 // objects — see PruneObjects, which sweeps against the manifests that
 // remain.
 func (n *Native) objectPath(hash string) string {
+	// A manifest is untrusted data — Load is a bare json.Unmarshal over a
+	// file in a store that may have been hand-copied, partially restored
+	// or written by another version — so the hash gets the same treatment
+	// as safeRelPath and validSnapshotID. Unvalidated, `hash[:2]` panicked
+	// on an empty or 1-char hash, and a 2-char one resolved to a shard
+	// DIRECTORY: the pre-delete os.Stat then succeeded, the irreversible
+	// deletion pass ran, and the write-back failed with "is a directory" —
+	// exactly the half-destroyed workspace that pre-flight exists to rule
+	// out. "" is unopenable, so every caller fails closed.
+	if !validHash(hash) {
+		return ""
+	}
 	return filepath.Join(n.root, objectsDir, hash[:2], hash[2:])
+}
+
+// validHash accepts only a full lowercase sha256 hex digest.
+func validHash(h string) bool {
+	if len(h) != sha256.Size*2 {
+		return false
+	}
+	for i := 0; i < len(h); i++ {
+		c := h[i]
+		if (c < '0' || c > '9') && (c < 'a' || c > 'f') {
+			return false
+		}
+	}
+	return true
 }
 
 func (n *Native) snapshotPath(runID, id string) string {
@@ -550,6 +576,18 @@ func (n *Native) Restore(runID, workspaceDir, snapshotID string, protected ...st
 	var toDelete, oversized []string
 	err = filepath.WalkDir(workspaceDir, func(path string, d fs.DirEntry, walkErr error) error {
 		if walkErr != nil {
+			// Same rule as Capture's walk, and for a sharper reason here.
+			// WalkDir reports a ROOT failure as one call with (path ==
+			// root, d == nil); tolerating it leaves toDelete empty and
+			// falls straight into the write-back, which MkdirAll's the
+			// whole tree back into existence and materialises every entry.
+			// So a workspace that is gone — a removed worktree, an
+			// unmounted volume whose mountpoint is now an empty dir —
+			// gets silently re-created, shadowing the real data when the
+			// volume comes back, and the report says Written=N, no error.
+			if path == workspaceDir {
+				return fmt.Errorf("workspacetrack: read workspace %s: %w", workspaceDir, walkErr)
+			}
 			if d != nil && d.IsDir() {
 				return fs.SkipDir
 			}
@@ -605,6 +643,20 @@ func (n *Native) Restore(runID, workspaceDir, snapshotID string, protected ...st
 		if _, serr := os.Stat(n.objectPath(e.Hash)); serr != nil {
 			return nil, fmt.Errorf("restore: object %s for %s is unavailable, refusing to delete anything: %w",
 				e.Hash, e.Path, serr)
+		}
+		// A DIRECTORY where the snapshot holds a file. The node replaced
+		// README.md with README.md/, say — a doc split into a folder, a
+		// config file turned into a config dir. The deletion walk skips
+		// directories, so it survives with its children removed, and the
+		// write-back then fails on os.Rename onto an existing directory
+		// (EISDIR/ENOTDIR) — after the irreversible deletion pass, which
+		// is the half-destroyed workspace this pre-flight exists to
+		// prevent. The object check alone did not cover it.
+		dest := filepath.Join(workspaceDir, filepath.FromSlash(e.Path))
+		if info, derr := os.Lstat(dest); derr == nil && info.IsDir() {
+			return nil, fmt.Errorf(
+				"restore: %s is a directory in the workspace but a file in the snapshot — "+
+					"remove or rename it and retry; nothing was deleted", e.Path)
 		}
 	}
 	for _, p := range toDelete {

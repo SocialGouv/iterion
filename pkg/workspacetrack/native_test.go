@@ -1101,3 +1101,75 @@ func TestRestore_PreservesAFileTheCaptureCouldNotRead(t *testing.T) {
 		t.Errorf("locked.txt was deleted by a restore that never held its content: %v", err)
 	}
 }
+
+// TestRestore_VanishedWorkspaceIsFatal is Revi's Rf6dd43: Capture was
+// hardened so a walk-ROOT failure is fatal, but Restore kept the tolerant
+// shape — so on a workspace that is gone (removed worktree, unmounted
+// volume) toDelete stayed empty and the write-back MkdirAll'd the whole
+// tree back into existence, reporting Written=N and no error. On an
+// unmounted volume that shadows the real data when it comes back.
+func TestRestore_VanishedWorkspaceIsFatal(t *testing.T) {
+	ws := t.TempDir()
+	write(t, ws, "a.txt", "content")
+	n := NewNative(t.TempDir())
+	snap, err := n.Capture("r1", ws, "pre:a:0")
+	if err != nil {
+		t.Fatalf("capture: %v", err)
+	}
+	gone := filepath.Join(t.TempDir(), "unmounted")
+	if _, err := n.Restore("r1", gone, snap.ID); err == nil {
+		t.Error("restoring into a workspace that does not exist must fail, not re-materialise it")
+	}
+	if _, err := os.Stat(gone); !os.IsNotExist(err) {
+		t.Error("the missing workspace was recreated — on an unmounted volume that shadows the real data")
+	}
+}
+
+// TestRestore_RefusesADirectoryWhereTheSnapshotHasAFile is Revi's
+// Rbb5517: the deletion walk skips directories, so a file the node
+// replaced with a directory survived with its children removed, and the
+// write-back then failed on os.Rename onto it — after the irreversible
+// deletion pass.
+func TestRestore_RefusesADirectoryWhereTheSnapshotHasAFile(t *testing.T) {
+	ws := t.TempDir()
+	write(t, ws, "README.md", "one file")
+	write(t, ws, "other.txt", "untouched")
+	n := NewNative(t.TempDir())
+	snap, err := n.Capture("r1", ws, "pre:a:0")
+	if err != nil {
+		t.Fatalf("capture: %v", err)
+	}
+	// The node split the doc into a folder.
+	if err := os.Remove(filepath.Join(ws, "README.md")); err != nil {
+		t.Fatal(err)
+	}
+	write(t, ws, "README.md/intro.md", "part one")
+	write(t, ws, "produced.txt", "by the node")
+
+	if _, err := n.Restore("r1", ws, snap.ID); err == nil {
+		t.Error("a directory where the snapshot holds a file must be refused up front")
+	}
+	// And refused having deleted NOTHING.
+	if _, err := os.Stat(filepath.Join(ws, "produced.txt")); err != nil {
+		t.Errorf("produced.txt was deleted before the restore discovered the collision: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(ws, "README.md", "intro.md")); err != nil {
+		t.Errorf("the node's directory was emptied before the collision was detected: %v", err)
+	}
+}
+
+// TestObjectPath_RejectsAMalformedHash is Revi's R800beb: a manifest is
+// untrusted data, and hash[:2] panicked on a short one — while a 2-char
+// hash resolved to a shard DIRECTORY, so the pre-delete Stat succeeded,
+// the deletion pass ran, and the read failed with "is a directory".
+func TestObjectPath_RejectsAMalformedHash(t *testing.T) {
+	n := NewNative(t.TempDir())
+	for _, bad := range []string{"", "a", "ab", "ABCDEF", strings.Repeat("z", 64), strings.Repeat("ab", 40)} {
+		if got := n.objectPath(bad); got != "" {
+			t.Errorf("objectPath(%q) = %q, want \"\" — an unopenable path fails closed", bad, got)
+		}
+	}
+	if got := n.objectPath(strings.Repeat("ab", 32)); got == "" {
+		t.Error("a well-formed sha256 hex digest must still resolve")
+	}
+}

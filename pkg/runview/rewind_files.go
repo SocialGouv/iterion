@@ -19,6 +19,13 @@ type fileRevertResult struct {
 	RevertCommit string `json:"revert_commit,omitempty"`
 	BackupRef    string `json:"backup_ref,omitempty"`
 	SkipReason   string `json:"skip_reason,omitempty"`
+	// CoverageGap describes files the revert could NOT put back even
+	// though it ran (paths the capture never stored). Distinct from
+	// SkipReason, which means the workspace was not touched at all — the
+	// CLI prints that one only when Reverted is false, so folding a
+	// partial-coverage warning into it dropped the warning on the single
+	// path where both are true.
+	CoverageGap string `json:"coverage_gap,omitempty"`
 	// Restored carries the tracker's per-file accounting (written /
 	// deleted / unchanged / skipped) when the restore went through
 	// iterion's own versioning rather than git.
@@ -272,7 +279,14 @@ func (s *Service) revertViaTracker(run *store.Run, wf *ir.Workflow, cp *store.Ch
 			// .iterionignore). Reporting it as "versioning was off" is the
 			// wrong-problem hunt this branch set out to remove.
 			if over, ok := s.workspaceTracker.(interface{ Overflowed(string) bool }); ok && over.Overflowed(run.ID) {
-				return &fileRevertResult{SkipReason: "this run's workspace exceeded the file cap, so nothing was versioned — narrow it with .iterionignore, or raise the cap"}, nil
+				// Deliberately no "raise the cap": MaxFiles has no env or
+				// flag override, and the overflow latches in this run's
+				// index — so neither half of the old advice could rescue
+				// the run being rewound. Say what is actually true.
+				return &fileRevertResult{SkipReason: fmt.Sprintf(
+					"this run's workspace exceeded the %d-file cap, so nothing was versioned for it — "+
+						"narrow the workspace with .iterionignore and relaunch; this run cannot be recovered",
+					workspacetrack.DefaultMaxFiles)}, nil
 			}
 			return &fileRevertResult{SkipReason: "this run captured no workspace snapshots at all — it was launched on a path that does not enable workspace versioning, or versioning was off"}, nil
 		}
@@ -301,7 +315,9 @@ func (s *Service) revertViaTracker(run *store.Run, wf *ir.Workflow, cp *store.Ch
 		Restored:  report,
 	}
 	if len(report.Skipped) > 0 {
-		res.SkipReason = fmt.Sprintf("%d path(s) were too large to version and were left as-is", len(report.Skipped))
+		res.CoverageGap = fmt.Sprintf(
+			"%d path(s) were never captured (too large, or unreadable at capture time) and were left as-is",
+			len(report.Skipped))
 	}
 	return res, nil
 }

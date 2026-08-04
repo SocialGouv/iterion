@@ -115,6 +115,11 @@ subbot runs) are never undone.`,
 		if f := result.Files; f != nil {
 			if f.Reverted {
 				fmt.Fprintf(os.Stderr, "  workspace reverted to the state %q started from (backup: %s)\n", result.NodeID, f.BackupRef)
+				if f.CoverageGap != "" {
+					// A revert that ran but could not put everything back
+					// is not a clean success — say so on the same screen.
+					fmt.Fprintf(os.Stderr, "  WARNING: %s\n", f.CoverageGap)
+				}
 			} else if f.SkipReason != "" {
 				fmt.Fprintf(os.Stderr, "  WARNING: files NOT reverted — %s\n", f.SkipReason)
 			}
