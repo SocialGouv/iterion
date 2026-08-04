@@ -33,11 +33,16 @@ Per-node git snapshots already exist and are used for runs that declare
 Everything lives beside the run's other state, never inside the project:
 
 ```
+<store>/workspace-objects/<aa>/<sha256 remainder>   file contents, deduped by hash
 <store>/runs/<run>/workspace/
-  objects/<aa>/<sha256 remainder>   file contents, deduped by hash
   snapshots/<id>.json               manifest: parent + path→hash entries
-  labels.json / index.json          labels and the stat cache
+  index.json                        stat cache + labels + head
 ```
+
+The object pool is **store-global**, not per-run: content is content, and a
+per-run pool re-stores the whole workspace for every run (measured: 318 MiB per
+run on this repo). That is also why deleting a run cannot blind-delete its
+objects — see *Reclaiming disk*.
 
 Snapshots carry a `Parent`, so a run's captures form a chain — the node-by-node
 history of the workspace, readable without git. Labels name the boundaries:
