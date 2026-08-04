@@ -62,7 +62,22 @@ export function ReviewScopePanel({ runId, live }: Props) {
   const { data, isLoading, error } = useQuery({
     queryKey: ["review-scope", runId],
     queryFn: () => getReviewScope(runId),
-    refetchInterval: live ? POLL_INTERVAL_MS : (false as const),
+    // Poll only until a range resolves, then stop for good.
+    //
+    // The panel is shown for a run paused at a gate, and a gate's range is
+    // frozen for the lifetime of that pause: both `gate/N-1..gate/N` and
+    // the workspacetrack snapshot ids are written once and never move. So
+    // every further poll returned a byte-identical payload while costing,
+    // server-side, two `git diff` forks per recorded node boundary — ~82
+    // git processes every 5s on a 40-boundary run, per open review card,
+    // and the board can render several.
+    //
+    // The initial poll is kept because the panel can mount in the moment
+    // between the pause surfacing and the gate ref being readable; with
+    // `retry: false` a single cold miss would otherwise leave the operator
+    // with a permanently empty panel.
+    refetchInterval: (query) =>
+      live && !query.state.data?.available ? POLL_INTERVAL_MS : (false as const),
     refetchIntervalInBackground: false,
     retry: false,
   });

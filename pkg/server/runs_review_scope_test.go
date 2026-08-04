@@ -1,6 +1,7 @@
 package server
 
 import (
+	"net/http/httptest"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -366,5 +367,88 @@ func TestReviewScope_InPlaceFallbackWithoutGateLabel(t *testing.T) {
 	}
 	if paused.Groups[0].Files[0].Path != "b.txt" {
 		t.Errorf("got %q, want b.txt", paused.Groups[0].Files[0].Path)
+	}
+}
+
+// TestSafeJoinUnder_RejectsSymlinkEscape is Revi's R2eb800.
+//
+// The containment check was lexical only (Abs + string prefix), so a
+// symlink whose own path sits inside the workspace but whose target does
+// not passed it, and os.Open then followed it — GET
+// /api/runs/{id}/workspace-files/<link> streamed back whatever the link
+// pointed at. Agents write freely into a run workspace and the workspace
+// may be a checkout of an untrusted repo, so planting that link is inside
+// the threat model this surface already defends against.
+func TestSafeJoinUnder_RejectsSymlinkEscape(t *testing.T) {
+	ws := t.TempDir()
+	outside := t.TempDir()
+	secret := filepath.Join(outside, "credentials")
+	if err := os.WriteFile(secret, []byte("aws_secret_access_key=hunter2"), 0o600); err != nil {
+		t.Fatalf("seed secret: %v", err)
+	}
+	if err := os.Symlink(secret, filepath.Join(ws, "innocent.mp3")); err != nil {
+		t.Skipf("symlinks unavailable: %v", err)
+	}
+	// A symlink to a directory, so the escape can also be reached through
+	// a parent component rather than the leaf.
+	if err := os.Symlink(outside, filepath.Join(ws, "media")); err != nil {
+		t.Skipf("symlinks unavailable: %v", err)
+	}
+
+	for _, rel := range []string{"innocent.mp3", "media/credentials"} {
+		got, err := safeJoinUnder(ws, rel)
+		if err == nil {
+			t.Errorf("safeJoinUnder(%q) = %q, want an error — the path resolves outside the workspace "+
+				"and the handler streams whatever it opens", rel, got)
+		}
+	}
+
+	// A genuine file inside the workspace still resolves.
+	writeIn(t, ws, "real.txt", "fine")
+	if _, err := safeJoinUnder(ws, "real.txt"); err != nil {
+		t.Errorf("safeJoinUnder rejected a legitimate workspace file: %v", err)
+	}
+}
+
+// TestWorkspaceFileHeaders_ForcesDownloadForScriptableTypes is Revi's
+// R03b907: the endpoint accepts ANY path under the run workspace, so
+// serving .html/.svg inline let a file an agent wrote execute on the
+// studio's own origin, against every unauthenticated local /api endpoint.
+func TestWorkspaceFileHeaders_ForcesDownloadForScriptableTypes(t *testing.T) {
+	cases := []struct {
+		path       string
+		wantInline bool
+	}{
+		{"report.html", false},
+		{"diagram.svg", false},
+		{"notes.md", false},
+		{"data.yaml", false},
+		{"doc.pdf", false},
+		{"episode.mp4", true},
+		{"theme.mp3", true},
+		{"cover.png", true},
+		{"transcript.txt", true},
+	}
+	for _, tc := range cases {
+		rec := httptest.NewRecorder()
+		req := httptest.NewRequest("GET", "/api/runs/r/workspace-files/"+tc.path, nil)
+		setWorkspaceFileHeaders(rec, req, tc.path)
+
+		disp := rec.Header().Get("Content-Disposition")
+		inline := strings.HasPrefix(disp, "inline")
+		if inline != tc.wantInline {
+			t.Errorf("%s: disposition = %q, want inline=%v", tc.path, disp, tc.wantInline)
+		}
+		if got := rec.Header().Get("X-Content-Type-Options"); got != "nosniff" {
+			t.Errorf("%s: X-Content-Type-Options = %q, want nosniff", tc.path, got)
+		}
+	}
+
+	// ?download=1 still forces attachment for an otherwise-inline type.
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest("GET", "/api/runs/r/workspace-files/a.mp4?download=1", nil)
+	setWorkspaceFileHeaders(rec, req, "a.mp4")
+	if !strings.HasPrefix(rec.Header().Get("Content-Disposition"), "attachment") {
+		t.Error("?download=1 must still force attachment")
 	}
 }

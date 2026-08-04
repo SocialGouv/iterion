@@ -2681,6 +2681,26 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/runs/{id}/workspace-files/{path}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+                path: string;
+            };
+            cookie?: never;
+        };
+        /** GET /api/runs/{id}/workspace-files/{path...} */
+        get: operations["getRunsByIdWorkspaceFilesByPath"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/server/info": {
         parameters: {
             query?: never;
@@ -8538,6 +8558,27 @@ export interface operations {
                 content: {
                     "application/json": components["schemas"]["WireWorkflow"];
                 };
+            };
+        };
+    };
+    getRunsByIdWorkspaceFilesByPath: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+                path: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Response */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
             };
         };
     };

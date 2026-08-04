@@ -491,14 +491,24 @@ func (e *Engine) buildCompanionMessage(rs *runState, hn *ir.HumanNode, turns []s
 // committed yet showed its companion nothing at all.
 func (e *Engine) reviewGateRange(rs *runState, wtCtx *worktreeContext) (base, head string) {
 	base, head = wtCtx.originalTip, "HEAD"
-	if len(rs.gateAnchors) == 0 {
-		return base, head
-	}
 	seq := -1
 	for _, s := range rs.gateAnchors {
 		if s > seq {
 			seq = s
 		}
+	}
+	if seq < 0 {
+		// rs.gateAnchors is in-memory only — never persisted to or
+		// rehydrated from the checkpoint — so a resumed review turn
+		// rebuilds runState with it empty. Falling straight back to
+		// originalTip..HEAD there restores exactly the two defects this
+		// function exists to fix, and does it silently: from turn 2 of any
+		// multi-turn review the companion would judge the whole run while
+		// the human panel keeps reading gate/N-1..gate/N from git.
+		//
+		// The sequence is recoverable from git itself, so no checkpoint
+		// change is needed.
+		seq = nextReviewGateSeq(e.workDir, rs.runID) - 1
 	}
 	if seq < 0 {
 		return base, head

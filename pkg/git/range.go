@@ -110,20 +110,6 @@ func DiffBetween(repoRoot, baseRef, finalRef, relPath string) (DiffPayload, erro
 	return payload, nil
 }
 
-// FindRepoRoot walks parent directories from startDir until it finds a valid
-// Git worktree root (regular .git directory or a worktree's gitfile pointer),
-// returning "" when no parent in the chain qualifies.
-//
-// Used by the studio server to recover a run's main repo root when the run
-// record predates the persisted RepoRoot field — we walk up from the run's
-// work_dir (`<repo>/.iterion/worktrees/<id>`) past `.iterion` to the repo
-// itself. Falls back gracefully on legacy or migrated runs whose work_dir
-// no longer resolves locally (returns "" so callers can try the server CWD).
-//
-// On a linked worktree (`.git` is a file containing `gitdir: <main>/.git/
-// worktrees/<name>`), this returns the WORKTREE path — not the main repo.
-// Callers that need the main checkout's path (e.g. project-rooted memory
-// keying) should use [FindMainRepoRoot] instead.
 // ForEachRef lists refs under a prefix with a caller-chosen format. The
 // prefix is a literal ref namespace built by the caller, never user
 // input — it becomes a git argument.
@@ -138,6 +124,20 @@ func ForEachRef(repoRoot, format, prefix string) (string, error) {
 	return string(out), nil
 }
 
+// FindRepoRoot walks parent directories from startDir until it finds a valid
+// Git worktree root (regular .git directory or a worktree's gitfile pointer),
+// returning "" when no parent in the chain qualifies.
+//
+// Used by the studio server to recover a run's main repo root when the run
+// record predates the persisted RepoRoot field — we walk up from the run's
+// work_dir (`<repo>/.iterion/worktrees/<id>`) past `.iterion` to the repo
+// itself. Falls back gracefully on legacy or migrated runs whose work_dir
+// no longer resolves locally (returns "" so callers can try the server CWD).
+//
+// On a linked worktree (`.git` is a file containing `gitdir: <main>/.git/
+// worktrees/<name>`), this returns the WORKTREE path — not the main repo.
+// Callers that need the main checkout's path (e.g. project-rooted memory
+// keying) should use [FindMainRepoRoot] instead.
 func FindRepoRoot(startDir string) string {
 	if startDir == "" {
 		return ""

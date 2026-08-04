@@ -218,13 +218,8 @@ func (s *Server) handleGetRunWorkspaceFile(w http.ResponseWriter, r *http.Reques
 		s.httpErrorFor(w, r, http.StatusNotFound, "file not found")
 		return
 	}
-	w.Header().Set("Content-Type", artifactFileContentType(relPath))
+	setWorkspaceFileHeaders(w, r, relPath)
 	w.Header().Set("Content-Length", strconv.FormatInt(int64(len(body)), 10))
-	disposition := "inline"
-	if r.URL.Query().Get("download") == "1" {
-		disposition = "attachment"
-	}
-	w.Header().Set("Content-Disposition", fmt.Sprintf(`%s; filename=%q`, disposition, filepath.Base(relPath)))
 	// size recorded in the snapshot may differ if the object was truncated;
 	// prefer the actual body length for the header.
 	_ = size
@@ -232,35 +227,74 @@ func (s *Server) handleGetRunWorkspaceFile(w http.ResponseWriter, r *http.Reques
 }
 
 func serveWorkspaceFile(w http.ResponseWriter, r *http.Request, relPath string, info os.FileInfo, f *os.File) {
-	w.Header().Set("Content-Type", artifactFileContentType(relPath))
-	disposition := "inline"
-	if r.URL.Query().Get("download") == "1" {
-		disposition = "attachment"
-	}
-	w.Header().Set("Content-Disposition", fmt.Sprintf(`%s; filename=%q`, disposition, filepath.Base(relPath)))
+	setWorkspaceFileHeaders(w, r, relPath)
 	// ServeContent handles Range requests so large media can seek.
 	http.ServeContent(w, r, filepath.Base(relPath), info.ModTime(), f)
 }
 
-// safeJoinUnder resolves rel under root and rejects any escape.
+// inlineWorkspaceTypes are the content types this endpoint will render
+// in the browser. It exists to play back media in the review panel, so
+// that is the whole list.
+//
+// Anything else — above all `.html` and `.svg`, which
+// artifactFileContentType maps to text/html and image/svg+xml — is forced
+// to a download. The handler accepts ANY path under the run workspace,
+// not just the media the panel links, so serving script-bearing content
+// inline would let a file an agent wrote (or one that ships in the repo
+// under review) execute on the studio's own origin, where it can drive
+// every unauthenticated local /api/... endpoint.
+// Deliberately an allow-list of concrete types rather than an
+// "image/*, audio/*, video/*" prefix rule: image/svg+xml is an image that
+// executes script.
+var inlineWorkspaceTypes = map[string]bool{
+	"image/png": true, "image/jpeg": true, "image/gif": true,
+	"image/webp": true, "image/avif": true, "image/bmp": true,
+	"audio/mpeg": true, "audio/ogg": true, "audio/wav": true,
+	"audio/webm": true, "audio/flac": true, "audio/aac": true,
+	"audio/mp4": true, "audio/x-wav": true,
+	"video/mp4": true, "video/webm": true, "video/ogg": true,
+	"video/quicktime": true,
+	"text/plain":      true,
+}
+
+// setWorkspaceFileHeaders writes the content type and disposition shared
+// by the live-file and snapshot-object paths.
+func setWorkspaceFileHeaders(w http.ResponseWriter, r *http.Request, relPath string) {
+	ct := artifactFileContentType(relPath)
+	w.Header().Set("Content-Type", ct)
+	// nosniff so a downloaded file cannot be re-interpreted as markup by
+	// content sniffing regardless of the type we declare.
+	w.Header().Set("X-Content-Type-Options", "nosniff")
+	// Compare on the media type alone — artifactFileContentType appends
+	// `; charset=utf-8` to the textual ones.
+	base := strings.ToLower(strings.TrimSpace(strings.SplitN(ct, ";", 2)[0]))
+	disposition := "attachment"
+	if inlineWorkspaceTypes[base] && r.URL.Query().Get("download") != "1" {
+		disposition = "inline"
+	}
+	w.Header().Set("Content-Disposition", fmt.Sprintf(`%s; filename=%q`, disposition, filepath.Base(relPath)))
+}
+
+// safeJoinUnder resolves rel under root and rejects any escape —
+// including an escape THROUGH a symlink inside the workspace.
+//
+// The lexical check this replaces (Abs + string prefix) passed for a
+// symlink whose own path sits under the workspace but whose target does
+// not, and os.Open then followed it: `GET
+// /api/runs/{id}/workspace-files/<link>` streamed back /etc/passwd,
+// ~/.aws/credentials or ~/.iterion/secrets.json. Agents write freely into
+// a run workspace, and the workspace may be a checkout of an untrusted
+// repo, so planting that link is inside the threat model.
+//
+// safePathWithin (pkg/server/server_files.go) is the repo's audited
+// boundary for exactly this class — introduced by the c9e18195 hardening
+// and already used by every other run-file endpoint. This was the only
+// one reimplementing containment.
 func safeJoinUnder(root, rel string) (string, error) {
 	if err := gitlib.ValidateRelPath(rel); err != nil {
 		return "", err
 	}
-	absRoot, err := filepath.Abs(root)
-	if err != nil {
-		return "", err
-	}
-	joined := filepath.Join(absRoot, filepath.FromSlash(rel))
-	abs, err := filepath.Abs(joined)
-	if err != nil {
-		return "", err
-	}
-	sep := string(filepath.Separator)
-	if abs != absRoot && !strings.HasPrefix(abs, absRoot+sep) {
-		return "", fmt.Errorf("path escapes workspace")
-	}
-	return abs, nil
+	return safePathWithin(root, rel)
 }
 
 // workspaceTracker returns the runview service's workspace tracker, or a
@@ -492,7 +526,15 @@ func groupByNodeGit(run *store.Run, files []gitlib.FileStatus) []reviewScopeGrou
 	}
 	// Latest boundary wins: when two nodes touched the same file, the
 	// reviewer cares about who left it in the state under review.
-	sort.Slice(ranges, func(i, j int) bool { return ranges[i].when < ranges[j].when })
+	//
+	// SliceStable, not Slice: `when` is committerdate at ONE-SECOND
+	// resolution and node boundaries routinely land in the same second, so
+	// an unstable sort permutes the tied ones. partitionFilesByRanges then
+	// awards a shared file to whichever came last, and with the panel
+	// refetching the operator watches files hop between node groups with
+	// nothing having changed. Stable sorting lets for-each-ref's own
+	// deterministic order break the tie.
+	sort.SliceStable(ranges, func(i, j int) bool { return ranges[i].when < ranges[j].when })
 	return partitionFilesByRanges(files, ranges)
 }
 
@@ -550,7 +592,9 @@ func groupByNodeWorkspace(tracker workspacetrack.Tracker, runID string, files []
 		}
 		ranges = append(ranges, nodeRange{node: b.node, loopIter: b.loopIter, when: when, set: set})
 	}
-	sort.Slice(ranges, func(i, j int) bool { return ranges[i].when < ranges[j].when })
+	// SliceStable for the same reason as the git path above: CreatedAt is
+	// truncated to seconds here too.
+	sort.SliceStable(ranges, func(i, j int) bool { return ranges[i].when < ranges[j].when })
 	return partitionFilesByRanges(files, ranges)
 }
 
