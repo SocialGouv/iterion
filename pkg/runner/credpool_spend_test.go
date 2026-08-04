@@ -15,6 +15,7 @@ import (
 	"github.com/SocialGouv/iterion/pkg/queue"
 	"github.com/SocialGouv/iterion/pkg/runtime"
 	"github.com/SocialGouv/iterion/pkg/secrets"
+	"github.com/SocialGouv/iterion/pkg/store"
 )
 
 // poolHarness wires a real broker with one donor who is already serving a
@@ -222,5 +223,56 @@ func TestRecordPoolSpend_usageWindowRestsTheDonor(t *testing.T) {
 		Wants: []credpool.Credential{{Source: credpool.SourceOAuth, Ref: string(secrets.OAuthKindClaudeCode)}},
 	}); !errors.Is(err, credpool.ErrNoDonor) {
 		t.Errorf("next Acquire = %v, want ErrNoDonor while the donor rests", err)
+	}
+}
+
+// An auth rejection that the RECOVERY machinery converts into a human
+// pause must still park the donor.
+//
+// Measured on prod: a lent credential whose token had expired stayed
+// `active` and first in the pool's rotation after two runs, because by
+// the time the runner reports, execErr says only "paused" — the rejection
+// is nowhere in it. Each subsequent run would take another unit of the
+// donor's daily quota and pause on the same dead credential.
+//
+// Driven through the production event path (the engine's own
+// node_recovery event, carrying the code recovery.Classify assigned), not
+// a hand-set flag: the flag is exactly what the test must prove gets set.
+func TestRecordPoolSpend_authFailureAbsorbedByRecoveryStillParksTheDonor(t *testing.T) {
+	h := newPoolHarness(t, credpool.Limits{MaxUSDPerDay: 10})
+	ctx := context.Background()
+
+	usage := newMetricsEmitter(&recordingEmitter{}, metrics.New())
+	usage.observe(store.Event{
+		Type:   store.EventNodeRecovery,
+		NodeID: "n1",
+		Data:   map[string]any{"code": string(runtime.ErrCodeAuthFailed), "attempt": 1},
+	})
+
+	// The attempt ends PAUSED, not on the auth error.
+	h.runner.recordPoolSpend(&queue.RunMessage{RunID: "run-1", TenantID: "team-1"}, usage, runtime.ErrRunPaused)
+
+	p, err := h.pledges.Get(ctx, credpool.PledgeID("donor", credpool.SourceOAuth, "claude_code"))
+	if err != nil {
+		t.Fatalf("pledge: %v", err)
+	}
+	if p.ConsecutiveAuthFailures == 0 {
+		t.Fatal("the rejection never reached the donor's health counter — a dead lent credential stays first in the rotation")
+	}
+}
+
+// The mirror: an ordinary workflow failure says nothing about the
+// credential and must not cost the donor their place.
+func TestRecordPoolSpend_ordinaryFailureLeavesTheDonorAlone(t *testing.T) {
+	h := newPoolHarness(t, credpool.Limits{MaxUSDPerDay: 10})
+	h.runner.recordPoolSpend(&queue.RunMessage{RunID: "run-1", TenantID: "team-1"},
+		usageWith(1, 10), errors.New("the bot's own logic failed"))
+
+	p, err := h.pledges.Get(context.Background(), credpool.PledgeID("donor", credpool.SourceOAuth, "claude_code"))
+	if err != nil {
+		t.Fatalf("pledge: %v", err)
+	}
+	if p.ConsecutiveAuthFailures != 0 {
+		t.Errorf("auth failures = %d — a bot failing on its own logic blamed the donor's credential", p.ConsecutiveAuthFailures)
 	}
 }

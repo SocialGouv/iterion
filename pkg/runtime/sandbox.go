@@ -442,6 +442,12 @@ func resolveAndStartSandbox(ctx context.Context, p SandboxParams) (*activeSandbo
 	if err != nil {
 		return nil, fmt.Errorf("runtime: sandbox: claude forfait delivery: %w", err)
 	}
+	// Same for a resolved ChatGPT forfait, so a sandboxed claw/codex node
+	// authenticates as the RUN rather than as the pod.
+	codexOAuthMounted, err := addCodexOAuthSecretFile(ctx, spec)
+	if err != nil {
+		return nil, fmt.Errorf("runtime: sandbox: chatgpt forfait delivery: %w", err)
+	}
 
 	// Optionally start the network proxy. When the workflow has no
 	// explicit network policy, default to the iterion-default
@@ -517,6 +523,15 @@ func resolveAndStartSandbox(ctx context.Context, p SandboxParams) (*activeSandbo
 		}
 		if logger != nil {
 			logger.Info("runtime: sandbox: claude forfait credentials delivered (CLAUDE_CONFIG_DIR=%s)", secrets.ClaudeCodeSandboxConfigDir)
+		}
+	}
+	if codexOAuthMounted {
+		if err := seedCodexConfigDir(ctx, run); err != nil {
+			active.shutdown(ctx, logger)
+			return nil, err
+		}
+		if logger != nil {
+			logger.Info("runtime: sandbox: chatgpt forfait credentials delivered (CODEX_HOME=%s)", secrets.CodexSandboxConfigDir)
 		}
 	}
 

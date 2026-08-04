@@ -703,3 +703,57 @@ func TestAcquire_lentKeyIsReadableFromAnotherTenant(t *testing.T) {
 		t.Errorf("the donor's pledge was parked as %q by a successful draw", fresh.Health)
 	}
 }
+
+// A run whose attempt is redelivered keeps its lease: the queue hands the
+// SAME sealed bundle to the next pod, so the donor's credential runs
+// again. Closing on the first attempt made every later one invisible —
+// nothing left open to report against — so a flapping backend could spend
+// a contributor's subscription once per delivery while their ledger
+// recorded a single attempt.
+func TestReport_interimAttemptChargesButKeepsTheLeaseOpen(t *testing.T) {
+	h := newHarness(t)
+	ctx := context.Background()
+	h.donor(t, "alice", Limits{MaxUSDPerDay: 10})
+
+	if _, err := h.broker.Acquire(ctx, h.request("run-1")); err != nil {
+		t.Fatalf("Acquire: %v", err)
+	}
+	// Attempt 1 dies transiently and will be redelivered.
+	if err := h.broker.Report(ctx, "run-1", Outcome{CostUSD: 2, Interim: true}); err != nil {
+		t.Fatalf("interim Report: %v", err)
+	}
+	// Attempt 2 runs on the same bundle, spends more, and settles the run.
+	if err := h.broker.Report(ctx, "run-1", Outcome{CostUSD: 3}); err != nil {
+		t.Fatalf("closing Report: %v", err)
+	}
+
+	day, _, _ := h.ledger.Usage(ctx, PledgeID("alice", SourceOAuth, "claude_code"), h.now)
+	if day.CostUSD != 5 {
+		t.Errorf("donor charged $%v, want $5 — the redelivered attempt spent their credential unmetered", day.CostUSD)
+	}
+	open, err := h.leases.ListOpenByRun(ctx, "run-1")
+	if err != nil {
+		t.Fatalf("leases: %v", err)
+	}
+	if len(open) != 0 {
+		t.Errorf("%d lease(s) still open after the settling report", len(open))
+	}
+}
+
+// An interim report must not free the donor's slot either: the run is
+// still theirs until something settles it.
+func TestReport_interimAttemptStillHoldsTheDonorsSlot(t *testing.T) {
+	h := newHarness(t)
+	ctx := context.Background()
+	h.donor(t, "alice", Limits{MaxConcurrentRuns: 1})
+
+	if _, err := h.broker.Acquire(ctx, h.request("run-1")); err != nil {
+		t.Fatalf("Acquire: %v", err)
+	}
+	if err := h.broker.Report(ctx, "run-1", Outcome{CostUSD: 1, Interim: true}); err != nil {
+		t.Fatalf("interim Report: %v", err)
+	}
+	if _, err := h.broker.Acquire(ctx, h.request("run-2")); !errors.Is(err, ErrNoDonor) {
+		t.Errorf("a second run took the slot a redelivering run still holds: %v", err)
+	}
+}

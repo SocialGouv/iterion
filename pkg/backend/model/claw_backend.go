@@ -898,7 +898,7 @@ func (b *ClawBackend) executeViaSandboxRunner(ctx context.Context, task delegate
 	// finds nothing and bails with "API key required for OpenAI-
 	// compatible provider". Pass through only the keys we know
 	// providers consume: anything else stays on the host.
-	runnerEnv := forwardableProviderEnv()
+	runnerEnv := forwardableProviderEnv(ctx)
 	cmd := run.Command(ctx, []string{"iterion", "__claw-runner"}, sandbox.ExecOpts{
 		KeepStdinOpen: true,
 		Env:           runnerEnv,
@@ -1043,17 +1043,59 @@ var providerCredentialEnvVars = []string{
 	"ANTHROPIC_CUSTOM_HEADERS",
 }
 
+// byokEnvVar names the environment variable claw's registry reads for a
+// provider's key inside the container. A provider absent here has no
+// env-based BYOK path, so a tenant key for it cannot be forwarded.
+var byokEnvVar = map[secrets.Provider]string{
+	secrets.ProviderOpenAI:    "OPENAI_API_KEY",
+	secrets.ProviderAnthropic: "ANTHROPIC_API_KEY",
+	secrets.ProviderAzure:     "AZURE_OPENAI_API_KEY",
+	secrets.ProviderZAI:       "ZAI_API_KEY",
+}
+
 // forwardableProviderEnv builds the env map ClawBackend hands to
 // sandbox.Run.Command so the in-container runner can reach the same
 // provider APIs as the host. Empty entries are skipped — we never
 // inject a name=<empty> pair, since some providers treat that as
 // "auth attempted but invalid" instead of "no auth".
-func forwardableProviderEnv() map[string]string {
+//
+// The RUN's own resolved credentials override the ambient ones. Inside
+// the container the runner rebuilds its registry from env alone — ctx
+// never crosses the process boundary — so without this a sandboxed node
+// silently authenticates as the HOST: a tenant's BYOK key is ignored in
+// favour of the pod's platform key, and a lent subscription is bypassed
+// entirely while its donor's lease has already been taken. The failure is
+// invisible whenever the ambient key happens to work, which is the worst
+// possible shape for a billing boundary.
+func forwardableProviderEnv(ctx context.Context) map[string]string {
 	env := map[string]string{}
 	for _, name := range providerCredentialEnvVars {
 		if v := os.Getenv(name); v != "" {
 			env[name] = v
 		}
+	}
+	creds, ok := secrets.CredentialsFromContext(ctx)
+	if !ok {
+		return env
+	}
+	for provider, key := range creds.APIKeys {
+		if key == "" {
+			continue
+		}
+		if name := byokEnvVar[provider]; name != "" {
+			env[name] = key
+		}
+	}
+	// A resolved ChatGPT forfait (the tenant's own, or one lent through the
+	// credential pool) is delivered into the sandbox as a file by
+	// runtime.addCodexOAuthSecretFile. Point the in-container runner at it
+	// and force the OAuth path: the ambient OPENAI_API_KEY would otherwise
+	// win by the documented "an explicit env key is deliberate" rule, which
+	// is true of a machine default and false of a credential resolved FOR
+	// THIS RUN.
+	if creds.OAuthDir(string(secrets.OAuthKindCodex)) != "" {
+		env["CODEX_HOME"] = secrets.CodexSandboxConfigDir
+		env["ITERION_OPENAI_USE_OAUTH"] = "1"
 	}
 	return env
 }

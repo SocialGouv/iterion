@@ -9,6 +9,7 @@ import (
 	"github.com/SocialGouv/iterion/pkg/backend/cost"
 	"github.com/SocialGouv/iterion/pkg/backend/model"
 	"github.com/SocialGouv/iterion/pkg/cloud/metrics"
+	"github.com/SocialGouv/iterion/pkg/runtime"
 	"github.com/SocialGouv/iterion/pkg/store"
 )
 
@@ -45,6 +46,16 @@ type metricsEmitter struct {
 	runCostUSD      float64
 	runInputTokens  int64
 	runOutputTokens int64
+
+	// sawAuthFailure records that the provider rejected this run's
+	// credential at some point, even if the attempt did not END on that
+	// error. Recovery converts an auth failure into a human pause, so by
+	// the time the runner reports, execErr is ErrRunPaused and the
+	// rejection is invisible — which left a dead lent credential first in
+	// the pool's rotation, pausing run after run and burning a unit of its
+	// donor's daily quota each time (measured on prod: 2 runs, credential
+	// dead, pledge still "active").
+	sawAuthFailure bool
 }
 
 // modelRate is the per-token cost (USD) for a given model, derived
@@ -187,6 +198,15 @@ func (m *metricsEmitter) observe(evt store.Event) {
 		if costDelta > 0 && m.reg != nil {
 			m.reg.LLMCostUSDTotal.WithLabelValues(backend, normalizeModelLabel(modelName)).Add(costDelta)
 		}
+	case store.EventNodeRecovery:
+		// The engine already classified the failure here (typed, from
+		// recovery.Classify) — this is the only place the reason survives
+		// once recovery turns an auth rejection into a pause.
+		if code, _ := evt.Data["code"].(string); code == string(runtime.ErrCodeAuthFailed) {
+			m.mu.Lock()
+			m.sawAuthFailure = true
+			m.mu.Unlock()
+		}
 	case store.EventDelegateFinished:
 		backend, _ := evt.Data["backend"].(string)
 		if backend == "" {
@@ -236,6 +256,14 @@ func (m *metricsEmitter) RunTotals() (costUSD float64, inputTokens, outputTokens
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	return m.runCostUSD, m.runInputTokens, m.runOutputTokens
+}
+
+// SawAuthFailure reports whether the provider rejected this run's
+// credential at any point during the attempt.
+func (m *metricsEmitter) SawAuthFailure() bool {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.sawAuthFailure
 }
 
 func (m *metricsEmitter) lookupModel(nodeID string) string {

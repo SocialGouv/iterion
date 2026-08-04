@@ -586,6 +586,13 @@ type Outcome struct {
 	// could parse one from ConditionUsageWindow. Zero falls back to a
 	// bounded blind wait.
 	CooldownUntil time.Time
+	// Interim marks an attempt that spent the credential but does NOT
+	// settle the run: the queue will redeliver the same sealed bundle, so
+	// the next attempt executes on the same lease. The spend is charged,
+	// the lease stays open. Without it a flapping backend could run a
+	// contributor's subscription once per delivery while their ledger
+	// recorded one attempt — and their ceilings would never see the rest.
+	Interim bool
 }
 
 // Condition is the part of an attempt's outcome that changes a donor's
@@ -629,6 +636,17 @@ func (b *Broker) Report(ctx context.Context, runID string, out Outcome) error {
 		outcome = string(ConditionAuthFailed)
 	}
 
+	// An INTERIM report: this attempt spent the donor's credential but the
+	// run keeps the same lease, because the queue will redeliver the very
+	// same sealed bundle to another pod. Closing here would make every
+	// redelivered attempt's spend invisible — no open lease left to report
+	// against — so a run could burn a contributor's quota once per delivery
+	// while their ledger recorded a single attempt. Charge now; the
+	// attempt that finally settles the run closes.
+	if out.Interim {
+		return b.chargeAndReact(ctx, lease, out, now, runID)
+	}
+
 	// Close FIRST, and charge only if this call is the one that closed it.
 	// A run can be reported twice — a redelivery whose first pod was merely
 	// slow, a cancel racing a finish — and reading "still open" then
@@ -645,6 +663,13 @@ func (b *Broker) Report(ctx context.Context, runID string, out Outcome) error {
 		return nil // another report got there first; it did the charging
 	}
 
+	return b.chargeAndReact(ctx, lease, out, now, runID)
+}
+
+// chargeAndReact debits the donor for what an attempt consumed and applies
+// what that attempt says about their credential. Shared by the closing and
+// interim report paths.
+func (b *Broker) chargeAndReact(ctx context.Context, lease Lease, out Outcome, now time.Time, runID string) error {
 	if out.CostUSD > 0 || out.InputTokens > 0 || out.OutputTokens > 0 {
 		// Charged against the lease's ACQUISITION instant, not now: a run
 		// that starts at 23:50 and ends at 00:10 must debit the day whose

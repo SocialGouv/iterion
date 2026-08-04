@@ -2,12 +2,13 @@ package runner
 
 import (
 	"context"
-	"errors"
 	"time"
 
 	"github.com/SocialGouv/iterion/pkg/backend/delegate"
 	"github.com/SocialGouv/iterion/pkg/credpool"
 	"github.com/SocialGouv/iterion/pkg/queue"
+	"github.com/SocialGouv/iterion/pkg/runtime"
+	"github.com/SocialGouv/iterion/pkg/runtime/recovery"
 )
 
 // recordOrgSpend charges the run's accumulated LLM consumption to the
@@ -56,6 +57,17 @@ func (r *Runner) recordPoolSpend(msg *queue.RunMessage, usage *metricsEmitter, e
 	}
 	costUSD, in, out := usage.RunTotals()
 	condition, cooldownUntil := classifyPoolCondition(execErr, time.Now().UTC())
+	// An auth rejection the recovery machinery absorbed into a human pause
+	// leaves execErr saying only "paused". Without this the donor's dead
+	// credential stays first in the rotation and pauses the next run too,
+	// costing them a unit of their daily quota every time.
+	if condition == credpool.ConditionOK && usage.SawAuthFailure() {
+		condition = credpool.ConditionAuthFailed
+	}
+	// An attempt that Naks is redelivered on the SAME sealed bundle, so the
+	// next pod runs on this very lease. Closing it here would leave every
+	// redelivered attempt with nothing to report against.
+	interim := classifyExecResult(execErr, msg.RunID).action == actionNak
 	bg, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	if err := r.cfg.CredPool.Report(bg, msg.RunID, credpool.Outcome{
@@ -64,6 +76,7 @@ func (r *Runner) recordPoolSpend(msg *queue.RunMessage, usage *metricsEmitter, e
 		OutputTokens:  out,
 		Condition:     condition,
 		CooldownUntil: cooldownUntil,
+		Interim:       interim,
 	}); err != nil {
 		r.cfg.Logger.Warn("runner: credential-pool report for run %s: %v (the donor's slot frees on lease expiry)", msg.RunID, err)
 	}
@@ -93,8 +106,12 @@ func classifyPoolCondition(execErr error, now time.Time) (credpool.Condition, ti
 		}
 		return credpool.ConditionUsageWindow, at
 	}
-	var auth *delegate.ErrAuthFailed
-	if errors.As(execErr, &auth) {
+	// Asked through recovery.Classify rather than a local type switch: it
+	// is the engine's single source of truth for "the provider rejected
+	// this credential", and it recognises the raw 401/403 an in-process
+	// backend surfaces as well as the typed ErrAuthFailed the CLI ones
+	// raise. A local check for the type alone missed claw entirely.
+	if recovery.Classify(execErr) == runtime.ErrCodeAuthFailed {
 		return credpool.ConditionAuthFailed, time.Time{}
 	}
 	return credpool.ConditionOK, time.Time{}

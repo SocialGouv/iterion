@@ -283,6 +283,23 @@ A donor's credential is never returned by any of these — it stays sealed in
   guard only covers `claw`/`pi` (`secrets.GuardSubscriptionOAuth`); a lent
   Claude forfait still works on `claude_code`, which is its native path.
   Correct, and worth knowing before you conclude the pool is off.
+- **A donation must survive the sandbox boundary.** A lent credential is
+  materialised as a FILE on the runner, and the kubernetes driver has no
+  host filesystem to bind-mount it from — so it is delivered as a file
+  secret and seeded into `CODEX_HOME` / `CLAUDE_CONFIG_DIR` inside the
+  container, and the sandboxed claw runner is handed the run's own keys
+  rather than the pod's. Before that, a pool-served run took its donor's
+  lease and then quietly spent the PLATFORM's ambient `OPENAI_API_KEY`
+  instead; wherever that key works, the substitution is invisible and
+  every donor's ledger reads $0 forever. Guarded by
+  `TestForwardableProviderEnv_runCredentialsBeatTheAmbientOnes` and
+  `TestAddCodexOAuthSecretFile`.
+- **An auth failure can be absorbed by recovery.** A rejected credential
+  usually becomes a human pause, so by report time the error says only
+  "paused" — the donor would never be parked and their dead credential
+  would stay first in the rotation, pausing run after run at a run unit
+  each. The runner watches the engine's own `node_recovery` classification
+  for this.
 - **The spend signal must be live.** Delegate backends only report cost
   because `DelegateInfo.CostUSD` rides the `delegate_finished` event into
   the runner's per-run totals. If a future change drops that field, every
