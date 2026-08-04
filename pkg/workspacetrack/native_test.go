@@ -995,3 +995,103 @@ func TestCapture_SurvivesAFileRemovedBeforeTheWalk(t *testing.T) {
 		t.Error("the boundary label did not resolve — a rewind would report 'no snapshot recorded'")
 	}
 }
+
+// TestCapture_ExcludesTheStoreUnderAnyName is Revi's R80c07e.
+//
+// The store was excluded BY NAME (`.iterion`), but store.ResolveStoreDir
+// returns an explicit --store-dir verbatim — so a store inside the
+// workspace under any other name was invisible to the ignorer. Two
+// consequences, both bad: every boundary captured the previous boundary's
+// objects and manifests as new content, so the pool compounded per node
+// instead of holding flat; and Restore, which deletes whatever the target
+// snapshot lacks, deleted pool objects and manifests written later —
+// content other snapshots and other RUNS still reference, since the pool
+// is store-global. The damage surfaces much later, as an unrelated
+// restore failing with "object … is unavailable".
+func TestCapture_ExcludesTheStoreUnderAnyName(t *testing.T) {
+	ws := t.TempDir()
+	write(t, ws, "main.go", "package main\n")
+	// The store lives INSIDE the workspace under a name the name-based
+	// rule knows nothing about — `iterion run --store-dir "$PWD/mystore"`.
+	storeDir := filepath.Join(ws, "mystore")
+	n := NewNative(storeDir)
+
+	if _, err := n.Capture("r1", ws, "pre:a:0"); err != nil {
+		t.Fatalf("first capture: %v", err)
+	}
+	// The second capture is where it showed: the first one's objects and
+	// manifests are now sitting in the workspace.
+	snap, err := n.Capture("r1", ws, "post:a:0")
+	if err != nil {
+		t.Fatalf("second capture: %v", err)
+	}
+	for _, e := range snap.Entries {
+		if strings.HasPrefix(e.Path, "mystore/") {
+			t.Errorf("captured %q — the tracker is versioning its own store, so the pool "+
+				"compounds per boundary and a restore deletes content other runs reference", e.Path)
+		}
+	}
+
+	// And a restore must not delete the store either.
+	write(t, ws, "produced.txt", "by the node")
+	objectsBefore := 0
+	_ = filepath.WalkDir(filepath.Join(storeDir, objectsDir), func(_ string, d fs.DirEntry, err error) error {
+		if err == nil && !d.IsDir() {
+			objectsBefore++
+		}
+		return nil
+	})
+	if objectsBefore == 0 {
+		t.Fatal("fixture: no objects were stored")
+	}
+	if _, err := n.Restore("r1", ws, snap.ID); err != nil {
+		t.Fatalf("restore: %v", err)
+	}
+	objectsAfter := 0
+	_ = filepath.WalkDir(filepath.Join(storeDir, objectsDir), func(_ string, d fs.DirEntry, err error) error {
+		if err == nil && !d.IsDir() {
+			objectsAfter++
+		}
+		return nil
+	})
+	if objectsAfter < objectsBefore {
+		t.Errorf("the restore deleted %d pool object(s) — they are store-global, so other "+
+			"snapshots and other runs still reference them", objectsBefore-objectsAfter)
+	}
+	// The restore still did its job on the real workspace.
+	if _, err := os.Stat(filepath.Join(ws, "produced.txt")); !os.IsNotExist(err) {
+		t.Error("the node's file survived a restore to a snapshot that predates it")
+	}
+}
+
+// TestRestore_LeavesUntouchedEmptyDirsAlone is Revi's R1e8c6f: the sweep
+// re-walked the whole workspace and removed ANY empty directory, not the
+// ones the restore emptied. Neither git nor this tracker records empty
+// directories, so on an in-place run that silently deleted the operator's
+// own scratch dirs, mount points and pre-created output dirs.
+func TestRestore_LeavesUntouchedEmptyDirsAlone(t *testing.T) {
+	ws := t.TempDir()
+	write(t, ws, "a.txt", "kept")
+	n := NewNative(t.TempDir())
+	snap, err := n.Capture("r1", ws, "pre:a:0")
+	if err != nil {
+		t.Fatalf("capture: %v", err)
+	}
+	// The operator's own empty directory, created AFTER the snapshot and
+	// never touched by the node.
+	if err := os.MkdirAll(filepath.Join(ws, "scratch"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	// And a directory the node genuinely created, which the restore empties.
+	write(t, ws, "generated/out.md", "by the node")
+
+	if _, err := n.Restore("r1", ws, snap.ID); err != nil {
+		t.Fatalf("restore: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(ws, "scratch")); err != nil {
+		t.Errorf("scratch/ was deleted — the restore never had a copy of it and never created it: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(ws, "generated")); !os.IsNotExist(err) {
+		t.Error("generated/ survived — the restore emptied it, so it must go")
+	}
+}
