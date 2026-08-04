@@ -7,6 +7,63 @@ commit onto the PR branch, post the verdict comment. Never merges past a
 check — and only ever the commit it audited. See
 [bots/dep-update-guard/](../../bots/dep-update-guard/).
 
+## 2026-08-03/04 — first Dependabot batch on iterion itself: 2 exemplary audits, 1 silent death, 0 merges
+
+- Status: **partial — the audits were the best this bot has produced; everything
+  around them broke.** Fixes shipped as v2.6.0 + engine PR #357.
+- Versions: bot 2.5.0 · iterion prod `:edge` (v3.24.0 era) · runs `019fc8e2`/
+  `019fc8e5`/`019fc8ed` (PR-open) then `019fc924`/`019fc927` (post-align re-audits)
+- Method: webhook-triggered on the 3 grouped Dependabot PRs of 2026-08-03
+  (#353 studio npm ×29, #354 go ×15, #355 npm root ×33), `gate_context:
+  revi/review` (required check + merge queue on main), `arm_automerge` NOT set.
+- Result, per PR:
+  - **#353 / #355 — audit exemplary, then stranded.** Tarballs extracted and
+    content-scanned, sha512 byte-matched against the registry, SLSA provenance
+    predicates decoded (the react org-rename and the radix "new releaser"
+    maintainer-change flags each investigated and cleared, not waved through),
+    CVE differential (dompurify net −14/+3, brace-expansion ×6 HIGH resolved),
+    esbuild 0.26 parameter-property lowering aligned (`b2459da8` — the staled
+    go:embed pi-ext bundle) and a workspace lockfile regenerated (`15823337`).
+    The alignment push self-superseded the run (`overlap: supersede`) and the
+    fresh runs re-audited the final head clean — the supersede property doing
+    its job. Then: `revi/review=success`, PR mergeable… and nobody to enqueue
+    it. `arm_automerge` was off on this repo, and would not have worked anyway
+    (see misses).
+  - **#354 — the silent-death case, end to end.** Usage window at launch →
+    `run_retry_scheduled` (retrypolicy ✓) → resumed 36 min later → died on the
+    bot's own `max_duration: 40m` mid-`security_audit` → `failed_resumable`
+    that nothing resumes (the auto-retry covers usage windows only) → no gate
+    status ever posted → required check absent → **PR silently unmergeable,
+    indefinitely**. The MCP go-sdk 1.6.1→1.7.0 alignment (`TestManagerHealthCheckHTTP`,
+    ping `_meta protocolVersion`) was never reached.
+- Value: the supply-chain audits are production-grade — and the batch was a
+  live probe of every seam around the audit, which is where all four defects
+  sat.
+- Findings / misses:
+  1. Gate reconciler skipped ALL `failed_resumable` runs ("it will resume") —
+     false for budget/exhausted/plain failures. The exact silent-block class
+     the bko handover predicted.
+  2. 40m/$15 budget too short for the heavy case (a CLEAN npm re-audit alone
+     runs ~30m).
+  3. `arm_automerge` was merge-now-first on CLEAN, which a merge queue rejects
+     — the bot could never land anything on a queue-protected repo.
+  4. Config: the iterion integration never set `arm_automerge: "true"` (bko
+     had it), so green audits stopped at "ready".
+- Engine hardening (PR #357 + bot v2.6.0): reconciler skips only ARMED
+  retries and carries the death reason on the synthetic failure; a dead gate
+  run relaunches its bot once per (PR, head) through the webhook tail; a
+  second death files a deduped `source:gate-reconcile` board card; the retry
+  sweeper republishes the outcome on permanent abandon; autofix ignores
+  synthetic failures; arm-first automerge with pinned `enqueuePullRequest`
+  fallback; budget 75m/$20. Adversarial review (opus) caught 2 real defects
+  pre-merge — the reconciler standing down on its own synthetic marker (the
+  board escalation was unreachable), and an abandon-failure republish loop.
+- Lessons for next run: a required gate makes EVERY death loud or the lane is
+  a trap — "resumable" must mean "something is actually coming back"; budget
+  the outlier, not the median; on a queue repo, arming IS the merge path (the
+  queue is the only door); an audit-side success is only half the loop — the
+  merge side needs its own e2e proof per repo shape.
+
 ## 2026-07-31 — v2.5.0 on three heritage PRs, and the rebase that would have stalled every one of them
 
 - Status: **validated, with one real gap found and closed.** Two of three PRs

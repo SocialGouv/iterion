@@ -10,6 +10,7 @@ import (
 	"github.com/SocialGouv/iterion/pkg/runview"
 	"github.com/SocialGouv/iterion/pkg/store"
 	mongostore "github.com/SocialGouv/iterion/pkg/store/mongo"
+	"github.com/SocialGouv/iterion/pkg/trigger"
 )
 
 // Retry sweeper: the half of the usage-window retry that outlives the pod.
@@ -188,11 +189,30 @@ func retryDenialIsTransient(reason string) bool {
 // abandonRetry records a permanent stop and audits it.
 func (s *Server) abandonRetry(ctx context.Context, retryStore store.RunRetryStore, tenantID, runID, reason string) {
 	if err := retryStore.AbandonRunRetry(ctx, runID, reason); err != nil {
+		// The abandon did not land: the retry stays claimable, the next sweep
+		// tick walks this path again, and republishing NOW would repeat on
+		// every tick until the write finally sticks. The single republish
+		// belongs to the tick that actually makes the stop permanent.
 		s.warnf("retry sweeper: abandon %s: %v", runID, err)
+		return
 	}
 	s.countRetry("abandoned")
 	s.auditSystem(tenantID, "retry-sweeper", "run.retry.abandoned", "run", runID, map[string]any{"reason": reason})
 	s.warnf("retry sweeper: run %s: %s", runID, reason)
+
+	// The run's terminal event fired back when it FAILED — while a retry was
+	// still armed, so every outcome consumer that defers to an armed retry
+	// (the merge-gate reconciler foremost) deliberately stood down. Abandoning
+	// is the moment the run becomes permanently dead, and nothing else fires
+	// for it: republish the outcome so those consumers get the event they
+	// were promised. The episode-keyed dedup in each consumer absorbs the
+	// replay for anyone who already acted.
+	if bus := s.eventsBus(); bus != nil && s.cfg.Store != nil {
+		ev := trigger.BuildRunOutcome(ctx, s.cfg.Store, runID, fmt.Errorf("%s", reason))
+		if err := bus.Publish(ctx, ev); err != nil {
+			s.warnf("retry sweeper: republish outcome for abandoned run %s: %v", runID, err)
+		}
+	}
 }
 
 // reArmRetry gives a failed resume another chance inside the attempt
