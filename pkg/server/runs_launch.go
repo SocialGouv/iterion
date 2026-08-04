@@ -331,14 +331,13 @@ func (s *Server) handleLaunchRun(w http.ResponseWriter, r *http.Request) {
 		repoProjectPath = strings.TrimSuffix(strings.TrimPrefix(req.RepoURL, base+"/"), ".git")
 	}
 
-	// Deterministic forge review publishing: when the launch carries a
-	// pr_url var and a team connection covers that PR, mint a per-run
-	// publish grant and inject forge_publish_url/forge_publish_token
-	// (dropped by the IR unless the bot declares them). The bot's publish
-	// node then posts through the server's live forge client instead of a
-	// workspace-mounted token.
+	// A launch that targets a pull request gets the repo's launch policy (its
+	// pinned gate_context) and a per-run forge-publish grant, so the bot's
+	// publish node posts through the server's live forge client instead of a
+	// workspace-mounted token. Same composition as the board lane — a launch
+	// from the studio form must gate under the same context a webhook does.
 	if launchID, _ := auth.FromContext(r.Context()); launchID.TeamID != "" {
-		req.Vars = s.injectForgePublishVars(r.Context(), launchID.TeamID, req.ConnectionID, req.BotID, req.Vars, r)
+		req.Vars = s.applyPRLaunchContext(r.Context(), launchID.TeamID, req.ConnectionID, req.BotID, req.Vars, r)
 	}
 
 	// Detach lifecycle from the HTTP request context so a client

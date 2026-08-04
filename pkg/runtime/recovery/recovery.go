@@ -352,6 +352,15 @@ func Classify(err error) runtime.ErrorCode {
 	if errors.As(err, &rerr) {
 		return rerr.Code
 	}
+	// A credential the provider rejected. Checked by TYPE, before any
+	// message matching: the needles below only catch the wordings that
+	// happen to be in the list today, so a backend that reports "upstream
+	// 401" instead of "API error 401" would be retried against a dead
+	// credential rather than paused for re-auth.
+	var authFailed *delegate.ErrAuthFailed
+	if errors.As(err, &authFailed) {
+		return runtime.ErrCodeAuthFailed
+	}
 	var rateLimited *delegate.ErrRateLimited
 	if errors.As(err, &rateLimited) {
 		if rateLimited.Kind == delegate.RateLimitKindUsageWindow {

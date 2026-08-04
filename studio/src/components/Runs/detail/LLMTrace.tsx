@@ -4,7 +4,7 @@
 import { useMemo, useState } from "react";
 
 import type { RunEvent } from "@/api/runs";
-import { CopyButton } from "@/components/ui";
+import { ExpandableValue } from "@/components/ui";
 import { isRecord } from "@/lib/isRecord";
 
 // llm_prompt / llm_request / llm_step_finished are pass-through events
@@ -172,9 +172,13 @@ function LLMStepCard({
                   <li key={i}>
                     <span className="text-fg-default">{c.name}</span>
                     {c.input && (
-                      <pre className="text-fg-subtle whitespace-pre-wrap">
-                        {c.input}
-                      </pre>
+                      // Tool inputs are almost always JSON — the same
+                      // expand/copy/pretty affordances pay off here too.
+                      <ExpandableValue
+                        value={c.input}
+                        label={`${c.name} input`}
+                        variant="bare"
+                      />
                     )}
                   </li>
                 ))}
@@ -187,7 +191,15 @@ function LLMStepCard({
   );
 }
 
-function TraceBlock({
+// TraceBlock is one system-prompt / user-message / response section. The body
+// goes through the shared ExpandableValue so a long prompt behaves here
+// exactly as it does in the pipeline card drawer: collapsed to a preview,
+// expandable IN PLACE, copyable, and pretty-printable when it holds JSON
+// (LLM responses very often do). It replaces a `max-h-60 overflow-auto` box
+// that could only ever show ~15 lines.
+//
+// Exported for unit tests, which is why it is not inlined above.
+export function TraceBlock({
   title,
   body,
   defaultOpen = true,
@@ -198,13 +210,18 @@ function TraceBlock({
 }) {
   return (
     <details className="rounded border border-border-default" open={defaultOpen}>
-      <summary className="px-2 py-1 cursor-pointer text-fg-muted bg-surface-2 rounded-t flex items-center justify-between">
-        <span>{title}</span>
-        <CopyButton value={body} />
+      <summary className="px-2 py-1 cursor-pointer text-fg-muted bg-surface-2 rounded-t">
+        {title}
       </summary>
-      <pre className="p-2 text-caption font-mono whitespace-pre-wrap max-h-60 overflow-auto">
-        {body}
-      </pre>
+      {/* Copy lives on the value, not the summary: it must follow the
+          raw/pretty toggle, and a summary button would copy the other form. */}
+      <ExpandableValue
+        value={body}
+        label={title}
+        variant="bare"
+        collapsedMaxHeight="15rem"
+        className="p-2"
+      />
     </details>
   );
 }

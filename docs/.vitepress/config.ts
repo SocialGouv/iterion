@@ -156,6 +156,7 @@ const sidebar = [
       { text: 'CLI reference', link: '/cli-reference' },
       { text: 'Visual editor', link: '/visual-editor' },
       { text: 'Install into AI agents (skill)', link: '/skill' },
+      { text: 'MCP server (drive from agents)', link: '/mcp-server' },
       { text: 'Why not prompt orchestration', link: '/why-not-prompt-orchestration' },
       { text: 'Asymptote bench', link: '/asymptote-bench' },
       { text: 'Thinking metrics', link: '/thinking-metrics' },

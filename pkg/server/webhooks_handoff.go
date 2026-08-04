@@ -152,7 +152,7 @@ func (s *Server) realWebhookHandoff(ctx context.Context, cfg webhooks.Config, ki
 		if !runTargetsPR(run, q.PRURL) {
 			continue
 		}
-		if rendered := renderHandoff(ctx, rs, run.ID, kind, spec, q); rendered != "" {
+		if rendered := renderHandoff(ctx, rs, run, kind, spec, q); rendered != "" {
 			return rendered
 		}
 	}
@@ -191,12 +191,12 @@ func (s *Server) handoffProducers(kind bundle.HandoffKind) map[string]bundle.Pro
 // renderHandoff dispatches to the renderer for the kind. The engine knows the
 // SHAPE of each role's payload; the producing bot's declaration says where in
 // its own graph to find it.
-func renderHandoff(ctx context.Context, rs store.RunStore, runID string, kind bundle.HandoffKind, spec bundle.ProducedArtifact, q handoffQuery) string {
+func renderHandoff(ctx context.Context, rs store.RunStore, run *store.Run, kind bundle.HandoffKind, spec bundle.ProducedArtifact, q handoffQuery) string {
 	switch kind {
 	case bundle.HandoffKindReview:
-		return renderReviewDigest(ctx, rs, runID, spec, q)
+		return renderReviewDigest(ctx, rs, run, spec, q)
 	case bundle.HandoffKindReviewLedger:
-		return renderReviewLedger(ctx, rs, runID, spec)
+		return renderReviewLedger(ctx, rs, run.ID, spec)
 	}
 	return ""
 }
@@ -221,14 +221,23 @@ func runTargetsPR(run *store.Run, prURL string) bool {
 // `spec` is the producing bot's own declaration of where those live in its
 // graph, so this function knows the SHAPE of a review and nothing about the bot
 // that produced it.
-func renderReviewDigest(ctx context.Context, rs store.RunStore, runID string, spec bundle.ProducedArtifact, q handoffQuery) string {
-	findings, questions, degraded, ok := loadReviewFindings(ctx, rs, runID, spec)
+func renderReviewDigest(ctx context.Context, rs store.RunStore, run *store.Run, spec bundle.ProducedArtifact, q handoffQuery) string {
+	runID := run.ID
+	findings, questions, degraded, ok := loadReviewFindings(ctx, rs, run, spec)
 	if !ok {
 		return ""
 	}
 
 	var b strings.Builder
-	fmt.Fprintf(&b, "Prior review of this PR (run %s).\n", runID)
+	if run.Status == store.RunStatusFinished {
+		fmt.Fprintf(&b, "Prior review of this PR (run %s).\n", runID)
+	} else {
+		// A run that did not finish still has a real merged set if it wrote one,
+		// but the consumer must be able to tell that from a clean review — a bare
+		// "the set was unreadable" reads identically to the producer's own prose
+		// degradation, which is a different problem with a different remedy.
+		fmt.Fprintf(&b, "Prior review of this PR (run %s) — that run ended %s, so it may have stopped before reviewing everything.\n", runID, run.Status)
+	}
 	if note := reviewAnchorNote(ctx, rs, runID, spec.AnchorNode, q.HeadSHA); note != "" {
 		b.WriteString(note + "\n")
 	}
@@ -272,7 +281,8 @@ func renderReviewDigest(ctx context.Context, rs store.RunStore, runID string, sp
 // "0 findings" is a verdict worth handing over ("the diff was read and is
 // clean"), an absent artifact is a review still in flight and the caller must
 // keep looking for an older, complete one.
-func loadReviewFindings(ctx context.Context, rs store.RunStore, runID string, spec bundle.ProducedArtifact) (findings []map[string]any, questions string, degraded, ok bool) {
+func loadReviewFindings(ctx context.Context, rs store.RunStore, run *store.Run, spec bundle.ProducedArtifact) (findings []map[string]any, questions string, degraded, ok bool) {
+	runID := run.ID
 	if art, err := rs.LoadLatestArtifact(ctx, runID, spec.Node); err == nil && art != nil {
 		findings = decodeFindings(art.Data["findings"])
 		questions, _ = art.Data["questions"].(string)
@@ -282,6 +292,18 @@ func loadReviewFindings(ctx context.Context, rs store.RunStore, runID string, sp
 		if len(findings) > 0 || asInt(art.Data["total_findings"]) == 0 {
 			return findings, questions, false, true
 		}
+	}
+	// The fallback exists for a merged set that came back as PROSE — not for a
+	// run that never got that far. Consulting it on an unfinished run makes a
+	// CRASHED review render, and since the scan takes the first run that
+	// renders, it then shadows the last complete review: the fixer is handed
+	// raw, un-thresholded reviewer output while a merged `[high]` finding sits
+	// one step further down the list, invisible.
+	//
+	// (That only became reachable when the fallback node started publishing —
+	// before that it rendered nothing and the scan walked past.)
+	if run.Status != store.RunStatusFinished {
+		return nil, questions, false, false
 	}
 	// The fallback nodes carry finding arrays under their own field names, which
 	// the producer alone knows — so every json-array field is taken, unioned and

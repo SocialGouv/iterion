@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 func write(t *testing.T, dir, name, body string) {
@@ -973,5 +974,403 @@ func TestRestore_LeavesUntouchedEmptyDirsAlone(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(ws, "generated")); !os.IsNotExist(err) {
 		t.Error("generated/ survived — the restore emptied it, so it must go")
+	}
+}
+
+// TestCapture_UnreadableRootIsFatal is Revi's R9dc956.
+//
+// WalkDir reports a failure of the walk ROOT as one call with
+// (path == root, d == nil). The tolerant sub-directory branch swallowed
+// it, so Capture returned a snapshot with ZERO entries and no error. Two
+// silent consequences: a boundary taken during a transient permission or
+// mount failure records an empty snapshot, and restoring it deletes every
+// file absent from it — the whole workspace; and revertViaTracker banks
+// through the same call, so the "nothing is destroyed" backup records
+// nothing while still handing the operator a ref to trust.
+func TestCapture_UnreadableRootIsFatal(t *testing.T) {
+	n := NewNative(t.TempDir())
+
+	// A root that does not exist at all.
+	if snap, err := n.Capture("r1", filepath.Join(t.TempDir(), "gone"), "pre:a:0"); err == nil {
+		t.Errorf("capture of a missing workspace returned a %d-entry snapshot and no error — "+
+			"restoring it would delete the whole workspace", len(snap.Entries))
+	}
+
+	// A root that exists but cannot be read.
+	if os.Geteuid() == 0 {
+		t.Skip("running as root: permission bits do not deny access")
+	}
+	ws := t.TempDir()
+	write(t, ws, "keep.txt", "content")
+	if err := os.Chmod(ws, 0o000); err != nil {
+		t.Fatalf("chmod: %v", err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(ws, 0o755) })
+	if snap, err := n.Capture("r2", ws, "pre:a:0"); err == nil {
+		t.Errorf("capture of an unreadable workspace returned a %d-entry snapshot and no error — "+
+			"a workspace that could not be read has not been observed to be empty", len(snap.Entries))
+	}
+}
+
+// TestStoreObject_DedupHitRefreshesMtime is Revi's Rf8961b.
+//
+// PruneObjects' grace window rests on "objects are written before the
+// manifest, so anything younger than minAge may be alive". A dedup hit
+// wrote nothing, so the object kept the mtime of whichever run first
+// stored it — possibly days old and since pruned. A sweep whose mark
+// phase ran before this run's first manifest landed then found the hash
+// unreferenced AND old enough, and deleted content the run was about to
+// name; the stat cache went on reusing that hash, so every later manifest
+// named dead content too.
+func TestStoreObject_DedupHitRefreshesMtime(t *testing.T) {
+	storeDir, ws := t.TempDir(), t.TempDir()
+	write(t, ws, "shared.txt", "content stored by an earlier run")
+	n := NewNative(storeDir)
+	if _, err := n.Capture("run-a", ws, "post:a:0"); err != nil {
+		t.Fatalf("first capture: %v", err)
+	}
+
+	// Age every object, as a long-lived pool naturally is.
+	old := time.Now().Add(-72 * time.Hour)
+	var objects []string
+	_ = filepath.WalkDir(filepath.Join(storeDir, objectsDir), func(p string, d fs.DirEntry, err error) error {
+		if err == nil && !d.IsDir() {
+			objects = append(objects, p)
+			_ = os.Chtimes(p, old, old)
+		}
+		return nil
+	})
+	if len(objects) == 0 {
+		t.Fatal("fixture: nothing was stored")
+	}
+
+	// A second run captures the same tree: every object is a dedup hit.
+	n2 := NewNative(storeDir)
+	if _, err := n2.Capture("run-b", ws, "post:a:0"); err != nil {
+		t.Fatalf("second capture: %v", err)
+	}
+
+	cutoff := time.Now().Add(-time.Hour)
+	for _, p := range objects {
+		info, err := os.Stat(p)
+		if err != nil {
+			t.Fatalf("stat %s: %v", p, err)
+		}
+		if !info.ModTime().After(cutoff) {
+			t.Errorf("%s still carries its original mtime after a dedup hit — the prune "+
+				"grace window does not cover it, so a concurrent sweep deletes content "+
+				"this run is about to name", filepath.Base(p))
+		}
+	}
+}
+
+// TestRestore_PreservesAFileTheCaptureCouldNotRead is Revi's R1d5285 —
+// and a consequence of the earlier fix that made a vanished file
+// non-fatal. Tolerating it dropped the path from Entries WITHOUT adding
+// it to Skipped, and Restore keeps a path only when it is in one of the
+// two. So the next rewind to that snapshot DELETED a file the tracker
+// never held a copy of and the run never created — on an in-place run,
+// the operator's own live checkout.
+func TestRestore_PreservesAFileTheCaptureCouldNotRead(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("running as root: permission bits do not deny access")
+	}
+	ws := t.TempDir()
+	write(t, ws, "readable.txt", "fine")
+	write(t, ws, "locked.txt", "the capture cannot read this")
+	if err := os.Chmod(filepath.Join(ws, "locked.txt"), 0o000); err != nil {
+		t.Fatalf("chmod: %v", err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(filepath.Join(ws, "locked.txt"), 0o644) })
+
+	n := NewNative(t.TempDir())
+	snap, err := n.Capture("r1", ws, "pre:a:0")
+	if err != nil {
+		t.Fatalf("an unreadable FILE must not abort the capture: %v", err)
+	}
+	for _, e := range snap.Entries {
+		if e.Path == "locked.txt" {
+			t.Fatal("fixture: locked.txt was captured after all")
+		}
+	}
+
+	if _, err := n.Restore("r1", ws, snap.ID); err != nil {
+		t.Fatalf("restore: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(ws, "locked.txt")); err != nil {
+		t.Errorf("locked.txt was deleted by a restore that never held its content: %v", err)
+	}
+}
+
+// TestRestore_VanishedWorkspaceIsFatal is Revi's Rf6dd43: Capture was
+// hardened so a walk-ROOT failure is fatal, but Restore kept the tolerant
+// shape — so on a workspace that is gone (removed worktree, unmounted
+// volume) toDelete stayed empty and the write-back MkdirAll'd the whole
+// tree back into existence, reporting Written=N and no error. On an
+// unmounted volume that shadows the real data when it comes back.
+func TestRestore_VanishedWorkspaceIsFatal(t *testing.T) {
+	ws := t.TempDir()
+	write(t, ws, "a.txt", "content")
+	n := NewNative(t.TempDir())
+	snap, err := n.Capture("r1", ws, "pre:a:0")
+	if err != nil {
+		t.Fatalf("capture: %v", err)
+	}
+	gone := filepath.Join(t.TempDir(), "unmounted")
+	if _, err := n.Restore("r1", gone, snap.ID); err == nil {
+		t.Error("restoring into a workspace that does not exist must fail, not re-materialise it")
+	}
+	if _, err := os.Stat(gone); !os.IsNotExist(err) {
+		t.Error("the missing workspace was recreated — on an unmounted volume that shadows the real data")
+	}
+}
+
+// TestRestore_RefusesADirectoryWhereTheSnapshotHasAFile is Revi's
+// Rbb5517: the deletion walk skips directories, so a file the node
+// replaced with a directory survived with its children removed, and the
+// write-back then failed on os.Rename onto it — after the irreversible
+// deletion pass.
+func TestRestore_RefusesADirectoryWhereTheSnapshotHasAFile(t *testing.T) {
+	ws := t.TempDir()
+	write(t, ws, "README.md", "one file")
+	write(t, ws, "other.txt", "untouched")
+	n := NewNative(t.TempDir())
+	snap, err := n.Capture("r1", ws, "pre:a:0")
+	if err != nil {
+		t.Fatalf("capture: %v", err)
+	}
+	// The node split the doc into a folder.
+	if err := os.Remove(filepath.Join(ws, "README.md")); err != nil {
+		t.Fatal(err)
+	}
+	write(t, ws, "README.md/intro.md", "part one")
+	write(t, ws, "produced.txt", "by the node")
+
+	if _, err := n.Restore("r1", ws, snap.ID); err == nil {
+		t.Error("a directory where the snapshot holds a file must be refused up front")
+	}
+	// And refused having deleted NOTHING.
+	if _, err := os.Stat(filepath.Join(ws, "produced.txt")); err != nil {
+		t.Errorf("produced.txt was deleted before the restore discovered the collision: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(ws, "README.md", "intro.md")); err != nil {
+		t.Errorf("the node's directory was emptied before the collision was detected: %v", err)
+	}
+}
+
+// TestObjectPath_RejectsAMalformedHash is Revi's R800beb: a manifest is
+// untrusted data, and hash[:2] panicked on a short one — while a 2-char
+// hash resolved to a shard DIRECTORY, so the pre-delete Stat succeeded,
+// the deletion pass ran, and the read failed with "is a directory".
+func TestObjectPath_RejectsAMalformedHash(t *testing.T) {
+	n := NewNative(t.TempDir())
+	for _, bad := range []string{"", "a", "ab", "ABCDEF", strings.Repeat("z", 64), strings.Repeat("ab", 40)} {
+		if got := n.objectPath(bad); got != "" {
+			t.Errorf("objectPath(%q) = %q, want \"\" — an unopenable path fails closed", bad, got)
+		}
+	}
+	if got := n.objectPath(strings.Repeat("ab", 32)); got == "" {
+		t.Error("a well-formed sha256 hex digest must still resolve")
+	}
+}
+
+// TestCapture_UnchangedWorkspaceWritesNoNewManifest is Revi's R5d97e1.
+//
+// writeSnapshot marshals the complete entry list on every capture, and
+// Capture runs at every post-node boundary — 1.67 MB per manifest on this
+// repo, so a 100-boundary run left ~167 MB behind, per run, undeduped
+// (unlike content, manifests are per-run by construction). Most nodes of
+// a long loop touch no files, and their snapshot is byte-identical to its
+// parent, so the label points at the parent instead.
+func TestCapture_UnchangedWorkspaceWritesNoNewManifest(t *testing.T) {
+	ws, storeDir := t.TempDir(), t.TempDir()
+	write(t, ws, "a.txt", "content")
+	n := NewNative(storeDir)
+
+	first, err := n.Capture("r1", ws, "post:a:0")
+	if err != nil {
+		t.Fatalf("first capture: %v", err)
+	}
+	countManifests := func() int {
+		c := 0
+		_ = filepath.WalkDir(filepath.Join(storeDir, "runs", "r1", "workspace", "snapshots"),
+			func(_ string, d fs.DirEntry, err error) error {
+				if err == nil && !d.IsDir() {
+					c++
+				}
+				return nil
+			})
+		return c
+	}
+	if countManifests() != 1 {
+		t.Fatalf("fixture: %d manifests after the first capture, want 1", countManifests())
+	}
+
+	// A node that touched nothing.
+	second, err := n.Capture("r1", ws, "post:b:0")
+	if err != nil {
+		t.Fatalf("second capture: %v", err)
+	}
+	if got := countManifests(); got != 1 {
+		t.Errorf("%d manifests after an unchanged boundary, want 1 — a long run accumulates "+
+			"one full entry list per node", got)
+	}
+	if second.ID != first.ID {
+		t.Errorf("unchanged capture returned a new id %s (want %s) — the label must resolve "+
+			"to the identical parent", second.ID, first.ID)
+	}
+	// Both labels must resolve, and to the same snapshot.
+	for _, label := range []string{"post:a:0", "post:b:0"} {
+		id, ok := n.Resolve("r1", label)
+		if !ok || id != first.ID {
+			t.Errorf("label %q resolved to (%q, %v), want %q", label, id, ok, first.ID)
+		}
+	}
+
+	// A real change still writes its own manifest.
+	write(t, ws, "b.txt", "new")
+	third, err := n.Capture("r1", ws, "post:c:0")
+	if err != nil {
+		t.Fatalf("third capture: %v", err)
+	}
+	if third.ID == first.ID {
+		t.Error("a changed workspace must get its own snapshot")
+	}
+	if got := countManifests(); got != 2 {
+		t.Errorf("%d manifests after a real change, want 2", got)
+	}
+}
+
+// TestCapture_SameSizeRewriteInOneTickIsSeen is Revi's R1b7ed8.
+//
+// (size, mtime) alone cannot call a file unchanged: it can be rewritten
+// AFTER a capture read it and still land in the same filesystem timestamp
+// tick, making the change permanently invisible. On overlayfs — container
+// and CI runners, including iterion's own sandbox images — granularity is
+// 4 ms, so consecutive writes routinely share one ModTime. Git carries
+// the same pair in its index and adds the racy rule for exactly this.
+//
+// The stakes are not cosmetic: revertViaTracker banks through Capture
+// before restoring, so a snapshot holding pre-write content means the
+// restore destroys bytes the operator was told were recoverable.
+//
+// The coarse-granularity condition is forced deterministically by pinning
+// BOTH the file and the index to one timestamp — which is precisely the
+// state a 4 ms tick produces on its own. Without pinning both, the
+// (size, mtime) test misses on its own and the guard is never exercised.
+func TestCapture_SameSizeRewriteInOneTickIsSeen(t *testing.T) {
+	ws := t.TempDir()
+	p := filepath.Join(ws, "a.txt")
+	write(t, ws, "a.txt", "1")
+	tick := time.Now().Add(-time.Second).Truncate(time.Second)
+	if err := os.Chtimes(p, tick, tick); err != nil {
+		t.Fatal(err)
+	}
+	n := NewNative(t.TempDir())
+
+	first, err := n.Capture("r1", ws, "post:a:0")
+	if err != nil {
+		t.Fatalf("first capture: %v", err)
+	}
+	// The index lands in the same tick as the file — the coarse-fs case.
+	idx := filepath.Join(n.runDir("r1"), "index.json")
+	if err := os.Chtimes(idx, tick, tick); err != nil {
+		t.Fatal(err)
+	}
+
+	// Same size, different content, and the mtime the cache already holds.
+	if err := os.WriteFile(p, []byte("2"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chtimes(p, tick, tick); err != nil {
+		t.Fatal(err)
+	}
+
+	// A fresh tracker, so the cache is re-read from disk with its stamp.
+	n2 := NewNative(n.root)
+	second, err := n2.Capture("r1", ws, "post:b:0")
+	if err != nil {
+		t.Fatalf("second capture: %v", err)
+	}
+	if second.ID == first.ID {
+		t.Fatal("the rewrite was invisible — the capture took the stat-cache hit and " +
+			"recorded the PREVIOUS content, so a restore would destroy the new bytes")
+	}
+	var hash string
+	for _, e := range second.Entries {
+		if e.Path == "a.txt" {
+			hash = e.Hash
+		}
+	}
+	blob, err := os.ReadFile(n2.objectPath(hash))
+	if err != nil {
+		t.Fatalf("read object: %v", err)
+	}
+	if string(blob) != "2" {
+		t.Errorf("stored content = %q, want the post-rewrite bytes", blob)
+	}
+}
+
+// TestRestore_ReportsPathsNewlyExcludedByAnEditedIgnoreFile is Revi's
+// Rb55b9a: the Ignorer is built from the ignore files as they stand at
+// RESTORE time, so a node that edited .gitignore made every path it newly
+// excludes skipped by both passes — the node's own production survived
+// the rewind, silently.
+func TestRestore_ReportsPathsNewlyExcludedByAnEditedIgnoreFile(t *testing.T) {
+	ws := t.TempDir()
+	write(t, ws, ".gitignore", "*.log\n")
+	write(t, ws, "build/out.bin", "captured while not ignored")
+	n := NewNative(t.TempDir())
+	snap, err := n.Capture("r1", ws, "pre:a:0")
+	if err != nil {
+		t.Fatalf("capture: %v", err)
+	}
+
+	// The node broadened the ignore rules — a scaffold/build-config bot.
+	write(t, ws, ".gitignore", "*.log\nbuild/\n")
+	write(t, ws, "build/out.bin", "the node's own production")
+
+	report, err := n.Restore("r1", ws, snap.ID)
+	if err != nil {
+		t.Fatalf("restore: %v", err)
+	}
+	found := false
+	for _, p := range report.Skipped {
+		if p == "build/out.bin" {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("Skipped = %v — a captured path the current rules exclude was neither "+
+			"restored nor reported, so the rewind claims a clean revert while the node's "+
+			"production survives", report.Skipped)
+	}
+}
+
+// TestRestore_RefusesAFileWhereTheSnapshotNeedsADirectory is the mirror
+// of the dir/file collision: a regular file sitting where the snapshot
+// needs a directory survives the deletion pass when it is ignored, and
+// MkdirAll then fails with ENOTDIR — after the irreversible deletions.
+func TestRestore_RefusesAFileWhereTheSnapshotNeedsADirectory(t *testing.T) {
+	ws := t.TempDir()
+	write(t, ws, "docs/page.md", "content")
+	write(t, ws, "keep.txt", "untouched")
+	n := NewNative(t.TempDir())
+	snap, err := n.Capture("r1", ws, "pre:a:0")
+	if err != nil {
+		t.Fatalf("capture: %v", err)
+	}
+	// The node collapsed docs/ into a single file.
+	if err := os.RemoveAll(filepath.Join(ws, "docs")); err != nil {
+		t.Fatal(err)
+	}
+	write(t, ws, "docs", "now a regular file")
+	write(t, ws, "produced.txt", "by the node")
+
+	if _, err := n.Restore("r1", ws, snap.ID); err == nil {
+		t.Error("a file where the snapshot needs a directory must be refused up front")
+	}
+	if _, err := os.Stat(filepath.Join(ws, "produced.txt")); err != nil {
+		t.Errorf("produced.txt was deleted before the collision was detected: %v", err)
 	}
 }

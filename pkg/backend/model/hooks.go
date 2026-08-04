@@ -748,6 +748,11 @@ func (h *storeHooks) onDelegateFinished(nodeID string, info DelegateInfo) {
 		"parse_fallback":       info.ParseFallback,
 		"formatting_pass_used": info.FormattingPassUsed,
 	}
+	// Omitted when the price table did not know the model, so an observer
+	// can tell "no cost data" from a measured $0 by the key's absence.
+	if info.CostUSD > 0 {
+		data["cost_usd"] = info.CostUSD
+	}
 	if h.logger.IsEnabled(iterlog.LevelTrace) && info.Stderr != "" {
 		data["stderr"] = iterlog.Truncate(info.Stderr, maxFieldSize)
 	}
@@ -854,6 +859,15 @@ func (h *storeHooks) onToolNodeResult(nodeID string, toolName string, input []by
 		if h.attachmentSink != nil {
 			for _, dir := range scanPreviewScreenshots(output) {
 				captureBrowserScreenshot(
+					h.ctx, h.attachmentSink, h.emitter,
+					h.runID, nodeID, dir, h.logger,
+				)
+			}
+			// A tool that GENERATED a deliverable hands it over the same
+			// way, so a downstream human gate can show it rather than
+			// print a path the browser cannot reach.
+			for _, dir := range scanToolAttachments(output) {
+				publishToolAttachment(
 					h.ctx, h.attachmentSink, h.emitter,
 					h.runID, nodeID, dir, h.logger,
 				)

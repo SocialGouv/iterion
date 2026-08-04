@@ -85,6 +85,12 @@ func (s *Server) admitReadyPipelines() {
 		s.logger.Warn("pipeline admission: list tickets: %v", err)
 		return
 	}
+	// File tickets whose run finished while nobody was watching BEFORE
+	// computing the ready set. SetState(done) cascades the waiting_deps
+	// promotion of satisfied dependents — an auto_ready dependent unblocked
+	// here becomes launchable on the next tick (this tick's `issues` view is
+	// already stale for it).
+	s.reconcileFinishedTickets(context.Background(), board, runs.RunStore(), issues)
 	ready := make([]*native.Issue, 0)
 	for _, iss := range issues {
 		if iss == nil {
@@ -101,10 +107,33 @@ func (s *Server) admitReadyPipelines() {
 	}
 	sortReadyTickets(ready)
 
+	if len(ready) == 0 {
+		// Nothing to admit — bail BEFORE the reservation set, which lists the
+		// whole board and the whole run store. Its 1s memo is shorter than the
+		// admission interval, so it is always cold at the tick: computing it
+		// unconditionally would make an idle studio with a large store pay a
+		// full run-store scan every interval, forever, for no decision.
+		return
+	}
+	// Slots held open for pipelines that died and need a human. Computed once
+	// per tick (the provider memoizes anyway); runview.Service.Launch remains
+	// the real authority — this gate exists to preserve launch ORDER and to
+	// avoid burning a claim on a ticket the queue would only park.
+	reservedSet := s.pipelineReservedSet(board, runs)
 	for _, iss := range ready {
 		st := runs.PipelineConcurrency()
-		if st.Enabled && st.Active >= st.Max {
-			return // no free slot; remaining ready tickets wait for the next tick
+		// A ticket that holds a reservation is spending its OWN slot here, so
+		// its entry must not count against it — otherwise the needs-attention
+		// card is refused by the very slot it is holding for its restart.
+		_, holdsOwn := reservedSet[iss.ID]
+		reserved := pipelineReservedForGate(st.Reserved, st.Max, holdsOwn)
+		if st.Enabled && st.Active+reserved >= st.Max {
+			// `continue`, not `return`: reservations are KEYED, so a
+			// lower-priority ticket further down this list may own the very
+			// slot being counted against the one in hand. Bailing out of the
+			// loop would leave its own reserved slot unusable until the tick
+			// after the higher-priority ticket resolves.
+			continue
 		}
 		s.launchReadyTicket(runs, board, iss)
 	}
@@ -113,15 +142,30 @@ func (s *Server) admitReadyPipelines() {
 // sortReadyTickets orders the launch candidates the admission loop submits:
 // highest Priority first (the operator's ranking dial, same field /board
 // sorts on), oldest CreatedAt as the tie-break so equal-priority tickets
-// launch first-come-first-served. This IS the "which ticket goes next from
-// Ready" policy — keep it aligned with the projection's card ordering.
+// launch first-come-first-served.
+//
+// This is the RANKING policy, not the whole "which ticket goes next" answer:
+// a ticket holding its own reserved slot can start while a higher-priority
+// one waits (see the gate above), and blocked tickets never reach this list
+// at all (native.CanLaunch filters first). The studio's Opened sort mirrors
+// both — blocked-last, then this order; keep the three aligned
+// (lessIssueByPriorityThenAge here, compareLaunchOrder in
+// studio/src/views/PipelineBoard/cardPredicates.ts).
 func sortReadyTickets(ready []*native.Issue) {
 	sort.SliceStable(ready, func(i, j int) bool {
-		if ready[i].Priority != ready[j].Priority {
-			return ready[i].Priority > ready[j].Priority
-		}
-		return ready[i].CreatedAt.Before(ready[j].CreatedAt)
+		return lessIssueByPriorityThenAge(ready[i], ready[j])
 	})
+}
+
+// lessIssueByPriorityThenAge is the single Go definition of the pipeline
+// launch order, shared by the admission loop and the board projection so the
+// list the operator reads matches the order the server actually launches in.
+// Mirrored in TypeScript by compareLaunchOrder.
+func lessIssueByPriorityThenAge(a, b *native.Issue) bool {
+	if a.Priority != b.Priority {
+		return a.Priority > b.Priority
+	}
+	return a.CreatedAt.Before(b.CreatedAt)
 }
 
 // pipelineTicketLaunchable reports whether a ready ticket has no run that is
@@ -148,6 +192,40 @@ func pipelineTicketLaunchable(ctx context.Context, rs store.RunStore, iss *nativ
 	default:
 		// failed / failed_resumable / cancelled → retry-able.
 		return true
+	}
+}
+
+// reconcileFinishedTickets files tickets whose last run reached a clean
+// finish into done. launchTicketNow moves a ticket to in_progress at launch
+// and nothing ever moves it out: the run's terminal status drives the
+// /pipelines column, but the TICKET state is what hard blockers count
+// (native.BlockerSatisfied accepts only done) — so without this sweep a
+// finished ticket strands in in_progress forever and every dependent parks
+// in waiting_deps. Mirrors the cloud board dispatcher's processCard
+// (success → doneState) and the local dispatcher's finishRun. Only a clean
+// finish closes the ticket: failed/cancelled runs stay with the operator
+// (needs-attention retry, or close), and an unreadable run record is left
+// alone (best-effort).
+func (s *Server) reconcileFinishedTickets(ctx context.Context, board native.BoardStore, rs store.RunStore, issues []*native.Issue) {
+	if rs == nil {
+		return
+	}
+	for _, iss := range issues {
+		if iss == nil || iss.State != native.StateInProgress || iss.LastRunID == "" {
+			continue
+		}
+		r, err := rs.LoadRun(ctx, iss.LastRunID)
+		if err != nil || r == nil {
+			continue
+		}
+		if r.Status != store.RunStatusFinished {
+			continue
+		}
+		if _, err := board.SetState(iss.ID, native.StateDone); err != nil {
+			s.logger.Warn("pipeline admission: file finished ticket %s (run %s): %v", iss.ID, iss.LastRunID, err)
+			continue
+		}
+		s.logger.Info("pipeline admission: ticket %s finished cleanly (run %s) — filed as done", iss.ID, iss.LastRunID)
 	}
 }
 
@@ -234,6 +312,24 @@ func (s *Server) launchTicketNow(runs *runview.Service, board native.BoardStore,
 		FilePath: entry.MainFile(),
 		BotID:    entry.Name,
 		Vars:     iss.BotArgs,
+		// Stamp the ticket onto the run IMMEDIATELY. Without this the run is
+		// undiscoverable from its ticket until SetLastRun lands below — and
+		// between the SetState above and that stamp sit compileForLaunch,
+		// BuildExecutor and worktree creation, i.e. seconds during which a
+		// live run is invisible to close, reset AND delete. issueRunRoots
+		// already looks for Source.IssueID; nothing was ever setting it here.
+		//
+		// Kind is deliberately LEFT EMPTY. deriveSourceKind
+		// (pkg/runview/service_runs.go) returns Source.Kind verbatim when set,
+		// so stamping RunSourceKindDispatcher here would relabel every
+		// studio-launched ticket run as "dispatcher" in the run list's
+		// grouping and filtering. It is a studio launch; only the issue link
+		// is new information.
+		SourceRef: &store.RunSource{IssueID: iss.ID},
+		// Consumed by the concurrency gate: a needs-attention ticket holds a
+		// reserved slot, and this is what lets its own relaunch spend that
+		// reservation instead of being refused by it.
+		PipelineTicketID: iss.ID,
 	})
 	if err != nil {
 		s.logger.Warn("pipeline admission: launch ticket %s: %v", iss.ID, err)

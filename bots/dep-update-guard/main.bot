@@ -1088,20 +1088,27 @@ print(json.dumps({'degraded': degraded or gate_degraded, 'banner': banner}))
 ## have landed green too, because arming on a verdict whose status never
 ## reached the PR would merge on a check nobody can see.
 ##
-## Two forge calls, and the choice between them is the forge's own answer,
-## never a judgement of this bot:
-##   - checks still pending  → enablePullRequestAutoMerge, which hands the
-##     decision to the repo's required checks;
-##   - forge reports CLEAN   → mergePullRequest pinned to the exact head we
-##     reviewed. CLEAN means "mergeable and passing commit status", so there
-##     is nothing left to wait for — and GitHub REFUSES to arm auto-merge in
-##     that state ("Pull request is in clean status"). Since the audit takes
-##     longer than CI, this is the ordinary case: without it the bot would
-##     arm nothing and merge nothing, ever.
+## Three forge calls, and the choice between them is the forge's own answer,
+## never a judgement of this bot. Arming comes FIRST, always:
+##   - enablePullRequestAutoMerge hands the decision to the repo's required
+##     checks — and on a merge-queue-protected base it is "merge when ready",
+##     which enqueues the PR instead of merging it directly. A queue REJECTS
+##     a direct merge outright, so arm-first is what makes this bot work on
+##     both repo shapes (observed 2026-08-03: two audited-green PRs on a
+##     queue repo that a merge-now-first ordering could never have landed).
+##   - the base has a merge queue and arming was refused → enqueuePullRequest
+##     pinned to the exact head we reviewed (expectedHeadOid).
+##   - no queue and the forge refused to arm because the PR is CLEAN
+##     ("Pull request is in clean status" — mergeable, every commit status
+##     passing, nothing left to wait for) → mergePullRequest pinned to the
+##     exact head we reviewed. Since the audit takes longer than CI, this is
+##     the ordinary no-queue case: without it the bot would arm nothing and
+##     merge nothing, ever.
 ## There is deliberately no path to PUT /pulls/{n}/merge: that merges
 ## whatever the state, bypassing every pending check, which is precisely what
 ## this bot exists to prevent. expectedHeadOid is the equivalent guarantee on
-## the GraphQL side — a push landing mid-decision aborts the merge.
+## the GraphQL side — a push landing mid-decision aborts the merge (and the
+## enqueue).
 tool arm_automerge:
   input: automerge_input
   output: automerge_output
@@ -1183,9 +1190,16 @@ tool arm_automerge:
     at = chr(36)
     q = ("query(@owner: String!, @name: String!, @number: Int!) { "
          "repository(owner: @owner, name: @name) { "
-         "pullRequest(number: @number) { id headRefOid mergeable mergeStateStatus "
-         "autoMergeRequest { enabledAt } } "
+         "pullRequest(number: @number) { id headRefOid baseRefName mergeable mergeStateStatus "
+         "autoMergeRequest { enabledAt } mergeQueueEntry { id } } "
          "} }").replace("@", at)
+    # A non-null mergeQueue on the PR's base branch is what makes this a
+    # queue-protected repo: direct merges are rejected there, enqueueing is
+    # the only door, and the forge is the authority on which shape this is.
+    queue_q = ("query(@owner: String!, @name: String!, @branch: String!) { "
+               "repository(owner: @owner, name: @name) { "
+               "mergeQueue(branch: @branch) { id } "
+               "} }").replace("@", at)
     arm_mut = ("mutation(@id: ID!, @method: PullRequestMergeMethod!) { "
                "enablePullRequestAutoMerge(input: { pullRequestId: @id, mergeMethod: @method }) "
                "{ clientMutationId } }").replace("@", at)
@@ -1194,10 +1208,27 @@ tool arm_automerge:
     merge_mut = ("mutation(@id: ID!, @method: PullRequestMergeMethod!, @oid: GitObjectID!) { "
                  "mergePullRequest(input: { pullRequestId: @id, mergeMethod: @method, "
                  "expectedHeadOid: @oid }) { clientMutationId } }").replace("@", at)
+    # Same pin on the queue door: enqueue this exact commit or nothing.
+    enqueue_mut = ("mutation(@id: ID!, @oid: GitObjectID!) { "
+                   "enqueuePullRequest(input: { pullRequestId: @id, expectedHeadOid: @oid }) "
+                   "{ clientMutationId } }").replace("@", at)
 
     def read_pr():
         data = graphql(q, {"owner": owner, "name": repo, "number": num})
         return ((data.get("repository") or {}).get("pullRequest") or {})
+
+    def base_has_merge_queue(pr):
+        branch = s(pr.get("baseRefName"))
+        if not branch:
+            return False
+        try:
+            data = graphql(queue_q, {"owner": owner, "name": repo, "branch": branch})
+            return bool((data.get("repository") or {}).get("mergeQueue"))
+        except Exception:
+            # An older GHES without the field, or a transient read failure:
+            # treat as no queue and let the no-queue path speak. Its own
+            # errors are reported, never swallowed.
+            return False
 
     # A merge may only ever target the commit THIS run audited and gated.
     # Re-reading the head does not give that commit: the audit takes minutes,
@@ -1222,17 +1253,19 @@ tool arm_automerge:
             return False
         return a[:n] == b[:n]
 
-    def merge_now(pr, why):
+    def vouched_sha(pr, act):
+        # The commit any merge or enqueue may target: the one THIS run
+        # audited, gated, and can still see at the branch head.
         head = s(pr.get("headRefOid"))
         gated = s(gate_sha)
         # What THIS run read, and what it pushed if it aligned anything.
         mine = s(committed_sha) or s(audited_sha)
         if not gated:
-            out(False, "no gated sha to merge against - merging the current head would "
-                       "ship a commit this run never audited")
+            out(False, "no gated sha to " + act + " against - acting on the current head "
+                       "would ship a commit this run never audited")
         if not mine:
-            out(False, "this run cannot name the commit it audited - refusing to merge "
-                       "on a sha it cannot vouch for")
+            out(False, "this run cannot name the commit it audited - refusing to " + act +
+                       " on a sha it cannot vouch for")
         # gate_sha comes from the FORGE (the head at publish time), not from
         # this run: a push landing between the alignment and the status read
         # would carry the gate onto a commit no auditor ever saw. It is only
@@ -1243,8 +1276,17 @@ tool arm_automerge:
         if head and not same_commit(head, gated):
             out(False, "the branch moved after the audit (gated " + gated[:12] +
                        ", head is now " + head[:12] + ") - the new head has not been audited")
+        return gated
+
+    def merge_now(pr, why):
+        gated = vouched_sha(pr, "merge")
         graphql(merge_mut, {"id": pr.get("id"), "method": s(method).upper() or "SQUASH",
                             "oid": gated})
+        out(True, why)
+
+    def enqueue_now(pr, why):
+        gated = vouched_sha(pr, "enqueue")
+        graphql(enqueue_mut, {"id": pr.get("id"), "oid": gated})
         out(True, why)
 
     # Ready to merge means every required check the forge knows about is
@@ -1260,14 +1302,27 @@ tool arm_automerge:
             out(False, "pull request not found via the forge API")
         if pr.get("autoMergeRequest"):
             out(True, "auto-merge was already armed")
-        if ready(pr):
-            merge_now(pr, "merged: the forge reported every required check already green")
+        if pr.get("mergeQueueEntry"):
+            out(True, "already in the merge queue")
+        # Arm FIRST, whatever the state. On a queue repo this is "merge when
+        # ready" and covers CLEAN too; on a plain repo a CLEAN PR is refused
+        # ("clean status") and falls through to the pinned direct merge. The
+        # ordering matters: a merge-now-first bot direct-merges into a queue's
+        # rejection and never lands anything on a queue-protected repo.
         try:
             graphql(arm_mut, {"id": node_id, "method": s(method).upper() or "SQUASH"})
         except Exception as arm_err:
-            # The forge refuses to arm a PR with nothing left to wait for. The
-            # state can flip between the read above and this call, so re-read
-            # rather than trusting the first answer.
+            if base_has_merge_queue(pr):
+                # The queue is the only door here; a direct merge would be
+                # rejected outright. Enqueue the audited commit or nothing.
+                pr = read_pr()
+                if pr.get("mergeQueueEntry"):
+                    out(True, "already in the merge queue")
+                enqueue_now(pr, "enqueued: the merge queue decides from here "
+                                "(arming was refused: " + str(arm_err)[:120] + ")")
+            # No queue: the one refusal that means "nothing left to wait for"
+            # is the CLEAN state. The state can flip between the read above
+            # and this call, so re-read rather than trusting the first answer.
             if "clean status" not in str(arm_err).lower():
                 raise
             pr = read_pr()
@@ -1291,10 +1346,15 @@ tool arm_automerge:
 workflow dep_update_guard:
   entry: prepare
 
+  ## Sized for the heavy case, not the median: a grouped go bump of 15
+  ## modules needing a real code alignment plus the repo's full test suite.
+  ## The clean re-audit of an npm group already runs ~30m; 40m killed a
+  ## 15-module go run mid-audit in production (2026-08-03, run 019fc8e5),
+  ## which with a required gate context left the PR silently unmergeable.
   budget:
     max_parallel_branches: 1
-    max_duration: "40m"
-    max_cost_usd: 15
+    max_duration: "75m"
+    max_cost_usd: 20
 
   ## Scanners + build toolchain live in the sec sandbox image. One
   ## sandbox for the whole run; network open by default so the auditors

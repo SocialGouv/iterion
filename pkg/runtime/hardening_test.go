@@ -78,6 +78,166 @@ func TestCancelProducesCancelledStatus(t *testing.T) {
 	}
 }
 
+// TestInterruptedCauseProducesResumableStatus pins the cause-threaded
+// engine write: a run whose context is cancelled with ErrRunInterrupted as
+// the cause (an infra interruption — runner drain / lost heartbeat) is
+// written failed_resumable and returns ErrRunInterrupted, NOT cancelled.
+// This is what lets a cloud runner's drained run auto-resume without a
+// runner-side status CAS, and without a misleading run_cancelled event.
+func TestInterruptedCauseProducesResumableStatus(t *testing.T) {
+	wf := &ir.Workflow{
+		Name:  "interrupt_status_test",
+		Entry: "step",
+		Nodes: map[string]ir.Node{
+			"step": &ir.AgentNode{BaseNode: ir.BaseNode{ID: "step"}},
+			"done": &ir.DoneNode{BaseNode: ir.BaseNode{ID: "done"}},
+		},
+		Edges:   []*ir.Edge{{From: "step", To: "done"}},
+		Schemas: map[string]*ir.Schema{},
+		Prompts: map[string]*ir.Prompt{},
+		Vars:    map[string]*ir.Var{},
+		Loops:   map[string]*ir.Loop{},
+	}
+
+	// Cancel with the interrupted cause BEFORE running, mirroring a runner
+	// drain that cancels the run context via context.CancelCause. Wrap it in
+	// a WithTimeout child exactly like the runner's executeRun does (msg
+	// TimeoutSec) — the cause must still propagate to context.Cause(rs.ctx)
+	// through that child, or the engine would fall back to `cancelled`.
+	base, cancel := context.WithCancelCause(context.Background())
+	cancel(ErrRunInterrupted)
+	ctx, timeoutCancel := context.WithTimeout(base, time.Hour)
+	defer timeoutCancel()
+
+	exec := newStubExecutor()
+	s := tmpStore(t)
+	eng := New(wf, s, exec)
+
+	err := eng.Run(ctx, "run-interrupted", nil)
+	if !errors.Is(err, ErrRunInterrupted) {
+		t.Fatalf("expected ErrRunInterrupted, got: %v", err)
+	}
+	if errors.Is(err, ErrRunCancelled) {
+		t.Error("interrupted run must NOT classify as ErrRunCancelled")
+	}
+
+	r, err := s.LoadRun(context.Background(), "run-interrupted")
+	if err != nil {
+		t.Fatalf("load run: %v", err)
+	}
+	if r.Status != store.RunStatusFailedResumable {
+		t.Errorf("expected status failed_resumable, got %s", r.Status)
+	}
+	if r.Checkpoint == nil {
+		t.Error("expected a checkpoint preserved for resume")
+	}
+
+	events, err := s.LoadEvents(context.Background(), "run-interrupted")
+	if err != nil {
+		t.Fatalf("load events: %v", err)
+	}
+	for _, evt := range events {
+		if evt.Type == store.EventRunCancelled {
+			t.Error("interrupted run must NOT emit a run_cancelled event (misleading)")
+		}
+	}
+}
+
+// TestInterruptedMidNodeProducesResumableStatus is the common real-world
+// case: a drain cancels the run WHILE a node is executing, so the
+// cancellation surfaces as the node's own execErr (not the between-node
+// select). The engine must still read the cause and write failed_resumable +
+// ErrRunInterrupted — otherwise a deploy would fire a spurious "run failed"
+// notification for a run that silently auto-resumes.
+func TestInterruptedMidNodeProducesResumableStatus(t *testing.T) {
+	wf := &ir.Workflow{
+		Name:  "interrupt_midnode_test",
+		Entry: "step",
+		Nodes: map[string]ir.Node{
+			"step": &ir.AgentNode{BaseNode: ir.BaseNode{ID: "step"}},
+			"done": &ir.DoneNode{BaseNode: ir.BaseNode{ID: "done"}},
+		},
+		Edges:   []*ir.Edge{{From: "step", To: "done"}},
+		Schemas: map[string]*ir.Schema{},
+		Prompts: map[string]*ir.Prompt{},
+		Vars:    map[string]*ir.Var{},
+		Loops:   map[string]*ir.Loop{},
+	}
+
+	ctx, cancel := context.WithCancelCause(context.Background())
+	exec := newStubExecutor()
+	// The node cancels the run mid-flight (drain) and returns a
+	// context.Canceled-wrapping error, exactly as a real delegate does when
+	// its ctx is cancelled during an LLM call.
+	exec.on("step", func(_ map[string]any) (map[string]any, error) {
+		cancel(ErrRunInterrupted)
+		return nil, fmt.Errorf("llm call aborted: %w", context.Canceled)
+	})
+
+	s := tmpStore(t)
+	eng := New(wf, s, exec)
+
+	err := eng.Run(ctx, "run-interrupted-midnode", nil)
+	if !errors.Is(err, ErrRunInterrupted) {
+		t.Fatalf("expected ErrRunInterrupted from a mid-node drain, got: %v", err)
+	}
+
+	r, _ := s.LoadRun(context.Background(), "run-interrupted-midnode")
+	if r.Status != store.RunStatusFailedResumable {
+		t.Errorf("expected status failed_resumable, got %s", r.Status)
+	}
+	events, _ := s.LoadEvents(context.Background(), "run-interrupted-midnode")
+	for _, evt := range events {
+		if evt.Type == store.EventRunCancelled {
+			t.Error("mid-node interrupted run must NOT emit run_cancelled")
+		}
+	}
+}
+
+// TestOperatorCancelMidNodeStaysTerminal is the mirror of the test above, and
+// the half whose regression actually costs something: an operator who stops a
+// run WHILE a node is executing must get a terminal `cancelled`. Written
+// failed_resumable instead, the runner naks it and the redelivery brings a
+// deliberately-stopped run back to life on another pod.
+func TestOperatorCancelMidNodeStaysTerminal(t *testing.T) {
+	wf := &ir.Workflow{
+		Name:  "operator_cancel_midnode_test",
+		Entry: "step",
+		Nodes: map[string]ir.Node{
+			"step": &ir.AgentNode{BaseNode: ir.BaseNode{ID: "step"}},
+			"done": &ir.DoneNode{BaseNode: ir.BaseNode{ID: "done"}},
+		},
+		Edges:   []*ir.Edge{{From: "step", To: "done"}},
+		Schemas: map[string]*ir.Schema{},
+		Prompts: map[string]*ir.Prompt{},
+		Vars:    map[string]*ir.Var{},
+		Loops:   map[string]*ir.Loop{},
+	}
+
+	ctx, cancel := context.WithCancelCause(context.Background())
+	exec := newStubExecutor()
+	exec.on("step", func(_ map[string]any) (map[string]any, error) {
+		cancel(ErrRunCancelled)
+		return nil, fmt.Errorf("llm call aborted: %w", context.Canceled)
+	})
+
+	s := tmpStore(t)
+	eng := New(wf, s, exec)
+
+	err := eng.Run(ctx, "run-opcancel-midnode", nil)
+	if !errors.Is(err, ErrRunCancelled) {
+		t.Fatalf("expected ErrRunCancelled from a mid-node operator cancel, got: %v", err)
+	}
+	if errors.Is(err, ErrRunInterrupted) {
+		t.Fatal("an operator cancel must not carry ErrRunInterrupted — the runner would nak it and resume")
+	}
+
+	r, _ := s.LoadRun(context.Background(), "run-opcancel-midnode")
+	if r.Status != store.RunStatusCancelled {
+		t.Errorf("status = %s, want cancelled — a stopped run would be redelivered and resumed", r.Status)
+	}
+}
+
 // ---------------------------------------------------------------------------
 // Test: context cancellation mid-execution cancels cleanly
 // ---------------------------------------------------------------------------

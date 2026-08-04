@@ -250,6 +250,73 @@ func TestNarrowGitHubAppSecret(t *testing.T) {
 	o.narrowGitHubAppSecret(ctx, &pat) // KindPAT → early return
 }
 
+// EnsureManagedSecret must re-mint a github_app connection's managed token at
+// the point of use: the plaintext is a one-hour installation token, so the
+// value stored at provision time is dead for any launch on a quiet
+// connection (observed live: repo-targeted launches failing their clone with
+// "Invalid username or token"). A mint failure keeps the stored token; a PAT
+// connection is returned as-is.
+func TestEnsureManagedSecret_RemintsGitHubAppAtUse(t *testing.T) {
+	o, _, sealer := newTestOrch(t)
+	ctx := context.Background()
+
+	connID := "gh-conn-launch"
+	sealed, err := SealOAuthTokens(sealer, connID, "ghs_stale", "", time.Time{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	conn := Connection{
+		ID: connID, TenantID: "t1", Provider: ProviderGitHub, Kind: KindGitHubApp,
+		InstallationID: 42, Status: StatusActive, SealedPayload: sealed,
+	}
+	if err := o.Connections.Create(ctx, conn); err != nil {
+		t.Fatal(err)
+	}
+	// First call creates the secret AND re-mints it fresh right away.
+	o.GitHubAppMinter = func(context.Context, Connection) (string, error) { return "ghs_fresh_1", nil }
+	secID, err := o.EnsureManagedSecret(ctx, &conn, "u1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	gs, _ := o.Secrets.Get(ctx, secID)
+	if pt, _ := secrets.OpenGenericSecret(sealer, secID, gs.SealedSecret); string(pt) != "ghs_fresh_1" {
+		t.Fatalf("first launch token = %q, want the freshly minted ghs_fresh_1", pt)
+	}
+
+	// A later launch re-mints again — the stored hour-old token is never
+	// served as-is.
+	o.GitHubAppMinter = func(context.Context, Connection) (string, error) { return "ghs_fresh_2", nil }
+	if _, err := o.EnsureManagedSecret(ctx, &conn, "u1"); err != nil {
+		t.Fatal(err)
+	}
+	gs2, _ := o.Secrets.Get(ctx, secID)
+	if pt, _ := secrets.OpenGenericSecret(sealer, secID, gs2.SealedSecret); string(pt) != "ghs_fresh_2" {
+		t.Fatalf("second launch token = %q, want ghs_fresh_2", pt)
+	}
+
+	// Best-effort: a mint failure keeps the stored token rather than failing
+	// the launch (it may still be live within its hour).
+	o.GitHubAppMinter = func(context.Context, Connection) (string, error) { return "", fmt.Errorf("mint down") }
+	if _, err := o.EnsureManagedSecret(ctx, &conn, "u1"); err != nil {
+		t.Fatal(err)
+	}
+	gs3, _ := o.Secrets.Get(ctx, secID)
+	if pt, _ := secrets.OpenGenericSecret(sealer, secID, gs3.SealedSecret); string(pt) != "ghs_fresh_2" {
+		t.Fatalf("mint failure must keep the stored token, got %q", pt)
+	}
+
+	// PAT connections keep their long-lived token untouched.
+	pat := seedConn(t, o, sealer)
+	patSec, err := o.EnsureManagedSecret(ctx, &pat, "u1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	gsp, _ := o.Secrets.Get(ctx, patSec)
+	if pt, _ := secrets.OpenGenericSecret(sealer, patSec, gsp.SealedSecret); string(pt) == "" {
+		t.Fatal("pat managed secret must hold the connection token")
+	}
+}
+
 func TestProvision_SingleBot(t *testing.T) {
 	o, fa, sealer := newTestOrch(t)
 	seedConn(t, o, sealer)

@@ -10,6 +10,11 @@ remains for anything not wrapped; `iterion remote routes` /
 All commands honour the global `--json` flag: the output is then the
 server's response body verbatim (lossless, stable for `jq`).
 
+The same surface is also exposable to MCP agents (Claude Code, desktop,
+Cursor): `iterion mcp` serves `remote_*` tools over the same stored
+credential, plus the `remote_api` escape hatch — see
+[mcp-server.md](mcp-server.md).
+
 ## Setup
 
 ### Interactive (browser)

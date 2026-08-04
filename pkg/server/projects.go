@@ -367,6 +367,11 @@ func (s *Server) swapWorkDir(_ context.Context, newDir string) error {
 	s.statsCache.clear()
 	s.stateMu.Unlock()
 
+	// Re-point the concurrency gate's reservation source at the new run
+	// service. Skipping this leaves the fresh Service ungated while the
+	// PREVIOUS project's tickets are still counted against it.
+	s.wirePipelineReservations(newRuns)
+
 	if oldWatcher != nil {
 		oldWatcher.Stop()
 	}

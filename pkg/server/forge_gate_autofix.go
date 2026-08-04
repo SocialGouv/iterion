@@ -9,6 +9,7 @@ import (
 	"github.com/SocialGouv/iterion/pkg/bundle"
 	"github.com/SocialGouv/iterion/pkg/eventbus"
 	"github.com/SocialGouv/iterion/pkg/forge"
+	"github.com/SocialGouv/iterion/pkg/identity"
 	"github.com/SocialGouv/iterion/pkg/knowledge"
 	"github.com/SocialGouv/iterion/pkg/store"
 	"github.com/SocialGouv/iterion/pkg/trigger"
@@ -95,9 +96,15 @@ func (s *Server) autofixForRun(ctx context.Context, ev trigger.Event) error {
 		return nil
 	}
 	// A run that will resume is still expected to post its own verdict; acting
-	// on the interim state would fire on a gate that is about to change.
-	if run.Status == store.RunStatusFailedResumable ||
-		run.Status == store.RunStatusPausedWaitingHuman || run.Status == store.RunStatusPausedOperator {
+	// on the interim state would fire on a gate that is about to change. Only
+	// an ARMED retry makes that true (same distinction as the reconciler): a
+	// failed_resumable with nothing coming back for it is final, and a red
+	// verdict it did post before dying deserves its fix pass.
+	if run.Status == store.RunStatusPausedWaitingHuman || run.Status == store.RunStatusPausedOperator {
+		return nil
+	}
+	if run.Status == store.RunStatusFailedResumable &&
+		run.RetryState != nil && run.RetryState.RetryAfter != nil {
 		return nil
 	}
 
@@ -170,8 +177,16 @@ func (s *Server) autofixForRun(ctx context.Context, ev trigger.Event) error {
 	// which a second replica would not share and a restart would lose. No read
 	// capability means abstain: launching a fixer on a gate we cannot see would
 	// be acting on a guess.
-	state, readable, err := gateStatusOn(ctx, gc, repo, pr.HeadSHA, gateCtx)
-	if err != nil || !readable || state != forge.CommitStateFailure {
+	gate, readable, err := gateStatusOn(ctx, gc, repo, pr.HeadSHA, gateCtx)
+	if err != nil || !readable || gate.State != forge.CommitStateFailure {
+		return nil
+	}
+	// A SYNTHETIC failure — the reconciler's "the review died without a
+	// verdict" marker — is not a verdict either. There are no findings behind
+	// it for a fixer to address; recovery for a review that never happened is
+	// the relaunch lane's job (re-run the REVIEWER), and launching the fixer
+	// here would push code against an instruction to fix nothing.
+	if isSyntheticGateInterruption(gate.Description) {
 		return nil
 	}
 
@@ -213,10 +228,21 @@ func (s *Server) autofixForRun(ctx context.Context, ev trigger.Event) error {
 		}
 	}
 
-	// Metered like any other launch. The bus handler carries no request
-	// identity, so the team comes from the grant — the shape the retry sweeper
-	// already uses to gate a launch it makes on a tenant's behalf.
-	launchCtx := auth.WithIdentity(ctx, auth.Identity{TeamID: grant.TeamID})
+	// Metered like any other launch, and stamped with BOTH identities the
+	// inbound-webhook middleware puts on a request: the auth identity the
+	// admission gate reads, and the store identity every tenant-scoped query
+	// asserts on. A bus handler is not an HTTP request and carries neither, and
+	// the store half is not optional — without it the launch reaches Mongo with
+	// no tenant and the tenancy tripwire fires inside SaveRun, taking the
+	// process down rather than failing the launch.
+	actor := "autofix:" + cfg.ID
+	launchCtx := auth.WithIdentity(ctx, auth.Identity{
+		UserID: actor,
+		TeamID: grant.TeamID,
+		Role:   identity.RoleMember,
+		Kind:   auth.KindWebhook,
+	})
+	launchCtx = store.WithIdentity(launchCtx, grant.TeamID, actor)
 
 	vars := applyWebhookVarLayers(fixerPRVars(
 		pr.TargetBranch, pr.SourceBranch, prURL,
@@ -280,27 +306,27 @@ func (s *Server) reviewFixerFor(integration forge.RepoIntegration) string {
 	return ""
 }
 
-// gateStatusOn reports the state of ctxName on sha; an ABSENT context is the
-// zero state. readable=false means the provider cannot list statuses at ALL —
+// gateStatusOn reports the status of ctxName on sha; an ABSENT context is the
+// zero status. readable=false means the provider cannot list statuses at ALL —
 // deliberately distinct from "absent", because the two callers assume opposite
 // things from it: the reconciler treats unreadable as "already posted" (never
 // overwrite a verdict it cannot see), this lane treats it as "abstain" (never
 // launch on a gate it cannot see).
-func gateStatusOn(ctx context.Context, gc forgeGateClient, repo, sha, ctxName string) (state forge.CommitState, readable bool, err error) {
+func gateStatusOn(ctx context.Context, gc forgeGateClient, repo, sha, ctxName string) (st forge.CommitStatus, readable bool, err error) {
 	lister, ok := gc.(forge.CommitStatusLister)
 	if !ok {
-		return "", false, nil
+		return forge.CommitStatus{}, false, nil
 	}
 	sts, err := lister.ListCommitStatuses(ctx, repo, sha)
 	if err != nil {
-		return "", false, err
+		return forge.CommitStatus{}, false, err
 	}
-	for _, st := range sts {
-		if strings.EqualFold(strings.TrimSpace(st.Context), ctxName) {
-			return st.State, true, nil
+	for _, s := range sts {
+		if strings.EqualFold(strings.TrimSpace(s.Context), ctxName) {
+			return s, true, nil
 		}
 	}
-	return "", true, nil
+	return forge.CommitStatus{}, true, nil
 }
 
 // pullRequestHoldLabel reports the hold label present on the PR, if any. An

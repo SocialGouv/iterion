@@ -140,3 +140,20 @@ func DeleteOneChecked(ctx context.Context, coll *mongo.Collection, filter bson.M
 	}
 	return nil
 }
+
+// SetBodyWithoutID marshals a document into a `$set` body with `_id`
+// removed. Mongo rejects an update that touches `_id` ("Mod on _id not
+// allowed"), so an upsert that keeps the id in `$setOnInsert` must strip it
+// from the `$set` half — a dance every store here performs identically.
+func SetBodyWithoutID(v any, what string) (bson.M, error) {
+	raw, err := bson.Marshal(v)
+	if err != nil {
+		return nil, fmt.Errorf("%s: marshal: %w", what, err)
+	}
+	var body bson.M
+	if err := bson.Unmarshal(raw, &body); err != nil {
+		return nil, fmt.Errorf("%s: re-decode: %w", what, err)
+	}
+	delete(body, "_id")
+	return body, nil
+}

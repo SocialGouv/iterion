@@ -19,6 +19,13 @@ type fileRevertResult struct {
 	RevertCommit string `json:"revert_commit,omitempty"`
 	BackupRef    string `json:"backup_ref,omitempty"`
 	SkipReason   string `json:"skip_reason,omitempty"`
+	// CoverageGap describes files the revert could NOT put back even
+	// though it ran (paths the capture never stored). Distinct from
+	// SkipReason, which means the workspace was not touched at all — the
+	// CLI prints that one only when Reverted is false, so folding a
+	// partial-coverage warning into it dropped the warning on the single
+	// path where both are true.
+	CoverageGap string `json:"coverage_gap,omitempty"`
 	// Restored carries the tracker's per-file accounting (written /
 	// deleted / unchanged / skipped) when the restore went through
 	// iterion's own versioning rather than git.
@@ -61,7 +68,18 @@ func (s *Service) revertWorkspace(run *store.Run, wf *ir.Workflow, cp *store.Che
 		// independent, so it can succeed where git's refs are missing —
 		// and it carries the same staleness guard, so the fallback cannot
 		// smuggle in the older-iteration revert the git path just refused.
-		if res, terr := s.revertViaTracker(run, wf, cp, pivot, sourcePath); terr == nil && res.Reverted {
+		res, terr := s.revertViaTracker(run, wf, cp, pivot, sourcePath)
+		if terr != nil {
+			// A tracker restore that FAILED is not "nothing happened": its
+			// deletion pass runs to completion before the write-back, so
+			// files may already be gone. Falling through to the git skip
+			// reason would hand the operator text that literally says the
+			// workspace was left as-is while it has in fact been mutated.
+			// "Could not attempt" and "attempted and broke" are different
+			// answers — the non-worktree path above already propagates.
+			return nil, terr
+		}
+		if res.Reverted {
 			return res, nil
 		}
 		return &fileRevertResult{SkipReason: skip}, nil
@@ -261,7 +279,14 @@ func (s *Service) revertViaTracker(run *store.Run, wf *ir.Workflow, cp *store.Ch
 			// .iterionignore). Reporting it as "versioning was off" is the
 			// wrong-problem hunt this branch set out to remove.
 			if over, ok := s.workspaceTracker.(interface{ Overflowed(string) bool }); ok && over.Overflowed(run.ID) {
-				return &fileRevertResult{SkipReason: "this run's workspace exceeded the file cap, so nothing was versioned — narrow it with .iterionignore, or raise the cap"}, nil
+				// Deliberately no "raise the cap": MaxFiles has no env or
+				// flag override, and the overflow latches in this run's
+				// index — so neither half of the old advice could rescue
+				// the run being rewound. Say what is actually true.
+				return &fileRevertResult{SkipReason: fmt.Sprintf(
+					"this run's workspace exceeded the %d-file cap, so nothing was versioned for it — "+
+						"narrow the workspace with .iterionignore and relaunch; this run cannot be recovered",
+					workspacetrack.DefaultMaxFiles)}, nil
 			}
 			return &fileRevertResult{SkipReason: "this run captured no workspace snapshots at all — it was launched on a path that does not enable workspace versioning, or versioning was off"}, nil
 		}
@@ -290,7 +315,9 @@ func (s *Service) revertViaTracker(run *store.Run, wf *ir.Workflow, cp *store.Ch
 		Restored:  report,
 	}
 	if len(report.Skipped) > 0 {
-		res.SkipReason = fmt.Sprintf("%d path(s) were too large to version and were left as-is", len(report.Skipped))
+		res.CoverageGap = fmt.Sprintf(
+			"%d path(s) were never captured (too large, or unreadable at capture time) and were left as-is",
+			len(report.Skipped))
 	}
 	return res, nil
 }
@@ -390,7 +417,17 @@ func (s *Service) restoreBanked(run *store.Run, snapshotID string) (*workspacetr
 	if _, berr := s.workspaceTracker.Capture(run.ID, run.WorkDir, "pre-restore:"+snapshotID); berr != nil {
 		return nil, fmt.Errorf("bank the current workspace before restoring: %w", berr)
 	}
-	return s.workspaceTracker.Restore(run.ID, run.WorkDir, snapshotID)
+	// Protect the workflow source, exactly as revertViaTracker does.
+	// --restore-snapshot accepts any id the chain holds — including a
+	// mid-run `pre:<node>:<iter>` boundary, which --list-snapshots prints
+	// right alongside the banks — so without this an operator recovering
+	// their workspace can have their edited .bot silently rewritten to
+	// the version the run originally executed, and the next
+	// `resume --force` then compiles the OLD workflow. Invisible: the CLI
+	// reports "N written, N deleted" and nothing flags that the source
+	// moved. Bites when the .bot lives inside the workspace, which is the
+	// self-hosted shape the docs make the primary example.
+	return s.workspaceTracker.Restore(run.ID, run.WorkDir, snapshotID, run.FilePath)
 }
 
 // ListWorkspaceSnapshots walks a run's capture chain, newest first, so an

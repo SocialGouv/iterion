@@ -3,6 +3,7 @@ package main
 import (
 	"bufio"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 
@@ -91,5 +92,18 @@ func runMCPLoop(in io.Reader, out io.Writer, bufMax int, dispatch func(req mcpRe
 			return err
 		}
 	}
-	return scanner.Err()
+	if err := scanner.Err(); err != nil {
+		// A single line beyond bufMax poisons the scanner (it cannot
+		// resync mid-line), so the server has to exit — but the client
+		// deserves to know WHY instead of watching the process vanish.
+		if errors.Is(err, bufio.ErrTooLong) {
+			_ = enc.Encode(mcpResponse{
+				JSONRPC: "2.0",
+				ID:      nil,
+				Error:   &mcpError{Code: -32700, Message: fmt.Sprintf("request line exceeds the %d-byte limit; the server cannot recover and will exit", bufMax)},
+			})
+		}
+		return err
+	}
+	return nil
 }

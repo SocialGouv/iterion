@@ -290,6 +290,25 @@ func (s *FilesystemRunStore) PatchRunSteering(_ context.Context, id string, loop
 	return s.writeRun(r)
 }
 
+// PatchRunPermissionGrants persists the permission-gate allow rules
+// earned by the operator. Replaces the stored slice wholesale (the
+// caller owns the accumulated set); a nil slice is a no-op patch.
+func (s *FilesystemRunStore) PatchRunPermissionGrants(_ context.Context, id string, grants map[string][]string) error {
+	if grants == nil {
+		return nil
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	r, err := s.loadRunRaw(id)
+	if err != nil {
+		return err
+	}
+	r.PermissionGrants = grants
+	r.UpdatedAt = time.Now().UTC()
+	return s.writeRun(r)
+}
+
 // UpdateRunStatusIf is a compare-and-set on the status field: the
 // write only lands when the current status is in expectedFrom. Used
 // by callers that need to avoid racing with a concurrent transition
@@ -387,6 +406,13 @@ func (s *FilesystemRunStore) FailRunResumable(ctx context.Context, id string, cp
 	r, err := s.loadRunRaw(id)
 	if err != nil {
 		return err
+	}
+	// An operator cancel is terminal and outranks a resumable failure. The
+	// two race whenever an interruption and a cancel arrive together, and
+	// resumable would win simply by writing last — auto-resuming a run
+	// somebody deliberately stopped. Cancelled stands.
+	if r.Status == RunStatusCancelled {
+		return nil
 	}
 	r.Checkpoint = cp
 	r.Status = RunStatusFailedResumable

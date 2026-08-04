@@ -149,6 +149,24 @@ func mergeVarsInto(dst, src map[string]string) map[string]string {
 	return dst
 }
 
+// fillVarGaps copies the keys of src that dst does not already carry a VALUE
+// for: the "layer UNDER" counterpart to mergeVarsInto's "layer OVER". Naming
+// the direction is the point — a var whose precedence is ambiguous is how a
+// gate_context ends up resolving differently per lane. A nil src is a no-op.
+//
+// A key present but blank counts as absent. A cleared studio field or an empty
+// bot-arg row is not a decision to suppress the repo's policy, and honouring
+// it as one would silently disarm the gate — exactly the failure this layering
+// exists to fix.
+func fillVarGaps(dst, src map[string]string) map[string]string {
+	for k, v := range src {
+		if strings.TrimSpace(dst[k]) == "" {
+			dst[k] = v
+		}
+	}
+	return dst
+}
+
 // reviewPRVars composes the launch-vars map every forge-specific
 // review-PR path produces: the canonical {pr_url, base_ref, scope_notes,
 // post_to_board:"false", pr_review_mode:"summary"} base, an optional

@@ -52,6 +52,19 @@ func (r *Runner) recordRunGitMeta(ctx context.Context, msg *queue.RunMessage, wo
 	// run ctx — so a cancelled/timed-out run still persists its final view
 	// (mirrors the run-log writer's flush-ctx rationale).
 	idCtx := store.WithIdentity(context.Background(), msg.TenantID, msg.OwnerID)
+	// An empty range never overwrites a recorded one. A resumed attempt runs
+	// on a FRESH pod that clones at RepoSHA, so its base is that clone's HEAD
+	// and its range is empty until it commits something of its own — and the
+	// save is a full replace. Writing it would erase the earlier attempt's
+	// real commits, which is how run 019f8e08 lost 40 of them. An empty
+	// snapshot may only ever CREATE the first record, never replace one.
+	if len(meta.Commits) == 0 {
+		if prev, perr := gs.LoadRunGitMeta(idCtx, msg.RunID); perr == nil && prev != nil && len(prev.Commits) > 0 {
+			r.cfg.Logger.Info("runner: run %s: keeping the recorded git snapshot (%d commit(s)) — this attempt produced none",
+				msg.RunID, len(prev.Commits))
+			return
+		}
+	}
 	// Capture per-file diff content (before/after) into the snapshot while the
 	// clone still exists, so the server pod can serve /files/diff and
 	// /commits/{sha}/diff for this run once the worktree is gone. Bounded:

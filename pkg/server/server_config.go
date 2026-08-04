@@ -17,6 +17,7 @@ import (
 	"github.com/SocialGouv/iterion/pkg/cloud/orgsweep"
 	"github.com/SocialGouv/iterion/pkg/cloudsched"
 	"github.com/SocialGouv/iterion/pkg/configshare"
+	"github.com/SocialGouv/iterion/pkg/credpool"
 	"github.com/SocialGouv/iterion/pkg/dispatcher"
 	"github.com/SocialGouv/iterion/pkg/dispatcher/boardmongo"
 	"github.com/SocialGouv/iterion/pkg/dispatcher/native"
@@ -150,6 +151,17 @@ type Config struct {
 	// gateLaunch quota checks and increments the month's run counter;
 	// the usage REST views read it back. nil → no metering (local mode).
 	OrgUsage orgusage.Counter
+
+	// CredPool* wire the mutualised credential pool (pkg/credpool): the
+	// contributor-lent LLM subscriptions a run with no credential of its
+	// own can draw on. All four must be non-nil together — the stores back
+	// the donor + operator REST surfaces, the Broker backs selection and
+	// the abandoned-lease sweeper. nil → no pool tier anywhere.
+	CredPoolBroker  *credpool.Broker
+	CredPoolPools   credpool.PoolStore
+	CredPoolPledges credpool.PledgeStore
+	CredPoolLeases  credpool.LeaseStore
+	CredPoolLedger  credpool.Ledger
 
 	// Audit, when non-nil, persists control-plane mutations (org
 	// status, secrets/bindings/webhooks CRUD, member changes…) and
