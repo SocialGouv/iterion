@@ -1,11 +1,13 @@
 # ADR-004: Per-node provider fallback chain as a credential-routing-hint chain
 
-- **Status**: Accepted (amended 2026-06-22 — per-element model shipped, see below)
+- **Status**: Accepted (amended 2026-06-22 — per-element model shipped, see
+  below; the cross-API deferral recorded here is discharged by
+  [ADR-087](087-cross-backend-model-fallback-chain.md))
 - **Date**: 2026-05-26
 - **Authors**: devthejo
 - **Code**: [pkg/backend/model/executor_retry.go](../../pkg/backend/model/executor_retry.go)
   (`dispatchWithProviderFallback`, `providerFallbackEligible`),
-  [pkg/backend/model/executor.go](../../pkg/backend/model/executor.go)
+  [pkg/backend/model/executor_resolve.go](../../pkg/backend/model/executor_resolve.go)
   (`resolveProviderChain`),
   [pkg/dsl/ir/validate_provider.go](../../pkg/dsl/ir/validate_provider.go)
   (C087 / C088)
@@ -138,6 +140,11 @@ situation visible rather than silent.
 - **Backends stay chain-unaware.** `task.ProviderHint` remains a single
   string; the executor owns the loop. Adding a hint-honouring backend is a
   one-line change in `providerFallbackEligible`.
+  *(Superseded by [ADR-087](087-cross-backend-model-fallback-chain.md): the
+  one-line change holds only for backends that swap a CREDENTIAL on an
+  otherwise identical task. A backend swap re-shapes at least seven
+  `delegate.Task` fields, so a cross-backend chain rebuilds the task per
+  element and the chain becomes an IR property the pre-run analyses read.)*
 - **One observability seam.** A new `OnProviderFallback` hook fires once
   per fall-through; the runtime can map it to a `provider_fallback` event
   later. Operators get exactly one note per route change, and the run only
