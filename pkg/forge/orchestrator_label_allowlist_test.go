@@ -95,6 +95,52 @@ func TestProvisionKeepsLabelAllowlistOnTheIdempotentPath(t *testing.T) {
 	}
 }
 
+// TestProvisionWidensALabelAllowlistThatLivesOnlyOnTheConfig: the legacy state
+// this branch exists to handle — the narrowing sits on the webhook config while
+// the integration stores none. An operator widening it back with an explicit
+// empty list matches the (empty) integration, so a mutation check that only
+// compared the two would find no change, skip the write, and return 200 with
+// the lane still narrowed: the API would report a widening that never reached
+// the surface enforcing it.
+func TestProvisionWidensALabelAllowlistThatLivesOnlyOnTheConfig(t *testing.T) {
+	o, _, sealer := newTestOrch(t)
+	seedConn(t, o, sealer)
+	ctx := context.Background()
+
+	res, err := o.Provision(ctx, ProvisionRequest{
+		TenantID: "t1", ConnectionID: "conn-1", RepoFullName: "group/api",
+		BotIDs: []string{"review-pr"}, ActorID: "u1",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := o.Webhooks.Get(ctx, res.WebhookID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg.LabelAllowlist = []string{"implement"}
+	if err := o.Webhooks.Update(ctx, cfg); err != nil {
+		t.Fatal(err)
+	}
+
+	// Same bots, same events → the idempotent short-circuit, with an explicit
+	// widening in the request.
+	if _, err := o.Provision(ctx, ProvisionRequest{
+		TenantID: "t1", ConnectionID: "conn-1", RepoFullName: "group/api",
+		BotIDs: []string{"review-pr"}, ActorID: "u1", LabelAllowlist: []string{},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	after, err := o.Webhooks.Get(ctx, res.WebhookID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(after.LabelAllowlist) != 0 {
+		t.Errorf("the explicit widening never reached the webhook config: %v — the lane "+
+			"stays narrowed while the API reports it open", after.LabelAllowlist)
+	}
+}
+
 // TestProvisionSetsAndClearsLabelAllowlist: the operator owns the field in both
 // directions. Nil says nothing (keep), a non-nil list narrows, and a non-nil
 // EMPTY list is the explicit widening — without that distinction there is no
