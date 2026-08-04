@@ -10,6 +10,7 @@ import (
 	"github.com/SocialGouv/iterion/pkg/runview"
 	"github.com/SocialGouv/iterion/pkg/store"
 	mongostore "github.com/SocialGouv/iterion/pkg/store/mongo"
+	"github.com/SocialGouv/iterion/pkg/trigger"
 )
 
 // Retry sweeper: the half of the usage-window retry that outlives the pod.
@@ -193,6 +194,20 @@ func (s *Server) abandonRetry(ctx context.Context, retryStore store.RunRetryStor
 	s.countRetry("abandoned")
 	s.auditSystem(tenantID, "retry-sweeper", "run.retry.abandoned", "run", runID, map[string]any{"reason": reason})
 	s.warnf("retry sweeper: run %s: %s", runID, reason)
+
+	// The run's terminal event fired back when it FAILED — while a retry was
+	// still armed, so every outcome consumer that defers to an armed retry
+	// (the merge-gate reconciler foremost) deliberately stood down. Abandoning
+	// is the moment the run becomes permanently dead, and nothing else fires
+	// for it: republish the outcome so those consumers get the event they
+	// were promised. The episode-keyed dedup in each consumer absorbs the
+	// replay for anyone who already acted.
+	if bus := s.eventsBus(); bus != nil && s.cfg.Store != nil {
+		ev := trigger.BuildRunOutcome(ctx, s.cfg.Store, runID, fmt.Errorf("%s", reason))
+		if err := bus.Publish(ctx, ev); err != nil {
+			s.warnf("retry sweeper: republish outcome for abandoned run %s: %v", runID, err)
+		}
+	}
 }
 
 // reArmRetry gives a failed resume another chance inside the attempt

@@ -3,6 +3,7 @@ package server
 import (
 	"context"
 	"testing"
+	"time"
 
 	"github.com/SocialGouv/iterion/pkg/auth"
 	"github.com/SocialGouv/iterion/pkg/forge"
@@ -190,9 +191,31 @@ func TestAutofixRefusesWhatItMust(t *testing.T) {
 		})
 	}
 
-	// A resumable failure is not a dead run: the runner republishes the outcome
-	// before deciding to retry, and the gate it left is about to change.
-	t.Run("a resumable failure is not a verdict", func(t *testing.T) {
+	// The reconciler's synthetic failure means "the review DIED", not "the
+	// review found problems". There are no findings behind it, so launching a
+	// fixer would push code against an instruction to fix nothing — recovery
+	// for a dead review is the relaunch lane's job (re-run the REVIEWER).
+	t.Run("a synthetic interruption is not a verdict to fix", func(t *testing.T) {
+		w := build(t, nil)
+		// After build: the fixture pins its own gate client last.
+		w.s.forgeGateClientFor = func(context.Context, forge.Connection) (forgeGateClient, error) {
+			return stubGateClient{head: head, state: forge.CommitStateFailure, ctxName: gateNm,
+				desc: gateInterruptedDescription}, nil
+		}
+		runID := seedRun(t, w.s, "reviewer-bot", gatingInputs)
+		_ = w.s.autofixForRun(context.Background(), trigger.Event{
+			Source: trigger.SourceRun, Kind: trigger.KindRunFinished,
+			Subject: trigger.Subject{ID: runID},
+		})
+		if *w.launched != 0 {
+			t.Error("launched a fixer on a review that never happened")
+		}
+	})
+
+	// A resumable failure whose retry is ARMED is not a dead run: the sweeper
+	// will resume it and the gate it left is about to change. (One with no
+	// retry armed is final — same distinction the reconciler applies.)
+	t.Run("an armed retry is not a verdict", func(t *testing.T) {
 		w := build(t, nil)
 		id, err := store.GenerateRunID()
 		if err != nil {
@@ -204,6 +227,8 @@ func TestAutofixRefusesWhatItMust(t *testing.T) {
 		}
 		run.BotID = "reviewer-bot"
 		run.Status = store.RunStatusFailedResumable
+		at := time.Now().UTC().Add(time.Hour)
+		run.RetryState = &store.RunRetryState{RetryAfter: &at, Reason: "usage_window"}
 		if err := w.s.cfg.Store.SaveRun(context.Background(), run); err != nil {
 			t.Fatal(err)
 		}
@@ -372,6 +397,7 @@ type stubGateClient struct {
 	head    string
 	state   forge.CommitState
 	ctxName string
+	desc    string
 }
 
 func (c stubGateClient) GetPullRequest(_ context.Context, _ string, number int) (forge.PullRef, error) {
@@ -381,7 +407,7 @@ func (c stubGateClient) SetCommitStatus(context.Context, string, string, forge.C
 	return nil
 }
 func (c stubGateClient) ListCommitStatuses(context.Context, string, string) ([]forge.CommitStatus, error) {
-	return []forge.CommitStatus{{Context: c.ctxName, State: c.state}}, nil
+	return []forge.CommitStatus{{Context: c.ctxName, State: c.state, Description: c.desc}}, nil
 }
 
 // TestReviewFixerIsDerivedNotNamed: the lane must pick the fixer from what a bot
@@ -425,9 +451,9 @@ func TestGateStatusOnSeparatesUnreadableFromAbsent(t *testing.T) {
 
 	// Readable but absent is a different fact: nothing has posted yet.
 	empty := stubGateClient{head: "abc", ctxName: "other/check", state: forge.CommitStateSuccess}
-	state, readable, err := gateStatusOn(ctx, empty, "acme/widgets", "abc", "iterion/review")
-	if err != nil || !readable || state != "" {
-		t.Errorf("gateStatusOn = (%q, %v, %v), want the zero state, readable, no error", state, readable, err)
+	st, readable, err := gateStatusOn(ctx, empty, "acme/widgets", "abc", "iterion/review")
+	if err != nil || !readable || st.State != "" {
+		t.Errorf("gateStatusOn = (%q, %v, %v), want the zero state, readable, no error", st.State, readable, err)
 	}
 	if posted, err := gateAlreadyPosted(ctx, empty, "acme/widgets", "abc", "iterion/review"); err != nil || posted {
 		t.Errorf("gateAlreadyPosted = %v (%v), want false when the context is absent", posted, err)

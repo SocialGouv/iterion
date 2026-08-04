@@ -1,0 +1,194 @@
+package server
+
+import (
+	"context"
+	"strings"
+	"testing"
+
+	"github.com/SocialGouv/iterion/pkg/dispatcher/native"
+	"github.com/SocialGouv/iterion/pkg/forge"
+	"github.com/SocialGouv/iterion/pkg/knowledge"
+	"github.com/SocialGouv/iterion/pkg/store"
+	"github.com/SocialGouv/iterion/pkg/webhooks"
+)
+
+// The relaunch lane is the recovery half of the reconciler: a gating run that
+// died without a verdict gets its bot re-run ONCE per head, through the same
+// admission tail as any webhook launch, and a head whose one attempt is spent
+// graduates to a board card instead of looping. Pinned here: the launch fires
+// with the original run's inputs (minus the per-run grant), the once-per-head
+// bound holds, the board card dedups, and a bot the repo no longer enables is
+// never relaunched.
+func TestGateRelaunch(t *testing.T) {
+	const (
+		team   = "t1"
+		repo   = "acme/widgets"
+		prURL  = "https://github.com/acme/widgets/pull/7"
+		head   = "cafe1234cafe1234cafe1234cafe1234cafe1234"
+		gateNm = "revi/review"
+		botID  = "dep-update-guard"
+	)
+
+	type world struct {
+		s        *Server
+		gc       *listingGateClient
+		board    native.BoardStore
+		launched *int
+		lastVars *map[string]string
+	}
+	build := func(t *testing.T, tune func(*Server, *forge.RepoIntegration, *webhooks.Config)) world {
+		t.Helper()
+		s := newWebhookTestServer(t)
+
+		rs, err := store.New(t.TempDir())
+		if err != nil {
+			t.Fatal(err)
+		}
+		s.cfg.Store = rs
+		s.cfg.PublicURL = "https://iterion.test"
+
+		conns := forge.NewMemoryConnectionStore()
+		conn := forge.Connection{ID: "c1", TenantID: team, Provider: forge.ProviderGitHub}
+		if err := conns.Create(context.Background(), conn); err != nil {
+			t.Fatal(err)
+		}
+		s.forgeConnections = conns
+		s.forgePublishTokens = NewForgePublishTokenRegistry()
+		s.forgePublishTokens.Register("run-token", ForgePublishGrant{TeamID: team, ConnectionID: "c1", Repo: repo})
+
+		ints := forge.NewMemoryRepoIntegrationStore()
+		integ := forge.RepoIntegration{
+			ID: "i1", TenantID: team, ConnectionID: "c1", RepoFullName: repo,
+			BotIDs: []string{botID}, WebhookID: "w1",
+			LaunchVars: map[string]string{gateContextVar: gateNm},
+		}
+		cfg := webhooks.Config{ID: "w1", TenantID: team, BotIDs: []string{botID}}
+		if tune != nil {
+			tune(s, &integ, &cfg)
+		}
+		if err := ints.Create(context.Background(), integ); err != nil {
+			t.Fatal(err)
+		}
+		s.forgeIntegrations = ints
+		if err := s.webhookConfigs.Create(context.Background(), cfg); err != nil {
+			t.Fatal(err)
+		}
+
+		gc := &listingGateClient{fakeGateClient: fakeGateClient{headSHA: head}}
+		s.forgeGateClientFor = func(context.Context, forge.Connection) (forgeGateClient, error) {
+			return gc, nil
+		}
+
+		board, err := native.NewStore(t.TempDir())
+		if err != nil {
+			t.Fatal(err)
+		}
+		s.cfg.CloudBoardFor = func(string) native.BoardStore { return board }
+
+		launched := 0
+		var lastVars map[string]string
+		s.webhookLaunchBot = func(_ context.Context, _ string, vars map[string]string, _, _, _ string, _, _ map[string]string) (string, error) {
+			launched++
+			lastVars = vars
+			return "run-relaunched", nil
+		}
+		return world{s: s, gc: gc, board: board, launched: &launched, lastVars: &lastVars}
+	}
+
+	deadInputs := map[string]any{
+		"pr_url":             prURL,
+		"gate_context":       gateNm,
+		"head_sha":           head,
+		"arm_automerge":      "true", // the operator's pinned vars must survive the relaunch
+		forgePublishVarToken: "run-token",
+		forgePublishVarURL:   "https://iterion.test/api/v1/forge/publish-review",
+	}
+	seedDeadRun := func(t *testing.T, s *Server) string {
+		t.Helper()
+		id, err := store.GenerateRunID()
+		if err != nil {
+			t.Fatal(err)
+		}
+		run, err := s.cfg.Store.CreateRun(context.Background(), id, "dep_update_guard", deadInputs)
+		if err != nil {
+			t.Fatal(err)
+		}
+		run.BotID = botID
+		run.Status = store.RunStatusFailedResumable // dead: no retry armed
+		run.Error = "budget exceeded: duration (2401987036905/2400000000000)"
+		if err := s.cfg.Store.SaveRun(context.Background(), run); err != nil {
+			t.Fatal(err)
+		}
+		return run.ID
+	}
+	relaunchIdem := knowledge.ChecksumHex([]byte("gaterelaunch|" + team + "|" + repo + "|7|" + head))
+
+	t.Run("a dead gating run posts its failure and is relaunched once", func(t *testing.T) {
+		w := build(t, nil)
+		runID := seedDeadRun(t, w.s)
+		if err := w.s.reconcileGateForRun(context.Background(), terminalEvent(runID)); err != nil {
+			t.Fatalf("reconcile: %v", err)
+		}
+		if w.gc.setCalls != 1 {
+			t.Fatalf("posted %d statuses, want 1 — the failure lands BEFORE any recovery", w.gc.setCalls)
+		}
+		if *w.launched != 1 {
+			t.Fatalf("launched %d runs, want 1 — the dead review's bot must be re-run", *w.launched)
+		}
+		vars := *w.lastVars
+		if vars["pr_url"] != prURL || vars["arm_automerge"] != "true" {
+			t.Errorf("relaunch dropped original launch vars: %v", vars)
+		}
+		if tok := vars[forgePublishVarToken]; tok == "" || tok == "run-token" {
+			t.Errorf("publish token = %q — the tail must mint a FRESH grant, not reuse the dead run's", tok)
+		}
+		// The claim is durable: the delivery row under the per-head key is
+		// what makes attempt two impossible.
+		if d, err := w.s.webhookDeliveries.GetByIdempotencyKey(context.Background(), relaunchIdem); err != nil || d.RunID != "run-relaunched" {
+			t.Errorf("no durable claim under the per-head key (%v, %+v)", err, d)
+		}
+	})
+
+	t.Run("the second death on the same head escalates to the board instead", func(t *testing.T) {
+		w := build(t, nil)
+		// The head's one attempt is already spent.
+		if err := w.s.webhookDeliveries.Insert(context.Background(), webhooks.Delivery{
+			ID: "d-spent", TenantID: team, WebhookID: "w1", IdempotencyKey: relaunchIdem,
+			Status: webhooks.StatusLaunched, RunID: "run-prior-relaunch",
+		}); err != nil {
+			t.Fatal(err)
+		}
+		runID := seedDeadRun(t, w.s)
+		_ = w.s.reconcileGateForRun(context.Background(), terminalEvent(runID))
+		if *w.launched != 0 {
+			t.Fatalf("launched %d runs, want 0 — one relaunch per head, ever", *w.launched)
+		}
+		cards, err := w.board.List(native.ListFilter{Labels: []string{gateRelaunchLabel}})
+		if err != nil || len(cards) != 1 {
+			t.Fatalf("board cards = %d (%v), want exactly 1", len(cards), err)
+		}
+		if !strings.Contains(cards[0].Body, "run-prior-relaunch") || !strings.Contains(cards[0].Body, "budget exceeded") {
+			t.Errorf("the card must name the dead runs and the reason; got body:\n%s", cards[0].Body)
+		}
+
+		// A third death on the same head adds no second card.
+		w.gc.statuses = nil // the synthetic failure was "lost" so the reconciler acts again
+		runID2 := seedDeadRun(t, w.s)
+		_ = w.s.reconcileGateForRun(context.Background(), terminalEvent(runID2))
+		cards, err = w.board.List(native.ListFilter{Labels: []string{gateRelaunchLabel}})
+		if err != nil || len(cards) != 1 {
+			t.Fatalf("board cards after a third death = %d (%v), want still 1", len(cards), err)
+		}
+	})
+
+	t.Run("a bot the repo no longer enables is not relaunched", func(t *testing.T) {
+		w := build(t, func(_ *Server, i *forge.RepoIntegration, _ *webhooks.Config) {
+			i.BotIDs = []string{"someone-else"}
+		})
+		runID := seedDeadRun(t, w.s)
+		_ = w.s.reconcileGateForRun(context.Background(), terminalEvent(runID))
+		if *w.launched != 0 {
+			t.Fatal("relaunched a bot the operator has since removed from the repo")
+		}
+	})
+}

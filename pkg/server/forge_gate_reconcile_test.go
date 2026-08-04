@@ -3,7 +3,9 @@ package server
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
+	"time"
 
 	"github.com/SocialGouv/iterion/pkg/forge"
 	"github.com/SocialGouv/iterion/pkg/store"
@@ -197,12 +199,9 @@ func TestGateReconcile_NeedsThePinnedContextToActAtAll(t *testing.T) {
 	}
 }
 
-// A resumable failure is not a dead run: the cloud runner republishes the
-// outcome on every delivery attempt, BEFORE it decides to retry. Painting the
-// check red there contradicts a review that is about to run again.
-func TestGateReconcile_LeavesResumableAndPausedRunsAlone(t *testing.T) {
+// A paused run is expected to resume and post its own verdict.
+func TestGateReconcile_LeavesPausedRunsAlone(t *testing.T) {
 	for _, st := range []store.RunStatus{
-		store.RunStatusFailedResumable,
 		store.RunStatusPausedWaitingHuman,
 		store.RunStatusPausedOperator,
 	} {
@@ -217,6 +216,94 @@ func TestGateReconcile_LeavesResumableAndPausedRunsAlone(t *testing.T) {
 				t.Fatalf("%s: wrote a verdict over a run that is expected to post its own (%d writes)", st, gc.setCalls)
 			}
 		})
+	}
+}
+
+// A resumable failure is only "not dead" while a retry is actually ARMED. The
+// runner arms one for usage-window failures (persisted before the outcome
+// event fires); everything else — budget exceeded, exhausted attempts, a
+// plain execution failure — has nothing coming back for it, and skipping
+// those left a PR silently unmergeable behind an absent required check
+// (observed in production, Vetty run 019fc8e5 on 2026-08-03).
+func TestGateReconcile_FailedResumable(t *testing.T) {
+	setStatus := func(t *testing.T, s *Server, runID string, retry *store.RunRetryState, runErr string) {
+		t.Helper()
+		run, err := s.cfg.Store.LoadRun(context.Background(), runID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		run.Status = store.RunStatusFailedResumable
+		run.Error = runErr
+		run.RetryState = retry
+		if err := s.cfg.Store.SaveRun(context.Background(), run); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	t.Run("an armed retry stands the reconciler down", func(t *testing.T) {
+		gc := &listingGateClient{fakeGateClient: fakeGateClient{headSHA: "deadbeef"}}
+		s, runID := gateReconcileFixture(t, gatingInputs(), gc)
+		at := time.Now().UTC().Add(time.Hour)
+		setStatus(t, s, runID, &store.RunRetryState{RetryAfter: &at, Reason: "usage_window"}, "usage window shut")
+		_ = s.reconcileGateForRun(context.Background(), terminalEvent(runID))
+		if gc.setCalls != 0 {
+			t.Fatalf("wrote a verdict over a run whose retry is armed and about to resume (%d writes)", gc.setCalls)
+		}
+	})
+
+	t.Run("no retry armed means the run is dead — reconcile it", func(t *testing.T) {
+		gc := &listingGateClient{fakeGateClient: fakeGateClient{headSHA: "deadbeef"}}
+		s, runID := gateReconcileFixture(t, gatingInputs(), gc)
+		setStatus(t, s, runID, nil, "budget exceeded: duration (2401987036905/2400000000000)")
+		if err := s.reconcileGateForRun(context.Background(), terminalEvent(runID)); err != nil {
+			t.Fatalf("reconcile: %v", err)
+		}
+		if gc.setCalls != 1 {
+			t.Fatalf("posted %d statuses, want 1 — nothing resumes a budget-exceeded run on its own", gc.setCalls)
+		}
+		if gc.last.State != forge.CommitStateFailure {
+			t.Errorf("state = %q, want failure", gc.last.State)
+		}
+		// The reason is on the check: whoever finds it must not have to dig
+		// through run storage to learn WHY the review died.
+		if !strings.Contains(gc.last.Description, "budget exceeded") {
+			t.Errorf("description %q does not carry the failure reason", gc.last.Description)
+		}
+		if !isSyntheticGateInterruption(gc.last.Description) {
+			t.Errorf("description %q is not recognizable as synthetic — the auto-fix lane would treat it as a real verdict", gc.last.Description)
+		}
+	})
+
+	t.Run("an abandoned retry is dead too", func(t *testing.T) {
+		gc := &listingGateClient{fakeGateClient: fakeGateClient{headSHA: "deadbeef"}}
+		s, runID := gateReconcileFixture(t, gatingInputs(), gc)
+		setStatus(t, s, runID, &store.RunRetryState{
+			RetryAfter: nil, Reason: "usage_window", Attempts: 3,
+			LastError: "usage-window retries exhausted (max 3)",
+		}, "usage limit blocked")
+		_ = s.reconcileGateForRun(context.Background(), terminalEvent(runID))
+		if gc.setCalls != 1 {
+			t.Fatalf("posted %d statuses, want 1 — an abandoned retry never comes back", gc.setCalls)
+		}
+	})
+}
+
+// The synthetic marker must be recognized in both its shapes and must never
+// swallow a real verdict.
+func TestGateReconcile_SyntheticMarker(t *testing.T) {
+	for _, tc := range []struct {
+		desc string
+		want bool
+	}{
+		{gateInterruptedDescription, true},
+		{"review died (budget exceeded: duration…) — push again or comment the bot's command to re-run", true},
+		{"no blocking findings (≥high); 4 total", false},
+		{"supply-chain audit clean; no alignment needed, build verified", false},
+		{"", false},
+	} {
+		if got := isSyntheticGateInterruption(tc.desc); got != tc.want {
+			t.Errorf("isSyntheticGateInterruption(%q) = %v, want %v", tc.desc, got, tc.want)
+		}
 	}
 }
 

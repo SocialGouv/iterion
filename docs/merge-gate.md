@@ -221,7 +221,7 @@ check that is *absent* rather than red. If a fixer posts nothing, look at the
 run's inputs for `forge_publish_url` and `gate_context` before looking at the
 bot.
 
-### Zero-touch: letting a red gate launch the fixer itself (opt-in)
+### <a name="autofix"></a>Zero-touch: letting a red gate launch the fixer itself (opt-in)
 
 By default nothing happens when the gate goes red: the findings are on the pull
 request and the developer decides — fix them, argue one, or hand the work over
@@ -341,9 +341,15 @@ that from doing harm of its own:
   starts a fresh review. A newer head is a newer review's responsibility, so
   the run must name the revision it read (`head_sha`, stamped at launch) and
   the reconciler abstains when it does not.
-- **It leaves resumable and paused runs alone.** The cloud runner republishes
-  a run outcome on every delivery attempt, before deciding to retry, so a
-  transient rate limit is not a dead run.
+- **It leaves paused runs and ARMED retries alone — and nothing else.** A
+  `failed_resumable` run whose usage-window retry is armed (persisted before
+  the outcome event fires) will resume and post its own verdict. One with no
+  retry armed — budget exceeded, retries exhausted, a plain execution failure —
+  has nothing coming back for it and IS reconciled: skipping those left a
+  Vetty-gated PR silently unmergeable for hours in production (2026-08-03,
+  a 15-module go bump whose audit died on the run's own duration budget).
+  When the retry sweeper permanently abandons a retry, it republishes the run
+  outcome so this rule fires then too.
 - **It stays inside the grant's scope.** `pr_url` is a launch var, and the
   server honours a caller-pinned publish token, so the repo and forge host are
   re-checked against the grant exactly as the publish endpoint checks them. A
@@ -354,3 +360,27 @@ that from doing harm of its own:
 
 A paused run is not reconciled: it is expected to resume and post its own
 verdict.
+
+### The dead review is re-run — once per head
+
+The synthetic `failure` makes the interruption visible; on an automated lane
+(a Dependabot PR guarded by Vetty) nobody is watching to act on it. So after
+posting it, the server relaunches the SAME bot on the same pull request —
+crash-recovery of a launch the webhook already admitted, re-run through the
+same tail (idempotency claim, quota metering, fresh publish grant, hold-label
+veto, `overlap: supersede`). The bound is the idempotency key itself: **one
+relaunch per (PR, head sha), ever.** The fresh run posts the real verdict over
+the synthetic failure when it completes.
+
+When the one relaunch is already spent and the gate dies AGAIN on the same
+head — or the relaunch cannot start at all — the problem graduates to the
+team's board: a card labelled `source:gate-reconcile` (deduped per PR+head)
+naming the dead runs, the failure reason, and the remedy. A required check
+dying repeatedly on one revision is a structural signal (a run budget too
+short for the workload, a recurring provider quota, a bot defect), which is a
+human's call, and the board is where Nexie and the operator will actually see
+it.
+
+The auto-fix lane ([above](#autofix)) deliberately ignores these synthetic
+failures: `review died` means there are no findings to fix, so the recovery is
+re-running the REVIEWER (this lane), never launching the fixer.
