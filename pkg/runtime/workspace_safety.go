@@ -126,7 +126,42 @@ func unrestrictedCLIBackendCanWrite(
 	if backend == "" || backend == "auto" {
 		return false
 	}
-	return backend != "claw"
+	if backend != "claw" {
+		return true
+	}
+	// The node resolves to claw, where an empty tools list means ZERO
+	// tools. But a `fallbacks:` route (ADR-087) on a CLI backend would
+	// run that same empty list as the FULL unrestricted native toolset
+	// under bypassPermissions — so a node admitted here as read-only
+	// could start writing the moment its chain falls through.
+	//
+	// Admission is decided ONCE, before the run, so it must be
+	// pessimistic over the WHOLE chain: mutating if ANY route would be.
+	// The cost is real and accepted — a tools-less claw node that
+	// declares a CLI route stops being eligible for parallel read-only
+	// fan-out — and it is the right trade against N concurrent writers
+	// racing on one worktree with every guard already passed.
+	return fallbacksReachCLIBackend(node)
+}
+
+// fallbacksReachCLIBackend reports whether any of a node's `fallbacks:`
+// routes runs on a backend where an empty `tools:` list means the full
+// native toolset rather than none.
+func fallbacksReachCLIBackend(node ir.Node) bool {
+	llm, ok := node.(ir.LLMNode)
+	if !ok {
+		return false
+	}
+	for _, fb := range llm.GetFallbacks() {
+		b := strings.TrimSpace(ir.ExpandEnvWithDefault(fb.Backend))
+		if b == "" || b == "auto" {
+			continue // inherits the node's backend, which is claw here
+		}
+		if b != "claw" {
+			return true
+		}
+	}
+	return false
 }
 
 // branchContainsMutation walks from startNodeID to globalConvergence (or to a

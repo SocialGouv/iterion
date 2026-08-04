@@ -1290,3 +1290,11 @@ agent reviewer:
   `model:` instead.
 - Single-value `provider:` (and unset) behaves exactly as before —
   the chain form is purely additive.
+- For what `provider:` cannot do — continuing on **another backend**
+  when a CLI forfait's window shuts — use **`fallbacks:`** (ADR-087):
+  named routes carrying their own backend + model, tried in declaration
+  order, filtered by `on:` (default `[usage_window, unavailable]`). A
+  fall-through emits a `model_fallback` event and stamps
+  `_fallback_used` / `_served_by` on the node output, so a deterministic
+  gate can fail closed on a degraded input. See
+  [docs/backends.md](../../docs/backends.md) §Cross-backend fallback routes.

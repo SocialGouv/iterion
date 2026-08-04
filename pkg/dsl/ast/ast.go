@@ -505,6 +505,26 @@ type LLMDecl struct {
 	Compress          string           // compress output-compression mode: on|ultra|off ("" = inherit)
 	Permission        string           // permission gate mode override: off|ask|deny ("" = inherit workflow)
 	Needs             []string         // resource names acquired before running (workflow.resources)
+	Fallbacks         []*FallbackDecl  // ordered `fallbacks:` routes tried when this node's primary fails (ADR-087); declaration order preserved for round-trip
+}
+
+// FallbackDecl is one named entry of a node's `fallbacks:` block — a
+// complete alternative route (backend + model + credential hint) the
+// runtime tries when the preceding one fails.
+//
+// Entries are NAMED rather than anonymous list items for two reasons:
+// the DSL lexer has no sequence token (`-` is only ever the first
+// character of `->`), and a name gives each route a stable id that the
+// fall-through event and the run report can cite — "fell through to
+// api" rather than "fell through to element 2".
+type FallbackDecl struct {
+	Name     string
+	Backend  string   // backend to run this route on ("" = the node's)
+	Model    string   // model for this route ("" = the node's)
+	Provider string   // credential-routing hint ("" = auto)
+	On       []string // failure categories that may route here ("" = the package default)
+	Metered  bool     // author's acknowledgement that this route spends a metered credential
+	Span     Span
 }
 
 // AgentDecl represents an `agent <name>:` node declaration.

@@ -185,6 +185,28 @@ func stampDelegateOutputMeta(output map[string]any, result delegate.Result, back
 	}
 }
 
+// stampFallbackMeta records, on the node's own output, that the run was
+// served by something other than its first choice.
+//
+// This is the half of ADR-087's judge guardrail that a bot can act on.
+// A reviewer served by a weaker model still emits a well-formed verdict
+// — only the finding COUNT changes, and a deterministic merge gate reads
+// that count. `_fallback_used` lets such a gate fail closed on a
+// degraded input, the same posture it already takes on an unreadable
+// one; `_served_by` names the route so a bilan can say which.
+//
+// Nothing is written on the happy path, so an output that carries these
+// keys always means something actually happened.
+func stampFallbackMeta(output map[string]any, out chainOutcome) {
+	if output == nil || !out.FellThrough {
+		return
+	}
+	output["_fallback_used"] = true
+	if out.ServedBy != "" {
+		output["_served_by"] = out.ServedBy
+	}
+}
+
 // dispatchWithObservability wraps dispatchWithProviderFallback with the
 // 3-hook lifecycle every agent/judge/LLM-router call paid by hand:
 // OnDelegateStarted fires before dispatch; on error, OnDelegateError
@@ -328,7 +350,7 @@ func (e *ClawExecutor) executeBackend(ctx context.Context, node ir.Node, input m
 			f.id, 0, task.Model, toolSuffix)
 	}
 
-	chain := collapseHintOnlyChain(e.resolveProviderChain(node), backendName)
+	chain := collapseHintOnlyChain(e.resolveChain(node), backendName)
 	build := e.newElementBuilder(f.id, backendName, backend,
 		func(ctx context.Context, bn string) (*delegate.Task, error) {
 			// The base backend's task is already built above; only an
@@ -366,6 +388,7 @@ func (e *ClawExecutor) executeBackend(ctx context.Context, node ir.Node, input m
 
 	// Attach metadata.
 	stampDelegateOutputMeta(result.Output, result, servingBackendName)
+	stampFallbackMeta(result.Output, out)
 
 	// Check for a backend interaction signal BEFORE schema validation.
 	// A `_needs_interaction` pause Result (e.g. an LLM ask_user call on a

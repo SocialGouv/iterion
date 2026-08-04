@@ -215,6 +215,7 @@ type AgentNode struct {
 	Memory           *Memory      // per-node workspace memory opt-in (nil = disabled)
 	Sandbox          *SandboxSpec // node-level sandbox override (nil = inherit workflow)
 	Cursors          *CursorInvocation
+	Fallbacks        []Fallback
 	Compress         string   // compress output-compression mode: on|ultra|off ("" = inherit)
 	Permission       string   // permission gate mode override: off|ask|deny ("" = inherit workflow)
 	Needs            []string // resource names this node acquires before running (counting semaphores)
@@ -243,6 +244,7 @@ type JudgeNode struct {
 	Memory           *Memory      // per-node workspace memory opt-in (nil = disabled)
 	Sandbox          *SandboxSpec // node-level sandbox override (nil = inherit workflow)
 	Cursors          *CursorInvocation
+	Fallbacks        []Fallback
 	Compress         string   // compress output-compression mode: on|ultra|off ("" = inherit)
 	Permission       string   // permission gate mode override: off|ask|deny ("" = inherit workflow)
 	Needs            []string // resource names this node acquires before running (counting semaphores)
@@ -517,6 +519,14 @@ type LLMNode interface {
 	GetCompaction() *Compaction
 	GetMemory() *Memory
 	GetCursors() *CursorInvocation
+	// GetFallbacks returns the node's ordered `fallbacks:` routes. It is
+	// on the interface — rather than executor-private state — because
+	// three PRE-RUN analyses read a node's backend and would otherwise
+	// be computed from the head element alone: the sandbox's iterion
+	// bind-mount (containsClawNode), parallel-branch admission
+	// (unrestrictedCLIBackendCanWrite), and the fan_out_each mutation
+	// guard. See ADR-087 decision 1.
+	GetFallbacks() []Fallback
 	GetCompress() string
 	GetPermission() string
 }
@@ -541,6 +551,7 @@ func (n *AgentNode) GetActiveMCPServers() []string            { return n.ActiveM
 func (n *AgentNode) GetCompaction() *Compaction               { return n.Compaction }
 func (n *AgentNode) GetMemory() *Memory                       { return n.Memory }
 func (n *AgentNode) GetCursors() *CursorInvocation            { return n.Cursors }
+func (n *AgentNode) GetFallbacks() []Fallback                 { return n.Fallbacks }
 func (n *AgentNode) GetCompress() string                      { return n.Compress }
 func (n *AgentNode) GetPermission() string                    { return n.Permission }
 
@@ -559,6 +570,7 @@ func (n *JudgeNode) GetActiveMCPServers() []string            { return n.ActiveM
 func (n *JudgeNode) GetCompaction() *Compaction               { return n.Compaction }
 func (n *JudgeNode) GetMemory() *Memory                       { return n.Memory }
 func (n *JudgeNode) GetCursors() *CursorInvocation            { return n.Cursors }
+func (n *JudgeNode) GetFallbacks() []Fallback                 { return n.Fallbacks }
 func (n *JudgeNode) GetCompress() string                      { return n.Compress }
 func (n *JudgeNode) GetPermission() string                    { return n.Permission }
 
@@ -1383,6 +1395,20 @@ type CursorBandSpec struct {
 // Settings preserves declaration order; resolution sorts by cursor
 // name alphabetically before composing the prompt suffix so identical
 // activations produce identical prompts (prompt-cache friendly).
+// Fallback is one compiled route of a node's `fallbacks:` block: a
+// complete alternative (backend + model + credential hint) the runtime
+// tries when the preceding route fails.
+//
+// Every field may carry ${VAR} refs, resolved at run time.
+type Fallback struct {
+	Name     string
+	Backend  string   // "" = the node's backend
+	Model    string   // "" = the node's model
+	Provider string   // "" = auto
+	On       []string // failure categories that may route here; empty = the runtime default
+	Metered  bool     // the author's acknowledgement that this route spends a metered credential
+}
+
 type CursorInvocation struct {
 	Enabled  bool
 	Settings []CursorSetting

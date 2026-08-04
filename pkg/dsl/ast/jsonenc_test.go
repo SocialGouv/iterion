@@ -766,3 +766,54 @@ workflow w:
 		}
 	}
 }
+
+// TestFallbacksRoundtrip guards the exact bug TestCapabilitiesRoundtrip
+// was written for, on the newest block. ast.UnmarshalFile is a plain
+// typed json.Unmarshal — a key the wire struct does not know is silently
+// discarded — and the studio round-trips every save through
+// /api/parse → /api/unparse. Miss the DECODE half and a `fallbacks:`
+// block disappears from the .bot the next time anyone edits an unrelated
+// field, with no diagnostic anywhere.
+func TestFallbacksRoundtrip(t *testing.T) {
+	original := &ast.File{
+		Agents: []*ast.AgentDecl{
+			{
+				Name: "implement",
+				LLMDecl: ast.LLMDecl{
+					Backend: "claude_code",
+					Model:   "claude-opus-5",
+					Tools:   []string{"read_file"},
+					Fallbacks: []*ast.FallbackDecl{
+						{Name: "api", Backend: "claw", Model: "anthropic/claude-opus-5", Provider: "anthropic", On: []string{"usage_window"}},
+						{Name: "gpt", Backend: "claw", Model: "openai/gpt-5.5", Metered: true},
+					},
+				},
+			},
+		},
+		Judges: []*ast.JudgeDecl{
+			{
+				Name: "gate",
+				LLMDecl: ast.LLMDecl{
+					Model:     "anthropic/claude-opus-5",
+					Fallbacks: []*ast.FallbackDecl{{Name: "second", Model: "openai/gpt-5.5"}},
+				},
+			},
+		},
+		Workflows: []*ast.WorkflowDecl{{Name: "wf", Entry: "implement"}},
+	}
+	data, err := ast.MarshalFile(original)
+	if err != nil {
+		t.Fatalf("MarshalFile: %v", err)
+	}
+	restored, err := ast.UnmarshalFile(data)
+	if err != nil {
+		t.Fatalf("UnmarshalFile: %v", err)
+	}
+	if !reflect.DeepEqual(original, restored) {
+		t.Errorf("fallbacks did not survive the JSON round-trip\n--- original ---\n%#v\n--- restored ---\n%#v",
+			original.Agents[0].Fallbacks, restored.Agents[0].Fallbacks)
+	}
+	if len(restored.Judges[0].Fallbacks) != 1 {
+		t.Error("judge routes lost — the judge encode/decode site is the easy one to forget")
+	}
+}

@@ -304,7 +304,12 @@ func providerFallbackEligible(backendName string) bool {
 // a hint-ignoring backend is pure waste.
 func chainIsHintOnly(chain []chainElement) bool {
 	for _, el := range chain {
-		if el.Backend != "" {
+		// A named element came from a `fallbacks:` block, i.e. the
+		// author declared a distinct route on purpose. Even one that
+		// only varies the model is meaningful on claw, which derives
+		// its provider from the model-spec prefix — so a named element
+		// is never collapsed away.
+		if el.Backend != "" || el.Label != "" {
 			return false
 		}
 	}
@@ -553,6 +558,15 @@ type chainOutcome struct {
 	BackendName string           // backend that served
 	Backend     delegate.Backend // its handle, for the schema retry
 	Task        *delegate.Task   // the task it ran, for the schema retry
+	// ServedBy names the element that served, and FellThrough reports
+	// whether it was anything but the node's first choice. They exist so
+	// a bot's DETERMINISTIC gate can fail closed on a degraded input —
+	// the same posture as an unreadable output. A reviewer served by a
+	// weaker model still emits a well-formed verdict; the count it
+	// produces is the only thing that changes, and nothing else in the
+	// run would record why.
+	ServedBy    string
+	FellThrough bool
 }
 
 // dispatchChain walks a node's fallback chain, building each element
@@ -623,6 +637,8 @@ func (e *ClawExecutor) dispatchChain(
 				BackendName: backendName,
 				Backend:     backend,
 				Task:        task,
+				ServedBy:    stepLabel(el),
+				FellThrough: i > 0,
 			}, nil
 		}
 		causes = append(causes, err)

@@ -93,6 +93,8 @@ func (p *parser) parseLLMProp(d *ast.LLMDecl, propTok Token, kind string) {
 		case "description":
 			p.expect(TokenColon)
 			d.Description = p.expectString()
+		case "fallbacks":
+			d.Fallbacks = p.parseFallbacksBlock(propTok)
 		default:
 			p.addError(DiagUnknownProperty, propTok, "unknown "+kind+" property '"+propTok.Value+"'")
 			p.skipToNewline()
@@ -593,6 +595,109 @@ func (p *parser) parseRecoveryBlock(propTok Token) *ast.RecoveryBlock {
 		p.skipNewlines()
 	}
 	return rb
+}
+
+// parseFallbacksBlock parses a node's `fallbacks:` block — an ordered
+// set of NAMED alternative routes (ADR-087):
+//
+//	fallbacks:
+//	  api:
+//	    backend: "claw"
+//	    model: "anthropic/claude-opus-5"
+//	    on: [usage_window]
+//
+// Named entries rather than a YAML-style bullet list because the lexer
+// has no sequence token (`-` is only ever the start of `->`), and
+// because a name gives each route a stable id for the fall-through
+// event and the run report. Order is the try order and is preserved.
+//
+// Reached from parseLLMProp's TokenIdent arm, so `fallbacks` stays a
+// plain identifier — making it a reserved keyword would break any bot
+// with a node, prompt or schema of that name.
+func (p *parser) parseFallbacksBlock(propTok Token) []*ast.FallbackDecl {
+	p.expect(TokenColon)
+	p.skipNewlines()
+	if _, ok := p.expect(TokenIndent); !ok {
+		// Empty block — recover gracefully; the IR validator reports it.
+		return nil
+	}
+	var out []*ast.FallbackDecl
+	for {
+		p.skipNewlines()
+		t := p.peek()
+		if t.Type == TokenDedent || t.Type == TokenEOF {
+			if t.Type == TokenDedent {
+				p.next()
+			}
+			break
+		}
+		if fd := p.parseFallbackEntry(); fd != nil {
+			out = append(out, fd)
+		}
+	}
+	return out
+}
+
+// parseFallbackEntry parses one named route of a `fallbacks:` block.
+func (p *parser) parseFallbackEntry() *ast.FallbackDecl {
+	nameT := p.next()
+	if nameT.Type != TokenIdent && !isKeywordToken(nameT.Type) {
+		p.addError(DiagExpectedToken, nameT, "expected fallback name, got "+nameT.Type.String())
+		p.skipToNewline()
+		return nil
+	}
+	p.expect(TokenColon)
+	fd := &ast.FallbackDecl{
+		Name: nameT.Value,
+		Span: ast.Span{Start: p.pos(nameT), End: p.pos(nameT)},
+	}
+	p.skipNewlines()
+	if p.peek().Type != TokenIndent {
+		// A name with no body declares nothing routable; the IR
+		// validator reports it (C173) rather than the parser, so a
+		// document built straight from JSON hits the same check.
+		return fd
+	}
+	p.next() // consume indent
+	for {
+		p.skipNewlines()
+		t := p.peek()
+		if t.Type == TokenDedent || t.Type == TokenEOF {
+			if t.Type == TokenDedent {
+				p.next()
+			}
+			break
+		}
+		if t.Type != TokenIdent && !isKeywordToken(t.Type) {
+			p.addError(DiagUnexpectedToken, t, "unexpected token in fallback block: "+t.Value)
+			p.next()
+			p.skipToNewline()
+			continue
+		}
+		propName := t.Value
+		p.next()
+		p.expect(TokenColon)
+		switch propName {
+		case "backend":
+			fd.Backend = p.expectString()
+		case "model":
+			fd.Model = p.expectString()
+		case "provider":
+			fd.Provider = p.expectString()
+		case "on":
+			fd.On = p.parseIdentList()
+		case "metered":
+			if v := p.parseBool(); v != nil {
+				fd.Metered = *v
+			}
+		default:
+			p.addError(DiagUnknownProperty, t, "unknown fallback property '"+propName+"'")
+			p.skipToNewline()
+		}
+		fd.Span.End = p.pos(t)
+		p.skipNewlines()
+	}
+	return fd
 }
 
 // ---- compute ----

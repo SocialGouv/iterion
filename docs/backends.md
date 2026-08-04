@@ -262,6 +262,116 @@ field first, so the `:-` in `${VAR:-x}` is never mistaken for a
 Like the hint chain itself, per-element models only take effect on
 `claude_code` (the only backend that walks the chain today).
 
+## Cross-backend fallback routes (`fallbacks:`)
+
+`provider:` swaps a **credential** on one backend. `fallbacks:` declares
+complete alternative **routes** — a different backend, model and
+credential — for the case the `provider:` chain cannot serve: a CLI
+backend whose subscription forfait has shut, continuing on a metered API
+through `claw`. See [ADR-087](adr/087-cross-backend-model-fallback-chain.md).
+
+```yaml
+agent implement:
+  backend: "claude_code"          # forfait
+  model: "claude-opus-5"
+  tools: [read_file, run_command]
+  fallbacks:
+    api:                          # same model, metered Anthropic key
+      backend: "claw"
+      model: "anthropic/claude-opus-5"
+      on: [usage_window]
+    gpt:                          # another API family
+      backend: "claw"
+      model: "openai/gpt-5.5"
+      metered: true
+```
+
+Routes are **named**, and the name is not decoration: it is the id the
+`model_fallback` event and the run report cite, so a bilan reads
+"fell through to `api`" rather than an ordinal. Declaration order is the
+try order. Both surfaces compose — the `provider:` hints are walked
+first, then each route.
+
+### When a route is taken
+
+`on:` filters which failure may route to an element:
+
+| Category | Meaning | Emitted by |
+|---|---|---|
+| `usage_window` | subscription 5h/weekly cap — waiting is the only cure for THIS credential | `claude_code`; `pi` when the provider echoes Anthropic-shaped prose |
+| `auth` | rejected or expired credential | `claude_code`, `pi` |
+| `unavailable` | model the credential cannot reach | `claude_code` |
+| `transient_exhausted` | a transient condition that survived the in-node retry budget | every backend |
+| `any` | escape hatch — clears the filter | — |
+
+The default when `on:` is omitted is **`[usage_window, unavailable]`**.
+Two omissions are deliberate: `any` is not the default because a budget
+cap or a schema-shape failure re-fails identically on every route, and
+`auth` is not, because a rejected credential deliberately pauses for a
+human rather than being automated around. Both remain available
+explicitly.
+
+An **unclassifiable** failure always routes, whatever the filter says.
+Refusing it would strand a run on exactly the failures iterion could not
+describe — a sandboxed `claw` route flattens its errors to a string at
+the IPC boundary, and `kimi`/`grok` have no error channel at all.
+
+A `usage_window` failure **skips** the in-node retry budget when a route
+remains: retrying inside a shut window cannot succeed, and the whole
+chain runs under one per-node `timeout:`.
+
+### What a fall-through leaves behind
+
+Nothing about it is silent:
+
+- a `model_fallback` event in `events.jsonl` (from/to backend, model and
+  provider, the classified reason, attempts spent) plus a `run.log`
+  warning;
+- `_backend` / `_model` on the node output name the route that
+  **served**, not the one requested;
+- `_fallback_used` and `_served_by` are stamped so a bot's deterministic
+  gate can **fail closed on a degraded input** — the same posture it
+  already takes on an unreadable one. This matters most for a judge: a
+  weaker model still emits a well-formed verdict, and only the finding
+  count changes;
+- a failed route's tokens and cost fold into the node's totals, so
+  `max_cost_usd` and the org monthly cap see what was really spent;
+- an exhausted chain surfaces every route's error (`Unwrap() []error`),
+  so the run-level usage-window retry and the credential-pool donor
+  cooldown still find the cause they key on.
+
+A fall-through also **drops the failed route's conversation** — the
+session store carries no provider fingerprint, so replaying it would
+send one provider's signed turns to another.
+
+### Refusals
+
+Two crossings are compile-time **errors** (`C176`), because the degraded
+run would be silently wrong rather than merely worse:
+
+- a route on a backend that cannot enforce the node's `permission:` gate
+  (`kimi`, `grok`, `codex`) — the anti-prompt-injection boundary must not
+  disappear at the moment the run is under stress;
+- a route crossing the claw⇄CLI boundary on a node with an **empty
+  `tools:` list**. The list inverts meaning there: empty means *no*
+  tools on `claw` and the *full unrestricted* native toolset on a CLI
+  backend. Declare the tools explicitly — on `claude_code` the list is
+  inert, so it costs nothing and makes the `claw` route real.
+
+A route that changes `backend:` must pin its own `model:` (`C173`):
+model specs are not portable (`claw` needs `provider/model`,
+`claude_code` accepts a bare id or an `anthropic/` prefix).
+
+### Scope
+
+`claude_code` ⇄ `claw` is the validated lane. `kimi` and `grok` sit on a
+CLI contract that structurally cannot return an error, so no typed
+trigger can fire for them; `codex` is frozen. A sandboxed `claw` route
+works — the trigger comes from the failing route, which `claude_code`
+types correctly — but it is refused on a node declaring `permission:`
+(the IPC envelope carries no policy) and its own failure is always
+unclassifiable.
+
 ## Transient-error & network resilience
 
 A brief internet/API outage should not abort a whole run. Every backend

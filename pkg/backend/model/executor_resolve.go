@@ -93,6 +93,84 @@ type chainElement struct {
 	On []delegate.FallbackCategory
 }
 
+// defaultFallbackTriggers is the `on:` set a `fallbacks:` route gets
+// when the author declares none.
+//
+// It is a closed POSITIVE list, and neither omission is accidental:
+//   - `any` is excluded because a budget cap or a schema-shape failure
+//     re-fails identically on every route, so routing on them buys
+//     nothing and costs a second credential;
+//   - `auth` is excluded because AuthFailedRecipe deliberately routes a
+//     rejected credential to a human rather than automating around it —
+//     enabling it by default would reverse a shipped, argued decision.
+//
+// Both remain available explicitly.
+var defaultFallbackTriggers = []delegate.FallbackCategory{
+	delegate.FallbackUsageWindow,
+	delegate.FallbackUnavailable,
+}
+
+// resolveChain builds a node's complete ordered route list: its legacy
+// `provider:` hint chain first (which always yields at least the node's
+// own route), then each `fallbacks:` entry in declaration order.
+//
+// The two surfaces stay independent by design. `provider:` swaps a
+// credential on one backend and falls through on ANY error, which is
+// what every shipped chain relies on; `fallbacks:` is a full
+// re-resolution filtered by `on:`. Desugaring one into the other would
+// silently change the first's semantics and invalidate C088, which two
+// catalog bots document in their own comments.
+func (e *ClawExecutor) resolveChain(node ir.Node) []chainElement {
+	chain := e.resolveProviderChain(node)
+	for _, fb := range nodeFallbacks(node) {
+		el := chainElement{
+			Label:    fb.Name,
+			Backend:  strings.TrimSpace(ir.ExpandEnvWithDefault(fb.Backend)),
+			Provider: strings.TrimSpace(ir.ExpandEnvWithDefault(fb.Provider)),
+			Model:    strings.TrimSpace(ir.ExpandEnvWithDefault(fb.Model)),
+		}
+		if el.Provider == "auto" {
+			el.Provider = "" // explicit auto → process-env precedence
+		}
+		el.On = resolveTriggers(fb.On)
+		chain = append(chain, el)
+	}
+	return chain
+}
+
+// resolveTriggers maps a route's declared `on:` tokens onto categories.
+// An empty list takes the package default; an explicit `any` yields nil,
+// which the walker reads as "accept every condition".
+func resolveTriggers(on []string) []delegate.FallbackCategory {
+	if len(on) == 0 {
+		return defaultFallbackTriggers
+	}
+	out := make([]delegate.FallbackCategory, 0, len(on))
+	for _, raw := range on {
+		token := strings.TrimSpace(ir.ExpandEnvWithDefault(raw))
+		if token == "" {
+			continue
+		}
+		if token == "any" {
+			return nil
+		}
+		out = append(out, delegate.FallbackCategory(token))
+	}
+	if len(out) == 0 {
+		return defaultFallbackTriggers
+	}
+	return out
+}
+
+// nodeFallbacks returns a node's compiled `fallbacks:` routes, or nil
+// for a node kind that cannot declare them.
+func nodeFallbacks(node ir.Node) []ir.Fallback {
+	if n, ok := node.(ir.LLMNode); ok {
+		return n.GetFallbacks()
+	}
+	return nil
+}
+
 // sameRoute reports whether two elements resolve to the same call —
 // same backend, same credential hint, same model. It deliberately
 // ignores Label and On: two elements that differ only in their name or

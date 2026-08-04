@@ -1232,17 +1232,39 @@ func containsClawNode(wf *ir.Workflow) bool {
 	for _, n := range wf.Nodes {
 		switch nn := n.(type) {
 		case *ir.AgentNode:
-			if backendIsClaw(nn.Backend) {
+			if backendIsClaw(nn.Backend) || fallbacksReachClaw(nn.Fallbacks) {
 				return true
 			}
 		case *ir.JudgeNode:
-			if backendIsClaw(nn.Backend) {
+			if backendIsClaw(nn.Backend) || fallbacksReachClaw(nn.Fallbacks) {
 				return true
 			}
 		case *ir.RouterNode:
 			if backendIsClaw(nn.Backend) {
 				return true
 			}
+		}
+	}
+	return false
+}
+
+// fallbacksReachClaw reports whether any of a node's `fallbacks:` routes
+// (ADR-087) runs on claw.
+//
+// The mount decision is taken ONCE, before the run, from static backend
+// strings — so a claw route that exists only inside a fallbacks block
+// would otherwise get no in-container iterion binary and die with
+// `exec: iterion: not found`, at the worst possible moment: the primary
+// has just exhausted its quota and the chain is advancing.
+//
+// Deliberately NOT backendIsClaw: that helper treats an empty backend as
+// claw (the implicit default), which is right for a node but wrong here
+// — a route inheriting the node's backend adds nothing the node itself
+// did not already declare.
+func fallbacksReachClaw(fbs []ir.Fallback) bool {
+	for _, fb := range fbs {
+		if fb.Backend != "" && backendIsClaw(fb.Backend) {
+			return true
 		}
 	}
 	return false

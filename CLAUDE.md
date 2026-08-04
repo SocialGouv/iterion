@@ -279,6 +279,22 @@ Six backends are wired:
 - `kimi` — Moonshot's kimi-code CLI driven through the generic CLI-agent seam (ADR-065, [pkg/backend/delegate/kimi.go](pkg/backend/delegate/kimi.go)): `backend: "kimi"`, prompt via `-p`, stream-json output, model alias passed through verbatim (e.g. `model: "kimi-code/kimi-for-coding"`); credentials are resolved by the CLI itself from its own env/config. Sessions are best-effort — resume/fork are not wired for CLI-agent backends, so each node runs fresh.
 - `grok` — xAI Grok Build CLI driven through the same CLI-agent seam (ADR-065, [pkg/backend/delegate/grok.go](pkg/backend/delegate/grok.go)): `backend: "grok"`, prompt via `-p`, `--output-format json`, `system:` via `--rules` (append — never override the native agentic baseline), model via `-m` (optional `xai/` prefix stripped), `reasoning_effort` via `--reasoning-effort`; headless tool approval forced with `--permission-mode bypassPermissions --always-approve`. Credentials come from the CLI itself (Grok Build login / `~/.grok`). Distinct from the metered xAI HTTP API path (`backend: claw` + `model: "xai/…"`).
 
+**Cross-backend fallback (`fallbacks:`).** A node may declare ordered,
+named alternative **routes** (backend + model + credential hint) taken
+when its primary fails — the case `provider:` cannot serve: a CLI
+backend whose subscription forfait has shut, continuing on a metered API
+through `claw`. `on:` filters which failure routes where (default
+`[usage_window, unavailable]`; never `any`, never `auth` by default). A
+fall-through is deliberately **loud**: a `model_fallback` event,
+`_backend`/`_model` naming what actually *served*, and
+`_fallback_used`/`_served_by` so a deterministic gate can fail closed on
+a degraded input. Two crossings are compile-time errors (C176): a route
+that cannot enforce the node's `permission:` gate, and a claw⇄CLI
+crossing on a node with an empty `tools:` list (the list inverts meaning
+across that boundary). See
+[ADR-087](docs/adr/087-cross-backend-model-fallback-chain.md) +
+[docs/backends.md](docs/backends.md).
+
 **Auto-detection.** When neither the node (`backend:`) nor the workflow (`default_backend:`) names a backend, and `ITERION_DEFAULT_BACKEND` is unset, the resolver in [pkg/backend/model/executor.go:resolveBackendName](pkg/backend/model/executor.go) probes the host for credentials (Claude Code OAuth, ANTHROPIC_API_KEY, OPENAI_API_KEY, AWS, GCP) and picks the first match in `ITERION_BACKEND_PREFERENCE` (default `claude_code,claw` — codex is intentionally excluded). When `model:` is also empty and the resolved backend is `claw`, the runtime substitutes a sensible model spec for the first available provider. The studio surfaces the live detection via the toolbar BackendStatusPill and disables Run when no credential is found. See [docs/backends.md](docs/backends.md).
 
 **System-prompt composition (adaptivity parity).** A node's `system:`

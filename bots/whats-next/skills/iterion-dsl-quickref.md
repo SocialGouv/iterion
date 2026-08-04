@@ -157,6 +157,32 @@ Backend rules:
   (same-API family); `claw`/`codex` use only the first hint
   (compiler warns C088). Malformed `provider:model` warns C172.
   Single values are unchanged.
+- `fallbacks:` declares complete alternative ROUTES (backend + model +
+  hint) for what `provider:` cannot do: continuing on another backend
+  when a CLI forfait's window shuts. Named entries, declaration order =
+  try order:
+
+  ```
+  agent implement:
+    backend: "claude_code"
+    model: "claude-opus-5"
+    tools: [read_file, run_command]
+    fallbacks:
+      api:
+        backend: "claw"
+        model: "anthropic/claude-opus-5"
+        on: [usage_window]
+  ```
+
+  `on:` defaults to `[usage_window, unavailable]` — NOT `any` (a budget
+  cap re-fails identically everywhere) and NOT `auth` (a dead credential
+  deliberately pauses for a human). An unclassifiable failure always
+  routes. A fall-through emits a `model_fallback` event and stamps
+  `_fallback_used` / `_served_by` on the output, so a deterministic gate
+  can fail closed on a degraded input. Errors: a route changing
+  `backend:` must pin its own `model:` (C173); a route that cannot
+  enforce the node's `permission:` gate, or that crosses the claw⇄CLI
+  boundary with an empty `tools:` list, is refused (C176). See ADR-087.
 
 Session-mode notes:
 - `fresh` (default) — new context every call.

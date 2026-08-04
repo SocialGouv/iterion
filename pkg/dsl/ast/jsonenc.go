@@ -261,6 +261,20 @@ type jsonCursorBand struct {
 	Prompt string `json:"prompt,omitempty"`
 }
 
+// jsonFallbackDecl is the wire form of one `fallbacks:` route.
+// It MUST round-trip in both directions: UnmarshalFile is a plain typed
+// json.Unmarshal, so a key missing here is silently discarded — and the
+// studio saves every edit through parse → unparse, which would delete
+// the block from the .bot on any unrelated change.
+type jsonFallbackDecl struct {
+	Name     string   `json:"name,omitempty"`
+	Backend  string   `json:"backend,omitempty"`
+	Model    string   `json:"model,omitempty"`
+	Provider string   `json:"provider,omitempty"`
+	On       []string `json:"on,omitempty"`
+	Metered  bool     `json:"metered,omitempty"`
+}
+
 type jsonCursorBlock struct {
 	Enabled  bool                 `json:"enabled"`
 	Settings []*jsonCursorSetting `json:"settings,omitempty"`
@@ -316,6 +330,7 @@ type jsonAgentDecl struct {
 	Memory            *jsonMemoryBlock     `json:"memory,omitempty"`
 	Sandbox           *jsonSandboxBlock    `json:"sandbox,omitempty"`
 	Cursors           *jsonCursorBlock     `json:"cursors,omitempty"`
+	Fallbacks         []*jsonFallbackDecl  `json:"fallbacks,omitempty"`
 	Compress          string               `json:"compress,omitempty"`
 	Permission        string               `json:"permission,omitempty"`
 	Needs             []string             `json:"needs,omitempty"`
@@ -355,6 +370,7 @@ type jsonJudgeDecl struct {
 	Memory            *jsonMemoryBlock     `json:"memory,omitempty"`
 	Sandbox           *jsonSandboxBlock    `json:"sandbox,omitempty"`
 	Cursors           *jsonCursorBlock     `json:"cursors,omitempty"`
+	Fallbacks         []*jsonFallbackDecl  `json:"fallbacks,omitempty"`
 	Compress          string               `json:"compress,omitempty"`
 	Permission        string               `json:"permission,omitempty"`
 	Needs             []string             `json:"needs,omitempty"`
@@ -918,6 +934,40 @@ func cursorBlockFromJSON(jb *jsonCursorBlock) *CursorBlock {
 	return b
 }
 
+func fallbacksToJSON(fbs []*FallbackDecl) []*jsonFallbackDecl {
+	if len(fbs) == 0 {
+		return nil
+	}
+	out := make([]*jsonFallbackDecl, 0, len(fbs))
+	for _, f := range fbs {
+		if f == nil {
+			continue
+		}
+		out = append(out, &jsonFallbackDecl{
+			Name: f.Name, Backend: f.Backend, Model: f.Model,
+			Provider: f.Provider, On: f.On, Metered: f.Metered,
+		})
+	}
+	return out
+}
+
+func fallbacksFromJSON(jfbs []*jsonFallbackDecl) []*FallbackDecl {
+	if len(jfbs) == 0 {
+		return nil
+	}
+	out := make([]*FallbackDecl, 0, len(jfbs))
+	for _, jf := range jfbs {
+		if jf == nil {
+			continue
+		}
+		out = append(out, &FallbackDecl{
+			Name: jf.Name, Backend: jf.Backend, Model: jf.Model,
+			Provider: jf.Provider, On: jf.On, Metered: jf.Metered,
+		})
+	}
+	return out
+}
+
 func memoryToJSON(m *MemoryBlock) *jsonMemoryBlock {
 	if m == nil {
 		return nil
@@ -1111,6 +1161,7 @@ func agentToJSON(a *AgentDecl) *jsonAgentDecl {
 		Memory:            memoryToJSON(a.Memory),
 		Sandbox:           sandboxBlockToJSON(a.Sandbox),
 		Cursors:           cursorBlockToJSON(a.Cursors),
+		Fallbacks:         fallbacksToJSON(a.Fallbacks),
 		Compress:          a.Compress,
 		Permission:        a.Permission,
 		Needs:             a.Needs,
@@ -1152,6 +1203,7 @@ func judgeToJSON(j *JudgeDecl) *jsonJudgeDecl {
 		Memory:            memoryToJSON(j.Memory),
 		Sandbox:           sandboxBlockToJSON(j.Sandbox),
 		Cursors:           cursorBlockToJSON(j.Cursors),
+		Fallbacks:         fallbacksToJSON(j.Fallbacks),
 		Compress:          j.Compress,
 		Permission:        j.Permission,
 		Needs:             j.Needs,
@@ -1655,6 +1707,7 @@ func agentFromJSON(ja *jsonAgentDecl) (*AgentDecl, error) {
 			Memory:            memoryFromJSON(ja.Memory),
 			Sandbox:           sandboxBlockFromJSON(ja.Sandbox),
 			Cursors:           cursorBlockFromJSON(ja.Cursors),
+			Fallbacks:         fallbacksFromJSON(ja.Fallbacks),
 			Compress:          ja.Compress,
 			Permission:        ja.Permission,
 			Needs:             ja.Needs,
@@ -1710,6 +1763,7 @@ func judgeFromJSON(jj *jsonJudgeDecl) (*JudgeDecl, error) {
 			Memory:            memoryFromJSON(jj.Memory),
 			Sandbox:           sandboxBlockFromJSON(jj.Sandbox),
 			Cursors:           cursorBlockFromJSON(jj.Cursors),
+			Fallbacks:         fallbacksFromJSON(jj.Fallbacks),
 			Compress:          jj.Compress,
 			Permission:        jj.Permission,
 			Needs:             jj.Needs,
