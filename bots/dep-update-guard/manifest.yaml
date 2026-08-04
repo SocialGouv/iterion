@@ -1,7 +1,11 @@
 name: dep-update-guard
 display_name: Vetty
 icon: 💂
-version: 2.6.1
+version: 2.6.2
+## 2.6.2 — the escalate node could never fire: its llm half passed a bare
+## "claude-opus-5" to the direct generation path, which requires
+## provider/model-id — every needs_decision bump crashed the run instead of
+## escalating (first exercised live 2026-08-04 on a plugin-react major).
 ## 2.6.1 — budget 75m → 2h: 75m killed the 15-module go workload at its
 ## LAST node (audit 5m + align 25m + verify 43m = 73m, dead at the commit
 ## with everything green behind it). The duration cap is a runaway guard,
