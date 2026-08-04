@@ -688,7 +688,7 @@ func (p *Publisher) SubmitLaunch(ctx context.Context, runID string, spec runview
 	// donor's allowance. This is the enforcement: the engine stops the run
 	// on its own cost budget, instead of the overspend being discovered
 	// after the fact when the donor is already out of pocket.
-	budget := clampBudgetToGrant(spec.Budget, wf, creds.grant, p.logger, runID)
+	budget := clampBudgetToGrant(spec.Budget, wf, creds.grant, 0, p.logger, runID)
 
 	if err := p.store.SaveRun(ctx, r); err != nil {
 		return 0, fmt.Errorf("cloudpublisher: save run: %w", err)
@@ -907,7 +907,9 @@ func (p *Publisher) SubmitResume(ctx context.Context, spec runview.ResumeSpec, w
 		// A resume re-acquires from the pool, so it re-inherits the donor's
 		// CURRENT remaining allowance as its cost ceiling — a run that was
 		// paused for a day must not come back holding yesterday's budget.
-		Budget:         clampBudgetToGrant(nil, wf, creds.grant, p.logger, spec.RunID),
+		// Offset by what the run already banked: the engine restores that
+		// figure into the very tracker this ceiling is checked against.
+		Budget:         clampBudgetToGrant(nil, wf, creds.grant, checkpointCostUSD(prior), p.logger, spec.RunID),
 		BackendConfig:  queue.BackendConfig{Default: queue.BackendClaw},
 		PublishedAtRFC: time.Now().UTC().Format(time.RFC3339Nano),
 		// Carry the prior run's tenant onto the resume publication so
@@ -1148,6 +1150,15 @@ func (p *Publisher) goSafeDetached(label string, fn func()) {
 	}()
 }
 
+// checkpointCostUSD is what a run has already banked across its earlier
+// attempts, 0 for a run that never checkpointed.
+func checkpointCostUSD(r *store.Run) float64 {
+	if r == nil || r.Checkpoint == nil {
+		return 0
+	}
+	return r.Checkpoint.BudgetCostUSD
+}
+
 // clampBudgetToGrant caps a run's cost budget at what remains of its
 // donor's allowance, and returns the wire form.
 //
@@ -1161,9 +1172,21 @@ func (p *Publisher) goSafeDetached(label string, fn func()) {
 // place) — so it imposes no ceiling. Otherwise the tightest of the
 // requested override, the workflow's own declared budget, and the
 // allowance wins; the clamp only ever lowers.
-func clampBudgetToGrant(o *ir.BudgetOverrides, wf *ir.Workflow, grant *credpool.Grant, logger *iterlog.Logger, runID string) *queue.BudgetOverrides {
+//
+// alreadySpentUSD is what THIS run banked in its earlier attempts, and it
+// must be added on a resume: the engine restores the checkpoint's
+// cumulative cost into the same tracker it checks max_cost_usd against
+// (runtime/checkpoint.go), whereas a grant is what the donor will lend
+// NEXT. Handing the marginal figure to a cumulative tracker fails the
+// budget check before the first node runs — a $6-of-$10 run coming back
+// with a $4 ceiling against $6 already counted, dead on arrival.
+func clampBudgetToGrant(o *ir.BudgetOverrides, wf *ir.Workflow, grant *credpool.Grant, alreadySpentUSD float64, logger *iterlog.Logger, runID string) *queue.BudgetOverrides {
 	if grant == nil || grant.RemainingUSD <= 0 {
 		return budgetForWire(o)
+	}
+	allowance := grant.RemainingUSD
+	if alreadySpentUSD > 0 {
+		allowance += alreadySpentUSD
 	}
 	effective := ir.BudgetOverrides{}
 	if o != nil {
@@ -1179,7 +1202,7 @@ func clampBudgetToGrant(o *ir.BudgetOverrides, wf *ir.Workflow, grant *credpool.
 	// The donor's allowance is a ceiling like any other, so it goes through
 	// the same primitive the platform ceiling uses: lower what exceeds it,
 	// impose it on a run that declared nothing, never raise.
-	resolved.ClampToCeiling(&ir.Budget{MaxCostUSD: grant.RemainingUSD})
+	resolved.ClampToCeiling(&ir.Budget{MaxCostUSD: allowance})
 	if effective.MaxCostUSD != resolved.MaxCostUSD && logger != nil {
 		logger.Info("cloudpublisher: run %s cost budget capped at $%.2f by its donor's remaining allowance", runID, resolved.MaxCostUSD)
 	}
