@@ -347,6 +347,33 @@ func (n *Native) Capture(runID, workspaceDir, label string) (*Snapshot, error) {
 	sort.Slice(snap.Entries, func(i, j int) bool { return snap.Entries[i].Path < snap.Entries[j].Path })
 	sort.Strings(snap.Skipped)
 
+	// An UNCHANGED workspace writes no new manifest — the label is aliased
+	// onto the parent instead.
+	//
+	// writeSnapshot marshals the complete entry list every time, and
+	// Capture runs at every post-node boundary: measured at 1.67 MB per
+	// manifest on this repo, so a 100-boundary run left ~167 MB behind.
+	// Unlike content, manifests are per-run by construction, so a second
+	// run of the same bot on the same tree paid it again. Most nodes of a
+	// long loop touch no files at all, which is exactly where this bites —
+	// and the resulting snapshot is byte-identical to its parent, so
+	// pointing at it loses nothing.
+	if parent := n.identicalParent(runID, c.Head, snap); parent != "" {
+		n.mu.Lock()
+		if label != "" {
+			c.Labels[label] = parent
+		}
+		n.mu.Unlock()
+		if err := n.saveCache(runID, c); err != nil {
+			return nil, err
+		}
+		reused, lerr := n.Load(runID, parent)
+		if lerr != nil {
+			return nil, lerr
+		}
+		return reused, nil
+	}
+
 	if err := n.writeSnapshot(runID, snap); err != nil {
 		return nil, err
 	}
@@ -361,6 +388,33 @@ func (n *Native) Capture(runID, workspaceDir, label string) (*Snapshot, error) {
 		return nil, err
 	}
 	return snap, nil
+}
+
+// identicalParent returns the parent snapshot id when `snap` records
+// exactly the same files, so the caller can alias onto it rather than
+// write a duplicate manifest. "" when they differ or the parent cannot be
+// read — the safe answer is always to write.
+func (n *Native) identicalParent(runID, parentID string, snap *Snapshot) string {
+	if parentID == "" {
+		return ""
+	}
+	parent, err := n.Load(runID, parentID)
+	if err != nil || len(parent.Entries) != len(snap.Entries) || len(parent.Skipped) != len(snap.Skipped) {
+		return ""
+	}
+	// Both sides are sorted by path, so one pass decides it.
+	for i := range snap.Entries {
+		a, b := parent.Entries[i], snap.Entries[i]
+		if a.Path != b.Path || a.Hash != b.Hash || a.Mode != b.Mode {
+			return ""
+		}
+	}
+	for i := range snap.Skipped {
+		if parent.Skipped[i] != snap.Skipped[i] {
+			return ""
+		}
+	}
+	return parentID
 }
 
 // storeObject hashes a file and writes it into the content-addressed
@@ -986,6 +1040,19 @@ func (n *Native) PruneObjects(minAge time.Duration) (objects int, bytes int64, e
 		}
 		parts := strings.Split(filepath.ToSlash(rel), "/")
 		if len(parts) != 2 {
+			// Not <aa>/<rest> — the only other thing that lands at the pool
+			// root is a `.obj-*` staging file from storeObject, orphaned by
+			// a killed or crashed process. It is structurally invisible to
+			// the mark phase (no manifest names it), so nothing else would
+			// ever reclaim it. Sweep it under the same age guard.
+			if len(parts) == 1 && strings.HasPrefix(parts[0], ".obj-") {
+				if info, ierr := d.Info(); ierr == nil && !info.ModTime().After(cutoff) {
+					if os.Remove(path) == nil {
+						objects++
+						bytes += info.Size()
+					}
+				}
+			}
 			return nil
 		}
 		if live[parts[0]+parts[1]] {

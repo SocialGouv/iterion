@@ -1173,3 +1173,70 @@ func TestObjectPath_RejectsAMalformedHash(t *testing.T) {
 		t.Error("a well-formed sha256 hex digest must still resolve")
 	}
 }
+
+// TestCapture_UnchangedWorkspaceWritesNoNewManifest is Revi's R5d97e1.
+//
+// writeSnapshot marshals the complete entry list on every capture, and
+// Capture runs at every post-node boundary — 1.67 MB per manifest on this
+// repo, so a 100-boundary run left ~167 MB behind, per run, undeduped
+// (unlike content, manifests are per-run by construction). Most nodes of
+// a long loop touch no files, and their snapshot is byte-identical to its
+// parent, so the label points at the parent instead.
+func TestCapture_UnchangedWorkspaceWritesNoNewManifest(t *testing.T) {
+	ws, storeDir := t.TempDir(), t.TempDir()
+	write(t, ws, "a.txt", "content")
+	n := NewNative(storeDir)
+
+	first, err := n.Capture("r1", ws, "post:a:0")
+	if err != nil {
+		t.Fatalf("first capture: %v", err)
+	}
+	countManifests := func() int {
+		c := 0
+		_ = filepath.WalkDir(filepath.Join(storeDir, "runs", "r1", "workspace", "snapshots"),
+			func(_ string, d fs.DirEntry, err error) error {
+				if err == nil && !d.IsDir() {
+					c++
+				}
+				return nil
+			})
+		return c
+	}
+	if countManifests() != 1 {
+		t.Fatalf("fixture: %d manifests after the first capture, want 1", countManifests())
+	}
+
+	// A node that touched nothing.
+	second, err := n.Capture("r1", ws, "post:b:0")
+	if err != nil {
+		t.Fatalf("second capture: %v", err)
+	}
+	if got := countManifests(); got != 1 {
+		t.Errorf("%d manifests after an unchanged boundary, want 1 — a long run accumulates "+
+			"one full entry list per node", got)
+	}
+	if second.ID != first.ID {
+		t.Errorf("unchanged capture returned a new id %s (want %s) — the label must resolve "+
+			"to the identical parent", second.ID, first.ID)
+	}
+	// Both labels must resolve, and to the same snapshot.
+	for _, label := range []string{"post:a:0", "post:b:0"} {
+		id, ok := n.Resolve("r1", label)
+		if !ok || id != first.ID {
+			t.Errorf("label %q resolved to (%q, %v), want %q", label, id, ok, first.ID)
+		}
+	}
+
+	// A real change still writes its own manifest.
+	write(t, ws, "b.txt", "new")
+	third, err := n.Capture("r1", ws, "post:c:0")
+	if err != nil {
+		t.Fatalf("third capture: %v", err)
+	}
+	if third.ID == first.ID {
+		t.Error("a changed workspace must get its own snapshot")
+	}
+	if got := countManifests(); got != 2 {
+		t.Errorf("%d manifests after a real change, want 2", got)
+	}
+}

@@ -50,6 +50,20 @@ type rule struct {
 	// root; a bare name ("node_modules") matches at any depth.
 	anchored bool
 	dirOnly  bool
+	// segLiteral[i] is true when segments[i] carries no glob
+	// metacharacters. Computed ONCE at parse: deriving it per call meant a
+	// strings.ContainsAny on every segment of every rule for every path,
+	// which the CPU profile showed as 25% of the matcher (IndexAny +
+	// makeASCIISet), with filepath.Match another 60% on segments that are
+	// plain strings.
+	segLiteral []bool
+	// rootLiteral is segments[0] when the rule is ANCHORED and that
+	// segment is a plain literal. Every candidate — the path and each of
+	// its ancestor prefixes — shares parts[0], so one string compare then
+	// rejects the rule for all of them at once. This is what keeps the
+	// per-path cost flat as the rule set grows: a repo's ignore file is
+	// mostly anchored rules naming different top-level directories.
+	rootLiteral string
 }
 
 // Ignorer decides which workspace paths are versioned.
@@ -224,6 +238,14 @@ func parseRule(line string) rule {
 		r.anchored = true
 	}
 	r.segments = strings.Split(line, "/")
+	r.segLiteral = make([]bool, len(r.segments))
+	for i, seg := range r.segments {
+		r.segLiteral[i] = seg != "**" && !strings.ContainsAny(seg, "*?[\\")
+	}
+	if r.anchored && len(r.segments) > 0 && r.segments[0] != "**" &&
+		!strings.ContainsAny(r.segments[0], "*?[\\") {
+		r.rootLiteral = r.segments[0]
+	}
 	return r
 }
 
@@ -255,7 +277,14 @@ func (ig *Ignorer) Match(rel string, isDir bool) bool {
 	if ig.protected[rel] {
 		return true
 	}
-	for _, seg := range strings.Split(rel, "/") {
+	// Split ONCE and pass the segments down. The matcher used to re-derive
+	// the path for every rule and every ancestor prefix (Split, then Join,
+	// then Split again inside matchPath), which is O(depth²) string work
+	// per rule: measured at 667 µs and 1129 allocs for one depth-7 path
+	// against this repo's own rule set, turning a 130 ms walk into 7 s —
+	// 50x the per-boundary budget, on a path that is ON by default.
+	parts := strings.Split(rel, "/")
+	for _, seg := range parts {
 		if alwaysIgnored[seg] {
 			return true
 		}
@@ -263,13 +292,15 @@ func (ig *Ignorer) Match(rel string, isDir bool) bool {
 	if ig.underAlwaysPrefix(rel) {
 		return true
 	}
-	excluded := false
-	for _, r := range ig.rules {
-		if r.matches(rel, isDir) {
-			excluded = !r.negated
+	// LAST match wins, so scanning in reverse and stopping at the first
+	// hit picks the same rule — and lets the common case exit early
+	// instead of evaluating every rule for every path.
+	for i := len(ig.rules) - 1; i >= 0; i-- {
+		if ig.rules[i].matches(parts, isDir) {
+			return !ig.rules[i].negated
 		}
 	}
-	return excluded
+	return false
 }
 
 // CanPrune reports whether ANY excluded directory can be skipped whole.
@@ -362,30 +393,54 @@ func (r rule) couldMatchUnder(dir string) bool {
 // matches reports whether the rule applies to a path, either directly or
 // through one of its ancestor directories (a directory rule covers its
 // whole subtree).
-func (r rule) matches(rel string, isDir bool) bool {
-	if r.matchPath(rel, isDir) {
+func (r rule) matches(parts []string, isDir bool) bool {
+	// Cheap rejection before any segment walk: an anchored rule rooted at
+	// a literal cannot match a path — nor any ancestor of it — whose first
+	// segment differs.
+	if r.rootLiteral != "" && (len(parts) == 0 || parts[0] != r.rootLiteral) {
+		return false
+	}
+	// A bare single-segment rule (`node_modules`, `*.log`) matches at any
+	// depth, so "the path OR any ancestor" reduces to "any segment" —
+	// ancestors are prefixes and contribute no segment the path lacks.
+	// One scan instead of one matchPath per ancestor, which for this class
+	// is where the remaining per-path cost sat.
+	if !r.anchored && len(r.segments) == 1 {
+		last := len(parts) - 1
+		for i, p := range parts {
+			// dirOnly: every ancestor segment IS a directory; only the
+			// final segment depends on isDir.
+			if r.dirOnly && i == last && !isDir {
+				continue
+			}
+			if segMatch(r.segments[0], p, r.segLiteral[0]) {
+				return true
+			}
+		}
+		return false
+	}
+	if r.matchPath(parts, isDir) {
 		return true
 	}
-	// Ancestors: `state/` must exclude `state/db/x.json`.
-	parts := strings.Split(rel, "/")
+	// Ancestors: `state/` must exclude `state/db/x.json`. Sub-slices, not
+	// Join+Split — an ancestor prefix is already the head of `parts`.
 	for i := 1; i < len(parts); i++ {
-		if r.matchPath(strings.Join(parts[:i], "/"), true) {
+		if r.matchPath(parts[:i], true) {
 			return true
 		}
 	}
 	return false
 }
 
-func (r rule) matchPath(rel string, isDir bool) bool {
+func (r rule) matchPath(parts []string, isDir bool) bool {
 	if r.dirOnly && !isDir {
 		return false
 	}
-	parts := strings.Split(rel, "/")
 	if !r.anchored {
 		// A bare name matches any single segment at any depth.
 		if len(r.segments) == 1 {
 			for _, p := range parts {
-				if ok, _ := filepath.Match(r.segments[0], p); ok {
+				if segMatch(r.segments[0], p, r.segLiteral[0]) {
 					return true
 				}
 			}
@@ -393,29 +448,41 @@ func (r rule) matchPath(rel string, isDir bool) bool {
 		}
 		// Unanchored multi-segment: try every suffix start.
 		for i := range parts {
-			if matchSegments(r.segments, parts[i:]) {
+			if matchSegments(r.segments, r.segLiteral, parts[i:]) {
 				return true
 			}
 		}
 		return false
 	}
-	return matchSegments(r.segments, parts)
+	return matchSegments(r.segments, r.segLiteral, parts)
 }
 
 // matchSegments matches a segment pattern against path segments, with
 // "**" standing for zero or more segments.
-func matchSegments(pattern, path []string) bool {
+// segMatch compares one pattern segment to one path segment. `literal`
+// is the precomputed verdict from parseRule — a plain compare for the
+// overwhelming majority of real ignore rules, filepath.Match only for
+// the ones that actually glob.
+func segMatch(pattern, seg string, literal bool) bool {
+	if literal {
+		return pattern == seg
+	}
+	ok, _ := filepath.Match(pattern, seg)
+	return ok
+}
+
+func matchSegments(pattern []string, lit []bool, path []string) bool {
 	if len(pattern) == 0 {
 		return len(path) == 0
 	}
 	if pattern[0] == "**" {
 		// Zero segments…
-		if matchSegments(pattern[1:], path) {
+		if matchSegments(pattern[1:], lit[1:], path) {
 			return true
 		}
 		// …or one or more.
 		for i := 1; i <= len(path); i++ {
-			if matchSegments(pattern[1:], path[i:]) {
+			if matchSegments(pattern[1:], lit[1:], path[i:]) {
 				return true
 			}
 		}
@@ -424,8 +491,8 @@ func matchSegments(pattern, path []string) bool {
 	if len(path) == 0 {
 		return false
 	}
-	if ok, _ := filepath.Match(pattern[0], path[0]); !ok {
+	if !segMatch(pattern[0], path[0], lit[0]) {
 		return false
 	}
-	return matchSegments(pattern[1:], path[1:])
+	return matchSegments(pattern[1:], lit[1:], path[1:])
 }
