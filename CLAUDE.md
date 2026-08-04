@@ -47,6 +47,10 @@ the hours this one spent.
   window, kill switch), the audience policy deciding who may draw, the
   fourth credential tier in `cloudpublisher`, and why the run's own
   `max_cost_usd` is the enforcement.
+- [docs/mcp-server.md](docs/mcp-server.md) — driving iterion from an MCP
+  client (Claude Code, desktop, Cursor): `iterion mcp` setup, the
+  `local_*`/`remote_*` tool families, detached-launch semantics,
+  `--read-only`, and the `remote_api` escape hatch.
 
 ## Development setup
 
@@ -1170,6 +1174,7 @@ iterion skill list|show|add|rm|import|export  # Local skill library (~/.iterion/
 iterion marketplace list|submit|install|uninstall  # Hosted registry CLI — bot AND plugin entries (kind auto-detected at submit; list --kind filters; same <store-dir>/marketplace the studio reads)
 iterion memory export|import|du         # Manage local shared-knowledge memory spaces (.tar.gz export/import, usage vs quota; see docs/memory-and-knowledge.md)
 iterion models [provider/model-id]      # Inspect resolved model capabilities and their source
+iterion mcp [--store-dir] [--read-only] [--only local|remote]  # Operator MCP server on stdio: local_* (store/engine, detached launches) + remote_* (logged-in instance, remote_api escape hatch) — `claude mcp add iterion -- iterion mcp` (see docs/mcp-server.md)
 iterion openapi                         # Generate this build's OpenAPI 3.1 spec offline (stdout)
 iterion bench asymptote [flags]         # Asymptote benchmark (see docs/asymptote-bench.md)
 iterion bundle pack                     # Pack a .botz bundle (create it with `bots create`; see docs/bundles.md)
