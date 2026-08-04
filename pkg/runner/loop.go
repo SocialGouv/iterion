@@ -997,7 +997,13 @@ func (r *Runner) processOne(parent context.Context, delivery *natsq.Delivery) {
 		return
 	}
 
-	r.recordPoolSpend(msg, usage, err, outcome.action == actionNak)
+	// Interim only when JetStream will really redeliver. A Nak does not
+	// imply one: ErrRunInterrupted (drain / lost heartbeat) is exempt from
+	// the DLQ park above, so on its LAST permitted delivery it Naks into
+	// nothing — and a lease left open there strands the donor's slot and
+	// committed allowance until the 12h TTL.
+	redeliverable := r.cfg.NATS != nil && delivery.NumDelivered() < r.cfg.NATS.MaxDeliver()
+	r.recordPoolSpend(msg, usage, err, outcome.action == actionNak && redeliverable)
 
 	if outcomeSideEffectsFire(err, outcome.action) {
 		fireOutcome()
@@ -1363,9 +1369,15 @@ func (r *Runner) executeRun(ctx context.Context, msg *queue.RunMessage, usageOut
 	if steerCh := r.steerChannelFor(msg.RunID); steerCh != nil {
 		engineOpts = append(engineOpts, runtime.WithOverrideChannel(steerCh))
 	}
-	// The engine writes THROUGH the metrics emitter: its own events (chiefly
-	// node_recovery) carry classifications nothing else reports.
-	engine := runtime.New(wf, observingStore{RunStore: r.cfg.Store, observe: usage.observe}, executor, engineOpts...)
+	// The engine's own events (chiefly node_recovery) carry classifications
+	// nothing else reports. Observed through the engine's dedicated seam
+	// rather than a store decorator: a decorator's method set is the
+	// INTERFACE's, which would hide the concrete store's optional
+	// capabilities (RunFilesStore, InteractionAnswerCAS, …) from the
+	// type-assertion probes inside the engine — silently, since each one
+	// degrades rather than errors.
+	engineOpts = append(engineOpts, runtime.WithEventObserver(usage.observe))
+	engine := runtime.New(wf, r.cfg.Store, executor, engineOpts...)
 	// Publish the engine so the store's Event.ActiveMs stamping reads
 	// this run's monotonic active elapsed; drop it when the run returns.
 	r.registerRunEngine(msg.RunID, engine)

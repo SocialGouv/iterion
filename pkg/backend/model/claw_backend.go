@@ -1106,7 +1106,10 @@ func forwardableProviderEnv(ctx context.Context) map[string]string {
 		// make the same run spend the opposite instrument depending on
 		// whether it happened to be sandboxed, quietly draining a
 		// subscription the tenant did not choose to use.
-		if creds.APIKeys[secrets.ProviderOpenAI] == "" {
+		// …and never against the operator's explicit kill switch:
+		// ITERION_OPENAI_USE_OAUTH=0 is a machine-wide refusal to spend any
+		// subscription, which a per-run credential does not get to overrule.
+		if creds.APIKeys[secrets.ProviderOpenAI] == "" && os.Getenv("ITERION_OPENAI_USE_OAUTH") != "0" {
 			env["ITERION_OPENAI_USE_OAUTH"] = "1"
 		}
 	}

@@ -261,8 +261,11 @@ func TestRecordPoolSpend_authFailureAbsorbedByRecoveryStillParksTheDonor(t *test
 	}
 	// The engine gets the SAME wrapper the runner builds. If that wiring
 	// regresses, this test goes red.
-	eng := runtime.New(wf, observingStore{RunStore: st, observe: usage.observe},
-		authRejectingExecutor{},
+	// Wired exactly as the runner wires it: the raw store plus the engine's
+	// event-observer seam. A store decorator would have hidden the store's
+	// optional capabilities from the engine's own probes.
+	eng := runtime.New(wf, st, authRejectingExecutor{},
+		runtime.WithEventObserver(usage.observe),
 		runtime.WithRecoveryDispatch(recovery.Dispatch(recovery.DefaultRecipes())))
 	_ = eng.Run(ctx, "run-1", map[string]any{})
 
