@@ -93,6 +93,11 @@ type launchRunRequest struct {
 	// glob, or kind keyword) and wins over the node's DSL backend:/model:.
 	// See runview.ModelOverrideEntry.
 	ModelOverrides []runview.ModelOverrideEntry `json:"model_overrides,omitempty"`
+	// Fallback is the operator's single run-level fallback route, taken
+	// when an agent node's primary fails. It applies only to agent nodes
+	// that declare no `fallbacks:` of their own and never to judges.
+	// Omitted = none. See ADR-087.
+	Fallback *runview.FallbackEntry `json:"fallback,omitempty"`
 	// Budget carries run-level budget-cap overrides for the workflow's
 	// `budget:` block — the HTTP twin of the CLI --max-* flags. Non-zero
 	// fields win over the DSL/recipe budget; zero fields inherit. A bad
@@ -379,6 +384,7 @@ func (s *Server) handleLaunchRun(w http.ResponseWriter, r *http.Request) {
 		// the one path where the author is watching.
 		RetryPolicy:        s.resolveRunRetryPolicy(botID),
 		ModelOverrides:     req.ModelOverrides,
+		Fallback:           req.Fallback,
 		Budget:             budget,
 		ParentRunID:        req.ParentRunID,
 		ShardIndex:         req.ShardIndex,

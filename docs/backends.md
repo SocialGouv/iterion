@@ -362,6 +362,33 @@ A route that changes `backend:` must pin its own `model:` (`C173`):
 model specs are not portable (`claw` needs `provider/model`,
 `claude_code` accepts a bare id or an `anthropic/` prefix).
 
+### At launch, without editing the bot
+
+An operator can add **one** run-level route instead of authoring a
+block — the studio Launch form's "Fallback route" row, or:
+
+```sh
+iterion run bot.bot --fallback 'claw:openai/gpt-5.5'
+```
+
+It applies to **agent nodes that declare no `fallbacks:` of their own**,
+and **never to judges** — a weaker judge still emits a well-formed
+verdict, so a blanket launch setting must not reach one. An author who
+wrote a chain vetted where it may go, so their routes win rather than
+being extended. It takes the default `on:` set; anything finer belongs
+in the `.bot`.
+
+One route rather than a per-node ordered list, deliberately: the value
+is "don't lose a long run to a forfait wall", which one alternative
+delivers, and the Launch form persists nothing between launches — a
+per-node chain would be rebuilt cell by cell on every launch of a
+15-node bot.
+
+Routes from all three sources (provider hints, authored routes, the
+launch route) are **deduped**: one resolving to the same backend +
+credential + model as the route before it is dropped rather than paying
+a second full retry budget to fail identically.
+
 ### Scope
 
 `claude_code` ⇄ `claw` is the validated lane. `kimi` and `grok` sit on a

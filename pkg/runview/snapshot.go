@@ -185,6 +185,16 @@ type RunHeader struct {
 	// "auto". Nil for runs with no LLM nodes (tool/compute-only) so the
 	// studio RunHeader renders no chip. See the studio BackendsUsed row.
 	BackendsUsed []BackendUsage `json:"backends_used,omitempty"`
+	// FallbacksUsed lists the nodes that were served by a fallback route
+	// rather than their first choice, with the route that served them.
+	// Empty on every clean run.
+	//
+	// It exists because a degraded run is otherwise indistinguishable
+	// from a clean one after the fact: a weaker model still returns a
+	// well-formed answer, and BackendsUsed alone cannot say whether a
+	// second backend appeared because the bot asked for it or because
+	// the first one ran out. See ADR-087.
+	FallbacksUsed []FallbackUsage `json:"fallbacks_used,omitempty"`
 	// Loops is the run-level "real loops" indicator: one entry per
 	// declared named loop (e.g. "review_loop"), reporting the SEMANTIC
 	// iteration counter (matching the runtime's `node#N` log label and
@@ -376,6 +386,9 @@ type SnapshotBuilder struct {
 	// don't inflate NodeCount.
 	backendUsage map[string]*backendAgg
 	backendOrder []string
+	// fallbacksUsed accumulates the nodes a fallback route served, in
+	// event order.
+	fallbacksUsed []FallbackUsage
 	// deployment / deployTrace hold the LAST reported delivery and the
 	// LAST traceability verdict (see recordDeployment). Last-write-wins
 	// because a redeploy loop re-reports both, and the final attempt is
@@ -524,6 +537,7 @@ func (b *SnapshotBuilder) Snapshot() *RunSnapshot {
 	header := b.header
 	header.Loops = b.buildLoopProgress()
 	header.BackendsUsed = b.buildBackendsUsed()
+	header.FallbacksUsed = b.fallbacksUsed
 	header.Deployment = b.buildDeployment()
 	return &RunSnapshot{
 		Run:        header,
@@ -573,6 +587,12 @@ func (b *SnapshotBuilder) recordBackendUsage(evt *store.Event) {
 		return
 	}
 	model, _ := output["_model"].(string)
+	if used, _ := output["_fallback_used"].(bool); used {
+		servedBy, _ := output["_served_by"].(string)
+		b.fallbacksUsed = append(b.fallbacksUsed, FallbackUsage{
+			NodeID: evt.NodeID, ServedBy: servedBy, Backend: backend, Model: model,
+		})
+	}
 	key := backend + "\x00" + model
 	agg := b.backendUsage[key]
 	if agg == nil {
@@ -581,6 +601,17 @@ func (b *SnapshotBuilder) recordBackendUsage(evt *store.Event) {
 		b.backendOrder = append(b.backendOrder, key)
 	}
 	agg.nodes[evt.NodeID] = true
+}
+
+// FallbackUsage names one node that a fallback route served.
+type FallbackUsage struct {
+	NodeID string `json:"node_id"`
+	// ServedBy is the route's declared name (a `fallbacks:` entry name,
+	// or "run-fallback" for the operator's launch-time route).
+	ServedBy string `json:"served_by,omitempty"`
+	// Backend / Model are what actually ran, not what was requested.
+	Backend string `json:"backend,omitempty"`
+	Model   string `json:"model,omitempty"`
 }
 
 // buildBackendsUsed materialises the aggregated (backend, model) pairs

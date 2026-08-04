@@ -107,6 +107,12 @@ type LaunchSpec struct {
 	// backend:/model:. Empty applies nothing. Composes with ReviewMode. See
 	// model_override.go.
 	ModelOverrides []ModelOverrideEntry
+	// Fallback is the operator's single run-level fallback route (the
+	// studio Launch row / CLI --fallback). It applies to agent nodes
+	// that declare no `fallbacks:` of their own, and never to judges —
+	// a weaker judge still emits a well-formed verdict, so a blanket
+	// launch setting must not reach one. Nil = none. See ADR-087.
+	Fallback *FallbackEntry
 	// Budget carries launch-time budget-cap overrides for the workflow's
 	// `budget:` block — the HTTP equivalent of the CLI --max-cost-usd /
 	// --max-tokens / --max-duration / --max-iterations /
@@ -226,6 +232,26 @@ type ModelOverrideEntry struct {
 	Backend  string `json:"backend,omitempty"`
 	Model    string `json:"model,omitempty"`
 	Provider string `json:"provider,omitempty"`
+}
+
+// FallbackEntry is the wire form of the operator's run-level fallback
+// route. A single route rather than a per-node chain: the value is
+// "don't lose a long run to a forfait wall", which one alternative
+// delivers, and a per-node ordered list is unusable on a real bot.
+type FallbackEntry struct {
+	Backend  string `json:"backend,omitempty"`
+	Model    string `json:"model,omitempty"`
+	Provider string `json:"provider,omitempty"`
+}
+
+// toRunFallback folds the launch entry into the engine's route. A nil
+// or targetless entry yields the zero value, which the executor reads
+// as "no run-level route".
+func toRunFallback(e *FallbackEntry) model.RunFallback {
+	if e == nil {
+		return model.RunFallback{}
+	}
+	return model.RunFallback{Backend: e.Backend, Model: e.Model, Provider: e.Provider}
 }
 
 // toModelOverrides folds the launch entries into the engine's ModelOverrides.

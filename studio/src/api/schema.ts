@@ -4768,6 +4768,12 @@ export interface components {
             state?: string;
             url?: string;
         };
+        FallbackUsage: {
+            backend?: string;
+            model?: string;
+            node_id: string;
+            served_by?: string;
+        };
         ForgeOAuthApp: {
             app_manage_url?: string;
             app_slug?: string;
@@ -4951,6 +4957,7 @@ export interface components {
             current_run_start?: string;
             deployment?: components["schemas"]["DeploymentReport"];
             error?: string;
+            fallbacks_used?: components["schemas"]["FallbackUsage"][];
             file_path?: string;
             final_branch?: string;
             final_branch_error?: string;

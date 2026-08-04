@@ -162,6 +162,31 @@ func splitSelectorValue(arg string) (selector, value string, err error) {
 	return selector, value, nil
 }
 
+// ParseRunFallback parses the `--fallback` flag value into the
+// operator's run-level route.
+//
+// The form is `<backend>:<model>` — split on the FIRST colon, so a model
+// id that itself contains one survives. A bare value with no colon is
+// read as a backend, since a model with no backend cannot be routed to
+// (model specs are not portable across backends).
+//
+// Deliberately no trigger syntax here: the flag takes the default
+// `on:` set, and an operator who needs a different one is authoring a
+// chain, which belongs in the .bot.
+func ParseRunFallback(arg string) (RunFallback, error) {
+	arg = strings.TrimSpace(arg)
+	if arg == "" {
+		return RunFallback{}, nil
+	}
+	backend, model, _ := strings.Cut(arg, ":")
+	backend = strings.TrimSpace(backend)
+	model = strings.TrimSpace(model)
+	if backend == "" {
+		return RunFallback{}, fmt.Errorf("--fallback %q: missing backend (expected <backend>:<model>)", arg)
+	}
+	return RunFallback{Backend: backend, Model: model}, nil
+}
+
 // ParseModelOverrides builds a ModelOverrides from repeatable CLI flag values.
 // Each element of modelFlags/backendFlags is a "selector=value" (or a bare
 // "value" targeting every node). Returns a descriptive error on a malformed

@@ -1171,7 +1171,7 @@ above is the standing baseline, not an open-work list).
 ```
 iterion validate <file.bot>            # Parse and validate workflow
 iterion import <workflow.js> [--out] [--name] [--dry-run]  # Lossy Claude-Code workflow-script → draft .bot (goja AST, zero execution; see docs/import.md)
-iterion run <file.bot> [flags]         # Execute workflow (--var, --recipe, --timeout, --store-dir, --merge-into, --branch-name, --compress, --max-cost-usd, --max-tokens, --max-duration, --max-iterations, --max-parallel-branches)
+iterion run <file.bot> [flags]         # Execute workflow (--var, --recipe, --timeout, --store-dir, --merge-into, --branch-name, --compress, --fallback, --max-cost-usd, --max-tokens, --max-duration, --max-iterations, --max-parallel-branches)
 iterion inspect [--run-id] [--events]   # View run state and events
 iterion runs prune [--store-dir] [--older-than 720h] [--keep-last N] [--status finished,failed,cancelled] [--dry-run]  # Delete old runs (pair with `iterion schedule` for retention; docs/scheduling.md)
 iterion runs questions <run-id> [--store-dir]   # List a run's pending async (ask_user_async) questions

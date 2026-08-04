@@ -26,6 +26,7 @@ import ForkDialog from "./ForkDialog";
 import ResumeDialog from "./ResumeDialog";
 import { RunShellPanel } from "./RunShellPanel";
 import BackendsUsedRow from "./runHeader/BackendsUsedRow";
+import FallbacksUsedRow from "./runHeader/FallbacksUsedRow";
 import BotChip from "./runHeader/BotChip";
 import DeploymentRow from "./runHeader/DeploymentRow";
 import ErrorHintRow from "./runHeader/ErrorHintRow";
@@ -425,6 +426,11 @@ export default function RunHeader({ run, active, wsState, onResetLayout, bare = 
               tool/compute-only runs. */}
           {run.backends_used && run.backends_used.length > 0 && (
             <BackendsUsedRow backends={run.backends_used} />
+          )}
+          {/* Only present when a route was actually taken — a clean run
+              renders nothing here. */}
+          {run.fallbacks_used && run.fallbacks_used.length > 0 && (
+            <FallbacksUsedRow fallbacks={run.fallbacks_used} />
           )}
           <RunTagsRow runId={run.id} />
         </div>

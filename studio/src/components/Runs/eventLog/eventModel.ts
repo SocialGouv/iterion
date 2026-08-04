@@ -79,6 +79,11 @@ export function previewData(data: Record<string, unknown> | undefined): string {
     "version",
     "publish",
     "to",
+    // model_fallback: the route change and why it happened.
+    "reason",
+    "from_backend",
+    "to_backend",
+    "to_model",
     "loop",
     "iteration",
     "error",

@@ -511,6 +511,26 @@
         ],
         "type": "object"
       },
+      "FallbackUsage": {
+        "properties": {
+          "backend": {
+            "type": "string"
+          },
+          "model": {
+            "type": "string"
+          },
+          "node_id": {
+            "type": "string"
+          },
+          "served_by": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "node_id"
+        ],
+        "type": "object"
+      },
       "ForgeOAuthApp": {
         "properties": {
           "app_manage_url": {
@@ -1120,6 +1140,12 @@
           },
           "error": {
             "type": "string"
+          },
+          "fallbacks_used": {
+            "items": {
+              "$ref": "#/components/schemas/FallbackUsage"
+            },
+            "type": "array"
           },
           "file_path": {
             "type": "string"

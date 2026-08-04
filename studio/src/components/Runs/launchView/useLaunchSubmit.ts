@@ -214,6 +214,12 @@ export function useLaunchSubmit({
             .filter((e) => e.model || e.backend);
           return entries.length > 0 ? entries : undefined;
         })(),
+        fallback: overrides.fallbackBackend
+          ? {
+              backend: overrides.fallbackBackend,
+              model: overrides.fallbackModel.trim() || undefined,
+            }
+          : undefined,
         repo_url: repoUrl,
         connection_id: connectionID,
       });

@@ -1,6 +1,6 @@
 # ADR-087: Cross-backend model fallback chain (`fallbacks:`) — loud, IR-visible, opt-in
 
-- **Status**: Proposed
+- **Status**: Accepted
 - **Date**: 2026-08-04
 - **Authors**: Victor Zeinstra
 - **Code**: [pkg/backend/model/executor_retry.go](../../pkg/backend/model/executor_retry.go)
@@ -523,5 +523,10 @@ Each stage is shippable and independently valuable.
    pruning, and the `metered:` + `ITERION_FORBID_METERED_FALLBACK` consent
    layer. Migration fixture: `bots/sec-audit-source`, whose comment block
    already documents the C088 contract.
-4. **Operator surface** — the single run-level opt-in row, the run-header
-   banner and the timeline row.
+4. **Operator surface** — one run-level route (studio Launch row + CLI
+   `--fallback <backend>:<model>`), applied to agent nodes that declare
+   none of their own and never to judges; a `fallbacks_used` row in the
+   run header naming each node a route served; the `model_fallback`
+   event rendered in the timeline. The chain is deduped across all three
+   sources, so a route resolving to the call that just failed is dropped
+   rather than paying a second retry budget.

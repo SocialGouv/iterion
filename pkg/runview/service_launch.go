@@ -181,6 +181,7 @@ func (s *Service) startInProcess(parent context.Context, runID string, spec Laun
 		AsyncAsk:       s.asyncAskBinder(),
 		Backend:        spec.Backend,
 		ModelOverrides: toModelOverrides(spec.ModelOverrides),
+		RunFallback:    toRunFallback(spec.Fallback),
 		BotID:          spec.BotID,
 		BoardRegister:  s.boardRegister,
 		Compress:       spec.Compress,
