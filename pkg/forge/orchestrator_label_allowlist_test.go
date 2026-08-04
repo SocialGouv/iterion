@@ -141,6 +141,54 @@ func TestProvisionWidensALabelAllowlistThatLivesOnlyOnTheConfig(t *testing.T) {
 	}
 }
 
+// TestProvisionKeepsAConfigOnlyOverlapWhileAdoptingAnAllowlist: adopting the
+// label allowlist makes the idempotent path WRITE where it used to no-op, so
+// every other operator field the write stamps must resolve from the config too.
+// Overlap is the sharp one: it is fail-open (no policy = launch every delivery),
+// and a repo that set it the documented way (a webhook PATCH) stores nothing on
+// the integration — so a write driven by the allowlist would stamp "" over it.
+func TestProvisionKeepsAConfigOnlyOverlapWhileAdoptingAnAllowlist(t *testing.T) {
+	o, _, sealer := newTestOrch(t)
+	seedConn(t, o, sealer)
+	ctx := context.Background()
+
+	res, err := o.Provision(ctx, ProvisionRequest{
+		TenantID: "t1", ConnectionID: "conn-1", RepoFullName: "group/api",
+		BotIDs: []string{"review-pr"}, ActorID: "u1",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := o.Webhooks.Get(ctx, res.WebhookID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg.Overlap = "supersede"
+	cfg.LabelAllowlist = []string{"implement"}
+	if err := o.Webhooks.Update(ctx, cfg); err != nil {
+		t.Fatal(err)
+	}
+
+	// A studio bot-set PATCH: same bots, no operator field in the request.
+	if _, err := o.Provision(ctx, ProvisionRequest{
+		TenantID: "t1", ConnectionID: "conn-1", RepoFullName: "group/api",
+		BotIDs: []string{"review-pr"}, ActorID: "u1",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	after, err := o.Webhooks.Get(ctx, res.WebhookID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if after.Overlap != "supersede" {
+		t.Errorf("overlap dropped to %q — an empty policy launches every delivery, "+
+			"so a re-review webhook now runs a bot per push in a burst", after.Overlap)
+	}
+	if !slices.Equal(after.LabelAllowlist, []string{"implement"}) {
+		t.Errorf("allowlist lost while keeping overlap: %v", after.LabelAllowlist)
+	}
+}
+
 // TestProvisionSetsAndClearsLabelAllowlist: the operator owns the field in both
 // directions. Nil says nothing (keep), a non-nil list narrows, and a non-nil
 // EMPTY list is the explicit widening — without that distinction there is no
