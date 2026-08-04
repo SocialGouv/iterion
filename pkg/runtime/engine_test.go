@@ -1764,6 +1764,93 @@ func TestHumanAutoOrPause_Pauses(t *testing.T) {
 	}
 }
 
+// The llm half of llm_or_human is an optimization; when it cannot run at all
+// (no credential for the direct generation path, a provider outage, a bad
+// model spec) the node must degrade to its HUMAN half, not kill the run — the
+// failure hits at the exact moment a hand-over was warranted. Observed in
+// production 2026-08-04: Vetty's first-ever escalation died on a 401 instead
+// of asking the operator.
+func TestHumanAutoOrPause_LLMFailureFallsBackToHumanPause(t *testing.T) {
+	wf := humanModeWorkflow(ir.InteractionLLMOrHuman)
+	exec := newStubExecutor()
+	exec.on("analyze", func(_ map[string]any) (map[string]any, error) {
+		return map[string]any{"summary": "complex change"}, nil
+	})
+	exec.on("review", func(_ map[string]any) (map[string]any, error) {
+		return nil, errors.New(`model: invalid spec "claude-opus-5" (expected "provider/model-id")`)
+	})
+
+	s := tmpStore(t)
+	eng := New(wf, s, exec)
+
+	err := eng.Run(context.Background(), "run-aop-llmfail", nil)
+	if !errors.Is(err, ErrRunPaused) {
+		t.Fatalf("expected ErrRunPaused (the human half), got: %v", err)
+	}
+	r, err := s.LoadRun(context.Background(), "run-aop-llmfail")
+	if err != nil {
+		t.Fatalf("load run: %v", err)
+	}
+	if r.Status != store.RunStatusPausedWaitingHuman {
+		t.Fatalf("expected paused_waiting_human, got %s", r.Status)
+	}
+	// The degradation is visible, never silent.
+	events, err := s.LoadEvents(context.Background(), "run-aop-llmfail")
+	if err != nil {
+		t.Fatalf("load events: %v", err)
+	}
+	seen := false
+	for _, ev := range events {
+		if ev.Type == store.EventNodeRecovery {
+			seen = true
+		}
+	}
+	if !seen {
+		t.Error("no node_recovery event — the llm-half failure degraded silently")
+	}
+
+	// The human answers, the run completes: the node did its job.
+	exec.on("integrate", func(_ map[string]any) (map[string]any, error) {
+		return map[string]any{"done": true}, nil
+	})
+	if err := eng.Resume(context.Background(), "run-aop-llmfail",
+		map[string]any{"approved": true, "reason": "human approved"}); err != nil {
+		t.Fatalf("resume failed: %v", err)
+	}
+	r, err = s.LoadRun(context.Background(), "run-aop-llmfail")
+	if err != nil {
+		t.Fatalf("load run after resume: %v", err)
+	}
+	if r.Status != store.RunStatusFinished {
+		t.Errorf("expected finished after the human answered, got %s", r.Status)
+	}
+}
+
+// A run being cancelled mid-llm-half is a stop, not a helper failure — it
+// must NOT be converted into a pause.
+func TestHumanAutoOrPause_CancellationStillFails(t *testing.T) {
+	wf := humanModeWorkflow(ir.InteractionLLMOrHuman)
+	exec := newStubExecutor()
+	exec.on("analyze", func(_ map[string]any) (map[string]any, error) {
+		return map[string]any{"summary": "s"}, nil
+	})
+	ctx, cancel := context.WithCancel(context.Background())
+	exec.on("review", func(_ map[string]any) (map[string]any, error) {
+		cancel()
+		return nil, context.Canceled
+	})
+
+	s := tmpStore(t)
+	eng := New(wf, s, exec)
+	err := eng.Run(ctx, "run-aop-cancel", nil)
+	if errors.Is(err, ErrRunPaused) {
+		t.Fatal("a cancellation was converted into a human pause")
+	}
+	if err == nil {
+		t.Fatal("expected an error from the cancelled run")
+	}
+}
+
 // ---------------------------------------------------------------------------
 // formatOutputPreview tests
 // ---------------------------------------------------------------------------
