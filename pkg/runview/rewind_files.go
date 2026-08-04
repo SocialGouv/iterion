@@ -53,16 +53,18 @@ func (s *Service) revertWorkspace(run *store.Run, wf *ir.Workflow, cp *store.Che
 		// mechanism that applies (git would stage the operator's work).
 		return s.revertViaTracker(run, wf, cp, pivot, sourcePath)
 	}
-	ref, ok := findPreNodeRef(run, wf, cp, pivot)
-	if !ok {
+	ref, skip := findPreNodeRef(run, wf, cp, pivot)
+	if skip != "" {
 		// Fall back to iterion's own versioning: a worktree run may still
 		// have been captured by the tracker (e.g. the git ref was never
-		// written because the boundary predates the marker).
+		// written because the boundary predates the marker). Its lookup is
+		// independent, so it can succeed where git's refs are missing —
+		// and it carries the same staleness guard, so the fallback cannot
+		// smuggle in the older-iteration revert the git path just refused.
 		if res, terr := s.revertViaTracker(run, wf, cp, pivot, sourcePath); terr == nil && res.Reverted {
 			return res, nil
 		}
-		return &fileRevertResult{SkipReason: fmt.Sprintf(
-			"no pre-execution snapshot recorded for %q (run predates the pre-boundary marker, or the node ran outside the worktree)", pivot)}, nil
+		return &fileRevertResult{SkipReason: skip}, nil
 	}
 
 	// Bank the current state — including uncommitted and untracked work —
@@ -126,19 +128,66 @@ func (s *Service) revertWorkspace(run *store.Run, wf *ir.Workflow, cp *store.Che
 // downwards from the checkpoint's loop iteration: the counters record
 // where the run STOPPED, which can be past the last iteration the pivot
 // actually ran.
-func findPreNodeRef(run *store.Run, wf *ir.Workflow, cp *store.Checkpoint, pivot string) (string, bool) {
-	for iter := loopIterationOf(wf, pivot, cp.LoopCounters); iter >= 0; iter-- {
-		ref := store.NodePreSnapshotRef(run.ID, pivot, iter)
-		if _, err := runtime.RunGitIn(run.WorkDir, "rev-parse", "--verify", "--quiet", ref+"^{commit}"); err == nil {
-			return ref, true
+// A non-empty skipReason means "do not revert" — never a silent
+// fallback to an older iteration.
+//
+// Probing DOWNWARDS is legitimate: the loop counters record where the run
+// STOPPED, which can be past the last iteration the pivot itself ran, so
+// the highest existing pre-marker at or below that is the right anchor.
+// What is NOT legitimate is landing below an iteration the pivot actually
+// executed. There the tree predates work whose outputs downstreamOf
+// deliberately keeps (loop-mates are ancestors of the pivot), so the
+// checkpoint would claim work whose files had been reverted away — and
+// the old code reported that as Reverted=true with no warning.
+//
+// The closing ref is what tells the two apart: `nodes/<pivot>/<n>` exists
+// iff the pivot completed iteration n. If one exists above the pre-marker
+// we settled on, the anchor is stale and we refuse.
+//
+// Two ordinary paths reach that: a workflow whose Loop.Body is empty
+// (loopIterationOf answered 0 for every node — now fixed by its
+// edge-endpoint fallback), and a run resumed from a human pause, where
+// the engine's markPreNodeBoundary is gated on rs.isWorktree, which that
+// path never sets — so nothing executed after the resume has a marker.
+//
+// Restoring the wrong tree is worse than restoring none: a SkipReason is
+// visible, a stale revert is not.
+func findPreNodeRef(run *store.Run, wf *ir.Workflow, cp *store.Checkpoint, pivot string) (ref string, skipReason string) {
+	want := loopIterationOf(wf, pivot, cp.LoopCounters)
+	found := -1
+	for iter := want; iter >= 0; iter-- {
+		candidate := store.NodePreSnapshotRef(run.ID, pivot, iter)
+		if _, err := runtime.RunGitIn(run.WorkDir, "rev-parse", "--verify", "--quiet", candidate+"^{commit}"); err == nil {
+			ref, found = candidate, iter
+			break
 		}
 	}
-	return "", false
+	if found < 0 {
+		return "", fmt.Sprintf(
+			"no pre-execution snapshot recorded for %q (run predates the pre-boundary marker, or the node ran outside the worktree)", pivot)
+	}
+	for iter := want; iter > found; iter-- {
+		post := store.NodeSnapshotRef(run.ID, pivot, iter)
+		if _, err := runtime.RunGitIn(run.WorkDir, "rev-parse", "--verify", "--quiet", post+"^{commit}"); err == nil {
+			return "", fmt.Sprintf(
+				"%q completed iteration %d but only iteration %d has a pre-execution snapshot — "+
+					"reverting to it would discard work the checkpoint still claims, so the workspace was left as-is "+
+					"(rewind with --keep-files to skip the workspace deliberately)",
+				pivot, iter, found)
+		}
+	}
+	return ref, ""
 }
 
 // loopIterationOf mirrors the engine's currentLoopIteration (unexported
 // in pkg/runtime): the max counter across every loop whose body contains
-// the node.
+// the node, falling back to loop-edge endpoints.
+//
+// The edge-endpoint half is not decoration. ir.Compile does not always
+// populate Loop.Body (older IRs, hand-written fixtures), and without the
+// fallback this answered 0 for every node in such a workflow — so the
+// pre-snapshot probe never looked above iteration 0 and a rewind of a
+// loop's third pass restored the tree from before its first.
 func loopIterationOf(wf *ir.Workflow, nodeID string, counters map[string]int) int {
 	iter := 0
 	for name, loop := range wf.Loops {
@@ -146,6 +195,17 @@ func loopIterationOf(wf *ir.Workflow, nodeID string, counters map[string]int) in
 			continue
 		}
 		if n := counters[name]; n > iter {
+			iter = n
+		}
+	}
+	for _, edge := range wf.Edges {
+		if edge == nil || edge.LoopName == "" {
+			continue
+		}
+		if edge.From != nodeID && edge.To != nodeID {
+			continue
+		}
+		if n := counters[edge.LoopName]; n > iter {
 			iter = n
 		}
 	}
@@ -239,13 +299,32 @@ func (s *Service) revertViaTracker(run *store.Run, wf *ir.Workflow, cp *store.Ch
 // probing downwards from the checkpoint's loop iteration: the counters
 // record where the run STOPPED, which can be past the last iteration the
 // pivot actually ran.
+//
+// It carries the same staleness guard as findPreNodeRef, and must: this
+// is the fallback the git path takes when its own refs are missing, so
+// without it the fallback would quietly perform the older-iteration
+// revert the git path had just refused. The closing label is the
+// discriminator — post:<pivot>:<n> exists iff the pivot completed n, so
+// one above the anchor means the anchor predates work the checkpoint
+// still keeps.
 func findPreNodeSnapshot(tr workspacetrack.Tracker, run *store.Run, wf *ir.Workflow, cp *store.Checkpoint, pivot string) (string, bool) {
-	for iter := loopIterationOf(wf, pivot, cp.LoopCounters); iter >= 0; iter-- {
-		if id, ok := tr.Resolve(run.ID, workspacetrack.Label(workspacetrack.PhasePre, pivot, iter)); ok {
-			return id, true
+	want := loopIterationOf(wf, pivot, cp.LoopCounters)
+	id, found := "", -1
+	for iter := want; iter >= 0; iter-- {
+		if got, ok := tr.Resolve(run.ID, workspacetrack.Label(workspacetrack.PhasePre, pivot, iter)); ok {
+			id, found = got, iter
+			break
 		}
 	}
-	return "", false
+	if found < 0 {
+		return "", false
+	}
+	for iter := want; iter > found; iter-- {
+		if _, ok := tr.Resolve(run.ID, workspacetrack.Label(workspacetrack.PhasePost, pivot, iter)); ok {
+			return "", false
+		}
+	}
+	return id, true
 }
 
 // RestoreWorkspaceSnapshot puts a run's workspace back to a snapshot the
@@ -267,7 +346,31 @@ func (s *Service) RestoreWorkspaceSnapshot(ctx context.Context, runID, snapshotI
 	if run.WorkDir == "" {
 		return nil, fmt.Errorf("runview: run %s has no recorded workspace", runID)
 	}
-	if isRewindableStatus(run.Status) || run.Status == store.RunStatusFinished || run.Status == store.RunStatusFailed {
+	switch {
+	case isRewindableStatus(run.Status):
+		// CLAIM before touching the workspace, exactly as Rewind does and
+		// for the same reason: reading the status and acting on it leaves
+		// a window in which `iterion resume` claims the run, and the
+		// restore then deletes and rewrites files under a live engine
+		// mid-node. The CAS closes it — losing the race means the run is
+		// already `running` and we refuse.
+		//
+		// Parking it at `cancelled` is not incidental either: resuming a
+		// paused run whose workspace was rewritten underneath it is the
+		// very hazard here, so the operator should have to resume
+		// deliberately. `cancelled` preserves the checkpoint, so that
+		// resume costs nothing.
+		claimed, cerr := s.store.UpdateRunStatusIf(ctx, run.ID, store.RunStatusCancelled, "", rewindableStatuses)
+		if cerr != nil {
+			return nil, fmt.Errorf("claim run for restore: %w", cerr)
+		}
+		if !claimed {
+			return nil, fmt.Errorf("%w: status changed under us — reload and retry", ErrRewindNotRewindable)
+		}
+		return s.workspaceTracker.Restore(run.ID, run.WorkDir, snapshotID)
+	case run.Status == store.RunStatusFinished || run.Status == store.RunStatusFailed:
+		// Terminal and non-resumable: no engine can claim it, so there is
+		// nothing to race with.
 		return s.workspaceTracker.Restore(run.ID, run.WorkDir, snapshotID)
 	}
 	return nil, fmt.Errorf("%w: %s — stop the run before restoring its workspace", ErrRewindNotRewindable, run.Status)
@@ -285,8 +388,16 @@ func (s *Service) ListWorkspaceSnapshots(ctx context.Context, runID string) ([]*
 	if _, err := s.store.LoadRun(ctx, runID); err != nil {
 		return nil, fmt.Errorf("load run: %w", err)
 	}
+	// `seen` bounds the walk. A manifest is on-disk JSON that Load
+	// unmarshals bare — the same untrusted-data posture the restore path
+	// takes for Entry.Path — so a Parent pointing at itself, or two
+	// pointing at each other (a partially-written file, a hand-edited or
+	// hand-copied store), would spin here appending until the process
+	// OOMs. Reachable from the CLI with only a run id.
 	var out []*workspacetrack.Snapshot
-	for id := s.workspaceTracker.Head(runID); id != ""; {
+	seen := map[string]bool{}
+	for id := s.workspaceTracker.Head(runID); id != "" && !seen[id]; {
+		seen[id] = true
 		snap, err := s.workspaceTracker.Load(runID, id)
 		if err != nil {
 			break

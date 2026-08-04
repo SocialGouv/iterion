@@ -87,6 +87,18 @@ type PruneResult struct {
 // UpdatedAt is zero (very old legacy runs).
 const pruneAgeField = "updated_at (falls back to created_at)"
 
+// pruneObjectGrace is how recently a workspace object may have been
+// written and still be spared by the pool sweep.
+//
+// docs/scheduling.md recommends `runs prune` from the host crontab, which
+// is precisely when it overlaps a scheduled bot — so the sweep has to be
+// safe against a capture in flight rather than assume an idle store. A
+// capture writes its objects first and its manifest last, so anything
+// written in the last hour may be alive with its manifest still pending.
+// An hour is orders of magnitude above a real capture and costs only a
+// deferral to the next sweep.
+const pruneObjectGrace = time.Hour
+
 // RunPrune is the entry point for `iterion runs prune`.
 func RunPrune(opts PruneOptions, p *Printer) error {
 	if opts.OlderThan < 0 {
@@ -216,7 +228,7 @@ func RunPrune(opts PruneOptions, p *Printer) error {
 	// sweep has to run against the manifests that survive.
 	wsObjects, wsBytes := 0, int64(0)
 	if !opts.DryRun {
-		if o, b, err := workspacetrack.NewNative(storeDir).PruneObjects(); err != nil {
+		if o, b, err := workspacetrack.NewNative(storeDir).PruneObjects(pruneObjectGrace); err != nil {
 			// Never fail the prune over it: the runs are already gone and
 			// the pool is reclaimable on the next sweep.
 			fmt.Fprintf(os.Stderr, "warning: could not sweep the workspace object pool: %v\n", err)

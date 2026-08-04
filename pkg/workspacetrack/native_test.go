@@ -3,6 +3,7 @@ package workspacetrack
 import (
 	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"strings"
@@ -586,7 +587,7 @@ func TestNative_PruneObjectsReclaimsUnreferencedContent(t *testing.T) {
 	}
 
 	// A live manifest still references both — nothing to reclaim.
-	objs, _, err := tr.PruneObjects()
+	objs, _, err := tr.PruneObjects(0)
 	if err != nil {
 		t.Fatalf("prune: %v", err)
 	}
@@ -598,7 +599,7 @@ func TestNative_PruneObjectsReclaimsUnreferencedContent(t *testing.T) {
 	if err := os.RemoveAll(filepath.Join(store, "runs", "run1")); err != nil {
 		t.Fatalf("remove run: %v", err)
 	}
-	objs, bytes, err := tr.PruneObjects()
+	objs, bytes, err := tr.PruneObjects(0)
 	if err != nil {
 		t.Fatalf("prune: %v", err)
 	}
@@ -754,5 +755,123 @@ func TestRestore_VerifiesObjectsBeforeDeleting(t *testing.T) {
 	b, err := os.ReadFile(filepath.Join(ws, "keep.txt"))
 	if err != nil || string(b) != "modified by the node" {
 		t.Errorf("keep.txt = %q (err %v), want it untouched", b, err)
+	}
+}
+
+// TestPruneObjects_UnreadableRunDirIsFatal is Revi's R0a5322.
+//
+// The mark phase skipped a run whose snapshots dir would not open, for
+// ANY reason. `continue` is right only for ENOENT (a run that never
+// versioned its workspace); on EACCES/ENOTDIR/EIO the run contributed
+// zero hashes and the sweep then deleted every object only it referenced,
+// destroying its whole workspace history. The neighbouring
+// unreadable-manifest branch already fails closed for the same reason,
+// and `runs prune` — which surfaces unreadable run dirs rather than
+// treating them as fatal — now calls this on every invocation.
+func TestPruneObjects_UnreadableRunDirIsFatal(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("running as root: permission bits do not deny access")
+	}
+	storeDir, ws := t.TempDir(), t.TempDir()
+	write(t, ws, "kept.txt", "content only this run references")
+	tr := NewNative(storeDir)
+	if _, err := tr.Capture("run-locked", ws, "post:implement:0"); err != nil {
+		t.Fatalf("capture: %v", err)
+	}
+	countObjects := func() int {
+		n := 0
+		_ = filepath.WalkDir(filepath.Join(storeDir, objectsDir), func(_ string, d fs.DirEntry, err error) error {
+			if err == nil && !d.IsDir() {
+				n++
+			}
+			return nil
+		})
+		return n
+	}
+	before := countObjects()
+	if before == 0 {
+		t.Fatal("fixture: nothing was stored")
+	}
+
+	snapDir := filepath.Join(storeDir, "runs", "run-locked", "workspace", "snapshots")
+	if err := os.Chmod(snapDir, 0o000); err != nil {
+		t.Fatalf("chmod: %v", err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(snapDir, 0o755) })
+
+	_, _, err := tr.PruneObjects(0)
+	if err == nil {
+		t.Error("an unreadable snapshots dir must abort the sweep — treating it as " +
+			"'this run references nothing' deletes content that is still live")
+	}
+	if after := countObjects(); after != before {
+		t.Errorf("%d object(s) deleted while a run's manifests were unreadable "+
+			"(had %d) — that run's workspace history is gone", before-after, before)
+	}
+}
+
+// TestStoreObject_MissingPathIsRecognisableAsNotExist is the load-bearing
+// half of Revi's R2a3d16.
+//
+// The default shape is an in-place run over the operator's LIVE checkout,
+// so a file disappearing between WalkDir's readdir and storeObject's open
+// is ordinary — an editor save that replaces a file, or a watcher a bot
+// node left running. That aborted the WHOLE capture before writeSnapshot
+// and saveCache, so the boundary got no snapshot AND the next one
+// re-hashed everything, surfacing much later as a rewind reporting "no
+// snapshot recorded".
+//
+// The fix skips the entry when os.IsNotExist(err). The race itself cannot
+// be staged deterministically from a unit test (there is no hook between
+// readdir and open), so what is pinned here is the predicate it rests on:
+// if storeObject ever wrapped the error such that os.IsNotExist stopped
+// matching, the tolerance would silently stop working and captures would
+// go back to being lost — with nothing failing.
+func TestStoreObject_MissingPathIsRecognisableAsNotExist(t *testing.T) {
+	n := NewNative(t.TempDir())
+	_, err := n.storeObject(filepath.Join(t.TempDir(), "never-existed.txt"))
+	if err == nil {
+		t.Fatal("storeObject on a missing path must fail")
+	}
+	if !os.IsNotExist(err) {
+		t.Errorf("storeObject error = %v; os.IsNotExist must match it, or Capture "+
+			"cannot tell a vanished file from a real failure and loses the whole boundary", err)
+	}
+}
+
+// TestCapture_SurvivesAFileRemovedBeforeTheWalk is the observable
+// counterpart: a workspace that shrank between captures still produces a
+// snapshot, and the removed path is simply absent from it.
+func TestCapture_SurvivesAFileRemovedBeforeTheWalk(t *testing.T) {
+	ws := t.TempDir()
+	write(t, ws, "stable.txt", "kept")
+	write(t, ws, "vanishing.txt", "about to disappear")
+	n := NewNative(t.TempDir())
+
+	if _, err := n.Capture("r1", ws, "pre:a:0"); err != nil {
+		t.Fatalf("warm capture: %v", err)
+	}
+	if err := os.Remove(filepath.Join(ws, "vanishing.txt")); err != nil {
+		t.Fatalf("remove: %v", err)
+	}
+
+	snap, err := n.Capture("r1", ws, "post:a:0")
+	if err != nil {
+		t.Fatalf("capture after a removal: %v", err)
+	}
+	found := false
+	for _, e := range snap.Entries {
+		if e.Path == "stable.txt" {
+			found = true
+		}
+		if e.Path == "vanishing.txt" {
+			t.Error("a file that no longer exists must not appear in the snapshot")
+		}
+	}
+	if !found {
+		t.Error("the rest of the workspace must still be captured")
+	}
+	if _, ok := n.Resolve("r1", "post:a:0"); !ok {
+		t.Error("the boundary label did not resolve — a rewind would report 'no snapshot recorded'")
 	}
 }

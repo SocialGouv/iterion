@@ -203,11 +203,44 @@ func declFingerprints(f *ast.File) map[string]string {
 	// runs on the raw parse. So the group body and its instantiations are
 	// fingerprinted here, and impactedNodes expands them to the real node
 	// ids — otherwise editing a group node is invisible.
+	//
+	// Both are encoded through their BODIES rather than directly: neither
+	// ast.MarshalFile's jsonFile nor unparse.Unparse carries a groups or
+	// uses field, so `&ast.File{Groups: …}` marshals to "{}" and put falls
+	// through to its "<unencodable N>" placeholder — which is derived from
+	// the declaration's ORDINAL POSITION and is therefore identical in the
+	// recorded and the edited source. diffDecls then saw no change, so
+	// `rewind --auto` on a group-body edit failed with "the workflow
+	// source is unchanged" and the operator resumed against the OLD node.
+	// A false negative, the direction this file's contract calls the
+	// dangerous one, and it silently disabled impactedNodes' whole
+	// group/use branch.
 	for _, d := range f.Groups {
-		put("group", d.Name, &ast.File{Groups: []*ast.GroupDecl{d}})
+		put("group", d.Name, &ast.File{
+			Agents:   d.Agents,
+			Judges:   d.Judges,
+			Routers:  d.Routers,
+			Humans:   d.Humans,
+			Tools:    d.Tools,
+			Computes: d.Computes,
+			// The body's edges ride in a synthetic workflow shell, which
+			// the encoder does know about.
+			Workflows: []*ast.WorkflowDecl{{Name: d.Name, Edges: d.Edges}},
+		})
 	}
 	for _, d := range f.Uses {
-		put("use", d.Group+" as "+d.Prefix, &ast.File{Uses: []*ast.UseDecl{d}})
+		// A use declares no body, so there is nothing encodable to
+		// fingerprint — fold everything that can change into the KEY
+		// instead, as edgeKey already does for edge mappings. Retuning a
+		// `with { … }` binding then surfaces as removed+added rather than
+		// vanishing.
+		key := d.Group + " as " + d.Prefix
+		for _, w := range d.With {
+			if w != nil {
+				key += " with " + w.Key + "=" + w.Value
+			}
+		}
+		put("use", key, &ast.File{Uses: []*ast.UseDecl{d}})
 	}
 	if f.Vars != nil {
 		put("vars", "", &ast.File{Vars: f.Vars})

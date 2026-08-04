@@ -810,3 +810,47 @@ func TestRewind_RetiresAbandonedAsyncQuestions(t *testing.T) {
 		t.Errorf("upstream questions = %d, want 1 kept", len(up))
 	}
 }
+
+// TestRewind_KeepsTheFinishedAtTheClaimStamped is Revi's R95a324.
+//
+// `run` is loaded before the CAS; UpdateRunStatusIf mutates its OWN copy
+// (loadRunRaw → applyStatusTransition), which stamps FinishedAt for the
+// `cancelled` transition. SaveRun is a full-document overwrite, so saving
+// the pre-claim snapshot dropped that stamp whenever the pre-rewind
+// status was paused_* or queued — where FinishedAt was nil. The run then
+// persisted as cancelled with finished_at null; healRun only repairs
+// `running`, and runs_stats falls back to now for a run with no end, so
+// the studio duration ticker never stopped.
+//
+// The same read-modify-write-across-a-CAS hazard as Rafe0da, one path over.
+func TestRewind_KeepsTheFinishedAtTheClaimStamped(t *testing.T) {
+	cp := &store.Checkpoint{
+		NodeID:  "verify",
+		Outputs: outputsOf("survey", "plan", "implement", "verify"),
+	}
+	// paused_waiting_human is the case that bites: FinishedAt is nil there.
+	svc, st, runID := seedRun(t, linearBot, cp, store.RunStatusPausedWaitingHuman)
+	ctx := context.Background()
+
+	if before, err := st.LoadRun(ctx, runID); err != nil {
+		t.Fatalf("load: %v", err)
+	} else if before.FinishedAt != nil {
+		t.Fatalf("fixture: a paused run must start with finished_at nil, got %v", before.FinishedAt)
+	}
+
+	if _, err := svc.Rewind(ctx, RewindSpec{RunID: runID, NodeID: "implement"}); err != nil {
+		t.Fatalf("Rewind: %v", err)
+	}
+
+	got, err := st.LoadRun(ctx, runID)
+	if err != nil {
+		t.Fatalf("reload: %v", err)
+	}
+	if got.Status != store.RunStatusCancelled {
+		t.Fatalf("status = %q, want cancelled", got.Status)
+	}
+	if got.FinishedAt == nil {
+		t.Error("finished_at is nil on a run parked by a rewind — the claim stamped it and " +
+			"the save dropped it, so the studio duration ticker runs forever")
+	}
+}

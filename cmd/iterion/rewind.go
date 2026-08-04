@@ -179,7 +179,9 @@ func runWorkspaceSnapshotCmd(cmd *cobra.Command, runID string) error {
 		if err != nil {
 			return fmt.Errorf("restore snapshot: %w", err)
 		}
-		p.JSON(report)
+		if jsonOutput {
+			p.JSON(report)
+		}
 		fmt.Fprintf(os.Stderr, "workspace restored to %s: %d written, %d deleted, %d unchanged\n",
 			rewindOpts.restoreID, report.Written, report.Deleted, report.Unchanged)
 		return nil
@@ -189,7 +191,15 @@ func runWorkspaceSnapshotCmd(cmd *cobra.Command, runID string) error {
 	if err != nil {
 		return fmt.Errorf("list snapshots: %w", err)
 	}
-	p.JSON(snaps)
+	if jsonOutput {
+		// Every Entry (path + hash + mode + size) of every snapshot in the
+		// chain — on a real repo that is ~10k paths per capture times the
+		// number of node boundaries, i.e. hundreds of MB. Machine
+		// consumers only; the human summary goes to stderr below. Printer
+		// .JSON writes to stdout regardless of Format, so the gate has to
+		// be here, as every other command in the tree does it.
+		p.JSON(snaps)
+	}
 	for _, s := range snaps {
 		fmt.Fprintf(os.Stderr, "%s  %-28s  %d files  %s\n",
 			s.ID, s.Label, len(s.Entries), s.CreatedAt.Format("15:04:05"))
