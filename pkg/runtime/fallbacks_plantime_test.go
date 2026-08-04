@@ -89,6 +89,24 @@ func TestWorkspaceSafety_ClawNodeWithCLIRouteIsMutating(t *testing.T) {
 	}
 }
 
+// TestWorkspaceSafety_ToolsListDoesNotShelterCLIRoute: declaring a
+// read-only `tools:` list does NOT make a claw→CLI route safe. Under
+// bypassPermissions a CLI agent ignores the lowercase list entirely and
+// carries the full native toolset, so the node gains Edit/Write on
+// fall-through — while the admission decided on the claw reading has
+// already let it run as one of N concurrent read-only branches.
+func TestWorkspaceSafety_ToolsListDoesNotShelterCLIRoute(t *testing.T) {
+	node := &ir.AgentNode{
+		BaseNode:  ir.BaseNode{ID: "a"},
+		LLMFields: ir.LLMFields{Backend: "claw"},
+		Tools:     []string{"read_file"},
+		Fallbacks: []ir.Fallback{{Name: "cli", Backend: "claude_code", Model: "claude-opus-5"}},
+	}
+	if !isMutatingNodeCtx(node, "", nil, false) {
+		t.Error("a read-only tools list must not shelter a claw→CLI route from the mutation classifier")
+	}
+}
+
 // TestWorkspaceSafety_ClawOnlyRouteStaysReadOnly keeps the pessimism
 // narrow: a route that stays on claw changes nothing about what the node
 // can do, so it must not cost the node its parallel-fan-out eligibility.

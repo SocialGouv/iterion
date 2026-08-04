@@ -235,6 +235,24 @@ func (b *ClawBackend) Execute(ctx context.Context, task delegate.Task) (delegate
 	}
 
 	if task.Sandbox != nil {
+		// The permission gate does NOT survive the sandbox IPC boundary:
+		// delegate.IOTask carries no Permission field, so the
+		// in-container `iterion __claw-runner` rebuilds a task whose
+		// policy is disabled and runs bash / file_edit / write_file
+		// ungated. Refusing is the only honest option — pi already
+		// treats the same combination as fail-not-degrade rather than
+		// running a gated node with an inert gate, and a boundary the
+		// author declared must not silently not exist.
+		//
+		// This is a pre-existing hole (sandbox is on by default), not
+		// one the fallback chain introduced; the chain merely adds
+		// another way to reach it. Closing it properly means carrying
+		// the policy on IOTask — a named follow-on.
+		if task.Permission.Enabled() {
+			return delegate.Result{}, fmt.Errorf(
+				"claw backend: node %q declares permission: %s but runs sandboxed, where the gate cannot be enforced (the IPC task carries no policy) — run this node unsandboxed, or route it to claude_code/pi",
+				task.NodeID, task.Permission.Mode)
+		}
 		return b.executeViaSandboxRunner(ctx, task)
 	}
 

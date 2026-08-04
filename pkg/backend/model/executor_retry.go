@@ -673,7 +673,6 @@ func (e *ClawExecutor) dispatchChain(
 			}, nil
 		}
 		causes = append(causes, err)
-		spent.add(result)
 
 		if ctx.Err() != nil {
 			return chainOutcome{Result: result, BackendName: backendName}, err
@@ -681,6 +680,12 @@ func (e *ClawExecutor) dispatchChain(
 		if !fallbackRemains {
 			break
 		}
+		// Accumulate only once this route is definitively abandoned. The
+		// terminal `result` is folded with `spent` on the way out, so
+		// adding the last route here too would count it twice — and on a
+		// single-route node that is a plain doubling of what the
+		// delegate_error event reports.
+		spent.add(result)
 		next := chain[i+1]
 		cat := delegate.ClassifyFallback(err, isDelegateRetryable(err))
 		if !elementAccepts(next, cat) {

@@ -116,7 +116,7 @@ func TestApplyRunFallback_RefusesToolsInversion(t *testing.T) {
 	w := &Workflow{Nodes: map[string]Node{"work": agent}}
 
 	refusals := ApplyRunFallback(w, Fallback{Backend: "claude_code", Model: "claude-opus-5"})
-	if len(refusals) != 1 || !strings.Contains(refusals[0], "claw⇄CLI") {
+	if len(refusals) != 1 || !strings.Contains(refusals[0], "un-restricts") {
 		t.Fatalf("expected a tools-inversion refusal, got %v", refusals)
 	}
 	if len(agent.Fallbacks) != 0 {

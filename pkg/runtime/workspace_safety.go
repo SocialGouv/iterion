@@ -111,9 +111,6 @@ func unrestrictedCLIBackendCanWrite(
 	defaultBackend string,
 	resolver effectiveBackendResolver,
 ) bool {
-	if len(tools) > 0 {
-		return false
-	}
 	backend := strings.TrimSpace(ir.ExpandEnvWithDefault(fields.Backend))
 	if backend == "" {
 		backend = strings.TrimSpace(ir.ExpandEnvWithDefault(defaultBackend))
@@ -122,6 +119,19 @@ func unrestrictedCLIBackendCanWrite(
 		if effective := strings.TrimSpace(resolver.EffectiveBackendName(node)); effective != "" {
 			backend = effective
 		}
+	}
+	// A claw→CLI route un-restricts the node's tool set WHATEVER it
+	// declared: under the always-on bypassPermissions, claude_code
+	// ignores the lowercase `tools:` list entirely and always carries
+	// the full native toolset. So this is checked BEFORE the
+	// list-based early return — a `tools: [read_file]` claw node with a
+	// CLI route still gains Edit/Write on fall-through, and admission
+	// happens once, before the run.
+	if backend == "claw" && fallbacksReachCLIBackend(node) {
+		return true
+	}
+	if len(tools) > 0 {
+		return false
 	}
 	if backend == "" || backend == "auto" {
 		return false

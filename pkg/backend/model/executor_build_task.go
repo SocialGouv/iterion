@@ -443,6 +443,14 @@ func (e *ClawExecutor) executeBackend(ctx context.Context, node ir.Node, input m
 				return nil, err
 			}
 			result = validated
+			// The schema retry (and the claw extraction fallback) hand
+			// back a FRESH output map, so the degraded-input marker has
+			// to be re-stamped or it is lost on exactly the correlated
+			// case: a weaker fallback model is the one most likely to
+			// emit output that needs the retry. Losing it makes a
+			// deterministic gate fail OPEN on a degraded verdict and
+			// erases the "fell back" row from the run header.
+			stampFallbackMeta(result.Output, out)
 		} else {
 			e.logger.Warn("[%s#%d/%s] node declares output schema %q but no schema with that name is registered — IR compiler should have rejected this; output passes through unvalidated",
 				f.id, task.Iteration, backendName, f.outputSchema)

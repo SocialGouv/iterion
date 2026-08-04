@@ -158,16 +158,34 @@ func TestFallbackToolsInversionIsRefused(t *testing.T) {
 	}
 }
 
-// TestFallbackToolsInversionAllowedWithExplicitList: declaring the tools
-// makes the crossing meaningful again, so the refusal must lift.
-func TestFallbackToolsInversionAllowedWithExplicitList(t *testing.T) {
+// TestFallbackClawToCLIRefusedEvenWithToolsList: the two directions are
+// not symmetric. Declaring `tools:` does NOT make a claw→CLI route safe
+// — under the always-on bypassPermissions a CLI agent ignores the
+// lowercase list entirely and carries the full native toolset, so a
+// reviewer restricted to read_file would gain Edit/Write the moment the
+// chain falls through, on a node the engine already admitted as a
+// read-only parallel branch.
+func TestFallbackClawToCLIRefusedEvenWithToolsList(t *testing.T) {
 	src := "agent x:\n  backend: \"claw\"\n  model: \"anthropic/claude-opus-5\"\n  system: p\n" +
 		"  tools: [read_file]\n" +
 		"  fallbacks:\n    cli:\n      backend: \"claude_code\"\n      model: \"claude-opus-5\"\n" +
 		"\nprompt p:\n  hi\n\nworkflow w:\n  entry: x\n  x -> done\n"
 	cr := compileFallbackSrc(t, src)
+	if !hasDiag(cr.Diagnostics, DiagFallbackUnsafeCross) {
+		t.Fatalf("a claw→CLI route un-restricts the node whatever its tools list; expected C176, got %+v", cr.Diagnostics)
+	}
+}
+
+// TestFallbackCLIToClawAllowedWithToolsList: the other direction
+// RESTRICTS, which is the documented pattern — a CLI node declares the
+// tools its claw route will actually get. The list is inert on the CLI
+// primary and load-bearing on the route, so this must compile clean.
+func TestFallbackCLIToClawAllowedWithToolsList(t *testing.T) {
+	src := fallbackWorkflow("  tools: [read_file, run_command]\n",
+		"    api:\n      backend: \"claw\"\n      model: \"anthropic/claude-opus-5\"\n")
+	cr := compileFallbackSrc(t, src)
 	if hasDiag(cr.Diagnostics, DiagFallbackUnsafeCross) {
-		t.Fatalf("C176 must not fire once the node declares its tools: %+v", cr.Diagnostics)
+		t.Fatalf("CLI→claw with an explicit tools list is the documented pattern: %+v", cr.Diagnostics)
 	}
 }
 

@@ -405,9 +405,13 @@ func TestExhaustedChainCarriesEverySpend(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected the chain to fail")
 	}
-	// The head burned 1000 tokens across its retry budget; the tail 500.
-	if out.Result.Tokens <= 500 {
-		t.Errorf("tokens = %d, want the failed head's spend folded in too", out.Result.Tokens)
+	// Each route reports its last attempt's usage (the retry loop does
+	// not accumulate across attempts), so the node's total is the head's
+	// 1000 plus the tail's 500 — asserted as an EXACT sum, because a
+	// loose lower bound is exactly what let a double-count of the last
+	// route pass unnoticed.
+	if got, want := out.Result.Tokens, 1500; got != want {
+		t.Errorf("tokens = %d, want %d (each route folded in exactly once)", got, want)
 	}
 }
 

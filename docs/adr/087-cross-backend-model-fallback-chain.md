@@ -285,7 +285,7 @@ the org monthly cap and a lending donor's ledger.
 | Crossing | Why |
 |---|---|
 | `permission: ask\|deny` + an element on a backend that cannot enforce it (`kimi`, `grok`, `codex`; `claw` under sandbox until `IOTask` carries the policy) | The gate is the anti-prompt-injection boundary. `IOTask` has **zero** `Permission` field, so a sandboxed claw element is ungated by construction. `pi` already refuses rather than degrades — adopt its precedent verbatim |
-| A claw⇄CLI crossing on a node with an **empty `tools:` list** | The list inverts meaning: empty = zero tools on claw, empty = full unrestricted native toolset under `bypassPermissions` on every CLI backend. A read-only reviewer becomes an agent that can edit its own subject |
+| A **claw → CLI** crossing, whatever the `tools:` list | Under `bypassPermissions` a CLI agent ignores the lowercase list entirely and carries the full native toolset, so the route un-restricts the node — and the parallel-branch admission was already decided on the claw reading. (**CLI → claw** restricts, and is refused only when the list is EMPTY, which on claw means zero tools) |
 | An element that changes backend without its own `model:` | The model-spec formats are mutually incompatible (`provider/model` for claw, `anthropic/`-only prefix stripping for claude_code) |
 | A secret-bearing node (`MaterializeSecrets`) with a `pi`/`kimi`/`grok` element | The agent is instructed to emit `__ITERION_SECRET_*__` placeholders the element never substitutes |
 | `session: inherit\|fork` with a cross-backend element | Session continuity has no cross-backend meaning |
@@ -483,7 +483,9 @@ the repo's own stated criterion.
   usable** — the trigger comes from the failing element, and `claude_code`
   types it correctly — but with two bounded limits: it is refused outright
   on a node declaring `permission: ask|deny` (the IPC envelope carries no
-  policy), and its own failure is unclassifiable, so per decision 4 it
+  policy — a pre-existing hole the chain merely adds a path to, now
+  failing LOUDLY at dispatch rather than running with an inert
+  boundary), and its own failure is unclassifiable, so per decision 4 it
   always advances the chain and can never be filtered by `on:`. Since
   sandbox is on by default, typing that envelope is the highest-value
   follow-on. The ~8 direct-claw

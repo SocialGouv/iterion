@@ -210,15 +210,33 @@ func ungatedCrossingReason(routeBackend, permission string) string {
 // toolsInversionReason returns why a route may not cross the claw⇄CLI
 // boundary on this node, or "" when it may.
 //
-// The list inverts meaning across that boundary: empty means ZERO tools
-// on claw and the FULL unrestricted native toolset on a CLI backend
-// under bypassPermissions. Both backends must be statically known for
-// the comparison to mean anything.
+// The two directions are not symmetric:
+//
+//   - claw → CLI un-restricts the node WHATEVER it declared. Under the
+//     always-on bypassPermissions a CLI agent ignores the lowercase
+//     `tools:` list and carries the full native toolset, so a reviewer
+//     restricted to read_file gains Edit/Write the moment the chain
+//     falls through — and the parallel-branch admission was already
+//     computed on the claw reading.
+//   - CLI → claw restricts, which is only a hazard when the list is
+//     EMPTY: on claw that means zero tools, so the node becomes a
+//     schema-shaped narrator with no way to verify anything.
+//
+// Both backends must be statically known for the comparison to mean
+// anything.
 func toolsInversionReason(nodeBackend, routeBackend string, tools []string) string {
-	if nodeBackend == "" || routeBackend == "" || len(tools) > 0 {
+	if nodeBackend == "" || routeBackend == "" {
 		return ""
 	}
-	if (nodeBackend == clawBackendName) == (routeBackend == clawBackendName) {
+	nodeClaw := nodeBackend == clawBackendName
+	routeClaw := routeBackend == clawBackendName
+	if nodeClaw == routeClaw {
+		return ""
+	}
+	if nodeClaw {
+		return "routes a claw node to a CLI backend, which ignores the lowercase tools: list under bypassPermissions and always carries the full native toolset — the route silently un-restricts this node (and the parallel-branch admission was already decided on the claw reading); declare the node on the CLI backend instead, or route to another claw model"
+	}
+	if len(tools) > 0 {
 		return ""
 	}
 	return "crosses the claw⇄CLI boundary on a node with no tools: list — an empty list means NO tools on claw but the full unrestricted toolset on a CLI backend, so the route silently changes what this node can do; declare an explicit tools: list"

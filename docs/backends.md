@@ -352,11 +352,18 @@ run would be silently wrong rather than merely worse:
 - a route on a backend that cannot enforce the node's `permission:` gate
   (`kimi`, `grok`, `codex`) — the anti-prompt-injection boundary must not
   disappear at the moment the run is under stress;
-- a route crossing the claw⇄CLI boundary on a node with an **empty
-  `tools:` list**. The list inverts meaning there: empty means *no*
-  tools on `claw` and the *full unrestricted* native toolset on a CLI
-  backend. Declare the tools explicitly — on `claude_code` the list is
-  inert, so it costs nothing and makes the `claw` route real.
+- a route crossing the claw⇄CLI boundary, because the `tools:` list
+  does not mean the same thing on both sides. The two directions are not
+  symmetric:
+  - **claw → CLI is refused outright**, whatever the list. Under the
+    always-on `bypassPermissions` a CLI agent ignores the lowercase
+    `tools:` list and carries the full native toolset, so a reviewer
+    restricted to `read_file` would gain Edit/Write the moment the chain
+    falls through — on a node the engine may already have admitted as a
+    read-only parallel branch.
+  - **CLI → claw is refused only when the list is empty**, which on claw
+    means *zero* tools. Declaring the tools explicitly is the documented
+    pattern: inert on the CLI primary, load-bearing on the claw route.
 
 A route that changes `backend:` must pin its own `model:` (`C173`):
 model specs are not portable (`claw` needs `provider/model`,
@@ -405,13 +412,22 @@ a second full retry budget to fail identically.
 
 ### Scope
 
-`claude_code` ⇄ `claw` is the validated lane. `kimi` and `grok` sit on a
+`claude_code` → `claw` is the validated lane. `kimi` and `grok` sit on a
 CLI contract that structurally cannot return an error, so no typed
 trigger can fire for them; `codex` is frozen. A sandboxed `claw` route
 works — the trigger comes from the failing route, which `claude_code`
-types correctly — but it is refused on a node declaring `permission:`
-(the IPC envelope carries no policy) and its own failure is always
-unclassifiable.
+types correctly — but its own failure is always unclassifiable, and it
+**cannot serve a node with `permission: ask|deny`**.
+
+> ⚠️ **Sandboxed `claw` cannot enforce the permission gate**, chain or no
+> chain. The IPC task the in-container `iterion __claw-runner` rebuilds
+> carries no policy, so `bash` / `file_edit` / `write_file` run ungated.
+> Since sandbox is on by default, a `permission:`-declaring claw node has
+> silently had no gate. That combination now **fails loudly at dispatch**
+> rather than running with an inert boundary — the same fail-not-degrade
+> posture `pi` already takes. Run the node unsandboxed, or route it to
+> `claude_code`/`pi`. Carrying the policy across the IPC boundary is a
+> named follow-on.
 
 ## Transient-error & network resilience
 
