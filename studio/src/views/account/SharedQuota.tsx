@@ -226,7 +226,11 @@ function PledgeCard({
       end: pledge?.window ? String(pledge.window.end_hour) : "",
     });
     setKeyID(pledge?.key_id ?? lendable.keys?.[0]?.id ?? "");
-  }, [pledge, lendable]);
+    // Keyed on the FIRST key's id, not on `lendable`: the parent rebuilds
+    // that object on every render, so depending on it would re-seed — and
+    // wipe — the form under a donor who is still typing their ceilings.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [pledge, lendable.keys?.[0]?.id]);
 
   const status = pledge?.status;
   const copy = status ? STATUS_COPY[status] : null;

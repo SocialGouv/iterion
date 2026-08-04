@@ -267,10 +267,16 @@ func (s *Server) verifyLendable(r *http.Request, userID string, cred credpool.Cr
 		if cred.KeyID == "" {
 			return secrets.OAuthRecord{}, &httpErr{http.StatusBadRequest, "name the key you are lending (key_id)"}
 		}
-		k, err := s.apiKeys.Get(r.Context(), cred.KeyID)
+		// Owner-scoped rather than tenant-scoped: a donor lends a key of
+		// their own, and which team they happen to be looking at when they
+		// do it is not the question. GetOwned already refuses a key that
+		// is not theirs, so a miss here is genuinely "no such key of
+		// yours" — the ownership check below then only has the
+		// team-scoped case left to reject.
+		k, err := s.apiKeys.GetOwned(r.Context(), cred.KeyID, userID)
 		if err != nil {
 			if errors.Is(err, secrets.ErrApiKeyNotFound) {
-				return secrets.OAuthRecord{}, &httpErr{http.StatusNotFound, "no such API key"}
+				return secrets.OAuthRecord{}, &httpErr{http.StatusNotFound, "no such API key of yours — only a personal key can be pooled"}
 			}
 			return secrets.OAuthRecord{}, &httpErr{http.StatusInternalServerError, err.Error()}
 		}
@@ -437,7 +443,10 @@ func (s *Server) stillHolds(r *http.Request, p credpool.Pledge, connectedOAuth m
 		if s.apiKeys == nil || p.KeyID == "" {
 			return false
 		}
-		k, err := s.apiKeys.Get(r.Context(), p.KeyID)
+		// Owner-scoped: a donor whose active team differs from the team
+		// their key is scoped to would otherwise be told their own
+		// contribution is gone.
+		k, err := s.apiKeys.GetOwned(r.Context(), p.KeyID, p.UserID)
 		return err == nil && k.ScopeUserID == p.UserID
 	}
 	return false

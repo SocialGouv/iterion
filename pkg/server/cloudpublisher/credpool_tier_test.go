@@ -274,3 +274,40 @@ func TestClampBudgetToGrant_resumeOffsetStillNeverRaisesADeclaredBudget(t *testi
 		t.Errorf("MaxCostUSD = %+v, want the workflow's own 3", got)
 	}
 }
+
+// A run that pins its models must not be handed a donation it cannot
+// spend. Asking for every known provider meant a bot pinned on
+// anthropic/… could be granted a lent z.ai key: the lease consumed a unit
+// of the donor's daily runs and held a slot for a run that then failed at
+// its first LLM call, and every retry re-picked the same wrong donation.
+func TestWantsFor_narrowsToTheProvidersTheRunPinned(t *testing.T) {
+	wf := &ir.Workflow{Nodes: map[string]ir.Node{
+		"a": &ir.AgentNode{LLMFields: ir.LLMFields{Model: "anthropic/claude-opus-5"}},
+	}}
+	got := wantsFor(wf)
+	if len(got) == 0 {
+		t.Fatal("a pinned run was left with nothing to ask for")
+	}
+	for _, w := range got {
+		if p := providerOfWant(w); p != string(secrets.ProviderAnthropic) {
+			t.Errorf("asked for %s (provider %q) on an anthropic-pinned run", w, p)
+		}
+	}
+	// The Claude subscription is the natural donation for that pin, and it
+	// must still come before the metered key.
+	if got[0].Source != credpool.SourceOAuth || got[0].Ref != string(secrets.OAuthKindClaudeCode) {
+		t.Errorf("first want = %s, want the lent Claude subscription", got[0])
+	}
+}
+
+// A run that pins nothing takes whatever it is given: claw substitutes the
+// first available provider, so every donation can serve it.
+func TestWantsFor_unpinnedRunKeepsTheWholeOrder(t *testing.T) {
+	for _, wf := range []*ir.Workflow{nil, {Nodes: map[string]ir.Node{
+		"a": &ir.AgentNode{LLMFields: ir.LLMFields{Model: ""}},
+	}}} {
+		if got := wantsFor(wf); len(got) != len(poolWantOrder) {
+			t.Errorf("unpinned run asks for %d want(s), want the full %d", len(got), len(poolWantOrder))
+		}
+	}
+}

@@ -497,7 +497,7 @@ func (p *Publisher) resolveAndSealCredentials(ctx context.Context, runID, orgID,
 	//    credentials" is the condition the pool exists for.
 	res := credResolution{}
 	if len(bundle.APIKeys) == 0 && len(bundle.OAuthCredentials) == 0 {
-		if grant := p.acquireFromPool(ctx, runID, orgID, tenantID, ownerID, botID); grant != nil {
+		if grant := p.acquireFromPool(ctx, runID, orgID, tenantID, ownerID, botID, wf); grant != nil {
 			// The lent credential goes in the slot its KIND belongs to, so
 			// the runner cannot tell a donation from the tenant's own.
 			switch grant.Source {
@@ -564,12 +564,65 @@ var poolWantOrder = func() []credpool.Credential {
 	return out
 }()
 
+// providerOfWant maps a want back to the LLM provider it authenticates
+// against, so a run that pinned its models can be matched to donations it
+// could actually use. "" for a want with no single provider.
+func providerOfWant(w credpool.Credential) string {
+	if w.Source == credpool.SourceAPIKey {
+		return w.Ref
+	}
+	switch secrets.OAuthKind(w.Ref) {
+	case secrets.OAuthKindClaudeCode:
+		return string(secrets.ProviderAnthropic)
+	case secrets.OAuthKindCodex:
+		return string(secrets.ProviderOpenAI)
+	}
+	return ""
+}
+
+// wantsFor narrows the pool request to donations a run can actually spend.
+//
+// A bot that pins `model: "anthropic/…"` has no use for a lent z.ai key:
+// granting one would consume a unit of the donor's daily runs and hold a
+// concurrency slot for a run that then fails at the first LLM call, and
+// every retry would pick the same wrong donation. A run that pins nothing
+// takes the full order — claw substitutes the first available provider, so
+// any donation serves it.
+func wantsFor(wf *ir.Workflow) []credpool.Credential {
+	pinned := map[string]bool{}
+	if wf != nil {
+		for _, n := range wf.Nodes {
+			f, ok := n.(interface{ GetLLMFields() *ir.LLMFields })
+			if !ok {
+				continue
+			}
+			if prov, _, cut := strings.Cut(f.GetLLMFields().Model, "/"); cut && prov != "" {
+				pinned[prov] = true
+			}
+		}
+	}
+	if len(pinned) == 0 {
+		return poolWantOrder
+	}
+	out := make([]credpool.Credential, 0, len(poolWantOrder))
+	for _, w := range poolWantOrder {
+		if prov := providerOfWant(w); prov != "" && pinned[prov] {
+			out = append(out, w)
+		}
+	}
+	return out
+}
+
 // acquireFromPool asks the credential pool for a donor. Returns nil when no
 // pool is wired, none serves this requester, or every donor is currently
 // unavailable — all ordinary outcomes that must let the launch proceed
 // exactly as it would have without a pool.
-func (p *Publisher) acquireFromPool(ctx context.Context, runID, orgID, tenantID, ownerID, botID string) *credpool.Grant {
+func (p *Publisher) acquireFromPool(ctx context.Context, runID, orgID, tenantID, ownerID, botID string, wf *ir.Workflow) *credpool.Grant {
 	if p.credPool == nil {
+		return nil
+	}
+	wants := wantsFor(wf)
+	if len(wants) == 0 {
 		return nil
 	}
 	grant, err := p.credPool.Acquire(ctx, credpool.Request{
@@ -578,7 +631,7 @@ func (p *Publisher) acquireFromPool(ctx context.Context, runID, orgID, tenantID,
 		TenantID: tenantID,
 		UserID:   ownerID,
 		BotID:    botID,
-		Wants:    poolWantOrder,
+		Wants:    wants,
 	})
 	if err != nil {
 		if !errors.Is(err, credpool.ErrNoDonor) {

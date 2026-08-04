@@ -473,7 +473,12 @@ func (b *Broker) openCredential(ctx context.Context, p Pledge, now time.Time) (p
 		if b.apiKeys == nil {
 			return nil, "", fmt.Errorf("credpool: no api-key store wired; cannot serve %s", p.Credential)
 		}
-		k, gerr := b.apiKeys.Get(ctx, p.KeyID)
+		// GetOwned, not Get: this read runs on the BORROWER's context, in
+		// another tenant than the donor's, and the tenant-scoped Get would
+		// find nothing — parking an innocent donor's pledge with "the lent
+		// API key was deleted" on every cross-team draw, which is every
+		// draw a pool exists for.
+		k, gerr := b.apiKeys.GetOwned(ctx, p.KeyID, p.UserID)
 		if gerr != nil {
 			if errors.Is(gerr, secrets.ErrApiKeyNotFound) {
 				return nil, "the lent API key was deleted — pledge another to resume sharing", nil

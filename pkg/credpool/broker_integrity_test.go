@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/SocialGouv/iterion/pkg/secrets"
+	"github.com/SocialGouv/iterion/pkg/store"
 )
 
 // Regressions for defects an adversarial review found in the accounting.
@@ -669,5 +670,36 @@ func TestAcquire_resumeKeepsItsShareInsteadOfTakingTheWholeAllowance(t *testing.
 		if _, err := h.broker.Acquire(ctx, h.request(id)); err != nil {
 			t.Errorf("%s refused while a resumed run held a slot: %v", id, err)
 		}
+	}
+}
+
+// A lent API key is read from the BORROWER's context, in a different
+// tenant than the donor's. The tenant-scoped Get finds nothing there, so
+// the draw failed AND parked the donor's pledge with "the lent API key was
+// deleted" — factually wrong, and re-pledging parked it again on the next
+// draw. Ownership, not tenancy, is the boundary for a pooled key.
+func TestAcquire_lentKeyIsReadableFromAnotherTenant(t *testing.T) {
+	h := newHarness(t)
+	ctx := context.Background()
+	p, _ := h.donorKey(t, "alice", "anthropic", Limits{MaxUSDPerDay: 5})
+
+	// The requester launches from another team entirely — the ordinary
+	// shape of a draw, since a donor never serves their own run.
+	req := h.wantKey("run-1", "anthropic")
+	req.TenantID = "team-elsewhere"
+
+	grant, err := h.broker.Acquire(store.WithTenant(ctx, "team-elsewhere"), req)
+	if err != nil {
+		t.Fatalf("a lent key was unreadable across tenants: %v", err)
+	}
+	if grant.DonorID != "alice" {
+		t.Errorf("served by %q, want alice", grant.DonorID)
+	}
+	fresh, gerr := h.pledges.Get(ctx, p.ID)
+	if gerr != nil {
+		t.Fatalf("pledge: %v", gerr)
+	}
+	if fresh.Health != HealthOK {
+		t.Errorf("the donor's pledge was parked as %q by a successful draw", fresh.Health)
 	}
 }
