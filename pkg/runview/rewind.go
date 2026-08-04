@@ -310,6 +310,20 @@ func (s *Service) Rewind(ctx context.Context, spec RewindSpec) (*RewindResult, e
 	run.Error = ""
 	run.Checkpoint = cp
 	run.UpdatedAt = time.Now().UTC()
+	// Re-apply the stamp the claim performed. `run` was loaded BEFORE the
+	// CAS, and UpdateRunStatusIf mutates its own copy (loadRunRaw →
+	// applyStatusTransition), which sets FinishedAt for the `cancelled`
+	// transition. SaveRun is a full-document overwrite, so saving `run`
+	// verbatim drops it whenever the pre-rewind status was paused_* or
+	// queued — where FinishedAt was nil. The run then persists as
+	// cancelled with finished_at null, nothing heals it (healRun only
+	// nulls it for `running`), and the studio duration ticker runs
+	// forever because runs_stats falls back to now for the end.
+	//
+	// Same read-modify-write-across-a-CAS hazard this branch already fixed
+	// on the resume path (restampWorkflowSource).
+	finishedAt := run.UpdatedAt
+	run.FinishedAt = &finishedAt
 	if err := s.store.SaveRun(ctx, run); err != nil {
 		return nil, fmt.Errorf("save rewound run: %w", err)
 	}
