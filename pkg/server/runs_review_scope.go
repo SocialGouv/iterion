@@ -1,6 +1,7 @@
 package server
 
 import (
+	"bytes"
 	"fmt"
 	"net/http"
 	"os"
@@ -213,17 +214,33 @@ func (s *Server) handleGetRunWorkspaceFile(w http.ResponseWriter, r *http.Reques
 		s.httpErrorFor(w, r, http.StatusNotFound, "file not found")
 		return
 	}
+	// Stream when the tracker can (the filesystem one can): buffering the
+	// blob would hold a multi-hundred-MB media export in the server heap
+	// once per concurrent request, on the endpoint whose entire purpose is
+	// playback. Fall back to the byte slice for trackers that cannot.
+	setWorkspaceFileHeaders(w, r, relPath)
+	if opener, ok := tracker.(interface {
+		OpenObject(string) (*os.File, error)
+	}); ok {
+		if f, oerr := opener.OpenObject(hash); oerr == nil {
+			defer f.Close()
+			_ = size
+			http.ServeContent(w, r, filepath.Base(relPath), headSnap.CreatedAt, f)
+			return
+		}
+	}
 	body, objErr := tracker.Object(hash)
 	if objErr != nil {
 		s.httpErrorFor(w, r, http.StatusNotFound, "file not found")
 		return
 	}
-	setWorkspaceFileHeaders(w, r, relPath)
-	w.Header().Set("Content-Length", strconv.FormatInt(int64(len(body)), 10))
-	// size recorded in the snapshot may differ if the object was truncated;
-	// prefer the actual body length for the header.
+	// ServeContent, not a bare Write: this endpoint exists for media
+	// playback, and a <video> seek issues Range requests. Writing the body
+	// answers each with a 200 and the WHOLE file, so every scrub re-sends
+	// it. ServeContent honours Range, sets Content-Length itself, and 304s
+	// a repeat fetch.
 	_ = size
-	_, _ = w.Write(body)
+	http.ServeContent(w, r, filepath.Base(relPath), headSnap.CreatedAt, bytes.NewReader(body))
 }
 
 func serveWorkspaceFile(w http.ResponseWriter, r *http.Request, relPath string, info os.FileInfo, f *os.File) {
@@ -371,7 +388,7 @@ func buildReviewScopeGit(run *store.Run, gate int, out *reviewScopeResponse) *re
 	}
 	out.Available = true
 	out.TotalFiles = len(files)
-	out.Groups = groupByNodeGit(run, files)
+	out.Groups = groupByNodeGit(run, files, out.BaseRef, out.HeadRef)
 	return out
 }
 
@@ -462,7 +479,7 @@ func buildReviewScopeWorkspace(run *store.Run, gate int, tracker workspacetrack.
 	files := workspaceChangesToFileStatus(changes)
 	out.Available = true
 	out.TotalFiles = len(files)
-	out.Groups = groupByNodeWorkspace(tracker, run.ID, files)
+	out.Groups = groupByNodeWorkspace(tracker, run.ID, files, baseSnap, headSnap)
 	return out
 }
 
@@ -470,8 +487,15 @@ func workspaceChangesToFileStatus(changes []workspacetrack.FileChange) []gitlib.
 	out := make([]gitlib.FileStatus, 0, len(changes))
 	for _, c := range changes {
 		fs := gitlib.FileStatus{Path: c.Path, Status: c.Status, Binary: c.Binary}
-		if c.Binary {
+		switch {
+		case c.Binary:
 			fs.Added, fs.Deleted = -1, -1
+		default:
+			// The tracker stores CONTENT, not diffs, and there is no git
+			// here to ask for a numstat — so line counts are genuinely
+			// unknown rather than zero. Saying so is the difference
+			// between "no lines changed" and "we did not measure".
+			fs.CountsUnknown = true
 		}
 		out = append(out, fs)
 	}
@@ -511,9 +535,23 @@ func diffReviewScopeWorkspace(tracker workspacetrack.Tracker, runID, baseID, hea
 
 // groupByNodeGit attributes each file in the range to the node that last
 // changed it, using per-node git boundary refs.
-func groupByNodeGit(run *store.Run, files []gitlib.FileStatus) []reviewScopeGroup {
+//
+// baseRef/headRef bound WHICH boundaries may claim a file. Without that
+// bound, every boundary of the whole run competes: a file that `implement`
+// wrote before gate/1 — already approved — and that a boundary-less writer
+// (a subbot, a fan-out branch, a compute node) rewrote between gate/1 and
+// gate/2 was still attributed to `implement` in the gate/2 panel, because
+// its pre..post set contains that path. The reviewer is then told a
+// specific node made a change it did not make in this range, and the
+// change is hidden from *Other changes*, where the design says
+// unattributable work belongs. Completeness held; attribution did not.
+func groupByNodeGit(run *store.Run, files []gitlib.FileStatus, baseRef, headRef string) []reviewScopeGroup {
+	lo, hi := refCommitTimes(run.WorkDir, baseRef, headRef)
 	var ranges []nodeRange
 	for _, b := range listNodeBoundaries(run.WorkDir, run.ID) {
+		if !withinGateWindow(b.when, lo, hi) {
+			continue
+		}
 		changed, err := gitlib.StatusBetween(run.WorkDir, b.preRef, b.postRef)
 		if err != nil {
 			continue
@@ -540,7 +578,22 @@ func groupByNodeGit(run *store.Run, files []gitlib.FileStatus) []reviewScopeGrou
 
 // groupByNodeWorkspace attributes files using workspacetrack pre:/post:
 // labels. Same partition contract as the git path.
-func groupByNodeWorkspace(tracker workspacetrack.Tracker, runID string, files []gitlib.FileStatus) []reviewScopeGroup {
+// baseSnap/headSnap bound WHICH boundaries may claim a file, for the same
+// reason as the git path: without it, a node that touched a path in an
+// already-approved range still out-competes *Other changes* for it here.
+func groupByNodeWorkspace(tracker workspacetrack.Tracker, runID string, files []gitlib.FileStatus, baseSnap, headSnap *workspacetrack.Snapshot) []reviewScopeGroup {
+	// Bound on snapshot IDs, not CreatedAt: newSnapshotID is
+	// "<unixnano>-<counter>", monotonic by construction, so the ordering
+	// is exact. CreatedAt is truncated to seconds and several boundaries
+	// routinely share one, which makes a timestamp window either drop
+	// legitimate boundaries or keep the ones it exists to exclude.
+	baseID, headSnapID := "", ""
+	if baseSnap != nil {
+		baseID = baseSnap.ID
+	}
+	if headSnap != nil {
+		headSnapID = headSnap.ID
+	}
 	labels := tracker.Labels(runID)
 	// Collect nodes that have BOTH pre and post labels.
 	type bound struct {
@@ -589,6 +642,9 @@ func groupByNodeWorkspace(tracker workspacetrack.Tracker, runID string, files []
 		when := int64(0)
 		if !postSnap.CreatedAt.IsZero() {
 			when = postSnap.CreatedAt.Unix()
+		}
+		if !snapshotWithinGate(b.postID, baseID, headSnapID) {
+			continue
 		}
 		ranges = append(ranges, nodeRange{node: b.node, loopIter: b.loopIter, when: when, set: set})
 	}
@@ -652,6 +708,74 @@ type nodeBoundary struct {
 	preRef   string
 	postRef  string
 	when     int64
+}
+
+// refCommitTimes reads the commit timestamps bracketing the gate range.
+// A zero bound means "unknown", which withinGateWindow treats as open —
+// grouping is presentation, so a missing timestamp must not drop a file
+// from its group, only widen who may claim it.
+func refCommitTimes(workDir, baseRef, headRef string) (lo, hi int64) {
+	read := func(ref string) int64 {
+		if ref == "" {
+			return 0
+		}
+		out, err := gitlib.ForEachRef(workDir, "%(committerdate:unix)", ref)
+		if err != nil {
+			return 0
+		}
+		n, _ := strconv.ParseInt(strings.TrimSpace(out), 10, 64)
+		return n
+	}
+	return read(baseRef), read(headRef)
+}
+
+// withinGateWindow reports whether a node boundary closed inside the gate
+// range. Half-open at the base (a boundary AT the previous gate belongs to
+// the range that gate closed) and inclusive at the head.
+func withinGateWindow(when, lo, hi int64) bool {
+	if when == 0 {
+		return true // unknown: let it compete rather than drop the group
+	}
+	// Inclusive at the base: committerdate has one-second resolution, and
+	// a boundary sharing the gate commit's second is genuinely ambiguous.
+	// Erring toward attribution is the right error — the case this window
+	// exists for (a boundary from an already-approved range) is many
+	// seconds away, while excluding a same-second boundary would silently
+	// dump real work into *Other changes*.
+	if lo > 0 && when < lo {
+		return false
+	}
+	if hi > 0 && when > hi {
+		return false
+	}
+	return true
+}
+
+// snapshotWithinGate reports whether a node's closing snapshot falls in
+// the gate range, comparing the monotonic "<unixnano>-<counter>" ids
+// rather than their second-truncated timestamps. An unparseable or empty
+// bound is treated as open, so a malformed id widens attribution rather
+// than dropping a group.
+func snapshotWithinGate(postID, baseID, headID string) bool {
+	nano := func(id string) (int64, bool) {
+		dash := strings.IndexByte(id, '-')
+		if dash <= 0 {
+			return 0, false
+		}
+		n, err := strconv.ParseInt(id[:dash], 10, 64)
+		return n, err == nil
+	}
+	p, ok := nano(postID)
+	if !ok {
+		return true
+	}
+	if b, ok := nano(baseID); ok && p <= b {
+		return false
+	}
+	if h, ok := nano(headID); ok && p > h {
+		return false
+	}
+	return true
 }
 
 // listNodeBoundaries enumerates the nodes that recorded BOTH boundaries,

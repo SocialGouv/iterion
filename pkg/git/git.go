@@ -69,6 +69,17 @@ type FileStatus struct {
 	// (pkg/server/runs_files.go); the git primitives here never set it,
 	// and `omitempty` keeps every other mode's wire shape unchanged.
 	Lifecycle string `json:"lifecycle,omitempty"`
+	// CountsUnknown marks Added/Deleted as UNPOPULATED rather than zero.
+	//
+	// Needed because the two fields are always serialized, so a producer
+	// that cannot compute line counts is indistinguishable from one
+	// reporting a genuine +0/-0. iterion's own workspace versioning is
+	// such a producer: it stores content, not diffs, and shells out to no
+	// git — so every modified text file on an IN-PLACE run (the default
+	// run shape) rendered as "modified … +0 −0", i.e. as if nothing in it
+	// had changed, on a surface that invites the reviewer to skip files.
+	// Set it and the UI omits the counts instead of asserting zeros.
+	CountsUnknown bool `json:"counts_unknown,omitempty"`
 }
 
 // DiffPayload carries the two sides of a file diff for the Monaco

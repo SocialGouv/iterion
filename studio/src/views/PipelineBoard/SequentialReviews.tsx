@@ -119,7 +119,17 @@ export function SequentialReviews({ card, onResolved }: Props) {
       )}
 
       {review.run_id && (
-        <ReviewScopePanel runId={review.run_id} live />
+        // Keyed AND cache-keyed on reviewKey, like the answer form below:
+        // a run that reaches a second gate keeps the same run_id, so
+        // without both the panel is reconciled in place and keeps serving
+        // the previous gate's file list — the operator would approve
+        // gate N while looking at gate N-1.
+        <ReviewScopePanel
+          key={reviewKey}
+          runId={review.run_id}
+          pauseKey={reviewKey}
+          live
+        />
       )}
 
       {review.run_id && review.node_id ? (

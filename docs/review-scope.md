@@ -85,6 +85,13 @@ mid-flight upgrade does not strand the operator with an empty range.
 | Cloud runs without a surviving store | the runner's clone is recycled and the snapshots die with the pod |
 | A node resumed after failure | its boundary is re-written against the post-failure tree, so the group shows the last attempt |
 
-Later nodes' edits to the same file are excluded from an earlier node's group by
-construction — the panel shows the file *as of that node*, not as it will merge.
+**Grouping is per-node; the rendered diff is not.** When two nodes touched the
+same file, the later boundary wins the file's *group membership* — that is the
+"latest boundary wins" rule. But clicking the file always renders the whole
+gate range for that path (`gate/N-1..gate/N`), including every later node's
+edit to it: the diff endpoint resolves the gate range, and there is no per-node
+ref pair in the diff path. So a file listed under `implement` shows what the
+gate as a whole did to it, not `implement`'s slice of it. A per-node diff would
+need the boundary pair threaded through `/review/diff` — worth doing, not done.
+
 The gate still merges the whole branch (worktree path).

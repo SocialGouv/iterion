@@ -555,3 +555,113 @@ workflow forked:
 		t.Errorf("pivot = %q, want split", result.NodeID)
 	}
 }
+
+// groupBot exercises the compile-time macro path: `use … as …` clones the
+// group's nodes with dotted ids inside ir.Compile, long after the source
+// diff runs on the raw parse. Modelled on examples/composition.
+const groupBot = `schema pout:
+  id: string
+  ok: bool
+
+group gate_block(label):
+  tool gate:
+    command: ` + "`" + `printf '{"id":"%s","ok":true}' "{{params.label}}"` + "`" + `
+    output: pout
+
+use gate_block as r1 with { label: "T-42" }
+
+agent report:
+  model: "claude-opus-4-7"
+  output: pout
+
+workflow composed:
+  entry: r1.gate
+  r1.gate -> report
+  report  -> done
+`
+
+// seedGroupRun is seedAutoRun over groupBot, with the group instance and
+// the downstream node both executed.
+func seedGroupRun(t *testing.T) (*Service, string, string) {
+	t.Helper()
+	dir := t.TempDir()
+	botPath := filepath.Join(dir, "main.bot")
+	if err := os.WriteFile(botPath, []byte(groupBot), 0o644); err != nil {
+		t.Fatalf("write fixture: %v", err)
+	}
+	storeDir := filepath.Join(dir, "store")
+	st, err := store.New(storeDir)
+	if err != nil {
+		t.Fatalf("store: %v", err)
+	}
+	const runID = "run-group"
+	if _, err := st.CreateRun(context.Background(), runID, "composed", nil); err != nil {
+		t.Fatalf("create run: %v", err)
+	}
+	run, err := st.LoadRun(context.Background(), runID)
+	if err != nil {
+		t.Fatalf("load run: %v", err)
+	}
+	run.FilePath = botPath
+	run.WorkflowSource = groupBot
+	run.Status = store.RunStatusFailedResumable
+	run.Checkpoint = &store.Checkpoint{
+		NodeID:  "report",
+		Outputs: outputsOf("r1.gate", "report"),
+	}
+	if err := st.SaveRun(context.Background(), run); err != nil {
+		t.Fatalf("save run: %v", err)
+	}
+	svc, err := NewService(storeDir)
+	if err != nil {
+		t.Fatalf("NewService: %v", err)
+	}
+	return svc, botPath, runID
+}
+
+// TestRewindAuto_GroupBodyEditIsSeen is Revi's R991318.
+//
+// Neither ast.MarshalFile's jsonFile nor the unparser carries a groups
+// field, so `&ast.File{Groups: …}` encoded to "{}" and put fell through
+// to its "<unencodable N>" placeholder — derived from the declaration's
+// ordinal position, hence IDENTICAL before and after the edit. diffDecls
+// saw nothing, `--auto` refused with "the workflow source is unchanged",
+// and the operator resumed against the old group node. A false negative,
+// which is the dangerous direction.
+func TestRewindAuto_GroupBodyEditIsSeen(t *testing.T) {
+	svc, botPath, runID := seedGroupRun(t)
+	editBot(t, botPath, `printf '{"id":"%s","ok":true}'`, `printf '{"id":"%s","ok":false}'`)
+
+	result, err := svc.Rewind(context.Background(), RewindSpec{RunID: runID, Auto: true})
+	if err != nil {
+		t.Fatalf("Rewind --auto on a group-body edit: %v", err)
+	}
+	if result.NodeID != "r1.gate" {
+		t.Errorf("auto pivot = %q, want the instantiated group node r1.gate", result.NodeID)
+	}
+	found := false
+	for _, c := range result.Changes {
+		if c.Kind == "group" && c.Name == "gate_block" {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("changes = %v, want the group itself reported", result.Changes)
+	}
+}
+
+// TestRewindAuto_GroupParameterEditIsSeen: a `use … with { … }` binding
+// is the group's only tunable, and it lived in neither the key nor the
+// fingerprint — so retuning it was equally invisible.
+func TestRewindAuto_GroupParameterEditIsSeen(t *testing.T) {
+	svc, botPath, runID := seedGroupRun(t)
+	editBot(t, botPath, `with { label: "T-42" }`, `with { label: "T-99" }`)
+
+	result, err := svc.Rewind(context.Background(), RewindSpec{RunID: runID, Auto: true})
+	if err != nil {
+		t.Fatalf("Rewind --auto on a group-parameter edit: %v", err)
+	}
+	if result.NodeID != "r1.gate" {
+		t.Errorf("auto pivot = %q, want r1.gate", result.NodeID)
+	}
+}

@@ -268,6 +268,20 @@ func (n *Native) Capture(runID, workspaceDir, label string) (*Snapshot, error) {
 		}
 		hash, herr := n.storeObject(path)
 		if herr != nil {
+			if os.IsNotExist(herr) {
+				// Vanished between readdir and open. The default shape is
+				// an IN-PLACE run whose workspace is the operator's live
+				// checkout, so this is ordinary: an editor save that
+				// replaces a file, or a watcher/dev-server a bot node left
+				// running. Failing here aborts the WHOLE capture before
+				// writeSnapshot and saveCache, so the boundary gets no
+				// snapshot at all AND the next one re-hashes everything —
+				// visible to the operator only much later, as a rewind
+				// reporting "no snapshot recorded". An unreadable directory
+				// and a failed d.Info() above are already tolerated the
+				// same way, as git's index is.
+				return nil
+			}
 			return fmt.Errorf("capture %s: %w", rel, herr)
 		}
 		snap.Entries = append(snap.Entries, Entry{Path: rel, Hash: hash, Mode: uint32(info.Mode().Perm()), Size: info.Size()})
@@ -449,6 +463,29 @@ func (n *Native) Labels(runID string) map[string]string {
 		out[k] = v
 	}
 	return out
+}
+
+// OpenObject returns the blob as a seekable reader instead of a byte
+// slice, so a caller serving media can stream it and honour Range.
+//
+// Object buffers the whole file, which is fine for a diff of a source
+// file and wrong for the artefact a media pipeline exists to produce: a
+// multi-hundred-MB export would sit in the server's heap once per
+// concurrent request, and every seek in the player would re-read it.
+// Callers reach this through an optional interface assertion, so the
+// Tracker contract stays minimal.
+func (n *Native) OpenObject(hash string) (*os.File, error) {
+	if len(hash) < 3 {
+		return nil, fmt.Errorf("%w: object %q", ErrSnapshotNotFound, hash)
+	}
+	f, err := os.Open(n.objectPath(hash))
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil, fmt.Errorf("%w: object %s", ErrSnapshotNotFound, hash)
+		}
+		return nil, err
+	}
+	return f, nil
 }
 
 // Object reads a content-addressed blob from the shared object pool.
@@ -769,11 +806,26 @@ func validSnapshotID(id string) bool {
 // closes it: mark every hash still named by a manifest under
 // <root>/runs/*/workspace/snapshots/, delete the rest.
 //
-// Safe to run while nothing is capturing. A concurrent capture could
-// write an object between the mark and the sweep, so callers should run
-// this when the store is idle — the same contract `runs prune` already
-// has.
-func (n *Native) PruneObjects() (objects int, bytes int64, err error) {
+// minAge is the grace period that makes the sweep safe to run while runs
+// are executing — git's `gc --prune=<date>` guard, and it is load-bearing
+// here rather than belt-and-braces.
+//
+// A Capture writes its objects FIRST and its manifest LAST. An object
+// written after the mark phase read the snapshots directory is therefore
+// unreferenced at mark time, and deleting it does not merely lose that
+// object: the stat cache goes on reusing its hash for the rest of the
+// run, so every later snapshot of that run names dead content too, and
+// the run's rewind capability is gone for good. Only the restore refuses
+// loudly, long after the fact.
+//
+// `runs prune` is documented as a crontab entry (docs/scheduling.md),
+// which is exactly when it would overlap a scheduled bot, so "callers
+// should run it when the store is idle" was not a contract that could
+// hold. Skipping anything younger than minAge covers the whole window
+// with room to spare — a capture is seconds — and only defers reclaim to
+// the next sweep. Pass 0 to disable (tests).
+func (n *Native) PruneObjects(minAge time.Duration) (objects int, bytes int64, err error) {
+	cutoff := time.Now().Add(-minAge)
 	live := map[string]bool{}
 	runsDir := filepath.Join(n.root, "runs")
 	entries, err := os.ReadDir(runsDir)
@@ -790,7 +842,16 @@ func (n *Native) PruneObjects() (objects int, bytes int64, err error) {
 		snapDir := filepath.Join(runsDir, e.Name(), "workspace", "snapshots")
 		snaps, rerr := os.ReadDir(snapDir)
 		if rerr != nil {
-			continue
+			if os.IsNotExist(rerr) {
+				continue // this run never versioned its workspace
+			}
+			// Any OTHER error (EACCES on a tightened run dir, ENOTDIR,
+			// EIO) must not read as "this run references nothing" — the
+			// sweep below would then delete every object only this run
+			// names, destroying its whole workspace history. Same
+			// fail-closed posture as the unreadable manifest just below:
+			// a partial mark set is exactly how live content gets deleted.
+			return 0, 0, fmt.Errorf("workspacetrack: prune: read %s: %w", snapDir, rerr)
 		}
 		for _, s := range snaps {
 			if s.IsDir() || !strings.HasSuffix(s.Name(), ".json") {
@@ -832,11 +893,23 @@ func (n *Native) PruneObjects() (objects int, bytes int64, err error) {
 			return nil
 		}
 		info, ierr := d.Info()
-		if ierr == nil {
-			bytes += info.Size()
+		if ierr != nil {
+			// Cannot tell how old it is — leave it. Reclaim is a
+			// best-effort optimisation; deleting live content is not
+			// recoverable.
+			return nil
 		}
+		// The grace window: an object written by a capture whose manifest
+		// had not landed when the mark phase ran is unreferenced but very
+		// much alive.
+		if info.ModTime().After(cutoff) {
+			return nil
+		}
+		// Count only what actually went: a reported reclaim the operator
+		// cannot find on disk is worse than no report.
 		if rmErr := os.Remove(path); rmErr == nil {
 			objects++
+			bytes += info.Size()
 		}
 		return nil
 	})
