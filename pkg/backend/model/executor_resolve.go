@@ -141,7 +141,32 @@ func (e *ClawExecutor) resolveChain(node ir.Node) []chainElement {
 		el.On = resolveTriggers(fb.On)
 		chain = append(chain, el)
 	}
-	return dedupeChain(chain, e.resolveBackendName(node))
+	return dedupeChain(chain, e.resolveBackendName(node), e.baselineModel(node))
+}
+
+// baselineModel is the model an element that pins none of its own runs:
+// the launch override if the operator set one, else the node's `model:`
+// with env refs expanded.
+//
+// It deliberately stops short of claw's detector-suggested default
+// (buildTask applies that when the model is still empty at dispatch):
+// this exists to compare two routes for equality, and an unresolved
+// empty baseline compares equal to another unresolved empty one, which
+// is the right answer.
+func (e *ClawExecutor) baselineModel(node ir.Node) string {
+	if ov := e.modelOverrides.ForNode(node.NodeID(), node.NodeKind()); ov.Model != "" {
+		return ov.Model
+	}
+	var m string
+	switch n := node.(type) {
+	case *ir.AgentNode:
+		m = n.Model
+	case *ir.JudgeNode:
+		m = n.Model
+	case *ir.RouterNode:
+		m = n.Model
+	}
+	return strings.TrimSpace(ir.ExpandEnvWithDefault(m))
 }
 
 // dedupeChain drops any element that would re-issue the call its
@@ -152,15 +177,19 @@ func (e *ClawExecutor) resolveChain(node ir.Node) []chainElement {
 // routes, the run-level route) can otherwise lose: a route resolving to
 // the same backend+credential+model as the one before it cannot succeed
 // where that one failed, and pays a second full retry budget to prove
-// it. Comparison is on the EFFECTIVE backend, so a route naming the
-// node's own backend explicitly is recognised as the duplicate it is.
-func dedupeChain(chain []chainElement, nodeBackend string) []chainElement {
+// it. Comparison is on the EFFECTIVE backend AND model, so a route that
+// names the node's own backend — or restates its `model:` verbatim
+// rather than inheriting it — is recognised as the duplicate it is.
+func dedupeChain(chain []chainElement, nodeBackend, baseModel string) []chainElement {
 	if len(chain) < 2 {
 		return chain
 	}
 	effective := func(el chainElement) chainElement {
 		if el.Backend == "" {
 			el.Backend = nodeBackend
+		}
+		if el.Model == "" {
+			el.Model = baseModel
 		}
 		return el
 	}

@@ -394,8 +394,12 @@ analyses (sandbox bind-mount, parallel-branch admission, the
 `fan_out_each` guard). Without that, a flag could reach exactly the
 crossings the compiler refuses in the `.bot`.
 
-Launch rules are not persisted, so repeat `--fallback` on
-`iterion resume` to keep the route: the scenario this feature exists for
+The route does **not** propagate into a `subbot:` child. A subbot is a
+different bot with its own routes, its own judges and its own permission
+posture; the launch route applies to the run you launched, and a child
+that needs one declares it or is launched with its own. Launch rules are
+not persisted either, so repeat `--fallback` on `iterion resume` to keep
+the route: the scenario this feature exists for
 — a long run outliving a quota window — is precisely the one that
 resumes.
 

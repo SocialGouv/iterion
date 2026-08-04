@@ -143,6 +143,20 @@ func TestDedupeChain_DropsIdenticalRoute(t *testing.T) {
 	}
 }
 
+// TestDedupeChain_DropsRestatedModel: a route that spells out the node's
+// own model rather than inheriting it is the same call, and would
+// otherwise pay a second full retry budget to fail identically.
+func TestDedupeChain_DropsRestatedModel(t *testing.T) {
+	e := &ClawExecutor{}
+	node := chainAgentNode("x", delegate.BackendClaudeCode, "", []ir.Fallback{
+		{Name: "same", Backend: delegate.BackendClaudeCode, Model: "claude-opus-5"},
+	})
+	node.Model = "claude-opus-5"
+	if got := e.resolveChain(node); len(got) != 1 {
+		t.Errorf("a route restating the node's own model must be dropped, got %+v", got)
+	}
+}
+
 // TestDedupeChain_KeepsDistinctRoutes guards the other direction: the
 // dedup must not eat a route that genuinely differs.
 func TestDedupeChain_KeepsDistinctRoutes(t *testing.T) {
@@ -150,7 +164,7 @@ func TestDedupeChain_KeepsDistinctRoutes(t *testing.T) {
 		{},
 		{Label: "api", Backend: "claw", Model: "openai/gpt-5.5"},
 		{Label: "gpt", Backend: "claw", Model: "openai/gpt-5.4-mini"},
-	}, "claude_code")
+	}, "claude_code", "claude-opus-5")
 	if len(got) != 3 {
 		t.Errorf("distinct routes were deduped: %+v", got)
 	}
