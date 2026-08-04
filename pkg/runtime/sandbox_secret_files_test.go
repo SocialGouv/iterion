@@ -184,8 +184,8 @@ func TestSeedClaudeConfigDir(t *testing.T) {
 	if err := seedClaudeConfigDir(context.Background(), ok); err != nil {
 		t.Fatalf("seedClaudeConfigDir: %v", err)
 	}
-	want := []string{"sh", "-c", seedClaudeConfigScript, "sh",
-		secretspkg.ClaudeCodeSandboxConfigDir, secretspkg.ClaudeCodeOAuthSandboxMountPath}
+	want := []string{"sh", "-c", seedForfaitConfigScript, "sh",
+		secretspkg.ClaudeCodeSandboxConfigDir, secretspkg.ClaudeCodeOAuthSandboxMountPath, ".credentials.json"}
 	if len(ok.gotCmd) != len(want) {
 		t.Fatalf("cmd = %v", ok.gotCmd)
 	}
@@ -200,4 +200,56 @@ func TestSeedClaudeConfigDir(t *testing.T) {
 	if err == nil || !strings.Contains(err.Error(), "exited 1") {
 		t.Fatalf("expected a hard exited-1 error, got %v", err)
 	}
+}
+
+// A resolved ChatGPT forfait — the tenant's own, or one lent through the
+// credential pool — must reach a sandboxed node. Before this delivery
+// existed the host temp dir simply did not exist inside the container, so
+// the node fell back to the pod's ambient OPENAI_API_KEY: the platform
+// paid, the resolved credential went unused, and nothing said so. Measured
+// on prod (run 019fcc09): sandboxed → "429 no credits" from the platform
+// key, unsandboxed → "401 token expired" from the lent subscription.
+func TestAddCodexOAuthSecretFile(t *testing.T) {
+	t.Run("no credentials in ctx is a silent no-op", func(t *testing.T) {
+		var spec sandbox.Spec
+		added, err := addCodexOAuthSecretFile(context.Background(), &spec)
+		if err != nil || added || len(spec.SecretFiles) != 0 {
+			t.Fatalf("added=%v err=%v spec=%+v — want a silent no-op", added, err, spec.SecretFiles)
+		}
+	})
+
+	t.Run("materialised forfait is mounted on the ADR-070 channel", func(t *testing.T) {
+		dir := t.TempDir()
+		payload := `{"tokens":{"access_token":"tok","account_id":"acct"},"auth_mode":"chatgpt"}`
+		if err := os.WriteFile(filepath.Join(dir, "auth.json"), []byte(payload), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		ctx := secretspkg.WithCredentials(context.Background(), secretspkg.Credentials{
+			OAuthCredentialFiles: map[string]string{string(secretspkg.OAuthKindCodex): dir},
+		})
+		var spec sandbox.Spec
+		added, err := addCodexOAuthSecretFile(ctx, &spec)
+		if err != nil || !added {
+			t.Fatalf("added=%v err=%v", added, err)
+		}
+		if len(spec.SecretFiles) != 1 {
+			t.Fatalf("SecretFiles = %+v", spec.SecretFiles)
+		}
+		sf := spec.SecretFiles[0]
+		if sf.Name != secretspkg.CodexOAuthSecretName ||
+			sf.MountPath != secretspkg.CodexOAuthSandboxMountPath ||
+			string(sf.Value) != payload {
+			t.Fatalf("forfait mount mis-built: name=%q path=%q", sf.Name, sf.MountPath)
+		}
+	})
+
+	t.Run("unreadable auth.json is a hard error", func(t *testing.T) {
+		ctx := secretspkg.WithCredentials(context.Background(), secretspkg.Credentials{
+			OAuthCredentialFiles: map[string]string{string(secretspkg.OAuthKindCodex): filepath.Join(t.TempDir(), "gone")},
+		})
+		var spec sandbox.Spec
+		if _, err := addCodexOAuthSecretFile(ctx, &spec); err == nil {
+			t.Fatal("expected a hard error: the run RESOLVED a forfait, so degrading to the ambient key silently is the defect")
+		}
+	})
 }

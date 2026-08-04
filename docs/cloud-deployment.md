@@ -274,6 +274,99 @@ When `OTEL_EXPORTER_OTLP_ENDPOINT` is unset, spans are dropped and the
 W3C propagator-only path is installed (inbound trace context still
 respected, but no export).
 
+## Pod turnover & in-flight runs
+
+A runner pod goes away for three reasons, and a deploy is the *rarest* of
+them:
+
+- **autoscaling** — with KEDA enabled the pool scales down whenever the
+  queue drains. That is continuous, it happens under normal operation, and
+  the ReplicaSet picks a victim without knowing which pods are busy.
+  Measured in production on 2026-08-01: `SuccessfulRescale … reason: All
+  metrics below target` killed a pod 21 minutes into a campaign, with idle
+  pods available. **A PodDisruptionBudget does not cover this** — a
+  scale-down deletes pods directly rather than evicting them, so it never
+  consults the PDB. The drain below is what does.
+- **node turnover** — a drain, an upgrade, a spot reclaim.
+- **a deploy** — a rolling restart of the runner Deployment.
+
+All three arrive as the same signal, SIGTERM, so one mechanism covers them
+all. What happens to a run a runner is executing is governed by
+**`config.runner.drainMode`**:
+
+- **`complete`** (default — *lame-duck*): on SIGTERM the runner stops
+  claiming new runs but **lets its in-flight run finish** before exiting.
+  New pods (already up) serve new runs; the draining pod holds its NATS KV
+  lease so nothing double-claims. A deploy interrupts **nothing** — the run
+  runs to completion, even if it takes hours. The bound is
+  `runner.terminationGracePeriodSeconds` (the k8s hard stop before SIGKILL)
+  and `config.runner.drainTimeout` (the internal ceiling, default `8h`): a
+  run exceeding it is capped — checkpointed and auto-resumed on another pod.
+- **`interrupt`**: on SIGTERM the runner cancels its in-flight run
+  immediately, checkpoints it, and it **auto-resumes** on a healthy pod from
+  the last completed node. The fast path for an urgent (e.g. security)
+  deploy that must not wait for long runs.
+
+Either way an interrupted run (lame-duck cap, interrupt mode, lost
+heartbeat, or an eviction the grace window can't cover) is **promoted to
+`failed_resumable` and redelivered** — it auto-resumes with no operator
+action. Only an **operator** cancel stays terminal `cancelled`, and it wins
+the race: a resumable failure never overwrites it.
+
+Two consequences worth knowing before relying on this:
+
+- **Resume restarts the interrupted node**, not the one after it. A node
+  whose side effects had already landed (a push, a posted comment) runs
+  again. That is the standing resume contract
+  ([docs/resume.md](resume.md)), now reached automatically rather than by an
+  operator's decision — so a node that must not repeat needs to be
+  idempotent.
+- The runner suppresses its own completion notification for an interrupted
+  run, but the `usernotify` reconciliation sweep re-derives outcomes from
+  the persisted status every 2 minutes and reads `failed_resumable` as a
+  failure. If the redelivery is slow (a rolling restart is exactly when it
+  would be), a user can still get one "run failed" push for a run that then
+  resumes silently.
+
+**Invariants when raising the lame-duck window:**
+
+- `runner.terminationGracePeriodSeconds` ≥ `config.runner.drainTimeout` +
+  a couple of minutes of checkpoint margin (else k8s SIGKILLs a capped run
+  before it checkpoints — it still recovers via the orphan sweeper, just
+  ~10 min slower).
+- `runner.progressDeadlineSeconds` above the grace period: a lame-duck
+  rollout stays `Progressing` until the last old pod drains (possibly
+  hours), and the default 600s deadline would otherwise mark the Deployment
+  degraded while the new pods already serve. ArgoCD users: the sync will
+  likewise show Progressing until the drain completes.
+
+**Verified in production, 2026-08-01.** The same signal, before and after:
+a KEDA scale-down killed run `019fbd98` 21 minutes into a campaign and it
+came back `cancelled`; a `kubectl delete pod` on the runner holding run
+`019fbdec` left the pod `Running` with a `deletionTimestamp` 2h05 out — it
+finished its run (240.8s, status `finished`) and only then exited.
+
+**What a long window costs.** A terminating pod keeps its node slot and its
+resource requests for the whole drain, so:
+
+- a scale-down→scale-up cycle inside the window (KEDA's cooldown is 60s) can
+  hold well above `maxReplicas` worth of footprint for hours;
+- `kubectl drain` and cluster-autoscaler node removal block for up to the
+  grace period per runner pod;
+- two runner generations talk to one Mongo and one NATS for the length of
+  the window, so a change to run-doc shape, checkpoint semantics or event
+  payloads must stay compatible across it — hours, not the 90 seconds this
+  used to be;
+- a genuinely broken rollout takes grace + progressDeadline to be flagged.
+
+Shorten `config.runner.drainTimeout` (and the grace with it) if any of those
+matter more than never interrupting a long run.
+
+The mechanism lives in the runner's `Shutdown`
+([pkg/runner/loop.go](../pkg/runner/loop.go)); the run's context is
+decoupled from the fetch-loop context so stopping intake never cancels a
+live run.
+
 ## Resume from a paused / failed run
 
 Cloud-mode resume goes through the same NATS path as launch. The

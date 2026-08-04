@@ -58,6 +58,11 @@ func (s *Server) ListenAndServe() error {
 	if s.pipelineAdmissionEnabled() {
 		go s.runPipelineAdmissionLoop()
 	}
+	// Teach the run service's concurrency gate about slots held open by
+	// pipelines that died and need a human. Wired regardless of the admission
+	// loop: the FIFO drain and every non-board launch path go through the same
+	// gate, and they run even when an external dispatcher owns the board.
+	s.wirePipelineReservations(s.runs)
 	// MVP3b: fan native-board issue-state transitions out to runs that
 	// subscribed (Run.WatchedIssueIDs). No-op when no native tracker is
 	// wired or the events tail can't start.
@@ -217,6 +222,19 @@ func (s *Server) ListenAndServe() error {
 				cancel()
 			}()
 			s.runQueueSweeper(ctx, lister, s.queue)
+		}()
+	}
+	// Abandoned-lease sweeper: gives a lending contributor back the
+	// concurrency slot of a run whose pod died without reporting.
+	if s.credPool != nil {
+		go func() {
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			go func() {
+				<-s.shutdown
+				cancel()
+			}()
+			s.runCredPoolSweeper(ctx)
 		}()
 	}
 	// Retry sweeper (cloud only): resumes runs whose provider quota window

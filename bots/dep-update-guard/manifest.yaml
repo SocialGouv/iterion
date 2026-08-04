@@ -1,7 +1,20 @@
 name: dep-update-guard
 display_name: Vetty
 icon: 💂
-version: 2.5.0
+version: 2.6.1
+## 2.6.1 — budget 75m → 2h: 75m killed the 15-module go workload at its
+## LAST node (audit 5m + align 25m + verify 43m = 73m, dead at the commit
+## with everything green behind it). The duration cap is a runaway guard,
+## not a performance target; $20 stays the real spend bound.
+## 2.6.0 — land on merge-queue repos, survive the heavy case. (a)
+## `arm_automerge` arms FIRST (enablePullRequestAutoMerge — "merge when
+## ready" on queue repos, so a queue-protected base enqueues instead of
+## hitting the queue's direct-merge rejection); a queue refusal falls back
+## to enqueuePullRequest pinned to the audited sha, and only a no-queue
+## CLEAN refusal takes the pinned direct merge. (b) Budget 40m/$15 →
+## 75m/$20: the clean npm re-audit already ran ~30m, and a 15-module go
+## group with a needed alignment died mid-audit at 40m in production —
+## with a required gate context, that left the PR silently unmergeable.
 ## 2.1.0 — classify, gate, arm. (a) The bump classifier only knew package
 ## manifests, so a PR moving a base-image digest, a devbox pin, a task-runner
 ## tool or a composite action matched nothing — and did not stop, because

@@ -261,7 +261,7 @@ func (s *Service) reconcileOrphans() {
 		if r2.Checkpoint != nil {
 			newStatus = store.RunStatusFailedResumable
 		}
-		if err := s.store.UpdateRunStatus(ctx, id, newStatus, "process orphaned: server restart found run in 'running' state"); err != nil {
+		if err := s.store.UpdateRunStatus(ctx, id, newStatus, ReasonProcessOrphaned); err != nil {
 			s.logger.Warn("runview: reconcile %s: %v", id, err)
 		} else {
 			s.logger.Info("runview: reconciled orphan run %s → %s", id, newStatus)
@@ -523,6 +523,27 @@ func (s *Service) markRemainingInterrupted(handles []HandleSnapshot) {
 	}
 }
 
+// ReasonServerDrained and ReasonProcessOrphaned are the two failure
+// reasons iterion writes ITSELF when the process — not the workflow —
+// ended a run: a graceful drain at shutdown, and the boot-time orphan
+// sweep that finds a run still flagged `running` from a previous
+// process. Both flip healthy runs to failed/failed_resumable en masse.
+//
+// They are exported because consumers must be able to tell "this run
+// failed" from "this run was interrupted by us". The pipeline board's
+// needs-attention lane uses them to decide NOT to reserve a
+// concurrency slot: without that distinction, every restart with N
+// pipelines in flight would reserve N slots and wedge the board — and
+// under `task studio:dev` a restart is every .go save.
+//
+// Compared by exact equality, never by prefix: a reworded message must
+// break the test in service_lifecycle_test.go loudly rather than
+// silently re-arm the restart wedge.
+const (
+	ReasonServerDrained   = "server drained: studio process shutting down"
+	ReasonProcessOrphaned = "process orphaned: server restart found run in 'running' state"
+)
+
 // markInterrupted emits EventRunInterrupted and flips the run's status
 // to failed_resumable with reason "server drained". Errors are logged
 // at warn level — drain must not abort over a single run's bookkeeping.
@@ -533,7 +554,7 @@ func (s *Service) markRemainingInterrupted(handles []HandleSnapshot) {
 // bypass the mongo backend's fail-closed guard. Without this the
 // drain panics in cloud mode the moment any active run exists.
 func (s *Service) markInterrupted(runID string) {
-	const reason = "server drained: studio process shutting down"
+	const reason = ReasonServerDrained
 	ctx := store.WithoutTenantFilter(context.Background())
 	if _, err := s.store.AppendEvent(ctx, runID, store.Event{
 		Type:  store.EventRunInterrupted,

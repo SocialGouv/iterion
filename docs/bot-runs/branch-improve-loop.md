@@ -1,5 +1,126 @@
 # Billy — branch-improvement validation
 
+## 2026-08-01 (fin de journée) — the zero-touch lane, and the crash it took to prove it (run 019fbd98)
+
+- Status: **validated after a crash-level fix.** The opt-in lane had never fired once since it was written; its first real firing panicked a server pod.
+- Method: `auto_fix_on_gate_failure` enabled on the e2e integration, a concurrency defect planted by hand (`Snapshot` handing the internal map out past the lock, `RecordHit` mutating it without one), pushed as a human. **No `/billy` comment at any point.**
+
+### First attempt: the lane crashed the server
+
+The gate went red at 12:51:30 and no fixer launched. The reason was in the pod's
+pre-restart log:
+
+```
+panic: store/mongo: tenant-scoped query without tenant in ctx
+  ← cloudpublisher.SubmitLaunch ← runview.Launch ← launchWebhookTarget
+  ← autofixForRun ← eventbus NATSBus subscriber
+```
+
+The lane stamped the **auth** identity the admission gate reads and not the
+**store** identity every tenant-scoped query asserts on. The inbound-webhook
+middleware stamps both; the retry sweeper stamps both; this lane had copied half
+the precedent. Missing, the launch does not fail — it trips the tenancy guard
+deep inside `SaveRun` and takes the process down.
+
+Its own tests could not see it: they stub `webhookLaunchBot`, which is the seam
+directly **above** where the launch reaches the store. Fixed in `b68f8a39f`,
+with the positive control now asserting on the context handed across that seam.
+
+A second, wider fix rode along: the bus fans one event out to independent
+consumers that share nothing but the dispatch, so a panic there is the widest
+blast radius for the narrowest bug. It is now recovered per delivery, logged
+with its stack, and dropped exactly as a returned error already is.
+
+### Second attempt: it works, untouched
+
+```
+gate auto-fix: iterion/review red on SocialGouv/iterion-test-appy-e2e#2@de9df24
+               → launched branch-improve-loop (run 019fbd98)
+```
+
+`restarts=0` on all three replicas. The launched run carried everything needed
+to close the loop back: `head_sha` exactly the head the gate was red on,
+`gate_context: iterion/review` (the repo's pin, not the bot's default), the
+publish grant, 7141 characters of prior review, and a `scope_notes` saying why
+it was launched.
+
+### Lessons for the next run
+
+- An opt-in feature that has never fired is not shipped, it is written. This one
+  passed a `/simplify`, an adversarial review and a refusal table, and still had
+  a process-killing bug on line one of its only untested path.
+- When a lane runs off the event bus rather than an HTTP request, it inherits
+  none of the request's context. Copy the middleware's stamping in full, or copy
+  the retry sweeper, which already had it right.
+
+
+## 2026-08-01 (soir) — the loop closes: red gate → fix → push → independent supersede (run 019fbd1b)
+
+- Status: **validated** — the four links of the Revi↔Billy loop exercised live, two of them for the first time ever.
+- Versions: bot 1.1.0 · iterion `a9f32534b` (v3.19.0, carrying `db2676c5b`).
+- Method: a real defect planted by hand on `feat/cache-layer` (a `Purge` ranging over the entry map and a `Len` reading it, both without the mutex, on a type documented "safe for concurrent use"), pushed as a human. Revi reviewed it, the gate went red, `/billy`.
+- Result: Revi found 4 findings (1 critical, 1 high, 2 medium) and the gate went `failure — 2 blocking finding(s) ≥high`. Billy fixed all four, pushed, and posted `iterion/review=success on a3a734324f33`. The independent re-review landed 14 minutes later and superseded it with `success — no blocking findings (≥high); 2 total`.
+
+### The measurement that mattered
+
+The same actor, the same event, the same repo — before and after `db2676c5b`:
+
+| heure (UTC) | `synchronize` pushed by | delivery | sha |
+|---|---|---|---|
+| 10:29:33 | the fixer, before the fix | **filtered** | `6dd691c1b` |
+| 11:28:28 | a human | launched | `e8ca8c0be` |
+| 11:56:49 | the fixer, after the fix | **launched** | `a3a734324` |
+
+And the two verdicts that then sat on that one head, in order:
+
+| heure | `iterion/review` on `a3a73432` | by |
+|---|---|---|
+| 11:56:50 | `success — 4 finding(s) fixed, re-review by the fixer clean, build green` | the fixer, about its own code |
+| 12:10:57 | `success — no blocking findings (≥high); 2 total` | the reviewer, independent |
+
+### The return ledger, exercised for the first time
+
+`prior_pushback` reached the re-review at 1920 characters, finding by finding with the commit that fixed each. The reviewer re-raised **none** of the four and instead found two new low ones — plus a question worth more than the findings: *does CI run `go test -race`? I could not here, and I confirmed by mutation that removing Len's mutex leaves the whole suite green.* A locking discipline with no automated guard, surfaced by the reviewer's own falsifiability channel.
+
+### Lessons for the next run
+
+- A guard keyed on the sender treats "our bot pushed" and "our bot opened this PR" as the same thing. They are opposites: the second converged in its own loop, the first is exactly the moment an independent judgement is needed.
+- Plant a defect and drive the whole loop rather than asserting each link separately. Both defects fixed today were compositions, not units.
+
+
+## 2026-08-01 — the board lane could not publish, and the fixer's push was invisible to the gate (run 019fbcbb)
+
+- Status: **validated** — first end-to-end run where Billy answers a review, pushes, posts its verdict AND closes the merge gate. Two engine defects found live, both fixed and deployed in-session.
+- Versions: bot 1.1.0 · iterion `cdfedc124` (server), the run itself on `claude_code` / `claude-opus-5`.
+- Method: `/billy` comment on [iterion-test-appy-e2e#2](https://github.com/SocialGouv/iterion-test-appy-e2e/pull/2) (`feat/cache-layer`, a real Go module with planted defects), cloud, board lane, GitHub App connection, `gate_context: iterion/review` pinned on the integration.
+- Result: converged in **one pass** — 38m12s active, 390 events, 152 tool calls, 11 nodes, `continuation_loop` never re-entered. Pushed 6 commits onto the PR branch; `publish_verdict` returned `verdict posted; iterion/review=success on 6dd691c1be95`.
+- Value: the hand-off paid for itself. Billy received 3388 characters of prior review carrying the stable id `Rcae144`, **reproduced the finding before fixing it** (a 503 origin was memoized and served with a nil error, and a recovered origin was never re-contacted), fixed it in `57c7a00`, then found four more real issues the review had not — among them a `Warm` semaphore allocated per call instead of per cache, so the fan-out cap was not a cap.
+
+### The two defects the run surfaced
+
+**1. A bot launched off the board could not publish anything** (fixed, `515714482` + `cdfedc124`).
+The cloud coordinator launches a card from its BotArgs alone, so the forge-publish grant and the repo's launch policy — both composed inline by the webhook tail — never reached it. Measured side by side with the reviewer on the same PR:
+
+| | `forge_publish_url` | `forge_publish_token` | `gate_context` |
+|---|---|---|---|
+| Revi (`mode: direct`) | oui | oui | `iterion/review` |
+| Billy (`mode: board`), avant | — | — | absent |
+| Billy (`mode: board`), après | oui | oui (64 car.) | `iterion/review` |
+
+Both are now resolved at claim time, never carried on the card: a grant expires, so a card claimed hours later would hold a dead token, and a board document is the wrong place for a credential at rest.
+
+A second defect rode along, found while preparing the fixture: the repo carried **two integrations** (a stale personal-token one from 2026-07-17 and the GitHub App it was re-provisioned onto), two live webhooks, and a double delivery on every comment. Resolving them by lowest id — deterministic but arbitrary — elected the stale one, which would have posted the verdict under the operator's own account, the identity the loop guard refuses. The latest provisioning now wins.
+
+**2. The fixer's push was the one delivery the gate never saw** (fixed, `db2676c5b`).
+The iterion-bot guard skips a PR our own loop produced, keyed on the SENDER. On a merge-gate resync the sender is by construction the forge bot — the fixer that just pushed — so the resync on `6dd691c1` was recorded `filtered — PR authored by iterion's forge bot`. Two consequences, both the failures the merge gate exists to remove: the required check stayed on the pre-push revision (absent on the head that needs judging), and the fixer's own verdict about code it wrote was never superseded by the independent re-review [docs/merge-gate.md](../merge-gate.md) promises. A PR the bot *opens* is still skipped — that one did converge in its own loop.
+
+### Lessons for the next run
+
+- A `mode: board` bot gets none of the launch context the webhook lane composes. When a board-mode bot behaves as if a var were unset, read the RUN's inputs before reading the bot.
+- Both defects were invisible to every test because each test supplied by hand the thing production had to produce. The same shape as the `publish:` defect in [review-pr.md](review-pr.md): when a contract crosses two components, at least one test must run the producer for real.
+- Deprovision a stale integration when re-provisioning a repo onto another connection. Two live webhooks on one repo double every delivery, and the extra one refuses everything with a misleading reason.
+
+
 ## 2026-07-10 — /billy command on a Dependabot PR: 4 engine gaps peeled live, then a clean push-back under the App identity (runs 019f4bd4 / 019f4c46 / 019f4c86 / 019f4ccb)
 
 - Status: **validated (cloud E2E, command path) — 5 engine fixes found live, all landed in-session.**

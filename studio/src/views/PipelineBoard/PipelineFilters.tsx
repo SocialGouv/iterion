@@ -7,8 +7,11 @@ import { Select } from "@/components/ui/Select";
 
 import {
   INVENTORY_SORT_OPTIONS,
+  sortModeForTab,
+  withSortModeForTab,
   pipelineFiltersActive,
   type ClosedSubfilter,
+  type DepsFilter,
   type InventorySortMode,
   type InventoryTab,
   type OpenedSubfilter,
@@ -55,6 +58,9 @@ export function PipelineFilters({
 }) {
   const active = pipelineFiltersActive(filters);
   const tab: InventoryTab = filters.inventoryTab ?? "opened";
+  // Each tab carries its own sort, so what the control shows is what the grid
+  // does — and changing it here cannot re-order the other tab.
+  const sortValue = sortModeForTab(filters, tab);
 
   const toggleLabel = (label: string) => {
     const labels = new Set(filters.labels);
@@ -126,26 +132,60 @@ export function PipelineFilters({
           </div>
 
           {tab === "opened" ? (
-            <SubfilterChips
-              ariaLabel="Filter opened tickets"
-              value={filters.openedSubfilter ?? "all"}
-              options={[
-                { value: "all", label: "All", title: "Every opened ticket" },
-                {
-                  value: "ready",
-                  label: "Ready",
-                  title: "Cleared to launch when a slot frees",
-                },
-                {
-                  value: "not_ready",
-                  label: "Not ready",
-                  title: "Drafts and tickets blocked by deps",
-                },
-              ]}
-              onChange={(openedSubfilter: OpenedSubfilter) =>
-                onChange({ ...filters, openedSubfilter })
-              }
-            />
+            // Two INDEPENDENT axes, so they get separate labelled groups.
+            // "Ready" and "Unblocked" read as synonyms side by side but are
+            // not: a ticket can be staged Ready and still be parked on an
+            // open dependency — that is exactly what "Mark ready (park if
+            // deps open)" produces.
+            <div className="flex flex-wrap items-center gap-x-4 gap-y-1">
+              <div className="flex items-center gap-1.5">
+                <span className="text-micro text-fg-subtle">Readiness</span>
+                <SubfilterChips
+                  ariaLabel="Filter opened tickets by readiness"
+                  value={filters.openedSubfilter ?? "all"}
+                  options={[
+                    { value: "all", label: "All", title: "Every opened ticket" },
+                    {
+                      value: "ready",
+                      label: "Ready",
+                      title: "Cleared to launch when a slot frees",
+                    },
+                    {
+                      value: "not_ready",
+                      label: "Not ready",
+                      title: "Drafts and tickets blocked by deps",
+                    },
+                  ]}
+                  onChange={(openedSubfilter: OpenedSubfilter) =>
+                    onChange({ ...filters, openedSubfilter })
+                  }
+                />
+              </div>
+              <div className="flex items-center gap-1.5">
+                <span className="text-micro text-fg-subtle">Dependencies</span>
+                <SubfilterChips
+                  ariaLabel="Filter opened tickets by dependency state"
+                  value={filters.depsFilter ?? "all"}
+                  options={[
+                    { value: "all", label: "All", title: "No dependency filter" },
+                    {
+                      value: "unblocked",
+                      label: "Unblocked",
+                      title: "Nothing stands in the way — these can launch",
+                    },
+                    {
+                      value: "blocked",
+                      label: "Blocked",
+                      title:
+                        "Waiting on an open blocker, a required label, or parked in waiting_deps",
+                    },
+                  ]}
+                  onChange={(depsFilter: DepsFilter) =>
+                    onChange({ ...filters, depsFilter })
+                  }
+                />
+              </div>
+            </div>
           ) : (
             <SubfilterChips
               ariaLabel="Filter closed tickets"
@@ -158,9 +198,12 @@ export function PipelineFilters({
                   title: "Finished successfully",
                 },
                 {
+                  // Mid-flight failures live in the Needs attention lane now,
+                  // so a "failed" card that reached Closed was stopped on
+                  // purpose — cancelled, or filed via Close.
                   value: "failed",
-                  label: "Failed",
-                  title: "Failed or cancelled",
+                  label: "Stopped",
+                  title: "Cancelled by the operator, or closed without finishing",
                 },
               ]}
               onChange={(closedSubfilter: ClosedSubfilter) =>
@@ -244,14 +287,6 @@ export function PipelineFilters({
             ))}
           </Select>
         )}
-        <Checkbox
-          checked={filters.waitingDepsOnly}
-          onChange={(e) =>
-            onChange({ ...filters, waitingDepsOnly: e.target.checked })
-          }
-          label="Waiting on deps"
-          title="Show only tickets with open hard blockers or waiting_deps"
-        />
         <label
           htmlFor="pipeline-inventory-sort"
           className="flex items-center gap-1.5 text-fg-muted"
@@ -261,18 +296,26 @@ export function PipelineFilters({
           <Select
             fit
             id="pipeline-inventory-sort"
-            value={filters.sortMode ?? "priority"}
+            value={sortValue}
             onChange={(e) =>
-              onChange({
-                ...filters,
-                sortMode: e.target.value as InventorySortMode,
-              })
+              onChange(
+                withSortModeForTab(
+                  filters,
+                  tab,
+                  e.target.value as InventorySortMode,
+                ),
+              )
             }
-            aria-label="Sort inventory cards"
+            aria-label={`Sort ${tab} inventory cards`}
             title={
-              (filters.sortMode ?? "priority") === "priority"
-                ? "Higher priority first — same order as the launch queue; ties oldest-first"
-                : "Order inventory cards"
+              sortValue !== "priority"
+                ? "Order inventory cards — this tab remembers its own choice"
+                : tab === "closed"
+                  ? // Priority stays selectable here (which high-P pipelines
+                    // completed?), but nothing in Closed is queued for launch,
+                    // so promising "the launch queue's order" would be a lie.
+                    "Higher priority first; ties oldest-first"
+                  : "Higher priority first — same order as the launch queue; ties oldest-first"
             }
           >
             {INVENTORY_SORT_OPTIONS.map((o) => (

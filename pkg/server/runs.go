@@ -45,8 +45,6 @@ func (s *Server) registerRunRoutes() {
 	s.mux.HandleFunc("GET /api/runs/{id}/files", s.handleListRunFiles)
 	s.mux.HandleFunc("GET /api/runs/{id}/files/touched", s.handleListRunTouchedFiles)
 	s.mux.HandleFunc("GET /api/runs/{id}/files/diff", s.handleGetRunFileDiff)
-	s.mux.HandleFunc("GET /api/runs/{id}/nodes/{node}/changes", s.handleGetRunNodeChanges)
-	s.mux.HandleFunc("GET /api/runs/{id}/nodes/{node}/diff", s.handleGetRunNodeFileDiff)
 	s.mux.HandleFunc("GET /api/runs/{id}/review/scope", s.handleGetRunReviewScope)
 	s.mux.HandleFunc("GET /api/runs/{id}/review/diff", s.handleGetRunReviewDiff)
 	// Workspace-relative file stream for the review panel's media players

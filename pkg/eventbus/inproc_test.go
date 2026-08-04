@@ -108,3 +108,45 @@ func waitN(t *testing.T, done <-chan struct{}, n int) {
 		}
 	}
 }
+
+// TestPanickingHandlerDoesNotKillTheBus: the bus fans one event out to several
+// independent subscribers. A defect in one of them must cost that delivery,
+// not the process — a panic escaping the dispatch takes down every other
+// subscriber and the HTTP surface with it (observed in production: a launch
+// reaching Mongo with no tenant tripped the tenancy guard inside a subscriber
+// and crashed the server pod).
+func TestPanickingHandlerDoesNotKillTheBus(t *testing.T) {
+	b := NewInProcBus(nil)
+
+	healthy := make(chan trigger.Event, 2)
+	cancel1, err := b.Subscribe("boom", trigger.Matcher{}, func(context.Context, trigger.Event) error {
+		panic("handler defect")
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer cancel1()
+	cancel2, err := b.Subscribe("healthy", trigger.Matcher{}, func(_ context.Context, ev trigger.Event) error {
+		healthy <- ev
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer cancel2()
+
+	for i := 0; i < 2; i++ {
+		if err := b.Publish(context.Background(), trigger.Event{Source: trigger.SourceRun, Kind: "run.finished"}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// The healthy subscriber must still receive BOTH events: the first panic
+	// must not stop its sibling, nor the panicking worker itself.
+	for i := 0; i < 2; i++ {
+		select {
+		case <-healthy:
+		case <-time.After(3 * time.Second):
+			t.Fatalf("healthy subscriber stopped receiving after a sibling panicked (got %d/2)", i)
+		}
+	}
+}

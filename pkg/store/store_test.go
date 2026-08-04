@@ -1606,3 +1606,34 @@ func TestLoadEventsRangeWindowAndLimit(t *testing.T) {
 		})
 	}
 }
+
+// TestFailRunResumableNeverOverwritesAnOperatorCancel: an operator cancel is
+// terminal. An interruption and a cancel race whenever a pod is torn down
+// while somebody stops the run, and a resumable failure landing last would
+// auto-resume a run that was deliberately stopped.
+func TestFailRunResumableNeverOverwritesAnOperatorCancel(t *testing.T) {
+	s, err := New(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	id, err := GenerateRunID()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.CreateRun(context.Background(), id, "wf", nil); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.UpdateRunStatus(context.Background(), id, RunStatusCancelled, "operator cancelled"); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.FailRunResumable(context.Background(), id, &Checkpoint{NodeID: "n1"}, "interrupted"); err != nil {
+		t.Fatalf("FailRunResumable on a cancelled run should be a no-op, got %v", err)
+	}
+	run, err := s.LoadRun(context.Background(), id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if run.Status != RunStatusCancelled {
+		t.Errorf("status = %q, want cancelled — a deliberately stopped run would auto-resume", run.Status)
+	}
+}

@@ -132,6 +132,12 @@ func (b *pipelineProjectionBuilder) enrichParentChildLinks() {
 				switch {
 				case child.ColumnID == pipelineColumnInProgress:
 					summary.InProgress++
+				case child.ColumnID == pipelineColumnNeedsAttention:
+					// A child that died mid-flight counts as failed on the
+					// parent's face. Without this arm it falls through to
+					// `default: Open++` and a planner parent silently
+					// under-reports its broken children.
+					summary.Failed++
 				case child.ColumnID == pipelineColumnClosed && child.Failed:
 					summary.Failed++
 				case child.ColumnID == pipelineColumnClosed:
@@ -163,6 +169,31 @@ func (b *pipelineProjectionBuilder) enrichParentChildLinks() {
 	}
 }
 
+// blockingIndex builds the reverse blocker map ONCE per projection.
+// native.ReverseBlockers rescans every issue per call, which was tolerable
+// while attachDeps only ran for task cards; calling it for run-backed cards
+// too (needed so the Close dialog can name a card's dependents) would have
+// made the projection O(issues²) on every 3s poll.
+func (b *pipelineProjectionBuilder) blockingIndex() map[string][]native.BlockingInfo {
+	if b.blocking != nil {
+		return b.blocking
+	}
+	index := make(map[string][]native.BlockingInfo)
+	for _, iss := range b.allIssues {
+		if iss == nil {
+			continue
+		}
+		for _, blockerID := range iss.Blockers {
+			if blockerID == "" {
+				continue
+			}
+			index[blockerID] = append(index[blockerID], native.BlockingInfo{ID: iss.ID, Title: iss.Title})
+		}
+	}
+	b.blocking = index
+	return index
+}
+
 // attachDeps fills the hard-dependency projection fields on a card from
 // its native issue. No-op when the card has no issue provenance.
 func (b *pipelineProjectionBuilder) attachDeps(card *PipelineBoardCard, issue *native.Issue) {
@@ -178,7 +209,7 @@ func (b *pipelineProjectionBuilder) attachDeps(card *PipelineBoardCard, issue *n
 		}
 	}
 	card.OpenBlockerCount = open
-	card.Blocking = native.ReverseBlockers(b.allIssues, issue.ID)
+	card.Blocking = b.blockingIndex()[issue.ID]
 	// launch_blocked_reason is useful even for non-ready tickets (waiting_deps
 	// / open blockers) so the UI can show a badge without re-deriving the rule.
 	if reason := native.LaunchBlockedReason(b.boardStore, issue); reason != "" {

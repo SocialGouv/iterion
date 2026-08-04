@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"slices"
 	"sort"
 	"time"
 
@@ -307,6 +308,12 @@ func (e *Engine) applySteeringState(rs *runState, r *store.Run) {
 			rs.loopOverrides[k] = v
 		}
 	}
+	if len(r.PermissionGrants) > 0 {
+		rs.permissionGrants = make(map[string][]string, len(r.PermissionGrants))
+		for node, rules := range r.PermissionGrants {
+			rs.permissionGrants[node] = append([]string(nil), rules...)
+		}
+	}
 	if r.BudgetRaises != nil && rs.budget != nil {
 		rs.budget.RaiseCaps(ir.BudgetOverrides{
 			MaxCostUSD:    r.BudgetRaises.MaxCostUSD,
@@ -332,4 +339,30 @@ func appliedBudgetFields(o ir.BudgetOverrides) map[string]any {
 		m["max_duration"] = o.MaxDuration
 	}
 	return m
+}
+
+// recordPermissionGrant appends a newly earned permission allow rule to
+// the run's accumulated set and persists it, so the next resume — which
+// builds a fresh engine and a fresh runState — still carries it. No-ops
+// on a duplicate so a repeated `allow always` on the same tool does not
+// grow the stored slice. A persistence failure is logged, never fatal:
+// the grant still holds for the current re-invocation, and the worst
+// case is the operator being asked once more.
+func (e *Engine) recordPermissionGrant(rs *runState, nodeID, rule string) {
+	if rs == nil || nodeID == "" || rule == "" {
+		return
+	}
+	if slices.Contains(rs.permissionGrants[nodeID], rule) {
+		return
+	}
+	if rs.permissionGrants == nil {
+		rs.permissionGrants = make(map[string][]string, 1)
+	}
+	rs.permissionGrants[nodeID] = append(rs.permissionGrants[nodeID], rule)
+	if e.store == nil {
+		return
+	}
+	if err := e.store.PatchRunPermissionGrants(rs.ctx, rs.runID, rs.permissionGrants); err != nil {
+		e.logger.Warn("runtime: persist permission grant %q: %v", rule, err)
+	}
 }

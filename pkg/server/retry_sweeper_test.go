@@ -13,9 +13,11 @@ import (
 	dto "github.com/prometheus/client_model/go"
 
 	"github.com/SocialGouv/iterion/pkg/cloud/metrics"
+	"github.com/SocialGouv/iterion/pkg/eventbus"
 	"github.com/SocialGouv/iterion/pkg/runview"
 	"github.com/SocialGouv/iterion/pkg/store"
 	mongostore "github.com/SocialGouv/iterion/pkg/store/mongo"
+	"github.com/SocialGouv/iterion/pkg/trigger"
 )
 
 // The sweeper is the half of the retry that can lose a run: it claims,
@@ -270,6 +272,45 @@ func TestSweepDueRetries_UnresolvableSourceAbandons(t *testing.T) {
 	}
 	if _, ok := st.rearmed["run-a"]; ok {
 		t.Error("a permanently unresolvable run must not be re-armed")
+	}
+}
+
+// Abandoning is the moment a run becomes permanently dead — its terminal event
+// fired while a retry was still armed, so consumers that defer to an armed
+// retry (the merge-gate reconciler foremost) stood down and nothing else ever
+// fires for it. The abandon must therefore republish the run outcome, or a
+// gating run whose retries die here leaves its required check absent forever.
+func TestSweepDueRetries_AbandonRepublishesTheRunOutcome(t *testing.T) {
+	st := newFakeRetryStore()
+	st.claimWins["run-a"] = true
+	resumer := &fakeResumer{}
+	s := newRetrySweeperServer(t, st, resumer)
+	s.cfg.Mode = "cloud"
+
+	bus := eventbus.NewInProcBus(nil)
+	s.cfg.EventsBus = bus
+	got := make(chan trigger.Event, 1)
+	if _, err := bus.Subscribe("probe", trigger.Matcher{
+		Sources: []trigger.Source{trigger.SourceRun},
+		Kinds:   []string{trigger.KindRunFailed},
+	}, func(_ context.Context, ev trigger.Event) error {
+		got <- ev
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	ref := dueRef("run-a", time.Now().UTC().Add(-time.Minute))
+	ref.FilePath = "bots/deleted-bot/main.bot" // unresolvable → abandon
+	s.sweepDueRetries(context.Background(), &fakeRetryLister{refs: []mongostore.RetryDueRef{ref}}, resumer, time.Now().UTC())
+
+	select {
+	case ev := <-got:
+		if ev.Subject.ID != "run-a" {
+			t.Errorf("republished outcome for %q, want run-a", ev.Subject.ID)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("no run outcome republished on abandon — the reconciler never learns the run is permanently dead")
 	}
 }
 

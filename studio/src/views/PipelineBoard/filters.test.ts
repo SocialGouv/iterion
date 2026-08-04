@@ -2,6 +2,8 @@ import { describe, expect, it } from "vitest";
 
 import type { PipelineBoardCard } from "@/api/pipelineBoards";
 
+import type { PipelineFilterState } from "./filters";
+
 import {
   collectFilterOptions,
   emptyPipelineFilters,
@@ -9,8 +11,11 @@ import {
   filterPipelineCards,
   partitionPipelineCards,
   pipelineFiltersActive,
+  resetPipelineFilters,
   sortInventoryCards,
+  sortModeForTab,
   sortNewestFirst,
+  withSortModeForTab,
 } from "./filters";
 
 function card(partial: Partial<PipelineBoardCard>): PipelineBoardCard {
@@ -98,9 +103,22 @@ describe("filterPipelineCards", () => {
     expect(
       filterPipelineCards(kindCards, { ...base, familyId: "fort" }).map((c) => c.id),
     ).toEqual(["m", "f"]);
-    expect(
-      filterPipelineCards(kindCards, { ...base, waitingDepsOnly: true }).map((c) => c.id),
-    ).toEqual(["f"]);
+  });
+
+  it("does not apply the dependency filter board-wide", () => {
+    // Regression: the deps filter used to live here, so switching it on
+    // emptied the In-progress section as a side effect — running cards carry
+    // no dependency fields at all (attachDeps only runs for ticket cards).
+    // It belongs to the Opened tab; see filterInventoryCards.
+    const mixed = [
+      card({ id: "running", column_id: "in_progress", status: "running" }),
+      card({ id: "blocked", column_id: "opened", open_blocker_count: 1 }),
+    ];
+    const f = { ...emptyPipelineFilters(), depsFilter: "blocked" as const };
+    expect(filterPipelineCards(mixed, f).map((c) => c.id)).toEqual([
+      "running",
+      "blocked",
+    ]);
   });
 
   it("bot filter matches the workflow_name fallback for bot-less runs", () => {
@@ -284,6 +302,60 @@ describe("partitionPipelineCards + inventory filters", () => {
   });
 });
 
+describe("per-tab sort state", () => {
+  it("defaults Opened to the launch order and Closed to recency", () => {
+    const f = emptyPipelineFilters();
+    expect(sortModeForTab(f, "opened")).toBe("priority");
+    expect(sortModeForTab(f, "closed")).toBe("updated");
+  });
+
+  it("keeps a pick on one tab from re-ordering the other", () => {
+    // The whole point of splitting the state: reading the archive by
+    // creation date must not silently cost the queue its launch order.
+    const f = withSortModeForTab(emptyPipelineFilters(), "closed", "created");
+    expect(sortModeForTab(f, "closed")).toBe("created");
+    expect(sortModeForTab(f, "opened")).toBe("priority");
+
+    const g = withSortModeForTab(f, "opened", "updated");
+    expect(sortModeForTab(g, "opened")).toBe("updated");
+    expect(sortModeForTab(g, "closed")).toBe("created");
+  });
+
+  it("does not mutate the filters it is given", () => {
+    const f = emptyPipelineFilters();
+    withSortModeForTab(f, "closed", "created");
+    expect(f.closedSortMode).toBe("updated");
+  });
+
+  it("survives a filter reset", () => {
+    // Reset clears CRITERIA. The lane being read and its ordering are view
+    // state — pipelineFiltersActive excludes both sorts, so neither can even
+    // raise the reset chip; wiping them as collateral would undo a choice the
+    // operator never asked about.
+    const picked: PipelineFilterState = {
+      ...withSortModeForTab(emptyPipelineFilters(), "closed", "created"),
+      inventoryTab: "closed",
+      query: "audio",
+      labels: new Set(["urgent"]),
+    };
+    const reset = resetPipelineFilters(picked);
+    expect(reset.query).toBe("");
+    expect(reset.labels.size).toBe(0);
+    expect(reset.inventoryTab).toBe("closed");
+    expect(sortModeForTab(reset, "closed")).toBe("created");
+    expect(sortModeForTab(reset, "opened")).toBe("priority");
+  });
+
+  it("resolves every mode on either tab", () => {
+    for (const mode of ["priority", "updated", "created"] as const) {
+      const f = withSortModeForTab(emptyPipelineFilters(), "closed", mode);
+      expect(sortModeForTab(f, "closed")).toBe(mode);
+      const g = withSortModeForTab(emptyPipelineFilters(), "opened", mode);
+      expect(sortModeForTab(g, "opened")).toBe(mode);
+    }
+  });
+});
+
 describe("pipelineFiltersActive", () => {
   it("detects any active filter", () => {
     expect(pipelineFiltersActive(emptyPipelineFilters())).toBe(false);
@@ -302,5 +374,102 @@ describe("pipelineFiltersActive", () => {
     const b = emptyPipelineFilters();
     a.labels.add("x");
     expect(b.labels.size).toBe(0);
+  });
+});
+
+describe("needs-attention lane + dependency filter", () => {
+  it("partitions needs_attention into its own bucket, out of the inventory", () => {
+    const cards = [
+      card({ id: "live", column_id: "in_progress" }),
+      card({ id: "broken", column_id: "needs_attention", failed: true }),
+      card({ id: "todo", column_id: "opened" }),
+      card({ id: "done", column_id: "closed" }),
+    ];
+    const { inProgress, needsAttention, inventory } = partitionPipelineCards(cards);
+    expect(inProgress.map((c) => c.id)).toEqual(["live"]);
+    expect(needsAttention.map((c) => c.id)).toEqual(["broken"]);
+    // Critically NOT in the inventory: a failed pipeline must not reappear
+    // in the Opened queue, where it would look launchable.
+    expect(inventory.map((c) => c.id).sort()).toEqual(["done", "todo"]);
+  });
+
+  it("routes a lane this build does not know into the Closed tab", () => {
+    // Forward compatibility: a newer server can add a lane, and an SPA
+    // bundle already loaded in a browser tab cannot be retro-fixed. Falling
+    // into Closed is recoverable; vanishing from both tabs is not.
+    const cards = [card({ id: "future", column_id: "some_future_lane" })];
+    const base = emptyPipelineFilters();
+    expect(
+      filterInventoryCards(cards, { ...base, inventoryTab: "closed" }).map((c) => c.id),
+    ).toEqual(["future"]);
+    expect(filterInventoryCards(cards, base)).toEqual([]);
+  });
+
+  it("depsFilter narrows the Opened tab three ways", () => {
+    const cards = [
+      card({ id: "free", column_id: "opened", ready: true }),
+      card({ id: "blocked", column_id: "opened", ready: true, open_blocker_count: 1 }),
+      card({ id: "labelled", column_id: "opened", launch_blocked_reason: "blocker_labels" }),
+    ];
+    const base = emptyPipelineFilters();
+    expect(filterInventoryCards(cards, base).map((c) => c.id)).toEqual([
+      "free",
+      "blocked",
+      "labelled",
+    ]);
+    expect(
+      filterInventoryCards(cards, { ...base, depsFilter: "unblocked" }).map((c) => c.id),
+    ).toEqual(["free"]);
+    expect(
+      filterInventoryCards(cards, { ...base, depsFilter: "blocked" }).map((c) => c.id),
+    ).toEqual(["blocked", "labelled"]);
+  });
+
+  it("defaults to no dependency filter and reports it as active once set", () => {
+    expect(emptyPipelineFilters().depsFilter).toBe("all");
+    expect(pipelineFiltersActive(emptyPipelineFilters())).toBe(false);
+    expect(
+      pipelineFiltersActive({ ...emptyPipelineFilters(), depsFilter: "unblocked" }),
+    ).toBe(true);
+  });
+
+  it("sorts blocked tickets below launchable ones before applying priority", () => {
+    const cards = [
+      card({ id: "blockedP9", column_id: "opened", priority: 9, open_blocker_count: 1 }),
+      card({ id: "freeP1", column_id: "opened", priority: 1 }),
+      card({ id: "freeP5", column_id: "opened", priority: 5 }),
+    ];
+    // Opened + priority: the top of the list is always something startable.
+    expect(sortInventoryCards(cards, "priority", "opened").map((c) => c.id)).toEqual([
+      "freeP5",
+      "freeP1",
+      "blockedP9",
+    ]);
+    // Closed's DEFAULT is recency (asserted in the per-tab suite), but an
+    // operator who explicitly asks for the ranking still gets it — "which
+    // high-P pipelines actually completed" is a real question. What Closed
+    // drops is only the blocked-last partition: nothing there is waiting to
+    // launch, so sinking terminal tickets for stale blockers is noise.
+    const archive = [
+      card({ id: "oldP9", column_id: "closed", priority: 9, open_blocker_count: 1, updated_at: "2026-06-01T00:00:00Z" }),
+      card({ id: "newP1", column_id: "closed", priority: 1, updated_at: "2026-07-20T00:00:00Z" }),
+      card({ id: "midP5", column_id: "closed", priority: 5, updated_at: "2026-07-10T00:00:00Z" }),
+    ];
+    expect(sortInventoryCards(archive, "priority", "closed").map((c) => c.id)).toEqual([
+      "oldP9",
+      "midP5",
+      "newP1",
+    ]);
+    expect(sortInventoryCards(archive, "updated", "closed").map((c) => c.id)).toEqual([
+      "newP1",
+      "midP5",
+      "oldP9",
+    ]);
+    // Date modes are chronology; the operator asked for it explicitly.
+    expect(sortInventoryCards(cards, "created", "opened").map((c) => c.id)).toEqual([
+      "blockedP9",
+      "freeP1",
+      "freeP5",
+    ]);
   });
 });

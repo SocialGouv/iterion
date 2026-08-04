@@ -120,6 +120,16 @@ export type { MeterProps, MeterTone, MeterSize } from "./Meter";
 export { CopyButton } from "./CopyButton";
 export type { CopyButtonProps } from "./CopyButton";
 
+export {
+  ExpandableValue,
+  valueRepresentations,
+  isLongValue,
+  countLines,
+  COLLAPSE_MAX_CHARS,
+  COLLAPSE_MAX_LINES,
+} from "./ExpandableValue";
+export type { ExpandableValueProps, ValueRepresentations } from "./ExpandableValue";
+
 export { LinkifiedText } from "./LinkifiedText";
 export type { LinkifiedTextProps } from "./LinkifiedText";
 

@@ -142,6 +142,61 @@ func TestLoad_SandboxDefaultEnv(t *testing.T) {
 	}
 }
 
+func TestLoad_RunnerDrainDefaults(t *testing.T) {
+	clearITERION(t)
+	cfg, err := Load(LoadOptions{})
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.Runner.DrainMode != "complete" {
+		t.Errorf("DrainMode default = %q, want complete (lame-duck)", cfg.Runner.DrainMode)
+	}
+	if cfg.Runner.DrainTimeout != 8*time.Hour {
+		t.Errorf("DrainTimeout default = %v, want 8h", cfg.Runner.DrainTimeout)
+	}
+}
+
+func TestLoad_RunnerDrainEnv(t *testing.T) {
+	cases := []struct {
+		mode    string
+		timeout string
+		wantErr bool
+	}{
+		{"complete", "8h", false},
+		{"interrupt", "90s", false},
+		{"", "2h", false},
+		{"paused", "1h", true},  // invalid mode
+		{"complete", "", false}, // empty timeout keeps default
+	}
+	for _, c := range cases {
+		t.Run(c.mode+"/"+c.timeout, func(t *testing.T) {
+			clearITERION(t)
+			if c.mode != "" {
+				t.Setenv("ITERION_RUNNER_DRAIN_MODE", c.mode)
+			}
+			if c.timeout != "" {
+				t.Setenv("ITERION_RUNNER_DRAIN_TIMEOUT", c.timeout)
+			}
+			cfg, err := Load(LoadOptions{})
+			if (err != nil) != c.wantErr {
+				t.Fatalf("Load() err = %v, wantErr = %v", err, c.wantErr)
+			}
+			if c.wantErr {
+				return
+			}
+			if c.mode != "" && cfg.Runner.DrainMode != c.mode {
+				t.Errorf("DrainMode = %q, want %q", cfg.Runner.DrainMode, c.mode)
+			}
+			if c.timeout != "" {
+				want, _ := time.ParseDuration(c.timeout)
+				if cfg.Runner.DrainTimeout != want {
+					t.Errorf("DrainTimeout = %v, want %v", cfg.Runner.DrainTimeout, want)
+				}
+			}
+		})
+	}
+}
+
 func TestLoad_SandboxOverrideEnv(t *testing.T) {
 	cases := []struct {
 		env     string

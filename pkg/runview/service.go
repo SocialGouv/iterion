@@ -197,6 +197,14 @@ type LaunchSpec struct {
 	// dispatcher sets it to the kanban issue that triggered the dispatch. Nil
 	// leaves Source unset (CLI / studio / fork launches).
 	SourceRef *store.RunSource
+	// PipelineTicketID is the native ticket this ROOT launch belongs to.
+	// Purely a concurrency-gate hint: a ticket whose last run died sits in
+	// the pipeline board's needs-attention lane and RESERVES a slot so
+	// nothing takes the place it needs to restart into. Passing the id here
+	// makes this launch CONSUME that ticket's own reservation instead of
+	// being refused by it — without it, the card would deadlock behind the
+	// slot it is holding for itself. Empty for every non-ticket launch.
+	PipelineTicketID string
 	// OnOutcome, when set, is invoked once with the run's terminal Go error
 	// (nil on success, runtime.ErrRunPaused/ErrRunPausedOperator on a pause,
 	// the failure error otherwise) just before the run goroutine closes
@@ -556,6 +564,10 @@ type Service struct {
 	// startPipelineScheduler). Closed by Drain/Stop via pipelineStopOnce.
 	pipelineStop     chan struct{}
 	pipelineStopOnce sync.Once
+	// pipelineReservedInvalidate drops the reservation provider's cache; see
+	// SetPipelineReservedProvider. Nil unless a board is wired.
+	pipelineReservedMu         sync.RWMutex
+	pipelineReservedInvalidate func()
 }
 
 // ServiceOption configures a Service at construction time.
@@ -688,6 +700,40 @@ func WithBoardMCP(handler http.Handler, register func(caps []string, sourceIssue
 // machinery, which only sees this process's writes. See ADR-053.
 func WithStreamSource(src runstream.Source) ServiceOption {
 	return func(svc *Service) { svc.streamSrc = src }
+}
+
+// workspaceTrackingEnabled reports whether runs should version their
+// workspace. ITERION_WORKSPACE_TRACK=off|0|false disables it globally.
+//
+// Default ON: without it a rewind cannot undo what a node actually
+// produced for the majority of bots, which is most of the point. The
+// escape hatch exists because the cost scales with the workspace, not
+// with the run.
+func workspaceTrackingEnabled() bool {
+	switch strings.ToLower(strings.TrimSpace(os.Getenv("ITERION_WORKSPACE_TRACK"))) {
+	case "off", "0", "false", "no":
+		return false
+	}
+	return true
+}
+
+// WorkspaceTrackerFor builds the workspace tracker for a store dir, or
+// nil when versioning is disabled. Exported so the CLI's own engine
+// assembly (`iterion run` / `iterion resume`, which do not go through
+// Service) enables the same thing on the same terms — without it, a run
+// launched from the terminal captures nothing and a later rewind reports
+// "no snapshots" for a run created seconds earlier.
+func WorkspaceTrackerFor(storeDir string) workspacetrack.Tracker {
+	if storeDir == "" || !workspaceTrackingEnabled() {
+		return nil
+	}
+	return workspacetrack.NewNative(storeDir)
+}
+
+// WithoutWorkspaceTracking disables workspace versioning for this
+// service, whatever the environment says.
+func WithoutWorkspaceTracking() ServiceOption {
+	return func(s *Service) { s.workspaceTrackDisabled = true }
 }
 
 // NewService constructs a Service rooted at storeDir. When the
@@ -986,6 +1032,48 @@ func (s *Service) PipelineConcurrency() PipelineConcurrencyStatus {
 		return PipelineConcurrencyStatus{}
 	}
 	return s.pipelineQueue.status()
+}
+
+// SetPipelineReservedProvider wires the board-derived source of RESERVED
+// concurrency slots — tickets whose pipeline died mid-flight and now sit in
+// the board's needs-attention lane. Those runs consume nothing (no
+// goroutine, no budget) but their slot is held so the operator's fix
+// restarts into it instead of queueing behind whatever grabbed it.
+//
+// runview owns the cap but knows nothing about boards, so the predicate is
+// injected by the server. Nil (the default, and every non-studio embedding)
+// means no reservations and therefore no behaviour change at all.
+//
+// invalidate, when non-nil, drops whatever cache the provider keeps. The
+// run teardown calls it just before releasing a slot: the release wakes the
+// FIFO drain immediately, and a drain reading a set computed before the
+// failure would hand out the slot that failure just reserved.
+//
+// Safe to call after construction and more than once — a studio project
+// switch rebuilds the Service and re-points it at the new board.
+func (s *Service) SetPipelineReservedProvider(reserved func() map[string]struct{}, invalidate func()) {
+	if s == nil {
+		return
+	}
+	s.pipelineReservedMu.Lock()
+	s.pipelineReservedInvalidate = invalidate
+	s.pipelineReservedMu.Unlock()
+	s.pipelineQueue.setReservedProvider(reserved)
+}
+
+// invalidatePipelineReserved drops the reservation provider's cache, if it
+// keeps one. Nil-safe in every direction so the launch teardown can call it
+// unconditionally.
+func (s *Service) invalidatePipelineReserved() {
+	if s == nil {
+		return
+	}
+	s.pipelineReservedMu.RLock()
+	fn := s.pipelineReservedInvalidate
+	s.pipelineReservedMu.RUnlock()
+	if fn != nil {
+		fn()
+	}
 }
 
 // inboxBinder returns the runtime's operator-chatbox plumbing

@@ -114,7 +114,7 @@ func (b *InProcBus) worker(s *inprocSub) {
 		case <-s.stop:
 			return
 		case ev := <-s.ch:
-			if err := s.h(s.ctx, ev); err != nil && b.logger != nil {
+			if err := deliver(s.ctx, s.h, ev); err != nil && b.logger != nil {
 				b.logger.Warn("eventbus: subscriber %q handler error on %s/%s: %v", s.name, ev.Source, ev.Kind, err)
 			}
 		}

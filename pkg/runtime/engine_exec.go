@@ -381,6 +381,23 @@ func (e *Engine) execLoopRunNode(ctx context.Context, rs *runState, currentNodeI
 	}
 	span.End()
 	if execErr != nil {
+		// If the RUN's own context is done, the run is being torn down —
+		// cancelled by a drain/operator/heartbeat, or past its wall-clock
+		// deadline — WHILE this node was executing. Route through the
+		// cause-aware handler, not recovery/retry (a cancelled run must not
+		// retry) and not a generic failRunWithCheckpoint (which stringifies
+		// the error, losing the ErrRunInterrupted sentinel — so a drain would
+		// surface as a spurious "run failed" notification instead of a silent
+		// auto-resume, and an operator cancel would wrongly land
+		// failed_resumable and get redelivered-resumed). This mirrors the
+		// top-of-loop select for the far more common MID-node interruption
+		// (a deploy almost always drains a run inside an LLM call, not in the
+		// gap between nodes). Gated on the RUN ctx being done, so a node's
+		// own internal Canceled error with a live run ctx still takes the
+		// normal recovery path below.
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			return nil, false, e.handleContextDoneWithCheckpoint(rs, currentNodeID, ctxErr)
+		}
 		// Check if the delegate needs user interaction.
 		var needsInput *model.ErrNeedsInteraction
 		if errors.As(execErr, &needsInput) {
@@ -601,7 +618,10 @@ func (e *Engine) snapshotAtNodeBoundary(rs *runState, nodeID string) {
 		// that commits in stride does. snapshotWorktree writes no ref in
 		// that case, so without this the node would have a `pre` boundary
 		// and no `post`, and `pre..post` — the range a reviewer sees —
-		// would not resolve for exactly the nodes that behaved best.
+		// would not resolve for exactly the nodes that behaved best. The
+		// review panel enumerates only this namespace, so every file such
+		// a node wrote would land in the *Other changes* catch-all and the
+		// per-node grouping would collapse to one anonymous bucket.
 		if out, uerr := runGit(e.workDir, "update-ref", ref, "HEAD"); uerr != nil && e.logger != nil {
 			e.logger.Warn("snapshot: node %q iter %d: anchor clean tree at HEAD: %v\noutput: %s", nodeID, loopIter, uerr, out)
 		}
@@ -842,6 +862,15 @@ func (e *Engine) captureWorkspace(rs *runState, nodeID, phase string) {
 		if e.logger != nil {
 			e.logger.Warn("workspace capture: node %q iter %d: %v", nodeID, loopIter, err)
 		}
+		// Invalidate the remembered anchor. It now predates whatever this
+		// node wrote, so leaving it would have the NEXT node's pre-marker
+		// alias a state from before this node ran — and a rewind there
+		// would delete this node's files while the checkpoint still keeps
+		// its outputs. Same failure the special-dispatch paths already
+		// close by clearing it; this was the remaining hole, and capture
+		// failures are not hypothetical (an unreadable file, a MaxFiles
+		// overflow). An extra walk costs time; a wrong anchor costs data.
+		rs.lastWorkspaceSnapshot = ""
 		return
 	}
 	rs.lastWorkspaceSnapshot = snap.ID

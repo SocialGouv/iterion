@@ -3,6 +3,7 @@ package server
 import (
 	"context"
 	"strings"
+	"unicode/utf8"
 
 	"github.com/SocialGouv/iterion/pkg/eventbus"
 	"github.com/SocialGouv/iterion/pkg/forge"
@@ -33,6 +34,48 @@ const gateReconcilerName = "forge-gate-reconcile"
 // gateInterruptedDescription is what the operator reads on the check. It has
 // to carry the remedy: whoever finds it has no other clue about what happened.
 const gateInterruptedDescription = "review ended without a verdict — push again or comment the bot's command to re-run"
+
+// gateInterruptedDescriptionFor prefixes the remedy with WHY the run died when
+// the run doc can say (budget exceeded, provider error, …). GitHub truncates
+// commit-status descriptions at 140 characters, so the reason is bounded and
+// the remedy — the part the operator cannot reconstruct — keeps priority.
+func gateInterruptedDescriptionFor(run *store.Run) string {
+	reason := ""
+	if run != nil {
+		reason = strings.TrimSpace(run.Error)
+	}
+	if i := strings.IndexByte(reason, '\n'); i >= 0 {
+		reason = strings.TrimSpace(reason[:i])
+	}
+	if reason == "" {
+		return gateInterruptedDescription
+	}
+	// Truncate on a rune boundary: run.Error routinely carries provider prose
+	// (accents, ellipses), and a raw byte slice can split a multi-byte rune
+	// into invalid UTF-8 that some forges reject with a 422 — turning a long
+	// reason into no synthetic status at all.
+	const maxReason = 60
+	if len(reason) > maxReason {
+		cut := maxReason - 1
+		for cut > 0 && !utf8.RuneStart(reason[cut]) {
+			cut--
+		}
+		reason = reason[:cut] + "…"
+	}
+	return gateDiedDescriptionPrefix + reason + ") — push again or comment the bot's command to re-run"
+}
+
+// gateDiedDescriptionPrefix opens the reasoned form of the synthetic status.
+const gateDiedDescriptionPrefix = "review died ("
+
+// isSyntheticGateInterruption reports whether a gate status description is one
+// of the reconciler's own synthetic failures — a review that never happened —
+// as opposed to a real verdict a bot posted. The auto-fix lane keys off it:
+// there are no findings behind a synthetic failure for a fixer to address.
+func isSyntheticGateInterruption(description string) bool {
+	d := strings.TrimSpace(description)
+	return d == gateInterruptedDescription || strings.HasPrefix(d, gateDiedDescriptionPrefix)
+}
 
 // startGateReconciler attaches the reconciler to the event spine. It rides the
 // same bus as the notification dispatcher — the shared cloud NATSBus, whose
@@ -88,11 +131,21 @@ func (s *Server) reconcileGateForRun(ctx context.Context, ev trigger.Event) erro
 	if err != nil || run == nil {
 		return nil
 	}
-	// A resumable failure is not a dead run: the cloud runner republishes the
-	// outcome on every delivery attempt, before it decides to retry, and
-	// `iterion resume` picks one up locally. Such a run is still expected to
-	// post its own verdict — the same reason paused is not reconciled.
-	if run.Status == store.RunStatusFailedResumable || run.Status == store.RunStatusPausedWaitingHuman || run.Status == store.RunStatusPausedOperator {
+	// A paused run is expected to resume and post its own verdict.
+	if run.Status == store.RunStatusPausedWaitingHuman || run.Status == store.RunStatusPausedOperator {
+		return nil
+	}
+	// A resumable failure is only "not dead" when something will actually
+	// resume it. The runner arms a durable retry for usage-window failures
+	// (persisted BEFORE the outcome event fires — pkg/runner/loop.go parks
+	// first, then fires), and that armed retry is the whole promise. Every
+	// other failed_resumable — budget exceeded, retries exhausted, a plain
+	// execution failure — sits until a human notices, which with an absent
+	// required check is never. Observed in production 2026-08-03: a Vetty run
+	// died on its own duration budget mid-audit and the PR it gated stayed
+	// silently unmergeable. Those runs ARE dead; reconcile them.
+	if run.Status == store.RunStatusFailedResumable &&
+		run.RetryState != nil && run.RetryState.RetryAfter != nil {
 		return nil
 	}
 
@@ -177,22 +230,31 @@ func (s *Server) reconcileGateForRun(ctx context.Context, ev trigger.Event) erro
 	}
 	// The forge is the authority on whether the verdict landed — not any
 	// bookkeeping of ours, which a second replica would not share and a
-	// restart would lose.
-	posted, err := gateAlreadyPosted(ctx, gc, repo, pr.HeadSHA, gateCtx)
+	// restart would lose. Only a REAL verdict stands the reconciler down: its
+	// own synthetic failure does not, or the second death on a head — the
+	// relaunched run dying too, exactly the case that must escalate to the
+	// board — would find the marker from the first death, read it as "already
+	// posted", and go silent right where the recovery runs out.
+	gate, readable, err := gateStatusOn(ctx, gc, repo, pr.HeadSHA, gateCtx)
 	if err != nil {
 		if s.logger != nil {
 			s.logger.Warn("forge gate: cannot read statuses on %s@%s: %v", repo, pr.HeadSHA[:7], err)
 		}
 		return nil
 	}
-	if posted {
+	if !readable {
+		// Cannot tell absent from posted: overwriting a real success with a
+		// synthetic failure is a worse outcome than leaving a stuck PR stuck.
+		return nil
+	}
+	if gate.State != "" && !isSyntheticGateInterruption(gate.Description) {
 		return nil
 	}
 
 	st := forge.CommitStatus{
 		State:       forge.CommitStateFailure,
 		Context:     gateCtx,
-		Description: gateInterruptedDescription,
+		Description: gateInterruptedDescriptionFor(run),
 		TargetURL:   gateRunURL(strings.TrimRight(strings.TrimSpace(s.cfg.PublicURL), "/"), runID),
 	}
 	if err := gc.SetCommitStatus(ctx, repo, pr.HeadSHA, st); err != nil {
@@ -205,18 +267,15 @@ func (s *Server) reconcileGateForRun(ctx context.Context, ev trigger.Event) erro
 	if s.logger != nil {
 		s.logger.Info("forge gate: run %s ended without a verdict; posted %s=failure on %s so the PR is not stuck waiting", runID, gateCtx, prURL)
 	}
+	// The failure status is the truth; the relaunch is the recovery. Posted
+	// first so the PR is never blind even when the relaunch cannot happen
+	// (local mode, quota, hold label) — the fresh run overwrites the failure
+	// with its own verdict when it completes.
+	s.relaunchDeadGateRun(ctx, deadGateRun{
+		run: run, grant: grant, conn: conn, gc: gc,
+		repo: repo, number: number, pr: pr, gateCtx: gateCtx, prURL: prURL,
+	})
 	return nil
-}
-
-// gateAlreadyPosted reports whether ctxName is already present on sha. Without
-// a read capability it says "posted": overwriting a real success with a
-// synthetic failure is a worse outcome than leaving a stuck PR stuck.
-func gateAlreadyPosted(ctx context.Context, gc forgeGateClient, repo, sha, ctxName string) (bool, error) {
-	state, readable, err := gateStatusOn(ctx, gc, repo, sha, ctxName)
-	if err != nil {
-		return false, err
-	}
-	return !readable || state != "", nil
 }
 
 // gateRunURL points the check at the run that owed it, so the operator lands

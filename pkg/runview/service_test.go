@@ -163,11 +163,17 @@ func TestCancelInactive_FlipsResumableStatuses(t *testing.T) {
 }
 
 // TestCancelInactive_NoOpOnTerminal verifies that calling CancelInactive
-// on a run that's ALREADY terminal (finished / failed / cancelled) is a
+// on a run that has ALREADY reached its end (finished / cancelled) is a
 // no-op — returns (false, nil) and leaves the persisted status alone.
 // Important because the HTTP handler dispatches here optimistically when
 // manager.Cancel returns ErrRunNotActive, regardless of the run's
 // terminal state.
+//
+// `failed` belongs here and must STAY here: `cancelled` is a resumable
+// status throughout the engine while applyStatusTransition clears the
+// checkpoint on `failed`, so flipping one to the other would offer Resume on
+// a checkpoint-less run — and Engine.Resume restarts a checkpoint-less run
+// from the workflow ENTRY, re-burning the whole budget.
 func TestCancelInactive_NoOpOnTerminal(t *testing.T) {
 	for _, terminal := range []store.RunStatus{
 		store.RunStatusFinished,

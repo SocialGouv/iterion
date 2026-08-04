@@ -26,6 +26,7 @@ import (
 
 	"github.com/SocialGouv/iterion/pkg/botsource"
 	"github.com/SocialGouv/iterion/pkg/cloud/metrics"
+	"github.com/SocialGouv/iterion/pkg/credpool"
 	"github.com/SocialGouv/iterion/pkg/dsl/ast"
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
 	"github.com/SocialGouv/iterion/pkg/dsl/parser"
@@ -93,6 +94,10 @@ type Config struct {
 	// Contributions channel — the runner's baked BotsPaths cannot resolve a
 	// tenant bundle, so this is the only way its skills mirror into the workspace.
 	BotSources botsource.Store
+	// CredPool, when non-nil, lets a run with no credential of its own
+	// draw on a contributor's lent subscription (pkg/credpool). Nil — the
+	// default — simply means no pool tier.
+	CredPool *credpool.Broker
 	// Identity, when non-nil, lets the publisher resolve a run's team
 	// to its parent org so the RunMessage carries the org id the launch
 	// gate metered the run on. The runner charges LLM spend to that key
@@ -130,6 +135,7 @@ type Publisher struct {
 	forgeConns     forge.ConnectionStore
 	pluginSources  *pluginsource.Resolver
 	botSources     botsource.Store
+	credPool       *credpool.Broker
 	identity       TeamResolver
 
 	// orgCache memoizes team → org id so the publish hot path doesn't
@@ -221,6 +227,7 @@ func New(cfg Config) (*Publisher, error) {
 		forgeConns:     cfg.ForgeConnections,
 		pluginSources:  cfg.PluginSources,
 		botSources:     cfg.BotSources,
+		credPool:       cfg.CredPool,
 		identity:       cfg.Identity,
 	}, nil
 }
@@ -237,6 +244,7 @@ var allKnownProviders = []secrets.Provider{
 	secrets.ProviderAzure,
 	secrets.ProviderOpenRouter,
 	secrets.ProviderXAI,
+	secrets.ProviderZAI,
 }
 
 func genericSecretNamesForWorkflow(wf *ir.Workflow) []string {
@@ -305,12 +313,13 @@ func (p *Publisher) appBotLoginForForgeToken(ctx context.Context, tenantID strin
 
 // resolveAndSealCredentials looks up every provider key visible to
 // (tenantID, ownerID), pairs it with any OAuth-forfait the owner has
-// connected, seals the resulting bundle, and persists it under a
-// fresh secrets ref. Returns the ref or an empty string when no
-// credentials are available — the runner then falls back to env.
-func (p *Publisher) resolveAndSealCredentials(ctx context.Context, runID, tenantID, ownerID, botID string, wf *ir.Workflow, keyOverrides, secretOverrides map[string]string) (string, error) {
+// connected — falling back to a contributor's pooled subscription when the
+// tenant has none — seals the resulting bundle, and persists it under a
+// fresh secrets ref. An empty ref means no credentials are available; the
+// runner then falls back to env.
+func (p *Publisher) resolveAndSealCredentials(ctx context.Context, runID, orgID, tenantID, ownerID, botID string, wf *ir.Workflow, keyOverrides, secretOverrides map[string]string) (credResolution, error) {
 	if p.runSecrets == nil || p.sealer == nil {
-		return "", nil
+		return credResolution{}, nil
 	}
 	// Defence in depth: every caller (SubmitLaunch, SubmitResume)
 	// already derives tenantID from either auth.FromContext or the
@@ -321,7 +330,7 @@ func (p *Publisher) resolveAndSealCredentials(ctx context.Context, runID, tenant
 		if runID != "" && p.logger != nil {
 			p.logger.Warn("cloudpublisher: refusing to seal credentials for run %s without a tenant_id", runID)
 		}
-		return "", nil
+		return credResolution{}, nil
 	}
 	bundle := secrets.RunBundle{
 		APIKeys:            map[secrets.Provider]string{},
@@ -344,7 +353,7 @@ func (p *Publisher) resolveAndSealCredentials(ctx context.Context, runID, tenant
 		}
 		resolved, err := secrets.Resolve(ctx, p.apiKeys, tenantID, ownerID, allKnownProviders, overrides, p.sealer)
 		if err != nil {
-			return "", fmt.Errorf("cloudpublisher: resolve creds: %w", err)
+			return credResolution{}, fmt.Errorf("cloudpublisher: resolve creds: %w", err)
 		}
 		now := time.Now().UTC()
 		usedIDs := make([]string, 0, len(resolved))
@@ -380,7 +389,7 @@ func (p *Publisher) resolveAndSealCredentials(ctx context.Context, runID, tenant
 		names := genericSecretNamesForWorkflow(wf)
 		resolved, err := secrets.ResolveGenericWithBindings(ctx, p.genericSecrets, p.botBindings, tenantID, ownerID, botID, names, secretOverrides, p.sealer, p.logger)
 		if err != nil {
-			return "", fmt.Errorf("cloudpublisher: resolve workflow secrets: %w", err)
+			return credResolution{}, fmt.Errorf("cloudpublisher: resolve workflow secrets: %w", err)
 		}
 		// Required-secret launch gate: a non-`optional` declared secret with no
 		// inline value MUST resolve to a non-empty value. If it resolves to
@@ -395,7 +404,7 @@ func (p *Publisher) resolveAndSealCredentials(ctx context.Context, runID, tenant
 			}
 		}
 		if missing := secrets.UnresolvedRequired(requiredSecretNamesForWorkflow(wf), haveValue); len(missing) > 0 {
-			return "", secrets.RequiredSecretsError(missing, "this team/bot")
+			return credResolution{}, secrets.RequiredSecretsError(missing, "this team/bot")
 		}
 		now := time.Now().UTC()
 		usedIDs := make([]string, 0, len(resolved))
@@ -481,13 +490,33 @@ func (p *Publisher) resolveAndSealCredentials(ctx context.Context, runID, tenant
 		addOAuth(secrets.OrgOwnerKey(tenantID), "org")
 	}
 
+	// 4. Mutualised pool — the LAST resort, and only for a run that has no
+	//    credential of its own at all. Spending a contributor's lent
+	//    subscription while the tenant holds a usable key of its own would
+	//    be taking a donation nobody needed; "the tenant is out of
+	//    credentials" is the condition the pool exists for.
+	res := credResolution{}
+	if len(bundle.APIKeys) == 0 && len(bundle.OAuthCredentials) == 0 {
+		if grant := p.acquireFromPool(ctx, runID, orgID, tenantID, ownerID, botID, wf); grant != nil {
+			// The lent credential goes in the slot its KIND belongs to, so
+			// the runner cannot tell a donation from the tenant's own.
+			switch grant.Source {
+			case credpool.SourceOAuth:
+				bundle.OAuthCredentials[grant.Ref] = grant.Payload
+			case credpool.SourceAPIKey:
+				bundle.APIKeys[secrets.Provider(grant.Ref)] = string(grant.Payload)
+			}
+			res.grant = grant
+		}
+	}
+
 	if len(bundle.APIKeys) == 0 && len(bundle.GenericSecrets) == 0 && len(bundle.OAuthCredentials) == 0 {
-		return "", nil
+		return res, nil
 	}
 
 	sealed, err := secrets.SealRunBundle(p.sealer, runID, bundle)
 	if err != nil {
-		return "", fmt.Errorf("cloudpublisher: seal bundle: %w", err)
+		return res, fmt.Errorf("cloudpublisher: seal bundle: %w", err)
 	}
 	ref := secrets.NewSecretsRef()
 	now := time.Now().UTC()
@@ -500,9 +529,122 @@ func (p *Publisher) resolveAndSealCredentials(ctx context.Context, runID, tenant
 		ExpiresAt:    now.Add(secrets.DefaultRunSecretsTTL),
 	}
 	if err := p.runSecrets.Put(ctx, rec); err != nil {
-		return "", fmt.Errorf("cloudpublisher: persist run secrets: %w", err)
+		return res, fmt.Errorf("cloudpublisher: persist run secrets: %w", err)
 	}
-	return ref, nil
+	res.secretsRef = ref
+	return res, nil
+}
+
+// credResolution is what resolving a run's credentials produced: the sealed
+// bundle's ref, plus the pool grant when a contributor's subscription was
+// what made the run possible. The grant travels back to the caller because
+// it carries the donor's remaining allowance, which must become the run's
+// own cost ceiling.
+type credResolution struct {
+	secretsRef string
+	grant      *credpool.Grant
+}
+
+// poolWantOrder is the order the pool is asked for a credential when a run
+// has none.
+//
+// Subscriptions first, and claude_code before codex: a lent Claude forfait
+// runs natively on the Claude Code CLI, drawing on a plan its lender has
+// already paid for. Metered keys come last on purpose — spending one costs
+// its lender real money per token, so it is the option of last resort even
+// among donations.
+var poolWantOrder = func() []credpool.Credential {
+	out := []credpool.Credential{
+		{Source: credpool.SourceOAuth, Ref: string(secrets.OAuthKindClaudeCode)},
+		{Source: credpool.SourceOAuth, Ref: string(secrets.OAuthKindCodex)},
+	}
+	for _, prov := range allKnownProviders {
+		out = append(out, credpool.Credential{Source: credpool.SourceAPIKey, Ref: string(prov)})
+	}
+	return out
+}()
+
+// providerOfWant maps a want back to the LLM provider it authenticates
+// against, so a run that pinned its models can be matched to donations it
+// could actually use. "" for a want with no single provider.
+func providerOfWant(w credpool.Credential) string {
+	if w.Source == credpool.SourceAPIKey {
+		return w.Ref
+	}
+	switch secrets.OAuthKind(w.Ref) {
+	case secrets.OAuthKindClaudeCode:
+		return string(secrets.ProviderAnthropic)
+	case secrets.OAuthKindCodex:
+		return string(secrets.ProviderOpenAI)
+	}
+	return ""
+}
+
+// wantsFor narrows the pool request to donations a run can actually spend.
+//
+// A bot that pins `model: "anthropic/…"` has no use for a lent z.ai key:
+// granting one would consume a unit of the donor's daily runs and hold a
+// concurrency slot for a run that then fails at the first LLM call, and
+// every retry would pick the same wrong donation. A run that pins nothing
+// takes the full order — claw substitutes the first available provider, so
+// any donation serves it.
+func wantsFor(wf *ir.Workflow) []credpool.Credential {
+	pinned := map[string]bool{}
+	if wf != nil {
+		for _, n := range wf.Nodes {
+			f, ok := n.(interface{ GetLLMFields() *ir.LLMFields })
+			if !ok {
+				continue
+			}
+			if prov, _, cut := strings.Cut(f.GetLLMFields().Model, "/"); cut && prov != "" {
+				pinned[prov] = true
+			}
+		}
+	}
+	if len(pinned) == 0 {
+		return poolWantOrder
+	}
+	out := make([]credpool.Credential, 0, len(poolWantOrder))
+	for _, w := range poolWantOrder {
+		if prov := providerOfWant(w); prov != "" && pinned[prov] {
+			out = append(out, w)
+		}
+	}
+	return out
+}
+
+// acquireFromPool asks the credential pool for a donor. Returns nil when no
+// pool is wired, none serves this requester, or every donor is currently
+// unavailable — all ordinary outcomes that must let the launch proceed
+// exactly as it would have without a pool.
+func (p *Publisher) acquireFromPool(ctx context.Context, runID, orgID, tenantID, ownerID, botID string, wf *ir.Workflow) *credpool.Grant {
+	if p.credPool == nil {
+		return nil
+	}
+	wants := wantsFor(wf)
+	if len(wants) == 0 {
+		return nil
+	}
+	grant, err := p.credPool.Acquire(ctx, credpool.Request{
+		RunID:    runID,
+		OrgID:    orgID,
+		TenantID: tenantID,
+		UserID:   ownerID,
+		BotID:    botID,
+		Wants:    wants,
+	})
+	if err != nil {
+		if !errors.Is(err, credpool.ErrNoDonor) {
+			// A store failure must not fail the launch: the pool is a
+			// best-effort extra tier, and a run with no credential still
+			// surfaces a legible error at the LLM call site.
+			p.logger.Warn("cloudpublisher: credential pool lookup for run %s: %v", runID, err)
+		}
+		return nil
+	}
+	p.logger.Info("cloudpublisher: run %s runs on a pooled contributor credential (donor=%s %s allowance=$%.2f)",
+		runID, grant.DonorID, grant.Credential, grant.RemainingUSD)
+	return grant
 }
 
 // SubmitLaunch persists the run as queued in Mongo, then publishes
@@ -576,10 +718,31 @@ func (p *Publisher) SubmitLaunch(ctx context.Context, runID string, spec runview
 	//     run record is persisted so a required-secret launch failure leaves
 	//     NO run record behind (never a stray queued/running run for a launch
 	//     that could not resolve its mandatory credentials).
-	secretsRef, err := p.resolveAndSealCredentials(ctx, runID, tenantID, ownerID, spec.BotID, wf, spec.KeyOverrides, spec.SecretOverrides)
+	orgID := p.orgIDForTeam(ctx, tenantID)
+	creds, err := p.resolveAndSealCredentials(ctx, runID, orgID, tenantID, ownerID, spec.BotID, wf, spec.KeyOverrides, spec.SecretOverrides)
+	// A donor's admission is consumed the moment it is granted. Armed BEFORE
+	// the error check: resolveAndSealCredentials can fail AFTER acquiring —
+	// sealing the bundle, persisting it — and still returns the grant. Every
+	// exit below is a launch that will never happen, so it must be returned,
+	// or one Mongo write blip spends a contributor's daily quota and holds
+	// their concurrency slot for the lease's whole 12h life, on a run that
+	// never ran.
+	launched := false
+	if creds.grant != nil {
+		defer func() {
+			if !launched {
+				p.credPool.Release(ctx, runID)
+			}
+		}()
+	}
 	if err != nil {
 		return 0, err
 	}
+	// A run served by the pool may not spend more than what remains of its
+	// donor's allowance. This is the enforcement: the engine stops the run
+	// on its own cost budget, instead of the overspend being discovered
+	// after the fact when the donor is already out of pocket.
+	budget := clampBudgetToGrant(spec.Budget, wf, creds.grant, 0, p.logger, runID)
 
 	if err := p.store.SaveRun(ctx, r); err != nil {
 		return 0, fmt.Errorf("cloudpublisher: save run: %w", err)
@@ -609,11 +772,11 @@ func (p *Publisher) SubmitLaunch(ctx context.Context, runID string, spec runview
 		WorkflowHash:   hash,
 		IRCompiled:     body,
 		Vars:           varsAsAny(spec.Vars),
-		SecretsRef:     secretsRef,
+		SecretsRef:     creds.secretsRef,
 		BackendConfig:  queue.BackendConfig{Default: queue.BackendClaw},
 		PublishedAtRFC: time.Now().UTC().Format(time.RFC3339Nano),
 		TenantID:       tenantID,
-		OrgID:          p.orgIDForTeam(ctx, tenantID),
+		OrgID:          orgID,
 		OwnerID:        ownerID,
 		// Cap. 3 sharding: when this run is a child shard, the runner
 		// pod that picks it up sees its place in the set so the studio
@@ -633,7 +796,7 @@ func (p *Publisher) SubmitLaunch(ctx context.Context, runID string, spec runview
 		RepoURL: spec.RepoURL,
 		RepoSHA: spec.RepoRef,
 		BotID:   spec.BotID,
-		Budget:  budgetForWire(spec.Budget),
+		Budget:  budget,
 	}
 	if err := p.publish(ctx, msg); err != nil {
 		pubErr := fmt.Errorf("cloudpublisher: publish: %w", err)
@@ -647,6 +810,7 @@ func (p *Publisher) SubmitLaunch(ctx context.Context, runID string, spec runview
 		}
 		return 0, pubErr
 	}
+	launched = true
 	if p.metrics != nil {
 		p.metrics.RunsCreatedTotal.WithLabelValues(string(store.RunStatusQueued)).Inc()
 	}
@@ -755,7 +919,17 @@ func (p *Publisher) SubmitResume(ctx context.Context, spec runview.ResumeSpec, w
 	// remain durable across pause/failure/TTL republishes.
 	secretsCtx := store.WithTenant(ctx, prior.TenantID)
 	secretsCtx = store.WithOwner(secretsCtx, prior.OwnerID)
-	secretsRef, secretsErr := p.resolveAndSealCredentials(secretsCtx, spec.RunID, prior.TenantID, prior.OwnerID, prior.BotID, wf, prior.KeyOverrides, prior.SecretOverrides)
+	priorOrgID := p.orgIDForTeam(ctx, prior.TenantID)
+	creds, secretsErr := p.resolveAndSealCredentials(secretsCtx, spec.RunID, priorOrgID, prior.TenantID, prior.OwnerID, prior.BotID, wf, prior.KeyOverrides, prior.SecretOverrides)
+	// Armed before the error check — see SubmitLaunch.
+	republished := false
+	if creds.grant != nil {
+		defer func() {
+			if !republished {
+				p.credPool.Release(ctx, spec.RunID)
+			}
+		}()
+	}
 	if secretsErr != nil {
 		return secretsErr
 	}
@@ -783,7 +957,13 @@ func (p *Publisher) SubmitResume(ctx context.Context, spec runview.ResumeSpec, w
 			Answers: spec.Answers,
 			Force:   spec.Force,
 		},
-		SecretsRef:     secretsRef,
+		SecretsRef: creds.secretsRef,
+		// A resume re-acquires from the pool, so it re-inherits the donor's
+		// CURRENT remaining allowance as its cost ceiling — a run that was
+		// paused for a day must not come back holding yesterday's budget.
+		// Offset by what the run already banked: the engine restores that
+		// figure into the very tracker this ceiling is checked against.
+		Budget:         clampBudgetToGrant(nil, wf, creds.grant, checkpointCostUSD(prior), p.logger, spec.RunID),
 		BackendConfig:  queue.BackendConfig{Default: queue.BackendClaw},
 		PublishedAtRFC: time.Now().UTC().Format(time.RFC3339Nano),
 		// Carry the prior run's tenant onto the resume publication so
@@ -793,7 +973,7 @@ func (p *Publisher) SubmitResume(ctx context.Context, spec runview.ResumeSpec, w
 		// and the resumed attempt's spend must charge that team's org,
 		// not the resumer's.
 		TenantID: prior.TenantID,
-		OrgID:    p.orgIDForTeam(ctx, prior.TenantID),
+		OrgID:    priorOrgID,
 		OwnerID:  prior.OwnerID,
 		// Preserve webhook/cloud source metadata so a resumed runner can
 		// reconstruct the same workspace as the original launch. ProjectPath
@@ -819,6 +999,7 @@ func (p *Publisher) SubmitResume(ctx context.Context, spec runview.ResumeSpec, w
 		}
 		return fmt.Errorf("cloudpublisher: republish: %w", err)
 	}
+	republished = true
 	if p.metrics != nil {
 		p.metrics.RunsCreatedTotal.WithLabelValues("resumed").Inc()
 	}
@@ -1021,6 +1202,66 @@ func (p *Publisher) goSafeDetached(label string, fn func()) {
 		}()
 		fn()
 	}()
+}
+
+// checkpointCostUSD is what a run has already banked across its earlier
+// attempts, 0 for a run that never checkpointed.
+func checkpointCostUSD(r *store.Run) float64 {
+	if r == nil || r.Checkpoint == nil {
+		return 0
+	}
+	return r.Checkpoint.BudgetCostUSD
+}
+
+// clampBudgetToGrant caps a run's cost budget at what remains of its
+// donor's allowance, and returns the wire form.
+//
+// This is what makes a pledge an actual ceiling rather than a hope: the
+// engine enforces max_cost_usd as the run proceeds, so a run that would
+// exhaust the donation stops itself. The post-hoc ledger charge is the
+// final truth, but it arrives too late to protect anyone.
+//
+// A grant with RemainingUSD == 0 means the donor set NO spend cap, not
+// "nothing left" (an exhausted donor is never selected in the first
+// place) — so it imposes no ceiling. Otherwise the tightest of the
+// requested override, the workflow's own declared budget, and the
+// allowance wins; the clamp only ever lowers.
+//
+// alreadySpentUSD is what THIS run banked in its earlier attempts, and it
+// must be added on a resume: the engine restores the checkpoint's
+// cumulative cost into the same tracker it checks max_cost_usd against
+// (runtime/checkpoint.go), whereas a grant is what the donor will lend
+// NEXT. Handing the marginal figure to a cumulative tracker fails the
+// budget check before the first node runs — a $6-of-$10 run coming back
+// with a $4 ceiling against $6 already counted, dead on arrival.
+func clampBudgetToGrant(o *ir.BudgetOverrides, wf *ir.Workflow, grant *credpool.Grant, alreadySpentUSD float64, logger *iterlog.Logger, runID string) *queue.BudgetOverrides {
+	if grant == nil || grant.RemainingUSD <= 0 {
+		return budgetForWire(o)
+	}
+	allowance := grant.RemainingUSD
+	if alreadySpentUSD > 0 {
+		allowance += alreadySpentUSD
+	}
+	effective := ir.BudgetOverrides{}
+	if o != nil {
+		effective = *o
+	}
+	// What the run would have spent up to, absent the pool: a launch
+	// override replaces the workflow's own figure (ApplyBudgetOverrides
+	// semantics), and zero means unlimited.
+	resolved := ir.Budget{MaxCostUSD: effective.MaxCostUSD}
+	if resolved.MaxCostUSD <= 0 && wf != nil && wf.Budget != nil {
+		resolved.MaxCostUSD = wf.Budget.MaxCostUSD
+	}
+	// The donor's allowance is a ceiling like any other, so it goes through
+	// the same primitive the platform ceiling uses: lower what exceeds it,
+	// impose it on a run that declared nothing, never raise.
+	resolved.ClampToCeiling(&ir.Budget{MaxCostUSD: allowance})
+	if effective.MaxCostUSD != resolved.MaxCostUSD && logger != nil {
+		logger.Info("cloudpublisher: run %s cost budget capped at $%.2f by its donor's remaining allowance", runID, resolved.MaxCostUSD)
+	}
+	effective.MaxCostUSD = resolved.MaxCostUSD
+	return budgetForWire(&effective)
 }
 
 // budgetForWire converts launch-time budget overrides to their queue wire

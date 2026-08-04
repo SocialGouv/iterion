@@ -7,7 +7,14 @@
 import type { PipelineBoardCard } from "@/api/pipelineBoards";
 
 import { cardHasAllTags, cardTags, collectTagVocabulary } from "./cardTags";
-import { cardReady, closedOutcome } from "./columnFilters";
+import {
+  cardBlocked,
+  cardReady,
+  closedOutcome,
+  compareBlockedLast,
+  compareLaunchOrder,
+  isKnownLane,
+} from "./cardPredicates";
 
 /** Which inventory tab is active (default: opened). */
 export type InventoryTab = "opened" | "closed";
@@ -19,20 +26,71 @@ export type OpenedSubfilter = "all" | "ready" | "not_ready";
 export type ClosedSubfilter = "all" | "success" | "failed";
 
 /**
- * Inventory card ordering. Default is priority (matches the admission loop's
- * launch order: higher P first, ties oldest-first). Closed history often
- * prefers "updated", which operators can pick in the Sort control.
+ * Dependency filter for the Opened tab. Three-way rather than a boolean so
+ * both questions are askable: "what can I launch right now" (unblocked) and
+ * "what do I need to unblock" (blocked). A boolean could only ever express
+ * one of them, and inverting it would make "a filter is active" the state
+ * the board loads in.
+ */
+export type DepsFilter = "all" | "unblocked" | "blocked";
+
+/**
+ * Inventory card ordering. Each tab remembers its own: Opened defaults to
+ * priority (the admission loop's launch order — higher P first, ties
+ * oldest-first), Closed to recency, because an archive of things that already
+ * ran has no launch order left to show. See sortModeForTab.
  */
 export type InventorySortMode = "priority" | "updated" | "created";
+
+// Keyed by mode, not a hand-kept array: the Sort control renders whatever a
+// tab can resolve to, so a mode without an entry here would render the select
+// blank. A Record makes that a typecheck error instead of a runtime hole.
+const INVENTORY_SORT_LABELS: Record<InventorySortMode, string> = {
+  priority: "Priority",
+  updated: "Recently updated",
+  created: "Recently created",
+};
 
 export const INVENTORY_SORT_OPTIONS: {
   value: InventorySortMode;
   label: string;
-}[] = [
-  { value: "priority", label: "Priority" },
-  { value: "updated", label: "Recently updated" },
-  { value: "created", label: "Recently created" },
-];
+}[] = (Object.keys(INVENTORY_SORT_LABELS) as InventorySortMode[]).map(
+  (value) => ({ value, label: INVENTORY_SORT_LABELS[value] }),
+);
+
+/**
+ * The sort a tab is currently using. Sort state is stored PER TAB, so the
+ * value the Sort control displays is always the value the grid sorts by, and
+ * a pick made while reading the archive cannot silently re-order the launch
+ * queue behind the operator's back.
+ *
+ * Do not collapse this back into one shared mode whose default is merely
+ * resolved per tab. Display then diverges from state — and because a
+ * controlled <select> fires no change event when the option it already shows
+ * is re-picked, the archive's order becomes impossible to pin. Normalising
+ * the shared value on tab switch does not rescue it either: merely visiting
+ * Closed would write "updated" into the shared field and cost Opened its
+ * priority ordering for good.
+ */
+export function sortModeForTab(
+  f: Pick<PipelineFilterState, "sortMode" | "closedSortMode">,
+  tab: InventoryTab,
+): InventorySortMode {
+  return tab === "closed"
+    ? (f.closedSortMode ?? "updated")
+    : (f.sortMode ?? "priority");
+}
+
+/** Immutably set the sort of the tab currently being read. */
+export function withSortModeForTab(
+  f: PipelineFilterState,
+  tab: InventoryTab,
+  mode: InventorySortMode,
+): PipelineFilterState {
+  return tab === "closed"
+    ? { ...f, closedSortMode: mode }
+    : { ...f, sortMode: mode };
+}
 
 export interface PipelineFilterState {
   query: string;
@@ -42,16 +100,18 @@ export interface PipelineFilterState {
   pipelineKind: string;
   /** bot_args.family_id exact match (empty = any). */
   familyId: string;
-  /** Only cards with open hard blockers or issue_state waiting_deps. */
-  waitingDepsOnly: boolean;
+  /** Dependency readiness chips (Opened tab only). */
+  depsFilter: DepsFilter;
   /** Inventory tab: Opened (default) vs Closed. */
   inventoryTab: InventoryTab;
   /** Ready / not ready chips (Opened tab only). */
   openedSubfilter: OpenedSubfilter;
   /** Success / failed chips (Closed tab only). */
   closedSubfilter: ClosedSubfilter;
-  /** How to order inventory cards (Opened + Closed tabs). */
+  /** How to order the Opened queue. */
   sortMode: InventorySortMode;
+  /** How to order the Closed archive — independent of the Opened queue. */
+  closedSortMode: InventorySortMode;
 }
 
 // Factory (not a shared constant): each call returns a fresh Set so a reset
@@ -63,11 +123,32 @@ export function emptyPipelineFilters(): PipelineFilterState {
     labels: new Set(),
     pipelineKind: "",
     familyId: "",
-    waitingDepsOnly: false,
+    depsFilter: "all",
     inventoryTab: "opened",
     openedSubfilter: "all",
     closedSubfilter: "all",
     sortMode: "priority",
+    closedSortMode: "updated",
+  };
+}
+
+/**
+ * What the "reset" chip clears: the filters, and only those.
+ *
+ * Which lane you are reading and how you have ordered it are VIEW state, not
+ * criteria — pipelineFiltersActive excludes both sorts for exactly that
+ * reason, so neither can raise the chip in the first place. Wiping them as
+ * collateral of clearing a text query would undo a choice the operator never
+ * asked about, on a tab they may not even be looking at.
+ */
+export function resetPipelineFilters(
+  current: PipelineFilterState,
+): PipelineFilterState {
+  return {
+    ...emptyPipelineFilters(),
+    inventoryTab: current.inventoryTab ?? "opened",
+    sortMode: current.sortMode ?? "priority",
+    closedSortMode: current.closedSortMode ?? "updated",
   };
 }
 
@@ -78,7 +159,7 @@ export function pipelineFiltersActive(f: PipelineFilterState): boolean {
     (f.labels?.size ?? 0) > 0 ||
     (f.pipelineKind ?? "") !== "" ||
     (f.familyId ?? "") !== "" ||
-    !!f.waitingDepsOnly ||
+    (f.depsFilter ?? "all") !== "all" ||
     (f.openedSubfilter ?? "all") !== "all" ||
     (f.closedSubfilter ?? "all") !== "all"
   );
@@ -161,12 +242,7 @@ export function filterPipelineCards(
   const family = (f.familyId ?? "").trim();
   const labels = f.labels ?? new Set<string>();
   const hasTextFilters =
-    q !== "" ||
-    bot !== "" ||
-    labels.size > 0 ||
-    kind !== "" ||
-    family !== "" ||
-    !!f.waitingDepsOnly;
+    q !== "" || bot !== "" || labels.size > 0 || kind !== "" || family !== "";
   if (!hasTextFilters && !repoScope) return cards;
   return cards.filter((card) => {
     if (q) {
@@ -189,15 +265,11 @@ export function filterPipelineCards(
     if (labels.size > 0 && !cardHasAllTags(card, labels)) return false;
     if (kind && cardArg(card, "pipeline_kind") !== kind) return false;
     if (family && cardArg(card, "family_id") !== family) return false;
-    if (f.waitingDepsOnly) {
-      const open = card.open_blocker_count ?? 0;
-      const waiting =
-        card.issue_state === "waiting_deps" ||
-        card.launch_blocked_reason === "waiting_deps" ||
-        card.launch_blocked_reason === "open_blockers" ||
-        open > 0;
-      if (!waiting) return false;
-    }
+    // The dependency filter is deliberately NOT applied here. This function
+    // narrows the WHOLE board, and running / needs-attention cards carry no
+    // dependency fields at all (attachDeps only runs for ticket cards), so a
+    // board-wide deps filter emptied the In-progress section as a side
+    // effect. It belongs to the Opened tab — see filterInventoryCards.
     if (repoScope) {
       const hasRepo = !!card.external?.repo;
       if (!hasRepo) {
@@ -210,7 +282,21 @@ export function filterPipelineCards(
   });
 }
 
-/** Newest first by updated_at (fallback created_at). */
+/**
+ * Newest first by updated_at (fallback created_at).
+ *
+ * "updated" means LAST TOUCHED, not finished: a closed card's `updated_at` is
+ * its issue's or run's mtime, so relabelling a months-old pipeline lifts it
+ * back to the top of the archive. On a repo-connected board this can happen
+ * with no action inside iterion at all — syncForgeIssuesToBoard patches an
+ * existing card unconditionally (pkg/server/board_forge.go:313), so a
+ * forge-side edit to a long-closed issue re-floats it here.
+ *
+ * That is the honest reading of the field the projection ships — the card DTO
+ * carries no completion timestamp — and "Recently created" is the stable
+ * escape hatch when an operator wants an order nothing can perturb. Ordering
+ * by true completion time needs a `finished_at` on the projection first.
+ */
 export function sortNewestFirst(cards: PipelineBoardCard[]): PipelineBoardCard[] {
   return [...cards].sort((a, b) => {
     const ta = Date.parse(a.updated_at || a.created_at || "") || 0;
@@ -222,26 +308,37 @@ export function sortNewestFirst(cards: PipelineBoardCard[]): PipelineBoardCard[]
 }
 
 /**
- * Inventory ordering. "priority" matches server sortReadyTickets /
- * queueSummary.sortLaunchOrder (P desc, then oldest-first). Date modes are
- * newest-first. Does not mutate the input array.
+ * Inventory ordering. "priority" matches the server's launch order (P desc,
+ * then oldest-first). Date modes are newest-first. Does not mutate the input
+ * array.
+ *
+ * The blocked-last partition is scoped to priority+opened. There it makes the
+ * UI agree with reality — the admission loop filters blocked tickets out
+ * before sorting the rest, so a blocked P9 above an unblocked P1 would be the
+ * list lying about which pipeline goes next. Ranking the Closed archive by P
+ * stays available (an operator may want to see which high-priority pipelines
+ * actually completed), but there the partition would be noise: a terminal
+ * ticket still carries whatever blockers it had, and nothing is waiting to
+ * launch.
  */
 export function sortInventoryCards(
   cards: PipelineBoardCard[],
   mode: InventorySortMode = "priority",
+  tab: InventoryTab = "opened",
 ): PipelineBoardCard[] {
   if (mode === "updated") return sortNewestFirst(cards);
+  if (mode === "priority") {
+    const blockedLast = tab === "opened";
+    return [...cards].sort((a, b) => {
+      if (blockedLast) {
+        const byBlocked = compareBlockedLast(a, b);
+        if (byBlocked !== 0) return byBlocked;
+      }
+      return compareLaunchOrder(a, b);
+    });
+  }
+  // created — newest first
   return [...cards].sort((a, b) => {
-    if (mode === "priority") {
-      const pa = a.priority ?? 0;
-      const pb = b.priority ?? 0;
-      if (pa !== pb) return pb - pa;
-      const ta = Date.parse(a.created_at || "") || 0;
-      const tb = Date.parse(b.created_at || "") || 0;
-      if (ta !== tb) return ta - tb;
-      return a.id < b.id ? -1 : a.id > b.id ? 1 : 0;
-    }
-    // created — newest first
     const ta = Date.parse(a.created_at || "") || 0;
     const tb = Date.parse(b.created_at || "") || 0;
     if (tb !== ta) return tb - ta;
@@ -251,30 +348,57 @@ export function sortInventoryCards(
 
 export function partitionPipelineCards(cards: PipelineBoardCard[]): {
   inProgress: PipelineBoardCard[];
+  needsAttention: PipelineBoardCard[];
   inventory: PipelineBoardCard[];
 } {
   const inProgress: PipelineBoardCard[] = [];
+  const needsAttention: PipelineBoardCard[] = [];
   const inventory: PipelineBoardCard[] = [];
   for (const card of cards) {
     if (card.column_id === "in_progress") inProgress.push(card);
+    else if (card.column_id === "needs_attention") needsAttention.push(card);
     else inventory.push(card);
   }
   return {
     inProgress: sortNewestFirst(inProgress),
+    needsAttention: sortNewestFirst(needsAttention),
     inventory: sortNewestFirst(inventory),
   };
 }
 
-/** Apply inventory tab + subfilter to opened/closed cards (not in-progress). */
+/**
+ * inventoryLane maps a card to the tab that must show it. Anything this
+ * build does not recognise falls into Closed rather than disappearing: a
+ * newer server can add a lane, and an SPA bundle already in a browser tab
+ * cannot be retro-fixed. Dropping such a card from BOTH tabs (the previous
+ * behaviour) makes it invisible with no counter and no error.
+ */
+function inventoryLane(card: PipelineBoardCard): "opened" | "closed" | null {
+  if (card.column_id === "opened") return "opened";
+  if (card.column_id === "closed") return "closed";
+  // In progress and needs attention have their own sections above.
+  if (card.column_id === "in_progress" || card.column_id === "needs_attention") {
+    return null;
+  }
+  return isKnownLane(card.column_id) ? null : "closed";
+}
+
+/** Apply inventory tab + subfilters to opened/closed cards (not in-progress). */
 export function filterInventoryCards(
   cards: PipelineBoardCard[],
-  f: Pick<PipelineFilterState, "inventoryTab" | "openedSubfilter" | "closedSubfilter">,
+  f: Pick<
+    PipelineFilterState,
+    "inventoryTab" | "openedSubfilter" | "closedSubfilter" | "depsFilter"
+  >,
 ): PipelineBoardCard[] {
   const tab = f.inventoryTab ?? "opened";
   if (tab === "opened") {
     const sub = f.openedSubfilter ?? "all";
+    const deps = f.depsFilter ?? "all";
     return cards.filter((card) => {
-      if (card.column_id !== "opened") return false;
+      if (inventoryLane(card) !== "opened") return false;
+      if (deps === "unblocked" && cardBlocked(card)) return false;
+      if (deps === "blocked" && !cardBlocked(card)) return false;
       if (sub === "ready") return cardReady(card);
       if (sub === "not_ready") return !cardReady(card);
       return true;
@@ -282,7 +406,7 @@ export function filterInventoryCards(
   }
   const sub = f.closedSubfilter ?? "all";
   return cards.filter((card) => {
-    if (card.column_id !== "closed") return false;
+    if (inventoryLane(card) !== "closed") return false;
     if (sub === "success") return closedOutcome(card) === "success";
     if (sub === "failed") return closedOutcome(card) === "failed";
     return true;
@@ -297,8 +421,9 @@ export function inventoryTabCounts(cards: PipelineBoardCard[]): {
   let opened = 0;
   let closed = 0;
   for (const card of cards) {
-    if (card.column_id === "opened") opened++;
-    else if (card.column_id === "closed") closed++;
+    const lane = inventoryLane(card);
+    if (lane === "opened") opened++;
+    else if (lane === "closed") closed++;
   }
   return { opened, closed };
 }

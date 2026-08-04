@@ -66,23 +66,15 @@ func usageWindowRetryAt(execErr error, pol retrypolicy.Policy, now time.Time) (t
 		return time.Time{}, "", false
 	}
 
-	var at time.Time
-	var source string
-
-	var rl *delegate.ErrRateLimited
-	switch {
-	case errors.As(execErr, &rl) && rl.Kind == delegate.RateLimitKindUsageWindow:
-		at, source = rl.ResetAt, "typed_error"
-	case runtimeCodeOf(execErr) == runtime.ErrCodeUsageLimitBlocked:
-		source = "runtime_code"
-	default:
+	at, source, ok := usageWindowEvidence(execErr)
+	if !ok {
 		return time.Time{}, "", false
 	}
 
 	// A usage window with no usable reset instant still gets a retry — the
 	// window is real, only its end is unknown.
 	if at.IsZero() {
-		if parsed, ok := delegate.ParseResetHint(execErr.Error(), now); ok {
+		if parsed, pok := delegate.ParseResetHint(execErr.Error(), now); pok {
 			at, source = parsed, source+"+parsed_text"
 		} else {
 			at, source = now.Add(usageWindowBlindWait), source+"+blind_wait"
@@ -105,6 +97,28 @@ func usageWindowRetryAt(execErr error, pol retrypolicy.Policy, now time.Time) (t
 		at = ceiling
 	}
 	return at.UTC(), source, true
+}
+
+// usageWindowEvidence answers the one question "did this error mean the
+// provider's quota window is shut, and when does it reopen".
+//
+// Shared because two consumers ask it: the retry arming below, and the
+// credential pool deciding whether to rest a donor. Two copies of an
+// evidence chain drift — the pool's did, silently dropping the text-parsed
+// reset the retry path relies on.
+//
+// Sources are tried structure-first, string-last on purpose. The typed
+// error is authoritative when it survives to here; the code is
+// authoritative when a recovery dispatcher classified it.
+func usageWindowEvidence(execErr error) (resetAt time.Time, source string, ok bool) {
+	var rl *delegate.ErrRateLimited
+	switch {
+	case errors.As(execErr, &rl) && rl.Kind == delegate.RateLimitKindUsageWindow:
+		return rl.ResetAt, "typed_error", true
+	case runtimeCodeOf(execErr) == runtime.ErrCodeUsageLimitBlocked:
+		return time.Time{}, "runtime_code", true
+	}
+	return time.Time{}, "", false
 }
 
 // runtimeCodeOf extracts the RuntimeError code from an error chain, or "".

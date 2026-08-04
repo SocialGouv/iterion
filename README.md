@@ -80,7 +80,7 @@ More than a DAG runner: Iterion is built for long, autonomous, multi-agent work 
 - 🔁 **Fuelled loops** — Fixed, templated, or convergence-driven loops with iteration and liveness backstops
 - 📡 **In-bot events** — `emit` / `wait` nodes coordinate concurrent branches without polling
 - 🔲 **Structured I/O** — Typed schemas for inputs and outputs with enum constraints
-- 🔗 **MCP support** — Declare MCP servers directly in `.bot` files (`stdio`, `http`)
+- 🔗 **MCP support** — Declare MCP servers directly in `.bot` files (`stdio`, `http`), and drive Iterion itself from any MCP client via `iterion mcp` (local runs/board + the remote instance) — see [docs/mcp-server.md](docs/mcp-server.md)
 - 🧪 **Recipe system** — Bundle workflows with presets for comparison and benchmarking
 - 📐 **Mermaid diagrams** — Auto-generate visual workflow diagrams (compact / detailed / full)
 
@@ -209,6 +209,7 @@ work on and pick the entry point that matches your intent:
 | **Build your own bot** | `iterion bots create <slug>`, or the studio builder at `/bots/new` |
 | **Wire bots into CI / a forge** | [`docs/repo-scope.md`](docs/repo-scope.md) — connect a repo, then trigger on PRs and issues |
 | **Use a cloud instance** | `iterion remote login <url>` — see [`docs/cloud-cli.md`](docs/cloud-cli.md) |
+| **Drive Iterion from your AI agent** | `claude mcp add iterion -- iterion mcp` — see [`docs/mcp-server.md`](docs/mcp-server.md) |
 
 #### Run a bot from the catalog
 
@@ -325,6 +326,7 @@ The full documentation lives under [`docs/`](docs/) — start with the [document
 - [docs/desktop.md](docs/desktop.md) — native desktop app
 - [docs/examples.md](docs/examples.md) — workflows of increasing complexity (starter → advanced)
 - [docs/skill.md](docs/skill.md) — install Iterion as an AI agent skill (Claude Code, Cursor, Copilot…)
+- [docs/mcp-server.md](docs/mcp-server.md) — drive Iterion from any MCP client (`iterion mcp`): local runs/board + remote instance
 
 **Author workflows**
 - [docs/dsl.md](docs/dsl.md) — full `.bot` DSL reference

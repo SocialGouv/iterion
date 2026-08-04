@@ -641,8 +641,21 @@ func (o *Orchestrator) narrowGitHubAppSecret(ctx context.Context, conn *Connecti
 // EnsureManagedSecret exposes ensureManagedSecret to launch-time callers
 // (the repo-targeted launch pins the connection's managed token as the
 // run's forge secret — same Tier-0 pinning the webhook path uses).
+//
+// For a github_app connection the managed secret's plaintext is a ONE-HOUR
+// installation token, so a stored value is dead for any launch that isn't
+// right after a provision or a worker rotation (observed live: every
+// repo-targeted launch on a quiet connection failing its clone with
+// "Invalid username or token"). Re-mint at the point of use — one API
+// call, best-effort: a mint failure keeps the stored token, which may
+// still be live within its hour.
 func (o *Orchestrator) EnsureManagedSecret(ctx context.Context, conn *Connection, actor string) (string, error) {
-	return o.ensureManagedSecret(ctx, conn, actor)
+	secID, err := o.ensureManagedSecret(ctx, conn, actor)
+	if err != nil {
+		return "", err
+	}
+	o.narrowGitHubAppSecret(ctx, conn)
+	return secID, nil
 }
 
 // ensureManagedSecret creates (once per connection) the team-scoped generic

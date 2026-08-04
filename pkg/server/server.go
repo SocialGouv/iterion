@@ -22,6 +22,7 @@ import (
 	"github.com/SocialGouv/iterion/pkg/botsource"
 	"github.com/SocialGouv/iterion/pkg/bundle"
 	"github.com/SocialGouv/iterion/pkg/configshare"
+	"github.com/SocialGouv/iterion/pkg/credpool"
 	"github.com/SocialGouv/iterion/pkg/forge"
 	"github.com/SocialGouv/iterion/pkg/knowledge"
 	iterlog "github.com/SocialGouv/iterion/pkg/log"
@@ -88,6 +89,13 @@ type Server struct {
 	admissionSkipMu     sync.Mutex
 	admissionSkipWarned map[string]string
 
+	// pipelineReserved memoizes which tickets hold a concurrency slot open for
+	// a pipeline that needs a human (see pipeline_reservations.go). Replaced
+	// wholesale on each wiring so a project switch cannot share one cache
+	// between the outgoing and incoming run services.
+	pipelineReservedMu sync.RWMutex
+	pipelineReserved   *pipelineReservedMemo
+
 	// finalOutputMemo caches finished runs' resolved board output. A finished
 	// run is terminal, so its final_answer/latest-artifact output never
 	// changes — computing it once per run (instead of on every 3s poll, each
@@ -119,6 +127,11 @@ type Server struct {
 	webhookCounter    webhooks.Counter
 	orgUsage          orgusage.Counter
 	orgDefaults       OrgLimitDefaults
+	credPool          *credpool.Broker
+	credPoolPools     credpool.PoolStore
+	credPoolPledges   credpool.PledgeStore
+	credPoolLeases    credpool.LeaseStore
+	credPoolLedger    credpool.Ledger
 	auditStore        audit.Store
 	pats              pat.Store
 	queue             *natsq.Conn
@@ -371,6 +384,11 @@ func New(cfg Config, logger *iterlog.Logger) *Server {
 		webhookCounter:    cfg.WebhookCounter,
 		orgUsage:          cfg.OrgUsage,
 		orgDefaults:       cfg.OrgDefaults,
+		credPool:          cfg.CredPoolBroker,
+		credPoolPools:     cfg.CredPoolPools,
+		credPoolPledges:   cfg.CredPoolPledges,
+		credPoolLeases:    cfg.CredPoolLeases,
+		credPoolLedger:    cfg.CredPoolLedger,
 		auditStore:        cfg.Audit,
 		pats:              cfg.PATs,
 		queue:             cfg.Queue,

@@ -681,11 +681,22 @@ func (e *ClawExecutor) buildTask(ctx context.Context, node ir.Node, f backendFie
 	if pol, perr := e.resolvePermissionPolicy(f.permission); perr != nil {
 		return delegate.Task{}, fmt.Errorf("model: node %q: %w", f.id, perr)
 	} else if pol.Enabled() {
-		// On resume after a permission `ask` pause, the runtime computed
-		// the operator's grant rule and passed it via GrantInputKey; add it
-		// so the agent's re-issued call passes the gate.
-		if grant, ok := input[permission.GrantInputKey].(string); ok && grant != "" {
-			pol.AddAllowRule(grant)
+		// On resume after a permission `ask` pause, the runtime passes the
+		// grants the operator has earned so far via GrantInputKey; add
+		// them so the agent's re-issued call passes the gate. The slice
+		// form carries every grant of the run, which is what makes an
+		// `allow always` hold across a node's later pauses instead of
+		// only the one it was answered on; the bare-string form is the
+		// older single-grant shape, still accepted so a checkpoint
+		// written by a previous build resumes without losing its grant.
+		// Two sources, two lifetimes: this pause's grant (whichever form
+		// the operator answered) and the run's accumulated `allow always`
+		// set. Both are additive to the freshly built policy.
+		for _, rule := range permission.GrantsFrom(input[permission.GrantInputKey]) {
+			pol.AddAllowRule(rule)
+		}
+		for _, rule := range permission.GrantsFrom(input[permission.RunGrantsInputKey]) {
+			pol.AddAllowRule(rule)
 		}
 		task.Permission = pol
 	}

@@ -324,6 +324,14 @@ type RunnerConfig struct {
 	Concurrency int           `yaml:"concurrency"`
 	Heartbeat   time.Duration `yaml:"heartbeat"`
 	LockTTL     time.Duration `yaml:"lock_ttl"`
+	// DrainMode governs SIGTERM handling on a deploy/node-drain:
+	// "complete" (default, lame-duck — finish the in-flight run before
+	// exiting) or "interrupt" (cancel + checkpoint for auto-resume).
+	DrainMode string `yaml:"drain_mode"`
+	// DrainTimeout is the lame-duck ceiling — the longest the pod waits for
+	// its in-flight run before capping it for a checkpoint-resume. The k8s
+	// terminationGracePeriodSeconds must be >= this + margin.
+	DrainTimeout time.Duration `yaml:"drain_timeout"`
 }
 
 // ServerConfig holds server-specific settings (HTTP API + healthz port).
@@ -365,10 +373,12 @@ func Defaults() Config {
 			UsePathStyle: true,
 		},
 		Runner: RunnerConfig{
-			WorkDir:     "/tmp/iterion",
-			Concurrency: 1,
-			Heartbeat:   20 * time.Second,
-			LockTTL:     60 * time.Second,
+			WorkDir:      "/tmp/iterion",
+			Concurrency:  1,
+			Heartbeat:    20 * time.Second,
+			LockTTL:      60 * time.Second,
+			DrainMode:    "complete",
+			DrainTimeout: 8 * time.Hour,
 		},
 		Server: ServerConfig{
 			HealthzPort: 4891,
@@ -560,6 +570,14 @@ func (c *Config) Validate() error {
 	}
 	if c.Runner.LockTTL <= 0 {
 		return fmt.Errorf("ITERION_LOCK_TTL %s invalid (want > 0)", c.Runner.LockTTL)
+	}
+	switch c.Runner.DrainMode {
+	case "", "complete", "interrupt":
+	default:
+		return fmt.Errorf("ITERION_RUNNER_DRAIN_MODE %q invalid (want \"complete\" or \"interrupt\")", c.Runner.DrainMode)
+	}
+	if c.Runner.DrainTimeout < 0 {
+		return fmt.Errorf("ITERION_RUNNER_DRAIN_TIMEOUT %s invalid (want >= 0)", c.Runner.DrainTimeout)
 	}
 
 	switch c.Sandbox.Default {

@@ -120,6 +120,16 @@ type ApiKey struct {
 type ApiKeyStore interface {
 	Create(ctx context.Context, k ApiKey) error
 	Get(ctx context.Context, id string) (ApiKey, error)
+	// GetOwned reads a PERSONAL key by (id, owner) with no tenant filter.
+	//
+	// Get is tenant-scoped, which is right for a run spending its own
+	// team's keys and wrong for the credential pool: a lent key is read
+	// from the BORROWER's context, in another tenant entirely, so Get
+	// finds nothing and the caller cannot tell "not yours" from "gone".
+	// Ownership replaces tenancy as the boundary here — the key must be
+	// user-scoped to ownerUserID, which is strictly narrower than an id
+	// lookup, and is the only thing the pool ever lends.
+	GetOwned(ctx context.Context, id, ownerUserID string) (ApiKey, error)
 	Update(ctx context.Context, k ApiKey) error
 	Delete(ctx context.Context, id string) error
 	// ListByTeam returns every key visible from teamID — i.e. team-
@@ -271,13 +281,29 @@ func buildResolution(k ApiKey, sealer Sealer, currentUserID string) (Resolution,
 	if sealer == nil {
 		return r, true
 	}
-	pt, err := sealer.Open(k.SealedSecret, []byte("api_key:"+k.ID))
+	pt, err := OpenApiKey(sealer, k)
 	if err != nil {
 		return Resolution{}, false
 	}
 	r.Plaintext = pt
 	return r, true
 }
+
+// OpenApiKey decrypts a stored key. The AAD binds the ciphertext to the
+// key's id, so a sealed secret copied onto another record cannot be
+// opened. Exported because resolution is no longer the only consumer: the
+// credential pool serves a key its donor lends by id, outside the
+// team-priority chain Resolve implements.
+func OpenApiKey(sealer Sealer, k ApiKey) ([]byte, error) {
+	if sealer == nil {
+		return nil, fmt.Errorf("secrets: nil sealer for OpenApiKey")
+	}
+	return sealer.Open(k.SealedSecret, apiKeyAAD(k.ID))
+}
+
+// apiKeyAAD is the single definition of a key's additional authenticated
+// data — sealing and opening must never disagree on it.
+func apiKeyAAD(id string) []byte { return []byte("api_key:" + id) }
 
 // SealAPIKey produces the sealed blob for storage. Pass the caller's
 // shared Sealer (e.g. ITERION_SECRETS_KEY-driven AESGCMSealer) and
@@ -287,7 +313,7 @@ func SealAPIKey(sealer Sealer, keyID string, plaintext []byte) ([]byte, error) {
 	if sealer == nil {
 		return nil, errNilSealer
 	}
-	return sealer.Seal(plaintext, []byte("api_key:"+keyID))
+	return sealer.Seal(plaintext, apiKeyAAD(keyID))
 }
 
 // MemoryApiKeyStore is the in-process store used by tests of the
@@ -313,6 +339,20 @@ func (m *MemoryApiKeyStore) Get(_ context.Context, id string) (ApiKey, error) {
 	defer m.mu.Unlock()
 	k, ok := m.keys[id]
 	if !ok {
+		return ApiKey{}, ErrApiKeyNotFound
+	}
+	return k, nil
+}
+
+func (m *MemoryApiKeyStore) GetOwned(_ context.Context, id, ownerUserID string) (ApiKey, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	k, ok := m.keys[id]
+	// The ownership term is enforced here even though this store ignores
+	// tenancy: it is the whole guarantee the method offers, and a memory
+	// store that waved it through would let a pool test pass against a
+	// key its "donor" does not own.
+	if !ok || ownerUserID == "" || k.ScopeUserID != ownerUserID {
 		return ApiKey{}, ErrApiKeyNotFound
 	}
 	return k, nil
@@ -447,6 +487,17 @@ func (s *MongoApiKeyStore) Get(ctx context.Context, id string) (ApiKey, error) {
 		return ApiKey{}, err
 	}
 	return mongoutil.FindOne[ApiKey](ctx, s.coll, filter, ErrApiKeyNotFound, "secrets: get api key")
+}
+
+func (s *MongoApiKeyStore) GetOwned(ctx context.Context, id, ownerUserID string) (ApiKey, error) {
+	if ownerUserID == "" {
+		return ApiKey{}, ErrApiKeyNotFound
+	}
+	// No tenant term, by design — see the interface doc. scope_user is the
+	// boundary: only the key's own owner can be served this way.
+	return mongoutil.FindOne[ApiKey](ctx, s.coll,
+		bson.M{"_id": id, "scope_user": ownerUserID},
+		ErrApiKeyNotFound, "secrets: get owned api key")
 }
 
 func (s *MongoApiKeyStore) Update(ctx context.Context, k ApiKey) error {

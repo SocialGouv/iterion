@@ -24,7 +24,6 @@ import (
 	"strconv"
 	"strings"
 	"sync"
-	"sync/atomic"
 	"time"
 
 	"go.opentelemetry.io/otel"
@@ -37,6 +36,7 @@ import (
 	"github.com/SocialGouv/iterion/pkg/botregistry"
 	"github.com/SocialGouv/iterion/pkg/bundle"
 	"github.com/SocialGouv/iterion/pkg/cloud/metrics"
+	"github.com/SocialGouv/iterion/pkg/credpool"
 	"github.com/SocialGouv/iterion/pkg/dsl/ast"
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
 	"github.com/SocialGouv/iterion/pkg/eventbus"
@@ -266,7 +266,7 @@ func (r *Runner) resolveDeliveryPreconditions(msg *queue.RunMessage) preconditio
 // because it has side effects (PublishDLQ + UpdateRunStatusIf). The
 // caller checks that trigger inline BEFORE delegating the remaining
 // generic-error case to this helper.
-func classifyExecResult(execErr error, hbFailed bool, parentErr error, runID string) execOutcome {
+func classifyExecResult(execErr error, runID string) execOutcome {
 	if execErr == nil {
 		return execOutcome{
 			finalStatus: "finished",
@@ -301,40 +301,9 @@ func classifyExecResult(execErr error, hbFailed bool, parentErr error, runID str
 			logArgs:     []any{runID, execErr},
 		}
 	}
-	if errors.Is(execErr, runtime.ErrRunCancelled) {
-		// Heartbeat-induced cancel: the lease is gone, so a sibling
-		// runner is free to pick this up via JetStream redelivery.
-		// Nak (not Ack) so the message stays queued instead of
-		// being marked done and forcing manual user intervention.
-		if hbFailed {
-			return execOutcome{
-				finalStatus: "lock_held",
-				op:          "nak-heartbeat-lost",
-				action:      actionNak,
-				level:       logWarn,
-				logFmt:      "runner: run %s heartbeat lost — naking for sibling redelivery",
-				logArgs:     []any{runID},
-			}
-		}
-		if parentErr != nil {
-			return execOutcome{
-				finalStatus: "shutdown",
-				op:          "nak-shutdown-cancelled",
-				action:      actionNak,
-				level:       logWarn,
-				logFmt:      "runner: run %s interrupted by runner shutdown — naking for checkpoint resume",
-				logArgs:     []any{runID},
-			}
-		}
-		return execOutcome{
-			finalStatus: "cancelled",
-			op:          "ack-cancelled",
-			action:      actionAck,
-			level:       logInfo,
-			logFmt:      "runner: run %s checkpointed (%v)",
-			logArgs:     []any{runID, execErr},
-		}
-	}
+	// Budget FIRST: an interruption that also carries a spent budget must
+	// not be auto-resumed. errors.Is short-circuits, so the order of these
+	// two is the precedence — pinned by a table case.
 	// Budget exceeded is a RESUMABLE checkpoint, not a transient blip:
 	// the engine saved a failed_resumable checkpoint (failBudgetExceeded).
 	// Ack it — do NOT Nak for auto-redelivery. Auto-resuming a
@@ -347,13 +316,47 @@ func classifyExecResult(execErr error, hbFailed bool, parentErr error, runID str
 	// The operator resumes MANUALLY with a raised cap
 	// (`iterion resume --max-duration/--max-cost-usd`), the documented
 	// "budget exceeded → raise the cap + resume" recovery.
-	if errors.Is(execErr, runtime.ErrBudgetExceeded) {
+	//
+	// Matched by sentinel AND by RuntimeError code: the engine has two budget
+	// exits (the branch scheduler wraps the sentinel, the per-node pre-check
+	// historically did not), and a budget death that misses this carve-out is
+	// naked into exactly the redelivery loop described above — observed live
+	// on 2026-08-04 (run 019fcc30-b9be: six ~40s resume/refail turns at a 96%
+	// duration hard limit, each re-provisioning a sandbox). The code match
+	// also covers a mixed-version deploy where an older engine produced the
+	// unwrapped shape.
+	if errors.Is(execErr, runtime.ErrBudgetExceeded) || runtimeCodeOf(execErr) == runtime.ErrCodeBudgetExceeded {
 		return execOutcome{
 			finalStatus: "budget_exceeded",
 			op:          "ack-budget-exceeded",
 			action:      actionAck,
 			level:       logWarn,
 			logFmt:      "runner: run %s hit a budget cap — failed_resumable, NOT auto-resuming (resume manually with a raised cap): %v",
+			logArgs:     []any{runID, execErr},
+		}
+	}
+	// Infrastructure interruption (runner drain / lost heartbeat): the
+	// engine already wrote failed_resumable (via the ErrRunInterrupted
+	// cancel cause). Nak so JetStream redelivers and the reconciliation
+	// auto-resumes from the checkpoint — no manual intervention.
+	if errors.Is(execErr, runtime.ErrRunInterrupted) {
+		return execOutcome{
+			finalStatus: "interrupted",
+			op:          "nak-interrupted",
+			action:      actionNak,
+			level:       logWarn,
+			logFmt:      "runner: run %s interrupted (resumable) — naking for auto-resume (%v)",
+			logArgs:     []any{runID, execErr},
+		}
+	}
+	// Operator cancel: terminal cancelled, acked (redelivery drops it).
+	if errors.Is(execErr, runtime.ErrRunCancelled) {
+		return execOutcome{
+			finalStatus: "cancelled",
+			op:          "ack-cancelled",
+			action:      actionAck,
+			level:       logInfo,
+			logFmt:      "runner: run %s checkpointed (%v)",
 			logArgs:     []any{runID, execErr},
 		}
 	}
@@ -408,7 +411,20 @@ type Config struct {
 	HeartbeatInterval time.Duration // how often to refresh the NATS KV lease
 	PendingPoll       time.Duration // how often to refresh nats_pending_messages (0 = 15s)
 	FetchWait         time.Duration // long-poll wait per fetch
-	Logger            *iterlog.Logger
+	// DrainMode governs SIGTERM handling. "complete" (default, the
+	// lame-duck posture): stop fetching new runs but let the in-flight run
+	// finish naturally before exiting — a rolling deploy interrupts
+	// nothing. "interrupt": cancel the in-flight run immediately, checkpoint
+	// it, and let it auto-resume on a healthy pod. Either way an interrupted
+	// run is promoted to failed_resumable + redelivered (never stranded).
+	DrainMode string
+	// DrainTimeout is the lame-duck ceiling: the longest Shutdown waits for
+	// the in-flight run before capping it (cancel → checkpoint → auto-resume
+	// on another pod). It is the internal bound; the k8s
+	// terminationGracePeriodSeconds is the hard external one and must be set
+	// >= DrainTimeout + margin for the cap to checkpoint cleanly. 0 → 8h.
+	DrainTimeout time.Duration
+	Logger       *iterlog.Logger
 	// MemoryStore, when non-nil, backs the agents' workspace-memory
 	// tools with a shared store (the cloud Mongo store) instead of the
 	// pod's ephemeral filesystem. nil → local filesystem memory.
@@ -440,6 +456,12 @@ type Config struct {
 	// execution attempt (the billing source of truth — Prometheus
 	// counters above stay tenant-unlabelled). nil → no org metering.
 	OrgUsage orgusage.Counter
+
+	// CredPool, when non-nil, receives the spend of a run served by a
+	// lending contributor's pooled subscription, closing its lease and
+	// freeing the donor's concurrency slot. nil → runs never draw on a
+	// pool, or the deployment has none.
+	CredPool *credpool.Broker
 
 	// Events, when non-nil, receives a run-outcome trigger.Event
 	// (run.finished/failed/cancelled/paused) after every execution
@@ -535,12 +557,44 @@ type Runner struct {
 type inFlight struct {
 	runID    string
 	delivery *natsq.Delivery
-	cancelFn context.CancelFunc
+	// cancelFn cancels the run context WITH A CAUSE (context.CancelCause).
+	// The cause is the single source of the shutdown-vs-operator decision:
+	// runtime.ErrRunInterrupted (runner drain / lost heartbeat) → the engine
+	// writes failed_resumable and the run auto-resumes; runtime.ErrRunCancelled
+	// (operator cancel subject) → terminal cancelled. This replaces inferring
+	// intent from the loop ctx, which would misclassify an operator cancel
+	// arriving during a (up-to-DrainTimeout-long) lame-duck drain and
+	// resurrect a deliberately-cancelled run.
+	cancelFn context.CancelCauseFunc
 	// done is closed once processOne has Ack'd or Nak'd the delivery.
 	// Shutdown selects on it to avoid double-acting on a delivery
 	// processOne already finalised.
 	done chan struct{}
 }
+
+const (
+	// DrainModeComplete (default) is the lame-duck posture: on SIGTERM the
+	// runner stops fetching new runs but lets the in-flight one finish
+	// before exiting, so a rolling deploy interrupts nothing.
+	DrainModeComplete = "complete"
+	// DrainModeInterrupt cancels the in-flight run immediately on SIGTERM,
+	// checkpoints it, and lets it auto-resume on a healthy pod — the fast
+	// path for an urgent (e.g. security) deploy.
+	DrainModeInterrupt = "interrupt"
+	// DefaultDrainTimeout is the lame-duck ceiling when unset.
+	DefaultDrainTimeout = 8 * time.Hour
+	// interruptCheckpointGrace bounds how long Shutdown waits, after
+	// capping a lame-duck run at the ceiling, for the engine's checkpoint +
+	// status promotion to land before best-effort naking.
+	interruptCheckpointGrace = 30 * time.Second
+)
+
+// DrainTimeout reports the lame-duck ceiling so the entrypoint can size the
+// Shutdown context to it (single source of truth for the bound).
+func (r *Runner) DrainTimeout() time.Duration { return r.cfg.DrainTimeout }
+
+// DrainMode reports the resolved drain mode.
+func (r *Runner) DrainMode() string { return r.cfg.DrainMode }
 
 // New builds a runner from the supplied dependencies and creates the
 // JetStream consumer. The actual loop starts via Run.
@@ -566,6 +620,12 @@ func New(ctx context.Context, cfg Config) (*Runner, error) {
 	}
 	if cfg.FetchWait == 0 {
 		cfg.FetchWait = 5 * time.Second
+	}
+	if cfg.DrainMode == "" {
+		cfg.DrainMode = DrainModeComplete
+	}
+	if cfg.DrainTimeout == 0 {
+		cfg.DrainTimeout = DefaultDrainTimeout
 	}
 	if cfg.Logger == nil {
 		cfg.Logger = iterlog.New(iterlog.LevelInfo, os.Stderr)
@@ -667,38 +727,91 @@ func (r *Runner) Run(ctx context.Context) error {
 	}
 }
 
-// Shutdown signals the loop to stop fetching new messages and waits
-// for the in-flight run (if any) to be cancelled, then republishes
-// its delivery so a sibling pod can pick it up. Plan §F T-28.
+// Shutdown signals the loop to stop fetching new messages and then, per
+// DrainMode, either lets the in-flight run finish (lame-duck, default) or
+// cancels it immediately for a checkpoint-resume. An interrupted run is
+// promoted to failed_resumable and redelivered by processOne, so a rolling
+// deploy never strands a run. `ctx` carries the drain ceiling
+// (DrainTimeout); k8s terminationGracePeriodSeconds is the hard external
+// bound. Plan §F T-28.
+//
+// Narrow benign race: a delivery Fetched in the instant before SIGTERM may
+// not have published r.current yet, so Shutdown sees nil and returns
+// without engaging the drain machinery for it. The run still executes
+// safely on its decoupled runCtx (the process stays alive because Run
+// blocks in processOne) — only the DrainTimeout ceiling is skipped;
+// terminationGracePeriodSeconds remains the hard bound and the orphan
+// sweeper recovers anything the SIGKILL leaves `running`. No state is lost.
 func (r *Runner) Shutdown(ctx context.Context) error {
 	r.mu.Lock()
 	cur := r.current
 	cancel := r.cancel
 	r.mu.Unlock()
 
+	// Stop fetching new deliveries. The in-flight run's context is
+	// decoupled from the loop context (see processOne), so this does NOT
+	// cancel the running run — Shutdown owns that decision below.
 	if cancel != nil {
 		cancel()
 	}
 	if cur == nil {
 		return nil
 	}
-	// Cancel the in-flight context so engine.Run unwinds via
-	// handleContextDoneWithCheckpoint (preserving the checkpoint),
-	// and extend the ack window while we wait for it to finish.
-	cur.cancelFn()
+
+	if r.cfg.DrainMode == DrainModeInterrupt {
+		// Cancel the in-flight run now and wait only long enough for
+		// processOne to checkpoint + nak; it auto-resumes on a healthy pod
+		// from the redelivery. The wait is the SHORT checkpoint grace, not
+		// the caller's drain ceiling: this mode exists to leave quickly, and
+		// an engine that does not unwind promptly (a delegate ignoring its
+		// ctx, a stuck subprocess) would otherwise hold the pod for the full
+		// ceiling — the opposite of what the operator asked for. A checkpoint
+		// that misses the window is recovered by the orphan sweeper.
+		capCtx, capCancel := context.WithTimeout(context.Background(), interruptCheckpointGrace)
+		defer capCancel()
+		r.cancelAndAwaitCheckpoint(cur, capCtx)
+		return nil
+	}
+
+	// Lame-duck (complete): let the in-flight run finish. The loop is
+	// single-threaded and blocked inside processOne, and the run's
+	// heartbeat keeps its NATS lease + ack window alive, so the pod stays
+	// up (until the k8s grace ceiling) while the run runs to completion —
+	// interrupting nothing.
+	r.cfg.Logger.Info("runner: draining — letting in-flight run %s finish (lame-duck, ceiling %s)", cur.runID, r.cfg.DrainTimeout)
+	select {
+	case <-cur.done:
+		r.cfg.Logger.Info("runner: in-flight run %s finished during drain", cur.runID)
+	case <-ctx.Done():
+		// Ceiling hit (or k8s grace about to SIGKILL): cap the run within a
+		// short bounded window so it checkpoints + auto-resumes elsewhere.
+		r.cfg.Logger.Warn("runner: drain ceiling reached for run %s — capping for checkpoint resume", cur.runID)
+		capCtx, cancel := context.WithTimeout(context.Background(), interruptCheckpointGrace)
+		defer cancel()
+		r.cancelAndAwaitCheckpoint(cur, capCtx)
+	}
+	return nil
+}
+
+// cancelAndAwaitCheckpoint cancels the in-flight run so the engine unwinds
+// via handleContextDoneWithCheckpoint (preserving the checkpoint), extends
+// the ack window, and waits for processOne to finalise (promote to
+// failed_resumable + nak). If waitCtx expires first it best-effort naks so
+// JetStream redelivers to a sibling. Shared by the interrupt drain and the
+// lame-duck ceiling cap.
+func (r *Runner) cancelAndAwaitCheckpoint(cur *inFlight, waitCtx context.Context) {
+	// Cancel WITH the interrupted cause so the engine writes failed_resumable
+	// (auto-resume) rather than terminal cancelled — the shutdown-vs-operator
+	// decision lives entirely in this cause.
+	cur.cancelFn(runtime.ErrRunInterrupted)
 	logDeliveryErr(r.cfg.Logger, "in-progress-shutdown", cur.runID, cur.delivery.InProgress())
 	select {
 	case <-cur.done:
-		// processOne already Ack'd (paused/cancelled checkpoint) or
-		// Nak'd (transient failure) the delivery. Nothing more to do.
-		r.cfg.Logger.Info("runner: in-flight run %s drained during shutdown", cur.runID)
-	case <-ctx.Done():
-		// Grace period expired before the engine finished checkpointing.
-		// Best-effort Nak so JetStream redelivers to a sibling pod.
+		r.cfg.Logger.Info("runner: in-flight run %s interrupted + checkpointed for resume", cur.runID)
+	case <-waitCtx.Done():
 		logDeliveryErr(r.cfg.Logger, "nak-shutdown-grace", cur.runID, cur.delivery.Nak())
-		r.cfg.Logger.Warn("runner: shutdown grace expired for run %s — naking for redelivery", cur.runID)
+		r.cfg.Logger.Warn("runner: drain grace expired for run %s — naking for redelivery", cur.runID)
 	}
-	return nil
 }
 
 // processOne validates, locks, executes a single delivery. The
@@ -730,8 +843,16 @@ func (r *Runner) processOne(parent context.Context, delivery *natsq.Delivery) {
 	}
 
 	spanCtx, span := r.startProcessSpan(parent, delivery, msg)
-	runCtx, runCancel := context.WithCancel(spanCtx)
-	defer runCancel()
+	// Decouple the run's cancellation from the loop context: a SIGTERM
+	// cancels loopCtx to stop fetching, but the in-flight run must NOT die
+	// with it — Shutdown drives run cancellation explicitly per drain mode
+	// (lame-duck lets it finish; interrupt cancels it via cur.cancelFn).
+	// WithoutCancel keeps the OTel span/trace values while severing the
+	// parent-chain cancel. WithCancelCause lets each cancel site stamp WHY
+	// (drain/heartbeat → ErrRunInterrupted → resumable; operator subject →
+	// ErrRunCancelled → terminal), which the engine reads via context.Cause.
+	runCtx, runCancel := context.WithCancelCause(context.WithoutCancel(spanCtx))
+	defer runCancel(nil)
 	defer func() {
 		span.SetAttributes(attribute.String("iterion.run.status", finalStatus))
 		if finalStatus == "failed" || finalStatus == "lock_held" {
@@ -741,8 +862,9 @@ func (r *Runner) processOne(parent context.Context, delivery *natsq.Delivery) {
 	}()
 
 	done := make(chan struct{})
+	inflight := &inFlight{runID: msg.RunID, delivery: delivery, cancelFn: runCancel, done: done}
 	r.mu.Lock()
-	r.current = &inFlight{runID: msg.RunID, delivery: delivery, cancelFn: runCancel, done: done}
+	r.current = inflight
 	r.mu.Unlock()
 	defer func() {
 		// Close before nilling: a Shutdown that captured the cur
@@ -754,10 +876,10 @@ func (r *Runner) processOne(parent context.Context, delivery *natsq.Delivery) {
 	}()
 
 	// Subscribe to the cancel subject for this run. A POST cancel on
-	// the API publishes on iterion.cancel.<run_id>; we react by
-	// cancelling runCtx, which unwinds engine.Run via
-	// handleContextDoneWithCheckpoint.
-	if _, err := r.cfg.NATS.SubscribeCancel(runCtx, msg.RunID, runCancel); err != nil {
+	// the API publishes on iterion.cancel.<run_id>; we react by cancelling
+	// runCtx with the OPERATOR cause, so the engine writes terminal
+	// cancelled (never resurrected), distinct from a shutdown-drain cancel.
+	if _, err := r.cfg.NATS.SubscribeCancel(runCtx, msg.RunID, func() { runCancel(runtime.ErrRunCancelled) }); err != nil {
 		logger.Warn("runner: subscribe cancel %s: %v (continuing without)", msg.RunID, err)
 	}
 
@@ -805,61 +927,111 @@ func (r *Runner) processOne(parent context.Context, delivery *natsq.Delivery) {
 		}
 	}()
 
-	// Heartbeat goroutine: refresh the NATS lease while we own it.
-	// On refresh failure the heartbeat cancels runCtx so engine.Run
-	// unwinds via handleContextDoneWithCheckpoint — better to lose
-	// progress than to let the lease expire while the engine is still
-	// writing to Mongo (which would invite split-brain when JetStream
-	// redelivers to a sibling pod). hbFailed flips to true before the
-	// cancel so processOne can distinguish heartbeat-induced cancel
-	// from a legitimate user cancel and Nak instead of Ack — without
-	// that, JetStream considers the run done and no sibling picks it
-	// up automatically.
-	var hbFailed atomic.Bool
+	// Heartbeat goroutine: refresh the NATS lease while we own it. On
+	// refresh failure it cancels runCtx WITH the interrupted cause so the
+	// engine unwinds to failed_resumable — better to lose progress than to
+	// let the lease expire while the engine is still writing to Mongo (which
+	// would invite split-brain when JetStream redelivers to a sibling pod).
+	// The cause makes the redelivery auto-resume without manual intervention.
 	hbDone := make(chan struct{})
-	go r.heartbeat(runCtx, runCancel, lock, delivery, hbDone, &hbFailed)
+	go r.heartbeat(runCtx, runCancel, lock, delivery, hbDone)
 	// Cancel runCtx *before* waiting on hbDone, otherwise we deadlock:
-	// heartbeat only exits on ctx.Done(), and the outer `defer
-	// runCancel()` at function entry is LIFO-last so it would run
-	// after this defer. Calling runCancel() here is idempotent. Kept as
-	// a panic-safety net even though the happy path drains the heartbeat
-	// explicitly below.
+	// heartbeat only exits on ctx.Done(), and the outer `defer runCancel`
+	// at function entry is LIFO-last so it would run after this defer.
+	// nil cause: the run has already returned terminally here, so this is
+	// teardown — the engine never reads the cause. Idempotent panic net.
 	defer func() {
-		runCancel()
+		runCancel(nil)
 		<-hbDone
 	}()
 
-	err := r.executeRun(runCtx, msg)
+	var usage *metricsEmitter
+	err := r.executeRun(runCtx, msg, &usage)
 	// Stop the heartbeat before finalizing (Ack/Nak) the delivery. The
 	// heartbeat issues periodic InProgress() on this same delivery to
 	// hold the JetStream ack deadline open; draining it here guarantees
 	// no InProgress() lands after the terminal Ack/Nak below (which would
 	// otherwise log a spurious already-acked error). A second drain in
 	// the defer above is a no-op on the closed channel.
-	runCancel()
+	runCancel(nil)
 	<-hbDone
 
-	r.fireCompletionNotifier(msg)
-	r.fireOutcomeEvent(msg, err)
+	// Run-outcome side effects (completion webhook + run.<outcome> event →
+	// push notifications, chained triggers) fire ONLY when this delivery
+	// reaches a FINAL disposition: an ack, or a park (usage-window retry /
+	// DLQ). A plain Nak with redeliveries remaining means the platform
+	// itself is about to auto-resume the run — firing there pushed one
+	// "run failed" episode per redelivery (the episode key deliberately
+	// folds updated_at so a LATER real re-failure notifies again), i.e. up
+	// to MaxDeliver notifications for a single deterministic failure
+	// within a minute. A non-operator interruption (runner drain / lost
+	// heartbeat, ErrRunInterrupted) is excluded for the same reason on its
+	// own path: the engine wrote failed_resumable and the redelivery
+	// auto-resumes, so a fire here would ping on every deploy.
+	outcome := classifyExecResult(err, msg.RunID)
+	fireOutcome := func() {
+		if !errors.Is(err, runtime.ErrRunInterrupted) {
+			r.fireCompletionNotifier(msg)
+			r.fireOutcomeEvent(msg, err)
+		}
+	}
+
+	// The park branches below (usage-window / DLQ) are final by
+	// construction and fire through the closure's interruption guard
+	// alone; the plain dispatch path at the bottom consults
+	// outcomeSideEffectsFire.
 
 	// Checked BEFORE the DLQ park so a usage-window failure on the FINAL
 	// delivery still arms a retry instead of being parked: the window is
 	// exactly the condition that makes every prior delivery useless, so
 	// reaching delivery 8 is evidence for retrying later, not against it.
+	// Close the credential-pool lease unless JetStream is about to hand the
+	// SAME sealed bundle to another pod — the only case where a later
+	// attempt still runs on this lease and can report against it. A parked
+	// delivery (usage-window retry, DLQ) is final for this bundle: an armed
+	// retry re-publishes and acquires afresh, and a DLQ'd run never comes
+	// back. Reporting `interim` there would strand the donor's slot and
+	// committed allowance until the 12h lease TTL.
 	if handled, retryStatus := r.parkUsageLimitRetry(runCtx, err, delivery, msg, logger); handled {
+		r.recordPoolSpend(msg, usage, err, false)
+		fireOutcome()
 		finalStatus = retryStatus
 		return
 	}
 
 	if handled, dlqStatus := r.parkOnDLQOnFinalDelivery(err, delivery, msg, logger); handled {
+		r.recordPoolSpend(msg, usage, err, false)
+		fireOutcome()
 		finalStatus = dlqStatus
 		return
 	}
 
-	outcome := classifyExecResult(err, hbFailed.Load(), parent.Err(), msg.RunID)
+	// Interim only when JetStream will really redeliver. A Nak does not
+	// imply one: ErrRunInterrupted (drain / lost heartbeat) is exempt from
+	// the DLQ park above, so on its LAST permitted delivery it Naks into
+	// nothing — and a lease left open there strands the donor's slot and
+	// committed allowance until the 12h TTL.
+	redeliverable := r.cfg.NATS != nil && delivery.NumDelivered() < r.cfg.NATS.MaxDeliver()
+	r.recordPoolSpend(msg, usage, err, outcome.action == actionNak && redeliverable)
+
+	if outcomeSideEffectsFire(err, outcome.action) {
+		fireOutcome()
+	}
 	logAt(logger, outcome.level, outcome.logFmt, outcome.logArgs...)
 	finalStatus = outcome.finalStatus
 	dispatchTerminal(logger, delivery, outcome.action, outcome.op, msg.RunID)
+}
+
+// outcomeSideEffectsFire reports whether a delivery ending on the plain
+// dispatch path (no park) is a FINAL disposition that must fire the
+// run-outcome side effects (completion webhook + run.<outcome> event). A
+// Nak is not final — JetStream redelivers and the run auto-resumes, so
+// user-facing "run failed" episodes must wait for a disposition that
+// actually settles the run. Named (rather than inlined) so the
+// err → fires mapping is pinned by a table test next to
+// TestClassifyExecResult.
+func outcomeSideEffectsFire(execErr error, action deliveryAction) bool {
+	return !errors.Is(execErr, runtime.ErrRunInterrupted) && action != actionNak
 }
 
 // startProcessSpan builds the runner-side OTel root span for this
@@ -929,7 +1101,17 @@ func (r *Runner) fireOutcomeEvent(msg *queue.RunMessage, execErr error) {
 // executeRun hydrates the IR from the message, builds the runtime
 // engine + Claw executor, then dispatches to Run or Resume based on
 // the message shape.
-func (r *Runner) executeRun(ctx context.Context, msg *queue.RunMessage) error {
+//
+// The return is named so the deferred spend accounting can see how the
+// attempt ended: a credential pool must know whether it was a provider
+// quota window or a rejected credential that stopped the run, not merely
+// how much it cost.
+// usageOut, when non-nil, receives the run's metrics emitter as soon as it
+// exists so the CALLER can report pool spend once it knows the delivery's
+// real disposition. The pool report cannot live in this function's defer:
+// whether an attempt is the last one — parked on the DLQ rather than
+// redelivered — is decided above, after this returns.
+func (r *Runner) executeRun(ctx context.Context, msg *queue.RunMessage, usageOut **metricsEmitter) (execErr error) {
 	// Honour the publisher's per-run wall-clock budget. Without this,
 	// queue.RunMessage.TimeoutSec — wired from `iterion run --timeout`
 	// and the studio Launch modal — has no effect in cloud mode: the
@@ -1113,9 +1295,14 @@ func (r *Runner) executeRun(ctx context.Context, msg *queue.RunMessage) error {
 	if err != nil {
 		return err
 	}
-	// Charge the org's monthly usage whatever the outcome — paused,
-	// cancelled and failed attempts incurred real LLM spend.
-	defer r.recordOrgSpend(msg, usage)
+	if usageOut != nil {
+		*usageOut = usage
+	}
+	// Charge the run's spend whatever the outcome — paused, cancelled and
+	// failed attempts incurred real LLM spend. The credential pool's half is
+	// reported by the caller instead, which alone knows whether this
+	// delivery is the last one.
+	defer func() { r.recordOrgSpend(msg, usage) }()
 
 	engineOpts := []runtime.EngineOption{
 		runtime.WithLogger(runLogger),
@@ -1191,6 +1378,14 @@ func (r *Runner) executeRun(ctx context.Context, msg *queue.RunMessage) error {
 	if steerCh := r.steerChannelFor(msg.RunID); steerCh != nil {
 		engineOpts = append(engineOpts, runtime.WithOverrideChannel(steerCh))
 	}
+	// The engine's own events (chiefly node_recovery) carry classifications
+	// nothing else reports. Observed through the engine's dedicated seam
+	// rather than a store decorator: a decorator's method set is the
+	// INTERFACE's, which would hide the concrete store's optional
+	// capabilities (RunFilesStore, InteractionAnswerCAS, …) from the
+	// type-assertion probes inside the engine — silently, since each one
+	// degrades rather than errors.
+	engineOpts = append(engineOpts, runtime.WithEventObserver(usage.observe))
 	engine := runtime.New(wf, r.cfg.Store, executor, engineOpts...)
 	// Publish the engine so the store's Event.ActiveMs stamping reads
 	// this run's monotonic active elapsed; drop it when the run returns.

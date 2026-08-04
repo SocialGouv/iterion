@@ -8,7 +8,7 @@ import (
 	"github.com/SocialGouv/iterion/pkg/store"
 )
 
-// PipelineBoardColumn is one of the five fixed lanes. Unlike the previous
+// PipelineBoardColumn is one of the four fixed lanes. Unlike the previous
 // per-bot board there are no derived interaction columns — human reviews
 // live inside the IN_PROGRESS card that blocks on them.
 type PipelineBoardColumn struct {
@@ -21,13 +21,17 @@ type PipelineBoardColumn struct {
 // not-yet-running ticket — a per-card `ready` flag marks the launch-eligible
 // ones (the studio badges + filters them), the rest are still being
 // prepared; the local launch loop starts ready tickets when a concurrency
-// slot frees. Closed holds every finished pipeline, success or failure —
-// a per-card success/failed outcome distinguishes them (surfaced as the
-// Closed lane's filter). In progress holds running / awaiting-review runs.
+// slot frees. In progress holds running / awaiting-review runs. Needs
+// attention holds runs that died mid-flight and hold their slot until the
+// operator retries, resumes or closes them. Closed holds every pipeline
+// that reached an end: finished, or cancelled by the operator — a per-card
+// success/failed outcome distinguishes them (surfaced as the Closed lane's
+// filter).
 func pipelineColumns() []PipelineBoardColumn {
 	return []PipelineBoardColumn{
 		{ID: pipelineColumnOpened, Title: "Opened", Kind: "opened"},
 		{ID: pipelineColumnInProgress, Title: "In progress", Kind: "in_progress"},
+		{ID: pipelineColumnNeedsAttention, Title: "Needs attention", Kind: "needs_attention"},
 		{ID: pipelineColumnClosed, Title: "Closed", Kind: "closed"},
 	}
 }
@@ -133,10 +137,17 @@ type PipelineBoardCard struct {
 	BotID        string          `json:"bot_id,omitempty"`
 	Status       store.RunStatus `json:"status,omitempty"`
 	Error        string          `json:"error,omitempty"`
-	// Failed is true when the card sits in the FAILED lane because its run
-	// failed / was cancelled. The UI shows the Error as the reason and
-	// offers a Retry (move back to Ready) on ticket-backed cards.
+	// Failed is true when the card's run failed / was cancelled, as opposed
+	// to finishing successfully. It spans two lanes: needs_attention (failed
+	// mid-flight) and closed (cancelled by the operator). The UI shows the
+	// Error as the reason and offers a Retry on ticket-backed cards.
 	Failed bool `json:"failed,omitempty"`
+	// ReservesSlot is true when this card is holding one of the local
+	// pipeline concurrency slots open for its own restart — no process is
+	// running, but nothing else may take its place until the operator
+	// retries, resumes or closes it. Only ever set on needs_attention cards;
+	// see pipelineLaneForRoot for the exact predicate.
+	ReservesSlot bool `json:"reserves_slot,omitempty"`
 	// Ready reflects whether a task-backed card's ticket is in a
 	// launch-eligible (ready) state — used by the UI to place run-less
 	// tasks in Ready vs Backlog and to enable the move buttons.

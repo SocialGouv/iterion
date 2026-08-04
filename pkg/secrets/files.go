@@ -39,6 +39,22 @@ const (
 	// in-sandbox claude CLI reads (and the runner's mid-run refresher
 	// rewrites through the sandbox exec seam).
 	ClaudeCodeSandboxCredentialsPath = ClaudeCodeSandboxConfigDir + "/.credentials.json"
+
+	// The same three for the ChatGPT (Codex) forfait. Without them a
+	// sandboxed node has no way to see a resolved subscription — the host
+	// temp dir does not exist in the container — and silently falls back to
+	// whatever ambient key the pod carries.
+	CodexOAuthSecretName = "codex-oauth"
+	// CodexOAuthSandboxMountPath keeps the payload under SecretFilesMountDir
+	// for the same reason as the Claude one: the k8s driver projects that
+	// directory volume and can refresh it mid-run.
+	CodexOAuthSandboxMountPath = SecretFilesMountDir + "/codex-oauth/auth.json"
+	// CodexSandboxConfigDir is the writable in-sandbox CODEX_HOME seeded
+	// from the mount above.
+	CodexSandboxConfigDir = "/tmp/iterion-codex-config"
+	// CodexSandboxAuthPath is the seeded auth.json the in-sandbox reader
+	// (claw's registry, or the codex CLI) opens.
+	CodexSandboxAuthPath = CodexSandboxConfigDir + "/auth.json"
 )
 
 var secretFileNameSanitizer = regexp.MustCompile(`[^A-Za-z0-9_.-]+`)

@@ -120,9 +120,14 @@ export interface PipelineBoardCard {
   status?: string;
   error?: string;
 
-  // Failed lane — the ticket's last run failed/cancelled (Retry stages it
-  // back to Ready), as opposed to a not-yet-ready Backlog ticket.
+  // The run failed or was cancelled, as opposed to finishing successfully.
+  // Spans two lanes: `needs_attention` (died mid-flight) and `closed`
+  // (stopped by the operator). Retry stages the ticket back to Ready.
   failed?: boolean;
+  // A `needs_attention` card holding one of the local concurrency slots open
+  // for its own restart. Nothing is running against it — retrying, resuming
+  // or closing the card releases the slot.
+  reserves_slot?: boolean;
   // Ready lane (wire ID "opened") — a task-backed ticket staged (waiting for a
   // concurrency slot; the studio auto-launches it when one frees).
   ready?: boolean;
@@ -163,6 +168,9 @@ export interface PipelineConcurrency {
   max: number;
   active: number;
   waiting: number;
+  // Slots held by needs-attention pipelines so they can restart into them.
+  // Absent from older servers, hence optional — treat as 0.
+  reserved?: number;
 }
 
 // PipelineBoard is the aggregate global read model returned by the board GET.
@@ -436,6 +444,9 @@ export function normalizePipelineBoardCard(
     ...(text(source.status) ? { status: text(source.status) } : {}),
     ...(text(source.error) ? { error: text(source.error) } : {}),
     ...(typeof source.failed === "boolean" ? { failed: source.failed } : {}),
+    ...(typeof source.reserves_slot === "boolean"
+      ? { reserves_slot: source.reserves_slot }
+      : {}),
     ...(typeof source.ready === "boolean" ? { ready: source.ready } : {}),
     ...(entryInput ? { entry_input: entryInput } : {}),
     ...(numberValue(source.queue_position) !== undefined
@@ -467,6 +478,7 @@ function normalizeConcurrency(value: unknown): PipelineConcurrency {
     max: intValue(source.max, 0),
     active: intValue(source.active, 0),
     waiting: intValue(source.waiting, 0),
+    reserved: intValue(source.reserved, 0),
   };
 }
 
@@ -581,6 +593,23 @@ export async function deletePipelineTask(taskId: string): Promise<void> {
 export async function resetPipelineTask(taskId: string): Promise<void> {
   await apiRequest<unknown>(
     `${BASE}/tasks/${encodeURIComponent(taskId)}/reset`,
+    { method: "POST", body: JSON.stringify({}) },
+  );
+}
+
+// closePipelineTask ends a ticket-backed pipeline for good: the server
+// cancels every still-active run in the ticket's tree, then files the
+// ticket in a terminal state. The outcome is ABANDONED (`blocked`), never
+// `done` — a pipeline that was closed did not deliver, and marking it done
+// would auto-promote every ticket waiting on it (BlockerSatisfied counts
+// only `done`) into work whose input does not exist. The caller is expected
+// to have shown the operator which dependents stay parked.
+//
+// This is also the release valve for a needs-attention card's reserved
+// concurrency slot. Refused (409) when a run is held by another process.
+export async function closePipelineTask(taskId: string): Promise<void> {
+  await apiRequest<unknown>(
+    `${BASE}/tasks/${encodeURIComponent(taskId)}/close`,
     { method: "POST", body: JSON.stringify({}) },
   );
 }

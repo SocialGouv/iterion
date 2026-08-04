@@ -9,6 +9,7 @@ import (
 	"github.com/SocialGouv/iterion/pkg/backend/cost"
 	"github.com/SocialGouv/iterion/pkg/backend/model"
 	"github.com/SocialGouv/iterion/pkg/cloud/metrics"
+	"github.com/SocialGouv/iterion/pkg/runtime"
 	"github.com/SocialGouv/iterion/pkg/store"
 )
 
@@ -39,12 +40,22 @@ type metricsEmitter struct {
 	modelByNode  map[string]string
 	priceByModel map[string]modelRate
 
-	// Per-run accumulation for org metering. Cost covers claw steps
-	// only (delegate backends report tokens without a price table) —
-	// a floor, not an exact invoice; documented on orgusage.
+	// Per-run accumulation for org metering. Covers both claw steps and
+	// delegate calls; a node whose model the price table cannot price
+	// contributes nothing, so this is a floor, not an exact invoice.
 	runCostUSD      float64
 	runInputTokens  int64
 	runOutputTokens int64
+
+	// sawAuthFailure records that the provider rejected this run's
+	// credential at some point, even if the attempt did not END on that
+	// error. Recovery converts an auth failure into a human pause, so by
+	// the time the runner reports, execErr is ErrRunPaused and the
+	// rejection is invisible — which left a dead lent credential first in
+	// the pool's rotation, pausing run after run and burning a unit of its
+	// donor's daily quota each time (measured on prod: 2 runs, credential
+	// dead, pledge still "active").
+	sawAuthFailure bool
 }
 
 // modelRate is the per-token cost (USD) for a given model, derived
@@ -65,6 +76,11 @@ func newMetricsEmitter(inner model.EventEmitter, reg *metrics.Registry) *metrics
 		priceByModel: make(map[string]modelRate),
 	}
 }
+
+// The executor writes through this emitter, but the ENGINE writes straight
+// to its own store — and node_recovery, the only place a recovery-absorbed
+// auth failure is still named, is an ENGINE event. The runner therefore
+// also registers observe via runtime.WithEventObserver (see loop.go).
 
 // rateForLocked returns the cached per-token rates for the given model,
 // resolving once via cost.EstimateUSD. Called under m.mu.
@@ -187,12 +203,39 @@ func (m *metricsEmitter) observe(evt store.Event) {
 		if costDelta > 0 && m.reg != nil {
 			m.reg.LLMCostUSDTotal.WithLabelValues(backend, normalizeModelLabel(modelName)).Add(costDelta)
 		}
+	case store.EventNodeRecovery:
+		// The engine already classified the failure here (typed, from
+		// recovery.Classify) — this is the only place the reason survives
+		// once recovery turns an auth rejection into a pause.
+		if code, _ := evt.Data["code"].(string); code == string(runtime.ErrCodeAuthFailed) {
+			m.mu.Lock()
+			m.sawAuthFailure = true
+			m.mu.Unlock()
+		}
 	case store.EventDelegateFinished:
 		backend, _ := evt.Data["backend"].(string)
 		if backend == "" {
 			backend = "delegate"
 		}
 		tokensF := toFloat(evt.Data["tokens"])
+		// The delegate already priced this call (its own CLI figure, or the
+		// token estimate a subscription session falls back to) and carries
+		// the result on the event. Accumulating it here is what keeps a
+		// claude_code run from reporting $0 spend for the whole attempt —
+		// which is what every downstream consumer of RunTotals (org monthly
+		// cost cap, credential-pool quota) is metering on. Absent key = the
+		// price table didn't know the model, so nothing is recorded.
+		//
+		// claw is excluded. It is an in-process backend but still dispatches
+		// through the same observability hook, so it emits BOTH a
+		// llm_step_finished per step (priced above, off the same table) and
+		// this delegation total — counting both would charge every claw run
+		// twice, tripping an org's monthly cap at half its budget and
+		// draining a lending donor at twice the rate they agreed to.
+		var costDelta float64
+		if backend != "claw" {
+			costDelta = toFloat(evt.Data["cost_usd"])
+		}
 
 		// Single critical section: resolve the per-node model name and
 		// accumulate the aggregated token count. Prometheus write
@@ -200,11 +243,15 @@ func (m *metricsEmitter) observe(evt store.Event) {
 		m.mu.Lock()
 		modelName := m.modelByNode[evt.NodeID]
 		m.runInputTokens += int64(tokensF)
+		m.runCostUSD += costDelta
 		m.mu.Unlock()
 
 		// Delegate events report a single aggregated token count;
 		// label as input so a sum across directions stays meaningful.
 		m.addTokens(backend, modelName, "input", evt.Data["tokens"])
+		if costDelta > 0 && m.reg != nil {
+			m.reg.LLMCostUSDTotal.WithLabelValues(backend, normalizeModelLabel(modelName)).Add(costDelta)
+		}
 	}
 }
 
@@ -214,6 +261,14 @@ func (m *metricsEmitter) RunTotals() (costUSD float64, inputTokens, outputTokens
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	return m.runCostUSD, m.runInputTokens, m.runOutputTokens
+}
+
+// SawAuthFailure reports whether the provider rejected this run's
+// credential at any point during the attempt.
+func (m *metricsEmitter) SawAuthFailure() bool {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.sawAuthFailure
 }
 
 func (m *metricsEmitter) lookupModel(nodeID string) string {

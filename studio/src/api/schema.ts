@@ -973,6 +973,61 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/me/pool": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** GET /api/me/pool */
+        get: operations["getMePool"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/me/pool/history": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** GET /api/me/pool/history */
+        get: operations["getMePoolHistory"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/me/pool/{source}/{ref}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                source: string;
+                ref: string;
+            };
+            cookie?: never;
+        };
+        get?: never;
+        /** PUT /api/me/pool/{source}/{ref} */
+        put: operations["putMePoolBySourceByRef"];
+        post?: never;
+        /** DELETE /api/me/pool/{source}/{ref} */
+        delete: operations["deleteMePoolBySourceByRef"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/me/secrets": {
         parameters: {
             query?: never;
@@ -3400,6 +3455,26 @@ export interface paths {
         patch: operations["patchTeamsByIdPluginSourcesBySourceId"];
         trace?: never;
     };
+    "/api/teams/{id}/pool": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        /** GET /api/teams/{id}/pool */
+        get: operations["getTeamsByIdPool"];
+        /** PUT /api/teams/{id}/pool */
+        put: operations["putTeamsByIdPool"];
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/teams/{id}/secrets": {
         parameters: {
             query?: never;
@@ -4004,6 +4079,25 @@ export interface paths {
         head?: never;
         /** PATCH /api/v1/pipeline-board/tasks/{id} */
         patch: operations["patchV1PipelineBoardTasksById"];
+        trace?: never;
+    };
+    "/api/v1/pipeline-board/tasks/{id}/close": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** POST /api/v1/pipeline-board/tasks/{id}/close */
+        post: operations["postV1PipelineBoardTasksByIdClose"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
         trace?: never;
     };
     "/api/v1/pipeline-board/tasks/{id}/dependency-graph": {
@@ -4762,6 +4856,7 @@ export interface components {
             priority?: number;
             queue_position?: number;
             ready?: boolean;
+            reserves_slot?: boolean;
             role?: string;
             run_id?: string;
             status?: string;
@@ -4823,6 +4918,7 @@ export interface components {
             active: number;
             enabled: boolean;
             max: number;
+            reserved: number;
             waiting: number;
         };
         RepoSummary: {
@@ -4990,6 +5086,8 @@ export interface components {
             backend?: string;
             description?: string;
             id: string;
+            input_schema?: components["schemas"]["WireSchemaField"][];
+            instruction_inputs?: string[];
             isolated?: boolean;
             kind: string;
             model?: string;
@@ -6432,6 +6530,84 @@ export interface operations {
             query?: never;
             header?: never;
             path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Response */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    getMePool: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Response */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    getMePoolHistory: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Response */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    putMePoolBySourceByRef: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                source: string;
+                ref: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Response */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    deleteMePoolBySourceByRef: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                source: string;
+                ref: string;
+            };
             cookie?: never;
         };
         requestBody?: never;
@@ -9735,6 +9911,46 @@ export interface operations {
             };
         };
     };
+    getTeamsByIdPool: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Response */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    putTeamsByIdPool: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Response */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
     getTeamsByIdSecrets: {
         parameters: {
             query?: never;
@@ -10577,6 +10793,26 @@ export interface operations {
                 content: {
                     "application/json": components["schemas"]["Issue"];
                 };
+            };
+        };
+    };
+    postV1PipelineBoardTasksByIdClose: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Response */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
             };
         };
     };

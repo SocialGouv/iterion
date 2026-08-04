@@ -109,62 +109,109 @@ func addSecretFileMounts(ctx context.Context, spec *sandbox.Spec, wf *ir.Workflo
 // Callers must only invoke this for a real (non-noop) driver: the noop
 // path rejects any SecretFiles.
 func addClaudeOAuthSecretFile(ctx context.Context, spec *sandbox.Spec) (bool, error) {
+	return addOAuthSecretFile(ctx, spec, oauthDelivery{
+		kind:       string(secrets.OAuthKindClaudeCode),
+		fileName:   ".credentials.json",
+		secretName: secrets.ClaudeCodeOAuthSecretName,
+		mountPath:  secrets.ClaudeCodeOAuthSandboxMountPath,
+		label:      "Claude",
+	})
+}
+
+// addCodexOAuthSecretFile is the same delivery for a resolved ChatGPT
+// (Codex) forfait — the tenant's own, or one lent through the credential
+// pool. Without it a sandboxed claw/codex node cannot see the resolved
+// subscription at all (the host temp dir does not exist in the container)
+// and silently authenticates with whatever ambient key the pod carries:
+// the platform pays, the tenant's or donor's credential goes unused, and
+// nothing in the run says so.
+func addCodexOAuthSecretFile(ctx context.Context, spec *sandbox.Spec) (bool, error) {
+	return addOAuthSecretFile(ctx, spec, oauthDelivery{
+		kind:       string(secrets.OAuthKindCodex),
+		fileName:   "auth.json",
+		secretName: secrets.CodexOAuthSecretName,
+		mountPath:  secrets.CodexOAuthSandboxMountPath,
+		label:      "ChatGPT",
+	})
+}
+
+// oauthDelivery describes one forfait kind's in-sandbox delivery.
+type oauthDelivery struct {
+	kind       string
+	fileName   string
+	secretName string
+	mountPath  string
+	label      string
+}
+
+func addOAuthSecretFile(ctx context.Context, spec *sandbox.Spec, d oauthDelivery) (bool, error) {
 	creds, ok := secrets.CredentialsFromContext(ctx)
 	if !ok {
 		return false, nil
 	}
-	dir := creds.OAuthDir(string(secrets.OAuthKindClaudeCode))
+	dir := creds.OAuthDir(d.kind)
 	if dir == "" {
 		return false, nil
 	}
-	payload, err := os.ReadFile(filepath.Join(dir, ".credentials.json"))
+	payload, err := os.ReadFile(filepath.Join(dir, d.fileName))
 	if err != nil {
-		return false, fmt.Errorf("read materialised claude forfait credentials: %w", err)
+		return false, fmt.Errorf("read materialised %s forfait credentials: %w", d.label, err)
 	}
 	for _, sf := range spec.SecretFiles {
-		if sf.Name == secrets.ClaudeCodeOAuthSecretName {
-			return false, fmt.Errorf("file secret name %q is reserved for the Claude forfait delivery; rename the workflow secret", sf.Name)
+		if sf.Name == d.secretName {
+			return false, fmt.Errorf("file secret name %q is reserved for the %s forfait delivery; rename the workflow secret", sf.Name, d.label)
 		}
-		if sf.MountPath == secrets.ClaudeCodeOAuthSandboxMountPath {
-			return false, fmt.Errorf("file secret %q mount_path %q collides with the Claude forfait delivery path", sf.Name, sf.MountPath)
+		if sf.MountPath == d.mountPath {
+			return false, fmt.Errorf("file secret %q mount_path %q collides with the %s forfait delivery path", sf.Name, sf.MountPath, d.label)
 		}
 	}
 	spec.SecretFiles = append(spec.SecretFiles, sandbox.SecretFileMount{
-		Name:      secrets.ClaudeCodeOAuthSecretName,
-		MountPath: secrets.ClaudeCodeOAuthSandboxMountPath,
+		Name:      d.secretName,
+		MountPath: d.mountPath,
 		Value:     payload,
 	})
 	return true, nil
 }
 
-// seedClaudeConfigScript copies the read-only forfait mount into a
-// WRITABLE CLAUDE_CONFIG_DIR ($1 = config dir, $2 = mounted payload).
-// The claude CLI persists session state — and its own token refreshes —
-// under its config dir, so pointing it at the read-only secret mount
-// would break it; the seeded copy is owner-only (0700 dir / 0600 file)
+// seedForfaitConfigScript copies a read-only forfait mount into a WRITABLE
+// config dir ($1 = config dir, $2 = mounted payload, $3 = file name).
+// These CLIs persist session state — and their own token refreshes —
+// under their config dir, so pointing them at the read-only secret mount
+// would break them; the seeded copy is owner-only (0700 dir / 0600 file)
 // and rewritten mid-run by the runner's forfait refresher through the
 // same exec seam.
-const seedClaudeConfigScript = `set -e
+const seedForfaitConfigScript = `set -e
 umask 077
 mkdir -p "$1"
-cp "$2" "$1/.credentials.json"
-chmod 600 "$1/.credentials.json"`
+cp "$2" "$1/$3"
+chmod 600 "$1/$3"`
 
 // seedClaudeConfigDir runs [seedClaudeConfigScript] inside the freshly
 // started sandbox. Hard error on failure: the run resolved a forfait
 // credential, so a half-delivered config dir must fail the boot loudly
 // rather than surface hours later as an auth error mid-workflow.
 func seedClaudeConfigDir(ctx context.Context, run sandbox.Run) error {
+	return seedForfaitConfigDir(ctx, run, "claude",
+		secrets.ClaudeCodeSandboxConfigDir, secrets.ClaudeCodeOAuthSandboxMountPath, ".credentials.json")
+}
+
+// seedCodexConfigDir is the same for the ChatGPT forfait: CODEX_HOME must
+// be writable because the reader may rotate the token in place.
+func seedCodexConfigDir(ctx context.Context, run sandbox.Run) error {
+	return seedForfaitConfigDir(ctx, run, "codex",
+		secrets.CodexSandboxConfigDir, secrets.CodexOAuthSandboxMountPath, "auth.json")
+}
+
+func seedForfaitConfigDir(ctx context.Context, run sandbox.Run, label, dir, mount, fileName string) error {
 	res, err := run.Exec(ctx, []string{
-		"sh", "-c", seedClaudeConfigScript, "sh",
-		secrets.ClaudeCodeSandboxConfigDir, secrets.ClaudeCodeOAuthSandboxMountPath,
+		"sh", "-c", seedForfaitConfigScript, "sh", dir, mount, fileName,
 	}, sandbox.ExecOpts{})
 	if err != nil {
-		return fmt.Errorf("runtime: sandbox: seed claude config dir: %w", err)
+		return fmt.Errorf("runtime: sandbox: seed %s config dir: %w", label, err)
 	}
 	if res.ExitCode != 0 {
-		return fmt.Errorf("runtime: sandbox: seed claude config dir: exited %d: %s",
-			res.ExitCode, strings.TrimSpace(string(res.Stderr)))
+		return fmt.Errorf("runtime: sandbox: seed %s config dir: exited %d: %s",
+			label, res.ExitCode, strings.TrimSpace(string(res.Stderr)))
 	}
 	return nil
 }

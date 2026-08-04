@@ -3,7 +3,6 @@ import { DiffEditor } from "@monaco-editor/react";
 
 import { Button, Dialog } from "@/components/ui";
 import {
-  getNodeFileDiff,
   getReviewFileDiff,
   getRunFileDiff,
   type RunFile,
@@ -23,10 +22,6 @@ interface FileDiffDialogProps {
   // the run's. A reviewer must see the file as they are being asked to
   // approve it — not as it stands after later nodes touched it.
   gate?: number;
-  // When set, the diff is taken over that NODE's boundary — the range the
-  // node itself produced, rather than the run's or a gate's.
-  nodeId?: string;
-  nodeIteration?: number;
   onClose: () => void;
   // When provided, renders an "Edit" affordance that switches from this
   // read-only diff to the editable FileEditDialog for the same path. The
@@ -42,8 +37,6 @@ export default function FileDiffDialog({
   file,
   mode,
   gate,
-  nodeId,
-  nodeIteration,
   onClose,
   onEdit,
 }: FileDiffDialogProps) {
@@ -51,16 +44,11 @@ export default function FileDiffDialog({
   const path = file?.path ?? null;
 
   const diffQuery = useQuery({
-    queryKey: ["run-file-diff", runId, path, mode ?? "", gate ?? -1, nodeId ?? "", nodeIteration ?? -1],
-    queryFn: () => {
-      if (nodeId) {
-        return getNodeFileDiff(runId, nodeId, path!, { iteration: nodeIteration });
-      }
-      if (gate !== undefined) {
-        return getReviewFileDiff(runId, path!, { gate });
-      }
-      return getRunFileDiff(runId, path!, { mode });
-    },
+    queryKey: ["run-file-diff", runId, path, mode ?? "", gate ?? -1],
+    queryFn: () =>
+      gate === undefined
+        ? getRunFileDiff(runId, path!, { mode })
+        : getReviewFileDiff(runId, path!, { gate }),
     enabled: !!path,
   });
   const diff = path ? diffQuery.data ?? null : null;

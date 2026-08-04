@@ -11,6 +11,7 @@ import (
 	"strings"
 
 	gitlib "github.com/SocialGouv/iterion/pkg/git"
+	"github.com/SocialGouv/iterion/pkg/runview"
 	"github.com/SocialGouv/iterion/pkg/store"
 	"github.com/SocialGouv/iterion/pkg/workspacetrack"
 )
@@ -327,14 +328,19 @@ func (s *Server) workspaceTracker() workspacetrack.Tracker {
 	return runviewWorkspaceTracker(s.runs.StoreDir())
 }
 
-// runviewWorkspaceTracker is a thin alias so tests can inject without
-// importing runview's package-level helper through a cycle. The real
-// construction lives in runview.WorkspaceTrackerFor.
+// runviewWorkspaceTracker is a seam so tests can inject a tracker. It
+// DELEGATES rather than re-constructing: WorkspaceTrackerFor is the
+// function that honours ITERION_WORKSPACE_TRACK=off, so building a Native
+// here handed the review panel a live tracker on a host where the
+// operator had disabled versioning — and the panel then reported "this
+// run captured no workspace snapshots at all", which reads as data loss
+// rather than a config choice, on a surface whose contract is that
+// available:false always names the real cause.
+//
+// (The cycle the previous comment cited does not exist: pkg/server
+// already imports pkg/runview.)
 var runviewWorkspaceTracker = func(storeDir string) workspacetrack.Tracker {
-	if storeDir == "" {
-		return nil
-	}
-	return workspacetrack.NewNative(storeDir)
+	return runview.WorkspaceTrackerFor(storeDir)
 }
 
 // buildReviewScope resolves the gate range and partitions it by node.
@@ -742,8 +748,10 @@ func refCommitTimes(workDir, baseRef, headRef string) (lo, hi int64) {
 }
 
 // withinGateWindow reports whether a node boundary closed inside the gate
-// range. Half-open at the base (a boundary AT the previous gate belongs to
-// the range that gate closed) and inclusive at the head.
+// range. Inclusive at BOTH ends: committerdate has one-second resolution,
+// so a boundary sharing the previous gate's second is genuinely ambiguous
+// and is allowed to compete rather than be dumped into *Other changes*
+// (see the inline note in the body).
 func withinGateWindow(when, lo, hi int64) bool {
 	if when == 0 {
 		return true // unknown: let it compete rather than drop the group

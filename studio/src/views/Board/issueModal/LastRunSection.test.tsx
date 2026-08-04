@@ -93,9 +93,15 @@ describe("LastRunSection answer-from-board affordance", () => {
     await waitFor(() => expect(screen.getByText(/environment/i)).toBeTruthy());
     expect(screen.getByText(/staging/i)).toBeTruthy();
     expect(screen.getByText(/production/i)).toBeTruthy();
-    // The checkpoint context vars must NOT be rendered as answer fields.
-    expect(screen.queryByText(/change_summary/i)).toBeNull();
-    expect(screen.queryByText(/checkout-api/i)).toBeNull();
+    // The checkpoint context vars must NOT be rendered as answer fields…
+    expect(screen.queryByLabelText(/change_summary/i)).toBeNull();
+    expect(screen.queryByLabelText(/service/i)).toBeNull();
+    // …but they ARE shown, read-only, as the review context above the
+    // form: they are exactly what the operator is validating (iterion#332).
+    const context = document.querySelector("section[aria-label='Review context']");
+    expect(context).toBeTruthy();
+    expect(context?.textContent).toContain("checkout-api");
+    expect(context?.textContent).toContain("bump sdk");
   });
 
   it("shows only the plain last-run panel when the run is not paused", async () => {

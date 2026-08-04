@@ -229,6 +229,71 @@ describe("PipelineCardDetailsBody", () => {
     expect(html).toContain("jazz");
   });
 
+  it("every input value carries a copy button, and JSON a raw/pretty toggle", () => {
+    const html = render(
+      makeCard({
+        column_id: "opened",
+        kind: "task",
+        entry_input: { topic: "jazz", options: { tempo: 120 } },
+      }),
+    );
+    expect(html).toContain('aria-label="Copy topic"');
+    expect(html).toContain('aria-label="Copy options"');
+    // Only the structured value has a second form to toggle to.
+    expect(html).toContain('aria-label="Show raw options"');
+    expect(html).not.toContain('aria-label="Show raw topic"');
+  });
+
+  it("a long input value collapses to a preview with an in-place expand toggle", () => {
+    const brief = Array.from({ length: 40 }, (_, i) => `paragraph ${i}`).join("\n");
+    const html = render(
+      makeCard({ column_id: "opened", kind: "task", entry_input: { brief } }),
+    );
+    // Nothing is truncated away — the full text ships, only its height is capped.
+    expect(html).toContain("paragraph 39");
+    expect(html).toContain("max-height:12rem");
+    expect(html).toContain("Show all 40 lines");
+  });
+
+  it("a short input value renders whole, with no expand toggle", () => {
+    const html = render(
+      makeCard({ column_id: "opened", kind: "task", entry_input: { topic: "jazz" } }),
+    );
+    expect(html).not.toContain("max-height");
+    expect(html).not.toContain("Show all");
+  });
+
+  it("the contract rows are expandable/copyable values too", () => {
+    const html = render(
+      makeCard({
+        column_id: "opened",
+        kind: "task",
+        entry_input: { feature_id: "feat-42", doc_refs: ["docs/a.md", "docs/b.md"] },
+      }),
+    );
+    expect(html).toContain("Ticket contract");
+    expect(html).toContain("feat-42");
+    expect(html).toContain('aria-label="Copy feature_id"');
+    expect(html).toContain('aria-label="Copy doc_refs"');
+  });
+
+  it("a long result collapses at a taller preview than an input", () => {
+    const output = Array.from({ length: 60 }, (_, i) => `answer line ${i}`).join("\n");
+    const html = render(
+      makeCard({
+        column_id: "closed",
+        run_id: "run-done",
+        status: "finished",
+        output,
+      }),
+    );
+    expect(html).toContain("Result");
+    expect(html).toContain("answer line 59");
+    expect(html).toContain("max-height:24rem");
+    expect(html).toContain("Show all 60 lines");
+    expect(html).toContain('aria-label="Copy result"');
+  });
+
   it("renders a 'No inputs recorded' fallback and a stale banner", () => {
     const html = render(makeCard({ column_id: "opened", kind: "task" }), true);
     expect(html).toContain("No additional inputs");

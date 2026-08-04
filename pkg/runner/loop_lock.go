@@ -3,12 +3,12 @@ package runner
 import (
 	"context"
 	"errors"
-	"sync/atomic"
 	"time"
 
 	iterlog "github.com/SocialGouv/iterion/pkg/log"
 	"github.com/SocialGouv/iterion/pkg/queue"
 	natsq "github.com/SocialGouv/iterion/pkg/queue/nats"
+	"github.com/SocialGouv/iterion/pkg/runtime"
 	"github.com/SocialGouv/iterion/pkg/store"
 )
 
@@ -37,14 +37,14 @@ func (r *Runner) acquireRunLock(runCtx context.Context, msg *queue.RunMessage, d
 
 // heartbeat refreshes the NATS KV lease so a long-running run keeps
 // holding the lock past the 60s default TTL. Returns when ctx is
-// cancelled (run finished). On refresh failure the heartbeat sets
-// hbFailed and triggers runCancel so the engine unwinds proactively
-// before the lease expires — without that signal, the lease would
+// cancelled (run finished). On refresh failure it cancels the run with
+// runtime.ErrRunInterrupted so the engine unwinds to failed_resumable
+// proactively before the lease expires — without that the lease would
 // silently lapse and JetStream would redeliver to a sibling pod, two
-// writers ending up on the same run state. processOne reads hbFailed
-// to Nak (not Ack) the delivery so the message stays queued for sibling
-// redelivery instead of requiring manual user resume.
-func (r *Runner) heartbeat(ctx context.Context, runCancel context.CancelFunc, lock store.RunLock, delivery *natsq.Delivery, done chan<- struct{}, hbFailed *atomic.Bool) {
+// writers ending up on the same run state. The interrupted cause makes
+// the engine write failed_resumable so the redelivery auto-resumes
+// instead of requiring a manual user resume.
+func (r *Runner) heartbeat(ctx context.Context, runCancel context.CancelCauseFunc, lock store.RunLock, delivery *natsq.Delivery, done chan<- struct{}) {
 	defer close(done)
 	natsLock, ok := lock.(*natsq.Lock)
 	if !ok {
@@ -75,9 +75,8 @@ func (r *Runner) heartbeat(ctx context.Context, runCancel context.CancelFunc, lo
 				if r.cfg.Metrics != nil {
 					r.cfg.Metrics.RunnerHeartbeatErrors.Inc()
 				}
-				r.cfg.Logger.Error("runner: heartbeat refresh failed: %v — cancelling run to avoid split-brain", err)
-				hbFailed.Store(true)
-				runCancel()
+				r.cfg.Logger.Error("runner: heartbeat refresh failed: %v — cancelling run (resumable) to avoid split-brain", err)
+				runCancel(runtime.ErrRunInterrupted)
 				return
 			}
 		}

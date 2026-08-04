@@ -23,6 +23,13 @@ Kimi and Grok are outside this sealed-credential matrix: their delegates rely
 on the CLI's own inherited environment/config. Legacy Codex consumes its own
 uploaded Codex credential.
 
+A **fourth** source exists when the deployment runs a credential pool: a run
+that resolves none of the three above may draw on a **contributor's lent
+subscription** (`pkg/credpool`). It reaches the runner as an ordinary OAuth
+blob — indistinguishable from a personal forfait — but is metered against
+the lender's own ceilings and the run's `max_cost_usd` is clamped to what
+remains of them. See [credential-pool.md](credential-pool.md).
+
 ## Decision shortcut
 
 - **Sovereign `web_search` / any claw feature** → needs claw. An Anthropic

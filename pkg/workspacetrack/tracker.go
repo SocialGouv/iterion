@@ -183,14 +183,6 @@ type Tracker interface {
 	// the workspace — above all the workflow source itself, since a
 	// rewind is launched precisely to test an edit to it.
 	Restore(runID, workspaceDir, snapshotID string, protected ...string) (*RestoreReport, error)
-	// Changes reports what differs between two snapshots of a run — the
-	// comparison half, without which the tracker can restore a node's
-	// work but not show it.
-	Changes(runID, fromID, toID string) ([]Change, error)
-	// ReadObject returns stored content by hash, so a caller can build a
-	// diff from both sides of a Change. The pool is store-global, so the
-	// run id is not part of the lookup.
-	ReadObject(hash string) ([]byte, error)
 	// Forget releases the in-memory stat cache for a run. The cache is a
 	// few MiB per run on a real repository and a Tracker outlives every
 	// run in a studio process, so a long-lived one must be told when a run
