@@ -85,6 +85,12 @@ func (s *Server) admitReadyPipelines() {
 		s.logger.Warn("pipeline admission: list tickets: %v", err)
 		return
 	}
+	// File tickets whose run finished while nobody was watching BEFORE
+	// computing the ready set. SetState(done) cascades the waiting_deps
+	// promotion of satisfied dependents — an auto_ready dependent unblocked
+	// here becomes launchable on the next tick (this tick's `issues` view is
+	// already stale for it).
+	s.reconcileFinishedTickets(context.Background(), board, runs.RunStore(), issues)
 	ready := make([]*native.Issue, 0)
 	for _, iss := range issues {
 		if iss == nil {
@@ -186,6 +192,40 @@ func pipelineTicketLaunchable(ctx context.Context, rs store.RunStore, iss *nativ
 	default:
 		// failed / failed_resumable / cancelled → retry-able.
 		return true
+	}
+}
+
+// reconcileFinishedTickets files tickets whose last run reached a clean
+// finish into done. launchTicketNow moves a ticket to in_progress at launch
+// and nothing ever moves it out: the run's terminal status drives the
+// /pipelines column, but the TICKET state is what hard blockers count
+// (native.BlockerSatisfied accepts only done) — so without this sweep a
+// finished ticket strands in in_progress forever and every dependent parks
+// in waiting_deps. Mirrors the cloud board dispatcher's processCard
+// (success → doneState) and the local dispatcher's finishRun. Only a clean
+// finish closes the ticket: failed/cancelled runs stay with the operator
+// (needs-attention retry, or close), and an unreadable run record is left
+// alone (best-effort).
+func (s *Server) reconcileFinishedTickets(ctx context.Context, board native.BoardStore, rs store.RunStore, issues []*native.Issue) {
+	if rs == nil {
+		return
+	}
+	for _, iss := range issues {
+		if iss == nil || iss.State != native.StateInProgress || iss.LastRunID == "" {
+			continue
+		}
+		r, err := rs.LoadRun(ctx, iss.LastRunID)
+		if err != nil || r == nil {
+			continue
+		}
+		if r.Status != store.RunStatusFinished {
+			continue
+		}
+		if _, err := board.SetState(iss.ID, native.StateDone); err != nil {
+			s.logger.Warn("pipeline admission: file finished ticket %s (run %s): %v", iss.ID, iss.LastRunID, err)
+			continue
+		}
+		s.logger.Info("pipeline admission: ticket %s finished cleanly (run %s) — filed as done", iss.ID, iss.LastRunID)
 	}
 }
 
