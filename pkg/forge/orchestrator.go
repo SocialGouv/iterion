@@ -314,16 +314,24 @@ func (o *Orchestrator) Provision(ctx context.Context, req ProvisionRequest) (Pro
 			if uerr := o.Integrations.Update(ctx, existing); uerr != nil {
 				return ProvisionResult{}, fmt.Errorf("forge: update integration launch vars: %w", uerr)
 			}
-			if cfg, gerr := o.Webhooks.Get(ctx, existing.WebhookID); gerr == nil {
-				cfg.LaunchVars = nilIfEmpty(manifestLaunchVars(desiredBots, frByBot))
-				cfg.OperatorLaunchVars = nilIfEmpty(maps.Clone(operatorVars))
-				cfg.Overlap = operatorOverlap
-				cfg.HoldLabels = operatorHold
-				cfg.LabelAllowlist = operatorLabels
-				cfg.UpdatedAt = o.clock()
-				if uerr := o.Webhooks.Update(ctx, cfg); uerr != nil {
-					return ProvisionResult{}, fmt.Errorf("forge: update webhook launch vars: %w", uerr)
-				}
+			// The integration now says one thing and the config still says
+			// another, so a failed read here cannot be skipped: the operator's
+			// settings are enforced from the CONFIG, and a divergence would
+			// leave the repo running the previous ones while the API reports
+			// the new ones. Surface it instead of returning a success that
+			// only half applied.
+			cfg, gerr := o.Webhooks.Get(ctx, existing.WebhookID)
+			if gerr != nil {
+				return ProvisionResult{}, fmt.Errorf("forge: read webhook %s to apply the repo's operator settings: %w", existing.WebhookID, gerr)
+			}
+			cfg.LaunchVars = nilIfEmpty(manifestLaunchVars(desiredBots, frByBot))
+			cfg.OperatorLaunchVars = nilIfEmpty(maps.Clone(operatorVars))
+			cfg.Overlap = operatorOverlap
+			cfg.HoldLabels = operatorHold
+			cfg.LabelAllowlist = operatorLabels
+			cfg.UpdatedAt = o.clock()
+			if uerr := o.Webhooks.Update(ctx, cfg); uerr != nil {
+				return ProvisionResult{}, fmt.Errorf("forge: update webhook operator settings: %w", uerr)
 			}
 		}
 		// Backfill the per-bot routing table onto a config provisioned before

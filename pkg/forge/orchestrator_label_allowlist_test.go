@@ -52,7 +52,9 @@ func TestProvisionKeepsTheOperatorLabelAllowlist(t *testing.T) {
 			"implementer on any label an operator adds to any issue.", after.LabelAllowlist)
 	}
 	// It must also land on the integration, which is what makes it durable for
-	// every FURTHER provision (the config adoption above only fires once).
+	// every FURTHER provision: the config adoption re-fires only while the
+	// integration's own allowlist is empty, so persisting it here is what ends
+	// the dependency on the config still carrying the operator's choice.
 	integ, err := o.Integrations.Get(ctx, res.IntegrationID)
 	if err != nil {
 		t.Fatal(err)
