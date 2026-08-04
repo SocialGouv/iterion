@@ -167,6 +167,10 @@ feature exists to prevent. Nodes the run never executed are ignored, and edits
 on independent fan-out branches are refused with the candidates named, since no
 single pivot covers them.
 
+Iterating repeatedly is safe: the source is re-stamped on each resume that
+executes a changed workflow, so the second rewind of a session diffs against
+what the first one actually ran rather than re-reporting its edits.
+
 `--auto` needs `Run.WorkflowSource`, the `.bot` text captured at launch
 (`WorkflowHash` only answers *whether* the source changed, never *which node*).
 Runs started before that capture existed refuse `--auto` and still accept
@@ -297,20 +301,19 @@ rewind — uncommitted and untracked work included — is banked first under
 `refs/iterion/runs/<run>/rewind/<node>/<seq>`. Nothing the run ever had becomes
 unreachable. `--keep-files` opts out.
 
-Coverage is honest rather than silent, and it is narrower than it looks:
+A run **without** a worktree cannot use that path at all: its workspace is the
+operator's live checkout, and `git add -A` there would stage their own
+uncommitted work as a side effect of running a bot. That is the default shape
+(17 of 30 catalog bots), so those runs are versioned by iterion itself —
+see [workspace versioning](workspace-versioning.md). The rewind picks the
+mechanism per run and reports which one ran:
 
-| Run shape | Files restored? |
+| Run shape | Files restored by |
 |---|---|
-| `worktree: auto` (docs-refresh, feature-dev, wiki-gen, app-dev…) | yes |
-| in-place (the default — whole-improve-loop, modernize, review-pr…) | **no**, reported in `files.skip_reason` |
-| Gitignored paths (`dist/`, `.venv/`) | never — `git add -A` honours `.gitignore` |
-| Paths outside the workspace | never |
-
-An in-place run's workspace *is* the operator's live tree, which iterion
-deliberately does not snapshot — `git add -A` there would stage the operator's
-own work. Restoring files for those runs needs an iterion-owned workspace
-tracker (content-addressed, outside the repo, no git dependency), which does
-not exist yet; until then the rewind says so instead of pretending.
+| `worktree: auto` (docs-refresh, feature-dev, wiki-gen…) | per-node git snapshots |
+| in-place (whole-improve-loop, modernize, review-pr…) | `pkg/workspacetrack` |
+| paths the ignore rules exclude, oversized files | neither — reported in `files.skip_reason` / `files.restored.skipped` |
+| paths outside the workspace | neither |
 
 ## Human and agent interaction resume
 

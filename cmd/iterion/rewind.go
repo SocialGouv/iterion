@@ -16,6 +16,8 @@ var rewindOpts struct {
 	nodeID    string
 	auto      bool
 	keepFiles bool
+	listSnaps bool
+	restoreID string
 	file      string
 	storeDir  string
 }
@@ -47,12 +49,15 @@ reach it back, so a loop's earlier stages survive for {{loop.*.previous_output}}
 Budget accounting and loop counters are NOT refunded (raise them on resume with
 --max-cost-usd / --max-iterations).
 
-For a run with an isolated worktree (worktree: auto) the workspace is also
-restored to the state the pivot started from — a docs or code bot's real
-product is its files, not its output map. The restore is a revert: the prior
-tree is committed on top of HEAD and the current state is banked under a
-backup ref first, so nothing becomes unreachable. --keep-files opts out, and a
-run without a worktree says so rather than silently leaving the files.
+The workspace is also restored to the state the pivot started from — a docs or
+code bot's real product is its files, not its output map. A run with an
+isolated worktree (worktree: auto) is reverted through git; an in-place run is
+reverted through iterion's own workspace versioning. Either way the state you
+had is banked first, so nothing becomes unreachable: recover it with
+--list-snapshots / --restore-snapshot in place, or with the printed backup ref
+in a worktree. --keep-files opts out, and when neither mechanism recorded a
+boundary for the pivot the rewind says so rather than silently leaving the
+files.
 
 External effects (board cards, forge comments, pushed commits, already-launched
 subbot runs) are never undone.`,
@@ -60,6 +65,9 @@ subbot runs) are never undone.`,
 	RunE: func(cmd *cobra.Command, _ []string) error {
 		if rewindOpts.runID == "" {
 			return fmt.Errorf("--run-id is required")
+		}
+		if rewindOpts.listSnaps || rewindOpts.restoreID != "" {
+			return runWorkspaceSnapshotCmd(cmd, rewindOpts.runID)
 		}
 		if rewindOpts.nodeID == "" && !rewindOpts.auto {
 			return fmt.Errorf("--node is required (or --auto to derive it from your edit)")
@@ -107,6 +115,11 @@ subbot runs) are never undone.`,
 		if f := result.Files; f != nil {
 			if f.Reverted {
 				fmt.Fprintf(os.Stderr, "  workspace reverted to the state %q started from (backup: %s)\n", result.NodeID, f.BackupRef)
+				if f.CoverageGap != "" {
+					// A revert that ran but could not put everything back
+					// is not a clean success — say so on the same screen.
+					fmt.Fprintf(os.Stderr, "  WARNING: %s\n", f.CoverageGap)
+				}
 			} else if f.SkipReason != "" {
 				fmt.Fprintf(os.Stderr, "  WARNING: files NOT reverted — %s\n", f.SkipReason)
 			}
@@ -136,8 +149,71 @@ func init() {
 	f.StringVar(&rewindOpts.nodeID, "node", "", "Pivot node id (the node the run re-executes from)")
 	f.BoolVar(&rewindOpts.auto, "auto", false, "Derive the pivot by diffing your edited .bot against the source this run executed")
 	f.BoolVar(&rewindOpts.keepFiles, "keep-files", false, "Do not restore the workspace to the state the pivot started from")
+	f.BoolVar(&rewindOpts.listSnaps, "list-snapshots", false, "List the recoverable workspace states of this run, newest first")
+	f.StringVar(&rewindOpts.restoreID, "restore-snapshot", "", "Put the workspace back to a snapshot id (undoes a rewind's file restore)")
 	f.StringVar(&rewindOpts.file, "file", "", "Workflow source to read the graph from (default: the run's persisted source)")
 	f.StringVar(&rewindOpts.storeDir, "store-dir", "", "Store directory override (default: managed store for the working directory)")
 	mustMarkRequired(rewindCmd, "run-id")
 	rootCmd.AddCommand(rewindCmd)
+}
+
+// runWorkspaceSnapshotCmd serves --list-snapshots / --restore-snapshot.
+//
+// A rewind banks the workspace before restoring it, but until now nothing
+// could consume the id it printed: the bytes were on disk and out of
+// reach. These are the way back for an operator whose own edits were
+// swept up by a restore.
+func runWorkspaceSnapshotCmd(cmd *cobra.Command, runID string) error {
+	storeRoot := rewindOpts.storeDir
+	if storeRoot == "" {
+		cwd, err := os.Getwd()
+		if err != nil {
+			return fmt.Errorf("resolve cwd: %w", err)
+		}
+		storeRoot = store.ResolveStoreDir(cwd, "")
+	}
+	absStore, err := filepath.Abs(storeRoot)
+	if err != nil {
+		return fmt.Errorf("resolve store dir: %w", err)
+	}
+	svc, err := runview.NewService(absStore)
+	if err != nil {
+		return fmt.Errorf("open service: %w", err)
+	}
+	p := newPrinter()
+
+	if rewindOpts.restoreID != "" {
+		report, err := svc.RestoreWorkspaceSnapshot(cmd.Context(), runID, rewindOpts.restoreID)
+		if err != nil {
+			return fmt.Errorf("restore snapshot: %w", err)
+		}
+		if jsonOutput {
+			p.JSON(report)
+		}
+		fmt.Fprintf(os.Stderr, "workspace restored to %s: %d written, %d deleted, %d unchanged\n",
+			rewindOpts.restoreID, report.Written, report.Deleted, report.Unchanged)
+		return nil
+	}
+
+	snaps, err := svc.ListWorkspaceSnapshots(cmd.Context(), runID)
+	if err != nil {
+		return fmt.Errorf("list snapshots: %w", err)
+	}
+	if jsonOutput {
+		// Every Entry (path + hash + mode + size) of every snapshot in the
+		// chain — on a real repo that is ~10k paths per capture times the
+		// number of node boundaries, i.e. hundreds of MB. Machine
+		// consumers only; the human summary goes to stderr below. Printer
+		// .JSON writes to stdout regardless of Format, so the gate has to
+		// be here, as every other command in the tree does it.
+		p.JSON(snaps)
+	}
+	for _, s := range snaps {
+		fmt.Fprintf(os.Stderr, "%s  %-28s  %d files  %s\n",
+			s.ID, s.Label, len(s.Entries), s.CreatedAt.Format("15:04:05"))
+	}
+	if len(snaps) == 0 {
+		fmt.Fprintf(os.Stderr, "no workspace snapshots for %s\n", runID)
+	}
+	return nil
 }

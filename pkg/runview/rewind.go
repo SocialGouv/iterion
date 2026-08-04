@@ -250,14 +250,14 @@ func (s *Service) Rewind(ctx context.Context, spec RewindSpec) (*RewindResult, e
 	dropped, invalidated := downstreamOf(wf, pivot, cp.Outputs)
 	fromNode := cp.NodeID
 
-	// Claim the run BEFORE touching anything, the worktree included. The
+	// Claim the run BEFORE touching anything, the workspace included. The
 	// CAS exists to make a concurrent resume safe; reverting first defeats
-	// it, because `git read-tree --reset` + `clean -fd` would already have
-	// run inside a worktree an engine is actively writing to before we
-	// discovered we lost the race. The original justification for going
-	// second — "a git failure leaves engine state untouched" — holds here
-	// too: `cancelled` preserves the checkpoint, so a revert failure after
-	// the claim leaves a resumable run carrying its pre-rewind state.
+	// it, because the restore would already have run inside a workspace an
+	// engine is actively writing to before we discovered we lost the race.
+	// The original justification for going second — "a revert failure
+	// leaves engine state untouched" — holds here too: `cancelled`
+	// preserves the checkpoint, so a revert failure after the claim leaves
+	// a resumable run carrying its pre-rewind state.
 	claimed, err := s.store.UpdateRunStatusIf(ctx, run.ID, store.RunStatusCancelled, "", rewindableStatuses)
 	if err != nil {
 		return nil, fmt.Errorf("claim run for rewind: %w", err)
@@ -268,7 +268,7 @@ func (s *Service) Rewind(ctx context.Context, spec RewindSpec) (*RewindResult, e
 
 	files := &fileRevertResult{SkipReason: "keep_files requested"}
 	if !spec.KeepFiles {
-		files, err = revertWorkspace(run, wf, cp, pivot)
+		files, err = s.revertWorkspace(run, wf, cp, pivot, sourcePath)
 		if err != nil {
 			return nil, err
 		}

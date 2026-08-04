@@ -160,10 +160,101 @@ func TestRewind_RevertsWorkspaceToPreNodeState(t *testing.T) {
 	}
 }
 
-// TestRewind_NoWorktreeReportsSkip: an in-place run's workspace is the
-// operator's live tree, which iterion does not snapshot. The rewind must
-// say so rather than silently leaving the files.
-func TestRewind_NoWorktreeReportsSkip(t *testing.T) {
+// TestRewind_RevertsWorkspaceWithoutWorktree is what iterion's own
+// versioning buys: a run with NO isolated worktree — the default shape,
+// and 17 of 30 catalog bots — can now have its files restored. git cannot
+// serve here, because that workspace is the operator's live checkout and
+// `git add -A` would stage their own uncommitted work.
+func TestRewind_RevertsWorkspaceWithoutWorktree(t *testing.T) {
+	dir := t.TempDir()
+	ws := filepath.Join(dir, "workspace")
+	writeFile(t, ws, "docs/intro.md", "intro v1\n")
+	writeFile(t, ws, "docs/keep.md", "untouched\n")
+
+	botPath := filepath.Join(dir, "main.bot")
+	if err := os.WriteFile(botPath, []byte(linearBot), 0o644); err != nil {
+		t.Fatalf("write bot: %v", err)
+	}
+	storeDir := filepath.Join(dir, "store")
+	st, err := store.New(storeDir)
+	if err != nil {
+		t.Fatalf("store: %v", err)
+	}
+	const runID = "run-inplace"
+	if _, err := st.CreateRun(context.Background(), runID, "linear", nil); err != nil {
+		t.Fatalf("create run: %v", err)
+	}
+	svc, err := NewService(storeDir)
+	if err != nil {
+		t.Fatalf("NewService: %v", err)
+	}
+	if svc.workspaceTracker == nil {
+		t.Fatal("a filesystem-backed service must wire workspace versioning")
+	}
+	// The engine's pre-boundary capture for `implement`.
+	if _, err := svc.workspaceTracker.Capture(runID, ws, "pre:implement:0"); err != nil {
+		t.Fatalf("seed capture: %v", err)
+	}
+
+	// `implement` writes the doc set.
+	writeFile(t, ws, "docs/intro.md", "intro v2 REWRITTEN\n")
+	writeFile(t, ws, "docs/api.md", "generated\n")
+
+	run, err := st.LoadRun(context.Background(), runID)
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	run.FilePath = botPath
+	run.Worktree = false // in place — the case git cannot cover
+	run.WorkDir = ws
+	run.Status = store.RunStatusFailedResumable
+	run.Checkpoint = &store.Checkpoint{
+		NodeID:  "verify",
+		Outputs: outputsOf("survey", "plan", "implement", "verify"),
+	}
+	if err := st.SaveRun(context.Background(), run); err != nil {
+		t.Fatalf("save: %v", err)
+	}
+
+	result, err := svc.Rewind(context.Background(), RewindSpec{RunID: runID, NodeID: "implement"})
+	if err != nil {
+		t.Fatalf("Rewind: %v", err)
+	}
+	if result.Files == nil || !result.Files.Reverted {
+		t.Fatalf("Files = %+v, want a completed restore", result.Files)
+	}
+	if got := readWorkspaceFile(t, ws, "docs/intro.md"); got != "intro v1\n" {
+		t.Errorf("docs/intro.md = %q, want the pre-node content", got)
+	}
+	if _, err := os.Stat(filepath.Join(ws, "docs/api.md")); !os.IsNotExist(err) {
+		t.Error("a file the node created survived the restore")
+	}
+	if got := readWorkspaceFile(t, ws, "docs/keep.md"); got != "untouched\n" {
+		t.Errorf("docs/keep.md = %q, want it left alone", got)
+	}
+	// Nothing is destroyed: the pre-rewind state stays a resolvable
+	// snapshot, so the discarded work is recoverable.
+	if result.Files.BackupRef == "" {
+		t.Fatal("expected the pre-rewind workspace to be banked")
+	}
+	banked, err := svc.workspaceTracker.Load(runID, result.Files.BackupRef)
+	if err != nil {
+		t.Fatalf("load banked snapshot: %v", err)
+	}
+	var hasAPI bool
+	for _, e := range banked.Entries {
+		if e.Path == "docs/api.md" {
+			hasAPI = true
+		}
+	}
+	if !hasAPI {
+		t.Error("the banked snapshot does not carry the work the rewind discarded")
+	}
+}
+
+// TestRewind_NoWorkspaceReportsSkip: a run with no recorded workspace has
+// nothing to restore, and says so rather than staying silent.
+func TestRewind_NoWorkspaceReportsSkip(t *testing.T) {
 	cp := &store.Checkpoint{
 		NodeID:  "verify",
 		Outputs: outputsOf("survey", "plan", "implement", "verify"),
@@ -177,8 +268,8 @@ func TestRewind_NoWorktreeReportsSkip(t *testing.T) {
 	if result.Files == nil || result.Files.Reverted {
 		t.Fatalf("Files = %+v, want a skip", result.Files)
 	}
-	if !strings.Contains(result.Files.SkipReason, "no isolated worktree") {
-		t.Errorf("SkipReason = %q, want it to name the missing worktree", result.Files.SkipReason)
+	if !strings.Contains(result.Files.SkipReason, "no recorded workspace") {
+		t.Errorf("SkipReason = %q, want it to name the missing workspace", result.Files.SkipReason)
 	}
 }
 

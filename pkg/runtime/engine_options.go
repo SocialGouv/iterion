@@ -8,6 +8,7 @@ import (
 	iterlog "github.com/SocialGouv/iterion/pkg/log"
 	"github.com/SocialGouv/iterion/pkg/sandbox"
 	"github.com/SocialGouv/iterion/pkg/store"
+	"github.com/SocialGouv/iterion/pkg/workspacetrack"
 )
 
 // WithSubbotRunner wires the closure invoked by `subbot` nodes.
@@ -151,6 +152,21 @@ func WithRecoveryDispatch(d RecoveryDispatch) EngineOption {
 // detect if the workflow changed since the run was started.
 func WithWorkflowHash(hash string) EngineOption {
 	return func(e *Engine) { e.workflowHash = hash }
+}
+
+// WithWorkspaceTracker wires iterion's own workspace versioning, used to
+// capture and restore the files a run produces.
+//
+// It is what makes a rewind able to undo a node's real work on a run that
+// has NO isolated worktree — the default shape, and the one where git
+// cannot serve: there the workspace is the operator's live checkout, and
+// snapshotting it with `git add -A` would stage their own uncommitted
+// work as a side effect of running a bot.
+//
+// nil disables workspace versioning (worktree runs keep using the
+// per-node git snapshots).
+func WithWorkspaceTracker(t workspacetrack.Tracker) EngineOption {
+	return func(e *Engine) { e.workspaceTracker = t }
 }
 
 // WithWorkflowSource records the .bot text as it is at launch, so a
