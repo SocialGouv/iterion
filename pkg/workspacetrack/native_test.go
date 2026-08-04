@@ -1063,3 +1063,41 @@ func TestStoreObject_DedupHitRefreshesMtime(t *testing.T) {
 		}
 	}
 }
+
+// TestRestore_PreservesAFileTheCaptureCouldNotRead is Revi's R1d5285 —
+// and a consequence of the earlier fix that made a vanished file
+// non-fatal. Tolerating it dropped the path from Entries WITHOUT adding
+// it to Skipped, and Restore keeps a path only when it is in one of the
+// two. So the next rewind to that snapshot DELETED a file the tracker
+// never held a copy of and the run never created — on an in-place run,
+// the operator's own live checkout.
+func TestRestore_PreservesAFileTheCaptureCouldNotRead(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("running as root: permission bits do not deny access")
+	}
+	ws := t.TempDir()
+	write(t, ws, "readable.txt", "fine")
+	write(t, ws, "locked.txt", "the capture cannot read this")
+	if err := os.Chmod(filepath.Join(ws, "locked.txt"), 0o000); err != nil {
+		t.Fatalf("chmod: %v", err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(filepath.Join(ws, "locked.txt"), 0o644) })
+
+	n := NewNative(t.TempDir())
+	snap, err := n.Capture("r1", ws, "pre:a:0")
+	if err != nil {
+		t.Fatalf("an unreadable FILE must not abort the capture: %v", err)
+	}
+	for _, e := range snap.Entries {
+		if e.Path == "locked.txt" {
+			t.Fatal("fixture: locked.txt was captured after all")
+		}
+	}
+
+	if _, err := n.Restore("r1", ws, snap.ID); err != nil {
+		t.Fatalf("restore: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(ws, "locked.txt")); err != nil {
+		t.Errorf("locked.txt was deleted by a restore that never held its content: %v", err)
+	}
+}

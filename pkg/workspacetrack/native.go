@@ -270,8 +270,13 @@ func (n *Native) Capture(runID, workspaceDir, label string) (*Snapshot, error) {
 		}
 		hash, herr := n.storeObject(path)
 		if herr != nil {
-			if os.IsNotExist(herr) {
-				// Vanished between readdir and open. The default shape is
+			// ENOENT (vanished between readdir and open) and EACCES (a
+			// path this process may not read) are both "we cannot read
+			// THIS file" — neither is a reason to lose the boundary. Any
+			// other error (ENOSPC, EIO) still aborts, because it says
+			// something is wrong with the store rather than with one path.
+			if os.IsNotExist(herr) || os.IsPermission(herr) {
+				// The default shape is
 				// an IN-PLACE run whose workspace is the operator's live
 				// checkout, so this is ordinary: an editor save that
 				// replaces a file, or a watcher/dev-server a bot node left
@@ -282,6 +287,14 @@ func (n *Native) Capture(runID, workspaceDir, label string) (*Snapshot, error) {
 				// reporting "no snapshot recorded". An unreadable directory
 				// and a failed d.Info() above are already tolerated the
 				// same way, as git's index is.
+				//
+				// Recorded in Skipped, NOT merely omitted: Restore keeps a
+				// path only when it is in Entries or Skipped, so dropping
+				// it silently means the next rewind to this snapshot
+				// DELETES it — a file the tracker never held a copy of and
+				// the run never created, on the operator's live checkout.
+				// Same protection the oversized branch already gets.
+				snap.Skipped = append(snap.Skipped, rel)
 				return nil
 			}
 			return fmt.Errorf("capture %s: %w", rel, herr)

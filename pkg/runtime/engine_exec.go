@@ -849,6 +849,15 @@ func (e *Engine) captureWorkspace(rs *runState, nodeID, phase string) {
 		if e.logger != nil {
 			e.logger.Warn("workspace capture: node %q iter %d: %v", nodeID, loopIter, err)
 		}
+		// Invalidate the remembered anchor. It now predates whatever this
+		// node wrote, so leaving it would have the NEXT node's pre-marker
+		// alias a state from before this node ran — and a rewind there
+		// would delete this node's files while the checkpoint still keeps
+		// its outputs. Same failure the special-dispatch paths already
+		// close by clearing it; this was the remaining hole, and capture
+		// failures are not hypothetical (an unreadable file, a MaxFiles
+		// overflow). An extra walk costs time; a wrong anchor costs data.
+		rs.lastWorkspaceSnapshot = ""
 		return
 	}
 	rs.lastWorkspaceSnapshot = snap.ID
