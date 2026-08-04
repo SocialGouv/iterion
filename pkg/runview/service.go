@@ -702,9 +702,6 @@ func WithStreamSource(src runstream.Source) ServiceOption {
 	return func(svc *Service) { svc.streamSrc = src }
 }
 
-// NewService constructs a Service rooted at storeDir. When the
-// caller wires WithStore, storeDir may be "" — the service uses the
-// injected store directly without resolving a filesystem path.
 // workspaceTrackingEnabled reports whether runs should version their
 // workspace. ITERION_WORKSPACE_TRACK=off|0|false disables it globally.
 //
@@ -739,6 +736,9 @@ func WithoutWorkspaceTracking() ServiceOption {
 	return func(s *Service) { s.workspaceTrackDisabled = true }
 }
 
+// NewService constructs a Service rooted at storeDir. When the
+// caller wires WithStore, storeDir may be "" — the service uses the
+// injected store directly without resolving a filesystem path.
 func NewService(storeDir string, opts ...ServiceOption) (*Service, error) {
 	logger := iterlog.New(iterlog.LevelInfo, os.Stderr)
 

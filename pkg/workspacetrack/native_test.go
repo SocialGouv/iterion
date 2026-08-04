@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 func write(t *testing.T, dir, name, body string) {
@@ -973,5 +974,92 @@ func TestRestore_LeavesUntouchedEmptyDirsAlone(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(ws, "generated")); !os.IsNotExist(err) {
 		t.Error("generated/ survived — the restore emptied it, so it must go")
+	}
+}
+
+// TestCapture_UnreadableRootIsFatal is Revi's R9dc956.
+//
+// WalkDir reports a failure of the walk ROOT as one call with
+// (path == root, d == nil). The tolerant sub-directory branch swallowed
+// it, so Capture returned a snapshot with ZERO entries and no error. Two
+// silent consequences: a boundary taken during a transient permission or
+// mount failure records an empty snapshot, and restoring it deletes every
+// file absent from it — the whole workspace; and revertViaTracker banks
+// through the same call, so the "nothing is destroyed" backup records
+// nothing while still handing the operator a ref to trust.
+func TestCapture_UnreadableRootIsFatal(t *testing.T) {
+	n := NewNative(t.TempDir())
+
+	// A root that does not exist at all.
+	if snap, err := n.Capture("r1", filepath.Join(t.TempDir(), "gone"), "pre:a:0"); err == nil {
+		t.Errorf("capture of a missing workspace returned a %d-entry snapshot and no error — "+
+			"restoring it would delete the whole workspace", len(snap.Entries))
+	}
+
+	// A root that exists but cannot be read.
+	if os.Geteuid() == 0 {
+		t.Skip("running as root: permission bits do not deny access")
+	}
+	ws := t.TempDir()
+	write(t, ws, "keep.txt", "content")
+	if err := os.Chmod(ws, 0o000); err != nil {
+		t.Fatalf("chmod: %v", err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(ws, 0o755) })
+	if snap, err := n.Capture("r2", ws, "pre:a:0"); err == nil {
+		t.Errorf("capture of an unreadable workspace returned a %d-entry snapshot and no error — "+
+			"a workspace that could not be read has not been observed to be empty", len(snap.Entries))
+	}
+}
+
+// TestStoreObject_DedupHitRefreshesMtime is Revi's Rf8961b.
+//
+// PruneObjects' grace window rests on "objects are written before the
+// manifest, so anything younger than minAge may be alive". A dedup hit
+// wrote nothing, so the object kept the mtime of whichever run first
+// stored it — possibly days old and since pruned. A sweep whose mark
+// phase ran before this run's first manifest landed then found the hash
+// unreferenced AND old enough, and deleted content the run was about to
+// name; the stat cache went on reusing that hash, so every later manifest
+// named dead content too.
+func TestStoreObject_DedupHitRefreshesMtime(t *testing.T) {
+	storeDir, ws := t.TempDir(), t.TempDir()
+	write(t, ws, "shared.txt", "content stored by an earlier run")
+	n := NewNative(storeDir)
+	if _, err := n.Capture("run-a", ws, "post:a:0"); err != nil {
+		t.Fatalf("first capture: %v", err)
+	}
+
+	// Age every object, as a long-lived pool naturally is.
+	old := time.Now().Add(-72 * time.Hour)
+	var objects []string
+	_ = filepath.WalkDir(filepath.Join(storeDir, objectsDir), func(p string, d fs.DirEntry, err error) error {
+		if err == nil && !d.IsDir() {
+			objects = append(objects, p)
+			_ = os.Chtimes(p, old, old)
+		}
+		return nil
+	})
+	if len(objects) == 0 {
+		t.Fatal("fixture: nothing was stored")
+	}
+
+	// A second run captures the same tree: every object is a dedup hit.
+	n2 := NewNative(storeDir)
+	if _, err := n2.Capture("run-b", ws, "post:a:0"); err != nil {
+		t.Fatalf("second capture: %v", err)
+	}
+
+	cutoff := time.Now().Add(-time.Hour)
+	for _, p := range objects {
+		info, err := os.Stat(p)
+		if err != nil {
+			t.Fatalf("stat %s: %v", p, err)
+		}
+		if !info.ModTime().After(cutoff) {
+			t.Errorf("%s still carries its original mtime after a dedup hit — the prune "+
+				"grace window does not cover it, so a concurrent sweep deletes content "+
+				"this run is about to name", filepath.Base(p))
+		}
 	}
 }

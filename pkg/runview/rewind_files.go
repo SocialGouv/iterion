@@ -61,7 +61,18 @@ func (s *Service) revertWorkspace(run *store.Run, wf *ir.Workflow, cp *store.Che
 		// independent, so it can succeed where git's refs are missing —
 		// and it carries the same staleness guard, so the fallback cannot
 		// smuggle in the older-iteration revert the git path just refused.
-		if res, terr := s.revertViaTracker(run, wf, cp, pivot, sourcePath); terr == nil && res.Reverted {
+		res, terr := s.revertViaTracker(run, wf, cp, pivot, sourcePath)
+		if terr != nil {
+			// A tracker restore that FAILED is not "nothing happened": its
+			// deletion pass runs to completion before the write-back, so
+			// files may already be gone. Falling through to the git skip
+			// reason would hand the operator text that literally says the
+			// workspace was left as-is while it has in fact been mutated.
+			// "Could not attempt" and "attempted and broke" are different
+			// answers — the non-worktree path above already propagates.
+			return nil, terr
+		}
+		if res.Reverted {
 			return res, nil
 		}
 		return &fileRevertResult{SkipReason: skip}, nil

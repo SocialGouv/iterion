@@ -203,8 +203,23 @@ func (n *Native) Capture(runID, workspaceDir, label string) (*Snapshot, error) {
 
 	err := filepath.WalkDir(workspaceDir, func(path string, d fs.DirEntry, walkErr error) error {
 		if walkErr != nil {
-			// An unreadable directory is skipped, not fatal: a run should
-			// not die because one path lost its permissions.
+			// The ROOT failing is a different animal from a sub-directory
+			// failing, and must be fatal. WalkDir reports it as a single
+			// call with (path == root, d == nil), which the tolerant branch
+			// below swallowed — so a workspace that was momentarily
+			// unreadable (permissions, an unmounted volume, a removed
+			// worktree) produced a snapshot with ZERO entries and no error.
+			// Restoring that snapshot then deletes every file absent from
+			// it, i.e. the whole workspace; and revertViaTracker banks
+			// through this same call, so the "nothing is destroyed" backup
+			// would record nothing while still handing the operator a ref
+			// they are told to trust. A workspace that could not be read
+			// has not been observed to be empty.
+			if path == workspaceDir {
+				return fmt.Errorf("workspacetrack: read workspace %s: %w", workspaceDir, walkErr)
+			}
+			// A single unreadable sub-directory stays non-fatal: a run
+			// should not die because one path lost its permissions.
 			if d != nil && d.IsDir() {
 				return fs.SkipDir
 			}
@@ -354,7 +369,24 @@ func (n *Native) storeObject(path string) (string, error) {
 	hash := hex.EncodeToString(h.Sum(nil))
 	dest := n.objectPath(hash)
 	if _, err := os.Stat(dest); err == nil {
-		return hash, nil // already stored
+		// Already stored — but TOUCH it, because PruneObjects' safety
+		// argument ("objects are written before the manifest, so anything
+		// younger than the grace window may be alive") only covers objects
+		// this capture actually wrote. On a dedup hit the file keeps the
+		// mtime of whichever run first stored it, possibly days old and
+		// possibly since pruned. A sweep whose mark phase ran before this
+		// run's first manifest landed would then find the hash
+		// unreferenced AND old enough, and delete content this run is
+		// about to name — after which the stat cache keeps reusing the
+		// same hash, so every later manifest of the run names dead content
+		// too. On a store where a bot runs repeatedly against one repo,
+		// deduped content is most of the workspace.
+		//
+		// Best-effort: failing to touch costs the grace window, not the
+		// capture.
+		now := time.Now()
+		_ = os.Chtimes(dest, now, now)
+		return hash, nil
 	}
 	if err := os.MkdirAll(filepath.Dir(dest), storeDirPerm); err != nil {
 		return "", err
