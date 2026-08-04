@@ -216,6 +216,16 @@ type Run struct {
 	WorkflowName   string            `json:"workflow_name" bson:"workflow_name"`
 	WorkflowHash   string            `json:"workflow_hash,omitempty" bson:"workflow_hash,omitempty"` // SHA-256 of the .bot source at run start
 	FilePath       string            `json:"file_path,omitempty" bson:"file_path,omitempty"`         // absolute .bot source path captured at launch (resume without re-supplying file)
+	// WorkflowSource is the .bot text as it was AT LAUNCH. WorkflowHash
+	// answers "did the source change since?"; this answers "which node
+	// changed", which is what `iterion rewind --auto` needs to target the
+	// edit. FilePath cannot serve: by the time you rewind, that file holds
+	// the NEW version — the whole reason you are rewinding.
+	//
+	// Best-effort and size-capped (see runtime.maxPersistedWorkflowSource):
+	// an unreadable or oversized source simply disables auto-targeting,
+	// leaving `--node` to work as before.
+	WorkflowSource string `json:"workflow_source,omitempty" bson:"workflow_source,omitempty"`
 	// Preset is the in-source preset name selected at launch via
 	// `--preset <name>` (or the studio Launch modal). Persisted so
 	// `iterion resume` re-applies the same parameter set without the
@@ -834,6 +844,17 @@ type Interaction struct {
 	// be enforced at the interaction layer too. Empty for legacy
 	// filesystem records.
 	TenantID string `json:"tenant_id,omitempty" bson:"tenant_id,omitempty"`
+	// RetiredAt marks a question the run no longer asks — set when a
+	// rewind invalidates the node that posted it.
+	//
+	// ADR-081's async pair is level-triggered against the STORE, not the
+	// checkpoint: await_answers parks until the pending list is empty and
+	// returns every answered record. So a rewind that only cleared the
+	// checkpoint pointer left its questions live, and the replayed node
+	// blocked on the union of its new questions and the abandoned ones —
+	// or mixed pre- and post-rewind answers into one output. A retired
+	// record is in neither list.
+	RetiredAt *time.Time `json:"retired_at,omitempty" bson:"retired_at,omitempty"`
 }
 
 // InteractionTurn is one message in a guided review-gate dialogue.

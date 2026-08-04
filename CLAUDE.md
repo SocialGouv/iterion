@@ -1156,6 +1156,7 @@ iterion runs questions <run-id> [--store-dir]   # List a run's pending async (as
 iterion runs answer <run-id> <interaction-id> <answer> [--store-dir]  # Answer one pending async question (non-blocking; ADR-081)
 iterion resume --run-id --file [--answers-file] [--force]  # Resume paused/failed/cancelled run
 iterion fork --run-id <parent> --node <id> [--turn N] [--rewind-code]  # Fork a run at a prior LLM turn (resume with `iterion resume`)
+iterion rewind --run-id <id> [--auto | --node <id>] [--file]  # Re-anchor THIS run on an earlier node + invalidate downstream outputs/artifacts, then `iterion resume --force`. `--auto` diffs the edited .bot against the source the run executed and targets the change (bot-dev iteration; docs/resume.md)
 iterion diagram <file.bot> [--view]    # Generate Mermaid diagram (compact|detailed|full)
 iterion studio [--port] [--dir] [--bind] [--bots-path] [--no-browser-pane] [--max-concurrent-pipelines]  # Launch visual workflow editor (+ kanban /board, global /pipelines control-center board, /dispatcher dashboard, Browser pane, Launch modal, /bots gallery + per-bot home + guided builder at /bots/new). --max-concurrent-pipelines (default 3) caps concurrent root pipelines; excess wait in /pipelines Todo.
 iterion report --run-id <id> [--store-dir] [--output]  # Generate chronological run report

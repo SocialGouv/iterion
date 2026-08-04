@@ -52,6 +52,7 @@ func (e *Engine) execSpecialNode(
 	for k, v := range extraStarted {
 		startedPayload[k] = v
 	}
+	e.markPreNodeBoundary(rs, nodeID)
 	if err := e.emit(rs.ctx, rs.runID, store.EventNodeStarted, nodeID, startedPayload); err != nil {
 		return "", err
 	}

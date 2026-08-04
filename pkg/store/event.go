@@ -109,6 +109,34 @@ const (
 	//     "runtime_code+parsed_text", "…+blind_wait") — the degraded
 	//     paths must be visible, not silent
 	EventRunRetryScheduled EventType = "run_retry_scheduled"
+	// EventRunRewound marks an in-place rewind: the operator re-anchored
+	// THIS run's checkpoint on an already-executed node and invalidated
+	// the outputs downstream of it, so the next resume re-executes from
+	// there (see runview.Service.Rewind). Distinct from a fork, which
+	// mints a NEW run id and leaves this one untouched.
+	//
+	// The event is the audit trail: events.jsonl stays append-only, so
+	// the superseded node_started / node_finished records of the dropped
+	// nodes remain in the timeline with this marker explaining why they
+	// are about to repeat. Data:
+	//   - from_node: the checkpoint node the run was anchored on before
+	//   - to_node: the new anchor (== NodeID on the event)
+	//   - dropped_nodes: node ids whose outputs were invalidated,
+	//     sorted; always includes to_node
+	//   - tombstoned_artifacts: dropped nodes whose published artifact was
+	//     superseded by a `rewound` marker version, sorted
+	//   - orphaned_child_runs: subbot child run ids whose pointer was
+	//     released, sorted
+	//   - promoted_from: the requested pivot when it was promoted to the
+	//     router of the fan-out containing it ("" otherwise)
+	//   - files_reverted: whether the workspace was reverted to the pivot's
+	//     pre-execution snapshot
+	//   - files_ref / files_revert_commit / files_backup_ref: the snapshot
+	//     ref restored, the revert commit written on top of HEAD, and the
+	//     ref banking the pre-revert state
+	//   - files_skip_reason: why the workspace was left untouched (no
+	//     worktree, keep_files, or no recorded pre-boundary)
+	EventRunRewound EventType = "run_rewound"
 	// Review-&-merge gate events (interaction: review). The gate runs a
 	// companion↔human dialogue and squash-merges during the pause.
 	EventReviewTurn     EventType = "review_turn"    // data: {interaction_id, role, turn}

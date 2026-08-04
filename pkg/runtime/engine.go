@@ -95,6 +95,7 @@ type Engine struct {
 	onEvent                  func(evt store.Event)    // optional observer fired after every successful append
 	recoveryDispatch         RecoveryDispatch         // optional; consulted on node execution failure
 	workflowHash             string                   // SHA-256 of the .bot source, set via WithWorkflowHash
+	workflowSource           string                   // .bot text at launch, set via WithWorkflowSource (else read from filePath)
 	filePath                 string                   // absolute .bot source path, set via WithFilePath
 	parentRunID              string                   // immediate parent run, set via WithParentRunID for nested executions
 	parentNodeID             string                   // IR node id of the parent's subbot node that spawned this run, set via WithParentNodeID
@@ -288,7 +289,25 @@ type runState struct {
 	// still observes it. Distinct from the lossy cross-run pkg/eventbus.
 	events           *runEvents
 	artifactVersions map[string]int
-	budget           *SharedBudget // shared across branches, nil if no budget
+	// lastSnapshotCommit is the commit capturing the workspace as the
+	// previous node boundary left it, or "" meaning UNKNOWN (run start,
+	// resume, or just out of a special dispatch that may have mutated the
+	// tree). When it is known, the next node's pre-boundary marker aliases
+	// it, so recording "state before node N" costs one update-ref instead
+	// of a second index walk. Written and read only on the main execution
+	// path (fan-out branches never snapshot — workspace safety admits a
+	// single mutating branch), so it needs no lock.
+	lastSnapshotCommit string
+	// preMarked deduplicates markPreNodeBoundary per (node, loopIter):
+	// several dispatch paths bracket the same node — execLoop brackets
+	// every isSpecialDispatch kind, and execSpecialNode / the human-node
+	// path bracket it again. A second call is pure duplicated work (the
+	// same tree, hence the same ref target), but when lastSnapshotCommit
+	// is UNKNOWN each one runs a full `git add -A` index walk and leaves
+	// an orphan commit object. Same-key entries are dropped; a later loop
+	// iteration carries a different key and re-marks.
+	preMarked map[string]bool
+	budget    *SharedBudget // shared across branches, nil if no budget
 
 	// resourceSemaphores holds one buffered channel per declared workflow
 	// resource, pre-seeded with its tokens and shared by reference across all
@@ -402,6 +421,7 @@ func (e *Engine) newRunState(runID string, inputs map[string]any) *runState {
 		loopStaleness:      make(map[string]int),
 		roundRobinCounters: make(map[string]int),
 		artifactVersions:   make(map[string]int),
+		preMarked:          make(map[string]bool),
 		nodeAttempts:       make(map[string]map[ErrorCode]int),
 		budget:             newSharedBudget(e.workflow.Budget, e.logger),
 		resourceSemaphores: buildResourceSemaphores(e.workflow.Resources, e.workflow.ResourceMembers),
