@@ -71,6 +71,10 @@ func (s *Service) NodeChanges(ctx context.Context, runID, nodeID string, iterati
 		}
 	}
 	if s.workspaceTracker != nil {
+		// Read-only surface over an ARBITRARY run, including ones this
+		// process never executed — so the stat cache this resolve warms
+		// must not be pinned for the life of the studio.
+		defer s.forgetTrackerCacheIfNotLive(run.ID)
 		if set, ok := s.nodeChangesFromTracker(run.ID, nodeID, iteration); ok {
 			return set, nil
 		}
@@ -104,7 +108,7 @@ func nodeChangesRepo(run *store.Run) string {
 }
 
 func (s *Service) nodeChangesFromGit(repo, runID, nodeID string, iteration int) (*NodeChangeSet, bool) {
-	for iter := nodeChangesProbeStart(iteration); iter >= 0; iter-- {
+	for iter := nodeChangesProbeStart(iteration); iter >= nodeChangesProbeStop(iteration); iter-- {
 		pre := store.NodePreSnapshotRef(runID, nodeID, iter)
 		post := store.NodeSnapshotRef(runID, nodeID, iter)
 		if !gitRefExists(repo, pre) || !gitRefExists(repo, post) {
@@ -130,7 +134,7 @@ func (s *Service) nodeChangesFromGit(repo, runID, nodeID string, iteration int) 
 }
 
 func (s *Service) nodeChangesFromTracker(runID, nodeID string, iteration int) (*NodeChangeSet, bool) {
-	for iter := nodeChangesProbeStart(iteration); iter >= 0; iter-- {
+	for iter := nodeChangesProbeStart(iteration); iter >= nodeChangesProbeStop(iteration); iter-- {
 		preID, okPre := s.workspaceTracker.Resolve(runID, workspacetrack.Label(workspacetrack.PhasePre, nodeID, iter))
 		postID, okPost := s.workspaceTracker.Resolve(runID, workspacetrack.Label(workspacetrack.PhasePost, nodeID, iter))
 		if !okPre || !okPost {
@@ -167,6 +171,24 @@ func nodeChangesProbeStart(iteration int) int {
 		return iteration
 	}
 	return 64
+}
+
+// nodeChangesProbeStop is where the downward probe must give up.
+//
+// Walking down is the semantics of iteration < 0 ("show me the latest one
+// recorded") and ONLY that. For an explicit iteration it is actively
+// wrong: the studio always sends one, so a loop node currently executing
+// its iteration 2 — which has an opening boundary but no closing one —
+// silently resolved iteration 1 and was reported Available with iteration
+// 1's file list. That made explainMissingBoundary's "this node has not
+// finished yet" unreachable for any looped node, and left a
+// plausible-but-wrong diff on screen with only a small caption to
+// contradict it. Precisely the class this feature exists to prevent.
+func nodeChangesProbeStop(iteration int) int {
+	if iteration >= 0 {
+		return iteration
+	}
+	return 0
 }
 
 // explainMissingBoundary names the actual cause, because the fixes
@@ -250,6 +272,9 @@ func (s *Service) NodeFileDiff(ctx context.Context, runID, nodeID string, iterat
 
 // trackerFileDiff builds a diff payload from stored content.
 func (s *Service) trackerFileDiff(runID, nodeID string, iteration int, path string) (*gitlib.DiffPayload, error) {
+	// Same reason as NodeChanges: a read-only resolve on a run this
+	// process does not hold must not pin its stat cache forever.
+	defer s.forgetTrackerCacheIfNotLive(runID)
 	preID, okPre := s.workspaceTracker.Resolve(runID, workspacetrack.Label(workspacetrack.PhasePre, nodeID, iteration))
 	postID, okPost := s.workspaceTracker.Resolve(runID, workspacetrack.Label(workspacetrack.PhasePost, nodeID, iteration))
 	if !okPre || !okPost {

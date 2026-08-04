@@ -64,13 +64,22 @@ func (s *Server) handleGetRunNodeFileDiff(w http.ResponseWriter, r *http.Request
 }
 
 // parseIterationParam reads ?iteration=N. Absent means "latest recorded".
+// maxIterationParam bounds ?iteration=N.
+//
+// Defence in depth: the resolvers no longer probe downwards for an
+// explicit iteration, so a large N costs one lookup — but the bound keeps
+// a malformed request an obvious 400 instead of a plausible-looking miss,
+// and it is the guard that holds if the probe ever walks again. Far above
+// any real loop (max_iterations is a workflow budget, not a page size).
+const maxIterationParam = 1024
+
 func parseIterationParam(s *Server, w http.ResponseWriter, r *http.Request) (int, bool) {
 	raw := r.URL.Query().Get("iteration")
 	if raw == "" {
 		return -1, true
 	}
 	n, err := strconv.Atoi(raw)
-	if err != nil || n < 0 {
+	if err != nil || n < 0 || n > maxIterationParam {
 		s.httpErrorFor(w, r, http.StatusBadRequest, "invalid iteration: %q", raw)
 		return 0, false
 	}

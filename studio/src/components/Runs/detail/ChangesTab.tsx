@@ -18,6 +18,18 @@ interface Props {
    * plausible but wrong diff.
    */
   iteration: number;
+  /**
+   * True when more than one execution of this node shares `iteration`.
+   *
+   * The scalar is `max()` across every containing loop, so under NESTED
+   * loops two distinct passes collide on it (outer=2/inner=1 and
+   * outer=1/inner=2 both yield 2) — and since the boundary ref and the
+   * tracker label are named with that scalar, the later pass overwrites
+   * the earlier one's pair. Only ONE range survives, so attributing it to
+   * each colliding pill would be exactly the plausible-but-wrong diff this
+   * panel exists to prevent. We show it once and say what it covers.
+   */
+  ambiguousIteration?: boolean;
 }
 
 const STATUS_LABEL: Record<string, string> = {
@@ -46,7 +58,7 @@ function statusTone(status: string): string {
  * the exec object, whose identity changes on every WebSocket event and
  * would refire this several times a second on a live run.
  */
-export function ChangesTab({ runId, nodeId, iteration }: Props) {
+export function ChangesTab({ runId, nodeId, iteration, ambiguousIteration }: Props) {
   const [diffFile, setDiffFile] = useState<RunFile | null>(null);
 
   const { data, isLoading, error } = useQuery({
@@ -78,16 +90,28 @@ export function ChangesTab({ runId, nodeId, iteration }: Props) {
   }
 
   const uncaptured = data.uncaptured ?? [];
+  const ambiguityNotice = ambiguousIteration ? (
+    <InlineBanner tone="warning" layout="inline">
+      Several passes of this node share iteration {iteration}, and a boundary is
+      recorded per iteration number — so this is the <strong>last</strong> of
+      them, not this pass specifically.
+    </InlineBanner>
+  ) : null;
+
   if (data.files.length === 0 && uncaptured.length === 0) {
     return (
-      <p className="text-caption text-fg-subtle">
-        This node changed no files.
-      </p>
+      <div className="flex flex-col gap-2">
+        {ambiguityNotice}
+        <p className="text-caption text-fg-subtle">
+          This node changed no files.
+        </p>
+      </div>
     );
   }
 
   return (
     <div className="flex flex-col gap-2">
+      {ambiguityNotice}
       <div className="flex items-baseline justify-between gap-2">
         <span className="text-caption text-fg-subtle">
           {data.files.length} file{data.files.length === 1 ? "" : "s"} changed

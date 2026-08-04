@@ -114,6 +114,33 @@ func (s *Service) unregisterRunEngine(runID string) {
 	s.runLogsMu.Unlock()
 }
 
+// forgetTrackerCacheIfNotLive evicts a run's workspace stat cache unless
+// this process is executing that run.
+//
+// The tracker outlives every run in a studio process, and its per-run
+// cache is only dropped by unregisterRunEngine — i.e. for runs this
+// process EXECUTED. But the read-only surfaces (a node's file changes, a
+// file diff) resolve labels for ARBITRARY runs, including long-finished
+// ones this studio never ran, so each one browsed pinned its full stat
+// cache for the life of the process: several MiB per run on a repo with
+// vendored dependencies, growing monotonically with no ceiling as the
+// operator pages through history.
+//
+// A live run keeps its warm cache — that one is on the write path, where
+// re-reading index.json at every node boundary is exactly what the cache
+// exists to avoid.
+func (s *Service) forgetTrackerCacheIfNotLive(runID string) {
+	if s == nil || s.workspaceTracker == nil || runID == "" {
+		return
+	}
+	s.runLogsMu.RLock()
+	_, live := s.runEngines[runID]
+	s.runLogsMu.RUnlock()
+	if !live {
+		s.workspaceTracker.Forget(runID)
+	}
+}
+
 // steerChannelFor returns the live run's override send channel, or nil
 // when this process does not hold the run.
 func (s *Service) steerChannelFor(runID string) chan *runtime.OverrideMsg {

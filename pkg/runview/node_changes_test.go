@@ -212,3 +212,64 @@ func TestNodeChanges_EmptyRangeIsAvailable(t *testing.T) {
 		t.Errorf("files = %v, want none", set.Files)
 	}
 }
+
+// TestNodeChanges_ExplicitIterationDoesNotFallBack is Revi's Rd56b21.
+//
+// Walking downwards is the semantics of iteration < 0 ("the latest one
+// recorded"), but the loop ran unconditionally — and the studio ALWAYS
+// sends an explicit iteration. So a loop node midway through its
+// iteration 1 (opening boundary written, closing one not yet) silently
+// resolved iteration 0 and was reported Available with iteration 0's file
+// list, under a caption reading "· iteration 0" that looks like a label
+// rather than a correction. explainMissingBoundary's "this node has not
+// finished yet" was unreachable for any looped node.
+func TestNodeChanges_ExplicitIterationDoesNotFallBack(t *testing.T) {
+	svc, ws, runID := seedNodeChangesRun(t)
+	tr := svc.workspaceTracker
+	ctx := context.Background()
+
+	// Iteration 0 ran to completion.
+	if err := os.WriteFile(filepath.Join(ws, "f.txt"), []byte("v1"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := tr.Capture(runID, ws, workspacetrack.Label(workspacetrack.PhasePre, "implement", 0)); err != nil {
+		t.Fatalf("pre 0: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(ws, "iter0-only.txt"), []byte("from pass 0"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := tr.Capture(runID, ws, workspacetrack.Label(workspacetrack.PhasePost, "implement", 0)); err != nil {
+		t.Fatalf("post 0: %v", err)
+	}
+	// Iteration 1 has started but not finished: opening boundary only.
+	if _, err := tr.Capture(runID, ws, workspacetrack.Label(workspacetrack.PhasePre, "implement", 1)); err != nil {
+		t.Fatalf("pre 1: %v", err)
+	}
+
+	set, err := svc.NodeChanges(ctx, runID, "implement", 1)
+	if err != nil {
+		t.Fatalf("NodeChanges: %v", err)
+	}
+	if set.Available {
+		names := make([]string, 0, len(set.Files))
+		for _, f := range set.Files {
+			names = append(names, f.Path)
+		}
+		t.Fatalf("iteration 1 reported Available with %v (resolved iteration %d) — "+
+			"an explicit iteration must resolve THAT iteration or say why it cannot, "+
+			"not silently present an earlier pass's diff", names, set.Iteration)
+	}
+	if set.Reason == "" {
+		t.Error("an unavailable range must say why")
+	}
+
+	// iteration < 0 keeps its documented meaning: the latest recorded one.
+	latest, err := svc.NodeChanges(ctx, runID, "implement", -1)
+	if err != nil {
+		t.Fatalf("NodeChanges(latest): %v", err)
+	}
+	if !latest.Available || latest.Iteration != 0 {
+		t.Errorf("latest = {available:%v iteration:%d}, want the completed iteration 0",
+			latest.Available, latest.Iteration)
+	}
+}
