@@ -936,7 +936,8 @@ func (r *Runner) processOne(parent context.Context, delivery *natsq.Delivery) {
 		<-hbDone
 	}()
 
-	err := r.executeRun(runCtx, msg)
+	var usage *metricsEmitter
+	err := r.executeRun(runCtx, msg, &usage)
 	// Stop the heartbeat before finalizing (Ack/Nak) the delivery. The
 	// heartbeat issues periodic InProgress() on this same delivery to
 	// hold the JetStream ack deadline open; draining it here guarantees
@@ -975,17 +976,34 @@ func (r *Runner) processOne(parent context.Context, delivery *natsq.Delivery) {
 	// delivery still arms a retry instead of being parked: the window is
 	// exactly the condition that makes every prior delivery useless, so
 	// reaching delivery 8 is evidence for retrying later, not against it.
+	// Close the credential-pool lease unless JetStream is about to hand the
+	// SAME sealed bundle to another pod — the only case where a later
+	// attempt still runs on this lease and can report against it. A parked
+	// delivery (usage-window retry, DLQ) is final for this bundle: an armed
+	// retry re-publishes and acquires afresh, and a DLQ'd run never comes
+	// back. Reporting `interim` there would strand the donor's slot and
+	// committed allowance until the 12h lease TTL.
 	if handled, retryStatus := r.parkUsageLimitRetry(runCtx, err, delivery, msg, logger); handled {
+		r.recordPoolSpend(msg, usage, err, false)
 		fireOutcome()
 		finalStatus = retryStatus
 		return
 	}
 
 	if handled, dlqStatus := r.parkOnDLQOnFinalDelivery(err, delivery, msg, logger); handled {
+		r.recordPoolSpend(msg, usage, err, false)
 		fireOutcome()
 		finalStatus = dlqStatus
 		return
 	}
+
+	// Interim only when JetStream will really redeliver. A Nak does not
+	// imply one: ErrRunInterrupted (drain / lost heartbeat) is exempt from
+	// the DLQ park above, so on its LAST permitted delivery it Naks into
+	// nothing — and a lease left open there strands the donor's slot and
+	// committed allowance until the 12h TTL.
+	redeliverable := r.cfg.NATS != nil && delivery.NumDelivered() < r.cfg.NATS.MaxDeliver()
+	r.recordPoolSpend(msg, usage, err, outcome.action == actionNak && redeliverable)
 
 	if outcomeSideEffectsFire(err, outcome.action) {
 		fireOutcome()
@@ -1079,7 +1097,12 @@ func (r *Runner) fireOutcomeEvent(msg *queue.RunMessage, execErr error) {
 // attempt ended: a credential pool must know whether it was a provider
 // quota window or a rejected credential that stopped the run, not merely
 // how much it cost.
-func (r *Runner) executeRun(ctx context.Context, msg *queue.RunMessage) (execErr error) {
+// usageOut, when non-nil, receives the run's metrics emitter as soon as it
+// exists so the CALLER can report pool spend once it knows the delivery's
+// real disposition. The pool report cannot live in this function's defer:
+// whether an attempt is the last one — parked on the DLQ rather than
+// redelivered — is decided above, after this returns.
+func (r *Runner) executeRun(ctx context.Context, msg *queue.RunMessage, usageOut **metricsEmitter) (execErr error) {
 	// Honour the publisher's per-run wall-clock budget. Without this,
 	// queue.RunMessage.TimeoutSec — wired from `iterion run --timeout`
 	// and the studio Launch modal — has no effect in cloud mode: the
@@ -1263,14 +1286,14 @@ func (r *Runner) executeRun(ctx context.Context, msg *queue.RunMessage) (execErr
 	if err != nil {
 		return err
 	}
+	if usageOut != nil {
+		*usageOut = usage
+	}
 	// Charge the run's spend whatever the outcome — paused, cancelled and
-	// failed attempts incurred real LLM spend. The org's monthly bucket
-	// always; a lending contributor's ledger too when this run drew on the
-	// credential pool.
-	defer func() {
-		r.recordOrgSpend(msg, usage)
-		r.recordPoolSpend(msg, usage, execErr)
-	}()
+	// failed attempts incurred real LLM spend. The credential pool's half is
+	// reported by the caller instead, which alone knows whether this
+	// delivery is the last one.
+	defer func() { r.recordOrgSpend(msg, usage) }()
 
 	engineOpts := []runtime.EngineOption{
 		runtime.WithLogger(runLogger),
@@ -1346,6 +1369,14 @@ func (r *Runner) executeRun(ctx context.Context, msg *queue.RunMessage) (execErr
 	if steerCh := r.steerChannelFor(msg.RunID); steerCh != nil {
 		engineOpts = append(engineOpts, runtime.WithOverrideChannel(steerCh))
 	}
+	// The engine's own events (chiefly node_recovery) carry classifications
+	// nothing else reports. Observed through the engine's dedicated seam
+	// rather than a store decorator: a decorator's method set is the
+	// INTERFACE's, which would hide the concrete store's optional
+	// capabilities (RunFilesStore, InteractionAnswerCAS, …) from the
+	// type-assertion probes inside the engine — silently, since each one
+	// degrades rather than errors.
+	engineOpts = append(engineOpts, runtime.WithEventObserver(usage.observe))
 	engine := runtime.New(wf, r.cfg.Store, executor, engineOpts...)
 	// Publish the engine so the store's Event.ActiveMs stamping reads
 	// this run's monotonic active elapsed; drop it when the run returns.

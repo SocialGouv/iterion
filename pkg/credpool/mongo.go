@@ -253,12 +253,18 @@ func (s *MongoLeaseStore) Close(ctx context.Context, leaseID string, costUSD flo
 	// charges nothing.
 	res, err := s.col.UpdateOne(ctx,
 		bson.M{"_id": leaseID, "closed": false},
-		bson.M{"$set": bson.M{
-			"closed":    true,
-			"cost_usd":  costUSD,
-			"outcome":   outcome,
-			"closed_at": when.UTC(),
-		}})
+		bson.M{
+			// cost_usd is INCREMENTED, not set: an attempt that was
+			// redelivered already charged its share through AddCost, and a
+			// $set would erase it — leaving the donor's per-lease audit
+			// trail disagreeing with their ledger on exactly the runs this
+			// accounting exists for.
+			"$inc": bson.M{"cost_usd": costUSD},
+			"$set": bson.M{
+				"closed":    true,
+				"outcome":   outcome,
+				"closed_at": when.UTC(),
+			}})
 	if err != nil {
 		return false, fmt.Errorf("credpool: close lease: %w", err)
 	}
@@ -270,6 +276,20 @@ func (s *MongoLeaseStore) Close(ctx context.Context, leaseID string, costUSD flo
 		return false, ErrNotFound
 	}
 	return false, nil
+}
+
+// AddCost accumulates an interim attempt's spend onto an OPEN lease, so
+// the donor's audit trail matches their ledger for a redelivered run.
+func (s *MongoLeaseStore) AddCost(ctx context.Context, leaseID string, costUSD float64) error {
+	if costUSD == 0 {
+		return nil
+	}
+	if _, err := s.col.UpdateOne(ctx,
+		bson.M{"_id": leaseID, "closed": false},
+		bson.M{"$inc": bson.M{"cost_usd": costUSD}}); err != nil {
+		return fmt.Errorf("credpool: accumulate lease cost: %w", err)
+	}
+	return nil
 }
 
 func (s *MongoLeaseStore) LiveCommitment(ctx context.Context, pledgeID, excludeRunID string, now time.Time) (int, float64, error) {

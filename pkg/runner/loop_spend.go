@@ -2,12 +2,13 @@ package runner
 
 import (
 	"context"
-	"errors"
 	"time"
 
 	"github.com/SocialGouv/iterion/pkg/backend/delegate"
 	"github.com/SocialGouv/iterion/pkg/credpool"
 	"github.com/SocialGouv/iterion/pkg/queue"
+	"github.com/SocialGouv/iterion/pkg/runtime"
+	"github.com/SocialGouv/iterion/pkg/runtime/recovery"
 )
 
 // recordOrgSpend charges the run's accumulated LLM consumption to the
@@ -50,12 +51,24 @@ func (r *Runner) recordOrgSpend(msg *queue.RunMessage, usage *metricsEmitter) {
 // ctx and best-effort for the same reason as recordOrgSpend: accounting
 // must never turn a finished run into a failed one. The lease's own TTL
 // plus the server-side sweeper are the backstop if this write is lost.
-func (r *Runner) recordPoolSpend(msg *queue.RunMessage, usage *metricsEmitter, execErr error) {
+// interim says this attempt does NOT settle the run: the queue will
+// redeliver the same sealed bundle, so the next pod runs on this very
+// lease. Decided by the caller, which is the only place the delivery's
+// real disposition is known — a run on its last permitted delivery is
+// parked, not redelivered.
+func (r *Runner) recordPoolSpend(msg *queue.RunMessage, usage *metricsEmitter, execErr error, interim bool) {
 	if r.cfg.CredPool == nil || usage == nil {
 		return
 	}
 	costUSD, in, out := usage.RunTotals()
 	condition, cooldownUntil := classifyPoolCondition(execErr, time.Now().UTC())
+	// An auth rejection the recovery machinery absorbed into a human pause
+	// leaves execErr saying only "paused". Without this the donor's dead
+	// credential stays first in the rotation and pauses the next run too,
+	// costing them a unit of their daily quota every time.
+	if condition == credpool.ConditionOK && usage.SawAuthFailure() {
+		condition = credpool.ConditionAuthFailed
+	}
 	bg, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	if err := r.cfg.CredPool.Report(bg, msg.RunID, credpool.Outcome{
@@ -64,6 +77,7 @@ func (r *Runner) recordPoolSpend(msg *queue.RunMessage, usage *metricsEmitter, e
 		OutputTokens:  out,
 		Condition:     condition,
 		CooldownUntil: cooldownUntil,
+		Interim:       interim,
 	}); err != nil {
 		r.cfg.Logger.Warn("runner: credential-pool report for run %s: %v (the donor's slot frees on lease expiry)", msg.RunID, err)
 	}
@@ -93,8 +107,12 @@ func classifyPoolCondition(execErr error, now time.Time) (credpool.Condition, ti
 		}
 		return credpool.ConditionUsageWindow, at
 	}
-	var auth *delegate.ErrAuthFailed
-	if errors.As(execErr, &auth) {
+	// Asked through recovery.Classify rather than a local type switch: it
+	// is the engine's single source of truth for "the provider rejected
+	// this credential", and it recognises the raw 401/403 an in-process
+	// backend surfaces as well as the typed ErrAuthFailed the CLI ones
+	// raise. A local check for the type alone missed claw entirely.
+	if recovery.Classify(execErr) == runtime.ErrCodeAuthFailed {
 		return credpool.ConditionAuthFailed, time.Time{}
 	}
 	return credpool.ConditionOK, time.Time{}
