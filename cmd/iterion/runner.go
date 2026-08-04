@@ -215,6 +215,7 @@ func runRunner(cmd *cobra.Command, _ []string) error {
 		Leases:  credpool.NewMongoLeaseStore(st.DB()),
 		Ledger:  credpool.NewMongoLedger(st.DB()).WithLogger(logger),
 		OAuth:   secrets.NewMongoOAuthStore(st.DB()),
+		APIKeys: secrets.NewMongoApiKeyStore(st.DB()),
 		Sealer:  sealer,
 		Logger:  logger,
 	})

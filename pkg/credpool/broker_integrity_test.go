@@ -5,6 +5,9 @@ import (
 	"errors"
 	"testing"
 	"time"
+
+	"github.com/SocialGouv/iterion/pkg/secrets"
+	"github.com/SocialGouv/iterion/pkg/store"
 )
 
 // Regressions for defects an adversarial review found in the accounting.
@@ -29,7 +32,7 @@ func TestReport_secondReportDoesNotChargeAgain(t *testing.T) {
 			t.Fatalf("Report %d: %v", i, err)
 		}
 	}
-	day, _, _ := h.ledger.Usage(ctx, PledgeID("alice", "claude_code"), h.now)
+	day, _, _ := h.ledger.Usage(ctx, PledgeID("alice", SourceOAuth, "claude_code"), h.now)
 	if day.CostUSD != 2 {
 		t.Errorf("donor charged %v, want 2 — a second report double-charged them", day.CostUSD)
 	}
@@ -42,13 +45,19 @@ func TestAcquire_resumeDoesNotConsumeASecondRunUnit(t *testing.T) {
 	ctx := context.Background()
 	h.donor(t, "alice", Limits{MaxRunsPerDay: 2})
 
-	// One run, admitted then resumed three times.
+	// One run, admitted then resumed three times. Each attempt reports as
+	// it ends, which is what the runner's deferred recordPoolSpend does on
+	// every outcome including paused_waiting_human — skipping it here would
+	// test a resume shape production never produces.
 	for i := 0; i < 4; i++ {
 		if _, err := h.broker.Acquire(ctx, h.request("run-1")); err != nil {
 			t.Fatalf("acquire attempt %d: %v", i, err)
 		}
+		if err := h.broker.Report(ctx, "run-1", Outcome{CostUSD: 0.1}); err != nil {
+			t.Fatalf("report attempt %d: %v", i, err)
+		}
 	}
-	day, _, _ := h.ledger.Usage(ctx, PledgeID("alice", "claude_code"), h.now)
+	day, _, _ := h.ledger.Usage(ctx, PledgeID("alice", SourceOAuth, "claude_code"), h.now)
 	if day.Runs != 1 {
 		t.Errorf("day runs = %d, want 1 — resuming re-consumed the donor's run quota", day.Runs)
 	}
@@ -98,7 +107,7 @@ func TestAcquire_exhaustedDonorIsRefusedNotGrantedZero(t *testing.T) {
 	h := newHarness(t)
 	ctx := context.Background()
 	h.donor(t, "alice", Limits{MaxUSDPerDay: 5})
-	if err := h.ledger.AddSpend(ctx, PledgeID("alice", "claude_code"), h.now, 5, 0, 0); err != nil {
+	if err := h.ledger.AddSpend(ctx, PledgeID("alice", SourceOAuth, "claude_code"), h.now, 5, 0, 0); err != nil {
 		t.Fatalf("seed spend: %v", err)
 	}
 	grant, err := h.broker.Acquire(ctx, h.request("run-1"))
@@ -120,7 +129,7 @@ func TestRelease_returnsAnAdmissionWhoseRunNeverStarted(t *testing.T) {
 	}
 	h.broker.Release(ctx, "run-1")
 
-	day, _, _ := h.ledger.Usage(ctx, PledgeID("alice", "claude_code"), h.now)
+	day, _, _ := h.ledger.Usage(ctx, PledgeID("alice", SourceOAuth, "claude_code"), h.now)
 	if day.Runs != 0 {
 		t.Errorf("day runs = %d, want 0 — the donor paid for a run that never launched", day.Runs)
 	}
@@ -148,7 +157,7 @@ func TestRelease_isSafeOnAnythingElse(t *testing.T) {
 		t.Fatalf("Report: %v", err)
 	}
 	h.broker.Release(ctx, "run-1") // already closed — must not refund
-	day, _, _ := h.ledger.Usage(ctx, PledgeID("alice", "claude_code"), h.now)
+	day, _, _ := h.ledger.Usage(ctx, PledgeID("alice", SourceOAuth, "claude_code"), h.now)
 	if day.Runs != 1 {
 		t.Errorf("day runs = %d, want 1 — a released-after-report run gave back a unit it had used", day.Runs)
 	}
@@ -193,7 +202,7 @@ func TestAcquire_resumeOnAnotherDonorKeepsTheFirstOnesRecord(t *testing.T) {
 	if history[0].CostUSD != 2 || history[0].RunID != "run-1" {
 		t.Errorf("record = (run %q, $%v), want (run-1, $2)", history[0].RunID, history[0].CostUSD)
 	}
-	day, _, _ := h.ledger.Usage(ctx, PledgeID(first.DonorID, "claude_code"), h.now)
+	day, _, _ := h.ledger.Usage(ctx, PledgeID(first.DonorID, SourceOAuth, "claude_code"), h.now)
 	if day.CostUSD != 2 {
 		t.Errorf("first donor's ledger = %v, want 2 (and it must match their history)", day.CostUSD)
 	}
@@ -219,8 +228,8 @@ func TestReport_chargesTheDonorServingTheCurrentAttempt(t *testing.T) {
 		t.Fatalf("second Report: %v", err)
 	}
 
-	firstDay, _, _ := h.ledger.Usage(ctx, PledgeID(first.DonorID, "claude_code"), h.now)
-	secondDay, _, _ := h.ledger.Usage(ctx, PledgeID(second.DonorID, "claude_code"), h.now)
+	firstDay, _, _ := h.ledger.Usage(ctx, PledgeID(first.DonorID, SourceOAuth, "claude_code"), h.now)
+	secondDay, _, _ := h.ledger.Usage(ctx, PledgeID(second.DonorID, SourceOAuth, "claude_code"), h.now)
 	if firstDay.CostUSD != 1 {
 		t.Errorf("%s charged %v, want 1 (only their own attempt)", first.DonorID, firstDay.CostUSD)
 	}
@@ -242,7 +251,7 @@ func TestReleaseExpired_keepsTheRunUnitOfAServedRun(t *testing.T) {
 	if _, err := h.broker.ReleaseExpired(ctx, 10); err != nil {
 		t.Fatalf("ReleaseExpired: %v", err)
 	}
-	day, _, _ := h.ledger.Usage(ctx, PledgeID("alice", "claude_code"), h.now.Add(-DefaultLeaseTTL-time.Minute))
+	day, _, _ := h.ledger.Usage(ctx, PledgeID("alice", SourceOAuth, "claude_code"), h.now.Add(-DefaultLeaseTTL-time.Minute))
 	if day.Runs != 1 {
 		t.Errorf("day runs = %d, want 1 — a served run's quota was refunded", day.Runs)
 	}
@@ -298,7 +307,7 @@ func TestAcquire_supersedesAnOrphanedOpenLease(t *testing.T) {
 	}
 	// No Report — the pod died. Park the first donor so the resume must
 	// pick the other one.
-	p, _ := h.pledges.Get(ctx, PledgeID(first.DonorID, "claude_code"))
+	p, _ := h.pledges.Get(ctx, PledgeID(first.DonorID, SourceOAuth, "claude_code"))
 	p.Health = HealthAuthFailed
 	if err := h.pledges.Upsert(ctx, p); err != nil {
 		t.Fatalf("park: %v", err)
@@ -326,8 +335,8 @@ func TestAcquire_supersedesAnOrphanedOpenLease(t *testing.T) {
 	if err := h.broker.Report(ctx, "run-1", Outcome{CostUSD: 3}); err != nil {
 		t.Fatalf("Report: %v", err)
 	}
-	orphan, _, _ := h.ledger.Usage(ctx, PledgeID(first.DonorID, "claude_code"), h.now)
-	serving, _, _ := h.ledger.Usage(ctx, PledgeID(second.DonorID, "claude_code"), h.now)
+	orphan, _, _ := h.ledger.Usage(ctx, PledgeID(first.DonorID, SourceOAuth, "claude_code"), h.now)
+	serving, _, _ := h.ledger.Usage(ctx, PledgeID(second.DonorID, SourceOAuth, "claude_code"), h.now)
 	if orphan.CostUSD != 0 {
 		t.Errorf("%s was charged %v for work they did not serve", first.DonorID, orphan.CostUSD)
 	}
@@ -373,7 +382,7 @@ func TestAcquire_readmissionKeepsTheFinishedAttemptsRecord(t *testing.T) {
 	if err := h.broker.Report(ctx, "run-1", Outcome{CostUSD: 2}); err != nil {
 		t.Fatalf("second Report: %v", err)
 	}
-	day, _, _ := h.ledger.Usage(ctx, PledgeID("alice", "claude_code"), h.now)
+	day, _, _ := h.ledger.Usage(ctx, PledgeID("alice", SourceOAuth, "claude_code"), h.now)
 	if day.CostUSD != 4 {
 		// 2 (attempt 1) + 2 (attempt 2, legitimately reported) = 4.
 		t.Errorf("charged %v, want 4", day.CostUSD)
@@ -391,12 +400,15 @@ func TestRelease_doesNotRefundARenewedAdmission(t *testing.T) {
 	if _, err := h.broker.Acquire(ctx, h.request("run-1")); err != nil {
 		t.Fatalf("Acquire: %v", err)
 	}
+	if err := h.broker.Report(ctx, "run-1", Outcome{CostUSD: 0.1}); err != nil { // the attempt paused
+		t.Fatalf("Report: %v", err)
+	}
 	if _, err := h.broker.Acquire(ctx, h.request("run-1")); err != nil { // resume
 		t.Fatalf("resume Acquire: %v", err)
 	}
 	h.broker.Release(ctx, "run-1") // the resume's launch failed
 
-	day, _, _ := h.ledger.Usage(ctx, PledgeID("alice", "claude_code"), h.now)
+	day, _, _ := h.ledger.Usage(ctx, PledgeID("alice", SourceOAuth, "claude_code"), h.now)
 	if day.Runs != 1 {
 		t.Errorf("day runs = %d, want 1 — releasing a resume refunded a unit it never took", day.Runs)
 	}
@@ -425,11 +437,11 @@ func TestAcquire_abandonedAttemptDoesNotEarnAFreeReadmission(t *testing.T) {
 	if _, err := h.broker.Acquire(ctx, h.request("run-1")); err != nil {
 		t.Fatalf("second Acquire: %v", err)
 	}
-	day, _, _ := h.ledger.Usage(ctx, PledgeID("alice", "claude_code"), h.now)
+	day, _, _ := h.ledger.Usage(ctx, PledgeID("alice", SourceOAuth, "claude_code"), h.now)
 	if day.Runs != 1 {
 		t.Fatalf("day runs = %d on the new day, want 1", day.Runs)
 	}
-	prior, _, _ := h.ledger.Usage(ctx, PledgeID("alice", "claude_code"), h.now.Add(-DefaultLeaseTTL-time.Minute))
+	prior, _, _ := h.ledger.Usage(ctx, PledgeID("alice", SourceOAuth, "claude_code"), h.now.Add(-DefaultLeaseTTL-time.Minute))
 	if prior.Runs != 1 {
 		t.Errorf("the abandoned attempt's unit = %d, want 1 (it was served)", prior.Runs)
 	}
@@ -444,7 +456,7 @@ func TestLiveCommitment_emptyExcludeCountsEverything(t *testing.T) {
 	if _, err := h.broker.Acquire(ctx, h.request("run-1")); err != nil {
 		t.Fatalf("Acquire: %v", err)
 	}
-	runs, committed, err := h.leases.LiveCommitment(ctx, PledgeID("alice", "claude_code"), "", h.now)
+	runs, committed, err := h.leases.LiveCommitment(ctx, PledgeID("alice", SourceOAuth, "claude_code"), "", h.now)
 	if err != nil {
 		t.Fatalf("LiveCommitment: %v", err)
 	}
@@ -501,5 +513,193 @@ func TestAvailable_emptyBotIDStillMeansIgnoreTheFilterForDisplay(t *testing.T) {
 	}
 	if ok, _ := p.AvailableForLaunch(now, ""); ok {
 		t.Error("AvailableForLaunch must fail closed on an empty bot id")
+	}
+}
+
+// A donor who allows 3 runs at a time AND caps their spend must actually
+// serve 3 at a time. Handing the first run the whole remaining allowance
+// promised it away, and the committed half of the admission rule then
+// refused every sibling on cost — so the concurrency dial they set could
+// never bind, and their dashboard read "exhausted" with $0 spent.
+func TestAcquire_concurrencyDialBindsUnderASpendCap(t *testing.T) {
+	h := newHarness(t)
+	ctx := context.Background()
+	h.donor(t, "alice", Limits{MaxUSDPerDay: 9, MaxConcurrentRuns: 3})
+
+	var granted []float64
+	for i := 1; i <= 3; i++ {
+		g, err := h.broker.Acquire(ctx, h.request(runIDf(i)))
+		if err != nil {
+			t.Fatalf("concurrent run %d refused: %v", i, err)
+		}
+		granted = append(granted, g.RemainingUSD)
+	}
+
+	// Each slot holds an equal share, and the shares exhaust the cap
+	// exactly — no slot may promise more than the donor offered.
+	var total float64
+	for i, g := range granted {
+		if g <= 0 {
+			t.Errorf("run %d granted %v, want a positive share", i+1, g)
+		}
+		total += g
+	}
+	if total > 9.0001 {
+		t.Errorf("three concurrent runs were promised $%.2f of a $9 cap", total)
+	}
+
+	// The fourth is refused on the dial the donor actually set.
+	if _, err := h.broker.Acquire(ctx, h.request("run-4")); !errors.Is(err, ErrNoDonor) {
+		t.Errorf("a 4th concurrent run was admitted past max_concurrent_runs=3: %v", err)
+	}
+}
+
+// A single-slot donor is unchanged: nothing to share, so the run still
+// receives the whole allowance rather than an arbitrary fraction of it.
+func TestAcquire_singleSlotDonorStillGrantsTheWholeAllowance(t *testing.T) {
+	h := newHarness(t)
+	h.donor(t, "alice", Limits{MaxUSDPerDay: 9, MaxConcurrentRuns: 1})
+
+	g, err := h.broker.Acquire(context.Background(), h.request("run-1"))
+	if err != nil {
+		t.Fatalf("Acquire: %v", err)
+	}
+	if g.RemainingUSD != 9 {
+		t.Errorf("granted $%.2f, want the full $9 — a lone run has no sibling to share with", g.RemainingUSD)
+	}
+}
+
+// An attempt whose pod was hard-killed never reported what it spent. Its
+// lease is still open, and reading that as "already admitted" renewed the
+// retry for free: no unit of the donor's daily runs, and their whole
+// remaining allowance re-granted against a ledger that learned nothing.
+func TestAcquire_attemptKilledWithoutReportingIsAdmittedAsNew(t *testing.T) {
+	h := newHarness(t)
+	ctx := context.Background()
+	h.donor(t, "alice", Limits{MaxRunsPerDay: 1})
+
+	if _, err := h.broker.Acquire(ctx, h.request("run-1")); err != nil {
+		t.Fatalf("Acquire: %v", err)
+	}
+	// No Report: the pod died before its deferred recordPoolSpend.
+
+	if _, err := h.broker.Acquire(ctx, h.request("run-1")); !errors.Is(err, ErrNoDonor) {
+		t.Errorf("an unreported attempt renewed for free past MaxRunsPerDay=1: %v", err)
+	}
+}
+
+// Disconnecting a credential deletes the pledge with it. An acquisition
+// already holding the pre-delete copy discovers the missing OAuth record
+// and parks the pledge — through an Upsert, which INSERTS when absent. A
+// blind write there put the donor's withdrawn terms back on the roster.
+func TestMarkUnhealthy_doesNotResurrectAWithdrawnPledge(t *testing.T) {
+	h := newHarness(t)
+	ctx := context.Background()
+	p := h.donor(t, "alice", Limits{MaxUSDPerDay: 5})
+
+	// The donor withdraws: pledge and credential both gone.
+	if err := h.pledges.Delete(ctx, p.ID); err != nil {
+		t.Fatalf("withdraw: %v", err)
+	}
+	if err := h.oauth.Delete(ctx, "alice", secrets.OAuthKindClaudeCode); err != nil {
+		t.Fatalf("disconnect: %v", err)
+	}
+
+	// An acquisition holding the stale copy runs the park path.
+	h.broker.markUnhealthy(ctx, p.ID, HealthTokenExpired, "disconnected")
+
+	if _, err := h.pledges.Get(ctx, p.ID); err == nil {
+		t.Error("a withdrawn pledge was recreated by the health writeback — the withdrawal must be final")
+	}
+}
+
+// An org running its own pool must still reach a community pool that opened
+// itself to it. Committing to the first audience-allowing pool meant having
+// a pool of your own silently excluded you from everyone else's.
+func TestAcquire_fallsThroughToACommunityPoolWhenTheOwnPoolCannotServe(t *testing.T) {
+	h := newHarness(t)
+	ctx := context.Background()
+
+	// The own-org pool exists (seeded by the harness) but has no donor.
+	if err := h.pools.Upsert(ctx, Pool{
+		ID: "pool-community", OrgID: "org-elsewhere", Enabled: true,
+		Audience: Audience{AllTeams: true},
+	}); err != nil {
+		t.Fatalf("seed community pool: %v", err)
+	}
+	h.donor(t, "carol", Limits{MaxUSDPerDay: 5}, func(p *Pledge) { p.PoolID = "pool-community" })
+
+	g, err := h.broker.Acquire(ctx, h.request("run-1"))
+	if err != nil {
+		t.Fatalf("the community pool was never reached: %v", err)
+	}
+	if g.DonorID != "carol" {
+		t.Errorf("served by %q, want carol from the community pool", g.DonorID)
+	}
+}
+
+func runIDf(i int) string { return "run-" + string(rune('0'+i)) }
+
+// The share must survive a RESUME. decideRenew synthesises the Limits it
+// judges with, and dropping MaxConcurrentRuns there made shareAcrossSlots
+// a no-op on that path: a resumed run re-took the donor's whole remaining
+// allowance and refused the very siblings they had allowed — the same
+// defect, through the pause/resume door every human-in-the-loop bot uses.
+func TestAcquire_resumeKeepsItsShareInsteadOfTakingTheWholeAllowance(t *testing.T) {
+	h := newHarness(t)
+	ctx := context.Background()
+	h.donor(t, "alice", Limits{MaxUSDPerDay: 9, MaxConcurrentRuns: 3})
+
+	if _, err := h.broker.Acquire(ctx, h.request("run-1")); err != nil {
+		t.Fatalf("first Acquire: %v", err)
+	}
+	if err := h.broker.Report(ctx, "run-1", Outcome{CostUSD: 0}); err != nil {
+		t.Fatalf("Report: %v", err)
+	}
+	resumed, err := h.broker.Acquire(ctx, h.request("run-1")) // the resume
+	if err != nil {
+		t.Fatalf("resume Acquire: %v", err)
+	}
+	if resumed.RemainingUSD > 3.0001 {
+		t.Errorf("the resume was granted $%.2f of a $9/3-slot pledge — it swallowed the other slots",
+			resumed.RemainingUSD)
+	}
+
+	// The two slots the donor allowed are still there for other runs.
+	for _, id := range []string{"run-2", "run-3"} {
+		if _, err := h.broker.Acquire(ctx, h.request(id)); err != nil {
+			t.Errorf("%s refused while a resumed run held a slot: %v", id, err)
+		}
+	}
+}
+
+// A lent API key is read from the BORROWER's context, in a different
+// tenant than the donor's. The tenant-scoped Get finds nothing there, so
+// the draw failed AND parked the donor's pledge with "the lent API key was
+// deleted" — factually wrong, and re-pledging parked it again on the next
+// draw. Ownership, not tenancy, is the boundary for a pooled key.
+func TestAcquire_lentKeyIsReadableFromAnotherTenant(t *testing.T) {
+	h := newHarness(t)
+	ctx := context.Background()
+	p, _ := h.donorKey(t, "alice", "anthropic", Limits{MaxUSDPerDay: 5})
+
+	// The requester launches from another team entirely — the ordinary
+	// shape of a draw, since a donor never serves their own run.
+	req := h.wantKey("run-1", "anthropic")
+	req.TenantID = "team-elsewhere"
+
+	grant, err := h.broker.Acquire(store.WithTenant(ctx, "team-elsewhere"), req)
+	if err != nil {
+		t.Fatalf("a lent key was unreadable across tenants: %v", err)
+	}
+	if grant.DonorID != "alice" {
+		t.Errorf("served by %q, want alice", grant.DonorID)
+	}
+	fresh, gerr := h.pledges.Get(ctx, p.ID)
+	if gerr != nil {
+		t.Fatalf("pledge: %v", gerr)
+	}
+	if fresh.Health != HealthOK {
+		t.Errorf("the donor's pledge was parked as %q by a successful draw", fresh.Health)
 	}
 }

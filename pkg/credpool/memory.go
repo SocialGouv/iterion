@@ -111,7 +111,7 @@ func (s *MemoryPledgeStore) Upsert(_ context.Context, p Pledge) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if p.ID == "" {
-		p.ID = PledgeID(p.UserID, p.Kind)
+		p.ID = PledgeID(p.UserID, p.Source, p.Ref)
 	}
 	now := time.Now().UTC()
 	if existing, ok := s.m[p.ID]; ok {
@@ -342,11 +342,15 @@ func (l *MemoryLedger) Renew(_ context.Context, pledgeID string, when time.Time,
 	return decideRenew(lim, millisToCost(day.costMillis), millisToCost(week.costMillis), live)
 }
 
-// decideRenew is decide() with the run-count ceiling left out.
+// decideRenew is decide() with the run-count ceiling left out — and ONLY
+// that one. MaxConcurrentRuns must survive: decide derives the per-slot
+// share from it, so dropping it would hand a resumed run the donor's whole
+// remaining allowance and refuse the very siblings they allowed.
 func decideRenew(lim Limits, daySpent, weekSpent float64, live LiveCommitment) (float64, DenyReason, error) {
 	remaining, deny := decide(Limits{
-		MaxUSDPerDay:  lim.MaxUSDPerDay,
-		MaxUSDPerWeek: lim.MaxUSDPerWeek,
+		MaxUSDPerDay:      lim.MaxUSDPerDay,
+		MaxUSDPerWeek:     lim.MaxUSDPerWeek,
+		MaxConcurrentRuns: lim.MaxConcurrentRuns,
 	}, 0, daySpent, weekSpent, live)
 	return remaining, deny, nil
 }

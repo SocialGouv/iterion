@@ -310,6 +310,7 @@ func runServer(cmd *cobra.Command, _ []string) error {
 		Leases:  stores.credLeases,
 		Ledger:  stores.credLedger,
 		OAuth:   stores.oauth,
+		APIKeys: stores.apiKeys,
 		Sealer:  sealer,
 		Logger:  logger,
 	})

@@ -47,8 +47,8 @@ func newPoolFixture(t *testing.T, limits credpool.Limits) *poolFixture {
 	}
 	pledges := credpool.NewMemoryPledgeStore()
 	if err := pledges.Upsert(ctx, credpool.Pledge{
-		ID: credpool.PledgeID("donor", "claude_code"), PoolID: "pool-1",
-		UserID: "donor", Kind: "claude_code",
+		ID: credpool.PledgeID("donor", credpool.SourceOAuth, "claude_code"), PoolID: "pool-1",
+		UserID: "donor", Credential: credpool.Credential{Source: credpool.SourceOAuth, Ref: "claude_code"},
 		Enabled: true, Health: credpool.HealthOK, Limits: limits,
 	}); err != nil {
 		t.Fatalf("seed pledge: %v", err)
@@ -129,7 +129,7 @@ func TestPoolTier_credentiallessRunGetsADonorsSubscription(t *testing.T) {
 func TestPoolTier_runBudgetIsCappedAtTheDonorsAllowance(t *testing.T) {
 	f := newPoolFixture(t, credpool.Limits{MaxUSDPerDay: 5})
 	// The donor has already given $3 today.
-	if err := f.ledger.AddSpend(context.Background(), credpool.PledgeID("donor", "claude_code"), time.Now().UTC(), 3, 0, 0); err != nil {
+	if err := f.ledger.AddSpend(context.Background(), credpool.PledgeID("donor", credpool.SourceOAuth, "claude_code"), time.Now().UTC(), 3, 0, 0); err != nil {
 		t.Fatalf("seed spend: %v", err)
 	}
 
@@ -137,7 +137,7 @@ func TestPoolTier_runBudgetIsCappedAtTheDonorsAllowance(t *testing.T) {
 	if creds.grant == nil {
 		t.Fatal("no grant")
 	}
-	budget := clampBudgetToGrant(nil, nil, creds.grant, testLogger(), "run-1")
+	budget := clampBudgetToGrant(nil, nil, creds.grant, 0, testLogger(), "run-1")
 	if budget == nil || budget.MaxCostUSD != 2 {
 		t.Fatalf("wire budget = %+v, want MaxCostUSD 2 (the $5 pledge minus the $3 already given)", budget)
 	}
@@ -169,7 +169,7 @@ func TestClampBudgetToGrant_neverRaises(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			got := clampBudgetToGrant(tc.override, tc.wf, grant, testLogger(), "run-1")
+			got := clampBudgetToGrant(tc.override, tc.wf, grant, 0, testLogger(), "run-1")
 			if got == nil || got.MaxCostUSD != tc.want {
 				t.Errorf("MaxCostUSD = %+v, want %v", got, tc.want)
 			}
@@ -182,7 +182,7 @@ func TestClampBudgetToGrant_neverRaises(t *testing.T) {
 // budget of zero and stop the run before its first node.
 func TestClampBudgetToGrant_uncappedDonorImposesNoCeiling(t *testing.T) {
 	wf := &ir.Workflow{Budget: &ir.Budget{MaxCostUSD: 7}}
-	got := clampBudgetToGrant(nil, wf, &credpool.Grant{RemainingUSD: 0}, testLogger(), "run-1")
+	got := clampBudgetToGrant(nil, wf, &credpool.Grant{RemainingUSD: 0}, 0, testLogger(), "run-1")
 	if got != nil && got.MaxCostUSD != 0 {
 		t.Errorf("budget = %+v, want no cost override imposed", got)
 	}
@@ -192,7 +192,7 @@ func TestClampBudgetToGrant_uncappedDonorImposesNoCeiling(t *testing.T) {
 // budget exactly as it was.
 func TestClampBudgetToGrant_noGrantPassesThrough(t *testing.T) {
 	in := &ir.BudgetOverrides{MaxCostUSD: 12, MaxTokens: 999}
-	got := clampBudgetToGrant(in, nil, nil, testLogger(), "run-1")
+	got := clampBudgetToGrant(in, nil, nil, 0, testLogger(), "run-1")
 	if got == nil || got.MaxCostUSD != 12 || got.MaxTokens != 999 {
 		t.Errorf("budget = %+v, want the caller's own overrides untouched", got)
 	}
@@ -222,7 +222,7 @@ func TestPoolTier_skippedWhenTheTenantHasItsOwnCredential(t *testing.T) {
 func TestPoolTier_pausedDonorLeavesTheRunCredentialless(t *testing.T) {
 	f := newPoolFixture(t, credpool.Limits{})
 	ctx := context.Background()
-	p, err := f.pledges.Get(ctx, credpool.PledgeID("donor", "claude_code"))
+	p, err := f.pledges.Get(ctx, credpool.PledgeID("donor", credpool.SourceOAuth, "claude_code"))
 	if err != nil {
 		t.Fatalf("get pledge: %v", err)
 	}
@@ -237,5 +237,77 @@ func TestPoolTier_pausedDonorLeavesTheRunCredentialless(t *testing.T) {
 	}
 	if len(bundle.OAuthCredentials) != 0 {
 		t.Errorf("bundle = %+v, want no credentials", bundle.OAuthCredentials)
+	}
+}
+
+// A resume must come back with a ceiling the ENGINE can satisfy.
+//
+// runtime/checkpoint.go restores the checkpoint's CUMULATIVE cost into the
+// same tracker that max_cost_usd is checked against, while a grant is what
+// the donor will lend NEXT. Publishing the marginal figure made a run that
+// had spent $6 of a $10 pledge resume with a $4 ceiling against $6 already
+// counted — BUDGET_EXCEEDED before the first node, on an ordinary pause.
+func TestClampBudgetToGrant_resumeCeilingIsInTheEnginesCumulativeFrame(t *testing.T) {
+	// The donor's $10/day with $6 of it already given to THIS run.
+	grant := &credpool.Grant{RemainingUSD: 4}
+	const alreadySpent = 6
+
+	got := clampBudgetToGrant(nil, nil, grant, alreadySpent, testLogger(), "run-1")
+	if got == nil {
+		t.Fatal("no budget published")
+	}
+	if got.MaxCostUSD <= alreadySpent {
+		t.Fatalf("ceiling $%.2f <= the $%.2f already counted — the run dies on its own budget at resume",
+			got.MaxCostUSD, float64(alreadySpent))
+	}
+	if got.MaxCostUSD != 10 {
+		t.Errorf("ceiling = $%.2f, want $10 (what was banked plus what the donor still lends)", got.MaxCostUSD)
+	}
+}
+
+// The offset must not become a loophole: a tighter declared budget still
+// wins, so a resume cannot quietly raise a bot's own ceiling.
+func TestClampBudgetToGrant_resumeOffsetStillNeverRaisesADeclaredBudget(t *testing.T) {
+	wf := &ir.Workflow{Budget: &ir.Budget{MaxCostUSD: 3}}
+	got := clampBudgetToGrant(nil, wf, &credpool.Grant{RemainingUSD: 4}, 6, testLogger(), "run-1")
+	if got == nil || got.MaxCostUSD != 3 {
+		t.Errorf("MaxCostUSD = %+v, want the workflow's own 3", got)
+	}
+}
+
+// A run that pins its models must not be handed a donation it cannot
+// spend. Asking for every known provider meant a bot pinned on
+// anthropic/… could be granted a lent z.ai key: the lease consumed a unit
+// of the donor's daily runs and held a slot for a run that then failed at
+// its first LLM call, and every retry re-picked the same wrong donation.
+func TestWantsFor_narrowsToTheProvidersTheRunPinned(t *testing.T) {
+	wf := &ir.Workflow{Nodes: map[string]ir.Node{
+		"a": &ir.AgentNode{LLMFields: ir.LLMFields{Model: "anthropic/claude-opus-5"}},
+	}}
+	got := wantsFor(wf)
+	if len(got) == 0 {
+		t.Fatal("a pinned run was left with nothing to ask for")
+	}
+	for _, w := range got {
+		if p := providerOfWant(w); p != string(secrets.ProviderAnthropic) {
+			t.Errorf("asked for %s (provider %q) on an anthropic-pinned run", w, p)
+		}
+	}
+	// The Claude subscription is the natural donation for that pin, and it
+	// must still come before the metered key.
+	if got[0].Source != credpool.SourceOAuth || got[0].Ref != string(secrets.OAuthKindClaudeCode) {
+		t.Errorf("first want = %s, want the lent Claude subscription", got[0])
+	}
+}
+
+// A run that pins nothing takes whatever it is given: claw substitutes the
+// first available provider, so every donation can serve it.
+func TestWantsFor_unpinnedRunKeepsTheWholeOrder(t *testing.T) {
+	for _, wf := range []*ir.Workflow{nil, {Nodes: map[string]ir.Node{
+		"a": &ir.AgentNode{LLMFields: ir.LLMFields{Model: ""}},
+	}}} {
+		if got := wantsFor(wf); len(got) != len(poolWantOrder) {
+			t.Errorf("unpinned run asks for %d want(s), want the full %d", len(got), len(poolWantOrder))
+		}
 	}
 }

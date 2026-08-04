@@ -15,12 +15,14 @@ import (
 
 var remotePoolCmd = &cobra.Command{
 	Use:   "pool",
-	Short: "Share your LLM subscription with the instance's credential pool",
-	Long: "Lend the unused part of your Claude or ChatGPT subscription so runs with no\n" +
-		"credential of their own can use it. You set the ceilings, you can see every\n" +
-		"run it served, and `pause` stops it taking effect at the next launch.\n\n" +
-		"Spend figures are ESTIMATES: a subscription bills nothing per call, so cost is\n" +
-		"derived from token counts.",
+	Short: "Share an LLM subscription or API key with the instance's credential pool",
+	Long: "Lend the unused part of your Claude or ChatGPT subscription — or a personal\n" +
+		"API key of any provider — so runs with no credential of their own can use it.\n" +
+		"You set the ceilings, you can see every run it served, and `pause` stops it\n" +
+		"taking effect at the next launch.\n\n" +
+		"For a SUBSCRIPTION the spend figures are ESTIMATES: the provider bills nothing\n" +
+		"per call, so cost is derived from token counts. For an API KEY they are actual\n" +
+		"charges on your own invoice — which is why a spend ceiling is required there.",
 }
 
 var remotePoolStatusCmd = &cobra.Command{
@@ -42,7 +44,9 @@ var remotePoolHistoryCmd = &cobra.Command{
 }
 
 var (
-	remotePoolKind       string
+	remotePoolSource     string
+	remotePoolRef        string
+	remotePoolKeyID      string
 	remotePoolUSDPerDay  float64
 	remotePoolUSDPerWeek float64
 	remotePoolRunsPerDay int
@@ -68,7 +72,8 @@ var remotePoolShareCmd = &cobra.Command{
 				MaxRunsPerDay:     remotePoolRunsPerDay,
 				MaxConcurrentRuns: remotePoolConcurrent,
 			},
-			Bots: remotePoolBots,
+			Bots:  remotePoolBots,
+			KeyID: remotePoolKeyID,
 		}
 		if remotePoolFromHour != 0 || remotePoolToHour != 0 {
 			in.Window = &credpool.Window{
@@ -77,7 +82,7 @@ var remotePoolShareCmd = &cobra.Command{
 				Timezone:  cli.LocalTimezone(),
 			}
 		}
-		return cli.RemotePoolShare(cmd.Context(), c, p, remotePoolKind, in)
+		return cli.RemotePoolShare(cmd.Context(), c, p, remotePoolSource, remotePoolRef, in)
 	}),
 }
 
@@ -86,7 +91,7 @@ var remotePoolPauseCmd = &cobra.Command{
 	Short: "Stop serving new runs, keeping your terms for later",
 	Args:  cobra.NoArgs,
 	RunE: remoteRunE(func(cmd *cobra.Command, args []string, c *cli.RemoteClient, p *cli.Printer) error {
-		return cli.RemotePoolPause(cmd.Context(), c, p, remotePoolKind, false)
+		return cli.RemotePoolPause(cmd.Context(), c, p, remotePoolSource, remotePoolRef, false)
 	}),
 }
 
@@ -95,7 +100,7 @@ var remotePoolResumeCmd = &cobra.Command{
 	Short: "Resume a paused contribution with its previous terms",
 	Args:  cobra.NoArgs,
 	RunE: remoteRunE(func(cmd *cobra.Command, args []string, c *cli.RemoteClient, p *cli.Printer) error {
-		return cli.RemotePoolPause(cmd.Context(), c, p, remotePoolKind, true)
+		return cli.RemotePoolPause(cmd.Context(), c, p, remotePoolSource, remotePoolRef, true)
 	}),
 }
 
@@ -104,7 +109,7 @@ var remotePoolWithdrawCmd = &cobra.Command{
 	Short: "Remove your contribution entirely",
 	Args:  cobra.NoArgs,
 	RunE: remoteRunE(func(cmd *cobra.Command, args []string, c *cli.RemoteClient, p *cli.Printer) error {
-		return cli.RemotePoolWithdraw(cmd.Context(), c, p, remotePoolKind)
+		return cli.RemotePoolWithdraw(cmd.Context(), c, p, remotePoolSource, remotePoolRef)
 	}),
 }
 
@@ -126,8 +131,10 @@ func init() {
 		remotePoolShareCmd, remotePoolPauseCmd, remotePoolResumeCmd, remotePoolWithdrawCmd,
 	}
 	for _, c := range kindFlagged {
-		c.Flags().StringVar(&remotePoolKind, "kind", "claude_code", "Subscription to share (claude_code|codex)")
+		c.Flags().StringVar(&remotePoolSource, "source", "oauth", "What you lend: oauth (a subscription) or api_key (a metered provider key)")
+		c.Flags().StringVar(&remotePoolRef, "ref", "claude_code", "Which one: a subscription (claude_code|codex) or a provider (anthropic, openai, …)")
 	}
+	remotePoolShareCmd.Flags().StringVar(&remotePoolKeyID, "key-id", "", "Which of your keys to lend (required for --source api_key)")
 	remotePoolShareCmd.Flags().Float64Var(&remotePoolUSDPerDay, "max-usd-day", 0, "Estimated spend ceiling per day (0 = no limit)")
 	remotePoolShareCmd.Flags().Float64Var(&remotePoolUSDPerWeek, "max-usd-week", 0, "Estimated spend ceiling per week (0 = no limit)")
 	remotePoolShareCmd.Flags().IntVar(&remotePoolRunsPerDay, "max-runs-day", 0, "Runs you will serve per day (0 = no limit)")

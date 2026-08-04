@@ -196,7 +196,30 @@ func decide(l Limits, runsAfterAdmit int, daySpent, weekSpent float64, live Live
 	if capped && remaining <= 0 {
 		return 0, DenyCostPerDay
 	}
-	return remaining, DenyNone
+	return shareAcrossSlots(l, remaining, live.Runs), DenyNone
+}
+
+// shareAcrossSlots splits what is left of a capped allowance across the
+// concurrency slots still free.
+//
+// Handing the WHOLE remaining allowance to the first run would promise it
+// away: the committed half of the admission rule above then denies every
+// further run on cost, and the concurrency dial a donor set could never
+// bind. Dividing keeps the ceiling exact — n slots each hold 1/n, summing
+// to the allowance — while letting the runs the donor allowed actually run
+// side by side.
+//
+// An uncapped allowance (0 = no ceiling) is returned untouched, and so is a
+// donor who allowed a single run at a time: there is nothing to share.
+func shareAcrossSlots(l Limits, remaining float64, liveRuns int) float64 {
+	if remaining <= 0 || l.MaxConcurrentRuns <= 1 {
+		return remaining
+	}
+	free := l.MaxConcurrentRuns - liveRuns
+	if free <= 1 {
+		return remaining
+	}
+	return remaining / float64(free)
 }
 
 // remainingAllowance returns what is left of the donor's spend caps given

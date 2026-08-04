@@ -244,6 +244,7 @@ var allKnownProviders = []secrets.Provider{
 	secrets.ProviderAzure,
 	secrets.ProviderOpenRouter,
 	secrets.ProviderXAI,
+	secrets.ProviderZAI,
 }
 
 func genericSecretNamesForWorkflow(wf *ir.Workflow) []string {
@@ -496,8 +497,15 @@ func (p *Publisher) resolveAndSealCredentials(ctx context.Context, runID, orgID,
 	//    credentials" is the condition the pool exists for.
 	res := credResolution{}
 	if len(bundle.APIKeys) == 0 && len(bundle.OAuthCredentials) == 0 {
-		if grant := p.acquireFromPool(ctx, runID, orgID, tenantID, ownerID, botID); grant != nil {
-			bundle.OAuthCredentials[grant.Kind] = grant.Payload
+		if grant := p.acquireFromPool(ctx, runID, orgID, tenantID, ownerID, botID, wf); grant != nil {
+			// The lent credential goes in the slot its KIND belongs to, so
+			// the runner cannot tell a donation from the tenant's own.
+			switch grant.Source {
+			case credpool.SourceOAuth:
+				bundle.OAuthCredentials[grant.Ref] = grant.Payload
+			case credpool.SourceAPIKey:
+				bundle.APIKeys[secrets.Provider(grant.Ref)] = string(grant.Payload)
+			}
 			res.grant = grant
 		}
 	}
@@ -537,18 +545,84 @@ type credResolution struct {
 	grant      *credpool.Grant
 }
 
-// poolKindPreference is the order the pool is asked for a credential when a
-// run has none. claude_code first: it is the native path for a Claude
-// subscription (the CLI IS Claude Code), so a lent Claude forfait works
-// there without spending anyone's extra-usage balance.
-var poolKindPreference = []secrets.OAuthKind{secrets.OAuthKindClaudeCode, secrets.OAuthKindCodex}
+// poolWantOrder is the order the pool is asked for a credential when a run
+// has none.
+//
+// Subscriptions first, and claude_code before codex: a lent Claude forfait
+// runs natively on the Claude Code CLI, drawing on a plan its lender has
+// already paid for. Metered keys come last on purpose — spending one costs
+// its lender real money per token, so it is the option of last resort even
+// among donations.
+var poolWantOrder = func() []credpool.Credential {
+	out := []credpool.Credential{
+		{Source: credpool.SourceOAuth, Ref: string(secrets.OAuthKindClaudeCode)},
+		{Source: credpool.SourceOAuth, Ref: string(secrets.OAuthKindCodex)},
+	}
+	for _, prov := range allKnownProviders {
+		out = append(out, credpool.Credential{Source: credpool.SourceAPIKey, Ref: string(prov)})
+	}
+	return out
+}()
+
+// providerOfWant maps a want back to the LLM provider it authenticates
+// against, so a run that pinned its models can be matched to donations it
+// could actually use. "" for a want with no single provider.
+func providerOfWant(w credpool.Credential) string {
+	if w.Source == credpool.SourceAPIKey {
+		return w.Ref
+	}
+	switch secrets.OAuthKind(w.Ref) {
+	case secrets.OAuthKindClaudeCode:
+		return string(secrets.ProviderAnthropic)
+	case secrets.OAuthKindCodex:
+		return string(secrets.ProviderOpenAI)
+	}
+	return ""
+}
+
+// wantsFor narrows the pool request to donations a run can actually spend.
+//
+// A bot that pins `model: "anthropic/…"` has no use for a lent z.ai key:
+// granting one would consume a unit of the donor's daily runs and hold a
+// concurrency slot for a run that then fails at the first LLM call, and
+// every retry would pick the same wrong donation. A run that pins nothing
+// takes the full order — claw substitutes the first available provider, so
+// any donation serves it.
+func wantsFor(wf *ir.Workflow) []credpool.Credential {
+	pinned := map[string]bool{}
+	if wf != nil {
+		for _, n := range wf.Nodes {
+			f, ok := n.(interface{ GetLLMFields() *ir.LLMFields })
+			if !ok {
+				continue
+			}
+			if prov, _, cut := strings.Cut(f.GetLLMFields().Model, "/"); cut && prov != "" {
+				pinned[prov] = true
+			}
+		}
+	}
+	if len(pinned) == 0 {
+		return poolWantOrder
+	}
+	out := make([]credpool.Credential, 0, len(poolWantOrder))
+	for _, w := range poolWantOrder {
+		if prov := providerOfWant(w); prov != "" && pinned[prov] {
+			out = append(out, w)
+		}
+	}
+	return out
+}
 
 // acquireFromPool asks the credential pool for a donor. Returns nil when no
 // pool is wired, none serves this requester, or every donor is currently
 // unavailable — all ordinary outcomes that must let the launch proceed
 // exactly as it would have without a pool.
-func (p *Publisher) acquireFromPool(ctx context.Context, runID, orgID, tenantID, ownerID, botID string) *credpool.Grant {
+func (p *Publisher) acquireFromPool(ctx context.Context, runID, orgID, tenantID, ownerID, botID string, wf *ir.Workflow) *credpool.Grant {
 	if p.credPool == nil {
+		return nil
+	}
+	wants := wantsFor(wf)
+	if len(wants) == 0 {
 		return nil
 	}
 	grant, err := p.credPool.Acquire(ctx, credpool.Request{
@@ -557,7 +631,7 @@ func (p *Publisher) acquireFromPool(ctx context.Context, runID, orgID, tenantID,
 		TenantID: tenantID,
 		UserID:   ownerID,
 		BotID:    botID,
-		Kinds:    poolKindPreference,
+		Wants:    wants,
 	})
 	if err != nil {
 		if !errors.Is(err, credpool.ErrNoDonor) {
@@ -568,8 +642,8 @@ func (p *Publisher) acquireFromPool(ctx context.Context, runID, orgID, tenantID,
 		}
 		return nil
 	}
-	p.logger.Info("cloudpublisher: run %s runs on a pooled contributor credential (donor=%s kind=%s allowance=$%.2f)",
-		runID, grant.DonorID, grant.Kind, grant.RemainingUSD)
+	p.logger.Info("cloudpublisher: run %s runs on a pooled contributor credential (donor=%s %s allowance=$%.2f)",
+		runID, grant.DonorID, grant.Credential, grant.RemainingUSD)
 	return grant
 }
 
@@ -668,7 +742,7 @@ func (p *Publisher) SubmitLaunch(ctx context.Context, runID string, spec runview
 	// donor's allowance. This is the enforcement: the engine stops the run
 	// on its own cost budget, instead of the overspend being discovered
 	// after the fact when the donor is already out of pocket.
-	budget := clampBudgetToGrant(spec.Budget, wf, creds.grant, p.logger, runID)
+	budget := clampBudgetToGrant(spec.Budget, wf, creds.grant, 0, p.logger, runID)
 
 	if err := p.store.SaveRun(ctx, r); err != nil {
 		return 0, fmt.Errorf("cloudpublisher: save run: %w", err)
@@ -887,7 +961,9 @@ func (p *Publisher) SubmitResume(ctx context.Context, spec runview.ResumeSpec, w
 		// A resume re-acquires from the pool, so it re-inherits the donor's
 		// CURRENT remaining allowance as its cost ceiling — a run that was
 		// paused for a day must not come back holding yesterday's budget.
-		Budget:         clampBudgetToGrant(nil, wf, creds.grant, p.logger, spec.RunID),
+		// Offset by what the run already banked: the engine restores that
+		// figure into the very tracker this ceiling is checked against.
+		Budget:         clampBudgetToGrant(nil, wf, creds.grant, checkpointCostUSD(prior), p.logger, spec.RunID),
 		BackendConfig:  queue.BackendConfig{Default: queue.BackendClaw},
 		PublishedAtRFC: time.Now().UTC().Format(time.RFC3339Nano),
 		// Carry the prior run's tenant onto the resume publication so
@@ -1128,6 +1204,15 @@ func (p *Publisher) goSafeDetached(label string, fn func()) {
 	}()
 }
 
+// checkpointCostUSD is what a run has already banked across its earlier
+// attempts, 0 for a run that never checkpointed.
+func checkpointCostUSD(r *store.Run) float64 {
+	if r == nil || r.Checkpoint == nil {
+		return 0
+	}
+	return r.Checkpoint.BudgetCostUSD
+}
+
 // clampBudgetToGrant caps a run's cost budget at what remains of its
 // donor's allowance, and returns the wire form.
 //
@@ -1141,9 +1226,21 @@ func (p *Publisher) goSafeDetached(label string, fn func()) {
 // place) — so it imposes no ceiling. Otherwise the tightest of the
 // requested override, the workflow's own declared budget, and the
 // allowance wins; the clamp only ever lowers.
-func clampBudgetToGrant(o *ir.BudgetOverrides, wf *ir.Workflow, grant *credpool.Grant, logger *iterlog.Logger, runID string) *queue.BudgetOverrides {
+//
+// alreadySpentUSD is what THIS run banked in its earlier attempts, and it
+// must be added on a resume: the engine restores the checkpoint's
+// cumulative cost into the same tracker it checks max_cost_usd against
+// (runtime/checkpoint.go), whereas a grant is what the donor will lend
+// NEXT. Handing the marginal figure to a cumulative tracker fails the
+// budget check before the first node runs — a $6-of-$10 run coming back
+// with a $4 ceiling against $6 already counted, dead on arrival.
+func clampBudgetToGrant(o *ir.BudgetOverrides, wf *ir.Workflow, grant *credpool.Grant, alreadySpentUSD float64, logger *iterlog.Logger, runID string) *queue.BudgetOverrides {
 	if grant == nil || grant.RemainingUSD <= 0 {
 		return budgetForWire(o)
+	}
+	allowance := grant.RemainingUSD
+	if alreadySpentUSD > 0 {
+		allowance += alreadySpentUSD
 	}
 	effective := ir.BudgetOverrides{}
 	if o != nil {
@@ -1159,7 +1256,7 @@ func clampBudgetToGrant(o *ir.BudgetOverrides, wf *ir.Workflow, grant *credpool.
 	// The donor's allowance is a ceiling like any other, so it goes through
 	// the same primitive the platform ceiling uses: lower what exceeds it,
 	// impose it on a run that declared nothing, never raise.
-	resolved.ClampToCeiling(&ir.Budget{MaxCostUSD: grant.RemainingUSD})
+	resolved.ClampToCeiling(&ir.Budget{MaxCostUSD: allowance})
 	if effective.MaxCostUSD != resolved.MaxCostUSD && logger != nil {
 		logger.Info("cloudpublisher: run %s cost budget capped at $%.2f by its donor's remaining allowance", runID, resolved.MaxCostUSD)
 	}

@@ -8,6 +8,7 @@ import (
 
 	"github.com/SocialGouv/iterion/pkg/auth"
 	"github.com/SocialGouv/iterion/pkg/credpool"
+	"github.com/SocialGouv/iterion/pkg/identity"
 	iterlog "github.com/SocialGouv/iterion/pkg/log"
 	"github.com/SocialGouv/iterion/pkg/secrets"
 )
@@ -101,8 +102,8 @@ func TestToPoolView_hidesTheRosterFromNonManagers(t *testing.T) {
 	ctx := context.Background()
 	pledges := credpool.NewMemoryPledgeStore()
 	if err := pledges.Upsert(ctx, credpool.Pledge{
-		ID: credpool.PledgeID("alice", "claude_code"), PoolID: "pool-1",
-		UserID: "alice", Kind: "claude_code", Enabled: true, Health: credpool.HealthOK,
+		ID: credpool.PledgeID("alice", credpool.SourceOAuth, "claude_code"), PoolID: "pool-1",
+		UserID: "alice", Credential: credpool.Credential{Source: credpool.SourceOAuth, Ref: "claude_code"}, Enabled: true, Health: credpool.HealthOK,
 	}); err != nil {
 		t.Fatalf("seed: %v", err)
 	}
@@ -120,5 +121,42 @@ func TestToPoolView_hidesTheRosterFromNonManagers(t *testing.T) {
 	}
 	if v := s.toPoolView(r, pool, true); len(v.Donors) != 1 {
 		t.Errorf("a manager saw %d donor(s), want 1", len(v.Donors))
+	}
+}
+
+// The `iterion remote pool` surface is driven by an `iap_` bearer, and a
+// PAT identity is built from a TEAM — the browser's active-org JWT claim
+// is not there. Resolving the pool from the org alone therefore made every
+// CLI contribution fail with "no pool accepts contributions", which is how
+// this shipped: three review passes read the handler, none ran it as the
+// CLI does.
+//
+// Built through identityFromPAT rather than a hand-made Identity: an
+// Identity written by the test would assert only what the test believes
+// production produces, which is exactly the belief that was wrong.
+func TestPoolIDForUser_resolvesForACLIToken(t *testing.T) {
+	s, ctx := newPATTestServer(t)
+	if _, err := s.authStore().CreateOrg(ctx, identity.Org{ID: "org-1", Name: "acme", Slug: "acme"}); err != nil {
+		t.Fatalf("seed org: %v", err)
+	}
+	if err := s.authStore().UpdateTeam(ctx, identity.Team{ID: "t1", Name: "t1", Slug: "acme", OrgID: "org-1"}); err != nil {
+		t.Fatalf("attach team to org: %v", err)
+	}
+	pools := credpool.NewMemoryPoolStore()
+	if err := pools.Upsert(ctx, credpool.Pool{ID: "pool-1", OrgID: "org-1", Enabled: true}); err != nil {
+		t.Fatalf("seed pool: %v", err)
+	}
+	s.credPoolPools = pools
+
+	_, plaintext := createPAT(t, s, ctx, `{"name":"cli"}`)
+	id, err := s.identityFromPAT(ctx, plaintext)
+	if err != nil {
+		t.Fatalf("identityFromPAT: %v", err)
+	}
+
+	r := httptest.NewRequest("GET", "/api/me/pool", nil)
+	r = r.WithContext(auth.WithIdentity(ctx, id))
+	if got := s.poolIDForUser(r); got != "pool-1" {
+		t.Errorf("pool = %q, want pool-1 — a CLI contributor cannot reach their own org's pool", got)
 	}
 }

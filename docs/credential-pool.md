@@ -1,16 +1,16 @@
-# Credential pool — mutualising contributors' unused LLM quota
+# Credential pool — mutualising contributors' unused LLM capacity
 
-How developers lend the unused part of their Claude Pro/Max or ChatGPT
-subscription to an iterion deployment, and how a run with no credential of
-its own draws on it.
+How developers lend spare LLM capacity to an iterion deployment — a Claude
+Pro/Max or ChatGPT **subscription**, or a personal **API key** of any
+provider — and how a run with no credential of its own draws on it.
 
 Read [cloud-llm-credentials.md](cloud-llm-credentials.md) first: the pool is
 the **fourth and last** tier of the credential resolution described there.
 
 ## The one-paragraph model
 
-A contributor connects their subscription through the ordinary personal
-OAuth flow, then makes a **pledge**: a standing offer of that credential
+A contributor connects a subscription through the ordinary personal OAuth
+flow (or already holds a personal BYOK key), then makes a **pledge**: a standing offer of that credential
 bounded by ceilings *they* choose (spend per day and per week, runs per day,
 runs at once, an optional sharing window, an optional bot allow-list). At
 launch, a run that has neither a BYOK key nor a personal/org forfait asks
@@ -20,12 +20,25 @@ ordinary sealing path — the runner cannot tell it apart from a personal
 forfait. When the attempt ends, the runner reports what it spent, which
 charges the donor's ledger and frees their concurrency slot.
 
+## Two sources, and why the difference matters
+
+| | `oauth` — a subscription | `api_key` — a metered key |
+|---|---|---|
+| Billed | against a plan the lender already pays for | **per token, on the lender's own invoice** |
+| The dollar figures are | ESTIMATES derived from tokens (`pkg/backend/cost`) — say "≈$1.80" | actual charges |
+| A spend ceiling is | optional | **required** (lending one without a ceiling is an open invoice) |
+| Real hard limit | the provider's usage window | the ceiling itself |
+| Asked for | first | last — only when no already-paid-for plan can serve |
+
+`CredentialSource.Metered()` is the single predicate every surface reads to
+decide whether to hedge a figure or state it.
+
 ## What this is not
 
-- **Not an invoice.** On a subscription the CLI bills nothing per call, so
-  the dollar figures are ESTIMATES derived from token counts
-  (`pkg/backend/cost`). They are the right unit for sharing fairly between
-  donors; they are not what anyone is charged. Say "≈$1.80" in any UI.
+- **Not an invoice, for a subscription.** The CLI bills nothing per call, so
+  those figures are estimates. They are the right unit for sharing fairly
+  between donors; they are not what anyone is charged. A lent API key is the
+  opposite case — there the figures are the charge.
 - **Not a way around a provider's quota.** The hard limit remains the
   provider's own usage window. When one is hit, the donor is put to rest
   until its reset — that cooldown, not the dollar ceiling, is what actually
@@ -48,11 +61,17 @@ charges the donor's ledger and frees their concurrency slot.
 3. **Org OAuth forfait** — `secrets.OrgOwnerKey(tenant)`, the fallback for
    automated runs whose owner is a synthetic identity.
 4. **Pool** — only when steps 1–3 produced **nothing at all**. Spending a
-   contributor's lent subscription while the tenant holds a usable key of
-   its own would take a donation nobody needed.
+   contributor's lent credential while the tenant holds a usable key of its
+   own would take a donation nobody needed.
 
-Kind preference within the pool: `claude_code` first (a lent Claude forfait
-runs natively there), then `codex`.
+Order within the pool (`poolWantOrder`): subscriptions first — `claude_code`
+(a lent Claude forfait runs natively there), then `codex` — and only then
+metered keys, provider by provider. Spending someone's real money is the
+last resort even among donations.
+
+A pledge only ever answers a request for its OWN source and ref: a
+subscription never stands in for a metered key, because they are billed to
+different places.
 
 ## Enforcement: the run's own budget is the ceiling
 
@@ -85,11 +104,22 @@ Two states are set from a run's outcome:
 ## What a donor's admission costs them, and when it comes back
 
 An acquisition consumes three things at once: a unit of the daily run
-quota, a concurrency slot, and — until the run reports — the whole
-allowance it was granted. That last one is what stops ten runs launched
-together from each being handed the same "remaining" and spending it ten
-times over: a live lease's `granted_cost_usd` counts against the next
-admission.
+quota, a concurrency slot, and — until the run reports — the allowance it
+was granted. That last one is what stops ten runs launched together from
+each being handed the same "remaining" and spending it ten times over: a
+live lease's `granted_cost_usd` counts against the next admission.
+
+Which is why a spend cap is **shared across the slots still free** rather
+than handed whole to the first run: promising it all away would deny every
+sibling on cost, and the `max_concurrent_runs` a donor set could never
+bind. A `$9/day` + `3 runs at a time` pledge grants `$3` per slot, summing
+to exactly what was offered. A donor who allowed a single run at a time
+has nothing to share, so that run still receives the whole allowance.
+
+While every allowed slot is busy the donor reads **`serving`**, not
+`exhausted` — the launches are refused, but nothing was given yet beyond
+what those runs spend, and the state clears as they end. `exhausted` is
+reserved for what the ledger really recorded.
 
 They come back on three paths, and the distinction matters:
 
@@ -100,10 +130,13 @@ They come back on three paths, and the distinction matters:
 | sweeper — the pod died without reporting | freed | **kept** (it ran) |
 
 `Report` closes the lease with a compare-and-set and charges the donor only
-if it wins, so a redelivered report cannot debit twice. A resumed run
-*renews* its admission instead of taking a second one: it is the same run,
-and charging it again would let one flaky run that resumes a few times
-consume a contributor's whole day.
+if it wins, so a redelivered report cannot debit twice. A resumed run that
+**reported** *renews* its admission instead of taking a second one: it is
+the same run, and charging it again would let one flaky run that resumes a
+few times consume a contributor's whole day. Reporting is what earns the
+renewal — the runner's spend hand-off is deferred and fires on every
+outcome, `paused_waiting_human` included, so an ordinary pause/resume
+always qualifies.
 
 **One lease document per attempt**, never reused. A run that resumes —
 onto the same donor or another — leaves every finished attempt's record
@@ -111,14 +144,18 @@ intact, because that record is the donor's only evidence for a charge
 already on their ledger. Acquiring *supersedes* whatever was still marked
 as serving that run (a pod that died without reporting leaves its lease
 open), so a run never holds two open leases and "who is serving this run",
-hence who gets charged, is never ambiguous.
+hence who gets charged, is never ambiguous. That supersede happens **before**
+the admission is judged, so an attempt killed mid-flight is seen for what it
+is — an attempt that never said what it spent — rather than as a prior
+admission to renew against for free.
 
 An attempt records whether it consumed a run unit, so releasing a **resume**
 gives nothing back: it renewed rather than consumed, and refunding it would
-mint quota out of a failed launch. An **abandoned** attempt does not count
-as a prior admission either — nothing ever learned what it spent, so the
-next attempt is admitted as new rather than renewing indefinitely against a
-record that means nothing.
+mint quota out of a failed launch. An **abandoned** or **superseded**
+attempt does not count as a prior admission either — nothing ever learned
+what it spent, so the next attempt is admitted as new rather than renewing
+indefinitely against a record that means nothing. When accounting is lost,
+the daily run ceiling is the only guard left standing, and it must hold.
 
 Concurrency and committed spend are **derived** from live leases, never
 accumulated in a counter, so an abandoned run cannot permanently consume
@@ -154,8 +191,25 @@ predicates**, each separately togglable, with the strictest default:
 | `all_teams: true` | Every team on the instance. |
 
 Selection scans the enabled pools and applies each audience, so a pool that
-opens itself to another org is genuinely reachable from there; the
-requester's own org pool wins when several would serve.
+opens itself to another org is genuinely reachable from there. Every pool
+that admits the requester is tried, own-org first: running a pool of your
+own must not exclude you from a community one when your own donors are all
+cooling, exhausted or out-of-hours.
+
+## Upgrading from the first release of the pool
+
+The first shipped version identified a pledge by OAuth **kind**
+(`user|claude_code`); a pledge now names a **credential**
+(`user|oauth|claude_code`, `user|api_key|anthropic`) so keys of any
+provider can be lent. There is no backfill: a pledge document written by
+the first version decodes with an empty source and is silently never
+selected, while still showing as enabled on its donor's dashboard —
+the one failure mode this feature must not have.
+
+**If contributors already pledged on that version, drop
+`credpool_pledges` and `credpool_leases` before deploying** and ask them
+to lend again. If nobody pledged yet (the pool ships disabled, so this is
+the common case), there is nothing to do.
 
 ## Operator cookbook
 
@@ -168,6 +222,10 @@ GitHub and is already a member — with the default audience they can both
 lend and borrow, with no extra setup.
 
 ```sh
+# A contributor lending a metered key instead of a subscription:
+iterion remote api-keys create --provider anthropic --name mine --from-file ~/key
+iterion remote pool share --source api_key --ref anthropic   --key-id <id from `iterion remote api-keys list`> --max-usd-day 3
+
 # 1. Operator: create/enable the pool for the org (default audience:
 #    the org's own teams only).
 iterion remote api PUT /api/teams/<team-id>/pool --data '{"enabled":true}'
@@ -179,7 +237,7 @@ iterion remote api PUT /api/teams/<team-id>/pool \
 
 # 2. Contributor: connect the subscription (once), then pledge it.
 iterion remote api POST /api/me/oauth/claude_code/authorize/start
-iterion remote pool share --kind claude_code \
+iterion remote pool share --source oauth --ref claude_code \
   --max-usd-day 5 --max-usd-week 20 --max-runs-day 10 --max-concurrent 1 \
   --from-hour 19 --to-hour 8          # optional: lend it overnight
 
@@ -201,8 +259,8 @@ Studio equivalents: **Account settings → Share my quota** for a contributor,
 | Endpoint | Who | Purpose |
 |---|---|---|
 | `GET /api/me/pool` | donor | Own pledges + today/this-week consumption |
-| `PUT /api/me/pool/{kind}` | donor | Create/update terms. Clears a parked health state ONLY when the credential was genuinely re-connected since — the signal is the record's `created_at` (stamped by connect/paste), never `updated_at`, which the token-refresh worker bumps hourly for a subscription the provider may have revoked |
-| `DELETE /api/me/pool/{kind}` | donor | Withdraw |
+| `PUT /api/me/pool/{source}/{ref}` | donor | Create/update terms. Clears a parked health state ONLY when the credential was genuinely re-connected since — the signal is the record's `created_at` (stamped by connect/paste), never `updated_at`, which the token-refresh worker bumps hourly for a subscription the provider may have revoked |
+| `DELETE /api/me/pool/{source}/{ref}` | donor | Withdraw |
 | `GET /api/me/pool/history` | donor | The runs this quota served |
 | `GET /api/teams/{id}/pool` | member | Pool policy. The donor roster is included only for org admins — who lends, and how much, is the contributors' business |
 | `PUT /api/teams/{id}/pool` | **org** admin | Enable/disable + audience. The pool document is org-keyed, so this is an org-level decision and is audited on the org |
@@ -212,9 +270,15 @@ A donor's credential is never returned by any of these — it stays sealed in
 
 ## Gotchas that will cost time
 
-- **A pledge without a connected subscription is refused, not stored.**
-  `PUT /api/me/pool/{kind}` returns 409 when the OAuth record is missing, so
-  nobody believes they are contributing when they are not.
+- **A pledge for a credential you do not hold is refused, not stored** — so
+  nobody believes they are contributing when they are not. 409 for a missing
+  subscription, 404/403 for a key that is absent or not yours.
+- **Only a PERSONAL key can be pooled.** A team-scoped key is the team's to
+  spend; letting one member lend it would hand the whole team's credential
+  to the pool. Checked at pledge time AND again at every acquisition, since
+  a key can be re-scoped afterwards.
+- **A metered pledge must carry a spend ceiling.** Refused otherwise: it
+  would be an open invoice on the lender's own account.
 - **`ITERION_FORBID_SUBSCRIPTION_OAUTH=1` does not disable the pool.** That
   guard only covers `claw`/`pi` (`secrets.GuardSubscriptionOAuth`); a lent
   Claude forfait still works on `claude_code`, which is its native path.

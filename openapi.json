@@ -3560,15 +3560,15 @@
         ]
       }
     },
-    "/api/me/pool/{kind}": {
+    "/api/me/pool/{source}/{ref}": {
       "delete": {
-        "operationId": "deleteMePoolByKind",
+        "operationId": "deleteMePoolBySourceByRef",
         "responses": {
           "default": {
             "description": "Response"
           }
         },
-        "summary": "DELETE /api/me/pool/{kind}",
+        "summary": "DELETE /api/me/pool/{source}/{ref}",
         "tags": [
           "me"
         ]
@@ -3576,7 +3576,15 @@
       "parameters": [
         {
           "in": "path",
-          "name": "kind",
+          "name": "source",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        },
+        {
+          "in": "path",
+          "name": "ref",
           "required": true,
           "schema": {
             "type": "string"
@@ -3584,13 +3592,13 @@
         }
       ],
       "put": {
-        "operationId": "putMePoolByKind",
+        "operationId": "putMePoolBySourceByRef",
         "responses": {
           "default": {
             "description": "Response"
           }
         },
-        "summary": "PUT /api/me/pool/{kind}",
+        "summary": "PUT /api/me/pool/{source}/{ref}",
         "tags": [
           "me"
         ]
