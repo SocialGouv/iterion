@@ -209,9 +209,11 @@ Deliberately **not** reset:
   superseded artifacts stay on disk and remain readable for comparison —
   invalidation here is logical, not a delete.
 - **`events.jsonl`.** Append-only, never truncated. The dropped nodes' original
-  records stay in the timeline, and the `run_rewound` event
-  (`{from_node, to_node, dropped_nodes, code_rewound, code_ref}`) explains why
-  they are about to repeat.
+  records stay in the timeline, and the `run_rewound` event explains why they
+  are about to repeat. Its payload is
+  `{from_node, to_node, dropped_nodes, tombstoned_artifacts, orphaned_child_runs,
+  promoted_from, files_reverted, files_ref, files_revert_commit,
+  files_backup_ref, files_skip_reason}`.
 
 Reset, because carrying them into the replay would be wrong: any pending
 interaction (the rewound run never asked that question) and the backend

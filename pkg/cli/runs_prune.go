@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/SocialGouv/iterion/pkg/store"
+	"github.com/SocialGouv/iterion/pkg/workspacetrack"
 )
 
 // PruneOptions holds the configuration for `iterion runs prune`.
@@ -66,6 +67,15 @@ type PruneResult struct {
 	// TombstonesReaped counts the deletion markers older than the
 	// retention horizon that this sweep removed for good.
 	TombstonesReaped int `json:"tombstones_reaped,omitempty"`
+	// WorkspaceObjectsPruned / WorkspaceBytesReclaimed report the sweep of
+	// the store-global workspace-versioning pool. Deleting a run's
+	// directory removes its snapshot manifests but not the content they
+	// referenced — the pool is shared across runs by design, so it can
+	// only be swept against the manifests that REMAIN. Without this the
+	// pool grew for the life of the store and pruning made it strictly
+	// worse: the runs went, the bytes stayed, unreachable.
+	WorkspaceObjectsPruned  int   `json:"workspace_objects_pruned,omitempty"`
+	WorkspaceBytesReclaimed int64 `json:"workspace_bytes_reclaimed,omitempty"`
 }
 
 // pruneAgeField is the constant advertised on --json output and in the
@@ -198,19 +208,38 @@ func RunPrune(opts PruneOptions, p *Printer) error {
 		}
 	}
 
+	// Sweep the workspace-versioning pool AFTER the run directories are
+	// gone, so the manifests of the runs just pruned no longer keep their
+	// content alive. The pool is store-global (content is content, and a
+	// per-run pool re-stored the whole workspace for every run), which is
+	// exactly why pruning runs cannot blind-delete their objects — the
+	// sweep has to run against the manifests that survive.
+	wsObjects, wsBytes := 0, int64(0)
+	if !opts.DryRun {
+		if o, b, err := workspacetrack.NewNative(storeDir).PruneObjects(); err != nil {
+			// Never fail the prune over it: the runs are already gone and
+			// the pool is reclaimable on the next sweep.
+			fmt.Fprintf(os.Stderr, "warning: could not sweep the workspace object pool: %v\n", err)
+		} else {
+			wsObjects, wsBytes = o, b
+		}
+	}
+
 	result := PruneResult{
-		StoreDir:         storeDir,
-		AgeField:         pruneAgeField,
-		OlderThan:        opts.OlderThan.String(),
-		KeepLast:         opts.KeepLast,
-		Statuses:         sortedStatusNames(statuses),
-		DryRun:           opts.DryRun,
-		Scanned:          scanned,
-		Pruned:           pruned,
-		PrunedCount:      len(pruned),
-		SkippedCount:     scanned - len(pruned),
-		Unreadable:       unreadable,
-		TombstonesReaped: tombstonesReaped,
+		StoreDir:                storeDir,
+		AgeField:                pruneAgeField,
+		OlderThan:               opts.OlderThan.String(),
+		KeepLast:                opts.KeepLast,
+		Statuses:                sortedStatusNames(statuses),
+		DryRun:                  opts.DryRun,
+		Scanned:                 scanned,
+		Pruned:                  pruned,
+		PrunedCount:             len(pruned),
+		SkippedCount:            scanned - len(pruned),
+		Unreadable:              unreadable,
+		TombstonesReaped:        tombstonesReaped,
+		WorkspaceObjectsPruned:  wsObjects,
+		WorkspaceBytesReclaimed: wsBytes,
 	}
 	return renderPruneResult(p, result)
 }
@@ -350,6 +379,7 @@ func renderPruneResult(p *Printer, r PruneResult) error {
 
 	if r.PrunedCount == 0 {
 		p.Line("nothing to prune (scanned %d, store %s)", r.Scanned, r.StoreDir)
+		renderWorkspaceReclaim(p, r)
 		return nil
 	}
 
@@ -376,5 +406,28 @@ func renderPruneResult(p *Printer, r PruneResult) error {
 	p.Table([]string{"RUN", "STATUS", "AGE", "NAME"}, rows)
 	p.Line("%s %d run(s); scanned %d; store %s (age field: %s)",
 		verb, r.PrunedCount, r.Scanned, r.StoreDir, r.AgeField)
+	renderWorkspaceReclaim(p, r)
 	return nil
+}
+
+// renderWorkspaceReclaim reports the workspace-versioning pool sweep.
+// Silent when it reclaimed nothing, so a store that never versioned a
+// workspace shows no line at all.
+func renderWorkspaceReclaim(p *Printer, r PruneResult) {
+	if r.WorkspaceObjectsPruned == 0 {
+		return
+	}
+	p.Line("reclaimed %d workspace object(s), %s", r.WorkspaceObjectsPruned, humanBytes(r.WorkspaceBytesReclaimed))
+}
+
+func humanBytes(b int64) string {
+	switch {
+	case b >= 1<<30:
+		return fmt.Sprintf("%.1f GiB", float64(b)/(1<<30))
+	case b >= 1<<20:
+		return fmt.Sprintf("%.1f MiB", float64(b)/(1<<20))
+	case b >= 1<<10:
+		return fmt.Sprintf("%.1f KiB", float64(b)/(1<<10))
+	}
+	return fmt.Sprintf("%d B", b)
 }

@@ -61,6 +61,20 @@ func (e *Engine) execLoop(ctx context.Context, rs *runState, startNodeID string)
 				fmt.Sprintf("node %q not found", currentNodeID))
 		}
 
+		// A specially-dispatched node (fan-out, round-robin, LLM router,
+		// compute, review gate, subbot) is bracketed here rather than in
+		// execLoopAfterExec, which it never reaches. Two distinct needs:
+		// the node gets its OWN pre-marker so a rewind promoted to a
+		// router has an anchor at all, and the remembered anchor is
+		// invalidated afterwards because these paths DO mutate the tree —
+		// fan-out branches write, a non-isolated subbot child writes into
+		// the parent worktree, and the review gate squash-merges — while
+		// none of them refreshes lastSnapshotCommit. Aliasing across one
+		// makes a later rewind revert past that work while its outputs
+		// stay in the checkpoint.
+		if isSpecialDispatch(node) {
+			e.markPreNodeBoundary(rs, currentNodeID)
+		}
 		handled, terminate, next, err := e.execLoopDispatchSpecial(ctx, rs, currentNodeID, node)
 		if handled {
 			if terminate {
@@ -618,12 +632,51 @@ func (e *Engine) markPreNodeBoundary(rs *runState, nodeID string) {
 		e.aliasWorkspacePre(rs, nodeID)
 		return
 	}
+	loopIter := e.currentLoopIteration(nodeID, rs.loopCounters)
+	// Several dispatch paths bracket the same node: execLoop brackets every
+	// isSpecialDispatch kind, then execSpecialNode brackets the compute /
+	// subbot / emit / wait / await_answers kinds again, and the human path
+	// does the same. The repeat lands on the same tree, so it is pure
+	// duplicated work — but with lastSnapshotCommit UNKNOWN (its state
+	// after every special dispatch) each call pays a full `git add -A`
+	// index walk and leaves an orphan commit.
+	if rs.preMarked == nil {
+		rs.preMarked = make(map[string]bool)
+	}
+	key := fmt.Sprintf("%s\x00%d", nodeID, loopIter)
+	if rs.preMarked[key] {
+		return
+	}
+	rs.preMarked[key] = true
+	ref := store.NodePreSnapshotRef(rs.runID, nodeID, loopIter)
 	target := rs.lastSnapshotCommit
 	if target == "" {
+		// "" means UNKNOWN, not "the tree equals HEAD" — the run just
+		// started, just resumed, or just came out of a special dispatch
+		// that mutated the tree. Only the first of those implies HEAD; in
+		// the other two the worktree carries uncommitted work HEAD does
+		// not, because the engine never commits the tree (snapshotWorktree
+		// only writes a ref). Aliasing HEAD there makes a later rewind
+		// `read-tree --reset` + `clean -fd` back to HEAD, deleting
+		// everything every fan-out branch and every earlier node produced
+		// — strictly worse than the stale alias this replaced, which would
+		// at least have restored the pre-fan-out tree.
+		//
+		// So capture the real state. snapshotWorktree returns "" and
+		// writes no ref only when the tree genuinely matches HEAD, which
+		// is the one case where aliasing is right.
+		commit, err := snapshotWorktree(e.workDir, ref)
+		if err != nil {
+			if e.logger != nil {
+				e.logger.Warn("pre-snapshot: node %q iter %d: %v", nodeID, loopIter, err)
+			}
+			return
+		}
+		if commit != "" {
+			return // snapshotWorktree already pointed the ref at it
+		}
 		target = "HEAD"
 	}
-	loopIter := e.currentLoopIteration(nodeID, rs.loopCounters)
-	ref := store.NodePreSnapshotRef(rs.runID, nodeID, loopIter)
 	if out, err := runGit(e.workDir, "update-ref", ref, target); err != nil && e.logger != nil {
 		e.logger.Warn("pre-snapshot: node %q iter %d: %v\noutput: %s", nodeID, loopIter, err, out)
 	}
@@ -819,4 +872,24 @@ func (e *Engine) aliasWorkspacePre(rs *runState, nodeID string) {
 	if err := e.workspaceTracker.Alias(rs.runID, label, head); err != nil && e.logger != nil {
 		e.logger.Warn("workspace pre-marker: node %q iter %d: %v", nodeID, loopIter, err)
 	}
+}
+
+// isSpecialDispatch reports whether a node is handled by
+// execLoopDispatchSpecial rather than the standard executor path.
+//
+// Those nodes never reach execLoopAfterExec, so nothing else brackets
+// them. Routers matter most: a rewind promotes any pivot inside a fan-out
+// body to its router, so without a marker here the single case where the
+// most files were written by the most nodes is the one that can never
+// restore them.
+func isSpecialDispatch(node ir.Node) bool {
+	switch n := node.(type) {
+	case *ir.RouterNode:
+		return n.RouterMode != ir.RouterCondition
+	case *ir.HumanNode:
+		return true
+	case *ir.ComputeNode, *ir.SubbotNode, *ir.EmitNode, *ir.WaitNode, *ir.AwaitAnswersNode:
+		return true
+	}
+	return false
 }

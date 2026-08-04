@@ -250,30 +250,28 @@ func (s *Service) Rewind(ctx context.Context, spec RewindSpec) (*RewindResult, e
 	dropped, invalidated := downstreamOf(wf, pivot, cp.Outputs)
 	fromNode := cp.NodeID
 
-	// Workspace first: a git failure then leaves the run's engine state
-	// untouched, so the operator can fix the tree and retry the whole
-	// rewind. The reverse order could leave a rewound checkpoint pointing
-	// at un-rewound files.
-	files := &fileRevertResult{SkipReason: "keep_files requested"}
-	if !spec.KeepFiles {
-		files, err = s.revertWorkspace(run, wf, cp, pivot, sourcePath)
-		if err != nil {
-			return nil, err
-		}
-	}
-
-	// Claim the run before mutating. UpdateRunStatusIf is a CAS against
-	// the expected statuses, so a concurrent resume that already flipped
-	// this run to `running` loses the race instead of being rewound out
-	// from under itself. `cancelled` preserves the checkpoint through
-	// applyStatusTransition (unlike running/finished/failed, which nil
-	// it) — so this must run BEFORE the checkpoint write.
+	// Claim the run BEFORE touching anything, the workspace included. The
+	// CAS exists to make a concurrent resume safe; reverting first defeats
+	// it, because the restore would already have run inside a workspace an
+	// engine is actively writing to before we discovered we lost the race.
+	// The original justification for going second — "a revert failure
+	// leaves engine state untouched" — holds here too: `cancelled`
+	// preserves the checkpoint, so a revert failure after the claim leaves
+	// a resumable run carrying its pre-rewind state.
 	claimed, err := s.store.UpdateRunStatusIf(ctx, run.ID, store.RunStatusCancelled, "", rewindableStatuses)
 	if err != nil {
 		return nil, fmt.Errorf("claim run for rewind: %w", err)
 	}
 	if !claimed {
 		return nil, fmt.Errorf("%w: status changed under us — reload and retry", ErrRewindNotRewindable)
+	}
+
+	files := &fileRevertResult{SkipReason: "keep_files requested"}
+	if !spec.KeepFiles {
+		files, err = s.revertWorkspace(run, wf, cp, pivot, sourcePath)
+		if err != nil {
+			return nil, err
+		}
 	}
 
 	// Reserve the tombstone versions BEFORE persisting the checkpoint,
@@ -320,6 +318,29 @@ func (s *Service) Rewind(ctx context.Context, spec RewindSpec) (*RewindResult, e
 	}
 
 	tombstoned := s.writeArtifactTombstones(ctx, run.ID, pivot, tombstones)
+
+	// Retire the async questions the invalidated nodes posted. ADR-081's
+	// pair is level-triggered against the STORE, so clearing the checkpoint
+	// pointer alone leaves them live: the replayed await_answers would
+	// park on the union of its new questions and these abandoned ones, or
+	// fold pre-rewind answers into its output.
+	//
+	// Keyed on `invalidated`, not `dropped`: a node that posted questions
+	// and then failed mid-execution — the canonical failed_resumable state
+	// a rewind is invoked on — has no output, so the output-filtered set
+	// would skip exactly the node whose questions are still pending. Same
+	// argument detachSubbotChildren and the NodeAttempts clear rest on.
+	retireNodes := map[string]bool{}
+	for _, id := range invalidated {
+		retireNodes[id] = true
+	}
+	if n, rerr := store.RetireAsyncInteractions(ctx, s.store, run.ID, retireNodes); rerr != nil {
+		if s.logger != nil {
+			s.logger.Warn("rewind: retire async interactions for %s: %v", run.ID, rerr)
+		}
+	} else if n > 0 && s.logger != nil {
+		s.logger.Info("rewind: retired %d abandoned async question(s)", n)
+	}
 
 	// Append-only audit. events.jsonl is never truncated — the dropped
 	// nodes' original records stay, and this marker explains why they

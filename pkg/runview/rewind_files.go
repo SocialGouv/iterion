@@ -68,8 +68,16 @@ func (s *Service) revertWorkspace(run *store.Run, wf *ir.Workflow, cp *store.Che
 	// Bank the current state — including uncommitted and untracked work —
 	// before touching anything, so the revert destroys nothing.
 	backupRef := store.RewindBackupRef(run.ID, pivot, nextRewindBackupSeq(run.WorkDir, run.ID, pivot))
-	if _, err := runtime.SnapshotWorktree(run.WorkDir, backupRef); err != nil {
+	banked, err := runtime.SnapshotWorktree(run.WorkDir, backupRef)
+	if err != nil {
 		return nil, fmt.Errorf("bank the current workspace before reverting: %w", err)
+	}
+	if banked == "" {
+		// The tree already matched HEAD, so SnapshotWorktree wrote no ref.
+		// Reporting the name anyway hands the operator a recovery hint
+		// that resolves to nothing — and leaves nextRewindBackupSeq
+		// handing out the same number again.
+		backupRef = ""
 	}
 
 	// Index + worktree := the pre-node tree. HEAD is untouched, so the
@@ -183,10 +191,18 @@ func (s *Service) revertViaTracker(run *store.Run, wf *ir.Workflow, cp *store.Ch
 	}
 	snapshotID, ok := findPreNodeSnapshot(s.workspaceTracker, run, wf, cp, pivot)
 	if !ok {
-		// Distinguish the three real causes: the operator can act on the
-		// first two, and conflating them sent people hunting for a
-		// non-existent "old run" problem.
+		// Distinguish the real causes: the operator can act on most of
+		// them, and conflating them sent people hunting for a non-existent
+		// "old run" problem.
 		if s.workspaceTracker.Head(run.ID) == "" {
+			// A workspace over the file cap produces no snapshots either,
+			// but for an entirely different reason and with a different
+			// fix (raise the cap, or narrow the workspace with
+			// .iterionignore). Reporting it as "versioning was off" is the
+			// wrong-problem hunt this branch set out to remove.
+			if over, ok := s.workspaceTracker.(interface{ Overflowed(string) bool }); ok && over.Overflowed(run.ID) {
+				return &fileRevertResult{SkipReason: "this run's workspace exceeded the file cap, so nothing was versioned — narrow it with .iterionignore, or raise the cap"}, nil
+			}
 			return &fileRevertResult{SkipReason: "this run captured no workspace snapshots at all — it was launched on a path that does not enable workspace versioning, or versioning was off"}, nil
 		}
 		return &fileRevertResult{SkipReason: fmt.Sprintf(
@@ -259,9 +275,15 @@ func (s *Service) RestoreWorkspaceSnapshot(ctx context.Context, runID, snapshotI
 
 // ListWorkspaceSnapshots walks a run's capture chain, newest first, so an
 // operator can see what states are recoverable.
-func (s *Service) ListWorkspaceSnapshots(runID string) ([]*workspacetrack.Snapshot, error) {
+func (s *Service) ListWorkspaceSnapshots(ctx context.Context, runID string) ([]*workspacetrack.Snapshot, error) {
 	if s.workspaceTracker == nil {
 		return nil, fmt.Errorf("runview: workspace versioning is not enabled on this store")
+	}
+	// Resolve the run first, as RestoreWorkspaceSnapshot does: the id
+	// reaches the tracker's path builders directly, so an unvalidated one
+	// would read a manifest outside the run's directory.
+	if _, err := s.store.LoadRun(ctx, runID); err != nil {
+		return nil, fmt.Errorf("load run: %w", err)
 	}
 	var out []*workspacetrack.Snapshot
 	for id := s.workspaceTracker.Head(runID); id != ""; {

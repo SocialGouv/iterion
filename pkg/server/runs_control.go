@@ -280,12 +280,27 @@ func (s *Server) handleRewindRun(w http.ResponseWriter, r *http.Request) {
 	if s.logger != nil {
 		s.logger.Info("server: rewind run %q to node %q (auto=%v) from %s", id, req.NodeID, req.Auto, r.RemoteAddr)
 	}
+	sourcePath := req.SourcePath
+	if sourcePath != "" {
+		// The same audited containment boundary every other workflow-path
+		// surface uses. Without it this handler is an arbitrary-file-read
+		// primitive for any authenticated caller: the path goes straight
+		// into CompileWorkflow + os.ReadFile, and the parse diagnostic
+		// returned on failure quotes the offending token out of whatever
+		// file it managed to read.
+		resolved, perr := s.resolveWorkflowPath(sourcePath, "")
+		if perr != nil {
+			s.httpErrorFor(w, r, http.StatusBadRequest, "source_path: %v", perr)
+			return
+		}
+		sourcePath = resolved
+	}
 	result, err := s.runs.Rewind(r.Context(), runview.RewindSpec{
 		RunID:      id,
 		NodeID:     req.NodeID,
 		Auto:       req.Auto,
 		KeepFiles:  req.KeepFiles,
-		SourcePath: req.SourcePath,
+		SourcePath: sourcePath,
 	})
 	if err != nil {
 		switch {

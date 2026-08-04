@@ -831,6 +831,17 @@ type Interaction struct {
 	// be enforced at the interaction layer too. Empty for legacy
 	// filesystem records.
 	TenantID string `json:"tenant_id,omitempty" bson:"tenant_id,omitempty"`
+	// RetiredAt marks a question the run no longer asks — set when a
+	// rewind invalidates the node that posted it.
+	//
+	// ADR-081's async pair is level-triggered against the STORE, not the
+	// checkpoint: await_answers parks until the pending list is empty and
+	// returns every answered record. So a rewind that only cleared the
+	// checkpoint pointer left its questions live, and the replayed node
+	// blocked on the union of its new questions and the abandoned ones —
+	// or mixed pre- and post-rewind answers into one output. A retired
+	// record is in neither list.
+	RetiredAt *time.Time `json:"retired_at,omitempty" bson:"retired_at,omitempty"`
 }
 
 // InteractionTurn is one message in a guided review-gate dialogue.

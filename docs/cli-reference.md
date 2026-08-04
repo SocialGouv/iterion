@@ -195,7 +195,9 @@ rewinds to the earliest affected node — the bot-development loop in one step.
 `compute`, unlike fork's turn anchor); `--file` overrides the source the graph
 is read from. Budget accounting, loop counters, and `events.jsonl` are
 preserved; artifacts the dropped nodes published get a superseding `rewound`
-marker version. Files written into the workspace are NOT undone — see
+marker version. For a `worktree: auto` run the workspace is also restored to the
+state the pivot started from — `--keep-files` opts out — while an in-place run's
+files are left alone and it says so. See
 [resume](resume.md#rewind-resume-from-an-earlier-node).
 
 ### `iterion runs prune`

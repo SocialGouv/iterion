@@ -558,11 +558,20 @@ func fanOutRouterFor(wf *ir.Workflow, nodeID string) string {
 // the body, since it runs once rather than per-branch.
 func fanOutBody(wf *ir.Workflow, routerID string) map[string]bool {
 	adj := adjacency(wf, false)
-	inDegree := map[string]int{}
+	// DISTINCT sources, not edge count — the engine's own convergence
+	// detection counts distinct predecessors. Two edges from the SAME
+	// node (a when/else pair, or sibling `with` mappings) are routine
+	// inside a fan-out branch and are not a convergence there; counting
+	// them as one truncates the body and skips the router promotion.
+	inSources := map[string]map[string]bool{}
 	for _, e := range wf.Edges {
-		if e != nil {
-			inDegree[e.To]++
+		if e == nil {
+			continue
 		}
+		if inSources[e.To] == nil {
+			inSources[e.To] = map[string]bool{}
+		}
+		inSources[e.To][e.From] = true
 	}
 	body := map[string]bool{}
 	queue := append([]string(nil), adj[routerID]...)
@@ -576,7 +585,7 @@ func fanOutBody(wf *ir.Workflow, routerID string) map[string]bool {
 		if !ok {
 			continue
 		}
-		if isFanOutBoundary(wf, node, id, inDegree) {
+		if isFanOutBoundary(wf, node, id, inSources) {
 			// The boundary: excluded from the body, and not expanded
 			// past. Without the walk stopping here it would swallow the
 			// whole post-fan-out graph, and a rewind onto a node far
@@ -592,13 +601,14 @@ func fanOutBody(wf *ir.Workflow, routerID string) map[string]bool {
 // isFanOutBoundary reports whether a node ends a fan-out region.
 //
 // A declared `await:` is the explicit form, but the engine also treats
-// more than one distinct incoming source as a convergence point
+// more than one DISTINCT incoming source as a convergence point
 // (pkg/runtime/convergence.go), and nothing in the DSL requires the
-// annotation. Relying on `await:` alone happens to work for every bot
+// annotation. Distinct sources, not edge count: a when/else pair from one
+// predecessor is two edges and no convergence. Relying on `await:` alone happens to work for every bot
 // shipped today and silently over-promotes for any graph that converges
 // implicitly. Terminals end the region too — nothing runs per-branch
 // after them.
-func isFanOutBoundary(wf *ir.Workflow, node ir.Node, id string, inDegree map[string]int) bool {
+func isFanOutBoundary(wf *ir.Workflow, node ir.Node, id string, inSources map[string]map[string]bool) bool {
 	if ir.NodeAwaitMode(node) != ir.AwaitNone {
 		return true
 	}
@@ -606,7 +616,7 @@ func isFanOutBoundary(wf *ir.Workflow, node ir.Node, id string, inDegree map[str
 	case *ir.DoneNode, *ir.FailNode:
 		return true
 	}
-	return inDegree[id] > 1
+	return len(inSources[id]) > 1
 }
 
 // supervisorWatches returns the node ids a supervisor declaration
