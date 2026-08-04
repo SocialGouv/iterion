@@ -8,6 +8,60 @@ pr_url` it also posts an inline forge review and an optional deterministic
 commit-status gate. Never edits or commits. See
 [bots/review-pr/](../../bots/review-pr/).
 
+## 2026-08-04 — five review passes over the credential pool: what Revi caught that adversarial subagents did not (runs 019fc939 / 019fc94a / 019fc95c / 019fc972 / 019fcb7b)
+
+- Status: **validated, and the highest-value reviewer signal measured so far.**
+- Versions: iterion cloud prod v3.23.2 → v3.24.0 · bot `review-pr` as deployed
+- Method: mono topology, gate `revi/review` required by the merge queue. Five
+  passes across two PRs (#350, then #356) on a ~6000-line feature
+  (`pkg/credpool` + publisher tier + runner accounting + studio + CLI).
+- Result: 14 findings kept across the five passes (3 high, 8 medium, 3 low).
+  Every high was real and fixed. #350 merged once the gate went green.
+
+### The finding that matters most for calibration
+
+The feature had already been through **four parallel `/simplify` agents and
+two adversarial review agents at max effort** before Revi saw it. Those layers
+produced 38 fixes. Revi then found, among others:
+
+- **a `[high]` fail-open on the donor's bot allow-list.** `LaunchSpec.BotID` is
+  empty for an inline uploaded `.bot`, and the availability check treated an
+  empty bot id as "no filter to apply". A donor who restricted their
+  subscription to one bot would have had it handed to arbitrary uploaded code —
+  the restriction yielding on the single input the requester fully controls.
+- **claw cost counted twice**, which would have drained every donor at 2× and
+  silently tightened every tenant's monthly cap.
+- **a `[high]` defect in one of my own fixes**: the per-slot allowance share
+  was a no-op on the *renew* path, because `decideRenew` re-synthesises the
+  `Limits` it judges with and dropped `MaxConcurrentRuns`. My regression test
+  for that fix only exercised fresh acquisitions — which is exactly why it
+  passed.
+
+**Lesson.** Adversarial subagents share the context that produced the code, so
+they inherit its blind spots. Revi reads the diff cold, and that is where its
+value is: not in finding *more* problems, but in finding a *different class* of
+them. Worth the ~15–20 min and ~$1–2 per pass on anything touching money,
+credentials, or consent.
+
+### The one no reviewer could have found
+
+`iterion remote pool` could never work at all: `identityFromPAT` never sets
+`OrgID`, so every CLI caller resolved to no pool and got "no credential pool
+accepts contributions on this instance". Three review layers read that handler;
+none *ran* it. It took one real call against prod. **A reviewer verifies what
+the code says; only an execution verifies what it does.**
+
+### Frictions
+
+- Revi cannot run the repo's tests (no network in its sandbox; devbox cannot
+  realise its nix closure), and says so in a verification caveat. Its findings
+  are reading-derived — accurate here, but it means the gate is a *review*
+  gate, not a test gate.
+- The prod instance's Claude forfait hit its **weekly** window mid-session,
+  blocking Revi and therefore the merge — the single-point-of-failure this very
+  feature exists to remove. It could not have saved itself: not deployed, and
+  no donor had pledged.
+
 ## 2026-08-01 — the hand-off measured working in production, and a second hole under it (runs 019fbc1d / 019fbc26)
 
 - Status: **the hand-off is validated live.** A separate, pre-existing defect
