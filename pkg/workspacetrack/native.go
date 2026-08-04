@@ -431,6 +431,29 @@ func (n *Native) Labels(runID string) map[string]string {
 	return out
 }
 
+// OpenObject returns the blob as a seekable reader instead of a byte
+// slice, so a caller serving media can stream it and honour Range.
+//
+// Object buffers the whole file, which is fine for a diff of a source
+// file and wrong for the artefact a media pipeline exists to produce: a
+// multi-hundred-MB export would sit in the server's heap once per
+// concurrent request, and every seek in the player would re-read it.
+// Callers reach this through an optional interface assertion, so the
+// Tracker contract stays minimal.
+func (n *Native) OpenObject(hash string) (*os.File, error) {
+	if len(hash) < 3 {
+		return nil, fmt.Errorf("%w: object %q", ErrSnapshotNotFound, hash)
+	}
+	f, err := os.Open(n.objectPath(hash))
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil, fmt.Errorf("%w: object %s", ErrSnapshotNotFound, hash)
+		}
+		return nil, err
+	}
+	return f, nil
+}
+
 // Object reads a content-addressed blob from the shared object pool.
 func (n *Native) Object(hash string) ([]byte, error) {
 	if len(hash) < 3 {

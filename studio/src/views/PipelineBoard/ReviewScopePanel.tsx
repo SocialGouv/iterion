@@ -19,6 +19,13 @@ interface Props {
   runId: string;
   /** Poll while the run is still live so late writes appear. */
   live?: boolean;
+  /**
+   * Identifies WHICH pause is being reviewed — a run reaching a second
+   * gate keeps the same runId, so this is what separates the two ranges
+   * in the query cache. Callers pass the same value they key the answer
+   * form on (interaction id + updated_at).
+   */
+  pauseKey?: string;
 }
 
 const STATUS_LABEL: Record<string, string> = {
@@ -55,12 +62,21 @@ function isMediaKind(kind: ProducedFileKind): boolean {
  * produce dozens of files and the form below is the action the operator needs
  * first. Opening a row plays media (audio/video/image) or opens a text diff.
  */
-export function ReviewScopePanel({ runId, live }: Props) {
+export function ReviewScopePanel({ runId, live, pauseKey }: Props) {
   const [diffFile, setDiffFile] = useState<RunFile | null>(null);
   const [mediaFile, setMediaFile] = useState<RunFile | null>(null);
 
   const { data, isLoading, error } = useQuery({
-    queryKey: ["review-scope", runId],
+    // `pauseKey` is part of the key, not decoration. A run that reaches a
+    // SECOND gate keeps the same runId, and React reconciles this panel in
+    // place when the board poll swaps in the new pending review — same
+    // element type, same props. Without a distinct key the cached payload
+    // is reused, and since polling stops once a range resolves (below),
+    // refetchOnWindowFocus is off globally and the pause has no other
+    // trigger, it is never refetched: the operator would approve gate N
+    // while reading gate N-1's file list. Exactly the multi-gate pipeline
+    // this panel exists for.
+    queryKey: ["review-scope", runId, pauseKey ?? ""],
     queryFn: () => getReviewScope(runId),
     // Poll only until a range resolves, then stop for good.
     //
@@ -189,7 +205,11 @@ export function ReviewScopePanel({ runId, live }: Props) {
                           <span className="shrink-0 text-fg-subtle">
                             {media ? "play" : "(binary)"}
                           </span>
-                        ) : (
+                        ) : f.counts_unknown ? null : (
+                          /* counts_unknown: the workspace backend stores
+                             content, not diffs, so it cannot produce line
+                             counts — rendering the zeros would read as
+                             "nothing changed in this file". */
                           <span className="shrink-0 text-fg-subtle">
                             +{f.added} −{f.deleted}
                           </span>

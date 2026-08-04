@@ -831,6 +831,13 @@ export interface RunFile {
   // other mode. Drives the FilesPanel's subtle per-file tint and the
   // per-row diff mode (committed → branch range, uncommitted → worktree).
   lifecycle?: "committed" | "uncommitted";
+  // True when the producer could not compute line counts at all, so
+  // added/deleted are UNPOPULATED rather than a genuine +0/-0. iterion's
+  // own workspace versioning is such a producer — it stores content, not
+  // diffs, and has no git to ask — so every modified text file on an
+  // in-place run would otherwise render "+0 −0", reading as "nothing
+  // changed in this file". Render nothing instead.
+  counts_unknown?: boolean;
 }
 
 // File listing source-of-truth selector. Mirrors the server's fileMode:
