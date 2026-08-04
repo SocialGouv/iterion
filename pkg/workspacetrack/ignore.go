@@ -127,6 +127,13 @@ func (ig *Ignorer) Protect(workspaceDir string, paths ...string) {
 	}
 }
 
+// IsProtected reports whether a workspace-relative path was marked
+// untouchable via Protect — a deliberate exclusion, as opposed to one
+// that merely happens to match an ignore rule.
+func (ig *Ignorer) IsProtected(rel string) bool {
+	return ig.protected[rel]
+}
+
 // NewIgnorer builds the rule set for a workspace.
 func NewIgnorer(workspaceDir string) *Ignorer {
 	ig := &Ignorer{}

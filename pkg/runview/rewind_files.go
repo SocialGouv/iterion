@@ -417,7 +417,17 @@ func (s *Service) restoreBanked(run *store.Run, snapshotID string) (*workspacetr
 	if _, berr := s.workspaceTracker.Capture(run.ID, run.WorkDir, "pre-restore:"+snapshotID); berr != nil {
 		return nil, fmt.Errorf("bank the current workspace before restoring: %w", berr)
 	}
-	return s.workspaceTracker.Restore(run.ID, run.WorkDir, snapshotID)
+	// Protect the workflow source, exactly as revertViaTracker does.
+	// --restore-snapshot accepts any id the chain holds — including a
+	// mid-run `pre:<node>:<iter>` boundary, which --list-snapshots prints
+	// right alongside the banks — so without this an operator recovering
+	// their workspace can have their edited .bot silently rewritten to
+	// the version the run originally executed, and the next
+	// `resume --force` then compiles the OLD workflow. Invisible: the CLI
+	// reports "N written, N deleted" and nothing flags that the source
+	// moved. Bites when the .bot lives inside the workspace, which is the
+	// self-hosted shape the docs make the primary example.
+	return s.workspaceTracker.Restore(run.ID, run.WorkDir, snapshotID, run.FilePath)
 }
 
 // ListWorkspaceSnapshots walks a run's capture chain, newest first, so an

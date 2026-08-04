@@ -1240,3 +1240,137 @@ func TestCapture_UnchangedWorkspaceWritesNoNewManifest(t *testing.T) {
 		t.Errorf("%d manifests after a real change, want 2", got)
 	}
 }
+
+// TestCapture_SameSizeRewriteInOneTickIsSeen is Revi's R1b7ed8.
+//
+// (size, mtime) alone cannot call a file unchanged: it can be rewritten
+// AFTER a capture read it and still land in the same filesystem timestamp
+// tick, making the change permanently invisible. On overlayfs — container
+// and CI runners, including iterion's own sandbox images — granularity is
+// 4 ms, so consecutive writes routinely share one ModTime. Git carries
+// the same pair in its index and adds the racy rule for exactly this.
+//
+// The stakes are not cosmetic: revertViaTracker banks through Capture
+// before restoring, so a snapshot holding pre-write content means the
+// restore destroys bytes the operator was told were recoverable.
+//
+// The coarse-granularity condition is forced deterministically by pinning
+// BOTH the file and the index to one timestamp — which is precisely the
+// state a 4 ms tick produces on its own. Without pinning both, the
+// (size, mtime) test misses on its own and the guard is never exercised.
+func TestCapture_SameSizeRewriteInOneTickIsSeen(t *testing.T) {
+	ws := t.TempDir()
+	p := filepath.Join(ws, "a.txt")
+	write(t, ws, "a.txt", "1")
+	tick := time.Now().Add(-time.Second).Truncate(time.Second)
+	if err := os.Chtimes(p, tick, tick); err != nil {
+		t.Fatal(err)
+	}
+	n := NewNative(t.TempDir())
+
+	first, err := n.Capture("r1", ws, "post:a:0")
+	if err != nil {
+		t.Fatalf("first capture: %v", err)
+	}
+	// The index lands in the same tick as the file — the coarse-fs case.
+	idx := filepath.Join(n.runDir("r1"), "index.json")
+	if err := os.Chtimes(idx, tick, tick); err != nil {
+		t.Fatal(err)
+	}
+
+	// Same size, different content, and the mtime the cache already holds.
+	if err := os.WriteFile(p, []byte("2"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chtimes(p, tick, tick); err != nil {
+		t.Fatal(err)
+	}
+
+	// A fresh tracker, so the cache is re-read from disk with its stamp.
+	n2 := NewNative(n.root)
+	second, err := n2.Capture("r1", ws, "post:b:0")
+	if err != nil {
+		t.Fatalf("second capture: %v", err)
+	}
+	if second.ID == first.ID {
+		t.Fatal("the rewrite was invisible — the capture took the stat-cache hit and " +
+			"recorded the PREVIOUS content, so a restore would destroy the new bytes")
+	}
+	var hash string
+	for _, e := range second.Entries {
+		if e.Path == "a.txt" {
+			hash = e.Hash
+		}
+	}
+	blob, err := os.ReadFile(n2.objectPath(hash))
+	if err != nil {
+		t.Fatalf("read object: %v", err)
+	}
+	if string(blob) != "2" {
+		t.Errorf("stored content = %q, want the post-rewrite bytes", blob)
+	}
+}
+
+// TestRestore_ReportsPathsNewlyExcludedByAnEditedIgnoreFile is Revi's
+// Rb55b9a: the Ignorer is built from the ignore files as they stand at
+// RESTORE time, so a node that edited .gitignore made every path it newly
+// excludes skipped by both passes — the node's own production survived
+// the rewind, silently.
+func TestRestore_ReportsPathsNewlyExcludedByAnEditedIgnoreFile(t *testing.T) {
+	ws := t.TempDir()
+	write(t, ws, ".gitignore", "*.log\n")
+	write(t, ws, "build/out.bin", "captured while not ignored")
+	n := NewNative(t.TempDir())
+	snap, err := n.Capture("r1", ws, "pre:a:0")
+	if err != nil {
+		t.Fatalf("capture: %v", err)
+	}
+
+	// The node broadened the ignore rules — a scaffold/build-config bot.
+	write(t, ws, ".gitignore", "*.log\nbuild/\n")
+	write(t, ws, "build/out.bin", "the node's own production")
+
+	report, err := n.Restore("r1", ws, snap.ID)
+	if err != nil {
+		t.Fatalf("restore: %v", err)
+	}
+	found := false
+	for _, p := range report.Skipped {
+		if p == "build/out.bin" {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("Skipped = %v — a captured path the current rules exclude was neither "+
+			"restored nor reported, so the rewind claims a clean revert while the node's "+
+			"production survives", report.Skipped)
+	}
+}
+
+// TestRestore_RefusesAFileWhereTheSnapshotNeedsADirectory is the mirror
+// of the dir/file collision: a regular file sitting where the snapshot
+// needs a directory survives the deletion pass when it is ignored, and
+// MkdirAll then fails with ENOTDIR — after the irreversible deletions.
+func TestRestore_RefusesAFileWhereTheSnapshotNeedsADirectory(t *testing.T) {
+	ws := t.TempDir()
+	write(t, ws, "docs/page.md", "content")
+	write(t, ws, "keep.txt", "untouched")
+	n := NewNative(t.TempDir())
+	snap, err := n.Capture("r1", ws, "pre:a:0")
+	if err != nil {
+		t.Fatalf("capture: %v", err)
+	}
+	// The node collapsed docs/ into a single file.
+	if err := os.RemoveAll(filepath.Join(ws, "docs")); err != nil {
+		t.Fatal(err)
+	}
+	write(t, ws, "docs", "now a regular file")
+	write(t, ws, "produced.txt", "by the node")
+
+	if _, err := n.Restore("r1", ws, snap.ID); err == nil {
+		t.Error("a file where the snapshot needs a directory must be refused up front")
+	}
+	if _, err := os.Stat(filepath.Join(ws, "produced.txt")); err != nil {
+		t.Errorf("produced.txt was deleted before the collision was detected: %v", err)
+	}
+}

@@ -131,6 +131,23 @@ type statCache struct {
 	Entries map[string]statEntry `json:"entries"`
 	Head    string               `json:"head,omitempty"`
 	Labels  map[string]string    `json:"labels,omitempty"`
+	// racyFrom is the mtime of index.json itself, filled in at load — NOT
+	// serialised. It is git's racy-index stamp.
+	//
+	// (size, mtime) alone is not sufficient to call a file unchanged: a
+	// file can be rewritten AFTER a capture read it and still land in the
+	// same filesystem timestamp tick, and the change is then permanently
+	// invisible. Measured on overlayfs — the shape container and CI
+	// runners use, including iterion's own sandbox images — mtime
+	// granularity is 4 ms, and five writes in a tight loop share one
+	// ModTime. Any entry whose mtime is at or after this stamp was touched
+	// during the capture window and must be re-hashed rather than trusted.
+	//
+	// On the runtime path a snapshot that silently records pre-write
+	// content is the one thing this must never do: revertViaTracker banks
+	// through Capture before restoring, so a stale bank means the restore
+	// destroys bytes the operator was told were recoverable.
+	racyFrom int64
 	// Overflowed latches once the workspace was found to exceed MaxFiles,
 	// so later boundaries short-circuit instead of re-walking a workspace
 	// that will fail identically. Persisted, so it survives a resume.
@@ -173,8 +190,19 @@ func (n *Native) cache(runID string) *statCache {
 		return c
 	}
 	c := &statCache{Entries: map[string]statEntry{}, Labels: map[string]string{}}
-	if b, err := os.ReadFile(filepath.Join(n.runDir(runID), "index.json")); err == nil {
+	idx := filepath.Join(n.runDir(runID), "index.json")
+	if b, err := os.ReadFile(idx); err == nil {
 		_ = json.Unmarshal(b, c)
+		// The racy stamp is the index file's OWN mtime, deliberately not a
+		// value we compute: it then comes from the same clock and the same
+		// granularity as the file mtimes it is compared against, which is
+		// what makes the rule self-calibrating. On a coarse filesystem
+		// (overlayfs: 4 ms) a file written in the same tick as the index
+		// compares equal and is re-read; on ns-granularity ext4 it
+		// compares strictly older and keeps its cache hit.
+		if info, serr := os.Stat(idx); serr == nil {
+			c.racyFrom = info.ModTime().UnixNano()
+		}
 	}
 	if c.Entries == nil {
 		c.Entries = map[string]statEntry{}
@@ -195,7 +223,16 @@ func (n *Native) saveCache(runID string, c *statCache) error {
 	if err != nil {
 		return err
 	}
-	return writeAtomic(filepath.Join(dir, "index.json"), b)
+	idx := filepath.Join(dir, "index.json")
+	if err := writeAtomic(idx, b); err != nil {
+		return err
+	}
+	// Re-stamp from the file we just wrote, so a long-lived tracker keeps
+	// the same self-calibrating comparison as a fresh load.
+	if info, serr := os.Stat(idx); serr == nil {
+		c.racyFrom = info.ModTime().UnixNano()
+	}
+	return nil
 }
 
 // Capture walks the workspace, stores any content it has not seen, and
@@ -226,6 +263,7 @@ func (n *Native) Capture(runID, workspaceDir, label string) (*Snapshot, error) {
 		CreatedAt: time.Now().UTC(),
 	}
 	fresh := map[string]statEntry{}
+	racyFrom := c.racyFrom
 
 	err := filepath.WalkDir(workspaceDir, func(path string, d fs.DirEntry, walkErr error) error {
 		if walkErr != nil {
@@ -289,7 +327,12 @@ func (n *Native) Capture(runID, workspaceDir, label string) (*Snapshot, error) {
 		// Stat-cache hit: same size and mtime as last time, reuse the hash
 		// and skip the read entirely.
 		modNano := info.ModTime().UnixNano()
-		if prev, ok := c.Entries[rel]; ok && prev.Size == info.Size() && prev.ModNano == modNano && prev.Hash != "" {
+		// Racy-clean guard (git's racy-index rule): an entry whose mtime
+		// sits at or after the previous capture's start may have been
+		// rewritten inside that tick, so its recorded hash cannot be
+		// trusted — re-read it.
+		racy := racyFrom > 0 && prevModAtOrAfter(c.Entries[rel], racyFrom)
+		if prev, ok := c.Entries[rel]; ok && !racy && prev.Size == info.Size() && prev.ModNano == modNano && prev.Hash != "" {
 			snap.Entries = append(snap.Entries, Entry{Path: rel, Hash: prev.Hash, Mode: uint32(info.Mode().Perm()), Size: info.Size()})
 			fresh[rel] = prev
 			return nil
@@ -360,6 +403,14 @@ func (n *Native) Capture(runID, workspaceDir, label string) (*Snapshot, error) {
 	// pointing at it loses nothing.
 	if parent := n.identicalParent(runID, c.Head, snap); parent != "" {
 		n.mu.Lock()
+		// Refresh the stat cache even though no manifest is written. The
+		// files re-hashed this round (their mtime moved, their content did
+		// not — `gofmt -w`, `prettier --write`, codegen) would otherwise
+		// keep their OLD stat entries and miss again at every later
+		// boundary, so a run in that state pays the cold full-hash cost
+		// forever instead of the warm one the default-ON case rests on.
+		// `fresh` is already computed; it was simply being dropped.
+		c.Entries = fresh
 		if label != "" {
 			c.Labels[label] = parent
 		}
@@ -415,6 +466,12 @@ func (n *Native) identicalParent(runID, parentID string, snap *Snapshot) string 
 		}
 	}
 	return parentID
+}
+
+// prevModAtOrAfter reports whether a cached entry's recorded mtime sits
+// at or after the given stamp — the racy window.
+func prevModAtOrAfter(e statEntry, stamp int64) bool {
+	return e.ModNano >= stamp
 }
 
 // storeObject hashes a file and writes it into the content-addressed
@@ -712,6 +769,24 @@ func (n *Native) Restore(runID, workspaceDir, snapshotID string, protected ...st
 				"restore: %s is a directory in the workspace but a file in the snapshot — "+
 					"remove or rename it and retry; nothing was deleted", e.Path)
 		}
+		// And the MIRROR: a regular file sitting where the snapshot needs a
+		// DIRECTORY. When that file is ignored, protected or oversized it
+		// survives the deletion pass, and MkdirAll then fails with ENOTDIR
+		// — again after the irreversible deletions.
+		for parent := filepath.Dir(dest); len(parent) > len(workspaceDir); parent = filepath.Dir(parent) {
+			info, derr := os.Lstat(parent)
+			if derr != nil {
+				break // does not exist yet: MkdirAll will create it
+			}
+			if !info.IsDir() {
+				rel, _ := filepath.Rel(workspaceDir, parent)
+				return nil, fmt.Errorf(
+					"restore: %s is a file in the workspace but a directory in the snapshot "+
+						"(it holds %s) — remove or rename it and retry; nothing was deleted",
+					filepath.ToSlash(rel), e.Path)
+			}
+			break // nearest existing ancestor is a directory: fine
+		}
 	}
 	for _, p := range toDelete {
 		if err := os.Remove(p); err != nil && !os.IsNotExist(err) {
@@ -740,6 +815,20 @@ func (n *Native) Restore(runID, workspaceDir, snapshotID string, protected ...st
 		// the exact failure this exists to prevent, since a rewind is
 		// launched to test an edit to that file.
 		if ig.Match(e.Path, false) {
+			// REPORT it unless it is protected. The Ignorer is built from
+			// the ignore files as they stand NOW, not as they stood at
+			// capture time — so a node that edited .gitignore/.iterionignore
+			// (routine for a scaffold or build-config bot) makes every path
+			// it newly excludes skipped by BOTH passes: the node's own
+			// production survives the rewind untouched, which is precisely
+			// the "replaying a node on top of its own previous production"
+			// failure this package exists to prevent. Silently, until now —
+			// contradicting the documented "coverage gaps are always
+			// reported, never silent". A protected path is a deliberate
+			// exclusion the operator asked for, so it stays quiet.
+			if !ig.IsProtected(e.Path) {
+				report.Skipped = append(report.Skipped, e.Path)
+			}
 			continue
 		}
 		dest := filepath.Join(workspaceDir, filepath.FromSlash(e.Path))
