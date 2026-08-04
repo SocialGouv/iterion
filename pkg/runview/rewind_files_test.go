@@ -325,3 +325,100 @@ func readWorkspaceFile(t *testing.T, dir, name string) string {
 	}
 	return string(b)
 }
+
+// TestRewind_RefusesAStalePreSnapshot is Revi's R7c488c.
+//
+// The probe walked down to iteration 0 and took the first ref that
+// resolved, with no bound and no signal. When the pivot had actually
+// completed a LATER iteration whose pre-marker was missing, that restored
+// the tree from before an earlier pass — while downstreamOf deliberately
+// keeps the loop-mates' outputs, so the checkpoint claimed work whose
+// files had just been reverted away. Reported as Reverted=true, silently.
+//
+// Two ordinary paths reach it: a workflow whose Loop.Body is empty, and a
+// run resumed from a human pause (markPreNodeBoundary is gated on
+// rs.isWorktree, which that path never sets).
+func TestRewind_RefusesAStalePreSnapshot(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not available")
+	}
+	dir := t.TempDir()
+	wt := filepath.Join(dir, "workspace")
+	if err := os.MkdirAll(wt, 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	git(t, wt, "init", "-q", "-b", "main")
+	git(t, wt, "config", "user.email", "iterion@example.test")
+	git(t, wt, "config", "user.name", "iterion")
+	writeFile(t, wt, "docs/intro.md", "v1 — before the first pass\n")
+	git(t, wt, "add", "-A")
+	git(t, wt, "commit", "-q", "-m", "base")
+
+	botPath := filepath.Join(dir, "main.bot")
+	if err := os.WriteFile(botPath, []byte(loopedBot), 0o644); err != nil {
+		t.Fatalf("write bot: %v", err)
+	}
+	storeDir := filepath.Join(dir, "store")
+	st, err := store.New(storeDir)
+	if err != nil {
+		t.Fatalf("store: %v", err)
+	}
+	const runID = "run-stale"
+	if _, err := st.CreateRun(context.Background(), runID, "looped", nil); err != nil {
+		t.Fatalf("create run: %v", err)
+	}
+
+	// Iteration 0 is fully bracketed.
+	git(t, wt, "update-ref", store.NodePreSnapshotRef(runID, "implement", 0), "HEAD")
+	writeFile(t, wt, "docs/intro.md", "v2 — produced by pass 0\n")
+	git(t, wt, "add", "-A")
+	git(t, wt, "commit", "-q", "-m", "pass 0")
+	git(t, wt, "update-ref", store.NodeSnapshotRef(runID, "implement", 0), "HEAD")
+
+	// Iteration 1 ran and COMPLETED, but its opening marker was never
+	// written — the resumed-from-pause shape.
+	writeFile(t, wt, "docs/intro.md", "v3 — produced by pass 1\n")
+	git(t, wt, "add", "-A")
+	git(t, wt, "commit", "-q", "-m", "pass 1")
+	git(t, wt, "update-ref", store.NodeSnapshotRef(runID, "implement", 1), "HEAD")
+
+	run, err := st.LoadRun(context.Background(), runID)
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	run.FilePath = botPath
+	run.Worktree = true
+	run.WorkDir = wt
+	run.Status = store.RunStatusFailedResumable
+	run.Checkpoint = &store.Checkpoint{
+		NodeID:       "verify",
+		Outputs:      outputsOf("survey", "plan", "implement", "verify"),
+		LoopCounters: map[string]int{"fix": 1},
+	}
+	if err := st.SaveRun(context.Background(), run); err != nil {
+		t.Fatalf("save: %v", err)
+	}
+	svc, err := NewService(storeDir)
+	if err != nil {
+		t.Fatalf("NewService: %v", err)
+	}
+
+	res, err := svc.Rewind(context.Background(), RewindSpec{RunID: runID, NodeID: "implement"})
+	if err != nil {
+		t.Fatalf("Rewind: %v", err)
+	}
+	if res.Files == nil {
+		t.Fatal("expected a files report")
+	}
+	if res.Files.Reverted {
+		t.Errorf("the workspace was reverted to iteration 0's snapshot even though "+
+			"%q completed iteration 1 — that discards work the checkpoint still claims", "implement")
+	}
+	if res.Files.SkipReason == "" {
+		t.Error("skipping the revert must say why; a silent no-op reads as success")
+	}
+	// The tree is untouched: pass 1's production is still there.
+	if got := readWorkspaceFile(t, wt, "docs/intro.md"); got != "v3 — produced by pass 1\n" {
+		t.Errorf("docs/intro.md = %q, want pass 1's content left in place", got)
+	}
+}
