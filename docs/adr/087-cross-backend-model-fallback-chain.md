@@ -524,8 +524,12 @@ Each stage is shippable and independently valuable.
    layer. Migration fixture: `bots/sec-audit-source`, whose comment block
    already documents the C088 contract.
 4. **Operator surface** — one run-level route (studio Launch row + CLI
-   `--fallback <backend>:<model>`), applied to agent nodes that declare
-   none of their own and never to judges; a `fallbacks_used` row in the
+   `--fallback <backend>:<model>`, re-passable on `resume`), applied to
+   agent nodes that declare none of their own and never to judges. It is
+   **materialised onto the compiled workflow** (`ir.ApplyRunFallback`)
+   rather than resolved inside the executor, so it passes the same
+   safety screen as an authored route — refused crossings are dropped
+   with a warning — and decision 1 holds for it too; a `fallbacks_used` row in the
    run header naming each node a route served; the `model_fallback`
    event rendered in the timeline. The chain is deduped across all three
    sources, so a route resolving to the call that just failed is dropped

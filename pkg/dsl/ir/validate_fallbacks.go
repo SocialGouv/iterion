@@ -44,6 +44,21 @@ var gateEnforcingBackends = map[string]bool{
 	"pi":          true,
 }
 
+// reasoningEffortBackends are the backends that carry a
+// reasoning-effort dial. Deliberately its OWN set rather than a reuse
+// of gateEnforcingBackends: that set answers "can this backend enforce
+// the permission gate", and the two memberships differ — grok passes
+// `--reasoning-effort` and codex has `model_reasoning_effort`, so
+// reusing the gate set made C177 assert a fact the engine contradicts.
+// A diagnostic that is wrong teaches authors to ignore it.
+var reasoningEffortBackends = map[string]bool{
+	"claude_code": true,
+	"claw":        true,
+	"pi":          true,
+	"grok":        true,
+	"codex":       true,
+}
+
 // clawBackendName is the literal value of the in-process backend.
 // Hardcoded for the same reason as codexBackendName: ir must not import
 // pkg/backend/delegate.
@@ -85,7 +100,7 @@ func (c *compiler) validateFallbacks(w *Workflow) {
 		for _, fb := range fbs {
 			c.checkFallbackShape(kind, id, fb, seen)
 			c.checkFallbackTriggers(kind, id, fb)
-			c.checkFallbackCrossing(kind, id, fb, nn, nodeBackend)
+			c.checkFallbackCrossing(kind, id, fb, nn, nodeBackend, w.Permission)
 		}
 	}
 }
@@ -131,40 +146,82 @@ func (c *compiler) checkFallbackTriggers(kind, id string, fb Fallback) {
 }
 
 // checkFallbackCrossing validates what the route changes about the
-// node's capabilities.
-func (c *compiler) checkFallbackCrossing(kind, id string, fb Fallback, nn LLMNode, nodeBackend string) {
+// node's capabilities, using the same predicates the launch-time
+// run-level route is screened by — so an operator cannot reach through
+// `--fallback` a crossing the compiler refuses in the .bot.
+func (c *compiler) checkFallbackCrossing(kind, id string, fb Fallback, nn LLMNode, nodeBackend, workflowPermission string) {
 	// An env-ref backend is not knowable here; defer to the runtime.
-	if fb.Backend == "" || strings.Contains(fb.Backend, "${") || nodeBackend == "" {
+	if fb.Backend == "" || strings.Contains(fb.Backend, "${") {
 		return
 	}
 	label := fallbackLabel(fb)
 
-	// The permission gate is the anti-prompt-injection boundary. A route
-	// that cannot enforce it must not exist, rather than silently
-	// running the node ungated.
-	perm := nn.GetPermission()
-	if perm != "" && perm != "off" && !gateEnforcingBackends[fb.Backend] {
+	// The permission gate is the anti-prompt-injection boundary. Whether
+	// a ROUTE can enforce it is a property of the route's own backend,
+	// so this check does NOT depend on the node's backend being
+	// statically knowable — the auto-resolved shape is the shipped
+	// default and must not escape it.
+	if reason := ungatedCrossingReason(fb.Backend, EffectivePermission(nn.GetPermission(), workflowPermission)); reason != "" {
 		c.errorfAt(DiagFallbackUnsafeCross, id, "",
-			"%s %q: fallback %s runs on backend %q, which cannot enforce this node's permission: %s gate — the run would fall back UNGATED",
-			kind, id, label, fb.Backend, perm)
+			"%s %q: fallback %s %s", kind, id, label, reason)
 	}
 
-	// `tools:` inverts meaning across the claw⇄CLI boundary: empty means
-	// ZERO tools on claw and the FULL native toolset on a CLI backend.
-	crossesClawBoundary := (nodeBackend == clawBackendName) != (fb.Backend == clawBackendName)
-	if crossesClawBoundary && len(nn.GetTools()) == 0 {
+	// The remaining checks compare the two backends, so they need the
+	// node's own to be knowable.
+	if nodeBackend == "" {
+		return
+	}
+	if reason := toolsInversionReason(nodeBackend, fb.Backend, nn.GetTools()); reason != "" {
 		c.errorfAt(DiagFallbackUnsafeCross, id, "",
-			"%s %q: fallback %s crosses the claw⇄CLI boundary on a node with no tools: list — an empty list means NO tools on claw but the full unrestricted toolset on a CLI backend, so the route silently changes what this node can do; declare an explicit tools: list",
-			kind, id, label)
+			"%s %q: fallback %s %s", kind, id, label, reason)
 	}
 
-	// Reasoning effort, compression and memory are honoured unevenly.
-	// These degrade rather than mislead, so they warn.
-	if effort := nn.GetLLMFields().ReasoningEffort; effort != "" && !gateEnforcingBackends[fb.Backend] {
+	// Reasoning effort degrades rather than misleads, so it warns.
+	if effort := nn.GetLLMFields().ReasoningEffort; effort != "" && !reasoningEffortBackends[fb.Backend] {
 		c.warnfAt(DiagFallbackDrift, id, "",
 			"%s %q: fallback %s runs on backend %q, which has no reasoning-effort dial; the node's reasoning_effort: %s is ignored on that route",
 			kind, id, label, fb.Backend, effort)
 	}
+}
+
+// EffectivePermission resolves a node's gate mode: its own override
+// wins, an empty one inherits the workflow block — which is the
+// DOCUMENTED place to declare it, and therefore the shape a check that
+// reads only the node-level field silently misses.
+func EffectivePermission(nodePermission, workflowPermission string) string {
+	if p := strings.TrimSpace(nodePermission); p != "" {
+		return p
+	}
+	return strings.TrimSpace(workflowPermission)
+}
+
+// ungatedCrossingReason returns why a route may not serve a gated node,
+// or "" when it may. Shared by C176 and the launch-time screen so the
+// two can never disagree.
+func ungatedCrossingReason(routeBackend, permission string) string {
+	if permission == "" || permission == "off" || gateEnforcingBackends[routeBackend] {
+		return ""
+	}
+	return fmt.Sprintf(
+		"runs on backend %q, which cannot enforce the effective permission: %s gate — the run would fall back UNGATED",
+		routeBackend, permission)
+}
+
+// toolsInversionReason returns why a route may not cross the claw⇄CLI
+// boundary on this node, or "" when it may.
+//
+// The list inverts meaning across that boundary: empty means ZERO tools
+// on claw and the FULL unrestricted native toolset on a CLI backend
+// under bypassPermissions. Both backends must be statically known for
+// the comparison to mean anything.
+func toolsInversionReason(nodeBackend, routeBackend string, tools []string) string {
+	if nodeBackend == "" || routeBackend == "" || len(tools) > 0 {
+		return ""
+	}
+	if (nodeBackend == clawBackendName) == (routeBackend == clawBackendName) {
+		return ""
+	}
+	return "crosses the claw⇄CLI boundary on a node with no tools: list — an empty list means NO tools on claw but the full unrestricted toolset on a CLI backend, so the route silently changes what this node can do; declare an explicit tools: list"
 }
 
 // effectiveNodeBackend mirrors the runtime precedence knowable at

@@ -460,7 +460,7 @@ func buildRunExecutor(
 	if err != nil {
 		return nil, err
 	}
-	runFallback, err := model.ParseRunFallback(opts.Fallback)
+	runFallback, err := ir.ParseRunFallbackFlag(opts.Fallback)
 	if err != nil {
 		return nil, err
 	}

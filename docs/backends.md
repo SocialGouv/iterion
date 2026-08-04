@@ -378,6 +378,20 @@ wrote a chain vetted where it may go, so their routes win rather than
 being extended. It takes the default `on:` set; anything finer belongs
 in the `.bot`.
 
+The route is **materialised onto the compiled workflow** at launch, not
+resolved privately at dispatch. That is what subjects it to the same
+refusals as an authored route — an ungated crossing or a claw⇄CLI
+crossing on a tools-less node is **dropped with a warning**, never
+silently taken — and what makes it visible to the three pre-run
+analyses (sandbox bind-mount, parallel-branch admission, the
+`fan_out_each` guard). Without that, a flag could reach exactly the
+crossings the compiler refuses in the `.bot`.
+
+Launch rules are not persisted, so repeat `--fallback` on
+`iterion resume` to keep the route: the scenario this feature exists for
+— a long run outliving a quota window — is precisely the one that
+resumes.
+
 One route rather than a per-node ordered list, deliberately: the value
 is "don't lose a long run to a forfait wall", which one alternative
 delivers, and the Launch form persists nothing between launches — a

@@ -57,9 +57,6 @@ type ClawExecutor struct {
 	// so a run can re-target the bot without editing the .bot. Empty applies
 	// nothing (backward-compatible). See model_override.go.
 	modelOverrides ModelOverrides
-	// runFallback is the operator's single run-level fallback route
-	// (studio Launch row / CLI --fallback). Zero value = none.
-	runFallback    RunFallback
 	wfCompaction   *ir.Compaction
 	wfCapabilities []string // workflow-level default host capabilities (nil = none)
 	wfSkills       []string // workflow-level default skill-library references (nil = none)
@@ -346,14 +343,6 @@ func WithDefaultBackend(name string) ClawExecutorOption {
 // take precedence over the node's DSL backend:/model:. Empty is a no-op.
 func WithModelOverrides(o ModelOverrides) ClawExecutorOption {
 	return func(e *ClawExecutor) { e.modelOverrides = o }
-}
-
-// WithRunFallback installs the operator's run-level fallback route: one
-// last-resort alternative applied to agent nodes that declare none of
-// their own. See RunFallback for why it is one route rather than a
-// per-node chain, and why judges are excluded.
-func WithRunFallback(fb RunFallback) ClawExecutorOption {
-	return func(e *ClawExecutor) { e.runFallback = fb }
 }
 
 // WithCompressOverride sets the run-level compression override (CLI --compress

@@ -113,6 +113,10 @@ func buildResumeExecutor(
 	if err != nil {
 		return nil, err
 	}
+	runFallback, err := ir.ParseRunFallbackFlag(opts.Fallback)
+	if err != nil {
+		return nil, err
+	}
 	localStore, localSealer, err := localSecretsForRun(len(wf.Secrets) > 0, storeDir, logger)
 	if err != nil {
 		return nil, err
@@ -128,6 +132,7 @@ func buildResumeExecutor(
 		PermissionAllow: opts.PermissionAllow,
 		PermissionAsk:   opts.PermissionAsk,
 		PermissionDeny:  opts.PermissionDeny,
+		RunFallback:     runFallback,
 		ModelOverrides:  modelOverrides,
 		LocalSecrets:    localStore,
 		LocalSealer:     localSealer,

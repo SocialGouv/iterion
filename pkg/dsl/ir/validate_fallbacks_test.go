@@ -196,3 +196,55 @@ func TestNodeWithoutFallbacksIsUntouched(t *testing.T) {
 		}
 	}
 }
+
+// TestFallbackUngatedRouteRefusedFromWorkflowGate: `permission:` on the
+// workflow block is the DOCUMENTED place to declare the mode, and a
+// node's own field means "inherit". A check reading only the node field
+// let the common shape compile clean.
+func TestFallbackUngatedRouteRefusedFromWorkflowGate(t *testing.T) {
+	src := "agent x:\n  backend: \"claude_code\"\n  model: \"claude-opus-5\"\n  system: p\n  tools: [read_file]\n" +
+		"  fallbacks:\n    cheap:\n      backend: \"kimi\"\n      model: \"kimi-code/kimi-for-coding\"\n" +
+		"\nprompt p:\n  hi\n\nworkflow w:\n  entry: x\n  permission: deny\n  x -> done\n"
+	cr := compileFallbackSrc(t, src)
+	if !hasDiag(cr.Diagnostics, DiagFallbackUnsafeCross) {
+		t.Fatalf("expected C176 for a workflow-level gate, got %+v", cr.Diagnostics)
+	}
+}
+
+// TestFallbackUngatedRouteRefusedOnAutoBackend: whether a ROUTE can
+// enforce the gate is a property of the route's own backend, so the
+// check must not be skipped just because the node's backend resolves at
+// run time — which is the shipped default shape.
+func TestFallbackUngatedRouteRefusedOnAutoBackend(t *testing.T) {
+	src := "agent x:\n  model: \"claude-opus-5\"\n  system: p\n  permission: deny\n  tools: [read_file]\n" +
+		"  fallbacks:\n    cheap:\n      backend: \"kimi\"\n      model: \"kimi-code/kimi-for-coding\"\n" +
+		"\nprompt p:\n  hi\n\nworkflow w:\n  entry: x\n  x -> done\n"
+	cr := compileFallbackSrc(t, src)
+	if !hasDiag(cr.Diagnostics, DiagFallbackUnsafeCross) {
+		t.Fatalf("expected C176 with no node backend: declared, got %+v", cr.Diagnostics)
+	}
+}
+
+// TestFallbackDriftDoesNotLieAboutReasoningEffort: grok DOES carry a
+// reasoning-effort dial (--reasoning-effort), so claiming otherwise is
+// a diagnostic asserting a fact the engine contradicts — which trains
+// authors to ignore the one signal for real capability drift.
+func TestFallbackDriftDoesNotLieAboutReasoningEffort(t *testing.T) {
+	src := "agent x:\n  backend: \"claude_code\"\n  model: \"claude-opus-5\"\n  system: p\n" +
+		"  reasoning_effort: high\n  tools: [read_file]\n" +
+		"  fallbacks:\n    g:\n      backend: \"grok\"\n      model: \"grok-code\"\n" +
+		"\nprompt p:\n  hi\n\nworkflow w:\n  entry: x\n  x -> done\n"
+	cr := compileFallbackSrc(t, src)
+	if hasDiag(cr.Diagnostics, DiagFallbackDrift) {
+		t.Errorf("C177 claimed grok has no reasoning-effort dial: %+v", cr.Diagnostics)
+	}
+
+	// kimi genuinely has none — the warning must still fire there.
+	kimi := "agent x:\n  backend: \"claude_code\"\n  model: \"claude-opus-5\"\n  system: p\n" +
+		"  reasoning_effort: high\n  tools: [read_file]\n" +
+		"  fallbacks:\n    k:\n      backend: \"kimi\"\n      model: \"kimi-code/kimi-for-coding\"\n" +
+		"\nprompt p:\n  hi\n\nworkflow w:\n  entry: x\n  x -> done\n"
+	if !hasDiag(compileFallbackSrc(t, kimi).Diagnostics, DiagFallbackDrift) {
+		t.Error("C177 must still fire for a backend that really has no dial")
+	}
+}

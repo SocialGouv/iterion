@@ -65,6 +65,13 @@ type ResumeOptions struct {
 	// Parsed via model.ParseModelOverrides in buildResumeExecutor.
 	ModelFor   []string
 	BackendFor []string
+	// Fallback re-applies the launch-time run-level fallback route
+	// (`--fallback <backend>:<model>`). Resume does not persist launch
+	// rules, and this feature's whole scenario — a long run outliving a
+	// quota window — is exactly the one that resumes, so a route that
+	// silently stopped applying would kill the run on the second
+	// closure. See ADR-087.
+	Fallback string
 	// AutoResume is the bounded run-level auto-resume budget N
 	// (`--auto-resume`, env ITERION_AUTO_RESUME; default 0 = off). Mirrors
 	// RunOptions.AutoResume so `iterion resume` can itself keep re-driving a
@@ -255,6 +262,7 @@ func RunResumeWithFile(ctx context.Context, iterFile string, opts ResumeOptions,
 			PermissionDeny:  opts.PermissionDeny,
 			ModelFor:        opts.ModelFor,
 			BackendFor:      opts.BackendFor,
+			Fallback:        opts.Fallback,
 		})),
 	)...)
 

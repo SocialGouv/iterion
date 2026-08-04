@@ -345,3 +345,88 @@ func TestBuildFailureDoesNotVetoLaterElements(t *testing.T) {
 		t.Errorf("served by %q, want claw", out.BackendName)
 	}
 }
+
+// TestUsageWindow_KeepsRetryBudgetWhenNextRouteRejectsIt: the carve-out
+// must consult the next route's `on:` filter, not merely its existence.
+// A node whose only route declares `on: [unavailable]` would otherwise
+// lose its in-place budget on a usage window AND then stop at the
+// filter — strictly worse off than before the chain existed.
+func TestUsageWindow_KeepsRetryBudgetWhenNextRouteRejectsIt(t *testing.T) {
+	head := &backendScriptedBackend{name: delegate.BackendClaudeCode, fail: usageWindowErr()}
+	tail := &backendScriptedBackend{name: delegate.BackendClaw}
+	reg := delegate.NewRegistry()
+	reg.Register(delegate.BackendClaudeCode, head)
+	reg.Register(delegate.BackendClaw, tail)
+	e := newFallbackExecutor(reg, EventHooks{})
+
+	build := e.newElementBuilder("review", delegate.BackendClaudeCode, nil,
+		func(_ context.Context, bn string) (*delegate.Task, error) {
+			return &delegate.Task{NodeID: "review"}, nil
+		})
+	_, _ = e.dispatchChain(context.Background(), "review", []chainElement{
+		{Label: "primary"},
+		{Label: "api", Backend: delegate.BackendClaw, Model: "openai/gpt-5.5",
+			On: []delegate.FallbackCategory{delegate.FallbackUnavailable}},
+	}, "claude-opus-5", build)
+
+	if len(head.tasks) != 2 {
+		t.Errorf("head attempted %d times, want the full budget (2) — the route ahead does not accept usage_window, so skipping the budget buys nothing", len(head.tasks))
+	}
+	if len(tail.tasks) != 0 {
+		t.Errorf("the filtered route ran %d times, want 0", len(tail.tasks))
+	}
+}
+
+// TestExhaustedChainCarriesEverySpend: an exhausted chain still burned
+// what its routes burned. Dropping it under-reports whole agentic
+// sessions to max_cost_usd, the org monthly cap and a donor's ledger.
+func TestExhaustedChainCarriesEverySpend(t *testing.T) {
+	head := &backendScriptedBackend{
+		name: delegate.BackendClaudeCode, fail: &delegate.ErrTransient{Reason: "boom"},
+		tokens: 1000, costUSD: 0.40,
+	}
+	tail := &backendScriptedBackend{
+		name: delegate.BackendClaw, fail: &delegate.ErrTransient{Reason: "boom"},
+		tokens: 500, costUSD: 0.20,
+	}
+	reg := delegate.NewRegistry()
+	reg.Register(delegate.BackendClaudeCode, head)
+	reg.Register(delegate.BackendClaw, tail)
+	e := newFallbackExecutor(reg, EventHooks{})
+
+	build := e.newElementBuilder("review", delegate.BackendClaudeCode, nil,
+		func(_ context.Context, bn string) (*delegate.Task, error) {
+			return &delegate.Task{NodeID: "review"}, nil
+		})
+	out, err := e.dispatchChain(context.Background(), "review", []chainElement{
+		{Label: "primary"},
+		{Label: "api", Backend: delegate.BackendClaw, Model: "openai/gpt-5.5"},
+	}, "claude-opus-5", build)
+	if err == nil {
+		t.Fatal("expected the chain to fail")
+	}
+	// The head burned 1000 tokens across its retry budget; the tail 500.
+	if out.Result.Tokens <= 500 {
+		t.Errorf("tokens = %d, want the failed head's spend folded in too", out.Result.Tokens)
+	}
+}
+
+// TestCollapseHintOnlyChain_TrimsPrefixNotWholeChain: a node carrying
+// both `provider: "a,b"` and a `fallbacks:` route must still collapse
+// its inert hint prefix on a hint-ignoring backend. Refusing to collapse
+// merely because an unrelated route exists re-issues an identical call
+// with a second full retry budget — the waste the guard exists for.
+func TestCollapseHintOnlyChain_TrimsPrefixNotWholeChain(t *testing.T) {
+	chain := []chainElement{
+		{Provider: "zai"},
+		{Provider: "anthropic"},
+		{Label: "api", Backend: delegate.BackendClaudeCode, Model: "claude-opus-5"},
+	}
+	got := collapseHintOnlyChain(chain, delegate.BackendClaw)
+	if len(got) != 2 {
+		t.Fatalf("got %d elements, want the hint prefix collapsed to its head plus the named route: %+v", len(got), got)
+	}
+	if got[0].Provider != "zai" || got[1].Label != "api" {
+		t.Errorf("collapse kept the wrong elements: %+v", got)
+	}
+}

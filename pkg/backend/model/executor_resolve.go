@@ -110,44 +110,15 @@ var defaultFallbackTriggers = []delegate.FallbackCategory{
 	delegate.FallbackUnavailable,
 }
 
-// RunFallback is the operator's single run-level fallback route,
-// supplied at launch (studio Launch row / CLI `--fallback`) rather than
-// authored in the .bot.
-//
-// It is ONE route, not a per-node chain, because that is where the
-// value is: "don't lose a 40-minute run to a forfait wall" needs one
-// alternative, and a per-node ordered list is unusable on a real bot
-// (the studio's override state persists nothing between launches, so an
-// operator would rebuild every cell each time).
-//
-// Two scoping rules, both load-bearing:
-//   - it applies ONLY to agent nodes. A judge's verdict is load-bearing
-//     — a weaker model still emits a well-formed verdict and only the
-//     finding count changes, which a deterministic merge gate reads —
-//     so a judge takes a route only from its own block, never from a
-//     blanket launch setting (ADR-087 decision 11).
-//   - it applies only to a node that declares NO routes of its own. An
-//     author who wrote a chain vetted where it may go; appending an
-//     operator's route past their last one would extend a deliberate
-//     stop.
-type RunFallback struct {
-	Backend  string
-	Model    string
-	Provider string
-	// On filters which failures may route here. Empty takes the same
-	// default as an authored route.
-	On []delegate.FallbackCategory
-}
-
-// Empty reports whether no run-level route is configured.
-func (f RunFallback) Empty() bool {
-	return f.Backend == "" && f.Model == "" && f.Provider == ""
-}
-
 // resolveChain builds a node's complete ordered route list: its legacy
 // `provider:` hint chain first (which always yields at least the node's
-// own route), then each `fallbacks:` entry in declaration order, then
-// the operator's run-level route when one applies.
+// own route), then each `fallbacks:` entry in declaration order.
+
+// The operator's launch-time route is NOT resolved here: it is
+// materialised onto the node's `fallbacks:` at launch
+// (ir.ApplyRunFallback), so it passes the same safety screen as an
+// authored route and is visible to the three pre-run analyses. By the
+// time the executor sees it, it is an authored route like any other.
 //
 // The two surfaces stay independent by design. `provider:` swaps a
 // credential on one backend and falls through on ANY error, which is
@@ -157,8 +128,7 @@ func (f RunFallback) Empty() bool {
 // catalog bots document in their own comments.
 func (e *ClawExecutor) resolveChain(node ir.Node) []chainElement {
 	chain := e.resolveProviderChain(node)
-	authored := nodeFallbacks(node)
-	for _, fb := range authored {
+	for _, fb := range nodeFallbacks(node) {
 		el := chainElement{
 			Label:    fb.Name,
 			Backend:  strings.TrimSpace(ir.ExpandEnvWithDefault(fb.Backend)),
@@ -171,44 +141,8 @@ func (e *ClawExecutor) resolveChain(node ir.Node) []chainElement {
 		el.On = resolveTriggers(fb.On)
 		chain = append(chain, el)
 	}
-	if el, ok := e.runFallbackElement(node, authored); ok {
-		chain = append(chain, el)
-	}
 	return dedupeChain(chain, e.resolveBackendName(node))
 }
-
-// runFallbackElement returns the operator's run-level route for this
-// node, or ok=false when it does not apply. See RunFallback for the two
-// scoping rules.
-func (e *ClawExecutor) runFallbackElement(node ir.Node, authored []ir.Fallback) (chainElement, bool) {
-	if e.runFallback.Empty() || len(authored) > 0 {
-		return chainElement{}, false
-	}
-	if node.NodeKind() != ir.NodeAgent {
-		return chainElement{}, false
-	}
-	el := chainElement{
-		// A distinct, recognisable label: a report that says "fell
-		// through to run-fallback" tells the reader the route came from
-		// the launch, not from the .bot.
-		Label:    runFallbackLabel,
-		Backend:  strings.TrimSpace(e.runFallback.Backend),
-		Provider: strings.TrimSpace(e.runFallback.Provider),
-		Model:    strings.TrimSpace(e.runFallback.Model),
-		On:       e.runFallback.On,
-	}
-	if el.Provider == "auto" {
-		el.Provider = ""
-	}
-	if len(el.On) == 0 {
-		el.On = defaultFallbackTriggers
-	}
-	return el, true
-}
-
-// runFallbackLabel names the operator's run-level route wherever a
-// fall-through is reported.
-const runFallbackLabel = "run-fallback"
 
 // dedupeChain drops any element that would re-issue the call its
 // predecessor just made.

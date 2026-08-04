@@ -103,7 +103,12 @@ type ExecutorSpec struct {
 	ModelOverrides model.ModelOverrides
 	// RunFallback is the operator's single run-level fallback route
 	// (studio Launch row / CLI --fallback). Zero value = none.
-	RunFallback model.RunFallback
+	//
+	// BuildExecutor materialises it onto the compiled workflow's eligible
+	// agent nodes rather than handing it to the executor privately, so it
+	// passes the same safety screen as an authored route and is visible
+	// to the pre-run analyses the engine runs on the SAME *ir.Workflow.
+	RunFallback ir.Fallback
 	// BotID is the stable bundle/bot identifier used to qualify
 	// structured visibility=bot memory. Empty falls back to Workflow.Name.
 	BotID string
@@ -192,6 +197,20 @@ func BuildExecutor(spec ExecutorSpec) (*model.ClawExecutor, error) {
 	}
 	if spec.RunID == "" {
 		return nil, fmt.Errorf("runview: run ID is required")
+	}
+	// Materialise the operator's launch-time fallback route onto the
+	// compiled workflow BEFORE anything reads it. The engine is
+	// constructed from the same *ir.Workflow, so writing it here is what
+	// lets the sandbox bind-mount, the parallel-branch admission and the
+	// fan_out_each guard all see the route — and what subjects it to the
+	// same refusals the compiler applies to an authored one.
+	//
+	// A refused node keeps its primary and the operator is told; the
+	// route is never silently taken.
+	for _, refusal := range ir.ApplyRunFallback(spec.Workflow, spec.RunFallback) {
+		if spec.Logger != nil {
+			spec.Logger.Warn("run-level fallback not applied — %s", refusal)
+		}
 	}
 	if spec.Logger == nil {
 		spec.Logger = iterlog.New(iterlog.LevelInfo, os.Stderr)
@@ -318,9 +337,7 @@ func BuildExecutor(spec ExecutorSpec) (*model.ClawExecutor, error) {
 	if !spec.ModelOverrides.Empty() {
 		opts = append(opts, model.WithModelOverrides(spec.ModelOverrides))
 	}
-	if !spec.RunFallback.Empty() {
-		opts = append(opts, model.WithRunFallback(spec.RunFallback))
-	}
+
 	if spec.BotID != "" {
 		opts = append(opts, model.WithBotID(spec.BotID))
 	}

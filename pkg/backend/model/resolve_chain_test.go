@@ -127,82 +127,19 @@ func TestResolveChain_NoFallbacksIsUnchanged(t *testing.T) {
 	}
 }
 
-func chainJudgeNode(id, backend string, fbs []ir.Fallback) *ir.JudgeNode {
-	n := &ir.JudgeNode{}
-	n.ID = id
-	n.Backend = backend
-	n.Fallbacks = fbs
-	return n
-}
-
-// TestRunFallback_AppliesToAgentWithNoRoutes is the operator surface's
-// whole point: a bot that declares nothing still survives a forfait
-// wall when the operator asks it to at launch.
-func TestRunFallback_AppliesToAgentWithNoRoutes(t *testing.T) {
-	e := &ClawExecutor{runFallback: RunFallback{
-		Backend: delegate.BackendClaw,
-		Model:   "openai/gpt-5.5",
-	}}
-	chain := e.resolveChain(chainAgentNode("x", delegate.BackendClaudeCode, "", nil))
-	if len(chain) != 2 {
-		t.Fatalf("chain length %d, want 2: %+v", len(chain), chain)
-	}
-	if chain[1].Label != runFallbackLabel || chain[1].Backend != delegate.BackendClaw {
-		t.Errorf("run-level route not appended: %+v", chain[1])
-	}
-	// It inherits the same closed positive default as an authored route.
-	if elementAccepts(chain[1], delegate.FallbackAuth) {
-		t.Error("the run-level route must not route on auth by default")
-	}
-}
-
-// TestRunFallback_NeverAppliesToJudges: a judge's verdict is
-// load-bearing — a weaker model still emits a well-formed verdict and
-// only the finding COUNT changes, which a deterministic merge gate
-// reads. A blanket launch setting must never reach it.
-func TestRunFallback_NeverAppliesToJudges(t *testing.T) {
-	e := &ClawExecutor{runFallback: RunFallback{
-		Backend: delegate.BackendClaw,
-		Model:   "openai/gpt-5.5",
-	}}
-	chain := e.resolveChain(chainJudgeNode("gate", delegate.BackendClaudeCode, nil))
-	for _, el := range chain {
-		if el.Label == runFallbackLabel {
-			t.Fatalf("the run-level route reached a judge: %+v", chain)
-		}
-	}
-}
-
-// TestRunFallback_AuthoredRoutesWin: an author who wrote a chain vetted
-// where it may go. Appending the operator's route past their last one
-// would extend a deliberate stop.
-func TestRunFallback_AuthoredRoutesWin(t *testing.T) {
-	e := &ClawExecutor{runFallback: RunFallback{
-		Backend: delegate.BackendClaw,
-		Model:   "openai/gpt-5.5",
-	}}
-	node := chainAgentNode("x", delegate.BackendClaudeCode, "", []ir.Fallback{
-		{Name: "api", Backend: delegate.BackendClaw, Model: "anthropic/claude-opus-5"},
-	})
-	chain := e.resolveChain(node)
-	for _, el := range chain {
-		if el.Label == runFallbackLabel {
-			t.Fatalf("the run-level route was appended past an authored chain: %+v", chain)
-		}
-	}
-}
-
 // TestDedupeChain_DropsIdenticalRoute keeps the protection the old
 // providerFallbackEligible collapse bought: a route resolving to the
 // same backend+credential+model as its predecessor cannot succeed where
 // that one failed, and would pay a second full retry budget to prove it.
+// Comparison is on the EFFECTIVE backend, so a route naming the node's
+// own backend explicitly is recognised as the duplicate it is.
 func TestDedupeChain_DropsIdenticalRoute(t *testing.T) {
-	e := &ClawExecutor{runFallback: RunFallback{Backend: delegate.BackendClaudeCode}}
-	// The operator's route names the backend the node already runs on
-	// and pins no model — nothing about the call would change.
-	chain := e.resolveChain(chainAgentNode("x", delegate.BackendClaudeCode, "", nil))
-	if len(chain) != 1 {
-		t.Errorf("a run-level route identical to the node's own must be dropped, got %+v", chain)
+	e := &ClawExecutor{}
+	node := chainAgentNode("x", delegate.BackendClaudeCode, "", []ir.Fallback{
+		{Name: "same", Backend: delegate.BackendClaudeCode},
+	})
+	if got := e.resolveChain(node); len(got) != 1 {
+		t.Errorf("a route identical to the node's own must be dropped, got %+v", got)
 	}
 }
 

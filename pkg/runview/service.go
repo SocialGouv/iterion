@@ -244,14 +244,19 @@ type FallbackEntry struct {
 	Provider string `json:"provider,omitempty"`
 }
 
-// toRunFallback folds the launch entry into the engine's route. A nil
-// or targetless entry yields the zero value, which the executor reads
+// toRunFallback folds the launch entry into an IR route. A nil or
+// targetless entry yields the zero value, which ApplyRunFallback treats
 // as "no run-level route".
-func toRunFallback(e *FallbackEntry) model.RunFallback {
+func toRunFallback(e *FallbackEntry) ir.Fallback {
 	if e == nil {
-		return model.RunFallback{}
+		return ir.Fallback{}
 	}
-	return model.RunFallback{Backend: e.Backend, Model: e.Model, Provider: e.Provider}
+	return ir.Fallback{
+		Name:     ir.RunFallbackName,
+		Backend:  e.Backend,
+		Model:    e.Model,
+		Provider: e.Provider,
+	}
 }
 
 // toModelOverrides folds the launch entries into the engine's ModelOverrides.

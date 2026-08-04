@@ -165,11 +165,15 @@ func retryReason(err error) string {
 // *ErrRateLimited that the run-level usage-window retry and the
 // credential-pool donor cooldown both key on.
 //
-// On the LAST element the carve-out does not apply: with nowhere better
-// to go, today's behaviour (retry, then surface the typed error upward)
-// is exactly right.
-func shouldRetryInPlace(err error, fallbackRemains bool) bool {
-	if fallbackRemains && delegate.IsUsageWindow(err) {
+// The carve-out applies only when the next route would ACTUALLY take
+// this failure — not merely when one exists. A node whose only route
+// declares `on: [unavailable]` would otherwise lose its in-place retry
+// budget on a usage window AND then stop at the filter, ending up worse
+// off than before the chain existed. On the last element, likewise:
+// with nowhere better to go, retrying and surfacing the typed error
+// upward is exactly right.
+func shouldRetryInPlace(err error, fallbackAccepts func(error) bool) bool {
+	if delegate.IsUsageWindow(err) && fallbackAccepts != nil && fallbackAccepts(err) {
 		return false
 	}
 	return isDelegateRetryable(err)
@@ -185,15 +189,16 @@ func shouldRetryInPlace(err error, fallbackRemains bool) bool {
 // (the schema-validation retry, direct one-shot dispatch) use it and get
 // the historical behaviour unchanged.
 func (e *ClawExecutor) retryDelegateLoop(ctx context.Context, nodeID string, backendName string, fn func() (delegate.Result, error)) (delegate.Result, error) {
-	return e.retryDelegateLoopChain(ctx, nodeID, backendName, false, fn)
+	return e.retryDelegateLoopChain(ctx, nodeID, backendName, nil, fn)
 }
 
 // retryDelegateLoopChain is retryDelegateLoop with knowledge of whether
-// the caller still has a fallback element to fall through to, which lets
-// it skip a budget that cannot succeed (see shouldRetryInPlace).
-func (e *ClawExecutor) retryDelegateLoopChain(ctx context.Context, nodeID string, backendName string, fallbackRemains bool, fn func() (delegate.Result, error)) (delegate.Result, error) {
+// the caller has a fallback route that would take THIS failure, which
+// lets it skip a budget that cannot succeed (see shouldRetryInPlace).
+// A nil predicate means "no route will take it".
+func (e *ClawExecutor) retryDelegateLoopChain(ctx context.Context, nodeID string, backendName string, fallbackAccepts func(error) bool, fn func() (delegate.Result, error)) (delegate.Result, error) {
 	result, err := fn()
-	for attempt := 1; err != nil && shouldRetryInPlace(err, fallbackRemains); attempt++ {
+	for attempt := 1; err != nil && shouldRetryInPlace(err, fallbackAccepts); attempt++ {
 		maxAttempts := e.retry.effectiveMaxAttempts(err)
 		if attempt >= maxAttempts {
 			break
@@ -316,14 +321,31 @@ func chainIsHintOnly(chain []chainElement) bool {
 	return true
 }
 
-// collapseHintOnlyChain trims a hint-only chain to its head when the
-// resolved backend ignores the hint. Callers apply it before dispatch,
-// where the node's backend is known.
+// collapseHintOnlyChain trims the leading run of hint-only elements to
+// its head when the resolved backend ignores the hint. Callers apply it
+// before dispatch, where the node's backend is known.
+//
+// It collapses the PREFIX rather than refusing whole-chain when a named
+// route exists: a node carrying both `provider: "a,b"` and a
+// `fallbacks:` block would otherwise re-issue an identical call with a
+// second full retry budget on claw/codex — exactly the waste
+// providerFallbackEligible and C088 exist to prevent — merely because
+// an unrelated route was declared further down.
 func collapseHintOnlyChain(chain []chainElement, backendName string) []chainElement {
-	if len(chain) > 1 && chainIsHintOnly(chain) && !providerFallbackEligible(backendName) {
-		return chain[:1]
+	if len(chain) < 2 || providerFallbackEligible(backendName) {
+		return chain
 	}
-	return chain
+	prefix := 0
+	for _, el := range chain {
+		if el.Backend != "" || el.Label != "" {
+			break
+		}
+		prefix++
+	}
+	if prefix < 2 {
+		return chain
+	}
+	return append(chain[:1:1], chain[prefix:]...)
 }
 
 // elementAccepts reports whether a failure of the PREVIOUS element may
@@ -628,7 +650,16 @@ func (e *ClawExecutor) dispatchChain(
 			e.noteFallback(ctx, nodeID, el, next, backendName, effModel(el), effModel(next), buildErr)
 			continue
 		}
-		result, err = e.retryDelegateLoopChain(ctx, nodeID, backendName, fallbackRemains, func() (delegate.Result, error) {
+		// Whether the NEXT route would take a given failure — the carve-out
+		// must not strip a retry budget the chain will not compensate for.
+		var accepts func(error) bool
+		if fallbackRemains {
+			next := chain[i+1]
+			accepts = func(failure error) bool {
+				return elementAccepts(next, delegate.ClassifyFallback(failure, isDelegateRetryable(failure)))
+			}
+		}
+		result, err = e.retryDelegateLoopChain(ctx, nodeID, backendName, accepts, func() (delegate.Result, error) {
 			return backend.Execute(ctx, *task)
 		})
 		if err == nil {
@@ -676,6 +707,11 @@ func (e *ClawExecutor) dispatchChain(
 		e.noteFallback(ctx, nodeID, el, next, backendName, fromModel, effModel(next), err)
 	}
 
+	// An exhausted chain still spent what its routes burned: fold the
+	// accumulation in here too, or a 3-route failure under-reports two
+	// whole agentic sessions to max_cost_usd, the org monthly cap and a
+	// lending donor's ledger.
+	result = spent.applyTo(result)
 	if len(chain) > 1 {
 		return chainOutcome{Result: result}, &ErrChainExhausted{Chain: chainLabel(chain), Errs: causes}
 	}
