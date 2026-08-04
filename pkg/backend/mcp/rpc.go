@@ -36,8 +36,28 @@ func newSDKClient(cfg *ServerConfig, info clientInfo) *sdkClient {
 	return &sdkClient{cfg: cloneServerConfig(cfg), info: info}
 }
 
+// protocolVersion20260728 is the first MCP revision that removed the
+// "ping" method (SEP-2575). The SDK keeps the constant unexported, so we
+// mirror it here; revisions are ISO dates, hence ordered by string compare
+// exactly as the SDK does internally.
+const protocolVersion20260728 = "2026-07-28"
+
+// Ping probes that the session is alive.
+//
+// The MCP "ping" method was REMOVED in protocol revision 2026-07-28: a
+// server speaking it answers MethodNotFound, and a stateless streamable-HTTP
+// server rejects the call at the transport with "missing or invalid _meta
+// field io.modelcontextprotocol/protocolVersion" (the SDK client does not
+// attach the per-request `_meta` triple to a ping, precisely because the
+// method no longer exists there). When the session negotiated that revision
+// or later, probe with tools/list instead — a supported RPC that exercises
+// the same round-trip, and the very call EnsureServers makes next.
 func (c *sdkClient) Ping(ctx context.Context) error {
 	if err := c.ensureStarted(ctx); err != nil {
+		return err
+	}
+	if res := c.session.InitializeResult(); res != nil && res.ProtocolVersion >= protocolVersion20260728 {
+		_, err := c.session.ListTools(ctx, nil)
 		return err
 	}
 	return c.session.Ping(ctx, nil)
