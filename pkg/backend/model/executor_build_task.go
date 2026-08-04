@@ -138,6 +138,15 @@ func (e *ClawExecutor) resolvePermissionPolicy(nodeMode string) (*permission.Pol
 //
 // `output` is passed explicitly so the LLM router path can re-stamp
 // after a `{"text": …}` fallback has reassigned to a fresh map.
+//
+// `backendName` is the REQUESTED backend and is only a fallback for the
+// stamp: `result.BackendName` — what actually served — wins whenever the
+// delegate reported it, which every shipped backend does. The
+// distinction is invisible on a single-backend node and load-bearing the
+// moment a fallback chain can cross backends (ADR-087): `_backend` feeds
+// the studio's backends_used chip and `iterion report`'s per-step tag,
+// so stamping the requested name would make both assert a false fact
+// about a degraded run.
 func stampDelegateOutputMeta(output map[string]any, result delegate.Result, backendName string) {
 	if output == nil {
 		return
@@ -145,7 +154,11 @@ func stampDelegateOutputMeta(output map[string]any, result delegate.Result, back
 	if output["_tokens"] == nil {
 		output["_tokens"] = result.Tokens
 	}
-	output["_backend"] = backendName
+	if result.BackendName != "" {
+		output["_backend"] = result.BackendName
+	} else {
+		output["_backend"] = backendName
+	}
 	if result.SessionID != "" {
 		output["_session_id"] = result.SessionID
 	}

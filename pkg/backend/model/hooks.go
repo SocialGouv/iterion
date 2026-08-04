@@ -814,6 +814,55 @@ func (h *storeHooks) onDelegateRetry(nodeID string, info DelegateInfo) {
 		nodeID, info.BackendName, info.Attempt, info.Delay.Milliseconds(), errMsg)
 }
 
+// onProviderFallback implements the OnProviderFallback hook: it turns a
+// chain fall-through into a first-class store event.
+//
+// The log line is a Warn rather than an Info deliberately — a
+// fall-through means the primary route is gone, which an operator wants
+// to see even when the run goes on to succeed.
+func (h *storeHooks) onProviderFallback(nodeID string, info ProviderFallbackInfo) {
+	data := map[string]any{
+		"from_backend":  info.FromBackend,
+		"to_backend":    info.ToBackend,
+		"from_model":    info.FromModel,
+		"to_model":      info.ToModel,
+		"from_provider": info.From,
+		"to_provider":   info.To,
+		"reason":        info.Reason,
+		"attempts":      info.Attempts,
+	}
+	if info.Err != nil {
+		data["error"] = info.Err.Error()
+	}
+	h.emit(nodeID, store.EventModelFallback, data)
+
+	errMsg := ""
+	if info.Err != nil {
+		errMsg = info.Err.Error()
+	}
+	h.logger.Warn("Model fallback [%s]: %s → %s (%s): %s",
+		nodeID, fallbackRouteLabel(info.FromBackend, info.From, info.FromModel),
+		fallbackRouteLabel(info.ToBackend, info.To, info.ToModel), info.Reason, errMsg)
+}
+
+// fallbackRouteLabel renders one side of a fall-through for the log line
+// as `backend[/provider][ model]`, skipping the parts that carry no
+// information (an empty provider hint means "auto"; a chain that does
+// not vary the model repeats it on both sides).
+func fallbackRouteLabel(backend, provider, model string) string {
+	label := backend
+	if label == "" {
+		label = "?"
+	}
+	if provider != "" {
+		label += "/" + provider
+	}
+	if model != "" {
+		label += " " + model
+	}
+	return label
+}
+
 // onToolNodeResult implements the OnToolNodeResult hook for direct tool
 // nodes (not LLM tool loops), surfacing full I/O content.
 func (h *storeHooks) onToolNodeResult(nodeID string, toolName string, input []byte, output string, elapsed time.Duration, err error) {
@@ -927,6 +976,7 @@ func NewStoreEventHooks(ctx context.Context, emitter EventEmitter, runID string,
 		OnDelegateFinished: h.onDelegateFinished,
 		OnDelegateError:    h.onDelegateError,
 		OnDelegateRetry:    h.onDelegateRetry,
+		OnProviderFallback: h.onProviderFallback,
 		// OnToolNodeResult handles direct tool nodes with full I/O content.
 		OnToolNodeResult: h.onToolNodeResult,
 	}

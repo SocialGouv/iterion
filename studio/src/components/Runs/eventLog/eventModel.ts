@@ -17,6 +17,9 @@ export const EVENT_BADGE: Record<string, string> = {
   human_input_requested: "bg-warning-soft text-warning-fg",
   budget_warning: "bg-warning-soft text-warning-fg",
   budget_exceeded: "bg-danger-soft text-danger-fg",
+  // A route change, not a failure — the run continues on another
+  // model/backend. Warning-coloured because the primary route is gone.
+  model_fallback: "bg-warning-soft text-warning-fg",
   llm_request: "bg-surface-2 text-fg-muted",
   llm_step_finished: "bg-surface-2 text-fg-muted",
   tool_called: "bg-surface-2 text-fg-muted",

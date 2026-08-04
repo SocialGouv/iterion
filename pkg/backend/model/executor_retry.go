@@ -149,14 +149,50 @@ func retryReason(err error) string {
 	return "transient backend error"
 }
 
+// shouldRetryInPlace decides whether a failed delegate call is worth
+// re-issuing against the SAME chain element. It is isDelegateRetryable
+// with one carve-out: a provider usage WINDOW (the subscription 5h or
+// weekly cap) cannot be cured by waiting a few seconds, so when the node
+// still has a fallback element left to try, the in-place budget is
+// skipped entirely and the chain advances immediately.
+//
+// Without the carve-out every element pays a full backed-off budget
+// inside a window where success is impossible by construction. That is
+// not merely slow: the whole chain runs under ONE per-node timeout
+// context, so a multi-element chain can hit the node deadline mid-walk
+// and surface context.DeadlineExceeded instead of the typed
+// *ErrRateLimited that the run-level usage-window retry and the
+// credential-pool donor cooldown both key on.
+//
+// On the LAST element the carve-out does not apply: with nowhere better
+// to go, today's behaviour (retry, then surface the typed error upward)
+// is exactly right.
+func shouldRetryInPlace(err error, fallbackRemains bool) bool {
+	if fallbackRemains && delegate.IsUsageWindow(err) {
+		return false
+	}
+	return isDelegateRetryable(err)
+}
+
 // retryDelegateLoop retries a backend execution call with exponential backoff.
 // The attempt budget is error-adaptive: a network/connectivity failure gets
 // the larger transient budget (rides out a multi-second outage), while a
 // deterministic-but-retryable error (signal kill, idle hang) keeps the
 // standard budget.
+//
+// This is the no-fallback form: callers with no further chain element
+// (the schema-validation retry, direct one-shot dispatch) use it and get
+// the historical behaviour unchanged.
 func (e *ClawExecutor) retryDelegateLoop(ctx context.Context, nodeID string, backendName string, fn func() (delegate.Result, error)) (delegate.Result, error) {
+	return e.retryDelegateLoopChain(ctx, nodeID, backendName, false, fn)
+}
+
+// retryDelegateLoopChain is retryDelegateLoop with knowledge of whether
+// the caller still has a fallback element to fall through to, which lets
+// it skip a budget that cannot succeed (see shouldRetryInPlace).
+func (e *ClawExecutor) retryDelegateLoopChain(ctx context.Context, nodeID string, backendName string, fallbackRemains bool, fn func() (delegate.Result, error)) (delegate.Result, error) {
 	result, err := fn()
-	for attempt := 1; err != nil && isDelegateRetryable(err); attempt++ {
+	for attempt := 1; err != nil && shouldRetryInPlace(err, fallbackRemains); attempt++ {
 		maxAttempts := e.retry.effectiveMaxAttempts(err)
 		if attempt >= maxAttempts {
 			break
@@ -300,7 +336,8 @@ func (e *ClawExecutor) dispatchWithProviderFallback(
 	for i, step := range chain {
 		task.ProviderHint = step.Provider
 		task.Model = effectiveModel(step)
-		result, err = e.retryDelegateLoop(ctx, nodeID, backendName, func() (delegate.Result, error) {
+		fallbackRemains := i < len(chain)-1
+		result, err = e.retryDelegateLoopChain(ctx, nodeID, backendName, fallbackRemains, func() (delegate.Result, error) {
 			return backend.Execute(ctx, *task)
 		})
 		if err == nil {
@@ -325,6 +362,13 @@ func (e *ClawExecutor) dispatchWithProviderFallback(
 					To:          next.Provider,
 					FromModel:   effectiveModel(step),
 					ToModel:     effectiveModel(next),
+					// A legacy `provider:` chain never changes backend;
+					// both sides are the node's resolved one. The fields
+					// exist so the emitted event has its final shape
+					// before `fallbacks:` starts varying them.
+					FromBackend: backendName,
+					ToBackend:   backendName,
+					Reason:      string(delegate.ClassifyFallback(err, isDelegateRetryable(err))),
 					Attempts:    e.retry.maxAttempts(),
 					Err:         err,
 				})

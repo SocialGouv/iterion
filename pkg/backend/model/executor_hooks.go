@@ -71,8 +71,22 @@ type ProviderFallbackInfo struct {
 	To          string // provider hint about to be tried next
 	FromModel   string // effective model the failed provider ran (per-element override or node baseline)
 	ToModel     string // effective model the next provider will run
-	Attempts    int    // retry attempts spent on the failed provider
-	Err         error  // the hard failure that triggered the fall-through
+	// FromBackend / ToBackend are the backends on each side of the
+	// fall-through. A legacy `provider:` chain never changes backend, so
+	// both equal BackendName; a `fallbacks:` chain (ADR-087) varies them.
+	// They are the ONLY honest answer to "what actually served this
+	// node" once a chain can cross backends, which is why the emitted
+	// event carries them rather than the requested name.
+	FromBackend string
+	ToBackend   string
+	// Reason is the delegate.FallbackCategory the failure classified as
+	// (usage_window / auth / unavailable / transient_exhausted /
+	// unclassified). It is what makes a fall-through readable in a
+	// report: "fell through because the forfait window shut" reads very
+	// differently from "fell through because the credential is dead".
+	Reason   string
+	Attempts int   // retry attempts spent on the failed provider
+	Err      error // the hard failure that triggered the fall-through
 }
 
 // EventHooks allows the executor to emit observability events back to the caller.
