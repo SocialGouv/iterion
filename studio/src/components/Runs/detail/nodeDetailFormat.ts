@@ -1,1 +1,1 @@
-export type TabValue = "pause" | "trace" | "tools" | "artifact" | "events" | "logs";
+export type TabValue = "pause" | "trace" | "tools" | "artifact" | "changes" | "events" | "logs";

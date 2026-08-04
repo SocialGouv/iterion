@@ -6,6 +6,7 @@ import { listArtifacts } from "@/api/runs";
 import { Tabs } from "@/components/ui";
 
 import { ArtifactTab } from "./detail/ArtifactTab";
+import { ChangesTab } from "./detail/ChangesTab";
 import { CollapseButton } from "./detail/CollapseButton";
 import { DetailHeader } from "./detail/DetailHeader";
 import { EventsTab } from "./detail/EventsTab";
@@ -83,6 +84,25 @@ export default function NodeDetailPanel({
     const i = Math.min(Math.max(selectedIteration, 0), executions.length - 1);
     return executions[i] ?? null;
   }, [executions, selectedIteration]);
+
+  // Does another execution share this one's loop_iteration?
+  //
+  // The scalar is `max()` over every containing loop, so under NESTED
+  // loops two distinct passes collide on it (outer=2/inner=1 and
+  // outer=1/inner=2 both yield 2). The workspace boundary ref and the
+  // tracker label are named with that same scalar and written with a
+  // plain update-ref / map assignment, so the later pass overwrites the
+  // earlier pair: only ONE range survives for all colliding pills.
+  // Showing it under each of them as "this pill's changes" would be a
+  // plausible-but-wrong diff — the precise failure this panel exists to
+  // prevent — so the Changes tab says what the range actually covers.
+  // Only this component sees every execution, so the detection lives here.
+  const iterationIsAmbiguous = useMemo(() => {
+    if (!exec) return false;
+    return (
+      executions.filter((e) => e.loop_iteration === exec.loop_iteration).length > 1
+    );
+  }, [executions, exec]);
 
   // Load only the version index here; ArtifactDiff handles fetching the
   // body for each selected version on demand.
@@ -205,6 +225,10 @@ export default function NodeDetailPanel({
           : "Artifact",
       disabled: !hasArtifact,
     },
+    // Deliberately NOT `disabled`-gated: the file count is only known
+    // after the request, and gating on it would force the eager
+    // parent-level fetch that the lazy in-tab query exists to avoid.
+    { value: "changes", label: "Files" } as const,
     { value: "events", label: `Events (${matching.length})` },
     { value: "logs", label: "Logs" },
   ];
@@ -253,6 +277,18 @@ export default function NodeDetailPanel({
               ) : (
                 <ToolCallList calls={toolCalls} runId={runId} />
               )}
+            </div>
+          ),
+          changes: (
+            <div className="overflow-auto px-4 py-3 h-full">
+              <ChangesTab
+                runId={runId}
+                nodeId={exec.ir_node_id}
+                // exec.loop_iteration, NOT selectedIteration — the latter is
+                // the 0-based pill index and names a different ref.
+                iteration={exec.loop_iteration}
+                ambiguousIteration={iterationIsAmbiguous}
+              />
             </div>
           ),
           artifact: (

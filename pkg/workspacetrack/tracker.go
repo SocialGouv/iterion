@@ -188,6 +188,10 @@ type Tracker interface {
 	// run in a studio process, so a long-lived one must be told when a run
 	// is over. Everything it held is re-derivable from index.json.
 	Forget(runID string)
+	// Changes reports what differs between two snapshots of a run — the
+	// comparison half, without which the tracker can restore a node's
+	// work but not show it.
+	Changes(runID, fromID, toID string) ([]Change, error)
 	// Labels returns a copy of the run's label → snapshot-id map (gate:N,
 	// pre:/post: node boundaries, …). Used by the review-scope panel to
 	// list gate anchors and attribute files to nodes without re-walking
