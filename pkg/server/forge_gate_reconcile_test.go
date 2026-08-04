@@ -6,6 +6,7 @@ import (
 	"strings"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"github.com/SocialGouv/iterion/pkg/forge"
 	"github.com/SocialGouv/iterion/pkg/store"
@@ -286,6 +287,23 @@ func TestGateReconcile_FailedResumable(t *testing.T) {
 			t.Fatalf("posted %d statuses, want 1 — an abandoned retry never comes back", gc.setCalls)
 		}
 	})
+}
+
+// A long reason is truncated on a RUNE boundary: provider prose carries
+// accents, and invalid UTF-8 in a status description is a forge 422 — a long
+// reason must never cost the synthetic status itself.
+func TestGateReconcile_ReasonTruncationIsRuneSafe(t *testing.T) {
+	long := "budget exceeded: durée écoulée éééééééééééééééééééééééé — provider était injoignable pendant la fenêtre"
+	got := gateInterruptedDescriptionFor(&store.Run{Error: long})
+	if !utf8.ValidString(got) {
+		t.Fatalf("truncated description is not valid UTF-8: %q", got)
+	}
+	if !strings.HasPrefix(got, gateDiedDescriptionPrefix) || !strings.Contains(got, "…") {
+		t.Errorf("unexpected shape: %q", got)
+	}
+	if !isSyntheticGateInterruption(got) {
+		t.Errorf("truncated description no longer recognized as synthetic: %q", got)
+	}
 }
 
 // The synthetic marker must be recognized in both its shapes and must never
