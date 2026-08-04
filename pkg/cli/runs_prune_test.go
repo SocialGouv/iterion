@@ -452,10 +452,30 @@ func TestRunPrune_ReclaimsOrphanedWorkspaceObjects(t *testing.T) {
 	}
 
 	p := &Printer{W: &bytes.Buffer{}, Format: OutputHuman}
+
+	// Fresh objects are inside the grace window that protects a capture
+	// in flight, so the sweep must spare them even though no manifest
+	// survives — that guard is what makes a cron-scheduled prune safe.
 	if err := RunPrune(PruneOptions{StoreDir: storeDir, OlderThan: time.Hour}, p); err != nil {
-		t.Fatalf("prune: %v", err)
+		t.Fatalf("prune (fresh): %v", err)
+	}
+	if countFiles(t, pool) != before {
+		t.Errorf("the sweep deleted objects written moments ago — a capture whose manifest " +
+			"has not landed yet would lose content it is still using")
 	}
 
+	// Age them past the grace window; now they are genuinely orphaned.
+	aged := time.Now().Add(-2 * pruneObjectGrace)
+	_ = filepath.WalkDir(pool, func(path string, d fs.DirEntry, err error) error {
+		if err != nil || d.IsDir() {
+			return nil //nolint:nilerr // best-effort backdating
+		}
+		return os.Chtimes(path, aged, aged)
+	})
+
+	if err := RunPrune(PruneOptions{StoreDir: storeDir, OlderThan: time.Hour}, p); err != nil {
+		t.Fatalf("prune (aged): %v", err)
+	}
 	if after := countFiles(t, pool); after != 0 {
 		t.Errorf("%d object(s) survived a prune of the only run referencing them — "+
 			"the pool is unreachable and never reclaimed", after)

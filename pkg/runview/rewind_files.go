@@ -267,7 +267,31 @@ func (s *Service) RestoreWorkspaceSnapshot(ctx context.Context, runID, snapshotI
 	if run.WorkDir == "" {
 		return nil, fmt.Errorf("runview: run %s has no recorded workspace", runID)
 	}
-	if isRewindableStatus(run.Status) || run.Status == store.RunStatusFinished || run.Status == store.RunStatusFailed {
+	switch {
+	case isRewindableStatus(run.Status):
+		// CLAIM before touching the workspace, exactly as Rewind does and
+		// for the same reason: reading the status and acting on it leaves
+		// a window in which `iterion resume` claims the run, and the
+		// restore then deletes and rewrites files under a live engine
+		// mid-node. The CAS closes it — losing the race means the run is
+		// already `running` and we refuse.
+		//
+		// Parking it at `cancelled` is not incidental either: resuming a
+		// paused run whose workspace was rewritten underneath it is the
+		// very hazard here, so the operator should have to resume
+		// deliberately. `cancelled` preserves the checkpoint, so that
+		// resume costs nothing.
+		claimed, cerr := s.store.UpdateRunStatusIf(ctx, run.ID, store.RunStatusCancelled, "", rewindableStatuses)
+		if cerr != nil {
+			return nil, fmt.Errorf("claim run for restore: %w", cerr)
+		}
+		if !claimed {
+			return nil, fmt.Errorf("%w: status changed under us — reload and retry", ErrRewindNotRewindable)
+		}
+		return s.workspaceTracker.Restore(run.ID, run.WorkDir, snapshotID)
+	case run.Status == store.RunStatusFinished || run.Status == store.RunStatusFailed:
+		// Terminal and non-resumable: no engine can claim it, so there is
+		// nothing to race with.
 		return s.workspaceTracker.Restore(run.ID, run.WorkDir, snapshotID)
 	}
 	return nil, fmt.Errorf("%w: %s — stop the run before restoring its workspace", ErrRewindNotRewindable, run.Status)
@@ -285,8 +309,16 @@ func (s *Service) ListWorkspaceSnapshots(ctx context.Context, runID string) ([]*
 	if _, err := s.store.LoadRun(ctx, runID); err != nil {
 		return nil, fmt.Errorf("load run: %w", err)
 	}
+	// `seen` bounds the walk. A manifest is on-disk JSON that Load
+	// unmarshals bare — the same untrusted-data posture the restore path
+	// takes for Entry.Path — so a Parent pointing at itself, or two
+	// pointing at each other (a partially-written file, a hand-edited or
+	// hand-copied store), would spin here appending until the process
+	// OOMs. Reachable from the CLI with only a run id.
 	var out []*workspacetrack.Snapshot
-	for id := s.workspaceTracker.Head(runID); id != ""; {
+	seen := map[string]bool{}
+	for id := s.workspaceTracker.Head(runID); id != "" && !seen[id]; {
+		seen[id] = true
 		snap, err := s.workspaceTracker.Load(runID, id)
 		if err != nil {
 			break
