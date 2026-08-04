@@ -68,8 +68,16 @@ func (s *Service) revertWorkspace(run *store.Run, wf *ir.Workflow, cp *store.Che
 	// Bank the current state — including uncommitted and untracked work —
 	// before touching anything, so the revert destroys nothing.
 	backupRef := store.RewindBackupRef(run.ID, pivot, nextRewindBackupSeq(run.WorkDir, run.ID, pivot))
-	if _, err := runtime.SnapshotWorktree(run.WorkDir, backupRef); err != nil {
+	banked, err := runtime.SnapshotWorktree(run.WorkDir, backupRef)
+	if err != nil {
 		return nil, fmt.Errorf("bank the current workspace before reverting: %w", err)
+	}
+	if banked == "" {
+		// The tree already matched HEAD, so SnapshotWorktree wrote no ref.
+		// Reporting the name anyway hands the operator a recovery hint
+		// that resolves to nothing — and leaves nextRewindBackupSeq
+		// handing out the same number again.
+		backupRef = ""
 	}
 
 	// Index + worktree := the pre-node tree. HEAD is untouched, so the

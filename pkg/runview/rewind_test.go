@@ -5,8 +5,10 @@ import (
 	"encoding/json"
 	"errors"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"testing"
+	"time"
 
 	iterlog "github.com/SocialGouv/iterion/pkg/log"
 	"github.com/SocialGouv/iterion/pkg/store"
@@ -594,5 +596,217 @@ func TestRewind_ReleasesSubbotPointerOfUncompletedNode(t *testing.T) {
 	// Same filter bug affected the recovery budget of the node that failed.
 	if _, still := got.Checkpoint.NodeAttempts["implement"]; still {
 		t.Error("NodeAttempts survived for the node that actually failed — its budget must reset on replay")
+	}
+}
+
+// TestRewind_ClaimsBeforeTouchingTheWorktree is Revi's Re3455c.
+//
+// The CAS exists to make a concurrent resume safe. Reverting the worktree
+// first defeated it: `read-tree --reset` + `clean -fd` would already have
+// run inside a tree an engine was writing to before the lost race was
+// discovered. A run that is NOT claimable must therefore leave the
+// workspace untouched.
+func TestRewind_ClaimsBeforeTouchingTheWorktree(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not available")
+	}
+	dir := t.TempDir()
+	ws := filepath.Join(dir, "workspace")
+	if err := os.MkdirAll(ws, 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	git(t, ws, "init", "-q", "-b", "main")
+	git(t, ws, "config", "user.email", "iterion@example.test")
+	git(t, ws, "config", "user.name", "iterion")
+	writeFile(t, ws, "live.txt", "the running node is writing this")
+	git(t, ws, "add", "-A")
+	git(t, ws, "commit", "-q", "-m", "base")
+	preRef := store.NodePreSnapshotRef("run-race", "implement", 0)
+	git(t, ws, "update-ref", preRef, "HEAD")
+	writeFile(t, ws, "live.txt", "MID-FLIGHT WORK")
+
+	botPath := filepath.Join(dir, "main.bot")
+	if err := os.WriteFile(botPath, []byte(linearBot), 0o644); err != nil {
+		t.Fatalf("write bot: %v", err)
+	}
+	storeDir := filepath.Join(dir, "store")
+	st, err := store.New(storeDir)
+	if err != nil {
+		t.Fatalf("store: %v", err)
+	}
+	if _, err := st.CreateRun(context.Background(), "run-race", "linear", nil); err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	run, err := st.LoadRun(context.Background(), "run-race")
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	run.FilePath = botPath
+	run.Worktree = true
+	run.WorkDir = ws
+	// CreateRun parks a run in `running` — the state a concurrent resume
+	// would have flipped it to.
+	run.Status = store.RunStatusRunning
+	run.Checkpoint = &store.Checkpoint{NodeID: "verify", Outputs: outputsOf("survey", "plan", "implement")}
+	if err := st.SaveRun(context.Background(), run); err != nil {
+		t.Fatalf("save: %v", err)
+	}
+	svc, err := NewService(storeDir)
+	if err != nil {
+		t.Fatalf("NewService: %v", err)
+	}
+
+	_, rerr := svc.Rewind(context.Background(), RewindSpec{RunID: "run-race", NodeID: "implement"})
+	if !errors.Is(rerr, ErrRewindNotRewindable) {
+		t.Fatalf("err = %v, want ErrRewindNotRewindable", rerr)
+	}
+	if got := readWorkspaceFile(t, ws, "live.txt"); got != "MID-FLIGHT WORK" {
+		t.Fatalf("live.txt = %q — the workspace of an unclaimable run was reverted anyway", got)
+	}
+}
+
+// TestRewind_NoBackupRefWhenNothingWasBanked is Revi's R5d2014: a clean
+// tree makes SnapshotWorktree write no ref, so reporting its name hands
+// the operator a recovery hint that resolves to nothing.
+func TestRewind_NoBackupRefWhenNothingWasBanked(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not available")
+	}
+	dir := t.TempDir()
+	ws := filepath.Join(dir, "workspace")
+	if err := os.MkdirAll(ws, 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	git(t, ws, "init", "-q", "-b", "main")
+	git(t, ws, "config", "user.email", "iterion@example.test")
+	git(t, ws, "config", "user.name", "iterion")
+	writeFile(t, ws, "a.txt", "one")
+	git(t, ws, "add", "-A")
+	git(t, ws, "commit", "-q", "-m", "base")
+	git(t, ws, "update-ref", store.NodePreSnapshotRef("run-clean", "implement", 0), "HEAD")
+
+	botPath := filepath.Join(dir, "main.bot")
+	if err := os.WriteFile(botPath, []byte(linearBot), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	storeDir := filepath.Join(dir, "store")
+	st, err := store.New(storeDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.CreateRun(context.Background(), "run-clean", "linear", nil); err != nil {
+		t.Fatal(err)
+	}
+	run, _ := st.LoadRun(context.Background(), "run-clean")
+	run.FilePath, run.Worktree, run.WorkDir = botPath, true, ws
+	run.Status = store.RunStatusFailedResumable
+	run.Checkpoint = &store.Checkpoint{NodeID: "verify", Outputs: outputsOf("survey", "plan", "implement")}
+	if err := st.SaveRun(context.Background(), run); err != nil {
+		t.Fatal(err)
+	}
+	svc, err := NewService(storeDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	result, err := svc.Rewind(context.Background(), RewindSpec{RunID: "run-clean", NodeID: "implement"})
+	if err != nil {
+		t.Fatalf("Rewind: %v", err)
+	}
+	if result.Files.BackupRef != "" {
+		t.Errorf("BackupRef = %q for a clean tree — that ref was never written and does not resolve",
+			result.Files.BackupRef)
+	}
+}
+
+// TestRewind_RetiresAbandonedAsyncQuestions is Revi's R0fee41.
+//
+// ADR-081's async pair is level-triggered against the STORE, not the
+// checkpoint: await_answers parks until the pending list is empty and
+// returns every answered record. Clearing only the checkpoint pointer
+// left the dropped nodes' questions live, so the replayed node would park
+// on the union of old and new — or fold pre-rewind answers into its
+// output.
+// Revi's Rf3cea6 sharpened it: the fixture must seed the questions on a
+// node that did NOT complete. Keying the retirement on the output-filtered
+// `dropped` set passes when the questions sit on the pivot (always in
+// `dropped`) yet skips exactly the canonical case — a node that posted
+// questions and then failed, which is the state a rewind is invoked on.
+// So `verify` here started, asked, and died without an output: it is in
+// `invalidated` only.
+func TestRewind_RetiresAbandonedAsyncQuestions(t *testing.T) {
+	cp := &store.Checkpoint{
+		NodeID:  "verify",
+		Outputs: outputsOf("survey", "plan", "implement"),
+	}
+	svc, st, runID := seedRun(t, linearBot, cp, store.RunStatusFailedResumable)
+	ctx := context.Background()
+
+	// One pending and one answered question on the pivot, two on the
+	// uncompleted downstream node, plus one from an upstream node that
+	// survives.
+	answered := time.Now().UTC()
+	for _, in := range []*store.Interaction{
+		{ID: "q-pending", RunID: runID, NodeID: "implement", Kind: store.InteractionKindAsync,
+			Questions: map[string]any{"which": "approach?"}, RequestedAt: answered},
+		{ID: "q-answered", RunID: runID, NodeID: "implement", Kind: store.InteractionKindAsync,
+			Questions: map[string]any{"ok": "?"}, Answers: map[string]any{"ok": true},
+			RequestedAt: answered, AnsweredAt: &answered},
+		{ID: "q-nooutput", RunID: runID, NodeID: "verify", Kind: store.InteractionKindAsync,
+			Questions: map[string]any{"looks": "right?"}, RequestedAt: answered},
+		{ID: "q-nooutput-answered", RunID: runID, NodeID: "verify", Kind: store.InteractionKindAsync,
+			Questions: map[string]any{"ship": "?"}, Answers: map[string]any{"ship": true},
+			RequestedAt: answered, AnsweredAt: &answered},
+		{ID: "q-upstream", RunID: runID, NodeID: "plan", Kind: store.InteractionKindAsync,
+			Questions: map[string]any{"scope": "?"}, RequestedAt: answered},
+	} {
+		if err := st.WriteInteraction(ctx, in); err != nil {
+			t.Fatalf("seed interaction %s: %v", in.ID, err)
+		}
+	}
+
+	if _, err := svc.Rewind(ctx, RewindSpec{RunID: runID, NodeID: "implement"}); err != nil {
+		t.Fatalf("Rewind: %v", err)
+	}
+
+	pending, err := store.ListPendingAsyncInteractions(ctx, st, runID, "implement")
+	if err != nil {
+		t.Fatalf("list pending: %v", err)
+	}
+	if len(pending) != 0 {
+		t.Errorf("%d pending question(s) survived for the replayed node — await_answers would park on them", len(pending))
+	}
+	done, err := store.ListAnsweredAsyncInteractions(ctx, st, runID, "implement")
+	if err != nil {
+		t.Fatalf("list answered: %v", err)
+	}
+	if len(done) != 0 {
+		t.Errorf("%d pre-rewind answer(s) survived — the replayed node's output would mix them in", len(done))
+	}
+	// The load-bearing case: `verify` has no output, so it is in
+	// `invalidated` but not in `dropped`. Keying the retirement on the
+	// output-filtered set leaves these live.
+	orphanPending, err := store.ListPendingAsyncInteractions(ctx, st, runID, "verify")
+	if err != nil {
+		t.Fatalf("list pending (uncompleted node): %v", err)
+	}
+	if len(orphanPending) != 0 {
+		t.Errorf("%d pending question(s) survived on a node that never completed — "+
+			"retirement is keyed on the output-filtered set, which skips exactly this case", len(orphanPending))
+	}
+	orphanDone, err := store.ListAnsweredAsyncInteractions(ctx, st, runID, "verify")
+	if err != nil {
+		t.Fatalf("list answered (uncompleted node): %v", err)
+	}
+	if len(orphanDone) != 0 {
+		t.Errorf("%d pre-rewind answer(s) survived on a node that never completed", len(orphanDone))
+	}
+	// An upstream node's question is not the rewind's business.
+	up, err := store.ListPendingAsyncInteractions(ctx, st, runID, "plan")
+	if err != nil {
+		t.Fatalf("list upstream: %v", err)
+	}
+	if len(up) != 1 {
+		t.Errorf("upstream questions = %d, want 1 kept", len(up))
 	}
 }

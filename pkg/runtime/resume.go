@@ -260,6 +260,12 @@ func (e *Engine) resumeFromPause(ctx context.Context, r *store.Run, answers map[
 	// Init maps when the checkpoint deserialised with omitted fields
 	// (Mongo bson omitempty, legacy stores) — a nil map here would
 	// crash selectEdgeRS the first time it tries `rs.loopCounters[X]++`.
+	// Restamp here as well as on the failure path: a run resumed from a
+	// human pause with `--file X --force` executes the NEW source, and
+	// leaving Run.WorkflowSource at the launch text makes the next
+	// `rewind --auto` re-report edits that already ran — the same
+	// monotonically-growing pivot the failure path restamps to avoid.
+	e.restampWorkflowSource(ctx, r)
 	rs, sandboxCleanup, rbErr := e.resumeRebuildState(ctx, r, cp, outputs, artifactVersions)
 	if rbErr != nil {
 		return rbErr
@@ -1668,7 +1674,26 @@ func (e *Engine) restampWorkflowSource(ctx context.Context, r *store.Run) {
 	if e.workflowHash != "" {
 		r.WorkflowHash = e.workflowHash
 	}
-	if err := e.store.SaveRun(ctx, r); err != nil && e.logger != nil {
+	// Re-read before writing. BOTH call sites run AFTER the resume CAS
+	// flipped the run to `running` — and the claim helpers mutate their
+	// OWN copy (UpdateRunStatusIf → loadRunRaw), never the caller's `r`,
+	// which therefore still carries the pre-claim status. SaveRun writes
+	// the whole document, so saving `r` verbatim would silently undo the
+	// claim: the run persists as cancelled/paused_* for its entire
+	// execution, the Checkpoint and FinishedAt that the `running`
+	// transition deliberately cleared come back, and — worst — the
+	// duplicate-resume guard falls, letting a second concurrent resume
+	// claim the same run id and spawn a second engine on it.
+	fresh, lerr := e.store.LoadRun(ctx, r.ID)
+	if lerr != nil {
+		if e.logger != nil {
+			e.logger.Warn("resume: re-stamp workflow source for %s: reload: %v", r.ID, lerr)
+		}
+		return
+	}
+	fresh.WorkflowSource = r.WorkflowSource
+	fresh.WorkflowHash = r.WorkflowHash
+	if err := e.store.SaveRun(ctx, fresh); err != nil && e.logger != nil {
 		e.logger.Warn("resume: re-stamp workflow source for %s: %v", r.ID, err)
 	}
 }
