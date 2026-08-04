@@ -10,6 +10,7 @@ import { DotsHorizontalIcon } from "@radix-ui/react-icons";
 import {
   bulkDeletePipelineTasks,
   bulkReadyPipelineTasks,
+  closePipelineTask,
   deletePipelineTask,
   launchPipelineTask,
   markPipelineTaskReady,
@@ -46,12 +47,13 @@ import {
   canUnmarkReady,
   isTicketEditable,
 } from "./cardCapabilities";
-import { cardReady, closedOutcome } from "./columnFilters";
+import { cardBlocked, cardReady, closedOutcome } from "./cardPredicates";
 import {
   filterInventoryCards,
   inventoryTabCounts,
   partitionPipelineCards,
   sortInventoryCards,
+  sortModeForTab,
   type PipelineFilterState,
 } from "./filters";
 import { PipelineFilters } from "./PipelineFilters";
@@ -65,7 +67,6 @@ import {
 import { QueueBanner } from "./QueueBanner";
 import { faceTags } from "./cardTags";
 import { formatChildrenSummary } from "./planGroups";
-import { hasOpenDeps } from "./queueSummary";
 import { resumePipelineRun } from "./resumePipelineRun";
 
 // Re-export capabilities for existing tests.
@@ -185,6 +186,7 @@ export interface PipelineCardActions {
   onStop: (card: PipelineBoardCardDTO) => void;
   onReset: (card: PipelineBoardCardDTO) => void;
   onDelete: (card: PipelineBoardCardDTO) => void;
+  onClose: (card: PipelineBoardCardDTO) => void;
 }
 
 export function PipelineColumns({
@@ -293,6 +295,53 @@ export function PipelineColumns({
         return;
       await runAction(() => deletePipelineTask(card.issue_id as string));
     },
+    onClose: async (card) => {
+      // Naming the dependents is the whole point of this dialog. Closing
+      // files the ticket as ABANDONED, which deliberately does NOT satisfy
+      // anything waiting on it — so an operator who closes a card three
+      // others depend on must see that they stay parked, here, before
+      // confirming rather than a day later on a board that stopped moving.
+      const blocking = card.blocking ?? [];
+      if (
+        !(await confirm({
+          title: "Close this pipeline?",
+          message: (
+            <div className="space-y-2">
+              <p>
+                Any run still alive under it is cancelled, and the ticket is
+                filed as abandoned.
+                {card.reserves_slot
+                  ? " The concurrency slot it holds is released."
+                  : ""}
+              </p>
+              {blocking.length > 0 && (
+                <div>
+                  <p className="font-medium">
+                    {blocking.length === 1
+                      ? "1 card was waiting on this one. It will stay waiting:"
+                      : `${blocking.length} cards were waiting on this one. They will stay waiting:`}
+                  </p>
+                  <ul className="mt-1 list-disc pl-5">
+                    {blocking.slice(0, 5).map((b) => (
+                      <li key={b.id} className="truncate">
+                        {b.title || b.id}
+                      </li>
+                    ))}
+                    {blocking.length > 5 && (
+                      <li>…and {blocking.length - 5} more</li>
+                    )}
+                  </ul>
+                </div>
+              )}
+            </div>
+          ),
+          confirmLabel: "Close",
+          confirmVariant: "danger",
+        }))
+      )
+        return;
+      await runAction(() => closePipelineTask(card.issue_id as string));
+    },
   };
 
   const onLaunchNow = async (issueId: string) => {
@@ -300,17 +349,19 @@ export function PipelineColumns({
     await runAction(() => launchPipelineTask(issueId));
   };
 
-  const { inProgress, inventory } = partitionPipelineCards(cards);
+  const { inProgress, needsAttention, inventory } = partitionPipelineCards(cards);
   const tab = filters?.inventoryTab ?? "opened";
   const tabCounts = inventoryTabCounts(inventory);
   const inventoryFiltered = filters
     ? filterInventoryCards(inventory, filters)
     : inventory;
-  // Opened defaults to priority order (same as the admission queue); Closed
-  // history and operators who prefer recency can switch via Sort.
+  // Each tab remembers its own order: Opened the priority queue (same as the
+  // admission loop, dependency-blocked tickets sunk to the bottom), Closed
+  // newest-first. Either can be changed via Sort without touching the other.
   const inventoryVisible = sortInventoryCards(
     inventoryFiltered,
-    filters?.sortMode ?? "priority",
+    filters ? sortModeForTab(filters, tab) : "priority",
+    tab,
   );
   const tabTotal = tab === "opened" ? tabCounts.opened : tabCounts.closed;
 
@@ -410,58 +461,87 @@ export function PipelineColumns({
         role="region"
         aria-label="Pipeline cards"
       >
-        <div
-          onDragOver={(e) => {
-            if (!e.dataTransfer.types.includes(LAUNCH_DRAG_TYPE)) return;
-            e.preventDefault();
-            e.dataTransfer.dropEffect = "move";
-            setDropActive(true);
-          }}
-          onDragLeave={(e) => {
-            // Only clear when the pointer truly left the zone, not when it
-            // crosses into a child element.
-            if (e.currentTarget.contains(e.relatedTarget as Node)) return;
-            setDropActive(false);
-          }}
-          onDrop={(e) => {
-            const issueId = e.dataTransfer.getData(LAUNCH_DRAG_TYPE);
-            if (!issueId) return;
-            e.preventDefault();
-            void onLaunchNow(issueId);
-          }}
-          className={`rounded-lg transition-colors ${
-            dropActive
-              ? "ring-2 ring-accent/60 bg-accent-soft/20"
-              : dragging
-                ? "ring-1 ring-dashed ring-accent/40"
-                : ""
-          }`}
-          data-launch-dropzone
-        >
-          <CardSection
-            id="in-progress"
-            title="In progress"
-            subtitle={
-              dropActive || dragging
-                ? "Drop a ticket here to launch it now — jumps the priority queue"
-                : "Live pipelines — concurrency-capped"
-            }
-            accent="bg-info"
-            count={inProgress.length}
-            empty={
+        <div className="flex min-w-0 flex-col gap-4 lg:flex-row lg:items-start">
+          {/* The drop zone wraps ONLY the live lane: needs-attention is not a
+              launch target, and letting a ticket be dropped onto a lane of
+              corpses would be nonsense. */}
+          <div
+            onDragOver={(e) => {
+              if (!e.dataTransfer.types.includes(LAUNCH_DRAG_TYPE)) return;
+              e.preventDefault();
+              e.dataTransfer.dropEffect = "move";
+              setDropActive(true);
+            }}
+            onDragLeave={(e) => {
+              // Only clear when the pointer truly left the zone, not when it
+              // crosses into a child element.
+              if (e.currentTarget.contains(e.relatedTarget as Node)) return;
+              setDropActive(false);
+            }}
+            onDrop={(e) => {
+              const issueId = e.dataTransfer.getData(LAUNCH_DRAG_TYPE);
+              if (!issueId) return;
+              e.preventDefault();
+              void onLaunchNow(issueId);
+            }}
+            className={`min-w-0 flex-1 rounded-lg transition-colors ${
               dropActive
-                ? "Drop here to start this ticket now."
-                : "Nothing running right now."
-            }
+                ? "ring-2 ring-accent/60 bg-accent-soft/20"
+                : dragging
+                  ? "ring-1 ring-dashed ring-accent/40"
+                  : ""
+            }`}
+            data-launch-dropzone
           >
-            <CardGrid
-              cards={inProgress}
-              onMoveTicket={onMoveTicket}
-              actions={actions}
-              onEditTask={onEditTask}
-              onOpenCard={onOpenCard}
-            />
-          </CardSection>
+            <CardSection
+              id="in-progress"
+              title="In progress"
+              subtitle={
+                dropActive || dragging
+                  ? "Drop a ticket here to launch it now — jumps the priority queue"
+                  : "Live pipelines — concurrency-capped"
+              }
+              accent="bg-info"
+              count={inProgress.length}
+              empty={
+                dropActive
+                  ? "Drop here to start this ticket now."
+                  : "Nothing running right now."
+              }
+            >
+              <CardGrid
+                cards={inProgress}
+                onMoveTicket={onMoveTicket}
+                actions={actions}
+                onEditTask={onEditTask}
+                onOpenCard={onOpenCard}
+              />
+            </CardSection>
+          </div>
+
+          {/* Rendered only when non-empty: an always-visible empty lane would
+              read as a permanent accusation. Below lg it stacks underneath
+              In progress rather than squeezing both into a narrow row. */}
+          {needsAttention.length > 0 && (
+            <div className="min-w-0 lg:w-80 lg:shrink-0 xl:w-96">
+              <CardSection
+                id="needs-attention"
+                title="Needs attention"
+                subtitle="Failed mid-flight — each holds a slot until you retry, resume or close it"
+                accent="bg-danger"
+                count={needsAttention.length}
+                empty="Nothing to fix."
+              >
+                <CardGrid
+                  cards={needsAttention}
+                  onMoveTicket={onMoveTicket}
+                  actions={actions}
+                  onEditTask={onEditTask}
+                  onOpenCard={onOpenCard}
+                />
+              </CardSection>
+            </div>
+          )}
         </div>
 
         <QueueBanner
@@ -483,8 +563,9 @@ export function PipelineColumns({
                 </h2>
               </div>
               <p className="mt-0.5 text-micro text-fg-muted">
-                Opened queue and closed history as tabs — default sort is
-                priority (higher first, ties oldest).
+                Opened queue and closed history as tabs. Each remembers its own
+                Sort — Opened starts on priority (higher first, ties oldest),
+                Closed on newest first.
               </p>
             </div>
           </div>
@@ -735,6 +816,9 @@ export function PipelineCard({
       case "stop":
         actions?.onStop(card);
         break;
+      case "close":
+        actions?.onClose(card);
+        break;
       case "open_run":
         if (card.run_id) setLocation(`/runs/${encodeURIComponent(card.run_id)}`);
         break;
@@ -815,6 +899,7 @@ export function PipelineCard({
       <div className="flex min-h-0 min-w-0 flex-1 flex-col gap-2 overflow-hidden">
         {card.column_id === "opened" && <TodoStatus card={card} />}
         {card.column_id === "in_progress" && <InProgressStatus card={card} />}
+        {card.column_id === "needs_attention" && <NeedsAttentionStatus card={card} />}
         {card.column_id === "closed" && <ClosedStatus card={card} />}
 
         {/* Parent side of the relation. The child side is the ↳ line above
@@ -918,7 +1003,7 @@ export function PipelineCard({
 
 // DepsPreview is display-only — body click opens the drawer (Dependencies section).
 function DepsPreview({ card }: { card: PipelineBoardCardDTO }) {
-  if (!hasOpenDeps(card)) return null;
+  if (!cardBlocked(card)) return null;
   const open =
     card.blockers?.filter((b) => !b.satisfied).slice(0, 2) ?? [];
   const more = Math.max(0, (card.open_blocker_count ?? open.length) - open.length);
@@ -1175,8 +1260,53 @@ function ClosedStatus({ card }: { card: PipelineBoardCardDTO }) {
     <div className="min-w-0 space-y-1.5">
       <div className="flex flex-wrap items-center gap-1">
         <PriorityBadge priority={card.priority} />
-        <Badge variant="danger">Failed</Badge>
+        {/* Distinguish the two ways a card reaches Closed badged failed: an
+            operator STOPPED it (cancelled, or filed via Close), or a
+            standalone run — which has no lane to be nursed in — simply
+            FAILED. Labelling both "Stopped" told the operator they had done
+            something they had not. */}
+        {card.status === "cancelled" ? (
+          <Badge variant="danger" title="Stopped by the operator, or closed without finishing">
+            Stopped
+          </Badge>
+        ) : (
+          <Badge variant="danger" title="This run failed">
+            Failed
+          </Badge>
+        )}
         <StatusChip status={card.status} />
+      </div>
+      {card.error && (
+        <div title={card.error} className="min-w-0">
+          <InlineBanner tone="danger" layout="inline" className="min-w-0 py-1.5">
+            <p className="line-clamp-2 break-words whitespace-pre-wrap">
+              {card.error}
+            </p>
+          </InlineBanner>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function NeedsAttentionStatus({ card }: { card: PipelineBoardCardDTO }) {
+  return (
+    <div className="min-w-0 space-y-1.5">
+      <ProgressBar executed={card.tree_executed_nodes} total={card.tree_total_nodes} />
+      <div className="flex min-w-0 flex-wrap items-center gap-1">
+        <PriorityBadge priority={card.priority} />
+        <Badge variant="danger" title="This pipeline died before finishing">
+          Failed
+        </Badge>
+        <StatusChip status={card.status} />
+        {card.reserves_slot && (
+          <Badge
+            variant="warning"
+            title="A concurrency slot is held open so this pipeline can restart into it. Nothing is running against it. Retry, resume or close the card to release it."
+          >
+            Holds a slot
+          </Badge>
+        )}
       </div>
       {card.error && (
         <div title={card.error} className="min-w-0">

@@ -57,7 +57,7 @@ vi.mock("@/store/ui", () => ({
     sel({ addToast: vi.fn() }),
 }));
 
-import { cardReady, closedOutcome } from "./columnFilters";
+import { cardReady, closedOutcome } from "./cardPredicates";
 import { resolveMenuItems, resolvePrimaryAction } from "./primaryAction";
 import {
   PipelineColumns,
@@ -285,26 +285,76 @@ describe("PipelineColumns", () => {
     expect(html).toContain("#3");
   });
 
-  it("renders a failed pipeline in the Closed lane with its reason and Retry", () => {
+  it("renders a failed pipeline in the Needs attention lane with its reason and Retry", () => {
     const html = render(
       makeBoard([
         makeCard({
           id: "failed",
-          column_id: "closed",
+          column_id: "needs_attention",
           kind: "run",
           title: "Broke last time",
           issue_id: "iss-2",
           run_id: "run-old",
           status: "failed_resumable",
           failed: true,
+          reserves_slot: true,
           error: "kaboom",
         }),
       ]),
     );
 
+    expect(html).toContain("Needs attention"); // the lane renders
     expect(html).toContain("kaboom"); // the reason stays visible
     expect(html).toContain(">Failed</span>"); // outcome badge (not the filter chip)
+    expect(html).toContain("Holds a slot"); // why the board stopped launching
     expect(html).toContain("Retry"); // ticket-backed → retryable to Todo
+  });
+
+  it("hides the Needs attention lane entirely when nothing is broken", () => {
+    // An always-visible empty lane reads as a permanent accusation.
+    const html = render(
+      makeBoard([
+        makeCard({ id: "live", column_id: "in_progress", status: "running" }),
+      ]),
+    );
+    expect(html).not.toContain("Needs attention");
+  });
+
+  it("does not make the Needs attention lane a launch drop target", () => {
+    // Exactly one drop zone exists, and it wraps the live lane. Dropping a
+    // ticket onto a lane of corpses would be nonsense.
+    const html = render(
+      makeBoard([
+        makeCard({
+          id: "failed",
+          column_id: "needs_attention",
+          kind: "run",
+          run_id: "run-old",
+          status: "failed",
+          failed: true,
+        }),
+      ]),
+    );
+    expect(html.match(/data-launch-dropzone/g) ?? []).toHaveLength(1);
+  });
+
+  it("a Closed card that was stopped reads Stopped, not Failed", () => {
+    // Mid-flight failures moved to Needs attention, so anything failed that
+    // reached Closed got there deliberately — cancelled, or filed via Close.
+    const html = render(
+      makeBoard([
+        makeCard({
+          id: "stopped",
+          column_id: "closed",
+          kind: "run",
+          title: "Cancelled by hand",
+          run_id: "run-cancelled",
+          status: "cancelled",
+          failed: true,
+        }),
+      ]),
+    );
+    expect(html).toContain(">Stopped</span>");
   });
 
   it("a failed pipeline without a ticket shows the reason but no Retry", () => {

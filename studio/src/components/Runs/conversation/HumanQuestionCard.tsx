@@ -95,6 +95,12 @@ export default function HumanQuestionCard({ runId, message, isActive }: Props) {
         runId={runId}
         nodeId={message.nodeId}
         questions={message.questions ?? {}}
+        // The prompt this card just rendered above the form. Passed (not
+        // re-rendered) so the payload block knows what is already on
+        // screen — `message.prompt` is the resolved instructions, EXCEPT
+        // when a bot resolver's humanRenderHints replaced it, which is
+        // exactly the case where nothing may be suppressed.
+        shownPrompt={message.prompt}
         quickActions={message.quickActions}
       />
     </div>

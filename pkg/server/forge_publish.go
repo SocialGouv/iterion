@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/SocialGouv/iterion/pkg/forge"
+	"github.com/SocialGouv/iterion/pkg/store"
 )
 
 // ---------------------------------------------------------------------------
@@ -567,6 +568,110 @@ func (s *Server) injectForgePublishVars(ctx context.Context, teamID, preferredCo
 	vars[forgePublishVarURL] = base + "/api/v1/forge/publish-review"
 	vars[forgePublishVarToken] = token
 	return vars
+}
+
+// applyPRLaunchContext gives a launch that targets a pull request the two
+// things only the server can supply: the target repo's launch policy — which
+// is where the shared gate_context a required check is named by lives — and a
+// forge-publish grant. It is the composition for lanes that hold no webhook
+// config: the cloud board coordinator, which launches a card from its BotArgs
+// alone, and the studio/API launch. Without it a bot pushes its commits and
+// then has no endpoint to post its verdict or its gate status to, leaving the
+// repo's required check stale on a head nobody will re-judge.
+//
+// Resolved at launch and deliberately never carried on a card: a grant
+// expires, so a card claimed hours after it was created would hold a dead
+// token, and a board document is the wrong place to persist a credential at
+// rest. Reading the repo's policy here too means a re-provision between
+// carding and claiming is honoured.
+//
+// The repo's policy goes UNDER the caller's vars: what is already on the
+// launch is a deliberate per-run pin and outranks a repo-wide default.
+//
+// No AllowsBot check, unlike the webhook lanes: that list is admission control
+// over which bots an EXTERNAL event may launch. Both callers here are already
+// authenticated team surfaces, and the grant is scoped to the (team,
+// connection, repo) the team is provisioned on and re-enforced at the publish
+// endpoint.
+func (s *Server) applyPRLaunchContext(ctx context.Context, teamID, preferredConnID, botID string, vars map[string]string, r *http.Request) map[string]string {
+	prURL := strings.TrimSpace(vars["pr_url"])
+	if prURL == "" {
+		return vars
+	}
+	if host, repo, _, err := forge.ParsePullURL(prURL); err == nil {
+		if ri, ok := s.repoIntegrationFor(ctx, teamID, host, repo); ok {
+			if preferredConnID == "" {
+				// Pin the grant to the connection the policy came from.
+				preferredConnID = ri.ConnectionID
+			}
+			fillVarGaps(vars, s.repoLaunchPolicy(ctx, ri, botID))
+		}
+	}
+	return s.injectForgePublishVars(ctx, teamID, preferredConnID, botID, vars, r)
+}
+
+// repoLaunchPolicy composes a repo's launch-var layers for ONE bot, in the
+// order every webhook lane applies them (forgePREventTargets): the co-enabled
+// bots' manifest union first, then this bot's own manifest rule, then the
+// operator's per-repo overrides. Skipping the per-bot layer is what hands one
+// bot another's settings; skipping the union resolves a manifest-supplied
+// gate_context on the webhook lanes and nowhere else.
+//
+// Falls back to the integration's operator vars alone when the webhook config
+// is unreadable or belongs to another tenant: that half is the authoritative
+// one, and losing the union only costs a default.
+func (s *Server) repoLaunchPolicy(ctx context.Context, ri forge.RepoIntegration, botID string) map[string]string {
+	if s.webhookConfigs == nil || ri.WebhookID == "" {
+		return ri.LaunchVars
+	}
+	cfg, err := s.webhookConfigs.Get(store.WithoutTenantFilter(ctx), ri.WebhookID)
+	if err != nil || cfg.TenantID != ri.TenantID {
+		return ri.LaunchVars
+	}
+	policy := mergeVarsInto(map[string]string{}, cfg.LaunchVars)
+	for _, rule := range cfg.BotRules {
+		if rule.BotID == botID {
+			mergeVarsInto(policy, rule.LaunchVars)
+			break
+		}
+	}
+	return mergeVarsInto(policy, cfg.OperatorLaunchVars)
+}
+
+// repoIntegrationFor finds a team's integration for a repo on a given forge
+// host. The host is part of the identity: the same slug on another forge is a
+// different repo, and applying its policy — or minting a grant on its
+// connection — would cross two unrelated projects.
+func (s *Server) repoIntegrationFor(ctx context.Context, teamID, host, repo string) (forge.RepoIntegration, bool) {
+	if s.forgeIntegrations == nil || s.forgeConnections == nil || strings.TrimSpace(repo) == "" {
+		return forge.RepoIntegration{}, false
+	}
+	ris, err := s.forgeIntegrations.ListByTenant(ctx, teamID)
+	if err != nil {
+		return forge.RepoIntegration{}, false
+	}
+	var best forge.RepoIntegration
+	found := false
+	for _, ri := range ris {
+		if !strings.EqualFold(ri.RepoFullName, repo) {
+			continue
+		}
+		conn, cerr := s.forgeConnections.Get(ctx, ri.ConnectionID)
+		if cerr != nil || conn.TenantID != teamID || !strings.EqualFold(hostOfURL(conn.BaseURL()), host) {
+			continue
+		}
+		// One repo provisioned twice on the same host — through two connections,
+		// which happens when a repo is re-provisioned onto another one and the
+		// first is left behind. The store's order is not stable and this choice
+		// decides both the policy and the connection the verdict is posted
+		// under, so take the LATEST provisioning: it is the operator's current
+		// intent, and the older row is the stale one. Id breaks an exact tie.
+		if !found || ri.CreatedAt.After(best.CreatedAt) ||
+			(ri.CreatedAt.Equal(best.CreatedAt) && ri.ID < best.ID) {
+			best, found = ri, true
+		}
+	}
+	return best, found
 }
 
 // forgeConnectionForPR picks the team connection to publish through:

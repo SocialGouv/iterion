@@ -48,6 +48,7 @@ func (r *Runner) parkOnDLQOnFinalDelivery(err error, delivery *natsq.Delivery, m
 		errors.Is(err, runtime.ErrRunPaused) ||
 		errors.Is(err, runtime.ErrRunPausedOperator) ||
 		errors.Is(err, runtime.ErrRunCancelled) ||
+		errors.Is(err, runtime.ErrRunInterrupted) ||
 		r.cfg.NATS == nil || delivery.NumDelivered() < r.cfg.NATS.MaxDeliver() {
 		return false, ""
 	}

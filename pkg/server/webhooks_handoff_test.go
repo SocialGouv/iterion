@@ -91,6 +91,7 @@ func TestRenderPriorReview(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
+		run.Status = store.RunStatusFinished
 		return run
 	}
 	write := func(t *testing.T, runID, node string, data map[string]any) {
@@ -117,7 +118,7 @@ func TestRenderPriorReview(t *testing.T) {
 			},
 		})
 
-		got := renderReviewDigest(ctx, rs, run.ID, reviewSpec, handoffQuery{PRURL: prURL})
+		got := renderReviewDigest(ctx, rs, run, reviewSpec, handoffQuery{PRURL: prURL})
 		for name, want := range map[string]string{
 			"the anchor span":       "db.go:42-44",
 			"the severity/category": "high/security",
@@ -142,7 +143,7 @@ func TestRenderPriorReview(t *testing.T) {
 	t.Run("empty findings still seed a verdict", func(t *testing.T) {
 		run := newRun(t, prURL)
 		write(t, run.ID, reviewSpec.Node, map[string]any{"findings": []any{}, "total_findings": 0})
-		if e := renderReviewDigest(ctx, rs, run.ID, reviewSpec, handoffQuery{PRURL: prURL}); !strings.Contains(e, "no findings") {
+		if e := renderReviewDigest(ctx, rs, run, reviewSpec, handoffQuery{PRURL: prURL}); !strings.Contains(e, "no findings") {
 			t.Errorf("empty-findings render should note no findings, got %q", e)
 		}
 	})
@@ -159,7 +160,7 @@ func TestRenderPriorReview(t *testing.T) {
 			"claude_findings": []any{map[string]any{"title": "race on cache", "file": "c.go", "line": float64(9), "severity": "high"}},
 			"gpt_findings":    []any{map[string]any{"title": "race on cache", "file": "c.go", "line": float64(9), "severity": "high"}},
 		})
-		got := renderReviewDigest(ctx, rs, run.ID, reviewSpec, handoffQuery{PRURL: prURL})
+		got := renderReviewDigest(ctx, rs, run, reviewSpec, handoffQuery{PRURL: prURL})
 		if !strings.Contains(got, "race on cache") {
 			t.Errorf("degraded merge lost every finding:\n%s", got)
 		}
@@ -181,14 +182,14 @@ func TestRenderPriorReview(t *testing.T) {
 		})
 		write(t, run.ID, reviewSpec.AnchorNode, map[string]any{"reviewed_sha": "aaaaaaaaaaaa1111"})
 
-		moved := renderReviewDigest(ctx, rs, run.ID, reviewSpec, handoffQuery{PRURL: prURL, HeadSHA: "bbbbbbbbbbbb2222"})
+		moved := renderReviewDigest(ctx, rs, run, reviewSpec, handoffQuery{PRURL: prURL, HeadSHA: "bbbbbbbbbbbb2222"})
 		if !strings.Contains(moved, "the branch moved after this review") {
 			t.Errorf("a stale review must be labelled stale:\n%s", moved)
 		}
 		if !strings.Contains(moved, "aaaaaaaaaaaa") || !strings.Contains(moved, "bbbbbbbbbbbb") {
 			t.Errorf("the digest must name both revisions so the fixer can diff them:\n%s", moved)
 		}
-		same := renderReviewDigest(ctx, rs, run.ID, reviewSpec, handoffQuery{PRURL: prURL, HeadSHA: "aaaaaaaaaaaa1111"})
+		same := renderReviewDigest(ctx, rs, run, reviewSpec, handoffQuery{PRURL: prURL, HeadSHA: "aaaaaaaaaaaa1111"})
 		if strings.Contains(same, "branch moved") {
 			t.Errorf("an up-to-date review must not be labelled stale:\n%s", same)
 		}
@@ -196,7 +197,7 @@ func TestRenderPriorReview(t *testing.T) {
 		// Found by an adversarial pass: with no head to compare against, the
 		// digest asserted "(the current head)" anyway — on the merge-queue
 		// auto-heal lane, which fires precisely because the base moved.
-		unknown := renderReviewDigest(ctx, rs, run.ID, reviewSpec, handoffQuery{PRURL: prURL})
+		unknown := renderReviewDigest(ctx, rs, run, reviewSpec, handoffQuery{PRURL: prURL})
 		if strings.Contains(unknown, "the current head") {
 			t.Errorf("claimed currency for a head it was never told:\n%s", unknown)
 		}
@@ -207,7 +208,7 @@ func TestRenderPriorReview(t *testing.T) {
 	// older review one step down the list.
 	t.Run("a review with nothing readable renders empty", func(t *testing.T) {
 		run := newRun(t, prURL)
-		if got := renderReviewDigest(ctx, rs, run.ID, reviewSpec, handoffQuery{PRURL: prURL}); got != "" {
+		if got := renderReviewDigest(ctx, rs, run, reviewSpec, handoffQuery{PRURL: prURL}); got != "" {
 			t.Errorf("a run with no artifacts must render empty so the scan continues, got %q", got)
 		}
 	})
@@ -346,5 +347,87 @@ func TestHandoffConsumersComeFromTheManifest(t *testing.T) {
 	got := s2.handoffConsumersFor("other-fixer")
 	if len(got) != 1 || got[0].Var != "upstream_notes" {
 		t.Fatalf("a bot consuming into its own var name must be honoured, got %+v", got)
+	}
+}
+
+// TestACrashedReviewDoesNotShadowACompleteOne pins the interaction an
+// adversarial pass found: publishing the FALLBACK node made a crashed run
+// render, and since the scan takes the first run that renders, it then hid the
+// last complete review behind raw, un-thresholded reviewer output.
+//
+// The fallback is for a merged set that came back as prose. A run that never
+// reached the merge is not a review at all.
+func TestACrashedReviewDoesNotShadowACompleteOne(t *testing.T) {
+	rs, err := store.New(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+	const prURL = "https://github.com/acme/widgets/pull/9"
+
+	crashed, err := rs.CreateRun(ctx, mustRunID(t), "review-pr", map[string]any{"pr_url": prURL})
+	if err != nil {
+		t.Fatal(err)
+	}
+	crashed.Status = store.RunStatusFailedResumable
+	// It died before merging, so only the raw per-family arrays exist.
+	if err := rs.WriteArtifact(ctx, &store.Artifact{RunID: crashed.ID, NodeID: reviewSpec.FallbackNodes[0], Data: map[string]any{
+		"claude_findings": []any{map[string]any{"title": "RAW UNTHRESHOLDED NOISE", "file": "b.go", "line": float64(2), "severity": "info"}},
+	}}); err != nil {
+		t.Fatal(err)
+	}
+
+	if got := renderReviewDigest(ctx, rs, crashed, reviewSpec, handoffQuery{PRURL: prURL}); got != "" {
+		t.Errorf("a run that died before merging must render nothing, so the scan keeps looking:\n%s", got)
+	}
+
+	// A FINISHED run whose merged set degraded to prose still gets the fallback —
+	// that is what it is for.
+	degraded, err := rs.CreateRun(ctx, mustRunID(t), "review-pr", map[string]any{"pr_url": prURL})
+	if err != nil {
+		t.Fatal(err)
+	}
+	degraded.Status = store.RunStatusFinished
+	if err := rs.WriteArtifact(ctx, &store.Artifact{RunID: degraded.ID, NodeID: reviewSpec.Node, Data: map[string]any{
+		"findings": "See structured findings array.", "total_findings": 1,
+	}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := rs.WriteArtifact(ctx, &store.Artifact{RunID: degraded.ID, NodeID: reviewSpec.FallbackNodes[0], Data: map[string]any{
+		"claude_findings": []any{map[string]any{"title": "real finding", "file": "b.go", "line": float64(2), "severity": "high"}},
+	}}); err != nil {
+		t.Fatal(err)
+	}
+	if got := renderReviewDigest(ctx, rs, degraded, reviewSpec, handoffQuery{PRURL: prURL}); !strings.Contains(got, "real finding") {
+		t.Errorf("a finished run whose merge degraded must still recover via the fallback:\n%s", got)
+	}
+}
+
+// TestAnUnfinishedRunSaysSo: a run that wrote a real merged set before dying is
+// still worth handing over, but the consumer must be able to tell.
+func TestAnUnfinishedRunSaysSo(t *testing.T) {
+	rs, err := store.New(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+	const prURL = "https://github.com/acme/widgets/pull/10"
+	run, err := rs.CreateRun(ctx, mustRunID(t), "review-pr", map[string]any{"pr_url": prURL})
+	if err != nil {
+		t.Fatal(err)
+	}
+	run.Status = store.RunStatusFailedResumable
+	if err := rs.WriteArtifact(ctx, &store.Artifact{RunID: run.ID, NodeID: reviewSpec.Node, Data: map[string]any{
+		"total_findings": 1,
+		"findings":       []any{map[string]any{"title": "merged finding", "file": "a.go", "line": float64(1), "severity": "high"}},
+	}}); err != nil {
+		t.Fatal(err)
+	}
+	got := renderReviewDigest(ctx, rs, run, reviewSpec, handoffQuery{PRURL: prURL})
+	if !strings.Contains(got, "merged finding") {
+		t.Errorf("a real merged set must still be handed over:\n%s", got)
+	}
+	if !strings.Contains(got, "stopped before reviewing everything") {
+		t.Errorf("the digest must say the producing run did not finish:\n%s", got)
 	}
 }

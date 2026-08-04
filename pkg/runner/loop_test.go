@@ -8,7 +8,9 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/SocialGouv/iterion/pkg/backend/mcp"
 	"github.com/SocialGouv/iterion/pkg/dsl/ast"
@@ -82,6 +84,46 @@ func TestShutdown_NoInFlight_NoOp(t *testing.T) {
 	// current is nil; Shutdown returns nil without panicking.
 	if err := r.Shutdown(context.Background()); err != nil {
 		t.Errorf("expected nil err, got %v", err)
+	}
+}
+
+// TestShutdown_CompleteMode_LetsRunFinish is the lame-duck proof: on
+// SIGTERM the complete-mode runner must NOT cancel its in-flight run — it
+// waits for the run to finish on its own. The run's delivery is never
+// touched on this happy path, so a nil delivery is safe here.
+func TestShutdown_CompleteMode_LetsRunFinish(t *testing.T) {
+	var cancelled atomic.Bool
+	done := make(chan struct{})
+	r := &Runner{cfg: Config{Logger: iterlog.Nop(), DrainMode: DrainModeComplete, DrainTimeout: time.Hour}}
+	r.current = &inFlight{
+		runID:    "run-1",
+		cancelFn: func(error) { cancelled.Store(true) },
+		done:     done,
+	}
+
+	// Shutdown must block until the run finishes (done closes), NOT return
+	// eagerly and NOT cancel the run.
+	shutReturned := make(chan struct{})
+	go func() { _ = r.Shutdown(context.Background()); close(shutReturned) }()
+
+	select {
+	case <-shutReturned:
+		t.Fatal("Shutdown returned before the in-flight run finished (lame-duck must wait)")
+	case <-time.After(50 * time.Millisecond):
+	}
+	if cancelled.Load() {
+		t.Fatal("lame-duck Shutdown cancelled the in-flight run — it must let it finish")
+	}
+
+	// Run finishes naturally → Shutdown returns, still never cancelling.
+	close(done)
+	select {
+	case <-shutReturned:
+	case <-time.After(2 * time.Second):
+		t.Fatal("Shutdown did not return after the run finished")
+	}
+	if cancelled.Load() {
+		t.Fatal("Shutdown cancelled the run after it had already finished")
 	}
 }
 
@@ -327,43 +369,88 @@ workflow main:
 // ---------------------------------------------------------------------------
 
 // TestClassifyExecResult pins the Ack/Nak matrix for engine outcomes:
-// checkpoint writes (paused / operator-paused / user-cancelled) Ack;
-// heartbeat-loss and shutdown cancellations Nak so JetStream redelivers
-// to a sibling; a generic failure Naks. errors.Is semantics mean wrapped
-// sentinels classify identically.
+// checkpoint writes (paused / operator-paused / operator-cancelled) Ack; an
+// infrastructure interruption (ErrRunInterrupted — runner drain / lost
+// heartbeat, already written failed_resumable by the engine) Naks for
+// auto-resume; a generic failure Naks. errors.Is semantics mean wrapped
+// sentinels classify identically. The shutdown-vs-operator distinction now
+// rides the returned error (the engine's cancel-cause branch), not runner
+// flags — so an operator cancel arriving during a drain still Acks.
 func TestClassifyExecResult(t *testing.T) {
 	cases := []struct {
 		name       string
 		err        error
-		hbFailed   bool
-		parentErr  error
 		wantStatus string
 		wantAction deliveryAction
 	}{
-		{"success acks finished", nil, false, nil, "finished", actionAck},
-		{"paused acks", runtime.ErrRunPaused, false, nil, "paused", actionAck},
-		{"wrapped paused acks", fmt.Errorf("engine: %w", runtime.ErrRunPaused), false, nil, "paused", actionAck},
-		{"operator pause acks", runtime.ErrRunPausedOperator, false, nil, "paused_operator", actionAck},
-		{"user cancel acks", runtime.ErrRunCancelled, false, nil, "cancelled", actionAck},
-		{"heartbeat-loss cancel naks", runtime.ErrRunCancelled, true, nil, "lock_held", actionNak},
-		// hbFailed wins over a concurrently-cancelled parent ctx.
-		{"heartbeat beats shutdown", runtime.ErrRunCancelled, true, context.Canceled, "lock_held", actionNak},
-		{"shutdown cancel naks", runtime.ErrRunCancelled, false, context.Canceled, "shutdown", actionNak},
-		{"generic failure naks", errors.New("boom"), false, nil, "failed", actionNak},
+		{"success acks finished", nil, "finished", actionAck},
+		{"paused acks", runtime.ErrRunPaused, "paused", actionAck},
+		{"wrapped paused acks", fmt.Errorf("engine: %w", runtime.ErrRunPaused), "paused", actionAck},
+		{"operator pause acks", runtime.ErrRunPausedOperator, "paused_operator", actionAck},
+		// Operator cancel stays terminal cancelled and Acks (redelivery
+		// drops it) — regardless of any concurrent drain.
+		{"operator cancel acks", runtime.ErrRunCancelled, "cancelled", actionAck},
+		// Infra interruption: engine already wrote failed_resumable; Nak so
+		// the redelivery auto-resumes.
+		{"interrupted naks for resume", runtime.ErrRunInterrupted, "interrupted", actionNak},
+		{"wrapped interrupted naks", fmt.Errorf("%w: at node n1", runtime.ErrRunInterrupted), "interrupted", actionNak},
+		{"generic failure naks", errors.New("boom"), "failed", actionNak},
 		// Budget exceeded is a resumable checkpoint — Ack, never auto-resume
 		// (auto-redelivery re-fails on the same spent budget and its fresh-pod
-		// recordRunGitMeta clobbers the exported commits; run 019f8e08).
-		{"budget exceeded acks (no auto-resume)", runtime.ErrBudgetExceeded, false, nil, "budget_exceeded", actionAck},
-		{"wrapped budget exceeded acks", fmt.Errorf("%w: duration (7201/7200)", runtime.ErrBudgetExceeded), false, nil, "budget_exceeded", actionAck},
+		// recordRunGitMeta clobbers the exported commits; run 019f8e08). It is
+		// the one interruption-shaped outcome that must NOT come back.
+		{"budget exceeded acks (no auto-resume)", runtime.ErrBudgetExceeded, "budget_exceeded", actionAck},
+		{"wrapped budget exceeded acks", fmt.Errorf("%w: duration (7201/7200)", runtime.ErrBudgetExceeded), "budget_exceeded", actionAck},
+		// Precedence, pinned rather than left to the order of the ifs: if an
+		// error ever carries BOTH, budget must win. Interrupted Naks for
+		// auto-resume, and auto-resuming a spent budget re-fails instantly on
+		// the restored accounting while a fresh pod's git snapshot overwrites
+		// the first attempt's. errors.Is short-circuits, so this is one
+		// reordering away from silently regressing.
+		{"budget beats interrupted", errors.Join(runtime.ErrRunInterrupted, runtime.ErrBudgetExceeded), "budget_exceeded", actionAck},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			out := classifyExecResult(c.err, c.hbFailed, c.parentErr, "run-1")
+			out := classifyExecResult(c.err, "run-1")
 			if out.finalStatus != c.wantStatus {
 				t.Errorf("finalStatus = %q, want %q", out.finalStatus, c.wantStatus)
 			}
 			if out.action != c.wantAction {
 				t.Errorf("action = %v, want %v", out.action, c.wantAction)
+			}
+		})
+	}
+}
+
+// TestOutcomeSideEffectsFire pins which engine outcomes fire the run-outcome
+// side effects (completion webhook + run.<outcome> event) on the plain
+// dispatch path. The action is derived through classifyExecResult, so this
+// also catches an Ack/Nak flip that would silently change fire behaviour:
+// finals (finished / paused / cancelled / budget) fire once; a Nak with
+// redeliveries remaining (generic failure, infra interruption) fires
+// NOTHING — firing there pushed one "run failed" notification episode per
+// redelivery, up to MaxDeliver for a single deterministic failure.
+func TestOutcomeSideEffectsFire(t *testing.T) {
+	cases := []struct {
+		name      string
+		err       error
+		wantFires bool
+	}{
+		{"finished fires", nil, true},
+		{"paused fires", runtime.ErrRunPaused, true},
+		{"operator pause fires", runtime.ErrRunPausedOperator, true},
+		{"operator cancel fires", runtime.ErrRunCancelled, true},
+		{"budget exceeded fires (acked, no auto-resume)", runtime.ErrBudgetExceeded, true},
+		{"generic failure naks — no fire before the final disposition", errors.New("boom"), false},
+		{"wrapped generic failure naks — no fire", fmt.Errorf("engine: %w", errors.New("boom")), false},
+		{"interrupted naks — no fire", runtime.ErrRunInterrupted, false},
+		{"wrapped interrupted naks — no fire", fmt.Errorf("%w: at node n1", runtime.ErrRunInterrupted), false},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			out := classifyExecResult(c.err, "run-1")
+			if got := outcomeSideEffectsFire(c.err, out.action); got != c.wantFires {
+				t.Errorf("outcomeSideEffectsFire(%v, %v) = %v, want %v", c.err, out.action, got, c.wantFires)
 			}
 		})
 	}

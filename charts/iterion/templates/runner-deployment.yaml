@@ -13,6 +13,12 @@ spec:
   {{- if not .Values.runner.keda.enabled }}
   replicas: {{ .Values.runner.replicas }}
   {{- end }}
+  {{- with .Values.runner.progressDeadlineSeconds }}
+  # Lame-duck rollouts stay Progressing until the last old pod drains its
+  # in-flight run; keep this above terminationGracePeriodSeconds so k8s /
+  # ArgoCD don't mark the rollout degraded while new pods already serve.
+  progressDeadlineSeconds: {{ . }}
+  {{- end }}
   selector:
     matchLabels:
       {{- include "iterion.selectorLabels" . | nindent 6 }}
@@ -37,9 +43,12 @@ spec:
       imagePullSecrets:
         {{- toYaml . | nindent 8 }}
       {{- end }}
-      # SIGTERM grace: runner drains its in-flight run + republishes
-      # to NATS before exiting (T-28).
-      terminationGracePeriodSeconds: 90
+      # SIGTERM grace: the hard k8s bound before SIGKILL. In the default
+      # lame-duck drain mode the runner lets its in-flight run FINISH
+      # within this window (raise it to cover long runs); at the ceiling a
+      # run is capped, checkpointed, and auto-resumed on another pod. Must
+      # be >= runner.drain.timeout + checkpoint margin.
+      terminationGracePeriodSeconds: {{ .Values.runner.terminationGracePeriodSeconds | default 90 }}
       {{- if .Values.runner.cache.enabled }}
       initContainers:
         # Ensure the Go cache subdirs exist and are writable by the uid-1000

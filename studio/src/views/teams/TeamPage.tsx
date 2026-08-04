@@ -26,6 +26,7 @@ import InviteLinkPanel from "@/components/shared/InviteLinkPanel";
 
 
 import AuditTab from "./tabs/AuditTab";
+import CredPoolTab from "./tabs/CredPoolTab";
 import MemoryTab from "./tabs/MemoryTab";
 
 // config_editor is prepended (index 0) so it reads as the least-privileged
@@ -45,11 +46,12 @@ function roleLabel(role: string): string {
 // resources: who can access this team, its API keys, audit and memory. The
 // integration surfaces (forges, webhooks, secrets, bot bindings, model
 // providers) moved to their own top-level destination (/integrations).
-type Tab = "members" | "api-keys" | "audit" | "memory";
+type Tab = "members" | "api-keys" | "cred-pool" | "audit" | "memory";
 
 const TABS: Array<{ id: Tab; label: string }> = [
   { id: "members", label: "Team access" },
   { id: "api-keys", label: "API keys" },
+  { id: "cred-pool", label: "Credential pool" },
   { id: "audit", label: "Audit log" },
   { id: "memory", label: "Memory" },
 ];
@@ -128,6 +130,9 @@ export default function TeamPage() {
           {tab === "members" && <Members teamID={team.team_id} canManage={canManage} />}
           {tab === "api-keys" && (
             <ApiKeysPanel team={{ id: team.team_id, name: team.team_name }} />
+          )}
+          {tab === "cred-pool" && (
+            <CredPoolTab teamID={team.team_id} canManage={canManage} />
           )}
           {tab === "audit" && <AuditTab teamID={team.team_id} canManage={canManage} />}
           {tab === "memory" && <MemoryTab teamID={team.team_id} />}

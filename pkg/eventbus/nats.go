@@ -169,7 +169,7 @@ func (b *NATSBus) Subscribe(name string, filter trigger.Matcher, h Handler) (fun
 		// handler doing store/LLM I/O manages its own deadline. Errors are
 		// logged and swallowed (the reconciliation poll is the safety net),
 		// mirroring InProcBus.worker.
-		if err := h(context.Background(), ev); err != nil && b.logger != nil {
+		if err := deliver(context.Background(), h, ev); err != nil && b.logger != nil {
 			b.logger.Warn("eventbus: subscriber %q handler error on %s/%s: %v", name, ev.Source, ev.Kind, err)
 		}
 	}

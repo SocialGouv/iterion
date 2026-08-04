@@ -40,6 +40,17 @@ var ErrRunPaused = errors.New("runtime: run paused waiting for human input")
 // can handle cancellation gracefully.
 var ErrRunCancelled = errors.New("runtime: run cancelled")
 
+// ErrRunInterrupted marks a run cancelled by INFRASTRUCTURE — a cloud
+// runner draining on deploy (lame-duck) or a lost lease heartbeat — rather
+// than by operator intent. A caller requests it by cancelling the run
+// context with this as the cause (context.CancelCause); the engine then
+// writes failed_resumable (not cancelled) and emits a resumable run_failed
+// event (not run_cancelled), so the run auto-resumes on a healthy pod
+// instead of being dropped like a deliberate cancel. This single-sources
+// the resumable-vs-terminal decision in the engine, next to the existing
+// Canceled-vs-DeadlineExceeded split in handleContextDoneWithCheckpoint.
+var ErrRunInterrupted = errors.New("runtime: run interrupted (resumable)")
+
 // ErrRunPausedOperator is returned when execution is suspended in
 // response to a POST /api/runs/{id}/pause request — the operator
 // asked for a soft pause (no cancellation) that resumes via the
@@ -247,6 +258,18 @@ type runState struct {
 	// Written only by the execution-loop goroutine (applyOverride) and
 	// re-seeded at resume from Run.LoopOverrides. nil until first bump.
 	loopOverrides map[string]int
+	// permissionGrants accumulates the `allow always` rules earned at a
+	// permission-gate pause, keyed by the node that earned them and
+	// ordered by grant. Every pause is resumed by a fresh engine with a
+	// fresh runState, so a grant that lived only in the node input
+	// reached exactly ONE re-invocation and then vanished — the operator
+	// re-authorized the same tool at every pause while the runtime told
+	// them it had been added "for the rest of this run". Re-seeded at
+	// resume from Run.PermissionGrants. Per node, never run-wide: an
+	// allow rule outranks the mode default, so a shared set would let an
+	// approval on a permissive node unlock one that declared
+	// `permission: deny`.
+	permissionGrants map[string][]string
 	// loopPreviousOutput holds the snapshot of the source node output from
 	// the PREVIOUS traversal of a given loop's edge — i.e., one iteration
 	// behind the current one. Workflows reference it as

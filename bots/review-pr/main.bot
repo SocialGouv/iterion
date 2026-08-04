@@ -682,6 +682,8 @@ schema publish_health_output:
 ## (e.g. base_ref absent) it runs the reviewers — never wrongly skips a
 ## real review.
 tool diff_precheck:
+  ## Carries reviewed_sha, the revision the findings anchor to.
+  publish: reviewed_revision
   command: `WS={{vars.workspace_dir}} BASE={{vars.base_ref}} python3 -c "
 import os, subprocess, json
 os.chdir(os.environ['WS'])
@@ -744,6 +746,9 @@ judge reviewer_gpt:
 ## Converges the reviewer branch(es) and fills in whichever family did not
 ## run, so the merging agent sees a stated absence instead of a raw template.
 compute merge_reviews:
+  ## Declared as the hand-off fallback when the merged set degrades to prose,
+  ## so it has to be persisted too.
+  publish: family_findings
   output: family_reviews
   ## best_effort, not wait_all: in mono only one branch ever arrives.
   await: best_effort
@@ -760,6 +765,11 @@ compute merge_reviews:
     gpt_questions:    "if(outputs.reviewer_gpt.questions, outputs.reviewer_gpt.questions, '')"
 
 agent converge:
+  ## The merged finding set is what a later run is handed (manifest
+  ## `produces: kind: review`). An artifact is written ONLY for a node that
+  ## declares `publish:` — without this the hand-off resolves to nothing, and
+  ## a missing seed is indistinguishable from "this PR was never reviewed".
+  publish: review_findings
   backend: "claude_code"
   model: "${ITERION_VIBE_MODEL_CLAUDE:-claude-opus-5}"
   reasoning_effort: "${ITERION_VIBE_EFFORT_EMIT:-medium}"

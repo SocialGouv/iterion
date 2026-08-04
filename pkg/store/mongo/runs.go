@@ -578,6 +578,24 @@ func (s *Store) PatchRunSteering(ctx context.Context, id string, loopOverrides m
 	return nil
 }
 
+// PatchRunPermissionGrants persists the permission-gate allow rules the
+// operator earned, tenant-scoped. Replaces the stored slice wholesale;
+// a nil slice is a no-op patch.
+func (s *Store) PatchRunPermissionGrants(ctx context.Context, id string, grants map[string][]string) error {
+	if grants == nil {
+		return nil
+	}
+	set := bson.M{"updated_at": time.Now().UTC(), "permission_grants": grants}
+	res, err := s.runs.UpdateOne(ctx, notDeleted(withTenantFilter(ctx, bson.M{"_id": id})), bson.M{"$set": set})
+	if err != nil {
+		return fmt.Errorf("store/mongo: patch run permission grants: %w", err)
+	}
+	if res.MatchedCount == 0 {
+		return store.ErrRunNotFound
+	}
+	return nil
+}
+
 func (s *Store) UpdateRunStatus(ctx context.Context, id string, status store.RunStatus, runErr string) error {
 	now := time.Now().UTC()
 	set := bson.M{
@@ -694,6 +712,22 @@ func (s *Store) FailRunResumable(ctx context.Context, id string, cp *store.Check
 		},
 		"$inc": bson.M{"version": 1},
 	}
-	return mongoutil.UpdateOneChecked(ctx, s.runs, withTenantFilter(ctx, bson.M{"_id": id}), update,
-		fmt.Errorf("store/mongo: run %s not found", id), fmt.Sprintf("store/mongo: fail resumable %s", id))
+	// An operator cancel is terminal and outranks a resumable failure. The two
+	// race whenever an interruption and a cancel arrive together, and resumable
+	// would win simply by writing last — auto-resuming a run somebody
+	// deliberately stopped. Excluded in the FILTER so the guard is atomic.
+	filter := withTenantFilter(ctx, bson.M{"_id": id, "status": bson.M{"$ne": store.RunStatusCancelled}})
+	res, err := s.runs.UpdateOne(ctx, filter, update)
+	if err != nil {
+		return fmt.Errorf("store/mongo: fail resumable %s: %w", id, err)
+	}
+	if res.MatchedCount == 0 {
+		// Either the run is gone, or it is already cancelled and stays so.
+		// Distinguish, since a genuine miss must still surface.
+		if _, gerr := s.LoadRun(ctx, id); gerr == nil {
+			return nil
+		}
+		return fmt.Errorf("store/mongo: run %s not found", id)
+	}
+	return nil
 }

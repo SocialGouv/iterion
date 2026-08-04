@@ -9,6 +9,7 @@ import (
 	"github.com/SocialGouv/iterion/pkg/bundle"
 	"github.com/SocialGouv/iterion/pkg/eventbus"
 	"github.com/SocialGouv/iterion/pkg/forge"
+	"github.com/SocialGouv/iterion/pkg/identity"
 	"github.com/SocialGouv/iterion/pkg/knowledge"
 	"github.com/SocialGouv/iterion/pkg/store"
 	"github.com/SocialGouv/iterion/pkg/trigger"
@@ -213,10 +214,21 @@ func (s *Server) autofixForRun(ctx context.Context, ev trigger.Event) error {
 		}
 	}
 
-	// Metered like any other launch. The bus handler carries no request
-	// identity, so the team comes from the grant — the shape the retry sweeper
-	// already uses to gate a launch it makes on a tenant's behalf.
-	launchCtx := auth.WithIdentity(ctx, auth.Identity{TeamID: grant.TeamID})
+	// Metered like any other launch, and stamped with BOTH identities the
+	// inbound-webhook middleware puts on a request: the auth identity the
+	// admission gate reads, and the store identity every tenant-scoped query
+	// asserts on. A bus handler is not an HTTP request and carries neither, and
+	// the store half is not optional — without it the launch reaches Mongo with
+	// no tenant and the tenancy tripwire fires inside SaveRun, taking the
+	// process down rather than failing the launch.
+	actor := "autofix:" + cfg.ID
+	launchCtx := auth.WithIdentity(ctx, auth.Identity{
+		UserID: actor,
+		TeamID: grant.TeamID,
+		Role:   identity.RoleMember,
+		Kind:   auth.KindWebhook,
+	})
+	launchCtx = store.WithIdentity(launchCtx, grant.TeamID, actor)
 
 	vars := applyWebhookVarLayers(fixerPRVars(
 		pr.TargetBranch, pr.SourceBranch, prURL,

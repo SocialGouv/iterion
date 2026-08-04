@@ -21,6 +21,7 @@ import {
   collectFilterOptions,
   emptyPipelineFilters,
   filterPipelineCards,
+  resetPipelineFilters,
 } from "./filters";
 import { findFollowCard } from "./selection";
 
@@ -191,10 +192,21 @@ export default function PipelineBoardView() {
           <div className="flex items-center gap-2 text-caption text-fg-subtle">
             {concurrency.enabled && (
               <span
-                title={`Concurrency cap: ${concurrency.max}`}
+                title={
+                  (concurrency.reserved ?? 0) > 0
+                    ? `Concurrency cap: ${concurrency.max}. ${concurrency.reserved} slot(s) are held for pipelines that need attention — nothing is running against them. Retry, resume or close one to release it. Reservations apply to board-launched pipelines only.`
+                    : `Concurrency cap: ${concurrency.max}`
+                }
                 className="rounded-full border border-border-default bg-surface-1 px-2 py-0.5 font-medium text-fg-muted"
               >
-                {concurrency.active} running · {concurrency.waiting} waiting
+                {concurrency.active} running
+                {/* Without this term a fully-reserved board reads
+                    "1 running · 2 waiting · max 3" next to a queue that never
+                    moves — i.e. as a hang with no stated cause. */}
+                {(concurrency.reserved ?? 0) > 0
+                  ? ` · ${concurrency.reserved} needs attention`
+                  : ""}{" "}
+                · {concurrency.waiting} waiting
                 {concurrency.max > 0 ? ` · max ${concurrency.max}` : ""}
               </span>
             )}
@@ -241,7 +253,7 @@ export default function PipelineBoardView() {
               onOpenCard={openCard}
               filters={filters}
               onFiltersChange={setFilters}
-              onFiltersReset={() => setFilters(emptyPipelineFilters())}
+              onFiltersReset={() => setFilters(resetPipelineFilters)}
               filterOptions={filterOptions}
               repoScope={repoScope}
               includeUnscoped={includeUnscoped}

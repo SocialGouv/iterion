@@ -8,6 +8,190 @@ pr_url` it also posts an inline forge review and an optional deterministic
 commit-status gate. Never edits or commits. See
 [bots/review-pr/](../../bots/review-pr/).
 
+## 2026-08-04 — five review passes over the credential pool: what Revi caught that adversarial subagents did not (runs 019fc939 / 019fc94a / 019fc95c / 019fc972 / 019fcb7b)
+
+- Status: **validated, and the highest-value reviewer signal measured so far.**
+- Versions: iterion cloud prod v3.23.2 → v3.24.0 · bot `review-pr` as deployed
+- Method: mono topology, gate `revi/review` required by the merge queue. Five
+  passes across two PRs (#350, then #356) on a ~6000-line feature
+  (`pkg/credpool` + publisher tier + runner accounting + studio + CLI).
+- Result: 14 findings kept across the five passes (3 high, 8 medium, 3 low).
+  Every high was real and fixed. #350 merged once the gate went green.
+
+### The finding that matters most for calibration
+
+The feature had already been through **four parallel `/simplify` agents and
+two adversarial review agents at max effort** before Revi saw it. Those layers
+produced 38 fixes. Revi then found, among others:
+
+- **a `[high]` fail-open on the donor's bot allow-list.** `LaunchSpec.BotID` is
+  empty for an inline uploaded `.bot`, and the availability check treated an
+  empty bot id as "no filter to apply". A donor who restricted their
+  subscription to one bot would have had it handed to arbitrary uploaded code —
+  the restriction yielding on the single input the requester fully controls.
+- **claw cost counted twice**, which would have drained every donor at 2× and
+  silently tightened every tenant's monthly cap.
+- **a `[high]` defect in one of my own fixes**: the per-slot allowance share
+  was a no-op on the *renew* path, because `decideRenew` re-synthesises the
+  `Limits` it judges with and dropped `MaxConcurrentRuns`. My regression test
+  for that fix only exercised fresh acquisitions — which is exactly why it
+  passed.
+
+**Lesson.** Adversarial subagents share the context that produced the code, so
+they inherit its blind spots. Revi reads the diff cold, and that is where its
+value is: not in finding *more* problems, but in finding a *different class* of
+them. Worth the ~15–20 min and ~$1–2 per pass on anything touching money,
+credentials, or consent.
+
+### The one no reviewer could have found
+
+`iterion remote pool` could never work at all: `identityFromPAT` never sets
+`OrgID`, so every CLI caller resolved to no pool and got "no credential pool
+accepts contributions on this instance". Three review layers read that handler;
+none *ran* it. It took one real call against prod. **A reviewer verifies what
+the code says; only an execution verifies what it does.**
+
+### Frictions
+
+- Revi cannot run the repo's tests (no network in its sandbox; devbox cannot
+  realise its nix closure), and says so in a verification caveat. Its findings
+  are reading-derived — accurate here, but it means the gate is a *review*
+  gate, not a test gate.
+- The prod instance's Claude forfait hit its **weekly** window mid-session,
+  blocking Revi and therefore the merge — the single-point-of-failure this very
+  feature exists to remove. It could not have saved itself: not deployed, and
+  no donor had pledged.
+
+## 2026-08-01 — the hand-off measured working in production, and a second hole under it (runs 019fbc1d / 019fbc26)
+
+- Status: **the hand-off is validated live.** A separate, pre-existing defect
+  keeps the fixer from posting its verdict on the board lane.
+- Versions: iterion cloud prod v3.18.1 @ `4bd82c830` (the `publish:` fix)
+- Method: same PR, redeployed instance, `/revi` then `/billy`.
+
+### Measured
+
+`prior_review` reached the fixer at **5829 characters** — it was **0** before the
+fix. It carried the stable id (`R727eac`), the anchor note pinned to the current
+head, `confidence: medium`, the reviewer's ready-made replacement block, and the
+open-questions channel. The engine emitted **6 `artifact_written` events** for
+`diff_precheck`, `merge_reviews` and `converge`, under the exact publish names
+declared; there were **zero** before.
+
+That also settles the caveat left on the previous entry: the cause was the
+missing `publish:`, not cloud storage. `GET /api/runs/<id>/artifacts` still
+returns `[]` — that endpoint has no mongo listing behind it and is a red herring;
+the targeted read the hand-off actually performs works.
+
+The loop is real, not just wired: this review reads the commits the fixer pushed
+in the earlier run and raises a second-order defect **in the fixer's own fix**
+(`Warm` re-introducing an unrecoverable crash through the panic-recovery the
+same branch had just added).
+
+### The remaining hole: a board-launched bot cannot post anything
+
+The fixer pushed, then `publish_verdict` returned *"no forge publish grant on
+this run"*. Measured side by side on the same PR:
+
+| | forge_publish_url | forge_publish_token | gate_context |
+|---|---|---|---|
+| reviewer (`mode: direct`) | yes | yes | `iterion/review` |
+| fixer (`mode: board`) | — | — | absent |
+
+So the fixer posts no verdict table, no finding ledger and no merge-gate status,
+and the required check stays on the revision before its push. The grant is minted
+in the webhook launch tail (`injectForgePublishVars`) and the operator's
+`gate_context` is layered there too; a board-mode command materialises a card and
+the cloud coordinator launches from `BotArgs` ONLY, so both are dropped. The
+declared hand-off vars survive because `ensureBoardCard` copies them explicitly —
+nothing else does.
+
+Not caused by this work, and it is the exact pre-flight the plan for the gate
+phase demanded ("verify `gate_context` and the publish grant actually reach a
+board-launched fixer before designing on top"). The measured answer is no.
+
+Fix direction: mint the grant at board-launch time rather than carrying it (a
+grant has a TTL and a card can be claimed much later), and layer the
+integration's operator launch vars there too.
+
+## 2026-07-31 — the Revi→Billy hand-off read an artifact no node ever wrote (runs 019fb9bc / 019fb9c6)
+
+- Status: **partial — Revi validated end to end, the hand-off to the fixer proved
+  non-functional in cloud.** The defect predates the declarative rework: the
+  shipped `stampPriorReview` read the same artifact.
+- Versions: review-pr 0.5.7 · branch-improve-loop 1.1.0 · iterion cloud prod
+  v3.17.7 @ `af787562c` (verified to contain the hand-off work)
+- Method: `SocialGouv/iterion-test-appy-e2e` PR #2, seeded with a real module and
+  three planted defects (unsynchronised map written from a `Warm` fan-out;
+  a failed fetch cached for the whole TTL; a loop-variable capture that is NOT a
+  bug under the declared `go 1.22`). Revi auto-launched on PR open; `/billy` by
+  comment afterwards. Repo provisioned with both bots, `gate_context` pinned.
+
+### What worked, verified on the forge
+
+- **Revi found the real bugs and refused the planted false positive.** critical:
+  the concurrent map access, *"reproduced empirically … crashed in 4 of 5 runs"*;
+  high: the cached failure, *"call 1 returns connection refused, call 2 returns
+  body=\"\" err=<nil>"*. The loop-capture did **not** become a finding — it went
+  to `questions` with the reason (`go.mod` declares 1.22, per-iteration
+  semantics, verified empirically). The falsifiability channel did its job.
+- **Stable finding ids are live**: `Ra34eca`, `R1dce3f`, plus the arbitration
+  line the review now carries — *"Fix them yourself, or comment /billy … adding
+  e.g. skip Ra34eca and your reason leaves that one alone."*
+- A `replacement` was produced and rendered ("Proposed replacement:").
+- The gate landed: `revi/review = FAILURE` on the head.
+- Mono topology reported honestly, no cross-confirmation claimed.
+
+### The defect: the producing node never wrote an artifact, anywhere
+
+`/billy` launched with the right PR context (`pr_url`, `head_sha`,
+`push_branch`) and **`prior_review` empty**.
+
+The first read of the evidence — `GET /api/runs/<id>/artifacts` returning `[]`
+for every run checked, and 89 events with **zero `artifact_written`** — looked
+like a cloud-storage gap. It is not (see the caveat below), and the correction
+matters: the engine
+persists an artifact **only for a node that declares `publish:`**
+(`runtime.persistArtifactIfPublished` returns early otherwise, [engine_exec.go](../../pkg/runtime/engine_exec.go)).
+Neither bot declared it on any node — `grep -c "publish:"` was **0** for both.
+
+So the hand-off resolved `LoadLatestArtifact(runID, "converge")` against an
+artifact that had never existed, on any run, local or cloud. Not a regression of
+the declarative rework either: the version it replaced read the same node the
+same way. It was recorded as shipped and never once exercised end to end.
+
+Every test stayed green because every test **wrote the artifact by hand** —
+the one thing that had to be true in production was the one thing never asserted.
+
+**Fixed**: the four nodes the manifests name as hand-off sources now declare
+`publish:`, and two guards make the omission impossible to repeat — a catalog
+test requiring `publish:` on any node a manifest declares as a source, and an
+e2e running the REAL engine over one node per source kind (agent, compute,
+tool) plus an unpublished twin.
+
+**Caveat, stated because the evidence does not cover it.** That the cause is the
+missing `publish:` and *not* a cloud-storage gap is an inference from the engine
+code plus a local run, not a measurement on prod: no cloud run has been observed
+writing an artifact since. The mongo store implements `LoadLatestArtifact` and
+the conformance suite pins multi-version latest-wins, so it is very likely — but
+the honest status is unverified until a redeployed instance is re-dogfooded.
+
+### Lessons for next run
+
+- **A declaration is not a mechanism.** `produces: node: converge` reads as if
+  naming the node makes its output available; it does not — the node must also
+  publish. Any future hand-off kind needs the same pairing, and the catalog
+  guard now enforces it.
+- **A test that writes the fixture by hand cannot prove the producer writes it.**
+  That is what hid this for the whole build. Where a contract spans producer and
+  consumer, at least one test has to run the producer for real.
+- The forge identity matters: the first `/billy` was refused *"self comment
+  (loop-guard)"* because the repo was provisioned on a **PAT connection whose
+  account is the operator's own**. Re-provisioning onto the GitHub App
+  connection fixed it. The guard was right; the provisioning was the mistake.
+- A freshly provisioned repo shows `auto_fix_on_gate_failure` absent — the
+  zero-touch lane is off unless asked for, confirmed on real config.
+
 ## 2026-07-30 — Revi had stopped publishing on every repo, and finished green doing it
 
 - Status: **defect found and fixed** — the runs were fine, the publishing step

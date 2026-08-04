@@ -66,6 +66,54 @@ unknown attachment name produces `C053`.
 | C053 | `{{attachments.X}}` references an undeclared attachment                |
 | C054 | unknown sub-field after `attachments.<name>.` (only `path`, `url`, `mime`, `size`, `sha256` are valid) |
 
+## A tool node hands over a file it produced
+
+The three sources above all bring bytes **in** from a person: the launch
+form, a `file`-typed gate field, the 📎 button. A workflow that
+*generates* a deliverable — a rendered video, an audio mix, a chart, a
+PDF — had no way to put it in front of a reviewer, because a human gate
+previews a `file` value by fetching
+`GET /api/runs/{id}/attachments/{name}` and the path a tool knows is a
+host or bind-mount path the browser cannot reach.
+
+A tool node declares one by printing a directive on stdout:
+
+```sh
+echo "[iterion] attachment=$PWD/exports/final.mp4 name=final_video mime=video/mp4"
+```
+
+| Token   | Required | Notes                                                                    |
+| ------- | -------- | ------------------------------------------------------------------------ |
+| `<path>` | yes     | Everything up to the first `name=` / `mime=` token, so a path may contain spaces. Host-absolute, readable, and at most 50 MB. |
+| `name`  | optional | The handle `/api/runs/{id}/attachments/{name}` serves. Defaults to the file's base name without its extension, sanitised to `[A-Za-z0-9_-]`. A name the run already carries is **never overwritten** — the directive is skipped with a warning, so a tool cannot clobber an operator's upload or an earlier iteration's deliverable. |
+| `mime`  | optional | Stored as-is when well formed; otherwise sniffed from the extension, falling back to `application/octet-stream`. Types the browser would EXECUTE (html, xhtml, svg, xml, javascript) are downgraded to `application/octet-stream`: the serve route replies `Content-Disposition: inline` with no nosniff, and tool stdout is not a trusted channel. |
+
+The runtime reads the bytes and persists them through the same
+`WriteAttachment` path as an upload, so the result is an ordinary run
+attachment: same storage layout, same serving route, same presigning.
+One line per file; other stdout is left alone.
+
+Failures are **non-fatal** — a missing or unreadable file is logged and
+skipped, never enough to fail the tool node. The tool's own output is
+its contract with the workflow; the directive is only how the bytes
+reach a human.
+
+To show it at a gate, return a descriptor from the same node and map it
+in the edge's `with {}`:
+
+```json
+{"attachment": "final_video", "filename": "final.mp4",
+ "mime": "video/mp4", "size": 57948692}
+```
+
+The gate's inbound payload renderer previews any value carrying an
+`attachment` name plus one corroborating field. Declaring the field as
+`file` in the gate's input schema sharpens the reading order; it is not
+required.
+
+> This is the writing counterpart of `[iterion] preview_screenshot=`,
+> which promotes a browser capture the same way.
+
 ## Upload protocol
 
 The Launch modal uploads each attachment immediately on selection via

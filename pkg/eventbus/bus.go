@@ -14,6 +14,8 @@ package eventbus
 
 import (
 	"context"
+	"fmt"
+	"runtime/debug"
 
 	"github.com/SocialGouv/iterion/pkg/trigger"
 )
@@ -33,4 +35,24 @@ type Bus interface {
 	// subscriber (used as the durable consumer name by NATSBus; informational
 	// for InProcBus). An empty Matcher matches every event.
 	Subscribe(name string, filter trigger.Matcher, h Handler) (cancel func(), err error)
+}
+
+// deliver runs one handler and converts a panic into an error, so a defect in
+// ONE subscriber cannot take the process down with every other subscriber and
+// the HTTP surface. The bus is a fan-out to independent consumers — the
+// trigger evaluator, notifications, the gate reconciler, the gate auto-fix —
+// which share nothing but this dispatch; a crash here is the widest possible
+// blast radius for the narrowest possible bug.
+//
+// It is loud, not silent: the panic surfaces as an error on the event that
+// caused it, with the stack, and that delivery is dropped exactly as a
+// returned error already is. Recovering does not paper over the defect — it
+// scopes it to the one event it belongs to.
+func deliver(ctx context.Context, h Handler, ev trigger.Event) (err error) {
+	defer func() {
+		if r := recover(); r != nil {
+			err = fmt.Errorf("handler panicked: %v\n%s", r, debug.Stack())
+		}
+	}()
+	return h(ctx, ev)
 }

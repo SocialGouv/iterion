@@ -799,6 +799,9 @@
           "ready": {
             "type": "boolean"
           },
+          "reserves_slot": {
+            "type": "boolean"
+          },
           "role": {
             "type": "string"
           },
@@ -1011,6 +1014,9 @@
           "max": {
             "type": "integer"
           },
+          "reserved": {
+            "type": "integer"
+          },
           "waiting": {
             "type": "integer"
           }
@@ -1019,7 +1025,8 @@
           "enabled",
           "max",
           "active",
-          "waiting"
+          "waiting",
+          "reserved"
         ],
         "type": "object"
       },
@@ -1531,6 +1538,18 @@
           },
           "id": {
             "type": "string"
+          },
+          "input_schema": {
+            "items": {
+              "$ref": "#/components/schemas/WireSchemaField"
+            },
+            "type": "array"
+          },
+          "instruction_inputs": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
           },
           "isolated": {
             "type": "boolean"
@@ -3508,6 +3527,78 @@
           }
         },
         "summary": "POST /api/me/password",
+        "tags": [
+          "me"
+        ]
+      }
+    },
+    "/api/me/pool": {
+      "get": {
+        "operationId": "getMePool",
+        "responses": {
+          "default": {
+            "description": "Response"
+          }
+        },
+        "summary": "GET /api/me/pool",
+        "tags": [
+          "me"
+        ]
+      }
+    },
+    "/api/me/pool/history": {
+      "get": {
+        "operationId": "getMePoolHistory",
+        "responses": {
+          "default": {
+            "description": "Response"
+          }
+        },
+        "summary": "GET /api/me/pool/history",
+        "tags": [
+          "me"
+        ]
+      }
+    },
+    "/api/me/pool/{source}/{ref}": {
+      "delete": {
+        "operationId": "deleteMePoolBySourceByRef",
+        "responses": {
+          "default": {
+            "description": "Response"
+          }
+        },
+        "summary": "DELETE /api/me/pool/{source}/{ref}",
+        "tags": [
+          "me"
+        ]
+      },
+      "parameters": [
+        {
+          "in": "path",
+          "name": "source",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        },
+        {
+          "in": "path",
+          "name": "ref",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        }
+      ],
+      "put": {
+        "operationId": "putMePoolBySourceByRef",
+        "responses": {
+          "default": {
+            "description": "Response"
+          }
+        },
+        "summary": "PUT /api/me/pool/{source}/{ref}",
         "tags": [
           "me"
         ]
@@ -7199,6 +7290,42 @@
         ]
       }
     },
+    "/api/teams/{id}/pool": {
+      "get": {
+        "operationId": "getTeamsByIdPool",
+        "responses": {
+          "default": {
+            "description": "Response"
+          }
+        },
+        "summary": "GET /api/teams/{id}/pool",
+        "tags": [
+          "teams"
+        ]
+      },
+      "parameters": [
+        {
+          "in": "path",
+          "name": "id",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        }
+      ],
+      "put": {
+        "operationId": "putTeamsByIdPool",
+        "responses": {
+          "default": {
+            "description": "Response"
+          }
+        },
+        "summary": "PUT /api/teams/{id}/pool",
+        "tags": [
+          "teams"
+        ]
+      }
+    },
     "/api/teams/{id}/secrets": {
       "get": {
         "operationId": "getTeamsByIdSecrets",
@@ -8055,6 +8182,30 @@
           }
         },
         "summary": "PATCH /api/v1/pipeline-board/tasks/{id}",
+        "tags": [
+          "pipeline-board"
+        ]
+      }
+    },
+    "/api/v1/pipeline-board/tasks/{id}/close": {
+      "parameters": [
+        {
+          "in": "path",
+          "name": "id",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        }
+      ],
+      "post": {
+        "operationId": "postV1PipelineBoardTasksByIdClose",
+        "responses": {
+          "default": {
+            "description": "Response"
+          }
+        },
+        "summary": "POST /api/v1/pipeline-board/tasks/{id}/close",
         "tags": [
           "pipeline-board"
         ]

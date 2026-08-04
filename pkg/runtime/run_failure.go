@@ -140,6 +140,30 @@ func (e *Engine) handleContextDoneWithCheckpoint(rs *runState, nodeID string, ct
 
 	if errors.Is(ctxErr, context.Canceled) {
 		cp := buildCheckpoint(rs, nodeID)
+		// Infrastructure interruption (runner drain / lost heartbeat): the
+		// caller cancelled with ErrRunInterrupted as the cause. This is NOT
+		// an operator cancel — write failed_resumable + a resumable
+		// run_failed event so the run auto-resumes on a healthy pod, and
+		// return ErrRunInterrupted so the runner naks (not acks) it. Writing
+		// the terminal status here (once, correctly) is why no downstream
+		// CAS or event-suppression is needed.
+		if errors.Is(context.Cause(rs.ctx), ErrRunInterrupted) {
+			reason := fmt.Sprintf("interrupted at node %s (resumable)", nodeID)
+			if storeErr := e.store.FailRunResumable(storeCtx, rs.runID, cp, reason); storeErr != nil {
+				e.logger.Error("failed to persist resumable interruption: %v", storeErr)
+				return e.failRun(storeCtx, rs.runID, nodeID, reason)
+			}
+			if err := e.emit(storeCtx, rs.runID, store.EventRunFailed, nodeID, map[string]any{
+				"error":       reason,
+				"code":        string(ErrCodeExecutionFailed),
+				"resumable":   true,
+				"interrupted": true,
+			}); err != nil {
+				e.logger.Warn("failed to emit run_failed event: %v", err)
+			}
+			return fmt.Errorf("%w: at node %s", ErrRunInterrupted, nodeID)
+		}
+		// Operator cancel (or plain SIGINT): terminal cancelled.
 		if err := e.store.SaveCheckpoint(storeCtx, rs.runID, cp); err != nil {
 			e.logger.Error("failed to save checkpoint on cancellation: %v", err)
 		}

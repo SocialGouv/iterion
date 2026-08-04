@@ -11,6 +11,7 @@ import { useConfirm } from "@/hooks/useConfirm";
 import ApiKeysPanel from "./ApiKeys";
 import NotificationsPanel from "./NotificationsPanel";
 import OAuthConnections from "./OAuthConnections";
+import SharedQuota from "./SharedQuota";
 import TokensPanel from "./TokensPanel";
 import {
   ApiError,
@@ -28,7 +29,7 @@ import { useAuth } from "@/auth/AuthContext";
 import { useServerInfoStore } from "@/store/serverInfo";
 import { useHeaderSlot } from "@/components/shared/useHeaderSlot";
 
-type Tab = "api-keys" | "oauth" | "tokens" | "notifications" | "profile";
+type Tab = "api-keys" | "oauth" | "shared-quota" | "tokens" | "notifications" | "profile";
 
 export default function SettingsPage() {
   const { user } = useAuth();
@@ -57,6 +58,9 @@ export default function SettingsPage() {
     { id: "api-keys", label: "API keys (BYOK)" },
     { id: "oauth", label: "OAuth subscriptions" },
   ];
+  // Lending a subscription starts by connecting one, so this tab sits
+  // next to the connections and only where an auth stack exists.
+  if (showAuthTabs) tabs.push({ id: "shared-quota", label: "Share my quota" });
   if (showAuthTabs) tabs.push({ id: "tokens", label: "Access tokens" });
   if (serverInfo?.web_push_enabled) tabs.push({ id: "notifications", label: "Notifications" });
   tabs.push({ id: "profile", label: "Profile" });
@@ -76,6 +80,7 @@ export default function SettingsPage() {
         <div className="bg-surface-0">
           {tab === "api-keys" && <ApiKeysPanel />}
           {tab === "oauth" && <OAuthConnections />}
+          {tab === "shared-quota" && showAuthTabs && <SharedQuota />}
           {tab === "tokens" && showAuthTabs && <TokensPanel />}
           {tab === "notifications" && serverInfo?.web_push_enabled && <NotificationsPanel />}
           {tab === "profile" && (

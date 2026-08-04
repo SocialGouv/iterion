@@ -508,7 +508,10 @@ func (b *ClaudeCodeBackend) Execute(ctx context.Context, task Task) (result Resu
 		detail := strings.TrimSpace(*rm.Result)
 		b.Logger.Error("[%s#%d/claude-code] authentication failed — failing fast: %.160s",
 			task.NodeID, task.Iteration, detail)
-		return result, fmt.Errorf("claude-code: authentication failed (check the forfait CLAUDE_CODE_OAUTH_TOKEN or the Anthropic API key): %s", detail)
+		return result, &ErrAuthFailed{
+			Provider: BackendClaudeCode,
+			Detail:   fmt.Sprintf("check the forfait CLAUDE_CODE_OAUTH_TOKEN or the Anthropic API key: %s", detail),
+		}
 	}
 
 	// Quota / usage-window guard on the RESULT. The forfait's weekly / session /
@@ -540,12 +543,40 @@ func (b *ClaudeCodeBackend) Execute(ctx context.Context, task Task) (result Resu
 
 	// Safety net: schema declared but Pass 1 gave empty/fallback output —
 	// try one recovery formatting pass via session resume (see helper).
+	var recoveryRM *claudesdk.ResultMessage
 	if (len(output) == 0 || fallback) && len(task.OutputSchema) > 0 && rm.SessionID != "" {
-		b.runRecoveryFormatterPass(ctx, task, rm.SessionID, &result, &totalIn, &totalOut)
+		recoveryRM = b.runRecoveryFormatterPass(ctx, task, rm.SessionID, &result, &totalIn, &totalOut)
 	}
 
-	cost.Annotate(result.Output, task.Model, totalIn, totalOut)
+	annotateCost(&result, task, totalIn, totalOut, rm, recoveryRM)
 	return result, nil
+}
+
+// annotateCost stamps `_tokens` / `_model` / `_cost_usd` on the delegation
+// output. The pricing model is the workflow-declared task.Model when set,
+// else the CLI-resolved effective model captured from system/init — a node
+// that omits `model:` (backend auto-detection) otherwise annotates with an
+// empty model id, prices to zero, and the whole run reports tokens but no
+// cost (the studio report then claims "no LLM cost recorded" forever). A
+// cost the CLI itself computed (ResultMessage.TotalCostUSD, metered API
+// runs) wins over the static estimate; sessions that report none (OAuth
+// forfait) fall back to the token estimate. Across multiple result
+// messages (Pass 1 + a formatting pass) the MAX is used, never the sum:
+// per the CLI's session-cumulative accounting the later message subsumes
+// the earlier, and max degrades to a small under-count rather than a
+// double-count if that accounting is ever per-invocation.
+func annotateCost(result *Result, task Task, totalIn, totalOut int, rms ...*claudesdk.ResultMessage) {
+	model := task.Model
+	if model == "" {
+		model = result.EffectiveModel
+	}
+	var cliCost float64
+	for _, rm := range rms {
+		if rm != nil && rm.TotalCostUSD != nil && *rm.TotalCostUSD > cliCost {
+			cliCost = *rm.TotalCostUSD
+		}
+	}
+	cost.AnnotateWithUSD(result.Output, model, totalIn, totalOut, cliCost)
 }
 
 // buildAskUserPendingResult packages the Result returned when the native
@@ -666,7 +697,7 @@ func (b *ClaudeCodeBackend) runTwoPassFormatting(ctx context.Context, task Task,
 		result.Output = output
 		result.RawOutputLen = rawLen
 		result.ParseFallback = false
-		cost.Annotate(result.Output, task.Model, *totalIn, *totalOut)
+		annotateCost(&result, task, *totalIn, *totalOut, rm)
 		return true, result, nil
 	}
 	const maxFmtAttempts = 2
@@ -695,7 +726,7 @@ func (b *ClaudeCodeBackend) runTwoPassFormatting(ctx context.Context, task Task,
 				result.Output = output
 				result.RawOutputLen = rawLen
 				result.ParseFallback = false
-				cost.Annotate(result.Output, task.Model, *totalIn, *totalOut)
+				annotateCost(&result, task, *totalIn, *totalOut, rm)
 				return true, result, nil
 			}
 			return true, result, fmt.Errorf("delegate: claude-code formatting pass failed: %w", fmtErr)
@@ -715,7 +746,7 @@ func (b *ClaudeCodeBackend) runTwoPassFormatting(ctx context.Context, task Task,
 		result.Output = output
 		result.RawOutputLen = rawLen
 		result.ParseFallback = fallback
-		cost.Annotate(result.Output, task.Model, *totalIn, *totalOut)
+		annotateCost(&result, task, *totalIn, *totalOut, rm, fmtRM)
 		return true, result, nil
 	}
 	// Defensive: loop fell through without returning. Shouldn't happen
@@ -758,13 +789,15 @@ func (b *ClaudeCodeBackend) setupCredsAndSession(ctx context.Context, task Task,
 // output. Catches agents that did real work (tools, code changes) but whose
 // structured output the SDK didn't capture (e.g. backends where tools are
 // implicit). Mutates result and the running token totals in place; failures
-// are logged and left non-fatal (the caller keeps Pass 1's output).
-func (b *ClaudeCodeBackend) runRecoveryFormatterPass(ctx context.Context, task Task, sessionID string, result *Result, totalIn, totalOut *int) {
+// are logged and left non-fatal (the caller keeps Pass 1's output). Returns
+// the pass's own ResultMessage (nil on failure) so the caller's cost
+// annotation sees its CLI-reported cost, not just Pass 1's.
+func (b *ClaudeCodeBackend) runRecoveryFormatterPass(ctx context.Context, task Task, sessionID string, result *Result, totalIn, totalOut *int) *claudesdk.ResultMessage {
 	b.Logger.Debug("claude-code: empty output with schema — attempting recovery formatting pass (session=%s)", sessionID)
 	fmtRM, fmtErr := b.formatOutput(ctx, task, sessionID)
 	if fmtErr != nil {
 		b.Logger.Warn("claude-code: recovery formatting pass failed: %v", fmtErr)
-		return
+		return nil
 	}
 	if fmtRM.Usage != nil {
 		*totalIn += fmtRM.Usage.InputTokens
@@ -780,6 +813,7 @@ func (b *ClaudeCodeBackend) runRecoveryFormatterPass(ctx context.Context, task T
 	} else {
 		b.Logger.Warn("claude-code: recovery formatting pass also produced empty output")
 	}
+	return fmtRM
 }
 
 // hostSpawnEnv returns the process environment with the per-task env entries

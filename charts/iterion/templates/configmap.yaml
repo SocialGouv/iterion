@@ -39,6 +39,12 @@ data:
   ITERION_RUNNER_CONCURRENCY: {{ .Values.config.runner.concurrency | quote }}
   ITERION_HEARTBEAT_INTERVAL: {{ .Values.config.runner.heartbeat | quote }}
   ITERION_LOCK_TTL: {{ .Values.config.runner.lockTtl | quote }}
+  {{- with .Values.config.runner.drainMode }}
+  ITERION_RUNNER_DRAIN_MODE: {{ . | quote }}
+  {{- end }}
+  {{- with .Values.config.runner.drainTimeout }}
+  ITERION_RUNNER_DRAIN_TIMEOUT: {{ . | quote }}
+  {{- end }}
   {{- if .Values.runner.sandbox.enabled }}
   # The kubernetes sandbox driver has no host filesystem to bind, so the
   # default host_state=auto hard-errors ("no host filesystem to bind").

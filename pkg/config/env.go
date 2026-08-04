@@ -74,6 +74,10 @@ func loadEnv(cfg *Config) error {
 	if err := lookupDuration("ITERION_LOCK_TTL", &cfg.Runner.LockTTL); err != nil {
 		return err
 	}
+	lookupString("ITERION_RUNNER_DRAIN_MODE", &cfg.Runner.DrainMode)
+	if err := lookupDuration("ITERION_RUNNER_DRAIN_TIMEOUT", &cfg.Runner.DrainTimeout); err != nil {
+		return err
+	}
 
 	if err := lookupInt("ITERION_HEALTHZ_PORT", &cfg.Server.HealthzPort); err != nil {
 		return err

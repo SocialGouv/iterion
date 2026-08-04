@@ -3,10 +3,11 @@ package bots
 import (
 	"os"
 	"path/filepath"
-	"strings"
 	"testing"
 
 	"github.com/SocialGouv/iterion/pkg/bundle"
+	"github.com/SocialGouv/iterion/pkg/dsl/ir"
+	"github.com/SocialGouv/iterion/pkg/dsl/parser"
 )
 
 // TestReviewHandoffIsDeclaredBySomeone guards the failure mode a declarative
@@ -48,13 +49,15 @@ func TestReviewHandoffIsDeclaredBySomeone(t *testing.T) {
 // with no error anywhere.
 func TestConsumedVarIsDeclaredByTheWorkflow(t *testing.T) {
 	for name, m := range loadCatalogManifests(t) {
+		if len(m.Consumes) == 0 {
+			continue
+		}
+		wf := compileBot(t, name)
+		if wf == nil {
+			continue
+		}
 		for _, c := range m.Consumes {
-			src, err := os.ReadFile(filepath.Join(botsDir(t), name, "main.bot"))
-			if err != nil {
-				t.Errorf("%s: consumes %s but its main.bot is unreadable: %v", name, c.Var, err)
-				continue
-			}
-			if !declaresVar(string(src), c.Var) {
+			if wf.Vars[c.Var] == nil {
 				t.Errorf("%s: manifest consumes into `%s`, but main.bot declares no such var — the stamped value is dropped by the IR and the hand-off silently does nothing", name, c.Var)
 			}
 		}
@@ -66,24 +69,60 @@ func TestConsumedVarIsDeclaredByTheWorkflow(t *testing.T) {
 // "this review has nothing to say yet" and skips.
 func TestProducedNodesExist(t *testing.T) {
 	for name, m := range loadCatalogManifests(t) {
+		if len(m.Produces) == 0 {
+			continue
+		}
+		wf := compileBot(t, name)
+		if wf == nil {
+			continue
+		}
 		for _, p := range m.Produces {
-			src, err := os.ReadFile(filepath.Join(botsDir(t), name, "main.bot"))
-			if err != nil {
-				t.Errorf("%s: produces from node %q but its main.bot is unreadable: %v", name, p.Node, err)
-				continue
-			}
-			body := string(src)
 			nodes := append([]string{p.Node}, p.FallbackNodes...)
 			if p.AnchorNode != "" {
 				nodes = append(nodes, p.AnchorNode)
 			}
 			for _, node := range nodes {
-				if !declaresNode(body, node) {
+				n := wf.Nodes[node]
+				if n == nil {
 					t.Errorf("%s: manifest produces from node %q, which main.bot does not declare — the artifact is never found and the hand-off silently yields nothing", name, node)
+					continue
+				}
+				// Declaring the node is not enough: the engine writes an artifact
+				// ONLY for a node carrying `publish:`, so naming one that
+				// publishes nothing hands over nothing. e2e/handoff_publish_test.go
+				// pins that engine behaviour; this pins the bots against it.
+				if ir.NodePublish(n) == "" {
+					t.Errorf("%s: node %q is declared as a hand-off source but has no `publish:` — it writes no artifact, so the hand-off silently yields nothing", name, node)
 				}
 			}
 		}
 	}
+}
+
+// compileBot compiles one catalog bot to its IR, so these checks ask the
+// compiler what a node and a var ARE rather than pattern-matching the source.
+// A line scanner cannot tell `schema converge:` from `agent converge:`; the IR
+// cannot express that confusion. Every catalog bot is compiled in this package
+// already (catalog_parse_compile_test.go), so this adds no new dependency.
+func compileBot(t *testing.T, name string) *ir.Workflow {
+	t.Helper()
+	path := filepath.Join(botsDir(t), name, "main.bot")
+	src, err := os.ReadFile(path)
+	if err != nil {
+		t.Errorf("%s: main.bot is unreadable: %v", name, err)
+		return nil
+	}
+	pr := parser.Parse(path, string(src))
+	if pr.File == nil {
+		t.Errorf("%s: main.bot does not parse", name)
+		return nil
+	}
+	cr := ir.Compile(pr.File)
+	if cr.Workflow == nil {
+		t.Errorf("%s: main.bot does not compile", name)
+		return nil
+	}
+	return cr.Workflow
 }
 
 func botsDir(t *testing.T) string {
@@ -121,39 +160,4 @@ func loadCatalogManifests(t *testing.T) map[string]*bundle.Manifest {
 		t.Fatal("no catalog manifests found — the test is looking in the wrong place")
 	}
 	return out
-}
-
-// declaresVar reports whether the .bot source declares `name:` inside its vars
-// block. Line-oriented on purpose: the manifest tests must not need the DSL.
-func declaresVar(src, name string) bool {
-	inVars := false
-	for _, line := range strings.Split(src, "\n") {
-		trimmed := strings.TrimSpace(line)
-		if strings.HasPrefix(trimmed, "##") || trimmed == "" {
-			continue
-		}
-		if !strings.HasPrefix(line, " ") && !strings.HasPrefix(line, "\t") {
-			inVars = trimmed == "vars:"
-			continue
-		}
-		if inVars && strings.HasPrefix(trimmed, name+":") {
-			return true
-		}
-	}
-	return false
-}
-
-// declaresNode reports whether the .bot source declares a node of that id, of
-// any kind (agent/judge/tool/compute/…).
-func declaresNode(src, node string) bool {
-	for _, line := range strings.Split(src, "\n") {
-		if strings.HasPrefix(line, " ") || strings.HasPrefix(line, "\t") {
-			continue
-		}
-		fields := strings.Fields(line)
-		if len(fields) == 2 && fields[1] == node+":" {
-			return true
-		}
-	}
-	return false
 }

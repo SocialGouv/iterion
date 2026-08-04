@@ -4,6 +4,7 @@ import (
 	"context"
 	"testing"
 
+	"github.com/SocialGouv/iterion/pkg/auth"
 	"github.com/SocialGouv/iterion/pkg/forge"
 	"github.com/SocialGouv/iterion/pkg/knowledge"
 	"github.com/SocialGouv/iterion/pkg/store"
@@ -310,8 +311,9 @@ func TestAutofixLaunchesTheFixerOnARedGate(t *testing.T) {
 
 	var gotBot string
 	var gotVars map[string]string
-	s.webhookLaunchBot = func(_ context.Context, botID string, vars map[string]string, _, _, _ string, _, _ map[string]string) (string, error) {
-		gotBot, gotVars = botID, vars
+	var gotCtx context.Context
+	s.webhookLaunchBot = func(ctx context.Context, botID string, vars map[string]string, _, _, _ string, _, _ map[string]string) (string, error) {
+		gotBot, gotVars, gotCtx = botID, vars, ctx
 		return "run-fixer", nil
 	}
 
@@ -340,6 +342,18 @@ func TestAutofixLaunchesTheFixerOnARedGate(t *testing.T) {
 	}
 	if gotBot != "fixer-bot" {
 		t.Fatalf("launched %q, want the bot that declares it consumes a review", gotBot)
+	}
+	// A bus handler is not an HTTP request: it carries neither identity unless
+	// this lane stamps both. The auth half gates admission; the STORE half is
+	// what every tenant-scoped query asserts on, and a launch missing it does
+	// not fail — it trips the tenancy guard deep inside SaveRun and takes the
+	// process down. The stub below this seam is exactly where that was
+	// invisible, so the contract is asserted on the ctx handed across it.
+	if tenant, ok := store.TenantFromContext(gotCtx); !ok || tenant != "t1" {
+		t.Errorf("launch ctx carries no store tenant (got %q, ok=%v) — the launch would reach Mongo untenanted", tenant, ok)
+	}
+	if id, ok := auth.FromContext(gotCtx); !ok || id.TeamID != "t1" {
+		t.Errorf("launch ctx carries no auth identity (got %+v, ok=%v) — the admission gate has nothing to meter", id, ok)
 	}
 	// It must reach the fixer knowing WHICH revision it is answering for, or the
 	// verdict it posts at the end cannot be pinned to one.

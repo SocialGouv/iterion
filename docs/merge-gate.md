@@ -187,6 +187,11 @@ from fighting:
    B and its verdict — the authoritative one, from a reviewer that did not
    write the code — lands minutes later and supersedes.
 
+Step 4 is deliberately exempt from the iterion-bot guard, which otherwise skips
+a delivery our own forge bot sent. Here the sender *is* the bot by
+construction — it is the fixer that pushed — and this is the one delivery the
+gate cannot lose.
+
 Step 3 is the one that needs care, because the fixer wrote the code it is
 grading. Three rules keep it honest, and a fixer that gates must implement all
 three:
@@ -204,6 +209,17 @@ three:
 
 A green from a fixer says so in its description, so it is never mistaken for an
 independent review.
+
+Step 3 needs two things the bot cannot mint for itself: a **forge-publish
+grant** and the repo's **pinned `gate_context`**. The server resolves both from
+the repo's integration on every lane that targets a pull request — the webhook
+tail, the studio/API launch, and the cloud board coordinator, which claims a
+card long after the webhook that created it is gone. Without them the run
+pushes and reports `no forge publish grant on this run`: no verdict, no gate,
+and the required check left on the pre-push revision, which blocks the PR on a
+check that is *absent* rather than red. If a fixer posts nothing, look at the
+run's inputs for `forge_publish_url` and `gate_context` before looking at the
+bot.
 
 ### Zero-touch: letting a red gate launch the fixer itself (opt-in)
 

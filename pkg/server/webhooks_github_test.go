@@ -667,3 +667,53 @@ func TestGitHubWebhook_BotNotAllowed(t *testing.T) {
 		t.Fatalf("bot not allowed: want filtered status, got %s", got)
 	}
 }
+
+// TestGitHubWebhook_GateResyncSurvivesBotGuard: the iterion-bot guard skips a
+// PR our own loop produced, keyed on the SENDER. On a merge-gate resync the
+// sender is by construction our own forge bot — the fixer that just pushed —
+// so the guard would swallow the one delivery the gate depends on: the
+// re-review that re-posts the required check on the new head and supersedes
+// the fixer's own verdict. A PR the bot OPENS is still skipped.
+func TestGitHubWebhook_GateResyncSurvivesBotGuard(t *testing.T) {
+	newSrv := func(t *testing.T) (*Server, webhooks.Config, string, *int) {
+		t.Helper()
+		s := newWebhookTestServer(t)
+		launched := 0
+		s.webhookLaunchBot = func(context.Context, string, map[string]string, string, string, string, map[string]string, map[string]string) (string, error) {
+			launched++
+			return "run1", nil
+		}
+		// The forge bot is the sender on everything this webhook receives.
+		s.webhookIterionBotAuthor = func(context.Context, webhooks.Config, string) bool { return true }
+		cfg, pt := ghConfig(t, s)
+		cfg.ReviewOnSync = true
+		return s, cfg, pt, &launched
+	}
+	status := func(w *httptest.ResponseRecorder) string {
+		var resp map[string]string
+		json.Unmarshal(w.Body.Bytes(), &resp)
+		return resp["status"]
+	}
+
+	s, cfg, pt, launched := newSrv(t)
+	body := strings.Replace(ghOpenPR, `"action": "opened"`, `"action": "synchronize"`, 1)
+	w := httptest.NewRecorder()
+	s.handleGitHubWebhook(w, ghReq(ghCtx(cfg), body, prforge.EventHeaderPullRequest, pt))
+	if got := status(w); got == webhooks.StatusFiltered {
+		t.Errorf("a gate resync pushed by the forge bot must still be reviewed, got %q", got)
+	}
+	if *launched == 0 {
+		t.Error("gate resync launched no review — the required check would stay absent on the new head")
+	}
+
+	// Same sender, PR opened: still the converged-in-its-own-loop case.
+	s2, cfg2, pt2, launched2 := newSrv(t)
+	w = httptest.NewRecorder()
+	s2.handleGitHubWebhook(w, ghReq(ghCtx(cfg2), ghOpenPR, prforge.EventHeaderPullRequest, pt2))
+	if got := status(w); got != webhooks.StatusFiltered {
+		t.Errorf("a PR opened by the forge bot must still be skipped, got %q", got)
+	}
+	if *launched2 != 0 {
+		t.Error("a bot-opened PR must not auto-review")
+	}
+}

@@ -3,6 +3,7 @@ package runview
 import (
 	"context"
 	"fmt"
+	"sort"
 	"sync"
 
 	"github.com/SocialGouv/iterion/pkg/bundle"
@@ -34,15 +35,36 @@ type WireWorkflow struct {
 // are populated for subbot nodes — the child .bot path relative to the
 // parent file, and whether the child is workspace-isolated (parallel-safe).
 type WireNode struct {
-	ID              string            `json:"id"`
-	Kind            string            `json:"kind"`
-	Description     string            `json:"description,omitempty"`
-	Model           string            `json:"model,omitempty"`
-	Backend         string            `json:"backend,omitempty"`
-	ReasoningEffort string            `json:"reasoning_effort,omitempty"`
-	OutputFields    []WireSchemaField `json:"output_schema,omitempty"`
-	Source          string            `json:"source,omitempty"`
-	Isolated        bool              `json:"isolated,omitempty"`
+	ID              string `json:"id"`
+	Kind            string `json:"kind"`
+	Description     string `json:"description,omitempty"`
+	Model           string `json:"model,omitempty"`
+	Backend         string `json:"backend,omitempty"`
+	ReasoningEffort string `json:"reasoning_effort,omitempty"`
+	// InputFields is the HumanNode's declared `input_schema`, the TYPE
+	// of the payload the gate receives (Interaction.Questions carries
+	// the resolved values). The studio renders that payload above the
+	// answer form so the operator sees what they are validating —
+	// `json` fields as structured data, `file` fields as previews —
+	// instead of the author having to stringify it into `instructions:`.
+	// Absent when the node declares no input schema; the studio then
+	// falls back to inferring a renderer from each value's shape.
+	InputFields []WireSchemaField `json:"input_schema,omitempty"`
+	// InstructionInputs names the inbound keys the HumanNode's
+	// `instructions:` prompt already interpolates (`{{input.<key>}}`,
+	// substituted by Engine.renderHumanInstructions against the very same
+	// resolved map). The studio skips them when rendering the inbound
+	// payload, so a gate whose instructions embed its input — the
+	// historical workaround, and still 13 gates across 8 shipped catalog
+	// bots — shows that value once, not twice.
+	//
+	// Wire-side rather than a text-containment check in the browser
+	// because the run console never receives the resolved instructions
+	// string, only the board does.
+	InstructionInputs []string          `json:"instruction_inputs,omitempty"`
+	OutputFields      []WireSchemaField `json:"output_schema,omitempty"`
+	Source            string            `json:"source,omitempty"`
+	Isolated          bool              `json:"isolated,omitempty"`
 }
 
 // WireSchemaField projects an ir.SchemaField as JSON. Type uses the
@@ -234,8 +256,8 @@ const IRWorkflowEndpointPath = "/api/runs/{id}/workflow"
 // expansions become "" — the run console treats that as "fall back to
 // the registry default" via its capability prefetch.
 //
-// wf is needed to resolve HumanNode output_schema names against
-// wf.Schemas; pass nil when only LLM nodes are projected.
+// wf is needed to resolve HumanNode input_schema/output_schema names
+// against wf.Schemas; pass nil when only LLM nodes are projected.
 func projectNode(id string, n ir.Node, wf *ir.Workflow) WireNode {
 	out := WireNode{ID: id, Kind: n.NodeKind().String()}
 	// Every ir node embeds BaseNode, which promotes NodeDescription; the
@@ -259,11 +281,50 @@ func projectNode(id string, n ir.Node, wf *ir.Workflow) WireNode {
 			out.ReasoningEffort = ir.ResolveEffortLiteral(v.ReasoningEffort)
 		}
 	case *ir.HumanNode:
+		out.InputFields = projectSchemaFields(v.InputSchema, wf)
+		out.InstructionInputs = projectInstructionInputs(v.Instructions, wf)
 		out.OutputFields = projectSchemaFields(v.OutputSchema, wf)
 	case *ir.SubbotNode:
 		out.Source = v.Source
 		out.Isolated = v.Isolated
 	}
+	return out
+}
+
+// projectInstructionInputs returns the sorted, de-duplicated top-level
+// `input.*` keys a human node's instructions prompt interpolates.
+//
+// Only the FIRST path segment matters: `{{input.plan.title}}` consumes
+// the `plan` item as far as the operator is concerned — the payload
+// renderer works per top-level key, not per leaf.
+//
+// Returns nil for an unset or unknown prompt name, which the studio
+// reads as "nothing already shown".
+func projectInstructionInputs(promptName string, wf *ir.Workflow) []string {
+	if promptName == "" || wf == nil {
+		return nil
+	}
+	p, ok := wf.Prompts[promptName]
+	if !ok || p == nil {
+		return nil
+	}
+	seen := make(map[string]bool)
+	out := make([]string, 0, len(p.TemplateRefs))
+	for _, ref := range p.TemplateRefs {
+		if ref == nil || ref.Kind != ir.RefInput || len(ref.Path) == 0 {
+			continue
+		}
+		key := ref.Path[0]
+		if key == "" || seen[key] {
+			continue
+		}
+		seen[key] = true
+		out = append(out, key)
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	sort.Strings(out)
 	return out
 }
 
