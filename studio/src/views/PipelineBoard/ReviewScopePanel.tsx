@@ -184,8 +184,15 @@ export function ReviewScopePanel({ runId, live, pauseKey }: Props) {
                     <li key={f.path}>
                       <button
                         type="button"
+                        // An uncaptured non-media row has no content on
+                        // either side, so /review/diff would 500 with
+                        // "path not in either snapshot" — an opaque server
+                        // error from a row the panel just labelled "(not
+                        // versioned)". Media still opens: that dialog
+                        // streams the LIVE file, which does exist.
+                        disabled={!!f.uncaptured && !media}
                         onClick={() => openFile(f)}
-                        className="flex w-full min-w-0 items-baseline gap-2 rounded px-1 py-0.5 text-left text-caption hover:bg-surface-hover"
+                        className="flex w-full min-w-0 items-baseline gap-2 rounded px-1 py-0.5 text-left text-caption enabled:hover:bg-surface-hover disabled:cursor-default"
                         title={
                           media
                             ? `Play ${producedKindLabel(kind).toLowerCase()}: ${f.path}`
