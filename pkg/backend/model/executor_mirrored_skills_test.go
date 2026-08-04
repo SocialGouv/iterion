@@ -37,7 +37,7 @@ func TestBuildTaskCarriesMirroredSkills(t *testing.T) {
 	// cover the seam.
 	for _, backend := range []string{delegate.BackendPi, delegate.BackendClaudeCode} {
 		t.Run(backend, func(t *testing.T) {
-			task, err := e.buildTask(context.Background(), node, f, map[string]any{}, backend)
+			task, err := e.buildTask(context.Background(), node, f, map[string]any{}, backend, nil)
 			if err != nil {
 				t.Fatalf("buildTask: %v", err)
 			}
@@ -55,7 +55,7 @@ func TestBuildTaskMirroredSkillsDefaultsEmpty(t *testing.T) {
 	node := &ir.AgentNode{}
 	node.ID = "n"
 
-	task, err := e.buildTask(context.Background(), node, backendFields{id: "n"}, map[string]any{}, delegate.BackendPi)
+	task, err := e.buildTask(context.Background(), node, backendFields{id: "n"}, map[string]any{}, delegate.BackendPi, nil)
 	if err != nil {
 		t.Fatalf("buildTask: %v", err)
 	}

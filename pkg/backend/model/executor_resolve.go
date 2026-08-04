@@ -63,14 +63,43 @@ func (e *ClawExecutor) EffectiveBackendName(node ir.Node) string {
 	return e.resolveBackendName(node)
 }
 
-// providerStep is one element of a resolved provider fallback chain: a
-// credential-routing hint paired with an optional per-element model
-// override. An empty Model means "inherit the node's `model:`" — the
-// historical behaviour, so a chain without any `provider:model` element
-// is byte-for-byte unchanged.
-type providerStep struct {
+// chainElement is one element of a node's resolved fallback chain: a
+// full routing step (backend + credential hint + model), any of which
+// may be empty to inherit the node's resolved value.
+//
+// Two producers fill it, and the difference is load-bearing:
+//   - the legacy `provider: "a,b"` field (ADR-004) varies Provider and
+//     optionally Model, and NEVER Backend — every element runs the same
+//     backend, so the task can be reused between attempts;
+//   - the `fallbacks:` block (ADR-087) may vary Backend too, which
+//     re-shapes the delegate.Task and forces a rebuild per element.
+//
+// `Backend == ""` on every element is therefore the machine-readable
+// signal that a chain is hint-only, which is what the collapse guard
+// for hint-ignoring backends keys on (see chainIsHintOnly).
+type chainElement struct {
+	// Label is the stable id this element is named by in logs, the
+	// model_fallback event and the run report — a `fallbacks:` entry
+	// name. Empty for a legacy `provider:` element, which falls back to
+	// its provider/model rendering.
+	Label    string
+	Backend  string // "" = inherit the node's resolved backend
 	Provider string // routing hint ("" = auto / defer to process-env precedence)
 	Model    string // per-element model override ("" = inherit the node's model)
+	// On is the set of failure categories that may route TO this element
+	// (i.e. it filters the failure of its PREDECESSOR). nil means the
+	// package default; it is only ever non-nil for a `fallbacks:`
+	// element, since a legacy chain falls through on any error.
+	On []delegate.FallbackCategory
+}
+
+// sameRoute reports whether two elements resolve to the same call —
+// same backend, same credential hint, same model. It deliberately
+// ignores Label and On: two elements that differ only in their name or
+// trigger filter would still re-issue an identical request, which is
+// the waste the consecutive-duplicate collapse exists to avoid.
+func sameRoute(a, b chainElement) bool {
+	return a.Backend == b.Backend && a.Provider == b.Provider && a.Model == b.Model
 }
 
 // resolveProvider returns the first (preferred) credential-routing hint
@@ -120,10 +149,10 @@ func (e *ClawExecutor) resolveProvider(node ir.Node) string {
 // empty tokens (stray/trailing commas) are dropped; consecutive
 // duplicate steps are collapsed. The chain is never empty: an
 // unset/blank field yields a single auto attempt.
-func (e *ClawExecutor) resolveProviderChain(node ir.Node) []providerStep {
+func (e *ClawExecutor) resolveProviderChain(node ir.Node) []chainElement {
 	// Launch-time provider override collapses the chain to the chosen hint.
 	if ov := e.modelOverrides.ForNode(node.NodeID(), node.NodeKind()); ov.Provider != "" {
-		return []providerStep{{Provider: ov.Provider}}
+		return []chainElement{{Provider: ov.Provider}}
 	}
 	var raw string
 	switch n := node.(type) {
@@ -135,7 +164,7 @@ func (e *ClawExecutor) resolveProviderChain(node ir.Node) []providerStep {
 		raw = n.Provider
 	}
 	expanded := ir.ExpandEnvWithDefault(raw)
-	chain := make([]providerStep, 0, 4)
+	chain := make([]chainElement, 0, 4)
 	for _, part := range strings.Split(expanded, ",") {
 		token := strings.TrimSpace(part)
 		if token == "" {
@@ -145,17 +174,17 @@ func (e *ClawExecutor) resolveProviderChain(node ir.Node) []providerStep {
 		// `provider:model` element form, shared with the compiler's
 		// validateProviders so parse and validation never drift.
 		hint, model, _ := ir.SplitProviderStep(token)
-		step := providerStep{Provider: hint, Model: model}
+		step := chainElement{Provider: hint, Model: model}
 		if step.Provider == "auto" {
 			step.Provider = "" // explicit auto → process-env precedence
 		}
-		if len(chain) > 0 && chain[len(chain)-1] == step {
+		if len(chain) > 0 && sameRoute(chain[len(chain)-1], step) {
 			continue // collapse consecutive duplicates
 		}
 		chain = append(chain, step)
 	}
 	if len(chain) == 0 {
-		return []providerStep{{}}
+		return []chainElement{{}}
 	}
 	return chain
 }

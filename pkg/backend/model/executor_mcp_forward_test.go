@@ -30,7 +30,7 @@ func TestBuildTaskForwardsDeclaredMCPServersPerBackend(t *testing.T) {
 	// regression: it went through the real executor with an empty list.
 	for _, backend := range []string{delegate.BackendClaudeCode, delegate.BackendPi} {
 		t.Run(backend, func(t *testing.T) {
-			task, err := e.buildTask(context.Background(), node, f, map[string]any{}, backend)
+			task, err := e.buildTask(context.Background(), node, f, map[string]any{}, backend, nil)
 			if err != nil {
 				t.Fatalf("buildTask: %v", err)
 			}

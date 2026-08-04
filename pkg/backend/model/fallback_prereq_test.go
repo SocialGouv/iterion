@@ -51,7 +51,7 @@ func TestUsageWindow_SkipsRetryBudgetWhenFallbackRemains(t *testing.T) {
 	task := delegate.Task{NodeID: "n"}
 	out, err := e.dispatchWithProviderFallback(context.Background(), "n",
 		delegate.BackendClaudeCode,
-		[]providerStep{{Provider: "zai"}, {Provider: "anthropic"}}, fake, &task)
+		[]chainElement{{Provider: "zai"}, {Provider: "anthropic"}}, fake, &task)
 	if err != nil {
 		t.Fatalf("chain should have succeeded on anthropic: %v", err)
 	}
@@ -79,7 +79,7 @@ func TestUsageWindow_KeepsRetryBudgetOnLastElement(t *testing.T) {
 
 	task := delegate.Task{NodeID: "n"}
 	_, err := e.dispatchWithProviderFallback(context.Background(), "n",
-		delegate.BackendClaudeCode, []providerStep{{Provider: "zai"}}, fake, &task)
+		delegate.BackendClaudeCode, []chainElement{{Provider: "zai"}}, fake, &task)
 	if err == nil {
 		t.Fatal("expected the single-element chain to fail")
 	}
@@ -105,7 +105,7 @@ func TestTransientStillBurnsBudgetWithFallback(t *testing.T) {
 	task := delegate.Task{NodeID: "n"}
 	if _, err := e.dispatchWithProviderFallback(context.Background(), "n",
 		delegate.BackendClaudeCode,
-		[]providerStep{{Provider: "zai"}, {Provider: "anthropic"}}, fake, &task); err != nil {
+		[]chainElement{{Provider: "zai"}, {Provider: "anthropic"}}, fake, &task); err != nil {
 		t.Fatalf("chain should have succeeded on anthropic: %v", err)
 	}
 	if got := countCalls(fake, "zai"); got != 2 {

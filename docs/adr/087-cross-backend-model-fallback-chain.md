@@ -152,11 +152,19 @@ hand-builds its task inline today and would otherwise keep the wrong
 backend's `SystemPromptMode`.
 
 Because `buildTask` is not a pure assembly, it splits: the **effects** —
-the `llm_prompt` store event, the board MCP run-token mint, the inbox-drain
-and async-ask bindings — fire **once per node execution**; only the
-assembly re-runs per element. The board token is minted once and **revoked**
-when the node finishes, closing a pre-existing leak against the registry's
-own documented contract.
+the `llm_prompt` store event and the board MCP run-token mint — fire
+**once per node execution**; only the assembly re-runs per element.
+Otherwise a 3-element chain writes three `llm_prompt` events for one
+logical call and hands out three board tokens.
+
+The token is minted once but **not** revoked here. The registry
+documents a Register/Revoke contract that nothing has honoured since it
+shipped — a pre-existing leak, bounded by a 1024-token cap and a TTL
+sweep, orthogonal to this decision and touching six files of wiring
+(`server.boardMCPServiceOption` → `runview.WithBoardMCP` →
+`ExecutorSpec` → `model.WithBoardRegister` → the subbot path). Minting
+once is what this ADR owes: it stops a chain from multiplying the leak.
+Closing it is a named follow-on.
 
 Evict, too: on every fall-through the node's claw session is dropped from
 the `(runID, nodeID)` store and `ResumeConversation` / `ResumePendingToolUseID`
@@ -456,9 +464,9 @@ the repo's own stated criterion.
   revert once the chain exists.
 
 - **`buildTask` splits into assembly and effects.** One `llm_prompt` event
-  and one board run-token per node execution, revoked at node end — closing
-  a pre-existing leak against a registry hard-capped at 1024 tokens, where
-  exhaustion silently disables board-emit.
+  and one board run-token per node execution, however long the chain. The
+  registry's unhonoured Revoke contract stays open as a named follow-on:
+  minting once stops the chain multiplying a leak it did not create.
 
 - **Two dispatch sites converge on a build closure.** `executeBackend` and
   `executeLLMRouterUnified` (which hand-builds its task today) supply the
