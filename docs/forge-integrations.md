@@ -160,6 +160,15 @@ by signed state + an agent-binding cookie:
 | PATCH | `/repo-bots/{integration_id}` | update an integration's bot set |
 | DELETE | `/repo-bots/{integration_id}` | disable |
 
+Both write routes also carry the repo's **operator-owned** settings —
+`launch_vars`, `overlap`, `hold_labels`, `label_allowlist`,
+`auto_fix_on_gate_failure`. They live on the integration because provisioning
+rebuilds the whole webhook config from the manifests: anything set only on that
+config is wiped by the next enable/update. Omitting a field keeps the stored
+value; an explicit empty list clears it. `label_allowlist` is the one that
+decides which freshly-applied issue label dispatches the implementer (empty =
+any label does).
+
 ## Provider support
 
 | Provider | Mode(s) | Status |
