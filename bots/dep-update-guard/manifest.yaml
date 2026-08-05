@@ -1,7 +1,15 @@
 name: dep-update-guard
 display_name: Vetty
 icon: 💂
-version: 2.6.2
+version: 2.6.3
+## 2.6.3 — verify.sh mirrors CI's exact strictness (skill §1c). Three
+## consecutive re-audits of one PR produced three DIFFERENT authored
+## verify.sh defects (env-dependent test, missing §1b drift gate, then
+## eslint failed on 534 pre-existing warnings / 0 errors while CI was
+## green): the aligner's work was discarded each time by a verify that
+## disagreed with the repo's own definition of green. The skill + prompt
+## now pin the litmus: no exit-relevant line without the CI step that
+## reds on it.
 ## 2.6.2 — the escalate node could never fire: its llm half passed a bare
 ## "claude-opus-5" to the direct generation path, which requires
 ## provider/model-id — every needs_decision bump crashed the run instead of

@@ -330,6 +330,15 @@ prompt verify_user:
   MUST mirror it — run the regen command(s), then fail on drift; the
   deterministic precheck rejects a gateless verify.sh otherwise.
 
+  EQUALLY MANDATORY (skill section 1c): mirror CI's exact STRICTNESS —
+  never stricter, never looser. Copy the CI step's invocation flags
+  verbatim (prefer the repo's own umbrella target, e.g. `task check`);
+  do NOT invent thresholds CI does not enforce (no --max-warnings 0 on
+  a lint CI tolerates warnings from, no promoting advisories to
+  failures). Before any exit-relevant line, ask: "would the repo's CI
+  be red on this exact tree for this reason?" — if you cannot name the
+  CI step that fails, your script must not fail there.
+
 prompt commit_system:
   You commit the code ALIGNMENT produced for this dependency bump onto
   the PR's OWN branch and push it back, so the dependency bot's PR now
