@@ -7,6 +7,50 @@ commit onto the PR branch, post the verdict comment. Never merges past a
 check — and only ever the commit it audited. See
 [bots/dep-update-guard/](../../bots/dep-update-guard/).
 
+## 2026-08-04/05 — the backlog majors + the Vite 8 alignment: capability proven, and the verify seam found its shape
+
+- Status: **capability validated; landing required four bot/engine fixes found
+  in stride.** Of the 6 pre-group major PRs `/vetty`'d: **#239, #38, #32
+  merged by the loop** (#38 dissolved the App-workflows-permission fear — on a
+  queue repo the QUEUE merges, not the App; #32's recreated branch re-audited
+  `clean` with a pro-grade risk trade-off: the one introduced sidecar HIGH has
+  an upstream fix while holding would keep a CRITICAL JetStream auth-bypass);
+  **#20, #21, #33 closed on grounded hold verdicts** (a self-contradictory
+  Dependabot recreate — trailer 6.0.3 vs diff 7.0.2; typescript-eslint peers
+  capping TS <6.1; Bitnami Secure Images mutable-`latest` posture). The
+  escalate lane ran its full arc live: bare-model-spec crash (fix 2.6.2 +
+  fleet lint) → 401 on a forfait-only deployment (engine fix: llm_or_human
+  degrades to a HUMAN PAUSE, #367) → a real operator answer resumed the run
+  through `iterion remote runs resume --answers`.
+- **Vite 8 (PR #19), the alignment objective jo set explicitly:** the aligner
+  performed the toolchain migration REPEATEDLY and correctly — first as
+  manualChunks object→function, then (recreated branch) as Rolldown's
+  `output.codeSplitting.groups` with the three named chunks verified, plus
+  plugin-react `^5.2.0` chosen as the minimal peer move, lockfile regenerated,
+  `import.meta.dirname` for the CJS `__dirname` deprecation. GitHub CI went
+  fully green on the migrated head. What kept discarding the work was the
+  VERIFY seam, three ways in one day: an env-dependent cost test (fix #368 —
+  recovered from the orphaned cross-branch commit), a verify.sh omitting the
+  repo's CI drift gate (the agent scopes "bump-relevant" and rationalises
+  away repo-wide gates), and a verify.sh stricter than CI (eslint failing on
+  534 pre-existing warnings / 0 errors).
+- Fixes shipped: **#368** (hermetic cost tests), **#369** (skill §1c: mirror
+  CI's exact strictness — never stricter, never looser; the litmus "name the
+  CI step that reds on it"), **#370** (the drift-gate precheck LOOPS BACK
+  into verify_build with the exact rejection — an authorship defect self-heals
+  in-loop instead of discarding the alignment at verdict time; budget 4h/$25
+  for the looped heavy case). #370 took three Revi rounds: R1acb67 (budget vs
+  loop, real), then Rc24903 (my rc=4 loop-back would have permanently
+  defeated a DELTA gate whose baseline swallows first-pass leftovers on
+  retry — accepted and reverted). Revi's blocking gate caught in review what
+  none of my local tests did, twice.
+- Lessons: an agent-authored verify script is the least deterministic node in
+  a deterministic pipeline — pin it three ways (mirror CI exactly §1c, never
+  scope out repo-wide gates §1b, and loop the precheck back instead of
+  judging at verdict time); a delta-based gate must never sit inside a retry
+  loop; suggestions in a review are hypotheses, not fixes — adopting Revi's
+  rc=4 idea without thinking its semantics cost one full round.
+
 ## 2026-08-04 — the retest: all 3 PRs merged by the system, every recovery lane exercised live
 
 - Status: **validated end-to-end.** After the fix waves below shipped (#357
