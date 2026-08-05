@@ -171,6 +171,23 @@ a bare `exit 127` that says nothing about the shell having been substituted.
 Either write POSIX `sh` and use `.` instead of `source`, or declare
 `#!/usr/bin/env bash` and make the file executable.
 
+**Never derive a path from `$0`.** The harness runs both scripts with the
+working directory already on the workspace, so every path you write is relative
+to the repository root — and that is the only anchor a mutant may use.
+
+A line like `cd "$(dirname "$0")/../../../.."` looks harmless and is a trap with
+a delay fuse, because **sealing MOVES the held-out set out of the repository**.
+In place the arithmetic is right and everything passes; sealed, the same
+expression lands somewhere else entirely and the mutant dies on a file it can
+see perfectly well. Worse, the radius tool runs mutants IN PLACE, so every
+rehearsal is green: the defect can surface only in the one-shot scoring pass —
+the single run that has no second chance.
+
+Measured: eight held-out mutants, all eight `INVALID` at the gate, all eight for
+this and nothing else. An invalid mutant neither scores nor dilutes, so the
+report read `holdout 0/0` — a vacuous truth wearing a green coat, which the
+conjunction passes without proving anything at all.
+
 ```json
 {
   "class": "data",
