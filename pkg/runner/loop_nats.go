@@ -13,14 +13,34 @@ import (
 	"github.com/SocialGouv/iterion/pkg/store"
 )
 
-// decodeOrTerm decodes the delivery payload into a queue.RunMessage. On
-// decode failure it Terms the delivery so the malformed message doesn't
-// loop in JetStream, surfacing a failed-Term at WARN so the operator
-// can purge rather than chase a silent loop. Returns (msg, true) on
-// success; (nil, false) when the caller must abandon the delivery.
+// decodeOrTerm decodes the delivery payload into a queue.RunMessage.
+//
+// Two decode failures, two opposite answers. A MALFORMED payload will never
+// decode on any consumer, so it is Termed rather than left to loop in
+// JetStream, with a failed Term surfaced at WARN so the operator can purge. A
+// payload from a NEWER server is Naked instead — see below.
+//
+// Returns (msg, true) on success; (nil, false) when the caller must abandon
+// the delivery.
 func (r *Runner) decodeOrTerm(delivery *natsq.Delivery) (*queue.RunMessage, bool) {
 	msg, err := delivery.Decode()
 	if err != nil {
+		// A message from a NEWER server is not malformed — it is the ordinary
+		// state of a rolling upgrade, where the server is deployed first on
+		// purpose. Nak it so a runner that already carries the new build takes
+		// it; JetStream's own MaxDeliver then parks it on the DLQ if the fleet
+		// never catches up, which is recoverable. Terming it is not: the queue
+		// entry is destroyed while the run document stays `queued` forever,
+		// and the only trace is one line in one pod's log. Seen in production
+		// during a schema bump — two runs vanished that way before the fleet
+		// finished rolling.
+		if errors.Is(err, queue.ErrSchemaVersion) {
+			r.cfg.Logger.Warn("runner: %v — leaving it for an upgraded runner (this pod is behind)", err)
+			if nakErr := delivery.Nak(); nakErr != nil {
+				r.cfg.Logger.Warn("runner: nak after version mismatch: %v", nakErr)
+			}
+			return nil, false
+		}
 		r.cfg.Logger.Error("runner: decode delivery: %v", err)
 		if termErr := delivery.Term(); termErr != nil {
 			// A failed Term leaves the malformed message in the queue

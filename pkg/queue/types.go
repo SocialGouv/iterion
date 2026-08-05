@@ -12,6 +12,7 @@ package queue
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 )
 
@@ -219,6 +220,18 @@ type TraceContext struct {
 	SpanID  string `json:"span_id,omitempty"`
 }
 
+// ErrSchemaVersion marks the one decode failure that is TRANSIENT rather than
+// terminal: the message was published by a newer server than this consumer.
+//
+// It matters because the two failures deserve opposite handling. A malformed
+// payload will never decode, on any consumer, so terminating it is right. A
+// version this build does not know is the ordinary state of a rolling upgrade
+// — the server is deployed first, deliberately — and a consumer that
+// terminates it destroys a run no one can recover: the queue entry is gone
+// while the run document sits `queued` forever, with the refusal visible only
+// in one pod's logs. Observed in production during exactly such a rollout.
+var ErrSchemaVersion = errors.New("queue: schema version")
+
 // Validate enforces the invariants a runner must rely on before
 // touching the workflow:
 //   - schema version matches (rolling-upgrade safety)
@@ -229,7 +242,7 @@ func (m *RunMessage) Validate() error {
 		return fmt.Errorf("queue: nil RunMessage")
 	}
 	if m.V != SchemaVersion {
-		return fmt.Errorf("queue: schema version %d unsupported (want %d)", m.V, SchemaVersion)
+		return fmt.Errorf("%w: %d unsupported (want %d)", ErrSchemaVersion, m.V, SchemaVersion)
 	}
 	if m.RunID == "" {
 		return fmt.Errorf("queue: RunID required")
