@@ -842,14 +842,13 @@ if rc == 0:
             fresh = sorted(post - pre)
             if fresh:
                 rc = 4
-                reason = 'UNCOMMITTED REGEN OUTPUT: a green verify left new changes in the tree; make verify.sh clean up after its regen (or the repo gitignore them):' + chr(10) + chr(10).join(fresh[:50])
-                out = out + chr(10) + reason
+                out = out + chr(10) + 'UNCOMMITTED REGEN OUTPUT: a green verify left new changes in the tree; commit (or gitignore) them:' + chr(10) + chr(10).join(fresh[:50])
 try:
     with open(os.path.join(scratch, 'verify.log'), 'w', encoding='utf-8') as lf:
         lf.write(out)
 except OSError:
     pass
-print(json.dumps({'passed': rc == 0, 'skipped': False, 'exit_code': rc, 'precheck_rejected': rc in (3, 4), 'precheck_reason': (reason if rc in (3, 4) else ''), 'log_tail': out[-4000:]}))
+print(json.dumps({'passed': rc == 0, 'skipped': False, 'exit_code': rc, 'precheck_rejected': rc == 3, 'precheck_reason': (reason if rc == 3 else ''), 'log_tail': out[-4000:]}))
 "`
   output: verify_result
 
@@ -1387,9 +1386,11 @@ workflow dep_update_guard:
   ## not a performance target; the cost cap is the real spend bound.
   budget:
     max_parallel_branches: 1
-    ## 3h: the heavy go case measured 73m for ONE audit→align→verify pass,
-    ## and the fix_verify loop may add up to two more verify cycles.
-    max_duration: "3h"
+    ## 4h: the heavy go case measured 73m for ONE audit→align→verify pass,
+    ## a fix_verify cycle re-runs verify_build+verify_run (30–50m each), and
+    ## commit/publish still need room after two of them. The duration cap is
+    ## a runaway guard, not a target; $25 is the spend bound.
+    max_duration: "4h"
     max_cost_usd: 25
 
   ## Scanners + build toolchain live in the sec sandbox image. One
