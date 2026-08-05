@@ -1,7 +1,14 @@
 name: dep-update-guard
 display_name: Vetty
 icon: 💂
-version: 2.6.3
+version: 2.6.4
+## 2.6.4 — the drift-gate precheck LOOPS BACK instead of discarding the
+## run: rc=3 (verify.sh missing a CI-enforced drift gate) now re-enters
+## verify_build with the exact rejection as feedback (bounded ×2, else →
+## hold as before). Twice in one day the aligner's correct migration was
+## thrown away because the precheck fired at verdict time — an authorship
+## defect is now self-healed in-loop, and §1b is spelled repo-wide (never
+## scoped out by bump relevance).
 ## 2.6.3 — verify.sh mirrors CI's exact strictness (skill §1c). Three
 ## consecutive re-audits of one PR produced three DIFFERENT authored
 ## verify.sh defects (env-dependent test, missing §1b drift gate, then
