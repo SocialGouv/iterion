@@ -482,6 +482,9 @@ schema escalate_output:
   decision: string
   guidance: string
 
+schema verify_feedback_input:
+  precheck_feedback: string
+
 schema verify_plan:
   prepared: bool
   summary: string
@@ -749,6 +752,7 @@ agent verify_build:
   backend: "claude_code"
   model: "${VETTY_MODEL_VALIDATE:-claude-opus-5}"
   reasoning_effort: "${VETTY_EFFORT_VALIDATE:-medium}"
+  input: verify_feedback_input
   output: verify_plan
   system: verify_system
   user: verify_user
@@ -838,13 +842,14 @@ if rc == 0:
             fresh = sorted(post - pre)
             if fresh:
                 rc = 4
-                out = out + chr(10) + 'UNCOMMITTED REGEN OUTPUT: a green verify left new changes in the tree; commit (or gitignore) them:' + chr(10) + chr(10).join(fresh[:50])
+                reason = 'UNCOMMITTED REGEN OUTPUT: a green verify left new changes in the tree; make verify.sh clean up after its regen (or the repo gitignore them):' + chr(10) + chr(10).join(fresh[:50])
+                out = out + chr(10) + reason
 try:
     with open(os.path.join(scratch, 'verify.log'), 'w', encoding='utf-8') as lf:
         lf.write(out)
 except OSError:
     pass
-print(json.dumps({'passed': rc == 0, 'skipped': False, 'exit_code': rc, 'precheck_rejected': rc == 3, 'precheck_reason': (reason if rc == 3 else ''), 'log_tail': out[-4000:]}))
+print(json.dumps({'passed': rc == 0, 'skipped': False, 'exit_code': rc, 'precheck_rejected': rc in (3, 4), 'precheck_reason': (reason if rc in (3, 4) else ''), 'log_tail': out[-4000:]}))
 "`
   output: verify_result
 
@@ -1382,8 +1387,10 @@ workflow dep_update_guard:
   ## not a performance target; the cost cap is the real spend bound.
   budget:
     max_parallel_branches: 1
-    max_duration: "2h"
-    max_cost_usd: 20
+    ## 3h: the heavy go case measured 73m for ONE audit→align→verify pass,
+    ## and the fix_verify loop may add up to two more verify cycles.
+    max_duration: "3h"
+    max_cost_usd: 25
 
   ## Scanners + build toolchain live in the sec sandbox image. One
   ## sandbox for the whole run; network open by default so the auditors
