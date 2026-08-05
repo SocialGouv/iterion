@@ -533,3 +533,36 @@ func TestApplyHostStateMounts_NoneCarriesGitIdentity(t *testing.T) {
 		}
 	})
 }
+
+// TestSeedDefaultLocale pins a default that only fires when the image and the
+// caller both stayed silent. An unset locale is the C/POSIX one, and a JVM
+// then reads filenames as ASCII — a build failure that names a file which is
+// plainly on disk.
+func TestSeedDefaultLocale(t *testing.T) {
+	t.Run("seeded when nothing declares one", func(t *testing.T) {
+		spec := &sandbox.Spec{}
+		seedDefaultLocale(spec)
+		if got := spec.Env["LANG"]; got != "C.UTF-8" {
+			t.Errorf("LANG = %q, want %q", got, "C.UTF-8")
+		}
+		if _, set := spec.Env["LC_ALL"]; set {
+			t.Errorf("LC_ALL was set: it overrides every category and would beat a repo's own choice")
+		}
+	})
+
+	t.Run("stands aside for an explicit LANG", func(t *testing.T) {
+		spec := &sandbox.Spec{Env: map[string]string{"LANG": "fr_FR.UTF-8"}}
+		seedDefaultLocale(spec)
+		if got := spec.Env["LANG"]; got != "fr_FR.UTF-8" {
+			t.Errorf("LANG = %q, want the declared %q", got, "fr_FR.UTF-8")
+		}
+	})
+
+	t.Run("stands aside for an explicit LC_ALL", func(t *testing.T) {
+		spec := &sandbox.Spec{Env: map[string]string{"LC_ALL": "en_GB.UTF-8"}}
+		seedDefaultLocale(spec)
+		if _, set := spec.Env["LANG"]; set {
+			t.Errorf("LANG was seeded next to an explicit LC_ALL, which decides on its own")
+		}
+	})
+}

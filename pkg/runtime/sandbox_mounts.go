@@ -715,3 +715,36 @@ func addWorktreeGitMount(spec *sandbox.Spec, gitDir string, logger *iterlog.Logg
 		fmt.Sprintf("source=%s,target=%s,type=bind", dotGit, dotGit),
 	)
 }
+
+// seedDefaultLocale gives the sandbox a UTF-8 capable locale when the image
+// declares none — which the shipped images do not.
+//
+// An unset locale is not neutral: it IS the C/POSIX locale, and the JVM then
+// derives `sun.jnu.encoding` from it and decodes filenames as ASCII. A build
+// whose resources carry an accented name fails on "Problems opening file input
+// stream", naming a file that is plainly there. The same class of surprise
+// reaches anything that reads bytes as text — the symptom never resembles the
+// cause, and the cause is an environment variable nobody set.
+//
+// `C.UTF-8` is chosen for what it does NOT do: it keeps C's collation and
+// number/date formatting, so sort order stays byte-order and no output changes
+// shape. Only the encoding moves. Picking `en_US.UTF-8` (or any language)
+// would silently change how programs sort and format — an environment
+// property leaking into results.
+//
+// LANG only, never LC_ALL: LC_ALL overrides every category and would take
+// precedence over a repository or a workflow that sets its own. This is a
+// default to fall back on, not a decision to impose — and it steps aside
+// entirely as soon as either variable is already set.
+func seedDefaultLocale(spec *sandbox.Spec) {
+	if spec.Env == nil {
+		spec.Env = map[string]string{}
+	}
+	if _, set := spec.Env["LANG"]; set {
+		return
+	}
+	if _, set := spec.Env["LC_ALL"]; set {
+		return
+	}
+	spec.Env["LANG"] = "C.UTF-8"
+}
