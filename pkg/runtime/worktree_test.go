@@ -909,3 +909,57 @@ func TestSetupWorktree_SingleCheckoutUnchanged(t *testing.T) {
 		t.Errorf("originalBranch = %q, want %q", wc.originalBranch, "main")
 	}
 }
+
+// TestRunOutputPaths_IgnoresIterionsOwnScaffolding pins which dirty paths count
+// as run output. Getting this wrong is expensive and silent: a dirty tree makes
+// finalize bank a wip commit, and a wip-banked HEAD is never merged — so a lot
+// whose gate converged does not land, because of files iterion itself mirrored
+// into the worktree at run start.
+func TestRunOutputPaths_IgnoresIterionsOwnScaffolding(t *testing.T) {
+	cases := []struct {
+		name      string
+		porcelain string
+		want      []string
+	}{
+		{
+			name: "only the mirrored bundle scaffolding",
+			porcelain: "?? .claude/skills/modernize-lots.md\n" +
+				"?? .claude/skills/plan-contract/SKILL.md\n" +
+				"?? .claude/skills/.iterion-managed/plan-contract.md.sha256\n",
+			want: nil,
+		},
+		{
+			name:      "real work is still seen",
+			porcelain: "?? .claude/skills/modernize-lots.md\n M build.gradle\n",
+			want:      []string{"build.gradle"},
+		},
+		{
+			name:      "a rename is judged on its destination",
+			porcelain: "R  old/name.txt -> src/new/name.txt\n",
+			want:      []string{"src/new/name.txt"},
+		},
+		{
+			name:      "a quoted non-ascii path survives the filter",
+			porcelain: "?? \"src/main/resources/static/doc/fiche-r\\303\\251sum\\303\\251.pdf\"\n",
+			want:      []string{"src/main/resources/static/doc/fiche-r\\303\\251sum\\303\\251.pdf"},
+		},
+		{
+			name:      "nothing at all",
+			porcelain: "",
+			want:      nil,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := runOutputPaths(tc.porcelain)
+			if len(got) != len(tc.want) {
+				t.Fatalf("runOutputPaths() = %v, want %v", got, tc.want)
+			}
+			for i := range got {
+				if got[i] != tc.want[i] {
+					t.Errorf("path %d = %q, want %q", i, got[i], tc.want[i])
+				}
+			}
+		})
+	}
+}
