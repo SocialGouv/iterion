@@ -836,3 +836,76 @@ func TestFinalizeWorktree_WipBankResidueOnTopOfCommits(t *testing.T) {
 		t.Fatalf("main moved to %s — must stay at %s", mainTip, originalTip)
 	}
 }
+
+// TestSetupWorktree_AnchorsOnTheLaunchCheckout pins the tree a run actually
+// describes. `iterion run` launched from a LINKED worktree used to anchor on
+// the MAIN checkout's HEAD, because the repo root is deliberately resolved up
+// to the main repository and `HEAD` was then read there.
+//
+// The failure mode is the dangerous kind: the run succeeds. It reads the main
+// branch's files, does whatever they imply, and reports done — while the
+// operator is looking at another branch. Nothing in the output said which
+// tree was used.
+func TestSetupWorktree_AnchorsOnTheLaunchCheckout(t *testing.T) {
+	main, firstSHA := initBareishRepo(t)
+
+	// A linked worktree pinned to the FIRST commit, on its own branch.
+	linked := filepath.Join(t.TempDir(), "linked")
+	mustRun(t, main, "git", "worktree", "add", "-b", "side", linked, firstSHA)
+
+	// main moves on. The two checkouts now disagree, which is the whole point.
+	secondSHA := addCommit(t, main, "moved.txt", "on main only\n", "second")
+	if secondSHA == firstSHA {
+		t.Fatalf("the fixture did not move main: %s", secondSHA)
+	}
+
+	wc, cleanup, err := setupWorktree(t.TempDir(), "run-anchor", linked, nil)
+	if err != nil {
+		t.Fatalf("setupWorktree from a linked worktree: %v", err)
+	}
+	defer cleanup()
+
+	got := strings.TrimSpace(string(mustOutput(t, wc.wtPath, "git", "rev-parse", "HEAD")))
+	if got != firstSHA {
+		t.Errorf("run worktree anchored at %s, want the launch checkout's %s (main is at %s)",
+			shortSHA(got), shortSHA(firstSHA), shortSHA(secondSHA))
+	}
+	if wc.originalBranch != "side" {
+		t.Errorf("originalBranch = %q, want %q — finalize would fast-forward the wrong branch", wc.originalBranch, "side")
+	}
+	if wc.originalTip != firstSHA {
+		t.Errorf("originalTip = %s, want %s", shortSHA(wc.originalTip), shortSHA(firstSHA))
+	}
+	if !samePath(wc.anchor(), linked) {
+		t.Errorf("anchor() = %q, want the launch checkout %q", wc.anchor(), linked)
+	}
+	// The file that exists only on main must NOT be there: that is the
+	// observable form of "this is the tree you asked for".
+	if _, statErr := os.Stat(filepath.Join(wc.wtPath, "moved.txt")); statErr == nil {
+		t.Errorf("the run worktree carries main's file — it was checked out from the wrong tree")
+	}
+}
+
+// TestSetupWorktree_SingleCheckoutUnchanged is the other half: with no linked
+// worktree in play, the anchor IS the repo root and nothing about the previous
+// behaviour moves.
+func TestSetupWorktree_SingleCheckoutUnchanged(t *testing.T) {
+	main, firstSHA := initBareishRepo(t)
+
+	wc, cleanup, err := setupWorktree(t.TempDir(), "run-plain", main, nil)
+	if err != nil {
+		t.Fatalf("setupWorktree: %v", err)
+	}
+	defer cleanup()
+
+	if !samePath(wc.anchor(), wc.repoRoot) {
+		t.Errorf("anchor() = %q, repoRoot = %q — they must coincide for a single checkout", wc.anchor(), wc.repoRoot)
+	}
+	got := strings.TrimSpace(string(mustOutput(t, wc.wtPath, "git", "rev-parse", "HEAD")))
+	if got != firstSHA {
+		t.Errorf("run worktree at %s, want %s", shortSHA(got), shortSHA(firstSHA))
+	}
+	if wc.originalBranch != "main" {
+		t.Errorf("originalBranch = %q, want %q", wc.originalBranch, "main")
+	}
+}

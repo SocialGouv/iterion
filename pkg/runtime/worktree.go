@@ -63,10 +63,22 @@ func gitCmd(args ...string) (*exec.Cmd, context.CancelFunc) {
 // is safe.
 type worktreeContext struct {
 	repoRoot       string // absolute path to the main repo (where .git lives)
+	anchorDir      string // checkout the run was launched from and describes; equals repoRoot unless launched from a linked worktree
 	wtPath         string // absolute path to the per-run worktree
 	gitDir         string // absolute host path of the worktree's git-private dir (<repoRoot>/.git/worktrees/<basename(wtPath)>); the worktree's `.git` pointer file points here
 	originalBranch string // current branch on the main worktree at run start ("" if detached)
 	originalTip    string // SHA of HEAD at run start (worktree initial state)
+}
+
+// anchor is the checkout the run describes — where the operator's branch is
+// checked out and where a fast-forward or squash has to land. Falls back to
+// repoRoot for contexts built before anchorDir existed (tests, and the
+// single-checkout case where the two are the same directory anyway).
+func (wc worktreeContext) anchor() string {
+	if wc.anchorDir != "" {
+		return wc.anchorDir
+	}
+	return wc.repoRoot
 }
 
 // setupWorktree creates a fresh git worktree at
@@ -94,37 +106,65 @@ func setupWorktree(storeRoot, runID, repoHint string, logger *iterlog.Logger) (w
 		return worktreeContext{}, nil, fmt.Errorf("create worktrees directory: %w", err)
 	}
 
-	// Capture the main worktree's branch + tip BEFORE creating the new
+	// The run anchors on the checkout the OPERATOR launched from, which is
+	// not always the main one: repoRoot is deliberately resolved up to the
+	// main repository (that is where `.git` lives and where worktrees are
+	// registered), but a linked worktree has its own HEAD and its own branch.
+	//
+	// Reading HEAD from repoRoot instead makes `iterion run` in a linked
+	// worktree silently execute against the MAIN branch's tree — a run that
+	// reports success while describing a tree the operator never asked about.
+	// Measured: launched from a worktree pinned to an older commit, the bot
+	// read the plan of `main`, found every step already done, and finished
+	// "successfully" in 90 seconds.
+	anchorDir := gitlib.FindRepoRoot(repoHint)
+	if anchorDir == "" {
+		anchorDir = repoRoot
+	}
+
+	// Capture the anchor checkout's branch + tip BEFORE creating the new
 	// worktree so we have a baseline to compare against in finalize.
 	// `symbolic-ref --quiet HEAD` returns "" + non-zero on detached HEAD —
 	// that's intentional: we treat detached as "no branch to FF".
 	originalBranch := ""
-	brCmd, brCancel := gitCmd("-C", repoRoot, "symbolic-ref", "--quiet", "--short", "HEAD")
+	brCmd, brCancel := gitCmd("-C", anchorDir, "symbolic-ref", "--quiet", "--short", "HEAD")
 	if out, brErr := brCmd.Output(); brErr == nil {
 		originalBranch = strings.TrimSpace(string(out))
 	}
 	brCancel()
 	originalTip := ""
-	tipCmd, tipCancel := gitCmd("-C", repoRoot, "rev-parse", "HEAD")
+	tipCmd, tipCancel := gitCmd("-C", anchorDir, "rev-parse", "HEAD")
 	if out, tipErr := tipCmd.Output(); tipErr == nil {
 		originalTip = strings.TrimSpace(string(out))
 	}
 	tipCancel()
 
-	// `git worktree add <path> HEAD` creates the worktree at the current
-	// HEAD commit. Any working-tree state (staged, unstaged, untracked)
-	// in the main checkout is intentionally NOT copied — that is the whole
-	// point of isolation.
-	cmd, cancel := gitCmd("-C", repoRoot, "worktree", "add", wtPath, "HEAD")
+	// The COMMIT is passed, never the word `HEAD`: `git worktree add` runs
+	// from repoRoot, where `HEAD` means the main checkout's HEAD and not the
+	// anchor's. Any working-tree state (staged, unstaged, untracked) is
+	// intentionally NOT copied — that is the whole point of isolation.
+	startPoint := originalTip
+	if startPoint == "" {
+		startPoint = "HEAD"
+	}
+	cmd, cancel := gitCmd("-C", repoRoot, "worktree", "add", wtPath, startPoint)
 	out, addErr := cmd.CombinedOutput()
 	cancel()
 	if addErr != nil {
-		return worktreeContext{}, nil, fmt.Errorf("git worktree add %s: %w\noutput: %s", wtPath, addErr, string(out))
+		return worktreeContext{}, nil, fmt.Errorf("git worktree add %s at %s: %w\noutput: %s", wtPath, startPoint, addErr, string(out))
 	}
 
 	if logger != nil {
-		logger.Info("runtime: worktree created at %s (base: %s HEAD %s on %s)",
-			wtPath, repoRoot, shortSHA(originalTip), branchOrDetached(originalBranch))
+		if samePath(anchorDir, repoRoot) {
+			logger.Info("runtime: worktree created at %s (base: %s HEAD %s on %s)",
+				wtPath, repoRoot, shortSHA(originalTip), branchOrDetached(originalBranch))
+		} else {
+			// Say which checkout the run describes when it is not the main
+			// one — the operator's cwd is the answer, and it used to be
+			// invisible precisely when it mattered.
+			logger.Info("runtime: worktree created at %s (base: %s HEAD %s on %s — linked worktree of %s)",
+				wtPath, anchorDir, shortSHA(originalTip), branchOrDetached(originalBranch), repoRoot)
+		}
 	}
 
 	cleanup := func() {
@@ -146,6 +186,7 @@ func setupWorktree(storeRoot, runID, repoHint string, logger *iterlog.Logger) (w
 	}
 	return worktreeContext{
 		repoRoot:       repoRoot,
+		anchorDir:      anchorDir,
 		wtPath:         wtPath,
 		gitDir:         resolveWorktreeGitDir(repoRoot, wtPath),
 		originalBranch: originalBranch,
@@ -459,7 +500,7 @@ func finalizeWorktree(wc worktreeContext, opts finalizeOptions, logger *iterlog.
 
 	switch strategy {
 	case "merge":
-		if mergeErr := tryFastForward(wc.repoRoot, target, finalName, finalSHA, wc.originalBranch, logger); mergeErr != nil {
+		if mergeErr := tryFastForward(wc.anchor(), target, finalName, finalSHA, wc.originalBranch, logger); mergeErr != nil {
 			res.MergeStatus = "failed"
 			if logger != nil {
 				logger.Warn("runtime: finalize: fast-forward of %s skipped: %v — `git merge %s` to bring it in",
@@ -476,8 +517,8 @@ func finalizeWorktree(wc worktreeContext, opts finalizeOptions, logger *iterlog.
 		return res
 
 	case "squash":
-		message := buildSquashMessage(wc.repoRoot, wc.originalTip, finalSHA, opts.runName)
-		merged, mergeErr := trySquashMerge(wc.repoRoot, target, finalName, wc.originalBranch, message, logger)
+		message := buildSquashMessage(wc.anchor(), wc.originalTip, finalSHA, opts.runName)
+		merged, mergeErr := trySquashMerge(wc.anchor(), target, finalName, wc.originalBranch, message, logger)
 		if mergeErr != nil {
 			res.MergeStatus = "failed"
 			if logger != nil {
