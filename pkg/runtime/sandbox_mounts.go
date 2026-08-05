@@ -172,6 +172,71 @@ func addOptionalBindMount(
 // the workspace bind. That is a fact about this run's mount plan, not a driver
 // input, so it travels as a return value like addOptionalBindMount's, rather
 // than as a field on the Spec every driver has to read past.
+// seedGitIdentityEnv gives an in-sandbox `git commit` an author when the
+// host's ~/.gitconfig is NOT mounted — i.e. under host_state: none. The mount
+// was what carried the identity, so dropping it drops the identity too, and
+// every commit-producing bot dies on "Author identity unknown" for a reason
+// that has nothing to do with what it was asked to do.
+//
+// The identity is READ from the host's git config and passed as four env vars
+// instead of mounting anything. `git config --get` resolves local-then-global
+// exactly as git would inside the container, so the committer stays the
+// operator — and the isolation host_state: none exists for is preserved: two
+// values cross the boundary, not a home directory.
+//
+// Nothing is invented when the host has no identity either. git then fails
+// with its own message, which names the real problem (a host that was never
+// configured) instead of attributing commits to an identity nobody chose.
+func seedGitIdentityEnv(spec *sandbox.Spec, workspacePath string, logger *iterlog.Logger) {
+	if spec.Env == nil {
+		spec.Env = map[string]string{}
+	}
+	// Signing is disabled for the same reason as under host_state: auto — the
+	// gpg-agent socket does not cross the container boundary, so a
+	// commit.gpgsign=true inherited from the repository's own config turns
+	// every commit into "gpg: no secret key".
+	if _, set := spec.Env["GIT_CONFIG_COUNT"]; !set {
+		spec.Env["GIT_CONFIG_COUNT"] = "1"
+		spec.Env["GIT_CONFIG_KEY_0"] = "commit.gpgsign"
+		spec.Env["GIT_CONFIG_VALUE_0"] = "false"
+	}
+
+	name := gitConfigValue(workspacePath, "user.name")
+	email := gitConfigValue(workspacePath, "user.email")
+	if name == "" || email == "" {
+		if logger != nil {
+			logger.Warn("runtime: host_state=none and the host git config has no user.name/user.email (name=%q email=%q) — an in-sandbox `git commit` will fail with \"Author identity unknown\"", name, email)
+		}
+		return
+	}
+	// Only fill free slots: a workflow that sets its own committer means it.
+	for key, value := range map[string]string{
+		"GIT_AUTHOR_NAME":     name,
+		"GIT_AUTHOR_EMAIL":    email,
+		"GIT_COMMITTER_NAME":  name,
+		"GIT_COMMITTER_EMAIL": email,
+	} {
+		if _, set := spec.Env[key]; !set {
+			spec.Env[key] = value
+		}
+	}
+}
+
+// gitConfigValue reads one git config key as the host resolves it from dir
+// (local, then global, then system). Returns "" when git fails for any reason
+// — an unset key, a directory that is not a repository, or no git at all. The
+// caller distinguishes those cases by what it does with an empty value, and
+// says so; swallowing the difference here would be the silent part.
+func gitConfigValue(dir, key string) string {
+	cmd, cancel := gitCmd("-C", dir, "config", "--get", key)
+	defer cancel()
+	out, err := cmd.Output()
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(string(out))
+}
+
 func applyHostStateMounts(
 	spec *sandbox.Spec,
 	wf *ir.Workflow,
@@ -182,6 +247,7 @@ func applyHostStateMounts(
 	resolvedHostState, hsSource := pickHostState(workflowHostState(wf), p.HostStateOverride, p.HostStateDefault)
 	spec.HostState = sandbox.HostState(resolvedHostState)
 	if !spec.HostState.Active() {
+		seedGitIdentityEnv(spec, p.WorkspacePath, logger)
 		_ = emitEvent(store.EventSandboxHostStateMounted, map[string]any{
 			"enabled": false,
 			"source":  hsSource,

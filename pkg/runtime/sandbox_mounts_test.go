@@ -449,3 +449,87 @@ func TestApplyScratchMount_AnnouncesBothOutcomes(t *testing.T) {
 		t.Errorf("the fallback to container-local scratch was not announced: %v", *seen)
 	}
 }
+
+// TestApplyHostStateMounts_NoneCarriesGitIdentity pins the contract of
+// host_state: none — the mount that used to carry ~/.gitconfig is gone, so the
+// identity has to travel some other way or every commit-producing bot dies on
+// "Author identity unknown".
+//
+// Falsified in three directions on purpose: the identity must appear when the
+// host has one, must NOT be invented when it doesn't, and must stay absent
+// under host_state: auto, where the mount is what carries it.
+func TestApplyHostStateMounts_NoneCarriesGitIdentity(t *testing.T) {
+	noopEmit := func(store.EventType, map[string]any) error { return nil }
+	// Neutralise the developer's own global config: without this the
+	// "no identity" case reads whatever the host happens to have.
+	newRepo := func(t *testing.T, name, email string) string {
+		t.Helper()
+		dir := t.TempDir()
+		run := func(args ...string) {
+			t.Helper()
+			cmd, cancel := gitCmd(append([]string{"-C", dir}, args...)...)
+			defer cancel()
+			if out, err := cmd.CombinedOutput(); err != nil {
+				t.Fatalf("git %v: %v\n%s", args, err, out)
+			}
+		}
+		run("init", "--quiet")
+		if name != "" {
+			run("config", "user.name", name)
+			run("config", "user.email", email)
+		}
+		return dir
+	}
+
+	t.Run("seeded from the host config", func(t *testing.T) {
+		t.Setenv("GIT_CONFIG_GLOBAL", os.DevNull)
+		t.Setenv("GIT_CONFIG_SYSTEM", os.DevNull)
+		repo := newRepo(t, "Ada Lovelace", "ada@example.invalid")
+		spec := &sandbox.Spec{}
+		p := SandboxParams{WorkspacePath: repo, HostStateOverride: "none"}
+
+		_ = applyHostStateMounts(spec, &ir.Workflow{}, p, noopEmit, iterlog.Nop())
+
+		for key, want := range map[string]string{
+			"GIT_AUTHOR_NAME":     "Ada Lovelace",
+			"GIT_AUTHOR_EMAIL":    "ada@example.invalid",
+			"GIT_COMMITTER_NAME":  "Ada Lovelace",
+			"GIT_COMMITTER_EMAIL": "ada@example.invalid",
+		} {
+			if got := spec.Env[key]; got != want {
+				t.Errorf("spec.Env[%q] = %q, want %q", key, got, want)
+			}
+		}
+		if spec.Env["GIT_CONFIG_VALUE_0"] != "false" {
+			t.Errorf("commit signing was not disabled: %v", spec.Env)
+		}
+	})
+
+	t.Run("nothing invented when the host has none", func(t *testing.T) {
+		t.Setenv("GIT_CONFIG_GLOBAL", os.DevNull)
+		t.Setenv("GIT_CONFIG_SYSTEM", os.DevNull)
+		repo := newRepo(t, "", "")
+		spec := &sandbox.Spec{}
+		p := SandboxParams{WorkspacePath: repo, HostStateOverride: "none"}
+
+		_ = applyHostStateMounts(spec, &ir.Workflow{}, p, noopEmit, iterlog.Nop())
+
+		if got, set := spec.Env["GIT_AUTHOR_NAME"]; set {
+			t.Errorf("an identity was invented for an unconfigured host: %q", got)
+		}
+	})
+
+	t.Run("untouched under host_state auto", func(t *testing.T) {
+		t.Setenv("GIT_CONFIG_GLOBAL", os.DevNull)
+		t.Setenv("GIT_CONFIG_SYSTEM", os.DevNull)
+		repo := newRepo(t, "Ada Lovelace", "ada@example.invalid")
+		spec := &sandbox.Spec{}
+		p := SandboxParams{WorkspacePath: repo, HostStateOverride: "auto"}
+
+		_ = applyHostStateMounts(spec, &ir.Workflow{}, p, noopEmit, iterlog.Nop())
+
+		if got, set := spec.Env["GIT_AUTHOR_NAME"]; set {
+			t.Errorf("host_state=auto mounts ~/.gitconfig; seeding GIT_AUTHOR_NAME=%q on top would override it", got)
+		}
+	})
+}
