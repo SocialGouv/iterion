@@ -261,14 +261,23 @@ Three properties worth knowing:
 
 **Known gaps:**
 
-- **A copy-based sandbox cannot carry it.** The kubernetes driver populates the
-  pod with a COPY of the workspace and offers no per-file read-back, so the
-  agent's notes would stay in the pod until teardown — long after the sync that
-  should have persisted them. Such a run refuses auto-memory with a visible
-  warning and proceeds without it, rather than running a half cycle whose only
-  symptom is a memory that is always empty. Docker (bind mount) and unsandboxed
-  runs are unaffected. Cloud runs are too, today: the runner pins
-  `ITERION_SANDBOX_OVERRIDE=none` because the pod is itself the boundary.
+- **A copy-based sandbox cannot carry it — and that includes cloud runs.** The
+  kubernetes driver populates the pod with a COPY of the workspace and offers no
+  per-file read-back, so the agent's notes would stay in the pod until teardown
+  — long after the sync that should have persisted them. Such a run refuses
+  auto-memory with a visible warning and proceeds without it, rather than
+  running a half cycle whose only symptom is a memory that is always empty.
+  Docker (bind mount) and unsandboxed runs are unaffected.
+
+  A cloud run is NOT automatically exempt, whatever the sandbox section of
+  CLAUDE.md still says about the runner pinning `ITERION_SANDBOX_OVERRIDE=none`.
+  Measured on the production instance (2026-08-05): the runner's config carries
+  `ITERION_SANDBOX_DEFAULT=auto`, `ITERION_SANDBOX_HOST_STATE=none` and an EMPTY
+  `ITERION_SANDBOX_OVERRIDE` — so a bot that does not opt out gets the
+  kubernetes sandbox and its auto-memory is refused. A cloud bot that wants
+  MEMORY.md declares `sandbox: none` (proven end to end there: one run wrote a
+  note, a second run on a different pod read it back through the store), or
+  waits for a read-back seam on the copy-based drivers.
 - `iterion fork` / `rewind` do not carry `--auto-memory`; the bot's DSL
   survives, the run-level override does not. (`run` and `resume` both carry it;
   `resume` needs it RE-STATED, since run-level overrides are not persisted on
