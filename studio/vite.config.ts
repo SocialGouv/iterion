@@ -22,17 +22,24 @@ export default defineConfig({
     // which dominated cold load on slow links. Each chunk maps to a
     // dep cluster that ships together — splitting finer doesn't help
     // because the chunks share runtime modules.
+    //
+    // Expressed as rolldown's `advancedChunks.groups` (Vite 8 bundles with
+    // rolldown, whose `manualChunks` only accepts a function — the
+    // name → module-list object form of Vite ≤7 is rejected). Each group's
+    // `test` matches the same packages the old object listed.
     rollupOptions: {
       output: {
-        manualChunks: {
-          reactflow: ["@xyflow/react"],
-          monaco: ["@monaco-editor/react", "monaco-editor"],
-          radix: [
-            "@radix-ui/react-dialog",
-            "@radix-ui/react-icons",
-            "@radix-ui/react-popover",
-            "@radix-ui/react-tabs",
-            "@radix-ui/react-tooltip",
+        advancedChunks: {
+          groups: [
+            { name: "reactflow", test: /[\\/]node_modules[\\/]@xyflow[\\/]react[\\/]/ },
+            {
+              name: "monaco",
+              test: /[\\/]node_modules[\\/](@monaco-editor[\\/]react|monaco-editor)[\\/]/,
+            },
+            {
+              name: "radix",
+              test: /[\\/]node_modules[\\/]@radix-ui[\\/]react-(dialog|icons|popover|tabs|tooltip)[\\/]/,
+            },
           ],
         },
       },
