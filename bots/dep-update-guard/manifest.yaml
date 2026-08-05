@@ -1,7 +1,23 @@
 name: dep-update-guard
 display_name: Vetty
 icon: 💂
-version: 2.6.3
+version: 2.6.5
+## 2.6.5 — Revi hardening of the loop-back: budget 2h → 4h/$25 (a
+## fix_verify cycle re-runs verify_build+verify_run, 30–50m each on the
+## measured heavy case — without the raise heavy bumps would trade
+## hold_unstable for BUDGET_EXCEEDED); verify_build gains an input schema
+## so the feedback wiring is compile-checked. rc=4 deliberately does NOT
+## loop back: it is a DELTA check whose baseline swallows first-pass
+## leftovers on retry (the loop would permanently defeat the gate), and
+## its remedy — commit the regen output — belongs to the alignment, not
+## to the verify script.
+## 2.6.4 — the drift-gate precheck LOOPS BACK instead of discarding the
+## run: rc=3 (verify.sh missing a CI-enforced drift gate) now re-enters
+## verify_build with the exact rejection as feedback (bounded ×2, else →
+## hold as before). Twice in one day the aligner's correct migration was
+## thrown away because the precheck fired at verdict time — an authorship
+## defect is now self-healed in-loop, and §1b is spelled repo-wide (never
+## scoped out by bump relevance).
 ## 2.6.3 — verify.sh mirrors CI's exact strictness (skill §1c). Three
 ## consecutive re-audits of one PR produced three DIFFERENT authored
 ## verify.sh defects (env-dependent test, missing §1b drift gate, then
