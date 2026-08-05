@@ -6,7 +6,11 @@ import (
 )
 
 func TestValidateDocPath(t *testing.T) {
-	ok := []string{"a.md", "findings/2026.md", "a/b/c.md", "dotted.name.md", "./x.md"}
+	ok := []string{"a.md", "findings/2026.md", "a/b/c.md", "dotted.name.md",
+		// A backslash is a plain character, not a separator, so a
+		// Windows-shaped name is not caught by the canonicality rule.
+		`a\b.md`,
+	}
 	for _, p := range ok {
 		if err := ValidateDocPath(p); err != nil {
 			t.Errorf("ValidateDocPath(%q) = %v, want nil", p, err)
@@ -24,6 +28,18 @@ func TestValidateDocPath(t *testing.T) {
 		// Characterization: the drive-letter guard rejects ANY path whose
 		// second character is ':', even a plausible relative name.
 		"a:b.md",
+		// Non-canonical spellings of a path that is otherwise perfectly
+		// legal. These were ACCEPTED until a reproduced data loss showed why
+		// they must not be: they address the same document as their clean
+		// form, the FS adapter silently normalises them while the cloud one
+		// stores them verbatim, and a consumer that round-trips a document
+		// through the filesystem then fails to find the key it was given —
+		// reading the mismatch as "the agent deleted this" and destroying an
+		// untouched note on both sides.
+		"./x.md",   // leading dot segment
+		"a//b.md",  // doubled separator
+		"a/./b.md", // interior dot segment
+		"x.md/",    // trailing separator
 	}
 	for _, p := range bad {
 		if err := ValidateDocPath(p); err == nil {

@@ -41,6 +41,7 @@ type backendFields struct {
 	skills           []string
 	cursors          *ir.CursorInvocation
 	compress         string   // node-level `compress:` value ("" = unset)
+	autoMemory       string   // node-level `auto_memory:` value ("" = inherit workflow)
 	permission       string   // node-level `permission:` mode override ("" = inherit)
 	timeout          string   // node-level `timeout:` Go duration ("" = no per-node bound); may contain ${VAR} env refs
 	readonly         bool     // node-level `readonly:` — force delegated agents into a read-only sandbox
@@ -73,6 +74,7 @@ func extractBackendFields(node ir.Node) (backendFields, error) {
 			skills:           n.Skills,
 			cursors:          n.Cursors,
 			compress:         n.Compress,
+			autoMemory:       n.AutoMemory,
 			permission:       n.Permission,
 			timeout:          n.Timeout,
 			readonly:         n.Readonly,
@@ -96,6 +98,7 @@ func extractBackendFields(node ir.Node) (backendFields, error) {
 			skills:           n.Skills,
 			cursors:          n.Cursors,
 			compress:         n.Compress,
+			autoMemory:       n.AutoMemory,
 			permission:       n.Permission,
 			timeout:          n.Timeout,
 			readonly:         n.Readonly,
@@ -266,6 +269,12 @@ func (e *ClawExecutor) executeBackend(ctx context.Context, node ir.Node, input m
 		e.logger.Info("[%s#%d/claw] 🤖 LLM call: %s%s",
 			f.id, 0, task.Model, toolSuffix)
 	}
+
+	// Auto-memory brackets the dispatch: the space is materialised before the
+	// backend sees the task, and folded back after — deferred, so a node that
+	// fails AFTER the agent wrote its notes still keeps them.
+	syncAutoMemory := e.applyAutoMemory(ctx, &task, f, backendName)
+	defer syncAutoMemory()
 
 	result, err := e.dispatchWithObservability(ctx, f.id, backendName, "model: node", e.resolveProviderChain(node), backend, &task)
 	if err != nil {
@@ -648,6 +657,13 @@ func (e *ClawExecutor) buildTask(ctx context.Context, node ir.Node, f backendFie
 	// Per-node CLI binary override (env-expanded). Only claude_code consumes
 	// it; other backends ignore Task.Command. Empty = backend default.
 	task.Command = ir.ExpandEnvWithDefault(f.command)
+	// The run's source-of-truth repository root. Every consumer that keys
+	// state per PROJECT needs it — the `memory:` block's project scope and
+	// auto-memory's space alike — so it travels unconditionally. Gating it on
+	// one of those consumers made the other silently key on WorkDir instead,
+	// which for a `worktree: auto` run is a fresh path every time: the space
+	// changed per run and the memory was always empty.
+	task.RepoRoot = e.repoRoot
 	// Command-output compression mode (precedence: run override > node DSL >
 	// workflow DSL > ITERION_COMPRESS env). Stored as a string so the delegate
 	// layer + IPC wire form stay decoupled from the rewrite enum; "" (off) is
@@ -845,8 +861,7 @@ func (e *ClawExecutor) resolveOutputSchema(schemaName string) json.RawMessage {
 }
 
 // applyMemorySpec wires the per-node memory spec onto the task when
-// the node opts in (memory.enabled = true). RepoRoot is forwarded
-// alongside so the memory layer can scope the per-project key.
+// the node opts in (memory.enabled = true).
 func (e *ClawExecutor) applyMemorySpec(task *delegate.Task, m *ir.Memory) {
 	if m == nil || !m.Enabled {
 		return
@@ -861,7 +876,6 @@ func (e *ClawExecutor) applyMemorySpec(task *delegate.Task, m *ir.Memory) {
 		Visibility:       m.Visibility,
 		BotID:            e.botID,
 	}
-	task.RepoRoot = e.repoRoot
 }
 
 // applyPresetFragment wires the launch-time preset bias ("## Focus")
@@ -962,6 +976,17 @@ func (e *ClawExecutor) assembleEffectiveTools(f backendFields, backendName strin
 	// (agenticOperatingPosture) prompts claw to actually maintain it.
 	if backendName == delegate.BackendClaw && len(effectiveTools) > 0 {
 		effectiveTools = ensureToolPresent(effectiveTools, "todo_write")
+	}
+	// Auto-memory is maintained with ORDINARY FILE TOOLS — that is the whole
+	// mechanism, on both backends. claude_code always has its native toolset
+	// under bypassPermissions, and an unrestricted claw set already exposes
+	// these; but a claw node that restricts `tools:` would be told to keep a
+	// MEMORY.md it has no way to read or write. Grant exactly the three the
+	// instructions call for.
+	if backendName == delegate.BackendClaw && len(effectiveTools) > 0 && e.autoMemoryMode(f).Enabled() {
+		for _, name := range []string{"read_file", "write_file", "list_files"} {
+			effectiveTools = ensureToolPresent(effectiveTools, name)
+		}
 	}
 	// CLI-based backends can't accept inline images on stdin: forward
 	// the image path via {{attachments.X}} text interpolation and

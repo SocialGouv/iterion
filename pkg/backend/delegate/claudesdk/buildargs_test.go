@@ -70,3 +70,18 @@ func TestBuildArgs_SettingSourcesAllThree(t *testing.T) {
 		}
 	}
 }
+
+func TestBuildArgs_Settings(t *testing.T) {
+	args := buildArgs(processConfig{
+		SettingsJSON: []byte(`{"autoMemoryEnabled":true}`),
+	}, true)
+	if got := flagValue(args, "--settings"); got != `{"autoMemoryEnabled":true}` {
+		t.Errorf("--settings = %q, want the inline JSON verbatim", got)
+	}
+
+	// Empty → flag omitted. The CLI treats an empty --settings as a parse
+	// error, and there is nothing to merge anyway.
+	if hasFlag(buildArgs(processConfig{}, true), "--settings") {
+		t.Error("--settings must be omitted when no inline settings are configured")
+	}
+}

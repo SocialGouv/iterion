@@ -52,12 +52,14 @@ export default function EngineOptionsSection({
       <RunSettingsSection
         backendOverride={overrides.backendOverride}
         compressOverride={overrides.compressOverride}
+        autoMemoryOverride={overrides.autoMemoryOverride}
         permissionOverride={overrides.permissionOverride}
         reviewModeOverride={overrides.reviewModeOverride}
         backendReport={backendReport}
         effective={overrides.effectiveSettings}
         onBackendChange={overrides.setBackendOverride}
         onCompressChange={overrides.setCompressOverride}
+        onAutoMemoryChange={overrides.setAutoMemoryOverride}
         onPermissionChange={overrides.setPermissionOverride}
         onReviewModeChange={overrides.setReviewModeOverride}
         showReviewMode={showReviewMode}

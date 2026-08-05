@@ -511,139 +511,20 @@ func piSessionDir(task Task) string {
 // helpers it calls.
 func piPrepareStateRoot(task Task, logger *iterlog.Logger) error {
 	root, loc := task.StateDir(BackendPi)
-
-	// Guard the leaf where someone OTHER than the operator could have planted
-	// it: inside the target repository's checkout, and on the shared mount,
-	// which is bind-mounted read-write at a predictable path and shared by every
-	// run on the host. NOT on `<StoreDir>/pi` or `~/.iterion/pi`: those are the
-	// operator's, and pointing them at another volume is a sensible answer to
-	// transcript growth — refusing there aborted every pi node with a message
-	// asserting a checkout that does not exist.
-	//
-	// StateDir already answered this; re-deriving it is what put the last three
-	// defects here, most recently a `lexicallyWithin(SharedStateDir, root)` that
-	// answered "not shared" for a relative SharedStateDir and skipped the guard.
-	if loc.Plantable() {
-		if err := piGuardWriteRoot(root); err != nil {
-			return err
-		}
-	}
-	// The leaf Lstat above is not enough inside a checkout: a symlink at ANY
-	// component redirects the whole root, and everything pi writes goes through
-	// it — the extension bundle (which is the permission gate), the composed
-	// system prompt, the transcripts, the credential. Only the credential path
-	// walked the components until now; the other three rode the leaf check
-	// alone, which follows a symlinked ancestor and finds a plain leaf inside
-	// the attacker's directory.
-	if loc == StateInCheckout {
-		if err := refuseSymlinkedPath(task.WorkDir, root); err != nil {
-			return err
-		}
+	// The guard choreography — which root is refused, and under which
+	// condition — is PrepareStateRoot's, shared with every other backend that
+	// writes under a state root. Re-deriving it here is what put the last
+	// three defects in this function, and hand-rolling it twice is how the
+	// same symlink hole came to exist at two levels.
+	if err := PrepareStateRoot(task, root, loc, "pi backend",
+		"pi's extension, system prompt and session transcripts", logger); err != nil {
+		return err
 	}
 	// Reap what an interrupted node stranded, for EVERY pi node — not just the
 	// codex ones that seed a credential. Session transcripts are written by all
 	// of them, and on a root shared across runs nothing else reaps them.
 	piSweepStaleSeeds(root)
-	if loc == StateInCheckout {
-		// A v2 campaign agent runs `git add -A` before each in-stride commit and
-		// finalizeWorktree fast-forwards the result onto the operator's branch,
-		// so anything here could be staged into the target repo.
-		piHideWorkspaceSessionDir(task, logger)
-	}
 	return nil
-}
-
-// piGuardWriteRoot refuses to write pi's workspace state through a symlink the
-// TARGET repository supplied at `<WorkDir>/.iterion/pi`.
-//
-// .gitignore does not stop a TRACKED symlink from being checked out, and both
-// os.MkdirAll and pi itself follow one — so a repo could redirect the extension
-// bundle, the composed system prompt and its own session transcripts to a host
-// path of its choosing, creating directories along the way. Off the sandbox
-// that path is outside the workspace entirely.
-//
-// Only the LEAF is refused, not a symlinked `.iterion` above it. That asymmetry
-// is deliberate: `pi/` is a directory iterion creates and names, so a symlink
-// there is never the operator's doing — whereas `.iterion` IS theirs. Without
-// `worktree: auto`, WorkDir is the operator's own repo root and `.iterion` is
-// the conventional store dir, which they may legitimately have pointed at
-// another volume; refusing that would fail every pi node on a working setup to
-// close a narrower hole.
-//
-// The residue is stated rather than hidden: a repo that commits `.iterion`
-// ITSELF as a symlink is not caught here, because at that point it is
-// impersonating the operator's own store convention and the two are
-// indistinguishable from this side.
-func piGuardWriteRoot(root string) error {
-	if root == "" {
-		return nil
-	}
-	leaf := root
-	info, err := os.Lstat(leaf)
-	if err != nil {
-		return nil // absent, or unreadable for a reason MkdirAll will report
-	}
-	if info.Mode()&os.ModeSymlink != 0 {
-		return fmt.Errorf("pi backend: refusing to run: %s is a symlink, and the workspace is a "+
-			"checkout of the target repository — pi's extension, system prompt and session "+
-			"transcripts would be written wherever it points", leaf)
-	}
-	return nil
-}
-
-// piHideWorkspaceSessionDir makes a workspace-relative session dir invisible
-// to the target repo's git, by dropping a self-ignoring .gitignore the way
-// devbox does for its generated profile.
-//
-// Without it, pi's transcripts are untracked files inside the worktree, so
-// they make workdirIsClean false and ride finalizeWorktree's `git add -A` into
-// a wip-bank commit — meaning a sandboxed pi run lands a commit full of
-// session transcripts in a repo that changed no code. It also writes iterion's
-// own `.iterion/` into someone else's tree, which the repo-agnostic rule
-// forbids. A no-op when the path is outside the workspace (the StoreDir case).
-func piHideWorkspaceSessionDir(task Task, logger *iterlog.Logger) {
-	// Guard whenever there is a workspace at all, not only when the SESSION
-	// dir happens to land under it. piext.Materialise and writeSystemPromptFile
-	// both write into <WorkDir>/.iterion/pi/ unconditionally, and on the
-	// default non-sandboxed path piSessionDir resolves to StoreDir — so keying
-	// on the session dir left the embedded extension bundle and the full
-	// composed system prompt unguarded in the target repo, which is exactly
-	// what this function exists to prevent.
-	if task.WorkDir == "" {
-		return
-	}
-	root := filepath.Join(task.WorkDir, ".iterion")
-	if err := os.MkdirAll(root, 0o755); err != nil {
-		if logger != nil {
-			logger.Warn("pi: cannot create %s: %v — session files may ride a `git add -A`", root, err)
-		}
-		return
-	}
-	// `*` also ignores this file, so nothing under .iterion/ is ever staged.
-	guard := filepath.Join(root, ".gitignore")
-	// Lstat, never a FOLLOWING Stat. A repo can ship `.iterion/.gitignore` as a
-	// tracked symlink, and following it fails both ways: a DANGLING link makes
-	// os.WriteFile create an attacker-chosen host file, and a link to any
-	// existing path makes the Stat below succeed so this returns as if the
-	// workspace were guarded — silently leaving pi's transcripts and composed
-	// system prompt stageable by a campaign agent's `git add -A`.
-	//
-	// The write policy deliberately differs from piWriteIgnoreGuard's: this path
-	// can be the OPERATOR's own store dir, where appending `*` would re-ignore
-	// everything their rules had negated (last match wins). Their file is left
-	// exactly as it is.
-	if err := refuseNonRegular(guard); err != nil {
-		if logger != nil {
-			logger.Warn("pi: %v — session files may ride a `git add -A`", err)
-		}
-		return
-	}
-	if _, err := os.Lstat(guard); err == nil {
-		return // an operator's own guard: never overwrite
-	}
-	if err := os.WriteFile(guard, []byte("*\n"), 0o644); err != nil && logger != nil {
-		logger.Warn("pi: cannot write %s: %v — session files may ride a `git add -A`", guard, err)
-	}
 }
 
 // piCredentialEnvNames is every environment variable pi resolves a provider

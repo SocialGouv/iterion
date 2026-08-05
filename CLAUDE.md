@@ -251,6 +251,28 @@ Other top-level directories: `studio/` (React/Vite frontend), `examples/` (.bot 
 
 **`compress:` field** (`on|ultra|off`) — command-output compression (the `rewriter` plugin kind, rtk by default) on the `workflow` block and on `agent`/`judge`/`tool` nodes. **Opt-OUT on agent/judge nodes**: when a rewriter plugin is enabled and its binary is present, compression defaults **on** (so rtk is used out of the box); disable per-run with `--compress off` (or the studio toggle) or globally with `iterion plugin disable rtk` / `ITERION_COMPRESS=off`. **Tool nodes stay opt-IN** (a review loop's `git diff` is never silently compressed). See the plugins section above + [docs/plugins.md](docs/plugins.md).
 
+**`auto_memory:` field** (`on|off`) — the backends' own auto-memory
+(`MEMORY.md`) on the `workflow` block and on `agent`/`judge` nodes. **Off by
+default**, so a run is hermetic: without it, claude_code's own default is *on*
+and every node would read and write the operator's personal
+`~/.claude/projects/<cwd>/memory/`. When on, iterion resolves ONE space
+(visibility `bot`, reserved name `auto-memory`, keyed on the **repo root** so a
+`worktree: auto` run doesn't start empty), materialises it on disk, and points
+**claude_code, claw and pi** at that same directory — `--settings
+autoMemoryDirectory` for claude_code (which has auto-memory of its own), a
+rendered `# Auto memory` prompt section for claw and pi (which have none) —
+then folds the agent's edits back through `knowledge.MemoryStore`, which is
+what makes it survive a cloud pod. Precedence mirrors `compress:`:
+`--auto-memory` → node → workflow → `ITERION_AUTO_MEMORY` → off — and unlike
+`compress:` the run-level override travels all the way onto the cloud queue
+(`RunMessage.auto_memory`, schema v6) and into a detached subprocess, so an
+operator's `off` is never quietly replaced by a bot's `on`. It is not persisted
+on the run, so `iterion resume --auto-memory` must re-state it. Diagnostics
+C131/C132. A **copy-based sandbox** (kubernetes) refuses the feature with a
+warning: it has a push seam but no per-file read-back, so the agent's notes
+could not be synced. Distinct from the `memory:` block (iterion's own tools +
+scopes). See [docs/memory-and-knowledge.md](docs/memory-and-knowledge.md).
+
 **`permission:` field** (`off|ask|deny`) + `allow:`/`ask:`/`deny:` rule lists — opt-in **tool-permission gate** (the anti-prompt-injection boundary). Mode on the `workflow` block and as a per-node override; rule lists (Claude-Code `Tool(pattern)` syntax, e.g. `Bash(go test:*)`, `Read(**)`, `Edit(pkg/**)`) on the workflow block. `off` (default) = today's bypassPermissions; `ask` pauses for human approval on any call not allow-listed; `deny` hard-blocks it (headless). The SAME resolved `permission.Policy` ([pkg/backend/permission](pkg/backend/permission/permission.go)) drives claude_code's `wirePermissionHook`, claw's `executeToolsDirect` gate, and pi's embedded RPC extension — so a bot behaves consistently across the three gated backends. Precedence (mirrors `compress:`): CLI `--permission`/`--permission-allow|ask|deny` → node → workflow → `ITERION_PERMISSION` → off. Diagnostics C110/C111/C112. See [docs/permissions.md](docs/permissions.md).
 
 **Edge syntax:**

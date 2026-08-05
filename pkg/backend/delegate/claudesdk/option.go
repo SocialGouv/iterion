@@ -110,6 +110,7 @@ type config struct {
 	outputFormat    map[string]any
 	thinking        *ThinkingConfig
 	settingSources  []SettingSource
+	settingsJSON    []byte
 	stderrCallback  func(string)
 	messageCallback MessageCallbackFunc
 	addDirs         []string
@@ -303,6 +304,12 @@ func WithThinking(cfg ThinkingConfig) Option {
 // WithSettingSources controls which settings sources to load.
 func WithSettingSources(sources ...SettingSource) Option {
 	return func(c *config) { c.settingSources = sources }
+}
+
+// WithSettingsJSON passes an inline settings object the CLI merges on top of
+// every settings source it loaded (`--settings`). Repeated calls replace.
+func WithSettingsJSON(raw []byte) Option {
+	return func(c *config) { c.settingsJSON = raw }
 }
 
 // WithStderrCallback sets a function to receive stderr output from the CLI.

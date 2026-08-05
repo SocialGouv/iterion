@@ -58,6 +58,7 @@ type previewEffectiveKnob struct {
 
 type previewEffectiveSettings struct {
 	Compress   previewEffectiveKnob `json:"compress"`
+	AutoMemory previewEffectiveKnob `json:"auto_memory"`
 	Permission previewEffectiveKnob `json:"permission"`
 	Backend    previewEffectiveKnob `json:"backend"`
 }

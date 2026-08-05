@@ -132,6 +132,9 @@ type PromptConfig struct {
 	ContextManagement   bool
 	// MemoryMaxBytes caps the combined injected memory content (0 = default).
 	MemoryMaxBytes int
+	// AutoMemoryDir overrides where the auto-memory section reads MEMORY.md
+	// from (empty = derived from the working directory).
+	AutoMemoryDir string
 }
 
 // DefaultPromptConfig returns the all-on default (Claude Code parity).
@@ -169,6 +172,7 @@ func (p PromptConfig) AssembleOptions() clawctx.AssembleOptions {
 		GitStatus:           p.GitStatus,
 		ProjectInstructions: p.ProjectInstructions,
 		AutoMemory:          p.AutoMemory,
+		AutoMemoryDir:       p.AutoMemoryDir,
 		Memory: clawctx.MemoryOptions{
 			WalkUp:   p.MemoryWalkUp,
 			Imports:  p.MemoryImports,

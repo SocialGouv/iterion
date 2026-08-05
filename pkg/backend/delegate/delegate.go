@@ -539,6 +539,33 @@ type Task struct {
 	// workflow DSL > ITERION_COMPRESS env).
 	CompressMode string
 
+	// AutoMemoryDir is the absolute directory holding this node's MEMORY.md
+	// tree, or "" when auto-memory is off for the node — the default, and the
+	// value every backend that cannot honour the switch sees.
+	//
+	// A single field carries both halves on purpose: the executor has already
+	// resolved the on/off precedence chain and materialised the directory, so
+	// "enabled" and "where" can never disagree here. Non-empty means the
+	// backend must point its native auto-memory at exactly this path; empty
+	// means it must actively DISABLE auto-memory rather than leave it alone,
+	// since claude_code's own default is on and would otherwise read and write
+	// the operator's personal memory for the workspace.
+	//
+	// Inside a sandbox the path resolves identically on both sides (it comes
+	// from Task.StateDir, which prefers the SharedStateDir mount).
+	AutoMemoryDir string
+
+	// AutoMemoryPrompt is the rendered system-prompt section describing that
+	// directory, or "" when the backend needs none.
+	//
+	// Backends split on this: claude_code has auto-memory of its own and only
+	// needs to be pointed at the directory, so describing it in the prompt too
+	// would state the mechanism twice; claw and pi have no such concept, so
+	// this section IS the mechanism. The executor decides which — this package
+	// stays free of that per-backend knowledge and simply appends whatever it
+	// was handed.
+	AutoMemoryPrompt string
+
 	// Rewriters is the active rewriter-plugin chain (rtk by default) carried
 	// alongside CompressMode so both the in-process claude_code hook and the
 	// (possibly sandboxed, IPC) claw runner can rebuild the rewrite.Chain. Each
@@ -1075,6 +1102,9 @@ func (t Task) BuildSystemPrompt() string {
 	if t.Ultracode {
 		b.WriteString(ultracodeOrchestrationInstruction)
 	}
+	// Before the operating-posture suffixes: the memory section is context the
+	// model reads, not an instruction about how to behave.
+	b.WriteString(t.AutoMemoryPrompt)
 	if t.SecretsHygiene || len(t.SecretFiles) > 0 {
 		b.WriteString(secretsHygieneInstruction)
 		if len(t.SecretFiles) > 0 {

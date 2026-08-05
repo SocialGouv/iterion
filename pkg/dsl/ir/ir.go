@@ -43,6 +43,7 @@ type Workflow struct {
 	Interaction     *InteractionMode       // workflow-level default interaction mode (nil = not set)
 	Worktree        string                 // "auto" runs in a per-run git worktree; "" or "none" runs in-place
 	Compress        string                 // compress output-compression mode: on|ultra|off ("" = unset)
+	AutoMemory      string                 // backend auto-memory (MEMORY.md) switch: on|off ("" = unset → off)
 	Permission      string                 // permission gate mode: off|ask|deny ("" = unset → off)
 	PermissionAllow []string               // allow rules (Claude-Code `Tool(pattern)` syntax, e.g. "Bash(go test:*)")
 	PermissionAsk   []string               // ask rules
@@ -216,6 +217,7 @@ type AgentNode struct {
 	Sandbox          *SandboxSpec // node-level sandbox override (nil = inherit workflow)
 	Cursors          *CursorInvocation
 	Compress         string   // compress output-compression mode: on|ultra|off ("" = inherit)
+	AutoMemory       string   // backend auto-memory (MEMORY.md) switch: on|off ("" = inherit workflow)
 	Permission       string   // permission gate mode override: off|ask|deny ("" = inherit workflow)
 	Needs            []string // resource names this node acquires before running (counting semaphores)
 }
@@ -244,6 +246,7 @@ type JudgeNode struct {
 	Sandbox          *SandboxSpec // node-level sandbox override (nil = inherit workflow)
 	Cursors          *CursorInvocation
 	Compress         string   // compress output-compression mode: on|ultra|off ("" = inherit)
+	AutoMemory       string   // backend auto-memory (MEMORY.md) switch: on|off ("" = inherit workflow)
 	Permission       string   // permission gate mode override: off|ask|deny ("" = inherit workflow)
 	Needs            []string // resource names this node acquires before running (counting semaphores)
 }
@@ -518,6 +521,7 @@ type LLMNode interface {
 	GetMemory() *Memory
 	GetCursors() *CursorInvocation
 	GetCompress() string
+	GetAutoMemory() string
 	GetPermission() string
 }
 
@@ -542,6 +546,7 @@ func (n *AgentNode) GetCompaction() *Compaction               { return n.Compact
 func (n *AgentNode) GetMemory() *Memory                       { return n.Memory }
 func (n *AgentNode) GetCursors() *CursorInvocation            { return n.Cursors }
 func (n *AgentNode) GetCompress() string                      { return n.Compress }
+func (n *AgentNode) GetAutoMemory() string                    { return n.AutoMemory }
 func (n *AgentNode) GetPermission() string                    { return n.Permission }
 
 // LLMNode accessor methods on *JudgeNode.
@@ -560,6 +565,7 @@ func (n *JudgeNode) GetCompaction() *Compaction               { return n.Compact
 func (n *JudgeNode) GetMemory() *Memory                       { return n.Memory }
 func (n *JudgeNode) GetCursors() *CursorInvocation            { return n.Cursors }
 func (n *JudgeNode) GetCompress() string                      { return n.Compress }
+func (n *JudgeNode) GetAutoMemory() string                    { return n.AutoMemory }
 func (n *JudgeNode) GetPermission() string                    { return n.Permission }
 
 // ---------------------------------------------------------------------------

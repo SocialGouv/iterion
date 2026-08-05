@@ -66,6 +66,12 @@ func (p *parser) parseWorkflowDecl() *ast.WorkflowDecl {
 			wd.Compress = p.expectIdent()
 			p.skipNewlines()
 
+		case TokenAutoMemory:
+			p.next() // consume "auto_memory"
+			p.expect(TokenColon)
+			wd.AutoMemory = p.expectIdent()
+			p.skipNewlines()
+
 		case TokenPermission:
 			p.next() // consume "permission"
 			p.expect(TokenColon)

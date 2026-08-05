@@ -122,14 +122,21 @@ func (s *Service) subbotRunnerFor(parentPath string, runLogger *iterlog.Logger) 
 		managedCtx, pauseOpts, releaseChild := manageSubbotChild(s.manager, ctx, childRunID, runLogger)
 
 		childExec, err := BuildExecutor(ExecutorSpec{
-			Ctx:           managedCtx,
-			Workflow:      childWf,
-			Store:         s.store,
-			RunID:         childRunID,
-			Logger:        runLogger,
-			StoreDir:      s.storeDir,
-			Inbox:         s.inboxBinder(),
-			AsyncAsk:      s.asyncAskBinder(),
+			Ctx:      managedCtx,
+			Workflow: childWf,
+			Store:    s.store,
+			RunID:    childRunID,
+			Logger:   runLogger,
+			StoreDir: s.storeDir,
+			Inbox:    s.inboxBinder(),
+			AsyncAsk: s.asyncAskBinder(),
+			// A subbot is a DIFFERENT bot from its parent, so it keys its own
+			// bot-scoped memory. Derived from the child's own path, exactly as
+			// the CLI subbot runner does — without it the executor falls back
+			// to the child WORKFLOW's name, and the same subbot bundle ends up
+			// with two memory spaces depending on which surface launched the
+			// parent.
+			BotID:         ResolveBotID("", BundleNameForPath(childPath), childPath),
 			BoardRegister: s.boardRegister,
 			LocalSecrets:  s.localSecrets,
 			LocalSealer:   s.localSealer,

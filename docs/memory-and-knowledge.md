@@ -133,10 +133,161 @@ It exposes three tools that every catalog bot can use:
 - `memory_write` — write or overwrite a document.
 - `memory_list` — list documents under an optional dir prefix.
 
+A document path is relative, stays inside the space (no `..`, no absolute
+form), and must be **canonical** — `MEMORY.md`, not `./MEMORY.md`;
+`topics/deploy.md`, not `topics//deploy.md`. One document, one spelling: the
+two adapters used to disagree about it (the filesystem one normalised on the
+way in, the cloud one stored the key verbatim), which let one document exist
+under several keys and a filesystem round trip lose track of its own file. The
+error names the canonical form, so a caller — or a model — can correct itself.
+
 The skill ships per-bundle (not per-instance) so each bot's authored
 scope is part of the bundle it lives in — see
 [bundles.md → Resource resolution](bundles.md#resource-resolution-at-run-time)
 for the workspace-mirror mechanism.
+
+## `auto_memory:` — the backends' own MEMORY.md
+
+The `memory:` block above is iterion's memory: explicit tools, an authored
+scope, an autoload set. Alongside it, **an agent already keeps a MEMORY.md if you let it** — Claude Code has
+auto-memory of its own (`~/.claude/projects/<cwd>/memory/`), and claw and pi
+maintain one from a prompt section plus their ordinary file tools.
+`auto_memory:` is the switch for that mechanism.
+
+```
+workflow main:
+  auto_memory: off          # workflow default
+
+agent implement:
+  backend: "claude_code"
+  auto_memory: on           # node override
+
+agent review:
+  backend: "claw"
+  auto_memory: on           # the SAME MEMORY.md as `implement`
+```
+
+**Off by default.** A run is hermetic unless it asks otherwise. Left alone,
+Claude Code's own default is *on*, which means every claude_code node of every
+bot run would read and write the operator's personal memory for that working
+directory — a side effect nobody opted into, and cross-run contamination
+between unrelated bots.
+
+**Precedence** (first set wins): `--auto-memory` / studio Launch → node
+`auto_memory:` → workflow `auto_memory:` → `ITERION_AUTO_MEMORY` → off.
+The run-level override travels the whole way — including onto the cloud queue
+(`RunMessage.auto_memory`, schema v6) and into a detached runner subprocess —
+so an operator's `off` is not quietly replaced by a bot's `on` further down.
+It is NOT persisted on the run, though: `iterion resume --auto-memory` has to
+re-state it.
+
+Diagnostics: **C131** (invalid value) and **C132** (`on` on a backend that
+ignores it — `claude_code`, `claw` and `pi` consume it; kimi, grok and the
+legacy codex do not). C132 fires per node on an explicit node-level `on`, and
+once for the workflow when a workflow-level `on` is inert because *nothing* in
+the graph can honour it.
+
+### One directory, both backends, persisted
+
+Each backend's native store keys on the working directory, which defeats the
+purpose twice over: a `worktree: auto` bot gets a fresh, empty memory every
+run, and a claude_code node and a claw node of the same bot never see each
+other's notes.
+
+So iterion owns the location instead. It resolves ONE space — visibility
+`bot`, reserved name `auto-memory`, keyed on the run's **repository root** —
+materialises it into a directory before the node runs, points every supported
+backend at that absolute path, and folds the agent's edits back into the space
+afterwards, including when the node failed.
+
+**Which bot the space belongs to** is resolved by one rule, shared by every
+surface that starts a run (CLI, studio in-process, a detached subprocess, the
+cloud runner, a resume, a subbot child, the dispatcher): the bot id persisted
+on the run when there is one, else the bundle directory name for a
+`<id>/main.bot` path, else nothing — and the executor then falls back to the
+workflow's own name. A standalone `.bot` deliberately takes that last branch:
+it has no identity beyond its workflow name, and deriving one from wherever the
+file happens to sit would move its memory when the file moves.
+
+The rule is shared because the alternative was not: while each surface resolved
+its own, a bundle whose id and workflow name differ — `whats-next` against
+`whats_next`, the usual shape — wrote its notes to one space at launch and read
+an empty other one on resume. Nothing failed; the memory simply split in two.
+A test over the construction sites (`TestEveryExecutorConstructionDecidesTheBotIdentity`)
+keeps a new surface from quietly reintroducing that.
+
+For a bundle, the three names must agree — `manifest.yaml`'s `name`, the
+`workflow NAME:`, and the bundle directory. **C230** enforces it for any bundle
+carrying per-bot memory, which now includes `auto_memory: on`, because the rule
+above resolves whichever of the three the launching surface happens to know.
+Two bundles that pick the SAME name still share one space; that is the same
+property `memory: visibility: bot` has always had, and the space is at least
+scoped per project, so the collision needs two identically-named bundles in one repo.
+
+How the backend is told splits in two, and only in two:
+
+| Backend | Told by |
+|---|---|
+| `claude_code` | `--settings autoMemoryDirectory` — it has auto-memory of its own, so it only needs pointing |
+| `claw`, `pi` | a rendered `# Auto memory` system-prompt section — they have no such concept, so the section IS the mechanism, and their ordinary file tools do the rest |
+
+The section is claw's own renderer, reused rather than re-authored, so a
+wording improvement upstream reaches every backend that needs it.
+
+Because the space goes through the same `knowledge.MemoryStore` as everything
+else on this page, **cloud runs persist**: the Mongo store carries MEMORY.md
+past the pod's ephemeral disk, and `iterion memory du|export` sees the space
+like any other.
+
+The sync-back deliberately runs on a context detached from the node's. A run
+that ends early — an operator Cancel, a runner drain, a timeout — is exactly
+when the agent's notes matter most, and the cloud store honours cancellation,
+so syncing on the node's own context would discard them. It is bounded, and the bound
+scales with how much there is to persist: cancelling a run does not return
+until the in-flight node has finished, so a fixed budget would either lose
+notes on a large memory or make Cancel feel stuck on a small one.
+
+Three properties worth knowing:
+
+- **Only Markdown is persisted.** The store indexes `.md`; anything else in
+  the directory is reported and skipped rather than written somewhere nobody
+  reads it.
+- **Secret-shaped bodies are refused.** Memory is readable by every later run
+  of the bot, so a document containing a literal credential token is rejected
+  with a warning instead of stored.
+- **A sync-back failure never fails the node.** Quota rejections, a skipped
+  symlink, an unreadable file — each is warned about individually and the rest
+  of the agent's notes still land.
+
+**Known gaps:**
+
+- **A copy-based sandbox cannot carry it.** The kubernetes driver populates the
+  pod with a COPY of the workspace and offers no per-file read-back, so the
+  agent's notes would stay in the pod until teardown — long after the sync that
+  should have persisted them. Such a run refuses auto-memory with a visible
+  warning and proceeds without it, rather than running a half cycle whose only
+  symptom is a memory that is always empty. Docker (bind mount) and unsandboxed
+  runs are unaffected. Cloud runs are too, today: the runner pins
+  `ITERION_SANDBOX_OVERRIDE=none` because the pod is itself the boundary.
+- `iterion fork` / `rewind` do not carry `--auto-memory`; the bot's DSL
+  survives, the run-level override does not. (`run` and `resume` both carry it;
+  `resume` needs it RE-STATED, since run-level overrides are not persisted on
+  the run.)
+- A fork re-hydrates from the space as it is TODAY, not as it was at the fork
+  point — the store is the source of truth, and it has moved on since.
+- The studio's Memory panel does not list `bot`- or `project`-visibility spaces:
+  `/api/…/memory` takes the project as a raw path while the engine keys on the
+  encoded workdir key, and `SpaceRef.Validate` rejects a raw path outright.
+  `iterion memory` encodes it and works. This predates auto-memory and affects
+  every such space.
+- A subbot's child executor is built without the parent's `MemoryStore`, so on a
+  cloud-mode studio running subbots in-process the child's memory falls back to
+  the local filesystem. Also predates auto-memory — the `memory:` block has the
+  same behaviour.
+- A credential with no published shape (a bare password, an internal token) is
+  not recognised and will be persisted. The guard matches structures the
+  provider documents, which is what keeps it from refusing an agent's ordinary
+  prose; it is not a general secret scanner.
 
 ## Tenant isolation
 

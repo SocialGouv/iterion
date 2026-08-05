@@ -164,7 +164,11 @@ func TestSchemaVersionConstant(t *testing.T) {
 	// so launch-time budget overrides reach the cloud runner. v=5
 	// (2026-07-20) added Contributions so enabled-plugin skills and DSL
 	// `skills:` library references reach the runner pod's empty iterion home.
-	if SchemaVersion != 5 {
-		t.Errorf("SchemaVersion = %d, want 5 (bump intentionally)", SchemaVersion)
+	// v=6 (2026-08-05) added AutoMemory so a launch-time `--auto-memory`
+	// decision reaches the runner instead of being replaced by the workflow's
+	// own value — a drop there turns a hermetic `off` into a run that reads
+	// and writes shared memory.
+	if SchemaVersion != 6 {
+		t.Errorf("SchemaVersion = %d, want 6 (bump intentionally)", SchemaVersion)
 	}
 }

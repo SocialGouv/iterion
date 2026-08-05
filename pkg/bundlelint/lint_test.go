@@ -40,6 +40,12 @@ func agentWithBotMemory(id string) ir.Node {
 	return &ir.AgentNode{BaseNode: ir.BaseNode{ID: id}, Memory: &ir.Memory{Enabled: true, Visibility: "bot"}}
 }
 
+// auto_memory is per-bot memory too, expressed on the node rather than in a
+// `memory:` block.
+func agentWithAutoMemory(id string) ir.Node {
+	return &ir.AgentNode{BaseNode: ir.BaseNode{ID: id}, AutoMemory: "on"}
+}
+
 func codesOf(diags []bundlelint.Diag) []string {
 	out := make([]string, 0, len(diags))
 	for _, d := range diags {
@@ -241,6 +247,27 @@ func TestCheckConsistency(t *testing.T) {
 				DirName:  "mybot",
 			},
 			codes: []string{"C230"},
+		},
+		{
+			// auto_memory keys ONE space per (bot, repo), resolved from
+			// whichever name the launching surface knows — manifest, bundle
+			// dir, or workflow. Three names that disagree are three memories,
+			// so the same stability rule has to cover it.
+			name: "auto_memory name mismatch trips C230 too",
+			in: bundlelint.Input{
+				Manifest: &bundle.Manifest{Name: "mybot"},
+				Workflow: wf("my_workflow", nil, nil, nil, agentWithAutoMemory("a")),
+				DirName:  "mybot",
+			},
+			codes: []string{"C230"},
+		},
+		{
+			name: "auto_memory with matching names is clean",
+			in: bundlelint.Input{
+				Manifest: &bundle.Manifest{Name: "mybot"},
+				Workflow: wf("mybot", nil, nil, nil, agentWithAutoMemory("a")),
+				DirName:  "mybot",
+			},
 		},
 		{
 			name: "name mismatch without per-bot memory is clean",

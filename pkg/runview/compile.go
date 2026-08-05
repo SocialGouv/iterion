@@ -210,3 +210,19 @@ func compileWith(path, inline string, withHash bool, b *bundle.Bundle) (*ir.Work
 
 	return cr.Workflow, hash, nil
 }
+
+// BundleNameForPath is the declared id of the bundle a workflow path belongs
+// to, or "" when the path is not a bundle entrypoint.
+//
+// It outranks anything derived from the path itself: a `.botz` archive is
+// extracted into a cache slot named after its CONTENT HASH, so a path-derived
+// identity would key the bot's memory on a name that changes with every edit
+// to the bundle — orphaning what it had learned on each version bump, and
+// disagreeing with the same bundle opened in directory form.
+func BundleNameForPath(filePath string) string {
+	b := ResolveBundleFromFilePath(filePath)
+	if b == nil {
+		return ""
+	}
+	return b.Manifest.Name
+}

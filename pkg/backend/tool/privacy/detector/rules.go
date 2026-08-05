@@ -244,6 +244,20 @@ func accountRules() []Rule {
 	}
 }
 
+// BuiltinRules returns the rule set [New] scans with.
+//
+// It exists so a consumer can assert something ABOUT the catalogue rather
+// than about one input — in particular that a pre-filter placed in front of
+// it covers every rule. A filter derived from the rules by hand drifts
+// silently: the only way to catch a rule with no literal of its own is to
+// enumerate them and check, which needs the list.
+//
+// The slice is a fresh copy; the Rule values inside are stateless and
+// shared.
+func BuiltinRules() []Rule {
+	return registerBuiltinRules()
+}
+
 // registerBuiltinRules assembles the full v1 rule set across all
 // five categories. Order matters only when two rules report
 // overlapping spans with equal score: the first one declared wins

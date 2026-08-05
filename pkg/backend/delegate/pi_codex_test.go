@@ -810,7 +810,7 @@ func TestPiGuardWriteRoot(t *testing.T) {
 			t.Skipf("symlinks unavailable: %v", err)
 		}
 		root, _ := Task{WorkDir: work, Sandbox: stubSandboxRun{}}.StateDir(BackendPi)
-		if err := piGuardWriteRoot(root); err == nil {
+		if err := guardStateRootLeaf(root, "pi backend", "pi's state"); err == nil {
 			t.Fatal("ran with pi's write root redirected by the repo")
 		}
 	})
@@ -828,7 +828,7 @@ func TestPiGuardWriteRoot(t *testing.T) {
 			t.Skipf("symlinks unavailable: %v", err)
 		}
 		root, _ := Task{WorkDir: work, Sandbox: stubSandboxRun{}}.StateDir(BackendPi)
-		if err := piGuardWriteRoot(root); err != nil {
+		if err := guardStateRootLeaf(root, "pi backend", "pi's state"); err != nil {
 			t.Errorf("refused an operator's own store symlink: %v", err)
 		}
 	})
@@ -836,16 +836,16 @@ func TestPiGuardWriteRoot(t *testing.T) {
 	t.Run("a real directory and an absent one both pass", func(t *testing.T) {
 		work := t.TempDir()
 		root, _ := Task{WorkDir: work, Sandbox: stubSandboxRun{}}.StateDir(BackendPi)
-		if err := piGuardWriteRoot(root); err != nil {
+		if err := guardStateRootLeaf(root, "pi backend", "pi's state"); err != nil {
 			t.Errorf("absent root refused: %v", err)
 		}
 		if err := os.MkdirAll(filepath.Join(work, ".iterion", "pi"), 0o755); err != nil {
 			t.Fatal(err)
 		}
-		if err := piGuardWriteRoot(work); err != nil {
+		if err := guardStateRootLeaf(work, "pi backend", "pi's state"); err != nil {
 			t.Errorf("real directory refused: %v", err)
 		}
-		if err := piGuardWriteRoot(""); err != nil {
+		if err := guardStateRootLeaf("", "pi backend", "pi's state"); err != nil {
 			t.Errorf("no workdir refused: %v", err)
 		}
 	})
@@ -1089,7 +1089,7 @@ func TestPiStateRootGuardWiring(t *testing.T) {
 		}
 		task := Task{NodeID: "n", WorkDir: t.TempDir(), SharedStateDir: shared, Sandbox: stubSandboxRun{}}
 		root, _ := task.StateDir(BackendPi)
-		if err := piGuardWriteRoot(root); err == nil {
+		if err := guardStateRootLeaf(root, "pi backend", "pi's state"); err == nil {
 			t.Error("a symlinked shared root was accepted")
 		}
 	})
@@ -1302,7 +1302,7 @@ func TestRefuseSymlinkedPathFailsClosedOnUnreadable(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = os.Chmod(locked, 0o755) })
 
-	if err := refuseSymlinkedPath(base, filepath.Join(locked, "inner", "pi")); err == nil {
+	if err := refuseSymlinkedPath(base, filepath.Join(locked, "inner", "pi"), "pi backend", "the pi credential"); err == nil {
 		t.Error("an uninspectable component was accepted")
 	}
 }

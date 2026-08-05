@@ -688,6 +688,9 @@ export interface CreateRunRequest {
   // Empty inherits the workflow/node `compress:` DSL then ITERION_COMPRESS.
   // Rewrites agent shell commands via the active rewriter plugin chain.
   compress?: string;
+  // auto-memory (MEMORY.md) override ("on" | "off"). Empty inherits the
+  // workflow/node `auto_memory:` DSL then ITERION_AUTO_MEMORY (default off).
+  auto_memory?: string;
   // tool-permission gate mode ("off" | "ask" | "deny"). Empty inherits
   // the workflow/node `permission:` DSL then ITERION_PERMISSION. "ask"
   // pauses for human approval on any tool not allow-listed; "deny" hard-
@@ -762,6 +765,7 @@ export interface PreviewEffectiveKnob {
 
 export interface PreviewEffectiveSettings {
   compress: PreviewEffectiveKnob;
+  auto_memory: PreviewEffectiveKnob;
   permission: PreviewEffectiveKnob;
   backend: PreviewEffectiveKnob;
 }

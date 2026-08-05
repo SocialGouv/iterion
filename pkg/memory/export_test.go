@@ -59,7 +59,7 @@ func TestExportRejectsSecret(t *testing.T) {
 	s := DefaultFSStore()
 	ctx := context.Background()
 	ref := botRef("notes")
-	if _, err := s.WriteDocument(ctx, ref, knowledge.DocumentInput{Path: "leak.md", Content: []byte("token: ghp_abcdefghijklmnop")}); err != nil {
+	if _, err := s.WriteDocument(ctx, ref, knowledge.DocumentInput{Path: "leak.md", Content: []byte("token: ghp_0123456789abcdefghijklmnopqrstuvwxyz")}); err != nil {
 		t.Fatal(err)
 	}
 	var buf bytes.Buffer

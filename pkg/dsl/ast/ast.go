@@ -503,6 +503,7 @@ type LLMDecl struct {
 	Sandbox           *SandboxBlock    // node-level sandbox override; nil inherits from workflow (see pkg/sandbox)
 	Cursors           *CursorBlock     // prompt-engineering cursor activations (nil = none)
 	Compress          string           // compress output-compression mode: on|ultra|off ("" = inherit)
+	AutoMemory        string           // backend auto-memory (MEMORY.md) switch: on|off ("" = inherit workflow)
 	Permission        string           // permission gate mode override: off|ask|deny ("" = inherit workflow)
 	Needs             []string         // resource names acquired before running (workflow.resources)
 }
@@ -738,6 +739,7 @@ type WorkflowDecl struct {
 	Interaction    *InteractionMode  // workflow-level default interaction mode (nil = not set)
 	Worktree       string            // "auto" creates a per-run git worktree; "" or "none" runs in-place
 	Compress       string            // compress output-compression mode: on|ultra|off ("" = unset)
+	AutoMemory     string            // backend auto-memory (MEMORY.md) switch: on|off ("" = unset → off)
 	Permission     string            // permission gate mode: off|ask|deny ("" = unset → off)
 	Allow          []string          // permission allow rules (Claude-Code `Tool(pattern)` syntax)
 	Ask            []string          // permission ask rules

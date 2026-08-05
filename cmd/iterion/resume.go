@@ -16,6 +16,7 @@ var resumeOpts struct {
 	forceStale  bool
 	background  bool
 
+	autoMemory      string
 	permission      string
 	permissionAllow []string
 	permissionAsk   []string
@@ -45,6 +46,7 @@ var resumeCmd = &cobra.Command{
 			ForceStale:  resumeOpts.forceStale,
 			Background:  resumeOpts.background,
 
+			AutoMemory:      resumeOpts.autoMemory,
 			Permission:      resumeOpts.permission,
 			PermissionAllow: resumeOpts.permissionAllow,
 			PermissionAsk:   resumeOpts.permissionAsk,
@@ -83,6 +85,7 @@ func init() {
 	f.BoolVar(&resumeOpts.forceStale, "force-stale", false, "Resume a status=running run whose engine has died (requires events.jsonl mtime ≥ 60s — server boot does this automatically)")
 	f.BoolVar(&resumeOpts.background, "background", false, "Internal: managed-runner mode for the studio server (writes .pid, suppresses interactive prompts)")
 	_ = f.MarkHidden("background")
+	f.StringVar(&resumeOpts.autoMemory, "auto-memory", "", "backend auto-memory (MEMORY.md) override on resume: on|off. Empty inherits the workflow/node auto_memory: DSL then ITERION_AUTO_MEMORY — NOT the original launch, which is not persisted, so re-state it to keep a hermetic run hermetic. See docs/memory-and-knowledge.md.")
 	f.StringVar(&resumeOpts.permission, "permission", "", "tool-permission gate override on resume: off|ask|deny (empty inherits the workflow/ITERION_PERMISSION). See docs/permissions.md.")
 	f.StringArrayVar(&resumeOpts.permissionAllow, "permission-allow", nil, "permission allow rule (repeatable), e.g. 'Bash(go build:*)'. Authorize an action the run paused on, then it proceeds on resume.")
 	f.StringArrayVar(&resumeOpts.permissionAsk, "permission-ask", nil, "permission ask rule (repeatable): matching calls pause for approval.")

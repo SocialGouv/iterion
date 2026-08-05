@@ -83,6 +83,8 @@ type IOTask struct {
 	ResumePendingToolUseID string                `json:"resume_pending_tool_use_id,omitempty"`
 	ResumeAnswer           string                `json:"resume_answer,omitempty"`
 	Memory                 *MemorySpec           `json:"memory,omitempty"`
+	AutoMemoryDir          string                `json:"auto_memory_dir,omitempty"`
+	AutoMemoryPrompt       string                `json:"auto_memory_prompt,omitempty"`
 	CompressMode           string                `json:"compress_mode,omitempty"`
 	Rewriters              []plugin.RewriterSpec `json:"rewriters,omitempty"`
 }
@@ -176,6 +178,8 @@ func ToIOTask(t Task) IOTask {
 		ResumePendingToolUseID: t.ResumePendingToolUseID,
 		ResumeAnswer:           t.ResumeAnswer,
 		Memory:                 t.Memory,
+		AutoMemoryDir:          t.AutoMemoryDir,
+		AutoMemoryPrompt:       t.AutoMemoryPrompt,
 		CompressMode:           t.CompressMode,
 		Rewriters:              t.Rewriters,
 	}
@@ -228,6 +232,8 @@ func FromIOTask(t IOTask) Task {
 		ResumePendingToolUseID: t.ResumePendingToolUseID,
 		ResumeAnswer:           t.ResumeAnswer,
 		Memory:                 t.Memory,
+		AutoMemoryDir:          t.AutoMemoryDir,
+		AutoMemoryPrompt:       t.AutoMemoryPrompt,
 		CompressMode:           t.CompressMode,
 		Rewriters:              t.Rewriters,
 	}

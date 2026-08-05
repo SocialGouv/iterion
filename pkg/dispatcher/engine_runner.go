@@ -277,6 +277,12 @@ func (r *EngineRunner) Dispatch(ctx context.Context, spec DispatchSpec) error {
 		RunID:    spec.RunID,
 		Logger:   runLogger,
 		StoreDir: spec.StoreDir,
+		// The dispatcher runs a bot per ticket, so it has a real identity to
+		// key bot-scoped memory on. Empty for a standalone `.bot`, where the
+		// executor falls back to the workflow name — the same rule every other
+		// launch surface follows, so a bot dispatched here and the same bot run
+		// from the CLI or the studio share one memory instead of three.
+		BotID: runview.ResolveBotID("", r.bundleName(), r.workflowPath),
 	}
 	// Local (self-hosted) secret injection: the dispatcher's in-process runner
 	// is only ever the local path (never a cloud runner pod), so resolve the
@@ -458,4 +464,14 @@ func dispatchViaServiceEnabled() bool {
 		return b
 	}
 	return false
+}
+
+// bundleName is the dispatched bundle's declared id, or "" for a plain .bot.
+// It outranks the path because a `.botz` lives in a content-hash cache slot,
+// whose name changes with every edit to the bundle.
+func (r *EngineRunner) bundleName() string {
+	if r.bundle == nil {
+		return ""
+	}
+	return r.bundle.Manifest.Name
 }

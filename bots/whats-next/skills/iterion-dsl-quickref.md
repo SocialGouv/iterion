@@ -61,6 +61,8 @@ agent worker:
 workflow my_workflow:
   entry: worker
   compress: on                    # optional: compress agent shell output run-wide (on|ultra|off)
+  auto_memory: on                 # optional: let agent/judge nodes keep a MEMORY.md across runs
+                                  # (on|off, OFF by default — a run is hermetic unless it opts in)
   worker -> done
 ```
 
@@ -116,6 +118,10 @@ agent w:
   max_tokens: 4096              # output cap (per LLM call)
   compress: on                  # opt-in command-output compression (on|ultra|off, off by default);
                                 # rewrites shell commands via the rtk plugin to save 60-90% output tokens (docs/plugins.md)
+  auto_memory: on               # a persistent MEMORY.md (on|off, off by default). One iterion-owned space
+                                # per (bot, repo) that claude_code, claw and pi all read/write, persisted
+                                # through the memory store so it survives a worktree or a cloud pod.
+                                # Distinct from the memory: block below. C132 warns on other backends.
   readonly: true                # runtime-blocks mutation tools
   interaction: human            # surfaces ask_user via MCP
   interaction_prompt: ask_msg   # used when interaction is llm or llm_or_human

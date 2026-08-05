@@ -317,6 +317,7 @@ type jsonAgentDecl struct {
 	Sandbox           *jsonSandboxBlock    `json:"sandbox,omitempty"`
 	Cursors           *jsonCursorBlock     `json:"cursors,omitempty"`
 	Compress          string               `json:"compress,omitempty"`
+	AutoMemory        string               `json:"auto_memory,omitempty"`
 	Permission        string               `json:"permission,omitempty"`
 	Needs             []string             `json:"needs,omitempty"`
 }
@@ -356,6 +357,7 @@ type jsonJudgeDecl struct {
 	Sandbox           *jsonSandboxBlock    `json:"sandbox,omitempty"`
 	Cursors           *jsonCursorBlock     `json:"cursors,omitempty"`
 	Compress          string               `json:"compress,omitempty"`
+	AutoMemory        string               `json:"auto_memory,omitempty"`
 	Permission        string               `json:"permission,omitempty"`
 	Needs             []string             `json:"needs,omitempty"`
 }
@@ -630,6 +632,7 @@ type jsonWorkflowDecl struct {
 	Interaction    string                `json:"interaction,omitempty"`
 	Worktree       string                `json:"worktree,omitempty"`
 	Compress       string                `json:"compress,omitempty"`
+	AutoMemory     string                `json:"auto_memory,omitempty"`
 	Permission     string                `json:"permission,omitempty"`
 	Allow          []string              `json:"allow,omitempty"`
 	Ask            []string              `json:"ask,omitempty"`
@@ -1112,6 +1115,7 @@ func agentToJSON(a *AgentDecl) *jsonAgentDecl {
 		Sandbox:           sandboxBlockToJSON(a.Sandbox),
 		Cursors:           cursorBlockToJSON(a.Cursors),
 		Compress:          a.Compress,
+		AutoMemory:        a.AutoMemory,
 		Permission:        a.Permission,
 		Needs:             a.Needs,
 	}
@@ -1153,6 +1157,7 @@ func judgeToJSON(j *JudgeDecl) *jsonJudgeDecl {
 		Sandbox:           sandboxBlockToJSON(j.Sandbox),
 		Cursors:           cursorBlockToJSON(j.Cursors),
 		Compress:          j.Compress,
+		AutoMemory:        j.AutoMemory,
 		Permission:        j.Permission,
 		Needs:             j.Needs,
 	}
@@ -1194,6 +1199,7 @@ func workflowToJSON(w *WorkflowDecl) *jsonWorkflowDecl {
 		Compaction:     compactionToJSON(w.Compaction),
 		Worktree:       w.Worktree,
 		Compress:       w.Compress,
+		AutoMemory:     w.AutoMemory,
 		Permission:     w.Permission,
 		Allow:          w.Allow,
 		Ask:            w.Ask,
@@ -1656,6 +1662,7 @@ func agentFromJSON(ja *jsonAgentDecl) (*AgentDecl, error) {
 			Sandbox:           sandboxBlockFromJSON(ja.Sandbox),
 			Cursors:           cursorBlockFromJSON(ja.Cursors),
 			Compress:          ja.Compress,
+			AutoMemory:        ja.AutoMemory,
 			Permission:        ja.Permission,
 			Needs:             ja.Needs,
 		},
@@ -1711,6 +1718,7 @@ func judgeFromJSON(jj *jsonJudgeDecl) (*JudgeDecl, error) {
 			Sandbox:           sandboxBlockFromJSON(jj.Sandbox),
 			Cursors:           cursorBlockFromJSON(jj.Cursors),
 			Compress:          jj.Compress,
+			AutoMemory:        jj.AutoMemory,
 			Permission:        jj.Permission,
 			Needs:             jj.Needs,
 		},
@@ -1769,6 +1777,7 @@ func workflowFromJSON(jw *jsonWorkflowDecl) (*WorkflowDecl, error) {
 		Compaction:     compactionFromJSON(jw.Compaction),
 		Worktree:       jw.Worktree,
 		Compress:       jw.Compress,
+		AutoMemory:     jw.AutoMemory,
 		Permission:     jw.Permission,
 		Allow:          jw.Allow,
 		Ask:            jw.Ask,

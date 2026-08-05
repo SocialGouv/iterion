@@ -16,6 +16,12 @@ type AssembleOptions struct {
 	// AutoMemory injects the persistent MEMORY.md section (path +
 	// maintenance instructions + current content).
 	AutoMemory bool
+	// AutoMemoryDir overrides where that section reads MEMORY.md from.
+	// Empty keeps the default derived from workDir. Set it when the host
+	// owns the memory location — a workDir that changes per session (a
+	// worktree, a container) otherwise fingerprints to a fresh, empty
+	// directory every run.
+	AutoMemoryDir string
 	// Memory configures CLAUDE.md discovery (walk-up, imports, size cap)
 	// when ProjectInstructions is enabled.
 	Memory MemoryOptions
@@ -80,7 +86,11 @@ func (a *Assembler) Assemble() string {
 	}
 
 	if a.opts.AutoMemory {
-		if auto := LoadAutoMemorySection(a.WorkDir); auto != "" {
+		dir := a.opts.AutoMemoryDir
+		if dir == "" {
+			dir = AutoMemoryDir(a.WorkDir)
+		}
+		if auto := LoadAutoMemorySectionAt(dir); auto != "" {
 			sections = append(sections, "# Auto memory\n\n"+auto)
 		}
 	}

@@ -85,6 +85,10 @@ const (
 	// Compress output-compression mode diagnostics.
 	DiagInvalidCompress DiagCode = "C102" // compress: value not one of on|off|ultra (error)
 
+	// Backend auto-memory (MEMORY.md) switch diagnostics.
+	DiagInvalidAutoMemory      DiagCode = "C131" // auto_memory: value not one of on|off (error)
+	DiagAutoMemoryNotSupported DiagCode = "C132" // auto_memory: on for a backend that does not consume it (warning)
+
 	// Static cross-node typing diagnostics (Phase 2). These resist the
 	// looseness that makes the rest of the validator a graph linter: they
 	// fire ONLY on genuinely-typed slots (enum literals compared against an

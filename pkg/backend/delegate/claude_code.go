@@ -212,15 +212,7 @@ func (b *ClaudeCodeBackend) buildTransportOptions(task Task) ([]claudesdk.Option
 		}))
 	}
 
-	effort := task.ReasoningEffort
-	if effort == "" {
-		effort = defaultClaudeCodeEffort
-	}
-	opts = append(opts, claudesdk.WithEnv("CLAUDE_CODE_EFFORT_LEVEL", effort))
-	opts = append(opts, taskExtraEnvOpts(task)...)
-	if d := claudeCodeThinkingDisplay(); d != "" {
-		opts = append(opts, claudesdk.WithThinkingDisplay(d))
-	}
+	opts = append(opts, perTaskSpawnOpts(task)...)
 
 	// tool_max_steps caps agentic tool-use iterations. Until now this
 	// field was defined in delegate.Task but never wired into the CLI,
@@ -832,6 +824,80 @@ func hostSpawnEnv(extra map[string]string) []string {
 	return base
 }
 
+// perTaskSpawnOpts are the per-task knobs BOTH claude spawns must carry: the
+// main pass and the structured-output formatting pass that resumes the same
+// session.
+//
+// It is one function rather than two copies because the failure mode of two
+// copies is silent and asymmetric — a knob wired into the main pass only lets
+// the CLI change its behaviour halfway through a node, with nothing in the
+// output to show for it.
+func perTaskSpawnOpts(task Task) []claudesdk.Option {
+	effort := task.ReasoningEffort
+	if effort == "" {
+		effort = defaultClaudeCodeEffort
+	}
+	opts := []claudesdk.Option{claudesdk.WithEnv("CLAUDE_CODE_EFFORT_LEVEL", effort)}
+	opts = append(opts, autoMemoryOpts(task)...)
+	opts = append(opts, taskExtraEnvOpts(task)...)
+	if d := claudeCodeThinkingDisplay(); d != "" {
+		opts = append(opts, claudesdk.WithThinkingDisplay(d))
+	}
+	return opts
+}
+
+// autoMemoryOpts wires the node's resolved auto-memory decision into the CLI
+// spawn. It is emitted for EVERY claude_code node, including the off case,
+// because the CLI's own default is ON: leaving it alone means a bot run reads
+// and writes the operator's personal `~/.claude/projects/<cwd>/memory/`
+// without anyone asking for it.
+//
+// The switch rides CLAUDE_CODE_DISABLE_AUTO_MEMORY, which the CLI resolves
+// BEFORE any settings file — so both directions beat an operator's
+// `autoMemoryEnabled`, and the node's declared behaviour is what actually
+// happens. "0" is not a no-op there: it force-ENABLES against a settings.json
+// that turned auto-memory off.
+//
+// The directory rides `--settings`, whose values land in the CLI's
+// `flagSettings` layer. That layer outranks user and local settings, and
+// `autoMemoryDirectory` is one key the CLI refuses to read from a checked-in
+// `.claude/settings.json` at all — so the target repository cannot redirect
+// where the memory is written.
+func autoMemoryOpts(task Task) []claudesdk.Option {
+	disable, settings := autoMemorySpawn(task)
+	opts := []claudesdk.Option{claudesdk.WithEnv(autoMemoryDisableEnv, disable)}
+	if len(settings) > 0 {
+		opts = append(opts, claudesdk.WithSettingsJSON(settings))
+	}
+	return opts
+}
+
+// autoMemoryDisableEnv is the CLI's own auto-memory switch, resolved BEFORE
+// any settings file — which is why both directions of the knob ride it.
+const autoMemoryDisableEnv = "CLAUDE_CODE_DISABLE_AUTO_MEMORY"
+
+// autoMemorySpawn is autoMemoryOpts' decision, split out so the mapping is
+// testable without reaching into the SDK's unexported config. It returns the
+// value for CLAUDE_CODE_DISABLE_AUTO_MEMORY and, when memory is on, the
+// inline settings JSON pinning the directory (nil otherwise).
+func autoMemorySpawn(task Task) (disable string, settings []byte) {
+	if task.AutoMemoryDir == "" {
+		return "1", nil
+	}
+	raw, err := json.Marshal(map[string]any{
+		"autoMemoryEnabled":   true,
+		"autoMemoryDirectory": task.AutoMemoryDir,
+	})
+	if err != nil {
+		// A map of a bool and a string cannot fail to marshal; if it somehow
+		// did, enabling auto-memory without pinning the directory would send
+		// the agent's notes to the operator's personal memory instead of the
+		// run's space. Stay off rather than write to the wrong place.
+		return "1", nil
+	}
+	return "0", raw
+}
+
 // taskExtraEnvOpts converts Task.ExtraEnv (KEY=value entries — run-level
 // provisioning such as the devbox profile PATH) into per-spawn env
 // options. Entries without an '=' are dropped: they cannot form a valid
@@ -974,15 +1040,7 @@ func (b *ClaudeCodeBackend) formatOutput(ctx context.Context, task Task, session
 	// Forward BYOK credentials and effort level into the formatting pass so
 	// the resumed session uses the same auth path as Pass 1.
 	opts = append(opts, anthropicCredOptsForCLI(ctx, task.ProviderHint, taskSandboxed(task))...)
-	effort := task.ReasoningEffort
-	if effort == "" {
-		effort = defaultClaudeCodeEffort
-	}
-	opts = append(opts, claudesdk.WithEnv("CLAUDE_CODE_EFFORT_LEVEL", effort))
-	opts = append(opts, taskExtraEnvOpts(task)...)
-	if d := claudeCodeThinkingDisplay(); d != "" {
-		opts = append(opts, claudesdk.WithThinkingDisplay(d))
-	}
+	opts = append(opts, perTaskSpawnOpts(task)...)
 
 	prompt := "Format your complete findings as JSON matching the required output schema."
 

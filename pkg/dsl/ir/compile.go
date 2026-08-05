@@ -520,6 +520,7 @@ func (c *compiler) compile() *Workflow {
 		Interaction:     interaction,
 		Worktree:        defaultWorktreeMode(wf.Worktree),
 		Compress:        wf.Compress,
+		AutoMemory:      wf.AutoMemory,
 		Permission:      wf.Permission,
 		PermissionAllow: wf.Allow,
 		PermissionAsk:   wf.Ask,
@@ -835,6 +836,7 @@ func (c *compiler) compileAgents() {
 			Sandbox:           c.compileSandboxBlock(a.Sandbox, "agent", a.Name),
 			Cursors:           compileCursorInvocation(a.Cursors),
 			Compress:          a.Compress,
+			AutoMemory:        a.AutoMemory,
 			Permission:        a.Permission,
 			Needs:             a.Needs,
 		}
@@ -870,6 +872,7 @@ func (c *compiler) compileJudges() {
 			Sandbox:           c.compileSandboxBlock(j.Sandbox, "judge", j.Name),
 			Cursors:           compileCursorInvocation(j.Cursors),
 			Compress:          j.Compress,
+			AutoMemory:        j.AutoMemory,
 			Permission:        j.Permission,
 			Needs:             j.Needs,
 		}

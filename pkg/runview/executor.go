@@ -118,6 +118,11 @@ type ExecutorSpec struct {
 	// input to rewrite.Resolve (above node/workflow DSL and ITERION_COMPRESS).
 	Compress string
 
+	// AutoMemory is the run-level auto-memory (MEMORY.md) override ("", "on",
+	// "off"), highest-priority input to automemory.Resolve (above node/workflow
+	// DSL and ITERION_AUTO_MEMORY). See docs/memory-and-knowledge.md.
+	AutoMemory string
+
 	// Permission is the run-level tool-permission-gate mode override
 	// ("", "off", "ask", "deny"), highest-priority input to the gate's
 	// mode precedence (above node/workflow DSL and ITERION_PERMISSION).
@@ -293,6 +298,12 @@ func BuildExecutor(spec ExecutorSpec) (*model.ClawExecutor, error) {
 		model.WithStoreDir(dispatcherStoreDir),
 		model.WithSecretGuard(guard),
 		model.WithCompressOverride(spec.Compress),
+		model.WithAutoMemoryOverride(spec.AutoMemory),
+		// The auto-memory mirror persists through the SAME store as the
+		// `memory:` block, so a cloud runner's Mongo store is what carries
+		// MEMORY.md past the pod's ephemeral disk. nil keeps the local
+		// filesystem default.
+		model.WithAutoMemoryStore(spec.MemoryStore),
 		model.WithRewriteChain(rewriteChainFromPlugins(spec.Logger)),
 		model.WithPermissionOverride(spec.Permission),
 		model.WithPermissionRules(spec.PermissionAllow, spec.PermissionAsk, spec.PermissionDeny),

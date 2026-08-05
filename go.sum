@@ -19,8 +19,8 @@ github.com/Masterminds/semver/v3 v3.5.0 h1:kQceYJfbupGfZOKZQg0kou0DgAKhzDg2NZPAw
 github.com/Masterminds/semver/v3 v3.5.0/go.mod h1:4V+yj/TJE1HU9XfppCwVMZq3I84lprf4nC11bSS5beM=
 github.com/SherClockHolmes/webpush-go v1.4.0 h1:ocnzNKWN23T9nvHi6IfyrQjkIc0oJWv1B1pULsf9i3s=
 github.com/SherClockHolmes/webpush-go v1.4.0/go.mod h1:XSq8pKX11vNV8MJEMwjrlTkxhAj1zKfxmyhdV7Pd6UA=
-github.com/SocialGouv/claw-code-go v0.1.1-0.20260714085100-c9eed790765b h1:5JhXvBCunV0OyBqjug+KJ4Ife5MFrMBCFecD3A9/yHI=
-github.com/SocialGouv/claw-code-go v0.1.1-0.20260714085100-c9eed790765b/go.mod h1:c0yGvkNqLl+A4KNRBBEg1iP3dhnnM9z0XX6jCFlA15k=
+github.com/SocialGouv/claw-code-go v0.1.1-0.20260804154152-abd6de0284cf h1:8iG4XDMo+gt7pcCrtJ55QZx6rQ64UzZtdmsD8NIf94E=
+github.com/SocialGouv/claw-code-go v0.1.1-0.20260804154152-abd6de0284cf/go.mod h1:c0yGvkNqLl+A4KNRBBEg1iP3dhnnM9z0XX6jCFlA15k=
 github.com/alicebob/miniredis/v2 v2.38.0 h1:nZAzCR+Lj+Vxk4ZXzm2NuKq2O33RXj1XxJ2e2uP9jiw=
 github.com/alicebob/miniredis/v2 v2.38.0/go.mod h1:TcL7YfarKPGDAthEtl5NBeHZfeUQj6OXMm/+iu5cLMM=
 github.com/aws/aws-sdk-go-v2 v1.43.2 h1:cl+IXwWb3qazClUcm08tGSsB6OiuV83JVJO9B0jQcPc=

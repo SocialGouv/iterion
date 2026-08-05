@@ -79,3 +79,73 @@ func botsPathsFromEnv() []string {
 	}
 	return out
 }
+
+// BotIDForRun resolves the bot identity a run's bot-scoped memory should be
+// keyed on, matching what the LAUNCH used.
+//
+// The identity a run carries depends on how it was launched, and only cloud
+// persists it:
+//   - cloud stamps BotID on the run document (CreateQueuedRun);
+//   - a studio launch passes the catalog bot id to the executor but persists
+//     nothing;
+//   - `iterion run` passes nothing, and the executor falls back to the
+//     workflow's own name.
+//
+// A resume rebuilds the executor from scratch, so without this it inherits the
+// workflow-name fallback — and for a bundle whose bot id and workflow name
+// differ (`whats-next` vs `whats_next`, the usual shape) the resumed nodes read
+// an EMPTY memory and write their notes into a second space nothing will read
+// again.
+//
+// The bundle layout is what closes the gap: `<id>/main.bot` is the shape
+// botregistry discovers, and `<id>` is precisely the id the studio launched
+// with. A standalone `.bot` deliberately resolves to "" so the executor keeps
+// its workflow-name fallback — which is what a CLI launch of that same file
+// used, so launch and resume still agree.
+func BotIDForRun(r *store.Run) string {
+	if r == nil {
+		return ""
+	}
+	return ResolveBotID(r.BotID, r.BundleName, r.FilePath)
+}
+
+// ResolveBotID is THE rule, and every surface that starts or resumes a run
+// applies it: an explicit id first, then the bundle's own declared name, then
+// the bundle directory a path names, then nothing — which lets the executor
+// fall back to the workflow's name.
+//
+// The bundle NAME has to come before the path, because a `.botz` archive is
+// extracted into a cache slot named after its CONTENT HASH. Deriving the
+// identity from that path keys the bot's memory on the hash: the same bot
+// answers to a different name than in its directory form, and every edit to
+// the bundle — a comment, a version bump — mints a fresh hash and orphans
+// everything it had learned. `manifest.yaml`'s `name` is the id that does not
+// move, and the run already persists it as BundleName.
+func ResolveBotID(explicitID, bundleName, filePath string) string {
+	if explicitID != "" {
+		return explicitID
+	}
+	if bundleName != "" {
+		return bundleName
+	}
+	return BotIDForPath(filePath)
+}
+
+// BotIDForPath derives a bot identity from a workflow path, or "" when the
+// path does not identify one.
+//
+// `<id>/main.bot` is the bundle layout botregistry discovers, and `<id>` is
+// exactly the catalog id the studio launches with — so deriving it here makes
+// the CLI, a detached subprocess and an in-process studio launch key the same
+// bot's memory identically, instead of the first two falling back to the
+// workflow's own name (`whats_next` where the studio said `whats-next`).
+//
+// A standalone `.bot` returns "" on purpose. It has no identity beyond its
+// workflow name, and inventing one from its parent directory would key the
+// memory on wherever the file happens to sit.
+func BotIDForPath(filePath string) string {
+	if !strings.EqualFold(filepath.Base(filePath), "main.bot") {
+		return ""
+	}
+	return botNameFromPath(filePath)
+}

@@ -50,6 +50,7 @@ var (
 	remoteLaunchTimeout        string
 	remoteLaunchBackend        string
 	remoteLaunchCompress       string
+	remoteLaunchAutoMemory     string
 	remoteLaunchPermission     string
 	remoteLaunchReviewMode     string
 	remoteLaunchMergeInto      string
@@ -91,6 +92,7 @@ var remoteRunsLaunchCmd = &cobra.Command{
 			Timeout:            remoteLaunchTimeout,
 			Backend:            remoteLaunchBackend,
 			Compress:           remoteLaunchCompress,
+			AutoMemory:         remoteLaunchAutoMemory,
 			Permission:         remoteLaunchPermission,
 			ReviewMode:         remoteLaunchReviewMode,
 			MergeInto:          remoteLaunchMergeInto,
@@ -437,6 +439,7 @@ func init() {
 	remoteRunsLaunchCmd.Flags().StringVar(&remoteLaunchTimeout, "timeout", "", "Run timeout (Go duration, e.g. 30m)")
 	remoteRunsLaunchCmd.Flags().StringVar(&remoteLaunchBackend, "backend", "", "Backend override (claude_code|claw)")
 	remoteRunsLaunchCmd.Flags().StringVar(&remoteLaunchCompress, "compress", "", "Compression override (on|ultra|off)")
+	remoteRunsLaunchCmd.Flags().StringVar(&remoteLaunchAutoMemory, "auto-memory", "", "Auto-memory (MEMORY.md) override (on|off)")
 	remoteRunsLaunchCmd.Flags().StringVar(&remoteLaunchPermission, "permission", "", "Permission gate override (off|ask|deny)")
 	remoteRunsLaunchCmd.Flags().StringVar(&remoteLaunchReviewMode, "review-mode", "", "Review topology (auto|mono|dual)")
 	remoteRunsLaunchCmd.Flags().StringVar(&remoteLaunchMergeInto, "merge-into", "", "Worktree finalization target (current|none|<branch>)")

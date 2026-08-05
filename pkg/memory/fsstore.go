@@ -235,6 +235,9 @@ func (s *FSStore) ListDocuments(_ context.Context, ref knowledge.SpaceRef, dir s
 // ReadDocument returns a document's metadata + content. A missing
 // document returns an error satisfying errors.Is(err, ErrDocNotFound).
 func (s *FSStore) ReadDocument(_ context.Context, ref knowledge.SpaceRef, path string) (knowledge.Document, error) {
+	if err := knowledge.ValidateDocPath(path); err != nil {
+		return knowledge.Document{}, err
+	}
 	sc, err := s.scopeFor(ref)
 	if err != nil {
 		return knowledge.Document{}, err
@@ -263,6 +266,15 @@ func (s *FSStore) ReadDocument(_ context.Context, ref knowledge.SpaceRef, path s
 // on disk. Counters are updated only after the write succeeds, under
 // the global quota lock, so concurrent writers stay consistent.
 func (s *FSStore) WriteDocument(_ context.Context, ref knowledge.SpaceRef, in knowledge.DocumentInput) (knowledge.DocumentMeta, error) {
+	// The SHARED clamp, not just the scope one below. Scope.Resolve keeps a
+	// path inside the space but silently normalises it through filepath.Clean,
+	// so this adapter used to accept `./notes.md` and store it as `notes.md`
+	// while the cloud adapter rejected the same call — one contract with two
+	// behaviours, and the local one hid every path defect until it reached
+	// production.
+	if err := knowledge.ValidateDocPath(in.Path); err != nil {
+		return knowledge.DocumentMeta{}, err
+	}
 	sc, err := s.scopeFor(ref)
 	if err != nil {
 		return knowledge.DocumentMeta{}, err
@@ -320,6 +332,9 @@ func (s *FSStore) WriteDocument(_ context.Context, ref knowledge.SpaceRef, in kn
 // DeleteDocument removes a document (no-op if absent) and credits its
 // bytes back to the per-space and aggregate counters.
 func (s *FSStore) DeleteDocument(_ context.Context, ref knowledge.SpaceRef, path string) error {
+	if err := knowledge.ValidateDocPath(path); err != nil {
+		return err
+	}
 	sc, err := s.scopeFor(ref)
 	if err != nil {
 		return err
