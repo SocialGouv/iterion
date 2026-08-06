@@ -1000,6 +1000,16 @@ func RecoverFinalize(ctx context.Context, st store.RunStore, r *store.Run, logge
 	if r.FinalBranch != "" || r.FinalCommit != "" {
 		return nil // already finalized
 	}
+	// A worktree already removed (operator cleanup, manual
+	// `git worktree remove`, store GC) leaves nothing to promote, and
+	// that state is permanent — the reconcile loop scans every terminal
+	// run on every tick, so reaching finalizeWorktree here re-logs the
+	// same "cannot read worktree HEAD" warning every minute per deleted
+	// worktree. Skip quietly; an EXISTING worktree with an unreadable
+	// HEAD still warns from finalizeWorktree below.
+	if _, err := os.Stat(r.WorkDir); err != nil {
+		return nil
+	}
 	// Finalize any terminally-stopped run that left work in the
 	// worktree. The happy path is `finished` (the original case that
 	// motivated RecoverFinalize). `cancelled` also benefits: when the

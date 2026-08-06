@@ -432,6 +432,11 @@ type Service struct {
 	broker  *EventBroker
 	manager *Manager
 
+	// skipRunLogged dedupes the "skip run" diagnostic emitted when a
+	// listed run fails to load: the same stale/corrupt id is reported
+	// once per service lifetime instead of on every UI poll.
+	skipRunLogged sync.Map
+
 	// sandboxDefault is the global sandbox default injected into every
 	// in-process engine this service launches (see WithSandboxDefault).
 	// Empty = neutral (no default), the contract tests rely on.

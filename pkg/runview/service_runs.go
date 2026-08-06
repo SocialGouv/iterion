@@ -2,6 +2,7 @@ package runview
 
 import (
 	"context"
+	"errors"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -105,9 +106,7 @@ func (s *Service) ListRunRecordsCtx(ctx context.Context, f ListFilter) ([]*store
 		r, err := s.store.LoadRun(ctx, id)
 		if err != nil {
 			// A single corrupt run.json shouldn't break the whole listing.
-			if s.logger != nil {
-				s.logger.Warn("runview: skip run %s: %v", id, err)
-			}
+			s.logSkippedRun(id, err)
 			continue
 		}
 		if !matchesFilter(r, f) {
@@ -128,6 +127,30 @@ func (s *Service) ListRunRecordsCtx(ctx context.Context, f ListFilter) ([]*store
 		out = out[:f.Limit]
 	}
 	return out, nil
+}
+
+// logSkippedRun reports a run id the listing had to skip — once per
+// (id, category). ListRuns keeps returning ids whose document is gone
+// (manual deletion, partial purge, migration), so without dedup every
+// UI poll re-logs the same line: several WARN lines per second,
+// indefinitely, drowning the instance log.
+//
+// A missing document (ErrRunNotFound) is a stale index entry, not a
+// corrupt run: Debug. Only an unreadable document rates a Warn — and
+// even that only once, since a corrupt run.json does not heal itself.
+func (s *Service) logSkippedRun(id string, err error) {
+	if s.logger == nil {
+		return
+	}
+	if errors.Is(err, store.ErrRunNotFound) {
+		if _, dup := s.skipRunLogged.LoadOrStore("gone:"+id, struct{}{}); !dup {
+			s.logger.Debug("runview: skip run %s (stale index entry, logged once): %v", id, err)
+		}
+		return
+	}
+	if _, dup := s.skipRunLogged.LoadOrStore("corrupt:"+id, struct{}{}); !dup {
+		s.logger.Warn("runview: skip run %s: %v", id, err)
+	}
 }
 
 // ListCtx is the tenant-aware variant of List: propagates the caller's
