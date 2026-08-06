@@ -271,12 +271,30 @@ func TestE2ECoverageMatrixGate(t *testing.T) {
 	t.Run("bypass_matrix_citing_itself", func(t *testing.T) {
 		// Both citation forms pointed at the matrix itself; the Feature cell
 		// then supplies the "name" the parenthesised form looks for.
-		for _, ref := range []string{matrixRel, "(" + matrixRel + ")", "Payment (" + matrixRel + ")"} {
+		//
+		// The matrix path used here is deliberately TEST-SHAPED
+		// (`..._test.md`): with an ordinary path the test-file regex alone
+		// would reject the citation, so it would pass even with the
+		// self-citation guard removed — measured, and the reason this case
+		// is written this way.
+		selfRel := "docs/coverage_matrix_test.md"
+		for _, ref := range []string{selfRel, "(" + selfRel + ")", "Payment (" + selfRel + ")"} {
 			ws, scratch := gitWorkspace(t), t.TempDir()
 			greenVerify(t, scratch)
-			writeFile(t, ws, matrixRel, header+
+			cmd := strings.ReplaceAll(command, "{{vars.workspace_dir}}", ws)
+			cmd = strings.ReplaceAll(cmd, "{{vars.scratch_dir}}", scratch)
+			cmd = strings.ReplaceAll(cmd, "{{vars.matrix_path}}", selfRel)
+			cmd = strings.ReplaceAll(cmd, "{{vars.target}}", shellQuote(""))
+			writeFile(t, ws, selfRel, header+
 				"| a.b | Payment | a | covered-deterministic | "+ref+" | |\n")
-			res := run(t, ws, scratch)
+			out, err := exec.Command("sh", "-c", cmd).Output()
+			if err != nil {
+				t.Fatalf("verify_run: %v (%s)", err, out)
+			}
+			var res verifyResult
+			if uerr := json.Unmarshal(out, &res); uerr != nil {
+				t.Fatalf("not verify_result JSON: %v (%s)", uerr, out)
+			}
 			if res.MatrixOK {
 				t.Fatalf("the matrix citing itself must not resolve (%q): %+v", ref, res)
 			}
@@ -361,6 +379,146 @@ func TestE2ECoverageMatrixGate(t *testing.T) {
 		res := run(t, ws, scratch)
 		if res.MatrixRows != 2 || res.UncoveredRows != 2 {
 			t.Fatalf("a fenced example table must be ignored and the real one parsed (want 2/2): %+v", res)
+		}
+	})
+
+	// Round-2 bypasses: each was an EXECUTED false-green (or, for the
+	// convention cases, a false RED) against the round-1 hardening.
+
+	t.Run("bypass_prose_line_inside_the_table", func(t *testing.T) {
+		// A heading between two row groups ended the scan and dropped every
+		// row below it — uncovered rows included — with no error at all.
+		ws, scratch := gitWorkspace(t), t.TempDir()
+		greenVerify(t, scratch)
+		writeFile(t, ws, "e2e/real_test.go", "package e2e\n\nfunc TestReal(t *testing.T) {}\n")
+		writeFile(t, ws, matrixRel, header+
+			"| a.b | Thing | a | covered-deterministic | TestReal (e2e/real_test.go) | |\n"+
+			"## Payment refunds\n"+
+			"| hidden | Payment refund | a | uncovered | | plan |\n")
+		res := run(t, ws, scratch)
+		if res.MatrixOK {
+			t.Fatalf("a stray line inside the table must be an error, not a silent truncation: %+v", res)
+		}
+		if !strings.Contains(res.LogTail, "AFTER the table ended") {
+			t.Fatalf("log_tail must name the dropped rows, got %q", res.LogTail)
+		}
+	})
+
+	t.Run("bypass_indented_code_block_table", func(t *testing.T) {
+		// A 4-space-indented table renders as <pre> — the operator sees no
+		// table at all — but was parsed as the matrix.
+		ws, scratch := gitWorkspace(t), t.TempDir()
+		greenVerify(t, scratch)
+		writeFile(t, ws, "e2e/real_test.go", "package e2e\n\nfunc TestReal(t *testing.T) {}\n")
+		writeFile(t, ws, matrixRel,
+			"<!-- e2e-coverage-matrix: v1 -->\n\nExample:\n\n"+
+				"    | ID | Feature | Family | Status | Tests | Notes |\n"+
+				"    |---|---|---|---|---|---|\n"+
+				"    | fake | Payment | a | covered-deterministic | TestReal (e2e/real_test.go) | |\n")
+		res := run(t, ws, scratch)
+		if res.MatrixOK || res.MatrixRows != 0 {
+			t.Fatalf("an indented (code-rendered) table must not be read as the matrix: %+v", res)
+		}
+	})
+
+	t.Run("bypass_mixed_fence_flavours", func(t *testing.T) {
+		// A tilde fence inside a backtick fence toggled one shared boolean
+		// back to "outside", leaking the block's table as the matrix.
+		ws, scratch := gitWorkspace(t), t.TempDir()
+		greenVerify(t, scratch)
+		writeFile(t, ws, "e2e/real_test.go", "package e2e\n\nfunc TestReal(t *testing.T) {}\n")
+		fence := strings.Repeat("`", 3)
+		writeFile(t, ws, matrixRel,
+			"<!-- e2e-coverage-matrix: v1 -->\n\n"+fence+"\nprose\n~~~\n"+
+				"| ID | Feature | Family | Status | Tests | Notes |\n|---|---|---|---|---|---|\n"+
+				"| leaked | Payment | a | covered-deterministic | TestReal (e2e/real_test.go) | |\n"+fence+"\n")
+		res := run(t, ws, scratch)
+		if res.MatrixOK || res.MatrixRows != 0 {
+			t.Fatalf("a table inside a fenced block must stay invisible whatever the fence flavour: %+v", res)
+		}
+	})
+
+	t.Run("bypass_short_name_in_path_form", func(t *testing.T) {
+		// The >=4-char / test-ish guard was only applied to bare names, so
+		// `x (test_x.go)` substring-matched almost any file.
+		ws, scratch := gitWorkspace(t), t.TempDir()
+		greenVerify(t, scratch)
+		writeFile(t, ws, "e2e/thing_test.go", "package e2e\n\nvar x = 1\n")
+		writeFile(t, ws, matrixRel, header+
+			"| a.b | Thing | a | covered-deterministic | x (e2e/thing_test.go) | |\n")
+		res := run(t, ws, scratch)
+		if res.MatrixOK {
+			t.Fatalf("a 1-char name in path form must not resolve: %+v", res)
+		}
+	})
+
+	t.Run("bypass_citation_escaping_the_workspace", func(t *testing.T) {
+		// `../`, an absolute path, and a symlink out of the tree all passed
+		// os.path.isfile.
+		outside := t.TempDir()
+		if err := os.WriteFile(filepath.Join(outside, "outside_test.go"), []byte("package x\nfunc TestOut(t *testing.T) {}\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		for _, ref := range []string{
+			"TestOut (../" + filepath.Base(outside) + "/outside_test.go)",
+			"TestOut (" + filepath.Join(outside, "outside_test.go") + ")",
+		} {
+			ws, scratch := gitWorkspace(t), t.TempDir()
+			greenVerify(t, scratch)
+			writeFile(t, ws, matrixRel, header+
+				"| a.b | Thing | a | covered-deterministic | "+ref+" | |\n")
+			res := run(t, ws, scratch)
+			if res.MatrixOK {
+				t.Fatalf("a citation outside the workspace must not resolve (%q): %+v", ref, res)
+			}
+		}
+	})
+
+	t.Run("dead_reference_in_a_non_covered_row", func(t *testing.T) {
+		// A unit-only row citing its unit suite skipped the claims check
+		// entirely, so a stale path lived on (the real matrix carried one).
+		ws, scratch := gitWorkspace(t), t.TempDir()
+		greenVerify(t, scratch)
+		writeFile(t, ws, matrixRel, header+
+			"| a.b | Thing | a | unit-only | pkg/x/gone_test.go | pure function |\n")
+		res := run(t, ws, scratch)
+		if res.MatrixOK || !strings.Contains(res.LogTail, "DEAD REFERENCE") {
+			t.Fatalf("a dead citation must be reported whatever the row's status: %+v", res)
+		}
+	})
+
+	t.Run("every_citation_must_resolve_not_just_one", func(t *testing.T) {
+		ws, scratch := gitWorkspace(t), t.TempDir()
+		greenVerify(t, scratch)
+		writeFile(t, ws, "e2e/real_test.go", "package e2e\n\nfunc TestReal(t *testing.T) {}\n")
+		writeFile(t, ws, matrixRel, header+
+			"| a.b | Thing | a | covered-deterministic | TestReal (e2e/real_test.go), TestGhost (e2e/ghost_test.go) | |\n")
+		res := run(t, ws, scratch)
+		if res.MatrixOK {
+			t.Fatalf("a dead citation beside a live one must still be reported: %+v", res)
+		}
+	})
+
+	t.Run("root_level_test_directories_are_accepted", func(t *testing.T) {
+		// FALSE POSITIVE regression: the round-1 regex required a slash on
+		// BOTH sides, so Rust `tests/`, pytest `tests/`, RSpec `spec/` and
+		// Jest `__tests__/` — all at the repo ROOT — were rejected, which
+		// would make this gate refuse the legitimate matrix of most
+		// non-Go repos.
+		for _, tc := range []struct{ path, body, name string }{
+			{"tests/integration.rs", "#[test]\nfn test_charge_is_idempotent() {}\n", "test_charge_is_idempotent"},
+			{"tests/scenarios.py", "def test_charge_is_idempotent():\n    pass\n", "test_charge_is_idempotent"},
+			{"__tests__/component.js", "it('renders the charge form', () => {});\n", "renders the charge form"},
+			{"spec/user.rb", "describe 'User' do\n  it_behaves_like 'a payer'\nend\n", "it_behaves_like"},
+		} {
+			ws, scratch := gitWorkspace(t), t.TempDir()
+			greenVerify(t, scratch)
+			writeFile(t, ws, tc.path, tc.body)
+			writeFile(t, ws, matrixRel, header+
+				"| a.b | Thing | a | covered-deterministic | "+tc.path+" | |\n")
+			if res := run(t, ws, scratch); !res.MatrixOK {
+				t.Fatalf("a root-level %s citation must resolve: %+v", tc.path, res)
+			}
 		}
 	})
 

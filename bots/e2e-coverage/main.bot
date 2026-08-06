@@ -570,7 +570,11 @@ else:
 # Universal test-file naming conventions (case-insensitive, no language
 # enum). Used BOTH by the claims check (a cited test must live in a file
 # that is actually a test file) and by the new_test_code signal below.
-rx = re.compile('(_test[.]|_tests[.]|[.]test[.]|[.]spec[.]|/test/|/tests/|/__tests__/|/spec/|(^|/)test_|_spec[.]|Test[.]|Tests[.]|Spec[.])', re.I)
+# The directory patterns anchor on (^|/) so a ROOT-level tests/ or spec/
+# counts: Rust tests/, pytest tests/, RSpec spec/ and Jest __tests__/ all
+# sit at the repo root, and rejecting them would make this gate refuse the
+# legitimate matrix of most non-Go repos.
+rx = re.compile('(_test[.]|_tests[.]|[.]test[.]|[.]spec[.]|(^|/)test/|(^|/)tests/|(^|/)__tests__/|(^|/)spec/|(^|/)test_|_spec[.]|Test[.]|Tests[.]|Spec[.])', re.I)
 # A cited NAME must look like a test identifier, not an arbitrary word: a
 # 1-char citation greps every source file in the tree.
 name_rx = re.compile('(test|spec|scenario|should|it_)', re.I)
@@ -604,16 +608,26 @@ if mtext:
     # Blank out fenced code blocks first: the coverage-matrix skill itself
     # ships an EXAMPLE table in a fence, and a doc that pastes one must not
     # have it mistaken for the matrix.
+    # An INDENTED block renders as code too (the operator sees no table at
+    # all), and the two fence flavours are tracked SEPARATELY -- one shared
+    # boolean let a tilde fence inside a backtick fence toggle the state
+    # back and leak the block contents as if they were the matrix.
     fence = chr(96) * 3
     lines = []
-    in_fence = False
+    back_open = False
+    tilde_open = False
     for l in mtext.splitlines():
         st = l.strip()
-        if st.startswith(fence) or st.startswith('~~~'):
-            in_fence = not in_fence
+        if st.startswith(fence) and not tilde_open:
+            back_open = not back_open
             lines.append('')
             continue
-        lines.append('' if in_fence else l)
+        if st.startswith('~~~') and not back_open:
+            tilde_open = not tilde_open
+            lines.append('')
+            continue
+        indented = l.startswith('    ') or l.startswith(chr(9))
+        lines.append('' if (back_open or tilde_open or indented) else l)
     contract_cols = ['id', 'feature', 'family', 'status', 'tests', 'notes']
     hdr = -1
     cols = {}
@@ -648,14 +662,24 @@ if mtext:
                 k = ref.rindex('(')
                 name = ref[:k].strip().strip(chr(96)).strip()
                 path = ref[k+1:-1].strip().strip(chr(96)).strip()
+            def usable_name(n):
+                # A cited NAME must look like a test identifier: a 1-char
+                # name substring-matches almost any file.
+                return len(n) >= 4 and bool(name_rx.search(n))
             def usable_file(rel):
-                # A claim resolves against a real TEST FILE only: a directory,
-                # a non-test file, or the matrix citing itself proves nothing.
+                # A claim resolves against a real TEST FILE INSIDE the
+                # workspace only: a directory, a non-test file, the matrix
+                # citing itself, or a path escaping the tree (../, absolute,
+                # a symlink out) proves nothing.
                 if not rel or matrix_rel in rel:
                     return False
-                return os.path.isfile(os.path.join(ws, rel)) and bool(rx.search(rel))
+                full = os.path.realpath(os.path.join(ws, rel))
+                root = os.path.realpath(ws)
+                if full != root and not full.startswith(root + os.sep):
+                    return False
+                return os.path.isfile(full) and bool(rx.search(rel))
             if path:
-                if not name or not usable_file(path):
+                if not usable_name(name) or not usable_file(path):
                     return False
                 try:
                     return name in open(os.path.join(ws, path), encoding='utf-8', errors='replace').read()
@@ -663,7 +687,7 @@ if mtext:
                     return False
             if usable_file(name):
                 return True
-            if len(name) < 4 or not name_rx.search(name):
+            if not usable_name(name):
                 return False
             hits = git(['grep', '-I', '-l', '-F', '--untracked', name])
             for h in hits.splitlines():
@@ -674,6 +698,7 @@ if mtext:
         need_note = ['covered-live', 'unit-only', 'excluded']
         need_tests = ['covered-deterministic', 'covered-live']
         i = hdr + 1
+        ended_at = -1
         while i < len(lines):
             s = lines[i].strip()
             i += 1
@@ -682,6 +707,7 @@ if mtext:
             if s == '':
                 continue
             if not s.startswith('|'):
+                ended_at = i - 1
                 break
             if s.replace('|', '').replace('-', '').replace(':', '').replace(' ', '') == '':
                 continue
@@ -707,18 +733,47 @@ if mtext:
             if status in need_note and cell('notes') == '':
                 matrix_ok = False
                 problems.append(rid + ': status ' + status + ' requires a justification in Notes')
+            tcell = cell('tests')
+            if status not in need_tests and tcell != '':
+                # A row that is not claiming coverage may still cite tests as
+                # context (unit-only pointing at its unit suite). Those are
+                # checked too: a reference is dead whatever the row's status,
+                # and it sends a reader verifying the row to a missing file.
+                dead = [r.strip() for r in tcell.split(',') if r.strip() and not ref_resolves(r)]
+                if dead:
+                    matrix_ok = False
+                    problems.append(rid + ': DEAD REFERENCE in a ' + status + ' row -- does not resolve to a real test file: ' + ', '.join(dead)[:150])
             if status in need_tests:
-                tcell = cell('tests')
                 refs = [r for r in tcell.split(',') if r.strip()]
                 if not refs:
                     matrix_ok = False
                     problems.append(rid + ': ' + status + ' without any test reference')
-                elif not any(ref_resolves(r) for r in refs):
-                    matrix_ok = False
-                    problems.append(rid + ': ORPHAN CLAIM -- no cited test resolves to a real test file in the tree: ' + tcell[:120])
+                else:
+                    # EVERY citation must resolve, not just one: a dead
+                    # reference beside a live one sends the reader who wants
+                    # to verify the claim to a file that is not there.
+                    dead = [r.strip() for r in refs if not ref_resolves(r)]
+                    if dead:
+                        matrix_ok = False
+                        problems.append(rid + ': ORPHAN CLAIM -- cited test(s) do not resolve to a real test file in the tree: ' + ', '.join(dead)[:150])
         if matrix_rows == 0:
             matrix_ok = False
             problems.append('matrix table has no feature rows')
+        # A heading or any stray prose line INSIDE the table ends the scan and
+        # would drop every row below it -- silently, which is exactly how a
+        # feature disappears from the accounting. Anything row-shaped after
+        # the table ended is therefore an error.
+        if ended_at >= 0:
+            for l in lines[ended_at:]:
+                s = l.strip()
+                if not s.startswith('|'):
+                    continue
+                c = [x.strip() for x in s.strip('|').split('|')]
+                j = cols.get('status', -1)
+                if len(c) >= len(contract_cols) and 0 <= j < len(c) and c[j].strip(chr(96)).strip().lower() in allowed:
+                    matrix_ok = False
+                    problems.append('matrix row found AFTER the table ended -- a heading or stray line inside the table drops every row below it: ' + s[:110])
+                    break
 if problems:
     out = out + chr(10) + '[gate] MATRIX PROBLEMS (' + str(len(problems)) + '):' + chr(10) + chr(10).join(problems[:40])
 if uncovered > 0:
