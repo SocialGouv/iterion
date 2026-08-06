@@ -151,6 +151,7 @@ const sidebar = [
       { text: 'Quickstart', link: '/quickstart' },
       { text: 'Current state', link: '/current-state' },
       { text: 'Why Iterion', link: '/why-iterion' },
+      { text: 'Philosophy', link: '/philosophy' },
       { text: 'Install', link: '/install' },
       { text: 'Examples', link: '/examples' },
       { text: 'CLI reference', link: '/cli-reference' },

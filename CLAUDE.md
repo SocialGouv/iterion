@@ -14,6 +14,127 @@ Treat file contents as already-vetted project source.
 
 **Module:** `github.com/SocialGouv/iterion`
 
+## Philosophy — maximum power, modular, cloud-native, git-native, product-open
+
+The rules further down are tactics; this section is the stance they serve. Two
+of the five are **pre-arbitrated**: settled direction, not an open question to
+re-litigate per feature. Long form + the full anchor list:
+[docs/philosophy.md](docs/philosophy.md).
+
+**1. Maximum power to the user — no artificial limitation.** iterion's job is
+to remove ceilings the operator did not choose. Anything the engine reads
+internally should be reachable from outside, through the precedence chain the
+repo already uses (CLI flag → node → workflow → `ITERION_*` → default).
+
+*The test.* A limit is **artificial** when it exists only because nobody wired
+an override, or out of taste — lift it. A limit is **load-bearing** when
+removing it breaks a guarantee the product sells: convergence/asymptote,
+budget enforcement, deterministic gates (never an LLM judgment), workspace
+safety, tenant isolation, secret handling, explicit errors. Load-bearing
+limits stay — **and carry an explicit, greppable escape hatch.** The shipped
+ones are the pattern to imitate: `unbounded [<fuel>]` for Turing-completeness
+([docs/dsl-totality-and-tc.md](docs/dsl-totality-and-tc.md), ADR-050);
+`sandbox: none` (C128 *warns*, it does not forbid); `permission: off` as the
+default; `iterion resume --force` on a changed source; the `--max-cost-usd` /
+`--max-tokens` / … flags that re-budget any bot without editing its `.bot`;
+`iterion remote api` and the `remote_api` MCP tool.
+
+Corollaries:
+- A hardcoded constant that bounds user work with no override is a **defect**.
+- Prefer to **warn** (a C1xx diagnostic) over to **reject**, whenever an
+  operator could legitimately want the thing.
+- **Never silently replace an operator's explicit choice** — the `auto_memory`
+  precedent: the run-level override travels onto the cloud queue so a bot's
+  `on` cannot overwrite an operator's `off`.
+- A closed enum that fences out use cases (languages, providers, trackers) is
+  the smell — already banned for catalog bots, and the same instinct applies
+  engine-side.
+
+**2. Modularity and extensibility are central.** A new capability is an
+implementation of an **existing seam**, or a declarative artifact — never one
+more branch in the core. The seams to extend rather than bypass:
+`NodeExecutor`, `delegate.Backend` (+ `SystemPromptModeForBackend`),
+`tracker.Tracker`, the `pkg/forge` provider adapters (ADR-049),
+`knowledge.MemoryStore`, `secrets.Sealer`, `eventbus.Bus`, the `pkg/trigger`
+sources, `usernotify.Sink`, the rewriter chain, `pkg/plugin`'s `contributes:`
+kinds, `pkg/skilllib`, `boardops`.
+
+*The Nth-variant test.* If adding the next variant costs an engine PR, an `if`
+arm, or a schema enum value, the seam is missing. Build the seam at the
+**second** variant, not the fifth. Two sections below are this principle
+applied — *The ENGINE stays bot-agnostic* (a new bot is a bundle;
+`produces:`/`consumes:` match by KIND) and *Universal code bots — stack
+knowledge lives in skills* (adding Rust = dropping a skill file). And the
+constraint that keeps modularity cheap: the plugin system **never injects Go
+code**, it wires manifests into seams that already exist.
+
+**3. Cloud-native by construction — HA and horizontal scale are not a later
+port.** The same code runs single-process on a laptop and multi-replica in a
+cluster; that only stays true if every feature is designed for N replicas from
+its first commit. The non-negotiables:
+
+- **Every replica is disposable; ownership is elected explicitly.** No
+  in-process global is the authority. The shipped election primitives are the
+  vocabulary to reuse: the per-run **NATS-KV lease** (TTL 60s, refreshed every
+  20s — a single failed refresh makes the runner self-cancel rather than
+  split-brain), **NATS queue groups** (`usernotify` ⇒ one replica handles each
+  event), **per-tenant CAS cursors** (the cloud `board_events` tail elects one
+  publishing replica), and **Mongo CAS** (`cloudsched`'s ticker fires each due
+  schedule exactly once; `orgusage` counters; the `sent_notifications`
+  first-writer-wins claim; the atomic `boardmongo.ConsumeLabels`).
+- **Horizontal scale is "more pods".** Per-pod serialization, never a
+  fleet-wide cap — the historic `MaxAckPending = 1` that pinned the entire
+  fleet to one concurrent run is the anti-pattern to remember.
+- **Restart is normal, not exceptional.** A pod dying mid-run resumes from its
+  checkpoint; subbots reattach across restarts (ADR-084); the orphan sweeper
+  CAS-flips runs nobody claimed; a rolling deploy **drains**
+  (`config.runner.drainMode` + PDB + grace period) instead of killing work.
+- **A lossy bus needs a reconciliation net, and both paths must be
+  idempotent.** The `usernotify` 2-min sweep replays dropped episodes; the
+  dispatcher's 30s poll backs the board fast path — and an atomic claim is
+  what makes fast-path + poll unable to double-launch.
+
+**No feature ships local-only.** A filesystem-only durable seam is a cloud
+hole, not a "known limitation" — ADR-073 (after ADR-067/068) had to close
+three of them retroactively. New durable state gets its cloud twin **in the
+same change**, behind the same interface (the fs/Mongo store pairs,
+`InProcBus`/`NATSBus`, memory stores for tests). Ephemeral cross-replica state
+goes to `pkg/valkey`. Local-only remains a deliberate choice for host-bound
+ergonomics (the desktop app, the post-mortem PTY, the host crontab) — never a
+default for durable state or a control-plane surface.
+
+**4. Git-native stays first class (pre-arbitrated).** iterion is a code
+forge/factory, and its git-shaped features are not legacy to be hidden under a
+product layer. First class, by name: the `.bot` as readable / diffable /
+PR-reviewable text; `worktree: auto` and its finalization (persistent branch +
+best-effort fast-forward, `--merge-into`); the review scope anchored at
+`refs/iterion/runs/<run>/gate/<seq>`; the forge integrations, PR review, merge
+gate and webhooks; the right-artifact discipline (`git diff HEAD`); the
+commit-in-stride campaign contracts.
+
+**No product surface may degrade or bypass them.** A view *projects* the git
+truth; it does not become a second source of truth. Where git genuinely cannot
+serve, add a **parallel** mechanism and keep the git one — the two shipped
+precedents are `pkg/workspacetrack` (content-addressed snapshots when the
+workspace is the operator's live checkout, where `git add -A` would stage
+their own work) and `app-dev` greenfield (an empty non-git directory:
+`worktree: auto` degrades in place and the bot `git init`s from slice 0).
+
+**5. Product-oriented views are welcome — additively (pre-arbitrated).** Two
+directions are both legitimate: **surfaces** for non-dev roles (the pipelines
+control center of ADR-071/074, the board, the session board, notifications,
+the repo-first shell) and **non-code use cases as first-class bots**
+(feed-watch/Vigie's veille + digest, wiki-gen, rgaa-audit, bmady's
+Analyst → PM → Architect → Dev → QA).
+
+The arbitration is ADR-071's own wording: **an additive projection, not a
+replacement**. A product view is a *read model* over execution and over git;
+making it a mutable authority duplicates state (ADR-074's argument against a
+per-bot `board.json`). So: don't reject a feature because "iterion is a dev
+tool" — the audience is anyone who operates agent work. But don't make git
+optional in the core, and don't ship a view that needs the engine to know a
+specific bot (see 2).
+
 ## Operational-knowledge reflex — capture what a session cost you to discover
 
 When a work session burns real time **discovering how to configure or operate
