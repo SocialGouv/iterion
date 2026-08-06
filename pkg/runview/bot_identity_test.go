@@ -129,6 +129,12 @@ func TestEveryExecutorConstructionDecidesTheBotIdentity(t *testing.T) {
 			switch d.Name() {
 			case "vendor", "node_modules", ".git", ".iterion", "studio", "testdata":
 				return filepath.SkipDir
+			// Nested checkouts an operator keeps on disk (git worktrees under
+			// .claude/, sibling repos under .works/) are not part of THIS
+			// tree — none of their files are tracked here, and their older
+			// copies would report as offenders of a rule they predate.
+			case ".claude", ".works":
+				return filepath.SkipDir
 			}
 			return nil
 		}
