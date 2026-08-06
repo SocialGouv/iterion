@@ -1,0 +1,5 @@
+name: launch-fixture
+display_name: Launch Fixture
+description: An agent-bearing fixture the studio UI e2e suite renders in the Launch form.
+version: 0.1.0
+enabled: true

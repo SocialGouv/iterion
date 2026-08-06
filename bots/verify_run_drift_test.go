@@ -212,6 +212,7 @@ func TestVerifyRunDriftTailPresentInAllBots(t *testing.T) {
 		"branch-improve-loop/main.bot": "verify_run",
 		"feature-gap-fill/main.bot":    "verify_run",
 		"test-coverage/main.bot":       "verify_run",
+		"e2e-coverage/main.bot":        "verify_run",
 		"dep-update-guard/main.bot":    "verify_run",
 		"adr-cartograph/main.bot":      "verify_run",
 		// docs-refresh dropped the build-verify apparatus (a docs-only

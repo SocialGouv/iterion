@@ -28,7 +28,6 @@ import (
 	"github.com/SocialGouv/iterion/pkg/orgusage"
 	"github.com/SocialGouv/iterion/pkg/pat"
 	"github.com/SocialGouv/iterion/pkg/pluginsource"
-	natsq "github.com/SocialGouv/iterion/pkg/queue/nats"
 	"github.com/SocialGouv/iterion/pkg/runview"
 	"github.com/SocialGouv/iterion/pkg/runview/runstream"
 	"github.com/SocialGouv/iterion/pkg/secrets"
@@ -178,10 +177,14 @@ type Config struct {
 	PATs      pat.Store
 	PATMaxTTL time.Duration
 
-	// Queue is the cloud-mode NATS connection. When non-nil the
-	// server registers the super-admin DLQ endpoints and starts the
-	// orphan-run sweeper (paired with a Mongo store).
-	Queue *natsq.Conn
+	// Queue is the cloud-mode NATS connection (*natsq.Conn). When
+	// non-nil the server registers the super-admin DLQ endpoints and
+	// starts the orphan-run sweeper (paired with a Mongo store).
+	//
+	// Typed as the narrow QueueBackend interface rather than the
+	// concrete type: pass a real *natsq.Conn or nothing at all —
+	// never a nil *natsq.Conn, which would read as "wired" here.
+	Queue QueueBackend
 
 	// BotBindings is the policy wrapper over GenericSecrets: it maps a
 	// stored org/user secret to a bot under the workflow's declared

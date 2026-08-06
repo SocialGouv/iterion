@@ -1,0 +1,916 @@
+## ─────────────────────────────────────────────────────────────────
+## e2e_coverage  (persona: Endy — one agent drives an application's
+##                e2e coverage to COMPLETE, matrix-anchored)
+##
+## THE MISSION is an E2E-COMPLETENESS campaign: every FEATURE of the
+## application in front of you ends up exercised end-to-end by the
+## repo's own CI-runnable test suite — or is explicitly, justifiably
+## not (unit-only / live-only / excluded). The instrument is THE
+## MATRIX: a committed feature×coverage table (see skills/
+## coverage-matrix.md) that is at once the inventory, the living todo,
+## the done-oracle and the audit trail. THE METRIC IS NOT A ROW COUNT.
+## It is features whose regression would fail a test before shipping.
+##
+## Sibling of `test-coverage` (Testy) v2 — SAME ADR-058 shape (one
+## adaptive `campaign` agent + a deterministic gate + a bounded
+## continuation loop + git-as-state), DIFFERENT mission: Testy deepens
+## coverage of a code area (unit/integration, coverage-tool compass);
+## Endy closes the FEATURE-level e2e axis of a whole application, with
+## completeness made checkable by the matrix contract.
+##
+## GRAPH (see the workflow block):
+##   campaign     — ONE adaptive agent (claude_code, full tools).
+##                  Inventory → matrix → one verified `test(e2e):`
+##                  commit per feature gap, matrix row flipped in the
+##                  SAME commit. Termination output:
+##                  {coverage_complete, commits_this_pass, …}.
+##   verify_build — adaptive, stack-agnostic: reads the `verify-build`
+##     + verify_run  + `verify-tests` skills and writes the repo's real
+##                  build + e2e-suite run into an OUT-OF-TREE
+##                  <scratch_dir>/verify.sh; a DETERMINISTIC tool node
+##                  re-runs it on the REAL exit code AND enforces the
+##                  MATRIX CONTRACT: file present + marker + parseable
+##                  table + allowed statuses + justified exceptions +
+##                  every covered-* row citing at least one test that
+##                  RESOLVES in the tree (grep — an orphan claim is a
+##                  red gate). No LLM judgment anywhere in the gate.
+##   gate         — deterministic compute:
+##                  converged = suite green AND matrix_ok AND the
+##                  campaign reports coverage complete AND (scoped run
+##                  OR zero uncovered rows). Else loop back with the
+##                  failure log.
+##
+## WHY new_test_code IS NOT IN THE CONVERGENCE CONJUNCTION (a
+## deliberate divergence from Testy): this bot's anti-façade floor is
+## the matrix CLAIMS CHECK — flipping a row to covered-* requires a
+## cited test that actually exists, which is STRICTLY stronger than
+## "some test-shaped lines appeared in the diff". And a legitimate
+## pure-MAPPING pass (inventorying a repo whose features are already
+## covered and citing the pre-existing tests) must be able to
+## converge without writing code. new_test_code is still computed and
+## surfaced in the log for observability. Citing a pre-existing,
+## UNRELATED test to flip a row survives the grep but violates the
+## campaign contract — pertinence is semantic; the honesty clause,
+## the operator's review of the matrix diff, and re-runs are the
+## backstop there (docs/workflow_authoring_pitfalls.md).
+##
+## CONTINUATION IS BOUNDED. The single declared loop
+## (campaign→verify_build→verify_run→gate→campaign) is capped by
+## `max_passes`; on exhaustion it ships what is banked. LANDS
+## CONTINUOUSLY: the campaign commits each closed gap (test + matrix
+## row) in stride, so an interrupted / budget-capped run has banked
+## every committed test. git IS the state; the matrix is part of the
+## tree, so a fresh pass just re-reads it and continues.
+##
+## RIGHT-ARTIFACT (docs/workflow_authoring_pitfalls.md): the gate
+## reads the WORKING TREE (matrix + tests + `git status`), diffs
+## against the RUN BASE (reflog-oldest) for the observability check,
+## and `git grep --untracked` so a not-yet-committed test still
+## resolves — but the campaign's contract is commit-in-stride, so an
+## uncommitted tree at gate time is already a smell the log surfaces.
+##
+## STACK/REPO-AGNOSTIC (CLAUDE.md "Catalog bots are repo-agnostic" +
+## "Universal code bots"): no language, no layout, no runner is named
+## in this DSL. How to enumerate features, find the repo's own e2e
+## harness and write real e2e tests lives in skills
+## (e2e-coverage / feature-inventory / coverage-matrix /
+## verify-build / verify-tests). iterion is only the reference
+## dogfood target, never the assumed one.
+## ─────────────────────────────────────────────────────────────────
+
+vars:
+  ## ${PROJECT_DIR} resolves to the run worktree under worktree: auto
+  ## (do NOT override with a literal repo root — that aims agents at the
+  ## main checkout; see CLAUDE.md dogfood note).
+  workspace_dir: string = "${PROJECT_DIR}"
+
+  ## Scope: a feature family, an area, or a free description of WHICH
+  ## slice of the application to cover this run. UNIVERSAL DEFAULT:
+  ## empty = the WHOLE application — the campaign inventories every
+  ## feature and the run only converges when no uncovered row remains.
+  ## A non-empty target converges on scope-level completion (the
+  ## matrix may still carry uncovered rows outside the scope).
+  target: string = ""
+
+  ## The committed feature×coverage matrix — path relative to the
+  ## workspace root. The gate enforces its contract deterministically
+  ## (see skills/coverage-matrix.md). `docs/` is a layout-agnostic
+  ## default; override per repo when its docs live elsewhere.
+  matrix_path: string = "docs/e2e-coverage-matrix.md"
+
+  ## Out-of-tree, sandbox-writable scratch for the deterministic
+  ## gate's verify script/log ONLY. The engine resolves
+  ## ${PROJECT_SCRATCH_DIR} to ~/.iterion/projects/<key>/scratch
+  ## non-sandboxed and to the container-writable /tmp/iterion-scratch
+  ## under a sandbox (never hardcode ~/.iterion here). Keeping it OUT
+  ## of the target worktree is the repo-agnostic rule: never pollute
+  ## someone else's tree.
+  scratch_dir: string = "${PROJECT_SCRATCH_DIR}/e2e-coverage"
+
+  ## BASELINE (G5 — docs/references/productive-session-patterns.md).
+  ## Known pre-existing failures / flaky tests the campaign must SKIP
+  ## rather than burn budget proving they aren't its own. Empty
+  ## (default) = the campaign establishes it once cheaply (a
+  ## `git stash`-based check) then skips what predates its work.
+  baseline: string = ""
+
+  ## Hard cap on continuation PASSES — the convergence backstop. NOTE
+  ## loop semantics: the DSL `as continuation_loop(N)` bounds the
+  ## loop-BACKS (re-entries), so the TOTAL number of passes is N+1.
+  max_passes: int = 8
+
+## ─── Prompts ────────────────────────────────────────────────────
+
+prompt campaign_system:
+  You are a senior engineer running an E2E-COVERAGE campaign — working
+  EXACTLY as you would in a productive, human-driven engineering
+  session. You have the repo in front of you and full tools (read,
+  edit, shell, git). No one micro-manages you; you own this pass end
+  to end.
+
+  WHY YOU ARE HERE (it governs every decision below): every FEATURE of
+  this application should be exercised END-TO-END by its own
+  CI-runnable test suite, so that a regression in any feature fails a
+  test BEFORE it ships. The deliverable is twofold: (1) real,
+  deterministic e2e tests written with the repo's OWN harness and
+  conventions; (2) THE MATRIX — a committed feature×coverage table
+  that makes the completeness claim checkable (every covered feature
+  cites the test that proves it; every not-covered feature says why).
+  The metric is NOT a row count or a green table. It is features whose
+  breakage would be CAUGHT. Every e2e test you write must satisfy the
+  MUTATION TEST at feature level: if the feature were broken — the
+  wire between components cut, the flag silently ignored, the status
+  never persisted, the endpoint returning garbage — the test MUST
+  fail. If you cannot state what observable outcome would change, do
+  not write the test.
+
+  DETERMINISTIC-FIRST. An e2e test that needs no external credential,
+  no network, no real LLM — and can run in CI on every change — is
+  worth ten opt-in ones. Only when a feature genuinely cannot be
+  exercised without a live external (a real model, a third-party OAuth
+  flow, a cloud service) do you either add a test in the repo's
+  opt-in/live layer (if it has one — status `covered-live`, justified)
+  or mark the row `excluded` with the reason. NEVER silently skip a
+  feature: the matrix must say one of covered / unit-only / excluded,
+  each justified per the contract.
+
+  FORBIDDEN (the deterministic gate + your own re-review must reject
+  these):
+    - stub-echo tests: asserting that your own stub/fake returned what
+      you configured it to return — the assertion must be about what
+      the SYSTEM did with it (persisted state, emitted events, status
+      transitions, exit codes, HTTP responses, files written);
+    - harness-only tests: exercising the test harness or fixtures
+      without crossing the application's real seams;
+    - no-invariant tests: driving the system but asserting nothing an
+      operator/user could observe;
+    - unit-tests-in-e2e-clothing: re-asserting a pure function through
+      the whole stack adds no risk coverage — that feature is
+      `unit-only`, say so in the matrix instead;
+    - flaky constructs: sleeps as synchronization, wall-clock
+      dependence, unseeded randomness, real network in a test marked
+      deterministic;
+    - ORPHAN/BORROWED CLAIMS: flipping a matrix row to covered-* by
+      citing a test that does not exist (the gate greps and goes red)
+      or a pre-existing test that does not actually exercise THAT
+      feature (survives the grep, violates this contract, and lands
+      you back here when caught).
+
+  Read these skills FIRST (mirrored into .claude/skills/ at run
+  start): `e2e-coverage` (the doctrine + how to write a real e2e
+  test), `feature-inventory` (how to enumerate an application's
+  features from the outside), `coverage-matrix` (the exact matrix
+  contract the deterministic gate parses), and `verify-tests` (how to
+  detect and run THIS repo's own suite).
+
+  HOW TO WORK — reproduce the shape of a productive session:
+
+  1. INVENTORY FIRST. If the matrix does not exist (or is stale),
+     build it before anything else: enumerate the application's
+     features from the OUTSIDE (docs/README, CLI surface, API
+     routes/OpenAPI, configuration flags, grammar/DSL) per the
+     `feature-inventory` skill; reconcile any existing coverage docs
+     the repo already has; MAP the repo's existing e2e tests onto
+     features (mapping pre-existing coverage and citing those tests is
+     legitimate work — it needs no new code). Commit the matrix as its
+     own commit. On a later pass, re-read it and refresh only what
+     changed.
+
+  2. LIVING TODO = the `uncovered` rows in scope, re-prioritized as
+     you learn: critical paths first (data integrity, auth/permission
+     boundaries, persistence, money), then recently-changed and
+     high-blast-radius features, then the long tail.
+
+  3. THE REPEATED UNIT, one feature gap at a time: pin down the
+     feature's OBSERVABLE CONTRACT (what an operator/user sees when it
+     works) → find the repo's own e2e idiom for it (read a
+     neighbouring e2e test and copy its structure, helpers, naming) →
+     write the deterministic e2e test asserting those observable
+     invariants → run it with the repo's OWN runner and SEE IT PASS →
+     flip the feature's matrix row (status + the test reference) → ONE
+     COMMIT carrying the test AND its matrix row
+     (`test(e2e): <feature locked down>`). Never commit a test you
+     have not seen pass; never flip a row in a different commit than
+     its test.
+
+  4. COMMIT EACH GAP AS YOU CLOSE IT — never batch. Stage everything
+     including new files (`git add -A`) and commit before moving on.
+     git IS your durable state: an interrupted run keeps every
+     committed test, and a fresh pass reads the matrix + `git log` and
+     continues where you left off.
+
+  5. DO NOT CHANGE PRODUCT CODE to make a test pass — that inverts the
+     dependency. The ONLY exception is a genuine, separately-flagged
+     testability seam (an injectable clock, an exported constructor
+     hook); call it out explicitly in the commit message and in
+     `summary`. If a new e2e test fails because it found a REAL BUG,
+     that test is a SUCCESS: keep it, mark it expected-fail/skip with
+     a clear reason in the code, report the bug in `summary`, and
+     leave the matrix row `uncovered` with a note — never delete or
+     weaken the test to force green.
+
+  6. BASELINE — don't chase failures you didn't cause. Pre-existing
+     failures / known-flaky tests are in your user prompt
+     (`baseline`). If empty, do ONE cheap `git stash`-based check to
+     establish what predates your work, then stop investigating.
+
+  7. ASK ONLY ON A REAL DECISION. You MAY pause for the operator when
+     a feature's intended behaviour is genuinely ambiguous and the
+     answer changes what you assert. Keep it RARE: most of the time
+     you decide, lower-stakes doubts go in `summary`.
+
+  KEEP GOING, one feature at a time, until the scope's matrix rows are
+  all terminal (covered-deterministic / covered-live / unit-only /
+  excluded — each justified) within your budget. Then STOP and report.
+
+  TERMINATION CONTRACT (required structured output — this is how the
+  engine detects completion; an under-specified end just gets
+  re-poked):
+    - coverage_complete: true ONLY when a fresh re-read of the matrix
+      shows every feature row IN SCOPE in a terminal, justified state
+      — no `uncovered` row left in scope. false if gaps remain (a
+      later pass continues from your commits).
+    - commits_this_pass: how many commits you landed this pass.
+    - coverage_gaps_remaining: a concise note of the uncovered
+      features still open (empty when coverage_complete).
+    - needs_human / human_note: set if you paused or need an operator
+      decision.
+    - summary: the features you locked down (with their test names),
+      any real bugs your tests surfaced, any testability seams you
+      introduced, and any rows you marked unit-only/excluded with the
+      one-line why.
+
+  Be honest. A DETERMINISTIC gate re-checks the tree after you — it
+  re-runs the repo's build+suite AND parses the matrix, greping every
+  covered row's cited test (an orphan claim is a red gate) — and the
+  run loops you back until you report coverage_complete AND the gate
+  is green. Under-reporting only costs a pass; over-reporting (or
+  façade tests, or borrowed claims) lands you right back here.
+
+prompt campaign_user:
+  Repository: {{vars.workspace_dir}}
+
+  Coverage matrix (path relative to the repo root — create it from the
+  `coverage-matrix` skill's contract if missing):
+  {{vars.matrix_path}}
+
+  Target scope (empty = the WHOLE application; non-empty = only this
+  slice/family this run):
+  {{vars.target}}
+
+  BASELINE — pre-existing failures / known-flaky tests to SKIP (empty
+  = establish it once cheaply, then skip what predates your work):
+  {{vars.baseline}}
+
+  Deterministic gate feedback from the PREVIOUS pass (empty on the
+  first pass; when present, the gate was RED after your last pass — a
+  build/suite failure to fix at the test level, or MATRIX PROBLEMS:
+  contract violations / orphan claims to repair):
+  {{input.fail_log}}
+
+  Work the feature gaps one at a time — inventory/refresh the matrix,
+  then per gap: pin the observable contract → write a mutation-proof
+  deterministic e2e test with the repo's own harness → see it pass →
+  flip the matrix row → commit test+row together — until every row in
+  scope is terminal and justified. Read `git log` and the matrix first
+  to see what earlier passes already landed. Then report the
+  termination contract (coverage_complete, commits_this_pass,
+  coverage_gaps_remaining).
+
+## ─── verify (deterministic gate: suite green + matrix contract) ────
+## An ADAPTIVE agent (verify_build) reads the verify-build +
+## verify-tests skills and writes the repo's real build + suite run
+## into an OUT-OF-TREE <scratch_dir>/verify.sh; a DETERMINISTIC tool
+## node (verify_run) re-runs it, gates on the REAL exit code, AND
+## enforces the matrix contract (parse + statuses + justifications +
+## claims resolution). No language / package manager is named here —
+## the gate stays universal while the verdict stays deterministic.
+## verify_build does NOT fix code: a RED gate routes back to
+## `campaign`.
+
+prompt verify_system:
+  You are a release engineer. An e2e-coverage pass just added tests to
+  this repository and committed them (plus a coverage-matrix file).
+  Your single job: capture how THIS repo builds and runs the test
+  suite(s) the campaign's new e2e tests belong to, into a re-runnable
+  script the deterministic gate will execute. You do NOT change code
+  and you do NOT write tests.
+
+  STEPS:
+  1. Detect how THIS repo builds and tests itself — read the
+     `verify-build` and `verify-tests` skills. Use the repo's OWN
+     toolchain (a task runner / Makefile target, a package-manager
+     test script, or a language build+test command), HONOURING any
+     pinned toolchain (version managers, lockfiles, devbox,
+     GOTOOLCHAIN). Do NOT assume a language.
+  2. Write an executable POSIX-sh script to
+     `{{vars.scratch_dir}}/verify.sh` (an OUT-OF-TREE scratch path,
+     NOT inside the repo — create it first with
+     `mkdir -p {{vars.scratch_dir}}`) that runs the repo's build AND
+     the suite(s) containing the campaign's new e2e tests (the e2e
+     suite itself — do not skip it for speed; scope OUT unrelated
+     slow suites like real-credential/live layers), and exits
+     non-zero on any failure. ALWAYS OVERWRITE any pre-existing
+     verify.sh — the scratch dir is shared across runs and a previous
+     run's script may point at a dead worktree. The gate executes the
+     script with the repo root as its working directory, so use
+     $PWD-relative commands and NEVER embed an absolute workspace
+     path.
+  3. PRE-EXISTING failures: scope `verify.sh` so a red base tree
+     can't absorb the run — the gate measures THIS run's tests. List
+     any excluded pre-existing failures in your summary.
+  4. Run it ONCE to confirm the script itself is valid (the commands
+     resolve). You do NOT fix tests here: if the suite is RED, the
+     deterministic gate reports it and the campaign fixes it next
+     pass.
+  5. If the repo genuinely has no build/test system, write a script
+     that echoes that and exits 0, and say so.
+
+  A deterministic tool node RE-RUNS your script and gates the run on
+  its real exit code (and, separately, on the coverage-matrix
+  contract). Output prepared=true once `{{vars.scratch_dir}}/verify.sh`
+  exists and reflects the repo's real build+suite; summary = the
+  command you settled on and any pre-existing failures you scoped out.
+
+prompt verify_user:
+  Repository to verify: {{vars.workspace_dir}}
+
+  Capture the repo's real build + the test suite(s) the campaign's new
+  e2e tests belong to into `{{vars.scratch_dir}}/verify.sh` (an
+  out-of-tree scratch path — see the system prompt + the
+  `verify-build` / `verify-tests` skills). Do NOT change code; the
+  deterministic gate runs your script and the campaign fixes any red
+  on the next pass.
+
+## ─── Schemas ─────────────────────────────────────────────────────
+
+## campaign's input: the deterministic gate's failure log from the
+## PREVIOUS pass (empty on the first pass and on a green-but-more-work
+## continuation — the campaign re-reads the matrix itself for the
+## remaining rows).
+schema campaign_input:
+  fail_log: string
+
+## campaign's TERMINATION CONTRACT (G2): a machine-checkable output
+## the engine keys convergence on. coverage_complete is the
+## done-oracle (every matrix row in scope terminal + justified); the
+## rest is observability.
+schema campaign_output:
+  coverage_complete: bool
+  commits_this_pass: int
+  coverage_gaps_remaining: string
+  needs_human: bool
+  human_note: string
+  summary: string
+
+## verify_plan is verify_build's contract: it has WRITTEN
+## <scratch_dir>/verify.sh.
+schema verify_plan:
+  prepared: bool
+  summary: string
+
+## verify_result is the DETERMINISTIC gate's contract. `passed` is the
+## real process exit code of re-running <scratch_dir>/verify.sh — NOT
+## an LLM judgment. `matrix_ok` is the matrix-contract verdict: file
+## present + marker + parseable table + allowed statuses + justified
+## exceptions + every covered-* row citing at least one test that
+## resolves in the tree (an ORPHAN CLAIM is matrix_ok=false).
+## `uncovered_rows` counts the `uncovered` rows left in the WHOLE
+## matrix. `scoped` is the run's scope predicate computed on the
+## TRIMMED target (a whitespace-only target is NOT a scope — the
+## expression language compares strings verbatim, so this belongs
+## here, deterministically, not in the compute).
+## `new_test_code` is observability only (see the header comment).
+## `skipped` is true only when no verify script was produced (treated
+## as pass but surfaced loudly, never a silent façade).
+schema verify_result:
+  passed: bool
+  skipped: bool
+  matrix_ok: bool
+  matrix_rows: int
+  uncovered_rows: int
+  scoped: bool
+  new_test_code: bool
+  exit_code: int
+  log_tail: string
+
+## gate is the deterministic continuation decision. converged = suite
+## green AND matrix contract satisfied AND the campaign reported the
+## scope complete AND (the run is scoped OR no uncovered row remains
+## anywhere). fail_log relays the gate's real failure to the campaign
+## on a RED pass; empty when green (the campaign re-reads the matrix
+## for the remaining work — uncovered rows are not a failure).
+schema gate_state:
+  converged: bool
+  fail_log: string
+
+## ─── Nodes ───────────────────────────────────────────────────────
+
+## campaign — the one adaptive agent. claude_code with the full native
+## toolset so it works exactly like a native Claude Code session: an
+## inventory, a living todo of feature gaps, one verified
+## `test(e2e):` commit per gap, in stride. session: fresh — a fresh
+## pass re-derives its todo from the matrix + `git log` (git is the
+## durable state). reasoning_effort high, not max: the working SHAPE,
+## not the model tier, is the lever. interaction: human — kept rare by
+## the contract.
+agent campaign:
+  backend: "claude_code"
+  model: "${ITERION_VIBE_MODEL_CLAUDE:-claude-opus-5}"
+  reasoning_effort: "${ITERION_VIBE_EFFORT_CLAUDE:-high}"
+  input: campaign_input
+  output: campaign_output
+  system: campaign_system
+  user: campaign_user
+  session: fresh
+  interaction: human
+
+## verify_build — adaptive, stack-agnostic gate authoring (writes
+## <scratch_dir>/verify.sh). fresh: whole-tree buildability, not a
+## per-gap session.
+agent verify_build:
+  backend: "claude_code"
+  model: "${ITERION_VIBE_MODEL_CLAUDE:-claude-opus-5}"
+  reasoning_effort: "${ITERION_VIBE_EFFORT_CLAUDE:-high}"
+  output: verify_plan
+  system: verify_system
+  user: verify_user
+  session: fresh
+  interaction: human
+
+## verify_run — the DETERMINISTIC half: re-runs the agent-prepared
+## <scratch_dir>/verify.sh, reports the REAL exit code, AND enforces
+## the coverage-matrix contract (parse, statuses, justifications,
+## claims resolution via filesystem + `git grep --untracked`), AND
+## computes the new-test-code observability signal. When something is
+## red the explanation is appended to log_tail so the gate's fail_log
+## carries it back to the campaign. python3 for safe JSON + subprocess
+## capture; double-quote-free body, no backslashes (uses [.] and
+## chr()) so it survives the .bot string + sh -c layers (E012).
+tool verify_run:
+  command: `WS={{vars.workspace_dir}} SCRATCH={{vars.scratch_dir}} MATRIX={{vars.matrix_path}} TARGET={{vars.target}} python3 -c "
+import os, re, json, subprocess
+ws = os.environ.get('WS', '.')
+scratch = os.environ.get('SCRATCH', '.')
+matrix_rel = os.environ.get('MATRIX', 'docs/e2e-coverage-matrix.md')
+# The scope predicate is computed HERE, not in the compute gate: a
+# whitespace-only target ('' vs ' ') must not read as scoped, and the
+# expression language compares strings verbatim.
+scoped = bool(os.environ.get('TARGET', '').strip())
+
+def git(args):
+    try:
+        p = subprocess.run(['git', '-C', ws] + args, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, timeout=120)
+        return p.stdout or ''
+    except Exception:
+        return ''
+
+try:
+    os.makedirs(scratch, exist_ok=True)
+except OSError:
+    pass
+
+# 1) Re-run the agent-written verify script (the repo's real build + suite).
+script = os.path.join(scratch, 'verify.sh')
+skipped = False
+if not os.path.exists(script):
+    skipped = True
+    passed = True
+    rc = 0
+    out = 'verify_build produced no verify.sh in the scratch dir; build/suite gate SKIPPED (counted as pass, but surfaced) -- verify_build should write the script'
+else:
+    def tree_state():
+        try:
+            p = subprocess.run(['git', '-C', ws, 'status', '--porcelain'], stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True, timeout=60)
+            if p.returncode != 0:
+                return None
+            return set(l for l in p.stdout.splitlines() if l.strip())
+        except Exception:
+            return None
+    pre = tree_state()
+    rc = 0
+    out = ''
+    try:
+        p = subprocess.run(['sh', script], cwd=ws, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, timeout=2400)
+        out = p.stdout or ''
+        rc = p.returncode
+    except subprocess.TimeoutExpired as e:
+        out = (e.output or '') + chr(10) + '[verify timed out after 2400s]'
+        rc = 124
+    except Exception as e:
+        out = 'verify_run could not execute the script: ' + str(e)
+        rc = 1
+    # Deterministic codegen-drift tail (stack-agnostic; the gate stays
+    # deterministic per ADR-044). Only on a GREEN verify: (1) if the repo's own
+    # CI enforces a drift gate, verify.sh must mirror it; (2) a green verify
+    # must not leave new changes in the tree (regen output belongs in a commit).
+    if rc == 0:
+        import glob
+        def has_drift_gate(text):
+            for l in text.splitlines():
+                if 'diff' in l and '--exit-code' in l:
+                    return True
+                gated = ('exit 1' in l) or ('|| exit' in l) or ('test -z' in l) or ('[ -z' in l)
+                if gated and (('diff' in l and '--quiet' in l) or 'status --porcelain' in l):
+                    return True
+            return False
+        ci_hit = ''
+        for pat in ('.github/workflows/*.yml', '.github/workflows/*.yaml', '.gitlab-ci.yml', '.circleci/config.yml'):
+            for f in sorted(glob.glob(os.path.join(ws, pat))):
+                try:
+                    if has_drift_gate(open(f, encoding='utf-8', errors='replace').read()):
+                        ci_hit = os.path.relpath(f, ws)
+                        break
+                except OSError:
+                    pass
+            if ci_hit:
+                break
+        if ci_hit:
+            try:
+                vs = open(script, encoding='utf-8', errors='replace').read()
+            except OSError:
+                vs = ''
+            if not has_drift_gate(vs):
+                rc = 3
+                out = out + chr(10) + 'DRIFT GATE MISSING: CI (' + ci_hit + ') enforces a codegen-drift gate but ' + script + ' has none -- edit the script per the verify-build skill section 1b (run the repo regen command, then: git diff --exit-code).'
+        if rc == 0 and pre is not None:
+            post = tree_state()
+            if post is not None:
+                fresh = sorted(post - pre)
+                if fresh:
+                    rc = 4
+                    out = out + chr(10) + 'UNCOMMITTED REGEN OUTPUT: a green verify left new changes in the tree; commit (or gitignore) them:' + chr(10) + chr(10).join(fresh[:50])
+    passed = rc == 0
+    try:
+        with open(os.path.join(scratch, 'verify.log'), 'w', encoding='utf-8') as lf:
+            lf.write(out)
+    except OSError:
+        pass
+
+# Universal test-file naming conventions (case-insensitive, no language
+# enum). Used BOTH by the claims check (a cited test must live in a file
+# that is actually a test file) and by the new_test_code signal below.
+# The directory patterns anchor on (^|/) so a ROOT-level tests/ or spec/
+# counts: Rust tests/, pytest tests/, RSpec spec/ and Jest __tests__/ all
+# sit at the repo root, and rejecting them would make this gate refuse the
+# legitimate matrix of most non-Go repos.
+# The CamelCase suffixes stay case-SENSITIVE (?-i:...) -- FooTest.java and
+# FooSpec.cs are test files, latest.tsx / contest.py / pretest.js are not,
+# and a case-insensitive 'test[.]' claims all of them.
+rx = re.compile('(_test[.]|_tests[.]|[.]test[.]|[.]spec[.]|(^|/)test/|(^|/)tests/|(^|/)__tests__/|(^|/)spec/|(^|/)test_|_spec[.]|(?-i:Test[.]|Tests[.]|Spec[.]))', re.I)
+# A cited NAME must look like a test identifier, not an arbitrary word: a
+# 1-char citation greps every source file in the tree. Only applied when
+# the citation carries NO file path (see ref_resolves).
+name_rx = re.compile('(test|spec|scenario|should|it_)', re.I)
+
+# 2) Matrix contract (the bot-specific anti-facade floor): file present +
+# marker + parseable table + allowed statuses + justified exceptions + every
+# covered-* row citing at least one test that RESOLVES in the tree. An
+# orphan claim (cited test not found) is a red matrix.
+#
+# EVERY unparseable/ambiguous shape is an ERROR, never a silent skip: a row
+# the parser cannot read is a feature the operator believes is accounted for.
+matrix_ok = True
+matrix_rows = 0
+uncovered = 0
+problems = []
+mp = os.path.join(ws, matrix_rel)
+mtext = ''
+if not os.path.exists(mp):
+    matrix_ok = False
+    problems.append('matrix file missing: ' + matrix_rel + ' (create it per the coverage-matrix skill)')
+else:
+    try:
+        mtext = open(mp, encoding='utf-8', errors='replace').read()
+    except OSError as e:
+        matrix_ok = False
+        problems.append('matrix unreadable: ' + str(e))
+if mtext and 'e2e-coverage-matrix' not in mtext:
+    matrix_ok = False
+    problems.append('matrix contract marker missing -- the file must carry the literal marker e2e-coverage-matrix (see the coverage-matrix skill)')
+if mtext:
+    # Blank out fenced code blocks first: the coverage-matrix skill itself
+    # ships an EXAMPLE table in a fence, and a doc that pastes one must not
+    # have it mistaken for the matrix.
+    # An INDENTED block renders as code too (the operator sees no table at
+    # all), and the two fence flavours are tracked SEPARATELY -- one shared
+    # boolean let a tilde fence inside a backtick fence toggle the state
+    # back and leak the block contents as if they were the matrix.
+    fence = chr(96) * 3
+    lines = []
+    back_open = False
+    tilde_open = False
+    for l in mtext.splitlines():
+        st = l.strip()
+        if st.startswith(fence) and not tilde_open:
+            back_open = not back_open
+            lines.append('')
+            continue
+        if st.startswith('~~~') and not back_open:
+            tilde_open = not tilde_open
+            lines.append('')
+            continue
+        indented = l.startswith('    ') or l.startswith(chr(9))
+        lines.append('' if (back_open or tilde_open or indented) else l)
+    contract_cols = ['id', 'feature', 'family', 'status', 'tests', 'notes']
+    hdr = -1
+    cols = {}
+    candidates = 0
+    for i, l in enumerate(lines):
+        s = l.strip()
+        if not s.startswith('|'):
+            continue
+        cells = [c.strip().lower() for c in s.strip('|').split('|')]
+        if 'feature' in cells and 'status' in cells:
+            candidates += 1
+            if hdr < 0 and cells == contract_cols:
+                hdr = i
+                for j, c in enumerate(cells):
+                    cols[c] = j
+    if hdr < 0:
+        matrix_ok = False
+        problems.append('no contract matrix table found -- the header row must be exactly | ID | Feature | Family | Status | Tests | Notes | (see the coverage-matrix skill)')
+    if candidates > 1:
+        # A decoy/summary table carrying Feature+Status ahead of the real one
+        # is how a matrix silently stops being the matrix.
+        matrix_ok = False
+        problems.append('the file has ' + str(candidates) + ' tables with Feature+Status columns; the contract allows exactly ONE matrix table (give legends/summaries a different column set)')
+    if hdr >= 0:
+        def ref_resolves(ref):
+            ref = ref.strip().strip(chr(96)).strip()
+            if not ref:
+                return False
+            name = ref
+            path = ''
+            if ref.endswith(')') and '(' in ref:
+                k = ref.rindex('(')
+                name = ref[:k].strip().strip(chr(96)).strip()
+                path = ref[k+1:-1].strip().strip(chr(96)).strip()
+            def usable_name(n):
+                # A cited NAME must look like a test identifier: a 1-char
+                # name substring-matches almost any file.
+                return len(n) >= 4 and bool(name_rx.search(n))
+            def usable_file(rel):
+                # A claim resolves against a real TEST FILE INSIDE the
+                # workspace only: a directory, a non-test file, the matrix
+                # citing itself, or a path escaping the tree (../, absolute,
+                # a symlink out) proves nothing.
+                if not rel or matrix_rel in rel:
+                    return False
+                full = os.path.realpath(os.path.join(ws, rel))
+                root = os.path.realpath(ws)
+                if full != root and not full.startswith(root + os.sep):
+                    return False
+                return os.path.isfile(full) and bool(rx.search(rel))
+            if path:
+                # Only the LENGTH guard here: the file already carries the
+                # proof that this is a test, so the name may be a plain
+                # description -- charge_is_idempotent (spec/charge_spec.rb),
+                # or renders the form (__tests__/form.js). Demanding a
+                # test-ish substring of the NAME too would reject the natural
+                # citation shape of RSpec, Jest, Cypress and pytest-BDD.
+                if len(name) < 4 or not usable_file(path):
+                    return False
+                try:
+                    return name in open(os.path.join(ws, path), encoding='utf-8', errors='replace').read()
+                except OSError:
+                    return False
+            if usable_file(name):
+                return True
+            if not usable_name(name):
+                return False
+            hits = git(['grep', '-I', '-l', '-F', '--untracked', name])
+            for h in hits.splitlines():
+                if usable_file(h.strip()):
+                    return True
+            return False
+        def split_refs(cellval):
+            # Citations are comma-separated, but a parametric test name
+            # carries its own commas -- test_charge[amount=100, currency=usd],
+            # it('logs in, then out'). Split only at depth 0.
+            out = []
+            depth = 0
+            cur = []
+            for ch in cellval:
+                if ch in '([':
+                    depth += 1
+                elif ch in ')]' and depth > 0:
+                    depth -= 1
+                if ch == ',' and depth == 0:
+                    if ''.join(cur).strip():
+                        out.append(''.join(cur))
+                    cur = []
+                else:
+                    cur.append(ch)
+            if ''.join(cur).strip():
+                out.append(''.join(cur))
+            return out
+        def looks_like_citation(r):
+            # A non-covered row's Tests cell may legitimately hold operator
+            # prose ('N/A', 'see docs/deploy.md'). Only check what actually
+            # claims to be a test reference.
+            # A slash alone is not the tell (N/A, see docs/deploy.md): what
+            # claims to be a citation either names a test FILE or carries the
+            # parenthesised name-in-file form.
+            r = r.strip()
+            return bool(rx.search(r)) or r.endswith(')')
+        allowed = ['covered-deterministic', 'covered-live', 'unit-only', 'excluded', 'uncovered']
+        need_note = ['covered-live', 'unit-only', 'excluded']
+        need_tests = ['covered-deterministic', 'covered-live']
+        i = hdr + 1
+        ended_at = -1
+        while i < len(lines):
+            s = lines[i].strip()
+            i += 1
+            # A blank line does NOT end the table: truncating there would hide
+            # every row after it (uncovered rows included).
+            if s == '':
+                continue
+            if not s.startswith('|'):
+                ended_at = i - 1
+                break
+            if s.replace('|', '').replace('-', '').replace(':', '').replace(' ', '') == '':
+                continue
+            cells = [c.strip() for c in s.strip('|').split('|')]
+            if len(cells) < len(contract_cols):
+                matrix_ok = False
+                problems.append('malformed row (' + str(len(cells)) + ' cells, contract needs ' + str(len(contract_cols)) + ' -- an unescaped pipe splits a row): ' + s[:110])
+                continue
+            def cell(key):
+                j = cols.get(key, -1)
+                if j < 0 or j >= len(cells):
+                    return ''
+                return cells[j]
+            rid = cell('id') or cell('feature') or ('row ' + str(i))
+            status = cell('status').strip(chr(96)).strip().lower()
+            matrix_rows += 1
+            if status not in allowed:
+                matrix_ok = False
+                problems.append(rid + ': invalid status ' + (status or '(empty)') + ' (allowed: ' + ', '.join(allowed) + ')')
+                continue
+            if status == 'uncovered':
+                uncovered += 1
+            if status in need_note and cell('notes') == '':
+                matrix_ok = False
+                problems.append(rid + ': status ' + status + ' requires a justification in Notes')
+            tcell = cell('tests')
+            if status not in need_tests and tcell != '':
+                # A row that is not claiming coverage may still cite tests as
+                # context (unit-only pointing at its unit suite). Those are
+                # checked too: a reference is dead whatever the row's status,
+                # and it sends a reader verifying the row to a missing file.
+                dead = [r.strip() for r in split_refs(tcell) if looks_like_citation(r) and not ref_resolves(r)]
+                if dead:
+                    matrix_ok = False
+                    problems.append(rid + ': DEAD REFERENCE in a ' + status + ' row -- does not resolve to a real test file: ' + ', '.join(dead)[:150])
+            if status in need_tests:
+                refs = [r for r in split_refs(tcell) if r.strip()]
+                if not refs:
+                    matrix_ok = False
+                    problems.append(rid + ': ' + status + ' without any test reference')
+                else:
+                    # EVERY citation must resolve, not just one: a dead
+                    # reference beside a live one sends the reader who wants
+                    # to verify the claim to a file that is not there.
+                    dead = [r.strip() for r in refs if not ref_resolves(r)]
+                    if dead:
+                        matrix_ok = False
+                        problems.append(rid + ': ORPHAN CLAIM -- cited test(s) do not resolve to a real test file in the tree: ' + ', '.join(dead)[:150])
+        if matrix_rows == 0:
+            matrix_ok = False
+            problems.append('matrix table has no feature rows')
+        # A heading or any stray prose line INSIDE the table ends the scan and
+        # would drop every row below it -- silently, which is exactly how a
+        # feature disappears from the accounting. Anything row-shaped after
+        # the table ended is therefore an error.
+        if ended_at >= 0:
+            for l in lines[ended_at:]:
+                s = l.strip()
+                if not s.startswith('|'):
+                    continue
+                c = [x.strip() for x in s.strip('|').split('|')]
+                j = cols.get('status', -1)
+                if len(c) >= len(contract_cols) and 0 <= j < len(c) and c[j].strip(chr(96)).strip().lower() in allowed:
+                    matrix_ok = False
+                    problems.append('matrix row found AFTER the table ended -- a heading or stray line inside the table drops every row below it: ' + s[:110])
+                    break
+if problems:
+    out = out + chr(10) + '[gate] MATRIX PROBLEMS (' + str(len(problems)) + '):' + chr(10) + chr(10).join(problems[:40])
+if uncovered > 0:
+    out = out + chr(10) + '[gate] ' + str(uncovered) + ' uncovered feature row(s) remain in the matrix.'
+
+# 3) new_test_code -- OBSERVABILITY only (see the workflow header): did new
+# test code land vs the RUN BASE (reflog-oldest; in-stride commits count)?
+reflog = [l for l in git(['reflog', '--format=%H']).splitlines() if l.strip()]
+diff_base = reflog[-1] if reflog else 'HEAD'
+added = 0
+for line in git(['diff', diff_base, '--numstat']).splitlines():
+    parts = line.split(chr(9))
+    if len(parts) >= 3 and rx.search(parts[2]):
+        try:
+            added += int(parts[0])
+        except ValueError:
+            pass
+untracked_test = False
+for line in git(['status', '--porcelain']).splitlines():
+    if line[:2].strip() == '??' and rx.search(line[3:]):
+        untracked_test = True
+        break
+new_test_code = added > 0 or untracked_test
+if not new_test_code:
+    out = out + chr(10) + '[gate] note: no new test code detected vs the run base (fine for a pure inventory/mapping pass; otherwise your tests never landed -- git add -A and commit).'
+
+print(json.dumps({'passed': passed, 'skipped': skipped, 'matrix_ok': matrix_ok, 'matrix_rows': matrix_rows, 'uncovered_rows': uncovered, 'scoped': scoped, 'new_test_code': new_test_code, 'exit_code': rc, 'log_tail': out[-4000:]}))
+"`
+  output: verify_result
+
+## gate — the deterministic continuation decision. Reads the real gate
+## result (suite green + matrix contract) AND the campaign's
+## termination output, both fresh in the loop BODY. converged = green
+## AND matrix_ok AND coverage reported complete AND (scoped run OR
+## zero uncovered rows anywhere). On a RED pass fail_log carries the
+## tool-composed failure log to the campaign; empty when green
+## (uncovered rows are remaining WORK, not a failure — the campaign
+## re-reads the matrix). No LLM, no shell.
+compute gate:
+  output: gate_state
+  expr:
+    converged: "outputs.verify_run.passed && outputs.verify_run.matrix_ok && outputs.campaign.coverage_complete && (outputs.verify_run.scoped || outputs.verify_run.uncovered_rows == 0)"
+    fail_log: "if(outputs.verify_run.passed && outputs.verify_run.matrix_ok, '', outputs.verify_run.log_tail)"
+
+## ─── Workflow ────────────────────────────────────────────────────
+
+workflow e2e_coverage:
+  ## Entry is the campaign itself — the inventory is the campaign's
+  ## own first move. A re-dispatch's campaign reads the matrix +
+  ## `git log` and continues from the tests earlier passes banked.
+  entry: campaign
+
+  ## Isolated git worktree at .iterion/worktrees/<run-id>/ — shields
+  ## the user's main tree from mutations; on convergence the commits
+  ## land on a persistent branch and best-effort fast-forward the
+  ## operator's checked-out branch.
+  worktree: auto
+
+  ## No `sandbox:` block (ADR-082): the platform sandboxes by default
+  ## (`sandbox: auto` — target repo's devcontainer, else the default
+  ## image); the target repo's toolchain comes from its own
+  ## devcontainer/devbox.json.
+
+  budget:
+    max_parallel_branches: 1
+    max_duration: "3h"
+    max_cost_usd: 60
+
+  compaction:
+    threshold: 0.9
+    preserve_recent: 8
+
+  ## Each pass: the campaign inventories/refreshes the matrix and
+  ## closes feature gaps (committing each in stride), then the
+  ## deterministic gate re-checks the suite + the matrix contract.
+  campaign -> verify_build
+  verify_build -> verify_run
+  verify_run -> gate
+
+  ## Converged (suite green AND matrix contract satisfied AND scope
+  ## reported complete AND — for a whole-app run — zero uncovered
+  ## rows) → done.
+  gate -> done when converged
+  ## Not converged → another campaign pass. RED carries the failure
+  ## log (a build/suite failure, or the MATRIX PROBLEMS the tool
+  ## composed) so the agent fixes exactly that; green-but-more-work
+  ## carries an empty log so the agent simply continues from the
+  ## matrix. This closes the single declared loop; the loop-back reads
+  ## outputs.gate.fail_log (a BODY node — never the loop-head
+  ## campaign's own output on its back-edge, which would read a
+  ## loop-entry-frozen value).
+  gate -> campaign as continuation_loop("{{vars.max_passes}}") with {
+    fail_log: "{{outputs.gate.fail_log}}"
+  }
+  ## continuation_loop exhausted (max_passes hit while gaps remain) →
+  ## finish anyway, shipping what is banked (every committed test is
+  ## real, landed work; the last campaign_output's
+  ## coverage_gaps_remaining + the matrix itself tell the operator
+  ## what is left).
+  gate -> done

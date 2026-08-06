@@ -2,12 +2,14 @@ package server
 
 import (
 	"context"
+	"encoding/json"
 	"net/http"
 	"strconv"
 	"time"
 
 	mongostore "github.com/SocialGouv/iterion/pkg/store/mongo"
 
+	natsq "github.com/SocialGouv/iterion/pkg/queue/nats"
 	"github.com/SocialGouv/iterion/pkg/store"
 )
 
@@ -155,9 +157,19 @@ func (s *Server) sweepOrphanRuns(ctx context.Context, lister staleRunLister, lea
 
 // ---- DLQ admin REST ----
 
-// The DLQ admin endpoints talk to the concrete *natsq.Conn (the
-// jetstream types don't warrant an abstraction layer); they're only
-// registered when cloud mode wired a queue connection.
+// QueueBackend is the slice of the cloud queue connection the server
+// itself consumes: the DLQ admin endpoints and the sweeper's lease
+// probe. Implemented by *natsq.Conn; the DLQ payload types stay
+// natsq's, since the admin views are exactly what the queue reports.
+// The endpoints are only registered when cloud mode wired a queue.
+type QueueBackend interface {
+	ListDLQ(ctx context.Context, cursorSeq uint64, limit int) ([]natsq.DLQMessage, uint64, error)
+	PeekDLQ(ctx context.Context, seq uint64) (natsq.DLQMessage, json.RawMessage, error)
+	RepublishDLQ(ctx context.Context, seq uint64) (string, error)
+	DiscardDLQ(ctx context.Context, seq uint64) error
+	DLQDepth(ctx context.Context) (uint64, error)
+	IsRunLocked(ctx context.Context, runID string) (bool, error)
+}
 
 func (s *Server) registerQueueAdminRoutes() {
 	if s.queue == nil {

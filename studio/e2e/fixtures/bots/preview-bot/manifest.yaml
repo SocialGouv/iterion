@@ -1,0 +1,5 @@
+name: preview-bot
+display_name: Preview Fixture
+description: Emits a preview URL so the run console's Browser pane has something to render.
+version: 0.1.0
+enabled: true

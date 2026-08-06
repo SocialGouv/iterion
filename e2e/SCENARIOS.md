@@ -1,5 +1,9 @@
 # E2E Test Scenarios
 
+> Scenario-level detail for the flagship stub-executor workflows. The
+> repository-wide feature×coverage inventory lives in
+> [docs/e2e-coverage-matrix.md](../docs/e2e-coverage-matrix.md).
+
 End-to-end suite validating that flagship workflows pass from start to finish
 through the full pipeline: parse `.bot` → compile IR → runtime engine → store.
 
