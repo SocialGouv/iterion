@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"strings"
 	"testing"
 	"time"
 
@@ -76,6 +77,9 @@ func newInviteE2E(t *testing.T) *inviteE2E {
 	mkUser("admin", "admin@x")
 	mkUser("member", "member@x")
 	mkUser("outsider", "outsider@x")
+	// A second unaffiliated account, used to prove a token only works for
+	// the address it was issued to.
+	mkUser("interloper", "interloper@x")
 	for _, m := range []identity.Membership{
 		{UserID: "admin", TeamID: "t1", Role: identity.RoleAdmin},
 		{UserID: "member", TeamID: "t1", Role: identity.RoleMember},
@@ -202,6 +206,26 @@ func TestInvitations_AdminIssuesAnonymousLookupAcceptGrantsMembership(t *testing
 	t.Run("an unknown token is refused, not answered with a team", func(t *testing.T) {
 		if status, body := i.call(t, http.MethodGet, "/api/auth/invitations/lookup?token=not-a-real-token", "", ""); status == http.StatusOK {
 			t.Fatalf("bogus token resolved: %d body=%s", status, body)
+		}
+	})
+
+	// Runs BEFORE the legitimate accept on purpose: a refused attempt must
+	// not consume the single-use token, and the invitee must still be able
+	// to accept afterwards.
+	t.Run("a token only works for the address it was issued to", func(t *testing.T) {
+		interloperJWT := i.jwt(t, "interloper", "", "")
+		status, body := i.call(t, http.MethodPost, "/api/auth/invitations/accept", interloperJWT,
+			`{"token":"`+invited.Token+`"}`)
+		if status == http.StatusOK {
+			t.Fatalf("a holder of the token whose email differs from the invitation was granted membership: %d body=%s", status, body)
+		}
+		// And no membership landed for the wrong account.
+		status, body = i.call(t, http.MethodGet, "/api/teams/t1/members", adminJWT, "")
+		if status != http.StatusOK {
+			t.Fatalf("member list = %d body=%s", status, body)
+		}
+		if strings.Contains(string(body), "interloper") {
+			t.Fatalf("refused acceptance still landed a membership: %s", body)
 		}
 	})
 
