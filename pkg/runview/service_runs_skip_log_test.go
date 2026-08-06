@@ -3,6 +3,8 @@ package runview
 import (
 	"bytes"
 	"context"
+	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -79,5 +81,41 @@ func TestListRunRecordsCtxSkipsStaleAndCorruptRunsQuietly(t *testing.T) {
 	}
 	if got := lineCount("run-corrupt"); got != 1 {
 		t.Errorf("run-corrupt logged on %d lines over 3 polls, want 1 (log-once)\nlog:\n%s", got, log)
+	}
+}
+
+// A context-derived failure (client disconnect, request deadline — the
+// mongo store honours the caller's ctx) is transient: the document may
+// be perfectly readable. It must be reported WITHOUT memoising —
+// otherwise one cancelled listing marks every remaining id "corrupt"
+// and permanently silences the diagnostic the Warn branch exists for.
+func TestLogSkippedRunDoesNotMemoizeTransientErrors(t *testing.T) {
+	var buf bytes.Buffer
+	logger := iterlog.New(iterlog.LevelDebug, &buf)
+	svc := &Service{logger: logger}
+
+	ctxErr := fmt.Errorf("store/mongo: find run: %w", context.Canceled)
+	for i := 0; i < 3; i++ {
+		svc.logSkippedRun("run-transient", ctxErr)
+	}
+	log := buf.String()
+	lineCount := 0
+	for _, line := range strings.Split(strings.TrimRight(log, "\n"), "\n") {
+		if strings.Contains(line, "run-transient") {
+			lineCount++
+			if strings.Contains(line, "⚠️") {
+				t.Errorf("a transient ctx error must not rate a Warn, got: %s", line)
+			}
+		}
+	}
+	if lineCount != 3 {
+		t.Errorf("transient error logged %d times over 3 calls, want 3 (reported, never memoised)\nlog:\n%s", lineCount, log)
+	}
+
+	// And a genuinely unreadable document for the SAME id still warns:
+	// the transient calls must not have consumed its one Warn slot.
+	svc.logSkippedRun("run-transient", errors.New("store: decode run run-transient: invalid character"))
+	if !strings.Contains(buf.String(), "⚠️") {
+		t.Errorf("a later corrupt document for the same id must still Warn\nlog:\n%s", buf.String())
 	}
 }

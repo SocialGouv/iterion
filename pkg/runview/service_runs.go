@@ -148,6 +148,16 @@ func (s *Service) logSkippedRun(id string, err error) {
 		}
 		return
 	}
+	// A context error means the CALLER went away (or a deadline blew),
+	// not that this document is unreadable — and the listing loop keeps
+	// iterating, so ONE cancelled request would mark every remaining id
+	// "corrupt" and permanently silence the real diagnostic for them
+	// (the mongo store honours the caller's ctx; cloud mode is exactly
+	// where the log flood was observed). Report it without memoising.
+	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+		s.logger.Debug("runview: skip run %s (store call interrupted): %v", id, err)
+		return
+	}
 	if _, dup := s.skipRunLogged.LoadOrStore("corrupt:"+id, struct{}{}); !dup {
 		s.logger.Warn("runview: skip run %s: %v", id, err)
 	}
