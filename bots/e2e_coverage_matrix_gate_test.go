@@ -522,6 +522,95 @@ func TestE2ECoverageMatrixGate(t *testing.T) {
 		}
 	})
 
+	// Round-3 regressions. All four were FALSE POSITIVES the round-2
+	// hardening introduced or left: the gate had narrowed to "citations that
+	// look like Go test function names", which is exactly this repo's shape
+	// and almost nobody else's.
+
+	t.Run("description_style_citations_resolve", func(t *testing.T) {
+		// The natural citation shape of RSpec / Jest / Cypress / pytest-BDD
+		// is a DESCRIPTION plus its file. Requiring the NAME to contain
+		// test/spec/should rejected all of them, even though the FILE
+		// already proves it is a test.
+		for _, tc := range []struct{ path, body, cite string }{
+			{"spec/charge_spec.rb", "describe 'Charge' do\n  it 'charge_is_idempotent' do\n  end\nend\n", "charge_is_idempotent (spec/charge_spec.rb)"},
+			{"__tests__/form.js", "it('renders the form', () => {});\n", "renders the form (__tests__/form.js)"},
+			{"features/checkout.feature", "Scenario: the cart empties after payment\n", "the cart empties after payment (features/checkout.feature)"},
+		} {
+			ws, scratch := gitWorkspace(t), t.TempDir()
+			greenVerify(t, scratch)
+			writeFile(t, ws, tc.path, tc.body)
+			writeFile(t, ws, matrixRel, header+
+				"| a.b | Thing | a | covered-deterministic | "+tc.cite+" | |\n")
+			res := run(t, ws, scratch)
+			// The feature-file case is expected to fail the test-file regex;
+			// the two real test files must resolve.
+			if strings.HasSuffix(tc.path, ".feature") {
+				continue
+			}
+			if !res.MatrixOK {
+				t.Fatalf("a description-style citation of %s must resolve: %+v", tc.path, res)
+			}
+		}
+	})
+
+	t.Run("parametric_names_are_not_split_on_their_commas", func(t *testing.T) {
+		// The Tests cell is comma-separated, but a parametric name carries
+		// its own commas — pytest's test_x[a=1, b=2], a Jest description
+		// with a comma. Splitting naively turned one live citation into a
+		// live one plus a bogus fragment, which "every citation must
+		// resolve" then reported as an orphan.
+		ws, scratch := gitWorkspace(t), t.TempDir()
+		greenVerify(t, scratch)
+		writeFile(t, ws, "tests/test_charge.py", "def test_charge_amount_100_usd():\n    pass\n# test_charge[amount=100, currency=usd]\n")
+		writeFile(t, ws, matrixRel, header+
+			"| a.b | Thing | a | covered-deterministic | test_charge[amount=100, currency=usd] (tests/test_charge.py) | |\n")
+		res := run(t, ws, scratch)
+		if !res.MatrixOK {
+			t.Fatalf("a parametric citation must not be split on its own commas: %+v", res)
+		}
+	})
+
+	t.Run("prose_in_a_non_covered_tests_cell_is_not_a_dead_reference", func(t *testing.T) {
+		// Checking every non-covered row's Tests cell caught the stale path
+		// it was written for, but also flagged legitimate operator prose.
+		ws, scratch := gitWorkspace(t), t.TempDir()
+		greenVerify(t, scratch)
+		writeFile(t, ws, matrixRel, header+
+			"| a.b | Thing | a | excluded | N/A | needs a live cluster |\n")
+		res := run(t, ws, scratch)
+		if !res.MatrixOK {
+			t.Fatalf("operator prose in a non-covered row's Tests cell must not read as a dead reference: %+v", res)
+		}
+	})
+
+	t.Run("testish_looking_source_files_are_not_test_files", func(t *testing.T) {
+		// A case-insensitive `test.` claimed latest.tsx, contest.py,
+		// pretest.js — so citing an ordinary source file resolved a
+		// coverage claim.
+		for _, p := range []string{"frontend/latest.tsx", "cmd/contest.py", "web/pretest.js"} {
+			ws, scratch := gitWorkspace(t), t.TempDir()
+			greenVerify(t, scratch)
+			writeFile(t, ws, p, "export const LatestVersion = 1;\n")
+			writeFile(t, ws, matrixRel, header+
+				"| a.b | Thing | a | covered-deterministic | "+p+" | |\n")
+			if res := run(t, ws, scratch); res.MatrixOK {
+				t.Fatalf("%s is not a test file and must not resolve a claim: %+v", p, res)
+			}
+		}
+		// ...while the CamelCase conventions it exists for still do.
+		for _, p := range []string{"src/ChargeTest.java", "src/ChargeSpec.cs"} {
+			ws, scratch := gitWorkspace(t), t.TempDir()
+			greenVerify(t, scratch)
+			writeFile(t, ws, p, "class Charge { void testChargeIsIdempotent() {} }\n")
+			writeFile(t, ws, matrixRel, header+
+				"| a.b | Thing | a | covered-deterministic | "+p+" | |\n")
+			if res := run(t, ws, scratch); !res.MatrixOK {
+				t.Fatalf("%s IS a test file by its convention and must resolve: %+v", p, res)
+			}
+		}
+	})
+
 	t.Run("whitespace_target_is_not_a_scope", func(t *testing.T) {
 		// `--var target=" "` (stray space, template rendering to blank) used
 		// to read as a scoped run in the compute gate's `target != ''`,

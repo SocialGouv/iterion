@@ -574,9 +574,13 @@ else:
 # counts: Rust tests/, pytest tests/, RSpec spec/ and Jest __tests__/ all
 # sit at the repo root, and rejecting them would make this gate refuse the
 # legitimate matrix of most non-Go repos.
-rx = re.compile('(_test[.]|_tests[.]|[.]test[.]|[.]spec[.]|(^|/)test/|(^|/)tests/|(^|/)__tests__/|(^|/)spec/|(^|/)test_|_spec[.]|Test[.]|Tests[.]|Spec[.])', re.I)
+# The CamelCase suffixes stay case-SENSITIVE (?-i:...) -- FooTest.java and
+# FooSpec.cs are test files, latest.tsx / contest.py / pretest.js are not,
+# and a case-insensitive 'test[.]' claims all of them.
+rx = re.compile('(_test[.]|_tests[.]|[.]test[.]|[.]spec[.]|(^|/)test/|(^|/)tests/|(^|/)__tests__/|(^|/)spec/|(^|/)test_|_spec[.]|(?-i:Test[.]|Tests[.]|Spec[.]))', re.I)
 # A cited NAME must look like a test identifier, not an arbitrary word: a
-# 1-char citation greps every source file in the tree.
+# 1-char citation greps every source file in the tree. Only applied when
+# the citation carries NO file path (see ref_resolves).
 name_rx = re.compile('(test|spec|scenario|should|it_)', re.I)
 
 # 2) Matrix contract (the bot-specific anti-facade floor): file present +
@@ -679,7 +683,13 @@ if mtext:
                     return False
                 return os.path.isfile(full) and bool(rx.search(rel))
             if path:
-                if not usable_name(name) or not usable_file(path):
+                # Only the LENGTH guard here: the file already carries the
+                # proof that this is a test, so the name may be a plain
+                # description -- charge_is_idempotent (spec/charge_spec.rb),
+                # or renders the form (__tests__/form.js). Demanding a
+                # test-ish substring of the NAME too would reject the natural
+                # citation shape of RSpec, Jest, Cypress and pytest-BDD.
+                if len(name) < 4 or not usable_file(path):
                     return False
                 try:
                     return name in open(os.path.join(ws, path), encoding='utf-8', errors='replace').read()
@@ -694,6 +704,36 @@ if mtext:
                 if usable_file(h.strip()):
                     return True
             return False
+        def split_refs(cellval):
+            # Citations are comma-separated, but a parametric test name
+            # carries its own commas -- test_charge[amount=100, currency=usd],
+            # it('logs in, then out'). Split only at depth 0.
+            out = []
+            depth = 0
+            cur = []
+            for ch in cellval:
+                if ch in '([':
+                    depth += 1
+                elif ch in ')]' and depth > 0:
+                    depth -= 1
+                if ch == ',' and depth == 0:
+                    if ''.join(cur).strip():
+                        out.append(''.join(cur))
+                    cur = []
+                else:
+                    cur.append(ch)
+            if ''.join(cur).strip():
+                out.append(''.join(cur))
+            return out
+        def looks_like_citation(r):
+            # A non-covered row's Tests cell may legitimately hold operator
+            # prose ('N/A', 'see docs/deploy.md'). Only check what actually
+            # claims to be a test reference.
+            # A slash alone is not the tell (N/A, see docs/deploy.md): what
+            # claims to be a citation either names a test FILE or carries the
+            # parenthesised name-in-file form.
+            r = r.strip()
+            return bool(rx.search(r)) or r.endswith(')')
         allowed = ['covered-deterministic', 'covered-live', 'unit-only', 'excluded', 'uncovered']
         need_note = ['covered-live', 'unit-only', 'excluded']
         need_tests = ['covered-deterministic', 'covered-live']
@@ -739,12 +779,12 @@ if mtext:
                 # context (unit-only pointing at its unit suite). Those are
                 # checked too: a reference is dead whatever the row's status,
                 # and it sends a reader verifying the row to a missing file.
-                dead = [r.strip() for r in tcell.split(',') if r.strip() and not ref_resolves(r)]
+                dead = [r.strip() for r in split_refs(tcell) if looks_like_citation(r) and not ref_resolves(r)]
                 if dead:
                     matrix_ok = False
                     problems.append(rid + ': DEAD REFERENCE in a ' + status + ' row -- does not resolve to a real test file: ' + ', '.join(dead)[:150])
             if status in need_tests:
-                refs = [r for r in tcell.split(',') if r.strip()]
+                refs = [r for r in split_refs(tcell) if r.strip()]
                 if not refs:
                     matrix_ok = False
                     problems.append(rid + ': ' + status + ' without any test reference')
