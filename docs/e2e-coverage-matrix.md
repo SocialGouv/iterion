@@ -69,8 +69,17 @@ family by family. What is left, and why it is not a quick win:
 - **studio-ui** (9 rows) — no browser harness exists in this repo. Closing
   the family means introducing one (Playwright against a `iterion studio`
   boot), which is its own scoped run.
-- **cloud** (3 rows) — `dlq`, `migrate-blobs`, `valkey-state` need a live
-  Mongo/S3/Valkey backend or a fake that does not exist yet.
+Pass 4 closed the three remaining **cloud** rows — `dlq`, `migrate-blobs`,
+`valkey-state` — which earlier passes had written off as needing a live
+Mongo/S3/Valkey. Each had a deterministic front door after all:
+
+- `valkey-state` — two servers built through the real `New()` wiring over one
+  miniredis; each flow starts on replica A and finishes on replica B.
+- `migrate-blobs` — the walker between two real stores, plus the real AWS SDK
+  against an in-process path-style S3 gateway.
+- `dlq` — the admin REST surface behind a narrow `QueueBackend` seam; the
+  JetStream-side semantics split out as `cloud.dlq-jetstream` (`excluded`, no
+  vendored broker).
 
 | ID | Feature | Family | Status | Tests | Notes |
 |---|---|---|---|---|---|
@@ -327,7 +336,7 @@ family by family. What is left, and why it is not a quick win:
 | cloud.memory-store | cloud MemoryStore adapter + quota | cloud | covered-deterministic | pkg/knowledge/scope_test.go, pkg/memory/space_test.go | |
 | cloud.dlq | dead-letter queue show/replay/delete (admin REST surface) | cloud | covered-deterministic | TestDLQAdmin_ListPeekReplayLeavesAuditTrail (pkg/server/dlq_admin_routes_test.go), TestDLQAdmin_NonSuperAdminCannotReplayOrDiscard (pkg/server/dlq_admin_routes_test.go) | the endpoints behind `iterion remote admin dlq`: super-admin gate (an unprivileged caller never reaches the queue), list/peek/replay/discard state transitions, the platform audit row naming the replayed run, and 400/404/502 mapping. Driven through the real New()/routes()/auth middleware with an in-process QueueBackend double (the seam added for it); the broker-side half is cloud.dlq-jetstream |
 | cloud.dlq-jetstream | DLQ transport semantics: park with headers, paged list over deleted holes, replay with a salted Nats-Msg-Id | cloud | excluded | | lives entirely inside JetStream (pkg/queue/nats/dlq.go): every operation is a stream Get/Publish/DeleteMsg. Needs a live broker — `nats-server/v2` is not vendored and vendoring an embedded broker is a heavy test dependency this repo has deliberately not taken (see the coverage note at the top of pkg/queue/nats/nats_test.go) |
-| cloud.migrate-blobs | `migrate to-cloud` artifact/blob upload to S3 | cloud | uncovered | | needs an S3-compatible endpoint; plan: a minio/fake-S3 stub, or mark excluded once confirmed impractical |
+| cloud.migrate-blobs | `migrate to-cloud` artifact/blob upload to S3 | cloud | covered-deterministic | TestMigrateToCloud_TransfersEveryVersionAndIsIdempotent (cmd/iterion/migrate_to_cloud_test.go), TestMigrateToCloud_DryRunWritesNothing (cmd/iterion/migrate_to_cloud_test.go), TestS3Client_ArtifactUploadRoundTripAndLayout (pkg/store/blob/s3_roundtrip_test.go), TestS3Client_DeleteRunSweepsOnlyThatRunsPrefix (pkg/store/blob/s3_roundtrip_test.go) | both halves of the one-way door: the walker (`migrateRun` between two real stores — every artifact VERSION, events, interactions, `--dry-run` writes nothing, re-runs don't duplicate) and the S3 upload driven by the REAL AWS SDK against an in-process path-style gateway (canonical key layout on the wire, byte round-trip, ErrArtifactNotFound mapping, prefix-scoped DeleteRun). Not covered: the Mongo store's own WriteArtifact→blob glue, which needs a live Mongo (mongo-conformance CI job) |
 | cloud.desktop-exchange | desktop auth token exchange endpoint | cloud | covered-deterministic | pkg/server/desktop_sso_test.go | |
 | cloud.valkey-state | ephemeral cross-replica state (OAuth/CSRF, board tokens, rate buckets) | cloud | covered-deterministic | TestValkeyCrossReplica_ForgeOAuthStartedOnACompletesOnB (pkg/server/valkey_cross_replica_test.go), TestValkeyCrossReplica_BoardTokenMintedOnAAuthorizesWriteOnB (pkg/server/valkey_cross_replica_test.go), TestValkeyCrossReplica_LoginRateBudgetIsSharedNotPerPod (pkg/server/valkey_cross_replica_test.go), pkg/server/valkey_stores_test.go | two servers built through the real `New()` wiring over ONE miniredis: each flow starts on replica A and finishes on replica B (OAuth connect → callback creates the connection, board token → board write, login burst → 429). Give each replica its own Valkey and all three fail. store-level TTL/GETDEL/write-failure surfacing in valkey_stores_test.go. Not covered: `valkey.New`'s Sentinel-HA topology (needs a real Sentinel quorum; the single-node client is what miniredis speaks) |
 | bots.catalog-universality | catalog bots stay repo- and stack-agnostic | bots | covered-deterministic | bots/catalog_universality_test.go | |
