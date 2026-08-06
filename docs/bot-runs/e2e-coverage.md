@@ -13,6 +13,15 @@ zero uncovered rows; scoped runs converge on scope-level completion.
 
 ---
 
+## 2026-08-06 — adversarial review, round 2 (the round-1 fixes, re-attacked)
+The loop's own rule — *what surfaces at round N+1 is usually a regression of round N* — held on both surfaces that were rewritten.
+
+- **The round-1 gate hardening had introduced a FALSE POSITIVE, and it was the worst finding of the round**: the test-file regex demanded a slash on both sides of `tests/` and `spec/`, so a **root-level** `tests/` (Rust, pytest), `spec/` (RSpec) or `__tests__/` (Jest) was rejected — this gate would have refused the legitimate matrix of most non-Go repos and could never have converged there. In a gate that BLOCKS, a false positive costs as much as a hole and is harder to see. Six more false-greens went with it (a heading inside the table silently dropping every row below it; a 4-space-indented table parsed as the matrix though markdown renders it as code; a tilde fence inside a backtick fence leaking its block; the short-name guard missing on the path form; `../`, absolute paths and symlinks escaping the workspace; only one citation of a list having to resolve) plus citations going unchecked entirely on non-`covered` rows — which is how a stale path had survived in the real matrix. All closed with 8 regression tests (`83e588d5e`).
+- **The generated tests held**: 11 of 13 designed mutations were killed, nothing critical or high. The two survivors were real and are fixed (`c0d308042`): the secret round-trip's "no plaintext on disk" grep missed the **base64** form, so a Seal/Open pass-through — no encryption at all — passed it; and the auto-resume test detected a dropped allow-list only by exhausting a 180 s timeout, because the exponential backoff ignored the operator's `max_wait` (now a ceiling on any wait — same mutation fails in 0.3 s).
+- **A second matrix sample (40 fresh rows, 70 across both audits) found 11 more mis-citations** (`9ecb92be2`), same failure mode throughout: a row cites the *mechanics of a helper* while the *wiring that invokes it* goes untested. Two were status-level — `dispatcher.hooks` claimed all four lifecycle hooks while only `before_remove` is proven to fire (deleting the other three `Run()` calls leaves the suite green), and `sandbox.kubernetes-driver` sat at `excluded` despite 57 real unit tests. Two genuine gaps became honest rows: `iterion issue import`, and **`ITERION_DISABLE_AUTH` — an authentication kill-switch with no test at all**.
+- **Standing number**: 11 mis-citations in 70 sampled rows. The claims grep proves existence; pertinence is human. That ratio is now written at the top of the matrix.
+- Final: 306 rows / 7 uncovered — the honest state, up from a "0 uncovered" that was partly an artifact of citations nobody had re-read.
+
 ## 2026-08-06 — adversarial review of the whole program (4 opus agents, one per surface)
 Not a bot run: the operator's `::rva` tour over the branch, one agent per surface (gate, generated Go tests, Playwright harness, matrix), each required to prove findings by execution. Every finding below was re-verified by hand before any fix.
 
