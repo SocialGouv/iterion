@@ -13,6 +13,15 @@ zero uncovered rows; scoped runs converge on scope-level completion.
 
 ---
 
+## 2026-08-06 — the audits' own backlog, closed: eight gaps → tests (`443198247`)
+The three audits had left 9 honest `uncovered` rows. Eight are now covered by deterministic tests; each was **seen red under a mutation of the feature it claims to cover**, then green on revert, with no product code changed.
+
+- **Two were security-relevant and had no test whatsoever.** `ITERION_DISABLE_AUTH` is the kill-switch deciding whether `/api/*` is protected at all — welding it on (a fully unauthenticated deployment) now fails the suite; both positions are asserted as ONE contract, because pinning one alone passes for a switch welded shut. `/api/me/oauth/*` is the BYOK / subscription-credential path for cloud runs: the STORE is the oracle, so a payload persisted unsealed, a response echoing the token, or one account reaching another's credential each turn it red.
+- The other six: `iterion server` / `iterion runner` boot posture, `iterion issue import`, `/api/parse|unparse|validate`, and the `after_create`/`before_run`/`after_run` hooks **firing in order** — the wiring whose three `Run()` calls could be deleted with the whole suite staying green.
+- **A parallel agent left a mutation in product code** (`pkg/server/effort.go`, a dropped 400-guard) and reverted it a moment later; the operator caught it in `git status` mid-flight. Worth remembering when delegating mutation testing: the tree must be audited, not trusted.
+- **A test of mine passed for the wrong reason before it passed for the right one**: the OAuth routes only mount when store + sealer + auth service are all wired, so the first run answered 404 and the "anonymous callers are refused" case went green on a missing route. The assertion now demands 401 exactly.
+- Final: **309 rows / 1 uncovered** — the six catalog bots that need real LLM runs, which is a budget decision, not an oversight. `task check` fully green (the usual flake included this pass), Playwright 24/24.
+
 ## 2026-08-06 — adversarial review, round 3 (converging: no new false-green, only a too-narrow domain)
 The round-3 signal is different in kind from rounds 1-2, and it is the convergence signal: **not one new false-green anywhere**. Every finding is the opposite failure — the hardening had narrowed what the gate ACCEPTS.
 
