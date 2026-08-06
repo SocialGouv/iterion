@@ -87,7 +87,7 @@ func TestReportRendersChronologicalRunReport(t *testing.T) {
 	if iSurvey < 0 || iBuild < 0 || iVerify < 0 {
 		t.Fatalf("timeline is missing one of the executed nodes (survey=%d build=%d verify=%d)\n---\n%s", iSurvey, iBuild, iVerify, md)
 	}
-	if !(iSurvey < iBuild && iBuild < iVerify) {
+	if iSurvey >= iBuild || iBuild >= iVerify {
 		t.Errorf("nodes are not in chronological order (survey=%d build=%d verify=%d)", iSurvey, iBuild, iVerify)
 	}
 
