@@ -128,7 +128,13 @@ Concrete façade patterns that are **banned**:
   pass. The rare exception is a genuine, separately-flagged testability
   seam (an injectable clock, a constructor hook) — call it out loudly.
 - A new test that fails because it found a REAL BUG is a success: keep
-  it (expected-fail/skip with a clear reason), report the bug, leave the
-  row `uncovered` with a note. Never weaken a test to force green.
+  it, report the bug, leave the row `uncovered` with a note. Never weaken
+  a test to force green. Prefer the **KNOWN-BUG tripwire** form over
+  expected-fail/skip when the defect has a deterministic observable state
+  (an error boundary, a wrong status, a crash message): assert the DEFECT
+  itself, name the test `KNOWN BUG — …`, and keep the intended positive
+  assertion in an adjacent comment — the day the bug is fixed the
+  tripwire goes red, which is precisely the signal to flip the test to
+  the positive contract. A skipped test rots silently; a tripwire cannot.
 - Never touch version-control state destructively (see [[verify-tests]]
   for the `.git`-safety rules).

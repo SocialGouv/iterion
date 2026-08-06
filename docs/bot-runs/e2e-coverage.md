@@ -13,6 +13,21 @@ zero uncovered rows; scoped runs converge on scope-level completion.
 
 ---
 
+## 2026-08-06 — V4 studio-ui: Playwright harness bootstrapped + 9 views covered + a real UI bug found (run 019fd6e6-32d8)
+- Status: **VALIDATED** — converged in ONE campaign pass (83 min, **$37.6**), scoped target = the 9 `studio-ui` rows + operator-approved harness bootstrap.
+- Result: 11 commits on `iterion/run/orbital-growl-crystalbloom-2659` (26 files, 1 268 insertions, **zero product-code changes**): `@playwright/test` harness in `studio/e2e/` (fixture-workspace seeding via the REST API + store, real built server on a temp store, no LLM credential), Taskfile target `test:e2e:ui` (skips cleanly when no browser is installed — `task check` stays credential-free), 9 view specs (run console, board drag-persist, launch, gallery+builder, editor parse→edit→unparse round-trip, pipelines cap, dispatcher lifecycle, secrets seal/delete, browser pane preview trigger), an order-independence hardening pass, and a docs note of the house rules. **24 Playwright tests, re-run post-merge by the operator: 24 passed in 29.8 s.**
+- **Real bug found by the suite**: `CostPreviewChip` dereferenced `data.nodes.length` while `/api/runs/preview-cost` answers `{"nodes": null}` for a workflow with no LLM node — the whole Launch view crashed into its error boundary, so a tool+compute-only bot could not be launched from the studio at all. The campaign honoured the contract (product code untouched): it committed a deterministic KNOWN-BUG tripwire test asserting the defect, with the positive assertion ready in a comment. Fixed post-merge by the operator (`fix(studio)` 457374ddd) and the tripwire flipped to the positive contract.
+- Lessons: the "bootstrap the harness + cover the family" compound target works in one pass when the operator pre-arbitrates the harness decision; the KNOWN-BUG tripwire pattern (assert the defect deterministically, positive assertion in a comment) is worth folding into the e2e-coverage skill.
+
+## 2026-08-06 — V3 cloud family: 3 gaps closed deterministically via existing fakes (run 019fd6ae-ca4a)
+- Status: **VALIDATED** — converged in one campaign pass (53 min, **$18.5**), scoped target = the 3 `cloud` rows, "no heavy new test deps" constraint honoured.
+- Result: 3 `test(e2e):` commits + 1 lint fix on `iterion/run/mirage-thwack-beamspire-f903`: DLQ admin surface (super-admin gate + audit trail), `migrate to-cloud` blob upload (walker + S3 wire, `pkg/store/blob/s3_roundtrip_test.go`), cross-replica Valkey state (OAuth/CSRF, board run-tokens, rate buckets). None ended `excluded` — the existing seams sufficed. Post-merge: e2e + server + cloud suites green.
+- Friction → bot hardening: this run's `verify_build` found the PREVIOUS run's `verify.sh` in the shared per-project scratch, pinned to a dead worktree path (it noticed and rewrote it — no harm). Hardened in the bot: the verify prompt now mandates overwrite + `$PWD`-relative commands (`fix(e2e-coverage)` 0af0da7b8).
+
+## 2026-08-06 — V2 cli family: 4 gaps in one pass, first-try green gate (run 019fd687-9cc6)
+- Status: **VALIDATED** — converged in one campaign pass (35 min, **$12.6**), scoped target = the 4 `cli` rows (incl. the `cli.dispatch` row the V1 pertinence audit had reopened).
+- Result: 4 `test(e2e):` commits on `iterion/run/onyx-glide-starforge-e9d1`: `--model/--backend` node re-targeting, `--auto-resume` recovery loop, `bench asymptote` convergence curve, `iterion dispatch` daemon boot loop. Scoped-run convergence semantics worked exactly as designed (out-of-scope rows untouched). Post-merge e2e suite green (171 s).
+
 ## 2026-08-06 — V1 inventory + quick wins on iterion itself: 290-row matrix, 10 test commits, gate caught a real contract break (run 019fd613-26f8)
 - Status: **VALIDATED** — first live run of the bot, converged (`gate.converged=true`) after one budget-raise resume.
 - Versions: bot v0.1.0 · iterion `f3de1569f` (worktree branch) · unsandboxed (`ITERION_SANDBOX_DEFAULT=none`, matching the recent local-dogfood pattern; `worktree: auto` is the isolation).

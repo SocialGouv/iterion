@@ -824,7 +824,7 @@ exactly this — see [docs/asymptote-bench.md](docs/asymptote-bench.md).)
 
 **The default mechanism (ADR-058 v2, the whole shipped fleet).** The
 flagship loop bots (whole-improve-loop, branch-improve-loop,
-feature-dev, feature-gap-fill, test-coverage, docs-refresh,
+feature-dev, feature-gap-fill, test-coverage, e2e-coverage, docs-refresh,
 adr-cartograph, secured-renovacy Phase 2) converge through ONE
 `campaign` agent + a deterministic gate + a bounded continuation loop:
 - the **deterministic verify gate** (`verify_build` writes the repo's
@@ -1261,6 +1261,8 @@ log + `0 tokens` billed confirms the OAuth-forfait path (not a metered API key).
   workspace `studio/e2e/serve.mjs` rebuilds per run and seeds with genuine
   artifacts (runs the engine actually executed from tool + compute fixtures, so
   no LLM credential and no network; a board card created through the CLI).
+  Bootstrapped by the e2e-coverage bot's V4 dogfood (see
+  [docs/bot-runs/e2e-coverage.md](docs/bot-runs/e2e-coverage.md)).
   `ITERION_HOME`/`HOME`/`ITERION_SECRETS_KEY` are redirected into that
   workspace, so the suite never touches the operator's own store, secrets or
   keychain — a rule any new spec must keep. Specs assert **rendered content and
@@ -1272,6 +1274,14 @@ log + `0 tokens` billed confirms the OAuth-forfait path (not a metered API key).
   by the whole suite (workers: 1), a spec that mutates state must leave it in a
   shape the others tolerate — see the board spec's note on not parking its card
   in a dispatcher-claimable column.
+- **E2E coverage matrix** ([docs/e2e-coverage-matrix.md](docs/e2e-coverage-matrix.md))
+  — the single feature×coverage inventory (one row per operator-observable
+  promise, every row terminal or an honest `uncovered` gap; every `covered-*`
+  row cites the test that proves it). Maintained by the **e2e-coverage bot
+  (Endy)**, whose deterministic gate parses the file and grep-verifies every
+  claim — when you add a feature or an e2e test, update the matching row (or
+  run Endy scoped to the family). Contract:
+  [bots/e2e-coverage/skills/coverage-matrix.md](bots/e2e-coverage/skills/coverage-matrix.md).
 - **Bot golden replay** (`pkg/botreplay/`, `task test:goldens`, wired into `check`) — freezes a bot's LLM node output as a committed fixture under `pkg/botreplay/testdata/bot-goldens/<bot>/<scenario>.json` and re-validates it against the current schema + invariants (required-field presence, no hallucinated assignees) with no API calls. Record mode (`task test:goldens:record`, build tag `goldens_record`) hits the real LLM to (re)generate fixtures — impractical for the v2 `campaign` nodes (whole-session claude_code agents), whose fixtures are hand-authored seeds frozen on the termination-contract schema. Wired scenarios: feature-dev `campaign_feature_complete`, docs-refresh `campaign_docs_aligned`, whats-next `nexie_turn_basic`. See [docs/adr/008-bot-golden-replay-framework.md](docs/adr/008-bot-golden-replay-framework.md).
 
 ### Live dogfood runs MUST be visible in the operator's studio
